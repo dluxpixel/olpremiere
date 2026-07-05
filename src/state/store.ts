@@ -4,7 +4,7 @@
 
 import { create } from 'zustand'
 import { subscribeWithSelector } from 'zustand/middleware'
-import { newProject, type Id, type Project } from '../engine/types'
+import { newProject, type Id, type Project, type Sequence } from '../engine/types'
 import {
   emptyHistory,
   pushCommand,
@@ -95,6 +95,15 @@ export const useStore = create<ReelState>()(
     },
   })),
 )
+
+/** Apply an undoable edit scoped to the active sequence. No-op if unchanged. */
+export function updateActiveSequence(label: string, fn: (seq: Sequence) => Sequence): void {
+  useStore.getState().dispatch(label, (p) => {
+    const seq = p.sequences[p.activeSequenceId]
+    const next = fn(seq)
+    return next === seq ? p : { ...p, sequences: { ...p.sequences, [seq.id]: next } }
+  })
+}
 
 export const zoomIn = () => {
   const { ui, setUI } = useStore.getState()

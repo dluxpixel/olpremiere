@@ -4,21 +4,57 @@ import { LeftPanel } from './components/LeftPanel'
 import { Monitor } from './components/Monitor'
 import { Timeline } from './components/Timeline'
 import { TopBar } from './components/TopBar'
+import { clipEndS, deleteClip, rippleDelete, splitClip } from './engine/timeline'
 import { quantizeToFrame } from './engine/timecode'
 import { activeSequence } from './engine/types'
 import { installKeymap } from './keymap'
+import { pausePlayback, shuttle, togglePlay } from './state/playbackControl'
 import { saveNow } from './state/persistence'
-import { useStore, zoomIn, zoomOut } from './state/store'
+import { updateActiveSequence, useStore, zoomIn, zoomOut } from './state/store'
 import { useToasts } from './state/toasts'
 import { Splitter } from './ui/Splitter'
 import { Toaster } from './ui/Toaster'
 import { useLayoutSizes } from './useLayoutSizes'
 
 function stepFrames(frames: number) {
+  pausePlayback()
   const s = useStore.getState()
   const seq = activeSequence(s.project)
   const t = quantizeToFrame(s.ui.playheadS, seq.fps) + frames / seq.fps
   s.setUI({ playheadS: Math.min(Math.max(0, t), seq.durationS) })
+}
+
+function deleteSelected(ripple: boolean) {
+  const s = useStore.getState()
+  const ids = s.ui.selection
+  if (ids.length === 0) return
+  updateActiveSequence(ripple ? 'Ripple delete' : 'Delete clip', (sq) => {
+    let next = sq
+    for (const id of ids) next = ripple ? rippleDelete(next, id) : deleteClip(next, id)
+    return next
+  })
+  s.setUI({ selection: [] })
+}
+
+/** Ctrl/Cmd+K: split the selected clips under the playhead — or every clip under it. */
+function splitAtPlayhead() {
+  const s = useStore.getState()
+  const t = s.ui.playheadS
+  const seq = activeSequence(s.project)
+  const sel = s.ui.selection
+  const targets = seq.tracks.flatMap((tr) =>
+    tr.locked
+      ? []
+      : tr.clips
+          .filter((c) => (sel.length === 0 || sel.includes(c.id)) && t > c.startS && t < clipEndS(c))
+          .map((c) => c.id),
+  )
+  if (targets.length === 0) return
+  updateActiveSequence('Split at playhead', (sq) => {
+    let next = sq
+    for (const id of targets) next = splitClip(next, id, t)
+    return next
+  })
 }
 
 function useAppKeymap() {
@@ -35,24 +71,47 @@ function useAppKeymap() {
           void saveNow().then(() => useToasts.getState().show('Project saved', 'success'))
         },
       },
+      { combo: 'space', description: 'Play / Pause', run: togglePlay },
+      { combo: 'j', description: 'Shuttle reverse', run: () => shuttle(-1) },
+      { combo: 'k', description: 'Pause', run: pausePlayback },
+      { combo: 'l', description: 'Shuttle forward', run: () => shuttle(1) },
+      { combo: 'arrowleft', description: 'Step 1 frame back', run: () => stepFrames(-1) },
+      { combo: 'arrowright', description: 'Step 1 frame forward', run: () => stepFrames(1) },
+      { combo: 'shift+arrowleft', description: 'Step ~1s back', run: () => stepFrames(-30) },
+      { combo: 'shift+arrowright', description: 'Step ~1s forward', run: () => stepFrames(30) },
+      {
+        combo: 'home',
+        description: 'Go to start',
+        run: () => {
+          pausePlayback()
+          store().setUI({ playheadS: 0 })
+        },
+      },
+      {
+        combo: 'end',
+        description: 'Go to end',
+        run: () => {
+          pausePlayback()
+          store().setUI({ playheadS: activeSequence(store().project).durationS })
+        },
+      },
       { combo: 's', description: 'Toggle snapping', run: () => store().setUI({ snapping: !store().ui.snapping }) },
       { combo: 'v', description: 'Selection tool', run: () => store().setUI({ tool: 'select' }) },
       { combo: 'c', description: 'Razor tool', run: () => store().setUI({ tool: 'razor' }) },
       { combo: 'h', description: 'Hand tool', run: () => store().setUI({ tool: 'hand' }) },
       { combo: 'z', description: 'Zoom tool', run: () => store().setUI({ tool: 'zoom' }) },
+      { combo: 'mod+k', description: 'Split clip at playhead', run: splitAtPlayhead },
+      { combo: 'delete', description: 'Delete (lift)', run: () => deleteSelected(false) },
+      { combo: 'backspace', description: 'Delete (lift)', run: () => deleteSelected(false) },
+      { combo: 'shift+delete', description: 'Ripple delete', run: () => deleteSelected(true) },
       { combo: '=', description: 'Zoom in timeline', run: zoomIn },
       { combo: 'shift++', description: 'Zoom in timeline', run: zoomIn },
       { combo: '-', description: 'Zoom out timeline', run: zoomOut },
       { combo: 'shift+_', description: 'Zoom out timeline', run: zoomOut },
-      { combo: 'arrowleft', description: 'Step 1 frame back', run: () => stepFrames(-1) },
-      { combo: 'arrowright', description: 'Step 1 frame forward', run: () => stepFrames(1) },
-      { combo: 'shift+arrowleft', description: 'Step ~1s back', run: () => stepFrames(-30) },
-      { combo: 'shift+arrowright', description: 'Step ~1s forward', run: () => stepFrames(30) },
-      { combo: 'home', description: 'Go to start', run: () => store().setUI({ playheadS: 0 }) },
       {
-        combo: 'end',
-        description: 'Go to end',
-        run: () => store().setUI({ playheadS: activeSequence(store().project).durationS }),
+        combo: '\\',
+        description: 'Zoom to fit sequence',
+        run: () => window.dispatchEvent(new Event('reel:zoom-fit')),
       },
     ])
   }, [])

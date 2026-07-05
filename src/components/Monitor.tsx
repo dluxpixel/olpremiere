@@ -3,25 +3,74 @@ import {
   ChevronRight,
   Maximize,
   MonitorPlay,
+  Pause,
   Play,
   SkipBack,
   SkipForward,
 } from 'lucide-react'
-import { useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { drawSequenceFrame } from '../engine/preview'
 import { formatTimecode, quantizeToFrame } from '../engine/timecode'
 import { activeSequence } from '../engine/types'
+import { pausePlayback, togglePlay } from '../state/playbackControl'
 import { useStore } from '../state/store'
 import { IconButton } from '../ui/Button'
-import { Tooltip } from '../ui/Tooltip'
+
+type Quality = 1 | 0.5 | 0.25
+
+/** rAF draw loop: reads the store imperatively so playback never re-renders React. */
+function useProgramCanvas(quality: Quality) {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const c2d = canvas.getContext('2d')
+    if (!c2d) return
+    let raf = 0
+    const draw = () => {
+      raf = requestAnimationFrame(draw)
+      const s = useStore.getState()
+      const seq = activeSequence(s.project)
+      const parent = canvas.parentElement
+      if (!parent) return
+      const rect = parent.getBoundingClientRect()
+      const aspect = seq.width / seq.height
+      let w = rect.width
+      let h = w / aspect
+      if (h > rect.height) {
+        h = rect.height
+        w = h * aspect
+      }
+      const dpr = (window.devicePixelRatio || 1) * quality
+      const pw = Math.max(1, Math.round(w * dpr))
+      const ph = Math.max(1, Math.round(h * dpr))
+      if (canvas.width !== pw || canvas.height !== ph) {
+        canvas.width = pw
+        canvas.height = ph
+      }
+      canvas.style.width = `${w}px`
+      canvas.style.height = `${h}px`
+      drawSequenceFrame(c2d, seq, s.project.assets, s.ui.playheadS, pw, ph, s.ui.playing)
+    }
+    raf = requestAnimationFrame(draw)
+    return () => cancelAnimationFrame(raf)
+  }, [quality])
+  return canvasRef
+}
 
 export function Monitor() {
   const playheadS = useStore((s) => s.ui.playheadS)
+  const playing = useStore((s) => s.ui.playing)
   const setUI = useStore((s) => s.setUI)
   const seq = useStore((s) => activeSequence(s.project))
+  const hasContent = seq.durationS > 0
+  const [quality, setQuality] = useState<Quality>(1)
   const regionRef = useRef<HTMLDivElement>(null)
+  const canvasRef = useProgramCanvas(quality)
 
   const stepFrames = (frames: number) => {
-    const t = quantizeToFrame(playheadS, seq.fps) + frames / seq.fps
+    pausePlayback()
+    const t = quantizeToFrame(useStore.getState().ui.playheadS, seq.fps) + frames / seq.fps
     setUI({ playheadS: Math.min(Math.max(0, t), seq.durationS) })
   }
 
@@ -32,13 +81,14 @@ export function Monitor() {
       className="flex min-h-0 min-w-0 flex-1 flex-col bg-bg-app"
       aria-label="Program monitor"
     >
-      <div className="flex min-h-0 flex-1 items-center justify-center p-3">
-        <div className="flex aspect-video max-h-full w-full max-w-full items-center justify-center rounded-[2px] bg-black">
-          <div className="flex flex-col items-center gap-2 text-center">
+      <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden p-3">
+        <canvas ref={canvasRef} data-testid="program-canvas" className="rounded-[2px] bg-black" />
+        {!hasContent && (
+          <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 text-center">
             <MonitorPlay size={28} strokeWidth={1.5} className="text-text-muted" aria-hidden />
             <span className="text-[12px] text-text-muted">No media yet</span>
           </div>
-        </div>
+        )}
       </div>
 
       <div className="relative flex h-11 shrink-0 items-center gap-2 border-t border-border bg-bg-panel px-3">
@@ -48,28 +98,38 @@ export function Monitor() {
         </span>
 
         <div className="absolute left-1/2 flex -translate-x-1/2 items-center gap-1">
-          <IconButton label="Go to start" shortcut="Home" onClick={() => setUI({ playheadS: 0 })}>
+          <IconButton
+            label="Go to start"
+            shortcut="Home"
+            onClick={() => {
+              pausePlayback()
+              setUI({ playheadS: 0 })
+            }}
+          >
             <SkipBack size={16} strokeWidth={1.5} />
           </IconButton>
           <IconButton label="Step back 1 frame" shortcut="←" onClick={() => stepFrames(-1)}>
             <ChevronLeft size={16} strokeWidth={1.5} />
           </IconButton>
-          <Tooltip label="Play — arrives in Phase 1" shortcut="Space">
-            <button
-              aria-label="Play"
-              disabled
-              className="inline-flex h-7 w-7 items-center justify-center rounded-[4px] text-text-secondary opacity-40"
-            >
-              <Play size={16} strokeWidth={1.5} />
-            </button>
-          </Tooltip>
+          <IconButton
+            label={playing ? 'Pause' : 'Play'}
+            shortcut="Space"
+            onClick={togglePlay}
+            disabled={!hasContent}
+            data-testid="play-toggle"
+          >
+            {playing ? <Pause size={16} strokeWidth={1.5} /> : <Play size={16} strokeWidth={1.5} />}
+          </IconButton>
           <IconButton label="Step forward 1 frame" shortcut="→" onClick={() => stepFrames(1)}>
             <ChevronRight size={16} strokeWidth={1.5} />
           </IconButton>
           <IconButton
             label="Go to end"
             shortcut="End"
-            onClick={() => setUI({ playheadS: seq.durationS })}
+            onClick={() => {
+              pausePlayback()
+              setUI({ playheadS: seq.durationS })
+            }}
           >
             <SkipForward size={16} strokeWidth={1.5} />
           </IconButton>
@@ -79,11 +139,12 @@ export function Monitor() {
           <select
             aria-label="Playback quality"
             className="h-6 rounded-[4px] border border-border bg-bg-input px-1.5 text-[11px] text-text-secondary focus:border-accent focus:outline-none"
-            defaultValue="full"
+            value={String(quality)}
+            onChange={(e) => setQuality(Number(e.target.value) as Quality)}
           >
-            <option value="full">Full</option>
-            <option value="half">Half</option>
-            <option value="quarter">Quarter</option>
+            <option value="1">Full</option>
+            <option value="0.5">Half</option>
+            <option value="0.25">Quarter</option>
           </select>
           <IconButton
             label="Fullscreen"
