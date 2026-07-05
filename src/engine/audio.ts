@@ -38,14 +38,14 @@ async function decodeAssetAudio(asset: MediaAsset): Promise<AudioBuffer | null> 
   if (asset.kind === 'image' || !asset.hasAudio) return null
   const blob = await getBlob(asset.blobKey)
   if (!blob) {
-    console.warn(`REEL audio: missing blob for "${asset.name}" (${asset.blobKey})`)
+    console.warn(`OT Premiere audio: missing blob for "${asset.name}" (${asset.blobKey})`)
     return null
   }
   try {
     const bytes = await blob.arrayBuffer()
     return await ensureAudioContext().decodeAudioData(bytes)
   } catch (err) {
-    console.warn(`REEL audio: decode failed for "${asset.name}"`, err)
+    console.warn(`OT Premiere audio: decode failed for "${asset.name}"`, err)
     return null
   }
 }

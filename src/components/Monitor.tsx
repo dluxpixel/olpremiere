@@ -9,7 +9,8 @@ import {
   SkipForward,
 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { drawSequenceFrame } from '../engine/preview'
+import { prewarmAudio } from '../engine/audio'
+import { drawSequenceFrame, prewarmPreview } from '../engine/preview'
 import { formatTimecode, quantizeToFrame } from '../engine/timecode'
 import { activeSequence } from '../engine/types'
 import { pausePlayback, togglePlay } from '../state/playbackControl'
@@ -59,6 +60,15 @@ function useProgramCanvas(quality: Quality) {
 }
 
 export function Monitor() {
+  const assets = useStore((s) => s.project.assets)
+  // Decode audio + spin up pooled elements as soon as media exists, so the
+  // first Space press starts instantly instead of stalling on decode.
+  useEffect(() => {
+    const list = Object.values(assets)
+    prewarmAudio(list)
+    prewarmPreview(list)
+  }, [assets])
+
   const playheadS = useStore((s) => s.ui.playheadS)
   const playing = useStore((s) => s.ui.playing)
   const setUI = useStore((s) => s.setUI)

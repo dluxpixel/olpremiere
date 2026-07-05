@@ -327,6 +327,7 @@ export function Timeline({ height }: { height: number }) {
 
   const lanesRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
+  const headersRef = useRef<HTMLDivElement>(null)
 
   const [drag, setDrag] = useState<Drag | null>(null)
   const [previewSeq, setPreviewSeq] = useState<Sequence | null>(null)
@@ -689,6 +690,7 @@ export function Timeline({ height }: { height: number }) {
       <TimelineToolbar onZoomFit={zoomFit} />
       <div className="flex min-h-0 flex-1">
         <div
+          ref={headersRef}
           className="flex shrink-0 flex-col overflow-hidden border-r border-border"
           style={{ width: HEADERS_W }}
         >
@@ -709,6 +711,10 @@ export function Timeline({ height }: { height: number }) {
           onPointerMove={handleLanesPointerMove}
           onPointerUp={handleLanesPointerUp}
           onPointerCancel={handleLanesPointerUp}
+          onScroll={(e) => {
+            // Track headers share vertical scroll with the lanes.
+            if (headersRef.current) headersRef.current.scrollTop = e.currentTarget.scrollTop
+          }}
           onDragOver={handleDragOver}
           onDrop={handleDrop}
           onDragLeave={(e) => {

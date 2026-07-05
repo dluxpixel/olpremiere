@@ -2,8 +2,8 @@ import { Clapperboard, Download, Redo2, Undo2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { comboLabel } from '../keymap'
 import { useStore } from '../state/store'
-import { useToasts } from '../state/toasts'
 import { Button, IconButton } from '../ui/Button'
+import { ExportDialog } from './ExportDialog'
 
 function SaveIndicator() {
   const saveState = useStore((s) => s.ui.saveState)
@@ -61,7 +61,7 @@ export function TopBar() {
   const canRedo = useStore((s) => s.history.redo.length > 0)
   const undo = useStore((s) => s.undo)
   const redo = useStore((s) => s.redo)
-  const show = useToasts((s) => s.show)
+  const [exporting, setExporting] = useState(false)
 
   return (
     <header
@@ -70,7 +70,7 @@ export function TopBar() {
     >
       <div className="flex items-center gap-2">
         <Clapperboard size={18} className="text-accent" aria-hidden />
-        <span className="text-[13px] font-semibold tracking-[0.08em]">REEL</span>
+        <span className="text-[13px] font-semibold tracking-[0.08em]">OT Premiere</span>
       </div>
       <div className="h-4 w-px bg-border" />
       <ProjectName />
@@ -96,14 +96,12 @@ export function TopBar() {
           <Redo2 size={16} strokeWidth={1.5} />
         </IconButton>
         <div className="mx-2 h-4 w-px bg-border" />
-        <Button
-          variant="primary"
-          onClick={() => show('Export lands in Phase 2 — the editor comes first.')}
-        >
+        <Button variant="primary" data-testid="export-open" onClick={() => setExporting(true)}>
           <Download size={16} strokeWidth={1.5} />
           Export
         </Button>
       </div>
+      {exporting && <ExportDialog onClose={() => setExporting(false)} />}
     </header>
   )
 }

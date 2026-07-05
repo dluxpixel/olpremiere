@@ -56,7 +56,7 @@ async function flushSave(): Promise<void> {
     await saveProject(useStore.getState().project)
     setUI({ saveState: 'saved' })
   } catch (err) {
-    console.error('REEL autosave failed', err)
+    console.error('OT Premiere autosave failed', err)
     setUI({ saveState: 'unsaved' })
   }
 }
@@ -75,7 +75,7 @@ export function initPersistence(): void {
       // Only hydrate if the user hasn't already started editing.
       if (p && s.history.undo.length === 0) s.setProject(p)
     })
-    .catch((err) => console.error('REEL project load failed', err))
+    .catch((err) => console.error('OT Premiere project load failed', err))
 
   useStore.subscribe(
     (s) => s.project,
