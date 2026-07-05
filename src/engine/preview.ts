@@ -2,6 +2,7 @@
 // onto a 2D canvas each rAF. Replaced by WebCodecs getFrameAt in Phase 3.
 
 import { getBlobUrl } from '../state/blobUrls'
+import { getFrameAt, prefetchAround } from './frameCache'
 import { clipEndS } from './timeline'
 import { videoTracks, type Id, type MediaAsset, type Sequence } from './types'
 
@@ -117,12 +118,26 @@ export function drawSequenceFrame(
     }
 
     if (asset.kind !== 'video') continue
+    const srcT = clip.inS + (tS - clip.startS) * Math.abs(clip.speed || 1)
     const pooled = warmVideo(asset)
     activeVideoAssets.add(asset.id)
+
+    if (!playing) {
+      // Frame-accurate scrub (Phase 3): exact WebCodecs frame when cached;
+      // a miss kicks the decode and the next rAF picks it up.
+      if (!pooled.el.paused) pooled.el.pause()
+      const exact = getFrameAt(asset, srcT)
+      prefetchAround(asset, srcT)
+      if (exact) {
+        // The cache yields canvases/bitmaps — both carry numeric width/height.
+        const size = exact as unknown as { width: number; height: number }
+        drawContain(c2d, exact, size.width, size.height, W, H, clip.opacity)
+        continue
+      }
+    }
     if (!pooled.ready) continue
 
     const el = pooled.el
-    const srcT = clip.inS + (tS - clip.startS) * Math.abs(clip.speed || 1)
     if (playing) {
       if (el.paused) {
         el.currentTime = srcT
@@ -132,11 +147,9 @@ export function drawSequenceFrame(
       } else if (Math.abs(el.currentTime - srcT) > 0.15) {
         el.currentTime = srcT
       }
-    } else {
-      if (!el.paused) el.pause()
-      if (Math.abs(el.currentTime - srcT) > 1 / (2 * seq.fps)) {
-        el.currentTime = srcT
-      }
+    } else if (Math.abs(el.currentTime - srcT) > 1 / (2 * seq.fps)) {
+      // Fallback while the exact frame decodes: nearest <video> seek.
+      el.currentTime = srcT
     }
     drawContain(c2d, el, el.videoWidth, el.videoHeight, W, H, clip.opacity)
   }

@@ -40,6 +40,8 @@ export interface ReelState {
   /** Replace the project without touching history (hydration from disk). */
   setProject: (p: Project) => void
   setUI: (patch: Partial<UIState>) => void
+  /** Switch the active sequence. Deliberately NOT undoable (tab switching). */
+  setActiveSequenceId: (id: Id) => void
 }
 
 export const MIN_PX_PER_S = 4
@@ -92,6 +94,16 @@ export const useStore = create<ReelState>()(
 
     setUI(patch) {
       set((s) => ({ ui: { ...s.ui, ...patch } }))
+    },
+
+    setActiveSequenceId(id) {
+      set((s) => {
+        if (!s.project.sequences[id] || s.project.activeSequenceId === id) return s
+        return {
+          project: { ...s.project, activeSequenceId: id, updatedAt: Date.now() },
+          ui: { ...s.ui, playheadS: 0, selection: [], playing: false, saveState: 'unsaved' as const },
+        }
+      })
     },
   })),
 )

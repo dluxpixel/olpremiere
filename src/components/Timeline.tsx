@@ -2,6 +2,7 @@ import {
   Expand,
   Hand,
   Headphones,
+  ListPlus,
   Lock,
   LockOpen,
   Magnet,
@@ -26,6 +27,8 @@ import {
   clipEndS,
   collectSnapPoints,
   moveClip,
+  rippleTrimTo,
+  slipClip,
   snapTime,
   splitClip,
   trimClipTo,
@@ -34,6 +37,7 @@ import { formatTimecode, quantizeToFrame } from '../engine/timecode'
 import {
   activeSequence,
   audioTracks,
+  newSequence,
   videoTracks,
   type Clip,
   type Id,
@@ -183,6 +187,17 @@ function TimelineToolbar({ onZoomFit }: { onZoomFit: () => void }) {
   const playheadS = useStore((s) => s.ui.playheadS)
   const setUI = useStore((s) => s.setUI)
   const fps = useStore((s) => activeSequence(s.project).fps)
+  const project = useStore((s) => s.project)
+  const setActiveSequenceId = useStore((s) => s.setActiveSequenceId)
+  const dispatch = useStore((s) => s.dispatch)
+
+  const addSequence = () => {
+    dispatch('Add sequence', (p) => {
+      const sq = newSequence(`Sequence ${Object.keys(p.sequences).length + 1}`)
+      return { ...p, sequences: { ...p.sequences, [sq.id]: sq }, activeSequenceId: sq.id }
+    })
+    setUI({ playheadS: 0, selection: [] })
+  }
 
   return (
     <div className="flex h-8 shrink-0 items-center gap-0.5 border-b border-border bg-bg-panel px-2">
@@ -208,6 +223,23 @@ function TimelineToolbar({ onZoomFit }: { onZoomFit: () => void }) {
         data-testid="snap-toggle"
       >
         <Magnet size={14} strokeWidth={1.5} />
+      </IconButton>
+      <div className="mx-1.5 h-4 w-px bg-border" />
+      <select
+        data-testid="sequence-select"
+        aria-label="Active sequence"
+        value={project.activeSequenceId}
+        onChange={(e) => setActiveSequenceId(e.target.value)}
+        className="h-6 max-w-36 rounded-[4px] border border-border bg-bg-input px-1.5 text-[11px] text-text-secondary focus:border-accent focus:outline-none"
+      >
+        {Object.values(project.sequences).map((sq) => (
+          <option key={sq.id} value={sq.id}>
+            {sq.name}
+          </option>
+        ))}
+      </select>
+      <IconButton size="compact" label="New sequence" onClick={addSequence} data-testid="sequence-new">
+        <ListPlus size={14} strokeWidth={1.5} />
       </IconButton>
 
       <div className="ml-auto flex items-center gap-1.5">
@@ -309,7 +341,8 @@ function ClipView({ clip, asset, pxPerS, selected, onClipPointerDown, onTrimPoin
 
 type Drag =
   | { kind: 'move'; clipId: Id; grabOffsetS: number; trackKind: 'video' | 'audio' }
-  | { kind: 'trim'; clipId: Id; edge: 'in' | 'out' }
+  | { kind: 'trim'; clipId: Id; edge: 'in' | 'out'; ripple: boolean }
+  | { kind: 'slip'; clipId: Id; startXPx: number }
   | { kind: 'hand'; startX: number; startY: number; scrollLeft: number; scrollTop: number }
 
 export function Timeline({ height }: { height: number }) {
@@ -421,7 +454,7 @@ export function Timeline({ height }: { height: number }) {
       updateActiveSequence('Split clip', (sq) => splitClip(sq, clip.id, t))
       return
     }
-    // Selection tool: select, then start a move drag.
+    // Selection tool: select, then start a move (or Alt = slip) drag.
     if (e.shiftKey) {
       setUI({
         selection: selection.includes(clip.id)
@@ -434,6 +467,10 @@ export function Timeline({ height }: { height: number }) {
     if (track.locked) return
     const { x } = contentPoint(e)
     dragFinal.current = null
+    if (e.altKey) {
+      beginDrag(e, { kind: 'slip', clipId: clip.id, startXPx: x })
+      return
+    }
     beginDrag(e, {
       kind: 'move',
       clipId: clip.id,
@@ -452,7 +489,7 @@ export function Timeline({ height }: { height: number }) {
     if (!track || track.locked) return
     setUI({ selection: [clip.id] })
     dragFinal.current = null
-    beginDrag(e, { kind: 'trim', clipId: clip.id, edge })
+    beginDrag(e, { kind: 'trim', clipId: clip.id, edge, ripple: e.ctrlKey || e.metaKey })
   }
 
   const beginHand = (e: ReactPointerEvent) => {
@@ -512,22 +549,38 @@ export function Timeline({ height }: { height: number }) {
       const target = hovered && hovered.kind === drag.trackKind && !hovered.locked ? hovered : current
       dragFinal.current = { trackId: target.id, tS: Math.max(0, desired) }
       setPreviewSeq(moveClip(seq, drag.clipId, target.id, Math.max(0, desired)))
+    } else if (drag.kind === 'slip') {
+      const deltaS = quantizeToFrame((x - drag.startXPx) / pxPerS, seq.fps)
+      dragFinal.current = { trackId: '', tS: deltaS }
+      const next = slipClip(seq, assets, drag.clipId, deltaS)
+      setPreviewSeq(next)
+      const slipped = next.tracks.flatMap((tr) => tr.clips).find((c) => c.id === drag.clipId)
+      if (slipped) {
+        setTrimTip({
+          x: e.clientX,
+          y: e.clientY - 34,
+          text: `Slip  in ${formatTimecode(slipped.inS, seq.fps)} · out ${formatTimecode(slipped.outS, seq.fps)}`,
+        })
+      }
     } else {
       const tRaw = quantizeToFrame(Math.max(0, x / pxPerS), seq.fps)
       const t = snapWithIndicator(tRaw, drag.clipId)
       dragFinal.current = { trackId: '', tS: t }
-      const next = trimClipTo(seq, assets, drag.clipId, drag.edge, t)
+      const trimFn = drag.ripple ? rippleTrimTo : trimClipTo
+      const next = trimFn(seq, assets, drag.clipId, drag.edge, t)
       setPreviewSeq(next)
       const trimmed = next.tracks.flatMap((tr) => tr.clips).find((c) => c.id === drag.clipId)
       const orig = seq.tracks.flatMap((tr) => tr.clips).find((c) => c.id === drag.clipId)
       if (trimmed && orig) {
         const edgeT = drag.edge === 'in' ? trimmed.startS : clipEndS(trimmed)
         const origT = drag.edge === 'in' ? orig.startS : clipEndS(orig)
-        const delta = edgeT - origT
+        // Ripple-in keeps startS fixed; show the source-window edge instead.
+        const shownT = drag.ripple && drag.edge === 'in' ? trimmed.inS : edgeT
+        const delta = drag.ripple && drag.edge === 'in' ? trimmed.inS - orig.inS : edgeT - origT
         setTrimTip({
           x: e.clientX,
           y: e.clientY - 34,
-          text: `${formatTimecode(edgeT, seq.fps)}  (${delta >= 0 ? '+' : '−'}${formatTimecode(Math.abs(delta), seq.fps).slice(6)})`,
+          text: `${drag.ripple ? 'Ripple  ' : ''}${formatTimecode(shownT, seq.fps)}  (${delta >= 0 ? '+' : '−'}${formatTimecode(Math.abs(delta), seq.fps).slice(6)})`,
         })
       }
     }
@@ -541,7 +594,13 @@ export function Timeline({ height }: { height: number }) {
       updateActiveSequence('Move clip', (sq) => moveClip(sq, drag.clipId, trackId, tS))
     } else if (drag.kind === 'trim' && dragFinal.current) {
       const { tS } = dragFinal.current
-      updateActiveSequence('Trim clip', (sq) => trimClipTo(sq, assets, drag.clipId, drag.edge, tS))
+      const trimFn = drag.ripple ? rippleTrimTo : trimClipTo
+      updateActiveSequence(drag.ripple ? 'Ripple trim' : 'Trim clip', (sq) =>
+        trimFn(sq, assets, drag.clipId, drag.edge, tS),
+      )
+    } else if (drag.kind === 'slip' && dragFinal.current) {
+      const { tS } = dragFinal.current
+      updateActiveSequence('Slip clip', (sq) => slipClip(sq, assets, drag.clipId, tS))
     }
     setDrag(null)
     setPreviewSeq(null)
@@ -737,6 +796,15 @@ export function Timeline({ height }: { height: number }) {
               }}
             >
               <Ruler contentWidth={contentWidth} lengthS={lengthS} />
+              {seq.markers.map((m) => (
+                <div
+                  key={m.id}
+                  data-testid="marker"
+                  title={m.label || formatTimecode(m.t, seq.fps)}
+                  className="pointer-events-none absolute h-2 w-2 rotate-45 rounded-[1px]"
+                  style={{ left: m.t * pxPerS - 4, top: RULER_H - 11, background: m.color }}
+                />
+              ))}
             </div>
 
             {vTracks.map((t) => renderLane(t, 'bg-bg-input/30'))}

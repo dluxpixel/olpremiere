@@ -2,18 +2,29 @@ import { describe, expect, it } from 'vitest'
 import { defaultTransform, type Clip, type MediaAsset, type Sequence, type Track } from './types'
 import {
   addClipFromAsset,
+  addMarker,
   canPlace,
   clipDurationS,
   clipEndS,
   collectSnapPoints,
   deleteClip,
+  duplicateClips,
   findClip,
   moveClip,
+  moveMarker,
+  pasteClips,
   pxToTime,
   recomputeDuration,
+  removeMarker,
+  removeMarkerNear,
   resolveStart,
   rippleDelete,
+  rippleTrimTo,
+  rollEditTo,
   sequenceDurationS,
+  serializeClips,
+  slideClip,
+  slipClip,
   snapTime,
   splitClip,
   timeToPx,
@@ -647,5 +658,743 @@ describe('time ↔ pixels', () => {
   })
   it('round-trips', () => {
     expect(pxToTime(timeToPx(4.321, 37), 37)).toBeCloseTo(4.321, 12)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Phase 3
+
+describe('rippleTrimTo', () => {
+  it('out grow shifts every later clip on that track by the delta, preserving gaps', () => {
+    const a = makeClip({ startS: 0, outS: 2 })
+    const b = makeClip({ startS: 3, outS: 2 })
+    const c = makeClip({ startS: 6, outS: 2 })
+    const otherClip = makeClip({ startS: 3, outS: 2 })
+    const seq = makeSeq([
+      makeTrack({ clips: [a, b, c] }),
+      makeTrack({ kind: 'audio', clips: [otherClip] }),
+    ])
+    const next = rippleTrimTo(seq, ASSETS, a.id, 'out', 4)
+    expect(clipEndS(findClip(next, a.id)!.clip)).toBe(4)
+    expect(findClip(next, b.id)!.clip.startS).toBe(5)
+    expect(findClip(next, c.id)!.clip.startS).toBe(8)
+    expect(findClip(next, otherClip.id)!.clip.startS).toBe(3)
+  })
+  it('out shrink pulls later clips left and recomputes duration', () => {
+    const a = makeClip({ startS: 0, outS: 2 })
+    const b = makeClip({ startS: 2, outS: 2 })
+    const seq = makeSeq([makeTrack({ clips: [a, b] })])
+    const next = rippleTrimTo(seq, ASSETS, a.id, 'out', 1)
+    expect(findClip(next, a.id)!.clip.outS).toBe(1)
+    expect(findClip(next, b.id)!.clip.startS).toBe(1)
+    expect(next.durationS).toBe(3)
+  })
+  it('out never shifts earlier clips', () => {
+    const a = makeClip({ startS: 0, outS: 2 })
+    const b = makeClip({ startS: 2, outS: 2 })
+    const seq = makeSeq([makeTrack({ clips: [a, b] })])
+    const next = rippleTrimTo(seq, ASSETS, b.id, 'out', 5)
+    expect(findClip(next, a.id)!.clip.startS).toBe(0)
+    expect(clipEndS(findClip(next, b.id)!.clip)).toBe(5)
+  })
+  it('out respects the source tail bound', () => {
+    const a = makeClip({ startS: 0, inS: 8, outS: 9 })
+    const b = makeClip({ startS: 1, outS: 2 })
+    const seq = makeSeq([makeTrack({ clips: [a, b] })])
+    const next = rippleTrimTo(seq, ASSETS, a.id, 'out', 5)
+    const t = findClip(next, a.id)!.clip
+    expect(clipEndS(t)).toBe(2)
+    expect(t.outS).toBe(10)
+    expect(findClip(next, b.id)!.clip.startS).toBe(2)
+  })
+  it('out enforces the one-frame minimum', () => {
+    const a = makeClip({ startS: 0, outS: 2 })
+    const b = makeClip({ startS: 2, outS: 2 })
+    const seq = makeSeq([makeTrack({ clips: [a, b] })])
+    const next = rippleTrimTo(seq, ASSETS, a.id, 'out', -3)
+    expect(findClip(next, a.id)!.clip.outS).toBeCloseTo(FRAME, 9)
+    expect(findClip(next, b.id)!.clip.startS).toBeCloseTo(FRAME, 9)
+  })
+  it('out on an image clip is unbounded', () => {
+    const a = makeClip({ assetId: 'ai', startS: 0, outS: 5 })
+    const b = makeClip({ startS: 5, outS: 2 })
+    const seq = makeSeq([makeTrack({ clips: [a, b] })])
+    const next = rippleTrimTo(seq, ASSETS, a.id, 'out', 12)
+    expect(findClip(next, a.id)!.clip.outS).toBe(12)
+    expect(findClip(next, b.id)!.clip.startS).toBe(12)
+  })
+  it('out scales the source delta by speed', () => {
+    const a = makeClip({ startS: 0, inS: 0, outS: 4, speed: 2 })
+    const b = makeClip({ startS: 2, outS: 1 })
+    const seq = makeSeq([makeTrack({ clips: [a, b] })])
+    const next = rippleTrimTo(seq, ASSETS, a.id, 'out', 3)
+    expect(findClip(next, a.id)!.clip.outS).toBe(6)
+    expect(findClip(next, b.id)!.clip.startS).toBe(3)
+  })
+  it('out returns the same reference when clamped to the current end', () => {
+    const a = makeClip({ startS: 0, inS: 8, outS: 10 })
+    const seq = makeSeq([makeTrack({ clips: [a] })])
+    expect(rippleTrimTo(seq, ASSETS, a.id, 'out', 9)).toBe(seq)
+  })
+  it('in keeps startS fixed and shifts later clips by the duration delta (shrink)', () => {
+    const a = makeClip({ startS: 2, inS: 1, outS: 5 })
+    const b = makeClip({ startS: 6, outS: 2 })
+    const seq = makeSeq([makeTrack({ clips: [a, b] })])
+    const next = rippleTrimTo(seq, ASSETS, a.id, 'in', 3)
+    const t = findClip(next, a.id)!.clip
+    expect(t.startS).toBe(2)
+    expect(t.inS).toBe(2)
+    expect(t.outS).toBe(5)
+    expect(clipEndS(t)).toBe(5)
+    expect(findClip(next, b.id)!.clip.startS).toBe(5)
+  })
+  it('in grows the head and pushes later clips right', () => {
+    const a = makeClip({ startS: 2, inS: 3, outS: 5 })
+    const b = makeClip({ startS: 4, outS: 2 })
+    const seq = makeSeq([makeTrack({ clips: [a, b] })])
+    const next = rippleTrimTo(seq, ASSETS, a.id, 'in', 0)
+    const t = findClip(next, a.id)!.clip
+    expect(t.startS).toBe(2)
+    expect(t.inS).toBe(1)
+    expect(clipEndS(t)).toBe(6)
+    expect(findClip(next, b.id)!.clip.startS).toBe(6)
+  })
+  it('in ignores the gap to the previous clip (start never moves)', () => {
+    const p = makeClip({ startS: 0, outS: 2 })
+    const a = makeClip({ startS: 2, inS: 5, outS: 7 })
+    const b = makeClip({ startS: 4, outS: 1 })
+    const seq = makeSeq([makeTrack({ clips: [p, a, b] })])
+    const next = rippleTrimTo(seq, ASSETS, a.id, 'in', 1)
+    const t = findClip(next, a.id)!.clip
+    expect(t.startS).toBe(2)
+    expect(t.inS).toBe(4)
+    expect(findClip(next, p.id)!.clip.startS).toBe(0)
+    expect(findClip(next, b.id)!.clip.startS).toBe(5)
+  })
+  it('in clamps at the source head', () => {
+    const a = makeClip({ startS: 5, inS: 1, outS: 3 })
+    const b = makeClip({ startS: 7, outS: 2 })
+    const seq = makeSeq([makeTrack({ clips: [a, b] })])
+    const next = rippleTrimTo(seq, ASSETS, a.id, 'in', 1)
+    const t = findClip(next, a.id)!.clip
+    expect(t.startS).toBe(5)
+    expect(t.inS).toBe(0)
+    expect(clipDurationS(t)).toBe(3)
+    expect(findClip(next, b.id)!.clip.startS).toBe(8)
+  })
+  it('in enforces the one-frame minimum', () => {
+    const a = makeClip({ startS: 0, inS: 0, outS: 2 })
+    const b = makeClip({ startS: 2, outS: 2 })
+    const seq = makeSeq([makeTrack({ clips: [a, b] })])
+    const next = rippleTrimTo(seq, ASSETS, a.id, 'in', 10)
+    const t = findClip(next, a.id)!.clip
+    expect(t.startS).toBe(0)
+    expect(clipDurationS(t)).toBeCloseTo(FRAME, 9)
+    expect(findClip(next, b.id)!.clip.startS).toBeCloseTo(FRAME, 9)
+  })
+  it('in on an image floors inS at 0 and widens the window', () => {
+    const a = makeClip({ assetId: 'ai', startS: 4, inS: 0, outS: 5 })
+    const b = makeClip({ startS: 9, outS: 1 })
+    const seq = makeSeq([makeTrack({ clips: [a, b] })])
+    const next = rippleTrimTo(seq, ASSETS, a.id, 'in', 1)
+    const t = findClip(next, a.id)!.clip
+    expect(t.startS).toBe(4)
+    expect(t.inS).toBe(0)
+    expect(t.outS).toBe(8)
+    expect(clipEndS(t)).toBe(12)
+    expect(findClip(next, b.id)!.clip.startS).toBe(12)
+  })
+  it('in scales the source delta by speed', () => {
+    const a = makeClip({ startS: 0, inS: 0, outS: 4, speed: 2 })
+    const b = makeClip({ startS: 2, outS: 1 })
+    const seq = makeSeq([makeTrack({ clips: [a, b] })])
+    const next = rippleTrimTo(seq, ASSETS, a.id, 'in', 0.5)
+    const t = findClip(next, a.id)!.clip
+    expect(t.startS).toBe(0)
+    expect(t.inS).toBe(1)
+    expect(clipDurationS(t)).toBe(1.5)
+    expect(findClip(next, b.id)!.clip.startS).toBe(1.5)
+  })
+  it('in returns the same reference when clamped to the current start', () => {
+    const a = makeClip({ startS: 3, inS: 0, outS: 2 })
+    const seq = makeSeq([makeTrack({ clips: [a] })])
+    expect(rippleTrimTo(seq, ASSETS, a.id, 'in', 0)).toBe(seq)
+  })
+  it('no-ops for an unknown clip', () => {
+    const seq = makeSeq([makeTrack()])
+    expect(rippleTrimTo(seq, ASSETS, 'nope', 'out', 3)).toBe(seq)
+  })
+})
+
+describe('rollEditTo', () => {
+  it('moves the boundary right: left tail grows, right head trims, right end fixed', () => {
+    const l = makeClip({ startS: 0, inS: 0, outS: 2 })
+    const r = makeClip({ startS: 2, inS: 0, outS: 3 })
+    const seq = makeSeq([makeTrack({ clips: [l, r] })])
+    const next = rollEditTo(seq, ASSETS, l.id, r.id, 3)
+    const nl = findClip(next, l.id)!.clip
+    const nr = findClip(next, r.id)!.clip
+    expect(nl.outS).toBe(3)
+    expect(clipEndS(nl)).toBe(3)
+    expect(nr.startS).toBe(3)
+    expect(nr.inS).toBe(1)
+    expect(nr.outS).toBe(3)
+    expect(clipEndS(nr)).toBe(5)
+  })
+  it('moves the boundary left: left tail trims, right head grows', () => {
+    const l = makeClip({ startS: 0, inS: 0, outS: 2 })
+    const r = makeClip({ startS: 2, inS: 2, outS: 5 })
+    const seq = makeSeq([makeTrack({ clips: [l, r] })])
+    const next = rollEditTo(seq, ASSETS, l.id, r.id, 1)
+    const nl = findClip(next, l.id)!.clip
+    const nr = findClip(next, r.id)!.clip
+    expect(nl.outS).toBe(1)
+    expect(nr.startS).toBe(1)
+    expect(nr.inS).toBe(1)
+    expect(clipEndS(nr)).toBe(5)
+  })
+  it('clamps to the left minimum duration', () => {
+    const l = makeClip({ startS: 0, inS: 0, outS: 2 })
+    const r = makeClip({ startS: 2, inS: 2, outS: 5 })
+    const seq = makeSeq([makeTrack({ clips: [l, r] })])
+    const next = rollEditTo(seq, ASSETS, l.id, r.id, -5)
+    const nl = findClip(next, l.id)!.clip
+    const nr = findClip(next, r.id)!.clip
+    expect(nl.outS).toBeCloseTo(FRAME, 9)
+    expect(nr.startS).toBeCloseTo(FRAME, 9)
+    expect(clipEndS(nr)).toBeCloseTo(5, 9)
+  })
+  it('clamps to the right minimum duration', () => {
+    const l = makeClip({ startS: 0, inS: 0, outS: 2 })
+    const r = makeClip({ startS: 2, inS: 0, outS: 3 })
+    const seq = makeSeq([makeTrack({ clips: [l, r] })])
+    const next = rollEditTo(seq, ASSETS, l.id, r.id, 9)
+    const nl = findClip(next, l.id)!.clip
+    const nr = findClip(next, r.id)!.clip
+    expect(clipEndS(nl)).toBeCloseTo(5 - FRAME, 9)
+    expect(nr.startS).toBeCloseTo(5 - FRAME, 9)
+    expect(clipDurationS(nr)).toBeCloseTo(FRAME, 9)
+    expect(clipEndS(nr)).toBeCloseTo(5, 9)
+  })
+  it('clamps to the left source tail', () => {
+    const l = makeClip({ startS: 0, inS: 8, outS: 9 })
+    const r = makeClip({ startS: 1, inS: 5, outS: 8 })
+    const seq = makeSeq([makeTrack({ clips: [l, r] })])
+    const next = rollEditTo(seq, ASSETS, l.id, r.id, 3)
+    const nl = findClip(next, l.id)!.clip
+    const nr = findClip(next, r.id)!.clip
+    expect(nl.outS).toBe(10)
+    expect(clipEndS(nl)).toBe(2)
+    expect(nr.startS).toBe(2)
+    expect(nr.inS).toBe(6)
+    expect(clipEndS(nr)).toBe(4)
+  })
+  it('clamps to the right source head', () => {
+    const l = makeClip({ startS: 0, inS: 0, outS: 2 })
+    const r = makeClip({ startS: 2, inS: 1, outS: 4 })
+    const seq = makeSeq([makeTrack({ clips: [l, r] })])
+    const next = rollEditTo(seq, ASSETS, l.id, r.id, 0)
+    const nl = findClip(next, l.id)!.clip
+    const nr = findClip(next, r.id)!.clip
+    expect(nl.outS).toBe(1)
+    expect(nr.startS).toBe(1)
+    expect(nr.inS).toBe(0)
+    expect(clipEndS(nr)).toBe(5)
+  })
+  it('floors a right image clip inS at 0 keeping its end fixed', () => {
+    const l = makeClip({ startS: 0, inS: 0, outS: 5 })
+    const r = makeClip({ assetId: 'ai', startS: 5, inS: 0, outS: 5 })
+    const seq = makeSeq([makeTrack({ clips: [l, r] })])
+    const next = rollEditTo(seq, ASSETS, l.id, r.id, 3)
+    const nl = findClip(next, l.id)!.clip
+    const nr = findClip(next, r.id)!.clip
+    expect(nl.outS).toBe(3)
+    expect(nr.startS).toBe(3)
+    expect(nr.inS).toBe(0)
+    expect(nr.outS).toBe(7)
+    expect(clipEndS(nr)).toBe(10)
+  })
+  it('scales by each clip speed independently', () => {
+    const l = makeClip({ startS: 0, inS: 0, outS: 4, speed: 2 })
+    const r = makeClip({ startS: 2, inS: 0, outS: 2 })
+    const seq = makeSeq([makeTrack({ clips: [l, r] })])
+    const next = rollEditTo(seq, ASSETS, l.id, r.id, 3)
+    const nl = findClip(next, l.id)!.clip
+    const nr = findClip(next, r.id)!.clip
+    expect(nl.outS).toBe(6)
+    expect(clipEndS(nl)).toBe(3)
+    expect(nr.startS).toBe(3)
+    expect(nr.inS).toBe(1)
+    expect(clipEndS(nr)).toBe(4)
+  })
+  it('no-ops when the clips are not adjacent', () => {
+    const l = makeClip({ startS: 0, inS: 0, outS: 2 })
+    const r = makeClip({ startS: 3, inS: 0, outS: 2 })
+    const seq = makeSeq([makeTrack({ clips: [l, r] })])
+    expect(rollEditTo(seq, ASSETS, l.id, r.id, 2.5)).toBe(seq)
+  })
+  it('no-ops across different tracks', () => {
+    const l = makeClip({ startS: 0, inS: 0, outS: 2 })
+    const r = makeClip({ startS: 2, inS: 0, outS: 2 })
+    const seq = makeSeq([makeTrack({ clips: [l] }), makeTrack({ name: 'V2', clips: [r] })])
+    expect(rollEditTo(seq, ASSETS, l.id, r.id, 3)).toBe(seq)
+  })
+  it('no-ops for unknown ids', () => {
+    const l = makeClip({ startS: 0, inS: 0, outS: 2 })
+    const seq = makeSeq([makeTrack({ clips: [l] })])
+    expect(rollEditTo(seq, ASSETS, l.id, 'nope', 1)).toBe(seq)
+    expect(rollEditTo(seq, ASSETS, 'nope', l.id, 1)).toBe(seq)
+  })
+  it('returns the same reference when rolled to the current boundary', () => {
+    const l = makeClip({ startS: 0, inS: 0, outS: 2 })
+    const r = makeClip({ startS: 2, inS: 2, outS: 5 })
+    const seq = makeSeq([makeTrack({ clips: [l, r] })])
+    expect(rollEditTo(seq, ASSETS, l.id, r.id, 2)).toBe(seq)
+  })
+})
+
+describe('slipClip', () => {
+  it('shifts the source window without moving the clip', () => {
+    const c = makeClip({ startS: 3, inS: 2, outS: 5 })
+    const seq = makeSeq([makeTrack({ clips: [c] })])
+    const t = findClip(slipClip(seq, ASSETS, c.id, 1), c.id)!.clip
+    expect(t.startS).toBe(3)
+    expect(t.inS).toBe(3)
+    expect(t.outS).toBe(6)
+    expect(clipDurationS(t)).toBe(3)
+  })
+  it('slips backwards', () => {
+    const c = makeClip({ startS: 3, inS: 2, outS: 5 })
+    const seq = makeSeq([makeTrack({ clips: [c] })])
+    const t = findClip(slipClip(seq, ASSETS, c.id, -1), c.id)!.clip
+    expect(t.inS).toBe(1)
+    expect(t.outS).toBe(4)
+  })
+  it('clamps at the source head', () => {
+    const c = makeClip({ startS: 3, inS: 2, outS: 5 })
+    const seq = makeSeq([makeTrack({ clips: [c] })])
+    const t = findClip(slipClip(seq, ASSETS, c.id, -5), c.id)!.clip
+    expect(t.inS).toBe(0)
+    expect(t.outS).toBe(3)
+  })
+  it('clamps at the source tail', () => {
+    const c = makeClip({ startS: 3, inS: 2, outS: 5 })
+    const seq = makeSeq([makeTrack({ clips: [c] })])
+    const t = findClip(slipClip(seq, ASSETS, c.id, 9), c.id)!.clip
+    expect(t.inS).toBe(7)
+    expect(t.outS).toBe(10)
+  })
+  it('scales the timeline delta by speed', () => {
+    const c = makeClip({ startS: 0, inS: 0, outS: 4, speed: 2 })
+    const seq = makeSeq([makeTrack({ clips: [c] })])
+    const t = findClip(slipClip(seq, ASSETS, c.id, 1), c.id)!.clip
+    expect(t.inS).toBe(2)
+    expect(t.outS).toBe(6)
+    expect(clipDurationS(t)).toBe(2)
+  })
+  it('no-ops on an image clip (same reference)', () => {
+    const c = makeClip({ assetId: 'ai', startS: 0, inS: 0, outS: 5 })
+    const seq = makeSeq([makeTrack({ clips: [c] })])
+    expect(slipClip(seq, ASSETS, c.id, 1)).toBe(seq)
+  })
+  it('returns the same reference when the window already fills the source', () => {
+    const c = makeClip({ startS: 0, inS: 0, outS: 10 })
+    const seq = makeSeq([makeTrack({ clips: [c] })])
+    expect(slipClip(seq, ASSETS, c.id, 1)).toBe(seq)
+    expect(slipClip(seq, ASSETS, c.id, -1)).toBe(seq)
+  })
+  it('does not move neighbors', () => {
+    const c = makeClip({ startS: 0, inS: 2, outS: 4 })
+    const b = makeClip({ startS: 2, outS: 2 })
+    const seq = makeSeq([makeTrack({ clips: [c, b] })])
+    const next = slipClip(seq, ASSETS, c.id, 1)
+    expect(findClip(next, b.id)!.clip).toBe(b)
+  })
+  it('no-ops for an unknown clip', () => {
+    const seq = makeSeq([makeTrack()])
+    expect(slipClip(seq, ASSETS, 'nope', 1)).toBe(seq)
+  })
+})
+
+describe('slideClip', () => {
+  const flushTrio = () => {
+    const p = makeClip({ startS: 0, inS: 0, outS: 2 })
+    const c = makeClip({ startS: 2, inS: 0, outS: 2 })
+    const nx = makeClip({ startS: 4, inS: 2, outS: 4 })
+    return { p, c, nx, seq: makeSeq([makeTrack({ clips: [p, c, nx] })]) }
+  }
+  it('slides right: prev tail grows, next head trims, totals preserved', () => {
+    const p = makeClip({ startS: 0, inS: 0, outS: 2 })
+    const c = makeClip({ startS: 2, inS: 0, outS: 2 })
+    const nx = makeClip({ startS: 4, inS: 0, outS: 2 })
+    const seq = makeSeq([makeTrack({ clips: [p, c, nx] })])
+    const next = slideClip(seq, ASSETS, c.id, 3)
+    const np = findClip(next, p.id)!.clip
+    const nc = findClip(next, c.id)!.clip
+    const nn = findClip(next, nx.id)!.clip
+    expect(np.outS).toBe(3)
+    expect(clipEndS(np)).toBe(3)
+    expect(nc.startS).toBe(3)
+    expect(nc.inS).toBe(0)
+    expect(nc.outS).toBe(2)
+    expect(nn.startS).toBe(5)
+    expect(nn.inS).toBe(1)
+    expect(clipEndS(nn)).toBe(6)
+    expect(next.durationS).toBe(6)
+  })
+  it('slides left: prev tail trims, next head grows', () => {
+    const { p, c, nx, seq } = flushTrio()
+    const next = slideClip(seq, ASSETS, c.id, 1)
+    const np = findClip(next, p.id)!.clip
+    const nc = findClip(next, c.id)!.clip
+    const nn = findClip(next, nx.id)!.clip
+    expect(np.outS).toBe(1)
+    expect(nc.startS).toBe(1)
+    expect(nn.startS).toBe(3)
+    expect(nn.inS).toBe(1)
+    expect(clipEndS(nn)).toBe(6)
+    expect(next.durationS).toBe(6)
+  })
+  it('clamps to the prev minimum duration', () => {
+    const { p, c, seq } = flushTrio()
+    const next = slideClip(seq, ASSETS, c.id, -5)
+    expect(clipDurationS(findClip(next, p.id)!.clip)).toBeCloseTo(FRAME, 9)
+    expect(findClip(next, c.id)!.clip.startS).toBeCloseTo(FRAME, 9)
+  })
+  it('clamps to the prev source tail', () => {
+    const p = makeClip({ startS: 0, inS: 7, outS: 9 })
+    const c = makeClip({ startS: 2, inS: 0, outS: 2 })
+    const nx = makeClip({ startS: 4, inS: 0, outS: 5 })
+    const seq = makeSeq([makeTrack({ clips: [p, c, nx] })])
+    const next = slideClip(seq, ASSETS, c.id, 5)
+    const np = findClip(next, p.id)!.clip
+    expect(np.outS).toBe(10)
+    expect(clipEndS(np)).toBe(3)
+    expect(findClip(next, c.id)!.clip.startS).toBe(3)
+    expect(findClip(next, nx.id)!.clip.startS).toBe(5)
+    expect(findClip(next, nx.id)!.clip.inS).toBe(1)
+  })
+  it('clamps to the next minimum duration', () => {
+    const p = makeClip({ startS: 0, inS: 0, outS: 2 })
+    const c = makeClip({ startS: 2, inS: 0, outS: 2 })
+    const nx = makeClip({ startS: 4, inS: 0, outS: 2 })
+    const seq = makeSeq([makeTrack({ clips: [p, c, nx] })])
+    const next = slideClip(seq, ASSETS, c.id, 5)
+    const nn = findClip(next, nx.id)!.clip
+    expect(findClip(next, c.id)!.clip.startS).toBeCloseTo(4 - FRAME, 9)
+    expect(clipDurationS(nn)).toBeCloseTo(FRAME, 9)
+    expect(clipEndS(nn)).toBeCloseTo(6, 9)
+  })
+  it('clamps to the next source head', () => {
+    const p = makeClip({ startS: 0, inS: 0, outS: 2 })
+    const c = makeClip({ startS: 2, inS: 0, outS: 2 })
+    const nx = makeClip({ startS: 4, inS: 1, outS: 3 })
+    const seq = makeSeq([makeTrack({ clips: [p, c, nx] })])
+    const next = slideClip(seq, ASSETS, c.id, 0)
+    const nn = findClip(next, nx.id)!.clip
+    expect(findClip(next, p.id)!.clip.outS).toBe(1)
+    expect(findClip(next, c.id)!.clip.startS).toBe(1)
+    expect(nn.startS).toBe(3)
+    expect(nn.inS).toBe(0)
+    expect(clipEndS(nn)).toBe(6)
+  })
+  it('handles an image next by flooring inS at 0 with its end fixed', () => {
+    const p = makeClip({ startS: 0, inS: 0, outS: 2 })
+    const c = makeClip({ startS: 2, inS: 0, outS: 2 })
+    const nx = makeClip({ assetId: 'ai', startS: 4, inS: 0, outS: 5 })
+    const seq = makeSeq([makeTrack({ clips: [p, c, nx] })])
+    const next = slideClip(seq, ASSETS, c.id, 1)
+    const nn = findClip(next, nx.id)!.clip
+    expect(nn.startS).toBe(3)
+    expect(nn.inS).toBe(0)
+    expect(nn.outS).toBe(6)
+    expect(clipEndS(nn)).toBe(9)
+  })
+  it('no-ops without a previous neighbor', () => {
+    const c = makeClip({ startS: 0, inS: 0, outS: 2 })
+    const nx = makeClip({ startS: 2, inS: 0, outS: 2 })
+    const seq = makeSeq([makeTrack({ clips: [c, nx] })])
+    expect(slideClip(seq, ASSETS, c.id, 1)).toBe(seq)
+  })
+  it('no-ops without a next neighbor', () => {
+    const p = makeClip({ startS: 0, inS: 0, outS: 2 })
+    const c = makeClip({ startS: 2, inS: 0, outS: 2 })
+    const seq = makeSeq([makeTrack({ clips: [p, c] })])
+    expect(slideClip(seq, ASSETS, c.id, 3)).toBe(seq)
+  })
+  it('no-ops when a neighbor is not flush', () => {
+    const p = makeClip({ startS: 0, inS: 0, outS: 1.5 })
+    const c = makeClip({ startS: 2, inS: 0, outS: 2 })
+    const nx = makeClip({ startS: 4, inS: 0, outS: 2 })
+    const seq = makeSeq([makeTrack({ clips: [p, c, nx] })])
+    expect(slideClip(seq, ASSETS, c.id, 3)).toBe(seq)
+  })
+  it('returns the same reference when the clamp lands on the current start', () => {
+    const { c, seq } = flushTrio()
+    expect(slideClip(seq, ASSETS, c.id, 2)).toBe(seq)
+  })
+  it('no-ops for an unknown clip', () => {
+    const seq = makeSeq([makeTrack()])
+    expect(slideClip(seq, ASSETS, 'nope', 1)).toBe(seq)
+  })
+})
+
+describe('markers', () => {
+  const emptySeq = () => makeSeq([makeTrack()])
+  it('addMarker inserts with defaults and returns the id', () => {
+    const { seq, markerId } = addMarker(emptySeq(), 2)
+    expect(seq.markers).toEqual([{ id: markerId, t: 2, label: '', color: '#6f6bff' }])
+  })
+  it('addMarker keeps a custom label and color', () => {
+    const { seq } = addMarker(emptySeq(), 1, 'Scene', '#ff0000')
+    expect(seq.markers[0].label).toBe('Scene')
+    expect(seq.markers[0].color).toBe('#ff0000')
+  })
+  it('addMarker keeps markers sorted by t', () => {
+    let seq = addMarker(emptySeq(), 5).seq
+    seq = addMarker(seq, 2).seq
+    seq = addMarker(seq, 8).seq
+    expect(seq.markers.map((m) => m.t)).toEqual([2, 5, 8])
+  })
+  it('addMarker at an exact existing time returns the existing id, seq unchanged', () => {
+    const r1 = addMarker(emptySeq(), 2, 'first')
+    const r2 = addMarker(r1.seq, 2, 'second')
+    expect(r2.seq).toBe(r1.seq)
+    expect(r2.markerId).toBe(r1.markerId)
+  })
+  it('addMarker allows near-duplicates beyond the exact-time tolerance', () => {
+    const r1 = addMarker(emptySeq(), 2)
+    const r2 = addMarker(r1.seq, 2.001)
+    expect(r2.seq.markers).toHaveLength(2)
+    expect(r2.markerId).not.toBe(r1.markerId)
+  })
+  it('addMarker clamps a negative time to 0', () => {
+    expect(addMarker(emptySeq(), -3).seq.markers[0].t).toBe(0)
+  })
+  it('removeMarker removes by id', () => {
+    const { seq, markerId } = addMarker(emptySeq(), 2)
+    expect(removeMarker(seq, markerId).markers).toEqual([])
+  })
+  it('removeMarker returns the same reference for an unknown id', () => {
+    const { seq } = addMarker(emptySeq(), 2)
+    expect(removeMarker(seq, 'nope')).toBe(seq)
+  })
+  it('removeMarkerNear removes the nearest marker within tolerance', () => {
+    let seq = addMarker(emptySeq(), 1).seq
+    seq = addMarker(seq, 3).seq
+    const next = removeMarkerNear(seq, 2.8, 0.5)
+    expect(next.markers.map((m) => m.t)).toEqual([1])
+  })
+  it('removeMarkerNear is inclusive at the tolerance and no-ops outside it', () => {
+    const seq = addMarker(emptySeq(), 3).seq
+    expect(removeMarkerNear(seq, 2.5, 0.5).markers).toEqual([])
+    expect(removeMarkerNear(seq, 2.4, 0.5)).toBe(seq)
+  })
+  it('removeMarkerNear prefers the earlier marker on an exact tie', () => {
+    let seq = addMarker(emptySeq(), 1).seq
+    seq = addMarker(seq, 3).seq
+    expect(removeMarkerNear(seq, 2, 1.5).markers.map((m) => m.t)).toEqual([3])
+  })
+  it('moveMarker moves and re-sorts', () => {
+    const r1 = addMarker(emptySeq(), 1)
+    let seq = r1.seq
+    seq = addMarker(seq, 3).seq
+    seq = addMarker(seq, 5).seq
+    const next = moveMarker(seq, r1.markerId, 4)
+    expect(next.markers.map((m) => m.t)).toEqual([3, 4, 5])
+    expect(next.markers[1].id).toBe(r1.markerId)
+  })
+  it('moveMarker clamps to >= 0', () => {
+    const { seq, markerId } = addMarker(emptySeq(), 2)
+    expect(moveMarker(seq, markerId, -5).markers[0].t).toBe(0)
+  })
+  it('moveMarker returns the same reference for an unknown id or unchanged time', () => {
+    const { seq, markerId } = addMarker(emptySeq(), 2)
+    expect(moveMarker(seq, 'nope', 4)).toBe(seq)
+    expect(moveMarker(seq, markerId, 2)).toBe(seq)
+  })
+})
+
+describe('serializeClips', () => {
+  it('computes offsets from the earliest selected clip and per-kind track offsets', () => {
+    const a = makeClip({ startS: 2, outS: 2 })
+    const b = makeClip({ startS: 5, outS: 2 })
+    const c = makeClip({ startS: 3, outS: 2 })
+    const seq = makeSeq([
+      makeTrack({ clips: [a] }),
+      makeTrack({ name: 'V2', clips: [b] }),
+      makeTrack({ kind: 'audio', clips: [c] }),
+    ])
+    const payload = serializeClips(seq, [a.id, b.id, c.id])
+    expect(payload).toHaveLength(3)
+    expect(payload[0]).toMatchObject({ trackKind: 'video', trackOffset: 0, offsetS: 0 })
+    expect(payload[1]).toMatchObject({ trackKind: 'video', trackOffset: 1, offsetS: 3 })
+    expect(payload[2]).toMatchObject({ trackKind: 'audio', trackOffset: 0, offsetS: 1 })
+  })
+  it('counts only same-kind tracks for trackOffset', () => {
+    const c = makeClip({ startS: 1, outS: 2 })
+    const seq = makeSeq([
+      makeTrack(),
+      makeTrack({ name: 'V2' }),
+      makeTrack({ kind: 'audio', name: 'A1' }),
+      makeTrack({ kind: 'audio', name: 'A2', clips: [c] }),
+    ])
+    expect(serializeClips(seq, [c.id])[0].trackOffset).toBe(1)
+  })
+  it('skips unknown ids and returns [] when nothing matches', () => {
+    const a = makeClip({ startS: 0, outS: 2 })
+    const seq = makeSeq([makeTrack({ clips: [a] })])
+    expect(serializeClips(seq, [a.id, 'nope'])).toHaveLength(1)
+    expect(serializeClips(seq, ['nope'])).toEqual([])
+    expect(serializeClips(seq, [])).toEqual([])
+  })
+  it('payload clip omits id and startS but keeps the trim window', () => {
+    const a = makeClip({ startS: 4, inS: 1, outS: 4, speed: 2, opacity: 0.5 })
+    const seq = makeSeq([makeTrack({ clips: [a] })])
+    const [p] = serializeClips(seq, [a.id])
+    expect('id' in p.clip).toBe(false)
+    expect('startS' in p.clip).toBe(false)
+    expect(p.assetId).toBe('av')
+    expect(p.clip.inS).toBe(1)
+    expect(p.clip.outS).toBe(4)
+    expect(p.clip.speed).toBe(2)
+    expect(p.clip.opacity).toBe(0.5)
+  })
+  it('preserves the clipIds order', () => {
+    const a = makeClip({ startS: 0, outS: 2 })
+    const b = makeClip({ startS: 3, outS: 2 })
+    const seq = makeSeq([makeTrack({ clips: [a, b] })])
+    const payload = serializeClips(seq, [b.id, a.id])
+    expect(payload.map((p) => p.offsetS)).toEqual([3, 0])
+  })
+})
+
+describe('pasteClips', () => {
+  it('pastes at atS with preserved offsets, fresh ids, matching tracks', () => {
+    const a = makeClip({ startS: 2, outS: 2 })
+    const b = makeClip({ startS: 5, outS: 2 })
+    const seq = makeSeq([makeTrack({ clips: [a] }), makeTrack({ name: 'V2', clips: [b] })])
+    const payload = serializeClips(seq, [a.id, b.id])
+    const { seq: next, newIds } = pasteClips(seq, payload, 10)
+    expect(newIds).toHaveLength(2)
+    expect(newIds).not.toContain(a.id)
+    expect(newIds).not.toContain(b.id)
+    const na = findClip(next, newIds[0])!
+    const nb = findClip(next, newIds[1])!
+    expect(na.trackIndex).toBe(0)
+    expect(na.clip.startS).toBe(10)
+    expect(nb.trackIndex).toBe(1)
+    expect(nb.clip.startS).toBe(13)
+    expect(findClip(next, a.id)).not.toBeNull()
+    expect(next.durationS).toBe(15)
+  })
+  it('clamps trackOffset onto the last same-kind track', () => {
+    const b = makeClip({ startS: 0, outS: 2 })
+    const source = makeSeq([makeTrack(), makeTrack({ name: 'V2', clips: [b] })])
+    const payload = serializeClips(source, [b.id])
+    const target = makeSeq([makeTrack()])
+    const { seq: next, newIds } = pasteClips(target, payload, 1)
+    expect(findClip(next, newIds[0])!.trackIndex).toBe(0)
+    expect(findClip(next, newIds[0])!.clip.startS).toBe(1)
+  })
+  it('collision-resolves each insert via resolveStart', () => {
+    const a = makeClip({ startS: 0, outS: 2 })
+    const seq = makeSeq([makeTrack({ clips: [a, makeClip({ startS: 10, outS: 2 })] })])
+    const payload = serializeClips(seq, [a.id])
+    const { seq: next, newIds } = pasteClips(seq, payload, 11)
+    expect(findClip(next, newIds[0])!.clip.startS).toBe(12)
+  })
+  it('collision-resolves later payload items against earlier pasted ones', () => {
+    const a = makeClip({ startS: 0, outS: 2 })
+    const b = makeClip({ startS: 2, outS: 2 })
+    const seq = makeSeq([makeTrack({ clips: [a, b] })])
+    const payload = serializeClips(seq, [a.id, b.id])
+    const { seq: next, newIds } = pasteClips(seq, payload, 4)
+    expect(findClip(next, newIds[0])!.clip.startS).toBe(4)
+    expect(findClip(next, newIds[1])!.clip.startS).toBe(6)
+  })
+  it('regenerates effect instance ids without mutating the payload', () => {
+    const fx = { id: 'fx1', type: 'blur', params: { amount: 3 }, enabled: true }
+    const a = makeClip({ startS: 0, outS: 2, effects: [fx] })
+    const seq = makeSeq([makeTrack({ clips: [a] })])
+    const payload = serializeClips(seq, [a.id])
+    const { seq: next, newIds } = pasteClips(seq, payload, 5)
+    const pasted = findClip(next, newIds[0])!.clip
+    expect(pasted.effects[0].id).not.toBe('fx1')
+    expect(pasted.effects[0].type).toBe('blur')
+    expect(pasted.effects[0].params).toEqual({ amount: 3 })
+    expect(payload[0].clip.effects[0].id).toBe('fx1')
+  })
+  it('skips items targeting a locked track but pastes the rest', () => {
+    const v = makeClip({ startS: 0, outS: 2 })
+    const aClip = makeClip({ startS: 1, outS: 2 })
+    const source = makeSeq([makeTrack({ clips: [v] }), makeTrack({ kind: 'audio', clips: [aClip] })])
+    const payload = serializeClips(source, [v.id, aClip.id])
+    const target = makeSeq([makeTrack({ locked: true }), makeTrack({ kind: 'audio' })])
+    const { seq: next, newIds } = pasteClips(target, payload, 5)
+    expect(newIds).toHaveLength(1)
+    expect(next.tracks[0].clips).toHaveLength(0)
+    const pasted = findClip(next, newIds[0])!
+    expect(pasted.trackIndex).toBe(1)
+    expect(pasted.clip.startS).toBe(6)
+  })
+  it('returns the same reference for an empty payload', () => {
+    const seq = makeSeq([makeTrack()])
+    const r = pasteClips(seq, [], 5)
+    expect(r.seq).toBe(seq)
+    expect(r.newIds).toEqual([])
+  })
+  it('returns the same reference when every item is skipped', () => {
+    const v = makeClip({ startS: 0, outS: 2 })
+    const source = makeSeq([makeTrack({ clips: [v] })])
+    const payload = serializeClips(source, [v.id])
+    const target = makeSeq([makeTrack({ locked: true })])
+    const r = pasteClips(target, payload, 0)
+    expect(r.seq).toBe(target)
+    expect(r.newIds).toEqual([])
+  })
+})
+
+describe('duplicateClips', () => {
+  it('lands duplicates flush after the selection on the same tracks', () => {
+    const a = makeClip({ startS: 0, outS: 2 })
+    const b = makeClip({ startS: 3, outS: 2 })
+    const seq = makeSeq([makeTrack({ clips: [a, b] })])
+    const { seq: next, newIds } = duplicateClips(seq, [a.id, b.id])
+    expect(newIds).toHaveLength(2)
+    expect(findClip(next, newIds[0])!.clip.startS).toBe(5)
+    expect(findClip(next, newIds[1])!.clip.startS).toBe(8)
+    expect(findClip(next, a.id)!.clip.startS).toBe(0)
+    expect(findClip(next, b.id)!.clip.startS).toBe(3)
+    expect(next.durationS).toBe(10)
+  })
+  it('duplicates across kinds keeping the layout', () => {
+    const v = makeClip({ startS: 1, outS: 2 })
+    const aClip = makeClip({ startS: 2, outS: 2 })
+    const seq = makeSeq([makeTrack({ clips: [v] }), makeTrack({ kind: 'audio', clips: [aClip] })])
+    const { seq: next, newIds } = duplicateClips(seq, [v.id, aClip.id])
+    const nv = findClip(next, newIds[0])!
+    const na = findClip(next, newIds[1])!
+    expect(nv.trackIndex).toBe(0)
+    expect(nv.clip.startS).toBe(4)
+    expect(na.trackIndex).toBe(1)
+    expect(na.clip.startS).toBe(5)
+  })
+  it('duplicates a single clip immediately after itself', () => {
+    const a = makeClip({ startS: 0, outS: 2 })
+    const seq = makeSeq([makeTrack({ clips: [a] })])
+    const { seq: next, newIds } = duplicateClips(seq, [a.id])
+    expect(newIds).toHaveLength(1)
+    expect(newIds[0]).not.toBe(a.id)
+    expect(findClip(next, newIds[0])!.clip.startS).toBe(2)
+  })
+  it('returns the same reference for an empty or unknown selection', () => {
+    const seq = makeSeq([makeTrack({ clips: [makeClip()] })])
+    const r1 = duplicateClips(seq, [])
+    const r2 = duplicateClips(seq, ['nope'])
+    expect(r1.seq).toBe(seq)
+    expect(r1.newIds).toEqual([])
+    expect(r2.seq).toBe(seq)
+    expect(r2.newIds).toEqual([])
   })
 })

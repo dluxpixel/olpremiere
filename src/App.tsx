@@ -4,10 +4,17 @@ import { LeftPanel } from './components/LeftPanel'
 import { Monitor } from './components/Monitor'
 import { Timeline } from './components/Timeline'
 import { TopBar } from './components/TopBar'
-import { clipEndS, deleteClip, rippleDelete, splitClip } from './engine/timeline'
+import { addMarker, clipEndS, deleteClip, removeMarkerNear, rippleDelete, splitClip } from './engine/timeline'
 import { quantizeToFrame } from './engine/timecode'
 import { activeSequence } from './engine/types'
 import { installKeymap } from './keymap'
+import {
+  copySelection,
+  cutSelection,
+  duplicateSelection,
+  pasteAtPlayhead,
+  selectClipOnAdjacentTrack,
+} from './state/clipboard'
 import { pausePlayback, shuttle, togglePlay } from './state/playbackControl'
 import { saveNow } from './state/persistence'
 import { updateActiveSequence, useStore, zoomIn, zoomOut } from './state/store'
@@ -104,6 +111,26 @@ function useAppKeymap() {
       { combo: 'delete', description: 'Delete (lift)', run: () => deleteSelected(false) },
       { combo: 'backspace', description: 'Delete (lift)', run: () => deleteSelected(false) },
       { combo: 'shift+delete', description: 'Ripple delete', run: () => deleteSelected(true) },
+      { combo: 'mod+c', description: 'Copy clip(s)', run: () => void copySelection() },
+      { combo: 'mod+x', description: 'Cut clip(s)', run: cutSelection },
+      { combo: 'mod+v', description: 'Paste at playhead', run: pasteAtPlayhead },
+      { combo: 'mod+d', description: 'Duplicate clip(s)', run: duplicateSelection },
+      {
+        combo: 'm',
+        description: 'Add marker at playhead',
+        run: () =>
+          updateActiveSequence('Add marker', (sq) => addMarker(sq, store().ui.playheadS).seq),
+      },
+      {
+        combo: 'shift+m',
+        description: 'Remove marker at playhead',
+        run: () =>
+          updateActiveSequence('Remove marker', (sq) =>
+            removeMarkerNear(sq, store().ui.playheadS, 0.15),
+          ),
+      },
+      { combo: 'arrowup', description: 'Select clip on track above', run: () => selectClipOnAdjacentTrack(-1) },
+      { combo: 'arrowdown', description: 'Select clip on track below', run: () => selectClipOnAdjacentTrack(1) },
       { combo: '=', description: 'Zoom in timeline', run: zoomIn },
       { combo: 'shift++', description: 'Zoom in timeline', run: zoomIn },
       { combo: '-', description: 'Zoom out timeline', run: zoomOut },

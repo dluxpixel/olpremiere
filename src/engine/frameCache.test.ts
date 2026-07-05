@@ -1,0 +1,132 @@
+import { describe, expect, it } from 'vitest'
+import { FrameLru, boundPending, frameIndexAt, frameMidTimeS, spanIndices } from './frameCache'
+
+describe('frameIndexAt', () => {
+  it('quantizes with floor semantics at the asset fps', () => {
+    expect(frameIndexAt(0, 30)).toBe(0)
+    expect(frameIndexAt(0.5, 30)).toBe(15)
+    expect(frameIndexAt(0.51, 30)).toBe(15)
+    expect(frameIndexAt(1.999, 24)).toBe(47)
+  })
+
+  it('lands exact frame boundaries on the boundary frame despite float error', () => {
+    expect(frameIndexAt(1 / 30, 30)).toBe(1)
+    expect(frameIndexAt(29 / 30, 30)).toBe(29)
+    expect(frameIndexAt(7 / 24, 24)).toBe(7)
+  })
+
+  it('falls back to 30fps when fps is undefined', () => {
+    expect(frameIndexAt(1, undefined)).toBe(30)
+    expect(frameIndexAt(0.5, undefined)).toBe(15)
+  })
+
+  it('falls back to 30fps for non-positive fps', () => {
+    expect(frameIndexAt(1, 0)).toBe(30)
+  })
+
+  it('clamps negative times to frame 0', () => {
+    expect(frameIndexAt(-0.2, undefined)).toBe(0)
+  })
+})
+
+describe('frameMidTimeS', () => {
+  it('targets the frame midpoint', () => {
+    expect(frameMidTimeS(0, 30)).toBeCloseTo(0.5 / 30)
+    expect(frameMidTimeS(15, 30)).toBeCloseTo(15.5 / 30)
+  })
+
+  it('round-trips with frameIndexAt', () => {
+    for (const fps of [24, 30, 60, undefined]) {
+      for (const idx of [0, 1, 29, 100]) {
+        expect(frameIndexAt(frameMidTimeS(idx, fps), fps)).toBe(idx)
+      }
+    }
+  })
+})
+
+describe('FrameLru', () => {
+  it('evicts the least-recently-used entry beyond the cap', () => {
+    const lru = new FrameLru<string>(3)
+    lru.set('a', 'A')
+    lru.set('b', 'B')
+    lru.set('c', 'C')
+    expect(lru.set('d', 'D')).toEqual(['a'])
+    expect(lru.get('a')).toBeUndefined()
+    expect(lru.size).toBe(3)
+  })
+
+  it('get() touches: a hit survives the next eviction', () => {
+    const lru = new FrameLru<string>(3)
+    lru.set('a', 'A')
+    lru.set('b', 'B')
+    lru.set('c', 'C')
+    expect(lru.get('a')).toBe('A')
+    expect(lru.set('d', 'D')).toEqual(['b'])
+    expect(lru.get('a')).toBe('A')
+  })
+
+  it('has() peeks without touching', () => {
+    const lru = new FrameLru<string>(2)
+    lru.set('a', 'A')
+    lru.set('b', 'B')
+    expect(lru.has('a')).toBe(true)
+    expect(lru.set('c', 'C')).toEqual(['a'])
+  })
+
+  it('overwriting a key re-orders it without growing', () => {
+    const lru = new FrameLru<string>(2)
+    lru.set('a', 'A')
+    lru.set('b', 'B')
+    expect(lru.set('a', 'A2')).toEqual([])
+    expect(lru.size).toBe(2)
+    expect(lru.set('c', 'C')).toEqual(['b'])
+    expect(lru.get('a')).toBe('A2')
+  })
+
+  it('delete + keys support prefix purges', () => {
+    const lru = new FrameLru<number>(4)
+    lru.set('x:1', 1)
+    lru.set('y:1', 2)
+    lru.set('x:2', 3)
+    for (const key of lru.keys()) {
+      if (key.startsWith('x:')) lru.delete(key)
+    }
+    expect(lru.keys()).toEqual(['y:1'])
+  })
+})
+
+describe('boundPending', () => {
+  it('keeps the cap nearest to latest, nearest-first', () => {
+    const out = boundPending([1, 2, 3, 10, 11, 12, 13, 14, 15, 16], 12, 8)
+    expect(out).toEqual([12, 11, 13, 10, 14, 15, 16, 3])
+  })
+
+  it('breaks distance ties with the lower index', () => {
+    expect(boundPending([13, 11, 12], 12, 3)).toEqual([12, 11, 13])
+  })
+
+  it('dedupes before bounding', () => {
+    expect(boundPending([5, 5, 6, 6, 4], 5, 8)).toEqual([5, 4, 6])
+  })
+
+  it('drops the farthest (oldest scrub positions) when over the cap', () => {
+    const stale = [0, 1, 2, 3, 4]
+    const out = boundPending([...stale, 100, 101, 99], 100, 3)
+    expect(out).toEqual([100, 99, 101])
+  })
+
+  it('handles empty input', () => {
+    expect(boundPending([], 0, 8)).toEqual([])
+  })
+})
+
+describe('spanIndices', () => {
+  it('emits nearest-first, forward before backward on ties', () => {
+    expect(spanIndices(5, 2, Number.MAX_SAFE_INTEGER)).toEqual([5, 6, 4, 7, 3])
+  })
+
+  it('clamps to [0, maxIndex]', () => {
+    expect(spanIndices(1, 2, 2)).toEqual([1, 2, 0])
+    expect(spanIndices(0, 1, 0)).toEqual([0])
+  })
+})
