@@ -19,9 +19,13 @@ async function addClip(page: Page): Promise<void> {
 const centerPixel = (page: Page) =>
   page.evaluate(() => {
     const c = document.querySelector('[data-testid="program-canvas"]') as HTMLCanvasElement
-    const d = c
-      .getContext('2d')!
-      .getImageData(Math.floor(c.width / 2), Math.floor(c.height / 2), 1, 1).data
+    // The program canvas is WebGL2; copy it onto a 2D scratch canvas to read pixels.
+    const scratch = document.createElement('canvas')
+    scratch.width = c.width
+    scratch.height = c.height
+    const ctx = scratch.getContext('2d')!
+    ctx.drawImage(c, 0, 0)
+    const d = ctx.getImageData(Math.floor(c.width / 2), Math.floor(c.height / 2), 1, 1).data
     return [d[0], d[1], d[2]] as [number, number, number]
   })
 

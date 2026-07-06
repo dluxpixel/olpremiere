@@ -1,19 +1,20 @@
 /// <reference lib="webworker" />
 // Export renderer (spec §5): demux/decode source video with mediabunny,
-// composite every output frame onto one OffscreenCanvas, encode with
-// WebCodecs, mux with mp4-muxer. Everything heavy happens in this module
-// worker; the main thread only relays progress.
+// composite every output frame with the SHARED WebGL2 renderer (identical to
+// the live preview) on an OffscreenCanvas, encode with WebCodecs, mux with
+// mp4-muxer. Everything heavy happens in this module worker; the main thread
+// only relays progress.
 
 import { ALL_FORMATS, BlobSource, CanvasSink, Input } from 'mediabunny'
-import type { InputVideoTrack, WrappedCanvas } from 'mediabunny'
+import type { WrappedCanvas } from 'mediabunny'
 import { ArrayBufferTarget, Muxer } from 'mp4-muxer'
-import { clipEndS } from '../timeline'
+import { createRenderer } from '../render/glRenderer'
+import { resolveFrame } from '../render/resolve'
+import type { RenderLayer } from '../render/types'
 import type { Clip, Id } from '../types'
 import {
   AUDIO_CHUNK_FRAMES,
   H264_CODECS,
-  clipFrameRange,
-  containRect,
   firstSupported,
   packPlanarChunk,
   pcmChunks,
@@ -44,15 +45,12 @@ const checkCancel = (): void => {
   if (cancelled) throw new CancelledError('cancelled')
 }
 
-// The encoder queue limit for backpressure; keeps decoded frames bounded.
 const MAX_ENCODE_QUEUE = 4
 
 // 'dequeue' can fire between reading encodeQueueSize and adding the listener,
 // so a short timeout race keeps the drain loop from hanging on that edge.
 const nextDequeue = (enc: VideoEncoder | AudioEncoder): Promise<void> =>
   new Promise((resolve) => {
-    // done only runs via the timer or the listener, both set up below, so
-    // reading `timer` inside it never hits the TDZ.
     const done = (): void => {
       clearTimeout(timer)
       enc.removeEventListener('dequeue', done)
@@ -62,44 +60,40 @@ const nextDequeue = (enc: VideoEncoder | AudioEncoder): Promise<void> =>
     enc.addEventListener('dequeue', done, { once: true })
   })
 
-function drawContain(
-  c2d: OffscreenCanvasRenderingContext2D,
-  source: CanvasImageSource,
-  srcW: number,
-  srcH: number,
-  dstW: number,
-  dstH: number,
-  opacity: number,
-): void {
-  const rect = containRect(srcW, srcH, dstW, dstH)
-  if (!rect) return
-  c2d.globalAlpha = Math.max(0, Math.min(1, opacity))
-  c2d.drawImage(source, rect.x, rect.y, rect.w, rect.h)
-  c2d.globalAlpha = 1
+// A per-clip monotonic frame reader. Random-access getCanvas() returns null on
+// VFR / cue-less MediaRecorder webm inside a worker, so export pulls frames
+// SEQUENTIALLY (canvases()) and holds the newest frame with timestamp ≤ the
+// requested source time — classic pull-down. One Input per CLIP, so two clips
+// of the same asset (e.g. across a cross-dissolve) read independently.
+interface ClipProvider {
+  iterator: AsyncGenerator<WrappedCanvas, void, unknown>
+  dispose: () => void
+  started: boolean
+  current: WrappedCanvas | null
+  ahead: WrappedCanvas | null
 }
 
-// Source frames rarely land exactly on the output grid (variable-frame-rate
-// captures, mismatched fps), so each video layer walks a SEQUENTIAL canvases()
-// iterator and holds the newest frame whose timestamp <= wanted source time —
-// classic pull-down. canvasesAtTimestamps() is unsuitable here: it yields null
-// whenever a requested grid time has no exact frame.
-type Layer =
-  | { kind: 'image'; clip: Clip; first: number; end: number; bitmap: ImageBitmap }
-  | {
-      kind: 'video'
-      clip: Clip
-      first: number
-      end: number
-      speed: number
-      iterator: AsyncGenerator<WrappedCanvas, void, unknown>
-      started: boolean
-      /** Newest frame with timestamp <= current source time. */
-      current: WrappedCanvas | null
-      /** Next decoded frame, not yet due. */
-      ahead: WrappedCanvas | null
-    }
+const SRC_EPS_S = 1e-4
 
-const SRC_TIME_EPS_S = 1e-4
+async function nextFrame(p: ClipProvider): Promise<WrappedCanvas | null> {
+  const r = await p.iterator.next()
+  return r.done ? null : r.value
+}
+
+/** Advance the clip's sequential reader to the newest frame with ts ≤ sourceT. */
+async function frameForClip(p: ClipProvider, sourceT: number): Promise<OffscreenCanvas | HTMLCanvasElement | null> {
+  if (!p.started) {
+    p.started = true
+    p.ahead = await nextFrame(p)
+  }
+  while (p.ahead && p.ahead.timestamp <= sourceT + SRC_EPS_S) {
+    p.current = p.ahead
+    p.ahead = await nextFrame(p)
+  }
+  // Before the first packet clamp to it; past the last, freeze on it.
+  const w = p.current ?? p.ahead
+  return w ? w.canvas : null
+}
 
 async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void> {
   const cleanups: (() => void)[] = []
@@ -221,21 +215,20 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
     }
 
     // --- open media --------------------------------------------------------
+    // Images decode once (shared by assetId). Video gets ONE sequential reader
+    // per CLIP (created lazily on first use), so overlapping same-asset clips
+    // in a transition each read independently.
     stage = 'opening media'
-    const assetById = new Map(assets.map((a) => [a.id, a]))
-    const videoTracks = new Map<Id, InputVideoTrack | null>()
+    const kindById = new Map<Id, 'video' | 'audio' | 'image'>()
+    const blobById = new Map<Id, Blob>()
+    const nameById = new Map<Id, string>()
     const bitmaps = new Map<Id, ImageBitmap>()
     for (const asset of assets) {
       checkCancel()
-      if (asset.kind === 'video') {
-        const input = new Input({ source: new BlobSource(asset.blob), formats: ALL_FORMATS })
-        cleanups.push(() => input.dispose())
-        try {
-          videoTracks.set(asset.id, await input.getPrimaryVideoTrack())
-        } catch (err) {
-          throw new Error(`could not read video "${asset.name}": ${err instanceof Error ? err.message : String(err)}`)
-        }
-      } else if (asset.kind === 'image') {
+      kindById.set(asset.id, asset.kind)
+      blobById.set(asset.id, asset.blob)
+      nameById.set(asset.id, asset.name)
+      if (asset.kind === 'image') {
         try {
           const bitmap = await createImageBitmap(asset.blob)
           bitmaps.set(asset.id, bitmap)
@@ -246,112 +239,103 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
       }
     }
 
-    // --- build layers ------------------------------------------------------
-    // seq.tracks keeps video tracks bottom→top, so layer order here IS draw
-    // order; clips never overlap within a track, so at most one layer per
-    // track is active at any output frame.
-    const layers: Layer[] = []
+    const clipProviders = new Map<Id, ClipProvider>()
+    const providerFor = async (clip: Clip): Promise<ClipProvider | null> => {
+      const existing = clipProviders.get(clip.id)
+      if (existing) return existing
+      const blob = blobById.get(clip.assetId)
+      if (!blob) return null
+      const input = new Input({ source: new BlobSource(blob), formats: ALL_FORMATS })
+      let track
+      try {
+        track = await input.getPrimaryVideoTrack()
+      } catch (err) {
+        input.dispose()
+        throw new Error(
+          `could not read video "${nameById.get(clip.assetId) ?? clip.assetId}": ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+      if (!track) {
+        input.dispose()
+        return null
+      }
+      const sink = new CanvasSink(track)
+      // Decode forward from just before the clip's in-point; a transition reads
+      // past the out-point (handles), so leave the end open (to media end).
+      const iterator = sink.canvases(Math.max(0, clip.inS))
+      const provider: ClipProvider = {
+        iterator,
+        dispose: () => input.dispose(),
+        started: false,
+        current: null,
+        ahead: null,
+      }
+      clipProviders.set(clip.id, provider)
+      cleanups.push(() => {
+        void iterator.return?.(undefined)
+        input.dispose()
+      })
+      return provider
+    }
+
+    // Index enabled video clips by id so a layer's clipId resolves to its Clip.
+    const clipById = new Map<Id, Clip>()
     for (const track of sequence.tracks) {
-      if (track.kind !== 'video' || track.muted) continue
-      for (const clip of track.clips) {
-        if (!clip.enabled) continue
-        const asset = assetById.get(clip.assetId)
-        if (!asset) continue
-        const { first, end } = clipFrameRange(clip.startS, clipEndS(clip), settings.fps)
-        if (first >= end) continue
-        if (asset.kind === 'image') {
-          const bitmap = bitmaps.get(asset.id)
-          if (bitmap) layers.push({ kind: 'image', clip, first, end, bitmap })
-        } else if (asset.kind === 'video') {
-          const track2 = videoTracks.get(asset.id)
-          if (!track2) continue // no decodable video track → contributes nothing
-          // One CanvasSink per CLIP, not per asset: canvasesAtTimestamps only
-          // hits its decode-each-packet-once fast path when the timestamp
-          // stream is monotone. Source times only ever increase WITHIN a clip
-          // (speed is constant, playback is forward), but different clips can
-          // revisit earlier source times, so sharing a sink/iterator across
-          // clips would break monotonicity. CanvasSink over VideoSampleSink
-          // because compositing needs a 2D-drawable (rotation + color
-          // conversion handled for us); poolSize bounds VRAM.
-          // poolSize 3: we hold up to two frames (current + ahead) while a
-          // third gets decoded into the pool.
-          const sink = new CanvasSink(track2, { poolSize: 3 })
-          const speed = Math.abs(clip.speed || 1)
-          layers.push({
-            kind: 'video',
-            clip,
-            first,
-            end,
-            speed,
-            iterator: sink.canvases(clip.inS, clip.outS + 1 / settings.fps),
-            started: false,
-            current: null,
-            ahead: null,
-          })
+      if (track.kind !== 'video') continue
+      for (const clip of track.clips) clipById.set(clip.id, clip)
+    }
+
+    // --- shared WebGL2 renderer on an OffscreenCanvas -----------------------
+    stage = 'initializing renderer'
+    const canvas = new OffscreenCanvas(settings.width, settings.height)
+    const gl = canvas.getContext('webgl2', { premultipliedAlpha: false, preserveDrawingBuffer: true })
+    if (!gl) throw new Error('WebGL2 is unavailable in this browser’s worker — cannot export')
+    const renderer = createRenderer(gl)
+    cleanups.push(() => renderer.dispose())
+
+    /** Decode every layer's texture for one frame (async), keyed by layer ref. */
+    const gatherTextures = async (layers: RenderLayer[]): Promise<Map<RenderLayer, TexImageSource>> => {
+      const map = new Map<RenderLayer, TexImageSource>()
+      for (const layer of layers) {
+        const kind = kindById.get(layer.assetId)
+        if (kind === 'image') {
+          const bmp = bitmaps.get(layer.assetId)
+          if (bmp) map.set(layer, bmp)
+        } else if (kind === 'video') {
+          const clip = clipById.get(layer.clipId)
+          if (!clip) continue
+          const provider = await providerFor(clip)
+          if (!provider) continue
+          const canvas = await frameForClip(provider, Math.max(0, layer.sourceTimeS))
+          if (canvas) map.set(layer, canvas)
         }
       }
+      return map
     }
 
     // --- render + encode video ---------------------------------------------
     stage = 'rendering video'
-    const canvas = new OffscreenCanvas(settings.width, settings.height)
-    const c2d = canvas.getContext('2d')
-    if (!c2d) throw new Error('OffscreenCanvas 2D context unavailable')
-
     const keyEvery = Math.max(1, Math.round(settings.fps * 2))
     for (let f = 0; f < framesTotal; f++) {
       checkCancel()
       throwIfFailed()
-      c2d.globalAlpha = 1
-      c2d.fillStyle = '#000'
-      c2d.fillRect(0, 0, settings.width, settings.height)
+      const t = f / settings.fps
+      const frame = resolveFrame(sequence, t)
 
-      for (const layer of layers) {
-        if (f < layer.first || f >= layer.end) continue
-        if (layer.kind === 'image') {
-          drawContain(
-            c2d,
-            layer.bitmap,
-            layer.bitmap.width,
-            layer.bitmap.height,
-            settings.width,
-            settings.height,
-            layer.clip.opacity,
-          )
-        } else {
-          const srcT = layer.clip.inS + (f / settings.fps - layer.clip.startS) * layer.speed
-          if (!layer.started) {
-            layer.started = true
-            const r = await layer.iterator.next()
-            layer.ahead = r.done ? null : r.value
-          }
-          while (layer.ahead && layer.ahead.timestamp <= srcT + SRC_TIME_EPS_S) {
-            layer.current = layer.ahead
-            const r = await layer.iterator.next()
-            layer.ahead = r.done ? null : r.value
-          }
-          // Before the first packet: clamp to it. Past the last: freeze on it.
-          const wrapped = layer.current ?? layer.ahead
-          if (wrapped) {
-            drawContain(
-              c2d,
-              wrapped.canvas,
-              wrapped.canvas.width,
-              wrapped.canvas.height,
-              settings.width,
-              settings.height,
-              layer.clip.opacity,
-            )
-          }
-        }
+      const layers: RenderLayer[] = []
+      for (const op of frame.ops) {
+        if (op.type === 'layer') layers.push(op.layer)
+        else layers.push(op.from, op.to)
       }
+      const texMap = await gatherTextures(layers)
+      renderer.render(frame, (layer) => texMap.get(layer) ?? null)
 
-      const frame = new VideoFrame(canvas, {
+      const vframe = new VideoFrame(canvas, {
         timestamp: Math.round((f * 1e6) / settings.fps),
         duration: Math.round(1e6 / settings.fps),
       })
-      videoEncoder.encode(frame, { keyFrame: f % keyEvery === 0 })
-      frame.close()
+      videoEncoder.encode(vframe, { keyFrame: f % keyEvery === 0 })
+      vframe.close()
       await drain(videoEncoder)
 
       if ((f + 1) % 5 === 0 || f + 1 === framesTotal) {

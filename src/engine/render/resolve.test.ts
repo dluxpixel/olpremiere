@@ -1,0 +1,536 @@
+import { describe, expect, it } from 'vitest'
+import { resolveFrame } from './resolve'
+import type { RenderLayer, RenderOp } from './types'
+import { defaultTransform, type Clip, type Keyframe, type Sequence, type Track } from '../types'
+
+// --- Fixtures -------------------------------------------------------------
+
+let uid = 0
+const id = (p: string): string => `${p}-${uid++}`
+
+const kf = (t: number, value: number, e: Keyframe['ease'] = 'linear'): Keyframe => ({ t, value, ease: e })
+
+/** A clip with defaults; startS/inS/outS drive its placement + source window. */
+function clip(over: Partial<Clip> = {}): Clip {
+  return {
+    id: id('clip'),
+    assetId: id('asset'),
+    startS: 0,
+    inS: 0,
+    outS: 2,
+    speed: 1,
+    enabled: true,
+    transform: defaultTransform(),
+    opacity: 1,
+    blendMode: 'normal',
+    audioGainDb: 0,
+    fadeInS: 0,
+    fadeOutS: 0,
+    effects: [],
+    ...over,
+  }
+}
+
+function track(over: Partial<Track> = {}): Track {
+  return {
+    id: id('track'),
+    kind: 'video',
+    name: 'V1',
+    height: 64,
+    muted: false,
+    solo: false,
+    locked: false,
+    clips: [],
+    ...over,
+  }
+}
+
+function seqOf(tracks: Track[], over: Partial<Sequence> = {}): Sequence {
+  return {
+    id: id('seq'),
+    name: 'Seq',
+    fps: 30,
+    width: 1920,
+    height: 1080,
+    sampleRate: 48000,
+    durationS: 0,
+    tracks,
+    markers: [],
+    ...over,
+  }
+}
+
+// Narrowing helpers so tests read cleanly.
+const asLayer = (op: RenderOp): RenderLayer => {
+  expect(op.type).toBe('layer')
+  if (op.type !== 'layer') throw new Error('not a layer')
+  return op.layer
+}
+const asTransition = (op: RenderOp) => {
+  expect(op.type).toBe('transition')
+  if (op.type !== 'transition') throw new Error('not a transition')
+  return op
+}
+
+// --- Frame shell ----------------------------------------------------------
+
+describe('resolveFrame shell', () => {
+  it('frame width/height come from the sequence native resolution', () => {
+    const f = resolveFrame(seqOf([], { width: 1280, height: 720 }), 0)
+    expect(f.width).toBe(1280)
+    expect(f.height).toBe(720)
+    expect(f.ops).toEqual([])
+  })
+
+  it('empty sequence produces no ops', () => {
+    expect(resolveFrame(seqOf([]), 5).ops).toHaveLength(0)
+  })
+
+  it('a time before any clip yields no ops', () => {
+    const t = track({ clips: [clip({ startS: 4, outS: 2 })] })
+    expect(resolveFrame(seqOf([t]), 0).ops).toHaveLength(0)
+  })
+
+  it('a time past the last clip yields no ops', () => {
+    const t = track({ clips: [clip({ startS: 0, outS: 2 })] })
+    expect(resolveFrame(seqOf([t]), 10).ops).toHaveLength(0)
+  })
+})
+
+// --- Identity clip --------------------------------------------------------
+
+describe('identity clip', () => {
+  it('emits one layer op with identity transform, opacity 1, neutral filters', () => {
+    const c = clip({ startS: 0, inS: 0, outS: 2 })
+    const f = resolveFrame(seqOf([track({ clips: [c] })]), 1)
+    expect(f.ops).toHaveLength(1)
+    const layer = asLayer(f.ops[0])
+    expect(layer.clipId).toBe(c.id)
+    expect(layer.assetId).toBe(c.assetId)
+    expect(layer.isImage).toBe(false)
+    expect(layer.transform).toEqual({
+      x: 0,
+      y: 0,
+      scale: 1,
+      rotationDeg: 0,
+      anchorX: 0.5,
+      anchorY: 0.5,
+      cropT: 0,
+      cropR: 0,
+      cropB: 0,
+      cropL: 0,
+    })
+    expect(layer.opacity).toBe(1)
+    expect(layer.filters).toEqual({
+      brightness: 0,
+      contrast: 0,
+      saturation: 0,
+      exposure: 0,
+      blur: 0,
+    })
+  })
+
+  it('sourceTimeS = inS + (t - startS) at speed 1', () => {
+    const c = clip({ startS: 3, inS: 1, outS: 5 })
+    const layer = asLayer(resolveFrame(seqOf([track({ clips: [c] })]), 4).ops[0])
+    // t=4, startS=3 → local 1s; inS 1 → source 2
+    expect(layer.sourceTimeS).toBeCloseTo(2)
+  })
+
+  it('sourceTimeS scales by |speed| (2×)', () => {
+    const c = clip({ startS: 0, inS: 0, outS: 4, speed: 2 })
+    // duration = (4-0)/2 = 2s; at t=1 → source = 0 + 1*2 = 2
+    const layer = asLayer(resolveFrame(seqOf([track({ clips: [c] })]), 1).ops[0])
+    expect(layer.sourceTimeS).toBeCloseTo(2)
+  })
+
+  it('sourceTimeS uses |speed| for reverse clips too', () => {
+    const c = clip({ startS: 0, inS: 0, outS: 4, speed: -2 })
+    const layer = asLayer(resolveFrame(seqOf([track({ clips: [c] })]), 1).ops[0])
+    expect(layer.sourceTimeS).toBeCloseTo(2)
+  })
+
+  it('is active at its exact start and inactive at its exact end (half-open)', () => {
+    const c = clip({ startS: 2, inS: 0, outS: 2 }) // ends at 4
+    const s = seqOf([track({ clips: [c] })])
+    expect(resolveFrame(s, 2).ops).toHaveLength(1) // start inclusive
+    expect(resolveFrame(s, 4).ops).toHaveLength(0) // end exclusive
+  })
+})
+
+// --- Keyframes ------------------------------------------------------------
+
+describe('keyframed channels resolve at local clip time', () => {
+  it('animated scale interpolates via localT', () => {
+    // scale 1→3 over local [0,2]; clip starts at 5.
+    const c = clip({
+      startS: 5,
+      inS: 0,
+      outS: 2,
+      keyframes: { scale: [kf(0, 1), kf(2, 3)] },
+    })
+    const s = seqOf([track({ clips: [c] })])
+    expect(asLayer(resolveFrame(s, 5).ops[0]).transform.scale).toBeCloseTo(1)
+    expect(asLayer(resolveFrame(s, 6).ops[0]).transform.scale).toBeCloseTo(2)
+    expect(asLayer(resolveFrame(s, 6.5).ops[0]).transform.scale).toBeCloseTo(2.5)
+  })
+
+  it('animated opacity interpolates and clamps', () => {
+    const c = clip({
+      startS: 0,
+      inS: 0,
+      outS: 2,
+      opacity: 1,
+      keyframes: { opacity: [kf(0, 0), kf(2, 1)] },
+    })
+    const s = seqOf([track({ clips: [c] })])
+    expect(asLayer(resolveFrame(s, 0).ops[0]).opacity).toBeCloseTo(0)
+    expect(asLayer(resolveFrame(s, 1).ops[0]).opacity).toBeCloseTo(0.5)
+  })
+
+  it('opacity keyframe values above 1 clamp to 1', () => {
+    const c = clip({ startS: 0, outS: 2, keyframes: { opacity: [kf(0, 5), kf(2, 5)] } })
+    expect(asLayer(resolveFrame(seqOf([track({ clips: [c] })]), 1).ops[0]).opacity).toBe(1)
+  })
+
+  it('animated posX/posY resolve into transform.x/.y', () => {
+    const c = clip({
+      startS: 0,
+      outS: 2,
+      keyframes: { posX: [kf(0, 0), kf(2, 100)], posY: [kf(0, 0), kf(2, -40)] },
+    })
+    const layer = asLayer(resolveFrame(seqOf([track({ clips: [c] })]), 1).ops[0])
+    expect(layer.transform.x).toBeCloseTo(50)
+    expect(layer.transform.y).toBeCloseTo(-20)
+  })
+
+  it('animated rotation maps to rotationDeg', () => {
+    const c = clip({ startS: 0, outS: 2, keyframes: { rotation: [kf(0, 0), kf(2, 90)] } })
+    const layer = asLayer(resolveFrame(seqOf([track({ clips: [c] })]), 1).ops[0])
+    expect(layer.transform.rotationDeg).toBeCloseTo(45)
+  })
+
+  it('animated filter (brightness) resolves into filters', () => {
+    const c = clip({ startS: 0, outS: 2, keyframes: { brightness: [kf(0, 0), kf(2, 0.5)] } })
+    const layer = asLayer(resolveFrame(seqOf([track({ clips: [c] })]), 1).ops[0])
+    expect(layer.filters.brightness).toBeCloseTo(0.25)
+  })
+
+  it('static filters (no keyframes) pass through', () => {
+    const c = clip({ startS: 0, outS: 2, filters: { blur: 8, saturation: -0.5 } })
+    const layer = asLayer(resolveFrame(seqOf([track({ clips: [c] })]), 1).ops[0])
+    expect(layer.filters.blur).toBe(8)
+    expect(layer.filters.saturation).toBe(-0.5)
+    expect(layer.filters.brightness).toBe(0)
+  })
+
+  it('static transform (no keyframes) passes through', () => {
+    const c = clip({
+      startS: 0,
+      outS: 2,
+      transform: { ...defaultTransform(), x: 12, scale: 2, rotationDeg: 30 },
+    })
+    const layer = asLayer(resolveFrame(seqOf([track({ clips: [c] })]), 1).ops[0])
+    expect(layer.transform.x).toBe(12)
+    expect(layer.transform.scale).toBe(2)
+    expect(layer.transform.rotationDeg).toBe(30)
+  })
+})
+
+// --- Stacking / muting / disabling ----------------------------------------
+
+describe('track stacking and filtering', () => {
+  it('two stacked tracks emit two ops bottom→top', () => {
+    const bottom = clip({ startS: 0, outS: 4 })
+    const top = clip({ startS: 0, outS: 4 })
+    const s = seqOf([
+      track({ name: 'V1', clips: [bottom] }),
+      track({ name: 'V2', clips: [top] }),
+    ])
+    const ops = resolveFrame(s, 1).ops
+    expect(ops).toHaveLength(2)
+    expect(asLayer(ops[0]).clipId).toBe(bottom.id) // lower track first
+    expect(asLayer(ops[1]).clipId).toBe(top.id)
+  })
+
+  it('a muted video track is omitted', () => {
+    const bottom = clip({ startS: 0, outS: 4 })
+    const top = clip({ startS: 0, outS: 4 })
+    const s = seqOf([
+      track({ name: 'V1', clips: [bottom] }),
+      track({ name: 'V2', muted: true, clips: [top] }),
+    ])
+    const ops = resolveFrame(s, 1).ops
+    expect(ops).toHaveLength(1)
+    expect(asLayer(ops[0]).clipId).toBe(bottom.id)
+  })
+
+  it('audio tracks contribute nothing visual', () => {
+    const v = clip({ startS: 0, outS: 4 })
+    const a = clip({ startS: 0, outS: 4 })
+    const s = seqOf([
+      track({ name: 'V1', clips: [v] }),
+      track({ kind: 'audio', name: 'A1', clips: [a] }),
+    ])
+    const ops = resolveFrame(s, 1).ops
+    expect(ops).toHaveLength(1)
+    expect(asLayer(ops[0]).clipId).toBe(v.id)
+  })
+
+  it('a disabled clip is omitted (nothing renders on its track)', () => {
+    const c = clip({ startS: 0, outS: 4, enabled: false })
+    expect(resolveFrame(seqOf([track({ clips: [c] })]), 1).ops).toHaveLength(0)
+  })
+
+  it('picks the correct active clip among many on a track', () => {
+    const a = clip({ startS: 0, outS: 2 }) // [0,2)
+    const b = clip({ startS: 2, outS: 2 }) // [2,4)
+    const c = clip({ startS: 4, outS: 2 }) // [4,6)
+    const s = seqOf([track({ clips: [a, b, c] })])
+    expect(asLayer(resolveFrame(s, 3).ops[0]).clipId).toBe(b.id)
+    expect(asLayer(resolveFrame(s, 5).ops[0]).clipId).toBe(c.id)
+  })
+})
+
+// --- Transitions (two-clip) -----------------------------------------------
+
+describe('two-clip transitions', () => {
+  // A [0,2), B [2,4) adjacent; crossDissolve on B.transitionIn, D=1.
+  const makeAB = (trIn?: Clip['transitionIn'], trOutA?: Clip['transitionOut']) => {
+    const a = clip({ startS: 0, inS: 0, outS: 2, transitionOut: trOutA })
+    const b = clip({ startS: 2, inS: 0, outS: 2, transitionIn: trIn })
+    return { a, b, s: seqOf([track({ clips: [a, b] })]) }
+  }
+
+  it('emits a transition op inside the window with correct progress', () => {
+    const { a, b, s } = makeAB({ type: 'crossDissolve', durationS: 1 })
+    // window [2,3). At t=2.5 → progress 0.5.
+    const op = asTransition(resolveFrame(s, 2.5).ops[0])
+    expect(op.kind).toBe('crossDissolve')
+    expect(op.progress).toBeCloseTo(0.5)
+    expect(op.from.clipId).toBe(a.id)
+    expect(op.to.clipId).toBe(b.id)
+  })
+
+  it('from-layer samples A PAST its out point; to-layer samples B normally', () => {
+    const { s } = makeAB({ type: 'crossDissolve', durationS: 1 })
+    // At t=2.5: A.inS=0, from.sourceTimeS = 0 + (2.5-0)*1 = 2.5 (past A.outS=2).
+    const op = asTransition(resolveFrame(s, 2.5).ops[0])
+    expect(op.from.sourceTimeS).toBeCloseTo(2.5)
+    // to.sourceTimeS = B.inS + (2.5 - 2) = 0.5
+    expect(op.to.sourceTimeS).toBeCloseTo(0.5)
+  })
+
+  it('progress is 0 at the window start', () => {
+    const { s } = makeAB({ type: 'crossDissolve', durationS: 1 })
+    expect(asTransition(resolveFrame(s, 2).ops[0]).progress).toBeCloseTo(0)
+  })
+
+  it('outside the window B renders as a plain layer', () => {
+    const { b, s } = makeAB({ type: 'crossDissolve', durationS: 1 })
+    // window [2,3); at t=3.5 B is plain.
+    const op = resolveFrame(s, 3.5).ops[0]
+    const layer = asLayer(op)
+    expect(layer.clipId).toBe(b.id)
+    expect(layer.opacity).toBe(1)
+  })
+
+  it('A renders as a plain layer during its own span (no double-draw)', () => {
+    const { a, s } = makeAB({ type: 'crossDissolve', durationS: 1 })
+    // A span [0,2) does not overlap window [2,3).
+    const op = resolveFrame(s, 1).ops[0]
+    expect(asLayer(op).clipId).toBe(a.id)
+    expect(resolveFrame(s, 1).ops).toHaveLength(1)
+  })
+
+  it('at the window end (t=D) B is plain again, not a transition', () => {
+    const { b, s } = makeAB({ type: 'crossDissolve', durationS: 1 })
+    // window is [2,3) half-open; at t=3 → plain B.
+    const op = resolveFrame(s, 3).ops[0]
+    expect(asLayer(op).clipId).toBe(b.id)
+  })
+
+  it('A.transitionOut supplies the transition when B.transitionIn is absent', () => {
+    const { a, b, s } = makeAB(undefined, { type: 'wipeLeft', durationS: 1 })
+    const op = asTransition(resolveFrame(s, 2.5).ops[0])
+    expect(op.kind).toBe('wipeLeft')
+    expect(op.from.clipId).toBe(a.id)
+    expect(op.to.clipId).toBe(b.id)
+  })
+
+  it('B.transitionIn wins over A.transitionOut', () => {
+    const { s } = makeAB({ type: 'dipToBlack', durationS: 1 }, { type: 'wipeRight', durationS: 1 })
+    expect(asTransition(resolveFrame(s, 2.5).ops[0]).kind).toBe('dipToBlack')
+  })
+
+  it('non-adjacent clips (a gap between them) do NOT form a transition', () => {
+    const a = clip({ startS: 0, outS: 2 }) // [0,2)
+    const b = clip({ startS: 3, outS: 2, transitionIn: { type: 'crossDissolve', durationS: 1 } })
+    const s = seqOf([track({ clips: [a, b] })])
+    // At t=3.5 (would be window head if adjacent) B is plain — no partner.
+    const op = resolveFrame(s, 3.5).ops[0]
+    // No previous partner → lone-edge fade-IN applies instead (window [3,4)).
+    expect(op.type).toBe('layer')
+    expect(asLayer(op).clipId).toBe(b.id)
+  })
+})
+
+// --- Transition kind coercion + D clamping --------------------------------
+
+describe('transition kind coercion', () => {
+  const at = (type: string) => {
+    const a = clip({ startS: 0, outS: 2 })
+    const b = clip({ startS: 2, outS: 2, transitionIn: { type, durationS: 1 } })
+    return asTransition(resolveFrame(seqOf([track({ clips: [a, b] })]), 2.5).ops[0])
+  }
+
+  it('coerces a valid kind (dipToWhite) through unchanged', () => {
+    expect(at('dipToWhite').kind).toBe('dipToWhite')
+  })
+
+  it('coerces slideLeft/slideRight/wipeRight through', () => {
+    expect(at('slideLeft').kind).toBe('slideLeft')
+    expect(at('slideRight').kind).toBe('slideRight')
+    expect(at('wipeRight').kind).toBe('wipeRight')
+  })
+
+  it('an unknown type falls back to crossDissolve', () => {
+    expect(at('sparkle-warp').kind).toBe('crossDissolve')
+    expect(at('').kind).toBe('crossDissolve')
+  })
+})
+
+describe('transition duration clamping', () => {
+  it('D is clamped to the shorter neighbor duration', () => {
+    // A [0,1) 1s, B [1,5) 4s. Requested D=3 → clamp to min(1,4)=1.
+    const a = clip({ startS: 0, inS: 0, outS: 1 })
+    const b = clip({ startS: 1, inS: 0, outS: 4, transitionIn: { type: 'crossDissolve', durationS: 3 } })
+    const s = seqOf([track({ clips: [a, b] })])
+    // window becomes [1,2). At t=1.5 → progress 0.5 (not 3s-based).
+    expect(asTransition(resolveFrame(s, 1.5).ops[0]).progress).toBeCloseTo(0.5)
+    // At t=2 → plain B (window ended at 2).
+    expect(resolveFrame(s, 2).ops[0].type).toBe('layer')
+  })
+
+  it('D is clamped up to at least one frame (1/fps)', () => {
+    // fps 30 → min D = 1/30. Requested tiny D=0.001.
+    const a = clip({ startS: 0, outS: 2 })
+    const b = clip({ startS: 2, outS: 2, transitionIn: { type: 'crossDissolve', durationS: 0.001 } })
+    const s = seqOf([track({ clips: [a, b] })], { fps: 30 })
+    // window [2, 2+1/30). At the half-frame the op is still a transition.
+    const half = 2 + 1 / 60
+    expect(resolveFrame(s, half).ops[0].type).toBe('transition')
+    expect(asTransition(resolveFrame(s, half).ops[0]).progress).toBeCloseTo(0.5)
+  })
+})
+
+// --- Lone-edge fades ------------------------------------------------------
+
+describe('lone-edge fades', () => {
+  it('transitionIn with no previous clip fades opacity in (ramp at 25%/50%)', () => {
+    // Single clip [0,4), transitionIn D=2, no partner → fade from black.
+    const c = clip({ startS: 0, inS: 0, outS: 4, transitionIn: { type: 'crossDissolve', durationS: 2 } })
+    const s = seqOf([track({ clips: [c] })])
+    // 25% of D=2 → t=0.5 → opacity 0.25
+    expect(asLayer(resolveFrame(s, 0.5).ops[0]).opacity).toBeCloseTo(0.25)
+    // 50% → t=1 → opacity 0.5
+    expect(asLayer(resolveFrame(s, 1).ops[0]).opacity).toBeCloseTo(0.5)
+    // A single layer op, NOT a transition.
+    expect(resolveFrame(s, 1).ops[0].type).toBe('layer')
+  })
+
+  it('after the fade-in window opacity is full', () => {
+    const c = clip({ startS: 0, outS: 4, transitionIn: { type: 'crossDissolve', durationS: 2 } })
+    const s = seqOf([track({ clips: [c] })])
+    expect(asLayer(resolveFrame(s, 3).ops[0]).opacity).toBeCloseTo(1)
+  })
+
+  it('transitionOut with no next clip fades out at the tail', () => {
+    // Single clip [0,4), transitionOut D=2 → fade from 2..4.
+    const c = clip({ startS: 0, outS: 4, transitionOut: { type: 'crossDissolve', durationS: 2 } })
+    const s = seqOf([track({ clips: [c] })])
+    // endS=4; at t=3 (50% into the 2s tail) opacity 0.5
+    expect(asLayer(resolveFrame(s, 3).ops[0]).opacity).toBeCloseTo(0.5)
+    // at t=3.5 (25% remaining) opacity 0.25
+    expect(asLayer(resolveFrame(s, 3.5).ops[0]).opacity).toBeCloseTo(0.25)
+  })
+
+  it('before the fade-out window opacity is full', () => {
+    const c = clip({ startS: 0, outS: 4, transitionOut: { type: 'crossDissolve', durationS: 2 } })
+    const s = seqOf([track({ clips: [c] })])
+    expect(asLayer(resolveFrame(s, 1).ops[0]).opacity).toBeCloseTo(1)
+  })
+
+  it('lone fade multiplies the clip base opacity, not replaces it', () => {
+    // base opacity 0.5, fade-in 50% → 0.25.
+    const c = clip({
+      startS: 0,
+      outS: 4,
+      opacity: 0.5,
+      transitionIn: { type: 'crossDissolve', durationS: 2 },
+    })
+    const s = seqOf([track({ clips: [c] })])
+    expect(asLayer(resolveFrame(s, 1).ops[0]).opacity).toBeCloseTo(0.25)
+  })
+
+  it('lone fade D clamps to at least one frame', () => {
+    const c = clip({ startS: 0, outS: 4, transitionIn: { type: 'crossDissolve', durationS: 0 } })
+    const s = seqOf([track({ clips: [c] })], { fps: 30 })
+    // D floored to 1/30. Just inside the window opacity is < 1.
+    expect(asLayer(resolveFrame(s, 0).ops[0]).opacity).toBeCloseTo(0)
+    expect(asLayer(resolveFrame(s, 1 / 60).ops[0]).opacity).toBeCloseTo(0.5)
+  })
+
+  it('lone fade D clamps to the clip duration', () => {
+    // clip 1s, requested fade 5s → clamp to 1s.
+    const c = clip({ startS: 0, inS: 0, outS: 1, transitionIn: { type: 'crossDissolve', durationS: 5 } })
+    const s = seqOf([track({ clips: [c] })])
+    // 50% of 1s → t=0.5 → opacity 0.5
+    expect(asLayer(resolveFrame(s, 0.5).ops[0]).opacity).toBeCloseTo(0.5)
+  })
+
+  it('a lone clip with no transitions renders at full opacity throughout', () => {
+    const c = clip({ startS: 0, outS: 4 })
+    const s = seqOf([track({ clips: [c] })])
+    expect(asLayer(resolveFrame(s, 0).ops[0]).opacity).toBe(1)
+    expect(asLayer(resolveFrame(s, 3.99).ops[0]).opacity).toBe(1)
+  })
+})
+
+// --- Precedence: two-clip transition beats lone-edge fade -----------------
+
+describe('precedence', () => {
+  it('a two-clip transition takes over the window, not a lone fade', () => {
+    // B has transitionIn AND an adjacent previous A → two-clip transition,
+    // NOT a lone fade-in.
+    const a = clip({ startS: 0, outS: 2 })
+    const b = clip({ startS: 2, outS: 2, transitionIn: { type: 'crossDissolve', durationS: 1 } })
+    const s = seqOf([track({ clips: [a, b] })])
+    // window [2,3): at t=2.5 → transition op (from A + to B), NOT a faded layer.
+    const op = resolveFrame(s, 2.5).ops[0]
+    expect(op.type).toBe('transition')
+    const tr = asTransition(op)
+    expect(tr.from.clipId).toBe(a.id)
+    expect(tr.to.clipId).toBe(b.id)
+  })
+
+  it("A's transitionOut with an adjacent next clip does not lone-fade A", () => {
+    // A adjacent to B, A.transitionOut set → two-clip transition at B head;
+    // A itself renders plainly (full opacity) during its own span.
+    const a = clip({ startS: 0, outS: 2, transitionOut: { type: 'crossDissolve', durationS: 1 } })
+    const b = clip({ startS: 2, outS: 2 })
+    const s = seqOf([track({ clips: [a, b] })])
+    // During A's span the opacity is full (no lone fade-out).
+    expect(asLayer(resolveFrame(s, 1.5).ops[0]).opacity).toBe(1)
+    // The transition lives at B's head window [2,3).
+    expect(resolveFrame(s, 2.5).ops[0].type).toBe('transition')
+  })
+
+  it('B.transitionIn with an adjacent previous clip does not lone-fade B', () => {
+    const a = clip({ startS: 0, outS: 2 })
+    const b = clip({ startS: 2, outS: 4, transitionIn: { type: 'crossDissolve', durationS: 1 } })
+    const s = seqOf([track({ clips: [a, b] })])
+    // Just past the window (t=3.5) B is plain at full opacity — no residual fade.
+    expect(asLayer(resolveFrame(s, 3.5).ops[0]).opacity).toBe(1)
+  })
+})

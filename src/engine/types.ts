@@ -88,6 +88,49 @@ export interface Clip {
   transitionOut?: Transition
   /** Color label. */
   label?: string
+  /**
+   * Phase 4 animation. Channel name → keyframes, sorted by t, with t RELATIVE
+   * to the clip start (0 = clip's first frame). A channel present here
+   * overrides its static base (transform/opacity/filters) at render time; a
+   * channel absent falls back to the static value. See ANIM_CHANNELS.
+   */
+  keyframes?: Partial<Record<AnimChannel, Keyframe[]>>
+  /** Phase 4 color/blur filters. Neutral (identity) = every field 0 / absent. */
+  filters?: ClipFilters
+}
+
+/** All keyframeable channels. Names are the shared contract across engine + UI. */
+export const ANIM_CHANNELS = [
+  'posX',
+  'posY',
+  'scale',
+  'rotation',
+  'anchorX',
+  'anchorY',
+  'cropT',
+  'cropR',
+  'cropB',
+  'cropL',
+  'opacity',
+  'brightness',
+  'contrast',
+  'saturation',
+  'exposure',
+  'blur',
+] as const
+export type AnimChannel = (typeof ANIM_CHANNELS)[number]
+
+export interface ClipFilters {
+  /** Additive, −1..1 (0 = neutral). */
+  brightness?: number
+  /** −1..1 (0 = neutral). */
+  contrast?: number
+  /** −1..1 (0 = neutral; −1 = greyscale). */
+  saturation?: number
+  /** Stops, out = color * 2^exposure (0 = neutral). */
+  exposure?: number
+  /** Gaussian blur radius in output px (0 = none). */
+  blur?: number
 }
 
 export interface Transform {

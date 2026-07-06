@@ -1,16 +1,19 @@
-// MVP preview compositor (spec §4.3): pooled <video>/<img> elements drawn
-// onto a 2D canvas each rAF. Replaced by WebCodecs getFrameAt in Phase 3.
+// Live preview compositor. Builds a RenderFrame (pure resolve.ts) and draws it
+// with the SHARED WebGL2 renderer — the same renderer the export worker uses,
+// so preview and export are pixel-identical. Textures come from pooled <video>
+// elements (playing), the WebCodecs frame cache (scrubbing), or <img> (stills).
 
 import { getBlobUrl } from '../state/blobUrls'
 import { getFrameAt, prefetchAround } from './frameCache'
-import { clipEndS } from './timeline'
-import { videoTracks, type Id, type MediaAsset, type Sequence } from './types'
+import { createRenderer, type Renderer } from './render/glRenderer'
+import { resolveFrame } from './render/resolve'
+import type { RenderLayer, TextureSource } from './render/types'
+import type { Id, MediaAsset, Sequence } from './types'
 
 interface PooledVideo {
   el: HTMLVideoElement
   ready: boolean
 }
-
 interface PooledImage {
   el: HTMLImageElement
   ready: boolean
@@ -50,7 +53,6 @@ function warmImage(asset: MediaAsset): PooledImage {
   return pooled
 }
 
-/** Pre-create pool entries so first playback doesn't stutter on load. */
 export function prewarmPreview(assets: MediaAsset[]): void {
   for (const a of assets) {
     if (a.kind === 'video') warmVideo(a)
@@ -59,104 +61,106 @@ export function prewarmPreview(assets: MediaAsset[]): void {
 }
 
 export function pauseAllPreviewVideos(): void {
-  for (const { el } of videoPool.values()) {
-    if (!el.paused) el.pause()
-  }
+  for (const { el } of videoPool.values()) if (!el.paused) el.pause()
 }
 
-function drawContain(
-  c2d: CanvasRenderingContext2D,
-  source: CanvasImageSource,
-  sw: number,
-  sh: number,
-  W: number,
-  H: number,
-  opacity: number,
-): void {
-  if (sw <= 0 || sh <= 0) return
-  const scale = Math.min(W / sw, H / sh)
-  const dw = sw * scale
-  const dh = sh * scale
-  const prevAlpha = c2d.globalAlpha
-  c2d.globalAlpha = Math.max(0, Math.min(1, opacity))
-  c2d.drawImage(source, (W - dw) / 2, (H - dh) / 2, dw, dh)
-  c2d.globalAlpha = prevAlpha
+// One renderer per canvas (a canvas keeps a single GL context for its life).
+const renderers = new WeakMap<HTMLCanvasElement, Renderer | null>()
+
+function rendererFor(canvas: HTMLCanvasElement): Renderer | null {
+  const cached = renderers.get(canvas)
+  if (cached !== undefined) return cached
+  // preserveDrawingBuffer so tests/screenshots can sample the last frame.
+  const gl = canvas.getContext('webgl2', {
+    premultipliedAlpha: false,
+    preserveDrawingBuffer: true,
+  })
+  let renderer: Renderer | null = null
+  if (gl) {
+    try {
+      renderer = createRenderer(gl)
+    } catch (err) {
+      console.error('OT Premiere: WebGL2 renderer init failed', err)
+      renderer = null
+    }
+  }
+  renderers.set(canvas, renderer)
+  return renderer
 }
 
 /**
- * Composite the sequence at time tS onto the canvas, bottom track first.
- * While playing, pooled videos free-run (drift-corrected) instead of seeking
- * every frame; while paused/scrubbing they hard-seek to the exact time.
+ * Resolve a layer to a texture. Playing → pooled <video> free-runs with drift
+ * correction; paused → exact WebCodecs frame (miss returns null, a later rAF
+ * catches it); stills → the decoded <img>. Side-effects (seek/play) live here.
  */
-export function drawSequenceFrame(
-  c2d: CanvasRenderingContext2D,
-  seq: Sequence,
+function makeTextureSource(
   assets: Record<Id, MediaAsset>,
-  tS: number,
-  W: number,
-  H: number,
+  fps: number,
   playing: boolean,
-): void {
-  c2d.fillStyle = '#000'
-  c2d.fillRect(0, 0, W, H)
-
-  const activeVideoAssets = new Set<Id>()
-
-  for (const track of videoTracks(seq)) {
-    if (track.muted) continue
-    const clip = track.clips.find((c) => c.enabled && tS >= c.startS && tS < clipEndS(c))
-    if (!clip) continue
-    const asset = assets[clip.assetId]
-    if (!asset) continue
+): TextureSource {
+  return (layer: RenderLayer): TexImageSource | null => {
+    const asset = assets[layer.assetId]
+    if (!asset) return null
 
     if (asset.kind === 'image') {
       const pooled = warmImage(asset)
-      if (pooled.ready) {
-        drawContain(c2d, pooled.el, pooled.el.naturalWidth, pooled.el.naturalHeight, W, H, clip.opacity)
-      }
-      continue
+      return pooled.ready ? pooled.el : null
     }
+    if (asset.kind !== 'video') return null
 
-    if (asset.kind !== 'video') continue
-    const srcT = clip.inS + (tS - clip.startS) * Math.abs(clip.speed || 1)
-    const pooled = warmVideo(asset)
-    activeVideoAssets.add(asset.id)
-
+    const srcT = layer.sourceTimeS
     if (!playing) {
-      // Frame-accurate scrub (Phase 3): exact WebCodecs frame when cached;
-      // a miss kicks the decode and the next rAF picks it up.
+      const pooled = warmVideo(asset)
       if (!pooled.el.paused) pooled.el.pause()
       const exact = getFrameAt(asset, srcT)
       prefetchAround(asset, srcT)
-      if (exact) {
-        // The cache yields canvases/bitmaps — both carry numeric width/height.
-        const size = exact as unknown as { width: number; height: number }
-        drawContain(c2d, exact, size.width, size.height, W, H, clip.opacity)
-        continue
-      }
+      // The cache only ever yields OffscreenCanvas/ImageBitmap — valid texture
+      // sources — but its return type is the wider CanvasImageSource.
+      if (exact) return exact as TexImageSource
+      // Fallback to a nearest <video> seek while the exact frame decodes.
+      if (!pooled.ready) return null
+      if (Math.abs(pooled.el.currentTime - srcT) > 1 / (2 * fps)) pooled.el.currentTime = srcT
+      return pooled.el
     }
-    if (!pooled.ready) continue
 
+    const pooled = warmVideo(asset)
+    if (!pooled.ready) return null
     const el = pooled.el
-    if (playing) {
-      if (el.paused) {
-        el.currentTime = srcT
-        void el.play().catch(() => {
-          // Autoplay rejection: the drift-correct path below still seeks.
-        })
-      } else if (Math.abs(el.currentTime - srcT) > 0.15) {
-        el.currentTime = srcT
-      }
-    } else if (Math.abs(el.currentTime - srcT) > 1 / (2 * seq.fps)) {
-      // Fallback while the exact frame decodes: nearest <video> seek.
+    if (el.paused) {
+      el.currentTime = srcT
+      void el.play().catch(() => {})
+    } else if (Math.abs(el.currentTime - srcT) > 0.15) {
       el.currentTime = srcT
     }
-    drawContain(c2d, el, el.videoWidth, el.videoHeight, W, H, clip.opacity)
+    return el
   }
+}
 
+/**
+ * Render the sequence at time `tS` into `canvas` (already sized to the target
+ * raster). Falls back to a cleared canvas when WebGL2 is unavailable.
+ */
+export function renderPreview(
+  canvas: HTMLCanvasElement,
+  seq: Sequence,
+  assets: Record<Id, MediaAsset>,
+  tS: number,
+  playing: boolean,
+): void {
+  const renderer = rendererFor(canvas)
+  if (!renderer) return
+  const frame = resolveFrame(seq, tS)
+  // Pause any pooled video no longer referenced this frame.
   if (playing) {
-    for (const [id, { el }] of videoPool) {
-      if (!activeVideoAssets.has(id) && !el.paused) el.pause()
+    const active = new Set<Id>()
+    for (const op of frame.ops) {
+      if (op.type === 'layer') active.add(op.layer.assetId)
+      else {
+        active.add(op.from.assetId)
+        active.add(op.to.assetId)
+      }
     }
+    for (const [id, { el }] of videoPool) if (!active.has(id) && !el.paused) el.pause()
   }
+  renderer.render(frame, makeTextureSource(assets, seq.fps, playing))
 }

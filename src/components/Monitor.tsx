@@ -10,7 +10,7 @@ import {
 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { prewarmAudio } from '../engine/audio'
-import { drawSequenceFrame, prewarmPreview } from '../engine/preview'
+import { prewarmPreview, renderPreview } from '../engine/preview'
 import { formatTimecode, quantizeToFrame } from '../engine/timecode'
 import { activeSequence } from '../engine/types'
 import { pausePlayback, togglePlay } from '../state/playbackControl'
@@ -25,8 +25,6 @@ function useProgramCanvas(quality: Quality) {
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
-    const c2d = canvas.getContext('2d')
-    if (!c2d) return
     let raf = 0
     const draw = () => {
       raf = requestAnimationFrame(draw)
@@ -51,7 +49,7 @@ function useProgramCanvas(quality: Quality) {
       }
       canvas.style.width = `${w}px`
       canvas.style.height = `${h}px`
-      drawSequenceFrame(c2d, seq, s.project.assets, s.ui.playheadS, pw, ph, s.ui.playing)
+      renderPreview(canvas, seq, s.project.assets, s.ui.playheadS, s.ui.playing)
     }
     raf = requestAnimationFrame(draw)
     return () => cancelAnimationFrame(raf)

@@ -1,9 +1,9 @@
 import { SlidersHorizontal } from 'lucide-react'
-import { useEffect, useState } from 'react'
 import { clipDurationS, clipEndS } from '../engine/timeline'
 import { formatTimecode } from '../engine/timecode'
 import { activeSequence, type Clip } from '../engine/types'
-import { updateActiveSequence, useStore } from '../state/store'
+import { useStore } from '../state/store'
+import { EffectControls } from './EffectControls'
 
 function Row({ label, value }: { label: string; value: string }) {
   return (
@@ -14,63 +14,17 @@ function Row({ label, value }: { label: string; value: string }) {
   )
 }
 
-/** Range that previews live but lands ONE undo entry on release. */
-function CommitSlider({
-  label,
-  min,
-  max,
-  step,
-  value,
-  format,
-  onCommit,
+function ClipPanel({
+  clip,
+  assetName,
+  fps,
+  playheadS,
 }: {
-  label: string
-  min: number
-  max: number
-  step: number
-  value: number
-  format: (v: number) => string
-  onCommit: (v: number) => void
+  clip: Clip
+  assetName: string
+  fps: number
+  playheadS: number
 }) {
-  const [draft, setDraft] = useState(value)
-  useEffect(() => setDraft(value), [value])
-  return (
-    <label className="flex flex-col gap-1 text-[12px]">
-      <span className="flex items-center justify-between">
-        <span className="text-text-secondary">{label}</span>
-        <span className="tabular-nums text-text-primary">{format(draft)}</span>
-      </span>
-      <input
-        type="range"
-        className="h-1 w-full accent-accent"
-        min={min}
-        max={max}
-        step={step}
-        value={draft}
-        onChange={(e) => setDraft(Number(e.target.value))}
-        onPointerUp={() => {
-          if (draft !== value) onCommit(draft)
-        }}
-        onKeyUp={(e) => {
-          if ((e.key.startsWith('Arrow') || e.key === 'Home' || e.key === 'End') && draft !== value)
-            onCommit(draft)
-        }}
-      />
-    </label>
-  )
-}
-
-function ClipPanel({ clip, assetName, fps }: { clip: Clip; assetName: string; fps: number }) {
-  const patchClip = (label: string, patch: Partial<Clip>) =>
-    updateActiveSequence(label, (seq) => ({
-      ...seq,
-      tracks: seq.tracks.map((t) =>
-        t.clips.some((c) => c.id === clip.id)
-          ? { ...t, clips: t.clips.map((c) => (c.id === clip.id ? { ...c, ...patch } : c)) }
-          : t,
-      ),
-    }))
-
   return (
     <div className="flex flex-col gap-4 p-3">
       <div>
@@ -94,27 +48,7 @@ function ClipPanel({ clip, assetName, fps }: { clip: Clip; assetName: string; fp
 
       <div className="h-px bg-border" />
 
-      <CommitSlider
-        label="Opacity"
-        min={0}
-        max={1}
-        step={0.01}
-        value={clip.opacity}
-        format={(v) => `${Math.round(v * 100)}%`}
-        onCommit={(v) => patchClip('Set clip opacity', { opacity: v })}
-      />
-      <CommitSlider
-        label="Audio gain"
-        min={-24}
-        max={12}
-        step={0.5}
-        value={clip.audioGainDb}
-        format={(v) => `${v > 0 ? '+' : ''}${v.toFixed(1)} dB`}
-        onCommit={(v) => patchClip('Set clip gain', { audioGainDb: v })}
-      />
-      <p className="text-[11px] leading-4 text-text-muted">
-        Transform, keyframes and effects arrive in Phase 4.
-      </p>
+      <EffectControls clip={clip} fps={fps} playheadS={playheadS} />
     </div>
   )
 }
@@ -122,6 +56,7 @@ function ClipPanel({ clip, assetName, fps }: { clip: Clip; assetName: string; fp
 export function Inspector({ width }: { width: number }) {
   const project = useStore((s) => s.project)
   const selection = useStore((s) => s.ui.selection)
+  const playheadS = useStore((s) => s.ui.playheadS)
   const seq = activeSequence(project)
   const selected =
     selection.length === 1
@@ -145,13 +80,16 @@ export function Inspector({ width }: { width: number }) {
             clip={selected}
             assetName={project.assets[selected.assetId]?.name ?? 'Missing media'}
             fps={seq.fps}
+            playheadS={playheadS}
           />
         </div>
       ) : (
         <div className="flex flex-1 flex-col items-center justify-center gap-2 p-4 text-center">
           <SlidersHorizontal size={24} strokeWidth={1.5} className="text-text-muted" aria-hidden />
           <div className="text-[12px] text-text-muted">
-            {selection.length > 1 ? `${selection.length} clips selected` : 'Select a clip to edit its properties'}
+            {selection.length > 1
+              ? `${selection.length} clips selected`
+              : 'Select a clip to edit its properties'}
           </div>
         </div>
       )}
