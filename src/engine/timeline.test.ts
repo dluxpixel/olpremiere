@@ -27,6 +27,7 @@ import {
   rollEditTo,
   sequenceDurationS,
   serializeClips,
+  setClipSpeed,
   slideClip,
   slipClip,
   snapTime,
@@ -1513,5 +1514,54 @@ describe('group operations', () => {
     const rightGroup = clipGroupIds(next, rightV.id)
     expect(rightGroup).toHaveLength(2)
     expect(rightGroup).not.toContain(vId)
+  })
+})
+
+describe('setClipSpeed', () => {
+  it('slowing a clip ripples the following clip right', () => {
+    const a = makeClip({ id: 'a', startS: 0, inS: 0, outS: 4 }) // dur 4
+    const b = makeClip({ id: 'b', startS: 4, inS: 0, outS: 2 }) // dur 2
+    const seq = makeSeq([makeTrack({ clips: [a, b] })])
+    const r = setClipSpeed(seq, 'a', 0.5) // dur → 8
+    const [ra, rb] = r.tracks[0].clips
+    expect(ra.speed).toBe(0.5)
+    expect(clipEndS(ra)).toBeCloseTo(8)
+    expect(rb.startS).toBeCloseTo(8) // rippled from 4 by +4
+  })
+
+  it('speeding up leaves the following clip in place (gap opens)', () => {
+    const a = makeClip({ id: 'a', startS: 0, inS: 0, outS: 4 })
+    const b = makeClip({ id: 'b', startS: 4, inS: 0, outS: 2 })
+    const seq = makeSeq([makeTrack({ clips: [a, b] })])
+    const r = setClipSpeed(seq, 'a', 2) // dur → 2
+    const [ra, rb] = r.tracks[0].clips
+    expect(ra.speed).toBe(2)
+    expect(clipEndS(ra)).toBeCloseTo(2)
+    expect(rb.startS).toBeCloseTo(4) // unchanged
+  })
+
+  it('negative speed reverses; duration uses the magnitude', () => {
+    const a = makeClip({ id: 'a', startS: 0, inS: 0, outS: 4 })
+    const seq = makeSeq([makeTrack({ clips: [a] })])
+    const r = setClipSpeed(seq, 'a', -2)
+    expect(r.tracks[0].clips[0].speed).toBe(-2)
+    expect(clipEndS(r.tracks[0].clips[0])).toBeCloseTo(2)
+  })
+
+  it('clamps the speed to [0.1, 8]', () => {
+    const a = makeClip({ id: 'a', startS: 0, inS: 0, outS: 4 })
+    const seq = makeSeq([makeTrack({ clips: [a] })])
+    expect(setClipSpeed(seq, 'a', 999).tracks[0].clips[0].speed).toBe(8)
+    expect(setClipSpeed(seq, 'a', 0.001).tracks[0].clips[0].speed).toBeCloseTo(0.1)
+    expect(setClipSpeed(seq, 'a', -999).tracks[0].clips[0].speed).toBe(-8)
+  })
+
+  it('a linked A/V group changes speed together', () => {
+    const v = makeClip({ id: 'v', startS: 0, inS: 0, outS: 4, linkId: 'g' })
+    const au = makeClip({ id: 'au', startS: 0, inS: 0, outS: 4, linkId: 'g' })
+    const seq = makeSeq([makeTrack({ clips: [v] }), makeTrack({ kind: 'audio', clips: [au] })])
+    const r = setClipSpeed(seq, 'v', 2)
+    expect(r.tracks[0].clips[0].speed).toBe(2)
+    expect(r.tracks[1].clips[0].speed).toBe(2)
   })
 })

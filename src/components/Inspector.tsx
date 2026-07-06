@@ -1,23 +1,57 @@
-import { SlidersHorizontal } from 'lucide-react'
+import { Rewind, SlidersHorizontal } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { clipEmitsAudio } from '../engine/audio'
 import { clipDurationS, clipEndS } from '../engine/timeline'
 import { formatTimecode } from '../engine/timecode'
 import { activeSequence, isTitleClip, type Clip, type MediaAsset, type Track } from '../engine/types'
-import { setClipFade, setClipGainDb } from '../state/clipEdits'
+import { setClipFade, setClipGainDb, setClipSpeed } from '../state/clipEdits'
 import { useStore } from '../state/store'
+import { IconButton } from '../ui/Button'
 import { EffectControls, ScrubField, type Spec } from './EffectControls'
 import { TitleControls } from './TitleControls'
 
 const GAIN_SPEC: Spec = { min: -60, max: 12, step: 0.5, sens: 0.2 }
 const FADE_SPEC: Spec = { min: 0, max: 30, step: 0.05, sens: 0.02 }
+const SPEED_SPEC: Spec = { min: 10, max: 800, step: 1, sens: 1 }
 
-function AudioRow({ label, children }: { label: string; children: ReactNode }) {
+function FieldRow({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="flex items-center gap-1.5">
       <span className="flex-1 truncate text-[11px] uppercase tracking-[0.04em] text-text-muted">{label}</span>
       {children}
     </div>
+  )
+}
+
+/** Speed / duration + reverse (Phase 7). */
+function SpeedControls({ clip }: { clip: Clip }) {
+  const reversed = clip.speed < 0
+  const pct = Math.abs(clip.speed) * 100
+  return (
+    <section className="flex flex-col gap-2" data-testid="speed-controls">
+      <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">Speed / Duration</h3>
+      <div className="flex flex-col gap-1.5">
+        <FieldRow label="Speed (%)">
+          <ScrubField
+            value={pct}
+            spec={SPEED_SPEC}
+            testId="field-speed"
+            ariaLabel="Speed percent"
+            onCommit={(v) => setClipSpeed(clip.id, (reversed ? -1 : 1) * (v / 100))}
+          />
+        </FieldRow>
+        <FieldRow label="Reverse">
+          <IconButton
+            label={reversed ? 'Play forward' : 'Reverse'}
+            active={reversed}
+            data-testid="reverse-toggle"
+            onClick={() => setClipSpeed(clip.id, -clip.speed)}
+          >
+            <Rewind size={14} strokeWidth={1.5} />
+          </IconButton>
+        </FieldRow>
+      </div>
+    </section>
   )
 }
 
@@ -28,7 +62,7 @@ function AudioControls({ clip }: { clip: Clip }) {
     <section className="flex flex-col gap-2" data-testid="audio-controls">
       <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">Audio</h3>
       <div className="flex flex-col gap-1.5">
-        <AudioRow label="Gain (dB)">
+        <FieldRow label="Gain (dB)">
           <ScrubField
             value={clip.audioGainDb}
             spec={GAIN_SPEC}
@@ -36,8 +70,8 @@ function AudioControls({ clip }: { clip: Clip }) {
             ariaLabel="Audio gain (dB)"
             onCommit={(v) => setClipGainDb(clip.id, v)}
           />
-        </AudioRow>
-        <AudioRow label="Fade in (s)">
+        </FieldRow>
+        <FieldRow label="Fade in (s)">
           <ScrubField
             value={clip.fadeInS}
             spec={{ ...FADE_SPEC, max: durMax }}
@@ -45,8 +79,8 @@ function AudioControls({ clip }: { clip: Clip }) {
             ariaLabel="Fade in seconds"
             onCommit={(v) => setClipFade(clip.id, 'in', v)}
           />
-        </AudioRow>
-        <AudioRow label="Fade out (s)">
+        </FieldRow>
+        <FieldRow label="Fade out (s)">
           <ScrubField
             value={clip.fadeOutS}
             spec={{ ...FADE_SPEC, max: durMax }}
@@ -54,7 +88,7 @@ function AudioControls({ clip }: { clip: Clip }) {
             ariaLabel="Fade out seconds"
             onCommit={(v) => setClipFade(clip.id, 'out', v)}
           />
-        </AudioRow>
+        </FieldRow>
       </div>
     </section>
   )
@@ -111,6 +145,13 @@ function ClipPanel({
       {isTitle && (
         <>
           <TitleControls clip={clip} />
+          <div className="h-px bg-border" />
+        </>
+      )}
+
+      {!isTitle && (
+        <>
+          <SpeedControls clip={clip} />
           <div className="h-px bg-border" />
         </>
       )}

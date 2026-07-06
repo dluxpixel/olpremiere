@@ -37,6 +37,50 @@ export function recomputeDuration(seq: Sequence): Sequence {
   return durationS === seq.durationS ? seq : { ...seq, durationS }
 }
 
+export const MIN_SPEED = 0.1
+export const MAX_SPEED = 8
+
+/** Clamp a speed to a sane magnitude, preserving sign (negative = reverse). */
+export function clampSpeed(s: number): number {
+  const mag = Math.min(MAX_SPEED, Math.max(MIN_SPEED, Math.abs(s) || 1))
+  return s < 0 ? -mag : mag
+}
+
+/**
+ * Change a clip's playback speed (negative = reverse). The clip's linked A/V
+ * partner gets the SAME speed so they stay synced. When a clip grows (slows
+ * down) the following clips on its track ripple right so nothing overlaps;
+ * speeding up simply leaves a gap (predictable, no data loss).
+ */
+export function setClipSpeed(seq: Sequence, clipId: Id, speed: number): Sequence {
+  const found = findClip(seq, clipId)
+  if (!found) return seq
+  const s = clampSpeed(speed)
+  if (s === found.clip.speed) return seq
+
+  const groupIds = new Set<Id>([clipId])
+  const linkId = found.clip.linkId
+  if (linkId !== undefined) {
+    for (const t of seq.tracks) for (const c of t.clips) if (c.linkId === linkId) groupIds.add(c.id)
+  }
+
+  const tracks = seq.tracks.map((track) => {
+    const member = track.clips.find((c) => groupIds.has(c.id))
+    if (!member) return track
+    const oldEnd = clipEndS(member)
+    const newDur = (member.outS - member.inS) / Math.abs(s)
+    const delta = member.startS + newDur - oldEnd
+    const clips = track.clips.map((c) => {
+      if (groupIds.has(c.id)) return { ...c, speed: s }
+      // Ripple the tail only when the member grew, to clear the overlap.
+      if (delta > EPS && c.startS >= oldEnd - EPS) return { ...c, startS: c.startS + delta }
+      return c
+    })
+    return { ...track, clips }
+  })
+  return recomputeDuration({ ...seq, tracks })
+}
+
 export function findClip(
   seq: Sequence,
   clipId: Id,

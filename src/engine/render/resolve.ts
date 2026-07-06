@@ -36,7 +36,9 @@ const coerceKind = (type: string): TransitionKind =>
  */
 function layerFor(clip: Clip, t: number): RenderLayer {
   const localT = t - clip.startS
-  const sourceTimeS = clip.inS + (t - clip.startS) * Math.abs(clip.speed || 1)
+  const rate = Math.abs(clip.speed || 1)
+  // Reverse (speed < 0): walk the source backward from outS as time advances.
+  const sourceTimeS = clip.speed < 0 ? clip.outS - localT * rate : clip.inS + localT * rate
   return {
     clipId: clip.id,
     assetId: clip.assetId,

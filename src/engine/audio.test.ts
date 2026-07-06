@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { clipGainEnvelope, computeClipSchedule, dbToGain } from './audio'
+import { clipGainEnvelope, computeClipSchedule, dbToGain, effectiveAudioClip } from './audio'
 import { defaultTransform, type Clip } from './types'
 
 const clip = (patch: Partial<Clip> = {}): Clip => ({
@@ -224,5 +224,27 @@ describe('clipGainEnvelope', () => {
     expect(clipGainEnvelope(clip({ enabled: false }), 0)).toBeNull()
     expect(clipGainEnvelope(clip({ speed: -1 }), 0)).toBeNull()
     expect(clipGainEnvelope(clip(), 5)).toBeNull()
+  })
+})
+
+describe('effectiveAudioClip (reverse)', () => {
+  it('forward clips pass through unchanged (same reference)', () => {
+    const c = clip({ speed: 1 })
+    expect(effectiveAudioClip(c, 10)).toBe(c)
+  })
+
+  it('mirrors the in/out window about the source duration for reverse', () => {
+    const c = clip({ speed: -1, inS: 2, outS: 6 })
+    const eff = effectiveAudioClip(c, 10)
+    expect(eff.speed).toBe(1)
+    expect(eff.inS).toBe(4) // 10 - 6
+    expect(eff.outS).toBe(8) // 10 - 2
+    expect(eff.outS - eff.inS).toBe(6 - 2) // same content length
+  })
+
+  it('the effective clip schedules where the raw reverse clip cannot', () => {
+    const c = clip({ speed: -2, inS: 0, outS: 4, startS: 0 })
+    expect(computeClipSchedule(c, 0)).toBeNull() // reverse rejected directly
+    expect(computeClipSchedule(effectiveAudioClip(c, 8), 0)).not.toBeNull()
   })
 })

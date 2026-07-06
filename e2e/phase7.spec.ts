@@ -95,6 +95,19 @@ async function exportSample(page: Page, tS: number, fx: number, fy: number): Pro
   )
 }
 
+async function setSpeed(page: Page, clipId: string, speed: number): Promise<void> {
+  await page.evaluate(
+    async ({ clipId, speed }) => {
+      const editsMod = '/src/state/clipEdits.ts'
+      const { setClipSpeed } = (await import(/* @vite-ignore */ editsMod)) as {
+        setClipSpeed: (id: string, s: number) => void
+      }
+      setClipSpeed(clipId, speed)
+    },
+    { clipId, speed },
+  )
+}
+
 const near = (a: number, b: number, tol = 40) => Math.abs(a - b) <= tol
 
 test('Color section exposes lift/gamma/gain/temperature/tint', async ({ page }) => {
@@ -130,4 +143,36 @@ test('white-balance (temperature) shifts the image the same way in preview and e
   expect(near(pv[1], ex[1])).toBeTruthy()
   expect(near(pv[2], ex[2])).toBeTruthy()
   await page.screenshot({ path: `${VERIFY}/color-graded.png` })
+})
+
+test('speeding a clip up shrinks its timeline width', async ({ page }) => {
+  const clipId = await addClip(page)
+  const clip = page.locator('[data-clip-kind="video"]')
+  const before = (await clip.boundingBox())!
+  await setSpeed(page, clipId, 2)
+  await expect
+    .poll(async () => (await clip.boundingBox())!.width, { timeout: 5_000 })
+    .toBeLessThan(before.width - 20)
+  await page.getByTestId('timeline').screenshot({ path: `${VERIFY}/speed.png` })
+})
+
+test('reverse plays the clip backward in preview and export', async ({ page }) => {
+  await addClip(page)
+  // Park near the head (source ≈ 0.2s → RED forward).
+  await page.getByTestId('ruler').click({ position: { x: 12, y: 10 } })
+  await expect
+    .poll(async () => (await previewPixel(page, 0.5, 0.5))[0], { timeout: 10_000 })
+    .toBeGreaterThan(120) // red forward
+
+  // Toggle reverse via the Inspector button.
+  await page.getByTestId('reverse-toggle').click()
+  // Now the head samples the END of the source (t≈1.8s → BLUE).
+  await expect
+    .poll(async () => (await previewPixel(page, 0.5, 0.5))[2], { timeout: 10_000 })
+    .toBeGreaterThan(120) // blue after reverse
+  const pv = await previewPixel(page, 0.5, 0.5)
+  const ex = await exportSample(page, 0.2, 0.5, 0.5)
+  expect(near(pv[0], ex[0])).toBeTruthy()
+  expect(near(pv[1], ex[1])).toBeTruthy()
+  expect(near(pv[2], ex[2])).toBeTruthy()
 })

@@ -7,7 +7,9 @@ import {
   clipGainEnvelope,
   computeClipSchedule,
   dbToGain,
+  effectiveAudioClip,
   getAudioBuffer,
+  getReversedAudioBuffer,
   type ClipSchedule,
 } from '../audio'
 import type { Clip, Id, MediaAsset, Sequence, Track } from '../types'
@@ -35,21 +37,25 @@ export async function renderAudioMix(
   const anySolo = seq.tracks.some((t) => t.solo)
   const audibleTracks = seq.tracks.filter((t) => (anySolo ? t.solo : !t.muted))
 
-  const candidates: { clip: Clip; track: Track; sched: ClipSchedule; asset: MediaAsset }[] = []
+  const candidates: { clip: Clip; track: Track; sched: ClipSchedule; asset: MediaAsset; reversed: boolean }[] = []
   for (const track of audibleTracks) {
     for (const clip of track.clips) {
       if (!clipEmitsAudio(track, clip)) continue
-      const sched = computeClipSchedule(clip, 0)
-      if (!sched) continue
       const asset: MediaAsset | undefined = assets[clip.assetId]
       if (!asset) continue
-      candidates.push({ clip, track, sched, asset })
+      const reversed = clip.speed < 0
+      const eff = reversed ? effectiveAudioClip(clip, asset.durationS) : clip
+      const sched = computeClipSchedule(eff, 0)
+      if (!sched) continue
+      candidates.push({ clip: eff, track, sched, asset, reversed })
     }
   }
   if (candidates.length === 0) return null
 
   // getAudioBuffer resolves null for silent/image assets and decode failures.
-  const buffers = await Promise.all(candidates.map((c) => getAudioBuffer(c.asset)))
+  const buffers = await Promise.all(
+    candidates.map((c) => (c.reversed ? getReversedAudioBuffer(c.asset) : getAudioBuffer(c.asset))),
+  )
   if (!buffers.some((b) => b !== null)) return null
 
   const length = Math.max(1, Math.ceil(seq.durationS * EXPORT_SAMPLE_RATE))

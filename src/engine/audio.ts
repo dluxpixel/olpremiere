@@ -57,6 +57,46 @@ export function prewarmAudio(assets: MediaAsset[]): void {
   for (const asset of assets) void getAudioBuffer(asset)
 }
 
+// Reversed buffers for reverse playback (Phase 7), cached per asset.
+const reversedCache = new Map<Id, Promise<AudioBuffer | null>>()
+
+export function getReversedAudioBuffer(asset: MediaAsset): Promise<AudioBuffer | null> {
+  let pending = reversedCache.get(asset.id)
+  if (!pending) {
+    pending = (async () => {
+      const src = await getAudioBuffer(asset)
+      if (!src) return null
+      const ctx = ensureAudioContext()
+      const rev = ctx.createBuffer(src.numberOfChannels, src.length, src.sampleRate)
+      for (let ch = 0; ch < src.numberOfChannels; ch++) {
+        const from = src.getChannelData(ch)
+        const to = rev.getChannelData(ch)
+        const n = from.length
+        for (let i = 0; i < n; i++) to[i] = from[n - 1 - i]
+      }
+      return rev
+    })()
+    reversedCache.set(asset.id, pending)
+  }
+  return pending
+}
+
+/**
+ * A reverse clip (speed < 0) played on a REVERSED buffer is identical to a
+ * forward clip on that buffer with the in/out window mirrored about the source
+ * duration. Returning that forward-equivalent lets every schedule/fade/gain
+ * routine stay direction-agnostic. Forward clips pass through unchanged.
+ */
+export function effectiveAudioClip(clip: Clip, sourceDurationS: number): Clip {
+  if (clip.speed >= 0) return clip
+  return {
+    ...clip,
+    speed: Math.abs(clip.speed) || 1,
+    inS: sourceDurationS - clip.outS,
+    outS: sourceDurationS - clip.inS,
+  }
+}
+
 export interface ClipSchedule {
   /** Seconds after "now" the source starts (0 = playhead is already inside the clip). */
   whenOffsetS: number
@@ -226,19 +266,24 @@ export async function scheduleAudio(
   // Audio comes from audio-track clips PLUS standalone (unlinked) video clips.
   // A linked video clip is video-only — its audio plays from the linked
   // audio-track clip, so counting it here would double the sound.
-  const candidates: { clip: Clip; track: Track; sched: ClipSchedule; asset: MediaAsset }[] = []
+  const candidates: { clip: Clip; track: Track; sched: ClipSchedule; asset: MediaAsset; reversed: boolean }[] = []
   for (const track of audibleTracks) {
     for (const clip of track.clips) {
       if (!clipEmitsAudio(track, clip)) continue
-      const sched = computeClipSchedule(clip, fromS)
-      if (!sched) continue
       const asset: MediaAsset | undefined = assets[clip.assetId]
       if (!asset) continue
-      candidates.push({ clip, track, sched, asset })
+      const reversed = clip.speed < 0
+      // A reverse clip schedules as its forward-equivalent on the reversed buffer.
+      const eff = reversed ? effectiveAudioClip(clip, asset.durationS) : clip
+      const sched = computeClipSchedule(eff, fromS)
+      if (!sched) continue
+      candidates.push({ clip: eff, track, sched, asset, reversed })
     }
   }
 
-  const buffers = await Promise.all(candidates.map((c) => getAudioBuffer(c.asset)))
+  const buffers = await Promise.all(
+    candidates.map((c) => (c.reversed ? getReversedAudioBuffer(c.asset) : getAudioBuffer(c.asset))),
+  )
 
   const { master } = ensureMasterChain()
 

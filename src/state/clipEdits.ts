@@ -3,7 +3,7 @@
 // one undo step. localT is always relative to the clip start.
 
 import { channelBase, resolveChannel, removeKeyframeNear, upsertKeyframe } from '../engine/keyframes'
-import { clipDurationS, clipEndS } from '../engine/timeline'
+import { clipDurationS, clipEndS, setClipSpeed as setClipSpeedT } from '../engine/timeline'
 import {
   activeSequence,
   type AnimChannel,
@@ -217,6 +217,11 @@ export function removeClipTransition(clipId: string, edge: 'in' | 'out'): void {
 // Audio (Phase 6): per-clip gain + fades and a simple crossfade.
 
 const clampFade = (s: number, dur: number): number => (s < 0 ? 0 : s > dur ? dur : s)
+
+/** Change a clip's playback speed (negative = reverse); ripples the tail. */
+export function setClipSpeed(clipId: string, speed: number): void {
+  updateActiveSequence('Set speed', (seq) => setClipSpeedT(seq, clipId, speed))
+}
 
 /** Set a clip's static gain in dB. */
 export function setClipGainDb(clipId: string, db: number): void {
