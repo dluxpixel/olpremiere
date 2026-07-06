@@ -23,7 +23,7 @@ import { KeyframeLane } from './KeyframeLane'
 
 // Per-channel range/step + drag sensitivity. sens = value units per pixel of
 // horizontal drag (independent of step, which only governs typed rounding).
-interface Spec {
+export interface Spec {
   min: number
   max: number
   step: number
@@ -83,7 +83,7 @@ function fmt(v: number): string {
  * sensitivity), type to set. Enter/blur commits; Escape reverts; double-click
  * or focus enters text-edit. Commits only fire when the value actually moved.
  */
-function ScrubField({
+export function ScrubField({
   value,
   spec,
   testId,

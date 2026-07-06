@@ -3,11 +3,12 @@
 // one undo step. localT is always relative to the clip start.
 
 import { channelBase, resolveChannel, removeKeyframeNear, upsertKeyframe } from '../engine/keyframes'
-import { clipEndS } from '../engine/timeline'
+import { clipDurationS, clipEndS } from '../engine/timeline'
 import {
   activeSequence,
   type AnimChannel,
   type Clip,
+  type Id,
   type Keyframe,
   type Transform,
 } from '../engine/types'
@@ -195,4 +196,56 @@ export function removeClipTransition(clipId: string, edge: 'in' | 'out'): void {
     ...c,
     [edge === 'in' ? 'transitionIn' : 'transitionOut']: undefined,
   }))
+}
+
+// ---------------------------------------------------------------------------
+// Audio (Phase 6): per-clip gain + fades and a simple crossfade.
+
+const clampFade = (s: number, dur: number): number => (s < 0 ? 0 : s > dur ? dur : s)
+
+/** Set a clip's static gain in dB. */
+export function setClipGainDb(clipId: string, db: number): void {
+  mapClip(clipId, 'Set clip gain', (c) => (c.audioGainDb === db ? c : { ...c, audioGainDb: db }))
+}
+
+/** Set a clip's fade in/out length (seconds), clamped to the clip duration. */
+export function setClipFade(clipId: string, edge: 'in' | 'out', seconds: number): void {
+  mapClip(clipId, edge === 'in' ? 'Set fade in' : 'Set fade out', (c) => {
+    const v = clampFade(seconds, clipDurationS(c))
+    const key = edge === 'in' ? 'fadeInS' : 'fadeOutS'
+    return c[key] === v ? c : { ...c, [key]: v }
+  })
+}
+
+/**
+ * Simple audio crossfade at the cut between an audio clip and its time-adjacent
+ * neighbour: fade the outgoing clip out and the incoming clip in over the same
+ * length, in ONE undo step. No-op if there is no adjacent neighbour on the side.
+ */
+export function crossfadeWithNeighbour(clipId: Id, side: 'next' | 'prev', seconds = 0.5): void {
+  updateActiveSequence('Crossfade', (seq) => {
+    const track = seq.tracks.find((t) => t.clips.some((c) => c.id === clipId))
+    if (!track) return seq
+    const idx = track.clips.findIndex((c) => c.id === clipId)
+    const a = side === 'next' ? track.clips[idx] : track.clips[idx - 1]
+    const b = side === 'next' ? track.clips[idx + 1] : track.clips[idx]
+    if (!a || !b) return seq
+    // Adjacent only (A's out edge meets B's in edge within a frame-ish).
+    if (Math.abs(clipEndS(a) - b.startS) > 1e-3) return seq
+    const d = Math.min(seconds, clipDurationS(a), clipDurationS(b))
+    if (d <= 0) return seq
+    return {
+      ...seq,
+      tracks: seq.tracks.map((t) =>
+        t.id !== track.id
+          ? t
+          : {
+              ...t,
+              clips: t.clips.map((c) =>
+                c.id === a.id ? { ...c, fadeOutS: d } : c.id === b.id ? { ...c, fadeInS: d } : c,
+              ),
+            },
+      ),
+    }
+  })
 }

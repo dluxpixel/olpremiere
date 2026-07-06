@@ -1,10 +1,64 @@
 import { SlidersHorizontal } from 'lucide-react'
+import type { ReactNode } from 'react'
+import { clipEmitsAudio } from '../engine/audio'
 import { clipDurationS, clipEndS } from '../engine/timeline'
 import { formatTimecode } from '../engine/timecode'
-import { activeSequence, isTitleClip, type Clip } from '../engine/types'
+import { activeSequence, isTitleClip, type Clip, type MediaAsset, type Track } from '../engine/types'
+import { setClipFade, setClipGainDb } from '../state/clipEdits'
 import { useStore } from '../state/store'
-import { EffectControls } from './EffectControls'
+import { EffectControls, ScrubField, type Spec } from './EffectControls'
 import { TitleControls } from './TitleControls'
+
+const GAIN_SPEC: Spec = { min: -60, max: 12, step: 0.5, sens: 0.2 }
+const FADE_SPEC: Spec = { min: 0, max: 30, step: 0.05, sens: 0.02 }
+
+function AudioRow({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="flex-1 truncate text-[11px] uppercase tracking-[0.04em] text-text-muted">{label}</span>
+      {children}
+    </div>
+  )
+}
+
+/** Gain + fades for a clip that contributes audio (Phase 6). */
+function AudioControls({ clip }: { clip: Clip }) {
+  const durMax = Math.max(0.05, clipDurationS(clip))
+  return (
+    <section className="flex flex-col gap-2" data-testid="audio-controls">
+      <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">Audio</h3>
+      <div className="flex flex-col gap-1.5">
+        <AudioRow label="Gain (dB)">
+          <ScrubField
+            value={clip.audioGainDb}
+            spec={GAIN_SPEC}
+            testId="field-gain"
+            ariaLabel="Audio gain (dB)"
+            onCommit={(v) => setClipGainDb(clip.id, v)}
+          />
+        </AudioRow>
+        <AudioRow label="Fade in (s)">
+          <ScrubField
+            value={clip.fadeInS}
+            spec={{ ...FADE_SPEC, max: durMax }}
+            testId="field-fade-in"
+            ariaLabel="Fade in seconds"
+            onCommit={(v) => setClipFade(clip.id, 'in', v)}
+          />
+        </AudioRow>
+        <AudioRow label="Fade out (s)">
+          <ScrubField
+            value={clip.fadeOutS}
+            spec={{ ...FADE_SPEC, max: durMax }}
+            testId="field-fade-out"
+            ariaLabel="Fade out seconds"
+            onCommit={(v) => setClipFade(clip.id, 'out', v)}
+          />
+        </AudioRow>
+      </div>
+    </section>
+  )
+}
 
 function Row({ label, value }: { label: string; value: string }) {
   return (
@@ -20,11 +74,13 @@ function ClipPanel({
   assetName,
   fps,
   playheadS,
+  showAudio,
 }: {
   clip: Clip
   assetName: string
   fps: number
   playheadS: number
+  showAudio: boolean
 }) {
   const isTitle = isTitleClip(clip)
   const name = isTitle ? clip.title!.text || 'Title' : assetName
@@ -59,6 +115,13 @@ function ClipPanel({
         </>
       )}
 
+      {showAudio && (
+        <>
+          <AudioControls clip={clip} />
+          <div className="h-px bg-border" />
+        </>
+      )}
+
       <EffectControls clip={clip} fps={fps} playheadS={playheadS} />
     </div>
   )
@@ -69,10 +132,20 @@ export function Inspector({ width }: { width: number }) {
   const selection = useStore((s) => s.ui.selection)
   const playheadS = useStore((s) => s.ui.playheadS)
   const seq = activeSequence(project)
-  const selected =
+  const selectedTrack: Track | undefined =
     selection.length === 1
-      ? seq.tracks.flatMap((t) => t.clips).find((c) => c.id === selection[0])
+      ? seq.tracks.find((t) => t.clips.some((c) => c.id === selection[0]))
       : undefined
+  const selected = selectedTrack?.clips.find((c) => c.id === selection[0])
+  const selectedAsset: MediaAsset | undefined = selected ? project.assets[selected.assetId] : undefined
+  // Show the Audio section when the clip actually contributes sound: an
+  // audio-track clip, or an unlinked video clip whose source has audio.
+  const showAudio =
+    !!selected &&
+    !isTitleClip(selected) &&
+    !!selectedTrack &&
+    clipEmitsAudio(selectedTrack, selected) &&
+    (selectedTrack.kind === 'audio' || !!selectedAsset?.hasAudio)
 
   return (
     <aside
@@ -89,9 +162,10 @@ export function Inspector({ width }: { width: number }) {
         <div className="min-h-0 flex-1 overflow-y-auto">
           <ClipPanel
             clip={selected}
-            assetName={project.assets[selected.assetId]?.name ?? 'Missing media'}
+            assetName={selectedAsset?.name ?? 'Missing media'}
             fps={seq.fps}
             playheadS={playheadS}
+            showAudio={showAudio}
           />
         </div>
       ) : (

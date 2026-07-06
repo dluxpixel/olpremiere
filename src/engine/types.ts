@@ -302,7 +302,7 @@ export function newTrack(kind: Track['kind'], name: string): Track {
     id: newId(),
     kind,
     name,
-    height: kind === 'video' ? 64 : 48,
+    height: kind === 'video' ? 64 : 60,
     muted: false,
     solo: false,
     locked: false,
@@ -311,6 +311,9 @@ export function newTrack(kind: Track['kind'], name: string): Track {
     clips: [],
   }
 }
+
+/** Legacy audio-track default before the mixer row existed; bumped on migrate. */
+const LEGACY_AUDIO_TRACK_H = 48
 
 /**
  * Fill fields added after a project was first persisted, so loading an older
@@ -324,9 +327,17 @@ export function migrateProject(p: Project): Project {
   for (const [id, seq] of Object.entries(p.sequences)) {
     let seqChanged = false
     const tracks = seq.tracks.map((t) => {
-      if (typeof t.volumeDb === 'number' && typeof t.pan === 'number') return t
+      const needsAudio = typeof t.volumeDb !== 'number' || typeof t.pan !== 'number'
+      // Give the mixer row room on audio tracks still at the legacy height.
+      const needsHeight = t.kind === 'audio' && t.height === LEGACY_AUDIO_TRACK_H
+      if (!needsAudio && !needsHeight) return t
       seqChanged = true
-      return { ...t, volumeDb: t.volumeDb ?? 0, pan: t.pan ?? 0 }
+      return {
+        ...t,
+        volumeDb: t.volumeDb ?? 0,
+        pan: t.pan ?? 0,
+        height: needsHeight ? 60 : t.height,
+      }
     })
     if (seqChanged) {
       changed = true

@@ -54,8 +54,11 @@ import {
 import { pausePlayback } from '../state/playbackControl'
 import { addTitleClip } from '../state/titleActions'
 import { copySelection, cutSelection, duplicateSelection } from '../state/clipboard'
+import { crossfadeWithNeighbour, setClipFade } from '../state/clipEdits'
+import { setTrackPan, setTrackVolumeDb } from '../state/trackEdits'
 import { openContextMenu } from '../state/contextMenu'
 import { useBlobUrl } from '../state/blobUrls'
+import { ClipWaveform } from './ClipWaveform'
 import {
   MAX_PX_PER_S,
   MIN_PX_PER_S,
@@ -69,7 +72,7 @@ import { useToasts } from '../state/toasts'
 import { IconButton } from '../ui/Button'
 
 const RULER_H = 28
-const HEADERS_W = 160
+const HEADERS_W = 178
 const SNAP_PX = 8
 const ASSET_MIME = 'application/x-reel-asset'
 
@@ -128,53 +131,140 @@ function Ruler({ contentWidth, lengthS }: { contentWidth: number; lengthS: numbe
 // ---------------------------------------------------------------------------
 // Track header
 
+/**
+ * Range control that commits ONE undoable value on release (pointer-up / key-up
+ * / blur), previewing locally during a drag — so dragging is never an undo
+ * flood. Double-click resets to `resetTo`.
+ */
+function Fader({
+  value,
+  min,
+  max,
+  step,
+  label,
+  title,
+  resetTo,
+  className,
+  onCommit,
+}: {
+  value: number
+  min: number
+  max: number
+  step: number
+  label: string
+  title: string
+  resetTo: number
+  className?: string
+  onCommit: (v: number) => void
+}) {
+  const [local, setLocal] = useState<number | null>(null)
+  const v = local ?? value
+  const commit = () => {
+    if (local !== null) {
+      if (local !== value) onCommit(local)
+      setLocal(null)
+    }
+  }
+  return (
+    <input
+      type="range"
+      min={min}
+      max={max}
+      step={step}
+      value={v}
+      aria-label={label}
+      title={title}
+      onChange={(e) => setLocal(Number(e.target.value))}
+      onPointerUp={commit}
+      onKeyUp={commit}
+      onBlur={commit}
+      onDoubleClick={() => onCommit(resetTo)}
+      className={`h-1 min-w-0 cursor-pointer accent-accent ${className ?? ''}`}
+    />
+  )
+}
+
 function TrackHeader({ track }: { track: Track }) {
   const toggle = (field: 'muted' | 'solo' | 'locked', label: string) =>
     updateActiveSequence(label, (seq) => ({
       ...seq,
       tracks: seq.tracks.map((t) => (t.id === track.id ? { ...t, [field]: !t[field] } : t)),
     }))
+  const isAudio = track.kind === 'audio'
 
   return (
     <div
-      className="flex shrink-0 items-center gap-0.5 border-b border-border/60 bg-bg-panel px-2"
+      className="flex shrink-0 flex-col justify-center gap-1 border-b border-border/60 bg-bg-panel px-2"
       style={{ height: track.height }}
     >
-      <span className="flex-1 text-[11px] font-medium uppercase tracking-[0.06em] text-text-secondary">
-        {track.name}
-      </span>
-      <IconButton
-        size="compact"
-        label={track.muted ? 'Unmute track' : 'Mute track'}
-        active={track.muted}
-        onClick={() => toggle('muted', `${track.muted ? 'Unmute' : 'Mute'} ${track.name}`)}
-      >
-        {track.muted ? (
-          <VolumeX size={14} strokeWidth={1.5} />
-        ) : (
-          <Volume2 size={14} strokeWidth={1.5} />
-        )}
-      </IconButton>
-      <IconButton
-        size="compact"
-        label={track.solo ? 'Unsolo track' : 'Solo track'}
-        active={track.solo}
-        onClick={() => toggle('solo', `${track.solo ? 'Unsolo' : 'Solo'} ${track.name}`)}
-      >
-        <Headphones size={14} strokeWidth={1.5} />
-      </IconButton>
-      <IconButton
-        size="compact"
-        label={track.locked ? 'Unlock track' : 'Lock track'}
-        active={track.locked}
-        onClick={() => toggle('locked', `${track.locked ? 'Unlock' : 'Lock'} ${track.name}`)}
-      >
-        {track.locked ? (
-          <Lock size={14} strokeWidth={1.5} />
-        ) : (
-          <LockOpen size={14} strokeWidth={1.5} />
-        )}
-      </IconButton>
+      <div className="flex items-center gap-0.5">
+        <span className="flex-1 text-[11px] font-medium uppercase tracking-[0.06em] text-text-secondary">
+          {track.name}
+        </span>
+        <IconButton
+          size="compact"
+          label={track.muted ? 'Unmute track' : 'Mute track'}
+          active={track.muted}
+          onClick={() => toggle('muted', `${track.muted ? 'Unmute' : 'Mute'} ${track.name}`)}
+        >
+          {track.muted ? (
+            <VolumeX size={14} strokeWidth={1.5} />
+          ) : (
+            <Volume2 size={14} strokeWidth={1.5} />
+          )}
+        </IconButton>
+        <IconButton
+          size="compact"
+          label={track.solo ? 'Unsolo track' : 'Solo track'}
+          active={track.solo}
+          onClick={() => toggle('solo', `${track.solo ? 'Unsolo' : 'Solo'} ${track.name}`)}
+        >
+          <Headphones size={14} strokeWidth={1.5} />
+        </IconButton>
+        <IconButton
+          size="compact"
+          label={track.locked ? 'Unlock track' : 'Lock track'}
+          active={track.locked}
+          onClick={() => toggle('locked', `${track.locked ? 'Unlock' : 'Lock'} ${track.name}`)}
+        >
+          {track.locked ? (
+            <Lock size={14} strokeWidth={1.5} />
+          ) : (
+            <LockOpen size={14} strokeWidth={1.5} />
+          )}
+        </IconButton>
+      </div>
+
+      {isAudio && (
+        <div className="flex items-center gap-1.5">
+          <Volume2 size={11} strokeWidth={1.5} className="shrink-0 text-text-muted" aria-hidden />
+          <Fader
+            className="flex-[2]"
+            value={track.volumeDb}
+            min={-60}
+            max={12}
+            step={0.5}
+            label={`${track.name} volume`}
+            title={`Volume ${track.volumeDb > 0 ? '+' : ''}${track.volumeDb.toFixed(1)} dB (double-click: 0)`}
+            resetTo={0}
+            onCommit={(db) => setTrackVolumeDb(track.id, db)}
+          />
+          <span className="shrink-0 text-[9px] font-medium uppercase tracking-tight text-text-muted" aria-hidden>
+            Pan
+          </span>
+          <Fader
+            className="flex-1"
+            value={track.pan}
+            min={-1}
+            max={1}
+            step={0.02}
+            label={`${track.name} pan`}
+            title={`Pan ${track.pan === 0 ? 'center' : track.pan < 0 ? `${Math.round(-track.pan * 100)}% L` : `${Math.round(track.pan * 100)}% R`} (double-click: center)`}
+            resetTo={0}
+            onCommit={(pan) => setTrackPan(track.id, pan)}
+          />
+        </div>
+      )}
     </div>
   )
 }
@@ -303,27 +393,34 @@ interface ClipViewProps {
   clip: Clip
   asset: MediaAsset | undefined
   trackKind: 'video' | 'audio'
+  trackHeight: number
   pxPerS: number
   selected: boolean
   onClipPointerDown: (e: ReactPointerEvent<HTMLDivElement>, clip: Clip) => void
   onTrimPointerDown: (e: ReactPointerEvent<HTMLDivElement>, clip: Clip, edge: 'in' | 'out') => void
   onClipContextMenu: (e: ReactMouseEvent<HTMLDivElement>, clip: Clip) => void
+  onFadeCommit: (clipId: Id, edge: 'in' | 'out', seconds: number) => void
 }
 
 function ClipView({
   clip,
   asset,
   trackKind,
+  trackHeight,
   pxPerS,
   selected,
   onClipPointerDown,
   onTrimPointerDown,
   onClipContextMenu,
+  onFadeCommit,
 }: ClipViewProps) {
   const left = clip.startS * pxPerS
-  const width = Math.max(4, clipDurationS(clip) * pxPerS)
+  const durS = clipDurationS(clip)
+  const width = Math.max(4, durS * pxPerS)
+  const innerH = Math.max(1, trackHeight - 6)
   // Titles are generated (no asset): a distinct violet family + the text label.
   const isTitle = clip.title !== undefined
+  const isAudio = !isTitle && trackKind === 'audio'
   // Colour by the TRACK: an audio-track clip is audio-family even when it
   // references a video asset (a linked-audio split).
   const { bg, bd } = isTitle
@@ -334,6 +431,45 @@ function ClipView({
   const kind = isTitle ? 'title' : trackKind
   const label = isTitle ? clip.title!.text || 'Title' : (asset?.name ?? 'Missing media')
   const thumb = useBlobUrl(isTitle || trackKind === 'audio' ? undefined : asset?.thumbnailKey)
+
+  // Fade drag: dragRef holds the gesture; fadePreview drives the live overlay.
+  // The committed value is computed purely from the pointer + dragRef on release
+  // (no stale state, no StrictMode double-commit).
+  const fadeDragRef = useRef<{ edge: 'in' | 'out'; startX: number; startVal: number } | null>(null)
+  const [fadePreview, setFadePreview] = useState<{ edge: 'in' | 'out'; val: number } | null>(null)
+  const fadeInS = fadePreview?.edge === 'in' ? fadePreview.val : clip.fadeInS
+  const fadeOutS = fadePreview?.edge === 'out' ? fadePreview.val : clip.fadeOutS
+
+  const valFor = (d: { edge: 'in' | 'out'; startX: number; startVal: number }, clientX: number): number => {
+    const delta = (clientX - d.startX) / pxPerS
+    const raw = d.edge === 'in' ? d.startVal + delta : d.startVal - delta
+    return Math.max(0, Math.min(durS, raw))
+  }
+  const beginFade = (e: ReactPointerEvent<HTMLDivElement>, edge: 'in' | 'out') => {
+    if (e.button !== 0) return
+    e.stopPropagation()
+    e.currentTarget.setPointerCapture(e.pointerId)
+    const startVal = edge === 'in' ? clip.fadeInS : clip.fadeOutS
+    fadeDragRef.current = { edge, startX: e.clientX, startVal }
+    setFadePreview({ edge, val: startVal })
+  }
+  const moveFade = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const d = fadeDragRef.current
+    if (!d) return
+    setFadePreview({ edge: d.edge, val: valFor(d, e.clientX) })
+  }
+  const endFade = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const d = fadeDragRef.current
+    fadeDragRef.current = null
+    setFadePreview(null)
+    if (!d) return
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
+    const val = valFor(d, e.clientX)
+    if (Math.abs(val - d.startVal) > 1e-4) onFadeCommit(clip.id, d.edge, val)
+  }
+
+  const fadeInPx = fadeInS * pxPerS
+  const fadeOutPx = fadeOutS * pxPerS
 
   return (
     <div
@@ -347,6 +483,7 @@ function ClipView({
       onPointerDown={(e) => onClipPointerDown(e, clip)}
       onContextMenu={(e) => onClipContextMenu(e, clip)}
     >
+      {isAudio && asset && <ClipWaveform clip={clip} asset={asset} width={width} height={innerH} />}
       {clip.linkId && (
         <span
           className="pointer-events-none absolute bottom-0.5 right-1 text-[9px] text-white/50"
@@ -366,6 +503,54 @@ function ClipView({
       <span className="pointer-events-none absolute left-1.5 right-1.5 top-0.5 truncate text-[11px] font-medium text-white/90 [text-shadow:0_1px_2px_rgba(0,0,0,0.6)]">
         {label}
       </span>
+
+      {isAudio && (fadeInPx > 0.5 || fadeOutPx > 0.5) && (
+        <svg
+          className="pointer-events-none absolute inset-0"
+          width={width}
+          height={innerH}
+          preserveAspectRatio="none"
+        >
+          {fadeInPx > 0.5 && (
+            <>
+              <path d={`M0,0 L${fadeInPx},0 L0,${innerH} Z`} fill="rgba(0,0,0,0.4)" />
+              <line x1={0} y1={innerH} x2={fadeInPx} y2={0} stroke="rgba(255,255,255,0.85)" strokeWidth={1} />
+            </>
+          )}
+          {fadeOutPx > 0.5 && (
+            <>
+              <path d={`M${width},0 L${width - fadeOutPx},0 L${width},${innerH} Z`} fill="rgba(0,0,0,0.4)" />
+              <line x1={width - fadeOutPx} y1={0} x2={width} y2={innerH} stroke="rgba(255,255,255,0.85)" strokeWidth={1} />
+            </>
+          )}
+        </svg>
+      )}
+
+      {isAudio && (
+        <>
+          <div
+            data-testid="fade-in-handle"
+            className="absolute top-0 z-10 h-2.5 w-2.5 -translate-x-1/2 cursor-ew-resize rounded-full border border-white/80 bg-white/40 opacity-0 transition-opacity duration-[120ms] group-hover/clip:opacity-100"
+            style={{ left: Math.min(width, Math.max(0, fadeInPx)) }}
+            title="Drag to fade in"
+            onPointerDown={(e) => beginFade(e, 'in')}
+            onPointerMove={moveFade}
+            onPointerUp={endFade}
+            onPointerCancel={endFade}
+          />
+          <div
+            data-testid="fade-out-handle"
+            className="absolute top-0 z-10 h-2.5 w-2.5 -translate-x-1/2 cursor-ew-resize rounded-full border border-white/80 bg-white/40 opacity-0 transition-opacity duration-[120ms] group-hover/clip:opacity-100"
+            style={{ left: Math.max(0, width - fadeOutPx) }}
+            title="Drag to fade out"
+            onPointerDown={(e) => beginFade(e, 'out')}
+            onPointerMove={moveFade}
+            onPointerUp={endFade}
+            onPointerCancel={endFade}
+          />
+        </>
+      )}
+
       <div
         data-testid="trim-in"
         className="absolute inset-y-0 left-0 w-[6px] cursor-w-resize bg-white/25 opacity-0 transition-opacity duration-[120ms] group-hover/clip:opacity-100"
@@ -537,10 +722,29 @@ export function Timeline({ height }: { height: number }) {
   const handleClipContextMenu = (e: ReactMouseEvent<HTMLDivElement>, clip: Clip) => {
     setUI({ selection: [clip.id] })
     const playheadInside = playheadS > clip.startS && playheadS < clipEndS(clip)
+    // Audio clips adjacent to a same-track neighbour can be crossfaded.
+    const track = seq.tracks.find((t) => t.clips.some((c) => c.id === clip.id))
+    const idx = track ? track.clips.findIndex((c) => c.id === clip.id) : -1
+    const prev = track && idx > 0 ? track.clips[idx - 1] : undefined
+    const next = track ? track.clips[idx + 1] : undefined
+    const canXfadePrev = !!prev && Math.abs(clipEndS(prev) - clip.startS) < 1e-3
+    const canXfadeNext = !!next && Math.abs(clipEndS(clip) - next.startS) < 1e-3
+    const crossfadeItems =
+      track?.kind === 'audio' && (canXfadePrev || canXfadeNext)
+        ? [
+            ...(canXfadePrev
+              ? [{ label: 'Crossfade with previous', onClick: () => crossfadeWithNeighbour(clip.id, 'prev') }]
+              : []),
+            ...(canXfadeNext
+              ? [{ label: 'Crossfade with next', separator: !canXfadePrev, onClick: () => crossfadeWithNeighbour(clip.id, 'next') }]
+              : []),
+          ]
+        : []
     openContextMenu(e, [
       { label: 'Copy', shortcut: comboLabel('mod+c'), onClick: () => copySelection() },
       { label: 'Cut', shortcut: comboLabel('mod+x'), onClick: cutSelection },
       { label: 'Duplicate', shortcut: comboLabel('mod+d'), onClick: duplicateSelection },
+      ...crossfadeItems,
       {
         label: 'Split at playhead',
         shortcut: comboLabel('mod+k'),
@@ -864,11 +1068,13 @@ export function Timeline({ height }: { height: number }) {
           clip={clip}
           asset={assets[clip.assetId]}
           trackKind={track.kind}
+          trackHeight={track.height}
           pxPerS={pxPerS}
           selected={selection.includes(clip.id)}
           onClipPointerDown={handleClipPointerDown}
           onTrimPointerDown={handleTrimPointerDown}
           onClipContextMenu={handleClipContextMenu}
+          onFadeCommit={setClipFade}
         />
       ))}
       {dropPreview?.trackId === track.id && (
