@@ -1,5 +1,34 @@
 import { describe, expect, it } from 'vitest'
-import { FrameLru, boundPending, frameIndexAt, frameMidTimeS, spanIndices } from './frameCache'
+import {
+  FrameLru,
+  boundPending,
+  frameIndexAt,
+  frameMidTimeS,
+  previewTargetHeight,
+  spanIndices,
+} from './frameCache'
+
+describe('previewTargetHeight', () => {
+  it('leaves ≤1080p footage at native size on Full', () => {
+    expect(previewTargetHeight(1080, 1)).toBeUndefined()
+    expect(previewTargetHeight(720, 1)).toBeUndefined()
+  })
+  it('caps 4K to 1080p on Full', () => {
+    expect(previewTargetHeight(2160, 1)).toBe(1080)
+  })
+  it('halves/quarters at reduced quality tiers', () => {
+    expect(previewTargetHeight(1080, 0.5)).toBe(540)
+    expect(previewTargetHeight(1080, 0.25)).toBe(270)
+    expect(previewTargetHeight(2160, 0.25)).toBe(270) // min(2160,1080)*0.25
+  })
+  it('never upscales a small source (returns undefined = native)', () => {
+    expect(previewTargetHeight(480, 1)).toBeUndefined()
+  })
+  it('is safe with unknown dimensions', () => {
+    expect(previewTargetHeight(undefined, 1)).toBeUndefined()
+    expect(previewTargetHeight(0, 1)).toBeUndefined()
+  })
+})
 
 describe('frameIndexAt', () => {
   it('quantizes with floor semantics at the asset fps', () => {

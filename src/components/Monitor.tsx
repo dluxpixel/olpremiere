@@ -11,6 +11,7 @@ import {
 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { prewarmAudio } from '../engine/audio'
+import { setPreviewScale } from '../engine/frameCache'
 import { prewarmPreview, renderPreview } from '../engine/preview'
 import { formatTimecode, quantizeToFrame } from '../engine/timecode'
 import { activeSequence } from '../engine/types'
@@ -121,6 +122,11 @@ export function Monitor() {
   const seq = useStore((s) => activeSequence(s.project))
   const hasContent = seq.durationS > 0
   const [quality, setQuality] = useState<Quality>(1)
+  // Quality tier drives BOTH the canvas raster (dpr) and the frame-cache decode
+  // resolution, so Half/Quarter genuinely cut scrub cost on large sources.
+  useEffect(() => {
+    setPreviewScale(quality)
+  }, [quality])
   const [safeMargins, setSafeMargins] = useState(false)
   const regionRef = useRef<HTMLDivElement>(null)
   const canvasRef = useProgramCanvas(quality)

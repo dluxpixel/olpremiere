@@ -13,6 +13,29 @@ export const FALLBACK_FPS = 30
 export const CACHE_CAP = 96
 export const PENDING_CAP = 8
 
+// Preview frames are decoded at PREVIEW-resolution, not necessarily source
+// resolution. At Full quality typical (≤1080p) footage decodes untouched, while
+// 4K is capped to 1080p; the Half/Quarter tiers then halve/quarter that so big
+// sources scrub cheaply and each cached frame costs far less memory. Export
+// decodes separately at full resolution, so this never affects the output file.
+export const PREVIEW_BASE_MAX_H = 1080
+
+let previewScale = 1
+
+/**
+ * Target decode height for an asset's preview frames, or undefined to decode at
+ * native size (never upscales). Pure — the sizing policy the sink uses.
+ */
+export function previewTargetHeight(
+  nativeH: number | undefined,
+  scale: number,
+  maxH = PREVIEW_BASE_MAX_H,
+): number | undefined {
+  if (!nativeH || nativeH <= 0) return undefined
+  const cap = Math.max(2, Math.round(Math.min(nativeH, maxH) * (scale > 0 ? scale : 1)))
+  return cap < nativeH ? cap : undefined
+}
+
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for tests — no DOM, no mediabunny)
 
@@ -157,8 +180,10 @@ async function openInput(e: AssetEntry): Promise<void> {
   e.input = input
   // poolSize deliberately omitted: 0/undefined disables mediabunny's canvas
   // pool, so every getCanvas yields a FRESH canvas — cached frames must never
-  // be recycled underneath us.
-  e.sink = new Sink(track)
+  // be recycled underneath us. Decode at PREVIEW height (downscaled) so large
+  // sources scrub cheaply; export uses its own full-res decode.
+  const th = previewTargetHeight(e.asset.height, previewScale)
+  e.sink = th ? new Sink(track, { height: th }) : new Sink(track)
 }
 
 function failAsset(e: AssetEntry, err: unknown): void {
@@ -257,6 +282,18 @@ export function evictAsset(assetId: Id): void {
   for (const key of cache.keys()) {
     if (key.startsWith(prefix)) cache.delete(key)
   }
+}
+
+/**
+ * Set the preview decode scale (1 = Full, 0.5 = Half, 0.25 = Quarter). Changing
+ * it drops every open demuxer + cached frame so subsequent decodes use the new
+ * size. No-op when unchanged.
+ */
+export function setPreviewScale(scale: number): void {
+  const s = scale > 0 ? scale : 1
+  if (s === previewScale) return
+  previewScale = s
+  for (const id of [...entries.keys()]) evictAsset(id)
 }
 
 export function frameCacheStats(): { entries: number; assets: number } {
