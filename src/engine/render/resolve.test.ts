@@ -129,7 +129,22 @@ describe('identity clip', () => {
       saturation: 0,
       exposure: 0,
       blur: 0,
+      lift: 0,
+      gamma: 0,
+      gain: 0,
+      temperature: 0,
+      tint: 0,
     })
+  })
+
+  it('color-correction filters flow from the clip into the resolved layer', () => {
+    const c = clip({ filters: { lift: 0.2, gamma: -0.3, gain: 0.1, temperature: 0.5, tint: -0.4 } })
+    const layer = asLayer(resolveFrame(seqOf([track({ clips: [c] })]), 0).ops[0])
+    expect(layer.filters.lift).toBeCloseTo(0.2)
+    expect(layer.filters.gamma).toBeCloseTo(-0.3)
+    expect(layer.filters.gain).toBeCloseTo(0.1)
+    expect(layer.filters.temperature).toBeCloseTo(0.5)
+    expect(layer.filters.tint).toBeCloseTo(-0.4)
   })
 
   it('sourceTimeS = inS + (t - startS) at speed 1', () => {

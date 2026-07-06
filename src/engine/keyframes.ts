@@ -88,6 +88,16 @@ export function channelBase(clip: Clip, channel: AnimChannel): number {
       return f?.exposure ?? 0
     case 'blur':
       return f?.blur ?? 0
+    case 'lift':
+      return f?.lift ?? 0
+    case 'gamma':
+      return f?.gamma ?? 0
+    case 'gain':
+      return f?.gain ?? 0
+    case 'temperature':
+      return f?.temperature ?? 0
+    case 'tint':
+      return f?.tint ?? 0
   }
 }
 

@@ -84,6 +84,16 @@ function withChannelBase(clip: Clip, channel: AnimChannel, value: number): Clip 
       return setFilter('exposure')
     case 'blur':
       return setFilter('blur')
+    case 'lift':
+      return setFilter('lift')
+    case 'gamma':
+      return setFilter('gamma')
+    case 'gain':
+      return setFilter('gain')
+    case 'temperature':
+      return setFilter('temperature')
+    case 'tint':
+      return setFilter('tint')
   }
 }
 
@@ -175,6 +185,11 @@ export function resetChannel(clipId: string, channel: AnimChannel): void {
     saturation: 0,
     exposure: 0,
     blur: 0,
+    lift: 0,
+    gamma: 0,
+    gain: 0,
+    temperature: 0,
+    tint: 0,
   }
   mapClip(clipId, `Reset ${channel}`, (c) => withChannelBase(withKeyframes(c, channel, []), channel, defaults[channel]))
 }

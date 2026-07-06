@@ -130,6 +130,11 @@ export const ANIM_CHANNELS = [
   'saturation',
   'exposure',
   'blur',
+  'lift',
+  'gamma',
+  'gain',
+  'temperature',
+  'tint',
 ] as const
 export type AnimChannel = (typeof ANIM_CHANNELS)[number]
 
@@ -144,6 +149,17 @@ export interface ClipFilters {
   exposure?: number
   /** Gaussian blur radius in output px (0 = none). */
   blur?: number
+  // --- Color correction (Phase 7), ASC-CDL-style; all neutral at 0. ---
+  /** Black point / offset, −1..1 (0 = neutral). */
+  lift?: number
+  /** Midtone power, −1..1 (0 = neutral; + brightens mids). */
+  gamma?: number
+  /** Highlight slope, −1..1 (0 = neutral). */
+  gain?: number
+  /** White balance warm↔cool, −1..1 (0 = neutral; + warmer). */
+  temperature?: number
+  /** White balance green↔magenta, −1..1 (0 = neutral; + greener). */
+  tint?: number
 }
 
 export interface Transform {

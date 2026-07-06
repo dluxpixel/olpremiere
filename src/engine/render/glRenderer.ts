@@ -43,6 +43,11 @@ uniform float uBrightness;
 uniform float uContrast;
 uniform float uSaturation;
 uniform float uExposure;
+uniform float uLift;         // ASC-CDL offset  (0 = neutral)
+uniform float uGamma;        // ASC-CDL power   (0 = neutral)
+uniform float uGain;         // ASC-CDL slope   (0 = neutral)
+uniform float uTemperature;  // white balance warm↔cool (0 = neutral)
+uniform float uTint;         // white balance green↔magenta (0 = neutral)
 uniform vec4 uUVRect; // u0,v0,u1,v1 — reject samples outside the crop window
 out vec4 outColor;
 void main() {
@@ -53,6 +58,15 @@ void main() {
   vec4 src = texture(uTex, vUV);
   vec3 c = src.rgb;
   c *= pow(2.0, uExposure);
+  // Lift / gamma / gain (ASC-CDL: out = (in*slope + offset)^power). Neutral at 0.
+  float slope = 1.0 + uGain;
+  float offset = uLift * 0.5;
+  float power = pow(2.0, -uGamma);
+  c = pow(max(c * slope + offset, vec3(0.0)), vec3(power));
+  // White balance: warm pushes red / pulls blue; tint pushes green.
+  c.r *= (1.0 + uTemperature * 0.4);
+  c.b *= (1.0 - uTemperature * 0.4);
+  c.g *= (1.0 + uTint * 0.4);
   c += uBrightness;
   c = (c - 0.5) * (1.0 + uContrast) + 0.5;
   float luma = dot(c, vec3(0.2126, 0.7152, 0.0722));
@@ -225,6 +239,11 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
     uContrast: gl.getUniformLocation(layerProg, 'uContrast'),
     uSaturation: gl.getUniformLocation(layerProg, 'uSaturation'),
     uExposure: gl.getUniformLocation(layerProg, 'uExposure'),
+    uLift: gl.getUniformLocation(layerProg, 'uLift'),
+    uGamma: gl.getUniformLocation(layerProg, 'uGamma'),
+    uGain: gl.getUniformLocation(layerProg, 'uGain'),
+    uTemperature: gl.getUniformLocation(layerProg, 'uTemperature'),
+    uTint: gl.getUniformLocation(layerProg, 'uTint'),
     uUVRect: gl.getUniformLocation(layerProg, 'uUVRect'),
   }
   const blurLoc = {
@@ -356,6 +375,11 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
     gl.uniform1f(layerLoc.uContrast, layer.filters.contrast)
     gl.uniform1f(layerLoc.uSaturation, layer.filters.saturation)
     gl.uniform1f(layerLoc.uExposure, layer.filters.exposure)
+    gl.uniform1f(layerLoc.uLift, layer.filters.lift)
+    gl.uniform1f(layerLoc.uGamma, layer.filters.gamma)
+    gl.uniform1f(layerLoc.uGain, layer.filters.gain)
+    gl.uniform1f(layerLoc.uTemperature, layer.filters.temperature)
+    gl.uniform1f(layerLoc.uTint, layer.filters.tint)
     gl.uniform4f(layerLoc.uUVRect, uv.u0, uv.v0, uv.u1, uv.v1)
     gl.drawArrays(gl.TRIANGLES, 0, 6)
   }

@@ -47,6 +47,11 @@ const SPECS: Record<AnimChannel, Spec> = {
   saturation: { min: -1, max: 1, step: 0.01, sens: 0.005 },
   exposure: { min: -4, max: 4, step: 0.01, sens: 0.02 },
   blur: { min: 0, max: 64, step: 0.5, sens: 0.25 },
+  lift: { min: -1, max: 1, step: 0.01, sens: 0.005 },
+  gamma: { min: -1, max: 1, step: 0.01, sens: 0.005 },
+  gain: { min: -1, max: 1, step: 0.01, sens: 0.005 },
+  temperature: { min: -1, max: 1, step: 0.01, sens: 0.005 },
+  tint: { min: -1, max: 1, step: 0.01, sens: 0.005 },
 }
 
 const LABELS: Record<AnimChannel, string> = {
@@ -66,6 +71,11 @@ const LABELS: Record<AnimChannel, string> = {
   saturation: 'Saturation',
   exposure: 'Exposure',
   blur: 'Blur',
+  lift: 'Lift',
+  gamma: 'Gamma',
+  gain: 'Gain',
+  temperature: 'Temperature',
+  tint: 'Tint',
 }
 
 const clamp = (v: number, min: number, max: number): number => (v < min ? min : v > max ? max : v)
@@ -374,6 +384,13 @@ export function EffectControls({
       <Section
         title="Filters"
         channels={['brightness', 'contrast', 'saturation', 'exposure', 'blur']}
+        clip={clip}
+        playheadS={playheadS}
+      />
+      <div className="h-px bg-border" />
+      <Section
+        title="Color"
+        channels={['lift', 'gamma', 'gain', 'temperature', 'tint']}
         clip={clip}
         playheadS={playheadS}
       />

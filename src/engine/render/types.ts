@@ -30,6 +30,12 @@ export interface ResolvedFilters {
   exposure: number
   /** Gaussian radius in output px. */
   blur: number
+  // Color correction (Phase 7); all neutral at 0.
+  lift: number
+  gamma: number
+  gain: number
+  temperature: number
+  tint: number
 }
 
 /**
@@ -101,4 +107,9 @@ export const NEUTRAL_FILTERS: ResolvedFilters = {
   saturation: 0,
   exposure: 0,
   blur: 0,
+  lift: 0,
+  gamma: 0,
+  gain: 0,
+  temperature: 0,
+  tint: 0,
 }

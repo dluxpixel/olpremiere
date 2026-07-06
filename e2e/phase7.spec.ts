@@ -1,0 +1,133 @@
+import { expect, test, type Page } from '@playwright/test'
+import fs from 'node:fs'
+
+const FIXTURE = 'e2e/.fixtures/clip.webm'
+const VERIFY = '_verify/phase7'
+
+test.beforeAll(() => {
+  fs.mkdirSync(VERIFY, { recursive: true })
+})
+
+async function addClip(page: Page): Promise<string> {
+  await page.goto('/')
+  await page.getByTestId('media-file-input').setInputFiles(FIXTURE)
+  await expect(page.getByTestId('asset-card')).toBeVisible({ timeout: 15_000 })
+  await page.getByTestId('asset-card').dblclick()
+  await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
+  const clipId = await page.evaluate(async () => {
+    const storeMod = '/src/state/store.ts'
+    const typesMod = '/src/engine/types.ts'
+    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+      useStore: { getState: () => { project: unknown; setUI: (p: unknown) => void } }
+    }
+    const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+      activeSequence: (p: unknown) => { tracks: { clips: { id: string }[] }[] }
+    }
+    const seq = activeSequence(useStore.getState().project)
+    const id = seq.tracks.flatMap((t) => t.clips)[0].id
+    useStore.getState().setUI({ selection: [id] })
+    return id
+  })
+  return clipId
+}
+
+async function setChannel(page: Page, clipId: string, channel: string, value: number): Promise<void> {
+  await page.evaluate(
+    async ({ clipId, channel, value }) => {
+      const editsMod = '/src/state/clipEdits.ts'
+      const { setChannel } = (await import(/* @vite-ignore */ editsMod)) as {
+        setChannel: (id: string, ch: string, v: number) => void
+      }
+      setChannel(clipId, channel, value)
+    },
+    { clipId, channel, value },
+  )
+}
+
+async function previewPixel(page: Page, fx: number, fy: number): Promise<[number, number, number]> {
+  return page.evaluate(
+    ({ fx, fy }) => {
+      const c = document.querySelector('[data-testid="program-canvas"]') as HTMLCanvasElement
+      const scratch = document.createElement('canvas')
+      scratch.width = c.width
+      scratch.height = c.height
+      const ctx = scratch.getContext('2d')!
+      ctx.drawImage(c, 0, 0)
+      const d = ctx.getImageData(Math.floor(c.width * fx), Math.floor(c.height * fy), 1, 1).data
+      return [d[0], d[1], d[2]] as [number, number, number]
+    },
+    { fx, fy },
+  )
+}
+
+async function exportSample(page: Page, tS: number, fx: number, fy: number): Promise<[number, number, number]> {
+  await page.getByTestId('export-open').click()
+  await page.getByTestId('export-resolution').selectOption('2')
+  const dl = page.waitForEvent('download', { timeout: 120_000 })
+  await page.getByTestId('export-start').click()
+  const download = await dl
+  const path = `${VERIFY}/out.mp4`
+  await download.saveAs(path)
+  const b64 = fs.readFileSync(path).toString('base64')
+  return page.evaluate(
+    async ({ b64, tS, fx, fy }) => {
+      const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
+      const video = document.createElement('video')
+      video.muted = true
+      video.src = URL.createObjectURL(new Blob([bytes], { type: 'video/mp4' }))
+      await new Promise<void>((res, rej) => {
+        video.onloadedmetadata = () => res()
+        video.onerror = () => rej(new Error('decode failed'))
+      })
+      video.currentTime = tS
+      await new Promise<void>((res) => {
+        video.onseeked = () => res()
+      })
+      const canvas = document.createElement('canvas')
+      canvas.width = video.videoWidth
+      canvas.height = video.videoHeight
+      const ctx = canvas.getContext('2d')!
+      ctx.drawImage(video, 0, 0)
+      const d = ctx.getImageData(Math.floor(canvas.width * fx), Math.floor(canvas.height * fy), 1, 1).data
+      return [d[0], d[1], d[2]] as [number, number, number]
+    },
+    { b64, tS, fx, fy },
+  )
+}
+
+const near = (a: number, b: number, tol = 40) => Math.abs(a - b) <= tol
+
+test('Color section exposes lift/gamma/gain/temperature/tint', async ({ page }) => {
+  await addClip(page)
+  await expect(page.getByTestId('channel-lift')).toBeVisible()
+  await expect(page.getByTestId('channel-gamma')).toBeVisible()
+  await expect(page.getByTestId('channel-gain')).toBeVisible()
+  await expect(page.getByTestId('channel-temperature')).toBeVisible()
+  await expect(page.getByTestId('channel-tint')).toBeVisible()
+  await page.getByTestId('panel-right').screenshot({ path: `${VERIFY}/color-controls.png` })
+})
+
+test('white-balance (temperature) shifts the image the same way in preview and export', async ({ page }) => {
+  const clipId = await addClip(page)
+  // Park in the BLUE region (source t > 1s → x≈90 @60px/s).
+  await page.getByTestId('ruler').click({ position: { x: 90, y: 10 } })
+  await expect
+    .poll(async () => (await previewPixel(page, 0.5, 0.5))[2], { timeout: 10_000 })
+    .toBeGreaterThan(120) // blue channel present
+  const base = await previewPixel(page, 0.5, 0.5)
+
+  // Cool it hard: red should drop, blue should rise.
+  await setChannel(page, clipId, 'temperature', -1)
+  await expect
+    .poll(async () => (await previewPixel(page, 0.5, 0.5))[0], { timeout: 10_000 })
+    .toBeLessThan(base[0]) // red reduced by cooling
+  const pv = await previewPixel(page, 0.5, 0.5)
+  expect(pv[2]).toBeGreaterThanOrEqual(base[2] - 5) // blue held or raised
+
+  const ex = await exportSample(page, 1.5, 0.5, 0.5)
+  // Identity: the graded pixel matches in the decoded MP4.
+  expect(near(pv[0], ex[0])).toBeTruthy()
+  expect(near(pv[1], ex[1])).toBeTruthy()
+  expect(near(pv[2], ex[2])).toBeTruthy()
+  await page.screenshot({ path: `${VERIFY}/color-graded.png` })
+})

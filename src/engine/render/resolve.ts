@@ -62,6 +62,11 @@ function layerFor(clip: Clip, t: number): RenderLayer {
       saturation: resolveChannel(clip, 'saturation', localT),
       exposure: resolveChannel(clip, 'exposure', localT),
       blur: resolveChannel(clip, 'blur', localT),
+      lift: resolveChannel(clip, 'lift', localT),
+      gamma: resolveChannel(clip, 'gamma', localT),
+      gain: resolveChannel(clip, 'gain', localT),
+      temperature: resolveChannel(clip, 'temperature', localT),
+      tint: resolveChannel(clip, 'tint', localT),
     },
   }
 }
