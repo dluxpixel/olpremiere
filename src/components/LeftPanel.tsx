@@ -3,7 +3,8 @@ import { useEffect, useRef, useState } from 'react'
 import { formatTimecode } from '../engine/timecode'
 import { activeSequence, type MediaAsset } from '../engine/types'
 import { useBlobUrl } from '../state/blobUrls'
-import { importFiles, insertAssetAtPlayhead } from '../state/mediaActions'
+import { openContextMenu } from '../state/contextMenu'
+import { deleteAsset, importFiles, insertAssetAtPlayhead } from '../state/mediaActions'
 import { useStore, type LeftTab } from '../state/store'
 import { Button } from '../ui/Button'
 
@@ -88,6 +89,17 @@ function AssetCard({ asset, fps }: { asset: MediaAsset; fps: number }) {
       onKeyDown={(e) => {
         if (e.key === 'Enter') insertAssetAtPlayhead(asset.id)
       }}
+      onContextMenu={(e) =>
+        openContextMenu(e, [
+          { label: 'Add to timeline', shortcut: 'Enter', onClick: () => insertAssetAtPlayhead(asset.id) },
+          {
+            label: 'Delete from bin',
+            danger: true,
+            separator: true,
+            onClick: () => deleteAsset(asset.id),
+          },
+        ])
+      }
       className="cursor-default overflow-hidden rounded-[6px] border border-border bg-bg-elevated transition-colors duration-[120ms] ease-out hover:border-border-strong"
     >
       <div className="relative flex aspect-video items-center justify-center bg-black">

@@ -20,6 +20,7 @@ import {
   useRef,
   useState,
   type DragEvent,
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from 'react'
 import {
@@ -28,7 +29,9 @@ import {
   clipDurationS,
   clipEndS,
   collectSnapPoints,
+  deleteGroup,
   moveGroup,
+  rippleDeleteGroup,
   rippleTrimGroup,
   slipClip,
   snapTime,
@@ -36,6 +39,7 @@ import {
   trimGroup,
 } from '../engine/timeline'
 import { formatTimecode, quantizeToFrame } from '../engine/timecode'
+import { comboLabel } from '../keymap'
 import {
   activeSequence,
   audioTracks,
@@ -49,6 +53,8 @@ import {
 } from '../engine/types'
 import { pausePlayback } from '../state/playbackControl'
 import { addTitleClip } from '../state/titleActions'
+import { copySelection, cutSelection, duplicateSelection } from '../state/clipboard'
+import { openContextMenu } from '../state/contextMenu'
 import { useBlobUrl } from '../state/blobUrls'
 import {
   MAX_PX_PER_S,
@@ -301,6 +307,7 @@ interface ClipViewProps {
   selected: boolean
   onClipPointerDown: (e: ReactPointerEvent<HTMLDivElement>, clip: Clip) => void
   onTrimPointerDown: (e: ReactPointerEvent<HTMLDivElement>, clip: Clip, edge: 'in' | 'out') => void
+  onClipContextMenu: (e: ReactMouseEvent<HTMLDivElement>, clip: Clip) => void
 }
 
 function ClipView({
@@ -311,6 +318,7 @@ function ClipView({
   selected,
   onClipPointerDown,
   onTrimPointerDown,
+  onClipContextMenu,
 }: ClipViewProps) {
   const left = clip.startS * pxPerS
   const width = Math.max(4, clipDurationS(clip) * pxPerS)
@@ -337,6 +345,7 @@ function ClipView({
       } ${clip.enabled ? '' : 'opacity-40'}`}
       style={{ left, width, background: bg, borderColor: bd }}
       onPointerDown={(e) => onClipPointerDown(e, clip)}
+      onContextMenu={(e) => onClipContextMenu(e, clip)}
     >
       {clip.linkId && (
         <span
@@ -401,6 +410,10 @@ export function Timeline({ height }: { height: number }) {
   const show = useToasts((s) => s.show)
 
   const lanesRef = useRef<HTMLDivElement>(null)
+  // Auto-follow suspension: manualScrollUntil holds a timestamp during which the
+  // user's own scroll wins; programmaticScroll marks our own scrollLeft writes.
+  const manualScrollUntil = useRef(0)
+  const programmaticScroll = useRef(false)
   const contentRef = useRef<HTMLDivElement>(null)
   const headersRef = useRef<HTMLDivElement>(null)
 
@@ -519,6 +532,42 @@ export function Timeline({ height }: { height: number }) {
       grabOffsetS: x / pxPerS - clip.startS,
       trackKind: track.kind,
     })
+  }
+
+  const handleClipContextMenu = (e: ReactMouseEvent<HTMLDivElement>, clip: Clip) => {
+    setUI({ selection: [clip.id] })
+    const playheadInside = playheadS > clip.startS && playheadS < clipEndS(clip)
+    openContextMenu(e, [
+      { label: 'Copy', shortcut: comboLabel('mod+c'), onClick: () => copySelection() },
+      { label: 'Cut', shortcut: comboLabel('mod+x'), onClick: cutSelection },
+      { label: 'Duplicate', shortcut: comboLabel('mod+d'), onClick: duplicateSelection },
+      {
+        label: 'Split at playhead',
+        shortcut: comboLabel('mod+k'),
+        separator: true,
+        disabled: !playheadInside,
+        onClick: () =>
+          updateActiveSequence('Split at playhead', (sq) => splitGroup(sq, clip.id, playheadS)),
+      },
+      {
+        label: 'Delete',
+        shortcut: 'Del',
+        separator: true,
+        onClick: () => {
+          updateActiveSequence('Delete clip', (sq) => deleteGroup(sq, clip.id))
+          setUI({ selection: [] })
+        },
+      },
+      {
+        label: 'Ripple delete',
+        shortcut: 'Shift+Del',
+        danger: true,
+        onClick: () => {
+          updateActiveSequence('Ripple delete', (sq) => rippleDeleteGroup(sq, clip.id))
+          setUI({ selection: [] })
+        },
+      },
+    ])
   }
 
   const handleTrimPointerDown = (
@@ -734,13 +783,22 @@ export function Timeline({ height }: { height: number }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Keep the playhead visible while playing (page-scroll like Premiere).
+  // Keep the playhead visible while playing (page-scroll like Premiere), but
+  // never fight a manual scroll: suspend auto-follow for a moment after the
+  // user scrolls the lanes themselves.
   useEffect(() => {
     if (!playing) return
     const el = lanesRef.current
     if (!el) return
+    if (performance.now() < manualScrollUntil.current) return
     const px = playheadS * pxPerS
-    if (px < el.scrollLeft + 20 || px > el.scrollLeft + el.clientWidth - 40) {
+    const left = el.scrollLeft
+    const right = left + el.clientWidth
+    // Page forward when the playhead runs off the right edge; re-centre only
+    // when it is fully off-screen (e.g. after Home). Do NOT tug back when the
+    // user has scrolled ahead of the playhead.
+    if (px > right - 40 || px < left - el.clientWidth) {
+      programmaticScroll.current = true
       el.scrollLeft = Math.max(0, px - 80)
     }
   }, [playheadS, playing, pxPerS])
@@ -797,6 +855,7 @@ export function Timeline({ height }: { height: number }) {
           selected={selection.includes(clip.id)}
           onClipPointerDown={handleClipPointerDown}
           onTrimPointerDown={handleTrimPointerDown}
+          onClipContextMenu={handleClipContextMenu}
         />
       ))}
       {dropPreview?.trackId === track.id && (
@@ -842,6 +901,10 @@ export function Timeline({ height }: { height: number }) {
           onScroll={(e) => {
             // Track headers share vertical scroll with the lanes.
             if (headersRef.current) headersRef.current.scrollTop = e.currentTarget.scrollTop
+            // A scroll we didn't trigger is the user's — suspend auto-follow so
+            // playback doesn't yank the view back while they drag the scrollbar.
+            if (programmaticScroll.current) programmaticScroll.current = false
+            else manualScrollUntil.current = performance.now() + 2000
           }}
           onDragOver={handleDragOver}
           onDrop={handleDrop}

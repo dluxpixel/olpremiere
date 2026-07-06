@@ -28,6 +28,7 @@ import { addTitleClip } from './state/titleActions'
 import { saveNow } from './state/persistence'
 import { updateActiveSequence, useStore, zoomIn, zoomOut } from './state/store'
 import { useToasts } from './state/toasts'
+import { ContextMenu } from './ui/ContextMenu'
 import { Splitter } from './ui/Splitter'
 import { Toaster } from './ui/Toaster'
 import { useLayoutSizes } from './useLayoutSizes'
@@ -166,7 +167,12 @@ export default function App() {
   useAppKeymap()
 
   return (
-    <div className="flex h-full select-none flex-col overflow-hidden text-[12px] text-text-primary">
+    <div
+      className="flex h-full select-none flex-col overflow-hidden text-[12px] text-text-primary"
+      // Suppress the browser's context menu app-wide; specific elements open
+      // our own menu instead (media cards, clips).
+      onContextMenu={(e) => e.preventDefault()}
+    >
       <TopBar />
       <div className="flex min-h-0 flex-1 flex-col">
         <div className="flex min-h-0 flex-1">
@@ -192,6 +198,7 @@ export default function App() {
         <Timeline height={sizes.bottom} />
       </div>
       <Toaster />
+      <ContextMenu />
     </div>
   )
 }

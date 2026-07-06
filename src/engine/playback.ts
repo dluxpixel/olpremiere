@@ -24,6 +24,13 @@ export class Transport {
   private rafId: number | null = null
   private stopAudio: (() => void) | null = null
   private isPlaying = false
+  /**
+   * Intent set SYNCHRONOUSLY by play()/pause(). play() schedules audio behind
+   * an await (a long clip decodes for seconds), so `isPlaying` lags; `intended`
+   * lets togglePlay/pause react immediately — pressing pause during that window
+   * reliably stops instead of starting a second playback.
+   */
+  private intended = false
   private currentRate = 0
   private startS = 0
   private anchor = 0
@@ -37,7 +44,7 @@ export class Transport {
   }
 
   get playing(): boolean {
-    return this.isPlaying
+    return this.intended
   }
 
   get rate(): number {
@@ -60,9 +67,11 @@ export class Transport {
     const token = ++this.playToken
     this.teardown()
     this.lastT = fromS
+    this.intended = true
 
     if (this.opts.getEndS() <= 0) {
       // Empty sequence: don't start — immediate pause semantics.
+      this.intended = false
       if (this.isPlaying) {
         this.isPlaying = false
         this.currentRate = 0
@@ -131,11 +140,14 @@ export class Transport {
   pause(): number {
     this.playToken++
     this.teardown()
-    if (this.isPlaying) {
-      this.isPlaying = false
-      this.currentRate = 0
-      this.opts.onStateChange?.(false, 0)
-    }
+    // Fire the state change if we were playing OR merely intending to (audio
+    // still decoding) — the latter guarantees the video preview is paused even
+    // when the user hits pause before playback visibly started.
+    const wasActive = this.isPlaying || this.intended
+    this.intended = false
+    this.isPlaying = false
+    this.currentRate = 0
+    if (wasActive) this.opts.onStateChange?.(false, 0)
     return this.lastT
   }
 

@@ -3,7 +3,7 @@
 // onto the timeline at the playhead.
 
 import { probeFile } from '../engine/probe'
-import { addClipFromAsset, addClipWithLinkedAudio } from '../engine/timeline'
+import { addClipFromAsset, addClipWithLinkedAudio, recomputeDuration } from '../engine/timeline'
 import {
   activeSequence,
   audioTracks,
@@ -60,6 +60,32 @@ export async function importFiles(files: File[]): Promise<void> {
     },
   }))
   show(`Imported ${imported.length} file(s)`, 'success')
+}
+
+/** Remove an asset from the bin and every clip that references it (all sequences). */
+export function deleteAsset(assetId: Id): void {
+  const { project, dispatch, ui, setUI } = useStore.getState()
+  const asset = project.assets[assetId]
+  if (!asset) return
+  dispatch(`Delete ${asset.name}`, (p) => {
+    const sequences = { ...p.sequences }
+    for (const sid of Object.keys(sequences)) {
+      const seq = sequences[sid]
+      // A linked audio clip references the same (video) asset, so filtering by
+      // assetId drops both halves of a linked pair.
+      const tracks = seq.tracks.map((t) => {
+        const clips = t.clips.filter((c) => c.assetId !== assetId)
+        return clips.length === t.clips.length ? t : { ...t, clips }
+      })
+      sequences[sid] = recomputeDuration({ ...seq, tracks })
+    }
+    const assets = { ...p.assets }
+    delete assets[assetId]
+    return { ...p, assets, sequences }
+  })
+  // Drop any selection that pointed at now-removed clips.
+  if (ui.selection.length > 0) setUI({ selection: [] })
+  useToasts.getState().show(`Removed ${asset.name}`)
 }
 
 export function insertAssetAtPlayhead(assetId: Id): void {
