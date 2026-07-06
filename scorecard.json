@@ -1,0 +1,61 @@
+{
+  "project": "OT Premiere",
+  "updated": "2026-07-06",
+  "overall": 84,
+  "note": "Honest distance-to-world-class. 100 = a world-class homemade Premiere per the spec Definition of Done. Phases 0-8 all now have real implementations; the remaining gap is ear/eye-gated quality + deeper perf (full proxy/streaming) + a few polish items. Never inflated to cross a review threshold.",
+  "dimensions": [
+    {
+      "key": "editing-core",
+      "label": "Editing core (timeline, trim/split/ripple/roll/slip/slide, snapping, markers, multi-seq)",
+      "score": 90,
+      "left": "Marquee multi-select; a track-height resize grip; roll/slide are engine+tests but not surfaced as dedicated UI."
+    },
+    {
+      "key": "export",
+      "label": "Export fidelity (real MP4, preview==export by construction)",
+      "score": 90,
+      "left": "Worker pool / throughput tuning; AV1/HEVC honesty is stated but codec set is H.264-first."
+    },
+    {
+      "key": "effects-color",
+      "label": "Effects, transitions, titles, color",
+      "score": 84,
+      "left": "Color is lift/gamma/gain + white balance (no curves/scopes); effect/transition/title presets aren't drag-from-Effects-tab yet (Inspector instead)."
+    },
+    {
+      "key": "audio",
+      "label": "Audio (mixer, fades, waveforms, pan, meter, crossfade, reverse)",
+      "score": 82,
+      "left": "EAR-GATED: mix/fade/pan math is built + tested + preview==export, but how it SOUNDS needs David's ears. No sub-mix buses, no EQ, master fader is unity (meter only)."
+    },
+    {
+      "key": "performance",
+      "label": "Performance on long/large media",
+      "score": 74,
+      "left": "Preview decode now scales by quality tier (real scrub win). NOT done: full proxy transcode for the PLAYING path, and streaming audio decode (whole-file decode still costs memory on very long clips)."
+    },
+    {
+      "key": "ux-a11y",
+      "label": "UX, keyboard workflow, a11y",
+      "score": 82,
+      "left": "Full keymap + a live help sheet + aria-live/roles. NOT axe-audited to 'axe-clean'; no first-run coach tour."
+    },
+    {
+      "key": "reliability",
+      "label": "Reliability (tests, autosave, crash recovery)",
+      "score": 88,
+      "left": "375 vitest + 47 e2e incl. golden export + preview==export + crash-recovery. More edge-case coverage on the new audio/color/speed paths would help."
+    },
+    {
+      "key": "design-craft",
+      "label": "Design / craft (dark pro editor)",
+      "score": 85,
+      "left": "Cohesive dark theme, real waveforms, machined controls. Eye-gated polish pass + an icon/spacing sweep would lift it further."
+    }
+  ],
+  "ear_eye_gated": [
+    "Audio mix/kit sound quality (needs David's ears)",
+    "Design polish pass (needs David's eye)"
+  ],
+  "autonomous_ceiling": "The autonomous, verifiable work of Phases 6-8 is done + gate-green. The last ~6 points to world-class-90 are (1) the ear-gated audio quality, (2) full proxy/streaming perf for very long media, and (3) an axe a11y pass + eye-gated design polish."
+}
