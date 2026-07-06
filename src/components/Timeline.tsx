@@ -8,6 +8,7 @@ import {
   Magnet,
   MousePointer2,
   Scissors,
+  Type,
   Volume2,
   VolumeX,
   ZoomIn,
@@ -46,6 +47,7 @@ import {
   type Track,
 } from '../engine/types'
 import { pausePlayback } from '../state/playbackControl'
+import { addTitleClip } from '../state/titleActions'
 import { useBlobUrl } from '../state/blobUrls'
 import {
   MAX_PX_PER_S,
@@ -241,6 +243,16 @@ function TimelineToolbar({ onZoomFit }: { onZoomFit: () => void }) {
       <IconButton size="compact" label="New sequence" onClick={addSequence} data-testid="sequence-new">
         <ListPlus size={14} strokeWidth={1.5} />
       </IconButton>
+      <div className="mx-1.5 h-4 w-px bg-border" />
+      <IconButton
+        size="compact"
+        label="Add title"
+        shortcut="T"
+        onClick={() => addTitleClip()}
+        data-testid="add-title"
+      >
+        <Type size={14} strokeWidth={1.5} />
+      </IconButton>
 
       <div className="ml-auto flex items-center gap-1.5">
         <span className="mr-2 text-[11px] tabular-nums text-text-secondary">
@@ -292,8 +304,11 @@ interface ClipViewProps {
 function ClipView({ clip, asset, pxPerS, selected, onClipPointerDown, onTrimPointerDown }: ClipViewProps) {
   const left = clip.startS * pxPerS
   const width = Math.max(4, clipDurationS(clip) * pxPerS)
-  const { bg, bd } = familyFor(asset)
-  const thumb = useBlobUrl(asset?.thumbnailKey)
+  // Titles are generated (no asset): a distinct violet family + the text label.
+  const isTitle = clip.title !== undefined
+  const { bg, bd } = isTitle ? { bg: '#4a3b6b', bd: '#7a5fb0' } : familyFor(asset)
+  const label = isTitle ? clip.title!.text || 'Title' : (asset?.name ?? 'Missing media')
+  const thumb = useBlobUrl(isTitle ? undefined : asset?.thumbnailKey)
 
   return (
     <div
@@ -314,7 +329,7 @@ function ClipView({ clip, asset, pxPerS, selected, onClipPointerDown, onTrimPoin
         />
       )}
       <span className="pointer-events-none absolute left-1.5 right-1.5 top-0.5 truncate text-[11px] font-medium text-white/90 [text-shadow:0_1px_2px_rgba(0,0,0,0.6)]">
-        {asset?.name ?? 'Missing media'}
+        {label}
       </span>
       <div
         data-testid="trim-in"

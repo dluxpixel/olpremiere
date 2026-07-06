@@ -7,6 +7,7 @@ import { getBlobUrl } from '../state/blobUrls'
 import { getFrameAt, prefetchAround } from './frameCache'
 import { createRenderer, type Renderer } from './render/glRenderer'
 import { resolveFrame } from './render/resolve'
+import { rasterizeTitle } from './render/titleRaster'
 import type { RenderLayer, TextureSource } from './render/types'
 import type { Id, MediaAsset, Sequence } from './types'
 
@@ -97,8 +98,12 @@ function makeTextureSource(
   assets: Record<Id, MediaAsset>,
   fps: number,
   playing: boolean,
+  frameW: number,
+  frameH: number,
 ): TextureSource {
   return (layer: RenderLayer): TexImageSource | null => {
+    // Titles are generated, not imported — rasterize at sequence resolution.
+    if (layer.title) return rasterizeTitle(layer.title, frameW, frameH)
     const asset = assets[layer.assetId]
     if (!asset) return null
 
@@ -162,5 +167,5 @@ export function renderPreview(
     }
     for (const [id, { el }] of videoPool) if (!active.has(id) && !el.paused) el.pause()
   }
-  renderer.render(frame, makeTextureSource(assets, seq.fps, playing))
+  renderer.render(frame, makeTextureSource(assets, seq.fps, playing, frame.width, frame.height))
 }

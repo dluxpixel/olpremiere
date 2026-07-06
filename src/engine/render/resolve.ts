@@ -42,6 +42,7 @@ function layerFor(clip: Clip, t: number): RenderLayer {
     assetId: clip.assetId,
     sourceTimeS,
     isImage: false,
+    title: clip.title,
     transform: {
       x: resolveChannel(clip, 'posX', localT),
       y: resolveChannel(clip, 'posY', localT),

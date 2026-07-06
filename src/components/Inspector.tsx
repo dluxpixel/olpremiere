@@ -1,9 +1,10 @@
 import { SlidersHorizontal } from 'lucide-react'
 import { clipDurationS, clipEndS } from '../engine/timeline'
 import { formatTimecode } from '../engine/timecode'
-import { activeSequence, type Clip } from '../engine/types'
+import { activeSequence, isTitleClip, type Clip } from '../engine/types'
 import { useStore } from '../state/store'
 import { EffectControls } from './EffectControls'
+import { TitleControls } from './TitleControls'
 
 function Row({ label, value }: { label: string; value: string }) {
   return (
@@ -25,28 +26,38 @@ function ClipPanel({
   fps: number
   playheadS: number
 }) {
+  const isTitle = isTitleClip(clip)
+  const name = isTitle ? clip.title!.text || 'Title' : assetName
+
   return (
     <div className="flex flex-col gap-4 p-3">
       <div>
         <div
           className="truncate text-[13px] font-medium text-text-primary"
-          title={assetName}
+          title={name}
           data-testid="inspector-clip-name"
         >
-          {assetName}
+          {name}
         </div>
-        <div className="mt-0.5 text-[11px] text-text-muted">Clip</div>
+        <div className="mt-0.5 text-[11px] text-text-muted">{isTitle ? 'Title' : 'Clip'}</div>
       </div>
 
       <div className="flex flex-col gap-1.5">
         <Row label="Start" value={formatTimecode(clip.startS, fps)} />
         <Row label="End" value={formatTimecode(clipEndS(clip), fps)} />
         <Row label="Duration" value={formatTimecode(clipDurationS(clip), fps)} />
-        <Row label="Source in" value={formatTimecode(clip.inS, fps)} />
-        <Row label="Source out" value={formatTimecode(clip.outS, fps)} />
+        {!isTitle && <Row label="Source in" value={formatTimecode(clip.inS, fps)} />}
+        {!isTitle && <Row label="Source out" value={formatTimecode(clip.outS, fps)} />}
       </div>
 
       <div className="h-px bg-border" />
+
+      {isTitle && (
+        <>
+          <TitleControls clip={clip} />
+          <div className="h-px bg-border" />
+        </>
+      )}
 
       <EffectControls clip={clip} fps={fps} playheadS={playheadS} />
     </div>

@@ -16,6 +16,7 @@ import {
   selectClipOnAdjacentTrack,
 } from './state/clipboard'
 import { pausePlayback, shuttle, togglePlay } from './state/playbackControl'
+import { addTitleClip } from './state/titleActions'
 import { saveNow } from './state/persistence'
 import { updateActiveSequence, useStore, zoomIn, zoomOut } from './state/store'
 import { useToasts } from './state/toasts'
@@ -103,6 +104,7 @@ function useAppKeymap() {
         },
       },
       { combo: 's', description: 'Toggle snapping', run: () => store().setUI({ snapping: !store().ui.snapping }) },
+      { combo: 't', description: 'Add title at playhead', run: () => addTitleClip() },
       { combo: 'v', description: 'Selection tool', run: () => store().setUI({ tool: 'select' }) },
       { combo: 'c', description: 'Razor tool', run: () => store().setUI({ tool: 'razor' }) },
       { combo: 'h', description: 'Hand tool', run: () => store().setUI({ tool: 'hand' }) },

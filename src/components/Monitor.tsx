@@ -5,6 +5,7 @@ import {
   MonitorPlay,
   Pause,
   Play,
+  Scan,
   SkipBack,
   SkipForward,
 } from 'lucide-react'
@@ -57,6 +58,52 @@ function useProgramCanvas(quality: Quality) {
   return canvasRef
 }
 
+/**
+ * Viewport-only safe-margin guides: action-safe (93%) + title-safe (90%)
+ * rectangles over the letterboxed video area. Tracks the canvas display size
+ * (set each frame by the draw loop) so it follows resize/letterboxing. Never
+ * touches the canvas render or export — it is an overlay, not a layer.
+ */
+function SafeMargins({ canvas }: { canvas: HTMLCanvasElement | null }) {
+  const [box, setBox] = useState<{ w: number; h: number } | null>(null)
+  useEffect(() => {
+    if (!canvas) return
+    let raf = 0
+    const tick = () => {
+      raf = requestAnimationFrame(tick)
+      const w = parseFloat(canvas.style.width) || 0
+      const h = parseFloat(canvas.style.height) || 0
+      setBox((prev) => (prev && prev.w === w && prev.h === h ? prev : { w, h }))
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [canvas])
+
+  if (!box || box.w === 0) return null
+  const inset = (pct: number) => ({
+    left: `${((1 - pct) / 2) * 100}%`,
+    top: `${((1 - pct) / 2) * 100}%`,
+    right: `${((1 - pct) / 2) * 100}%`,
+    bottom: `${((1 - pct) / 2) * 100}%`,
+  })
+  return (
+    <div
+      data-testid="safe-margins"
+      className="pointer-events-none absolute"
+      style={{ width: box.w, height: box.h }}
+    >
+      <div
+        className="absolute rounded-[1px] border border-dashed"
+        style={{ ...inset(0.93), borderColor: 'var(--color-border-strong)' }}
+      />
+      <div
+        className="absolute rounded-[1px] border border-dashed"
+        style={{ ...inset(0.9), borderColor: 'var(--color-accent-quiet)' }}
+      />
+    </div>
+  )
+}
+
 export function Monitor() {
   const assets = useStore((s) => s.project.assets)
   // Decode audio + spin up pooled elements as soon as media exists, so the
@@ -73,6 +120,7 @@ export function Monitor() {
   const seq = useStore((s) => activeSequence(s.project))
   const hasContent = seq.durationS > 0
   const [quality, setQuality] = useState<Quality>(1)
+  const [safeMargins, setSafeMargins] = useState(false)
   const regionRef = useRef<HTMLDivElement>(null)
   const canvasRef = useProgramCanvas(quality)
 
@@ -91,6 +139,7 @@ export function Monitor() {
     >
       <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden p-3">
         <canvas ref={canvasRef} data-testid="program-canvas" className="rounded-[2px] bg-black" />
+        {safeMargins && <SafeMargins canvas={canvasRef.current} />}
         {!hasContent && (
           <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 text-center">
             <MonitorPlay size={28} strokeWidth={1.5} className="text-text-muted" aria-hidden />
@@ -144,6 +193,14 @@ export function Monitor() {
         </div>
 
         <div className="ml-auto flex items-center gap-2">
+          <IconButton
+            label="Safe margins"
+            active={safeMargins}
+            onClick={() => setSafeMargins((v) => !v)}
+            data-testid="safe-margins-toggle"
+          >
+            <Scan size={16} strokeWidth={1.5} />
+          </IconButton>
           <select
             aria-label="Playback quality"
             className="h-6 rounded-[4px] border border-border bg-bg-input px-1.5 text-[11px] text-text-secondary focus:border-accent focus:outline-none"

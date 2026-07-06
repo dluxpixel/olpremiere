@@ -97,6 +97,8 @@ export interface Clip {
   keyframes?: Partial<Record<AnimChannel, Keyframe[]>>
   /** Phase 4 color/blur filters. Neutral (identity) = every field 0 / absent. */
   filters?: ClipFilters
+  /** Phase 5 title. When set, this is a generated title clip (assetId is ''). */
+  title?: TitleDef
 }
 
 /** All keyframeable channels. Names are the shared contract across engine + UI. */
@@ -171,6 +173,83 @@ export interface Marker {
   label: string
   color: string
 }
+
+// ---------------------------------------------------------------------------
+// Titles (Phase 5). A title clip has `title` set and an empty assetId — it is
+// generated, not imported, and rasterized to a texture at render time.
+
+export interface TitleShadow {
+  color: string
+  blurPx: number
+  dx: number
+  dy: number
+}
+
+/** A background rectangle behind the text (lower-third / plain shape). */
+export interface TitleBox {
+  color: string
+  paddingPx: number
+  radiusPx: number
+}
+
+export interface TitleDef {
+  text: string
+  fontFamily: string
+  /** Font size in SEQUENCE px (relative to the sequence height). */
+  fontSizePx: number
+  color: string
+  align: 'left' | 'center' | 'right'
+  vAlign: 'top' | 'middle' | 'bottom'
+  bold: boolean
+  italic: boolean
+  /** Line-height multiplier. */
+  lineHeight: number
+  /** Position offset from the aligned anchor, in sequence px. */
+  offsetXPx: number
+  offsetYPx: number
+  shadow?: TitleShadow
+  box?: TitleBox
+}
+
+export function defaultTitleDef(text = 'Title'): TitleDef {
+  return {
+    text,
+    fontFamily: "'Inter', system-ui, sans-serif",
+    fontSizePx: 96,
+    color: '#ffffff',
+    align: 'center',
+    vAlign: 'middle',
+    bold: true,
+    italic: false,
+    lineHeight: 1.2,
+    offsetXPx: 0,
+    offsetYPx: 0,
+    shadow: { color: 'rgba(0,0,0,0.6)', blurPx: 12, dx: 0, dy: 4 },
+  }
+}
+
+/** A title clip: no source asset, a settable duration like a still. */
+export function newTitleClip(def: TitleDef, startS: number, durationS = 5): Clip {
+  return {
+    id: newId(),
+    assetId: '',
+    startS,
+    inS: 0,
+    outS: durationS,
+    speed: 1,
+    enabled: true,
+    transform: defaultTransform(),
+    opacity: 1,
+    blendMode: 'normal',
+    audioGainDb: 0,
+    fadeInS: 0,
+    fadeOutS: 0,
+    effects: [],
+    title: def,
+  }
+}
+
+export const isTitleClip = (clip: Clip): boolean => clip.title !== undefined
 
 // ---------------------------------------------------------------------------
 // Factories

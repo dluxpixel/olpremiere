@@ -10,6 +10,7 @@ import type { WrappedCanvas } from 'mediabunny'
 import { ArrayBufferTarget, Muxer } from 'mp4-muxer'
 import { createRenderer } from '../render/glRenderer'
 import { resolveFrame } from '../render/resolve'
+import { rasterizeTitle } from '../render/titleRaster'
 import type { RenderLayer } from '../render/types'
 import type { Clip, Id } from '../types'
 import {
@@ -297,6 +298,11 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
     const gatherTextures = async (layers: RenderLayer[]): Promise<Map<RenderLayer, TexImageSource>> => {
       const map = new Map<RenderLayer, TexImageSource>()
       for (const layer of layers) {
+        if (layer.title) {
+          // Titles rasterize at sequence resolution (resolveFrame uses seq dims).
+          map.set(layer, rasterizeTitle(layer.title, sequence.width, sequence.height))
+          continue
+        }
         const kind = kindById.get(layer.assetId)
         if (kind === 'image') {
           const bmp = bitmaps.get(layer.assetId)

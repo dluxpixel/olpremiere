@@ -3,7 +3,7 @@
 // Preview (main thread) and export (worker) both go through the SAME resolver
 // and the SAME renderer — that is what keeps them pixel-identical.
 
-import type { Id } from '../types'
+import type { Id, TitleDef } from '../types'
 
 /** A transform fully resolved to numbers at a specific time (no keyframes left). */
 export interface ResolvedTransform {
@@ -44,6 +44,8 @@ export interface RenderLayer {
   sourceTimeS: number
   /** Still image (no time sampling) — caller draws the image texture directly. */
   isImage: boolean
+  /** Generated title (Phase 5): the caller rasterizes this to a texture. */
+  title?: TitleDef
   transform: ResolvedTransform
   opacity: number
   filters: ResolvedFilters
