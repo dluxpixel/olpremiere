@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { Inspector } from './components/Inspector'
+import { KeyboardHelp } from './components/KeyboardHelp'
 import { LeftPanel } from './components/LeftPanel'
 import { Monitor } from './components/Monitor'
 import { Timeline } from './components/Timeline'
@@ -15,7 +16,7 @@ import {
 } from './engine/timeline'
 import { quantizeToFrame } from './engine/timecode'
 import { activeSequence } from './engine/types'
-import { installKeymap } from './keymap'
+import { installKeymap, type Binding } from './keymap'
 import {
   copySelection,
   cutSelection,
@@ -81,10 +82,10 @@ function splitAtPlayhead() {
   })
 }
 
-function useAppKeymap() {
-  useEffect(() => {
-    const store = () => useStore.getState()
-    return installKeymap([
+function buildAppBindings(): Binding[] {
+  const store = () => useStore.getState()
+  return [
+      { combo: 'shift+/', description: 'Keyboard shortcuts', run: () => store().setUI({ helpOpen: !store().ui.helpOpen }) },
       { combo: 'mod+z', description: 'Undo', run: () => store().undo() },
       { combo: 'mod+shift+z', description: 'Redo', run: () => store().redo() },
       { combo: 'mod+y', description: 'Redo', run: () => store().redo() },
@@ -158,8 +159,11 @@ function useAppKeymap() {
         description: 'Zoom to fit sequence',
         run: () => window.dispatchEvent(new Event('reel:zoom-fit')),
       },
-    ])
-  }, [])
+  ]
+}
+
+function useAppKeymap() {
+  useEffect(() => installKeymap(buildAppBindings()), [])
 }
 
 export default function App() {
@@ -199,6 +203,7 @@ export default function App() {
       </div>
       <Toaster />
       <ContextMenu />
+      <KeyboardHelp bindings={buildAppBindings()} />
     </div>
   )
 }

@@ -27,6 +27,8 @@ export interface UIState {
   leftTab: LeftTab
   saveState: SaveState
   playing: boolean
+  /** Keyboard-shortcuts help overlay. */
+  helpOpen: boolean
 }
 
 export interface ReelState {
@@ -60,6 +62,7 @@ export const useStore = create<ReelState>()(
       leftTab: 'media',
       saveState: 'saved',
       playing: false,
+      helpOpen: false,
     },
 
     dispatch(label, fn) {

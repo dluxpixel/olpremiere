@@ -1,4 +1,4 @@
-import { Clapperboard, Download, Redo2, Undo2 } from 'lucide-react'
+import { Clapperboard, Download, Keyboard, Redo2, Undo2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { comboLabel } from '../keymap'
 import { useStore } from '../state/store'
@@ -61,6 +61,7 @@ export function TopBar() {
   const canRedo = useStore((s) => s.history.redo.length > 0)
   const undo = useStore((s) => s.undo)
   const redo = useStore((s) => s.redo)
+  const setUI = useStore((s) => s.setUI)
   const [exporting, setExporting] = useState(false)
 
   return (
@@ -94,6 +95,14 @@ export function TopBar() {
           data-testid="redo"
         >
           <Redo2 size={16} strokeWidth={1.5} />
+        </IconButton>
+        <IconButton
+          label="Keyboard shortcuts"
+          shortcut="?"
+          onClick={() => setUI({ helpOpen: true })}
+          data-testid="help-open"
+        >
+          <Keyboard size={16} strokeWidth={1.5} />
         </IconButton>
         <div className="mx-2 h-4 w-px bg-border" />
         <Button variant="primary" data-testid="export-open" onClick={() => setExporting(true)}>
