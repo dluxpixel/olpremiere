@@ -3,7 +3,7 @@
 // onto the timeline at the playhead.
 
 import { probeFile } from '../engine/probe'
-import { addClipFromAsset } from '../engine/timeline'
+import { addClipFromAsset, addClipWithLinkedAudio } from '../engine/timeline'
 import {
   activeSequence,
   audioTracks,
@@ -68,6 +68,15 @@ export function insertAssetAtPlayhead(assetId: Id): void {
   if (!asset) return
   dispatch(`Add ${asset.name}`, (p) => {
     const seq = activeSequence(p)
+    // Video with audio → linked pair (video on V1, audio split to A1); other
+    // assets → a single clip on the matching track.
+    if (asset.kind === 'video' && asset.hasAudio) {
+      const vTrack = videoTracks(seq)[0]
+      if (!vTrack) return p
+      const aTrack = audioTracks(seq).find((t) => !t.locked) ?? null
+      const { seq: next } = addClipWithLinkedAudio(seq, vTrack.id, aTrack?.id ?? null, asset, ui.playheadS)
+      return { ...p, sequences: { ...p.sequences, [seq.id]: next } }
+    }
     const track = asset.kind === 'audio' ? audioTracks(seq)[0] : videoTracks(seq)[0]
     if (!track) return p
     const { seq: next } = addClipFromAsset(seq, track.id, asset, ui.playheadS)

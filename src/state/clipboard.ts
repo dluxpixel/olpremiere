@@ -3,7 +3,7 @@
 
 import {
   clipEndS,
-  deleteClip,
+  deleteGroup,
   duplicateClips,
   pasteClips,
   serializeClips,
@@ -30,7 +30,7 @@ export function cutSelection(): void {
   const ids = s.ui.selection
   updateActiveSequence('Cut clip(s)', (sq) => {
     let next = sq
-    for (const id of ids) next = deleteClip(next, id)
+    for (const id of ids) next = deleteGroup(next, id)
     return next
   })
   s.setUI({ selection: [] })

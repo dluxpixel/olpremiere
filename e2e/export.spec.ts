@@ -18,9 +18,9 @@ test('golden export: the MP4 matches the composited sequence', async ({ page }) 
   await page.getByTestId('media-file-input').setInputFiles(FIXTURE)
   await expect(page.getByTestId('asset-card')).toBeVisible({ timeout: 15_000 })
   await page.getByTestId('asset-card').dblclick()
-  await expect(page.getByTestId('clip')).toHaveCount(1)
+  await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
   await page.getByTestId('asset-card').dblclick() // resolves to the gap after clip 1
-  await expect(page.getByTestId('clip')).toHaveCount(2)
+  await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(2)
 
   await page.getByTestId('export-open').click()
   await page.getByTestId('export-resolution').selectOption('2') // SD 640×360
@@ -102,7 +102,7 @@ test('export cancel returns to settings without a file', async ({ page }) => {
   await page.getByTestId('media-file-input').setInputFiles(FIXTURE)
   await expect(page.getByTestId('asset-card')).toBeVisible({ timeout: 15_000 })
   await page.getByTestId('asset-card').dblclick()
-  await expect(page.getByTestId('clip')).toHaveCount(1)
+  await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
 
   await page.getByTestId('export-open').click()
   await page.getByTestId('export-start').click()

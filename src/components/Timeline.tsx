@@ -24,15 +24,16 @@ import {
 } from 'react'
 import {
   addClipFromAsset,
+  addClipWithLinkedAudio,
   clipDurationS,
   clipEndS,
   collectSnapPoints,
-  moveClip,
-  rippleTrimTo,
+  moveGroup,
+  rippleTrimGroup,
   slipClip,
   snapTime,
-  splitClip,
-  trimClipTo,
+  splitGroup,
+  trimGroup,
 } from '../engine/timeline'
 import { formatTimecode, quantizeToFrame } from '../engine/timecode'
 import {
@@ -295,31 +296,56 @@ function familyFor(asset: MediaAsset | undefined): { bg: string; bd: string } {
 interface ClipViewProps {
   clip: Clip
   asset: MediaAsset | undefined
+  trackKind: 'video' | 'audio'
   pxPerS: number
   selected: boolean
   onClipPointerDown: (e: ReactPointerEvent<HTMLDivElement>, clip: Clip) => void
   onTrimPointerDown: (e: ReactPointerEvent<HTMLDivElement>, clip: Clip, edge: 'in' | 'out') => void
 }
 
-function ClipView({ clip, asset, pxPerS, selected, onClipPointerDown, onTrimPointerDown }: ClipViewProps) {
+function ClipView({
+  clip,
+  asset,
+  trackKind,
+  pxPerS,
+  selected,
+  onClipPointerDown,
+  onTrimPointerDown,
+}: ClipViewProps) {
   const left = clip.startS * pxPerS
   const width = Math.max(4, clipDurationS(clip) * pxPerS)
   // Titles are generated (no asset): a distinct violet family + the text label.
   const isTitle = clip.title !== undefined
-  const { bg, bd } = isTitle ? { bg: '#4a3b6b', bd: '#7a5fb0' } : familyFor(asset)
+  // Colour by the TRACK: an audio-track clip is audio-family even when it
+  // references a video asset (a linked-audio split).
+  const { bg, bd } = isTitle
+    ? { bg: '#4a3b6b', bd: '#7a5fb0' }
+    : trackKind === 'audio'
+      ? { bg: 'var(--color-clip-audio)', bd: 'var(--color-clip-audio-bd)' }
+      : familyFor(asset)
+  const kind = isTitle ? 'title' : trackKind
   const label = isTitle ? clip.title!.text || 'Title' : (asset?.name ?? 'Missing media')
-  const thumb = useBlobUrl(isTitle ? undefined : asset?.thumbnailKey)
+  const thumb = useBlobUrl(isTitle || trackKind === 'audio' ? undefined : asset?.thumbnailKey)
 
   return (
     <div
       data-testid="clip"
       data-clip-id={clip.id}
+      data-clip-kind={kind}
       className={`group/clip absolute bottom-[3px] top-[3px] overflow-hidden rounded-[6px] border ${
         selected ? 'ring-2 ring-accent' : ''
       } ${clip.enabled ? '' : 'opacity-40'}`}
       style={{ left, width, background: bg, borderColor: bd }}
       onPointerDown={(e) => onClipPointerDown(e, clip)}
     >
+      {clip.linkId && (
+        <span
+          className="pointer-events-none absolute bottom-0.5 right-1 text-[9px] text-white/50"
+          title="Linked A/V"
+        >
+          🔗
+        </span>
+      )}
       {thumb && width > 48 && (
         <img
           src={thumb}
@@ -358,6 +384,7 @@ type Drag =
   | { kind: 'move'; clipId: Id; grabOffsetS: number; trackKind: 'video' | 'audio' }
   | { kind: 'trim'; clipId: Id; edge: 'in' | 'out'; ripple: boolean }
   | { kind: 'slip'; clipId: Id; startXPx: number }
+  | { kind: 'scrub' }
   | { kind: 'hand'; startX: number; startY: number; scrollLeft: number; scrollTop: number }
 
 export function Timeline({ height }: { height: number }) {
@@ -466,7 +493,7 @@ export function Timeline({ height }: { height: number }) {
     if (tool === 'razor') {
       if (track.locked) return
       const t = quantizeToFrame(contentPoint(e).x / pxPerS, seq.fps)
-      updateActiveSequence('Split clip', (sq) => splitClip(sq, clip.id, t))
+      updateActiveSequence('Split clip', (sq) => splitGroup(sq, clip.id, t))
       return
     }
     // Selection tool: select, then start a move (or Alt = slip) drag.
@@ -519,11 +546,25 @@ export function Timeline({ height }: { height: number }) {
     })
   }
 
+  const scrubPlayheadTo = (clientX: number) => {
+    const rect = contentRef.current?.getBoundingClientRect()
+    if (!rect) return
+    const t = Math.max(0, (clientX - rect.left) / pxPerS)
+    setUI({ playheadS: quantizeToFrame(t, seq.fps) })
+  }
+
   const handleLanePointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (e.button !== 0 || e.target !== e.currentTarget) return
     if (tool === 'hand') beginHand(e)
     else if (tool === 'zoom') zoomAround(e.clientX, e.altKey ? 1 / 1.4 : 1.4)
-    else if (tool === 'select') setUI({ selection: [] })
+    else if (tool === 'select') {
+      // Vegas-style: clicking empty track space moves the playhead there and
+      // deselects; dragging scrubs.
+      pausePlayback()
+      setUI({ selection: [] })
+      scrubPlayheadTo(e.clientX)
+      beginDrag(e, { kind: 'scrub' })
+    }
   }
 
   const handleLanesPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -534,6 +575,10 @@ export function Timeline({ height }: { height: number }) {
         el.scrollLeft = drag.scrollLeft - (e.clientX - drag.startX)
         el.scrollTop = drag.scrollTop - (e.clientY - drag.startY)
       }
+      return
+    }
+    if (drag.kind === 'scrub') {
+      scrubPlayheadTo(e.clientX)
       return
     }
     const { x, y } = contentPoint(e)
@@ -563,7 +608,7 @@ export function Timeline({ height }: { height: number }) {
       const hovered = laneAt(y)
       const target = hovered && hovered.kind === drag.trackKind && !hovered.locked ? hovered : current
       dragFinal.current = { trackId: target.id, tS: Math.max(0, desired) }
-      setPreviewSeq(moveClip(seq, drag.clipId, target.id, Math.max(0, desired)))
+      setPreviewSeq(moveGroup(seq, drag.clipId, target.id, Math.max(0, desired)))
     } else if (drag.kind === 'slip') {
       const deltaS = quantizeToFrame((x - drag.startXPx) / pxPerS, seq.fps)
       dragFinal.current = { trackId: '', tS: deltaS }
@@ -581,7 +626,7 @@ export function Timeline({ height }: { height: number }) {
       const tRaw = quantizeToFrame(Math.max(0, x / pxPerS), seq.fps)
       const t = snapWithIndicator(tRaw, drag.clipId)
       dragFinal.current = { trackId: '', tS: t }
-      const trimFn = drag.ripple ? rippleTrimTo : trimClipTo
+      const trimFn = drag.ripple ? rippleTrimGroup : trimGroup
       const next = trimFn(seq, assets, drag.clipId, drag.edge, t)
       setPreviewSeq(next)
       const trimmed = next.tracks.flatMap((tr) => tr.clips).find((c) => c.id === drag.clipId)
@@ -606,10 +651,10 @@ export function Timeline({ height }: { height: number }) {
     lanesRef.current?.releasePointerCapture(e.pointerId)
     if (drag.kind === 'move' && dragFinal.current) {
       const { trackId, tS } = dragFinal.current
-      updateActiveSequence('Move clip', (sq) => moveClip(sq, drag.clipId, trackId, tS))
+      updateActiveSequence('Move clip', (sq) => moveGroup(sq, drag.clipId, trackId, tS))
     } else if (drag.kind === 'trim' && dragFinal.current) {
       const { tS } = dragFinal.current
-      const trimFn = drag.ripple ? rippleTrimTo : trimClipTo
+      const trimFn = drag.ripple ? rippleTrimGroup : trimGroup
       updateActiveSequence(drag.ripple ? 'Ripple trim' : 'Trim clip', (sq) =>
         trimFn(sq, assets, drag.clipId, drag.edge, tS),
       )
@@ -663,6 +708,14 @@ export function Timeline({ height }: { height: number }) {
     const tRaw = quantizeToFrame(Math.max(0, x / pxPerS), seq.fps)
     const points = snapping ? collectSnapPoints(seq, { playheadS }) : []
     const t = snapping ? snapTime(tRaw, points, SNAP_PX / pxPerS).t : tRaw
+    // Dropping a video with audio splits its sound to a linked audio clip on A1.
+    if (asset.kind === 'video' && asset.hasAudio) {
+      const audioTrack = audioTracks(seq).find((tr) => !tr.locked) ?? null
+      updateActiveSequence(`Add ${asset.name}`, (sq) =>
+        addClipWithLinkedAudio(sq, target.id, audioTrack?.id ?? null, asset, t).seq,
+      )
+      return
+    }
     updateActiveSequence(`Add ${asset.name}`, (sq) => addClipFromAsset(sq, target.id, asset, t).seq)
   }
 
@@ -739,6 +792,7 @@ export function Timeline({ height }: { height: number }) {
           key={clip.id}
           clip={clip}
           asset={assets[clip.assetId]}
+          trackKind={track.kind}
           pxPerS={pxPerS}
           selected={selection.includes(clip.id)}
           onClipPointerDown={handleClipPointerDown}

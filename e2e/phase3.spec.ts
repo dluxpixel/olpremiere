@@ -4,6 +4,10 @@ import fs from 'node:fs'
 const FIXTURE = 'e2e/.fixtures/clip.webm'
 const VERIFY = '_verify/phase3'
 
+// The fixture has audio, so each add creates a linked video+audio pair; the
+// tests operate on the video clips.
+const vclip = (page: Page) => page.locator('[data-clip-kind="video"]')
+
 test.beforeAll(() => {
   fs.mkdirSync(VERIFY, { recursive: true })
 })
@@ -13,7 +17,7 @@ async function addClip(page: Page): Promise<void> {
   await page.getByTestId('media-file-input').setInputFiles(FIXTURE)
   await expect(page.getByTestId('asset-card')).toBeVisible({ timeout: 15_000 })
   await page.getByTestId('asset-card').dblclick()
-  await expect(page.getByTestId('clip')).toHaveCount(1)
+  await expect(vclip(page)).toHaveCount(1)
 }
 
 const centerPixel = (page: Page) =>
@@ -62,16 +66,16 @@ test('frame-accurate scrub: exact frames on both sides of the color cut', async 
 
 test('copy / paste / duplicate via keyboard', async ({ page }) => {
   await addClip(page)
-  await page.getByTestId('clip').click()
+  await vclip(page).click()
   await page.keyboard.press('Control+c')
   await page.getByTestId('ruler').click({ position: { x: 300, y: 10 } }) // 5s
   await page.keyboard.press('Control+v')
-  await expect(page.getByTestId('clip')).toHaveCount(2)
+  await expect(vclip(page)).toHaveCount(2)
   await page.keyboard.press('Control+d')
-  await expect(page.getByTestId('clip')).toHaveCount(3)
+  await expect(vclip(page)).toHaveCount(3)
   await page.keyboard.press('Control+z')
   await page.keyboard.press('Control+z')
-  await expect(page.getByTestId('clip')).toHaveCount(1)
+  await expect(vclip(page)).toHaveCount(1)
 })
 
 test('markers: add, exact-time dedupe, remove', async ({ page }) => {
@@ -92,19 +96,19 @@ test('markers: add, exact-time dedupe, remove', async ({ page }) => {
 test('multiple sequences: new empties the timeline, switching back restores', async ({ page }) => {
   await addClip(page)
   await page.getByTestId('sequence-new').click()
-  await expect(page.getByTestId('clip')).toHaveCount(0)
+  await expect(vclip(page)).toHaveCount(0)
   await expect(page.getByTestId('sequence-select')).toHaveValue(/.+/)
   await page.getByTestId('sequence-select').selectOption({ label: 'Sequence 1' })
-  await expect(page.getByTestId('clip')).toHaveCount(1)
+  await expect(vclip(page)).toHaveCount(1)
 })
 
 test('ripple trim: Ctrl+drag the out edge pulls the next clip along', async ({ page }) => {
   await addClip(page)
   await page.getByTestId('asset-card').dblclick() // second clip lands after the first
-  await expect(page.getByTestId('clip')).toHaveCount(2)
-  const second = page.getByTestId('clip').nth(1)
+  await expect(vclip(page)).toHaveCount(2)
+  const second = vclip(page).nth(1)
   const before2 = (await second.boundingBox())!
-  const first = page.getByTestId('clip').first()
+  const first = vclip(page).first()
   const b1 = (await first.boundingBox())!
 
   await page.keyboard.down('Control')
@@ -120,7 +124,7 @@ test('ripple trim: Ctrl+drag the out edge pulls the next clip along', async ({ p
 
 test('slip: Alt+drag shifts the source window, not the position', async ({ page }) => {
   await addClip(page)
-  const clip = page.getByTestId('clip')
+  const clip = vclip(page)
   // Trim the head in ~30px first so the slip has source room on the left.
   let box = (await clip.boundingBox())!
   await page.mouse.move(box.x + 3, box.y + box.height / 2)
@@ -150,18 +154,18 @@ test('history round-trips: undo to empty, redo to the edited state', async ({ pa
   await addClip(page)
   await page.getByTestId('ruler').click({ position: { x: 60, y: 10 } }) // 1s
   await page.keyboard.press('Control+k')
-  await expect(page.getByTestId('clip')).toHaveCount(2)
-  await page.getByTestId('clip').first().click()
+  await expect(vclip(page)).toHaveCount(2)
+  await vclip(page).first().click()
   await page.keyboard.press('Delete')
-  await expect(page.getByTestId('clip')).toHaveCount(1)
+  await expect(vclip(page)).toHaveCount(1)
 
   await page.keyboard.press('Control+z')
   await page.keyboard.press('Control+z')
   await page.keyboard.press('Control+z')
-  await expect(page.getByTestId('clip')).toHaveCount(0)
+  await expect(vclip(page)).toHaveCount(0)
 
   await page.keyboard.press('Control+Shift+z')
   await page.keyboard.press('Control+Shift+z')
   await page.keyboard.press('Control+Shift+z')
-  await expect(page.getByTestId('clip')).toHaveCount(1)
+  await expect(vclip(page)).toHaveCount(1)
 })

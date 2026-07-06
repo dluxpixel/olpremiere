@@ -13,7 +13,7 @@ async function addClip(page: Page): Promise<string> {
   await page.getByTestId('media-file-input').setInputFiles(FIXTURE)
   await expect(page.getByTestId('asset-card')).toBeVisible({ timeout: 15_000 })
   await page.getByTestId('asset-card').dblclick()
-  await expect(page.getByTestId('clip')).toHaveCount(1)
+  await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
   // Select the clip and return its id.
   const clipId = await page.evaluate(async () => {
     const storeMod = '/src/state/store.ts'
@@ -190,8 +190,9 @@ test('Effect Controls: stopwatch keyframes a channel and the lane shows a diamon
 test('transition dropdown applies a cross-dissolve to a two-clip cut', async ({ page }) => {
   await addClip(page)
   await page.getByTestId('asset-card').dblclick() // second clip after the first
-  await expect(page.getByTestId('clip')).toHaveCount(2)
-  await page.getByTestId('clip').nth(1).click()
+  const vclip = page.locator('[data-clip-kind="video"]')
+  await expect(vclip).toHaveCount(2)
+  await vclip.nth(1).click()
   await page.getByTestId('transition-in').selectOption('crossDissolve')
 
   const has = await page.evaluate(async () => {

@@ -2,7 +2,7 @@
 // thread: OfflineAudioContext is not reliably available in workers, and the
 // decoded-AudioBuffer cache in audio.ts already lives here.
 
-import { computeClipSchedule, dbToGain, getAudioBuffer, type ClipSchedule } from '../audio'
+import { clipEmitsAudio, computeClipSchedule, dbToGain, getAudioBuffer, type ClipSchedule } from '../audio'
 import type { Clip, Id, MediaAsset, Sequence } from '../types'
 import type { RenderedAudio } from './messages'
 
@@ -29,6 +29,7 @@ export async function renderAudioMix(
   const candidates: { clip: Clip; sched: ClipSchedule; asset: MediaAsset }[] = []
   for (const track of audibleTracks) {
     for (const clip of track.clips) {
+      if (!clipEmitsAudio(track, clip)) continue
       const sched = computeClipSchedule(clip, 0)
       if (!sched) continue
       const asset: MediaAsset | undefined = assets[clip.assetId]

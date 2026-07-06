@@ -4,7 +4,7 @@
 // MASTER clock so A/V stays in sync.
 
 import { getBlob } from '../state/persistence'
-import type { Clip, Id, MediaAsset, Sequence } from './types'
+import type { Clip, Id, MediaAsset, Sequence, Track } from './types'
 
 /** Sources start this far in the future so scheduling jitter can't clip the head. */
 export const SCHEDULE_LATENCY_S = 0.05
@@ -75,6 +75,16 @@ export interface ClipSchedule {
  * frozen speed (reverse audio is Phase 7; speed 0 never advances),
  * zero-length trim, or a timeline window that ends at/before `fromS`.
  */
+/**
+ * Whether a clip contributes audio: audio-track clips always do; a video-track
+ * clip only when it is NOT linked (a linked video clip's audio lives on its
+ * linked audio-track partner). Keeps linked A/V from doubling the sound.
+ */
+export function clipEmitsAudio(track: Track, clip: Clip): boolean {
+  if (track.kind === 'audio') return true
+  return clip.linkId === undefined
+}
+
 export function computeClipSchedule(clip: Clip, fromS: number): ClipSchedule | null {
   if (!clip.enabled) return null
   if (clip.speed <= 0) return null
@@ -116,12 +126,13 @@ export async function scheduleAudio(
   const anySolo = seq.tracks.some((t) => t.solo)
   const audibleTracks = seq.tracks.filter((t) => (anySolo ? t.solo : !t.muted))
 
-  // Clips on BOTH audio and video tracks count: a video clip carries its
-  // asset's audio when asset.hasAudio — the REEL MVP has no separate linked
-  // audio clips. getAudioBuffer() resolves null for silent/image assets.
+  // Audio comes from audio-track clips PLUS standalone (unlinked) video clips.
+  // A linked video clip is video-only — its audio plays from the linked
+  // audio-track clip, so counting it here would double the sound.
   const candidates: { clip: Clip; sched: ClipSchedule; asset: MediaAsset }[] = []
   for (const track of audibleTracks) {
     for (const clip of track.clips) {
+      if (!clipEmitsAudio(track, clip)) continue
       const sched = computeClipSchedule(clip, fromS)
       if (!sched) continue
       const asset: MediaAsset | undefined = assets[clip.assetId]

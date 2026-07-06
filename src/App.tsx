@@ -4,7 +4,15 @@ import { LeftPanel } from './components/LeftPanel'
 import { Monitor } from './components/Monitor'
 import { Timeline } from './components/Timeline'
 import { TopBar } from './components/TopBar'
-import { addMarker, clipEndS, deleteClip, removeMarkerNear, rippleDelete, splitClip } from './engine/timeline'
+import {
+  addMarker,
+  clipEndS,
+  clipGroupIds,
+  deleteGroup,
+  removeMarkerNear,
+  rippleDeleteGroup,
+  splitGroup,
+} from './engine/timeline'
 import { quantizeToFrame } from './engine/timecode'
 import { activeSequence } from './engine/types'
 import { installKeymap } from './keymap'
@@ -36,9 +44,10 @@ function deleteSelected(ripple: boolean) {
   const s = useStore.getState()
   const ids = s.ui.selection
   if (ids.length === 0) return
+  // Group-aware: deleting a linked clip removes its A/V partner too.
   updateActiveSequence(ripple ? 'Ripple delete' : 'Delete clip', (sq) => {
     let next = sq
-    for (const id of ids) next = ripple ? rippleDelete(next, id) : deleteClip(next, id)
+    for (const id of ids) next = ripple ? rippleDeleteGroup(next, id) : deleteGroup(next, id)
     return next
   })
   s.setUI({ selection: [] })
@@ -60,7 +69,13 @@ function splitAtPlayhead() {
   if (targets.length === 0) return
   updateActiveSequence('Split at playhead', (sq) => {
     let next = sq
-    for (const id of targets) next = splitClip(next, id, t)
+    // De-dupe linked partners so a group isn't split twice.
+    const done = new Set<string>()
+    for (const id of targets) {
+      if (done.has(id)) continue
+      for (const gid of clipGroupIds(next, id)) done.add(gid)
+      next = splitGroup(next, id, t)
+    }
     return next
   })
 }

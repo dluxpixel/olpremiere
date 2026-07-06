@@ -4,6 +4,7 @@
 
 import {
   defaultTransform,
+  newClipFromAsset,
   newId,
   type Clip,
   type Id,
@@ -277,6 +278,158 @@ export function collectSnapPoints(
 export const timeToPx = (tS: number, pxPerS: number): number => tS * pxPerS
 
 export const pxToTime = (px: number, pxPerS: number): number => px / pxPerS
+
+// ---------------------------------------------------------------------------
+// Linked A/V groups (Vegas-style). Clips sharing a linkId move/trim/split/
+// delete together. A linked video clip is video-only; its audio-track partner
+// carries the sound (see clipEmitsAudio in engine/audio.ts).
+
+/** All clip ids sharing clipId's link group (just [clipId] when unlinked). */
+export function clipGroupIds(seq: Sequence, clipId: Id): Id[] {
+  const found = findClip(seq, clipId)
+  if (!found) return []
+  const link = found.clip.linkId
+  if (!link) return [clipId]
+  const ids: Id[] = []
+  for (const track of seq.tracks) for (const c of track.clips) if (c.linkId === link) ids.push(c.id)
+  return ids
+}
+
+/**
+ * Add a video asset AND split its audio to a linked clip on an audio track.
+ * The video clip (video-only, linked) lands on videoTrackId; the audio clip
+ * (same asset, linked) lands on audioTrackId at the same start. Falls back to
+ * a standalone video clip (its own audio) when no audio track is available.
+ */
+export function addClipWithLinkedAudio(
+  seq: Sequence,
+  videoTrackId: Id,
+  audioTrackId: Id | null,
+  asset: MediaAsset,
+  desiredStartS: number,
+): { seq: Sequence; videoClipId: Id; audioClipId: Id } {
+  const vIndex = seq.tracks.findIndex((t) => t.id === videoTrackId)
+  if (vIndex === -1) return { seq, videoClipId: '', audioClipId: '' }
+  const vTrack = seq.tracks[vIndex]
+  if (vTrack.kind !== 'video' || vTrack.locked) return { seq, videoClipId: '', audioClipId: '' }
+
+  const aIndex = audioTrackId ? seq.tracks.findIndex((t) => t.id === audioTrackId) : -1
+  const aTrack = aIndex === -1 ? null : seq.tracks[aIndex]
+  const canLink = !!aTrack && aTrack.kind === 'audio' && !aTrack.locked
+
+  const dur = clipDurationS(newClipFromAsset(asset, 0))
+  // Place at a start free on BOTH tracks so the pair stays aligned.
+  const obstacles: Track = {
+    ...vTrack,
+    clips: [...vTrack.clips, ...(canLink ? aTrack!.clips : [])],
+  }
+  const startS = resolveStart(obstacles, desiredStartS, dur)
+
+  if (!canLink) {
+    // No audio track — standalone video clip keeps its own audio (no linkId).
+    const clip = { ...newClipFromAsset(asset, startS) }
+    return {
+      seq: withTrackClips(seq, vIndex, insertSorted(vTrack.clips, clip)),
+      videoClipId: clip.id,
+      audioClipId: '',
+    }
+  }
+
+  const linkId = newId()
+  const videoClip: Clip = { ...newClipFromAsset(asset, startS), linkId }
+  const audioClip: Clip = { ...newClipFromAsset(asset, startS), linkId }
+  const tracks = seq.tracks.map((t, i) => {
+    if (i === vIndex) return { ...t, clips: insertSorted(t.clips, videoClip) }
+    if (i === aIndex) return { ...t, clips: insertSorted(t.clips, audioClip) }
+    return t
+  })
+  return {
+    seq: recomputeDuration({ ...seq, tracks }),
+    videoClipId: videoClip.id,
+    audioClipId: audioClip.id,
+  }
+}
+
+/** Move a clip and shift every linked group member by the same time delta. */
+export function moveGroup(seq: Sequence, clipId: Id, targetTrackId: Id, desiredStartS: number): Sequence {
+  const group = clipGroupIds(seq, clipId)
+  if (group.length <= 1) return moveClip(seq, clipId, targetTrackId, desiredStartS)
+  const before = findClip(seq, clipId)
+  if (!before) return seq
+  let next = moveClip(seq, clipId, targetTrackId, desiredStartS)
+  const after = findClip(next, clipId)
+  if (!after) return next
+  const delta = after.clip.startS - before.clip.startS
+  if (delta === 0) return next
+  for (const id of group) {
+    if (id === clipId) continue
+    const m = findClip(next, id)
+    if (!m) continue
+    next = moveClip(next, id, m.track.id, m.clip.startS + delta)
+  }
+  return next
+}
+
+/** Trim a clip's edge and apply the same absolute edge to every linked member. */
+export function trimGroup(
+  seq: Sequence,
+  assets: Record<Id, MediaAsset>,
+  clipId: Id,
+  edge: 'in' | 'out',
+  tS: number,
+): Sequence {
+  let next = seq
+  for (const id of clipGroupIds(seq, clipId)) next = trimClipTo(next, assets, id, edge, tS)
+  return next
+}
+
+export function rippleTrimGroup(
+  seq: Sequence,
+  assets: Record<Id, MediaAsset>,
+  clipId: Id,
+  edge: 'in' | 'out',
+  tS: number,
+): Sequence {
+  let next = seq
+  for (const id of clipGroupIds(seq, clipId)) next = rippleTrimTo(next, assets, id, edge, tS)
+  return next
+}
+
+export function deleteGroup(seq: Sequence, clipId: Id): Sequence {
+  let next = seq
+  for (const id of clipGroupIds(seq, clipId)) next = deleteClip(next, id)
+  return next
+}
+
+export function rippleDeleteGroup(seq: Sequence, clipId: Id): Sequence {
+  let next = seq
+  for (const id of clipGroupIds(seq, clipId)) next = rippleDelete(next, id)
+  return next
+}
+
+/** Split every linked member at tS; the right halves form a fresh link group. */
+export function splitGroup(seq: Sequence, clipId: Id, tS: number): Sequence {
+  const found = findClip(seq, clipId)
+  if (!found) return seq
+  const link = found.clip.linkId
+  if (!link) return splitClip(seq, clipId, tS)
+  const groupBefore = new Set(clipGroupIds(seq, clipId))
+  let next = seq
+  for (const id of groupBefore) next = splitClip(next, id, tS)
+  // splitClip copies linkId onto both halves; the left halves keep the original
+  // ids (in groupBefore). Re-link the right halves (same link, new ids) so the
+  // two sides are independent groups.
+  const newLink = newId()
+  return {
+    ...next,
+    tracks: next.tracks.map((track) => ({
+      ...track,
+      clips: track.clips.map((c) =>
+        c.linkId === link && !groupBefore.has(c.id) ? { ...c, linkId: newLink } : c,
+      ),
+    })),
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Phase 3: ripple/roll/slip/slide, markers, clipboard ops
@@ -561,6 +714,9 @@ export function pasteClips(
   seq.tracks.forEach((t, i) => kindIdx[t.kind].push(i))
 
   const newIds: Id[] = []
+  // Remap link groups to FRESH ids: clips linked in the payload stay linked to
+  // each other, but never to the source clips (which would merge groups).
+  const linkRemap = new Map<Id, Id>()
   let tracks = seq.tracks
   for (const item of payload) {
     const sameKind = kindIdx[item.trackKind]
@@ -571,11 +727,18 @@ export function pasteClips(
     // Clone so the payload stays reusable; fresh clip + effect-instance ids.
     const body = structuredClone(item.clip)
     const durS = (body.outS - body.inS) / Math.abs(body.speed || 1)
+    let linkId = body.linkId
+    if (linkId) {
+      const mapped = linkRemap.get(linkId) ?? newId()
+      linkRemap.set(linkId, mapped)
+      linkId = mapped
+    }
     const clip: Clip = {
       ...body,
       id: newId(),
       startS: resolveStart(track, atS + item.offsetS, durS),
       effects: body.effects.map((e) => ({ ...e, id: newId() })),
+      linkId,
     }
     tracks = tracks.map((t, i) => (i === ti ? { ...t, clips: insertSorted(t.clips, clip) } : t))
     newIds.push(clip.id)

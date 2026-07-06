@@ -2,15 +2,19 @@ import { describe, expect, it } from 'vitest'
 import { defaultTransform, type Clip, type MediaAsset, type Sequence, type Track } from './types'
 import {
   addClipFromAsset,
+  addClipWithLinkedAudio,
   addMarker,
   canPlace,
   clipDurationS,
   clipEndS,
+  clipGroupIds,
   collectSnapPoints,
   deleteClip,
+  deleteGroup,
   duplicateClips,
   findClip,
   moveClip,
+  moveGroup,
   moveMarker,
   pasteClips,
   pxToTime,
@@ -27,8 +31,10 @@ import {
   slipClip,
   snapTime,
   splitClip,
+  splitGroup,
   timeToPx,
   trimClipTo,
+  trimGroup,
 } from './timeline'
 
 // ---------------------------------------------------------------------------
@@ -1396,5 +1402,114 @@ describe('duplicateClips', () => {
     expect(r1.newIds).toEqual([])
     expect(r2.seq).toBe(seq)
     expect(r2.newIds).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Linked A/V groups (Vegas-style)
+
+const videoAsset: MediaAsset = {
+  id: 'vid',
+  name: 'v.mp4',
+  kind: 'video',
+  blobKey: 'k',
+  durationS: 6,
+  hasAudio: true,
+  hasVideo: true,
+}
+
+describe('addClipWithLinkedAudio', () => {
+  const setup = () => {
+    const v = makeTrack({ name: 'V1', kind: 'video' })
+    const a = makeTrack({ name: 'A1', kind: 'audio' })
+    return { v, a, seq: makeSeq([v, a]) }
+  }
+
+  it('creates a linked video + audio clip sharing a linkId at the same start', () => {
+    const { v, a, seq } = setup()
+    const { seq: next, videoClipId, audioClipId } = addClipWithLinkedAudio(seq, v.id, a.id, videoAsset, 2)
+    const vc = findClip(next, videoClipId)!
+    const ac = findClip(next, audioClipId)!
+    expect(vc.track.kind).toBe('video')
+    expect(ac.track.kind).toBe('audio')
+    expect(vc.clip.linkId).toBeDefined()
+    expect(vc.clip.linkId).toBe(ac.clip.linkId)
+    expect(vc.clip.startS).toBe(ac.clip.startS)
+    expect(clipEndS(vc.clip)).toBeCloseTo(clipEndS(ac.clip))
+  })
+
+  it('falls back to a standalone video clip (no link) when no audio track', () => {
+    const { v, seq } = setup()
+    const { seq: next, videoClipId, audioClipId } = addClipWithLinkedAudio(seq, v.id, null, videoAsset, 0)
+    expect(audioClipId).toBe('')
+    expect(findClip(next, videoClipId)!.clip.linkId).toBeUndefined()
+  })
+
+  it('places the pair at a start free on BOTH tracks', () => {
+    const v = makeTrack({ name: 'V1', kind: 'video' })
+    const a = makeTrack({
+      name: 'A1',
+      kind: 'audio',
+      clips: [makeClip({ assetId: 'x', startS: 0, outS: 3 })],
+    })
+    const seq = makeSeq([v, a])
+    const { seq: next, videoClipId } = addClipWithLinkedAudio(seq, v.id, a.id, videoAsset, 0)
+    // Audio track is occupied [0,3); the 6s pair must start at/after 3.
+    expect(findClip(next, videoClipId)!.clip.startS).toBeGreaterThanOrEqual(3 - 1e-9)
+  })
+})
+
+describe('group operations', () => {
+  const linked = () => {
+    const v = makeTrack({ name: 'V1', kind: 'video' })
+    const a = makeTrack({ name: 'A1', kind: 'audio' })
+    const r = addClipWithLinkedAudio(makeSeq([v, a]), v.id, a.id, videoAsset, 1)
+    return { ...r, vId: r.videoClipId, aId: r.audioClipId }
+  }
+
+  it('clipGroupIds returns both members of a link, or just the clip when unlinked', () => {
+    const { seq, vId, aId } = linked()
+    expect(clipGroupIds(seq, vId).sort()).toEqual([vId, aId].sort())
+    const solo = makeClip()
+    const s2 = makeSeq([makeTrack({ clips: [solo] })])
+    expect(clipGroupIds(s2, solo.id)).toEqual([solo.id])
+  })
+
+  it('moveGroup shifts both members by the same delta', () => {
+    const { seq, vId, aId } = linked()
+    const v0 = findClip(seq, vId)!.clip.startS
+    const a0 = findClip(seq, aId)!.clip.startS
+    const track = findClip(seq, vId)!.track
+    const next = moveGroup(seq, vId, track.id, v0 + 2)
+    expect(findClip(next, vId)!.clip.startS).toBeCloseTo(v0 + 2)
+    expect(findClip(next, aId)!.clip.startS).toBeCloseTo(a0 + 2)
+  })
+
+  it('deleteGroup removes both members', () => {
+    const { seq, vId, aId } = linked()
+    const next = deleteGroup(seq, vId)
+    expect(findClip(next, vId)).toBeNull()
+    expect(findClip(next, aId)).toBeNull()
+  })
+
+  it('trimGroup trims both members to the same edge', () => {
+    const { seq, vId, aId } = linked()
+    const assets = { vid: videoAsset }
+    const next = trimGroup(seq, assets, vId, 'out', 4)
+    expect(clipEndS(findClip(next, vId)!.clip)).toBeCloseTo(4)
+    expect(clipEndS(findClip(next, aId)!.clip)).toBeCloseTo(4)
+  })
+
+  it('splitGroup splits both members and re-links the right halves as one group', () => {
+    const { seq, vId, aId } = linked()
+    const next = splitGroup(seq, vId, 3)
+    // Both original halves stay linked together; both right halves link together.
+    const leftGroup = clipGroupIds(next, vId).sort()
+    expect(leftGroup).toEqual([vId, aId].sort())
+    const vTrack = findClip(next, vId)!.track
+    const rightV = vTrack.clips.find((c) => Math.abs(c.startS - 3) < 1e-6)!
+    const rightGroup = clipGroupIds(next, rightV.id)
+    expect(rightGroup).toHaveLength(2)
+    expect(rightGroup).not.toContain(vId)
   })
 })

@@ -99,6 +99,13 @@ export interface Clip {
   filters?: ClipFilters
   /** Phase 5 title. When set, this is a generated title clip (assetId is ''). */
   title?: TitleDef
+  /**
+   * Linked-clip group id (Vegas-style A/V link). Clips sharing a linkId move,
+   * trim, split, and delete together. A video clip WITH a linkId is video-only
+   * (its audio plays from the linked audio-track clip); a video clip WITHOUT a
+   * linkId plays its own audio.
+   */
+  linkId?: Id
 }
 
 /** All keyframeable channels. Names are the shared contract across engine + UI. */
@@ -250,6 +257,26 @@ export function newTitleClip(def: TitleDef, startS: number, durationS = 5): Clip
 }
 
 export const isTitleClip = (clip: Clip): boolean => clip.title !== undefined
+
+/** A plain clip referencing an imported asset, placed at startS (in-point 0). */
+export function newClipFromAsset(asset: MediaAsset, startS: number): Clip {
+  return {
+    id: newId(),
+    assetId: asset.id,
+    startS,
+    inS: 0,
+    outS: asset.durationS || 5, // stills default to 5s
+    speed: 1,
+    enabled: true,
+    transform: defaultTransform(),
+    opacity: 1,
+    blendMode: 'normal',
+    audioGainDb: 0,
+    fadeInS: 0,
+    fadeOutS: 0,
+    effects: [],
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Factories
