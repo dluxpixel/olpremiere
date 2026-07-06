@@ -602,18 +602,31 @@ export function Timeline({ height }: { height: number }) {
     setUI({ playheadS: quantizeToFrame(t, seq.fps) })
   }
 
-  const handleLanePointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0 || e.target !== e.currentTarget) return
+  // Vegas-style: click empty space (a track lane, or the blank area below the
+  // tracks) to move the playhead there; drag to scrub. Deselects clips.
+  const beginEmptyScrub = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (tool === 'hand') beginHand(e)
     else if (tool === 'zoom') zoomAround(e.clientX, e.altKey ? 1 / 1.4 : 1.4)
     else if (tool === 'select') {
-      // Vegas-style: clicking empty track space moves the playhead there and
-      // deselects; dragging scrubs.
       pausePlayback()
       setUI({ selection: [] })
       scrubPlayheadTo(e.clientX)
       beginDrag(e, { kind: 'scrub' })
     }
+  }
+
+  const handleLanePointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0 || e.target !== e.currentTarget) return
+    beginEmptyScrub(e)
+  }
+
+  // The scroll container's own background (the blank area beneath the last
+  // track). Bubbled events from lanes/clips/ruler are ignored via the target
+  // check, so only a click on the empty background scrubs.
+  const handleLanesBackgroundPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return
+    if (e.target !== e.currentTarget && e.target !== contentRef.current) return
+    beginEmptyScrub(e)
   }
 
   const handleLanesPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -895,6 +908,7 @@ export function Timeline({ height }: { height: number }) {
           ref={lanesRef}
           className={`relative min-w-0 flex-1 overflow-auto ${cursorClass}`}
           data-testid="timeline-lanes"
+          onPointerDown={handleLanesBackgroundPointerDown}
           onPointerMove={handleLanesPointerMove}
           onPointerUp={handleLanesPointerUp}
           onPointerCancel={handleLanesPointerUp}
