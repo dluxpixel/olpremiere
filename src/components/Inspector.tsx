@@ -66,7 +66,7 @@ function AudioControls({ clip }: { clip: Clip }) {
           <ScrubField
             value={clip.audioGainDb}
             spec={GAIN_SPEC}
-            testId="field-gain"
+            testId="field-audio-gain"
             ariaLabel="Audio gain (dB)"
             onCommit={(v) => setClipGainDb(clip.id, v)}
           />

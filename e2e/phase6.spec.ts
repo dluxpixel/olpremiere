@@ -49,7 +49,7 @@ test('the Inspector shows an Audio section (gain + fades) for an audio clip', as
   await addClip(page)
   await aclip(page).click()
   await expect(page.getByTestId('audio-controls')).toBeVisible()
-  await expect(page.getByTestId('field-gain')).toBeVisible()
+  await expect(page.getByTestId('field-audio-gain')).toBeVisible()
   await expect(page.getByTestId('field-fade-in')).toBeVisible()
   await expect(page.getByTestId('field-fade-out')).toBeVisible()
   await page.getByTestId('panel-right').screenshot({ path: `${VERIFY}/inspector-audio.png` })
