@@ -2,7 +2,7 @@
 // IndexedDB. Nothing ever leaves the machine.
 
 import { openDB, type IDBPDatabase } from 'idb'
-import type { Project } from '../engine/types'
+import { migrateProject, type Project } from '../engine/types'
 import { useStore } from './store'
 
 const DB_NAME = 'reel'
@@ -33,7 +33,8 @@ export async function loadLastProject(): Promise<Project | null> {
   const d = await db()
   const id = (await d.get('meta', 'lastProjectId')) as string | undefined
   if (!id) return null
-  return ((await d.get('projects', id)) as Project | undefined) ?? null
+  const p = (await d.get('projects', id)) as Project | undefined
+  return p ? migrateProject(p) : null
 }
 
 export async function putBlob(key: string, blob: Blob): Promise<void> {

@@ -69,6 +69,8 @@ const makeTrack = (over: Partial<Track> = {}): Track => ({
   muted: false,
   solo: false,
   locked: false,
+  volumeDb: 0,
+  pan: 0,
   clips: [],
   ...over,
 })

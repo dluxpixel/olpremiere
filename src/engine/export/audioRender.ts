@@ -2,9 +2,18 @@
 // thread: OfflineAudioContext is not reliably available in workers, and the
 // decoded-AudioBuffer cache in audio.ts already lives here.
 
-import { clipEmitsAudio, computeClipSchedule, dbToGain, getAudioBuffer, type ClipSchedule } from '../audio'
-import type { Clip, Id, MediaAsset, Sequence } from '../types'
+import {
+  clipEmitsAudio,
+  clipGainEnvelope,
+  computeClipSchedule,
+  dbToGain,
+  getAudioBuffer,
+  type ClipSchedule,
+} from '../audio'
+import type { Clip, Id, MediaAsset, Sequence, Track } from '../types'
 import type { RenderedAudio } from './messages'
+
+const clamp = (x: number, lo: number, hi: number): number => (x < lo ? lo : x > hi ? hi : x)
 
 export const EXPORT_SAMPLE_RATE = 48000
 export const EXPORT_CHANNELS = 2
@@ -26,7 +35,7 @@ export async function renderAudioMix(
   const anySolo = seq.tracks.some((t) => t.solo)
   const audibleTracks = seq.tracks.filter((t) => (anySolo ? t.solo : !t.muted))
 
-  const candidates: { clip: Clip; sched: ClipSchedule; asset: MediaAsset }[] = []
+  const candidates: { clip: Clip; track: Track; sched: ClipSchedule; asset: MediaAsset }[] = []
   for (const track of audibleTracks) {
     for (const clip of track.clips) {
       if (!clipEmitsAudio(track, clip)) continue
@@ -34,7 +43,7 @@ export async function renderAudioMix(
       if (!sched) continue
       const asset: MediaAsset | undefined = assets[clip.assetId]
       if (!asset) continue
-      candidates.push({ clip, sched, asset })
+      candidates.push({ clip, track, sched, asset })
     }
   }
   if (candidates.length === 0) return null
@@ -45,16 +54,39 @@ export async function renderAudioMix(
 
   const length = Math.max(1, Math.ceil(seq.durationS * EXPORT_SAMPLE_RATE))
   const ctx = new OfflineAudioContext(EXPORT_CHANNELS, length, EXPORT_SAMPLE_RATE)
-  candidates.forEach(({ clip, sched }, i) => {
+
+  // Same gain→pan-per-track → destination topology as the live preview, so the
+  // exported mix matches what was heard. Times are absolute (export renders
+  // from t=0), which is exactly clipGainEnvelope(clip, 0)'s offset convention.
+  const trackNodes = new Map<Id, GainNode>()
+  const trackInputFor = (track: Track): GainNode => {
+    let gain = trackNodes.get(track.id)
+    if (!gain) {
+      gain = ctx.createGain()
+      gain.gain.value = dbToGain(track.volumeDb ?? 0)
+      const pan = ctx.createStereoPanner()
+      pan.pan.value = clamp(track.pan ?? 0, -1, 1)
+      gain.connect(pan)
+      pan.connect(ctx.destination)
+      trackNodes.set(track.id, gain)
+    }
+    return gain
+  }
+
+  candidates.forEach(({ clip, track, sched }, i) => {
     const buffer = buffers[i]
     if (!buffer) return
     const source = ctx.createBufferSource()
     source.buffer = buffer
     source.playbackRate.value = Math.abs(clip.speed)
     const gain = ctx.createGain()
-    gain.gain.value = dbToGain(clip.audioGainDb)
+    const env = clipGainEnvelope(clip, 0) ?? [{ offsetS: 0, value: dbToGain(clip.audioGainDb) }]
+    env.forEach((pt, idx) => {
+      if (idx === 0) gain.gain.setValueAtTime(pt.value, pt.offsetS)
+      else gain.gain.linearRampToValueAtTime(pt.value, pt.offsetS)
+    })
     source.connect(gain)
-    gain.connect(ctx.destination)
+    gain.connect(trackInputFor(track))
     source.start(sched.whenOffsetS, sched.sourceOffsetS, sched.durationS)
   })
 

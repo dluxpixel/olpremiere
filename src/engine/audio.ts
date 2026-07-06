@@ -9,6 +9,8 @@ import type { Clip, Id, MediaAsset, Sequence, Track } from './types'
 /** Sources start this far in the future so scheduling jitter can't clip the head. */
 export const SCHEDULE_LATENCY_S = 0.05
 
+const clamp = (x: number, lo: number, hi: number): number => (x < lo ? lo : x > hi ? hi : x)
+
 export function dbToGain(db: number): number {
   return 10 ** (db / 20)
 }
@@ -98,6 +100,101 @@ export function computeClipSchedule(clip: Clip, fromS: number): ClipSchedule | n
   return { whenOffsetS, sourceOffsetS, durationS: clip.outS - sourceOffsetS }
 }
 
+export interface GainPoint {
+  /** Seconds after the schedule base time (baseT for preview, 0 for export). */
+  offsetS: number
+  value: number
+}
+
+/**
+ * Piecewise-linear gain automation for a clip scheduled from `fromS`, combining
+ * its static gain (`audioGainDb`) with fade-in/out ramps. Offsets are relative
+ * to the schedule base (= the transport `fromS`); the FIRST point is the audible
+ * start and should be applied with setValueAtTime, the rest with
+ * linearRampToValueAtTime. Fades that would overlap on a short clip are scaled
+ * down proportionally so the envelope stays a clean trapezoid. Returns null in
+ * exactly the cases computeClipSchedule does (no audible contribution).
+ */
+export function clipGainEnvelope(clip: Clip, fromS: number): GainPoint[] | null {
+  if (!computeClipSchedule(clip, fromS)) return null
+  const g = dbToGain(clip.audioGainDb)
+  const speed = Math.abs(clip.speed) || 1
+  const winStart = clip.startS
+  const winEnd = clip.startS + (clip.outS - clip.inS) / speed
+  const winLen = winEnd - winStart
+
+  let fin = Math.max(0, clip.fadeInS)
+  let fout = Math.max(0, clip.fadeOutS)
+  if (fin + fout > winLen && fin + fout > 0) {
+    const k = winLen / (fin + fout)
+    fin *= k
+    fout *= k
+  }
+
+  const envAt = (x: number): number => {
+    const fi = fin > 0 ? clamp((x - winStart) / fin, 0, 1) : 1
+    const fo = fout > 0 ? clamp((winEnd - x) / fout, 0, 1) : 1
+    return g * Math.min(fi, fo)
+  }
+
+  const audibleStart = Math.max(fromS, winStart)
+  const times = new Set<number>([audibleStart, winEnd])
+  if (fin > 0) times.add(winStart + fin)
+  if (fout > 0) times.add(winEnd - fout)
+  const sorted = [...times]
+    .filter((x) => x >= audibleStart - 1e-9 && x <= winEnd + 1e-9)
+    .sort((a, b) => a - b)
+  return sorted.map((x) => ({ offsetS: Math.max(0, x - fromS), value: envAt(x) }))
+}
+
+// ---------------------------------------------------------------------------
+// Master chain + stereo meter. One persistent master bus taps a splitter into
+// two AnalyserNodes so the UI can draw an L/R level meter. Created lazily on the
+// first play; the meter reads ~silence until then.
+
+export interface MasterChain {
+  master: GainNode
+  analyserL: AnalyserNode
+  analyserR: AnalyserNode
+}
+
+let masterChain: MasterChain | null = null
+
+export function ensureMasterChain(): MasterChain {
+  if (masterChain) return masterChain
+  const ctx = ensureAudioContext()
+  const master = ctx.createGain()
+  const splitter = ctx.createChannelSplitter(2)
+  const analyserL = ctx.createAnalyser()
+  const analyserR = ctx.createAnalyser()
+  for (const a of [analyserL, analyserR]) {
+    a.fftSize = 1024
+    a.smoothingTimeConstant = 0.5
+  }
+  master.connect(ctx.destination) // the audible path
+  master.connect(splitter) // the meter tap
+  splitter.connect(analyserL, 0)
+  splitter.connect(analyserR, 1)
+  masterChain = { master, analyserL, analyserR }
+  return masterChain
+}
+
+/** Null until the first play has built the chain — the meter shows idle. */
+export function getMasterChain(): MasterChain | null {
+  return masterChain
+}
+
+/** Peak absolute amplitude (0..1) of an analyser's current time-domain window. */
+export function readAnalyserPeak(analyser: AnalyserNode, buf: Float32Array): number {
+  analyser.getFloatTimeDomainData(buf)
+  let peak = 0
+  for (let i = 0; i < buf.length; i++) {
+    const a = Math.abs(buf[i])
+    if (a > peak) peak = a
+  }
+  return peak
+}
+
 // resume() can stay pending forever under autoplay policy, so race a short
 // timeout: scheduling proceeds either way and the transport falls back to
 // performance.now() while the context stays suspended.
@@ -129,7 +226,7 @@ export async function scheduleAudio(
   // Audio comes from audio-track clips PLUS standalone (unlinked) video clips.
   // A linked video clip is video-only — its audio plays from the linked
   // audio-track clip, so counting it here would double the sound.
-  const candidates: { clip: Clip; sched: ClipSchedule; asset: MediaAsset }[] = []
+  const candidates: { clip: Clip; track: Track; sched: ClipSchedule; asset: MediaAsset }[] = []
   for (const track of audibleTracks) {
     for (const clip of track.clips) {
       if (!clipEmitsAudio(track, clip)) continue
@@ -137,34 +234,60 @@ export async function scheduleAudio(
       if (!sched) continue
       const asset: MediaAsset | undefined = assets[clip.assetId]
       if (!asset) continue
-      candidates.push({ clip, sched, asset })
+      candidates.push({ clip, track, sched, asset })
     }
   }
 
   const buffers = await Promise.all(candidates.map((c) => getAudioBuffer(c.asset)))
 
-  const nodes: { source: AudioBufferSourceNode; gain: GainNode }[] = []
+  const { master } = ensureMasterChain()
+
+  // One gain→pan node per audible track, feeding the shared master. Built lazily
+  // so a track with no audible clip costs nothing.
+  const trackNodes = new Map<Id, { gain: GainNode; pan: StereoPannerNode }>()
+  const trackInputFor = (track: Track): GainNode => {
+    let n = trackNodes.get(track.id)
+    if (!n) {
+      const gain = ctx.createGain()
+      gain.gain.value = dbToGain(track.volumeDb ?? 0)
+      const pan = ctx.createStereoPanner()
+      pan.pan.value = clamp(track.pan ?? 0, -1, 1)
+      gain.connect(pan)
+      pan.connect(master)
+      n = { gain, pan }
+      trackNodes.set(track.id, n)
+    }
+    return n.gain
+  }
+
+  const clipNodes: { source: AudioBufferSourceNode; gain: GainNode }[] = []
   // One base time shared by every clip so relative offsets stay exact.
   const baseT = ctx.currentTime + SCHEDULE_LATENCY_S
-  candidates.forEach(({ clip, sched }, i) => {
+  candidates.forEach(({ clip, track, sched }, i) => {
     const buffer = buffers[i]
     if (!buffer) return
     const source = ctx.createBufferSource()
     source.buffer = buffer
     source.playbackRate.value = Math.abs(clip.speed)
     const gain = ctx.createGain()
-    gain.gain.value = dbToGain(clip.audioGainDb)
+    // Fade in/out + static gain, shared with the export mix by construction.
+    const env = clipGainEnvelope(clip, fromS) ?? [{ offsetS: 0, value: dbToGain(clip.audioGainDb) }]
+    env.forEach((pt, idx) => {
+      const when = baseT + pt.offsetS
+      if (idx === 0) gain.gain.setValueAtTime(pt.value, when)
+      else gain.gain.linearRampToValueAtTime(pt.value, when)
+    })
     source.connect(gain)
-    gain.connect(ctx.destination)
+    gain.connect(trackInputFor(track))
     source.start(baseT + sched.whenOffsetS, sched.sourceOffsetS, sched.durationS)
-    nodes.push({ source, gain })
+    clipNodes.push({ source, gain })
   })
 
   let stopped = false
   return () => {
     if (stopped) return
     stopped = true
-    for (const { source, gain } of nodes) {
+    for (const { source, gain } of clipNodes) {
       try {
         source.stop()
       } catch {
@@ -172,6 +295,11 @@ export async function scheduleAudio(
       }
       source.disconnect()
       gain.disconnect()
+    }
+    // Tear down the per-track nodes too; the master chain persists for the meter.
+    for (const { gain, pan } of trackNodes.values()) {
+      gain.disconnect()
+      pan.disconnect()
     }
   }
 }

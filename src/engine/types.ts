@@ -60,6 +60,10 @@ export interface Track {
   muted: boolean
   solo: boolean
   locked: boolean
+  /** Track fader in dB (0 = unity). Phase 6 audio mixer. */
+  volumeDb: number
+  /** Stereo pan, −1 (hard left) .. 1 (hard right); 0 = center. Phase 6. */
+  pan: number
   /** Sorted by startS; clips never overlap on one track. */
   clips: Clip[]
 }
@@ -302,8 +306,36 @@ export function newTrack(kind: Track['kind'], name: string): Track {
     muted: false,
     solo: false,
     locked: false,
+    volumeDb: 0,
+    pan: 0,
     clips: [],
   }
+}
+
+/**
+ * Fill fields added after a project was first persisted, so loading an older
+ * IndexedDB document never yields tracks missing volumeDb/pan (etc.). Pure +
+ * structuredClone-safe; returns the SAME object when nothing needed patching so
+ * callers can skip a needless store write.
+ */
+export function migrateProject(p: Project): Project {
+  let changed = false
+  const sequences: Record<Id, Sequence> = {}
+  for (const [id, seq] of Object.entries(p.sequences)) {
+    let seqChanged = false
+    const tracks = seq.tracks.map((t) => {
+      if (typeof t.volumeDb === 'number' && typeof t.pan === 'number') return t
+      seqChanged = true
+      return { ...t, volumeDb: t.volumeDb ?? 0, pan: t.pan ?? 0 }
+    })
+    if (seqChanged) {
+      changed = true
+      sequences[id] = { ...seq, tracks }
+    } else {
+      sequences[id] = seq
+    }
+  }
+  return changed ? { ...p, sequences } : p
 }
 
 export function newSequence(name = 'Sequence 1'): Sequence {

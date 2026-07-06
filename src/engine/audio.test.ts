@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { computeClipSchedule, dbToGain } from './audio'
+import { clipGainEnvelope, computeClipSchedule, dbToGain } from './audio'
 import { defaultTransform, type Clip } from './types'
 
 const clip = (patch: Partial<Clip> = {}): Clip => ({
@@ -145,5 +145,84 @@ describe('computeClipSchedule', () => {
       expect(computeClipSchedule(slow(), 5.9)).not.toBeNull()
       expect(computeClipSchedule(slow(), 6)).toBeNull()
     })
+  })
+})
+
+describe('clipGainEnvelope', () => {
+  // clip [0,4) at unity gain unless overridden.
+  it('no fades → flat at the static gain across the window', () => {
+    const env = clipGainEnvelope(clip(), 0)
+    expect(env).toEqual([
+      { offsetS: 0, value: 1 },
+      { offsetS: 4, value: 1 },
+    ])
+  })
+
+  it('respects audioGainDb as the plateau level', () => {
+    const env = clipGainEnvelope(clip({ audioGainDb: -6 }), 0)!
+    expect(env[0].value).toBeCloseTo(0.501, 3)
+    expect(env.at(-1)!.value).toBeCloseTo(0.501, 3)
+  })
+
+  it('fade in only: 0 → g over fadeInS', () => {
+    const env = clipGainEnvelope(clip({ fadeInS: 1 }), 0)
+    expect(env).toEqual([
+      { offsetS: 0, value: 0 },
+      { offsetS: 1, value: 1 },
+      { offsetS: 4, value: 1 },
+    ])
+  })
+
+  it('fade out only: g → 0 over fadeOutS', () => {
+    const env = clipGainEnvelope(clip({ fadeOutS: 1 }), 0)
+    expect(env).toEqual([
+      { offsetS: 0, value: 1 },
+      { offsetS: 3, value: 1 },
+      { offsetS: 4, value: 0 },
+    ])
+  })
+
+  it('both fades: trapezoid 0 → g → g → 0', () => {
+    const env = clipGainEnvelope(clip({ fadeInS: 1, fadeOutS: 1 }), 0)
+    expect(env).toEqual([
+      { offsetS: 0, value: 0 },
+      { offsetS: 1, value: 1 },
+      { offsetS: 3, value: 1 },
+      { offsetS: 4, value: 0 },
+    ])
+  })
+
+  it('overlapping fades on a short clip scale down proportionally (no overlap)', () => {
+    // window length 2, fades 2+2 → scaled to 1+1, peak g at the center
+    const env = clipGainEnvelope(clip({ outS: 2, fadeInS: 2, fadeOutS: 2 }), 0)
+    expect(env).toEqual([
+      { offsetS: 0, value: 0 },
+      { offsetS: 1, value: 1 },
+      { offsetS: 2, value: 0 },
+    ])
+  })
+
+  it('starting mid fade-in sets the partial level then ramps to g', () => {
+    // fromS=1 lands halfway through a 2s fade-in on clip [0,4)
+    const env = clipGainEnvelope(clip({ fadeInS: 2 }), 1)!
+    expect(env[0]).toEqual({ offsetS: 0, value: 0.5 })
+    expect(env[1]).toEqual({ offsetS: 1, value: 1 }) // reaches g at t=2 → offset 1
+    expect(env.at(-1)).toEqual({ offsetS: 3, value: 1 })
+  })
+
+  it('half-speed clip fades over the STRETCHED timeline window', () => {
+    // source [0,2) at speed 0.5 → timeline window [0,4); fade-out 1s ends at t=4
+    const env = clipGainEnvelope(clip({ outS: 2, speed: 0.5, fadeOutS: 1 }), 0)
+    expect(env).toEqual([
+      { offsetS: 0, value: 1 },
+      { offsetS: 3, value: 1 },
+      { offsetS: 4, value: 0 },
+    ])
+  })
+
+  it('returns null when the clip contributes no audio', () => {
+    expect(clipGainEnvelope(clip({ enabled: false }), 0)).toBeNull()
+    expect(clipGainEnvelope(clip({ speed: -1 }), 0)).toBeNull()
+    expect(clipGainEnvelope(clip(), 5)).toBeNull()
   })
 })
