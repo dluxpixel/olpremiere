@@ -303,7 +303,7 @@ function TrackHeader({ track }: { track: Track }) {
 
 const TOOLS: { tool: Tool; label: string; shortcut: string; icon: typeof MousePointer2 }[] = [
   { tool: 'select', label: 'Selection tool', shortcut: 'V', icon: MousePointer2 },
-  { tool: 'razor', label: 'Razor tool', shortcut: 'C', icon: Scissors },
+  { tool: 'razor', label: 'Razor (blade) tool', shortcut: 'B', icon: Scissors },
   { tool: 'hand', label: 'Hand tool', shortcut: 'H', icon: Hand },
   { tool: 'zoom', label: 'Zoom tool', shortcut: 'Z', icon: ZoomIn },
 ]

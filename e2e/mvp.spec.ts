@@ -62,13 +62,14 @@ test('move: dragging a clip shifts its timeline position (linked audio follows)'
   expect(Math.abs(undone.x - before.x)).toBeLessThan(3)
 })
 
-test('split: Ctrl+K at the playhead makes two clips; razor makes three', async ({ page }) => {
+test('C cuts at the playhead; the razor (B) tool cuts on click', async ({ page }) => {
   await addClipToTimeline(page)
   await page.getByTestId('ruler').click({ position: { x: 60, y: 10 } }) // t = 1s @60px/s
-  await page.keyboard.press('Control+k')
+  // C is the one-key cut: it splits the clip under the playhead into two.
+  await page.keyboard.press('c')
   await expect(vclip(page)).toHaveCount(2)
 
-  await page.keyboard.press('c') // razor
+  await page.keyboard.press('b') // razor / blade tool
   await vclip(page).first().click({ position: { x: 20, y: 20 } })
   await expect(vclip(page)).toHaveCount(3)
   await page.keyboard.press('v')

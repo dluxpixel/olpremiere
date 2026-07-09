@@ -123,10 +123,13 @@ function buildAppBindings(): Binding[] {
       { combo: 's', description: 'Toggle snapping', run: () => store().setUI({ snapping: !store().ui.snapping }) },
       { combo: 't', description: 'Add title at playhead', run: () => addTitleClip() },
       { combo: 'v', description: 'Selection tool', run: () => store().setUI({ tool: 'select' }) },
-      { combo: 'c', description: 'Razor tool', run: () => store().setUI({ tool: 'razor' }) },
+      // C cuts the clip(s) at the playhead right away (Premiere muscle memory). The razor
+      // TOOL (click-to-cut anywhere) moved to B (Blade) so click-cutting is still available.
+      { combo: 'c', description: 'Cut at playhead', run: splitAtPlayhead },
+      { combo: 'b', description: 'Razor (blade) tool', run: () => store().setUI({ tool: 'razor' }) }, // click-to-cut anywhere
       { combo: 'h', description: 'Hand tool', run: () => store().setUI({ tool: 'hand' }) },
       { combo: 'z', description: 'Zoom tool', run: () => store().setUI({ tool: 'zoom' }) },
-      { combo: 'mod+k', description: 'Split clip at playhead', run: splitAtPlayhead },
+      { combo: 'mod+k', description: 'Cut at playhead', run: splitAtPlayhead },
       { combo: 'delete', description: 'Delete (lift)', run: () => deleteSelected(false) },
       { combo: 'backspace', description: 'Delete (lift)', run: () => deleteSelected(false) },
       { combo: 'shift+delete', description: 'Ripple delete', run: () => deleteSelected(true) },

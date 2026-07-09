@@ -88,8 +88,8 @@ test('keyboard: snapping toggle, tools, zoom', async ({ page }) => {
   await page.keyboard.press('s')
   await expect(snap).toHaveAttribute('aria-pressed', 'true')
 
-  await page.keyboard.press('c')
-  await expect(page.getByRole('button', { name: 'Razor tool' })).toHaveAttribute(
+  await page.keyboard.press('b')
+  await expect(page.getByRole('button', { name: 'Razor (blade) tool' })).toHaveAttribute(
     'aria-pressed',
     'true',
   )
