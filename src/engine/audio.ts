@@ -4,7 +4,7 @@
 // MASTER clock so A/V stays in sync.
 
 import { getBlob } from '../state/persistence'
-import type { Clip, Id, MediaAsset, Sequence, Track } from './types'
+import type { AutoLevel, Clip, Id, MediaAsset, Sequence, Track } from './types'
 
 /** Sources start this far in the future so scheduling jitter can't clip the head. */
 export const SCHEDULE_LATENCY_S = 0.05
@@ -13,6 +13,35 @@ const clamp = (x: number, lo: number, hi: number): number => (x < lo ? lo : x > 
 
 export function dbToGain(db: number): number {
   return 10 ** (db / 20)
+}
+
+export interface CompressorParams {
+  threshold: number
+  knee: number
+  ratio: number
+  attack: number
+  release: number
+  /** Post-compression makeup gain, dB — what lifts the evened signal back up. */
+  makeupDb: number
+}
+
+/**
+ * Compressor + makeup-gain settings for a loudness-equalization degree. Higher
+ * degree = lower threshold, higher ratio, more makeup → a more even, louder
+ * track. Pure so the mapping is unit-tested; the same params drive preview and
+ * export. 'off' returns null (bypass).
+ */
+export function compressorParamsFor(level: AutoLevel | undefined): CompressorParams | null {
+  switch (level) {
+    case 'low':
+      return { threshold: -18, knee: 10, ratio: 2, attack: 0.01, release: 0.25, makeupDb: 2 }
+    case 'medium':
+      return { threshold: -24, knee: 16, ratio: 3.5, attack: 0.006, release: 0.2, makeupDb: 4 }
+    case 'high':
+      return { threshold: -30, knee: 22, ratio: 6, attack: 0.003, release: 0.15, makeupDb: 6 }
+    default:
+      return null
+  }
 }
 
 let sharedCtx: AudioContext | null = null
@@ -287,22 +316,38 @@ export async function scheduleAudio(
 
   const { master } = ensureMasterChain()
 
-  // One gain→pan node per audible track, feeding the shared master. Built lazily
-  // so a track with no audible clip costs nothing.
-  const trackNodes = new Map<Id, { gain: GainNode; pan: StereoPannerNode }>()
+  // One gain→[compressor]→pan chain per audible track, feeding the shared
+  // master. Built lazily so a track with no audible clip costs nothing.
+  const trackNodes = new Map<Id, { input: GainNode; nodes: AudioNode[] }>()
   const trackInputFor = (track: Track): GainNode => {
-    let n = trackNodes.get(track.id)
-    if (!n) {
-      const gain = ctx.createGain()
-      gain.gain.value = dbToGain(track.volumeDb ?? 0)
-      const pan = ctx.createStereoPanner()
-      pan.pan.value = clamp(track.pan ?? 0, -1, 1)
-      gain.connect(pan)
-      pan.connect(master)
-      n = { gain, pan }
-      trackNodes.set(track.id, n)
+    const existing = trackNodes.get(track.id)
+    if (existing) return existing.input
+    const gain = ctx.createGain()
+    gain.gain.value = dbToGain(track.volumeDb ?? 0)
+    const pan = ctx.createStereoPanner()
+    pan.pan.value = clamp(track.pan ?? 0, -1, 1)
+    const nodes: AudioNode[] = [gain, pan]
+    let tail: AudioNode = gain
+    // Loudness equalization: a compressor + makeup gain on the track bus.
+    const cp = compressorParamsFor(track.autoLevel)
+    if (cp) {
+      const comp = ctx.createDynamicsCompressor()
+      comp.threshold.value = cp.threshold
+      comp.knee.value = cp.knee
+      comp.ratio.value = cp.ratio
+      comp.attack.value = cp.attack
+      comp.release.value = cp.release
+      const makeup = ctx.createGain()
+      makeup.gain.value = dbToGain(cp.makeupDb)
+      tail.connect(comp)
+      comp.connect(makeup)
+      nodes.push(comp, makeup)
+      tail = makeup
     }
-    return n.gain
+    tail.connect(pan)
+    pan.connect(master)
+    trackNodes.set(track.id, { input: gain, nodes })
+    return gain
   }
 
   const clipNodes: { source: AudioBufferSourceNode; gain: GainNode }[] = []
@@ -342,9 +387,8 @@ export async function scheduleAudio(
       gain.disconnect()
     }
     // Tear down the per-track nodes too; the master chain persists for the meter.
-    for (const { gain, pan } of trackNodes.values()) {
-      gain.disconnect()
-      pan.disconnect()
+    for (const { nodes } of trackNodes.values()) {
+      for (const n of nodes) n.disconnect()
     }
   }
 }

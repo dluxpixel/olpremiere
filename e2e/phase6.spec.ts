@@ -95,3 +95,29 @@ test('the master meter is present in the monitor', async ({ page }) => {
   await expect(page.getByTestId('master-meter')).toBeAttached()
   await page.getByTestId('monitor').screenshot({ path: `${VERIFY}/monitor-meter.png` })
 })
+
+test('auto-level button sets track loudness equalization via a menu', async ({ page }) => {
+  await addClip(page)
+  await page.getByTestId('autolevel-btn').first().click()
+  const menu = page.getByTestId('context-menu')
+  await expect(menu).toBeVisible()
+  await expect(menu).toContainText('Off')
+  await expect(menu).toContainText('Medium')
+  await page.screenshot({ path: `${VERIFY}/autolevel-menu.png` })
+  await menu.getByRole('menuitem', { name: /Medium/ }).click()
+
+  // The first audio track now carries autoLevel: 'medium'.
+  const level = await page.evaluate(async () => {
+    const storeMod = '/src/state/store.ts'
+    const typesMod = '/src/engine/types.ts'
+    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+      useStore: { getState: () => { project: unknown } }
+    }
+    const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+      activeSequence: (p: unknown) => { tracks: { kind: string; autoLevel?: string }[] }
+    }
+    const seq = activeSequence(useStore.getState().project)
+    return seq.tracks.find((t) => t.kind === 'audio')?.autoLevel
+  })
+  expect(level).toBe('medium')
+})

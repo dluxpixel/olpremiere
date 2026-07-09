@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { clipGainEnvelope, computeClipSchedule, dbToGain, effectiveAudioClip } from './audio'
+import {
+  clipGainEnvelope,
+  compressorParamsFor,
+  computeClipSchedule,
+  dbToGain,
+  effectiveAudioClip,
+} from './audio'
 import { defaultTransform, type Clip } from './types'
 
 const clip = (patch: Partial<Clip> = {}): Clip => ({
@@ -246,5 +252,37 @@ describe('effectiveAudioClip (reverse)', () => {
     const c = clip({ speed: -2, inS: 0, outS: 4, startS: 0 })
     expect(computeClipSchedule(c, 0)).toBeNull() // reverse rejected directly
     expect(computeClipSchedule(effectiveAudioClip(c, 8), 0)).not.toBeNull()
+  })
+})
+
+describe('compressorParamsFor (loudness equalization)', () => {
+  it('off / undefined bypasses (null)', () => {
+    expect(compressorParamsFor('off')).toBeNull()
+    expect(compressorParamsFor(undefined)).toBeNull()
+  })
+
+  it('higher degree = lower threshold, higher ratio, more makeup', () => {
+    const lo = compressorParamsFor('low')!
+    const mid = compressorParamsFor('medium')!
+    const hi = compressorParamsFor('high')!
+    expect(lo.threshold).toBeGreaterThan(mid.threshold)
+    expect(mid.threshold).toBeGreaterThan(hi.threshold)
+    expect(lo.ratio).toBeLessThan(mid.ratio)
+    expect(mid.ratio).toBeLessThan(hi.ratio)
+    expect(lo.makeupDb).toBeLessThan(hi.makeupDb)
+  })
+
+  it('params stay in Web Audio DynamicsCompressor valid ranges', () => {
+    for (const lvl of ['low', 'medium', 'high'] as const) {
+      const p = compressorParamsFor(lvl)!
+      expect(p.threshold).toBeGreaterThanOrEqual(-100)
+      expect(p.threshold).toBeLessThanOrEqual(0)
+      expect(p.ratio).toBeGreaterThanOrEqual(1)
+      expect(p.ratio).toBeLessThanOrEqual(20)
+      expect(p.knee).toBeGreaterThanOrEqual(0)
+      expect(p.knee).toBeLessThanOrEqual(40)
+      expect(p.attack).toBeGreaterThanOrEqual(0)
+      expect(p.release).toBeGreaterThanOrEqual(0)
+    }
   })
 })

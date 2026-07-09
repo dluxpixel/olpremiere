@@ -5,6 +5,7 @@
 import {
   clipEmitsAudio,
   clipGainEnvelope,
+  compressorParamsFor,
   computeClipSchedule,
   dbToGain,
   effectiveAudioClip,
@@ -66,16 +67,31 @@ export async function renderAudioMix(
   // from t=0), which is exactly clipGainEnvelope(clip, 0)'s offset convention.
   const trackNodes = new Map<Id, GainNode>()
   const trackInputFor = (track: Track): GainNode => {
-    let gain = trackNodes.get(track.id)
-    if (!gain) {
-      gain = ctx.createGain()
-      gain.gain.value = dbToGain(track.volumeDb ?? 0)
-      const pan = ctx.createStereoPanner()
-      pan.pan.value = clamp(track.pan ?? 0, -1, 1)
-      gain.connect(pan)
-      pan.connect(ctx.destination)
-      trackNodes.set(track.id, gain)
+    const existing = trackNodes.get(track.id)
+    if (existing) return existing
+    const gain = ctx.createGain()
+    gain.gain.value = dbToGain(track.volumeDb ?? 0)
+    const pan = ctx.createStereoPanner()
+    pan.pan.value = clamp(track.pan ?? 0, -1, 1)
+    let tail: AudioNode = gain
+    // Same loudness-equalization chain as the live mix → export matches preview.
+    const cp = compressorParamsFor(track.autoLevel)
+    if (cp) {
+      const comp = ctx.createDynamicsCompressor()
+      comp.threshold.value = cp.threshold
+      comp.knee.value = cp.knee
+      comp.ratio.value = cp.ratio
+      comp.attack.value = cp.attack
+      comp.release.value = cp.release
+      const makeup = ctx.createGain()
+      makeup.gain.value = dbToGain(cp.makeupDb)
+      tail.connect(comp)
+      comp.connect(makeup)
+      tail = makeup
     }
+    tail.connect(pan)
+    pan.connect(ctx.destination)
+    trackNodes.set(track.id, gain)
     return gain
   }
 

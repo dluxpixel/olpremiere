@@ -1,5 +1,6 @@
 import {
   Expand,
+  Gauge,
   Hand,
   Headphones,
   ListPlus,
@@ -45,6 +46,7 @@ import {
   audioTracks,
   newSequence,
   videoTracks,
+  type AutoLevel,
   type Clip,
   type Id,
   type MediaAsset,
@@ -55,7 +57,7 @@ import { pausePlayback } from '../state/playbackControl'
 import { addTitleClip } from '../state/titleActions'
 import { copySelection, cutSelection, duplicateSelection } from '../state/clipboard'
 import { crossfadeWithNeighbour, setClipFade } from '../state/clipEdits'
-import { setTrackPan, setTrackVolumeDb } from '../state/trackEdits'
+import { setTrackAutoLevel, setTrackPan, setTrackVolumeDb } from '../state/trackEdits'
 import { openContextMenu } from '../state/contextMenu'
 import { useBlobUrl } from '../state/blobUrls'
 import { ClipWaveform } from './ClipWaveform'
@@ -184,6 +186,13 @@ function Fader({
   )
 }
 
+const AUTO_LEVELS: { key: AutoLevel; label: string }[] = [
+  { key: 'off', label: 'Off' },
+  { key: 'low', label: 'Low — gentle' },
+  { key: 'medium', label: 'Medium' },
+  { key: 'high', label: 'High — strong' },
+]
+
 function TrackHeader({ track }: { track: Track }) {
   const toggle = (field: 'muted' | 'solo' | 'locked', label: string) =>
     updateActiveSequence(label, (seq) => ({
@@ -191,6 +200,15 @@ function TrackHeader({ track }: { track: Track }) {
       tracks: seq.tracks.map((t) => (t.id === track.id ? { ...t, [field]: !t[field] } : t)),
     }))
   const isAudio = track.kind === 'audio'
+  const level = track.autoLevel ?? 'off'
+  const openAutoLevel = (e: ReactMouseEvent<HTMLButtonElement>) =>
+    openContextMenu(
+      e,
+      AUTO_LEVELS.map((l) => ({
+        label: level === l.key ? `${l.label}  ✓` : l.label,
+        onClick: () => setTrackAutoLevel(track.id, l.key),
+      })),
+    )
 
   return (
     <div
@@ -233,6 +251,17 @@ function TrackHeader({ track }: { track: Track }) {
             <LockOpen size={14} strokeWidth={1.5} />
           )}
         </IconButton>
+        {isAudio && (
+          <IconButton
+            size="compact"
+            label={`Auto-level (loudness): ${level}`}
+            active={level !== 'off'}
+            onClick={openAutoLevel}
+            data-testid="autolevel-btn"
+          >
+            <Gauge size={14} strokeWidth={1.5} />
+          </IconButton>
+        )}
       </div>
 
       {isAudio && (

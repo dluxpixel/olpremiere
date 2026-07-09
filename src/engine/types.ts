@@ -64,11 +64,20 @@ export interface Track {
   volumeDb: number
   /** Stereo pan, −1 (hard left) .. 1 (hard right); 0 = center. Phase 6. */
   pan: number
+  /**
+   * Loudness equalization: a compressor + makeup gain on the track bus that
+   * evens the audio to the chosen degree. Undefined / 'off' = bypass. Applied
+   * identically in preview + export.
+   */
+  autoLevel?: AutoLevel
   /** Sorted by startS; clips never overlap on one track. */
   clips: Clip[]
 }
 
 export type BlendMode = 'normal' | 'multiply' | 'screen' | 'overlay'
+
+/** Per-track loudness equalization strength (Phase 6+). 'off' = bypass. */
+export type AutoLevel = 'off' | 'low' | 'medium' | 'high'
 
 export interface Clip {
   id: Id
