@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { clipEndS } from '../engine/timeline'
-import { computeQuad } from '../engine/render/mat'
-import type { ResolvedTransform } from '../engine/render/types'
+import { computeQuad, pointInQuad } from '../engine/render/mat'
+import { resolveFrame } from '../engine/render/resolve'
+import type { RenderLayer, ResolvedTransform } from '../engine/render/types'
 import { activeSequence } from '../engine/types'
 import { setLivePreviewTransform } from '../engine/preview'
 import { setClipTransform } from '../state/clipEdits'
@@ -20,25 +21,22 @@ const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi 
 const ACCENT = 'var(--color-accent)'
 
 /**
- * Direct-manipulation transform gizmo over the program monitor: a box with four
- * corner handles around the SELECTED clip. Drag the body to move, a corner to
- * scale (uniform, about the clip center). Live via a preview override; commits
- * ONE undo step on release. Shown only for a static (non-animated) visual clip
- * that is under the playhead and paused.
- *
- * Built from HTML divs (not SVG) so `pointer-events:auto` reliably overrides the
- * container's `pointer-events:none`, and drags track WINDOW pointer moves so the
- * cursor can leave the tiny handle.
+ * Direct-manipulation transform layer over the program monitor.
+ * - Click a clip in the preview to SELECT it (click the black bars to deselect).
+ * - The selected clip gets a box with 4 corner handles: drag the body to move,
+ *   a corner to scale (uniform, about the clip center).
+ * Live via a preview override; commits ONE undo step on release. Only active
+ * while paused with content; the gizmo shows for a static (non-animated) clip
+ * that is under the playhead.
  */
 export function MonitorTransformOverlay({ canvas }: { canvas: HTMLCanvasElement | null }) {
   const selection = useStore((s) => s.ui.selection)
   const playing = useStore((s) => s.ui.playing)
   const project = useStore((s) => s.project)
   const playheadS = useStore((s) => s.ui.playheadS)
+  const setUI = useStore((s) => s.setUI)
   const seq = activeSequence(project)
 
-  // Track the canvas's on-screen box (position + size) so the overlay sits
-  // exactly over it, following letterboxing/resize.
   const [box, setBox] = useState<{ left: number; top: number; w: number; h: number } | null>(null)
   useEffect(() => {
     if (!canvas) return
@@ -64,9 +62,45 @@ export function MonitorTransformOverlay({ canvas }: { canvas: HTMLCanvasElement 
   const tfRef = useRef<Tf | null>(null)
   const cleanupRef = useRef<(() => void) | null>(null)
   const [dragTf, setDragTf] = useState<Tf | null>(null)
-  // Tear down an in-flight drag if the gizmo unmounts.
   useEffect(() => () => cleanupRef.current?.(), [])
 
+  const active = !!box && box.w > 0 && !playing && seq.durationS > 0
+  if (!active || !box) return null
+
+  const k = box.w / seq.width // seq px → overlay px (uniform; aspect matches)
+  const localPt = (clientX: number, clientY: number): { x: number; y: number } => {
+    const r = rootRef.current?.getBoundingClientRect()
+    return { x: clientX - (r?.left ?? 0), y: clientY - (r?.top ?? 0) }
+  }
+
+  // Visible layers at the playhead, for click-to-select hit-testing.
+  const frame = resolveFrame(seq, playheadS)
+  const visibleLayers: RenderLayer[] = frame.ops.flatMap((op) =>
+    op.type === 'layer' ? [op.layer] : [op.from, op.to],
+  )
+  const quadFor = (layer: RenderLayer): [number, number][] => {
+    const isTitle = layer.title !== undefined
+    const a = project.assets[layer.assetId]
+    const tw = isTitle ? seq.width : (a?.width ?? seq.width)
+    const th = isTitle ? seq.height : (a?.height ?? seq.height)
+    return computeQuad({ frameW: seq.width, frameH: seq.height, texW: tw, texH: th, transform: layer.transform })
+      .corners
+  }
+
+  const selectAt = (e: ReactPointerEvent) => {
+    const p = localPt(e.clientX, e.clientY)
+    const sx = p.x / k
+    const sy = p.y / k
+    for (let i = visibleLayers.length - 1; i >= 0; i--) {
+      if (pointInQuad(sx, sy, quadFor(visibleLayers[i]))) {
+        setUI({ selection: [visibleLayers[i].clipId] })
+        return
+      }
+    }
+    setUI({ selection: [] })
+  }
+
+  // --- The selected clip's gizmo (box + handles) ---------------------------
   const clip =
     selection.length === 1 ? seq.tracks.flatMap((t) => t.clips).find((c) => c.id === selection[0]) : undefined
   const track = clip ? seq.tracks.find((t) => t.clips.some((c) => c.id === clip.id)) : undefined
@@ -76,108 +110,124 @@ export function MonitorTransformOverlay({ canvas }: { canvas: HTMLCanvasElement 
     clip?.keyframes?.scale?.length
   )
   const onScreen = !!clip && playheadS >= clip.startS && playheadS < clipEndS(clip)
-  const show = !!clip && track?.kind === 'video' && !animated && !playing && onScreen && !!box && box.w > 0
+  const gizmoOn = !!clip && track?.kind === 'video' && !animated && onScreen
 
-  if (!show || !clip || !box) return null
+  let gizmo: React.ReactNode = null
+  if (gizmoOn && clip) {
+    const clipId = clip.id
+    const tf: Tf = dragTf ?? { x: clip.transform.x, y: clip.transform.y, scale: clip.transform.scale }
+    const isTitle = clip.title !== undefined
+    const asset = project.assets[clip.assetId]
+    const texW = isTitle ? seq.width : (asset?.width ?? seq.width)
+    const texH = isTitle ? seq.height : (asset?.height ?? seq.height)
+    const rt: ResolvedTransform = {
+      x: tf.x,
+      y: tf.y,
+      scale: tf.scale,
+      rotationDeg: clip.transform.rotationDeg,
+      anchorX: clip.transform.anchorX,
+      anchorY: clip.transform.anchorY,
+      cropT: clip.transform.crop.t,
+      cropR: clip.transform.crop.r,
+      cropB: clip.transform.crop.b,
+      cropL: clip.transform.crop.l,
+    }
+    const { corners } = computeQuad({ frameW: seq.width, frameH: seq.height, texW, texH, transform: rt })
+    const xs = corners.map(([x]) => x * k)
+    const ys = corners.map(([, y]) => y * k)
+    const minX = Math.min(...xs)
+    const maxX = Math.max(...xs)
+    const minY = Math.min(...ys)
+    const maxY = Math.max(...ys)
+    // Keep handles inside the visible frame so they stay grabbable when the clip
+    // fills or exceeds it (the drag math uses the pointer, not the handle spot).
+    const HM = 9
+    const hx = (v: number) => clamp(v, HM, box.w - HM)
+    const hy = (v: number) => clamp(v, HM, box.h - HM)
+    const handlePts: [number, number][] = [
+      [hx(minX), hy(minY)],
+      [hx(maxX), hy(minY)],
+      [hx(maxX), hy(maxY)],
+      [hx(minX), hy(maxY)],
+    ]
+    const cursors = ['nwse-resize', 'nesw-resize', 'nwse-resize', 'nesw-resize']
 
-  const clipId = clip.id
-  const tf: Tf = dragTf ?? { x: clip.transform.x, y: clip.transform.y, scale: clip.transform.scale }
-  const k = box.w / seq.width // seq px → overlay px (uniform; aspect matches)
-
-  const isTitle = clip.title !== undefined
-  const asset = project.assets[clip.assetId]
-  const texW = isTitle ? seq.width : (asset?.width ?? seq.width)
-  const texH = isTitle ? seq.height : (asset?.height ?? seq.height)
-
-  const rt: ResolvedTransform = {
-    x: tf.x,
-    y: tf.y,
-    scale: tf.scale,
-    rotationDeg: clip.transform.rotationDeg,
-    anchorX: clip.transform.anchorX,
-    anchorY: clip.transform.anchorY,
-    cropT: clip.transform.crop.t,
-    cropR: clip.transform.crop.r,
-    cropB: clip.transform.crop.b,
-    cropL: clip.transform.crop.l,
-  }
-  const { corners } = computeQuad({ frameW: seq.width, frameH: seq.height, texW, texH, transform: rt })
-  const xs = corners.map(([x]) => x * k)
-  const ys = corners.map(([, y]) => y * k)
-  const minX = Math.min(...xs)
-  const maxX = Math.max(...xs)
-  const minY = Math.min(...ys)
-  const maxY = Math.max(...ys)
-  // Keep handles inside the visible frame so they stay grabbable even when the
-  // clip fills or exceeds it (the region clips anything past the canvas edge).
-  // Only the handle's SHOWN position is clamped; the drag math uses the pointer.
-  const HM = 9
-  const hx = (v: number) => clamp(v, HM, box.w - HM)
-  const hy = (v: number) => clamp(v, HM, box.h - HM)
-  const handlePts: [number, number][] = [
-    [hx(minX), hy(minY)],
-    [hx(maxX), hy(minY)],
-    [hx(maxX), hy(maxY)],
-    [hx(minX), hy(maxY)],
-  ]
-  const cursors = ['nwse-resize', 'nesw-resize', 'nwse-resize', 'nesw-resize'] // TL, TR, BR, BL
-
-  const localPt = (clientX: number, clientY: number): { x: number; y: number } => {
-    const r = rootRef.current?.getBoundingClientRect()
-    return { x: clientX - (r?.left ?? 0), y: clientY - (r?.top ?? 0) }
-  }
-
-  const apply = (next: Tf) => {
-    tfRef.current = next
-    setDragTf(next)
-    setLivePreviewTransform({ clipId, ...next })
-  }
-
-  const startDrag = (drag: Drag) => {
-    const onMoveWin = (ev: globalThis.PointerEvent) => {
-      const p = localPt(ev.clientX, ev.clientY)
-      if (drag.mode === 'move') {
-        apply({
-          x: drag.startTf.x + (p.x - drag.startX) / k,
-          y: drag.startTf.y + (p.y - drag.startY) / k,
-          scale: drag.startTf.scale,
-        })
-      } else {
-        const dist = Math.hypot(p.x - drag.cx, p.y - drag.cy)
-        apply({ ...drag.startTf, scale: clamp((drag.startTf.scale * dist) / drag.startDist, 0.05, 5) })
+    const apply = (next: Tf) => {
+      tfRef.current = next
+      setDragTf(next)
+      setLivePreviewTransform({ clipId, ...next })
+    }
+    const startDrag = (drag: Drag) => {
+      const onMoveWin = (ev: globalThis.PointerEvent) => {
+        const p = localPt(ev.clientX, ev.clientY)
+        if (drag.mode === 'move') {
+          apply({
+            x: drag.startTf.x + (p.x - drag.startX) / k,
+            y: drag.startTf.y + (p.y - drag.startY) / k,
+            scale: drag.startTf.scale,
+          })
+        } else {
+          const dist = Math.hypot(p.x - drag.cx, p.y - drag.cy)
+          apply({ ...drag.startTf, scale: clamp((drag.startTf.scale * dist) / drag.startDist, 0.05, 5) })
+        }
       }
+      const onUpWin = () => {
+        cleanupRef.current?.()
+        const final = tfRef.current
+        setLivePreviewTransform(null)
+        setDragTf(null)
+        tfRef.current = null
+        if (final) setClipTransform(clipId, final)
+      }
+      cleanupRef.current = () => {
+        window.removeEventListener('pointermove', onMoveWin)
+        window.removeEventListener('pointerup', onUpWin)
+        cleanupRef.current = null
+      }
+      window.addEventListener('pointermove', onMoveWin)
+      window.addEventListener('pointerup', onUpWin)
     }
-    const onUpWin = () => {
-      cleanupRef.current?.()
-      const final = tfRef.current
-      setLivePreviewTransform(null)
-      setDragTf(null)
-      tfRef.current = null
-      if (final) setClipTransform(clipId, final)
+    const beginMove = (e: ReactPointerEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      const p = localPt(e.clientX, e.clientY)
+      startDrag({ mode: 'move', startX: p.x, startY: p.y, startTf: tf })
     }
-    cleanupRef.current = () => {
-      window.removeEventListener('pointermove', onMoveWin)
-      window.removeEventListener('pointerup', onUpWin)
-      cleanupRef.current = null
+    const beginScale = (e: ReactPointerEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      const p = localPt(e.clientX, e.clientY)
+      const cx = (seq.width / 2 + tf.x) * k
+      const cy = (seq.height / 2 + tf.y) * k
+      startDrag({ mode: 'scale', startTf: tf, cx, cy, startDist: Math.max(1, Math.hypot(p.x - cx, p.y - cy)) })
     }
-    window.addEventListener('pointermove', onMoveWin)
-    window.addEventListener('pointerup', onUpWin)
-  }
 
-  const beginMove = (e: ReactPointerEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    const p = localPt(e.clientX, e.clientY)
-    startDrag({ mode: 'move', startX: p.x, startY: p.y, startTf: tf })
-  }
-
-  const beginScale = (e: ReactPointerEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    const p = localPt(e.clientX, e.clientY)
-    const cx = (seq.width / 2 + tf.x) * k
-    const cy = (seq.height / 2 + tf.y) * k
-    startDrag({ mode: 'scale', startTf: tf, cx, cy, startDist: Math.max(1, Math.hypot(p.x - cx, p.y - cy)) })
+    gizmo = (
+      <>
+        <div
+          data-testid="gizmo-body"
+          className="pointer-events-auto absolute cursor-move"
+          style={{
+            left: minX,
+            top: minY,
+            width: maxX - minX,
+            height: maxY - minY,
+            border: `1.5px solid ${ACCENT}`,
+            background: 'rgba(111,107,255,0.05)',
+          }}
+          onPointerDown={beginMove}
+        />
+        {handlePts.map(([x, y], i) => (
+          <div
+            key={i}
+            data-testid={`gizmo-handle-${i}`}
+            className="pointer-events-auto absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-[2px] border-2 border-white"
+            style={{ left: x, top: y, cursor: cursors[i], background: ACCENT }}
+            onPointerDown={beginScale}
+          />
+        ))}
+      </>
+    )
   }
 
   return (
@@ -187,29 +237,13 @@ export function MonitorTransformOverlay({ canvas }: { canvas: HTMLCanvasElement 
       data-testid="transform-gizmo"
       style={{ left: box.left, top: box.top, width: box.w, height: box.h }}
     >
-      {/* Body: drag to move. Border shows the clip bounds. */}
+      {/* Full-canvas click-to-select layer, beneath the gizmo. */}
       <div
-        data-testid="gizmo-body"
-        className="pointer-events-auto absolute cursor-move"
-        style={{
-          left: minX,
-          top: minY,
-          width: maxX - minX,
-          height: maxY - minY,
-          border: `1.5px solid ${ACCENT}`,
-          background: 'rgba(111,107,255,0.05)',
-        }}
-        onPointerDown={beginMove}
+        data-testid="preview-select"
+        className="pointer-events-auto absolute inset-0"
+        onPointerDown={selectAt}
       />
-      {handlePts.map(([x, y], i) => (
-        <div
-          key={i}
-          data-testid={`gizmo-handle-${i}`}
-          className="pointer-events-auto absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-[2px] border-2 border-white"
-          style={{ left: x, top: y, cursor: cursors[i], background: ACCENT }}
-          onPointerDown={beginScale}
-        />
-      ))}
+      {gizmo}
     </div>
   )
 }

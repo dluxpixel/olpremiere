@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { apply, computeQuad, cropUV, croppedSize, fitScale, identity, multiply, rotation } from './mat'
+import {
+  apply,
+  computeQuad,
+  cropUV,
+  croppedSize,
+  fitScale,
+  identity,
+  multiply,
+  pointInQuad,
+  rotation,
+} from './mat'
 import { NEUTRAL_FILTERS } from './types'
 import type { ResolvedTransform } from './types'
 
@@ -168,5 +178,30 @@ describe('cropUV', () => {
   })
   it('neutral crop samples the full [0,1] square', () => {
     expect(cropUV(0, 0, 0, 0)).toEqual({ u0: 0, v0: 0, u1: 1, v1: 1 })
+  })
+})
+
+describe('pointInQuad', () => {
+  const square: [number, number][] = [
+    [0, 0],
+    [10, 0],
+    [10, 10],
+    [0, 10],
+  ]
+  it('detects inside vs outside', () => {
+    expect(pointInQuad(5, 5, square)).toBe(true)
+    expect(pointInQuad(15, 5, square)).toBe(false)
+    expect(pointInQuad(5, 15, square)).toBe(false)
+    expect(pointInQuad(-1, 5, square)).toBe(false)
+  })
+  it('works for a rotated quad (diamond)', () => {
+    const diamond: [number, number][] = [
+      [5, 0],
+      [10, 5],
+      [5, 10],
+      [0, 5],
+    ]
+    expect(pointInQuad(5, 5, diamond)).toBe(true) // center
+    expect(pointInQuad(1, 1, diamond)).toBe(false) // corner region cut off
   })
 })

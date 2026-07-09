@@ -44,6 +44,18 @@ export function apply(m: Mat3, x: number, y: number): [number, number] {
   return [m[0] * x + m[3] * y + m[6], m[1] * x + m[4] * y + m[7]]
 }
 
+/** Is point (px,py) inside the polygon `corners` (ray-casting; any winding)? */
+export function pointInQuad(px: number, py: number, corners: readonly [number, number][]): boolean {
+  let inside = false
+  for (let i = 0, j = corners.length - 1; i < corners.length; j = i++) {
+    const [xi, yi] = corners[i]
+    const [xj, yj] = corners[j]
+    const intersect = yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi
+    if (intersect) inside = !inside
+  }
+  return inside
+}
+
 /** Cropped source dimensions given crop fractions inset from each edge. */
 export function croppedSize(
   texW: number,

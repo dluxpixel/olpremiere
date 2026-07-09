@@ -216,3 +216,30 @@ test('drag a corner handle in the preview to scale the selected clip', async ({ 
   await page.keyboard.press('Control+z')
   expect(await readScale(page, clipId)).toBeCloseTo(before, 3)
 })
+
+test('clicking a clip in the preview selects it and shows the gizmo', async ({ page }) => {
+  const clipId = await addClip(page)
+  // Deselect, so the gizmo is hidden to start.
+  await page.evaluate(async () => {
+    const storeMod = '/src/state/store.ts'
+    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+      useStore: { getState: () => { setUI: (p: unknown) => void } }
+    }
+    useStore.getState().setUI({ selection: [] })
+  })
+  await expect(page.getByTestId('gizmo-body')).toHaveCount(0)
+
+  // Click the video in the preview → it selects and the gizmo appears.
+  const canvas = (await page.getByTestId('program-canvas').boundingBox())!
+  await page.mouse.click(canvas.x + canvas.width / 2, canvas.y + canvas.height / 2)
+  await expect(page.getByTestId('gizmo-body')).toBeVisible()
+
+  const sel = await page.evaluate(async () => {
+    const storeMod = '/src/state/store.ts'
+    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+      useStore: { getState: () => { ui: { selection: string[] } } }
+    }
+    return useStore.getState().ui.selection
+  })
+  expect(sel).toEqual([clipId])
+})
