@@ -8,6 +8,7 @@ import {
   LockOpen,
   Magnet,
   MousePointer2,
+  Plus,
   Scissors,
   Type,
   Volume2,
@@ -27,6 +28,7 @@ import {
 import {
   addClipFromAsset,
   addClipWithLinkedAudio,
+  addTrack,
   clipDurationS,
   clipEndS,
   collectSnapPoints,
@@ -1137,6 +1139,29 @@ export function Timeline({ height }: { height: number }) {
           {aTracks.map((t) => (
             <TrackHeader key={t.id} track={t} />
           ))}
+          {/* Blank space below the tracks: buttons to add a video or audio track. */}
+          <div className="flex shrink-0 items-center gap-1.5 border-t border-border/60 px-2 py-2">
+            <button
+              type="button"
+              data-testid="add-video-track"
+              className="flex flex-1 items-center justify-center gap-1 rounded-[4px] border border-border py-1 text-[11px] font-medium text-text-secondary transition-colors duration-[120ms] hover:border-border-strong hover:bg-bg-elevated hover:text-text-primary"
+              onClick={() => updateActiveSequence('Add video track', (sq) => addTrack(sq, 'video'))}
+              title="Add a video track"
+            >
+              <Plus size={12} strokeWidth={1.75} />
+              Video
+            </button>
+            <button
+              type="button"
+              data-testid="add-audio-track"
+              className="flex flex-1 items-center justify-center gap-1 rounded-[4px] border border-border py-1 text-[11px] font-medium text-text-secondary transition-colors duration-[120ms] hover:border-border-strong hover:bg-bg-elevated hover:text-text-primary"
+              onClick={() => updateActiveSequence('Add audio track', (sq) => addTrack(sq, 'audio'))}
+              title="Add an audio track"
+            >
+              <Plus size={12} strokeWidth={1.75} />
+              Audio
+            </button>
+          </div>
         </div>
 
         <div

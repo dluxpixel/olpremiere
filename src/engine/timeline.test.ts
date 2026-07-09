@@ -3,6 +3,7 @@ import { defaultTransform, type Clip, type MediaAsset, type Sequence, type Track
 import {
   addClipFromAsset,
   addClipWithLinkedAudio,
+  addTrack,
   addMarker,
   canPlace,
   clipDurationS,
@@ -1615,5 +1616,35 @@ describe('setSequenceFormat / refitClipToFill (Shorts aspect switch)', () => {
     const out = setSequenceFormat(seq, landscape, 1080, 1920, false)
     expect(out.width).toBe(1080)
     expect(out.tracks[0].clips[0].transform.scale).toBe(1)
+  })
+})
+
+describe('addTrack', () => {
+  it('adds an audio track below the audio block, named A(n+1)', () => {
+    const seq = makeSeq([
+      makeTrack({ kind: 'video', name: 'V1' }),
+      makeTrack({ kind: 'audio', name: 'A1' }),
+      makeTrack({ kind: 'audio', name: 'A2' }),
+    ])
+    const r = addTrack(seq, 'audio')
+    expect(r.tracks).toHaveLength(4)
+    expect(r.tracks[3]).toMatchObject({ kind: 'audio', name: 'A3' })
+  })
+
+  it('adds a video track inside the video block (before the first audio), named V(n+1)', () => {
+    const seq = makeSeq([
+      makeTrack({ kind: 'video', name: 'V1' }),
+      makeTrack({ kind: 'video', name: 'V2' }),
+      makeTrack({ kind: 'audio', name: 'A1' }),
+    ])
+    const r = addTrack(seq, 'video')
+    // Inserted at index 2 (just before A1), so audio stays after the video block.
+    expect(r.tracks.map((t) => t.name)).toEqual(['V1', 'V2', 'V3', 'A1'])
+    expect(r.tracks[2].kind).toBe('video')
+  })
+
+  it('names from the highest existing number, not the count', () => {
+    const seq = makeSeq([makeTrack({ kind: 'audio', name: 'A5' })])
+    expect(addTrack(seq, 'audio').tracks.at(-1)!.name).toBe('A6')
   })
 })

@@ -88,3 +88,30 @@ test('9:16 Shorts format makes the sequence vertical and fills the frame', async
   expect(state.scale).toBeGreaterThan(1.5) // scaled to cover the vertical frame
   await page.screenshot({ path: `${VERIFY}/shorts-format.png` })
 })
+
+test('the blank header space adds a video or audio track', async ({ page }) => {
+  await page.goto('/')
+  const names = async () =>
+    page.evaluate(async () => {
+      const storeMod = '/src/state/store.ts'
+      const typesMod = '/src/engine/types.ts'
+      const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+        useStore: { getState: () => { project: unknown } }
+      }
+      const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+        activeSequence: (p: unknown) => { tracks: { name: string }[] }
+      }
+      return activeSequence(useStore.getState().project).tracks.map((t) => t.name)
+    })
+  expect(await names()).toEqual(['V1', 'V2', 'A1', 'A2'])
+
+  await page.getByTestId('add-audio-track').click()
+  expect(await names()).toContain('A3')
+
+  await page.getByTestId('add-video-track').click()
+  const after = await names()
+  expect(after).toContain('V3')
+  // A video track stays in the video block (before any audio track).
+  expect(after.indexOf('V3')).toBeLessThan(after.indexOf('A1'))
+  await page.getByTestId('timeline').screenshot({ path: `${VERIFY}/add-track.png` })
+})

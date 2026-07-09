@@ -6,6 +6,7 @@ import {
   defaultTransform,
   newClipFromAsset,
   newId,
+  newTrack,
   type Clip,
   type Id,
   type Marker,
@@ -90,6 +91,29 @@ export function setSequenceFormat(
     : seq.tracks
   if (sameDims && tracks === seq.tracks) return seq
   return recomputeDuration({ ...seq, width, height, tracks })
+}
+
+/**
+ * Add a new empty track. Video tracks join the video block (stacking above the
+ * existing ones); audio tracks append below the audio block. Named V(n+1)/A(n+1)
+ * from the highest existing number so a name never collides.
+ */
+export function addTrack(seq: Sequence, kind: 'video' | 'audio'): Sequence {
+  const prefix = kind === 'video' ? 'V' : 'A'
+  let maxN = 0
+  for (const t of seq.tracks) {
+    if (t.kind !== kind) continue
+    const n = Number(t.name.slice(prefix.length))
+    if (Number.isFinite(n) && n > maxN) maxN = n
+  }
+  const track = newTrack(kind, `${prefix}${maxN + 1}`)
+  if (kind === 'audio') return { ...seq, tracks: [...seq.tracks, track] }
+  // Video: insert just before the first audio track (stays in the video block).
+  const firstAudio = seq.tracks.findIndex((t) => t.kind === 'audio')
+  if (firstAudio === -1) return { ...seq, tracks: [...seq.tracks, track] }
+  const tracks = seq.tracks.slice()
+  tracks.splice(firstAudio, 0, track)
+  return { ...seq, tracks }
 }
 
 export const MIN_SPEED = 0.1
