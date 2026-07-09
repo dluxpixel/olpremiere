@@ -22,7 +22,7 @@ test('keyboard help overlay lists shortcuts and closes on Escape', async ({ page
   const help = page.getByTestId('keyboard-help')
   await expect(help).toBeVisible()
   await expect(help).toContainText('Play / Pause')
-  await expect(help).toContainText('Split clip at playhead')
+  await expect(help).toContainText('Cut at playhead')
   await expect(help).toContainText('Ripple delete')
   await page.screenshot({ path: `${VERIFY}/keyboard-help.png` })
   await page.keyboard.press('Escape')

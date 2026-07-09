@@ -65,6 +65,15 @@ export function pauseAllPreviewVideos(): void {
   for (const { el } of videoPool.values()) if (!el.paused) el.pause()
 }
 
+// Live on-canvas transform override (Monitor gizmo). While the user drags a
+// clip in the preview we override just that layer's x/y/scale so the frame
+// updates in real time; the store commits once on release.
+let liveTransform: { clipId: Id; x: number; y: number; scale: number } | null = null
+
+export function setLivePreviewTransform(v: { clipId: Id; x: number; y: number; scale: number } | null): void {
+  liveTransform = v
+}
+
 // One renderer per canvas (a canvas keeps a single GL context for its life).
 const renderers = new WeakMap<HTMLCanvasElement, Renderer | null>()
 
@@ -155,6 +164,16 @@ export function renderPreview(
   const renderer = rendererFor(canvas)
   if (!renderer) return
   const frame = resolveFrame(seq, tS)
+  // Apply the live drag override to its layer (frame is freshly built, safe to mutate).
+  if (liveTransform) {
+    for (const op of frame.ops) {
+      if (op.type === 'layer' && op.layer.clipId === liveTransform.clipId) {
+        op.layer.transform.x = liveTransform.x
+        op.layer.transform.y = liveTransform.y
+        op.layer.transform.scale = liveTransform.scale
+      }
+    }
+  }
   // Pause any pooled video no longer referenced this frame.
   if (playing) {
     const active = new Set<Id>()

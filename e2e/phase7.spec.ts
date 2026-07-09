@@ -176,3 +176,43 @@ test('reverse plays the clip backward in preview and export', async ({ page }) =
   expect(near(pv[1], ex[1])).toBeTruthy()
   expect(near(pv[2], ex[2])).toBeTruthy()
 })
+
+async function readScale(page: Page, clipId: string): Promise<number> {
+  return page.evaluate(
+    async (clipId) => {
+      const storeMod = '/src/state/store.ts'
+      const typesMod = '/src/engine/types.ts'
+      const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+        useStore: { getState: () => { project: unknown } }
+      }
+      const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+        activeSequence: (p: unknown) => { tracks: { clips: { id: string; transform: { scale: number } }[] }[] }
+      }
+      const seq = activeSequence(useStore.getState().project)
+      return seq.tracks.flatMap((t) => t.clips).find((c) => c.id === clipId)!.transform.scale
+    },
+    clipId,
+  )
+}
+
+test('drag a corner handle in the preview to scale the selected clip', async ({ page }) => {
+  const clipId = await addClip(page)
+  const gizmo = page.getByTestId('transform-gizmo')
+  await expect(gizmo).toBeVisible()
+  await page.screenshot({ path: `${VERIFY}/gizmo.png` })
+
+  const before = await readScale(page, clipId)
+  // Drag the bottom-right handle outward (away from center) → scale up.
+  const handle = page.getByTestId('gizmo-handle-2')
+  const b = (await handle.boundingBox())!
+  await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(b.x + 90, b.y + 90, { steps: 12 })
+  await page.mouse.up()
+
+  const after = await readScale(page, clipId)
+  expect(after).toBeGreaterThan(before + 0.1)
+  // Undo restores the original scale (single history step).
+  await page.keyboard.press('Control+z')
+  expect(await readScale(page, clipId)).toBeCloseTo(before, 3)
+})

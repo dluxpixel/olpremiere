@@ -223,6 +223,19 @@ export function setClipSpeed(clipId: string, speed: number): void {
   updateActiveSequence('Set speed', (seq) => setClipSpeedT(seq, clipId, speed))
 }
 
+/** Set position + scale together in ONE undo step (the Monitor drag-gizmo commit). */
+export function setClipTransform(clipId: string, patch: { x?: number; y?: number; scale?: number }): void {
+  mapClip(clipId, 'Transform clip', (c) => ({
+    ...c,
+    transform: {
+      ...c.transform,
+      x: patch.x ?? c.transform.x,
+      y: patch.y ?? c.transform.y,
+      scale: patch.scale ?? c.transform.scale,
+    },
+  }))
+}
+
 /** Set a clip's static gain in dB. */
 export function setClipGainDb(clipId: string, db: number): void {
   mapClip(clipId, 'Set clip gain', (c) => (c.audioGainDb === db ? c : { ...c, audioGainDb: db }))

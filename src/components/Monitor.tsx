@@ -19,6 +19,7 @@ import { pausePlayback, togglePlay } from '../state/playbackControl'
 import { setActiveSequenceFormat, useStore } from '../state/store'
 import { IconButton } from '../ui/Button'
 import { MasterMeter } from './MasterMeter'
+import { MonitorTransformOverlay } from './MonitorTransformOverlay'
 
 type Quality = 1 | 0.5 | 0.25
 
@@ -159,6 +160,7 @@ export function Monitor() {
       <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden p-3">
         <canvas ref={canvasRef} data-testid="program-canvas" className="rounded-[2px] bg-black" />
         {safeMargins && <SafeMargins canvas={canvasRef.current} />}
+        <MonitorTransformOverlay canvas={canvasRef.current} />
         <MasterMeter />
         {!hasContent && (
           <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 text-center">
