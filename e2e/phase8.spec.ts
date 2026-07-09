@@ -49,3 +49,42 @@ test('unsupported files surface an honest error toast', async ({ page }) => {
   await page.getByTestId('media-file-input').setInputFiles(bad)
   await expect(page.getByTestId('toast')).toContainText(/unsupported|import failed/i, { timeout: 15_000 })
 })
+
+test('9:16 Shorts format makes the sequence vertical and fills the frame', async ({ page }) => {
+  await importAndAdd(page)
+  const before = (await page.getByTestId('program-canvas').boundingBox())!
+  expect(before.width).toBeGreaterThan(before.height) // starts 16:9
+
+  await page.getByTestId('format-select').selectOption('9:16')
+
+  // The program canvas is now portrait.
+  await expect
+    .poll(
+      async () => {
+        const b = await page.getByTestId('program-canvas').boundingBox()
+        return b ? b.height > b.width : false
+      },
+      { timeout: 5_000 },
+    )
+    .toBe(true)
+
+  // The sequence flipped to 9:16 and the clip was scaled up to fill it.
+  const state = await page.evaluate(async () => {
+    const storeMod = '/src/state/store.ts'
+    const typesMod = '/src/engine/types.ts'
+    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+      useStore: { getState: () => { project: unknown } }
+    }
+    const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+      activeSequence: (p: unknown) => {
+        width: number
+        height: number
+        tracks: { clips: { transform: { scale: number } }[] }[] }
+    }
+    const seq = activeSequence(useStore.getState().project)
+    return { w: seq.width, h: seq.height, scale: seq.tracks.flatMap((t) => t.clips)[0].transform.scale }
+  })
+  expect(state.h).toBeGreaterThan(state.w)
+  expect(state.scale).toBeGreaterThan(1.5) // scaled to cover the vertical frame
+  await page.screenshot({ path: `${VERIFY}/shorts-format.png` })
+})

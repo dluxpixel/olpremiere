@@ -16,11 +16,23 @@ import { prewarmPreview, renderPreview } from '../engine/preview'
 import { formatTimecode, quantizeToFrame } from '../engine/timecode'
 import { activeSequence } from '../engine/types'
 import { pausePlayback, togglePlay } from '../state/playbackControl'
-import { useStore } from '../state/store'
+import { setActiveSequenceFormat, useStore } from '../state/store'
 import { IconButton } from '../ui/Button'
 import { MasterMeter } from './MasterMeter'
 
 type Quality = 1 | 0.5 | 0.25
+
+// Aspect presets. Switching one reformats the sequence AND scales clips to fill.
+const FORMATS = [
+  { key: '16:9', label: '16:9 Wide', w: 1920, h: 1080 },
+  { key: '9:16', label: '9:16 Shorts', w: 1080, h: 1920 },
+  { key: '1:1', label: '1:1 Square', w: 1080, h: 1080 },
+] as const
+
+function aspectKeyFor(w: number, h: number): string {
+  if (w === h) return '1:1'
+  return h > w ? '9:16' : '16:9'
+}
 
 /** rAF draw loop: reads the store imperatively so playback never re-renders React. */
 function useProgramCanvas(quality: Quality) {
@@ -201,6 +213,23 @@ export function Monitor() {
         </div>
 
         <div className="ml-auto flex items-center gap-2">
+          <select
+            data-testid="format-select"
+            aria-label="Aspect ratio"
+            title="Aspect ratio — 9:16 makes a vertical Shorts video"
+            className="h-6 rounded-[4px] border border-border bg-bg-input px-1.5 text-[11px] text-text-secondary focus:border-accent focus:outline-none"
+            value={aspectKeyFor(seq.width, seq.height)}
+            onChange={(e) => {
+              const f = FORMATS.find((x) => x.key === e.target.value)
+              if (f) setActiveSequenceFormat(f.w, f.h)
+            }}
+          >
+            {FORMATS.map((f) => (
+              <option key={f.key} value={f.key}>
+                {f.label}
+              </option>
+            ))}
+          </select>
           <IconButton
             label="Safe margins"
             active={safeMargins}

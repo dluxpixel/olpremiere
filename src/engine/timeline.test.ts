@@ -26,8 +26,10 @@ import {
   rippleTrimTo,
   rollEditTo,
   sequenceDurationS,
+  refitClipToFill,
   serializeClips,
   setClipSpeed,
+  setSequenceFormat,
   slideClip,
   slipClip,
   snapTime,
@@ -1563,5 +1565,55 @@ describe('setClipSpeed', () => {
     const r = setClipSpeed(seq, 'v', 2)
     expect(r.tracks[0].clips[0].speed).toBe(2)
     expect(r.tracks[1].clips[0].speed).toBe(2)
+  })
+})
+
+describe('setSequenceFormat / refitClipToFill (Shorts aspect switch)', () => {
+  const landscape = { a: makeAsset({ id: 'a', width: 1920, height: 1080 }) }
+  const clip16x9 = () => makeClip({ id: 'a', assetId: 'a', startS: 0, outS: 4 })
+  // 16:9 source covering a 9:16 frame → scale = max/min of the fit ratios.
+  const COVER_16x9_INTO_9x16 = 1920 / 1080 / (1080 / 1920) // ≈ 3.1605
+
+  it('scales a 16:9 clip to COVER a 9:16 frame (fill + crop)', () => {
+    const out = refitClipToFill(clip16x9(), landscape, 1080, 1920)
+    expect(out.transform.scale).toBeCloseTo(COVER_16x9_INTO_9x16, 3)
+    expect(out.transform.x).toBe(0)
+    expect(out.transform.y).toBe(0)
+  })
+
+  it('a clip already matching the frame aspect keeps scale 1', () => {
+    const out = refitClipToFill(clip16x9(), landscape, 1920, 1080)
+    expect(out.transform.scale).toBeCloseTo(1, 6)
+  })
+
+  it('does not fight a clip that animates scale/position', () => {
+    const animated = makeClip({
+      id: 'a',
+      assetId: 'a',
+      startS: 0,
+      outS: 4,
+      keyframes: { scale: [{ t: 0, value: 1, ease: 'linear' }] },
+    })
+    expect(refitClipToFill(animated, landscape, 1080, 1920)).toBe(animated)
+  })
+
+  it('leaves title clips alone (frame-relative already)', () => {
+    const title = makeClip({ id: 't', startS: 0, outS: 4, title: { text: 'hi' } as never })
+    expect(refitClipToFill(title, landscape, 1080, 1920)).toBe(title)
+  })
+
+  it('setSequenceFormat sets the new dimensions and refits every clip', () => {
+    const seq = makeSeq([makeTrack({ clips: [clip16x9()] })])
+    const out = setSequenceFormat(seq, landscape, 1080, 1920)
+    expect(out.width).toBe(1080)
+    expect(out.height).toBe(1920)
+    expect(out.tracks[0].clips[0].transform.scale).toBeCloseTo(COVER_16x9_INTO_9x16, 3)
+  })
+
+  it('refit:false changes dimensions but leaves clip transforms untouched', () => {
+    const seq = makeSeq([makeTrack({ clips: [clip16x9()] })])
+    const out = setSequenceFormat(seq, landscape, 1080, 1920, false)
+    expect(out.width).toBe(1080)
+    expect(out.tracks[0].clips[0].transform.scale).toBe(1)
   })
 })

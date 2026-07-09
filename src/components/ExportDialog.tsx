@@ -12,11 +12,30 @@ interface ResolutionPreset {
   height: number
 }
 
-const RESOLUTIONS: ResolutionPreset[] = [
-  { label: 'Sequence (1920×1080)', width: 1920, height: 1080 },
-  { label: 'HD (1280×720)', width: 1280, height: 720 },
-  { label: 'SD (640×360)', width: 640, height: 360 },
-]
+/** Largest even-dimension box that fits seq within (boxW×boxH), keeping aspect. */
+function evenFit(seqW: number, seqH: number, boxW: number, boxH: number): { width: number; height: number } {
+  const s = Math.min(1, boxW / seqW, boxH / seqH)
+  return {
+    width: Math.max(2, Math.round((seqW * s) / 2) * 2),
+    height: Math.max(2, Math.round((seqH * s) / 2) * 2),
+  }
+}
+
+/**
+ * Export presets PRESERVE the sequence aspect (so a 9:16 Shorts sequence exports
+ * vertical, never stretched). For a 1920×1080 sequence these are the classic
+ * Sequence / 1280×720 / 640×360.
+ */
+function buildResolutions(seqW: number, seqH: number): ResolutionPreset[] {
+  const full = evenFit(seqW, seqH, seqW, seqH)
+  const hd = evenFit(seqW, seqH, 1280, 720)
+  const sd = evenFit(seqW, seqH, 640, 360)
+  return [
+    { label: `Sequence (${full.width}×${full.height})`, ...full },
+    { label: `HD (${hd.width}×${hd.height})`, ...hd },
+    { label: `SD (${sd.width}×${sd.height})`, ...sd },
+  ]
+}
 
 const BITRATES = [
   { label: 'High (24 Mbps)', value: 24_000_000 },
@@ -48,6 +67,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   const seq = activeSequence(project)
   const show = useToasts((s) => s.show)
 
+  const resolutions = buildResolutions(seq.width, seq.height)
   const [resolution, setResolution] = useState(0)
   const [bitrate, setBitrate] = useState(1)
   const [stage, setStage] = useState<Stage>({ kind: 'settings' })
@@ -60,7 +80,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   const running = stage.kind === 'running'
 
   const start = async () => {
-    const preset = RESOLUTIONS[resolution]
+    const preset = resolutions[resolution]
     const settings: ExportSettings = {
       width: preset.width,
       height: preset.height,
@@ -147,7 +167,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
                 value={resolution}
                 onChange={(e) => setResolution(Number(e.target.value))}
               >
-                {RESOLUTIONS.map((r, i) => (
+                {resolutions.map((r, i) => (
                   <option key={r.label} value={i}>
                     {r.label}
                   </option>

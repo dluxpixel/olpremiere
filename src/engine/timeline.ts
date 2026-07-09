@@ -37,6 +37,61 @@ export function recomputeDuration(seq: Sequence): Sequence {
   return durationS === seq.durationS ? seq : { ...seq, durationS }
 }
 
+/**
+ * Scale a clip to COVER (fill) a frame of frameW×frameH, cropping the overflow
+ * and centering it — the "make it a Short" refit. `transform.scale=1` is the
+ * renderer's contain-fit; cover needs scale = cover/contain. Skips titles
+ * (frame-relative already) and clips that animate scale/position (don't fight
+ * an author's animation). Returns the same clip when nothing changes.
+ */
+export function refitClipToFill(
+  clip: Clip,
+  assets: Record<Id, MediaAsset>,
+  frameW: number,
+  frameH: number,
+): Clip {
+  if (clip.title) return clip
+  if (
+    clip.keyframes?.scale?.length ||
+    clip.keyframes?.posX?.length ||
+    clip.keyframes?.posY?.length
+  )
+    return clip
+  const asset = assets[clip.assetId]
+  const sw = asset?.width ?? 0
+  const sh = asset?.height ?? 0
+  if (sw <= 0 || sh <= 0) return clip
+  const contain = Math.min(frameW / sw, frameH / sh)
+  if (contain <= 0) return clip
+  const scale = Math.max(frameW / sw, frameH / sh) / contain
+  const tf = clip.transform
+  if (Math.abs(tf.scale - scale) < 1e-6 && tf.x === 0 && tf.y === 0) return clip
+  return { ...clip, transform: { ...tf, scale, x: 0, y: 0 } }
+}
+
+/**
+ * Reformat a sequence to width×height (e.g. 9:16 Shorts). When `refit`, every
+ * clip is scaled to fill the new frame. Export follows the sequence dimensions.
+ */
+export function setSequenceFormat(
+  seq: Sequence,
+  assets: Record<Id, MediaAsset>,
+  width: number,
+  height: number,
+  refit = true,
+): Sequence {
+  if (width <= 0 || height <= 0) return seq
+  const sameDims = seq.width === width && seq.height === height
+  const tracks = refit
+    ? seq.tracks.map((t) => {
+        const clips = t.clips.map((c) => refitClipToFill(c, assets, width, height))
+        return clips.some((c, i) => c !== t.clips[i]) ? { ...t, clips } : t
+      })
+    : seq.tracks
+  if (sameDims && tracks === seq.tracks) return seq
+  return recomputeDuration({ ...seq, width, height, tracks })
+}
+
 export const MIN_SPEED = 0.1
 export const MAX_SPEED = 8
 

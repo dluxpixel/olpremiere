@@ -4,6 +4,7 @@
 
 import { create } from 'zustand'
 import { subscribeWithSelector } from 'zustand/middleware'
+import { setSequenceFormat } from '../engine/timeline'
 import { newProject, type Id, type Project, type Sequence } from '../engine/types'
 import {
   emptyHistory,
@@ -117,6 +118,24 @@ export function updateActiveSequence(label: string, fn: (seq: Sequence) => Seque
     const seq = p.sequences[p.activeSequenceId]
     const next = fn(seq)
     return next === seq ? p : { ...p, sequences: { ...p.sequences, [seq.id]: next } }
+  })
+}
+
+/**
+ * Reformat the active sequence (aspect/resolution, e.g. 9:16 Shorts) and refit
+ * its clips to fill. Also updates the project default so new sequences inherit
+ * it. One undoable edit.
+ */
+export function setActiveSequenceFormat(width: number, height: number, refit = true): void {
+  useStore.getState().dispatch('Set aspect ratio', (p) => {
+    const seq = p.sequences[p.activeSequenceId]
+    const next = setSequenceFormat(seq, p.assets, width, height, refit)
+    if (next === seq) return p
+    return {
+      ...p,
+      sequences: { ...p.sequences, [seq.id]: next },
+      settings: { ...p.settings, width, height },
+    }
   })
 }
 
