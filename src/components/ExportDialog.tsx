@@ -1,6 +1,12 @@
 import { Download, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { exportSequence, type ExportProgress, type ExportSettings } from '../engine/export'
+import {
+  canStreamToDisk,
+  exportSequence,
+  pickExportDestination,
+  type ExportProgress,
+  type ExportSettings,
+} from '../engine/export'
 import { activeSequence } from '../engine/types'
 import { useStore } from '../state/store'
 import { useToasts } from '../state/toasts'
@@ -46,7 +52,8 @@ const BITRATES = [
 type Stage =
   | { kind: 'settings' }
   | { kind: 'running'; progress: ExportProgress; startedAt: number }
-  | { kind: 'done'; sizeBytes: number; fileName: string }
+  /** `streamed` distinguishes "written where you chose" from "in your downloads". */
+  | { kind: 'done'; sizeBytes: number; fileName: string; streamed: boolean }
   | { kind: 'error'; message: string }
 
 function fmtBytes(n: number): string {
@@ -87,6 +94,23 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
       fps: seq.fps,
       videoBitrate: BITRATES[bitrate].value,
     }
+
+    // Ask for the destination FIRST: showSaveFilePicker needs transient user
+    // activation, which any await before it would spend. Chunks then stream
+    // straight to disk, so peak memory does not grow with the movie's length.
+    // Firefox has no picker; it buffers and downloads instead (spec §3).
+    let handle: FileSystemFileHandle | null = null
+    if (canStreamToDisk()) {
+      try {
+        handle = await pickExportDestination(fileName)
+      } catch (err) {
+        setStage({ kind: 'error', message: err instanceof Error ? err.message : String(err) })
+        return
+      }
+      // Dismissing the picker is a normal "never mind", not an error.
+      if (!handle) return
+    }
+
     const abort = new AbortController()
     abortRef.current = abort
     setStage({
@@ -103,17 +127,26 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
             prev.kind === 'running' ? { ...prev, progress } : prev,
           ),
         abort.signal,
+        handle ?? undefined,
       )
-      // Save as a download: works everywhere incl. headless verification.
-      // The File System Access save-picker path is Phase 8 polish.
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = fileName
-      a.click()
-      setTimeout(() => URL.revokeObjectURL(url), 30_000)
-      setStage({ kind: 'done', sizeBytes: blob.size, fileName })
-      show(`Exported ${fileName} (${fmtBytes(blob.size)})`, 'success')
+
+      let sizeBytes: number
+      if (blob) {
+        // Buffered fallback: hand the bytes to the browser as a download.
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = fileName
+        a.click()
+        setTimeout(() => URL.revokeObjectURL(url), 30_000)
+        sizeBytes = blob.size
+      } else {
+        // Streamed: the bytes are already on disk. Ask the file how big it is.
+        sizeBytes = (await handle!.getFile()).size
+      }
+      const savedAs = handle?.name ?? fileName
+      setStage({ kind: 'done', sizeBytes, fileName: savedAs, streamed: !!handle })
+      show(`Exported ${savedAs} (${fmtBytes(sizeBytes)})`, 'success')
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') {
         setStage({ kind: 'settings' })
@@ -249,8 +282,8 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           <div className="flex flex-col gap-3 p-4">
             <p className="text-[13px] text-text-primary">
               Saved <span className="font-medium">{stage.fileName}</span>{' '}
-              <span className="text-text-secondary">({fmtBytes(stage.sizeBytes)})</span> to your
-              downloads.
+              <span className="text-text-secondary">({fmtBytes(stage.sizeBytes)})</span>{' '}
+              {stage.streamed ? 'where you chose.' : 'to your downloads.'}
             </p>
             <div className="flex justify-end gap-2">
               <Button variant="secondary" onClick={() => setStage({ kind: 'settings' })}>

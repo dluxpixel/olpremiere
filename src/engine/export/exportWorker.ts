@@ -7,7 +7,7 @@
 
 import { ALL_FORMATS, BlobSource, CanvasSink, Input } from 'mediabunny'
 import type { WrappedCanvas } from 'mediabunny'
-import { ArrayBufferTarget, Muxer } from 'mp4-muxer'
+import { ArrayBufferTarget, FileSystemWritableFileStreamTarget, Muxer } from 'mp4-muxer'
 import { createRenderer } from '../render/glRenderer'
 import { resolveFrame } from '../render/resolve'
 import { rasterizeTitle } from '../render/titleRaster'
@@ -99,8 +99,15 @@ async function frameForClip(p: ClipProvider, sourceT: number): Promise<Offscreen
 async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void> {
   const cleanups: (() => void)[] = []
   let stage = 'preparing'
+  // Held outside the try so the finally block can abort a half-written file.
+  // Set to null once closed, so a successful finalize is never aborted.
+  let writable: FileSystemWritableFileStream | null = null
+  // The terminal message is posted only AFTER teardown: the main thread calls
+  // worker.terminate() the moment it sees 'cancelled' or 'done', which would
+  // otherwise kill us mid-abort() and leave the half-written movie on disk.
+  let outcome: { msg: ExportResponse; transfer: Transferable[] } | null = null
   try {
-    const { settings, sequence, assets, audio } = init
+    const { settings, sequence, assets, audio, fileHandle } = init
     const framesTotal = Math.max(1, Math.ceil(sequence.durationS * settings.fps))
     post({ type: 'progress', progress: { phase: 'preparing', framesDone: 0, framesTotal } })
 
@@ -147,9 +154,19 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
     }
 
     // --- muxer + encoders --------------------------------------------------
+    // Streaming to disk and front-loading the moov box are mutually exclusive:
+    // fastStart 'in-memory' buffers the ENTIRE file to move the index to the
+    // front, which is precisely what streaming exists to avoid. So a streamed
+    // export writes moov at the end. It plays everywhere locally; it is only
+    // worse for progressive HTTP playback, which a local editor never does.
+    // The buffered fallback keeps fastStart, since it has already paid the RAM.
+    if (fileHandle) writable = await fileHandle.createWritable()
+    const streamTarget = writable ? new FileSystemWritableFileStreamTarget(writable) : null
+    const bufferTarget = streamTarget ? null : new ArrayBufferTarget()
+
     const muxer = new Muxer({
-      target: new ArrayBufferTarget(),
-      fastStart: 'in-memory',
+      target: streamTarget ?? bufferTarget!,
+      fastStart: streamTarget ? false : 'in-memory',
       video: { codec: 'avc', width: settings.width, height: settings.height, frameRate: settings.fps },
       audio:
         audio && audioCodec
@@ -356,16 +373,34 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
     stage = 'finalizing'
     post({ type: 'progress', progress: { phase: 'finalizing', framesDone: framesTotal, framesTotal } })
     muxer.finalize()
-    const { buffer } = muxer.target
-    post({ type: 'done', buffer }, [buffer])
+
+    if (writable) {
+      await writable.close()
+      // Null it BEFORE the finally block, so a closed stream is never aborted.
+      writable = null
+      outcome = { msg: { type: 'done', buffer: null }, transfer: [] }
+    } else {
+      const { buffer } = bufferTarget!
+      outcome = { msg: { type: 'done', buffer }, transfer: [buffer] }
+    }
   } catch (err) {
     if (err instanceof CancelledError || cancelled) {
-      post({ type: 'cancelled' })
+      outcome = { msg: { type: 'cancelled' }, transfer: [] }
     } else {
       const message = err instanceof Error ? err.message : String(err)
-      post({ type: 'error', message: `Export failed while ${stage}: ${message}` })
+      outcome = { msg: { type: 'error', message: `Export failed while ${stage}: ${message}` }, transfer: [] }
     }
   } finally {
+    // A cancelled or failed streamed export must not leave a half-written movie
+    // behind. abort() discards the swap file, so the destination keeps whatever
+    // it held before (a zero-byte file if the picker just created it).
+    if (writable) {
+      try {
+        await writable.abort()
+      } catch {
+        // best-effort teardown
+      }
+    }
     for (const cleanup of cleanups.reverse()) {
       try {
         cleanup()
@@ -373,5 +408,6 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
         // best-effort teardown
       }
     }
+    if (outcome) post(outcome.msg, outcome.transfer)
   }
 }

@@ -11,15 +11,54 @@ export type { ExportProgress, ExportSettings } from './messages'
 
 const abortError = (): DOMException => new DOMException('Export cancelled', 'AbortError')
 
-/** How long after a cancel request the worker gets before hard termination. */
+/**
+ * How long after a cancel request the worker gets before hard termination. The
+ * worker aborts its writable before acking, so this must outlast a disk abort.
+ */
 const CANCEL_GRACE_MS = 500
 
+/**
+ * Can this browser stream an export straight to disk? Firefox has no
+ * showSaveFilePicker, so it buffers the file and downloads it instead. Probed,
+ * never sniffed from the user agent.
+ *
+ * A `typeof` check rather than `'x' in globalThis`: the picker lives on
+ * Window.prototype, so tests that shadow it with `undefined` (to exercise the
+ * download fallback) would still satisfy `in`.
+ */
+export const canStreamToDisk = (): boolean => typeof globalThis.showSaveFilePicker === 'function'
+
+/**
+ * Ask the user where to write. Returns null when they cancel the picker, which
+ * is a normal outcome and not an error.
+ */
+export async function pickExportDestination(suggestedName: string): Promise<FileSystemFileHandle | null> {
+  if (!canStreamToDisk()) return null
+  try {
+    return await globalThis.showSaveFilePicker({
+      suggestedName,
+      types: [{ description: 'MPEG-4 video', accept: { 'video/mp4': ['.mp4'] } }],
+    })
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') return null
+    throw err
+  }
+}
+
+/**
+ * Render and encode the active sequence.
+ *
+ * With a `fileHandle`, chunks stream to disk as they are muxed and the returned
+ * Blob is null: there is nothing left in memory to hand back. Without one, the
+ * whole file is buffered and returned for a download fallback.
+ */
 export async function exportSequence(
   project: Project,
   settings: ExportSettings,
   onProgress: (p: ExportProgress) => void,
   signal: AbortSignal,
-): Promise<Blob> {
+  fileHandle?: FileSystemFileHandle,
+): Promise<Blob | null> {
   if (signal.aborted) throw abortError()
   const sequence = project.sequences[project.activeSequenceId]
   if (!sequence || sequence.durationS <= 0) throw new Error('Nothing to export')
@@ -47,7 +86,7 @@ export async function exportSequence(
   const audio = await renderAudioMix(sequence, project.assets)
   if (signal.aborted) throw abortError()
 
-  return await new Promise<Blob>((resolve, reject) => {
+  return await new Promise<Blob | null>((resolve, reject) => {
     const worker = new Worker(new URL('./exportWorker.ts', import.meta.url), { type: 'module' })
     let graceTimer: ReturnType<typeof setTimeout> | undefined
     let settled = false
@@ -73,7 +112,7 @@ export async function exportSequence(
       if (msg.type === 'progress') {
         if (!settled) onProgress(msg.progress)
       } else if (msg.type === 'done') {
-        finish(() => resolve(new Blob([msg.buffer], { type: 'video/mp4' })))
+        finish(() => resolve(msg.buffer ? new Blob([msg.buffer], { type: 'video/mp4' }) : null))
       } else if (msg.type === 'cancelled') {
         finish(() => reject(abortError()))
       } else {
@@ -83,7 +122,8 @@ export async function exportSequence(
     worker.onerror = (e) => finish(() => reject(new Error(`Export worker crashed: ${e.message || 'unknown error'}`)))
     worker.onmessageerror = () => finish(() => reject(new Error('Export worker message could not be decoded')))
 
-    const initMsg: ExportRequest = { type: 'init', settings, sequence, assets: exportAssets, audio }
+    // The handle is CLONED, not transferred: only the audio PCM moves.
+    const initMsg: ExportRequest = { type: 'init', settings, sequence, assets: exportAssets, audio, fileHandle }
     worker.postMessage(initMsg, audio ? audio.channelData.map((c) => c.buffer) : [])
   })
 }

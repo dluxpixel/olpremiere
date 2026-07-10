@@ -1,6 +1,16 @@
 import { expect, test, type Page } from '@playwright/test'
 import fs from 'node:fs'
 
+// Headless Chromium HAS showSaveFilePicker, and a real OS picker cannot be driven
+// from a test. Shadowing it exercises the documented Firefox path: buffer the file
+// and hand it to the browser as a download. The streaming-to-disk path has its own
+// test in export.spec.ts, backed by a real OPFS file handle.
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    ;(window as unknown as { showSaveFilePicker?: unknown }).showSaveFilePicker = undefined
+  })
+})
+
 const VERIFY = '_verify/phase5'
 
 test.beforeAll(() => {

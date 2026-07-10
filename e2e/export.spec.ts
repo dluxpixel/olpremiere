@@ -1,6 +1,16 @@
 import { expect, test } from '@playwright/test'
 import fs from 'node:fs'
 
+// Headless Chromium HAS showSaveFilePicker, and a real OS picker cannot be driven
+// from a test. Shadowing it by default exercises the documented Firefox path:
+// buffer the file and hand it to the browser as a download. The first test below
+// re-stubs it with a REAL OPFS handle to cover the streaming-to-disk path.
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    ;(window as unknown as { showSaveFilePicker?: unknown }).showSaveFilePicker = undefined
+  })
+})
+
 const FIXTURE = 'e2e/.fixtures/clip.webm'
 const VERIFY = '_verify/export'
 
@@ -10,6 +20,56 @@ const VERIFY = '_verify/export'
 
 test.beforeAll(() => {
   fs.mkdirSync(VERIFY, { recursive: true })
+})
+
+test('streaming export writes straight to the chosen file, and it decodes', async ({ page }) => {
+  test.setTimeout(180_000)
+
+  // Hand the app a REAL FileSystemFileHandle (from OPFS, which needs no picker),
+  // so the worker exercises the true createWritable + stream-to-disk path rather
+  // than a mock. addInitScript calls run in order, so this overrides beforeEach.
+  await page.addInitScript(() => {
+    ;(window as unknown as { showSaveFilePicker: unknown }).showSaveFilePicker = async () => {
+      const root = await navigator.storage.getDirectory()
+      return root.getFileHandle('streamed.mp4', { create: true })
+    }
+  })
+
+  await page.goto('/')
+  await page.getByTestId('media-file-input').setInputFiles(FIXTURE)
+  await expect(page.getByTestId('asset-card')).toBeVisible({ timeout: 15_000 })
+  await page.getByTestId('asset-card').dblclick()
+  await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
+
+  await page.getByTestId('export-open').click()
+  await page.getByTestId('export-resolution').selectOption('2') // SD 640×360
+  await page.getByTestId('export-bitrate').selectOption('2')
+
+  // No download event fires: nothing was buffered in memory to hand back.
+  await page.getByTestId('export-start').click()
+  await expect(page.getByText('where you chose.')).toBeVisible({ timeout: 150_000 })
+
+  // Read the file back out of OPFS and prove it is a real, decodable MP4.
+  const result = await page.evaluate(async () => {
+    const root = await navigator.storage.getDirectory()
+    const handle = await root.getFileHandle('streamed.mp4')
+    const file = await handle.getFile()
+    const video = document.createElement('video')
+    video.muted = true
+    video.src = URL.createObjectURL(file)
+    await new Promise<void>((resolve, reject) => {
+      video.onloadedmetadata = () => resolve()
+      video.onerror = () => reject(new Error('streamed MP4 failed to decode'))
+    })
+    return { size: file.size, width: video.videoWidth, height: video.videoHeight, duration: video.duration }
+  })
+
+  expect(result.size).toBeGreaterThan(20_000)
+  expect(result.width).toBe(640)
+  expect(result.height).toBe(360)
+  // moov sits at the END of a streamed file. A decoder handed the whole file
+  // still reads the duration; this assertion fails if the target is mis-wired.
+  expect(result.duration).toBeGreaterThan(1)
 })
 
 test('golden export: the MP4 matches the composited sequence', async ({ page }) => {

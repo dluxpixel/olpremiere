@@ -43,12 +43,22 @@ export type ExportRequest =
       sequence: Sequence
       assets: ExportAsset[]
       audio: RenderedAudio | null
+      /**
+       * Destination opened with showSaveFilePicker on the main thread. Handles
+       * are structured-cloneable, so the worker opens the writable itself and
+       * mp4-muxer streams encoded chunks straight to disk: peak memory stays
+       * bounded no matter how long the export runs. Absent when the browser
+       * lacks File System Access (Firefox), in which case the worker buffers
+       * the file and hands back an ArrayBuffer to download.
+       */
+      fileHandle?: FileSystemFileHandle
     }
   | { type: 'cancel' }
 
 export type ExportResponse =
   | { type: 'progress'; progress: ExportProgress }
-  | { type: 'done'; buffer: ArrayBuffer }
+  /** `buffer` is null when the file was streamed to disk: there is nothing to hand back. */
+  | { type: 'done'; buffer: ArrayBuffer | null }
   | { type: 'cancelled' }
   | { type: 'error'; message: string }
 
