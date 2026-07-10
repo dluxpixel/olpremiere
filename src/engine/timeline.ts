@@ -131,6 +131,75 @@ export function clampSpeed(s: number): number {
  * down) the following clips on its track ripple right so nothing overlaps;
  * speeding up simply leaves a gap (predictable, no data loss).
  */
+/**
+ * Rate stretch (Premiere's R tool as an Alt+edge-drag): move a clip's edge to
+ * `tS` by CHANGING ITS SPEED, never its source window. The same source frames
+ * play faster (shorter clip) or slower (longer clip); in/out stay put — that is
+ * the whole difference from a trim.
+ *
+ * In place, like a plain trim: the opposite edge is fixed, and the new length
+ * clamps against the neighbour on the dragged side, one output frame minimum,
+ * and the engine's speed range. A linked A/V group stretches together to the
+ * same duration (each member's own source span sets its own speed, so a pair
+ * whose spans match stays sample-aligned). Reverse clips keep their direction.
+ *
+ * Returns the sequence unchanged when there is no room at all rather than
+ * producing an overlap.
+ */
+export function rateStretchGroup(seq: Sequence, clipId: Id, edge: 'in' | 'out', tS: number): Sequence {
+  const found = findClip(seq, clipId)
+  if (!found) return seq
+  const grabbed = found.clip
+
+  const groupIds = new Set<Id>([clipId])
+  if (grabbed.linkId !== undefined) {
+    for (const t of seq.tracks) for (const c of t.clips) if (c.linkId === grabbed.linkId) groupIds.add(c.id)
+  }
+
+  // Desired new duration, from where the grabbed clip's edge was dragged to.
+  const desiredDur = edge === 'out' ? tS - grabbed.startS : clipEndS(grabbed) - tS
+
+  // Intersect every member's allowed range: the speed clamp bounds duration via
+  // its own source span, and the neighbour on the dragged side bounds it on the
+  // member's own track (clips are kept sorted by startS).
+  let minDur = 1 / (seq.fps || 30) // never stretch below one output frame
+  let maxDur = Infinity
+  for (const track of seq.tracks) {
+    const i = track.clips.findIndex((c) => groupIds.has(c.id))
+    if (i < 0) continue
+    const member = track.clips[i]
+    const span = member.outS - member.inS
+    minDur = Math.max(minDur, span / MAX_SPEED)
+    maxDur = Math.min(maxDur, span / MIN_SPEED)
+    if (edge === 'out') {
+      const next = track.clips[i + 1]
+      if (next) maxDur = Math.min(maxDur, next.startS - member.startS)
+    } else {
+      const prev = track.clips[i - 1]
+      maxDur = Math.min(maxDur, clipEndS(member) - (prev ? clipEndS(prev) : 0))
+    }
+  }
+  if (maxDur < minDur) return seq
+
+  const newDur = Math.min(maxDur, Math.max(minDur, desiredDur))
+  if (newDur <= 0 || Math.abs(newDur - clipDurationS(grabbed)) < EPS) return seq
+
+  const tracks = seq.tracks.map((track) => {
+    if (!track.clips.some((c) => groupIds.has(c.id))) return track
+    const clips = track.clips.map((c) => {
+      if (!groupIds.has(c.id)) return c
+      const span = c.outS - c.inS
+      const sign = c.speed < 0 ? -1 : 1
+      const speed = sign * (span / newDur)
+      // Out-edge: start fixed. In-edge: END fixed, so the start moves.
+      const startS = edge === 'out' ? c.startS : clipEndS(c) - newDur
+      return { ...c, speed, startS }
+    })
+    return { ...track, clips }
+  })
+  return recomputeDuration({ ...seq, tracks })
+}
+
 export function setClipSpeed(seq: Sequence, clipId: Id, speed: number): Sequence {
   const found = findClip(seq, clipId)
   if (!found) return seq

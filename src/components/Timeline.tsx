@@ -35,6 +35,7 @@ import {
   collectSnapPoints,
   deleteGroup,
   moveGroup,
+  rateStretchGroup,
   rippleDeleteGroup,
   rippleTrimGroup,
   slipClip,
@@ -670,6 +671,8 @@ function ClipView({
 type Drag =
   | { kind: 'move'; clipId: Id; grabOffsetS: number; trackKind: 'video' | 'audio' }
   | { kind: 'trim'; clipId: Id; edge: 'in' | 'out'; ripple: boolean }
+  /** Alt+edge-drag: retime the clip (speed changes, source in/out stay put). */
+  | { kind: 'stretch'; clipId: Id; edge: 'in' | 'out' }
   | { kind: 'slip'; clipId: Id; startXPx: number }
   | { kind: 'scrub' }
   | { kind: 'hand'; startX: number; startY: number; scrollLeft: number; scrollTop: number }
@@ -881,6 +884,11 @@ export function Timeline({ height }: { height: number }) {
     if (!track || track.locked) return
     setUI({ selection: [clip.id] })
     dragFinal.current = null
+    // Edge modifiers: Ctrl = ripple trim, Alt = rate stretch (retime, not trim).
+    if (e.altKey) {
+      beginDrag(e, { kind: 'stretch', clipId: clip.id, edge })
+      return
+    }
     beginDrag(e, { kind: 'trim', clipId: clip.id, edge, ripple: e.ctrlKey || e.metaKey })
   }
 
@@ -989,6 +997,22 @@ export function Timeline({ height }: { height: number }) {
           text: `Slip  in ${formatTimecode(slipped.inS, seq.fps)} · out ${formatTimecode(slipped.outS, seq.fps)}`,
         })
       }
+    } else if (drag.kind === 'stretch') {
+      const tRaw = quantizeToFrame(Math.max(0, x / pxPerS), seq.fps)
+      // Snapping still applies: stretching a clip to end exactly on a marker or
+      // a neighbour's edge is the whole point of the gesture half the time.
+      const t = snapWithIndicator(tRaw, drag.clipId)
+      dragFinal.current = { trackId: '', tS: t }
+      const next = rateStretchGroup(seq, drag.clipId, drag.edge, t)
+      setPreviewSeq(next)
+      const stretched = next.tracks.flatMap((tr) => tr.clips).find((c) => c.id === drag.clipId)
+      if (stretched) {
+        setTrimTip({
+          x: e.clientX,
+          y: e.clientY - 34,
+          text: `Speed ${Math.round(Math.abs(stretched.speed) * 100)}%  ·  ${formatTimecode(clipDurationS(stretched), seq.fps)}`,
+        })
+      }
     } else {
       const tRaw = quantizeToFrame(Math.max(0, x / pxPerS), seq.fps)
       const t = snapWithIndicator(tRaw, drag.clipId)
@@ -1025,6 +1049,9 @@ export function Timeline({ height }: { height: number }) {
       updateActiveSequence(drag.ripple ? 'Ripple trim' : 'Trim clip', (sq) =>
         trimFn(sq, assets, drag.clipId, drag.edge, tS),
       )
+    } else if (drag.kind === 'stretch' && dragFinal.current) {
+      const { tS } = dragFinal.current
+      updateActiveSequence('Rate stretch', (sq) => rateStretchGroup(sq, drag.clipId, drag.edge, tS))
     } else if (drag.kind === 'slip' && dragFinal.current) {
       const { tS } = dragFinal.current
       updateActiveSequence('Slip clip', (sq) => slipClip(sq, assets, drag.clipId, tS))

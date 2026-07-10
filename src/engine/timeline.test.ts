@@ -19,6 +19,7 @@ import {
   moveMarker,
   pasteClips,
   pxToTime,
+  rateStretchGroup,
   recomputeDuration,
   removeMarker,
   removeMarkerNear,
@@ -632,6 +633,108 @@ describe('snapTime', () => {
   })
   it('handles no points', () => {
     expect(snapTime(3, [], 1)).toEqual({ t: 3, snapped: false })
+  })
+})
+
+describe('rateStretchGroup', () => {
+  const find = (seq: Sequence, id: string) => seq.tracks.flatMap((t) => t.clips).find((c) => c.id === id)!
+
+  it('dragging the out edge inward speeds the clip up; the source window never moves', () => {
+    const c = makeClip({ startS: 0, outS: 4 }) // 4s of source at speed 1
+    const seq = makeSeq([makeTrack({ clips: [c] })])
+    const out = find(rateStretchGroup(seq, c.id, 'out', 2), c.id)
+    expect(out.speed).toBeCloseTo(2)
+    expect(clipDurationS(out)).toBeCloseTo(2)
+    expect(out.inS).toBe(0) // a stretch is NOT a trim
+    expect(out.outS).toBe(4)
+    expect(out.startS).toBe(0)
+  })
+
+  it('dragging the out edge outward slows it down', () => {
+    const c = makeClip({ startS: 0, outS: 4 })
+    const seq = makeSeq([makeTrack({ clips: [c] })])
+    const out = find(rateStretchGroup(seq, c.id, 'out', 8), c.id)
+    expect(out.speed).toBeCloseTo(0.5)
+    expect(clipDurationS(out)).toBeCloseTo(8)
+  })
+
+  it('the in edge keeps the END fixed and moves the start', () => {
+    const c = makeClip({ startS: 2, outS: 4 }) // 2..6 on the timeline
+    const seq = makeSeq([makeTrack({ clips: [c] })])
+    const out = find(rateStretchGroup(seq, c.id, 'in', 4), c.id)
+    expect(out.startS).toBeCloseTo(4)
+    expect(clipEndS(out)).toBeCloseTo(6)
+    expect(out.speed).toBeCloseTo(2)
+  })
+
+  it('clamps against the next clip instead of overlapping it', () => {
+    const a = makeClip({ startS: 0, outS: 4 })
+    const b = makeClip({ startS: 5, outS: 2 })
+    const seq = makeSeq([makeTrack({ clips: [a, b] })])
+    const out = find(rateStretchGroup(seq, a.id, 'out', 9), a.id)
+    expect(clipDurationS(out)).toBeCloseTo(5) // stops at b.startS
+    expect(out.speed).toBeCloseTo(4 / 5)
+  })
+
+  it('clamps against the previous clip end on the in edge', () => {
+    const a = makeClip({ startS: 0, outS: 2 }) // 0..2
+    const b = makeClip({ startS: 4, outS: 2 }) // 4..6
+    const seq = makeSeq([makeTrack({ clips: [a, b] })])
+    const out = find(rateStretchGroup(seq, b.id, 'in', 0), b.id)
+    expect(out.startS).toBeCloseTo(2) // stops at a's end
+    expect(clipEndS(out)).toBeCloseTo(6)
+  })
+
+  it('clamps to the engine speed range both ways', () => {
+    const c = makeClip({ startS: 0, outS: 4 })
+    const seq = makeSeq([makeTrack({ clips: [c] })])
+    expect(find(rateStretchGroup(seq, c.id, 'out', 0.01), c.id).speed).toBeCloseTo(8)
+    expect(find(rateStretchGroup(seq, c.id, 'out', 400), c.id).speed).toBeCloseTo(0.1)
+  })
+
+  it('a linked A/V pair stretches together and stays aligned', () => {
+    const v = makeClip({ startS: 1, outS: 4, linkId: 'g' })
+    const a = makeClip({ startS: 1, outS: 4, linkId: 'g' })
+    const seq = makeSeq([makeTrack({ clips: [v] }), makeTrack({ kind: 'audio', clips: [a] })])
+    const next = rateStretchGroup(seq, v.id, 'out', 3)
+    const vOut = find(next, v.id)
+    const aOut = find(next, a.id)
+    expect(vOut.speed).toBeCloseTo(2)
+    expect(aOut.speed).toBeCloseTo(2)
+    expect(clipDurationS(aOut)).toBeCloseTo(clipDurationS(vOut))
+    expect(aOut.startS).toBe(vOut.startS)
+  })
+
+  it('a reversed clip keeps its direction', () => {
+    const c = makeClip({ startS: 0, outS: 4, speed: -1 })
+    const seq = makeSeq([makeTrack({ clips: [c] })])
+    expect(find(rateStretchGroup(seq, c.id, 'out', 2), c.id).speed).toBeCloseTo(-2)
+  })
+
+  it('returns the sequence unchanged when there is no room at all', () => {
+    // Fastest legal speed still needs 0.5s, but the neighbour is 0.3s away.
+    const a = makeClip({ startS: 0, outS: 4 })
+    const b = makeClip({ startS: 0.3, outS: 2 })
+    const seq = makeSeq([makeTrack({ clips: [a, b] })])
+    expect(rateStretchGroup(seq, a.id, 'out', 0.2)).toBe(seq)
+  })
+
+  it('never stretches below one output frame', () => {
+    const c = makeClip({ startS: 0, outS: 0.1 }) // tiny source span
+    const seq = makeSeq([makeTrack({ clips: [c] })])
+    const out = find(rateStretchGroup(seq, c.id, 'out', 0), c.id)
+    expect(clipDurationS(out)).toBeGreaterThanOrEqual(1 / 30 - 1e-9)
+  })
+
+  it('is a no-op for an unknown clip id', () => {
+    const seq = makeSeq([makeTrack({ clips: [makeClip()] })])
+    expect(rateStretchGroup(seq, 'nope', 'out', 1)).toBe(seq)
+  })
+
+  it('updates the sequence duration when the last clip grows', () => {
+    const c = makeClip({ startS: 0, outS: 2 })
+    const seq = makeSeq([makeTrack({ clips: [c] })])
+    expect(rateStretchGroup(seq, c.id, 'out', 6).durationS).toBeCloseTo(6)
   })
 })
 
