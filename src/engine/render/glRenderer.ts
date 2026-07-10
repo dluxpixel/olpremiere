@@ -5,8 +5,9 @@
 // identical output in both places. This file is the sole engine exception that
 // touches GL; all transform math lives in the pure, unit-tested mat.ts.
 
+import { getEffect, stackSignature } from '../effects/registry'
 import { computeQuad, cropUV } from './mat'
-import type { RenderFrame, RenderLayer, RenderOp, TextureSource, TransitionKind } from './types'
+import type { RenderFrame, RenderLayer, RenderOp, ResolvedEffect, TextureSource, TransitionKind } from './types'
 
 export interface Renderer {
   render(frame: RenderFrame, tex: TextureSource): void
@@ -32,23 +33,36 @@ void main() {
   vUV = aUV;
 }`
 
-// Color filters per the frozen spec. Output is PREMULTIPLIED alpha so the
-// alpha-OVER blend (ONE, ONE_MINUS_SRC_ALPHA) composites correctly.
-const LAYER_FS = `#version 300 es
+/** Uniform name for one param of the effect sitting at stack index `i`. */
+const uniformName = (i: number, key: string): string => `u_fx${i}_${key}`
+
+/**
+ * Build the per-layer fragment shader for one POINTWISE effect stack. Each
+ * effect's GLSL body is concatenated in stack order inside its own block scope,
+ * so two instances of the same effect cannot collide on a local name; their
+ * uniforms are indexed, so they cannot collide either.
+ *
+ * An empty stack yields the identity shader — which is exactly what the old
+ * monolithic LAYER_FS computed when every filter sat at 0. Output is
+ * PREMULTIPLIED alpha so the alpha-OVER blend (ONE, ONE_MINUS_SRC_ALPHA)
+ * composites correctly.
+ */
+function buildLayerFs(pointwise: readonly ResolvedEffect[]): string {
+  const decls: string[] = []
+  const bodies: string[] = []
+  pointwise.forEach((fx, i) => {
+    const def = getEffect(fx.type)
+    if (!def?.glsl) return
+    for (const param of def.params) decls.push(`uniform float ${uniformName(i, param.key)};`)
+    bodies.push(`  { // ${def.type}\n${def.glsl((key) => uniformName(i, key))}\n  }`)
+  })
+  return `#version 300 es
 precision highp float;
 in vec2 vUV;
 uniform sampler2D uTex;
 uniform float uOpacity;
-uniform float uBrightness;
-uniform float uContrast;
-uniform float uSaturation;
-uniform float uExposure;
-uniform float uLift;         // ASC-CDL offset  (0 = neutral)
-uniform float uGamma;        // ASC-CDL power   (0 = neutral)
-uniform float uGain;         // ASC-CDL slope   (0 = neutral)
-uniform float uTemperature;  // white balance warm↔cool (0 = neutral)
-uniform float uTint;         // white balance green↔magenta (0 = neutral)
 uniform vec4 uUVRect; // u0,v0,u1,v1 — reject samples outside the crop window
+${decls.join('\n')}
 out vec4 outColor;
 void main() {
   if (vUV.x < uUVRect.x || vUV.x > uUVRect.z || vUV.y < uUVRect.y || vUV.y > uUVRect.w) {
@@ -57,24 +71,12 @@ void main() {
   }
   vec4 src = texture(uTex, vUV);
   vec3 c = src.rgb;
-  c *= pow(2.0, uExposure);
-  // Lift / gamma / gain (ASC-CDL: out = (in*slope + offset)^power). Neutral at 0.
-  float slope = 1.0 + uGain;
-  float offset = uLift * 0.5;
-  float power = pow(2.0, -uGamma);
-  c = pow(max(c * slope + offset, vec3(0.0)), vec3(power));
-  // White balance: warm pushes red / pulls blue; tint pushes green.
-  c.r *= (1.0 + uTemperature * 0.4);
-  c.b *= (1.0 - uTemperature * 0.4);
-  c.g *= (1.0 + uTint * 0.4);
-  c += uBrightness;
-  c = (c - 0.5) * (1.0 + uContrast) + 0.5;
-  float luma = dot(c, vec3(0.2126, 0.7152, 0.0722));
-  c = mix(vec3(luma), c, 1.0 + uSaturation);
-  c = clamp(c, 0.0, 1.0);
   float a = src.a * uOpacity;
+${bodies.join('\n')}
+  c = clamp(c, 0.0, 1.0);
   outColor = vec4(c * a, a); // premultiplied
 }`
+}
 
 // Full-screen pass shared by blur + combine + blit.
 const FULL_VS = `#version 300 es
@@ -219,33 +221,60 @@ interface Fbo {
   tex: WebGLTexture
 }
 
+/** One compiled layer program, specialised to a single pointwise stack shape. */
+interface LayerProgram {
+  prog: WebGLProgram
+  aPos: number
+  aUV: number
+  uFrame: WebGLUniformLocation | null
+  uTex: WebGLUniformLocation | null
+  uOpacity: WebGLUniformLocation | null
+  uUVRect: WebGLUniformLocation | null
+  /** fx[stackIndex][paramKey] -> location */
+  fx: Record<string, WebGLUniformLocation | null>[]
+}
+
+const isPointwise = (fx: ResolvedEffect): boolean => getEffect(fx.type)?.pass === 'pointwise'
+const isNeighborhood = (fx: ResolvedEffect): boolean => getEffect(fx.type)?.pass === 'neighborhood'
+
 // --- Renderer --------------------------------------------------------------
 
 export function createRenderer(gl: WebGL2RenderingContext): Renderer {
   // Programs (thrown from here on failure so the caller can fall back).
-  const layerProg = link(gl, LAYER_VS, LAYER_FS)
   const blurProg = link(gl, FULL_VS, BLUR_FS)
   const combineProg = link(gl, FULL_VS, COMBINE_FS)
   const blitProg = link(gl, FULL_VS, BLIT_FS)
 
-  // Cached uniform/attrib locations.
-  const layerLoc = {
-    aPos: gl.getAttribLocation(layerProg, 'aPos'),
-    aUV: gl.getAttribLocation(layerProg, 'aUV'),
-    uFrame: gl.getUniformLocation(layerProg, 'uFrame'),
-    uTex: gl.getUniformLocation(layerProg, 'uTex'),
-    uOpacity: gl.getUniformLocation(layerProg, 'uOpacity'),
-    uBrightness: gl.getUniformLocation(layerProg, 'uBrightness'),
-    uContrast: gl.getUniformLocation(layerProg, 'uContrast'),
-    uSaturation: gl.getUniformLocation(layerProg, 'uSaturation'),
-    uExposure: gl.getUniformLocation(layerProg, 'uExposure'),
-    uLift: gl.getUniformLocation(layerProg, 'uLift'),
-    uGamma: gl.getUniformLocation(layerProg, 'uGamma'),
-    uGain: gl.getUniformLocation(layerProg, 'uGain'),
-    uTemperature: gl.getUniformLocation(layerProg, 'uTemperature'),
-    uTint: gl.getUniformLocation(layerProg, 'uTint'),
-    uUVRect: gl.getUniformLocation(layerProg, 'uUVRect'),
+  // One layer program per distinct pointwise stack SHAPE (types + order, not
+  // values), compiled on first sight and reused thereafter. A project with no
+  // effects compiles exactly one identity program; adding a saturation to one
+  // clip compiles a second. Bounded by the number of distinct stacks in use.
+  const layerPrograms = new Map<string, LayerProgram>()
+
+  function getLayerProgram(pointwise: readonly ResolvedEffect[]): LayerProgram {
+    const key = stackSignature(pointwise)
+    const hit = layerPrograms.get(key)
+    if (hit) return hit
+    const prog = link(gl, LAYER_VS, buildLayerFs(pointwise))
+    const entry: LayerProgram = {
+      prog,
+      aPos: gl.getAttribLocation(prog, 'aPos'),
+      aUV: gl.getAttribLocation(prog, 'aUV'),
+      uFrame: gl.getUniformLocation(prog, 'uFrame'),
+      uTex: gl.getUniformLocation(prog, 'uTex'),
+      uOpacity: gl.getUniformLocation(prog, 'uOpacity'),
+      uUVRect: gl.getUniformLocation(prog, 'uUVRect'),
+      fx: pointwise.map((fx, i) => {
+        const def = getEffect(fx.type)
+        const locs: Record<string, WebGLUniformLocation | null> = {}
+        for (const param of def?.params ?? []) locs[param.key] = gl.getUniformLocation(prog, uniformName(i, param.key))
+        return locs
+      }),
+    }
+    layerPrograms.set(key, entry)
+    return entry
   }
+
   const blurLoc = {
     aPos: gl.getAttribLocation(blurProg, 'aPos'),
     uTex: gl.getUniformLocation(blurProg, 'uTex'),
@@ -357,30 +386,34 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
       bl[0], bl[1], uv.u0, uv.v1,
     ])
 
-    gl.useProgram(layerProg)
+    const pointwise = layer.effects.filter(isPointwise)
+    const lp = getLayerProgram(pointwise)
+
+    gl.useProgram(lp.prog)
     gl.bindVertexArray(layerVao)
     gl.bindBuffer(gl.ARRAY_BUFFER, layerVbo)
     gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW)
-    gl.enableVertexAttribArray(layerLoc.aPos)
-    gl.vertexAttribPointer(layerLoc.aPos, 2, gl.FLOAT, false, 16, 0)
-    gl.enableVertexAttribArray(layerLoc.aUV)
-    gl.vertexAttribPointer(layerLoc.aUV, 2, gl.FLOAT, false, 16, 8)
+    gl.enableVertexAttribArray(lp.aPos)
+    gl.vertexAttribPointer(lp.aPos, 2, gl.FLOAT, false, 16, 0)
+    gl.enableVertexAttribArray(lp.aUV)
+    gl.vertexAttribPointer(lp.aUV, 2, gl.FLOAT, false, 16, 8)
 
-    gl.uniform2f(layerLoc.uFrame, frameW, frameH)
-    gl.uniform1i(layerLoc.uTex, 0)
+    gl.uniform2f(lp.uFrame, frameW, frameH)
+    gl.uniform1i(lp.uTex, 0)
     gl.activeTexture(gl.TEXTURE0)
     gl.bindTexture(gl.TEXTURE_2D, srcTex)
-    gl.uniform1f(layerLoc.uOpacity, clamp01(layer.opacity))
-    gl.uniform1f(layerLoc.uBrightness, layer.filters.brightness)
-    gl.uniform1f(layerLoc.uContrast, layer.filters.contrast)
-    gl.uniform1f(layerLoc.uSaturation, layer.filters.saturation)
-    gl.uniform1f(layerLoc.uExposure, layer.filters.exposure)
-    gl.uniform1f(layerLoc.uLift, layer.filters.lift)
-    gl.uniform1f(layerLoc.uGamma, layer.filters.gamma)
-    gl.uniform1f(layerLoc.uGain, layer.filters.gain)
-    gl.uniform1f(layerLoc.uTemperature, layer.filters.temperature)
-    gl.uniform1f(layerLoc.uTint, layer.filters.tint)
-    gl.uniform4f(layerLoc.uUVRect, uv.u0, uv.v0, uv.u1, uv.v1)
+    gl.uniform1f(lp.uOpacity, clamp01(layer.opacity))
+    gl.uniform4f(lp.uUVRect, uv.u0, uv.v0, uv.u1, uv.v1)
+    // Bind this draw's effect params. Locations were resolved against THIS
+    // program, so index i lines up with pointwise[i] by construction.
+    pointwise.forEach((fx, i) => {
+      const locs = lp.fx[i]
+      if (!locs) return
+      for (const key of Object.keys(locs)) {
+        const loc = locs[key]
+        if (loc) gl.uniform1f(loc, fx.params[key] ?? 0)
+      }
+    })
     gl.drawArrays(gl.TRIANGLES, 0, 6)
   }
 
@@ -411,8 +444,21 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
     gl.drawArrays(gl.TRIANGLES, 0, 3)
   }
 
-  // Composite one layer op, isolated in its own FBO so per-layer blur doesn't
-  // bleed into siblings, then alpha-over onto the target framebuffer.
+  /**
+   * Run one neighborhood effect over the layer's isolated FBO. Result is left
+   * in `fbo`. These run AFTER the pointwise chain (which already premultiplied
+   * alpha), in stack order.
+   */
+  function applyNeighborhood(fx: ResolvedEffect, fbo: Fbo, scratch: Fbo): void {
+    if (fx.type === 'gaussianBlur') {
+      const r = fx.params.blur ?? 0
+      if (r > 0) blurFbo(fbo, scratch, r)
+    }
+  }
+
+  // Composite one layer op. When the stack has neighborhood effects (blur), the
+  // layer is drawn into its own FBO first so the effect cannot bleed into its
+  // siblings, then blitted over the target. Otherwise it draws straight through.
   function compositeLayer(
     layer: RenderLayer,
     source: TexImageSource,
@@ -422,8 +468,8 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
     layerFbo: Fbo,
     scratch: Fbo,
   ): void {
-    const blur = layer.filters.blur
-    if (blur > 0) {
+    const post = layer.effects.filter(isNeighborhood)
+    if (post.length > 0) {
       gl.bindFramebuffer(gl.FRAMEBUFFER, layerFbo.fb)
       gl.viewport(0, 0, fboW, fboH)
       gl.disable(gl.BLEND)
@@ -432,8 +478,8 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
       gl.enable(gl.BLEND)
       gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
       drawLayer(layer, source, frameW, frameH)
-      blurFbo(layerFbo, scratch, blur)
-      // Blit blurred premultiplied layer onto the target, over.
+      for (const fx of post) applyNeighborhood(fx, layerFbo, scratch)
+      // Blit the processed premultiplied layer onto the target, over.
       gl.bindFramebuffer(gl.FRAMEBUFFER, targetFb)
       gl.viewport(0, 0, gl.canvas.width, gl.canvas.height)
       gl.enable(gl.BLEND)
@@ -536,7 +582,8 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
   }
 
   function dispose(): void {
-    gl.deleteProgram(layerProg)
+    for (const lp of layerPrograms.values()) gl.deleteProgram(lp.prog)
+    layerPrograms.clear()
     gl.deleteProgram(blurProg)
     gl.deleteProgram(combineProg)
     gl.deleteProgram(blitProg)

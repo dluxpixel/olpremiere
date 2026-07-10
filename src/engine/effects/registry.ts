@@ -11,7 +11,7 @@
 // key, luma curve, and masks become registry entries, not new architecture.
 
 import { evalChannel } from '../keyframes'
-import type { ResolvedEffect } from '../render/types'
+import type { ResolvedEffect, ResolvedFilters } from '../render/types'
 import type { ClipFilters, EffectInstance, Keyframe } from '../types'
 
 export type EffectCategory = 'color' | 'blur' | 'key' | 'stylize'
@@ -270,6 +270,33 @@ export function filtersToEffectStack(filters: ClipFilters | undefined): EffectIn
     if (anyNonNeutral) stack.push({ id: `fx_${type}`, type, params, enabled: true })
   }
   return stack
+}
+
+/**
+ * Turn ALREADY-SAMPLED filter values (keyframes resolved for this frame) into
+ * the canonical ordered stack the renderer draws. This is the bridge that lets
+ * the fixed `filters` bag and a real effect stack share one render path.
+ *
+ * Neutral effects are skipped. Every GLSL body is the identity at its defaults,
+ * so dropping them cannot move a pixel; it just keeps the compiled-program
+ * cache small (a project with no grade compiles exactly one layer program).
+ */
+export function resolvedFiltersToStack(f: ResolvedFilters): ResolvedEffect[] {
+  const out: ResolvedEffect[] = []
+  const push = (type: string, params: Record<string, number>): void => {
+    const def = EFFECT_BY_TYPE[type]
+    if (!def) return
+    if (def.params.every((param) => params[param.key] === param.default)) return
+    out.push({ type, params })
+  }
+  // Frozen LAYER_FS math order. See CANONICAL_ORDER.
+  push('exposure', { exposure: f.exposure })
+  push('colorWheels', { lift: f.lift, gamma: f.gamma, gain: f.gain })
+  push('whiteBalance', { temperature: f.temperature, tint: f.tint })
+  push('brightnessContrast', { brightness: f.brightness, contrast: f.contrast })
+  push('saturation', { saturation: f.saturation })
+  push('gaussianBlur', { blur: f.blur })
+  return out
 }
 
 /**

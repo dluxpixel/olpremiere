@@ -65,7 +65,17 @@ export interface RenderLayer {
   title?: TitleDef
   transform: ResolvedTransform
   opacity: number
+  /**
+   * The fixed color params, keyframes already sampled. Kept as the document's
+   * current shape; `effects` is derived from it and is what the renderer draws.
+   */
   filters: ResolvedFilters
+  /**
+   * The ordered effect stack the renderer applies, keyframes already sampled.
+   * Pointwise effects concatenate into one fragment shader; neighborhood
+   * effects (blur) run as their own pass afterwards, in this order.
+   */
+  effects: ResolvedEffect[]
 }
 
 export type TransitionKind =

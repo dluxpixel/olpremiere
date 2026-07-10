@@ -5,6 +5,7 @@
 // Transforms live in sequence-NATIVE px; the renderer scales the raster so a
 // 1920×1080 preview and a 1920×1080 export match proportionally.
 
+import { resolvedFiltersToStack } from '../effects/registry'
 import { resolveChannel } from '../keyframes'
 import { clipDurationS, clipEndS } from '../timeline'
 import type { Clip, Sequence, Track } from '../types'
@@ -13,6 +14,7 @@ import {
   type RenderFrame,
   type RenderLayer,
   type RenderOp,
+  type ResolvedFilters,
   type TransitionKind,
 } from './types'
 
@@ -39,6 +41,20 @@ function layerFor(clip: Clip, t: number): RenderLayer {
   const rate = Math.abs(clip.speed || 1)
   // Reverse (speed < 0): walk the source backward from outS as time advances.
   const sourceTimeS = clip.speed < 0 ? clip.outS - localT * rate : clip.inS + localT * rate
+  // Sample every color channel ONCE, then derive the render stack from those
+  // same numbers — so a keyframed grade and a static one take one code path.
+  const filters: ResolvedFilters = {
+    brightness: resolveChannel(clip, 'brightness', localT),
+    contrast: resolveChannel(clip, 'contrast', localT),
+    saturation: resolveChannel(clip, 'saturation', localT),
+    exposure: resolveChannel(clip, 'exposure', localT),
+    blur: resolveChannel(clip, 'blur', localT),
+    lift: resolveChannel(clip, 'lift', localT),
+    gamma: resolveChannel(clip, 'gamma', localT),
+    gain: resolveChannel(clip, 'gain', localT),
+    temperature: resolveChannel(clip, 'temperature', localT),
+    tint: resolveChannel(clip, 'tint', localT),
+  }
   return {
     clipId: clip.id,
     assetId: clip.assetId,
@@ -58,18 +74,8 @@ function layerFor(clip: Clip, t: number): RenderLayer {
       cropL: resolveChannel(clip, 'cropL', localT),
     },
     opacity: clamp(resolveChannel(clip, 'opacity', localT), 0, 1),
-    filters: {
-      brightness: resolveChannel(clip, 'brightness', localT),
-      contrast: resolveChannel(clip, 'contrast', localT),
-      saturation: resolveChannel(clip, 'saturation', localT),
-      exposure: resolveChannel(clip, 'exposure', localT),
-      blur: resolveChannel(clip, 'blur', localT),
-      lift: resolveChannel(clip, 'lift', localT),
-      gamma: resolveChannel(clip, 'gamma', localT),
-      gain: resolveChannel(clip, 'gain', localT),
-      temperature: resolveChannel(clip, 'temperature', localT),
-      tint: resolveChannel(clip, 'tint', localT),
-    },
+    filters,
+    effects: resolvedFiltersToStack(filters),
   }
 }
 
