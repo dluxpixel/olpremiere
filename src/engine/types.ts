@@ -48,6 +48,14 @@ export interface Sequence {
    */
   tracks: Track[]
   markers: Marker[]
+  /**
+   * Work area (spec §5.6, I / O). Both optional and independent: an in point
+   * alone means "to the end", an out point alone "from the start". Always read
+   * them through engine/workArea.ts, which normalises inverted, out-of-bounds,
+   * and degenerate ranges rather than letting an export render zero frames.
+   */
+  inPointS?: number
+  outPointS?: number
 }
 
 export interface Track {

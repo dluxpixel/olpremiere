@@ -108,7 +108,7 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
   let outcome: { msg: ExportResponse; transfer: Transferable[] } | null = null
   try {
     const { settings, sequence, assets, audio, fileHandle } = init
-    const framesTotal = Math.max(1, Math.ceil(sequence.durationS * settings.fps))
+    const framesTotal = Math.max(1, Math.ceil((settings.endS - settings.startS) * settings.fps))
     post({ type: 'progress', progress: { phase: 'preparing', framesDone: 0, framesTotal } })
 
     // --- codec picks -------------------------------------------------------
@@ -342,7 +342,9 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
     for (let f = 0; f < framesTotal; f++) {
       checkCancel()
       throwIfFailed()
-      const t = f / settings.fps
+      // Sample the sequence from the work-area start, but stamp the output from
+      // zero: a work-area export begins at its in point, not after startS of black.
+      const t = settings.startS + f / settings.fps
       const frame = resolveFrame(sequence, t)
 
       const layers: RenderLayer[] = []

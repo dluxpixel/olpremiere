@@ -25,6 +25,7 @@ import {
   selectClipOnAdjacentTrack,
 } from './state/clipboard'
 import { pausePlayback, shuttle, togglePlay } from './state/playbackControl'
+import { clearInOut, gotoIn, gotoOut, markIn, markOut } from './state/workAreaActions'
 import { addTitleClip } from './state/titleActions'
 import { saveNow } from './state/persistence'
 import { updateActiveSequence, useStore, zoomIn, zoomOut } from './state/store'
@@ -137,6 +138,12 @@ function buildAppBindings(): Binding[] {
       { combo: 'mod+x', description: 'Cut clip(s)', run: cutSelection },
       { combo: 'mod+v', description: 'Paste at playhead', run: pasteAtPlayhead },
       { combo: 'mod+d', description: 'Duplicate clip(s)', run: duplicateSelection },
+      // Work area (spec §5.6). Scopes export; I/O are the universal NLE keys.
+      { combo: 'i', description: 'Mark in at playhead', run: markIn },
+      { combo: 'o', description: 'Mark out at playhead', run: markOut },
+      { combo: 'shift+i', description: 'Go to in point', run: gotoIn },
+      { combo: 'shift+o', description: 'Go to out point', run: gotoOut },
+      { combo: 'alt+x', description: 'Clear in/out', run: clearInOut },
       {
         combo: 'm',
         description: 'Add marker at playhead',

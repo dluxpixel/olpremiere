@@ -8,6 +8,7 @@ import {
   type ExportSettings,
 } from '../engine/export'
 import { activeSequence } from '../engine/types'
+import { workArea } from '../engine/workArea'
 import { useStore } from '../state/store'
 import { useToasts } from '../state/toasts'
 import { Button, IconButton } from '../ui/Button'
@@ -62,6 +63,14 @@ function fmtBytes(n: number): string {
   return `${Math.round(n / 1e3)} KB`
 }
 
+/** A duration for the range picker: "4.5s" reads better than a full timecode here. */
+function fmtSeconds(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return '0s'
+  if (seconds < 60) return `${seconds.toFixed(1)}s`
+  const m = Math.floor(seconds / 60)
+  return `${m}m ${Math.round(seconds - m * 60)}s`
+}
+
 function fmtEta(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return '—'
   const s = Math.round(seconds)
@@ -80,6 +89,12 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   const [stage, setStage] = useState<Stage>({ kind: 'settings' })
   const abortRef = useRef<AbortController | null>(null)
 
+  // Default to the work area when one exists: someone who just set in/out points
+  // almost always means to render that bit.
+  const area = workArea(seq)
+  const [useWorkArea, setUseWorkArea] = useState(area.active)
+  const range = useWorkArea && area.active ? area : { startS: 0, endS: seq.durationS }
+
   // Cancel a running export if the dialog unmounts.
   useEffect(() => () => abortRef.current?.abort(), [])
 
@@ -93,6 +108,8 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
       height: preset.height,
       fps: seq.fps,
       videoBitrate: BITRATES[bitrate].value,
+      startS: range.startS,
+      endS: range.endS,
     }
 
     // Ask for the destination FIRST: showSaveFilePicker needs transient user
@@ -115,7 +132,11 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
     abortRef.current = abort
     setStage({
       kind: 'running',
-      progress: { phase: 'preparing', framesDone: 0, framesTotal: Math.ceil(seq.durationS * seq.fps) },
+      progress: {
+        phase: 'preparing',
+        framesDone: 0,
+        framesTotal: Math.ceil((range.endS - range.startS) * seq.fps),
+      },
       startedAt: performance.now(),
     })
     try {
@@ -192,6 +213,22 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
 
         {stage.kind === 'settings' && (
           <div className="flex flex-col gap-3 p-4">
+            <label className="flex items-center justify-between gap-3 text-[12px] text-text-secondary">
+              Range
+              <select
+                data-testid="export-range"
+                aria-label="Export range"
+                className="h-7 w-56 rounded-[4px] border border-border bg-bg-input px-2 text-[12px] text-text-primary focus:border-accent focus:outline-none disabled:opacity-40"
+                value={useWorkArea ? 'workArea' : 'sequence'}
+                disabled={!area.active}
+                onChange={(e) => setUseWorkArea(e.target.value === 'workArea')}
+              >
+                <option value="sequence">Entire sequence ({fmtSeconds(seq.durationS)})</option>
+                {area.active && (
+                  <option value="workArea">Work area ({fmtSeconds(area.endS - area.startS)})</option>
+                )}
+              </select>
+            </label>
             <label className="flex items-center justify-between gap-3 text-[12px] text-text-secondary">
               Resolution
               <select

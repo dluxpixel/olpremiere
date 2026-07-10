@@ -43,6 +43,7 @@ import {
 } from '../engine/timeline'
 import type { TransitionKind } from '../engine/render/types'
 import { formatTimecode, quantizeToFrame } from '../engine/timecode'
+import { workArea } from '../engine/workArea'
 import { applyEffect, setClipTransition } from '../state/clipEdits'
 import { ASSET_MIME, EFFECT_MIME, TRANSITION_MIME, dragHasType, edgeForOffset } from '../state/dnd'
 import { comboLabel } from '../keymap'
@@ -704,6 +705,7 @@ export function Timeline({ height }: { height: number }) {
   const vTracks = useMemo(() => [...videoTracks(renderSeq)].reverse(), [renderSeq])
   const aTracks = useMemo(() => audioTracks(renderSeq), [renderSeq])
   const hasClips = seq.tracks.some((t) => t.clips.length > 0)
+  const area = workArea(seq)
 
   const lengthS = Math.max(120, seq.durationS + 60)
   const contentWidth = lengthS * pxPerS
@@ -1262,6 +1264,33 @@ export function Timeline({ height }: { height: number }) {
               }}
             >
               <Ruler contentWidth={contentWidth} lengthS={lengthS} />
+              {/* Work area: the range an export renders. Drawn under the markers
+                  so a marker sitting on the in point stays legible. */}
+              {area.active && (
+                <>
+                  <div
+                    data-testid="work-area"
+                    className="pointer-events-none absolute top-0 border-x border-accent bg-accent/20"
+                    style={{
+                      left: area.startS * pxPerS,
+                      width: Math.max(1, (area.endS - area.startS) * pxPerS),
+                      height: RULER_H,
+                    }}
+                  />
+                  <div
+                    data-testid="work-area-in"
+                    title={`In ${formatTimecode(area.startS, seq.fps)}`}
+                    className="pointer-events-none absolute h-2 w-2 bg-accent"
+                    style={{ left: area.startS * pxPerS, top: 0, clipPath: 'polygon(0 0, 100% 0, 0 100%)' }}
+                  />
+                  <div
+                    data-testid="work-area-out"
+                    title={`Out ${formatTimecode(area.endS, seq.fps)}`}
+                    className="pointer-events-none absolute h-2 w-2 bg-accent"
+                    style={{ left: area.endS * pxPerS - 8, top: 0, clipPath: 'polygon(100% 0, 100% 100%, 0 0)' }}
+                  />
+                </>
+              )}
               {seq.markers.map((m) => (
                 <div
                   key={m.id}

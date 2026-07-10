@@ -22,18 +22,27 @@ export const EXPORT_SAMPLE_RATE = 48000
 export const EXPORT_CHANNELS = 2
 
 /**
- * Mixes every audible clip from t=0 with the exact rules of scheduleAudio:
- * solo wins (any solo → only solo tracks, else non-muted), clips on video AND
- * audio tracks carry audio, disabled clips and speed <= 0 are skipped, and
- * playbackRate = |speed|. Returns null when there is nothing audible or the
- * platform has no AudioEncoder (older Safari) — the export is then video-only.
+ * Mixes every audible clip over [startS, endS) with the exact rules of
+ * scheduleAudio: solo wins (any solo → only solo tracks, else non-muted), clips
+ * on video AND audio tracks carry audio, disabled clips and speed <= 0 are
+ * skipped, and playbackRate = |speed|. Returns null when there is nothing
+ * audible or the platform has no AudioEncoder (older Safari) — the export is
+ * then video-only.
+ *
+ * `startS` is the schedule base, which is exactly what computeClipSchedule and
+ * clipGainEnvelope already take as `fromS`: a clip whose window ends before it
+ * drops out, and the rest report offsets relative to it. So the rendered PCM
+ * begins at the work-area in point, matching the video's zero-based timestamps.
  */
 export async function renderAudioMix(
   seq: Sequence,
   assets: Record<Id, MediaAsset>,
+  startS = 0,
+  endS = seq.durationS,
 ): Promise<RenderedAudio | null> {
   if (!('AudioEncoder' in globalThis)) return null
-  if (seq.durationS <= 0) return null
+  const rangeS = endS - startS
+  if (rangeS <= 0) return null
 
   const anySolo = seq.tracks.some((t) => t.solo)
   const audibleTracks = seq.tracks.filter((t) => (anySolo ? t.solo : !t.muted))
@@ -46,7 +55,7 @@ export async function renderAudioMix(
       if (!asset) continue
       const reversed = clip.speed < 0
       const eff = reversed ? effectiveAudioClip(clip, asset.durationS) : clip
-      const sched = computeClipSchedule(eff, 0)
+      const sched = computeClipSchedule(eff, startS)
       if (!sched) continue
       candidates.push({ clip: eff, track, sched, asset, reversed })
     }
@@ -59,12 +68,12 @@ export async function renderAudioMix(
   )
   if (!buffers.some((b) => b !== null)) return null
 
-  const length = Math.max(1, Math.ceil(seq.durationS * EXPORT_SAMPLE_RATE))
+  const length = Math.max(1, Math.ceil(rangeS * EXPORT_SAMPLE_RATE))
   const ctx = new OfflineAudioContext(EXPORT_CHANNELS, length, EXPORT_SAMPLE_RATE)
 
   // Same gain→pan-per-track → destination topology as the live preview, so the
-  // exported mix matches what was heard. Times are absolute (export renders
-  // from t=0), which is exactly clipGainEnvelope(clip, 0)'s offset convention.
+  // exported mix matches what was heard. Offsets are relative to `startS`, which
+  // is exactly clipGainEnvelope(clip, startS)'s convention.
   const trackNodes = new Map<Id, GainNode>()
   const trackInputFor = (track: Track): GainNode => {
     const existing = trackNodes.get(track.id)
@@ -102,7 +111,7 @@ export async function renderAudioMix(
     source.buffer = buffer
     source.playbackRate.value = Math.abs(clip.speed)
     const gain = ctx.createGain()
-    const env = clipGainEnvelope(clip, 0) ?? [{ offsetS: 0, value: dbToGain(clip.audioGainDb) }]
+    const env = clipGainEnvelope(clip, startS) ?? [{ offsetS: 0, value: dbToGain(clip.audioGainDb) }]
     env.forEach((pt, idx) => {
       if (idx === 0) gain.gain.setValueAtTime(pt.value, pt.offsetS)
       else gain.gain.linearRampToValueAtTime(pt.value, pt.offsetS)

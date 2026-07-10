@@ -62,8 +62,9 @@ export async function exportSequence(
   if (signal.aborted) throw abortError()
   const sequence = project.sequences[project.activeSequenceId]
   if (!sequence || sequence.durationS <= 0) throw new Error('Nothing to export')
+  if (settings.endS - settings.startS <= 0) throw new Error('Nothing to export: the range is empty')
 
-  const framesTotal = Math.max(1, Math.ceil(sequence.durationS * settings.fps))
+  const framesTotal = Math.max(1, Math.ceil((settings.endS - settings.startS) * settings.fps))
   onProgress({ phase: 'preparing', framesDone: 0, framesTotal })
 
   const usedIds = new Set<Id>()
@@ -83,7 +84,7 @@ export async function exportSequence(
   if (signal.aborted) throw abortError()
 
   onProgress({ phase: 'audio', framesDone: 0, framesTotal })
-  const audio = await renderAudioMix(sequence, project.assets)
+  const audio = await renderAudioMix(sequence, project.assets, settings.startS, settings.endS)
   if (signal.aborted) throw abortError()
 
   return await new Promise<Blob | null>((resolve, reject) => {

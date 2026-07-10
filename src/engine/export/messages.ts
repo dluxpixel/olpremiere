@@ -10,6 +10,13 @@ export interface ExportSettings {
   fps: number
   /** Bits per second. */
   videoBitrate: number
+  /**
+   * The sequence-time range to render, normalised by engine/workArea.ts. Output
+   * timestamps always start at zero, so a work-area export produces a file that
+   * begins at its in point rather than one padded with `startS` of black.
+   */
+  startS: number
+  endS: number
 }
 
 export interface ExportProgress {
