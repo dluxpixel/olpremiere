@@ -39,6 +39,17 @@ export interface ResolvedFilters {
 }
 
 /**
+ * One effect, fully resolved to numbers at a specific time (no keyframes left).
+ * `type` indexes the effect registry (engine/effects/registry.ts), which owns
+ * the GLSL and the param definitions. Order within a layer's stack is the order
+ * the effects apply, bottom-up.
+ */
+export interface ResolvedEffect {
+  type: string
+  params: Record<string, number>
+}
+
+/**
  * One drawable source. The caller resolves `assetId` + `sourceTimeS` to an
  * actual texture (video frame / image / decoded canvas) at draw time; the
  * renderer never touches decoding.
