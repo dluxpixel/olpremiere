@@ -655,7 +655,28 @@ describe('collectSnapPoints', () => {
   it('excludes the dragged clip', () => {
     const dragged = makeClip({ startS: 1, outS: 2 })
     const seq = makeSeq([makeTrack({ clips: [dragged, makeClip({ startS: 5, outS: 2 })] })])
-    expect(collectSnapPoints(seq, { excludeClipId: dragged.id })).toEqual([0, 5, 7])
+    expect(collectSnapPoints(seq, { excludeClipIds: [dragged.id] })).toEqual([0, 5, 7])
+  })
+  it('excludes the whole link group, so a linked A/V pair cannot snap to itself', () => {
+    // Regression: excluding only the grabbed clip left the linked audio
+    // partner's stale edges in the set, and every drag magnetized back to its
+    // own origin instead of to its neighbours across lanes.
+    const v = makeClip({ startS: 1, outS: 2, linkId: 'g1' })
+    const a = makeClip({ startS: 1, outS: 2, linkId: 'g1' })
+    const neighbour = makeClip({ startS: 5, outS: 2 })
+    const seq = makeSeq([
+      makeTrack({ clips: [v, neighbour] }),
+      makeTrack({ kind: 'audio', clips: [a] }),
+    ])
+    expect(collectSnapPoints(seq, { excludeClipIds: clipGroupIds(seq, v.id) })).toEqual([0, 5, 7])
+  })
+  it('gathers edges across lanes: V1 and audio clips are all magnets', () => {
+    const seq = makeSeq([
+      makeTrack({ clips: [makeClip({ startS: 2, outS: 2 })] }), // V1: 2..4
+      makeTrack({ clips: [] }), // V2, the lane being dragged into
+      makeTrack({ kind: 'audio', clips: [makeClip({ startS: 9, outS: 1 })] }), // A1: 9..10
+    ])
+    expect(collectSnapPoints(seq)).toEqual([0, 2, 4, 9, 10])
   })
   it('omits the playhead when not provided', () => {
     const seq = makeSeq([makeTrack()])

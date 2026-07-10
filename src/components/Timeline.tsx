@@ -31,6 +31,7 @@ import {
   addTrack,
   clipDurationS,
   clipEndS,
+  clipGroupIds,
   collectSnapPoints,
   deleteGroup,
   moveGroup,
@@ -744,7 +745,10 @@ export function Timeline({ height }: { height: number }) {
       setSnapIndicatorT(null)
       return tS
     }
-    const points = collectSnapPoints(seq, { excludeClipId, playheadS })
+    // Exclude the whole link group: a linked A/V pair trims/moves together, so
+    // the partner's stale edges must not magnetize the gesture back onto itself.
+    const excludeClipIds = excludeClipId ? clipGroupIds(seq, excludeClipId) : undefined
+    const points = collectSnapPoints(seq, { ...(excludeClipIds ? { excludeClipIds } : {}), playheadS })
     const r = snapTime(tS, points, SNAP_PX / pxPerS)
     setSnapIndicatorT(r.snapped ? r.t : null)
     return r.t
@@ -948,7 +952,11 @@ export function Timeline({ height }: { height: number }) {
       if (!current || !clip) return
       const durS = clipDurationS(clip)
       // Snap the leading edge, then the trailing edge; keep the closer catch.
-      const points = snapping ? collectSnapPoints(seq, { excludeClipId: drag.clipId, playheadS }) : []
+      // The dragged clip's whole link group is excluded: its audio partner's
+      // stale edges would otherwise snap the drag back to where it started.
+      const points = snapping
+        ? collectSnapPoints(seq, { excludeClipIds: clipGroupIds(seq, drag.clipId), playheadS })
+        : []
       let desired = desiredRaw
       if (snapping) {
         const threshold = SNAP_PX / pxPerS

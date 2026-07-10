@@ -381,14 +381,25 @@ export function snapTime(
   return bestDist <= thresholdS ? { t: best, snapped: true } : { t: tS, snapped: false }
 }
 
+/**
+ * Every edge a drag can magnet to: clip starts/ends on EVERY lane (video and
+ * audio alike — cross-track alignment is the point), markers, t=0, and the
+ * playhead.
+ *
+ * `excludeClipIds` must be the dragged clip's whole LINK GROUP, not just the
+ * grabbed clip. A linked A/V pair otherwise leaves its partner's stale edges in
+ * the set, and the drag magnetizes back to its own origin instead of to its
+ * neighbours — which reads as "snapping doesn't work across lanes".
+ */
 export function collectSnapPoints(
   seq: Sequence,
-  opts?: { excludeClipId?: Id; playheadS?: number },
+  opts?: { excludeClipIds?: readonly Id[]; playheadS?: number },
 ): number[] {
+  const excluded = new Set(opts?.excludeClipIds ?? [])
   const points = new Set<number>([0])
   for (const track of seq.tracks) {
     for (const clip of track.clips) {
-      if (clip.id === opts?.excludeClipId) continue
+      if (excluded.has(clip.id)) continue
       points.add(clip.startS)
       points.add(clipEndS(clip))
     }
