@@ -12,7 +12,9 @@ import {
   deleteGroup,
   removeMarkerNear,
   rippleDeleteGroup,
+  rippleTrimGroup,
   splitGroup,
+  unlockedClipIds,
 } from './engine/timeline'
 import { quantizeToFrame } from './engine/timecode'
 import { activeSequence } from './engine/types'
@@ -20,10 +22,15 @@ import { installKeymap, type Binding } from './keymap'
 import {
   copySelection,
   cutSelection,
+  deselectAll,
   duplicateSelection,
+  moveSelectionToAdjacentTrack,
+  nudgeSelection,
   pasteAtPlayhead,
+  selectAllClips,
   selectClipOnAdjacentTrack,
 } from './state/clipboard'
+import { toggleClipEnabled } from './state/clipEdits'
 import { pausePlayback, shuttle, togglePlay } from './state/playbackControl'
 import { clearInOut, gotoIn, gotoOut, markIn, markOut } from './state/workAreaActions'
 import { addTitleClip } from './state/titleActions'
@@ -45,7 +52,8 @@ function stepFrames(frames: number) {
 
 function deleteSelected(ripple: boolean) {
   const s = useStore.getState()
-  const ids = s.ui.selection
+  // Selection may legitimately include locked-track clips; deleting them never may.
+  const ids = unlockedClipIds(activeSequence(s.project), s.ui.selection)
   if (ids.length === 0) return
   // Group-aware: deleting a linked clip removes its A/V partner too.
   updateActiveSequence(ripple ? 'Ripple delete' : 'Delete clip', (sq) => {
@@ -83,13 +91,53 @@ function splitAtPlayhead() {
   })
 }
 
+/**
+ * Q / W: top-and-tail. Ripple-trim the head (Q) or tail (W) of the clip under
+ * the playhead TO the playhead, closing the gap. The dead-air remover: park the
+ * playhead where the good part starts, tap Q. Target = the selected clip if the
+ * playhead is inside it, else the topmost unlocked clip under the playhead.
+ */
+function topAndTail(edge: 'in' | 'out') {
+  const s = useStore.getState()
+  const t = s.ui.playheadS
+  const assets = s.project.assets
+  const seq = activeSequence(s.project)
+  const sel = new Set(s.ui.selection)
+  const under = seq.tracks
+    .filter((tr) => !tr.locked)
+    .flatMap((tr) => tr.clips)
+    .filter((c) => t > c.startS && t < clipEndS(c))
+  if (under.length === 0) return
+  const target = under.find((c) => sel.has(c.id)) ?? under[under.length - 1]
+  updateActiveSequence(edge === 'in' ? 'Trim head to playhead' : 'Trim tail to playhead', (sq) =>
+    rippleTrimGroup(sq, assets, target.id, edge, t),
+  )
+}
+
 function buildAppBindings(): Binding[] {
   const store = () => useStore.getState()
   return [
-      { combo: 'shift+/', description: 'Keyboard shortcuts', run: () => store().setUI({ helpOpen: !store().ui.helpOpen }) },
-      { combo: 'mod+z', description: 'Undo', run: () => store().undo() },
-      { combo: 'mod+shift+z', description: 'Redo', run: () => store().redo() },
-      { combo: 'mod+y', description: 'Redo', run: () => store().redo() },
+      // comboFromEvent reads the PRODUCED character (e.key), so the '?' help key
+      // arrives as 'shift+?' on US and plain '?' from synthetic events; on Czech
+      // QWERTZ '?' isn't Shift+/ at all. Register every interpretation, including
+      // the legacy 'shift+/', so it fires on real keyboards and stays testable.
+      ...['shift+?', '?', 'shift+/'].map((combo) => ({
+        combo,
+        description: 'Keyboard shortcuts',
+        run: () => store().setUI({ helpOpen: !store().ui.helpOpen }),
+      })),
+      { combo: 'mod+z', description: 'Undo', run: () => {
+        const label = store().undo()
+        if (label) useToasts.getState().show(`Undo: ${label}`)
+      } },
+      { combo: 'mod+shift+z', description: 'Redo', run: () => {
+        const label = store().redo()
+        if (label) useToasts.getState().show(`Redo: ${label}`)
+      } },
+      { combo: 'mod+y', description: 'Redo', run: () => {
+        const label = store().redo()
+        if (label) useToasts.getState().show(`Redo: ${label}`)
+      } },
       {
         combo: 'mod+s',
         description: 'Save project',
@@ -160,6 +208,23 @@ function buildAppBindings(): Binding[] {
       },
       { combo: 'arrowup', description: 'Select clip on track above', run: () => selectClipOnAdjacentTrack(-1) },
       { combo: 'arrowdown', description: 'Select clip on track below', run: () => selectClipOnAdjacentTrack(1) },
+      // Top-and-tail: ripple the head/tail of the clip under the playhead to it.
+      { combo: 'q', description: 'Trim clip head to playhead', run: () => topAndTail('in') },
+      { combo: 'w', description: 'Trim clip tail to playhead', run: () => topAndTail('out') },
+      // Nudge the selection along its track (Alt = 1 frame, Shift+Alt = 10).
+      { combo: 'alt+arrowleft', description: 'Nudge clip 1 frame left', run: () => nudgeSelection(-1) },
+      { combo: 'alt+arrowright', description: 'Nudge clip 1 frame right', run: () => nudgeSelection(1) },
+      { combo: 'shift+alt+arrowleft', description: 'Nudge clip 10 frames left', run: () => nudgeSelection(-10) },
+      { combo: 'shift+alt+arrowright', description: 'Nudge clip 10 frames right', run: () => nudgeSelection(10) },
+      // Move the selected clip to the adjacent same-kind track.
+      { combo: 'alt+arrowup', description: 'Move clip to track above', run: () => moveSelectionToAdjacentTrack(-1) },
+      { combo: 'alt+arrowdown', description: 'Move clip to track below', run: () => moveSelectionToAdjacentTrack(1) },
+      { combo: 'mod+a', description: 'Select all clips', run: selectAllClips },
+      { combo: 'escape', description: 'Deselect all', run: deselectAll },
+      { combo: 'shift+e', description: 'Enable / disable clip', run: () => {
+        const id = store().ui.selection[0]
+        if (id) toggleClipEnabled(id)
+      } },
       { combo: '=', description: 'Zoom in timeline', run: zoomIn },
       { combo: 'shift++', description: 'Zoom in timeline', run: zoomIn },
       { combo: '-', description: 'Zoom out timeline', run: zoomOut },

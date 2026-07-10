@@ -17,14 +17,28 @@ export function Toaster() {
       aria-live="polite"
     >
       {toasts.map((t) => (
-        <button
+        <div
           key={t.id}
           data-testid="toast"
-          onClick={() => dismiss(t.id)}
-          className={`pointer-events-auto rounded-[6px] border bg-bg-elevated px-3 py-2 text-[12px] text-text-primary shadow-pop ${kindClasses[t.kind]}`}
+          className={`pointer-events-auto flex items-center gap-3 rounded-[6px] border bg-bg-elevated px-3 py-2 text-[12px] text-text-primary shadow-pop ${kindClasses[t.kind]}`}
         >
-          {t.message}
-        </button>
+          {/* The message dismisses; a separate action button (e.g. Undo) does not. */}
+          <button onClick={() => dismiss(t.id)} className="text-left">
+            {t.message}
+          </button>
+          {t.action && (
+            <button
+              data-testid="toast-action"
+              onClick={() => {
+                t.action?.onClick()
+                dismiss(t.id)
+              }}
+              className="shrink-0 rounded-[4px] bg-accent px-2 py-0.5 text-[11px] font-medium text-white hover:bg-accent-hover"
+            >
+              {t.action.label}
+            </button>
+          )}
+        </div>
       ))}
     </div>
   )

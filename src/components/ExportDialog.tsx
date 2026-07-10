@@ -7,6 +7,7 @@ import {
   type ExportProgress,
   type ExportSettings,
 } from '../engine/export'
+import { beginCriticalWork } from '../state/unloadGuard'
 import { activeSequence } from '../engine/types'
 import { workArea } from '../engine/workArea'
 import { useStore } from '../state/store'
@@ -130,6 +131,9 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
 
     const abort = new AbortController()
     abortRef.current = abort
+    // Arm the beforeunload guard: closing the tab now would throw away minutes
+    // of encoding and leave a half-written file. Disarmed in `finally`.
+    const endCritical = beginCriticalWork()
     setStage({
       kind: 'running',
       progress: {
@@ -175,6 +179,8 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
         const message = err instanceof Error ? err.message : String(err)
         setStage({ kind: 'error', message })
       }
+    } finally {
+      endCritical()
     }
   }
 

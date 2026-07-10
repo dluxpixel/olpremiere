@@ -13,7 +13,13 @@ import {
 import * as ops from '../engine/effects/ops'
 import { getEffect } from '../engine/effects/registry'
 import { removeKeyframeNear, upsertKeyframe } from '../engine/keyframes'
-import { clipDurationS, clipEndS, setClipSpeed as setClipSpeedT } from '../engine/timeline'
+import {
+  clipDurationS,
+  clipEndS,
+  clipGroupIds,
+  setClipSpeed as setClipSpeedT,
+  unlockedClipIds,
+} from '../engine/timeline'
 import {
   activeSequence,
   ANIM_CHANNELS,
@@ -42,8 +48,10 @@ export function playheadLocalT(clip: Clip): number {
 function mapClip(clipId: string, label: string, fn: (clip: Clip) => Clip): void {
   updateActiveSequence(label, (seq) => ({
     ...seq,
+    // The locked check here is the ONE choke point for every Inspector, effect,
+    // keyframe, and transition edit: a locked track rejects them all.
     tracks: seq.tracks.map((t) =>
-      t.clips.some((c) => c.id === clipId)
+      !t.locked && t.clips.some((c) => c.id === clipId)
         ? { ...t, clips: t.clips.map((c) => (c.id === clipId ? fn(c) : c)) }
         : t,
     ),
@@ -126,6 +134,27 @@ export function resetChannel(clipId: string, channel: AnimChannel): void {
   mapClip(clipId, `Reset ${channel}`, (c) =>
     withChannelValue(withChannelKeyframes(c, channel, []), channel, channelDefault(channel)),
   )
+}
+
+/**
+ * Toggle a clip's enabled flag (Shift+E). A disabled clip renders nothing, its
+ * audio is muted, and export skips it — but it keeps its place, effects, and
+ * keyframes, so it's the way to A/B an overlay without deleting it. Group-aware
+ * so a linked A/V pair toggles together.
+ */
+export function toggleClipEnabled(clipId: string): void {
+  const clip = findClip(clipId)
+  if (!clip) return
+  const next = !clip.enabled
+  const group = new Set(clipGroupIds(activeSequence(useStore.getState().project), clipId))
+  updateActiveSequence(next ? 'Enable clip' : 'Disable clip', (seq) => ({
+    ...seq,
+    tracks: seq.tracks.map((t) =>
+      t.locked
+        ? t
+        : { ...t, clips: t.clips.map((c) => (group.has(c.id) ? { ...c, enabled: next } : c)) },
+    ),
+  }))
 }
 
 /** Reset every channel a clip can animate, in one undo step. */
@@ -218,7 +247,10 @@ const clampFade = (s: number, dur: number): number => (s < 0 ? 0 : s > dur ? dur
 
 /** Change a clip's playback speed (negative = reverse); ripples the tail. */
 export function setClipSpeed(clipId: string, speed: number): void {
-  updateActiveSequence('Set speed', (seq) => setClipSpeedT(seq, clipId, speed))
+  updateActiveSequence('Set speed', (seq) =>
+    // Speed edits bypass mapClip (they ripple neighbours), so lock-check here.
+    unlockedClipIds(seq, [clipId]).length === 0 ? seq : setClipSpeedT(seq, clipId, speed),
+  )
 }
 
 /** Set position + scale together in ONE undo step (the Monitor drag-gizmo commit). */

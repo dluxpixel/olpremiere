@@ -30,6 +30,21 @@ export function KeyboardHelp({ bindings }: { bindings: Binding[] }) {
     return true
   })
 
+  // Mouse gestures are half the editor's power and live in NO keymap, so they
+  // are documented by hand here. Keep in sync with Timeline.tsx pointer handlers.
+  const gestures: { action: string; how: string }[] = [
+    { action: 'Move clip', how: 'Drag clip body' },
+    { action: 'Trim edge', how: 'Drag clip edge' },
+    { action: 'Ripple trim', how: 'Ctrl + drag edge' },
+    { action: 'Rate stretch (retime)', how: 'Alt + drag edge' },
+    { action: 'Slip source', how: 'Alt + drag body' },
+    { action: 'Add / remove to selection', how: 'Shift + click clip' },
+    { action: 'Zoom at cursor', how: 'Ctrl + mouse wheel' },
+    { action: 'Apply effect / transition', how: 'Drag from Effects panel onto a clip' },
+    { action: 'Fade in / out', how: 'Drag a clip top corner' },
+    { action: 'Scrub playhead', how: 'Click / drag empty lane' },
+  ]
+
   return (
     <div
       className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-6"
@@ -58,6 +73,20 @@ export function KeyboardHelp({ bindings }: { bindings: Binding[] }) {
               </kbd>
             </div>
           ))}
+        </div>
+
+        <div className="border-t border-border px-4 pb-4 pt-3">
+          <h3 className="pb-2 text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">
+            Mouse gestures
+          </h3>
+          <div className="grid grid-cols-1 gap-x-6 gap-y-1.5 sm:grid-cols-2">
+            {gestures.map((g) => (
+              <div key={g.action} className="flex items-center justify-between gap-3 text-[12px]">
+                <span className="truncate text-text-secondary">{g.action}</span>
+                <span className="shrink-0 text-[11px] text-text-muted">{g.how}</span>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
     </div>

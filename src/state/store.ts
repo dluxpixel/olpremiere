@@ -38,8 +38,9 @@ export interface ReelState {
   ui: UIState
   /** Apply an undoable edit to the project document. */
   dispatch: (label: string, fn: (p: Project) => Project) => void
-  undo: () => void
-  redo: () => void
+  /** Returns the undone/redone command's label, or null when there was nothing. */
+  undo: () => string | null
+  redo: () => string | null
   /** Replace the project without touching history (hydration from disk). */
   setProject: (p: Project) => void
   setUI: (patch: Partial<UIState>) => void
@@ -78,18 +79,22 @@ export const useStore = create<ReelState>()(
       })
     },
 
+    // Return the command label (or null when there's nothing to undo/redo) so
+    // the caller can surface it — keeps the store free of any toast dependency.
     undo() {
       const { history, ui } = get()
       const r = undoCommand(history)
-      if (!r) return
+      if (!r) return null
       set({ project: r.project, history: r.history, ui: { ...ui, saveState: 'unsaved' } })
+      return r.label
     },
 
     redo() {
       const { history, ui } = get()
       const r = redoCommand(history)
-      if (!r) return
+      if (!r) return null
       set({ project: r.project, history: r.history, ui: { ...ui, saveState: 'unsaved' } })
+      return r.label
     },
 
     setProject(p) {

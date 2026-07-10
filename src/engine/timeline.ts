@@ -478,6 +478,21 @@ export function collectSnapPoints(
   return [...points].sort((a, b) => a - b)
 }
 
+/**
+ * The subset of `ids` whose clips sit on UNLOCKED tracks. A locked track
+ * rejects every mutation, but selection stays allowed (inspecting a locked
+ * clip's values is legitimate) — so every destructive VERB filters through
+ * this instead of trusting the selection.
+ */
+export function unlockedClipIds(seq: Sequence, ids: readonly Id[]): Id[] {
+  const locked = new Set<Id>()
+  for (const t of seq.tracks) {
+    if (!t.locked) continue
+    for (const c of t.clips) locked.add(c.id)
+  }
+  return ids.filter((id) => !locked.has(id))
+}
+
 export const timeToPx = (tS: number, pxPerS: number): number => tS * pxPerS
 
 export const pxToTime = (px: number, pxPerS: number): number => px / pxPerS

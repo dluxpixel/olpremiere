@@ -36,6 +36,7 @@ import {
   slipClip,
   snapTime,
   splitClip,
+  unlockedClipIds,
   splitGroup,
   timeToPx,
   trimClipTo,
@@ -633,6 +634,28 @@ describe('snapTime', () => {
   })
   it('handles no points', () => {
     expect(snapTime(3, [], 1)).toEqual({ t: 3, snapped: false })
+  })
+})
+
+describe('unlockedClipIds', () => {
+  it('drops ids whose clips sit on a locked track, keeps the rest', () => {
+    const a = makeClip({ startS: 0, outS: 2 })
+    const b = makeClip({ startS: 3, outS: 2 })
+    const seq = makeSeq([
+      makeTrack({ clips: [a] }),
+      makeTrack({ kind: 'audio', clips: [b], locked: true }),
+    ])
+    expect(unlockedClipIds(seq, [a.id, b.id])).toEqual([a.id])
+  })
+  it('returns empty when everything is locked', () => {
+    const a = makeClip()
+    const seq = makeSeq([makeTrack({ clips: [a], locked: true })])
+    expect(unlockedClipIds(seq, [a.id])).toEqual([])
+  })
+  it('preserves input order and passes unknown ids through untouched', () => {
+    const a = makeClip()
+    const seq = makeSeq([makeTrack({ clips: [a] })])
+    expect(unlockedClipIds(seq, ['ghost', a.id])).toEqual(['ghost', a.id])
   })
 })
 

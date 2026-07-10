@@ -85,7 +85,12 @@ export function deleteAsset(assetId: Id): void {
   })
   // Drop any selection that pointed at now-removed clips.
   if (ui.selection.length > 0) setUI({ selection: [] })
-  useToasts.getState().show(`Removed ${asset.name}`)
+  // Bin delete also nukes every clip referencing the asset across ALL sequences,
+  // which the user may not expect — so the toast carries a one-click Undo.
+  useToasts.getState().show(`Removed ${asset.name}`, 'info', {
+    label: 'Undo',
+    onClick: () => useStore.getState().undo(),
+  })
 }
 
 export function insertAssetAtPlayhead(assetId: Id): void {
