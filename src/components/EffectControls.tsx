@@ -3,19 +3,41 @@
 // (+ keyframe add/remove + prev/next steppers when animated). Every mutation
 // goes through the clipEdits helpers; interpolation math is never redone here.
 
-import { Clock, Diamond, ChevronLeft, ChevronRight } from 'lucide-react'
+import {
+  Clock,
+  Diamond,
+  ChevronLeft,
+  ChevronRight,
+  ChevronUp,
+  ChevronDown,
+  Eye,
+  EyeOff,
+  RotateCcw,
+  Sparkles,
+  X,
+} from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { channelKeyframes, isChannelAnimated, resolveChannel } from '../engine/effects/channels'
+import { isParamAnimated, paramKeyframes, resolveParam } from '../engine/effects/ops'
+import { getEffect, paramSens, type EffectParamDef } from '../engine/effects/registry'
 import { clipEndS } from '../engine/timeline'
 import { TRANSITION_KINDS, type TransitionKind } from '../engine/render/types'
-import { type AnimChannel, type Clip } from '../engine/types'
+import { type AnimChannel, type Clip, type EffectInstance } from '../engine/types'
 import {
+  addEffectKeyframeAtPlayhead,
   addKeyframeAtPlayhead,
+  deleteEffect,
+  moveEffectInStack,
   removeClipTransition,
+  removeEffectKeyframeAtPlayhead,
   removeKeyframeAtPlayhead,
+  resetEffectParams,
   setChannel,
   setClipTransition,
+  setEffectParamValue,
   toggleChannelAnimation,
+  toggleEffectEnabled,
+  toggleEffectParamKeyframes,
 } from '../state/clipEdits'
 import { useStore } from '../state/store'
 import { IconButton } from '../ui/Button'
@@ -30,6 +52,8 @@ export interface Spec {
   sens: number
 }
 
+// Only the FIXED channels live here now: transform, crop, opacity. Colour and
+// blur are applied effects, and their ranges come from the effect registry.
 const SPECS: Record<AnimChannel, Spec> = {
   posX: { min: -2000, max: 2000, step: 1, sens: 1 },
   posY: { min: -2000, max: 2000, step: 1, sens: 1 },
@@ -302,6 +326,195 @@ function Section({ title, channels, clip, playheadS }: {
   )
 }
 
+// ---------------------------------------------------------------------------
+// The applied effect stack. Rows address an effect INSTANCE by id, so a clip can
+// carry the same effect twice and each copy keeps its own params and keyframes.
+
+/** Keyframe steppers shared by channel rows and effect-param rows. */
+function KeyframeNav({
+  kfs,
+  localT,
+  onGoto,
+  onToggleKf,
+  onKf,
+}: {
+  kfs: readonly { t: number }[]
+  localT: number
+  onGoto: (t: number) => void
+  onToggleKf: () => void
+  onKf: boolean
+}) {
+  const prevT = [...kfs].reverse().find((k) => k.t < localT - 1e-6)?.t
+  const nextT = kfs.find((k) => k.t > localT + 1e-6)?.t
+  return (
+    <>
+      <IconButton label="Previous keyframe" size="compact" disabled={prevT === undefined} onClick={() => prevT !== undefined && onGoto(prevT)}>
+        <ChevronLeft size={13} strokeWidth={1.75} aria-hidden />
+      </IconButton>
+      <IconButton label={onKf ? 'Remove keyframe at playhead' : 'Add keyframe at playhead'} active={onKf} size="compact" onClick={onToggleKf}>
+        <Diamond size={12} strokeWidth={1.75} aria-hidden />
+      </IconButton>
+      <IconButton label="Next keyframe" size="compact" disabled={nextT === undefined} onClick={() => nextT !== undefined && onGoto(nextT)}>
+        <ChevronRight size={13} strokeWidth={1.75} aria-hidden />
+      </IconButton>
+    </>
+  )
+}
+
+function EffectParamRow({
+  clip,
+  effect,
+  param,
+  localT,
+}: {
+  clip: Clip
+  effect: EffectInstance
+  param: EffectParamDef
+  localT: number
+}) {
+  const animated = isParamAnimated(effect, param.key)
+  const value = resolveParam(effect, param.key, localT)
+  const kfs = paramKeyframes(effect, param.key)
+  const onKf = animated && kfs.some((k) => Math.abs(k.t - localT) <= 0.05)
+  const spec: Spec = { min: param.min, max: param.max, step: param.step, sens: paramSens(param) }
+
+  const gotoT = (t: number) => useStore.getState().setUI({ playheadS: clip.startS + t })
+
+  return (
+    <div className="flex items-center gap-1.5" data-testid={`channel-${param.key}`} data-effect-id={effect.id}>
+      <IconButton
+        label={animated ? `Disable ${param.label} keyframes` : `Animate ${param.label}`}
+        active={animated}
+        size="compact"
+        data-testid={`stopwatch-${param.key}`}
+        onClick={() => toggleEffectParamKeyframes(clip.id, effect.id, param.key)}
+      >
+        <Clock size={13} strokeWidth={1.75} aria-hidden />
+      </IconButton>
+
+      <span className="flex-1 truncate text-[11px] uppercase tracking-[0.04em] text-text-muted">{param.label}</span>
+
+      {animated && (
+        <KeyframeNav
+          kfs={kfs}
+          localT={localT}
+          onGoto={gotoT}
+          onKf={onKf}
+          onToggleKf={() =>
+            onKf
+              ? removeEffectKeyframeAtPlayhead(clip.id, effect.id, param.key)
+              : addEffectKeyframeAtPlayhead(clip.id, effect.id, param.key)
+          }
+        />
+      )}
+
+      <ScrubField
+        value={value}
+        spec={spec}
+        testId={`field-${param.key}`}
+        ariaLabel={param.label}
+        onCommit={(v) => setEffectParamValue(clip.id, effect.id, param.key, v)}
+      />
+    </div>
+  )
+}
+
+function EffectCard({ clip, effect, index, count, localT }: {
+  clip: Clip
+  effect: EffectInstance
+  index: number
+  count: number
+  localT: number
+}) {
+  const def = getEffect(effect.type)
+  // An effect type the registry no longer knows: show it honestly, let it be
+  // removed, but never pretend to render controls for it.
+  if (!def) {
+    return (
+      <div className="rounded-[6px] border border-border bg-bg-elevated p-2" data-testid="effect-card">
+        <div className="flex items-center gap-1.5">
+          <span className="flex-1 truncate text-[12px] text-text-secondary">Unknown effect: {effect.type}</span>
+          <IconButton label="Remove effect" size="compact" onClick={() => deleteEffect(clip.id, effect.id)}>
+            <X size={13} strokeWidth={1.75} aria-hidden />
+          </IconButton>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div
+      className="flex flex-col gap-2 rounded-[6px] border border-border bg-bg-elevated p-2"
+      data-testid="effect-card"
+      data-effect-type={effect.type}
+      data-effect-id={effect.id}
+    >
+      <div className="flex items-center gap-1">
+        <IconButton
+          label={effect.enabled ? `Disable ${def.label}` : `Enable ${def.label}`}
+          active={effect.enabled}
+          size="compact"
+          data-testid="effect-toggle"
+          onClick={() => toggleEffectEnabled(clip.id, effect.id)}
+        >
+          {effect.enabled ? <Eye size={13} strokeWidth={1.75} aria-hidden /> : <EyeOff size={13} strokeWidth={1.75} aria-hidden />}
+        </IconButton>
+        <span
+          title={def.description}
+          className={`flex-1 truncate text-[12px] font-medium ${effect.enabled ? 'text-text-primary' : 'text-text-muted line-through'}`}
+        >
+          {def.label}
+        </span>
+        <IconButton label={`Move ${def.label} earlier`} size="compact" disabled={index === 0} data-testid="effect-up" onClick={() => moveEffectInStack(clip.id, effect.id, -1)}>
+          <ChevronUp size={13} strokeWidth={1.75} aria-hidden />
+        </IconButton>
+        <IconButton label={`Move ${def.label} later`} size="compact" disabled={index === count - 1} data-testid="effect-down" onClick={() => moveEffectInStack(clip.id, effect.id, 1)}>
+          <ChevronDown size={13} strokeWidth={1.75} aria-hidden />
+        </IconButton>
+        <IconButton label={`Reset ${def.label}`} size="compact" data-testid="effect-reset" onClick={() => resetEffectParams(clip.id, effect.id)}>
+          <RotateCcw size={13} strokeWidth={1.75} aria-hidden />
+        </IconButton>
+        <IconButton label={`Remove ${def.label}`} size="compact" data-testid="effect-remove" onClick={() => deleteEffect(clip.id, effect.id)}>
+          <X size={13} strokeWidth={1.75} aria-hidden />
+        </IconButton>
+      </div>
+
+      <div className={`flex flex-col gap-1.5 ${effect.enabled ? '' : 'opacity-40'}`}>
+        {def.params.map((param) => (
+          <EffectParamRow key={param.key} clip={clip} effect={effect} param={param} localT={localT} />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function EffectStack({ clip, playheadS }: { clip: Clip; playheadS: number }) {
+  const durS = Math.max(0, clipEndS(clip) - clip.startS)
+  const localT = Math.max(0, Math.min(playheadS - clip.startS, durS))
+
+  return (
+    <section className="flex flex-col gap-2" data-testid="effect-stack">
+      <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">Effects</h3>
+      {clip.effects.length === 0 ? (
+        <div
+          data-testid="effect-stack-empty"
+          className="flex flex-col items-center gap-1.5 rounded-[6px] border border-dashed border-border-strong px-2 py-4 text-center"
+        >
+          <Sparkles size={18} strokeWidth={1.5} className="text-text-muted" aria-hidden />
+          <div className="text-[11px] text-text-secondary">No effects applied</div>
+          <div className="text-[10px] text-text-muted">Drag one from the Effects panel, or double-click it</div>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {clip.effects.map((effect, i) => (
+            <EffectCard key={effect.id} clip={clip} effect={effect} index={i} count={clip.effects.length} localT={localT} />
+          ))}
+        </div>
+      )}
+    </section>
+  )
+}
+
 const NONE = 'none'
 
 function TransitionRow({
@@ -381,19 +594,7 @@ export function EffectControls({
       <div className="h-px bg-border" />
       <Section title="Opacity" channels={['opacity']} clip={clip} playheadS={playheadS} />
       <div className="h-px bg-border" />
-      <Section
-        title="Filters"
-        channels={['brightness', 'contrast', 'saturation', 'exposure', 'blur']}
-        clip={clip}
-        playheadS={playheadS}
-      />
-      <div className="h-px bg-border" />
-      <Section
-        title="Color"
-        channels={['lift', 'gamma', 'gain', 'temperature', 'tint']}
-        clip={clip}
-        playheadS={playheadS}
-      />
+      <EffectStack clip={clip} playheadS={playheadS} />
 
       <div className="h-px bg-border" />
       <section className="flex flex-col gap-2">

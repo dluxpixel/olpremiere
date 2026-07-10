@@ -41,7 +41,10 @@ import {
   splitGroup,
   trimGroup,
 } from '../engine/timeline'
+import type { TransitionKind } from '../engine/render/types'
 import { formatTimecode, quantizeToFrame } from '../engine/timecode'
+import { applyEffect, setClipTransition } from '../state/clipEdits'
+import { ASSET_MIME, EFFECT_MIME, TRANSITION_MIME, dragHasType, edgeForOffset } from '../state/dnd'
 import { comboLabel } from '../keymap'
 import {
   activeSequence,
@@ -78,7 +81,6 @@ import { IconButton } from '../ui/Button'
 const RULER_H = 28
 const HEADERS_W = 178
 const SNAP_PX = 8
-const ASSET_MIME = 'application/x-reel-asset'
 
 // ---------------------------------------------------------------------------
 // Ruler
@@ -502,6 +504,55 @@ function ClipView({
   const fadeInPx = fadeInS * pxPerS
   const fadeOutPx = fadeOutS * pxPerS
 
+  // Effect / transition drops land on the clip itself. A transition takes the
+  // edge nearest the cursor; `fxDropEdge` previews which one while hovering.
+  const [fxDropEdge, setFxDropEdge] = useState<'in' | 'out' | null>(null)
+  const [fxDropHot, setFxDropHot] = useState(false)
+
+  // offsetX is relative to whatever CHILD is under the cursor (waveform, label,
+  // fade handle), not the clip. Measure against the clip's own box instead.
+  const offsetInClip = (e: DragEvent<HTMLDivElement>): number =>
+    e.clientX - e.currentTarget.getBoundingClientRect().left
+
+  const fxDragOver = (e: DragEvent<HTMLDivElement>) => {
+    const t = e.dataTransfer.types
+    const isEffect = dragHasType(t, EFFECT_MIME)
+    const isTransition = dragHasType(t, TRANSITION_MIME)
+    if (!isEffect && !isTransition) return
+    // Beat the track-level asset drop handler to the event.
+    e.preventDefault()
+    e.stopPropagation()
+    e.dataTransfer.dropEffect = 'copy'
+    setFxDropHot(true)
+    setFxDropEdge(isTransition ? edgeForOffset(offsetInClip(e), width) : null)
+  }
+
+  const clearFxDrop = () => {
+    setFxDropHot(false)
+    setFxDropEdge(null)
+  }
+
+  // dragleave also fires when the cursor crosses between a clip's own children,
+  // which would flicker the hint. Only clear when it truly leaves the clip.
+  const fxDragLeave = (e: DragEvent<HTMLDivElement>) => {
+    const to = e.relatedTarget
+    if (to instanceof Node && e.currentTarget.contains(to)) return
+    clearFxDrop()
+  }
+
+  const fxDrop = (e: DragEvent<HTMLDivElement>) => {
+    const effectType = e.dataTransfer.getData(EFFECT_MIME)
+    const transitionKind = e.dataTransfer.getData(TRANSITION_MIME)
+    if (!effectType && !transitionKind) return
+    e.preventDefault()
+    e.stopPropagation()
+    clearFxDrop()
+    if (effectType) applyEffect(clip.id, effectType)
+    else setClipTransition(clip.id, edgeForOffset(offsetInClip(e), width), transitionKind as TransitionKind)
+    // Reveal what just happened in the Inspector.
+    useStore.getState().setUI({ selection: [clip.id] })
+  }
+
   return (
     <div
       data-testid="clip"
@@ -509,11 +560,20 @@ function ClipView({
       data-clip-kind={kind}
       className={`group/clip absolute bottom-[3px] top-[3px] overflow-hidden rounded-[6px] border ${
         selected ? 'ring-2 ring-accent' : ''
-      } ${clip.enabled ? '' : 'opacity-40'}`}
+      } ${clip.enabled ? '' : 'opacity-40'} ${fxDropHot ? 'ring-2 ring-accent' : ''}`}
       style={{ left, width, background: bg, borderColor: bd }}
       onPointerDown={(e) => onClipPointerDown(e, clip)}
       onContextMenu={(e) => onClipContextMenu(e, clip)}
+      onDragOver={fxDragOver}
+      onDragLeave={fxDragLeave}
+      onDrop={fxDrop}
     >
+      {fxDropEdge && (
+        <div
+          data-testid="transition-drop-hint"
+          className={`pointer-events-none absolute inset-y-0 w-1/2 bg-accent/25 ${fxDropEdge === 'in' ? 'left-0' : 'right-0'}`}
+        />
+      )}
       {isAudio && asset && <ClipWaveform clip={clip} asset={asset} width={width} height={innerH} />}
       {clip.linkId && (
         <span

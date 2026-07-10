@@ -10,9 +10,19 @@ import {
   withChannelKeyframes,
   withChannelValue,
 } from '../engine/effects/channels'
+import * as ops from '../engine/effects/ops'
+import { getEffect } from '../engine/effects/registry'
 import { removeKeyframeNear, upsertKeyframe } from '../engine/keyframes'
 import { clipDurationS, clipEndS, setClipSpeed as setClipSpeedT } from '../engine/timeline'
-import { activeSequence, ANIM_CHANNELS, type AnimChannel, type Clip, type Id, type Keyframe } from '../engine/types'
+import {
+  activeSequence,
+  ANIM_CHANNELS,
+  newId,
+  type AnimChannel,
+  type Clip,
+  type Id,
+  type Keyframe,
+} from '../engine/types'
 import type { TransitionKind } from '../engine/render/types'
 import { updateActiveSequence, useStore } from './store'
 
@@ -126,6 +136,60 @@ export function resetAllChannels(clipId: string): void {
       c,
     ),
   )
+}
+
+// ---------------------------------------------------------------------------
+// Effect stack. Addressed by effect INSTANCE id, so a clip can carry the same
+// effect twice. Every call is one named undo step; the math lives in
+// engine/effects/ops.ts and is unit-tested there.
+
+/** Apply an effect to a clip. Returns silently for unknown types. */
+export function applyEffect(clipId: string, type: string): void {
+  const label = getEffect(type)?.label ?? type
+  const id = newId()
+  mapClip(clipId, `Add ${label}`, (c) => ops.addEffect(c, type, id))
+}
+
+export function deleteEffect(clipId: string, effectId: Id): void {
+  mapClip(clipId, 'Remove effect', (c) => ops.removeEffect(c, effectId))
+}
+
+export function toggleEffectEnabled(clipId: string, effectId: Id): void {
+  mapClip(clipId, 'Toggle effect', (c) => ops.toggleEffect(c, effectId))
+}
+
+export function moveEffectInStack(clipId: string, effectId: Id, delta: -1 | 1): void {
+  mapClip(clipId, 'Reorder effect', (c) => ops.moveEffect(c, effectId, delta))
+}
+
+export function resetEffectParams(clipId: string, effectId: Id): void {
+  mapClip(clipId, 'Reset effect', (c) => ops.resetEffect(c, effectId))
+}
+
+export function setEffectParamValue(clipId: string, effectId: Id, key: string, value: number): void {
+  mapClip(clipId, `Set ${key}`, (c) => ops.setEffectParam(c, effectId, key, value, playheadLocalT(c)))
+}
+
+export function toggleEffectParamKeyframes(clipId: string, effectId: Id, key: string): void {
+  mapClip(clipId, `Toggle ${key} keyframes`, (c) => ops.toggleEffectParamAnimation(c, effectId, key, playheadLocalT(c)))
+}
+
+export function addEffectKeyframeAtPlayhead(clipId: string, effectId: Id, key: string): void {
+  mapClip(clipId, `Add ${key} keyframe`, (c) => ops.addEffectParamKeyframe(c, effectId, key, playheadLocalT(c)))
+}
+
+export function removeEffectKeyframeAtPlayhead(clipId: string, effectId: Id, key: string): void {
+  mapClip(clipId, `Remove ${key} keyframe`, (c) => ops.removeEffectParamKeyframe(c, effectId, key, playheadLocalT(c)))
+}
+
+export function setEffectKeyframeEase(
+  clipId: string,
+  effectId: Id,
+  key: string,
+  kfT: number,
+  ease: Keyframe['ease'],
+): void {
+  mapClip(clipId, `Set ${key} easing`, (c) => ops.setEffectParamEase(c, effectId, key, kfT, ease))
 }
 
 export function setClipTransition(

@@ -35,7 +35,12 @@ export interface EffectParamDef {
   /** Neutral (identity) value. An effect whose params all sit here is a no-op. */
   default: number
   unit?: string
+  /** Value units per pixel of horizontal drag. Defaults to half a step. */
+  sens?: number
 }
+
+/** Drag sensitivity for a param, with the sane default applied. */
+export const paramSens = (param: EffectParamDef): number => param.sens ?? param.step / 2
 
 /** Emit the uniform name for one param of this effect at its stack index. */
 export type UniformNamer = (paramKey: string) => string
@@ -69,7 +74,17 @@ const p = (
   step: number,
   def: number,
   unit?: string,
-): EffectParamDef => ({ key, label, min, max, step, default: def, ...(unit ? { unit } : {}) })
+  sens?: number,
+): EffectParamDef => ({
+  key,
+  label,
+  min,
+  max,
+  step,
+  default: def,
+  ...(unit ? { unit } : {}),
+  ...(sens ? { sens } : {}),
+})
 
 // ---------------------------------------------------------------------------
 // The registry.
@@ -88,7 +103,7 @@ export const EFFECTS: EffectDef[] = [
     description: 'Scale linear light by stops before any other grade.',
     category: 'color',
     pass: 'pointwise',
-    params: [p('exposure', 'Exposure', -4, 4, 0.01, 0, 'stops')],
+    params: [p('exposure', 'Exposure', -4, 4, 0.01, 0, 'stops', 0.02)],
     glsl: (u) => `c *= pow(2.0, ${u('exposure')});`,
   },
   {
@@ -158,7 +173,7 @@ export const EFFECTS: EffectDef[] = [
     description: 'Separable gaussian over the composited layer.',
     category: 'blur',
     pass: 'neighborhood',
-    params: [p('blur', 'Radius', 0, 64, 0.5, 0, 'px')],
+    params: [p('blur', 'Radius', 0, 64, 0.5, 0, 'px', 0.25)],
   },
 ]
 

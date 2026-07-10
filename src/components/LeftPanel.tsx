@@ -1,9 +1,13 @@
 import { Film, FolderOpen, Image as ImageIcon, Music, Plus, Sparkles, Upload } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
+import { EFFECTS } from '../engine/effects/registry'
+import { TRANSITION_KINDS, type TransitionKind } from '../engine/render/types'
 import { formatTimecode } from '../engine/timecode'
 import { activeSequence, type MediaAsset } from '../engine/types'
 import { useBlobUrl } from '../state/blobUrls'
+import { applyEffect, setClipTransition } from '../state/clipEdits'
 import { openContextMenu } from '../state/contextMenu'
+import { ASSET_MIME, EFFECT_MIME, TRANSITION_MIME } from '../state/dnd'
 import { deleteAsset, importFiles, insertAssetAtPlayhead } from '../state/mediaActions'
 import { useStore, type LeftTab } from '../state/store'
 import { Button } from '../ui/Button'
@@ -82,7 +86,7 @@ function AssetCard({ asset, fps }: { asset: MediaAsset; fps: number }) {
       tabIndex={0}
       draggable
       onDragStart={(e) => {
-        e.dataTransfer.setData('application/x-reel-asset', asset.id)
+        e.dataTransfer.setData(ASSET_MIME, asset.id)
         e.dataTransfer.effectAllowed = 'copy'
       }}
       onDoubleClick={() => insertAssetAtPlayhead(asset.id)}
@@ -169,12 +173,141 @@ function MediaTab() {
   )
 }
 
-function EffectsTab() {
+/** One draggable entry. Double-click applies it to the selected clip. */
+function BrowserItem({
+  name,
+  title,
+  mime,
+  payload,
+  onApply,
+  disabled,
+  testId,
+}: {
+  name: string
+  title: string
+  mime: string
+  payload: string
+  onApply: () => void
+  disabled: boolean
+  testId: string
+}) {
   return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center">
-      <Sparkles size={24} strokeWidth={1.5} className="text-text-muted" aria-hidden />
-      <div className="text-[13px] text-text-secondary">Effects &amp; transitions</div>
-      <div className="text-[11px] text-text-muted">Arriving in Phase 4</div>
+    <div
+      data-testid={testId}
+      data-payload={payload}
+      role="button"
+      tabIndex={0}
+      draggable
+      title={title}
+      onDragStart={(e) => {
+        e.dataTransfer.setData(mime, payload)
+        e.dataTransfer.effectAllowed = 'copy'
+      }}
+      onDoubleClick={onApply}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') onApply()
+      }}
+      className={`flex cursor-default items-center gap-2 rounded-[4px] px-2 py-1.5 text-[12px] transition-colors duration-[120ms] ${
+        disabled
+          ? 'text-text-muted'
+          : 'text-text-secondary hover:bg-bg-elevated hover:text-text-primary'
+      }`}
+    >
+      <Sparkles size={13} strokeWidth={1.5} aria-hidden className="shrink-0 text-text-muted" />
+      <span className="truncate">{name}</span>
+    </div>
+  )
+}
+
+const TRANSITION_LABELS: Record<TransitionKind, string> = {
+  crossDissolve: 'Cross Dissolve',
+  dipToBlack: 'Dip to Black',
+  dipToWhite: 'Dip to White',
+  wipeLeft: 'Wipe Left',
+  wipeRight: 'Wipe Right',
+  slideLeft: 'Slide Left',
+  slideRight: 'Slide Right',
+}
+
+function EffectsTab() {
+  const [query, setQuery] = useState('')
+  const selection = useStore((s) => s.ui.selection)
+  const targetId = selection.length === 1 ? selection[0] : undefined
+
+  const q = query.trim().toLowerCase()
+  const matches = (s: string): boolean => q === '' || s.toLowerCase().includes(q)
+
+  const effects = EFFECTS.filter((e) => matches(e.label) || matches(e.type))
+  const transitions = TRANSITION_KINDS.filter((k) => matches(TRANSITION_LABELS[k]) || matches(k))
+  const empty = effects.length === 0 && transitions.length === 0
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="px-2 py-2">
+        <input
+          type="search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search effects"
+          aria-label="Search effects and transitions"
+          data-testid="effect-search"
+          className="h-7 w-full rounded-[4px] bg-bg-input px-2 text-[12px] text-text-primary placeholder:text-text-muted"
+        />
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto px-1 pb-2">
+        {!targetId && (
+          <p className="px-2 pb-1.5 text-[10px] text-text-muted">
+            Select a clip to apply, or drag straight onto one.
+          </p>
+        )}
+
+        {empty ? (
+          <div className="px-2 py-6 text-center text-[11px] text-text-muted">No match for &ldquo;{query}&rdquo;</div>
+        ) : (
+          <>
+            {effects.length > 0 && (
+              <section className="mb-2">
+                <h3 className="px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">
+                  Effects
+                </h3>
+                {effects.map((e) => (
+                  <BrowserItem
+                    key={e.type}
+                    testId="effect-item"
+                    name={e.label}
+                    title={e.description}
+                    mime={EFFECT_MIME}
+                    payload={e.type}
+                    disabled={!targetId}
+                    onApply={() => targetId && applyEffect(targetId, e.type)}
+                  />
+                ))}
+              </section>
+            )}
+
+            {transitions.length > 0 && (
+              <section>
+                <h3 className="px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">
+                  Transitions
+                </h3>
+                {transitions.map((k) => (
+                  <BrowserItem
+                    key={k}
+                    testId="transition-item"
+                    name={TRANSITION_LABELS[k]}
+                    title="Drop on the left half of a clip for its in edge, the right half for its out edge"
+                    mime={TRANSITION_MIME}
+                    payload={k}
+                    disabled={!targetId}
+                    onApply={() => targetId && setClipTransition(targetId, 'in', k)}
+                  />
+                ))}
+              </section>
+            )}
+          </>
+        )}
+      </div>
     </div>
   )
 }

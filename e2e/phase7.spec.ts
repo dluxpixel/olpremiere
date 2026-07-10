@@ -110,8 +110,18 @@ async function setSpeed(page: Page, clipId: string, speed: number): Promise<void
 
 const near = (a: number, b: number, tol = 40) => Math.abs(a - b) <= tol
 
-test('Color section exposes lift/gamma/gain/temperature/tint', async ({ page }) => {
+test('applying the colour effects exposes lift/gamma/gain/temperature/tint', async ({ page }) => {
   await addClip(page)
+
+  // Colour is an APPLIED effect now, not an always-on panel section: a fresh
+  // clip carries an empty stack, exactly like Premiere.
+  await expect(page.getByTestId('effect-stack-empty')).toBeVisible()
+  await expect(page.getByTestId('channel-lift')).toHaveCount(0)
+
+  await page.getByRole('tab', { name: 'Effects' }).click()
+  await page.locator('[data-testid="effect-item"][data-payload="colorWheels"]').dblclick()
+  await page.locator('[data-testid="effect-item"][data-payload="whiteBalance"]').dblclick()
+
   await expect(page.getByTestId('channel-lift')).toBeVisible()
   await expect(page.getByTestId('channel-gamma')).toBeVisible()
   await expect(page.getByTestId('channel-gain')).toBeVisible()
