@@ -140,6 +140,14 @@ function makeTextureSource(
     const pooled = warmVideo(asset)
     if (!pooled.ready) return null
     const el = pooled.el
+    // Match the element's rate to the clip's speed so a slowed/sped clip's
+    // picture advances exactly as fast as the compositor samples it — otherwise
+    // the source drifts and the tolerance re-seek below fires every few frames,
+    // which is the stutter on slow-motion. Native <video> can't play backward,
+    // so a reversed clip keeps rate 1 and rides the seek path. Browsers clamp
+    // playbackRate to about [0.0625, 16].
+    const wantRate = layer.speed > 0 ? Math.min(16, Math.max(0.0625, layer.speed)) : 1
+    if (el.playbackRate !== wantRate) el.playbackRate = wantRate
     if (el.paused) {
       el.currentTime = srcT
       void el.play().catch(() => {})

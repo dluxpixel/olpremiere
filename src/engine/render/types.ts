@@ -47,6 +47,13 @@ export interface RenderLayer {
   isImage: boolean
   /** Generated title (Phase 5): the caller rasterizes this to a texture. */
   title?: TitleDef
+  /**
+   * The clip's playback speed (negative = reverse). The live preview matches the
+   * pooled <video>'s playbackRate to |speed| so a slowed clip's picture tracks
+   * the compositor instead of drifting and re-seeking (audio already does this).
+   * The export path ignores it — it decodes exact frames, never plays.
+   */
+  speed: number
   transform: ResolvedTransform
   opacity: number
   /**

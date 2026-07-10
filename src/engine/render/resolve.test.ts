@@ -172,6 +172,11 @@ describe('identity clip', () => {
     expect(layer.sourceTimeS).toBeCloseTo(2)
   })
 
+  it('carries the clip speed onto the layer (preview matches the video rate to it)', () => {
+    expect(asLayer(resolveFrame(seqOf([track({ clips: [clip({ speed: 0.5 })] })]), 0).ops[0]).speed).toBe(0.5)
+    expect(asLayer(resolveFrame(seqOf([track({ clips: [clip({ speed: -2 })] })]), 0).ops[0]).speed).toBe(-2)
+  })
+
   it('is active at its exact start and inactive at its exact end (half-open)', () => {
     const c = clip({ startS: 2, inS: 0, outS: 2 }) // ends at 4
     const s = seqOf([track({ clips: [c] })])
