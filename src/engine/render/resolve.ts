@@ -5,8 +5,8 @@
 // Transforms live in sequence-NATIVE px; the renderer scales the raster so a
 // 1920×1080 preview and a 1920×1080 export match proportionally.
 
-import { resolvedFiltersToStack } from '../effects/registry'
-import { resolveChannel } from '../keyframes'
+import { resolveChannel } from '../effects/channels'
+import { isNeutral, resolveEffect } from '../effects/registry'
 import { clipDurationS, clipEndS } from '../timeline'
 import type { Clip, Sequence, Track } from '../types'
 import {
@@ -14,7 +14,7 @@ import {
   type RenderFrame,
   type RenderLayer,
   type RenderOp,
-  type ResolvedFilters,
+  type ResolvedEffect,
   type TransitionKind,
 } from './types'
 
@@ -41,19 +41,14 @@ function layerFor(clip: Clip, t: number): RenderLayer {
   const rate = Math.abs(clip.speed || 1)
   // Reverse (speed < 0): walk the source backward from outS as time advances.
   const sourceTimeS = clip.speed < 0 ? clip.outS - localT * rate : clip.inS + localT * rate
-  // Sample every color channel ONCE, then derive the render stack from those
-  // same numbers — so a keyframed grade and a static one take one code path.
-  const filters: ResolvedFilters = {
-    brightness: resolveChannel(clip, 'brightness', localT),
-    contrast: resolveChannel(clip, 'contrast', localT),
-    saturation: resolveChannel(clip, 'saturation', localT),
-    exposure: resolveChannel(clip, 'exposure', localT),
-    blur: resolveChannel(clip, 'blur', localT),
-    lift: resolveChannel(clip, 'lift', localT),
-    gamma: resolveChannel(clip, 'gamma', localT),
-    gain: resolveChannel(clip, 'gain', localT),
-    temperature: resolveChannel(clip, 'temperature', localT),
-    tint: resolveChannel(clip, 'tint', localT),
+  // The clip's effect stack, sampled at this instant. A disabled or unknown
+  // effect resolves to null; a neutral one is dropped because every GLSL body is
+  // the identity at its defaults, so an ungraded clip compiles one program.
+  const effects: ResolvedEffect[] = []
+  for (const inst of clip.effects) {
+    if (isNeutral(inst)) continue
+    const resolved = resolveEffect(inst, localT)
+    if (resolved) effects.push(resolved)
   }
   return {
     clipId: clip.id,
@@ -74,8 +69,7 @@ function layerFor(clip: Clip, t: number): RenderLayer {
       cropL: resolveChannel(clip, 'cropL', localT),
     },
     opacity: clamp(resolveChannel(clip, 'opacity', localT), 0, 1),
-    filters,
-    effects: resolvedFiltersToStack(filters),
+    effects,
   }
 }
 

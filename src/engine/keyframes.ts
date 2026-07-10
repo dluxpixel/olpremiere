@@ -2,8 +2,12 @@
 // Keyframes sorted by t; evaluating at time t clamps at the ends (hold) and
 // interpolates between the surrounding pair using the LEFT keyframe's easing
 // (the ease describes the segment leaving that keyframe). No React, no DOM.
+//
+// This module is a LEAF: it knows nothing about clips or the effect registry,
+// which is what lets effects/registry.ts depend on it. Channel resolution
+// (which needs both) lives in effects/channels.ts.
 
-import type { AnimChannel, Clip, Keyframe } from './types'
+import type { Keyframe } from './types'
 
 export type Easing = Keyframe['ease']
 
@@ -50,69 +54,6 @@ export function evalChannel(keyframes: readonly Keyframe[] | undefined, t: numbe
   const p = span <= 0 ? 0 : (t - a.t) / span
   return a.value + (b.value - a.value) * ease(a.ease, p)
 }
-
-/** Static base value for a channel from the clip's non-animated fields. */
-export function channelBase(clip: Clip, channel: AnimChannel): number {
-  const tf = clip.transform
-  const f = clip.filters
-  switch (channel) {
-    case 'posX':
-      return tf.x
-    case 'posY':
-      return tf.y
-    case 'scale':
-      return tf.scale
-    case 'rotation':
-      return tf.rotationDeg
-    case 'anchorX':
-      return tf.anchorX
-    case 'anchorY':
-      return tf.anchorY
-    case 'cropT':
-      return tf.crop.t
-    case 'cropR':
-      return tf.crop.r
-    case 'cropB':
-      return tf.crop.b
-    case 'cropL':
-      return tf.crop.l
-    case 'opacity':
-      return clip.opacity
-    case 'brightness':
-      return f?.brightness ?? 0
-    case 'contrast':
-      return f?.contrast ?? 0
-    case 'saturation':
-      return f?.saturation ?? 0
-    case 'exposure':
-      return f?.exposure ?? 0
-    case 'blur':
-      return f?.blur ?? 0
-    case 'lift':
-      return f?.lift ?? 0
-    case 'gamma':
-      return f?.gamma ?? 0
-    case 'gain':
-      return f?.gain ?? 0
-    case 'temperature':
-      return f?.temperature ?? 0
-    case 'tint':
-      return f?.tint ?? 0
-  }
-}
-
-/**
- * Resolve a channel for a clip at LOCAL clip time `localT` (t − clip.startS):
- * the keyframed value when the channel is animated, else the static base.
- */
-export function resolveChannel(clip: Clip, channel: AnimChannel, localT: number): number {
-  const kf = clip.keyframes?.[channel]
-  if (!kf || kf.length === 0) return channelBase(clip, channel)
-  return evalChannel(kf, localT, channelBase(clip, channel))
-}
-
-export const isChannelAnimated = (clip: Clip, channel: AnimChannel): boolean =>
-  (clip.keyframes?.[channel]?.length ?? 0) > 0
 
 /** Insert or replace a keyframe at time t (exact-time replace), returning a new sorted array. */
 export function upsertKeyframe(

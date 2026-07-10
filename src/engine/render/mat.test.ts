@@ -10,7 +10,6 @@ import {
   pointInQuad,
   rotation,
 } from './mat'
-import { NEUTRAL_FILTERS } from './types'
 import type { ResolvedTransform } from './types'
 
 const NEUTRAL_T: ResolvedTransform = {
@@ -27,9 +26,6 @@ const NEUTRAL_T: ResolvedTransform = {
 }
 
 const tf = (over: Partial<ResolvedTransform>): ResolvedTransform => ({ ...NEUTRAL_T, ...over })
-
-// Silence unused import in a place that also documents the neutral filter set.
-void NEUTRAL_FILTERS
 
 const width = (c: [number, number][]): number => c[1][0] - c[0][0]
 const height = (c: [number, number][]): number => c[3][1] - c[0][1]

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { migrateClipEffects } from '../effects/migrate'
 import { resolveFrame } from './resolve'
 import type { RenderLayer, RenderOp } from './types'
 import { defaultTransform, type Clip, type Keyframe, type Sequence, type Track } from '../types'
@@ -123,28 +124,32 @@ describe('identity clip', () => {
       cropL: 0,
     })
     expect(layer.opacity).toBe(1)
-    expect(layer.filters).toEqual({
-      brightness: 0,
-      contrast: 0,
-      saturation: 0,
-      exposure: 0,
-      blur: 0,
-      lift: 0,
-      gamma: 0,
-      gain: 0,
-      temperature: 0,
-      tint: 0,
-    })
+    // An ungraded clip resolves to an EMPTY stack, so the renderer compiles the
+    // identity program rather than ten no-op uniforms.
+    expect(layer.effects).toEqual([])
   })
 
-  it('color-correction filters flow from the clip into the resolved layer', () => {
-    const c = clip({ filters: { lift: 0.2, gamma: -0.3, gain: 0.1, temperature: 0.5, tint: -0.4 } })
+  it('color-correction flows from a migrated clip into the resolved layer', () => {
+    const c = migrateClipEffects(clip({ filters: { lift: 0.2, gamma: -0.3, gain: 0.1, temperature: 0.5, tint: -0.4 } }))
     const layer = asLayer(resolveFrame(seqOf([track({ clips: [c] })]), 0).ops[0])
-    expect(layer.filters.lift).toBeCloseTo(0.2)
-    expect(layer.filters.gamma).toBeCloseTo(-0.3)
-    expect(layer.filters.gain).toBeCloseTo(0.1)
-    expect(layer.filters.temperature).toBeCloseTo(0.5)
-    expect(layer.filters.tint).toBeCloseTo(-0.4)
+    expect(layer.effects.map((e) => e.type)).toEqual(['colorWheels', 'whiteBalance'])
+    expect(layer.effects[0].params.lift).toBeCloseTo(0.2)
+    expect(layer.effects[0].params.gamma).toBeCloseTo(-0.3)
+    expect(layer.effects[0].params.gain).toBeCloseTo(0.1)
+    expect(layer.effects[1].params.temperature).toBeCloseTo(0.5)
+    expect(layer.effects[1].params.tint).toBeCloseTo(-0.4)
+  })
+
+  it('a disabled effect is dropped from the resolved stack', () => {
+    const c = clip({ effects: [{ id: 'x', type: 'saturation', params: { saturation: -1 }, enabled: false }] })
+    const layer = asLayer(resolveFrame(seqOf([track({ clips: [c] })]), 0).ops[0])
+    expect(layer.effects).toEqual([])
+  })
+
+  it('an unknown effect type is ignored rather than crashing the render', () => {
+    const c = clip({ effects: [{ id: 'x', type: 'timeWarp', params: { amount: 3 }, enabled: true }] })
+    const layer = asLayer(resolveFrame(seqOf([track({ clips: [c] })]), 0).ops[0])
+    expect(layer.effects).toEqual([])
   })
 
   it('sourceTimeS = inS + (t - startS) at speed 1', () => {
@@ -227,18 +232,27 @@ describe('keyframed channels resolve at local clip time', () => {
     expect(layer.transform.rotationDeg).toBeCloseTo(45)
   })
 
-  it('animated filter (brightness) resolves into filters', () => {
-    const c = clip({ startS: 0, outS: 2, keyframes: { brightness: [kf(0, 0), kf(2, 0.5)] } })
+  it('an animated effect param samples at the clip-local time', () => {
+    const c = migrateClipEffects(clip({ startS: 0, outS: 2, keyframes: { brightness: [kf(0, 0), kf(2, 0.5)] } }))
     const layer = asLayer(resolveFrame(seqOf([track({ clips: [c] })]), 1).ops[0])
-    expect(layer.filters.brightness).toBeCloseTo(0.25)
+    const bc = layer.effects.find((e) => e.type === 'brightnessContrast')
+    expect(bc?.params.brightness).toBeCloseTo(0.25)
   })
 
-  it('static filters (no keyframes) pass through', () => {
-    const c = clip({ startS: 0, outS: 2, filters: { blur: 8, saturation: -0.5 } })
+  it('an animated param keeps its effect in the stack even where it reads neutral', () => {
+    // At t=0 brightness is exactly 0. The effect must NOT be dropped, or the
+    // frame would pop when the animation leaves zero.
+    const c = migrateClipEffects(clip({ startS: 0, outS: 2, keyframes: { brightness: [kf(0, 0), kf(2, 0.5)] } }))
+    const layer = asLayer(resolveFrame(seqOf([track({ clips: [c] })]), 0).ops[0])
+    expect(layer.effects.map((e) => e.type)).toEqual(['brightnessContrast'])
+  })
+
+  it('static effects (no keyframes) pass through, and neutral siblings stay neutral', () => {
+    const c = migrateClipEffects(clip({ startS: 0, outS: 2, filters: { blur: 8, saturation: -0.5 } }))
     const layer = asLayer(resolveFrame(seqOf([track({ clips: [c] })]), 1).ops[0])
-    expect(layer.filters.blur).toBe(8)
-    expect(layer.filters.saturation).toBe(-0.5)
-    expect(layer.filters.brightness).toBe(0)
+    expect(layer.effects.map((e) => e.type)).toEqual(['saturation', 'gaussianBlur'])
+    expect(layer.effects[0].params.saturation).toBe(-0.5)
+    expect(layer.effects[1].params.blur).toBe(8)
   })
 
   it('static transform (no keyframes) passes through', () => {

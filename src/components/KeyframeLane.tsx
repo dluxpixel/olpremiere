@@ -5,7 +5,7 @@
 
 import { useState } from 'react'
 import { clipDurationS } from '../engine/timeline'
-import { isChannelAnimated } from '../engine/keyframes'
+import { channelKeyframes, isChannelAnimated } from '../engine/effects/channels'
 import { ANIM_CHANNELS, type AnimChannel, type Clip, type Keyframe } from '../engine/types'
 import { setKeyframeEase } from '../state/clipEdits'
 
@@ -86,13 +86,12 @@ export function KeyframeLane({
 
   const selEase =
     selected &&
-    (clip.keyframes?.[selected.channel]?.find((k) => Math.abs(k.t - selected.t) <= 1e-4)?.ease ??
-      null)
+    (channelKeyframes(clip, selected.channel).find((k) => Math.abs(k.t - selected.t) <= 1e-4)?.ease ?? null)
 
   return (
     <div className="flex flex-col gap-1" data-testid="keyframe-lane">
       {animated.map((ch) => {
-        const kfs = clip.keyframes?.[ch] ?? []
+        const kfs = channelKeyframes(clip, ch)
         return (
           <div key={ch} className="flex items-center gap-2" style={{ height: 18 }}>
             <span

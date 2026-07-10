@@ -22,22 +22,6 @@ export interface ResolvedTransform {
   cropL: number
 }
 
-/** Color/blur, all neutral at 0. */
-export interface ResolvedFilters {
-  brightness: number
-  contrast: number
-  saturation: number
-  exposure: number
-  /** Gaussian radius in output px. */
-  blur: number
-  // Color correction (Phase 7); all neutral at 0.
-  lift: number
-  gamma: number
-  gain: number
-  temperature: number
-  tint: number
-}
-
 /**
  * One effect, fully resolved to numbers at a specific time (no keyframes left).
  * `type` indexes the effect registry (engine/effects/registry.ts), which owns
@@ -66,14 +50,10 @@ export interface RenderLayer {
   transform: ResolvedTransform
   opacity: number
   /**
-   * The fixed color params, keyframes already sampled. Kept as the document's
-   * current shape; `effects` is derived from it and is what the renderer draws.
-   */
-  filters: ResolvedFilters
-  /**
-   * The ordered effect stack the renderer applies, keyframes already sampled.
-   * Pointwise effects concatenate into one fragment shader; neighborhood
-   * effects (blur) run as their own pass afterwards, in this order.
+   * The ordered effect stack the renderer applies, keyframes already sampled
+   * and neutral effects already dropped. Pointwise effects concatenate into one
+   * fragment shader; neighborhood effects (blur) run as their own pass
+   * afterwards, in this order.
    */
   effects: ResolvedEffect[]
 }
@@ -121,16 +101,3 @@ export interface RenderFrame {
 
 /** Resolve a texture for a layer; return null while it is still decoding. */
 export type TextureSource = (layer: RenderLayer) => TexImageSource | null
-
-export const NEUTRAL_FILTERS: ResolvedFilters = {
-  brightness: 0,
-  contrast: 0,
-  saturation: 0,
-  exposure: 0,
-  blur: 0,
-  lift: 0,
-  gamma: 0,
-  gain: 0,
-  temperature: 0,
-  tint: 0,
-}

@@ -2,6 +2,7 @@
 // IndexedDB. Nothing ever leaves the machine.
 
 import { openDB, type IDBPDatabase } from 'idb'
+import { migrateProjectEffects } from '../engine/effects/migrate'
 import { migrateProject, type Project } from '../engine/types'
 import { useStore } from './store'
 
@@ -34,7 +35,9 @@ export async function loadLastProject(): Promise<Project | null> {
   const id = (await d.get('meta', 'lastProjectId')) as string | undefined
   if (!id) return null
   const p = (await d.get('projects', id)) as Project | undefined
-  return p ? migrateProject(p) : null
+  // Shape migration first (tracks/mixer fields), then the colour bag -> effect
+  // stack move. Both are idempotent, so a re-load is free.
+  return p ? migrateProjectEffects(migrateProject(p)) : null
 }
 
 export async function putBlob(key: string, blob: Blob): Promise<void> {

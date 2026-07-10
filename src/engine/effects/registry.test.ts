@@ -98,6 +98,7 @@ describe('resolveEffectParams', () => {
   it('samples a keyframed param at clip-local time, and holds past the ends', () => {
     const animated = inst('colorWheels', {
       lift: {
+        value: 0,
         keyframes: [
           { t: 0, value: 0, ease: 'linear' },
           { t: 2, value: 1, ease: 'linear' },
@@ -115,6 +116,10 @@ describe('resolveEffectParams', () => {
   it('drops params the registry does not declare', () => {
     const out = resolveEffectParams(wheels, inst('colorWheels', { lift: 0.2, bogus: 9 }), 0)
     expect(out).not.toHaveProperty('bogus')
+  })
+
+  it('an animated param with an emptied keyframe list falls back to its retained base', () => {
+    expect(resolveEffectParams(wheels, inst('colorWheels', { lift: { value: 0.7, keyframes: [] } }), 0).lift).toBe(0.7)
   })
 })
 
@@ -146,9 +151,9 @@ describe('isNeutral', () => {
   })
 
   it('is false for a keyframed param even when it currently reads neutral', () => {
-    expect(isNeutral(inst('brightnessContrast', { brightness: { keyframes: [{ t: 0, value: 0, ease: 'linear' }] } }))).toBe(
-      false,
-    )
+    expect(
+      isNeutral(inst('brightnessContrast', { brightness: { value: 0, keyframes: [{ t: 0, value: 0, ease: 'linear' }] } })),
+    ).toBe(false)
   })
 
   it('treats an unknown effect as neutral so it cannot affect the render', () => {
@@ -223,7 +228,7 @@ describe('isAnimated', () => {
     expect(isAnimated(0.5)).toBe(false)
     expect(isAnimated(undefined)).toBe(false)
     expect(isAnimated(null)).toBe(false)
-    expect(isAnimated({ keyframes: [] })).toBe(true)
+    expect(isAnimated({ value: 0, keyframes: [] })).toBe(true)
   })
 })
 

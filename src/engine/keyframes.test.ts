@@ -1,14 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import {
-  channelBase,
-  ease,
-  evalChannel,
-  isChannelAnimated,
-  removeKeyframeNear,
-  resolveChannel,
-  upsertKeyframe,
-} from './keyframes'
-import { defaultTransform, type Clip, type Keyframe } from './types'
+import { ease, evalChannel, removeKeyframeNear, upsertKeyframe } from './keyframes'
+import { type Keyframe } from './types'
 
 const kf = (t: number, value: number, e: Keyframe['ease'] = 'linear'): Keyframe => ({ t, value, ease: e })
 
@@ -70,64 +62,8 @@ describe('evalChannel', () => {
   })
 })
 
-const clip = (over: Partial<Clip> = {}): Clip => ({
-  id: 'c',
-  assetId: 'a',
-  startS: 5,
-  inS: 0,
-  outS: 4,
-  speed: 1,
-  enabled: true,
-  transform: { ...defaultTransform(), x: 100, scale: 2, rotationDeg: 45 },
-  opacity: 0.8,
-  blendMode: 'normal',
-  audioGainDb: 0,
-  fadeInS: 0,
-  fadeOutS: 0,
-  effects: [],
-  filters: { brightness: 0.3, blur: 4 },
-  ...over,
-})
-
-describe('channelBase', () => {
-  it('reads static transform / opacity / filter fields', () => {
-    const c = clip()
-    expect(channelBase(c, 'posX')).toBe(100)
-    expect(channelBase(c, 'scale')).toBe(2)
-    expect(channelBase(c, 'rotation')).toBe(45)
-    expect(channelBase(c, 'opacity')).toBe(0.8)
-    expect(channelBase(c, 'brightness')).toBe(0.3)
-    expect(channelBase(c, 'blur')).toBe(4)
-  })
-  it('defaults absent filters to neutral 0', () => {
-    const c = clip({ filters: undefined })
-    expect(channelBase(c, 'brightness')).toBe(0)
-    expect(channelBase(c, 'saturation')).toBe(0)
-  })
-})
-
-describe('resolveChannel', () => {
-  it('falls back to the static base when unanimated', () => {
-    expect(resolveChannel(clip(), 'scale', 1)).toBe(2)
-  })
-  it('uses keyframes (LOCAL time) when animated', () => {
-    // Keyframe times are relative to clip start; localT already subtracted by caller.
-    const c = clip({ keyframes: { scale: [kf(0, 1), kf(2, 3)] } })
-    expect(resolveChannel(c, 'scale', 0)).toBe(1)
-    expect(resolveChannel(c, 'scale', 1)).toBeCloseTo(2)
-    expect(resolveChannel(c, 'scale', 2)).toBe(3)
-  })
-  it('isChannelAnimated reflects presence of keyframes', () => {
-    expect(isChannelAnimated(clip(), 'scale')).toBe(false)
-    expect(isChannelAnimated(clip({ keyframes: { scale: [kf(0, 1)] } }), 'scale')).toBe(true)
-    expect(isChannelAnimated(clip({ keyframes: { scale: [] } }), 'scale')).toBe(false)
-  })
-  it('leaves an unrelated animated channel on the base for others', () => {
-    const c = clip({ keyframes: { posX: [kf(0, 0), kf(1, 50)] } })
-    expect(resolveChannel(c, 'posX', 0.5)).toBeCloseTo(25)
-    expect(resolveChannel(c, 'scale', 0.5)).toBe(2) // still static
-  })
-})
+// Channel resolution moved to effects/channels.ts (it needs the registry); its
+// tests live in effects/channels.test.ts. This module is pure math now.
 
 describe('upsertKeyframe / removeKeyframeNear', () => {
   it('inserts sorted', () => {

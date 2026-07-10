@@ -2,16 +2,17 @@
 // transitions. Channel names + math come from engine/keyframes; every edit is
 // one undo step. localT is always relative to the clip start.
 
-import { channelBase, resolveChannel, removeKeyframeNear, upsertKeyframe } from '../engine/keyframes'
-import { clipDurationS, clipEndS, setClipSpeed as setClipSpeedT } from '../engine/timeline'
 import {
-  activeSequence,
-  type AnimChannel,
-  type Clip,
-  type Id,
-  type Keyframe,
-  type Transform,
-} from '../engine/types'
+  channelBase,
+  channelDefault,
+  channelKeyframes,
+  resolveChannel,
+  withChannelKeyframes,
+  withChannelValue,
+} from '../engine/effects/channels'
+import { removeKeyframeNear, upsertKeyframe } from '../engine/keyframes'
+import { clipDurationS, clipEndS, setClipSpeed as setClipSpeedT } from '../engine/timeline'
+import { activeSequence, ANIM_CHANNELS, type AnimChannel, type Clip, type Id, type Keyframe } from '../engine/types'
 import type { TransitionKind } from '../engine/render/types'
 import { updateActiveSequence, useStore } from './store'
 
@@ -39,83 +40,24 @@ function mapClip(clipId: string, label: string, fn: (clip: Clip) => Clip): void 
   }))
 }
 
-/** Write a channel's static base back into the clip's transform/opacity/filters. */
-function withChannelBase(clip: Clip, channel: AnimChannel, value: number): Clip {
-  const tf = clip.transform
-  const setTf = (patch: Partial<Transform>): Clip => ({ ...clip, transform: { ...tf, ...patch } })
-  const setCrop = (patch: Partial<Transform['crop']>): Clip => ({
-    ...clip,
-    transform: { ...tf, crop: { ...tf.crop, ...patch } },
-  })
-  const setFilter = (key: keyof NonNullable<Clip['filters']>): Clip => ({
-    ...clip,
-    filters: { ...clip.filters, [key]: value },
-  })
-  switch (channel) {
-    case 'posX':
-      return setTf({ x: value })
-    case 'posY':
-      return setTf({ y: value })
-    case 'scale':
-      return setTf({ scale: value })
-    case 'rotation':
-      return setTf({ rotationDeg: value })
-    case 'anchorX':
-      return setTf({ anchorX: value })
-    case 'anchorY':
-      return setTf({ anchorY: value })
-    case 'cropT':
-      return setCrop({ t: value })
-    case 'cropR':
-      return setCrop({ r: value })
-    case 'cropB':
-      return setCrop({ b: value })
-    case 'cropL':
-      return setCrop({ l: value })
-    case 'opacity':
-      return { ...clip, opacity: value }
-    case 'brightness':
-      return setFilter('brightness')
-    case 'contrast':
-      return setFilter('contrast')
-    case 'saturation':
-      return setFilter('saturation')
-    case 'exposure':
-      return setFilter('exposure')
-    case 'blur':
-      return setFilter('blur')
-    case 'lift':
-      return setFilter('lift')
-    case 'gamma':
-      return setFilter('gamma')
-    case 'gain':
-      return setFilter('gain')
-    case 'temperature':
-      return setFilter('temperature')
-    case 'tint':
-      return setFilter('tint')
-  }
-}
-
-const withKeyframes = (clip: Clip, channel: AnimChannel, kfs: Keyframe[]): Clip => {
-  const next: Partial<Record<AnimChannel, Keyframe[]>> = { ...clip.keyframes }
-  if (kfs.length === 0) delete next[channel]
-  else next[channel] = kfs
-  return { ...clip, keyframes: next }
-}
-
 /**
  * Set a channel value. Animated channel → upsert a keyframe at the playhead;
  * static channel → set the base. This is what scrubbable fields call on commit.
+ * Where the value LIVES (on the clip, or inside its effect stack) is the
+ * adapter's problem, not this module's.
  */
 export function setChannel(clipId: string, channel: AnimChannel, value: number): void {
   const clip = findClip(clipId)
   if (!clip) return
-  const animated = (clip.keyframes?.[channel]?.length ?? 0) > 0
+  const animated = channelKeyframes(clip, channel).length > 0
   mapClip(clipId, `Set ${channel}`, (c) => {
-    if (!animated) return withChannelBase(c, channel, value)
+    if (!animated) return withChannelValue(c, channel, value)
     const localT = playheadLocalT(c)
-    return withKeyframes(c, channel, upsertKeyframe(c.keyframes?.[channel], { t: localT, value, ease: 'linear' }))
+    return withChannelKeyframes(
+      c,
+      channel,
+      upsertKeyframe(channelKeyframes(c, channel), { t: localT, value, ease: 'linear' }),
+    )
   })
 }
 
@@ -123,12 +65,12 @@ export function setChannel(clipId: string, channel: AnimChannel, value: number):
 export function toggleChannelAnimation(clipId: string, channel: AnimChannel): void {
   const clip = findClip(clipId)
   if (!clip) return
-  const animated = (clip.keyframes?.[channel]?.length ?? 0) > 0
+  const animated = channelKeyframes(clip, channel).length > 0
   mapClip(clipId, animated ? `Disable ${channel} keyframes` : `Enable ${channel} keyframes`, (c) => {
-    if (animated) return withKeyframes(c, channel, [])
+    if (animated) return withChannelKeyframes(c, channel, [])
     const localT = playheadLocalT(c)
     const value = channelBase(c, channel)
-    return withKeyframes(c, channel, [{ t: localT, value, ease: 'linear' }])
+    return withChannelKeyframes(c, channel, [{ t: localT, value, ease: 'linear' }])
   })
 }
 
@@ -139,7 +81,11 @@ export function addKeyframeAtPlayhead(clipId: string, channel: AnimChannel): voi
   mapClip(clipId, `Add ${channel} keyframe`, (c) => {
     const localT = playheadLocalT(c)
     const value = resolveChannel(c, channel, localT)
-    return withKeyframes(c, channel, upsertKeyframe(c.keyframes?.[channel], { t: localT, value, ease: 'linear' }))
+    return withChannelKeyframes(
+      c,
+      channel,
+      upsertKeyframe(channelKeyframes(c, channel), { t: localT, value, ease: 'linear' }),
+    )
   })
 }
 
@@ -149,16 +95,15 @@ export function removeKeyframeAtPlayhead(clipId: string, channel: AnimChannel): 
   if (!clip) return
   mapClip(clipId, `Remove ${channel} keyframe`, (c) => {
     const localT = playheadLocalT(c)
-    const next = removeKeyframeNear(c.keyframes?.[channel], localT, 0.05)
-    return withKeyframes(c, channel, next)
+    return withChannelKeyframes(c, channel, removeKeyframeNear(channelKeyframes(c, channel), localT, 0.05))
   })
 }
 
 export function setKeyframeEase(clipId: string, channel: AnimChannel, kfT: number, ease: Keyframe['ease']): void {
   mapClip(clipId, `Set ${channel} easing`, (c) => {
-    const kfs = c.keyframes?.[channel]
-    if (!kfs) return c
-    return withKeyframes(
+    const kfs = channelKeyframes(c, channel)
+    if (kfs.length === 0) return c
+    return withChannelKeyframes(
       c,
       channel,
       kfs.map((k) => (Math.abs(k.t - kfT) <= KEYFRAME_TOLERANCE_S ? { ...k, ease } : k)),
@@ -168,30 +113,19 @@ export function setKeyframeEase(clipId: string, channel: AnimChannel, kfT: numbe
 
 /** Clear a channel: drop its keyframes and reset the base to neutral/default. */
 export function resetChannel(clipId: string, channel: AnimChannel): void {
-  const defaults: Record<AnimChannel, number> = {
-    posX: 0,
-    posY: 0,
-    scale: 1,
-    rotation: 0,
-    anchorX: 0.5,
-    anchorY: 0.5,
-    cropT: 0,
-    cropR: 0,
-    cropB: 0,
-    cropL: 0,
-    opacity: 1,
-    brightness: 0,
-    contrast: 0,
-    saturation: 0,
-    exposure: 0,
-    blur: 0,
-    lift: 0,
-    gamma: 0,
-    gain: 0,
-    temperature: 0,
-    tint: 0,
-  }
-  mapClip(clipId, `Reset ${channel}`, (c) => withChannelBase(withKeyframes(c, channel, []), channel, defaults[channel]))
+  mapClip(clipId, `Reset ${channel}`, (c) =>
+    withChannelValue(withChannelKeyframes(c, channel, []), channel, channelDefault(channel)),
+  )
+}
+
+/** Reset every channel a clip can animate, in one undo step. */
+export function resetAllChannels(clipId: string): void {
+  mapClip(clipId, 'Reset all', (c) =>
+    ANIM_CHANNELS.reduce<Clip>(
+      (acc, ch) => withChannelValue(withChannelKeyframes(acc, ch, []), ch, channelDefault(ch)),
+      c,
+    ),
+  )
 }
 
 export function setClipTransition(

@@ -5,7 +5,7 @@
 
 import { Clock, Diamond, ChevronLeft, ChevronRight } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { isChannelAnimated, resolveChannel } from '../engine/keyframes'
+import { channelKeyframes, isChannelAnimated, resolveChannel } from '../engine/effects/channels'
 import { clipEndS } from '../engine/timeline'
 import { TRANSITION_KINDS, type TransitionKind } from '../engine/render/types'
 import { type AnimChannel, type Clip } from '../engine/types'
@@ -214,7 +214,7 @@ function ChannelRow({
   const localT = Math.max(0, Math.min(playheadS - clip.startS, durS))
   const value = resolveChannel(clip, channel, localT)
 
-  const kfs = clip.keyframes?.[channel] ?? []
+  const kfs = channelKeyframes(clip, channel)
   const onKf = animated && kfs.some((k) => Math.abs(k.t - localT) <= 0.05)
   const prevT = animated ? [...kfs].reverse().find((k) => k.t < localT - 1e-6)?.t : undefined
   const nextT = animated ? kfs.find((k) => k.t > localT + 1e-6)?.t : undefined

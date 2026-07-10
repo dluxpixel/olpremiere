@@ -190,7 +190,13 @@ export interface EffectInstance {
   enabled: boolean
 }
 
-export type Keyframeable = number | { keyframes: Keyframe[] }
+/**
+ * An effect param is either a plain static number, or an animated param that
+ * ALSO carries `value`: the static base to fall back on when its keyframes are
+ * removed. Without that base, turning a stopwatch off would silently reset the
+ * param to its neutral instead of the value the user set before animating.
+ */
+export type Keyframeable = number | { value: number; keyframes: Keyframe[] }
 
 export interface Keyframe {
   t: number
