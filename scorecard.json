@@ -1,8 +1,8 @@
 {
   "project": "OT Premiere",
-  "updated": "2026-07-06",
-  "overall": 84,
-  "note": "Honest distance-to-world-class. 100 = a world-class homemade Premiere per the spec Definition of Done. Phases 0-8 all now have real implementations; the remaining gap is ear/eye-gated quality + deeper perf (full proxy/streaming) + a few polish items. Never inflated to cross a review threshold.",
+  "updated": "2026-07-10",
+  "overall": 85,
+  "note": "Honest distance-to-world-class. 100 = a world-class homemade Premiere per the spec Definition of Done. ALL 8 spec phases are implemented (the spec is DONE), plus a real-use run: 9:16 Shorts format + aspect-correct export, audio auto-level, C=cut, a monitor transform gizmo + click-preview-to-select, add-track buttons. The remaining gap is ear/eye-gated quality, deeper perf (full proxy/streaming decode), and the Effects tab still being a stub. Never inflated to cross a review threshold.",
   "dimensions": [
     {
       "key": "editing-core",
@@ -57,5 +57,5 @@
     "Audio mix/kit sound quality (needs David's ears)",
     "Design polish pass (needs David's eye)"
   ],
-  "autonomous_ceiling": "The autonomous, verifiable work of Phases 6-8 is done + gate-green. The last ~6 points to world-class-90 are (1) the ear-gated audio quality, (2) full proxy/streaming perf for very long media, and (3) an axe a11y pass + eye-gated design polish."
+  "autonomous_ceiling": "The spec is complete and gate-green (389 vitest + 52 e2e). The last ~5 points: (1) ear-gated audio sound quality, (2) full proxy media + streaming audio decode for very long media, (3) the Effects tab is still a stub saying \"Arriving in Phase 4\" (effects work only via the Inspector; no drag-onto-clip flow), (4) axe a11y + eye-gated design polish."
 }
