@@ -4,6 +4,7 @@
 // goes through the clipEdits helpers; interpolation math is never redone here.
 
 import {
+  Bookmark,
   Clock,
   Diamond,
   ChevronLeft,
@@ -39,6 +40,7 @@ import {
   toggleEffectEnabled,
   toggleEffectParamKeyframes,
 } from '../state/clipEdits'
+import { saveSelectionAsPreset } from '../state/library'
 import { useStore } from '../state/store'
 import { IconButton } from '../ui/Button'
 import { KeyframeLane } from './KeyframeLane'
@@ -494,7 +496,21 @@ function EffectStack({ clip, playheadS }: { clip: Clip; playheadS: number }) {
 
   return (
     <section className="flex flex-col gap-2" data-testid="effect-stack">
-      <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">Effects</h3>
+      <div className="flex items-center">
+        <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">Effects</h3>
+        {clip.effects.length > 0 && (
+          <span className="ml-auto">
+            <IconButton
+              label="Save effects as preset"
+              size="compact"
+              data-testid="save-preset"
+              onClick={() => void saveSelectionAsPreset()}
+            >
+              <Bookmark size={13} strokeWidth={1.75} aria-hidden />
+            </IconButton>
+          </span>
+        )}
+      </div>
       {clip.effects.length === 0 ? (
         <div
           data-testid="effect-stack-empty"

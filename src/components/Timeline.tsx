@@ -432,6 +432,8 @@ interface ClipViewProps {
   trackHeight: number
   pxPerS: number
   selected: boolean
+  /** Locked tracks reject every mutation, including effect/transition drops. */
+  locked: boolean
   onClipPointerDown: (e: ReactPointerEvent<HTMLDivElement>, clip: Clip) => void
   onTrimPointerDown: (e: ReactPointerEvent<HTMLDivElement>, clip: Clip, edge: 'in' | 'out') => void
   onClipContextMenu: (e: ReactMouseEvent<HTMLDivElement>, clip: Clip) => void
@@ -445,6 +447,7 @@ function ClipView({
   trackHeight,
   pxPerS,
   selected,
+  locked,
   onClipPointerDown,
   onTrimPointerDown,
   onClipContextMenu,
@@ -518,6 +521,9 @@ function ClipView({
     e.clientX - e.currentTarget.getBoundingClientRect().left
 
   const fxDragOver = (e: DragEvent<HTMLDivElement>) => {
+    // A locked track rejects grades exactly like it rejects trims and moves.
+    // (Found in review: this was the ONE mutation path that ignored the lock.)
+    if (locked) return
     const t = e.dataTransfer.types
     const isEffect = dragHasType(t, EFFECT_MIME)
     const isTransition = dragHasType(t, TRANSITION_MIME)
@@ -544,6 +550,7 @@ function ClipView({
   }
 
   const fxDrop = (e: DragEvent<HTMLDivElement>) => {
+    if (locked) return
     const effectType = e.dataTransfer.getData(EFFECT_MIME)
     const transitionKind = e.dataTransfer.getData(TRANSITION_MIME)
     if (!effectType && !transitionKind) return
@@ -1199,6 +1206,7 @@ export function Timeline({ height }: { height: number }) {
           trackHeight={track.height}
           pxPerS={pxPerS}
           selected={selection.includes(clip.id)}
+          locked={track.locked}
           onClipPointerDown={handleClipPointerDown}
           onTrimPointerDown={handleTrimPointerDown}
           onClipContextMenu={handleClipContextMenu}

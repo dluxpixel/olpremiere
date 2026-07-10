@@ -7,16 +7,26 @@ import { migrateProject, type Project } from '../engine/types'
 import { useStore } from './store'
 
 const DB_NAME = 'reel'
-const DB_VERSION = 1
+// v2 adds the global Library ('library' media entries + 'presets' effect
+// stacks) — content that deliberately OUTLIVES any project document.
+const DB_VERSION = 2
 
 let dbPromise: Promise<IDBPDatabase> | null = null
 
 export function db(): Promise<IDBPDatabase> {
   dbPromise ??= openDB(DB_NAME, DB_VERSION, {
     upgrade(d) {
-      d.createObjectStore('projects')
-      d.createObjectStore('blobs')
-      d.createObjectStore('meta')
+      // Guarded, not versioned-if-chains: upgrade re-runs the whole list for a
+      // v1 user, and createObjectStore throws on a store that already exists.
+      // David's real projects live in this DB; a crash here bricks the app.
+      const ensure = (name: string): void => {
+        if (!d.objectStoreNames.contains(name)) d.createObjectStore(name)
+      }
+      ensure('projects')
+      ensure('blobs')
+      ensure('meta')
+      ensure('library')
+      ensure('presets')
     },
   })
   return dbPromise
@@ -60,7 +70,7 @@ async function flushSave(): Promise<void> {
     await saveProject(useStore.getState().project)
     setUI({ saveState: 'saved' })
   } catch (err) {
-    console.error('OT Premiere autosave failed', err)
+    console.error('OL Premiere autosave failed', err)
     setUI({ saveState: 'unsaved' })
   }
 }
@@ -79,7 +89,7 @@ export function initPersistence(): void {
       // Only hydrate if the user hasn't already started editing.
       if (p && s.history.undo.length === 0) s.setProject(p)
     })
-    .catch((err) => console.error('OT Premiere project load failed', err))
+    .catch((err) => console.error('OL Premiere project load failed', err))
 
   useStore.subscribe(
     (s) => s.project,

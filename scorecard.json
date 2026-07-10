@@ -1,5 +1,5 @@
 {
-  "project": "OT Premiere",
+  "project": "OL Premiere",
   "updated": "2026-07-10",
   "overall": 85,
   "note": "Honest distance-to-world-class. 100 = a world-class homemade Premiere per the spec Definition of Done. ALL 8 spec phases are implemented (the spec is DONE), plus a real-use run: 9:16 Shorts format + aspect-correct export, audio auto-level, C=cut, a monitor transform gizmo + click-preview-to-select, add-track buttons. The remaining gap is ear/eye-gated quality, deeper perf (full proxy/streaming decode), and the Effects tab still being a stub. Never inflated to cross a review threshold.",

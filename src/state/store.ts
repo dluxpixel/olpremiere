@@ -16,7 +16,7 @@ import {
 
 export type Tool = 'select' | 'razor' | 'hand' | 'zoom'
 export type SaveState = 'saved' | 'saving' | 'unsaved'
-export type LeftTab = 'media' | 'effects'
+export type LeftTab = 'media' | 'effects' | 'library'
 
 export interface UIState {
   tool: Tool

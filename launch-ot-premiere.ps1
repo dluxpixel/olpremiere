@@ -1,9 +1,12 @@
-# OT Premiere launcher — starts the local dev server (if not already up) and
+# OL Premiere launcher — starts the local dev server (if not already up) and
 # opens the editor in a chromeless app window. Local-first: nothing leaves the
 # machine. Double-clicked via the Desktop shortcut.
+# NOTE: the Desktop shortcut now goes through the shared .launchers\launch-app.ps1 (unified
+# with Almanac/OL Studio/etc). This standalone script is kept as a direct fallback. Port is
+# 4318 — co-typer owns 4317, and sharing it made clicking one open the other.
 $ErrorActionPreference = 'Stop'
 $repo = 'C:\Users\skyle\Desktop\reel'
-$port = 4317
+$port = 4318
 $url = "http://localhost:$port/"
 
 Set-Location $repo

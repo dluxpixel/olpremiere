@@ -1,4 +1,4 @@
-import { Film, FolderOpen, Image as ImageIcon, Music, Plus, Sparkles, Upload } from 'lucide-react'
+import { Bookmark, Film, FolderOpen, Image as ImageIcon, Music, Plus, Sparkles, Upload } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { EFFECTS } from '../engine/effects/registry'
 import { TRANSITION_KINDS, type TransitionKind } from '../engine/render/types'
@@ -8,6 +8,15 @@ import { useBlobUrl } from '../state/blobUrls'
 import { applyEffect, setClipTransition } from '../state/clipEdits'
 import { openContextMenu } from '../state/contextMenu'
 import { ASSET_MIME, EFFECT_MIME, TRANSITION_MIME } from '../state/dnd'
+import {
+  addLibraryItemToProject,
+  applyPresetToSelection,
+  removeLibraryItem,
+  removePreset,
+  saveAssetToLibrary,
+  useLibrary,
+  type LibraryItem,
+} from '../state/library'
 import { deleteAsset, importFiles, insertAssetAtPlayhead } from '../state/mediaActions'
 import { useStore, type LeftTab } from '../state/store'
 import { Button } from '../ui/Button'
@@ -96,6 +105,7 @@ function AssetCard({ asset, fps }: { asset: MediaAsset; fps: number }) {
       onContextMenu={(e) =>
         openContextMenu(e, [
           { label: 'Add to timeline', shortcut: 'Enter', onClick: () => insertAssetAtPlayhead(asset.id) },
+          { label: 'Save to Library', onClick: () => void saveAssetToLibrary(asset.id) },
           {
             label: 'Delete from bin',
             danger: true,
@@ -312,6 +322,127 @@ function EffectsTab() {
   )
 }
 
+/** One saved media entry. Double-click brings it into the current project. */
+function LibraryCard({ item, fps }: { item: LibraryItem; fps: number }) {
+  const thumbUrl = useBlobUrl(item.thumbnailKey)
+  const Icon = KIND_ICONS[item.kind]
+  return (
+    <div
+      data-testid="library-card"
+      role="button"
+      tabIndex={0}
+      onDoubleClick={() => void addLibraryItemToProject(item.id)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') void addLibraryItemToProject(item.id)
+      }}
+      onContextMenu={(e) =>
+        openContextMenu(e, [
+          { label: 'Add to project', shortcut: 'Enter', onClick: () => void addLibraryItemToProject(item.id) },
+          {
+            label: 'Remove from Library',
+            danger: true,
+            separator: true,
+            onClick: () => void removeLibraryItem(item.id),
+          },
+        ])
+      }
+      className="cursor-default overflow-hidden rounded-[6px] border border-border bg-bg-elevated transition-colors duration-[120ms] ease-out hover:border-border-strong"
+    >
+      <div className="relative flex aspect-video items-center justify-center bg-black">
+        {thumbUrl ? (
+          <img src={thumbUrl} alt="" draggable={false} className="h-full w-full object-contain" />
+        ) : (
+          <Icon size={16} strokeWidth={1.5} className="text-text-muted" aria-hidden />
+        )}
+        {item.kind !== 'image' && (
+          <span className="absolute right-1 bottom-1 rounded-[3px] bg-black/70 px-1 text-[10px] text-text-primary tabular-nums">
+            {formatTimecode(item.durationS, fps)}
+          </span>
+        )}
+      </div>
+      <div title={item.name} className="truncate px-1.5 py-1 text-[11px] text-text-secondary">
+        {item.name}
+      </div>
+    </div>
+  )
+}
+
+function LibraryTab() {
+  const items = useLibrary((s) => s.items)
+  const presets = useLibrary((s) => s.presets)
+  const fps = useStore((s) => activeSequence(s.project).fps)
+  const hasSelection = useStore((s) => s.ui.selection.length === 1)
+  const empty = items.length === 0 && presets.length === 0
+
+  if (empty) {
+    return (
+      <div
+        data-testid="library-empty"
+        className="m-2 flex flex-1 flex-col items-center justify-center gap-2 rounded-[6px] border border-dashed border-border-strong text-center"
+      >
+        <Bookmark size={24} strokeWidth={1.5} className="text-text-muted" aria-hidden />
+        <div className="text-[13px] text-text-secondary">Nothing saved yet</div>
+        <div className="max-w-[200px] text-[11px] text-text-muted">
+          Right-click media → Save to Library. Select a graded clip and save its effects as a preset.
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="min-h-0 flex-1 overflow-y-auto p-2">
+      {items.length > 0 && (
+        <section className="mb-3">
+          <h3 className="px-0.5 pb-1.5 text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">
+            Media
+          </h3>
+          <div className="grid grid-cols-2 content-start gap-2">
+            {items.map((item) => (
+              <LibraryCard key={item.id} item={item} fps={fps} />
+            ))}
+          </div>
+        </section>
+      )}
+      {presets.length > 0 && (
+        <section>
+          <h3 className="px-0.5 pb-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">
+            Effect presets
+          </h3>
+          {!hasSelection && (
+            <p className="px-0.5 pb-1 text-[10px] text-text-muted">Select a clip to apply one.</p>
+          )}
+          {presets.map((p) => (
+            <div
+              key={p.id}
+              data-testid="preset-item"
+              role="button"
+              tabIndex={0}
+              title={`${p.effects.length} effect(s) — double-click to apply to the selected clip`}
+              onDoubleClick={() => applyPresetToSelection(p.id)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') applyPresetToSelection(p.id)
+              }}
+              onContextMenu={(e) =>
+                openContextMenu(e, [
+                  { label: 'Apply to selected clip', shortcut: 'Enter', onClick: () => applyPresetToSelection(p.id) },
+                  { label: 'Remove preset', danger: true, separator: true, onClick: () => void removePreset(p.id) },
+                ])
+              }
+              className={`flex cursor-default items-center gap-2 rounded-[4px] px-2 py-1.5 text-[12px] transition-colors duration-[120ms] ${
+                hasSelection ? 'text-text-secondary hover:bg-bg-elevated hover:text-text-primary' : 'text-text-muted'
+              }`}
+            >
+              <Bookmark size={13} strokeWidth={1.5} aria-hidden className="shrink-0 text-text-muted" />
+              <span className="truncate">{p.name}</span>
+              <span className="ml-auto shrink-0 text-[10px] text-text-muted">{p.effects.length} fx</span>
+            </div>
+          ))}
+        </section>
+      )}
+    </div>
+  )
+}
+
 export function LeftPanel({ width }: { width: number }) {
   const leftTab = useStore((s) => s.ui.leftTab)
   const dragging = useOsFileDrop()
@@ -324,8 +455,9 @@ export function LeftPanel({ width }: { width: number }) {
       <div role="tablist" className="flex items-center gap-1 border-b border-border px-2 py-1.5">
         <Tab tab="media" label="Media" />
         <Tab tab="effects" label="Effects" />
+        <Tab tab="library" label="Library" />
       </div>
-      {leftTab === 'media' ? <MediaTab /> : <EffectsTab />}
+      {leftTab === 'media' ? <MediaTab /> : leftTab === 'effects' ? <EffectsTab /> : <LibraryTab />}
       {dragging && (
         <div className="pointer-events-none fixed inset-0 z-50 flex bg-black/60 p-4">
           <div className="flex flex-1 flex-col items-center justify-center gap-2 rounded-[6px] border-2 border-dashed border-accent bg-accent-quiet">
