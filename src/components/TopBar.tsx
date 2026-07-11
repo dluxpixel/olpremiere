@@ -1,8 +1,26 @@
-import { Circle, Clapperboard, Download, Keyboard, Mic, Redo2, Square, Undo2 } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import {
+  ChevronDown,
+  Circle,
+  Clapperboard,
+  Download,
+  Keyboard,
+  Mic,
+  Redo2,
+  Square,
+  Undo2,
+} from 'lucide-react'
+import { type MouseEvent as ReactMouseEvent, useEffect, useState } from 'react'
 import { comboLabel } from '../keymap'
+import { openContextMenu } from '../state/contextMenu'
 import { useStore } from '../state/store'
-import { canRecordVoice, startRecording, stopRecording, useRecorder } from '../state/voiceRecorder'
+import {
+  canRecordVoice,
+  listAudioInputs,
+  setInputDevice,
+  startRecording,
+  stopRecording,
+  useRecorder,
+} from '../state/voiceRecorder'
 import { Button, IconButton } from '../ui/Button'
 import { ExportDialog } from './ExportDialog'
 
@@ -10,6 +28,7 @@ import { ExportDialog } from './ExportDialog'
 function RecordButton() {
   const recording = useRecorder((s) => s.recording)
   const startedAt = useRecorder((s) => s.startedAt)
+  const selectedInputId = useRecorder((s) => s.selectedInputId)
   const [elapsed, setElapsed] = useState(0)
 
   useEffect(() => {
@@ -25,9 +44,29 @@ function RecordButton() {
 
   if (!canRecordVoice()) return null
 
+  // Open the input-device menu at the cursor: system default first, then every
+  // audio input, with a ✓ on the active one. Fixes "I recorded but got silence"
+  // when the OS default isn't the mic being spoken into.
+  const chooseDevice = async (e: ReactMouseEvent<HTMLButtonElement>) => {
+    const { clientX, clientY } = e
+    const inputs = await listAudioInputs()
+    const check = (on: boolean, label: string) => (on ? `${label}  ✓` : label)
+    openContextMenu({ preventDefault: () => {}, clientX, clientY }, [
+      {
+        label: check(selectedInputId === null, 'System default'),
+        onClick: () => setInputDevice(null),
+      },
+      ...inputs.map((d, i) => ({
+        label: check(d.deviceId === selectedInputId, d.label || `Microphone ${i + 1}`),
+        onClick: () => setInputDevice(d.deviceId),
+        separator: i === 0,
+      })),
+    ])
+  }
+
   const mmss = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, '0')}`
   return (
-    <span className="flex items-center gap-1.5">
+    <span className="flex items-center gap-0.5">
       <IconButton
         label={recording ? 'Stop recording' : 'Record voiceover'}
         active={recording}
@@ -40,8 +79,17 @@ function RecordButton() {
           <Mic size={16} strokeWidth={1.5} />
         )}
       </IconButton>
+      <IconButton
+        size="compact"
+        label="Choose microphone"
+        disabled={recording}
+        data-testid="record-device"
+        onClick={(e) => void chooseDevice(e)}
+      >
+        <ChevronDown size={13} strokeWidth={1.5} />
+      </IconButton>
       {recording && (
-        <span data-testid="record-elapsed" className="flex items-center gap-1 text-[11px] tabular-nums text-danger">
+        <span data-testid="record-elapsed" className="ml-1 flex items-center gap-1 text-[11px] tabular-nums text-danger">
           <Circle size={7} fill="currentColor" className="animate-pulse" aria-hidden />
           {mmss}
         </span>

@@ -11,9 +11,71 @@ interface RecorderState {
   recording: boolean
   /** Epoch ms the current take started, for the elapsed readout. Null when idle. */
   startedAt: number | null
+  /** Chosen audio-input `deviceId`, or null for the system default. Persisted. */
+  selectedInputId: string | null
 }
 
-export const useRecorder = create<RecorderState>(() => ({ recording: false, startedAt: null }))
+/** localStorage key for the remembered mic; survives reloads and projects. */
+const INPUT_KEY = 'reel:recorder:input-device'
+
+/** Read the saved mic id, tolerating environments without localStorage. */
+function loadSavedInputId(): string | null {
+  try {
+    return typeof localStorage !== 'undefined' ? localStorage.getItem(INPUT_KEY) : null
+  } catch {
+    return null
+  }
+}
+
+export const useRecorder = create<RecorderState>(() => ({
+  recording: false,
+  startedAt: null,
+  selectedInputId: loadSavedInputId(),
+}))
+
+/**
+ * The `getUserMedia` audio constraint for a chosen input, or the system default.
+ * A pinned device uses `exact` so we KNOW we captured the mic the user picked —
+ * if it's gone, `getUserMedia` throws and we fall back loudly rather than record
+ * silence from the wrong device (the bug this feature fixes).
+ */
+export function audioConstraintFor(deviceId: string | null): MediaTrackConstraints | boolean {
+  return deviceId ? { deviceId: { exact: deviceId } } : true
+}
+
+/**
+ * The available audio-input devices. Device labels are empty until mic
+ * permission has been granted at least once; since the whole point here is to
+ * pick a mic, unlock them with a transient stream when they're all blank.
+ */
+export async function listAudioInputs(): Promise<MediaDeviceInfo[]> {
+  if (!navigator.mediaDevices?.enumerateDevices) return []
+  const audioInputs = async () =>
+    (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'audioinput')
+  let inputs = await audioInputs()
+  if (inputs.length > 0 && inputs.every((d) => d.label === '')) {
+    try {
+      const unlock = await navigator.mediaDevices.getUserMedia({ audio: true })
+      unlock.getTracks().forEach((t) => t.stop())
+      inputs = await audioInputs()
+    } catch {
+      // Permission denied — return the unlabeled entries; the UI names them generically.
+    }
+  }
+  return inputs
+}
+
+/** Choose the recording input (null = system default) and remember it. */
+export function setInputDevice(deviceId: string | null): void {
+  useRecorder.setState({ selectedInputId: deviceId })
+  try {
+    if (typeof localStorage === 'undefined') return
+    if (deviceId) localStorage.setItem(INPUT_KEY, deviceId)
+    else localStorage.removeItem(INPUT_KEY)
+  } catch {
+    // Ignore storage failures (private mode / quota); the in-memory pick still applies.
+  }
+}
 
 let recorder: MediaRecorder | null = null
 let stream: MediaStream | null = null
@@ -48,11 +110,27 @@ export async function startRecording(): Promise<void> {
     show('Voice recording is not supported in this browser', 'danger')
     return
   }
+  const chosen = useRecorder.getState().selectedInputId
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-  } catch {
-    show('Microphone access was blocked', 'danger')
-    return
+    stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraintFor(chosen) })
+  } catch (err) {
+    const name = (err as { name?: string })?.name
+    // A pinned device that's since been unplugged makes the `exact` constraint
+    // throw. Clear the stale pick and retry on the default so a missing mic
+    // degrades to "records from default", never "silently records nothing".
+    if (chosen && (name === 'OverconstrainedError' || name === 'NotFoundError')) {
+      setInputDevice(null)
+      show('That microphone is unavailable — using the system default', 'info')
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      } catch {
+        show('Microphone access was blocked', 'danger')
+        return
+      }
+    } else {
+      show('Microphone access was blocked', 'danger')
+      return
+    }
   }
   const mime = pickRecorderMime()
   chunks = []

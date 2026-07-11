@@ -28,3 +28,28 @@ test('recording the mic adds an audio clip to the bin', async ({ page }) => {
   await page.getByTestId('asset-card').dblclick()
   await expect(page.locator('[data-clip-kind="audio"]')).toHaveCount(1)
 })
+
+test('the mic picker lists input devices and remembers the choice', async ({ page }) => {
+  test.setTimeout(60_000)
+  await page.goto('/')
+
+  // Open the picker beside the record button.
+  await page.getByTestId('record-device').click()
+  const menu = page.getByTestId('context-menu')
+  await expect(menu).toBeVisible()
+
+  // System default is always offered; Chromium's fake device adds ≥1 real input.
+  await expect(menu.getByRole('menuitem', { name: /System default/ })).toBeVisible()
+  const items = menu.getByRole('menuitem')
+  expect(await items.count()).toBeGreaterThan(1)
+
+  // Pick the first real device; the menu closes.
+  await items.nth(1).click()
+  await expect(menu).toHaveCount(0)
+
+  // Reopen: exactly one item now carries the ✓ (the remembered choice).
+  await page.getByTestId('record-device').click()
+  await expect(
+    page.getByTestId('context-menu').getByRole('menuitem').filter({ hasText: '✓' }),
+  ).toHaveCount(1)
+})

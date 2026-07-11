@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { recordingFileName } from './voiceRecorder'
+import { audioConstraintFor, recordingFileName } from './voiceRecorder'
 
 describe('recordingFileName', () => {
   it('numbers takes and picks the extension from the mime', () => {
@@ -13,5 +13,15 @@ describe('recordingFileName', () => {
   it('defaults to webm when the mime is unknown or empty', () => {
     expect(recordingFileName(5, '')).toBe('Voice recording 5.webm')
     expect(recordingFileName(6, 'audio/weird')).toBe('Voice recording 6.webm')
+  })
+})
+
+describe('audioConstraintFor', () => {
+  it('uses the system default when no device is chosen', () => {
+    expect(audioConstraintFor(null)).toBe(true)
+  })
+
+  it('pins an explicitly chosen device with an exact constraint', () => {
+    expect(audioConstraintFor('mic-abc123')).toEqual({ deviceId: { exact: 'mic-abc123' } })
   })
 })
