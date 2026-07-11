@@ -70,8 +70,20 @@ export function pauseAllPreviewVideos(): void {
 // updates in real time; the store commits once on release.
 let liveTransform: { clipId: Id; x: number; y: number; scale: number } | null = null
 
+// Monotonic token bumped whenever an imperative preview input changes that the
+// store doesn't cover (the live gizmo transform). The Monitor's draw loop folds
+// this into its dirty-check so a drag repaints even though the playhead and the
+// stored project are unchanged.
+let epoch = 0
+
+/** Current preview invalidation token (see `epoch`). */
+export function previewEpoch(): number {
+  return epoch
+}
+
 export function setLivePreviewTransform(v: { clipId: Id; x: number; y: number; scale: number } | null): void {
   liveTransform = v
+  epoch++
 }
 
 // One renderer per canvas (a canvas keeps a single GL context for its life).
@@ -109,6 +121,7 @@ function makeTextureSource(
   playing: boolean,
   frameW: number,
   frameH: number,
+  markPending: () => void,
 ): TextureSource {
   return (layer: RenderLayer): TexImageSource | null => {
     // Titles are generated, not imported — rasterize at sequence resolution.
@@ -118,7 +131,9 @@ function makeTextureSource(
 
     if (asset.kind === 'image') {
       const pooled = warmImage(asset)
-      return pooled.ready ? pooled.el : null
+      if (pooled.ready) return pooled.el
+      markPending() // still loading — keep polling
+      return null
     }
     if (asset.kind !== 'video') return null
 
@@ -131,14 +146,20 @@ function makeTextureSource(
       // The cache only ever yields OffscreenCanvas/ImageBitmap — valid texture
       // sources — but its return type is the wider CanvasImageSource.
       if (exact) return exact as TexImageSource
-      // Fallback to a nearest <video> seek while the exact frame decodes.
+      // No exact frame yet. Fall back to a nearest <video> seek — but the seek
+      // is ASYNC, so this frame is NOT final: mark it pending so the draw loop
+      // keeps polling until the exact decode lands (else it freezes mid-seek).
+      markPending()
       if (!pooled.ready) return null
       if (Math.abs(pooled.el.currentTime - srcT) > 1 / (2 * fps)) pooled.el.currentTime = srcT
       return pooled.el
     }
 
     const pooled = warmVideo(asset)
-    if (!pooled.ready) return null
+    if (!pooled.ready) {
+      markPending() // element still warming up — keep polling
+      return null
+    }
     const el = pooled.el
     // Match the element's rate to the clip's speed so a slowed/sped clip's
     // picture advances exactly as fast as the compositor samples it — otherwise
@@ -161,6 +182,11 @@ function makeTextureSource(
 /**
  * Render the sequence at time `tS` into `canvas` (already sized to the target
  * raster). Falls back to a cleared canvas when WebGL2 is unavailable.
+ *
+ * Returns `true` when every referenced layer resolved to a texture this frame,
+ * `false` when something was still decoding/loading (a null texture source). The
+ * Monitor's draw loop uses this to keep polling a paused frame until its exact
+ * decode lands, then stop — instead of redrawing on every rAF forever.
  */
 export function renderPreview(
   canvas: HTMLCanvasElement,
@@ -168,9 +194,9 @@ export function renderPreview(
   assets: Record<Id, MediaAsset>,
   tS: number,
   playing: boolean,
-): void {
+): boolean {
   const renderer = rendererFor(canvas)
-  if (!renderer) return
+  if (!renderer) return true
   const frame = resolveFrame(seq, tS)
   // Apply the live drag override to its layer (frame is freshly built, safe to mutate).
   if (liveTransform) {
@@ -194,5 +220,14 @@ export function renderPreview(
     }
     for (const [id, { el }] of videoPool) if (!active.has(id) && !el.paused) el.pause()
   }
-  renderer.render(frame, makeTextureSource(assets, seq.fps, playing, frame.width, frame.height))
+  // A frame is "complete" only when every layer resolved to its FINAL texture
+  // (the exact decoded frame / loaded image) — not a still-seeking <video>
+  // fallback. While anything is pending, the caller keeps polling so the async
+  // seek/decode lands instead of the preview freezing on a stale frame.
+  let complete = true
+  const source = makeTextureSource(assets, seq.fps, playing, frame.width, frame.height, () => {
+    complete = false
+  })
+  renderer.render(frame, source)
+  return complete
 }

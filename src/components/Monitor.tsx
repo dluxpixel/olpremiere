@@ -12,9 +12,9 @@ import {
 import { useEffect, useRef, useState } from 'react'
 import { prewarmAudio } from '../engine/audio'
 import { setPreviewScale } from '../engine/frameCache'
-import { prewarmPreview, renderPreview } from '../engine/preview'
+import { prewarmPreview, previewEpoch, renderPreview } from '../engine/preview'
 import { formatTimecode, quantizeToFrame } from '../engine/timecode'
-import { activeSequence } from '../engine/types'
+import { activeSequence, type Sequence } from '../engine/types'
 import { pausePlayback, togglePlay } from '../state/playbackControl'
 import { setActiveSequenceFormat, useStore } from '../state/store'
 import { IconButton } from '../ui/Button'
@@ -35,6 +35,14 @@ function aspectKeyFor(w: number, h: number): string {
   return h > w ? '9:16' : '16:9'
 }
 
+// The preview never needs to redraw faster than this. The <video> upload +
+// composite is the frame's real cost, so on a 144/240 Hz display an uncapped
+// rAF loop did that work 2–4× more often than any content changed — the "laggy
+// preview". 60 fps is smoother than any timeline footage and imperceptible next
+// to it. (Scrub/drag bursts and playback all coalesce to this ceiling.)
+const MAX_PREVIEW_FPS = 60
+const MIN_FRAME_MS = 1000 / MAX_PREVIEW_FPS
+
 /** rAF draw loop: reads the store imperatively so playback never re-renders React. */
 function useProgramCanvas(quality: Quality) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -42,7 +50,16 @@ function useProgramCanvas(quality: Quality) {
     const canvas = canvasRef.current
     if (!canvas) return
     let raf = 0
-    const draw = () => {
+    // Dirty-check state: only repaint when a real input changed (playhead frame,
+    // play/pause, canvas size, project edit, or a live gizmo drag), and never
+    // faster than MAX_PREVIEW_FPS. A frame that's still decoding leaves
+    // `prevComplete=false` so we keep polling until its exact frame lands.
+    let lastDrawT = -Infinity
+    let prevKey = ''
+    let prevSeq: Sequence | null = null
+    let prevComplete = false
+
+    const draw = (now: number) => {
       raf = requestAnimationFrame(draw)
       const s = useStore.getState()
       const seq = activeSequence(s.project)
@@ -59,13 +76,28 @@ function useProgramCanvas(quality: Quality) {
       const dpr = (window.devicePixelRatio || 1) * quality
       const pw = Math.max(1, Math.round(w * dpr))
       const ph = Math.max(1, Math.round(h * dpr))
+
+      const playing = s.ui.playing
+      const fps = seq.fps > 0 ? seq.fps : 30
+      const frameIdx = Math.floor(s.ui.playheadS * fps + 1e-6)
+      const key = `${frameIdx}|${playing ? 1 : 0}|${pw}x${ph}|${previewEpoch()}`
+      const changed = key !== prevKey || seq !== prevSeq
+
+      // Parked on a fully-resolved frame with nothing new — do zero GPU work.
+      if (!changed && prevComplete) return
+      // Cap the redraw rate (tames high-refresh displays and rapid scrub/drag).
+      if (now - lastDrawT < MIN_FRAME_MS) return
+      lastDrawT = now
+
       if (canvas.width !== pw || canvas.height !== ph) {
         canvas.width = pw
         canvas.height = ph
       }
       canvas.style.width = `${w}px`
       canvas.style.height = `${h}px`
-      renderPreview(canvas, seq, s.project.assets, s.ui.playheadS, s.ui.playing)
+      prevComplete = renderPreview(canvas, seq, s.project.assets, s.ui.playheadS, playing)
+      prevKey = key
+      prevSeq = seq
     }
     raf = requestAnimationFrame(draw)
     return () => cancelAnimationFrame(raf)
