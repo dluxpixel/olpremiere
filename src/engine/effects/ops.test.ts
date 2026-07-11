@@ -54,6 +54,14 @@ describe('addEffect', () => {
     expect(addEffect(clip(), 'timeWarp', 'e1').effects).toEqual([])
   })
 
+  it('seeds initialParams so Auto Color applies visibly on drop, but resets to identity', () => {
+    const c = addEffect(clip(), 'autoColor', 'e1')
+    const inst = c.effects[0]
+    expect(inst.params).toEqual({ amount: 0.6 }) // applied at strength, not neutral 0
+    // Reset returns it to the neutral default (identity), not the applied value.
+    expect(resetEffect(c, 'e1').effects[0].params).toEqual({ amount: 0 })
+  })
+
   it('inserts canonical effects in frozen math order whatever the apply order', () => {
     let c = clip()
     c = addEffect(c, 'gaussianBlur', 'e1')

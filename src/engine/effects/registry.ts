@@ -56,6 +56,14 @@ export interface EffectDef {
    * shown in Effect Controls, never draggable, never removable.
    */
   fixed?: boolean
+  /**
+   * Params to seed when the user APPLIES this effect, overriding the neutral
+   * `default`s. For effects that should do something visible the moment they are
+   * dropped (Auto Color), so they don't look broken sitting at identity. `reset`
+   * and the neutral-skip still use each param's `default`, so Reset returns to
+   * identity and a hand-zeroed instance is still skipped.
+   */
+  initialParams?: Record<string, number>
   params: EffectParamDef[]
   /**
    * Pointwise GLSL. Mutates `vec3 c` (0..1 RGB) in place; `float a` (alpha) is
@@ -97,6 +105,28 @@ const p = (
 // renders identically. The golden export test is what proves it.
 
 export const EFFECTS: EffectDef[] = [
+  {
+    type: 'autoColor',
+    label: 'Auto Color',
+    description: 'One-click correction: adds contrast (S-curve) and lifts muted colours. Tune with Amount.',
+    category: 'color',
+    pass: 'pointwise',
+    // Dropped at a visible strength; `default` stays 0 (identity) so Reset and
+    // the neutral-skip still work.
+    initialParams: { amount: 0.6 },
+    params: [p('amount', 'Amount', 0, 1, 0.01, 0)],
+    glsl: (u) => `
+      float acAmt = ${u('amount')};
+      // Auto contrast: an S-curve (smoothstep) deepens shadows and lifts highlights.
+      c = mix(c, smoothstep(0.0, 1.0, c), acAmt * 0.6);
+      // Auto vibrance: push muted colours more than already-saturated ones.
+      float acMax = max(c.r, max(c.g, c.b));
+      float acMin = min(c.r, min(c.g, c.b));
+      float acSat = acMax - acMin;
+      float acLuma = dot(c, vec3(0.2126, 0.7152, 0.0722));
+      c = mix(vec3(acLuma), c, 1.0 + acAmt * 0.5 * (1.0 - acSat));
+    `,
+  },
   {
     type: 'exposure',
     label: 'Exposure',
@@ -201,6 +231,7 @@ export const EFFECTS: EffectDef[] = [
  * golden-test re-baseline.
  */
 export const CANONICAL_ORDER = [
+  'autoColor',
   'exposure',
   'colorWheels',
   'whiteBalance',

@@ -170,6 +170,45 @@ test('dragging a transition onto a clip picks the edge nearest the cursor', asyn
   expect(edges).toEqual({ in: 'crossDissolve', out: 'dipToBlack' })
 })
 
+test('Auto Color applies on drop at a visible strength and still renders', async ({ page }) => {
+  const clipId = await addClip(page)
+  // Park inside the clip so the monitor shows a real decoded frame.
+  await page.getByTestId('ruler').click({ position: { x: 30, y: 10 } })
+  await expect
+    .poll(async () => (await previewPixel(page, 0.5, 0.5)).some((c) => c > 10), { timeout: 10_000 })
+    .toBe(true)
+
+  await page.getByRole('tab', { name: 'Effects' }).click()
+  await page.locator('[data-testid="effect-item"][data-payload="autoColor"]').dblclick()
+
+  // It lands in the stack with an Amount control...
+  await expect(page.getByTestId('effect-card')).toHaveCount(1)
+  await expect(page.getByTestId('channel-amount')).toBeVisible()
+  expect(await stackTypes(page, clipId)).toEqual(['autoColor'])
+
+  // ...seeded at strength 0.6 immediately (NOT the neutral 0), so it does
+  // something the moment it's dropped...
+  const amount = await page.evaluate(async (id) => {
+    const storeMod = '/src/state/store.ts'
+    const typesMod = '/src/engine/types.ts'
+    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+      useStore: { getState: () => { project: unknown } }
+    }
+    const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+      activeSequence: (p: unknown) => {
+        tracks: { clips: { id: string; effects: { params: Record<string, number> }[] }[] }[]
+      }
+    }
+    const seq = activeSequence(useStore.getState().project)
+    const clip = seq.tracks.flatMap((t) => t.clips).find((c) => c.id === id)!
+    return clip.effects[0].params.amount
+  }, clipId)
+  expect(amount).toBe(0.6)
+
+  // ...and the preview still paints a real frame (the generated shader compiled + ran).
+  expect((await previewPixel(page, 0.5, 0.5)).some((c) => c > 10)).toBe(true)
+})
+
 test('applying the same effect twice keeps two independent instances', async ({ page }) => {
   const clipId = await addClip(page)
   await page.getByRole('tab', { name: 'Effects' }).click()

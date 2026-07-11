@@ -52,7 +52,10 @@ export const findEffectById = (clip: Clip, effectId: Id): EffectInstance | undef
 export function addEffect(clip: Clip, type: string, id: Id): Clip {
   const def = getEffect(type)
   if (!def) return clip
-  const inst: EffectInstance = { id, type, params: defaultParams(def), enabled: true }
+  // Seed neutral defaults, then apply any `initialParams` so an effect that
+  // should do something on drop (Auto Color) isn't invisible at identity.
+  const params = { ...defaultParams(def), ...(def.initialParams ?? {}) }
+  const inst: EffectInstance = { id, type, params, enabled: true }
   const effects = [...clip.effects]
   effects.splice(insertIndex(effects, type), 0, inst)
   return { ...clip, effects }
