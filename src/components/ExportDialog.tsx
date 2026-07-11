@@ -7,6 +7,7 @@ import {
   type ExportProgress,
   type ExportSettings,
 } from '../engine/export'
+import { losslessBitrate } from '../engine/export/bitrate'
 import { beginCriticalWork } from '../state/unloadGuard'
 import { activeSequence } from '../engine/types'
 import { workArea } from '../engine/workArea'
@@ -45,11 +46,15 @@ function buildResolutions(seqW: number, seqH: number): ResolutionPreset[] {
   ]
 }
 
+// `max` computes a near-lossless target from the chosen resolution at export
+// time (see losslessBitrate); the rest are fixed. Listed best-first so the
+// highest-quality "1:1 to source" option is the most prominent.
 const BITRATES = [
-  { label: 'High (24 Mbps)', value: 24_000_000 },
-  { label: 'Medium (12 Mbps)', value: 12_000_000 },
-  { label: 'Low (5 Mbps)', value: 5_000_000 },
-]
+  { key: 'max', label: 'Maximum (1:1 — near-lossless)', value: null },
+  { key: 'high', label: 'High (24 Mbps)', value: 24_000_000 },
+  { key: 'medium', label: 'Medium (12 Mbps)', value: 12_000_000 },
+  { key: 'low', label: 'Low (5 Mbps)', value: 5_000_000 },
+] as const
 
 type Stage =
   | { kind: 'settings' }
@@ -86,7 +91,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
 
   const resolutions = buildResolutions(seq.width, seq.height)
   const [resolution, setResolution] = useState(0)
-  const [bitrate, setBitrate] = useState(1)
+  const [bitrateKey, setBitrateKey] = useState<string>('medium')
   const [stage, setStage] = useState<Stage>({ kind: 'settings' })
   const abortRef = useRef<AbortController | null>(null)
 
@@ -104,11 +109,15 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
 
   const start = async () => {
     const preset = resolutions[resolution]
+    const bopt = BITRATES.find((b) => b.key === bitrateKey) ?? BITRATES[2]
+    // "Maximum" targets a near-lossless rate computed from the export raster; the
+    // rest are fixed values.
+    const videoBitrate = bopt.value ?? losslessBitrate(preset.width, preset.height, seq.fps)
     const settings: ExportSettings = {
       width: preset.width,
       height: preset.height,
       fps: seq.fps,
-      videoBitrate: BITRATES[bitrate].value,
+      videoBitrate,
       startS: range.startS,
       endS: range.endS,
     }
@@ -255,11 +264,11 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
               <select
                 data-testid="export-bitrate"
                 className="h-7 w-56 rounded-[4px] border border-border bg-bg-input px-2 text-[12px] text-text-primary focus:border-accent focus:outline-none"
-                value={bitrate}
-                onChange={(e) => setBitrate(Number(e.target.value))}
+                value={bitrateKey}
+                onChange={(e) => setBitrateKey(e.target.value)}
               >
-                {BITRATES.map((b, i) => (
-                  <option key={b.label} value={i}>
+                {BITRATES.map((b) => (
+                  <option key={b.key} value={b.key}>
                     {b.label}
                   </option>
                 ))}

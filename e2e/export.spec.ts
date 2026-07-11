@@ -43,7 +43,7 @@ test('streaming export writes straight to the chosen file, and it decodes', asyn
 
   await page.getByTestId('export-open').click()
   await page.getByTestId('export-resolution').selectOption('2') // SD 640×360
-  await page.getByTestId('export-bitrate').selectOption('2')
+  await page.getByTestId('export-bitrate').selectOption('low')
 
   // No download event fires: nothing was buffered in memory to hand back.
   await page.getByTestId('export-start').click()
@@ -72,6 +72,41 @@ test('streaming export writes straight to the chosen file, and it decodes', asyn
   expect(result.duration).toBeGreaterThan(1)
 })
 
+test('Maximum quality (1:1) exports a valid, decodable MP4', async ({ page }) => {
+  test.setTimeout(180_000)
+  await page.goto('/')
+  await page.getByTestId('media-file-input').setInputFiles(FIXTURE)
+  await expect(page.getByTestId('asset-card')).toBeVisible({ timeout: 15_000 })
+  await page.getByTestId('asset-card').dblclick()
+  await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
+
+  await page.getByTestId('export-open').click()
+  await page.getByTestId('export-resolution').selectOption('2') // SD keeps CI encoding fast
+  await page.getByTestId('export-bitrate').selectOption('max') // the new highest-quality option
+
+  const downloadPromise = page.waitForEvent('download', { timeout: 150_000 })
+  await page.getByTestId('export-start').click()
+  const download = await downloadPromise
+  const mp4Path = `${VERIFY}/max-quality.mp4`
+  await download.saveAs(mp4Path)
+  expect(fs.statSync(mp4Path).size).toBeGreaterThan(20_000)
+
+  const meta = await page.evaluate(async (b64) => {
+    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
+    const video = document.createElement('video')
+    video.muted = true
+    video.src = URL.createObjectURL(new Blob([bytes], { type: 'video/mp4' }))
+    await new Promise<void>((res, rej) => {
+      video.onloadedmetadata = () => res()
+      video.onerror = () => rej(new Error('Maximum-quality MP4 failed to decode'))
+    })
+    return { width: video.videoWidth, height: video.videoHeight, duration: video.duration }
+  }, fs.readFileSync(mp4Path).toString('base64'))
+  expect(meta.width).toBe(640)
+  expect(meta.height).toBe(360)
+  expect(meta.duration).toBeGreaterThan(1)
+})
+
 test('golden export: the MP4 matches the composited sequence', async ({ page }) => {
   test.setTimeout(180_000)
   await page.goto('/')
@@ -84,7 +119,7 @@ test('golden export: the MP4 matches the composited sequence', async ({ page }) 
 
   await page.getByTestId('export-open').click()
   await page.getByTestId('export-resolution').selectOption('2') // SD 640×360
-  await page.getByTestId('export-bitrate').selectOption('2') // 5 Mbps
+  await page.getByTestId('export-bitrate').selectOption('low') // 5 Mbps
 
   const downloadPromise = page.waitForEvent('download', { timeout: 150_000 })
   await page.getByTestId('export-start').click()

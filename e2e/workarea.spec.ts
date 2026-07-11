@@ -127,7 +127,7 @@ test('exporting the work area renders only that range, starting AT the in point'
   await page.getByTestId('export-open').click()
   await expect(page.getByTestId('export-range')).toHaveValue('workArea')
   await page.getByTestId('export-resolution').selectOption('2') // SD
-  await page.getByTestId('export-bitrate').selectOption('2')
+  await page.getByTestId('export-bitrate').selectOption('low')
 
   const dl = page.waitForEvent('download', { timeout: 150_000 })
   await page.getByTestId('export-start').click()
