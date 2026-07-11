@@ -479,16 +479,20 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
       gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
       drawLayer(layer, source, frameW, frameH)
       for (const fx of post) applyNeighborhood(fx, layerFbo, scratch)
-      // Blit the processed premultiplied layer onto the target, over.
+      // Blit the processed premultiplied layer onto the target, over. The target
+      // may be a seq-sized transition FBO (fboW×fboH), NOT the canvas — sizing the
+      // viewport to the canvas would draw into only a sub-rect of that FBO (the
+      // transition-preview bug).
       gl.bindFramebuffer(gl.FRAMEBUFFER, targetFb)
-      gl.viewport(0, 0, gl.canvas.width, gl.canvas.height)
+      gl.viewport(0, 0, targetFb ? fboW : gl.canvas.width, targetFb ? fboH : gl.canvas.height)
       gl.enable(gl.BLEND)
       gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
       blitFbo(layerFbo)
     } else {
-      // Fast path: draw straight onto the target with premultiplied over.
+      // Fast path: draw straight onto the target with premultiplied over. Same
+      // as above — target may be a seq-sized FBO, so size the viewport to it.
       gl.bindFramebuffer(gl.FRAMEBUFFER, targetFb)
-      gl.viewport(0, 0, gl.canvas.width, gl.canvas.height)
+      gl.viewport(0, 0, targetFb ? fboW : gl.canvas.width, targetFb ? fboH : gl.canvas.height)
       gl.enable(gl.BLEND)
       gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
       drawLayer(layer, source, frameW, frameH)
@@ -508,7 +512,11 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
     gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fb)
     gl.viewport(0, 0, fboW, fboH)
     gl.disable(gl.BLEND)
-    clear(0, 0, 0, 1) // opaque black base so dips/wipes read against black
+    // TRANSPARENT base, not opaque black: a transition on an upper track must
+    // let LOWER tracks show through wherever its clips don't cover (e.g. a
+    // scaled PIP over a full-frame background). Dip solids stay opaque (alpha 1)
+    // where they apply, so dips still read; only the uncovered area is see-through.
+    clear(0, 0, 0, 0)
     if (!source) return
     compositeLayer(layer, source, frameW, frameH, dst.fb, layerFbo, scratch)
   }
@@ -539,10 +547,15 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
     renderSideToFbo(op.from, fromSrc, frameW, frameH, fromFbo, layerFbo, scratch)
     renderSideToFbo(op.to, toSrc, frameW, frameH, toFbo, layerFbo, scratch)
 
-    // Combine into the default framebuffer (the visible/target canvas).
+    // Combine into the default framebuffer (the visible/target canvas), OVER
+    // whatever lower tracks were already drawn. The combined sides are
+    // premultiplied (transparent where neither clip covers), so premultiplied-
+    // over compositing lets those lower tracks show. For a full-frame transition
+    // the combined alpha is 1 everywhere, so this is identical to a replace.
     gl.bindFramebuffer(gl.FRAMEBUFFER, null)
     gl.viewport(0, 0, gl.canvas.width, gl.canvas.height)
-    gl.disable(gl.BLEND) // sides are already composited; combine replaces pixels
+    gl.enable(gl.BLEND)
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
     gl.useProgram(combineProg)
     bindFull(combineLoc.aPos)
     gl.uniform1i(combineLoc.uFrom, 0)
