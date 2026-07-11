@@ -31,11 +31,13 @@ describe('audioConstraintFor', () => {
     expect(audioConstraintFor('mic-abc123')).toMatchObject({ deviceId: { exact: 'mic-abc123' } })
   })
 
-  it('enhance mode re-enables the browser noise/echo/gain processing', () => {
+  it('noise-reduce toggles ONLY noise suppression (echo + auto-gain stay off)', () => {
     expect(audioConstraintFor(null, true)).toEqual({
-      echoCancellation: true,
+      echoCancellation: false,
       noiseSuppression: true,
-      autoGainControl: true,
+      autoGainControl: false,
+      sampleRate: 48_000,
+      channelCount: 1,
     })
   })
 })

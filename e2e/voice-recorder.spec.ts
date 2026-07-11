@@ -53,8 +53,8 @@ test('the mic picker lists input devices and remembers the choice', async ({ pag
     page.getByTestId('context-menu').getByRole('menuitem').filter({ hasText: '✓' }),
   ).toHaveCount(1)
 
-  // Toggle "Reduce noise & echo" on; reopening shows a second ✓ (device + enhance).
-  await page.getByTestId('context-menu').getByRole('menuitem', { name: /Reduce noise & echo/ }).click()
+  // Toggle "Reduce background noise" on; reopening shows a second ✓ (device + it).
+  await page.getByTestId('context-menu').getByRole('menuitem', { name: /Reduce background noise/ }).click()
   await page.getByTestId('record-device').click()
   await expect(
     page.getByTestId('context-menu').getByRole('menuitem').filter({ hasText: '✓' }),

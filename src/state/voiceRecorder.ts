@@ -14,8 +14,9 @@ interface RecorderState {
   /** Chosen audio-input `deviceId`, or null for the system default. Persisted. */
   selectedInputId: string | null
   /**
-   * Whether to run the browser's noise/echo/gain processing. OFF by default so a
-   * voiceover captures clean; ON helps a noisy room. Persisted.
+   * Whether to run browser noise suppression. OFF by default so a voiceover
+   * captures pristine; ON removes steady background sound (a passing car, fans).
+   * Persisted.
    */
   enhance: boolean
 }
@@ -53,29 +54,34 @@ export const useRecorder = create<RecorderState>(() => ({
 }))
 
 /**
- * The `getUserMedia` audio constraint. By DEFAULT it turns OFF the phone-call
- * processing chain — echo cancellation, noise suppression, auto-gain — which
- * mangles a voiceover into a pumped, muffled mess, and requests full-quality
- * 48 kHz mono. `enhance` puts that processing back for a noisy room. A pinned
- * device uses `exact` so we KNOW we captured the mic the user picked — if it's
- * gone, `getUserMedia` throws and we fall back loudly rather than record from
- * the wrong device.
+ * The `getUserMedia` audio constraint. Always captures clean 48 kHz mono with
+ * echo-cancellation and auto-gain OFF (those are what mangle a voiceover into a
+ * pumped, muffled mess). `reduceNoise` toggles ONLY noise suppression — the one
+ * step that removes steady background sound (a passing car, fans) — so it can
+ * quiet the room without the old artefacts. A pinned device uses `exact` so we
+ * KNOW we captured the mic the user picked; if it's gone `getUserMedia` throws
+ * and we fall back loudly rather than record from the wrong device.
  */
-export function audioConstraintFor(deviceId: string | null, enhance = false): MediaTrackConstraints {
-  const c: MediaTrackConstraints = enhance
-    ? { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
-    : {
-        echoCancellation: false,
-        noiseSuppression: false,
-        autoGainControl: false,
-        sampleRate: 48_000,
-        channelCount: 1,
-      }
+export function audioConstraintFor(deviceId: string | null, reduceNoise = false): MediaTrackConstraints {
+  const c: MediaTrackConstraints = {
+    // Echo cancellation is for call feedback, not a voiceover — it only muddies
+    // the sound, so keep it off.
+    echoCancellation: false,
+    // Noise suppression is the ONE processing step that removes steady/background
+    // sound (a passing car, fans, hum). Off = pristine but captures everything;
+    // on = quieter background for a little lost detail.
+    noiseSuppression: reduceNoise,
+    // Auto-gain stays OFF either way: its volume-riding is what pumped/muffled the
+    // recording, so noise reduction no longer drags that artefact back in.
+    autoGainControl: false,
+    sampleRate: 48_000,
+    channelCount: 1,
+  }
   if (deviceId) c.deviceId = { exact: deviceId }
   return c
 }
 
-/** Toggle the browser noise/echo/gain processing and remember it. */
+/** Toggle background-noise suppression and remember it. */
 export function setEnhance(on: boolean): void {
   useRecorder.setState({ enhance: on })
   try {
