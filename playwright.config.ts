@@ -12,7 +12,13 @@ export default defineConfig({
     headless: true,
     viewport: { width: 1600, height: 900 },
     launchOptions: {
-      args: ['--autoplay-policy=no-user-gesture-required'],
+      args: [
+        '--autoplay-policy=no-user-gesture-required',
+        // A fake mic + auto-granted permission so the voiceover recorder path is
+        // testable headless; harmless to specs that never touch the mic.
+        '--use-fake-device-for-media-stream',
+        '--use-fake-ui-for-media-stream',
+      ],
     },
   },
   webServer: {

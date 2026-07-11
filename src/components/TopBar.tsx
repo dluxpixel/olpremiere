@@ -1,9 +1,54 @@
-import { Clapperboard, Download, Keyboard, Redo2, Undo2 } from 'lucide-react'
+import { Circle, Clapperboard, Download, Keyboard, Mic, Redo2, Square, Undo2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { comboLabel } from '../keymap'
 import { useStore } from '../state/store'
+import { canRecordVoice, startRecording, stopRecording, useRecorder } from '../state/voiceRecorder'
 import { Button, IconButton } from '../ui/Button'
 import { ExportDialog } from './ExportDialog'
+
+/** Record a voiceover from the mic; the take lands in the bin as an audio clip. */
+function RecordButton() {
+  const recording = useRecorder((s) => s.recording)
+  const startedAt = useRecorder((s) => s.startedAt)
+  const [elapsed, setElapsed] = useState(0)
+
+  useEffect(() => {
+    if (!recording || startedAt === null) {
+      setElapsed(0)
+      return
+    }
+    const tick = () => setElapsed(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)))
+    tick()
+    const id = window.setInterval(tick, 250)
+    return () => window.clearInterval(id)
+  }, [recording, startedAt])
+
+  if (!canRecordVoice()) return null
+
+  const mmss = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, '0')}`
+  return (
+    <span className="flex items-center gap-1.5">
+      <IconButton
+        label={recording ? 'Stop recording' : 'Record voiceover'}
+        active={recording}
+        data-testid="record-voice"
+        onClick={() => (recording ? stopRecording() : void startRecording())}
+      >
+        {recording ? (
+          <Square size={14} strokeWidth={2} className="text-danger" fill="currentColor" />
+        ) : (
+          <Mic size={16} strokeWidth={1.5} />
+        )}
+      </IconButton>
+      {recording && (
+        <span data-testid="record-elapsed" className="flex items-center gap-1 text-[11px] tabular-nums text-danger">
+          <Circle size={7} fill="currentColor" className="animate-pulse" aria-hidden />
+          {mmss}
+        </span>
+      )}
+    </span>
+  )
+}
 
 function SaveIndicator() {
   const saveState = useStore((s) => s.ui.saveState)
@@ -105,6 +150,7 @@ export function TopBar() {
           <Keyboard size={16} strokeWidth={1.5} />
         </IconButton>
         <div className="mx-2 h-4 w-px bg-border" />
+        <RecordButton />
         <Button variant="primary" data-testid="export-open" onClick={() => setExporting(true)}>
           <Download size={16} strokeWidth={1.5} />
           Export

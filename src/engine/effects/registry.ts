@@ -168,6 +168,24 @@ export const EFFECTS: EffectDef[] = [
     `,
   },
   {
+    type: 'vibrance',
+    label: 'Vibrance',
+    description: 'Smart saturation: pushes muted colours harder than already-vivid ones (Premiere-style).',
+    category: 'color',
+    pass: 'pointwise',
+    params: [p('vibrance', 'Vibrance', -1, 1, 0.01, 0)],
+    // Unlike plain saturation, the boost scales by (1 - current saturation), so
+    // low-saturation pixels get most of it and already-saturated ones are barely
+    // touched — the "digital vibrance" look that avoids clipping vivid colours.
+    glsl: (u) => `
+      float vMax = max(c.r, max(c.g, c.b));
+      float vMin = min(c.r, min(c.g, c.b));
+      float vSat = vMax - vMin;
+      float vLuma = dot(c, vec3(0.2126, 0.7152, 0.0722));
+      c = mix(vec3(vLuma), c, 1.0 + ${u('vibrance')} * (1.0 - vSat));
+    `,
+  },
+  {
     type: 'gaussianBlur',
     label: 'Gaussian Blur',
     description: 'Separable gaussian over the composited layer.',
@@ -188,6 +206,7 @@ export const CANONICAL_ORDER = [
   'whiteBalance',
   'brightnessContrast',
   'saturation',
+  'vibrance',
   'gaussianBlur',
 ] as const
 
