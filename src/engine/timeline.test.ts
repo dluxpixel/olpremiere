@@ -589,6 +589,19 @@ describe('deleteClip / rippleDelete', () => {
     const seq = makeSeq([makeTrack({ clips: [makeClip()] })])
     expect(deleteClip(seq, 'nope')).toBe(seq)
   })
+  it('deleting one half of a linked A/V pair keeps the other half (and its link marker)', () => {
+    // The "delete the audio, keep the video" case. deleteClip acts on ONE clip,
+    // never the group; the surviving video keeps its linkId so it stays silent
+    // (its own audio remains suppressed) rather than suddenly playing sound.
+    const v = makeClip({ startS: 0, outS: 4, linkId: 'g1' })
+    const a = makeClip({ startS: 0, outS: 4, linkId: 'g1' })
+    const seq = makeSeq([makeTrack({ clips: [v] }), makeTrack({ kind: 'audio', clips: [a] })])
+    const next = deleteClip(seq, a.id) // delete the audio
+    expect(findClip(next, a.id)).toBeNull()
+    const survivor = findClip(next, v.id)!.clip
+    expect(survivor.id).toBe(v.id)
+    expect(survivor.linkId).toBe('g1') // kept -> video stays video-only/silent
+  })
   it('rippleDelete shifts only later clips on that track', () => {
     const a = makeClip({ startS: 0, outS: 2 })
     const b = makeClip({ startS: 3, outS: 2 }) // duration 2, occupies 3..5

@@ -33,6 +33,7 @@ import {
   clipEndS,
   clipGroupIds,
   collectSnapPoints,
+  deleteClip,
   deleteGroup,
   moveGroup,
   rateStretchGroup,
@@ -874,6 +875,27 @@ export function Timeline({ height }: { height: number }) {
           setUI({ selection: [] })
         },
       },
+      // Only meaningful for a linked A/V pair: delete just THIS half, keep the
+      // other. Deleting the audio keeps the video silent (its own audio stays
+      // suppressed by the surviving link marker); deleting the video keeps the
+      // audio playing. deleteClip acts on one clip, never the group.
+      ...(clip.linkId !== undefined
+        ? [
+            {
+              label:
+                track?.kind === 'audio'
+                  ? 'Delete audio only (keep video)'
+                  : track?.kind === 'video'
+                    ? 'Delete video only (keep audio)'
+                    : 'Delete this clip only',
+              disabled: !!track?.locked,
+              onClick: () => {
+                updateActiveSequence('Delete clip (keep linked)', (sq) => deleteClip(sq, clip.id))
+                setUI({ selection: [] })
+              },
+            },
+          ]
+        : []),
       {
         label: 'Ripple delete',
         shortcut: 'Shift+Del',
