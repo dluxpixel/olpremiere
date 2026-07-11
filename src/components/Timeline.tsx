@@ -611,7 +611,7 @@ function ClipView({
         {label}
       </span>
 
-      {isAudio && (fadeInPx > 0.5 || fadeOutPx > 0.5) && (
+      {(fadeInPx > 0.5 || fadeOutPx > 0.5) && (
         <svg
           className="pointer-events-none absolute inset-0"
           width={width}
@@ -633,7 +633,7 @@ function ClipView({
         </svg>
       )}
 
-      {isAudio && (
+      {(
         <>
           <div
             data-testid="fade-in-handle"

@@ -140,6 +140,16 @@ function resolveTrack(track: Track, t: number, fps: number): RenderOp | null {
         if (t >= endS - d) layer.opacity = clamp(layer.opacity * ((endS - t) / d), 0, 1)
       }
 
+      // Clip fade handles fade OPACITY too (the visual analogue of the audio
+      // gain fade), so a picture/video/title fades in and out. Same fadeInS/
+      // fadeOutS fields, one shared renderer → preview == export.
+      if (clip.fadeInS > 0 && t < clip.startS + clip.fadeInS) {
+        layer.opacity = clamp(layer.opacity * ((t - clip.startS) / clip.fadeInS), 0, 1)
+      }
+      if (clip.fadeOutS > 0 && t >= endS - clip.fadeOutS) {
+        layer.opacity = clamp(layer.opacity * ((endS - t) / clip.fadeOutS), 0, 1)
+      }
+
       return { type: 'layer', layer }
     }
   }

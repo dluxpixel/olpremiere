@@ -129,6 +129,21 @@ describe('identity clip', () => {
     expect(layer.effects).toEqual([])
   })
 
+  it('fadeInS ramps layer opacity up over the fade, full after it', () => {
+    const c = clip({ startS: 0, inS: 0, outS: 4, fadeInS: 1 })
+    const at = (t: number) => asLayer(resolveFrame(seqOf([track({ clips: [c] })]), t).ops[0]).opacity
+    expect(at(0)).toBeCloseTo(0, 5) // fully transparent at the very start
+    expect(at(0.5)).toBeCloseTo(0.5, 5) // halfway through the fade
+    expect(at(2)).toBe(1) // past the fade
+  })
+
+  it('fadeOutS ramps layer opacity down to 0 at the end', () => {
+    const c = clip({ startS: 0, inS: 0, outS: 4, fadeOutS: 1 }) // endS = 4
+    const at = (t: number) => asLayer(resolveFrame(seqOf([track({ clips: [c] })]), t).ops[0]).opacity
+    expect(at(2)).toBe(1) // before the fade-out
+    expect(at(3.5)).toBeCloseTo(0.5, 5) // halfway through the fade-out
+  })
+
   it('color-correction flows from a migrated clip into the resolved layer', () => {
     const c = migrateClipEffects(clip({ filters: { lift: 0.2, gamma: -0.3, gain: 0.1, temperature: 0.5, tint: -0.4 } }))
     const layer = asLayer(resolveFrame(seqOf([track({ clips: [c] })]), 0).ops[0])
