@@ -92,7 +92,7 @@ export class Transport {
         this.stopAudio = stop
         audioScheduled = true
       } catch (err) {
-        console.warn('OL Premiere transport: audio scheduling failed, playing silent', err)
+        console.warn('OL Studio transport: audio scheduling failed, playing silent', err)
       }
     }
 

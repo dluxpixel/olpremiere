@@ -173,7 +173,7 @@ export function TopBar() {
     >
       <div className="flex items-center gap-2">
         <Clapperboard size={18} className="text-accent" aria-hidden />
-        <span className="text-[13px] font-semibold tracking-[0.08em]">OL Premiere</span>
+        <span className="text-[13px] font-semibold tracking-[0.08em]">OL Studio</span>
       </div>
       <div className="h-4 w-px bg-border" />
       <ProjectName />

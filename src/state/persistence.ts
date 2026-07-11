@@ -70,7 +70,7 @@ async function flushSave(): Promise<void> {
     await saveProject(useStore.getState().project)
     setUI({ saveState: 'saved' })
   } catch (err) {
-    console.error('OL Premiere autosave failed', err)
+    console.error('OL Studio autosave failed', err)
     setUI({ saveState: 'unsaved' })
   }
 }
@@ -89,7 +89,7 @@ export function initPersistence(): void {
       // Only hydrate if the user hasn't already started editing.
       if (p && s.history.undo.length === 0) s.setProject(p)
     })
-    .catch((err) => console.error('OL Premiere project load failed', err))
+    .catch((err) => console.error('OL Studio project load failed', err))
 
   useStore.subscribe(
     (s) => s.project,

@@ -123,7 +123,7 @@ function rendererFor(canvas: HTMLCanvasElement): Renderer | null {
     try {
       renderer = createRenderer(gl)
     } catch (err) {
-      console.error('OL Premiere: WebGL2 renderer init failed', err)
+      console.error('OL Studio: WebGL2 renderer init failed', err)
       renderer = null
     }
   }

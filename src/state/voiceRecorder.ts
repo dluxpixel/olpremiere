@@ -205,7 +205,7 @@ export async function startRecording(): Promise<void> {
       stream?.getTracks().forEach((t) => t.stop())
       stream = null
       recorder = null
-      console.warn('OL Premiere: could not start MediaRecorder', err)
+      console.warn('OL Studio: could not start MediaRecorder', err)
       show('Could not start recording on this device', 'danger')
       return
     }
