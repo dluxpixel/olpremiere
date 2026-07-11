@@ -186,6 +186,12 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
         audio && audioCodec
           ? { codec: audioCodec, numberOfChannels: audio.numberOfChannels, sampleRate: audio.sampleRate }
           : undefined,
+      // Normalize each track so its first chunk lands at t=0. An AAC encoder's
+      // priming (or a track whose first chunk isn't exactly at 0) otherwise makes
+      // the muxer throw "first chunk must have a timestamp of 0" and crashes the
+      // export. 'offset' subtracts each track's first timestamp — a no-op for a
+      // track already at 0, so it never shifts a well-formed export.
+      firstTimestampBehavior: 'offset',
     })
 
     let encoderError: Error | null = null
