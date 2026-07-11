@@ -67,6 +67,8 @@ const nextDequeue = (enc: VideoEncoder | AudioEncoder): Promise<void> =>
 // requested source time — classic pull-down. One Input per CLIP, so two clips
 // of the same asset (e.g. across a cross-dissolve) read independently.
 interface ClipProvider {
+  /** Kept so the iterator can be re-opened for a backward (reverse-clip) seek. */
+  sink: CanvasSink
   iterator: AsyncGenerator<WrappedCanvas, void, unknown>
   dispose: () => void
   started: boolean
@@ -83,6 +85,18 @@ async function nextFrame(p: ClipProvider): Promise<WrappedCanvas | null> {
 
 /** Advance the clip's sequential reader to the newest frame with ts ≤ sourceT. */
 async function frameForClip(p: ClipProvider, sourceT: number): Promise<OffscreenCanvas | HTMLCanvasElement | null> {
+  // A REVERSE clip (speed < 0) requests DECREASING sourceT. The reader is
+  // forward-only, so a backward jump means re-opening the sink iterator from the
+  // new time (a random-access re-seek). Without this the whole reversed clip
+  // would freeze on its furthest-decoded frame — the preview reverses correctly
+  // (random-access frame cache) but the export would not.
+  if (p.current && sourceT + SRC_EPS_S < p.current.timestamp) {
+    void p.iterator.return?.(undefined)
+    p.iterator = p.sink.canvases(Math.max(0, sourceT))
+    p.started = false
+    p.current = null
+    p.ahead = null
+  }
   if (!p.started) {
     p.started = true
     p.ahead = await nextFrame(p)
@@ -279,9 +293,11 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
       }
       const sink = new CanvasSink(track)
       // Decode forward from just before the clip's in-point; a transition reads
-      // past the out-point (handles), so leave the end open (to media end).
+      // past the out-point (handles), so leave the end open (to media end). For a
+      // reverse clip frameForClip re-opens sink.canvases() at each backward step.
       const iterator = sink.canvases(Math.max(0, clip.inS))
       const provider: ClipProvider = {
+        sink,
         iterator,
         dispose: () => input.dispose(),
         started: false,
@@ -290,7 +306,9 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
       }
       clipProviders.set(clip.id, provider)
       cleanups.push(() => {
-        void iterator.return?.(undefined)
+        // provider.iterator, not the captured `iterator` — a reverse re-seek may
+        // have replaced it.
+        void provider.iterator.return?.(undefined)
         input.dispose()
       })
       return provider

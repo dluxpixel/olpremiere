@@ -96,12 +96,28 @@ export function getReversedAudioBuffer(asset: MediaAsset): Promise<AudioBuffer |
       const src = await getAudioBuffer(asset)
       if (!src) return null
       const ctx = ensureAudioContext()
-      const rev = ctx.createBuffer(src.numberOfChannels, src.length, src.sampleRate)
+      // Mirror about the CONTAINER duration, not the decoded length. Callers
+      // mirror the clip window about asset.durationS (effectiveAudioClip); if the
+      // decoded audio track is shorter/longer than the container (common for
+      // screen/phone recordings, or codec priming/padding), reversing about the
+      // decoded length instead would time-shift the reversed audio by the
+      // difference. Sizing the reversed buffer to the container and indexing from
+      // its end keeps the two axes aligned. When they're equal this is identical
+      // to a plain reverse (no regression).
+      const n = src.length
+      // Buffer length == the mirror axis (container), so its time axis lines up
+      // with effectiveAudioClip's window exactly. Fall back to the decoded length
+      // if durationS is missing/zero, which reduces to a plain reverse.
+      const containerLen = asset.durationS > 0 ? Math.round(asset.durationS * src.sampleRate) : n
+      const L = Math.max(1, containerLen)
+      const rev = ctx.createBuffer(src.numberOfChannels, L, src.sampleRate)
       for (let ch = 0; ch < src.numberOfChannels; ch++) {
         const from = src.getChannelData(ch)
         const to = rev.getChannelData(ch)
-        const n = from.length
-        for (let i = 0; i < n; i++) to[i] = from[n - 1 - i]
+        for (let i = 0; i < L; i++) {
+          const j = L - 1 - i
+          to[i] = j >= 0 && j < n ? from[j] : 0
+        }
       }
       return rev
     })()

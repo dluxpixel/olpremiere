@@ -105,6 +105,36 @@ async function exportSample(page: Page, tS: number, fx: number, fy: number): Pro
   )
 }
 
+/** Sample the LAST-exported file again at a different time, without re-exporting
+ * (a second exportSample would be blocked by the still-open export dialog). */
+async function sampleExportedAt(page: Page, tS: number, fx: number, fy: number): Promise<[number, number, number]> {
+  const b64 = fs.readFileSync(`${VERIFY}/out.mp4`).toString('base64')
+  return page.evaluate(
+    async ({ b64, tS, fx, fy }) => {
+      const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
+      const video = document.createElement('video')
+      video.muted = true
+      video.src = URL.createObjectURL(new Blob([bytes], { type: 'video/mp4' }))
+      await new Promise<void>((res, rej) => {
+        video.onloadedmetadata = () => res()
+        video.onerror = () => rej(new Error('decode failed'))
+      })
+      video.currentTime = tS
+      await new Promise<void>((res) => {
+        video.onseeked = () => res()
+      })
+      const canvas = document.createElement('canvas')
+      canvas.width = video.videoWidth
+      canvas.height = video.videoHeight
+      const ctx = canvas.getContext('2d')!
+      ctx.drawImage(video, 0, 0)
+      const d = ctx.getImageData(Math.floor(canvas.width * fx), Math.floor(canvas.height * fy), 1, 1).data
+      return [d[0], d[1], d[2]] as [number, number, number]
+    },
+    { b64, tS, fx, fy },
+  )
+}
+
 async function setSpeed(page: Page, clipId: string, speed: number): Promise<void> {
   await page.evaluate(
     async ({ clipId, speed }) => {
@@ -195,6 +225,13 @@ test('reverse plays the clip backward in preview and export', async ({ page }) =
   expect(near(pv[0], ex[0])).toBeTruthy()
   expect(near(pv[1], ex[1])).toBeTruthy()
   expect(near(pv[2], ex[2])).toBeTruthy()
+
+  // The export must WALK the source backward, not freeze on the end frame. The
+  // fixture is red for source t<1s, blue after; a full reversed ~2s clip maps a
+  // LATE output time → an EARLY source time = RED. A frozen-last-frame bug would
+  // show blue there. (Re-sample the same exported file — no second export.)
+  const late = await sampleExportedAt(page, 1.6, 0.5, 0.5)
+  expect(late[0]).toBeGreaterThan(late[2])
 })
 
 async function readScale(page: Page, clipId: string): Promise<number> {
