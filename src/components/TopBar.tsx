@@ -16,6 +16,7 @@ import { useStore } from '../state/store'
 import {
   canRecordVoice,
   listAudioInputs,
+  setEnhance,
   setInputDevice,
   startRecording,
   stopRecording,
@@ -29,6 +30,7 @@ function RecordButton() {
   const recording = useRecorder((s) => s.recording)
   const startedAt = useRecorder((s) => s.startedAt)
   const selectedInputId = useRecorder((s) => s.selectedInputId)
+  const enhance = useRecorder((s) => s.enhance)
   const [elapsed, setElapsed] = useState(0)
 
   useEffect(() => {
@@ -61,6 +63,13 @@ function RecordButton() {
         onClick: () => setInputDevice(d.deviceId),
         separator: i === 0,
       })),
+      {
+        // Off by default = clean capture; on = browser noise/echo/gain processing
+        // for a noisy room. See audioConstraintFor.
+        label: check(enhance, 'Reduce noise & echo'),
+        onClick: () => setEnhance(!enhance),
+        separator: true,
+      },
     ])
   }
 

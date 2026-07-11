@@ -13,10 +13,20 @@ interface RecorderState {
   startedAt: number | null
   /** Chosen audio-input `deviceId`, or null for the system default. Persisted. */
   selectedInputId: string | null
+  /**
+   * Whether to run the browser's noise/echo/gain processing. OFF by default so a
+   * voiceover captures clean; ON helps a noisy room. Persisted.
+   */
+  enhance: boolean
 }
 
-/** localStorage key for the remembered mic; survives reloads and projects. */
+/** localStorage keys; survive reloads and projects. */
 const INPUT_KEY = 'reel:recorder:input-device'
+const ENHANCE_KEY = 'reel:recorder:enhance'
+
+/** Recorded-audio bitrate. 128 kbps Opus is transparent for voice; the browser
+ * default is far lower, which is a big part of why raw recordings sound bad. */
+export const RECORDING_BITS_PER_SECOND = 128_000
 
 /** Read the saved mic id, tolerating environments without localStorage. */
 function loadSavedInputId(): string | null {
@@ -27,20 +37,54 @@ function loadSavedInputId(): string | null {
   }
 }
 
+function loadEnhance(): boolean {
+  try {
+    return typeof localStorage !== 'undefined' && localStorage.getItem(ENHANCE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
 export const useRecorder = create<RecorderState>(() => ({
   recording: false,
   startedAt: null,
   selectedInputId: loadSavedInputId(),
+  enhance: loadEnhance(),
 }))
 
 /**
- * The `getUserMedia` audio constraint for a chosen input, or the system default.
- * A pinned device uses `exact` so we KNOW we captured the mic the user picked —
- * if it's gone, `getUserMedia` throws and we fall back loudly rather than record
- * silence from the wrong device (the bug this feature fixes).
+ * The `getUserMedia` audio constraint. By DEFAULT it turns OFF the phone-call
+ * processing chain — echo cancellation, noise suppression, auto-gain — which
+ * mangles a voiceover into a pumped, muffled mess, and requests full-quality
+ * 48 kHz mono. `enhance` puts that processing back for a noisy room. A pinned
+ * device uses `exact` so we KNOW we captured the mic the user picked — if it's
+ * gone, `getUserMedia` throws and we fall back loudly rather than record from
+ * the wrong device.
  */
-export function audioConstraintFor(deviceId: string | null): MediaTrackConstraints | boolean {
-  return deviceId ? { deviceId: { exact: deviceId } } : true
+export function audioConstraintFor(deviceId: string | null, enhance = false): MediaTrackConstraints {
+  const c: MediaTrackConstraints = enhance
+    ? { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+    : {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+        sampleRate: 48_000,
+        channelCount: 1,
+      }
+  if (deviceId) c.deviceId = { exact: deviceId }
+  return c
+}
+
+/** Toggle the browser noise/echo/gain processing and remember it. */
+export function setEnhance(on: boolean): void {
+  useRecorder.setState({ enhance: on })
+  try {
+    if (typeof localStorage === 'undefined') return
+    if (on) localStorage.setItem(ENHANCE_KEY, '1')
+    else localStorage.removeItem(ENHANCE_KEY)
+  } catch {
+    // Ignore storage failures (private mode / quota); the in-memory choice still applies.
+  }
 }
 
 /**
@@ -110,9 +154,9 @@ export async function startRecording(): Promise<void> {
     show('Voice recording is not supported in this browser', 'danger')
     return
   }
-  const chosen = useRecorder.getState().selectedInputId
+  const { selectedInputId: chosen, enhance } = useRecorder.getState()
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraintFor(chosen) })
+    stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraintFor(chosen, enhance) })
   } catch (err) {
     const name = (err as { name?: string })?.name
     // A pinned device that's since been unplugged makes the `exact` constraint
@@ -122,7 +166,7 @@ export async function startRecording(): Promise<void> {
       setInputDevice(null)
       show('That microphone is unavailable — using the system default', 'info')
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+        stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraintFor(null, enhance) })
       } catch {
         show('Microphone access was blocked', 'danger')
         return
@@ -134,7 +178,11 @@ export async function startRecording(): Promise<void> {
   }
   const mime = pickRecorderMime()
   chunks = []
-  recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined)
+  // A high, explicit bitrate — the browser default is low and a big reason raw
+  // recordings sound bad.
+  const options: MediaRecorderOptions = { audioBitsPerSecond: RECORDING_BITS_PER_SECOND }
+  if (mime) options.mimeType = mime
+  recorder = new MediaRecorder(stream, options)
   recorder.ondataavailable = (e) => {
     if (e.data.size > 0) chunks.push(e.data)
   }

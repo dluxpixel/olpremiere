@@ -47,9 +47,16 @@ test('the mic picker lists input devices and remembers the choice', async ({ pag
   await items.nth(1).click()
   await expect(menu).toHaveCount(0)
 
-  // Reopen: exactly one item now carries the ✓ (the remembered choice).
+  // Reopen: exactly one item now carries the ✓ (the remembered device).
   await page.getByTestId('record-device').click()
   await expect(
     page.getByTestId('context-menu').getByRole('menuitem').filter({ hasText: '✓' }),
   ).toHaveCount(1)
+
+  // Toggle "Reduce noise & echo" on; reopening shows a second ✓ (device + enhance).
+  await page.getByTestId('context-menu').getByRole('menuitem', { name: /Reduce noise & echo/ }).click()
+  await page.getByTestId('record-device').click()
+  await expect(
+    page.getByTestId('context-menu').getByRole('menuitem').filter({ hasText: '✓' }),
+  ).toHaveCount(2)
 })

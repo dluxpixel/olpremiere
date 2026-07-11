@@ -17,11 +17,25 @@ describe('recordingFileName', () => {
 })
 
 describe('audioConstraintFor', () => {
-  it('uses the system default when no device is chosen', () => {
-    expect(audioConstraintFor(null)).toBe(true)
+  it('defaults to clean capture: processing off, 48k mono, no device pinned', () => {
+    expect(audioConstraintFor(null)).toEqual({
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+      sampleRate: 48_000,
+      channelCount: 1,
+    })
   })
 
   it('pins an explicitly chosen device with an exact constraint', () => {
-    expect(audioConstraintFor('mic-abc123')).toEqual({ deviceId: { exact: 'mic-abc123' } })
+    expect(audioConstraintFor('mic-abc123')).toMatchObject({ deviceId: { exact: 'mic-abc123' } })
+  })
+
+  it('enhance mode re-enables the browser noise/echo/gain processing', () => {
+    expect(audioConstraintFor(null, true)).toEqual({
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+    })
   })
 })
