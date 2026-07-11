@@ -144,6 +144,21 @@ describe('identity clip', () => {
     expect(at(3.5)).toBeCloseTo(0.5, 5) // halfway through the fade-out
   })
 
+  it('a fade + a lone-edge transition on the same edge do NOT double-fade', () => {
+    // Last clip on its track (no next partner) with BOTH a 1s dip-to-black
+    // transitionOut and a 1s fade-out handle. The transition owns the opacity
+    // ramp; the handle must not multiply it again (would be quadratic → 0.25).
+    const c = clip({
+      startS: 0,
+      inS: 0,
+      outS: 4,
+      fadeOutS: 1,
+      transitionOut: { type: 'dipToBlack', durationS: 1 },
+    })
+    const at = (t: number) => asLayer(resolveFrame(seqOf([track({ clips: [c] })]), t).ops[0]).opacity
+    expect(at(3.5)).toBeCloseTo(0.5, 5) // linear, not 0.25
+  })
+
   it('color-correction flows from a migrated clip into the resolved layer', () => {
     const c = migrateClipEffects(clip({ filters: { lift: 0.2, gamma: -0.3, gain: 0.1, temperature: 0.5, tint: -0.4 } }))
     const layer = asLayer(resolveFrame(seqOf([track({ clips: [c] })]), 0).ops[0])

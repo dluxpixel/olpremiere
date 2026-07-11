@@ -143,10 +143,12 @@ function resolveTrack(track: Track, t: number, fps: number): RenderOp | null {
       // Clip fade handles fade OPACITY too (the visual analogue of the audio
       // gain fade), so a picture/video/title fades in and out. Same fadeInS/
       // fadeOutS fields, one shared renderer → preview == export.
-      if (clip.fadeInS > 0 && t < clip.startS + clip.fadeInS) {
+      // Skip the edge whose lone-edge transition (above) ALREADY scaled opacity,
+      // or the two would multiply and the picture would fade quadratically.
+      if (clip.fadeInS > 0 && !(clip.transitionIn && !hasPrevPartner) && t < clip.startS + clip.fadeInS) {
         layer.opacity = clamp(layer.opacity * ((t - clip.startS) / clip.fadeInS), 0, 1)
       }
-      if (clip.fadeOutS > 0 && t >= endS - clip.fadeOutS) {
+      if (clip.fadeOutS > 0 && !(clip.transitionOut && !hasNextPartner) && t >= endS - clip.fadeOutS) {
         layer.opacity = clamp(layer.opacity * ((endS - t) / clip.fadeOutS), 0, 1)
       }
 
