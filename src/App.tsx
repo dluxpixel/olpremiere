@@ -16,6 +16,7 @@ import {
   splitGroup,
   unlockedClipIds,
 } from './engine/timeline'
+import { nextEditPoint, prevEditPoint } from './engine/editPoints'
 import { quantizeToFrame } from './engine/timecode'
 import { activeSequence } from './engine/types'
 import { installKeymap, type Binding } from './keymap'
@@ -208,6 +209,15 @@ function buildAppBindings(): Binding[] {
       },
       { combo: 'arrowup', description: 'Select clip on track above', run: () => selectClipOnAdjacentTrack(-1) },
       { combo: 'arrowdown', description: 'Select clip on track below', run: () => selectClipOnAdjacentTrack(1) },
+      // , / . jump the playhead to the previous / next cut (any clip edge).
+      { combo: ',', description: 'Jump to previous cut', run: () => {
+        pausePlayback()
+        store().setUI({ playheadS: prevEditPoint(activeSequence(store().project), store().ui.playheadS) })
+      } },
+      { combo: '.', description: 'Jump to next cut', run: () => {
+        pausePlayback()
+        store().setUI({ playheadS: nextEditPoint(activeSequence(store().project), store().ui.playheadS) })
+      } },
       // Top-and-tail: ripple the head/tail of the clip under the playhead to it.
       { combo: 'q', description: 'Trim clip head to playhead', run: () => topAndTail('in') },
       { combo: 'w', description: 'Trim clip tail to playhead', run: () => topAndTail('out') },
