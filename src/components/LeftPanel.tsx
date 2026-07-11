@@ -10,6 +10,7 @@ import { openContextMenu } from '../state/contextMenu'
 import { ASSET_MIME, EFFECT_MIME, TRANSITION_MIME } from '../state/dnd'
 import {
   addLibraryItemToProject,
+  applyPresetToAllClips,
   applyPresetToSelection,
   removeLibraryItem,
   removePreset,
@@ -409,7 +410,9 @@ function LibraryTab() {
             Effect presets
           </h3>
           {!hasSelection && (
-            <p className="px-0.5 pb-1 text-[10px] text-text-muted">Select a clip to apply one.</p>
+            <p className="px-0.5 pb-1 text-[10px] text-text-muted">
+              Select a clip to apply one, or right-click → Apply to every clip.
+            </p>
           )}
           {presets.map((p) => (
             <div
@@ -425,6 +428,7 @@ function LibraryTab() {
               onContextMenu={(e) =>
                 openContextMenu(e, [
                   { label: 'Apply to selected clip', shortcut: 'Enter', onClick: () => applyPresetToSelection(p.id) },
+                  { label: 'Apply to every clip', onClick: () => applyPresetToAllClips(p.id) },
                   { label: 'Remove preset', danger: true, separator: true, onClick: () => void removePreset(p.id) },
                 ])
               }

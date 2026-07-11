@@ -179,3 +179,55 @@ test('an effect preset saves, survives a reload, and applies to another clip', a
   }, target)
   expect(undone).toBe(0)
 })
+
+test('a preset applies to every video clip at once, as one undo step', async ({ page }) => {
+  await page.goto('/')
+  await importClip(page)
+  await selectFirstVideoClip(page)
+
+  // Grade the first clip and save the stack as a preset.
+  await page.getByRole('tab', { name: 'Effects' }).click()
+  await page.locator('[data-testid="effect-item"][data-payload="saturation"]').dblclick()
+  await expect(page.getByTestId('effect-card')).toHaveCount(1)
+  await page.getByTestId('save-preset').click()
+  await expect(page.getByText(/Saved preset/)).toBeVisible()
+
+  // Add two more clips (no effects on them).
+  await page.getByRole('tab', { name: 'Media' }).click()
+  await page.getByTestId('asset-card').dblclick()
+  await page.getByTestId('asset-card').dblclick()
+  await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(3)
+
+  // Right-click the preset → Apply to every clip.
+  await page.getByRole('tab', { name: 'Library' }).click()
+  await page.getByTestId('preset-item').click({ button: 'right' })
+  await page.getByText('Apply to every clip').click()
+  await expect(page.getByText(/Applied .* to 3 clips/)).toBeVisible()
+
+  const readSaturationCounts = () =>
+    page.evaluate(async () => {
+      const storeMod = '/src/state/store.ts'
+      const typesMod = '/src/engine/types.ts'
+      const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+        useStore: { getState: () => { project: unknown } }
+      }
+      const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+        activeSequence: (p: unknown) => {
+          tracks: { kind: string; clips: { effects: { type: string }[] }[] }[]
+        }
+      }
+      const seq = activeSequence(useStore.getState().project)
+      return seq.tracks
+        .filter((t) => t.kind === 'video')
+        .flatMap((t) => t.clips)
+        .map((c) => c.effects.length)
+        .sort()
+    })
+
+  // The graded clip now has 2 saturation effects; the two fresh clips have 1 each.
+  expect(await readSaturationCounts()).toEqual([1, 1, 2])
+
+  // One Ctrl+Z reverses the whole apply.
+  await page.keyboard.press('Control+z')
+  expect(await readSaturationCounts()).toEqual([0, 0, 1])
+})

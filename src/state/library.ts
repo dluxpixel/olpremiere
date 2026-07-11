@@ -204,6 +204,42 @@ export function applyPresetToSelection(presetId: Id): void {
   show(`Applied "${preset.name}"`, 'success')
 }
 
+/**
+ * Apply a preset to EVERY video clip in the active sequence — ONE undo step.
+ * Audio clips are skipped (visual effects don't apply to them). Each clip gets
+ * its OWN fresh-id copy of the effects, appended (never replacing an existing
+ * grade), exactly like applyPresetToSelection.
+ */
+export function applyPresetToAllClips(presetId: Id): void {
+  const show = useToasts.getState().show
+  const preset = useLibrary.getState().presets.find((p) => p.id === presetId)
+  const { project, dispatch } = useStore.getState()
+  if (!preset) return
+  const targetCount = activeSequence(project)
+    .tracks.filter((t) => t.kind === 'video')
+    .reduce((n, t) => n + t.clips.length, 0)
+  if (targetCount === 0) {
+    show('No video clips to apply the preset to')
+    return
+  }
+  dispatch(`Apply preset ${preset.name} to all clips`, (p) => {
+    const seq = activeSequence(p)
+    const tracks = seq.tracks.map((t) =>
+      t.kind !== 'video'
+        ? t
+        : {
+            ...t,
+            clips: t.clips.map((c) => ({
+              ...c,
+              effects: [...c.effects, ...copyEffects(preset.effects, newId)],
+            })),
+          },
+    )
+    return { ...p, sequences: { ...p.sequences, [seq.id]: { ...seq, tracks } } }
+  })
+  show(`Applied "${preset.name}" to ${targetCount} clip${targetCount === 1 ? '' : 's'}`, 'success')
+}
+
 export async function removePreset(presetId: Id): Promise<void> {
   const preset = useLibrary.getState().presets.find((p) => p.id === presetId)
   if (!preset) return
