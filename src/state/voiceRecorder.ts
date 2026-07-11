@@ -129,7 +129,6 @@ export function setInputDevice(deviceId: string | null): void {
 
 let recorder: MediaRecorder | null = null
 let stream: MediaStream | null = null
-let chunks: Blob[] = []
 let takeCount = 0
 
 /** Whether this browser can record at all (mic + MediaRecorder). Pure capability check. */
@@ -193,23 +192,30 @@ export async function startRecording(): Promise<void> {
       }
     }
     const mime = pickRecorderMime()
-    chunks = []
     // A high, explicit bitrate — the browser default is low and a big reason raw
     // recordings sound bad.
     const options: MediaRecorderOptions = { audioBitsPerSecond: RECORDING_BITS_PER_SECOND }
     if (mime) options.mimeType = mime
+    // Bind THIS take's stream + chunk buffer into the recorder's callbacks. A fast
+    // stop-then-record can start take 2 before take 1's onstop flush fires; without
+    // per-take binding, take 1's finalize would stop take 2's live mic and null the
+    // recorder mid-take (Stop button stuck forever), and its late data would land
+    // in take 2's buffer.
+    const takeStream = stream
+    const takeChunks: Blob[] = []
     try {
-      recorder = new MediaRecorder(stream, options)
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunks.push(e.data)
+      const rec = new MediaRecorder(takeStream, options)
+      recorder = rec
+      rec.ondataavailable = (e) => {
+        if (e.data.size > 0) takeChunks.push(e.data)
       }
-      recorder.onstop = () => void finalize(mime)
-      recorder.start()
+      rec.onstop = () => void finalize(mime, rec, takeStream, takeChunks)
+      rec.start()
     } catch (err) {
       // Constructor/start can throw on an unsupported option or UA quirk. The mic
       // stream is already live — release it, or the OS record indicator stays lit.
-      stream?.getTracks().forEach((t) => t.stop())
-      stream = null
+      takeStream?.getTracks().forEach((t) => t.stop())
+      if (stream === takeStream) stream = null
       recorder = null
       console.warn('OL Studio: could not start MediaRecorder', err)
       show('Could not start recording on this device', 'danger')
@@ -228,13 +234,21 @@ export function stopRecording(): void {
   useRecorder.setState({ recording: false, startedAt: null })
 }
 
-/** Assemble the take, release the mic, and import it as an audio asset. */
-async function finalize(mime: string): Promise<void> {
-  stream?.getTracks().forEach((t) => t.stop())
-  stream = null
-  const blob = new Blob(chunks, { type: mime || 'audio/webm' })
-  chunks = []
-  recorder = null
+/**
+ * Assemble ONE take, release ITS OWN mic, and import it — operating only on the
+ * stream/chunks passed in, and clearing the module pointers only if this take is
+ * still the active one, so a newer take started mid-flush is never torn down.
+ */
+async function finalize(
+  mime: string,
+  rec: MediaRecorder,
+  takeStream: MediaStream | null,
+  takeChunks: Blob[],
+): Promise<void> {
+  takeStream?.getTracks().forEach((t) => t.stop())
+  if (recorder === rec) recorder = null
+  if (stream === takeStream) stream = null
+  const blob = new Blob(takeChunks, { type: mime || 'audio/webm' })
   if (blob.size === 0) {
     useToasts.getState().show('Recording was empty', 'danger')
     return
