@@ -84,6 +84,11 @@ import { IconButton } from '../ui/Button'
 const RULER_H = 28
 const HEADERS_W = 178
 const SNAP_PX = 8
+// The add-track button row lives at the bottom of the HEADERS column. The lanes
+// column carries a spacer of the SAME height so both columns scroll to the same
+// depth — otherwise, with many tracks, the buttons sit below the lanes' scroll
+// range and become unreachable.
+const ADD_TRACK_ROW_H = 46
 
 // ---------------------------------------------------------------------------
 // Ruler
@@ -1244,8 +1249,13 @@ export function Timeline({ height }: { height: number }) {
           {aTracks.map((t) => (
             <TrackHeader key={t.id} track={t} />
           ))}
-          {/* Blank space below the tracks: buttons to add a video or audio track. */}
-          <div className="flex shrink-0 items-center gap-1.5 border-t border-border/60 px-2 py-2">
+          {/* Blank space below the tracks: buttons to add a video or audio track.
+              Fixed height, mirrored by a spacer in the lanes so the shared scroll
+              can always bring these into view (see ADD_TRACK_ROW_H). */}
+          <div
+            className="flex shrink-0 items-center gap-1.5 border-t border-border/60 px-2"
+            style={{ height: ADD_TRACK_ROW_H }}
+          >
             <button
               type="button"
               data-testid="add-video-track"
@@ -1348,6 +1358,9 @@ export function Timeline({ height }: { height: number }) {
             {vTracks.map((t) => renderLane(t, 'bg-bg-input/30'))}
             <div className="h-[2px] bg-border-strong" />
             {aTracks.map((t) => renderLane(t, 'bg-bg-input/20'))}
+            {/* Mirrors the headers' add-track row so both columns scroll to the
+                same depth and those buttons stay reachable with many tracks. */}
+            <div className="shrink-0" style={{ height: ADD_TRACK_ROW_H }} />
 
             {snapIndicatorT !== null && (
               <div
