@@ -65,6 +65,27 @@ export function pauseAllPreviewVideos(): void {
   for (const { el } of videoPool.values()) if (!el.paused) el.pause()
 }
 
+/**
+ * Release the pooled <video>/<img> for a removed asset so its decoder + buffered
+ * media don't leak for the session (pair with frameCache.evictAsset). Safe to
+ * call for an unknown id; the element re-warms on next preview if the asset
+ * comes back (undo).
+ */
+export function disposePreviewAsset(assetId: Id): void {
+  const v = videoPool.get(assetId)
+  if (v) {
+    if (!v.el.paused) v.el.pause()
+    v.el.removeAttribute('src')
+    v.el.load() // drops the decoder + buffered data held by the element
+    videoPool.delete(assetId)
+  }
+  const img = imagePool.get(assetId)
+  if (img) {
+    img.el.removeAttribute('src')
+    imagePool.delete(assetId)
+  }
+}
+
 // Live on-canvas transform override (Monitor gizmo). While the user drags a
 // clip in the preview we override just that layer's x/y/scale so the frame
 // updates in real time; the store commits once on release.

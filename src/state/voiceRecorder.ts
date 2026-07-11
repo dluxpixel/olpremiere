@@ -147,48 +147,72 @@ export function recordingFileName(n: number, mime: string): string {
   return `Voice recording ${n}.${ext}`
 }
 
+/**
+ * Synchronous in-flight guard. `recording` only flips true AFTER the async
+ * getUserMedia below, so without this a second click DURING acquisition (a
+ * double-click, or a slow first-time permission prompt) would pass the guard
+ * again, start a second recorder, and orphan the first mic stream.
+ */
+let acquiring = false
+
 export async function startRecording(): Promise<void> {
-  if (useRecorder.getState().recording) return
   const show = useToasts.getState().show
+  if (useRecorder.getState().recording || acquiring) return
   if (!canRecordVoice()) {
     show('Voice recording is not supported in this browser', 'danger')
     return
   }
-  const { selectedInputId: chosen, enhance } = useRecorder.getState()
+  acquiring = true
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraintFor(chosen, enhance) })
-  } catch (err) {
-    const name = (err as { name?: string })?.name
-    // A pinned device that's since been unplugged makes the `exact` constraint
-    // throw. Clear the stale pick and retry on the default so a missing mic
-    // degrades to "records from default", never "silently records nothing".
-    if (chosen && (name === 'OverconstrainedError' || name === 'NotFoundError')) {
-      setInputDevice(null)
-      show('That microphone is unavailable — using the system default', 'info')
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraintFor(null, enhance) })
-      } catch {
+    const { selectedInputId: chosen, enhance } = useRecorder.getState()
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraintFor(chosen, enhance) })
+    } catch (err) {
+      const name = (err as { name?: string })?.name
+      // A pinned device that's since been unplugged makes the `exact` constraint
+      // throw. Clear the stale pick and retry on the default so a missing mic
+      // degrades to "records from default", never "silently records nothing".
+      if (chosen && (name === 'OverconstrainedError' || name === 'NotFoundError')) {
+        setInputDevice(null)
+        show('That microphone is unavailable — using the system default', 'info')
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraintFor(null, enhance) })
+        } catch {
+          show('Microphone access was blocked', 'danger')
+          return
+        }
+      } else {
         show('Microphone access was blocked', 'danger')
         return
       }
-    } else {
-      show('Microphone access was blocked', 'danger')
+    }
+    const mime = pickRecorderMime()
+    chunks = []
+    // A high, explicit bitrate — the browser default is low and a big reason raw
+    // recordings sound bad.
+    const options: MediaRecorderOptions = { audioBitsPerSecond: RECORDING_BITS_PER_SECOND }
+    if (mime) options.mimeType = mime
+    try {
+      recorder = new MediaRecorder(stream, options)
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunks.push(e.data)
+      }
+      recorder.onstop = () => void finalize(mime)
+      recorder.start()
+    } catch (err) {
+      // Constructor/start can throw on an unsupported option or UA quirk. The mic
+      // stream is already live — release it, or the OS record indicator stays lit.
+      stream?.getTracks().forEach((t) => t.stop())
+      stream = null
+      recorder = null
+      console.warn('OL Premiere: could not start MediaRecorder', err)
+      show('Could not start recording on this device', 'danger')
       return
     }
+    useRecorder.setState({ recording: true, startedAt: Date.now() })
+  } finally {
+    acquiring = false
   }
-  const mime = pickRecorderMime()
-  chunks = []
-  // A high, explicit bitrate — the browser default is low and a big reason raw
-  // recordings sound bad.
-  const options: MediaRecorderOptions = { audioBitsPerSecond: RECORDING_BITS_PER_SECOND }
-  if (mime) options.mimeType = mime
-  recorder = new MediaRecorder(stream, options)
-  recorder.ondataavailable = (e) => {
-    if (e.data.size > 0) chunks.push(e.data)
-  }
-  recorder.onstop = () => void finalize(mime)
-  recorder.start()
-  useRecorder.setState({ recording: true, startedAt: Date.now() })
 }
 
 export function stopRecording(): void {

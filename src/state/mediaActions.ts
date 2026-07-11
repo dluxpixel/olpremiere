@@ -2,6 +2,8 @@
 // dispatch so the whole batch is a single undo step) and insert an asset
 // onto the timeline at the playhead.
 
+import { evictAsset } from '../engine/frameCache'
+import { disposePreviewAsset } from '../engine/preview'
 import { probeFile } from '../engine/probe'
 import { addClipFromAsset, addClipWithLinkedAudio, recomputeDuration } from '../engine/timeline'
 import {
@@ -83,6 +85,13 @@ export function deleteAsset(assetId: Id): void {
     delete assets[assetId]
     return { ...p, assets, sequences }
   })
+  // Release the decode resources keyed by this asset: the frameCache demuxer +
+  // WebCodecs decoder and the pooled preview <video>/<img>. Without this they
+  // stay open for the whole session (a hardware-decoder + memory leak across
+  // repeated import→scrub→delete). Undo-safe: they lazily rebuild on next use.
+  // (The IndexedDB blob is deliberately KEPT so Undo can restore the bin item.)
+  evictAsset(assetId)
+  disposePreviewAsset(assetId)
   // Drop any selection that pointed at now-removed clips.
   if (ui.selection.length > 0) setUI({ selection: [] })
   // Bin delete also nukes every clip referencing the asset across ALL sequences,

@@ -3,6 +3,7 @@
 
 import {
   clipEndS,
+  clipGroupIds,
   deleteGroup,
   duplicateClips,
   moveGroup,
@@ -30,9 +31,21 @@ export function copySelection(): boolean {
 export function cutSelection(): void {
   const s = useStore.getState()
   const seq = activeSequence(s.project)
-  // Cut only what may be deleted: locked-track clips stay out of BOTH halves,
-  // so the clipboard holds exactly what left the timeline.
-  const ids = unlockedClipIds(seq, s.ui.selection)
+  // Expand each selected clip to its full link group and cut a group ONLY if
+  // EVERY member is unlocked. deleteGroup removes the whole linked pair, so (a)
+  // both halves must land on the clipboard or a cut+paste would lose the partner,
+  // and (b) a group with any locked member is protected entirely — you can't cut
+  // half a linked pair, and a lock must not be bypassed via the partner.
+  const isLocked = (id: string): boolean =>
+    seq.tracks.find((t) => t.clips.some((c) => c.id === id))?.locked ?? false
+  const ids: string[] = []
+  const seen = new Set<string>()
+  for (const sel of s.ui.selection) {
+    const group = clipGroupIds(seq, sel)
+    if (group.some((id) => seen.has(id))) continue
+    group.forEach((id) => seen.add(id))
+    if (group.every((id) => !isLocked(id))) ids.push(...group)
+  }
   if (ids.length === 0) return
   const payload = serializeClips(seq, ids)
   if (payload.length === 0) return
@@ -49,7 +62,8 @@ export function pasteAtPlayhead(): void {
   const s = useStore.getState()
   // Assets can be gone if the payload outlived them (future bin deletes).
   // pasteClips itself skips locked destination tracks, so no lock guard here.
-  const payload = clipboard.filter((p) => s.project.assets[p.assetId])
+  // Title clips carry no asset (assetId===''), so keep them regardless.
+  const payload = clipboard.filter((p) => p.clip.title !== undefined || s.project.assets[p.assetId])
   if (payload.length === 0) return
   let pastedIds: string[] = []
   updateActiveSequence('Paste clip(s)', (sq) => {
@@ -119,10 +133,15 @@ export function nudgeSelection(deltaFrames: number): void {
 
   updateActiveSequence(deltaFrames > 0 ? 'Nudge right' : 'Nudge left', (sq) => {
     let next = sq
+    // De-dupe link-group members: moveGroup already carries the linked partner,
+    // so nudging both selected members would shift the pair twice.
+    const done = new Set<string>()
     for (const { id } of withStart) {
+      if (done.has(id)) continue
       const clip = next.tracks.flatMap((t) => t.clips).find((c) => c.id === id)
       const track = next.tracks.find((t) => t.clips.some((c) => c.id === id))
       if (!clip || !track) continue
+      for (const gid of clipGroupIds(next, id)) done.add(gid)
       next = moveGroup(next, id, track.id, Math.max(0, clip.startS + deltaS))
     }
     return next
