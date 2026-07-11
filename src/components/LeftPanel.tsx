@@ -1,4 +1,4 @@
-import { Bookmark, Film, FolderOpen, Image as ImageIcon, Music, Plus, Sparkles, Upload } from 'lucide-react'
+import { Bookmark, Film, FolderOpen, Image as ImageIcon, Music, Plus, Sparkles, Type, Upload } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { EFFECTS } from '../engine/effects/registry'
 import { TRANSITION_KINDS, type TransitionKind } from '../engine/render/types'
@@ -20,6 +20,7 @@ import {
 } from '../state/library'
 import { deleteAsset, importFiles, insertAssetAtPlayhead } from '../state/mediaActions'
 import { useStore, type LeftTab } from '../state/store'
+import { addTitleClip } from '../state/titleActions'
 import { Button } from '../ui/Button'
 
 function Tab({ tab, label }: { tab: LeftTab; label: string }) {
@@ -147,6 +148,10 @@ function MediaTab() {
         <Button variant="secondary" onClick={() => fileInput.current?.click()}>
           <Plus size={16} strokeWidth={1.5} />
           Import
+        </Button>
+        <Button variant="secondary" data-testid="add-text" onClick={() => addTitleClip()}>
+          <Type size={16} strokeWidth={1.5} />
+          Text
         </Button>
         <input
           ref={fileInput}

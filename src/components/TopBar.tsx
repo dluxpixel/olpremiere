@@ -3,15 +3,18 @@ import {
   Circle,
   Clapperboard,
   Download,
+  FolderOpen,
+  HardDriveDownload,
   Keyboard,
   Mic,
   Redo2,
   Square,
   Undo2,
 } from 'lucide-react'
-import { type MouseEvent as ReactMouseEvent, useEffect, useState } from 'react'
+import { type MouseEvent as ReactMouseEvent, useEffect, useRef, useState } from 'react'
 import { comboLabel } from '../keymap'
 import { openContextMenu } from '../state/contextMenu'
+import { exportProjectToFile, importProjectFromFile } from '../state/projectFile'
 import { useStore } from '../state/store'
 import {
   canRecordVoice,
@@ -64,9 +67,9 @@ function RecordButton() {
         separator: i === 0,
       })),
       {
-        // Off by default = clean capture; on = browser noise/echo/gain processing
-        // for a noisy room. See audioConstraintFor.
-        label: check(enhance, 'Reduce noise & echo'),
+        // Off by default = pristine capture; on = noise suppression to quiet a
+        // passing car / fans / hum. See audioConstraintFor.
+        label: check(enhance, 'Reduce background noise'),
         onClick: () => setEnhance(!enhance),
         separator: true,
       },
@@ -165,6 +168,7 @@ export function TopBar() {
   const redo = useStore((s) => s.redo)
   const setUI = useStore((s) => s.setUI)
   const [exporting, setExporting] = useState(false)
+  const openFileRef = useRef<HTMLInputElement>(null)
 
   return (
     <header
@@ -178,6 +182,35 @@ export function TopBar() {
       <div className="h-4 w-px bg-border" />
       <ProjectName />
       <SaveIndicator />
+
+      {/* Manual save/restore to a self-contained file — a backup for when the
+          in-browser autosave can't be trusted. */}
+      <input
+        ref={openFileRef}
+        type="file"
+        accept=".json,.olstudio.json,application/json"
+        className="hidden"
+        data-testid="open-project-input"
+        onChange={(e) => {
+          const file = e.target.files?.[0]
+          if (file) void importProjectFromFile(file)
+          e.target.value = '' // allow re-opening the same file
+        }}
+      />
+      <IconButton
+        label="Save project to a file (backup)"
+        onClick={() => void exportProjectToFile()}
+        data-testid="save-project-file"
+      >
+        <HardDriveDownload size={16} strokeWidth={1.5} />
+      </IconButton>
+      <IconButton
+        label="Open a project file"
+        onClick={() => openFileRef.current?.click()}
+        data-testid="open-project-file"
+      >
+        <FolderOpen size={16} strokeWidth={1.5} />
+      </IconButton>
 
       <div className="ml-auto flex items-center gap-1">
         <IconButton
