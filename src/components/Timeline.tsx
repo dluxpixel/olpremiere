@@ -70,6 +70,7 @@ import { setTrackAutoLevel, setTrackPan, setTrackVolumeDb } from '../state/track
 import { openContextMenu } from '../state/contextMenu'
 import { useBlobUrl } from '../state/blobUrls'
 import { ClipWaveform } from './ClipWaveform'
+import { pointOnScrollbar } from './scrollbarGuard'
 import {
   MAX_PX_PER_S,
   MIN_PX_PER_S,
@@ -968,6 +969,11 @@ export function Timeline({ height }: { height: number }) {
   // check, so only a click on the empty background scrubs.
   const handleLanesBackgroundPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return
+    // Ignore clicks on the native scrollbars: they sit inside the element's box
+    // but past its client area, so without this, dragging the horizontal scrollbar
+    // scrubs the playhead to it.
+    const el = e.currentTarget
+    if (pointOnScrollbar(el.getBoundingClientRect(), el.clientWidth, el.clientHeight, e.clientX, e.clientY)) return
     if (e.target !== e.currentTarget && e.target !== contentRef.current) return
     beginEmptyScrub(e)
   }
