@@ -1260,8 +1260,17 @@ export function Timeline({ height }: { height: number }) {
       <div className="flex min-h-0 flex-1">
         <div
           ref={headersRef}
+          data-testid="track-headers"
           className="flex shrink-0 flex-col overflow-hidden border-r border-border"
           style={{ width: HEADERS_W }}
+          // The headers column is overflow-hidden (no scrollbar of its own) and is
+          // kept in sync by the lanes' onScroll. But a wheel over the headers must
+          // still scroll: forward it to the lanes, which mirrors back here. Without
+          // this, scrolling only works with the cursor over the lanes — "can't
+          // scroll on the left" once there are more tracks than fit.
+          onWheel={(e) => {
+            if (lanesRef.current) lanesRef.current.scrollTop += e.deltaY
+          }}
         >
           <div className="shrink-0 border-b border-border" style={{ height: RULER_H }} />
           {vTracks.map((t) => (

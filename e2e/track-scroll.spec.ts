@@ -51,3 +51,38 @@ test('with many tracks, you can scroll to the add-track buttons and use them', a
   expect(vCount).toBe(8) // 2 default + 5 added + 1 from the click
   void before
 })
+
+test('the wheel scrolls even with the cursor over the LEFT track headers', async ({ page }) => {
+  await page.goto('/')
+
+  // Enough tracks to overflow, added through the store (not the buttons).
+  await page.evaluate(async () => {
+    const storeMod = '/src/state/store.ts'
+    const tlMod = '/src/engine/timeline.ts'
+    const { updateActiveSequence } = (await import(/* @vite-ignore */ storeMod)) as {
+      updateActiveSequence: (label: string, fn: (s: unknown) => unknown) => void
+    }
+    const { addTrack } = (await import(/* @vite-ignore */ tlMod)) as {
+      addTrack: (seq: unknown, kind: 'video' | 'audio') => unknown
+    }
+    for (let i = 0; i < 5; i++) updateActiveSequence('add v', (s) => addTrack(s, 'video'))
+    for (let i = 0; i < 5; i++) updateActiveSequence('add a', (s) => addTrack(s, 'audio'))
+  })
+
+  const lanes = page.getByTestId('timeline-lanes')
+  const headers = page.getByTestId('track-headers')
+  expect(await lanes.evaluate((el) => el.scrollHeight > el.clientHeight + 4)).toBe(true)
+
+  // Start at the top, then wheel while hovering the headers column (the left
+  // side, where David's cursor was) — this used to do nothing.
+  await lanes.evaluate((el) => (el.scrollTop = 0))
+  await headers.hover()
+  await page.mouse.wheel(0, 600)
+  await page.waitForTimeout(100)
+
+  // The lanes scrolled AND the headers mirror the exact same offset.
+  const laneTop = await lanes.evaluate((el) => el.scrollTop)
+  const headTop = await headers.evaluate((el) => el.scrollTop)
+  expect(laneTop).toBeGreaterThan(0)
+  expect(headTop).toBe(laneTop)
+})
