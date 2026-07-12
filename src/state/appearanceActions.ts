@@ -4,17 +4,13 @@
 // export). Appearance OWNS those channels: applying rebuilds them from the spec,
 // clearing removes them.
 
-import {
-  APPEARANCE_CHANNELS,
-  buildAppearanceKeyframes,
-  isEmptyAppearance,
-} from '../engine/anim/appearance'
-import { channelBase, withChannelKeyframes } from '../engine/effects/channels'
-import { clipDurationS } from '../engine/timeline'
+import { applyAppearanceToClip, isEmptyAppearance } from '../engine/anim/appearance'
 import { activeSequence, type AppearanceSpec, type Clip } from '../engine/types'
 import { db } from './persistence'
 import { updateActiveSequence, useStore } from './store'
 import { useToasts } from './toasts'
+
+export { applyAppearanceToClip }
 
 function findClip(clipId: string): Clip | undefined {
   return activeSequence(useStore.getState().project)
@@ -32,39 +28,6 @@ function mapClip(clipId: string, label: string, fn: (clip: Clip) => Clip): void 
         : t,
     ),
   }))
-}
-
-/**
- * Pure: rebuild a clip's appearance-owned channels from `spec`, settling to the
- * clip's current static base so a manually positioned/scaled clip still returns
- * to where the user put it. An empty spec clears the animation and drops the
- * field. Reused by the menu actions AND new-title creation (the saved default).
- */
-export function applyAppearanceToClip(clip: Clip, spec: AppearanceSpec, seqW: number, seqH: number): Clip {
-  // Base is the STATIC value (unaffected by keyframes), read before clearing.
-  const base = {
-    opacity: channelBase(clip, 'opacity'),
-    scale: channelBase(clip, 'scale'),
-    posX: channelBase(clip, 'posX'),
-    posY: channelBase(clip, 'posY'),
-    rotation: channelBase(clip, 'rotation'),
-  }
-  // Appearance owns these channels: clear them, then write the compiled set.
-  let next = clip
-  for (const ch of APPEARANCE_CHANNELS) next = withChannelKeyframes(next, ch, [])
-
-  if (isEmptyAppearance(spec)) {
-    const cleared: Clip = { ...next }
-    delete cleared.appearance
-    return cleared
-  }
-
-  const kfMap = buildAppearanceKeyframes(spec, clipDurationS(clip), seqW, seqH, base)
-  for (const ch of APPEARANCE_CHANNELS) {
-    const kfs = kfMap[ch]
-    if (kfs && kfs.length > 0) next = withChannelKeyframes(next, ch, kfs)
-  }
-  return { ...next, appearance: spec }
 }
 
 /** Merge a patch into a clip's appearance and recompile its keyframes. */

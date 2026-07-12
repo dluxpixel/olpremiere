@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest'
+import { newTitleClip, defaultTitleDef, type Clip } from '../types'
 import { evalChannel } from '../keyframes'
+import { resolveChannel } from '../effects/channels'
 import {
   APPEARANCE_CHANNELS,
+  applyAppearanceToClip,
   buildAppearanceKeyframes,
   ENTRANCE_PRESETS,
   EXIT_PRESETS,
@@ -29,6 +32,7 @@ describe('appearance presets', () => {
       'zoomIn',
       'riseUp',
       'spinIn',
+      'bounce',
     ])
     expect(EXIT_PRESETS.map((p) => p.id)).toEqual([
       'fadeOut',
@@ -114,8 +118,17 @@ describe('appearance presets', () => {
     }
   })
 
+  it('bounce overshoots bigger than base then settles', () => {
+    const kfs = buildAppearanceKeyframes({ in: 'bounce', durS: 0.5 }, 5, W, H)
+    // Peaks above base scale mid-window, settles back to base.
+    const peak = Math.max(...[0.2, 0.275, 0.35].map((t) => evalChannel(kfs.scale, t, 1)))
+    expect(peak).toBeGreaterThan(1.1)
+    expect(evalChannel(kfs.scale, 4, 1)).toBeCloseTo(1, 5)
+  })
+
   it('id guards and emptiness', () => {
     expect(isEntranceId('pop')).toBe(true)
+    expect(isEntranceId('bounce')).toBe(true)
     expect(isEntranceId('fadeOut')).toBe(false)
     expect(isExitId('fadeOut')).toBe(true)
     expect(isExitId('nope')).toBe(false)
@@ -124,5 +137,34 @@ describe('appearance presets', () => {
     expect(isEmptyAppearance({ in: 'bogus' })).toBe(true)
     expect(isEmptyAppearance({ in: 'pop' })).toBe(false)
     expect(buildAppearanceKeyframes({}, 5, W, H)).toEqual({})
+  })
+})
+
+describe('applyAppearanceToClip', () => {
+  const titleClip = (): Clip => newTitleClip(defaultTitleDef('Hi'), 0, 5)
+
+  it('writes appearance-owned keyframes and stamps the spec', () => {
+    const out = applyAppearanceToClip(titleClip(), { in: 'pop' }, W, H)
+    expect(out.appearance).toEqual({ in: 'pop' })
+    expect(out.keyframes?.scale?.length).toBeGreaterThan(0)
+    expect(out.keyframes?.opacity?.length).toBeGreaterThan(0)
+    // Invisible at the first frame, base by the settle point.
+    expect(resolveChannel(out, 'opacity', 0)).toBeCloseTo(0, 5)
+    expect(resolveChannel(out, 'scale', 4)).toBeCloseTo(1, 5)
+  })
+
+  it('an empty spec clears the keyframes and drops the field', () => {
+    const withAnim = applyAppearanceToClip(titleClip(), { in: 'pop', out: 'fadeOut' }, W, H)
+    const cleared = applyAppearanceToClip(withAnim, {}, W, H)
+    expect(cleared.appearance).toBeUndefined()
+    expect(cleared.keyframes?.scale).toBeUndefined()
+    expect(cleared.keyframes?.opacity).toBeUndefined()
+  })
+
+  it('is base-relative: re-applying after a scale change re-derives from the new base', () => {
+    const base = { ...titleClip(), transform: { ...titleClip().transform, scale: 2 } }
+    const out = applyAppearanceToClip(base, { in: 'pop' }, W, H)
+    // pop settles to the clip's (new) base scale of 2, not neutral 1.
+    expect(resolveChannel(out, 'scale', 4)).toBeCloseTo(2, 5)
   })
 })

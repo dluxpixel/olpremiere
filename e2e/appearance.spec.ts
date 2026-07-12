@@ -52,9 +52,11 @@ async function setPlayhead(page: Page, s: number): Promise<void> {
 }
 
 interface ClipData {
-  appearance: { in?: string; out?: string } | null
+  appearance: { in?: string; out?: string; durS?: number } | null
   opacityKf: { t: number; value: number }[] | null
   scaleKf: { t: number; value: number }[] | null
+  fontFamily: string | null
+  fontSizePx: number | null
 }
 
 async function clipData(page: Page, clipId: string): Promise<ClipData> {
@@ -69,7 +71,8 @@ async function clipData(page: Page, clipId: string): Promise<ClipData> {
         tracks: {
           clips: {
             id: string
-            appearance?: { in?: string; out?: string }
+            appearance?: { in?: string; out?: string; durS?: number }
+            title?: { fontFamily: string; fontSizePx: number }
             keyframes?: { opacity?: { t: number; value: number }[]; scale?: { t: number; value: number }[] }
           }[]
         }[]
@@ -81,6 +84,8 @@ async function clipData(page: Page, clipId: string): Promise<ClipData> {
       appearance: c?.appearance ?? null,
       opacityKf: c?.keyframes?.opacity ?? null,
       scaleKf: c?.keyframes?.scale ?? null,
+      fontFamily: c?.title?.fontFamily ?? null,
+      fontSizePx: c?.title?.fontSizePx ?? null,
     }
   }, clipId)
 }
@@ -194,4 +199,75 @@ test('the Minecraft font renders in both preview and export (worker font path)',
     return max
   }, b64)
   expect(bright).toBeGreaterThan(150)
+})
+
+test('right-click Font and Size restyle the title', async ({ page }) => {
+  await page.goto('/')
+  const id = await addTitle(page)
+  const menu = page.getByTestId('context-menu')
+
+  await page.getByTestId('clip').click({ button: 'right' })
+  await menu.getByRole('menuitem', { name: 'Font' }).hover()
+  await menu.getByRole('menuitem', { name: 'Minecraft' }).click()
+  expect((await clipData(page, id)).fontFamily).toContain('Monocraft')
+
+  await page.getByTestId('clip').click({ button: 'right' })
+  await menu.getByRole('menuitem', { name: 'Size' }).hover()
+  await menu.getByRole('menuitem', { name: /Large/ }).click()
+  expect((await clipData(page, id)).fontSizePx).toBe(160)
+})
+
+test('animation speed shrinks the entrance window', async ({ page }) => {
+  await page.goto('/')
+  const id = await addTitle(page)
+  const menu = page.getByTestId('context-menu')
+
+  await page.getByTestId('clip').click({ button: 'right' })
+  await menu.getByRole('menuitem', { name: 'Entrance' }).hover()
+  await menu.getByRole('menuitem', { name: /Fade in/ }).click()
+  const normalEnd = (await clipData(page, id)).opacityKf!.at(-1)!.t
+  expect(normalEnd).toBeCloseTo(0.5, 2)
+
+  await page.getByTestId('clip').click({ button: 'right' })
+  await menu.getByRole('menuitem', { name: 'Animation speed' }).hover()
+  await menu.getByRole('menuitem', { name: 'Fast' }).click()
+  const d = await clipData(page, id)
+  expect(d.appearance?.durS).toBeCloseTo(0.25, 5)
+  expect(d.opacityKf!.at(-1)!.t).toBeCloseTo(0.25, 2) // window halved
+})
+
+test('right-click IN the preview opens the clip menu, and the gizmo survives an animation', async ({ page }) => {
+  await page.goto('/')
+  const id = await addTitle(page)
+  await updateTitle(page, id, { text: 'HELLO', fontSizePx: 200 })
+  await setPlayhead(page, 2) // settled part of the title
+
+  // Right-click the title in the program monitor → its menu (Font/Entrance/…).
+  // The selected title shows the gizmo over the canvas; right-clicking it opens
+  // the same in-preview menu.
+  await expect(page.getByTestId('gizmo-body')).toBeVisible()
+  await page.getByTestId('gizmo-body').click({ button: 'right' })
+  const menu = page.getByTestId('context-menu')
+  await expect(menu).toBeVisible()
+  await menu.getByRole('menuitem', { name: 'Entrance' }).hover()
+  await menu.getByRole('menuitem', { name: /Bounce/ }).click()
+  expect((await clipData(page, id)).appearance?.in).toBe('bounce')
+
+  // The drag gizmo is STILL available on an animated clip (it recompiles on drag).
+  await expect(page.getByTestId('gizmo-body')).toBeVisible()
+})
+
+test('the Minecraft font renders Czech diacritics', async ({ page }) => {
+  await page.goto('/')
+  const id = await addTitle(page)
+  await updateTitle(page, id, {
+    text: 'PŘÍLIŠ ŽLUŤOUČKÝ KŮŇ',
+    color: '#ffffff',
+    fontSizePx: 90,
+    fontFamily: "'Monocraft', 'Courier New', monospace",
+  })
+  await setPlayhead(page, 1)
+  // Bright strokes across the text row prove the accented glyphs rasterized.
+  await expect.poll(() => rowMaxLuma(page, 0.5), { timeout: 8_000 }).toBeGreaterThan(150)
+  await page.screenshot({ path: `${VERIFY}/czech.png` })
 })

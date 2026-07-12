@@ -1,0 +1,82 @@
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { describe, expect, it } from 'vitest'
+
+// Guard the BUNDLED Minecraft font's glyph coverage. The app is used in Czech,
+// so the font must carry every Czech diacritic natively — otherwise Czech titles
+// silently fall back to a non-Minecraft face (and can diverge preview vs export).
+// Parses the TrueType cmap (format 4 / 12) directly, no font library needed.
+
+const fontPath = fileURLToPath(new URL('../../assets/fonts/Monocraft.ttf', import.meta.url))
+
+function cmapHasFactory(buf: Buffer): (cp: number) => boolean {
+  const u16 = (o: number) => buf.readUInt16BE(o)
+  const u32 = (o: number) => buf.readUInt32BE(o)
+  const i16 = (o: number) => buf.readInt16BE(o)
+  const numTables = u16(4)
+  let cmapOff = 0
+  for (let i = 0; i < numTables; i++) {
+    const r = 12 + i * 16
+    if (buf.toString('ascii', r, r + 4) === 'cmap') cmapOff = u32(r + 8)
+  }
+  if (!cmapOff) throw new Error('no cmap table')
+  const nSub = u16(cmapOff + 2)
+  let best = 0
+  let bestScore = -1
+  for (let i = 0; i < nSub; i++) {
+    const r = cmapOff + 4 + i * 8
+    const pid = u16(r)
+    const eid = u16(r + 2)
+    const off = u32(r + 4)
+    const score = pid === 3 && eid === 10 ? 4 : pid === 3 && eid === 1 ? 3 : pid === 0 ? 2 : pid === 3 && eid === 0 ? 1 : -1
+    if (score > bestScore) {
+      bestScore = score
+      best = cmapOff + off
+    }
+  }
+  const fmt = u16(best)
+  return (cp: number): boolean => {
+    if (fmt === 4) {
+      const segX2 = u16(best + 6)
+      const seg = segX2 / 2
+      const endO = best + 14
+      const startO = endO + segX2 + 2
+      const deltaO = startO + segX2
+      const rangeO = deltaO + segX2
+      for (let s = 0; s < seg; s++) {
+        const end = u16(endO + s * 2)
+        if (cp > end) continue
+        const start = u16(startO + s * 2)
+        if (cp < start) return false
+        const idr = u16(rangeO + s * 2)
+        const delta = i16(deltaO + s * 2)
+        if (idr === 0) return ((cp + delta) & 0xffff) !== 0
+        return u16(rangeO + s * 2 + idr + (cp - start) * 2) !== 0
+      }
+      return false
+    }
+    if (fmt === 12) {
+      const nGroups = u32(best + 12)
+      for (let g = 0; g < nGroups; g++) {
+        const r = best + 16 + g * 12
+        if (cp >= u32(r) && cp <= u32(r + 4)) return true
+      }
+      return false
+    }
+    throw new Error(`unsupported cmap format ${fmt}`)
+  }
+}
+
+describe('bundled Minecraft font (Monocraft)', () => {
+  const has = cmapHasFactory(readFileSync(fontPath))
+  const CZECH = 'áčďéěíňóřšťúůýžÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ'
+
+  it('covers every Czech diacritic', () => {
+    const missing = [...CZECH].filter((c) => !has(c.codePointAt(0)!))
+    expect(missing).toEqual([])
+  })
+
+  it('covers ASCII and common punctuation', () => {
+    for (const c of 'ABCabc0123.,!?:-') expect(has(c.codePointAt(0)!)).toBe(true)
+  })
+})

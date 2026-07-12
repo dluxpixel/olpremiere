@@ -1,11 +1,19 @@
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import {
+  useEffect,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+} from 'react'
 import { clipEndS } from '../engine/timeline'
 import { computeQuad, pointInQuad } from '../engine/render/mat'
 import { resolveFrame } from '../engine/render/resolve'
 import type { RenderLayer, ResolvedTransform } from '../engine/render/types'
 import { activeSequence } from '../engine/types'
 import { setLivePreviewTransform } from '../engine/preview'
+import { previewClipMenu } from '../state/clipMenus'
 import { setClipTransform } from '../state/clipEdits'
+import { openContextMenu } from '../state/contextMenu'
 import { useStore } from '../state/store'
 
 interface Tf {
@@ -88,6 +96,7 @@ export function MonitorTransformOverlay({ canvas }: { canvas: HTMLCanvasElement 
   }
 
   const selectAt = (e: ReactPointerEvent) => {
+    if (e.button !== 0) return // right-click is handled by the context menu below
     const p = localPt(e.clientX, e.clientY)
     const sx = p.x / k
     const sy = p.y / k
@@ -100,17 +109,36 @@ export function MonitorTransformOverlay({ canvas }: { canvas: HTMLCanvasElement 
     setUI({ selection: [] })
   }
 
+  // Right-click a clip IN the preview → its font/size/appearance menu, so you can
+  // restyle and animate a title right where you see it.
+  const contextAt = (e: ReactMouseEvent) => {
+    const p = localPt(e.clientX, e.clientY)
+    const sx = p.x / k
+    const sy = p.y / k
+    for (let i = visibleLayers.length - 1; i >= 0; i--) {
+      const layer = visibleLayers[i]
+      if (pointInQuad(sx, sy, quadFor(layer))) {
+        setUI({ selection: [layer.clipId] })
+        const clip = seq.tracks.flatMap((t) => t.clips).find((c) => c.id === layer.clipId)
+        if (clip) openContextMenu(e, previewClipMenu(clip))
+        return
+      }
+    }
+  }
+
   // --- The selected clip's gizmo (box + handles) ---------------------------
   const clip =
     selection.length === 1 ? seq.tracks.flatMap((t) => t.clips).find((c) => c.id === selection[0]) : undefined
   const track = clip ? seq.tracks.find((t) => t.clips.some((c) => c.id === clip.id)) : undefined
-  const animated = !!(
-    clip?.keyframes?.posX?.length ||
-    clip?.keyframes?.posY?.length ||
-    clip?.keyframes?.scale?.length
-  )
+  // Appearance animations OWN scale/pos keyframes but are base-relative and
+  // recompiled on a transform edit, so the gizmo stays usable for them. Only
+  // MANUAL keyframes (no appearance spec) hide it, since dragging would fight them.
+  const appearanceOwned = !!clip?.appearance
+  const manualAnimated =
+    !appearanceOwned &&
+    !!(clip?.keyframes?.posX?.length || clip?.keyframes?.posY?.length || clip?.keyframes?.scale?.length)
   const onScreen = !!clip && playheadS >= clip.startS && playheadS < clipEndS(clip)
-  const gizmoOn = !!clip && track?.kind === 'video' && !animated && onScreen
+  const gizmoOn = !!clip && track?.kind === 'video' && !manualAnimated && onScreen
 
   let gizmo: React.ReactNode = null
   if (gizmoOn && clip) {
@@ -188,12 +216,14 @@ export function MonitorTransformOverlay({ canvas }: { canvas: HTMLCanvasElement 
       window.addEventListener('pointerup', onUpWin)
     }
     const beginMove = (e: ReactPointerEvent) => {
+      if (e.button !== 0) return // let right-click open the context menu instead
       e.preventDefault()
       e.stopPropagation()
       const p = localPt(e.clientX, e.clientY)
       startDrag({ mode: 'move', startX: p.x, startY: p.y, startTf: tf })
     }
     const beginScale = (e: ReactPointerEvent) => {
+      if (e.button !== 0) return
       e.preventDefault()
       e.stopPropagation()
       const p = localPt(e.clientX, e.clientY)
@@ -216,6 +246,7 @@ export function MonitorTransformOverlay({ canvas }: { canvas: HTMLCanvasElement 
             background: 'rgba(111,107,255,0.05)',
           }}
           onPointerDown={beginMove}
+          onContextMenu={contextAt}
         />
         {handlePts.map(([x, y], i) => (
           <div
@@ -242,6 +273,7 @@ export function MonitorTransformOverlay({ canvas }: { canvas: HTMLCanvasElement 
         data-testid="preview-select"
         className="pointer-events-auto absolute inset-0"
         onPointerDown={selectAt}
+        onContextMenu={contextAt}
       />
       {gizmo}
     </div>

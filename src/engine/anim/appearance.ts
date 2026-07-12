@@ -10,7 +10,9 @@
 // channel touched by only one side clamps to base outside its window (evalChannel
 // holds before the first / after the last keyframe).
 
-import type { AnimChannel, AppearanceSpec, Keyframe } from '../types'
+import { channelBase, withChannelKeyframes } from '../effects/channels'
+import { clipDurationS } from '../timeline'
+import type { AnimChannel, AppearanceSpec, Clip, Keyframe } from '../types'
 
 export type { AppearanceSpec }
 
@@ -106,6 +108,21 @@ export const ENTRANCE_PRESETS: AppearancePreset[] = [
       rotation: [kf(0, base.rotation - 180, 'easeOut'), kf(d, base.rotation)],
       scale: [kf(0, 0.2 * base.scale, 'easeOut'), kf(d, base.scale)],
       opacity: [kf(0, 0, 'easeOut'), kf(d * 0.5, base.opacity)],
+    }),
+  },
+  {
+    id: 'bounce',
+    label: 'Bounce (pop bigger)',
+    build: ({ d, base }) => ({
+      // Pops in, overshoots BIGGER than normal, dips slightly, settles — a bouncy
+      // emphasis on the entrance.
+      scale: [
+        kf(0, 0.5 * base.scale, 'easeOut'),
+        kf(d * 0.55, 1.25 * base.scale, 'easeOut'),
+        kf(d * 0.8, 0.95 * base.scale, 'easeIn'),
+        kf(d, base.scale, 'easeOut'),
+      ],
+      opacity: [kf(0, 0, 'easeOut'), kf(d * 0.3, base.opacity)],
     }),
   },
 ]
@@ -209,4 +226,38 @@ export function buildAppearanceKeyframes(
     if (merged.length > 0) result[ch] = normalize(merged)
   }
   return result
+}
+
+/**
+ * Pure clip operation: rebuild a clip's appearance-owned channels from `spec`,
+ * settling to the clip's CURRENT static base — so a manually moved/scaled clip
+ * still returns to where the user put it, and re-applying after a transform edit
+ * re-derives the animation from the new base. An empty spec clears the animation
+ * and drops the field. Reused by the menu actions, new-title creation, and the
+ * gizmo drag-commit. Never mutates.
+ */
+export function applyAppearanceToClip(clip: Clip, spec: AppearanceSpec, seqW: number, seqH: number): Clip {
+  const base: AppearanceBase = {
+    opacity: channelBase(clip, 'opacity'),
+    scale: channelBase(clip, 'scale'),
+    posX: channelBase(clip, 'posX'),
+    posY: channelBase(clip, 'posY'),
+    rotation: channelBase(clip, 'rotation'),
+  }
+  // Appearance OWNS these channels: clear them, then write the compiled set.
+  let next = clip
+  for (const ch of APPEARANCE_CHANNELS) next = withChannelKeyframes(next, ch, [])
+
+  if (isEmptyAppearance(spec)) {
+    const cleared: Clip = { ...next }
+    delete cleared.appearance
+    return cleared
+  }
+
+  const kfMap = buildAppearanceKeyframes(spec, clipDurationS(clip), seqW, seqH, base)
+  for (const ch of APPEARANCE_CHANNELS) {
+    const kfs = kfMap[ch]
+    if (kfs && kfs.length > 0) next = withChannelKeyframes(next, ch, kfs)
+  }
+  return { ...next, appearance: spec }
 }

@@ -13,20 +13,12 @@ import {
   Italic,
 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { CUSTOM_TITLE_FONTS } from '../engine/render/titleFonts'
+import { TITLE_FONT_OPTIONS } from '../engine/render/titleFonts'
 import { defaultTitleDef, type Clip, type TitleDef } from '../engine/types'
 import { updateTitle } from '../state/titleActions'
 import { IconButton } from '../ui/Button'
 
-const FONT_FAMILIES: { label: string; value: string }[] = [
-  { label: 'Inter', value: "'Inter', system-ui, sans-serif" },
-  { label: 'Georgia', value: 'Georgia, serif' },
-  { label: 'Courier', value: "'Courier New', monospace" },
-  { label: 'Arial', value: 'Arial, sans-serif' },
-  // Bundled custom fonts (Minecraft / Monocraft) — registered for the canvas
-  // rasterizer in both the preview and the export worker.
-  ...CUSTOM_TITLE_FONTS.map((f) => ({ label: f.label, value: f.stack })),
-]
+const FONT_FAMILIES = TITLE_FONT_OPTIONS
 
 const inputCls =
   'h-6 w-full rounded-[4px] bg-bg-input px-2 text-[12px] text-text-primary focus:outline-none focus:ring-1 focus:ring-accent'

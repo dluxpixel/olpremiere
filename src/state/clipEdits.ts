@@ -2,6 +2,7 @@
 // transitions. Channel names + math come from engine/keyframes; every edit is
 // one undo step. localT is always relative to the clip start.
 
+import { applyAppearanceToClip } from '../engine/anim/appearance'
 import {
   channelBase,
   channelDefault,
@@ -255,15 +256,22 @@ export function setClipSpeed(clipId: string, speed: number): void {
 
 /** Set position + scale together in ONE undo step (the Monitor drag-gizmo commit). */
 export function setClipTransform(clipId: string, patch: { x?: number; y?: number; scale?: number }): void {
-  mapClip(clipId, 'Transform clip', (c) => ({
-    ...c,
-    transform: {
-      ...c.transform,
-      x: patch.x ?? c.transform.x,
-      y: patch.y ?? c.transform.y,
-      scale: patch.scale ?? c.transform.scale,
-    },
-  }))
+  const seq = activeSequence(useStore.getState().project)
+  mapClip(clipId, 'Transform clip', (c) => {
+    const moved: Clip = {
+      ...c,
+      transform: {
+        ...c.transform,
+        x: patch.x ?? c.transform.x,
+        y: patch.y ?? c.transform.y,
+        scale: patch.scale ?? c.transform.scale,
+      },
+    }
+    // A clip with an entrance/exit animation re-derives its keyframes from the
+    // NEW base, so dragging it in the preview moves/scales the SETTLED clip and
+    // the animation follows — instead of the baked keyframes fighting the drag.
+    return moved.appearance ? applyAppearanceToClip(moved, moved.appearance, seq.width, seq.height) : moved
+  })
 }
 
 /** Set a clip's static gain in dB. */

@@ -67,9 +67,8 @@ import { addTitleClip } from '../state/titleActions'
 import { copySelection, cutSelection, duplicateSelection } from '../state/clipboard'
 import { crossfadeWithNeighbour, setClipFade } from '../state/clipEdits'
 import { setTrackAutoLevel, setTrackPan, setTrackVolumeDb } from '../state/trackEdits'
-import { ENTRANCE_PRESETS, EXIT_PRESETS } from '../engine/anim/appearance'
-import { clearClipAppearance, saveClipAppearanceAsDefault, setClipAppearance } from '../state/appearanceActions'
-import { openContextMenu, type MenuItem } from '../state/contextMenu'
+import { appearanceMenuItems, titleFontSizeItems } from '../state/clipMenus'
+import { openContextMenu } from '../state/contextMenu'
 import { useBlobUrl } from '../state/blobUrls'
 import { ClipWaveform } from './ClipWaveform'
 import { pointOnScrollbar } from './scrollbarGuard'
@@ -857,33 +856,10 @@ export function Timeline({ height }: { height: number }) {
           ]
         : []
 
-    // "How it appears" — entrance / exit animation presets. Compiles to keyframes
-    // (preview == export); shown on any clip, defaults save for new text clips.
-    const entranceSub: MenuItem[] = [
-      { label: 'None', checked: !clip.appearance?.in, onClick: () => setClipAppearance(clip.id, { in: undefined }) },
-      ...ENTRANCE_PRESETS.map((p, i) => ({
-        label: p.label,
-        separator: i === 0,
-        checked: clip.appearance?.in === p.id,
-        onClick: () => setClipAppearance(clip.id, { in: p.id }),
-      })),
-    ]
-    const exitSub: MenuItem[] = [
-      { label: 'None', checked: !clip.appearance?.out, onClick: () => setClipAppearance(clip.id, { out: undefined }) },
-      ...EXIT_PRESETS.map((p, i) => ({
-        label: p.label,
-        separator: i === 0,
-        checked: clip.appearance?.out === p.id,
-        onClick: () => setClipAppearance(clip.id, { out: p.id }),
-      })),
-    ]
-    const hasAppearance = !!clip.appearance
-    const appearanceItems: MenuItem[] = [
-      { label: 'Entrance', separator: true, submenu: entranceSub },
-      { label: 'Exit', submenu: exitSub },
-      { label: 'Save as default for new text', onClick: () => saveClipAppearanceAsDefault(clip.id) },
-      { label: 'Clear animation', disabled: !hasAppearance, onClick: () => clearClipAppearance(clip.id) },
-    ]
+    // "How it appears" — font/size quick-picks (titles) + entrance/exit/speed
+    // animation. All compile to keyframes (preview == export). Shared with the
+    // preview-monitor menu via state/clipMenus.
+    const appearanceItems = [...titleFontSizeItems(clip), ...appearanceMenuItems(clip)]
 
     openContextMenu(e, [
       { label: 'Copy', shortcut: comboLabel('mod+c'), onClick: () => copySelection() },

@@ -28,6 +28,16 @@ export const CUSTOM_TITLE_FONTS: CustomTitleFont[] = [
   { label: 'Minecraft', family: 'Monocraft', stack: MONOCRAFT_STACK, url: monocraftUrl },
 ]
 
+/** Every selectable title font (system stacks + bundled), for the Inspector
+ * dropdown AND the right-click Font menu — one shared source of truth. */
+export const TITLE_FONT_OPTIONS: { label: string; value: string }[] = [
+  { label: 'Inter', value: "'Inter', system-ui, sans-serif" },
+  { label: 'Georgia', value: 'Georgia, serif' },
+  { label: 'Courier', value: "'Courier New', monospace" },
+  { label: 'Arial', value: 'Arial, sans-serif' },
+  ...CUSTOM_TITLE_FONTS.map((f) => ({ label: f.label, value: f.stack })),
+]
+
 // One in-flight load per JS context (the main window, or a worker). Module state
 // is per-context, so this dedupes within each without leaking across the worker
 // boundary.
