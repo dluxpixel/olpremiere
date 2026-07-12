@@ -121,6 +121,13 @@ export interface Clip {
   /** Phase 5 title. When set, this is a generated title clip (assetId is ''). */
   title?: TitleDef
   /**
+   * Entrance / exit animation ("how it appears"). A tiny spec that COMPILES to
+   * keyframes on transform + opacity channels (see engine/anim/appearance.ts) —
+   * kept alongside the compiled keyframes so a single side can be changed and the
+   * pair rebuilt deterministically, and so it can be saved as the text default.
+   */
+  appearance?: AppearanceSpec
+  /**
    * Linked-clip group id (Vegas-style A/V link). Clips sharing a linkId move,
    * trim, split, and delete together. A video clip WITH a linkId is video-only
    * (its audio plays from the linked audio-track clip); a video clip WITHOUT a
@@ -215,6 +222,19 @@ export interface Keyframe {
 export interface Transition {
   type: string
   durationS: number
+}
+
+/**
+ * Entrance / exit animation preset selection. Plain data (structuredClone-safe).
+ * `in` / `out` are preset ids from engine/anim/appearance.ts; absent = none.
+ */
+export interface AppearanceSpec {
+  /** Entrance preset id (e.g. 'pop', 'fadeIn'). */
+  in?: string
+  /** Exit preset id (e.g. 'fadeOut', 'zoomOut'). */
+  out?: string
+  /** Window length per side, seconds. Defaults to DEFAULT_APPEARANCE_DUR. */
+  durS?: number
 }
 
 export interface Marker {

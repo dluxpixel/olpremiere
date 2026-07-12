@@ -1,6 +1,7 @@
 // Title clip creation + editing. A title lives entirely on the clip (no bin
 // asset) and rasterizes to a texture at render time.
 
+import { isEmptyAppearance } from '../engine/anim/appearance'
 import { clipDurationS, recomputeDuration, resolveStart } from '../engine/timeline'
 import {
   activeSequence,
@@ -11,6 +12,7 @@ import {
   type TitleDef,
   type Track,
 } from '../engine/types'
+import { applyAppearanceToClip, getDefaultTextAppearance } from './appearanceActions'
 import { updateActiveSequence, useStore } from './store'
 import { useToasts } from './toasts'
 
@@ -30,7 +32,11 @@ export function addTitleClip(text = 'Title'): void {
     useToasts.getState().show('No unlocked video track for the title', 'danger')
     return
   }
-  const clip = newTitleClip(defaultTitleDef(text), s.ui.playheadS, DEFAULT_TITLE_S)
+  let clip = newTitleClip(defaultTitleDef(text), s.ui.playheadS, DEFAULT_TITLE_S)
+  // New titles inherit the saved default entrance/exit, so a chosen "how it
+  // appears" applies every time (compiled to keyframes up front).
+  const def = getDefaultTextAppearance()
+  if (def && !isEmptyAppearance(def)) clip = applyAppearanceToClip(clip, def, seq.width, seq.height)
   updateActiveSequence('Add title', (sq) => {
     const track = sq.tracks.find((t) => t.id === target.id)
     if (!track) return sq

@@ -2,12 +2,17 @@ import { create } from 'zustand'
 
 export interface MenuItem {
   label: string
-  onClick: () => void
+  /** Optional when `submenu` is present (the row just opens the flyout). */
+  onClick?: () => void
   shortcut?: string
   danger?: boolean
   disabled?: boolean
   /** Render a divider ABOVE this item. */
   separator?: boolean
+  /** A checkmark/active dot before the label (e.g. the selected preset). */
+  checked?: boolean
+  /** One level of nested items, shown as a hover flyout to the side. */
+  submenu?: MenuItem[]
 }
 
 interface ContextMenuState {

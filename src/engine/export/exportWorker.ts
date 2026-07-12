@@ -11,6 +11,7 @@ import { ArrayBufferTarget, FileSystemWritableFileStreamTarget, Muxer } from 'mp
 import { createRenderer } from '../render/glRenderer'
 import { resolveFrame } from '../render/resolve'
 import { rasterizeTitle } from '../render/titleRaster'
+import { loadTitleFonts } from '../render/titleFonts'
 import type { RenderLayer } from '../render/types'
 import type { Clip, Id } from '../types'
 import {
@@ -124,6 +125,11 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
     const { settings, sequence, assets, audio, fileHandle } = init
     const framesTotal = Math.max(1, Math.ceil((settings.endS - settings.startS) * settings.fps))
     post({ type: 'progress', progress: { phase: 'preparing', framesDone: 0, framesTotal } })
+
+    // Register bundled title fonts in THIS worker's FontFaceSet before any title
+    // is rasterized — otherwise a Minecraft title would fall back to a different
+    // face here than in the preview, breaking preview == export.
+    await loadTitleFonts(scope.fonts)
 
     // --- codec picks -------------------------------------------------------
     stage = 'probing encoder support'

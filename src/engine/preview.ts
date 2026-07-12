@@ -102,6 +102,15 @@ export function previewEpoch(): number {
   return epoch
 }
 
+/**
+ * Force the next preview frame to redraw even if the playhead/project are
+ * unchanged. Used when an out-of-band input lands — e.g. a bundled title font
+ * finishing loading, which invalidates any title rasterized with the fallback.
+ */
+export function invalidatePreview(): void {
+  epoch++
+}
+
 export function setLivePreviewTransform(v: { clipId: Id; x: number; y: number; scale: number } | null): void {
   liveTransform = v
   epoch++
