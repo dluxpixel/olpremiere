@@ -133,12 +133,15 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
       height: settings.height,
       bitrate: settings.videoBitrate,
       framerate: settings.fps,
-      // 'realtime', NOT 'quality': the quality mode lets the H.264 encoder emit
-      // B-frames, which reorders output so decode timestamps aren't monotonic —
-      // mp4-muxer then throws "Timestamps must be monotonically increasing" and
-      // crashes the export on complex footage (gameplay etc.). Realtime disables
-      // B-frames; at our high bitrates the quality difference is negligible.
+      // Never emit B-frames. They reorder output so decode timestamps go backward,
+      // and mp4-muxer (unsigned composition-offset table) can't mux that — it
+      // throws "Timestamps must be monotonically increasing" and crashes the export
+      // on complex footage (gameplay). Two guards: 'realtime' asks the encoder to
+      // skip B-frames, and prefer-software picks Chrome's openh264 encoder, which
+      // has no B-frames at all (hardware encoders may ignore latencyMode). Slightly
+      // slower than a GPU encode, but reliable; at our bitrates quality is unchanged.
       latencyMode: 'realtime',
+      hardwareAcceleration: 'prefer-software',
     })
     const videoCodec = await firstSupported([...H264_CODECS], async (codec) => {
       const support = await VideoEncoder.isConfigSupported(videoConfigFor(codec))
