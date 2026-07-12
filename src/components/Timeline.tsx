@@ -71,6 +71,7 @@ import { appearanceMenuItems, titleFontSizeItems } from '../state/clipMenus'
 import { openContextMenu } from '../state/contextMenu'
 import { useBlobUrl } from '../state/blobUrls'
 import { ClipWaveform } from './ClipWaveform'
+import { PlayheadLine, PlayheadTimecode } from './PlayheadWidgets'
 import { pointOnScrollbar } from './scrollbarGuard'
 import {
   MAX_PX_PER_S,
@@ -87,6 +88,8 @@ import { IconButton } from '../ui/Button'
 const RULER_H = 28
 const HEADERS_W = 178
 const SNAP_PX = 8
+/** Pointer travel below this is a click (move playhead), not a clip drag. */
+const CLICK_SLOP_PX = 4
 // The add-track button row lives at the bottom of the HEADERS column. The lanes
 // column carries a spacer of the SAME height so both columns scroll to the same
 // depth — otherwise, with many tracks, the buttons sit below the lanes' scroll
@@ -327,7 +330,6 @@ function TimelineToolbar({ onZoomFit }: { onZoomFit: () => void }) {
   const tool = useStore((s) => s.ui.tool)
   const snapping = useStore((s) => s.ui.snapping)
   const pxPerS = useStore((s) => s.ui.pxPerS)
-  const playheadS = useStore((s) => s.ui.playheadS)
   const setUI = useStore((s) => s.setUI)
   const fps = useStore((s) => activeSequence(s.project).fps)
   const project = useStore((s) => s.project)
@@ -396,9 +398,7 @@ function TimelineToolbar({ onZoomFit }: { onZoomFit: () => void }) {
       </IconButton>
 
       <div className="ml-auto flex items-center gap-1.5">
-        <span className="mr-2 text-[11px] tabular-nums text-text-secondary">
-          {formatTimecode(playheadS, fps)}
-        </span>
+        <PlayheadTimecode fps={fps} className="mr-2 text-[11px] tabular-nums text-text-secondary" />
         <IconButton size="compact" label="Zoom out" shortcut="-" onClick={zoomOut}>
           <ZoomOut size={14} strokeWidth={1.5} />
         </IconButton>
@@ -684,7 +684,15 @@ function ClipView({
 // Timeline
 
 type Drag =
-  | { kind: 'move'; clipId: Id; grabOffsetS: number; trackKind: 'video' | 'audio' }
+  | {
+      kind: 'move'
+      clipId: Id
+      grabOffsetS: number
+      trackKind: 'video' | 'audio'
+      /** Pointer-down spot: release within CLICK_SLOP_PX = a click, not a drag. */
+      downClientX: number
+      downClientY: number
+    }
   | { kind: 'trim'; clipId: Id; edge: 'in' | 'out'; ripple: boolean }
   /** Alt+edge-drag: retime the clip (speed changes, source in/out stay put). */
   | { kind: 'stretch'; clipId: Id; edge: 'in' | 'out' }
@@ -697,7 +705,10 @@ export function Timeline({ height }: { height: number }) {
   const seq = activeSequence(project)
   const assets = project.assets
   const pxPerS = useStore((s) => s.ui.pxPerS)
-  const playheadS = useStore((s) => s.ui.playheadS)
+  // DELIBERATELY no playheadS subscription: the transport ticks it every frame,
+  // and a hook here re-renders this whole component tree at the display refresh
+  // rate — the old "laggy preview". Handlers read it via useStore.getState();
+  // the red line + timecodes are imperative leaves (PlayheadWidgets).
   const playing = useStore((s) => s.ui.playing)
   const snapping = useStore((s) => s.ui.snapping)
   const tool = useStore((s) => s.ui.tool)
@@ -766,7 +777,10 @@ export function Timeline({ height }: { height: number }) {
     // Exclude the whole link group: a linked A/V pair trims/moves together, so
     // the partner's stale edges must not magnetize the gesture back onto itself.
     const excludeClipIds = excludeClipId ? clipGroupIds(seq, excludeClipId) : undefined
-    const points = collectSnapPoints(seq, { ...(excludeClipIds ? { excludeClipIds } : {}), playheadS })
+    const points = collectSnapPoints(seq, {
+      ...(excludeClipIds ? { excludeClipIds } : {}),
+      playheadS: useStore.getState().ui.playheadS,
+    })
     const r = snapTime(tS, points, SNAP_PX / pxPerS)
     setSnapIndicatorT(r.snapped ? r.t : null)
     return r.t
@@ -831,11 +845,14 @@ export function Timeline({ height }: { height: number }) {
       clipId: clip.id,
       grabOffsetS: x / pxPerS - clip.startS,
       trackKind: track.kind,
+      downClientX: e.clientX,
+      downClientY: e.clientY,
     })
   }
 
   const handleClipContextMenu = (e: ReactMouseEvent<HTMLDivElement>, clip: Clip) => {
     setUI({ selection: [clip.id] })
+    const playheadS = useStore.getState().ui.playheadS
     const playheadInside = playheadS > clip.startS && playheadS < clipEndS(clip)
     // Audio clips adjacent to a same-track neighbour can be crossfaded.
     const track = seq.tracks.find((t) => t.clips.some((c) => c.id === clip.id))
@@ -1011,7 +1028,10 @@ export function Timeline({ height }: { height: number }) {
       // The dragged clip's whole link group is excluded: its audio partner's
       // stale edges would otherwise snap the drag back to where it started.
       const points = snapping
-        ? collectSnapPoints(seq, { excludeClipIds: clipGroupIds(seq, drag.clipId), playheadS })
+        ? collectSnapPoints(seq, {
+            excludeClipIds: clipGroupIds(seq, drag.clipId),
+            playheadS: useStore.getState().ui.playheadS,
+          })
         : []
       let desired = desiredRaw
       if (snapping) {
@@ -1088,7 +1108,15 @@ export function Timeline({ height }: { height: number }) {
   const handleLanesPointerUp = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (!drag) return
     lanesRef.current?.releasePointerCapture(e.pointerId)
-    if (drag.kind === 'move' && dragFinal.current) {
+    // A release within the slop of the pointer-down is a CLICK on the clip, not
+    // a drag: move the playhead there so the preview shows the spot you clicked
+    // (CapCut-style), and skip the no-op move commit (keeps undo history clean).
+    const isClipClick =
+      drag.kind === 'move' &&
+      Math.hypot(e.clientX - drag.downClientX, e.clientY - drag.downClientY) < CLICK_SLOP_PX
+    if (isClipClick) {
+      scrubTo(drag.downClientX)
+    } else if (drag.kind === 'move' && dragFinal.current) {
       const { trackId, tS } = dragFinal.current
       updateActiveSequence('Move clip', (sq) => moveGroup(sq, drag.clipId, trackId, tS))
     } else if (drag.kind === 'trim' && dragFinal.current) {
@@ -1148,7 +1176,9 @@ export function Timeline({ height }: { height: number }) {
       return
     }
     const tRaw = quantizeToFrame(Math.max(0, x / pxPerS), seq.fps)
-    const points = snapping ? collectSnapPoints(seq, { playheadS }) : []
+    const points = snapping
+      ? collectSnapPoints(seq, { playheadS: useStore.getState().ui.playheadS })
+      : []
     const t = snapping ? snapTime(tRaw, points, SNAP_PX / pxPerS).t : tRaw
     // Dropping a video with audio splits its sound to a linked audio clip on A1.
     if (asset.kind === 'video' && asset.hasAudio) {
@@ -1179,22 +1209,32 @@ export function Timeline({ height }: { height: number }) {
   // Keep the playhead visible while playing (page-scroll like Premiere), but
   // never fight a manual scroll: suspend auto-follow for a moment after the
   // user scrolls the lanes themselves.
+  // Auto-follow rides an IMPERATIVE playhead subscription (not a React effect
+  // keyed on playheadS — that re-ran per transport tick). pxPerS via ref so
+  // zoom changes mid-play take effect without resubscribing.
+  const pxPerSRef = useRef(pxPerS)
+  pxPerSRef.current = pxPerS
   useEffect(() => {
     if (!playing) return
-    const el = lanesRef.current
-    if (!el) return
-    if (performance.now() < manualScrollUntil.current) return
-    const px = playheadS * pxPerS
-    const left = el.scrollLeft
-    const right = left + el.clientWidth
-    // Page forward when the playhead runs off the right edge; re-centre only
-    // when it is fully off-screen (e.g. after Home). Do NOT tug back when the
-    // user has scrolled ahead of the playhead.
-    if (px > right - 40 || px < left - el.clientWidth) {
-      programmaticScroll.current = true
-      el.scrollLeft = Math.max(0, px - 80)
-    }
-  }, [playheadS, playing, pxPerS])
+    return useStore.subscribe(
+      (s) => s.ui.playheadS,
+      (t) => {
+        const el = lanesRef.current
+        if (!el) return
+        if (performance.now() < manualScrollUntil.current) return
+        const px = t * pxPerSRef.current
+        const left = el.scrollLeft
+        const right = left + el.clientWidth
+        // Page forward when the playhead runs off the right edge; re-centre only
+        // when it is fully off-screen (e.g. after Home). Do NOT tug back when the
+        // user has scrolled ahead of the playhead.
+        if (px > right - 40 || px < left - el.clientWidth) {
+          programmaticScroll.current = true
+          el.scrollLeft = Math.max(0, px - 80)
+        }
+      },
+    )
+  }, [playing])
 
   const zoomFit = () => {
     const el = lanesRef.current
@@ -1414,16 +1454,7 @@ export function Timeline({ height }: { height: number }) {
               />
             )}
 
-            <div
-              data-testid="playhead"
-              className="pointer-events-none absolute bottom-0 top-0 z-30 w-px bg-playhead"
-              style={{ left: playheadS * pxPerS }}
-            >
-              <div
-                className="absolute -left-[5px] top-0 h-0 w-0 border-l-[5px] border-r-[5px] border-t-[7px] border-l-transparent border-r-transparent"
-                style={{ borderTopColor: 'var(--color-playhead)' }}
-              />
-            </div>
+            <PlayheadLine pxPerS={pxPerS} />
           </div>
 
           {!hasClips && (

@@ -1,12 +1,32 @@
 import { describe, expect, it } from 'vitest'
 import {
   FrameLru,
+  SEQ_REOPEN_GAP,
   boundPending,
   frameIndexAt,
   frameMidTimeS,
+  needsReopen,
   previewTargetHeight,
   spanIndices,
 } from './frameCache'
+
+describe('needsReopen (sequential-reader seek policy)', () => {
+  it('reopens when there is no reader yet', () => {
+    expect(needsReopen(-1, 10)).toBe(true)
+  })
+  it('reopens on any backward target (the reader is forward-only)', () => {
+    expect(needsReopen(30, 29)).toBe(true)
+    expect(needsReopen(30, 0)).toBe(true)
+  })
+  it('advances through small forward gaps instead of re-seeking', () => {
+    expect(needsReopen(30, 30)).toBe(false)
+    expect(needsReopen(30, 31)).toBe(false)
+    expect(needsReopen(30, 30 + SEQ_REOPEN_GAP)).toBe(false)
+  })
+  it('reopens past the gap (a seek beats decoding hundreds of frames)', () => {
+    expect(needsReopen(30, 30 + SEQ_REOPEN_GAP + 1)).toBe(true)
+  })
+})
 
 describe('previewTargetHeight', () => {
   it('leaves ≤1080p footage at native size on Full', () => {

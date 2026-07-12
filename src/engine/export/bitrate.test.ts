@@ -32,8 +32,11 @@ describe('youtubeBitrate', () => {
     expect(youtubeBitrate(3840, 2160, 30)).toBe(69_672_960)
   })
 
-  it('floors at 12 Mbps (YouTube 1080p60 rec) for small rasters', () => {
-    expect(youtubeBitrate(640, 360, 30)).toBe(12_000_000)
+  it('floor scales with the raster: SD stays small (2 Mbps min, not a flat 12)', () => {
+    // 640×360×30 × 0.28 ≈ 1.94 Mbps → floored to 2 Mbps, NOT bloated to 12.
+    expect(youtubeBitrate(640, 360, 30)).toBe(2_000_000)
+    // 720p30 ≈ 7.7 Mbps — above the floor, unfloored.
+    expect(youtubeBitrate(1280, 720, 30)).toBe(7_741_440)
   })
 
   it('is ceiled so an 8K/high-fps timeline stays sane', () => {

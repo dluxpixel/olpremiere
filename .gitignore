@@ -6,3 +6,5 @@ _verify/
 *.local
 .DS_Store
 e2e/.fixtures/
+
+.vercel

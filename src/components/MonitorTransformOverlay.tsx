@@ -36,10 +36,18 @@ const ACCENT = 'var(--color-accent)'
  * Live via a preview override; commits ONE undo step on release. Only active
  * while paused with content; the gizmo shows for a static (non-animated) clip
  * that is under the playhead.
+ *
+ * The paused-only inner component holds the playheadS subscription, so during
+ * PLAYBACK the transport's per-frame ticks re-render nothing here at all.
  */
 export function MonitorTransformOverlay({ canvas }: { canvas: HTMLCanvasElement | null }) {
-  const selection = useStore((s) => s.ui.selection)
   const playing = useStore((s) => s.ui.playing)
+  if (playing) return null
+  return <OverlayInner canvas={canvas} />
+}
+
+function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
+  const selection = useStore((s) => s.ui.selection)
   const project = useStore((s) => s.project)
   const playheadS = useStore((s) => s.ui.playheadS)
   const setUI = useStore((s) => s.setUI)
@@ -48,11 +56,11 @@ export function MonitorTransformOverlay({ canvas }: { canvas: HTMLCanvasElement 
   const [box, setBox] = useState<{ left: number; top: number; w: number; h: number } | null>(null)
   useEffect(() => {
     if (!canvas) return
-    let raf = 0
-    const tick = () => {
-      raf = requestAnimationFrame(tick)
-      const parent = canvas.parentElement
-      if (!parent) return
+    const parent = canvas.parentElement
+    if (!parent) return
+    // Recompute the overlay box when the canvas or its panel RESIZES — not on a
+    // per-frame rAF poll (rect reads every frame force needless layout work).
+    const measure = (): void => {
       const cr = canvas.getBoundingClientRect()
       const pr = parent.getBoundingClientRect()
       const next = { left: cr.left - pr.left, top: cr.top - pr.top, w: cr.width, h: cr.height }
@@ -62,8 +70,11 @@ export function MonitorTransformOverlay({ canvas }: { canvas: HTMLCanvasElement 
           : next,
       )
     }
-    raf = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(raf)
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(canvas)
+    ro.observe(parent)
+    return () => ro.disconnect()
   }, [canvas])
 
   const rootRef = useRef<HTMLDivElement>(null)
@@ -72,7 +83,8 @@ export function MonitorTransformOverlay({ canvas }: { canvas: HTMLCanvasElement 
   const [dragTf, setDragTf] = useState<Tf | null>(null)
   useEffect(() => () => cleanupRef.current?.(), [])
 
-  const active = !!box && box.w > 0 && !playing && seq.durationS > 0
+  // Playing is handled by the outer gate; here we are always paused.
+  const active = !!box && box.w > 0 && seq.durationS > 0
   if (!active || !box) return null
 
   const k = box.w / seq.width // seq px → overlay px (uniform; aspect matches)

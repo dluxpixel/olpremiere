@@ -6,12 +6,21 @@
 // mediabunny + persistence are loaded via dynamic import on first decode so
 // this module stays importable in a plain node test env (no DOM, no IDB).
 
-import type { CanvasSink, Input } from 'mediabunny'
+import type { CanvasSink, Input, WrappedCanvas } from 'mediabunny'
 import type { Id, MediaAsset } from './types'
 
 export const FALLBACK_FPS = 30
 export const CACHE_CAP = 96
-export const PENDING_CAP = 8
+// With sequential decode (see pump) a queued frame is cheap, so the queue can
+// afford to be deeper than the old seek-per-frame path allowed.
+export const PENDING_CAP = 16
+/**
+ * Reopen threshold for the sequential reader: when the target frame is at most
+ * this many frames AHEAD of the iterator, decoding forward through the gap is
+ * cheaper than a random-access re-seek (which decodes forward from the previous
+ * KEYFRAME anyway — typically 2s ≈ 60 frames of work). Behind always reopens.
+ */
+export const SEQ_REOPEN_GAP = 90
 
 // Preview frames are decoded at PREVIEW-resolution, not necessarily source
 // resolution. At Full quality typical (≤1080p) footage decodes untouched, while
@@ -137,6 +146,17 @@ interface AssetEntry {
   failed: boolean
   /** Indices the demuxer has no frame for (before track start) — never re-request. */
   noFrame: Set<number>
+  /**
+   * Persistent sequential reader. getCanvas() is a RANDOM seek: it decodes
+   * forward from the previous keyframe for EVERY requested frame (~a whole GOP
+   * of work per frame — the old scrub lag). The iterator decodes each frame
+   * once and steps forward; only a backward jump or a large forward jump
+   * re-seeks. Every frame it passes is cached, so a forward scrub is ~1 decode
+   * per frame instead of ~GOP decodes per frame.
+   */
+  iter: AsyncGenerator<WrappedCanvas, void, unknown> | null
+  /** Nominal frame index the iterator will yield NEXT (advances as it reads). */
+  iterIdx: number
 }
 
 const cache = new FrameLru<CanvasImageSource>(CACHE_CAP)
@@ -158,10 +178,27 @@ function ensureEntry(asset: MediaAsset): AssetEntry {
       pumping: false,
       failed: false,
       noFrame: new Set(),
+      iter: null,
+      iterIdx: -1,
     }
     entries.set(asset.id, e)
   }
   return e
+}
+
+/** Should the sequential reader re-seek to reach `target`? (Pure, tested.) */
+export function needsReopen(iterIdx: number, target: number, gap = SEQ_REOPEN_GAP): boolean {
+  if (iterIdx < 0) return true // no reader yet
+  if (target < iterIdx) return true // behind — the reader is forward-only
+  return target - iterIdx > gap // too far ahead to decode through
+}
+
+function closeIter(e: AssetEntry): void {
+  if (e.iter) {
+    void e.iter.return?.(undefined)
+    e.iter = null
+  }
+  e.iterIdx = -1
 }
 
 async function openInput(e: AssetEntry): Promise<void> {
@@ -190,9 +227,53 @@ function failAsset(e: AssetEntry, err: unknown): void {
   if (!e.failed) console.warn(`frameCache: decode failed for asset ${e.asset.id}; disabling`, err)
   e.failed = true
   e.pending = []
+  closeIter(e)
   e.input?.dispose()
   e.input = null
   e.sink = null
+}
+
+/**
+ * Decode frame `idx` via the sequential reader, caching every frame passed on
+ * the way (they're the very frames a scrub is about to ask for). Handles a
+ * source whose real timing differs from the nominal fps grid: on overshoot the
+ * last frame at-or-before the target is cached UNDER the target index (the
+ * frame actually displayed at that time), so a sparse-timestamped source can't
+ * loop forever re-requesting an index no packet maps to.
+ */
+async function decodeSequential(e: AssetEntry, idx: number): Promise<void> {
+  if (!e.sink) return
+  if (needsReopen(e.iterIdx, idx)) {
+    closeIter(e)
+    e.iter = e.sink.canvases(frameMidTimeS(idx, e.asset.fps))
+    e.iterIdx = idx
+  }
+  const targetKey = cacheKey(e.asset.id, idx)
+  let prev: WrappedCanvas | null = null
+  while (e.iter) {
+    const r = await e.iter.next()
+    if (e.failed) return // evicted mid-decode
+    if (r.done) {
+      // Source exhausted before the target: the last decoded frame IS the
+      // display at the target time (freeze on last), else mark no-frame.
+      if (prev) cache.set(targetKey, prev.canvas)
+      else e.noFrame.add(idx)
+      closeIter(e)
+      return
+    }
+    const w = r.value
+    const wIdx = frameIndexAt(w.timestamp, e.asset.fps)
+    cache.set(cacheKey(e.asset.id, wIdx), w.canvas)
+    e.iterIdx = wIdx + 1
+    if (wIdx === idx) return // exact hit
+    if (wIdx > idx) {
+      // Overshot the nominal grid (sparse/VFR timestamps): the frame shown at
+      // the target time is the last one before it — clamp-to-first otherwise.
+      cache.set(targetKey, (prev ?? w).canvas)
+      return
+    }
+    prev = w
+  }
 }
 
 /** One serialized decode chain per asset — concurrent seeks on one demuxer corrupt state. */
@@ -203,16 +284,20 @@ async function pump(e: AssetEntry): Promise<void> {
     await e.ready
     while (e.pending.length > 0 && !e.failed) {
       e.pending = boundPending(e.pending, e.latest, PENDING_CAP)
+      // Order for sequential decode WITHOUT starving the displayed frame: the
+      // at-or-after-playhead half ascending FIRST (the playhead frame leads and
+      // the forward span rides the same iterator pass), then the behind half
+      // ascending (one re-seek covers all of it).
+      const fwd = e.pending.filter((i) => i >= e.latest).sort((a, b) => a - b)
+      const back = e.pending.filter((i) => i < e.latest).sort((a, b) => a - b)
+      e.pending = [...fwd, ...back]
       const idx = e.pending.shift()
       if (idx === undefined || !e.sink) break
       const key = cacheKey(e.asset.id, idx)
       if (cache.has(key)) continue
       e.decoding = idx
-      const wrapped = await e.sink.getCanvas(frameMidTimeS(idx, e.asset.fps))
+      await decodeSequential(e, idx)
       e.decoding = null
-      if (e.failed) break // evicted mid-decode
-      if (wrapped) cache.set(key, wrapped.canvas)
-      else e.noFrame.add(idx)
     }
   } catch (err) {
     failAsset(e, err)
@@ -273,6 +358,7 @@ export function evictAsset(assetId: Id): void {
   if (e) {
     e.failed = true // stops an in-flight pump without a spurious warn (already true on failure)
     e.pending = []
+    closeIter(e)
     e.input?.dispose()
     e.input = null
     e.sink = null

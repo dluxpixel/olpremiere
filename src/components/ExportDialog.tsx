@@ -52,11 +52,17 @@ function evenFit(
  * The upscales only appear when they actually raise the resolution.
  */
 function buildResolutions(seqW: number, seqH: number): ResolutionPreset[] {
+  // Orient the target boxes to the sequence: YouTube tiers a vertical video by
+  // its SHORT edge, so a 9:16 Shorts timeline must upscale to 1440×2560 /
+  // 2160×3840 — the landscape boxes would give it no 1440p option at all and a
+  // 1216-wide "2160p" that never reaches the promised tier.
+  const portrait = seqH > seqW
+  const box = (w: number, h: number): [number, number] => (portrait ? [h, w] : [w, h])
   const full = evenFit(seqW, seqH, seqW, seqH)
-  const twoK = evenFit(seqW, seqH, 2560, 1440, true)
-  const fourK = evenFit(seqW, seqH, 3840, 2160, true)
-  const hd = evenFit(seqW, seqH, 1280, 720)
-  const sd = evenFit(seqW, seqH, 640, 360)
+  const twoK = evenFit(seqW, seqH, ...box(2560, 1440), true)
+  const fourK = evenFit(seqW, seqH, ...box(3840, 2160), true)
+  const hd = evenFit(seqW, seqH, ...box(1280, 720))
+  const sd = evenFit(seqW, seqH, ...box(640, 360))
   const seqPx = full.width * full.height
   const bigger = (r: { width: number; height: number }): boolean => r.width * r.height > seqPx * 1.02
 
@@ -153,6 +159,11 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   const [resolutionKey, setResolutionKey] = useState<string>(
     () => (resolutions.some((r) => r.key === '2k') ? '2k' : 'seq'),
   )
+  // The keyed list varies with the sequence size, which can change while the
+  // dialog is open (undo of a format switch reaches the global keymap). A key
+  // no longer offered falls back to the native size instead of a blank select
+  // that silently exports resolutions[0].
+  const effectiveResolutionKey = resolutions.some((r) => r.key === resolutionKey) ? resolutionKey : 'seq'
   const [bitrateKey, setBitrateKey] = useState<string>('youtube')
   const [encoder, setEncoder] = useState<EncoderMode>(loadEncoderMode)
   const [stage, setStage] = useState<Stage>({ kind: 'settings' })
@@ -171,7 +182,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   const running = stage.kind === 'running'
 
   const start = async () => {
-    const preset = resolutions.find((r) => r.key === resolutionKey) ?? resolutions[0]
+    const preset = resolutions.find((r) => r.key === effectiveResolutionKey) ?? resolutions[0]
     const bopt = BITRATES.find((b) => b.key === bitrateKey) ?? BITRATES[0]
     // "YouTube" and "Maximum" compute their rate from the export raster; the rest
     // are fixed values.
@@ -336,7 +347,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
               <select
                 data-testid="export-resolution"
                 className="h-7 w-56 rounded-[4px] border border-border bg-bg-input px-2 text-[12px] text-text-primary focus:border-accent focus:outline-none"
-                value={resolutionKey}
+                value={effectiveResolutionKey}
                 onChange={(e) => setResolutionKey(e.target.value)}
               >
                 {resolutions.map((r) => (
@@ -390,7 +401,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
             <p className="text-[11px] leading-4 text-text-muted">
               Encoded locally with WebCodecs — your footage never leaves this machine.
             </p>
-            {resolutionKey === '2k' || resolutionKey === '4k' ? (
+            {effectiveResolutionKey === '2k' || effectiveResolutionKey === '4k' ? (
               <p className="text-[11px] leading-4 text-accent">
                 Uploading at a higher resolution than your timeline makes YouTube encode it in
                 its higher-bitrate tier — noticeably cleaner, even watched at 1080p.

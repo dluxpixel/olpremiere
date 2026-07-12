@@ -171,7 +171,15 @@ function ClipPanel({
 export function Inspector({ width }: { width: number }) {
   const project = useStore((s) => s.project)
   const selection = useStore((s) => s.ui.selection)
-  const playheadS = useStore((s) => s.ui.playheadS)
+  // FRAME-quantized playhead: the keyframe UI is frame-accurate anyway, and the
+  // raw value ticks every animation frame during playback — subscribing to it
+  // directly re-rendered the whole Inspector at display refresh rate. Selecting
+  // the quantized value re-renders at most fps times per second.
+  const playheadS = useStore((s) => {
+    const sq = activeSequence(s.project)
+    const f = sq.fps > 0 ? sq.fps : 30
+    return Math.floor(s.ui.playheadS * f + 1e-6) / f
+  })
   const seq = activeSequence(project)
   const selectedTrack: Track | undefined =
     selection.length === 1

@@ -20,6 +20,7 @@ import { setActiveSequenceFormat, useStore } from '../state/store'
 import { IconButton } from '../ui/Button'
 import { MasterMeter } from './MasterMeter'
 import { MonitorTransformOverlay } from './MonitorTransformOverlay'
+import { PlayheadTimecode } from './PlayheadWidgets'
 
 type Quality = 1 | 0.5 | 0.25
 
@@ -59,18 +60,31 @@ function useProgramCanvas(quality: Quality) {
     let prevSeq: Sequence | null = null
     let prevComplete = false
 
+    // Parent size via ResizeObserver, NOT getBoundingClientRect per rAF — a
+    // per-frame rect read plus unconditional style writes forced a style/layout
+    // pass on every frame, competing with the video for main-thread time.
+    const parent = canvas.parentElement
+    let parentW = parent?.clientWidth ?? 0
+    let parentH = parent?.clientHeight ?? 0
+    const ro = new ResizeObserver((entries) => {
+      for (const en of entries) {
+        parentW = en.contentRect.width
+        parentH = en.contentRect.height
+      }
+    })
+    if (parent) ro.observe(parent)
+    let styleW = ''
+    let styleH = ''
+
     const draw = (now: number) => {
       raf = requestAnimationFrame(draw)
       const s = useStore.getState()
       const seq = activeSequence(s.project)
-      const parent = canvas.parentElement
-      if (!parent) return
-      const rect = parent.getBoundingClientRect()
       const aspect = seq.width / seq.height
-      let w = rect.width
+      let w = parentW
       let h = w / aspect
-      if (h > rect.height) {
-        h = rect.height
+      if (h > parentH) {
+        h = parentH
         w = h * aspect
       }
       const dpr = (window.devicePixelRatio || 1) * quality
@@ -93,14 +107,27 @@ function useProgramCanvas(quality: Quality) {
         canvas.width = pw
         canvas.height = ph
       }
-      canvas.style.width = `${w}px`
-      canvas.style.height = `${h}px`
+      // Write styles only on CHANGE — a same-value style write still dirties
+      // style state in some engines and forces a recalc.
+      const wPx = `${w}px`
+      const hPx = `${h}px`
+      if (wPx !== styleW) {
+        styleW = wPx
+        canvas.style.width = wPx
+      }
+      if (hPx !== styleH) {
+        styleH = hPx
+        canvas.style.height = hPx
+      }
       prevComplete = renderPreview(canvas, seq, s.project.assets, s.ui.playheadS, playing)
       prevKey = key
       prevSeq = seq
     }
     raf = requestAnimationFrame(draw)
-    return () => cancelAnimationFrame(raf)
+    return () => {
+      cancelAnimationFrame(raf)
+      ro.disconnect()
+    }
   }, [quality])
   return canvasRef
 }
@@ -115,15 +142,15 @@ function SafeMargins({ canvas }: { canvas: HTMLCanvasElement | null }) {
   const [box, setBox] = useState<{ w: number; h: number } | null>(null)
   useEffect(() => {
     if (!canvas) return
-    let raf = 0
-    const tick = () => {
-      raf = requestAnimationFrame(tick)
+    // ResizeObserver, not a rAF poll: the canvas CSS size only changes on panel
+    // resize / format switch, so polling it every frame was pure overhead.
+    const ro = new ResizeObserver(() => {
       const w = parseFloat(canvas.style.width) || 0
       const h = parseFloat(canvas.style.height) || 0
       setBox((prev) => (prev && prev.w === w && prev.h === h ? prev : { w, h }))
-    }
-    raf = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(raf)
+    })
+    ro.observe(canvas)
+    return () => ro.disconnect()
   }, [canvas])
 
   if (!box || box.w === 0) return null
@@ -161,7 +188,8 @@ export function Monitor() {
     prewarmPreview(list)
   }, [assets])
 
-  const playheadS = useStore((s) => s.ui.playheadS)
+  // No playheadS subscription — the timecode is an imperative leaf
+  // (PlayheadTimecode), so transport ticks never re-render the Monitor.
   const playing = useStore((s) => s.ui.playing)
   const setUI = useStore((s) => s.setUI)
   const seq = useStore((s) => activeSequence(s.project))
@@ -204,7 +232,7 @@ export function Monitor() {
 
       <div className="relative flex h-11 shrink-0 items-center gap-2 border-t border-border bg-bg-panel px-3">
         <span data-testid="timecode" className="text-[12px] tabular-nums text-text-primary">
-          {formatTimecode(playheadS, seq.fps)}
+          <PlayheadTimecode fps={seq.fps} />
           <span className="text-text-muted"> / {formatTimecode(seq.durationS, seq.fps)}</span>
         </span>
 
