@@ -127,31 +127,43 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
 
     // --- codec picks -------------------------------------------------------
     stage = 'probing encoder support'
-    const videoConfigFor = (codec: string): VideoEncoderConfig => ({
+    // B-frames reorder encoder output so decode timestamps go backward, and
+    // mp4-muxer's unsigned composition table can't mux that — it crashes with
+    // "Timestamps must be monotonically increasing". 'realtime' asks the encoder
+    // to skip B-frames; hardware encoders can ignore that hint, so the software
+    // path prefers Chrome's openh264 (no B-frames at all). WebCodecs has no
+    // 'require-software', so 'prefer-software' is the strongest software request.
+    const videoConfigFor = (codec: string, accel: HardwarePreference): VideoEncoderConfig => ({
       codec,
       width: settings.width,
       height: settings.height,
       bitrate: settings.videoBitrate,
       framerate: settings.fps,
-      // Never emit B-frames. They reorder output so decode timestamps go backward,
-      // and mp4-muxer (unsigned composition-offset table) can't mux that — it
-      // throws "Timestamps must be monotonically increasing" and crashes the export
-      // on complex footage (gameplay). Two guards: 'realtime' asks the encoder to
-      // skip B-frames, and prefer-software picks Chrome's openh264 encoder, which
-      // has no B-frames at all (hardware encoders may ignore latencyMode). Slightly
-      // slower than a GPU encode, but reliable; at our bitrates quality is unchanged.
       latencyMode: 'realtime',
-      hardwareAcceleration: 'prefer-software',
+      hardwareAcceleration: accel,
     })
-    const videoCodec = await firstSupported([...H264_CODECS], async (codec) => {
-      const support = await VideoEncoder.isConfigSupported(videoConfigFor(codec))
-      return support.supported === true
-    })
-    if (!videoCodec) {
+    const accelOrder: HardwarePreference[] =
+      settings.hardwareAcceleration === 'prefer-hardware'
+        ? ['prefer-hardware', 'no-preference']
+        : ['prefer-software', 'no-preference']
+    let picked: { codec: string; accel: HardwarePreference } | null = null
+    for (const accel of accelOrder) {
+      const codec = await firstSupported([...H264_CODECS], async (c) => {
+        const support = await VideoEncoder.isConfigSupported(videoConfigFor(c, accel))
+        return support.supported === true
+      })
+      if (codec) {
+        picked = { codec, accel }
+        break
+      }
+    }
+    if (!picked) {
       throw new Error(
         `no H.264 (avc1) encoder available for ${settings.width}x${settings.height}@${settings.fps} — try a smaller frame size`,
       )
     }
+    const videoCodec = picked.codec
+    const videoAccel = picked.accel
 
     let audioCodec: 'aac' | 'opus' | null = null
     let audioConfig: AudioEncoderConfig | null = null
@@ -220,7 +232,7 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
         encoderError ??= new Error(`video encoding failed: ${e.message}`)
       },
     })
-    videoEncoder.configure(videoConfigFor(videoCodec))
+    videoEncoder.configure(videoConfigFor(videoCodec, videoAccel))
     cleanups.push(() => {
       if (videoEncoder.state !== 'closed') videoEncoder.close()
     })

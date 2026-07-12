@@ -17,6 +17,13 @@ export interface ExportSettings {
    */
   startS: number
   endS: number
+  /**
+   * Encoder acceleration. 'prefer-hardware' is a fast GPU encode, but some GPUs
+   * emit B-frames that mp4-muxer can't mux (the export crashes with a
+   * monotonic-timestamp error); 'prefer-software' uses Chrome's openh264, which
+   * has no B-frames (reliable, a little slower). Defaults to software.
+   */
+  hardwareAcceleration?: 'prefer-hardware' | 'prefer-software' | 'no-preference'
 }
 
 export interface ExportProgress {

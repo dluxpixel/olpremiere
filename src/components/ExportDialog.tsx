@@ -56,6 +56,38 @@ const BITRATES = [
   { key: 'low', label: 'Low (5 Mbps)', value: 5_000_000 },
 ] as const
 
+// GPU is fast but some GPUs emit B-frames the muxer can't handle (the export
+// crashes); software (openh264) never does. Auto uses the GPU and falls back to
+// software only if it actually crashes — so most people get GPU speed and nobody
+// hits the crash. The choice is remembered.
+type EncoderMode = 'auto' | 'gpu' | 'software'
+const ENCODER_KEY = 'reel:export:encoder'
+const ENCODERS: { key: EncoderMode; label: string }[] = [
+  { key: 'auto', label: 'Auto (GPU, else software)' },
+  { key: 'gpu', label: 'GPU (fastest)' },
+  { key: 'software', label: 'Software (most compatible)' },
+]
+function loadEncoderMode(): EncoderMode {
+  try {
+    const v = typeof localStorage !== 'undefined' ? localStorage.getItem(ENCODER_KEY) : null
+    return v === 'gpu' || v === 'software' || v === 'auto' ? v : 'auto'
+  } catch {
+    return 'auto'
+  }
+}
+function saveEncoderMode(m: EncoderMode): void {
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.setItem(ENCODER_KEY, m)
+  } catch {
+    // ignore storage failures
+  }
+}
+/** The specific GPU-B-frame crash that a software retry fixes. */
+export function isBFrameCrash(err: unknown): boolean {
+  const m = err instanceof Error ? err.message : String(err)
+  return /monotonically|Timestamps must be|\bDTS\b|B-?frame/i.test(m)
+}
+
 type Stage =
   | { kind: 'settings' }
   | { kind: 'running'; progress: ExportProgress; startedAt: number }
@@ -92,6 +124,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   const resolutions = buildResolutions(seq.width, seq.height)
   const [resolution, setResolution] = useState(0)
   const [bitrateKey, setBitrateKey] = useState<string>('medium')
+  const [encoder, setEncoder] = useState<EncoderMode>(loadEncoderMode)
   const [stage, setStage] = useState<Stage>({ kind: 'settings' })
   const abortRef = useRef<AbortController | null>(null)
 
@@ -153,16 +186,36 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
       startedAt: performance.now(),
     })
     try {
-      const blob = await exportSequence(
-        project,
-        settings,
-        (progress) =>
+      const runExport = (hw: 'prefer-hardware' | 'prefer-software') =>
+        exportSequence(
+          project,
+          { ...settings, hardwareAcceleration: hw },
+          (progress) => setStage((prev) => (prev.kind === 'running' ? { ...prev, progress } : prev)),
+          abort.signal,
+          handle ?? undefined,
+        )
+
+      let blob: Blob | null
+      if (encoder === 'software') {
+        blob = await runExport('prefer-software')
+      } else if (encoder === 'gpu') {
+        blob = await runExport('prefer-hardware')
+      } else {
+        // Auto: fast GPU first; if THIS GPU emits B-frames the muxer can't mux,
+        // silently retry on the software encoder (which never does). The GPU
+        // attempt crashes at the first B-frame — early — so little is wasted.
+        try {
+          blob = await runExport('prefer-hardware')
+        } catch (err) {
+          if (abort.signal.aborted || !isBFrameCrash(err)) throw err
           setStage((prev) =>
-            prev.kind === 'running' ? { ...prev, progress } : prev,
-          ),
-        abort.signal,
-        handle ?? undefined,
-      )
+            prev.kind === 'running'
+              ? { ...prev, progress: { ...prev.progress, phase: 'preparing', framesDone: 0 }, startedAt: performance.now() }
+              : prev,
+          )
+          blob = await runExport('prefer-software')
+        }
+      }
 
       let sizeBytes: number
       if (blob) {
@@ -270,6 +323,26 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
                 {BITRATES.map((b) => (
                   <option key={b.key} value={b.key}>
                     {b.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex items-center justify-between gap-3 text-[12px] text-text-secondary">
+              Encoder
+              <select
+                data-testid="export-encoder"
+                title="GPU is fastest; some GPUs crash the export — Software always works. Auto tries GPU, falls back to Software."
+                className="h-7 w-56 rounded-[4px] border border-border bg-bg-input px-2 text-[12px] text-text-primary focus:border-accent focus:outline-none"
+                value={encoder}
+                onChange={(e) => {
+                  const m = e.target.value as EncoderMode
+                  setEncoder(m)
+                  saveEncoderMode(m)
+                }}
+              >
+                {ENCODERS.map((en) => (
+                  <option key={en.key} value={en.key}>
+                    {en.label}
                   </option>
                 ))}
               </select>
