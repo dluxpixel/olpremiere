@@ -212,27 +212,46 @@ export function rasterizeTitle(def: TitleDef, width: number, height: number): Of
     }
   }
 
-  // TEXT — with optional shadow. Guard against no text / bad font size.
+  // TEXT — optional outline (stroke) then fill, with an optional shadow. Guard
+  // against no text / bad font size.
   if (hasText) {
+    const hasOutline = !!def.outline && def.outline.widthPx > 0
+    const clearShadow = (): void => {
+      ctx.shadowColor = 'transparent'
+      ctx.shadowBlur = 0
+      ctx.shadowOffsetX = 0
+      ctx.shadowOffsetY = 0
+    }
     if (def.shadow) {
       ctx.shadowColor = def.shadow.color
       ctx.shadowBlur = def.shadow.blurPx
       ctx.shadowOffsetX = def.shadow.dx
       ctx.shadowOffsetY = def.shadow.dy
     }
+
+    // Outline is the BOTTOM layer: it (not the fill) casts the shadow, and the
+    // fill lands crisply on top so only the outer half of the stroke shows.
+    if (hasOutline) {
+      ctx.lineJoin = 'round'
+      ctx.lineCap = 'round'
+      ctx.strokeStyle = def.outline!.color
+      ctx.lineWidth = def.outline!.widthPx
+      let y = firstBaselineY
+      for (const line of lines) {
+        if (line !== '') ctx.strokeText(line, anchorX, y)
+        y += lineHeightPx
+      }
+      if (def.shadow) clearShadow() // the fill on top must not double the shadow
+    }
+
     ctx.fillStyle = def.color
     let y = firstBaselineY
     for (const line of lines) {
       if (line !== '') ctx.fillText(line, anchorX, y)
       y += lineHeightPx
     }
-    if (def.shadow) {
-      // Reset so a later cached draw on this ctx can't inherit the shadow.
-      ctx.shadowColor = 'transparent'
-      ctx.shadowBlur = 0
-      ctx.shadowOffsetX = 0
-      ctx.shadowOffsetY = 0
-    }
+    // Reset so a later cached draw on this ctx can't inherit the shadow.
+    if (def.shadow && !hasOutline) clearShadow()
   }
 
   cache.push({ key, canvas })

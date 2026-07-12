@@ -255,6 +255,13 @@ export interface TitleShadow {
   dy: number
 }
 
+/** A stroke drawn around the glyphs (outline). */
+export interface TitleOutline {
+  color: string
+  /** Stroke width in SEQUENCE px (0 = no outline). */
+  widthPx: number
+}
+
 /** A background rectangle behind the text (lower-third / plain shape). */
 export interface TitleBox {
   color: string
@@ -278,6 +285,7 @@ export interface TitleDef {
   offsetXPx: number
   offsetYPx: number
   shadow?: TitleShadow
+  outline?: TitleOutline
   box?: TitleBox
 }
 

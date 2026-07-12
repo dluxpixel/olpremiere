@@ -338,6 +338,45 @@ export function TitleControls({ clip }: { clip: Clip }) {
 
       <div className="h-px bg-border" />
 
+      <Section title="Outline">
+        <label className="flex items-center gap-2 text-[12px] text-text-secondary">
+          <input
+            type="checkbox"
+            data-testid="title-outline-toggle"
+            aria-label="Enable outline"
+            checked={!!def.outline}
+            onChange={(e) => set({ outline: e.target.checked ? { color: '#000000', widthPx: 8 } : undefined })}
+            className="accent-accent"
+          />
+          Outline stroke
+        </label>
+        {def.outline && (
+          <div className="flex flex-col gap-2">
+            <Field label="Color">
+              <input
+                type="color"
+                data-testid="title-outline-color"
+                aria-label="Outline color"
+                value={hexOf(def.outline.color)}
+                onChange={(e) => set({ outline: { ...def.outline!, color: e.target.value } })}
+                className="h-7 w-9 shrink-0 cursor-default rounded-[4px] bg-bg-input p-0.5"
+              />
+            </Field>
+            <Field label="Width">
+              <NumberField
+                value={def.outline.widthPx}
+                min={0}
+                max={100}
+                ariaLabel="Outline width"
+                onCommit={(v) => set({ outline: { ...def.outline!, widthPx: v } })}
+              />
+            </Field>
+          </div>
+        )}
+      </Section>
+
+      <div className="h-px bg-border" />
+
       <Section title="Background">
         <label className="flex items-center gap-2 text-[12px] text-text-secondary">
           <input

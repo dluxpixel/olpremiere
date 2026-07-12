@@ -106,6 +106,22 @@ async function rowMaxLuma(page: Page, fy: number): Promise<number> {
   }, fy)
 }
 
+/** Strongest "redness" (R − max(G,B)) across a program-monitor row. */
+async function rowMaxRedness(page: Page, fy: number): Promise<number> {
+  return page.evaluate((fy) => {
+    const c = document.querySelector('[data-testid="program-canvas"]') as HTMLCanvasElement
+    const s = document.createElement('canvas')
+    s.width = c.width
+    s.height = c.height
+    const ctx = s.getContext('2d')!
+    ctx.drawImage(c, 0, 0)
+    const row = ctx.getImageData(0, Math.floor(c.height * fy), c.width, 1).data
+    let max = 0
+    for (let i = 0; i < row.length; i += 4) max = Math.max(max, row[i] - Math.max(row[i + 1], row[i + 2]))
+    return max
+  }, fy)
+}
+
 test('entrance preset compiles to keyframes and animates in the preview', async ({ page }) => {
   await page.goto('/')
   const id = await addTitle(page)
@@ -255,6 +271,54 @@ test('right-click IN the preview opens the clip menu, and the gizmo survives an 
 
   // The drag gizmo is STILL available on an animated clip (it recompiles on drag).
   await expect(page.getByTestId('gizmo-body')).toBeVisible()
+})
+
+test('a text outline renders in preview AND export, and its color is editable', async ({ page }) => {
+  await page.goto('/')
+  const id = await addTitle(page)
+  await updateTitle(page, id, {
+    text: 'HELLO',
+    color: '#ffffff', // white fill
+    fontSizePx: 200,
+    outline: { color: 'rgb(255,0,0)', widthPx: 24 }, // red outline
+  })
+  await setPlayhead(page, 1)
+  // A strong red edge (the outline) around the white glyphs, in the preview.
+  await expect.poll(() => rowMaxRedness(page, 0.5), { timeout: 8_000 }).toBeGreaterThan(120)
+  await page.screenshot({ path: `${VERIFY}/outline.png` })
+
+  // The same red outline survives export (preview == export via the one raster).
+  await page.getByTestId('export-open').click()
+  await page.getByTestId('export-resolution').selectOption('2') // SD 640×360
+  const dl = page.waitForEvent('download', { timeout: 120_000 })
+  await page.getByTestId('export-start').click()
+  const download = await dl
+  const path = `${VERIFY}/outline.mp4`
+  await download.saveAs(path)
+  const b64 = fs.readFileSync(path).toString('base64')
+  const redness = await page.evaluate(async (b64) => {
+    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
+    const video = document.createElement('video')
+    video.muted = true
+    video.src = URL.createObjectURL(new Blob([bytes], { type: 'video/mp4' }))
+    await new Promise<void>((res, rej) => {
+      video.onloadedmetadata = () => res()
+      video.onerror = () => rej(new Error('decode failed'))
+    })
+    video.currentTime = 1
+    await new Promise<void>((res) => {
+      video.onseeked = () => res()
+    })
+    const canvas = document.createElement('canvas')
+    canvas.width = video.videoWidth
+    canvas.height = video.videoHeight
+    canvas.getContext('2d')!.drawImage(video, 0, 0)
+    const row = canvas.getContext('2d')!.getImageData(0, Math.floor(canvas.height * 0.5), canvas.width, 1).data
+    let max = 0
+    for (let i = 0; i < row.length; i += 4) max = Math.max(max, row[i] - Math.max(row[i + 1], row[i + 2]))
+    return max
+  }, b64)
+  expect(redness).toBeGreaterThan(80) // SD + H.264 chroma is softer, but clearly red
 })
 
 test('the Minecraft font renders Czech diacritics', async ({ page }) => {
