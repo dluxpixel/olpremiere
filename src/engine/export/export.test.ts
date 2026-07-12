@@ -116,8 +116,9 @@ describe('firstSupported', () => {
     expect(await firstSupported(['a', 'b'], async () => false)).toBeNull()
   })
 
-  it('prefers High profile first in the H.264 ladder', () => {
-    expect(H264_CODECS[0]).toBe('avc1.640028')
-    expect(H264_CODECS).toHaveLength(3)
+  it('prefers High L4.0 first, and carries higher levels for 1440p/4K', () => {
+    expect(H264_CODECS[0]).toBe('avc1.640028') // High L4.0 — ≤1080p
+    expect(H264_CODECS).toContain('avc1.640033') // High L5.1 — 4K uploads
+    expect(H264_CODECS.length).toBeGreaterThanOrEqual(4)
   })
 })

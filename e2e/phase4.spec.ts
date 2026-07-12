@@ -80,7 +80,7 @@ async function exportSamples(
   positions: [number, number][],
 ): Promise<[number, number, number][]> {
   await page.getByTestId('export-open').click()
-  await page.getByTestId('export-resolution').selectOption('2')
+  await page.getByTestId('export-resolution').selectOption('sd')
   const dl = page.waitForEvent('download', { timeout: 120_000 })
   await page.getByTestId('export-start').click()
   const download = await dl

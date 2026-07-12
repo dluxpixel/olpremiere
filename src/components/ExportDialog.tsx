@@ -7,7 +7,7 @@ import {
   type ExportProgress,
   type ExportSettings,
 } from '../engine/export'
-import { losslessBitrate } from '../engine/export/bitrate'
+import { losslessBitrate, youtubeBitrate } from '../engine/export/bitrate'
 import { beginCriticalWork } from '../state/unloadGuard'
 import { activeSequence } from '../engine/types'
 import { workArea } from '../engine/workArea'
@@ -16,14 +16,27 @@ import { useToasts } from '../state/toasts'
 import { Button, IconButton } from '../ui/Button'
 
 interface ResolutionPreset {
+  /** Stable key used as the <option> value (survives reordering the list). */
+  key: string
   label: string
   width: number
   height: number
 }
 
-/** Largest even-dimension box that fits seq within (boxW×boxH), keeping aspect. */
-function evenFit(seqW: number, seqH: number, boxW: number, boxH: number): { width: number; height: number } {
-  const s = Math.min(1, boxW / seqW, boxH / seqH)
+/**
+ * Largest even-dimension box that fits seq within (boxW×boxH), keeping aspect.
+ * With `allowUpscale`, seq may be scaled UP to fill the box (for the "upload at a
+ * higher resolution" YouTube presets); otherwise it only ever scales down.
+ */
+function evenFit(
+  seqW: number,
+  seqH: number,
+  boxW: number,
+  boxH: number,
+  allowUpscale = false,
+): { width: number; height: number } {
+  const fit = Math.min(boxW / seqW, boxH / seqH)
+  const s = allowUpscale ? fit : Math.min(1, fit)
   return {
     width: Math.max(2, Math.round((seqW * s) / 2) * 2),
     height: Math.max(2, Math.round((seqH * s) / 2) * 2),
@@ -32,24 +45,37 @@ function evenFit(seqW: number, seqH: number, boxW: number, boxH: number): { widt
 
 /**
  * Export presets PRESERVE the sequence aspect (so a 9:16 Shorts sequence exports
- * vertical, never stretched). For a 1920×1080 sequence these are the classic
- * Sequence / 1280×720 / 640×360.
+ * vertical, never stretched). Besides the sequence's native size and the classic
+ * downscales, we offer 1440p/2160p UPSCALES: uploading a 1080p timeline as 2K/4K
+ * escapes YouTube's bitrate-starved 1080p tier and looks markedly cleaner after
+ * their re-encode (the well-known "upload higher-res for better 1080p" trick).
+ * The upscales only appear when they actually raise the resolution.
  */
 function buildResolutions(seqW: number, seqH: number): ResolutionPreset[] {
   const full = evenFit(seqW, seqH, seqW, seqH)
+  const twoK = evenFit(seqW, seqH, 2560, 1440, true)
+  const fourK = evenFit(seqW, seqH, 3840, 2160, true)
   const hd = evenFit(seqW, seqH, 1280, 720)
   const sd = evenFit(seqW, seqH, 640, 360)
-  return [
-    { label: `Sequence (${full.width}×${full.height})`, ...full },
-    { label: `HD (${hd.width}×${hd.height})`, ...hd },
-    { label: `SD (${sd.width}×${sd.height})`, ...sd },
+  const seqPx = full.width * full.height
+  const bigger = (r: { width: number; height: number }): boolean => r.width * r.height > seqPx * 1.02
+
+  const list: ResolutionPreset[] = [
+    { key: 'seq', label: `Sequence (${full.width}×${full.height})`, ...full },
   ]
+  if (bigger(twoK)) list.push({ key: '2k', label: `1440p — sharper on YouTube (${twoK.width}×${twoK.height})`, ...twoK })
+  if (bigger(fourK)) list.push({ key: '4k', label: `2160p — best for YouTube (${fourK.width}×${fourK.height})`, ...fourK })
+  list.push({ key: 'hd', label: `HD (${hd.width}×${hd.height})`, ...hd })
+  list.push({ key: 'sd', label: `SD (${sd.width}×${sd.height})`, ...sd })
+  return list
 }
 
-// `max` computes a near-lossless target from the chosen resolution at export
-// time (see losslessBitrate); the rest are fixed. Listed best-first so the
-// highest-quality "1:1 to source" option is the most prominent.
+// `youtube` and `max` compute their target from the chosen resolution at export
+// time (null value → computed in start()); the rest are fixed. "YouTube" is the
+// default: ~2× YouTube's recommended upload bitrate so their re-encode stays
+// clean. "Maximum" is near-lossless (huge files) for archival.
 const BITRATES = [
+  { key: 'youtube', label: 'YouTube (high quality)', value: null },
   { key: 'max', label: 'Maximum (1:1 — near-lossless)', value: null },
   { key: 'high', label: 'High (24 Mbps)', value: 24_000_000 },
   { key: 'medium', label: 'Medium (12 Mbps)', value: 12_000_000 },
@@ -122,8 +148,12 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   const show = useToasts((s) => s.show)
 
   const resolutions = buildResolutions(seq.width, seq.height)
-  const [resolution, setResolution] = useState(0)
-  const [bitrateKey, setBitrateKey] = useState<string>('medium')
+  // Default to the 1440p upscale when it's offered (i.e. the timeline is ≤2K) —
+  // that's the YouTube sweet spot — else the native sequence size.
+  const [resolutionKey, setResolutionKey] = useState<string>(
+    () => (resolutions.some((r) => r.key === '2k') ? '2k' : 'seq'),
+  )
+  const [bitrateKey, setBitrateKey] = useState<string>('youtube')
   const [encoder, setEncoder] = useState<EncoderMode>(loadEncoderMode)
   const [stage, setStage] = useState<Stage>({ kind: 'settings' })
   const abortRef = useRef<AbortController | null>(null)
@@ -141,11 +171,15 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   const running = stage.kind === 'running'
 
   const start = async () => {
-    const preset = resolutions[resolution]
-    const bopt = BITRATES.find((b) => b.key === bitrateKey) ?? BITRATES[2]
-    // "Maximum" targets a near-lossless rate computed from the export raster; the
-    // rest are fixed values.
-    const videoBitrate = bopt.value ?? losslessBitrate(preset.width, preset.height, seq.fps)
+    const preset = resolutions.find((r) => r.key === resolutionKey) ?? resolutions[0]
+    const bopt = BITRATES.find((b) => b.key === bitrateKey) ?? BITRATES[0]
+    // "YouTube" and "Maximum" compute their rate from the export raster; the rest
+    // are fixed values.
+    const computed =
+      bopt.key === 'max'
+        ? losslessBitrate(preset.width, preset.height, seq.fps)
+        : youtubeBitrate(preset.width, preset.height, seq.fps)
+    const videoBitrate = bopt.value ?? computed
     const settings: ExportSettings = {
       width: preset.width,
       height: preset.height,
@@ -302,11 +336,11 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
               <select
                 data-testid="export-resolution"
                 className="h-7 w-56 rounded-[4px] border border-border bg-bg-input px-2 text-[12px] text-text-primary focus:border-accent focus:outline-none"
-                value={resolution}
-                onChange={(e) => setResolution(Number(e.target.value))}
+                value={resolutionKey}
+                onChange={(e) => setResolutionKey(e.target.value)}
               >
-                {resolutions.map((r, i) => (
-                  <option key={r.label} value={i}>
+                {resolutions.map((r) => (
+                  <option key={r.key} value={r.key}>
                     {r.label}
                   </option>
                 ))}
@@ -356,6 +390,12 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
             <p className="text-[11px] leading-4 text-text-muted">
               Encoded locally with WebCodecs — your footage never leaves this machine.
             </p>
+            {resolutionKey === '2k' || resolutionKey === '4k' ? (
+              <p className="text-[11px] leading-4 text-accent">
+                Uploading at a higher resolution than your timeline makes YouTube encode it in
+                its higher-bitrate tier — noticeably cleaner, even watched at 1080p.
+              </p>
+            ) : null}
             <div className="mt-1 flex justify-end gap-2">
               <Button variant="secondary" onClick={onClose}>
                 Cancel

@@ -72,7 +72,7 @@ async function previewPixel(page: Page, fx: number, fy: number): Promise<[number
 
 async function exportSample(page: Page, tS: number, fx: number, fy: number): Promise<[number, number, number]> {
   await page.getByTestId('export-open').click()
-  await page.getByTestId('export-resolution').selectOption('2')
+  await page.getByTestId('export-resolution').selectOption('sd')
   const dl = page.waitForEvent('download', { timeout: 120_000 })
   await page.getByTestId('export-start').click()
   const download = await dl

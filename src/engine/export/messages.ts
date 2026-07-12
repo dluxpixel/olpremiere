@@ -79,8 +79,20 @@ export type ExportResponse =
 // ---------------------------------------------------------------------------
 // Pure helpers (unit-tested in export.test.ts)
 
-/** H.264 candidates, best first: High 4.0 → Main 4.0 → Baseline 3.1. */
-export const H264_CODECS = ['avc1.640028', 'avc1.4d0028', 'avc1.42001f'] as const
+/**
+ * H.264 candidates, best first. Higher resolutions need higher LEVELS: L4.0 maxes
+ * out at 1080p, so a 1440p/4K (YouTube upscale) export needs L5.0–L5.2. The
+ * encoder probe (firstSupported) picks the first the browser accepts for the
+ * chosen frame size — 1080p lands on L4.0, 2K on L5.0, 4K on L5.1/L5.2.
+ */
+export const H264_CODECS = [
+  'avc1.640028', // High L4.0 — ≤1080p (widest compatibility)
+  'avc1.640032', // High L5.0 — ≤1440p
+  'avc1.640033', // High L5.1 — ≤4K @30
+  'avc1.640034', // High L5.2 — ≤4K @60
+  'avc1.4d0028', // Main L4.0 (fallback)
+  'avc1.42001f', // Baseline L3.1 (fallback)
+] as const
 
 /** First candidate the async predicate accepts; probes stop at the first hit. */
 export async function firstSupported<T>(

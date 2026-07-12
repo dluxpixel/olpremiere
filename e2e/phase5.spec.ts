@@ -83,7 +83,7 @@ async function previewRowMaxLuma(page: Page, fy: number): Promise<number> {
 
 async function exportPixel(page: Page, fx: number, fy: number): Promise<[number, number, number]> {
   await page.getByTestId('export-open').click()
-  await page.getByTestId('export-resolution').selectOption('2') // SD 640×360
+  await page.getByTestId('export-resolution').selectOption('sd') // SD 640×360
   const dl = page.waitForEvent('download', { timeout: 120_000 })
   await page.getByTestId('export-start').click()
   const download = await dl
@@ -162,7 +162,7 @@ test('title text is drawn (bright strokes) in preview and export', async ({ page
   // Export and confirm the text band also has bright pixels.
   const bright = await (async () => {
     await page.getByTestId('export-open').click()
-    await page.getByTestId('export-resolution').selectOption('2')
+    await page.getByTestId('export-resolution').selectOption('sd')
     const dl = page.waitForEvent('download', { timeout: 120_000 })
     await page.getByTestId('export-start').click()
     const d = await dl

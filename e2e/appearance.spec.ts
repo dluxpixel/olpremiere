@@ -185,7 +185,7 @@ test('the Minecraft font renders in both preview and export (worker font path)',
   // Export (buffered download path) and confirm the text band is bright there too
   // — proving the font loaded in the worker's FontFaceSet without crashing.
   await page.getByTestId('export-open').click()
-  await page.getByTestId('export-resolution').selectOption('2') // SD 640×360
+  await page.getByTestId('export-resolution').selectOption('sd') // SD 640×360
   const dl = page.waitForEvent('download', { timeout: 120_000 })
   await page.getByTestId('export-start').click()
   const download = await dl
@@ -289,7 +289,7 @@ test('a text outline renders in preview AND export, and its color is editable', 
 
   // The same red outline survives export (preview == export via the one raster).
   await page.getByTestId('export-open').click()
-  await page.getByTestId('export-resolution').selectOption('2') // SD 640×360
+  await page.getByTestId('export-resolution').selectOption('sd') // SD 640×360
   const dl = page.waitForEvent('download', { timeout: 120_000 })
   await page.getByTestId('export-start').click()
   const download = await dl

@@ -124,6 +124,9 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
   try {
     const { settings, sequence, assets, audio, fileHandle } = init
     const framesTotal = Math.max(1, Math.ceil((settings.endS - settings.startS) * settings.fps))
+    // HD+ gets the quality-tuned encode + BT.709 tag (the YouTube path); SD stays
+    // byte-stable so the golden / preview==export tests are unaffected.
+    const isHd = settings.height >= 720 || settings.width >= 1280
     post({ type: 'progress', progress: { phase: 'preparing', framesDone: 0, framesTotal } })
 
     // Register bundled title fonts in THIS worker's FontFaceSet before any title
@@ -145,7 +148,11 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
       height: settings.height,
       bitrate: settings.videoBitrate,
       framerate: settings.fps,
-      latencyMode: 'realtime',
+      // Software (openh264, no B-frames) uses 'quality' rate control for a
+      // cleaner offline file, but only at HD+ (SD stays byte-stable for tests).
+      // Hardware keeps 'realtime', which also suppresses the B-frames that would
+      // crash the muxer (the Auto fallback relies on it).
+      latencyMode: accel === 'prefer-software' && isHd ? 'quality' : 'realtime',
       hardwareAcceleration: accel,
     })
     const accelOrder: HardwarePreference[] =
@@ -232,8 +239,23 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
       }
     }
 
+    // Tag HD+ output as BT.709 (the MP4 `colr` box, written by mp4-muxer from
+    // this metadata) so players and YouTube interpret the colours correctly
+    // instead of guessing — the usual cause of "washed out after upload". SD
+    // stays untagged: encoders work in BT.601 there, and leaving it alone keeps
+    // the golden export byte-stable.
     const videoEncoder = new VideoEncoder({
-      output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+      output: (chunk, meta) => {
+        if (isHd && meta?.decoderConfig) {
+          meta.decoderConfig.colorSpace = {
+            primaries: 'bt709',
+            transfer: 'bt709',
+            matrix: 'bt709',
+            fullRange: false,
+          }
+        }
+        muxer.addVideoChunk(chunk, meta)
+      },
       error: (e) => {
         encoderError ??= new Error(`video encoding failed: ${e.message}`)
       },
