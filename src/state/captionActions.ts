@@ -13,8 +13,8 @@ import { activeSequence, videoTracks, type Clip, type Track } from '../engine/ty
 import { updateActiveSequence, useStore } from './store'
 import { useToasts } from './toasts'
 
-/** Words per caption when timings come from a transcript (Jettism runs 1-3). */
-const AUTO_CAPTION_MAX_WORDS = 2
+/** One word per caption — the brief's hard-cut house style. */
+const AUTO_CAPTION_MAX_WORDS = 1
 
 /** Place clips one by one so each lands in a real gap (never overlapping). */
 function withClips(track: Track, clips: Clip[]): Track {

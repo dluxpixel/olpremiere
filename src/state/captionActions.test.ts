@@ -54,9 +54,9 @@ describe('splitTitleIntoWordCaptions', () => {
         expect(c.startS).toBeGreaterThanOrEqual(prev.startS + prev.outS - 1e-6)
       }
     }
-    // inherits the source style, and every piece pops in
+    // inherits the source style; hard-cut per the brief (no entrance animation)
     expect(track.clips[0].title?.fontSizePx).toBe(60)
-    expect(track.clips[0].appearance?.in).toBe('pop')
+    expect(track.clips[0].appearance).toBeUndefined()
     // selection moves to the new pieces
     expect(useStore.getState().ui.selection).toEqual(track.clips.map((c) => c.id))
   })
@@ -102,13 +102,15 @@ describe('addCaptionsFromWords', () => {
     const vids = videoTracks(seq())
     expect(vids).toHaveLength(before + 1)
     const top = vids[vids.length - 1]
-    // 'so I' group (gap 0.9s breaks the chunk), then 'trapped'
-    expect(top.clips.map((c) => c.title?.text)).toEqual(['SO I', 'TRAPPED'])
+    // one word per caption (hard-cut house style)
+    expect(top.clips.map((c) => c.title?.text)).toEqual(['SO', 'I', 'TRAPPED'])
     expect(top.clips[0].startS).toBeCloseTo(0, 6)
-    expect(top.clips[1].startS).toBeCloseTo(1.5, 6)
-    // house style: white 8%-height text with a black outline, pop entrance
+    expect(top.clips[1].startS).toBeCloseTo(0.3, 6)
+    expect(top.clips[2].startS).toBeCloseTo(1.5, 6)
+    // house style: white 8%-height text, black outline, comic caption face
     expect(top.clips[0].title?.outline?.color).toBe('#000000')
-    expect(top.clips[0].appearance?.in).toBe('pop')
+    expect(top.clips[0].title?.fontFamily).toContain('Lilita One')
+    expect(top.clips[0].appearance).toBeUndefined()
     expect(useStore.getState().ui.selection).toEqual(top.clips.map((c) => c.id))
   })
 

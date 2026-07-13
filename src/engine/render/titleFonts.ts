@@ -8,6 +8,7 @@
 // The font file is bundled by Vite (?url) so the same emitted asset URL resolves
 // in both the app bundle and the worker bundle.
 
+import lilitaUrl from '../../assets/fonts/LilitaOne-Regular.ttf?url'
 import monocraftUrl from '../../assets/fonts/Monocraft.ttf?url'
 import { clearTitleCache } from './titleRaster'
 
@@ -24,8 +25,16 @@ export interface CustomTitleFont {
 /** Minecraft-style pixel font (Monocraft, SIL OFL — safe to ship publicly). */
 export const MONOCRAFT_STACK = "'Monocraft', 'Courier New', monospace"
 
+/**
+ * The Shorts-caption comic face (Lilita One, SIL OFL). The genre's exact font
+ * (Obelix Pro) has an unclear commercial license, so we ship the standard
+ * clean-licensed lookalike; the caption style defaults to this stack.
+ */
+export const CAPTION_FONT_STACK = "'Lilita One', 'Arial Black', 'Inter', sans-serif"
+
 export const CUSTOM_TITLE_FONTS: CustomTitleFont[] = [
   { label: 'Minecraft', family: 'Monocraft', stack: MONOCRAFT_STACK, url: monocraftUrl },
+  { label: 'Comic Bold (captions)', family: 'Lilita One', stack: CAPTION_FONT_STACK, url: lilitaUrl },
 ]
 
 /** Every selectable title font (system stacks + bundled), for the Inspector

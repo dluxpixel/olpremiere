@@ -119,8 +119,9 @@ describe('jettismCaptionDef', () => {
     expect(def.fontSizePx).toBe(154)
     expect(def.color).toBe('#ffffff')
     expect(def.bold).toBe(true)
+    expect(def.fontFamily).toContain('Lilita One')
     expect(def.outline).toEqual({ color: '#000000', widthPx: 9 })
-    expect(def.offsetYPx).toBe(422)
+    expect(def.offsetYPx).toBe(38) // ~52% height per the brief
     expect(def.align).toBe('center')
   })
 
@@ -153,8 +154,16 @@ describe('captionClips', () => {
     expect(clips[1].title?.color).toBe(CAPTION_EMPHASIS_COLORS[0])
   })
 
-  it('compiles a pop entrance onto every clip', () => {
+  it('hard-cuts by default: no entrance animation on caption clips', () => {
     const clips = captionClips(chunks, opts)
+    for (const clip of clips) {
+      expect(clip.appearance).toBeUndefined()
+      expect(clip.keyframes?.scale?.length ?? 0).toBe(0)
+    }
+  })
+
+  it('compiles a pop entrance when explicitly asked for', () => {
+    const clips = captionClips(chunks, { ...opts, popIn: true })
     for (const clip of clips) {
       expect(clip.appearance).toEqual({ in: 'pop', durS: CAPTION_POP_DUR_S })
       expect(clip.keyframes?.scale?.length ?? 0).toBeGreaterThan(0)

@@ -80,3 +80,20 @@ describe('bundled Minecraft font (Monocraft)', () => {
     for (const c of 'ABCabc0123.,!?:-') expect(has(c.codePointAt(0)!)).toBe(true)
   })
 })
+
+describe('bundled caption font (Lilita One)', () => {
+  const lilitaPath = fileURLToPath(new URL('../../assets/fonts/LilitaOne-Regular.ttf', import.meta.url))
+  const has = cmapHasFactory(readFileSync(lilitaPath))
+
+  it('covers ASCII and common punctuation (captions are English-first)', () => {
+    for (const c of 'ABCabc0123.,!?:-*') expect(has(c.codePointAt(0)!)).toBe(true)
+  })
+
+  it('documents the known Czech gaps — caron glyphs fall back down the stack', () => {
+    // Per-glyph canvas fallback is identical in preview and export (same stack
+    // registered in both contexts), so this is cosmetic, not a divergence.
+    const missing = [...'čďěňřťů'].filter((c) => !has(c.codePointAt(0)!))
+    expect(missing.length).toBeGreaterThan(0) // flips when a fuller font lands
+    for (const c of 'áéíóúý') expect(has(c.codePointAt(0)!)).toBe(true)
+  })
+})

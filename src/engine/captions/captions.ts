@@ -10,6 +10,7 @@
 import type { Clip, TitleDef } from '../types'
 import { newTitleClip } from '../types'
 import { applyAppearanceToClip } from '../anim/appearance'
+import { CAPTION_FONT_STACK } from '../render/titleFonts'
 
 /** One spoken word with its absolute timeline window, seconds. */
 export interface CaptionWord {
@@ -45,7 +46,7 @@ const CHUNK_DEFAULTS: Required<ChunkOptions> = {
   maxWords: 2,
   maxGapS: 0.35,
   maxSpanS: 1.6,
-  holdS: 0.3,
+  holdS: 0.4,
   minDurS: 0.18,
 }
 
@@ -164,11 +165,12 @@ export interface CaptionStyleOptions {
 /** Scale a 1920-height reference pixel value to this sequence. */
 const px = (ref: number, seqHeight: number): number => Math.max(1, Math.round((ref / 1920) * seqHeight))
 
-/** The house caption look: heavy white text, thick black outline, at ~72% height. */
+/** The house caption look: the comic caption face, white fill, thick black
+ * outline, just under center (~52% height per the motion-pack brief). */
 export function jettismCaptionDef(text: string, seqHeight: number): TitleDef {
   return {
     text,
-    fontFamily: "'Inter', system-ui, sans-serif",
+    fontFamily: CAPTION_FONT_STACK,
     fontSizePx: px(154, seqHeight), // ~8% of frame height
     color: '#ffffff',
     align: 'center',
@@ -177,8 +179,8 @@ export function jettismCaptionDef(text: string, seqHeight: number): TitleDef {
     italic: false,
     lineHeight: 1.1,
     offsetXPx: 0,
-    // vAlign middle sits at 50%; the spec wants the caption line at ~72%.
-    offsetYPx: px(422, seqHeight),
+    // vAlign middle sits at 50%; the brief wants the caption line at ~52%.
+    offsetYPx: px(38, seqHeight),
     shadow: { color: 'rgba(0,0,0,0.6)', blurPx: px(6, seqHeight), dx: 0, dy: px(4, seqHeight) },
     outline: { color: '#000000', widthPx: px(9, seqHeight) },
   }
@@ -189,12 +191,17 @@ export const CAPTION_POP_DUR_S = 0.13
 
 export interface CaptionClipOptions extends CaptionStyleOptions {
   seqWidth: number
+  /**
+   * Compile a pop entrance onto each caption. The brief's house style is a
+   * HARD CUT (instant word swap), so this is off by default.
+   */
+  popIn?: boolean
 }
 
 /**
  * Turn chunks into ready-to-insert title clips: house style (or the inherited
- * base style), emphasis color on keyword chunks, and the pop entrance compiled
- * to real keyframes through the standard appearance path.
+ * base style), emphasis color on keyword chunks, hard-cut by default with an
+ * optional pop entrance compiled through the standard appearance path.
  */
 export function captionClips(chunks: CaptionChunk[], options: CaptionClipOptions): Clip[] {
   const upper = options.upper ?? options.baseDef === undefined
@@ -206,6 +213,7 @@ export function captionClips(chunks: CaptionChunk[], options: CaptionClipOptions
       : jettismCaptionDef(text, options.seqHeight)
     if (chunk.emphasis) def.color = emphasisColor
     const clip = newTitleClip(def, chunk.startS, chunk.endS - chunk.startS)
+    if (!options.popIn) return clip
     return applyAppearanceToClip(clip, { in: 'pop', durS: CAPTION_POP_DUR_S }, options.seqWidth, options.seqHeight)
   })
 }
