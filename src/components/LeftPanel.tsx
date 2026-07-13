@@ -1,7 +1,8 @@
-import { Bookmark, Film, FolderOpen, Image as ImageIcon, Music, Plus, Sparkles, Type, Upload } from 'lucide-react'
+import { Bookmark, Film, FolderOpen, Image as ImageIcon, Music, Plus, Sparkles, Type, Upload, Volume2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { EFFECTS } from '../engine/effects/registry'
 import { TRANSITION_KINDS, type TransitionKind } from '../engine/render/types'
+import { SFX_LIBRARY, type SfxDef } from '../engine/sfx/sfx'
 import { formatTimecode } from '../engine/timecode'
 import { activeSequence, type MediaAsset } from '../engine/types'
 import { useBlobUrl } from '../state/blobUrls'
@@ -21,6 +22,7 @@ import {
 import { healArrivedBlob, useMediaSync } from '../collab/mediaSync'
 import { useCollab } from '../collab/collabControl'
 import { deleteAsset, importFiles, insertAssetAtPlayhead } from '../state/mediaActions'
+import { insertSfxAtPlayhead, previewSfx } from '../state/sfxActions'
 import { useStore, type LeftTab } from '../state/store'
 import { addTitleClip } from '../state/titleActions'
 import { putBlob } from '../state/persistence'
@@ -453,6 +455,29 @@ function LibraryCard({ item, fps }: { item: LibraryItem; fps: number }) {
   )
 }
 
+/** One bundled stinger: click auditions it, double-click drops it at the playhead. */
+function SfxRow({ sfx }: { sfx: SfxDef }) {
+  return (
+    <div
+      data-testid="sfx-item"
+      data-payload={sfx.id}
+      role="button"
+      tabIndex={0}
+      title="Click to preview · double-click to add at the playhead"
+      onClick={() => previewSfx(sfx.id)}
+      onDoubleClick={() => void insertSfxAtPlayhead(sfx.id)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') void insertSfxAtPlayhead(sfx.id)
+      }}
+      className="flex cursor-default items-center gap-2 rounded-[4px] px-2 py-1.5 text-[12px] text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated hover:text-text-primary"
+    >
+      <Volume2 size={13} strokeWidth={1.5} aria-hidden className="shrink-0 text-text-muted" />
+      <span className="truncate">{sfx.name}</span>
+      <span className="ml-auto shrink-0 text-[10px] text-text-muted tabular-nums">{sfx.durationS.toFixed(1)}s</span>
+    </div>
+  )
+}
+
 function LibraryTab() {
   const items = useLibrary((s) => s.items)
   const presets = useLibrary((s) => s.presets)
@@ -460,23 +485,20 @@ function LibraryTab() {
   const hasSelection = useStore((s) => s.ui.selection.length === 1)
   const empty = items.length === 0 && presets.length === 0
 
-  if (empty) {
-    return (
-      <div
-        data-testid="library-empty"
-        className="m-2 flex flex-1 flex-col items-center justify-center gap-2 rounded-[6px] border border-dashed border-border-strong text-center"
-      >
-        <Bookmark size={24} strokeWidth={1.5} className="text-text-muted" aria-hidden />
-        <div className="text-[13px] text-text-secondary">Nothing saved yet</div>
-        <div className="max-w-[200px] text-[11px] text-text-muted">
-          Right-click media → Save to Library. Select a graded clip and save its effects as a preset.
-        </div>
-      </div>
-    )
-  }
-
   return (
     <div className="min-h-0 flex-1 overflow-y-auto p-2">
+      {empty && (
+        <div
+          data-testid="library-empty"
+          className="mb-3 flex flex-col items-center justify-center gap-2 rounded-[6px] border border-dashed border-border-strong py-6 text-center"
+        >
+          <Bookmark size={24} strokeWidth={1.5} className="text-text-muted" aria-hidden />
+          <div className="text-[13px] text-text-secondary">Nothing saved yet</div>
+          <div className="max-w-[200px] text-[11px] text-text-muted">
+            Right-click media → Save to Library. Select a graded clip and save its effects as a preset.
+          </div>
+        </div>
+      )}
       {items.length > 0 && (
         <section className="mb-3">
           <h3 className="px-0.5 pb-1.5 text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">
@@ -528,6 +550,17 @@ function LibraryTab() {
           ))}
         </section>
       )}
+      <section className={items.length > 0 || presets.length > 0 ? 'mt-3' : ''}>
+        <h3 className="px-0.5 pb-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">
+          Sound effects
+        </h3>
+        <p className="px-0.5 pb-1 text-[10px] text-text-muted">
+          Click to preview · double-click to drop at the playhead.
+        </p>
+        {SFX_LIBRARY.map((sfx) => (
+          <SfxRow key={sfx.id} sfx={sfx} />
+        ))}
+      </section>
     </div>
   )
 }

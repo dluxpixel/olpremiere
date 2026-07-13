@@ -1,0 +1,56 @@
+[
+  {
+    "id": "whoosh",
+    "name": "Whoosh",
+    "file": "whoosh.wav",
+    "durationS": 0.5
+  },
+  {
+    "id": "boom",
+    "name": "Deep Boom",
+    "file": "boom.wav",
+    "durationS": 1.2
+  },
+  {
+    "id": "hit",
+    "name": "Hit Marker",
+    "file": "hit.wav",
+    "durationS": 0.14
+  },
+  {
+    "id": "ding",
+    "name": "Level Ding",
+    "file": "ding.wav",
+    "durationS": 0.9
+  },
+  {
+    "id": "pop",
+    "name": "Pop",
+    "file": "pop.wav",
+    "durationS": 0.1
+  },
+  {
+    "id": "riser",
+    "name": "Riser",
+    "file": "riser.wav",
+    "durationS": 1.4
+  },
+  {
+    "id": "subdrop",
+    "name": "Sub Drop",
+    "file": "subdrop.wav",
+    "durationS": 0.8
+  },
+  {
+    "id": "zap",
+    "name": "Zap",
+    "file": "zap.wav",
+    "durationS": 0.3
+  },
+  {
+    "id": "tick",
+    "name": "Tick",
+    "file": "tick.wav",
+    "durationS": 0.06
+  }
+]
