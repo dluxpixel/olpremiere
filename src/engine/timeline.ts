@@ -395,7 +395,11 @@ export function splitClip(seq: Sequence, clipId: Id, tS: number): Sequence {
   const found = findClip(seq, clipId)
   if (!found) return seq
   const { track, clip, trackIndex, clipIndex } = found
-  if (tS <= clip.startS || tS >= clipEndS(clip)) return seq
+  // A piece shorter than one frame can never render a full frame — a cut that
+  // close to an edge is playhead jitter (cutting during playback, double-taps),
+  // and honoring it litters the timeline with unusable slivers. No-op instead.
+  const minPieceS = 1 / (seq.fps || 30)
+  if (tS < clip.startS + minPieceS || tS > clipEndS(clip) - minPieceS) return seq
 
   const cutSource = clip.inS + (tS - clip.startS) * absSpeed(clip)
   const left: Clip = { ...clip, outS: cutSource, transitionOut: undefined }

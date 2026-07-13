@@ -929,7 +929,9 @@ export function Timeline({ height }: { height: number }) {
         separator: true,
         disabled: !playheadInside,
         onClick: () =>
-          updateActiveSequence('Split at playhead', (sq) => splitGroup(sq, clip.id, playheadS)),
+          updateActiveSequence('Split at playhead', (sq) =>
+            splitGroup(sq, clip.id, quantizeToFrame(playheadS, sq.fps)),
+          ),
       },
       {
         label: 'Delete',

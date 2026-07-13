@@ -515,6 +515,16 @@ describe('splitClip', () => {
     expect(splitClip(seq, c.id, 0.5)).toBe(seq)
     expect(splitClip(seq, c.id, 7)).toBe(seq)
   })
+  it('no-ops within one frame of an edge — jitter cuts must not leave slivers', () => {
+    const c = makeClip({ startS: 1, inS: 0, outS: 4 })
+    const seq = makeSeq([makeTrack({ clips: [c] })]) // 30fps → min piece 1/30s
+    expect(splitClip(seq, c.id, 1.02)).toBe(seq) // 20ms from the start edge
+    expect(splitClip(seq, c.id, 4.985)).toBe(seq) // 15ms from the end edge
+    // exactly one frame in is a legitimate cut
+    const ok = splitClip(seq, c.id, 1 + 1 / 30)
+    expect(ok).not.toBe(seq)
+    expect(ok.tracks[0].clips).toHaveLength(2)
+  })
   it('produces continuous halves preserving the source range', () => {
     const c = makeClip({ startS: 1, inS: 0.5, outS: 4.5 })
     const seq = makeSeq([makeTrack({ clips: [c] })])

@@ -70,8 +70,10 @@ function deleteSelected(ripple: boolean) {
 /** Ctrl/Cmd+K: split the selected clips under the playhead — or every clip under it. */
 function splitAtPlayhead() {
   const s = useStore.getState()
-  const t = s.ui.playheadS
   const seq = activeSequence(s.project)
+  // Cut on the frame grid: a mid-frame playhead (playback, fine scrubs) would
+  // otherwise land off-grid cuts that leave sliver fragments.
+  const t = quantizeToFrame(s.ui.playheadS, seq.fps)
   const sel = s.ui.selection
   const targets = seq.tracks.flatMap((tr) =>
     tr.locked
