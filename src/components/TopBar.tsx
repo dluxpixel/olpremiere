@@ -239,7 +239,7 @@ export function TopBar() {
       <input
         ref={openFileRef}
         type="file"
-        accept=".json,.olstudio.json,application/json"
+        accept=".olstudio,.json,.olstudio.json,application/json,application/octet-stream"
         className="hidden"
         data-testid="open-project-input"
         onChange={(e) => {

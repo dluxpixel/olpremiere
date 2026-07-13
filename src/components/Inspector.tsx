@@ -109,12 +109,15 @@ function ClipPanel({
   fps,
   playheadS,
   showAudio,
+  audioFirst,
 }: {
   clip: Clip
   assetName: string
   fps: number
   playheadS: number
   showAudio: boolean
+  /** Audio-track clips lead with the sound controls (above Speed/Duration). */
+  audioFirst: boolean
 }) {
   const isTitle = isTitleClip(clip)
   const name = isTitle ? clip.title!.text || 'Title' : assetName
@@ -149,6 +152,15 @@ function ClipPanel({
         </>
       )}
 
+      {/* A SOUND clip is about its sound: Audio leads, Speed/Duration follows.
+          Video clips keep Speed first (their audio is secondary). */}
+      {audioFirst && showAudio && (
+        <>
+          <AudioControls clip={clip} />
+          <div className="h-px bg-border" />
+        </>
+      )}
+
       {!isTitle && (
         <>
           <SpeedControls clip={clip} />
@@ -156,7 +168,7 @@ function ClipPanel({
         </>
       )}
 
-      {showAudio && (
+      {!audioFirst && showAudio && (
         <>
           <AudioControls clip={clip} />
           <div className="h-px bg-border" />
@@ -215,6 +227,7 @@ export function Inspector({ width }: { width: number }) {
             fps={seq.fps}
             playheadS={playheadS}
             showAudio={showAudio}
+            audioFirst={selectedTrack?.kind === 'audio'}
           />
         </div>
       ) : (

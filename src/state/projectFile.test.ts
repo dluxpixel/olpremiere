@@ -1,7 +1,52 @@
 import { describe, expect, it } from 'vitest'
 
-import type { MediaAsset, Project } from '../engine/types'
-import { base64ToBytes, blobKeysOf, bytesToBase64, projectFileName } from './projectFile'
+import { newProject, type MediaAsset, type Project } from '../engine/types'
+import {
+  PROJECT_FILE_FORMAT,
+  PROJECT_FILE_VERSION,
+  base64ToBytes,
+  blobKeysOf,
+  bytesToBase64,
+  decodeHeader,
+  encodeHeader,
+  isBinaryProjectFile,
+  projectFileName,
+} from './projectFile'
+
+describe('v2 binary header', () => {
+  const header = () => ({
+    format: PROJECT_FILE_FORMAT,
+    version: PROJECT_FILE_VERSION,
+    project: newProject('Head Test'),
+    blobs: [
+      { key: 'asset/a', type: 'video/mp4', size: 1234 },
+      { key: 'thumb/a', type: 'image/jpeg', size: 56 },
+    ],
+  })
+
+  it('encodes and decodes losslessly, reporting the body offset', () => {
+    // ONE header instance: newProject() mints fresh ids/timestamps per call.
+    const h = header()
+    const bytes = encodeHeader(h)
+    expect(isBinaryProjectFile(bytes)).toBe(true)
+    const decoded = decodeHeader(bytes)
+    expect(decoded).not.toBeNull()
+    expect(decoded!.header).toEqual(h)
+    expect(decoded!.bodyOffset).toBe(bytes.length)
+  })
+
+  it('rejects garbage and truncated prefixes', () => {
+    expect(isBinaryProjectFile(new TextEncoder().encode('NOTMAGIC'))).toBe(false)
+    expect(decodeHeader(new Uint8Array(4))).toBeNull()
+    const bytes = encodeHeader(header())
+    expect(decodeHeader(bytes.subarray(0, 20))).toBeNull() // header cut short
+  })
+
+  it('rejects a wrong-format header', () => {
+    const bytes = encodeHeader({ ...header(), format: 'other' })
+    expect(decodeHeader(bytes)).toBeNull()
+  })
+})
 
 describe('base64 round-trip', () => {
   it('encodes and decodes bytes losslessly', () => {
@@ -44,9 +89,9 @@ describe('blobKeysOf', () => {
 
 describe('projectFileName', () => {
   it('sanitizes the name and appends the extension', () => {
-    expect(projectFileName('My Short #1!')).toBe('My Short 1.olstudio.json')
+    expect(projectFileName('My Short #1!')).toBe('My Short 1.olstudio')
   })
   it('falls back when the name is empty after sanitizing', () => {
-    expect(projectFileName('***')).toBe('project.olstudio.json')
+    expect(projectFileName('***')).toBe('project.olstudio')
   })
 })
