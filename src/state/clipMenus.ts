@@ -6,6 +6,7 @@ import { DEFAULT_APPEARANCE_DUR, ENTRANCE_PRESETS, EXIT_PRESETS } from '../engin
 import { TITLE_FONT_OPTIONS } from '../engine/render/titleFonts'
 import type { Clip } from '../engine/types'
 import { clearClipAppearance, saveClipAppearanceAsDefault, setClipAppearance } from './appearanceActions'
+import { splitTitleIntoWordCaptions } from './captionActions'
 import type { MenuItem } from './contextMenu'
 import { updateTitle } from './titleActions'
 
@@ -39,6 +40,8 @@ export function titleFontSizeItems(clip: Clip): MenuItem[] {
   return [
     { label: 'Font', separator: true, submenu: fontSub },
     { label: 'Size', submenu: sizeSub },
+    // Jettism-style captions: one pop-in title per word, spread over the clip.
+    { label: 'Split into word captions', onClick: () => splitTitleIntoWordCaptions(clip.id) },
   ]
 }
 
