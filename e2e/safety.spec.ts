@@ -96,6 +96,24 @@ test('deleting an asset from the bin offers a working Undo', async ({ page }) =>
   expect(await clipCount(page)).toBe(1)
 })
 
+test('click a bin asset, press Delete → it deletes (with Undo)', async ({ page }) => {
+  await importAndPlace(page)
+  expect(await clipCount(page)).toBe(1)
+
+  // Clicking the card focuses it — that's the bin selection (visible ring).
+  await page.getByTestId('asset-card').click()
+  await expect(page.getByTestId('asset-card')).toBeFocused()
+  await page.keyboard.press('Delete')
+
+  await expect(page.getByTestId('asset-card')).toHaveCount(0)
+  expect(await clipCount(page)).toBe(0)
+
+  // Same undo path as the context-menu delete.
+  await page.getByTestId('toast-action').click()
+  await expect(page.getByTestId('asset-card')).toHaveCount(1)
+  expect(await clipCount(page)).toBe(1)
+})
+
 test('undo announces what it reverted', async ({ page }) => {
   await importAndPlace(page)
   await page.keyboard.press('Delete') // "Delete clip(s)" or similar label

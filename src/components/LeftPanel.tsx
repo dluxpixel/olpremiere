@@ -100,9 +100,22 @@ function AssetCard({ asset, fps }: { asset: MediaAsset; fps: number }) {
         e.dataTransfer.setData(ASSET_MIME, asset.id)
         e.dataTransfer.effectAllowed = 'copy'
       }}
-      onDoubleClick={() => insertAssetAtPlayhead(asset.id)}
+      onDoubleClick={(e) => {
+        // Inserting moves the user's working context to the TIMELINE — drop the
+        // card's focus so a follow-up Delete edits the timeline selection, not
+        // the bin (a focused card would otherwise swallow it and nuke the asset).
+        e.currentTarget.blur()
+        insertAssetAtPlayhead(asset.id)
+      }}
       onKeyDown={(e) => {
         if (e.key === 'Enter') insertAssetAtPlayhead(asset.id)
+        // A SINGLE click focuses the card (tabIndex) — that is the bin
+        // selection, so Delete removes this asset. stopPropagation keeps the
+        // global keymap from ALSO deleting the timeline selection.
+        else if (e.key === 'Delete' || e.key === 'Backspace') {
+          e.stopPropagation()
+          deleteAsset(asset.id)
+        }
       }}
       onContextMenu={(e) =>
         openContextMenu(e, [
@@ -110,13 +123,14 @@ function AssetCard({ asset, fps }: { asset: MediaAsset; fps: number }) {
           { label: 'Save to Library', onClick: () => void saveAssetToLibrary(asset.id) },
           {
             label: 'Delete from bin',
+            shortcut: 'Del',
             danger: true,
             separator: true,
             onClick: () => deleteAsset(asset.id),
           },
         ])
       }
-      className="cursor-default overflow-hidden rounded-[6px] border border-border bg-bg-elevated transition-colors duration-[120ms] ease-out hover:border-border-strong"
+      className="cursor-default overflow-hidden rounded-[6px] border border-border bg-bg-elevated transition-colors duration-[120ms] ease-out hover:border-border-strong focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
     >
       <div className="relative flex aspect-video items-center justify-center bg-black">
         {thumbUrl ? (
