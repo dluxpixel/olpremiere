@@ -179,6 +179,44 @@ test('the YouTube 1440p upscale renders + encodes at the higher resolution', asy
   expect(meta.duration).toBeGreaterThan(1)
 })
 
+test('a 9:16 Shorts sequence exports at the default portrait 1440p (the crash case)', async ({ page }) => {
+  test.setTimeout(180_000)
+  await page.goto('/')
+  await page.getByTestId('media-file-input').setInputFiles(FIXTURE)
+  await expect(page.getByTestId('asset-card')).toBeVisible({ timeout: 15_000 })
+  await page.getByTestId('asset-card').dblclick()
+  await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
+
+  // Switch to a vertical Shorts sequence — the format of the real-world crash.
+  await page.getByTestId('format-select').selectOption('9:16')
+
+  await page.getByTestId('export-open').click()
+  // Portrait timelines get true vertical upscales; 1440×2560 is the default.
+  await expect(page.getByTestId('export-resolution')).toHaveValue('2k')
+
+  const downloadPromise = page.waitForEvent('download', { timeout: 150_000 })
+  await page.getByTestId('export-start').click()
+  const download = await downloadPromise
+  const mp4Path = `${VERIFY}/portrait-1440p.mp4`
+  await download.saveAs(mp4Path)
+  expect(fs.statSync(mp4Path).size).toBeGreaterThan(20_000)
+
+  const meta = await page.evaluate(async (b64) => {
+    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
+    const video = document.createElement('video')
+    video.muted = true
+    video.src = URL.createObjectURL(new Blob([bytes], { type: 'video/mp4' }))
+    await new Promise<void>((res, rej) => {
+      video.onloadedmetadata = () => res()
+      video.onerror = () => rej(new Error('portrait 1440p MP4 failed to decode'))
+    })
+    return { width: video.videoWidth, height: video.videoHeight, duration: video.duration }
+  }, fs.readFileSync(mp4Path).toString('base64'))
+  expect(meta.width).toBe(1440)
+  expect(meta.height).toBe(2560)
+  expect(meta.duration).toBeGreaterThan(1)
+})
+
 test('golden export: the MP4 matches the composited sequence', async ({ page }) => {
   test.setTimeout(180_000)
   await page.goto('/')

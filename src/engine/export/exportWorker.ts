@@ -1,13 +1,27 @@
 /// <reference lib="webworker" />
 // Export renderer (spec §5): demux/decode source video with mediabunny,
 // composite every output frame with the SHARED WebGL2 renderer (identical to
-// the live preview) on an OffscreenCanvas, encode with WebCodecs, mux with
-// mp4-muxer. Everything heavy happens in this module worker; the main thread
-// only relays progress.
+// the live preview) on an OffscreenCanvas, encode with WebCodecs, and mux with
+// mediabunny's Output. mediabunny handles B-frame reordering natively (packets
+// added in decode order with presentation timestamps), which deletes the class
+// of GPU-encoder crashes mp4-muxer had ("timestamps must be monotonically
+// increasing"). Everything heavy happens in this module worker; the main
+// thread only relays progress.
 
-import { ALL_FORMATS, BlobSource, CanvasSink, Input } from 'mediabunny'
-import type { WrappedCanvas } from 'mediabunny'
-import { ArrayBufferTarget, FileSystemWritableFileStreamTarget, Muxer } from 'mp4-muxer'
+import {
+  ALL_FORMATS,
+  BlobSource,
+  BufferTarget,
+  CanvasSink,
+  EncodedAudioPacketSource,
+  EncodedPacket,
+  EncodedVideoPacketSource,
+  Input,
+  Mp4OutputFormat,
+  Output,
+  StreamTarget,
+} from 'mediabunny'
+import type { StreamTargetChunk, WrappedCanvas } from 'mediabunny'
 import { createRenderer } from '../render/glRenderer'
 import { resolveFrame } from '../render/resolve'
 import { rasterizeTitle } from '../render/titleRaster'
@@ -32,6 +46,18 @@ class CancelledError extends Error {}
 
 let cancelled = false
 let started = false
+
+// SAFETY NET: nothing may ever surface as the opaque "worker crashed: unknown
+// error" again. Any exception that escapes run()'s try/catch (an encoder
+// output callback throwing, a stray rejected promise) posts a real message;
+// the main thread ignores messages after it settles, so this can't double-fire.
+scope.addEventListener('error', (e) => {
+  post({ type: 'error', message: `Export failed (worker): ${e.message || String(e.error ?? 'unknown')}` })
+})
+scope.addEventListener('unhandledrejection', (e) => {
+  const r = (e as PromiseRejectionEvent).reason
+  post({ type: 'error', message: `Export failed (worker): ${r instanceof Error ? r.message : String(r)}` })
+})
 
 scope.onmessage = (e: MessageEvent<ExportRequest>) => {
   const msg = e.data
@@ -200,7 +226,7 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
       }
     }
 
-    // --- muxer + encoders --------------------------------------------------
+    // --- output (muxer) + encoders ------------------------------------------
     // Streaming to disk and front-loading the moov box are mutually exclusive:
     // fastStart 'in-memory' buffers the ENTIRE file to move the index to the
     // front, which is precisely what streaming exists to avoid. So a streamed
@@ -208,28 +234,41 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
     // worse for progressive HTTP playback, which a local editor never does.
     // The buffered fallback keeps fastStart, since it has already paid the RAM.
     if (fileHandle) writable = await fileHandle.createWritable()
-    const streamTarget = writable ? new FileSystemWritableFileStreamTarget(writable) : null
-    const bufferTarget = streamTarget ? null : new ArrayBufferTarget()
+    const fsWritable = writable
+    const bufferTarget = fsWritable ? null : new BufferTarget()
+    // A FileSystemWritableFileStream accepts positioned writes directly, which
+    // is exactly the shape mediabunny's StreamTarget chunks carry.
+    const target = fsWritable
+      ? new StreamTarget(
+          new WritableStream<StreamTargetChunk>({
+            write: (c) => fsWritable.write({ type: 'write', position: c.position, data: c.data }),
+          }),
+        )
+      : bufferTarget!
 
-    const muxer = new Muxer({
-      target: streamTarget ?? bufferTarget!,
-      fastStart: streamTarget ? false : 'in-memory',
-      video: { codec: 'avc', width: settings.width, height: settings.height, frameRate: settings.fps },
-      audio:
-        audio && audioCodec
-          ? { codec: audioCodec, numberOfChannels: audio.numberOfChannels, sampleRate: audio.sampleRate }
-          : undefined,
-      // Normalize each track so its first chunk lands at t=0. An AAC encoder's
-      // priming (or a track whose first chunk isn't exactly at 0) otherwise makes
-      // the muxer throw "first chunk must have a timestamp of 0" and crashes the
-      // export. 'offset' subtracts each track's first timestamp — a no-op for a
-      // track already at 0, so it never shifts a well-formed export.
-      firstTimestampBehavior: 'offset',
+    const output = new Output({
+      format: new Mp4OutputFormat({ fastStart: fsWritable ? false : 'in-memory' }),
+      target,
+    })
+    // Packets are added in DECODE order with PRESENTATION timestamps; mediabunny
+    // derives DTS/ctts itself, so a hardware encoder that emits B-frames muxes
+    // fine (the old muxer threw "timestamps must be monotonically increasing").
+    const videoSource = new EncodedVideoPacketSource('avc')
+    output.addVideoTrack(videoSource, { frameRate: settings.fps })
+    const audioSource = audio && audioCodec ? new EncodedAudioPacketSource(audioCodec) : null
+    if (audioSource) output.addAudioTrack(audioSource)
+    await output.start()
+    cleanups.push(() => {
+      // Release muxer resources when we never reached finalize (error/cancel).
+      if (output.state === 'pending' || output.state === 'started') void output.cancel().catch(() => undefined)
     })
 
     let encoderError: Error | null = null
     const throwIfFailed = (): void => {
       if (encoderError) throw encoderError
+    }
+    const fail = (err: unknown): void => {
+      encoderError ??= err instanceof Error ? err : new Error(String(err))
     }
     const drain = async (enc: VideoEncoder | AudioEncoder): Promise<void> => {
       while (enc.encodeQueueSize > MAX_ENCODE_QUEUE) {
@@ -239,22 +278,40 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
       }
     }
 
-    // Tag HD+ output as BT.709 (the MP4 `colr` box, written by mp4-muxer from
-    // this metadata) so players and YouTube interpret the colours correctly
-    // instead of guessing — the usual cause of "washed out after upload". SD
-    // stays untagged: encoders work in BT.601 there, and leaving it alone keeps
-    // the golden export byte-stable.
+    // WebCodecs output callbacks are synchronous, but mediabunny's add() is
+    // async (writer backpressure). Chain the adds per track so packets keep
+    // their decode order, and CAPTURE failures into encoderError — a throw that
+    // escaped the callback surfaced as the opaque "worker crashed" error.
+    let videoMux: Promise<void> = Promise.resolve()
+    let audioMux: Promise<void> = Promise.resolve()
+    const packetOf = (chunk: EncodedVideoChunk | EncodedAudioChunk, tsUs: number, fallbackDurUs: number): EncodedPacket => {
+      const data = new Uint8Array(chunk.byteLength)
+      chunk.copyTo(data)
+      return new EncodedPacket(data, chunk.type, tsUs / 1e6, (chunk.duration ?? fallbackDurUs) / 1e6)
+    }
+
+    // Tag HD+ output as BT.709 (the MP4 `colr` box, written from this decoder
+    // config) so players and YouTube interpret the colours correctly instead
+    // of guessing — the usual cause of "washed out after upload". SD stays
+    // untagged: encoders work in BT.601 there, and leaving it alone keeps the
+    // golden export byte-stable.
+    const videoFrameDurUs = 1e6 / settings.fps
     const videoEncoder = new VideoEncoder({
       output: (chunk, meta) => {
-        if (isHd && meta?.decoderConfig) {
-          meta.decoderConfig.colorSpace = {
-            primaries: 'bt709',
-            transfer: 'bt709',
-            matrix: 'bt709',
-            fullRange: false,
+        try {
+          if (isHd && meta?.decoderConfig) {
+            meta.decoderConfig.colorSpace = {
+              primaries: 'bt709',
+              transfer: 'bt709',
+              matrix: 'bt709',
+              fullRange: false,
+            }
           }
+          const packet = packetOf(chunk, chunk.timestamp, videoFrameDurUs)
+          videoMux = videoMux.then(() => videoSource.add(packet, meta)).catch(fail)
+        } catch (err) {
+          fail(err)
         }
-        muxer.addVideoChunk(chunk, meta)
       },
       error: (e) => {
         encoderError ??= new Error(`video encoding failed: ${e.message}`)
@@ -269,8 +326,21 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
     if (audio && audioConfig) {
       stage = 'encoding audio'
       post({ type: 'progress', progress: { phase: 'audio', framesDone: 0, framesTotal } })
+      // Normalize the track so its first chunk lands at t=0: AAC encoder
+      // priming can stamp the first chunk slightly after zero, which used to
+      // crash the old muxer's strict mode (fixed then via 'offset' — kept here).
+      let audioBaseUs: number | null = null
+      const audioChunkDurUs = (AUDIO_CHUNK_FRAMES / audio.sampleRate) * 1e6
       const audioEncoder = new AudioEncoder({
-        output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
+        output: (chunk, meta) => {
+          try {
+            audioBaseUs ??= chunk.timestamp
+            const packet = packetOf(chunk, chunk.timestamp - audioBaseUs, audioChunkDurUs)
+            audioMux = audioMux.then(() => audioSource!.add(packet, meta)).catch(fail)
+          } catch (err) {
+            fail(err)
+          }
+        },
         error: (e) => {
           encoderError ??= new Error(`audio encoding failed: ${e.message}`)
         },
@@ -297,6 +367,7 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
         await drain(audioEncoder)
       }
       await audioEncoder.flush()
+      await audioMux // every queued packet handed to the muxer (or failed)
       throwIfFailed()
     }
 
@@ -441,12 +512,13 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
     }
 
     await videoEncoder.flush()
+    await videoMux // every queued packet handed to the muxer (or failed)
     throwIfFailed()
 
     // --- finalize ----------------------------------------------------------
     stage = 'finalizing'
     post({ type: 'progress', progress: { phase: 'finalizing', framesDone: framesTotal, framesTotal } })
-    muxer.finalize()
+    await output.finalize()
 
     if (writable) {
       await writable.close()
@@ -454,7 +526,8 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
       writable = null
       outcome = { msg: { type: 'done', buffer: null }, transfer: [] }
     } else {
-      const { buffer } = bufferTarget!
+      const buffer = bufferTarget!.buffer
+      if (!buffer) throw new Error('muxer produced no output buffer')
       outcome = { msg: { type: 'done', buffer }, transfer: [buffer] }
     }
   } catch (err) {
