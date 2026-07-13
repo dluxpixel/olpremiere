@@ -43,6 +43,12 @@ export interface ReelState {
   redo: () => string | null
   /** Replace the project without touching history (hydration from disk). */
   setProject: (p: Project) => void
+  /**
+   * Apply a REMOTE collaborator's state: replaces the project but PRESERVES
+   * local history (a remote edit must not wipe your undo stack) and prunes the
+   * selection down to clips that still exist.
+   */
+  applyRemoteProject: (p: Project) => void
   setUI: (patch: Partial<UIState>) => void
   /** Switch the active sequence. Deliberately NOT undoable (tab switching). */
   setActiveSequenceId: (id: Id) => void
@@ -99,6 +105,17 @@ export const useStore = create<ReelState>()(
 
     setProject(p) {
       set({ project: p, history: emptyHistory() })
+    },
+
+    applyRemoteProject(p) {
+      set((s) => {
+        const seq = p.sequences[p.activeSequenceId]
+        const alive = new Set(seq ? seq.tracks.flatMap((t) => t.clips.map((c) => c.id)) : [])
+        return {
+          project: p,
+          ui: { ...s.ui, selection: s.ui.selection.filter((id) => alive.has(id)), saveState: 'unsaved' as const },
+        }
+      })
     },
 
     setUI(patch) {

@@ -10,8 +10,10 @@ import {
   Redo2,
   Square,
   Undo2,
+  Users,
 } from 'lucide-react'
 import { type MouseEvent as ReactMouseEvent, useEffect, useRef, useState } from 'react'
+import { enterRoom, leaveRoom, useCollab } from '../collab/collabControl'
 import { comboLabel } from '../keymap'
 import { openContextMenu } from '../state/contextMenu'
 import { exportProjectToFile, importProjectFromFile } from '../state/projectFile'
@@ -27,6 +29,55 @@ import {
 } from '../state/voiceRecorder'
 import { Button, IconButton } from '../ui/Button'
 import { ExportDialog } from './ExportDialog'
+
+/**
+ * "Edit together" — create/share a live room, or show who's in it. The badge is
+ * honest about reach: the relay origin syncs across machines, elsewhere the
+ * room spans tabs on this machine only.
+ */
+function CollabButton() {
+  const roomId = useCollab((s) => s.roomId)
+  const peers = useCollab((s) => s.peers)
+  const mode = useCollab((s) => s.mode)
+
+  if (!roomId) {
+    return (
+      <Button variant="secondary" data-testid="collab-start" onClick={() => void enterRoom()}>
+        <Users size={16} strokeWidth={1.5} />
+        Edit together
+      </Button>
+    )
+  }
+  return (
+    <div className="flex items-center gap-1.5" data-testid="collab-badge">
+      <span
+        className="flex items-center gap-1.5 rounded-[4px] border border-accent/40 bg-accent-quiet px-2 py-1 text-[11px] text-accent"
+        title={
+          mode === 'relay'
+            ? `Live room ${roomId} — anyone with the link edits with you`
+            : `Live room ${roomId} — tabs on THIS machine (deploy with the relay for cross-machine)`
+        }
+      >
+        <span className="relative flex h-2 w-2">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent opacity-60" />
+          <span className="relative inline-flex h-2 w-2 rounded-full bg-accent" />
+        </span>
+        {peers.length === 0 ? 'Waiting for others…' : `${peers.length + 1} editing`}
+        {peers.slice(0, 4).map((p) => (
+          <span
+            key={p.clientId}
+            title={p.name}
+            className="inline-block h-2.5 w-2.5 rounded-full border border-black/30"
+            style={{ background: p.color }}
+          />
+        ))}
+      </span>
+      <Button variant="secondary" data-testid="collab-leave" onClick={leaveRoom}>
+        Leave
+      </Button>
+    </div>
+  )
+}
 
 /** Record a voiceover from the mic; the take lands in the bin as an audio clip. */
 function RecordButton() {
@@ -240,6 +291,7 @@ export function TopBar() {
           <Keyboard size={16} strokeWidth={1.5} />
         </IconButton>
         <div className="mx-2 h-4 w-px bg-border" />
+        <CollabButton />
         <RecordButton />
         <Button variant="primary" data-testid="export-open" onClick={() => setExporting(true)}>
           <Download size={16} strokeWidth={1.5} />
