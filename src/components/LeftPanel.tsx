@@ -18,10 +18,75 @@ import {
   useLibrary,
   type LibraryItem,
 } from '../state/library'
+import { healArrivedBlob, useMediaSync } from '../collab/mediaSync'
+import { useCollab } from '../collab/collabControl'
 import { deleteAsset, importFiles, insertAssetAtPlayhead } from '../state/mediaActions'
 import { useStore, type LeftTab } from '../state/store'
 import { addTitleClip } from '../state/titleActions'
+import { putBlob } from '../state/persistence'
 import { Button } from '../ui/Button'
+
+/**
+ * Room media status: live transfers plus assets nobody in the room has bytes
+ * for — each with a Locate button that heals the asset in place (same blob
+ * key, so every clip using it lights up immediately and then uploads for the
+ * rest of the room).
+ */
+function MediaSyncBanner() {
+  const inRelayRoom = useCollab((s) => s.mode === 'relay')
+  // Select the RAW arrays (stable identities) — deriving inside the selector
+  // returns a new array per call and useSyncExternalStore loops forever on it.
+  const rawTransfers = useMediaSync((s) => s.transfers)
+  const missing = useMediaSync((s) => s.missing)
+  const transfers = rawTransfers.map((t) => t.split('|')[1])
+  const locateRef = useRef<HTMLInputElement>(null)
+  const [locating, setLocating] = useState<{ blobKey: string; assetId: string } | null>(null)
+
+  if (!inRelayRoom || (transfers.length === 0 && missing.length === 0)) return null
+  return (
+    <div
+      data-testid="media-sync-banner"
+      className="mx-2 mb-1 flex flex-col gap-1 rounded-[6px] border border-border bg-bg-elevated px-2 py-1.5 text-[11px]"
+    >
+      {transfers.map((t) => (
+        <div key={t} className="text-text-secondary">
+          ⏳ {t}
+        </div>
+      ))}
+      {missing.map((m) => (
+        <div key={m.assetId} className="flex items-center justify-between gap-2">
+          <span className="truncate text-text-secondary" title={m.name}>
+            ⚠ {m.name} — no one in the room has this file
+          </span>
+          <button
+            data-testid={`locate-${m.assetId}`}
+            className="shrink-0 rounded-[4px] border border-border px-1.5 py-0.5 text-accent hover:border-accent"
+            onClick={() => {
+              setLocating({ blobKey: m.blobKey, assetId: m.assetId })
+              locateRef.current?.click()
+            }}
+          >
+            Locate
+          </button>
+        </div>
+      ))}
+      <input
+        ref={locateRef}
+        type="file"
+        accept="video/*,audio/*,image/*"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.currentTarget.files?.[0]
+          e.currentTarget.value = ''
+          if (!file || !locating) return
+          const { blobKey, assetId } = locating
+          setLocating(null)
+          void putBlob(blobKey, file).then(() => healArrivedBlob(blobKey, assetId))
+        }}
+      />
+    </div>
+  )
+}
 
 function Tab({ tab, label }: { tab: LeftTab; label: string }) {
   const active = useStore((s) => s.ui.leftTab === tab)
@@ -182,6 +247,7 @@ function MediaTab() {
           }}
         />
       </div>
+      <MediaSyncBanner />
       {list.length === 0 ? (
         <div
           data-testid="media-empty"

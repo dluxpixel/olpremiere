@@ -98,7 +98,10 @@ export function deleteAsset(assetId: Id): void {
   // which the user may not expect — so the toast carries a one-click Undo.
   useToasts.getState().show(`Removed ${asset.name}`, 'info', {
     label: 'Undo',
-    onClick: () => useStore.getState().undo(),
+    // Routed: in a room a plain snapshot undo would wipe every edit peers made
+    // since the delete; the routed step rebases only this command. (Dynamic
+    // import keeps this module out of the collab graph for solo code paths.)
+    onClick: () => void import('../collab/collabControl').then((m) => m.performHistoryStep('undo')),
   })
 }
 

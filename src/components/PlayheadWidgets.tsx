@@ -7,6 +7,7 @@
 // ZERO React renders anywhere.
 
 import { useEffect, useRef } from 'react'
+import { useCollab } from '../collab/collabControl'
 import { formatTimecode } from '../engine/timecode'
 import { useStore } from '../state/store'
 
@@ -42,6 +43,35 @@ export function PlayheadLine({ pxPerS }: { pxPerS: number }) {
         style={{ borderTopColor: 'var(--color-playhead)' }}
       />
     </div>
+  )
+}
+
+/**
+ * Every OTHER editor's playhead in the room: a thin colored line + name tag.
+ * Presence arrives every ~2s, so these are plain React renders (a handful of
+ * absolutely-positioned divs — nothing like the local playhead's tick rate).
+ */
+export function RemotePlayheads({ pxPerS }: { pxPerS: number }) {
+  const peers = useCollab((s) => s.peers)
+  if (peers.length === 0) return null
+  return (
+    <>
+      {peers.map((p) => (
+        <div
+          key={p.clientId}
+          data-testid="remote-playhead"
+          className="pointer-events-none absolute bottom-0 top-0 z-20 w-px opacity-70"
+          style={{ left: p.playheadS * pxPerS, background: p.color }}
+        >
+          <span
+            className="absolute left-1 top-0 max-w-24 truncate rounded-[3px] px-1 text-[9px] leading-4 text-black/80"
+            style={{ background: p.color }}
+          >
+            {p.name}
+          </span>
+        </div>
+      ))}
+    </>
   )
 }
 

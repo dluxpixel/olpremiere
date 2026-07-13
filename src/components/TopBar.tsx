@@ -13,7 +13,14 @@ import {
   Users,
 } from 'lucide-react'
 import { type MouseEvent as ReactMouseEvent, useEffect, useRef, useState } from 'react'
-import { enterRoom, leaveRoom, useCollab } from '../collab/collabControl'
+import {
+  enterRoom,
+  leaveRoom,
+  performHistoryStep,
+  setDisplayName,
+  storedDisplayName,
+  useCollab,
+} from '../collab/collabControl'
 import { comboLabel } from '../keymap'
 import { openContextMenu } from '../state/contextMenu'
 import { exportProjectToFile, importProjectFromFile } from '../state/projectFile'
@@ -39,6 +46,8 @@ function CollabButton() {
   const roomId = useCollab((s) => s.roomId)
   const peers = useCollab((s) => s.peers)
   const mode = useCollab((s) => s.mode)
+  const connected = useCollab((s) => s.connected)
+  const [editingName, setEditingName] = useState(false)
 
   if (!roomId) {
     return (
@@ -48,21 +57,55 @@ function CollabButton() {
       </Button>
     )
   }
+  if (editingName) {
+    return (
+      <input
+        autoFocus
+        data-testid="collab-name-input"
+        aria-label="Your display name"
+        defaultValue={storedDisplayName()}
+        maxLength={24}
+        className="h-7 w-36 rounded-[4px] border border-accent bg-bg-input px-2 text-[12px] text-text-primary focus:outline-none"
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            setDisplayName(e.currentTarget.value)
+            setEditingName(false)
+          } else if (e.key === 'Escape') setEditingName(false)
+        }}
+        onBlur={(e) => {
+          setDisplayName(e.currentTarget.value)
+          setEditingName(false)
+        }}
+      />
+    )
+  }
   return (
     <div className="flex items-center gap-1.5" data-testid="collab-badge">
       <span
-        className="flex items-center gap-1.5 rounded-[4px] border border-accent/40 bg-accent-quiet px-2 py-1 text-[11px] text-accent"
-        title={
+        role="button"
+        tabIndex={0}
+        onClick={() => setEditingName(true)}
+        onKeyDown={(e) => e.key === 'Enter' && setEditingName(true)}
+        className="flex cursor-pointer items-center gap-1.5 rounded-[4px] border border-accent/40 bg-accent-quiet px-2 py-1 text-[11px] text-accent"
+        title={`${
           mode === 'relay'
             ? `Live room ${roomId} — anyone with the link edits with you`
             : `Live room ${roomId} — tabs on THIS machine (deploy with the relay for cross-machine)`
-        }
+        } · click to set your name`}
       >
         <span className="relative flex h-2 w-2">
-          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent opacity-60" />
-          <span className="relative inline-flex h-2 w-2 rounded-full bg-accent" />
+          {connected && (
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent opacity-60" />
+          )}
+          <span
+            className={`relative inline-flex h-2 w-2 rounded-full ${connected ? 'bg-accent' : 'bg-yellow-500'}`}
+          />
         </span>
-        {peers.length === 0 ? 'Waiting for others…' : `${peers.length + 1} editing`}
+        {!connected
+          ? 'Reconnecting…'
+          : peers.length === 0
+            ? 'Waiting for others…'
+            : `${peers.length + 1} editing`}
         {peers.slice(0, 4).map((p) => (
           <span
             key={p.clientId}
@@ -215,8 +258,9 @@ function ProjectName() {
 export function TopBar() {
   const canUndo = useStore((s) => s.history.undo.length > 0)
   const canRedo = useStore((s) => s.history.redo.length > 0)
-  const undo = useStore((s) => s.undo)
-  const redo = useStore((s) => s.redo)
+  // Routed through collab: rebased in a room, snapshot solo.
+  const undo = () => performHistoryStep('undo')
+  const redo = () => performHistoryStep('redo')
   const setUI = useStore((s) => s.setUI)
   const [exporting, setExporting] = useState(false)
   const openFileRef = useRef<HTMLInputElement>(null)

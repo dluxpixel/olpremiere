@@ -44,6 +44,37 @@ test('two tabs in a room see each other\'s edits live', async ({ context }) => {
   await expect(b.getByTestId('collab-start')).toBeVisible()
 })
 
+test('undo in a room reverts only YOUR edit — the other person\'s clip survives', async ({ context }) => {
+  test.setTimeout(120_000)
+  const a = await context.newPage()
+  await a.goto('/')
+  await a.getByTestId('add-title').click() // A's base clip
+  await a.getByTestId('collab-start').click()
+  const roomUrl = await a.evaluate(() => window.location.href)
+
+  const b = await context.newPage()
+  await b.goto(roomUrl)
+  await expect(b.getByTestId('clip')).toHaveCount(1, { timeout: 15_000 })
+
+  // A adds a second title (undoable on A), then B adds a third.
+  await a.getByTestId('add-title').click()
+  await expect(b.getByTestId('clip')).toHaveCount(2, { timeout: 15_000 })
+  await b.getByTestId('add-title').click()
+  await expect(a.getByTestId('clip')).toHaveCount(3, { timeout: 15_000 })
+
+  // A undoes: A's OWN last add disappears everywhere; B's clip stays everywhere.
+  // (Snapshot undo would have wiped B's clip from A's timeline too.)
+  await a.locator('body').click()
+  await a.keyboard.press('Control+z')
+  await expect(a.getByTestId('clip')).toHaveCount(2, { timeout: 15_000 })
+  await expect(b.getByTestId('clip')).toHaveCount(2, { timeout: 15_000 })
+
+  // Redo brings A's add back on both sides.
+  await a.keyboard.press('Control+Shift+z')
+  await expect(a.getByTestId('clip')).toHaveCount(3, { timeout: 15_000 })
+  await expect(b.getByTestId('clip')).toHaveCount(3, { timeout: 15_000 })
+})
+
 test('a title edit (not just adds) propagates', async ({ context }) => {
   test.setTimeout(120_000)
   const a = await context.newPage()

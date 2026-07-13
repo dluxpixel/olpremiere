@@ -31,6 +31,7 @@ import {
   selectAllClips,
   selectClipOnAdjacentTrack,
 } from './state/clipboard'
+import { performHistoryStep } from './collab/collabControl'
 import { toggleClipEnabled } from './state/clipEdits'
 import { pausePlayback, shuttle, togglePlay } from './state/playbackControl'
 import { clearInOut, gotoIn, gotoOut, markIn, markOut } from './state/workAreaActions'
@@ -127,16 +128,18 @@ function buildAppBindings(): Binding[] {
         description: 'Keyboard shortcuts',
         run: () => store().setUI({ helpOpen: !store().ui.helpOpen }),
       })),
+      // Routed: solo = snapshot undo; in a room = rebased (only YOUR command
+      // reverts, other people's edits survive).
       { combo: 'mod+z', description: 'Undo', run: () => {
-        const label = store().undo()
+        const label = performHistoryStep('undo')
         if (label) useToasts.getState().show(`Undo: ${label}`)
       } },
       { combo: 'mod+shift+z', description: 'Redo', run: () => {
-        const label = store().redo()
+        const label = performHistoryStep('redo')
         if (label) useToasts.getState().show(`Redo: ${label}`)
       } },
       { combo: 'mod+y', description: 'Redo', run: () => {
-        const label = store().redo()
+        const label = performHistoryStep('redo')
         if (label) useToasts.getState().show(`Redo: ${label}`)
       } },
       {

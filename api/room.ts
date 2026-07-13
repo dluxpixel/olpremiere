@@ -12,13 +12,15 @@ import { del, list, put } from '@vercel/blob'
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 
 const ROOM_RE = /^[a-z0-9-]{4,40}$/i
-/** Presence entries older than this are dead peers. */
-const PRESENCE_TTL_MS = 10_000
+/** Presence entries older than this are dead peers. Generous: hidden tabs get
+ * their timers browser-throttled, and flapping is worse than lingering. */
+const PRESENCE_TTL_MS = 25_000
 /** Hard cap per response so a huge room log can't blow the function. */
 const MAX_UPDATES_PER_GET = 500
 
 const prefix = (room: string): string => `reel-rooms/${room}/log/`
 const presencePrefix = (room: string): string => `reel-rooms/${room}/presence/`
+const mediaPrefix = (room: string): string => `reel-rooms/${room}/media/`
 
 /** Monotonic-enough cursor: ms epoch + random suffix orders lexicographically. */
 const newSeq = (): string => `${Date.now().toString().padStart(14, '0')}-${Math.random().toString(36).slice(2, 8)}`
@@ -32,6 +34,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
 
   try {
     if (req.method === 'GET') {
+      // Lightweight media-manifest poll (no log/presence work).
+      if (req.query.mediaOnly !== undefined) {
+        const media = await list({ prefix: mediaPrefix(room), limit: 500 })
+        res.setHeader('cache-control', 'no-store')
+        res.status(200).json({
+          media: media.blobs.map((b) => ({
+            key: decodeURIComponent(b.pathname.slice(mediaPrefix(room).length)),
+            url: b.url,
+            size: b.size,
+          })),
+        })
+        return
+      }
+
       const since = String(req.query.since ?? '')
       const [log, presence] = await Promise.all([
         list({ prefix: prefix(room), limit: 1000 }),

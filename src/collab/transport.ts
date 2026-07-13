@@ -29,16 +29,23 @@ export interface CollabTransport {
   onSyncRequest(provide: () => Uint8Array): () => void
   sendPresence(state: PeerPresence): void
   subscribePresence(cb: (peers: PeerPresence[]) => void): () => void
+  /** Wire health: false while the relay is unreachable (UI shows reconnecting). */
+  subscribeStatus?(cb: (connected: boolean) => void): () => void
   close(): void
 }
 
-/** How long a peer may go silent before it disappears from presence. */
-export const PRESENCE_TTL_MS = 8_000
+/**
+ * How long a peer may go silent before it disappears from presence. Generous:
+ * hidden tabs get their timers throttled by the browser, and a peer flapping
+ * in and out of the list is worse than one lingering a few extra seconds.
+ */
+export const PRESENCE_TTL_MS = 25_000
 
 type BcMsg =
   | { kind: 'update'; bytes: number[] }
   | { kind: 'sync-request' }
   | { kind: 'presence'; peer: PeerPresence }
+  | { kind: 'goodbye'; clientId: string }
 
 /**
  * Same-origin, same-machine transport over a BroadcastChannel. Presence is
@@ -50,6 +57,8 @@ export class BroadcastChannelTransport implements CollabTransport {
   private presenceSubs = new Set<(p: PeerPresence[]) => void>()
   private syncProvider: (() => Uint8Array) | null = null
   private peers = new Map<string, PeerPresence>()
+  private lastClientId: string | null = null
+  private pruneTimer: ReturnType<typeof setInterval>
 
   constructor(room: string) {
     this.ch = new BroadcastChannel(`reel-collab:${room}`)
@@ -64,8 +73,15 @@ export class BroadcastChannelTransport implements CollabTransport {
       } else if (msg.kind === 'presence') {
         this.peers.set(msg.peer.clientId, msg.peer)
         this.emitPresence()
+      } else if (msg.kind === 'goodbye') {
+        // A departing tab announces itself — no ghost lingering until TTL.
+        this.peers.delete(msg.clientId)
+        this.emitPresence()
       }
     }
+    // TTL pruning must also run WITHOUT inbound traffic: with only one remote
+    // peer that closed silently, no message would ever trigger the sweep.
+    this.pruneTimer = setInterval(() => this.emitPresence(), 3_000)
   }
 
   private post(msg: BcMsg): void {
@@ -100,6 +116,7 @@ export class BroadcastChannelTransport implements CollabTransport {
   }
 
   sendPresence(state: PeerPresence): void {
+    this.lastClientId = state.clientId
     this.post({ kind: 'presence', peer: state })
   }
 
@@ -109,6 +126,8 @@ export class BroadcastChannelTransport implements CollabTransport {
   }
 
   close(): void {
+    clearInterval(this.pruneTimer)
+    if (this.lastClientId) this.post({ kind: 'goodbye', clientId: this.lastClientId })
     this.ch.close()
     this.updateSubs.clear()
     this.presenceSubs.clear()

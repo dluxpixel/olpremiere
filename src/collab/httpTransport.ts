@@ -5,9 +5,16 @@
 
 import type { CollabTransport, PeerPresence } from './transport'
 
-const POLL_MS = 1_500
+/** Focus-aware poll cadence: snappy while the tab is active, gentle when hidden. */
+const POLL_ACTIVE_MS = 1_000
+const POLL_HIDDEN_MS = 4_000
+/** Consecutive failures before the UI is told we're reconnecting. */
+const FAILS_BEFORE_OFFLINE = 2
 /** Join-time compaction threshold: above this many log blobs, post a snapshot. */
 const COMPACT_AT = 200
+
+const pollDelay = (): number =>
+  typeof document !== 'undefined' && document.visibilityState === 'hidden' ? POLL_HIDDEN_MS : POLL_ACTIVE_MS
 
 const b64 = (u: Uint8Array): string => btoa(String.fromCharCode(...u))
 const fromB64 = (s: string): Uint8Array => Uint8Array.from(atob(s), (c) => c.charCodeAt(0))
@@ -36,11 +43,23 @@ export class HttpRelayTransport implements CollabTransport {
   private timer: ReturnType<typeof setTimeout> | null = null
   private updateSubs = new Set<(u: Uint8Array) => void>()
   private presenceSubs = new Set<(p: PeerPresence[]) => void>()
+  private statusSubs = new Set<(connected: boolean) => void>()
   private syncProvider: (() => Uint8Array) | null = null
   private outbox: string[] = []
   private pendingPresence: PeerPresence | null = null
   private posting = false
   private firstPoll = true
+  private failStreak = 0
+  private connected = true
+
+  private reportPoll(ok: boolean): void {
+    this.failStreak = ok ? 0 : this.failStreak + 1
+    const next = this.failStreak < FAILS_BEFORE_OFFLINE
+    if (next !== this.connected) {
+      this.connected = next
+      for (const cb of this.statusSubs) cb(next)
+    }
+  }
 
   constructor(room: string) {
     this.room = room
@@ -80,11 +99,13 @@ export class HttpRelayTransport implements CollabTransport {
         }
         this.firstPoll = false
       }
+      this.reportPoll(r.ok)
     } catch {
       // transient network failure — next poll retries
+      this.reportPoll(false)
     }
     void this.flush()
-    this.timer = setTimeout(() => void this.loop(), POLL_MS)
+    this.timer = setTimeout(() => void this.loop(), pollDelay())
   }
 
   /** Push queued updates + presence in one POST (serialized). */
@@ -96,13 +117,20 @@ export class HttpRelayTransport implements CollabTransport {
     const presence = this.pendingPresence
     this.pendingPresence = null
     try {
-      await fetch(`/api/room?room=${encodeURIComponent(this.room)}`, {
+      const r = await fetch(`/api/room?room=${encodeURIComponent(this.room)}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ updates, ...(presence ? { presence } : {}) }),
       })
+      // A failing POST means EDITS are not reaching the room — that must flip
+      // the health badge just like a failing poll (silent drops are worse).
+      if (!r.ok) {
+        this.outbox.unshift(...updates)
+        this.reportPoll(false)
+      }
     } catch {
       this.outbox.unshift(...updates) // retry on the next tick
+      this.reportPoll(false)
     } finally {
       this.posting = false
     }
@@ -137,6 +165,12 @@ export class HttpRelayTransport implements CollabTransport {
   subscribePresence(cb: (peers: PeerPresence[]) => void): () => void {
     this.presenceSubs.add(cb)
     return () => this.presenceSubs.delete(cb)
+  }
+
+  subscribeStatus(cb: (connected: boolean) => void): () => void {
+    this.statusSubs.add(cb)
+    cb(this.connected)
+    return () => this.statusSubs.delete(cb)
   }
 
   close(): void {

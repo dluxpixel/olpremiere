@@ -4,10 +4,14 @@
 // tabs via BroadcastChannel — same UI, honest badge text either way.
 
 import { create } from 'zustand'
+import { useStore } from '../state/store'
 import { useToasts } from '../state/toasts'
 import { HttpRelayTransport, relayAvailable } from './httpTransport'
-import { startCollabSession, type CollabSession } from './session'
-import { BroadcastChannelTransport, type PeerPresence } from './transport'
+import { startMediaSync } from './mediaSync'
+import { rebasedHistoryStep, startCollabSession, type CollabSession } from './session'
+import { BroadcastChannelTransport, type CollabTransport, type PeerPresence } from './transport'
+
+let stopMediaSync: (() => void) | null = null
 
 interface CollabState {
   session: CollabSession | null
@@ -15,6 +19,10 @@ interface CollabState {
   /** 'relay' = cross-machine via the Vercel relay; 'tabs' = this machine only. */
   mode: 'relay' | 'tabs' | null
   peers: PeerPresence[]
+  /** The project open BEFORE joining someone else's room — Leave restores it. */
+  preJoinProjectId: string | null
+  /** False while the relay is unreachable (badge shows reconnecting). */
+  connected: boolean
 }
 
 export const useCollab = create<CollabState>(() => ({
@@ -22,6 +30,8 @@ export const useCollab = create<CollabState>(() => ({
   roomId: null,
   mode: null,
   peers: [],
+  preJoinProjectId: null,
+  connected: true,
 }))
 
 const ROOM_HASH_RE = /room=([a-z0-9-]{4,40})/i
@@ -40,13 +50,36 @@ export async function enterRoom(roomId?: string): Promise<void> {
   const state = useCollab.getState()
   const room = (roomId ?? newRoomId()).toLowerCase()
   if (state.roomId === room) return
+  ++lifecycleToken // cancel any in-flight leave-restore
+  stopMediaSync?.()
+  stopMediaSync = null
   state.session?.leave()
 
   const useRelay = await relayAvailable()
-  const transport = useRelay ? new HttpRelayTransport(room) : new BroadcastChannelTransport(room)
-  const session = startCollabSession({ room, transport, name: `Editor ${Math.floor(Math.random() * 90 + 10)}` })
+  const transport: CollabTransport = useRelay
+    ? new HttpRelayTransport(room)
+    : new BroadcastChannelTransport(room)
+  const preJoinProjectId = useStore.getState().project.id
+  const session = startCollabSession({ room, transport, name: displayName() })
   session.subscribePeers((peers) => useCollab.setState({ peers }))
-  useCollab.setState({ session, roomId: room, mode: useRelay ? 'relay' : 'tabs', peers: [] })
+  transport.subscribeStatus?.((connected) => useCollab.setState({ connected }))
+  useCollab.setState({
+    session,
+    roomId: room,
+    mode: useRelay ? 'relay' : 'tabs',
+    peers: [],
+    preJoinProjectId,
+    connected: true,
+  })
+  // Media bytes travel only through the relay; tabs-mode rooms share IndexedDB.
+  // Gated on session READY: starting before the room doc is adopted would
+  // upload the joiner's PRIVATE project media to a foreign room's store.
+  // (The previous room's sync was already stopped at the top of this function.)
+  if (useRelay) {
+    session.onReady(() => {
+      if (useCollab.getState().session === session) stopMediaSync = startMediaSync(room)
+    })
+  }
 
   window.location.hash = `room=${room}`
   try {
@@ -57,16 +90,96 @@ export async function enterRoom(roomId?: string): Promise<void> {
   }
 }
 
+// Bumped on every enter/leave so a slow async restore can't apply after the
+// user already joined another room (it would broadcast the solo project in).
+let lifecycleToken = 0
+
 export function leaveRoom(): void {
-  const { session } = useCollab.getState()
+  const { session, preJoinProjectId } = useCollab.getState()
+  const token = ++lifecycleToken
+  stopMediaSync?.()
+  stopMediaSync = null
   session?.leave()
-  useCollab.setState({ session: null, roomId: null, mode: null, peers: [] })
+  useCollab.setState({ session: null, roomId: null, mode: null, peers: [], preJoinProjectId: null })
   // Drop only the room part of the hash.
   if (roomFromHash()) window.history.replaceState(null, '', window.location.pathname)
+
+  // Joining someone else's room replaced the open project (the room's copy is
+  // autosaved under ITS OWN id, so nothing was lost) — Leave brings the user's
+  // own project back. Room creators keep editing theirs; nothing to restore.
+  const current = useStore.getState().project.id
+  if (preJoinProjectId && preJoinProjectId !== current) {
+    void (async () => {
+      const { loadProjectById, saveNow, saveProject } = await import('../state/persistence')
+      // Flush the ROOM project first: the debounced autosave may still hold the
+      // last second of room edits, and the restore below would cancel it.
+      await saveNow()
+      const mine = await loadProjectById(preJoinProjectId)
+      if (!mine || token !== lifecycleToken) return // re-entered a room meanwhile
+      useStore.getState().setProject(mine)
+      useStore.getState().setUI({ selection: [] })
+      await saveProject(mine) // move the lastProjectId pointer back too
+      useToasts.getState().show(`Back to your project "${mine.name}"`, 'info')
+    })()
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Display name (persisted; presence shows it to everyone in the room).
+
+const NAME_KEY = 'reel:collab:name'
+
+export function displayName(): string {
+  try {
+    const saved = localStorage.getItem(NAME_KEY)
+    if (saved && saved.trim()) return saved.trim().slice(0, 24)
+  } catch {
+    // storage unavailable — fall through to a generated name
+  }
+  const generated = `Editor ${Math.floor(Math.random() * 90 + 10)}`
+  try {
+    localStorage.setItem(NAME_KEY, generated)
+  } catch {
+    // fine — regenerate next time
+  }
+  return generated
+}
+
+/** The stored name for prefilling the rename input ('' when storage is blocked). */
+export function storedDisplayName(): string {
+  try {
+    return localStorage.getItem(NAME_KEY) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+/** Rename yourself; takes effect on the next presence heartbeat (≤2s). */
+export function setDisplayName(name: string): void {
+  const clean = name.trim().slice(0, 24)
+  if (!clean) return
+  try {
+    localStorage.setItem(NAME_KEY, clean)
+  } catch {
+    // storage unavailable — the session keeps the old name
+  }
+  useCollab.getState().session?.setName(clean)
 }
 
 /** Boot hook: auto-join when the URL carries a room (a shared link). */
 export function joinRoomFromUrl(): void {
   const room = roomFromHash()
   if (room) void enterRoom(room)
+}
+
+/**
+ * Undo/redo entry point for the whole app. Solo: the plain snapshot undo. In a
+ * room: the REBASED step (only your own command's delta reverts — everyone
+ * else's edits since survive). Returns the command label for the toast.
+ */
+export function performHistoryStep(dir: 'undo' | 'redo'): string | null {
+  const inRoom = useCollab.getState().session !== null
+  if (inRoom) return rebasedHistoryStep(dir)
+  const store = useStore.getState()
+  return dir === 'undo' ? store.undo() : store.redo()
 }

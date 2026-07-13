@@ -10,16 +10,16 @@ import { loadLibrary } from './state/library'
 import { initPersistence } from './state/persistence'
 import { initUpdateCheck } from './state/updateCheck'
 
-initPersistence()
+// A shared room link (#room=...) auto-joins only AFTER the local project
+// hydrates — joining against the boot placeholder captures the wrong
+// preJoinProjectId and can seed/leak the wrong document into the room.
+void initPersistence().then(joinRoomFromUrl)
 void loadLibrary()
 // Register bundled title fonts (Minecraft/Monocraft) for the preview rasterizer,
 // and hydrate the saved default text animation. Once the font lands, force a
 // redraw so a reopened Minecraft title re-rasterizes off the real font.
 void loadTitleFonts(document.fonts).then(invalidatePreview)
 void loadDefaultTextAppearance()
-// A shared room link (#room=...) auto-joins after the local project hydrates,
-// so the joiner adopts the room state rather than racing it with a stale doc.
-window.setTimeout(joinRoomFromUrl, 400)
 // Nudge stale tabs after a deploy ("A new version is live — Reload").
 initUpdateCheck()
 

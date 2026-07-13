@@ -8,9 +8,11 @@ import { setSequenceFormat } from '../engine/timeline'
 import { newProject, type Id, type Project, type Sequence } from '../engine/types'
 import {
   emptyHistory,
+  popCommand,
   pushCommand,
   redoCommand,
   undoCommand,
+  type Command,
   type History,
 } from './history'
 
@@ -49,6 +51,8 @@ export interface ReelState {
    * selection down to clips that still exist.
    */
   applyRemoteProject: (p: Project) => void
+  /** Pop an undo/redo command WITHOUT applying it (collab rebased undo). */
+  popHistory: (dir: 'undo' | 'redo') => Command | null
   setUI: (patch: Partial<UIState>) => void
   /** Switch the active sequence. Deliberately NOT undoable (tab switching). */
   setActiveSequenceId: (id: Id) => void
@@ -113,9 +117,22 @@ export const useStore = create<ReelState>()(
         const alive = new Set(seq ? seq.tracks.flatMap((t) => t.clips.map((c) => c.id)) : [])
         return {
           project: p,
+          // Adopting a DIFFERENT project (joining a room) invalidates history by
+          // definition — stale commands recorded against the old project would
+          // otherwise rebase its meta (id/name!) into the room and let autosave
+          // overwrite the user's own project.
+          ...(p.id !== s.project.id ? { history: emptyHistory() } : {}),
           ui: { ...s.ui, selection: s.ui.selection.filter((id) => alive.has(id)), saveState: 'unsaved' as const },
         }
       })
+    },
+
+    popHistory(dir) {
+      const { history } = get()
+      const r = popCommand(history, dir)
+      if (!r) return null
+      set({ history: r.history })
+      return r.command
     },
 
     setUI(patch) {

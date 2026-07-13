@@ -44,3 +44,22 @@ export function redoCommand(h: History): { history: History; project: Project; l
     label: cmd.label,
   }
 }
+
+/**
+ * Pop the next undo/redo command WITHOUT applying its snapshot. Collab rooms
+ * use this: restoring a whole-project snapshot would clobber every edit other
+ * people made since, so the session re-applies just this command's own delta
+ * (rebased onto the current shared state) instead.
+ */
+export function popCommand(h: History, dir: 'undo' | 'redo'): { history: History; command: Command } | null {
+  const stack = h[dir]
+  const cmd = stack[stack.length - 1]
+  if (!cmd) return null
+  return {
+    history:
+      dir === 'undo'
+        ? { undo: h.undo.slice(0, -1), redo: [...h.redo, cmd] }
+        : { undo: [...h.undo, cmd], redo: h.redo.slice(0, -1) },
+    command: cmd,
+  }
+}

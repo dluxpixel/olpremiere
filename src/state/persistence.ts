@@ -44,6 +44,13 @@ export async function loadLastProject(): Promise<Project | null> {
   const d = await db()
   const id = (await d.get('meta', 'lastProjectId')) as string | undefined
   if (!id) return null
+  return loadProjectById(id)
+}
+
+/** Load one project by id (projects are keyed individually — a collab join
+ * never overwrites the solo project; Leave restores it through this). */
+export async function loadProjectById(id: string): Promise<Project | null> {
+  const d = await db()
   const p = (await d.get('projects', id)) as Project | undefined
   // Shape migration first (tracks/mixer fields), then the colour bag -> effect
   // stack move. Both are idempotent, so a re-load is free.
@@ -81,9 +88,13 @@ export function saveNow(): Promise<void> {
   return flushSave()
 }
 
-/** Hydrate the last project and start debounced autosave. Call once at boot. */
-export function initPersistence(): void {
-  loadLastProject()
+/**
+ * Hydrate the last project and start debounced autosave. Call once at boot.
+ * Returns the hydration promise — anything that must see the REAL project
+ * (e.g. joining a collab room from the URL) awaits it.
+ */
+export function initPersistence(): Promise<void> {
+  const hydrated = loadLastProject()
     .then((p) => {
       const s = useStore.getState()
       // Only hydrate if the user hasn't already started editing.
@@ -98,4 +109,5 @@ export function initPersistence(): void {
       saveTimer = window.setTimeout(() => void flushSave(), AUTOSAVE_DEBOUNCE_MS)
     },
   )
+  return hydrated
 }

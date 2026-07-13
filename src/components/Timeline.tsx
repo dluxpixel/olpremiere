@@ -71,7 +71,7 @@ import { appearanceMenuItems, titleFontSizeItems } from '../state/clipMenus'
 import { openContextMenu } from '../state/contextMenu'
 import { useBlobUrl } from '../state/blobUrls'
 import { ClipWaveform } from './ClipWaveform'
-import { PlayheadLine, PlayheadTimecode } from './PlayheadWidgets'
+import { PlayheadLine, PlayheadTimecode, RemotePlayheads } from './PlayheadWidgets'
 import { pointOnScrollbar } from './scrollbarGuard'
 import {
   MAX_PX_PER_S,
@@ -1454,6 +1454,7 @@ export function Timeline({ height }: { height: number }) {
               />
             )}
 
+            <RemotePlayheads pxPerS={pxPerS} />
             <PlayheadLine pxPerS={pxPerS} />
           </div>
 

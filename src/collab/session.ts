@@ -14,7 +14,14 @@
 import * as Y from 'yjs'
 import { activeSequence } from '../engine/types'
 import { useStore } from '../state/store'
-import { diffEntities, entitiesToProject, projectToEntities, type Entities, type EntityValue } from './entities'
+import {
+  diffEntities,
+  entitiesToProject,
+  META_KEY,
+  projectToEntities,
+  type Entities,
+  type EntityValue,
+} from './entities'
 import type { CollabTransport, PeerPresence } from './transport'
 
 export interface CollabSession {
@@ -23,6 +30,16 @@ export interface CollabSession {
   /** Live list of the OTHER people in the room (self excluded). */
   peers: () => PeerPresence[]
   subscribePeers: (cb: (peers: PeerPresence[]) => void) => () => void
+  /** Rename this editor; the next heartbeat (≤2s) carries it to everyone. */
+  setName: (name: string) => void
+  /**
+   * Fires ONCE when the session knows which document the room holds — either
+   * we adopted the room's state, or the room was empty and we seeded it. Media
+   * sync must not start earlier: before adoption the store still holds the
+   * joiner's PRIVATE project, and uploading its media to a foreign room's
+   * public store would leak it.
+   */
+  onReady: (cb: () => void) => () => void
   leave: () => void
 }
 
@@ -57,6 +74,16 @@ export function startCollabSession(opts: {
   let applyingRemote = false
   let lastEntities: Entities = projectToEntities(useStore.getState().project)
 
+  // Ready = the room's document identity is settled (adopted or seeded).
+  const readyCbs = new Set<() => void>()
+  let ready = false
+  const fireReady = (): void => {
+    if (ready) return
+    ready = true
+    for (const cb of readyCbs) cb()
+    readyCbs.clear()
+  }
+
   // --- outbound: doc updates with local origin go to the wire ---------------
   doc.on('update', (update: Uint8Array, origin: unknown) => {
     if (origin === 'local') transport.send(update)
@@ -86,6 +113,7 @@ export function startCollabSession(opts: {
     } finally {
       applyingRemote = false
     }
+    fireReady() // adopted the room's document
   }
   em.observeDeep(observer)
 
@@ -115,6 +143,7 @@ export function startCollabSession(opts: {
       doc.transact(() => {
         for (const [key, value] of lastEntities) em.set(key, value)
       }, 'local')
+      fireReady() // the room was empty — OUR project is its document
     }
   }, 1_200)
 
@@ -125,11 +154,12 @@ export function startCollabSession(opts: {
     peers = all.filter((p) => p.clientId !== clientId)
     for (const cb of peerSubs) cb(peers)
   })
+  let currentName = name
   const beat = (): void => {
     const s = useStore.getState()
     transport.sendPresence({
       clientId,
-      name,
+      name: currentName,
       color,
       playheadS: s.ui.playheadS,
       at: Date.now(),
@@ -145,6 +175,18 @@ export function startCollabSession(opts: {
     subscribePeers: (cb) => {
       peerSubs.add(cb)
       return () => peerSubs.delete(cb)
+    },
+    setName: (n) => {
+      currentName = n
+      beat()
+    },
+    onReady: (cb) => {
+      if (ready) {
+        cb()
+        return () => undefined
+      }
+      readyCbs.add(cb)
+      return () => readyCbs.delete(cb)
     },
     leave: () => {
       clearTimeout(seedTimer)
@@ -167,4 +209,58 @@ export function remotePlayheads(session: CollabSession): { color: string; name: 
     .peers()
     .filter((p) => p.playheadS >= 0 && p.playheadS <= seq.durationS + 60)
     .map((p) => ({ color: p.color, name: p.name, playheadS: p.playheadS }))
+}
+
+/**
+ * REBASED undo/redo for rooms. Plain undo restores a whole-project snapshot —
+ * in a room that snapshot predates everyone else's recent edits, so applying
+ * it would silently wipe them. Instead: pop the user's own top command, take
+ * ONLY that command's entity delta, and apply its inverse onto the CURRENT
+ * shared state. Other people's work survives; your last edit reverts; the
+ * change broadcasts like any local edit. Returns the command label, or null
+ * when the stack is empty.
+ */
+export function rebasedHistoryStep(dir: 'undo' | 'redo'): string | null {
+  const store = useStore.getState()
+  const cmd = store.popHistory(dir)
+  if (!cmd) return null
+  // A command recorded against a DIFFERENT project (before a room adoption
+  // slipped in) must never rebase into this one — discard it outright.
+  if (cmd.before.id !== store.project.id) return null
+  // Undo applies after→before; redo applies before→after.
+  const src = dir === 'undo' ? cmd.after : cmd.before
+  const dst = dir === 'undo' ? cmd.before : cmd.after
+  const from = projectToEntities(src)
+  const to = projectToEntities(dst)
+  const { changed, removed } = diffEntities(from, to)
+
+  const current = projectToEntities(store.project)
+  for (const [key, value] of changed) {
+    if (key === META_KEY) {
+      // dispatch() bumps updatedAt, so META differs on virtually EVERY command
+      // — writing it wholesale would revert other people's project rename /
+      // aspect switch / active-sequence on any unrelated undo. Merge only the
+      // meta fields THIS command genuinely changed onto the current meta.
+      const cur = current.get(META_KEY)
+      if (!cur) continue
+      const merged: EntityValue = { ...cur }
+      let touched = false
+      for (const field of ['name', 'settings', 'activeSequenceId'] as const) {
+        if (JSON.stringify(src[field]) !== JSON.stringify(dst[field])) {
+          merged[field] = dst[field] as never
+          touched = true
+        }
+      }
+      if (touched) current.set(META_KEY, merged)
+      continue
+    }
+    current.set(key, value)
+  }
+  for (const key of removed) current.delete(key)
+  const rebuilt = entitiesToProject(current)
+  if (!rebuilt) return cmd.label // degenerate (e.g. undoing the seed itself) — drop the step
+  // Goes through the normal store path WITHOUT a history push; the session's
+  // store subscription sees it as a local change and broadcasts the delta.
+  store.applyRemoteProject(rebuilt)
+  return cmd.label
 }

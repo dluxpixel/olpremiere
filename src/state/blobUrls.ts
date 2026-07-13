@@ -33,6 +33,15 @@ export function getCachedBlobUrl(key: string): string | null {
   return urls.get(key) ?? null
 }
 
+// A blob that was MISSING can arrive later (collab media sync, "Locate file").
+// Mounted components that already resolved null re-fetch on this signal.
+const arrivalListeners = new Set<(key: string) => void>()
+
+/** Announce that `key` now has a blob in IndexedDB (heals missing-media UI). */
+export function notifyBlobArrived(key: string): void {
+  for (const cb of arrivalListeners) cb(key)
+}
+
 /** React hook: resolve a blob key to a stable object URL (null while loading or missing). */
 export function useBlobUrl(key: string | undefined): string | null {
   const [url, setUrl] = useState<string | null>(key ? getCachedBlobUrl(key) : null)
@@ -43,13 +52,20 @@ export function useBlobUrl(key: string | undefined): string | null {
     }
     const cached = getCachedBlobUrl(key)
     setUrl(cached)
-    if (cached) return
     let alive = true
-    void getBlobUrl(key).then((u) => {
-      if (alive) setUrl(u)
-    })
+    const fetch = (): void => {
+      void getBlobUrl(key).then((u) => {
+        if (alive && u) setUrl(u)
+      })
+    }
+    if (!cached) fetch()
+    const onArrival = (k: string): void => {
+      if (k === key) fetch()
+    }
+    arrivalListeners.add(onArrival)
     return () => {
       alive = false
+      arrivalListeners.delete(onArrival)
     }
   }, [key])
   return url
