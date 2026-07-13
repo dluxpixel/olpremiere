@@ -4,6 +4,7 @@
 // MASTER clock so A/V stays in sync.
 
 import { getBlob } from '../state/persistence'
+import { duckEnvelope } from './ducking'
 import type { AutoLevel, Clip, Id, MediaAsset, Sequence, Track } from './types'
 
 /** Sources start this far in the future so scheduling jitter can't clip the head. */
@@ -308,6 +309,9 @@ export async function scheduleAudio(
   const anySolo = seq.tracks.some((t) => t.solo)
   const audibleTracks = seq.tracks.filter((t) => (anySolo ? t.solo : !t.muted))
 
+  // One duck automation shared by every music track (see engine/ducking.ts).
+  const duckEnv = duckEnvelope(seq.tracks, anySolo, fromS)
+
   // Audio comes from audio-track clips PLUS standalone (unlinked) video clips.
   // A linked video clip is video-only — its audio plays from the linked
   // audio-track clip, so counting it here would double the sound.
@@ -359,6 +363,19 @@ export async function scheduleAudio(
       comp.connect(makeup)
       nodes.push(comp, makeup)
       tail = makeup
+    }
+    // Music sits down under the voiceover: the shared duck automation rides a
+    // dedicated gain so the fader/auto-level stay untouched.
+    if (track.audioRole === 'music' && duckEnv) {
+      const duck = ctx.createGain()
+      duckEnv.forEach((pt, idx) => {
+        const when = baseT + pt.offsetS
+        if (idx === 0) duck.gain.setValueAtTime(pt.value, when)
+        else duck.gain.linearRampToValueAtTime(pt.value, when)
+      })
+      tail.connect(duck)
+      nodes.push(duck)
+      tail = duck
     }
     tail.connect(pan)
     pan.connect(master)

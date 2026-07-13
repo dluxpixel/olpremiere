@@ -30,6 +30,7 @@ import {
   dbToGain,
   type GainPoint,
 } from '../audio'
+import { duckEnvelope } from '../ducking'
 import type { Clip, Track } from '../types'
 
 const clamp = (x: number, lo: number, hi: number): number => (x < lo ? lo : x > hi ? hi : x)
@@ -247,6 +248,11 @@ export function mixToStereo(sources: MixSourcePcm[], opts: MixOptions): Float32A
   const rawR = new Float32Array(totalFrames)
   if (totalFrames === 0) return [rawL, rawR]
 
+  // The Track objects carried by the sources include their full clip lists, so
+  // the duck automation derives from the same data the live graph uses.
+  const uniqueTracks = [...new Map(sources.map((s) => [s.track.id, s.track])).values()]
+  const duckEnv = duckEnvelope(uniqueTracks, soloActive, startS)
+
   for (const src of sources) {
     const { clip, track } = src
     // Solo wins over mute, matching renderAudioMix's audibleTracks filter.
@@ -275,7 +281,14 @@ export function mixToStereo(sources: MixSourcePcm[], opts: MixOptions): Float32A
       { offsetS: 0, value: dbToGain(clip.audioGainDb) },
     ]
     const localPoints = env.map((p) => ({ offsetS: p.offsetS - sched.whenOffsetS, value: p.value }))
-    const gained = applyGainEnvelope(clipMono, localPoints, sampleRate)
+    let gained = applyGainEnvelope(clipMono, localPoints, sampleRate)
+
+    // Music ducks under the voiceover — the same shift-to-buffer-local trick,
+    // reproducing the duck GainNode in scheduleAudio/renderAudioMix.
+    if (track.audioRole === 'music' && duckEnv) {
+      const localDuck = duckEnv.map((p) => ({ offsetS: p.offsetS - sched.whenOffsetS, value: p.value }))
+      gained = applyGainEnvelope(gained, localDuck, sampleRate)
+    }
 
     // Track bus: volume * auto-level makeup, then equal-power pan. These are all
     // linear, so panning each clip and summing equals summing then panning.

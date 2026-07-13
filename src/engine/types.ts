@@ -78,6 +78,12 @@ export interface Track {
    * identically in preview + export.
    */
   autoLevel?: AutoLevel
+  /**
+   * Auto-duck opt-in (audio tracks): 'voice' drives the duck, 'music' drops by
+   * DUCK_DB whenever a voice clip plays (see engine/ducking.ts). Undefined =
+   * neither. Applied identically in preview + export.
+   */
+  audioRole?: 'voice' | 'music'
   /** Sorted by startS; clips never overlap on one track. */
   clips: Clip[]
 }

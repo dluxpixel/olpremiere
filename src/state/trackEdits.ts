@@ -31,3 +31,14 @@ export function setTrackPan(trackId: Id, pan: number): void {
 export function setTrackAutoLevel(trackId: Id, level: AutoLevel): void {
   mapTrack(trackId, 'Set auto-level', (t) => (t.autoLevel ?? 'off') === level ? t : { ...t, autoLevel: level })
 }
+
+/** Auto-duck opt-in: 'voice' drives the duck, 'music' receives it (engine/ducking.ts). */
+export function setTrackAudioRole(trackId: Id, role: Track['audioRole']): void {
+  mapTrack(trackId, 'Set audio role', (t) => {
+    if (t.audioRole === role) return t
+    const next = { ...t }
+    if (role === undefined) delete next.audioRole
+    else next.audioRole = role
+    return next
+  })
+}

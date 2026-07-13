@@ -7,7 +7,9 @@ import {
   Lock,
   LockOpen,
   Magnet,
+  Mic,
   MousePointer2,
+  Music as MusicIcon,
   Plus,
   Scissors,
   Type,
@@ -66,7 +68,7 @@ import { pausePlayback } from '../state/playbackControl'
 import { addTitleClip } from '../state/titleActions'
 import { copySelection, cutSelection, duplicateSelection } from '../state/clipboard'
 import { crossfadeWithNeighbour, setClipFade } from '../state/clipEdits'
-import { setTrackAutoLevel, setTrackPan, setTrackVolumeDb } from '../state/trackEdits'
+import { setTrackAudioRole, setTrackAutoLevel, setTrackPan, setTrackVolumeDb } from '../state/trackEdits'
 import { appearanceMenuItems, titleFontSizeItems } from '../state/clipMenus'
 import { openContextMenu } from '../state/contextMenu'
 import { useBlobUrl } from '../state/blobUrls'
@@ -211,6 +213,12 @@ const AUTO_LEVELS: { key: AutoLevel; label: string }[] = [
   { key: 'high', label: 'High — strong' },
 ]
 
+const AUDIO_ROLES: { key: Track['audioRole']; label: string }[] = [
+  { key: undefined, label: 'None' },
+  { key: 'voice', label: 'Voiceover — drives ducking' },
+  { key: 'music', label: 'Music — ducks under voice' },
+]
+
 function TrackHeader({ track }: { track: Track }) {
   const toggle = (field: 'muted' | 'solo' | 'locked', label: string) =>
     updateActiveSequence(label, (seq) => ({
@@ -225,6 +233,14 @@ function TrackHeader({ track }: { track: Track }) {
       AUTO_LEVELS.map((l) => ({
         label: level === l.key ? `${l.label}  ✓` : l.label,
         onClick: () => setTrackAutoLevel(track.id, l.key),
+      })),
+    )
+  const openAudioRole = (e: ReactMouseEvent<HTMLButtonElement>) =>
+    openContextMenu(
+      e,
+      AUDIO_ROLES.map((r) => ({
+        label: track.audioRole === r.key ? `${r.label}  ✓` : r.label,
+        onClick: () => setTrackAudioRole(track.id, r.key),
       })),
     )
 
@@ -278,6 +294,21 @@ function TrackHeader({ track }: { track: Track }) {
             data-testid="autolevel-btn"
           >
             <Gauge size={14} strokeWidth={1.5} />
+          </IconButton>
+        )}
+        {isAudio && (
+          <IconButton
+            size="compact"
+            label={`Audio role: ${track.audioRole === 'voice' ? 'voiceover (drives ducking)' : track.audioRole === 'music' ? 'music (ducks under voice)' : 'none'}`}
+            active={track.audioRole !== undefined}
+            onClick={openAudioRole}
+            data-testid="audiorole-btn"
+          >
+            {track.audioRole === 'music' ? (
+              <MusicIcon size={14} strokeWidth={1.5} />
+            ) : (
+              <Mic size={14} strokeWidth={1.5} />
+            )}
           </IconButton>
         )}
       </div>

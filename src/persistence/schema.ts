@@ -101,6 +101,8 @@ const TrackSchema = z
     // Backfilled by migrateProject for pre mixer documents, so optional here.
     volumeDb: num.optional(),
     pan: num.optional(),
+    // Auto-duck opt-in (engine/ducking.ts); absent on older documents.
+    audioRole: z.enum(['voice', 'music']).optional(),
     clips: z.array(ClipSchema),
   })
   .catchall(z.unknown())

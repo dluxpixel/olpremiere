@@ -13,6 +13,7 @@ import {
   getReversedAudioBuffer,
   type ClipSchedule,
 } from '../audio'
+import { duckEnvelope } from '../ducking'
 import type { Clip, Id, MediaAsset, Sequence, Track } from '../types'
 import type { RenderedAudio } from './messages'
 
@@ -46,6 +47,9 @@ export async function renderAudioMix(
 
   const anySolo = seq.tracks.some((t) => t.solo)
   const audibleTracks = seq.tracks.filter((t) => (anySolo ? t.solo : !t.muted))
+
+  // Same duck automation as the live preview (see engine/ducking.ts).
+  const duckEnv = duckEnvelope(seq.tracks, anySolo, startS)
 
   const candidates: { clip: Clip; track: Track; sched: ClipSchedule; asset: MediaAsset; reversed: boolean }[] = []
   for (const track of audibleTracks) {
@@ -97,6 +101,16 @@ export async function renderAudioMix(
       tail.connect(comp)
       comp.connect(makeup)
       tail = makeup
+    }
+    // Music ducks under the voiceover — identical automation to the preview.
+    if (track.audioRole === 'music' && duckEnv) {
+      const duck = ctx.createGain()
+      duckEnv.forEach((pt, idx) => {
+        if (idx === 0) duck.gain.setValueAtTime(pt.value, pt.offsetS)
+        else duck.gain.linearRampToValueAtTime(pt.value, pt.offsetS)
+      })
+      tail.connect(duck)
+      tail = duck
     }
     tail.connect(pan)
     pan.connect(ctx.destination)
