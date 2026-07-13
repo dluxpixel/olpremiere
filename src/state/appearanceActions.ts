@@ -83,6 +83,11 @@ async function persistDefault(spec: AppearanceSpec | null): Promise<void> {
   }
 }
 
+/** Set the new-text default directly (used by Looks; silent, fire-and-forget). */
+export function setDefaultTextAppearance(spec: AppearanceSpec | null): void {
+  void persistDefault(spec && !isEmptyAppearance(spec) ? spec : null)
+}
+
 /** Save a clip's current appearance as the default for new text clips. */
 export function saveClipAppearanceAsDefault(clipId: string): void {
   const clip = findClip(clipId)

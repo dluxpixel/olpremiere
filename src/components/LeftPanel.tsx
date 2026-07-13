@@ -1,4 +1,4 @@
-import { Bookmark, Film, FolderOpen, Image as ImageIcon, Music, Plus, Sparkles, Type, Upload, Volume2 } from 'lucide-react'
+import { Bookmark, Film, FolderOpen, Image as ImageIcon, Music, Plus, Sparkles, Type, Upload, Volume2, Wand2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { EFFECTS } from '../engine/effects/registry'
 import { TRANSITION_KINDS, type TransitionKind } from '../engine/render/types'
@@ -22,6 +22,7 @@ import {
 import { healArrivedBlob, useMediaSync } from '../collab/mediaSync'
 import { useCollab } from '../collab/collabControl'
 import { deleteAsset, importFiles, insertAssetAtPlayhead } from '../state/mediaActions'
+import { applyJettismLook } from '../state/lookActions'
 import { insertSfxAtPlayhead, previewSfx } from '../state/sfxActions'
 import { useStore, type LeftTab } from '../state/store'
 import { addTitleClip } from '../state/titleActions'
@@ -337,7 +338,8 @@ function EffectsTab() {
 
   const effects = EFFECTS.filter((e) => matches(e.label) || matches(e.type))
   const transitions = TRANSITION_KINDS.filter((k) => matches(TRANSITION_LABELS[k]) || matches(k))
-  const empty = effects.length === 0 && transitions.length === 0
+  const showLook = matches('Jettism') || matches('look')
+  const empty = effects.length === 0 && transitions.length === 0 && !showLook
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -364,6 +366,27 @@ function EffectsTab() {
           <div className="px-2 py-6 text-center text-[11px] text-text-muted">No match for &ldquo;{query}&rdquo;</div>
         ) : (
           <>
+            {showLook && (
+              <section className="mb-2">
+                <h3 className="px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">
+                  Looks
+                </h3>
+                <div
+                  data-testid="look-jettism"
+                  role="button"
+                  tabIndex={0}
+                  title="One click: 9:16, punchy grade on every clip, pop-in titles. Grade lands in the Library as 'Jettism Punch'."
+                  onDoubleClick={applyJettismLook}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') applyJettismLook()
+                  }}
+                  className="flex cursor-default items-center gap-2 rounded-[4px] px-2 py-1.5 text-[12px] text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated hover:text-text-primary"
+                >
+                  <Wand2 size={13} strokeWidth={1.5} aria-hidden className="shrink-0 text-text-muted" />
+                  <span className="truncate">Jettism (Shorts template)</span>
+                </div>
+              </section>
+            )}
             {effects.length > 0 && (
               <section className="mb-2">
                 <h3 className="px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">
