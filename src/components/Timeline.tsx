@@ -68,10 +68,11 @@ import { pausePlayback } from '../state/playbackControl'
 import { addTitleClip } from '../state/titleActions'
 import { copySelection, cutSelection, duplicateSelection } from '../state/clipboard'
 import { crossfadeWithNeighbour, setClipFade } from '../state/clipEdits'
+import { impactAtPlayhead, punchInAtPlayhead, rampWorkArea, whipToNext } from '../state/motionActions'
 import { autoCaptionFromClip } from '../state/transcribeActions'
 import { setTrackAudioRole, setTrackAutoLevel, setTrackPan, setTrackVolumeDb } from '../state/trackEdits'
 import { appearanceMenuItems, titleFontSizeItems } from '../state/clipMenus'
-import { openContextMenu } from '../state/contextMenu'
+import { openContextMenu, type MenuItem } from '../state/contextMenu'
 import { useBlobUrl } from '../state/blobUrls'
 import { ClipWaveform } from './ClipWaveform'
 import { PlayheadLine, PlayheadTimecode, RemotePlayheads } from './PlayheadWidgets'
@@ -911,6 +912,35 @@ export function Timeline({ height }: { height: number }) {
         ? [{ label: 'Auto-Caption from voiceover', onClick: () => void autoCaptionFromClip(clip.id) }]
         : []
 
+    // Jettism Motion Pack, for video-track clips.
+    const nextClip = next
+    const nextTouches = !!nextClip && Math.abs(clipEndS(clip) - nextClip.startS) < 1e-3
+    const motionItems: MenuItem[] =
+      track?.kind === 'video'
+        ? [
+            {
+              label: 'Punch in at playhead',
+              shortcut: 'P',
+              separator: true,
+              disabled: !playheadInside,
+              onClick: () => punchInAtPlayhead(clip.id),
+            },
+            {
+              label: 'Impact hit at playhead',
+              disabled: !playheadInside,
+              onClick: () => impactAtPlayhead(clip.id),
+            },
+            { label: 'Whip to next clip', disabled: !nextTouches, onClick: () => whipToNext(clip.id) },
+            {
+              label: 'Speed ramp work area',
+              submenu: [2, 3, 0.5].map((f) => ({
+                label: `×${f}`,
+                onClick: () => rampWorkArea(clip.id, f),
+              })),
+            },
+          ]
+        : []
+
     // "How it appears" — font/size quick-picks (titles) + entrance/exit/speed
     // animation. All compile to keyframes (preview == export). Shared with the
     // preview-monitor menu via state/clipMenus.
@@ -922,6 +952,7 @@ export function Timeline({ height }: { height: number }) {
       { label: 'Duplicate', shortcut: comboLabel('mod+d'), onClick: duplicateSelection },
       ...crossfadeItems,
       ...captionItems,
+      ...motionItems,
       ...appearanceItems,
       {
         label: 'Split at playhead',

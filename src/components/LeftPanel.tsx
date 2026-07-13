@@ -1,4 +1,4 @@
-import { Bookmark, Film, FolderOpen, Image as ImageIcon, Music, Plus, Sparkles, Type, Upload, Volume2, Wand2 } from 'lucide-react'
+import { Bookmark, Film, FolderOpen, Image as ImageIcon, Music, Plus, Sparkles, Type, Upload, Volume2, Wand2, Zap } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { EFFECTS } from '../engine/effects/registry'
 import { TRANSITION_KINDS, type TransitionKind } from '../engine/render/types'
@@ -23,6 +23,7 @@ import { healArrivedBlob, useMediaSync } from '../collab/mediaSync'
 import { useCollab } from '../collab/collabControl'
 import { deleteAsset, importFiles, insertAssetAtPlayhead } from '../state/mediaActions'
 import { applyJettismLook } from '../state/lookActions'
+import { impactAtPlayhead, punchInAtPlayhead, whipToNext } from '../state/motionActions'
 import { insertSfxAtPlayhead, previewSfx } from '../state/sfxActions'
 import { useStore, type LeftTab } from '../state/store'
 import { addTitleClip } from '../state/titleActions'
@@ -339,7 +340,12 @@ function EffectsTab() {
   const effects = EFFECTS.filter((e) => matches(e.label) || matches(e.type))
   const transitions = TRANSITION_KINDS.filter((k) => matches(TRANSITION_LABELS[k]) || matches(k))
   const showLook = matches('Jettism') || matches('look')
-  const empty = effects.length === 0 && transitions.length === 0 && !showLook
+  const motion = [
+    { key: 'punch', name: 'Punch in (at playhead)', run: punchInAtPlayhead },
+    { key: 'impact', name: 'Impact hit (at playhead)', run: impactAtPlayhead },
+    { key: 'whip', name: 'Whip to next clip', run: whipToNext },
+  ].filter((m) => matches(m.name) || matches('motion'))
+  const empty = effects.length === 0 && transitions.length === 0 && !showLook && motion.length === 0
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -385,6 +391,32 @@ function EffectsTab() {
                   <Wand2 size={13} strokeWidth={1.5} aria-hidden className="shrink-0 text-text-muted" />
                   <span className="truncate">Jettism (Shorts template)</span>
                 </div>
+              </section>
+            )}
+            {motion.length > 0 && (
+              <section className="mb-2">
+                <h3 className="px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">
+                  Motion
+                </h3>
+                {motion.map((m) => (
+                  <div
+                    key={m.key}
+                    data-testid={`motion-${m.key}`}
+                    role="button"
+                    tabIndex={0}
+                    title="Double-click to apply to the selected clip"
+                    onDoubleClick={() => targetId && m.run(targetId)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && targetId) m.run(targetId)
+                    }}
+                    className={`flex cursor-default items-center gap-2 rounded-[4px] px-2 py-1.5 text-[12px] transition-colors duration-[120ms] ${
+                      targetId ? 'text-text-secondary hover:bg-bg-elevated hover:text-text-primary' : 'text-text-muted'
+                    }`}
+                  >
+                    <Zap size={13} strokeWidth={1.5} aria-hidden className="shrink-0 text-text-muted" />
+                    <span className="truncate">{m.name}</span>
+                  </div>
+                ))}
               </section>
             )}
             {effects.length > 0 && (

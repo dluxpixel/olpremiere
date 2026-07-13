@@ -444,6 +444,34 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
     gl.drawArrays(gl.TRIANGLES, 0, 3)
   }
 
+  // Directional smear: the SAME separable-blur program run twice along one
+  // axis (half radius each ≈ a triangular kernel), so no new shader and the
+  // result lands back in srcFbo exactly like blurFbo.
+  function directionalBlurFbo(srcFbo: Fbo, scratch: Fbo, angleRad: number, radiusPx: number): void {
+    const r = Math.min(radiusPx, MAX_BLUR_PX)
+    gl.useProgram(blurProg)
+    bindFull(blurLoc.aPos)
+    gl.uniform1i(blurLoc.uTex, 0)
+    gl.activeTexture(gl.TEXTURE0)
+    const dx = Math.cos(angleRad) / fboW
+    const dy = Math.sin(angleRad) / fboH
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, scratch.fb)
+    gl.viewport(0, 0, fboW, fboH)
+    gl.disable(gl.BLEND)
+    gl.bindTexture(gl.TEXTURE_2D, srcFbo.tex)
+    gl.uniform2f(blurLoc.uDir, dx, dy)
+    gl.uniform1f(blurLoc.uRadius, r / 2)
+    gl.drawArrays(gl.TRIANGLES, 0, 3)
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, srcFbo.fb)
+    gl.viewport(0, 0, fboW, fboH)
+    gl.bindTexture(gl.TEXTURE_2D, scratch.tex)
+    gl.uniform2f(blurLoc.uDir, dx, dy)
+    gl.uniform1f(blurLoc.uRadius, r / 2)
+    gl.drawArrays(gl.TRIANGLES, 0, 3)
+  }
+
   /**
    * Run one neighborhood effect over the layer's isolated FBO. Result is left
    * in `fbo`. These run AFTER the pointwise chain (which already premultiplied
@@ -453,6 +481,12 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
     if (fx.type === 'gaussianBlur') {
       const r = fx.params.blur ?? 0
       if (r > 0) blurFbo(fbo, scratch, r)
+    } else if (fx.type === 'directionalBlur') {
+      const strength = fx.params.strength ?? 0
+      if (strength > 0.005) {
+        const angle = ((fx.params.angleDeg ?? 0) * Math.PI) / 180
+        directionalBlurFbo(fbo, scratch, angle, strength * MAX_BLUR_PX)
+      }
     }
   }
 

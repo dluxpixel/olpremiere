@@ -36,6 +36,7 @@ import { performHistoryStep } from './collab/collabControl'
 import { toggleClipEnabled } from './state/clipEdits'
 import { pausePlayback, shuttle, togglePlay } from './state/playbackControl'
 import { clearInOut, gotoIn, gotoOut, markIn, markOut } from './state/workAreaActions'
+import { punchInAtPlayhead } from './state/motionActions'
 import { addTitleClip } from './state/titleActions'
 import { saveNow } from './state/persistence'
 import { updateActiveSequence, useStore, zoomIn, zoomOut } from './state/store'
@@ -178,6 +179,15 @@ function buildAppBindings(): Binding[] {
       },
       { combo: 's', description: 'Toggle snapping', run: () => store().setUI({ snapping: !store().ui.snapping }) },
       { combo: 't', description: 'Add title at playhead', run: () => addTitleClip() },
+      // Jettism Motion Pack: the workhorse zoom on the selected clip.
+      {
+        combo: 'p',
+        description: 'Punch in at playhead (selected clip)',
+        run: () => {
+          const id = store().ui.selection[0]
+          if (id) punchInAtPlayhead(id)
+        },
+      },
       { combo: 'v', description: 'Selection tool', run: () => store().setUI({ tool: 'select' }) },
       // C cuts the clip(s) at the playhead right away (Premiere muscle memory). The razor
       // TOOL (click-to-cut anywhere) moved to B (Blade) so click-cutting is still available.

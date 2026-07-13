@@ -223,6 +223,14 @@ export const EFFECTS: EffectDef[] = [
     pass: 'neighborhood',
     params: [p('blur', 'Radius', 0, 64, 0.5, 0, 'px', 0.25)],
   },
+  {
+    type: 'directionalBlur',
+    label: 'Directional Blur',
+    description: 'Motion smear along an angle — the whip-transition workhorse.',
+    category: 'blur',
+    pass: 'neighborhood',
+    params: [p('angleDeg', 'Angle', 0, 360, 1, 0, '°'), p('strength', 'Strength', 0, 1, 0.01, 0)],
+  },
 ]
 
 /**
@@ -239,6 +247,7 @@ export const CANONICAL_ORDER = [
   'saturation',
   'vibrance',
   'gaussianBlur',
+  'directionalBlur',
 ] as const
 
 export const EFFECT_BY_TYPE: Readonly<Record<string, EffectDef>> = Object.freeze(
