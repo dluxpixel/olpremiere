@@ -5,6 +5,7 @@ import { LeftPanel } from './components/LeftPanel'
 import { Monitor } from './components/Monitor'
 import { Timeline } from './components/Timeline'
 import { TopBar } from './components/TopBar'
+import { TranscribeStatus } from './components/TranscribeStatus'
 import {
   addMarker,
   clipEndS,
@@ -290,6 +291,7 @@ export default function App() {
         <Timeline height={sizes.bottom} />
       </div>
       <Toaster />
+      <TranscribeStatus />
       <ContextMenu />
       <KeyboardHelp bindings={buildAppBindings()} />
     </div>

@@ -68,6 +68,7 @@ import { pausePlayback } from '../state/playbackControl'
 import { addTitleClip } from '../state/titleActions'
 import { copySelection, cutSelection, duplicateSelection } from '../state/clipboard'
 import { crossfadeWithNeighbour, setClipFade } from '../state/clipEdits'
+import { autoCaptionFromClip } from '../state/transcribeActions'
 import { setTrackAudioRole, setTrackAutoLevel, setTrackPan, setTrackVolumeDb } from '../state/trackEdits'
 import { appearanceMenuItems, titleFontSizeItems } from '../state/clipMenus'
 import { openContextMenu } from '../state/contextMenu'
@@ -904,6 +905,12 @@ export function Timeline({ height }: { height: number }) {
           ]
         : []
 
+    // Local Whisper → word-by-word captions, for any audio clip with sound.
+    const captionItems =
+      track?.kind === 'audio' && assets[clip.assetId]?.hasAudio
+        ? [{ label: 'Auto-Caption from voiceover', onClick: () => void autoCaptionFromClip(clip.id) }]
+        : []
+
     // "How it appears" — font/size quick-picks (titles) + entrance/exit/speed
     // animation. All compile to keyframes (preview == export). Shared with the
     // preview-monitor menu via state/clipMenus.
@@ -914,6 +921,7 @@ export function Timeline({ height }: { height: number }) {
       { label: 'Cut', shortcut: comboLabel('mod+x'), onClick: cutSelection },
       { label: 'Duplicate', shortcut: comboLabel('mod+d'), onClick: duplicateSelection },
       ...crossfadeItems,
+      ...captionItems,
       ...appearanceItems,
       {
         label: 'Split at playhead',

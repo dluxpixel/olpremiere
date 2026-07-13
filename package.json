@@ -13,6 +13,7 @@
     "ci": "tsc --noEmit && eslint . && vitest run && vite build"
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.2.0",
     "idb": "^8.0.1",
     "lucide-react": "^0.469.0",
     "mediabunny": "^1.50.6",
