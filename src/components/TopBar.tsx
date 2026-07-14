@@ -25,6 +25,7 @@ import { comboLabel } from '../keymap'
 import { openContextMenu } from '../state/contextMenu'
 import { exportProjectToFile, importProjectFromFile } from '../state/projectFile'
 import { useStore } from '../state/store'
+import { useToasts } from '../state/toasts'
 import {
   canRecordVoice,
   listAudioInputs,
@@ -206,8 +207,14 @@ function RecordButton() {
 
 function SaveIndicator() {
   const saveState = useStore((s) => s.ui.saveState)
+  // Persistent risk shouts, transient states whisper: unsaved work is the one
+  // state that must be noticed; saving is a flicker.
   const dot =
-    saveState === 'saved' ? 'bg-success' : saveState === 'saving' ? 'bg-warning' : 'bg-text-muted'
+    saveState === 'saved'
+      ? 'bg-success'
+      : saveState === 'saving'
+        ? 'bg-text-muted animate-pulse'
+        : 'bg-warning'
   const label = saveState === 'saved' ? 'Saved' : saveState === 'saving' ? 'Saving…' : 'Unsaved'
   return (
     <span
@@ -258,9 +265,19 @@ function ProjectName() {
 export function TopBar() {
   const canUndo = useStore((s) => s.history.undo.length > 0)
   const canRedo = useStore((s) => s.history.redo.length > 0)
-  // Routed through collab: rebased in a room, snapshot solo.
-  const undo = () => performHistoryStep('undo')
-  const redo = () => performHistoryStep('redo')
+  // Tooltips say WHAT will be undone; history entries already carry labels.
+  const nextUndo = useStore((s) => s.history.undo[s.history.undo.length - 1]?.label)
+  const nextRedo = useStore((s) => s.history.redo[s.history.redo.length - 1]?.label)
+  // Routed through collab: rebased in a room, snapshot solo. The keymap route
+  // toasts the label (App.tsx) — the buttons must not be the silent path.
+  const undo = () => {
+    const label = performHistoryStep('undo')
+    if (label) useToasts.getState().show(`Undo: ${label}`)
+  }
+  const redo = () => {
+    const label = performHistoryStep('redo')
+    if (label) useToasts.getState().show(`Redo: ${label}`)
+  }
   const setUI = useStore((s) => s.setUI)
   const [exporting, setExporting] = useState(false)
   const openFileRef = useRef<HTMLInputElement>(null)
@@ -309,7 +326,7 @@ export function TopBar() {
 
       <div className="ml-auto flex items-center gap-1">
         <IconButton
-          label="Undo"
+          label={nextUndo ? `Undo: ${nextUndo}` : 'Undo'}
           shortcut={comboLabel('mod+z')}
           onClick={undo}
           disabled={!canUndo}
@@ -318,7 +335,7 @@ export function TopBar() {
           <Undo2 size={16} strokeWidth={1.5} />
         </IconButton>
         <IconButton
-          label="Redo"
+          label={nextRedo ? `Redo: ${nextRedo}` : 'Redo'}
           shortcut={comboLabel('mod+shift+z')}
           onClick={redo}
           disabled={!canRedo}

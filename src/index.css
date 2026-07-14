@@ -34,6 +34,10 @@
   --color-clip-audio-bd: #3f9163;
   --color-clip-image: #6b4a78;
   --color-clip-image-bd: #8a5fa0;
+  /* Titles/captions: magenta, deliberately far from the interface accent so
+     the selection ring stays visible on them. */
+  --color-clip-title: #8a3d78;
+  --color-clip-title-bd: #b555a0;
 
   --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.45);
 }

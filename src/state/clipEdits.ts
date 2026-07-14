@@ -18,6 +18,7 @@ import {
   clipDurationS,
   clipEndS,
   clipGroupIds,
+  rippleTrimGroup,
   setClipSpeed as setClipSpeedT,
   unlockedClipIds,
 } from '../engine/timeline'
@@ -319,4 +320,26 @@ export function crossfadeWithNeighbour(clipId: Id, side: 'next' | 'prev', second
       ),
     }
   })
+}
+
+/**
+ * Q / W: top-and-tail. Ripple-trim the head ('in') or tail ('out') of the
+ * clip under the playhead — a selected clip under the playhead wins, else the
+ * topmost unlocked one. Shared by the keymap and the clip context menu.
+ */
+export function topAndTail(edge: 'in' | 'out'): void {
+  const s = useStore.getState()
+  const t = s.ui.playheadS
+  const assets = s.project.assets
+  const seq = activeSequence(s.project)
+  const sel = new Set(s.ui.selection)
+  const under = seq.tracks
+    .filter((tr) => !tr.locked)
+    .flatMap((tr) => tr.clips)
+    .filter((c) => t > c.startS && t < clipEndS(c))
+  if (under.length === 0) return
+  const target = under.find((c) => sel.has(c.id)) ?? under[under.length - 1]
+  updateActiveSequence(edge === 'in' ? 'Trim head to playhead' : 'Trim tail to playhead', (sq) =>
+    rippleTrimGroup(sq, assets, target.id, edge, t),
+  )
 }

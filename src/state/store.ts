@@ -178,12 +178,13 @@ export function setActiveSequenceFormat(width: number, height: number, refit = t
   })
 }
 
+// Zoom is anchored by the Timeline (playhead-if-visible, else view center) so
+// the view never drifts while zooming — raw pxPerS writes slide toward t=0.
+// The event keeps this store DOM-free; with no timeline mounted it's a no-op.
 export const zoomIn = () => {
-  const { ui, setUI } = useStore.getState()
-  setUI({ pxPerS: Math.min(MAX_PX_PER_S, ui.pxPerS * 1.4) })
+  window.dispatchEvent(new CustomEvent('reel:zoom', { detail: { factor: 1.4 } }))
 }
 
 export const zoomOut = () => {
-  const { ui, setUI } = useStore.getState()
-  setUI({ pxPerS: Math.max(MIN_PX_PER_S, ui.pxPerS / 1.4) })
+  window.dispatchEvent(new CustomEvent('reel:zoom', { detail: { factor: 1 / 1.4 } }))
 }

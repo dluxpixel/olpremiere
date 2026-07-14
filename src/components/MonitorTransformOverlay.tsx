@@ -82,6 +82,8 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
   const tfRef = useRef<Tf | null>(null)
   const cleanupRef = useRef<(() => void) | null>(null)
   const [dragTf, setDragTf] = useState<Tf | null>(null)
+  // Which axes are currently snapped to frame center (drives the guide lines).
+  const [centerSnap, setCenterSnap] = useState<{ x: boolean; y: boolean }>({ x: false, y: false })
   useEffect(() => () => cleanupRef.current?.(), [])
 
   // Playing is handled by the outer gate; here we are always paused.
@@ -207,11 +209,22 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
       const onMoveWin = (ev: globalThis.PointerEvent) => {
         const p = localPt(ev.clientX, ev.clientY)
         if (drag.mode === 'move') {
-          apply({
-            x: drag.startTf.x + (p.x - drag.startX) / k,
-            y: drag.startTf.y + (p.y - drag.startY) / k,
-            scale: drag.startTf.scale,
-          })
+          let x = drag.startTf.x + (p.x - drag.startX) / k
+          let y = drag.startTf.y + (p.y - drag.startY) / k
+          // Shift constrains to the dominant axis (Premiere muscle memory).
+          if (ev.shiftKey) {
+            if (Math.abs(p.x - drag.startX) >= Math.abs(p.y - drag.startY)) y = drag.startTf.y
+            else x = drag.startTf.x
+          }
+          // Snap to frame center: x/y are offsets from center, so |v| < 8
+          // screen px means "you clearly meant centered".
+          const snapSeqPx = 8 / k
+          const sx = Math.abs(x) < snapSeqPx
+          const sy = Math.abs(y) < snapSeqPx
+          if (sx) x = 0
+          if (sy) y = 0
+          setCenterSnap({ x: sx, y: sy })
+          apply({ x, y, scale: drag.startTf.scale })
         } else {
           const dist = Math.hypot(p.x - drag.cx, p.y - drag.cy)
           apply({ ...drag.startTf, scale: clamp((drag.startTf.scale * dist) / drag.startDist, 0.05, 5) })
@@ -222,6 +235,7 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
         const final = tfRef.current
         setLivePreviewTransform(null)
         setDragTf(null)
+        setCenterSnap({ x: false, y: false })
         tfRef.current = null
         if (final) setClipTransform(clipId, final)
       }
@@ -293,6 +307,13 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
         onPointerDown={selectAt}
         onContextMenu={contextAt}
       />
+      {/* Center-snap guides: shown only while a move-drag holds the snap. */}
+      {centerSnap.x && (
+        <div className="pointer-events-none absolute inset-y-0 w-px bg-accent/80" style={{ left: box.w / 2 }} />
+      )}
+      {centerSnap.y && (
+        <div className="pointer-events-none absolute inset-x-0 h-px bg-accent/80" style={{ top: box.h / 2 }} />
+      )}
       {gizmo}
     </div>
   )

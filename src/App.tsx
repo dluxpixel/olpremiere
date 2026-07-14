@@ -13,7 +13,6 @@ import {
   deleteGroup,
   removeMarkerNear,
   rippleDeleteGroup,
-  rippleTrimGroup,
   splitGroup,
   unlockedClipIds,
 } from './engine/timeline'
@@ -33,7 +32,7 @@ import {
   selectClipOnAdjacentTrack,
 } from './state/clipboard'
 import { performHistoryStep } from './collab/collabControl'
-import { toggleClipEnabled } from './state/clipEdits'
+import { toggleClipEnabled, topAndTail } from './state/clipEdits'
 import { pausePlayback, shuttle, togglePlay } from './state/playbackControl'
 import { clearInOut, gotoIn, gotoOut, markIn, markOut } from './state/workAreaActions'
 import { punchInAtPlayhead } from './state/motionActions'
@@ -103,22 +102,7 @@ function splitAtPlayhead() {
  * playhead where the good part starts, tap Q. Target = the selected clip if the
  * playhead is inside it, else the topmost unlocked clip under the playhead.
  */
-function topAndTail(edge: 'in' | 'out') {
-  const s = useStore.getState()
-  const t = s.ui.playheadS
-  const assets = s.project.assets
-  const seq = activeSequence(s.project)
-  const sel = new Set(s.ui.selection)
-  const under = seq.tracks
-    .filter((tr) => !tr.locked)
-    .flatMap((tr) => tr.clips)
-    .filter((c) => t > c.startS && t < clipEndS(c))
-  if (under.length === 0) return
-  const target = under.find((c) => sel.has(c.id)) ?? under[under.length - 1]
-  updateActiveSequence(edge === 'in' ? 'Trim head to playhead' : 'Trim tail to playhead', (sq) =>
-    rippleTrimGroup(sq, assets, target.id, edge, t),
-  )
-}
+// topAndTail moved to state/clipEdits.ts so the clip context menu shares it.
 
 function buildAppBindings(): Binding[] {
   const store = () => useStore.getState()

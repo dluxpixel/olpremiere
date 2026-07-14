@@ -3,6 +3,7 @@ import {
   Gauge,
   Hand,
   Headphones,
+  Link2,
   ListPlus,
   Lock,
   LockOpen,
@@ -67,7 +68,7 @@ import {
 import { pausePlayback } from '../state/playbackControl'
 import { addTitleClip } from '../state/titleActions'
 import { copySelection, cutSelection, duplicateSelection } from '../state/clipboard'
-import { crossfadeWithNeighbour, setClipFade } from '../state/clipEdits'
+import { crossfadeWithNeighbour, setClipFade, topAndTail } from '../state/clipEdits'
 import { impactAtPlayhead, punchInAtPlayhead, punchOnBeats, rampWorkArea, whipToNext } from '../state/motionActions'
 import { autoCaptionFromClip } from '../state/transcribeActions'
 import { setTrackAudioRole, setTrackAutoLevel, setTrackPan, setTrackVolumeDb } from '../state/trackEdits'
@@ -444,7 +445,13 @@ function TimelineToolbar({ onZoomFit }: { onZoomFit: () => void }) {
           max={Math.log2(MAX_PX_PER_S)}
           step={0.01}
           value={Math.log2(pxPerS)}
-          onChange={(e) => setUI({ pxPerS: 2 ** Number(e.target.value) })}
+          onChange={(e) =>
+            // The toolbar renders outside the lanes component — route through
+            // the same anchored-zoom event the keymap uses.
+            window.dispatchEvent(
+              new CustomEvent('reel:zoom', { detail: { pxPerS: 2 ** Number(e.target.value) } }),
+            )
+          }
         />
         <IconButton size="compact" label="Zoom in" shortcut="=" onClick={zoomIn}>
           <ZoomIn size={14} strokeWidth={1.5} />
@@ -505,7 +512,7 @@ function ClipView({
   // Colour by the TRACK: an audio-track clip is audio-family even when it
   // references a video asset (a linked-audio split).
   const { bg, bd } = isTitle
-    ? { bg: '#4a3b6b', bd: '#7a5fb0' }
+    ? { bg: 'var(--color-clip-title)', bd: 'var(--color-clip-title-bd)' }
     : trackKind === 'audio'
       ? { bg: 'var(--color-clip-audio)', bd: 'var(--color-clip-audio-bd)' }
       : familyFor(asset)
@@ -620,8 +627,10 @@ function ClipView({
       data-clip-id={clip.id}
       data-clip-kind={kind}
       className={`group/clip absolute bottom-[3px] top-[3px] overflow-hidden rounded-[6px] border ${
-        selected ? 'ring-2 ring-accent' : ''
-      } ${clip.enabled ? '' : 'opacity-40'} ${fxDropHot ? 'ring-2 ring-accent' : ''}`}
+        // Selection lifts the clip (offset ring + brightness); an imminent FX
+        // drop is an INSET ring — the two states must never look alike.
+        selected ? 'ring-2 ring-accent ring-offset-1 ring-offset-bg-app brightness-110' : ''
+      } ${clip.enabled ? '' : 'opacity-40'} ${fxDropHot ? 'ring-2 ring-inset ring-accent-hover' : ''}`}
       style={{ left, width, background: bg, borderColor: bd }}
       onPointerDown={(e) => onClipPointerDown(e, clip)}
       onContextMenu={(e) => onClipContextMenu(e, clip)}
@@ -638,10 +647,10 @@ function ClipView({
       {isAudio && asset && <ClipWaveform clip={clip} asset={asset} width={width} height={innerH} />}
       {clip.linkId && (
         <span
-          className="pointer-events-none absolute bottom-0.5 right-1 text-[9px] text-white/50"
+          className="pointer-events-none absolute bottom-1 right-1 rounded-[3px] bg-black/45 p-0.5 text-white/80"
           title="Linked A/V"
         >
-          🔗
+          <Link2 size={9} strokeWidth={2} />
         </span>
       )}
       {strip && width > 48 ? (
@@ -662,6 +671,9 @@ function ClipView({
           />
         )
       )}
+      {/* Scrim under the name: a 1px text-shadow can't hold 11px text over
+          bright footage frames. */}
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-4 bg-gradient-to-b from-black/60 to-transparent" />
       <span className="pointer-events-none absolute left-1.5 right-1.5 top-0.5 truncate text-[11px] font-medium text-white/90 [text-shadow:0_1px_2px_rgba(0,0,0,0.6)]">
         {label}
       </span>
@@ -688,7 +700,9 @@ function ClipView({
         </svg>
       )}
 
-      {(
+      {/* Fade dots share the clip's corners with the trim zones — on narrow
+          clips they'd fight for the same pixels, so they step aside. */}
+      {width >= 32 && (
         <>
           <div
             data-testid="fade-in-handle"
@@ -713,22 +727,32 @@ function ClipView({
         </>
       )}
 
-      <div
-        data-testid="trim-in"
-        className="absolute inset-y-0 left-0 w-[6px] cursor-w-resize bg-white/25 opacity-0 transition-opacity duration-[120ms] group-hover/clip:opacity-100"
-        onPointerDown={(e) => {
-          e.stopPropagation()
-          onTrimPointerDown(e, clip, 'in')
-        }}
-      />
-      <div
-        data-testid="trim-out"
-        className="absolute inset-y-0 right-0 w-[6px] cursor-e-resize bg-white/25 opacity-0 transition-opacity duration-[120ms] group-hover/clip:opacity-100"
-        onPointerDown={(e) => {
-          e.stopPropagation()
-          onTrimPointerDown(e, clip, 'out')
-        }}
-      />
+      {/* Trim zones shrink on short clips so at least half the body stays
+          grabbable — a 0.2s SFX at default zoom is 12px wide, and two fixed
+          6px handles used to swallow it whole. Below ~10px, trim by keyboard
+          (Q/W) or zoom in; the whole clip is for moving. */}
+      {width >= 10 && (
+        <>
+          <div
+            data-testid="trim-in"
+            className="absolute inset-y-0 left-0 cursor-w-resize bg-white/25 opacity-0 transition-opacity duration-[120ms] group-hover/clip:opacity-100"
+            style={{ width: width < 24 ? Math.max(3, Math.floor(width / 4)) : 6 }}
+            onPointerDown={(e) => {
+              e.stopPropagation()
+              onTrimPointerDown(e, clip, 'in')
+            }}
+          />
+          <div
+            data-testid="trim-out"
+            className="absolute inset-y-0 right-0 cursor-e-resize bg-white/25 opacity-0 transition-opacity duration-[120ms] group-hover/clip:opacity-100"
+            style={{ width: width < 24 ? Math.max(3, Math.floor(width / 4)) : 6 }}
+            onPointerDown={(e) => {
+              e.stopPropagation()
+              onTrimPointerDown(e, clip, 'out')
+            }}
+          />
+        </>
+      )}
     </div>
   )
 }
@@ -850,6 +874,37 @@ export function Timeline({ height }: { height: number }) {
     setUI({ pxPerS: next })
     el.scrollLeft = Math.max(0, tAt * next - (clientX - rect.left))
   }
+
+  // Keyboard / toolbar / slider zoom: anchor on the playhead when it's in
+  // view, else the viewport center — zooming must never slide the thing you
+  // are looking at out of the window (raw setUI({pxPerS}) drifts toward t=0).
+  const zoomTo = (nextRaw: number) => {
+    const el = lanesRef.current
+    if (!el) return
+    const old = useStore.getState().ui.pxPerS
+    const next = Math.min(MAX_PX_PER_S, Math.max(MIN_PX_PER_S, nextRaw))
+    if (next === old) return
+    const playheadS = useStore.getState().ui.playheadS
+    const viewStartS = el.scrollLeft / old
+    const viewEndS = (el.scrollLeft + el.clientWidth) / old
+    const anchorS =
+      playheadS >= viewStartS && playheadS <= viewEndS ? playheadS : (viewStartS + viewEndS) / 2
+    const anchorPx = anchorS * old - el.scrollLeft
+    setUI({ pxPerS: next })
+    el.scrollLeft = Math.max(0, anchorS * next - anchorPx)
+  }
+
+  // "=" / "-" in the central keymap (store.zoomIn/zoomOut dispatch this).
+  useEffect(() => {
+    const onZoom = (e: Event) => {
+      const detail = (e as CustomEvent<{ factor?: number; pxPerS?: number }>).detail
+      if (detail?.pxPerS !== undefined) zoomTo(detail.pxPerS)
+      else zoomTo(useStore.getState().ui.pxPerS * (detail?.factor ?? 1))
+    }
+    window.addEventListener('reel:zoom', onZoom)
+    return () => window.removeEventListener('reel:zoom', onZoom)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // --- pointer interactions -------------------------------------------------
 
@@ -978,9 +1033,23 @@ export function Timeline({ height }: { height: number }) {
       ...motionItems,
       ...appearanceItems,
       {
-        label: 'Split at playhead',
-        shortcut: comboLabel('mod+k'),
+        label: 'Trim head to playhead',
+        shortcut: 'Q',
         separator: true,
+        disabled: !playheadInside,
+        onClick: () => topAndTail('in'),
+      },
+      {
+        label: 'Trim tail to playhead',
+        shortcut: 'W',
+        disabled: !playheadInside,
+        onClick: () => topAndTail('out'),
+      },
+      {
+        // C is the branded single-key cut; the old label advertised only the
+        // secondary Ctrl+K chord and hid the key everyone should learn.
+        label: 'Split at playhead',
+        shortcut: 'C',
         disabled: !playheadInside,
         onClick: () =>
           updateActiveSequence('Split at playhead', (sq) =>
@@ -1369,7 +1438,7 @@ export function Timeline({ height }: { height: number }) {
   const renderLane = (track: Track, tint: string) => (
     <div
       key={track.id}
-      className={`relative border-b border-border/60 ${tint} ${track.locked ? 'opacity-60' : ''}`}
+      className={`relative border-b border-border ${tint} ${track.locked ? 'opacity-60' : ''}`}
       style={{ height: track.height }}
       onPointerDown={handleLanePointerDown}
     >
@@ -1535,9 +1604,12 @@ export function Timeline({ height }: { height: number }) {
               ))}
             </div>
 
-            {vTracks.map((t) => renderLane(t, 'bg-bg-input/30'))}
+            {/* Alternating lane tints: with 3+ tracks a flat wash makes lane
+                targeting during drags pure guesswork. Audio lanes carry a
+                whisper of the audio-clip green so the zone reads instantly. */}
+            {vTracks.map((t, i) => renderLane(t, i % 2 === 0 ? 'bg-bg-input/30' : 'bg-bg-input/[0.12]'))}
             <div className="h-[2px] bg-border-strong" />
-            {aTracks.map((t) => renderLane(t, 'bg-bg-input/20'))}
+            {aTracks.map((t, i) => renderLane(t, i % 2 === 0 ? 'bg-clip-audio/[0.08]' : 'bg-transparent'))}
             {/* Mirrors the headers' add-track row so both columns scroll to the
                 same depth and those buttons stay reachable with many tracks. */}
             <div className="shrink-0" style={{ height: ADD_TRACK_ROW_H }} />
