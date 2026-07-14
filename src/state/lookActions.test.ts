@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { activeSequence, defaultTitleDef, newProject, newTitleClip, videoTracks } from '../engine/types'
-import { applyJettismLook, jettismGradeEffects } from './lookActions'
+import { applyJettismLook, applyPunchyGrade, jettismGradeEffects } from './lookActions'
 import { updateActiveSequence, useStore } from './store'
 
 vi.mock('./toasts', () => ({
@@ -62,6 +62,18 @@ describe('applyJettismLook', () => {
     const tracks = videoTracks(seq())
     expect(tracks[0].clips[0].effects).toHaveLength(3) // not 6
     expect(tracks[1].clips[0].effects).toHaveLength(0) // captions stay clean
+  })
+
+  it('applyPunchyGrade grades just the one clip — no 9:16, no double-apply', () => {
+    const a = seedFootage(0, 5)
+    seedFootage(5, 3)
+    const before = seq().width
+    applyPunchyGrade(a)
+    applyPunchyGrade(a)
+    const clips = videoTracks(seq())[0].clips
+    expect(clips[0].effects).toHaveLength(3)
+    expect(clips[1].effects).toHaveLength(0)
+    expect(seq().width).toBe(before) // format untouched
   })
 
   it('grade instances get fresh ids per call', () => {

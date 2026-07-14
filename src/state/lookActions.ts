@@ -61,6 +61,27 @@ async function ensureLookPreset(): Promise<void> {
   }
 }
 
+/** Just the grade on one clip (no 9:16, no text defaults); banks the preset. */
+export function applyPunchyGrade(clipId: string): void {
+  useStore.getState().dispatch('Punchy grade', (p) => {
+    const seq = p.sequences[p.activeSequenceId]
+    const tracks = seq.tracks.map((t) =>
+      t.locked || !t.clips.some((c) => c.id === clipId)
+        ? t
+        : {
+            ...t,
+            clips: t.clips.map((c) =>
+              c.id !== clipId || hasJettismGrade(c)
+                ? c
+                : { ...c, effects: [...c.effects, ...jettismGradeEffects()] },
+            ),
+          },
+    )
+    return { ...p, sequences: { ...p.sequences, [seq.id]: { ...seq, tracks } } }
+  })
+  void ensureLookPreset()
+}
+
 /**
  * Apply the Jettism look: 9:16 + punch grade on every ungraded video clip
  * (title clips stay clean — the caption style owns them) in one undo step,

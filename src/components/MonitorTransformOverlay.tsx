@@ -12,6 +12,7 @@ import type { RenderLayer, ResolvedTransform } from '../engine/render/types'
 import { activeSequence } from '../engine/types'
 import { setLivePreviewTransform } from '../engine/preview'
 import { previewClipMenu } from '../state/clipMenus'
+import { punchInAtPoint } from '../state/motionActions'
 import { setClipTransform } from '../state/clipEdits'
 import { openContextMenu } from '../state/contextMenu'
 import { useStore } from '../state/store'
@@ -132,7 +133,12 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
       if (pointInQuad(sx, sy, quadFor(layer))) {
         setUI({ selection: [layer.clipId] })
         const clip = seq.tracks.flatMap((t) => t.clips).find((c) => c.id === layer.clipId)
-        if (clip) openContextMenu(e, previewClipMenu(clip))
+        if (clip)
+          openContextMenu(e, [
+            // The zoom centers on the exact point that was right-clicked.
+            { label: 'Punch in here', onClick: () => punchInAtPoint(clip.id, { x: sx, y: sy }) },
+            ...previewClipMenu(clip).map((item, idx) => (idx === 0 ? { ...item, separator: true } : item)),
+          ])
         return
       }
     }

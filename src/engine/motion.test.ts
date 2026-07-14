@@ -39,6 +39,24 @@ describe('punchInClip', () => {
     expect(scaleAt(out, 9)).toBeCloseTo(1, 6)
   })
 
+  it('focal punch shifts position so the clicked point stays put', () => {
+    const { clip } = seed()
+    const out = punchInClip(clip, FPS, {
+      atS: 4,
+      focal: { x: 810, y: 960 }, // 270px right of center, vertical center
+      seqWidth: 1080,
+      seqHeight: 1920,
+    })
+    const peak = 2 + 5 / FPS
+    // shift = -f * (r - 1) = -270 * 0.2
+    expect(evalChannel(out.keyframes?.posX, peak, 0)).toBeCloseTo(-54, 4)
+    expect(evalChannel(out.keyframes?.posY, peak, 0)).toBeCloseTo(0, 4)
+    expect(evalChannel(out.keyframes?.posX, 9, 0)).toBeCloseTo(0, 4) // settles back
+    // without a focal point, position stays untouched
+    const plain = punchInClip(clip, FPS, { atS: 4 })
+    expect(plain.keyframes?.posX).toBeUndefined()
+  })
+
   it('stacks relative to an existing punch instead of clobbering it', () => {
     const { clip } = seed()
     const first = punchInClip(clip, FPS, { atS: 3 })

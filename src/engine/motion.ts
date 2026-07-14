@@ -26,6 +26,14 @@ export interface PunchInOptions {
   riseFrames?: number
   holdS?: number
   returnS?: number
+  /**
+   * Zoom toward this point (sequence px, frame coordinates). The position
+   * shifts so the focal point holds still while the frame scales around it.
+   * Requires seqWidth/seqHeight to know where the frame center is.
+   */
+  focal?: { x: number; y: number }
+  seqWidth?: number
+  seqHeight?: number
 }
 
 /**
@@ -40,12 +48,30 @@ export function punchInClip(clip: Clip, fps: number, options: PunchInOptions): C
   const returnS = options.returnS ?? 0.25
   const at = clamp(options.atS - clip.startS, 0, Math.max(0, durS(clip) - riseS))
   const base = evalChannel(clip.keyframes?.scale, at, clip.transform.scale)
-  return withKeyframes(clip, 'scale', [
-    { t: at, value: base, ease: 'easeOut' }, // rise segment: fast in, soft landing
-    { t: at + riseS, value: base * target, ease: 'linear' },
-    { t: at + riseS + holdS, value: base * target, ease: 'easeInOut' },
-    { t: at + riseS + holdS + returnS, value: base, ease: 'linear' },
-  ])
+  // Envelope shape shared by scale and (when focal) position: ratio r of the
+  // resting scale at each knot.
+  const knots: { t: number; r: number; ease: Keyframe['ease'] }[] = [
+    { t: at, r: 1, ease: 'easeOut' }, // rise segment: fast in, soft landing
+    { t: at + riseS, r: target, ease: 'linear' },
+    { t: at + riseS + holdS, r: target, ease: 'easeInOut' },
+    { t: at + riseS + holdS + returnS, r: 1, ease: 'linear' },
+  ]
+  let next = withKeyframes(
+    clip,
+    'scale',
+    knots.map((k) => ({ t: k.t, value: base * k.r, ease: k.ease })),
+  )
+  if (options.focal && options.seqWidth && options.seqHeight) {
+    // Keep the focal point still: a point f px from center lands at f*r after
+    // scaling, so the layer shifts by -f*(r-1).
+    const fx = options.focal.x - options.seqWidth / 2
+    const fy = options.focal.y - options.seqHeight / 2
+    const xBase = evalChannel(clip.keyframes?.posX, at, clip.transform.x)
+    const yBase = evalChannel(clip.keyframes?.posY, at, clip.transform.y)
+    next = withKeyframes(next, 'posX', knots.map((k) => ({ t: k.t, value: xBase - fx * (k.r - 1), ease: k.ease })))
+    next = withKeyframes(next, 'posY', knots.map((k) => ({ t: k.t, value: yBase - fy * (k.r - 1), ease: k.ease })))
+  }
+  return next
 }
 
 export interface ImpactOptions {

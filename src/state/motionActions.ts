@@ -2,9 +2,11 @@
 // a cut, speed-ramp the work area. Each action is ONE dispatch (one undo step)
 // over the pure builders in engine/motion.ts.
 
+import { getAudioBuffer } from '../engine/audio'
+import { detectOnsets } from '../engine/beats'
 import { impactClip, punchInClip, rampSpeedRange, whipClips } from '../engine/motion'
 import { clipEndS } from '../engine/timeline'
-import { activeSequence, newId, type Clip, type Sequence, type Track } from '../engine/types'
+import { activeSequence, newId, videoTracks, type Clip, type Sequence, type Track } from '../engine/types'
 import { hasWorkArea, workArea } from '../engine/workArea'
 import { updateActiveSequence, useStore } from './store'
 import { useToasts } from './toasts'
@@ -48,6 +50,16 @@ export function punchInAtPlayhead(clipId: string): void {
   mapOne('Punch in', clipId, (c, sq) => punchInClip(c, sq.fps, { atS }))
 }
 
+/** Punch in toward a point (monitor right-click: the zoom centers on it). */
+export function punchInAtPoint(clipId: string, focal: { x: number; y: number }): void {
+  const g = guarded(clipId)
+  if (!g) return
+  const atS = useStore.getState().ui.playheadS
+  mapOne('Punch in', clipId, (c, sq) =>
+    punchInClip(c, sq.fps, { atS, focal, seqWidth: sq.width, seqHeight: sq.height }),
+  )
+}
+
 /** The phonk impact (desat + blur + punch + shake), at the playhead. */
 export function impactAtPlayhead(clipId: string): void {
   const g = guarded(clipId)
@@ -89,6 +101,73 @@ export function whipToNext(clipId: string): void {
       ),
     }
   })
+}
+
+/** Two punches closer than this would overlap their envelopes and compound. */
+const BEAT_PUNCH_GAP_S = 0.8
+
+/**
+ * Detect beats/hits in an audio clip and punch the topmost footage clip under
+ * each one — the whole run is ONE undo step. Detection is local + pure; only
+ * the decode touches WebAudio.
+ */
+export async function punchOnBeats(audioClipId: string): Promise<void> {
+  const g = guarded(audioClipId)
+  if (!g) return
+  const asset = useStore.getState().project.assets[g.clip.assetId]
+  if (!asset?.hasAudio) {
+    useToasts.getState().show('Pick an audio clip with sound', 'danger')
+    return
+  }
+  const buffer = await getAudioBuffer(asset)
+  if (!buffer) {
+    useToasts.getState().show('Could not decode the audio', 'danger')
+    return
+  }
+  // Mono mixdown of the clip's trimmed slice.
+  const sr = buffer.sampleRate
+  const s0 = Math.max(0, Math.floor(g.clip.inS * sr))
+  const s1 = Math.min(buffer.length, Math.ceil(g.clip.outS * sr))
+  const mono = new Float32Array(Math.max(0, s1 - s0))
+  for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
+    const data = buffer.getChannelData(ch)
+    for (let i = 0; i < mono.length; i++) mono[i] += data[s0 + i] / buffer.numberOfChannels
+  }
+  const onsets = detectOnsets(mono, sr, { minGapS: BEAT_PUNCH_GAP_S, maxOnsets: 16 })
+  if (onsets.length === 0) {
+    useToasts.getState().show('No beats found in the clip', 'danger')
+    return
+  }
+  const speed = Math.abs(g.clip.speed) || 1
+  const times = onsets.map((t) => g.clip.startS + t / speed)
+
+  let punched = 0
+  updateActiveSequence('Punch on beats', (sq) => {
+    let next = sq
+    for (const t of times) {
+      // Topmost enabled FOOTAGE clip under the beat (captions stay still).
+      const vids = videoTracks(next)
+      for (let i = vids.length - 1; i >= 0; i--) {
+        if (vids[i].locked) continue
+        const target = vids[i].clips.find((c) => !c.title && c.enabled && t > c.startS && t < clipEndS(c))
+        if (!target) continue
+        next = {
+          ...next,
+          tracks: next.tracks.map((tr) =>
+            tr.id === vids[i].id
+              ? { ...tr, clips: tr.clips.map((c) => (c.id === target.id ? punchInClip(c, sq.fps, { atS: t }) : c)) }
+              : tr,
+          ),
+        }
+        punched++
+        break
+      }
+    }
+    return punched > 0 ? next : sq
+  })
+  useToasts
+    .getState()
+    .show(punched > 0 ? `Punched ${punched} beat(s)` : 'No footage under the beats', punched > 0 ? 'success' : 'danger')
 }
 
 /** Speed-ramp the work-area range of this clip (I/O keys set the range). */
