@@ -57,6 +57,57 @@ export async function loadProjectById(id: string): Promise<Project | null> {
   return p ? migrateProjectEffects(migrateProject(p)) : null
 }
 
+/** Light listing for the Projects picker (docs are blob-free JSON — cheap). */
+export interface ProjectSummary {
+  id: string
+  name: string
+  updatedAt: number
+  createdAt: number
+  assetCount: number
+  clipCount: number
+}
+
+export async function listProjects(): Promise<ProjectSummary[]> {
+  const d = await db()
+  const all = (await d.getAll('projects')) as Project[]
+  return all
+    .map((p) => ({
+      id: p.id,
+      name: p.name,
+      updatedAt: p.updatedAt,
+      createdAt: p.createdAt,
+      assetCount: Object.keys(p.assets ?? {}).length,
+      clipCount: Object.values(p.sequences ?? {}).reduce(
+        (n, sq) => n + sq.tracks.reduce((m, t) => m + t.clips.length, 0),
+        0,
+      ),
+    }))
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+}
+
+/**
+ * Delete a project AND its media bytes. Blobs are per-project copies
+ * ('asset/<id>', 'thumb/<id>'); the Library keeps its own 'lib/*' copies, so
+ * this never touches saved Library media.
+ */
+export async function deleteProject(id: string): Promise<void> {
+  const d = await db()
+  const p = (await d.get('projects', id)) as Project | undefined
+  const tx = d.transaction(['projects', 'blobs', 'meta'], 'readwrite')
+  void tx.objectStore('projects').delete(id)
+  if (p) {
+    const blobs = tx.objectStore('blobs')
+    for (const asset of Object.values(p.assets ?? {})) {
+      void blobs.delete(asset.blobKey)
+      if (asset.thumbnailKey) void blobs.delete(asset.thumbnailKey)
+    }
+  }
+  const meta = tx.objectStore('meta')
+  const last = (await meta.get('lastProjectId')) as string | undefined
+  if (last === id) void meta.delete('lastProjectId')
+  await tx.done
+}
+
 export async function putBlob(key: string, blob: Blob): Promise<void> {
   const d = await db()
   await d.put('blobs', blob, key)

@@ -1,5 +1,5 @@
 import { Rewind, SlidersHorizontal } from 'lucide-react'
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { clipEmitsAudio } from '../engine/audio'
 import { clipDurationS, clipEndS } from '../engine/timeline'
 import { formatTimecode } from '../engine/timecode'
@@ -55,21 +55,58 @@ function SpeedControls({ clip }: { clip: Clip }) {
   )
 }
 
-/** Gain + fades for a clip that contributes audio (Phase 6). */
-function AudioControls({ clip }: { clip: Clip }) {
+/** Commit-on-release volume slider (a live commit per tick would flood undo). */
+function VolumeSlider({ clip }: { clip: Clip }) {
+  const [draft, setDraft] = useState<number | null>(null)
+  const value = draft ?? clip.audioGainDb
+  const commit = () => {
+    if (draft !== null && draft !== clip.audioGainDb) setClipGainDb(clip.id, draft)
+    setDraft(null)
+  }
+  return (
+    <input
+      type="range"
+      aria-label="Clip volume (dB)"
+      data-testid="clip-volume-slider"
+      className="h-1 w-full cursor-pointer accent-accent"
+      min={GAIN_SPEC.min}
+      max={GAIN_SPEC.max}
+      step={GAIN_SPEC.step}
+      value={value}
+      title={`${value > 0 ? '+' : ''}${value.toFixed(1)} dB (double-click: 0)`}
+      onChange={(e) => setDraft(Number(e.target.value))}
+      onPointerUp={commit}
+      onKeyUp={commit}
+      onBlur={commit}
+      onDoubleClick={() => setClipGainDb(clip.id, 0)}
+    />
+  )
+}
+
+/**
+ * Gain + fades for a clip that contributes audio (Phase 6). `linked` marks the
+ * common mp4 case: the VIDEO clip is selected but its sound lives on the
+ * linked audio clip — these controls edit that partner.
+ */
+function AudioControls({ clip, linked }: { clip: Clip; linked?: boolean }) {
   const durMax = Math.max(0.05, clipDurationS(clip))
   return (
     <section className="flex flex-col gap-2" data-testid="audio-controls">
-      <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">Audio</h3>
+      <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">
+        Audio{linked ? ' · linked clip' : ''}
+      </h3>
       <div className="flex flex-col gap-1.5">
-        <FieldRow label="Gain (dB)">
-          <ScrubField
-            value={clip.audioGainDb}
-            spec={GAIN_SPEC}
-            testId="field-audio-gain"
-            ariaLabel="Audio gain (dB)"
-            onCommit={(v) => setClipGainDb(clip.id, v)}
-          />
+        <FieldRow label="Volume">
+          <div className="flex w-full items-center gap-2">
+            <VolumeSlider clip={clip} />
+            <ScrubField
+              value={clip.audioGainDb}
+              spec={GAIN_SPEC}
+              testId="field-audio-gain"
+              ariaLabel="Audio gain (dB)"
+              onCommit={(v) => setClipGainDb(clip.id, v)}
+            />
+          </div>
         </FieldRow>
         <FieldRow label="Fade in (s)">
           <ScrubField
@@ -110,6 +147,7 @@ function ClipPanel({
   playheadS,
   showAudio,
   audioFirst,
+  linkedAudio,
 }: {
   clip: Clip
   assetName: string
@@ -118,6 +156,8 @@ function ClipPanel({
   showAudio: boolean
   /** Audio-track clips lead with the sound controls (above Speed/Duration). */
   audioFirst: boolean
+  /** The linked audio partner of a video clip — its volume shows HERE. */
+  linkedAudio?: Clip
 }) {
   const isTitle = isTitleClip(clip)
   const name = isTitle ? clip.title!.text || 'Title' : assetName
@@ -175,6 +215,15 @@ function ClipPanel({
         </>
       )}
 
+      {/* Clicking the mp4's VIDEO clip must still offer volume — the sound
+          lives on the linked audio clip, so edit that partner right here. */}
+      {!showAudio && linkedAudio && (
+        <>
+          <AudioControls clip={linkedAudio} linked />
+          <div className="h-px bg-border" />
+        </>
+      )}
+
       <EffectControls clip={clip} fps={fps} playheadS={playheadS} />
     </div>
   )
@@ -228,6 +277,14 @@ export function Inspector({ width }: { width: number }) {
             playheadS={playheadS}
             showAudio={showAudio}
             audioFirst={selectedTrack?.kind === 'audio'}
+            linkedAudio={
+              selected.linkId !== undefined && selectedTrack?.kind === 'video'
+                ? seq.tracks
+                    .filter((t) => t.kind === 'audio')
+                    .flatMap((t) => t.clips)
+                    .find((c) => c.linkId === selected.linkId)
+                : undefined
+            }
           />
         </div>
       ) : (

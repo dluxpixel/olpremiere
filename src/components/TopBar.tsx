@@ -5,6 +5,7 @@ import {
   Download,
   FolderOpen,
   HardDriveDownload,
+  LayoutGrid,
   Keyboard,
   Mic,
   Redo2,
@@ -37,6 +38,7 @@ import {
 } from '../state/voiceRecorder'
 import { Button, IconButton } from '../ui/Button'
 import { ExportDialog } from './ExportDialog'
+import { ProjectsDialog } from './ProjectsDialog'
 
 /**
  * "Edit together" — create/share a live room, or show who's in it. The badge is
@@ -280,6 +282,7 @@ export function TopBar() {
   }
   const setUI = useStore((s) => s.setUI)
   const [exporting, setExporting] = useState(false)
+  const [projectsOpen, setProjectsOpen] = useState(false)
   const openFileRef = useRef<HTMLInputElement>(null)
 
   return (
@@ -293,6 +296,13 @@ export function TopBar() {
       </div>
       <div className="h-4 w-px bg-border" />
       <ProjectName />
+      <IconButton
+        label="Projects — switch or start another edit"
+        onClick={() => setProjectsOpen(true)}
+        data-testid="open-projects"
+      >
+        <LayoutGrid size={16} strokeWidth={1.5} />
+      </IconButton>
       <SaveIndicator />
 
       {/* Manual save/restore to a self-contained file — a backup for when the
@@ -360,6 +370,7 @@ export function TopBar() {
         </Button>
       </div>
       {exporting && <ExportDialog onClose={() => setExporting(false)} />}
+      {projectsOpen && <ProjectsDialog onClose={() => setProjectsOpen(false)} />}
     </header>
   )
 }
