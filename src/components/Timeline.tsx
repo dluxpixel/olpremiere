@@ -68,7 +68,7 @@ import { pausePlayback } from '../state/playbackControl'
 import { addTitleClip } from '../state/titleActions'
 import { copySelection, cutSelection, duplicateSelection } from '../state/clipboard'
 import { crossfadeWithNeighbour, setClipFade } from '../state/clipEdits'
-import { impactAtPlayhead, punchInAtPlayhead, rampWorkArea, whipToNext } from '../state/motionActions'
+import { impactAtPlayhead, punchInAtPlayhead, punchOnBeats, rampWorkArea, whipToNext } from '../state/motionActions'
 import { autoCaptionFromClip } from '../state/transcribeActions'
 import { setTrackAudioRole, setTrackAutoLevel, setTrackPan, setTrackVolumeDb } from '../state/trackEdits'
 import { appearanceMenuItems, titleFontSizeItems } from '../state/clipMenus'
@@ -906,10 +906,13 @@ export function Timeline({ height }: { height: number }) {
           ]
         : []
 
-    // Local Whisper → word-by-word captions, for any audio clip with sound.
+    // Local Whisper captions + beat-driven punches, for audio clips with sound.
     const captionItems =
       track?.kind === 'audio' && assets[clip.assetId]?.hasAudio
-        ? [{ label: 'Auto-Caption from voiceover', onClick: () => void autoCaptionFromClip(clip.id) }]
+        ? [
+            { label: 'Auto-Caption from voiceover', onClick: () => void autoCaptionFromClip(clip.id) },
+            { label: 'Punch video on beats', onClick: () => void punchOnBeats(clip.id) },
+          ]
         : []
 
     // Jettism Motion Pack, for video-track clips.
