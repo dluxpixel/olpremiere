@@ -1,4 +1,4 @@
-import { Bookmark, Film, FolderOpen, Image as ImageIcon, Music, Plus, Sparkles, Type, Upload, Volume2, Wand2, Zap } from 'lucide-react'
+import { Bookmark, Captions, Film, FolderOpen, Image as ImageIcon, Music, Plus, Sparkles, Type, Upload, Volume2, Wand2, Zap } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { EFFECTS } from '../engine/effects/registry'
 import { TRANSITION_KINDS, type TransitionKind } from '../engine/render/types'
@@ -6,6 +6,7 @@ import { SFX_LIBRARY, type SfxDef } from '../engine/sfx/sfx'
 import { formatTimecode } from '../engine/timecode'
 import { activeSequence, type MediaAsset } from '../engine/types'
 import { useBlobUrl } from '../state/blobUrls'
+import { CaptionsDialog } from './CaptionsDialog'
 import { applyEffect, setClipTransition } from '../state/clipEdits'
 import { openContextMenu } from '../state/contextMenu'
 import { ASSET_MIME, EFFECT_MIME, TRANSITION_MIME } from '../state/dnd'
@@ -22,7 +23,7 @@ import {
 import { healArrivedBlob, useMediaSync } from '../collab/mediaSync'
 import { useCollab } from '../collab/collabControl'
 import { deleteAsset, importFiles, insertAssetAtPlayhead } from '../state/mediaActions'
-import { applyJettismLook } from '../state/lookActions'
+import { applyJettismLook, applyPunchyGrade } from '../state/lookActions'
 import { impactAtPlayhead, punchInAtPlayhead, whipToNext } from '../state/motionActions'
 import { insertSfxAtPlayhead, previewSfx } from '../state/sfxActions'
 import { useStore, type LeftTab } from '../state/store'
@@ -224,6 +225,7 @@ function MediaTab() {
   const assets = useStore((s) => s.project.assets)
   const fps = useStore((s) => activeSequence(s.project).fps)
   const fileInput = useRef<HTMLInputElement>(null)
+  const [captionsOpen, setCaptionsOpen] = useState(false)
   const list = Object.values(assets)
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -236,6 +238,11 @@ function MediaTab() {
           <Type size={16} strokeWidth={1.5} />
           Text
         </Button>
+        <Button variant="secondary" data-testid="open-captions" onClick={() => setCaptionsOpen(true)}>
+          <Captions size={16} strokeWidth={1.5} />
+          Captions
+        </Button>
+        {captionsOpen && <CaptionsDialog onClose={() => setCaptionsOpen(false)} />}
         <input
           ref={fileInput}
           type="file"
@@ -390,6 +397,22 @@ function EffectsTab() {
                 >
                   <Wand2 size={13} strokeWidth={1.5} aria-hidden className="shrink-0 text-text-muted" />
                   <span className="truncate">Jettism (Shorts template)</span>
+                </div>
+                <div
+                  data-testid="look-grade"
+                  role="button"
+                  tabIndex={0}
+                  title="Just the punch grade (+exposure/+contrast/+saturation) on the selected clip"
+                  onDoubleClick={() => targetId && applyPunchyGrade(targetId)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && targetId) applyPunchyGrade(targetId)
+                  }}
+                  className={`flex cursor-default items-center gap-2 rounded-[4px] px-2 py-1.5 text-[12px] transition-colors duration-[120ms] ${
+                    targetId ? 'text-text-secondary hover:bg-bg-elevated hover:text-text-primary' : 'text-text-muted'
+                  }`}
+                >
+                  <Wand2 size={13} strokeWidth={1.5} aria-hidden className="shrink-0 text-text-muted" />
+                  <span className="truncate">Punchy Grade (selected clip)</span>
                 </div>
               </section>
             )}
