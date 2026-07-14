@@ -15,6 +15,8 @@ import { previewClipMenu } from '../state/clipMenus'
 import { punchInAtPoint } from '../state/motionActions'
 import { setClipTransform } from '../state/clipEdits'
 import { openContextMenu } from '../state/contextMenu'
+import { pausePlayback } from '../state/playbackControl'
+import { quantizeToFrame } from '../engine/timecode'
 import { useStore } from '../state/store'
 
 interface Tf {
@@ -28,6 +30,8 @@ type Drag =
 
 const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v)
 const ACCENT = 'var(--color-accent)'
+/** Pointer travel before a monitor click becomes a scrub jog. */
+const SCRUB_SLOP_PX = 4
 
 /**
  * Direct-manipulation transform layer over the program monitor.
@@ -110,9 +114,8 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
       .corners
   }
 
-  const selectAt = (e: ReactPointerEvent) => {
-    if (e.button !== 0) return // right-click is handled by the context menu below
-    const p = localPt(e.clientX, e.clientY)
+  const doSelect = (clientX: number, clientY: number) => {
+    const p = localPt(clientX, clientY)
     const sx = p.x / k
     const sy = p.y / k
     for (let i = visibleLayers.length - 1; i >= 0; i--) {
@@ -122,6 +125,36 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
       }
     }
     setUI({ selection: [] })
+  }
+
+  // Drag anywhere on the picture to jog (full canvas width == whole sequence,
+  // like scrubbing a video player); a click without travel selects instead.
+  // Writes only playheadS — every consumer is imperative, so the perf rule holds.
+  const selectAt = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return // right-click is handled by the context menu below
+    const startX = e.clientX
+    const startPlayhead = useStore.getState().ui.playheadS
+    const el = e.currentTarget
+    el.setPointerCapture(e.pointerId)
+    let moved = false
+    const onMove = (ev: PointerEvent) => {
+      const dx = ev.clientX - startX
+      if (!moved && Math.abs(dx) < SCRUB_SLOP_PX) return
+      if (!moved) {
+        moved = true
+        pausePlayback()
+      }
+      const t = startPlayhead + (dx / box.w) * seq.durationS
+      setUI({ playheadS: quantizeToFrame(Math.max(0, Math.min(seq.durationS, t)), seq.fps) })
+    }
+    const onUp = (ev: PointerEvent) => {
+      el.releasePointerCapture(ev.pointerId)
+      el.removeEventListener('pointermove', onMove)
+      el.removeEventListener('pointerup', onUp)
+      if (!moved) doSelect(ev.clientX, ev.clientY)
+    }
+    el.addEventListener('pointermove', onMove)
+    el.addEventListener('pointerup', onUp)
   }
 
   // Right-click a clip IN the preview → its font/size/appearance menu, so you can

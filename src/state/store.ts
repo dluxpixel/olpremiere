@@ -32,6 +32,8 @@ export interface UIState {
   playing: boolean
   /** Loop playback over the in/out range (or the whole sequence). */
   loop: boolean
+  /** Which panel last took a pointer — routes arrow keys (monitor nudge vs timeline step). */
+  focusedPanel: 'timeline' | 'monitor'
   /** Keyboard-shortcuts help overlay. */
   helpOpen: boolean
 }
@@ -77,6 +79,7 @@ export const useStore = create<ReelState>()(
       saveState: 'saved',
       playing: false,
       loop: false,
+      focusedPanel: 'timeline',
       helpOpen: false,
     },
 

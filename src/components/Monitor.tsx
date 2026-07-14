@@ -218,18 +218,33 @@ export function Monitor() {
       data-testid="monitor"
       className="flex min-h-0 min-w-0 flex-1 flex-col bg-bg-app"
       aria-label="Program monitor"
+      onPointerDownCapture={() => {
+        if (useStore.getState().ui.focusedPanel !== 'monitor') setUI({ focusedPanel: 'monitor' })
+      }}
     >
-      <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden p-3">
-        <canvas ref={canvasRef} data-testid="program-canvas" className="rounded-[2px] bg-black" />
-        {safeMargins && <SafeMargins canvas={canvasRef.current} />}
-        <MonitorTransformOverlay canvas={canvasRef.current} />
+      <div className="flex min-h-0 flex-1 items-stretch gap-2 p-3">
+        <div className="relative flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden">
+          <canvas ref={canvasRef} data-testid="program-canvas" className="rounded-[2px] bg-black" />
+          {safeMargins && <SafeMargins canvas={canvasRef.current} />}
+          {/* Click the picture to pause — every video player teaches this.
+              (Paused, the overlay's select layer handles click/scrub instead.) */}
+          {playing && (
+            <div
+              data-testid="click-to-pause"
+              className="absolute inset-0 cursor-pointer"
+              onPointerDown={() => pausePlayback()}
+            />
+          )}
+          <MonitorTransformOverlay canvas={canvasRef.current} />
+          {!hasContent && (
+            <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 text-center">
+              <MonitorPlay size={28} strokeWidth={1.5} className="text-text-muted" aria-hidden />
+              <span className="text-[12px] text-text-muted">No media yet</span>
+            </div>
+          )}
+        </div>
+        {/* Meter lives in its OWN column — never over the video. */}
         <MasterMeter />
-        {!hasContent && (
-          <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 text-center">
-            <MonitorPlay size={28} strokeWidth={1.5} className="text-text-muted" aria-hidden />
-            <span className="text-[12px] text-text-muted">No media yet</span>
-          </div>
-        )}
       </div>
 
       <div className="relative flex h-11 shrink-0 items-center gap-2 border-t border-border bg-bg-panel px-3">
