@@ -70,19 +70,26 @@ export function appearanceMenuItems(clip: Clip): MenuItem[] {
       onClick: () => setClipAppearance(clip.id, { out: p.id }),
     })),
   ]
-  const speedSub: MenuItem[] = APPEARANCE_SPEEDS.map((s) => ({
-    label: s.label,
-    checked: Math.abs(curDur - s.durS) < 1e-6,
-    onClick: () => setClipAppearance(clip.id, { durS: s.durS }),
-  }))
-
+  // Entrance / Exit stay top-level (the taste-picking hot path); the rest of
+  // the animation controls fold into one Animation submenu so the clip menu
+  // doesn't wall up. Speed flattens INTO it as leaves — the menu only renders
+  // ONE submenu level, so a nested Speed submenu would never open.
+  const animationSub: MenuItem[] = [
+    ...(hasAppearance
+      ? APPEARANCE_SPEEDS.map((s, i) => ({
+          label: `Speed: ${s.label}`,
+          separator: i === 0,
+          checked: Math.abs(curDur - s.durS) < 1e-6,
+          onClick: () => setClipAppearance(clip.id, { durS: s.durS }),
+        }))
+      : []),
+    { label: 'Save as default for new text', separator: true, onClick: () => saveClipAppearanceAsDefault(clip.id) },
+    { label: 'Clear animation', disabled: !clip.appearance, onClick: () => clearClipAppearance(clip.id) },
+  ]
   return [
     { label: 'Entrance', separator: true, submenu: entranceSub },
     { label: 'Exit', submenu: exitSub },
-    // Speed only matters once there's an animation to speed up / slow down.
-    ...(hasAppearance ? [{ label: 'Animation speed', submenu: speedSub } as MenuItem] : []),
-    { label: 'Save as default for new text', onClick: () => saveClipAppearanceAsDefault(clip.id) },
-    { label: 'Clear animation', disabled: !clip.appearance, onClick: () => clearClipAppearance(clip.id) },
+    { label: 'Animation', submenu: animationSub },
   ]
 }
 

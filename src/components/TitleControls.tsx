@@ -12,11 +12,11 @@ import {
   Bold,
   Italic,
 } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
 import { TITLE_FONT_OPTIONS } from '../engine/render/titleFonts'
 import { defaultTitleDef, type Clip, type TitleDef } from '../engine/types'
 import { updateTitle } from '../state/titleActions'
 import { IconButton } from '../ui/Button'
+import { ScrubField, type Spec } from './EffectControls'
 
 const FONT_FAMILIES = TITLE_FONT_OPTIONS
 
@@ -24,11 +24,18 @@ const inputCls =
   'h-6 w-full rounded-[4px] bg-bg-input px-2 text-[12px] text-text-primary focus:outline-none focus:ring-1 focus:ring-accent'
 
 /** Typed number field; commits clamped value on blur/Enter, reverts on Escape. */
+/**
+ * A title number field. Delegates to the shared ScrubField so it drag-scrubs
+ * exactly like every effect-param field — the gesture that used to silently
+ * fail here (size, offsets, shadow, outline, box all looked scrubbable but
+ * weren't). Same commit path (updateTitle = one undo).
+ */
 function NumberField({
   value,
   min,
   max,
   step = 1,
+  sens,
   testId,
   ariaLabel,
   onCommit,
@@ -37,55 +44,19 @@ function NumberField({
   min: number
   max: number
   step?: number
+  sens?: number
   testId?: string
   ariaLabel: string
   onCommit: (v: number) => void
 }) {
-  const [text, setText] = useState(String(value))
-  const [editing, setEditing] = useState(false)
-  const ref = useRef<HTMLInputElement>(null)
-
-  useEffect(() => {
-    if (!editing) setText(String(value))
-  }, [value, editing])
-
-  const commit = () => {
-    setEditing(false)
-    const n = Number(text)
-    if (Number.isFinite(n)) {
-      const clamped = Math.min(max, Math.max(min, n))
-      if (clamped !== value) onCommit(clamped)
-      setText(String(clamped))
-    } else {
-      setText(String(value))
-    }
-  }
-
+  const spec: Spec = { min, max, step, sens: sens ?? Math.max(step, (max - min) / 1500) }
   return (
-    <input
-      ref={ref}
-      type="number"
-      inputMode="decimal"
-      min={min}
-      max={max}
-      step={step}
-      data-testid={testId}
-      aria-label={ariaLabel}
-      value={text}
-      onFocus={() => setEditing(true)}
-      onChange={(e) => setText(e.target.value)}
-      onBlur={commit}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter') {
-          commit()
-          ref.current?.blur()
-        } else if (e.key === 'Escape') {
-          setEditing(false)
-          setText(String(value))
-          ref.current?.blur()
-        }
-      }}
-      className={`${inputCls} tabular-nums`}
+    <ScrubField
+      value={value}
+      spec={spec}
+      testId={testId ?? `title-num-${ariaLabel.toLowerCase().replace(/\s+/g, '-')}`}
+      ariaLabel={ariaLabel}
+      onCommit={onCommit}
     />
   )
 }

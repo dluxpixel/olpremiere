@@ -159,9 +159,10 @@ test('save as default carries the appearance to new title clips', async ({ page 
   await menu.getByRole('menuitem', { name: /Fade out/ }).click()
   expect((await clipData(page, first)).appearance?.out).toBe('fadeOut')
 
-  // Save the current appearance as the default for new text.
+  // Save the current appearance as the default for new text (now under Animation ▸).
   await page.getByTestId('clip').first().click({ button: 'right' })
-  await page.getByTestId('context-menu').getByRole('menuitem', { name: /Save as default/ }).click()
+  await menu.getByRole('menuitem', { name: 'Animation' }).hover()
+  await menu.getByRole('menuitem', { name: /Save as default/ }).click()
 
   // A brand-new title inherits it.
   const second = await addTitle(page)
@@ -245,8 +246,8 @@ test('animation speed shrinks the entrance window', async ({ page }) => {
   expect(normalEnd).toBeCloseTo(0.5, 2)
 
   await page.getByTestId('clip').click({ button: 'right' })
-  await menu.getByRole('menuitem', { name: 'Animation speed' }).hover()
-  await menu.getByRole('menuitem', { name: 'Fast' }).click()
+  await menu.getByRole('menuitem', { name: 'Animation' }).hover()
+  await menu.getByRole('menuitem', { name: 'Speed: Fast' }).click()
   const d = await clipData(page, id)
   expect(d.appearance?.durS).toBeCloseTo(0.25, 5)
   expect(d.opacityKf!.at(-1)!.t).toBeCloseTo(0.25, 2) // window halved

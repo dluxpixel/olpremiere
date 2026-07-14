@@ -1103,6 +1103,9 @@ export function Timeline({ height }: { height: number }) {
     // Jettism Motion Pack, for video-track clips.
     const nextClip = next
     const nextTouches = !!nextClip && Math.abs(clipEndS(clip) - nextClip.startS) < 1e-3
+    // Punch stays top-level (its P key is the workhorse); the rest fold into a
+    // Motion submenu so the menu doesn't wall up. Speed-ramp flattens INTO it
+    // (one-level submenu limit) as three leaves.
     const motionItems: MenuItem[] =
       track?.kind === 'video'
         ? [
@@ -1114,17 +1117,16 @@ export function Timeline({ height }: { height: number }) {
               onClick: () => punchInAtPlayhead(clip.id),
             },
             {
-              label: 'Impact hit at playhead',
-              disabled: !playheadInside,
-              onClick: () => impactAtPlayhead(clip.id),
-            },
-            { label: 'Whip to next clip', disabled: !nextTouches, onClick: () => whipToNext(clip.id) },
-            {
-              label: 'Speed ramp work area',
-              submenu: [2, 3, 0.5].map((f) => ({
-                label: `×${f}`,
-                onClick: () => rampWorkArea(clip.id, f),
-              })),
+              label: 'Motion',
+              submenu: [
+                { label: 'Impact hit at playhead', disabled: !playheadInside, onClick: () => impactAtPlayhead(clip.id) },
+                { label: 'Whip to next clip', disabled: !nextTouches, onClick: () => whipToNext(clip.id) },
+                ...[2, 3, 0.5].map((f, i) => ({
+                  label: `Speed ramp ×${f}`,
+                  separator: i === 0,
+                  onClick: () => rampWorkArea(clip.id, f),
+                })),
+              ],
             },
           ]
         : []
