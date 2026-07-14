@@ -99,10 +99,14 @@ test('keyboard: snapping toggle, tools, zoom', async ({ page }) => {
     'true',
   )
 
-  // Zoom in moves the playhead pixel position for the same time.
+  // Zoom is ANCHORED on the playhead: '=' raises px/s while the playhead's
+  // screen position holds still (the old behavior drifted the view toward 0).
   await page.getByTestId('ruler').click({ position: { x: 300, y: 10 } })
+  const zoom = page.locator('[aria-label="Timeline zoom"]')
+  const zBefore = Number(await zoom.inputValue())
   const before = (await page.getByTestId('playhead').boundingBox())!.x
   await page.keyboard.press('=')
+  expect(Number(await zoom.inputValue())).toBeGreaterThan(zBefore)
   const after = (await page.getByTestId('playhead').boundingBox())!.x
-  expect(after).toBeGreaterThan(before)
+  expect(Math.abs(after - before)).toBeLessThan(2)
 })

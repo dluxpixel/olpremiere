@@ -15,6 +15,13 @@ export interface TransportOpts {
   onStateChange?: (playing: boolean, rate: number) => void
   /** Schedules audio from a timeline time; resolves to a stop fn. */
   schedule: ScheduleFn
+  /**
+   * Loop range (in/out marks or the whole sequence), re-read every frame;
+   * null/undefined = no looping. Forward play at the range end re-anchors to
+   * the start instead of pausing — the caption/beat-timing workflow replays
+   * the same two seconds forever.
+   */
+  getLoopRange?: () => { startS: number; endS: number } | null
 }
 
 const perfClock = (): number => performance.now() / 1000
@@ -115,7 +122,30 @@ export class Transport {
     const loop = (): void => {
       const endS = Math.max(0, this.opts.getEndS())
       const t = this.liveTime()
-      if (rate > 0 && t >= endS) {
+      const loopRange = rate > 0 ? (this.opts.getLoopRange?.() ?? null) : null
+      const stopAt = loopRange
+        ? Math.min(Math.max(loopRange.endS, loopRange.startS + 0.05), endS)
+        : endS
+      if (rate > 0 && t >= stopAt) {
+        if (loopRange) {
+          // Re-anchor and swap the audio in place — no pause/play state churn,
+          // the rAF loop never dies. Audio rejoins a scheduling-latency later;
+          // video restarts on this very frame.
+          const fromS = Math.max(0, Math.min(loopRange.startS, stopAt))
+          this.lastT = fromS
+          this.startS = fromS
+          this.anchor = this.readClock()
+          this.stopAudio?.()
+          this.stopAudio = null
+          void this.opts.schedule(fromS).then((stop) => {
+            if (token === this.playToken) this.stopAudio = stop
+            else stop()
+          })
+          this.opts.onTick(fromS)
+          if (token !== this.playToken) return
+          this.rafId = requestAnimationFrame(loop)
+          return
+        }
         this.lastT = endS
         this.pause()
         this.opts.onTick(endS)

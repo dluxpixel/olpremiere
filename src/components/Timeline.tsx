@@ -680,6 +680,7 @@ function ClipView({
 
       {(fadeInPx > 0.5 || fadeOutPx > 0.5) && (
         <svg
+          data-testid="fade-overlay"
           className="pointer-events-none absolute inset-0"
           width={width}
           height={innerH}
@@ -769,6 +770,13 @@ type Drag =
       /** Pointer-down spot: release within CLICK_SLOP_PX = a click, not a drag. */
       downClientX: number
       downClientY: number
+      /**
+       * The REST of a multi-selection (one entry per link group, original
+       * startS at grab time): grabbing one selected clip moves them all,
+       * matching Alt+Arrow nudge — anything else silently destroys the
+       * selection's relative timing.
+       */
+      others: { id: Id; startS0: number }[]
     }
   | { kind: 'trim'; clipId: Id; edge: 'in' | 'out'; ripple: boolean }
   /** Alt+edge-drag: retime the clip (speed changes, source in/out stay put). */
@@ -913,6 +921,92 @@ export function Timeline({ height }: { height: number }) {
     setDrag(d)
   }
 
+  // --- edge auto-scroll during drags ---------------------------------------
+  // Speed ramps 4→20 px/frame with proximity to the container edge. The rAF
+  // loop marks its scrollLeft writes as programmatic (playback-follow must not
+  // suspend) and re-runs the drag math from the last pointer position.
+  const lastDragPointer = useRef<{ clientX: number; clientY: number } | null>(null)
+  const edgeScrollRaf = useRef<number | null>(null)
+  const EDGE_ZONE_PX = 32
+
+  const edgeSpeed = (el: HTMLElement, clientX: number): number => {
+    const r = el.getBoundingClientRect()
+    const leftGap = clientX - r.left
+    const rightGap = r.right - clientX
+    if (leftGap < EDGE_ZONE_PX) return -(4 + (16 * (EDGE_ZONE_PX - Math.max(0, leftGap))) / EDGE_ZONE_PX)
+    if (rightGap < EDGE_ZONE_PX) return 4 + (16 * (EDGE_ZONE_PX - Math.max(0, rightGap))) / EDGE_ZONE_PX
+    return 0
+  }
+
+  const stopEdgeScroll = () => {
+    if (edgeScrollRaf.current !== null) cancelAnimationFrame(edgeScrollRaf.current)
+    edgeScrollRaf.current = null
+  }
+
+  const maybeEdgeScroll = () => {
+    const el = lanesRef.current
+    const p = lastDragPointer.current
+    if (!el || !p || edgeSpeed(el, p.clientX) === 0) {
+      stopEdgeScroll()
+      return
+    }
+    if (edgeScrollRaf.current !== null) return // loop already alive
+    const step = () => {
+      const el2 = lanesRef.current
+      const p2 = lastDragPointer.current
+      if (!el2 || !p2) {
+        edgeScrollRaf.current = null
+        return
+      }
+      const sp = edgeSpeed(el2, p2.clientX)
+      if (sp === 0) {
+        edgeScrollRaf.current = null
+        return
+      }
+      const before = el2.scrollLeft
+      programmaticScroll.current = true
+      el2.scrollLeft = Math.max(0, before + sp)
+      // At the rail ends nothing moved — don't spin the loop for free.
+      if (el2.scrollLeft === before) {
+        edgeScrollRaf.current = null
+        return
+      }
+      handleLanesPointerMove(p2)
+      edgeScrollRaf.current = requestAnimationFrame(step)
+    }
+    edgeScrollRaf.current = requestAnimationFrame(step)
+  }
+
+  // A dying component must never leave a scroll loop running.
+  useEffect(() => stopEdgeScroll, [])
+
+  // Move the grabbed clip's group to tS, then shift every other selected
+  // group by the same delta on its own track — direction-ordered so earlier
+  // moves never collide with clips that are themselves about to move (the
+  // same trick as nudgeSelection). ONE sequence in, one out: preview and the
+  // single-dispatch commit share it byte-for-byte.
+  const moveSelectionWith = (
+    base: Sequence,
+    grabbedId: Id,
+    targetTrackId: Id,
+    tS: number,
+    others: { id: Id; startS0: number }[],
+  ): Sequence => {
+    const grabbed = base.tracks.flatMap((t) => t.clips).find((c) => c.id === grabbedId)
+    if (!grabbed) return base
+    const deltaS = tS - grabbed.startS
+    let next = moveGroup(base, grabbedId, targetTrackId, tS)
+    if (others.length === 0 || deltaS === 0) return next
+    const ordered = [...others].sort((a, b) => (deltaS > 0 ? b.startS0 - a.startS0 : a.startS0 - b.startS0))
+    for (const o of ordered) {
+      const tr = next.tracks.find((t) => t.clips.some((c) => c.id === o.id))
+      const oc = tr?.clips.find((c) => c.id === o.id)
+      if (!tr || !oc) continue
+      next = moveGroup(next, o.id, tr.id, Math.max(0, oc.startS + deltaS))
+    }
+    return next
+  }
+
   const handleClipPointerDown = (e: ReactPointerEvent<HTMLDivElement>, clip: Clip) => {
     if (e.button !== 0) return
     const track = seq.tracks.find((t) => t.clips.some((c) => c.id === clip.id))
@@ -948,6 +1042,21 @@ export function Timeline({ height }: { height: number }) {
       beginDrag(e, { kind: 'slip', clipId: clip.id, startXPx: x })
       return
     }
+    // Multi-selection: carry every OTHER selected unlocked clip (deduped by
+    // link group — moveGroup moves partners) so the whole selection travels.
+    const selNow = useStore.getState().ui.selection
+    const others: { id: Id; startS0: number }[] = []
+    if (selNow.includes(clip.id) && selNow.length > 1) {
+      const seen = new Set<Id>(clipGroupIds(seq, clip.id))
+      for (const tr of seq.tracks) {
+        if (tr.locked) continue
+        for (const c of tr.clips) {
+          if (!selNow.includes(c.id) || seen.has(c.id)) continue
+          for (const gid of clipGroupIds(seq, c.id)) seen.add(gid)
+          others.push({ id: c.id, startS0: c.startS })
+        }
+      }
+    }
     beginDrag(e, {
       kind: 'move',
       clipId: clip.id,
@@ -955,6 +1064,7 @@ export function Timeline({ height }: { height: number }) {
       trackKind: track.kind,
       downClientX: e.clientX,
       downClientY: e.clientY,
+      others,
     })
   }
 
@@ -1167,7 +1277,7 @@ export function Timeline({ height }: { height: number }) {
     beginEmptyScrub(e)
   }
 
-  const handleLanesPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+  const handleLanesPointerMove = (e: { clientX: number; clientY: number }) => {
     if (!drag) return
     if (drag.kind === 'hand') {
       const el = lanesRef.current
@@ -1177,6 +1287,11 @@ export function Timeline({ height }: { height: number }) {
       }
       return
     }
+    // Every non-hand drag edge-scrolls: park the pointer near a side and the
+    // view travels, re-running this handler from the parked coordinates so the
+    // clip/trim/scrub keeps following. Pro-NLE table stakes.
+    lastDragPointer.current = { clientX: e.clientX, clientY: e.clientY }
+    maybeEdgeScroll()
     if (drag.kind === 'scrub') {
       scrubPlayheadTo(e.clientX)
       return
@@ -1215,7 +1330,7 @@ export function Timeline({ height }: { height: number }) {
       const hovered = laneAt(y)
       const target = hovered && hovered.kind === drag.trackKind && !hovered.locked ? hovered : current
       dragFinal.current = { trackId: target.id, tS: Math.max(0, desired) }
-      setPreviewSeq(moveGroup(seq, drag.clipId, target.id, Math.max(0, desired)))
+      setPreviewSeq(moveSelectionWith(seq, drag.clipId, target.id, Math.max(0, desired), drag.others))
     } else if (drag.kind === 'slip') {
       const deltaS = quantizeToFrame((x - drag.startXPx) / pxPerS, seq.fps)
       dragFinal.current = { trackId: '', tS: deltaS }
@@ -1271,6 +1386,8 @@ export function Timeline({ height }: { height: number }) {
 
   const handleLanesPointerUp = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (!drag) return
+    stopEdgeScroll()
+    lastDragPointer.current = null
     lanesRef.current?.releasePointerCapture(e.pointerId)
     // A release within the slop of the pointer-down is a CLICK on the clip, not
     // a drag: move the playhead there so the preview shows the spot you clicked
@@ -1282,7 +1399,9 @@ export function Timeline({ height }: { height: number }) {
       scrubTo(drag.downClientX)
     } else if (drag.kind === 'move' && dragFinal.current) {
       const { trackId, tS } = dragFinal.current
-      updateActiveSequence('Move clip', (sq) => moveGroup(sq, drag.clipId, trackId, tS))
+      updateActiveSequence(drag.others.length > 0 ? 'Move clips' : 'Move clip', (sq) =>
+        moveSelectionWith(sq, drag.clipId, trackId, tS, drag.others),
+      )
     } else if (drag.kind === 'trim' && dragFinal.current) {
       const { tS } = dragFinal.current
       const trimFn = drag.ripple ? rippleTrimGroup : trimGroup
@@ -1309,6 +1428,10 @@ export function Timeline({ height }: { height: number }) {
     if (!e.dataTransfer.types.includes(ASSET_MIME)) return
     e.preventDefault()
     e.dataTransfer.dropEffect = 'copy'
+    // Bin drags edge-scroll too (the loop only scrolls here — the preview line
+    // is content-anchored, and dragover re-fires on the next mouse move).
+    lastDragPointer.current = { clientX: e.clientX, clientY: e.clientY }
+    maybeEdgeScroll()
     const { x, y } = contentPoint(e)
     const lane = laneAt(y)
     if (!lane) {
@@ -1322,6 +1445,8 @@ export function Timeline({ height }: { height: number }) {
 
   const handleDrop = (e: DragEvent<HTMLDivElement>) => {
     const assetId = e.dataTransfer.getData(ASSET_MIME)
+    stopEdgeScroll()
+    lastDragPointer.current = null
     setDropPreview(null)
     setSnapIndicatorT(null)
     if (!assetId) return

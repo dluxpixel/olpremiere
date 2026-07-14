@@ -59,15 +59,16 @@ test('dragging the fade-in handle creates a fade (an overlay appears)', async ({
   await addClip(page)
   const clip = aclip(page)
   const box = (await clip.boundingBox())!
-  // No fade yet → no overlay path.
-  await expect(clip.locator('svg path')).toHaveCount(0)
+  // No fade yet → no fade overlay. (Bare `svg path` would also match the
+  // linked-A/V badge icon, so the overlay carries its own testid.)
+  await expect(clip.locator('[data-testid="fade-overlay"]')).toHaveCount(0)
   // Grab the fade-in handle (top-left, above the trim handle) and drag right.
   await page.mouse.move(box.x + 1, box.y + 2)
   await page.mouse.down()
   await page.mouse.move(box.x + 60, box.y + 2, { steps: 10 })
   await page.mouse.up()
   // A fade overlay (triangle path) is now drawn.
-  await expect(clip.locator('svg path')).toHaveCount(1)
+  await expect(clip.locator('[data-testid="fade-overlay"] path')).toHaveCount(1)
   // …and the Inspector reflects a non-zero fade in.
   await clip.click()
   const fadeIn = await page.getByTestId('field-fade-in').inputValue()

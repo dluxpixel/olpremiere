@@ -33,7 +33,7 @@ import {
 } from './state/clipboard'
 import { performHistoryStep } from './collab/collabControl'
 import { toggleClipEnabled, topAndTail } from './state/clipEdits'
-import { pausePlayback, shuttle, togglePlay } from './state/playbackControl'
+import { pausePlayback, shuttle, toggleLoop, togglePlay } from './state/playbackControl'
 import { clearInOut, gotoIn, gotoOut, markIn, markOut } from './state/workAreaActions'
 import { punchInAtPlayhead } from './state/motionActions'
 import { addTitleClip } from './state/titleActions'
@@ -162,6 +162,7 @@ function buildAppBindings(): Binding[] {
         },
       },
       { combo: 's', description: 'Toggle snapping', run: () => store().setUI({ snapping: !store().ui.snapping }) },
+      { combo: '/', description: 'Loop playback (In/Out range)', run: toggleLoop },
       { combo: 't', description: 'Add title at playhead', run: () => addTitleClip() },
       // Jettism Motion Pack: the workhorse zoom on the selected clip.
       {

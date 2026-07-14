@@ -4,12 +4,34 @@
 //            voiceover plays; taps become the word timings.
 // Both funnel into addCaptionsFromWords, same as Auto-Caption.
 
+import { Sparkles } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { parseTranscript, tapsToWords } from '../engine/captions/transcript'
+import { clipEndS } from '../engine/timeline'
+import { activeSequence } from '../engine/types'
 import { addCaptionsFromWords } from '../state/captionActions'
 import { pausePlayback, togglePlay } from '../state/playbackControl'
 import { useStore } from '../state/store'
+import { autoCaptionFromClip } from '../state/transcribeActions'
 import { Button } from '../ui/Button'
+
+/** The voiceover clip Auto-Caption should target: the clip under the playhead
+ * on a voice-role track wins, else the first audio clip with sound. */
+function findVoClipId(): string | null {
+  const s = useStore.getState()
+  const seq = activeSequence(s.project)
+  const t = s.ui.playheadS
+  const audible = seq.tracks
+    .filter((tr) => tr.kind === 'audio' && !tr.locked)
+    .flatMap((tr) =>
+      tr.clips
+        .filter((c) => s.project.assets[c.assetId]?.hasAudio)
+        .map((c) => ({ c, voice: tr.audioRole === 'voice' })),
+    )
+  if (audible.length === 0) return null
+  const under = audible.find(({ c, voice }) => voice && t >= c.startS && t < clipEndS(c))
+  return (under ?? audible.find(({ voice }) => voice) ?? audible[0]).c.id
+}
 
 const PASTE_HINT = `[{"text":"so","startS":0.1,"endS":0.4}, …]   or an .srt`
 
@@ -151,6 +173,31 @@ export function CaptionsDialog({ onClose }: { onClose: () => void }) {
           </button>
         </div>
 
+        {/* The #1 Jettism step, front and center — right-click was its only
+            home before, which made the flagship feature invisible. */}
+        {!tapping && (
+          <div className="flex items-center gap-2 border-b border-border px-4 py-3">
+            <Button
+              data-testid="captions-auto"
+              disabled={findVoClipId() === null}
+              onClick={() => {
+                const id = findVoClipId()
+                if (id) {
+                  void autoCaptionFromClip(id)
+                  onClose()
+                }
+              }}
+            >
+              <Sparkles size={14} strokeWidth={1.5} />
+              Auto-Caption from voiceover
+            </Button>
+            <span className="text-[10px] text-text-muted">
+              {findVoClipId()
+                ? 'Local Whisper — word captions land automatically.'
+                : 'Add an audio clip with sound first.'}
+            </span>
+          </div>
+        )}
         <div className="flex flex-col gap-2 p-4">
           {tapping ? (
             <div data-testid="tap-progress" className="rounded-[6px] border border-border bg-bg-panel px-3 py-4 text-center">

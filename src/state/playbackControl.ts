@@ -5,6 +5,7 @@ import { scheduleAudio } from '../engine/audio'
 import { Transport } from '../engine/playback'
 import { pauseAllPreviewVideos } from '../engine/preview'
 import { activeSequence } from '../engine/types'
+import { workArea } from '../engine/workArea'
 import { useStore } from './store'
 
 const transport = new Transport({
@@ -18,7 +19,21 @@ const transport = new Transport({
     const { project } = useStore.getState()
     return scheduleAudio(activeSequence(project), project.assets, fromS)
   },
+  // Loop toggle: the in/out range when set, else the whole sequence.
+  getLoopRange: () => {
+    const s = useStore.getState()
+    if (!s.ui.loop) return null
+    const seq = activeSequence(s.project)
+    const wa = workArea(seq)
+    return wa.active ? { startS: wa.startS, endS: wa.endS } : { startS: 0, endS: seq.durationS }
+  },
 })
+
+/** "/" and the transport Repeat button. */
+export function toggleLoop(): void {
+  const s = useStore.getState()
+  s.setUI({ loop: !s.ui.loop })
+}
 
 export function togglePlay(): void {
   if (transport.playing) {

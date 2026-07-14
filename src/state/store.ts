@@ -30,6 +30,8 @@ export interface UIState {
   leftTab: LeftTab
   saveState: SaveState
   playing: boolean
+  /** Loop playback over the in/out range (or the whole sequence). */
+  loop: boolean
   /** Keyboard-shortcuts help overlay. */
   helpOpen: boolean
 }
@@ -74,6 +76,7 @@ export const useStore = create<ReelState>()(
       leftTab: 'media',
       saveState: 'saved',
       playing: false,
+      loop: false,
       helpOpen: false,
     },
 

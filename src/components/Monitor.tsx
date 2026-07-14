@@ -5,6 +5,7 @@ import {
   MonitorPlay,
   Pause,
   Play,
+  Repeat,
   Scan,
   SkipBack,
   SkipForward,
@@ -15,7 +16,7 @@ import { setPreviewScale } from '../engine/frameCache'
 import { prewarmPreview, previewEpoch, renderPreview } from '../engine/preview'
 import { formatTimecode, quantizeToFrame } from '../engine/timecode'
 import { activeSequence, type Sequence } from '../engine/types'
-import { pausePlayback, togglePlay } from '../state/playbackControl'
+import { pausePlayback, toggleLoop, togglePlay } from '../state/playbackControl'
 import { setActiveSequenceFormat, useStore } from '../state/store'
 import { IconButton } from '../ui/Button'
 import { MasterMeter } from './MasterMeter'
@@ -191,6 +192,7 @@ export function Monitor() {
   // No playheadS subscription — the timecode is an imperative leaf
   // (PlayheadTimecode), so transport ticks never re-render the Monitor.
   const playing = useStore((s) => s.ui.playing)
+  const loop = useStore((s) => s.ui.loop)
   const setUI = useStore((s) => s.setUI)
   const seq = useStore((s) => activeSequence(s.project))
   const hasContent = seq.durationS > 0
@@ -292,6 +294,15 @@ export function Monitor() {
               </option>
             ))}
           </select>
+          <IconButton
+            label="Loop playback — repeats the In/Out range"
+            shortcut="/"
+            active={loop}
+            onClick={toggleLoop}
+            data-testid="loop-toggle"
+          >
+            <Repeat size={16} strokeWidth={1.5} />
+          </IconButton>
           <IconButton
             label="Safe margins"
             active={safeMargins}
