@@ -57,8 +57,11 @@ class FakeTransport implements CollabTransport {
       this.provider = null
     }
   }
-  sendPresence(_state: PeerPresence): void {}
-  subscribePresence(_cb: (peers: PeerPresence[]) => void): () => void {
+  sendPresence(state: PeerPresence): void {
+    void state
+  }
+  subscribePresence(cb: (peers: PeerPresence[]) => void): () => void {
+    void cb
     return () => {}
   }
   close(): void {}
