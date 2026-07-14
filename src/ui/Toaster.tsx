@@ -11,8 +11,10 @@ export function Toaster() {
   const dismiss = useToasts((s) => s.dismiss)
   if (toasts.length === 0) return null
   return (
+    // Bottom-RIGHT, not bottom-center: centered toasts sat directly on top of
+    // the timeline clips being edited. Newest at the bottom, stack grows up.
     <div
-      className="pointer-events-none fixed bottom-4 left-1/2 z-[100] flex -translate-x-1/2 flex-col items-center gap-2"
+      className="pointer-events-none fixed right-4 bottom-4 z-[100] flex flex-col items-end gap-2"
       role="status"
       aria-live="polite"
     >

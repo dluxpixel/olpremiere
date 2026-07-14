@@ -74,6 +74,7 @@ import { setTrackAudioRole, setTrackAutoLevel, setTrackPan, setTrackVolumeDb } f
 import { appearanceMenuItems, titleFontSizeItems } from '../state/clipMenus'
 import { openContextMenu, type MenuItem } from '../state/contextMenu'
 import { useBlobUrl } from '../state/blobUrls'
+import { useFilmstrip } from '../state/filmstrips'
 import { ClipWaveform } from './ClipWaveform'
 import { PlayheadLine, PlayheadTimecode, RemotePlayheads } from './PlayheadWidgets'
 import { pointOnScrollbar } from './scrollbarGuard'
@@ -511,6 +512,15 @@ function ClipView({
   const kind = isTitle ? 'title' : trackKind
   const label = isTitle ? clip.title!.text || 'Title' : (asset?.name ?? 'Missing media')
   const thumb = useBlobUrl(isTitle || trackKind === 'audio' ? undefined : asset?.thumbnailKey)
+  // Filmstrip across the whole clip (real NLE look); the single poster frame
+  // stays as the instant placeholder while a strip generates.
+  const strip = useFilmstrip(
+    isTitle || trackKind === 'audio' ? undefined : asset,
+    width,
+    clip.inS,
+    clip.outS,
+    clip.speed,
+  )
 
   // Fade drag: dragRef holds the gesture; fadePreview drives the live overlay.
   // The committed value is computed purely from the pointer + dragRef on release
@@ -634,13 +644,23 @@ function ClipView({
           🔗
         </span>
       )}
-      {thumb && width > 48 && (
+      {strip && width > 48 ? (
         <img
-          src={thumb}
+          src={strip}
           alt=""
           draggable={false}
-          className="pointer-events-none absolute inset-y-0 left-0 h-full w-auto object-cover opacity-80"
+          className="pointer-events-none absolute inset-0 h-full w-full object-fill opacity-80"
         />
+      ) : (
+        thumb &&
+        width > 48 && (
+          <img
+            src={thumb}
+            alt=""
+            draggable={false}
+            className="pointer-events-none absolute inset-y-0 left-0 h-full w-auto object-cover opacity-80"
+          />
+        )
       )}
       <span className="pointer-events-none absolute left-1.5 right-1.5 top-0.5 truncate text-[11px] font-medium text-white/90 [text-shadow:0_1px_2px_rgba(0,0,0,0.6)]">
         {label}

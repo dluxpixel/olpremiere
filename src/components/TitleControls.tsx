@@ -227,6 +227,26 @@ export function TitleControls({ clip }: { clip: Clip }) {
             onChange={(e) => set({ color: e.target.value })}
             className={`${inputCls} font-mono`}
           />
+          {/* The caption workflow flips single words to a highlight color
+              constantly — one click, no picker round-trip. */}
+          {[
+            { hex: '#ffffff', label: 'White' },
+            { hex: '#FFD400', label: 'Highlight yellow' },
+            { hex: '#3B7DFF', label: 'Highlight blue' },
+          ].map((c) => (
+            <button
+              key={c.hex}
+              type="button"
+              data-testid={`title-swatch-${c.hex.slice(1).toLowerCase()}`}
+              aria-label={c.label}
+              title={c.label}
+              onClick={() => set({ color: c.hex })}
+              className={`h-6 w-6 shrink-0 rounded-[4px] border transition-transform duration-[120ms] hover:scale-110 ${
+                def.color.toLowerCase() === c.hex.toLowerCase() ? 'border-accent' : 'border-border-strong'
+              }`}
+              style={{ backgroundColor: c.hex }}
+            />
+          ))}
         </div>
       </Section>
 
