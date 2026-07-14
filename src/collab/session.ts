@@ -44,6 +44,21 @@ export interface CollabSession {
 }
 
 const PRESENCE_INTERVAL_MS = 2_000
+/**
+ * Joiner: how often to re-ask a silent room for state. A ONE-SHOT request
+ * loses to any main-thread stall on either side (dev-server module storms,
+ * busy host) — and the peer that answers re-answers full state, so repeats
+ * are free (CRDT-idempotent).
+ */
+const RESYNC_INTERVAL_MS = 700
+/**
+ * Joiner: how long a room must stay completely silent before we conclude it's
+ * dead and adopt the LOCAL project as its document. Deliberately long: seeding
+ * while a live peer's answer is still in flight is how a joiner's blank
+ * placeholder used to win the `meta` LWW and lock every timeline in the room
+ * onto an empty sequence (the collab e2e flake of 2026-07-14).
+ */
+const SEED_FALLBACK_MS = 8_000
 const PEER_COLORS = ['#ff6b6b', '#4ecdc4', '#ffd166', '#a78bfa', '#f472b6', '#34d399']
 
 const randomId = (): string => crypto.randomUUID().slice(0, 8)
@@ -56,16 +71,25 @@ function snapshotOf(map: Y.Map<EntityValue>): Entities {
 }
 
 /**
- * Join (or seed) a collab room over the given transport. If the room already
- * has a document, it replaces the local project (the joiner adopts the room);
- * if the room is empty, the local project seeds it.
+ * Join (or seed) a collab room over the given transport.
+ *
+ * role 'creator': a freshly minted room id — nobody else can hold state, so
+ * the local project IS the document, immediately. Seeding right away also
+ * means sync requests are answered with REAL state from t=0 (the old deferred
+ * seed answered early joiners with an empty doc).
+ *
+ * role 'joiner' (room id came from a URL): the room's document wins — ask for
+ * it, keep asking, and adopt what answers. The local project seeds the room
+ * only after a long silence, which means the room is genuinely dead (tabs
+ * mode with the creator's tab closed).
  */
 export function startCollabSession(opts: {
   room: string
   transport: CollabTransport
   name: string
+  role: 'creator' | 'joiner'
 }): CollabSession {
-  const { room, transport, name } = opts
+  const { room, transport, name, role } = opts
   const clientId = randomId()
   const color = PEER_COLORS[Math.abs([...clientId].reduce((h, c) => h * 31 + c.charCodeAt(0), 7)) % PEER_COLORS.length]
 
@@ -77,9 +101,15 @@ export function startCollabSession(opts: {
   // Ready = the room's document identity is settled (adopted or seeded).
   const readyCbs = new Set<() => void>()
   let ready = false
+  let seedTimer: ReturnType<typeof setTimeout> | null = null
+  let resyncTimer: ReturnType<typeof setInterval> | null = null
   const fireReady = (): void => {
     if (ready) return
     ready = true
+    if (seedTimer) clearTimeout(seedTimer)
+    if (resyncTimer) clearInterval(resyncTimer)
+    seedTimer = null
+    resyncTimer = null
     for (const cb of readyCbs) cb()
     readyCbs.clear()
   }
@@ -134,18 +164,29 @@ export function startCollabSession(opts: {
   )
 
   // --- initial sync ----------------------------------------------------------
-  // Ask the room for state. If nothing arrives shortly, we're first: seed the
-  // doc from the local project. If state DOES arrive, the observer above adopts
-  // it (any interim seed merges by CRDT rules — ids differ, so no clobbering).
-  transport.requestSync()
-  const seedTimer = setTimeout(() => {
-    if (em.size === 0) {
-      doc.transact(() => {
-        for (const [key, value] of lastEntities) em.set(key, value)
-      }, 'local')
-      fireReady() // the room was empty — OUR project is its document
-    }
-  }, 1_200)
+  // NOT symmetric, on purpose. Entities mostly merge by disjoint ids, but
+  // `meta` is ONE shared key: when a joiner blind-seeds its local placeholder
+  // concurrently with the room's real state, the meta LWW is a client-id coin
+  // flip — lose it and activeSequenceId points at the placeholder's empty
+  // sequence on EVERY peer. So only a creator seeds eagerly; a joiner adopts.
+  const seedFromLocal = (): void => {
+    doc.transact(() => {
+      for (const [key, value] of lastEntities) em.set(key, value)
+    }, 'local')
+    fireReady() // OUR project is the room's document
+  }
+  if (role === 'creator') {
+    seedFromLocal()
+  } else {
+    transport.requestSync()
+    resyncTimer = setInterval(() => transport.requestSync(), RESYNC_INTERVAL_MS)
+    seedTimer = setTimeout(() => {
+      // Silence this long = dead room. em.size > 0 without ready means SOME
+      // state arrived but never rebuilt into a valid project — keep asking
+      // rather than merge a second identity into a live-but-torn room.
+      if (!ready && em.size === 0) seedFromLocal()
+    }, SEED_FALLBACK_MS)
+  }
 
   // --- presence ---------------------------------------------------------------
   let peers: PeerPresence[] = []
@@ -189,7 +230,8 @@ export function startCollabSession(opts: {
       return () => readyCbs.delete(cb)
     },
     leave: () => {
-      clearTimeout(seedTimer)
+      if (seedTimer) clearTimeout(seedTimer)
+      if (resyncTimer) clearInterval(resyncTimer)
       clearInterval(beatTimer)
       unsubscribeStore()
       unsubscribePresence()

@@ -48,6 +48,10 @@ const newRoomId = (): string =>
 export async function enterRoom(roomId?: string): Promise<void> {
   const show = useToasts.getState().show
   const state = useCollab.getState()
+  // No id = we mint the room → creator (seeds it instantly). An id — from a
+  // shared link or our own URL after a reload — means the room may already
+  // have a document that must win → joiner.
+  const role = roomId === undefined ? 'creator' : 'joiner'
   const room = (roomId ?? newRoomId()).toLowerCase()
   if (state.roomId === room) return
   ++lifecycleToken // cancel any in-flight leave-restore
@@ -60,7 +64,7 @@ export async function enterRoom(roomId?: string): Promise<void> {
     ? new HttpRelayTransport(room)
     : new BroadcastChannelTransport(room)
   const preJoinProjectId = useStore.getState().project.id
-  const session = startCollabSession({ room, transport, name: displayName() })
+  const session = startCollabSession({ room, transport, name: displayName(), role })
   session.subscribePeers((peers) => useCollab.setState({ peers }))
   transport.subscribeStatus?.((connected) => useCollab.setState({ connected }))
   useCollab.setState({

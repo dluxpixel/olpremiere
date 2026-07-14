@@ -50,7 +50,11 @@ test('undo in a room reverts only YOUR edit — the other person\'s clip survive
   await a.goto('/')
   await a.getByTestId('add-title').click() // A's base clip
   await a.getByTestId('collab-start').click()
+  // enterRoom sets the hash asynchronously (after the relay probe) — reading
+  // the href before the badge renders races it and hands B a room-less URL.
+  await expect(a.getByTestId('collab-badge')).toBeVisible()
   const roomUrl = await a.evaluate(() => window.location.href)
+  expect(roomUrl).toMatch(/#room=/)
 
   const b = await context.newPage()
   await b.goto(roomUrl)
@@ -81,7 +85,10 @@ test('a title edit (not just adds) propagates', async ({ context }) => {
   await a.goto('/')
   await a.getByTestId('add-title').click()
   await a.getByTestId('collab-start').click()
+  // Same badge-then-read guard as the tests above — the hash is set async.
+  await expect(a.getByTestId('collab-badge')).toBeVisible()
   const roomUrl = await a.evaluate(() => window.location.href)
+  expect(roomUrl).toMatch(/#room=/)
 
   const b = await context.newPage()
   await b.goto(roomUrl)
