@@ -488,6 +488,8 @@ interface ClipViewProps {
   onTrimPointerDown: (e: ReactPointerEvent<HTMLDivElement>, clip: Clip, edge: 'in' | 'out') => void
   onClipContextMenu: (e: ReactMouseEvent<HTMLDivElement>, clip: Clip) => void
   onFadeCommit: (clipId: Id, edge: 'in' | 'out', seconds: number) => void
+  /** Live tooltip while dragging a fade handle (null clears it). */
+  onFadePreview: (tip: { x: number; y: number; text: string } | null) => void
 }
 
 function ClipView({
@@ -502,6 +504,7 @@ function ClipView({
   onTrimPointerDown,
   onClipContextMenu,
   onFadeCommit,
+  onFadePreview,
 }: ClipViewProps) {
   const left = clip.startS * pxPerS
   const durS = clipDurationS(clip)
@@ -554,12 +557,15 @@ function ClipView({
   const moveFade = (e: ReactPointerEvent<HTMLDivElement>) => {
     const d = fadeDragRef.current
     if (!d) return
-    setFadePreview({ edge: d.edge, val: valFor(d, e.clientX) })
+    const val = valFor(d, e.clientX)
+    setFadePreview({ edge: d.edge, val })
+    onFadePreview({ x: e.clientX, y: e.clientY - 34, text: `Fade ${d.edge} ${val.toFixed(2)}s` })
   }
   const endFade = (e: ReactPointerEvent<HTMLDivElement>) => {
     const d = fadeDragRef.current
     fadeDragRef.current = null
     setFadePreview(null)
+    onFadePreview(null)
     if (!d) return
     if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
     const val = valFor(d, e.clientX)
@@ -1650,6 +1656,7 @@ export function Timeline({ height }: { height: number }) {
           onTrimPointerDown={handleTrimPointerDown}
           onClipContextMenu={handleClipContextMenu}
           onFadeCommit={setClipFade}
+          onFadePreview={setTrimTip}
         />
       ))}
       {dropPreview?.trackId === track.id && (

@@ -16,7 +16,7 @@ import { setPreviewScale } from '../engine/frameCache'
 import { prewarmPreview, previewEpoch, renderPreview } from '../engine/preview'
 import { formatTimecode, quantizeToFrame } from '../engine/timecode'
 import { activeSequence, type Sequence } from '../engine/types'
-import { pausePlayback, toggleLoop, togglePlay } from '../state/playbackControl'
+import { pausePlayback, subscribeShuttleRate, toggleLoop, togglePlay } from '../state/playbackControl'
 import { setActiveSequenceFormat, useStore } from '../state/store'
 import { IconButton } from '../ui/Button'
 import { MasterMeter } from './MasterMeter'
@@ -179,6 +179,22 @@ function SafeMargins({ canvas }: { canvas: HTMLCanvasElement | null }) {
   )
 }
 
+/** J/K/L shuttle indicator — shows only when shuttling faster/reverse. */
+function ShuttleBadge() {
+  const [rate, setRate] = useState(0)
+  useEffect(() => subscribeShuttleRate(setRate), [])
+  if (rate === 0 || (rate > 0 && rate <= 1)) return null // normal play / paused: hide
+  const arrow = rate < 0 ? '◀◀' : '▶▶'
+  return (
+    <span
+      data-testid="shuttle-badge"
+      className="rounded-[3px] bg-accent-quiet px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-accent"
+    >
+      {arrow} {Math.abs(rate)}×
+    </span>
+  )
+}
+
 export function Monitor() {
   const assets = useStore((s) => s.project.assets)
   // Decode audio + spin up pooled elements as soon as media exists, so the
@@ -252,6 +268,7 @@ export function Monitor() {
           <PlayheadTimecode fps={seq.fps} editable testId="monitor-timecode" />
           <span className="text-text-muted"> / {formatTimecode(seq.durationS, seq.fps)}</span>
         </span>
+        <ShuttleBadge />
 
         <div className="absolute left-1/2 flex -translate-x-1/2 items-center gap-1">
           <IconButton

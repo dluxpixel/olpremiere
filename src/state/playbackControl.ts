@@ -8,12 +8,27 @@ import { activeSequence } from '../engine/types'
 import { workArea } from '../engine/workArea'
 import { useStore } from './store'
 
+// Current shuttle rate, published only on state CHANGE (never per tick) so the
+// transport badge can subscribe imperatively without any per-frame React.
+let shuttleRate = 0
+const rateSubs = new Set<(rate: number) => void>()
+export function subscribeShuttleRate(cb: (rate: number) => void): () => void {
+  rateSubs.add(cb)
+  cb(shuttleRate)
+  return () => rateSubs.delete(cb)
+}
+
 const transport = new Transport({
   getEndS: () => activeSequence(useStore.getState().project).durationS,
   onTick: (t) => useStore.getState().setUI({ playheadS: Math.max(0, t) }),
-  onStateChange: (playing) => {
+  onStateChange: (playing, rate) => {
     useStore.getState().setUI({ playing })
     if (!playing) pauseAllPreviewVideos()
+    const next = playing ? rate : 0
+    if (next !== shuttleRate) {
+      shuttleRate = next
+      for (const cb of rateSubs) cb(next)
+    }
   },
   schedule: (fromS) => {
     const { project } = useStore.getState()

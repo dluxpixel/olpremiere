@@ -21,6 +21,7 @@ import { useToasts } from './toasts'
 export async function importFiles(files: File[]): Promise<void> {
   const show = useToasts.getState().show
   const imported: MediaAsset[] = []
+  const failed: string[] = []
   for (const file of files) {
     try {
       const probe = await probeFile(file)
@@ -45,14 +46,14 @@ export async function importFiles(files: File[]): Promise<void> {
         thumbnailKey,
         codec: undefined,
       })
-    } catch (err) {
-      const unsupported = err instanceof Error && err.message === 'unsupported'
-      show(
-        unsupported ? `${file.name}: unsupported file type` : `${file.name}: import failed`,
-        'danger',
-      )
+    } catch {
+      failed.push(file.name)
     }
   }
+  // ONE summary toast for failures — never one per file (folder-drop flood).
+  if (failed.length === 1) show(`${failed[0]}: couldn’t import (unsupported?)`, 'danger')
+  else if (failed.length > 1) show(`${failed.length} files skipped (unsupported)`, 'danger')
+
   if (imported.length === 0) return
   useStore.getState().dispatch(`Import ${imported.length} file(s)`, (p) => ({
     ...p,

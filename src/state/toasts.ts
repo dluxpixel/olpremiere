@@ -28,7 +28,16 @@ export const useToasts = create<ToastState>((set, get) => ({
   toasts: [],
   show(message, kind = 'info', action) {
     const id = nextId++
-    set((s) => ({ toasts: [...s.toasts, { id, message, kind, ...(action ? { action } : {}) }] }))
+    set((s) => {
+      // Cap the stack: a bad folder import (one toast per file) must never
+      // wall the screen — drop the oldest actionless toast past 5.
+      let toasts = s.toasts
+      if (toasts.length >= 5) {
+        const drop = toasts.find((t) => !t.action)
+        toasts = drop ? toasts.filter((t) => t !== drop) : toasts.slice(1)
+      }
+      return { toasts: [...toasts, { id, message, kind, ...(action ? { action } : {}) }] }
+    })
     window.setTimeout(() => get().dismiss(id), action ? TOAST_ACTION_MS : TOAST_MS)
   },
   dismiss(id) {
