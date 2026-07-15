@@ -23,10 +23,12 @@ interface Tf {
   x: number
   y: number
   scale: number
+  rotationDeg: number
 }
 type Drag =
   | { mode: 'move'; startX: number; startY: number; startTf: Tf }
   | { mode: 'scale'; startTf: Tf; cx: number; cy: number; startDist: number }
+  | { mode: 'rotate'; startTf: Tf; cx: number; cy: number; startAngle: number }
 
 const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v)
 const ACCENT = 'var(--color-accent)'
@@ -196,7 +198,12 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
   let gizmo: React.ReactNode = null
   if (gizmoOn && clip) {
     const clipId = clip.id
-    const tf: Tf = dragTf ?? { x: clip.transform.x, y: clip.transform.y, scale: clip.transform.scale }
+    const tf: Tf = dragTf ?? {
+      x: clip.transform.x,
+      y: clip.transform.y,
+      scale: clip.transform.scale,
+      rotationDeg: clip.transform.rotationDeg,
+    }
     const isTitle = clip.title !== undefined
     const asset = project.assets[clip.assetId]
     const texW = isTitle ? seq.width : (asset?.width ?? seq.width)
@@ -205,7 +212,7 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
       x: tf.x,
       y: tf.y,
       scale: tf.scale,
-      rotationDeg: clip.transform.rotationDeg,
+      rotationDeg: tf.rotationDeg,
       anchorX: clip.transform.anchorX,
       anchorY: clip.transform.anchorY,
       cropT: clip.transform.crop.t,
@@ -257,10 +264,16 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
           if (sx) x = 0
           if (sy) y = 0
           setCenterSnap({ x: sx, y: sy })
-          apply({ x, y, scale: drag.startTf.scale })
-        } else {
+          apply({ ...drag.startTf, x, y })
+        } else if (drag.mode === 'scale') {
           const dist = Math.hypot(p.x - drag.cx, p.y - drag.cy)
           apply({ ...drag.startTf, scale: clamp((drag.startTf.scale * dist) / drag.startDist, 0.05, 5) })
+        } else {
+          // Rotate about the clip center; Shift snaps to 15° increments.
+          const ang = (Math.atan2(p.y - drag.cy, p.x - drag.cx) * 180) / Math.PI
+          let deg = drag.startTf.rotationDeg + (ang - drag.startAngle)
+          if (ev.shiftKey) deg = Math.round(deg / 15) * 15
+          apply({ ...drag.startTf, rotationDeg: deg })
         }
       }
       const onUpWin = () => {
@@ -296,6 +309,17 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
       const cy = (seq.height / 2 + tf.y) * k
       startDrag({ mode: 'scale', startTf: tf, cx, cy, startDist: Math.max(1, Math.hypot(p.x - cx, p.y - cy)) })
     }
+    const beginRotate = (e: ReactPointerEvent) => {
+      if (e.button !== 0) return
+      e.preventDefault()
+      e.stopPropagation()
+      const p = localPt(e.clientX, e.clientY)
+      const cx = (seq.width / 2 + tf.x) * k
+      const cy = (seq.height / 2 + tf.y) * k
+      const startAngle = (Math.atan2(p.y - cy, p.x - cx) * 180) / Math.PI
+      startDrag({ mode: 'rotate', startTf: tf, cx, cy, startAngle })
+    }
+    const cxPx = (maxX + minX) / 2
 
     gizmo = (
       <>
@@ -314,14 +338,40 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
           onContextMenu={contextAt}
         />
         {handlePts.map(([x, y], i) => (
+          // 24px invisible hit target wrapping a 12px visual handle.
           <div
             key={i}
             data-testid={`gizmo-handle-${i}`}
-            className="pointer-events-auto absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-[2px] border-2 border-white"
-            style={{ left: x, top: y, cursor: cursors[i], background: ACCENT }}
+            className="pointer-events-auto absolute flex h-6 w-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center"
+            style={{ left: x, top: y, cursor: cursors[i] }}
             onPointerDown={beginScale}
-          />
+          >
+            <div className="h-3 w-3 rounded-[2px] border-2 border-white" style={{ background: ACCENT }} />
+          </div>
         ))}
+        {/* Rotate lollipop: 22px above top-center, on a stalk. */}
+        <div
+          className="pointer-events-none absolute w-px bg-white/70"
+          style={{ left: cxPx, top: hy(minY) - 22, height: 22 }}
+        />
+        <div
+          data-testid="gizmo-rotate"
+          className="pointer-events-auto absolute flex h-6 w-6 -translate-x-1/2 -translate-y-1/2 cursor-grab items-center justify-center active:cursor-grabbing"
+          style={{ left: cxPx, top: hy(minY) - 22 }}
+          onPointerDown={beginRotate}
+        >
+          <div className="h-3 w-3 rounded-full border-2 border-white" style={{ background: ACCENT }} />
+        </div>
+        {/* Live readout while dragging. */}
+        {dragTf && (
+          <div
+            data-testid="gizmo-readout"
+            className="pointer-events-none absolute rounded-[3px] bg-black/70 px-1.5 py-0.5 text-[10px] tabular-nums text-white"
+            style={{ left: minX, top: minY - 18 }}
+          >
+            X {Math.round(tf.x)} · Y {Math.round(tf.y)} · {Math.round(tf.scale * 100)}% · {Math.round(tf.rotationDeg)}°
+          </div>
+        )}
       </>
     )
   }

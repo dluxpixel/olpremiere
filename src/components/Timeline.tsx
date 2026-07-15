@@ -820,6 +820,7 @@ export function Timeline({ height }: { height: number }) {
   const [trimTip, setTrimTip] = useState<{ x: number; y: number; text: string } | null>(null)
   const [dropPreview, setDropPreview] = useState<{ trackId: Id; tS: number } | null>(null)
   const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null)
+  const [hoverLane, setHoverLane] = useState<{ trackId: Id; valid: boolean } | null>(null)
   const dragFinal = useRef<{ trackId: Id; tS: number } | null>(null)
 
   const renderSeq = previewSeq ?? seq
@@ -1363,7 +1364,10 @@ export function Timeline({ height }: { height: number }) {
         }
       }
       const hovered = laneAt(y)
-      const target = hovered && hovered.kind === drag.trackKind && !hovered.locked ? hovered : current
+      const valid = !!hovered && hovered.kind === drag.trackKind && !hovered.locked
+      const target = valid ? hovered! : current
+      // Tint the lane you're over — green ok, red no (wrong kind / locked).
+      setHoverLane(hovered && hovered.id !== current.id ? { trackId: hovered.id, valid } : null)
       dragFinal.current = { trackId: target.id, tS: Math.max(0, desired) }
       setPreviewSeq(moveSelectionWith(seq, drag.clipId, target.id, Math.max(0, desired), drag.others))
     } else if (drag.kind === 'slip') {
@@ -1423,6 +1427,7 @@ export function Timeline({ height }: { height: number }) {
     if (!drag) return
     stopEdgeScroll()
     lastDragPointer.current = null
+    setHoverLane(null)
     lanesRef.current?.releasePointerCapture(e.pointerId)
     // Marquee is selection-only (no undo dispatch) — just drop the rectangle.
     if (drag.kind === 'marquee') {
@@ -1616,10 +1621,18 @@ export function Timeline({ height }: { height: number }) {
           ? 'cursor-zoom-in'
           : ''
 
-  const renderLane = (track: Track, tint: string) => (
+  const renderLane = (track: Track, tint: string) => {
+    // Drop-target feedback during a cross-track move: green valid, red no-go.
+    const hov = hoverLane?.trackId === track.id ? hoverLane : null
+    const hovClass = hov
+      ? hov.valid
+        ? 'ring-1 ring-inset ring-accent/50 bg-accent/10'
+        : 'ring-1 ring-inset ring-danger/50 bg-danger/10'
+      : ''
+    return (
     <div
       key={track.id}
-      className={`relative border-b border-border ${tint} ${track.locked ? 'opacity-60' : ''}`}
+      className={`relative border-b border-border ${tint} ${hovClass} ${track.locked ? 'opacity-60' : ''}`}
       style={{ height: track.height }}
       onPointerDown={handleLanePointerDown}
     >
@@ -1646,7 +1659,8 @@ export function Timeline({ height }: { height: number }) {
         />
       )}
     </div>
-  )
+    )
+  }
 
   return (
     <section

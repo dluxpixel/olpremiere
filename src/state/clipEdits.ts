@@ -256,7 +256,10 @@ export function setClipSpeed(clipId: string, speed: number): void {
 }
 
 /** Set position + scale together in ONE undo step (the Monitor drag-gizmo commit). */
-export function setClipTransform(clipId: string, patch: { x?: number; y?: number; scale?: number }): void {
+export function setClipTransform(
+  clipId: string,
+  patch: { x?: number; y?: number; scale?: number; rotationDeg?: number },
+): void {
   const seq = activeSequence(useStore.getState().project)
   mapClip(clipId, 'Transform clip', (c) => {
     const moved: Clip = {
@@ -266,6 +269,7 @@ export function setClipTransform(clipId: string, patch: { x?: number; y?: number
         x: patch.x ?? c.transform.x,
         y: patch.y ?? c.transform.y,
         scale: patch.scale ?? c.transform.scale,
+        rotationDeg: patch.rotationDeg ?? c.transform.rotationDeg,
       },
     }
     // A clip with an entrance/exit animation re-derives its keyframes from the
