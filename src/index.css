@@ -85,6 +85,28 @@ body {
   background-clip: content-box;
 }
 
+/* Micro-motion — tasteful, CSS-only, auto-disabled by the reduced-motion
+   guard below. Never touches the render path (chrome only). */
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes clip-pop {
+  from {
+    box-shadow: 0 0 0 2px var(--color-accent);
+  }
+  to {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

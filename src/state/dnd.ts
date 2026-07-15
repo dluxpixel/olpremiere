@@ -7,6 +7,7 @@
 export const ASSET_MIME = 'application/x-reel-asset'
 export const EFFECT_MIME = 'application/x-reel-effect'
 export const TRANSITION_MIME = 'application/x-reel-transition'
+export const SFX_MIME = 'application/x-reel-sfx'
 
 export const dragHasType = (types: readonly string[], mime: string): boolean => types.includes(mime)
 

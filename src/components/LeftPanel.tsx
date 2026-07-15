@@ -9,7 +9,7 @@ import { useBlobUrl } from '../state/blobUrls'
 import { CaptionsDialog } from './CaptionsDialog'
 import { applyEffect, setClipTransition } from '../state/clipEdits'
 import { openContextMenu } from '../state/contextMenu'
-import { ASSET_MIME, EFFECT_MIME, TRANSITION_MIME } from '../state/dnd'
+import { ASSET_MIME, EFFECT_MIME, SFX_MIME, TRANSITION_MIME } from '../state/dnd'
 import {
   addLibraryItemToProject,
   applyPresetToAllClips,
@@ -541,13 +541,18 @@ function SfxRow({ sfx }: { sfx: SfxDef }) {
       data-payload={sfx.id}
       role="button"
       tabIndex={0}
-      title="Click to preview · double-click to add at the playhead"
+      draggable
+      title="Click to preview · double-click or drag to add"
+      onDragStart={(e) => {
+        e.dataTransfer.setData(SFX_MIME, sfx.id)
+        e.dataTransfer.effectAllowed = 'copy'
+      }}
       onClick={() => previewSfx(sfx.id)}
       onDoubleClick={() => void insertSfxAtPlayhead(sfx.id)}
       onKeyDown={(e) => {
         if (e.key === 'Enter') void insertSfxAtPlayhead(sfx.id)
       }}
-      className="flex cursor-default items-center gap-2 rounded-[4px] px-2 py-1.5 text-[12px] text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated hover:text-text-primary"
+      className="flex cursor-grab items-center gap-2 rounded-[4px] px-2 py-1.5 text-[12px] text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated hover:text-text-primary active:cursor-grabbing"
     >
       <Volume2 size={13} strokeWidth={1.5} aria-hidden className="shrink-0 text-text-muted" />
       <span className="truncate">{sfx.name}</span>
@@ -657,7 +662,10 @@ export function LeftPanel({ width }: { width: number }) {
         <Tab tab="effects" label="Effects" />
         <Tab tab="library" label="Library" />
       </div>
-      {leftTab === 'media' ? <MediaTab /> : leftTab === 'effects' ? <EffectsTab /> : <LibraryTab />}
+      {/* key on the tab so the content fades in on each switch (hard cut → soft). */}
+      <div key={leftTab} className="flex min-h-0 flex-1 animate-[fade-in_100ms_ease-out] flex-col">
+        {leftTab === 'media' ? <MediaTab /> : leftTab === 'effects' ? <EffectsTab /> : <LibraryTab />}
+      </div>
       {dragging && (
         <div className="pointer-events-none fixed inset-0 z-50 flex bg-black/60 p-4">
           <div className="flex flex-1 flex-col items-center justify-center gap-2 rounded-[6px] border-2 border-dashed border-accent bg-accent-quiet">

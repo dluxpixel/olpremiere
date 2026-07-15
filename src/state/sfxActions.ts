@@ -17,12 +17,18 @@ function sfxTargetTrackId(): string | null {
   return track?.id ?? null
 }
 
-function insertExisting(def: SfxDef, asset: MediaAsset, trackId: string): void {
+/** Where a dropped/inserted SFX lands. Defaults to playhead + topmost track. */
+export interface SfxPlacement {
+  atS?: number
+  trackId?: string
+}
+
+function insertExisting(def: SfxDef, asset: MediaAsset, trackId: string, atS: number): void {
   const s = useStore.getState()
   let clipId = ''
   s.dispatch(`Add ${def.name}`, (p) => {
     const seq = p.sequences[p.activeSequenceId]
-    const r = addClipFromAsset(seq, trackId, asset, s.ui.playheadS)
+    const r = addClipFromAsset(seq, trackId, asset, atS)
     if (!r.clipId) return p
     clipId = r.clipId
     return { ...p, sequences: { ...p.sequences, [seq.id]: r.seq } }
@@ -30,12 +36,14 @@ function insertExisting(def: SfxDef, asset: MediaAsset, trackId: string): void {
   if (clipId) s.setUI({ selection: [clipId] })
 }
 
-/** Insert a bundled SFX at the playhead (fetching its bytes on first use). */
-export async function insertSfxAtPlayhead(sfxId: string): Promise<void> {
+/** Insert a bundled SFX (fetching its bytes on first use). Playhead + top
+ * unlocked audio track by default; a drop passes an explicit time/track. */
+export async function insertSfxAtPlayhead(sfxId: string, place: SfxPlacement = {}): Promise<void> {
   const def = sfxById(sfxId)
   if (!def) return
   const s = useStore.getState()
-  const trackId = sfxTargetTrackId()
+  const trackId = place.trackId ?? sfxTargetTrackId()
+  const atS = place.atS ?? s.ui.playheadS
   if (!trackId) {
     useToasts.getState().show('No unlocked audio track for the sound', 'danger')
     return
@@ -45,7 +53,7 @@ export async function insertSfxAtPlayhead(sfxId: string): Promise<void> {
     (a) => a.kind === 'audio' && a.name === sfxAssetName(def),
   )
   if (existing) {
-    insertExisting(def, existing, trackId)
+    insertExisting(def, existing, trackId, atS)
     return
   }
 
@@ -73,7 +81,7 @@ export async function insertSfxAtPlayhead(sfxId: string): Promise<void> {
   let clipId = ''
   useStore.getState().dispatch(`Add ${def.name}`, (p) => {
     const seq = p.sequences[p.activeSequenceId]
-    const r = addClipFromAsset(seq, trackId, asset, useStore.getState().ui.playheadS)
+    const r = addClipFromAsset(seq, trackId, asset, atS)
     if (!r.clipId) return p
     clipId = r.clipId
     return {

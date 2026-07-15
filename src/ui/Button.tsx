@@ -9,10 +9,10 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 
 const variantClasses: Record<Variant, string> = {
   ghost:
-    'text-text-secondary hover:bg-bg-elevated hover:text-text-primary disabled:hover:bg-transparent disabled:hover:text-text-secondary',
+    'text-text-secondary hover:bg-bg-elevated hover:text-text-primary active:bg-bg-input disabled:hover:bg-transparent disabled:hover:text-text-secondary',
   secondary:
-    'border border-border text-text-primary hover:border-border-strong hover:bg-bg-elevated',
-  primary: 'bg-accent text-white font-medium hover:bg-accent-hover',
+    'border border-border text-text-primary hover:border-border-strong hover:bg-bg-elevated active:bg-bg-input',
+  primary: 'bg-accent text-white font-medium hover:bg-accent-hover active:brightness-90',
 }
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
@@ -52,10 +52,10 @@ export function IconButton({
       <button
         aria-label={label}
         aria-pressed={active || undefined}
-        className={`inline-flex ${px} shrink-0 cursor-default items-center justify-center rounded-[4px] transition-colors duration-[120ms] ease-out disabled:opacity-40 ${
+        className={`inline-flex ${px} shrink-0 cursor-default items-center justify-center rounded-[4px] transition-colors duration-[120ms] ease-out active:scale-95 disabled:opacity-40 disabled:active:scale-100 ${
           active
             ? 'bg-accent-quiet text-accent'
-            : 'text-text-secondary hover:bg-bg-elevated hover:text-text-primary disabled:hover:bg-transparent'
+            : 'text-text-secondary hover:bg-bg-elevated hover:text-text-primary active:bg-bg-input disabled:hover:bg-transparent'
         } ${className}`}
         {...rest}
       >

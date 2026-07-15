@@ -22,7 +22,7 @@ export function Toaster() {
         <div
           key={t.id}
           data-testid="toast"
-          className={`pointer-events-auto flex items-center gap-3 rounded-[6px] border bg-bg-elevated px-3 py-2 text-[12px] text-text-primary shadow-pop ${kindClasses[t.kind]}`}
+          className={`pointer-events-auto flex animate-[toast-in_140ms_ease-out] items-center gap-3 rounded-[6px] border bg-bg-elevated px-3 py-2 text-[12px] text-text-primary shadow-pop ${kindClasses[t.kind]}`}
         >
           {/* The message dismisses; a separate action button (e.g. Undo) does not. */}
           <button onClick={() => dismiss(t.id)} className="text-left">

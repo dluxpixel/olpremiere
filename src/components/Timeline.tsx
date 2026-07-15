@@ -51,7 +51,8 @@ import type { TransitionKind } from '../engine/render/types'
 import { formatTimecode, quantizeToFrame } from '../engine/timecode'
 import { workArea } from '../engine/workArea'
 import { applyEffect, setClipTransition } from '../state/clipEdits'
-import { ASSET_MIME, EFFECT_MIME, TRANSITION_MIME, dragHasType, edgeForOffset } from '../state/dnd'
+import { ASSET_MIME, EFFECT_MIME, SFX_MIME, TRANSITION_MIME, dragHasType, edgeForOffset } from '../state/dnd'
+import { insertSfxAtPlayhead } from '../state/sfxActions'
 import { comboLabel } from '../keymap'
 import {
   activeSequence,
@@ -626,7 +627,9 @@ function ClipView({
       data-testid="clip"
       data-clip-id={clip.id}
       data-clip-kind={kind}
-      className={`group/clip absolute bottom-[3px] top-[3px] overflow-hidden rounded-[6px] border ${
+      // A one-shot accent pulse on mount = a genuinely new clip (add / paste /
+      // undo-restore) — clips aren't virtualized, so mount is meaningful.
+      className={`group/clip absolute bottom-[3px] top-[3px] animate-[clip-pop_500ms_ease-out] overflow-hidden rounded-[6px] border ${
         // Selection lifts the clip (offset ring + brightness); an imminent FX
         // drop is an INSET ring — the two states must never look alike.
         selected ? 'ring-2 ring-accent ring-offset-1 ring-offset-bg-app brightness-110' : ''
@@ -783,6 +786,8 @@ type Drag =
   | { kind: 'stretch'; clipId: Id; edge: 'in' | 'out' }
   | { kind: 'slip'; clipId: Id; startXPx: number }
   | { kind: 'scrub' }
+  /** Shift+drag on empty lane space: rubber-band select. Content coordinates. */
+  | { kind: 'marquee'; x0: number; y0: number }
   | { kind: 'hand'; startX: number; startY: number; scrollLeft: number; scrollTop: number }
 
 export function Timeline({ height }: { height: number }) {
@@ -814,6 +819,7 @@ export function Timeline({ height }: { height: number }) {
   const [snapIndicatorT, setSnapIndicatorT] = useState<number | null>(null)
   const [trimTip, setTrimTip] = useState<{ x: number; y: number; text: string } | null>(null)
   const [dropPreview, setDropPreview] = useState<{ trackId: Id; tS: number } | null>(null)
+  const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null)
   const dragFinal = useRef<{ trackId: Id; tS: number } | null>(null)
 
   const renderSeq = previewSeq ?? seq
@@ -1253,6 +1259,13 @@ export function Timeline({ height }: { height: number }) {
     if (tool === 'hand') beginHand(e)
     else if (tool === 'zoom') zoomAround(e.clientX, e.altKey ? 1 / 1.4 : 1.4)
     else if (tool === 'select') {
+      // Shift+drag = rubber-band select; plain click/drag = scrub (Vegas).
+      if (e.shiftKey) {
+        const { x, y } = contentPoint(e)
+        setMarquee({ x0: x, y0: y, x1: x, y1: y })
+        beginDrag(e, { kind: 'marquee', x0: x, y0: y })
+        return
+      }
       pausePlayback()
       setUI({ selection: [] })
       scrubPlayheadTo(e.clientX)
@@ -1296,6 +1309,26 @@ export function Timeline({ height }: { height: number }) {
     maybeEdgeScroll()
     if (drag.kind === 'scrub') {
       scrubPlayheadTo(e.clientX)
+      return
+    }
+    if (drag.kind === 'marquee') {
+      const p = contentPoint(e)
+      setMarquee({ x0: drag.x0, y0: drag.y0, x1: p.x, y1: p.y })
+      // Live-select every clip whose box overlaps the rectangle.
+      const loX = Math.min(drag.x0, p.x)
+      const hiX = Math.max(drag.x0, p.x)
+      const loY = Math.min(drag.y0, p.y)
+      const hiY = Math.max(drag.y0, p.y)
+      const hits: Id[] = []
+      for (const { track, top } of laneInfos) {
+        if (top + track.height < loY || top > hiY) continue
+        for (const c of track.clips) {
+          const cx0 = c.startS * pxPerS
+          const cx1 = clipEndS(c) * pxPerS
+          if (cx1 >= loX && cx0 <= hiX) hits.push(c.id)
+        }
+      }
+      setUI({ selection: hits })
       return
     }
     const { x, y } = contentPoint(e)
@@ -1391,6 +1424,12 @@ export function Timeline({ height }: { height: number }) {
     stopEdgeScroll()
     lastDragPointer.current = null
     lanesRef.current?.releasePointerCapture(e.pointerId)
+    // Marquee is selection-only (no undo dispatch) — just drop the rectangle.
+    if (drag.kind === 'marquee') {
+      setMarquee(null)
+      setDrag(null)
+      return
+    }
     // A release within the slop of the pointer-down is a CLICK on the clip, not
     // a drag: move the playhead there so the preview shows the spot you clicked
     // (CapCut-style), and skip the no-op move commit (keeps undo history clean).
@@ -1427,7 +1466,9 @@ export function Timeline({ height }: { height: number }) {
   // --- drop from the media bin ----------------------------------------------
 
   const handleDragOver = (e: DragEvent<HTMLDivElement>) => {
-    if (!e.dataTransfer.types.includes(ASSET_MIME)) return
+    const isAsset = e.dataTransfer.types.includes(ASSET_MIME)
+    const isSfx = e.dataTransfer.types.includes(SFX_MIME)
+    if (!isAsset && !isSfx) return
     e.preventDefault()
     e.dataTransfer.dropEffect = 'copy'
     // Bin drags edge-scroll too (the loop only scrolls here — the preview line
@@ -1436,7 +1477,7 @@ export function Timeline({ height }: { height: number }) {
     maybeEdgeScroll()
     const { x, y } = contentPoint(e)
     const lane = laneAt(y)
-    if (!lane) {
+    if (!lane || (isSfx && lane.kind !== 'audio')) {
       setDropPreview(null)
       return
     }
@@ -1446,11 +1487,24 @@ export function Timeline({ height }: { height: number }) {
   }
 
   const handleDrop = (e: DragEvent<HTMLDivElement>) => {
+    const sfxId = e.dataTransfer.getData(SFX_MIME)
     const assetId = e.dataTransfer.getData(ASSET_MIME)
     stopEdgeScroll()
     lastDragPointer.current = null
     setDropPreview(null)
     setSnapIndicatorT(null)
+    // A dragged SFX lands on the hovered audio lane at the drop time.
+    if (sfxId) {
+      e.preventDefault()
+      const { x, y } = contentPoint(e)
+      const lane = laneAt(y)
+      const target = lane?.kind === 'audio' && !lane.locked ? lane : audioTracks(seq).find((t) => !t.locked)
+      const tRaw = quantizeToFrame(Math.max(0, x / pxPerS), seq.fps)
+      const points = snapping ? collectSnapPoints(seq, { playheadS: useStore.getState().ui.playheadS }) : []
+      const t = snapping ? snapTime(tRaw, points, SNAP_PX / pxPerS).t : tRaw
+      void insertSfxAtPlayhead(sfxId, { atS: t, ...(target ? { trackId: target.id } : {}) })
+      return
+    }
     if (!assetId) return
     e.preventDefault()
     const asset = assets[assetId]
@@ -1748,6 +1802,18 @@ export function Timeline({ height }: { height: number }) {
               <div
                 className="pointer-events-none absolute bottom-0 z-30 w-px bg-accent"
                 style={{ left: snapIndicatorT * pxPerS, top: RULER_H }}
+              />
+            )}
+
+            {marquee && (
+              <div
+                className="pointer-events-none absolute z-30 rounded-[2px] border border-accent bg-accent/10"
+                style={{
+                  left: Math.min(marquee.x0, marquee.x1),
+                  top: Math.min(marquee.y0, marquee.y1),
+                  width: Math.abs(marquee.x1 - marquee.x0),
+                  height: Math.abs(marquee.y1 - marquee.y0),
+                }}
               />
             )}
 
