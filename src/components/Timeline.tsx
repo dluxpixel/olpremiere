@@ -827,6 +827,7 @@ export function Timeline({ height }: { height: number }) {
   const [dropPreview, setDropPreview] = useState<{ trackId: Id; tS: number } | null>(null)
   const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null)
   const [hoverLane, setHoverLane] = useState<{ trackId: Id; valid: boolean } | null>(null)
+  const [razorHover, setRazorHover] = useState<{ t: number; top: number } | null>(null)
   const dragFinal = useRef<{ trackId: Id; tS: number } | null>(null)
 
   const renderSeq = previewSeq ?? seq
@@ -1300,7 +1301,18 @@ export function Timeline({ height }: { height: number }) {
   }
 
   const handleLanesPointerMove = (e: { clientX: number; clientY: number }) => {
-    if (!drag) return
+    if (!drag) {
+      // Razor hover: preview the exact cut line the blade will make.
+      if (tool === 'razor') {
+        const { x, y } = contentPoint(e)
+        const lane = laneAt(y)
+        setRazorHover(lane ? { t: quantizeToFrame(Math.max(0, x / pxPerS), seq.fps), top: y } : null)
+      } else if (razorHover) {
+        setRazorHover(null)
+      }
+      return
+    }
+    if (razorHover) setRazorHover(null)
     if (drag.kind === 'hand') {
       const el = lanesRef.current
       if (el) {
@@ -1739,6 +1751,7 @@ export function Timeline({ height }: { height: number }) {
           data-testid="timeline-lanes"
           onPointerDown={handleLanesBackgroundPointerDown}
           onPointerMove={handleLanesPointerMove}
+          onPointerLeave={() => razorHover && setRazorHover(null)}
           onPointerUp={handleLanesPointerUp}
           onPointerCancel={handleLanesPointerUp}
           onScroll={(e) => {
@@ -1823,6 +1836,14 @@ export function Timeline({ height }: { height: number }) {
               <div
                 className="pointer-events-none absolute bottom-0 z-30 w-px bg-accent"
                 style={{ left: snapIndicatorT * pxPerS, top: RULER_H }}
+              />
+            )}
+
+            {razorHover && tool === 'razor' && (
+              <div
+                data-testid="razor-line"
+                className="pointer-events-none absolute bottom-0 z-30 w-px bg-text-primary/70"
+                style={{ left: razorHover.t * pxPerS, top: RULER_H }}
               />
             )}
 

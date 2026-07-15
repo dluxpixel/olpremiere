@@ -344,14 +344,15 @@ export function Monitor() {
             <Scan size={16} strokeWidth={1.5} />
           </IconButton>
           <select
-            aria-label="Playback quality"
+            aria-label="Preview quality"
+            title="Preview quality — lower = smoother scrubbing on big footage. Never affects the export."
             className="h-6 rounded-[4px] border border-border bg-bg-input px-1.5 text-[11px] text-text-secondary focus:border-accent focus:outline-none"
             value={String(quality)}
             onChange={(e) => setQuality(Number(e.target.value) as Quality)}
           >
-            <option value="1">Full</option>
-            <option value="0.5">Half</option>
-            <option value="0.25">Quarter</option>
+            <option value="1">Preview: Full</option>
+            <option value="0.5">Preview: Half</option>
+            <option value="0.25">Preview: Quarter</option>
           </select>
           <IconButton
             label="Fullscreen"
