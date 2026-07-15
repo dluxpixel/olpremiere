@@ -189,37 +189,53 @@ export function ScrubField({
     else setText(fmt(value))
   }
 
+  // Position-in-range fill: 0% at min, 100% at max. Finite ranges only — a
+  // sensitivity-only field (e.g. ±4000 offsets) still fills, which reads fine.
+  const span = spec.max - spec.min
+  const frac = span > 0 ? clamp((value - spec.min) / span, 0, 1) : 0
+
   return (
-    <input
-      ref={inputRef}
-      type="text"
-      inputMode="decimal"
-      data-testid={testId}
-      aria-label={ariaLabel}
-      value={text}
-      readOnly={!editing}
-      onChange={(e) => setText(e.target.value)}
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={endDrag}
-      onPointerCancel={endDrag}
-      onDoubleClick={enterEdit}
-      onFocus={enterEdit}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter') {
-          commitTyped()
-          inputRef.current?.blur()
-        } else if (e.key === 'Escape') {
-          setEditing(false)
-          setText(fmt(value))
-          inputRef.current?.blur()
-        }
-      }}
-      onBlur={() => editing && commitTyped()}
-      className={`h-6 w-[68px] rounded-[4px] bg-bg-input px-2 text-right text-[12px] tabular-nums text-text-primary transition-colors duration-[120ms] hover:bg-bg-elevated ${
-        editing ? 'cursor-text' : 'cursor-ew-resize'
-      }`}
-    />
+    <div className="relative w-[68px]">
+      <input
+        ref={inputRef}
+        type="text"
+        inputMode="decimal"
+        data-testid={testId}
+        aria-label={ariaLabel}
+        value={text}
+        readOnly={!editing}
+        onChange={(e) => setText(e.target.value)}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+        onDoubleClick={enterEdit}
+        onFocus={enterEdit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            commitTyped()
+            inputRef.current?.blur()
+          } else if (e.key === 'Escape') {
+            setEditing(false)
+            setText(fmt(value))
+            inputRef.current?.blur()
+          }
+        }}
+        onBlur={() => editing && commitTyped()}
+        className={`h-6 w-full rounded-[4px] bg-bg-input px-2 text-right text-[12px] tabular-nums text-text-primary transition-colors duration-[120ms] hover:bg-bg-elevated ${
+          editing ? 'cursor-text' : 'cursor-ew-resize'
+        }`}
+      />
+      {/* Slider fill — a bounded param now shows where it sits in its range. */}
+      {!editing && (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-x-1 bottom-[3px] h-[2px] overflow-hidden rounded-full bg-white/10"
+        >
+          <div className="h-full rounded-full bg-accent/60" style={{ width: `${frac * 100}%` }} />
+        </div>
+      )}
+    </div>
   )
 }
 

@@ -6,9 +6,10 @@
 // write style/text through a ref, so a playhead tick costs two DOM writes and
 // ZERO React renders anywhere.
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useCollab } from '../collab/collabControl'
-import { formatTimecode } from '../engine/timecode'
+import { formatTimecode, parseTimecode } from '../engine/timecode'
+import { activeSequence } from '../engine/types'
 import { useStore } from '../state/store'
 
 /** The timeline's red playhead line. Position = playheadS × pxPerS, imperative. */
@@ -76,12 +77,25 @@ export function RemotePlayheads({ pxPerS }: { pxPerS: number }) {
 }
 
 /** A live timecode span for the current playhead time. Text updates imperatively. */
-export function PlayheadTimecode({ fps, className, testId }: { fps: number; className?: string; testId?: string }) {
+export function PlayheadTimecode({
+  fps,
+  className,
+  testId,
+  editable,
+}: {
+  fps: number
+  className?: string
+  testId?: string
+  /** Double-click to type a timecode and jump the playhead there. */
+  editable?: boolean
+}) {
   const ref = useRef<HTMLSpanElement>(null)
   const fpsRef = useRef(fps)
   fpsRef.current = fps
+  const [editing, setEditing] = useState<string | null>(null)
 
   useEffect(() => {
+    if (editing !== null) return // frozen while typing
     let last = ''
     const write = (t: number): void => {
       const text = formatTimecode(t, fpsRef.current)
@@ -92,12 +106,50 @@ export function PlayheadTimecode({ fps, className, testId }: { fps: number; clas
     }
     write(useStore.getState().ui.playheadS)
     return useStore.subscribe((s) => s.ui.playheadS, write)
-  }, [])
+  }, [editing])
 
   // fps changed (sequence switch): rewrite with the new frame base.
   useEffect(() => {
-    if (ref.current) ref.current.textContent = formatTimecode(useStore.getState().ui.playheadS, fps)
-  }, [fps])
+    if (editing === null && ref.current)
+      ref.current.textContent = formatTimecode(useStore.getState().ui.playheadS, fps)
+  }, [fps, editing])
 
-  return <span ref={ref} data-testid={testId} className={className} />
+  if (editable && editing !== null) {
+    const commit = () => {
+      const t = parseTimecode(editing, fps)
+      if (t !== null) {
+        const seq = activeSequence(useStore.getState().project)
+        useStore.getState().setUI({ playheadS: Math.max(0, Math.min(t, seq.durationS)) })
+      }
+      setEditing(null)
+    }
+    return (
+      <input
+        autoFocus
+        data-testid={testId ? `${testId}-input` : undefined}
+        value={editing}
+        onChange={(e) => setEditing(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') commit()
+          else if (e.key === 'Escape') setEditing(null)
+        }}
+        className={`w-[86px] rounded-[3px] bg-bg-input px-1 tabular-nums text-text-primary outline-none ${className ?? ''}`}
+      />
+    )
+  }
+
+  return (
+    <span
+      ref={ref}
+      data-testid={testId}
+      title={editable ? 'Double-click to type a time' : undefined}
+      className={`${className ?? ''} ${editable ? 'cursor-text' : ''}`}
+      onDoubleClick={
+        editable
+          ? () => setEditing(formatTimecode(useStore.getState().ui.playheadS, fps))
+          : undefined
+      }
+    />
+  )
 }

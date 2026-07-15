@@ -249,7 +249,7 @@ export function Monitor() {
 
       <div className="relative flex h-11 shrink-0 items-center gap-2 border-t border-border bg-bg-panel px-3">
         <span data-testid="timecode" className="text-[12px] tabular-nums text-text-primary">
-          <PlayheadTimecode fps={seq.fps} />
+          <PlayheadTimecode fps={seq.fps} editable testId="monitor-timecode" />
           <span className="text-text-muted"> / {formatTimecode(seq.durationS, seq.fps)}</span>
         </span>
 
