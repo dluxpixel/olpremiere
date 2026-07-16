@@ -48,11 +48,13 @@ import {
   rateStretchGroup,
   rippleDeleteGroup,
   rippleTrimGroup,
+  rippleTrimTo,
   rollEditTo,
   slideClip,
   slipClip,
   snapTime,
   splitGroup,
+  trimClipTo,
   trimGroup,
 } from '../engine/timeline'
 import type { TransitionKind } from '../engine/render/types'
@@ -851,7 +853,8 @@ type Drag =
        */
       collapseCandidate: boolean
     }
-  | { kind: 'trim'; clipId: Id; edge: 'in' | 'out'; ripple: boolean }
+  /** `solo`: this half was singled out before the grab → trim it alone. */
+  | { kind: 'trim'; clipId: Id; edge: 'in' | 'out'; ripple: boolean; solo: boolean }
   /** Alt+edge-drag: retime the clip (speed changes, source in/out stay put). */
   | { kind: 'stretch'; clipId: Id; edge: 'in' | 'out' }
   | { kind: 'slip'; clipId: Id; startXPx: number }
@@ -884,6 +887,27 @@ export function Timeline({ height }: { height: number }) {
   const selection = useStore((s) => s.ui.selection)
   const setUI = useStore((s) => s.setUI)
   const show = useToasts((s) => s.show)
+
+  /**
+   * Had the user singled this clip out BEFORE grabbing its edge? Selecting ONE
+   * half of a linked A/V pair and trimming it means "trim just this clip", so
+   * shortening the audio no longer shortens the video. With nothing selected —
+   * or the whole pair selected — the edge still trims the pair together, which
+   * IS the point of the link. Must be read before the grab's own select().
+   */
+  const soloTrimIntent = (clipId: Id): boolean =>
+    selection.length > 0 &&
+    selection.includes(clipId) &&
+    !clipGroupIds(seq, clipId).every((g) => selection.includes(g))
+
+  /**
+   * Trimming never touches linkId, so a solo-trimmed pair stays linked and keeps
+   * moving together — only their lengths differ.
+   */
+  const trimFnFor = (solo: boolean, ripple: boolean) => {
+    if (solo) return ripple ? rippleTrimTo : trimClipTo
+    return ripple ? rippleTrimGroup : trimGroup
+  }
 
   const lanesRef = useRef<HTMLDivElement>(null)
   // Auto-follow suspension: manualScrollUntil holds a timestamp during which the
@@ -1472,6 +1496,11 @@ export function Timeline({ height }: { height: number }) {
     if (e.button !== 0 || tool !== 'select') return
     const track = seq.tracks.find((t) => t.clips.some((c) => c.id === clip.id))
     if (!track || track.locked) return
+    // Read the intent BEFORE the select below: grabbing the edge always selects
+    // the clip, so asking afterwards would say "solo" every time and quietly
+    // kill linked trimming. Having singled this half out ALREADY (clicked it,
+    // partner not selected) is what means "trim just this one".
+    const solo = soloTrimIntent(clip.id)
     setUI({ selection: [clip.id] })
     dragFinal.current = null
     // Edge modifiers: Ctrl = ripple trim, Alt = rate stretch, Ctrl+Alt = roll.
@@ -1495,7 +1524,13 @@ export function Timeline({ height }: { height: number }) {
     }
     // `!e.altKey` keeps the no-neighbour Ctrl+Alt fallthrough a PLAIN trim, as
     // documented above — Ctrl alone still means ripple.
-    beginDrag(e, { kind: 'trim', clipId: clip.id, edge, ripple: (e.ctrlKey || e.metaKey) && !e.altKey })
+    beginDrag(e, {
+      kind: 'trim',
+      clipId: clip.id,
+      edge,
+      ripple: (e.ctrlKey || e.metaKey) && !e.altKey,
+      solo,
+    })
   }
 
   const beginHand = (e: ReactPointerEvent) => {
@@ -1743,8 +1778,7 @@ export function Timeline({ height }: { height: number }) {
       const tRaw = quantizeToFrame(Math.max(0, x / pxPerS), seq.fps)
       const t = snapWithIndicator(tRaw, drag.clipId)
       dragFinal.current = { trackId: '', tS: t }
-      const trimFn = drag.ripple ? rippleTrimGroup : trimGroup
-      const next = trimFn(seq, assets, drag.clipId, drag.edge, t)
+      const next = trimFnFor(drag.solo, drag.ripple)(seq, assets, drag.clipId, drag.edge, t)
       setPreviewSeq(next)
       const trimmed = next.tracks.flatMap((tr) => tr.clips).find((c) => c.id === drag.clipId)
       const orig = seq.tracks.flatMap((tr) => tr.clips).find((c) => c.id === drag.clipId)
@@ -1793,9 +1827,8 @@ export function Timeline({ height }: { height: number }) {
       )
     } else if (drag.kind === 'trim' && dragFinal.current) {
       const { tS } = dragFinal.current
-      const trimFn = drag.ripple ? rippleTrimGroup : trimGroup
       updateActiveSequence(drag.ripple ? 'Ripple trim' : 'Trim clip', (sq) =>
-        trimFn(sq, assets, drag.clipId, drag.edge, tS),
+        trimFnFor(drag.solo, drag.ripple)(sq, assets, drag.clipId, drag.edge, tS),
       )
     } else if (drag.kind === 'stretch' && dragFinal.current) {
       const { tS } = dragFinal.current

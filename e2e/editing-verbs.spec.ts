@@ -179,3 +179,49 @@ test('C with the whole linked pair selected still cuts both', async ({ page }) =
   expect(after.filter((c) => c.trackKind === 'video')).toHaveLength(2)
   expect(after.filter((c) => c.trackKind === 'audio')).toHaveLength(2)
 })
+
+test('trimming a SELECTED audio clip leaves its linked video full length', async ({ page }) => {
+  await boot(page)
+  await page.getByTestId('asset-card').dblclick()
+  await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
+  const before = await clips(page)
+  const v0 = before.find((c) => c.trackKind === 'video')!
+  const a0 = before.find((c) => c.trackKind === 'audio')!
+
+  await select(page, a0.id) // the AUDIO half only
+  // Drag the audio clip's right edge left by 60px (~1s at the default zoom).
+  const audio = page.locator('[data-clip-kind="audio"]').first()
+  const box = (await audio.boundingBox())!
+  await page.mouse.move(box.x + box.width - 2, box.y + box.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(box.x + box.width - 62, box.y + box.height / 2, { steps: 8 })
+  await page.mouse.up()
+
+  const after = await clips(page)
+  const v1 = after.find((c) => c.id === v0.id)!
+  const a1 = after.find((c) => c.id === a0.id)!
+  expect(a1.outS).toBeLessThan(a0.outS) // audio got shorter
+  expect(v1.outS).toBe(v0.outS) // video untouched
+})
+
+test('trimming with nothing selected still trims the linked pair together', async ({ page }) => {
+  await boot(page)
+  await page.getByTestId('asset-card').dblclick()
+  await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
+  const before = await clips(page)
+  const v0 = before.find((c) => c.trackKind === 'video')!
+  const a0 = before.find((c) => c.trackKind === 'audio')!
+  await setUI(page, { selection: [] })
+
+  const audio = page.locator('[data-clip-kind="audio"]').first()
+  const box = (await audio.boundingBox())!
+  await page.mouse.move(box.x + box.width - 2, box.y + box.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(box.x + box.width - 62, box.y + box.height / 2, { steps: 8 })
+  await page.mouse.up()
+
+  const after = await clips(page)
+  // The link still means "these stay in sync" when you haven't singled one out.
+  expect(after.find((c) => c.id === a0.id)!.outS).toBeLessThan(a0.outS)
+  expect(after.find((c) => c.id === v0.id)!.outS).toBeLessThan(v0.outS)
+})
