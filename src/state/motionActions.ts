@@ -38,8 +38,8 @@ const mapOne = (label: string, clipId: string, fn: (clip: Clip, seq: Sequence) =
     ),
   }))
 
-/** The workhorse zoom, at the playhead on this clip. */
-export function punchInAtPlayhead(clipId: string): void {
+/** The workhorse zoom, at the playhead on this clip. Depth = the chosen punch depth. */
+export function punchInAtPlayhead(clipId: string, targetScale?: number): void {
   const g = guarded(clipId)
   if (!g) return
   const atS = useStore.getState().ui.playheadS
@@ -47,7 +47,8 @@ export function punchInAtPlayhead(clipId: string): void {
     useToasts.getState().show('Put the playhead inside the clip first', 'danger')
     return
   }
-  mapOne('Punch in', clipId, (c, sq) => punchInClip(c, sq.fps, { atS }))
+  const depth = targetScale ?? useStore.getState().ui.punchDepth
+  mapOne('Punch in', clipId, (c, sq) => punchInClip(c, sq.fps, { atS, targetScale: depth }))
 }
 
 /** Punch in toward a point (monitor right-click: the zoom centers on it). */
@@ -55,8 +56,9 @@ export function punchInAtPoint(clipId: string, focal: { x: number; y: number }):
   const g = guarded(clipId)
   if (!g) return
   const atS = useStore.getState().ui.playheadS
+  const depth = useStore.getState().ui.punchDepth
   mapOne('Punch in', clipId, (c, sq) =>
-    punchInClip(c, sq.fps, { atS, focal, seqWidth: sq.width, seqHeight: sq.height }),
+    punchInClip(c, sq.fps, { atS, targetScale: depth, focal, seqWidth: sq.width, seqHeight: sq.height }),
   )
 }
 

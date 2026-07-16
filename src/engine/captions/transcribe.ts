@@ -86,34 +86,74 @@ export interface TranscribeRun {
   cancel: () => void
 }
 
-/** Run Whisper on 16kHz mono PCM in a dedicated worker. */
+// One long-lived worker for the whole session: the heavy Whisper model loads
+// ONCE and stays resident, so a second/third caption run reuses it with no
+// re-download and no "Downloading Whisper" banner. Only cancel/crash tears it
+// down (the next run lazily rebuilds it).
+let sharedWorker: Worker | null = null
+function getWorker(): Worker {
+  if (!sharedWorker) {
+    sharedWorker = new Worker(new URL('./transcribeWorker.ts', import.meta.url), { type: 'module' })
+  }
+  return sharedWorker
+}
+function killWorker(): void {
+  if (sharedWorker) {
+    sharedWorker.terminate()
+    sharedWorker = null
+  }
+}
+
+// The shared worker has no per-request id and routes each message to whoever is
+// listening, so exactly ONE run may be in flight at a time. The UI already
+// guards this, but this module-level lock makes transcribePcm safe on its own
+// (and future-proofs a "caption every clip" batch feature).
+let busy = false
+
+/** Run Whisper on 16kHz mono PCM in the shared, kept-alive worker. */
 export function transcribePcm(
   pcm: Float32Array,
   onProgress: (p: TranscribeProgress) => void,
 ): TranscribeRun {
-  const worker = new Worker(new URL('./transcribeWorker.ts', import.meta.url), { type: 'module' })
+  if (busy) {
+    return {
+      promise: Promise.reject(new Error('A transcription is already running')),
+      cancel: () => {},
+    }
+  }
+  busy = true
+  const worker = getWorker()
   let settled = false
   let reject!: (reason: unknown) => void
   const promise = new Promise<AsrChunk[]>((res, rej) => {
     reject = rej
-    worker.onmessage = (e: MessageEvent<TranscribeResponse>) => {
+    const cleanup = (): void => {
+      busy = false
+      worker.removeEventListener('message', onMessage as EventListener)
+      worker.removeEventListener('error', onError as EventListener)
+    }
+    const onMessage = (e: MessageEvent<TranscribeResponse>): void => {
       const msg = e.data
       if (msg.type === 'progress') onProgress({ phase: msg.phase, pct: msg.pct })
       else if (msg.type === 'done') {
         settled = true
-        worker.terminate()
+        cleanup() // keep the worker ALIVE — model stays loaded for next time
         res(msg.chunks)
       } else {
         settled = true
-        worker.terminate()
+        cleanup()
+        killWorker() // a hard error may have corrupted the pipeline — rebuild next run
         rej(new Error(msg.message))
       }
     }
-    worker.onerror = (e) => {
+    const onError = (e: ErrorEvent): void => {
       settled = true
-      worker.terminate()
+      cleanup()
+      killWorker()
       rej(new Error(e.message || 'transcription worker crashed'))
     }
+    worker.addEventListener('message', onMessage as EventListener)
+    worker.addEventListener('error', onError as EventListener)
   })
   // Transferring the PCM avoids copying up to minutes of audio.
   worker.postMessage({ pcm }, [pcm.buffer])
@@ -122,7 +162,8 @@ export function transcribePcm(
     cancel: () => {
       if (settled) return
       settled = true
-      worker.terminate()
+      busy = false
+      killWorker() // terminate mid-inference (can't interrupt otherwise)
       reject({ cancelled: true })
     },
   }

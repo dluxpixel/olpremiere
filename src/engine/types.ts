@@ -285,6 +285,12 @@ export interface TitleDef {
   vAlign: 'top' | 'middle' | 'bottom'
   bold: boolean
   italic: boolean
+  /**
+   * Force letter case at render time (non-destructive — the typed text is kept).
+   * Whisper captions come in ALL-CAPS, so 'lower' fixes a whole batch in one
+   * click. Undefined = show the text exactly as typed.
+   */
+  textCase?: 'upper' | 'lower'
   /** Line-height multiplier. */
   lineHeight: number
   /** Position offset from the aligned anchor, in sequence px. */

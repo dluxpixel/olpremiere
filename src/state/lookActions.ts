@@ -63,21 +63,33 @@ async function ensureLookPreset(): Promise<void> {
 
 /** Just the grade on one clip (no 9:16, no text defaults); banks the preset. */
 export function applyPunchyGrade(clipId: string): void {
+  applyPunchyGradeToClips([clipId])
+}
+
+/**
+ * The punch grade on every selected clip in ONE undo step (the multi-select
+ * "Punch grade" button). Title clips and already-graded clips are skipped, so a
+ * second click never stacks the grade twice. Banks the reusable preset.
+ */
+export function applyPunchyGradeToClips(ids: Iterable<string>): void {
+  const idSet = new Set(ids)
+  if (idSet.size === 0) return
   useStore.getState().dispatch('Punchy grade', (p) => {
     const seq = p.sequences[p.activeSequenceId]
+    let changed = false
     const tracks = seq.tracks.map((t) =>
-      t.locked || !t.clips.some((c) => c.id === clipId)
+      t.locked || !t.clips.some((c) => idSet.has(c.id))
         ? t
         : {
             ...t,
-            clips: t.clips.map((c) =>
-              c.id !== clipId || hasJettismGrade(c)
-                ? c
-                : { ...c, effects: [...c.effects, ...jettismGradeEffects()] },
-            ),
+            clips: t.clips.map((c) => {
+              if (!idSet.has(c.id) || c.title || hasJettismGrade(c)) return c
+              changed = true
+              return { ...c, effects: [...c.effects, ...jettismGradeEffects()] }
+            }),
           },
     )
-    return { ...p, sequences: { ...p.sequences, [seq.id]: { ...seq, tracks } } }
+    return changed ? { ...p, sequences: { ...p.sequences, [seq.id]: { ...seq, tracks } } } : p
   })
   void ensureLookPreset()
 }

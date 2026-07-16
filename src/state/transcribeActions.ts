@@ -12,6 +12,7 @@ import {
 import { activeSequence } from '../engine/types'
 import { addCaptionsFromWords } from './captionActions'
 import { useStore } from './store'
+import type { TextStylePreset } from './textPresets'
 import { useToasts } from './toasts'
 
 export type TranscribeStatus = 'idle' | 'reading' | 'model' | 'listening'
@@ -32,7 +33,7 @@ export const useTranscribe = create<TranscribeState>(() => ({
 const reset = (): void => useTranscribe.setState({ status: 'idle', pct: null, cancel: null })
 
 /** Transcribe the audio clip locally and lay its words down as captions. */
-export async function autoCaptionFromClip(clipId: string): Promise<void> {
+export async function autoCaptionFromClip(clipId: string, preset?: TextStylePreset): Promise<void> {
   const toasts = useToasts.getState()
   if (useTranscribe.getState().status !== 'idle') {
     toasts.show('A transcription is already running', 'danger')
@@ -59,7 +60,7 @@ export async function autoCaptionFromClip(clipId: string): Promise<void> {
     if (words.length === 0) {
       toasts.show('No speech found in the clip', 'danger')
     } else {
-      addCaptionsFromWords(words, { label: 'Auto-caption from voiceover' })
+      addCaptionsFromWords(words, { label: 'Auto-caption from voiceover', preset })
     }
   } catch (err) {
     if (!(typeof err === 'object' && err !== null && 'cancelled' in err)) {

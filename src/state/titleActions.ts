@@ -68,3 +68,26 @@ export function updateTitle(clipId: string, patch: Partial<TitleDef>): void {
     ),
   }))
 }
+
+/**
+ * Patch the SAME field(s) on every selected title clip in ONE undo step —
+ * bold/italic, family, size, colour across a whole multi-selection. Non-title
+ * clips and locked tracks are skipped; nothing changing records no undo step.
+ */
+export function updateTitles(ids: Iterable<string>, patch: Partial<TitleDef>): void {
+  const idSet = new Set(ids)
+  if (idSet.size === 0) return
+  updateActiveSequence('Edit titles', (seq) => {
+    let changed = false
+    const tracks = seq.tracks.map((t) => {
+      if (t.locked || !t.clips.some((c) => idSet.has(c.id) && c.title)) return t
+      const clips = t.clips.map((c) => {
+        if (!idSet.has(c.id) || !c.title) return c
+        changed = true
+        return { ...c, title: { ...c.title, ...patch } }
+      })
+      return changed ? { ...t, clips } : t
+    })
+    return changed ? { ...seq, tracks } : seq
+  })
+}

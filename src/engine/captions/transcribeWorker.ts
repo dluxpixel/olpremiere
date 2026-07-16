@@ -31,15 +31,29 @@ self.onmessage = (e: MessageEvent<TranscribeRequest>) => {
   void run(e.data.pcm)
 }
 
-async function run(pcm: Float32Array): Promise<void> {
-  try {
-    const { pipeline } = await import('@huggingface/transformers')
+type Asr = (
+  audio: Float32Array,
+  opts: Record<string, unknown>,
+) => Promise<{ chunks?: { text: string; timestamp: [number, number | null] }[] }>
 
-    // Surface model-download progress; the largest file dominates, so tracking
-    // the biggest total seen reads honestly without summing every sidecar.
+// The loaded pipeline is cached in module scope and this worker is kept ALIVE
+// across transcriptions (see transcribe.ts), so the model loads exactly ONCE
+// per session — no "Downloading Whisper" every time. The Hugging Face files
+// themselves live in the browser Cache Storage, so it also survives reloads.
+let asrCache: Asr | null = null
+let loadingAsr: Promise<Asr> | null = null
+
+async function getAsr(): Promise<Asr> {
+  if (asrCache) return asrCache
+  if (loadingAsr) return loadingAsr
+  loadingAsr = (async () => {
+    const { pipeline, env } = await import('@huggingface/transformers')
+    // Persist model files in the browser Cache Storage across sessions.
+    ;(env as { useBrowserCache?: boolean; allowLocalModels?: boolean }).useBrowserCache = true
+    ;(env as { useBrowserCache?: boolean; allowLocalModels?: boolean }).allowLocalModels = false
+
     let biggestTotal = 0
     const progress_callback = (p: { status?: string; progress?: number; total?: number; file?: string }) => {
-      // One line per model file — invaluable when diagnosing download issues.
       if (p.status === 'initiate' && p.file) console.log('OL Studio transcribe: fetching', p.file)
       if (p.status === 'progress' && typeof p.progress === 'number') {
         if ((p.total ?? 0) >= biggestTotal) {
@@ -48,38 +62,46 @@ async function run(pcm: Float32Array): Promise<void> {
         }
       }
     }
-
-    type Asr = (
-      audio: Float32Array,
-      opts: Record<string, unknown>,
-    ) => Promise<{ chunks?: { text: string; timestamp: [number, number | null] }[] }>
     const makeAsr = async (device: 'webgpu' | 'wasm'): Promise<Asr> =>
       (await pipeline('automatic-speech-recognition', MODEL, {
         device,
-        // The int8 ("q8"/quantized) decoder export trips onnxruntime's
-        // MatMulNBits weight-transpose pass (its tied-embedding QDQ pattern
-        // has no group scales), so session creation fails. The q4 decoder is
-        // BUILT for MatMulNBits — scales present — and loads cleanly.
+        // The int8 ("q8") decoder trips onnxruntime's MatMulNBits pass; the q4
+        // decoder is built for it and loads cleanly.
         ...(device === 'wasm' ? { dtype: { encoder_model: 'q8', decoder_model_merged: 'q4' } } : {}),
         progress_callback,
       })) as unknown as Asr
 
-    // Probe the adapter up front: pipeline() resolves lazily, so a missing GPU
-    // only explodes at first INFERENCE — too late for a pipeline-level catch.
     const gpu = (navigator as { gpu?: { requestAdapter(): Promise<unknown> } }).gpu
     const hasWebgpu = !!gpu && !!(await gpu.requestAdapter().catch(() => null))
+    asrCache = await makeAsr(hasWebgpu ? 'webgpu' : 'wasm')
+    return asrCache
+  })()
+  try {
+    return await loadingAsr
+  } finally {
+    loadingAsr = null
+  }
+}
 
-    const OPTS = { return_timestamps: 'word', chunk_length_s: 30, stride_length_s: 5 }
-    let asr = await makeAsr(hasWebgpu ? 'webgpu' : 'wasm')
+const OPTS = { return_timestamps: 'word', chunk_length_s: 30, stride_length_s: 5 }
+
+async function run(pcm: Float32Array): Promise<void> {
+  try {
+    const asr = await getAsr()
     post({ type: 'progress', phase: 'listening', pct: null })
     let out: { chunks?: { text: string; timestamp: [number, number | null] }[] }
     try {
       out = await asr(pcm, OPTS)
     } catch (err) {
-      // A GPU that probed fine can still fail shader compile — retry on WASM.
-      if (!hasWebgpu) throw err
-      asr = await makeAsr('wasm')
-      out = await asr(pcm, OPTS)
+      // A GPU pipeline can still fail shader compile at inference — fall back to
+      // a WASM pipeline once and cache THAT for subsequent runs.
+      const { pipeline } = await import('@huggingface/transformers')
+      asrCache = (await pipeline('automatic-speech-recognition', MODEL, {
+        device: 'wasm',
+        dtype: { encoder_model: 'q8', decoder_model_merged: 'q4' },
+      })) as unknown as Asr
+      out = await asrCache(pcm, OPTS)
+      void err
     }
     post({ type: 'done', chunks: out.chunks ?? [] })
   } catch (err) {

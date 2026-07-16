@@ -1,7 +1,7 @@
 import { Bookmark, Captions, Film, FolderOpen, Image as ImageIcon, Music, Plus, Sparkles, Type, Upload, Volume2, Wand2, Zap } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { EFFECTS } from '../engine/effects/registry'
-import { TRANSITION_KINDS, type TransitionKind } from '../engine/render/types'
+import { TRANSITION_KINDS, TRANSITION_LABELS } from '../engine/render/types'
 import { SFX_LIBRARY, type SfxDef } from '../engine/sfx/sfx'
 import { formatTimecode } from '../engine/timecode'
 import { activeSequence, type MediaAsset } from '../engine/types'
@@ -226,7 +226,9 @@ function MediaTab() {
   const fps = useStore((s) => activeSequence(s.project).fps)
   const fileInput = useRef<HTMLInputElement>(null)
   const [captionsOpen, setCaptionsOpen] = useState(false)
-  const list = Object.values(assets)
+  // Newest import first, so the file you just added is at the top (matches the
+  // Library and every other panel) instead of buried at the bottom of the grid.
+  const list = Object.values(assets).reverse()
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex items-center gap-2 px-2 py-2">
@@ -326,15 +328,6 @@ function BrowserItem({
   )
 }
 
-const TRANSITION_LABELS: Record<TransitionKind, string> = {
-  crossDissolve: 'Cross Dissolve',
-  dipToBlack: 'Dip to Black',
-  dipToWhite: 'Dip to White',
-  wipeLeft: 'Wipe Left',
-  wipeRight: 'Wipe Right',
-  slideLeft: 'Slide Left',
-  slideRight: 'Slide Right',
-}
 
 function EffectsTab() {
   const [query, setQuery] = useState('')
@@ -359,6 +352,7 @@ function EffectsTab() {
       <div className="px-2 py-2">
         <input
           type="search"
+          autoFocus
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search effects"

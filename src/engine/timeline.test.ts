@@ -9,7 +9,10 @@ import {
   clipDurationS,
   clipEndS,
   clipGroupIds,
+  closeAllGaps,
+  closeGapBefore,
   collectSnapPoints,
+  gapBefore,
   deleteClip,
   deleteGroup,
   duplicateClips,
@@ -1816,5 +1819,55 @@ describe('addTrack', () => {
   it('names from the highest existing number, not the count', () => {
     const seq = makeSeq([makeTrack({ kind: 'audio', name: 'A5' })])
     expect(addTrack(seq, 'audio').tracks.at(-1)!.name).toBe('A6')
+  })
+})
+
+describe('close gap', () => {
+  const A = () => makeClip({ id: 'A', startS: 0, inS: 0, outS: 2 }) // ends 2
+  const B = () => makeClip({ id: 'B', startS: 5, inS: 0, outS: 2 }) // gap 3 before it, ends 7
+  const C = () => makeClip({ id: 'C', startS: 10, inS: 0, outS: 2 }) // gap 3 before it
+
+  it('gapBefore measures the empty space before a clip', () => {
+    const seq = makeSeq([makeTrack({ clips: [A(), B(), C()] })])
+    expect(gapBefore(seq, 'B')).toBeCloseTo(3, 6)
+    expect(gapBefore(seq, 'A')).toBe(0) // first clip, starts at 0
+  })
+
+  it('closeGapBefore slides the clip + everything after it left to butt the previous', () => {
+    const seq = makeSeq([makeTrack({ clips: [A(), B(), C()] })])
+    const r = closeGapBefore(seq, 'B')
+    const clips = r.tracks[0].clips
+    expect(clips.find((c) => c.id === 'B')!.startS).toBeCloseTo(2, 6)
+    expect(clips.find((c) => c.id === 'C')!.startS).toBeCloseTo(7, 6) // rippled by the same 3
+    expect(clips.find((c) => c.id === 'A')!.startS).toBe(0) // before it, untouched
+  })
+
+  it('closeGapBefore is a no-op when there is no gap', () => {
+    const seq = makeSeq([makeTrack({ clips: [A(), makeClip({ id: 'B', startS: 2, inS: 0, outS: 2 })] })])
+    expect(closeGapBefore(seq, 'B')).toBe(seq)
+  })
+
+  it('closeAllGaps butts every clip together, keeping the first in place', () => {
+    const seq = makeSeq([makeTrack({ clips: [A(), B(), C()] })])
+    const r = closeAllGaps(seq, seq.tracks[0].id)
+    const starts = r.tracks[0].clips.sort((a, b) => a.startS - b.startS).map((c) => c.startS)
+    expect(starts).toEqual([0, 2, 4])
+  })
+})
+
+describe('close gap — link-group aware', () => {
+  it('closeGapBefore moves a video clip AND its linked audio partner together', () => {
+    const v0 = makeClip({ id: 'V0', startS: 0, inS: 0, outS: 2 }) // ends 2
+    const v1 = makeClip({ id: 'V1', startS: 5, inS: 0, outS: 2, linkId: 'lg' }) // gap 3
+    const a1 = makeClip({ id: 'A1', startS: 5, inS: 0, outS: 2, linkId: 'lg' }) // linked partner
+    const seq = makeSeq([
+      makeTrack({ kind: 'video', name: 'V1', clips: [v0, v1] }),
+      makeTrack({ kind: 'audio', name: 'A1', clips: [a1] }),
+    ])
+    const r = closeGapBefore(seq, 'V1')
+    const vid = r.tracks[0].clips.find((c) => c.id === 'V1')!
+    const aud = r.tracks[1].clips.find((c) => c.id === 'A1')!
+    expect(vid.startS).toBeCloseTo(2, 6)
+    expect(aud.startS).toBeCloseTo(2, 6) // partner moved the same 3s — no A/V drift
   })
 })

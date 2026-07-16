@@ -20,18 +20,21 @@ import {
 import { useEffect, useRef, useState } from 'react'
 import { channelKeyframes, isChannelAnimated, resolveChannel } from '../engine/effects/channels'
 import { isParamAnimated, paramKeyframes, resolveParam } from '../engine/effects/ops'
-import { getEffect, paramSens, type EffectParamDef } from '../engine/effects/registry'
+import { EFFECTS, getEffect, paramSens, type EffectParamDef } from '../engine/effects/registry'
 import { clipEndS } from '../engine/timeline'
-import { TRANSITION_KINDS, type TransitionKind } from '../engine/render/types'
-import { type AnimChannel, type Clip, type EffectInstance } from '../engine/types'
+import { TRANSITION_KINDS, TRANSITION_LABELS, type TransitionKind } from '../engine/render/types'
+import { ANIM_CHANNELS, type AnimChannel, type Clip, type EffectInstance } from '../engine/types'
 import {
   addEffectKeyframeAtPlayhead,
   addKeyframeAtPlayhead,
+  applyEffect,
   deleteEffect,
   moveEffectInStack,
   removeClipTransition,
   removeEffectKeyframeAtPlayhead,
   removeKeyframeAtPlayhead,
+  resetChannel,
+  resetChannels,
   resetEffectParams,
   setChannel,
   setClipTransition,
@@ -44,6 +47,7 @@ import { saveSelectionAsPreset } from '../state/library'
 import { useStore } from '../state/store'
 import { IconButton } from '../ui/Button'
 import { KeyframeLane } from './KeyframeLane'
+import { PunchControl } from './PunchControl'
 
 // Per-channel range/step + drag sensitivity. sens = value units per pixel of
 // horizontal drag (independent of step, which only governs typed rounding).
@@ -159,7 +163,9 @@ export function ScrubField({
     const dx = e.clientX - d.startX
     if (Math.abs(dx) > 2) d.moved = true
     if (!d.moved) return
-    const raw = d.startVal + dx * spec.sens
+    // Shift = fine scrub (⅕ sensitivity) for landing precise values, like Premiere/AE.
+    const sens = e.shiftKey ? spec.sens * 0.2 : spec.sens
+    const raw = d.startVal + dx * sens
     const next = clamp(roundStep(raw, spec.step), spec.min, spec.max)
     setText(fmt(next))
   }
@@ -219,6 +225,15 @@ export function ScrubField({
             setEditing(false)
             setText(fmt(value))
             inputRef.current?.blur()
+          } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+            // Arrow = nudge by one step (×10 with Shift), like every pro NLE field.
+            e.preventDefault()
+            const base = Number(text)
+            const from = Number.isFinite(base) ? base : value
+            const dir = e.key === 'ArrowUp' ? 1 : -1
+            const next = clamp(roundStep(from + dir * spec.step * (e.shiftKey ? 10 : 1), spec.step), spec.min, spec.max)
+            setText(fmt(next))
+            if (Math.abs(next - value) > 1e-9) onCommit(next)
           }
         }}
         onBlur={() => editing && commitTyped()}
@@ -278,7 +293,11 @@ function ChannelRow({
         <Clock size={13} strokeWidth={1.75} aria-hidden />
       </IconButton>
 
-      <span className="flex-1 truncate text-[11px] uppercase tracking-[0.04em] text-text-muted">
+      <span
+        className="flex-1 cursor-default truncate text-[11px] uppercase tracking-[0.04em] text-text-muted"
+        title={`${LABELS[channel]} — double-click to reset`}
+        onDoubleClick={() => resetChannel(clip.id, channel)}
+      >
         {LABELS[channel]}
       </span>
 
@@ -332,9 +351,21 @@ function Section({ title, channels, clip, playheadS }: {
 }) {
   return (
     <section className="flex flex-col gap-2">
-      <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">
-        {title}
-      </h3>
+      <div className="flex items-center">
+        <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">
+          {title}
+        </h3>
+        <span className="ml-auto">
+          <IconButton
+            label={`Reset ${title}`}
+            size="compact"
+            data-testid={`reset-section-${title.toLowerCase()}`}
+            onClick={() => resetChannels(clip.id, channels)}
+          >
+            <RotateCcw size={12} strokeWidth={1.75} aria-hidden />
+          </IconButton>
+        </span>
+      </div>
       <div className="flex flex-col gap-1.5">
         {channels.map((ch) => (
           <ChannelRow key={ch} clip={clip} channel={ch} playheadS={playheadS} />
@@ -512,10 +543,27 @@ function EffectStack({ clip, playheadS }: { clip: Clip; playheadS: number }) {
 
   return (
     <section className="flex flex-col gap-2" data-testid="effect-stack">
-      <div className="flex items-center">
+      <div className="flex items-center gap-1.5">
         <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">Effects</h3>
-        {clip.effects.length > 0 && (
-          <span className="ml-auto">
+        <span className="ml-auto flex items-center gap-1">
+          {/* Add an effect without leaving for the Effects tab. */}
+          <select
+            aria-label="Add effect"
+            data-testid="inspector-add-effect"
+            value=""
+            onChange={(e) => {
+              if (e.target.value) applyEffect(clip.id, e.target.value)
+            }}
+            className="h-6 cursor-default rounded-[4px] bg-bg-input px-1.5 text-[11px] text-text-secondary"
+          >
+            <option value="">+ Add effect…</option>
+            {EFFECTS.map((ef) => (
+              <option key={ef.type} value={ef.type}>
+                {ef.label}
+              </option>
+            ))}
+          </select>
+          {clip.effects.length > 0 && (
             <IconButton
               label="Save effects as preset"
               size="compact"
@@ -524,8 +572,8 @@ function EffectStack({ clip, playheadS }: { clip: Clip; playheadS: number }) {
             >
               <Bookmark size={13} strokeWidth={1.75} aria-hidden />
             </IconButton>
-          </span>
-        )}
+          )}
+        </span>
       </div>
       {clip.effects.length === 0 ? (
         <div
@@ -582,25 +630,21 @@ function TransitionRow({
         <option value={NONE}>None</option>
         {TRANSITION_KINDS.map((k) => (
           <option key={k} value={k}>
-            {k}
+            {TRANSITION_LABELS[k]}
           </option>
         ))}
       </select>
-      <input
-        type="number"
-        aria-label={`${edge === 'in' ? 'In' : 'Out'} transition duration (seconds)`}
-        title="Duration (s)"
-        min={0.1}
-        max={10}
-        step={0.1}
-        value={durationS}
-        disabled={kind === NONE}
-        onChange={(e) => {
-          const d = Number(e.target.value)
-          if (Number.isFinite(d) && d > 0) setClipTransition(clip.id, edge, kind as TransitionKind, d)
-        }}
-        className="h-6 w-14 rounded-[4px] bg-bg-input px-1.5 text-right text-[11px] tabular-nums text-text-primary disabled:opacity-40"
-      />
+      {kind === NONE ? (
+        <span className="w-[68px] shrink-0 text-right text-[11px] text-text-muted">—</span>
+      ) : (
+        <ScrubField
+          value={durationS}
+          spec={{ min: 0.1, max: 10, step: 0.1, sens: 0.03 }}
+          testId={`${testId}-duration`}
+          ariaLabel={`${edge === 'in' ? 'In' : 'Out'} transition duration (seconds)`}
+          onCommit={(d) => setClipTransition(clip.id, edge, kind as TransitionKind, d)}
+        />
+      )}
     </div>
   )
 }
@@ -608,13 +652,29 @@ function TransitionRow({
 export function EffectControls({
   clip,
   playheadS,
+  fps,
 }: {
   clip: Clip
   fps?: number
   playheadS: number
 }) {
+  // "Put the keyframe completely up": the Zoom/Punch control + (when animated)
+  // the Keyframes editor lead the panel instead of hiding at the very bottom.
+  const hasAnimation = ANIM_CHANNELS.some((ch) => isChannelAnimated(clip, ch))
   return (
     <div className="flex flex-col gap-5">
+      <PunchControl clipId={clip.id} />
+      {hasAnimation && (
+        <>
+          <section className="flex flex-col gap-2" data-testid="keyframes-section">
+            <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">
+              Keyframes
+            </h3>
+            <KeyframeLane clip={clip} playheadS={playheadS} width={240} fps={fps} />
+          </section>
+          <div className="h-px bg-border" />
+        </>
+      )}
       <Section
         title="Transform"
         channels={['posX', 'posY', 'scale', 'rotation', 'anchorX', 'anchorY']}
@@ -637,14 +697,6 @@ export function EffectControls({
           <TransitionRow clip={clip} edge="in" testId="transition-in" />
           <TransitionRow clip={clip} edge="out" testId="transition-out" />
         </div>
-      </section>
-
-      <div className="h-px bg-border" />
-      <section className="flex flex-col gap-2">
-        <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">
-          Keyframes
-        </h3>
-        <KeyframeLane clip={clip} playheadS={playheadS} width={240} />
       </section>
     </div>
   )

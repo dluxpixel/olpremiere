@@ -5,6 +5,7 @@
 // clearing removes them.
 
 import { applyAppearanceToClip, isEmptyAppearance } from '../engine/anim/appearance'
+import { clipDurationS } from '../engine/timeline'
 import { activeSequence, type AppearanceSpec, type Clip } from '../engine/types'
 import { db } from './persistence'
 import { updateActiveSequence, useStore } from './store'
@@ -38,6 +39,66 @@ export function setClipAppearance(clipId: string, patch: Partial<AppearanceSpec>
   const spec: AppearanceSpec = { ...clip.appearance, ...patch }
   const label = 'in' in patch ? 'Set entrance' : 'out' in patch ? 'Set exit' : 'Set appearance'
   mapClip(clipId, label, (c) => applyAppearanceToClip(c, spec, seq.width, seq.height))
+}
+
+/**
+ * Merge an appearance patch into EVERY clip in `ids` and recompile, in ONE undo
+ * step. Merging (not replacing) means changing the speed keeps the entrance, and
+ * vice-versa. This is what makes the right-click animation menu apply to the
+ * whole selection.
+ */
+export function setClipsAppearance(ids: Iterable<string>, patch: Partial<AppearanceSpec>): void {
+  const idSet = new Set(ids)
+  if (idSet.size === 0) return
+  const label = 'in' in patch ? 'Set entrance' : 'out' in patch ? 'Set exit' : 'Set animation'
+  updateActiveSequence(label, (seq) => {
+    let changed = false
+    const tracks = seq.tracks.map((t) => {
+      if (t.locked || !t.clips.some((c) => idSet.has(c.id))) return t
+      const clips = t.clips.map((c) => {
+        if (!idSet.has(c.id)) return c
+        // Never touch a clip with no animation unless we're ADDING an entrance/exit
+        // — applyAppearanceToClip clears the shared transform/opacity channels, so a
+        // Speed/None/Clear op would silently wipe a clip's own manual keyframes.
+        if (!c.appearance && !patch.in && !patch.out) return c
+        changed = true
+        return applyAppearanceToClip(c, { ...c.appearance, ...patch }, seq.width, seq.height)
+      })
+      return { ...t, clips }
+    })
+    return changed ? { ...seq, tracks } : seq
+  })
+}
+
+/** Auto window: shorter clips get a shorter animation. Clamped so it always reads. */
+export const autoAppearanceDur = (clipDurS: number): number =>
+  Math.max(0.08, Math.min(0.6, clipDurS * 0.4))
+
+/**
+ * Set the animation SPEED (window length) on every clip. `'auto'` sizes each
+ * clip's window to ITS OWN duration — long words animate slower, short words
+ * snappier — which is what David asked for.
+ */
+export function setClipsAppearanceDur(ids: Iterable<string>, durS: number | 'auto'): void {
+  const idSet = new Set(ids)
+  if (idSet.size === 0) return
+  updateActiveSequence('Animation speed', (seq) => {
+    let changed = false
+    const tracks = seq.tracks.map((t) => {
+      if (t.locked || !t.clips.some((c) => idSet.has(c.id))) return t
+      const clips = t.clips.map((c) => {
+        if (!idSet.has(c.id)) return c
+        // Speed only means something for a clip that HAS an entrance/exit; applying
+        // it to an un-animated clip would wipe its manual keyframes for nothing.
+        if (!c.appearance) return c
+        changed = true
+        const d = durS === 'auto' ? autoAppearanceDur(clipDurationS(c)) : durS
+        return applyAppearanceToClip(c, { ...c.appearance, durS: d }, seq.width, seq.height)
+      })
+      return { ...t, clips }
+    })
+    return changed ? { ...seq, tracks } : seq
+  })
 }
 
 /** Remove a clip's appearance animation entirely. */

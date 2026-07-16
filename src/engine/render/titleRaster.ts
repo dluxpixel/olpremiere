@@ -97,8 +97,15 @@ const CACHE_LIMIT = 32
 // Insertion-ordered LRU-ish list; oldest at index 0, evicted first.
 const cache: CacheEntry[] = []
 
+// Per-frame fast path: the SAME TitleDef object is drawn every frame during
+// playback (the def lives on the clip, unchanged until an edit makes a new one).
+// Keying a WeakMap by that object identity skips the JSON.stringify + linear scan
+// of the string cache on every hit. An edit → new def object → miss → re-raster.
+let identityCache = new WeakMap<TitleDef, { w: number; h: number; canvas: OffscreenCanvas }>()
+
 export function clearTitleCache(): void {
   cache.length = 0
+  identityCache = new WeakMap()
 }
 
 function cacheKey(def: TitleDef, width: number, height: number): string {
@@ -118,11 +125,14 @@ function fontString(def: TitleDef): string {
  * instance, so preview and export rasterize identically. Never throws.
  */
 export function rasterizeTitle(def: TitleDef, width: number, height: number): OffscreenCanvas {
+  const fast = identityCache.get(def)
+  if (fast && fast.w === width && fast.h === height) return fast.canvas
   const key = cacheKey(def, width, height)
   const hitIdx = cache.findIndex((e) => e.key === key)
   if (hitIdx !== -1) {
     const [hit] = cache.splice(hitIdx, 1)
     cache.push(hit) // touch → most-recently-used
+    identityCache.set(def, { w: width, h: height, canvas: hit.canvas })
     return hit.canvas
   }
 
@@ -138,8 +148,11 @@ export function rasterizeTitle(def: TitleDef, width: number, height: number): Of
   ctx.textAlign = def.align
   ctx.textBaseline = 'alphabetic'
 
-  const lines = fontSizeOk ? wrapLines(ctx, def.text, maxWidth) : ['']
-  const hasText = fontSizeOk && def.text !== '' && lines.some((l) => l !== '')
+  // Non-destructive case: the typed text stays put; only the drawn glyphs change.
+  const shownText =
+    def.textCase === 'upper' ? def.text.toUpperCase() : def.textCase === 'lower' ? def.text.toLowerCase() : def.text
+  const lines = fontSizeOk ? wrapLines(ctx, shownText, maxWidth) : ['']
+  const hasText = fontSizeOk && shownText !== '' && lines.some((l) => l !== '')
   const lineHeightPx = fontSizeOk ? def.fontSizePx * def.lineHeight : 0
 
   const { firstBaselineY, blockTop, blockH } = blockLayout({
@@ -256,6 +269,7 @@ export function rasterizeTitle(def: TitleDef, width: number, height: number): Of
 
   cache.push({ key, canvas })
   if (cache.length > CACHE_LIMIT) cache.shift() // evict oldest
+  identityCache.set(def, { w: width, h: height, canvas })
   return canvas
 }
 

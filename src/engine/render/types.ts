@@ -84,6 +84,17 @@ export const TRANSITION_KINDS: TransitionKind[] = [
   'slideRight',
 ]
 
+/** Human labels for the transition kinds — shared by the Effects panel + Inspector. */
+export const TRANSITION_LABELS: Record<TransitionKind, string> = {
+  crossDissolve: 'Cross Dissolve',
+  dipToBlack: 'Dip to Black',
+  dipToWhite: 'Dip to White',
+  wipeLeft: 'Wipe Left',
+  wipeRight: 'Wipe Right',
+  slideLeft: 'Slide Left',
+  slideRight: 'Slide Right',
+}
+
 /**
  * An ordered draw op. `layer` draws one source with its transform+filters.
  * `transition` blends `from`→`to` by `progress` (0..1) using `kind`; dip

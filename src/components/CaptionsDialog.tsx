@@ -12,15 +12,19 @@ import { activeSequence } from '../engine/types'
 import { addCaptionsFromWords } from '../state/captionActions'
 import { pausePlayback, togglePlay } from '../state/playbackControl'
 import { useStore } from '../state/store'
+import { builtinTextPresets, useTextPresets, type TextStylePreset } from '../state/textPresets'
 import { autoCaptionFromClip } from '../state/transcribeActions'
 import { Button } from '../ui/Button'
 
-/** The voiceover clip Auto-Caption should target: the clip under the playhead
- * on a voice-role track wins, else the first audio clip with sound. */
+/** The voiceover clip Auto-Caption should target. Priority: the clip you have
+ * SELECTED (so picking a clip then captioning does what you expect), then the
+ * clip under the playhead on a voice-role track, then the first voice clip,
+ * then the first audio clip with sound. */
 function findVoClipId(): string | null {
   const s = useStore.getState()
   const seq = activeSequence(s.project)
   const t = s.ui.playheadS
+  const sel = new Set(s.ui.selection)
   const audible = seq.tracks
     .filter((tr) => tr.kind === 'audio' && !tr.locked)
     .flatMap((tr) =>
@@ -29,8 +33,9 @@ function findVoClipId(): string | null {
         .map((c) => ({ c, voice: tr.audioRole === 'voice' })),
     )
   if (audible.length === 0) return null
+  const selected = audible.find(({ c }) => sel.has(c.id))
   const under = audible.find(({ c, voice }) => voice && t >= c.startS && t < clipEndS(c))
-  return (under ?? audible.find(({ voice }) => voice) ?? audible[0]).c.id
+  return (selected ?? under ?? audible.find(({ voice }) => voice) ?? audible[0]).c.id
 }
 
 const PASTE_HINT = `[{"text":"so","startS":0.1,"endS":0.4}, …]   or an .srt`
@@ -41,6 +46,12 @@ export function CaptionsDialog({ onClose }: { onClose: () => void }) {
   const [mode, setMode] = useState<Mode>('paste')
   const [text, setText] = useState('')
   const [error, setError] = useState<string | null>(null)
+  // Caption style: pick a look (lowercase + outline + position + in/out anim) to
+  // apply to the whole run. Defaults to the Jettism house style.
+  const savedPresets = useTextPresets((s) => s.saved)
+  const presets = [...builtinTextPresets(), ...savedPresets]
+  const [presetId, setPresetId] = useState('builtin-jettism')
+  const preset: TextStylePreset | undefined = presets.find((p) => p.id === presetId)
   // Tap mode: the words being timed and the taps collected so far.
   const [tapWords, setTapWords] = useState<string[] | null>(null)
   const [taps, setTaps] = useState<number[]>([])
@@ -55,7 +66,7 @@ export function CaptionsDialog({ onClose }: { onClose: () => void }) {
     if (commit && run) {
       const words = tapsToWords(run.words, run.taps)
       if (words.length > 0) {
-        addCaptionsFromWords(words, { label: 'Captions (tap to time)' })
+        addCaptionsFromWords(words, { label: 'Captions (tap to time)', preset })
         onClose()
       }
     }
@@ -107,7 +118,7 @@ export function CaptionsDialog({ onClose }: { onClose: () => void }) {
       setError('Could not read that — paste a JSON word list or an SRT.')
       return
     }
-    addCaptionsFromWords(words, { label: 'Captions from transcript' })
+    addCaptionsFromWords(words, { label: 'Captions from transcript', preset })
     onClose()
   }
 
@@ -183,7 +194,7 @@ export function CaptionsDialog({ onClose }: { onClose: () => void }) {
               onClick={() => {
                 const id = findVoClipId()
                 if (id) {
-                  void autoCaptionFromClip(id)
+                  void autoCaptionFromClip(id, preset)
                   onClose()
                 }
               }}
@@ -196,6 +207,25 @@ export function CaptionsDialog({ onClose }: { onClose: () => void }) {
                 ? 'Local Whisper — word captions land automatically.'
                 : 'Add an audio clip with sound first.'}
             </span>
+          </div>
+        )}
+        {!tapping && (
+          <div className="flex items-center gap-2 border-b border-border px-4 py-2">
+            <span className="text-[11px] text-text-muted">Caption style</span>
+            <select
+              aria-label="Caption style preset"
+              data-testid="captions-preset"
+              value={presetId}
+              onChange={(e) => setPresetId(e.target.value)}
+              className="ml-auto h-6 w-[190px] cursor-default rounded-[4px] bg-bg-input px-1.5 text-[11px] text-text-primary"
+            >
+              <option value="">Plain (no styling)</option>
+              {presets.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
           </div>
         )}
         <div className="flex flex-col gap-2 p-4">

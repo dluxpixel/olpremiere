@@ -2,6 +2,7 @@
 // (auto-caption / transcription) into a run of word-caption title clips.
 // Each action is ONE dispatch — a 40-clip caption pass undoes atomically.
 
+import { applyAppearanceToClip } from '../engine/anim/appearance'
 import {
   captionClips,
   chunkWords,
@@ -11,6 +12,7 @@ import {
 import { addTrack, clipDurationS, recomputeDuration, resolveStart } from '../engine/timeline'
 import { activeSequence, videoTracks, type Clip, type Track } from '../engine/types'
 import { updateActiveSequence, useStore } from './store'
+import type { TextStylePreset } from './textPresets'
 import { useToasts } from './toasts'
 
 /** One word per caption — the brief's hard-cut house style. */
@@ -79,7 +81,7 @@ export function splitTitleIntoWordCaptions(clipId: string): void {
  */
 export function addCaptionsFromWords(
   words: CaptionWord[],
-  options: { label?: string; maxWords?: number } = {},
+  options: { label?: string; maxWords?: number; preset?: TextStylePreset } = {},
 ): void {
   const s = useStore.getState()
   const seq = activeSequence(s.project)
@@ -88,7 +90,18 @@ export function addCaptionsFromWords(
     useToasts.getState().show('No words to caption', 'danger')
     return
   }
-  const clips = captionClips(chunks, { seqWidth: seq.width, seqHeight: seq.height })
+  let clips = captionClips(chunks, { seqWidth: seq.width, seqHeight: seq.height })
+  // Apply the chosen caption STYLE preset (case/outline/colour/position) + its
+  // entrance/exit animation to every word, so the whole run lands pre-styled.
+  const preset = options.preset
+  if (preset) {
+    clips = clips.map((c) => {
+      if (!c.title) return c
+      let nc: Clip = { ...c, title: { ...c.title, ...preset.style } }
+      if (preset.appearance) nc = applyAppearanceToClip(nc, preset.appearance, seq.width, seq.height)
+      return nc
+    })
+  }
   updateActiveSequence(options.label ?? 'Auto-caption', (sq) => {
     const grown = addTrack(sq, 'video')
     const target = videoTracks(grown)[videoTracks(grown).length - 1]

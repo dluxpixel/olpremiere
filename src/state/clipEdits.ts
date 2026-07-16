@@ -119,6 +119,39 @@ export function removeKeyframeAtPlayhead(clipId: string, channel: AnimChannel): 
   })
 }
 
+/**
+ * Retime a keyframe: move the one nearest `fromT` on this channel to `toT`
+ * (clamped to the clip span), keeping its value + easing. This is what the
+ * Keyframes lane's drag-and-type calls — "set the time this happens". Landing
+ * exactly on another keyframe's time merges onto it (upsert replaces).
+ */
+export function moveKeyframeTime(clipId: string, channel: AnimChannel, fromT: number, toT: number): void {
+  const clip = findClip(clipId)
+  if (!clip) return
+  const dur = Math.max(0, clipEndS(clip) - clip.startS)
+  const t = Math.max(0, Math.min(toT, dur))
+  // Early no-op BEFORE dispatch: mapClip always rebuilds the sequence, so
+  // guarding only inside its callback would still push an empty undo command
+  // (dragging a keyframe back to where it started, or retyping the same time).
+  const kf = channelKeyframes(clip, channel).find((k) => Math.abs(k.t - fromT) <= 1e-4)
+  if (!kf || Math.abs(kf.t - t) <= 1e-6) return
+  mapClip(clipId, `Move ${channel} keyframe`, (c) => {
+    const kfs = channelKeyframes(c, channel)
+    const cur = kfs.find((k) => Math.abs(k.t - fromT) <= 1e-4)
+    if (!cur) return c
+    return withChannelKeyframes(c, channel, upsertKeyframe(kfs.filter((k) => k !== cur), { ...cur, t }))
+  })
+}
+
+/** Remove the keyframe nearest time `t` on a channel (the Keyframes-lane trash button). */
+export function removeKeyframeAtTime(clipId: string, channel: AnimChannel, t: number): void {
+  const clip = findClip(clipId)
+  if (!clip) return
+  mapClip(clipId, `Remove ${channel} keyframe`, (c) =>
+    withChannelKeyframes(c, channel, removeKeyframeNear(channelKeyframes(c, channel), t, 0.05)),
+  )
+}
+
 export function setKeyframeEase(clipId: string, channel: AnimChannel, kfT: number, ease: Keyframe['ease']): void {
   mapClip(clipId, `Set ${channel} easing`, (c) => {
     const kfs = channelKeyframes(c, channel)
@@ -157,6 +190,16 @@ export function toggleClipEnabled(clipId: string): void {
         : { ...t, clips: t.clips.map((c) => (group.has(c.id) ? { ...c, enabled: next } : c)) },
     ),
   }))
+}
+
+/** Reset a specific set of channels (one Inspector section) in one undo step. */
+export function resetChannels(clipId: string, channels: AnimChannel[]): void {
+  mapClip(clipId, 'Reset', (c) =>
+    channels.reduce<Clip>(
+      (acc, ch) => withChannelValue(withChannelKeyframes(acc, ch, []), ch, channelDefault(ch)),
+      c,
+    ),
+  )
 }
 
 /** Reset every channel a clip can animate, in one undo step. */

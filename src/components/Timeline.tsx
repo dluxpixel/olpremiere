@@ -35,9 +35,12 @@ import {
   clipDurationS,
   clipEndS,
   clipGroupIds,
+  closeAllGaps,
+  closeGapBefore,
   collectSnapPoints,
   deleteClip,
   deleteGroup,
+  gapBefore,
   moveGroup,
   rateStretchGroup,
   rippleDeleteGroup,
@@ -68,7 +71,15 @@ import {
 } from '../engine/types'
 import { pausePlayback } from '../state/playbackControl'
 import { addTitleClip } from '../state/titleActions'
-import { copySelection, cutSelection, duplicateSelection } from '../state/clipboard'
+import { copySelection, cutSelection, duplicateSelection, pasteAtPlayhead } from '../state/clipboard'
+import { copyClipAttributes, hasClipAttributes, pasteClipAttributes } from '../state/attributes'
+import { normalizeClipGain } from '../state/audioActions'
+import {
+  allTextPresets,
+  applyTextPresetToClips,
+  captureTextPreset,
+  useTextPresets,
+} from '../state/textPresets'
 import { crossfadeWithNeighbour, setClipFade, topAndTail } from '../state/clipEdits'
 import { impactAtPlayhead, punchInAtPlayhead, punchOnBeats, rampWorkArea, whipToNext } from '../state/motionActions'
 import { autoCaptionFromClip } from '../state/transcribeActions'
@@ -521,7 +532,16 @@ function ClipView({
       ? { bg: 'var(--color-clip-audio)', bd: 'var(--color-clip-audio-bd)' }
       : familyFor(asset)
   const kind = isTitle ? 'title' : trackKind
-  const label = isTitle ? clip.title!.text || 'Title' : (asset?.name ?? 'Missing media')
+  // The clip label mirrors the rendered case (textCase) so a lowercase/UPPERCASE
+  // toggle visibly updates the timeline chip too, not just the preview.
+  const titleText = isTitle
+    ? clip.title!.textCase === 'upper'
+      ? (clip.title!.text || 'Title').toUpperCase()
+      : clip.title!.textCase === 'lower'
+        ? (clip.title!.text || 'Title').toLowerCase()
+        : clip.title!.text || 'Title'
+    : ''
+  const label = isTitle ? titleText : (asset?.name ?? 'Missing media')
   const thumb = useBlobUrl(isTitle || trackKind === 'audio' ? undefined : asset?.thumbnailKey)
   // Filmstrip across the whole clip (real NLE look); the single poster frame
   // stays as the instant placeholder while a strip generates.
@@ -792,8 +812,13 @@ type Drag =
   | { kind: 'stretch'; clipId: Id; edge: 'in' | 'out' }
   | { kind: 'slip'; clipId: Id; startXPx: number }
   | { kind: 'scrub' }
-  /** Shift+drag on empty lane space: rubber-band select. Content coordinates. */
-  | { kind: 'marquee'; x0: number; y0: number }
+  /**
+   * Shift/Ctrl+drag on empty lane space: rubber-band select. Content
+   * coordinates. `additive` (Ctrl/Cmd) unions the rectangle's hits onto `base`
+   * — the selection that existed when the drag began — so you can build a
+   * selection up in passes, exactly like dragging a box on the desktop.
+   */
+  | { kind: 'marquee'; x0: number; y0: number; additive: boolean; base: Id[] }
   | { kind: 'hand'; startX: number; startY: number; scrollLeft: number; scrollTop: number }
 
 export function Timeline({ height }: { height: number }) {
@@ -829,6 +854,15 @@ export function Timeline({ height }: { height: number }) {
   const [hoverLane, setHoverLane] = useState<{ trackId: Id; valid: boolean } | null>(null)
   const [razorHover, setRazorHover] = useState<{ t: number; top: number } | null>(null)
   const dragFinal = useRef<{ trackId: Id; tS: number } | null>(null)
+  // Right-drag box-select: a right-button drag on empty timeline rubber-bands a
+  // selection (David finds this easier than Ctrl+drag). rightMarqueeRef marks an
+  // in-flight right-drag; suppressContextRef swallows the contextmenu that fires
+  // on right-button release so a drag-select never pops a menu.
+  const rightMarqueeRef = useRef(false)
+  // Timestamp of the last right-drag select. The contextmenu fired by that drag
+  // is swallowed only if it lands within SUPPRESS_MS — a timestamp (not a bare
+  // flag) so a stale suppression can never block a later, legit right-click.
+  const suppressContextRef = useRef(0)
 
   const renderSeq = previewSeq ?? seq
   const vTracks = useMemo(() => [...videoTracks(renderSeq)].reverse(), [renderSeq])
@@ -1022,6 +1056,10 @@ export function Timeline({ height }: { height: number }) {
   }
 
   const handleClipPointerDown = (e: ReactPointerEvent<HTMLDivElement>, clip: Clip) => {
+    // Any fresh press on a clip clears a stale right-drag suppression (e.g. a
+    // right-drag that released over the track headers/monitor never got cleared),
+    // so the next right-click always opens the menu.
+    suppressContextRef.current = 0
     if (e.button !== 0) return
     const track = seq.tracks.find((t) => t.clips.some((c) => c.id === clip.id))
     if (!track) return
@@ -1083,7 +1121,22 @@ export function Timeline({ height }: { height: number }) {
   }
 
   const handleClipContextMenu = (e: ReactMouseEvent<HTMLDivElement>, clip: Clip) => {
-    setUI({ selection: [clip.id] })
+    // A right-drag box-select that happened to end over a clip must NOT open the
+    // clip menu — swallow this one contextmenu (only if it's fresh).
+    if (performance.now() - suppressContextRef.current < 500) {
+      suppressContextRef.current = 0
+      e.preventDefault()
+      return
+    }
+    // Right-clicking a clip that's part of a multi-selection KEEPS the selection
+    // (so "apply to all" acts on every selected clip); otherwise select just it.
+    const keepSelection = selection.includes(clip.id) && selection.length > 1
+    if (!keepSelection) setUI({ selection: [clip.id] })
+    const selNow = keepSelection ? selection : [clip.id]
+    const titleIdsSel = seq.tracks
+      .flatMap((t) => t.clips)
+      .filter((c) => selNow.includes(c.id) && c.title)
+      .map((c) => c.id)
     const playheadS = useStore.getState().ui.playheadS
     const playheadInside = playheadS > clip.startS && playheadS < clipEndS(clip)
     // Audio clips adjacent to a same-track neighbour can be crossfaded.
@@ -1109,6 +1162,7 @@ export function Timeline({ height }: { height: number }) {
     const captionItems =
       track?.kind === 'audio' && assets[clip.assetId]?.hasAudio
         ? [
+            { label: 'Normalize volume', onClick: () => void normalizeClipGain(clip.id) },
             { label: 'Auto-Caption from voiceover', onClick: () => void autoCaptionFromClip(clip.id) },
             { label: 'Punch video on beats', onClick: () => void punchOnBeats(clip.id) },
           ]
@@ -1148,16 +1202,64 @@ export function Timeline({ height }: { height: number }) {
     // "How it appears" — font/size quick-picks (titles) + entrance/exit/speed
     // animation. All compile to keyframes (preview == export). Shared with the
     // preview-monitor menu via state/clipMenus.
-    const appearanceItems = [...titleFontSizeItems(clip), ...appearanceMenuItems(clip)]
+    // Font/Size target the selected TITLES; Entrance/Exit/Speed target the whole
+    // selection — so right-clicking one of several selected captions applies to all.
+    const fontSizeIds = titleIdsSel.length > 1 ? titleIdsSel : [clip.id]
+    const appearanceIds = selNow.length > 1 ? selNow : [clip.id]
+    const appearanceItems = [
+      ...titleFontSizeItems(clip, fontSizeIds),
+      ...appearanceMenuItems(clip, appearanceIds),
+    ]
+
+    // Multi-selected text also gets whole STYLE presets (font+case+colour+outline
+    // +animation together) applied to all, plus Save. (Entrance/Exit/Speed above
+    // already apply to the whole selection.)
+    const bulkTitleItems: MenuItem[] =
+      titleIdsSel.length > 1
+        ? [
+            {
+              label: `Style preset — all ${titleIdsSel.length}`,
+              separator: true,
+              submenu: [
+                ...allTextPresets().map((p) => ({
+                  label: p.name,
+                  onClick: () => applyTextPresetToClips(titleIdsSel, p),
+                })),
+                {
+                  label: 'Save current as preset',
+                  separator: true,
+                  onClick: () => {
+                    // Capture the clip you right-clicked (fallback: first selected title).
+                    const src = clip.title ? clip.id : titleIdsSel[0]
+                    const p = captureTextPreset(src, `Style ${useTextPresets.getState().saved.length + 1}`)
+                    if (p) {
+                      useTextPresets.getState().add(p)
+                      show(`Saved "${p.name}"`, 'success')
+                    }
+                  },
+                },
+              ],
+            },
+          ]
+        : []
 
     openContextMenu(e, [
       { label: 'Copy', shortcut: comboLabel('mod+c'), onClick: () => copySelection() },
       { label: 'Cut', shortcut: comboLabel('mod+x'), onClick: cutSelection },
       { label: 'Duplicate', shortcut: comboLabel('mod+d'), onClick: duplicateSelection },
+      { label: 'Paste', shortcut: comboLabel('mod+v'), onClick: pasteAtPlayhead },
+      { label: 'Copy attributes', shortcut: comboLabel('mod+alt+c'), separator: true, onClick: () => copyClipAttributes(clip.id) },
+      {
+        label: keepSelection ? `Paste attributes to ${selNow.length}` : 'Paste attributes',
+        shortcut: comboLabel('mod+alt+v'),
+        disabled: !hasClipAttributes(),
+        onClick: () => pasteClipAttributes(keepSelection ? selNow : [clip.id]),
+      },
       ...crossfadeItems,
       ...captionItems,
       ...motionItems,
       ...appearanceItems,
+      ...bulkTitleItems,
       {
         label: 'Trim head to playhead',
         shortcut: 'Q',
@@ -1183,11 +1285,14 @@ export function Timeline({ height }: { height: number }) {
           ),
       },
       {
-        label: 'Delete',
+        label: keepSelection ? `Delete ${selNow.length} clips` : 'Delete',
         shortcut: 'Del',
         separator: true,
         onClick: () => {
-          updateActiveSequence('Delete clip', (sq) => deleteGroup(sq, clip.id))
+          // Match Copy/Cut/Duplicate + the Del key: a kept multi-selection deletes
+          // ALL selected clips, not just the one right-clicked.
+          const ids = keepSelection ? selNow : [clip.id]
+          updateActiveSequence('Delete clip', (sq) => ids.reduce((next, id) => deleteGroup(next, id), sq))
           setUI({ selection: [] })
         },
       },
@@ -1213,14 +1318,29 @@ export function Timeline({ height }: { height: number }) {
           ]
         : []),
       {
-        label: 'Ripple delete',
+        label: keepSelection ? `Ripple delete ${selNow.length} clips` : 'Ripple delete',
         shortcut: 'Shift+Del',
         danger: true,
         onClick: () => {
-          updateActiveSequence('Ripple delete', (sq) => rippleDeleteGroup(sq, clip.id))
+          const ids = keepSelection ? selNow : [clip.id]
+          updateActiveSequence('Ripple delete', (sq) => ids.reduce((next, id) => rippleDeleteGroup(next, id), sq))
           setUI({ selection: [] })
         },
       },
+      {
+        label: 'Close gap before',
+        separator: true,
+        disabled: gapBefore(seq, clip.id) <= 1e-4,
+        onClick: () => updateActiveSequence('Close gap', (sq) => closeGapBefore(sq, clip.id)),
+      },
+      ...(track
+        ? [
+            {
+              label: 'Close all gaps on track',
+              onClick: () => updateActiveSequence('Close gaps', (sq) => closeAllGaps(sq, track.id)),
+            },
+          ]
+        : []),
     ])
   }
 
@@ -1267,11 +1387,21 @@ export function Timeline({ height }: { height: number }) {
     if (tool === 'hand') beginHand(e)
     else if (tool === 'zoom') zoomAround(e.clientX, e.altKey ? 1 / 1.4 : 1.4)
     else if (tool === 'select') {
-      // Shift+drag = rubber-band select; plain click/drag = scrub (Vegas).
-      if (e.shiftKey) {
+      // Shift OR Ctrl/Cmd + drag = rubber-band select; plain click/drag =
+      // scrub (Vegas). Ctrl/Cmd is additive (matches desktop box-select), Shift
+      // replaces — so either modifier lets you "click and drag to select
+      // multiple", the way David expects it to work.
+      if (e.shiftKey || e.ctrlKey || e.metaKey) {
         const { x, y } = contentPoint(e)
+        const additive = e.ctrlKey || e.metaKey
         setMarquee({ x0: x, y0: y, x1: x, y1: y })
-        beginDrag(e, { kind: 'marquee', x0: x, y0: y })
+        beginDrag(e, {
+          kind: 'marquee',
+          x0: x,
+          y0: y,
+          additive,
+          base: additive ? [...useStore.getState().ui.selection] : [],
+        })
         return
       }
       pausePlayback()
@@ -1281,8 +1411,23 @@ export function Timeline({ height }: { height: number }) {
     }
   }
 
+  // Right-button drag on empty timeline = rubber-band box-select (any tool).
+  // Reuses the exact marquee drag machinery; replace-mode (fresh box).
+  const beginRightMarquee = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const { x, y } = contentPoint(e)
+    rightMarqueeRef.current = true
+    suppressContextRef.current = 0
+    setMarquee({ x0: x, y0: y, x1: x, y1: y })
+    beginDrag(e, { kind: 'marquee', x0: x, y0: y, additive: false, base: [] })
+  }
+
   const handleLanePointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0 || e.target !== e.currentTarget) return
+    if (e.target !== e.currentTarget) return
+    if (e.button === 2) {
+      beginRightMarquee(e)
+      return
+    }
+    if (e.button !== 0) return
     beginEmptyScrub(e)
   }
 
@@ -1290,13 +1435,17 @@ export function Timeline({ height }: { height: number }) {
   // track). Bubbled events from lanes/clips/ruler are ignored via the target
   // check, so only a click on the empty background scrubs.
   const handleLanesBackgroundPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0) return
+    if (e.button !== 0 && e.button !== 2) return
     // Ignore clicks on the native scrollbars: they sit inside the element's box
     // but past its client area, so without this, dragging the horizontal scrollbar
     // scrubs the playhead to it.
     const el = e.currentTarget
     if (pointOnScrollbar(el.getBoundingClientRect(), el.clientWidth, el.clientHeight, e.clientX, e.clientY)) return
     if (e.target !== e.currentTarget && e.target !== contentRef.current) return
+    if (e.button === 2) {
+      beginRightMarquee(e)
+      return
+    }
     beginEmptyScrub(e)
   }
 
@@ -1331,6 +1480,9 @@ export function Timeline({ height }: { height: number }) {
       return
     }
     if (drag.kind === 'marquee') {
+      // A right-drag that actually moved must swallow the contextmenu that fires
+      // on button release, or the box-select would also pop a menu.
+      if (rightMarqueeRef.current) suppressContextRef.current = performance.now()
       const p = contentPoint(e)
       setMarquee({ x0: drag.x0, y0: drag.y0, x1: p.x, y1: p.y })
       // Live-select every clip whose box overlaps the rectangle.
@@ -1347,7 +1499,8 @@ export function Timeline({ height }: { height: number }) {
           if (cx1 >= loX && cx0 <= hiX) hits.push(c.id)
         }
       }
-      setUI({ selection: hits })
+      // Additive (Ctrl/Cmd): fold the box onto the pre-drag selection, deduped.
+      setUI({ selection: drag.additive ? [...new Set([...drag.base, ...hits])] : hits })
       return
     }
     const { x, y } = contentPoint(e)
@@ -1449,6 +1602,7 @@ export function Timeline({ height }: { height: number }) {
     lanesRef.current?.releasePointerCapture(e.pointerId)
     // Marquee is selection-only (no undo dispatch) — just drop the rectangle.
     if (drag.kind === 'marquee') {
+      rightMarqueeRef.current = false // keep suppressContextRef for the imminent contextmenu
       setMarquee(null)
       setDrag(null)
       return
@@ -1749,6 +1903,12 @@ export function Timeline({ height }: { height: number }) {
           ref={lanesRef}
           className={`relative min-w-0 flex-1 overflow-auto ${cursorClass}`}
           data-testid="timeline-lanes"
+          onContextMenu={(e) => {
+            // No browser menu on the timeline background; also clears the
+            // right-drag-select suppression flag after it's served its purpose.
+            e.preventDefault()
+            suppressContextRef.current = 0
+          }}
           onPointerDown={handleLanesBackgroundPointerDown}
           onPointerMove={handleLanesPointerMove}
           onPointerLeave={() => razorHover && setRazorHover(null)}

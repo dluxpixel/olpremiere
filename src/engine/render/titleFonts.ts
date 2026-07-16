@@ -10,6 +10,7 @@
 
 import lilitaUrl from '../../assets/fonts/LilitaOne-Regular.ttf?url'
 import monocraftUrl from '../../assets/fonts/Monocraft.ttf?url'
+import versatileUrl from '../../assets/fonts/VersatileBold.ttf?url'
 import { clearTitleCache } from './titleRaster'
 
 export interface CustomTitleFont {
@@ -32,9 +33,21 @@ export const MONOCRAFT_STACK = "'Monocraft', 'Courier New', monospace"
  */
 export const CAPTION_FONT_STACK = "'Lilita One', 'Arial Black', 'Inter', sans-serif"
 
+/**
+ * Versatile Bold (OnlineWebFonts.com, CC BY 4.0 — credited in
+ * VersatileBold-License.txt). A heavy display face for punchy titles. The
+ * FontFace API keys off the family name we DECLARE below, so this string is the
+ * single source of truth — it need not match the file's internal name.
+ */
+export const VERSATILE_STACK = "'Versatile Bold', 'Arial Black', sans-serif"
+
+// To add another bundled font: (1) drop the .ttf in src/assets/fonts/, (2) add
+// an `import <name>Url from '../../assets/fonts/<File>.ttf?url'` up top, (3) add
+// one row here. It flows into the dropdown + loader automatically.
 export const CUSTOM_TITLE_FONTS: CustomTitleFont[] = [
   { label: 'Minecraft', family: 'Monocraft', stack: MONOCRAFT_STACK, url: monocraftUrl },
   { label: 'Comic Bold (captions)', family: 'Lilita One', stack: CAPTION_FONT_STACK, url: lilitaUrl },
+  { label: 'Versatile Bold', family: 'Versatile Bold', stack: VERSATILE_STACK, url: versatileUrl },
 ]
 
 /** Every selectable title font (system stacks + bundled), for the Inspector

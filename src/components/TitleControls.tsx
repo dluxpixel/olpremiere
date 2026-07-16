@@ -10,6 +10,8 @@ import {
   AlignStartVertical,
   AlignVerticalJustifyCenter,
   Bold,
+  CaseLower,
+  CaseUpper,
   Italic,
 } from 'lucide-react'
 import { TITLE_FONT_OPTIONS } from '../engine/render/titleFonts'
@@ -175,6 +177,25 @@ export function TitleControls({ clip }: { clip: Clip }) {
             onClick={() => set({ italic: !def.italic })}
           >
             <Italic size={14} strokeWidth={1.5} />
+          </IconButton>
+          <div className="mx-0.5 h-4 w-px bg-border" />
+          <IconButton
+            size="compact"
+            label="UPPERCASE"
+            active={def.textCase === 'upper'}
+            data-testid="title-case-upper"
+            onClick={() => set({ textCase: def.textCase === 'upper' ? undefined : 'upper' })}
+          >
+            <CaseUpper size={15} strokeWidth={1.5} />
+          </IconButton>
+          <IconButton
+            size="compact"
+            label="lowercase"
+            active={def.textCase === 'lower'}
+            data-testid="title-case-lower"
+            onClick={() => set({ textCase: def.textCase === 'lower' ? undefined : 'lower' })}
+          >
+            <CaseLower size={15} strokeWidth={1.5} />
           </IconButton>
         </div>
       </Section>

@@ -436,6 +436,68 @@ export function rippleDelete(seq: Sequence, clipId: Id): Sequence {
   return withTrackClips(seq, found.trackIndex, clips)
 }
 
+/** Seconds of empty space immediately before a clip on its track (0 if none). */
+export function gapBefore(seq: Sequence, clipId: Id): number {
+  const found = findClip(seq, clipId)
+  if (!found) return 0
+  const prev = found.track.clips[found.clipIndex - 1]
+  const target = prev ? clipEndS(prev) : 0
+  return Math.max(0, found.clip.startS - target)
+}
+
+/** Shift a set of clip ids by −delta[id] across ALL tracks, then re-sort + recompute. */
+function shiftClipsBy(seq: Sequence, deltaById: Map<Id, number>): Sequence {
+  if (deltaById.size === 0) return seq
+  const tracks = seq.tracks.map((t) => {
+    if (!t.clips.some((c) => deltaById.has(c.id))) return t
+    const clips = t.clips
+      .map((c) => (deltaById.has(c.id) ? { ...c, startS: c.startS - deltaById.get(c.id)! } : c))
+      .sort((a, b) => a.startS - b.startS)
+    return { ...t, clips }
+  })
+  return recomputeDuration({ ...seq, tracks })
+}
+
+/**
+ * Close the gap immediately BEFORE a clip: slide it (and every clip after it on
+ * the same track) left to butt against the previous clip — or to 0 if it's the
+ * first. LINK-GROUP AWARE: each moved clip's linked audio partner moves the same
+ * distance, so a video and its split-off audio never drift apart. Preserves
+ * spacing among the rippled clips. No-op when there's no gap.
+ */
+export function closeGapBefore(seq: Sequence, clipId: Id): Sequence {
+  const found = findClip(seq, clipId)
+  if (!found) return seq
+  const delta = gapBefore(seq, clipId)
+  if (delta <= EPS) return seq
+  const deltaById = new Map<Id, number>()
+  for (let i = found.clipIndex; i < found.track.clips.length; i++) {
+    for (const gid of clipGroupIds(seq, found.track.clips[i].id)) deltaById.set(gid, delta)
+  }
+  return shiftClipsBy(seq, deltaById)
+}
+
+/**
+ * Remove every gap on a track: butt each clip against the previous, keeping the
+ * FIRST clip where it is (its lead-in is intentional). LINK-GROUP AWARE — each
+ * clip's linked partner shifts by that clip's own delta, so linked audio repacks
+ * in lockstep. One tidy pass.
+ */
+export function closeAllGaps(seq: Sequence, trackId: Id): Sequence {
+  const ti = seq.tracks.findIndex((t) => t.id === trackId)
+  if (ti < 0) return seq
+  const sorted = [...seq.tracks[ti].clips].sort((a, b) => a.startS - b.startS)
+  if (sorted.length === 0) return seq
+  const deltaById = new Map<Id, number>()
+  let cursor = sorted[0].startS
+  for (const c of sorted) {
+    const d = c.startS - cursor
+    if (Math.abs(d) > EPS) for (const gid of clipGroupIds(seq, c.id)) deltaById.set(gid, d)
+    cursor += clipDurationS(c)
+  }
+  return shiftClipsBy(seq, deltaById)
+}
+
 export function snapTime(
   tS: number,
   points: number[],

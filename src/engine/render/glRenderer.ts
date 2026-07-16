@@ -301,19 +301,80 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
   if (!layerVbo || !fullVbo) throw new Error('createBuffer failed')
   gl.bindBuffer(gl.ARRAY_BUFFER, fullVbo)
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW)
+  // Allocate the per-layer quad store ONCE (6 verts × 4 floats) and rewrite it
+  // each draw with bufferSubData + a reused array — avoids a per-layer per-frame
+  // Float32Array allocation and VBO storage reallocation in the hot draw loop.
+  gl.bindBuffer(gl.ARRAY_BUFFER, layerVbo)
+  gl.bufferData(gl.ARRAY_BUFFER, 24 * 4, gl.DYNAMIC_DRAW)
+  const layerVerts = new Float32Array(24)
 
   const layerVao = gl.createVertexArray()
   const fullVao = gl.createVertexArray()
   if (!layerVao || !fullVao) throw new Error('createVertexArray failed')
 
-  // The one uploaded source texture (re-uploaded each layer op).
+  // Shared texture for CHANGING sources (video frames): re-uploaded each draw,
+  // but with texSubImage2D into stable storage so it doesn't reallocate.
   const srcTex = gl.createTexture()
   if (!srcTex) throw new Error('createTexture failed')
+  const setTexParams = (): void => {
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+  }
   gl.bindTexture(gl.TEXTURE_2D, srcTex)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+  setTexParams()
+  let srcTexW = -1
+  let srcTexH = -1
+
+  // Per-source texture cache for STABLE sources — stills (<img>) and the cached
+  // title/caption rasters (OffscreenCanvas). Their pixels never change between
+  // frames, so once uploaded they're just re-BOUND, never re-uploaded. This is
+  // the big playback win on caption-heavy timelines, where 10+ static title
+  // layers were each re-uploading their whole texture every frame. Bounded LRU;
+  // GL textures freed on eviction. VideoFrames/ImageBitmaps stay on srcTex.
+  const STABLE_TEX_CAP = 48
+  const texCache = new Map<TexImageSource, { tex: WebGLTexture; w: number; h: number }>()
+
+  /** Upload if needed, return the texture to bind. Skips upload for unchanged
+   *  stills/titles. `cacheable` MUST be false for video frames: mediabunny decodes
+   *  each frame into a FRESH OffscreenCanvas, so type-sniffing can't tell a reused
+   *  title raster from a one-shot video frame — the caller signals it from the layer. */
+  function acquireTexture(source: TexImageSource, texW: number, texH: number, cacheable: boolean): WebGLTexture {
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false)
+    if (cacheable) {
+      const hit = texCache.get(source)
+      if (hit && hit.w === texW && hit.h === texH) {
+        texCache.delete(source)
+        texCache.set(source, hit) // LRU touch
+        return hit.tex
+      }
+      const tex = hit?.tex ?? gl.createTexture()!
+      gl.bindTexture(gl.TEXTURE_2D, tex)
+      if (!hit) setTexParams()
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source)
+      texCache.delete(source)
+      texCache.set(source, { tex, w: texW, h: texH })
+      if (texCache.size > STABLE_TEX_CAP) {
+        const oldest = texCache.keys().next().value as TexImageSource
+        const e = texCache.get(oldest)
+        if (e) gl.deleteTexture(e.tex)
+        texCache.delete(oldest)
+      }
+      return tex
+    }
+    // CHANGING source: reuse srcTex; texSubImage2D avoids reallocating storage
+    // when the frame size is unchanged (the common case across a clip).
+    gl.bindTexture(gl.TEXTURE_2D, srcTex)
+    if (srcTexW === texW && srcTexH === texH) {
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, source)
+    } else {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source)
+      srcTexW = texW
+      srcTexH = texH
+    }
+    return srcTex
+  }
 
   // FBO pool, recreated when frame dims change. Sized to seq resolution.
   let fboW = 0
@@ -368,23 +429,26 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
     const texH = sourceH(source)
     if (texW <= 0 || texH <= 0) return
 
-    gl.bindTexture(gl.TEXTURE_2D, srcTex)
-    // Flip so texture row 0 (top of the image) maps to v=0; matches cropUV.
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false)
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source)
+    // Only genuinely-reused sources are cacheable: a title/caption raster (a
+    // stable OffscreenCanvas) or a still <img>. VIDEO frames are a fresh
+    // OffscreenCanvas each frame — never cache them, or the LRU floods with
+    // one-shot full-res textures (VRAM blowup on 4K export). Signalled from the
+    // layer, not the source type (both are OffscreenCanvas).
+    const cacheable =
+      layer.title !== undefined || (typeof HTMLImageElement !== 'undefined' && source instanceof HTMLImageElement)
+    const tex = acquireTexture(source, texW, texH, cacheable)
 
     const { corners } = computeQuad({ frameW, frameH, texW, texH, transform: layer.transform })
     const uv = cropUV(layer.transform.cropT, layer.transform.cropR, layer.transform.cropB, layer.transform.cropL)
     // Interleaved pos(x,y) + uv(u,v) for TL,TR,BR then TL,BR,BL (two triangles).
     const [tl, tr, br, bl] = corners
-    const verts = new Float32Array([
-      tl[0], tl[1], uv.u0, uv.v0,
-      tr[0], tr[1], uv.u1, uv.v0,
-      br[0], br[1], uv.u1, uv.v1,
-      tl[0], tl[1], uv.u0, uv.v0,
-      br[0], br[1], uv.u1, uv.v1,
-      bl[0], bl[1], uv.u0, uv.v1,
-    ])
+    const v = layerVerts
+    v[0] = tl[0]; v[1] = tl[1]; v[2] = uv.u0; v[3] = uv.v0
+    v[4] = tr[0]; v[5] = tr[1]; v[6] = uv.u1; v[7] = uv.v0
+    v[8] = br[0]; v[9] = br[1]; v[10] = uv.u1; v[11] = uv.v1
+    v[12] = tl[0]; v[13] = tl[1]; v[14] = uv.u0; v[15] = uv.v0
+    v[16] = br[0]; v[17] = br[1]; v[18] = uv.u1; v[19] = uv.v1
+    v[20] = bl[0]; v[21] = bl[1]; v[22] = uv.u0; v[23] = uv.v1
 
     const pointwise = layer.effects.filter(isPointwise)
     const lp = getLayerProgram(pointwise)
@@ -392,7 +456,7 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
     gl.useProgram(lp.prog)
     gl.bindVertexArray(layerVao)
     gl.bindBuffer(gl.ARRAY_BUFFER, layerVbo)
-    gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW)
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, v)
     gl.enableVertexAttribArray(lp.aPos)
     gl.vertexAttribPointer(lp.aPos, 2, gl.FLOAT, false, 16, 0)
     gl.enableVertexAttribArray(lp.aUV)
@@ -401,7 +465,7 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
     gl.uniform2f(lp.uFrame, frameW, frameH)
     gl.uniform1i(lp.uTex, 0)
     gl.activeTexture(gl.TEXTURE0)
-    gl.bindTexture(gl.TEXTURE_2D, srcTex)
+    gl.bindTexture(gl.TEXTURE_2D, tex)
     gl.uniform1f(lp.uOpacity, clamp01(layer.opacity))
     gl.uniform4f(lp.uUVRect, uv.u0, uv.v0, uv.u1, uv.v1)
     // Bind this draw's effect params. Locations were resolved against THIS
@@ -639,6 +703,8 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
     gl.deleteVertexArray(layerVao)
     gl.deleteVertexArray(fullVao)
     gl.deleteTexture(srcTex)
+    for (const e of texCache.values()) gl.deleteTexture(e.tex)
+    texCache.clear()
     for (const f of pool) {
       gl.deleteFramebuffer(f.fb)
       gl.deleteTexture(f.tex)

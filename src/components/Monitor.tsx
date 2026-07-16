@@ -301,7 +301,8 @@ export function Monitor() {
             shortcut="End"
             onClick={() => {
               pausePlayback()
-              setUI({ playheadS: seq.durationS })
+              // Last real frame, not durationS (which resolves to a black frame).
+              setUI({ playheadS: Math.max(0, seq.durationS - 1 / (seq.fps || 30)) })
             }}
           >
             <SkipForward size={16} strokeWidth={1.5} />

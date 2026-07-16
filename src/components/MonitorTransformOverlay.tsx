@@ -14,6 +14,7 @@ import { setLivePreviewTransform } from '../engine/preview'
 import { previewClipMenu } from '../state/clipMenus'
 import { punchInAtPoint } from '../state/motionActions'
 import { setClipTransform } from '../state/clipEdits'
+import { setClipsPosition } from '../state/bulkEdits'
 import { openContextMenu } from '../state/contextMenu'
 import { pausePlayback } from '../state/playbackControl'
 import { quantizeToFrame } from '../engine/timecode'
@@ -376,6 +377,74 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
     )
   }
 
+  // --- Multi-select: drag anywhere on the picture to align every selected clip
+  // to the SAME spot (great for stacking a run of captions). We move only the
+  // topmost VISIBLE selected clip live, then commit that position to all of them.
+  let multiGizmo: React.ReactNode = null
+  if (selection.length > 1) {
+    const sel = new Set(selection)
+    const under = visibleLayers.filter((l) => sel.has(l.clipId))
+    const primary = under[under.length - 1]
+    const pClip = primary ? seq.tracks.flatMap((t) => t.clips).find((c) => c.id === primary.clipId) : undefined
+    if (primary && pClip) {
+      const xs = quadFor(primary).map(([x]) => x * k)
+      const ys = quadFor(primary).map(([, y]) => y * k)
+      const minX = Math.min(...xs)
+      const maxX = Math.max(...xs)
+      const minY = Math.min(...ys)
+      const maxY = Math.max(...ys)
+      const startTf = { x: pClip.transform.x, y: pClip.transform.y, scale: pClip.transform.scale, rotationDeg: pClip.transform.rotationDeg }
+
+      const beginMulti = (e: ReactPointerEvent) => {
+        if (e.button !== 0) return
+        e.preventDefault()
+        e.stopPropagation()
+        const start = localPt(e.clientX, e.clientY)
+        // Null until an actual drag moves the box — a plain click must NOT align
+        // every clip onto the primary (mirrors the single-clip gizmo's guard).
+        let last: { x: number; y: number; scale: number; rotationDeg: number } | null = null
+        const onMove = (ev: globalThis.PointerEvent) => {
+          const p = localPt(ev.clientX, ev.clientY)
+          let x = startTf.x + (p.x - start.x) / k
+          let y = startTf.y + (p.y - start.y) / k
+          if (ev.shiftKey) {
+            if (Math.abs(p.x - start.x) >= Math.abs(p.y - start.y)) y = startTf.y
+            else x = startTf.x
+          }
+          last = { ...startTf, x, y }
+          setDragTf(last)
+          setLivePreviewTransform({ clipId: primary.clipId, ...last })
+        }
+        const onUp = () => {
+          window.removeEventListener('pointermove', onMove)
+          window.removeEventListener('pointerup', onUp)
+          setLivePreviewTransform(null)
+          setDragTf(null)
+          if (last) setClipsPosition(selection, last.x, last.y)
+        }
+        window.addEventListener('pointermove', onMove)
+        window.addEventListener('pointerup', onUp)
+      }
+
+      multiGizmo = (
+        <div
+          data-testid="multi-move-box"
+          className="pointer-events-auto absolute cursor-move"
+          style={{
+            left: minX,
+            top: minY,
+            width: maxX - minX,
+            height: maxY - minY,
+            border: `1.5px dashed ${ACCENT}`,
+            background: 'rgba(111,107,255,0.05)',
+          }}
+          onPointerDown={beginMulti}
+          title={`Drag to align all ${selection.length} selected clips to the same spot`}
+        />
+      )
+    }
+  }
+
   return (
     <div
       ref={rootRef}
@@ -398,6 +467,7 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
         <div className="pointer-events-none absolute inset-x-0 h-px bg-accent/80" style={{ top: box.h / 2 }} />
       )}
       {gizmo}
+      {multiGizmo}
     </div>
   )
 }

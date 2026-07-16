@@ -8,6 +8,7 @@ import { setClipFade, setClipGainDb, setClipSpeed } from '../state/clipEdits'
 import { useStore } from '../state/store'
 import { IconButton } from '../ui/Button'
 import { EffectControls, ScrubField, type Spec } from './EffectControls'
+import { MultiInspector, type SelectedClip } from './MultiInspector'
 import { TitleControls } from './TitleControls'
 
 const GAIN_SPEC: Spec = { min: -60, max: 12, step: 0.5, sens: 0.2 }
@@ -175,13 +176,21 @@ function ClipPanel({
         <div className="mt-0.5 text-[11px] text-text-muted">{isTitle ? 'Title' : 'Clip'}</div>
       </div>
 
-      <div className="flex flex-col gap-1.5">
-        <Row label="Start" value={formatTimecode(clip.startS, fps)} />
-        <Row label="End" value={formatTimecode(clipEndS(clip), fps)} />
-        <Row label="Duration" value={formatTimecode(clipDurationS(clip), fps)} />
-        {!isTitle && <Row label="Source in" value={formatTimecode(clip.inS, fps)} />}
-        {!isTitle && <Row label="Source out" value={formatTimecode(clip.outS, fps)} />}
-      </div>
+      {/* Read-only clip metadata is folded away by default so the editing
+          controls (and Keyframes) sit up top. Click "Details" to expand. */}
+      <details className="group">
+        <summary className="flex cursor-default list-none items-center justify-between text-[11px] text-text-muted [&::-webkit-details-marker]:hidden">
+          <span className="uppercase tracking-[0.06em]">Details</span>
+          <span className="tabular-nums text-text-secondary">{formatTimecode(clipDurationS(clip), fps)}</span>
+        </summary>
+        <div className="mt-2 flex flex-col gap-1.5">
+          <Row label="Start" value={formatTimecode(clip.startS, fps)} />
+          <Row label="End" value={formatTimecode(clipEndS(clip), fps)} />
+          <Row label="Duration" value={formatTimecode(clipDurationS(clip), fps)} />
+          {!isTitle && <Row label="Source in" value={formatTimecode(clip.inS, fps)} />}
+          {!isTitle && <Row label="Source out" value={formatTimecode(clip.outS, fps)} />}
+        </div>
+      </details>
 
       <div className="h-px bg-border" />
 
@@ -233,10 +242,13 @@ export function Inspector({ width }: { width: number }) {
   const project = useStore((s) => s.project)
   const selection = useStore((s) => s.ui.selection)
   // FRAME-quantized playhead: the keyframe UI is frame-accurate anyway, and the
-  // raw value ticks every animation frame during playback — subscribing to it
-  // directly re-rendered the whole Inspector at display refresh rate. Selecting
-  // the quantized value re-renders at most fps times per second.
+  // raw value ticks every animation frame. Even quantized, that re-rendered the
+  // whole Effect Controls + KeyframeLane fps×/s DURING PLAYBACK — a big chunk of
+  // playback lag. So while PLAYING we return a constant sentinel: the panel stops
+  // re-rendering entirely and its live value readouts freeze (you watch the
+  // monitor, not the inspector, while it plays). They resume the instant you pause.
   const playheadS = useStore((s) => {
+    if (s.ui.playing) return -1
     const sq = activeSequence(s.project)
     const f = sq.fps > 0 ? sq.fps : 30
     return Math.floor(s.ui.playheadS * f + 1e-6) / f
@@ -247,6 +259,25 @@ export function Inspector({ width }: { width: number }) {
       ? seq.tracks.find((t) => t.clips.some((c) => c.id === selection[0]))
       : undefined
   const selected = selectedTrack?.clips.find((c) => c.id === selection[0])
+
+  // Multi-select: enrich every still-existing selected clip with its track +
+  // whether it emits sound (mirrors the single-clip `showAudio` rule), so the
+  // bulk panel can decide which sections to show.
+  const multi: SelectedClip[] =
+    selection.length > 1
+      ? seq.tracks.flatMap((track) =>
+          track.clips
+            .filter((c) => selection.includes(c.id))
+            .map((clip) => ({
+              clip,
+              track,
+              emitsAudio:
+                !isTitleClip(clip) &&
+                clipEmitsAudio(track, clip) &&
+                (track.kind === 'audio' || !!project.assets[clip.assetId]?.hasAudio),
+            })),
+        )
+      : []
   const selectedAsset: MediaAsset | undefined = selected ? project.assets[selected.assetId] : undefined
   // Show the Audio section when the clip actually contributes sound: an
   // audio-track clip, or an unlinked video clip whose source has audio.
@@ -287,14 +318,14 @@ export function Inspector({ width }: { width: number }) {
             }
           />
         </div>
+      ) : multi.length > 1 ? (
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <MultiInspector selected={multi} />
+        </div>
       ) : (
         <div className="flex flex-1 flex-col items-center justify-center gap-2 p-4 text-center">
           <SlidersHorizontal size={24} strokeWidth={1.5} className="text-text-muted" aria-hidden />
-          <div className="text-[12px] text-text-muted">
-            {selection.length > 1
-              ? `${selection.length} clips selected`
-              : 'Select a clip to edit its properties'}
-          </div>
+          <div className="text-[12px] text-text-muted">Select a clip to edit its properties</div>
         </div>
       )}
     </aside>

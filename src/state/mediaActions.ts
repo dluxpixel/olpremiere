@@ -107,9 +107,12 @@ export function deleteAsset(assetId: Id): void {
 }
 
 export function insertAssetAtPlayhead(assetId: Id): void {
-  const { project, ui, dispatch } = useStore.getState()
+  const { project, ui, dispatch, setUI } = useStore.getState()
   const asset = project.assets[assetId]
   if (!asset) return
+  // Select the freshly-inserted clip so an immediate trim/effect/delete acts on
+  // it without hunting it down on the timeline (matches insertSfxAtPlayhead).
+  let newClipId: Id | null = null
   dispatch(`Add ${asset.name}`, (p) => {
     const seq = activeSequence(p)
     // Video with audio → linked pair (video on V1, audio split to A1); other
@@ -118,12 +121,15 @@ export function insertAssetAtPlayhead(assetId: Id): void {
       const vTrack = videoTracks(seq)[0]
       if (!vTrack) return p
       const aTrack = audioTracks(seq).find((t) => !t.locked) ?? null
-      const { seq: next } = addClipWithLinkedAudio(seq, vTrack.id, aTrack?.id ?? null, asset, ui.playheadS)
+      const { seq: next, videoClipId } = addClipWithLinkedAudio(seq, vTrack.id, aTrack?.id ?? null, asset, ui.playheadS)
+      newClipId = videoClipId || null
       return { ...p, sequences: { ...p.sequences, [seq.id]: next } }
     }
     const track = asset.kind === 'audio' ? audioTracks(seq)[0] : videoTracks(seq)[0]
     if (!track) return p
-    const { seq: next } = addClipFromAsset(seq, track.id, asset, ui.playheadS)
+    const { seq: next, clipId } = addClipFromAsset(seq, track.id, asset, ui.playheadS)
+    newClipId = clipId || null
     return { ...p, sequences: { ...p.sequences, [seq.id]: next } }
   })
+  if (newClipId) setUI({ selection: [newClipId] })
 }

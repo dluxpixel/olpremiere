@@ -31,6 +31,7 @@ import {
   selectAllClips,
   selectClipOnAdjacentTrack,
 } from './state/clipboard'
+import { copyClipAttributes, pasteClipAttributes } from './state/attributes'
 import { performHistoryStep } from './collab/collabControl'
 import { setClipTransform, toggleClipEnabled, topAndTail } from './state/clipEdits'
 import { pausePlayback, shuttle, toggleLoop, togglePlay } from './state/playbackControl'
@@ -86,13 +87,15 @@ function deleteSelected(ripple: boolean) {
 }
 
 /** Ctrl/Cmd+K: split the selected clips under the playhead — or every clip under it. */
-function splitAtPlayhead() {
+function splitAtPlayhead(allTracks = false) {
   const s = useStore.getState()
   const seq = activeSequence(s.project)
   // Cut on the frame grid: a mid-frame playhead (playback, fine scrubs) would
   // otherwise land off-grid cuts that leave sliver fragments.
   const t = quantizeToFrame(s.ui.playheadS, seq.fps)
-  const sel = s.ui.selection
+  // "Add edit" (C / Ctrl+K) cuts the selected clips (or all when none selected);
+  // "Add edit to all tracks" (Ctrl+Shift+K) always cuts every unlocked track.
+  const sel = allTracks ? [] : s.ui.selection
   const targets = seq.tracks.flatMap((tr) =>
     tr.locked
       ? []
@@ -176,7 +179,10 @@ function buildAppBindings(): Binding[] {
         description: 'Go to end',
         run: () => {
           pausePlayback()
-          store().setUI({ playheadS: activeSequence(store().project).durationS })
+          // Land on the LAST real frame, not exactly durationS (where no clip
+          // resolves and the monitor shows black).
+          const seq = activeSequence(store().project)
+          store().setUI({ playheadS: Math.max(0, seq.durationS - 1 / (seq.fps || 30)) })
         },
       },
       { combo: 's', description: 'Toggle snapping', run: () => store().setUI({ snapping: !store().ui.snapping }) },
@@ -194,11 +200,14 @@ function buildAppBindings(): Binding[] {
       { combo: 'v', description: 'Selection tool', run: () => store().setUI({ tool: 'select' }) },
       // C cuts the clip(s) at the playhead right away (Premiere muscle memory). The razor
       // TOOL (click-to-cut anywhere) moved to B (Blade) so click-cutting is still available.
-      { combo: 'c', description: 'Cut at playhead', run: splitAtPlayhead },
+      { combo: 'c', description: 'Cut at playhead', run: () => splitAtPlayhead() },
       { combo: 'b', description: 'Razor (blade) tool', run: () => store().setUI({ tool: 'razor' }) }, // click-to-cut anywhere
       { combo: 'h', description: 'Hand tool', run: () => store().setUI({ tool: 'hand' }) },
       { combo: 'z', description: 'Zoom tool', run: () => store().setUI({ tool: 'zoom' }) },
-      { combo: 'mod+k', description: 'Cut at playhead', run: splitAtPlayhead },
+      { combo: 'mod+k', description: 'Cut at playhead', run: () => splitAtPlayhead() },
+      { combo: 'mod+shift+k', description: 'Add edit to ALL tracks at playhead', run: () => splitAtPlayhead(true) },
+      { combo: 'mod+alt+c', description: 'Copy attributes', run: () => copyClipAttributes() },
+      { combo: 'mod+alt+v', description: 'Paste attributes', run: () => pasteClipAttributes() },
       { combo: 'delete', description: 'Delete (lift)', run: () => deleteSelected(false) },
       { combo: 'backspace', description: 'Delete (lift)', run: () => deleteSelected(false) },
       { combo: 'shift+delete', description: 'Ripple delete', run: () => deleteSelected(true) },
