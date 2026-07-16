@@ -143,3 +143,39 @@ test('Shift+E disables the clip (renders at 40%) and re-enables it', async ({ pa
   await page.keyboard.press('Shift+E')
   expect((await clips(page)).find((c) => c.id === v.id)!.enabled).toBe(true)
 })
+
+test('C on a selected clip cuts ONLY it, leaving its linked partner whole', async ({ page }) => {
+  await boot(page)
+  await page.getByTestId('asset-card').dblclick()
+  await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
+  const v = (await clips(page)).find((c) => c.trackKind === 'video')!
+  const a = (await clips(page)).find((c) => c.trackKind === 'audio')!
+
+  await setPlayhead(page, 0.5)
+  await select(page, v.id) // the VIDEO half of the linked pair only
+  await page.getByTestId('panel-left').click({ position: { x: 5, y: 5 } })
+  await page.keyboard.press('c')
+
+  const after = await clips(page)
+  expect(after.filter((c) => c.trackKind === 'video')).toHaveLength(2) // cut
+  expect(after.filter((c) => c.trackKind === 'audio')).toHaveLength(1) // untouched
+  expect(after.find((c) => c.id === a.id)).toBeDefined()
+})
+
+test('C with the whole linked pair selected still cuts both', async ({ page }) => {
+  await boot(page)
+  await page.getByTestId('asset-card').dblclick()
+  await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
+  const all = await clips(page)
+  const v = all.find((c) => c.trackKind === 'video')!
+  const a = all.find((c) => c.trackKind === 'audio')!
+
+  await setPlayhead(page, 0.5)
+  await setUI(page, { selection: [v.id, a.id] })
+  await page.getByTestId('panel-left').click({ position: { x: 5, y: 5 } })
+  await page.keyboard.press('c')
+
+  const after = await clips(page)
+  expect(after.filter((c) => c.trackKind === 'video')).toHaveLength(2)
+  expect(after.filter((c) => c.trackKind === 'audio')).toHaveLength(2)
+})

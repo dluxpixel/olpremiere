@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { clipEmitsAudio } from './audio'
 import { defaultTransform, type Clip, type MediaAsset, type Sequence, type Track } from './types'
 import {
   addClipFromAsset,
@@ -40,6 +41,7 @@ import {
   snapTime,
   splitClip,
   unlockedClipIds,
+  splitClipOnly,
   splitGroup,
   timeToPx,
   trimClipTo,
@@ -1824,6 +1826,59 @@ describe('setSequenceFormat / refitClipToFill (Shorts aspect switch)', () => {
     expect(shorts.tracks[0].clips[0].transform.scale).toBeCloseTo(COVER_16x9_INTO_9x16, 3)
     const back = setSequenceFormat(shorts, landscape, 1920, 1080)
     expect(back.tracks[0].clips[0].transform.scale).toBeCloseTo(1, 6)
+  })
+})
+
+describe('splitClipOnly (cut just the selected clip)', () => {
+  const linkedPair = () => {
+    const v = makeClip({ id: 'v', assetId: 'av', startS: 0, inS: 0, outS: 4, linkId: 'g' })
+    const a = makeClip({ id: 'a', assetId: 'av', startS: 0, inS: 0, outS: 4, linkId: 'g' })
+    return makeSeq([makeTrack({ clips: [v] }), makeTrack({ kind: 'audio', clips: [a] })])
+  }
+
+  it('splits ONLY the named clip; the linked partner is untouched', () => {
+    const out = splitClipOnly(linkedPair(), 'v', 2)
+    expect(out.tracks[0].clips).toHaveLength(2) // video cut
+    expect(out.tracks[1].clips).toHaveLength(1) // audio left alone
+    expect(out.tracks[1].clips[0].linkId).toBe('g')
+  })
+
+  it('gives each half its OWN link group, so they move independently', () => {
+    const out = splitClipOnly(linkedPair(), 'v', 2)
+    const [left, right] = out.tracks[0].clips
+    expect(left.linkId).not.toBe(right.linkId)
+    expect(clipGroupIds(out, left.id)).toEqual([left.id])
+    expect(clipGroupIds(out, right.id)).toEqual([right.id])
+  })
+
+  it('keeps both halves LINKED so their audio never doubles the partner', () => {
+    // A video clip without a linkId plays its own audio — dropping the link
+    // here would play the sound twice against the untouched partner clip.
+    const out = splitClipOnly(linkedPair(), 'v', 2)
+    const videoTrack = out.tracks[0]
+    for (const c of videoTrack.clips) {
+      expect(c.linkId).toBeDefined()
+      expect(clipEmitsAudio(videoTrack, c)).toBe(false)
+    }
+    expect(clipEmitsAudio(out.tracks[1], out.tracks[1].clips[0])).toBe(true)
+  })
+
+  it('cutting the AUDIO half alone leaves the video whole', () => {
+    const out = splitClipOnly(linkedPair(), 'a', 2)
+    expect(out.tracks[1].clips).toHaveLength(2)
+    expect(out.tracks[0].clips).toHaveLength(1)
+  })
+
+  it('an unlinked clip just splits, halves stay unlinked (they own their audio)', () => {
+    const solo = makeClip({ id: 's', assetId: 'av', startS: 0, inS: 0, outS: 4 })
+    const out = splitClipOnly(makeSeq([makeTrack({ clips: [solo] })]), 's', 2)
+    expect(out.tracks[0].clips).toHaveLength(2)
+    expect(out.tracks[0].clips.every((c) => c.linkId === undefined)).toBe(true)
+  })
+
+  it('honours the min-piece guard (no sliver, no stray relink)', () => {
+    const seq = linkedPair()
+    expect(splitClipOnly(seq, 'v', 0.001)).toBe(seq)
   })
 })
 

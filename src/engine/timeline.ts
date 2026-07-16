@@ -710,6 +710,33 @@ export function rippleDeleteGroup(seq: Sequence, clipId: Id): Sequence {
   return next
 }
 
+/**
+ * Split ONE clip at tS and leave its linked A/V partner untouched — "cut just
+ * this clip", the verb behind an explicit selection (splitGroup cuts the pair).
+ *
+ * Each half gets its OWN fresh link group rather than dropping linkId, because
+ * a video clip WITHOUT a linkId plays its own audio — that would double against
+ * the partner audio clip still sitting on the timeline. A group of one keeps
+ * each half video-only (the sound keeps coming from the untouched partner)
+ * while letting the halves move, trim and delete independently.
+ */
+export function splitClipOnly(seq: Sequence, clipId: Id, tS: number): Sequence {
+  const found = findClip(seq, clipId)
+  if (!found) return seq
+  if (!found.clip.linkId) return splitClip(seq, clipId, tS)
+  const next = splitClip(seq, clipId, tS)
+  if (next === seq) return seq // the min-piece guard declined the cut
+  const after = findClip(next, clipId)
+  if (!after) return next
+  const { track, trackIndex, clipIndex } = after
+  // clipIndex is the left half; the right half is the clip directly after it.
+  return withTrackClips(
+    next,
+    trackIndex,
+    track.clips.map((c, i) => (i === clipIndex || i === clipIndex + 1 ? { ...c, linkId: newId() } : c)),
+  )
+}
+
 /** Split every linked member at tS; the right halves form a fresh link group. */
 export function splitGroup(seq: Sequence, clipId: Id, tS: number): Sequence {
   const found = findClip(seq, clipId)

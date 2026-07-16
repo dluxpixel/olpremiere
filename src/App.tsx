@@ -13,6 +13,7 @@ import {
   deleteGroup,
   removeMarkerNear,
   rippleDeleteGroup,
+  splitClipOnly,
   splitGroup,
   unlockedClipIds,
 } from './engine/timeline'
@@ -104,13 +105,23 @@ function splitAtPlayhead(allTracks = false) {
           .map((c) => c.id),
   )
   if (targets.length === 0) return
+  const selSet = new Set(sel)
   updateActiveSequence('Split at playhead', (sq) => {
     let next = sq
     // De-dupe linked partners so a group isn't split twice.
     const done = new Set<string>()
     for (const id of targets) {
       if (done.has(id)) continue
-      for (const gid of clipGroupIds(next, id)) done.add(gid)
+      const group = clipGroupIds(next, id)
+      // Selecting ONE half of a linked A/V pair means "cut just this clip" —
+      // cutting its partner too is the whole complaint. Select the pair (or
+      // nothing) and it still cuts as a pair, staying linked.
+      if (sel.length > 0 && !group.every((g) => selSet.has(g))) {
+        done.add(id)
+        next = splitClipOnly(next, id, t)
+        continue
+      }
+      for (const gid of group) done.add(gid)
       next = splitGroup(next, id, t)
     }
     return next
