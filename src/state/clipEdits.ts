@@ -29,6 +29,7 @@ import {
   type AnimChannel,
   type BlendMode,
   type Clip,
+  type ClipMask,
   type Id,
   type Keyframe,
 } from '../engine/types'
@@ -288,6 +289,11 @@ export function removeClipTransition(clipId: string, edge: 'in' | 'out'): void {
 
 export function setClipBlendMode(clipId: string, mode: BlendMode): void {
   mapClip(clipId, 'Set blend mode', (c) => ({ ...c, blendMode: mode }))
+}
+
+/** Set or clear (undefined) the clip's shape mask. */
+export function setClipMask(clipId: string, mask: ClipMask | undefined): void {
+  mapClip(clipId, mask ? 'Edit mask' : 'Remove mask', (c) => ({ ...c, mask }))
 }
 
 // ---------------------------------------------------------------------------

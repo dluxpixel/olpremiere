@@ -30,6 +30,7 @@ import {
   type AnimChannel,
   type BlendMode,
   type Clip,
+  type ClipMask,
   type EffectInstance,
 } from '../engine/types'
 import {
@@ -46,6 +47,7 @@ import {
   resetEffectParams,
   setChannel,
   setClipBlendMode,
+  setClipMask,
   setClipTransition,
   setEffectParamValue,
   toggleChannelAnimation,
@@ -658,6 +660,66 @@ function TransitionRow({
   )
 }
 
+const DEFAULT_MASK: Omit<ClipMask, 'kind'> = { cx: 0.5, cy: 0.5, rx: 0.35, ry: 0.35, feather: 0.05, invert: false }
+
+const MASK_FIELDS: { key: 'cx' | 'cy' | 'rx' | 'ry' | 'feather'; label: string; max: number }[] = [
+  { key: 'cx', label: 'Center X', max: 1 },
+  { key: 'cy', label: 'Center Y', max: 1 },
+  { key: 'rx', label: 'Width', max: 1 },
+  { key: 'ry', label: 'Height', max: 1 },
+  { key: 'feather', label: 'Feather', max: 0.5 },
+]
+
+function MaskSection({ clip }: { clip: Clip }) {
+  const mask = clip.mask
+  const onKind = (v: string) => {
+    if (v === 'none') setClipMask(clip.id, undefined)
+    else setClipMask(clip.id, { ...(mask ?? DEFAULT_MASK), kind: v as ClipMask['kind'] })
+  }
+  return (
+    <section className="flex flex-col gap-1.5">
+      <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">Mask</h3>
+      <div className="flex items-center gap-1.5">
+        <select
+          data-testid="mask-kind"
+          aria-label="Mask shape"
+          value={mask?.kind ?? 'none'}
+          onChange={(e) => onKind(e.target.value)}
+          className="h-6 flex-1 cursor-default rounded-[4px] bg-bg-input px-1.5 text-[11px] text-text-primary"
+        >
+          <option value="none">None</option>
+          <option value="rect">Rectangle</option>
+          <option value="ellipse">Ellipse</option>
+        </select>
+        {mask && (
+          <label className="flex shrink-0 items-center gap-1 text-[11px] text-text-muted">
+            <input
+              type="checkbox"
+              data-testid="mask-invert"
+              checked={mask.invert}
+              onChange={(e) => setClipMask(clip.id, { ...mask, invert: e.target.checked })}
+            />
+            Invert
+          </label>
+        )}
+      </div>
+      {mask &&
+        MASK_FIELDS.map((f) => (
+          <div key={f.key} className="flex items-center gap-1.5">
+            <span className="w-14 shrink-0 text-[11px] text-text-muted">{f.label}</span>
+            <ScrubField
+              value={mask[f.key]}
+              spec={{ min: 0, max: f.max, step: 0.01, sens: 0.003 }}
+              testId={`mask-${f.key}`}
+              ariaLabel={`Mask ${f.label}`}
+              onCommit={(v) => setClipMask(clip.id, { ...mask, [f.key]: v })}
+            />
+          </div>
+        ))}
+    </section>
+  )
+}
+
 export function EffectControls({
   clip,
   playheadS,
@@ -710,6 +772,8 @@ export function EffectControls({
           ))}
         </select>
       </div>
+      <div className="h-px bg-border" />
+      <MaskSection clip={clip} />
       <div className="h-px bg-border" />
       <EffectStack clip={clip} playheadS={playheadS} />
 

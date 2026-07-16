@@ -47,7 +47,7 @@ const uniformName = (i: number, key: string): string => `u_fx${i}_${key}`
  * PREMULTIPLIED alpha so the alpha-OVER blend (ONE, ONE_MINUS_SRC_ALPHA)
  * composites correctly.
  */
-function buildLayerFs(pointwise: readonly ResolvedEffect[]): string {
+function buildLayerFs(pointwise: readonly ResolvedEffect[], withMask: boolean): string {
   const decls: string[] = []
   const bodies: string[] = []
   pointwise.forEach((fx, i) => {
@@ -56,6 +56,31 @@ function buildLayerFs(pointwise: readonly ResolvedEffect[]): string {
     for (const param of def.params) decls.push(`uniform float ${uniformName(i, param.key)};`)
     bodies.push(`  { // ${def.type}\n${def.glsl((key) => uniformName(i, key))}\n  }`)
   })
+  // Shape mask (source-UV space) modulates alpha before the effect chain, so
+  // keys/grades see the masked layer. Compiled in only when the layer HAS a
+  // mask — unmasked layers keep the identity shader.
+  const maskDecls = withMask
+    ? `uniform vec2 uMaskCenter;
+uniform vec2 uMaskRadius;
+uniform float uMaskFeather;
+uniform int uMaskKind;   // 0 = rect, 1 = ellipse
+uniform float uMaskInvert;`
+    : ''
+  const maskBody = withMask
+    ? `  { // shape mask
+    float mkCov;
+    if (uMaskKind == 0) {
+      vec2 mkD = abs(vUV - uMaskCenter) - uMaskRadius;
+      float mkOut = length(max(mkD, vec2(0.0))) + min(max(mkD.x, mkD.y), 0.0);
+      mkCov = 1.0 - smoothstep(0.0, max(uMaskFeather, 1e-4), mkOut);
+    } else {
+      vec2 mkN = (vUV - uMaskCenter) / max(uMaskRadius, vec2(1e-4));
+      float mkF = max(uMaskFeather, 1e-4) / max(min(uMaskRadius.x, uMaskRadius.y), 1e-4);
+      mkCov = 1.0 - smoothstep(1.0 - mkF * 0.5, 1.0 + mkF * 0.5, length(mkN));
+    }
+    a *= mix(mkCov, 1.0 - mkCov, uMaskInvert);
+  }`
+    : ''
   return `#version 300 es
 precision highp float;
 in vec2 vUV;
@@ -64,6 +89,7 @@ uniform float uOpacity;
 uniform vec4 uUVRect; // u0,v0,u1,v1 — reject samples outside the crop window
 uniform vec2 uFrame;  // frame width,height in px (shared with the VS)
 uniform float uSeed;  // resolver frame index — animates stochastic effects (grain)
+${maskDecls}
 ${decls.join('\n')}
 out vec4 outColor;
 void main() {
@@ -74,6 +100,7 @@ void main() {
   vec4 src = texture(uTex, vUV);
   vec3 c = src.rgb;
   float a = src.a * uOpacity;
+${maskBody}
 ${bodies.join('\n')}
   c = clamp(c, 0.0, 1.0);
   outColor = vec4(c * a, a); // premultiplied
@@ -346,6 +373,14 @@ interface LayerProgram {
   uOpacity: WebGLUniformLocation | null
   uUVRect: WebGLUniformLocation | null
   uSeed: WebGLUniformLocation | null
+  /** Mask uniforms — present only on the masked variant of a stack program. */
+  mask?: {
+    center: WebGLUniformLocation | null
+    radius: WebGLUniformLocation | null
+    feather: WebGLUniformLocation | null
+    kind: WebGLUniformLocation | null
+    invert: WebGLUniformLocation | null
+  }
   /** fx[stackIndex][paramKey] -> location */
   fx: Record<string, WebGLUniformLocation | null>[]
 }
@@ -370,11 +405,13 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
   // clip compiles a second. Bounded by the number of distinct stacks in use.
   const layerPrograms = new Map<string, LayerProgram>()
 
-  function getLayerProgram(pointwise: readonly ResolvedEffect[]): LayerProgram {
-    const key = stackSignature(pointwise)
+  function getLayerProgram(pointwise: readonly ResolvedEffect[], withMask: boolean): LayerProgram {
+    // Masked layers compile their own variant of the stack program — an
+    // unmasked identity clip must never pay for mask uniforms it doesn't have.
+    const key = stackSignature(pointwise) + (withMask ? '#mask' : '')
     const hit = layerPrograms.get(key)
     if (hit) return hit
-    const prog = link(gl, LAYER_VS, buildLayerFs(pointwise))
+    const prog = link(gl, LAYER_VS, buildLayerFs(pointwise, withMask))
     const entry: LayerProgram = {
       prog,
       aPos: gl.getAttribLocation(prog, 'aPos'),
@@ -384,6 +421,17 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
       uOpacity: gl.getUniformLocation(prog, 'uOpacity'),
       uUVRect: gl.getUniformLocation(prog, 'uUVRect'),
       uSeed: gl.getUniformLocation(prog, 'uSeed'),
+      ...(withMask
+        ? {
+            mask: {
+              center: gl.getUniformLocation(prog, 'uMaskCenter'),
+              radius: gl.getUniformLocation(prog, 'uMaskRadius'),
+              feather: gl.getUniformLocation(prog, 'uMaskFeather'),
+              kind: gl.getUniformLocation(prog, 'uMaskKind'),
+              invert: gl.getUniformLocation(prog, 'uMaskInvert'),
+            },
+          }
+        : {}),
       fx: pointwise.map((fx, i) => {
         const def = getEffect(fx.type)
         const locs: Record<string, WebGLUniformLocation | null> = {}
@@ -628,7 +676,7 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
     v[20] = bl[0]; v[21] = bl[1]; v[22] = uv.u0; v[23] = uv.v1
 
     const pointwise = layer.effects.filter(isPointwise)
-    const lp = getLayerProgram(pointwise)
+    const lp = getLayerProgram(pointwise, !!layer.mask)
 
     gl.useProgram(lp.prog)
     gl.bindVertexArray(layerVao)
@@ -646,6 +694,14 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
     gl.uniform1f(lp.uOpacity, clamp01(layer.opacity))
     gl.uniform4f(lp.uUVRect, uv.u0, uv.v0, uv.u1, uv.v1)
     if (lp.uSeed) gl.uniform1f(lp.uSeed, layer.frameSeed)
+    if (layer.mask && lp.mask) {
+      const m = layer.mask
+      gl.uniform2f(lp.mask.center, m.cx, m.cy)
+      gl.uniform2f(lp.mask.radius, Math.max(m.rx, 1e-4), Math.max(m.ry, 1e-4))
+      gl.uniform1f(lp.mask.feather, m.feather)
+      gl.uniform1i(lp.mask.kind, m.kind === 'ellipse' ? 1 : 0)
+      gl.uniform1f(lp.mask.invert, m.invert ? 1 : 0)
+    }
     // Bind this draw's effect params. Locations were resolved against THIS
     // program, so index i lines up with pointwise[i] by construction.
     pointwise.forEach((fx, i) => {

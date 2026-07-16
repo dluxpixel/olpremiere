@@ -90,6 +90,21 @@ export interface Track {
 
 export type BlendMode = 'normal' | 'multiply' | 'screen' | 'overlay' | 'add' | 'softLight'
 
+/**
+ * A clip-level shape mask in source-UV space (0..1 across the clip's frame,
+ * before transform — so it rides the clip's position/scale/rotation for free).
+ * `feather` softens the edge outward, in UV units. `invert` keeps the outside.
+ */
+export interface ClipMask {
+  kind: 'rect' | 'ellipse'
+  cx: number
+  cy: number
+  rx: number
+  ry: number
+  feather: number
+  invert: boolean
+}
+
 export const BLEND_MODES: BlendMode[] = ['normal', 'multiply', 'screen', 'overlay', 'add', 'softLight']
 
 /** Human labels for the blend modes — shared by the Inspector + bulk panel. */
@@ -119,6 +134,8 @@ export interface Clip {
   transform: Transform
   opacity: number
   blendMode: BlendMode
+  /** Optional shape mask limiting where the clip shows (source-UV space). */
+  mask?: ClipMask
   audioGainDb: number
   fadeInS: number
   fadeOutS: number

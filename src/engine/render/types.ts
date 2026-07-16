@@ -3,7 +3,7 @@
 // Preview (main thread) and export (worker) both go through the SAME resolver
 // and the SAME renderer — that is what keeps them pixel-identical.
 
-import type { BlendMode, Id, TitleDef } from '../types'
+import type { BlendMode, ClipMask, Id, TitleDef } from '../types'
 
 /** A transform fully resolved to numbers at a specific time (no keyframes left). */
 export interface ResolvedTransform {
@@ -64,6 +64,8 @@ export interface RenderLayer {
   opacity: number
   /** How this layer composites over the tracks below it. */
   blendMode: BlendMode
+  /** Optional shape mask, applied to layer alpha in source-UV space. */
+  mask?: ClipMask
   /**
    * The ordered effect stack the renderer applies, keyframes already sampled
    * and neutral effects already dropped. Pointwise effects concatenate into one

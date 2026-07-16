@@ -135,6 +135,14 @@ describe('identity clip', () => {
     expect(asLayer(f.ops[0]).blendMode).toBe('screen')
   })
 
+  it('the shape mask flows onto the resolved layer (and is absent without one)', () => {
+    const mask = { kind: 'ellipse' as const, cx: 0.5, cy: 0.5, rx: 0.3, ry: 0.2, feather: 0.05, invert: false }
+    const masked = clip({ startS: 0, inS: 0, outS: 2, mask })
+    expect(asLayer(resolveFrame(seqOf([track({ clips: [masked] })]), 1).ops[0]).mask).toEqual(mask)
+    const plain = clip({ startS: 0, inS: 0, outS: 2 })
+    expect(asLayer(resolveFrame(seqOf([track({ clips: [plain] })]), 1).ops[0]).mask).toBeUndefined()
+  })
+
   it('frameSeed is the sequence-time frame index, identical for preview and export at one frame', () => {
     const c = clip({ startS: 0, inS: 0, outS: 5 })
     const seq = seqOf([track({ clips: [c] })]) // fps 30
