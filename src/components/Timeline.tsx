@@ -20,6 +20,8 @@ import {
   ZoomOut,
 } from 'lucide-react'
 import {
+  memo,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -495,6 +497,9 @@ interface ClipViewProps {
   selected: boolean
   /** Locked tracks reject every mutation, including effect/transition drops. */
   locked: boolean
+  /** One-shot accent pulse for a genuinely NEW clip. With virtualization a
+   *  mount can also be a scroll-in, so newness is decided by the parent. */
+  pop: boolean
   onClipPointerDown: (e: ReactPointerEvent<HTMLDivElement>, clip: Clip) => void
   onTrimPointerDown: (e: ReactPointerEvent<HTMLDivElement>, clip: Clip, edge: 'in' | 'out') => void
   onClipContextMenu: (e: ReactMouseEvent<HTMLDivElement>, clip: Clip) => void
@@ -503,7 +508,12 @@ interface ClipViewProps {
   onFadePreview: (tip: { x: number; y: number; text: string } | null) => void
 }
 
-function ClipView({
+// Memoized: during a drag, previewSeq re-renders the lane tree every
+// pointermove, but the engine preserves object identity for untouched clips —
+// so with stable handler props, every clip NOT being dragged skips its render
+// (filmstrip, waveform, fades and all). This is the big drag-feel win on
+// caption-heavy timelines.
+const ClipView = memo(function ClipView({
   clip,
   asset,
   trackKind,
@@ -511,6 +521,7 @@ function ClipView({
   pxPerS,
   selected,
   locked,
+  pop,
   onClipPointerDown,
   onTrimPointerDown,
   onClipContextMenu,
@@ -653,9 +664,10 @@ function ClipView({
       data-testid="clip"
       data-clip-id={clip.id}
       data-clip-kind={kind}
-      // A one-shot accent pulse on mount = a genuinely new clip (add / paste /
-      // undo-restore) — clips aren't virtualized, so mount is meaningful.
-      className={`group/clip absolute bottom-[3px] top-[3px] animate-[clip-pop_500ms_ease-out] overflow-hidden rounded-[6px] border ${
+      // A one-shot accent pulse for a genuinely new clip (add / paste / undo-
+      // restore). Mount is NOT meaningful anymore — virtualization remounts
+      // clips as they scroll in — so the parent decides newness by id.
+      className={`group/clip absolute bottom-[3px] top-[3px] ${pop ? 'animate-[clip-pop_500ms_ease-out]' : ''} overflow-hidden rounded-[6px] border ${
         // Selection lifts the clip (offset ring + brightness); an imminent FX
         // drop is an INSET ring — the two states must never look alike.
         selected ? 'ring-2 ring-accent ring-offset-1 ring-offset-bg-app brightness-110' : ''
@@ -785,10 +797,22 @@ function ClipView({
       )}
     </div>
   )
-}
+})
 
 // ---------------------------------------------------------------------------
 // Timeline
+
+/**
+ * A stable-identity wrapper around a fresh-every-render closure. The returned
+ * function never changes, but always calls the latest closure — what memoized
+ * children need from handler props without threading useCallback dependency
+ * lists through the Timeline's very large drag closures.
+ */
+function useStableCallback<A extends unknown[], R>(fn: (...args: A) => R): (...args: A) => R {
+  const ref = useRef(fn)
+  ref.current = fn
+  return useCallback((...args: A) => ref.current(...args), [])
+}
 
 type Drag =
   | {
@@ -872,6 +896,46 @@ export function Timeline({ height }: { height: number }) {
 
   const lengthS = Math.max(120, seq.durationS + 60)
   const contentWidth = lengthS * pxPerS
+
+  // --- Clip virtualization -------------------------------------------------
+  // Only clips intersecting the visible time range (+ one full viewport of
+  // margin each side, so ordinary scrolling never pops clips in at the edge)
+  // are mounted. Until the first measure, everything renders (null viewport).
+  const [viewport, setViewport] = useState<{ left: number; width: number } | null>(null)
+  const scrollRafRef = useRef(0)
+  const scheduleViewportMeasure = useCallback(() => {
+    if (scrollRafRef.current) return
+    scrollRafRef.current = requestAnimationFrame(() => {
+      scrollRafRef.current = 0
+      const el = lanesRef.current
+      if (el) setViewport({ left: el.scrollLeft, width: el.clientWidth })
+    })
+  }, [])
+  useEffect(() => {
+    const el = lanesRef.current
+    if (!el) return
+    setViewport({ left: el.scrollLeft, width: el.clientWidth })
+    const ro = new ResizeObserver(scheduleViewportMeasure)
+    ro.observe(el)
+    return () => {
+      ro.disconnect()
+      if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current)
+      scrollRafRef.current = 0
+    }
+  }, [scheduleViewportMeasure])
+  const winStartS = viewport ? (viewport.left - viewport.width) / pxPerS : -Infinity
+  const winEndS = viewport ? (viewport.left + viewport.width * 2) / pxPerS : Infinity
+
+  // Pop gating: ids seen on the previous commit. A clip id NOT in the set is
+  // genuinely new (add / paste / undo-restore) and gets the one-shot pulse; a
+  // virtualization remount is already in the set and stays quiet.
+  const seenClipIdsRef = useRef<Set<string>>(new Set())
+  const seenClipIds = seenClipIdsRef.current
+  useEffect(() => {
+    const ids = new Set<string>()
+    for (const t of seq.tracks) for (const c of t.clips) ids.add(c.id)
+    seenClipIdsRef.current = ids
+  }, [seq])
 
   // Lane geometry in content space (below the ruler), for pointer hit tests.
   const laneInfos = useMemo(() => {
@@ -1793,6 +1857,13 @@ export function Timeline({ height }: { height: number }) {
           ? 'cursor-zoom-in'
           : ''
 
+  // Stable identities for the ClipView handler props — without these, every
+  // Timeline render (each pointermove during a drag) would hand every ClipView
+  // fresh functions and defeat its memo().
+  const stableClipPointerDown = useStableCallback(handleClipPointerDown)
+  const stableTrimPointerDown = useStableCallback(handleTrimPointerDown)
+  const stableClipContextMenu = useStableCallback(handleClipContextMenu)
+
   const renderLane = (track: Track, tint: string) => {
     // Drop-target feedback during a cross-track move: green valid, red no-go.
     const hov = hoverLane?.trackId === track.id ? hoverLane : null
@@ -1808,23 +1879,26 @@ export function Timeline({ height }: { height: number }) {
       style={{ height: track.height }}
       onPointerDown={handleLanePointerDown}
     >
-      {track.clips.map((clip) => (
-        <ClipView
-          key={clip.id}
-          clip={clip}
-          asset={assets[clip.assetId]}
-          trackKind={track.kind}
-          trackHeight={track.height}
-          pxPerS={pxPerS}
-          selected={selection.includes(clip.id)}
-          locked={track.locked}
-          onClipPointerDown={handleClipPointerDown}
-          onTrimPointerDown={handleTrimPointerDown}
-          onClipContextMenu={handleClipContextMenu}
-          onFadeCommit={setClipFade}
-          onFadePreview={setTrimTip}
-        />
-      ))}
+      {track.clips.map((clip) =>
+        clipEndS(clip) < winStartS || clip.startS > winEndS ? null : (
+          <ClipView
+            key={clip.id}
+            clip={clip}
+            asset={assets[clip.assetId]}
+            trackKind={track.kind}
+            trackHeight={track.height}
+            pxPerS={pxPerS}
+            selected={selection.includes(clip.id)}
+            locked={track.locked}
+            pop={!seenClipIds.has(clip.id)}
+            onClipPointerDown={stableClipPointerDown}
+            onTrimPointerDown={stableTrimPointerDown}
+            onClipContextMenu={stableClipContextMenu}
+            onFadeCommit={setClipFade}
+            onFadePreview={setTrimTip}
+          />
+        ),
+      )}
       {dropPreview?.trackId === track.id && (
         <div
           className="pointer-events-none absolute inset-y-0 z-20 w-[2px] bg-accent"
@@ -1921,6 +1995,8 @@ export function Timeline({ height }: { height: number }) {
             // playback doesn't yank the view back while they drag the scrollbar.
             if (programmaticScroll.current) programmaticScroll.current = false
             else manualScrollUntil.current = performance.now() + 2000
+            // Virtualization window follows the scroll (rAF-throttled).
+            scheduleViewportMeasure()
           }}
           onDragOver={handleDragOver}
           onDrop={handleDrop}
