@@ -107,7 +107,7 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
   // Visible layers at the playhead, for click-to-select hit-testing.
   const frame = resolveFrame(seq, playheadS)
   const visibleLayers: RenderLayer[] = frame.ops.flatMap((op) =>
-    op.type === 'layer' ? [op.layer] : [op.from, op.to],
+    op.type === 'layer' ? [op.layer] : op.type === 'transition' ? [op.from, op.to] : [],
   )
   const quadFor = (layer: RenderLayer): [number, number][] => {
     const isTitle = layer.title !== undefined

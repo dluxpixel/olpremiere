@@ -75,8 +75,19 @@ async function px(page: Page, fx: number, fy: number): Promise<[number, number, 
 
 const luma = ([r, g, b]: [number, number, number]) => 0.2126 * r + 0.7152 * g + 0.0722 * b
 
+/**
+ * Wait for the monitor to actually PAINT the fixture's red frame. Media
+ * warmup starts when a clip enters the sequence (bounded-warmup change), so
+ * the first composite lands a beat after addClip — baselines sampled before
+ * it see the black stage.
+ */
+async function waitForFirstFrame(page: Page): Promise<void> {
+  await expect.poll(async () => (await px(page, 0.5, 0.5))[0], { timeout: 10_000 }).toBeGreaterThan(120)
+}
+
 test('vignette darkens the corners but not the center', async ({ page }) => {
   const clipId = await addClip(page)
+  await waitForFirstFrame(page)
   const beforeCorner = await px(page, 0.06, 0.06)
   await applyEffectWithParams(page, clipId, 'vignette', { amount: 0.9, size: 0.3, feather: 0.3 })
   await page.waitForTimeout(300)
@@ -88,6 +99,7 @@ test('vignette darkens the corners but not the center', async ({ page }) => {
 
 test('film grain perturbs pixels', async ({ page }) => {
   const clipId = await addClip(page)
+  await waitForFirstFrame(page)
   await applyEffectWithParams(page, clipId, 'grain', { amount: 1, size: 4 })
   await page.waitForTimeout(300)
   // Neighbouring samples on a flat red frame now differ — noise is present.
@@ -101,6 +113,7 @@ test('film grain perturbs pixels', async ({ page }) => {
 
 test('blend modes hit the renderer: multiply blacks out over the empty stage, overlay takes the dest-sampling path, normal restores', async ({ page }) => {
   await addClip(page)
+  await waitForFirstFrame(page)
   const baseline = await px(page, 0.5, 0.5)
   expect(baseline[0]).toBeGreaterThan(120)
 
@@ -121,6 +134,7 @@ test('blend modes hit the renderer: multiply blacks out over the empty stage, ov
 
 test('an ellipse mask keeps the center, kills the corner, and invert flips it', async ({ page }) => {
   await addClip(page)
+  await waitForFirstFrame(page)
   await page.getByTestId('mask-kind').selectOption('ellipse')
   await page.waitForTimeout(300)
   expect((await px(page, 0.5, 0.5))[0]).toBeGreaterThan(120) // inside survives
@@ -134,7 +148,7 @@ test('an ellipse mask keeps the center, kills the corner, and invert flips it', 
 
 test('chroma key removes the keyed colour', async ({ page }) => {
   const clipId = await addClip(page)
-  expect((await px(page, 0.5, 0.5))[0]).toBeGreaterThan(120) // red frame
+  await waitForFirstFrame(page) // red frame painted
   // Key RED (the fixture's first-second frame colour).
   await applyEffectWithParams(page, clipId, 'chromaKey', {
     keyR: 1,
@@ -150,10 +164,54 @@ test('chroma key removes the keyed colour', async ({ page }) => {
 
 test('luma key keys the frame out above threshold and leaves it below', async ({ page }) => {
   const clipId = await addClip(page)
+  await waitForFirstFrame(page)
   // Red luma ≈ 0.22 → threshold 0.6 keys the whole red frame to black.
   await applyEffectWithParams(page, clipId, 'lumaKey', { threshold: 0.6, softness: 0.05 })
   await page.waitForTimeout(300)
   expect(luma(await px(page, 0.5, 0.5))).toBeLessThan(25)
+})
+
+test('an adjustment layer grades the footage below it (and only inside its mask)', async ({ page }) => {
+  const clipId = await addClip(page)
+  await waitForFirstFrame(page)
+  const before = await px(page, 0.5, 0.5)
+  expect(before[0]).toBeGreaterThan(120) // red footage
+  expect(before[0] - before[2]).toBeGreaterThan(80) // strongly saturated
+
+  // Add an adjustment layer over the footage and desaturate through it.
+  await page.getByTestId('add-adjustment').click()
+  await expect(page.locator('[data-clip-kind="adjustment"]')).toHaveCount(1)
+  const adjId = await page.evaluate(async () => {
+    const storeMod = '/src/state/store.ts'
+    const typesMod = '/src/engine/types.ts'
+    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+      useStore: { getState: () => { project: unknown } }
+    }
+    const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+      activeSequence: (p: unknown) => { tracks: { clips: { id: string; adjustment?: boolean }[] }[] }
+    }
+    const seq = activeSequence(useStore.getState().project)
+    return seq.tracks.flatMap((t) => t.clips).find((c) => c.adjustment)!.id
+  })
+  await applyEffectWithParams(page, adjId, 'saturation', { saturation: -1 })
+  await page.waitForTimeout(300)
+  const after = await px(page, 0.5, 0.5)
+  expect(Math.abs(after[0] - after[2])).toBeLessThan(14) // grayscale = channels converge
+
+  // Mask the adjustment to a small centered ellipse: the corner regains colour.
+  await page.evaluate(async (id) => {
+    const editsMod = '/src/state/clipEdits.ts'
+    const { setClipMask } = (await import(/* @vite-ignore */ editsMod)) as {
+      setClipMask: (clipId: string, mask: unknown) => void
+    }
+    setClipMask(id, { kind: 'ellipse', cx: 0.5, cy: 0.5, rx: 0.2, ry: 0.2, feather: 0.02, invert: false })
+  }, adjId)
+  await page.waitForTimeout(300)
+  const centerMasked = await px(page, 0.5, 0.5)
+  const cornerMasked = await px(page, 0.1, 0.1)
+  expect(Math.abs(centerMasked[0] - centerMasked[2])).toBeLessThan(14) // inside: graded
+  expect(cornerMasked[0] - cornerMasked[2]).toBeGreaterThan(80) // outside: original red
+  void clipId
 })
 
 test('the new transitions are listed in the Effects browser', async ({ page }) => {

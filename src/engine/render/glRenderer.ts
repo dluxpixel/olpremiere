@@ -966,6 +966,7 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
     tex: TextureSource,
     frameW: number,
     frameH: number,
+    targetFb: WebGLFramebuffer | null,
   ): void {
     // FBOs: 0=from-composited, 1=to-composited, 2=layer scratch, 3=blur scratch.
     ensurePool(frameW, frameH, 4)
@@ -978,13 +979,12 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
     renderSideToFbo(op.from, fromSrc, frameW, frameH, fromFbo, layerFbo, scratch)
     renderSideToFbo(op.to, toSrc, frameW, frameH, toFbo, layerFbo, scratch)
 
-    // Combine into the default framebuffer (the visible/target canvas), OVER
-    // whatever lower tracks were already drawn. The combined sides are
-    // premultiplied (transparent where neither clip covers), so premultiplied-
-    // over compositing lets those lower tracks show. For a full-frame transition
-    // the combined alpha is 1 everywhere, so this is identical to a replace.
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
-    gl.viewport(0, 0, gl.canvas.width, gl.canvas.height)
+    // Combine into the target (canvas, or the accumulation FBO when the frame
+    // has adjustment layers), OVER whatever lower tracks were already drawn.
+    // The combined sides are premultiplied (transparent where neither clip
+    // covers), so premultiplied-over compositing lets those lower tracks show.
+    gl.bindFramebuffer(gl.FRAMEBUFFER, targetFb)
+    gl.viewport(0, 0, targetFb ? fboW : gl.canvas.width, targetFb ? fboH : gl.canvas.height)
     gl.enable(gl.BLEND)
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
     gl.useProgram(combineProg)
@@ -1003,14 +1003,108 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
     gl.activeTexture(gl.TEXTURE0)
   }
 
+  /**
+   * Full-frame pass: run a pointwise stack (and optional mask/opacity) over a
+   * source FBO into the CURRENT framebuffer via the shared per-layer program —
+   * the exact GLSL the per-clip path compiles, so adjustment grades are
+   * pixel-identical to clip grades. UVs are v-flipped: FBO memory is
+   * bottom-row-first while image textures are top-row-first.
+   */
+  function drawFboThroughStack(
+    src: Fbo,
+    pointwise: readonly ResolvedEffect[],
+    mask: RenderLayer['mask'],
+    opacity: number,
+    frameSeed: number,
+    frameW: number,
+    frameH: number,
+  ): void {
+    const lp = getLayerProgram(pointwise, !!mask)
+    gl.useProgram(lp.prog)
+    gl.bindVertexArray(layerVao)
+    gl.bindBuffer(gl.ARRAY_BUFFER, layerVbo)
+    const v = layerVerts
+    v[0] = 0; v[1] = 0; v[2] = 0; v[3] = 1
+    v[4] = frameW; v[5] = 0; v[6] = 1; v[7] = 1
+    v[8] = frameW; v[9] = frameH; v[10] = 1; v[11] = 0
+    v[12] = 0; v[13] = 0; v[14] = 0; v[15] = 1
+    v[16] = frameW; v[17] = frameH; v[18] = 1; v[19] = 0
+    v[20] = 0; v[21] = frameH; v[22] = 0; v[23] = 1
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, v)
+    gl.enableVertexAttribArray(lp.aPos)
+    gl.vertexAttribPointer(lp.aPos, 2, gl.FLOAT, false, 16, 0)
+    gl.enableVertexAttribArray(lp.aUV)
+    gl.vertexAttribPointer(lp.aUV, 2, gl.FLOAT, false, 16, 8)
+    gl.uniform2f(lp.uFrame, frameW, frameH)
+    gl.uniform1i(lp.uTex, 0)
+    gl.activeTexture(gl.TEXTURE0)
+    gl.bindTexture(gl.TEXTURE_2D, src.tex)
+    gl.uniform1f(lp.uOpacity, clamp01(opacity))
+    gl.uniform4f(lp.uUVRect, 0, 0, 1, 1)
+    if (lp.uSeed) gl.uniform1f(lp.uSeed, frameSeed)
+    // Bind the stack's effect params — locations were resolved against THIS
+    // program, so index i lines up with pointwise[i] by construction.
+    pointwise.forEach((fx, i) => {
+      const locs = lp.fx[i]
+      if (!locs) return
+      for (const key of Object.keys(locs)) {
+        const loc = locs[key]
+        if (loc) gl.uniform1f(loc, fx.params[key] ?? 0)
+      }
+    })
+    if (mask && lp.mask) {
+      // The mask spec is top-down (source space); this pass samples v-flipped.
+      gl.uniform2f(lp.mask.center, mask.cx, 1 - mask.cy)
+      gl.uniform2f(lp.mask.radius, Math.max(mask.rx, 1e-4), Math.max(mask.ry, 1e-4))
+      gl.uniform1f(lp.mask.feather, mask.feather)
+      gl.uniform1i(lp.mask.kind, mask.kind === 'ellipse' ? 1 : 0)
+      gl.uniform1f(lp.mask.invert, mask.invert ? 1 : 0)
+    }
+    gl.drawArrays(gl.TRIANGLES, 0, 6)
+  }
+
+  /**
+   * Apply an adjustment op to the accumulated frame: pointwise chain into a
+   * work FBO, neighborhood passes over it, then the processed frame composites
+   * OVER the original through mask + opacity — masked-out pixels keep the
+   * untouched original, and opacity fades the whole grade.
+   */
+  function applyAdjustment(
+    op: Extract<RenderOp, { type: 'adjustment' }>,
+    accum: Fbo,
+    work: Fbo,
+    scratch: Fbo,
+    frameW: number,
+    frameH: number,
+  ): void {
+    const pointwise = op.effects.filter(isPointwise)
+    const post = op.effects.filter(isNeighborhood)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, work.fb)
+    gl.viewport(0, 0, fboW, fboH)
+    gl.disable(gl.BLEND)
+    drawFboThroughStack(accum, pointwise, undefined, 1, op.frameSeed, frameW, frameH)
+    for (const fx of post) applyNeighborhood(fx, work, scratch)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, accum.fb)
+    gl.viewport(0, 0, fboW, fboH)
+    gl.enable(gl.BLEND)
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
+    drawFboThroughStack(work, [], op.mask, op.opacity, op.frameSeed, frameW, frameH)
+  }
+
   function render(frame: RenderFrame, tex: TextureSource): void {
     const frameW = frame.width
     const frameH = frame.height
-    // Pool for per-layer isolation: 2 FBOs (layer + blur scratch) at seq res.
-    ensurePool(frameW, frameH, 4)
+    // Adjustment frames composite into an accumulation FBO (pool[5]) so the
+    // adjustment stack can re-read the whole frame; everything else keeps the
+    // byte-stable straight-to-canvas path. pool[6] is the adjustment work FBO;
+    // glow's lazy pool[4] stays free in both paths.
+    const hasAdjustment = frame.ops.some((op) => op.type === 'adjustment')
+    ensurePool(frameW, frameH, hasAdjustment ? 7 : 4)
+    const accum = hasAdjustment ? pool[5] : null
+    const targetFb = accum ? accum.fb : null
 
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
-    gl.viewport(0, 0, gl.canvas.width, gl.canvas.height)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, targetFb)
+    gl.viewport(0, 0, targetFb ? fboW : gl.canvas.width, targetFb ? fboH : gl.canvas.height)
     gl.disable(gl.BLEND)
     clear(0, 0, 0, 1) // opaque black background
 
@@ -1018,10 +1112,18 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
       if (op.type === 'layer') {
         const source = tex(op.layer)
         if (!source) continue // still decoding — skip, never throw
-        compositeLayer(op.layer, source, frameW, frameH, null, pool[2], pool[3])
-      } else {
-        drawTransition(op, tex, frameW, frameH)
+        compositeLayer(op.layer, source, frameW, frameH, targetFb, pool[2], pool[3])
+      } else if (op.type === 'transition') {
+        drawTransition(op, tex, frameW, frameH, targetFb)
+      } else if (accum) {
+        applyAdjustment(op, accum, pool[6], pool[3], frameW, frameH)
       }
+    }
+    if (accum) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+      gl.viewport(0, 0, gl.canvas.width, gl.canvas.height)
+      gl.disable(gl.BLEND)
+      blitFbo(accum)
     }
     gl.bindVertexArray(null)
   }

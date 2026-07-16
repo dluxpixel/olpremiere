@@ -465,6 +465,39 @@ describe('two-clip transitions', () => {
   })
 })
 
+// --- Adjustment layers ------------------------------------------------------
+
+describe('adjustment layers', () => {
+  it('an adjustment clip on an upper track emits an adjustment op ABOVE the footage layer', () => {
+    const footage = track({ clips: [clip({ startS: 0, inS: 0, outS: 4 })] })
+    const adj = clip({ startS: 0, inS: 0, outS: 4, adjustment: true })
+    adj.effects = [{ id: 'fx1', type: 'saturation', params: { saturation: -1 }, enabled: true }]
+    const f = resolveFrame(seqOf([footage, track({ clips: [adj] })]), 1)
+    expect(f.ops).toHaveLength(2)
+    expect(f.ops[0].type).toBe('layer')
+    const op = f.ops[1]
+    expect(op.type).toBe('adjustment')
+    if (op.type === 'adjustment') {
+      expect(op.effects).toEqual([{ type: 'saturation', params: { saturation: -1 } }])
+      expect(op.opacity).toBe(1)
+      expect(op.frameSeed).toBe(30)
+    }
+  })
+
+  it('fading an adjustment clip scales the op opacity (grade fades in)', () => {
+    const adj = clip({ startS: 0, inS: 0, outS: 4, adjustment: true, fadeInS: 2 })
+    const f = resolveFrame(seqOf([track({ clips: [adj] })]), 1)
+    const op = f.ops[0]
+    expect(op.type).toBe('adjustment')
+    if (op.type === 'adjustment') expect(op.opacity).toBeCloseTo(0.5, 6)
+  })
+
+  it('a frame without adjustment clips emits no adjustment ops (fast path preserved)', () => {
+    const f = resolveFrame(seqOf([track({ clips: [clip({ startS: 0, outS: 4 })] })]), 1)
+    expect(f.ops.every((o) => o.type !== 'adjustment')).toBe(true)
+  })
+})
+
 // --- activeIndex binary search ---------------------------------------------
 
 describe('activeIndex binary search', () => {

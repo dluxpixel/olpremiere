@@ -136,6 +136,8 @@ export interface Clip {
   blendMode: BlendMode
   /** Optional shape mask limiting where the clip shows (source-UV space). */
   mask?: ClipMask
+  /** True = adjustment layer: the effect stack grades everything below it. */
+  adjustment?: boolean
   audioGainDb: number
   fadeInS: number
   fadeOutS: number
@@ -372,6 +374,33 @@ export function newTitleClip(def: TitleDef, startS: number, durationS = 5): Clip
 }
 
 export const isTitleClip = (clip: Clip): boolean => clip.title !== undefined
+
+/**
+ * An adjustment layer: no source of its own — its effect stack (and optional
+ * mask) applies to the COMPOSITE of everything below it for its time span,
+ * like Premiere/Resolve adjustment layers. Discriminated like titles.
+ */
+export function newAdjustmentClip(startS: number, durationS = 5): Clip {
+  return {
+    id: newId(),
+    assetId: '',
+    startS,
+    inS: 0,
+    outS: durationS,
+    speed: 1,
+    enabled: true,
+    transform: defaultTransform(),
+    opacity: 1,
+    blendMode: 'normal',
+    audioGainDb: 0,
+    fadeInS: 0,
+    fadeOutS: 0,
+    effects: [],
+    adjustment: true,
+  }
+}
+
+export const isAdjustmentClip = (clip: Clip): boolean => clip.adjustment === true
 
 /** A plain clip referencing an imported asset, placed at startS (in-point 0). */
 export function newClipFromAsset(asset: MediaAsset, startS: number): Clip {

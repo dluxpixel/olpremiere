@@ -6,6 +6,7 @@ import { clipDurationS, recomputeDuration, resolveStart } from '../engine/timeli
 import {
   activeSequence,
   defaultTitleDef,
+  newAdjustmentClip,
   newTitleClip,
   videoTracks,
   type Clip,
@@ -38,6 +39,35 @@ export function addTitleClip(text = 'Title'): void {
   const def = getDefaultTextAppearance()
   if (def && !isEmptyAppearance(def)) clip = applyAppearanceToClip(clip, def, seq.width, seq.height)
   updateActiveSequence('Add title', (sq) => {
+    const track = sq.tracks.find((t) => t.id === target.id)
+    if (!track) return sq
+    const startS = resolveStart(track, s.ui.playheadS, clipDurationS(clip))
+    const placed: Clip = { ...clip, startS }
+    const tracks = sq.tracks.map((t) =>
+      t.id === track.id
+        ? { ...t, clips: [...t.clips, placed].sort((a, b) => a.startS - b.startS) }
+        : t,
+    )
+    return recomputeDuration({ ...sq, tracks })
+  })
+  s.setUI({ selection: [clip.id] })
+}
+
+/**
+ * Add an ADJUSTMENT layer at the playhead on the topmost unlocked video track
+ * (same placement rule as titles — it must sit ABOVE the footage it grades).
+ * Effects added to it in the Inspector apply to everything below its span.
+ */
+export function addAdjustmentClip(): void {
+  const s = useStore.getState()
+  const seq = activeSequence(s.project)
+  const target = titleTargetTrack(seq.tracks)
+  if (!target) {
+    useToasts.getState().show('No unlocked video track for the adjustment layer', 'danger')
+    return
+  }
+  const clip = newAdjustmentClip(s.ui.playheadS, DEFAULT_TITLE_S)
+  updateActiveSequence('Add adjustment layer', (sq) => {
     const track = sq.tracks.find((t) => t.id === target.id)
     if (!track) return sq
     const startS = resolveStart(track, s.ui.playheadS, clipDurationS(clip))

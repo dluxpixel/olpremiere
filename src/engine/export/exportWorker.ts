@@ -549,7 +549,8 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
       const layers: RenderLayer[] = []
       for (const op of frame.ops) {
         if (op.type === 'layer') layers.push(op.layer)
-        else layers.push(op.from, op.to)
+        else if (op.type === 'transition') layers.push(op.from, op.to)
+        // adjustment ops carry no texture — nothing to gather
       }
       const texMap = await gatherTextures(layers)
       renderer.render(frame, (layer) => texMap.get(layer) ?? null)

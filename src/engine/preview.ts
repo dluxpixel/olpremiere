@@ -273,10 +273,11 @@ export function renderPreview(
     const active = new Set<Id>()
     for (const op of frame.ops) {
       if (op.type === 'layer') active.add(op.layer.assetId)
-      else {
+      else if (op.type === 'transition') {
         active.add(op.from.assetId)
         active.add(op.to.assetId)
       }
+      // adjustment ops reference no asset
     }
     for (const [id, { el }] of videoPool) if (!active.has(id) && !el.paused) el.pause()
   }

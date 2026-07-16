@@ -13,6 +13,7 @@ import {
   Music as MusicIcon,
   Plus,
   Scissors,
+  SlidersHorizontal,
   Type,
   Volume2,
   VolumeX,
@@ -74,7 +75,7 @@ import {
   type Track,
 } from '../engine/types'
 import { pausePlayback } from '../state/playbackControl'
-import { addTitleClip } from '../state/titleActions'
+import { addAdjustmentClip, addTitleClip } from '../state/titleActions'
 import { copySelection, cutSelection, duplicateSelection, pasteAtPlayhead } from '../state/clipboard'
 import { copyClipAttributes, hasClipAttributes, pasteClipAttributes } from '../state/attributes'
 import { normalizeClipGain } from '../state/audioActions'
@@ -447,6 +448,14 @@ function TimelineToolbar({ onZoomFit }: { onZoomFit: () => void }) {
       >
         <Type size={14} strokeWidth={1.5} />
       </IconButton>
+      <IconButton
+        size="compact"
+        label="Add adjustment layer (grades everything below it)"
+        onClick={() => addAdjustmentClip()}
+        data-testid="add-adjustment"
+      >
+        <SlidersHorizontal size={14} strokeWidth={1.5} />
+      </IconButton>
 
       <div className="ml-auto flex items-center gap-1.5">
         <PlayheadTimecode fps={fps} className="mr-2 text-[11px] tabular-nums text-text-secondary" />
@@ -536,15 +545,18 @@ const ClipView = memo(function ClipView({
   const innerH = Math.max(1, trackHeight - 6)
   // Titles are generated (no asset): a distinct violet family + the text label.
   const isTitle = clip.title !== undefined
-  const isAudio = !isTitle && trackKind === 'audio'
+  const isAdjustment = clip.adjustment === true
+  const isAudio = !isTitle && !isAdjustment && trackKind === 'audio'
   // Colour by the TRACK: an audio-track clip is audio-family even when it
   // references a video asset (a linked-audio split).
   const { bg, bd } = isTitle
     ? { bg: 'var(--color-clip-title)', bd: 'var(--color-clip-title-bd)' }
-    : trackKind === 'audio'
-      ? { bg: 'var(--color-clip-audio)', bd: 'var(--color-clip-audio-bd)' }
-      : familyFor(asset)
-  const kind = isTitle ? 'title' : trackKind
+    : isAdjustment
+      ? { bg: 'var(--color-accent-quiet)', bd: 'var(--color-accent)' }
+      : trackKind === 'audio'
+        ? { bg: 'var(--color-clip-audio)', bd: 'var(--color-clip-audio-bd)' }
+        : familyFor(asset)
+  const kind = isTitle ? 'title' : isAdjustment ? 'adjustment' : trackKind
   // The clip label mirrors the rendered case (textCase) so a lowercase/UPPERCASE
   // toggle visibly updates the timeline chip too, not just the preview.
   const titleText = isTitle
@@ -554,8 +566,8 @@ const ClipView = memo(function ClipView({
         ? (clip.title!.text || 'Title').toLowerCase()
         : clip.title!.text || 'Title'
     : ''
-  const label = isTitle ? titleText : (asset?.name ?? 'Missing media')
-  const thumb = useBlobUrl(isTitle || trackKind === 'audio' ? undefined : asset?.thumbnailKey)
+  const label = isTitle ? titleText : isAdjustment ? 'Adjustment' : (asset?.name ?? 'Missing media')
+  const thumb = useBlobUrl(isTitle || isAdjustment || trackKind === 'audio' ? undefined : asset?.thumbnailKey)
   // Filmstrip across the whole clip (real NLE look); the single poster frame
   // stays as the instant placeholder while a strip generates.
   const strip = useFilmstrip(

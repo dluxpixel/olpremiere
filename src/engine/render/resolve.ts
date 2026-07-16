@@ -182,6 +182,18 @@ function resolveTrack(track: Track, t: number, fps: number): RenderOp | null {
         layer.opacity = clamp(layer.opacity * ((endS - t) / clip.fadeOutS), 0, 1)
       }
 
+      // An adjustment clip converts to an adjustment op AFTER the fade math, so
+      // fading an adjustment layer fades its grade in/out (opacity scales it).
+      if (clip.adjustment) {
+        return {
+          type: 'adjustment',
+          effects: layer.effects,
+          opacity: layer.opacity,
+          mask: layer.mask,
+          frameSeed: layer.frameSeed,
+        }
+      }
+
       return { type: 'layer', layer }
     }
   }

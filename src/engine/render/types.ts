@@ -132,6 +132,18 @@ export type RenderOp =
       from: RenderLayer
       to: RenderLayer
     }
+  /**
+   * An adjustment layer: apply `effects` (optionally through `mask`, scaled by
+   * `opacity`) to the COMPOSITE of every op before this one. Forces the
+   * renderer onto its accumulation-FBO path for the frame.
+   */
+  | {
+      type: 'adjustment'
+      effects: ResolvedEffect[]
+      opacity: number
+      mask?: ClipMask
+      frameSeed: number
+    }
 
 export interface RenderFrame {
   width: number
