@@ -129,6 +129,16 @@ describe('identity clip', () => {
     expect(layer.effects).toEqual([])
   })
 
+  it('frameSeed is the sequence-time frame index, identical for preview and export at one frame', () => {
+    const c = clip({ startS: 0, inS: 0, outS: 5 })
+    const seq = seqOf([track({ clips: [c] })]) // fps 30
+    expect(asLayer(resolveFrame(seq, 1).ops[0]).frameSeed).toBe(30)
+    expect(asLayer(resolveFrame(seq, 2.5).ops[0]).frameSeed).toBe(75)
+    // Sub-frame preview times quantize to the SAME seed as the exact frame time,
+    // so stochastic effects (grain) cannot diverge between preview and export.
+    expect(asLayer(resolveFrame(seq, 2.5 + 0.01).ops[0]).frameSeed).toBe(75)
+  })
+
   it('fadeInS ramps layer opacity up over the fade, full after it', () => {
     const c = clip({ startS: 0, inS: 0, outS: 4, fadeInS: 1 })
     const at = (t: number) => asLayer(resolveFrame(seqOf([track({ clips: [c] })]), t).ops[0]).opacity

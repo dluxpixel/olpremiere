@@ -36,7 +36,7 @@ const coerceKind = (type: string): TransitionKind =>
  * `t` may lie past the clip's own [startS, endS) (a transition samples A past
  * its out point); the caller clamps to the source handles.
  */
-function layerFor(clip: Clip, t: number): RenderLayer {
+function layerFor(clip: Clip, t: number, fps: number): RenderLayer {
   const localT = t - clip.startS
   const rate = Math.abs(clip.speed || 1)
   // Reverse (speed < 0): walk the source backward from outS as time advances.
@@ -57,6 +57,7 @@ function layerFor(clip: Clip, t: number): RenderLayer {
     isImage: false,
     title: clip.title,
     speed: clip.speed,
+    frameSeed: Math.round(t * fps),
     transform: {
       x: resolveChannel(clip, 'posX', localT),
       y: resolveChannel(clip, 'posY', localT),
@@ -110,8 +111,8 @@ function resolveTrack(track: Track, t: number, fps: number): RenderOp | null {
             kind: coerceKind(tr.type),
             progress: (t - clip.startS) / d,
             // A sampled PAST its out point (t is beyond A's end).
-            from: layerFor(prev, t),
-            to: layerFor(clip, t),
+            from: layerFor(prev, t, fps),
+            to: layerFor(clip, t, fps),
           }
         }
       }
@@ -122,7 +123,7 @@ function resolveTrack(track: Track, t: number, fps: number): RenderOp | null {
     // there is no double-draw. ---
     const endS = clipEndS(clip)
     if (t >= clip.startS && t < endS) {
-      const layer = layerFor(clip, t)
+      const layer = layerFor(clip, t, fps)
       const dur = clipDurationS(clip)
 
       // Lone-edge fades: a transitionIn/Out with NO partner clip fades to/from

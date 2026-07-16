@@ -54,6 +54,12 @@ export interface RenderLayer {
    * The export path ignores it — it decodes exact frames, never plays.
    */
   speed: number
+  /**
+   * The sequence-time frame index (round(t * fps)), identical in preview and
+   * export at the same frame. Bound as `uSeed` so stochastic effects (grain)
+   * animate per frame without breaking preview==export parity.
+   */
+  frameSeed: number
   transform: ResolvedTransform
   opacity: number
   /**

@@ -216,6 +216,55 @@ export const EFFECTS: EffectDef[] = [
     `,
   },
   {
+    type: 'vignette',
+    label: 'Vignette',
+    description: 'Darken toward the edges. Size sets where the falloff starts, Feather how soft it is.',
+    category: 'stylize',
+    pass: 'pointwise',
+    // Dropped at a visible strength (like Auto Color); `default` stays 0 so
+    // Reset and the neutral-skip still work.
+    initialParams: { amount: 0.5 },
+    params: [
+      p('amount', 'Amount', 0, 1, 0.01, 0),
+      p('size', 'Size', 0, 1.5, 0.01, 0.4),
+      p('feather', 'Feather', 0, 1, 0.01, 0.35),
+    ],
+    // Radial falloff in source UV space, aspect-corrected by the frame so the
+    // vignette is round on screen rather than stretched.
+    glsl: (u) => `
+      vec2 vgP = (vUV - 0.5) * vec2(uFrame.x / max(uFrame.y, 1.0), 1.0);
+      float vgD = length(vgP);
+      float vgM = smoothstep(${u('size')}, ${u('size')} + max(${u('feather')}, 0.001), vgD);
+      c *= 1.0 - ${u('amount')} * vgM;
+    `,
+  },
+  {
+    type: 'grain',
+    label: 'Film Grain',
+    description: 'Animated luma noise. Size sets the grain cell in pixels.',
+    category: 'stylize',
+    pass: 'pointwise',
+    initialParams: { amount: 0.3 },
+    params: [p('amount', 'Amount', 0, 1, 0.01, 0), p('size', 'Size', 1, 8, 0.5, 2, 'px')],
+    // uSeed is the resolver's frame index (same in preview and export at the
+    // same frame time), so grain flickers per frame yet stays parity-safe.
+    glsl: (u) => `
+      float gnSize = max(${u('size')}, 1.0);
+      vec2 gnCell = floor(vUV * uFrame / gnSize);
+      float gnN = fract(sin(dot(gnCell + fract(uSeed * vec2(0.1031, 0.103)) * 61.0, vec2(12.9898, 78.233))) * 43758.5453);
+      c += (gnN - 0.5) * ${u('amount')} * 0.35;
+    `,
+  },
+  {
+    type: 'sharpen',
+    label: 'Sharpen',
+    description: 'Unsharp-mask detail boost. Radius sets the detail scale.',
+    category: 'stylize',
+    pass: 'neighborhood',
+    initialParams: { amount: 0.8 },
+    params: [p('amount', 'Amount', 0, 3, 0.01, 0), p('radius', 'Radius', 0.5, 4, 0.1, 1, 'px')],
+  },
+  {
     type: 'gaussianBlur',
     label: 'Gaussian Blur',
     description: 'Separable gaussian over the composited layer.',
@@ -230,6 +279,19 @@ export const EFFECTS: EffectDef[] = [
     category: 'blur',
     pass: 'neighborhood',
     params: [p('angleDeg', 'Angle', 0, 360, 1, 0, '°'), p('strength', 'Strength', 0, 1, 0.01, 0)],
+  },
+  {
+    type: 'glow',
+    label: 'Glow',
+    description: 'Bloom: bright areas bleed soft light. Threshold picks what counts as bright.',
+    category: 'stylize',
+    pass: 'neighborhood',
+    initialParams: { intensity: 1 },
+    params: [
+      p('intensity', 'Intensity', 0, 3, 0.01, 0),
+      p('radius', 'Radius', 2, 64, 0.5, 24, 'px'),
+      p('threshold', 'Threshold', 0, 1, 0.01, 0.6),
+    ],
   },
 ]
 
@@ -246,8 +308,12 @@ export const CANONICAL_ORDER = [
   'brightnessContrast',
   'saturation',
   'vibrance',
+  'vignette',
+  'grain',
+  'sharpen',
   'gaussianBlur',
   'directionalBlur',
+  'glow',
 ] as const
 
 export const EFFECT_BY_TYPE: Readonly<Record<string, EffectDef>> = Object.freeze(

@@ -62,6 +62,8 @@ in vec2 vUV;
 uniform sampler2D uTex;
 uniform float uOpacity;
 uniform vec4 uUVRect; // u0,v0,u1,v1 — reject samples outside the crop window
+uniform vec2 uFrame;  // frame width,height in px (shared with the VS)
+uniform float uSeed;  // resolver frame index — animates stochastic effects (grain)
 ${decls.join('\n')}
 out vec4 outColor;
 void main() {
@@ -121,6 +123,45 @@ in vec2 vUV;
 uniform sampler2D uTex;
 out vec4 outColor;
 void main() { outColor = texture(uTex, vUV); }`
+
+// Unsharp mask: centre minus a 4-tap cross average = high-pass, scaled back in.
+// Premultiplied in/out; rgb clamped to alpha so the result stays valid premult.
+const SHARPEN_FS = `#version 300 es
+precision highp float;
+in vec2 vUV;
+uniform sampler2D uTex;
+uniform vec2 uTexel;   // 1/w, 1/h
+uniform float uAmount;
+uniform float uRadius; // tap offset in texels
+out vec4 outColor;
+void main() {
+  vec4 cC = texture(uTex, vUV);
+  vec2 o = uTexel * uRadius;
+  vec4 nb = texture(uTex, vUV + vec2(o.x, 0.0)) + texture(uTex, vUV - vec2(o.x, 0.0))
+          + texture(uTex, vUV + vec2(0.0, o.y)) + texture(uTex, vUV - vec2(0.0, o.y));
+  vec3 hp = cC.rgb - nb.rgb * 0.25;
+  outColor = vec4(clamp(cC.rgb + hp * uAmount, vec3(0.0), vec3(cC.a)), cC.a);
+}`
+
+// Glow combine: base + bright-passed blurred copy as additive light. The glow's
+// luma feeds alpha so bloom escaping the layer's silhouette still composites
+// over lower tracks. Premultiplied in/out.
+const GLOW_FS = `#version 300 es
+precision highp float;
+in vec2 vUV;
+uniform sampler2D uBase;
+uniform sampler2D uBlur;
+uniform float uIntensity;
+uniform float uThreshold;
+out vec4 outColor;
+void main() {
+  vec4 base = texture(uBase, vUV);
+  vec4 blurc = texture(uBlur, vUV);
+  vec3 glow = max(blurc.rgb - uThreshold * blurc.a, vec3(0.0)) * uIntensity;
+  float glowLuma = dot(glow, vec3(0.2126, 0.7152, 0.0722));
+  float a = clamp(base.a + glowLuma, 0.0, 1.0);
+  outColor = vec4(min(base.rgb + glow, vec3(a)), a);
+}`
 
 // Transition combine: both inputs are premultiplied composited layers on black.
 const COMBINE_FS = `#version 300 es
@@ -230,6 +271,7 @@ interface LayerProgram {
   uTex: WebGLUniformLocation | null
   uOpacity: WebGLUniformLocation | null
   uUVRect: WebGLUniformLocation | null
+  uSeed: WebGLUniformLocation | null
   /** fx[stackIndex][paramKey] -> location */
   fx: Record<string, WebGLUniformLocation | null>[]
 }
@@ -244,6 +286,8 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
   const blurProg = link(gl, FULL_VS, BLUR_FS)
   const combineProg = link(gl, FULL_VS, COMBINE_FS)
   const blitProg = link(gl, FULL_VS, BLIT_FS)
+  const sharpenProg = link(gl, FULL_VS, SHARPEN_FS)
+  const glowProg = link(gl, FULL_VS, GLOW_FS)
 
   // One layer program per distinct pointwise stack SHAPE (types + order, not
   // values), compiled on first sight and reused thereafter. A project with no
@@ -264,6 +308,7 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
       uTex: gl.getUniformLocation(prog, 'uTex'),
       uOpacity: gl.getUniformLocation(prog, 'uOpacity'),
       uUVRect: gl.getUniformLocation(prog, 'uUVRect'),
+      uSeed: gl.getUniformLocation(prog, 'uSeed'),
       fx: pointwise.map((fx, i) => {
         const def = getEffect(fx.type)
         const locs: Record<string, WebGLUniformLocation | null> = {}
@@ -292,6 +337,20 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
   const blitLoc = {
     aPos: gl.getAttribLocation(blitProg, 'aPos'),
     uTex: gl.getUniformLocation(blitProg, 'uTex'),
+  }
+  const sharpenLoc = {
+    aPos: gl.getAttribLocation(sharpenProg, 'aPos'),
+    uTex: gl.getUniformLocation(sharpenProg, 'uTex'),
+    uTexel: gl.getUniformLocation(sharpenProg, 'uTexel'),
+    uAmount: gl.getUniformLocation(sharpenProg, 'uAmount'),
+    uRadius: gl.getUniformLocation(sharpenProg, 'uRadius'),
+  }
+  const glowLoc = {
+    aPos: gl.getAttribLocation(glowProg, 'aPos'),
+    uBase: gl.getUniformLocation(glowProg, 'uBase'),
+    uBlur: gl.getUniformLocation(glowProg, 'uBlur'),
+    uIntensity: gl.getUniformLocation(glowProg, 'uIntensity'),
+    uThreshold: gl.getUniformLocation(glowProg, 'uThreshold'),
   }
 
   // Reusable buffers: a per-layer quad (positions+UVs, rewritten each draw) and
@@ -468,6 +527,7 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
     gl.bindTexture(gl.TEXTURE_2D, tex)
     gl.uniform1f(lp.uOpacity, clamp01(layer.opacity))
     gl.uniform4f(lp.uUVRect, uv.u0, uv.v0, uv.u1, uv.v1)
+    if (lp.uSeed) gl.uniform1f(lp.uSeed, layer.frameSeed)
     // Bind this draw's effect params. Locations were resolved against THIS
     // program, so index i lines up with pointwise[i] by construction.
     pointwise.forEach((fx, i) => {
@@ -536,6 +596,63 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
     gl.drawArrays(gl.TRIANGLES, 0, 3)
   }
 
+  // Single-pass unsharp mask into scratch, copied back so the result lands in
+  // srcFbo like every neighborhood pass.
+  function sharpenFbo(srcFbo: Fbo, scratch: Fbo, amount: number, radiusPx: number): void {
+    gl.useProgram(sharpenProg)
+    bindFull(sharpenLoc.aPos)
+    gl.uniform1i(sharpenLoc.uTex, 0)
+    gl.activeTexture(gl.TEXTURE0)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, scratch.fb)
+    gl.viewport(0, 0, fboW, fboH)
+    gl.disable(gl.BLEND)
+    gl.bindTexture(gl.TEXTURE_2D, srcFbo.tex)
+    gl.uniform2f(sharpenLoc.uTexel, 1 / fboW, 1 / fboH)
+    gl.uniform1f(sharpenLoc.uAmount, amount)
+    gl.uniform1f(sharpenLoc.uRadius, Math.min(Math.max(radiusPx, 0), 8))
+    gl.drawArrays(gl.TRIANGLES, 0, 3)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, srcFbo.fb)
+    gl.viewport(0, 0, fboW, fboH)
+    blitFbo(scratch)
+  }
+
+  // Glow: copy the layer into `extra`, blur it there, then additively combine
+  // the bright-passed blur with the original. Needs a third seq-sized FBO.
+  function glowFbo(
+    srcFbo: Fbo,
+    scratch: Fbo,
+    extra: Fbo,
+    radiusPx: number,
+    intensity: number,
+    threshold: number,
+  ): void {
+    gl.activeTexture(gl.TEXTURE0)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, extra.fb)
+    gl.viewport(0, 0, fboW, fboH)
+    gl.disable(gl.BLEND)
+    blitFbo(srcFbo)
+    blurFbo(extra, scratch, radiusPx)
+
+    gl.useProgram(glowProg)
+    bindFull(glowLoc.aPos)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, scratch.fb)
+    gl.viewport(0, 0, fboW, fboH)
+    gl.disable(gl.BLEND)
+    gl.uniform1i(glowLoc.uBase, 0)
+    gl.uniform1i(glowLoc.uBlur, 1)
+    gl.activeTexture(gl.TEXTURE0)
+    gl.bindTexture(gl.TEXTURE_2D, srcFbo.tex)
+    gl.activeTexture(gl.TEXTURE1)
+    gl.bindTexture(gl.TEXTURE_2D, extra.tex)
+    gl.uniform1f(glowLoc.uIntensity, intensity)
+    gl.uniform1f(glowLoc.uThreshold, threshold)
+    gl.drawArrays(gl.TRIANGLES, 0, 3)
+    gl.activeTexture(gl.TEXTURE0)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, srcFbo.fb)
+    gl.viewport(0, 0, fboW, fboH)
+    blitFbo(scratch)
+  }
+
   /**
    * Run one neighborhood effect over the layer's isolated FBO. Result is left
    * in `fbo`. These run AFTER the pointwise chain (which already premultiplied
@@ -550,6 +667,19 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
       if (strength > 0.005) {
         const angle = ((fx.params.angleDeg ?? 0) * Math.PI) / 180
         directionalBlurFbo(fbo, scratch, angle, strength * MAX_BLUR_PX)
+      }
+    } else if (fx.type === 'sharpen') {
+      const amount = fx.params.amount ?? 0
+      if (amount > 0.001) sharpenFbo(fbo, scratch, amount, fx.params.radius ?? 1)
+    } else if (fx.type === 'glow') {
+      const intensity = fx.params.intensity ?? 0
+      if (intensity > 0.001) {
+        // Glow holds a blurred copy alongside the original, so it needs a third
+        // seq-sized FBO beyond the (fbo, scratch) pair every pass gets. Grown
+        // lazily: projects without glow never pay for it. pool[4] is free in
+        // both the layer path (uses 2,3) and the transition path (uses 0-3).
+        ensurePool(fboW, fboH, 5)
+        glowFbo(fbo, scratch, pool[4], fx.params.radius ?? 24, intensity, fx.params.threshold ?? 0.6)
       }
     }
   }
@@ -698,6 +828,8 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
     gl.deleteProgram(blurProg)
     gl.deleteProgram(combineProg)
     gl.deleteProgram(blitProg)
+    gl.deleteProgram(sharpenProg)
+    gl.deleteProgram(glowProg)
     gl.deleteBuffer(layerVbo)
     gl.deleteBuffer(fullVbo)
     gl.deleteVertexArray(layerVao)
