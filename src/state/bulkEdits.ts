@@ -13,6 +13,7 @@ import { clipDurationS } from '../engine/timeline'
 import { activeSequence, newId, type AnimChannel, type Clip } from '../engine/types'
 import { playheadLocalT } from './clipEdits'
 import { updateActiveSequence, useStore } from './store'
+import { useToasts } from './toasts'
 
 /**
  * Map `fn` over every selected clip that lives on an unlocked track, as a
@@ -75,6 +76,26 @@ export function setClipsPosition(ids: Iterable<string>, x: number, y: number): v
 export function applyEffectToClips(ids: Iterable<string>, type: string): void {
   const label = getEffect(type)?.label ?? type
   mapClips(ids, `Add ${label}`, (c) => addEffect(c, type, newId()))
+}
+
+/**
+ * Add one fresh instance of an effect to EVERY video clip in the active
+ * sequence — ONE undo step, no selection needed. Audio clips are skipped
+ * (a visual effect means nothing on them) and locked tracks are skipped by
+ * mapClips. Mirrors applyPresetToAllClips in library.ts.
+ */
+export function applyEffectToAllClips(type: string): void {
+  const show = useToasts.getState().show
+  const label = getEffect(type)?.label ?? type
+  const ids = activeSequence(useStore.getState().project)
+    .tracks.filter((t) => t.kind === 'video' && !t.locked)
+    .flatMap((t) => t.clips.map((c) => c.id))
+  if (ids.length === 0) {
+    show(`No video clips to apply ${label} to`)
+    return
+  }
+  applyEffectToClips(ids, type)
+  show(`Applied "${label}" to ${ids.length} clip${ids.length === 1 ? '' : 's'}`, 'success')
 }
 
 /** Drop every applied effect from every selected clip. */

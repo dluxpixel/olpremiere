@@ -7,8 +7,9 @@ import { formatTimecode } from '../engine/timecode'
 import { activeSequence, type MediaAsset } from '../engine/types'
 import { useBlobUrl } from '../state/blobUrls'
 import { CaptionsDialog } from './CaptionsDialog'
+import { applyEffectToAllClips } from '../state/bulkEdits'
 import { applyEffect, setClipTransition } from '../state/clipEdits'
-import { openContextMenu } from '../state/contextMenu'
+import { openContextMenu, type MenuItem } from '../state/contextMenu'
 import { ASSET_MIME, EFFECT_MIME, SFX_MIME, TRANSITION_MIME } from '../state/dnd'
 import {
   addLibraryItemToProject,
@@ -282,7 +283,11 @@ function MediaTab() {
   )
 }
 
-/** One draggable entry. Double-click applies it to the selected clip. */
+/**
+ * One draggable entry. Double-click applies it to the selected clip; `menu`
+ * adds a right-click menu (an effect can go on every clip at once from there,
+ * with no selection at all).
+ */
 function BrowserItem({
   name,
   title,
@@ -291,6 +296,7 @@ function BrowserItem({
   onApply,
   disabled,
   testId,
+  menu,
 }: {
   name: string
   title: string
@@ -299,6 +305,7 @@ function BrowserItem({
   onApply: () => void
   disabled: boolean
   testId: string
+  menu?: MenuItem[]
 }) {
   return (
     <div
@@ -313,6 +320,7 @@ function BrowserItem({
         e.dataTransfer.effectAllowed = 'copy'
       }}
       onDoubleClick={onApply}
+      onContextMenu={menu ? (e) => openContextMenu(e, menu) : undefined}
       onKeyDown={(e) => {
         if (e.key === 'Enter') onApply()
       }}
@@ -365,7 +373,7 @@ function EffectsTab() {
       <div className="min-h-0 flex-1 overflow-y-auto px-1 pb-2">
         {!targetId && (
           <p className="px-2 pb-1.5 text-[10px] text-text-muted">
-            Select a clip to apply, or drag straight onto one.
+            Select a clip to apply, drag straight onto one, or right-click → Apply to every clip.
           </p>
         )}
 
@@ -451,6 +459,15 @@ function EffectsTab() {
                     payload={e.type}
                     disabled={!targetId}
                     onApply={() => targetId && applyEffect(targetId, e.type)}
+                    menu={[
+                      {
+                        label: 'Apply to selected clip',
+                        shortcut: 'Enter',
+                        disabled: !targetId,
+                        onClick: () => targetId && applyEffect(targetId, e.type),
+                      },
+                      { label: 'Apply to every clip', onClick: () => applyEffectToAllClips(e.type) },
+                    ]}
                   />
                 ))}
               </section>

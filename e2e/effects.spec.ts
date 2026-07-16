@@ -145,6 +145,44 @@ test('dragging an effect from the browser onto a clip applies it', async ({ page
   expect(await stackTypes(page, clipId)).toEqual(['saturation'])
 })
 
+test('right-click an effect → Apply to every clip hits them all, in one undo', async ({ page }) => {
+  await addClip(page)
+  // A second clip on the timeline, and NOTHING selected — "every clip" must not
+  // depend on a selection.
+  await page.getByTestId('asset-card').dblclick()
+  await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(2)
+  // Video-track clips only — the imported webm carries linked audio, and a
+  // visual effect deliberately never lands on an audio clip.
+  const ids = await page.evaluate(async () => {
+    // Same indirection as the helpers above: a literal specifier would make tsc
+    // try to resolve these browser-only paths at build time.
+    const storeMod = '/src/state/store.ts'
+    const typesMod = '/src/engine/types.ts'
+    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+      useStore: { getState: () => { project: unknown; setUI: (p: unknown) => void } }
+    }
+    const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+      activeSequence: (p: unknown) => { tracks: { kind: string; clips: { id: string }[] }[] }
+    }
+    useStore.getState().setUI({ selection: [] })
+    return activeSequence(useStore.getState().project)
+      .tracks.filter((t) => t.kind === 'video')
+      .flatMap((t) => t.clips)
+      .map((c) => c.id)
+  })
+  expect(ids).toHaveLength(2)
+
+  await page.getByRole('tab', { name: 'Effects' }).click()
+  await page.locator('[data-testid="effect-item"][data-payload="saturation"]').click({ button: 'right' })
+  await page.getByTestId('context-menu').getByRole('menuitem', { name: 'Apply to every clip' }).click()
+
+  for (const id of ids) expect(await stackTypes(page, id)).toEqual(['saturation'])
+
+  // ONE undo clears all of them → it was a single command, not one per clip.
+  await page.keyboard.press('Control+z')
+  for (const id of ids) expect(await stackTypes(page, id)).toEqual([])
+})
+
 test('dragging a transition onto a clip picks the edge nearest the cursor', async ({ page }) => {
   const clipId = await addClip(page)
 

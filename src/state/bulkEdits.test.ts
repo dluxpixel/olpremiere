@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { channelKeyframes } from '../engine/effects/channels'
 import { recomputeDuration } from '../engine/timeline'
 import { toggleChannelAnimation } from './clipEdits'
@@ -11,6 +11,7 @@ import {
   type Sequence,
 } from '../engine/types'
 import {
+  applyEffectToAllClips,
   applyEffectToClips,
   clearEffectsForClips,
   mapClips,
@@ -21,6 +22,12 @@ import {
 } from './bulkEdits'
 import { updateTitles } from './titleActions'
 import { updateActiveSequence, useStore } from './store'
+
+// The suite runs on the node environment; the real toast store reaches for
+// window.setTimeout. Same shim the other action suites use.
+vi.mock('./toasts', () => ({
+  useToasts: { getState: () => ({ show: () => {} }) },
+}))
 
 const seq = (): Sequence => activeSequence(useStore.getState().project)
 const clips = () => seq().tracks[0].clips
@@ -97,6 +104,43 @@ describe('applyEffectToClips', () => {
     expect(ca.effects[0].type).toBe('saturation')
     // Distinct instance ids (not a shared reference).
     expect(ca.effects[0].id).not.toBe(cb.effects[0].id)
+  })
+})
+
+describe('applyEffectToAllClips', () => {
+  it('applies to EVERY video clip with nothing selected, in ONE undo step', () => {
+    seedTitle(0)
+    seedTitle(6)
+    seedTitle(12)
+    useStore.getState().setUI({ selection: [] })
+    applyEffectToAllClips('saturation')
+    expect(clips().map((c) => c.effects.length)).toEqual([1, 1, 1])
+    // Distinct instance ids per clip, not one shared object.
+    const ids = clips().map((c) => c.effects[0].id)
+    expect(new Set(ids).size).toBe(3)
+    useStore.getState().undo()
+    expect(clips().map((c) => c.effects.length)).toEqual([0, 0, 0])
+  })
+
+  it('leaves audio clips alone (a visual effect means nothing on them)', () => {
+    seedTitle(0)
+    updateActiveSequence('seed audio', (sq) => ({
+      ...sq,
+      tracks: sq.tracks.map((t) =>
+        t.kind === 'audio'
+          ? { ...t, clips: [{ ...newTitleClip(defaultTitleDef('a'), 0, 5), title: undefined }] }
+          : t,
+      ),
+    }))
+    applyEffectToAllClips('saturation')
+    const audio = seq().tracks.find((t) => t.kind === 'audio')!
+    expect(audio.clips[0].effects).toHaveLength(0)
+  })
+
+  it('does nothing (no undo entry) when there are no video clips', () => {
+    const before = useStore.getState().project
+    applyEffectToAllClips('saturation')
+    expect(useStore.getState().project).toBe(before)
   })
 })
 
