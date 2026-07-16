@@ -194,6 +194,9 @@ export const ANIM_CHANNELS = [
   'gain',
   'temperature',
   'tint',
+  /** Per-clip audio volume in dB — the ONLY audio channel; all three mixers
+   *  inherit it through the shared clipGainEnvelope. */
+  'volume',
 ] as const
 export type AnimChannel = (typeof ANIM_CHANNELS)[number]
 

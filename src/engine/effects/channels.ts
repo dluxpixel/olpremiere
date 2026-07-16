@@ -90,6 +90,8 @@ export function channelBase(clip: Clip, channel: AnimChannel): number {
       return tf.crop.l
     case 'opacity':
       return clip.opacity
+    case 'volume':
+      return clip.audioGainDb
     default:
       return 0
   }
@@ -189,6 +191,8 @@ export function withChannelValue(clip: Clip, channel: AnimChannel, value: number
       return setCrop({ l: value })
     case 'opacity':
       return { ...clip, opacity: value }
+    case 'volume':
+      return { ...clip, audioGainDb: value }
     default:
       return clip
   }

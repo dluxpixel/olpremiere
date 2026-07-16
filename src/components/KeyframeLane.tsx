@@ -64,6 +64,7 @@ const FRIENDLY: Partial<Record<AnimChannel, string>> = {
   gain: 'Gain',
   temperature: 'Temperature',
   tint: 'Tint',
+  volume: 'Volume (dB)',
 }
 const friendly = (ch: AnimChannel): string => FRIENDLY[ch] ?? ch
 

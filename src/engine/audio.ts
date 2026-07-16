@@ -5,6 +5,7 @@
 
 import { getBlob } from '../state/persistence'
 import { duckEnvelope } from './ducking'
+import { evalChannel } from './keyframes'
 import type { AutoLevel, Clip, Id, MediaAsset, Sequence, Track } from './types'
 
 /** Sources start this far in the future so scheduling jitter can't clip the head. */
@@ -234,11 +235,22 @@ export interface GainPoint {
  */
 export function clipGainEnvelope(clip: Clip, fromS: number): GainPoint[] | null {
   if (!computeClipSchedule(clip, fromS)) return null
-  const g = dbToGain(clip.audioGainDb)
   const speed = Math.abs(clip.speed) || 1
   const winStart = clip.startS
   const winEnd = clip.startS + (clip.outS - clip.inS) / speed
   const winLen = winEnd - winStart
+
+  // Keyframed volume: sample dB at each knot; between knots every consumer
+  // ramps LINEARLY IN AMPLITUDE (setValueAtTime/linearRampToValueAtTime and
+  // the pure mixer's applyGainEnvelope agree, keeping all three mixers
+  // byte-identical). Non-linear eases are approximated by subdividing their
+  // interval into 8 knots. Without keyframes this collapses to the old
+  // constant `g` and the envelope is byte-identical to before.
+  const volKfs = clip.keyframes?.volume
+  const gAt =
+    volKfs && volKfs.length > 0
+      ? (x: number): number => dbToGain(evalChannel(volKfs, x - winStart, clip.audioGainDb))
+      : (): number => dbToGain(clip.audioGainDb)
 
   let fin = Math.max(0, clip.fadeInS)
   let fout = Math.max(0, clip.fadeOutS)
@@ -251,13 +263,23 @@ export function clipGainEnvelope(clip: Clip, fromS: number): GainPoint[] | null 
   const envAt = (x: number): number => {
     const fi = fin > 0 ? clamp((x - winStart) / fin, 0, 1) : 1
     const fo = fout > 0 ? clamp((winEnd - x) / fout, 0, 1) : 1
-    return g * Math.min(fi, fo)
+    return gAt(x) * Math.min(fi, fo)
   }
 
   const audibleStart = Math.max(fromS, winStart)
   const times = new Set<number>([audibleStart, winEnd])
   if (fin > 0) times.add(winStart + fin)
   if (fout > 0) times.add(winEnd - fout)
+  if (volKfs) {
+    for (let i = 0; i < volKfs.length; i++) {
+      times.add(winStart + volKfs[i].t)
+      const next = volKfs[i + 1]
+      if (next && volKfs[i].ease !== 'linear') {
+        const span = next.t - volKfs[i].t
+        for (let s = 1; s < 8; s++) times.add(winStart + volKfs[i].t + (span * s) / 8)
+      }
+    }
+  }
   const sorted = [...times]
     .filter((x) => x >= audibleStart - 1e-9 && x <= winEnd + 1e-9)
     .sort((a, b) => a - b)

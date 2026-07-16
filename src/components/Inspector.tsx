@@ -1,10 +1,11 @@
-import { Rewind, SlidersHorizontal } from 'lucide-react'
+import { Clock, Rewind, SlidersHorizontal } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 import { clipEmitsAudio } from '../engine/audio'
+import { isChannelAnimated, resolveChannel } from '../engine/effects/channels'
 import { clipDurationS, clipEndS, moveGroup } from '../engine/timeline'
 import { formatTimecode, parseTimecode, quantizeToFrame } from '../engine/timecode'
 import { activeSequence, isTitleClip, type Clip, type MediaAsset, type Track } from '../engine/types'
-import { setClipFade, setClipGainDb, setClipSpeed } from '../state/clipEdits'
+import { setChannel, setClipFade, setClipGainDb, setClipSpeed, toggleChannelAnimation } from '../state/clipEdits'
 import { updateActiveSequence, useStore } from '../state/store'
 import { IconButton } from '../ui/Button'
 import { EffectControls, ScrubField, type Spec } from './EffectControls'
@@ -89,8 +90,15 @@ function VolumeSlider({ clip }: { clip: Clip }) {
  * common mp4 case: the VIDEO clip is selected but its sound lives on the
  * linked audio clip — these controls edit that partner.
  */
-function AudioControls({ clip, linked }: { clip: Clip; linked?: boolean }) {
+function AudioControls({ clip, linked, playheadS }: { clip: Clip; linked?: boolean; playheadS?: number }) {
   const durMax = Math.max(0.05, clipDurationS(clip))
+  // Keyframed volume: the stopwatch toggles animation; while animated the
+  // field shows the RESOLVED dB at the playhead and commits write a keyframe
+  // there (setChannel). The lane itself appears in Effect Controls' Keyframes
+  // section automatically once the channel is animated.
+  const volAnimated = isChannelAnimated(clip, 'volume')
+  const volLocalT = playheadS !== undefined && playheadS >= 0 ? Math.max(0, playheadS - clip.startS) : 0
+  const shownGain = volAnimated ? resolveChannel(clip, 'volume', volLocalT) : clip.audioGainDb
   return (
     <section className="flex flex-col gap-2" data-testid="audio-controls">
       <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">
@@ -101,12 +109,20 @@ function AudioControls({ clip, linked }: { clip: Clip; linked?: boolean }) {
           <div className="flex w-full items-center gap-2">
             <VolumeSlider clip={clip} />
             <ScrubField
-              value={clip.audioGainDb}
+              value={shownGain}
               spec={GAIN_SPEC}
               testId="field-audio-gain"
               ariaLabel="Audio gain (dB)"
-              onCommit={(v) => setClipGainDb(clip.id, v)}
+              onCommit={(v) => (volAnimated ? setChannel(clip.id, 'volume', v) : setClipGainDb(clip.id, v))}
             />
+            <IconButton
+              label={volAnimated ? 'Stop animating volume' : 'Animate volume (keyframes)'}
+              data-testid="volume-stopwatch"
+              onClick={() => toggleChannelAnimation(clip.id, 'volume')}
+              className={volAnimated ? 'text-accent' : undefined}
+            >
+              <Clock size={13} strokeWidth={1.75} aria-hidden />
+            </IconButton>
           </div>
         </FieldRow>
         <FieldRow label="Fade in (s)">
@@ -275,7 +291,7 @@ function ClipPanel({
           Video clips keep Speed first (their audio is secondary). */}
       {audioFirst && showAudio && (
         <>
-          <AudioControls clip={clip} />
+          <AudioControls clip={clip} playheadS={playheadS} />
           <div className="h-px bg-border" />
         </>
       )}
@@ -289,7 +305,7 @@ function ClipPanel({
 
       {!audioFirst && showAudio && (
         <>
-          <AudioControls clip={clip} />
+          <AudioControls clip={clip} playheadS={playheadS} />
           <div className="h-px bg-border" />
         </>
       )}
@@ -298,7 +314,7 @@ function ClipPanel({
           lives on the linked audio clip, so edit that partner right here. */}
       {!showAudio && linkedAudio && (
         <>
-          <AudioControls clip={linkedAudio} linked />
+          <AudioControls clip={linkedAudio} linked playheadS={playheadS} />
           <div className="h-px bg-border" />
         </>
       )}

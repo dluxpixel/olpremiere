@@ -208,6 +208,53 @@ describe('clipGainEnvelope', () => {
     ])
   })
 
+  it('volume keyframes bake into the envelope as dB sampled at each knot', () => {
+    // 0 dB at t=0 → −12 dB at t=2 → −12 dB flat to the end.
+    const env = clipGainEnvelope(
+      clip({
+        keyframes: {
+          volume: [
+            { t: 0, value: 0, ease: 'linear' },
+            { t: 2, value: -12, ease: 'linear' },
+          ],
+        },
+      }),
+      0,
+    )!
+    expect(env[0]).toEqual({ offsetS: 0, value: 1 })
+    const at2 = env.find((p) => p.offsetS === 2)!
+    expect(at2.value).toBeCloseTo(10 ** (-12 / 20), 6)
+    // Past the last keyframe the channel clamps at its final value.
+    expect(env.at(-1)!.offsetS).toBe(4)
+    expect(env.at(-1)!.value).toBeCloseTo(10 ** (-12 / 20), 6)
+  })
+
+  it('volume keyframes compose with fades (fade multiplies the keyframed gain)', () => {
+    const env = clipGainEnvelope(
+      clip({
+        fadeInS: 1,
+        keyframes: { volume: [{ t: 0, value: -6, ease: 'linear' }] },
+      }),
+      0,
+    )!
+    const g = 10 ** (-6 / 20)
+    expect(env[0]).toEqual({ offsetS: 0, value: 0 }) // fade wins at the head
+    expect(env.find((p) => p.offsetS === 1)!.value).toBeCloseTo(g, 6)
+    expect(env.at(-1)!.value).toBeCloseTo(g, 6)
+  })
+
+  it('a clip WITHOUT volume keyframes produces the exact pre-keyframe envelope', () => {
+    // Byte-determinism guard: the volume-aware path must collapse to the old
+    // constant-gain math when no keyframes exist.
+    const env = clipGainEnvelope(clip({ audioGainDb: -6, fadeInS: 1, fadeOutS: 1 }), 0)!
+    const g = 10 ** (-6 / 20)
+    expect(env.map((p) => p.offsetS)).toEqual([0, 1, 3, 4])
+    expect(env[0].value).toBe(0)
+    expect(env[1].value).toBeCloseTo(g, 9)
+    expect(env[2].value).toBeCloseTo(g, 9)
+    expect(env[3].value).toBe(0)
+  })
+
   it('starting mid fade-in sets the partial level then ramps to g', () => {
     // fromS=1 lands halfway through a 2s fade-in on clip [0,4)
     const env = clipGainEnvelope(clip({ fadeInS: 2 }), 1)!
