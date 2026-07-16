@@ -143,6 +143,34 @@ void main() {
   outColor = vec4(clamp(cC.rgb + hp * uAmount, vec3(0.0), vec3(cC.a)), cC.a);
 }`
 
+// Dest-sampling blend modes (overlay / soft light): fixed-function blending
+// cannot read the destination, so the target is captured to a texture and the
+// blend computed in a full-screen pass. Both inputs premultiplied; math runs
+// on straight colour (W3C compositing formulas) and re-premultiplies.
+const BLENDMODE_FS = `#version 300 es
+precision highp float;
+in vec2 vUV;
+uniform sampler2D uDst;
+uniform sampler2D uSrc;
+uniform int uMode; // 0 = overlay, 1 = soft light
+out vec4 outColor;
+void main() {
+  vec4 dst = texture(uDst, vUV);
+  vec4 src = texture(uSrc, vUV);
+  vec3 d = dst.a > 0.0 ? dst.rgb / dst.a : vec3(0.0);
+  vec3 s = src.a > 0.0 ? src.rgb / src.a : vec3(0.0);
+  vec3 b;
+  if (uMode == 0) {
+    b = mix(2.0 * d * s, 1.0 - 2.0 * (1.0 - d) * (1.0 - s), step(0.5, d));
+  } else {
+    vec3 dd = mix(((16.0 * d - 12.0) * d + 4.0) * d, sqrt(d), step(0.25, d));
+    b = mix(d - (1.0 - 2.0 * s) * d * (1.0 - d), d + (2.0 * s - 1.0) * (dd - d), step(0.5, s));
+  }
+  vec3 outRgb = mix(d, b, src.a);
+  float outA = clamp(dst.a + src.a * (1.0 - dst.a), 0.0, 1.0);
+  outColor = vec4(outRgb * outA, outA);
+}`
+
 // Glow combine: base + bright-passed blurred copy as additive light. The glow's
 // luma feeds alpha so bloom escaping the layer's silhouette still composites
 // over lower tracks. Premultiplied in/out.
@@ -334,6 +362,7 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
   const blitProg = link(gl, FULL_VS, BLIT_FS)
   const sharpenProg = link(gl, FULL_VS, SHARPEN_FS)
   const glowProg = link(gl, FULL_VS, GLOW_FS)
+  const blendModeProg = link(gl, FULL_VS, BLENDMODE_FS)
 
   // One layer program per distinct pointwise stack SHAPE (types + order, not
   // values), compiled on first sight and reused thereafter. A project with no
@@ -398,6 +427,12 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
     uBlur: gl.getUniformLocation(glowProg, 'uBlur'),
     uIntensity: gl.getUniformLocation(glowProg, 'uIntensity'),
     uThreshold: gl.getUniformLocation(glowProg, 'uThreshold'),
+  }
+  const blendModeLoc = {
+    aPos: gl.getAttribLocation(blendModeProg, 'aPos'),
+    uDst: gl.getUniformLocation(blendModeProg, 'uDst'),
+    uSrc: gl.getUniformLocation(blendModeProg, 'uSrc'),
+    uMode: gl.getUniformLocation(blendModeProg, 'uMode'),
   }
 
   // Reusable buffers: a per-layer quad (positions+UVs, rewritten each draw) and
@@ -486,6 +521,42 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
   let fboW = 0
   let fboH = 0
   const pool: Fbo[] = []
+
+  // Destination capture for the dest-sampling blend modes (overlay/soft light).
+  // Sized to whatever target it last captured (canvas or seq-sized FBO).
+  let destCapTex: WebGLTexture | null = null
+  let destCapW = -1
+  let destCapH = -1
+
+  function captureTarget(targetFb: WebGLFramebuffer | null, w: number, h: number): void {
+    if (!destCapTex) {
+      destCapTex = gl.createTexture()
+      if (!destCapTex) throw new Error('createTexture failed')
+      gl.bindTexture(gl.TEXTURE_2D, destCapTex)
+      setTexParams()
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, targetFb)
+    gl.activeTexture(gl.TEXTURE0)
+    gl.bindTexture(gl.TEXTURE_2D, destCapTex)
+    if (w !== destCapW || h !== destCapH) {
+      gl.copyTexImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 0, 0, w, h, 0)
+      destCapW = w
+      destCapH = h
+    } else {
+      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, w, h)
+    }
+  }
+
+  // Fixed-function blend for the modes that don't need to read the destination.
+  // All inputs are premultiplied: multiply = dst*(src + 1 - srcA), screen =
+  // src + dst*(1 - src), add = src + dst — each is exact for opaque sources and
+  // degrades gracefully with alpha.
+  function setBlendForMode(mode: RenderLayer['blendMode']): void {
+    if (mode === 'multiply') gl.blendFunc(gl.DST_COLOR, gl.ONE_MINUS_SRC_ALPHA)
+    else if (mode === 'screen') gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_COLOR)
+    else if (mode === 'add') gl.blendFunc(gl.ONE, gl.ONE)
+    else gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
+  }
 
   function makeFbo(w: number, h: number): Fbo {
     const tex = gl.createTexture()
@@ -744,7 +815,11 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
     scratch: Fbo,
   ): void {
     const post = layer.effects.filter(isNeighborhood)
-    if (post.length > 0) {
+    const mode = layer.blendMode
+    // Overlay/soft light must read the destination, so they always take the
+    // isolated-FBO path even without neighborhood effects.
+    const needsDestSample = mode === 'overlay' || mode === 'softLight'
+    if (post.length > 0 || needsDestSample) {
       gl.bindFramebuffer(gl.FRAMEBUFFER, layerFbo.fb)
       gl.viewport(0, 0, fboW, fboH)
       gl.disable(gl.BLEND)
@@ -754,23 +829,44 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
       gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
       drawLayer(layer, source, frameW, frameH)
       for (const fx of post) applyNeighborhood(fx, layerFbo, scratch)
-      // Blit the processed premultiplied layer onto the target, over. The target
-      // may be a seq-sized transition FBO (fboW×fboH), NOT the canvas — sizing the
-      // viewport to the canvas would draw into only a sub-rect of that FBO (the
-      // transition-preview bug).
-      gl.bindFramebuffer(gl.FRAMEBUFFER, targetFb)
-      gl.viewport(0, 0, targetFb ? fboW : gl.canvas.width, targetFb ? fboH : gl.canvas.height)
-      gl.enable(gl.BLEND)
-      gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
-      blitFbo(layerFbo)
+      // The target may be a seq-sized transition FBO (fboW×fboH), NOT the
+      // canvas — sizing the viewport to the canvas would draw into only a
+      // sub-rect of that FBO (the transition-preview bug).
+      const tw = targetFb ? fboW : gl.canvas.width
+      const th = targetFb ? fboH : gl.canvas.height
+      if (needsDestSample) {
+        // Capture what's on the target, then compute the blend full-screen.
+        captureTarget(targetFb, tw, th)
+        gl.bindFramebuffer(gl.FRAMEBUFFER, targetFb)
+        gl.viewport(0, 0, tw, th)
+        gl.disable(gl.BLEND)
+        gl.useProgram(blendModeProg)
+        bindFull(blendModeLoc.aPos)
+        gl.uniform1i(blendModeLoc.uDst, 0)
+        gl.uniform1i(blendModeLoc.uSrc, 1)
+        gl.activeTexture(gl.TEXTURE0)
+        gl.bindTexture(gl.TEXTURE_2D, destCapTex!)
+        gl.activeTexture(gl.TEXTURE1)
+        gl.bindTexture(gl.TEXTURE_2D, layerFbo.tex)
+        gl.uniform1i(blendModeLoc.uMode, mode === 'overlay' ? 0 : 1)
+        gl.drawArrays(gl.TRIANGLES, 0, 3)
+        gl.activeTexture(gl.TEXTURE0)
+      } else {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, targetFb)
+        gl.viewport(0, 0, tw, th)
+        gl.enable(gl.BLEND)
+        setBlendForMode(mode)
+        blitFbo(layerFbo)
+        gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
+      }
     } else {
-      // Fast path: draw straight onto the target with premultiplied over. Same
-      // as above — target may be a seq-sized FBO, so size the viewport to it.
+      // Fast path: draw straight onto the target. Same viewport note as above.
       gl.bindFramebuffer(gl.FRAMEBUFFER, targetFb)
       gl.viewport(0, 0, targetFb ? fboW : gl.canvas.width, targetFb ? fboH : gl.canvas.height)
       gl.enable(gl.BLEND)
-      gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
+      setBlendForMode(mode)
       drawLayer(layer, source, frameW, frameH)
+      gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
     }
   }
 
@@ -793,7 +889,11 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
     // where they apply, so dips still read; only the uncovered area is see-through.
     clear(0, 0, 0, 0)
     if (!source) return
-    compositeLayer(layer, source, frameW, frameH, dst.fb, layerFbo, scratch)
+    // Blend modes composite against the tracks BELOW, but a transition side is
+    // isolated on transparent — multiply/overlay against nothing would black
+    // out or vanish the clip mid-transition. Flatten to normal inside sides.
+    const flat = layer.blendMode !== 'normal' ? { ...layer, blendMode: 'normal' as const } : layer
+    compositeLayer(flat, source, frameW, frameH, dst.fb, layerFbo, scratch)
   }
 
   function blitFbo(fbo: Fbo): void {
@@ -878,6 +978,9 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
     gl.deleteProgram(blitProg)
     gl.deleteProgram(sharpenProg)
     gl.deleteProgram(glowProg)
+    gl.deleteProgram(blendModeProg)
+    if (destCapTex) gl.deleteTexture(destCapTex)
+    destCapTex = null
     gl.deleteBuffer(layerVbo)
     gl.deleteBuffer(fullVbo)
     gl.deleteVertexArray(layerVao)

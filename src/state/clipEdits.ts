@@ -27,6 +27,7 @@ import {
   ANIM_CHANNELS,
   newId,
   type AnimChannel,
+  type BlendMode,
   type Clip,
   type Id,
   type Keyframe,
@@ -283,6 +284,10 @@ export function removeClipTransition(clipId: string, edge: 'in' | 'out'): void {
     ...c,
     [edge === 'in' ? 'transitionIn' : 'transitionOut']: undefined,
   }))
+}
+
+export function setClipBlendMode(clipId: string, mode: BlendMode): void {
+  mapClip(clipId, 'Set blend mode', (c) => ({ ...c, blendMode: mode }))
 }
 
 // ---------------------------------------------------------------------------

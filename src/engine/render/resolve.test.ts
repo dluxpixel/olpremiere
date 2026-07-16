@@ -129,6 +129,12 @@ describe('identity clip', () => {
     expect(layer.effects).toEqual([])
   })
 
+  it('blendMode flows onto the resolved layer', () => {
+    const c = clip({ startS: 0, inS: 0, outS: 2, blendMode: 'screen' })
+    const f = resolveFrame(seqOf([track({ clips: [c] })]), 1)
+    expect(asLayer(f.ops[0]).blendMode).toBe('screen')
+  })
+
   it('frameSeed is the sequence-time frame index, identical for preview and export at one frame', () => {
     const c = clip({ startS: 0, inS: 0, outS: 5 })
     const seq = seqOf([track({ clips: [c] })]) // fps 30

@@ -3,7 +3,7 @@
 // Preview (main thread) and export (worker) both go through the SAME resolver
 // and the SAME renderer — that is what keeps them pixel-identical.
 
-import type { Id, TitleDef } from '../types'
+import type { BlendMode, Id, TitleDef } from '../types'
 
 /** A transform fully resolved to numbers at a specific time (no keyframes left). */
 export interface ResolvedTransform {
@@ -62,6 +62,8 @@ export interface RenderLayer {
   frameSeed: number
   transform: ResolvedTransform
   opacity: number
+  /** How this layer composites over the tracks below it. */
+  blendMode: BlendMode
   /**
    * The ordered effect stack the renderer applies, keyframes already sampled
    * and neutral effects already dropped. Pointwise effects concatenate into one

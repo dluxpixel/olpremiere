@@ -71,6 +71,7 @@ function layerFor(clip: Clip, t: number, fps: number): RenderLayer {
       cropL: resolveChannel(clip, 'cropL', localT),
     },
     opacity: clamp(resolveChannel(clip, 'opacity', localT), 0, 1),
+    blendMode: clip.blendMode ?? 'normal',
     effects,
   }
 }

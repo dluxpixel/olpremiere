@@ -88,7 +88,19 @@ export interface Track {
   clips: Clip[]
 }
 
-export type BlendMode = 'normal' | 'multiply' | 'screen' | 'overlay'
+export type BlendMode = 'normal' | 'multiply' | 'screen' | 'overlay' | 'add' | 'softLight'
+
+export const BLEND_MODES: BlendMode[] = ['normal', 'multiply', 'screen', 'overlay', 'add', 'softLight']
+
+/** Human labels for the blend modes — shared by the Inspector + bulk panel. */
+export const BLEND_LABELS: Record<BlendMode, string> = {
+  normal: 'Normal',
+  multiply: 'Multiply',
+  screen: 'Screen',
+  overlay: 'Overlay',
+  add: 'Add',
+  softLight: 'Soft Light',
+}
 
 /** Per-track loudness equalization strength (Phase 6+). 'off' = bypass. */
 export type AutoLevel = 'off' | 'low' | 'medium' | 'high'

@@ -23,7 +23,15 @@ import { isParamAnimated, paramKeyframes, resolveParam } from '../engine/effects
 import { EFFECTS, getEffect, paramSens, type EffectParamDef } from '../engine/effects/registry'
 import { clipEndS } from '../engine/timeline'
 import { TRANSITION_KINDS, TRANSITION_LABELS, type TransitionKind } from '../engine/render/types'
-import { ANIM_CHANNELS, type AnimChannel, type Clip, type EffectInstance } from '../engine/types'
+import {
+  ANIM_CHANNELS,
+  BLEND_LABELS,
+  BLEND_MODES,
+  type AnimChannel,
+  type BlendMode,
+  type Clip,
+  type EffectInstance,
+} from '../engine/types'
 import {
   addEffectKeyframeAtPlayhead,
   addKeyframeAtPlayhead,
@@ -37,6 +45,7 @@ import {
   resetChannels,
   resetEffectParams,
   setChannel,
+  setClipBlendMode,
   setClipTransition,
   setEffectParamValue,
   toggleChannelAnimation,
@@ -685,6 +694,22 @@ export function EffectControls({
       <Section title="Crop" channels={['cropT', 'cropR', 'cropB', 'cropL']} clip={clip} playheadS={playheadS} />
       <div className="h-px bg-border" />
       <Section title="Opacity" channels={['opacity']} clip={clip} playheadS={playheadS} />
+      <div className="flex items-center gap-1.5">
+        <span className="w-14 shrink-0 text-[11px] text-text-muted">Blend</span>
+        <select
+          data-testid="blend-mode"
+          aria-label="Blend mode"
+          value={clip.blendMode ?? 'normal'}
+          onChange={(e) => setClipBlendMode(clip.id, e.target.value as BlendMode)}
+          className="h-6 flex-1 cursor-default rounded-[4px] bg-bg-input px-1.5 text-[11px] text-text-primary"
+        >
+          {BLEND_MODES.map((m) => (
+            <option key={m} value={m}>
+              {BLEND_LABELS[m]}
+            </option>
+          ))}
+        </select>
+      </div>
       <div className="h-px bg-border" />
       <EffectStack clip={clip} playheadS={playheadS} />
 
