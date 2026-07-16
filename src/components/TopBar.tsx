@@ -164,8 +164,8 @@ function RecordButton() {
         separator: i === 0,
       })),
       {
-        // On by default: RNNoise removes cars / fans / hum while keeping the
-        // voice (see noiseChain.ts). Off = pristine raw capture.
+        // Off by default = pristine capture; on = noise suppression to quiet a
+        // passing car / fans / hum. See audioConstraintFor.
         label: check(enhance, 'Reduce background noise'),
         onClick: () => setEnhance(!enhance),
         separator: true,

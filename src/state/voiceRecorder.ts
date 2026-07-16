@@ -5,7 +5,6 @@
 
 import { create } from 'zustand'
 import { importFiles } from './mediaActions'
-import { createNoiseChain, type NoiseChain } from './noiseChain'
 import { useToasts } from './toasts'
 
 interface RecorderState {
@@ -15,10 +14,8 @@ interface RecorderState {
   /** Chosen audio-input `deviceId`, or null for the system default. Persisted. */
   selectedInputId: string | null
   /**
-   * Whether to run noise reduction. ON by default: the RNNoise worklet chain
-   * (see noiseChain.ts) removes background sound — cars, fans, mains hum —
-   * while leaving the voice intact; browsers' own suppression is only the
-   * fallback when the worklet can't load. OFF captures the mic pristine.
+   * Whether to run browser noise suppression. OFF by default so a voiceover
+   * captures pristine; ON removes steady background sound (a passing car, fans).
    * Persisted.
    */
   enhance: boolean
@@ -26,7 +23,7 @@ interface RecorderState {
 
 /** localStorage keys; survive reloads and projects. */
 const INPUT_KEY = 'reel:recorder:input-device'
-export const ENHANCE_KEY = 'reel:recorder:enhance'
+const ENHANCE_KEY = 'reel:recorder:enhance'
 
 /** Recorded-audio bitrate. 128 kbps Opus is transparent for voice; the browser
  * default is far lower, which is a big part of why raw recordings sound bad. */
@@ -41,12 +38,11 @@ function loadSavedInputId(): string | null {
   }
 }
 
-/** Noise reduction defaults ON; only an explicit '0' (user turned it off) disables it. */
-export function loadEnhance(): boolean {
+function loadEnhance(): boolean {
   try {
-    return typeof localStorage === 'undefined' || localStorage.getItem(ENHANCE_KEY) !== '0'
+    return typeof localStorage !== 'undefined' && localStorage.getItem(ENHANCE_KEY) === '1'
   } catch {
-    return true
+    return false
   }
 }
 
@@ -60,12 +56,11 @@ export const useRecorder = create<RecorderState>(() => ({
 /**
  * The `getUserMedia` audio constraint. Always captures clean 48 kHz mono with
  * echo-cancellation and auto-gain OFF (those are what mangle a voiceover into a
- * pumped, muffled mess). `reduceNoise` toggles ONLY the browser's noise
- * suppression — used solely as the FALLBACK when the RNNoise chain can't load
- * (noiseChain.ts does the real work on a raw capture, and running both would
- * double-process the voice). A pinned device uses `exact` so we KNOW we
- * captured the mic the user picked; if it's gone `getUserMedia` throws and we
- * fall back loudly rather than record from the wrong device.
+ * pumped, muffled mess). `reduceNoise` toggles ONLY noise suppression — the one
+ * step that removes steady background sound (a passing car, fans) — so it can
+ * quiet the room without the old artefacts. A pinned device uses `exact` so we
+ * KNOW we captured the mic the user picked; if it's gone `getUserMedia` throws
+ * and we fall back loudly rather than record from the wrong device.
  */
 export function audioConstraintFor(deviceId: string | null, reduceNoise = false): MediaTrackConstraints {
   const c: MediaTrackConstraints = {
@@ -86,13 +81,13 @@ export function audioConstraintFor(deviceId: string | null, reduceNoise = false)
   return c
 }
 
-/** Toggle background-noise reduction and remember it ('0' = explicitly off). */
+/** Toggle background-noise suppression and remember it. */
 export function setEnhance(on: boolean): void {
   useRecorder.setState({ enhance: on })
   try {
     if (typeof localStorage === 'undefined') return
     if (on) localStorage.setItem(ENHANCE_KEY, '1')
-    else localStorage.setItem(ENHANCE_KEY, '0')
+    else localStorage.removeItem(ENHANCE_KEY)
   } catch {
     // Ignore storage failures (private mode / quota); the in-memory choice still applies.
   }
@@ -175,24 +170,8 @@ export async function startRecording(): Promise<void> {
   acquiring = true
   try {
     const { selectedInputId: chosen, enhance } = useRecorder.getState()
-    // Build the RNNoise graph BEFORE opening the mic: if it sets up, capture RAW
-    // and let it do the suppression; if it can't (old browser, blocked wasm),
-    // fall back to the browser's own noiseSuppression constraint. Never both —
-    // stacking two suppressors chews up the voice.
-    let takeChain: NoiseChain | null = null
-    if (enhance) {
-      try {
-        takeChain = await createNoiseChain()
-      } catch (err) {
-        console.warn(
-          'OL Studio: noise-reduction worklet unavailable, using browser suppression',
-          err,
-        )
-      }
-    }
-    const browserNS = enhance && !takeChain
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraintFor(chosen, browserNS) })
+      stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraintFor(chosen, enhance) })
     } catch (err) {
       const name = (err as { name?: string })?.name
       // A pinned device that's since been unplugged makes the `exact` constraint
@@ -202,14 +181,12 @@ export async function startRecording(): Promise<void> {
         setInputDevice(null)
         show('That microphone is unavailable — using the system default', 'info')
         try {
-          stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraintFor(null, browserNS) })
+          stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraintFor(null, enhance) })
         } catch {
-          takeChain?.dispose()
           show('Microphone access was blocked', 'danger')
           return
         }
       } else {
-        takeChain?.dispose()
         show('Microphone access was blocked', 'danger')
         return
       }
@@ -226,34 +203,18 @@ export async function startRecording(): Promise<void> {
     // in take 2's buffer.
     const takeStream = stream
     const takeChunks: Blob[] = []
-    // Record the CLEANED stream when the chain is up; the raw mic stream still
-    // owns the hardware (it's what finalize stops to douse the OS record light).
-    let recordStream = takeStream
-    if (takeChain) {
-      try {
-        recordStream = takeChain.attach(takeStream)
-        console.info('OL Studio: RNNoise noise reduction active')
-      } catch (err) {
-        console.warn('OL Studio: noise-reduction attach failed, recording raw', err)
-        takeChain.dispose()
-        takeChain = null
-        // Best effort: at least ask the browser to suppress on the live track.
-        void takeStream.getAudioTracks()[0]?.applyConstraints({ noiseSuppression: true }).catch(() => {})
-      }
-    }
     try {
-      const rec = new MediaRecorder(recordStream, options)
+      const rec = new MediaRecorder(takeStream, options)
       recorder = rec
       rec.ondataavailable = (e) => {
         if (e.data.size > 0) takeChunks.push(e.data)
       }
-      rec.onstop = () => void finalize(mime, rec, takeStream, takeChunks, takeChain)
+      rec.onstop = () => void finalize(mime, rec, takeStream, takeChunks)
       rec.start()
     } catch (err) {
       // Constructor/start can throw on an unsupported option or UA quirk. The mic
       // stream is already live — release it, or the OS record indicator stays lit.
       takeStream?.getTracks().forEach((t) => t.stop())
-      takeChain?.dispose()
       if (stream === takeStream) stream = null
       recorder = null
       console.warn('OL Studio: could not start MediaRecorder', err)
@@ -283,10 +244,8 @@ async function finalize(
   rec: MediaRecorder,
   takeStream: MediaStream | null,
   takeChunks: Blob[],
-  takeChain: NoiseChain | null,
 ): Promise<void> {
   takeStream?.getTracks().forEach((t) => t.stop())
-  takeChain?.dispose()
   if (recorder === rec) recorder = null
   if (stream === takeStream) stream = null
   const blob = new Blob(takeChunks, { type: mime || 'audio/webm' })
