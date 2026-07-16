@@ -67,9 +67,10 @@ export interface EffectDef {
   params: EffectParamDef[]
   /**
    * Pointwise GLSL. Mutates `vec3 c` (0..1 RGB) in place; `float a` (alpha) is
-   * readable. The renderer wraps every body in its own block scope, so local
-   * variable names cannot collide when an effect appears in a stack twice.
-   * Uniform names come from `u`, so they cannot collide either.
+   * readable AND writable — keying effects multiply it down, and the premultiply
+   * happens after the whole chain. The renderer wraps every body in its own
+   * block scope, so local variable names cannot collide when an effect appears
+   * in a stack twice. Uniform names come from `u`, so they cannot collide either.
    */
   glsl?: (u: UniformNamer) => string
 }
@@ -281,6 +282,64 @@ export const EFFECTS: EffectDef[] = [
     params: [p('angleDeg', 'Angle', 0, 360, 1, 0, '°'), p('strength', 'Strength', 0, 1, 0.01, 0)],
   },
   {
+    type: 'chromaKey',
+    label: 'Chroma Key',
+    description: 'Green screen: keys out the key colour. Similarity 0 is off; Spill desaturates leftover fringe.',
+    category: 'key',
+    pass: 'pointwise',
+    // Dropped keying green at a working strength; defaults stay identity.
+    initialParams: { similarity: 0.35, smoothness: 0.1, spill: 0.5 },
+    params: [
+      p('keyR', 'Key R', 0, 1, 0.01, 0),
+      p('keyG', 'Key G', 0, 1, 0.01, 1),
+      p('keyB', 'Key B', 0, 1, 0.01, 0),
+      p('similarity', 'Similarity', 0, 1, 0.01, 0),
+      p('smoothness', 'Smoothness', 0, 1, 0.01, 0.1),
+      p('spill', 'Spill', 0, 1, 0.01, 0),
+    ],
+    // Distance in CbCr (chroma-only) space so shadows/lighting on the screen
+    // still key. similarity 0 bypasses entirely = identity at defaults.
+    glsl: (u) => `
+      float ckSim = ${u('similarity')};
+      if (ckSim > 0.0) {
+        vec3 ckKey = vec3(${u('keyR')}, ${u('keyG')}, ${u('keyB')});
+        vec2 ckPx = vec2(dot(c, vec3(-0.169, -0.331, 0.5)), dot(c, vec3(0.5, -0.419, -0.081)));
+        vec2 ckKy = vec2(dot(ckKey, vec3(-0.169, -0.331, 0.5)), dot(ckKey, vec3(0.5, -0.419, -0.081)));
+        float ckD = distance(ckPx, ckKy) * 2.0;
+        float ckSmooth = max(${u('smoothness')}, 0.001);
+        a *= smoothstep(ckSim, ckSim + ckSmooth, ckD);
+        float ckSpill = ${u('spill')};
+        if (ckSpill > 0.0) {
+          float ckSpillMask = 1.0 - smoothstep(ckSim, ckSim + ckSmooth * 2.0 + 0.1, ckD);
+          float ckLuma = dot(c, vec3(0.2126, 0.7152, 0.0722));
+          c = mix(c, vec3(ckLuma), ckSpillMask * ckSpill);
+        }
+      }
+    `,
+  },
+  {
+    type: 'lumaKey',
+    label: 'Luma Key',
+    description: 'Keys out darks below the threshold (or brights, with Key Brights). Threshold 0 is off.',
+    category: 'key',
+    pass: 'pointwise',
+    initialParams: { threshold: 0.15, softness: 0.1 },
+    params: [
+      p('threshold', 'Threshold', 0, 1, 0.01, 0),
+      p('softness', 'Softness', 0, 1, 0.01, 0.1),
+      p('keyBright', 'Key Brights', 0, 1, 1, 0),
+    ],
+    glsl: (u) => `
+      float lkThr = ${u('threshold')};
+      if (lkThr > 0.0) {
+        float lkLuma = dot(c, vec3(0.2126, 0.7152, 0.0722));
+        float lkL = mix(lkLuma, 1.0 - lkLuma, ${u('keyBright')});
+        float lkSoft = max(${u('softness')}, 0.001);
+        a *= smoothstep(lkThr - lkSoft, lkThr + lkSoft, lkL);
+      }
+    `,
+  },
+  {
     type: 'glow',
     label: 'Glow',
     description: 'Bloom: bright areas bleed soft light. Threshold picks what counts as bright.',
@@ -301,6 +360,9 @@ export const EFFECTS: EffectDef[] = [
  * golden-test re-baseline.
  */
 export const CANONICAL_ORDER = [
+  // Keys run first: they read the ORIGINAL colours, before any grade shifts them.
+  'chromaKey',
+  'lumaKey',
   'autoColor',
   'exposure',
   'colorWheels',
