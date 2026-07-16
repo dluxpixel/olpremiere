@@ -470,6 +470,13 @@ describe('transition kind coercion', () => {
     expect(at('wipeRight').kind).toBe('wipeRight')
   })
 
+  it('coerces the stylized kinds (zoom/spin/glitch/lumaWipe) through', () => {
+    expect(at('zoom').kind).toBe('zoom')
+    expect(at('spin').kind).toBe('spin')
+    expect(at('glitch').kind).toBe('glitch')
+    expect(at('lumaWipe').kind).toBe('lumaWipe')
+  })
+
   it('an unknown type falls back to crossDissolve', () => {
     expect(at('sparkle-warp').kind).toBe('crossDissolve')
     expect(at('').kind).toBe('crossDissolve')

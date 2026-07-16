@@ -79,6 +79,10 @@ export type TransitionKind =
   | 'wipeRight'
   | 'slideLeft'
   | 'slideRight'
+  | 'zoom'
+  | 'spin'
+  | 'glitch'
+  | 'lumaWipe'
 
 export const TRANSITION_KINDS: TransitionKind[] = [
   'crossDissolve',
@@ -88,6 +92,10 @@ export const TRANSITION_KINDS: TransitionKind[] = [
   'wipeRight',
   'slideLeft',
   'slideRight',
+  'zoom',
+  'spin',
+  'glitch',
+  'lumaWipe',
 ]
 
 /** Human labels for the transition kinds — shared by the Effects panel + Inspector. */
@@ -99,6 +107,10 @@ export const TRANSITION_LABELS: Record<TransitionKind, string> = {
   wipeRight: 'Wipe Right',
   slideLeft: 'Slide Left',
   slideRight: 'Slide Right',
+  zoom: 'Cross Zoom',
+  spin: 'Spin',
+  glitch: 'Glitch',
+  lumaWipe: 'Luma Wipe',
 }
 
 /**

@@ -172,6 +172,7 @@ uniform sampler2D uTo;
 uniform float uProgress;
 uniform int uKind;   // index into TransitionKind order
 uniform float uSoft; // edge softness in UV for wipes
+uniform float uSeed; // resolver frame index — animates the glitch slices
 out vec4 outColor;
 
 vec4 dip(vec4 from, vec4 to, float p, vec3 col) {
@@ -204,12 +205,53 @@ void main() {
     vec4 f = (fromUV.x <= 1.0) ? texture(uFrom, fromUV) : vec4(0.0);
     vec4 t = (toUV.x >= 0.0) ? texture(uTo, toUV) : vec4(0.0);
     col = (toUV.x >= 0.0) ? t : f;
-  } else {                     // slideRight: TO slides in from the left, over from
+  } else if (uKind == 6) {     // slideRight: TO slides in from the left, over from
     vec2 fromUV = vec2(vUV.x - p, vUV.y);
     vec2 toUV = vec2(vUV.x + (1.0 - p), vUV.y);
     vec4 f = (fromUV.x >= 0.0) ? texture(uFrom, fromUV) : vec4(0.0);
     vec4 t = (toUV.x <= 1.0) ? texture(uTo, toUV) : vec4(0.0);
     col = (toUV.x <= 1.0) ? t : f;
+  } else if (uKind == 7) {     // zoom: FROM punches in while TO settles from a deeper punch
+    float zp = smoothstep(0.0, 1.0, p);
+    vec2 ctr = vec2(0.5);
+    vec2 fromUV = ctr + (vUV - ctr) / (1.0 + 0.6 * zp);
+    vec2 toUV = ctr + (vUV - ctr) * (1.0 + 0.4 * (1.0 - zp));
+    vec4 f = texture(uFrom, fromUV);
+    bool tin = toUV.x >= 0.0 && toUV.x <= 1.0 && toUV.y >= 0.0 && toUV.y <= 1.0;
+    vec4 t = tin ? texture(uTo, toUV) : vec4(0.0);
+    col = mix(f, t, zp);
+  } else if (uKind == 8) {     // spin: whip-rotate FROM out while TO rotates in, both punched
+    float sp = smoothstep(0.0, 1.0, p);
+    vec2 ctr = vec2(0.5);
+    float angF = sp * 0.5;
+    float angT = (sp - 1.0) * 0.5;
+    vec2 dF = vUV - ctr;
+    vec2 rF = vec2(dF.x * cos(angF) - dF.y * sin(angF), dF.x * sin(angF) + dF.y * cos(angF));
+    vec2 rT = vec2(dF.x * cos(angT) - dF.y * sin(angT), dF.x * sin(angT) + dF.y * cos(angT));
+    vec4 f = texture(uFrom, ctr + rF / (1.0 + 0.3 * sp));
+    vec4 t = texture(uTo, ctr + rT / (1.0 + 0.3 * (1.0 - sp)));
+    col = mix(f, t, sp);
+  } else if (uKind == 9) {     // glitch: sliced displacement + RGB split, peaking mid-cut
+    float gi = p * (1.0 - p) * 4.0;
+    float band = floor(vUV.y * 24.0);
+    float rnd = fract(sin(band * 91.17 + uSeed * 13.7) * 43758.5453);
+    float rnd2 = fract(sin(band * 41.3 + uSeed * 7.3) * 22578.145);
+    float shift = (rnd - 0.5) * 0.2 * gi * step(0.6, rnd2);
+    vec2 gUV = vec2(clamp(vUV.x + shift, 0.0, 1.0), vUV.y);
+    vec2 split = vec2(0.008 * gi, 0.0);
+    if (p < 0.5) {
+      col = vec4(texture(uFrom, clamp(gUV + split, 0.0, 1.0)).r, texture(uFrom, gUV).g,
+                 texture(uFrom, clamp(gUV - split, 0.0, 1.0)).b, texture(uFrom, gUV).a);
+    } else {
+      col = vec4(texture(uTo, clamp(gUV + split, 0.0, 1.0)).r, texture(uTo, gUV).g,
+                 texture(uTo, clamp(gUV - split, 0.0, 1.0)).b, texture(uTo, gUV).a);
+    }
+  } else {                     // lumaWipe: TO reveals through FROM's darks first
+    float soft = 0.08;
+    float luma = dot(from.rgb, vec3(0.2126, 0.7152, 0.0722));
+    float pp = p * (1.0 + 2.0 * soft) - soft;
+    float m = smoothstep(luma - soft, luma + soft, pp);
+    col = mix(from, to, m);
   }
   outColor = col;
 }`
@@ -222,6 +264,10 @@ const KIND_INDEX: Record<TransitionKind, number> = {
   wipeRight: 4,
   slideLeft: 5,
   slideRight: 6,
+  zoom: 7,
+  spin: 8,
+  glitch: 9,
+  lumaWipe: 10,
 }
 
 // --- GL helpers ------------------------------------------------------------
@@ -333,6 +379,7 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
     uProgress: gl.getUniformLocation(combineProg, 'uProgress'),
     uKind: gl.getUniformLocation(combineProg, 'uKind'),
     uSoft: gl.getUniformLocation(combineProg, 'uSoft'),
+    uSeed: gl.getUniformLocation(combineProg, 'uSeed'),
   }
   const blitLoc = {
     aPos: gl.getAttribLocation(blitProg, 'aPos'),
@@ -795,6 +842,7 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
     gl.uniform1f(combineLoc.uProgress, clamp01(op.progress))
     gl.uniform1i(combineLoc.uKind, KIND_INDEX[op.kind])
     gl.uniform1f(combineLoc.uSoft, 0.004)
+    if (combineLoc.uSeed) gl.uniform1f(combineLoc.uSeed, op.from.frameSeed)
     gl.drawArrays(gl.TRIANGLES, 0, 3)
     gl.activeTexture(gl.TEXTURE0)
   }
