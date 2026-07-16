@@ -274,8 +274,14 @@ export function clipGainEnvelope(clip: Clip, fromS: number): GainPoint[] | null 
     for (let i = 0; i < volKfs.length; i++) {
       times.add(winStart + volKfs[i].t)
       const next = volKfs[i + 1]
-      if (next && volKfs[i].ease !== 'linear') {
-        const span = next.t - volKfs[i].t
+      if (!next) continue
+      const span = next.t - volKfs[i].t
+      if (volKfs[i].ease === 'hold') {
+        // Hold = freeze then SNAP: one knot just before the next keyframe, so
+        // every consumer ramps over <=1ms (perceptually a step, still
+        // click-safe) — matching how the video channels honor hold exactly.
+        times.add(winStart + next.t - Math.min(0.001, span / 2))
+      } else if (volKfs[i].ease !== 'linear') {
         for (let s = 1; s < 8; s++) times.add(winStart + volKfs[i].t + (span * s) / 8)
       }
     }

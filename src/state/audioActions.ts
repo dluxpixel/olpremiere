@@ -26,6 +26,13 @@ export async function normalizeClipGain(clipId: string): Promise<void> {
     useToasts.getState().show('Track is locked', 'danger')
     return
   }
+  // Normalize sets an ABSOLUTE level; with volume keyframes active the base is
+  // overridden and a single keyframe write would only pin one instant. Bail
+  // honestly rather than silently half-applying.
+  if (clip.keyframes?.volume?.length) {
+    useToasts.getState().show('Volume is keyframed — remove the keyframes to normalize', 'danger')
+    return
+  }
   const buffer = await getAudioBuffer(asset)
   if (!buffer) {
     useToasts.getState().show('Could not decode the audio', 'danger')

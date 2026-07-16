@@ -62,8 +62,10 @@ export function pasteAtPlayhead(): void {
   const s = useStore.getState()
   // Assets can be gone if the payload outlived them (future bin deletes).
   // pasteClips itself skips locked destination tracks, so no lock guard here.
-  // Title clips carry no asset (assetId===''), so keep them regardless.
-  const payload = clipboard.filter((p) => p.clip.title !== undefined || s.project.assets[p.assetId])
+  // Title and adjustment clips carry no asset (assetId===''), keep them regardless.
+  const payload = clipboard.filter(
+    (p) => p.clip.title !== undefined || p.clip.adjustment === true || s.project.assets[p.assetId],
+  )
   if (payload.length === 0) return
   let pastedIds: string[] = []
   updateActiveSequence('Paste clip(s)', (sq) => {

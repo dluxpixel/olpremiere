@@ -363,9 +363,21 @@ export function setClipTransform(
   })
 }
 
-/** Set a clip's static gain in dB. */
+/**
+ * Set a clip's gain in dB. Keyframe-aware: while the volume channel is
+ * animated a non-empty keyframe list OVERRIDES audioGainDb everywhere (the
+ * envelope never reads the base), so writing the base would be a silent no-op
+ * — instead the write upserts a keyframe at the playhead, exactly like the
+ * volume ScrubField.
+ */
 export function setClipGainDb(clipId: string, db: number): void {
-  mapClip(clipId, 'Set clip gain', (c) => (c.audioGainDb === db ? c : { ...c, audioGainDb: db }))
+  mapClip(clipId, 'Set clip gain', (c) => {
+    const kfs = channelKeyframes(c, 'volume')
+    if (kfs.length > 0) {
+      return withChannelKeyframes(c, 'volume', upsertKeyframe(kfs, { t: playheadLocalT(c), value: db, ease: 'linear' }))
+    }
+    return c.audioGainDb === db ? c : { ...c, audioGainDb: db }
+  })
 }
 
 /** Set a clip's fade in/out length (seconds), clamped to the clip duration. */

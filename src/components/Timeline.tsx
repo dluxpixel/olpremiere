@@ -858,7 +858,7 @@ type Drag =
   /** Ctrl+Alt+edge-drag: roll the shared cut — both outer ends stay fixed. */
   | { kind: 'roll'; leftId: Id; rightId: Id }
   /** Ctrl+Alt+body-drag: slide the clip — neighbours absorb, totals preserved. */
-  | { kind: 'slide'; clipId: Id; grabOffsetS: number }
+  | { kind: 'slide'; clipId: Id; grabOffsetS: number; neighborIds: Id[] }
   | { kind: 'scrub' }
   /**
    * Shift/Ctrl+drag on empty lane space: rubber-band select. Content
@@ -990,14 +990,18 @@ export function Timeline({ height }: { height: number }) {
     return null
   }
 
-  const snapWithIndicator = (tS: number, excludeClipId?: Id): number => {
+  const snapWithIndicator = (tS: number, excludeClipId?: Id | Id[]): number => {
     if (!snapping) {
       setSnapIndicatorT(null)
       return tS
     }
-    // Exclude the whole link group: a linked A/V pair trims/moves together, so
-    // the partner's stale edges must not magnetize the gesture back onto itself.
-    const excludeClipIds = excludeClipId ? clipGroupIds(seq, excludeClipId) : undefined
+    // Exclude the whole link group of EVERY seed id: a linked A/V pair trims/
+    // moves together, so the partner's stale edges must not magnetize the
+    // gesture back onto itself. Roll/slide pass every clip whose edges ARE the
+    // gesture's own origin (left+right of the cut; the slid clip + neighbours)
+    // — otherwise the origin stays a snap magnet and fine adjustments no-op.
+    const seeds = excludeClipId === undefined ? [] : Array.isArray(excludeClipId) ? excludeClipId : [excludeClipId]
+    const excludeClipIds = seeds.length > 0 ? seeds.flatMap((id) => clipGroupIds(seq, id)) : undefined
     const points = collectSnapPoints(seq, {
       ...(excludeClipIds ? { excludeClipIds } : {}),
       playheadS: useStore.getState().ui.playheadS,
@@ -1005,6 +1009,20 @@ export function Timeline({ height }: { height: number }) {
     const r = snapTime(tS, points, SNAP_PX / pxPerS)
     setSnapIndicatorT(r.snapped ? r.t : null)
     return r.t
+  }
+
+  // Zoom re-anchors scrollLeft in the SAME event as the pxPerS change, so the
+  // virtualization window must be re-measured synchronously too — the async
+  // scroll-event measure lands after paint, and one frame culled against the
+  // stale scrollLeft blanks every visible clip.
+  const measureViewportNow = () => {
+    const el = lanesRef.current
+    if (!el) return
+    if (scrollRafRef.current) {
+      cancelAnimationFrame(scrollRafRef.current)
+      scrollRafRef.current = 0
+    }
+    setViewport({ left: el.scrollLeft, width: el.clientWidth })
   }
 
   const zoomAround = (clientX: number, factor: number) => {
@@ -1017,6 +1035,7 @@ export function Timeline({ height }: { height: number }) {
     const tAt = (clientX - rect.left + el.scrollLeft) / old
     setUI({ pxPerS: next })
     el.scrollLeft = Math.max(0, tAt * next - (clientX - rect.left))
+    measureViewportNow()
   }
 
   // Keyboard / toolbar / slider zoom: anchor on the playhead when it's in
@@ -1036,6 +1055,7 @@ export function Timeline({ height }: { height: number }) {
     const anchorPx = anchorS * old - el.scrollLeft
     setUI({ pxPerS: next })
     el.scrollLeft = Math.max(0, anchorS * next - anchorPx)
+    measureViewportNow()
   }
 
   // "=" / "-" in the central keymap (store.zoomIn/zoomOut dispatch this).
@@ -1181,7 +1201,9 @@ export function Timeline({ height }: { height: number }) {
     // Ctrl+Alt = the advanced-trim pair (roll on an edge, slide on the body).
     // Checked before plain Alt: a Ctrl+Alt press has altKey === true too.
     if ((e.ctrlKey || e.metaKey) && e.altKey) {
-      beginDrag(e, { kind: 'slide', clipId: clip.id, grabOffsetS: x / pxPerS - clip.startS })
+      const idx = track.clips.findIndex((c) => c.id === clip.id)
+      const neighborIds = [track.clips[idx - 1]?.id, track.clips[idx + 1]?.id].filter((id): id is Id => !!id)
+      beginDrag(e, { kind: 'slide', clipId: clip.id, grabOffsetS: x / pxPerS - clip.startS, neighborIds })
       return
     }
     if (e.altKey) {
@@ -1471,7 +1493,9 @@ export function Timeline({ height }: { height: number }) {
       beginDrag(e, { kind: 'stretch', clipId: clip.id, edge })
       return
     }
-    beginDrag(e, { kind: 'trim', clipId: clip.id, edge, ripple: e.ctrlKey || e.metaKey })
+    // `!e.altKey` keeps the no-neighbour Ctrl+Alt fallthrough a PLAIN trim, as
+    // documented above — Ctrl alone still means ripple.
+    beginDrag(e, { kind: 'trim', clipId: clip.id, edge, ripple: (e.ctrlKey || e.metaKey) && !e.altKey })
   }
 
   const beginHand = (e: ReactPointerEvent) => {
@@ -1668,7 +1692,10 @@ export function Timeline({ height }: { height: number }) {
       }
     } else if (drag.kind === 'roll') {
       const tRaw = quantizeToFrame(Math.max(0, x / pxPerS), seq.fps)
-      const t = snapWithIndicator(tRaw, drag.rightId)
+      // Exclude BOTH sides of the cut: the left clip's out edge IS the origin
+      // cut — leaving it in the snap set magnetizes every fine roll back to a
+      // no-op.
+      const t = snapWithIndicator(tRaw, [drag.leftId, drag.rightId])
       dragFinal.current = { trackId: '', tS: t }
       const next = rollEditTo(seq, assets, drag.leftId, drag.rightId, t)
       setPreviewSeq(next)
@@ -1682,7 +1709,9 @@ export function Timeline({ height }: { height: number }) {
       }
     } else if (drag.kind === 'slide') {
       const tRaw = quantizeToFrame(Math.max(0, x / pxPerS - drag.grabOffsetS), seq.fps)
-      const t = snapWithIndicator(tRaw, drag.clipId)
+      // Neighbours' facing edges ARE the slid clip's origin (slide requires
+      // adjacency) — exclude them or the origin stays a snap magnet.
+      const t = snapWithIndicator(tRaw, [drag.clipId, ...drag.neighborIds])
       dragFinal.current = { trackId: '', tS: t }
       const next = slideClip(seq, assets, drag.clipId, t)
       setPreviewSeq(next)
@@ -1915,6 +1944,7 @@ export function Timeline({ height }: { height: number }) {
     )
     setUI({ pxPerS: next })
     el.scrollLeft = 0
+    measureViewportNow()
   }
 
   // "\" in the central keymap.

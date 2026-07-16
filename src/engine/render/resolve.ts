@@ -128,8 +128,12 @@ function resolveTrack(track: Track, t: number, fps: number): RenderOp | null {
     const next = clips[i + 1] as Clip | undefined
 
     // --- Transition INTO this clip (this clip is B). Its window sits at the
-    // head of B and takes over from B's plain layer for its duration. ---
-    if (prev && prev.enabled && timeAdjacent(prev, clip)) {
+    // head of B and takes over from B's plain layer for its duration.
+    // Adjustment clips NEVER form pair transitions: they have no texture, so a
+    // side built from one is fully transparent — the partner would dissolve
+    // against nothing and the grade would cut out. Their edges fall back to
+    // the lone-edge fade, which correctly ramps the adjustment op's opacity. ---
+    if (prev && prev.enabled && !prev.adjustment && !clip.adjustment && timeAdjacent(prev, clip)) {
       const tr = pairTransition(prev, clip)
       if (tr) {
         const maxD = Math.min(clipDurationS(prev), clipDurationS(clip))
@@ -158,8 +162,8 @@ function resolveTrack(track: Track, t: number, fps: number): RenderOp | null {
       // Lone-edge fades: a transitionIn/Out with NO partner clip fades to/from
       // black by scaling opacity. A two-clip transition (handled above) beats
       // this, so only apply when the neighbor is absent or not adjacent.
-      const hasPrevPartner = !!prev && prev.enabled && timeAdjacent(prev, clip)
-      const hasNextPartner = !!next && next.enabled && timeAdjacent(clip, next)
+      const hasPrevPartner = !!prev && prev.enabled && !prev.adjustment && !clip.adjustment && timeAdjacent(prev, clip)
+      const hasNextPartner = !!next && next.enabled && !next.adjustment && !clip.adjustment && timeAdjacent(clip, next)
 
       if (clip.transitionIn && !hasPrevPartner) {
         const d = clamp(clip.transitionIn.durationS, 1 / fps, dur)

@@ -202,7 +202,10 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
       clip?.keyframes?.rotation?.length
     )
   const onScreen = !!clip && playheadS >= clip.startS && playheadS < clipEndS(clip)
-  const gizmoOn = !!clip && track?.kind === 'video' && onScreen
+  // Adjustment layers have no transform in the render path (only effects/mask/
+  // opacity reach applyAdjustment) — a gizmo would commit undo steps that can
+  // never change a pixel.
+  const gizmoOn = !!clip && !clip.adjustment && track?.kind === 'video' && onScreen
 
   let gizmo: React.ReactNode = null
   if (gizmoOn && clip) {

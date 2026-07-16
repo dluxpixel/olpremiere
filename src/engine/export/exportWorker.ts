@@ -53,6 +53,10 @@ let started = false
 // a parked loop can observe the flag.
 const audioSegments: Float32Array[][] = []
 let audioWaiter: (() => void) | null = null
+// Set when init promised audio but no worker-side encoder exists (video-only
+// fallback): segments are dropped on arrival — but still ACKed, so the main
+// thread's credit window keeps draining instead of deadlocking.
+let audioDiscard = false
 const wakeAudioLoop = (): void => {
   audioWaiter?.()
   audioWaiter = null
@@ -76,8 +80,12 @@ scope.onmessage = (e: MessageEvent<ExportRequest>) => {
     cancelled = true
     wakeAudioLoop()
   } else if (msg.type === 'audioSegment') {
-    audioSegments.push(msg.channelData)
-    wakeAudioLoop()
+    if (audioDiscard) {
+      post({ type: 'segmentDone' })
+    } else {
+      audioSegments.push(msg.channelData)
+      wakeAudioLoop()
+    }
   } else if (!started) {
     started = true
     void run(msg)
@@ -241,6 +249,17 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
         }
         // Neither AAC nor Opus: ship a video-only file instead of failing.
       }
+      if (!audioConfig) {
+        // Video-only fallback: the main thread will still stream the mix (it
+        // has no way to know the probe failed) — discard segments on arrival
+        // and ACK them, or the queue retains the entire mix for the whole
+        // video render.
+        audioDiscard = true
+        while (audioSegments.length > 0) {
+          audioSegments.shift()
+          post({ type: 'segmentDone' })
+        }
+      }
     }
 
     // --- output (muxer) + encoders ------------------------------------------
@@ -400,6 +419,9 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
           await drain(audioEncoder)
         }
         audioFramesDone += segFrames
+        // Credit back to the producer: this segment is consumed, its memory is
+        // free — the main thread may render the next one.
+        post({ type: 'segmentDone' })
       }
       await audioEncoder.flush()
       await audioMux // every queued packet handed to the muxer (or failed)

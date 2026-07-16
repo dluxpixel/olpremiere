@@ -47,8 +47,16 @@ function warmVideo(asset: MediaAsset): PooledVideo {
   el.preload = 'auto'
   const pooled: PooledVideo = { el, ready: false }
   videoPool.set(asset.id, pooled)
-  while (videoPool.size > VIDEO_POOL_CAP) {
-    disposeVideo(videoPool.keys().next().value as Id)
+  // Evict the least-recently-used PAUSED element. Never dispose one that is
+  // actively playing (a multi-insert sweep like prewarm would otherwise evict
+  // the on-screen video regardless of how recently a frame touched it);
+  // tolerate temporary over-cap when everything is playing.
+  if (videoPool.size > VIDEO_POOL_CAP) {
+    for (const [id, v] of videoPool) {
+      if (videoPool.size <= VIDEO_POOL_CAP) break
+      if (id === asset.id || !v.el.paused) continue
+      disposeVideo(id)
+    }
   }
   void getBlobUrl(asset.blobKey).then((url) => {
     if (!url) return
@@ -79,9 +87,16 @@ function warmImage(asset: MediaAsset): PooledImage {
 }
 
 export function prewarmPreview(assets: MediaAsset[]): void {
+  // Prewarm is best-effort: it touches what's already pooled and only creates
+  // new elements while the pool has room. Only real render-loop acquires may
+  // evict — a >cap sweep here would churn the whole pool (and the on-screen
+  // element) on every edit.
   for (const a of assets) {
-    if (a.kind === 'video') warmVideo(a)
-    else if (a.kind === 'image') warmImage(a)
+    if (a.kind === 'video') {
+      if (videoPool.has(a.id) || videoPool.size < VIDEO_POOL_CAP) warmVideo(a)
+    } else if (a.kind === 'image') {
+      if (imagePool.has(a.id) || imagePool.size < IMAGE_POOL_CAP) warmImage(a)
+    }
   }
 }
 

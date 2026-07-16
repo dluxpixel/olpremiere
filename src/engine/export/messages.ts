@@ -76,6 +76,14 @@ export type ExportRequest =
 
 export type ExportResponse =
   | { type: 'progress'; progress: ExportProgress }
+  /**
+   * Backpressure credit: one per audioSegment fully consumed (encoded, or
+   * discarded when the worker has no audio encoder). The producer holds a
+   * small in-flight window against these, so the worker's segment queue —
+   * and therefore peak audio memory — stays bounded no matter how much
+   * faster the offline render runs than the encode.
+   */
+  | { type: 'segmentDone' }
   /** `buffer` is null when the file was streamed to disk: there is nothing to hand back. */
   | { type: 'done'; buffer: ArrayBuffer | null }
   | { type: 'cancelled' }

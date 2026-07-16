@@ -228,6 +228,7 @@ uniform float uProgress;
 uniform int uKind;   // index into TransitionKind order
 uniform float uSoft; // edge softness in UV for wipes
 uniform float uSeed; // resolver frame index — animates the glitch slices
+uniform float uAspect; // frame w/h — spin must rotate in ASPECT space or it shears
 out vec4 outColor;
 
 vec4 dip(vec4 from, vec4 to, float p, vec3 col) {
@@ -280,11 +281,14 @@ void main() {
     vec2 ctr = vec2(0.5);
     float angF = sp * 0.5;
     float angT = (sp - 1.0) * 0.5;
-    vec2 dF = vUV - ctr;
+    // Rotate in aspect-corrected space: UV units are anisotropic on non-square
+    // frames, so a raw UV rotation is a shear, not a rigid spin.
+    float asp = max(uAspect, 1e-4);
+    vec2 dF = (vUV - ctr) * vec2(asp, 1.0);
     vec2 rF = vec2(dF.x * cos(angF) - dF.y * sin(angF), dF.x * sin(angF) + dF.y * cos(angF));
     vec2 rT = vec2(dF.x * cos(angT) - dF.y * sin(angT), dF.x * sin(angT) + dF.y * cos(angT));
-    vec4 f = texture(uFrom, ctr + rF / (1.0 + 0.3 * sp));
-    vec4 t = texture(uTo, ctr + rT / (1.0 + 0.3 * (1.0 - sp)));
+    vec4 f = texture(uFrom, ctr + (rF / (1.0 + 0.3 * sp)) * vec2(1.0 / asp, 1.0));
+    vec4 t = texture(uTo, ctr + (rT / (1.0 + 0.3 * (1.0 - sp))) * vec2(1.0 / asp, 1.0));
     col = mix(f, t, sp);
   } else if (uKind == 9) {     // glitch: sliced displacement + RGB split, peaking mid-cut
     float gi = p * (1.0 - p) * 4.0;
@@ -457,6 +461,7 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
     uKind: gl.getUniformLocation(combineProg, 'uKind'),
     uSoft: gl.getUniformLocation(combineProg, 'uSoft'),
     uSeed: gl.getUniformLocation(combineProg, 'uSeed'),
+    uAspect: gl.getUniformLocation(combineProg, 'uAspect'),
   }
   const blitLoc = {
     aPos: gl.getAttribLocation(blitProg, 'aPos'),
@@ -999,6 +1004,7 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
     gl.uniform1i(combineLoc.uKind, KIND_INDEX[op.kind])
     gl.uniform1f(combineLoc.uSoft, 0.004)
     if (combineLoc.uSeed) gl.uniform1f(combineLoc.uSeed, op.from.frameSeed)
+    if (combineLoc.uAspect) gl.uniform1f(combineLoc.uAspect, frameW / Math.max(frameH, 1))
     gl.drawArrays(gl.TRIANGLES, 0, 3)
     gl.activeTexture(gl.TEXTURE0)
   }

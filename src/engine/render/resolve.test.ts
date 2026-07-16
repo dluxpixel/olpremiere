@@ -496,6 +496,25 @@ describe('adjustment layers', () => {
     const f = resolveFrame(seqOf([track({ clips: [clip({ startS: 0, outS: 4 })] })]), 1)
     expect(f.ops.every((o) => o.type !== 'adjustment')).toBe(true)
   })
+
+  it('adjustment clips never form pair transitions — the edge falls back to the lone-edge fade', () => {
+    // Video clip butt-joined to an adjustment clip carrying an In transition:
+    // a pair side built from an adjustment clip would be fully transparent.
+    const a = clip({ startS: 0, inS: 0, outS: 2 })
+    const adj = clip({
+      startS: 2,
+      inS: 0,
+      outS: 2,
+      adjustment: true,
+      transitionIn: { type: 'crossDissolve', durationS: 1 },
+    })
+    const f = resolveFrame(seqOf([track({ clips: [a, adj] })]), 2.5)
+    expect(f.ops).toHaveLength(1)
+    const op = f.ops[0]
+    expect(op.type).toBe('adjustment')
+    // The lone-edge fade ramps the grade in: halfway through the 1s window.
+    if (op.type === 'adjustment') expect(op.opacity).toBeCloseTo(0.5, 6)
+  })
 })
 
 // --- activeIndex binary search ---------------------------------------------

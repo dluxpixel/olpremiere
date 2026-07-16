@@ -82,9 +82,17 @@ export function clearEffectsForClips(ids: Iterable<string>): void {
   mapClips(ids, 'Clear effects', (c) => (c.effects.length === 0 ? c : { ...c, effects: [] }))
 }
 
-/** Set the same gain (dB) on every selected clip. */
+/** Set the same gain (dB) on every selected clip. Keyframe-aware per clip:
+ *  an animated volume channel overrides the base, so those clips get a
+ *  keyframe at the playhead instead of a dead base write. */
 export function setClipsGainDb(ids: Iterable<string>, db: number): void {
-  mapClips(ids, 'Set volume', (c) => (c.audioGainDb === db ? c : { ...c, audioGainDb: db }))
+  mapClips(ids, 'Set volume', (c) => {
+    const kfs = channelKeyframes(c, 'volume')
+    if (kfs.length > 0) {
+      return withChannelKeyframes(c, 'volume', upsertKeyframe(kfs, { t: playheadLocalT(c), value: db, ease: 'linear' }))
+    }
+    return c.audioGainDb === db ? c : { ...c, audioGainDb: db }
+  })
 }
 
 const clampFade = (s: number, dur: number): number => (s < 0 ? 0 : s > dur ? dur : s)

@@ -1,7 +1,8 @@
 // Copy / Paste Attributes (Premiere's Cmd+Alt+C / Cmd+Alt+V): grab one clip's
-// LOOK — its effect stack, transform, opacity, and (for a title) its style +
-// animation — and stamp it onto every selected clip in one undo step. Faster
-// than a saved preset when you just want "make these look like that one".
+// LOOK — its effect stack, transform, opacity, blend mode, mask, and (for a
+// title) its style + animation — and stamp it onto every selected clip in one
+// undo step. Faster than a saved preset when you just want "make these look
+// like that one".
 
 import { applyAppearanceToClip } from '../engine/anim/appearance'
 import {
@@ -19,6 +20,9 @@ interface ClipAttrs {
   effects: EffectInstance[]
   transform: Clip['transform']
   opacity: number
+  blendMode: Clip['blendMode']
+  /** undefined = the source had no mask; pasting CLEARS the target's. */
+  mask: Clip['mask']
   /** Title style (everything but the text) — only for title clips. */
   title?: Partial<TitleDef>
   appearance?: AppearanceSpec
@@ -45,6 +49,8 @@ export function copyClipAttributes(clipId?: string): void {
     effects: clip.effects,
     transform: clip.transform,
     opacity: clip.opacity,
+    blendMode: clip.blendMode,
+    mask: clip.mask ? structuredClone(clip.mask) : undefined,
     appearance: clip.appearance,
     title: t
       ? {
@@ -98,6 +104,9 @@ export function pasteClipAttributes(ids?: Iterable<string>): void {
           effects: cloneEffects(attrs.effects),
           transform: attrs.transform,
           opacity: attrs.opacity,
+          blendMode: attrs.blendMode ?? 'normal',
+          // Clone per target so pasted clips never share one mask object.
+          mask: attrs.mask ? structuredClone(attrs.mask) : undefined,
         }
         // Titles also inherit the style (never the text) + animation.
         if (c.title && attrs.title) nc = { ...nc, title: { ...c.title, ...attrs.title } }

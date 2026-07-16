@@ -746,9 +746,18 @@ export function EffectControls({
   // "Put the keyframe completely up": the Zoom/Punch control + (when animated)
   // the Keyframes editor lead the panel instead of hiding at the very bottom.
   const hasAnimation = ANIM_CHANNELS.some((ch) => isChannelAnimated(clip, ch))
+  // Adjustment layers render ONLY effects/mask/opacity (resolve.ts builds the
+  // op from just those) — transform, crop, blend and punch would be inert
+  // document edits, so they are hidden with a hint instead.
+  const isAdjustment = clip.adjustment === true
   return (
     <div className="flex flex-col gap-5">
-      <PunchControl clipId={clip.id} />
+      {isAdjustment && (
+        <p className="rounded-[4px] bg-bg-input px-2 py-1.5 text-[11px] leading-snug text-text-muted">
+          Adjustment layer — its effects, mask and opacity grade everything below it.
+        </p>
+      )}
+      {!isAdjustment && <PunchControl clipId={clip.id} />}
       {hasAnimation && (
         <>
           <section className="flex flex-col gap-2" data-testid="keyframes-section">
@@ -760,32 +769,38 @@ export function EffectControls({
           <div className="h-px bg-border" />
         </>
       )}
-      <Section
-        title="Transform"
-        channels={['posX', 'posY', 'scale', 'rotation', 'anchorX', 'anchorY']}
-        clip={clip}
-        playheadS={playheadS}
-      />
-      <div className="h-px bg-border" />
-      <Section title="Crop" channels={['cropT', 'cropR', 'cropB', 'cropL']} clip={clip} playheadS={playheadS} />
-      <div className="h-px bg-border" />
+      {!isAdjustment && (
+        <>
+          <Section
+            title="Transform"
+            channels={['posX', 'posY', 'scale', 'rotation', 'anchorX', 'anchorY']}
+            clip={clip}
+            playheadS={playheadS}
+          />
+          <div className="h-px bg-border" />
+          <Section title="Crop" channels={['cropT', 'cropR', 'cropB', 'cropL']} clip={clip} playheadS={playheadS} />
+          <div className="h-px bg-border" />
+        </>
+      )}
       <Section title="Opacity" channels={['opacity']} clip={clip} playheadS={playheadS} />
-      <div className="flex items-center gap-1.5">
-        <span className="w-14 shrink-0 text-[11px] text-text-muted">Blend</span>
-        <select
-          data-testid="blend-mode"
-          aria-label="Blend mode"
-          value={clip.blendMode ?? 'normal'}
-          onChange={(e) => setClipBlendMode(clip.id, e.target.value as BlendMode)}
-          className="h-6 flex-1 cursor-default rounded-[4px] bg-bg-input px-1.5 text-[11px] text-text-primary"
-        >
-          {BLEND_MODES.map((m) => (
-            <option key={m} value={m}>
-              {BLEND_LABELS[m]}
-            </option>
-          ))}
-        </select>
-      </div>
+      {!isAdjustment && (
+        <div className="flex items-center gap-1.5">
+          <span className="w-14 shrink-0 text-[11px] text-text-muted">Blend</span>
+          <select
+            data-testid="blend-mode"
+            aria-label="Blend mode"
+            value={clip.blendMode ?? 'normal'}
+            onChange={(e) => setClipBlendMode(clip.id, e.target.value as BlendMode)}
+            className="h-6 flex-1 cursor-default rounded-[4px] bg-bg-input px-1.5 text-[11px] text-text-primary"
+          >
+            {BLEND_MODES.map((m) => (
+              <option key={m} value={m}>
+                {BLEND_LABELS[m]}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
       <div className="h-px bg-border" />
       <MaskSection clip={clip} />
       <div className="h-px bg-border" />

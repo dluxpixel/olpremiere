@@ -243,6 +243,29 @@ describe('clipGainEnvelope', () => {
     expect(env.at(-1)!.value).toBeCloseTo(g, 6)
   })
 
+  it("'hold' ease freezes then SNAPS: no interior ramp, one <=1ms step knot", () => {
+    const env = clipGainEnvelope(
+      clip({
+        keyframes: {
+          volume: [
+            { t: 0, value: 0, ease: 'hold' },
+            { t: 2, value: -12, ease: 'linear' },
+          ],
+        },
+      }),
+      0,
+    )!
+    const low = 10 ** (-12 / 20)
+    // Every knot strictly before the step point holds full level.
+    for (const p of env.filter((p) => p.offsetS < 2 - 0.001 - 1e-9)) {
+      expect(p.value, `offset ${p.offsetS}`).toBeCloseTo(1, 9)
+    }
+    // The step knot sits within 1ms of the next keyframe, still at the held value.
+    const step = env.find((p) => Math.abs(p.offsetS - (2 - 0.001)) < 1e-9)!
+    expect(step.value).toBeCloseTo(1, 9)
+    expect(env.find((p) => p.offsetS === 2)!.value).toBeCloseTo(low, 9)
+  })
+
   it('a clip WITHOUT volume keyframes produces the exact pre-keyframe envelope', () => {
     // Byte-determinism guard: the volume-aware path must collapse to the old
     // constant-gain math when no keyframes exist.

@@ -96,12 +96,25 @@ export async function exportSequence(
     let graceTimer: ReturnType<typeof setTimeout> | undefined
     let settled = false
 
+    // Backpressure: at most this many rendered segments may be un-ACKed at
+    // once, so the worker's queue (and peak audio memory) stays at ~2 segments
+    // no matter how much faster the offline render runs than the encode.
+    const AUDIO_CREDIT_WINDOW = 2
+    let audioInFlight = 0
+    let audioCreditWaiter: (() => void) | null = null
+    const wakeAudioCredit = (): void => {
+      audioCreditWaiter?.()
+      audioCreditWaiter = null
+    }
+
     const finish = (settle: () => void): void => {
       if (settled) return
       settled = true
       clearTimeout(graceTimer)
       signal.removeEventListener('abort', onAbort)
       worker.terminate()
+      // A render parked on credit must wake to observe `settled` and bail.
+      wakeAudioCredit()
       settle()
     }
 
@@ -116,6 +129,9 @@ export async function exportSequence(
       const msg = e.data
       if (msg.type === 'progress') {
         if (!settled) onProgress(msg.progress)
+      } else if (msg.type === 'segmentDone') {
+        audioInFlight = Math.max(0, audioInFlight - 1)
+        wakeAudioCredit()
       } else if (msg.type === 'done') {
         finish(() => resolve(msg.buffer ? new Blob([msg.buffer], { type: 'video/mp4' }) : null))
       } else if (msg.type === 'cancelled') {
@@ -138,12 +154,19 @@ export async function exportSequence(
     worker.postMessage(initMsg)
 
     // Stream the mix segments behind the init. Each segment's buffers are
-    // TRANSFERRED. A render failure fails the export like any worker error;
-    // a settle (cancel/done) stops the loop at the next segment boundary.
+    // TRANSFERRED, and the producer holds a small credit window against the
+    // worker's segmentDone ACKs. A render failure fails the export like any
+    // worker error; a settle (cancel/done) stops the loop at the next boundary.
     if (audioPlan) {
       void audioPlan
         .render(async (channelData) => {
+          while (audioInFlight >= AUDIO_CREDIT_WINDOW && !settled && !signal.aborted) {
+            await new Promise<void>((r) => {
+              audioCreditWaiter = r
+            })
+          }
           if (settled || signal.aborted) throw abortError()
+          audioInFlight++
           worker.postMessage(
             { type: 'audioSegment', channelData } satisfies ExportRequest,
             channelData.map((c) => c.buffer),

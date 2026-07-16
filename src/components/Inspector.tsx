@@ -57,12 +57,14 @@ function SpeedControls({ clip }: { clip: Clip }) {
   )
 }
 
-/** Commit-on-release volume slider (a live commit per tick would flood undo). */
-function VolumeSlider({ clip }: { clip: Clip }) {
+/** Commit-on-release volume slider (a live commit per tick would flood undo).
+ *  Value + commit come from the parent so the slider stays in agreement with
+ *  the dB field beside it when volume is keyframe-animated. */
+function VolumeSlider({ shown, onCommit }: { shown: number; onCommit: (db: number) => void }) {
   const [draft, setDraft] = useState<number | null>(null)
-  const value = draft ?? clip.audioGainDb
+  const value = draft ?? shown
   const commit = () => {
-    if (draft !== null && draft !== clip.audioGainDb) setClipGainDb(clip.id, draft)
+    if (draft !== null && draft !== shown) onCommit(draft)
     setDraft(null)
   }
   return (
@@ -80,7 +82,7 @@ function VolumeSlider({ clip }: { clip: Clip }) {
       onPointerUp={commit}
       onKeyUp={commit}
       onBlur={commit}
-      onDoubleClick={() => setClipGainDb(clip.id, 0)}
+      onDoubleClick={() => onCommit(0)}
     />
   )
 }
@@ -107,7 +109,10 @@ function AudioControls({ clip, linked, playheadS }: { clip: Clip; linked?: boole
       <div className="flex flex-col gap-1.5">
         <FieldRow label="Volume">
           <div className="flex w-full items-center gap-2">
-            <VolumeSlider clip={clip} />
+            <VolumeSlider
+              shown={shownGain}
+              onCommit={(v) => (volAnimated ? setChannel(clip.id, 'volume', v) : setClipGainDb(clip.id, v))}
+            />
             <ScrubField
               value={shownGain}
               spec={GAIN_SPEC}
