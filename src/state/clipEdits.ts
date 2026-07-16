@@ -296,6 +296,36 @@ export function setClipMask(clipId: string, mask: ClipMask | undefined): void {
   mapClip(clipId, mask ? 'Edit mask' : 'Remove mask', (c) => ({ ...c, mask }))
 }
 
+/**
+ * Commit a gizmo drag on a KEYFRAMED clip: each changed channel upserts a
+ * keyframe at the playhead when animated, or updates its base when static —
+ * all in ONE undo step. This is what lets the monitor gizmo stay alive on
+ * animated clips instead of hiding (Premiere behavior: drag = keyframe).
+ */
+export function setClipTransformAtPlayhead(
+  clipId: string,
+  changes: Partial<{ x: number; y: number; scale: number; rotationDeg: number }>,
+): void {
+  const vals: [AnimChannel, number][] = []
+  if (changes.x !== undefined) vals.push(['posX', changes.x])
+  if (changes.y !== undefined) vals.push(['posY', changes.y])
+  if (changes.scale !== undefined) vals.push(['scale', changes.scale])
+  if (changes.rotationDeg !== undefined) vals.push(['rotation', changes.rotationDeg])
+  if (vals.length === 0) return
+  mapClip(clipId, 'Transform at playhead', (c) => {
+    const localT = playheadLocalT(c)
+    let next = c
+    for (const [channel, value] of vals) {
+      const kfs = channelKeyframes(next, channel)
+      next =
+        kfs.length > 0
+          ? withChannelKeyframes(next, channel, upsertKeyframe(kfs, { t: localT, value, ease: 'linear' }))
+          : withChannelValue(next, channel, value)
+    }
+    return next
+  })
+}
+
 // ---------------------------------------------------------------------------
 // Audio (Phase 6): per-clip gain + fades and a simple crossfade.
 

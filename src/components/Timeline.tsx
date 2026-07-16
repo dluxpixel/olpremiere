@@ -47,6 +47,8 @@ import {
   rateStretchGroup,
   rippleDeleteGroup,
   rippleTrimGroup,
+  rollEditTo,
+  slideClip,
   slipClip,
   snapTime,
   splitGroup,
@@ -830,11 +832,21 @@ type Drag =
        * selection's relative timing.
        */
       others: { id: Id; startS0: number }[]
+      /**
+       * Click-without-drag on an already-multi-selected clip collapses the
+       * selection to just it (narrowing without deselect-all); a real drag
+       * still moves the whole group.
+       */
+      collapseCandidate: boolean
     }
   | { kind: 'trim'; clipId: Id; edge: 'in' | 'out'; ripple: boolean }
   /** Alt+edge-drag: retime the clip (speed changes, source in/out stay put). */
   | { kind: 'stretch'; clipId: Id; edge: 'in' | 'out' }
   | { kind: 'slip'; clipId: Id; startXPx: number }
+  /** Ctrl+Alt+edge-drag: roll the shared cut — both outer ends stay fixed. */
+  | { kind: 'roll'; leftId: Id; rightId: Id }
+  /** Ctrl+Alt+body-drag: slide the clip — neighbours absorb, totals preserved. */
+  | { kind: 'slide'; clipId: Id; grabOffsetS: number }
   | { kind: 'scrub' }
   /**
    * Shift/Ctrl+drag on empty lane space: rubber-band select. Content
@@ -1154,6 +1166,12 @@ export function Timeline({ height }: { height: number }) {
     if (track.locked) return
     const { x } = contentPoint(e)
     dragFinal.current = null
+    // Ctrl+Alt = the advanced-trim pair (roll on an edge, slide on the body).
+    // Checked before plain Alt: a Ctrl+Alt press has altKey === true too.
+    if ((e.ctrlKey || e.metaKey) && e.altKey) {
+      beginDrag(e, { kind: 'slide', clipId: clip.id, grabOffsetS: x / pxPerS - clip.startS })
+      return
+    }
     if (e.altKey) {
       beginDrag(e, { kind: 'slip', clipId: clip.id, startXPx: x })
       return
@@ -1181,13 +1199,17 @@ export function Timeline({ height }: { height: number }) {
       downClientX: e.clientX,
       downClientY: e.clientY,
       others,
+      collapseCandidate: !e.shiftKey && selNow.includes(clip.id) && selNow.length > 1,
     })
   }
 
   const handleClipContextMenu = (e: ReactMouseEvent<HTMLDivElement>, clip: Clip) => {
     // A right-drag box-select that happened to end over a clip must NOT open the
-    // clip menu — swallow this one contextmenu (only if it's fresh).
-    if (performance.now() - suppressContextRef.current < 500) {
+    // clip menu — swallow this one contextmenu (only if it's fresh). 0 is the
+    // "nothing pending" sentinel and must never suppress: with no guard, every
+    // right-click during the first 500ms after navigation (performance.now()
+    // still < 500) would be swallowed.
+    if (suppressContextRef.current > 0 && performance.now() - suppressContextRef.current < 500) {
       suppressContextRef.current = 0
       e.preventDefault()
       return
@@ -1418,8 +1440,22 @@ export function Timeline({ height }: { height: number }) {
     if (!track || track.locked) return
     setUI({ selection: [clip.id] })
     dragFinal.current = null
-    // Edge modifiers: Ctrl = ripple trim, Alt = rate stretch (retime, not trim).
-    if (e.altKey) {
+    // Edge modifiers: Ctrl = ripple trim, Alt = rate stretch, Ctrl+Alt = roll.
+    // Roll is checked FIRST — a Ctrl+Alt press satisfies both single checks.
+    if ((e.ctrlKey || e.metaKey) && e.altKey) {
+      const idx = track.clips.findIndex((c) => c.id === clip.id)
+      const neighbor = edge === 'out' ? track.clips[idx + 1] : track.clips[idx - 1]
+      if (neighbor) {
+        beginDrag(e, {
+          kind: 'roll',
+          leftId: edge === 'out' ? clip.id : neighbor.id,
+          rightId: edge === 'out' ? neighbor.id : clip.id,
+        })
+        return
+      }
+      // No neighbour to roll against — fall through to a plain trim.
+    }
+    if (e.altKey && !(e.ctrlKey || e.metaKey)) {
       beginDrag(e, { kind: 'stretch', clipId: clip.id, edge })
       return
     }
@@ -1618,6 +1654,34 @@ export function Timeline({ height }: { height: number }) {
           text: `Slip  in ${formatTimecode(slipped.inS, seq.fps)} · out ${formatTimecode(slipped.outS, seq.fps)}`,
         })
       }
+    } else if (drag.kind === 'roll') {
+      const tRaw = quantizeToFrame(Math.max(0, x / pxPerS), seq.fps)
+      const t = snapWithIndicator(tRaw, drag.rightId)
+      dragFinal.current = { trackId: '', tS: t }
+      const next = rollEditTo(seq, assets, drag.leftId, drag.rightId, t)
+      setPreviewSeq(next)
+      const right = next.tracks.flatMap((tr) => tr.clips).find((c) => c.id === drag.rightId)
+      if (right) {
+        setTrimTip({
+          x: e.clientX,
+          y: e.clientY - 34,
+          text: `Roll  ${formatTimecode(right.startS, seq.fps)}`,
+        })
+      }
+    } else if (drag.kind === 'slide') {
+      const tRaw = quantizeToFrame(Math.max(0, x / pxPerS - drag.grabOffsetS), seq.fps)
+      const t = snapWithIndicator(tRaw, drag.clipId)
+      dragFinal.current = { trackId: '', tS: t }
+      const next = slideClip(seq, assets, drag.clipId, t)
+      setPreviewSeq(next)
+      const slid = next.tracks.flatMap((tr) => tr.clips).find((c) => c.id === drag.clipId)
+      if (slid) {
+        setTrimTip({
+          x: e.clientX,
+          y: e.clientY - 34,
+          text: `Slide  ${formatTimecode(slid.startS, seq.fps)}`,
+        })
+      }
     } else if (drag.kind === 'stretch') {
       const tRaw = quantizeToFrame(Math.max(0, x / pxPerS), seq.fps)
       // Snapping still applies: stretching a clip to end exactly on a marker or
@@ -1678,6 +1742,8 @@ export function Timeline({ height }: { height: number }) {
       drag.kind === 'move' &&
       Math.hypot(e.clientX - drag.downClientX, e.clientY - drag.downClientY) < CLICK_SLOP_PX
     if (isClipClick) {
+      // Narrow a multi-selection to the clicked clip (drags keep the group).
+      if (drag.kind === 'move' && drag.collapseCandidate) setUI({ selection: [drag.clipId] })
       scrubTo(drag.downClientX)
     } else if (drag.kind === 'move' && dragFinal.current) {
       const { trackId, tS } = dragFinal.current
@@ -1696,6 +1762,12 @@ export function Timeline({ height }: { height: number }) {
     } else if (drag.kind === 'slip' && dragFinal.current) {
       const { tS } = dragFinal.current
       updateActiveSequence('Slip clip', (sq) => slipClip(sq, assets, drag.clipId, tS))
+    } else if (drag.kind === 'roll' && dragFinal.current) {
+      const { tS } = dragFinal.current
+      updateActiveSequence('Roll edit', (sq) => rollEditTo(sq, assets, drag.leftId, drag.rightId, tS))
+    } else if (drag.kind === 'slide' && dragFinal.current) {
+      const { tS } = dragFinal.current
+      updateActiveSequence('Slide clip', (sq) => slideClip(sq, assets, drag.clipId, tS))
     }
     setDrag(null)
     setPreviewSeq(null)

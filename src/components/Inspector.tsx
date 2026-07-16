@@ -1,11 +1,11 @@
 import { Rewind, SlidersHorizontal } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 import { clipEmitsAudio } from '../engine/audio'
-import { clipDurationS, clipEndS } from '../engine/timeline'
-import { formatTimecode } from '../engine/timecode'
+import { clipDurationS, clipEndS, moveGroup } from '../engine/timeline'
+import { formatTimecode, parseTimecode, quantizeToFrame } from '../engine/timecode'
 import { activeSequence, isTitleClip, type Clip, type MediaAsset, type Track } from '../engine/types'
 import { setClipFade, setClipGainDb, setClipSpeed } from '../state/clipEdits'
-import { useStore } from '../state/store'
+import { updateActiveSequence, useStore } from '../state/store'
 import { IconButton } from '../ui/Button'
 import { EffectControls, ScrubField, type Spec } from './EffectControls'
 import { MultiInspector, type SelectedClip } from './MultiInspector'
@@ -141,6 +141,63 @@ function Row({ label, value }: { label: string; value: string }) {
   )
 }
 
+/**
+ * An editable timecode row: click to type an exact time, Enter/blur commits
+ * (parsed + frame-quantized), Escape reverts. The commit goes through
+ * moveGroup, so linked A/V travels together and overlaps resolve to the
+ * nearest free slot — typing an occupied time lands beside it, not on it.
+ */
+function EditableTimecodeRow({
+  label,
+  seconds,
+  fps,
+  testId,
+  onCommit,
+}: {
+  label: string
+  seconds: number
+  fps: number
+  testId: string
+  onCommit: (s: number) => void
+}) {
+  const [text, setText] = useState<string | null>(null) // null = display mode
+  const commit = () => {
+    if (text === null) return
+    const parsed = parseTimecode(text, fps)
+    if (parsed !== null && parsed >= 0) onCommit(quantizeToFrame(parsed, fps))
+    setText(null)
+  }
+  return (
+    <div className="flex items-center justify-between text-[12px]">
+      <span className="text-text-secondary">{label}</span>
+      {text === null ? (
+        <button
+          type="button"
+          data-testid={testId}
+          className="cursor-text rounded-[3px] px-1 tabular-nums text-text-primary hover:bg-bg-elevated"
+          onClick={() => setText(formatTimecode(seconds, fps))}
+        >
+          {formatTimecode(seconds, fps)}
+        </button>
+      ) : (
+        <input
+          autoFocus
+          data-testid={`${testId}-input`}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commit()
+            else if (e.key === 'Escape') setText(null)
+          }}
+          onBlur={commit}
+          onFocus={(e) => e.currentTarget.select()}
+          className="w-[92px] rounded-[3px] bg-bg-input px-1 text-right text-[12px] tabular-nums text-text-primary"
+        />
+      )}
+    </div>
+  )
+}
+
 function ClipPanel({
   clip,
   assetName,
@@ -149,6 +206,7 @@ function ClipPanel({
   showAudio,
   audioFirst,
   linkedAudio,
+  trackId,
 }: {
   clip: Clip
   assetName: string
@@ -159,6 +217,8 @@ function ClipPanel({
   audioFirst: boolean
   /** The linked audio partner of a video clip — its volume shows HERE. */
   linkedAudio?: Clip
+  /** The clip's own track — the Start field moves it in place. */
+  trackId?: string
 }) {
   const isTitle = isTitleClip(clip)
   const name = isTitle ? clip.title!.text || 'Title' : assetName
@@ -184,7 +244,17 @@ function ClipPanel({
           <span className="tabular-nums text-text-secondary">{formatTimecode(clipDurationS(clip), fps)}</span>
         </summary>
         <div className="mt-2 flex flex-col gap-1.5">
-          <Row label="Start" value={formatTimecode(clip.startS, fps)} />
+          {trackId ? (
+            <EditableTimecodeRow
+              label="Start"
+              seconds={clip.startS}
+              fps={fps}
+              testId="clip-start-timecode"
+              onCommit={(s) => updateActiveSequence('Move clip', (sq) => moveGroup(sq, clip.id, trackId, s))}
+            />
+          ) : (
+            <Row label="Start" value={formatTimecode(clip.startS, fps)} />
+          )}
           <Row label="End" value={formatTimecode(clipEndS(clip), fps)} />
           <Row label="Duration" value={formatTimecode(clipDurationS(clip), fps)} />
           {!isTitle && <Row label="Source in" value={formatTimecode(clip.inS, fps)} />}
@@ -307,6 +377,7 @@ export function Inspector({ width }: { width: number }) {
             fps={seq.fps}
             playheadS={playheadS}
             showAudio={showAudio}
+            trackId={selectedTrack?.id}
             audioFirst={selectedTrack?.kind === 'audio'}
             linkedAudio={
               selected.linkId !== undefined && selectedTrack?.kind === 'video'

@@ -13,7 +13,8 @@ import { activeSequence } from '../engine/types'
 import { setLivePreviewTransform } from '../engine/preview'
 import { previewClipMenu } from '../state/clipMenus'
 import { punchInAtPoint } from '../state/motionActions'
-import { setClipTransform } from '../state/clipEdits'
+import { resolveChannel } from '../engine/effects/channels'
+import { setClipTransform, setClipTransformAtPlayhead } from '../state/clipEdits'
 import { setClipsPosition } from '../state/bulkEdits'
 import { openContextMenu } from '../state/contextMenu'
 import { pausePlayback } from '../state/playbackControl'
@@ -187,24 +188,41 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
     selection.length === 1 ? seq.tracks.flatMap((t) => t.clips).find((c) => c.id === selection[0]) : undefined
   const track = clip ? seq.tracks.find((t) => t.clips.some((c) => c.id === clip.id)) : undefined
   // Appearance animations OWN scale/pos keyframes but are base-relative and
-  // recompiled on a transform edit, so the gizmo stays usable for them. Only
-  // MANUAL keyframes (no appearance spec) hide it, since dragging would fight them.
+  // recompiled on a transform edit, so the gizmo uses their BASE transform.
+  // MANUAL keyframes no longer hide the gizmo: it tracks the RESOLVED
+  // transform at the playhead, and a drag commits keyframes there (Premiere
+  // behavior) via setClipTransformAtPlayhead.
   const appearanceOwned = !!clip?.appearance
   const manualAnimated =
     !appearanceOwned &&
-    !!(clip?.keyframes?.posX?.length || clip?.keyframes?.posY?.length || clip?.keyframes?.scale?.length)
+    !!(
+      clip?.keyframes?.posX?.length ||
+      clip?.keyframes?.posY?.length ||
+      clip?.keyframes?.scale?.length ||
+      clip?.keyframes?.rotation?.length
+    )
   const onScreen = !!clip && playheadS >= clip.startS && playheadS < clipEndS(clip)
-  const gizmoOn = !!clip && track?.kind === 'video' && !manualAnimated && onScreen
+  const gizmoOn = !!clip && track?.kind === 'video' && onScreen
 
   let gizmo: React.ReactNode = null
   if (gizmoOn && clip) {
     const clipId = clip.id
-    const tf: Tf = dragTf ?? {
-      x: clip.transform.x,
-      y: clip.transform.y,
-      scale: clip.transform.scale,
-      rotationDeg: clip.transform.rotationDeg,
-    }
+    const gizmoLocalT = playheadS - clip.startS
+    const tf: Tf =
+      dragTf ??
+      (manualAnimated
+        ? {
+            x: resolveChannel(clip, 'posX', gizmoLocalT),
+            y: resolveChannel(clip, 'posY', gizmoLocalT),
+            scale: resolveChannel(clip, 'scale', gizmoLocalT),
+            rotationDeg: resolveChannel(clip, 'rotation', gizmoLocalT),
+          }
+        : {
+            x: clip.transform.x,
+            y: clip.transform.y,
+            scale: clip.transform.scale,
+            rotationDeg: clip.transform.rotationDeg,
+          })
     const isTitle = clip.title !== undefined
     const asset = project.assets[clip.assetId]
     const texW = isTitle ? seq.width : (asset?.width ?? seq.width)
@@ -284,7 +302,20 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
         setDragTf(null)
         setCenterSnap({ x: false, y: false })
         tfRef.current = null
-        if (final) setClipTransform(clipId, final)
+        if (!final) return
+        if (manualAnimated) {
+          // Keyframed clip: write ONLY the channels the drag changed, as
+          // keyframes at the playhead (static channels update their base).
+          const changes: Partial<Tf> = {}
+          if (Math.abs(final.x - drag.startTf.x) > 1e-9) changes.x = final.x
+          if (Math.abs(final.y - drag.startTf.y) > 1e-9) changes.y = final.y
+          if (Math.abs(final.scale - drag.startTf.scale) > 1e-9) changes.scale = final.scale
+          if (Math.abs(final.rotationDeg - drag.startTf.rotationDeg) > 1e-9)
+            changes.rotationDeg = final.rotationDeg
+          setClipTransformAtPlayhead(clipId, changes)
+        } else {
+          setClipTransform(clipId, final)
+        }
       }
       cleanupRef.current = () => {
         window.removeEventListener('pointermove', onMoveWin)

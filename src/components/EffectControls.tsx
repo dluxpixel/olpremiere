@@ -190,6 +190,13 @@ export function ScrubField({
       commit(Number(text))
       // Prevent the click that follows a drag from entering text-edit.
       e.preventDefault()
+      // Drop focus so the NEXT drag scrubs too — a focused field used to be
+      // stuck in edit mode, making drag-scrub one-shot per field.
+      inputRef.current?.blur()
+    } else {
+      // A genuine click (no movement) enters text-edit — same UX as before,
+      // but decided here instead of by focus (which pointerdown also fires).
+      enterEdit()
     }
   }
 
@@ -227,7 +234,12 @@ export function ScrubField({
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
         onDoubleClick={enterEdit}
-        onFocus={enterEdit}
+        // Keyboard/tab focus enters edit; a pointer-initiated focus does not
+        // (draggingRef is already set by onPointerDown) — endDrag decides
+        // between click→edit and drag→scrub instead.
+        onFocus={() => {
+          if (!draggingRef.current) enterEdit()
+        }}
         onKeyDown={(e) => {
           if (e.key === 'Enter') {
             commitTyped()
