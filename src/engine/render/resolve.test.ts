@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { migrateClipEffects } from '../effects/migrate'
-import { resolveFrame } from './resolve'
+import { resolveFrame, _activeIndexForTest } from './resolve'
 import type { RenderLayer, RenderOp } from './types'
 import { defaultTransform, type Clip, type Keyframe, type Sequence, type Track } from '../types'
 
@@ -462,6 +462,44 @@ describe('two-clip transitions', () => {
     // No previous partner → lone-edge fade-IN applies instead (window [3,4)).
     expect(op.type).toBe('layer')
     expect(asLayer(op).clipId).toBe(b.id)
+  })
+})
+
+// --- activeIndex binary search ---------------------------------------------
+
+describe('activeIndex binary search', () => {
+  it('agrees with a linear scan across adjacency, gaps, and boundaries', () => {
+    const clips: ReturnType<typeof clip>[] = []
+    let t0 = 0
+    for (let k = 0; k < 40; k++) {
+      const dur = 0.5 + (k % 3) * 0.25
+      clips.push(clip({ startS: t0, inS: 0, outS: dur }))
+      // Half the cuts are butt-joined, half leave a gap.
+      t0 += dur + (k % 2 === 0 ? 0 : 0.3)
+    }
+    const linear = (t: number): number => {
+      let ans = -1
+      for (let j = 0; j < clips.length; j++) {
+        if (clips[j].startS <= t) ans = j
+        else break
+      }
+      return ans
+    }
+    const probes: number[] = [-5, 0, 1e6]
+    for (const c of clips) {
+      const dur = c.outS - c.inS
+      probes.push(c.startS, c.startS + dur / 2, c.startS + dur, c.startS + dur + 0.05)
+    }
+    for (const p of probes) {
+      expect(_activeIndexForTest(clips, p), `probe t=${p}`).toBe(linear(p))
+    }
+  })
+
+  it('a disabled containing clip resolves to no op (later clips cannot match)', () => {
+    const a = clip({ startS: 0, inS: 0, outS: 2 })
+    const b = clip({ startS: 2, inS: 0, outS: 2, enabled: false })
+    const f = resolveFrame(seqOf([track({ clips: [a, b] })]), 3)
+    expect(f.ops).toHaveLength(0)
   })
 })
 

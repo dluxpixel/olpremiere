@@ -87,15 +87,42 @@ const pairTransition = (a: Clip, b: Clip) => b.transitionIn ?? a.transitionOut
 const timeAdjacent = (a: Clip, b: Clip): boolean => Math.abs(clipEndS(a) - b.startS) < ADJ_EPS
 
 /**
+ * Index of the LAST clip with startS <= t, or -1 when t precedes every clip.
+ * track.clips is sorted by startS and never overlaps (types.ts invariant,
+ * maintained by every timeline edit op and asserted in timeline.test.ts), so
+ * this clip is the ONLY one whose span or transition window can contain t —
+ * which turns the per-frame track scan from O(clips) into O(log clips). On a
+ * word-caption timeline (one title clip per word) resolveFrame runs 60×/s in
+ * preview and once per export frame, so this is the difference between
+ * hundreds of comparisons per frame and ~10.
+ */
+function activeIndex(clips: readonly Clip[], t: number): number {
+  let lo = 0
+  let hi = clips.length - 1
+  let ans = -1
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1
+    if (clips[mid].startS <= t) {
+      ans = mid
+      lo = mid + 1
+    } else {
+      hi = mid - 1
+    }
+  }
+  return ans
+}
+
+/**
  * Resolve one video track to at most one op at time `t`. Returns null when the
  * track shows nothing (no active clip, or the only candidate is fully inside a
  * transition it does not own).
  */
 function resolveTrack(track: Track, t: number, fps: number): RenderOp | null {
   const clips = track.clips
-  for (let i = 0; i < clips.length; i++) {
+  const i = activeIndex(clips, t)
+  if (i >= 0) {
     const clip = clips[i]
-    if (!clip.enabled) continue
+    if (!clip.enabled) return null
 
     const prev = clips[i - 1] as Clip | undefined
     const next = clips[i + 1] as Clip | undefined
@@ -160,6 +187,9 @@ function resolveTrack(track: Track, t: number, fps: number): RenderOp | null {
   }
   return null
 }
+
+/** Test-only export: proves activeIndex agrees with a linear scan. */
+export const _activeIndexForTest = activeIndex
 
 /**
  * Resolve the whole sequence at time `t` into an ordered draw list. Ops are
