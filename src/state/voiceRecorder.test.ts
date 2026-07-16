@@ -1,6 +1,12 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { audioConstraintFor, recordingFileName } from './voiceRecorder'
+import {
+  audioConstraintFor,
+  ENHANCE_KEY,
+  loadEnhance,
+  recordingFileName,
+  setEnhance,
+} from './voiceRecorder'
 
 describe('recordingFileName', () => {
   it('numbers takes and picks the extension from the mime', () => {
@@ -39,5 +45,35 @@ describe('audioConstraintFor', () => {
       sampleRate: 48_000,
       channelCount: 1,
     })
+  })
+})
+
+describe('loadEnhance / setEnhance', () => {
+  // The suite runs on the node environment (no DOM), so stand up the minimum
+  // localStorage the recorder actually calls.
+  const store = new Map<string, string>()
+  const stub = {
+    getItem: (k: string) => store.get(k) ?? null,
+    setItem: (k: string, v: string) => void store.set(k, v),
+    removeItem: (k: string) => void store.delete(k),
+  }
+  beforeEach(() => {
+    store.clear()
+    vi.stubGlobal('localStorage', stub)
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('noise reduction defaults ON when nothing is saved', () => {
+    expect(loadEnhance()).toBe(true)
+  })
+
+  it('only an explicit off ("0") disables it; legacy "1" stays on', () => {
+    setEnhance(false)
+    expect(store.get(ENHANCE_KEY)).toBe('0')
+    expect(loadEnhance()).toBe(false)
+    setEnhance(true)
+    expect(loadEnhance()).toBe(true)
+    store.set(ENHANCE_KEY, '1') // value written before this change
+    expect(loadEnhance()).toBe(true)
   })
 })

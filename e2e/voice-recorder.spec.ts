@@ -6,6 +6,10 @@ import { expect, test } from '@playwright/test'
 
 test('recording the mic adds an audio clip to the bin', async ({ page }) => {
   test.setTimeout(60_000)
+  const consoleInfos: string[] = []
+  page.on('console', (m) => {
+    if (m.type() === 'info') consoleInfos.push(m.text())
+  })
   await page.goto('/')
 
   const record = page.getByTestId('record-voice')
@@ -14,6 +18,12 @@ test('recording the mic adds an audio clip to the bin', async ({ page }) => {
   // Start: the elapsed readout appears while recording.
   await record.click()
   await expect(page.getByTestId('record-elapsed')).toBeVisible()
+
+  // Noise reduction defaults ON and must be the REAL chain, not the browser
+  // fallback: the recorder logs once the RNNoise worklet is wired in.
+  await expect
+    .poll(() => consoleInfos.some((t) => t.includes('RNNoise noise reduction active')))
+    .toBe(true)
 
   // Capture roughly a second of audio, then stop.
   await page.waitForTimeout(1200)
@@ -47,16 +57,17 @@ test('the mic picker lists input devices and remembers the choice', async ({ pag
   await items.nth(1).click()
   await expect(menu).toHaveCount(0)
 
-  // Reopen: exactly one item now carries the ✓ (the remembered device).
-  await page.getByTestId('record-device').click()
-  await expect(
-    page.getByTestId('context-menu').getByRole('menuitem').filter({ hasText: '✓' }),
-  ).toHaveCount(1)
-
-  // Toggle "Reduce background noise" on; reopening shows a second ✓ (device + it).
-  await page.getByTestId('context-menu').getByRole('menuitem', { name: /Reduce background noise/ }).click()
+  // Reopen: two ✓s — the remembered device plus "Reduce background noise",
+  // which is ON by default.
   await page.getByTestId('record-device').click()
   await expect(
     page.getByTestId('context-menu').getByRole('menuitem').filter({ hasText: '✓' }),
   ).toHaveCount(2)
+
+  // Toggle "Reduce background noise" off; reopening shows only the device ✓.
+  await page.getByTestId('context-menu').getByRole('menuitem', { name: /Reduce background noise/ }).click()
+  await page.getByTestId('record-device').click()
+  await expect(
+    page.getByTestId('context-menu').getByRole('menuitem').filter({ hasText: '✓' }),
+  ).toHaveCount(1)
 })
