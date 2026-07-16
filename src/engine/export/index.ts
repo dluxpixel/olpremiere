@@ -4,7 +4,7 @@
 
 import { getBlob } from '../../state/persistence'
 import type { Id, MediaAsset, Project } from '../types'
-import { renderAudioMix } from './audioRender'
+import { planAudioMix } from './audioRender'
 import type { ExportAsset, ExportProgress, ExportRequest, ExportResponse, ExportSettings } from './messages'
 
 export type { ExportProgress, ExportSettings } from './messages'
@@ -84,7 +84,11 @@ export async function exportSequence(
   if (signal.aborted) throw abortError()
 
   onProgress({ phase: 'audio', framesDone: 0, framesTotal })
-  const audio = await renderAudioMix(sequence, project.assets, settings.startS, settings.endS)
+  // Two-phase: the plan resolves whether audio exists (and its shape) up
+  // front; the PCM itself renders in bounded segments AFTER the worker starts,
+  // streamed as `audioSegment` messages — a long export never holds its whole
+  // mix in memory on either side.
+  const audioPlan = await planAudioMix(sequence, project.assets, settings.startS, settings.endS)
   if (signal.aborted) throw abortError()
 
   return await new Promise<Blob | null>((resolve, reject) => {
@@ -123,8 +127,32 @@ export async function exportSequence(
     worker.onerror = (e) => finish(() => reject(new Error(`Export worker crashed: ${e.message || 'unknown error'}`)))
     worker.onmessageerror = () => finish(() => reject(new Error('Export worker message could not be decoded')))
 
-    // The handle is CLONED, not transferred: only the audio PCM moves.
-    const initMsg: ExportRequest = { type: 'init', settings, sequence, assets: exportAssets, audio, fileHandle }
-    worker.postMessage(initMsg, audio ? audio.channelData.map((c) => c.buffer) : [])
+    const initMsg: ExportRequest = {
+      type: 'init',
+      settings,
+      sequence,
+      assets: exportAssets,
+      audio: audioPlan ? audioPlan.info : null,
+      fileHandle,
+    }
+    worker.postMessage(initMsg)
+
+    // Stream the mix segments behind the init. Each segment's buffers are
+    // TRANSFERRED. A render failure fails the export like any worker error;
+    // a settle (cancel/done) stops the loop at the next segment boundary.
+    if (audioPlan) {
+      void audioPlan
+        .render(async (channelData) => {
+          if (settled || signal.aborted) throw abortError()
+          worker.postMessage(
+            { type: 'audioSegment', channelData } satisfies ExportRequest,
+            channelData.map((c) => c.buffer),
+          )
+        })
+        .catch((err: unknown) => {
+          if (err instanceof DOMException && err.name === 'AbortError') return
+          finish(() => reject(err instanceof Error ? err : new Error(String(err))))
+        })
+    }
   })
 }

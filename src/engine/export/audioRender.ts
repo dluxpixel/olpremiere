@@ -15,12 +15,39 @@ import {
 } from '../audio'
 import { duckEnvelope } from '../ducking'
 import type { Clip, Id, MediaAsset, Sequence, Track } from '../types'
-import type { RenderedAudio } from './messages'
+import type { AudioStreamMeta } from './messages'
 
 const clamp = (x: number, lo: number, hi: number): number => (x < lo ? lo : x > hi ? hi : x)
 
 export const EXPORT_SAMPLE_RATE = 48000
 export const EXPORT_CHANNELS = 2
+
+/**
+ * Segment size for the streamed render: 30 s of 48 kHz stereo float32 is
+ * ~11.5 MB per segment — peak audio memory no longer scales with export
+ * length (a 30-minute export used to allocate ~700 MB three times over).
+ * 30 s = 300 exact AUDIO_CHUNK_FRAMES chunks, so the worker's AAC framing is
+ * byte-identical to the old whole-range render.
+ */
+export const AUDIO_SEGMENT_FRAMES = 30 * EXPORT_SAMPLE_RATE
+
+/**
+ * Pre-roll rendered before each segment after the first and discarded. Gain
+ * envelopes (clip fades, duck) are pure functions of absolute time, so they
+ * are exact at any fromS; the ONE stateful node — the per-track auto-level
+ * DynamicsCompressorNode (release ≤ 0.25 s) — needs this run-in for its
+ * envelope follower to converge to the continuous render. Audibly identical;
+ * bit-identity only holds for tracks without auto-level, and for any export
+ * that fits one segment (the golden-test case) which takes the zero-preroll
+ * path and is byte-identical to the old code by construction.
+ */
+export const AUDIO_PREROLL_S = 1
+
+export interface AudioMixPlan {
+  info: AudioStreamMeta
+  /** Render every segment in order, awaiting the consumer between segments. */
+  render: (onSegment: (channelData: Float32Array<ArrayBuffer>[]) => void | Promise<void>) => Promise<void>
+}
 
 /**
  * Mixes every audible clip over [startS, endS) with the exact rules of
@@ -35,12 +62,12 @@ export const EXPORT_CHANNELS = 2
  * drops out, and the rest report offsets relative to it. So the rendered PCM
  * begins at the work-area in point, matching the video's zero-based timestamps.
  */
-export async function renderAudioMix(
+export async function planAudioMix(
   seq: Sequence,
   assets: Record<Id, MediaAsset>,
   startS = 0,
   endS = seq.durationS,
-): Promise<RenderedAudio | null> {
+): Promise<AudioMixPlan | null> {
   if (!('AudioEncoder' in globalThis)) return null
   const rangeS = endS - startS
   if (rangeS <= 0) return null
@@ -48,10 +75,7 @@ export async function renderAudioMix(
   const anySolo = seq.tracks.some((t) => t.solo)
   const audibleTracks = seq.tracks.filter((t) => (anySolo ? t.solo : !t.muted))
 
-  // Same duck automation as the live preview (see engine/ducking.ts).
-  const duckEnv = duckEnvelope(seq.tracks, anySolo, startS)
-
-  const candidates: { clip: Clip; track: Track; sched: ClipSchedule; asset: MediaAsset; reversed: boolean }[] = []
+  const candidates: { clip: Clip; track: Track; asset: MediaAsset; reversed: boolean }[] = []
   for (const track of audibleTracks) {
     for (const clip of track.clips) {
       if (!clipEmitsAudio(track, clip)) continue
@@ -59,9 +83,9 @@ export async function renderAudioMix(
       if (!asset) continue
       const reversed = clip.speed < 0
       const eff = reversed ? effectiveAudioClip(clip, asset.durationS) : clip
-      const sched = computeClipSchedule(eff, startS)
-      if (!sched) continue
-      candidates.push({ clip: eff, track, sched, asset, reversed })
+      // Audible in the exported range at all? (Per-segment scheduling below.)
+      if (!computeClipSchedule(eff, startS)) continue
+      candidates.push({ clip: eff, track, asset, reversed })
     }
   }
   if (candidates.length === 0) return null
@@ -72,75 +96,102 @@ export async function renderAudioMix(
   )
   if (!buffers.some((b) => b !== null)) return null
 
-  const length = Math.max(1, Math.ceil(rangeS * EXPORT_SAMPLE_RATE))
-  const ctx = new OfflineAudioContext(EXPORT_CHANNELS, length, EXPORT_SAMPLE_RATE)
+  const totalFrames = Math.max(1, Math.ceil(rangeS * EXPORT_SAMPLE_RATE))
 
-  // Same gain→pan-per-track → destination topology as the live preview, so the
-  // exported mix matches what was heard. Offsets are relative to `startS`, which
-  // is exactly clipGainEnvelope(clip, startS)'s convention.
-  const trackNodes = new Map<Id, GainNode>()
-  const trackInputFor = (track: Track): GainNode => {
-    const existing = trackNodes.get(track.id)
-    if (existing) return existing
-    const gain = ctx.createGain()
-    gain.gain.value = dbToGain(track.volumeDb ?? 0)
-    const pan = ctx.createStereoPanner()
-    pan.pan.value = clamp(track.pan ?? 0, -1, 1)
-    let tail: AudioNode = gain
-    // Same loudness-equalization chain as the live mix → export matches preview.
-    const cp = compressorParamsFor(track.autoLevel)
-    if (cp) {
-      const comp = ctx.createDynamicsCompressor()
-      comp.threshold.value = cp.threshold
-      comp.knee.value = cp.knee
-      comp.ratio.value = cp.ratio
-      comp.attack.value = cp.attack
-      comp.release.value = cp.release
-      const makeup = ctx.createGain()
-      makeup.gain.value = dbToGain(cp.makeupDb)
-      tail.connect(comp)
-      comp.connect(makeup)
-      tail = makeup
+  /** Render one segment: [f0, f0 + segFrames) of the mix, with pre-roll. */
+  const renderSegment = async (f0: number, segFrames: number): Promise<Float32Array<ArrayBuffer>[]> => {
+    const prerollS = f0 === 0 ? 0 : AUDIO_PREROLL_S
+    const prerollFrames = Math.round(prerollS * EXPORT_SAMPLE_RATE)
+    // The schedule base: every envelope + schedule offset below is relative to
+    // it, exactly the fromS convention of computeClipSchedule/clipGainEnvelope/
+    // duckEnvelope — all pure functions of absolute time, so a mid-mix base is
+    // exact, not approximated.
+    const fromS = startS + f0 / EXPORT_SAMPLE_RATE - prerollS
+    const ctxFrames = prerollFrames + segFrames
+    const ctx = new OfflineAudioContext(EXPORT_CHANNELS, ctxFrames, EXPORT_SAMPLE_RATE)
+
+    // Same duck automation as the live preview (see engine/ducking.ts).
+    const duckEnv = duckEnvelope(seq.tracks, anySolo, fromS)
+
+    // Same gain→pan-per-track → destination topology as the live preview, so
+    // the exported mix matches what was heard.
+    const trackNodes = new Map<Id, GainNode>()
+    const trackInputFor = (track: Track): GainNode => {
+      const existing = trackNodes.get(track.id)
+      if (existing) return existing
+      const gain = ctx.createGain()
+      gain.gain.value = dbToGain(track.volumeDb ?? 0)
+      const pan = ctx.createStereoPanner()
+      pan.pan.value = clamp(track.pan ?? 0, -1, 1)
+      let tail: AudioNode = gain
+      // Same loudness-equalization chain as the live mix → export matches preview.
+      const cp = compressorParamsFor(track.autoLevel)
+      if (cp) {
+        const comp = ctx.createDynamicsCompressor()
+        comp.threshold.value = cp.threshold
+        comp.knee.value = cp.knee
+        comp.ratio.value = cp.ratio
+        comp.attack.value = cp.attack
+        comp.release.value = cp.release
+        const makeup = ctx.createGain()
+        makeup.gain.value = dbToGain(cp.makeupDb)
+        tail.connect(comp)
+        comp.connect(makeup)
+        tail = makeup
+      }
+      // Music ducks under the voiceover — identical automation to the preview.
+      if (track.audioRole === 'music' && duckEnv) {
+        const duck = ctx.createGain()
+        duckEnv.forEach((pt, idx) => {
+          if (idx === 0) duck.gain.setValueAtTime(pt.value, pt.offsetS)
+          else duck.gain.linearRampToValueAtTime(pt.value, pt.offsetS)
+        })
+        tail.connect(duck)
+        tail = duck
+      }
+      tail.connect(pan)
+      pan.connect(ctx.destination)
+      trackNodes.set(track.id, gain)
+      return gain
     }
-    // Music ducks under the voiceover — identical automation to the preview.
-    if (track.audioRole === 'music' && duckEnv) {
-      const duck = ctx.createGain()
-      duckEnv.forEach((pt, idx) => {
-        if (idx === 0) duck.gain.setValueAtTime(pt.value, pt.offsetS)
-        else duck.gain.linearRampToValueAtTime(pt.value, pt.offsetS)
+
+    const ctxEndOffsetS = ctxFrames / EXPORT_SAMPLE_RATE
+    candidates.forEach(({ clip, track }, i) => {
+      const buffer = buffers[i]
+      if (!buffer) return
+      const sched: ClipSchedule | null = computeClipSchedule(clip, fromS)
+      // Ends before this segment's base, or starts after its end — silent here.
+      if (!sched || sched.whenOffsetS >= ctxEndOffsetS) return
+      const source = ctx.createBufferSource()
+      source.buffer = buffer
+      source.playbackRate.value = Math.abs(clip.speed)
+      const gain = ctx.createGain()
+      const env = clipGainEnvelope(clip, fromS) ?? [{ offsetS: 0, value: dbToGain(clip.audioGainDb) }]
+      env.forEach((pt, idx) => {
+        if (idx === 0) gain.gain.setValueAtTime(pt.value, pt.offsetS)
+        else gain.gain.linearRampToValueAtTime(pt.value, pt.offsetS)
       })
-      tail.connect(duck)
-      tail = duck
-    }
-    tail.connect(pan)
-    pan.connect(ctx.destination)
-    trackNodes.set(track.id, gain)
-    return gain
+      source.connect(gain)
+      gain.connect(trackInputFor(track))
+      source.start(sched.whenOffsetS, sched.sourceOffsetS, sched.durationS)
+    })
+
+    const rendered = await ctx.startRendering()
+    // Copy each channel (dropping the pre-roll) so transferring the buffers to
+    // the worker can't detach the AudioBuffer's internal storage.
+    return Array.from(
+      { length: EXPORT_CHANNELS },
+      (_, ch) => new Float32Array(rendered.getChannelData(ch).subarray(prerollFrames)),
+    )
   }
 
-  candidates.forEach(({ clip, track, sched }, i) => {
-    const buffer = buffers[i]
-    if (!buffer) return
-    const source = ctx.createBufferSource()
-    source.buffer = buffer
-    source.playbackRate.value = Math.abs(clip.speed)
-    const gain = ctx.createGain()
-    const env = clipGainEnvelope(clip, startS) ?? [{ offsetS: 0, value: dbToGain(clip.audioGainDb) }]
-    env.forEach((pt, idx) => {
-      if (idx === 0) gain.gain.setValueAtTime(pt.value, pt.offsetS)
-      else gain.gain.linearRampToValueAtTime(pt.value, pt.offsetS)
-    })
-    source.connect(gain)
-    gain.connect(trackInputFor(track))
-    source.start(sched.whenOffsetS, sched.sourceOffsetS, sched.durationS)
-  })
-
-  const rendered = await ctx.startRendering()
-  // Copy each channel so transferring the buffers to the worker can't detach
-  // the AudioBuffer's internal storage.
-  const channelData = Array.from(
-    { length: EXPORT_CHANNELS },
-    (_, ch) => new Float32Array(rendered.getChannelData(ch)),
-  )
-  return { sampleRate: EXPORT_SAMPLE_RATE, numberOfChannels: EXPORT_CHANNELS, channelData }
+  return {
+    info: { sampleRate: EXPORT_SAMPLE_RATE, numberOfChannels: EXPORT_CHANNELS, totalFrames },
+    render: async (onSegment) => {
+      for (let f0 = 0; f0 < totalFrames; f0 += AUDIO_SEGMENT_FRAMES) {
+        const segFrames = Math.min(AUDIO_SEGMENT_FRAMES, totalFrames - f0)
+        await onSegment(await renderSegment(f0, segFrames))
+      }
+    },
+  }
 }

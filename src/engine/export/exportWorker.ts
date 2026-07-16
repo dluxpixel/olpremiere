@@ -47,6 +47,17 @@ class CancelledError extends Error {}
 let cancelled = false
 let started = false
 
+// The streamed audio-mix segments (see messages.ts): pushed by onmessage,
+// consumed in order by the audio-encode loop, which parks on `audioWaiter`
+// when it outruns the main thread's renderer. Cancel also wakes the waiter so
+// a parked loop can observe the flag.
+const audioSegments: Float32Array[][] = []
+let audioWaiter: (() => void) | null = null
+const wakeAudioLoop = (): void => {
+  audioWaiter?.()
+  audioWaiter = null
+}
+
 // SAFETY NET: nothing may ever surface as the opaque "worker crashed: unknown
 // error" again. Any exception that escapes run()'s try/catch (an encoder
 // output callback throwing, a stray rejected promise) posts a real message;
@@ -63,6 +74,10 @@ scope.onmessage = (e: MessageEvent<ExportRequest>) => {
   const msg = e.data
   if (msg.type === 'cancel') {
     cancelled = true
+    wakeAudioLoop()
+  } else if (msg.type === 'audioSegment') {
+    audioSegments.push(msg.channelData)
+    wakeAudioLoop()
   } else if (!started) {
     started = true
     void run(msg)
@@ -350,21 +365,39 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
         if (audioEncoder.state !== 'closed') audioEncoder.close()
       })
 
-      const totalFrames = audio.channelData[0]?.length ?? 0
-      for (const chunk of pcmChunks(totalFrames, AUDIO_CHUNK_FRAMES, audio.sampleRate)) {
+      // Consume the streamed segments in arrival order until every frame the
+      // init meta promised has been encoded. Timestamps are computed from the
+      // GLOBAL frame position, so the AAC framing is identical to the old
+      // whole-mix loop (segments are exact multiples of AUDIO_CHUNK_FRAMES
+      // except the last).
+      let audioFramesDone = 0
+      while (audioFramesDone < audio.totalFrames) {
         checkCancel()
         throwIfFailed()
-        const data = new AudioData({
-          format: 'f32-planar',
-          sampleRate: audio.sampleRate,
-          numberOfFrames: chunk.frames,
-          numberOfChannels: audio.numberOfChannels,
-          timestamp: chunk.timestampUs,
-          data: packPlanarChunk(audio.channelData, chunk.offset, chunk.frames),
-        })
-        audioEncoder.encode(data)
-        data.close()
-        await drain(audioEncoder)
+        const seg = audioSegments.shift()
+        if (!seg) {
+          await new Promise<void>((resolve) => {
+            audioWaiter = resolve
+          })
+          continue
+        }
+        const segFrames = seg[0]?.length ?? 0
+        for (const chunk of pcmChunks(segFrames, AUDIO_CHUNK_FRAMES, audio.sampleRate)) {
+          checkCancel()
+          throwIfFailed()
+          const data = new AudioData({
+            format: 'f32-planar',
+            sampleRate: audio.sampleRate,
+            numberOfFrames: chunk.frames,
+            numberOfChannels: audio.numberOfChannels,
+            timestamp: Math.round(((audioFramesDone + chunk.offset) * 1e6) / audio.sampleRate),
+            data: packPlanarChunk(seg, chunk.offset, chunk.frames),
+          })
+          audioEncoder.encode(data)
+          data.close()
+          await drain(audioEncoder)
+        }
+        audioFramesDone += segFrames
       }
       await audioEncoder.flush()
       await audioMux // every queued packet handed to the muxer (or failed)

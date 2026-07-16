@@ -33,13 +33,16 @@ export interface ExportProgress {
 }
 
 /**
- * Full stereo PCM mix rendered on the main thread — OfflineAudioContext is
- * not reliably available inside workers. Buffers are transferred, not copied.
+ * Shape of the audio mix the worker will receive. The PCM itself arrives as a
+ * stream of `audioSegment` messages AFTER init — the mix is rendered on the
+ * main thread (OfflineAudioContext is not reliably available inside workers)
+ * in bounded segments, so a long export never allocates its whole PCM at once.
  */
-export interface RenderedAudio {
+export interface AudioStreamMeta {
   sampleRate: number
   numberOfChannels: number
-  channelData: Float32Array<ArrayBuffer>[]
+  /** Total frames across all segments — the worker's loop-termination count. */
+  totalFrames: number
 }
 
 export interface ExportAsset {
@@ -56,7 +59,7 @@ export type ExportRequest =
       settings: ExportSettings
       sequence: Sequence
       assets: ExportAsset[]
-      audio: RenderedAudio | null
+      audio: AudioStreamMeta | null
       /**
        * Destination opened with showSaveFilePicker on the main thread. Handles
        * are structured-cloneable, so the worker opens the writable itself and
@@ -67,6 +70,8 @@ export type ExportRequest =
        */
       fileHandle?: FileSystemFileHandle
     }
+  /** One rendered mix segment, in order. Buffers are transferred, not copied. */
+  | { type: 'audioSegment'; channelData: Float32Array<ArrayBuffer>[] }
   | { type: 'cancel' }
 
 export type ExportResponse =
