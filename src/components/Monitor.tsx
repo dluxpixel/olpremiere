@@ -197,13 +197,18 @@ function ShuttleBadge() {
 
 export function Monitor() {
   const assets = useStore((s) => s.project.assets)
-  // Decode audio + spin up pooled elements as soon as media exists, so the
-  // first Space press starts instantly instead of stalling on decode.
+  const warmSeq = useStore((s) => activeSequence(s.project))
+  // Decode audio + spin up pooled elements so the first Space press starts
+  // instantly — but ONLY for assets the active sequence actually uses.
+  // Warming the whole bin meant importing a 100-clip library spun up 100
+  // video decoders + 100 full PCM decodes at once.
   useEffect(() => {
-    const list = Object.values(assets)
+    const used = new Set<string>()
+    for (const t of warmSeq.tracks) for (const c of t.clips) if (c.assetId) used.add(c.assetId)
+    const list = Object.values(assets).filter((a) => used.has(a.id))
     prewarmAudio(list)
     prewarmPreview(list)
-  }, [assets])
+  }, [assets, warmSeq])
 
   // No playheadS subscription — the timecode is an imperative leaf
   // (PlayheadTimecode), so transport ticks never re-render the Monitor.

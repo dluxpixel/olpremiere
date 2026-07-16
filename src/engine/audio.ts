@@ -55,14 +55,45 @@ export function ensureAudioContext(): AudioContext {
 
 // Keyed by asset id and holding the in-flight Promise so concurrent callers
 // dedupe; failures resolve to a cached null (warned once), never reject.
+// LRU-bounded by decoded PCM bytes: a large library previously kept EVERY
+// asset's full float32 PCM in RAM forever (~23MB per stereo minute). Evicted
+// entries simply re-decode on next use; anything actively scheduled is kept
+// alive by the graph's own references.
+const AUDIO_CACHE_MAX_BYTES = 256 * 1024 * 1024
 const bufferCache = new Map<Id, Promise<AudioBuffer | null>>()
+const bufferBytes = new Map<Id, number>()
+let bufferTotalBytes = 0
+
+function evictAudioOverflow(keepId: Id): void {
+  for (const id of bufferCache.keys()) {
+    if (bufferTotalBytes <= AUDIO_CACHE_MAX_BYTES) return
+    if (id === keepId) continue // never evict the entry we just decoded
+    bufferTotalBytes -= bufferBytes.get(id) ?? 0
+    bufferBytes.delete(id)
+    bufferCache.delete(id)
+  }
+}
 
 export async function getAudioBuffer(asset: MediaAsset): Promise<AudioBuffer | null> {
   let pending = bufferCache.get(asset.id)
-  if (!pending) {
-    pending = decodeAssetAudio(asset)
+  if (pending) {
+    // LRU touch on both maps so hot assets stay resident.
+    bufferCache.delete(asset.id)
     bufferCache.set(asset.id, pending)
+    return pending
   }
+  pending = decodeAssetAudio(asset).then((buf) => {
+    // Account bytes when the decode actually lands (only if still cached —
+    // eviction may have raced a slow decode).
+    if (buf && bufferCache.get(asset.id) === pending) {
+      const bytes = buf.length * buf.numberOfChannels * 4
+      bufferBytes.set(asset.id, bytes)
+      bufferTotalBytes += bytes
+      evictAudioOverflow(asset.id)
+    }
+    return buf
+  })
+  bufferCache.set(asset.id, pending)
   return pending
 }
 

@@ -20,18 +20,36 @@ interface PooledImage {
   ready: boolean
 }
 
+// Both pools are LRU-bounded: every acquire re-inserts (touch), so anything on
+// screen can never be the eviction victim. A 100-asset library previously meant
+// 100 buffering <video> decoders alive at once — decoders are a scarce hardware
+// resource and each element buffers media.
+const VIDEO_POOL_CAP = 12
+const IMAGE_POOL_CAP = 48
+
 const videoPool = new Map<Id, PooledVideo>()
 const imagePool = new Map<Id, PooledImage>()
 
+function lruTouch<V>(pool: Map<Id, V>, id: Id, v: V): void {
+  pool.delete(id)
+  pool.set(id, v)
+}
+
 function warmVideo(asset: MediaAsset): PooledVideo {
   const existing = videoPool.get(asset.id)
-  if (existing) return existing
+  if (existing) {
+    lruTouch(videoPool, asset.id, existing)
+    return existing
+  }
   const el = document.createElement('video')
   el.muted = true // audio comes from the Web Audio graph, never the elements
   el.playsInline = true
   el.preload = 'auto'
   const pooled: PooledVideo = { el, ready: false }
   videoPool.set(asset.id, pooled)
+  while (videoPool.size > VIDEO_POOL_CAP) {
+    disposeVideo(videoPool.keys().next().value as Id)
+  }
   void getBlobUrl(asset.blobKey).then((url) => {
     if (!url) return
     el.addEventListener('loadeddata', () => (pooled.ready = true), { once: true })
@@ -42,10 +60,16 @@ function warmVideo(asset: MediaAsset): PooledVideo {
 
 function warmImage(asset: MediaAsset): PooledImage {
   const existing = imagePool.get(asset.id)
-  if (existing) return existing
+  if (existing) {
+    lruTouch(imagePool, asset.id, existing)
+    return existing
+  }
   const el = new Image()
   const pooled: PooledImage = { el, ready: false }
   imagePool.set(asset.id, pooled)
+  while (imagePool.size > IMAGE_POOL_CAP) {
+    disposeImage(imagePool.keys().next().value as Id)
+  }
   void getBlobUrl(asset.blobKey).then((url) => {
     if (!url) return
     el.addEventListener('load', () => (pooled.ready = true), { once: true })
@@ -71,19 +95,25 @@ export function pauseAllPreviewVideos(): void {
  * call for an unknown id; the element re-warms on next preview if the asset
  * comes back (undo).
  */
-export function disposePreviewAsset(assetId: Id): void {
+function disposeVideo(assetId: Id): void {
   const v = videoPool.get(assetId)
-  if (v) {
-    if (!v.el.paused) v.el.pause()
-    v.el.removeAttribute('src')
-    v.el.load() // drops the decoder + buffered data held by the element
-    videoPool.delete(assetId)
-  }
+  if (!v) return
+  if (!v.el.paused) v.el.pause()
+  v.el.removeAttribute('src')
+  v.el.load() // drops the decoder + buffered data held by the element
+  videoPool.delete(assetId)
+}
+
+function disposeImage(assetId: Id): void {
   const img = imagePool.get(assetId)
-  if (img) {
-    img.el.removeAttribute('src')
-    imagePool.delete(assetId)
-  }
+  if (!img) return
+  img.el.removeAttribute('src')
+  imagePool.delete(assetId)
+}
+
+export function disposePreviewAsset(assetId: Id): void {
+  disposeVideo(assetId)
+  disposeImage(assetId)
 }
 
 // Live on-canvas transform override (Monitor gizmo). While the user drags a
