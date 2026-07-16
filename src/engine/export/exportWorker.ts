@@ -116,6 +116,8 @@ interface ClipProvider {
   started: boolean
   current: WrappedCanvas | null
   ahead: WrappedCanvas | null
+  /** Reaped mid-export (sweep passed the clip) — guards double-dispose. */
+  disposed: boolean
 }
 
 const SRC_EPS_S = 1e-4
@@ -461,15 +463,36 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
         started: false,
         current: null,
         ahead: null,
+        disposed: false,
       }
       clipProviders.set(clip.id, provider)
       cleanups.push(() => {
+        if (provider.disposed) return // reaped mid-export
         // provider.iterator, not the captured `iterator` — a reverse re-seek may
         // have replaced it.
         void provider.iterator.return?.(undefined)
         input.dispose()
       })
       return provider
+    }
+
+    // A transition into the NEXT clip samples this clip past its out point, and
+    // the transition-duration UI caps at 10s — so anything 10s behind the sweep
+    // can never be read again. Without reaping, a several-hundred-clip timeline
+    // ends the export holding hundreds of open demuxers + hardware decoders.
+    const PROVIDER_REAP_MARGIN_S = 10
+    const reapProviders = (t: number): void => {
+      for (const [id, provider] of clipProviders) {
+        const clip = clipById.get(id)
+        if (!clip) continue
+        const endS = clip.startS + (clip.outS - clip.inS) / Math.max(Math.abs(clip.speed) || 1, 1e-6)
+        if (t > endS + PROVIDER_REAP_MARGIN_S) {
+          provider.disposed = true
+          void provider.iterator.return?.(undefined)
+          provider.dispose()
+          clipProviders.delete(id)
+        }
+      }
     }
 
     // Index enabled video clips by id so a layer's clipId resolves to its Clip.
@@ -542,6 +565,8 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
       if ((f + 1) % 5 === 0 || f + 1 === framesTotal) {
         post({ type: 'progress', progress: { phase: 'video', framesDone: f + 1, framesTotal } })
       }
+      // Close demuxers/decoders the sweep has permanently passed (~1×/second).
+      if (f % Math.max(1, Math.round(settings.fps)) === 0) reapProviders(t)
     }
 
     await videoEncoder.flush()
