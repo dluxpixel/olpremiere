@@ -1790,6 +1790,41 @@ describe('setSequenceFormat / refitClipToFill (Shorts aspect switch)', () => {
     expect(out.width).toBe(1080)
     expect(out.tracks[0].clips[0].transform.scale).toBe(1)
   })
+
+  it('leaves a manually repositioned clip alone (x/y set by the author)', () => {
+    const moved = makeClip({
+      id: 'a',
+      assetId: 'a',
+      startS: 0,
+      outS: 4,
+      transform: { ...defaultTransform(), x: 0.2, y: -0.1 },
+    })
+    const seq = makeSeq([makeTrack({ clips: [moved] })])
+    const out = setSequenceFormat(seq, landscape, 1080, 1920)
+    expect(out.width).toBe(1080)
+    expect(out.tracks[0].clips[0]).toBe(moved)
+  })
+
+  it('leaves a manually scaled clip alone (scale set by the author)', () => {
+    const scaled = makeClip({
+      id: 'a',
+      assetId: 'a',
+      startS: 0,
+      outS: 4,
+      transform: { ...defaultTransform(), scale: 2 },
+    })
+    const seq = makeSeq([makeTrack({ clips: [scaled] })])
+    const out = setSequenceFormat(seq, landscape, 1080, 1920)
+    expect(out.tracks[0].clips[0]).toBe(scaled)
+  })
+
+  it('re-refits its OWN previous cover-fit when switching back (9:16 → 16:9)', () => {
+    const seq = makeSeq([makeTrack({ clips: [clip16x9()] })])
+    const shorts = setSequenceFormat(seq, landscape, 1080, 1920)
+    expect(shorts.tracks[0].clips[0].transform.scale).toBeCloseTo(COVER_16x9_INTO_9x16, 3)
+    const back = setSequenceFormat(shorts, landscape, 1920, 1080)
+    expect(back.tracks[0].clips[0].transform.scale).toBeCloseTo(1, 6)
+  })
 })
 
 describe('addTrack', () => {

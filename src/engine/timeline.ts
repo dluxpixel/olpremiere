@@ -42,14 +42,19 @@ export function recomputeDuration(seq: Sequence): Sequence {
  * Scale a clip to COVER (fill) a frame of frameW×frameH, cropping the overflow
  * and centering it — the "make it a Short" refit. `transform.scale=1` is the
  * renderer's contain-fit; cover needs scale = cover/contain. Skips titles
- * (frame-relative already) and clips that animate scale/position (don't fight
- * an author's animation). Returns the same clip when nothing changes.
+ * (frame-relative already), clips that animate scale/position, and clips the
+ * author has manually moved or scaled (don't fight a hand-placed transform) —
+ * only identity transforms and the exact cover-fit a previous refit produced
+ * for the prevW×prevH frame are refit. Returns the same clip when nothing
+ * changes.
  */
 export function refitClipToFill(
   clip: Clip,
   assets: Record<Id, MediaAsset>,
   frameW: number,
   frameH: number,
+  prevW = 0,
+  prevH = 0,
 ): Clip {
   if (clip.title) return clip
   if (
@@ -64,15 +69,27 @@ export function refitClipToFill(
   if (sw <= 0 || sh <= 0) return clip
   const contain = Math.min(frameW / sw, frameH / sh)
   if (contain <= 0) return clip
-  const scale = Math.max(frameW / sw, frameH / sh) / contain
   const tf = clip.transform
-  if (Math.abs(tf.scale - scale) < 1e-6 && tf.x === 0 && tf.y === 0) return clip
+  if (tf.x !== 0 || tf.y !== 0) return clip
+  const untouched = Math.abs(tf.scale - 1) < 1e-6
+  let prevAutoFit = false
+  if (!untouched && prevW > 0 && prevH > 0) {
+    const prevContain = Math.min(prevW / sw, prevH / sh)
+    if (prevContain > 0) {
+      const prevCover = Math.max(prevW / sw, prevH / sh)
+      prevAutoFit = Math.abs(tf.scale - prevCover / prevContain) < 1e-6
+    }
+  }
+  if (!untouched && !prevAutoFit) return clip
+  const scale = Math.max(frameW / sw, frameH / sh) / contain
+  if (Math.abs(tf.scale - scale) < 1e-6) return clip
   return { ...clip, transform: { ...tf, scale, x: 0, y: 0 } }
 }
 
 /**
  * Reformat a sequence to width×height (e.g. 9:16 Shorts). When `refit`, every
- * clip is scaled to fill the new frame. Export follows the sequence dimensions.
+ * untouched clip is scaled to fill the new frame (hand-placed transforms are
+ * left alone — see refitClipToFill). Export follows the sequence dimensions.
  */
 export function setSequenceFormat(
   seq: Sequence,
@@ -85,7 +102,9 @@ export function setSequenceFormat(
   const sameDims = seq.width === width && seq.height === height
   const tracks = refit
     ? seq.tracks.map((t) => {
-        const clips = t.clips.map((c) => refitClipToFill(c, assets, width, height))
+        const clips = t.clips.map((c) =>
+          refitClipToFill(c, assets, width, height, seq.width, seq.height),
+        )
         return clips.some((c, i) => c !== t.clips[i]) ? { ...t, clips } : t
       })
     : seq.tracks
