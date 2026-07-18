@@ -4,6 +4,7 @@
 // MASTER clock so A/V stays in sync.
 
 import { getBlob } from '../state/persistence'
+import { denoisedBufferFor } from './denoise'
 import { duckEnvelope } from './ducking'
 import { evalChannel } from './keyframes'
 import type { AutoLevel, Clip, Id, MediaAsset, Sequence, Track } from './types'
@@ -122,41 +123,76 @@ export function prewarmAudio(assets: MediaAsset[]): void {
 // Reversed buffers for reverse playback (Phase 7), cached per asset.
 const reversedCache = new Map<Id, Promise<AudioBuffer | null>>()
 
+/**
+ * Mirror a decoded buffer about the CONTAINER duration, not the decoded length.
+ * Callers mirror the clip window about asset.durationS (effectiveAudioClip); if
+ * the decoded audio track is shorter/longer than the container (common for
+ * screen/phone recordings, or codec priming/padding), reversing about the
+ * decoded length instead would time-shift the reversed audio by the difference.
+ * Sizing the reversed buffer to the container and indexing from its end keeps
+ * the two axes aligned. When they're equal this is identical to a plain
+ * reverse (no regression). Pure: used by the cached raw path and the (uncached)
+ * denoised path so both reverse identically.
+ */
+function reverseAboutContainer(src: AudioBuffer, asset: MediaAsset): AudioBuffer {
+  const ctx = ensureAudioContext()
+  const n = src.length
+  // Buffer length == the mirror axis (container), so its time axis lines up
+  // with effectiveAudioClip's window exactly. Fall back to the decoded length
+  // if durationS is missing/zero, which reduces to a plain reverse.
+  const containerLen = asset.durationS > 0 ? Math.round(asset.durationS * src.sampleRate) : n
+  const L = Math.max(1, containerLen)
+  const rev = ctx.createBuffer(src.numberOfChannels, L, src.sampleRate)
+  for (let ch = 0; ch < src.numberOfChannels; ch++) {
+    const from = src.getChannelData(ch)
+    const to = rev.getChannelData(ch)
+    for (let i = 0; i < L; i++) {
+      const j = L - 1 - i
+      to[i] = j >= 0 && j < n ? from[j] : 0
+    }
+  }
+  return rev
+}
+
 export function getReversedAudioBuffer(asset: MediaAsset): Promise<AudioBuffer | null> {
   let pending = reversedCache.get(asset.id)
   if (!pending) {
     pending = (async () => {
       const src = await getAudioBuffer(asset)
       if (!src) return null
-      const ctx = ensureAudioContext()
-      // Mirror about the CONTAINER duration, not the decoded length. Callers
-      // mirror the clip window about asset.durationS (effectiveAudioClip); if the
-      // decoded audio track is shorter/longer than the container (common for
-      // screen/phone recordings, or codec priming/padding), reversing about the
-      // decoded length instead would time-shift the reversed audio by the
-      // difference. Sizing the reversed buffer to the container and indexing from
-      // its end keeps the two axes aligned. When they're equal this is identical
-      // to a plain reverse (no regression).
-      const n = src.length
-      // Buffer length == the mirror axis (container), so its time axis lines up
-      // with effectiveAudioClip's window exactly. Fall back to the decoded length
-      // if durationS is missing/zero, which reduces to a plain reverse.
-      const containerLen = asset.durationS > 0 ? Math.round(asset.durationS * src.sampleRate) : n
-      const L = Math.max(1, containerLen)
-      const rev = ctx.createBuffer(src.numberOfChannels, L, src.sampleRate)
-      for (let ch = 0; ch < src.numberOfChannels; ch++) {
-        const from = src.getChannelData(ch)
-        const to = rev.getChannelData(ch)
-        for (let i = 0; i < L; i++) {
-          const j = L - 1 - i
-          to[i] = j >= 0 && j < n ? from[j] : 0
-        }
-      }
-      return rev
+      return reverseAboutContainer(src, asset)
     })()
     reversedCache.set(asset.id, pending)
   }
   return pending
+}
+
+/**
+ * THE buffer resolver for a clip: the one place that decides which samples a
+ * clip plays. Both mixers (live graph below, export's audioRender) route
+ * through here, so preview==export can't diverge on audio processing.
+ *
+ * No `denoise` → the exact same cached promises as before (golden-safe,
+ * byte-identical). With `denoise`, the raw decode is crossfaded against the
+ * cached RNNoise pass at the clip's strength (engine/denoise.ts); if the wasm
+ * can't load the clip falls back to raw — audibly un-denoised, never silent.
+ * Reversal applies AFTER denoise so both directions play the same samples.
+ */
+export async function clipAudioBuffer(
+  clip: Clip,
+  asset: MediaAsset,
+  reversed: boolean,
+): Promise<AudioBuffer | null> {
+  const strength = clip.denoise ?? 0
+  if (strength <= 0) return reversed ? getReversedAudioBuffer(asset) : getAudioBuffer(asset)
+  const src = await getAudioBuffer(asset)
+  if (!src) return null
+  const ctx = ensureAudioContext()
+  const denoised = await denoisedBufferFor(asset, src, strength, (c, l, r) => ctx.createBuffer(c, l, r))
+  const forward = denoised ?? src
+  // Reversed+denoised is rare; recomputing the mirror on demand keeps the
+  // cached reversed path untouched rather than doubling its cache keys.
+  return reversed ? reverseAboutContainer(forward, asset) : forward
 }
 
 /**
@@ -389,9 +425,7 @@ export async function scheduleAudio(
     }
   }
 
-  const buffers = await Promise.all(
-    candidates.map((c) => (c.reversed ? getReversedAudioBuffer(c.asset) : getAudioBuffer(c.asset))),
-  )
+  const buffers = await Promise.all(candidates.map((c) => clipAudioBuffer(c.clip, c.asset, c.reversed)))
 
   const { master } = ensureMasterChain()
 

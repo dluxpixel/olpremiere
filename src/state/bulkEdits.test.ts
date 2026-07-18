@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { channelKeyframes } from '../engine/effects/channels'
 import { recomputeDuration } from '../engine/timeline'
-import { toggleChannelAnimation } from './clipEdits'
+import { setClipDenoise, toggleChannelAnimation } from './clipEdits'
 import {
   activeSequence,
   defaultTitleDef,
@@ -141,6 +141,35 @@ describe('applyEffectToAllClips', () => {
     const before = useStore.getState().project
     applyEffectToAllClips('saturation')
     expect(useStore.getState().project).toBe(before)
+  })
+})
+
+describe('setClipDenoise (undo granularity)', () => {
+  it('each dispatch is ONE undo step; off deletes the field entirely', () => {
+    const a = seedTitle(0)
+    setClipDenoise(a.id, 1)
+    setClipDenoise(a.id, 0.6)
+    expect(clips()[0].denoise).toBeCloseTo(0.6, 9)
+    useStore.getState().undo()
+    expect(clips()[0].denoise).toBe(1)
+    useStore.getState().undo()
+    expect('denoise' in clips()[0]).toBe(false)
+  })
+
+  it('same value / strength 0 are no-ops that add NO undo entry', () => {
+    const a = seedTitle(0)
+    setClipDenoise(a.id, 0.5)
+    const before = useStore.getState().project
+    setClipDenoise(a.id, 0.5) // identical → no entry
+    expect(useStore.getState().project).toBe(before)
+    setClipDenoise(a.id, 0) // 0 ≡ off
+    expect('denoise' in clips()[0]).toBe(false)
+  })
+
+  it('clamps strength above 1', () => {
+    const a = seedTitle(0)
+    setClipDenoise(a.id, 5)
+    expect(clips()[0].denoise).toBe(1)
   })
 })
 

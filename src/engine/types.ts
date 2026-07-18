@@ -171,6 +171,14 @@ export interface Clip {
    * linkId plays its own audio.
    */
   linkId?: Id
+  /**
+   * Noise-reduction strength 0..1 (RNNoise dry/wet). Absent = off. NON-
+   * destructive: the recording stays raw; this only changes which samples the
+   * mixers read (engine/audio.ts clipAudioBuffer), so it can be A/B'd and
+   * undone freely. 1 = the full RNNoise output (OBS's suppressor config);
+   * fractions crossfade toward the raw take. Deliberately NOT keyframeable.
+   */
+  denoise?: number
 }
 
 /** All keyframeable channels. Names are the shared contract across engine + UI. */

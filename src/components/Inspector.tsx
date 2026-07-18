@@ -1,11 +1,18 @@
-import { Clock, Rewind, SlidersHorizontal } from 'lucide-react'
+import { AudioWaveform, Clock, Rewind, SlidersHorizontal } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 import { clipEmitsAudio } from '../engine/audio'
 import { isChannelAnimated, resolveChannel } from '../engine/effects/channels'
 import { clipDurationS, clipEndS, moveGroup } from '../engine/timeline'
 import { formatTimecode, parseTimecode, quantizeToFrame } from '../engine/timecode'
 import { activeSequence, isTitleClip, type Clip, type MediaAsset, type Track } from '../engine/types'
-import { setChannel, setClipFade, setClipGainDb, setClipSpeed, toggleChannelAnimation } from '../state/clipEdits'
+import {
+  setChannel,
+  setClipDenoise,
+  setClipFade,
+  setClipGainDb,
+  setClipSpeed,
+  toggleChannelAnimation,
+} from '../state/clipEdits'
 import { updateActiveSequence, useStore } from '../state/store'
 import { IconButton } from '../ui/Button'
 import { EffectControls, ScrubField, type Spec } from './EffectControls'
@@ -14,6 +21,7 @@ import { TitleControls } from './TitleControls'
 
 const GAIN_SPEC: Spec = { min: -60, max: 12, step: 0.5, sens: 0.2 }
 const FADE_SPEC: Spec = { min: 0, max: 30, step: 0.05, sens: 0.02 }
+const DENOISE_SPEC: Spec = { min: 5, max: 100, step: 5, sens: 0.5 }
 const SPEED_SPEC: Spec = { min: 10, max: 800, step: 1, sens: 1 }
 
 function FieldRow({ label, children }: { label: string; children: ReactNode }) {
@@ -147,6 +155,30 @@ function AudioControls({ clip, linked, playheadS }: { clip: Clip; linked?: boole
             ariaLabel="Fade out seconds"
             onCommit={(v) => setClipFade(clip.id, 'out', v)}
           />
+        </FieldRow>
+        {/* Non-destructive RNNoise (OBS's suppressor). The take stays raw —
+            toggle to A/B by ear, drag the % toward natural if 100 sounds
+            processed. 100% = the straight RNNoise output. */}
+        <FieldRow label="Reduce noise">
+          <div className="flex w-full items-center justify-end gap-2">
+            {clip.denoise !== undefined && (
+              <ScrubField
+                value={Math.round(clip.denoise * 100)}
+                spec={DENOISE_SPEC}
+                testId="field-denoise"
+                ariaLabel="Noise reduction strength (%)"
+                onCommit={(v) => setClipDenoise(clip.id, v / 100)}
+              />
+            )}
+            <IconButton
+              label={clip.denoise !== undefined ? 'Turn noise reduction off' : 'Reduce background noise (RNNoise)'}
+              data-testid="denoise-toggle"
+              onClick={() => setClipDenoise(clip.id, clip.denoise !== undefined ? undefined : 1)}
+              className={clip.denoise !== undefined ? 'text-accent' : undefined}
+            >
+              <AudioWaveform size={13} strokeWidth={1.75} aria-hidden />
+            </IconButton>
+          </div>
         </FieldRow>
       </div>
     </section>

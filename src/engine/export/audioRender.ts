@@ -5,12 +5,11 @@
 import {
   clipEmitsAudio,
   clipGainEnvelope,
+  clipAudioBuffer,
   compressorParamsFor,
   computeClipSchedule,
   dbToGain,
   effectiveAudioClip,
-  getAudioBuffer,
-  getReversedAudioBuffer,
   type ClipSchedule,
 } from '../audio'
 import { duckEnvelope } from '../ducking'
@@ -90,10 +89,9 @@ export async function planAudioMix(
   }
   if (candidates.length === 0) return null
 
-  // getAudioBuffer resolves null for silent/image assets and decode failures.
-  const buffers = await Promise.all(
-    candidates.map((c) => (c.reversed ? getReversedAudioBuffer(c.asset) : getAudioBuffer(c.asset))),
-  )
+  // clipAudioBuffer resolves null for silent/image assets and decode failures,
+  // and routes denoised clips through the SAME resolver as live preview.
+  const buffers = await Promise.all(candidates.map((c) => clipAudioBuffer(c.clip, c.asset, c.reversed)))
   if (!buffers.some((b) => b !== null)) return null
 
   const totalFrames = Math.max(1, Math.ceil(rangeS * EXPORT_SAMPLE_RATE))

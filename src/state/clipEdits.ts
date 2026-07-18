@@ -226,6 +226,28 @@ export function applyEffect(clipId: string, type: string): void {
   mapClip(clipId, `Add ${label}`, (c) => ops.addEffect(c, type, id))
 }
 
+/**
+ * Set a clip's noise-reduction strength (0..1); undefined/0 turns it off.
+ * Non-destructive — flips which samples the mixers read (clipAudioBuffer),
+ * the recording itself is never touched. One undo step, like any edit.
+ */
+export function setClipDenoise(clipId: string, strength: number | undefined): void {
+  const s = strength !== undefined && strength > 0 ? Math.min(1, strength) : undefined
+  // No-op guard BEFORE dispatch: mapClip rebuilds the sequence object even for
+  // an unchanged clip, so a same-value commit (ScrubField blur re-commit) would
+  // otherwise land a do-nothing entry on the undo stack.
+  const cur = activeSequence(useStore.getState().project)
+    .tracks.flatMap((t) => t.clips)
+    .find((c) => c.id === clipId)
+  if (!cur || cur.denoise === s) return
+  mapClip(clipId, s === undefined ? 'Noise reduction off' : 'Reduce noise', (c) => {
+    const next = { ...c }
+    if (s === undefined) delete next.denoise
+    else next.denoise = s
+    return next
+  })
+}
+
 export function deleteEffect(clipId: string, effectId: Id): void {
   mapClip(clipId, 'Remove effect', (c) => ops.removeEffect(c, effectId))
 }
