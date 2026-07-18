@@ -33,7 +33,7 @@ import {
   type Id,
   type Keyframe,
 } from '../engine/types'
-import type { TransitionKind } from '../engine/render/types'
+import { transitionDurationSpec, type TransitionKind } from '../engine/render/types'
 import { updateActiveSequence, useStore } from './store'
 
 const KEYFRAME_TOLERANCE_S = 1e-4
@@ -294,11 +294,21 @@ export function setClipTransition(
   clipId: string,
   edge: 'in' | 'out',
   kind: TransitionKind,
-  durationS = 1,
+  durationS?: number,
 ): void {
+  // Per-kind envelope: whiteFlash defaults to its 200 ms hit and lives in
+  // 100–500 ms; everything else keeps the classic 1 s default. Enforced HERE —
+  // the one write path for drops, the Inspector select, and duration commits.
+  // A duration outside the new kind's envelope (e.g. a 1 s dissolve switched
+  // to White Flash) snaps to the kind's DEFAULT, not the clamp edge: the
+  // carried value was tuned for a different verb, so the envelope edge would
+  // be an arbitrary landing spot. In-envelope values are kept as-is.
+  const spec = transitionDurationSpec(kind)
+  const d =
+    durationS !== undefined && durationS >= spec.min && durationS <= spec.max ? durationS : spec.def
   mapClip(clipId, `Add ${edge} transition`, (c) => ({
     ...c,
-    [edge === 'in' ? 'transitionIn' : 'transitionOut']: { type: kind, durationS },
+    [edge === 'in' ? 'transitionIn' : 'transitionOut']: { type: kind, durationS: d },
   }))
 }
 

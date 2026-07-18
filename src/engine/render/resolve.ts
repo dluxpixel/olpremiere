@@ -167,7 +167,23 @@ function resolveTrack(track: Track, t: number, fps: number): RenderOp | null {
 
       if (clip.transitionIn && !hasPrevPartner) {
         const d = clamp(clip.transitionIn.durationS, 1 / fps, dur)
-        if (t < clip.startS + d) layer.opacity = clamp(layer.opacity * ((t - clip.startS) / d), 0, 1)
+        if (t < clip.startS + d) {
+          // whiteFlash is white → footage even with NO neighbor (an intro hit,
+          // e.g. the first clip on the timeline), so it emits the transition op
+          // instead of the lone-edge fade-from-black opacity ramp. The shader
+          // ignores `from`, so the clip's own layer stands in for both sides.
+          // Adjustment clips keep the ramp (they have no texture to flash to).
+          if (clip.transitionIn.type === 'whiteFlash' && !clip.adjustment) {
+            return {
+              type: 'transition',
+              kind: 'whiteFlash',
+              progress: (t - clip.startS) / d,
+              from: layer,
+              to: layer,
+            }
+          }
+          layer.opacity = clamp(layer.opacity * ((t - clip.startS) / d), 0, 1)
+        }
       }
       if (clip.transitionOut && !hasNextPartner) {
         const d = clamp(clip.transitionOut.durationS, 1 / fps, dur)

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { channelKeyframes } from '../engine/effects/channels'
 import { recomputeDuration } from '../engine/timeline'
-import { setClipDenoise, toggleChannelAnimation } from './clipEdits'
+import { setClipDenoise, setClipTransition, toggleChannelAnimation } from './clipEdits'
 import {
   activeSequence,
   defaultTitleDef,
@@ -170,6 +170,27 @@ describe('setClipDenoise (undo granularity)', () => {
     const a = seedTitle(0)
     setClipDenoise(a.id, 5)
     expect(clips()[0].denoise).toBe(1)
+  })
+})
+
+describe('setClipTransition duration envelope (whiteFlash)', () => {
+  it('whiteFlash defaults to its 200 ms hit; other kinds keep the 1 s default', () => {
+    const a = seedTitle(0)
+    setClipTransition(a.id, 'in', 'whiteFlash')
+    expect(clips()[0].transitionIn).toEqual({ type: 'whiteFlash', durationS: 0.2 })
+    setClipTransition(a.id, 'in', 'crossDissolve')
+    expect(clips()[0].transitionIn!.durationS).toBe(1)
+  })
+
+  it('keeps in-envelope durations; snaps out-of-envelope ones to the default', () => {
+    const a = seedTitle(0)
+    setClipTransition(a.id, 'in', 'whiteFlash', 0.35)
+    expect(clips()[0].transitionIn!.durationS).toBeCloseTo(0.35, 9)
+    // A 1 s dissolve switched to White Flash: 1 s is outside 100-500 ms → 200 ms.
+    setClipTransition(a.id, 'in', 'whiteFlash', 1)
+    expect(clips()[0].transitionIn!.durationS).toBe(0.2)
+    setClipTransition(a.id, 'in', 'whiteFlash', 0.01)
+    expect(clips()[0].transitionIn!.durationS).toBe(0.2)
   })
 })
 

@@ -305,12 +305,18 @@ void main() {
       col = vec4(texture(uTo, clamp(gUV + split, 0.0, 1.0)).r, texture(uTo, gUV).g,
                  texture(uTo, clamp(gUV - split, 0.0, 1.0)).b, texture(uTo, gUV).a);
     }
-  } else {                     // lumaWipe: TO reveals through FROM's darks first
+  } else if (uKind == 10) {    // lumaWipe: TO reveals through FROM's darks first
     float soft = 0.08;
     float luma = dot(from.rgb, vec3(0.2126, 0.7152, 0.0722));
     float pp = p * (1.0 + 2.0 * soft) - soft;
     float m = smoothstep(luma - soft, luma + soft, pp);
     col = mix(from, to, m);
+  } else {                     // whiteFlash: hard white at p=0, ease-out resolve to TO.
+    // (1-p)^2 has its steepest decay at p=0 (rate 2) and lands at 0 with zero
+    // slope — the flash pops full white then quickly settles into the footage.
+    // FROM is deliberately ignored: this is an intro hit, not a blend.
+    float a = (1.0 - p) * (1.0 - p);
+    col = mix(to, vec4(1.0), a);
   }
   outColor = col;
 }`
@@ -327,6 +333,7 @@ const KIND_INDEX: Record<TransitionKind, number> = {
   spin: 8,
   glitch: 9,
   lumaWipe: 10,
+  whiteFlash: 11,
 }
 
 // --- GL helpers ------------------------------------------------------------

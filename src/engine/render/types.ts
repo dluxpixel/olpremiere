@@ -87,6 +87,7 @@ export type TransitionKind =
   | 'spin'
   | 'glitch'
   | 'lumaWipe'
+  | 'whiteFlash'
 
 export const TRANSITION_KINDS: TransitionKind[] = [
   'crossDissolve',
@@ -100,6 +101,7 @@ export const TRANSITION_KINDS: TransitionKind[] = [
   'spin',
   'glitch',
   'lumaWipe',
+  'whiteFlash',
 ]
 
 /** Human labels for the transition kinds — shared by the Effects panel + Inspector. */
@@ -115,6 +117,17 @@ export const TRANSITION_LABELS: Record<TransitionKind, string> = {
   spin: 'Spin',
   glitch: 'Glitch',
   lumaWipe: 'Luma Wipe',
+  whiteFlash: 'White Flash',
+}
+
+/**
+ * Per-kind duration envelope for the edit layer (default + clamp on set).
+ * whiteFlash is an INTRO hit, not a blend — it reads wrong past half a second,
+ * so its envelope is deliberately tight (100–500 ms, default 200).
+ */
+export function transitionDurationSpec(kind: TransitionKind): { def: number; min: number; max: number } {
+  if (kind === 'whiteFlash') return { def: 0.2, min: 0.1, max: 0.5 }
+  return { def: 1, min: 0.1, max: 10 }
 }
 
 /**

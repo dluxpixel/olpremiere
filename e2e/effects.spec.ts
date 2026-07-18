@@ -208,6 +208,59 @@ test('dragging a transition onto a clip picks the edge nearest the cursor', asyn
   expect(edges).toEqual({ in: 'crossDissolve', out: 'dipToBlack' })
 })
 
+test('White Flash: drop on the in edge → opens near-white, resolves to footage', async ({ page }) => {
+  const clipId = await addClip(page)
+
+  // Drop on the LEFT half → in edge; the drop carries the kind's own default.
+  await dropOnClip(page, 'application/x-reel-transition', 'whiteFlash', 0.1)
+  const tr = await page.evaluate(async (id) => {
+    const storeMod = '/src/state/store.ts'
+    const typesMod = '/src/engine/types.ts'
+    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+      useStore: { getState: () => { project: unknown } }
+    }
+    const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+      activeSequence: (p: unknown) => {
+        tracks: { clips: { id: string; transitionIn?: { type: string; durationS: number } }[] }[]
+      }
+    }
+    const seq = activeSequence(useStore.getState().project)
+    return seq.tracks.flatMap((t) => t.clips).find((c) => c.id === id)?.transitionIn ?? null
+  }, clipId)
+  expect(tr).toEqual({ type: 'whiteFlash', durationS: 0.2 })
+
+  // Drive the playhead EXACTLY (a ruler click lands frames late, which is deep
+  // enough into a 200 ms flash to fail a whiteness threshold). At t=0 the
+  // curve is alpha=1 → the monitor must be essentially pure white.
+  const setPlayhead = (tS: number) =>
+    page.evaluate(async (t) => {
+      const storeMod = '/src/state/store.ts'
+      const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+        useStore: { getState: () => { setUI: (p: unknown) => void } }
+      }
+      useStore.getState().setUI({ playheadS: t })
+    }, tS)
+
+  await setPlayhead(0)
+  await expect
+    .poll(async () => (await previewPixel(page, 0.5, 0.5)).every((c) => c >= 240), { timeout: 10_000 })
+    .toBe(true)
+  const flash = await previewPixel(page, 0.5, 0.5)
+
+  // Well past the 200 ms window the white must have fully resolved into
+  // footage — a clearly different frame from the flash.
+  await setPlayhead(1)
+  await expect
+    .poll(
+      async () => {
+        const px = await previewPixel(page, 0.5, 0.5)
+        return px.reduce((s, c, i) => s + Math.abs(c - flash[i]!), 0)
+      },
+      { timeout: 10_000 },
+    )
+    .toBeGreaterThan(60)
+})
+
 test('Auto Color applies on drop at a visible strength and still renders', async ({ page }) => {
   const clipId = await addClip(page)
   // Park inside the clip so the monitor shows a real decoded frame.

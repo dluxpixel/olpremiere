@@ -168,6 +168,55 @@ describe('identity clip', () => {
     expect(at(3.5)).toBeCloseTo(0.5, 5) // halfway through the fade-out
   })
 
+  it('whiteFlash on a lone in-edge emits a transition op (white → footage), not a fade ramp', () => {
+    // The FIRST clip on a timeline: no neighbor, yet the intro must open on
+    // white — the lone-edge fade-from-black ramp would be wrong for this kind.
+    const c = clip({ startS: 0, inS: 0, outS: 2, transitionIn: { type: 'whiteFlash', durationS: 0.2 } })
+    const at = (t: number) => resolveFrame(seqOf([track({ clips: [c] })]), t).ops[0]
+
+    const t0 = at(0)
+    expect(t0.type).toBe('transition')
+    if (t0.type !== 'transition') throw new Error('not a transition')
+    expect(t0.kind).toBe('whiteFlash')
+    expect(t0.progress).toBeCloseTo(0, 6)
+    // The shader ignores `from`; both sides are the clip's own layer.
+    expect(t0.from).toBe(t0.to)
+
+    const mid = at(0.1)
+    if (mid.type !== 'transition') throw new Error('not a transition')
+    expect(mid.progress).toBeCloseTo(0.5, 6)
+
+    // Past the window: a plain layer at FULL opacity — no residual fade.
+    const after = at(0.3)
+    expect(after.type).toBe('layer')
+    expect(asLayer(after).opacity).toBe(1)
+  })
+
+  it('whiteFlash between two adjacent clips still flashes at the head of B', () => {
+    const a = clip({ startS: 0, inS: 0, outS: 2 })
+    const b = clip({ startS: 2, inS: 0, outS: 2, transitionIn: { type: 'whiteFlash', durationS: 0.2 } })
+    const op = resolveFrame(seqOf([track({ clips: [a, b] })]), 2.05).ops[0]
+    expect(op.type).toBe('transition')
+    if (op.type !== 'transition') throw new Error('not a transition')
+    expect(op.kind).toBe('whiteFlash')
+    expect(op.progress).toBeCloseTo(0.25, 6)
+  })
+
+  it('whiteFlash + fadeInS on the same edge does not re-fade after the flash', () => {
+    // fadeInS longer than the flash window: the transition owns the edge, so
+    // the handle must not dim the footage after the white resolves.
+    const c = clip({
+      startS: 0,
+      inS: 0,
+      outS: 4,
+      fadeInS: 1,
+      transitionIn: { type: 'whiteFlash', durationS: 0.2 },
+    })
+    const op = resolveFrame(seqOf([track({ clips: [c] })]), 0.5).ops[0]
+    expect(op.type).toBe('layer')
+    expect(asLayer(op).opacity).toBe(1)
+  })
+
   it('a fade + a lone-edge transition on the same edge do NOT double-fade', () => {
     // Last clip on its track (no next partner) with BOTH a 1s dip-to-black
     // transitionOut and a 1s fade-out handle. The transition owns the opacity

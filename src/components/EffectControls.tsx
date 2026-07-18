@@ -22,7 +22,12 @@ import { channelKeyframes, isChannelAnimated, resolveChannel } from '../engine/e
 import { isParamAnimated, paramKeyframes, resolveParam } from '../engine/effects/ops'
 import { EFFECTS, getEffect, paramSens, type EffectParamDef } from '../engine/effects/registry'
 import { clipEndS } from '../engine/timeline'
-import { TRANSITION_KINDS, TRANSITION_LABELS, type TransitionKind } from '../engine/render/types'
+import {
+  TRANSITION_KINDS,
+  TRANSITION_LABELS,
+  transitionDurationSpec,
+  type TransitionKind,
+} from '../engine/render/types'
 import {
   ANIM_CHANNELS,
   BLEND_LABELS,
@@ -664,7 +669,14 @@ function TransitionRow({
       ) : (
         <ScrubField
           value={durationS}
-          spec={{ min: 0.1, max: 10, step: 0.1, sens: 0.03 }}
+          // whiteFlash scrubs inside its tight 100–500 ms envelope with a finer
+          // step; other kinds keep the classic 0.1–10 s range.
+          spec={{
+            min: transitionDurationSpec(kind as TransitionKind).min,
+            max: transitionDurationSpec(kind as TransitionKind).max,
+            step: kind === 'whiteFlash' ? 0.05 : 0.1,
+            sens: 0.03,
+          }}
           testId={`${testId}-duration`}
           ariaLabel={`${edge === 'in' ? 'In' : 'Out'} transition duration (seconds)`}
           onCommit={(d) => setClipTransition(clip.id, edge, kind as TransitionKind, d)}
