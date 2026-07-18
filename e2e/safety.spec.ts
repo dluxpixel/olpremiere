@@ -84,7 +84,7 @@ test('deleting an asset from the bin offers a working Undo', async ({ page }) =>
   expect(await clipCount(page)).toBe(1)
 
   await page.getByTestId('asset-card').click({ button: 'right' })
-  await page.getByText('Delete from bin').click()
+  await page.getByText('Remove from bin').click()
 
   // The clip vanished from the timeline AND the asset from the bin.
   await expect(page.getByTestId('asset-card')).toHaveCount(0)

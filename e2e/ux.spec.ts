@@ -29,7 +29,7 @@ test('right-clicking a media card can delete it from the bin', async ({ page }) 
   await page.getByTestId('asset-card').click({ button: 'right' })
   const menu = page.getByTestId('context-menu')
   await expect(menu).toBeVisible()
-  await menu.getByRole('menuitem', { name: 'Delete from bin' }).click()
+  await menu.getByRole('menuitem', { name: 'Remove from bin' }).click()
   // The bin card and any clips using it are gone.
   await expect(page.getByTestId('asset-card')).toHaveCount(0)
   await expect(vclip(page)).toHaveCount(0)

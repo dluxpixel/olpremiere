@@ -320,14 +320,14 @@ export function TopBar() {
         }}
       />
       <IconButton
-        label="Save project to a file (backup)"
+        label="Back up project to a file"
         onClick={() => void exportProjectToFile()}
         data-testid="save-project-file"
       >
         <HardDriveDownload size={16} strokeWidth={1.5} />
       </IconButton>
       <IconButton
-        label="Open a project file"
+        label="Open a project file (.olstudio)"
         onClick={() => openFileRef.current?.click()}
         data-testid="open-project-file"
       >

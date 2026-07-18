@@ -66,7 +66,7 @@ test('media saved to the Library survives a reload AND deletion from the bin', a
   // Delete the original from the bin; the Library copy must not care.
   await page.getByRole('tab', { name: 'Media' }).click()
   await page.getByTestId('asset-card').first().click({ button: 'right' })
-  await page.getByText('Delete from bin').click()
+  await page.getByText('Remove from bin').click()
   await expect(page.getByTestId('asset-card')).toHaveCount(0)
 
   await page.getByRole('tab', { name: 'Library' }).click()

@@ -1,4 +1,4 @@
-import { Bookmark, Captions, Film, FolderOpen, Image as ImageIcon, Music, Plus, Sparkles, Type, Upload, Volume2, Wand2, Zap } from 'lucide-react'
+import { Bookmark, Captions, Film, FolderOpen, Image as ImageIcon, Music, Plus, Sparkles, Type, Upload, Volume2, Wand2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { EFFECTS } from '../engine/effects/registry'
 import { TRANSITION_KINDS, TRANSITION_LABELS } from '../engine/render/types'
@@ -8,7 +8,7 @@ import { activeSequence, type MediaAsset } from '../engine/types'
 import { useBlobUrl } from '../state/blobUrls'
 import { CaptionsDialog } from './CaptionsDialog'
 import { applyEffectToAllClips } from '../state/bulkEdits'
-import { applyEffect, setClipTransition } from '../state/clipEdits'
+import { applyEffect } from '../state/clipEdits'
 import { openContextMenu, type MenuItem } from '../state/contextMenu'
 import { ASSET_MIME, EFFECT_MIME, SFX_MIME, TRANSITION_MIME } from '../state/dnd'
 import {
@@ -25,7 +25,6 @@ import { healArrivedBlob, useMediaSync } from '../collab/mediaSync'
 import { useCollab } from '../collab/collabControl'
 import { deleteAsset, importFiles, insertAssetAtPlayhead } from '../state/mediaActions'
 import { applyJettismLook, applyPunchyGrade } from '../state/lookActions'
-import { impactAtPlayhead, punchInAtPlayhead, whipToNext } from '../state/motionActions'
 import { insertSfxAtPlayhead, previewSfx } from '../state/sfxActions'
 import { useStore, type LeftTab } from '../state/store'
 import { addTitleClip } from '../state/titleActions'
@@ -193,7 +192,9 @@ function AssetCard({ asset, fps }: { asset: MediaAsset; fps: number }) {
           { label: 'Add to timeline', shortcut: 'Enter', onClick: () => insertAssetAtPlayhead(asset.id) },
           { label: 'Save to Library', onClick: () => void saveAssetToLibrary(asset.id) },
           {
-            label: 'Delete from bin',
+            // "Remove from …" is the one shape for taking things out of any
+            // list (bin / Library / presets); "Delete" stays for timeline clips.
+            label: 'Remove from bin',
             shortcut: 'Del',
             danger: true,
             separator: true,
@@ -237,9 +238,10 @@ function MediaTab() {
           <Plus size={16} strokeWidth={1.5} />
           Import
         </Button>
+        {/* Same label as the T shortcut + timeline toolbar button — one verb, one name. */}
         <Button variant="secondary" data-testid="add-text" onClick={() => addTitleClip()}>
           <Type size={16} strokeWidth={1.5} />
-          Text
+          Add title
         </Button>
         <Button variant="secondary" data-testid="open-captions" onClick={() => setCaptionsOpen(true)}>
           <Captions size={16} strokeWidth={1.5} />
@@ -284,9 +286,11 @@ function MediaTab() {
 }
 
 /**
- * One draggable entry. Double-click applies it to the selected clip; `menu`
- * adds a right-click menu (an effect can go on every clip at once from there,
- * with no selection at all).
+ * One draggable entry. `onApply` (optional) makes double-click/Enter apply it
+ * to the selected clip; `menu` adds a right-click menu (an effect can go on
+ * every clip at once from there, with no selection at all). Transitions are
+ * drag-only — their edge choice IS the drop position, so a click apply would
+ * have to pick an edge silently.
  */
 function BrowserItem({
   name,
@@ -302,7 +306,7 @@ function BrowserItem({
   title: string
   mime: string
   payload: string
-  onApply: () => void
+  onApply?: () => void
   disabled: boolean
   testId: string
   menu?: MenuItem[]
@@ -322,7 +326,7 @@ function BrowserItem({
       onDoubleClick={onApply}
       onContextMenu={menu ? (e) => openContextMenu(e, menu) : undefined}
       onKeyDown={(e) => {
-        if (e.key === 'Enter') onApply()
+        if (e.key === 'Enter') onApply?.()
       }}
       className={`flex cursor-default items-center gap-2 rounded-[4px] px-2 py-1.5 text-[12px] transition-colors duration-[120ms] ${
         disabled
@@ -348,12 +352,11 @@ function EffectsTab() {
   const effects = EFFECTS.filter((e) => matches(e.label) || matches(e.type))
   const transitions = TRANSITION_KINDS.filter((k) => matches(TRANSITION_LABELS[k]) || matches(k))
   const showLook = matches('Jettism') || matches('look')
-  const motion = [
-    { key: 'punch', name: 'Punch in (at playhead)', run: punchInAtPlayhead },
-    { key: 'impact', name: 'Impact hit (at playhead)', run: impactAtPlayhead },
-    { key: 'whip', name: 'Whip to next clip', run: whipToNext },
-  ].filter((m) => matches(m.name) || matches('motion'))
-  const empty = effects.length === 0 && transitions.length === 0 && !showLook && motion.length === 0
+  // The Motion tiles were removed in the 2026-07-18 de-bloat: punch-in/impact/
+  // whip live on the clip right-click Motion submenu, the P key, and (with a
+  // depth control) the Inspector's PunchControl — this was a fourth, least
+  // capable surface for the same verbs.
+  const empty = effects.length === 0 && transitions.length === 0 && !showLook
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -418,32 +421,6 @@ function EffectsTab() {
                 </div>
               </section>
             )}
-            {motion.length > 0 && (
-              <section className="mb-2">
-                <h3 className="px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">
-                  Motion
-                </h3>
-                {motion.map((m) => (
-                  <div
-                    key={m.key}
-                    data-testid={`motion-${m.key}`}
-                    role="button"
-                    tabIndex={0}
-                    title="Double-click to apply to the selected clip"
-                    onDoubleClick={() => targetId && m.run(targetId)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && targetId) m.run(targetId)
-                    }}
-                    className={`flex cursor-default items-center gap-2 rounded-[4px] px-2 py-1.5 text-[12px] transition-colors duration-[120ms] ${
-                      targetId ? 'text-text-secondary hover:bg-bg-elevated hover:text-text-primary' : 'text-text-muted'
-                    }`}
-                  >
-                    <Zap size={13} strokeWidth={1.5} aria-hidden className="shrink-0 text-text-muted" />
-                    <span className="truncate">{m.name}</span>
-                  </div>
-                ))}
-              </section>
-            )}
             {effects.length > 0 && (
               <section className="mb-2">
                 <h3 className="px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">
@@ -478,16 +455,19 @@ function EffectsTab() {
                 <h3 className="px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">
                   Transitions
                 </h3>
+                {/* Drag-only, deliberately: the old double-click apply silently
+                    targeted the IN edge with no way to know or choose. The drag
+                    shows its edge (half-clip highlight) and the Inspector's
+                    Transitions section sets either edge explicitly. */}
                 {transitions.map((k) => (
                   <BrowserItem
                     key={k}
                     testId="transition-item"
                     name={TRANSITION_LABELS[k]}
-                    title="Drop on the left half of a clip for its in edge, the right half for its out edge"
+                    title="Drag onto a clip — left half sets the in edge, right half the out edge"
                     mime={TRANSITION_MIME}
                     payload={k}
-                    disabled={!targetId}
-                    onApply={() => targetId && setClipTransition(targetId, 'in', k)}
+                    disabled={false}
                   />
                 ))}
               </section>

@@ -211,12 +211,14 @@ function buildAppBindings(): Binding[] {
       { combo: 'v', description: 'Selection tool', run: () => store().setUI({ tool: 'select' }) },
       // C cuts the clip(s) at the playhead right away (Premiere muscle memory). The razor
       // TOOL (click-to-cut anywhere) moved to B (Blade) so click-cutting is still available.
-      { combo: 'c', description: 'Cut at playhead', run: () => splitAtPlayhead() },
+      // "Split", ONE name everywhere (menu, razor, here) — "Cut" stays reserved
+      // for the clipboard verb (Ctrl+X) so the two never read as one action.
+      { combo: 'c', description: 'Split at playhead', run: () => splitAtPlayhead() },
       { combo: 'b', description: 'Razor (blade) tool', run: () => store().setUI({ tool: 'razor' }) }, // click-to-cut anywhere
       { combo: 'h', description: 'Hand tool', run: () => store().setUI({ tool: 'hand' }) },
       { combo: 'z', description: 'Zoom tool', run: () => store().setUI({ tool: 'zoom' }) },
-      { combo: 'mod+k', description: 'Cut at playhead', run: () => splitAtPlayhead() },
-      { combo: 'mod+shift+k', description: 'Add edit to ALL tracks at playhead', run: () => splitAtPlayhead(true) },
+      { combo: 'mod+k', description: 'Split at playhead', run: () => splitAtPlayhead() },
+      { combo: 'mod+shift+k', description: 'Split ALL tracks at playhead', run: () => splitAtPlayhead(true) },
       { combo: 'mod+alt+c', description: 'Copy attributes', run: () => copyClipAttributes() },
       { combo: 'mod+alt+v', description: 'Paste attributes', run: () => pasteClipAttributes() },
       { combo: 'delete', description: 'Delete (lift)', run: () => deleteSelected(false) },

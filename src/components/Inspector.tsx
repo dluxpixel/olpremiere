@@ -418,8 +418,15 @@ export function Inspector({ width }: { width: number }) {
       style={{ width }}
     >
       <div className="flex h-9 shrink-0 items-center border-b border-border px-3">
-        <span className="text-[11px] font-medium uppercase tracking-[0.08em] text-text-secondary">
-          Effect Controls
+        {/* The header says WHAT is being edited, not the name of one of its own
+            sections — "Effect Controls" as a panel title while showing clip
+            details/speed/audio was a standing source of confusion. */}
+        <span className="truncate text-[11px] font-medium uppercase tracking-[0.08em] text-text-secondary">
+          {selected
+            ? `Clip — ${isTitleClip(selected) ? (selected.title?.text || 'Title') : (selectedAsset?.name ?? 'Missing media')}`
+            : multi.length > 1
+              ? `${multi.length} clips`
+              : 'Inspector'}
         </span>
       </div>
       {selected ? (
