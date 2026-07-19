@@ -8,7 +8,7 @@ import { activeSequence, type MediaAsset } from '../engine/types'
 import { useBlobUrl } from '../state/blobUrls'
 import { CaptionsDialog } from './CaptionsDialog'
 import { applyEffectToAllClips } from '../state/bulkEdits'
-import { applyEffect } from '../state/clipEdits'
+import { applyEffect, setClipTransition } from '../state/clipEdits'
 import { openContextMenu, type MenuItem } from '../state/contextMenu'
 import { ASSET_MIME, EFFECT_MIME, SFX_MIME, TRANSITION_MIME } from '../state/dnd'
 import {
@@ -288,9 +288,9 @@ function MediaTab() {
 /**
  * One draggable entry. `onApply` (optional) makes double-click/Enter apply it
  * to the selected clip; `menu` adds a right-click menu (an effect can go on
- * every clip at once from there, with no selection at all). Transitions are
- * drag-only — their edge choice IS the drop position, so a click apply would
- * have to pick an edge silently.
+ * every clip at once from there, with no selection at all). Transitions have
+ * no `onApply` — their edge choice IS the drop position, so a click apply
+ * would have to pick an edge silently; their menu names each edge instead.
  */
 function BrowserItem({
   name,
@@ -376,7 +376,7 @@ function EffectsTab() {
       <div className="min-h-0 flex-1 overflow-y-auto px-1 pb-2">
         {!targetId && (
           <p className="px-2 pb-1.5 text-[10px] text-text-muted">
-            Select a clip to apply, drag straight onto one, or right-click → Apply to every clip.
+            Select a clip to apply, drag straight onto one, or right-click — apply to every clip, or a transition to either edge.
           </p>
         )}
 
@@ -455,19 +455,32 @@ function EffectsTab() {
                 <h3 className="px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">
                   Transitions
                 </h3>
-                {/* Drag-only, deliberately: the old double-click apply silently
-                    targeted the IN edge with no way to know or choose. The drag
-                    shows its edge (half-clip highlight) and the Inspector's
-                    Transitions section sets either edge explicitly. */}
+                {/* No double-click apply, deliberately: the old one silently
+                    targeted the IN edge with no way to know or choose. Every
+                    apply path names its edge — the drag by drop position
+                    (half-clip highlight), the right-click menu and the
+                    Inspector's Transitions section by explicit label. */}
                 {transitions.map((k) => (
                   <BrowserItem
                     key={k}
                     testId="transition-item"
                     name={TRANSITION_LABELS[k]}
-                    title="Drag onto a clip — left half sets the in edge, right half the out edge"
+                    title="Drag onto a clip (left half = start, right half = end), or right-click to apply to the selected clip's start or end"
                     mime={TRANSITION_MIME}
                     payload={k}
                     disabled={false}
+                    menu={[
+                      {
+                        label: 'Apply to clip start',
+                        disabled: !targetId,
+                        onClick: () => targetId && setClipTransition(targetId, 'in', k),
+                      },
+                      {
+                        label: 'Apply to clip end',
+                        disabled: !targetId,
+                        onClick: () => targetId && setClipTransition(targetId, 'out', k),
+                      },
+                    ]}
                   />
                 ))}
               </section>

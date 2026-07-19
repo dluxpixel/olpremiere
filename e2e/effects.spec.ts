@@ -208,6 +208,38 @@ test('dragging a transition onto a clip picks the edge nearest the cursor', asyn
   expect(edges).toEqual({ in: 'crossDissolve', out: 'dipToBlack' })
 })
 
+test('right-click a transition → Apply to clip start sets the in edge explicitly', async ({ page }) => {
+  // addClip leaves the clip selected — the menu items need a single selection.
+  const clipId = await addClip(page)
+  await page.getByRole('tab', { name: 'Effects' }).click()
+
+  // Filter the list down to the one tile: the full list scrolls, and a click
+  // after auto-scroll can land on a neighbour whose menu has different items.
+  await page.getByTestId('effect-search').fill('white flash')
+  const tile = page.locator('[data-testid="transition-item"][data-payload="whiteFlash"]')
+  await tile.scrollIntoViewIfNeeded()
+  await tile.click({ button: 'right' })
+  await page.getByTestId('context-menu').getByRole('menuitem', { name: 'Apply to clip start' }).click()
+
+  const edges = await page.evaluate(async (id) => {
+    const storeMod = '/src/state/store.ts'
+    const typesMod = '/src/engine/types.ts'
+    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+      useStore: { getState: () => { project: unknown } }
+    }
+    const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+      activeSequence: (p: unknown) => {
+        tracks: { clips: { id: string; transitionIn?: { type: string }; transitionOut?: { type: string } }[] }[]
+      }
+    }
+    const seq = activeSequence(useStore.getState().project)
+    const clip = seq.tracks.flatMap((t) => t.clips).find((c) => c.id === id)
+    return { in: clip?.transitionIn?.type ?? null, out: clip?.transitionOut?.type ?? null }
+  }, clipId)
+
+  expect(edges).toEqual({ in: 'whiteFlash', out: null })
+})
+
 test('White Flash: drop on the in edge → opens near-white, resolves to footage', async ({ page }) => {
   const clipId = await addClip(page)
 
