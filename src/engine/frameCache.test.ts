@@ -7,6 +7,7 @@ import {
   frameMidTimeS,
   needsReopen,
   previewTargetHeight,
+  rangeIndices,
   spanIndices,
 } from './frameCache'
 
@@ -47,6 +48,40 @@ describe('previewTargetHeight', () => {
   it('is safe with unknown dimensions', () => {
     expect(previewTargetHeight(undefined, 1)).toBeUndefined()
     expect(previewTargetHeight(0, 1)).toBeUndefined()
+  })
+  it('Full follows a TALLER sequence raster (vertical reels, 4K timelines)', () => {
+    expect(previewTargetHeight(1920, 1, 1080, 1920)).toBeUndefined() // native — no cap
+    expect(previewTargetHeight(3840, 1, 1080, 1920)).toBe(1920)
+    expect(previewTargetHeight(2160, 1, 1080, 2160)).toBeUndefined() // 4K seq → native 4K
+  })
+  it('a sequence shorter than the base never LOWERS the Full cap', () => {
+    expect(previewTargetHeight(2160, 1, 1080, 720)).toBe(1080)
+  })
+  it('Half/Quarter ignore the sequence raster (cheap scrubbing is their point)', () => {
+    expect(previewTargetHeight(1920, 0.5, 1080, 1920)).toBe(540)
+    expect(previewTargetHeight(3840, 0.25, 1080, 1920)).toBe(270)
+  })
+})
+
+describe('rangeIndices (transition pre-roll window math)', () => {
+  it('covers the range ascending, inclusive of both edge frames', () => {
+    expect(rangeIndices(1, 1.1, 30, 10)).toEqual([30, 31, 32, 33])
+  })
+  it('normalizes a reversed range (reversed outgoing clip)', () => {
+    expect(rangeIndices(1.1, 1, 30, 10)).toEqual([30, 31, 32, 33])
+  })
+  it('clamps to the last real frame (past-EOF freeze-frame territory)', () => {
+    expect(rangeIndices(9.9, 10.5, 30, 10)).toEqual([297, 298, 299])
+  })
+  it('caps the request size', () => {
+    expect(rangeIndices(0, 100, 30, 1000, 8)).toHaveLength(8)
+    expect(rangeIndices(0, 100, 30, 1000, 8)[0]).toBe(0)
+  })
+  it('falls back to 30fps when the asset fps is unknown', () => {
+    expect(rangeIndices(1, 1.05, undefined, 10)).toEqual([30, 31])
+  })
+  it('collapses a zero-length range to the single containing frame', () => {
+    expect(rangeIndices(2, 2, 30, 10)).toEqual([60])
   })
 })
 

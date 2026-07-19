@@ -4,12 +4,13 @@
 // elements (playing), the WebCodecs frame cache (scrubbing), or <img> (stills).
 
 import { getBlobUrl } from '../state/blobUrls'
-import { getFrameAt, prefetchAround } from './frameCache'
+import { getFrameAt, prefetchAround, prefetchRange, setPreviewSequenceHeight } from './frameCache'
 import { createRenderer, type Renderer } from './render/glRenderer'
 import { resolveFrame } from './render/resolve'
 import { rasterizeTitle } from './render/titleRaster'
 import type { RenderLayer, TextureSource } from './render/types'
-import type { Id, MediaAsset, Sequence } from './types'
+import { clipDurationS, clipEndS } from './timeline'
+import type { Clip, Id, MediaAsset, Sequence } from './types'
 
 interface PooledVideo {
   el: HTMLVideoElement
@@ -175,7 +176,10 @@ function rendererFor(canvas: HTMLCanvasElement): Renderer | null {
   let renderer: Renderer | null = null
   if (gl) {
     try {
-      renderer = createRenderer(gl)
+      // mipmapPreview: the panel raster is 3-6x below source res — mipmapped
+      // minification kills the aliasing/shimmer. PREVIEW ONLY: the export
+      // renderer must stay flagless (golden byte-tests pin its LINEAR path).
+      renderer = createRenderer(gl, { mipmapPreview: true })
     } catch (err) {
       console.error('OL Studio: WebGL2 renderer init failed', err)
       renderer = null
@@ -185,10 +189,132 @@ function rendererFor(canvas: HTMLCanvasElement): Renderer | null {
   return renderer
 }
 
+// ---------------------------------------------------------------------------
+// Pair-transition pre-roll. During a pair transition the resolver samples the
+// OUTGOING clip past its cut while the INCOMING clip needs the pooled <video>
+// — and when both clips come from the SAME asset (one take split into
+// segments, the standard reel edit) they need the ONE pooled element at two
+// source times at once: each rAF re-seeks it twice, the element never
+// accumulates playback, and the window degenerates into a seek-decode
+// slideshow. The cure: within TRANSITION_PRE_ROLL_S of a window the outgoing
+// side's window frames are decoded into the frame cache, and during the window
+// the from-layer reads the cache — the element belongs to the incoming side.
+
+export const TRANSITION_PRE_ROLL_S = 1
+
+/** Mirrors resolve.ts ADJ_EPS: pair windows must match the resolver's. */
+const PAIR_ADJ_EPS = 1e-6
+
+export interface PairTransitionWindow {
+  /** Sequence-time window [startS, endS) at the incoming clip's head. */
+  startS: number
+  endS: number
+  fromAssetId: Id
+  toAssetId: Id
+  /** Outgoing clip's source time at startS/endS (start > end when reversed). */
+  fromSourceStartS: number
+  fromSourceEndS: number
+  /** Incoming clip's source time at startS. */
+  toSourceStartS: number
+}
+
+/**
+ * The pair-transition window at B's head, or null. Pure. Duplicates the
+ * resolver's pair rules (adjacency, enabled, non-adjustment, duration clamp)
+ * because resolve.ts keeps them private — keep in sync with resolveTrack.
+ */
+export function pairTransitionWindow(a: Clip, b: Clip, fps: number): PairTransitionWindow | null {
+  if (!a.enabled || !b.enabled || a.adjustment || b.adjustment) return null
+  if (Math.abs(clipEndS(a) - b.startS) >= PAIR_ADJ_EPS) return null
+  const tr = b.transitionIn ?? a.transitionOut
+  if (!tr) return null
+  const maxD = Math.min(clipDurationS(a), clipDurationS(b))
+  const d = Math.min(Math.max(tr.durationS, 1 / fps), maxD)
+  const rate = Math.abs(a.speed || 1)
+  const srcA = (t: number): number => (a.speed < 0 ? a.outS - (t - a.startS) * rate : a.inS + (t - a.startS) * rate)
+  return {
+    startS: b.startS,
+    endS: b.startS + d,
+    fromAssetId: a.assetId,
+    toAssetId: b.assetId,
+    fromSourceStartS: srcA(b.startS),
+    fromSourceEndS: srcA(b.startS + d),
+    toSourceStartS: b.speed < 0 ? b.outS : b.inS,
+  }
+}
+
+/**
+ * Every pair-transition window whose span or pre-roll contains tS. Pure.
+ * Binary search finds the clip at the playhead; only pairs whose window can
+ * still matter are examined (earlier windows have fully passed, later heads
+ * sit beyond the pre-roll), so a long track costs O(log n) per frame.
+ */
+export function transitionWindowsNear(
+  seq: Sequence,
+  tS: number,
+  preRollS = TRANSITION_PRE_ROLL_S,
+): PairTransitionWindow[] {
+  const out: PairTransitionWindow[] = []
+  for (const track of seq.tracks) {
+    if (track.kind !== 'video' || track.muted) continue
+    const clips = track.clips
+    // Last clip with startS <= tS (same sorted/non-overlap invariant resolve's
+    // activeIndex relies on).
+    let lo = 0
+    let hi = clips.length - 1
+    let i = -1
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1
+      if (clips[mid].startS <= tS) {
+        i = mid
+        lo = mid + 1
+      } else {
+        hi = mid - 1
+      }
+    }
+    // Pair (i-1, i) may still be inside its window; later pairs matter while
+    // the incoming head is within the pre-roll horizon.
+    for (let j = Math.max(1, i); j < clips.length && clips[j].startS <= tS + preRollS; j++) {
+      const w = pairTransitionWindow(clips[j - 1], clips[j], seq.fps)
+      if (w && tS < w.endS) out.push(w)
+    }
+  }
+  return out
+}
+
+/**
+ * rAF-driven pre-roll (playing only): decode the outgoing side's window frames
+ * ahead of the cut and warm the incoming element so the window's first frame
+ * doesn't cold-start a seek. No window near the playhead → near no-op.
+ */
+function prerollTransitions(seq: Sequence, assets: Record<Id, MediaAsset>, tS: number): void {
+  for (const w of transitionWindowsNear(seq, tS)) {
+    const from = assets[w.fromAssetId]
+    if (from?.kind === 'video') prefetchRange(from, w.fromSourceStartS, w.fromSourceEndS)
+    const to = assets[w.toAssetId]
+    if (to?.kind === 'video') {
+      const pooled = warmVideo(to)
+      // Pre-seek only BEFORE the window and only a PAUSED element — a playing
+      // one is on screen (including the same-asset case, where the outgoing
+      // clip still owns it until the cut).
+      if (
+        tS < w.startS &&
+        pooled.ready &&
+        pooled.el.paused &&
+        Math.abs(pooled.el.currentTime - w.toSourceStartS) > 0.15
+      ) {
+        pooled.el.currentTime = w.toSourceStartS
+      }
+    }
+  }
+}
+
 /**
  * Resolve a layer to a texture. Playing → pooled <video> free-runs with drift
  * correction; paused → exact WebCodecs frame (miss returns null, a later rAF
  * catches it); stills → the decoded <img>. Side-effects (seek/play) live here.
+ * `transitionFrom`: layers that are the OUTGOING side of a live pair
+ * transition — served from the frame cache, never from an element seek.
  */
 function makeTextureSource(
   assets: Record<Id, MediaAsset>,
@@ -197,6 +323,7 @@ function makeTextureSource(
   frameW: number,
   frameH: number,
   markPending: () => void,
+  transitionFrom?: ReadonlySet<RenderLayer>,
 ): TextureSource {
   return (layer: RenderLayer): TexImageSource | null => {
     // Titles are generated, not imported — rasterize at sequence resolution.
@@ -213,6 +340,20 @@ function makeTextureSource(
     if (asset.kind !== 'video') return null
 
     const srcT = layer.sourceTimeS
+    if (playing && transitionFrom?.has(layer)) {
+      // Outgoing side of a live pair transition, sampled past its cut. The
+      // incoming side owns the pooled element (the SAME element when both clips
+      // come from one asset — seeking it from here too would fight it twice per
+      // rAF, the transition stutter). Serve the pre-rolled exact frame; on a
+      // miss show the element AS-IS (never seek it) until the decode lands —
+      // getFrameAt already queued it. Sampling past the media end freeze-frames
+      // on the last real frame, which an element cannot do.
+      const exact = getFrameAt(asset, srcT)
+      if (exact) return exact as TexImageSource
+      markPending()
+      const pooled = videoPool.get(asset.id)
+      return pooled?.ready ? pooled.el : null
+    }
     if (!playing) {
       const pooled = warmVideo(asset)
       if (!pooled.el.paused) pooled.el.pause()
@@ -272,6 +413,8 @@ export function renderPreview(
 ): boolean {
   const renderer = rendererFor(canvas)
   if (!renderer) return true
+  // Keep the scrub cache's Full-quality decode cap matched to this raster.
+  setPreviewSequenceHeight(seq.height)
   const frame = resolveFrame(seq, tS)
   // Apply the live drag override to its layer (frame is freshly built, safe to mutate).
   if (liveTransform) {
@@ -296,14 +439,34 @@ export function renderPreview(
     }
     for (const [id, { el }] of videoPool) if (!active.has(id) && !el.paused) el.pause()
   }
+  // Transition pre-roll + the from-layers served from the frame cache this
+  // frame. whiteFlash stand-ins (from/to are the same clip) keep the element
+  // path — their "from" is the clip's own continuously-playing layer.
+  let transitionFrom: Set<RenderLayer> | undefined
+  if (playing) {
+    prerollTransitions(seq, assets, tS)
+    for (const op of frame.ops) {
+      if (op.type === 'transition' && op.from.clipId !== op.to.clipId) {
+        (transitionFrom ??= new Set()).add(op.from)
+      }
+    }
+  }
   // A frame is "complete" only when every layer resolved to its FINAL texture
   // (the exact decoded frame / loaded image) — not a still-seeking <video>
   // fallback. While anything is pending, the caller keeps polling so the async
   // seek/decode lands instead of the preview freezing on a stale frame.
   let complete = true
-  const source = makeTextureSource(assets, seq.fps, playing, frame.width, frame.height, () => {
-    complete = false
-  })
+  const source = makeTextureSource(
+    assets,
+    seq.fps,
+    playing,
+    frame.width,
+    frame.height,
+    () => {
+      complete = false
+    },
+    transitionFrom,
+  )
   renderer.render(frame, source)
   return complete
 }

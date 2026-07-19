@@ -401,7 +401,19 @@ const isNeighborhood = (fx: ResolvedEffect): boolean => getEffect(fx.type)?.pass
 
 // --- Renderer --------------------------------------------------------------
 
-export function createRenderer(gl: WebGL2RenderingContext): Renderer {
+export interface RendererOptions {
+  /**
+   * Mipmapped minification for SOURCE textures (video frames, stills, title
+   * rasters). The preview samples native-res sources down 3-6x to the panel
+   * raster, where plain LINEAR minification aliases and shimmers. Export must
+   * NEVER set this: the golden export e2e byte-tests pin the LINEAR-only path.
+   * WebGL2 supports NPOT mipmaps as long as wrap stays CLAMP_TO_EDGE.
+   */
+  mipmapPreview?: boolean
+}
+
+export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOptions): Renderer {
+  const mipmapSources = options?.mipmapPreview === true
   // Programs (thrown from here on failure so the caller can fall back).
   const blurProg = link(gl, FULL_VS, BLUR_FS)
   const combineProg = link(gl, FULL_VS, COMBINE_FS)
@@ -517,14 +529,17 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
   // but with texSubImage2D into stable storage so it doesn't reallocate.
   const srcTex = gl.createTexture()
   if (!srcTex) throw new Error('createTexture failed')
-  const setTexParams = (): void => {
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+  // `mipmap` may be true ONLY for source textures that get generateMipmap after
+  // every upload — a mipmap MIN_FILTER on a texture without a complete mip
+  // chain is incomplete and samples opaque black (why destCapTex passes false).
+  const setTexParams = (mipmap: boolean): void => {
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, mipmap ? gl.LINEAR_MIPMAP_LINEAR : gl.LINEAR)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
   }
   gl.bindTexture(gl.TEXTURE_2D, srcTex)
-  setTexParams()
+  setTexParams(mipmapSources)
   let srcTexW = -1
   let srcTexH = -1
 
@@ -552,8 +567,11 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
       }
       const tex = hit?.tex ?? gl.createTexture()!
       gl.bindTexture(gl.TEXTURE_2D, tex)
-      if (!hit) setTexParams()
+      if (!hit) setTexParams(mipmapSources)
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source)
+      // Stable sources upload once, so the mip chain is built once and then
+      // only re-bound — cache hits above never pay for generateMipmap.
+      if (mipmapSources) gl.generateMipmap(gl.TEXTURE_2D)
       texCache.delete(source)
       texCache.set(source, { tex, w: texW, h: texH })
       if (texCache.size > STABLE_TEX_CAP) {
@@ -574,6 +592,9 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
       srcTexW = texW
       srcTexH = texH
     }
+    // Every upload replaces level 0, so the chain must be re-derived each time
+    // or the mip MIN_FILTER would sample stale (or missing) levels.
+    if (mipmapSources) gl.generateMipmap(gl.TEXTURE_2D)
     return srcTex
   }
 
@@ -593,7 +614,7 @@ export function createRenderer(gl: WebGL2RenderingContext): Renderer {
       destCapTex = gl.createTexture()
       if (!destCapTex) throw new Error('createTexture failed')
       gl.bindTexture(gl.TEXTURE_2D, destCapTex)
-      setTexParams()
+      setTexParams(false) // sampled 1:1, never mipmapped — see setTexParams
     }
     gl.bindFramebuffer(gl.FRAMEBUFFER, targetFb)
     gl.activeTexture(gl.TEXTURE0)

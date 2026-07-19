@@ -20,6 +20,7 @@ import { pausePlayback, subscribeShuttleRate, toggleLoop, togglePlay } from '../
 import { setActiveSequenceFormat, useStore } from '../state/store'
 import { IconButton } from '../ui/Button'
 import { MasterMeter } from './MasterMeter'
+import { fitCanvasBox } from './monitorSizing'
 import { MonitorTransformOverlay } from './MonitorTransformOverlay'
 import { PlayheadTimecode } from './PlayheadWidgets'
 
@@ -81,21 +82,20 @@ function useProgramCanvas(quality: Quality) {
       raf = requestAnimationFrame(draw)
       const s = useStore.getState()
       const seq = activeSequence(s.project)
-      const aspect = seq.width / seq.height
-      let w = parentW
-      let h = w / aspect
-      if (h > parentH) {
-        h = parentH
-        w = h * aspect
-      }
-      const dpr = (window.devicePixelRatio || 1) * quality
-      const pw = Math.max(1, Math.round(w * dpr))
-      const ph = Math.max(1, Math.round(h * dpr))
+      // CSS box AND raster snapped to whole device pixels (fitCanvasBox): a
+      // fractional device-pixel box makes the compositor resample the finished
+      // canvas — a uniform blur no render-side sharpness can beat.
+      const box = fitCanvasBox(parentW, parentH, seq.width / seq.height, window.devicePixelRatio || 1, quality)
+      const pw = box.pxW
+      const ph = box.pxH
 
       const playing = s.ui.playing
       const fps = seq.fps > 0 ? seq.fps : 30
       const frameIdx = Math.floor(s.ui.playheadS * fps + 1e-6)
-      const key = `${frameIdx}|${playing ? 1 : 0}|${pw}x${ph}|${previewEpoch()}`
+      // cssW/cssH in the key: the CSS box can move by a device pixel while the
+      // reduced-quality raster rounds to the same pw×ph — the style write below
+      // must not be skipped by the parked-frame early-out when that happens.
+      const key = `${frameIdx}|${playing ? 1 : 0}|${pw}x${ph}|${box.cssW}x${box.cssH}|${previewEpoch()}`
       const changed = key !== prevKey || seq !== prevSeq
 
       // Parked on a fully-resolved frame with nothing new — do zero GPU work.
@@ -110,8 +110,8 @@ function useProgramCanvas(quality: Quality) {
       }
       // Write styles only on CHANGE — a same-value style write still dirties
       // style state in some engines and forces a recalc.
-      const wPx = `${w}px`
-      const hPx = `${h}px`
+      const wPx = `${box.cssW}px`
+      const hPx = `${box.cssH}px`
       if (wPx !== styleW) {
         styleW = wPx
         canvas.style.width = wPx

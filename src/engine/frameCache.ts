@@ -30,18 +30,27 @@ export const SEQ_REOPEN_GAP = 90
 export const PREVIEW_BASE_MAX_H = 1080
 
 let previewScale = 1
+// Sequence raster height, fed by renderPreview each frame (no-op unless it
+// changes). At FULL quality the decode cap follows it, so a >1080-tall
+// sequence (vertical 1080×1920 reels, 4K timelines) gets 1:1 paused frames.
+let sequenceH = 0
 
 /**
  * Target decode height for an asset's preview frames, or undefined to decode at
  * native size (never upscales). Pure — the sizing policy the sink uses.
+ * At Full quality (scale >= 1) a sequence TALLER than the base cap raises the
+ * cap to the sequence height — capping a 1920-tall reel to 1080 softened every
+ * paused frame. Half/Quarter keep the base cap: cheap scrubbing is their point.
  */
 export function previewTargetHeight(
   nativeH: number | undefined,
   scale: number,
   maxH = PREVIEW_BASE_MAX_H,
+  seqH = 0,
 ): number | undefined {
   if (!nativeH || nativeH <= 0) return undefined
-  const cap = Math.max(2, Math.round(Math.min(nativeH, maxH) * (scale > 0 ? scale : 1)))
+  const base = scale >= 1 ? Math.max(maxH, seqH) : maxH
+  const cap = Math.max(2, Math.round(Math.min(nativeH, base) * (scale > 0 ? scale : 1)))
   return cap < nativeH ? cap : undefined
 }
 
@@ -219,7 +228,7 @@ async function openInput(e: AssetEntry): Promise<void> {
   // pool, so every getCanvas yields a FRESH canvas — cached frames must never
   // be recycled underneath us. Decode at PREVIEW height (downscaled) so large
   // sources scrub cheaply; export uses its own full-res decode.
-  const th = previewTargetHeight(e.asset.height, previewScale)
+  const th = previewTargetHeight(e.asset.height, previewScale, PREVIEW_BASE_MAX_H, sequenceH)
   e.sink = th ? new Sink(track, { height: th }) : new Sink(track)
 }
 
@@ -352,6 +361,49 @@ export function prefetchAround(asset: MediaAsset, tS: number, spanS = 0.5): void
   }
 }
 
+/** Hard bound on how many indices one range request may enqueue per call. */
+export const RANGE_REQUEST_CAP = 240
+
+/**
+ * Ascending frame indices covering source-time range [aS, bS] (either order —
+ * a reversed clip's window runs backward), clamped to the asset's last frame
+ * and capped at `cap`. Pure — the transition pre-roll's window math.
+ */
+export function rangeIndices(
+  aS: number,
+  bS: number,
+  fps: number | undefined,
+  durationS: number,
+  cap = RANGE_REQUEST_CAP,
+): number[] {
+  const f = fps && fps > 0 ? fps : FALLBACK_FPS
+  const maxIdx = durationS > 0 ? Math.max(0, Math.ceil(durationS * f) - 1) : Number.MAX_SAFE_INTEGER
+  const lo = Math.min(frameIndexAt(Math.min(aS, bS), fps), maxIdx)
+  const hi = Math.min(frameIndexAt(Math.max(aS, bS), fps), maxIdx)
+  const out: number[] = []
+  for (let i = lo; i <= hi && out.length < cap; i++) out.push(i)
+  return out
+}
+
+/**
+ * Queue decode of every frame covering source-time range [aS, bS]. Transition
+ * pre-roll: called each rAF while a pair-transition window is near so the
+ * combine pass reads exact cached frames instead of seeking a <video>. Memory
+ * stays bounded: only the window's frames are requested (RANGE_REQUEST_CAP,
+ * then PENDING_CAP per pump pass) and the frame LRU (CACHE_CAP) ages them out
+ * once the cut has passed. Anchored at the range start so decode proceeds
+ * ascending; a later getFrameAt re-anchors `latest` to the live playhead.
+ */
+export function prefetchRange(asset: MediaAsset, aS: number, bS: number): void {
+  if (asset.kind !== 'video') return
+  try {
+    const indices = rangeIndices(aS, bS, asset.fps, asset.durationS)
+    if (indices.length > 0) request(asset, indices, indices[0])
+  } catch {
+    // same guarantee as getFrameAt
+  }
+}
+
 /** Drop cached frames + close the demuxer for a removed asset. */
 export function evictAsset(assetId: Id): void {
   const e = entries.get(assetId)
@@ -380,6 +432,18 @@ export function setPreviewScale(scale: number): void {
   if (s === previewScale) return
   previewScale = s
   for (const id of [...entries.keys()]) evictAsset(id)
+}
+
+/**
+ * Feed the active sequence's raster height (renderPreview calls this every
+ * frame; no-op unless it changes). Only the Full tier decodes against it, so
+ * only then does a change invalidate open demuxers + cached frames.
+ */
+export function setPreviewSequenceHeight(h: number): void {
+  const v = Number.isFinite(h) && h > 0 ? Math.round(h) : 0
+  if (v === sequenceH) return
+  sequenceH = v
+  if (previewScale >= 1) for (const id of [...entries.keys()]) evictAsset(id)
 }
 
 export function frameCacheStats(): { entries: number; assets: number } {
