@@ -6,6 +6,7 @@
 import { getAudioBuffer } from '../audio'
 import type { Clip, MediaAsset } from '../types'
 import type { CaptionWord } from './captions'
+import type { CaptionLanguage } from './transcribeConfig'
 import type { TranscribeResponse } from './transcribeWorker'
 
 /** Whisper's feature-extractor input rate. */
@@ -113,6 +114,7 @@ let busy = false
 /** Run Whisper on 16kHz mono PCM in the shared, kept-alive worker. */
 export function transcribePcm(
   pcm: Float32Array,
+  language: CaptionLanguage,
   onProgress: (p: TranscribeProgress) => void,
 ): TranscribeRun {
   if (busy) {
@@ -156,7 +158,7 @@ export function transcribePcm(
     worker.addEventListener('error', onError as EventListener)
   })
   // Transferring the PCM avoids copying up to minutes of audio.
-  worker.postMessage({ pcm }, [pcm.buffer])
+  worker.postMessage({ pcm, language }, [pcm.buffer])
   return {
     promise,
     cancel: () => {

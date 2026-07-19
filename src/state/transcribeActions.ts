@@ -9,6 +9,7 @@ import {
   transcribePcm,
   wordsFromAsrChunks,
 } from '../engine/captions/transcribe'
+import { getCaptionLanguage } from '../engine/captions/transcribeConfig'
 import { activeSequence } from '../engine/types'
 import { addCaptionsFromWords } from './captionActions'
 import { useStore } from './store'
@@ -51,7 +52,9 @@ export async function autoCaptionFromClip(clipId: string, preset?: TextStylePres
   useTranscribe.setState({ status: 'reading', pct: null, cancel: null })
   try {
     const pcm = await extractClipPcm(asset, clip)
-    const run = transcribePcm(pcm, (p) =>
+    // The persisted language pick (CaptionsDialog) also drives this right-click
+    // path — one setting, every caption entrance.
+    const run = transcribePcm(pcm, getCaptionLanguage(), (p) =>
       useTranscribe.setState({ status: p.phase, pct: p.pct }),
     )
     useTranscribe.setState({ cancel: run.cancel })

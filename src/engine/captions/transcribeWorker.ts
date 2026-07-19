@@ -6,16 +6,18 @@
 // from the Hugging Face CDN and lands in the browser cache; after that the
 // whole pipeline is offline. No audio ever leaves the machine.
 
-// English-only model: the Jettism format is English-first. For multilingual
-// captions swap to 'onnx-community/whisper-base_timestamped'. It MUST be a
-// `_timestamped` onnx-community export: word-level timestamps need the
-// cross-attention outputs only those exports carry, and the older Xenova
-// exports trip the current onnxruntime's session validation outright.
-const MODEL = 'onnx-community/whisper-base.en_timestamped'
+// Model + generation options route per language (transcribeConfig.ts):
+// English keeps the `.en` model, Czech/auto use the multilingual export. Both
+// are `_timestamped` onnx-community exports — word timestamps need the
+// cross-attention outputs only those carry, and older Xenova exports trip
+// onnxruntime's session validation outright.
+import { generationOptsFor, modelFor, type CaptionLanguage } from './transcribeConfig'
 
 export interface TranscribeRequest {
   /** Mono PCM at 16kHz (the Whisper feature-extractor rate). */
   pcm: Float32Array
+  /** Caption language — picks the model AND the generation options. */
+  language: CaptionLanguage
 }
 
 export type TranscribeResponse =
@@ -28,7 +30,7 @@ const post = (msg: TranscribeResponse): void => {
 }
 
 self.onmessage = (e: MessageEvent<TranscribeRequest>) => {
-  void run(e.data.pcm)
+  void run(e.data.pcm, e.data.language ?? 'en')
 }
 
 type Asr = (
@@ -36,17 +38,20 @@ type Asr = (
   opts: Record<string, unknown>,
 ) => Promise<{ chunks?: { text: string; timestamp: [number, number | null] }[] }>
 
-// The loaded pipeline is cached in module scope and this worker is kept ALIVE
-// across transcriptions (see transcribe.ts), so the model loads exactly ONCE
-// per session — no "Downloading Whisper" every time. The Hugging Face files
-// themselves live in the browser Cache Storage, so it also survives reloads.
-let asrCache: Asr | null = null
-let loadingAsr: Promise<Asr> | null = null
+// Loaded pipelines are cached PER MODEL in module scope and this worker is
+// kept ALIVE across transcriptions (see transcribe.ts), so each model loads at
+// most once per session — switching English↔Czech keeps both resident rather
+// than thrashing. The Hugging Face files live in the browser Cache Storage,
+// so downloads also survive reloads.
+const asrCache = new Map<string, Asr>()
+const loadingAsr = new Map<string, Promise<Asr>>()
 
-async function getAsr(): Promise<Asr> {
-  if (asrCache) return asrCache
-  if (loadingAsr) return loadingAsr
-  loadingAsr = (async () => {
+async function getAsr(model: string): Promise<Asr> {
+  const cached = asrCache.get(model)
+  if (cached) return cached
+  const loading = loadingAsr.get(model)
+  if (loading) return loading
+  const load = (async () => {
     const { pipeline, env } = await import('@huggingface/transformers')
     // Persist model files in the browser Cache Storage across sessions.
     ;(env as { useBrowserCache?: boolean; allowLocalModels?: boolean }).useBrowserCache = true
@@ -63,7 +68,7 @@ async function getAsr(): Promise<Asr> {
       }
     }
     const makeAsr = async (device: 'webgpu' | 'wasm'): Promise<Asr> =>
-      (await pipeline('automatic-speech-recognition', MODEL, {
+      (await pipeline('automatic-speech-recognition', model, {
         device,
         // The int8 ("q8") decoder trips onnxruntime's MatMulNBits pass; the q4
         // decoder is built for it and loads cleanly.
@@ -73,34 +78,41 @@ async function getAsr(): Promise<Asr> {
 
     const gpu = (navigator as { gpu?: { requestAdapter(): Promise<unknown> } }).gpu
     const hasWebgpu = !!gpu && !!(await gpu.requestAdapter().catch(() => null))
-    asrCache = await makeAsr(hasWebgpu ? 'webgpu' : 'wasm')
-    return asrCache
+    const asr = await makeAsr(hasWebgpu ? 'webgpu' : 'wasm')
+    asrCache.set(model, asr)
+    return asr
   })()
+  loadingAsr.set(model, load)
   try {
-    return await loadingAsr
+    return await load
   } finally {
-    loadingAsr = null
+    loadingAsr.delete(model)
   }
 }
 
 const OPTS = { return_timestamps: 'word', chunk_length_s: 30, stride_length_s: 5 }
 
-async function run(pcm: Float32Array): Promise<void> {
+async function run(pcm: Float32Array, language: CaptionLanguage): Promise<void> {
   try {
-    const asr = await getAsr()
+    const model = modelFor(language)
+    // language/task are GENERATION options (multilingual only — a `.en`
+    // pipeline rejects them); the model choice above is what routes Czech.
+    const opts = { ...OPTS, ...generationOptsFor(language) }
+    const asr = await getAsr(model)
     post({ type: 'progress', phase: 'listening', pct: null })
     let out: { chunks?: { text: string; timestamp: [number, number | null] }[] }
     try {
-      out = await asr(pcm, OPTS)
+      out = await asr(pcm, opts)
     } catch (err) {
       // A GPU pipeline can still fail shader compile at inference — fall back to
       // a WASM pipeline once and cache THAT for subsequent runs.
       const { pipeline } = await import('@huggingface/transformers')
-      asrCache = (await pipeline('automatic-speech-recognition', MODEL, {
+      const wasmAsr = (await pipeline('automatic-speech-recognition', model, {
         device: 'wasm',
         dtype: { encoder_model: 'q8', decoder_model_merged: 'q4' },
       })) as unknown as Asr
-      out = await asrCache(pcm, OPTS)
+      asrCache.set(model, wasmAsr)
+      out = await wasmAsr(pcm, opts)
       void err
     }
     post({ type: 'done', chunks: out.chunks ?? [] })

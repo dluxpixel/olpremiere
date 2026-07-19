@@ -6,6 +6,12 @@
 
 import { Sparkles } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
+import {
+  CAPTION_LANGUAGES,
+  getCaptionLanguage,
+  setCaptionLanguage,
+  type CaptionLanguage,
+} from '../engine/captions/transcribeConfig'
 import { parseTranscript, tapsToWords } from '../engine/captions/transcript'
 import { clipEndS } from '../engine/timeline'
 import { activeSequence } from '../engine/types'
@@ -51,6 +57,7 @@ export function CaptionsDialog({ onClose }: { onClose: () => void }) {
   const savedPresets = useTextPresets((s) => s.saved)
   const presets = [...builtinTextPresets(), ...savedPresets]
   const [presetId, setPresetId] = useState('builtin-jettism')
+  const [language, setLanguage] = useState<CaptionLanguage>(getCaptionLanguage)
   const preset: TextStylePreset | undefined = presets.find((p) => p.id === presetId)
   // Tap mode: the words being timed and the taps collected so far.
   const [tapWords, setTapWords] = useState<string[] | null>(null)
@@ -223,6 +230,28 @@ export function CaptionsDialog({ onClose }: { onClose: () => void }) {
               {presets.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+        {!tapping && (
+          <div className="flex items-center gap-2 border-b border-border px-4 py-2">
+            <span className="text-[11px] text-text-muted">Spoken language</span>
+            <select
+              aria-label="Caption language"
+              data-testid="captions-language"
+              value={language}
+              onChange={(e) => {
+                const v = e.target.value as CaptionLanguage
+                setLanguage(v)
+                setCaptionLanguage(v) // persists; the clip right-click path reads it too
+              }}
+              className="ml-auto h-6 w-[190px] cursor-default rounded-[4px] bg-bg-input px-1.5 text-[11px] text-text-primary"
+            >
+              {CAPTION_LANGUAGES.map((l) => (
+                <option key={l.value} value={l.value}>
+                  {l.label}
                 </option>
               ))}
             </select>
