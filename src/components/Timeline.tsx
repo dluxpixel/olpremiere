@@ -1,4 +1,5 @@
 import {
+  Bookmark,
   Expand,
   Gauge,
   Hand,
@@ -90,6 +91,7 @@ import { crossfadeWithNeighbour, setClipFade, topAndTail } from '../state/clipEd
 import { impactAtPlayhead, punchInAtPlayhead, punchOnBeats, rampWorkArea, whipToNext } from '../state/motionActions'
 import { autoCaptionFromClip } from '../state/transcribeActions'
 import { setTrackAudioRole, setTrackAutoLevel, setTrackPan, setTrackVolumeDb } from '../state/trackEdits'
+import { applyTemplateTracks, loadTrackTemplate, saveTrackTemplate } from '../state/trackTemplate'
 import { appearanceMenuItems, titleFontSizeItems } from '../state/clipMenus'
 import { openContextMenu, type MenuItem } from '../state/contextMenu'
 import { useBlobUrl } from '../state/blobUrls'
@@ -391,7 +393,9 @@ function TimelineToolbar({ onZoomFit }: { onZoomFit: () => void }) {
 
   const addSequence = () => {
     dispatch('Add sequence', (p) => {
-      const sq = newSequence(`Sequence ${Object.keys(p.sequences).length + 1}`)
+      const base = newSequence(`Sequence ${Object.keys(p.sequences).length + 1}`)
+      // A saved track template replaces the stock V1/V2/A1/A2 layout.
+      const sq = { ...base, tracks: applyTemplateTracks(base.tracks) }
       return { ...p, sequences: { ...p.sequences, [sq.id]: sq }, activeSequenceId: sq.id }
     })
     setUI({ playheadS: 0, selection: [] })
@@ -870,6 +874,37 @@ type Drag =
    */
   | { kind: 'marquee'; x0: number; y0: number; additive: boolean; base: Id[] }
   | { kind: 'hand'; startX: number; startY: number; scrollLeft: number; scrollTop: number }
+
+/**
+ * Footer bookmark: save the CURRENT track layout as the template every new
+ * project/sequence starts from (state/trackTemplate.ts). `saved` only steers
+ * the tooltip — the template itself lives in localStorage, so it seeds from
+ * there and a second click simply overwrites.
+ */
+function SaveTrackTemplateButton() {
+  const [saved, setSaved] = useState(() => loadTrackTemplate() !== null)
+  return (
+    <button
+      type="button"
+      data-testid="save-track-template"
+      aria-label="Save track setup as default for new videos"
+      title={
+        saved
+          ? 'A track setup is already saved for new videos — click to overwrite it with the current tracks'
+          : 'Save track setup as default for new videos'
+      }
+      className="flex shrink-0 items-center justify-center rounded-[4px] border border-border px-1.5 py-1 text-[11px] font-medium text-text-secondary transition-colors duration-[120ms] hover:border-border-strong hover:bg-bg-elevated hover:text-text-primary"
+      onClick={() => {
+        saveTrackTemplate()
+        setSaved(true)
+      }}
+    >
+      {/* h-[17px] ≈ the siblings' 11px text line box, so all three footer
+          buttons land the same height (the icon itself stays 12px). */}
+      <Bookmark size={12} strokeWidth={1.75} className="h-[17px]" />
+    </button>
+  )
+}
 
 export function Timeline({ height }: { height: number }) {
   const project = useStore((s) => s.project)
@@ -2104,6 +2139,7 @@ export function Timeline({ height }: { height: number }) {
               <Plus size={12} strokeWidth={1.75} />
               Audio
             </button>
+            <SaveTrackTemplateButton />
           </div>
         </div>
 
