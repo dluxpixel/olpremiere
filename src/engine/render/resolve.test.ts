@@ -202,6 +202,29 @@ describe('identity clip', () => {
     expect(op.progress).toBeCloseTo(0.25, 6)
   })
 
+  it('whiteFlash on a lone OUT edge ramps footage → white at the video end', () => {
+    // The LAST clip on the timeline: the outro must land on full white, not
+    // the generic fade-to-black ramp. Progress is inverted so the shared
+    // shader curve mirrors: near the end progress → 0 (alpha → 1, white).
+    const c = clip({ startS: 0, inS: 0, outS: 2, transitionOut: { type: 'whiteFlash', durationS: 0.2 } })
+    const at = (t: number) => resolveFrame(seqOf([track({ clips: [c] })]), t).ops[0]
+
+    const nearEnd = at(1.95)
+    expect(nearEnd.type).toBe('transition')
+    if (nearEnd.type !== 'transition') throw new Error('not a transition')
+    expect(nearEnd.kind).toBe('whiteFlash')
+    expect(nearEnd.progress).toBeCloseTo(0.25, 6) // alpha (1-p)² = 0.56 and rising
+
+    const windowStart = at(1.8)
+    if (windowStart.type !== 'transition') throw new Error('not a transition')
+    expect(windowStart.progress).toBeCloseTo(1, 6) // pure footage at the window's start
+
+    // Before the window: plain full-opacity layer.
+    const before = at(1.5)
+    expect(before.type).toBe('layer')
+    expect(asLayer(before).opacity).toBe(1)
+  })
+
   it('whiteFlash + fadeInS on the same edge does not re-fade after the flash', () => {
     // fadeInS longer than the flash window: the transition owns the edge, so
     // the handle must not dim the footage after the white resolves.

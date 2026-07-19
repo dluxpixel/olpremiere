@@ -261,6 +261,38 @@ test('White Flash: drop on the in edge → opens near-white, resolves to footage
     .toBeGreaterThan(60)
 })
 
+test('White Flash: drop on the out edge → footage ends on near-white', async ({ page }) => {
+  const clipId = await addClip(page)
+  // Right half of the clip = the OUT edge.
+  await dropOnClip(page, 'application/x-reel-transition', 'whiteFlash', 0.9)
+  const info = await page.evaluate(async (id) => {
+    const storeMod = '/src/state/store.ts'
+    const typesMod = '/src/engine/types.ts'
+    const timelineMod = '/src/engine/timeline.ts'
+    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+      useStore: { getState: () => { project: unknown; setUI: (p: unknown) => void } }
+    }
+    const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+      activeSequence: (p: unknown) => {
+        tracks: { clips: { id: string; transitionOut?: { type: string; durationS: number } }[] }[]
+      }
+    }
+    const { clipEndS } = (await import(/* @vite-ignore */ timelineMod)) as {
+      clipEndS: (c: unknown) => number
+    }
+    const seq = activeSequence(useStore.getState().project)
+    const clip = seq.tracks.flatMap((t) => t.clips).find((c) => c.id === id)!
+    // Park a hair before the end: progress ≈ 0.05 → the frame is ~90% white.
+    useStore.getState().setUI({ playheadS: clipEndS(clip) - 0.01, selection: [] })
+    return clip.transitionOut ?? null
+  }, clipId)
+  expect(info).toEqual({ type: 'whiteFlash', durationS: 0.2 })
+
+  await expect
+    .poll(async () => (await previewPixel(page, 0.5, 0.5)).every((c) => c >= 220), { timeout: 10_000 })
+    .toBe(true)
+})
+
 test('Auto Color applies on drop at a visible strength and still renders', async ({ page }) => {
   const clipId = await addClip(page)
   // Park inside the clip so the monitor shows a real decoded frame.

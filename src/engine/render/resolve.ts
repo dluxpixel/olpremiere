@@ -187,7 +187,24 @@ function resolveTrack(track: Track, t: number, fps: number): RenderOp | null {
       }
       if (clip.transitionOut && !hasNextPartner) {
         const d = clamp(clip.transitionOut.durationS, 1 / fps, dur)
-        if (t >= endS - d) layer.opacity = clamp(layer.opacity * ((endS - t) / d), 0, 1)
+        if (t >= endS - d) {
+          // The outro mirror of the intro case above: footage → full white as
+          // the video ends, instead of the fade-to-black ramp. INVERTED
+          // progress feeds the same shader curve — alpha=(1-progress)² becomes
+          // pOut², so the white accelerates in and lands at 1 exactly at the
+          // end. Between two clips this branch never runs (the pair window at
+          // B's head owns the cut, where the flash lands as a white hit).
+          if (clip.transitionOut.type === 'whiteFlash' && !clip.adjustment) {
+            return {
+              type: 'transition',
+              kind: 'whiteFlash',
+              progress: 1 - (t - (endS - d)) / d,
+              from: layer,
+              to: layer,
+            }
+          }
+          layer.opacity = clamp(layer.opacity * ((endS - t) / d), 0, 1)
+        }
       }
 
       // Clip fade handles fade OPACITY too (the visual analogue of the audio
