@@ -16,6 +16,7 @@ import {
   gapBefore,
   deleteClip,
   deleteGroup,
+  deleteScoped,
   duplicateClips,
   findClip,
   moveClip,
@@ -1954,6 +1955,38 @@ describe('splitClipOnly (cut just the selected clip)', () => {
   it('honours the min-piece guard (no sliver, no stray relink)', () => {
     const seq = linkedPair()
     expect(splitClipOnly(seq, 'v', 0.001)).toBe(seq)
+  })
+})
+
+describe('deleteScoped (one selection-aware Delete verb)', () => {
+  const pair = () => {
+    const v = makeClip({ id: 'v', assetId: 'av', startS: 0, inS: 0, outS: 4, linkId: 'g' })
+    const a = makeClip({ id: 'a', assetId: 'av', startS: 0, inS: 0, outS: 4, linkId: 'g' })
+    return makeSeq([makeTrack({ clips: [v] }), makeTrack({ kind: 'audio', clips: [a] })])
+  }
+
+  it('the audio half of a linked pair deletes ALONE — video survives, still silent', () => {
+    const out = deleteScoped(pair(), 'a')
+    expect(out.tracks[1].clips).toHaveLength(0)
+    expect(out.tracks[0].clips).toHaveLength(1)
+    // The survivor keeps its linkId, so clipEmitsAudio keeps it video-only:
+    // deleting the sound must not resurrect the clip's own (duplicate) audio.
+    const survivor = out.tracks[0].clips[0]
+    expect(survivor.linkId).toBe('g')
+    expect(clipEmitsAudio(out.tracks[0], survivor)).toBe(false)
+  })
+
+  it('a VIDEO clip takes its linked audio with it (the everyday click-and-Del)', () => {
+    const out = deleteScoped(pair(), 'v')
+    expect(out.tracks[0].clips).toHaveLength(0)
+    expect(out.tracks[1].clips).toHaveLength(0)
+  })
+
+  it('an unlinked audio clip (music/SFX) just deletes itself', () => {
+    const solo = makeClip({ id: 's', assetId: 'av', startS: 0, inS: 0, outS: 4 })
+    const seq = makeSeq([makeTrack({ kind: 'audio', clips: [solo] })])
+    const out = deleteScoped(seq, 's')
+    expect(out.tracks[0].clips).toHaveLength(0)
   })
 })
 

@@ -1,40 +1,51 @@
-// Deleting one half of a linked A/V pair: "delete the audio, keep the video".
+// TWO deletes, not three: Delete is selection-scoped (the audio half of a
+// linked pair goes alone; a video clip takes its pair), Ripple delete stays.
+// The enumerated "Delete audio only (keep video)" / "Delete video only" menu
+// items are gone — this spec pins their replacement.
 
-import { expect, test } from '@playwright/test'
+import { expect, test, type Page } from '@playwright/test'
 
-test('right-clicking the audio of a linked clip can delete just the audio', async ({ page }) => {
+async function bootPair(page: Page): Promise<void> {
   await page.goto('/')
   await page.getByTestId('media-file-input').setInputFiles('e2e/.fixtures/clip.webm')
   await expect(page.getByTestId('asset-card')).toBeVisible({ timeout: 15_000 })
-
   // A video WITH audio drops as a linked pair: video on V1, audio on A1.
   await page.getByTestId('asset-card').dblclick()
   await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
   await expect(page.locator('[data-clip-kind="audio"]')).toHaveCount(1)
+}
 
-  // Right-click the AUDIO clip and delete only it.
+test('the clip menu offers exactly TWO deletes; on the audio half it reads "Delete audio"', async ({
+  page,
+}) => {
+  await bootPair(page)
   await page.locator('[data-clip-kind="audio"]').click({ button: 'right' })
-  await page.getByText('Delete audio only (keep video)').click()
+  const menu = page.getByTestId('context-menu')
+  await expect(menu.getByRole('menuitem', { name: /delete/i })).toHaveCount(2)
+  await expect(menu.getByRole('menuitem', { name: 'Delete audio' })).toBeVisible()
+  await expect(menu.getByRole('menuitem', { name: /Ripple delete/ })).toBeVisible()
 
-  // Audio gone, video stays.
+  // "Delete audio" removes just the audio; the video survives.
+  await menu.getByRole('menuitem', { name: 'Delete audio' }).click()
   await expect(page.locator('[data-clip-kind="audio"]')).toHaveCount(0)
   await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
 })
 
-test('the linked-only delete option does not appear for an unlinked clip', async ({ page }) => {
-  await page.goto('/')
-  await page.getByTestId('media-file-input').setInputFiles('e2e/.fixtures/clip.webm')
-  await expect(page.getByTestId('asset-card')).toBeVisible({ timeout: 15_000 })
-  await page.getByTestId('asset-card').dblclick()
-
-  // Delete the audio half first, leaving an unlinked video.
-  await page.locator('[data-clip-kind="audio"]').click({ button: 'right' })
-  await page.getByText('Delete audio only (keep video)').click()
+test('Del on a selected audio half deletes only it; on the video it takes the pair', async ({
+  page,
+}) => {
+  await bootPair(page)
+  // Select the AUDIO half → Del removes only the audio.
+  await page.locator('[data-clip-kind="audio"]').click()
+  await page.keyboard.press('Delete')
   await expect(page.locator('[data-clip-kind="audio"]')).toHaveCount(0)
+  await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
 
-  // The surviving video keeps a dangling link marker, so its context menu still
-  // offers the split option but plain Delete now removes only it.
-  await page.locator('[data-clip-kind="video"]').click({ button: 'right' })
-  await expect(page.getByText('Delete', { exact: true })).toBeVisible()
-  await page.keyboard.press('Escape')
+  // Undo restores the pair; Del on the VIDEO clip removes both halves.
+  await page.keyboard.press('Control+z')
+  await expect(page.locator('[data-clip-kind="audio"]')).toHaveCount(1)
+  await page.locator('[data-clip-kind="video"]').click({ position: { x: 20, y: 10 } })
+  await page.keyboard.press('Delete')
+  await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(0)
+  await expect(page.locator('[data-clip-kind="audio"]')).toHaveCount(0)
 })

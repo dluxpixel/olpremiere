@@ -10,7 +10,7 @@ import {
   addMarker,
   clipEndS,
   clipGroupIds,
-  deleteGroup,
+  deleteScoped,
   removeMarkerNear,
   rippleDeleteGroup,
   splitClipOnly,
@@ -78,10 +78,12 @@ function deleteSelected(ripple: boolean) {
   // Selection may legitimately include locked-track clips; deleting them never may.
   const ids = unlockedClipIds(activeSequence(s.project), s.ui.selection)
   if (ids.length === 0) return
-  // Group-aware: deleting a linked clip removes its A/V partner too.
+  // Selection-scoped: an audio half deletes alone, everything else takes its
+  // linked partner along (deleteScoped). Ripple stays group-wide — rippling
+  // one half of a pair would slide its track out of sync with the partner.
   updateActiveSequence(ripple ? 'Ripple delete' : 'Delete clip', (sq) => {
     let next = sq
-    for (const id of ids) next = ripple ? rippleDeleteGroup(next, id) : deleteGroup(next, id)
+    for (const id of ids) next = ripple ? rippleDeleteGroup(next, id) : deleteScoped(next, id)
     return next
   })
   s.setUI({ selection: [] })

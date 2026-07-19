@@ -41,8 +41,7 @@ import {
   closeAllGaps,
   closeGapBefore,
   collectSnapPoints,
-  deleteClip,
-  deleteGroup,
+  deleteScoped,
   gapBefore,
   moveGroup,
   rateStretchGroup,
@@ -1429,38 +1428,25 @@ export function Timeline({ height }: { height: number }) {
           ),
       },
       {
-        label: keepSelection ? `Delete ${selNow.length} clips` : 'Delete',
+        // TWO deletes, not three (David, 2026-07-18): Delete is selection-
+        // scoped (deleteScoped — an audio half goes alone, a video clip takes
+        // its pair), which retired the enumerated "Delete audio only (keep
+        // video)" / "Delete video only" items. The label says which it'll be.
+        label: keepSelection
+          ? `Delete ${selNow.length} clips`
+          : clip.linkId !== undefined && track?.kind === 'audio'
+            ? 'Delete audio'
+            : 'Delete',
         shortcut: 'Del',
         separator: true,
         onClick: () => {
           // Match Copy/Cut/Duplicate + the Del key: a kept multi-selection deletes
           // ALL selected clips, not just the one right-clicked.
           const ids = keepSelection ? selNow : [clip.id]
-          updateActiveSequence('Delete clip', (sq) => ids.reduce((next, id) => deleteGroup(next, id), sq))
+          updateActiveSequence('Delete clip', (sq) => ids.reduce((next, id) => deleteScoped(next, id), sq))
           setUI({ selection: [] })
         },
       },
-      // Only meaningful for a linked A/V pair: delete just THIS half, keep the
-      // other. Deleting the audio keeps the video silent (its own audio stays
-      // suppressed by the surviving link marker); deleting the video keeps the
-      // audio playing. deleteClip acts on one clip, never the group.
-      ...(clip.linkId !== undefined
-        ? [
-            {
-              label:
-                track?.kind === 'audio'
-                  ? 'Delete audio only (keep video)'
-                  : track?.kind === 'video'
-                    ? 'Delete video only (keep audio)'
-                    : 'Delete this clip only',
-              disabled: !!track?.locked,
-              onClick: () => {
-                updateActiveSequence('Delete clip (keep linked)', (sq) => deleteClip(sq, clip.id))
-                setUI({ selection: [] })
-              },
-            },
-          ]
-        : []),
       {
         label: keepSelection ? `Ripple delete ${selNow.length} clips` : 'Ripple delete',
         shortcut: 'Shift+Del',
