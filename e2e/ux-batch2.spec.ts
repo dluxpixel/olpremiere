@@ -31,6 +31,9 @@ test('drag-scrubbing a numeric field works twice in a row (was one-shot)', async
   await expect(field).toBeVisible()
 
   const drag = async (dx: number) => {
+    // Audio sits below the fold since the effects-first reorder — the mouse
+    // must drag REAL on-screen coordinates, not a clipped bounding box.
+    await field.scrollIntoViewIfNeeded()
     const box = (await field.boundingBox())!
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
     await page.mouse.down()

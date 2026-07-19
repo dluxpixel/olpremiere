@@ -289,34 +289,10 @@ function ClipPanel({
         <div className="mt-0.5 text-[11px] text-text-muted">{isTitle ? 'Title' : 'Clip'}</div>
       </div>
 
-      {/* Read-only clip metadata is folded away by default so the editing
-          controls (and Keyframes) sit up top. Click "Details" to expand. */}
-      <details className="group">
-        <summary className="flex cursor-default list-none items-center justify-between text-[11px] text-text-muted [&::-webkit-details-marker]:hidden">
-          <span className="uppercase tracking-[0.06em]">Details</span>
-          <span className="tabular-nums text-text-secondary">{formatTimecode(clipDurationS(clip), fps)}</span>
-        </summary>
-        <div className="mt-2 flex flex-col gap-1.5">
-          {trackId ? (
-            <EditableTimecodeRow
-              label="Start"
-              seconds={clip.startS}
-              fps={fps}
-              testId="clip-start-timecode"
-              onCommit={(s) => updateActiveSequence('Move clip', (sq) => moveGroup(sq, clip.id, trackId, s))}
-            />
-          ) : (
-            <Row label="Start" value={formatTimecode(clip.startS, fps)} />
-          )}
-          <Row label="End" value={formatTimecode(clipEndS(clip), fps)} />
-          <Row label="Duration" value={formatTimecode(clipDurationS(clip), fps)} />
-          {!isTitle && <Row label="Source in" value={formatTimecode(clip.inS, fps)} />}
-          {!isTitle && <Row label="Source out" value={formatTimecode(clip.outS, fps)} />}
-        </div>
-      </details>
-
-      <div className="h-px bg-border" />
-
+      {/* Most-important-first (David, 2026-07-18): the EDITING controls lead —
+          a title's text, a sound clip's audio, everything else's effects.
+          Speed and Audio follow; the read-only Details metadata sits LAST
+          (it answers questions, it doesn't edit anything). */}
       {isTitle && (
         <>
           <TitleControls clip={clip} />
@@ -324,14 +300,17 @@ function ClipPanel({
         </>
       )}
 
-      {/* A SOUND clip is about its sound: Audio leads, Speed/Duration follows.
-          Video clips keep Speed first (their audio is secondary). */}
+      {/* A SOUND clip is about its sound: Audio leads even the effects. */}
       {audioFirst && showAudio && (
         <>
           <AudioControls clip={clip} playheadS={playheadS} />
           <div className="h-px bg-border" />
         </>
       )}
+
+      <EffectControls clip={clip} fps={fps} playheadS={playheadS} />
+
+      <div className="h-px bg-border" />
 
       {!isTitle && (
         <>
@@ -356,7 +335,30 @@ function ClipPanel({
         </>
       )}
 
-      <EffectControls clip={clip} fps={fps} playheadS={playheadS} />
+      {/* Read-only clip metadata, folded and last. Click "Details" to expand. */}
+      <details className="group">
+        <summary className="flex cursor-default list-none items-center justify-between text-[11px] text-text-muted [&::-webkit-details-marker]:hidden">
+          <span className="uppercase tracking-[0.06em]">Details</span>
+          <span className="tabular-nums text-text-secondary">{formatTimecode(clipDurationS(clip), fps)}</span>
+        </summary>
+        <div className="mt-2 flex flex-col gap-1.5">
+          {trackId ? (
+            <EditableTimecodeRow
+              label="Start"
+              seconds={clip.startS}
+              fps={fps}
+              testId="clip-start-timecode"
+              onCommit={(s) => updateActiveSequence('Move clip', (sq) => moveGroup(sq, clip.id, trackId, s))}
+            />
+          ) : (
+            <Row label="Start" value={formatTimecode(clip.startS, fps)} />
+          )}
+          <Row label="End" value={formatTimecode(clipEndS(clip), fps)} />
+          <Row label="Duration" value={formatTimecode(clipDurationS(clip), fps)} />
+          {!isTitle && <Row label="Source in" value={formatTimecode(clip.inS, fps)} />}
+          {!isTitle && <Row label="Source out" value={formatTimecode(clip.outS, fps)} />}
+        </div>
+      </details>
     </div>
   )
 }
