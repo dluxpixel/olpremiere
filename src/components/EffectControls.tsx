@@ -17,7 +17,7 @@ import {
   Sparkles,
   X,
 } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { channelKeyframes, isChannelAnimated, resolveChannel } from '../engine/effects/channels'
 import { isParamAnimated, paramKeyframes, resolveParam } from '../engine/effects/ops'
 import { EFFECTS, getEffect, paramSens, type EffectParamDef } from '../engine/effects/registry'
@@ -751,14 +751,18 @@ export function EffectControls({
   clip,
   playheadS,
   fps,
+  afterStack,
 }: {
   clip: Clip
   fps?: number
   playheadS: number
+  /** Rendered between the effects stack and Transitions — the Inspector slots
+   *  Speed here (title clips pass nothing: they have no speed). */
+  afterStack?: ReactNode
 }) {
-  // "The most important stuff first": the applied-effects stack leads the
-  // panel, then the Zoom/Punch control; the fixed sections follow in their
-  // usual order and the Keyframes editor closes the panel.
+  // Ranked by reach-for frequency (David, 2026-07-19): effects stack, Speed
+  // (slot), Transitions, Zoom/Punch, Transform, then Opacity/Blend/Crop/Mask;
+  // the Keyframes editor closes the panel.
   const hasAnimation = ANIM_CHANNELS.some((ch) => isChannelAnimated(clip, ch))
   // Adjustment layers render ONLY effects/mask/opacity (resolve.ts builds the
   // op from just those) — transform, crop, blend and punch would be inert
@@ -772,6 +776,22 @@ export function EffectControls({
         </p>
       )}
       <EffectStack clip={clip} playheadS={playheadS} />
+      {afterStack && (
+        <>
+          <div className="h-px bg-border" />
+          {afterStack}
+        </>
+      )}
+      <div className="h-px bg-border" />
+      <section className="flex flex-col gap-2">
+        <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">
+          Transitions
+        </h3>
+        <div className="flex flex-col gap-1.5">
+          <TransitionRow clip={clip} edge="in" testId="transition-in" />
+          <TransitionRow clip={clip} edge="out" testId="transition-out" />
+        </div>
+      </section>
       <div className="h-px bg-border" />
       {!isAdjustment && (
         <>
@@ -801,41 +821,33 @@ export function EffectControls({
             playheadS={playheadS}
           />
           <div className="h-px bg-border" />
-          <Section title="Crop" channels={['cropT', 'cropR', 'cropB', 'cropL']} clip={clip} playheadS={playheadS} />
-          <div className="h-px bg-border" />
         </>
       )}
       <Section title="Opacity" channels={['opacity']} clip={clip} playheadS={playheadS} />
       {!isAdjustment && (
-        <div className="flex items-center gap-1.5">
-          <span className="w-14 shrink-0 text-[11px] text-text-muted">Blend</span>
-          <select
-            data-testid="blend-mode"
-            aria-label="Blend mode"
-            value={clip.blendMode ?? 'normal'}
-            onChange={(e) => setClipBlendMode(clip.id, e.target.value as BlendMode)}
-            className="h-6 flex-1 cursor-default rounded-[4px] bg-bg-input px-1.5 text-[11px] text-text-primary"
-          >
-            {BLEND_MODES.map((m) => (
-              <option key={m} value={m}>
-                {BLEND_LABELS[m]}
-              </option>
-            ))}
-          </select>
-        </div>
+        <>
+          <div className="flex items-center gap-1.5">
+            <span className="w-14 shrink-0 text-[11px] text-text-muted">Blend</span>
+            <select
+              data-testid="blend-mode"
+              aria-label="Blend mode"
+              value={clip.blendMode ?? 'normal'}
+              onChange={(e) => setClipBlendMode(clip.id, e.target.value as BlendMode)}
+              className="h-6 flex-1 cursor-default rounded-[4px] bg-bg-input px-1.5 text-[11px] text-text-primary"
+            >
+              {BLEND_MODES.map((m) => (
+                <option key={m} value={m}>
+                  {BLEND_LABELS[m]}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="h-px bg-border" />
+          <Section title="Crop" channels={['cropT', 'cropR', 'cropB', 'cropL']} clip={clip} playheadS={playheadS} />
+        </>
       )}
       <div className="h-px bg-border" />
       <MaskSection clip={clip} />
-      <div className="h-px bg-border" />
-      <section className="flex flex-col gap-2">
-        <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">
-          Transitions
-        </h3>
-        <div className="flex flex-col gap-1.5">
-          <TransitionRow clip={clip} edge="in" testId="transition-in" />
-          <TransitionRow clip={clip} edge="out" testId="transition-out" />
-        </div>
-      </section>
       {hasAnimation && (
         <>
           <div className="h-px bg-border" />

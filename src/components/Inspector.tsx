@@ -33,13 +33,13 @@ function FieldRow({ label, children }: { label: string; children: ReactNode }) {
   )
 }
 
-/** Speed / duration + reverse (Phase 7). */
+/** Speed + reverse (Phase 7). Slotted into EffectControls via afterStack. */
 function SpeedControls({ clip }: { clip: Clip }) {
   const reversed = clip.speed < 0
   const pct = Math.abs(clip.speed) * 100
   return (
     <section className="flex flex-col gap-2" data-testid="speed-controls">
-      <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">Speed / Duration</h3>
+      <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">Speed</h3>
       <div className="flex flex-col gap-1.5">
         <FieldRow label="Speed (%)">
           <ScrubField
@@ -291,8 +291,9 @@ function ClipPanel({
 
       {/* Most-important-first (David, 2026-07-18): the EDITING controls lead —
           a title's text, a sound clip's audio, everything else's effects.
-          Speed and Audio follow; the read-only Details metadata sits LAST
-          (it answers questions, it doesn't edit anything). */}
+          Speed rides INSIDE EffectControls right after the stack (titles pass
+          no slot: they have no speed); Audio follows; the read-only Details
+          metadata sits LAST (it answers questions, it doesn't edit anything). */}
       {isTitle && (
         <>
           <TitleControls clip={clip} />
@@ -308,16 +309,14 @@ function ClipPanel({
         </>
       )}
 
-      <EffectControls clip={clip} fps={fps} playheadS={playheadS} />
+      <EffectControls
+        clip={clip}
+        fps={fps}
+        playheadS={playheadS}
+        afterStack={isTitle ? undefined : <SpeedControls clip={clip} />}
+      />
 
       <div className="h-px bg-border" />
-
-      {!isTitle && (
-        <>
-          <SpeedControls clip={clip} />
-          <div className="h-px bg-border" />
-        </>
-      )}
 
       {!audioFirst && showAudio && (
         <>
