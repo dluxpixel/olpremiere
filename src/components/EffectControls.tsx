@@ -813,6 +813,20 @@ export function EffectControls({
               </button>
             )}
           </div>
+          {/* Keyframes ride DIRECTLY under the zoom that creates most of them
+              (David, 2026-07-18 — they were a cramped afterthought at the very
+              bottom): make a zoom, retime its diamonds without scrolling. */}
+          {hasAnimation && (
+            <>
+              <div className="h-px bg-border" />
+              <section className="flex flex-col gap-2" data-testid="keyframes-section">
+                <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">
+                  Keyframes
+                </h3>
+                <KeyframeLane clip={clip} playheadS={playheadS} width={240} fps={fps} />
+              </section>
+            </>
+          )}
           <div className="h-px bg-border" />
           <Section
             title="Transform"
@@ -848,7 +862,9 @@ export function EffectControls({
       )}
       <div className="h-px bg-border" />
       <MaskSection clip={clip} />
-      {hasAnimation && (
+      {/* Adjustment layers have no Zoom/Punch block, so their keyframe lane
+          keeps its old home down here; regular clips render it up top. */}
+      {hasAnimation && isAdjustment && (
         <>
           <div className="h-px bg-border" />
           <section className="flex flex-col gap-2" data-testid="keyframes-section">
