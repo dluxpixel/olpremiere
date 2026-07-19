@@ -1,6 +1,7 @@
 // Keyframe-tab overhaul: selectable zoom depth applies a punch of that depth,
-// the Keyframes editor leads the panel, the easing explainer answers "what is
-// Lin", and a multi-select shows the align-to-same-spot box in the preview.
+// the easing explainer answers "what is Lin", and a multi-select shows the
+// align-to-same-spot box in the preview. (The applied-effects stack leads the
+// panel since the 2026-07-18 reorder; Keyframes sits last.)
 
 import { expect, test, type Page } from '@playwright/test'
 
@@ -68,7 +69,7 @@ test('selecting a zoom depth applies a punch of that depth', async ({ page }) =>
   await page.getByTestId('punch-apply').click()
   expect(await scaleKfMax(page)).toBeCloseTo(1.4, 2)
 
-  // The Keyframes editor now leads the panel (it's above Transform).
+  // The Keyframes editor is present (last section since the 2026-07-18 reorder).
   await expect(page.getByTestId('keyframes-section')).toBeVisible()
 })
 

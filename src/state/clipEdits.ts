@@ -174,6 +174,17 @@ export function resetChannel(clipId: string, channel: AnimChannel): void {
 }
 
 /**
+ * Remove a punch/zoom. Every zoom path (PunchControl Apply, the P key, the
+ * clip context menu) writes SCALE keyframes and never touches the static base,
+ * so dropping those keyframes restores the pre-zoom look exactly. Unlike
+ * resetChannel the base is deliberately kept — a hand-scaled clip stays at its
+ * size, only the animated zoom goes away. One undo step.
+ */
+export function removeZoom(clipId: string): void {
+  mapClip(clipId, 'Remove zoom', (c) => withChannelKeyframes(c, 'scale', []))
+}
+
+/**
  * Toggle a clip's enabled flag (Shift+E). A disabled clip renders nothing, its
  * audio is muted, and export skips it — but it keeps its place, effects, and
  * keyframes, so it's the way to A/B an overlay without deleting it. Group-aware

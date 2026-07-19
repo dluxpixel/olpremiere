@@ -47,6 +47,7 @@ import {
   removeClipTransition,
   removeEffectKeyframeAtPlayhead,
   removeKeyframeAtPlayhead,
+  removeZoom,
   resetChannel,
   resetChannels,
   resetEffectParams,
@@ -755,8 +756,9 @@ export function EffectControls({
   fps?: number
   playheadS: number
 }) {
-  // "Put the keyframe completely up": the Zoom/Punch control + (when animated)
-  // the Keyframes editor lead the panel instead of hiding at the very bottom.
+  // "The most important stuff first": the applied-effects stack leads the
+  // panel, then the Zoom/Punch control; the fixed sections follow in their
+  // usual order and the Keyframes editor closes the panel.
   const hasAnimation = ANIM_CHANNELS.some((ch) => isChannelAnimated(clip, ch))
   // Adjustment layers render ONLY effects/mask/opacity (resolve.ts builds the
   // op from just those) — transform, crop, blend and punch would be inert
@@ -769,20 +771,29 @@ export function EffectControls({
           Adjustment layer — its effects, mask and opacity grade everything below it.
         </p>
       )}
-      {!isAdjustment && <PunchControl clipId={clip.id} />}
-      {hasAnimation && (
-        <>
-          <section className="flex flex-col gap-2" data-testid="keyframes-section">
-            <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">
-              Keyframes
-            </h3>
-            <KeyframeLane clip={clip} playheadS={playheadS} width={240} fps={fps} />
-          </section>
-          <div className="h-px bg-border" />
-        </>
-      )}
+      <EffectStack clip={clip} playheadS={playheadS} />
+      <div className="h-px bg-border" />
       {!isAdjustment && (
         <>
+          <div className="flex flex-col gap-1.5">
+            <PunchControl clipId={clip.id} />
+            {/* A zoom is nothing but scale keyframes — give it the same escape
+                hatch an effect card's X offers. Works for zooms from Apply, the
+                P key, and the context menu alike; the static scale is kept. */}
+            {isChannelAnimated(clip, 'scale') && (
+              <button
+                type="button"
+                data-testid="punch-remove"
+                title="Remove the zoom — clears the Scale keyframes, the clip keeps its static scale"
+                className="flex h-6 items-center gap-1 self-start rounded-[4px] bg-bg-input px-2 text-[11px] text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated hover:text-text-primary"
+                onClick={() => removeZoom(clip.id)}
+              >
+                <X size={12} strokeWidth={1.75} aria-hidden />
+                Remove zoom
+              </button>
+            )}
+          </div>
+          <div className="h-px bg-border" />
           <Section
             title="Transform"
             channels={['posX', 'posY', 'scale', 'rotation', 'anchorX', 'anchorY']}
@@ -816,9 +827,6 @@ export function EffectControls({
       <div className="h-px bg-border" />
       <MaskSection clip={clip} />
       <div className="h-px bg-border" />
-      <EffectStack clip={clip} playheadS={playheadS} />
-
-      <div className="h-px bg-border" />
       <section className="flex flex-col gap-2">
         <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">
           Transitions
@@ -828,6 +836,17 @@ export function EffectControls({
           <TransitionRow clip={clip} edge="out" testId="transition-out" />
         </div>
       </section>
+      {hasAnimation && (
+        <>
+          <div className="h-px bg-border" />
+          <section className="flex flex-col gap-2" data-testid="keyframes-section">
+            <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">
+              Keyframes
+            </h3>
+            <KeyframeLane clip={clip} playheadS={playheadS} width={240} fps={fps} />
+          </section>
+        </>
+      )}
     </div>
   )
 }
