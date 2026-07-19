@@ -42,11 +42,16 @@ export function recomputeDuration(seq: Sequence): Sequence {
  * Scale a clip to COVER (fill) a frame of frameW×frameH, cropping the overflow
  * and centering it — the "make it a Short" refit. `transform.scale=1` is the
  * renderer's contain-fit; cover needs scale = cover/contain. Skips titles
- * (frame-relative already), clips that animate scale/position, and clips the
- * author has manually moved or scaled (don't fight a hand-placed transform) —
- * only identity transforms and the exact cover-fit a previous refit produced
- * for the prevW×prevH frame are refit. Returns the same clip when nothing
- * changes.
+ * (frame-relative already), clips that animate position, and clips the author
+ * has manually moved or scaled (don't fight a hand-placed transform) — only
+ * identity transforms and the exact cover-fit a previous refit produced for
+ * the prevW×prevH frame are refit. A punch-in zoom (scale keyframes only, no
+ * position animation, clip never moved) is refit too, by the same "only touch
+ * our own work" rule applied to its resting baseline (the MIN keyframe value):
+ * when that baseline is 1 or the previous frame's cover ratio, every scale
+ * keyframe is multiplied by newCover/baseline — so the zoom rides along and
+ * the switch stays reversible. Any other baseline is hand-authored and stays
+ * sacred. Returns the same clip when nothing changes.
  */
 export function refitClipToFill(
   clip: Clip,
@@ -57,12 +62,7 @@ export function refitClipToFill(
   prevH = 0,
 ): Clip {
   if (clip.title) return clip
-  if (
-    clip.keyframes?.scale?.length ||
-    clip.keyframes?.posX?.length ||
-    clip.keyframes?.posY?.length
-  )
-    return clip
+  if (clip.keyframes?.posX?.length || clip.keyframes?.posY?.length) return clip
   const asset = assets[clip.assetId]
   const sw = asset?.width ?? 0
   const sh = asset?.height ?? 0
@@ -71,19 +71,37 @@ export function refitClipToFill(
   if (contain <= 0) return clip
   const tf = clip.transform
   if (tf.x !== 0 || tf.y !== 0) return clip
-  const untouched = Math.abs(tf.scale - 1) < 1e-6
-  let prevAutoFit = false
-  if (!untouched && prevW > 0 && prevH > 0) {
-    const prevContain = Math.min(prevW / sw, prevH / sh)
-    if (prevContain > 0) {
-      const prevCover = Math.max(prevW / sw, prevH / sh)
-      prevAutoFit = Math.abs(tf.scale - prevCover / prevContain) < 1e-6
+  const cover = Math.max(frameW / sw, frameH / sh) / contain
+  // Is this scale value our own work? Identity (never touched) or the exact
+  // cover-fit a previous refit produced for the prevW×prevH frame.
+  const isOwnWork = (v: number): boolean => {
+    if (Math.abs(v - 1) < 1e-6) return true
+    if (prevW > 0 && prevH > 0) {
+      const prevContain = Math.min(prevW / sw, prevH / sh)
+      if (prevContain > 0) {
+        const prevCover = Math.max(prevW / sw, prevH / sh)
+        return Math.abs(v - prevCover / prevContain) < 1e-6
+      }
+    }
+    return false
+  }
+  const scaleKfs = clip.keyframes?.scale
+  if (scaleKfs?.length) {
+    let m = Infinity
+    for (const k of scaleKfs) m = Math.min(m, k.value)
+    if (!isOwnWork(m)) return clip
+    const factor = cover / m
+    if (Math.abs(factor - 1) < 1e-6 && Math.abs(tf.scale - cover) < 1e-6) return clip
+    const scale = scaleKfs.map((k) => ({ ...k, value: k.value * factor }))
+    return {
+      ...clip,
+      keyframes: { ...clip.keyframes, scale },
+      transform: { ...tf, scale: cover, x: 0, y: 0 },
     }
   }
-  if (!untouched && !prevAutoFit) return clip
-  const scale = Math.max(frameW / sw, frameH / sh) / contain
-  if (Math.abs(tf.scale - scale) < 1e-6) return clip
-  return { ...clip, transform: { ...tf, scale, x: 0, y: 0 } }
+  if (!isOwnWork(tf.scale)) return clip
+  if (Math.abs(tf.scale - cover) < 1e-6) return clip
+  return { ...clip, transform: { ...tf, scale: cover, x: 0, y: 0 } }
 }
 
 /**

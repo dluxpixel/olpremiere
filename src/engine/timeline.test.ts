@@ -1762,15 +1762,90 @@ describe('setSequenceFormat / refitClipToFill (Shorts aspect switch)', () => {
     expect(out.transform.scale).toBeCloseTo(1, 6)
   })
 
-  it('does not fight a clip that animates scale/position', () => {
-    const animated = makeClip({
+  it('does not fight a clip that animates position (posX keyframes)', () => {
+    const panned = makeClip({
       id: 'a',
       assetId: 'a',
       startS: 0,
       outS: 4,
-      keyframes: { scale: [{ t: 0, value: 1, ease: 'linear' }] },
+      keyframes: {
+        scale: [{ t: 0, value: 1, ease: 'linear' }],
+        posX: [
+          { t: 0, value: 0, ease: 'linear' },
+          { t: 2, value: 0.3, ease: 'linear' },
+        ],
+      },
     })
-    expect(refitClipToFill(animated, landscape, 1080, 1920)).toBe(animated)
+    expect(refitClipToFill(panned, landscape, 1080, 1920, 1920, 1080)).toBe(panned)
+  })
+
+  it('refits a punch-in zoom by scaling its keyframes (16:9 → 9:16)', () => {
+    const punch = makeClip({
+      id: 'a',
+      assetId: 'a',
+      startS: 0,
+      outS: 4,
+      keyframes: {
+        scale: [
+          { t: 0, value: 1, ease: 'linear' },
+          { t: 2, value: 1.2, ease: 'easeInOut' },
+        ],
+      },
+    })
+    const out = refitClipToFill(punch, landscape, 1080, 1920, 1920, 1080)
+    const kfs = out.keyframes?.scale ?? []
+    expect(kfs).toHaveLength(2)
+    expect(kfs[0].value).toBeCloseTo(COVER_16x9_INTO_9x16, 6)
+    expect(kfs[1].value).toBeCloseTo(COVER_16x9_INTO_9x16 * 1.2, 6)
+    expect(kfs[1].ease).toBe('easeInOut') // t/ease ride along untouched
+    expect(out.transform.scale).toBeCloseTo(COVER_16x9_INTO_9x16, 6)
+    expect(out.transform.x).toBe(0)
+    expect(out.transform.y).toBe(0)
+    // Input keyframes were not mutated.
+    expect(punch.keyframes?.scale?.[0].value).toBe(1)
+    expect(punch.keyframes?.scale?.[1].value).toBe(1.2)
+  })
+
+  it('punch-in round-trip 16:9 → 9:16 → 16:9 restores the keyframes', () => {
+    const punch = makeClip({
+      id: 'a',
+      assetId: 'a',
+      startS: 0,
+      outS: 4,
+      keyframes: {
+        scale: [
+          { t: 0, value: 1, ease: 'linear' },
+          { t: 2, value: 1.2, ease: 'easeInOut' },
+        ],
+      },
+    })
+    const seq = makeSeq([makeTrack({ clips: [punch] })])
+    const shorts = setSequenceFormat(seq, landscape, 1080, 1920)
+    const back = setSequenceFormat(shorts, landscape, 1920, 1080)
+    const clip = back.tracks[0].clips[0]
+    const kfs = clip.keyframes?.scale ?? []
+    expect(kfs).toHaveLength(2)
+    expect(kfs[0].value).toBeCloseTo(1, 6)
+    expect(kfs[1].value).toBeCloseTo(1.2, 6)
+    expect(clip.transform.scale).toBeCloseTo(1, 6)
+  })
+
+  it('leaves a hand-scaled keyframed clip alone (baseline is the author’s)', () => {
+    const zoomed = makeClip({
+      id: 'a',
+      assetId: 'a',
+      startS: 0,
+      outS: 4,
+      keyframes: {
+        scale: [
+          { t: 0, value: 2, ease: 'linear' },
+          { t: 2, value: 2.4, ease: 'linear' },
+        ],
+      },
+    })
+    const seq = makeSeq([makeTrack({ clips: [zoomed] })])
+    const out = setSequenceFormat(seq, landscape, 1080, 1920)
+    expect(out.tracks[0].clips[0]).toBe(zoomed)
   })
 
   it('leaves title clips alone (frame-relative already)', () => {
