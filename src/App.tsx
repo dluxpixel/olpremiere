@@ -89,41 +89,46 @@ function deleteSelected(ripple: boolean) {
   s.setUI({ selection: [] })
 }
 
-/** Ctrl/Cmd+K: split the selected clips under the playhead — or every clip under it. */
-function splitAtPlayhead(allTracks = false) {
+/**
+ * Split at the playhead. Three explicit verbs (David, 2026-07-18 — the earlier
+ * selection-scoped C was "way too confusing"):
+ *   C          → split the clip(s): a linked pair always splits TOGETHER.
+ *   Shift+C    → split only the AUDIO half (kind: 'audio').
+ *   Alt+C      → split only the VIDEO half (kind: 'video').
+ * (Ctrl+C stays Copy — the universal clipboard verb is not up for grabs.)
+ * A selection still narrows WHICH clips are considered (multi-track editing),
+ * but never changes what a verb splits. Ctrl+Shift+K ignores the selection.
+ */
+function splitAtPlayhead(allTracks = false, kind?: 'video' | 'audio') {
   const s = useStore.getState()
   const seq = activeSequence(s.project)
   // Cut on the frame grid: a mid-frame playhead (playback, fine scrubs) would
   // otherwise land off-grid cuts that leave sliver fragments.
   const t = quantizeToFrame(s.ui.playheadS, seq.fps)
-  // "Add edit" (C / Ctrl+K) cuts the selected clips (or all when none selected);
-  // "Add edit to all tracks" (Ctrl+Shift+K) always cuts every unlocked track.
   const sel = allTracks ? [] : s.ui.selection
   const targets = seq.tracks.flatMap((tr) =>
-    tr.locked
+    tr.locked || (kind && tr.kind !== kind)
       ? []
       : tr.clips
           .filter((c) => (sel.length === 0 || sel.includes(c.id)) && t > c.startS && t < clipEndS(c))
           .map((c) => c.id),
   )
   if (targets.length === 0) return
-  const selSet = new Set(sel)
-  updateActiveSequence('Split at playhead', (sq) => {
+  const label = kind === 'audio' ? 'Split audio' : kind === 'video' ? 'Split video' : 'Split at playhead'
+  updateActiveSequence(label, (sq) => {
     let next = sq
     // De-dupe linked partners so a group isn't split twice.
     const done = new Set<string>()
     for (const id of targets) {
       if (done.has(id)) continue
-      const group = clipGroupIds(next, id)
-      // Selecting ONE half of a linked A/V pair means "cut just this clip" —
-      // cutting its partner too is the whole complaint. Select the pair (or
-      // nothing) and it still cuts as a pair, staying linked.
-      if (sel.length > 0 && !group.every((g) => selSet.has(g))) {
+      if (kind) {
+        // Kind-scoped: split just this half; the partner stays whole. For an
+        // unlinked clip splitClipOnly reduces to a plain split.
         done.add(id)
         next = splitClipOnly(next, id, t)
         continue
       }
-      for (const gid of group) done.add(gid)
+      for (const gid of clipGroupIds(next, id)) done.add(gid)
       next = splitGroup(next, id, t)
     }
     return next
@@ -216,6 +221,8 @@ function buildAppBindings(): Binding[] {
       // "Split", ONE name everywhere (menu, razor, here) — "Cut" stays reserved
       // for the clipboard verb (Ctrl+X) so the two never read as one action.
       { combo: 'c', description: 'Split at playhead', run: () => splitAtPlayhead() },
+      { combo: 'shift+c', description: 'Split only the AUDIO at playhead', run: () => splitAtPlayhead(false, 'audio') },
+      { combo: 'alt+c', description: 'Split only the VIDEO at playhead', run: () => splitAtPlayhead(false, 'video') },
       { combo: 'b', description: 'Razor (blade) tool', run: () => store().setUI({ tool: 'razor' }) }, // click-to-cut anywhere
       { combo: 'h', description: 'Hand tool', run: () => store().setUI({ tool: 'hand' }) },
       { combo: 'z', description: 'Zoom tool', run: () => store().setUI({ tool: 'zoom' }) },

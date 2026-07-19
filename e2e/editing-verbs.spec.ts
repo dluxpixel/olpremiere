@@ -144,40 +144,45 @@ test('Shift+E disables the clip (renders at 40%) and re-enables it', async ({ pa
   expect((await clips(page)).find((c) => c.id === v.id)!.enabled).toBe(true)
 })
 
-test('C on a selected clip cuts ONLY it, leaving its linked partner whole', async ({ page }) => {
+// The split scheme (2026-07-18, replaces the earlier selection-scoped C which
+// was "way too confusing"): C = the pair, ALWAYS; Shift+C = audio only;
+// Alt+C = video only. Ctrl+C stays Copy.
+test('C cuts the linked PAIR even when only one half is selected', async ({ page }) => {
   await boot(page)
   await page.getByTestId('asset-card').dblclick()
   await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
   const v = (await clips(page)).find((c) => c.trackKind === 'video')!
-  const a = (await clips(page)).find((c) => c.trackKind === 'audio')!
 
   await setPlayhead(page, 0.5)
-  await select(page, v.id) // the VIDEO half of the linked pair only
-  await page.getByTestId('panel-left').click({ position: { x: 5, y: 5 } })
-  await page.keyboard.press('c')
-
-  const after = await clips(page)
-  expect(after.filter((c) => c.trackKind === 'video')).toHaveLength(2) // cut
-  expect(after.filter((c) => c.trackKind === 'audio')).toHaveLength(1) // untouched
-  expect(after.find((c) => c.id === a.id)).toBeDefined()
-})
-
-test('C with the whole linked pair selected still cuts both', async ({ page }) => {
-  await boot(page)
-  await page.getByTestId('asset-card').dblclick()
-  await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
-  const all = await clips(page)
-  const v = all.find((c) => c.trackKind === 'video')!
-  const a = all.find((c) => c.trackKind === 'audio')!
-
-  await setPlayhead(page, 0.5)
-  await setUI(page, { selection: [v.id, a.id] })
+  await select(page, v.id) // one half selected — C must STILL cut both
   await page.getByTestId('panel-left').click({ position: { x: 5, y: 5 } })
   await page.keyboard.press('c')
 
   const after = await clips(page)
   expect(after.filter((c) => c.trackKind === 'video')).toHaveLength(2)
   expect(after.filter((c) => c.trackKind === 'audio')).toHaveLength(2)
+})
+
+test('Shift+C cuts only the AUDIO; Alt+C only the VIDEO', async ({ page }) => {
+  await boot(page)
+  await page.getByTestId('asset-card').dblclick()
+  await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
+
+  await setPlayhead(page, 0.5)
+  await setUI(page, { selection: [] })
+  await page.getByTestId('panel-left').click({ position: { x: 5, y: 5 } })
+
+  await page.keyboard.press('Shift+C')
+  let after = await clips(page)
+  expect(after.filter((c) => c.trackKind === 'audio')).toHaveLength(2) // audio cut
+  expect(after.filter((c) => c.trackKind === 'video')).toHaveLength(1) // video whole
+
+  await page.keyboard.press('Control+z')
+  await setPlayhead(page, 0.5)
+  await page.keyboard.press('Alt+C')
+  after = await clips(page)
+  expect(after.filter((c) => c.trackKind === 'video')).toHaveLength(2) // video cut
+  expect(after.filter((c) => c.trackKind === 'audio')).toHaveLength(1) // audio whole
 })
 
 test('trimming a SELECTED audio clip leaves its linked video full length', async ({ page }) => {
