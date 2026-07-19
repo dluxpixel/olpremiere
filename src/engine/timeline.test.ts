@@ -513,6 +513,18 @@ describe('trimClipTo', () => {
 })
 
 describe('splitClip', () => {
+  it('fades split with their edge: left keeps fade-in only, right fade-out only', () => {
+    // Copying both fades to both halves put an audible fade-out+fade-in dip at
+    // every cut point — the cut itself must stay a hard cut.
+    const c = makeClip({ startS: 0, inS: 0, outS: 4, fadeInS: 0.8, fadeOutS: 0.6 })
+    const seq = makeSeq([makeTrack({ clips: [c] })])
+    const [left, right] = splitClip(seq, c.id, 2).tracks[0].clips
+    expect(left.fadeInS).toBe(0.8)
+    expect(left.fadeOutS).toBe(0)
+    expect(right.fadeInS).toBe(0)
+    expect(right.fadeOutS).toBe(0.6)
+  })
+
   it('no-ops at the exact boundaries and outside', () => {
     const c = makeClip({ startS: 1, inS: 0, outS: 4 })
     const seq = makeSeq([makeTrack({ clips: [c] })])

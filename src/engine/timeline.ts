@@ -439,7 +439,11 @@ export function splitClip(seq: Sequence, clipId: Id, tS: number): Sequence {
   if (tS < clip.startS + minPieceS || tS > clipEndS(clip) - minPieceS) return seq
 
   const cutSource = clip.inS + (tS - clip.startS) * absSpeed(clip)
-  const left: Clip = { ...clip, outS: cutSource, transitionOut: undefined }
+  // Edge-owned decorations split with their edge: the LEFT half keeps only the
+  // fade-in/transition-in (its out edge is now a hard cut), the RIGHT half only
+  // the fade-out/transition-out. Copying both to both halves put a fade-out+
+  // fade-in bump at every cut point.
+  const left: Clip = { ...clip, outS: cutSource, transitionOut: undefined, fadeOutS: 0 }
   const right: Clip = {
     ...clip,
     id: newId(),
@@ -448,6 +452,7 @@ export function splitClip(seq: Sequence, clipId: Id, tS: number): Sequence {
     transform: { ...clip.transform, crop: { ...clip.transform.crop } },
     effects: clip.effects.map((e) => ({ ...e, id: newId(), params: { ...e.params } })),
     transitionIn: undefined,
+    fadeInS: 0,
   }
   const clips = [...track.clips.slice(0, clipIndex), left, right, ...track.clips.slice(clipIndex + 1)]
   return withTrackClips(seq, trackIndex, clips)
