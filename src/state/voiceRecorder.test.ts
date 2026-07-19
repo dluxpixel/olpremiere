@@ -1,6 +1,24 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { audioConstraintFor, recordingFileName } from './voiceRecorder'
+// Recording must coexist with playback: starting/stopping a take never touches
+// the transport. voiceRecorder has NO import of playbackControl — this mock
+// intercepts any future coupling so the spy assertion below would catch it.
+const { importFilesSpy, pausePlaybackSpy, showSpy } = vi.hoisted(() => ({
+  importFilesSpy: vi.fn(() => Promise.resolve()),
+  pausePlaybackSpy: vi.fn(),
+  showSpy: vi.fn(),
+}))
+vi.mock('./mediaActions', () => ({ importFiles: importFilesSpy }))
+vi.mock('./playbackControl', () => ({ pausePlayback: pausePlaybackSpy }))
+vi.mock('./toasts', () => ({ useToasts: { getState: () => ({ show: showSpy }) } }))
+
+import {
+  audioConstraintFor,
+  recordingFileName,
+  startRecording,
+  stopRecording,
+  useRecorder,
+} from './voiceRecorder'
 
 describe('recordingFileName', () => {
   it('numbers takes and picks the extension from the mime', () => {
@@ -39,5 +57,109 @@ describe('audioConstraintFor', () => {
       sampleRate: 48_000,
       channelCount: 1,
     })
+  })
+})
+
+/** Real browser onstop is async — tests fire rec.onstop manually to model it. */
+class FakeMediaRecorder {
+  static instances: FakeMediaRecorder[] = []
+  static isTypeSupported = (): boolean => true
+  ondataavailable: ((e: { data: Blob }) => void) | null = null
+  onstop: (() => void) | null = null
+  constructor(
+    public stream: MediaStream,
+    public options?: MediaRecorderOptions,
+  ) {
+    FakeMediaRecorder.instances.push(this)
+  }
+  start(): void {}
+  stop(): void {}
+}
+
+describe('recording state guards (coexistence with playback)', () => {
+  const mics: { stream: MediaStream; stop: ReturnType<typeof vi.fn> }[] = []
+  const getUserMedia = vi.fn(async () => {
+    const stop = vi.fn()
+    const stream = { getTracks: () => [{ stop }] } as unknown as MediaStream
+    mics.push({ stream, stop })
+    return stream
+  })
+
+  beforeEach(() => {
+    vi.stubGlobal('navigator', { mediaDevices: { getUserMedia } })
+    vi.stubGlobal('MediaRecorder', FakeMediaRecorder as unknown as typeof MediaRecorder)
+    FakeMediaRecorder.instances.length = 0
+    mics.length = 0
+    getUserMedia.mockClear()
+    importFilesSpy.mockClear()
+    pausePlaybackSpy.mockClear()
+    showSpy.mockClear()
+    useRecorder.setState({ recording: false, startedAt: null, selectedInputId: null })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('a full take never reaches into the transport, and Stop responds before the async flush', async () => {
+    await startRecording()
+    expect(useRecorder.getState().recording).toBe(true)
+    expect(typeof useRecorder.getState().startedAt).toBe('number')
+
+    const rec = FakeMediaRecorder.instances[0]
+    rec.ondataavailable?.({ data: new Blob(['x']) })
+    stopRecording()
+    // UI state flips immediately — the async onstop flush must not gate it.
+    expect(useRecorder.getState().recording).toBe(false)
+    expect(useRecorder.getState().startedAt).toBeNull()
+
+    rec.onstop?.()
+    expect(mics[0].stop).toHaveBeenCalled()
+    expect(importFilesSpy).toHaveBeenCalledTimes(1)
+    // The recorder never pauses/stops playback — not on start, stop, or flush.
+    expect(pausePlaybackSpy).not.toHaveBeenCalled()
+  })
+
+  it('concurrent and repeat starts are one take (acquiring + recording guards)', async () => {
+    await Promise.all([startRecording(), startRecording()])
+    await startRecording()
+    expect(getUserMedia).toHaveBeenCalledTimes(1)
+    expect(FakeMediaRecorder.instances).toHaveLength(1)
+    stopRecording()
+    FakeMediaRecorder.instances[0].onstop?.()
+  })
+
+  it('stopRecording with no active take is a no-op', () => {
+    expect(() => stopRecording()).not.toThrow()
+    expect(useRecorder.getState().recording).toBe(false)
+    expect(pausePlaybackSpy).not.toHaveBeenCalled()
+  })
+
+  it('a recorder that stops on its own (mic unplugged) resets the flag — no stuck Stop button', async () => {
+    await startRecording()
+    // Browser-initiated stop: onstop fires with stopRecording() never called.
+    FakeMediaRecorder.instances[0].onstop?.()
+    expect(useRecorder.getState().recording).toBe(false)
+    expect(useRecorder.getState().startedAt).toBeNull()
+    expect(mics[0].stop).toHaveBeenCalled()
+  })
+
+  it("a stale take's late flush never tears down the newer take", async () => {
+    await startRecording()
+    const rec1 = FakeMediaRecorder.instances[0]
+    rec1.ondataavailable?.({ data: new Blob(['x']) })
+    stopRecording() // take 1 onstop still pending
+    await startRecording() // take 2 live
+    expect(useRecorder.getState().recording).toBe(true)
+
+    rec1.onstop?.() // take 1's late flush
+    expect(useRecorder.getState().recording).toBe(true)
+    expect(mics[1].stop).not.toHaveBeenCalled() // take 2's mic untouched
+    expect(importFilesSpy).toHaveBeenCalledTimes(1) // take 1 still imported
+
+    FakeMediaRecorder.instances[1].ondataavailable?.({ data: new Blob(['y']) })
+    stopRecording()
+    FakeMediaRecorder.instances[1].onstop?.()
+    expect(importFilesSpy).toHaveBeenCalledTimes(2)
   })
 })

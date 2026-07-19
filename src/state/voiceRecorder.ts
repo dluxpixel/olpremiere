@@ -246,7 +246,17 @@ async function finalize(
   takeChunks: Blob[],
 ): Promise<void> {
   takeStream?.getTracks().forEach((t) => t.stop())
-  if (recorder === rec) recorder = null
+  if (recorder === rec) {
+    recorder = null
+    // The recorder can stop on its OWN (mic unplugged, permission revoked)
+    // without stopRecording() ever running; the flag must reset here or the
+    // Stop button sticks forever (stopRecording's !recorder guard bails).
+    // Active take only — a stale take's late flush must not knock out a newer
+    // one. Recorder state stays self-contained: never touches the transport.
+    if (useRecorder.getState().recording) {
+      useRecorder.setState({ recording: false, startedAt: null })
+    }
+  }
   if (stream === takeStream) stream = null
   const blob = new Blob(takeChunks, { type: mime || 'audio/webm' })
   if (blob.size === 0) {
