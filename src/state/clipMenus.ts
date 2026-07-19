@@ -4,7 +4,7 @@
 
 import { DEFAULT_APPEARANCE_DUR, ENTRANCE_PRESETS, EXIT_PRESETS } from '../engine/anim/appearance'
 import { TITLE_FONT_OPTIONS } from '../engine/render/titleFonts'
-import type { Clip } from '../engine/types'
+import { isTitleClip, type Clip } from '../engine/types'
 import {
   saveClipAppearanceAsDefault,
   setClipsAppearance,
@@ -65,10 +65,13 @@ export function titleFontSizeItems(clip: Clip, ids: string[] = [clip.id]): MenuI
 
 /**
  * Entrance / Exit / speed appearance controls. Actions apply to `ids` — the
- * whole selection when several clips are selected — so choosing an animation or
- * speed on ONE right-clicked clip applies to every clip you selected.
+ * selected TITLES when several are selected — so choosing an animation or
+ * speed on ONE right-clicked caption applies to every caption you selected.
+ * Empty for non-title clips: video already has transitions + the Motion
+ * submenu, and this lineup (Pop/Bang, Bounce…) is caption-flavored.
  */
 export function appearanceMenuItems(clip: Clip, ids: string[] = [clip.id]): MenuItem[] {
+  if (!isTitleClip(clip)) return []
   const inId = clip.appearance?.in
   const outId = clip.appearance?.out
   const hasAppearance = !!(inId || outId)

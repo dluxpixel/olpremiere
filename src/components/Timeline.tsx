@@ -1342,21 +1342,22 @@ export function Timeline({ height }: { height: number }) {
           ]
         : []
 
-    // "How it appears" — font/size quick-picks (titles) + entrance/exit/speed
-    // animation. All compile to keyframes (preview == export). Shared with the
+    // "How it appears" — font/size quick-picks + entrance/exit/speed animation,
+    // TITLE clips only (video animates via transitions + the Motion submenu).
+    // All compile to keyframes (preview == export). Shared with the
     // preview-monitor menu via state/clipMenus.
-    // Font/Size target the selected TITLES; Entrance/Exit/Speed target the whole
-    // selection — so right-clicking one of several selected captions applies to all.
-    const fontSizeIds = titleIdsSel.length > 1 ? titleIdsSel : [clip.id]
-    const appearanceIds = selNow.length > 1 ? selNow : [clip.id]
+    // Both target the selected TITLES — so right-clicking one of several
+    // selected captions applies to all, and video clips inside a mixed
+    // selection are left alone.
+    const titleMenuIds = titleIdsSel.length > 1 ? titleIdsSel : [clip.id]
     const appearanceItems = [
-      ...titleFontSizeItems(clip, fontSizeIds),
-      ...appearanceMenuItems(clip, appearanceIds),
+      ...titleFontSizeItems(clip, titleMenuIds),
+      ...appearanceMenuItems(clip, titleMenuIds),
     ]
 
     // Multi-selected text also gets whole STYLE presets (font+case+colour+outline
     // +animation together) applied to all, plus Save. (Entrance/Exit/Speed above
-    // already apply to the whole selection.)
+    // already apply to every selected title.)
     const bulkTitleItems: MenuItem[] =
       titleIdsSel.length > 1
         ? [
