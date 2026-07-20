@@ -179,7 +179,7 @@ export async function startRecording(): Promise<void> {
       // degrades to "records from default", never "silently records nothing".
       if (chosen && (name === 'OverconstrainedError' || name === 'NotFoundError')) {
         setInputDevice(null)
-        show('That microphone is unavailable — using the system default', 'info')
+        show('That microphone is unavailable, using the system default', 'info')
         try {
           stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraintFor(null, enhance) })
         } catch {

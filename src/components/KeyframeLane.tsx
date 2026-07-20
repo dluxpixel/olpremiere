@@ -26,11 +26,11 @@ const EASE_LABEL: Record<Keyframe['ease'], string> = {
 // Plain-English: this is what "Lin" etc. actually DO, shown as a tooltip + an
 // in-context explainer line under the buttons.
 const EASE_HELP: Record<Keyframe['ease'], string> = {
-  linear: 'Linear — constant speed the whole way (even, mechanical).',
-  hold: 'Hold — freeze on this value, then snap to the next (no motion between).',
-  easeIn: 'Ease In — starts slow, then speeds up (winds up).',
-  easeOut: 'Ease Out — starts fast, then settles. Best for punch-ins landing.',
-  easeInOut: 'Ease In-Out — slow at both ends, fast in the middle (most natural).',
+  linear: 'Linear: constant speed the whole way (even, mechanical).',
+  hold: 'Hold: freeze on this value, then snap to the next (no motion between).',
+  easeIn: 'Ease In: starts slow, then speeds up (winds up).',
+  easeOut: 'Ease Out: starts fast, then settles. Best for punch-ins landing.',
+  easeInOut: 'Ease In-Out: slow at both ends, fast in the middle (most natural).',
 }
 // Tiny 12×10 curve glyphs so the motion is legible at a glance.
 const EASE_GLYPH: Record<Keyframe['ease'], string> = {
@@ -41,7 +41,7 @@ const EASE_GLYPH: Record<Keyframe['ease'], string> = {
   easeInOut: 'M1 9 C5 9 7 1 11 1',
 }
 
-// Human channel names — "scale" reads as Zoom, the thing Jettism editors touch most.
+// Human channel names - "scale" reads as Zoom, the thing Jettism editors touch most.
 const FRIENDLY: Partial<Record<AnimChannel, string>> = {
   scale: 'Zoom',
   posX: 'Position X',
@@ -68,8 +68,10 @@ const FRIENDLY: Partial<Record<AnimChannel, string>> = {
 }
 const friendly = (ch: AnimChannel): string => FRIENDLY[ch] ?? ch
 
-const ZOOM_IN = '#f5a524' // amber
-const ZOOM_OUT = '#3b7dff' // blue
+// Palette tokens, not loose hexes: ember for a zoom-in, the video family's
+// slate blue for a zoom-out. Both sit cleanly on the warm near-black ground.
+const ZOOM_IN = 'var(--color-ember)'
+const ZOOM_OUT = 'var(--color-clip-video-bd)'
 
 interface Selected {
   channel: AnimChannel
@@ -179,7 +181,7 @@ export function KeyframeLane({
     (channelKeyframes(clip, selected.channel).find((k) => Math.abs(k.t - selected.t) <= 1e-4)?.ease ?? null)
 
   // Window-level move/up listeners (installed on pointerdown, removed on up) so
-  // the drag keeps tracking even when the pointer leaves the small diamond — more
+  // the drag keeps tracking even when the pointer leaves the small diamond - more
   // robust than relying on pointer capture for such a tiny target.
   const onDiamondDown = (e: React.PointerEvent<HTMLButtonElement>, ch: AnimChannel, k: Keyframe) => {
     if (e.button !== 0) return
@@ -288,7 +290,7 @@ export function KeyframeLane({
               {/* Live time readout while dragging a diamond on this lane. */}
               {dragView?.channel === ch && (
                 <div
-                  className="pointer-events-none absolute -top-4 z-10 -translate-x-1/2 whitespace-nowrap rounded-[3px] bg-bg-elevated px-1 py-px text-[9px] tabular-nums text-text-primary shadow"
+                  className="pointer-events-none absolute -top-4 z-10 -translate-x-1/2 whitespace-nowrap rounded-[3px] border border-border bg-bg-elevated px-1 py-px font-numeric text-[9px] text-text-primary shadow-pop"
                   style={{ left: `${Math.min(100, Math.max(0, (dragView.t / Math.max(durS, 1e-6)) * 100))}%` }}
                 >
                   {formatTimecode(dragView.t, fps)}
@@ -299,7 +301,7 @@ export function KeyframeLane({
         )
       })}
 
-      {/* Legend for the zoom colour-coding — only when a Zoom lane is shown. */}
+      {/* Legend for the zoom colour-coding - only when a Zoom lane is shown. */}
       {hasZoom && (
         <div className="flex items-center gap-3 pl-[84px] text-[9px] text-text-muted">
           <span className="flex items-center gap-1">
@@ -340,7 +342,7 @@ export function KeyframeLane({
               <Trash2 size={13} strokeWidth={1.75} aria-hidden />
             </IconButton>
           </div>
-          {/* In-context answer to "what is Lin?" — explains the CURRENT easing. */}
+          {/* In-context answer to "what is Lin?" - explains the CURRENT easing. */}
           <p className="text-[10px] leading-snug text-text-muted">{EASE_HELP[selEase]}</p>
         </div>
       )}

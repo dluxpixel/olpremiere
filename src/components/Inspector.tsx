@@ -1,5 +1,5 @@
 import { AudioWaveform, Clock, Rewind, SlidersHorizontal } from 'lucide-react'
-import { useState, type ReactNode } from 'react'
+import { useState } from 'react'
 import { clipEmitsAudio } from '../engine/audio'
 import { isChannelAnimated, resolveChannel } from '../engine/effects/channels'
 import { clipDurationS, clipEndS, moveGroup } from '../engine/timeline'
@@ -15,7 +15,7 @@ import {
 } from '../state/clipEdits'
 import { updateActiveSequence, useStore } from '../state/store'
 import { IconButton } from '../ui/Button'
-import { EffectControls, ScrubField, type Spec } from './EffectControls'
+import { EffectControls, PropRow, ScrubField, SectionLabel, type Spec } from './EffectControls'
 import { MultiInspector, type SelectedClip } from './MultiInspector'
 import { TitleControls } from './TitleControls'
 
@@ -24,24 +24,19 @@ const FADE_SPEC: Spec = { min: 0, max: 30, step: 0.05, sens: 0.02 }
 const DENOISE_SPEC: Spec = { min: 5, max: 100, step: 5, sens: 0.5 }
 const SPEED_SPEC: Spec = { min: 10, max: 800, step: 1, sens: 1 }
 
-function FieldRow({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="flex items-center gap-1.5">
-      <span className="flex-1 truncate text-[11px] uppercase tracking-[0.04em] text-text-muted">{label}</span>
-      {children}
-    </div>
-  )
-}
-
 /** Speed + reverse (Phase 7). Slotted into EffectControls via afterStack. */
 function SpeedControls({ clip }: { clip: Clip }) {
   const reversed = clip.speed < 0
   const pct = Math.abs(clip.speed) * 100
   return (
     <section className="flex flex-col gap-2" data-testid="speed-controls">
-      <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">Speed</h3>
-      <div className="flex flex-col gap-1.5">
-        <FieldRow label="Speed (%)">
+      <SectionLabel>Speed</SectionLabel>
+      <div className="flex flex-col gap-1">
+        <PropRow
+          label="Speed (%)"
+          onReset={() => setClipSpeed(clip.id, reversed ? -1 : 1)}
+          resetLabel="Reset speed to 100%"
+        >
           <ScrubField
             value={pct}
             spec={SPEED_SPEC}
@@ -49,17 +44,18 @@ function SpeedControls({ clip }: { clip: Clip }) {
             ariaLabel="Speed percent"
             onCommit={(v) => setClipSpeed(clip.id, (reversed ? -1 : 1) * (v / 100))}
           />
-        </FieldRow>
-        <FieldRow label="Reverse">
+        </PropRow>
+        <PropRow label="Reverse">
           <IconButton
             label={reversed ? 'Play forward' : 'Reverse'}
             active={reversed}
+            size="compact"
             data-testid="reverse-toggle"
             onClick={() => setClipSpeed(clip.id, -clip.speed)}
           >
             <Rewind size={14} strokeWidth={1.5} />
           </IconButton>
-        </FieldRow>
+        </PropRow>
       </div>
     </section>
   )
@@ -80,7 +76,7 @@ function VolumeSlider({ shown, onCommit }: { shown: number; onCommit: (db: numbe
       type="range"
       aria-label="Clip volume (dB)"
       data-testid="clip-volume-slider"
-      className="h-1 w-full cursor-pointer accent-accent"
+      className="h-1 w-20 cursor-pointer accent-accent"
       min={GAIN_SPEC.min}
       max={GAIN_SPEC.max}
       step={GAIN_SPEC.step}
@@ -98,7 +94,7 @@ function VolumeSlider({ shown, onCommit }: { shown: number; onCommit: (db: numbe
 /**
  * Gain + fades for a clip that contributes audio (Phase 6). `linked` marks the
  * common mp4 case: the VIDEO clip is selected but its sound lives on the
- * linked audio clip — these controls edit that partner.
+ * linked audio clip - these controls edit that partner.
  */
 function AudioControls({ clip, linked, playheadS }: { clip: Clip; linked?: boolean; playheadS?: number }) {
   const durMax = Math.max(0.05, clipDurationS(clip))
@@ -111,34 +107,37 @@ function AudioControls({ clip, linked, playheadS }: { clip: Clip; linked?: boole
   const shownGain = volAnimated ? resolveChannel(clip, 'volume', volLocalT) : clip.audioGainDb
   return (
     <section className="flex flex-col gap-2" data-testid="audio-controls">
-      <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">
-        Audio{linked ? ' · linked clip' : ''}
-      </h3>
-      <div className="flex flex-col gap-1.5">
-        <FieldRow label="Volume">
-          <div className="flex w-full items-center gap-2">
-            <VolumeSlider
-              shown={shownGain}
-              onCommit={(v) => (volAnimated ? setChannel(clip.id, 'volume', v) : setClipGainDb(clip.id, v))}
-            />
-            <ScrubField
-              value={shownGain}
-              spec={GAIN_SPEC}
-              testId="field-audio-gain"
-              ariaLabel="Audio gain (dB)"
-              onCommit={(v) => (volAnimated ? setChannel(clip.id, 'volume', v) : setClipGainDb(clip.id, v))}
-            />
+      <SectionLabel>Audio{linked ? ' · linked clip' : ''}</SectionLabel>
+      <div className="flex flex-col gap-1">
+        <PropRow
+          label="Volume"
+          onReset={() => (volAnimated ? setChannel(clip.id, 'volume', 0) : setClipGainDb(clip.id, 0))}
+          resetLabel="Reset volume to 0 dB"
+          lead={
             <IconButton
               label={volAnimated ? 'Stop animating volume' : 'Animate volume (keyframes)'}
+              size="compact"
               data-testid="volume-stopwatch"
               onClick={() => toggleChannelAnimation(clip.id, 'volume')}
               className={volAnimated ? 'text-accent' : undefined}
             >
               <Clock size={13} strokeWidth={1.75} aria-hidden />
             </IconButton>
-          </div>
-        </FieldRow>
-        <FieldRow label="Fade in (s)">
+          }
+        >
+          <VolumeSlider
+            shown={shownGain}
+            onCommit={(v) => (volAnimated ? setChannel(clip.id, 'volume', v) : setClipGainDb(clip.id, v))}
+          />
+          <ScrubField
+            value={shownGain}
+            spec={GAIN_SPEC}
+            testId="field-audio-gain"
+            ariaLabel="Audio gain (dB)"
+            onCommit={(v) => (volAnimated ? setChannel(clip.id, 'volume', v) : setClipGainDb(clip.id, v))}
+          />
+        </PropRow>
+        <PropRow label="Fade in (s)" onReset={() => setClipFade(clip.id, 'in', 0)} resetLabel="Reset fade in">
           <ScrubField
             value={clip.fadeInS}
             spec={{ ...FADE_SPEC, max: durMax }}
@@ -146,8 +145,8 @@ function AudioControls({ clip, linked, playheadS }: { clip: Clip; linked?: boole
             ariaLabel="Fade in seconds"
             onCommit={(v) => setClipFade(clip.id, 'in', v)}
           />
-        </FieldRow>
-        <FieldRow label="Fade out (s)">
+        </PropRow>
+        <PropRow label="Fade out (s)" onReset={() => setClipFade(clip.id, 'out', 0)} resetLabel="Reset fade out">
           <ScrubField
             value={clip.fadeOutS}
             spec={{ ...FADE_SPEC, max: durMax }}
@@ -155,31 +154,34 @@ function AudioControls({ clip, linked, playheadS }: { clip: Clip; linked?: boole
             ariaLabel="Fade out seconds"
             onCommit={(v) => setClipFade(clip.id, 'out', v)}
           />
-        </FieldRow>
-        {/* Non-destructive RNNoise (OBS's suppressor). The take stays raw —
+        </PropRow>
+        {/* Non-destructive RNNoise (OBS's suppressor). The take stays raw -
             toggle to A/B by ear, drag the % toward natural if 100 sounds
             processed. 100% = the straight RNNoise output. */}
-        <FieldRow label="Reduce noise">
-          <div className="flex w-full items-center justify-end gap-2">
-            {clip.denoise !== undefined && (
-              <ScrubField
-                value={Math.round(clip.denoise * 100)}
-                spec={DENOISE_SPEC}
-                testId="field-denoise"
-                ariaLabel="Noise reduction strength (%)"
-                onCommit={(v) => setClipDenoise(clip.id, v / 100)}
-              />
-            )}
+        <PropRow
+          label="Reduce noise"
+          lead={
             <IconButton
               label={clip.denoise !== undefined ? 'Turn noise reduction off' : 'Reduce background noise (RNNoise)'}
+              size="compact"
               data-testid="denoise-toggle"
               onClick={() => setClipDenoise(clip.id, clip.denoise !== undefined ? undefined : 1)}
               className={clip.denoise !== undefined ? 'text-accent' : undefined}
             >
               <AudioWaveform size={13} strokeWidth={1.75} aria-hidden />
             </IconButton>
-          </div>
-        </FieldRow>
+          }
+        >
+          {clip.denoise !== undefined && (
+            <ScrubField
+              value={Math.round(clip.denoise * 100)}
+              spec={DENOISE_SPEC}
+              testId="field-denoise"
+              ariaLabel="Noise reduction strength (%)"
+              onCommit={(v) => setClipDenoise(clip.id, v / 100)}
+            />
+          )}
+        </PropRow>
       </div>
     </section>
   )
@@ -187,10 +189,9 @@ function AudioControls({ clip, linked, playheadS }: { clip: Clip; linked?: boole
 
 function Row({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex items-center justify-between text-[12px]">
-      <span className="text-text-secondary">{label}</span>
-      <span className="tabular-nums text-text-primary">{value}</span>
-    </div>
+    <PropRow label={label}>
+      <span className="font-numeric text-ui-sm text-text-primary">{value}</span>
+    </PropRow>
   )
 }
 
@@ -198,7 +199,7 @@ function Row({ label, value }: { label: string; value: string }) {
  * An editable timecode row: click to type an exact time, Enter/blur commits
  * (parsed + frame-quantized), Escape reverts. The commit goes through
  * moveGroup, so linked A/V travels together and overlaps resolve to the
- * nearest free slot — typing an occupied time lands beside it, not on it.
+ * nearest free slot - typing an occupied time lands beside it, not on it.
  */
 function EditableTimecodeRow({
   label,
@@ -221,13 +222,12 @@ function EditableTimecodeRow({
     setText(null)
   }
   return (
-    <div className="flex items-center justify-between text-[12px]">
-      <span className="text-text-secondary">{label}</span>
+    <PropRow label={label}>
       {text === null ? (
         <button
           type="button"
           data-testid={testId}
-          className="cursor-text rounded-[3px] px-1 tabular-nums text-text-primary hover:bg-bg-elevated"
+          className="cursor-text rounded-field px-1 font-numeric text-ui-sm text-text-primary hover:bg-bg-elevated"
           onClick={() => setText(formatTimecode(seconds, fps))}
         >
           {formatTimecode(seconds, fps)}
@@ -244,10 +244,10 @@ function EditableTimecodeRow({
           }}
           onBlur={commit}
           onFocus={(e) => e.currentTarget.select()}
-          className="w-[92px] rounded-[3px] bg-bg-input px-1 text-right text-[12px] tabular-nums text-text-primary"
+          className="w-[92px] rounded-field bg-bg-input px-1 text-right font-numeric text-ui-sm text-text-primary"
         />
       )}
-    </div>
+    </PropRow>
   )
 }
 
@@ -268,9 +268,9 @@ function ClipPanel({
   showAudio: boolean
   /** Audio-track clips lead with the sound controls (above Speed/Duration). */
   audioFirst: boolean
-  /** The linked audio partner of a video clip — its volume shows HERE. */
+  /** The linked audio partner of a video clip - its volume shows HERE. */
   linkedAudio?: Clip
-  /** The clip's own track — the Start field moves it in place. */
+  /** The clip's own track - the Start field moves it in place. */
   trackId?: string
 }) {
   const isTitle = isTitleClip(clip)
@@ -280,16 +280,16 @@ function ClipPanel({
     <div className="flex flex-col gap-4 p-3">
       <div>
         <div
-          className="truncate text-[13px] font-medium text-text-primary"
+          className="truncate text-ui font-medium text-text-primary"
           title={name}
           data-testid="inspector-clip-name"
         >
           {name}
         </div>
-        <div className="mt-0.5 text-[11px] text-text-muted">{isTitle ? 'Title' : 'Clip'}</div>
+        <div className="mt-0.5 text-dense text-text-muted">{isTitle ? 'Title' : 'Clip'}</div>
       </div>
 
-      {/* Most-important-first (David, 2026-07-18): the EDITING controls lead —
+      {/* Most-important-first (David, 2026-07-18): the EDITING controls lead -
           a title's text, a sound clip's audio, everything else's effects.
           Speed rides INSIDE EffectControls right after the stack (titles pass
           no slot: they have no speed); Audio follows; the read-only Details
@@ -325,7 +325,7 @@ function ClipPanel({
         </>
       )}
 
-      {/* Clicking the mp4's VIDEO clip must still offer volume — the sound
+      {/* Clicking the mp4's VIDEO clip must still offer volume - the sound
           lives on the linked audio clip, so edit that partner right here. */}
       {!showAudio && linkedAudio && (
         <>
@@ -336,11 +336,11 @@ function ClipPanel({
 
       {/* Read-only clip metadata, folded and last. Click "Details" to expand. */}
       <details className="group">
-        <summary className="flex cursor-default list-none items-center justify-between text-[11px] text-text-muted [&::-webkit-details-marker]:hidden">
-          <span className="uppercase tracking-[0.06em]">Details</span>
-          <span className="tabular-nums text-text-secondary">{formatTimecode(clipDurationS(clip), fps)}</span>
+        <summary className="flex cursor-default list-none items-center justify-between text-text-muted [&::-webkit-details-marker]:hidden">
+          <span className="text-[10px] font-semibold uppercase tracking-[0.12em]">Details</span>
+          <span className="font-numeric text-dense text-text-secondary">{formatTimecode(clipDurationS(clip), fps)}</span>
         </summary>
-        <div className="mt-2 flex flex-col gap-1.5">
+        <div className="mt-2 flex flex-col gap-1">
           {trackId ? (
             <EditableTimecodeRow
               label="Start"
@@ -367,7 +367,7 @@ export function Inspector({ width }: { width: number }) {
   const selection = useStore((s) => s.ui.selection)
   // FRAME-quantized playhead: the keyframe UI is frame-accurate anyway, and the
   // raw value ticks every animation frame. Even quantized, that re-rendered the
-  // whole Effect Controls + KeyframeLane fps×/s DURING PLAYBACK — a big chunk of
+  // whole Effect Controls + KeyframeLane fps×/s DURING PLAYBACK - a big chunk of
   // playback lag. So while PLAYING we return a constant sentinel: the panel stops
   // re-rendering entirely and its live value readouts freeze (you watch the
   // monitor, not the inspector, while it plays). They resume the instant you pause.
@@ -420,11 +420,11 @@ export function Inspector({ width }: { width: number }) {
     >
       <div className="flex h-9 shrink-0 items-center border-b border-border px-3">
         {/* The header says WHAT is being edited, not the name of one of its own
-            sections — "Effect Controls" as a panel title while showing clip
+            sections - "Effect Controls" as a panel title while showing clip
             details/speed/audio was a standing source of confusion. */}
         <span className="truncate text-[11px] font-medium uppercase tracking-[0.08em] text-text-secondary">
           {selected
-            ? `Clip — ${isTitleClip(selected) ? (selected.title?.text || 'Title') : (selectedAsset?.name ?? 'Missing media')}`
+            ? `Clip · ${isTitleClip(selected) ? (selected.title?.text || 'Title') : (selectedAsset?.name ?? 'Missing media')}`
             : multi.length > 1
               ? `${multi.length} clips`
               : 'Inspector'}
@@ -457,7 +457,7 @@ export function Inspector({ width }: { width: number }) {
       ) : (
         <div className="flex flex-1 flex-col items-center justify-center gap-2 p-4 text-center">
           <SlidersHorizontal size={24} strokeWidth={1.5} className="text-text-muted" aria-hidden />
-          <div className="text-[12px] text-text-muted">Select a clip to edit its properties</div>
+          <div className="text-ui text-text-muted">Select a clip to edit its properties</div>
         </div>
       )}
     </aside>

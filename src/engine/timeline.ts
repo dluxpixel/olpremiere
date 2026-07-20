@@ -872,7 +872,7 @@ export function splitGroup(seq: Sequence, clipId: Id, tS: number): Sequence {
 // times that have been through px→time round-trips.
 const ADJ_EPS = 1e-6
 
-const DEFAULT_MARKER_COLOR = '#6f6bff'
+const DEFAULT_MARKER_COLOR = '#ffa946'
 
 export function rippleTrimTo(
   seq: Sequence,

@@ -1,45 +1,85 @@
 @import 'tailwindcss';
+@import './fonts.css';
 
-@theme {
-  --font-sans: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+/* Static so every token is emitted even before a utility references it:
+   sweep agents and runtime var() reads rely on the full set being present. */
+@theme static {
+  /* Type. Figtree for UI, JetBrains Mono for every numeric readout. */
+  --font-sans: 'Figtree Variable', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Mono', Consolas, monospace;
 
-  /* Surfaces (darkest → elevated) */
-  --color-bg-app: #17171a;
-  --color-bg-panel: #1e1e22;
-  --color-bg-elevated: #26262b;
-  --color-bg-input: #2d2d33;
-  --color-border: #34343b;
-  --color-border-strong: #45454d;
+  /* Type scale: 13px base panel text; 11px reserved for dense timeline labels. */
+  --text-ui: 13px;
+  --text-ui--line-height: 1.35;
+  --text-ui-sm: 12px;
+  --text-ui-sm--line-height: 1.3;
+  --text-dense: 11px;
+  --text-dense--line-height: 1.25;
 
-  /* Text */
-  --color-text-primary: #ececee;
-  --color-text-secondary: #a2a2aa;
-  --color-text-muted: #6c6c76;
+  /* Radii: fields (buttons, inputs) 8px, floating overlays 10px, dialogs 12px,
+     timeline clips 5px. Pills use rounded-full. */
+  --radius-field: 8px;
+  --radius-overlay: 10px;
+  --radius-dialog: 12px;
+  --radius-clip: 5px;
 
-  /* Accent (scarce: primary action, active tool, selection) */
-  --color-accent: #6f6bff;
-  --color-accent-hover: #837fff;
-  --color-accent-quiet: rgba(111, 107, 255, 0.16);
+  /* Surfaces: warm near-black studio, darkest to elevated. */
+  --color-bg-app: #0f0e0d;
+  --color-bg-panel: #141312;
+  --color-bg-elevated: #1b1a18;
+  --color-bg-input: #232120;
+  --color-border: #2a2825;
+  --color-border-strong: #3a3733;
+
+  /* Text: warm neutrals, AA on every surface up to bg-input. */
+  --color-text-primary: #ede9e3;
+  --color-text-secondary: #a8a199;
+  --color-text-muted: #8d877e;
+
+  /* Accent: lavender. Primary action, selection ring, active tool, focus.
+     Light fill, so text on it is dark (accent-fg), never white. */
+  --color-accent: #f0d7ff;
+  --color-accent-hover: #e6c6fa;
+  --color-accent-quiet: rgba(240, 215, 255, 0.14);
+  --color-accent-fg: #1a1420;
+
+  /* Ember: live and in-progress states (recording, rendering, armed). */
+  --color-ember: #ffa946;
+  --color-ember-quiet: rgba(255, 169, 70, 0.16);
+
+  /* Teal family: audio, success, confirmed. Deep teal is a fill color only
+     (fails contrast as text); success is the lighter text-safe teal. */
+  --color-teal: #034f46;
+  --color-success: #4cc2a7;
 
   /* Signals */
-  --color-playhead: #ff4d4f;
-  --color-danger: #ff5c5c;
-  --color-warning: #f5a623;
-  --color-success: #46c26a;
+  --color-playhead: #ff4d3d;
+  --color-danger: #ff6155;
+  --color-warning: #ffa946;
 
-  /* Timeline clip families */
-  --color-clip-video: #2f5d78;
-  --color-clip-video-bd: #3f7ea3;
-  --color-clip-audio: #2f6b48;
-  --color-clip-audio-bd: #3f9163;
-  --color-clip-image: #6b4a78;
-  --color-clip-image-bd: #8a5fa0;
+  /* Timeline clip families: fill + brighter top edge, tuned for the warm
+     ground so none of them fight the lavender selection ring. */
+  --color-clip-video: #2c4a60;
+  --color-clip-video-bd: #4f82ab;
+  --color-clip-audio: #175249;
+  --color-clip-audio-bd: #3b9483;
+  --color-clip-image: #57406a;
+  --color-clip-image-bd: #8a64a8;
   /* Titles/captions: magenta, deliberately far from the interface accent so
      the selection ring stays visible on them. */
-  --color-clip-title: #8a3d78;
-  --color-clip-title-bd: #b555a0;
+  --color-clip-title: #7c3a6c;
+  --color-clip-title-bd: #b357a0;
 
-  --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.45);
+  /* Overlay-only shadow (menus, toasts, dialogs): soft and warm, never a
+     blue-black bloom. Panels never get shadows. */
+  --shadow-pop: 0 12px 32px rgba(15, 10, 5, 0.55), 0 2px 8px rgba(15, 10, 5, 0.35);
+}
+
+/* Numeric readouts (timecode, durations, meters): mono with tabular figures
+   so digits never jitter during playback. */
+@utility font-numeric {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
 }
 
 :root {
@@ -57,8 +97,8 @@ body {
   background: var(--color-bg-app);
   color: var(--color-text-primary);
   font-family: var(--font-sans);
-  font-size: 12px;
-  line-height: 1.3;
+  font-size: var(--text-ui);
+  line-height: 1.35;
   overflow: hidden;
 }
 
@@ -85,7 +125,7 @@ body {
   background-clip: content-box;
 }
 
-/* Micro-motion — tasteful, CSS-only, auto-disabled by the reduced-motion
+/* Micro-motion: tasteful, CSS-only, auto-disabled by the reduced-motion
    guard below. Never touches the render path (chrome only). */
 @keyframes toast-in {
   from {
@@ -105,6 +145,55 @@ body {
   to {
     box-shadow: 0 0 0 0 transparent;
   }
+}
+/* Snap lock: a hard 2px accent bar collapses onto the 1px line the instant
+   snapTime engages. Same ring device as clip-pop, no blur, no glow. */
+@keyframes snap-pulse {
+  from {
+    box-shadow: 0 0 0 2px var(--color-accent);
+  }
+  to {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+/* --- Timeline cursor language ---------------------------------------------
+   The pointer always says what a press would do. All rules are pure CSS on
+   attributes the Timeline writes imperatively (data-tool from render,
+   data-mods from raw keydown/keyup) - nothing runs per frame. */
+
+/* Blade tool: a real razor cursor (scissors, white stroke over a black
+   underlay so it reads on any footage), crosshair fallback. Data URI keeps
+   it local-first. Hotspot at the blade crossing (9,9). */
+.cursor-razor {
+  cursor:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='18' height='18' viewBox='0 0 24 24' fill='none' stroke-linecap='round' stroke-linejoin='round'%3E%3Cg stroke='%23000000' stroke-width='3.5'%3E%3Ccircle cx='6' cy='6' r='3'/%3E%3Cpath d='M8.12 8.12 12 12'/%3E%3Cpath d='M20 4 8.12 15.88'/%3E%3Ccircle cx='6' cy='18' r='3'/%3E%3Cpath d='M14.8 14.8 20 20'/%3E%3C/g%3E%3Cg stroke='%23ffffff' stroke-width='1.5'%3E%3Ccircle cx='6' cy='6' r='3'/%3E%3Cpath d='M8.12 8.12 12 12'/%3E%3Cpath d='M20 4 8.12 15.88'/%3E%3Ccircle cx='6' cy='18' r='3'/%3E%3Cpath d='M14.8 14.8 20 20'/%3E%3C/g%3E%3C/svg%3E")
+      9 9,
+    crosshair;
+}
+
+/* Select tool + Alt: slip on the clip body, rate stretch on an edge - both
+   are pure horizontal adjustments, so the double arrow. */
+[data-tool='select'][data-mods='alt'] [data-clip-id],
+[data-tool='select'][data-mods='alt'] [data-testid='trim-in'],
+[data-tool='select'][data-mods='alt'] [data-testid='trim-out'] {
+  cursor: ew-resize;
+}
+/* Select tool + Ctrl+Alt: slide on the body, roll on an edge. col-resize's
+   twin bars with outward arrows read as "both sides of the cut move". */
+[data-tool='select'][data-mods='ctrl-alt'] [data-clip-id],
+[data-tool='select'][data-mods='ctrl-alt'] [data-testid='trim-in'],
+[data-tool='select'][data-mods='ctrl-alt'] [data-testid='trim-out'] {
+  cursor: col-resize;
+}
+/* Zoom tool: Alt means zoom OUT - the cursor flips with it. */
+[data-tool='zoom'][data-mods='alt'] {
+  cursor: zoom-out;
+}
+/* While a hand-pan is LIVE the closed fist wins everywhere in the lanes,
+   including over the ruler's own ew-resize. */
+[data-testid='timeline-lanes'].cursor-grabbing * {
+  cursor: grabbing;
 }
 
 @media (prefers-reduced-motion: reduce) {

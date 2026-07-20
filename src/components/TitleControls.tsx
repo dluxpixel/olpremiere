@@ -18,17 +18,20 @@ import { TITLE_FONT_OPTIONS } from '../engine/render/titleFonts'
 import { defaultTitleDef, type Clip, type TitleDef } from '../engine/types'
 import { updateTitle } from '../state/titleActions'
 import { IconButton } from '../ui/Button'
-import { ScrubField, type Spec } from './EffectControls'
+import { PropRow, ScrubField, SectionLabel, type Spec } from './EffectControls'
 
 const FONT_FAMILIES = TITLE_FONT_OPTIONS
 
 const inputCls =
-  'h-6 w-full rounded-[4px] bg-bg-input px-2 text-[12px] text-text-primary focus:outline-none focus:ring-1 focus:ring-accent'
+  'h-6 w-full rounded-field bg-bg-input px-2 text-ui-sm text-text-primary focus:outline-none focus:ring-1 focus:ring-accent'
+
+// Per-field reset targets: the same defaults the toggles create with.
+const TITLE_DEFAULTS = defaultTitleDef()
 
 /** Typed number field; commits clamped value on blur/Enter, reverts on Escape. */
 /**
  * A title number field. Delegates to the shared ScrubField so it drag-scrubs
- * exactly like every effect-param field — the gesture that used to silently
+ * exactly like every effect-param field - the gesture that used to silently
  * fail here (size, offsets, shadow, outline, box all looked scrubbable but
  * weren't). Same commit path (updateTitle = one undo).
  */
@@ -63,23 +66,10 @@ function NumberField({
   )
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <label className="flex items-center gap-2">
-      <span className="w-14 shrink-0 text-[11px] uppercase tracking-[0.04em] text-text-muted">
-        {label}
-      </span>
-      {children}
-    </label>
-  )
-}
-
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="flex flex-col gap-2">
-      <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">
-        {title}
-      </h3>
+      <SectionLabel>{title}</SectionLabel>
       {children}
     </section>
   )
@@ -96,7 +86,7 @@ function Segmented<T extends string>({
   onChange: (v: T) => void
 }) {
   return (
-    <div className="flex items-center gap-0.5 rounded-[4px] bg-bg-input p-0.5">
+    <div className="flex items-center gap-0.5 rounded-field bg-bg-input p-0.5">
       {options.map(({ value: v, label, icon: Icon }) => (
         <IconButton
           key={v}
@@ -126,14 +116,18 @@ export function TitleControls({ clip }: { clip: Clip }) {
           value={def.text}
           onChange={(e) => set({ text: e.target.value })}
           rows={3}
-          className="min-h-[60px] w-full resize-y rounded-[4px] bg-bg-input px-2 py-1.5 text-[12px] leading-snug text-text-primary focus:outline-none focus:ring-1 focus:ring-accent"
+          className="min-h-[60px] w-full resize-y rounded-field bg-bg-input px-2 py-1.5 text-ui-sm leading-snug text-text-primary focus:outline-none focus:ring-1 focus:ring-accent"
         />
       </Section>
 
       <div className="h-px bg-border" />
 
       <Section title="Font">
-        <Field label="Size">
+        <PropRow
+          label="Size"
+          onReset={() => set({ fontSizePx: TITLE_DEFAULTS.fontSizePx })}
+          resetLabel="Reset font size"
+        >
           <NumberField
             value={def.fontSizePx}
             min={8}
@@ -142,13 +136,13 @@ export function TitleControls({ clip }: { clip: Clip }) {
             ariaLabel="Font size"
             onCommit={(v) => set({ fontSizePx: v })}
           />
-        </Field>
-        <Field label="Family">
+        </PropRow>
+        <PropRow label="Family">
           <select
             aria-label="Font family"
             value={def.fontFamily}
             onChange={(e) => set({ fontFamily: e.target.value })}
-            className={`${inputCls} cursor-default`}
+            className="h-6 w-[140px] cursor-default rounded-field bg-bg-input px-1.5 text-ui-sm text-text-primary"
           >
             {FONT_FAMILIES.map((f) => (
               <option key={f.value} value={f.value}>
@@ -160,7 +154,7 @@ export function TitleControls({ clip }: { clip: Clip }) {
               <option value={def.fontFamily}>Custom</option>
             )}
           </select>
-        </Field>
+        </PropRow>
         <div className="flex items-center gap-0.5">
           <IconButton
             size="compact"
@@ -210,7 +204,7 @@ export function TitleControls({ clip }: { clip: Clip }) {
             aria-label="Text color"
             value={hexOf(def.color)}
             onChange={(e) => set({ color: e.target.value })}
-            className="h-7 w-9 shrink-0 cursor-default rounded-[4px] bg-bg-input p-0.5"
+            className="h-7 w-9 shrink-0 cursor-default rounded-field bg-bg-input p-0.5"
           />
           <input
             type="text"
@@ -220,7 +214,7 @@ export function TitleControls({ clip }: { clip: Clip }) {
             className={`${inputCls} font-mono`}
           />
           {/* The caption workflow flips single words to a highlight color
-              constantly — one click, no picker round-trip. */}
+              constantly - one click, no picker round-trip. */}
           {[
             { hex: '#ffffff', label: 'White' },
             { hex: '#FFD400', label: 'Highlight yellow' },
@@ -233,7 +227,7 @@ export function TitleControls({ clip }: { clip: Clip }) {
               aria-label={c.label}
               title={c.label}
               onClick={() => set({ color: c.hex })}
-              className={`h-6 w-6 shrink-0 rounded-[4px] border transition-transform duration-[120ms] hover:scale-110 ${
+              className={`h-6 w-6 shrink-0 rounded-field border transition-transform duration-[120ms] hover:scale-110 ${
                 def.color.toLowerCase() === c.hex.toLowerCase() ? 'border-accent' : 'border-border-strong'
               }`}
               style={{ backgroundColor: c.hex }}
@@ -245,7 +239,7 @@ export function TitleControls({ clip }: { clip: Clip }) {
       <div className="h-px bg-border" />
 
       <Section title="Align">
-        <Field label="Horiz">
+        <PropRow label="Horiz" labelTitle="Horizontal alignment">
           <Segmented
             value={def.align}
             onChange={(align) => set({ align })}
@@ -255,8 +249,8 @@ export function TitleControls({ clip }: { clip: Clip }) {
               { value: 'right', label: 'Align right', icon: AlignRight },
             ]}
           />
-        </Field>
-        <Field label="Vert">
+        </PropRow>
+        <PropRow label="Vert" labelTitle="Vertical alignment">
           <Segmented
             value={def.vAlign}
             onChange={(vAlign) => set({ vAlign })}
@@ -266,13 +260,13 @@ export function TitleControls({ clip }: { clip: Clip }) {
               { value: 'bottom', label: 'Align bottom', icon: AlignEndVertical },
             ]}
           />
-        </Field>
+        </PropRow>
       </Section>
 
       <div className="h-px bg-border" />
 
       <Section title="Position">
-        <Field label="Offset X">
+        <PropRow label="Offset X" onReset={() => set({ offsetXPx: 0 })} resetLabel="Reset offset X">
           <NumberField
             value={def.offsetXPx}
             min={-4000}
@@ -280,8 +274,8 @@ export function TitleControls({ clip }: { clip: Clip }) {
             ariaLabel="Offset X"
             onCommit={(v) => set({ offsetXPx: v })}
           />
-        </Field>
-        <Field label="Offset Y">
+        </PropRow>
+        <PropRow label="Offset Y" onReset={() => set({ offsetYPx: 0 })} resetLabel="Reset offset Y">
           <NumberField
             value={def.offsetYPx}
             min={-4000}
@@ -289,26 +283,34 @@ export function TitleControls({ clip }: { clip: Clip }) {
             ariaLabel="Offset Y"
             onCommit={(v) => set({ offsetYPx: v })}
           />
-        </Field>
+        </PropRow>
       </Section>
 
       <div className="h-px bg-border" />
 
       <Section title="Shadow">
-        <label className="flex items-center gap-2 text-[12px] text-text-secondary">
-          <input
-            type="checkbox"
-            data-testid="title-shadow-toggle"
-            aria-label="Enable shadow"
-            checked={!!def.shadow}
-            onChange={(e) => set({ shadow: e.target.checked ? defaultTitleDef().shadow : undefined })}
-            className="accent-accent"
-          />
-          Drop shadow
-        </label>
+        <PropRow
+          label="Drop shadow"
+          labelFor="title-shadow-on"
+          lead={
+            <input
+              type="checkbox"
+              id="title-shadow-on"
+              data-testid="title-shadow-toggle"
+              aria-label="Enable shadow"
+              checked={!!def.shadow}
+              onChange={(e) => set({ shadow: e.target.checked ? defaultTitleDef().shadow : undefined })}
+              className="ml-1 accent-accent"
+            />
+          }
+        />
         {def.shadow && (
-          <div className="flex flex-col gap-2">
-            <Field label="Blur">
+          <div className="flex flex-col gap-1">
+            <PropRow
+              label="Blur"
+              onReset={() => set({ shadow: { ...def.shadow!, blurPx: TITLE_DEFAULTS.shadow!.blurPx } })}
+              resetLabel="Reset shadow blur"
+            >
               <NumberField
                 value={def.shadow.blurPx}
                 min={0}
@@ -316,8 +318,12 @@ export function TitleControls({ clip }: { clip: Clip }) {
                 ariaLabel="Shadow blur"
                 onCommit={(v) => set({ shadow: { ...def.shadow!, blurPx: v } })}
               />
-            </Field>
-            <Field label="Offset X">
+            </PropRow>
+            <PropRow
+              label="Offset X"
+              onReset={() => set({ shadow: { ...def.shadow!, dx: TITLE_DEFAULTS.shadow!.dx } })}
+              resetLabel="Reset shadow offset X"
+            >
               <NumberField
                 value={def.shadow.dx}
                 min={-200}
@@ -325,8 +331,12 @@ export function TitleControls({ clip }: { clip: Clip }) {
                 ariaLabel="Shadow offset X"
                 onCommit={(v) => set({ shadow: { ...def.shadow!, dx: v } })}
               />
-            </Field>
-            <Field label="Offset Y">
+            </PropRow>
+            <PropRow
+              label="Offset Y"
+              onReset={() => set({ shadow: { ...def.shadow!, dy: TITLE_DEFAULTS.shadow!.dy } })}
+              resetLabel="Reset shadow offset Y"
+            >
               <NumberField
                 value={def.shadow.dy}
                 min={-200}
@@ -334,16 +344,16 @@ export function TitleControls({ clip }: { clip: Clip }) {
                 ariaLabel="Shadow offset Y"
                 onCommit={(v) => set({ shadow: { ...def.shadow!, dy: v } })}
               />
-            </Field>
-            <Field label="Color">
+            </PropRow>
+            <PropRow label="Color" labelTitle="Shadow color">
               <input
                 type="color"
                 aria-label="Shadow color"
                 value={hexOf(def.shadow.color)}
                 onChange={(e) => set({ shadow: { ...def.shadow!, color: e.target.value } })}
-                className="h-7 w-9 shrink-0 cursor-default rounded-[4px] bg-bg-input p-0.5"
+                className="h-6 w-9 shrink-0 cursor-default rounded-field bg-bg-input p-0.5"
               />
-            </Field>
+            </PropRow>
           </div>
         )}
       </Section>
@@ -351,30 +361,38 @@ export function TitleControls({ clip }: { clip: Clip }) {
       <div className="h-px bg-border" />
 
       <Section title="Outline">
-        <label className="flex items-center gap-2 text-[12px] text-text-secondary">
-          <input
-            type="checkbox"
-            data-testid="title-outline-toggle"
-            aria-label="Enable outline"
-            checked={!!def.outline}
-            onChange={(e) => set({ outline: e.target.checked ? { color: '#000000', widthPx: 8 } : undefined })}
-            className="accent-accent"
-          />
-          Outline stroke
-        </label>
+        <PropRow
+          label="Outline stroke"
+          labelFor="title-outline-on"
+          lead={
+            <input
+              type="checkbox"
+              id="title-outline-on"
+              data-testid="title-outline-toggle"
+              aria-label="Enable outline"
+              checked={!!def.outline}
+              onChange={(e) => set({ outline: e.target.checked ? { color: '#000000', widthPx: 8 } : undefined })}
+              className="ml-1 accent-accent"
+            />
+          }
+        />
         {def.outline && (
-          <div className="flex flex-col gap-2">
-            <Field label="Color">
+          <div className="flex flex-col gap-1">
+            <PropRow label="Color" labelTitle="Outline color">
               <input
                 type="color"
                 data-testid="title-outline-color"
                 aria-label="Outline color"
                 value={hexOf(def.outline.color)}
                 onChange={(e) => set({ outline: { ...def.outline!, color: e.target.value } })}
-                className="h-7 w-9 shrink-0 cursor-default rounded-[4px] bg-bg-input p-0.5"
+                className="h-6 w-9 shrink-0 cursor-default rounded-field bg-bg-input p-0.5"
               />
-            </Field>
-            <Field label="Width">
+            </PropRow>
+            <PropRow
+              label="Width"
+              onReset={() => set({ outline: { ...def.outline!, widthPx: 8 } })}
+              resetLabel="Reset outline width"
+            >
               <NumberField
                 value={def.outline.widthPx}
                 min={0}
@@ -382,7 +400,7 @@ export function TitleControls({ clip }: { clip: Clip }) {
                 ariaLabel="Outline width"
                 onCommit={(v) => set({ outline: { ...def.outline!, widthPx: v } })}
               />
-            </Field>
+            </PropRow>
           </div>
         )}
       </Section>
@@ -390,35 +408,43 @@ export function TitleControls({ clip }: { clip: Clip }) {
       <div className="h-px bg-border" />
 
       <Section title="Background">
-        <label className="flex items-center gap-2 text-[12px] text-text-secondary">
-          <input
-            type="checkbox"
-            data-testid="title-box-toggle"
-            aria-label="Enable background"
-            checked={!!def.box}
-            onChange={(e) =>
-              set({
-                box: e.target.checked
-                  ? { color: 'rgba(0,0,0,0.6)', paddingPx: 24, radiusPx: 8 }
-                  : undefined,
-              })
-            }
-            className="accent-accent"
-          />
-          Box behind text
-        </label>
+        <PropRow
+          label="Box behind text"
+          labelFor="title-box-on"
+          lead={
+            <input
+              type="checkbox"
+              id="title-box-on"
+              data-testid="title-box-toggle"
+              aria-label="Enable background"
+              checked={!!def.box}
+              onChange={(e) =>
+                set({
+                  box: e.target.checked
+                    ? { color: 'rgba(0,0,0,0.6)', paddingPx: 24, radiusPx: 8 }
+                    : undefined,
+                })
+              }
+              className="ml-1 accent-accent"
+            />
+          }
+        />
         {def.box && (
-          <div className="flex flex-col gap-2">
-            <Field label="Color">
+          <div className="flex flex-col gap-1">
+            <PropRow label="Color" labelTitle="Background color">
               <input
                 type="color"
                 aria-label="Background color"
                 value={hexOf(def.box.color)}
                 onChange={(e) => set({ box: { ...def.box!, color: e.target.value } })}
-                className="h-7 w-9 shrink-0 cursor-default rounded-[4px] bg-bg-input p-0.5"
+                className="h-6 w-9 shrink-0 cursor-default rounded-field bg-bg-input p-0.5"
               />
-            </Field>
-            <Field label="Padding">
+            </PropRow>
+            <PropRow
+              label="Padding"
+              onReset={() => set({ box: { ...def.box!, paddingPx: 24 } })}
+              resetLabel="Reset background padding"
+            >
               <NumberField
                 value={def.box.paddingPx}
                 min={0}
@@ -426,8 +452,12 @@ export function TitleControls({ clip }: { clip: Clip }) {
                 ariaLabel="Background padding"
                 onCommit={(v) => set({ box: { ...def.box!, paddingPx: v } })}
               />
-            </Field>
-            <Field label="Radius">
+            </PropRow>
+            <PropRow
+              label="Radius"
+              onReset={() => set({ box: { ...def.box!, radiusPx: 8 } })}
+              resetLabel="Reset background radius"
+            >
               <NumberField
                 value={def.box.radiusPx}
                 min={0}
@@ -435,7 +465,7 @@ export function TitleControls({ clip }: { clip: Clip }) {
                 ariaLabel="Background radius"
                 onCommit={(v) => set({ box: { ...def.box!, radiusPx: v } })}
               />
-            </Field>
+            </PropRow>
           </div>
         )}
       </Section>

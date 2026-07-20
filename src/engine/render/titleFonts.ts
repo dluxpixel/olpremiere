@@ -31,7 +31,7 @@ export const MONOCRAFT_STACK = "'Monocraft', 'Courier New', monospace"
  * (Obelix Pro) has an unclear commercial license, so we ship the standard
  * clean-licensed lookalike; the caption style defaults to this stack.
  */
-export const CAPTION_FONT_STACK = "'Lilita One', 'Arial Black', 'Inter', sans-serif"
+export const CAPTION_FONT_STACK = "'Lilita One', 'Arial Black', sans-serif"
 
 /**
  * Versatile Bold (OnlineWebFonts.com, CC BY 4.0 — credited in
@@ -41,23 +41,41 @@ export const CAPTION_FONT_STACK = "'Lilita One', 'Arial Black', 'Inter', sans-se
  */
 export const VERSATILE_STACK = "'Versatile Bold', 'Arial Black', sans-serif"
 
+/**
+ * Figtree (the UI family) doubling as the default title face. Served from the
+ * same self-hosted woff2 the UI loads (public/fonts), and registered in the
+ * export worker's own FontFaceSet so titled text matches preview == export.
+ * Latin subset only; other scripts fall back down the stack.
+ */
+export const FIGTREE_TITLE_STACK = "'Figtree Variable', 'Segoe UI', system-ui, sans-serif"
+
 // To add another bundled font: (1) drop the .ttf in src/assets/fonts/, (2) add
 // an `import <name>Url from '../../assets/fonts/<File>.ttf?url'` up top, (3) add
 // one row here. It flows into the dropdown + loader automatically.
 export const CUSTOM_TITLE_FONTS: CustomTitleFont[] = [
+  {
+    label: 'Figtree',
+    family: 'Figtree Variable',
+    stack: FIGTREE_TITLE_STACK,
+    url: '/fonts/figtree-latin-wght-normal.woff2',
+  },
   { label: 'Minecraft', family: 'Monocraft', stack: MONOCRAFT_STACK, url: monocraftUrl },
   { label: 'Comic Bold (captions)', family: 'Lilita One', stack: CAPTION_FONT_STACK, url: lilitaUrl },
   { label: 'Versatile Bold', family: 'Versatile Bold', stack: VERSATILE_STACK, url: versatileUrl },
 ]
 
-/** Every selectable title font (system stacks + bundled), for the Inspector
- * dropdown AND the right-click Font menu — one shared source of truth. */
+/** Every selectable title font (bundled + system stacks), for the Inspector
+ * dropdown AND the right-click Font menu: one shared source of truth. Figtree
+ * leads because it is the default face for new titles. */
 export const TITLE_FONT_OPTIONS: { label: string; value: string }[] = [
-  { label: 'Inter', value: "'Inter', system-ui, sans-serif" },
+  { label: 'Figtree', value: FIGTREE_TITLE_STACK },
   { label: 'Georgia', value: 'Georgia, serif' },
   { label: 'Courier', value: "'Courier New', monospace" },
   { label: 'Arial', value: 'Arial, sans-serif' },
-  ...CUSTOM_TITLE_FONTS.map((f) => ({ label: f.label, value: f.stack })),
+  ...CUSTOM_TITLE_FONTS.filter((f) => f.stack !== FIGTREE_TITLE_STACK).map((f) => ({
+    label: f.label,
+    value: f.stack,
+  })),
 ]
 
 // One in-flight load per JS context (the main window, or a worker). Module state

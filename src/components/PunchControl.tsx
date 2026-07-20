@@ -1,4 +1,4 @@
-// "Select how deep the zoom is" — a punch-depth picker that lives in the
+// "Select how deep the zoom is" - a punch-depth picker that lives in the
 // Keyframes area. Presets pick a target scale (also what the P key uses), and
 // Apply drops a punch-in at the playhead on the selected clip. Custom depths can
 // be saved (localStorage) and reappear as one-click chips.
@@ -7,7 +7,7 @@ import { Plus, X, ZoomIn } from 'lucide-react'
 import { useState } from 'react'
 import { punchInAtPlayhead } from '../state/motionActions'
 import { useStore } from '../state/store'
-import { ScrubField, type Spec } from './EffectControls'
+import { PropRow, ScrubField, type Spec } from './EffectControls'
 
 const BUILTINS: { label: string; v: number }[] = [
   { label: 'Subtle', v: 1.1 },
@@ -32,7 +32,7 @@ function persist(list: number[]): void {
   try {
     if (typeof localStorage !== 'undefined') localStorage.setItem(KEY, JSON.stringify(list))
   } catch {
-    /* private mode / quota — presets just won't persist */
+    /* private mode / quota - presets just won't persist */
   }
 }
 
@@ -45,7 +45,7 @@ export function PunchControl({ clipId }: { clipId: string }) {
   const [saved, setSaved] = useState<number[]>(loadSaved)
 
   const chip = (active: boolean) =>
-    `flex h-6 items-center gap-1 rounded-[4px] px-2 text-[11px] transition-colors duration-[120ms] ${
+    `flex h-6 items-center gap-1 rounded-field px-2 text-dense transition-colors duration-[120ms] ${
       active ? 'bg-accent-quiet text-accent' : 'bg-bg-input text-text-secondary hover:bg-bg-elevated hover:text-text-primary'
     }`
 
@@ -62,11 +62,11 @@ export function PunchControl({ clipId }: { clipId: string }) {
   }
 
   return (
-    <section className="flex flex-col gap-2 rounded-[6px] bg-bg-elevated/50 p-2" data-testid="punch-control">
+    <section className="flex flex-col gap-2 rounded-field bg-bg-elevated/50 p-2" data-testid="punch-control">
       <div className="flex items-center gap-1.5">
         <ZoomIn size={13} strokeWidth={1.75} className="text-text-muted" aria-hidden />
-        <h4 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">Zoom / Punch depth</h4>
-        <span className="ml-auto text-[11px] tabular-nums text-accent" data-testid="punch-depth-readout">
+        <h4 className="text-[10px] font-semibold uppercase tracking-[0.12em] text-text-muted">Zoom / Punch depth</h4>
+        <span className="ml-auto font-numeric text-dense text-accent" data-testid="punch-depth-readout">
           {pct(depth)}
         </span>
       </div>
@@ -77,18 +77,17 @@ export function PunchControl({ clipId }: { clipId: string }) {
             key={b.label}
             type="button"
             data-testid={`punch-preset-${b.label.toLowerCase()}`}
-            title={`${b.label} zoom — ${pct(b.v)}`}
+            title={`${b.label} zoom, ${pct(b.v)}`}
             className={chip(near(depth, b.v))}
             onClick={() => setUI({ punchDepth: b.v })}
           >
             {b.label}
-            <span className="tabular-nums opacity-70">{pct(b.v)}</span>
+            <span className="font-numeric opacity-70">{pct(b.v)}</span>
           </button>
         ))}
       </div>
 
-      <div className="flex items-center gap-2">
-        <span className="text-[10px] uppercase tracking-[0.04em] text-text-muted">Custom</span>
+      <PropRow label="Custom" labelTitle="Custom zoom depth">
         <ScrubField
           value={depth}
           spec={DEPTH_SPEC}
@@ -100,16 +99,19 @@ export function PunchControl({ clipId }: { clipId: string }) {
           type="button"
           data-testid="punch-save"
           title="Save this depth as a preset"
-          className="flex h-6 w-6 items-center justify-center rounded-[4px] bg-bg-input text-text-secondary hover:bg-bg-elevated hover:text-text-primary"
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-field bg-bg-input text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated hover:text-text-primary"
           onClick={saveCurrent}
         >
           <Plus size={13} strokeWidth={1.75} aria-hidden />
         </button>
+      </PropRow>
+
+      <div className="flex justify-end">
         <button
           type="button"
           data-testid="punch-apply"
           title="Add a zoom-punch at the playhead (also: press P)"
-          className="ml-auto flex h-6 items-center gap-1 rounded-[4px] bg-accent px-2.5 text-[11px] font-medium text-white transition-opacity duration-[120ms] hover:opacity-90"
+          className="flex h-6 items-center gap-1 rounded-field bg-accent px-2.5 text-ui-sm font-medium text-accent-fg transition-colors duration-[120ms] hover:bg-accent-hover"
           onClick={() => punchInAtPlayhead(clipId, depth)}
         >
           <ZoomIn size={12} strokeWidth={2} aria-hidden />
@@ -119,10 +121,10 @@ export function PunchControl({ clipId }: { clipId: string }) {
 
       {saved.length > 0 && (
         <div className="flex flex-wrap items-center gap-1">
-          <span className="text-[10px] uppercase tracking-[0.04em] text-text-muted">Saved</span>
+          <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-text-muted">Saved</span>
           {saved.map((v) => (
             <span key={v} className={chip(near(depth, v))}>
-              <button type="button" title={`Use ${pct(v)}`} onClick={() => setUI({ punchDepth: v })}>
+              <button type="button" className="font-numeric" title={`Use ${pct(v)}`} onClick={() => setUI({ punchDepth: v })}>
                 {pct(v)}
               </button>
               <button type="button" aria-label={`Remove ${pct(v)} preset`} title="Remove" onClick={() => removeSaved(v)}>

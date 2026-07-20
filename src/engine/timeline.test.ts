@@ -1431,7 +1431,7 @@ describe('markers', () => {
   const emptySeq = () => makeSeq([makeTrack()])
   it('addMarker inserts with defaults and returns the id', () => {
     const { seq, markerId } = addMarker(emptySeq(), 2)
-    expect(seq.markers).toEqual([{ id: markerId, t: 2, label: '', color: '#6f6bff' }])
+    expect(seq.markers).toEqual([{ id: markerId, t: 2, label: '', color: '#ffa946' }])
   })
   it('addMarker keeps a custom label and color', () => {
     const { seq } = addMarker(emptySeq(), 1, 'Scene', '#ff0000')

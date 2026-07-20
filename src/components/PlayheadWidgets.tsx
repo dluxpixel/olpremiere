@@ -1,7 +1,7 @@
 // Zero-re-render playhead readouts. The transport writes ui.playheadS on EVERY
 // animation frame while playing; any React component that subscribes via a hook
 // re-renders at the display's refresh rate. On a high-refresh monitor that
-// re-rendered the entire Timeline ~144×/s and starved the actual video — the
+// re-rendered the entire Timeline ~144×/s and starved the actual video - the
 // "laggy preview". These leaves subscribe imperatively (store.subscribe) and
 // write style/text through a ref, so a playhead tick costs two DOM writes and
 // ZERO React renders anywhere.
@@ -10,6 +10,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useCollab } from '../collab/collabControl'
 import { formatTimecode, parseTimecode } from '../engine/timecode'
 import { activeSequence } from '../engine/types'
+import { pausePlayback } from '../state/playbackControl'
 import { useStore } from '../state/store'
 
 /** The timeline's red playhead line. Position = playheadS × pxPerS, imperative. */
@@ -50,7 +51,7 @@ export function PlayheadLine({ pxPerS }: { pxPerS: number }) {
 /**
  * Every OTHER editor's playhead in the room: a thin colored line + name tag.
  * Presence arrives every ~2s, so these are plain React renders (a handful of
- * absolutely-positioned divs — nothing like the local playhead's tick rate).
+ * absolutely-positioned divs - nothing like the local playhead's tick rate).
  */
 export function RemotePlayheads({ pxPerS }: { pxPerS: number }) {
   const peers = useCollab((s) => s.peers)
@@ -86,7 +87,7 @@ export function PlayheadTimecode({
   fps: number
   className?: string
   testId?: string
-  /** Double-click to type a timecode and jump the playhead there. */
+  /** Click to type a timecode and jump the playhead there (Enter commits, Esc reverts). */
   editable?: boolean
 }) {
   const ref = useRef<HTMLSpanElement>(null)
@@ -128,13 +129,17 @@ export function PlayheadTimecode({
         autoFocus
         data-testid={testId ? `${testId}-input` : undefined}
         value={editing}
+        spellCheck={false}
+        // Select-all on focus so the field is overtype-first: click, type the
+        // target time, Enter. No cursor gymnastics.
+        onFocus={(e) => e.currentTarget.select()}
         onChange={(e) => setEditing(e.target.value)}
         onBlur={commit}
         onKeyDown={(e) => {
           if (e.key === 'Enter') commit()
-          else if (e.key === 'Escape') setEditing(null)
+          else if (e.key === 'Escape') setEditing(null) // revert: live readout resumes
         }}
-        className={`w-[86px] rounded-[3px] bg-bg-input px-1 tabular-nums text-text-primary outline-none ${className ?? ''}`}
+        className={`w-[86px] rounded-[3px] bg-bg-input px-1 font-numeric text-text-primary outline-none ${className ?? ''}`}
       />
     )
   }
@@ -143,11 +148,16 @@ export function PlayheadTimecode({
     <span
       ref={ref}
       data-testid={testId}
-      title={editable ? 'Double-click to type a time' : undefined}
+      title={editable ? 'Click to type a time' : undefined}
       className={`${className ?? ''} ${editable ? 'cursor-text' : ''}`}
-      onDoubleClick={
+      onClick={
         editable
-          ? () => setEditing(formatTimecode(useStore.getState().ui.playheadS, fps))
+          ? () => {
+              // Freeze transport first so the typed jump lands visibly instead
+              // of racing a moving playhead.
+              pausePlayback()
+              setEditing(formatTimecode(useStore.getState().ui.playheadS, fps))
+            }
           : undefined
       }
     />

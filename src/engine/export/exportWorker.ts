@@ -528,7 +528,7 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
     stage = 'initializing renderer'
     const canvas = new OffscreenCanvas(settings.width, settings.height)
     const gl = canvas.getContext('webgl2', { premultipliedAlpha: false, preserveDrawingBuffer: true })
-    if (!gl) throw new Error('WebGL2 is unavailable in this browser’s worker — cannot export')
+    if (!gl) throw new Error('WebGL2 is unavailable in this browser’s worker, cannot export')
     const renderer = createRenderer(gl)
     cleanups.push(() => renderer.dispose())
 

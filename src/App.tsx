@@ -1,8 +1,10 @@
-import { useEffect } from 'react'
+import { useEffect, useMemo } from 'react'
+import { CommandPalette, togglePalette } from './components/CommandPalette'
 import { Inspector } from './components/Inspector'
 import { KeyboardHelp } from './components/KeyboardHelp'
 import { LeftPanel } from './components/LeftPanel'
 import { Monitor } from './components/Monitor'
+import { QuickStart } from './components/QuickStart'
 import { Timeline } from './components/Timeline'
 import { TopBar } from './components/TopBar'
 import { TranscribeStatus } from './components/TranscribeStatus'
@@ -79,7 +81,7 @@ function deleteSelected(ripple: boolean) {
   const ids = unlockedClipIds(activeSequence(s.project), s.ui.selection)
   if (ids.length === 0) return
   // Selection-scoped: an audio half deletes alone, everything else takes its
-  // linked partner along (deleteScoped). Ripple stays group-wide — rippling
+  // linked partner along (deleteScoped). Ripple stays group-wide - rippling
   // one half of a pair would slide its track out of sync with the partner.
   updateActiveSequence(ripple ? 'Ripple delete' : 'Delete clip', (sq) => {
     let next = sq
@@ -90,12 +92,12 @@ function deleteSelected(ripple: boolean) {
 }
 
 /**
- * Split at the playhead. Three explicit verbs (David, 2026-07-18 — the earlier
+ * Split at the playhead. Three explicit verbs (David, 2026-07-18 - the earlier
  * selection-scoped C was "way too confusing"):
  *   C          → split the clip(s): a linked pair always splits TOGETHER.
  *   Shift+C    → split only the AUDIO half (kind: 'audio').
  *   Alt+C      → split only the VIDEO half (kind: 'video').
- * (Ctrl+C stays Copy — the universal clipboard verb is not up for grabs.)
+ * (Ctrl+C stays Copy - the universal clipboard verb is not up for grabs.)
  * A selection still narrows WHICH clips are considered (multi-track editing),
  * but never changes what a verb splits. Ctrl+Shift+K ignores the selection.
  */
@@ -150,43 +152,49 @@ function buildAppBindings(): Binding[] {
       // arrives as 'shift+?' on US and plain '?' from synthetic events; on Czech
       // QWERTZ '?' isn't Shift+/ at all. Register every interpretation, including
       // the legacy 'shift+/', so it fires on real keyboards and stays testable.
-      ...['shift+?', '?', 'shift+/'].map((combo) => ({
+      ...['shift+?', '?', 'shift+/'].map<Binding>((combo) => ({
         combo,
         description: 'Keyboard shortcuts',
+        domain: 'view',
         run: () => store().setUI({ helpOpen: !store().ui.helpOpen }),
       })),
+      // The palette owns mod+k (the old 'Split at playhead' alias was redundant
+      // bloat: C is the split key). Lists every command here with its shortcut.
+      { combo: 'mod+k', description: 'Command palette', domain: 'view', run: () => togglePalette() },
       // Routed: solo = snapshot undo; in a room = rebased (only YOUR command
       // reverts, other people's edits survive).
-      { combo: 'mod+z', description: 'Undo', run: () => {
+      { combo: 'mod+z', description: 'Undo', domain: 'project', run: () => {
         const label = performHistoryStep('undo')
         if (label) useToasts.getState().show(`Undo: ${label}`)
       } },
-      { combo: 'mod+shift+z', description: 'Redo', run: () => {
+      { combo: 'mod+shift+z', description: 'Redo', domain: 'project', run: () => {
         const label = performHistoryStep('redo')
         if (label) useToasts.getState().show(`Redo: ${label}`)
       } },
-      { combo: 'mod+y', description: 'Redo', run: () => {
+      { combo: 'mod+y', description: 'Redo', domain: 'project', run: () => {
         const label = performHistoryStep('redo')
         if (label) useToasts.getState().show(`Redo: ${label}`)
       } },
       {
         combo: 'mod+s',
         description: 'Save project',
+        domain: 'project',
         run: () => {
           void saveNow().then(() => useToasts.getState().show('Project saved', 'success'))
         },
       },
-      { combo: 'space', description: 'Play / Pause', run: togglePlay },
-      { combo: 'j', description: 'Shuttle reverse', run: () => shuttle(-1) },
-      { combo: 'k', description: 'Pause', run: pausePlayback },
-      { combo: 'l', description: 'Shuttle forward', run: () => shuttle(1) },
-      { combo: 'arrowleft', description: 'Step 1 frame back (nudge clip ← in monitor)', run: () => arrowH(-1, false) },
-      { combo: 'arrowright', description: 'Step 1 frame forward (nudge clip → in monitor)', run: () => arrowH(1, false) },
-      { combo: 'shift+arrowleft', description: 'Step ~1s back (nudge clip ×10 in monitor)', run: () => arrowH(-1, true) },
-      { combo: 'shift+arrowright', description: 'Step ~1s forward (nudge clip ×10 in monitor)', run: () => arrowH(1, true) },
+      { combo: 'space', description: 'Play / Pause', domain: 'transport', run: togglePlay },
+      { combo: 'j', description: 'Shuttle reverse', domain: 'transport', run: () => shuttle(-1) },
+      { combo: 'k', description: 'Pause', domain: 'transport', run: pausePlayback },
+      { combo: 'l', description: 'Shuttle forward', domain: 'transport', run: () => shuttle(1) },
+      { combo: 'arrowleft', description: 'Step 1 frame back (nudge clip ← in monitor)', domain: 'transport', run: () => arrowH(-1, false) },
+      { combo: 'arrowright', description: 'Step 1 frame forward (nudge clip → in monitor)', domain: 'transport', run: () => arrowH(1, false) },
+      { combo: 'shift+arrowleft', description: 'Step ~1s back (nudge clip ×10 in monitor)', domain: 'transport', run: () => arrowH(-1, true) },
+      { combo: 'shift+arrowright', description: 'Step ~1s forward (nudge clip ×10 in monitor)', domain: 'transport', run: () => arrowH(1, true) },
       {
         combo: 'home',
         description: 'Go to start',
+        domain: 'transport',
         run: () => {
           pausePlayback()
           store().setUI({ playheadS: 0 })
@@ -195,6 +203,7 @@ function buildAppBindings(): Binding[] {
       {
         combo: 'end',
         description: 'Go to end',
+        domain: 'transport',
         run: () => {
           pausePlayback()
           // Land on the LAST real frame, not exactly durationS (where no clip
@@ -203,107 +212,109 @@ function buildAppBindings(): Binding[] {
           store().setUI({ playheadS: Math.max(0, seq.durationS - 1 / (seq.fps || 30)) })
         },
       },
-      { combo: 's', description: 'Toggle snapping', run: () => store().setUI({ snapping: !store().ui.snapping }) },
-      { combo: '/', description: 'Loop playback (In/Out range)', run: toggleLoop },
-      { combo: 't', description: 'Add title at playhead', run: () => addTitleClip() },
+      { combo: 's', description: 'Toggle snapping', domain: 'tools', run: () => store().setUI({ snapping: !store().ui.snapping }) },
+      { combo: '/', description: 'Loop playback (In/Out range)', domain: 'transport', run: toggleLoop },
+      { combo: 't', description: 'Add title at playhead', domain: 'trim', run: () => addTitleClip() },
       // Jettism Motion Pack: the workhorse zoom on the selected clip.
       {
         combo: 'p',
         description: 'Punch in at playhead (selected clip)',
+        domain: 'trim',
         run: () => {
           const id = store().ui.selection[0]
           if (id) punchInAtPlayhead(id)
         },
       },
-      { combo: 'v', description: 'Selection tool', run: () => store().setUI({ tool: 'select' }) },
+      { combo: 'v', description: 'Selection tool', domain: 'tools', run: () => store().setUI({ tool: 'select' }) },
       // C cuts the clip(s) at the playhead right away (Premiere muscle memory). The razor
       // TOOL (click-to-cut anywhere) moved to B (Blade) so click-cutting is still available.
-      // "Split", ONE name everywhere (menu, razor, here) — "Cut" stays reserved
+      // "Split", ONE name everywhere (menu, razor, here) - "Cut" stays reserved
       // for the clipboard verb (Ctrl+X) so the two never read as one action.
-      { combo: 'c', description: 'Split at playhead', run: () => splitAtPlayhead() },
-      { combo: 'shift+c', description: 'Split only the AUDIO at playhead', run: () => splitAtPlayhead(false, 'audio') },
-      { combo: 'alt+c', description: 'Split only the VIDEO at playhead', run: () => splitAtPlayhead(false, 'video') },
-      { combo: 'b', description: 'Razor (blade) tool', run: () => store().setUI({ tool: 'razor' }) }, // click-to-cut anywhere
-      { combo: 'h', description: 'Hand tool', run: () => store().setUI({ tool: 'hand' }) },
-      { combo: 'z', description: 'Zoom tool', run: () => store().setUI({ tool: 'zoom' }) },
-      { combo: 'mod+k', description: 'Split at playhead', run: () => splitAtPlayhead() },
-      { combo: 'mod+shift+k', description: 'Split ALL tracks at playhead', run: () => splitAtPlayhead(true) },
-      { combo: 'mod+alt+c', description: 'Copy attributes', run: () => copyClipAttributes() },
-      { combo: 'mod+alt+v', description: 'Paste attributes', run: () => pasteClipAttributes() },
-      { combo: 'delete', description: 'Delete (lift)', run: () => deleteSelected(false) },
-      { combo: 'backspace', description: 'Delete (lift)', run: () => deleteSelected(false) },
-      { combo: 'shift+delete', description: 'Ripple delete', run: () => deleteSelected(true) },
-      { combo: 'mod+c', description: 'Copy clip(s)', run: () => void copySelection() },
-      { combo: 'mod+x', description: 'Cut clip(s)', run: cutSelection },
-      { combo: 'mod+v', description: 'Paste at playhead', run: pasteAtPlayhead },
-      { combo: 'mod+d', description: 'Duplicate clip(s)', run: duplicateSelection },
+      { combo: 'c', description: 'Split at playhead', domain: 'trim', run: () => splitAtPlayhead() },
+      { combo: 'shift+c', description: 'Split only the AUDIO at playhead', domain: 'trim', run: () => splitAtPlayhead(false, 'audio') },
+      { combo: 'alt+c', description: 'Split only the VIDEO at playhead', domain: 'trim', run: () => splitAtPlayhead(false, 'video') },
+      { combo: 'b', description: 'Razor (blade) tool', domain: 'tools', run: () => store().setUI({ tool: 'razor' }) }, // click-to-cut anywhere
+      { combo: 'h', description: 'Hand tool', domain: 'tools', run: () => store().setUI({ tool: 'hand' }) },
+      { combo: 'z', description: 'Zoom tool', domain: 'tools', run: () => store().setUI({ tool: 'zoom' }) },
+      { combo: 'mod+shift+k', description: 'Split ALL tracks at playhead', domain: 'trim', run: () => splitAtPlayhead(true) },
+      { combo: 'mod+alt+c', description: 'Copy attributes', domain: 'trim', run: () => copyClipAttributes() },
+      { combo: 'mod+alt+v', description: 'Paste attributes', domain: 'trim', run: () => pasteClipAttributes() },
+      { combo: 'delete', description: 'Delete (lift)', domain: 'trim', run: () => deleteSelected(false) },
+      { combo: 'backspace', description: 'Delete (lift)', domain: 'trim', run: () => deleteSelected(false) },
+      { combo: 'shift+delete', description: 'Ripple delete', domain: 'trim', run: () => deleteSelected(true) },
+      { combo: 'mod+c', description: 'Copy clip(s)', domain: 'trim', run: () => void copySelection() },
+      { combo: 'mod+x', description: 'Cut clip(s)', domain: 'trim', run: cutSelection },
+      { combo: 'mod+v', description: 'Paste at playhead', domain: 'trim', run: pasteAtPlayhead },
+      { combo: 'mod+d', description: 'Duplicate clip(s)', domain: 'trim', run: duplicateSelection },
       // Work area (spec §5.6). Scopes export; I/O are the universal NLE keys.
-      { combo: 'i', description: 'Mark in at playhead', run: markIn },
-      { combo: 'o', description: 'Mark out at playhead', run: markOut },
-      { combo: 'shift+i', description: 'Go to in point', run: gotoIn },
-      { combo: 'shift+o', description: 'Go to out point', run: gotoOut },
-      { combo: 'alt+x', description: 'Clear in/out', run: clearInOut },
+      { combo: 'i', description: 'Mark in at playhead', domain: 'transport', run: markIn },
+      { combo: 'o', description: 'Mark out at playhead', domain: 'transport', run: markOut },
+      { combo: 'shift+i', description: 'Go to in point', domain: 'transport', run: gotoIn },
+      { combo: 'shift+o', description: 'Go to out point', domain: 'transport', run: gotoOut },
+      { combo: 'alt+x', description: 'Clear in/out', domain: 'transport', run: clearInOut },
       {
         combo: 'm',
         description: 'Add marker at playhead',
+        domain: 'project',
         run: () =>
           updateActiveSequence('Add marker', (sq) => addMarker(sq, store().ui.playheadS).seq),
       },
       {
         combo: 'shift+m',
         description: 'Remove marker at playhead',
+        domain: 'project',
         run: () =>
           updateActiveSequence('Remove marker', (sq) =>
             removeMarkerNear(sq, store().ui.playheadS, 0.15),
           ),
       },
-      { combo: 'arrowup', description: 'Select clip on track above', run: () => selectClipOnAdjacentTrack(-1) },
-      { combo: 'arrowdown', description: 'Select clip on track below', run: () => selectClipOnAdjacentTrack(1) },
+      { combo: 'arrowup', description: 'Select clip on track above', domain: 'selection', run: () => selectClipOnAdjacentTrack(-1) },
+      { combo: 'arrowdown', description: 'Select clip on track below', domain: 'selection', run: () => selectClipOnAdjacentTrack(1) },
       // , / . jump the playhead to the previous / next cut (any clip edge).
-      { combo: ',', description: 'Jump to previous cut', run: () => {
+      { combo: ',', description: 'Jump to previous cut', domain: 'transport', run: () => {
         pausePlayback()
         store().setUI({ playheadS: prevEditPoint(activeSequence(store().project), store().ui.playheadS) })
       } },
-      { combo: '.', description: 'Jump to next cut', run: () => {
+      { combo: '.', description: 'Jump to next cut', domain: 'transport', run: () => {
         pausePlayback()
         store().setUI({ playheadS: nextEditPoint(activeSequence(store().project), store().ui.playheadS) })
       } },
       // Top-and-tail: ripple the head/tail of the clip under the playhead to it.
-      { combo: 'q', description: 'Trim clip head to playhead', run: () => topAndTail('in') },
-      { combo: 'w', description: 'Trim clip tail to playhead', run: () => topAndTail('out') },
+      { combo: 'q', description: 'Trim clip head to playhead', domain: 'trim', run: () => topAndTail('in') },
+      { combo: 'w', description: 'Trim clip tail to playhead', domain: 'trim', run: () => topAndTail('out') },
       // Nudge the selection along its track (Alt = 1 frame, Shift+Alt = 10).
-      { combo: 'alt+arrowleft', description: 'Nudge clip 1 frame left', run: () => nudgeSelection(-1) },
-      { combo: 'alt+arrowright', description: 'Nudge clip 1 frame right', run: () => nudgeSelection(1) },
-      { combo: 'shift+alt+arrowleft', description: 'Nudge clip 10 frames left', run: () => nudgeSelection(-10) },
-      { combo: 'shift+alt+arrowright', description: 'Nudge clip 10 frames right', run: () => nudgeSelection(10) },
+      { combo: 'alt+arrowleft', description: 'Nudge clip 1 frame left', domain: 'trim', run: () => nudgeSelection(-1) },
+      { combo: 'alt+arrowright', description: 'Nudge clip 1 frame right', domain: 'trim', run: () => nudgeSelection(1) },
+      { combo: 'shift+alt+arrowleft', description: 'Nudge clip 10 frames left', domain: 'trim', run: () => nudgeSelection(-10) },
+      { combo: 'shift+alt+arrowright', description: 'Nudge clip 10 frames right', domain: 'trim', run: () => nudgeSelection(10) },
       // Move the selected clip to the adjacent same-kind track.
-      { combo: 'alt+arrowup', description: 'Move clip to track above', run: () => moveSelectionToAdjacentTrack(-1) },
-      { combo: 'alt+arrowdown', description: 'Move clip to track below', run: () => moveSelectionToAdjacentTrack(1) },
-      { combo: 'mod+a', description: 'Select all clips', run: selectAllClips },
-      { combo: 'escape', description: 'Deselect all', run: deselectAll },
-      { combo: 'shift+e', description: 'Enable / disable clip', run: () => {
+      { combo: 'alt+arrowup', description: 'Move clip to track above', domain: 'trim', run: () => moveSelectionToAdjacentTrack(-1) },
+      { combo: 'alt+arrowdown', description: 'Move clip to track below', domain: 'trim', run: () => moveSelectionToAdjacentTrack(1) },
+      { combo: 'mod+a', description: 'Select all clips', domain: 'selection', run: selectAllClips },
+      { combo: 'escape', description: 'Deselect all', domain: 'selection', run: deselectAll },
+      { combo: 'shift+e', description: 'Enable / disable clip', domain: 'trim', run: () => {
         const id = store().ui.selection[0]
         if (id) toggleClipEnabled(id)
       } },
-      { combo: '=', description: 'Zoom in timeline', run: zoomIn },
-      { combo: 'shift++', description: 'Zoom in timeline', run: zoomIn },
-      { combo: '-', description: 'Zoom out timeline', run: zoomOut },
-      { combo: 'shift+_', description: 'Zoom out timeline', run: zoomOut },
+      { combo: '=', description: 'Zoom in timeline', domain: 'view', run: zoomIn },
+      { combo: 'shift++', description: 'Zoom in timeline', domain: 'view', run: zoomIn },
+      { combo: '-', description: 'Zoom out timeline', domain: 'view', run: zoomOut },
+      { combo: 'shift+_', description: 'Zoom out timeline', domain: 'view', run: zoomOut },
       {
         combo: '\\',
         description: 'Zoom to fit sequence',
+        domain: 'view',
         run: () => window.dispatchEvent(new Event('reel:zoom-fit')),
       },
   ]
 }
 
-function useAppKeymap() {
-  useEffect(() => installKeymap(buildAppBindings()), [])
-}
-
 export default function App() {
   const { sizes, adjust } = useLayoutSizes()
-  useAppKeymap()
+  // One binding list feeds the keymap, the palette, and the help sheet, so the
+  // three can never disagree.
+  const bindings = useMemo(() => buildAppBindings(), [])
+  useEffect(() => installKeymap(bindings), [bindings])
 
   return (
     <div
@@ -337,9 +348,11 @@ export default function App() {
         <Timeline height={sizes.bottom} />
       </div>
       <Toaster />
+      <QuickStart />
       <TranscribeStatus />
       <ContextMenu />
-      <KeyboardHelp bindings={buildAppBindings()} />
+      <CommandPalette bindings={bindings} />
+      <KeyboardHelp bindings={bindings} />
     </div>
   )
 }

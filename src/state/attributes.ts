@@ -70,7 +70,7 @@ export function copyClipAttributes(clipId?: string): void {
         }
       : undefined,
   }
-  useToasts.getState().show('Attributes copied — paste onto other clips')
+  useToasts.getState().show('Attributes copied, paste onto other clips')
 }
 
 /** Deep-clone an effect stack with fresh instance ids (so each clip owns its copy). */
@@ -82,7 +82,7 @@ function cloneEffects(effects: readonly EffectInstance[]): EffectInstance[] {
 export function pasteClipAttributes(ids?: Iterable<string>): void {
   const attrs = clipboard
   if (!attrs) {
-    useToasts.getState().show('Nothing to paste — copy attributes first', 'danger')
+    useToasts.getState().show('Nothing to paste, copy attributes first', 'danger')
     return
   }
   const idSet = new Set(ids ?? useStore.getState().ui.selection)

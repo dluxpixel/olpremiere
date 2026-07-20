@@ -88,9 +88,9 @@ export async function enterRoom(roomId?: string): Promise<void> {
   window.location.hash = `room=${room}`
   try {
     await navigator.clipboard.writeText(window.location.href)
-    show(useRelay ? 'Room link copied — anyone with it edits live' : 'Room link copied — works in tabs on THIS machine', 'success')
+    show(useRelay ? 'Room link copied, anyone with it edits live' : 'Room link copied, works in tabs on THIS machine', 'success')
   } catch {
-    show('Room created — share the URL to edit together', 'success')
+    show('Room created, share the URL to edit together', 'success')
   }
 }
 

@@ -17,7 +17,7 @@ import {
   Sparkles,
   X,
 } from 'lucide-react'
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type HTMLAttributes, type ReactNode } from 'react'
 import { channelKeyframes, isChannelAnimated, resolveChannel } from '../engine/effects/channels'
 import { isParamAnimated, paramKeyframes, resolveParam } from '../engine/effects/ops'
 import { EFFECTS, getEffect, paramSens, type EffectParamDef } from '../engine/effects/registry'
@@ -137,6 +137,71 @@ function fmt(v: number): string {
   return String(r)
 }
 
+/** Section label: small, letterspaced, uppercase, muted (spec 2.3 hierarchy). */
+export function SectionLabel({ children }: { children: ReactNode }) {
+  return (
+    <h3 className="text-[10px] font-semibold uppercase tracking-[0.12em] text-text-muted">{children}</h3>
+  )
+}
+
+/**
+ * One property row on the shared inspector grid (spec 3.2): lead toggle,
+ * label, control cluster, reset. Empty zones still occupy their tracks, so
+ * labels, value fields and reset buttons land on the same columns in every
+ * panel that renders property rows.
+ */
+export function PropRow({
+  lead,
+  label,
+  labelTitle,
+  labelFor,
+  onLabelDoubleClick,
+  onReset,
+  resetLabel,
+  children,
+  className = '',
+  ...rest
+}: {
+  /** Leading 24px zone: stopwatch / enable toggle. Empty keeps the indent. */
+  lead?: ReactNode
+  label: string
+  labelTitle?: string
+  /** Render the label as a <label htmlFor> so clicking it drives the control. */
+  labelFor?: string
+  onLabelDoubleClick?: () => void
+  /** Far-right reset zone; omitted, the 24px track stays reserved but empty. */
+  onReset?: () => void
+  resetLabel?: string
+  children?: ReactNode
+} & HTMLAttributes<HTMLDivElement>) {
+  const labelCls = 'cursor-default truncate text-ui text-text-secondary'
+  return (
+    <div
+      className={`grid min-h-6 grid-cols-[24px_minmax(0,1fr)_auto_24px] items-center gap-x-1 ${className}`}
+      {...rest}
+    >
+      <span className="flex h-6 items-center">{lead}</span>
+      {labelFor ? (
+        <label htmlFor={labelFor} title={labelTitle ?? label} onDoubleClick={onLabelDoubleClick} className={labelCls}>
+          {label}
+        </label>
+      ) : (
+        <span title={labelTitle ?? label} onDoubleClick={onLabelDoubleClick} className={labelCls}>
+          {label}
+        </span>
+      )}
+      <div className="flex min-w-0 items-center justify-end gap-1">{children}</div>
+      <span className="flex h-6 items-center justify-end">
+        {onReset && (
+          <IconButton label={resetLabel ?? `Reset ${label}`} size="compact" onClick={onReset}>
+            <RotateCcw size={12} strokeWidth={1.75} aria-hidden />
+          </IconButton>
+        )}
+      </span>
+    </div>
+  )
+}
+
 /**
  * Scrubbable numeric field: click-drag horizontally to change (dx * step *
  * sensitivity), type to set. Enter/blur commits; Escape reverts; double-click
@@ -198,11 +263,11 @@ export function ScrubField({
       commit(Number(text))
       // Prevent the click that follows a drag from entering text-edit.
       e.preventDefault()
-      // Drop focus so the NEXT drag scrubs too — a focused field used to be
+      // Drop focus so the NEXT drag scrubs too - a focused field used to be
       // stuck in edit mode, making drag-scrub one-shot per field.
       inputRef.current?.blur()
     } else {
-      // A genuine click (no movement) enters text-edit — same UX as before,
+      // A genuine click (no movement) enters text-edit - same UX as before,
       // but decided here instead of by focus (which pointerdown also fires).
       enterEdit()
     }
@@ -221,7 +286,7 @@ export function ScrubField({
     else setText(fmt(value))
   }
 
-  // Position-in-range fill: 0% at min, 100% at max. Finite ranges only — a
+  // Position-in-range fill: 0% at min, 100% at max. Finite ranges only - a
   // sensitivity-only field (e.g. ±4000 offsets) still fills, which reads fine.
   const span = spec.max - spec.min
   const frac = span > 0 ? clamp((value - spec.min) / span, 0, 1) : 0
@@ -243,7 +308,7 @@ export function ScrubField({
         onPointerCancel={endDrag}
         onDoubleClick={enterEdit}
         // Keyboard/tab focus enters edit; a pointer-initiated focus does not
-        // (draggingRef is already set by onPointerDown) — endDrag decides
+        // (draggingRef is already set by onPointerDown) - endDrag decides
         // between click→edit and drag→scrub instead.
         onFocus={() => {
           if (!draggingRef.current) enterEdit()
@@ -268,15 +333,15 @@ export function ScrubField({
           }
         }}
         onBlur={() => editing && commitTyped()}
-        className={`h-6 w-full rounded-[4px] bg-bg-input px-2 text-right text-[12px] tabular-nums text-text-primary transition-colors duration-[120ms] hover:bg-bg-elevated ${
+        className={`h-6 w-full rounded-field bg-bg-input px-2 text-right font-numeric text-ui-sm text-text-primary transition-colors duration-[120ms] hover:bg-bg-elevated ${
           editing ? 'cursor-text' : 'cursor-ew-resize'
         }`}
       />
-      {/* Slider fill — a bounded param now shows where it sits in its range. */}
+      {/* Slider fill - a bounded param now shows where it sits in its range. */}
       {!editing && (
         <div
           aria-hidden
-          className="pointer-events-none absolute inset-x-1 bottom-[3px] h-[2px] overflow-hidden rounded-full bg-white/10"
+          className="pointer-events-none absolute inset-x-1.5 bottom-[3px] h-[2px] overflow-hidden rounded-full bg-border"
         >
           <div className="h-full rounded-full bg-accent/60" style={{ width: `${frac * 100}%` }} />
         </div>
@@ -304,8 +369,6 @@ function ChannelRow({
 
   const kfs = channelKeyframes(clip, channel)
   const onKf = animated && kfs.some((k) => Math.abs(k.t - localT) <= 0.05)
-  const prevT = animated ? [...kfs].reverse().find((k) => k.t < localT - 1e-6)?.t : undefined
-  const nextT = animated ? kfs.find((k) => k.t > localT + 1e-6)?.t : undefined
 
   const gotoT = (t: number) => {
     // Move the playhead to a keyframe (absolute sequence time).
@@ -313,56 +376,36 @@ function ChannelRow({
   }
 
   return (
-    <div className="flex items-center gap-1.5" data-testid={`channel-${channel}`}>
-      <IconButton
-        label={animated ? `Disable ${LABELS[channel]} keyframes` : `Animate ${LABELS[channel]}`}
-        active={animated}
-        size="compact"
-        data-testid={`stopwatch-${channel}`}
-        onClick={() => toggleChannelAnimation(clip.id, channel)}
-      >
-        <Clock size={13} strokeWidth={1.75} aria-hidden />
-      </IconButton>
-
-      <span
-        className="flex-1 cursor-default truncate text-[11px] uppercase tracking-[0.04em] text-text-muted"
-        title={`${LABELS[channel]} — double-click to reset`}
-        onDoubleClick={() => resetChannel(clip.id, channel)}
-      >
-        {LABELS[channel]}
-      </span>
-
+    <PropRow
+      data-testid={`channel-${channel}`}
+      label={LABELS[channel]}
+      labelTitle={`${LABELS[channel]} (double-click to reset)`}
+      onLabelDoubleClick={() => resetChannel(clip.id, channel)}
+      onReset={() => resetChannel(clip.id, channel)}
+      resetLabel={`Reset ${LABELS[channel]}`}
+      lead={
+        <IconButton
+          label={animated ? `Disable ${LABELS[channel]} keyframes` : `Animate ${LABELS[channel]}`}
+          active={animated}
+          size="compact"
+          data-testid={`stopwatch-${channel}`}
+          onClick={() => toggleChannelAnimation(clip.id, channel)}
+        >
+          <Clock size={13} strokeWidth={1.75} aria-hidden />
+        </IconButton>
+      }
+    >
       {animated && (
-        <>
-          <IconButton
-            label="Previous keyframe"
-            size="compact"
-            disabled={prevT === undefined}
-            onClick={() => prevT !== undefined && gotoT(prevT)}
-          >
-            <ChevronLeft size={13} strokeWidth={1.75} aria-hidden />
-          </IconButton>
-          <IconButton
-            label={onKf ? 'Remove keyframe at playhead' : 'Add keyframe at playhead'}
-            active={onKf}
-            size="compact"
-            onClick={() =>
-              onKf ? removeKeyframeAtPlayhead(clip.id, channel) : addKeyframeAtPlayhead(clip.id, channel)
-            }
-          >
-            <Diamond size={12} strokeWidth={1.75} aria-hidden />
-          </IconButton>
-          <IconButton
-            label="Next keyframe"
-            size="compact"
-            disabled={nextT === undefined}
-            onClick={() => nextT !== undefined && gotoT(nextT)}
-          >
-            <ChevronRight size={13} strokeWidth={1.75} aria-hidden />
-          </IconButton>
-        </>
+        <KeyframeNav
+          kfs={kfs}
+          localT={localT}
+          onGoto={gotoT}
+          onKf={onKf}
+          onToggleKf={() =>
+            onKf ? removeKeyframeAtPlayhead(clip.id, channel) : addKeyframeAtPlayhead(clip.id, channel)
+          }
+        />
       )}
-
       <ScrubField
         value={value}
         spec={spec}
@@ -370,7 +413,7 @@ function ChannelRow({
         ariaLabel={LABELS[channel]}
         onCommit={(v) => setChannel(clip.id, channel, v)}
       />
-    </div>
+    </PropRow>
   )
 }
 
@@ -383,9 +426,7 @@ function Section({ title, channels, clip, playheadS }: {
   return (
     <section className="flex flex-col gap-2">
       <div className="flex items-center">
-        <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">
-          {title}
-        </h3>
+        <SectionLabel>{title}</SectionLabel>
         <span className="ml-auto">
           <IconButton
             label={`Reset ${title}`}
@@ -397,7 +438,7 @@ function Section({ title, channels, clip, playheadS }: {
           </IconButton>
         </span>
       </div>
-      <div className="flex flex-col gap-1.5">
+      <div className="flex flex-col gap-1">
         {channels.map((ch) => (
           <ChannelRow key={ch} clip={clip} channel={ch} playheadS={playheadS} />
         ))}
@@ -461,19 +502,26 @@ function EffectParamRow({
   const gotoT = (t: number) => useStore.getState().setUI({ playheadS: clip.startS + t })
 
   return (
-    <div className="flex items-center gap-1.5" data-testid={`channel-${param.key}`} data-effect-id={effect.id}>
-      <IconButton
-        label={animated ? `Disable ${param.label} keyframes` : `Animate ${param.label}`}
-        active={animated}
-        size="compact"
-        data-testid={`stopwatch-${param.key}`}
-        onClick={() => toggleEffectParamKeyframes(clip.id, effect.id, param.key)}
-      >
-        <Clock size={13} strokeWidth={1.75} aria-hidden />
-      </IconButton>
-
-      <span className="flex-1 truncate text-[11px] uppercase tracking-[0.04em] text-text-muted">{param.label}</span>
-
+    <PropRow
+      data-testid={`channel-${param.key}`}
+      data-effect-id={effect.id}
+      label={param.label}
+      labelTitle={`${param.label} (double-click to reset)`}
+      onLabelDoubleClick={() => setEffectParamValue(clip.id, effect.id, param.key, param.default)}
+      onReset={() => setEffectParamValue(clip.id, effect.id, param.key, param.default)}
+      resetLabel={`Reset ${param.label}`}
+      lead={
+        <IconButton
+          label={animated ? `Disable ${param.label} keyframes` : `Animate ${param.label}`}
+          active={animated}
+          size="compact"
+          data-testid={`stopwatch-${param.key}`}
+          onClick={() => toggleEffectParamKeyframes(clip.id, effect.id, param.key)}
+        >
+          <Clock size={13} strokeWidth={1.75} aria-hidden />
+        </IconButton>
+      }
+    >
       {animated && (
         <KeyframeNav
           kfs={kfs}
@@ -487,7 +535,6 @@ function EffectParamRow({
           }
         />
       )}
-
       <ScrubField
         value={value}
         spec={spec}
@@ -495,7 +542,7 @@ function EffectParamRow({
         ariaLabel={param.label}
         onCommit={(v) => setEffectParamValue(clip.id, effect.id, param.key, v)}
       />
-    </div>
+    </PropRow>
   )
 }
 
@@ -511,9 +558,9 @@ function EffectCard({ clip, effect, index, count, localT }: {
   // removed, but never pretend to render controls for it.
   if (!def) {
     return (
-      <div className="rounded-[6px] border border-border bg-bg-elevated p-2" data-testid="effect-card">
+      <div className="rounded-field border border-border bg-bg-elevated p-2" data-testid="effect-card">
         <div className="flex items-center gap-1.5">
-          <span className="flex-1 truncate text-[12px] text-text-secondary">Unknown effect: {effect.type}</span>
+          <span className="flex-1 truncate text-ui text-text-secondary">Unknown effect: {effect.type}</span>
           <IconButton label="Remove effect" size="compact" onClick={() => deleteEffect(clip.id, effect.id)}>
             <X size={13} strokeWidth={1.75} aria-hidden />
           </IconButton>
@@ -524,7 +571,7 @@ function EffectCard({ clip, effect, index, count, localT }: {
 
   return (
     <div
-      className="flex flex-col gap-2 rounded-[6px] border border-border bg-bg-elevated p-2"
+      className="flex flex-col gap-2 rounded-field border border-border bg-bg-elevated p-2"
       data-testid="effect-card"
       data-effect-type={effect.type}
       data-effect-id={effect.id}
@@ -541,7 +588,7 @@ function EffectCard({ clip, effect, index, count, localT }: {
         </IconButton>
         <span
           title={def.description}
-          className={`flex-1 truncate text-[12px] font-medium ${effect.enabled ? 'text-text-primary' : 'text-text-muted line-through'}`}
+          className={`flex-1 truncate text-ui font-medium ${effect.enabled ? 'text-text-primary' : 'text-text-muted line-through'}`}
         >
           {def.label}
         </span>
@@ -559,7 +606,7 @@ function EffectCard({ clip, effect, index, count, localT }: {
         </IconButton>
       </div>
 
-      <div className={`flex flex-col gap-1.5 ${effect.enabled ? '' : 'opacity-40'}`}>
+      <div className={`flex flex-col gap-1 ${effect.enabled ? '' : 'opacity-40'}`}>
         {def.params.map((param) => (
           <EffectParamRow key={param.key} clip={clip} effect={effect} param={param} localT={localT} />
         ))}
@@ -575,7 +622,7 @@ function EffectStack({ clip, playheadS }: { clip: Clip; playheadS: number }) {
   return (
     <section className="flex flex-col gap-2" data-testid="effect-stack">
       <div className="flex items-center gap-1.5">
-        <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">Effects</h3>
+        <SectionLabel>Effects</SectionLabel>
         <span className="ml-auto flex items-center gap-1">
           {/* Add an effect without leaving for the Effects tab. */}
           <select
@@ -585,7 +632,7 @@ function EffectStack({ clip, playheadS }: { clip: Clip; playheadS: number }) {
             onChange={(e) => {
               if (e.target.value) applyEffect(clip.id, e.target.value)
             }}
-            className="h-6 cursor-default rounded-[4px] bg-bg-input px-1.5 text-[11px] text-text-secondary"
+            className="h-6 cursor-default rounded-field bg-bg-input px-1.5 text-ui-sm text-text-secondary"
           >
             <option value="">+ Add effect…</option>
             {EFFECTS.map((ef) => (
@@ -609,11 +656,11 @@ function EffectStack({ clip, playheadS }: { clip: Clip; playheadS: number }) {
       {clip.effects.length === 0 ? (
         <div
           data-testid="effect-stack-empty"
-          className="flex flex-col items-center gap-1.5 rounded-[6px] border border-dashed border-border-strong px-2 py-4 text-center"
+          className="flex flex-col items-center gap-1.5 rounded-field border border-dashed border-border-strong px-2 py-4 text-center"
         >
           <Sparkles size={18} strokeWidth={1.5} className="text-text-muted" aria-hidden />
-          <div className="text-[11px] text-text-secondary">No effects applied</div>
-          <div className="text-[10px] text-text-muted">Drag one from the Effects panel, or double-click it</div>
+          <div className="text-ui-sm text-text-secondary">No effects applied</div>
+          <div className="text-dense text-text-muted">Drag one from the Effects panel, or double-click it</div>
         </div>
       ) : (
         <div className="flex flex-col gap-2">
@@ -647,16 +694,13 @@ function TransitionRow({
   }
 
   return (
-    <div className="flex items-center gap-1.5">
-      <span className="w-8 shrink-0 text-[11px] uppercase tracking-[0.04em] text-text-muted">
-        {edge === 'in' ? 'In' : 'Out'}
-      </span>
+    <PropRow label={edge === 'in' ? 'In' : 'Out'}>
       <select
         data-testid={testId}
         aria-label={`${edge === 'in' ? 'In' : 'Out'} transition`}
         value={kind}
         onChange={(e) => onKind(e.target.value)}
-        className="h-6 flex-1 cursor-default rounded-[4px] bg-bg-input px-1.5 text-[11px] text-text-primary"
+        className="h-6 w-[104px] cursor-default rounded-field bg-bg-input px-1.5 text-ui-sm text-text-primary"
       >
         <option value={NONE}>None</option>
         {TRANSITION_KINDS.map((k) => (
@@ -666,12 +710,12 @@ function TransitionRow({
         ))}
       </select>
       {kind === NONE ? (
-        <span className="w-[68px] shrink-0 text-right text-[11px] text-text-muted">—</span>
+        <span aria-hidden className="w-[68px] shrink-0" />
       ) : (
         <ScrubField
           value={durationS}
-          // whiteFlash scrubs inside its tight 100–500 ms envelope with a finer
-          // step; other kinds keep the classic 0.1–10 s range.
+          // whiteFlash scrubs inside its tight 100-500 ms envelope with a finer
+          // step; other kinds keep the classic 0.1-10 s range.
           spec={{
             min: transitionDurationSpec(kind as TransitionKind).min,
             max: transitionDurationSpec(kind as TransitionKind).max,
@@ -683,7 +727,7 @@ function TransitionRow({
           onCommit={(d) => setClipTransition(clip.id, edge, kind as TransitionKind, d)}
         />
       )}
-    </div>
+    </PropRow>
   )
 }
 
@@ -704,45 +748,57 @@ function MaskSection({ clip }: { clip: Clip }) {
     else setClipMask(clip.id, { ...(mask ?? DEFAULT_MASK), kind: v as ClipMask['kind'] })
   }
   return (
-    <section className="flex flex-col gap-1.5">
-      <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">Mask</h3>
-      <div className="flex items-center gap-1.5">
-        <select
-          data-testid="mask-kind"
-          aria-label="Mask shape"
-          value={mask?.kind ?? 'none'}
-          onChange={(e) => onKind(e.target.value)}
-          className="h-6 flex-1 cursor-default rounded-[4px] bg-bg-input px-1.5 text-[11px] text-text-primary"
-        >
-          <option value="none">None</option>
-          <option value="rect">Rectangle</option>
-          <option value="ellipse">Ellipse</option>
-        </select>
+    <section className="flex flex-col gap-2">
+      <SectionLabel>Mask</SectionLabel>
+      <div className="flex flex-col gap-1">
+        <PropRow label="Shape">
+          <select
+            data-testid="mask-kind"
+            aria-label="Mask shape"
+            value={mask?.kind ?? 'none'}
+            onChange={(e) => onKind(e.target.value)}
+            className="h-6 w-[132px] cursor-default rounded-field bg-bg-input px-1.5 text-ui-sm text-text-primary"
+          >
+            <option value="none">None</option>
+            <option value="rect">Rectangle</option>
+            <option value="ellipse">Ellipse</option>
+          </select>
+        </PropRow>
         {mask && (
-          <label className="flex shrink-0 items-center gap-1 text-[11px] text-text-muted">
-            <input
-              type="checkbox"
-              data-testid="mask-invert"
-              checked={mask.invert}
-              onChange={(e) => setClipMask(clip.id, { ...mask, invert: e.target.checked })}
-            />
-            Invert
-          </label>
+          <PropRow
+            label="Invert"
+            labelFor="mask-invert-toggle"
+            lead={
+              <input
+                type="checkbox"
+                id="mask-invert-toggle"
+                data-testid="mask-invert"
+                aria-label="Invert mask"
+                checked={mask.invert}
+                onChange={(e) => setClipMask(clip.id, { ...mask, invert: e.target.checked })}
+                className="ml-1 accent-accent"
+              />
+            }
+          />
         )}
+        {mask &&
+          MASK_FIELDS.map((f) => (
+            <PropRow
+              key={f.key}
+              label={f.label}
+              onReset={() => setClipMask(clip.id, { ...mask, [f.key]: DEFAULT_MASK[f.key] })}
+              resetLabel={`Reset mask ${f.label}`}
+            >
+              <ScrubField
+                value={mask[f.key]}
+                spec={{ min: 0, max: f.max, step: 0.01, sens: 0.003 }}
+                testId={`mask-${f.key}`}
+                ariaLabel={`Mask ${f.label}`}
+                onCommit={(v) => setClipMask(clip.id, { ...mask, [f.key]: v })}
+              />
+            </PropRow>
+          ))}
       </div>
-      {mask &&
-        MASK_FIELDS.map((f) => (
-          <div key={f.key} className="flex items-center gap-1.5">
-            <span className="w-14 shrink-0 text-[11px] text-text-muted">{f.label}</span>
-            <ScrubField
-              value={mask[f.key]}
-              spec={{ min: 0, max: f.max, step: 0.01, sens: 0.003 }}
-              testId={`mask-${f.key}`}
-              ariaLabel={`Mask ${f.label}`}
-              onCommit={(v) => setClipMask(clip.id, { ...mask, [f.key]: v })}
-            />
-          </div>
-        ))}
     </section>
   )
 }
@@ -756,7 +812,7 @@ export function EffectControls({
   clip: Clip
   fps?: number
   playheadS: number
-  /** Rendered between the effects stack and Transitions — the Inspector slots
+  /** Rendered between the effects stack and Transitions - the Inspector slots
    *  Speed here (title clips pass nothing: they have no speed). */
   afterStack?: ReactNode
 }) {
@@ -765,14 +821,14 @@ export function EffectControls({
   // the Keyframes editor closes the panel.
   const hasAnimation = ANIM_CHANNELS.some((ch) => isChannelAnimated(clip, ch))
   // Adjustment layers render ONLY effects/mask/opacity (resolve.ts builds the
-  // op from just those) — transform, crop, blend and punch would be inert
+  // op from just those) - transform, crop, blend and punch would be inert
   // document edits, so they are hidden with a hint instead.
   const isAdjustment = clip.adjustment === true
   return (
     <div className="flex flex-col gap-5">
       {isAdjustment && (
-        <p className="rounded-[4px] bg-bg-input px-2 py-1.5 text-[11px] leading-snug text-text-muted">
-          Adjustment layer — its effects, mask and opacity grade everything below it.
+        <p className="rounded-field bg-bg-input px-2 py-1.5 text-ui-sm leading-snug text-text-muted">
+          Adjustment layer: its effects, mask and opacity grade everything below it.
         </p>
       )}
       <EffectStack clip={clip} playheadS={playheadS} />
@@ -784,10 +840,8 @@ export function EffectControls({
       )}
       <div className="h-px bg-border" />
       <section className="flex flex-col gap-2">
-        <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">
-          Transitions
-        </h3>
-        <div className="flex flex-col gap-1.5">
+        <SectionLabel>Transitions</SectionLabel>
+        <div className="flex flex-col gap-1">
           <TransitionRow clip={clip} edge="in" testId="transition-in" />
           <TransitionRow clip={clip} edge="out" testId="transition-out" />
         </div>
@@ -797,15 +851,15 @@ export function EffectControls({
         <>
           <div className="flex flex-col gap-1.5">
             <PunchControl clipId={clip.id} />
-            {/* A zoom is nothing but scale keyframes — give it the same escape
+            {/* A zoom is nothing but scale keyframes - give it the same escape
                 hatch an effect card's X offers. Works for zooms from Apply, the
                 P key, and the context menu alike; the static scale is kept. */}
             {isChannelAnimated(clip, 'scale') && (
               <button
                 type="button"
                 data-testid="punch-remove"
-                title="Remove the zoom — clears the Scale keyframes, the clip keeps its static scale"
-                className="flex h-6 items-center gap-1 self-start rounded-[4px] bg-bg-input px-2 text-[11px] text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated hover:text-text-primary"
+                title="Remove the zoom: clears the Scale keyframes, the clip keeps its static scale"
+                className="flex h-6 items-center gap-1 self-start rounded-field bg-bg-input px-2 text-ui-sm text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated hover:text-text-primary"
                 onClick={() => removeZoom(clip.id)}
               >
                 <X size={12} strokeWidth={1.75} aria-hidden />
@@ -814,15 +868,13 @@ export function EffectControls({
             )}
           </div>
           {/* Keyframes ride DIRECTLY under the zoom that creates most of them
-              (David, 2026-07-18 — they were a cramped afterthought at the very
+              (David, 2026-07-18 - they were a cramped afterthought at the very
               bottom): make a zoom, retime its diamonds without scrolling. */}
           {hasAnimation && (
             <>
               <div className="h-px bg-border" />
               <section className="flex flex-col gap-2" data-testid="keyframes-section">
-                <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">
-                  Keyframes
-                </h3>
+                <SectionLabel>Keyframes</SectionLabel>
                 <KeyframeLane clip={clip} playheadS={playheadS} width={240} fps={fps} />
               </section>
             </>
@@ -840,14 +892,13 @@ export function EffectControls({
       <Section title="Opacity" channels={['opacity']} clip={clip} playheadS={playheadS} />
       {!isAdjustment && (
         <>
-          <div className="flex items-center gap-1.5">
-            <span className="w-14 shrink-0 text-[11px] text-text-muted">Blend</span>
+          <PropRow label="Blend">
             <select
               data-testid="blend-mode"
               aria-label="Blend mode"
               value={clip.blendMode ?? 'normal'}
               onChange={(e) => setClipBlendMode(clip.id, e.target.value as BlendMode)}
-              className="h-6 flex-1 cursor-default rounded-[4px] bg-bg-input px-1.5 text-[11px] text-text-primary"
+              className="h-6 w-[132px] cursor-default rounded-field bg-bg-input px-1.5 text-ui-sm text-text-primary"
             >
               {BLEND_MODES.map((m) => (
                 <option key={m} value={m}>
@@ -855,7 +906,7 @@ export function EffectControls({
                 </option>
               ))}
             </select>
-          </div>
+          </PropRow>
           <div className="h-px bg-border" />
           <Section title="Crop" channels={['cropT', 'cropR', 'cropB', 'cropL']} clip={clip} playheadS={playheadS} />
         </>
@@ -868,9 +919,7 @@ export function EffectControls({
         <>
           <div className="h-px bg-border" />
           <section className="flex flex-col gap-2" data-testid="keyframes-section">
-            <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">
-              Keyframes
-            </h3>
+            <SectionLabel>Keyframes</SectionLabel>
             <KeyframeLane clip={clip} playheadS={playheadS} width={240} fps={fps} />
           </section>
         </>

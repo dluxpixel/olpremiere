@@ -1,7 +1,7 @@
 // The Inspector body when MORE THAN ONE clip is selected. Every control here
 // fans out to the whole selection in ONE undo step (see state/bulkEdits.ts,
 // updateTitles, applyPunchyGradeToClips). Displayed values come from the first
-// selected clip of the relevant kind — committing writes an ABSOLUTE value to
+// selected clip of the relevant kind - committing writes an ABSOLUTE value to
 // all of them, so a mixed selection converges on one click. This is what makes
 // "select many, edit boldness / effects on all" work.
 
@@ -28,7 +28,7 @@ import { TITLE_FONT_OPTIONS } from '../engine/render/titleFonts'
 import { clipDurationS } from '../engine/timeline'
 import type { Clip, Track } from '../engine/types'
 import { IconButton } from '../ui/Button'
-import { ScrubField, type Spec } from './EffectControls'
+import { PropRow, ScrubField, SectionLabel, type Spec } from './EffectControls'
 
 const OPACITY_SPEC: Spec = { min: 0, max: 1, step: 0.01, sens: 0.005 }
 const SCALE_SPEC: Spec = { min: 0, max: 5, step: 0.01, sens: 0.01 }
@@ -53,16 +53,7 @@ function Header({ label, icon: Icon }: { label: string; icon?: typeof Bold }) {
   return (
     <div className="flex items-center gap-1.5">
       {Icon && <Icon size={12} strokeWidth={2} className="text-text-muted" aria-hidden />}
-      <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">{label}</h3>
-    </div>
-  )
-}
-
-function FieldRow({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="flex items-center gap-1.5">
-      <span className="flex-1 truncate text-[11px] uppercase tracking-[0.04em] text-text-muted">{label}</span>
-      {children}
+      <SectionLabel>{label}</SectionLabel>
     </div>
   )
 }
@@ -100,9 +91,9 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
   return (
     <div className="flex flex-col gap-4 p-3" data-testid="multi-inspector">
       <div>
-        <div className="text-[13px] font-medium text-text-primary">{selected.length} clips selected</div>
-        <div className="mt-0.5 text-[11px] text-text-muted">
-          {parts.join(' · ')} — edits apply to all
+        <div className="text-ui font-medium text-text-primary">{selected.length} clips selected</div>
+        <div className="mt-0.5 text-dense text-text-muted">
+          {parts.join(' · ')} (edits apply to all)
         </div>
       </div>
 
@@ -150,13 +141,13 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
                 <CaseLower size={15} strokeWidth={1.5} />
               </IconButton>
             </div>
-            <FieldRow label="Family">
+            <PropRow label="Family">
               <select
                 aria-label="Font family (all)"
                 data-testid="multi-family"
                 value={firstTitle?.fontFamily ?? ''}
                 onChange={(e) => updateTitles(titleIds, { fontFamily: e.target.value })}
-                className="h-6 w-[140px] cursor-default rounded-[4px] bg-bg-input px-1.5 text-[11px] text-text-primary"
+                className="h-6 w-[140px] cursor-default rounded-field bg-bg-input px-1.5 text-ui-sm text-text-primary"
               >
                 {TITLE_FONT_OPTIONS.map((f) => (
                   <option key={f.value} value={f.value}>
@@ -167,8 +158,8 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
                   <option value={firstTitle.fontFamily}>Custom</option>
                 )}
               </select>
-            </FieldRow>
-            <FieldRow label="Size">
+            </PropRow>
+            <PropRow label="Size">
               <ScrubField
                 value={firstTitle?.fontSizePx ?? 64}
                 spec={SIZE_SPEC}
@@ -176,7 +167,7 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
                 ariaLabel="Font size (all)"
                 onCommit={(v) => updateTitles(titleIds, { fontSizePx: v })}
               />
-            </FieldRow>
+            </PropRow>
             <div className="flex items-center gap-2">
               <input
                 type="color"
@@ -184,7 +175,7 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
                 aria-label="Text color (all)"
                 value={hexOf(firstTitle?.color ?? '#ffffff')}
                 onChange={(e) => updateTitles(titleIds, { color: e.target.value })}
-                className="h-7 w-9 shrink-0 cursor-default rounded-[4px] bg-bg-input p-0.5"
+                className="h-7 w-9 shrink-0 cursor-default rounded-field bg-bg-input p-0.5"
               />
               {SWATCHES.map((c) => (
                 <button
@@ -193,38 +184,45 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
                   aria-label={`${c.label} (all)`}
                   title={c.label}
                   onClick={() => updateTitles(titleIds, { color: c.hex })}
-                  className="h-6 w-6 shrink-0 rounded-[4px] border border-border-strong transition-transform duration-[120ms] hover:scale-110"
+                  className="h-6 w-6 shrink-0 rounded-field border border-border-strong transition-transform duration-[120ms] hover:scale-110"
                   style={{ backgroundColor: c.hex }}
                 />
               ))}
             </div>
 
-            {/* Outline — colour + width across all selected captions. */}
-            <label className="flex items-center gap-2 text-[11px] text-text-secondary">
-              <input
-                type="checkbox"
-                data-testid="multi-outline-toggle"
-                checked={allOutline}
-                onChange={(e) =>
-                  updateTitles(titleIds, { outline: e.target.checked ? { color: '#000000', widthPx: 10 } : undefined })
-                }
-                className="accent-accent"
-              />
-              Outline
-            </label>
-            {allOutline && (
-              <div className="flex items-center gap-2 pl-5">
+            {/* Outline: colour + width across all selected captions. */}
+            <PropRow
+              label="Outline"
+              labelFor="multi-outline-on"
+              lead={
                 <input
-                  type="color"
-                  data-testid="multi-outline-color"
-                  aria-label="Outline color (all)"
-                  value={hexOf(firstOutline?.color ?? '#000000')}
+                  type="checkbox"
+                  id="multi-outline-on"
+                  data-testid="multi-outline-toggle"
+                  aria-label="Outline (all)"
+                  checked={allOutline}
                   onChange={(e) =>
-                    updateTitles(titleIds, { outline: { color: e.target.value, widthPx: firstOutline?.widthPx ?? 10 } })
+                    updateTitles(titleIds, { outline: e.target.checked ? { color: '#000000', widthPx: 10 } : undefined })
                   }
-                  className="h-7 w-9 shrink-0 cursor-default rounded-[4px] bg-bg-input p-0.5"
+                  className="ml-1 accent-accent"
                 />
-                <FieldRow label="Width">
+              }
+            />
+            {allOutline && (
+              <>
+                <PropRow label="Color" labelTitle="Outline color (all)">
+                  <input
+                    type="color"
+                    data-testid="multi-outline-color"
+                    aria-label="Outline color (all)"
+                    value={hexOf(firstOutline?.color ?? '#000000')}
+                    onChange={(e) =>
+                      updateTitles(titleIds, { outline: { color: e.target.value, widthPx: firstOutline?.widthPx ?? 10 } })
+                    }
+                    className="h-6 w-9 shrink-0 cursor-default rounded-field bg-bg-input p-0.5"
+                  />
+                </PropRow>
+                <PropRow label="Width" labelTitle="Outline width (all)">
                   <ScrubField
                     value={firstOutline?.widthPx ?? 10}
                     spec={{ min: 0, max: 100, step: 1, sens: 0.3 }}
@@ -232,18 +230,18 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
                     ariaLabel="Outline width (all)"
                     onCommit={(v) => updateTitles(titleIds, { outline: { color: firstOutline?.color ?? '#000000', widthPx: v } })}
                   />
-                </FieldRow>
-              </div>
+                </PropRow>
+              </>
             )}
 
             {/* Entrance animation across all selected captions. */}
-            <FieldRow label="Animation">
+            <PropRow label="Animation">
               <select
                 aria-label="Entrance animation (all)"
                 data-testid="multi-animation"
                 value={firstAppearanceIn ?? ''}
                 onChange={(e) => setClipsAppearance(titleIds, { in: e.target.value || undefined })}
-                className="h-6 w-[140px] cursor-default rounded-[4px] bg-bg-input px-1.5 text-[11px] text-text-primary"
+                className="h-6 w-[140px] cursor-default rounded-field bg-bg-input px-1.5 text-ui-sm text-text-primary"
               >
                 <option value="">None</option>
                 {ENTRANCE_PRESETS.map((p) => (
@@ -252,7 +250,7 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
                   </option>
                 ))}
               </select>
-            </FieldRow>
+            </PropRow>
 
             {/* Style presets: apply a saved look (font+case+colour+outline+animation)
                 to the whole selection, or save the current one for reuse. */}
@@ -265,7 +263,7 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
                   const p = presets.find((x) => x.id === e.target.value)
                   if (p) applyTextPresetToClips(titleIds, p)
                 }}
-                className="h-6 flex-1 cursor-default rounded-[4px] bg-bg-input px-1.5 text-[11px] text-text-primary"
+                className="h-6 flex-1 cursor-default rounded-field bg-bg-input px-1.5 text-ui-sm text-text-primary"
               >
                 <option value="">Apply preset…</option>
                 {presets.map((p) => (
@@ -282,7 +280,7 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
                   const p = captureTextPreset(titleIds[0], `Style ${useTextPresets.getState().saved.length + 1}`)
                   if (p) useTextPresets.getState().add(p)
                 }}
-                className="h-6 rounded-[4px] bg-bg-input px-2 text-[11px] text-text-secondary hover:bg-bg-elevated hover:text-text-primary"
+                className="h-6 rounded-field bg-bg-input px-2 text-ui-sm text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated hover:text-text-primary"
               >
                 Save
               </button>
@@ -294,8 +292,12 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
       <div className="h-px bg-border" />
       <section className="flex flex-col gap-2" data-testid="multi-adjust">
         <Header label="Adjust" />
-        <div className="flex flex-col gap-1.5">
-          <FieldRow label="Opacity">
+        <div className="flex flex-col gap-1">
+          <PropRow
+            label="Opacity"
+            onReset={() => setChannelForClips(allIds, 'opacity', 1)}
+            resetLabel="Reset opacity (all)"
+          >
             <ScrubField
               value={first.opacity ?? 1}
               spec={OPACITY_SPEC}
@@ -303,8 +305,12 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
               ariaLabel="Opacity (all)"
               onCommit={(v) => setChannelForClips(allIds, 'opacity', v)}
             />
-          </FieldRow>
-          <FieldRow label="Scale">
+          </PropRow>
+          <PropRow
+            label="Scale"
+            onReset={() => setChannelForClips(allIds, 'scale', 1)}
+            resetLabel="Reset scale (all)"
+          >
             <ScrubField
               value={first.transform.scale ?? 1}
               spec={SCALE_SPEC}
@@ -312,7 +318,7 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
               ariaLabel="Scale (all)"
               onCommit={(v) => setChannelForClips(allIds, 'scale', v)}
             />
-          </FieldRow>
+          </PropRow>
         </div>
       </section>
 
@@ -324,7 +330,7 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
             type="button"
             data-testid="multi-punch-grade"
             onClick={() => applyPunchyGradeToClips(allIds)}
-            className="flex h-7 items-center gap-1.5 rounded-[4px] bg-bg-input px-2.5 text-[11px] font-medium text-text-primary transition-colors duration-[120ms] hover:bg-bg-elevated"
+            className="flex h-7 items-center gap-1.5 rounded-field bg-bg-input px-2.5 text-ui-sm font-medium text-text-primary transition-colors duration-[120ms] hover:bg-bg-elevated"
           >
             <Sparkles size={13} strokeWidth={1.75} aria-hidden />
             Punch grade
@@ -333,13 +339,13 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
             type="button"
             data-testid="multi-clear-effects"
             onClick={() => clearEffectsForClips(allIds)}
-            className="flex h-7 items-center gap-1.5 rounded-[4px] bg-bg-input px-2.5 text-[11px] font-medium text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated"
+            className="flex h-7 items-center gap-1.5 rounded-field bg-bg-input px-2.5 text-ui-sm font-medium text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated"
           >
             <Layers size={13} strokeWidth={1.75} aria-hidden />
             Clear
           </button>
         </div>
-        <FieldRow label="Add effect">
+        <PropRow label="Add effect">
           <select
             aria-label="Add effect to all"
             data-testid="multi-add-effect"
@@ -347,7 +353,7 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
             onChange={(e) => {
               if (e.target.value) applyEffectToClips(allIds, e.target.value)
             }}
-            className="h-6 w-[140px] cursor-default rounded-[4px] bg-bg-input px-1.5 text-[11px] text-text-primary"
+            className="h-6 w-[140px] cursor-default rounded-field bg-bg-input px-1.5 text-ui-sm text-text-primary"
           >
             <option value="">Choose…</option>
             {EFFECTS.map((ef) => (
@@ -356,7 +362,7 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
               </option>
             ))}
           </select>
-        </FieldRow>
+        </PropRow>
       </section>
 
       {audioIds.length > 0 && (
@@ -364,8 +370,12 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
           <div className="h-px bg-border" />
           <section className="flex flex-col gap-2" data-testid="multi-audio">
             <Header label={`Audio · ${audioIds.length}`} />
-            <div className="flex flex-col gap-1.5">
-              <FieldRow label="Volume">
+            <div className="flex flex-col gap-1">
+              <PropRow
+                label="Volume"
+                onReset={() => setClipsGainDb(audioIds, 0)}
+                resetLabel="Reset volume (all)"
+              >
                 <ScrubField
                   value={audio[0].clip.audioGainDb}
                   spec={GAIN_SPEC}
@@ -373,8 +383,12 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
                   ariaLabel="Volume dB (all)"
                   onCommit={(v) => setClipsGainDb(audioIds, v)}
                 />
-              </FieldRow>
-              <FieldRow label="Fade in (s)">
+              </PropRow>
+              <PropRow
+                label="Fade in (s)"
+                onReset={() => setClipsFade(audioIds, 'in', 0)}
+                resetLabel="Reset fade in (all)"
+              >
                 <ScrubField
                   value={audio[0].clip.fadeInS}
                   spec={{ ...FADE_SPEC, max: Math.max(0.05, clipDurationS(audio[0].clip)) }}
@@ -382,8 +396,12 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
                   ariaLabel="Fade in seconds (all)"
                   onCommit={(v) => setClipsFade(audioIds, 'in', v)}
                 />
-              </FieldRow>
-              <FieldRow label="Fade out (s)">
+              </PropRow>
+              <PropRow
+                label="Fade out (s)"
+                onReset={() => setClipsFade(audioIds, 'out', 0)}
+                resetLabel="Reset fade out (all)"
+              >
                 <ScrubField
                   value={audio[0].clip.fadeOutS}
                   spec={{ ...FADE_SPEC, max: Math.max(0.05, clipDurationS(audio[0].clip)) }}
@@ -391,7 +409,7 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
                   ariaLabel="Fade out seconds (all)"
                   onCommit={(v) => setClipsFade(audioIds, 'out', v)}
                 />
-              </FieldRow>
+              </PropRow>
             </div>
           </section>
         </>

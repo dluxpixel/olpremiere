@@ -68,7 +68,7 @@ export async function autoCaptionFromClip(clipId: string, preset?: TextStylePres
   } catch (err) {
     if (!(typeof err === 'object' && err !== null && 'cancelled' in err)) {
       toasts.show(
-        'Transcription failed — the model downloads once and needs a connection',
+        'Transcription failed, the model downloads once and needs a connection',
         'danger',
       )
       console.error('auto-caption:', err)

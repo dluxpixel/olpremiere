@@ -33,13 +33,13 @@ import { Button } from '../ui/Button'
 
 /**
  * Room media status: live transfers plus assets nobody in the room has bytes
- * for — each with a Locate button that heals the asset in place (same blob
+ * for - each with a Locate button that heals the asset in place (same blob
  * key, so every clip using it lights up immediately and then uploads for the
  * rest of the room).
  */
 function MediaSyncBanner() {
   const inRelayRoom = useCollab((s) => s.mode === 'relay')
-  // Select the RAW arrays (stable identities) — deriving inside the selector
+  // Select the RAW arrays (stable identities) - deriving inside the selector
   // returns a new array per call and useSyncExternalStore loops forever on it.
   const rawTransfers = useMediaSync((s) => s.transfers)
   const missing = useMediaSync((s) => s.missing)
@@ -61,7 +61,7 @@ function MediaSyncBanner() {
       {missing.map((m) => (
         <div key={m.assetId} className="flex items-center justify-between gap-2">
           <span className="truncate text-text-secondary" title={m.name}>
-            ⚠ {m.name} — no one in the room has this file
+            ⚠ {m.name}: no one in the room has this file
           </span>
           <button
             data-testid={`locate-${m.assetId}`}
@@ -171,7 +171,7 @@ function AssetCard({ asset, fps }: { asset: MediaAsset; fps: number }) {
         e.dataTransfer.effectAllowed = 'copy'
       }}
       onDoubleClick={(e) => {
-        // Inserting moves the user's working context to the TIMELINE — drop the
+        // Inserting moves the user's working context to the TIMELINE - drop the
         // card's focus so a follow-up Delete edits the timeline selection, not
         // the bin (a focused card would otherwise swallow it and nuke the asset).
         e.currentTarget.blur()
@@ -179,7 +179,7 @@ function AssetCard({ asset, fps }: { asset: MediaAsset; fps: number }) {
       }}
       onKeyDown={(e) => {
         if (e.key === 'Enter') insertAssetAtPlayhead(asset.id)
-        // A SINGLE click focuses the card (tabIndex) — that is the bin
+        // A SINGLE click focuses the card (tabIndex) - that is the bin
         // selection, so Delete removes this asset. stopPropagation keeps the
         // global keymap from ALSO deleting the timeline selection.
         else if (e.key === 'Delete' || e.key === 'Backspace') {
@@ -238,7 +238,7 @@ function MediaTab() {
           <Plus size={16} strokeWidth={1.5} />
           Import
         </Button>
-        {/* Same label as the T shortcut + timeline toolbar button — one verb, one name. */}
+        {/* Same label as the T shortcut + timeline toolbar button - one verb, one name. */}
         <Button variant="secondary" data-testid="add-text" onClick={() => addTitleClip()}>
           <Type size={16} strokeWidth={1.5} />
           Add title
@@ -289,7 +289,7 @@ function MediaTab() {
  * One draggable entry. `onApply` (optional) makes double-click/Enter apply it
  * to the selected clip; `menu` adds a right-click menu (an effect can go on
  * every clip at once from there, with no selection at all). Transitions have
- * no `onApply` — their edge choice IS the drop position, so a click apply
+ * no `onApply` - their edge choice IS the drop position, so a click apply
  * would have to pick an edge silently; their menu names each edge instead.
  */
 function BrowserItem({
@@ -354,7 +354,7 @@ function EffectsTab() {
   const showLook = matches('Jettism') || matches('look')
   // The Motion tiles were removed in the 2026-07-18 de-bloat: punch-in/impact/
   // whip live on the clip right-click Motion submenu, the P key, and (with a
-  // depth control) the Inspector's PunchControl — this was a fourth, least
+  // depth control) the Inspector's PunchControl - this was a fourth, least
   // capable surface for the same verbs.
   const empty = effects.length === 0 && transitions.length === 0 && !showLook
 
@@ -369,14 +369,14 @@ function EffectsTab() {
           placeholder="Search effects"
           aria-label="Search effects and transitions"
           data-testid="effect-search"
-          className="h-7 w-full rounded-[4px] bg-bg-input px-2 text-[12px] text-text-primary placeholder:text-text-muted"
+          className="h-7 w-full rounded-field border border-border bg-bg-input px-2 text-[12px] text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
         />
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-1 pb-2">
         {!targetId && (
           <p className="px-2 pb-1.5 text-[10px] text-text-muted">
-            Select a clip to apply, drag straight onto one, or right-click — apply to every clip, or a transition to either edge.
+            Select a clip to apply, drag straight onto one, or right-click to apply to every clip, or a transition to either edge.
           </p>
         )}
 
@@ -457,7 +457,7 @@ function EffectsTab() {
                 </h3>
                 {/* No double-click apply, deliberately: the old one silently
                     targeted the IN edge with no way to know or choose. Every
-                    apply path names its edge — the drag by drop position
+                    apply path names its edge - the drag by drop position
                     (half-clip highlight), the right-click menu and the
                     Inspector's Transitions section by explicit label. */}
                 {transitions.map((k) => (
@@ -614,7 +614,7 @@ function LibraryTab() {
               data-testid="preset-item"
               role="button"
               tabIndex={0}
-              title={`${p.effects.length} effect(s) — double-click to apply to the selected clip`}
+              title={`${p.effects.length} effect(s); double-click to apply to the selected clip`}
               onDoubleClick={() => applyPresetToSelection(p.id)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') applyPresetToSelection(p.id)
@@ -672,7 +672,7 @@ export function LeftPanel({ width }: { width: number }) {
       </div>
       {dragging && (
         <div className="pointer-events-none fixed inset-0 z-50 flex bg-black/60 p-4">
-          <div className="flex flex-1 flex-col items-center justify-center gap-2 rounded-[6px] border-2 border-dashed border-accent bg-accent-quiet">
+          <div className="flex flex-1 flex-col items-center justify-center gap-2 rounded-overlay border-2 border-dashed border-accent bg-accent-quiet">
             <Upload size={24} strokeWidth={1.5} className="text-accent" aria-hidden />
             <div className="text-[14px] font-medium text-text-primary">Drop to import</div>
           </div>

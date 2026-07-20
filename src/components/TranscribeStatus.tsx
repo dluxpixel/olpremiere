@@ -14,23 +14,29 @@ export function TranscribeStatus() {
     status === 'reading'
       ? 'Reading the clip’s audio…'
       : status === 'model'
-        ? `Downloading Whisper (once)${pct != null ? ` — ${Math.round(pct)}%` : '…'}`
+        ? 'Downloading Whisper (once)'
         : 'Listening for words…'
 
   return (
     <div
       data-testid="transcribe-status"
       role="status"
-      className="fixed bottom-12 left-1/2 z-50 flex -translate-x-1/2 items-center gap-2 rounded-[6px] border border-border bg-bg-elevated px-3 py-1.5 text-[12px] text-text-primary shadow-lg"
+      className="fixed bottom-12 left-1/2 z-50 flex -translate-x-1/2 items-center gap-2 rounded-full border border-border bg-bg-elevated py-1.5 pl-3 pr-2.5 text-ui-sm text-text-primary shadow-pop"
     >
-      <Loader2 size={13} strokeWidth={2} aria-hidden className="animate-spin text-accent" />
+      {/* In-progress work is an ember state, not an accent state. */}
+      <Loader2 size={13} strokeWidth={2} aria-hidden className="animate-spin text-ember" />
       <span>{label}</span>
+      {status === 'model' && (
+        <span className="font-numeric text-ui-sm text-text-secondary">
+          {pct != null ? `${Math.round(pct)}%` : '…'}
+        </span>
+      )}
       {cancel && (
         <button
           type="button"
           aria-label="Cancel transcription"
           onClick={cancel}
-          className="ml-1 rounded-[3px] p-0.5 text-text-muted transition-colors hover:bg-bg-input hover:text-text-primary"
+          className="ml-0.5 rounded-full p-0.5 text-text-muted transition-colors duration-[120ms] hover:bg-bg-input hover:text-text-primary"
         >
           <X size={12} strokeWidth={2} />
         </button>

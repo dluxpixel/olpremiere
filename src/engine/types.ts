@@ -346,7 +346,7 @@ export interface TitleDef {
 export function defaultTitleDef(text = 'Title'): TitleDef {
   return {
     text,
-    fontFamily: "'Inter', system-ui, sans-serif",
+    fontFamily: "'Figtree Variable', 'Segoe UI', system-ui, sans-serif",
     fontSizePx: 96,
     color: '#ffffff',
     align: 'center',

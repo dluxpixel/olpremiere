@@ -41,7 +41,7 @@ import { ExportDialog } from './ExportDialog'
 import { ProjectsDialog } from './ProjectsDialog'
 
 /**
- * "Edit together" — create/share a live room, or show who's in it. The badge is
+ * "Edit together": create/share a live room, or show who's in it. The badge is
  * honest about reach: the relay origin syncs across machines, elsewhere the
  * room spans tabs on this machine only.
  */
@@ -68,7 +68,7 @@ function CollabButton() {
         aria-label="Your display name"
         defaultValue={storedDisplayName()}
         maxLength={24}
-        className="h-7 w-36 rounded-[4px] border border-accent bg-bg-input px-2 text-[12px] text-text-primary focus:outline-none"
+        className="h-7 w-36 rounded-field border border-accent bg-bg-input px-2 text-ui-sm text-text-primary focus:outline-none"
         onKeyDown={(e) => {
           if (e.key === 'Enter') {
             setDisplayName(e.currentTarget.value)
@@ -89,11 +89,11 @@ function CollabButton() {
         tabIndex={0}
         onClick={() => setEditingName(true)}
         onKeyDown={(e) => e.key === 'Enter' && setEditingName(true)}
-        className="flex cursor-pointer items-center gap-1.5 rounded-[4px] border border-accent/40 bg-accent-quiet px-2 py-1 text-[11px] text-accent"
+        className="flex cursor-pointer items-center gap-1.5 rounded-full border border-accent/40 bg-accent-quiet px-2.5 py-1 text-ui-sm text-accent"
         title={`${
           mode === 'relay'
-            ? `Live room ${roomId} — anyone with the link edits with you`
-            : `Live room ${roomId} — tabs on THIS machine (deploy with the relay for cross-machine)`
+            ? `Live room ${roomId}: anyone with the link edits with you`
+            : `Live room ${roomId}: tabs on THIS machine (deploy with the relay for cross-machine)`
         } · click to set your name`}
       >
         <span className="relative flex h-2 w-2">
@@ -101,7 +101,7 @@ function CollabButton() {
             <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent opacity-60" />
           )}
           <span
-            className={`relative inline-flex h-2 w-2 rounded-full ${connected ? 'bg-accent' : 'bg-yellow-500'}`}
+            className={`relative inline-flex h-2 w-2 rounded-full ${connected ? 'bg-accent' : 'bg-warning'}`}
           />
         </span>
         {!connected
@@ -181,9 +181,10 @@ function RecordButton() {
         active={recording}
         data-testid="record-voice"
         onClick={() => (recording ? stopRecording() : void startRecording())}
+        className={recording ? 'bg-ember-quiet! text-ember!' : ''}
       >
         {recording ? (
-          <Square size={14} strokeWidth={2} className="text-danger" fill="currentColor" />
+          <Square size={14} strokeWidth={2} fill="currentColor" />
         ) : (
           <Mic size={16} strokeWidth={1.5} />
         )}
@@ -198,7 +199,10 @@ function RecordButton() {
         <ChevronDown size={13} strokeWidth={1.5} />
       </IconButton>
       {recording && (
-        <span data-testid="record-elapsed" className="ml-1 flex items-center gap-1 text-[11px] tabular-nums text-danger">
+        <span
+          data-testid="record-elapsed"
+          className="ml-1 flex items-center gap-1 font-numeric text-ui-sm text-ember"
+        >
           <Circle size={7} fill="currentColor" className="animate-pulse" aria-hidden />
           {mmss}
         </span>
@@ -221,7 +225,7 @@ function SaveIndicator() {
   return (
     <span
       data-testid="save-state"
-      className="flex items-center gap-1.5 text-[11px] text-text-secondary"
+      className="flex items-center gap-1.5 text-ui-sm text-text-secondary"
     >
       <span className={`h-1.5 w-1.5 rounded-full ${dot}`} />
       {label}
@@ -249,7 +253,7 @@ function ProjectName() {
     <input
       data-testid="project-name"
       aria-label="Project name"
-      className="h-7 w-52 rounded-[4px] border border-transparent bg-transparent px-2 text-[13px] font-medium text-text-primary transition-colors duration-[120ms] hover:bg-bg-elevated focus:border-accent focus:bg-bg-input focus:outline-none"
+      className="h-7 w-52 rounded-field border border-transparent bg-transparent px-2 text-ui font-medium text-text-primary transition-colors duration-[120ms] hover:bg-bg-elevated focus:border-accent focus:bg-bg-input focus:outline-none"
       value={draft}
       onChange={(e) => setDraft(e.target.value)}
       onBlur={commit}
@@ -271,7 +275,7 @@ export function TopBar() {
   const nextUndo = useStore((s) => s.history.undo[s.history.undo.length - 1]?.label)
   const nextRedo = useStore((s) => s.history.redo[s.history.redo.length - 1]?.label)
   // Routed through collab: rebased in a room, snapshot solo. The keymap route
-  // toasts the label (App.tsx) — the buttons must not be the silent path.
+  // toasts the label (App.tsx); the buttons must not be the silent path.
   const undo = () => {
     const label = performHistoryStep('undo')
     if (label) useToasts.getState().show(`Undo: ${label}`)
@@ -292,12 +296,12 @@ export function TopBar() {
     >
       <div className="flex items-center gap-2">
         <Clapperboard size={18} className="text-accent" aria-hidden />
-        <span className="text-[13px] font-semibold tracking-[0.08em]">OL Studio</span>
+        <span className="text-ui font-semibold tracking-[0.08em]">OL Studio</span>
       </div>
       <div className="h-4 w-px bg-border" />
       <ProjectName />
       <IconButton
-        label="Projects — switch or start another edit"
+        label="Projects: switch or start another edit"
         onClick={() => setProjectsOpen(true)}
         data-testid="open-projects"
       >
@@ -305,7 +309,7 @@ export function TopBar() {
       </IconButton>
       <SaveIndicator />
 
-      {/* Manual save/restore to a self-contained file — a backup for when the
+      {/* Manual save/restore to a self-contained file: a backup for when the
           in-browser autosave can't be trusted. */}
       <input
         ref={openFileRef}

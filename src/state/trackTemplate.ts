@@ -69,7 +69,7 @@ export function saveTrackTemplate(): void {
   } catch {
     /* private mode / quota — the template just won't persist */
   }
-  useToasts.getState().show('Track setup saved — new videos start like this', 'success')
+  useToasts.getState().show('Track setup saved, new videos start like this', 'success')
 }
 
 /** The saved template, or null when none exists / storage is unreadable. */

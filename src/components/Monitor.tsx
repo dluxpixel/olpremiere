@@ -40,7 +40,7 @@ function aspectKeyFor(w: number, h: number): string {
 
 // The preview never needs to redraw faster than this. The <video> upload +
 // composite is the frame's real cost, so on a 144/240 Hz display an uncapped
-// rAF loop did that work 2–4× more often than any content changed — the "laggy
+// rAF loop did that work 2-4x more often than any content changed: the "laggy
 // preview". 60 fps is smoother than any timeline footage and imperceptible next
 // to it. (Scrub/drag bursts and playback all coalesce to this ceiling.)
 const MAX_PREVIEW_FPS = 60
@@ -62,7 +62,7 @@ function useProgramCanvas(quality: Quality) {
     let prevSeq: Sequence | null = null
     let prevComplete = false
 
-    // Parent size via ResizeObserver, NOT getBoundingClientRect per rAF — a
+    // Parent size via ResizeObserver, NOT getBoundingClientRect per rAF: a
     // per-frame rect read plus unconditional style writes forced a style/layout
     // pass on every frame, competing with the video for main-thread time.
     const parent = canvas.parentElement
@@ -84,7 +84,7 @@ function useProgramCanvas(quality: Quality) {
       const seq = activeSequence(s.project)
       // CSS box AND raster snapped to whole device pixels (fitCanvasBox): a
       // fractional device-pixel box makes the compositor resample the finished
-      // canvas — a uniform blur no render-side sharpness can beat.
+      // canvas, a uniform blur no render-side sharpness can beat.
       const box = fitCanvasBox(parentW, parentH, seq.width / seq.height, window.devicePixelRatio || 1, quality)
       const pw = box.pxW
       const ph = box.pxH
@@ -93,12 +93,12 @@ function useProgramCanvas(quality: Quality) {
       const fps = seq.fps > 0 ? seq.fps : 30
       const frameIdx = Math.floor(s.ui.playheadS * fps + 1e-6)
       // cssW/cssH in the key: the CSS box can move by a device pixel while the
-      // reduced-quality raster rounds to the same pw×ph — the style write below
-      // must not be skipped by the parked-frame early-out when that happens.
+      // reduced-quality raster rounds to the same pw×ph, so the style write
+      // below must not be skipped by the parked-frame early-out when that happens.
       const key = `${frameIdx}|${playing ? 1 : 0}|${pw}x${ph}|${box.cssW}x${box.cssH}|${previewEpoch()}`
       const changed = key !== prevKey || seq !== prevSeq
 
-      // Parked on a fully-resolved frame with nothing new — do zero GPU work.
+      // Parked on a fully-resolved frame with nothing new: do zero GPU work.
       if (!changed && prevComplete) return
       // Cap the redraw rate (tames high-refresh displays and rapid scrub/drag).
       if (now - lastDrawT < MIN_FRAME_MS) return
@@ -108,7 +108,7 @@ function useProgramCanvas(quality: Quality) {
         canvas.width = pw
         canvas.height = ph
       }
-      // Write styles only on CHANGE — a same-value style write still dirties
+      // Write styles only on CHANGE: a same-value style write still dirties
       // style state in some engines and forces a recalc.
       const wPx = `${box.cssW}px`
       const hPx = `${box.cssH}px`
@@ -134,10 +134,11 @@ function useProgramCanvas(quality: Quality) {
 }
 
 /**
- * Viewport-only safe-margin guides: action-safe (93%) + title-safe (90%)
- * rectangles over the letterboxed video area. Tracks the canvas display size
+ * Viewport-only safe-margin guides: action-safe (90%) + title-safe (80%)
+ * rectangles over the letterboxed video area, the broadcast-spec insets.
+ * Tracks the canvas display size
  * (set each frame by the draw loop) so it follows resize/letterboxing. Never
- * touches the canvas render or export — it is an overlay, not a layer.
+ * touches the canvas render or export; it is an overlay, not a layer.
  */
 function SafeMargins({ canvas }: { canvas: HTMLCanvasElement | null }) {
   const [box, setBox] = useState<{ w: number; h: number } | null>(null)
@@ -169,26 +170,28 @@ function SafeMargins({ canvas }: { canvas: HTMLCanvasElement | null }) {
     >
       <div
         className="absolute rounded-[1px] border border-dashed"
-        style={{ ...inset(0.93), borderColor: 'var(--color-border-strong)' }}
+        style={{ ...inset(0.9), borderColor: 'var(--color-border-strong)' }}
       />
       <div
         className="absolute rounded-[1px] border border-dashed"
-        style={{ ...inset(0.9), borderColor: 'var(--color-accent-quiet)' }}
+        style={{ ...inset(0.8), borderColor: 'var(--color-accent-quiet)' }}
       />
     </div>
   )
 }
 
-/** J/K/L shuttle indicator — shows only when shuttling faster/reverse. */
+/** J/K/L shuttle indicator; shows only when shuttling faster/reverse. */
 function ShuttleBadge() {
   const [rate, setRate] = useState(0)
   useEffect(() => subscribeShuttleRate(setRate), [])
   if (rate === 0 || (rate > 0 && rate <= 1)) return null // normal play / paused: hide
   const arrow = rate < 0 ? '◀◀' : '▶▶'
   return (
+    // Ember pill: shuttle is a live transport state, and the mono digits keep
+    // the rate readout steady while J/K/L pumps it.
     <span
       data-testid="shuttle-badge"
-      className="rounded-[3px] bg-accent-quiet px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-accent"
+      className="rounded-full bg-ember-quiet px-2 py-0.5 font-numeric text-dense font-medium text-ember"
     >
       {arrow} {Math.abs(rate)}×
     </span>
@@ -198,10 +201,10 @@ function ShuttleBadge() {
 export function Monitor() {
   const assets = useStore((s) => s.project.assets)
   // Decode audio + spin up pooled elements so the first Space press starts
-  // instantly — but ONLY for assets the active sequence actually uses.
+  // instantly, but ONLY for assets the active sequence actually uses.
   // Warming the whole bin meant importing a 100-clip library spun up 100
   // video decoders + 100 full PCM decodes at once. Keyed on the SET of used
-  // asset ids (stable string), not the sequence object — every edit replaces
+  // asset ids (stable string), not the sequence object: every edit replaces
   // the sequence reference, and re-sweeping per keystroke churned the pools.
   const usedAssetKey = useStore((s) => {
     const sq = activeSequence(s.project)
@@ -217,7 +220,7 @@ export function Monitor() {
     prewarmPreview(list)
   }, [assets, usedAssetKey])
 
-  // No playheadS subscription — the timecode is an imperative leaf
+  // No playheadS subscription: the timecode is an imperative leaf
   // (PlayheadTimecode), so transport ticks never re-render the Monitor.
   const playing = useStore((s) => s.ui.playing)
   const loop = useStore((s) => s.ui.loop)
@@ -254,7 +257,7 @@ export function Monitor() {
         <div className="relative flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden">
           <canvas ref={canvasRef} data-testid="program-canvas" className="rounded-[2px] bg-black" />
           {safeMargins && <SafeMargins canvas={canvasRef.current} />}
-          {/* Click the picture to pause — every video player teaches this.
+          {/* Click the picture to pause; every video player teaches this.
               (Paused, the overlay's select layer handles click/scrub instead.) */}
           {playing && (
             <div
@@ -267,16 +270,16 @@ export function Monitor() {
           {!hasContent && (
             <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 text-center">
               <MonitorPlay size={28} strokeWidth={1.5} className="text-text-muted" aria-hidden />
-              <span className="text-[12px] text-text-muted">No media yet</span>
+              <span className="text-ui-sm text-text-muted">No media yet</span>
             </div>
           )}
         </div>
-        {/* Meter lives in its OWN column — never over the video. */}
+        {/* Meter lives in its OWN column, never over the video. */}
         <MasterMeter />
       </div>
 
       <div className="relative flex h-11 shrink-0 items-center gap-2 border-t border-border bg-bg-panel px-3">
-        <span data-testid="timecode" className="text-[12px] tabular-nums text-text-primary">
+        <span data-testid="timecode" className="font-numeric text-ui-sm text-text-primary">
           <PlayheadTimecode fps={seq.fps} editable testId="monitor-timecode" />
           <span className="text-text-muted"> / {formatTimecode(seq.durationS, seq.fps)}</span>
         </span>
@@ -302,6 +305,7 @@ export function Monitor() {
             onClick={togglePlay}
             disabled={!hasContent}
             data-testid="play-toggle"
+            className="text-text-primary!"
           >
             {playing ? <Pause size={16} strokeWidth={1.5} /> : <Play size={16} strokeWidth={1.5} />}
           </IconButton>
@@ -325,8 +329,8 @@ export function Monitor() {
           <select
             data-testid="format-select"
             aria-label="Aspect ratio"
-            title="Aspect ratio — 9:16 makes a vertical Shorts video"
-            className="h-6 rounded-[4px] border border-border bg-bg-input px-1.5 text-[11px] text-text-secondary focus:border-accent focus:outline-none"
+            title="Aspect ratio: 9:16 makes a vertical Shorts video"
+            className="h-7 cursor-default rounded-field border border-border bg-bg-input px-2 text-ui-sm text-text-secondary transition-colors duration-[120ms] hover:border-border-strong hover:text-text-primary focus:border-accent focus:outline-none"
             value={aspectKeyFor(seq.width, seq.height)}
             onChange={(e) => {
               const f = FORMATS.find((x) => x.key === e.target.value)
@@ -340,11 +344,12 @@ export function Monitor() {
             ))}
           </select>
           <IconButton
-            label="Loop playback — repeats the In/Out range"
+            label="Loop playback: repeats the In/Out range"
             shortcut="/"
             active={loop}
             onClick={toggleLoop}
             data-testid="loop-toggle"
+            className={loop ? 'bg-ember-quiet! text-ember!' : ''}
           >
             <Repeat size={16} strokeWidth={1.5} />
           </IconButton>
@@ -358,8 +363,8 @@ export function Monitor() {
           </IconButton>
           <select
             aria-label="Preview quality"
-            title="Preview quality — lower = smoother scrubbing on big footage. Never affects the export."
-            className="h-6 rounded-[4px] border border-border bg-bg-input px-1.5 text-[11px] text-text-secondary focus:border-accent focus:outline-none"
+            title="Preview quality: lower = smoother scrubbing on big footage. Never affects the export."
+            className="h-7 cursor-default rounded-field border border-border bg-bg-input px-2 text-ui-sm text-text-secondary transition-colors duration-[120ms] hover:border-border-strong hover:text-text-primary focus:border-accent focus:outline-none"
             value={String(quality)}
             onChange={(e) => setQuality(Number(e.target.value) as Quality)}
           >

@@ -29,19 +29,27 @@ interface Tf {
 }
 type Drag =
   | { mode: 'move'; startX: number; startY: number; startTf: Tf }
-  | { mode: 'scale'; startTf: Tf; cx: number; cy: number; startDist: number }
+  // axis: edge handles scale along the edge's outward normal (travel along the
+  // edge is ignored); corners omit it and use radial distance from center.
+  | { mode: 'scale'; startTf: Tf; cx: number; cy: number; startDist: number; axis?: { x: number; y: number } }
   | { mode: 'rotate'; startTf: Tf; cx: number; cy: number; startAngle: number }
 
 const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v)
 const ACCENT = 'var(--color-accent)'
+/** Barely-there lavender wash for the gizmo body, derived from the token. */
+const ACCENT_WASH = 'color-mix(in srgb, var(--color-accent) 6%, transparent)'
+/** Dark ink border keeps the light lavender handles legible on any footage. */
+const HANDLE_INK = 'var(--color-accent-fg)'
 /** Pointer travel before a monitor click becomes a scrub jog. */
 const SCRUB_SLOP_PX = 4
 
 /**
  * Direct-manipulation transform layer over the program monitor.
  * - Click a clip in the preview to SELECT it (click the black bars to deselect).
- * - The selected clip gets a box with 4 corner handles: drag the body to move,
- *   a corner to scale (uniform, about the clip center).
+ * - The selected clip gets a box with corner + edge handles: drag the body to
+ *   move, any handle to scale (uniform, about the clip center; the engine has
+ *   one scale channel, so aspect is always constrained). Shift snaps the scale
+ *   to 5% steps.
  * Live via a preview override; commits ONE undo step on release. Only active
  * while paused with content; the gizmo shows for a static (non-animated) clip
  * that is under the playhead.
@@ -67,7 +75,7 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
     if (!canvas) return
     const parent = canvas.parentElement
     if (!parent) return
-    // Recompute the overlay box when the canvas or its panel RESIZES — not on a
+    // Recompute the overlay box when the canvas or its panel RESIZES, not on a
     // per-frame rAF poll (rect reads every frame force needless layout work).
     const measure = (): void => {
       const cr = canvas.getBoundingClientRect()
@@ -133,7 +141,7 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
 
   // Drag anywhere on the picture to jog (full canvas width == whole sequence,
   // like scrubbing a video player); a click without travel selects instead.
-  // Writes only playheadS — every consumer is imperative, so the perf rule holds.
+  // Writes only playheadS; every consumer is imperative, so the perf rule holds.
   const selectAt = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return // right-click is handled by the context menu below
     const startX = e.clientX
@@ -203,7 +211,7 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
     )
   const onScreen = !!clip && playheadS >= clip.startS && playheadS < clipEndS(clip)
   // Adjustment layers have no transform in the render path (only effects/mask/
-  // opacity reach applyAdjustment) — a gizmo would commit undo steps that can
+  // opacity reach applyAdjustment), so a gizmo would commit undo steps that can
   // never change a pixel.
   const gizmoOn = !!clip && !clip.adjustment && track?.kind === 'video' && onScreen
 
@@ -261,6 +269,24 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
       [hx(minX), hy(maxY)],
     ]
     const cursors = ['nwse-resize', 'nesw-resize', 'nwse-resize', 'nesw-resize']
+    // Edge-midpoint scale handles (top/right/bottom/left). Each edge only
+    // shows when it has clearance between its two 24px corner targets, so a
+    // small clip never becomes overlapping-target soup.
+    const edgeRoomX = maxX - minX >= 40
+    const edgeRoomY = maxY - minY >= 40
+    const edgePts: {
+      x: number
+      y: number
+      cursor: string
+      axis: { x: number; y: number }
+      show: boolean
+      horiz: boolean
+    }[] = [
+      { x: hx((minX + maxX) / 2), y: hy(minY), cursor: 'ns-resize', axis: { x: 0, y: -1 }, show: edgeRoomX, horiz: true },
+      { x: hx(maxX), y: hy((minY + maxY) / 2), cursor: 'ew-resize', axis: { x: 1, y: 0 }, show: edgeRoomY, horiz: false },
+      { x: hx((minX + maxX) / 2), y: hy(maxY), cursor: 'ns-resize', axis: { x: 0, y: 1 }, show: edgeRoomX, horiz: true },
+      { x: hx(minX), y: hy((minY + maxY) / 2), cursor: 'ew-resize', axis: { x: -1, y: 0 }, show: edgeRoomY, horiz: false },
+    ]
 
     const apply = (next: Tf) => {
       tfRef.current = next
@@ -288,8 +314,15 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
           setCenterSnap({ x: sx, y: sy })
           apply({ ...drag.startTf, x, y })
         } else if (drag.mode === 'scale') {
-          const dist = Math.hypot(p.x - drag.cx, p.y - drag.cy)
-          apply({ ...drag.startTf, scale: clamp((drag.startTf.scale * dist) / drag.startDist, 0.05, 5) })
+          // Engine scale is uniform, so aspect stays constrained by
+          // construction on every handle. Shift snaps to 5% steps, the scale
+          // twin of Shift-rotate's 15 degree detents.
+          const dist = drag.axis
+            ? Math.max(1, (p.x - drag.cx) * drag.axis.x + (p.y - drag.cy) * drag.axis.y)
+            : Math.hypot(p.x - drag.cx, p.y - drag.cy)
+          let scale = clamp((drag.startTf.scale * dist) / drag.startDist, 0.05, 5)
+          if (ev.shiftKey) scale = clamp(Math.round(scale * 20) / 20, 0.05, 5)
+          apply({ ...drag.startTf, scale })
         } else {
           // Rotate about the clip center; Shift snaps to 15° increments.
           const ang = (Math.atan2(p.y - drag.cy, p.x - drag.cx) * 180) / Math.PI
@@ -335,14 +368,17 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
       const p = localPt(e.clientX, e.clientY)
       startDrag({ mode: 'move', startX: p.x, startY: p.y, startTf: tf })
     }
-    const beginScale = (e: ReactPointerEvent) => {
+    const beginScale = (e: ReactPointerEvent, axis?: { x: number; y: number }) => {
       if (e.button !== 0) return
       e.preventDefault()
       e.stopPropagation()
       const p = localPt(e.clientX, e.clientY)
       const cx = (seq.width / 2 + tf.x) * k
       const cy = (seq.height / 2 + tf.y) * k
-      startDrag({ mode: 'scale', startTf: tf, cx, cy, startDist: Math.max(1, Math.hypot(p.x - cx, p.y - cy)) })
+      const startDist = axis
+        ? Math.max(1, (p.x - cx) * axis.x + (p.y - cy) * axis.y)
+        : Math.max(1, Math.hypot(p.x - cx, p.y - cy))
+      startDrag({ mode: 'scale', startTf: tf, cx, cy, startDist, axis })
     }
     const beginRotate = (e: ReactPointerEvent) => {
       if (e.button !== 0) return
@@ -367,11 +403,28 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
             width: maxX - minX,
             height: maxY - minY,
             border: `1.5px solid ${ACCENT}`,
-            background: 'rgba(111,107,255,0.05)',
+            background: ACCENT_WASH,
           }}
           onPointerDown={beginMove}
           onContextMenu={contextAt}
         />
+        {/* Edges render BEFORE corners so a corner wins any hit-target overlap. */}
+        {edgePts.map((ep, i) =>
+          ep.show ? (
+            <div
+              key={i}
+              data-testid={`gizmo-edge-${i}`}
+              className="pointer-events-auto absolute flex h-6 w-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center"
+              style={{ left: ep.x, top: ep.y, cursor: ep.cursor }}
+              onPointerDown={(e) => beginScale(e, ep.axis)}
+            >
+              <div
+                className={`rounded-full border ${ep.horiz ? 'h-[6px] w-4' : 'h-4 w-[6px]'}`}
+                style={{ background: ACCENT, borderColor: HANDLE_INK }}
+              />
+            </div>
+          ) : null,
+        )}
         {handlePts.map(([x, y], i) => (
           // 24px invisible hit target wrapping a 12px visual handle.
           <div
@@ -381,12 +434,15 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
             style={{ left: x, top: y, cursor: cursors[i] }}
             onPointerDown={beginScale}
           >
-            <div className="h-3 w-3 rounded-[2px] border-2 border-white" style={{ background: ACCENT }} />
+            <div
+              className="h-3 w-3 rounded-[2px] border-2"
+              style={{ background: ACCENT, borderColor: HANDLE_INK }}
+            />
           </div>
         ))}
         {/* Rotate lollipop: 22px above top-center, on a stalk. */}
         <div
-          className="pointer-events-none absolute w-px bg-white/70"
+          className="pointer-events-none absolute w-px bg-accent/70"
           style={{ left: cxPx, top: hy(minY) - 22, height: 22 }}
         />
         <div
@@ -395,14 +451,18 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
           style={{ left: cxPx, top: hy(minY) - 22 }}
           onPointerDown={beginRotate}
         >
-          <div className="h-3 w-3 rounded-full border-2 border-white" style={{ background: ACCENT }} />
+          <div
+            className="h-3 w-3 rounded-full border-2"
+            style={{ background: ACCENT, borderColor: HANDLE_INK }}
+          />
         </div>
-        {/* Live readout while dragging. */}
+        {/* Live readout while dragging: same chip language as the timeline's
+            trim tooltip (elevated surface, mono digits), clamped into view. */}
         {dragTf && (
           <div
             data-testid="gizmo-readout"
-            className="pointer-events-none absolute rounded-[3px] bg-black/70 px-1.5 py-0.5 text-[10px] tabular-nums text-white"
-            style={{ left: minX, top: minY - 18 }}
+            className="pointer-events-none absolute rounded-[4px] border border-border bg-bg-elevated px-2 py-0.5 font-numeric text-dense text-text-primary shadow-pop"
+            style={{ left: Math.max(2, minX), top: Math.max(2, minY - 26) }}
           >
             X {Math.round(tf.x)} · Y {Math.round(tf.y)} · {Math.round(tf.scale * 100)}% · {Math.round(tf.rotationDeg)}°
           </div>
@@ -434,7 +494,7 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
         e.preventDefault()
         e.stopPropagation()
         const start = localPt(e.clientX, e.clientY)
-        // Null until an actual drag moves the box — a plain click must NOT align
+        // Null until an actual drag moves the box: a plain click must NOT align
         // every clip onto the primary (mirrors the single-clip gizmo's guard).
         let last: { x: number; y: number; scale: number; rotationDeg: number } | null = null
         const onMove = (ev: globalThis.PointerEvent) => {
@@ -470,7 +530,7 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
             width: maxX - minX,
             height: maxY - minY,
             border: `1.5px dashed ${ACCENT}`,
-            background: 'rgba(111,107,255,0.05)',
+            background: ACCENT_WASH,
           }}
           onPointerDown={beginMulti}
           title={`Drag to align all ${selection.length} selected clips to the same spot`}

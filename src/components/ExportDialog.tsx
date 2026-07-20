@@ -54,7 +54,7 @@ function evenFit(
 function buildResolutions(seqW: number, seqH: number): ResolutionPreset[] {
   // Orient the target boxes to the sequence: YouTube tiers a vertical video by
   // its SHORT edge, so a 9:16 Shorts timeline must upscale to 1440×2560 /
-  // 2160×3840 — the landscape boxes would give it no 1440p option at all and a
+  // 2160×3840 - the landscape boxes would give it no 1440p option at all and a
   // 1216-wide "2160p" that never reaches the promised tier.
   const portrait = seqH > seqW
   const box = (w: number, h: number): [number, number] => (portrait ? [h, w] : [w, h])
@@ -69,8 +69,8 @@ function buildResolutions(seqW: number, seqH: number): ResolutionPreset[] {
   const list: ResolutionPreset[] = [
     { key: 'seq', label: `Sequence (${full.width}×${full.height})`, ...full },
   ]
-  if (bigger(twoK)) list.push({ key: '2k', label: `1440p — sharper on YouTube (${twoK.width}×${twoK.height})`, ...twoK })
-  if (bigger(fourK)) list.push({ key: '4k', label: `2160p — best for YouTube (${fourK.width}×${fourK.height})`, ...fourK })
+  if (bigger(twoK)) list.push({ key: '2k', label: `1440p, sharper on YouTube (${twoK.width}×${twoK.height})`, ...twoK })
+  if (bigger(fourK)) list.push({ key: '4k', label: `2160p, best for YouTube (${fourK.width}×${fourK.height})`, ...fourK })
   list.push({ key: 'hd', label: `HD (${hd.width}×${hd.height})`, ...hd })
   list.push({ key: 'sd', label: `SD (${sd.width}×${sd.height})`, ...sd })
   return list
@@ -82,7 +82,7 @@ function buildResolutions(seqW: number, seqH: number): ResolutionPreset[] {
 // clean. "Maximum" is near-lossless (huge files) for archival.
 const BITRATES = [
   { key: 'youtube', label: 'YouTube (high quality)', value: null },
-  { key: 'max', label: 'Maximum (1:1 — near-lossless)', value: null },
+  { key: 'max', label: 'Maximum (1:1, near-lossless)', value: null },
   { key: 'high', label: 'High (24 Mbps)', value: 24_000_000 },
   { key: 'medium', label: 'Medium (12 Mbps)', value: 12_000_000 },
   { key: 'low', label: 'Low (5 Mbps)', value: 5_000_000 },
@@ -90,7 +90,7 @@ const BITRATES = [
 
 // GPU is fast but some GPUs emit B-frames the muxer can't handle (the export
 // crashes); software (openh264) never does. Auto uses the GPU and falls back to
-// software only if it actually crashes — so most people get GPU speed and nobody
+// software only if it actually crashes - so most people get GPU speed and nobody
 // hits the crash. The choice is remembered.
 type EncoderMode = 'auto' | 'gpu' | 'software'
 const ENCODER_KEY = 'reel:export:encoder'
@@ -142,7 +142,7 @@ function fmtSeconds(seconds: number): string {
 }
 
 function fmtEta(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds < 0) return '—'
+  if (!Number.isFinite(seconds) || seconds < 0) return '--'
   const s = Math.round(seconds)
   return s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`
 }
@@ -154,8 +154,8 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   const show = useToasts((s) => s.show)
 
   const resolutions = buildResolutions(seq.width, seq.height)
-  // Default to the 1440p upscale when it's offered (i.e. the timeline is ≤2K) —
-  // that's the YouTube sweet spot — else the native sequence size.
+  // Default to the 1440p upscale when it's offered (i.e. the timeline is ≤2K) -
+  // that's the YouTube sweet spot - else the native sequence size.
   const [resolutionKey, setResolutionKey] = useState<string>(
     () => (resolutions.some((r) => r.key === '2k') ? '2k' : 'seq'),
   )
@@ -180,6 +180,17 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
 
   const fileName = `${project.name.replace(/[^\w\- ]+/g, '').trim() || 'export'}.mp4`
   const running = stage.kind === 'running'
+
+  // Escape closes the dialog while idle; a running export never cancels from
+  // a stray keypress (the explicit Cancel button owns that).
+  useEffect(() => {
+    if (running) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [running, onClose])
 
   const start = async () => {
     const preset = resolutions.find((r) => r.key === effectiveResolutionKey) ?? resolutions[0]
@@ -248,7 +259,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
       } else {
         // Auto: fast GPU first; if THIS GPU emits B-frames the muxer can't mux,
         // silently retry on the software encoder (which never does). The GPU
-        // attempt crashes at the first B-frame — early — so little is wasted.
+        // attempt crashes at the first B-frame - early - so little is wasted.
         try {
           blob = await runExport('prefer-hardware')
         } catch (err) {
@@ -313,10 +324,10 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
         aria-modal="true"
         aria-label="Export"
         data-testid="export-dialog"
-        className="w-[420px] rounded-[6px] border border-border bg-bg-elevated shadow-pop"
+        className="w-[420px] rounded-dialog border border-border bg-bg-elevated shadow-pop"
       >
         <div className="flex h-11 items-center border-b border-border px-4">
-          <span className="text-[16px] font-semibold">Export</span>
+          <span className="text-ui font-semibold text-text-primary">Export</span>
           <span className="ml-auto">
             <IconButton label="Close" onClick={onClose} disabled={running}>
               <X size={16} strokeWidth={1.5} />
@@ -331,7 +342,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
               <select
                 data-testid="export-range"
                 aria-label="Export range"
-                className="h-7 w-56 rounded-[4px] border border-border bg-bg-input px-2 text-[12px] text-text-primary focus:border-accent focus:outline-none disabled:opacity-40"
+                className="h-7 w-56 rounded-field border border-border bg-bg-input px-2 text-[12px] text-text-primary focus:border-accent focus:outline-none disabled:opacity-40"
                 value={useWorkArea ? 'workArea' : 'sequence'}
                 disabled={!area.active}
                 onChange={(e) => setUseWorkArea(e.target.value === 'workArea')}
@@ -346,7 +357,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
               Resolution
               <select
                 data-testid="export-resolution"
-                className="h-7 w-56 rounded-[4px] border border-border bg-bg-input px-2 text-[12px] text-text-primary focus:border-accent focus:outline-none"
+                className="h-7 w-56 rounded-field border border-border bg-bg-input px-2 text-[12px] text-text-primary focus:border-accent focus:outline-none"
                 value={effectiveResolutionKey}
                 onChange={(e) => setResolutionKey(e.target.value)}
               >
@@ -361,7 +372,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
               Bitrate
               <select
                 data-testid="export-bitrate"
-                className="h-7 w-56 rounded-[4px] border border-border bg-bg-input px-2 text-[12px] text-text-primary focus:border-accent focus:outline-none"
+                className="h-7 w-56 rounded-field border border-border bg-bg-input px-2 text-[12px] text-text-primary focus:border-accent focus:outline-none"
                 value={bitrateKey}
                 onChange={(e) => setBitrateKey(e.target.value)}
               >
@@ -376,8 +387,8 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
               Encoder
               <select
                 data-testid="export-encoder"
-                title="GPU is fastest; some GPUs crash the export — Software always works. Auto tries GPU, falls back to Software."
-                className="h-7 w-56 rounded-[4px] border border-border bg-bg-input px-2 text-[12px] text-text-primary focus:border-accent focus:outline-none"
+                title="GPU is fastest; some GPUs crash the export, Software always works. Auto tries GPU, falls back to Software."
+                className="h-7 w-56 rounded-field border border-border bg-bg-input px-2 text-[12px] text-text-primary focus:border-accent focus:outline-none"
                 value={encoder}
                 onChange={(e) => {
                   const m = e.target.value as EncoderMode
@@ -399,12 +410,12 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
               </span>
             </div>
             <p className="text-[11px] leading-4 text-text-muted">
-              Encoded locally with WebCodecs — your footage never leaves this machine.
+              Encoded locally with WebCodecs; your footage never leaves this machine.
             </p>
             {effectiveResolutionKey === '2k' || effectiveResolutionKey === '4k' ? (
               <p className="text-[11px] leading-4 text-accent">
                 Uploading at a higher resolution than your timeline makes YouTube encode it in
-                its higher-bitrate tier — noticeably cleaner, even watched at 1080p.
+                its higher-bitrate tier: noticeably cleaner, even watched at 1080p.
               </p>
             ) : null}
             <div className="mt-1 flex justify-end gap-2">
@@ -427,16 +438,19 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
         {stage.kind === 'running' && (
           <div className="flex flex-col gap-3 p-4" data-testid="export-progress">
             <div className="flex items-center justify-between text-[12px]">
-              <span className="capitalize text-text-secondary">{stage.progress.phase}…</span>
-              <span className="tabular-nums text-text-primary">{pct}%</span>
+              <span className="flex items-center gap-1.5 capitalize text-ember">
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-ember" aria-hidden />
+                {stage.progress.phase}…
+              </span>
+              <span className="font-numeric text-text-primary">{pct}%</span>
             </div>
             <div className="h-1.5 overflow-hidden rounded-full bg-bg-input">
               <div
-                className="h-full rounded-full bg-accent transition-[width] duration-[120ms] ease-out"
+                className="h-full rounded-full bg-ember transition-[width] duration-[120ms] ease-out"
                 style={{ width: `${pct}%` }}
               />
             </div>
-            <div className="flex items-center justify-between text-[11px] tabular-nums text-text-muted">
+            <div className="flex items-center justify-between font-numeric text-[11px] text-text-muted">
               <span>
                 {stage.progress.framesDone} / {stage.progress.framesTotal} frames
               </span>

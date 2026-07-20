@@ -1,10 +1,10 @@
-// The Captions dialog — the two non-Whisper roads to word captions:
-//   Paste  — a word-timed JSON list or an SRT (exact timings win).
-//   Tap    — type the script, press Start, tap Enter on each word as the
+// The Captions dialog - the two non-Whisper roads to word captions:
+//   Paste  - a word-timed JSON list or an SRT (exact timings win).
+//   Tap    - type the script, press Start, tap Enter on each word as the
 //            voiceover plays; taps become the word timings.
 // Both funnel into addCaptionsFromWords, same as Auto-Caption.
 
-import { Sparkles } from 'lucide-react'
+import { Sparkles, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import {
   CAPTION_LANGUAGES,
@@ -20,7 +20,7 @@ import { pausePlayback, togglePlay } from '../state/playbackControl'
 import { useStore } from '../state/store'
 import { builtinTextPresets, useTextPresets, type TextStylePreset } from '../state/textPresets'
 import { autoCaptionFromClip } from '../state/transcribeActions'
-import { Button } from '../ui/Button'
+import { Button, IconButton } from '../ui/Button'
 
 /** The voiceover clip Auto-Caption should target. Priority: the clip you have
  * SELECTED (so picking a clip then captioning does what you expect), then the
@@ -119,10 +119,22 @@ export function CaptionsDialog({ onClose }: { onClose: () => void }) {
   // Leaving the dialog mid-run must not leave the transport playing.
   useEffect(() => () => pausePlayback(), [])
 
+  // Escape closes the dialog whenever a tap run is not consuming the keys
+  // (the tap handler above intercepts Escape on capture to cancel the run).
+  const tappingNow = tapWords !== null
+  useEffect(() => {
+    if (tappingNow) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [tappingNow, onClose])
+
   const applyPaste = () => {
     const words = parseTranscript(text)
     if (!words || words.length === 0) {
-      setError('Could not read that — paste a JSON word list or an SRT.')
+      setError('Could not read that. Paste a JSON word list or an SRT.')
       return
     }
     addCaptionsFromWords(words, { label: 'Captions from transcript', preset })
@@ -132,7 +144,7 @@ export function CaptionsDialog({ onClose }: { onClose: () => void }) {
   const startTapping = () => {
     const words = text.split(/\s+/).filter(Boolean)
     if (words.length === 0) {
-      setError('Type the script first — one tap per word.')
+      setError('Type the script first. One tap per word.')
       return
     }
     setError(null)
@@ -157,10 +169,10 @@ export function CaptionsDialog({ onClose }: { onClose: () => void }) {
         aria-modal="true"
         aria-label="Captions"
         data-testid="captions-dialog"
-        className="w-[460px] rounded-[6px] border border-border bg-bg-elevated shadow-pop"
+        className="w-[460px] rounded-dialog border border-border bg-bg-elevated shadow-pop"
       >
         <div className="flex h-11 items-center gap-2 border-b border-border px-4">
-          <span className="text-[13px] font-medium text-text-primary">Captions</span>
+          <span className="text-ui font-semibold text-text-primary">Captions</span>
           <div role="tablist" className="ml-2 flex items-center gap-1">
             {(['paste', 'tap'] as Mode[]).map((m) => (
               <button
@@ -180,18 +192,14 @@ export function CaptionsDialog({ onClose }: { onClose: () => void }) {
               </button>
             ))}
           </div>
-          <button
-            type="button"
-            aria-label="Close"
-            disabled={tapping}
-            onClick={onClose}
-            className="ml-auto rounded-[3px] px-1.5 text-[14px] text-text-muted hover:text-text-primary"
-          >
-            ×
-          </button>
+          <span className="ml-auto">
+            <IconButton label="Close" disabled={tapping} onClick={onClose}>
+              <X size={16} strokeWidth={1.5} />
+            </IconButton>
+          </span>
         </div>
 
-        {/* The #1 Jettism step, front and center — right-click was its only
+        {/* The #1 Jettism step, front and center - right-click was its only
             home before, which made the flagship feature invisible. */}
         {!tapping && (
           <div className="flex items-center gap-2 border-b border-border px-4 py-3">
@@ -211,7 +219,7 @@ export function CaptionsDialog({ onClose }: { onClose: () => void }) {
             </Button>
             <span className="text-[10px] text-text-muted">
               {findVoClipId()
-                ? 'Local Whisper — word captions land automatically.'
+                ? 'Local Whisper; word captions land automatically.'
                 : 'Add an audio clip with sound first.'}
             </span>
           </div>
@@ -224,7 +232,7 @@ export function CaptionsDialog({ onClose }: { onClose: () => void }) {
               data-testid="captions-preset"
               value={presetId}
               onChange={(e) => setPresetId(e.target.value)}
-              className="ml-auto h-6 w-[190px] cursor-default rounded-[4px] bg-bg-input px-1.5 text-[11px] text-text-primary"
+              className="ml-auto h-6 w-[190px] cursor-default rounded-field border border-border bg-bg-input px-1.5 text-[11px] text-text-primary focus:border-accent focus:outline-none"
             >
               <option value="">Plain (no styling)</option>
               {presets.map((p) => (
@@ -247,7 +255,7 @@ export function CaptionsDialog({ onClose }: { onClose: () => void }) {
                 setLanguage(v)
                 setCaptionLanguage(v) // persists; the clip right-click path reads it too
               }}
-              className="ml-auto h-6 w-[190px] cursor-default rounded-[4px] bg-bg-input px-1.5 text-[11px] text-text-primary"
+              className="ml-auto h-6 w-[190px] cursor-default rounded-field border border-border bg-bg-input px-1.5 text-[11px] text-text-primary focus:border-accent focus:outline-none"
             >
               {CAPTION_LANGUAGES.map((l) => (
                 <option key={l.value} value={l.value}>
@@ -277,9 +285,9 @@ export function CaptionsDialog({ onClose }: { onClose: () => void }) {
                   setError(null)
                 }}
                 rows={7}
-                placeholder={mode === 'paste' ? PASTE_HINT : 'Type the voiceover script — one tap per word.'}
+                placeholder={mode === 'paste' ? PASTE_HINT : 'Type the voiceover script. One tap per word.'}
                 data-testid="captions-text"
-                className="w-full resize-none rounded-[4px] bg-bg-input p-2 font-mono text-[11px] text-text-primary placeholder:text-text-muted"
+                className="w-full resize-none rounded-field border border-border bg-bg-input p-2 font-mono text-[11px] text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
               />
               {error && <div className="text-[11px] text-danger">{error}</div>}
               <div className="flex items-center gap-2">

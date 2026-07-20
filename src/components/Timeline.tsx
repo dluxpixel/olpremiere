@@ -116,9 +116,23 @@ const HEADERS_W = 178
 const SNAP_PX = 8
 /** Pointer travel below this is a click (move playhead), not a clip drag. */
 const CLICK_SLOP_PX = 4
+
+/**
+ * Signed gesture delta for the live drag readout: compact timecode plus total
+ * frames, e.g. "+00:00:12 / +14f". ASCII sign only. The hours group is dropped
+ * (deltas that long do not happen in hand edits) so the tip stays glanceable.
+ */
+const fmtDelta = (deltaS: number, fps: number): string => {
+  const fpsInt = Math.max(1, Math.round(fps))
+  const frames = Math.round(Math.abs(deltaS) * fpsInt)
+  const sign = deltaS < 0 ? '-' : '+'
+  const tc = formatTimecode(Math.abs(deltaS), fps)
+  const shown = tc.startsWith('00:') ? tc.slice(3) : tc
+  return `${sign}${shown} / ${sign}${frames}f`
+}
 // The add-track button row lives at the bottom of the HEADERS column. The lanes
 // column carries a spacer of the SAME height so both columns scroll to the same
-// depth — otherwise, with many tracks, the buttons sit below the lanes' scroll
+// depth - otherwise, with many tracks, the buttons sit below the lanes' scroll
 // range and become unreachable.
 const ADD_TRACK_ROW_H = 46
 
@@ -158,7 +172,7 @@ function Ruler({ contentWidth, lengthS }: { contentWidth: number; lengthS: numbe
       {majors.map((t) => (
         <div key={t} className="absolute bottom-0 top-0" style={{ left: t * pxPerS }}>
           <div className="absolute bottom-0 h-2.5 w-px bg-border-strong" />
-          <span className="absolute left-1 top-1 text-[11px] tabular-nums text-text-muted">
+          <span className="absolute left-1 top-1 font-numeric text-[11px] text-text-muted">
             {rulerLabel(t, fps, majorStepS)}
           </span>
           {[1, 2, 3, 4].map((i) => (
@@ -179,7 +193,7 @@ function Ruler({ contentWidth, lengthS }: { contentWidth: number; lengthS: numbe
 
 /**
  * Range control that commits ONE undoable value on release (pointer-up / key-up
- * / blur), previewing locally during a drag — so dragging is never an undo
+ * / blur), previewing locally during a drag - so dragging is never an undo
  * flood. Double-click resets to `resetTo`.
  */
 function Fader({
@@ -232,15 +246,15 @@ function Fader({
 
 const AUTO_LEVELS: { key: AutoLevel; label: string }[] = [
   { key: 'off', label: 'Off' },
-  { key: 'low', label: 'Low — gentle' },
+  { key: 'low', label: 'Low (gentle)' },
   { key: 'medium', label: 'Medium' },
-  { key: 'high', label: 'High — strong' },
+  { key: 'high', label: 'High (strong)' },
 ]
 
 const AUDIO_ROLES: { key: Track['audioRole']; label: string }[] = [
   { key: undefined, label: 'None' },
-  { key: 'voice', label: 'Voiceover — drives ducking' },
-  { key: 'music', label: 'Music — ducks under voice' },
+  { key: 'voice', label: 'Voiceover (drives ducking)' },
+  { key: 'music', label: 'Music (ducks under voice)' },
 ]
 
 function TrackHeader({ track }: { track: Track }) {
@@ -277,10 +291,15 @@ function TrackHeader({ track }: { track: Track }) {
         <span className="flex-1 text-[11px] font-medium uppercase tracking-[0.06em] text-text-secondary">
           {track.name}
         </span>
+        {/* Mute and solo carry their own signal colors (danger red, ember)
+            instead of the stock lavender active, so a silenced or soloed
+            track reads from across the room. Inline style wins over the
+            IconButton's own active classes deterministically. */}
         <IconButton
           size="compact"
           label={track.muted ? 'Unmute track' : 'Mute track'}
           active={track.muted}
+          style={track.muted ? { color: 'var(--color-danger)', background: 'rgba(255, 97, 85, 0.15)' } : undefined}
           onClick={() => toggle('muted', `${track.muted ? 'Unmute' : 'Mute'} ${track.name}`)}
         >
           {track.muted ? (
@@ -293,6 +312,7 @@ function TrackHeader({ track }: { track: Track }) {
           size="compact"
           label={track.solo ? 'Unsolo track' : 'Solo track'}
           active={track.solo}
+          style={track.solo ? { color: 'var(--color-ember)', background: 'var(--color-ember-quiet)' } : undefined}
           onClick={() => toggle('solo', `${track.solo ? 'Unsolo' : 'Solo'} ${track.name}`)}
         >
           <Headphones size={14} strokeWidth={1.5} />
@@ -418,7 +438,7 @@ function TimelineToolbar({ onZoomFit }: { onZoomFit: () => void }) {
       <div className="mx-1.5 h-4 w-px bg-border" />
       <IconButton
         size="compact"
-        label="Snapping"
+        label={snapping ? 'Snapping on' : 'Snapping off'}
         shortcut="S"
         active={snapping}
         onClick={() => setUI({ snapping: !snapping })}
@@ -463,7 +483,7 @@ function TimelineToolbar({ onZoomFit }: { onZoomFit: () => void }) {
       </IconButton>
 
       <div className="ml-auto flex items-center gap-1.5">
-        <PlayheadTimecode fps={fps} className="mr-2 text-[11px] tabular-nums text-text-secondary" />
+        <PlayheadTimecode fps={fps} className="mr-2 font-numeric text-[11px] text-text-secondary" />
         <IconButton size="compact" label="Zoom out" shortcut="-" onClick={zoomOut}>
           <ZoomOut size={14} strokeWidth={1.5} />
         </IconButton>
@@ -476,7 +496,7 @@ function TimelineToolbar({ onZoomFit }: { onZoomFit: () => void }) {
           step={0.01}
           value={Math.log2(pxPerS)}
           onChange={(e) =>
-            // The toolbar renders outside the lanes component — route through
+            // The toolbar renders outside the lanes component - route through
             // the same anchored-zoom event the keymap uses.
             window.dispatchEvent(
               new CustomEvent('reel:zoom', { detail: { pxPerS: 2 ** Number(e.target.value) } }),
@@ -513,6 +533,13 @@ interface ClipViewProps {
   selected: boolean
   /** Locked tracks reject every mutation, including effect/transition drops. */
   locked: boolean
+  /**
+   * False when a non-select tool is active or the track is locked: the trim
+   * zones and fade dots hide, so the cursor never advertises a gesture the
+   * pointer-down handlers would refuse. Also lets razor/hand presses land on
+   * the clip itself instead of being swallowed by an edge handle.
+   */
+  interactive: boolean
   /** One-shot accent pulse for a genuinely NEW clip. With virtualization a
    *  mount can also be a scroll-in, so newness is decided by the parent. */
   pop: boolean
@@ -525,7 +552,7 @@ interface ClipViewProps {
 }
 
 // Memoized: during a drag, previewSeq re-renders the lane tree every
-// pointermove, but the engine preserves object identity for untouched clips —
+// pointermove, but the engine preserves object identity for untouched clips -
 // so with stable handler props, every clip NOT being dragged skips its render
 // (filmstrip, waveform, fades and all). This is the big drag-feel win on
 // caption-heavy timelines.
@@ -537,6 +564,7 @@ const ClipView = memo(function ClipView({
   pxPerS,
   selected,
   locked,
+  interactive,
   pop,
   onClipPointerDown,
   onTrimPointerDown,
@@ -684,14 +712,17 @@ const ClipView = memo(function ClipView({
       data-clip-id={clip.id}
       data-clip-kind={kind}
       // A one-shot accent pulse for a genuinely new clip (add / paste / undo-
-      // restore). Mount is NOT meaningful anymore — virtualization remounts
-      // clips as they scroll in — so the parent decides newness by id.
-      className={`group/clip absolute bottom-[3px] top-[3px] ${pop ? 'animate-[clip-pop_500ms_ease-out]' : ''} overflow-hidden rounded-[6px] border ${
+      // restore). Mount is NOT meaningful anymore - virtualization remounts
+      // clips as they scroll in - so the parent decides newness by id.
+      // Family look: flat fill, a dark hairline seam (so butted cuts stay
+      // visible), and a brighter 1px TOP edge in the family color. Selection
+      // is a 2px lavender ring plus a slight lift in fill luminance.
+      className={`group/clip absolute bottom-[3px] top-[3px] ${pop ? 'animate-[clip-pop_500ms_ease-out]' : ''} overflow-hidden rounded-clip border border-black/40 ${
         // Selection lifts the clip (offset ring + brightness); an imminent FX
-        // drop is an INSET ring — the two states must never look alike.
+        // drop is an INSET ring - the two states must never look alike.
         selected ? 'ring-2 ring-accent ring-offset-1 ring-offset-bg-app brightness-110' : ''
       } ${clip.enabled ? '' : 'opacity-40'} ${fxDropHot ? 'ring-2 ring-inset ring-accent-hover' : ''}`}
-      style={{ left, width, background: bg, borderColor: bd }}
+      style={{ left, width, background: bg, borderTopColor: bd }}
       onPointerDown={(e) => onClipPointerDown(e, clip)}
       onContextMenu={(e) => onClipContextMenu(e, clip)}
       onDragOver={fxDragOver}
@@ -731,9 +762,12 @@ const ClipView = memo(function ClipView({
           />
         )
       )}
-      {/* Scrim under the name: a 1px text-shadow can't hold 11px text over
-          bright footage frames. */}
-      <div className="pointer-events-none absolute inset-x-0 top-0 h-4 bg-gradient-to-b from-black/60 to-transparent" />
+      {/* Solid name strip, only over footage imagery: a text-shadow alone
+          can't hold 11px text over bright frames, and flat family fills must
+          stay flat (no gradients anywhere). */}
+      {width > 48 && (strip || thumb) && (
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-[15px] bg-black/45" />
+      )}
       <span className="pointer-events-none absolute left-1.5 right-1.5 top-0.5 truncate text-[11px] font-medium text-white/90 [text-shadow:0_1px_2px_rgba(0,0,0,0.6)]">
         {label}
       </span>
@@ -761,9 +795,9 @@ const ClipView = memo(function ClipView({
         </svg>
       )}
 
-      {/* Fade dots share the clip's corners with the trim zones — on narrow
+      {/* Fade dots share the clip's corners with the trim zones - on narrow
           clips they'd fight for the same pixels, so they step aside. */}
-      {width >= 32 && (
+      {width >= 32 && interactive && (
         <>
           <div
             data-testid="fade-in-handle"
@@ -789,10 +823,10 @@ const ClipView = memo(function ClipView({
       )}
 
       {/* Trim zones shrink on short clips so at least half the body stays
-          grabbable — a 0.2s SFX at default zoom is 12px wide, and two fixed
+          grabbable - a 0.2s SFX at default zoom is 12px wide, and two fixed
           6px handles used to swallow it whole. Below ~10px, trim by keyboard
           (Q/W) or zoom in; the whole clip is for moving. */}
-      {width >= 10 && (
+      {width >= 10 && interactive && (
         <>
           <div
             data-testid="trim-in"
@@ -823,7 +857,7 @@ const ClipView = memo(function ClipView({
 
 /**
  * A stable-identity wrapper around a fresh-every-render closure. The returned
- * function never changes, but always calls the latest closure — what memoized
+ * function never changes, but always calls the latest closure - what memoized
  * children need from handler props without threading useCallback dependency
  * lists through the Timeline's very large drag closures.
  */
@@ -845,7 +879,7 @@ type Drag =
       /**
        * The REST of a multi-selection (one entry per link group, original
        * startS at grab time): grabbing one selected clip moves them all,
-       * matching Alt+Arrow nudge — anything else silently destroys the
+       * matching Alt+Arrow nudge - anything else silently destroys the
        * selection's relative timing.
        */
       others: { id: Id; startS0: number }[]
@@ -861,15 +895,15 @@ type Drag =
   /** Alt+edge-drag: retime the clip (speed changes, source in/out stay put). */
   | { kind: 'stretch'; clipId: Id; edge: 'in' | 'out' }
   | { kind: 'slip'; clipId: Id; startXPx: number }
-  /** Ctrl+Alt+edge-drag: roll the shared cut — both outer ends stay fixed. */
+  /** Ctrl+Alt+edge-drag: roll the shared cut - both outer ends stay fixed. */
   | { kind: 'roll'; leftId: Id; rightId: Id }
-  /** Ctrl+Alt+body-drag: slide the clip — neighbours absorb, totals preserved. */
+  /** Ctrl+Alt+body-drag: slide the clip - neighbours absorb, totals preserved. */
   | { kind: 'slide'; clipId: Id; grabOffsetS: number; neighborIds: Id[] }
   | { kind: 'scrub' }
   /**
    * Shift/Ctrl+drag on empty lane space: rubber-band select. Content
    * coordinates. `additive` (Ctrl/Cmd) unions the rectangle's hits onto `base`
-   * — the selection that existed when the drag began — so you can build a
+   * - the selection that existed when the drag began - so you can build a
    * selection up in passes, exactly like dragging a box on the desktop.
    */
   | { kind: 'marquee'; x0: number; y0: number; additive: boolean; base: Id[] }
@@ -878,7 +912,7 @@ type Drag =
 /**
  * Footer bookmark: save the CURRENT track layout as the template every new
  * project/sequence starts from (state/trackTemplate.ts). `saved` only steers
- * the tooltip — the template itself lives in localStorage, so it seeds from
+ * the tooltip - the template itself lives in localStorage, so it seeds from
  * there and a second click simply overwrites.
  */
 function SaveTrackTemplateButton() {
@@ -890,7 +924,7 @@ function SaveTrackTemplateButton() {
       aria-label="Save track setup as default for new videos"
       title={
         saved
-          ? 'A track setup is already saved for new videos — click to overwrite it with the current tracks'
+          ? 'A track setup is already saved for new videos. Click to overwrite it with the current tracks'
           : 'Save track setup as default for new videos'
       }
       className="flex shrink-0 items-center justify-center rounded-[4px] border border-border px-1.5 py-1 text-[11px] font-medium text-text-secondary transition-colors duration-[120ms] hover:border-border-strong hover:bg-bg-elevated hover:text-text-primary"
@@ -913,7 +947,7 @@ export function Timeline({ height }: { height: number }) {
   const pxPerS = useStore((s) => s.ui.pxPerS)
   // DELIBERATELY no playheadS subscription: the transport ticks it every frame,
   // and a hook here re-renders this whole component tree at the display refresh
-  // rate — the old "laggy preview". Handlers read it via useStore.getState();
+  // rate - the old "laggy preview". Handlers read it via useStore.getState();
   // the red line + timecodes are imperative leaves (PlayheadWidgets).
   const playing = useStore((s) => s.ui.playing)
   const snapping = useStore((s) => s.ui.snapping)
@@ -925,8 +959,8 @@ export function Timeline({ height }: { height: number }) {
   /**
    * Had the user singled this clip out BEFORE grabbing its edge? Selecting ONE
    * half of a linked A/V pair and trimming it means "trim just this clip", so
-   * shortening the audio no longer shortens the video. With nothing selected —
-   * or the whole pair selected — the edge still trims the pair together, which
+   * shortening the audio no longer shortens the video. With nothing selected -
+   * or the whole pair selected - the edge still trims the pair together, which
    * IS the point of the link. Must be read before the grab's own select().
    */
   const soloTrimIntent = (clipId: Id): boolean =>
@@ -936,7 +970,7 @@ export function Timeline({ height }: { height: number }) {
 
   /**
    * Trimming never touches linkId, so a solo-trimmed pair stays linked and keeps
-   * moving together — only their lengths differ.
+   * moving together - only their lengths differ.
    */
   const trimFnFor = (solo: boolean, ripple: boolean) => {
     if (solo) return ripple ? rippleTrimTo : trimClipTo
@@ -966,7 +1000,7 @@ export function Timeline({ height }: { height: number }) {
   // on right-button release so a drag-select never pops a menu.
   const rightMarqueeRef = useRef(false)
   // Timestamp of the last right-drag select. The contextmenu fired by that drag
-  // is swallowed only if it lands within SUPPRESS_MS — a timestamp (not a bare
+  // is swallowed only if it lands within SUPPRESS_MS - a timestamp (not a bare
   // flag) so a stale suppression can never block a later, legit right-click.
   const suppressContextRef = useRef(0)
 
@@ -1057,7 +1091,7 @@ export function Timeline({ height }: { height: number }) {
     // moves together, so the partner's stale edges must not magnetize the
     // gesture back onto itself. Roll/slide pass every clip whose edges ARE the
     // gesture's own origin (left+right of the cut; the slid clip + neighbours)
-    // — otherwise the origin stays a snap magnet and fine adjustments no-op.
+    // - otherwise the origin stays a snap magnet and fine adjustments no-op.
     const seeds = excludeClipId === undefined ? [] : Array.isArray(excludeClipId) ? excludeClipId : [excludeClipId]
     const excludeClipIds = seeds.length > 0 ? seeds.flatMap((id) => clipGroupIds(seq, id)) : undefined
     const points = collectSnapPoints(seq, {
@@ -1070,7 +1104,7 @@ export function Timeline({ height }: { height: number }) {
   }
 
   // Zoom re-anchors scrollLeft in the SAME event as the pxPerS change, so the
-  // virtualization window must be re-measured synchronously too — the async
+  // virtualization window must be re-measured synchronously too - the async
   // scroll-event measure lands after paint, and one frame culled against the
   // stale scrollLeft blanks every visible clip.
   const measureViewportNow = () => {
@@ -1097,7 +1131,7 @@ export function Timeline({ height }: { height: number }) {
   }
 
   // Keyboard / toolbar / slider zoom: anchor on the playhead when it's in
-  // view, else the viewport center — zooming must never slide the thing you
+  // view, else the viewport center - zooming must never slide the thing you
   // are looking at out of the window (raw setUI({pxPerS}) drifts toward t=0).
   const zoomTo = (nextRaw: number) => {
     const el = lanesRef.current
@@ -1180,7 +1214,7 @@ export function Timeline({ height }: { height: number }) {
       const before = el2.scrollLeft
       programmaticScroll.current = true
       el2.scrollLeft = Math.max(0, before + sp)
-      // At the rail ends nothing moved — don't spin the loop for free.
+      // At the rail ends nothing moved - don't spin the loop for free.
       if (el2.scrollLeft === before) {
         edgeScrollRaf.current = null
         return
@@ -1195,7 +1229,7 @@ export function Timeline({ height }: { height: number }) {
   useEffect(() => stopEdgeScroll, [])
 
   // Move the grabbed clip's group to tS, then shift every other selected
-  // group by the same delta on its own track — direction-ordered so earlier
+  // group by the same delta on its own track - direction-ordered so earlier
   // moves never collide with clips that are themselves about to move (the
   // same trick as nudgeSelection). ONE sequence in, one out: preview and the
   // single-dispatch commit share it byte-for-byte.
@@ -1269,7 +1303,7 @@ export function Timeline({ height }: { height: number }) {
       return
     }
     // Multi-selection: carry every OTHER selected unlocked clip (deduped by
-    // link group — moveGroup moves partners) so the whole selection travels.
+    // link group - moveGroup moves partners) so the whole selection travels.
     const selNow = useStore.getState().ui.selection
     const others: { id: Id; startS0: number }[] = []
     if (selNow.includes(clip.id) && selNow.length > 1) {
@@ -1297,7 +1331,7 @@ export function Timeline({ height }: { height: number }) {
 
   const handleClipContextMenu = (e: ReactMouseEvent<HTMLDivElement>, clip: Clip) => {
     // A right-drag box-select that happened to end over a clip must NOT open the
-    // clip menu — swallow this one contextmenu (only if it's fresh). 0 is the
+    // clip menu - swallow this one contextmenu (only if it's fresh). 0 is the
     // "nothing pending" sentinel and must never suppress: with no guard, every
     // right-click during the first 500ms after navigation (performance.now()
     // still < 500) would be swallowed.
@@ -1377,11 +1411,11 @@ export function Timeline({ height }: { height: number }) {
           ]
         : []
 
-    // "How it appears" — font/size quick-picks + entrance/exit/speed animation,
+    // "How it appears" - font/size quick-picks + entrance/exit/speed animation,
     // TITLE clips only (video animates via transitions + the Motion submenu).
     // All compile to keyframes (preview == export). Shared with the
     // preview-monitor menu via state/clipMenus.
-    // Both target the selected TITLES — so right-clicking one of several
+    // Both target the selected TITLES - so right-clicking one of several
     // selected captions applies to all, and video clips inside a mixed
     // selection are left alone.
     const titleMenuIds = titleIdsSel.length > 1 ? titleIdsSel : [clip.id]
@@ -1397,7 +1431,7 @@ export function Timeline({ height }: { height: number }) {
       titleIdsSel.length > 1
         ? [
             {
-              label: `Style preset — all ${titleIdsSel.length}`,
+              label: `Style preset (all ${titleIdsSel.length})`,
               separator: true,
               submenu: [
                 ...allTextPresets().map((p) => ({
@@ -1465,7 +1499,7 @@ export function Timeline({ height }: { height: number }) {
       },
       {
         // TWO deletes, not three (David, 2026-07-18): Delete is selection-
-        // scoped (deleteScoped — an audio half goes alone, a video clip takes
+        // scoped (deleteScoped - an audio half goes alone, a video clip takes
         // its pair), which retired the enumerated "Delete audio only (keep
         // video)" / "Delete video only" items. The label says which it'll be.
         label: keepSelection
@@ -1526,7 +1560,7 @@ export function Timeline({ height }: { height: number }) {
     setUI({ selection: [clip.id] })
     dragFinal.current = null
     // Edge modifiers: Ctrl = ripple trim, Alt = rate stretch, Ctrl+Alt = roll.
-    // Roll is checked FIRST — a Ctrl+Alt press satisfies both single checks.
+    // Roll is checked FIRST - a Ctrl+Alt press satisfies both single checks.
     if ((e.ctrlKey || e.metaKey) && e.altKey) {
       const idx = track.clips.findIndex((c) => c.id === clip.id)
       const neighbor = edge === 'out' ? track.clips[idx + 1] : track.clips[idx - 1]
@@ -1538,14 +1572,14 @@ export function Timeline({ height }: { height: number }) {
         })
         return
       }
-      // No neighbour to roll against — fall through to a plain trim.
+      // No neighbour to roll against - fall through to a plain trim.
     }
     if (e.altKey && !(e.ctrlKey || e.metaKey)) {
       beginDrag(e, { kind: 'stretch', clipId: clip.id, edge })
       return
     }
     // `!e.altKey` keeps the no-neighbour Ctrl+Alt fallthrough a PLAIN trim, as
-    // documented above — Ctrl alone still means ripple.
+    // documented above - Ctrl alone still means ripple.
     beginDrag(e, {
       kind: 'trim',
       clipId: clip.id,
@@ -1582,7 +1616,7 @@ export function Timeline({ height }: { height: number }) {
     else if (tool === 'select') {
       // Shift OR Ctrl/Cmd + drag = rubber-band select; plain click/drag =
       // scrub (Vegas). Ctrl/Cmd is additive (matches desktop box-select), Shift
-      // replaces — so either modifier lets you "click and drag to select
+      // replaces - so either modifier lets you "click and drag to select
       // multiple", the way David expects it to work.
       if (e.shiftKey || e.ctrlKey || e.metaKey) {
         const { x, y } = contentPoint(e)
@@ -1730,54 +1764,69 @@ export function Timeline({ height }: { height: number }) {
       const hovered = laneAt(y)
       const valid = !!hovered && hovered.kind === drag.trackKind && !hovered.locked
       const target = valid ? hovered! : current
-      // Tint the lane you're over — green ok, red no (wrong kind / locked).
+      // Tint the lane you're over - green ok, red no (wrong kind / locked).
       setHoverLane(hovered && hovered.id !== current.id ? { trackId: hovered.id, valid } : null)
-      dragFinal.current = { trackId: target.id, tS: Math.max(0, desired) }
-      setPreviewSeq(moveSelectionWith(seq, drag.clipId, target.id, Math.max(0, desired), drag.others))
+      const finalT = Math.max(0, desired)
+      dragFinal.current = { trackId: target.id, tS: finalT }
+      // Moves get the live readout too: new start timecode + signed delta.
+      // Suppressed inside the click slop so a plain click never flashes it.
+      if (Math.hypot(e.clientX - drag.downClientX, e.clientY - drag.downClientY) >= CLICK_SLOP_PX) {
+        setTrimTip({
+          x: e.clientX,
+          y: e.clientY - 34,
+          text: `Move  ${formatTimecode(finalT, seq.fps)}  ${fmtDelta(finalT - clip.startS, seq.fps)}`,
+        })
+      }
+      setPreviewSeq(moveSelectionWith(seq, drag.clipId, target.id, finalT, drag.others))
     } else if (drag.kind === 'slip') {
       const deltaS = quantizeToFrame((x - drag.startXPx) / pxPerS, seq.fps)
       dragFinal.current = { trackId: '', tS: deltaS }
       const next = slipClip(seq, assets, drag.clipId, deltaS)
       setPreviewSeq(next)
       const slipped = next.tracks.flatMap((tr) => tr.clips).find((c) => c.id === drag.clipId)
-      if (slipped) {
+      const slipOrig = seq.tracks.flatMap((tr) => tr.clips).find((c) => c.id === drag.clipId)
+      if (slipped && slipOrig) {
+        // Delta = the APPLIED source offset (slipClip clamps at the media ends),
+        // so the readout never claims more slip than actually happened.
         setTrimTip({
           x: e.clientX,
           y: e.clientY - 34,
-          text: `Slip  in ${formatTimecode(slipped.inS, seq.fps)} · out ${formatTimecode(slipped.outS, seq.fps)}`,
+          text: `Slip  in ${formatTimecode(slipped.inS, seq.fps)} · out ${formatTimecode(slipped.outS, seq.fps)}  ${fmtDelta(slipped.inS - slipOrig.inS, seq.fps)}`,
         })
       }
     } else if (drag.kind === 'roll') {
       const tRaw = quantizeToFrame(Math.max(0, x / pxPerS), seq.fps)
       // Exclude BOTH sides of the cut: the left clip's out edge IS the origin
-      // cut — leaving it in the snap set magnetizes every fine roll back to a
+      // cut - leaving it in the snap set magnetizes every fine roll back to a
       // no-op.
       const t = snapWithIndicator(tRaw, [drag.leftId, drag.rightId])
       dragFinal.current = { trackId: '', tS: t }
       const next = rollEditTo(seq, assets, drag.leftId, drag.rightId, t)
       setPreviewSeq(next)
       const right = next.tracks.flatMap((tr) => tr.clips).find((c) => c.id === drag.rightId)
-      if (right) {
+      const rightOrig = seq.tracks.flatMap((tr) => tr.clips).find((c) => c.id === drag.rightId)
+      if (right && rightOrig) {
         setTrimTip({
           x: e.clientX,
           y: e.clientY - 34,
-          text: `Roll  ${formatTimecode(right.startS, seq.fps)}`,
+          text: `Roll  ${formatTimecode(right.startS, seq.fps)}  ${fmtDelta(right.startS - rightOrig.startS, seq.fps)}`,
         })
       }
     } else if (drag.kind === 'slide') {
       const tRaw = quantizeToFrame(Math.max(0, x / pxPerS - drag.grabOffsetS), seq.fps)
       // Neighbours' facing edges ARE the slid clip's origin (slide requires
-      // adjacency) — exclude them or the origin stays a snap magnet.
+      // adjacency) - exclude them or the origin stays a snap magnet.
       const t = snapWithIndicator(tRaw, [drag.clipId, ...drag.neighborIds])
       dragFinal.current = { trackId: '', tS: t }
       const next = slideClip(seq, assets, drag.clipId, t)
       setPreviewSeq(next)
       const slid = next.tracks.flatMap((tr) => tr.clips).find((c) => c.id === drag.clipId)
-      if (slid) {
+      const slidOrig = seq.tracks.flatMap((tr) => tr.clips).find((c) => c.id === drag.clipId)
+      if (slid && slidOrig) {
         setTrimTip({
           x: e.clientX,
           y: e.clientY - 34,
-          text: `Slide  ${formatTimecode(slid.startS, seq.fps)}`,
+          text: `Slide  ${formatTimecode(slid.startS, seq.fps)}  ${fmtDelta(slid.startS - slidOrig.startS, seq.fps)}`,
         })
       }
     } else if (drag.kind === 'stretch') {
@@ -1813,7 +1862,7 @@ export function Timeline({ height }: { height: number }) {
         setTrimTip({
           x: e.clientX,
           y: e.clientY - 34,
-          text: `${drag.ripple ? 'Ripple  ' : ''}${formatTimecode(shownT, seq.fps)}  (${delta >= 0 ? '+' : '−'}${formatTimecode(Math.abs(delta), seq.fps).slice(6)})`,
+          text: `${drag.ripple ? 'Ripple  ' : ''}${formatTimecode(shownT, seq.fps)}  ${fmtDelta(delta, seq.fps)}`,
         })
       }
     }
@@ -1825,7 +1874,7 @@ export function Timeline({ height }: { height: number }) {
     lastDragPointer.current = null
     setHoverLane(null)
     lanesRef.current?.releasePointerCapture(e.pointerId)
-    // Marquee is selection-only (no undo dispatch) — just drop the rectangle.
+    // Marquee is selection-only (no undo dispatch) - just drop the rectangle.
     if (drag.kind === 'marquee') {
       rightMarqueeRef.current = false // keep suppressContextRef for the imminent contextmenu
       setMarquee(null)
@@ -1880,7 +1929,7 @@ export function Timeline({ height }: { height: number }) {
     if (!isAsset && !isSfx) return
     e.preventDefault()
     e.dataTransfer.dropEffect = 'copy'
-    // Bin drags edge-scroll too (the loop only scrolls here — the preview line
+    // Bin drags edge-scroll too (the loop only scrolls here - the preview line
     // is content-anchored, and dragover re-fires on the next mouse move).
     lastDragPointer.current = { clientX: e.clientX, clientY: e.clientY }
     maybeEdgeScroll()
@@ -1960,11 +2009,37 @@ export function Timeline({ height }: { height: number }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Modifier-hover cursor language: holding Alt arms slip (clip body) and rate
+  // stretch (edge), Ctrl+Alt arms slide (body) and roll (edge), and Alt flips
+  // the zoom tool to zoom-out. Written straight to the container's dataset so
+  // a held key never touches React state; index.css keys on
+  // [data-tool][data-mods] to re-cursor the targets.
+  useEffect(() => {
+    const write = (ctrl: boolean, alt: boolean) => {
+      const el = lanesRef.current
+      if (!el) return
+      const mods = ctrl && alt ? 'ctrl-alt' : alt ? 'alt' : ctrl ? 'ctrl' : ''
+      if (mods) el.dataset.mods = mods
+      else delete el.dataset.mods
+    }
+    const onKey = (e: KeyboardEvent) => write(e.ctrlKey || e.metaKey, e.altKey)
+    // Alt+Tab and friends can steal the keyup: clear on window blur too.
+    const clear = () => write(false, false)
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('keyup', onKey)
+    window.addEventListener('blur', clear)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('keyup', onKey)
+      window.removeEventListener('blur', clear)
+    }
+  }, [])
+
   // Keep the playhead visible while playing (page-scroll like Premiere), but
   // never fight a manual scroll: suspend auto-follow for a moment after the
   // user scrolls the lanes themselves.
   // Auto-follow rides an IMPERATIVE playhead subscription (not a React effect
-  // keyed on playheadS — that re-ran per transport tick). pxPerS via ref so
+  // keyed on playheadS - that re-ran per transport tick). pxPerS via ref so
   // zoom changes mid-play take effect without resubscribing.
   const pxPerSRef = useRef(pxPerS)
   pxPerSRef.current = pxPerS
@@ -2017,16 +2092,23 @@ export function Timeline({ height }: { height: number }) {
     setUI({ playheadS: quantizeToFrame(t, seq.fps) })
   }
 
+  // The pointer always says what a press would do: a razor blade for the
+  // blade tool, grab that closes to grabbing while a hand-pan is live, zoom
+  // magnifier (flipped to zoom-out by Alt via CSS on data-mods). Children
+  // inherit, so the whole lane area speaks the tool. Modifier-hover cursors
+  // for slip/stretch (Alt) and slide/roll (Ctrl+Alt) key off data-mods below.
   const cursorClass =
     tool === 'razor'
-      ? 'cursor-crosshair'
+      ? 'cursor-razor'
       : tool === 'hand'
-        ? 'cursor-grab'
+        ? drag?.kind === 'hand'
+          ? 'cursor-grabbing'
+          : 'cursor-grab'
         : tool === 'zoom'
           ? 'cursor-zoom-in'
           : ''
 
-  // Stable identities for the ClipView handler props — without these, every
+  // Stable identities for the ClipView handler props - without these, every
   // Timeline render (each pointermove during a drag) would hand every ClipView
   // fresh functions and defeat its memo().
   const stableClipPointerDown = useStableCallback(handleClipPointerDown)
@@ -2059,6 +2141,7 @@ export function Timeline({ height }: { height: number }) {
             pxPerS={pxPerS}
             selected={selection.includes(clip.id)}
             locked={track.locked}
+            interactive={tool === 'select' && !track.locked}
             pop={!seenClipIds.has(clip.id)}
             onClipPointerDown={stableClipPointerDown}
             onTrimPointerDown={stableTrimPointerDown}
@@ -2098,7 +2181,7 @@ export function Timeline({ height }: { height: number }) {
           // The headers column is overflow-hidden (no scrollbar of its own) and is
           // kept in sync by the lanes' onScroll. But a wheel over the headers must
           // still scroll: forward it to the lanes, which mirrors back here. Without
-          // this, scrolling only works with the cursor over the lanes — "can't
+          // this, scrolling only works with the cursor over the lanes - "can't
           // scroll on the left" once there are more tracks than fit.
           onWheel={(e) => {
             if (lanesRef.current) lanesRef.current.scrollTop += e.deltaY
@@ -2147,6 +2230,7 @@ export function Timeline({ height }: { height: number }) {
           ref={lanesRef}
           className={`relative min-w-0 flex-1 overflow-auto ${cursorClass}`}
           data-testid="timeline-lanes"
+          data-tool={tool}
           onContextMenu={(e) => {
             // No browser menu on the timeline background; also clears the
             // right-drag-select suppression flag after it's served its purpose.
@@ -2161,7 +2245,7 @@ export function Timeline({ height }: { height: number }) {
           onScroll={(e) => {
             // Track headers share vertical scroll with the lanes.
             if (headersRef.current) headersRef.current.scrollTop = e.currentTarget.scrollTop
-            // A scroll we didn't trigger is the user's — suspend auto-follow so
+            // A scroll we didn't trigger is the user's - suspend auto-follow so
             // playback doesn't yank the view back while they drag the scrollbar.
             if (programmaticScroll.current) programmaticScroll.current = false
             else manualScrollUntil.current = performance.now() + 2000
@@ -2238,9 +2322,14 @@ export function Timeline({ height }: { height: number }) {
                 same depth and those buttons stay reachable with many tracks. */}
             <div className="shrink-0" style={{ height: ADD_TRACK_ROW_H }} />
 
+            {/* Snap lock line: keyed on the snapped time so landing on a NEW
+                edge remounts it and re-fires the one-shot pulse. Reduced
+                motion collapses the pulse; the line itself always shows. */}
             {snapIndicatorT !== null && (
               <div
-                className="pointer-events-none absolute bottom-0 z-30 w-px bg-accent"
+                key={snapIndicatorT}
+                data-testid="snap-line"
+                className="pointer-events-none absolute bottom-0 z-30 w-px animate-[snap-pulse_240ms_ease-out] bg-accent"
                 style={{ left: snapIndicatorT * pxPerS, top: RULER_H }}
               />
             )}
@@ -2282,7 +2371,7 @@ export function Timeline({ height }: { height: number }) {
 
       {trimTip && (
         <div
-          className="pointer-events-none fixed z-[90] rounded-[4px] border border-border bg-bg-elevated px-2 py-1 text-[11px] tabular-nums text-text-primary shadow-pop"
+          className="pointer-events-none fixed z-[90] rounded-[4px] border border-border bg-bg-elevated px-2 py-1 font-numeric text-[11px] text-text-primary shadow-pop"
           style={{ left: trimTip.x, top: trimTip.y }}
         >
           {trimTip.text}

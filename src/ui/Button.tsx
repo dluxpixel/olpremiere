@@ -12,7 +12,7 @@ const variantClasses: Record<Variant, string> = {
     'text-text-secondary hover:bg-bg-elevated hover:text-text-primary active:bg-bg-input disabled:hover:bg-transparent disabled:hover:text-text-secondary',
   secondary:
     'border border-border text-text-primary hover:border-border-strong hover:bg-bg-elevated active:bg-bg-input',
-  primary: 'bg-accent text-white font-medium hover:bg-accent-hover active:brightness-90',
+  primary: 'bg-accent text-accent-fg font-medium hover:bg-accent-hover active:brightness-90',
 }
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
@@ -22,7 +22,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
   return (
     <button
       ref={ref}
-      className={`inline-flex h-7 shrink-0 cursor-default items-center gap-1.5 rounded-[4px] px-2.5 text-[12px] transition-colors duration-[120ms] ease-out disabled:opacity-40 ${variantClasses[variant]} ${className}`}
+      className={`inline-flex h-7 shrink-0 cursor-default items-center gap-1.5 rounded-field px-2.5 text-ui transition-colors duration-[120ms] ease-out disabled:opacity-40 ${variantClasses[variant]} ${className}`}
       {...rest}
     />
   )
@@ -52,7 +52,7 @@ export function IconButton({
       <button
         aria-label={label}
         aria-pressed={active || undefined}
-        className={`inline-flex ${px} shrink-0 cursor-default items-center justify-center rounded-[4px] transition-colors duration-[120ms] ease-out active:scale-95 disabled:opacity-40 disabled:active:scale-100 ${
+        className={`inline-flex ${px} shrink-0 cursor-default items-center justify-center rounded-field transition-colors duration-[120ms] ease-out active:scale-95 disabled:opacity-40 disabled:active:scale-100 ${
           active
             ? 'bg-accent-quiet text-accent'
             : 'text-text-secondary hover:bg-bg-elevated hover:text-text-primary active:bg-bg-input disabled:hover:bg-transparent'

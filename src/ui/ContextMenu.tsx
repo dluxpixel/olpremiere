@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useContextMenu, type MenuItem } from '../state/contextMenu'
 
 const rowClass = (item: MenuItem): string =>
-  `flex w-full items-center justify-between gap-6 px-3 py-1.5 text-left text-[12px] transition-colors duration-[120ms] disabled:opacity-40 ${
+  `flex w-full items-center justify-between gap-6 px-3 py-1.5 text-left text-ui transition-colors duration-[120ms] disabled:opacity-40 ${
     item.danger
       ? 'text-danger hover:bg-danger/15'
       : 'text-text-primary hover:bg-accent-quiet hover:text-accent'
@@ -10,7 +10,7 @@ const rowClass = (item: MenuItem): string =>
 
 /** Leading area: a checkmark for the active item, else a blank gutter. */
 function Check({ on }: { on?: boolean }) {
-  return <span className="w-3 shrink-0 text-[11px] text-accent">{on ? '✓' : ''}</span>
+  return <span className="w-3 shrink-0 text-ui-sm text-accent">{on ? '✓' : ''}</span>
 }
 
 /** A single row; owns its own flyout open state via hover. */
@@ -30,6 +30,21 @@ function Row({
   onLeaf: () => void
 }) {
   const hasSub = !!item.submenu && item.submenu.length > 0
+  const subRef = useRef<HTMLDivElement>(null)
+  const [subShift, setSubShift] = useState(0)
+
+  // Clamp the flyout vertically: near the bottom edge a tall submenu would
+  // otherwise run off-screen (unreachable items). Measure once per open.
+  useLayoutEffect(() => {
+    if (!hasSub || openSub !== index) return
+    setSubShift(0)
+    const el = subRef.current
+    if (!el) return
+    const rect = el.getBoundingClientRect()
+    const overflow = rect.bottom - (window.innerHeight - 8)
+    if (overflow > 0) setSubShift(-Math.min(overflow, Math.max(0, rect.top - 8)))
+  }, [hasSub, openSub, index])
+
   return (
     <div
       className="relative"
@@ -58,17 +73,21 @@ function Row({
           <span>{item.label}</span>
         </span>
         {hasSub ? (
-          <span className="text-[11px] text-text-muted">▸</span>
+          <span className="text-ui-sm text-text-muted">▸</span>
         ) : (
-          item.shortcut && <span className="text-[11px] text-text-muted">{item.shortcut}</span>
+          item.shortcut && <span className="text-ui-sm text-text-muted">{item.shortcut}</span>
         )}
       </button>
 
       {hasSub && openSub === index && (
         <div
+          ref={subRef}
           role="menu"
-          className="absolute top-0 z-10 min-w-[180px] max-h-[70vh] overflow-y-auto rounded-[6px] border border-border bg-bg-elevated py-1 shadow-pop"
-          style={flipLeft ? { right: '100%', marginRight: 2 } : { left: '100%', marginLeft: 2 }}
+          className="absolute z-10 min-w-[180px] max-h-[70vh] overflow-y-auto rounded-overlay border border-border bg-bg-elevated py-1 shadow-pop"
+          style={{
+            top: subShift,
+            ...(flipLeft ? { right: '100%', marginRight: 2 } : { left: '100%', marginLeft: 2 }),
+          }}
         >
           {item.submenu!.map((sub, j) => (
             <div key={j}>
@@ -86,7 +105,7 @@ function Row({
                   <Check on={sub.checked} />
                   <span>{sub.label}</span>
                 </span>
-                {sub.shortcut && <span className="text-[11px] text-text-muted">{sub.shortcut}</span>}
+                {sub.shortcut && <span className="text-ui-sm text-text-muted">{sub.shortcut}</span>}
               </button>
             </div>
           ))}
@@ -143,7 +162,7 @@ export function ContextMenu() {
         ref={ref}
         role="menu"
         data-testid="context-menu"
-        className="absolute min-w-[184px] rounded-[6px] border border-border bg-bg-elevated py-1 shadow-pop"
+        className="absolute min-w-[184px] rounded-overlay border border-border bg-bg-elevated py-1 shadow-pop"
         style={{ left: pos.x, top: pos.y }}
         onPointerDown={(e) => e.stopPropagation()}
       >

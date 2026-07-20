@@ -153,7 +153,8 @@ test('slip: Alt+drag shifts the source window, not the position', async ({ page 
 test('history round-trips: undo to empty, redo to the edited state', async ({ page }) => {
   await addClip(page)
   await page.getByTestId('ruler').click({ position: { x: 60, y: 10 } }) // 1s
-  await page.keyboard.press('Control+k')
+  // 'c' is the split-at-playhead key; mod+k now belongs to the command palette.
+  await page.keyboard.press('c')
   await expect(vclip(page)).toHaveCount(2)
   await vclip(page).first().click()
   await page.keyboard.press('Delete')
