@@ -8,6 +8,7 @@ import {
   Keyboard,
   Mic,
   Redo2,
+  Settings,
   Square,
   Undo2,
   Users,
@@ -39,6 +40,7 @@ import { Button, IconButton } from '../ui/Button'
 import { MelonMark } from '../ui/BootSplash'
 import { ExportDialog } from './ExportDialog'
 import { ProjectsDialog } from './ProjectsDialog'
+import { SettingsDialog } from './SettingsDialog'
 
 /**
  * "Edit together": create/share a live room, or show who's in it. The badge is
@@ -287,6 +289,7 @@ export function TopBar() {
   const setUI = useStore((s) => s.setUI)
   const [exporting, setExporting] = useState(false)
   const [projectsOpen, setProjectsOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const openFileRef = useRef<HTMLInputElement>(null)
 
   return (
@@ -367,6 +370,13 @@ export function TopBar() {
         >
           <Keyboard size={16} strokeWidth={1.5} />
         </IconButton>
+        <IconButton
+          label="Settings"
+          onClick={() => setSettingsOpen(true)}
+          data-testid="settings-open"
+        >
+          <Settings size={16} strokeWidth={1.5} />
+        </IconButton>
         <div className="mx-2 h-4 w-px bg-border" />
         <CollabButton />
         <RecordButton />
@@ -377,6 +387,7 @@ export function TopBar() {
       </div>
       {exporting && <ExportDialog onClose={() => setExporting(false)} />}
       {projectsOpen && <ProjectsDialog onClose={() => setProjectsOpen(false)} />}
+      {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
     </header>
   )
 }

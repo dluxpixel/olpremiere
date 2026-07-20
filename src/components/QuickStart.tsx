@@ -56,6 +56,15 @@ function save(patch: Stored) {
   }
 }
 
+/** Forget the "seen" flag so the intro returns on the next load (Settings). */
+export function resetQuickStart(): void {
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.removeItem(KEY)
+  } catch {
+    // Private mode / quota: nothing to forget.
+  }
+}
+
 export function QuickStart() {
   const [phase, setPhase] = useState<'defer' | 'show' | 'gone'>(() =>
     load().dismissed ? 'gone' : 'defer',

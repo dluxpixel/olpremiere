@@ -17,6 +17,7 @@ import { prewarmPreview, previewEpoch, renderPreview } from '../engine/preview'
 import { formatTimecode, quantizeToFrame } from '../engine/timecode'
 import { activeSequence, type Sequence } from '../engine/types'
 import { pausePlayback, subscribeShuttleRate, toggleLoop, togglePlay } from '../state/playbackControl'
+import { useSettings } from '../state/settings'
 import { setActiveSequenceFormat, useStore } from '../state/store'
 import { IconButton } from '../ui/Button'
 import { MasterMeter } from './MasterMeter'
@@ -227,7 +228,8 @@ export function Monitor() {
   const setUI = useStore((s) => s.setUI)
   const seq = useStore((s) => activeSequence(s.project))
   const hasContent = seq.durationS > 0
-  const [quality, setQuality] = useState<Quality>(1)
+  // Opens at the Settings default; the picker below still owns the session.
+  const [quality, setQuality] = useState<Quality>(() => useSettings.getState().previewQuality)
   // Quality tier drives BOTH the canvas raster (dpr) and the frame-cache decode
   // resolution, so Half/Quarter genuinely cut scrub cost on large sources.
   useEffect(() => {

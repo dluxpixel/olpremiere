@@ -9,7 +9,11 @@ import './index.css'
 import { loadDefaultTextAppearance } from './state/appearanceActions'
 import { loadLibrary } from './state/library'
 import { initPersistence } from './state/persistence'
+import { initSettings } from './state/settings'
 import { initUpdateCheck } from './state/updateCheck'
+
+// Stamp the saved theme BEFORE React mounts: no flash of the wrong ground.
+initSettings()
 
 // A shared room link (#room=...) auto-joins only AFTER the local project
 // hydrates — joining against the boot placeholder captures the wrong

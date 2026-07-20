@@ -75,6 +75,45 @@
   --shadow-pop: 0 12px 32px rgba(15, 10, 5, 0.55), 0 2px 8px rgba(15, 10, 5, 0.35);
 }
 
+/*
+ * Light theme. Same warm family, inverted ground: parchment surfaces instead
+ * of near-black. The lavender accent CANNOT survive the flip (a pale fill is
+ * invisible on parchment), so it deepens to the same hue at low luminance and
+ * carries white text; ember and success darken for the same reason. Clip fills
+ * stay dark on purpose: they are media containers with white labels, and
+ * keeping them anchors the timeline as the dense working surface even here.
+ * Dark stays the default and the recommendation for grading, this is a choice.
+ */
+:root[data-theme='light'] {
+  --color-bg-app: #e9e5dd;
+  --color-bg-panel: #f4f1ea;
+  --color-bg-elevated: #fbf9f5;
+  --color-bg-input: #e2ded4;
+  --color-border: #d3cec3;
+  --color-border-strong: #b6b0a3;
+
+  --color-text-primary: #1a1714;
+  --color-text-secondary: #4b453c;
+  --color-text-muted: #6b6459;
+
+  --color-accent: #6b3a8c;
+  --color-accent-hover: #562c72;
+  --color-accent-quiet: rgba(107, 58, 140, 0.13);
+  --color-accent-fg: #ffffff;
+
+  --color-ember: #a75700;
+  --color-ember-quiet: rgba(167, 87, 0, 0.14);
+
+  --color-teal: #034f46;
+  --color-success: #0d6d5d;
+
+  --color-playhead: #d6301f;
+  --color-danger: #b8342a;
+  --color-warning: #a75700;
+
+  --shadow-pop: 0 12px 32px rgba(60, 50, 35, 0.18), 0 2px 8px rgba(60, 50, 35, 0.12);
+}
+
 /* Numeric readouts (timecode, durations, meters): mono with tabular figures
    so digits never jitter during playback. */
 @utility font-numeric {
