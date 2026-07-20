@@ -513,6 +513,94 @@ describe('trimClipTo', () => {
 })
 
 describe('splitClip', () => {
+  it('keyframes split by time: no replayed animation, seamless value at the cut', () => {
+    // A punch zoom [1 → 1.3 over 0.5s]. Cutting at 0.25 must leave each half
+    // its own slice — copying the full set made the zoom REPLAY on the right.
+    const c = makeClip({
+      startS: 0,
+      inS: 0,
+      outS: 4,
+      keyframes: {
+        scale: [
+          { t: 0, value: 1, ease: 'linear' },
+          { t: 0.5, value: 1.3, ease: 'linear' },
+        ],
+      },
+    })
+    const seq = makeSeq([makeTrack({ clips: [c] })])
+    const [left, right] = splitClip(seq, c.id, 0.25).tracks[0].clips
+    const lk = left.keyframes!.scale!
+    const rk = right.keyframes!.scale!
+    // Left: original start + boundary at the cut carrying the mid value.
+    expect(lk.map((k) => [k.t, k.value])).toEqual([
+      [0, 1],
+      [0.25, 1.15],
+    ])
+    // Right: boundary at its new zero + the remaining keyframe, shifted.
+    expect(rk.map((k) => [k.t, k.value])).toEqual([
+      [0, 1.15],
+      [0.25, 1.3],
+    ])
+  })
+
+  it('a side whose animation is constant collapses to a static base (no phantom stopwatch)', () => {
+    // Zoom finished at 0.5; cut at 2 — the right half must HOLD 1.3 statically,
+    // not carry a single-keyframe "animated" channel, and not replay anything.
+    const c = makeClip({
+      startS: 0,
+      inS: 0,
+      outS: 4,
+      keyframes: {
+        scale: [
+          { t: 0, value: 1, ease: 'linear' },
+          { t: 0.5, value: 1.3, ease: 'linear' },
+        ],
+      },
+    })
+    const seq = makeSeq([makeTrack({ clips: [c] })])
+    const [left, right] = splitClip(seq, c.id, 2).tracks[0].clips
+    expect(left.keyframes!.scale!.length).toBe(3) // 0, 0.5, boundary@2
+    expect(right.keyframes?.scale ?? []).toHaveLength(0)
+    expect(right.transform.scale).toBeCloseTo(1.3, 9)
+  })
+
+  it('animated EFFECT params split the same way', () => {
+    const c = makeClip({
+      startS: 0,
+      inS: 0,
+      outS: 4,
+      effects: [
+        {
+          id: 'fx',
+          type: 'gaussianBlur',
+          enabled: true,
+          params: {
+            blur: {
+              value: 0,
+              keyframes: [
+                { t: 0, value: 0, ease: 'linear' },
+                { t: 1, value: 10, ease: 'linear' },
+              ],
+            },
+          },
+        },
+      ],
+    })
+    const seq = makeSeq([makeTrack({ clips: [c] })])
+    const [left, right] = splitClip(seq, c.id, 0.5).tracks[0].clips
+    const lp = left.effects[0].params.blur
+    const rp = right.effects[0].params.blur
+    if (typeof lp === 'number' || typeof rp === 'number') throw new Error('should stay animated')
+    expect(lp.keyframes.map((k) => [k.t, k.value])).toEqual([
+      [0, 0],
+      [0.5, 5],
+    ])
+    expect(rp.keyframes.map((k) => [k.t, k.value])).toEqual([
+      [0, 5],
+      [0.5, 10],
+    ])
+  })
+
   it('fades split with their edge: left keeps fade-in only, right fade-out only', () => {
     // Copying both fades to both halves put an audible fade-out+fade-in dip at
     // every cut point — the cut itself must stay a hard cut.

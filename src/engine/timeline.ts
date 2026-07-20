@@ -2,13 +2,18 @@
 // No React, no DOM, no store — only types. Every function takes and returns
 // immutable data; when nothing changes the input reference comes back as-is.
 
+import { withChannelKeyframes, withChannelValue } from './effects/channels'
+import { evalChannel } from './keyframes'
 import {
   defaultTransform,
   newClipFromAsset,
   newId,
   newTrack,
+  type AnimChannel,
   type Clip,
   type Id,
+  type Keyframe,
+  type Keyframeable,
   type Marker,
   type MediaAsset,
   type Sequence,
@@ -428,6 +433,32 @@ export function trimClipTo(
   )
 }
 
+// Keyframe times are within-tolerance-equal when closer than this (matches the
+// clipEdits keyframe tolerance).
+const KF_EPS = 1e-4
+
+/**
+ * Split one channel's keyframes at clip-local time `cutT`. Both sides get a
+ * boundary keyframe holding the RESOLVED value at the cut (an existing
+ * keyframe at the cut is reused verbatim), so left ends and right begins on
+ * the exact same value. Eased segments spanning the cut are resampled
+ * linearly at the boundary — exact for linear/hold, near for eases.
+ */
+export function splitKeyframeList(
+  kfs: readonly Keyframe[],
+  cutT: number,
+): { left: Keyframe[]; right: Keyframe[] } {
+  const atCut = kfs.find((k) => Math.abs(k.t - cutT) <= KF_EPS)
+  // fallback is unreachable for a non-empty list; first value keeps it honest.
+  const v = atCut ? atCut.value : evalChannel(kfs, cutT, kfs[0]?.value ?? 0)
+  const before = kfs.filter((k) => k.t < cutT - KF_EPS)
+  const after = kfs.filter((k) => k.t > cutT + KF_EPS).map((k) => ({ ...k, t: k.t - cutT }))
+  return {
+    left: [...before, atCut ? { ...atCut, t: cutT } : { t: cutT, value: v, ease: 'linear' as const }],
+    right: [atCut ? { ...atCut, t: 0 } : { t: 0, value: v, ease: 'linear' as const }, ...after],
+  }
+}
+
 export function splitClip(seq: Sequence, clipId: Id, tS: number): Sequence {
   const found = findClip(seq, clipId)
   if (!found) return seq
@@ -439,12 +470,13 @@ export function splitClip(seq: Sequence, clipId: Id, tS: number): Sequence {
   if (tS < clip.startS + minPieceS || tS > clipEndS(clip) - minPieceS) return seq
 
   const cutSource = clip.inS + (tS - clip.startS) * absSpeed(clip)
+  const cutLocal = tS - clip.startS
   // Edge-owned decorations split with their edge: the LEFT half keeps only the
   // fade-in/transition-in (its out edge is now a hard cut), the RIGHT half only
   // the fade-out/transition-out. Copying both to both halves put a fade-out+
   // fade-in bump at every cut point.
-  const left: Clip = { ...clip, outS: cutSource, transitionOut: undefined, fadeOutS: 0 }
-  const right: Clip = {
+  let left: Clip = { ...clip, outS: cutSource, transitionOut: undefined, fadeOutS: 0 }
+  let right: Clip = {
     ...clip,
     id: newId(),
     startS: tS,
@@ -454,6 +486,38 @@ export function splitClip(seq: Sequence, clipId: Id, tS: number): Sequence {
     transitionIn: undefined,
     fadeInS: 0,
   }
+  // Animation splits by TIME, like the fades above: each half keeps only its
+  // own slice of the keyframes (the right half's shifted to its new zero), and
+  // both get a boundary keyframe carrying the resolved value at the cut so the
+  // motion continues seamlessly across it. Copying the full set to both halves
+  // made a punch zoom REPLAY from the start on the right piece. A side left
+  // with a single boundary keyframe (its half of the animation is constant)
+  // collapses to a static base — no phantom "animated" stopwatch on it.
+  for (const [ch, kfs] of Object.entries(clip.keyframes ?? {}) as [AnimChannel, Keyframe[]][]) {
+    if (!kfs?.length) continue
+    const s = splitKeyframeList(kfs, cutLocal)
+    left =
+      s.left.length <= 1
+        ? withChannelValue(withChannelKeyframes(left, ch, []), ch, s.left[0]!.value)
+        : withChannelKeyframes(left, ch, s.left)
+    right =
+      s.right.length <= 1
+        ? withChannelValue(withChannelKeyframes(right, ch, []), ch, s.right[0]!.value)
+        : withChannelKeyframes(right, ch, s.right)
+  }
+  const splitParamsSide = (effects: Clip['effects'], side: 'left' | 'right'): Clip['effects'] =>
+    effects.map((e) => ({
+      ...e,
+      params: Object.fromEntries(
+        Object.entries(e.params).map(([k, p]): [string, Keyframeable] => {
+          if (typeof p === 'number' || !p.keyframes?.length) return [k, p]
+          const s = splitKeyframeList(p.keyframes, cutLocal)[side]
+          return [k, s.length <= 1 ? s[0]!.value : { value: p.value, keyframes: s }]
+        }),
+      ),
+    }))
+  left = { ...left, effects: splitParamsSide(left.effects, 'left') }
+  right = { ...right, effects: splitParamsSide(right.effects, 'right') }
   const clips = [...track.clips.slice(0, clipIndex), left, right, ...track.clips.slice(clipIndex + 1)]
   return withTrackClips(seq, trackIndex, clips)
 }
