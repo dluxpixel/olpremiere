@@ -3,6 +3,8 @@
 
 import { openDB, type IDBPDatabase } from 'idb'
 import { migrateProjectEffects } from '../engine/effects/migrate'
+import { planSequenceSplit } from './sequenceSplit'
+import { useToasts } from './toasts'
 import { migrateProject, type Project } from '../engine/types'
 import { useStore } from './store'
 
@@ -54,7 +56,39 @@ export async function loadProjectById(id: string): Promise<Project | null> {
   const p = (await d.get('projects', id)) as Project | undefined
   // Shape migration first (tracks/mixer fields), then the colour bag -> effect
   // stack move. Both are idempotent, so a re-load is free.
-  return p ? migrateProjectEffects(migrateProject(p)) : null
+  if (!p) return null
+  return splitLegacySequences(migrateProjectEffects(migrateProject(p)))
+}
+
+/**
+ * One-time conversion for projects saved while sequences existed: every extra
+ * sequence holding real work is written out as its own project (its media
+ * copied to fresh blob keys so the two can be deleted independently), and
+ * empty extras are dropped. Idempotent: a project already down to one
+ * sequence takes the fast path and touches nothing.
+ */
+async function splitLegacySequences(project: Project): Promise<Project> {
+  const plan = planSequenceSplit(project, Date.now())
+  if (plan.spawned.length === 0 && plan.droppedEmpty === 0) return project
+
+  for (const { from, to } of plan.blobCopies) {
+    const blob = await getBlob(from)
+    // A missing source blob means the media was already gone; the spawned
+    // project keeps the asset entry and shows it as offline, exactly like any
+    // other missing file, rather than failing the whole conversion.
+    if (blob) await putBlob(to, blob)
+  }
+  for (const spawn of plan.spawned) await saveProject(spawn)
+  await saveProject(plan.kept)
+
+  if (plan.spawned.length > 0) {
+    useToasts
+      .getState()
+      .show(
+        `Sequences are now separate projects: ${plan.spawned.length} moved out. Find them in Projects.`,
+      )
+  }
+  return plan.kept
 }
 
 /** Light listing for the Projects picker (docs are blob-free JSON — cheap). */

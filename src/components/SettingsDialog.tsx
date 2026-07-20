@@ -16,7 +16,12 @@ import {
 import { resolvedTheme, setPreviewQuality, setTheme, useSettings, type PreviewQuality, type ThemeChoice } from '../state/settings'
 import { useStore } from '../state/store'
 import { useToasts } from '../state/toasts'
-import { clearTrackTemplate, loadTrackTemplate, saveTrackTemplate } from '../state/trackTemplate'
+import {
+  defaultTrackPresetId,
+  listTrackPresets,
+  saveTrackPresetFromCurrent,
+  setDefaultTrackPreset,
+} from '../state/trackTemplate'
 import {
   listAudioInputs,
   setEnhance,
@@ -66,8 +71,16 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const enhance = useRecorder((s) => s.enhance)
   const [language, setLanguage] = useState<CaptionLanguage>(getCaptionLanguage)
   const [inputs, setInputs] = useState<MediaDeviceInfo[]>([])
-  const [hasTemplate, setHasTemplate] = useState(() => loadTrackTemplate() !== null)
+  // The presets live in localStorage, not a store, so this row keeps its own
+  // copy and re-reads after every action it takes.
+  const [presets, setPresets] = useState(listTrackPresets)
+  const [defaultId, setDefaultId] = useState(defaultTrackPresetId)
   const show = useToasts((s) => s.show)
+
+  const refreshPresets = () => {
+    setPresets(listTrackPresets())
+    setDefaultId(defaultTrackPresetId())
+  }
 
   // Device labels need one granted mic permission; listAudioInputs handles the
   // unlock, so the list fills in shortly after open on a fresh profile.
@@ -225,32 +238,45 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
         <Group title="New videos">
           <Row
             label="Track setup"
-            hint={hasTemplate ? 'New videos start from your saved track setup.' : 'Not saved yet: new videos use the defaults.'}
+            hint={
+              presets.length === 0
+                ? 'Not set: new videos use the default tracks. Save one to pick it here.'
+                : `New videos start from: ${presets.find((p) => p.id === defaultId)?.name ?? 'Not set'}`
+            }
           >
+            <select
+              aria-label="Track setup for new videos"
+              data-testid="settings-default-preset"
+              className={`${SELECT_CLS} max-w-[160px]`}
+              value={defaultId ?? ''}
+              disabled={presets.length === 0}
+              onChange={(e) => {
+                setDefaultTrackPreset(e.target.value || null)
+                refreshPresets()
+              }}
+            >
+              <option value="">Not set</option>
+              {presets.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
             <Button
               variant="secondary"
               data-testid="settings-save-template"
               onClick={() => {
-                saveTrackTemplate()
-                setHasTemplate(true)
+                // Same prompt as the timeline footer menu: there is no small
+                // single-field dialog primitive to reuse yet.
+                const name = window.prompt('Name this track setup', `Setup ${presets.length + 1}`)
+                if (name === null) return
+                saveTrackPresetFromCurrent(name)
+                refreshPresets()
               }}
             >
               <Bookmark size={14} strokeWidth={1.5} />
-              {hasTemplate ? 'Update' : 'Save current'}
+              Save current
             </Button>
-            {hasTemplate && (
-              <Button
-                variant="secondary"
-                data-testid="settings-clear-template"
-                onClick={() => {
-                  clearTrackTemplate()
-                  setHasTemplate(false)
-                  show('Track setup cleared: new videos use the defaults')
-                }}
-              >
-                Clear
-              </Button>
-            )}
           </Row>
           <Row label="Quick start" hint="The three-step intro shown on a first visit.">
             <Button

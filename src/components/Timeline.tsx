@@ -5,7 +5,6 @@ import {
   Hand,
   Headphones,
   Link2,
-  ListPlus,
   Lock,
   LockOpen,
   Magnet,
@@ -67,7 +66,6 @@ import { comboLabel } from '../keymap'
 import {
   activeSequence,
   audioTracks,
-  newSequence,
   videoTracks,
   type AutoLevel,
   type Clip,
@@ -91,7 +89,14 @@ import { crossfadeWithNeighbour, setClipFade, topAndTail } from '../state/clipEd
 import { impactAtPlayhead, punchInAtPlayhead, punchOnBeats, rampWorkArea, whipToNext } from '../state/motionActions'
 import { autoCaptionFromClip } from '../state/transcribeActions'
 import { setTrackAudioRole, setTrackAutoLevel, setTrackPan, setTrackVolumeDb } from '../state/trackEdits'
-import { applyTemplateTracks, loadTrackTemplate, saveTrackTemplate } from '../state/trackTemplate'
+import {
+  applyTrackPreset,
+  defaultTrackPresetId,
+  listTrackPresets,
+  removeTrackPreset,
+  saveTrackPresetFromCurrent,
+  setDefaultTrackPreset,
+} from '../state/trackTemplate'
 import { appearanceMenuItems, titleFontSizeItems } from '../state/clipMenus'
 import { openContextMenu, type MenuItem } from '../state/contextMenu'
 import { useBlobUrl } from '../state/blobUrls'
@@ -407,19 +412,7 @@ function TimelineToolbar({ onZoomFit }: { onZoomFit: () => void }) {
   const pxPerS = useStore((s) => s.ui.pxPerS)
   const setUI = useStore((s) => s.setUI)
   const fps = useStore((s) => activeSequence(s.project).fps)
-  const project = useStore((s) => s.project)
-  const setActiveSequenceId = useStore((s) => s.setActiveSequenceId)
-  const dispatch = useStore((s) => s.dispatch)
 
-  const addSequence = () => {
-    dispatch('Add sequence', (p) => {
-      const base = newSequence(`Sequence ${Object.keys(p.sequences).length + 1}`)
-      // A saved track template replaces the stock V1/V2/A1/A2 layout.
-      const sq = { ...base, tracks: applyTemplateTracks(base.tracks) }
-      return { ...p, sequences: { ...p.sequences, [sq.id]: sq }, activeSequenceId: sq.id }
-    })
-    setUI({ playheadS: 0, selection: [] })
-  }
 
   return (
     <div className="flex h-8 shrink-0 items-center gap-0.5 border-b border-border bg-bg-panel px-2">
@@ -446,23 +439,10 @@ function TimelineToolbar({ onZoomFit }: { onZoomFit: () => void }) {
       >
         <Magnet size={14} strokeWidth={1.5} />
       </IconButton>
-      <div className="mx-1.5 h-4 w-px bg-border" />
-      <select
-        data-testid="sequence-select"
-        aria-label="Active sequence"
-        value={project.activeSequenceId}
-        onChange={(e) => setActiveSequenceId(e.target.value)}
-        className="h-6 max-w-36 rounded-[4px] border border-border bg-bg-input px-1.5 text-[11px] text-text-secondary focus:border-accent focus:outline-none"
-      >
-        {Object.values(project.sequences).map((sq) => (
-          <option key={sq.id} value={sq.id}>
-            {sq.name}
-          </option>
-        ))}
-      </select>
-      <IconButton size="compact" label="New sequence" onClick={addSequence} data-testid="sequence-new">
-        <ListPlus size={14} strokeWidth={1.5} />
-      </IconButton>
+      {/* Sequences were removed 2026-07-19: separate PROJECTS already serve
+          that purpose, and a second nesting level with no delete affordance
+          was bloat. Projects saved with extras are split on load, see
+          state/sequenceSplit.ts. */}
       <div className="mx-1.5 h-4 w-px bg-border" />
       <IconButton
         size="compact"
@@ -910,27 +890,90 @@ type Drag =
   | { kind: 'hand'; startX: number; startY: number; scrollLeft: number; scrollTop: number }
 
 /**
- * Footer bookmark: save the CURRENT track layout as the template every new
- * project/sequence starts from (state/trackTemplate.ts). `saved` only steers
- * the tooltip - the template itself lives in localStorage, so it seeds from
- * there and a second click simply overwrites.
+ * Footer bookmark: the shelf of NAMED track setups (state/trackTemplate.ts).
+ * Clicking opens the app menu at the button - picking a preset reshapes the
+ * current tracks, and one preset carries the flag for what new videos start
+ * from (the checkmark). `count` only steers the tooltip; the presets themselves
+ * live in localStorage, so the menu re-reads them on every open.
  */
-function SaveTrackTemplateButton() {
-  const [saved, setSaved] = useState(() => loadTrackTemplate() !== null)
+function TrackPresetMenuButton() {
+  const [count, setCount] = useState(() => listTrackPresets().length)
+
+  const buildItems = (): MenuItem[] => {
+    const presets = listTrackPresets()
+    const defaultId = defaultTrackPresetId()
+    const refresh = () => setCount(listTrackPresets().length)
+
+    const items: MenuItem[] =
+      presets.length > 0
+        ? presets.map((p) => ({
+            label: p.name,
+            checked: p.id === defaultId,
+            onClick: () => applyTrackPreset(p.id),
+          }))
+        : [{ label: 'No saved track setups yet', disabled: true }]
+
+    items.push({
+      label: 'Save current setup as preset...',
+      separator: true,
+      onClick: () => {
+        // A menu row is a button, so there is nowhere to type inside the menu
+        // and the app has no small single-field dialog primitive. The browser
+        // prompt is the honest option here.
+        const name = window.prompt('Name this track setup', `Setup ${presets.length + 1}`)
+        if (name === null) return
+        saveTrackPresetFromCurrent(name)
+        refresh()
+      },
+    })
+
+    if (presets.length > 0) {
+      items.push({
+        label: 'Set as default for new videos',
+        submenu: presets.map((p) => ({
+          label: p.name,
+          checked: p.id === defaultId,
+          // Picking the one already flagged clears it: new videos go back to
+          // the stock tracks. This is where the old "Clear" action lives now.
+          onClick: () => {
+            setDefaultTrackPreset(p.id === defaultId ? null : p.id)
+            refresh()
+          },
+        })),
+      })
+      items.push({
+        label: 'Remove preset',
+        submenu: presets.map((p) => ({
+          label: p.name,
+          danger: true,
+          onClick: () => {
+            removeTrackPreset(p.id)
+            refresh()
+          },
+        })),
+      })
+    }
+    return items
+  }
+
   return (
     <button
       type="button"
       data-testid="save-track-template"
-      aria-label="Save track setup as default for new videos"
+      aria-haspopup="menu"
+      aria-label="Track setup presets"
       title={
-        saved
-          ? 'A track setup is already saved for new videos. Click to overwrite it with the current tracks'
-          : 'Save track setup as default for new videos'
+        count > 0
+          ? `Track setups: pick one to apply it to these tracks, or save the current setup (${count} saved)`
+          : 'Track setups: save the current tracks as a preset you can pick later'
       }
       className="flex shrink-0 items-center justify-center rounded-[4px] border border-border px-1.5 py-1 text-[11px] font-medium text-text-secondary transition-colors duration-[120ms] hover:border-border-strong hover:bg-bg-elevated hover:text-text-primary"
-      onClick={() => {
-        saveTrackTemplate()
-        setSaved(true)
+      onClick={(e) => {
+        // Anchored to the button, not the pointer, so a keyboard activation
+        // (clientX/Y = 0) still opens the menu on the button instead of the
+        // top-left corner. ContextMenu clamps it into the viewport.
+        const r = e.currentTarget.getBoundingClientRect()
+        openContextMenu({ preventDefault: () => {}, clientX: r.left, clientY: r.bottom + 4 }, buildItems())
       }}
     >
       {/* h-[17px] ≈ the siblings' 11px text line box, so all three footer
@@ -2222,7 +2265,7 @@ export function Timeline({ height }: { height: number }) {
               <Plus size={12} strokeWidth={1.75} />
               Audio
             </button>
-            <SaveTrackTemplateButton />
+            <TrackPresetMenuButton />
           </div>
         </div>
 

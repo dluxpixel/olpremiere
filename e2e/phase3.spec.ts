@@ -93,15 +93,6 @@ test('markers: add, exact-time dedupe, remove', async ({ page }) => {
   await page.getByTestId('timeline').screenshot({ path: `${VERIFY}/markers.png` })
 })
 
-test('multiple sequences: new empties the timeline, switching back restores', async ({ page }) => {
-  await addClip(page)
-  await page.getByTestId('sequence-new').click()
-  await expect(vclip(page)).toHaveCount(0)
-  await expect(page.getByTestId('sequence-select')).toHaveValue(/.+/)
-  await page.getByTestId('sequence-select').selectOption({ label: 'Sequence 1' })
-  await expect(vclip(page)).toHaveCount(1)
-})
-
 test('ripple trim: Ctrl+drag the out edge pulls the next clip along', async ({ page }) => {
   await addClip(page)
   await page.getByTestId('asset-card').dblclick() // second clip lands after the first

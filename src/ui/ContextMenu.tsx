@@ -140,7 +140,18 @@ export function ContextMenu() {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') close()
     }
-    const onScroll = () => close()
+    // Scroll closes the menu (it is anchored to a point that just moved) —
+    // EXCEPT for the scroll the opening click itself causes. A menu opened by
+    // LEFT-click from a button inside a scrollable column (the track preset
+    // bookmark, auto-level, audio role) focuses that button, the browser
+    // scrolls it into view, and the capture-phase listener below fired ~8ms
+    // after open and shut the menu again before it could be used. Right-click
+    // menus never hit this because nothing takes focus.
+    const openedAt = performance.now()
+    const onScroll = () => {
+      if (performance.now() - openedAt < 250) return
+      close()
+    }
     window.addEventListener('keydown', onKey)
     window.addEventListener('scroll', onScroll, true)
     window.addEventListener('resize', close)
