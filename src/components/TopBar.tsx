@@ -1,7 +1,6 @@
 import {
   ChevronDown,
   Circle,
-  Clapperboard,
   Download,
   FolderOpen,
   HardDriveDownload,
@@ -37,6 +36,7 @@ import {
   useRecorder,
 } from '../state/voiceRecorder'
 import { Button, IconButton } from '../ui/Button'
+import { MelonMark } from '../ui/BootSplash'
 import { ExportDialog } from './ExportDialog'
 import { ProjectsDialog } from './ProjectsDialog'
 
@@ -294,9 +294,11 @@ export function TopBar() {
       data-testid="topbar"
       className="flex h-12 shrink-0 items-center gap-3 border-b border-border bg-bg-panel px-3"
     >
+      {/* The suite's melon mark, same mascot as the OL Studio DAW — one brand,
+          two apps. Name reads OL Premiere: this is the video editor. */}
       <div className="flex items-center gap-2">
-        <Clapperboard size={18} className="text-accent" aria-hidden />
-        <span className="text-ui font-semibold tracking-[0.08em]">OL Studio</span>
+        <MelonMark size={18} />
+        <span className="text-ui font-semibold tracking-[0.08em]">OL Premiere</span>
       </div>
       <div className="h-4 w-px bg-border" />
       <ProjectName />

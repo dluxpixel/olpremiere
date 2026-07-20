@@ -1,6 +1,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App'
+import { Boot } from './ui/BootSplash'
 import { joinRoomFromUrl } from './collab/collabControl'
 import { invalidatePreview } from './engine/preview'
 import { loadTitleFonts } from './engine/render/titleFonts'
@@ -25,6 +26,8 @@ initUpdateCheck()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <App />
+    <Boot>
+      <App />
+    </Boot>
   </StrictMode>,
 )

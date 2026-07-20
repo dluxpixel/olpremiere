@@ -1,0 +1,175 @@
+/*
+ * Boot splash, shared brand moment with the OL Studio DAW: deep near-black
+ * field, soft coral glow, the pixel-melon floating as the hero. Clicking the
+ * melon is the user gesture that unlocks audio and "opens" into the editor.
+ * Kept coral-on-black even though the editor's UI accent is lavender: the
+ * splash is the SUITE's brand, identical across both apps by design.
+ */
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background:
+    radial-gradient(closest-side at 50% 50%, rgba(240, 90, 70, 0.14), transparent 62%),
+    radial-gradient(135% 105% at 50% 47%, #16171c 0%, #0c0d11 56%, #070709 100%);
+  animation: bootIn 460ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.overlay.leaving {
+  animation: bootOut 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  pointer-events: none;
+}
+
+/* Large, slow ambient halo behind everything, the bloom that fills the dark. */
+.overlay::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: clamp(520px, 92vmin, 1200px);
+  aspect-ratio: 1 / 1;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(240, 90, 70, 0.22), rgba(240, 90, 70, 0) 70%);
+  filter: blur(24px);
+  pointer-events: none;
+  animation: ambientBreathe 6.5s ease-in-out infinite;
+}
+
+/* The mascot is the button: clicking it (or Enter/Space when focused) launches. */
+.melonBtn {
+  position: relative;
+  z-index: 1;
+  display: inline-grid;
+  place-items: center;
+  background: transparent;
+  border: none;
+  padding: 0;
+  line-height: 0;
+  transition: transform 160ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.melonBtn:hover,
+.melonBtn:focus-visible {
+  transform: scale(1.05);
+}
+.melonBtn:active {
+  transform: scale(0.97);
+}
+.melonBtn:focus-visible {
+  outline: none; /* the glow + mascot are the focus affordance; no box on a floating fruit */
+}
+
+/* The tighter, brighter coral glow hugging the fruit (breathes faster than ambient). */
+.halo {
+  position: absolute;
+  z-index: 0;
+  width: clamp(300px, 54vmin, 720px);
+  aspect-ratio: 1 / 1;
+  border-radius: 50%;
+  background: radial-gradient(
+    closest-side,
+    rgba(240, 96, 76, 0.62),
+    rgba(235, 70, 60, 0.3) 46%,
+    rgba(235, 70, 60, 0) 72%
+  );
+  filter: blur(6px);
+  pointer-events: none;
+  animation: haloPulse 3.6s ease-in-out infinite;
+}
+
+/* The mascot itself, crisp at any size via the SVG viewBox. */
+.melon {
+  position: relative;
+  z-index: 1;
+  display: block;
+  width: clamp(170px, 30vmin, 410px);
+  height: auto;
+  image-rendering: pixelated;
+  filter: drop-shadow(0 12px 26px rgba(0, 0, 0, 0.55));
+  animation: melonBob 3.8s ease-in-out infinite;
+}
+
+/* Exit: the fruit pops forward + fades while the backdrop pushes back + fades. */
+.overlay.leaving::before,
+.overlay.leaving .melon {
+  animation: none;
+}
+.overlay.leaving .melonBtn {
+  animation: melonPop 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes bootIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes bootOut {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.08); /* backdrop pushes back as the editor opens through it */
+  }
+}
+@keyframes melonBob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-7px);
+  }
+}
+@keyframes haloPulse {
+  0%,
+  100% {
+    opacity: 0.78;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.06);
+  }
+}
+@keyframes ambientBreathe {
+  0%,
+  100% {
+    opacity: 0.65;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.07);
+  }
+}
+@keyframes melonPop {
+  0% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  40% {
+    transform: scale(1.13);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1.5);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .overlay,
+  .overlay.leaving,
+  .overlay::before,
+  .halo,
+  .melon,
+  .overlay.leaving .melonBtn {
+    animation: none;
+  }
+}
