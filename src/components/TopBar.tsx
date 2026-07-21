@@ -1,6 +1,4 @@
 import {
-  ChevronDown,
-  Circle,
   Download,
   FolderOpen,
   HardDriveDownload,
@@ -9,11 +7,10 @@ import {
   Mic,
   Redo2,
   Settings,
-  Square,
   Undo2,
   Users,
 } from 'lucide-react'
-import { type MouseEvent as ReactMouseEvent, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   enterRoom,
   leaveRoom,
@@ -23,19 +20,10 @@ import {
   useCollab,
 } from '../collab/collabControl'
 import { comboLabel } from '../keymap'
-import { openContextMenu } from '../state/contextMenu'
 import { exportProjectToFile, importProjectFromFile } from '../state/projectFile'
 import { useStore } from '../state/store'
 import { useToasts } from '../state/toasts'
-import {
-  canRecordVoice,
-  listAudioInputs,
-  setEnhance,
-  setInputDevice,
-  startRecording,
-  stopRecording,
-  useRecorder,
-} from '../state/voiceRecorder'
+import { canRecordVoice, closeStudio, openStudio, useRecorder } from '../state/voiceRecorder'
 import { Button, IconButton } from '../ui/Button'
 import { MelonMark } from '../ui/BootSplash'
 import { ExportDialog } from './ExportDialog'
@@ -127,89 +115,26 @@ function CollabButton() {
   )
 }
 
-/** Record a voiceover from the mic; the take lands in the bin as an audio clip. */
+/**
+ * Opens the recording studio (the movable panel). No longer an instant-record
+ * button: a take now lands in the studio for review (keep or discard) rather
+ * than dropping straight into the bin. Lit while the studio is open or a take
+ * is recording.
+ */
 function RecordButton() {
+  const studioOpen = useRecorder((s) => s.studioOpen)
   const recording = useRecorder((s) => s.recording)
-  const startedAt = useRecorder((s) => s.startedAt)
-  const selectedInputId = useRecorder((s) => s.selectedInputId)
-  const enhance = useRecorder((s) => s.enhance)
-  const [elapsed, setElapsed] = useState(0)
-
-  useEffect(() => {
-    if (!recording || startedAt === null) {
-      setElapsed(0)
-      return
-    }
-    const tick = () => setElapsed(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)))
-    tick()
-    const id = window.setInterval(tick, 250)
-    return () => window.clearInterval(id)
-  }, [recording, startedAt])
-
   if (!canRecordVoice()) return null
-
-  // Open the input-device menu at the cursor: system default first, then every
-  // audio input, with a ✓ on the active one. Fixes "I recorded but got silence"
-  // when the OS default isn't the mic being spoken into.
-  const chooseDevice = async (e: ReactMouseEvent<HTMLButtonElement>) => {
-    const { clientX, clientY } = e
-    const inputs = await listAudioInputs()
-    const check = (on: boolean, label: string) => (on ? `${label}  ✓` : label)
-    openContextMenu({ preventDefault: () => {}, clientX, clientY }, [
-      {
-        label: check(selectedInputId === null, 'System default'),
-        onClick: () => setInputDevice(null),
-      },
-      ...inputs.map((d, i) => ({
-        label: check(d.deviceId === selectedInputId, d.label || `Microphone ${i + 1}`),
-        onClick: () => setInputDevice(d.deviceId),
-        separator: i === 0,
-      })),
-      {
-        // Off by default = pristine capture; on = noise suppression to quiet a
-        // passing car / fans / hum. See audioConstraintFor.
-        label: check(enhance, 'Reduce background noise'),
-        onClick: () => setEnhance(!enhance),
-        separator: true,
-      },
-    ])
-  }
-
-  const mmss = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, '0')}`
   return (
-    <span className="flex items-center gap-0.5">
-      <IconButton
-        label={recording ? 'Stop recording' : 'Record voiceover'}
-        active={recording}
-        data-testid="record-voice"
-        onClick={() => (recording ? stopRecording() : void startRecording())}
-        className={recording ? 'bg-ember-quiet! text-ember!' : ''}
-      >
-        {recording ? (
-          <Square size={14} strokeWidth={2} fill="currentColor" />
-        ) : (
-          <Mic size={16} strokeWidth={1.5} />
-        )}
-      </IconButton>
-      <IconButton
-        size="compact"
-        label="Choose microphone"
-        disabled={recording}
-        data-testid="record-device"
-        onClick={(e) => void chooseDevice(e)}
-      >
-        <ChevronDown size={13} strokeWidth={1.5} />
-      </IconButton>
-      {recording && (
-        <span
-          data-testid="record-elapsed"
-          className="ml-1 flex items-center gap-1 font-numeric text-ui-sm text-ember"
-        >
-          <Circle size={7} fill="currentColor" className="animate-pulse" aria-hidden />
-          {mmss}
-        </span>
-      )}
-    </span>
+    <IconButton
+      label="Recording studio"
+      active={studioOpen || recording}
+      data-testid="record-voice"
+      onClick={() => (studioOpen ? closeStudio() : void openStudio())}
+      className={recording ? 'bg-ember-quiet! text-ember!' : ''}
+    >
+      <Mic size={16} strokeWidth={1.5} />
+    </IconButton>
   )
 }
 

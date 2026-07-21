@@ -5,6 +5,8 @@ import { KeyboardHelp } from './components/KeyboardHelp'
 import { LeftPanel } from './components/LeftPanel'
 import { Monitor } from './components/Monitor'
 import { QuickStart } from './components/QuickStart'
+import { RecordingStudio } from './components/RecordingStudio'
+import { useRecorder } from './state/voiceRecorder'
 import { Timeline } from './components/Timeline'
 import { TopBar } from './components/TopBar'
 import { TranscribeStatus } from './components/TranscribeStatus'
@@ -309,6 +311,11 @@ function buildAppBindings(): Binding[] {
   ]
 }
 
+function RecordingStudioMount() {
+  const open = useRecorder((s) => s.studioOpen)
+  return open ? <RecordingStudio /> : null
+}
+
 export default function App() {
   const { sizes, adjust } = useLayoutSizes()
   // One binding list feeds the keymap, the palette, and the help sheet, so the
@@ -349,6 +356,7 @@ export default function App() {
       </div>
       <Toaster />
       <QuickStart />
+      <RecordingStudioMount />
       <TranscribeStatus />
       <ContextMenu />
       <CommandPalette bindings={bindings} />
