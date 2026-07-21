@@ -651,6 +651,10 @@ const ClipView = memo(function ClipView({
     const isEffect = dragHasType(t, EFFECT_MIME)
     const isTransition = dragHasType(t, TRANSITION_MIME)
     if (!isEffect && !isTransition) return
+    // Effects composite only on video (resolveFrame skips audio tracks), so an
+    // effect dropped on an audio clip would render nothing. Refuse it here so the
+    // cursor shows "no-drop" instead of accepting a dead effect.
+    if (isAudio && isEffect) return
     // Beat the track-level asset drop handler to the event.
     e.preventDefault()
     e.stopPropagation()
@@ -677,6 +681,7 @@ const ClipView = memo(function ClipView({
     const effectType = e.dataTransfer.getData(EFFECT_MIME)
     const transitionKind = e.dataTransfer.getData(TRANSITION_MIME)
     if (!effectType && !transitionKind) return
+    if (isAudio && effectType) return // effects don't composite on audio (also guarded in applyEffect)
     e.preventDefault()
     e.stopPropagation()
     clearFxDrop()

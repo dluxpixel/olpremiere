@@ -230,8 +230,17 @@ export function resetAllChannels(clipId: string): void {
 // effect twice. Every call is one named undo step; the math lives in
 // engine/effects/ops.ts and is unit-tested there.
 
-/** Apply an effect to a clip. Returns silently for unknown types. */
+/**
+ * Apply an effect to a clip. Returns silently for unknown types, and for clips
+ * on an AUDIO track: effects only composite on video tracks (resolveFrame skips
+ * audio), so a grade/key/blur dropped on an audio clip would sit dead and render
+ * nothing — the "why did nothing happen?" confusion. Titles and adjustment
+ * layers DO render, so they stay eligible.
+ */
 export function applyEffect(clipId: string, type: string): void {
+  const seq = activeSequence(useStore.getState().project)
+  const track = seq.tracks.find((t) => t.clips.some((c) => c.id === clipId))
+  if (!track || track.kind === 'audio') return
   const label = getEffect(type)?.label ?? type
   const id = newId()
   mapClip(clipId, `Add ${label}`, (c) => ops.addEffect(c, type, id))
