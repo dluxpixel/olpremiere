@@ -16,9 +16,11 @@ import {
   setOutputDevice,
   startRecording,
   stopRecording,
+  takeElapsedMs,
   useRecorder,
 } from '../state/voiceRecorder'
 import { canPickOutput, listAudioOutputs } from '../state/recordingMonitor'
+import { ensurePlaying, pausePlayback } from '../state/playbackControl'
 import { IconButton } from '../ui/Button'
 
 const SELECT_CLS =
@@ -48,6 +50,7 @@ function LevelMeter() {
 
 export function RecordingStudio() {
   const recording = useRecorder((s) => s.recording)
+  const paused = useRecorder((s) => s.paused)
   const startedAt = useRecorder((s) => s.startedAt)
   const pending = useRecorder((s) => s.pendingTake)
   const monitoring = useRecorder((s) => s.monitoring)
@@ -69,7 +72,8 @@ export function RecordingStudio() {
       setElapsed(0)
       return
     }
-    const tick = () => setElapsed(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)))
+    // takeElapsedMs excludes paused spans, so the readout freezes while held.
+    const tick = () => setElapsed(Math.floor(takeElapsedMs() / 1000))
     tick()
     const id = window.setInterval(tick, 250)
     return () => window.clearInterval(id)
@@ -131,7 +135,18 @@ export function RecordingStudio() {
             type="button"
             data-testid="studio-record"
             aria-label={recording ? 'Stop recording' : 'Record'}
-            onClick={() => (recording ? stopRecording() : void startRecording())}
+            onClick={() => {
+              if (recording) {
+                // End the take and stop the preview together.
+                stopRecording()
+                pausePlayback()
+              } else {
+                // Roll the preview so you can dub to picture; Space then pauses
+                // both and resumes both.
+                void startRecording()
+                ensurePlaying()
+              }
+            }}
             className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full transition-colors duration-[120ms] ${
               recording ? 'bg-ember text-black' : 'bg-danger text-white hover:brightness-110'
             }`}
@@ -145,10 +160,13 @@ export function RecordingStudio() {
           <div className="flex min-w-0 flex-1 flex-col gap-1.5">
             <div className="flex items-center justify-between">
               <span className="text-ui-sm text-text-secondary">
-                {recording ? 'Recording' : pending ? 'Review your take' : 'Ready'}
+                {recording ? (paused ? 'Paused' : 'Recording') : pending ? 'Review your take' : 'Ready'}
               </span>
               {recording && (
-                <span className="font-numeric text-ui-sm text-ember" data-testid="studio-elapsed">
+                <span
+                  className={`font-numeric text-ui-sm ${paused ? 'text-text-muted' : 'text-ember'}`}
+                  data-testid="studio-elapsed"
+                >
                   {mmss}
                 </span>
               )}
@@ -156,6 +174,11 @@ export function RecordingStudio() {
             <LevelMeter />
           </div>
         </div>
+        {recording && (
+          <p className="-mt-1 text-ui-sm text-text-muted" data-testid="studio-dub-hint">
+            {paused ? 'Space resumes the take and the preview.' : 'Space pauses the take and the preview — for dubbing to picture.'}
+          </p>
+        )}
 
         {/* The captured take: keep it or throw it away. */}
         {pending && (

@@ -1,0 +1,63 @@
+// The shared IPC type surface between the Electron main process, the sandboxed
+// preload, and the renderer (via electron-api.d.ts).
+
+export type NativeEncoder = 'x264' | 'x265' | 'nvenc-h264' | 'nvenc-hevc' | 'nvenc-av1' | 'prores' | 'lossless'
+
+export interface NativeCaps {
+  ok: boolean
+  encoders: string[]
+  nvenc: { h264: boolean; hevc: boolean; av1: boolean }
+}
+
+export interface NativeExportConfig {
+  width: number
+  height: number
+  fps: number
+  totalFrames: number
+  encoder: NativeEncoder
+  /** QP/CRF on the 0–51 scale (used by x264/x265/nvenc; ignored by prores/lossless). */
+  quality: number
+  hasAudio: boolean
+  /** When set, skip the save dialog (used by re-export / tests). */
+  outPath?: string
+  suggestedName: string
+}
+
+export interface NativeStartResult {
+  started: boolean
+  outPath?: string
+  cancelled?: boolean
+  error?: string
+}
+
+export interface NativeFinishResult {
+  ok: boolean
+  outPath?: string
+  sizeBytes?: number
+  error?: string
+}
+
+export interface NativeProgress {
+  frame: number
+  totalFrames: number
+}
+
+export interface OlApi {
+  /** Always true when running inside the desktop shell — the renderer's isElectron gate. */
+  readonly isElectron: true
+  getVersion(): Promise<string>
+  /** Which native encoders this machine's bundled ffmpeg + GPU actually offer. */
+  nativeProbe(): Promise<NativeCaps>
+  /** Write the rendered audio mix (a full WAV) to a temp file BEFORE starting (it's an ffmpeg input). */
+  nativePrepareAudio(wav: ArrayBuffer): Promise<{ ok: boolean }>
+  /** Pick a destination (or use config.outPath) and spawn ffmpeg. */
+  nativeStart(config: NativeExportConfig): Promise<NativeStartResult>
+  /** Stream one raw RGBA frame to ffmpeg; resolves when it's accepted (backpressure). */
+  nativeWriteFrame(frame: ArrayBuffer): Promise<{ ok: boolean; error?: string }>
+  /** Close the stream, wait for ffmpeg to finish, return the result. */
+  nativeFinish(): Promise<NativeFinishResult>
+  /** Abort + clean up a partial file. */
+  nativeCancel(): Promise<void>
+  /** Encode progress (frame/totalFrames) parsed from ffmpeg. Returns an unsubscribe fn. */
+  onNativeProgress(cb: (p: NativeProgress) => void): () => void
+}

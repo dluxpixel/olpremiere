@@ -136,9 +136,10 @@ export async function exportSequence(
         finish(() => resolve(msg.buffer ? new Blob([msg.buffer], { type: 'video/mp4' }) : null))
       } else if (msg.type === 'cancelled') {
         finish(() => reject(abortError()))
-      } else {
+      } else if (msg.type === 'error') {
         finish(() => reject(new Error(msg.message)))
       }
+      // 'frame' is native-mode only and never reaches this WebCodecs orchestrator.
     }
     worker.onerror = (e) => finish(() => reject(new Error(`Export worker crashed: ${e.message || 'unknown error'}`)))
     worker.onmessageerror = () => finish(() => reject(new Error('Export worker message could not be decoded')))

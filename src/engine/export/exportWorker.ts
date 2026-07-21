@@ -30,13 +30,89 @@ import type { RenderLayer } from '../render/types'
 import type { Clip, Id } from '../types'
 import {
   AUDIO_CHUNK_FRAMES,
-  H264_CODECS,
+  effectiveAudioBitrate,
+  effectiveRateControl,
+  effectiveVideoCodec,
   firstSupported,
+  isHdRaster,
+  keyframeStride,
   packPlanarChunk,
   pcmChunks,
+  quantizerFor,
+  videoCodecLadder,
+  videoEncoderConfig,
+  type RateControl,
+  type VideoCodecFamily,
   type ExportRequest,
   type ExportResponse,
 } from './messages'
+
+type Accel = 'prefer-hardware' | 'prefer-software' | 'no-preference'
+
+/** Per-frame encode() options carrying the constant-QP quantizer for a codec family. */
+function quantizerEncodeOption(family: VideoCodecFamily, q: number): VideoEncoderEncodeOptions {
+  if (family === 'av1') return { av1: { quantizer: q } }
+  if (family === 'hevc') return { hevc: { quantizer: q } }
+  return { avc: { quantizer: q } }
+}
+
+/** HEVC needs the explicit 'hevc' bitstream format so a hvcC config box is emitted (else the MP4 is unplayable). */
+function withHevcFormat(config: VideoEncoderConfig, family: VideoCodecFamily): VideoEncoderConfig {
+  return family === 'hevc' ? { ...config, hevc: { format: 'hevc' } } : config
+}
+
+/**
+ * Behavioural constant-QP probe. isConfigSupported validates the CONFIG but the
+ * per-frame quantizer is passed at encode() time, so an encoder can accept
+ * bitrateMode:'quantizer' and then silently rate-control to its own default —
+ * an invisible failure that would defeat the whole "flawless" promise. This
+ * encodes a few noise frames at a low QP and a high QP on the REAL codec/accel
+ * and returns true only if the output byte size actually responds to QP. Cheap
+ * (128×72). A false negative merely falls back to high-bitrate VBR (still great),
+ * so erring toward "not honoured" is safe.
+ */
+async function probeQuantizerHonored(codec: string, accel: Accel, family: VideoCodecFamily, fps: number): Promise<boolean> {
+  const W = 128
+  const H = 72
+  const measure = async (qp: number): Promise<number> => {
+    let bytes = 0
+    const enc = new VideoEncoder({ output: (c) => (bytes += c.byteLength), error: () => {} })
+    enc.configure(
+      withHevcFormat(
+        videoEncoderConfig({ codec, accel, width: W, height: H, fps, videoBitrate: 2_000_000, rateControl: 'quantizer', isHd: true }),
+        family,
+      ),
+    )
+    const q = quantizerFor(family, qp)
+    for (let i = 0; i < 6; i++) {
+      const canvas = new OffscreenCanvas(W, H)
+      const ctx = canvas.getContext('2d')!
+      const img = ctx.createImageData(W, H)
+      for (let p = 0; p < img.data.length; p += 4) {
+        // Deterministic high-frequency noise so QP has real detail to quantise.
+        const v = ((p * 2654435761 + i * 40503) >>> 0) & 0xff
+        img.data[p] = v
+        img.data[p + 1] = (v * 3) & 0xff
+        img.data[p + 2] = (v * 7) & 0xff
+        img.data[p + 3] = 255
+      }
+      ctx.putImageData(img, 0, 0)
+      const vf = new VideoFrame(canvas, { timestamp: Math.round((i * 1e6) / fps), duration: Math.round(1e6 / fps) })
+      enc.encode(vf, { keyFrame: i === 0, ...quantizerEncodeOption(family, q) })
+      vf.close()
+    }
+    await enc.flush()
+    enc.close()
+    return bytes
+  }
+  try {
+    const lo = await measure(4) // near-lossless → large
+    const hi = await measure(50) // heavily quantised → small
+    return hi > 0 && lo > hi * 1.5
+  } catch {
+    return false
+  }
+}
 
 const scope = self as unknown as DedicatedWorkerGlobalScope
 
@@ -62,6 +138,19 @@ const wakeAudioLoop = (): void => {
   audioWaiter = null
 }
 
+// NATIVE mode credit: the render loop posts one RGBA frame, then parks here until
+// the page confirms it was written to ffmpeg ('frameAck'). Serialized (one frame
+// in flight) → peak memory bounded to a single frame. Cancel wakes it too.
+let frameAckWaiter: (() => void) | null = null
+const wakeFrameAck = (): void => {
+  frameAckWaiter?.()
+  frameAckWaiter = null
+}
+const waitFrameAck = (): Promise<void> =>
+  new Promise((resolve) => {
+    frameAckWaiter = resolve
+  })
+
 // SAFETY NET: nothing may ever surface as the opaque "worker crashed: unknown
 // error" again. Any exception that escapes run()'s try/catch (an encoder
 // output callback throwing, a stray rejected promise) posts a real message;
@@ -79,6 +168,9 @@ scope.onmessage = (e: MessageEvent<ExportRequest>) => {
   if (msg.type === 'cancel') {
     cancelled = true
     wakeAudioLoop()
+    wakeFrameAck()
+  } else if (msg.type === 'frameAck') {
+    wakeFrameAck()
   } else if (msg.type === 'audioSegment') {
     if (audioDiscard) {
       post({ type: 'segmentDone' })
@@ -88,7 +180,7 @@ scope.onmessage = (e: MessageEvent<ExportRequest>) => {
     }
   } else if (!started) {
     started = true
-    void run(msg)
+    void (msg.native ? runNative(msg) : run(msg))
   }
 }
 
@@ -162,6 +254,177 @@ async function frameForClip(p: ClipProvider, sourceT: number): Promise<Offscreen
   return w ? w.canvas : null
 }
 
+/**
+ * NATIVE (Electron ffmpeg) render path. Uses the SAME media-open + shared WebGL
+ * render pipeline as run() so preview == export, but instead of a WebCodecs
+ * encoder + muxer it reads the rendered RGBA back and streams each frame to the
+ * page (which relays it to a native ffmpeg process). No WebCodecs, no muxer, no
+ * audio here — audio is rendered + muxed on the page/main side.
+ */
+async function runNative(init: Extract<ExportRequest, { type: 'init' }>): Promise<void> {
+  const cleanups: (() => void)[] = []
+  let stage = 'preparing'
+  let outcome: { msg: ExportResponse; transfer: Transferable[] } | null = null
+  try {
+    const { settings, sequence, assets } = init
+    const W = settings.width
+    const H = settings.height
+    const framesTotal = Math.max(1, Math.ceil((settings.endS - settings.startS) * settings.fps))
+    post({ type: 'progress', progress: { phase: 'preparing', framesDone: 0, framesTotal } })
+    await loadTitleFonts(scope.fonts)
+
+    // --- open media (identical to run()) -----------------------------------
+    stage = 'opening media'
+    const kindById = new Map<Id, 'video' | 'audio' | 'image'>()
+    const blobById = new Map<Id, Blob>()
+    const nameById = new Map<Id, string>()
+    const bitmaps = new Map<Id, ImageBitmap>()
+    for (const asset of assets) {
+      checkCancel()
+      kindById.set(asset.id, asset.kind)
+      blobById.set(asset.id, asset.blob)
+      nameById.set(asset.id, asset.name)
+      if (asset.kind === 'image') {
+        try {
+          const bitmap = await createImageBitmap(asset.blob)
+          bitmaps.set(asset.id, bitmap)
+          cleanups.push(() => bitmap.close())
+        } catch {
+          throw new Error(`could not decode image "${asset.name}"`)
+        }
+      }
+    }
+
+    const clipById = new Map<Id, Clip>()
+    for (const track of sequence.tracks) {
+      if (track.kind !== 'video') continue
+      for (const clip of track.clips) clipById.set(clip.id, clip)
+    }
+
+    const clipProviders = new Map<Id, ClipProvider>()
+    const providerFor = async (clip: Clip): Promise<ClipProvider | null> => {
+      const existing = clipProviders.get(clip.id)
+      if (existing) return existing
+      const blob = blobById.get(clip.assetId)
+      if (!blob) return null
+      const input = new Input({ source: new BlobSource(blob), formats: ALL_FORMATS })
+      let track
+      try {
+        track = await input.getPrimaryVideoTrack()
+      } catch (err) {
+        input.dispose()
+        throw new Error(
+          `could not read video "${nameById.get(clip.assetId) ?? clip.assetId}": ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+      if (!track) {
+        input.dispose()
+        return null
+      }
+      const sink = new CanvasSink(track)
+      const iterator = sink.canvases(Math.max(0, clip.inS))
+      const provider: ClipProvider = { sink, iterator, dispose: () => input.dispose(), started: false, current: null, ahead: null, disposed: false }
+      clipProviders.set(clip.id, provider)
+      cleanups.push(() => {
+        if (provider.disposed) return
+        void provider.iterator.return?.(undefined)
+        input.dispose()
+      })
+      return provider
+    }
+    const PROVIDER_REAP_MARGIN_S = 10
+    const reapProviders = (t: number): void => {
+      for (const [id, provider] of clipProviders) {
+        const clip = clipById.get(id)
+        if (!clip) continue
+        const endS = clip.startS + (clip.outS - clip.inS) / Math.max(Math.abs(clip.speed) || 1, 1e-6)
+        if (t > endS + PROVIDER_REAP_MARGIN_S) {
+          provider.disposed = true
+          void provider.iterator.return?.(undefined)
+          provider.dispose()
+          clipProviders.delete(id)
+        }
+      }
+    }
+
+    // --- shared WebGL2 renderer (identical to run()) ------------------------
+    stage = 'initializing renderer'
+    const canvas = new OffscreenCanvas(W, H)
+    const gl = canvas.getContext('webgl2', { premultipliedAlpha: false, preserveDrawingBuffer: true })
+    if (!gl) throw new Error('WebGL2 is unavailable in this worker, cannot export')
+    const renderer = createRenderer(gl)
+    cleanups.push(() => renderer.dispose())
+
+    const gatherTextures = async (layers: RenderLayer[]): Promise<Map<RenderLayer, TexImageSource>> => {
+      const map = new Map<RenderLayer, TexImageSource>()
+      for (const layer of layers) {
+        if (layer.title) {
+          map.set(layer, rasterizeTitle(layer.title, sequence.width, sequence.height))
+          continue
+        }
+        const kind = kindById.get(layer.assetId)
+        if (kind === 'image') {
+          const bmp = bitmaps.get(layer.assetId)
+          if (bmp) map.set(layer, bmp)
+        } else if (kind === 'video') {
+          const clip = clipById.get(layer.clipId)
+          if (!clip) continue
+          const provider = await providerFor(clip)
+          if (!provider) continue
+          const c = await frameForClip(provider, Math.max(0, layer.sourceTimeS))
+          if (c) map.set(layer, c)
+        }
+      }
+      return map
+    }
+
+    // --- render → readback → stream ----------------------------------------
+    stage = 'rendering video'
+    for (let f = 0; f < framesTotal; f++) {
+      checkCancel()
+      const t = settings.startS + f / settings.fps
+      const frame = resolveFrame(sequence, t)
+      const layers: RenderLayer[] = []
+      for (const op of frame.ops) {
+        if (op.type === 'layer') layers.push(op.layer)
+        else if (op.type === 'transition') layers.push(op.from, op.to)
+      }
+      const texMap = await gatherTextures(layers)
+      renderer.render(frame, (layer) => texMap.get(layer) ?? null)
+
+      // Read the rendered pixels (bottom-origin RGBA; ffmpeg -vf vflip corrects the
+      // row order). A fresh buffer per frame because it's transferred to the page.
+      const pixels = new Uint8Array(W * H * 4)
+      gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, pixels)
+      post({ type: 'frame', index: f, data: pixels.buffer }, [pixels.buffer])
+      await waitFrameAck()
+      checkCancel()
+
+      if ((f + 1) % 3 === 0 || f + 1 === framesTotal) {
+        post({ type: 'progress', progress: { phase: 'video', framesDone: f + 1, framesTotal } })
+      }
+      if (f % Math.max(1, Math.round(settings.fps)) === 0) reapProviders(t)
+    }
+    outcome = { msg: { type: 'done', buffer: null }, transfer: [] }
+  } catch (err) {
+    if (err instanceof CancelledError || cancelled) {
+      outcome = { msg: { type: 'cancelled' }, transfer: [] }
+    } else {
+      const message = err instanceof Error ? err.message : String(err)
+      outcome = { msg: { type: 'error', message: `Native export failed while ${stage}: ${message}` }, transfer: [] }
+    }
+  } finally {
+    for (const cleanup of cleanups.reverse()) {
+      try {
+        cleanup()
+      } catch {
+        // best-effort teardown
+      }
+    }
+    if (outcome) post(outcome.msg, outcome.transfer)
+  }
+}
+
 async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void> {
   const cleanups: (() => void)[] = []
   let stage = 'preparing'
@@ -177,7 +440,7 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
     const framesTotal = Math.max(1, Math.ceil((settings.endS - settings.startS) * settings.fps))
     // HD+ gets the quality-tuned encode + BT.709 tag (the YouTube path); SD stays
     // byte-stable so the golden / preview==export tests are unaffected.
-    const isHd = settings.height >= 720 || settings.width >= 1280
+    const isHd = isHdRaster(settings.width, settings.height)
     post({ type: 'progress', progress: { phase: 'preparing', framesDone: 0, framesTotal } })
 
     // Register bundled title fonts in THIS worker's FontFaceSet before any title
@@ -185,49 +448,78 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
     // face here than in the preview, breaking preview == export.
     await loadTitleFonts(scope.fonts)
 
-    // --- codec picks -------------------------------------------------------
+    // --- codec + rate-control picks ---------------------------------------
     stage = 'probing encoder support'
-    // B-frames reorder encoder output so decode timestamps go backward, and
-    // mp4-muxer's unsigned composition table can't mux that — it crashes with
-    // "Timestamps must be monotonically increasing". 'realtime' asks the encoder
-    // to skip B-frames; hardware encoders can ignore that hint, so the software
-    // path prefers Chrome's openh264 (no B-frames at all). WebCodecs has no
-    // 'require-software', so 'prefer-software' is the strongest software request.
-    const videoConfigFor = (codec: string, accel: HardwarePreference): VideoEncoderConfig => ({
-      codec,
-      width: settings.width,
-      height: settings.height,
-      bitrate: settings.videoBitrate,
-      framerate: settings.fps,
-      // Software (openh264, no B-frames) uses 'quality' rate control for a
-      // cleaner offline file, but only at HD+ (SD stays byte-stable for tests).
-      // Hardware keeps 'realtime', which also suppresses the B-frames that would
-      // crash the muxer (the Auto fallback relies on it).
-      latencyMode: accel === 'prefer-software' && isHd ? 'quality' : 'realtime',
-      hardwareAcceleration: accel,
-    })
-    const accelOrder: HardwarePreference[] =
-      settings.hardwareAcceleration === 'prefer-hardware'
-        ? ['prefer-hardware', 'no-preference']
-        : ['prefer-software', 'no-preference']
-    let picked: { codec: string; accel: HardwarePreference } | null = null
-    for (const accel of accelOrder) {
-      const codec = await firstSupported([...H264_CODECS], async (c) => {
-        const support = await VideoEncoder.isConfigSupported(videoConfigFor(c, accel))
-        return support.supported === true
-      })
-      if (codec) {
-        picked = { codec, accel }
-        break
+    // Effective (SD-gated) knobs: below HD everything collapses to the legacy
+    // avc + implicit-VBR config so the golden export stays byte-identical.
+    const requestedRate = effectiveRateControl(settings, isHd)
+    let codecFamily = effectiveVideoCodec(settings, isHd)
+
+    // Constant-QP forces the SOFTWARE encoder: openh264/libaom reliably honour a
+    // per-frame quantizer, whereas hardware NVENC CQP is not guaranteed (it can
+    // silently ignore the QP). VBR/CBR keep the requested acceleration — and its
+    // 'realtime' B-frame suppression that the Auto crash-fallback depends on.
+    const accelOrderFor = (rate: RateControl): Accel[] =>
+      rate === 'quantizer'
+        ? ['prefer-software', 'no-preference']
+        : settings.hardwareAcceleration === 'prefer-hardware'
+          ? ['prefer-hardware', 'no-preference']
+          : ['prefer-software', 'no-preference']
+
+    const pick = async (family: VideoCodecFamily, rate: RateControl): Promise<{ codec: string; accel: Accel } | null> => {
+      for (const accel of accelOrderFor(rate)) {
+        const codec = await firstSupported(videoCodecLadder(family), async (c) => {
+          const cfg = withHevcFormat(
+            videoEncoderConfig({
+              codec: c,
+              accel,
+              width: settings.width,
+              height: settings.height,
+              fps: settings.fps,
+              videoBitrate: settings.videoBitrate,
+              rateControl: rate,
+              isHd,
+            }),
+            family,
+          )
+          const support = await VideoEncoder.isConfigSupported(cfg)
+          return support.supported === true
+        })
+        if (codec) return { codec, accel }
       }
+      return null
+    }
+
+    let rateControl: RateControl = requestedRate
+    let picked = await pick(codecFamily, rateControl)
+    // Constant-QP config rejected outright → drop to VBR (still a great export).
+    if (!picked && rateControl === 'quantizer') {
+      rateControl = 'variable'
+      picked = await pick(codecFamily, rateControl)
+    }
+    // Chosen codec family isn't encodable here → fall back to H.264.
+    if (!picked && codecFamily !== 'avc') {
+      codecFamily = 'avc'
+      picked = await pick(codecFamily, rateControl)
     }
     if (!picked) {
       throw new Error(
-        `no H.264 (avc1) encoder available for ${settings.width}x${settings.height}@${settings.fps} — try a smaller frame size`,
+        `no ${codecFamily} encoder available for ${settings.width}x${settings.height}@${settings.fps} — try a smaller frame size`,
       )
+    }
+    // Constant-QP: confirm the encoder ACTUALLY honours per-frame QP; if not,
+    // fall back to VBR at the computed bitrate rather than ship a wrong file.
+    if (rateControl === 'quantizer') {
+      const honored = await probeQuantizerHonored(picked.codec, picked.accel, codecFamily, settings.fps)
+      if (!honored) {
+        rateControl = 'variable'
+        picked = (await pick(codecFamily, rateControl)) ?? picked
+      }
     }
     const videoCodec = picked.codec
     const videoAccel = picked.accel
+    const useQuantizer = rateControl === 'quantizer'
+    const frameQuantizer = quantizerFor(codecFamily, settings.quantizer ?? 18)
 
     let audioCodec: 'aac' | 'opus' | null = null
     let audioConfig: AudioEncoderConfig | null = null
@@ -235,20 +527,32 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
       const base = {
         sampleRate: audio.sampleRate,
         numberOfChannels: audio.numberOfChannels,
-        bitrate: 192_000,
+        // SD is forced to the legacy 192k; HD honours the dialog's choice.
+        bitrate: effectiveAudioBitrate(settings, isHd),
       }
-      const aac = await AudioEncoder.isConfigSupported({ codec: 'mp4a.40.2', ...base })
-      if (aac.supported) {
-        audioCodec = 'aac'
-        audioConfig = { codec: 'mp4a.40.2', ...base }
-      } else {
-        const opus = await AudioEncoder.isConfigSupported({ codec: 'opus', ...base })
-        if (opus.supported) {
-          audioCodec = 'opus'
-          audioConfig = { codec: 'opus', ...base }
+      // AAC-LC is the universal default; Opus is smaller/cleaner for voice but
+      // isn't accepted in MP4 by every player, so it's opt-in. Try the preferred
+      // codec first, then fall back to the other. (SD keeps AAC-first so the
+      // golden bytes hold.)
+      const candidates: { codec: 'aac' | 'opus'; str: string }[] =
+        settings.audioCodecPref === 'opus' && isHd
+          ? [
+              { codec: 'opus', str: 'opus' },
+              { codec: 'aac', str: 'mp4a.40.2' },
+            ]
+          : [
+              { codec: 'aac', str: 'mp4a.40.2' },
+              { codec: 'opus', str: 'opus' },
+            ]
+      for (const cand of candidates) {
+        const support = await AudioEncoder.isConfigSupported({ codec: cand.str, ...base })
+        if (support.supported) {
+          audioCodec = cand.codec
+          audioConfig = { codec: cand.str, ...base }
+          break
         }
-        // Neither AAC nor Opus: ship a video-only file instead of failing.
       }
+      // Neither AAC nor Opus: ship a video-only file instead of failing.
       if (!audioConfig) {
         // Video-only fallback: the main thread will still stream the mix (it
         // has no way to know the probe failed) — discard segments on arrival
@@ -289,7 +593,7 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
     // Packets are added in DECODE order with PRESENTATION timestamps; mediabunny
     // derives DTS/ctts itself, so a hardware encoder that emits B-frames muxes
     // fine (the old muxer threw "timestamps must be monotonically increasing").
-    const videoSource = new EncodedVideoPacketSource('avc')
+    const videoSource = new EncodedVideoPacketSource(codecFamily)
     output.addVideoTrack(videoSource, { frameRate: settings.fps })
     const audioSource = audio && audioCodec ? new EncodedAudioPacketSource(audioCodec) : null
     if (audioSource) output.addAudioTrack(audioSource)
@@ -353,7 +657,21 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
         encoderError ??= new Error(`video encoding failed: ${e.message}`)
       },
     })
-    videoEncoder.configure(videoConfigFor(videoCodec, videoAccel))
+    videoEncoder.configure(
+      withHevcFormat(
+        videoEncoderConfig({
+          codec: videoCodec,
+          accel: videoAccel,
+          width: settings.width,
+          height: settings.height,
+          fps: settings.fps,
+          videoBitrate: settings.videoBitrate,
+          rateControl,
+          isHd,
+        }),
+        codecFamily,
+      ),
+    )
     cleanups.push(() => {
       if (videoEncoder.state !== 'closed') videoEncoder.close()
     })
@@ -559,7 +877,7 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
 
     // --- render + encode video ---------------------------------------------
     stage = 'rendering video'
-    const keyEvery = Math.max(1, Math.round(settings.fps * 2))
+    const keyEvery = keyframeStride(settings.fps, settings.keyframeIntervalS)
     for (let f = 0; f < framesTotal; f++) {
       checkCancel()
       throwIfFailed()
@@ -581,7 +899,12 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
         timestamp: Math.round((f * 1e6) / settings.fps),
         duration: Math.round(1e6 / settings.fps),
       })
-      videoEncoder.encode(vframe, { keyFrame: f % keyEvery === 0 })
+      // Constant-QP passes the fixed quantizer on EVERY frame — a missed frame
+      // silently reverts to the encoder's default QP. VBR/CBR pass no QP.
+      videoEncoder.encode(vframe, {
+        keyFrame: f % keyEvery === 0,
+        ...(useQuantizer ? quantizerEncodeOption(codecFamily, frameQuantizer) : {}),
+      })
       vframe.close()
       await drain(videoEncoder)
 

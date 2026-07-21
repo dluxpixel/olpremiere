@@ -25,6 +25,13 @@ interface RecorderState {
   /** The studio panel is open (owns the live mic + monitor graph). */
   studioOpen: boolean
   recording: boolean
+  /**
+   * Take paused mid-record (dubbing): the mic capture is held so both the take
+   * and the preview can stop and resume together on Space, staying in sync and
+   * dropping the paused gap. `recording` stays true while paused — a take is
+   * still in progress.
+   */
+  paused: boolean
   /** Epoch ms the current take started, for the elapsed readout. Null when idle. */
   startedAt: number | null
   /** A finished take awaiting keep/discard. Null when there is nothing to review. */
@@ -37,19 +44,12 @@ interface RecorderState {
   selectedInputId: string | null
   /** Chosen audio-OUTPUT `deviceId`, or null for the system default. Persisted. */
   selectedOutputId: string | null
-  /**
-   * Whether to run browser noise suppression. OFF by default so a voiceover
-   * captures pristine; ON removes steady background sound (a passing car, fans).
-   * Persisted.
-   */
-  enhance: boolean
 }
 
 /** localStorage keys; survive reloads and projects. */
 const INPUT_KEY = 'reel:recorder:input-device'
 const OUTPUT_KEY = 'reel:recorder:output-device'
 const MONITOR_KEY = 'reel:recorder:monitor'
-const ENHANCE_KEY = 'reel:recorder:enhance'
 
 /** Recorded-audio bitrate. 128 kbps Opus is transparent for voice; the browser
  * default is far lower, which is a big part of why raw recordings sound bad. */
@@ -61,14 +61,6 @@ function loadSavedInputId(): string | null {
     return typeof localStorage !== 'undefined' ? localStorage.getItem(INPUT_KEY) : null
   } catch {
     return null
-  }
-}
-
-function loadEnhance(): boolean {
-  try {
-    return typeof localStorage !== 'undefined' && localStorage.getItem(ENHANCE_KEY) === '1'
-  } catch {
-    return false
   }
 }
 
@@ -91,53 +83,37 @@ function loadString(key: string): string | null {
 export const useRecorder = create<RecorderState>(() => ({
   studioOpen: false,
   recording: false,
+  paused: false,
   startedAt: null,
   pendingTake: null,
   monitoring: loadFlag(MONITOR_KEY),
   level: 0,
   selectedInputId: loadSavedInputId(),
   selectedOutputId: loadString(OUTPUT_KEY),
-  enhance: loadEnhance(),
 }))
 
 /**
- * The `getUserMedia` audio constraint. Always captures clean 48 kHz mono with
- * echo-cancellation and auto-gain OFF (those are what mangle a voiceover into a
- * pumped, muffled mess). `reduceNoise` toggles ONLY noise suppression — the one
- * step that removes steady background sound (a passing car, fans) — so it can
- * quiet the room without the old artefacts. A pinned device uses `exact` so we
- * KNOW we captured the mic the user picked; if it's gone `getUserMedia` throws
- * and we fall back loudly rather than record from the wrong device.
+ * The `getUserMedia` audio constraint. Always captures the mic RAW: echo
+ * cancellation, auto-gain AND noise suppression all OFF. Every one of those is
+ * tuned for a phone/call and mangles a real mic into a pumped, muffled,
+ * low-quality mess — the exact complaint. A condenser in a quiet room is best
+ * captured pristine; clean-up (if ever wanted) belongs after the take, not baked
+ * into the capture. Discord's clean suppression is Krisp — proprietary/licensed,
+ * not something a local browser app can embed — so there is no honest "match
+ * Discord" toggle to offer here. A pinned device uses `exact` so we KNOW we
+ * captured the mic the user picked; if it's gone `getUserMedia` throws and we
+ * fall back loudly rather than record from the wrong device.
  */
-export function audioConstraintFor(deviceId: string | null, reduceNoise = false): MediaTrackConstraints {
+export function audioConstraintFor(deviceId: string | null): MediaTrackConstraints {
   const c: MediaTrackConstraints = {
-    // Echo cancellation is for call feedback, not a voiceover — it only muddies
-    // the sound, so keep it off.
     echoCancellation: false,
-    // Noise suppression is the ONE processing step that removes steady/background
-    // sound (a passing car, fans, hum). Off = pristine but captures everything;
-    // on = quieter background for a little lost detail.
-    noiseSuppression: reduceNoise,
-    // Auto-gain stays OFF either way: its volume-riding is what pumped/muffled the
-    // recording, so noise reduction no longer drags that artefact back in.
+    noiseSuppression: false,
     autoGainControl: false,
     sampleRate: 48_000,
     channelCount: 1,
   }
   if (deviceId) c.deviceId = { exact: deviceId }
   return c
-}
-
-/** Toggle background-noise suppression and remember it. */
-export function setEnhance(on: boolean): void {
-  useRecorder.setState({ enhance: on })
-  try {
-    if (typeof localStorage === 'undefined') return
-    if (on) localStorage.setItem(ENHANCE_KEY, '1')
-    else localStorage.removeItem(ENHANCE_KEY)
-  } catch {
-    // Ignore storage failures (private mode / quota); the in-memory choice still applies.
-  }
 }
 
 /**
@@ -207,6 +183,54 @@ export function setMonitoring(on: boolean): void {
 let recorder: MediaRecorder | null = null
 let takeCount = 0
 
+// Pause bookkeeping for the current take. MediaRecorder.pause() drops the paused
+// span from the file, so the take's true length is wall-time minus the paused
+// total — tracked here so the elapsed readout and the take duration both exclude
+// it. Reset at the start of every take.
+let pausedAccumMs = 0
+let pausedAtMs: number | null = null
+
+/** Elapsed RECORDED time of the current take in ms (paused spans excluded). */
+export function takeElapsedMs(): number {
+  const { startedAt } = useRecorder.getState()
+  if (startedAt === null) return 0
+  const now = Date.now()
+  const pausedNow = pausedAtMs !== null ? now - pausedAtMs : 0
+  return Math.max(0, now - startedAt - pausedAccumMs - pausedNow)
+}
+
+/** True while a take is being recorded (including while paused). */
+export const isTakeInProgress = (): boolean => useRecorder.getState().recording
+
+/** Hold the current take — the mic capture pauses, dropping the gap. No-op if idle/already paused. */
+export function pauseRecording(): void {
+  const s = useRecorder.getState()
+  if (!s.recording || s.paused || !recorder || recorder.state !== 'recording') return
+  try {
+    recorder.pause()
+  } catch {
+    return
+  }
+  pausedAtMs = Date.now()
+  useRecorder.setState({ paused: true })
+}
+
+/** Resume a held take. No-op if idle/not paused. */
+export function resumeRecording(): void {
+  const s = useRecorder.getState()
+  if (!s.recording || !s.paused || !recorder || recorder.state !== 'paused') return
+  try {
+    recorder.resume()
+  } catch {
+    return
+  }
+  if (pausedAtMs !== null) {
+    pausedAccumMs += Date.now() - pausedAtMs
+    pausedAtMs = null
+  }
+  useRecorder.setState({ paused: false })
+}
+
 // ---------------------------------------------------------------------------
 // The studio's live mic. ONE MonitorGraph feeds the meter, the "hear myself"
 // path, and MediaRecorder, so opening the studio is the single mic acquisition.
@@ -236,9 +260,9 @@ export async function openStudio(): Promise<void> {
   }
   useRecorder.setState({ studioOpen: true })
   if (monitor) return
-  const { selectedInputId, selectedOutputId, monitoring, enhance } = useRecorder.getState()
+  const { selectedInputId, selectedOutputId, monitoring } = useRecorder.getState()
   try {
-    monitor = await createMonitorGraph(selectedInputId, (id) => audioConstraintFor(id, enhance))
+    monitor = await createMonitorGraph(selectedInputId, (id) => audioConstraintFor(id))
   } catch {
     show('Microphone access was blocked', 'danger')
     useRecorder.setState({ studioOpen: false })
@@ -267,9 +291,9 @@ async function reacquireMonitor(): Promise<void> {
   cancelRaf(levelRaf)
   monitor.dispose()
   monitor = null
-  const { selectedInputId, selectedOutputId, monitoring, enhance } = useRecorder.getState()
+  const { selectedInputId, selectedOutputId, monitoring } = useRecorder.getState()
   try {
-    monitor = await createMonitorGraph(selectedInputId, (id) => audioConstraintFor(id, enhance))
+    monitor = await createMonitorGraph(selectedInputId, (id) => audioConstraintFor(id))
   } catch {
     useRecorder.setState({ level: 0 })
     return
@@ -347,14 +371,19 @@ export async function startRecording(): Promise<void> {
     show('Could not start recording on this device', 'danger')
     return
   }
-  useRecorder.setState({ recording: true, startedAt })
+  // Fresh take: clear any pause carried from the last one.
+  pausedAccumMs = 0
+  pausedAtMs = null
+  useRecorder.setState({ recording: true, paused: false, startedAt })
 }
 
 export function stopRecording(): void {
   if (!useRecorder.getState().recording || !recorder) return
   // onstop fires finalize(); flip the UI state now so the button responds at once.
+  // stop() from a paused recorder is valid and still fires onstop — finalize uses
+  // the pause bookkeeping to report the true (gap-excluded) length.
   recorder.stop()
-  useRecorder.setState({ recording: false, startedAt: null })
+  useRecorder.setState({ recording: false, paused: false, startedAt: null })
 }
 
 /**
@@ -369,9 +398,15 @@ function finalize(mime: string, rec: MediaRecorder, takeChunks: Blob[], startedA
     // A recorder can stop on its OWN (mic unplugged) without stopRecording();
     // reset the flag here or the Stop button sticks forever.
     if (useRecorder.getState().recording) {
-      useRecorder.setState({ recording: false, startedAt: null })
+      useRecorder.setState({ recording: false, paused: false, startedAt: null })
     }
   }
+  // The take's length is wall-time from start minus every paused span (the mic
+  // dropped those), including a pause still open if stop() fired while paused.
+  const pausedTotalMs = pausedAccumMs + (pausedAtMs !== null ? Date.now() - pausedAtMs : 0)
+  const recordedS = Math.max(0, (Date.now() - startedAt - pausedTotalMs) / 1000)
+  pausedAccumMs = 0
+  pausedAtMs = null
   const blob = new Blob(takeChunks, { type: mime || 'audio/webm' })
   if (blob.size === 0) {
     useToasts.getState().show('Recording was empty', 'danger')
@@ -383,7 +418,7 @@ function finalize(mime: string, rec: MediaRecorder, takeChunks: Blob[], startedA
     blob,
     mime,
     name: recordingFileName(takeCount, mime),
-    durationS: Math.max(0, (Date.now() - startedAt) / 1000),
+    durationS: recordedS,
   }
   useRecorder.setState({ pendingTake: take })
 }

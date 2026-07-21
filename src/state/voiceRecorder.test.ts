@@ -69,16 +69,6 @@ describe('audioConstraintFor', () => {
   it('pins an explicitly chosen device with an exact constraint', () => {
     expect(audioConstraintFor('mic-abc123')).toMatchObject({ deviceId: { exact: 'mic-abc123' } })
   })
-
-  it('noise-reduce toggles ONLY noise suppression (echo + auto-gain stay off)', () => {
-    expect(audioConstraintFor(null, true)).toEqual({
-      echoCancellation: false,
-      noiseSuppression: true,
-      autoGainControl: false,
-      sampleRate: 48_000,
-      channelCount: 1,
-    })
-  })
 })
 
 /** Real browser onstop is async — tests fire rec.onstop manually to model it. */

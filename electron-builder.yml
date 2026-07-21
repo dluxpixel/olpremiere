@@ -1,0 +1,29 @@
+# electron-builder config. appId + productName are PINNED FOREVER: changing
+# either moves the userData dir and orphans the user's IndexedDB (saved
+# projects). The app:// origin host in electron/main.ts is pinned for the same
+# reason. Per-user NSIS install → no admin prompt, works unsigned.
+appId: com.olpremiere.desktop
+productName: OL Premiere
+directories:
+  output: release/${version}
+  buildResources: build
+# Lean asar: only the built output + package.json. The renderer is fully bundled
+# by Vite into out/renderer, and the main process externalizes only electron +
+# node builtins (runtime-provided), so no node_modules ship.
+files:
+  - out/**/*
+  - package.json
+asar: true
+# The bundled ffmpeg ships OUTSIDE app.asar (you cannot spawn an exe from a
+# virtual asar path). Resolved at runtime via process.resourcesPath/ffmpeg.
+extraResources:
+  - from: vendor/ffmpeg/win-x64/ffmpeg.exe
+    to: ffmpeg/ffmpeg.exe
+win:
+  target: nsis
+  icon: build/icon.ico
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  artifactName: ${productName}-${version}-setup.${ext}

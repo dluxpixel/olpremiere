@@ -8,3 +8,8 @@ _verify/
 e2e/.fixtures/
 
 .vercel
+
+# Electron desktop build
+out/
+release/
+vendor/ffmpeg/

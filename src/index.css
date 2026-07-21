@@ -114,6 +114,44 @@
   --shadow-pop: 0 12px 32px rgba(60, 50, 35, 0.18), 0 2px 8px rgba(60, 50, 35, 0.12);
 }
 
+/*
+ * Claude theme. David asked for "the same gray as Claude" — the warm charcoal
+ * of the Claude interface with its clay/coral accent. A DARK family (lighter
+ * and warmer-grey than the default near-black studio ground), so color-scheme
+ * stays dark and the clip fills read fine unchanged. Accent is Claude's coral
+ * with white text, matching Claude's own primary button rather than the app's
+ * light-fill/dark-text lavender.
+ */
+:root[data-theme='claude'] {
+  --color-bg-app: #1c1b19;
+  --color-bg-panel: #232220;
+  --color-bg-elevated: #2b2a27;
+  --color-bg-input: #37352f;
+  --color-border: #3b3934;
+  --color-border-strong: #55524b;
+
+  --color-text-primary: #f4f3ee;
+  --color-text-secondary: #c3c0b6;
+  --color-text-muted: #9b988e;
+
+  --color-accent: #d97757;
+  --color-accent-hover: #c96442;
+  --color-accent-quiet: rgba(217, 119, 87, 0.16);
+  --color-accent-fg: #ffffff;
+
+  --color-ember: #e0894d;
+  --color-ember-quiet: rgba(224, 137, 77, 0.16);
+
+  --color-teal: #034f46;
+  --color-success: #4cc2a7;
+
+  --color-playhead: #ff4d3d;
+  --color-danger: #ff6155;
+  --color-warning: #e0894d;
+
+  --shadow-pop: 0 12px 32px rgba(8, 6, 4, 0.55), 0 2px 8px rgba(8, 6, 4, 0.35);
+}
+
 /* Numeric readouts (timecode, durations, meters): mono with tabular figures
    so digits never jitter during playback. */
 @utility font-numeric {

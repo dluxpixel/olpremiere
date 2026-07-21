@@ -4,7 +4,10 @@
 
 import { create } from 'zustand'
 
-export type ThemeChoice = 'dark' | 'light' | 'system'
+export type ThemeChoice = 'dark' | 'light' | 'system' | 'claude'
+
+/** The concrete themes that map to a data-theme attribute (dark is the default). */
+export type ResolvedTheme = 'dark' | 'light' | 'claude'
 
 /** Preview render scale. 1 = full sequence resolution. */
 export type PreviewQuality = 1 | 0.5 | 0.25
@@ -38,7 +41,7 @@ function write(key: string, value: string | null): void {
 
 function loadTheme(): ThemeChoice {
   const v = read(THEME_KEY)
-  return v === 'light' || v === 'system' ? v : 'dark'
+  return v === 'light' || v === 'system' || v === 'claude' ? v : 'dark'
 }
 
 function loadQuality(): PreviewQuality {
@@ -52,22 +55,22 @@ export const useSettings = create<SettingsState>(() => ({
 }))
 
 /** The theme actually in force: 'system' resolves against the OS preference. */
-export function resolvedTheme(choice: ThemeChoice): 'dark' | 'light' {
+export function resolvedTheme(choice: ThemeChoice): ResolvedTheme {
   if (choice !== 'system') return choice
   if (typeof window === 'undefined' || !window.matchMedia) return 'dark'
   return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
 }
 
 /**
- * Stamp the resolved theme on <html>. The light overrides key off
- * data-theme='light'; dark is the token default, so the attribute is REMOVED
+ * Stamp the resolved theme on <html>. Light and Claude each key off their own
+ * data-theme value; dark is the token default, so the attribute is REMOVED
  * rather than set, keeping dark the zero-config baseline.
  */
 function applyTheme(choice: ThemeChoice): void {
   if (typeof document === 'undefined') return
   const resolved = resolvedTheme(choice)
-  if (resolved === 'light') document.documentElement.dataset.theme = 'light'
-  else delete document.documentElement.dataset.theme
+  if (resolved === 'dark') delete document.documentElement.dataset.theme
+  else document.documentElement.dataset.theme = resolved
 }
 
 export function setTheme(choice: ThemeChoice): void {

@@ -179,6 +179,16 @@ export function saveNow(): Promise<void> {
  * (e.g. joining a collab room from the URL) awaits it.
  */
 export function initPersistence(): Promise<void> {
+  // Ask the browser to make this origin's storage DURABLE, so projects + media
+  // aren't silently evicted under storage pressure (or by a "clear site data"
+  // heuristic). Best-effort — ignored where unsupported. Matters most before a
+  // web→desktop migration, where un-backed work must not vanish.
+  try {
+    void navigator.storage?.persist?.()
+  } catch {
+    // ignore
+  }
+
   const hydrated = loadLastProject()
     .then((p) => {
       const s = useStore.getState()

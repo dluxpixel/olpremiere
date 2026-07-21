@@ -5,7 +5,7 @@
 // picker) keep it; this is where they are ALSO discoverable, and where every
 // new preference lands so they stop breeding in dropdown corners.
 
-import { Bookmark, Monitor as MonitorIcon, Moon, Sun, X } from 'lucide-react'
+import { Bookmark, Monitor as MonitorIcon, Moon, Sparkles, Sun, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import {
   CAPTION_LANGUAGES,
@@ -22,12 +22,7 @@ import {
   saveTrackPresetFromCurrent,
   setDefaultTrackPreset,
 } from '../state/trackTemplate'
-import {
-  listAudioInputs,
-  setEnhance,
-  setInputDevice,
-  useRecorder,
-} from '../state/voiceRecorder'
+import { listAudioInputs, setInputDevice, useRecorder } from '../state/voiceRecorder'
 import { Button, IconButton } from '../ui/Button'
 import { resetQuickStart } from './QuickStart'
 
@@ -58,6 +53,7 @@ const SELECT_CLS =
 
 const THEMES: { value: ThemeChoice; label: string; Icon: typeof Moon }[] = [
   { value: 'dark', label: 'Dark', Icon: Moon },
+  { value: 'claude', label: 'Claude', Icon: Sparkles },
   { value: 'light', label: 'Light', Icon: Sun },
   { value: 'system', label: 'System', Icon: MonitorIcon },
 ]
@@ -68,7 +64,6 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const snapping = useStore((s) => s.ui.snapping)
   const setUI = useStore((s) => s.setUI)
   const selectedInputId = useRecorder((s) => s.selectedInputId)
-  const enhance = useRecorder((s) => s.enhance)
   const [language, setLanguage] = useState<CaptionLanguage>(getCaptionLanguage)
   const [inputs, setInputs] = useState<MediaDeviceInfo[]>([])
   // The presets live in localStorage, not a store, so this row keeps its own
@@ -219,19 +214,6 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
                 </option>
               ))}
             </select>
-          </Row>
-          <Row label="Reduce background noise" hint="Browser suppression while recording. Judge it by ear.">
-            <button
-              type="button"
-              data-testid="settings-enhance"
-              aria-pressed={enhance}
-              onClick={() => setEnhance(!enhance)}
-              className={`h-7 rounded-field px-3 text-ui-sm transition-colors duration-[120ms] ${
-                enhance ? 'bg-accent text-accent-fg' : 'bg-bg-input text-text-secondary hover:text-text-primary'
-              }`}
-            >
-              {enhance ? 'On' : 'Off'}
-            </button>
           </Row>
         </Group>
 

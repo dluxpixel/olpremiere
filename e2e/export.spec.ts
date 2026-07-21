@@ -193,6 +193,10 @@ test('a 9:16 Shorts sequence exports at the default portrait 1440p (the crash ca
   await page.getByTestId('export-open').click()
   // Portrait timelines get true vertical upscales; 1440×2560 is the default.
   await expect(page.getByTestId('export-resolution')).toHaveValue('2k')
+  // Pin a fixed-bitrate VBR quality: the default is constant-quality (software),
+  // which is needlessly slow to encode a 1440×2560 frame in CI — this test is
+  // about the portrait raster + muxing, not the quality mode.
+  await page.getByTestId('export-bitrate').selectOption('high')
 
   const downloadPromise = page.waitForEvent('download', { timeout: 150_000 })
   await page.getByTestId('export-start').click()
@@ -300,6 +304,45 @@ test('golden export: the MP4 matches the composited sequence', async ({ page }) 
   expect(r3).toBeGreaterThan(160) // red again in clip 2
   expect(g3).toBeLessThan(120)
   expect(b3).toBeLessThan(120)
+})
+
+test('HD constant-quality (CQP) export produces a valid, decodable MP4', async ({ page }) => {
+  test.setTimeout(180_000)
+  await page.goto('/')
+  await page.getByTestId('media-file-input').setInputFiles(FIXTURE)
+  await expect(page.getByTestId('asset-card')).toBeVisible({ timeout: 15_000 })
+  await page.getByTestId('asset-card').dblclick()
+  await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
+
+  await page.getByTestId('export-open').click()
+  // Constant-quality is the default; its QP slider is shown, and the codec probe
+  // hides HEVC in a headless (no-NVENC) Chromium — H.264 is always present.
+  await expect(page.getByTestId('export-bitrate')).toHaveValue('cqp')
+  await expect(page.getByTestId('export-quantizer')).toBeVisible()
+  await expect(page.getByTestId('export-codec').locator('option[value="hevc"]')).toHaveCount(0)
+  await page.getByTestId('export-resolution').selectOption('hd') // 1280×720 — HD, so CQP actually engages
+
+  const downloadPromise = page.waitForEvent('download', { timeout: 150_000 })
+  await page.getByTestId('export-start').click()
+  const download = await downloadPromise
+  const mp4Path = `${VERIFY}/hd-cqp.mp4`
+  await download.saveAs(mp4Path)
+  expect(fs.statSync(mp4Path).size).toBeGreaterThan(20_000)
+
+  const meta = await page.evaluate(async (b64) => {
+    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
+    const video = document.createElement('video')
+    video.muted = true
+    video.src = URL.createObjectURL(new Blob([bytes], { type: 'video/mp4' }))
+    await new Promise<void>((res, rej) => {
+      video.onloadedmetadata = () => res()
+      video.onerror = () => rej(new Error('HD CQP MP4 failed to decode'))
+    })
+    return { width: video.videoWidth, height: video.videoHeight, duration: video.duration }
+  }, fs.readFileSync(mp4Path).toString('base64'))
+  expect(meta.width).toBe(1280)
+  expect(meta.height).toBe(720)
+  expect(meta.duration).toBeGreaterThan(1)
 })
 
 test('export cancel returns to settings without a file', async ({ page }) => {
