@@ -8,12 +8,15 @@
 
 import { execSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
+import { loadToken } from './lib.mjs'
 
 const OUT = process.env.OLP_OUT || 'C:/Users/skyle/AppData/Local/olp-build/release'
-if (!process.env.GH_TOKEN) {
-  console.error('❌ Set GH_TOKEN (a GitHub token with contents:write on hackedbydlux/olpremiere).')
+const token = loadToken()
+if (!token) {
+  console.error('❌ No GitHub token. Put GH_TOKEN=... in a gitignored .env.release (copy .env.release.example), or set $GH_TOKEN.')
   process.exit(1)
 }
+process.env.GH_TOKEN = token // so the build/publish subprocesses inherit it
 const version = JSON.parse(readFileSync('package.json', 'utf8')).version
 console.log(`\n▶ Releasing OL Premiere v${version}\n`)
 

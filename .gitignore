@@ -13,3 +13,7 @@ e2e/.fixtures/
 out/
 release/
 vendor/ffmpeg/
+
+# Release token (never committed) — put GH_TOKEN=... here to auto-publish updates
+.env.release
+.env

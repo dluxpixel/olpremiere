@@ -7,13 +7,14 @@
 import { execSync } from 'node:child_process'
 import { readFileSync, writeFileSync, statSync } from 'node:fs'
 import { createHash as hash } from 'node:crypto'
+import { loadToken, fetchRetry } from './lib.mjs'
 
 const OWNER = 'hackedbydlux'
 const REPO = 'olpremiere'
 const OUT = process.env.OLP_OUT || 'C:/Users/skyle/AppData/Local/olp-build/release'
-const token = process.env.GH_TOKEN
+const token = loadToken()
 if (!token) {
-  console.error('❌ Set GH_TOKEN')
+  console.error('❌ No GitHub token. Put GH_TOKEN=... in a gitignored .env.release, or set $GH_TOKEN.')
   process.exit(1)
 }
 
@@ -44,7 +45,7 @@ console.log(`• latest.yml -> ${exeName} (${(size / 1e6).toFixed(0)} MB)`)
 
 // --- GitHub API helpers ---
 const api = async (path, opts = {}) => {
-  const res = await fetch('https://api.github.com' + path, {
+  const res = await fetchRetry('https://api.github.com' + path, {
     ...opts,
     headers: {
       Authorization: 'token ' + token,
@@ -58,10 +59,12 @@ const api = async (path, opts = {}) => {
   if (!res.ok) throw new Error(`GitHub ${res.status} ${path}: ${body.message || text}`)
   return body
 }
-// curl handles the large binary reliably; -f fails on non-2xx.
+// curl handles the large binary reliably; -f fails on non-2xx, --retry rides out
+// the transient network blips (ENOTFOUND / connection reset) seen in this env.
 const upload = (name, file, type) =>
   execSync(
-    `curl -sf -X POST -H "Authorization: token ${token}" -H "Content-Type: ${type}" --data-binary @"${file}" ` +
+    `curl -sf --retry 5 --retry-all-errors --retry-connrefused -X POST -H "Authorization: token ${token}" ` +
+      `-H "Content-Type: ${type}" --data-binary @"${file}" ` +
       `"https://uploads.github.com/repos/${OWNER}/${REPO}/releases/${releaseId}/assets?name=${encodeURIComponent(name)}"`,
     { stdio: 'pipe' },
   )
