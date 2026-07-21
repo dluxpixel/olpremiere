@@ -160,12 +160,19 @@ app.whenReady().then(() => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
 
-  // Auto-update: on a packaged build, check the generic feed (from electron-
-  // builder.yml `publish`), download a newer version in the background, and
-  // install it on quit. A failed check (offline / feed 404) logs and is ignored.
+  // Auto-update: on a packaged build, check GitHub Releases (electron-builder.yml
+  // `publish`), download a newer version in the background, and install it on
+  // quit. A failed check (offline / no release) logs and is ignored. We re-check
+  // every 15 minutes so an app that's left open still gets a release the same
+  // day it ships — not only on the next launch.
   if (app.isPackaged) {
     autoUpdater.on('error', (e) => console.error('OL Premiere auto-update error:', e))
+    autoUpdater.on('update-downloaded', (info) =>
+      console.log(`OL Premiere update ${info.version} downloaded — installs on quit`),
+    )
     void autoUpdater.checkForUpdatesAndNotify()
+    const FIFTEEN_MIN = 15 * 60 * 1000
+    setInterval(() => void autoUpdater.checkForUpdatesAndNotify(), FIFTEEN_MIN)
   }
 })
 

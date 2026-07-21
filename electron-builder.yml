@@ -26,11 +26,16 @@ nsis:
   oneClick: false
   perMachine: false
   allowToChangeInstallationDirectory: true
-  artifactName: ${productName}-${version}-setup.${ext}
+  # Hyphenated (no spaces) so the local file, the GitHub asset, and latest.yml
+  # all reference the EXACT same name — no sanitization mismatch to break updates.
+  artifactName: OL-Premiere-${version}-setup.${ext}
 # Auto-update feed: GitHub Releases. electron-updater checks the latest published
 # release of hackedbydlux/olpremiere (public, binaries only — no source pushed).
+# releaseType 'draft' uploads all assets reliably (no pre-existing-tag 422); the
+# release script (scripts/release.mjs) then flips it to published, which mints the
+# tag and makes it the 'latest' the updater sees.
 publish:
   provider: github
   owner: hackedbydlux
   repo: olpremiere
-  releaseType: release
+  releaseType: draft
