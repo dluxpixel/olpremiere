@@ -11,6 +11,9 @@ import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { NativeExportConfig } from './ipc-types'
 import * as native from './nativeExport'
+import electronUpdater from 'electron-updater'
+
+const { autoUpdater } = electronUpdater
 
 // ESM main has no __dirname.
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -156,6 +159,14 @@ app.whenReady().then(() => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+
+  // Auto-update: on a packaged build, check the generic feed (from electron-
+  // builder.yml `publish`), download a newer version in the background, and
+  // install it on quit. A failed check (offline / feed 404) logs and is ignored.
+  if (app.isPackaged) {
+    autoUpdater.on('error', (e) => console.error('OL Premiere auto-update error:', e))
+    void autoUpdater.checkForUpdatesAndNotify()
+  }
 })
 
 app.on('window-all-closed', () => {

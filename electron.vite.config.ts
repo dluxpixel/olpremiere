@@ -9,7 +9,9 @@ import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()],
+    // Bundle electron-updater INTO main.js (exclude from externalization) so the
+    // packaged asar needs no node_modules — the app ships lean (out/** only).
+    plugins: [externalizeDepsPlugin({ exclude: ['electron-updater'] })],
     build: {
       outDir: 'out/main',
       rollupOptions: {
