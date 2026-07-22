@@ -86,13 +86,18 @@ function buildArgs(config: NativeExportConfig, audioPath: string | null, outPath
     '-f', 'rawvideo', '-pixel_format', 'rgba', '-video_size', `${config.width}x${config.height}`, '-framerate', String(config.fps), '-i', 'pipe:0',
   ]
   if (audioPath) args.push('-i', audioPath)
-  // GL frames are bottom-origin; ffmpeg rawvideo is top-origin → flip.
-  args.push('-vf', 'vflip')
+  // GL frames are bottom-origin (vflip). Convert the full-range RGBA readback to
+  // limited-range BT.709 YUV EXPLICITLY rather than letting swscale pick the
+  // RGB→YUV matrix by a resolution heuristic — which could convert with BT.601
+  // while we tag BT.709. (Verified pixel-identical to the implicit path on the
+  // bundled ffmpeg, so this is version/raster-drift hardening, not a visible
+  // change — the export corruption reported separately is NOT this.)
+  args.push('-vf', 'vflip,scale=in_range=full:out_range=tv:out_color_matrix=bt709')
   args.push(...videoEncoderArgs(config))
   args.push('-map', '0:v:0')
   if (audioPath) args.push('-map', '1:a:0', '-c:a', 'aac', '-b:a', '320k')
-  // Tag BT.709 so players/YouTube don't guess (the washed-out fix).
-  args.push('-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709')
+  // Tag BT.709 limited range so players/YouTube don't guess (the washed-out fix).
+  args.push('-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709', '-color_range', 'tv')
   // Machine-readable progress on stdout (the movie goes to a file).
   args.push('-progress', 'pipe:1', '-nostats')
   args.push(outPath)
