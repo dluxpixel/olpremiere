@@ -288,9 +288,10 @@ export const EFFECTS: EffectDef[] = [
     category: 'key',
     pass: 'pointwise',
     // Dropped keying GREEN at a clean working strength (key-colour default is green,
-    // keyR/G/B = 0/1/0); spill high so leftover green fringe is desaturated. A pure
-    // bright green screen keys cleanly at these defaults with no tuning.
-    initialParams: { similarity: 0.4, smoothness: 0.08, spill: 0.85 },
+    // keyR/G/B = 0/1/0); spill FULL (1.0) so no green tint survives on the kept
+    // edges — the fix for green surviving on white corners + thin white lines. A
+    // pure bright green screen keys cleanly at these defaults with no tuning.
+    initialParams: { similarity: 0.4, smoothness: 0.08, spill: 1 },
     params: [
       p('keyR', 'Key R', 0, 1, 0.01, 0),
       p('keyG', 'Key G', 0, 1, 0.01, 1),
@@ -299,28 +300,46 @@ export const EFFECTS: EffectDef[] = [
       p('smoothness', 'Smoothness', 0, 1, 0.01, 0.1),
       p('spill', 'Spill', 0, 1, 0.01, 0),
     ],
-    // Distance in CbCr (chroma-only) space so shadows/lighting on the screen
-    // still key. similarity 0 bypasses entirely = identity at defaults.
+    // Green/blue screens key on the screen channel's EXCESS over the other two
+    // (luminance-independent, so white detail survives); arbitrary key colours
+    // fall back to CbCr chroma distance. similarity 0 bypasses = identity.
     glsl: (u) => `
       float ckSim = ${u('similarity')};
       if (ckSim > 0.0) {
         vec3 ckKey = vec3(${u('keyR')}, ${u('keyG')}, ${u('keyB')});
-        vec2 ckPx = vec2(dot(c, vec3(-0.169, -0.331, 0.5)), dot(c, vec3(0.5, -0.419, -0.081)));
-        vec2 ckKy = vec2(dot(ckKey, vec3(-0.169, -0.331, 0.5)), dot(ckKey, vec3(0.5, -0.419, -0.081)));
-        float ckD = distance(ckPx, ckKy) * 2.0;
         float ckSmooth = max(${u('smoothness')}, 0.001);
-        a *= smoothstep(ckSim, ckSim + ckSmooth, ckD);
         float ckSpill = ${u('spill')};
-        if (ckSpill > 0.0) {
-          if (ckKey.g >= ckKey.r && ckKey.g >= ckKey.b) {
-            // Green-screen DESPILL: clamp excess green on the KEPT pixels (the
-            // green fringe on white line edges) down toward the red/blue level, so
-            // edges lose their green tint but keep brightness. The standard despill
-            // — fixes "some green still remains" far better than graying the edge.
-            float ckRB = max(c.r, c.b);
-            if (c.g > ckRB) c.g = mix(c.g, ckRB, ckSpill);
-          } else {
-            // Blue / other key colour: desaturate the near-key fringe toward luma.
+        bool ckGreen = ckKey.g >= ckKey.r && ckKey.g >= ckKey.b;
+        bool ckBlue = ckKey.b >= ckKey.r && ckKey.b > ckKey.g;
+        if (ckGreen || ckBlue) {
+          // GREEN/BLUE SCREEN: key on how far the screen channel EXCEEDS the other
+          // two. White, grey and any neutral have ~zero excess, so thin white lines
+          // and the CORNERS of white shapes are kept fully opaque — a chroma-distance
+          // key eats them because their anti-aliased edges drift toward the screen
+          // colour. Excess ignores brightness, so bright detail never keys out.
+          float ckChan = ckGreen ? c.g : c.b;
+          float ckOther = ckGreen ? max(c.r, c.b) : max(c.r, c.g);
+          float ckExcess = ckChan - ckOther;
+          // similarity = the excess at which a pixel is fully screen; below it, keep.
+          float ckHi = ckSim;
+          float ckLo = max(0.0, ckSim - ckSmooth - 0.15);
+          a *= 1.0 - smoothstep(ckLo, ckHi, ckExcess);
+          // DESPILL every kept pixel: pull the screen channel down to its neighbours
+          // so no green/blue tint survives on the kept edges (the white-corner fix).
+          // Only the EXCESS is removed, so white stays white and brightness holds;
+          // spill scales completeness (1 = fully neutral edges).
+          if (ckSpill > 0.0 && ckExcess > 0.0) {
+            float ckClamped = mix(ckChan, ckOther, ckSpill);
+            if (ckGreen) c.g = ckClamped; else c.b = ckClamped;
+          }
+        } else {
+          // Arbitrary key colour: CbCr (chroma-only) distance, so shadows/lighting
+          // on the screen still key. Despill desaturates the near-key fringe.
+          vec2 ckPx = vec2(dot(c, vec3(-0.169, -0.331, 0.5)), dot(c, vec3(0.5, -0.419, -0.081)));
+          vec2 ckKy = vec2(dot(ckKey, vec3(-0.169, -0.331, 0.5)), dot(ckKey, vec3(0.5, -0.419, -0.081)));
+          float ckD = distance(ckPx, ckKy) * 2.0;
+          a *= smoothstep(ckSim, ckSim + ckSmooth, ckD);
+          if (ckSpill > 0.0) {
             float ckSpillMask = 1.0 - smoothstep(ckSim, ckSim + ckSmooth * 2.0 + 0.1, ckD);
             float ckLuma = dot(c, vec3(0.2126, 0.7152, 0.0722));
             c = mix(c, vec3(ckLuma), ckSpillMask * ckSpill);

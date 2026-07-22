@@ -7,9 +7,9 @@ import { expect, test, type Page } from '@playwright/test'
 
 const FIXTURE = 'e2e/.fixtures/clip.webm'
 
-async function addClip(page: Page): Promise<string> {
+async function addClip(page: Page, fixture: string = FIXTURE): Promise<string> {
   await page.goto('/')
-  await page.getByTestId('media-file-input').setInputFiles(FIXTURE)
+  await page.getByTestId('media-file-input').setInputFiles(fixture)
   await expect(page.getByTestId('asset-card')).toBeVisible({ timeout: 15_000 })
   await page.getByTestId('asset-card').dblclick()
   await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
@@ -160,6 +160,26 @@ test('chroma key removes the keyed colour', async ({ page }) => {
   })
   await page.waitForTimeout(300)
   expect(luma(await px(page, 0.5, 0.5))).toBeLessThan(25)
+})
+
+test('green screen keys the green but keeps white detail (corners + thin lines)', async ({ page }) => {
+  // A dedicated pure-green fixture with a white centre block + a thin white line —
+  // the exact case that used to keep a green fringe on white edges. Applied at the
+  // effect's DROP defaults (no param overrides), so this also proves "just drop it
+  // and it works" for a bright green screen.
+  const clipId = await addClip(page, 'e2e/.fixtures/greenscreen.webm')
+  // The white centre must paint before we key.
+  await expect.poll(async () => luma(await px(page, 0.5, 0.5)), { timeout: 10_000 }).toBeGreaterThan(200)
+  await applyEffectWithParams(page, clipId, 'chromaKey', {})
+  await page.waitForTimeout(300)
+
+  const white = await px(page, 0.5, 0.5) // white centre block
+  const green = await px(page, 0.15, 0.5) // pure-green screen area
+  // White detail survives, fully opaque and bright (a chroma-distance key ate this).
+  expect(luma(white)).toBeGreaterThan(200)
+  // The green screen is keyed out → the dark stage shows through, with no green left.
+  expect(luma(green)).toBeLessThan(40)
+  expect(green[1]).toBeLessThan(60)
 })
 
 test('luma key keys the frame out above threshold and leaves it below', async ({ page }) => {
