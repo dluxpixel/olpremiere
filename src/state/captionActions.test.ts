@@ -102,11 +102,10 @@ describe('addCaptionsFromWords', () => {
     const vids = videoTracks(seq())
     expect(vids).toHaveLength(before + 1)
     const top = vids[vids.length - 1]
-    // one word per caption (hard-cut house style)
-    expect(top.clips.map((c) => c.title?.text)).toEqual(['SO', 'I', 'TRAPPED'])
+    // phrase-grouped: "so I" joins (no gap); "trapped" splits off after the 0.9s pause
+    expect(top.clips.map((c) => c.title?.text)).toEqual(['SO I', 'TRAPPED'])
     expect(top.clips[0].startS).toBeCloseTo(0, 6)
-    expect(top.clips[1].startS).toBeCloseTo(0.3, 6)
-    expect(top.clips[2].startS).toBeCloseTo(1.5, 6)
+    expect(top.clips[1].startS).toBeCloseTo(1.5, 6)
     // house style: white 8%-height text, black outline, comic caption face
     expect(top.clips[0].title?.outline?.color).toBe('#000000')
     expect(top.clips[0].title?.fontFamily).toContain('Lilita One')

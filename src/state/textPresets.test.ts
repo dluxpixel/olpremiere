@@ -96,7 +96,7 @@ describe('addCaptionsFromWords with a preset', () => {
     // Captions land on a new top video track.
     const caption = seq()
       .tracks.flatMap((t) => t.clips)
-      .find((c) => c.title?.text.toLowerCase() === 'hello')
+      .find((c) => c.title?.text.toLowerCase().includes('hello')) // phrase mode groups "hello world" into one caption
     expect(caption).toBeTruthy()
     expect(caption!.title!.textCase).toBe('lower')
     expect(caption!.title!.outline).toEqual({ color: '#000000', widthPx: 12 })
