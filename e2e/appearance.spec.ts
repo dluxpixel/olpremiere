@@ -241,7 +241,8 @@ test('animation speed shrinks the entrance window', async ({ page }) => {
 
   await page.getByTestId('clip').click({ button: 'right' })
   await menu.getByRole('menuitem', { name: 'Entrance' }).hover()
-  await menu.getByRole('menuitem', { name: /Fade in/ }).click()
+  // Exact: the top-level "Fade in + out" item also matches /Fade in/ (strict-mode clash).
+  await menu.getByRole('menuitem', { name: 'Fade in', exact: true }).click()
   const normalEnd = (await clipData(page, id)).opacityKf!.at(-1)!.t
   expect(normalEnd).toBeCloseTo(0.5, 2)
 
