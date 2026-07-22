@@ -13,6 +13,7 @@ import {
 import { splitTitleIntoWordCaptions } from './captionActions'
 import type { MenuItem } from './contextMenu'
 import { updateTitles } from './titleActions'
+import { useStore } from './store'
 
 const TITLE_SIZE_PRESETS = [
   { label: 'Small', px: 48 },
@@ -63,15 +64,23 @@ export function titleFontSizeItems(clip: Clip, ids: string[] = [clip.id]): MenuI
   ]
 }
 
+/** A still-image clip (not a title, not an adjustment layer): asset kind 'image'. */
+function isStillImageClip(clip: Clip): boolean {
+  if (clip.title !== undefined || clip.adjustment) return false
+  return useStore.getState().project.assets[clip.assetId]?.kind === 'image'
+}
+
 /**
  * Entrance / Exit / speed appearance controls. Actions apply to `ids` — the
- * selected TITLES when several are selected — so choosing an animation or
- * speed on ONE right-clicked caption applies to every caption you selected.
- * Empty for non-title clips: video already has transitions + the Motion
- * submenu, and this lineup (Pop/Bang, Bounce…) is caption-flavored.
+ * selected clips when several are selected — so choosing an animation on ONE
+ * right-clicked clip applies to the rest of the selection.
+ * Shown for TITLES and still IMAGES: both "appear" on screen, so a fade/pop/slide
+ * entrance suits them. Empty for VIDEO and audio — video animates via transitions
+ * + the Motion submenu (its own set), which is the deliberate split.
  */
 export function appearanceMenuItems(clip: Clip, ids: string[] = [clip.id]): MenuItem[] {
-  if (!isTitleClip(clip)) return []
+  const isTitle = isTitleClip(clip)
+  if (!isTitle && !isStillImageClip(clip)) return []
   const inId = clip.appearance?.in
   const outId = clip.appearance?.out
   const hasAppearance = !!(inId || outId)
@@ -107,8 +116,11 @@ export function appearanceMenuItems(clip: Clip, ids: string[] = [clip.id]): Menu
           onClick: () => setClipsAppearanceDur(ids, s.durS),
         }))
       : []),
-    { label: 'Save as default for new text', separator: true, onClick: () => saveClipAppearanceAsDefault(clip.id) },
-    { label: 'Clear animation', disabled: !clip.appearance, onClick: () => setClipsAppearance(ids, { in: undefined, out: undefined }) },
+    // "Save as default for new text" is text-specific, so titles only.
+    ...(isTitle
+      ? [{ label: 'Save as default for new text', separator: true, onClick: () => saveClipAppearanceAsDefault(clip.id) }]
+      : []),
+    { label: 'Clear animation', separator: !isTitle, disabled: !clip.appearance, onClick: () => setClipsAppearance(ids, { in: undefined, out: undefined }) },
   ]
   return [
     { label: `Entrance${suffix}`, separator: true, submenu: entranceSub },
