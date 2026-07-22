@@ -425,6 +425,25 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
             </div>
           ) : null,
         )}
+        {/* Corner ROTATE zones: grab just OUTSIDE a corner to rotate (Figma /
+            PowerPoint muscle memory). Rendered BEFORE the scale handles so the
+            corner square wins the exact corner and this catches the area beyond it. */}
+        {handlePts.map(([x, y], i) => {
+          const gcx = (minX + maxX) / 2
+          const gcy = (minY + maxY) / 2
+          const dx = x - gcx
+          const dy = y - gcy
+          const len = Math.hypot(dx, dy) || 1
+          return (
+            <div
+              key={`rot-${i}`}
+              data-testid={`gizmo-corner-rotate-${i}`}
+              className="pointer-events-auto absolute h-7 w-7 -translate-x-1/2 -translate-y-1/2 cursor-grab active:cursor-grabbing"
+              style={{ left: x + (dx / len) * 16, top: y + (dy / len) * 16 }}
+              onPointerDown={beginRotate}
+            />
+          )
+        })}
         {handlePts.map(([x, y], i) => (
           // 24px invisible hit target wrapping a 12px visual handle.
           <div

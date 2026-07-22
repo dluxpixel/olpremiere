@@ -123,7 +123,9 @@ export function appearanceMenuItems(clip: Clip, ids: string[] = [clip.id]): Menu
     { label: 'Clear animation', separator: !isTitle, disabled: !clip.appearance, onClick: () => setClipsAppearance(ids, { in: undefined, out: undefined }) },
   ]
   return [
-    { label: `Entrance${suffix}`, separator: true, submenu: entranceSub },
+    // One-click fade: nothing -> in -> hold -> out -> nothing (entrance + exit at once).
+    { label: 'Fade in + out', separator: true, onClick: () => setClipsAppearance(ids, { in: 'fadeIn', out: 'fadeOut' }) },
+    { label: `Entrance${suffix}`, submenu: entranceSub },
     { label: `Exit${suffix}`, submenu: exitSub },
     { label: 'Animation', submenu: animationSub },
   ]
