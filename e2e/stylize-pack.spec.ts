@@ -182,6 +182,18 @@ test('green screen keys the green but keeps white detail (corners + thin lines)'
   expect(green[1]).toBeLessThan(60)
 })
 
+test('a green key leaves non-green footage untouched', async ({ page }) => {
+  // Guard against a green screen desaturating/erasing the rest of the footage:
+  // red has zero green-excess, so it must survive fully (opaque, un-despilled).
+  const clipId = await addClip(page) // the RED fixture
+  await waitForFirstFrame(page)
+  await applyEffectWithParams(page, clipId, 'chromaKey', {}) // green key at drop defaults
+  await page.waitForTimeout(300)
+  const red = await px(page, 0.5, 0.5)
+  expect(red[0]).toBeGreaterThan(120) // red channel intact
+  expect(luma(red)).toBeGreaterThan(40) // not keyed to the dark stage
+})
+
 test('luma key keys the frame out above threshold and leaves it below', async ({ page }) => {
   const clipId = await addClip(page)
   await waitForFirstFrame(page)
