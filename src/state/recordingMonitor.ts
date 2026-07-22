@@ -4,10 +4,11 @@
 // Audio graph plumbing (source -> gain -> destination -> <audio sinkId>) and
 // device routing, none of which the capture path needs to know about.
 //
-// Monitoring routes the mic to a chosen OUTPUT via an <audio> element's
-// setSinkId (the only way to pick an output device on the web). Echo
-// cancellation stays off for recording quality, so monitoring on SPEAKERS
-// feeds back; the panel warns and headphones are the intended path.
+// Monitoring routes the mic to a chosen OUTPUT. On modern engines that is a
+// DIRECT AudioContext.setSinkId path (low latency); older engines fall back to
+// an <audio> element sink. Echo cancellation stays off for recording quality,
+// so monitoring on SPEAKERS feeds back; the panel warns and headphones are the
+// intended path.
 
 export interface MonitorGraph {
   /** The live mic stream MediaRecorder records from. */
@@ -43,7 +44,11 @@ export async function createMonitorGraph(
     }
   }
 
-  const ctx = new AudioContext()
+  type SinkableCtx = AudioContext & { setSinkId?: (id: string) => Promise<void> }
+
+  // Interactive latency hint: the monitor is a live "hear yourself" path, so ask
+  // the engine for the smallest output buffer it will give us.
+  const ctx = new AudioContext({ latencyHint: 'interactive' })
   // Resume in case the tab has no prior gesture; the studio opens from a click,
   // so this is gesture-blessed, but resume() is harmless if already running.
   void ctx.resume().catch(() => {})
@@ -55,17 +60,25 @@ export async function createMonitorGraph(
 
   const monitorGain = ctx.createGain()
   monitorGain.gain.value = 0 // start muted: never surprise the user with feedback
-  const dest = ctx.createMediaStreamDestination()
   source.connect(monitorGain)
-  monitorGain.connect(dest)
 
-  // An <audio> element is the only route to a specific OUTPUT device (setSinkId).
-  // Muted-until-monitoring is done with the gain node, not the element volume,
-  // so the analyser and the sink stay wired the whole time.
-  const el = new Audio()
-  el.srcObject = dest.stream
-  el.autoplay = true
-  void el.play().catch(() => {})
+  // Prefer routing the CONTEXT itself to the chosen output (AudioContext.setSinkId,
+  // Chromium 110+/Electron): monitorGain -> ctx.destination is a DIRECT path at
+  // interactive latency. The old MediaStreamDestination -> <audio> element route
+  // added a whole jitter buffer of delay (the "hear myself is delayed" complaint),
+  // so it survives only as the FALLBACK for engines without ctx.setSinkId (Firefox).
+  const ctxSinkable = typeof (ctx as SinkableCtx).setSinkId === 'function'
+  let el: HTMLAudioElement | null = null
+  if (ctxSinkable) {
+    monitorGain.connect(ctx.destination)
+  } else {
+    const dest = ctx.createMediaStreamDestination()
+    monitorGain.connect(dest)
+    el = new Audio()
+    el.srcObject = dest.stream
+    el.autoplay = true
+    void el.play().catch(() => {})
+  }
 
   const buf = new Float32Array(analyser.fftSize)
 
@@ -86,17 +99,28 @@ export async function createMonitorGraph(
       monitorGain.gain.setTargetAtTime(on ? 1 : 0, t, 0.01)
     },
     async setOutput(id) {
-      const sinkable = el as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }
-      if (typeof sinkable.setSinkId !== 'function') return // Firefox: default output only
+      // Fast path: route the context. Fallback: the <audio> element's sink.
+      if (ctxSinkable) {
+        try {
+          await (ctx as SinkableCtx).setSinkId!(id ?? '')
+        } catch {
+          // Device gone / denied: stay on the current sink rather than throw.
+        }
+        return
+      }
+      const sinkable = el as (HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }) | null
+      if (!sinkable || typeof sinkable.setSinkId !== 'function') return
       try {
         await sinkable.setSinkId(id ?? '')
       } catch {
-        // Device gone or permission denied: stay on the current sink rather than throw.
+        // Device gone / denied: stay on the current sink.
       }
     },
     dispose() {
-      el.pause()
-      el.srcObject = null
+      if (el) {
+        el.pause()
+        el.srcObject = null
+      }
       stream.getTracks().forEach((t) => t.stop())
       void ctx.close().catch(() => {})
     },

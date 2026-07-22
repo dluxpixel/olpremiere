@@ -49,10 +49,61 @@ export function compressorParamsFor(level: AutoLevel | undefined): CompressorPar
 
 let sharedCtx: AudioContext | null = null
 
+// The chosen playback OUTPUT device (null = system default), persisted so the
+// whole app plays to the device the user picked instead of always the OS
+// default. Routed via AudioContext.setSinkId (Chromium 110+/Electron); an engine
+// without it silently stays on the default output.
+const AUDIO_OUTPUT_KEY = 'reel:audio:output-device'
+let outputDeviceId: string | null = (() => {
+  try {
+    return typeof localStorage !== 'undefined' ? localStorage.getItem(AUDIO_OUTPUT_KEY) : null
+  } catch {
+    return null
+  }
+})()
+
+type SinkableCtx = AudioContext & { setSinkId?: (id: string) => Promise<void> }
+
+/** Whether this engine can route playback to a chosen output device at all. */
+export const canPickAudioOutput = (): boolean =>
+  typeof AudioContext !== 'undefined' && 'setSinkId' in AudioContext.prototype
+
+function applyOutputSink(ctx: AudioContext, id: string | null): Promise<void> {
+  const c = ctx as SinkableCtx
+  if (typeof c.setSinkId !== 'function') return Promise.resolve()
+  // Device gone / permission denied: stay on the current sink rather than throw.
+  return c.setSinkId(id ?? '').catch(() => {})
+}
+
 /** Lazy singleton — one AudioContext for the whole app. */
 export function ensureAudioContext(): AudioContext {
-  sharedCtx ??= new AudioContext()
+  if (!sharedCtx) {
+    sharedCtx = new AudioContext()
+    if (outputDeviceId) void applyOutputSink(sharedCtx, outputDeviceId)
+  }
   return sharedCtx
+}
+
+/** The chosen playback output device id (null = system default). */
+export const getAudioOutputDevice = (): string | null => outputDeviceId
+
+/**
+ * Route ALL app playback to a chosen output device (null = system default) and
+ * remember it. Applies live to the running context. The recording monitor shares
+ * this choice, so the user picks their output once and both playback and the
+ * "hear myself" monitor come out of it.
+ */
+export async function setAudioOutputDevice(id: string | null): Promise<void> {
+  outputDeviceId = id
+  try {
+    if (typeof localStorage !== 'undefined') {
+      if (id) localStorage.setItem(AUDIO_OUTPUT_KEY, id)
+      else localStorage.removeItem(AUDIO_OUTPUT_KEY)
+    }
+  } catch {
+    // Ignore storage failures (private mode / quota); the in-memory choice still applies.
+  }
+  if (sharedCtx) await applyOutputSink(sharedCtx, id)
 }
 
 // Keyed by asset id and holding the in-flight Promise so concurrent callers

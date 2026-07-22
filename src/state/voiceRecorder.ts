@@ -6,6 +6,7 @@
 // 100% local — the audio never leaves the machine.
 
 import { create } from 'zustand'
+import { getAudioOutputDevice, setAudioOutputDevice } from '../engine/audio'
 import { importFiles } from './mediaActions'
 import { createMonitorGraph, type MonitorGraph } from './recordingMonitor'
 import { useToasts } from './toasts'
@@ -46,9 +47,8 @@ interface RecorderState {
   selectedOutputId: string | null
 }
 
-/** localStorage keys; survive reloads and projects. */
+/** localStorage keys; survive reloads and projects. (Output lives in engine/audio.) */
 const INPUT_KEY = 'reel:recorder:input-device'
-const OUTPUT_KEY = 'reel:recorder:output-device'
 const MONITOR_KEY = 'reel:recorder:monitor'
 
 /** Recorded-audio bitrate. 128 kbps Opus is transparent for voice; the browser
@@ -72,14 +72,6 @@ function loadFlag(key: string): boolean {
   }
 }
 
-function loadString(key: string): string | null {
-  try {
-    return typeof localStorage !== 'undefined' ? localStorage.getItem(key) : null
-  } catch {
-    return null
-  }
-}
-
 export const useRecorder = create<RecorderState>(() => ({
   studioOpen: false,
   recording: false,
@@ -89,7 +81,8 @@ export const useRecorder = create<RecorderState>(() => ({
   monitoring: loadFlag(MONITOR_KEY),
   level: 0,
   selectedInputId: loadSavedInputId(),
-  selectedOutputId: loadString(OUTPUT_KEY),
+  // Output is app-wide (playback + monitor) and owned/persisted by engine/audio.
+  selectedOutputId: getAudioOutputDevice(),
 }))
 
 /**
@@ -152,18 +145,15 @@ export function setInputDevice(deviceId: string | null): void {
   if (useRecorder.getState().studioOpen) void reacquireMonitor()
 }
 
-/** Choose the monitor OUTPUT (null = system default) and remember it. */
+/**
+ * Choose the app OUTPUT device (null = system default). App-wide: it routes BOTH
+ * the main playback (engine/audio) AND the live "hear myself" monitor to the same
+ * device, and engine/audio persists it — so the user picks their output once.
+ */
 export function setOutputDevice(deviceId: string | null): void {
   useRecorder.setState({ selectedOutputId: deviceId })
-  try {
-    if (typeof localStorage !== 'undefined') {
-      if (deviceId) localStorage.setItem(OUTPUT_KEY, deviceId)
-      else localStorage.removeItem(OUTPUT_KEY)
-    }
-  } catch {
-    // Ignore storage failures; the in-memory pick still applies.
-  }
-  void monitor?.setOutput(deviceId)
+  void setAudioOutputDevice(deviceId) // route + remember app playback
+  void monitor?.setOutput(deviceId) // route the live monitor to the same device
 }
 
 /** Hear yourself: route the live mic to the output while the studio is open. */

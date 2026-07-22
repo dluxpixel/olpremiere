@@ -22,7 +22,9 @@ import {
   saveTrackPresetFromCurrent,
   setDefaultTrackPreset,
 } from '../state/trackTemplate'
-import { listAudioInputs, setInputDevice, useRecorder } from '../state/voiceRecorder'
+import { listAudioInputs, setInputDevice, setOutputDevice, useRecorder } from '../state/voiceRecorder'
+import { listAudioOutputs } from '../state/recordingMonitor'
+import { canPickAudioOutput } from '../engine/audio'
 import { Button, IconButton } from '../ui/Button'
 import { resetQuickStart } from './QuickStart'
 
@@ -64,8 +66,10 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const snapping = useStore((s) => s.ui.snapping)
   const setUI = useStore((s) => s.setUI)
   const selectedInputId = useRecorder((s) => s.selectedInputId)
+  const selectedOutputId = useRecorder((s) => s.selectedOutputId)
   const [language, setLanguage] = useState<CaptionLanguage>(getCaptionLanguage)
   const [inputs, setInputs] = useState<MediaDeviceInfo[]>([])
+  const [outputs, setOutputs] = useState<MediaDeviceInfo[]>([])
   // The presets live in localStorage, not a store, so this row keeps its own
   // copy and re-reads after every action it takes.
   const [presets, setPresets] = useState(listTrackPresets)
@@ -80,7 +84,11 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   // Device labels need one granted mic permission; listAudioInputs handles the
   // unlock, so the list fills in shortly after open on a fresh profile.
   useEffect(() => {
-    void listAudioInputs().then(setInputs)
+    // Inputs first: granting the mic also unlocks the OUTPUT device labels.
+    void listAudioInputs().then((ins) => {
+      setInputs(ins)
+      void listAudioOutputs().then(setOutputs)
+    })
   }, [])
 
   useEffect(() => {
@@ -211,6 +219,24 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
               {inputs.map((d, i) => (
                 <option key={d.deviceId} value={d.deviceId}>
                   {d.label || `Microphone ${i + 1}`}
+                </option>
+              ))}
+            </select>
+          </Row>
+          <Row label="Output" hint="Where playback and voiceover monitoring are heard.">
+            <select
+              aria-label="Audio output"
+              data-testid="settings-output"
+              disabled={!canPickAudioOutput()}
+              className={`${SELECT_CLS} max-w-[200px]`}
+              value={selectedOutputId ?? ''}
+              onChange={(e) => setOutputDevice(e.target.value || null)}
+              title={canPickAudioOutput() ? undefined : 'This engine always uses the system default output'}
+            >
+              <option value="">System default</option>
+              {outputs.map((d, i) => (
+                <option key={d.deviceId} value={d.deviceId}>
+                  {d.label || `Output ${i + 1}`}
                 </option>
               ))}
             </select>
