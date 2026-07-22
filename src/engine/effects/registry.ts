@@ -290,7 +290,7 @@ export const EFFECTS: EffectDef[] = [
     // Dropped keying GREEN at a clean working strength (key-colour default is green,
     // keyR/G/B = 0/1/0); spill high so leftover green fringe is desaturated. A pure
     // bright green screen keys cleanly at these defaults with no tuning.
-    initialParams: { similarity: 0.4, smoothness: 0.08, spill: 0.6 },
+    initialParams: { similarity: 0.4, smoothness: 0.08, spill: 0.85 },
     params: [
       p('keyR', 'Key R', 0, 1, 0.01, 0),
       p('keyG', 'Key G', 0, 1, 0.01, 1),
@@ -312,9 +312,19 @@ export const EFFECTS: EffectDef[] = [
         a *= smoothstep(ckSim, ckSim + ckSmooth, ckD);
         float ckSpill = ${u('spill')};
         if (ckSpill > 0.0) {
-          float ckSpillMask = 1.0 - smoothstep(ckSim, ckSim + ckSmooth * 2.0 + 0.1, ckD);
-          float ckLuma = dot(c, vec3(0.2126, 0.7152, 0.0722));
-          c = mix(c, vec3(ckLuma), ckSpillMask * ckSpill);
+          if (ckKey.g >= ckKey.r && ckKey.g >= ckKey.b) {
+            // Green-screen DESPILL: clamp excess green on the KEPT pixels (the
+            // green fringe on white line edges) down toward the red/blue level, so
+            // edges lose their green tint but keep brightness. The standard despill
+            // — fixes "some green still remains" far better than graying the edge.
+            float ckRB = max(c.r, c.b);
+            if (c.g > ckRB) c.g = mix(c.g, ckRB, ckSpill);
+          } else {
+            // Blue / other key colour: desaturate the near-key fringe toward luma.
+            float ckSpillMask = 1.0 - smoothstep(ckSim, ckSim + ckSmooth * 2.0 + 0.1, ckD);
+            float ckLuma = dot(c, vec3(0.2126, 0.7152, 0.0722));
+            c = mix(c, vec3(ckLuma), ckSpillMask * ckSpill);
+          }
         }
       }
     `,
