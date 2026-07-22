@@ -7,6 +7,7 @@
 import { app, dialog, type BrowserWindow } from 'electron'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { writeFile, unlink, stat } from 'node:fs/promises'
+import { unlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { NativeCaps, NativeExportConfig, NativeFinishResult, NativeStartResult } from './ipc-types'
@@ -29,9 +30,41 @@ interface Job {
 let job: Job | null = null
 let pendingAudioPath: string | null = null
 
-/** True while a native ffmpeg export is running — the auto-updater must never force-quit through it. */
+/**
+ * True while a native ffmpeg export is actually running — the auto-updater's
+ * main-side guard. The renderer's isCriticalWorkInFlight() covers the pre-spawn
+ * prep phase (before `job` exists), so this tracks only the spawned process and
+ * can't get wedged true (pendingAudioPath is deliberately excluded).
+ */
 export function isExporting(): boolean {
-  return job !== null || pendingAudioPath !== null
+  return job !== null
+}
+
+/**
+ * Synchronous best-effort teardown for app 'before-quit', where an async unlink
+ * would race the process exit: SIGKILL ffmpeg and remove the truncated output +
+ * temp WAV right now, so a quit-during-export leaves nothing orphaned or leaked.
+ */
+export function cancelSync(): void {
+  const stale = [pendingAudioPath, job?.outPath, job?.audioPath]
+  if (job) {
+    try {
+      job.ffmpeg.stdin.destroy()
+      job.ffmpeg.kill('SIGKILL')
+    } catch {
+      // already gone
+    }
+  }
+  job = null
+  pendingAudioPath = null
+  for (const p of stale) {
+    if (!p) continue
+    try {
+      unlinkSync(p)
+    } catch {
+      // best effort — a killed ffmpeg may still hold the handle for a beat
+    }
+  }
 }
 
 // -- probe -----------------------------------------------------------------

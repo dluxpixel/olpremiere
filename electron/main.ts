@@ -156,9 +156,10 @@ app.whenReady().then(() => {
   ipcMain.handle('native:cancel', () => native.cancel())
 
   // Whatever ends the app (user quit, or an auto-update install), never leave a
-  // native ffmpeg child orphaned or its temp files behind. Best-effort; before-quit
-  // doesn't await, but cancel() SIGKILLs + unlinks synchronously enough.
-  app.on('before-quit', () => void native.cancel())
+  // native ffmpeg child orphaned or its temp files behind. before-quit can't await,
+  // so use the synchronous teardown (SIGKILL + unlinkSync) rather than the async
+  // cancel() whose unlink would race the process exit.
+  app.on('before-quit', () => native.cancelSync())
 
   createWindow()
   app.on('activate', () => {
