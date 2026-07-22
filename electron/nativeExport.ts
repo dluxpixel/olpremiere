@@ -29,6 +29,11 @@ interface Job {
 let job: Job | null = null
 let pendingAudioPath: string | null = null
 
+/** True while a native ffmpeg export is running — the auto-updater must never force-quit through it. */
+export function isExporting(): boolean {
+  return job !== null || pendingAudioPath !== null
+}
+
 // -- probe -----------------------------------------------------------------
 export async function probe(): Promise<NativeCaps> {
   return new Promise((resolve) => {

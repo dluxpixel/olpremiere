@@ -44,6 +44,7 @@ import { clearInOut, gotoIn, gotoOut, markIn, markOut } from './state/workAreaAc
 import { punchInAtPlayhead } from './state/motionActions'
 import { addTitleClip } from './state/titleActions'
 import { saveNow } from './state/persistence'
+import { isCriticalWorkInFlight } from './state/unloadGuard'
 import { updateActiveSequence, useStore, zoomIn, zoomOut } from './state/store'
 import { useToasts } from './state/toasts'
 import { APP_VERSION, LAST_SEEN_VERSION_KEY, checkForUpdate } from './appVersion'
@@ -335,6 +336,27 @@ export default function App() {
           onClick: () => olApi?.restartToUpdate?.(),
         }),
       ),
+    [],
+  )
+
+  // Desktop auto-apply: main asks us to install a fresh-launch update. WE decide —
+  // NEVER restart through an in-flight export or other critical work (that would
+  // truncate the render + lose it); in that case defer to the manual restart toast.
+  // Otherwise flush a save first so no edit is lost, then relaunch into the new
+  // version (the post-update toast confirms it after boot).
+  useEffect(
+    () =>
+      olApi?.onAutoApplyUpdate?.((version) => {
+        if (isCriticalWorkInFlight()) {
+          useToasts.getState().show(`Update ${version} is ready — restart to install`, 'success', {
+            label: 'Restart',
+            onClick: () => olApi?.restartToUpdate?.(),
+          })
+          return
+        }
+        useToasts.getState().show(`Updating to v${version}…`, 'info')
+        void saveNow().finally(() => olApi?.restartToUpdate?.())
+      }),
     [],
   )
 

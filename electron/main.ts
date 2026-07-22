@@ -155,6 +155,11 @@ app.whenReady().then(() => {
   ipcMain.handle('native:finish', () => native.finish())
   ipcMain.handle('native:cancel', () => native.cancel())
 
+  // Whatever ends the app (user quit, or an auto-update install), never leave a
+  // native ffmpeg child orphaned or its temp files behind. Best-effort; before-quit
+  // doesn't await, but cancel() SIGKILLs + unlinks synchronously enough.
+  app.on('before-quit', () => void native.cancel())
+
   createWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -181,18 +186,22 @@ app.whenReady().then(() => {
     autoUpdater.autoInstallOnAppQuit = true // a pending update also installs on any quit
     autoUpdater.on('error', (e) => console.error('OL Premiere auto-update error:', e))
     autoUpdater.on('update-downloaded', (info) => {
-      if (Date.now() - launchedAt < AUTO_APPLY_WINDOW_MS) {
-        console.log(`OL Premiere update ${info.version} downloaded at launch — installing now`)
-        // isSilent = true (no installer UI), isForceRunAfter = true (relaunch after).
-        autoUpdater.quitAndInstall(true, true)
+      // Auto-apply only in the fresh-launch window AND only when no native export
+      // is mid-render (a force-quit would truncate the file + orphan ffmpeg). Even
+      // then we don't quit blindly: we ASK the renderer, which flushes a save and
+      // restarts only if no critical work is in flight — otherwise it falls back to
+      // the "Restart to update" toast. Outside the window we always just offer the toast.
+      const freshLaunch = Date.now() - launchedAt < AUTO_APPLY_WINDOW_MS
+      if (freshLaunch && !native.isExporting()) {
+        console.log(`OL Premiere update ${info.version} downloaded at launch — asking renderer to auto-apply`)
+        mainWindow?.webContents.send('update:autoApply', info.version)
       } else {
         console.log(`OL Premiere update ${info.version} downloaded — offering restart`)
-        // Tell the renderer to surface "Update ready — Restart" rather than
-        // interrupting an in-progress edit/export.
         mainWindow?.webContents.send('update:ready', info.version)
       }
     })
-    // One-click apply from the toast: quit and relaunch into the downloaded version.
+    // One-click apply from the toast (and the renderer's save-then-restart path):
+    // quit and relaunch into the downloaded version.
     ipcMain.on('update:install', () => autoUpdater.quitAndInstall())
     void autoUpdater.checkForUpdatesAndNotify()
     const FIFTEEN_MIN = 15 * 60 * 1000

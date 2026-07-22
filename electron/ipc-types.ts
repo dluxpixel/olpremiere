@@ -62,6 +62,13 @@ export interface OlApi {
   onNativeProgress(cb: (p: NativeProgress) => void): () => void
   /** Fires when a newer version has downloaded and is staged to install on restart. Returns an unsubscribe fn. */
   onUpdateReady(cb: (version: string) => void): () => void
+  /**
+   * Fires when an update downloaded during the fresh-launch window and main wants
+   * to apply it NOW — but the renderer arbitrates: it flushes a save and restarts
+   * only if no critical work (e.g. an export) is in flight, else it defers to the
+   * "Restart to update" toast. Returns an unsubscribe fn.
+   */
+  onAutoApplyUpdate(cb: (version: string) => void): () => void
   /** Quit and install the downloaded update now — relaunches into the new version. */
   restartToUpdate(): void
 }

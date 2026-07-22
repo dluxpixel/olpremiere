@@ -32,6 +32,11 @@ const api: OlApi = {
     ipcRenderer.on('update:ready', l)
     return () => ipcRenderer.off('update:ready', l)
   },
+  onAutoApplyUpdate: (cb: (version: string) => void) => {
+    const l = (_e: unknown, version: string) => cb(version)
+    ipcRenderer.on('update:autoApply', l)
+    return () => ipcRenderer.off('update:autoApply', l)
+  },
   restartToUpdate: () => ipcRenderer.send('update:install'),
 }
 
