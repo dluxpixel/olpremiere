@@ -6,8 +6,10 @@ import { applyAppearanceToClip } from '../engine/anim/appearance'
 import {
   captionClips,
   chunkWords,
+  PHRASE_CAPTION_OPTIONS,
   spreadWords,
   type CaptionWord,
+  type ChunkOptions,
 } from '../engine/captions/captions'
 import { addTrack, clipDurationS, recomputeDuration, resolveStart } from '../engine/timeline'
 import { activeSequence, videoTracks, type Clip, type Track } from '../engine/types'
@@ -15,8 +17,7 @@ import { updateActiveSequence, useStore } from './store'
 import type { TextStylePreset } from './textPresets'
 import { useToasts } from './toasts'
 
-/** One word per caption — the brief's hard-cut house style. */
-const AUTO_CAPTION_MAX_WORDS = 1
+// Auto-captions group into readable PHRASES (PHRASE_CAPTION_OPTIONS); maxWords:1 = karaoke.
 
 /** Place clips one by one so each lands in a real gap (never overlapping). */
 function withClips(track: Track, clips: Clip[]): Track {
@@ -85,7 +86,13 @@ export function addCaptionsFromWords(
 ): void {
   const s = useStore.getState()
   const seq = activeSequence(s.project)
-  const chunks = chunkWords(words, { maxWords: options.maxWords ?? AUTO_CAPTION_MAX_WORDS })
+  // Default to grouped PHRASE captions (readable chunks, no one-frame flashes);
+  // maxWords:1 opts into the one-word "karaoke" house style.
+  const chunkOpts: ChunkOptions =
+    options.maxWords === 1
+      ? { maxWords: 1 }
+      : { ...PHRASE_CAPTION_OPTIONS, ...(options.maxWords ? { maxWords: options.maxWords } : {}) }
+  const chunks = chunkWords(words, chunkOpts)
   if (chunks.length === 0) {
     useToasts.getState().show('No words to caption', 'danger')
     return

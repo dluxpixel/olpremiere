@@ -3,6 +3,7 @@ import { defaultTitleDef } from '../types'
 import {
   CAPTION_EMPHASIS_COLORS,
   CAPTION_POP_DUR_S,
+  PHRASE_CAPTION_OPTIONS,
   captionClips,
   chunkWords,
   jettismCaptionDef,
@@ -82,6 +83,34 @@ describe('chunkWords', () => {
     const words = [w('two', 0.5, 0.7), w('one', 0, 0.3)]
     const chunks = chunkWords(words, { maxWords: 1 })
     expect(chunks.map((c) => c.text)).toEqual(['one', 'two'])
+  })
+})
+
+describe('chunkWords — phrase mode (PHRASE_CAPTION_OPTIONS)', () => {
+  it('groups words into multi-word chunks, not one per word', () => {
+    const words = [
+      w('so', 0, 0.3), w('I', 0.3, 0.5), w('went', 0.5, 0.9), w('to', 0.9, 1.1),
+      w('the', 1.1, 1.3), w('store', 1.3, 1.8), w('and', 1.8, 2.0), w('bought', 2.0, 2.5),
+      w('some', 2.5, 2.8), w('milk', 2.8, 3.3),
+    ]
+    const chunks = chunkWords(words, PHRASE_CAPTION_OPTIONS)
+    expect(chunks.length).toBeLessThanOrEqual(3) // grouped, not 10 one-word flashes
+    for (const c of chunks) expect(c.text.split(' ').length).toBeGreaterThan(1)
+    assertNonOverlapping(chunks)
+  })
+
+  it('never leaves a bare function word as its own chunk mid-sentence', () => {
+    const words = [w('go', 0, 0.4), w('to', 0.4, 0.6), w('the', 0.6, 0.8), w('shop', 0.8, 1.3)]
+    const chunks = chunkWords(words, PHRASE_CAPTION_OPTIONS)
+    const fn = new Set(['to', 'the', 'a', 'and', 'of'])
+    for (const c of chunks) expect(fn.has(c.text.toLowerCase())).toBe(false)
+  })
+
+  it('keeps a sentence boundary — never merges across it', () => {
+    const words = [w('end.', 0, 0.5), w('new', 0.6, 1.0), w('start', 1.0, 1.5)]
+    const chunks = chunkWords(words, PHRASE_CAPTION_OPTIONS)
+    expect(chunks[0].text).toBe('end.')
+    assertNonOverlapping(chunks)
   })
 })
 

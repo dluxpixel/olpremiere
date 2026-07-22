@@ -30,35 +30,75 @@ export interface CaptionChunk {
 }
 
 export interface ChunkOptions {
-  /** Words per caption (Jettism runs 1-3). */
+  /** Words per caption (phrase mode groups up to this; karaoke uses 1). */
   maxWords?: number
+  /** Soft character cap per caption — split before a chunk overflows the frame. Infinity = off. */
+  maxChars?: number
+  /** Reading-speed ceiling (characters/second) — split a chunk that reads too fast. Infinity = off. */
+  maxCps?: number
   /** A silence longer than this starts a new chunk instead of joining it. */
   maxGapS?: number
   /** No chunk spans longer than this even if the words run on. */
   maxSpanS?: number
   /** How long a caption may linger after its last word when nothing follows. */
   holdS?: number
-  /** Readability floor — never flash a caption shorter than this if avoidable. */
+  /** Readability floor — a chunk shorter than this is merged (if mergeShort) so it never flashes. */
   minDurS?: number
+  /** Merge a sub-minDur or lone-function-word chunk into a soft-adjacent neighbor. */
+  mergeShort?: boolean
 }
 
 const CHUNK_DEFAULTS: Required<ChunkOptions> = {
+  // LEGACY defaults: the new limits are OFF (Infinity / false), so calling with
+  // only `maxWords` behaves exactly as before. The tuned short-form set that fixes
+  // "words are too short" is PHRASE_CAPTION_OPTIONS below.
   maxWords: 2,
+  maxChars: Infinity,
+  maxCps: Infinity,
   maxGapS: 0.35,
   maxSpanS: 1.6,
   holdS: 0.4,
   minDurS: 0.18,
+  mergeShort: false,
+}
+
+/**
+ * Tuned short-form phrase captions: group words into readable ~4-6 word chunks,
+ * cap line length + reading speed, and GUARANTEE a ~1s minimum on screen by
+ * MERGING short/orphan words into a neighbor instead of flashing them for a frame.
+ * This is what the auto-caption path uses (vs the one-word karaoke house style).
+ */
+export const PHRASE_CAPTION_OPTIONS: Required<ChunkOptions> = {
+  maxWords: 6,
+  maxChars: 30,
+  maxCps: 20,
+  maxGapS: 0.4,
+  maxSpanS: 4,
+  holdS: 0.4,
+  minDurS: 1.0,
+  mergeShort: true,
 }
 
 /** Ends a sentence → the next word starts a fresh chunk. */
 const SENTENCE_END = /[.!?…]["')\]]*$/
 
+/** Short function words that shouldn't stand alone as a caption or end a chunk. */
+const FUNCTION_WORDS = new Set([
+  'a', 'an', 'the', 'to', 'of', 'in', 'on', 'for', 'and', 'but', 'or', 'so', 'is', 'it', 'at', 'by',
+  'as', 'my', 'your', 'with', 'that', 'this', 'i', 'we', 'you', 'are', 'was', 'be', 'if', 'our',
+])
+const normalizeWord = (t: string): string => t.toLowerCase().replace(/[^a-z']/g, '')
+const isFunctionWord = (t: string): boolean => FUNCTION_WORDS.has(normalizeWord(t))
+const groupText = (ws: CaptionWord[]): string => ws.map((w) => w.text.trim()).join(' ')
+const groupSpan = (ws: CaptionWord[]): number => ws[ws.length - 1].endS - ws[0].startS
+
 /**
- * Group timed words into caption chunks. Break on chunk size, on real
- * silences, on sentence punctuation, and around emphasized words (an
- * emphasized word gets its own chunk so the whole caption can flip color).
- * Chunks are then extended to meet their successor — Jettism captions stay on
- * screen until replaced — and clamped so clips can NEVER overlap on a track.
+ * Group timed words into caption chunks. HARD boundaries (sentence end, real
+ * silence, emphasis flip) always break; SOFT limits (word count, line length,
+ * reading speed, span) break too but can be UNDONE by the merge pass, which folds
+ * a too-short or lone-function-word chunk into a soft-adjacent neighbor so nothing
+ * flashes for a single frame. Chunks are then extended to meet their successor
+ * (seamless) and clamped strictly non-overlapping — the track invariant wins.
  */
 export function chunkWords(words: CaptionWord[], options: ChunkOptions = {}): CaptionChunk[] {
   const o = { ...CHUNK_DEFAULTS, ...options }
@@ -69,30 +109,78 @@ export function chunkWords(words: CaptionWord[], options: ChunkOptions = {}): Ca
     .sort((a, b) => a.startS - b.startS)
   if (input.length === 0) return []
 
-  const groups: CaptionWord[][] = []
+  // Build groups, remembering whether the break BEFORE each was HARD — the merge
+  // pass may only cross SOFT breaks, never a sentence / silence / emphasis edge.
+  interface Group {
+    words: CaptionWord[]
+    breakBeforeHard: boolean
+  }
+  const groups: Group[] = []
   let cur: CaptionWord[] = []
+  let curBreakHard = false
   for (const word of input) {
     const last = cur[cur.length - 1]
-    const breakBefore =
-      cur.length > 0 &&
-      (cur.length >= maxWords ||
-        !!word.emphasis !== !!last.emphasis ||
-        word.startS - last.endS > o.maxGapS ||
-        word.endS - cur[0].startS > o.maxSpanS ||
-        SENTENCE_END.test(last.text))
-    if (breakBefore) {
-      groups.push(cur)
+    let hard = false
+    let soft = false
+    if (cur.length > 0) {
+      if (SENTENCE_END.test(last.text) || !!word.emphasis !== !!last.emphasis || word.startS - last.endS > o.maxGapS) {
+        hard = true
+      } else {
+        const span = word.endS - cur[0].startS
+        const chars = groupText([...cur, word]).length
+        soft =
+          cur.length >= maxWords || chars > o.maxChars || span > o.maxSpanS || chars / Math.max(1e-3, span) > o.maxCps
+      }
+    }
+    if (hard || soft) {
+      groups.push({ words: cur, breakBeforeHard: curBreakHard })
       cur = []
+      curBreakHard = hard
     }
     cur.push(word)
   }
-  if (cur.length > 0) groups.push(cur)
+  if (cur.length > 0) groups.push({ words: cur, breakBeforeHard: curBreakHard })
+
+  // Merge pass: fold a too-short or lone-function-word group into the neighbor it
+  // shares a SOFT break with (prefer the shorter-span side), while the merge still
+  // respects maxWords + maxChars. Never crosses a hard break, so sentence/silence/
+  // emphasis edges are preserved and an isolated word is extended (not merged).
+  if (o.mergeShort) {
+    const fits = (ws: CaptionWord[]): boolean => ws.length <= maxWords && groupText(ws).length <= o.maxChars
+    let i = 0
+    while (i < groups.length && groups.length > 1) {
+      const g = groups[i]
+      const tooShort = groupSpan(g.words) < o.minDurS || (g.words.length === 1 && isFunctionWord(g.words[0].text))
+      if (tooShort) {
+        const left = i > 0 && !g.breakBeforeHard ? groups[i - 1] : null
+        const right = i < groups.length - 1 && !groups[i + 1].breakBeforeHard ? groups[i + 1] : null
+        const leftOk = left ? fits([...left.words, ...g.words]) : false
+        const rightOk = right ? fits([...g.words, ...right.words]) : false
+        let side: 'left' | 'right' | null = null
+        if (leftOk && rightOk) side = groupSpan(left!.words) <= groupSpan(right!.words) ? 'left' : 'right'
+        else if (leftOk) side = 'left'
+        else if (rightOk) side = 'right'
+        if (side === 'left') {
+          left!.words = [...left!.words, ...g.words]
+          groups.splice(i, 1)
+          continue
+        }
+        if (side === 'right') {
+          right!.words = [...g.words, ...right!.words]
+          right!.breakBeforeHard = g.breakBeforeHard
+          groups.splice(i, 1)
+          continue
+        }
+      }
+      i++
+    }
+  }
 
   const chunks: CaptionChunk[] = groups.map((g) => ({
-    text: g.map((w) => w.text.trim()).join(' '),
-    startS: g[0].startS,
-    endS: Math.max(g[0].startS, g[g.length - 1].endS),
-    emphasis: g.some((w) => w.emphasis),
+    text: groupText(g.words),
+    startS: g.words[0].startS,
+    endS: Math.max(g.words[0].startS, g.words[g.words.length - 1].endS),
+    emphasis: g.words.some((w) => w.emphasis),
   }))
 
   // Seamless hold: run each caption up to its successor (or linger holdS at a
