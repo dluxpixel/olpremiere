@@ -41,6 +41,7 @@ import {
   quantizerFor,
   videoCodecLadder,
   videoEncoderConfig,
+  EXPORT_DECODER_OPTIONS,
   type RateControl,
   type VideoCodecFamily,
   type ExportRequest,
@@ -321,7 +322,7 @@ async function runNative(init: Extract<ExportRequest, { type: 'init' }>): Promis
         input.dispose()
         return null
       }
-      const sink = new CanvasSink(track)
+      const sink = new CanvasSink(track, { decoderOptions: EXPORT_DECODER_OPTIONS })
       const iterator = sink.canvases(Math.max(0, clip.inS))
       const provider: ClipProvider = { sink, iterator, dispose: () => input.dispose(), started: false, current: null, ahead: null, disposed: false }
       clipProviders.set(clip.id, provider)
@@ -791,7 +792,7 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
         input.dispose()
         return null
       }
-      const sink = new CanvasSink(track)
+      const sink = new CanvasSink(track, { decoderOptions: EXPORT_DECODER_OPTIONS })
       // Decode forward from just before the clip's in-point; a transition reads
       // past the out-point (handles), so leave the end open (to media end). For a
       // reverse clip frameForClip re-opens sink.canvases() at each backward step.

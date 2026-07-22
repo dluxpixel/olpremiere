@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest'
 import {
   AUDIO_CHUNK_FRAMES,
   AV1_CODECS,
+  EXPORT_DECODER_OPTIONS,
   H264_CODECS,
   HEVC_CODECS,
   clipFrameRange,
@@ -249,5 +250,13 @@ describe('videoCodecLadder', () => {
     expect(videoCodecLadder('av1')).toBe(AV1_CODECS)
     expect(HEVC_CODECS[0]).toContain('L120') // ≤1080p first
     expect(AV1_CODECS[0]).toContain('av01.0.08M') // level 4.0 first
+  })
+})
+
+describe('export decode contract', () => {
+  it('forces SOFTWARE video decode (hardware NVDEC tears inter-frame gameplay footage)', () => {
+    // Regression guard for the torn-export bug: real long-GOP OBS footage
+    // decoded via the hardware decoder mis-reconstructs high-motion P/B blocks.
+    expect(EXPORT_DECODER_OPTIONS.hardwareAcceleration).toBe('prefer-software')
   })
 })

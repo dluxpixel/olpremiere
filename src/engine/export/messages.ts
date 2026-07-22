@@ -19,6 +19,19 @@ export type RateControl = 'variable' | 'constant' | 'quantizer'
 /** Video codec family. 'avc' (H.264) is always available; the others are probe-gated. */
 export type VideoCodecFamily = 'avc' | 'hevc' | 'av1'
 
+/**
+ * The video DECODE preference for EXPORT: always SOFTWARE. Hardware decoders
+ * (e.g. NVDEC) mis-reconstruct inter-frame (P/B) macroblocks on real long-GOP
+ * capture footage (OBS/NVENC), visible as torn/sheared frames clustered in
+ * high-motion areas — a clean static ground, a shredded moving sky — while flat
+ * or all-keyframe content decodes fine, which is why the golden export never
+ * caught it. Export must be pixel-CORRECT, not fast; it is already dominated by
+ * libx264 -preset veryslow, so software decode costs little. Preview keeps
+ * hardware decode (downscaled) for scrub speed — the two paths may differ
+ * because export must be correct. Passed as the CanvasSink `decoderOptions`.
+ */
+export const EXPORT_DECODER_OPTIONS = { hardwareAcceleration: 'prefer-software' } as const
+
 export interface ExportSettings {
   width: number
   height: number
