@@ -167,9 +167,14 @@ app.whenReady().then(() => {
   // day it ships — not only on the next launch.
   if (app.isPackaged) {
     autoUpdater.on('error', (e) => console.error('OL Premiere auto-update error:', e))
-    autoUpdater.on('update-downloaded', (info) =>
-      console.log(`OL Premiere update ${info.version} downloaded — installs on quit`),
-    )
+    autoUpdater.on('update-downloaded', (info) => {
+      console.log(`OL Premiere update ${info.version} downloaded — installs on quit`)
+      // Tell the renderer so it can surface "Update ready — Restart", instead of
+      // the update sitting invisibly until the user happens to quit.
+      mainWindow?.webContents.send('update:ready', info.version)
+    })
+    // One-click apply: quit and relaunch into the freshly downloaded version.
+    ipcMain.on('update:install', () => autoUpdater.quitAndInstall())
     void autoUpdater.checkForUpdatesAndNotify()
     const FIFTEEN_MIN = 15 * 60 * 1000
     setInterval(() => void autoUpdater.checkForUpdatesAndNotify(), FIFTEEN_MIN)

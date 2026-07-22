@@ -46,6 +46,7 @@ import { addTitleClip } from './state/titleActions'
 import { saveNow } from './state/persistence'
 import { updateActiveSequence, useStore, zoomIn, zoomOut } from './state/store'
 import { useToasts } from './state/toasts'
+import { olApi } from './platform'
 import { ContextMenu } from './ui/ContextMenu'
 import { Splitter } from './ui/Splitter'
 import { Toaster } from './ui/Toaster'
@@ -322,6 +323,19 @@ export default function App() {
   // three can never disagree.
   const bindings = useMemo(() => buildAppBindings(), [])
   useEffect(() => installKeymap(bindings), [bindings])
+
+  // Desktop: when a newer version has downloaded, surface "Update ready → Restart"
+  // so it doesn't sit invisible until the user happens to fully quit the app.
+  useEffect(
+    () =>
+      olApi?.onUpdateReady?.((version) =>
+        useToasts.getState().show(`Update ${version} is ready`, 'success', {
+          label: 'Restart',
+          onClick: () => olApi?.restartToUpdate?.(),
+        }),
+      ),
+    [],
+  )
 
   return (
     <div

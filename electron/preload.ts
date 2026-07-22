@@ -27,6 +27,12 @@ const api: OlApi = {
     ipcRenderer.on('native:progress', l)
     return () => ipcRenderer.off('native:progress', l)
   },
+  onUpdateReady: (cb: (version: string) => void) => {
+    const l = (_e: unknown, version: string) => cb(version)
+    ipcRenderer.on('update:ready', l)
+    return () => ipcRenderer.off('update:ready', l)
+  },
+  restartToUpdate: () => ipcRenderer.send('update:install'),
 }
 
 contextBridge.exposeInMainWorld('api', api)

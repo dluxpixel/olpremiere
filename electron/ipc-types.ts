@@ -60,4 +60,8 @@ export interface OlApi {
   nativeCancel(): Promise<void>
   /** Encode progress (frame/totalFrames) parsed from ffmpeg. Returns an unsubscribe fn. */
   onNativeProgress(cb: (p: NativeProgress) => void): () => void
+  /** Fires when a newer version has downloaded and is staged to install on restart. Returns an unsubscribe fn. */
+  onUpdateReady(cb: (version: string) => void): () => void
+  /** Quit and install the downloaded update now — relaunches into the new version. */
+  restartToUpdate(): void
 }
