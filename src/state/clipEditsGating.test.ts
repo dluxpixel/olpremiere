@@ -40,3 +40,17 @@ describe('applyEffect — clip-kind gating', () => {
     expect(seq().tracks[2].clips[0].effects).toEqual([])
   })
 })
+
+describe('one-click green screen (chroma key)', () => {
+  it('applying the chroma-key effect keys GREEN at a working strength', () => {
+    const clip = seedClipOnTrack(0, videoAsset) // V1
+    applyEffect(clip.id, 'chromaKey')
+    const fx = seq().tracks[0].clips[0].effects.find((e) => e.type === 'chromaKey')
+    expect(fx).toBeTruthy()
+    const p = fx!.params as Record<string, number>
+    expect(p.keyG).toBe(1) // green keyed by default
+    expect(p.keyR).toBe(0)
+    expect(p.keyB).toBe(0)
+    expect(p.similarity).toBeGreaterThan(0) // active on drop, not identity
+  })
+})

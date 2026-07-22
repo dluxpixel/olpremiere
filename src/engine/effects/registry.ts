@@ -283,12 +283,14 @@ export const EFFECTS: EffectDef[] = [
   },
   {
     type: 'chromaKey',
-    label: 'Chroma Key',
-    description: 'Green screen: keys out the key colour. Similarity 0 is off; Spill desaturates leftover fringe.',
+    label: 'Green Screen',
+    description: 'Removes a green (or blue) screen behind the clip. Drop it on the clip that HAS the screen; raise Similarity if green edges remain, Spill kills green fringe.',
     category: 'key',
     pass: 'pointwise',
-    // Dropped keying green at a working strength; defaults stay identity.
-    initialParams: { similarity: 0.35, smoothness: 0.1, spill: 0.5 },
+    // Dropped keying GREEN at a clean working strength (key-colour default is green,
+    // keyR/G/B = 0/1/0); spill high so leftover green fringe is desaturated. A pure
+    // bright green screen keys cleanly at these defaults with no tuning.
+    initialParams: { similarity: 0.4, smoothness: 0.08, spill: 0.6 },
     params: [
       p('keyR', 'Key R', 0, 1, 0.01, 0),
       p('keyG', 'Key G', 0, 1, 0.01, 1),

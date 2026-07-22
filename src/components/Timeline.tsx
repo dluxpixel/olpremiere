@@ -1459,6 +1459,14 @@ export function Timeline({ height }: { height: number }) {
           ]
         : []
 
+    // One-click green-screen removal on a media clip (video/image that HAS a screen).
+    // Applies the chroma-key effect, which defaults to keying green at a clean
+    // strength — drop-and-done, then fine-tune in the Inspector if edges remain.
+    const greenScreenItems: MenuItem[] =
+      track?.kind === 'video' && !clip.title && !clip.adjustment
+        ? [{ label: 'Remove green screen', onClick: () => applyEffect(clip.id, 'chromaKey') }]
+        : []
+
     // "How it appears" - font/size quick-picks + entrance/exit/speed animation,
     // TITLE clips only (video animates via transitions + the Motion submenu).
     // All compile to keyframes (preview == export). Shared with the
@@ -1519,6 +1527,7 @@ export function Timeline({ height }: { height: number }) {
       ...crossfadeItems,
       ...captionItems,
       ...motionItems,
+      ...greenScreenItems,
       ...appearanceItems,
       ...bulkTitleItems,
       {
