@@ -26,6 +26,7 @@ import { useToasts } from '../state/toasts'
 import { canRecordVoice, closeStudio, openStudio, useRecorder } from '../state/voiceRecorder'
 import { Button, IconButton } from '../ui/Button'
 import { MelonMark } from '../ui/BootSplash'
+import { APP_VERSION } from '../appVersion'
 import { ExportDialog } from './ExportDialog'
 import { ProjectsDialog } from './ProjectsDialog'
 import { SettingsDialog } from './SettingsDialog'
@@ -195,6 +196,24 @@ function ProjectName() {
   )
 }
 
+/**
+ * The running build version, always on screen. This is the passive half of the
+ * "how do I know I'm updated" answer: a glance confirms the build at any time
+ * (the post-update toast is the active half). It reflects the loaded bundle, so
+ * after an auto-update it shows the new number.
+ */
+function VersionTag() {
+  return (
+    <span
+      data-testid="app-version"
+      title={`OL Premiere v${APP_VERSION} — this is the build you're running`}
+      className="select-text font-numeric text-[10px] leading-none text-text-muted"
+    >
+      v{APP_VERSION}
+    </span>
+  )
+}
+
 export function TopBar() {
   const canUndo = useStore((s) => s.history.undo.length > 0)
   const canRedo = useStore((s) => s.history.redo.length > 0)
@@ -227,6 +246,7 @@ export function TopBar() {
       <div className="flex items-center gap-2">
         <MelonMark size={18} />
         <span className="text-ui font-semibold tracking-[0.08em]">OL Premiere</span>
+        <VersionTag />
       </div>
       <div className="h-4 w-px bg-border" />
       <ProjectName />

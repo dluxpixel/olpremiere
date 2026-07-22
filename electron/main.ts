@@ -161,19 +161,38 @@ app.whenReady().then(() => {
   })
 
   // Auto-update: on a packaged build, check GitHub Releases (electron-builder.yml
-  // `publish`), download a newer version in the background, and install it on
-  // quit. A failed check (offline / no release) logs and is ignored. We re-check
-  // every 15 minutes so an app that's left open still gets a release the same
-  // day it ships — not only on the next launch.
+  // `publish`) and download a newer version in the background. A failed check
+  // (offline / no release) logs and is ignored. We re-check every 15 minutes so
+  // an app left open still gets a release the same day it ships.
+  //
+  // APPLY POLICY (David's ask — "every time I start, just update to the newest"):
+  // if the update finishes downloading shortly after LAUNCH (before the user has
+  // settled into editing), quit + install + relaunch straight into it, so every
+  // start converges to the newest build with zero clicks. If it lands LATER —
+  // mid-edit — we must not yank the app out from under active work, so we surface
+  // the "Restart to update" toast instead. Either way, after the relaunch the
+  // renderer shows a "Updated to vX" toast and the always-on version tag confirms
+  // exactly which build is running (App.tsx / TopBar) — the "what version am I on"
+  // confusion is gone.
   if (app.isPackaged) {
+    const launchedAt = Date.now()
+    const AUTO_APPLY_WINDOW_MS = 3 * 60 * 1000
+    autoUpdater.autoDownload = true
+    autoUpdater.autoInstallOnAppQuit = true // a pending update also installs on any quit
     autoUpdater.on('error', (e) => console.error('OL Premiere auto-update error:', e))
     autoUpdater.on('update-downloaded', (info) => {
-      console.log(`OL Premiere update ${info.version} downloaded — installs on quit`)
-      // Tell the renderer so it can surface "Update ready — Restart", instead of
-      // the update sitting invisibly until the user happens to quit.
-      mainWindow?.webContents.send('update:ready', info.version)
+      if (Date.now() - launchedAt < AUTO_APPLY_WINDOW_MS) {
+        console.log(`OL Premiere update ${info.version} downloaded at launch — installing now`)
+        // isSilent = true (no installer UI), isForceRunAfter = true (relaunch after).
+        autoUpdater.quitAndInstall(true, true)
+      } else {
+        console.log(`OL Premiere update ${info.version} downloaded — offering restart`)
+        // Tell the renderer to surface "Update ready — Restart" rather than
+        // interrupting an in-progress edit/export.
+        mainWindow?.webContents.send('update:ready', info.version)
+      }
     })
-    // One-click apply: quit and relaunch into the freshly downloaded version.
+    // One-click apply from the toast: quit and relaunch into the downloaded version.
     ipcMain.on('update:install', () => autoUpdater.quitAndInstall())
     void autoUpdater.checkForUpdatesAndNotify()
     const FIFTEEN_MIN = 15 * 60 * 1000

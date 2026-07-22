@@ -13,9 +13,15 @@ export interface Toast {
   action?: ToastAction
 }
 
+/** Optional display tuning for a toast. */
+export interface ToastOptions {
+  /** Override how long the toast stays up (ms). Used for the prominent update banner. */
+  durationMs?: number
+}
+
 interface ToastState {
   toasts: Toast[]
-  show: (message: string, kind?: Toast['kind'], action?: ToastAction) => void
+  show: (message: string, kind?: Toast['kind'], action?: ToastAction, opts?: ToastOptions) => void
   dismiss: (id: number) => void
 }
 
@@ -26,7 +32,7 @@ const TOAST_ACTION_MS = 7000
 
 export const useToasts = create<ToastState>((set, get) => ({
   toasts: [],
-  show(message, kind = 'info', action) {
+  show(message, kind = 'info', action, opts) {
     const id = nextId++
     set((s) => {
       // Cap the stack: a bad folder import (one toast per file) must never
@@ -38,7 +44,8 @@ export const useToasts = create<ToastState>((set, get) => ({
       }
       return { toasts: [...toasts, { id, message, kind, ...(action ? { action } : {}) }] }
     })
-    window.setTimeout(() => get().dismiss(id), action ? TOAST_ACTION_MS : TOAST_MS)
+    const ms = opts?.durationMs ?? (action ? TOAST_ACTION_MS : TOAST_MS)
+    window.setTimeout(() => get().dismiss(id), ms)
   },
   dismiss(id) {
     set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }))

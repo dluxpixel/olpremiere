@@ -46,6 +46,7 @@ import { addTitleClip } from './state/titleActions'
 import { saveNow } from './state/persistence'
 import { updateActiveSequence, useStore, zoomIn, zoomOut } from './state/store'
 import { useToasts } from './state/toasts'
+import { APP_VERSION, LAST_SEEN_VERSION_KEY, checkForUpdate } from './appVersion'
 import { olApi } from './platform'
 import { ContextMenu } from './ui/ContextMenu'
 import { Splitter } from './ui/Splitter'
@@ -329,13 +330,39 @@ export default function App() {
   useEffect(
     () =>
       olApi?.onUpdateReady?.((version) =>
-        useToasts.getState().show(`Update ${version} is ready`, 'success', {
+        useToasts.getState().show(`Update ${version} is ready — restart to install`, 'success', {
           label: 'Restart',
           onClick: () => olApi?.restartToUpdate?.(),
         }),
       ),
     [],
   )
+
+  // On the FIRST launch after an auto-update, tell the user plainly that they're
+  // now on the new build — the piece that was missing, so an update no longer
+  // installs invisibly. The always-on version tag in the top bar is the passive
+  // half; this toast is the active "it just happened" half. Runs once, on mount.
+  useEffect(() => {
+    let lastSeen: string | null = null
+    try {
+      lastSeen = localStorage.getItem(LAST_SEEN_VERSION_KEY)
+    } catch {
+      return // storage blocked — skip silently rather than risk a bad first paint
+    }
+    const result = checkForUpdate(lastSeen, APP_VERSION)
+    if (result.kind === 'updated') {
+      useToasts
+        .getState()
+        .show(`🎉 Updated to v${result.to} — you're on the newest version`, 'success', undefined, {
+          durationMs: 12_000,
+        })
+    }
+    try {
+      if (result.kind !== 'unchanged') localStorage.setItem(LAST_SEEN_VERSION_KEY, APP_VERSION)
+    } catch {
+      // ignore storage failures — the toast already fired
+    }
+  }, [])
 
   return (
     <div
