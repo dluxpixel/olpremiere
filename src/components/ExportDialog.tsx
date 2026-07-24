@@ -619,11 +619,19 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
                   value={qualityKey}
                   onChange={(e) => setQualityKey(e.target.value as QualityKey)}
                 >
-                  {QUALITIES.map((q) => (
-                    <option key={q.key} value={q.key}>
-                      {q.label}
-                    </option>
-                  ))}
+                  {QUALITIES.map((q) => {
+                    const label =
+                      q.key === 'youtube'
+                        ? `YouTube (high quality · ~${Math.round(youtubeBitrate(preset.width, preset.height, exportFps) / 1e6)} Mbps)`
+                        : q.key === 'max'
+                          ? `Maximum (near-lossless · ~${Math.round(losslessBitrate(preset.width, preset.height, exportFps) / 1e6)} Mbps)`
+                          : q.label
+                    return (
+                      <option key={q.key} value={q.key}>
+                        {label}
+                      </option>
+                    )
+                  })}
                 </select>
               </label>
             )}
