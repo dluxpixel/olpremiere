@@ -185,7 +185,15 @@ app.whenReady().then(() => {
     const AUTO_APPLY_WINDOW_MS = 3 * 60 * 1000
     autoUpdater.autoDownload = true
     autoUpdater.autoInstallOnAppQuit = true // a pending update also installs on any quit
-    autoUpdater.on('error', (e) => console.error('OL Premiere auto-update error:', e))
+    autoUpdater.on('error', (e) => {
+      // NEVER swallow this. A silent failure here is indistinguishable from "no
+      // update available", which is exactly how a dead update feed (an
+      // unreachable repo, a 404 on latest.yml) hid for weeks.
+      const msg = e instanceof Error ? e.message : String(e)
+      console.error('OL Premiere auto-update error:', e)
+      mainWindow?.webContents.send('update:error', msg)
+    })
+    autoUpdater.on('update-not-available', () => mainWindow?.webContents.send('update:none'))
     autoUpdater.on('update-downloaded', (info) => {
       // Auto-apply only in the fresh-launch window AND only when no native export
       // is mid-render (a force-quit would truncate the file + orphan ffmpeg). Even

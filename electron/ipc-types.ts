@@ -69,6 +69,10 @@ export interface OlApi {
    * "Restart to update" toast. Returns an unsubscribe fn.
    */
   onAutoApplyUpdate(cb: (version: string) => void): () => void
+  /** Fires when an update CHECK or download fails (404 feed, offline, bad yml). Returns an unsubscribe fn. */
+  onUpdateError(cb: (message: string) => void): () => void
+  /** Fires when the check succeeded and the app is already newest. Returns an unsubscribe fn. */
+  onUpdateNone(cb: () => void): () => void
   /** Quit and install the downloaded update now — relaunches into the new version. */
   restartToUpdate(): void
 }

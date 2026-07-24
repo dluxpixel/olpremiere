@@ -360,6 +360,22 @@ export default function App() {
     [],
   )
 
+  // Update CHECK failures must be visible. Swallowing them into console.error is
+  // indistinguishable from "you're up to date" — which is exactly how an
+  // unreachable release feed (404) hid for weeks while the app silently never
+  // updated. If the check can't run, the user gets told.
+  useEffect(
+    () =>
+      olApi?.onUpdateError?.((message) =>
+        useToasts
+          .getState()
+          .show(`Update check failed — you may not be on the newest version. ${message}`, 'danger', undefined, {
+            durationMs: 12_000,
+          }),
+      ),
+    [],
+  )
+
   // On the FIRST launch after an auto-update, tell the user plainly that they're
   // now on the new build — the piece that was missing, so an update no longer
   // installs invisibly. The always-on version tag in the top bar is the passive
