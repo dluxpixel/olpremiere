@@ -241,7 +241,6 @@ function buildAppBindings(): Binding[] {
       { combo: 'b', description: 'Razor (blade) tool', domain: 'tools', run: () => store().setUI({ tool: 'razor' }) }, // click-to-cut anywhere
       { combo: 'h', description: 'Hand tool', domain: 'tools', run: () => store().setUI({ tool: 'hand' }) },
       { combo: 'z', description: 'Zoom tool', domain: 'tools', run: () => store().setUI({ tool: 'zoom' }) },
-      { combo: 'mod+shift+k', description: 'Split ALL tracks at playhead', domain: 'trim', run: () => splitAtPlayhead(true) },
       { combo: 'mod+alt+c', description: 'Copy attributes', domain: 'trim', run: () => copyClipAttributes() },
       { combo: 'mod+alt+v', description: 'Paste attributes', domain: 'trim', run: () => pasteClipAttributes() },
       { combo: 'delete', description: 'Delete (lift)', domain: 'trim', run: () => deleteSelected(false) },

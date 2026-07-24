@@ -158,13 +158,14 @@ type EncoderMode = 'auto' | 'gpu' | 'software'
 const ENCODER_KEY = 'reel:export:encoder'
 const ENCODERS: { key: EncoderMode; label: string }[] = [
   { key: 'auto', label: 'Auto (GPU, else software)' },
-  { key: 'gpu', label: 'GPU (fastest)' },
   { key: 'software', label: 'Software (most compatible)' },
 ]
 function loadEncoderMode(): EncoderMode {
   try {
     const v = typeof localStorage !== 'undefined' ? localStorage.getItem(ENCODER_KEY) : null
-    return v === 'gpu' || v === 'software' || v === 'auto' ? v : 'auto'
+    // A stored 'gpu' from an older build maps to Auto (which already uses the
+    // GPU, and falls back to software only if it actually crashes).
+    return v === 'software' || v === 'auto' ? v : 'auto'
   } catch {
     return 'auto'
   }

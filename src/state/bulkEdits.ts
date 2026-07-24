@@ -75,7 +75,16 @@ export function setClipsPosition(ids: Iterable<string>, x: number, y: number): v
 /** Add one fresh instance of an effect to every selected clip (own id each). */
 export function applyEffectToClips(ids: Iterable<string>, type: string): void {
   const label = getEffect(type)?.label ?? type
-  mapClips(ids, `Add ${label}`, (c) => addEffect(c, type, newId()))
+  // Skip audio clips the way the single-clip applyEffect does (clipEdits.ts): a
+  // visual effect on an audio clip stores a card, costs an undo and renders
+  // nothing. A mixed selection applies to its visual clips only.
+  const seq = activeSequence(useStore.getState().project)
+  const audioIds = new Set(
+    seq.tracks.filter((t) => t.kind === 'audio').flatMap((t) => t.clips.map((c) => c.id)),
+  )
+  const visual = [...ids].filter((id) => !audioIds.has(id))
+  if (visual.length === 0) return
+  mapClips(visual, `Add ${label}`, (c) => addEffect(c, type, newId()))
 }
 
 /**

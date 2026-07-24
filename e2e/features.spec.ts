@@ -19,7 +19,7 @@ async function importClip(page: Page): Promise<void> {
 
 test('the Media-panel Text button adds a title clip', async ({ page }) => {
   await importClip(page)
-  await page.getByTestId('add-text').click()
+  await page.getByTestId('add-title').click()
   const hasTitle = await page.evaluate(async () => {
     const storeMod = '/src/state/store.ts'
     const typesMod = '/src/engine/types.ts'

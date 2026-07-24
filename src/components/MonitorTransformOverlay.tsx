@@ -178,13 +178,18 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
     for (let i = visibleLayers.length - 1; i >= 0; i--) {
       const layer = visibleLayers[i]
       if (pointInQuad(sx, sy, quadFor(layer))) {
-        setUI({ selection: [layer.clipId] })
+        // Right-clicking a clip that is ALREADY selected keeps the selection (the
+        // timeline's own rule), so restyling 12 word-captions from the monitor hits
+        // all 12 instead of silently collapsing to the one under the cursor.
+        const keepSelection = selection.includes(layer.clipId)
+        const ids = keepSelection ? [...selection] : [layer.clipId]
+        if (!keepSelection) setUI({ selection: ids })
         const clip = seq.tracks.flatMap((t) => t.clips).find((c) => c.id === layer.clipId)
         if (clip)
           openContextMenu(e, [
             // The zoom centers on the exact point that was right-clicked.
             { label: 'Punch in here', onClick: () => punchInAtPoint(clip.id, { x: sx, y: sy }) },
-            ...previewClipMenu(clip).map((item, idx) => (idx === 0 ? { ...item, separator: true } : item)),
+            ...previewClipMenu(clip, ids).map((item, idx) => (idx === 0 ? { ...item, separator: true } : item)),
           ])
         return
       }

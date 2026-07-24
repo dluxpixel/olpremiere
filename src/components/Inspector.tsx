@@ -253,7 +253,6 @@ function EditableTimecodeRow({
 
 function ClipPanel({
   clip,
-  assetName,
   fps,
   playheadS,
   showAudio,
@@ -262,7 +261,6 @@ function ClipPanel({
   trackId,
 }: {
   clip: Clip
-  assetName: string
   fps: number
   playheadS: number
   showAudio: boolean
@@ -274,21 +272,9 @@ function ClipPanel({
   trackId?: string
 }) {
   const isTitle = isTitleClip(clip)
-  const name = isTitle ? clip.title!.text || 'Title' : assetName
 
   return (
     <div className="flex flex-col gap-4 p-3">
-      <div>
-        <div
-          className="truncate text-ui font-medium text-text-primary"
-          title={name}
-          data-testid="inspector-clip-name"
-        >
-          {name}
-        </div>
-        <div className="mt-0.5 text-dense text-text-muted">{isTitle ? 'Title' : 'Clip'}</div>
-      </div>
-
       {/* Most-important-first (David, 2026-07-18): the EDITING controls lead -
           a title's text, a sound clip's audio, everything else's effects.
           Speed rides INSIDE EffectControls right after the stack (titles pass
@@ -434,7 +420,6 @@ export function Inspector({ width }: { width: number }) {
         <div className="min-h-0 flex-1 overflow-y-auto">
           <ClipPanel
             clip={selected}
-            assetName={selectedAsset?.name ?? 'Missing media'}
             fps={seq.fps}
             playheadS={playheadS}
             showAudio={showAudio}

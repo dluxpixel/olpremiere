@@ -858,12 +858,12 @@ export function EffectControls({
               <button
                 type="button"
                 data-testid="punch-remove"
-                title="Remove the zoom: clears the Scale keyframes, the clip keeps its static scale"
+                title="Clears the Scale keyframes (the zoom included) - the clip keeps its static scale"
                 className="flex h-6 items-center gap-1 self-start rounded-field bg-bg-input px-2 text-ui-sm text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated hover:text-text-primary"
                 onClick={() => removeZoom(clip.id)}
               >
                 <X size={12} strokeWidth={1.75} aria-hidden />
-                Remove zoom
+                Remove scale animation
               </button>
             )}
           </div>

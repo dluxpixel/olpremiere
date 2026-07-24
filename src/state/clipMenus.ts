@@ -132,8 +132,8 @@ export function appearanceMenuItems(clip: Clip, ids: string[] = [clip.id]): Menu
 }
 
 /** The focused menu shown when right-clicking a clip IN the preview monitor. */
-export function previewClipMenu(clip: Clip): MenuItem[] {
-  const items = [...titleFontSizeItems(clip), ...appearanceMenuItems(clip)]
+export function previewClipMenu(clip: Clip, ids?: string[]): MenuItem[] {
+  const items = [...titleFontSizeItems(clip, ids), ...appearanceMenuItems(clip, ids)]
   // Never a leading divider at the very top of the menu.
   if (items.length > 0) items[0] = { ...items[0], separator: false }
   return items

@@ -102,7 +102,7 @@ import { openContextMenu, type MenuItem } from '../state/contextMenu'
 import { useBlobUrl } from '../state/blobUrls'
 import { useFilmstrip } from '../state/filmstrips'
 import { ClipWaveform } from './ClipWaveform'
-import { PlayheadLine, PlayheadTimecode, RemotePlayheads } from './PlayheadWidgets'
+import { PlayheadLine, RemotePlayheads } from './PlayheadWidgets'
 import { pointOnScrollbar } from './scrollbarGuard'
 import {
   MAX_PX_PER_S,
@@ -274,7 +274,8 @@ function TrackHeader({ track }: { track: Track }) {
     openContextMenu(
       e,
       AUTO_LEVELS.map((l) => ({
-        label: level === l.key ? `${l.label}  ✓` : l.label,
+        label: l.label,
+        checked: level === l.key,
         onClick: () => setTrackAutoLevel(track.id, l.key),
       })),
     )
@@ -282,7 +283,8 @@ function TrackHeader({ track }: { track: Track }) {
     openContextMenu(
       e,
       AUDIO_ROLES.map((r) => ({
-        label: track.audioRole === r.key ? `${r.label}  ✓` : r.label,
+        label: r.label,
+        checked: track.audioRole === r.key,
         onClick: () => setTrackAudioRole(track.id, r.key),
       })),
     )
@@ -411,7 +413,6 @@ function TimelineToolbar({ onZoomFit }: { onZoomFit: () => void }) {
   const snapping = useStore((s) => s.ui.snapping)
   const pxPerS = useStore((s) => s.ui.pxPerS)
   const setUI = useStore((s) => s.setUI)
-  const fps = useStore((s) => activeSequence(s.project).fps)
 
 
   return (
@@ -463,7 +464,6 @@ function TimelineToolbar({ onZoomFit }: { onZoomFit: () => void }) {
       </IconButton>
 
       <div className="ml-auto flex items-center gap-1.5">
-        <PlayheadTimecode fps={fps} className="mr-2 font-numeric text-[11px] text-text-secondary" />
         <IconButton size="compact" label="Zoom out" shortcut="-" onClick={zoomOut}>
           <ZoomOut size={14} strokeWidth={1.5} />
         </IconButton>

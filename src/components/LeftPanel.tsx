@@ -1,4 +1,4 @@
-import { Bookmark, Captions, Film, FolderOpen, Image as ImageIcon, Music, Plus, Sparkles, Type, Upload, Volume2, Wand2 } from 'lucide-react'
+import { Bookmark, Captions, Film, FolderOpen, Image as ImageIcon, Music, Plus, Sparkles, Upload, Volume2, Wand2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { EFFECTS } from '../engine/effects/registry'
 import { TRANSITION_KINDS, TRANSITION_LABELS } from '../engine/render/types'
@@ -8,7 +8,8 @@ import { activeSequence, type MediaAsset } from '../engine/types'
 import { useBlobUrl } from '../state/blobUrls'
 import { CaptionsDialog } from './CaptionsDialog'
 import { applyEffectToAllClips } from '../state/bulkEdits'
-import { applyEffect, setClipTransition } from '../state/clipEdits'
+import { applyEffectToClips } from '../state/bulkEdits'
+import { setClipTransition } from '../state/clipEdits'
 import { openContextMenu, type MenuItem } from '../state/contextMenu'
 import { ASSET_MIME, EFFECT_MIME, SFX_MIME, TRANSITION_MIME } from '../state/dnd'
 import {
@@ -24,10 +25,9 @@ import {
 import { healArrivedBlob, useMediaSync } from '../collab/mediaSync'
 import { useCollab } from '../collab/collabControl'
 import { deleteAsset, importFiles, insertAssetAtPlayhead } from '../state/mediaActions'
-import { applyJettismLook, applyPunchyGrade } from '../state/lookActions'
+import { applyJettismLook, applyPunchyGradeToClips } from '../state/lookActions'
 import { insertSfxAtPlayhead, previewSfx } from '../state/sfxActions'
 import { useStore, type LeftTab } from '../state/store'
-import { addTitleClip } from '../state/titleActions'
 import { putBlob } from '../state/persistence'
 import { Button } from '../ui/Button'
 
@@ -238,11 +238,6 @@ function MediaTab() {
           <Plus size={16} strokeWidth={1.5} />
           Import
         </Button>
-        {/* Same label as the T shortcut + timeline toolbar button - one verb, one name. */}
-        <Button variant="secondary" data-testid="add-text" onClick={() => addTitleClip()}>
-          <Type size={16} strokeWidth={1.5} />
-          Add title
-        </Button>
         <Button variant="secondary" data-testid="open-captions" onClick={() => setCaptionsOpen(true)}>
           <Captions size={16} strokeWidth={1.5} />
           Captions
@@ -344,7 +339,11 @@ function BrowserItem({
 function EffectsTab() {
   const [query, setQuery] = useState('')
   const selection = useStore((s) => s.ui.selection)
-  const targetId = selection.length === 1 ? selection[0] : undefined
+  // Effects + grades apply to the WHOLE selection through the bulk helpers
+  // (one undo step). Selecting five clips used to grey the browser out entirely.
+  const targets = selection
+  const hasTarget = targets.length > 0
+  const applyLabel = targets.length > 1 ? `Apply to ${targets.length} clips` : 'Apply to selected clip'
 
   const q = query.trim().toLowerCase()
   const matches = (s: string): boolean => q === '' || s.toLowerCase().includes(q)
@@ -374,7 +373,7 @@ function EffectsTab() {
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-1 pb-2">
-        {!targetId && (
+        {!hasTarget && (
           <p className="px-2 pb-1.5 text-[10px] text-text-muted">
             Select a clip to apply, drag straight onto one, or right-click to apply to every clip, or a transition to either edge.
           </p>
@@ -408,12 +407,12 @@ function EffectsTab() {
                   role="button"
                   tabIndex={0}
                   title="Just the punch grade (+exposure/+contrast/+saturation) on the selected clip"
-                  onDoubleClick={() => targetId && applyPunchyGrade(targetId)}
+                  onDoubleClick={() => hasTarget && applyPunchyGradeToClips(targets)}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter' && targetId) applyPunchyGrade(targetId)
+                    if (e.key === 'Enter' && hasTarget) applyPunchyGradeToClips(targets)
                   }}
                   className={`flex cursor-default items-center gap-2 rounded-[4px] px-2 py-1.5 text-[12px] transition-colors duration-[120ms] ${
-                    targetId ? 'text-text-secondary hover:bg-bg-elevated hover:text-text-primary' : 'text-text-muted'
+                    hasTarget ? 'text-text-secondary hover:bg-bg-elevated hover:text-text-primary' : 'text-text-muted'
                   }`}
                 >
                   <Wand2 size={13} strokeWidth={1.5} aria-hidden className="shrink-0 text-text-muted" />
@@ -434,14 +433,14 @@ function EffectsTab() {
                     title={e.description}
                     mime={EFFECT_MIME}
                     payload={e.type}
-                    disabled={!targetId}
-                    onApply={() => targetId && applyEffect(targetId, e.type)}
+                    disabled={!hasTarget}
+                    onApply={() => hasTarget && applyEffectToClips(targets, e.type)}
                     menu={[
                       {
-                        label: 'Apply to selected clip',
+                        label: applyLabel,
                         shortcut: 'Enter',
-                        disabled: !targetId,
-                        onClick: () => targetId && applyEffect(targetId, e.type),
+                        disabled: !hasTarget,
+                        onClick: () => hasTarget && applyEffectToClips(targets, e.type),
                       },
                       { label: 'Apply to every clip', onClick: () => applyEffectToAllClips(e.type) },
                     ]}
@@ -472,13 +471,13 @@ function EffectsTab() {
                     menu={[
                       {
                         label: 'Apply to clip start',
-                        disabled: !targetId,
-                        onClick: () => targetId && setClipTransition(targetId, 'in', k),
+                        disabled: !hasTarget,
+                        onClick: () => hasTarget && setClipTransition(targets[0], 'in', k),
                       },
                       {
                         label: 'Apply to clip end',
-                        disabled: !targetId,
-                        onClick: () => targetId && setClipTransition(targetId, 'out', k),
+                        disabled: !hasTarget,
+                        onClick: () => hasTarget && setClipTransition(targets[0], 'out', k),
                       },
                     ]}
                   />
