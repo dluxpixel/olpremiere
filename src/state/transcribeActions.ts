@@ -5,6 +5,7 @@
 import { create } from 'zustand'
 import {
   extractClipPcm,
+  tidyTranscribedWords,
   timelineWords,
   transcribePcm,
   wordsFromAsrChunks,
@@ -60,7 +61,9 @@ export async function autoCaptionFromClip(clipId: string, preset?: TextStylePres
     )
     useTranscribe.setState({ cancel: run.cancel })
     const chunks = await run.promise
-    const words = timelineWords(wordsFromAsrChunks(chunks), clip)
+    // tidy BEFORE the timeline mapping: loops, bare punctuation and Whisper's
+    // end-of-silence inventions are recogniser artifacts, not edits.
+    const words = timelineWords(tidyTranscribedWords(wordsFromAsrChunks(chunks)), clip)
     if (words.length === 0) {
       toasts.show('No speech found in the clip', 'danger')
     } else {

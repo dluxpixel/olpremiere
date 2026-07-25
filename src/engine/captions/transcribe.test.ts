@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { defaultTitleDef, newTitleClip } from '../types'
-import { timelineWords, wordsFromAsrChunks, type AsrChunk } from './transcribe'
+import { tidyTranscribedWords, timelineWords, wordsFromAsrChunks, type AsrChunk } from './transcribe'
 
 const chunk = (text: string, start: number, end: number | null): AsrChunk => ({
   text,
@@ -49,5 +49,47 @@ describe('timelineWords', () => {
     const words = timelineWords([{ text: 'go', startS: 1, endS: 2 }], clip)
     expect(words[0].startS).toBeCloseTo(10.5, 9)
     expect(words[0].endS).toBeCloseTo(11, 9)
+  })
+})
+
+describe('tidyTranscribedWords', () => {
+  const w = (text: string, startS: number, endS: number) => ({ text, startS, endS })
+
+  it('collapses a recogniser loop but keeps a genuine repeat', () => {
+    // Whisper skipping: the same token again with no audible gap.
+    const looped = tidyTranscribedWords([
+      w('the', 0.0, 0.2), w('the', 0.2, 0.4), w('the', 0.4, 0.6), w('wall', 0.6, 1.0),
+    ])
+    expect(looped.map((x) => x.text)).toEqual(['the', 'wall'])
+
+    // Actually saying a word twice leaves a real gap between them.
+    const real = tidyTranscribedWords([w('go', 0.0, 0.3), w('go', 0.9, 1.2)])
+    expect(real).toHaveLength(2)
+  })
+
+  it('drops tokens that are only punctuation', () => {
+    const out = tidyTranscribedWords([w('hi', 0, 0.3), w('.', 0.3, 0.35), w('there', 0.4, 0.8)])
+    expect(out.map((x) => x.text)).toEqual(['hi', 'there'])
+  })
+
+  it('strips the end-of-silence hallucination, but only after a real pause', () => {
+    const invented = tidyTranscribedWords([
+      w('diamonds', 0.0, 0.6),
+      w('thanks', 3.0, 3.3), w('for', 3.3, 3.5), w('watching', 3.5, 4.0),
+    ])
+    expect(invented.map((x) => x.text)).toEqual(['diamonds'])
+
+    // Said straight after the previous word — that is the creator actually
+    // signing off, so it stays.
+    const spoken = tidyTranscribedWords([
+      w('diamonds', 0.0, 0.6),
+      w('thanks', 0.7, 1.0), w('for', 1.0, 1.2), w('watching', 1.2, 1.6),
+    ])
+    expect(spoken).toHaveLength(4)
+  })
+
+  it('leaves ordinary punctuation attached — the chunker breaks captions on it', () => {
+    const out = tidyTranscribedWords([w('done.', 0, 0.5), w('next', 0.6, 1.0)])
+    expect(out[0].text).toBe('done.')
   })
 })

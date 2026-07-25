@@ -43,6 +43,82 @@ export function wordsFromAsrChunks(chunks: readonly AsrChunk[]): TranscribedWord
 }
 
 /**
+ * Whisper's classic end-of-audio hallucinations. It was trained on subtitle
+ * files, so when the audio goes quiet it invents the credits it saw in that
+ * data. This is a documented failure mode, not a guess — the list stays SHORT
+ * and only ever fires at the very end after real silence, so a video that
+ * genuinely ends on "thanks for watching" keeps it.
+ */
+const TAIL_HALLUCINATIONS = [
+  'thanks for watching',
+  'thank you for watching',
+  'thanks for watching!',
+  'subscribe to my channel',
+  'please subscribe',
+  'subtitles by',
+  'transcribed by',
+  'amara.org',
+]
+
+const norm = (t: string): string => t.toLowerCase().replace(/[^a-z0-9'!?]/g, '')
+
+/** A token that is only punctuation carries no word and must not become a caption. */
+const isPunctuationOnly = (t: string): boolean => !/[a-z0-9]/i.test(t)
+
+/**
+ * Repair what the recogniser actually got wrong, before any of it becomes
+ * captions. Three real artifacts, each deterministic:
+ *
+ *  - LOOPS. On a stutter or a stretch of near-silence Whisper repeats a token,
+ *    sometimes many times. An immediate repeat of the same word with no real gap
+ *    is the recogniser skipping, never speech.
+ *  - BARE PUNCTUATION. A chunk that is just "." or "," would otherwise become a
+ *    caption clip showing a full stop.
+ *  - TAIL HALLUCINATIONS. See TAIL_HALLUCINATIONS above.
+ *
+ * What this deliberately does NOT do is fix general mishearings — telling
+ * "diamonds" from "diamond's" from "die-monds" needs a language model, and there
+ * isn't one running locally. Punctuation is also left ALONE on purpose: the
+ * chunker reads sentence-ending marks to decide where a caption must break, so
+ * stripping them here would silently flatten those boundaries.
+ */
+export function tidyTranscribedWords(words: readonly TranscribedWord[]): TranscribedWord[] {
+  const out: TranscribedWord[] = []
+  for (const w of words) {
+    const text = w.text.trim()
+    if (!text || isPunctuationOnly(text)) continue
+    const prev = out[out.length - 1]
+    // A repeat with no audible gap is the model skipping, not the speaker
+    // saying it twice. Absorb the skipped span into the word we kept, so a run
+    // of loops collapses to one caption covering the whole stretch (and so the
+    // NEXT repeat is still measured against a gap that has not gone stale).
+    if (prev && norm(prev.text) === norm(text) && w.startS - prev.endS < 0.12) {
+      prev.endS = Math.max(prev.endS, w.endS)
+      continue
+    }
+    out.push({ ...w, text })
+  }
+
+  // Trailing invention: only when it sits after a real pause, so a video that
+  // really does end on those words keeps them.
+  for (let take = Math.min(4, out.length); take >= 1; take--) {
+    const tail = out.slice(out.length - take)
+    const phrase = tail
+      .map((w) => w.text)
+      .join(' ')
+      .toLowerCase()
+      .replace(/[^a-z0-9' ]/g, '')
+      .trim()
+    if (!TAIL_HALLUCINATIONS.includes(phrase)) continue
+    const before = out[out.length - take - 1]
+    if (before && tail[0].startS - before.endS < 0.6) continue // spoken, not invented
+    out.length = out.length - take
+    break
+  }
+  return out
+}
+
+/**
  * Map slice-relative word times onto the sequence timeline. The transcribed
  * slice starts at the clip's in point, so timeline time = clip start + word
  * time compressed by the clip's playback speed.
