@@ -243,15 +243,17 @@ test('animation speed shrinks the entrance window', async ({ page }) => {
   await menu.getByRole('menuitem', { name: 'Entrance' }).hover()
   // Exact: the top-level "Fade in + out" item also matches /Fade in/ (strict-mode clash).
   await menu.getByRole('menuitem', { name: 'Fade in', exact: true }).click()
+  // The default window is a quarter second — an accent, not a motion-graphics
+  // half second that is still arriving when the shot has moved on.
   const normalEnd = (await clipData(page, id)).opacityKf!.at(-1)!.t
-  expect(normalEnd).toBeCloseTo(0.5, 2)
+  expect(normalEnd).toBeCloseTo(0.25, 2)
 
   await page.getByTestId('clip').click({ button: 'right' })
   await menu.getByRole('menuitem', { name: 'Animation' }).hover()
-  await menu.getByRole('menuitem', { name: 'Speed: Fast' }).click()
+  await menu.getByRole('menuitem', { name: 'Speed: Instant' }).click()
   const d = await clipData(page, id)
-  expect(d.appearance?.durS).toBeCloseTo(0.25, 5)
-  expect(d.opacityKf!.at(-1)!.t).toBeCloseTo(0.25, 2) // window halved
+  expect(d.appearance?.durS).toBeCloseTo(0.1, 5)
+  expect(d.opacityKf!.at(-1)!.t).toBeCloseTo(0.1, 2) // window shrank with it
 })
 
 test('right-click IN the preview opens the clip menu, and the gizmo survives an animation', async ({ page }) => {

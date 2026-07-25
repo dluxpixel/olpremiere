@@ -6,6 +6,7 @@ import {
   APPEARANCE_CHANNELS,
   applyAppearanceToClip,
   buildAppearanceKeyframes,
+  DEFAULT_APPEARANCE_DUR,
   ENTRANCE_PRESETS,
   EXIT_PRESETS,
   isEmptyAppearance,
@@ -168,6 +169,58 @@ describe('applyAppearanceToClip', () => {
     const out = applyAppearanceToClip(base, { in: 'pop' }, W, H)
     // pop settles to the clip's (new) base scale of 2, not neutral 1.
     expect(resolveChannel(out, 'scale', 4)).toBeCloseTo(2, 5)
+  })
+})
+
+describe('preset curves settle instead of slamming', () => {
+  const D = 5
+  const d = 0.5
+  /** |dv/dt| of a channel at t, by central difference. */
+  const speedAt = (kfs: { t: number; value: number; ease?: string }[], t: number, base = 1): number => {
+    const h = 1e-4
+    return Math.abs(evalChannel(kfs as never, t + h, base) - evalChannel(kfs as never, t - h, base)) / (2 * h)
+  }
+  const peakSpeed = (kfs: { t: number; value: number }[], from: number, to: number, base = 1): number => {
+    let max = 0
+    for (let i = 0; i <= 100; i++) max = Math.max(max, speedAt(kfs as never, from + ((to - from) * i) / 100, base))
+    return max
+  }
+
+  it('bounce arrives at its resting size at rest, not at full speed', () => {
+    const kfs = buildAppearanceKeyframes({ in: 'bounce', durS: d }, D, W, H).scale!
+    // The bug: the final segment was easeIn, so the fastest moment of the whole
+    // animation was the instant it stopped.
+    expect(speedAt(kfs, d - 1e-3)).toBeLessThan(0.25 * peakSpeed(kfs, 0, d))
+  })
+
+  it('pop leaves its overshoot from rest, so the scale does not kink there', () => {
+    const kfs = buildAppearanceKeyframes({ in: 'pop', durS: d }, D, W, H).scale!
+    const peak = d * 0.6
+    // Both sides of the turning point are slow; a kink shows up as one side fast.
+    expect(speedAt(kfs, peak + 1e-3)).toBeLessThan(0.4 * peakSpeed(kfs, 0, d))
+  })
+
+  it('pop out swells to its peak at rest, then accelerates away', () => {
+    const kfs = buildAppearanceKeyframes({ out: 'popOut', durS: d }, D, W, H).scale!
+    const peak = D - d * 0.6
+    expect(speedAt(kfs, peak - 1e-3)).toBeLessThan(speedAt(kfs, D - 1e-3))
+  })
+
+  it('every entrance still ends exactly on the base value', () => {
+    for (const p of ENTRANCE_PRESETS) {
+      const kfs = buildAppearanceKeyframes({ in: p.id, durS: d }, D, W, H)
+      for (const ch of Object.keys(kfs) as (keyof typeof kfs)[]) {
+        const base = ch === 'scale' || ch === 'opacity' ? 1 : 0
+        expect(evalChannel(kfs[ch], d, base)).toBeCloseTo(base, 5)
+      }
+    }
+  })
+
+  it('the default window is short enough to read as an accent', () => {
+    // The app's own caption/text paths use 0.13-0.20s; the default must live in
+    // that world, not in the half-second motion-graphics one it came from.
+    expect(DEFAULT_APPEARANCE_DUR).toBeLessThanOrEqual(0.3)
+    expect(DEFAULT_APPEARANCE_DUR).toBeGreaterThanOrEqual(0.12)
   })
 })
 

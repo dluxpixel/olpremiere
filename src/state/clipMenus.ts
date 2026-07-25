@@ -27,12 +27,11 @@ const TITLE_SIZE_PRESETS = [
 const APPEARANCE_SPEEDS: { label: string; durS: number | 'auto' }[] = [
   { label: 'Auto (fit each word)', durS: 'auto' },
   { label: 'Instant', durS: 0.1 },
-  { label: 'Very fast', durS: 0.18 },
-  { label: 'Fast', durS: 0.25 },
-  { label: 'Normal', durS: 0.5 },
-  { label: 'Slow', durS: 0.8 },
-  { label: 'Slower', durS: 1.3 },
-  { label: 'Very slow', durS: 2 },
+  { label: 'Fast', durS: 0.18 },
+  { label: 'Normal', durS: DEFAULT_APPEARANCE_DUR },
+  { label: 'Relaxed', durS: 0.4 },
+  { label: 'Slow', durS: 0.6 },
+  { label: 'Very slow', durS: 1 },
 ]
 
 /**

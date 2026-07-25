@@ -27,8 +27,17 @@ export const APPEARANCE_CHANNELS: readonly AnimChannel[] = [
   'rotation',
 ]
 
-/** Default entrance/exit window length in seconds. */
-export const DEFAULT_APPEARANCE_DUR = 0.5
+/**
+ * Default entrance/exit window length, seconds.
+ *
+ * Half a second was inherited from motion-graphics defaults and reads slow on a
+ * fast-cut edit — the animation is still arriving when the shot has moved on.
+ * Every path this app builds FOR ITSELF (captions, the text presets) already
+ * hardcodes 0.13–0.20 s, so the code knew the default was wrong long before the
+ * audit said so. A quarter second lands: quick enough to feel like an accent,
+ * long enough to read as motion rather than a pop-in.
+ */
+export const DEFAULT_APPEARANCE_DUR = 0.25
 
 /** The clip's settled values each channel returns to (its static base). */
 export interface AppearanceBase {
@@ -72,8 +81,14 @@ export const ENTRANCE_PRESETS: AppearancePreset[] = [
     id: 'pop',
     label: 'Pop / Bang',
     build: ({ d, base }) => ({
-      // Overshoot past the base then settle back — the "bang".
-      scale: [kf(0, 0.3 * base.scale, 'easeOut'), kf(d * 0.6, 1.12 * base.scale, 'easeOut'), kf(d, base.scale)],
+      // Overshoot past the base then settle back — the "bang". The overshoot is
+      // a TURNING POINT: the first segment decelerates into it, so the second
+      // has to leave it from rest (easeInOut) or the scale visibly kinks there.
+      scale: [
+        kf(0, 0.3 * base.scale, 'easeOut'),
+        kf(d * 0.6, 1.12 * base.scale, 'easeInOut'),
+        kf(d, base.scale),
+      ],
       opacity: [kf(0, 0, 'easeOut'), kf(d * 0.45, base.opacity)],
     }),
   },
@@ -115,11 +130,14 @@ export const ENTRANCE_PRESETS: AppearancePreset[] = [
     label: 'Bounce (pop bigger)',
     build: ({ d, base }) => ({
       // Pops in, overshoots BIGGER than normal, dips slightly, settles — a bouncy
-      // emphasis on the entrance.
+      // emphasis on the entrance. The peak and the dip are turning points, so
+      // every segment between them starts and ends at rest; the last one used to
+      // be easeIn, which meant the bounce arrived at its resting size travelling
+      // at MAXIMUM speed and simply stopped dead.
       scale: [
         kf(0, 0.5 * base.scale, 'easeOut'),
-        kf(d * 0.55, 1.25 * base.scale, 'easeOut'),
-        kf(d * 0.8, 0.95 * base.scale, 'easeIn'),
+        kf(d * 0.55, 1.25 * base.scale, 'easeInOut'),
+        kf(d * 0.8, 0.95 * base.scale, 'easeInOut'),
         kf(d, base.scale, 'easeOut'),
       ],
       opacity: [kf(0, 0, 'easeOut'), kf(d * 0.3, base.opacity)],
@@ -139,7 +157,13 @@ export const EXIT_PRESETS: AppearancePreset[] = [
     id: 'popOut',
     label: 'Pop out',
     build: ({ d, D, base }) => ({
-      scale: [kf(D - d, base.scale, 'easeIn'), kf(D - d * 0.6, 1.12 * base.scale, 'easeIn'), kf(D, 0)],
+      // Anticipation then action: swell to the peak and settle there
+      // (easeInOut), then accelerate away from it (easeIn).
+      scale: [
+        kf(D - d, base.scale, 'easeInOut'),
+        kf(D - d * 0.6, 1.12 * base.scale, 'easeIn'),
+        kf(D, 0),
+      ],
       opacity: [kf(D - d, base.opacity, 'easeIn'), kf(D, 0)],
     }),
   },
