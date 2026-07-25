@@ -82,8 +82,20 @@ export function applyEffectToClips(ids: Iterable<string>, type: string): void {
   const audioIds = new Set(
     seq.tracks.filter((t) => t.kind === 'audio').flatMap((t) => t.clips.map((c) => c.id)),
   )
-  const visual = [...ids].filter((id) => !audioIds.has(id))
-  if (visual.length === 0) return
+  const requested = [...ids]
+  const visual = requested.filter((id) => !audioIds.has(id))
+  if (visual.length === 0) {
+    // Double-clicking an effect with nothing (or only audio) selected used to do
+    // absolutely nothing, silently. The browser row is always usable, so the
+    // reason it did not land has to be said out loud.
+    useToasts
+      .getState()
+      .show(
+        requested.length === 0 ? 'Select a clip first' : 'Effects don’t apply to audio clips',
+        'danger',
+      )
+    return
+  }
   mapClips(visual, `Add ${label}`, (c) => addEffect(c, type, newId()))
 }
 

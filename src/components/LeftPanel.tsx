@@ -24,7 +24,7 @@ import {
 } from '../state/library'
 import { healArrivedBlob, useMediaSync } from '../collab/mediaSync'
 import { useCollab } from '../collab/collabControl'
-import { deleteAsset, importFiles, insertAssetAtPlayhead } from '../state/mediaActions'
+import { deleteAsset, importFiles, insertAssetAtPlayhead, useImportProgress } from '../state/mediaActions'
 import { applyJettismLook, applyPunchyGradeToClips } from '../state/lookActions'
 import { insertSfxAtPlayhead, previewSfx } from '../state/sfxActions'
 import { useStore, type LeftTab } from '../state/store'
@@ -223,11 +223,37 @@ function AssetCard({ asset, fps }: { asset: MediaAsset; fps: number }) {
   )
 }
 
+/**
+ * What the app is doing while it copies a drop in. Without this the panel sat on
+ * "Import media to begin" for the whole copy, which on a multi-GB capture looks
+ * exactly like a crash — so the file gets dropped a second time.
+ */
+function ImportProgress() {
+  const total = useImportProgress((s) => s.total)
+  const done = useImportProgress((s) => s.done)
+  const name = useImportProgress((s) => s.name)
+  if (total === 0) return null
+  return (
+    <div
+      data-testid="import-progress"
+      className="mx-2 mb-1 flex items-center gap-2 rounded-[6px] border border-border bg-bg-elevated px-2 py-1.5 text-[11px]"
+    >
+      <span className="shrink-0 tabular-nums text-text-secondary">
+        {total > 1 ? `Importing ${done + 1} of ${total}` : 'Importing'}
+      </span>
+      <span className="truncate text-text-muted" title={name}>
+        {name}
+      </span>
+    </div>
+  )
+}
+
 function MediaTab() {
   const assets = useStore((s) => s.project.assets)
   const fps = useStore((s) => activeSequence(s.project).fps)
   const fileInput = useRef<HTMLInputElement>(null)
   const [captionsOpen, setCaptionsOpen] = useState(false)
+  const importing = useImportProgress((s) => s.total)
   // Newest import first, so the file you just added is at the top (matches the
   // Library and every other panel) instead of buried at the bottom of the grid.
   const list = Object.values(assets).reverse()
@@ -259,7 +285,8 @@ function MediaTab() {
         />
       </div>
       <MediaSyncBanner />
-      {list.length === 0 ? (
+      <ImportProgress />
+      {list.length === 0 && importing === 0 ? (
         <div
           data-testid="media-empty"
           onDragOver={(e) => e.preventDefault()}
@@ -293,7 +320,6 @@ function BrowserItem({
   mime,
   payload,
   onApply,
-  disabled,
   testId,
   menu,
 }: {
@@ -302,7 +328,6 @@ function BrowserItem({
   mime: string
   payload: string
   onApply?: () => void
-  disabled: boolean
   testId: string
   menu?: MenuItem[]
 }) {
@@ -323,11 +348,7 @@ function BrowserItem({
       onKeyDown={(e) => {
         if (e.key === 'Enter') onApply?.()
       }}
-      className={`flex cursor-default items-center gap-2 rounded-[4px] px-2 py-1.5 text-[12px] transition-colors duration-[120ms] ${
-        disabled
-          ? 'text-text-muted'
-          : 'text-text-secondary hover:bg-bg-elevated hover:text-text-primary'
-      }`}
+      className="flex cursor-default items-center gap-2 rounded-[4px] px-2 py-1.5 text-[12px] text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated hover:text-text-primary"
     >
       <Sparkles size={13} strokeWidth={1.5} aria-hidden className="shrink-0 text-text-muted" />
       <span className="truncate">{name}</span>
@@ -406,13 +427,11 @@ function EffectsTab() {
                   role="button"
                   tabIndex={0}
                   title="Just the punch grade (+exposure/+contrast/+saturation) on the selected clip"
-                  onDoubleClick={() => hasTarget && applyPunchyGradeToClips(targets)}
+                  onDoubleClick={() => applyPunchyGradeToClips(targets)}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter' && hasTarget) applyPunchyGradeToClips(targets)
+                    if (e.key === 'Enter') applyPunchyGradeToClips(targets)
                   }}
-                  className={`flex cursor-default items-center gap-2 rounded-[4px] px-2 py-1.5 text-[12px] transition-colors duration-[120ms] ${
-                    hasTarget ? 'text-text-secondary hover:bg-bg-elevated hover:text-text-primary' : 'text-text-muted'
-                  }`}
+                  className="flex cursor-default items-center gap-2 rounded-[4px] px-2 py-1.5 text-[12px] text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated hover:text-text-primary"
                 >
                   <Wand2 size={13} strokeWidth={1.5} aria-hidden className="shrink-0 text-text-muted" />
                   <span className="truncate">Punchy Grade (selected clip)</span>
@@ -432,14 +451,12 @@ function EffectsTab() {
                     title={e.description}
                     mime={EFFECT_MIME}
                     payload={e.type}
-                    disabled={!hasTarget}
-                    onApply={() => hasTarget && applyEffectToClips(targets, e.type)}
+                    onApply={() => applyEffectToClips(targets, e.type)}
                     menu={[
                       {
                         label: applyLabel,
                         shortcut: 'Enter',
-                        disabled: !hasTarget,
-                        onClick: () => hasTarget && applyEffectToClips(targets, e.type),
+                        onClick: () => applyEffectToClips(targets, e.type),
                       },
                       { label: 'Apply to every clip', onClick: () => applyEffectToAllClips(e.type) },
                     ]}
@@ -466,7 +483,6 @@ function EffectsTab() {
                     title="Drag onto a clip (left half = start, right half = end), or right-click to apply to the selected clip's start or end"
                     mime={TRANSITION_MIME}
                     payload={k}
-                    disabled={false}
                     menu={[
                       {
                         label: 'Apply to clip start',

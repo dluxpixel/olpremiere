@@ -2,6 +2,7 @@
 // dispatch so the whole batch is a single undo step) and insert an asset
 // onto the timeline at the playhead.
 
+import { create } from 'zustand'
 import { evictAsset } from '../engine/frameCache'
 import { disposePreviewAsset } from '../engine/preview'
 import { probeFile } from '../engine/probe'
@@ -29,43 +30,60 @@ function isOutOfRoom(err: unknown): boolean {
   return err instanceof Error && /quota/i.test(err.message)
 }
 
+/** Live import progress — `total: 0` means nothing is importing. */
+export const useImportProgress = create<{ total: number; done: number; name: string }>(() => ({
+  total: 0,
+  done: 0,
+  name: '',
+}))
+
 export async function importFiles(files: File[]): Promise<void> {
   const show = useToasts.getState().show
   const imported: MediaAsset[] = []
   const failed: string[] = []
   const outOfRoom: string[] = []
-  for (const file of files) {
-    try {
-      const probe = await probeFile(file)
-      const id = newId()
-      const blobKey = 'asset/' + id
-      await putBlob(blobKey, file)
-      let thumbnailKey: string | undefined
-      if (probe.thumbnailBlob) {
-        thumbnailKey = 'thumb/' + id
-        await putBlob(thumbnailKey, probe.thumbnailBlob)
+  // Probing + copying every file's bytes into IndexedDB takes real time on
+  // multi-GB captures, and until now the app showed NOTHING while it happened —
+  // the drop overlay vanished on release and the panel sat on "Import media to
+  // begin". Indistinguishable from a crash, so people drop the file again.
+  useImportProgress.setState({ total: files.length, done: 0, name: files[0]?.name ?? '' })
+  try {
+    for (const [i, file] of files.entries()) {
+      useImportProgress.setState({ total: files.length, done: i, name: file.name })
+      try {
+        const probe = await probeFile(file)
+        const id = newId()
+        const blobKey = 'asset/' + id
+        await putBlob(blobKey, file)
+        let thumbnailKey: string | undefined
+        if (probe.thumbnailBlob) {
+          thumbnailKey = 'thumb/' + id
+          await putBlob(thumbnailKey, probe.thumbnailBlob)
+        }
+        imported.push({
+          id,
+          name: file.name,
+          kind: probe.kind,
+          blobKey,
+          durationS: probe.durationS,
+          width: probe.width,
+          height: probe.height,
+          hasAudio: probe.hasAudio,
+          hasVideo: probe.hasVideo,
+          thumbnailKey,
+          codec: undefined,
+        })
+      } catch (err) {
+        // Running out of room is NOT a bad file, and saying "unsupported" sends
+        // the user off re-encoding footage that was fine. Every import writes a
+        // full second copy of the file into IndexedDB, so filling the origin quota
+        // on gameplay captures is ordinary, not exotic.
+        if (isOutOfRoom(err)) outOfRoom.push(file.name)
+        else failed.push(file.name)
       }
-      imported.push({
-        id,
-        name: file.name,
-        kind: probe.kind,
-        blobKey,
-        durationS: probe.durationS,
-        width: probe.width,
-        height: probe.height,
-        hasAudio: probe.hasAudio,
-        hasVideo: probe.hasVideo,
-        thumbnailKey,
-        codec: undefined,
-      })
-    } catch (err) {
-      // Running out of room is NOT a bad file, and saying "unsupported" sends
-      // the user off re-encoding footage that was fine. Every import writes a
-      // full second copy of the file into IndexedDB, so filling the origin quota
-      // on gameplay captures is ordinary, not exotic.
-      if (isOutOfRoom(err)) outOfRoom.push(file.name)
-      else failed.push(file.name)
     }
+  } finally {
+    useImportProgress.setState({ total: 0, done: 0, name: '' })
   }
   // ONE summary toast per failure KIND — never one per file (folder-drop flood).
   if (outOfRoom.length > 0) {
