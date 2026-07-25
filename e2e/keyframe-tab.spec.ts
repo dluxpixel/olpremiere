@@ -94,3 +94,34 @@ test('multi-select shows the align-to-same-spot box in the preview', async ({ pa
   await setUI(page, { selection: [a, b], playheadS: 2 })
   await expect(page.getByTestId('multi-move-box')).toBeVisible()
 })
+
+test('an animated clip shows its keyframes ON the timeline', async ({ page }) => {
+  // Keyframes only ever existed in the Inspector's 240px lane, so nothing on
+  // the timeline said a clip was animated at all, let alone where.
+  await page.goto('/')
+  await page.getByTestId('add-title').click()
+  await expect(page.getByTestId('clip')).toBeVisible()
+  await expect(page.getByTestId('clip-keyframe')).toHaveCount(0)
+
+  // A punch-in animates several channels at two moments — which is TWO marks,
+  // not six, because a moment is what you can see and grab.
+  await page.getByTestId('clip').click()
+  await page.keyboard.press('p')
+  await expect.poll(async () => page.getByTestId('clip-keyframe').count()).toBeGreaterThan(0)
+
+  const marks = await page.getByTestId('clip-keyframe').count()
+  const channels = await page.evaluate(async () => {
+    const storeMod = '/src/state/store.ts'
+    const typesMod = '/src/engine/types.ts'
+    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+      useStore: { getState: () => { project: unknown } }
+    }
+    const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+      activeSequence: (p: unknown) => { tracks: { clips: { keyframes?: Record<string, unknown[]> }[] }[] }
+    }
+    const clip = activeSequence(useStore.getState().project).tracks.flatMap((t) => t.clips)[0]
+    return Object.keys(clip.keyframes ?? {}).length
+  })
+  expect(channels).toBeGreaterThan(0)
+  expect(marks).toBeLessThanOrEqual(channels * 4) // moments, not channel-times
+})

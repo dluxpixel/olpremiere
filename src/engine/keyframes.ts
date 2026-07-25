@@ -85,3 +85,36 @@ export function removeKeyframeNear(
   if (bestIdx === -1) return list as Keyframe[]
   return list.filter((_, i) => i !== bestIdx)
 }
+
+/**
+ * Every distinct LOCAL time at which this clip has a keyframe, sorted, across
+ * every animated channel it has — the transform/opacity channels and any
+ * keyframed effect param alike.
+ *
+ * The timeline needs one mark per MOMENT, not per channel: a punch-in that
+ * animates scale and position at the same instant is one keyframe to the person
+ * looking at it, which is how CapCut shows them and why they can be grabbed at
+ * all. Pure, so the mark and the animation can never disagree.
+ */
+export function clipKeyframeTimes(clip: {
+  keyframes?: Partial<Record<string, readonly Keyframe[]>>
+  effects?: readonly { params: Record<string, number | { keyframes?: readonly Keyframe[] }> }[]
+}): number[] {
+  const times: number[] = []
+  const add = (kfs: readonly Keyframe[] | undefined): void => {
+    if (kfs) for (const k of kfs) times.push(k.t)
+  }
+  for (const kfs of Object.values(clip.keyframes ?? {})) add(kfs)
+  for (const fx of clip.effects ?? []) {
+    for (const p of Object.values(fx.params)) {
+      if (typeof p !== 'number') add(p.keyframes)
+    }
+  }
+  if (times.length === 0) return times
+  times.sort((a, b) => a - b)
+  // Collapse moments that land within a frame of each other at any sane rate;
+  // two marks a pixel apart are one mark to the eye and to the cursor.
+  const out: number[] = [times[0]]
+  for (const t of times) if (t - out[out.length - 1] > 1e-4) out.push(t)
+  return out
+}

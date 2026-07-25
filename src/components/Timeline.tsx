@@ -55,6 +55,7 @@ import {
   trimClipTo,
   trimGroup,
 } from '../engine/timeline'
+import { clipKeyframeTimes } from '../engine/keyframes'
 import { TRANSITION_KINDS, TRANSITION_LABELS, type TransitionKind } from '../engine/render/types'
 import { formatTimecode, quantizeToFrame } from '../engine/timecode'
 import { workArea } from '../engine/workArea'
@@ -661,6 +662,18 @@ const ClipView = memo(function ClipView({
   const fadeInPx = fadeInS * pxPerS
   const fadeOutPx = fadeOutS * pxPerS
 
+  // Keyframes, drawn ON the clip the way CapCut does — until now they existed
+  // only inside the Inspector's 240px lane, so nothing on the timeline said a
+  // clip was animated at all, let alone WHERE. Clip-local seconds map straight
+  // to px at the current zoom.
+  // Depends on exactly the two fields keyframes can live in; taking the whole
+  // clip would recompute on every move, trim and rename.
+  const { keyframes: clipKfs, effects: clipFx } = clip
+  const keyframePx = useMemo(
+    () => clipKeyframeTimes({ keyframes: clipKfs, effects: clipFx }).map((t) => t * pxPerS),
+    [clipKfs, clipFx, pxPerS],
+  )
+
   // A transition's mark can never be wider than the clip it sits on, or two
   // long ones on a short clip would draw past each other.
   const halfPx = width / 2
@@ -795,6 +808,25 @@ const ClipView = memo(function ClipView({
       <span className="pointer-events-none absolute left-1.5 right-1.5 top-0.5 truncate text-[11px] font-medium text-white/90 [text-shadow:0_1px_2px_rgba(0,0,0,0.6)]">
         {label}
       </span>
+
+      {keyframePx.length > 0 && width > 8 && (
+        <div
+          data-testid="clip-keyframes"
+          className="pointer-events-none absolute inset-x-0 bottom-0 h-3"
+          aria-hidden
+        >
+          {keyframePx.map((x, i) =>
+            x >= -3 && x <= width + 3 ? (
+              <span
+                key={i}
+                data-testid="clip-keyframe"
+                className="absolute bottom-[3px] h-[7px] w-[7px] -translate-x-1/2 rotate-45 border border-black/50 bg-white/90"
+                style={{ left: x }}
+              />
+            ) : null,
+          )}
+        </div>
+      )}
 
       {/* Transitions were INVISIBLE on the timeline: nothing read transitionIn/
           Out, so there was no way to see which cuts already had one, or which
