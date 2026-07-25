@@ -2,6 +2,7 @@
 
 import { expect, test, type Page } from '@playwright/test'
 import fs from 'node:fs'
+import { shrinkSequence } from './exportHelpers'
 
 // See export.spec.ts: headless Chromium has a save picker that a test cannot
 // drive. Shadowing it takes the buffered download path.
@@ -87,20 +88,19 @@ test('dropping the in point past the out point clears the out point', async ({ p
   expect(p.outS).toBeUndefined()
 })
 
-test('the export dialog offers the work area, and defaults to it', async ({ page }) => {
+test('the export uses the work area, and says so, without asking', async ({ page }) => {
   await addClip(page)
 
-  // With no work area the range picker is disabled and reads "entire sequence".
+  // With no work area, the export plan does not mention one.
   await page.getByTestId('export-open').click()
-  await expect(page.getByTestId('export-range')).toBeDisabled()
-  await expect(page.getByTestId('export-range')).toHaveValue('sequence')
+  await expect(page.getByTestId('export-plan')).not.toContainText('work area')
   await page.getByRole('button', { name: 'Close' }).click()
-  await expect(page.getByTestId('export-range')).toHaveCount(0)
+  await expect(page.getByTestId('export-dialog')).toHaveCount(0)
 
+  // Mark an in point and it is honoured — no dropdown, no opt-out.
   await markAt(page, 1.2, 'i')
   await page.getByTestId('export-open').click()
-  await expect(page.getByTestId('export-range')).toBeEnabled()
-  await expect(page.getByTestId('export-range')).toHaveValue('workArea')
+  await expect(page.getByTestId('export-plan')).toContainText('work area')
 })
 
 test('exporting the work area renders only that range, starting AT the in point', async ({ page }) => {
@@ -124,13 +124,11 @@ test('exporting the work area renders only that range, starting AT the in point'
   // Mark in inside the BLUE half of the fixture.
   await markAt(page, 1.2, 'i')
 
-  await page.getByTestId('export-open').click()
-  await expect(page.getByTestId('export-range')).toHaveValue('workArea')
-  await page.getByTestId('export-resolution').selectOption('sd') // SD
-  await page.getByTestId('export-bitrate').selectOption('low')
+  await shrinkSequence(page)
 
   const dl = page.waitForEvent('download', { timeout: 150_000 })
-  await page.getByTestId('export-start').click()
+  await page.getByTestId('export-open').click()
+  await expect(page.getByTestId('export-plan')).toContainText('work area')
   const download = await dl
   const mp4Path = `${VERIFY}/workarea.mp4`
   await download.saveAs(mp4Path)

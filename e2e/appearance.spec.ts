@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { shrinkSequence } from './exportHelpers'
 import fs from 'node:fs'
 
 // Firefox download path (see phase5): a real save picker can't be driven headless.
@@ -185,10 +186,9 @@ test('the Minecraft font renders in both preview and export (worker font path)',
 
   // Export (buffered download path) and confirm the text band is bright there too
   // — proving the font loaded in the worker's FontFaceSet without crashing.
-  await page.getByTestId('export-open').click()
-  await page.getByTestId('export-resolution').selectOption('sd') // SD 640×360
+  await shrinkSequence(page)
   const dl = page.waitForEvent('download', { timeout: 120_000 })
-  await page.getByTestId('export-start').click()
+  await page.getByTestId('export-open').click()
   const download = await dl
   const path = `${VERIFY}/minecraft.mp4`
   await download.saveAs(path)
@@ -290,10 +290,9 @@ test('a text outline renders in preview AND export, and its color is editable', 
   await page.screenshot({ path: `${VERIFY}/outline.png` })
 
   // The same red outline survives export (preview == export via the one raster).
-  await page.getByTestId('export-open').click()
-  await page.getByTestId('export-resolution').selectOption('sd') // SD 640×360
+  await shrinkSequence(page)
   const dl = page.waitForEvent('download', { timeout: 120_000 })
-  await page.getByTestId('export-start').click()
+  await page.getByTestId('export-open').click()
   const download = await dl
   const path = `${VERIFY}/outline.mp4`
   await download.saveAs(path)

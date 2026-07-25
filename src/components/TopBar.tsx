@@ -19,6 +19,7 @@ import {
   storedDisplayName,
   useCollab,
 } from '../collab/collabControl'
+import { activeSequence } from '../engine/types'
 import { comboLabel } from '../keymap'
 import { exportProjectToFile, importProjectFromFile } from '../state/projectFile'
 import { useStore } from '../state/store'
@@ -136,6 +137,23 @@ function RecordButton() {
     >
       <Mic size={16} strokeWidth={1.5} />
     </IconButton>
+  )
+}
+
+/**
+ * The whole export flow's entry point — one button, no settings behind it. An
+ * empty timeline has nothing to render, so the button says so by being disabled
+ * rather than opening a dialog that immediately fails. Its own component so the
+ * header does not re-render on every timeline edit: the selector returns a
+ * boolean, not the project.
+ */
+function ExportButton({ onOpen }: { onOpen: () => void }) {
+  const canExport = useStore((s) => activeSequence(s.project).durationS > 0)
+  return (
+    <Button variant="primary" data-testid="export-open" onClick={onOpen} disabled={!canExport}>
+      <Download size={16} strokeWidth={1.5} />
+      Export
+    </Button>
   )
 }
 
@@ -325,10 +343,7 @@ export function TopBar() {
         <div className="mx-2 h-4 w-px bg-border" />
         <CollabButton />
         <RecordButton />
-        <Button variant="primary" data-testid="export-open" onClick={() => setExporting(true)}>
-          <Download size={16} strokeWidth={1.5} />
-          Export
-        </Button>
+        <ExportButton onOpen={() => setExporting(true)} />
       </div>
       {exporting && <ExportDialog onClose={() => setExporting(false)} />}
       {projectsOpen && <ProjectsDialog onClose={() => setProjectsOpen(false)} />}

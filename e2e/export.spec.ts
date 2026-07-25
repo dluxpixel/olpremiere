@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test'
 import fs from 'node:fs'
+import { shrinkSequence } from './exportHelpers'
 
 // Headless Chromium HAS showSaveFilePicker, and a real OS picker cannot be driven
 // from a test. Shadowing it by default exercises the documented Firefox path:
@@ -41,12 +42,12 @@ test('streaming export writes straight to the chosen file, and it decodes', asyn
   await page.getByTestId('asset-card').dblclick()
   await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
 
-  await page.getByTestId('export-open').click()
-  await page.getByTestId('export-resolution').selectOption('sd') // SD 640×360
-  await page.getByTestId('export-bitrate').selectOption('low')
+  // Export has no settings: the raster follows the sequence, so a small
+  // sequence is how this test asks for a small file.
+  await shrinkSequence(page)
 
   // No download event fires: nothing was buffered in memory to hand back.
-  await page.getByTestId('export-start').click()
+  await page.getByTestId('export-open').click()
   await expect(page.getByText('where you chose.')).toBeVisible({ timeout: 150_000 })
 
   // Read the file back out of OPFS and prove it is a real, decodable MP4.
@@ -72,75 +73,6 @@ test('streaming export writes straight to the chosen file, and it decodes', asyn
   expect(result.duration).toBeGreaterThan(1)
 })
 
-test('Maximum quality (1:1) exports a valid, decodable MP4', async ({ page }) => {
-  test.setTimeout(180_000)
-  await page.goto('/')
-  await page.getByTestId('media-file-input').setInputFiles(FIXTURE)
-  await expect(page.getByTestId('asset-card')).toBeVisible({ timeout: 15_000 })
-  await page.getByTestId('asset-card').dblclick()
-  await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
-
-  await page.getByTestId('export-open').click()
-  await page.getByTestId('export-resolution').selectOption('sd') // SD keeps CI encoding fast
-  await page.getByTestId('export-bitrate').selectOption('max') // the new highest-quality option
-
-  const downloadPromise = page.waitForEvent('download', { timeout: 150_000 })
-  await page.getByTestId('export-start').click()
-  const download = await downloadPromise
-  const mp4Path = `${VERIFY}/max-quality.mp4`
-  await download.saveAs(mp4Path)
-  expect(fs.statSync(mp4Path).size).toBeGreaterThan(20_000)
-
-  const meta = await page.evaluate(async (b64) => {
-    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
-    const video = document.createElement('video')
-    video.muted = true
-    video.src = URL.createObjectURL(new Blob([bytes], { type: 'video/mp4' }))
-    await new Promise<void>((res, rej) => {
-      video.onloadedmetadata = () => res()
-      video.onerror = () => rej(new Error('Maximum-quality MP4 failed to decode'))
-    })
-    return { width: video.videoWidth, height: video.videoHeight, duration: video.duration }
-  }, fs.readFileSync(mp4Path).toString('base64'))
-  expect(meta.width).toBe(640)
-  expect(meta.height).toBe(360)
-  expect(meta.duration).toBeGreaterThan(1)
-})
-
-test('the Software encoder option exports a valid, decodable MP4', async ({ page }) => {
-  test.setTimeout(180_000)
-  await page.goto('/')
-  await page.getByTestId('media-file-input').setInputFiles(FIXTURE)
-  await expect(page.getByTestId('asset-card')).toBeVisible({ timeout: 15_000 })
-  await page.getByTestId('asset-card').dblclick()
-  await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
-
-  await page.getByTestId('export-open').click()
-  await page.getByTestId('export-resolution').selectOption('sd') // SD keeps CI fast
-  await page.getByTestId('export-encoder').selectOption('software') // openh264 path
-
-  const downloadPromise = page.waitForEvent('download', { timeout: 150_000 })
-  await page.getByTestId('export-start').click()
-  const download = await downloadPromise
-  const mp4Path = `${VERIFY}/software.mp4`
-  await download.saveAs(mp4Path)
-  expect(fs.statSync(mp4Path).size).toBeGreaterThan(20_000)
-
-  const meta = await page.evaluate(async (b64) => {
-    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
-    const video = document.createElement('video')
-    video.muted = true
-    video.src = URL.createObjectURL(new Blob([bytes], { type: 'video/mp4' }))
-    await new Promise<void>((res, rej) => {
-      video.onloadedmetadata = () => res()
-      video.onerror = () => rej(new Error('software MP4 failed to decode'))
-    })
-    return { width: video.videoWidth, duration: video.duration }
-  }, fs.readFileSync(mp4Path).toString('base64'))
-  expect(meta.width).toBe(640)
-  expect(meta.duration).toBeGreaterThan(1)
-})
-
 test('the YouTube 1440p upscale renders + encodes at the higher resolution', async ({ page }) => {
   test.setTimeout(180_000)
   await page.goto('/')
@@ -149,20 +81,16 @@ test('the YouTube 1440p upscale renders + encodes at the higher resolution', asy
   await page.getByTestId('asset-card').dblclick()
   await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
 
-  await page.getByTestId('export-open').click()
-  // A ≤2K (1080p) timeline defaults to the 1440p upscale — the YouTube sweet spot.
-  await expect(page.getByTestId('export-resolution')).toHaveValue('2k')
-  await page.getByTestId('export-bitrate').selectOption('high') // fixed rate → predictable CI
-
+  // An HD (1080p) timeline is raised one tier to 1440p — the YouTube sweet spot
+  // — automatically, with no dialog and nothing to choose. This is also the only
+  // export test above H.264 level 4.0 in landscape, and the CQP path at HD.
   const downloadPromise = page.waitForEvent('download', { timeout: 150_000 })
-  await page.getByTestId('export-start').click()
+  await page.getByTestId('export-open').click()
   const download = await downloadPromise
   const mp4Path = `${VERIFY}/upscale-1440p.mp4`
   await download.saveAs(mp4Path)
   expect(fs.statSync(mp4Path).size).toBeGreaterThan(20_000)
 
-  // The exported file is genuinely 2560×1440 — the upscale required an H.264
-  // level above 4.0, so this also proves the codec-level ladder works.
   const meta = await page.evaluate(async (b64) => {
     const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
     const video = document.createElement('video')
@@ -190,16 +118,10 @@ test('a 9:16 Shorts sequence exports at the default portrait 1440p (the crash ca
   // Switch to a vertical Shorts sequence — the format of the real-world crash.
   await page.getByTestId('format-select').selectOption('9:16')
 
+  // Portrait timelines get a true VERTICAL upscale: 1440×2560, never a
+  // stretched landscape frame — with nothing to choose.
+  const downloadPromise = page.waitForEvent('download', { timeout: 280_000 })
   await page.getByTestId('export-open').click()
-  // Portrait timelines get true vertical upscales; 1440×2560 is the default.
-  await expect(page.getByTestId('export-resolution')).toHaveValue('2k')
-  // Pin a fixed-bitrate VBR quality: the default is constant-quality (software),
-  // which is needlessly slow to encode a 1440×2560 frame in CI — this test is
-  // about the portrait raster + muxing, not the quality mode.
-  await page.getByTestId('export-bitrate').selectOption('high')
-
-  const downloadPromise = page.waitForEvent('download', { timeout: 150_000 })
-  await page.getByTestId('export-start').click()
   const download = await downloadPromise
   const mp4Path = `${VERIFY}/portrait-1440p.mp4`
   await download.saveAs(mp4Path)
@@ -231,12 +153,10 @@ test('golden export: the MP4 matches the composited sequence', async ({ page }) 
   await page.getByTestId('asset-card').dblclick() // resolves to the gap after clip 1
   await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(2)
 
-  await page.getByTestId('export-open').click()
-  await page.getByTestId('export-resolution').selectOption('sd') // SD 640×360
-  await page.getByTestId('export-bitrate').selectOption('low') // 5 Mbps
+  await shrinkSequence(page) // 640×360 — the golden raster
 
   const downloadPromise = page.waitForEvent('download', { timeout: 150_000 })
-  await page.getByTestId('export-start').click()
+  await page.getByTestId('export-open').click()
   const download = await downloadPromise
   const mp4Path = `${VERIFY}/golden.mp4`
   await download.saveAs(mp4Path)
@@ -306,55 +226,16 @@ test('golden export: the MP4 matches the composited sequence', async ({ page }) 
   expect(b3).toBeLessThan(120)
 })
 
-test('HD constant-quality (CQP) export produces a valid, decodable MP4', async ({ page }) => {
-  test.setTimeout(180_000)
+test('export cancel closes the dialog without a file', async ({ page }) => {
   await page.goto('/')
   await page.getByTestId('media-file-input').setInputFiles(FIXTURE)
   await expect(page.getByTestId('asset-card')).toBeVisible({ timeout: 15_000 })
   await page.getByTestId('asset-card').dblclick()
   await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
 
+  await shrinkSequence(page)
   await page.getByTestId('export-open').click()
-  // Constant-quality is the default; its QP slider is shown, and the codec probe
-  // hides HEVC in a headless (no-NVENC) Chromium — H.264 is always present.
-  await expect(page.getByTestId('export-bitrate')).toHaveValue('cqp')
-  await expect(page.getByTestId('export-quantizer')).toBeVisible()
-  await expect(page.getByTestId('export-codec').locator('option[value="hevc"]')).toHaveCount(0)
-  await page.getByTestId('export-resolution').selectOption('hd') // 1280×720 — HD, so CQP actually engages
-
-  const downloadPromise = page.waitForEvent('download', { timeout: 150_000 })
-  await page.getByTestId('export-start').click()
-  const download = await downloadPromise
-  const mp4Path = `${VERIFY}/hd-cqp.mp4`
-  await download.saveAs(mp4Path)
-  expect(fs.statSync(mp4Path).size).toBeGreaterThan(20_000)
-
-  const meta = await page.evaluate(async (b64) => {
-    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
-    const video = document.createElement('video')
-    video.muted = true
-    video.src = URL.createObjectURL(new Blob([bytes], { type: 'video/mp4' }))
-    await new Promise<void>((res, rej) => {
-      video.onloadedmetadata = () => res()
-      video.onerror = () => rej(new Error('HD CQP MP4 failed to decode'))
-    })
-    return { width: video.videoWidth, height: video.videoHeight, duration: video.duration }
-  }, fs.readFileSync(mp4Path).toString('base64'))
-  expect(meta.width).toBe(1280)
-  expect(meta.height).toBe(720)
-  expect(meta.duration).toBeGreaterThan(1)
-})
-
-test('export cancel returns to settings without a file', async ({ page }) => {
-  await page.goto('/')
-  await page.getByTestId('media-file-input').setInputFiles(FIXTURE)
-  await expect(page.getByTestId('asset-card')).toBeVisible({ timeout: 15_000 })
-  await page.getByTestId('asset-card').dblclick()
-  await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
-
-  await page.getByTestId('export-open').click()
-  await page.getByTestId('export-start').click()
   // Cancel as soon as the progress UI appears.
   await page.getByTestId('export-cancel').click({ timeout: 10_000 })
-  await expect(page.getByTestId('export-start')).toBeVisible({ timeout: 10_000 })
+  await expect(page.getByTestId('export-dialog')).toHaveCount(0, { timeout: 10_000 })
 })

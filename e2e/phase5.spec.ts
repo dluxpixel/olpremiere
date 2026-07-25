@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
 import fs from 'node:fs'
+import { shrinkSequence } from './exportHelpers'
 
 // Headless Chromium HAS showSaveFilePicker, and a real OS picker cannot be driven
 // from a test. Shadowing it exercises the documented Firefox path: buffer the file
@@ -82,10 +83,9 @@ async function previewRowMaxLuma(page: Page, fy: number): Promise<number> {
 }
 
 async function exportPixel(page: Page, fx: number, fy: number): Promise<[number, number, number]> {
-  await page.getByTestId('export-open').click()
-  await page.getByTestId('export-resolution').selectOption('sd') // SD 640×360
+  await shrinkSequence(page)
   const dl = page.waitForEvent('download', { timeout: 120_000 })
-  await page.getByTestId('export-start').click()
+  await page.getByTestId('export-open').click()
   const download = await dl
   const path = `${VERIFY}/title.mp4`
   await download.saveAs(path)
@@ -161,10 +161,9 @@ test('title text is drawn (bright strokes) in preview and export', async ({ page
 
   // Export and confirm the text band also has bright pixels.
   const bright = await (async () => {
-    await page.getByTestId('export-open').click()
-    await page.getByTestId('export-resolution').selectOption('sd')
+    await shrinkSequence(page)
     const dl = page.waitForEvent('download', { timeout: 120_000 })
-    await page.getByTestId('export-start').click()
+    await page.getByTestId('export-open').click()
     const d = await dl
     const path = `${VERIFY}/text.mp4`
     await d.saveAs(path)

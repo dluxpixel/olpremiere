@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
 import fs from 'node:fs'
+import { shrinkSequence } from './exportHelpers'
 
 // Headless Chromium HAS showSaveFilePicker, and a real OS picker cannot be driven
 // from a test. Shadowing it exercises the documented Firefox path: buffer the file
@@ -71,10 +72,9 @@ async function previewPixel(page: Page, fx: number, fy: number): Promise<[number
 }
 
 async function exportSample(page: Page, tS: number, fx: number, fy: number): Promise<[number, number, number]> {
-  await page.getByTestId('export-open').click()
-  await page.getByTestId('export-resolution').selectOption('sd')
+  await shrinkSequence(page)
   const dl = page.waitForEvent('download', { timeout: 120_000 })
-  await page.getByTestId('export-start').click()
+  await page.getByTestId('export-open').click()
   const download = await dl
   const path = `${VERIFY}/out.mp4`
   await download.saveAs(path)
