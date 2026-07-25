@@ -22,7 +22,7 @@ import {
   captureTextPreset,
   useTextPresets,
 } from '../state/textPresets'
-import { updateTitles } from '../state/titleActions'
+import { setTitlesFontSize, updateTitles } from '../state/titleActions'
 import { EFFECTS } from '../engine/effects/registry'
 import { TITLE_FONT_OPTIONS } from '../engine/render/titleFonts'
 import { clipDurationS } from '../engine/timeline'
@@ -165,7 +165,7 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
                 spec={SIZE_SPEC}
                 testId="multi-fontsize"
                 ariaLabel="Font size (all)"
-                onCommit={(v) => updateTitles(titleIds, { fontSizePx: v })}
+                onCommit={(v) => setTitlesFontSize(titleIds, v)}
               />
             </PropRow>
             <div className="flex items-center gap-2">

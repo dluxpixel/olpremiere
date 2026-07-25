@@ -12,7 +12,7 @@ import {
 } from './appearanceActions'
 import { splitTitleIntoWordCaptions } from './captionActions'
 import type { MenuItem } from './contextMenu'
-import { updateTitles } from './titleActions'
+import { setTitlesFontSize, updateTitles } from './titleActions'
 import { useStore } from './store'
 
 const TITLE_SIZE_PRESETS = [
@@ -51,7 +51,7 @@ export function titleFontSizeItems(clip: Clip, ids: string[] = [clip.id]): MenuI
   const sizeSub: MenuItem[] = TITLE_SIZE_PRESETS.map((s) => ({
     label: `${s.label} (${s.px}px)`,
     checked: def.fontSizePx === s.px,
-    onClick: () => updateTitles(ids, { fontSizePx: s.px }),
+    onClick: () => setTitlesFontSize(ids, s.px),
   }))
   return [
     { label: `Font${suffix}`, separator: true, submenu: fontSub },

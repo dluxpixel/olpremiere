@@ -422,6 +422,32 @@ export function scaleTitleDef(def: TitleDef, k: number): TitleDef {
 }
 
 /**
+ * Resize a title's TYPE and bring its decoration with it.
+ *
+ * Outline width, shadow offset and blur, and box padding are absolute pixels,
+ * while the size ladder runs 48 → 240 px. Changing size alone therefore broke
+ * the look in both directions: an outline tuned at Medium is a hairline at Huge
+ * and a blob at Small, and it is the main reason text here could read cheap.
+ * Position is deliberately NOT scaled — resizing type must not move the title.
+ */
+export function withTitleFontSize(def: TitleDef, nextSizePx: number): TitleDef {
+  const next = Math.max(1, Math.round(nextSizePx))
+  const prev = Math.max(1, def.fontSizePx)
+  if (next === prev) return def
+  const k = next / prev
+  const s = (v: number): number => Math.round(v * k)
+  return {
+    ...def,
+    fontSizePx: next,
+    ...(def.outline ? { outline: { ...def.outline, widthPx: Math.max(1, s(def.outline.widthPx)) } } : {}),
+    ...(def.shadow
+      ? { shadow: { ...def.shadow, blurPx: s(def.shadow.blurPx), dx: s(def.shadow.dx), dy: s(def.shadow.dy) } }
+      : {}),
+    ...(def.box ? { box: { ...def.box, paddingPx: s(def.box.paddingPx), radiusPx: s(def.box.radiusPx) } } : {}),
+  }
+}
+
+/**
  * An adjustment layer: no source of its own — its effect stack (and optional
  * mask) applies to the COMPOSITE of everything below it for its time span,
  * like Premiere/Resolve adjustment layers. Discriminated like titles.

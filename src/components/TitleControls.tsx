@@ -16,7 +16,7 @@ import {
 } from 'lucide-react'
 import { TITLE_FONT_OPTIONS } from '../engine/render/titleFonts'
 import { defaultTitleDef, type Clip, type TitleDef } from '../engine/types'
-import { updateTitle } from '../state/titleActions'
+import { setTitlesFontSize, updateTitle } from '../state/titleActions'
 import { IconButton } from '../ui/Button'
 import { PropRow, ScrubField, SectionLabel, type Spec } from './EffectControls'
 
@@ -129,7 +129,7 @@ export function TitleControls({ clip }: { clip: Clip }) {
       <Section title="Font">
         <PropRow
           label="Size"
-          onReset={() => set({ fontSizePx: TITLE_DEFAULTS.fontSizePx })}
+          onReset={() => setTitlesFontSize([clip.id], TITLE_DEFAULTS.fontSizePx)}
           resetLabel="Reset font size"
         >
           <NumberField
@@ -138,7 +138,7 @@ export function TitleControls({ clip }: { clip: Clip }) {
             max={400}
             testId="title-fontsize"
             ariaLabel="Font size"
-            onCommit={(v) => set({ fontSizePx: v })}
+            onCommit={(v) => setTitlesFontSize([clip.id], v)}
           />
         </PropRow>
         <PropRow label="Family">

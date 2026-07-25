@@ -9,6 +9,7 @@ import {
   newAdjustmentClip,
   newTitleClip,
   videoTracks,
+  withTitleFontSize,
   type Clip,
   type TitleDef,
   type Track,
@@ -112,6 +113,31 @@ export function updateTitle(
     }),
     mergeField === undefined ? undefined : `title:${mergeField}:${clipId}`,
   )
+}
+
+/**
+ * Resize the type on every selected title, bringing each one's outline, shadow
+ * and box padding with it. Not expressible as a patch: the scale factor depends
+ * on the clip's CURRENT size, which differs across a selection.
+ */
+export function setTitlesFontSize(ids: Iterable<string>, fontSizePx: number): void {
+  const idSet = new Set(ids)
+  if (idSet.size === 0) return
+  updateActiveSequence('Set text size', (seq) => {
+    let changed = false
+    const tracks = seq.tracks.map((t) => {
+      if (t.locked || !t.clips.some((c) => idSet.has(c.id) && c.title)) return t
+      const clips = t.clips.map((c) => {
+        if (!idSet.has(c.id) || !c.title) return c
+        const title = withTitleFontSize(c.title, fontSizePx)
+        if (title === c.title) return c
+        changed = true
+        return { ...c, title }
+      })
+      return changed ? { ...t, clips } : t
+    })
+    return changed ? { ...seq, tracks } : seq
+  })
 }
 
 /**
