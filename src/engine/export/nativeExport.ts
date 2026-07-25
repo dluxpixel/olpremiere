@@ -158,9 +158,12 @@ export async function exportNative(
         const data = msg.data
         writeChain = writeChain
           .then(async () => {
-            if (settled) return
+            if (settled || signal.aborted) return
             const res = await api.nativeWriteFrame(data)
-            if (settled) return
+            // A write that fails BECAUSE the user cancelled must not latch an
+            // error over the abort — the dialog would sit on a red
+            // "ffmpeg is not running" instead of just closing.
+            if (settled || signal.aborted) return
             if (!res.ok) {
               void api.nativeCancel()
               done(() => reject(new Error(res.error ?? 'frame write failed')))
@@ -172,7 +175,7 @@ export async function exportNative(
           // later frame would skip its ack, the worker would park on a credit
           // that never returns, and the export promise would never settle.
           .catch((err: unknown) => {
-            if (settled) return
+            if (settled || signal.aborted) return
             void api.nativeCancel()
             done(() => reject(err instanceof Error ? err : new Error(String(err))))
           })

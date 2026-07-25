@@ -841,8 +841,11 @@ const ClipView = memo(function ClipView({
         {label}
       </span>
 
+      {/* z-20: the trim zones are later siblings with no stacking of their own,
+          so without it the FIRST diamond sits UNDER the trim-in handle and
+          dragging it silently trims the clip's head instead of retiming. */}
       {keyframeTimes.length > 0 && width > 8 && (
-        <div data-testid="clip-keyframes" className="absolute inset-x-0 bottom-0 h-3">
+        <div data-testid="clip-keyframes" className="absolute inset-x-0 bottom-0 z-20 h-3">
           {keyframeTimes.map((t, i) => {
             const live = kfPreview?.fromT === t ? kfPreview.t : t
             const x = live * pxPerS

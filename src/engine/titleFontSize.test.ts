@@ -66,3 +66,30 @@ describe('resizing type brings its decoration with it', () => {
     expect(out.shadow!.dy).toBe(plain.shadow!.dy * 2)
   })
 })
+
+describe('decoration survives a there-and-back size change', () => {
+  it('never lets a non-zero measurement round away to nothing', () => {
+    // 0 is a fixed point of a multiply, so anything that rounds to 0 on the way
+    // DOWN can never come back on the way up — the shadow would be gone for good.
+    const tiny = withTitleFontSize(styled({ fontSizePx: 240 }), 8)
+    expect(tiny.shadow!.blurPx).toBeGreaterThanOrEqual(1)
+    expect(tiny.shadow!.dy).toBeGreaterThanOrEqual(1)
+    expect(tiny.box!.paddingPx).toBeGreaterThanOrEqual(1)
+    expect(tiny.outline!.widthPx).toBeGreaterThanOrEqual(1)
+
+    const back = withTitleFontSize(tiny, 240)
+    expect(back.shadow!.blurPx).toBeGreaterThan(1)
+    expect(back.box!.paddingPx).toBeGreaterThan(1)
+  })
+
+  it('leaves a deliberate ZERO alone — that is how "no outline" is expressed', () => {
+    const none = withTitleFontSize(styled({ outline: { color: '#000', widthPx: 0 } }), 240)
+    expect(none.outline!.widthPx).toBe(0)
+  })
+
+  it('keeps the sign of a negative shadow offset', () => {
+    const up = withTitleFontSize(styled({ shadow: { color: '#000', dx: -6, dy: -4, blurPx: 8 } }), 192)
+    expect(up.shadow!.dx).toBeLessThan(0)
+    expect(up.shadow!.dy).toBeLessThan(0)
+  })
+})

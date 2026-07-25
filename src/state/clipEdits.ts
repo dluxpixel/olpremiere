@@ -68,7 +68,15 @@ export function playheadLocalT(clip: Clip): number {
  * stack. Five dead slider drags meant five phantom steps to Ctrl+Z through before
  * reaching a real edit.
  */
-function mapClip(clipId: string, label: string, fn: (clip: Clip) => Clip): void {
+function mapClip(
+  clipId: string,
+  label: string,
+  fn: (clip: Clip) => Clip,
+  /** Skip the edit entirely when `fn` hands back the SAME clip — otherwise the
+   *  rebuilt track and sequence defeat the store's identity bail and a provable
+   *  no-op still costs the user an undo press. */
+  bailOnNoop = false,
+): void {
   const track = activeSequence(useStore.getState().project).tracks.find((t) =>
     t.clips.some((c) => c.id === clipId),
   )
@@ -77,12 +85,18 @@ function mapClip(clipId: string, label: string, fn: (clip: Clip) => Clip): void 
     useToasts.getState().show('Track is locked', 'danger')
     return
   }
-  updateActiveSequence(label, (seq) => ({
-    ...seq,
-    tracks: seq.tracks.map((t) =>
-      t.id === track.id ? { ...t, clips: t.clips.map((c) => (c.id === clipId ? fn(c) : c)) } : t,
-    ),
-  }))
+  updateActiveSequence(label, (seq) => {
+    if (bailOnNoop) {
+      const before = seq.tracks.flatMap((t) => t.clips).find((c) => c.id === clipId)
+      if (before && fn(before) === before) return seq
+    }
+    return {
+      ...seq,
+      tracks: seq.tracks.map((t) =>
+        t.id === track.id ? { ...t, clips: t.clips.map((c) => (c.id === clipId ? fn(c) : c)) } : t,
+      ),
+    }
+  })
 }
 
 /**
@@ -626,5 +640,8 @@ export function topAndTail(edge: 'in' | 'out'): void {
  * keyframes or land two on the same frame.
  */
 export function moveClipKeyframe(clipId: string, fromT: number, toT: number): void {
-  mapClip(clipId, 'Move keyframe', (c) => moveKeyframeMoment(c, fromT, toT, clipDurationS(c)))
+  // mapClip rebuilds the track and sequence unconditionally, so returning the
+  // SAME clip is not enough to stop an undo entry — a drag the engine clamps
+  // straight back to where it started would still cost the user an undo press.
+  mapClip(clipId, 'Move keyframe', (c) => moveKeyframeMoment(c, fromT, toT, clipDurationS(c)), true)
 }

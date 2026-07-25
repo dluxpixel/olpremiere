@@ -91,3 +91,15 @@ describe('moveKeyframeMoment', () => {
     expect(out.keyframes.scale[0]).toEqual({ t: 0, value: 1, ease: 'linear' })
   })
 })
+
+describe('a clamped drag is a no-op, not an undo entry', () => {
+  it('returns the identical clip when the clamp lands it back where it started', () => {
+    const c = {
+      keyframes: { scale: [{ t: 0, value: 1, ease: 'linear' as const }, { t: 0.5, value: 2, ease: 'linear' as const }] },
+    }
+    // Dragging the second moment left, past its neighbour: the clamp pins it just
+    // clear of t=0, which IS a move. Dragging it to where it already is is not.
+    expect(moveKeyframeMoment(c, 0.5, 0.5, 3)).toBe(c)
+    expect(moveKeyframeMoment(c, 0.5, 0.5 + 1e-6, 3)).toBe(c)
+  })
+})

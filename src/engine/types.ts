@@ -435,11 +435,16 @@ export function withTitleFontSize(def: TitleDef, nextSizePx: number): TitleDef {
   const prev = Math.max(1, def.fontSizePx)
   if (next === prev) return def
   const k = next / prev
-  const s = (v: number): number => Math.round(v * k)
+  // Zero is a FIXED POINT of a multiply, so any measurement that rounds to 0 on
+  // the way down can never come back on the way up — the shadow or the box
+  // padding would be gone for good after a there-and-back size change. Keep a
+  // non-zero measurement at 1px minimum, and leave a deliberate 0 (which is how
+  // "no outline" is expressed) exactly where it is.
+  const s = (v: number): number => (v === 0 ? 0 : Math.max(1, Math.round(Math.abs(v) * k)) * Math.sign(v))
   return {
     ...def,
     fontSizePx: next,
-    ...(def.outline ? { outline: { ...def.outline, widthPx: Math.max(1, s(def.outline.widthPx)) } } : {}),
+    ...(def.outline ? { outline: { ...def.outline, widthPx: s(def.outline.widthPx) } } : {}),
     ...(def.shadow
       ? { shadow: { ...def.shadow, blurPx: s(def.shadow.blurPx), dx: s(def.shadow.dx), dy: s(def.shadow.dy) } }
       : {}),

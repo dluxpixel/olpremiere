@@ -505,6 +505,13 @@ function livePreviewSource(el: HTMLVideoElement, assetId: Id): TexImageSource {
 
   const w = Math.max(2, Math.round((nativeW / nativeH) * capH))
   let canvas = liveScale.get(assetId)
+  // Touch on a HIT as well: eviction takes the oldest INSERTED, so without this
+  // the map stays in creation order and past the cap it evicts the canvas it is
+  // about to need again — reallocating every canvas every frame.
+  if (canvas) {
+    liveScale.delete(assetId)
+    liveScale.set(assetId, canvas)
+  }
   if (!canvas || canvas.width !== w || canvas.height !== capH) {
     canvas = new OffscreenCanvas(w, capH)
     liveScale.delete(assetId)
