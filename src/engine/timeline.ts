@@ -9,6 +9,7 @@ import {
   newClipFromAsset,
   newId,
   newTrack,
+  scaleTitleDef,
   type AnimChannel,
   type Clip,
   type Id,
@@ -17,7 +18,6 @@ import {
   type Marker,
   type MediaAsset,
   type Sequence,
-  type TitleDef,
   type Track,
 } from './types'
 
@@ -70,30 +70,16 @@ function refitTitleToFrame(clip: Clip, frameW: number, frameH: number, prevW: nu
   const title = clip.title
   if (!title) return clip
   const ry = frameH / prevH
+  // scaleTitleDef is the ONE place these metrics are scaled — shared with the
+  // preview (which draws smaller) and the export (which draws larger), so the
+  // three cannot drift apart. Height drives it: every title metric is authored
+  // against the frame height.
+  const next = scaleTitleDef(title, ry)
+  if (next === title) return clip
+  // The x offset is the one measurement that follows the WIDTH.
   const rx = frameW / prevW
-  if (Math.abs(ry - 1) < 1e-6 && Math.abs(rx - 1) < 1e-6) return clip
-  const s = (v: number): number => Math.round(v * ry)
-  const next: TitleDef = {
-    ...title,
-    fontSizePx: Math.max(1, s(title.fontSizePx)),
-    offsetXPx: Math.round(title.offsetXPx * rx),
-    offsetYPx: s(title.offsetYPx),
-    ...(title.outline ? { outline: { ...title.outline, widthPx: s(title.outline.widthPx) } } : {}),
-    ...(title.shadow
-      ? {
-          shadow: {
-            ...title.shadow,
-            blurPx: s(title.shadow.blurPx),
-            dx: Math.round(title.shadow.dx * rx),
-            dy: s(title.shadow.dy),
-          },
-        }
-      : {}),
-    ...(title.box
-      ? { box: { ...title.box, paddingPx: s(title.box.paddingPx), radiusPx: s(title.box.radiusPx) } }
-      : {}),
-  }
-  return { ...clip, title: next }
+  const scaledX = Math.round(title.offsetXPx * rx)
+  return { ...clip, title: scaledX === next.offsetXPx ? next : { ...next, offsetXPx: scaledX } }
 }
 
 export function refitClipToFill(

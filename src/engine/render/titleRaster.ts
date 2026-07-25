@@ -3,7 +3,7 @@
 // document/window. Preview and export call rasterizeTitle with identical def +
 // dims and hit the SAME cache, so the pixels are byte-for-byte identical.
 
-import type { TitleDef } from '../types'
+import { scaleTitleDef, type TitleDef } from '../types'
 
 // ---------------------------------------------------------------------------
 // Pure helpers (no canvas) — unit-tested in node.
@@ -133,19 +133,40 @@ function fontString(def: TitleDef): string {
  * is cached by JSON(def)+dims — identical inputs return the SAME canvas
  * instance, so preview and export rasterize identically. Never throws.
  */
-export function rasterizeTitle(def: TitleDef, width: number, height: number): OffscreenCanvas {
-  const fast = identityCache.get(def)
+export function rasterizeTitle(
+  defIn: TitleDef,
+  width: number,
+  height: number,
+  /**
+   * Raster height ÷ SEQUENCE height. A title's metrics are absolute sequence px,
+   * so drawing it into a different raster has to bring them along:
+   *   - the PREVIEW passes < 1 and draws a small canvas. A 1080×1920 caption is an
+   *     8.3 MB allocation plus a full-frame text raster on the main thread plus a
+   *     texture upload and mipmap — and on a 2-word caption cadence that fires
+   *     roughly twice a second DURING playback. At preview size it is a fraction
+   *     of that, and identical on screen.
+   *   - the EXPORT passes > 1 when it upscales, which genuinely sharpens: font
+   *     outlines are the only thing in the frame with real detail left to give,
+   *     and rasterizing at the sequence size threw it away.
+   * 1 keeps the old behaviour byte for byte.
+   */
+  scale = 1,
+): OffscreenCanvas {
+  const fast = identityCache.get(defIn)
   if (fast && fast.w === width && fast.h === height) return fast.canvas
+  // Everything below reads the SCALED def; the identity cache stays keyed on the
+  // caller's original object, which is the one the store holds.
+  const def = scaleTitleDef(defIn, scale)
   const key = cacheKey(def, width, height)
   const hitIdx = cache.findIndex((e) => e.key === key)
   if (hitIdx !== -1) {
     const [hit] = cache.splice(hitIdx, 1)
     // Re-key the entry to the def we were just handed: that is the object the
     // identity map now points at, so it is the one eviction has to clear.
-    if (hit.def !== def) identityCache.delete(hit.def)
-    hit.def = def
+    if (hit.def !== defIn) identityCache.delete(hit.def)
+    hit.def = defIn
     cache.push(hit) // touch → most-recently-used
-    identityCache.set(def, { w: width, h: height, canvas: hit.canvas })
+    identityCache.set(defIn, { w: width, h: height, canvas: hit.canvas })
     return hit.canvas
   }
 
@@ -280,12 +301,12 @@ export function rasterizeTitle(def: TitleDef, width: number, height: number): Of
     if (def.shadow && !hasOutline) clearShadow()
   }
 
-  cache.push({ key, canvas, def })
+  cache.push({ key, canvas, def: defIn })
   if (cache.length > CACHE_LIMIT) {
     const evicted = cache.shift() // evict oldest
     if (evicted) identityCache.delete(evicted.def)
   }
-  identityCache.set(def, { w: width, h: height, canvas })
+  identityCache.set(defIn, { w: width, h: height, canvas })
   return canvas
 }
 

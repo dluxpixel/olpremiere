@@ -165,6 +165,28 @@ export function setLivePreviewTransform(v: { clipId: Id; x: number; y: number; s
 // One renderer per canvas (a canvas keeps a single GL context for its life).
 const renderers = new WeakMap<HTMLCanvasElement, Renderer | null>()
 
+/**
+ * The raster the LIVE canvas is actually drawing into, in device px. Titles are
+ * rasterized against this instead of the sequence, so a small monitor does not
+ * pay for a full 1080x1920 text canvas per caption.
+ */
+let previewRasterH = 0
+
+/**
+ * How much of the sequence raster a preview title needs. 1.5x the canvas gives
+ * headroom for a resize or a hi-dpi display without a visible re-raster, and it
+ * never exceeds the sequence (drawing text LARGER than the sequence would be
+ * paying for detail the export path is the one that actually wants).
+ */
+function titleRasterScale(seqH: number): number {
+  if (previewRasterH <= 0 || seqH <= 0) return 1
+  const wanted = (previewRasterH * 1.5) / seqH
+  if (wanted >= 1) return 1
+  // Quantized, so a drag-resize of the panel does not invalidate the cache on
+  // every pixel — only when it crosses a step.
+  return Math.max(0.25, Math.ceil(wanted * 8) / 8)
+}
+
 function rendererFor(canvas: HTMLCanvasElement): Renderer | null {
   const cached = renderers.get(canvas)
   if (cached !== undefined) return cached
@@ -326,8 +348,18 @@ function makeTextureSource(
   transitionFrom?: ReadonlySet<RenderLayer>,
 ): TextureSource {
   return (layer: RenderLayer): TexImageSource | null => {
-    // Titles are generated, not imported — rasterize at sequence resolution.
-    if (layer.title) return rasterizeTitle(layer.title, frameW, frameH)
+    // Titles are generated, not imported. Rasterize them at PREVIEW size, not at
+    // sequence size: a 1080x1920 caption canvas is an 8.3 MB allocation plus a
+    // full-frame text raster on the main thread plus a texture upload and a
+    // mipmap rebuild — and on a two-word caption cadence a NEW one lands roughly
+    // twice a second while the video is playing, which is exactly when there is
+    // no budget for it. On screen it is the same picture.
+    if (layer.title) {
+      const scale = titleRasterScale(frameH)
+      return scale === 1
+        ? rasterizeTitle(layer.title, frameW, frameH)
+        : rasterizeTitle(layer.title, Math.round(frameW * scale), Math.round(frameH * scale), scale)
+    }
     const asset = assets[layer.assetId]
     if (!asset) return null
 
@@ -415,6 +447,8 @@ export function renderPreview(
   if (!renderer) return true
   // Keep the scrub cache's Full-quality decode cap matched to this raster.
   setPreviewSequenceHeight(seq.height)
+  // The live raster drives how big preview-only rasters (titles) need to be.
+  previewRasterH = canvas.height
   const frame = resolveFrame(seq, tS)
   // Apply the live drag override to its layer (frame is freshly built, safe to mutate).
   if (liveTransform) {

@@ -384,6 +384,31 @@ export function newTitleClip(def: TitleDef, startS: number, durationS = 5): Clip
 export const isTitleClip = (clip: Clip): boolean => clip.title !== undefined
 
 /**
+ * Scale every SEQUENCE-pixel measurement on a title by `k`, leaving its style
+ * alone. Type size, outline, shadow, box and offsets are all absolute px against
+ * the sequence raster, so anything that changes the raster a title is drawn into
+ * — a format switch, a preview drawn smaller than the sequence, an export drawn
+ * larger — has to bring them along or the look breaks.
+ *
+ * One function so those three callers cannot drift apart.
+ */
+export function scaleTitleDef(def: TitleDef, k: number): TitleDef {
+  if (Math.abs(k - 1) < 1e-6) return def
+  const s = (v: number): number => Math.round(v * k)
+  return {
+    ...def,
+    fontSizePx: Math.max(1, s(def.fontSizePx)),
+    offsetXPx: s(def.offsetXPx),
+    offsetYPx: s(def.offsetYPx),
+    ...(def.outline ? { outline: { ...def.outline, widthPx: s(def.outline.widthPx) } } : {}),
+    ...(def.shadow
+      ? { shadow: { ...def.shadow, blurPx: s(def.shadow.blurPx), dx: s(def.shadow.dx), dy: s(def.shadow.dy) } }
+      : {}),
+    ...(def.box ? { box: { ...def.box, paddingPx: s(def.box.paddingPx), radiusPx: s(def.box.radiusPx) } } : {}),
+  }
+}
+
+/**
  * An adjustment layer: no source of its own — its effect stack (and optional
  * mask) applies to the COMPOSITE of everything below it for its time span,
  * like Premiere/Resolve adjustment layers. Discriminated like titles.

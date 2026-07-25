@@ -25,9 +25,11 @@ import type { StreamTargetChunk, WrappedCanvas } from 'mediabunny'
 import { createRenderer } from '../render/glRenderer'
 import { resolveFrame } from '../render/resolve'
 import { rasterizeTitle } from '../render/titleRaster'
+
+
 import { loadTitleFonts } from '../render/titleFonts'
 import type { RenderLayer } from '../render/types'
-import type { Clip, Id } from '../types'
+import type { Clip, Id, TitleDef } from '../types'
 import {
   AUDIO_CHUNK_FRAMES,
   effectiveAudioBitrate,
@@ -47,6 +49,29 @@ import {
   type ExportRequest,
   type ExportResponse,
 } from './messages'
+
+/**
+ * Rasterize a title at the EXPORT raster rather than the sequence raster.
+ *
+ * Font outlines are the only thing in the frame with real detail left to give,
+ * and pinning the raster to the timeline threw it away: on the default upscale a
+ * caption was a 1080-wide rasterization bilinear-stretched to 1440. Captions are
+ * the most-looked-at object in a Short, so this is the most visible quality win
+ * available in the export path.
+ *
+ * When the export raster EQUALS the sequence raster (every SD export, including
+ * the golden) the scale is exactly 1 and this is the old call, byte for byte.
+ */
+function rasterizeTitleForExport(
+  title: TitleDef,
+  seqW: number,
+  seqH: number,
+  outW: number,
+  outH: number,
+): OffscreenCanvas {
+  if (outH === seqH && outW === seqW) return rasterizeTitle(title, seqW, seqH)
+  return rasterizeTitle(title, outW, outH, outH / seqH)
+}
 
 type Accel = 'prefer-hardware' | 'prefer-software' | 'no-preference'
 
@@ -73,7 +98,8 @@ function withHevcFormat(config: VideoEncoderConfig, family: VideoCodecFamily): V
  * so erring toward "not honoured" is safe.
  */
 async function probeQuantizerHonored(codec: string, accel: Accel, family: VideoCodecFamily, fps: number): Promise<boolean> {
-  const W = 128
+  
+const W = 128
   const H = 72
   const measure = async (qp: number): Promise<number> => {
     let bytes = 0
@@ -360,7 +386,7 @@ async function runNative(init: Extract<ExportRequest, { type: 'init' }>): Promis
       const map = new Map<RenderLayer, TexImageSource>()
       for (const layer of layers) {
         if (layer.title) {
-          map.set(layer, rasterizeTitle(layer.title, sequence.width, sequence.height))
+          map.set(layer, rasterizeTitleForExport(layer.title, sequence.width, sequence.height, W, H))
           continue
         }
         const kind = kindById.get(layer.assetId)
@@ -856,8 +882,10 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
       const map = new Map<RenderLayer, TexImageSource>()
       for (const layer of layers) {
         if (layer.title) {
-          // Titles rasterize at sequence resolution (resolveFrame uses seq dims).
-          map.set(layer, rasterizeTitle(layer.title, sequence.width, sequence.height))
+          map.set(
+            layer,
+            rasterizeTitleForExport(layer.title, sequence.width, sequence.height, settings.width, settings.height),
+          )
           continue
         }
         const kind = kindById.get(layer.assetId)
