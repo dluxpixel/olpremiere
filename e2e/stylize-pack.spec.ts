@@ -322,3 +322,59 @@ test('a lone Glitch is not a fade to black', async ({ page }) => {
   // displaces and tints instead, so simply prove there IS picture here.
   await expect.poll(async () => luma(await px(page, 0.5, 0.5)), { timeout: 10_000 }).toBeGreaterThan(30)
 })
+
+// The ring/streak bugs live in the PAIR path (two real clips either side of the
+// cut), where both sides carry picture — on a lone edge the surround is empty by
+// design, so it proves nothing.
+async function addSecondClip(page: Page): Promise<string> {
+  await page.getByTestId('asset-card').dblclick()
+  await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(2)
+  return page.evaluate(async () => {
+    const storeMod = '/src/state/store.ts'
+    const typesMod = '/src/engine/types.ts'
+    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+      useStore: { getState: () => { project: unknown } }
+    }
+    const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+      activeSequence: (p: unknown) => { tracks: { clips: { id: string; startS: number }[] }[] }
+    }
+    const clips = activeSequence(useStore.getState().project)
+      .tracks.flatMap((t) => t.clips)
+      .sort((a, b) => a.startS - b.startS)
+    return clips[clips.length - 1].id
+  })
+}
+
+async function cutTimeOf(page: Page, clipId: string): Promise<number> {
+  return page.evaluate(async (id) => {
+    const storeMod = '/src/state/store.ts'
+    const typesMod = '/src/engine/types.ts'
+    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+      useStore: { getState: () => { project: unknown } }
+    }
+    const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+      activeSequence: (p: unknown) => { tracks: { clips: { id: string; startS: number }[] }[] }
+    }
+    return activeSequence(useStore.getState().project)
+      .tracks.flatMap((t) => t.clips)
+      .find((c) => c.id === id)!.startS
+  }, clipId)
+}
+
+test('Cross Zoom no longer draws a dark ring round the frame', async ({ page }) => {
+  await addClip(page)
+  await waitForFirstFrame(page)
+  const cornerBefore = luma(await px(page, 0.04, 0.06))
+  const second = await addSecondClip(page)
+
+  await setLoneTransition(page, second, 'zoom', 1)
+  const cut = await cutTimeOf(page, second)
+  // Late enough that the old fallback mixed the corner mostly toward black
+  // (weight ~0.72), but still inside the window where the incoming shot's
+  // sample runs off the frame — which is exactly where the ring lived.
+  await setPlayhead(page, cut + 0.65)
+  await expect
+    .poll(async () => luma(await px(page, 0.04, 0.06)), { timeout: 10_000 })
+    .toBeGreaterThan(cornerBefore * 0.6)
+  expect(luma(await px(page, 0.96, 0.94))).toBeGreaterThan(cornerBefore * 0.6)
+})

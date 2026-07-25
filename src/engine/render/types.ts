@@ -111,8 +111,10 @@ export const TRANSITION_LABELS: Record<TransitionKind, string> = {
   dipToWhite: 'Dip to White',
   wipeLeft: 'Wipe Left',
   wipeRight: 'Wipe Right',
-  slideLeft: 'Slide Left',
-  slideRight: 'Slide Right',
+  // Both shots travel together, which is a PUSH — calling it a slide (where
+  // only the incoming shot moves) described a transition the app does not have.
+  slideLeft: 'Push Left',
+  slideRight: 'Push Right',
   zoom: 'Cross Zoom',
   spin: 'Spin',
   glitch: 'Glitch',

@@ -219,6 +219,27 @@ void main() {
 }`
 
 // Transition combine: both inputs are premultiplied composited layers on black.
+export const SPIN = {
+  /** Peak rotation of either side, radians. 0.5 (28 degrees) did not register at speed. */
+  angleRad: 0.6,
+  /** Extra zoom at peak rotation, as a fraction (1.0 = up to 2x). */
+  punch: 1.1,
+}
+
+/**
+ * Zoom needed for a rotated frame to still cover the frame it is drawn into.
+ * Rotating a w x h rectangle by `angle` leaves triangular gaps at the corners;
+ * the gaps are what "streaking" is (the sampler clamps and smears the edge
+ * pixels into them). A spin is only honest if SPIN.punch covers this at the
+ * worst moment, which is the midpoint — see the unit test.
+ */
+export function spinCoverScale(angleRad: number, aspect: number): number {
+  const c = Math.abs(Math.cos(angleRad))
+  const s = Math.abs(Math.sin(angleRad))
+  const w = Math.max(aspect, 1e-4)
+  return Math.max((c * w + s) / w, s * w + c)
+}
+
 const COMBINE_FS = `#version 300 es
 precision highp float;
 in vec2 vUV;
@@ -261,15 +282,19 @@ void main() {
   } else if (uKind == 4) {     // wipeRight: edge sweeps left to right, TO from the right
     float m = smoothstep(p - uSoft, p + uSoft, vUV.x);
     col = mix(from, to, m);
-  } else if (uKind == 5) {     // slideLeft: TO slides in from the right, over from
-    vec2 fromUV = vec2(vUV.x + p, vUV.y);
-    vec2 toUV = vec2(vUV.x - (1.0 - p), vUV.y);
+  } else if (uKind == 5) {     // slideLeft: TO pushes in from the right
+    // Eased, not linear: a constant-velocity push starts and stops dead, which
+    // is the single thing that makes a move read as machinery instead of craft.
+    float lp = smoothstep(0.0, 1.0, p);
+    vec2 fromUV = vec2(vUV.x + lp, vUV.y);
+    vec2 toUV = vec2(vUV.x - (1.0 - lp), vUV.y);
     vec4 f = (fromUV.x <= 1.0) ? texture(uFrom, fromUV) : vec4(0.0);
     vec4 t = (toUV.x >= 0.0) ? texture(uTo, toUV) : vec4(0.0);
     col = (toUV.x >= 0.0) ? t : f;
-  } else if (uKind == 6) {     // slideRight: TO slides in from the left, over from
-    vec2 fromUV = vec2(vUV.x - p, vUV.y);
-    vec2 toUV = vec2(vUV.x + (1.0 - p), vUV.y);
+  } else if (uKind == 6) {     // slideRight: TO pushes in from the left
+    float rp = smoothstep(0.0, 1.0, p);
+    vec2 fromUV = vec2(vUV.x - rp, vUV.y);
+    vec2 toUV = vec2(vUV.x + (1.0 - rp), vUV.y);
     vec4 f = (fromUV.x >= 0.0) ? texture(uFrom, fromUV) : vec4(0.0);
     vec4 t = (toUV.x <= 1.0) ? texture(uTo, toUV) : vec4(0.0);
     col = (toUV.x <= 1.0) ? t : f;
@@ -279,22 +304,31 @@ void main() {
     vec2 fromUV = ctr + (vUV - ctr) / (1.0 + 0.6 * zp);
     vec2 toUV = ctr + (vUV - ctr) * (1.0 + 0.4 * (1.0 - zp));
     vec4 f = texture(uFrom, fromUV);
+    // TO starts SHRUNK, so early in the transition its sample lands outside the
+    // frame all the way round. Falling back to transparent black there mixed a
+    // dark ring into all four edges; falling back to FROM means the incoming
+    // shot punches in OVER the outgoing one, which is what a cross zoom is. The
+    // ring closes on its own: at p=1 toUV == vUV, so nothing is out of range.
     bool tin = toUV.x >= 0.0 && toUV.x <= 1.0 && toUV.y >= 0.0 && toUV.y <= 1.0;
-    vec4 t = tin ? texture(uTo, toUV) : vec4(0.0);
+    vec4 t = tin ? texture(uTo, toUV) : f;
     col = mix(f, t, zp);
   } else if (uKind == 8) {     // spin: whip-rotate FROM out while TO rotates in, both punched
     float sp = smoothstep(0.0, 1.0, p);
     vec2 ctr = vec2(0.5);
-    float angF = sp * 0.5;
-    float angT = (sp - 1.0) * 0.5;
+    // Two constants decide whether this reads as a whip or a wobble, and they
+    // are NOT independent: the punch has to cover the rotation or the corners it
+    // exposes streak. Both live in SPIN above, where spinCoverScale + its unit
+    // test hold them to that relationship.
+    float angF = sp * ${SPIN.angleRad.toFixed(4)};
+    float angT = (sp - 1.0) * ${SPIN.angleRad.toFixed(4)};
     // Rotate in aspect-corrected space: UV units are anisotropic on non-square
     // frames, so a raw UV rotation is a shear, not a rigid spin.
     float asp = max(uAspect, 1e-4);
     vec2 dF = (vUV - ctr) * vec2(asp, 1.0);
     vec2 rF = vec2(dF.x * cos(angF) - dF.y * sin(angF), dF.x * sin(angF) + dF.y * cos(angF));
     vec2 rT = vec2(dF.x * cos(angT) - dF.y * sin(angT), dF.x * sin(angT) + dF.y * cos(angT));
-    vec4 f = texture(uFrom, ctr + (rF / (1.0 + 0.3 * sp)) * vec2(1.0 / asp, 1.0));
-    vec4 t = texture(uTo, ctr + (rT / (1.0 + 0.3 * (1.0 - sp))) * vec2(1.0 / asp, 1.0));
+    vec4 f = texture(uFrom, ctr + (rF / (1.0 + ${SPIN.punch.toFixed(4)} * sp)) * vec2(1.0 / asp, 1.0));
+    vec4 t = texture(uTo, ctr + (rT / (1.0 + ${SPIN.punch.toFixed(4)} * (1.0 - sp))) * vec2(1.0 / asp, 1.0));
     col = mix(f, t, sp);
   } else if (uKind == 9) {     // glitch: sliced displacement + RGB split, peaking mid-cut
     float gi = p * (1.0 - p) * 4.0;
