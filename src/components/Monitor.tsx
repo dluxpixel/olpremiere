@@ -1,4 +1,5 @@
 import {
+  Diamond,
   ChevronLeft,
   ChevronRight,
   Maximize,
@@ -17,7 +18,7 @@ import { prewarmPreview, previewEpoch, renderPreview } from '../engine/preview'
 import { formatTimecode, quantizeToFrame } from '../engine/timecode'
 import { activeSequence, type Sequence } from '../engine/types'
 import { pausePlayback, subscribeShuttleRate, toggleLoop, togglePlay } from '../state/playbackControl'
-import { setPreviewQuality, useSettings } from '../state/settings'
+import { setAutoKeyframe, setPreviewQuality, useSettings } from '../state/settings'
 import { setActiveSequenceFormat, useStore } from '../state/store'
 import { IconButton } from '../ui/Button'
 import { MasterMeter } from './MasterMeter'
@@ -256,6 +257,7 @@ export function Monitor() {
     setPreviewScale(quality)
   }, [quality])
   const [safeMargins, setSafeMargins] = useState(false)
+  const autoKeyframe = useSettings((s) => s.autoKeyframe)
   const regionRef = useRef<HTMLDivElement>(null)
   const canvasRef = useProgramCanvas(quality)
 
@@ -379,6 +381,16 @@ export function Monitor() {
             data-testid="safe-margins-toggle"
           >
             <Scan size={16} strokeWidth={1.5} />
+          </IconButton>
+          {/* Auto-keyframe: with it on, moving or scaling a clip in the monitor
+              ANIMATES it from where it was instead of moving the whole clip. */}
+          <IconButton
+            label={autoKeyframe ? 'Auto keyframe: on' : 'Auto keyframe: off'}
+            active={autoKeyframe}
+            onClick={() => setAutoKeyframe(!autoKeyframe)}
+            data-testid="auto-keyframe-toggle"
+          >
+            <Diamond size={16} strokeWidth={1.5} />
           </IconButton>
           <select
             aria-label="Preview quality"

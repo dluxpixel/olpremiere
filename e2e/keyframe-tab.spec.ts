@@ -167,3 +167,47 @@ test('dragging a keyframe on the clip retimes it, in one undo step', async ({ pa
   await page.keyboard.press('Control+z')
   await expect.poll(timesOf).toEqual(before)
 })
+
+test('auto-keyframe turns a monitor drag into an animation', async ({ page }) => {
+  await page.goto('/')
+  await page.getByTestId('add-title').click()
+  await page.getByTestId('clip').click()
+
+  const posXCount = () =>
+    page.evaluate(async () => {
+      const storeMod = '/src/state/store.ts'
+      const typesMod = '/src/engine/types.ts'
+      const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+        useStore: { getState: () => { project: unknown } }
+      }
+      const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+        activeSequence: (p: unknown) => { tracks: { clips: { keyframes?: { posX?: unknown[] } }[] }[] }
+      }
+      const clip = activeSequence(useStore.getState().project).tracks.flatMap((t) => t.clips)[0]
+      return clip.keyframes?.posX?.length ?? 0
+    })
+
+  // The toggle starts off, and a drag at the head is a plain move either way —
+  // so park the playhead inside the clip first.
+  await expect(page.getByTestId('auto-keyframe-toggle')).toBeVisible()
+  await page.getByTestId('auto-keyframe-toggle').click()
+  await page.evaluate(async () => {
+    const storeMod = '/src/state/store.ts'
+    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+      useStore: { getState: () => { setUI: (p: unknown) => void } }
+    }
+    useStore.getState().setUI({ playheadS: 2 })
+  })
+
+  const gizmo = page.getByTestId('gizmo-body')
+  await expect(gizmo).toBeVisible()
+  const box = (await gizmo.boundingBox())!
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(box.x + box.width / 2 + 80, box.y + box.height / 2, { steps: 8 })
+  await page.mouse.up()
+
+  // Two keyframes: where it was, and where the playhead is.
+  await expect.poll(posXCount).toBe(2)
+  await expect(page.getByTestId('clip-keyframe')).toHaveCount(2)
+})

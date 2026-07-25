@@ -13,7 +13,7 @@ import {
 } from '../engine/effects/channels'
 import * as ops from '../engine/effects/ops'
 import { getEffect } from '../engine/effects/registry'
-import { removeKeyframeNear, upsertKeyframe, moveKeyframeMoment } from '../engine/keyframes'
+import { moveKeyframeMoment, removeKeyframeNear, upsertKeyframe } from '../engine/keyframes'
 import {
   clipDurationS,
   clipEndS,
@@ -40,6 +40,7 @@ import {
 } from '../engine/types'
 import { transitionDurationSpec, type TransitionKind } from '../engine/render/types'
 import { updateActiveSequence, useStore } from './store'
+import { useSettings } from './settings'
 import { useToasts } from './toasts'
 
 const KEYFRAME_TOLERANCE_S = 1e-4
@@ -386,15 +387,29 @@ export function setClipTransformAtPlayhead(
   if (changes.scale !== undefined) vals.push(['scale', changes.scale])
   if (changes.rotationDeg !== undefined) vals.push(['rotation', changes.rotationDeg])
   if (vals.length === 0) return
+  const auto = useSettings.getState().autoKeyframe
   mapClip(clipId, 'Transform at playhead', (c) => {
     const localT = playheadLocalT(c)
     let next = c
     for (const [channel, value] of vals) {
       const kfs = channelKeyframes(next, channel)
-      next =
-        kfs.length > 0
-          ? withChannelKeyframes(next, channel, upsertKeyframe(kfs, { t: localT, value, ease: 'linear' }))
-          : withChannelValue(next, channel, value)
+      if (kfs.length > 0) {
+        next = withChannelKeyframes(next, channel, upsertKeyframe(kfs, { t: localT, value, ease: 'linear' }))
+        continue
+      }
+      // AUTO-KEYFRAME: a still channel becomes an animated one. A lone keyframe
+      // would just be a moved base — evalChannel holds it everywhere — so the
+      // clip's existing value is pinned at the head and the new one lands at the
+      // playhead. That is the whole point of the mode: drag, and there is motion.
+      // At the head itself there is nowhere to animate FROM, so it stays a base.
+      if (auto && localT > 1e-3) {
+        next = withChannelKeyframes(next, channel, [
+          { t: 0, value: channelBase(next, channel), ease: 'linear' },
+          { t: localT, value, ease: 'linear' },
+        ])
+        continue
+      }
+      next = withChannelValue(next, channel, value)
     }
     return next
   })

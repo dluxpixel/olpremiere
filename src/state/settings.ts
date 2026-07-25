@@ -14,12 +14,19 @@ export type PreviewQuality = 1 | 0.5 | 0.25
 
 interface SettingsState {
   theme: ThemeChoice
-  /** Preview quality NEW monitors open at; the monitor's own picker still wins for the session. */
+  /** Preview quality, shared by the Settings dialog and the monitor's own picker. */
   previewQuality: PreviewQuality
+  /**
+   * Auto-keyframe: moving or scaling a clip in the monitor ANIMATES it instead
+   * of moving the whole clip. Off by default — a drag should not secretly start
+   * an animation until you have asked for that mode.
+   */
+  autoKeyframe: boolean
 }
 
 const THEME_KEY = 'reel:settings:theme'
 const QUALITY_KEY = 'reel:settings:preview-quality'
+const AUTOKEY_KEY = 'reel:settings:auto-keyframe'
 
 function read(key: string): string | null {
   try {
@@ -52,7 +59,13 @@ function loadQuality(): PreviewQuality {
 export const useSettings = create<SettingsState>(() => ({
   theme: loadTheme(),
   previewQuality: loadQuality(),
+  autoKeyframe: read(AUTOKEY_KEY) === '1',
 }))
+
+export function setAutoKeyframe(on: boolean): void {
+  useSettings.setState({ autoKeyframe: on })
+  write(AUTOKEY_KEY, on ? '1' : null)
+}
 
 /** The theme actually in force: 'system' resolves against the OS preference. */
 export function resolvedTheme(choice: ThemeChoice): ResolvedTheme {

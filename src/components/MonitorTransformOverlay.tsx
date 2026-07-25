@@ -20,6 +20,7 @@ import { setClipsPosition } from '../state/bulkEdits'
 import { openContextMenu } from '../state/contextMenu'
 import { pausePlayback } from '../state/playbackControl'
 import { quantizeToFrame } from '../engine/timecode'
+import { useSettings } from '../state/settings'
 import { useStore } from '../state/store'
 
 interface Tf {
@@ -227,6 +228,12 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
       clip?.keyframes?.scale?.length ||
       clip?.keyframes?.rotation?.length
     )
+  // With auto-keyframe on, a STILL clip takes the keyframe path too — that is
+  // the mode: a drag animates the clip from where it was instead of moving it.
+  // Read at COMMIT time, not as a hook: this component early-returns above, so a
+  // hook here runs conditionally and React tears the whole tree down.
+  const keyframeOnDrag = (): boolean =>
+    manualAnimated || (!appearanceOwned && useSettings.getState().autoKeyframe)
   const onScreen = !!clip && playheadS >= clip.startS && playheadS < clipEndS(clip)
   // Adjustment layers have no transform in the render path (only effects/mask/
   // opacity reach applyAdjustment), so a gizmo would commit undo steps that can
@@ -357,9 +364,9 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
         setCenterSnap({ x: false, y: false })
         tfRef.current = null
         if (!final) return
-        if (manualAnimated) {
-          // Keyframed clip: write ONLY the channels the drag changed, as
-          // keyframes at the playhead (static channels update their base).
+        if (keyframeOnDrag()) {
+          // Keyframed clip (or auto-keyframe): write ONLY the channels the drag
+          // changed, as keyframes at the playhead.
           const changes: Partial<Tf> = {}
           if (Math.abs(final.x - drag.startTf.x) > 1e-9) changes.x = final.x
           if (Math.abs(final.y - drag.startTf.y) > 1e-9) changes.y = final.y
