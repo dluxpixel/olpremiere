@@ -25,6 +25,17 @@ interface PooledImage {
 // screen can never be the eviction victim. A 100-asset library previously meant
 // 100 buffering <video> decoders alive at once — decoders are a scarce hardware
 // resource and each element buffers media.
+/**
+ * Picture-vs-playhead drift past this is a real jump (a cut, a scrub, a loop
+ * wrap) and gets a seek. Anything smaller is steered out by trimming the
+ * element's rate, which the viewer cannot see — a seek, they can.
+ */
+const HARD_SEEK_S = 0.35
+/** Ceiling on that trim. ±2% is inaudible and invisible. */
+const RATE_TRIM = 0.02
+/** Roughly how long the servo takes to absorb an error, in seconds. */
+const SERVO_TAU_S = 2
+
 const VIDEO_POOL_CAP = 12
 const IMAGE_POOL_CAP = 48
 
@@ -171,6 +182,19 @@ const renderers = new WeakMap<HTMLCanvasElement, Renderer | null>()
  * pay for a full 1080x1920 text canvas per caption.
  */
 let previewRasterH = 0
+
+/**
+ * The TRANSPORT's rate — 1 for normal play, ±2/±4 while shuttling on J/L.
+ *
+ * Pushed in by playbackControl (which already publishes only on change) rather
+ * than pulled, because playbackControl imports this module and the reverse would
+ * be a cycle.
+ */
+let transportRate = 1
+
+export function setPreviewTransportRate(rate: number): void {
+  transportRate = rate === 0 ? 1 : rate
+}
 
 /**
  * How much of the sequence raster a preview title needs. 1.5x the canvas gives
@@ -415,13 +439,33 @@ function makeTextureSource(
     // which is the stutter on slow-motion. Native <video> can't play backward,
     // so a reversed clip keeps rate 1 and rides the seek path. Browsers clamp
     // playbackRate to about [0.0625, 16].
-    const wantRate = layer.speed > 0 ? Math.min(16, Math.max(0.0625, layer.speed)) : 1
-    if (el.playbackRate !== wantRate) el.playbackRate = wantRate
+    // The element has to advance as fast as the COMPOSITOR samples it, which is
+    // the clip's own speed TIMES the transport rate. Leaving the transport out
+    // is what made J/L a slideshow: at 2x the playhead ran twice as fast as the
+    // picture, drift crossed the tolerance every ~150ms, and every crossing was a
+    // hard seek. Native <video> can't play backward, so a reversed clip (or a
+    // reversed shuttle) keeps rate 1 and rides the seek path.
+    const speed = layer.speed * Math.abs(transportRate)
+    const wantRate = layer.speed > 0 && transportRate > 0 ? Math.min(16, Math.max(0.0625, speed)) : 1
     if (el.paused) {
       el.currentTime = srcT
+      el.playbackRate = wantRate
       void el.play().catch(() => {})
-    } else if (Math.abs(el.currentTime - srcT) > 0.15) {
-      el.currentTime = srcT
+    } else {
+      const err = el.currentTime - srcT // > 0 = picture ahead of the playhead
+      if (Math.abs(err) > HARD_SEEK_S) {
+        // A real jump — a cut, a scrub, a loop wrap. Seeking is correct here.
+        el.currentTime = srcT
+        el.playbackRate = wantRate
+      } else {
+        // Small drift: STEER instead of seeking. The old code did nothing at all
+        // inside its tolerance, so the picture could sit a tenth of a second off
+        // the audio indefinitely and then hitch when it finally fell out — this
+        // converges invisibly and never shows a seek.
+        const corr = Math.max(1 - RATE_TRIM, Math.min(1 + RATE_TRIM, 1 - err / SERVO_TAU_S))
+        const rate = wantRate * corr
+        if (Math.abs(el.playbackRate - rate) > 1e-3) el.playbackRate = rate
+      }
     }
     return el
   }

@@ -3,7 +3,7 @@
 
 import { scheduleAudio } from '../engine/audio'
 import { Transport } from '../engine/playback'
-import { pauseAllPreviewVideos } from '../engine/preview'
+import { pauseAllPreviewVideos, setPreviewTransportRate } from '../engine/preview'
 import { activeSequence } from '../engine/types'
 import { workArea } from '../engine/workArea'
 import { isTakeInProgress, pauseRecording, resumeRecording } from './voiceRecorder'
@@ -34,6 +34,10 @@ const transport = new Transport({
       else pauseRecording()
     }
     const next = playing ? rate : 0
+    // The preview needs the transport rate to keep the picture advancing as fast
+    // as the compositor samples it (J/L shuttle). Pushed, not pulled: this module
+    // already imports preview, so the reverse would be a cycle.
+    setPreviewTransportRate(playing ? rate : 1)
     if (next !== shuttleRate) {
       shuttleRate = next
       for (const cb of rateSubs) cb(next)
