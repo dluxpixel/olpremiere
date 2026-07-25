@@ -15,16 +15,23 @@ import {
 import { activeSequence } from '../engine/types'
 import { useContextMenu } from './contextMenu'
 import { updateActiveSequence, useStore } from './store'
+import { useToasts } from './toasts'
 
 let clipboard: ClipPayload[] = []
 
 export function copySelection(): boolean {
   const s = useStore.getState()
   const seq = activeSequence(s.project)
-  if (s.ui.selection.length === 0) return false
+  // Copy is the one verb with NO visible effect of its own, so it has to say so
+  // — otherwise the only way to find out whether it worked is to paste.
+  if (s.ui.selection.length === 0) {
+    useToasts.getState().show('Select a clip to copy', 'danger')
+    return false
+  }
   const payload = serializeClips(seq, s.ui.selection)
   if (payload.length === 0) return false
   clipboard = payload
+  useToasts.getState().show(`Copied ${payload.length} clip(s)`, 'info')
   return true
 }
 
@@ -66,7 +73,10 @@ export function pasteAtPlayhead(): void {
   const payload = clipboard.filter(
     (p) => p.clip.title !== undefined || p.clip.adjustment === true || s.project.assets[p.assetId],
   )
-  if (payload.length === 0) return
+  if (payload.length === 0) {
+    useToasts.getState().show('Nothing to paste — copy a clip first', 'danger')
+    return
+  }
   let pastedIds: string[] = []
   updateActiveSequence('Paste clip(s)', (sq) => {
     const r = pasteClips(sq, payload, s.ui.playheadS)

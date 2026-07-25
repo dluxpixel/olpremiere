@@ -10,17 +10,7 @@ import { useRecorder } from './state/voiceRecorder'
 import { Timeline } from './components/Timeline'
 import { TopBar } from './components/TopBar'
 import { TranscribeStatus } from './components/TranscribeStatus'
-import {
-  addMarker,
-  clipEndS,
-  clipGroupIds,
-  deleteScoped,
-  removeMarkerNear,
-  rippleDeleteGroup,
-  splitClipOnly,
-  splitGroup,
-  unlockedClipIds,
-} from './engine/timeline'
+import { addMarker, removeMarkerNear } from './engine/timeline'
 import { nextEditPoint, prevEditPoint } from './engine/editPoints'
 import { quantizeToFrame } from './engine/timecode'
 import { activeSequence } from './engine/types'
@@ -38,7 +28,7 @@ import {
 } from './state/clipboard'
 import { copyClipAttributes, pasteClipAttributes } from './state/attributes'
 import { performHistoryStep } from './collab/collabControl'
-import { toggleClipEnabled, topAndTail } from './state/clipEdits'
+import { deleteSelected, splitAtPlayhead, toggleClipEnabled, topAndTail } from './state/clipEdits'
 import { pausePlayback, shuttle, toggleLoop, togglePlay } from './state/playbackControl'
 import { clearInOut, gotoIn, gotoOut, markIn, markOut } from './state/workAreaActions'
 import { punchInAtPlayhead } from './state/motionActions'
@@ -60,68 +50,6 @@ function stepFrames(frames: number) {
   const seq = activeSequence(s.project)
   const t = quantizeToFrame(s.ui.playheadS, seq.fps) + frames / seq.fps
   s.setUI({ playheadS: Math.min(Math.max(0, t), seq.durationS) })
-}
-
-function deleteSelected(ripple: boolean) {
-  const s = useStore.getState()
-  // Selection may legitimately include locked-track clips; deleting them never may.
-  const ids = unlockedClipIds(activeSequence(s.project), s.ui.selection)
-  if (ids.length === 0) return
-  // Selection-scoped: an audio half deletes alone, everything else takes its
-  // linked partner along (deleteScoped). Ripple stays group-wide - rippling
-  // one half of a pair would slide its track out of sync with the partner.
-  updateActiveSequence(ripple ? 'Ripple delete' : 'Delete clip', (sq) => {
-    let next = sq
-    for (const id of ids) next = ripple ? rippleDeleteGroup(next, id) : deleteScoped(next, id)
-    return next
-  })
-  s.setUI({ selection: [] })
-}
-
-/**
- * Split at the playhead. Three explicit verbs (David, 2026-07-18 - the earlier
- * selection-scoped C was "way too confusing"):
- *   C          → split the clip(s): a linked pair always splits TOGETHER.
- *   Shift+C    → split only the AUDIO half (kind: 'audio').
- *   Alt+C      → split only the VIDEO half (kind: 'video').
- * (Ctrl+C stays Copy - the universal clipboard verb is not up for grabs.)
- * A selection still narrows WHICH clips are considered (multi-track editing),
- * but never changes what a verb splits. Ctrl+Shift+K ignores the selection.
- */
-function splitAtPlayhead(allTracks = false, kind?: 'video' | 'audio') {
-  const s = useStore.getState()
-  const seq = activeSequence(s.project)
-  // Cut on the frame grid: a mid-frame playhead (playback, fine scrubs) would
-  // otherwise land off-grid cuts that leave sliver fragments.
-  const t = quantizeToFrame(s.ui.playheadS, seq.fps)
-  const sel = allTracks ? [] : s.ui.selection
-  const targets = seq.tracks.flatMap((tr) =>
-    tr.locked || (kind && tr.kind !== kind)
-      ? []
-      : tr.clips
-          .filter((c) => (sel.length === 0 || sel.includes(c.id)) && t > c.startS && t < clipEndS(c))
-          .map((c) => c.id),
-  )
-  if (targets.length === 0) return
-  const label = kind === 'audio' ? 'Split audio' : kind === 'video' ? 'Split video' : 'Split at playhead'
-  updateActiveSequence(label, (sq) => {
-    let next = sq
-    // De-dupe linked partners so a group isn't split twice.
-    const done = new Set<string>()
-    for (const id of targets) {
-      if (done.has(id)) continue
-      if (kind) {
-        // Kind-scoped: split just this half; the partner stays whole. For an
-        // unlinked clip splitClipOnly reduces to a plain split.
-        done.add(id)
-        next = splitClipOnly(next, id, t)
-        continue
-      }
-      for (const gid of clipGroupIds(next, id)) done.add(gid)
-      next = splitGroup(next, id, t)
-    }
-    return next
-  })
 }
 
 /**

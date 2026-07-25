@@ -41,11 +41,9 @@ import {
   closeAllGaps,
   closeGapBefore,
   collectSnapPoints,
-  deleteScoped,
   gapBefore,
   moveGroup,
   rateStretchGroup,
-  rippleDeleteGroup,
   rippleTrimGroup,
   rippleTrimTo,
   rollEditTo,
@@ -86,7 +84,13 @@ import {
   captureTextPreset,
   useTextPresets,
 } from '../state/textPresets'
-import { crossfadeWithNeighbour, setClipFade, topAndTail } from '../state/clipEdits'
+import {
+  crossfadeWithNeighbour,
+  deleteSelected,
+  setClipFade,
+  splitAtPlayhead,
+  topAndTail,
+} from '../state/clipEdits'
 import { impactAtPlayhead, punchInAtPlayhead, punchOnBeats, rampWorkArea, whipToNext } from '../state/motionActions'
 import { autoCaptionFromClip } from '../state/transcribeActions'
 import { setTrackAudioRole, setTrackAutoLevel, setTrackPan, setTrackVolumeDb } from '../state/trackEdits'
@@ -1571,13 +1575,12 @@ export function Timeline({ height }: { height: number }) {
       {
         // C is the branded single-key cut; the old label advertised only the
         // secondary Ctrl+K chord and hid the key everyone should learn.
-        label: 'Split at playhead',
+        label: keepSelection ? `Split ${selNow.length} clips at playhead` : 'Split at playhead',
         shortcut: 'C',
         disabled: !playheadInside,
-        onClick: () =>
-          updateActiveSequence('Split at playhead', (sq) =>
-            splitGroup(sq, clip.id, quantizeToFrame(playheadS, sq.fps)),
-          ),
+        // The SAME verb the C key runs. This used to split only the clip you
+        // right-clicked while the Delete item one row below said "Delete 5 clips".
+        onClick: () => splitAtPlayhead(),
       },
       {
         // TWO deletes, not three (David, 2026-07-18): Delete is selection-
@@ -1591,23 +1594,15 @@ export function Timeline({ height }: { height: number }) {
             : 'Delete',
         shortcut: 'Del',
         separator: true,
-        onClick: () => {
-          // Match Copy/Cut/Duplicate + the Del key: a kept multi-selection deletes
-          // ALL selected clips, not just the one right-clicked.
-          const ids = keepSelection ? selNow : [clip.id]
-          updateActiveSequence('Delete clip', (sq) => ids.reduce((next, id) => deleteScoped(next, id), sq))
-          setUI({ selection: [] })
-        },
+        // The SAME verb the Del key runs, lock filter included — the inline copy
+        // here skipped it, so right-click Delete removed clips Del refused to.
+        onClick: () => deleteSelected(false),
       },
       {
         label: keepSelection ? `Ripple delete ${selNow.length} clips` : 'Ripple delete',
         shortcut: 'Shift+Del',
         danger: true,
-        onClick: () => {
-          const ids = keepSelection ? selNow : [clip.id]
-          updateActiveSequence('Ripple delete', (sq) => ids.reduce((next, id) => rippleDeleteGroup(next, id), sq))
-          setUI({ selection: [] })
-        },
+        onClick: () => deleteSelected(true),
       },
       {
         label: 'Close gap before',

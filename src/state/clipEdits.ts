@@ -18,10 +18,15 @@ import {
   clipDurationS,
   clipEndS,
   clipGroupIds,
+  deleteScoped,
+  rippleDeleteGroup,
   rippleTrimGroup,
   setClipSpeed as setClipSpeedT,
+  splitClipOnly,
+  splitGroup,
   unlockedClipIds,
 } from '../engine/timeline'
+import { quantizeToFrame } from '../engine/timecode'
 import {
   activeSequence,
   ANIM_CHANNELS,
@@ -496,6 +501,89 @@ export function crossfadeWithNeighbour(clipId: Id, side: 'next' | 'prev', second
  * clip under the playhead — a selected clip under the playhead wins, else the
  * topmost unlocked one. Shared by the keymap and the clip context menu.
  */
+/**
+ * Delete the selection (ripple or not). Shared by the Del / Shift+Del keys AND
+ * the clip context menu — the menu used to reimplement this inline and skipped
+ * the lock filter, so right-click Delete removed clips the Del key refused.
+ */
+export function deleteSelected(ripple: boolean): void {
+  const s = useStore.getState()
+  const selection = s.ui.selection
+  if (selection.length === 0) return
+  // Selection may legitimately include locked-track clips; deleting them never may.
+  const ids = unlockedClipIds(activeSequence(s.project), selection)
+  if (ids.length === 0) {
+    useToasts.getState().show('Those clips are on a locked track', 'danger')
+    return
+  }
+  // Selection-scoped: an audio half deletes alone, everything else takes its
+  // linked partner along (deleteScoped). Ripple stays group-wide - rippling
+  // one half of a pair would slide its track out of sync with the partner.
+  updateActiveSequence(ripple ? 'Ripple delete' : 'Delete clip', (sq) => {
+    let next = sq
+    for (const id of ids) next = ripple ? rippleDeleteGroup(next, id) : deleteScoped(next, id)
+    return next
+  })
+  s.setUI({ selection: [] })
+}
+
+/**
+ * Split at the playhead. Three explicit verbs (David, 2026-07-18 - the earlier
+ * selection-scoped C was "way too confusing"):
+ *   C          → split the clip(s): a linked pair always splits TOGETHER.
+ *   Shift+C    → split only the AUDIO half (kind: 'audio').
+ *   Alt+C      → split only the VIDEO half (kind: 'video').
+ * A selection still narrows WHICH clips are considered (multi-track editing),
+ * but never changes what a verb splits.
+ *
+ * Shared with the clip context menu, which used to split only the clip you
+ * right-clicked while the Delete item one row below it said "Delete 5 clips".
+ */
+export function splitAtPlayhead(allTracks = false, kind?: 'video' | 'audio'): void {
+  const s = useStore.getState()
+  const seq = activeSequence(s.project)
+  // Cut on the frame grid: a mid-frame playhead (playback, fine scrubs) would
+  // otherwise land off-grid cuts that leave sliver fragments.
+  const t = quantizeToFrame(s.ui.playheadS, seq.fps)
+  const sel = allTracks ? [] : s.ui.selection
+  const targets = seq.tracks.flatMap((tr) =>
+    tr.locked || (kind && tr.kind !== kind)
+      ? []
+      : tr.clips
+          .filter((c) => (sel.length === 0 || sel.includes(c.id)) && t > c.startS && t < clipEndS(c))
+          .map((c) => c.id),
+  )
+  if (targets.length === 0) {
+    // The usual cause is a stale selection narrowing the cut to a clip the
+    // playhead is nowhere near — invisible unless we say it.
+    useToasts
+      .getState()
+      .show(
+        sel.length > 0
+          ? "Playhead isn't over a selected clip"
+          : 'Put the playhead over a clip to split it',
+        'danger',
+      )
+    return
+  }
+  const label = kind === 'audio' ? 'Split audio' : kind === 'video' ? 'Split video' : 'Split at playhead'
+  updateActiveSequence(label, (sq) => {
+    let next = sq
+    // De-dupe linked partners so a group isn't split twice.
+    const done = new Set<string>()
+    for (const id of targets) {
+      if (done.has(id)) continue
+      if (kind) {
+        done.add(id)
+        next = splitClipOnly(next, id, t)
+        continue
+      }
+      for (const gid of clipGroupIds(next, id)) done.add(gid)
+      next = splitGroup(next, id, t)
+    }
+    return next
+  })
+}
 export function topAndTail(edge: 'in' | 'out'): void {
   const s = useStore.getState()
   const t = s.ui.playheadS
@@ -506,7 +594,10 @@ export function topAndTail(edge: 'in' | 'out'): void {
     .filter((tr) => !tr.locked)
     .flatMap((tr) => tr.clips)
     .filter((c) => t > c.startS && t < clipEndS(c))
-  if (under.length === 0) return
+  if (under.length === 0) {
+    useToasts.getState().show('Put the playhead inside a clip first', 'danger')
+    return
+  }
   const target = under.find((c) => sel.has(c.id)) ?? under[under.length - 1]
   updateActiveSequence(edge === 'in' ? 'Trim head to playhead' : 'Trim tail to playhead', (sq) =>
     rippleTrimGroup(sq, assets, target.id, edge, t),
