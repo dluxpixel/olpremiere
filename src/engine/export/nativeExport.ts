@@ -139,6 +139,8 @@ export async function exportNative(
       worker.terminate()
       fn()
     }
+    // Serializes every frame write; see the 'frame' branch below.
+    let writeChain: Promise<void> = Promise.resolve()
     const onAbort = (): void => {
       worker.postMessage({ type: 'cancel' } satisfies ExportRequest)
       void api.nativeCancel().finally(() => done(() => reject(abortError())))
@@ -149,7 +151,14 @@ export async function exportNative(
       const msg = e.data
       if (settled) return
       if (msg.type === 'frame') {
-        void api.nativeWriteFrame(msg.data).then((res) => {
+        // ffmpeg's stdin is a raw RGBA pipe with no framing, so two writes in
+        // flight at once would interleave into garbage. The worker is allowed
+        // to render several frames ahead; the ORDER is enforced here, by
+        // chaining every write onto the previous one.
+        const data = msg.data
+        writeChain = writeChain.then(async () => {
+          if (settled) return
+          const res = await api.nativeWriteFrame(data)
           if (settled) return
           if (!res.ok) {
             void api.nativeCancel()
@@ -163,7 +172,8 @@ export async function exportNative(
         if (msg.progress.phase !== 'video') onProgress(msg.progress)
       } else if (msg.type === 'done') {
         onProgress({ phase: 'finalizing', framesDone: framesTotal, framesTotal })
-        void api.nativeFinish().then((fin) => {
+        // Drain the write queue before closing ffmpeg's stdin.
+        void writeChain.then(() => api.nativeFinish()).then((fin) => {
           if (fin.ok) done(() => resolve({ outPath: fin.outPath ?? '', sizeBytes: fin.sizeBytes ?? 0 }))
           else done(() => reject(new Error(fin.error ?? 'ffmpeg failed')))
         })

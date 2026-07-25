@@ -219,6 +219,34 @@ void main() {
 }`
 
 // Transition combine: both inputs are premultiplied composited layers on black.
+/**
+ * Size of the renderer's intermediate FBOs — the buffers a transition's two
+ * sides, a neighborhood effect, a dest-sampling blend and the adjustment
+ * accumulator are drawn into before they reach the target.
+ *
+ * They used to be pinned to the SEQUENCE raster. That is fine while the output
+ * is the sequence, but the export can be BIGGER (an HD timeline renders at
+ * 1440p), and then every one of those buffers was rendered at 1080p and blown
+ * up on the way out — while an ordinary layer went straight to the target at
+ * full size. The result was a picture that visibly softened for the length of
+ * every cross dissolve and snapped back after it.
+ *
+ * Taking the max means: unchanged whenever the target is the sequence or
+ * smaller (so the SD golden export cannot move), and native when the target is
+ * larger.
+ */
+export function intermediateSize(
+  frameW: number,
+  frameH: number,
+  targetW: number,
+  targetH: number,
+): { width: number; height: number } {
+  return {
+    width: Math.max(1, Math.max(frameW, targetW)),
+    height: Math.max(1, Math.max(frameH, targetH)),
+  }
+}
+
 export const SPIN = {
   /** Peak rotation of either side, radians. 0.5 (28 degrees) did not register at speed. */
   angleRad: 0.6,
@@ -1044,7 +1072,9 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     targetFb: WebGLFramebuffer | null,
   ): void {
     // FBOs: 0=from-composited, 1=to-composited, 2=layer scratch, 3=blur scratch.
-    ensurePool(frameW, frameH, 4)
+    // render() already sized the pool for this frame; only the COUNT matters
+    // here, so pass the current dims rather than resizing back to the sequence.
+    ensurePool(fboW, fboH, 4)
     const fromFbo = pool[0]
     const toFbo = pool[1]
     const layerFbo = pool[2]
@@ -1175,7 +1205,8 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     // byte-stable straight-to-canvas path. pool[6] is the adjustment work FBO;
     // glow's lazy pool[4] stays free in both paths.
     const hasAdjustment = frame.ops.some((op) => op.type === 'adjustment')
-    ensurePool(frameW, frameH, hasAdjustment ? 7 : 4)
+    const inter = intermediateSize(frameW, frameH, gl.canvas.width, gl.canvas.height)
+    ensurePool(inter.width, inter.height, hasAdjustment ? 7 : 4)
     const accum = hasAdjustment ? pool[5] : null
     const targetFb = accum ? accum.fb : null
 

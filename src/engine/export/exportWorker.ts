@@ -165,18 +165,38 @@ const wakeAudioLoop = (): void => {
   audioWaiter = null
 }
 
-// NATIVE mode credit: the render loop posts one RGBA frame, then parks here until
-// the page confirms it was written to ffmpeg ('frameAck'). Serialized (one frame
-// in flight) → peak memory bounded to a single frame. Cancel wakes it too.
-let frameAckWaiter: (() => void) | null = null
+// NATIVE mode credit WINDOW. The render loop used to post one RGBA frame and
+// park until the page confirmed it had reached ffmpeg, so the GPU and the
+// encoder took strict turns and neither ever overlapped the other — the whole
+// render pipeline idled for every ffmpeg write and vice versa. A few frames may
+// now be in flight at once, which is still a hard bound on peak memory (three
+// 1440p frames ≈ 44 MB) rather than an unbounded queue.
+//
+// The PAGE keeps the writes strictly ordered (a raw RGBA pipe has no framing,
+// so two overlapping writes would interleave into garbage); this only decides
+// how far ahead the renderer may run.
+const FRAME_CREDIT = 3
+let framesInFlight = 0
+let frameCreditWaiter: (() => void) | null = null
 const wakeFrameAck = (): void => {
-  frameAckWaiter?.()
-  frameAckWaiter = null
+  frameCreditWaiter?.()
+  frameCreditWaiter = null
 }
-const waitFrameAck = (): Promise<void> =>
-  new Promise((resolve) => {
-    frameAckWaiter = resolve
+/** Park until the page has drained enough frames to accept another. */
+const awaitFrameCredit = (): Promise<void> => {
+  if (cancelled || framesInFlight < FRAME_CREDIT) return Promise.resolve()
+  return new Promise((resolve) => {
+    frameCreditWaiter = resolve
   })
+}
+/** Park until EVERY posted frame has been written — before ffmpeg's stdin closes. */
+const awaitFramesDrained = async (): Promise<void> => {
+  while (!cancelled && framesInFlight > 0) {
+    await new Promise<void>((resolve) => {
+      frameCreditWaiter = resolve
+    })
+  }
+}
 
 // SAFETY NET: nothing may ever surface as the opaque "worker crashed: unknown
 // error" again. Any exception that escapes run()'s try/catch (an encoder
@@ -197,6 +217,7 @@ scope.onmessage = (e: MessageEvent<ExportRequest>) => {
     wakeAudioLoop()
     wakeFrameAck()
   } else if (msg.type === 'frameAck') {
+    framesInFlight = Math.max(0, framesInFlight - 1)
     wakeFrameAck()
   } else if (msg.type === 'audioSegment') {
     if (audioDiscard) {
@@ -424,7 +445,8 @@ async function runNative(init: Extract<ExportRequest, { type: 'init' }>): Promis
       const pixels = new Uint8Array(W * H * 4)
       gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, pixels)
       post({ type: 'frame', index: f, data: pixels.buffer }, [pixels.buffer])
-      await waitFrameAck()
+      framesInFlight++
+      await awaitFrameCredit()
       checkCancel()
 
       if ((f + 1) % 3 === 0 || f + 1 === framesTotal) {
@@ -432,6 +454,10 @@ async function runNative(init: Extract<ExportRequest, { type: 'init' }>): Promis
       }
       if (f % Math.max(1, Math.round(settings.fps)) === 0) reapProviders(t)
     }
+    // Every frame must be WRITTEN before 'done' lets the page close ffmpeg's
+    // stdin, or the credit window would silently truncate the tail of the video.
+    await awaitFramesDrained()
+    checkCancel()
     outcome = { msg: { type: 'done', buffer: null }, transfer: [] }
   } catch (err) {
     if (err instanceof CancelledError || cancelled) {
