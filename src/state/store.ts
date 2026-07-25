@@ -34,8 +34,6 @@ export interface UIState {
   loop: boolean
   /** Chosen punch-in / zoom depth (target scale) used by P and the Zoom control. */
   punchDepth: number
-  /** Which panel last took a pointer — routes arrow keys (monitor nudge vs timeline step). */
-  focusedPanel: 'timeline' | 'monitor'
   /** Keyboard-shortcuts help overlay. */
   helpOpen: boolean
 }
@@ -82,7 +80,6 @@ export const useStore = create<ReelState>()(
       playing: false,
       loop: false,
       punchDepth: 1.2,
-      focusedPanel: 'timeline',
       helpOpen: false,
     },
 

@@ -23,7 +23,7 @@ import {
 } from './engine/timeline'
 import { nextEditPoint, prevEditPoint } from './engine/editPoints'
 import { quantizeToFrame } from './engine/timecode'
-import { activeSequence, isTitleClip } from './engine/types'
+import { activeSequence } from './engine/types'
 import { installKeymap, type Binding } from './keymap'
 import {
   copySelection,
@@ -38,7 +38,7 @@ import {
 } from './state/clipboard'
 import { copyClipAttributes, pasteClipAttributes } from './state/attributes'
 import { performHistoryStep } from './collab/collabControl'
-import { setClipTransform, toggleClipEnabled, topAndTail } from './state/clipEdits'
+import { toggleClipEnabled, topAndTail } from './state/clipEdits'
 import { pausePlayback, shuttle, toggleLoop, togglePlay } from './state/playbackControl'
 import { clearInOut, gotoIn, gotoOut, markIn, markOut } from './state/workAreaActions'
 import { punchInAtPlayhead } from './state/motionActions'
@@ -60,24 +60,6 @@ function stepFrames(frames: number) {
   const seq = activeSequence(s.project)
   const t = quantizeToFrame(s.ui.playheadS, seq.fps) + frames / seq.fps
   s.setUI({ playheadS: Math.min(Math.max(0, t), seq.durationS) })
-}
-
-/**
- * Left/Right arrows: when the MONITOR is focused, paused, and a single
- * gizmo-eligible video clip is selected, nudge its x position (±1 seq-px, or
- * ±10 with Shift); otherwise step the playhead (frame, or ~1s with Shift).
- */
-function arrowH(dir: -1 | 1, big: boolean) {
-  const s = useStore.getState()
-  if (s.ui.focusedPanel === 'monitor' && !s.ui.playing && s.ui.selection.length === 1) {
-    const seq = activeSequence(s.project)
-    const clip = seq.tracks.flatMap((t) => t.clips).find((c) => c.id === s.ui.selection[0])
-    if (clip && !isTitleClip(clip)) {
-      setClipTransform(clip.id, { x: clip.transform.x + dir * (big ? 10 : 1) })
-      return
-    }
-  }
-  stepFrames(dir * (big ? 30 : 1))
 }
 
 function deleteSelected(ripple: boolean) {
@@ -198,10 +180,10 @@ function buildAppBindings(): Binding[] {
       { combo: 'j', description: 'Shuttle reverse', domain: 'transport', run: () => shuttle(-1) },
       { combo: 'k', description: 'Pause', domain: 'transport', run: pausePlayback },
       { combo: 'l', description: 'Shuttle forward', domain: 'transport', run: () => shuttle(1) },
-      { combo: 'arrowleft', description: 'Step 1 frame back (nudge clip ← in monitor)', domain: 'transport', run: () => arrowH(-1, false) },
-      { combo: 'arrowright', description: 'Step 1 frame forward (nudge clip → in monitor)', domain: 'transport', run: () => arrowH(1, false) },
-      { combo: 'shift+arrowleft', description: 'Step ~1s back (nudge clip ×10 in monitor)', domain: 'transport', run: () => arrowH(-1, true) },
-      { combo: 'shift+arrowright', description: 'Step ~1s forward (nudge clip ×10 in monitor)', domain: 'transport', run: () => arrowH(1, true) },
+      { combo: 'arrowleft', description: 'Step 1 frame back', domain: 'transport', run: () => stepFrames(-1) },
+      { combo: 'arrowright', description: 'Step 1 frame forward', domain: 'transport', run: () => stepFrames(1) },
+      { combo: 'shift+arrowleft', description: 'Step ~1s back', domain: 'transport', run: () => stepFrames(-30) },
+      { combo: 'shift+arrowright', description: 'Step ~1s forward', domain: 'transport', run: () => stepFrames(30) },
       {
         combo: 'home',
         description: 'Go to start',

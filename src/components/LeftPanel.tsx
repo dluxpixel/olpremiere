@@ -362,7 +362,6 @@ function EffectsTab() {
       <div className="px-2 py-2">
         <input
           type="search"
-          autoFocus
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search effects"
@@ -573,16 +572,14 @@ function LibraryTab() {
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto p-2">
+      {/* Not an EMPTY state — the bundled sound effects below always fill this
+          tab, so a "Nothing saved yet" card sat on screen directly above a list
+          of eight SFX and read as a bug. What is actually empty is the user's
+          own saved media + presets, so say only that, in one line. */}
       {empty && (
-        <div
-          data-testid="library-empty"
-          className="mb-3 flex flex-col items-center justify-center gap-2 rounded-[6px] border border-dashed border-border-strong py-6 text-center"
-        >
-          <Bookmark size={24} strokeWidth={1.5} className="text-text-muted" aria-hidden />
-          <div className="text-[13px] text-text-secondary">Nothing saved yet</div>
-          <div className="max-w-[200px] text-[11px] text-text-muted">
-            Right-click media → Save to Library. Select a graded clip and save its effects as a preset.
-          </div>
+        <div data-testid="library-empty" className="mb-3 px-0.5 text-[11px] leading-relaxed text-text-muted">
+          Nothing of your own saved yet — right-click media → Save to Library, or save a graded clip’s
+          effects as a preset.
         </div>
       )}
       {items.length > 0 && (

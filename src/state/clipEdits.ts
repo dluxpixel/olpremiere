@@ -35,6 +35,7 @@ import {
 } from '../engine/types'
 import { transitionDurationSpec, type TransitionKind } from '../engine/render/types'
 import { updateActiveSequence, useStore } from './store'
+import { useToasts } from './toasts'
 
 const KEYFRAME_TOLERANCE_S = 1e-4
 
@@ -49,15 +50,31 @@ export function playheadLocalT(clip: Clip): number {
   return Math.max(0, Math.min(t - clip.startS, Math.max(0, clipEndS(clip) - clip.startS)))
 }
 
+/**
+ * The ONE choke point for every Inspector, effect, keyframe and transition edit,
+ * and therefore the one that has to say "no" out loud.
+ *
+ * The lock used to be enforced by quietly mapping the track to itself, which
+ * meant two things went wrong at once: the user got no signal that the track was
+ * locked (every other guarded path in the app toasts — motionActions, audio,
+ * captions, attributes), AND the no-op still produced a fresh sequence object, so
+ * it sailed past the identity bail in updateActiveSequence and landed on the undo
+ * stack. Five dead slider drags meant five phantom steps to Ctrl+Z through before
+ * reaching a real edit.
+ */
 function mapClip(clipId: string, label: string, fn: (clip: Clip) => Clip): void {
+  const track = activeSequence(useStore.getState().project).tracks.find((t) =>
+    t.clips.some((c) => c.id === clipId),
+  )
+  if (!track) return
+  if (track.locked) {
+    useToasts.getState().show('Track is locked', 'danger')
+    return
+  }
   updateActiveSequence(label, (seq) => ({
     ...seq,
-    // The locked check here is the ONE choke point for every Inspector, effect,
-    // keyframe, and transition edit: a locked track rejects them all.
     tracks: seq.tracks.map((t) =>
-      !t.locked && t.clips.some((c) => c.id === clipId)
-        ? { ...t, clips: t.clips.map((c) => (c.id === clipId ? fn(c) : c)) }
-        : t,
+      t.id === track.id ? { ...t, clips: t.clips.map((c) => (c.id === clipId ? fn(c) : c)) } : t,
     ),
   }))
 }

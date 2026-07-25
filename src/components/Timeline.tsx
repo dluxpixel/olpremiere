@@ -2246,9 +2246,6 @@ export function Timeline({ height }: { height: number }) {
       aria-label="Timeline"
       className="flex shrink-0 flex-col bg-bg-panel"
       style={{ height }}
-      onPointerDownCapture={() => {
-        if (useStore.getState().ui.focusedPanel !== 'timeline') setUI({ focusedPanel: 'timeline' })
-      }}
     >
       <TimelineToolbar onZoomFit={zoomFit} />
       <div className="flex min-h-0 flex-1">

@@ -251,9 +251,6 @@ export function Monitor() {
       data-testid="monitor"
       className="flex min-h-0 min-w-0 flex-1 flex-col bg-bg-app"
       aria-label="Program monitor"
-      onPointerDownCapture={() => {
-        if (useStore.getState().ui.focusedPanel !== 'monitor') setUI({ focusedPanel: 'monitor' })
-      }}
     >
       <div className="flex min-h-0 flex-1 items-stretch gap-2 p-3">
         <div className="relative flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden">

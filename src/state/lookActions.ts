@@ -1,20 +1,14 @@
 // Looks: one click applies a whole channel style. The Jettism look = the
 // genre-standard punchy grade on every video clip + 9:16 Shorts format + pop
-// entrances for new text, and the grade is banked as a reusable Library
-// preset. The project edit is ONE dispatch (one undo step); the Library/
-// default-appearance side effects live outside the undo stack by design.
+// entrances for new text. The project edit is ONE dispatch (one undo step); the
+// default-appearance side effect lives outside the undo stack by design.
 
 import { CAPTION_POP_DUR_S } from '../engine/captions/captions'
-import type { EffectPreset } from '../engine/effects/presets'
 import { setSequenceFormat } from '../engine/timeline'
 import { newId, type Clip, type EffectInstance } from '../engine/types'
 import { setDefaultTextAppearance } from './appearanceActions'
-import { useLibrary } from './library'
-import { db } from './persistence'
 import { useStore } from './store'
 import { useToasts } from './toasts'
-
-export const JETTISM_LOOK_NAME = 'Jettism Punch'
 
 /** Shorts frame. */
 const LOOK_W = 1080
@@ -42,26 +36,15 @@ function hasJettismGrade(clip: Clip): boolean {
   )
 }
 
-/** Bank the grade as a Library preset (idempotent by name; best-effort). */
-async function ensureLookPreset(): Promise<void> {
-  const lib = useLibrary.getState()
-  if (lib.presets.some((p) => p.name === JETTISM_LOOK_NAME)) return
-  const preset: EffectPreset = {
-    id: newId(),
-    name: JETTISM_LOOK_NAME,
-    effects: jettismGradeEffects(),
-    createdAt: Date.now(),
-  }
-  try {
-    const d = await db()
-    await d.put('presets', preset, preset.id)
-    useLibrary.setState((s) => ({ presets: [preset, ...s.presets] }))
-  } catch (err) {
-    console.error('OL Studio: could not bank the look preset', err)
-  }
-}
+// There is deliberately NO third door to this grade. Applying the look used to
+// deposit a "Jettism Punch" preset into the user's Library, sitting among the
+// presets they actually saved — and that copy applied through applyPresetToSelection,
+// which appends unconditionally. So the one door that looked identical to the other
+// two was the only one that could grade an already-graded clip a second time and
+// blow it out. The Effects tab tile and the Inspector button both route through
+// applyPunchyGradeToClips, which dedupes.
 
-/** Just the grade on one clip (no 9:16, no text defaults); banks the preset. */
+/** Just the grade on one clip (no 9:16, no text defaults). */
 export function applyPunchyGrade(clipId: string): void {
   applyPunchyGradeToClips([clipId])
 }
@@ -69,11 +52,13 @@ export function applyPunchyGrade(clipId: string): void {
 /**
  * The punch grade on every selected clip in ONE undo step (the multi-select
  * "Punch grade" button). Title clips and already-graded clips are skipped, so a
- * second click never stacks the grade twice. Banks the reusable preset.
+ * second click never stacks the grade twice — and now SAYS so, instead of the
+ * button flashing while nothing happens and nothing explains why.
  */
 export function applyPunchyGradeToClips(ids: Iterable<string>): void {
   const idSet = new Set(ids)
   if (idSet.size === 0) return
+  let graded = 0
   useStore.getState().dispatch('Punchy grade', (p) => {
     const seq = p.sequences[p.activeSequenceId]
     let changed = false
@@ -85,19 +70,25 @@ export function applyPunchyGradeToClips(ids: Iterable<string>): void {
             clips: t.clips.map((c) => {
               if (!idSet.has(c.id) || c.title || hasJettismGrade(c)) return c
               changed = true
+              graded++
               return { ...c, effects: [...c.effects, ...jettismGradeEffects()] }
             }),
           },
     )
     return changed ? { ...p, sequences: { ...p.sequences, [seq.id]: { ...seq, tracks } } } : p
   })
-  void ensureLookPreset()
+  useToasts
+    .getState()
+    .show(
+      graded > 0 ? `Punch grade on ${graded} clip(s)` : 'Those clips are already graded',
+      graded > 0 ? 'success' : 'info',
+    )
 }
 
 /**
  * Apply the Jettism look: 9:16 + punch grade on every ungraded video clip
  * (title clips stay clean — the caption style owns them) in one undo step,
- * pop as the default text entrance, and the grade banked for reuse.
+ * and pop as the default text entrance.
  */
 export function applyJettismLook(): void {
   let graded = 0
@@ -124,7 +115,6 @@ export function applyJettismLook(): void {
     }
   })
   setDefaultTextAppearance({ in: 'pop', durS: CAPTION_POP_DUR_S })
-  void ensureLookPreset()
   useToasts
     .getState()
     .show(

@@ -18,10 +18,22 @@ import { putBlob } from './persistence'
 import { useStore } from './store'
 import { useToasts } from './toasts'
 
+/**
+ * A storage-quota rejection, however the browser spells it. Chrome throws a
+ * DOMException named QuotaExceededError; Firefox has historically used
+ * NS_ERROR_DOM_QUOTA_REACHED, and idb can surface it wrapped in a plain Error.
+ */
+function isOutOfRoom(err: unknown): boolean {
+  const name = err instanceof DOMException || err instanceof Error ? err.name : ''
+  if (name === 'QuotaExceededError' || name === 'NS_ERROR_DOM_QUOTA_REACHED') return true
+  return err instanceof Error && /quota/i.test(err.message)
+}
+
 export async function importFiles(files: File[]): Promise<void> {
   const show = useToasts.getState().show
   const imported: MediaAsset[] = []
   const failed: string[] = []
+  const outOfRoom: string[] = []
   for (const file of files) {
     try {
       const probe = await probeFile(file)
@@ -46,11 +58,24 @@ export async function importFiles(files: File[]): Promise<void> {
         thumbnailKey,
         codec: undefined,
       })
-    } catch {
-      failed.push(file.name)
+    } catch (err) {
+      // Running out of room is NOT a bad file, and saying "unsupported" sends
+      // the user off re-encoding footage that was fine. Every import writes a
+      // full second copy of the file into IndexedDB, so filling the origin quota
+      // on gameplay captures is ordinary, not exotic.
+      if (isOutOfRoom(err)) outOfRoom.push(file.name)
+      else failed.push(file.name)
     }
   }
-  // ONE summary toast for failures — never one per file (folder-drop flood).
+  // ONE summary toast per failure KIND — never one per file (folder-drop flood).
+  if (outOfRoom.length > 0) {
+    show(
+      outOfRoom.length === 1
+        ? `No room left for ${outOfRoom[0]} — delete an old project to free space`
+        : `No room left for ${outOfRoom.length} files — delete an old project to free space`,
+      'danger',
+    )
+  }
   if (failed.length === 1) show(`${failed[0]}: couldn’t import (unsupported?)`, 'danger')
   else if (failed.length > 1) show(`${failed.length} files skipped (unsupported)`, 'danger')
 
