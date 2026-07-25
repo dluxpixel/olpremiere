@@ -80,13 +80,21 @@ const CHUNK_DEFAULTS: Required<ChunkOptions> = {
  * here scales sensibly around it.
  */
 export const PHRASE_CAPTION_OPTIONS: Required<ChunkOptions> = {
-  // 2, not 3: his example above is 14 words in 9 captions — ~1.5 words each.
-  // Run against those words, `2` reproduces his rhythm almost exactly while `3`
-  // collapses it to five wide captions. Measured, not guessed.
-  maxWords: 2,
-  maxChars: 18,
-  // Permissive on purpose: maxWords does the grouping, and this only has to
-  // catch a chunk that is genuinely unreadable for how long it is on screen.
+  // WIDTH governs, not word count. David: "if words are shorter, maybe group
+  // them together" — which word count structurally cannot do, because it cannot
+  // tell "to try" (6 chars, reads instantly) from "minecraft diamonds" (18, a
+  // mouthful). maxChars is therefore the real limiter and maxWords is only a
+  // ceiling, so short words pack up and long ones stand alone by themselves.
+  //
+  // Measured against his own example rather than guessed: at 12 chars / 3 words
+  // his 14 words land as
+  //   minecraft | but i'm | going to try | and find | diamonds | without | touching the | color green!
+  // — 8 captions against the 9 he wrote by hand, with every single word he put
+  // alone ("minecraft", "diamonds", "without") landing alone.
+  maxWords: 3,
+  maxChars: 12,
+  // Permissive on purpose: width does the grouping, and this only has to catch a
+  // chunk that is genuinely unreadable for how long it is on screen.
   maxCps: 28,
   maxGapS: 0.4,
   maxSpanS: 2,
@@ -94,6 +102,13 @@ export const PHRASE_CAPTION_OPTIONS: Required<ChunkOptions> = {
   minDurS: 0.35,
   mergeShort: true,
 }
+
+/**
+ * The width budget for a given words-per-caption setting. Four characters per
+ * word is what makes the dial behave the way its label reads: raising it lets
+ * MORE short words share a caption rather than forcing long ones together.
+ */
+export const maxCharsFor = (maxWords: number): number => Math.max(4, Math.round(maxWords * 4))
 
 /** Ends a sentence → the next word starts a fresh chunk. */
 const SENTENCE_END = /[.!?…]["')\]]*$/

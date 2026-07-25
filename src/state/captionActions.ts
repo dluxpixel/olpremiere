@@ -6,6 +6,7 @@ import { applyAppearanceToClip } from '../engine/anim/appearance'
 import {
   captionClips,
   chunkWords,
+  maxCharsFor,
   PHRASE_CAPTION_OPTIONS,
   spreadWords,
   type CaptionWord,
@@ -138,7 +139,11 @@ export function addCaptionsFromWords(
   // house style, which keeps the legacy timings.
   const wanted = options.maxWords ?? getCaptionWordsPerChunk()
   const chunkOpts: ChunkOptions =
-    wanted === 1 ? { maxWords: 1 } : { ...PHRASE_CAPTION_OPTIONS, maxWords: wanted }
+    wanted === 1
+      ? { maxWords: 1 }
+      : // The width budget scales with the dial, so turning it up groups more
+        // SHORT words rather than forcing long ones to share a caption.
+        { ...PHRASE_CAPTION_OPTIONS, maxWords: wanted, maxChars: maxCharsFor(wanted) }
   const chunks = chunkWords(words, chunkOpts)
   if (chunks.length === 0) {
     useToasts.getState().show('No words to caption', 'danger')

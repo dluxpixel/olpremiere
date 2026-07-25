@@ -167,8 +167,34 @@ describe('words per caption', () => {
     setCaptionWordsPerChunk(4)
     addCaptionsFromWords(run)
     top = videoTracks(seq())[videoTracks(seq()).length - 1]
-    expect(top.clips).toHaveLength(1)
-    expect(top.clips[0].title?.text).toBe('ONE TWO THREE FOUR')
+    expect(top.clips.length).toBeLessThan(4) // grouped, not one word each
+  })
+
+  it('turning the dial up groups SHORT words, and never crams long ones', () => {
+    // The whole point of width-governed chunking: the dial buys you more room,
+    // and short words are what fit in it.
+    const shortWords = [
+      { text: 'go', startS: 0.0, endS: 0.3 },
+      { text: 'now', startS: 0.3, endS: 0.6 },
+      { text: 'get', startS: 0.6, endS: 0.9 },
+      { text: 'it', startS: 0.9, endS: 1.2 },
+    ]
+    const longWords = [
+      { text: 'minecraft', startS: 0.0, endS: 0.5 },
+      { text: 'diamonds', startS: 0.5, endS: 1.0 },
+      { text: 'underground', startS: 1.0, endS: 1.6 },
+    ]
+    setCaptionWordsPerChunk(4)
+
+    addCaptionsFromWords(shortWords)
+    const shortRun = videoTracks(seq())[videoTracks(seq()).length - 1]
+    expect(shortRun.clips).toHaveLength(1) // 12 chars — they all fit
+    useStore.getState().undo()
+
+    addCaptionsFromWords(longWords)
+    const longRun = videoTracks(seq())[videoTracks(seq()).length - 1]
+    // Same dial, same word ceiling — but these do NOT get crammed together.
+    expect(longRun.clips).toHaveLength(3)
   })
 
   it('an explicit maxWords still wins over the setting', () => {
