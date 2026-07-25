@@ -78,6 +78,14 @@ function layerFor(clip: Clip, t: number, fps: number): RenderLayer {
 }
 
 /**
+ * The "there is no clip here" side of a lone-edge transition: the same layer at
+ * zero opacity, which the renderer draws into a fully transparent side FBO.
+ * Copying the layer (rather than inventing an empty one) keeps the frame seed
+ * and geometry the shaders read, and costs one already-decoded texture fetch.
+ */
+const emptySide = (layer: RenderLayer): RenderLayer => ({ ...layer, opacity: 0 })
+
+/**
  * The effective transition of the pair (A → B): B's incoming wins, else A's
  * outgoing. Only meaningful when A and B are time-adjacent on one track.
  */
@@ -159,9 +167,18 @@ function resolveTrack(track: Track, t: number, fps: number): RenderOp | null {
       const layer = layerFor(clip, t, fps)
       const dur = clipDurationS(clip)
 
-      // Lone-edge fades: a transitionIn/Out with NO partner clip fades to/from
-      // black by scaling opacity. A two-clip transition (handled above) beats
-      // this, so only apply when the neighbor is absent or not adjacent.
+      // A transitionIn/Out with NO partner clip still runs its REAL form: the
+      // absent side is a fully transparent copy of this layer, so a wipe wipes
+      // in over nothing, a slide slides in from off-frame, a dip dips through
+      // its colour, and a cross dissolve resolves to exactly the opacity ramp
+      // this used to hard-code for every kind. That fallback was the reason
+      // applying "Glitch" to the head of the FIRST clip of a Short — the most
+      // common place a Shorts editor wants a hit — silently produced a fade
+      // from black while the Inspector went on saying "Glitch".
+      // Adjustment clips keep the ramp: they have no texture, so a side built
+      // from one is transparent and the grade would simply cut out.
+      // A two-clip transition (handled above) beats this, so only apply when
+      // the neighbor is absent or not adjacent.
       const hasPrevPartner = !!prev && prev.enabled && !prev.adjustment && !clip.adjustment && timeAdjacent(prev, clip)
       const hasNextPartner = !!next && next.enabled && !next.adjustment && !clip.adjustment && timeAdjacent(clip, next)
 
@@ -179,6 +196,15 @@ function resolveTrack(track: Track, t: number, fps: number): RenderOp | null {
               kind: 'whiteFlash',
               progress: (t - clip.startS) / d,
               from: layer,
+              to: layer,
+            }
+          }
+          if (!clip.adjustment) {
+            return {
+              type: 'transition',
+              kind: coerceKind(clip.transitionIn.type),
+              progress: (t - clip.startS) / d,
+              from: emptySide(layer),
               to: layer,
             }
           }
@@ -201,6 +227,15 @@ function resolveTrack(track: Track, t: number, fps: number): RenderOp | null {
               progress: 1 - (t - (endS - d)) / d,
               from: layer,
               to: layer,
+            }
+          }
+          if (!clip.adjustment) {
+            return {
+              type: 'transition',
+              kind: coerceKind(clip.transitionOut.type),
+              progress: (t - (endS - d)) / d,
+              from: layer,
+              to: emptySide(layer),
             }
           }
           layer.opacity = clamp(layer.opacity * ((endS - t) / d), 0, 1)

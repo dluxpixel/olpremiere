@@ -256,3 +256,69 @@ test('the new transitions are listed in the Effects browser', async ({ page }) =
     await expect(page.locator(`[data-testid="effect-item"][data-payload="${type}"]`)).toBeVisible()
   }
 })
+
+// --- Lone-edge transitions --------------------------------------------------
+// A transition with no partner clip used to collapse to a fade-from-black for
+// every kind but White Flash: applying "Glitch" or "Dip to White" to the head of
+// the FIRST clip of a Short drew a black fade while the Inspector kept saying
+// Glitch. These sample the live monitor to prove each kind now runs its own form.
+
+async function setLoneTransition(page: Page, clipId: string, kind: string, durationS: number): Promise<void> {
+  await page.evaluate(
+    async ({ clipId, kind, durationS }) => {
+      const editsMod = '/src/state/clipEdits.ts'
+      const { setClipTransition } = (await import(/* @vite-ignore */ editsMod)) as {
+        setClipTransition: (id: string, edge: 'in' | 'out', kind: string, durationS?: number) => void
+      }
+      setClipTransition(clipId, 'in', kind, durationS)
+    },
+    { clipId, kind, durationS },
+  )
+}
+
+async function setPlayhead(page: Page, tS: number): Promise<void> {
+  await page.evaluate(async (t) => {
+    const storeMod = '/src/state/store.ts'
+    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+      useStore: { getState: () => { setUI: (p: unknown) => void } }
+    }
+    useStore.getState().setUI({ playheadS: t, selection: [] })
+  }, tS)
+}
+
+test('a lone Dip to White dips through WHITE, not through black', async ({ page }) => {
+  const clipId = await addClip(page)
+  await waitForFirstFrame(page)
+
+  await setLoneTransition(page, clipId, 'dipToWhite', 1)
+  // Halfway through the window is the solid — the whole point of a dip.
+  await setPlayhead(page, 0.5)
+  await expect.poll(async () => luma(await px(page, 0.5, 0.5)), { timeout: 10_000 }).toBeGreaterThan(200)
+
+  // ...and by the end of the window the footage is back.
+  await setPlayhead(page, 1.5)
+  await expect.poll(async () => (await px(page, 0.5, 0.5))[0], { timeout: 10_000 }).toBeGreaterThan(120)
+})
+
+test('a lone Wipe Left really wipes: one side of the frame is footage, the other is not', async ({ page }) => {
+  const clipId = await addClip(page)
+  await waitForFirstFrame(page)
+
+  await setLoneTransition(page, clipId, 'wipeLeft', 1)
+  await setPlayhead(page, 0.5) // half wiped
+  // The revealed half shows the red fixture; the unrevealed half shows nothing.
+  await expect
+    .poll(async () => (await px(page, 0.15, 0.5))[0] - (await px(page, 0.85, 0.5))[0], { timeout: 10_000 })
+    .toBeGreaterThan(60)
+})
+
+test('a lone Glitch is not a fade to black', async ({ page }) => {
+  const clipId = await addClip(page)
+  await waitForFirstFrame(page)
+
+  await setLoneTransition(page, clipId, 'glitch', 1)
+  await setPlayhead(page, 0.9) // near the end of the window: mostly resolved
+  // A fade-from-black at 90% would be ~90% of the fixture's red. A glitch
+  // displaces and tints instead, so simply prove there IS picture here.
+  await expect.poll(async () => luma(await px(page, 0.5, 0.5)), { timeout: 10_000 }).toBeGreaterThan(30)
+})

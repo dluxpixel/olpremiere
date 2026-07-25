@@ -242,8 +242,9 @@ describe('identity clip', () => {
 
   it('a fade + a lone-edge transition on the same edge do NOT double-fade', () => {
     // Last clip on its track (no next partner) with BOTH a 1s dip-to-black
-    // transitionOut and a 1s fade-out handle. The transition owns the opacity
-    // ramp; the handle must not multiply it again (would be quadratic → 0.25).
+    // transitionOut and a 1s fade-out handle. The transition OWNS its window,
+    // so the handle cannot multiply into it (which used to risk a quadratic
+    // ramp); outside the window the handle is the only thing acting.
     const c = clip({
       startS: 0,
       inS: 0,
@@ -251,8 +252,12 @@ describe('identity clip', () => {
       fadeOutS: 1,
       transitionOut: { type: 'dipToBlack', durationS: 1 },
     })
-    const at = (t: number) => asLayer(resolveFrame(seqOf([track({ clips: [c] })]), t).ops[0]).opacity
-    expect(at(3.5)).toBeCloseTo(0.5, 5) // linear, not 0.25
+    const s = seqOf([track({ clips: [c] })])
+    const op = asTransition(resolveFrame(s, 3.5).ops[0])
+    expect(op.kind).toBe('dipToBlack')
+    expect(op.progress).toBeCloseTo(0.5, 5)
+    expect(op.from.opacity).toBeCloseTo(1, 5) // NOT pre-ramped by the handle
+    expect(asLayer(resolveFrame(s, 2.5).ops[0]).opacity).toBeCloseTo(1, 5)
   })
 
   it('color-correction flows from a migrated clip into the resolved layer', () => {
@@ -529,11 +534,12 @@ describe('two-clip transitions', () => {
     const a = clip({ startS: 0, outS: 2 }) // [0,2)
     const b = clip({ startS: 3, outS: 2, transitionIn: { type: 'crossDissolve', durationS: 1 } })
     const s = seqOf([track({ clips: [a, b] })])
-    // At t=3.5 (would be window head if adjacent) B is plain — no partner.
-    const op = resolveFrame(s, 3.5).ops[0]
-    // No previous partner → lone-edge fade-IN applies instead (window [3,4)).
-    expect(op.type).toBe('layer')
-    expect(asLayer(op).clipId).toBe(b.id)
+    // At t=3.5 (would be the window head if adjacent) there is no pair: B runs
+    // its own LONE-edge transition instead (window [3,4)), against nothing.
+    const op = asTransition(resolveFrame(s, 3.5).ops[0])
+    expect(op.to.clipId).toBe(b.id)
+    expect(op.from.clipId).toBe(b.id) // the empty side is a copy of B, at alpha 0
+    expect(op.from.opacity).toBe(0)
   })
 })
 
@@ -685,43 +691,47 @@ describe('transition duration clamping', () => {
 
 // --- Lone-edge fades ------------------------------------------------------
 
-describe('lone-edge fades', () => {
-  it('transitionIn with no previous clip fades opacity in (ramp at 25%/50%)', () => {
-    // Single clip [0,4), transitionIn D=2, no partner → fade from black.
+describe('lone-edge transitions run their REAL form', () => {
+  // A transition with no partner used to collapse to a fade-from-black opacity
+  // ramp for every kind but White Flash — so "Glitch" on the head of the first
+  // clip drew a black fade while the Inspector still said Glitch. The absent
+  // side is now a transparent copy of the layer, which the shader treats as
+  // "nothing here".
+
+  it('a lone cross dissolve is the transition, and still resolves to the same picture', () => {
+    // Single clip [0,4), transitionIn D=2, no partner.
     const c = clip({ startS: 0, inS: 0, outS: 4, transitionIn: { type: 'crossDissolve', durationS: 2 } })
     const s = seqOf([track({ clips: [c] })])
-    // 25% of D=2 → t=0.5 → opacity 0.25
-    expect(asLayer(resolveFrame(s, 0.5).ops[0]).opacity).toBeCloseTo(0.25)
-    // 50% → t=1 → opacity 0.5
-    expect(asLayer(resolveFrame(s, 1).ops[0]).opacity).toBeCloseTo(0.5)
-    // A single layer op, NOT a transition.
-    expect(resolveFrame(s, 1).ops[0].type).toBe('layer')
+
+    const op = asTransition(resolveFrame(s, 0.5).ops[0])
+    expect(op.kind).toBe('crossDissolve')
+    expect(op.progress).toBeCloseTo(0.25)
+    // mix(transparent, to, p) premultiplied IS to*p — the exact opacity ramp
+    // this replaced, so nothing about a dissolve moved.
+    expect(op.from.opacity).toBe(0)
+    expect(op.to.opacity).toBeCloseTo(1)
+    expect(asTransition(resolveFrame(s, 1).ops[0]).progress).toBeCloseTo(0.5)
   })
 
-  it('after the fade-in window opacity is full', () => {
+  it('after the window it is an ordinary layer at full opacity', () => {
     const c = clip({ startS: 0, outS: 4, transitionIn: { type: 'crossDissolve', durationS: 2 } })
     const s = seqOf([track({ clips: [c] })])
     expect(asLayer(resolveFrame(s, 3).ops[0]).opacity).toBeCloseTo(1)
   })
 
-  it('transitionOut with no next clip fades out at the tail', () => {
-    // Single clip [0,4), transitionOut D=2 → fade from 2..4.
+  it('a lone out edge runs FORWARD into nothing', () => {
     const c = clip({ startS: 0, outS: 4, transitionOut: { type: 'crossDissolve', durationS: 2 } })
     const s = seqOf([track({ clips: [c] })])
-    // endS=4; at t=3 (50% into the 2s tail) opacity 0.5
-    expect(asLayer(resolveFrame(s, 3).ops[0]).opacity).toBeCloseTo(0.5)
-    // at t=3.5 (25% remaining) opacity 0.25
-    expect(asLayer(resolveFrame(s, 3.5).ops[0]).opacity).toBeCloseTo(0.25)
-  })
-
-  it('before the fade-out window opacity is full', () => {
-    const c = clip({ startS: 0, outS: 4, transitionOut: { type: 'crossDissolve', durationS: 2 } })
-    const s = seqOf([track({ clips: [c] })])
+    // endS=4, window [2,4): halfway at t=3, three-quarters at t=3.5.
+    const half = asTransition(resolveFrame(s, 3).ops[0])
+    expect(half.progress).toBeCloseTo(0.5)
+    expect(half.from.opacity).toBeCloseTo(1)
+    expect(half.to.opacity).toBe(0)
+    expect(asTransition(resolveFrame(s, 3.5).ops[0]).progress).toBeCloseTo(0.75)
     expect(asLayer(resolveFrame(s, 1).ops[0]).opacity).toBeCloseTo(1)
   })
 
-  it('lone fade multiplies the clip base opacity, not replaces it', () => {
-    // base opacity 0.5, fade-in 50% → 0.25.
+  it('carries the clip base opacity into the live side, so it still multiplies', () => {
     const c = clip({
       startS: 0,
       outS: 4,
@@ -729,23 +739,49 @@ describe('lone-edge fades', () => {
       transitionIn: { type: 'crossDissolve', durationS: 2 },
     })
     const s = seqOf([track({ clips: [c] })])
-    expect(asLayer(resolveFrame(s, 1).ops[0]).opacity).toBeCloseTo(0.25)
+    const op = asTransition(resolveFrame(s, 1).ops[0])
+    expect(op.to.opacity).toBeCloseTo(0.5)
+    expect(op.progress).toBeCloseTo(0.5) // 0.5 * 0.5 = the old 0.25
   })
 
-  it('lone fade D clamps to at least one frame', () => {
-    const c = clip({ startS: 0, outS: 4, transitionIn: { type: 'crossDissolve', durationS: 0 } })
-    const s = seqOf([track({ clips: [c] })], { fps: 30 })
-    // D floored to 1/30. Just inside the window opacity is < 1.
-    expect(asLayer(resolveFrame(s, 0).ops[0]).opacity).toBeCloseTo(0)
-    expect(asLayer(resolveFrame(s, 1 / 60).ops[0]).opacity).toBeCloseTo(0.5)
+  it('D still clamps to at least one frame, and to the clip duration', () => {
+    const short = clip({ startS: 0, outS: 4, transitionIn: { type: 'crossDissolve', durationS: 0 } })
+    const s30 = seqOf([track({ clips: [short] })], { fps: 30 })
+    expect(asTransition(resolveFrame(s30, 0).ops[0]).progress).toBeCloseTo(0)
+    expect(asTransition(resolveFrame(s30, 1 / 60).ops[0]).progress).toBeCloseTo(0.5)
+
+    // clip 1s, requested 5s → clamped to 1s, so t=0.5 is halfway.
+    const long = clip({ startS: 0, inS: 0, outS: 1, transitionIn: { type: 'crossDissolve', durationS: 5 } })
+    const s1 = seqOf([track({ clips: [long] })])
+    expect(asTransition(resolveFrame(s1, 0.5).ops[0]).progress).toBeCloseTo(0.5)
   })
 
-  it('lone fade D clamps to the clip duration', () => {
-    // clip 1s, requested fade 5s → clamp to 1s.
-    const c = clip({ startS: 0, inS: 0, outS: 1, transitionIn: { type: 'crossDissolve', durationS: 5 } })
+  it('THE BUG: a lone Glitch is a glitch, not a fade to black', () => {
+    const c = clip({ startS: 0, outS: 4, transitionIn: { type: 'glitch', durationS: 0.2 } })
     const s = seqOf([track({ clips: [c] })])
-    // 50% of 1s → t=0.5 → opacity 0.5
-    expect(asLayer(resolveFrame(s, 0.5).ops[0]).opacity).toBeCloseTo(0.5)
+    const op = asTransition(resolveFrame(s, 0.1).ops[0])
+    expect(op.kind).toBe('glitch')
+    expect(op.from.opacity).toBe(0)
+  })
+
+  it('every kind keeps its own identity on a lone edge', () => {
+    for (const kind of ['wipeLeft', 'slideRight', 'zoom', 'spin', 'lumaWipe', 'dipToWhite'] as const) {
+      const c = clip({ startS: 0, outS: 4, transitionIn: { type: kind, durationS: 1 } })
+      const s = seqOf([track({ clips: [c] })])
+      expect(asTransition(resolveFrame(s, 0.5).ops[0]).kind).toBe(kind)
+    }
+  })
+
+  it('an adjustment layer keeps the opacity ramp — it has no texture to transition', () => {
+    const c = clip({
+      startS: 0,
+      outS: 4,
+      adjustment: true,
+      transitionIn: { type: 'wipeLeft', durationS: 2 },
+    })
+    const s = seqOf([track({ clips: [c] })])
+    const op = resolveFrame(s, 1).ops[0]
+    expect(op.type).toBe('adjustment')
   })
 
   it('a lone clip with no transitions renders at full opacity throughout', () => {
@@ -755,8 +791,6 @@ describe('lone-edge fades', () => {
     expect(asLayer(resolveFrame(s, 3.99).ops[0]).opacity).toBe(1)
   })
 })
-
-// --- Precedence: two-clip transition beats lone-edge fade -----------------
 
 describe('precedence', () => {
   it('a two-clip transition takes over the window, not a lone fade', () => {
