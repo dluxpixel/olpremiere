@@ -2243,3 +2243,60 @@ describe('linked A/V groups stay in sync', () => {
     expect(pv.linkId).not.toBe('g')
   })
 })
+
+describe('captions survive a format switch', () => {
+  const captionClip = (over: Partial<Clip> = {}): Clip =>
+    makeClip({
+      assetId: '',
+      title: {
+        text: 'diamonds',
+        fontFamily: 'Lilita One',
+        fontSizePx: 87, // what jettismCaptionDef bakes for a 1080-tall frame
+        color: '#ffffff',
+        align: 'center',
+        vAlign: 'bottom',
+        bold: true,
+        italic: false,
+        lineHeight: 1.1,
+        offsetXPx: 0,
+        offsetYPx: -21,
+        outline: { color: '#000000', widthPx: 5 },
+      },
+      ...over,
+    })
+
+  it('rescales caption metrics with the frame when switching 16:9 → 9:16', () => {
+    // Caption first, THEN hit the Look — the natural order, since the Look is
+    // the "make it a Short" button. The caption used to be left at its
+    // 1080-frame size inside a 1920-tall frame: half the intended size, thin
+    // outline, wrong height, forty clips to fix by hand.
+    const c = captionClip()
+    const seq = makeSeq([makeTrack({ clips: [c] })], { width: 1920, height: 1080 })
+    const out = setSequenceFormat(seq, {}, 1080, 1920)
+    const title = out.tracks[0].clips[0].title!
+    const ratio = 1920 / 1080
+    expect(title.fontSizePx).toBe(Math.round(87 * ratio))
+    expect(title.offsetYPx).toBe(Math.round(-21 * ratio))
+    expect(title.outline!.widthPx).toBe(Math.round(5 * ratio))
+    // Style is untouched — only the measurements move.
+    expect(title.text).toBe('diamonds')
+    expect(title.vAlign).toBe('bottom')
+  })
+
+  it('is reversible: switching back restores the original metrics', () => {
+    const c = captionClip()
+    const seq = makeSeq([makeTrack({ clips: [c] })], { width: 1920, height: 1080 })
+    const vertical = setSequenceFormat(seq, {}, 1080, 1920)
+    const back = setSequenceFormat(vertical, {}, 1920, 1080)
+    const title = back.tracks[0].clips[0].title!
+    expect(title.fontSizePx).toBe(87)
+    expect(title.outline!.widthPx).toBe(5)
+  })
+
+  it('leaves a title alone when the frame size did not change', () => {
+    const c = captionClip()
+    const seq = makeSeq([makeTrack({ clips: [c] })], { width: 1920, height: 1080 })
+    const out = setSequenceFormat(seq, {}, 1920, 1080)
+    expect(out.tracks[0].clips[0]).toBe(c) // same reference: nothing rebuilt
+  })
+})

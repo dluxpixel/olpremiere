@@ -24,7 +24,13 @@ import {
 } from '../state/captionActions'
 import { pausePlayback, togglePlay } from '../state/playbackControl'
 import { useStore } from '../state/store'
-import { builtinTextPresets, useTextPresets, type TextStylePreset } from '../state/textPresets'
+import {
+  builtinTextPresets,
+  getCaptionPresetId,
+  setCaptionPresetId,
+  useTextPresets,
+  type TextStylePreset,
+} from '../state/textPresets'
 import { autoCaptionFromClip } from '../state/transcribeActions'
 import { Button, IconButton } from '../ui/Button'
 
@@ -62,7 +68,9 @@ export function CaptionsDialog({ onClose }: { onClose: () => void }) {
   // apply to the whole run. Defaults to the Jettism house style.
   const savedPresets = useTextPresets((s) => s.saved)
   const presets = [...builtinTextPresets(), ...savedPresets]
-  const [presetId, setPresetId] = useState('builtin-jettism')
+  // Remembered, not reset-on-open: right-click → Auto-Caption reads the same
+  // pick, so the two doors cannot drift apart again.
+  const [presetId, setPresetId] = useState(getCaptionPresetId)
   const [language, setLanguage] = useState<CaptionLanguage>(getCaptionLanguage)
   // Cadence is taste, so it is his dial. Persisted, and read by every caption
   // entrance including the right-click auto-caption.
@@ -240,7 +248,10 @@ export function CaptionsDialog({ onClose }: { onClose: () => void }) {
               aria-label="Caption style preset"
               data-testid="captions-preset"
               value={presetId}
-              onChange={(e) => setPresetId(e.target.value)}
+              onChange={(e) => {
+                setPresetId(e.target.value)
+                setCaptionPresetId(e.target.value)
+              }}
               className="ml-auto h-6 w-[190px] cursor-default rounded-field border border-border bg-bg-input px-1.5 text-[11px] text-text-primary focus:border-accent focus:outline-none"
             >
               <option value="">Plain (no styling)</option>

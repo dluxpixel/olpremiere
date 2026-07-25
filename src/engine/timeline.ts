@@ -17,6 +17,7 @@ import {
   type Marker,
   type MediaAsset,
   type Sequence,
+  type TitleDef,
   type Track,
 } from './types'
 
@@ -46,8 +47,9 @@ export function recomputeDuration(seq: Sequence): Sequence {
 /**
  * Scale a clip to COVER (fill) a frame of frameW×frameH, cropping the overflow
  * and centering it — the "make it a Short" refit. `transform.scale=1` is the
- * renderer's contain-fit; cover needs scale = cover/contain. Skips titles
- * (frame-relative already), clips that animate position, and clips the author
+ * renderer's contain-fit; cover needs scale = cover/contain. Titles take the
+ * separate title path below (their metrics are sequence px, not frame-relative);
+ * this skips clips that animate position, and clips the author
  * has manually moved or scaled (don't fight a hand-placed transform) — only
  * identity transforms and the exact cover-fit a previous refit produced for
  * the prevW×prevH frame are refit. A punch-in zoom (scale keyframes only, no
@@ -58,6 +60,42 @@ export function recomputeDuration(seq: Sequence): Sequence {
  * the switch stays reversible. Any other baseline is hand-authored and stays
  * sacred. Returns the same clip when nothing changes.
  */
+/**
+ * Scale a title's SEQUENCE-pixel fields with the frame. Vertical measurements
+ * (type size, outline, shadow, box padding, the y offset) follow the height
+ * ratio because that is what every title metric is authored against; only the x
+ * offset follows the width. Returns the same clip when the ratio is 1.
+ */
+function refitTitleToFrame(clip: Clip, frameW: number, frameH: number, prevW: number, prevH: number): Clip {
+  const title = clip.title
+  if (!title) return clip
+  const ry = frameH / prevH
+  const rx = frameW / prevW
+  if (Math.abs(ry - 1) < 1e-6 && Math.abs(rx - 1) < 1e-6) return clip
+  const s = (v: number): number => Math.round(v * ry)
+  const next: TitleDef = {
+    ...title,
+    fontSizePx: Math.max(1, s(title.fontSizePx)),
+    offsetXPx: Math.round(title.offsetXPx * rx),
+    offsetYPx: s(title.offsetYPx),
+    ...(title.outline ? { outline: { ...title.outline, widthPx: s(title.outline.widthPx) } } : {}),
+    ...(title.shadow
+      ? {
+          shadow: {
+            ...title.shadow,
+            blurPx: s(title.shadow.blurPx),
+            dx: Math.round(title.shadow.dx * rx),
+            dy: s(title.shadow.dy),
+          },
+        }
+      : {}),
+    ...(title.box
+      ? { box: { ...title.box, paddingPx: s(title.box.paddingPx), radiusPx: s(title.box.radiusPx) } }
+      : {}),
+  }
+  return { ...clip, title: next }
+}
+
 export function refitClipToFill(
   clip: Clip,
   assets: Record<Id, MediaAsset>,
@@ -66,7 +104,14 @@ export function refitClipToFill(
   prevW = 0,
   prevH = 0,
 ): Clip {
-  if (clip.title) return clip
+  // Titles carry SEQUENCE pixels, not frame-relative ones: jettismCaptionDef
+  // bakes fontSizePx/outline/offset off the sequence HEIGHT at the moment the
+  // caption is made. So captioning a 1920x1080 project and THEN switching to
+  // 9:16 — the natural order, since the Look is the "make it a Short" button you
+  // press last — left every caption at roughly half size, thin-outlined and at
+  // the wrong height, with forty clips to fix by hand. Rescale them with the
+  // frame instead. (Needs a known previous size; without one there is no ratio.)
+  if (clip.title) return prevW > 0 && prevH > 0 ? refitTitleToFrame(clip, frameW, frameH, prevW, prevH) : clip
   if (clip.keyframes?.posX?.length || clip.keyframes?.posY?.length) return clip
   const asset = assets[clip.assetId]
   const sw = asset?.width ?? 0

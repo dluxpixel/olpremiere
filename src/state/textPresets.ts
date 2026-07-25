@@ -110,6 +110,45 @@ export function allTextPresets(): TextStylePreset[] {
   return [...BUILTINS, ...useTextPresets.getState().saved]
 }
 
+// --- The remembered caption style ------------------------------------------
+// The caption LANGUAGE has always been persisted so every caption door agrees
+// (transcribeConfig). The STYLE was not, so the Captions dialog defaulted to the
+// Jettism look while right-click → Auto-Caption passed no preset at all and fell
+// through to raw ALL-CAPS titles in the middle of the frame. Same feature, same
+// name, completely different output — and right-click is the one people reach for.
+
+const STYLE_KEY = 'reel:captions:style'
+/** The house style, and what an unset install gets. */
+export const DEFAULT_CAPTION_PRESET_ID = 'builtin-jettism'
+
+let captionPresetId: string | null = null
+
+export function getCaptionPresetId(): string {
+  if (captionPresetId !== null) return captionPresetId
+  try {
+    const v = typeof localStorage !== 'undefined' ? localStorage.getItem(STYLE_KEY) : null
+    captionPresetId = v ?? DEFAULT_CAPTION_PRESET_ID
+  } catch {
+    captionPresetId = DEFAULT_CAPTION_PRESET_ID
+  }
+  return captionPresetId
+}
+
+export function setCaptionPresetId(id: string): void {
+  captionPresetId = id
+  try {
+    if (typeof localStorage === 'undefined') return
+    if (id === DEFAULT_CAPTION_PRESET_ID) localStorage.removeItem(STYLE_KEY)
+    else localStorage.setItem(STYLE_KEY, id)
+  } catch {
+    // Private mode / quota — the in-memory value above still applies this run.
+  }
+}
+
+/** The remembered style, or undefined when the pick was "Plain (no styling)". */
+export function rememberedCaptionPreset(): TextStylePreset | undefined {
+  return allTextPresets().find((x) => x.id === getCaptionPresetId())
+}
 /**
  * Apply a preset's style + animation to every selected TITLE clip in ONE undo
  * step. Non-title clips and locked tracks are skipped.

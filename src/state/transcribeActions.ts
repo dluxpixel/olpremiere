@@ -12,6 +12,7 @@ import {
 import { getCaptionLanguage } from '../engine/captions/transcribeConfig'
 import { activeSequence } from '../engine/types'
 import { addCaptionsFromWords } from './captionActions'
+import { rememberedCaptionPreset } from './textPresets'
 import { useStore } from './store'
 import type { TextStylePreset } from './textPresets'
 import { useToasts } from './toasts'
@@ -63,7 +64,12 @@ export async function autoCaptionFromClip(clipId: string, preset?: TextStylePres
     if (words.length === 0) {
       toasts.show('No speech found in the clip', 'danger')
     } else {
-      addCaptionsFromWords(words, { label: 'Auto-caption from voiceover', preset })
+      // No preset passed (the right-click door) falls back to the REMEMBERED
+      // style, so both doors produce the same captions.
+      addCaptionsFromWords(words, {
+        label: 'Auto-caption from voiceover',
+        preset: preset ?? rememberedCaptionPreset(),
+      })
     }
   } catch (err) {
     if (!(typeof err === 'object' && err !== null && 'cancelled' in err)) {
