@@ -174,12 +174,15 @@ describe('setClipDenoise (undo granularity)', () => {
 })
 
 describe('setClipTransition duration envelope (whiteFlash)', () => {
-  it('whiteFlash defaults to its 200 ms hit; other kinds keep the 1 s default', () => {
+  it('every kind gets its own default: a hit is short, a blend longer, none a full second', () => {
     const a = seedTitle(0)
     setClipTransition(a.id, 'in', 'whiteFlash')
     expect(clips()[0].transitionIn).toEqual({ type: 'whiteFlash', durationS: 0.2 })
     setClipTransition(a.id, 'in', 'crossDissolve')
-    expect(clips()[0].transitionIn!.durationS).toBe(1)
+    const dissolve = clips()[0].transitionIn!.durationS
+    expect(dissolve).toBeGreaterThan(0.2)
+    // A full second is half a shot at his pacing — the old flat default is gone.
+    expect(dissolve).toBeLessThanOrEqual(0.5)
   })
 
   it('keeps in-envelope durations; snaps out-of-envelope ones to the default', () => {

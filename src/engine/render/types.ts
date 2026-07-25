@@ -122,12 +122,41 @@ export const TRANSITION_LABELS: Record<TransitionKind, string> = {
 
 /**
  * Per-kind duration envelope for the edit layer (default + clamp on set).
- * whiteFlash is an INTRO hit, not a blend — it reads wrong past half a second,
- * so its envelope is deliberately tight (100–500 ms, default 200).
+ *
+ * Every kind used to default to a flat 1.000 second — inherited from the NLE
+ * tradition where a dissolve joins two long takes. On a fast-cut Short a whole
+ * second is HALF A SHOT, so the default made every transition read as a mistake:
+ * the cut disappears into a mush instead of landing. The defaults below are per
+ * VERB instead of per convention:
+ *   - a HIT (glitch, flash) is over before you can name it — 150–200 ms;
+ *   - a MOVE (zoom, spin, slide, wipe) has to be readable but must not steal
+ *     the incoming shot — ~300 ms;
+ *   - a BLEND (dissolve, dip, luma wipe) is the only one meant to feel like
+ *     time passing, and even then 400–500 ms is plenty at this pacing.
+ * The envelopes stay wide (a deliberate 3-second dissolve is still one drag
+ * away); only the value you get for free changed. setClipTransition is the one
+ * write path, so this table lands on drops, the Inspector, and every menu.
  */
+const TRANSITION_DURATIONS: Record<TransitionKind, { def: number; min: number; max: number }> = {
+  // Blends — the slowest verbs, and still well under a second.
+  crossDissolve: { def: 0.4, min: 0.1, max: 10 },
+  dipToBlack: { def: 0.5, min: 0.1, max: 10 },
+  dipToWhite: { def: 0.4, min: 0.1, max: 10 },
+  lumaWipe: { def: 0.4, min: 0.1, max: 10 },
+  // Moves — readable, but they hand the frame over quickly.
+  wipeLeft: { def: 0.3, min: 0.1, max: 10 },
+  wipeRight: { def: 0.3, min: 0.1, max: 10 },
+  slideLeft: { def: 0.3, min: 0.1, max: 10 },
+  slideRight: { def: 0.3, min: 0.1, max: 10 },
+  zoom: { def: 0.3, min: 0.1, max: 10 },
+  spin: { def: 0.28, min: 0.1, max: 10 },
+  // Hits — an accent on the cut, not a passage of time.
+  glitch: { def: 0.18, min: 0.06, max: 2 },
+  whiteFlash: { def: 0.2, min: 0.1, max: 0.5 },
+}
+
 export function transitionDurationSpec(kind: TransitionKind): { def: number; min: number; max: number } {
-  if (kind === 'whiteFlash') return { def: 0.2, min: 0.1, max: 0.5 }
-  return { def: 1, min: 0.1, max: 10 }
+  return TRANSITION_DURATIONS[kind] ?? { def: 0.4, min: 0.1, max: 10 }
 }
 
 /**
