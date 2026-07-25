@@ -6,8 +6,9 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react'
 import { clipEndS } from '../engine/timeline'
-import { computeQuad, pointInQuad } from '../engine/render/mat'
+import { computeQuad, pointInQuad, subQuad } from '../engine/render/mat'
 import { resolveFrame } from '../engine/render/resolve'
+import { titleInkBoxUV } from '../engine/render/titleRaster'
 import type { RenderLayer, ResolvedTransform } from '../engine/render/types'
 import { activeSequence } from '../engine/types'
 import { setLivePreviewTransform } from '../engine/preview'
@@ -122,8 +123,20 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
     const a = project.assets[layer.assetId]
     const tw = isTitle ? seq.width : (a?.width ?? seq.width)
     const th = isTitle ? seq.height : (a?.height ?? seq.height)
-    return computeQuad({ frameW: seq.width, frameH: seq.height, texW: tw, texH: th, transform: layer.transform })
-      .corners
+    const corners = computeQuad({
+      frameW: seq.width,
+      frameH: seq.height,
+      texW: tw,
+      texH: th,
+      transform: layer.transform,
+    }).corners
+    // A title rasterizes into a FULL-FRAME texture, so its quad is the whole
+    // picture. Hit-test its INK instead: otherwise clicking anywhere in the
+    // monitor selects the topmost caption, and the footage under it can never
+    // be clicked at all.
+    if (!isTitle) return corners
+    const ink = titleInkBoxUV(layer.title!, seq.width, seq.height)
+    return ink ? subQuad(corners, ink) : []
   }
 
   const doSelect = (clientX: number, clientY: number) => {

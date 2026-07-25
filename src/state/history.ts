@@ -8,6 +8,17 @@ export interface Command {
   label: string
   before: Project
   after: Project
+  /**
+   * Commands sharing a merge key COALESCE into a single undo step while they
+   * keep arriving. Typing is the case that matters: one command per keystroke
+   * meant a sentence cost thirty undo steps, and ~200 characters silently
+   * pushed every other edit of the session off the end of MAX_HISTORY. The key
+   * identifies the run (the field AND the clip), so moving to another clip
+   * starts a new step.
+   */
+  mergeKey?: string
+  /** Wall-clock ms; only used to decide whether a merge run is still live. */
+  at?: number
 }
 
 export interface History {
@@ -17,10 +28,31 @@ export interface History {
 
 export const MAX_HISTORY = 200
 
+/**
+ * A pause this long ends a merge run, so undo lands on the natural pauses in
+ * typing rather than swallowing an entire session's edits into one step.
+ */
+export const MERGE_WINDOW_MS = 1000
+
 export const emptyHistory = (): History => ({ undo: [], redo: [] })
 
-/** Push a new command: truncates redo (a new edit forks history). */
+/**
+ * Push a new command: truncates redo (a new edit forks history). Consecutive
+ * commands with the same merge key, arriving within MERGE_WINDOW_MS of each
+ * other, fold into the previous step — keeping its `before` (so one undo goes
+ * back to where the run started) and taking the newest `after`.
+ */
 export function pushCommand(h: History, cmd: Command): History {
+  const top = h.undo[h.undo.length - 1]
+  if (
+    cmd.mergeKey !== undefined &&
+    top !== undefined &&
+    top.mergeKey === cmd.mergeKey &&
+    (cmd.at ?? 0) - (top.at ?? 0) <= MERGE_WINDOW_MS
+  ) {
+    const merged: Command = { ...top, after: cmd.after, at: cmd.at }
+    return { undo: [...h.undo.slice(0, -1), merged], redo: [] }
+  }
   const undo = [...h.undo, cmd]
   return { undo: undo.length > MAX_HISTORY ? undo.slice(undo.length - MAX_HISTORY) : undo, redo: [] }
 }

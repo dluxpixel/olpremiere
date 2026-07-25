@@ -105,7 +105,11 @@ function Segmented<T extends string>({
 export function TitleControls({ clip }: { clip: Clip }) {
   const def = clip.title
   if (!def) return null
-  const set = (patch: Partial<TitleDef>) => updateTitle(clip.id, patch)
+  // `mergeField` marks a control that fires CONTINUOUSLY — a text box being
+  // typed into, a colour picker being dragged — so the whole run collapses to
+  // one undo step instead of one step per event.
+  const set = (patch: Partial<TitleDef>, mergeField?: keyof TitleDef) =>
+    updateTitle(clip.id, patch, mergeField)
 
   return (
     <div className="flex flex-col gap-5">
@@ -114,7 +118,7 @@ export function TitleControls({ clip }: { clip: Clip }) {
           data-testid="title-text"
           aria-label="Title text"
           value={def.text}
-          onChange={(e) => set({ text: e.target.value })}
+          onChange={(e) => set({ text: e.target.value }, 'text')}
           rows={3}
           className="min-h-[60px] w-full resize-y rounded-field bg-bg-input px-2 py-1.5 text-ui-sm leading-snug text-text-primary focus:outline-none focus:ring-1 focus:ring-accent"
         />
@@ -203,14 +207,14 @@ export function TitleControls({ clip }: { clip: Clip }) {
             data-testid="title-color"
             aria-label="Text color"
             value={hexOf(def.color)}
-            onChange={(e) => set({ color: e.target.value })}
+            onChange={(e) => set({ color: e.target.value }, 'color')}
             className="h-7 w-9 shrink-0 cursor-default rounded-field bg-bg-input p-0.5"
           />
           <input
             type="text"
             aria-label="Text color hex"
             value={def.color}
-            onChange={(e) => set({ color: e.target.value })}
+            onChange={(e) => set({ color: e.target.value }, 'color')}
             className={`${inputCls} font-mono`}
           />
           {/* The caption workflow flips single words to a highlight color
@@ -350,7 +354,7 @@ export function TitleControls({ clip }: { clip: Clip }) {
                 type="color"
                 aria-label="Shadow color"
                 value={hexOf(def.shadow.color)}
-                onChange={(e) => set({ shadow: { ...def.shadow!, color: e.target.value } })}
+                onChange={(e) => set({ shadow: { ...def.shadow!, color: e.target.value } }, 'shadow')}
                 className="h-6 w-9 shrink-0 cursor-default rounded-field bg-bg-input p-0.5"
               />
             </PropRow>
@@ -384,7 +388,7 @@ export function TitleControls({ clip }: { clip: Clip }) {
                 data-testid="title-outline-color"
                 aria-label="Outline color"
                 value={hexOf(def.outline.color)}
-                onChange={(e) => set({ outline: { ...def.outline!, color: e.target.value } })}
+                onChange={(e) => set({ outline: { ...def.outline!, color: e.target.value } }, 'outline')}
                 className="h-6 w-9 shrink-0 cursor-default rounded-field bg-bg-input p-0.5"
               />
             </PropRow>
@@ -436,7 +440,7 @@ export function TitleControls({ clip }: { clip: Clip }) {
                 type="color"
                 aria-label="Background color"
                 value={hexOf(def.box.color)}
-                onChange={(e) => set({ box: { ...def.box!, color: e.target.value } })}
+                onChange={(e) => set({ box: { ...def.box!, color: e.target.value } }, 'box')}
                 className="h-6 w-9 shrink-0 cursor-default rounded-field bg-bg-input p-0.5"
               />
             </PropRow>

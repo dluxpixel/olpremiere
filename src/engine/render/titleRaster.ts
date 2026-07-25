@@ -86,6 +86,171 @@ export function blockLayout(opts: {
 }
 
 // ---------------------------------------------------------------------------
+// Layout — where the text actually lands inside the frame.
+
+export interface TitleLayout {
+  sidePad: number
+  padPx: number
+  maxWidth: number
+  lines: string[]
+  hasText: boolean
+  lineHeightPx: number
+  firstBaselineY: number
+  blockTop: number
+  blockH: number
+  /** Widest measured line, 0 when there is no text. */
+  textW: number
+  /** X the lines are drawn from, matching ctx.textAlign. */
+  anchorX: number
+}
+
+/**
+ * Everything about WHERE a title's text sits. `measure` reports the width of a
+ * string in the title's font (the caller owns the font state), the same
+ * injection wrapLinesWith uses, so this is testable without a canvas.
+ *
+ * Shared by the rasterizer and by hit-testing so the two can never disagree
+ * about where a caption is — the renderer draws into a full-frame canvas, but
+ * the ink is only ever a small part of it.
+ */
+export function titleLayout(
+  def: TitleDef,
+  width: number,
+  height: number,
+  measure: (s: string) => number,
+): TitleLayout {
+  const sidePad = Math.round(width * 0.06)
+  const padPx = Math.round(height * 0.06)
+  const maxWidth = Math.max(1, width - 2 * sidePad)
+
+  const fontSizeOk = def.fontSizePx > 0
+
+  // Non-destructive case: the typed text stays put; only the drawn glyphs change.
+  const shownText =
+    def.textCase === 'upper' ? def.text.toUpperCase() : def.textCase === 'lower' ? def.text.toLowerCase() : def.text
+  const lines = fontSizeOk ? wrapLinesWith(measure, shownText, maxWidth) : ['']
+  const hasText = fontSizeOk && shownText !== '' && lines.some((l) => l !== '')
+  const lineHeightPx = fontSizeOk ? def.fontSizePx * def.lineHeight : 0
+
+  const { firstBaselineY, blockTop, blockH } = blockLayout({
+    lines,
+    lineHeightPx,
+    vAlign: def.vAlign,
+    frameH: height,
+    padPx,
+    offsetYPx: def.offsetYPx,
+  })
+
+  // Widest measured line → text-block width (0 when there is no text).
+  let textW = 0
+  if (hasText) {
+    for (const line of lines) {
+      const w = measure(line)
+      if (w > textW) textW = w
+    }
+  }
+
+  // X anchor by alignment (matches ctx.textAlign, offset by offsetXPx).
+  let anchorX: number
+  if (def.align === 'left') {
+    anchorX = sidePad + def.offsetXPx
+  } else if (def.align === 'right') {
+    anchorX = width - sidePad + def.offsetXPx
+  } else {
+    anchorX = width / 2 + def.offsetXPx
+  }
+
+  return { sidePad, padPx, maxWidth, lines, hasText, lineHeightPx, firstBaselineY, blockTop, blockH, textW, anchorX }
+}
+
+/** Left edge of the text block for the current alignment. */
+function textLeftOf(anchorX: number, textW: number, align: TitleDef['align']): number {
+  if (align === 'left') return anchorX
+  if (align === 'right') return anchorX - textW
+  return anchorX - textW / 2
+}
+
+// One shared 1×1 canvas for measurement-only calls; its size never matters
+// because nothing is drawn into it.
+let measureCtx: OffscreenCanvasRenderingContext2D | null = null
+
+/** Text measurer for `def`'s font, or null where there is no canvas (node). */
+function canvasMeasurer(def: TitleDef): ((s: string) => number) | null {
+  if (typeof OffscreenCanvas === 'undefined') return null
+  if (!measureCtx) measureCtx = new OffscreenCanvas(1, 1).getContext('2d')
+  const ctx = measureCtx
+  if (!ctx) return null
+  ctx.font = fontString(def)
+  return (str) => ctx.measureText(str).width
+}
+
+/**
+ * The rectangle a title's INK actually occupies inside its frame, as fractions
+ * of the frame (0..1), including its box, outline and shadow.
+ *
+ * A title rasterizes into a FULL-FRAME texture, so treating the texture as the
+ * clip's shape makes every caption's hit area the whole picture: once captions
+ * exist, clicking anywhere in the monitor selects a caption and the footage
+ * underneath can never be clicked at all. Returns null when the title draws
+ * nothing (empty text, no box), which is not selectable either.
+ */
+export function titleInkBoxUV(
+  def: TitleDef,
+  width: number,
+  height: number,
+  measure: ((s: string) => number) | null = canvasMeasurer(def),
+): { u0: number; v0: number; u1: number; v1: number } | null {
+  if (width <= 0 || height <= 0 || !measure) return null
+  const L = titleLayout(def, width, height, measure)
+
+  let x0 = Infinity
+  let y0 = Infinity
+  let x1 = -Infinity
+  let y1 = -Infinity
+  const add = (ax0: number, ay0: number, ax1: number, ay1: number) => {
+    if (ax1 <= ax0 || ay1 <= ay0) return
+    x0 = Math.min(x0, ax0)
+    y0 = Math.min(y0, ay0)
+    x1 = Math.max(x1, ax1)
+    y1 = Math.max(y1, ay1)
+  }
+
+  if (L.hasText) {
+    const left = textLeftOf(L.anchorX, L.textW, def.align)
+    // The outline strokes OUTWARD by half its width; the shadow offsets and blurs.
+    const grow = def.outline && def.outline.widthPx > 0 ? def.outline.widthPx / 2 : 0
+    add(left - grow, L.blockTop - grow, left + L.textW + grow, L.blockTop + L.blockH + grow)
+    if (def.shadow) {
+      const b = def.shadow.blurPx
+      add(
+        left - grow + def.shadow.dx - b,
+        L.blockTop - grow + def.shadow.dy - b,
+        left + L.textW + grow + def.shadow.dx + b,
+        L.blockTop + L.blockH + grow + def.shadow.dy + b,
+      )
+    }
+  }
+
+  if (def.box) {
+    const pad = def.box.paddingPx
+    const boxW = L.hasText ? L.textW + 2 * pad : L.maxWidth + 2 * pad
+    const boxLeft = L.hasText
+      ? textLeftOf(L.anchorX, L.textW, def.align) - pad
+      : textLeftOf(L.anchorX, L.maxWidth, def.align) - pad
+    add(boxLeft, L.blockTop - pad, boxLeft + boxW, L.blockTop + L.blockH + pad)
+  }
+
+  if (!Number.isFinite(x0)) return null
+  // The raster clips to the frame, so the hit area does too.
+  return {
+    u0: Math.max(0, x0 / width),
+    v0: Math.max(0, y0 / height),
+    u1: Math.min(1, x1 / width),
+    v1: Math.min(1, y1 / height),
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Rasterization.
 
 interface CacheEntry {
@@ -173,49 +338,16 @@ export function rasterizeTitle(
   const canvas = new OffscreenCanvas(Math.max(1, width), Math.max(1, height))
   const ctx = canvas.getContext('2d')!
 
-  const sidePad = Math.round(width * 0.06)
-  const padPx = Math.round(height * 0.06)
-  const maxWidth = Math.max(1, width - 2 * sidePad)
-
-  const fontSizeOk = def.fontSizePx > 0
   ctx.font = fontString(def)
   ctx.textAlign = def.align
   ctx.textBaseline = 'alphabetic'
 
-  // Non-destructive case: the typed text stays put; only the drawn glyphs change.
-  const shownText =
-    def.textCase === 'upper' ? def.text.toUpperCase() : def.textCase === 'lower' ? def.text.toLowerCase() : def.text
-  const lines = fontSizeOk ? wrapLines(ctx, shownText, maxWidth) : ['']
-  const hasText = fontSizeOk && shownText !== '' && lines.some((l) => l !== '')
-  const lineHeightPx = fontSizeOk ? def.fontSizePx * def.lineHeight : 0
-
-  const { firstBaselineY, blockTop, blockH } = blockLayout({
-    lines,
-    lineHeightPx,
-    vAlign: def.vAlign,
-    frameH: height,
-    padPx,
-    offsetYPx: def.offsetYPx,
-  })
-
-  // Widest measured line → text-block width (0 when there is no text).
-  let textW = 0
-  if (hasText) {
-    for (const line of lines) {
-      const w = ctx.measureText(line).width
-      if (w > textW) textW = w
-    }
-  }
-
-  // X anchor by alignment (matches ctx.textAlign, offset by offsetXPx).
-  let anchorX: number
-  if (def.align === 'left') {
-    anchorX = sidePad + def.offsetXPx
-  } else if (def.align === 'right') {
-    anchorX = width - sidePad + def.offsetXPx
-  } else {
-    anchorX = width / 2 + def.offsetXPx
-  }
+  const { maxWidth, lines, hasText, lineHeightPx, firstBaselineY, blockTop, blockH, textW, anchorX } = titleLayout(
+    def,
+    width,
+    height,
+    (str) => ctx.measureText(str).width,
+  )
 
   // BOX — drawn behind the text. If there is no text but a box is set, draw a
   // plain rectangle centered on the block (the "basic shape" path).

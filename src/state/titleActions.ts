@@ -82,21 +82,36 @@ export function addAdjustmentClip(): void {
   s.setUI({ selection: [clip.id] })
 }
 
-/** Patch the selected title clip's definition (one undo step per change). */
-export function updateTitle(clipId: string, patch: Partial<TitleDef>): void {
-  updateActiveSequence('Edit title', (seq) => ({
-    ...seq,
-    tracks: seq.tracks.map((t) =>
-      t.clips.some((c) => c.id === clipId)
-        ? {
-            ...t,
-            clips: t.clips.map((c) =>
-              c.id === clipId && c.title ? { ...c, title: { ...c.title, ...patch } } : c,
-            ),
-          }
-        : t,
-    ),
-  }))
+/**
+ * Patch the selected title clip's definition (one undo step per change).
+ *
+ * `mergeField` names a field being edited CONTINUOUSLY — typing into the text
+ * box, dragging a slider — so the run folds into a single undo step instead of
+ * one step per keystroke. Without it a typed sentence cost thirty undo steps and
+ * a couple of paragraphs pushed the whole session off the end of the history.
+ */
+export function updateTitle(
+  clipId: string,
+  patch: Partial<TitleDef>,
+  mergeField?: keyof TitleDef,
+): void {
+  updateActiveSequence(
+    'Edit title',
+    (seq) => ({
+      ...seq,
+      tracks: seq.tracks.map((t) =>
+        t.clips.some((c) => c.id === clipId)
+          ? {
+              ...t,
+              clips: t.clips.map((c) =>
+                c.id === clipId && c.title ? { ...c, title: { ...c.title, ...patch } } : c,
+              ),
+            }
+          : t,
+      ),
+    }),
+    mergeField === undefined ? undefined : `title:${mergeField}:${clipId}`,
+  )
 }
 
 /**
@@ -104,9 +119,17 @@ export function updateTitle(clipId: string, patch: Partial<TitleDef>): void {
  * bold/italic, family, size, colour across a whole multi-selection. Non-title
  * clips and locked tracks are skipped; nothing changing records no undo step.
  */
-export function updateTitles(ids: Iterable<string>, patch: Partial<TitleDef>): void {
+export function updateTitles(
+  ids: Iterable<string>,
+  patch: Partial<TitleDef>,
+  mergeField?: keyof TitleDef,
+): void {
   const idSet = new Set(ids)
   if (idSet.size === 0) return
+  const mergeKey =
+    mergeField === undefined
+      ? undefined
+      : `titles:${mergeField}:${[...idSet].sort().join(',')}`
   updateActiveSequence('Edit titles', (seq) => {
     let changed = false
     const tracks = seq.tracks.map((t) => {
@@ -119,5 +142,5 @@ export function updateTitles(ids: Iterable<string>, patch: Partial<TitleDef>): v
       return changed ? { ...t, clips } : t
     })
     return changed ? { ...seq, tracks } : seq
-  })
+  }, mergeKey)
 }

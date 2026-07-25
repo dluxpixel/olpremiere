@@ -174,7 +174,7 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
                 data-testid="multi-color"
                 aria-label="Text color (all)"
                 value={hexOf(firstTitle?.color ?? '#ffffff')}
-                onChange={(e) => updateTitles(titleIds, { color: e.target.value })}
+                onChange={(e) => updateTitles(titleIds, { color: e.target.value }, 'color')}
                 className="h-7 w-9 shrink-0 cursor-default rounded-field bg-bg-input p-0.5"
               />
               {SWATCHES.map((c) => (
@@ -217,7 +217,11 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
                     aria-label="Outline color (all)"
                     value={hexOf(firstOutline?.color ?? '#000000')}
                     onChange={(e) =>
-                      updateTitles(titleIds, { outline: { color: e.target.value, widthPx: firstOutline?.widthPx ?? 10 } })
+                      updateTitles(
+                        titleIds,
+                        { outline: { color: e.target.value, widthPx: firstOutline?.widthPx ?? 10 } },
+                        'outline',
+                      )
                     }
                     className="h-6 w-9 shrink-0 cursor-default rounded-field bg-bg-input p-0.5"
                   />

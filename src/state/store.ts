@@ -42,8 +42,12 @@ export interface ReelState {
   project: Project
   history: History
   ui: UIState
-  /** Apply an undoable edit to the project document. */
-  dispatch: (label: string, fn: (p: Project) => Project) => void
+  /**
+   * Apply an undoable edit to the project document. Passing a `mergeKey` folds
+   * this edit into the previous one when they share the key and arrive close
+   * together — that is what makes a typed sentence ONE undo step.
+   */
+  dispatch: (label: string, fn: (p: Project) => Project, mergeKey?: string) => void
   /** Returns the undone/redone command's label, or null when there was nothing. */
   undo: () => string | null
   redo: () => string | null
@@ -83,14 +87,15 @@ export const useStore = create<ReelState>()(
       helpOpen: false,
     },
 
-    dispatch(label, fn) {
+    dispatch(label, fn, mergeKey) {
       const { project, history, ui } = get()
       const mutated = fn(project)
       if (mutated === project) return
-      const after: Project = { ...mutated, updatedAt: Date.now() }
+      const at = Date.now()
+      const after: Project = { ...mutated, updatedAt: at }
       set({
         project: after,
-        history: pushCommand(history, { label, before: project, after }),
+        history: pushCommand(history, { label, before: project, after, mergeKey, at }),
         ui: { ...ui, saveState: 'unsaved' },
       })
     },
@@ -158,12 +163,20 @@ export const useStore = create<ReelState>()(
 )
 
 /** Apply an undoable edit scoped to the active sequence. No-op if unchanged. */
-export function updateActiveSequence(label: string, fn: (seq: Sequence) => Sequence): void {
-  useStore.getState().dispatch(label, (p) => {
-    const seq = p.sequences[p.activeSequenceId]
-    const next = fn(seq)
-    return next === seq ? p : { ...p, sequences: { ...p.sequences, [seq.id]: next } }
-  })
+export function updateActiveSequence(
+  label: string,
+  fn: (seq: Sequence) => Sequence,
+  mergeKey?: string,
+): void {
+  useStore.getState().dispatch(
+    label,
+    (p) => {
+      const seq = p.sequences[p.activeSequenceId]
+      const next = fn(seq)
+      return next === seq ? p : { ...p, sequences: { ...p.sequences, [seq.id]: next } }
+    },
+    mergeKey,
+  )
 }
 
 /**

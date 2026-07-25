@@ -144,3 +144,27 @@ export function cropUV(
 ): { u0: number; v0: number; u1: number; v1: number } {
   return { u0: cropL, v0: cropT, u1: 1 - cropR, v1: 1 - cropB }
 }
+
+/**
+ * The sub-rectangle of a quad, addressed in UV (0..1) coordinates of the quad's
+ * own space. Corners are TL,TR,BR,BL and the mapping is affine, so bilinear
+ * interpolation between the four corners is exact — no matrix needed.
+ *
+ * Used to hit-test the part of a layer that actually has ink in it: a title
+ * draws into a full-frame texture, but only a small rectangle of that frame is
+ * the caption.
+ */
+export function subQuad(
+  corners: readonly [number, number][],
+  uv: { u0: number; v0: number; u1: number; v1: number },
+): [number, number][] {
+  const [tl, tr, br, bl] = corners
+  const at = (u: number, v: number): [number, number] => {
+    const topX = tl[0] + (tr[0] - tl[0]) * u
+    const topY = tl[1] + (tr[1] - tl[1]) * u
+    const botX = bl[0] + (br[0] - bl[0]) * u
+    const botY = bl[1] + (br[1] - bl[1]) * u
+    return [topX + (botX - topX) * v, topY + (botY - topY) * v]
+  }
+  return [at(uv.u0, uv.v0), at(uv.u1, uv.v0), at(uv.u1, uv.v1), at(uv.u0, uv.v1)]
+}
