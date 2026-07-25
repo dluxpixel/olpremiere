@@ -72,6 +72,15 @@ export function previewTargetHeight(
   return cap < nativeH ? cap : undefined
 }
 
+/**
+ * The decode/upload cap for an asset RIGHT NOW, applying the live quality tier
+ * and sequence raster. Undefined when the source is already at or under it.
+ * The paused path uses this to decode small; the live preview uses it to stop
+ * uploading a native-resolution frame every time it draws.
+ */
+export const previewCapHeight = (nativeH: number | undefined): number | undefined =>
+  previewTargetHeight(nativeH, previewScale, PREVIEW_BASE_MAX_H, sequenceH)
+
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for tests — no DOM, no mediabunny)
 

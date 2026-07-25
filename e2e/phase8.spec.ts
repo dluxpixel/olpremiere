@@ -115,3 +115,37 @@ test('the blank header space adds a video or audio track', async ({ page }) => {
   expect(after.indexOf('V3')).toBeLessThan(after.indexOf('A1'))
   await page.getByTestId('timeline').screenshot({ path: `${VERIFY}/add-track.png` })
 })
+
+test('a reduced preview quality still paints the picture during PLAYBACK', async ({ page }) => {
+  // The live path used to hand the pooled <video> straight to the renderer, so
+  // it uploaded at the SOURCE's native size every frame and the quality tiers
+  // did nothing for playback (only for scrubbing). It now draws down to the
+  // same cap the frame cache uses — this proves that path still renders.
+  await page.goto('/')
+  await page.getByTestId('media-file-input').setInputFiles('e2e/.fixtures/clip.webm')
+  await expect(page.getByTestId('asset-card')).toBeVisible({ timeout: 15_000 })
+  await page.getByTestId('asset-card').dblclick()
+  await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
+
+  // Quarter caps at 270px tall, below the 320x180 fixture's own height once the
+  // sequence raster is taken into account — so the downscale path engages.
+  await page.getByLabel('Preview quality').selectOption('0.25')
+  await page.keyboard.press('Space')
+  await expect
+    .poll(
+      async () =>
+        page.evaluate(() => {
+          const c = document.querySelector('[data-testid="program-canvas"]') as HTMLCanvasElement
+          const s = document.createElement('canvas')
+          s.width = c.width
+          s.height = c.height
+          const ctx = s.getContext('2d')!
+          ctx.drawImage(c, 0, 0)
+          const d = ctx.getImageData(Math.floor(c.width / 2), Math.floor(c.height / 2), 1, 1).data
+          return d[0]
+        }),
+      { timeout: 15_000 },
+    )
+    .toBeGreaterThan(100) // the fixture's red, not a black or blank frame
+  await page.keyboard.press('Space')
+})

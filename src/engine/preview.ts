@@ -4,7 +4,13 @@
 // elements (playing), the WebCodecs frame cache (scrubbing), or <img> (stills).
 
 import { getBlobUrl } from '../state/blobUrls'
-import { getFrameAt, prefetchAround, prefetchRange, setPreviewSequenceHeight } from './frameCache'
+import {
+  getFrameAt,
+  prefetchAround,
+  prefetchRange,
+  previewCapHeight,
+  setPreviewSequenceHeight,
+} from './frameCache'
 import { createRenderer, type Renderer } from './render/glRenderer'
 import { resolveFrame } from './render/resolve'
 import { rasterizeTitle } from './render/titleRaster'
@@ -467,8 +473,52 @@ function makeTextureSource(
         if (Math.abs(el.playbackRate - rate) > 1e-3) el.playbackRate = rate
       }
     }
-    return el
+    return livePreviewSource(el, asset.id)
   }
+}
+
+// --- Live-playback texture sizing -------------------------------------------
+//
+// The PLAYING path handed the pooled <video> straight to the renderer, so every
+// frame uploaded a texture at the SOURCE's native size and rebuilt its whole mip
+// chain from it. On 4K gameplay that is a 3840×2160 upload per layer per frame —
+// 33 MB of pixels and twelve mip levels, sixty times a second — and the
+// Preview-Quality picker did not touch that path at all: only the PAUSED path
+// ever decoded at preview resolution. That asymmetry is why quality tiers helped
+// scrubbing and did nothing for playback.
+//
+// Drawing the element down to the cap the frame cache ALREADY uses costs one GPU
+// blit and makes the upload and the mip chain preview-sized. Sources at or under
+// the cap (anything 1080p or smaller at Full) take the untouched path.
+
+/** Scratch canvases, one per asset, reused across frames. */
+const liveScale = new Map<Id, OffscreenCanvas>()
+/** Two or three video layers can be live at once; more than this is a leak. */
+const LIVE_SCALE_CAP = 4
+
+function livePreviewSource(el: HTMLVideoElement, assetId: Id): TexImageSource {
+  const nativeH = el.videoHeight
+  const nativeW = el.videoWidth
+  if (!nativeH || !nativeW || typeof OffscreenCanvas === 'undefined') return el
+  const capH = previewCapHeight(nativeH)
+  if (!capH || capH >= nativeH) return el
+
+  const w = Math.max(2, Math.round((nativeW / nativeH) * capH))
+  let canvas = liveScale.get(assetId)
+  if (!canvas || canvas.width !== w || canvas.height !== capH) {
+    canvas = new OffscreenCanvas(w, capH)
+    liveScale.delete(assetId)
+    liveScale.set(assetId, canvas)
+    while (liveScale.size > LIVE_SCALE_CAP) {
+      const oldest = liveScale.keys().next().value
+      if (oldest === undefined) break
+      liveScale.delete(oldest)
+    }
+  }
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return el
+  ctx.drawImage(el, 0, 0, w, capH)
+  return canvas
 }
 
 /**
