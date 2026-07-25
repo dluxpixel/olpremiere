@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest'
+import { applyAppearanceToClip } from './anim/appearance'
 import { clipEmitsAudio } from './audio'
-import { defaultTransform, type Clip, type MediaAsset, type Sequence, type Track } from './types'
+import { resolveChannel } from './effects/channels'
+import {
+  defaultTitleDef,
+  defaultTransform,
+  newTitleClip,
+  type Clip,
+  type MediaAsset,
+  type Sequence,
+  type Track,
+} from './types'
 import {
   addClipFromAsset,
   addClipWithLinkedAudio,
@@ -2298,5 +2308,96 @@ describe('captions survive a format switch', () => {
     const seq = makeSeq([makeTrack({ clips: [c] })], { width: 1920, height: 1080 })
     const out = setSequenceFormat(seq, {}, 1920, 1080)
     expect(out.tracks[0].clips[0]).toBe(c) // same reference: nothing rebuilt
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Appearance animations follow the clip's length
+
+describe('trim/speed edits retime a clip appearance', () => {
+  // A 5s title with a 0.5s fade out: the exit window sits at [4.5, 5].
+  const fadedTitle = (): Clip =>
+    applyAppearanceToClip(newTitleClip(defaultTitleDef('Hi'), 0, 5), { out: 'fadeOut', durS: 0.5 }, 1920, 1080)
+
+  const seqWith = (clips: Clip[]): Sequence => makeSeq([makeTrack({ clips })])
+  const only = (seq: Sequence): Clip => seq.tracks[0].clips[0]
+
+  it('trimming the out edge LONGER moves the fade with it (was: invisible tail)', () => {
+    const seq = seqWith([fadedTitle()])
+    // A title has no source bounds, so the out edge can be dragged past 5s.
+    const out = only(trimClipTo(seq, ASSETS, only(seq).id, 'out', 8))
+    expect(clipDurationS(out)).toBeCloseTo(8, 5)
+    expect(resolveChannel(out, 'opacity', 6)).toBeCloseTo(1, 5)
+    expect(resolveChannel(out, 'opacity', 8)).toBeCloseTo(0, 5)
+  })
+
+  it('trimming the out edge SHORTER lands the fade on the new end', () => {
+    const seq = seqWith([fadedTitle()])
+    const out = only(trimClipTo(seq, ASSETS, only(seq).id, 'out', 3))
+    expect(resolveChannel(out, 'opacity', 2)).toBeCloseTo(1, 5)
+    expect(resolveChannel(out, 'opacity', 3)).toBeCloseTo(0, 5)
+  })
+
+  it('ripple trim retimes it too', () => {
+    const seq = seqWith([fadedTitle()])
+    const out = only(rippleTrimTo(seq, ASSETS, only(seq).id, 'out', 2))
+    expect(resolveChannel(out, 'opacity', 1)).toBeCloseTo(1, 5)
+    expect(resolveChannel(out, 'opacity', 2)).toBeCloseTo(0, 5)
+  })
+
+  it('a speed change retimes it', () => {
+    const seq = seqWith([fadedTitle()])
+    const out = only(setClipSpeed(seq, only(seq).id, 2)) // 5s -> 2.5s
+    expect(resolveChannel(out, 'opacity', 1.5)).toBeCloseTo(1, 5)
+    expect(resolveChannel(out, 'opacity', 2.5)).toBeCloseTo(0, 5)
+  })
+
+  it('a roll edit retimes both sides', () => {
+    const left = fadedTitle()
+    const right = applyAppearanceToClip(
+      newTitleClip(defaultTitleDef('Two'), 5, 5),
+      { out: 'fadeOut', durS: 0.5 },
+      1920,
+      1080,
+    )
+    const seq = seqWith([left, right])
+    const rolled = rollEditTo(seq, ASSETS, left.id, right.id, 7)
+    const [l, r] = rolled.tracks[0].clips
+    expect(resolveChannel(l, 'opacity', 6)).toBeCloseTo(1, 5)
+    expect(resolveChannel(l, 'opacity', 7)).toBeCloseTo(0, 5)
+    expect(resolveChannel(r, 'opacity', 2)).toBeCloseTo(1, 5)
+    expect(resolveChannel(r, 'opacity', 3)).toBeCloseTo(0, 5)
+  })
+
+  it('splitting gives the entrance to the left half and the exit to the right', () => {
+    const clip = applyAppearanceToClip(
+      newTitleClip(defaultTitleDef('Hi'), 0, 5),
+      { in: 'fadeIn', out: 'fadeOut', durS: 0.5 },
+      1920,
+      1080,
+    )
+    const [l, r] = splitClip(seqWith([clip]), clip.id, 2).tracks[0].clips
+    expect(l.appearance).toEqual({ in: 'fadeIn', durS: 0.5 })
+    expect(r.appearance).toEqual({ out: 'fadeOut', durS: 0.5 })
+    // The motion itself is unchanged by the cut: fade in at the head, out at the tail.
+    expect(resolveChannel(l, 'opacity', 0)).toBeCloseTo(0, 5)
+    expect(resolveChannel(l, 'opacity', 2)).toBeCloseTo(1, 5)
+    expect(resolveChannel(r, 'opacity', 0)).toBeCloseTo(1, 5)
+    expect(resolveChannel(r, 'opacity', 3)).toBeCloseTo(0, 5)
+    // ...and each half now retimes on its own.
+    const grown = splitClip(seqWith([clip]), clip.id, 2).tracks[0].clips[1]
+    const seq2 = makeSeq([makeTrack({ clips: [grown] })])
+    const stretched = seq2.tracks[0].clips[0]
+    const trimmed = trimClipTo(seq2, ASSETS, stretched.id, 'out', 8).tracks[0].clips[0]
+    expect(resolveChannel(trimmed, 'opacity', 4)).toBeCloseTo(1, 5)
+    expect(resolveChannel(trimmed, 'opacity', 6)).toBeCloseTo(0, 5)
+  })
+
+  it('leaves a clip with no appearance untouched', () => {
+    const plain = newTitleClip(defaultTitleDef('Hi'), 0, 5)
+    const seq = seqWith([plain])
+    const out = only(trimClipTo(seq, ASSETS, plain.id, 'out', 8))
+    expect(out.keyframes ?? {}).toEqual({})
+    expect(out.appearance).toBeUndefined()
   })
 })

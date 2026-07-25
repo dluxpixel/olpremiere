@@ -10,8 +10,8 @@
 // channel touched by only one side clamps to base outside its window (evalChannel
 // holds before the first / after the last keyframe).
 
-import { channelBase, withChannelKeyframes } from '../effects/channels'
-import { clipDurationS } from '../timeline'
+import { channelBase, channelKeyframes, withChannelKeyframes } from '../effects/channels'
+import { clipDurationS } from '../types'
 import type { AnimChannel, AppearanceSpec, Clip, Keyframe } from '../types'
 
 export type { AppearanceSpec }
@@ -260,4 +260,113 @@ export function applyAppearanceToClip(clip: Clip, spec: AppearanceSpec, seqW: nu
     if (kfs && kfs.length > 0) next = withChannelKeyframes(next, ch, kfs)
   }
   return { ...next, appearance: spec }
+}
+
+// ---------------------------------------------------------------------------
+// Keeping a compiled appearance TRUE as the clip's length changes.
+//
+// An exit preset is baked at absolute local times [D-d, D] from the duration the
+// clip had when it was applied. Every edit that changes that duration — trim,
+// ripple trim, roll, slide, rate stretch, speed — therefore strands it: extend a
+// title's out edge and the fade fires at the OLD end, leaving opacity at 0 for
+// the whole tail. The timeline engine calls retimeAppearance on both sides of
+// every such edit so the compiled keyframes follow the clip.
+
+/** Same times and values within float noise (keyframes are authored, not measured). */
+const KF_MATCH_EPS = 1e-6
+
+function sameKeyframes(a: readonly Keyframe[], b: readonly Keyframe[]): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    if (Math.abs(a[i].t - b[i].t) > KF_MATCH_EPS) return false
+    if (Math.abs(a[i].value - b[i].value) > KF_MATCH_EPS) return false
+    if ((a[i].ease ?? 'linear') !== (b[i].ease ?? 'linear')) return false
+  }
+  return true
+}
+
+/**
+ * True when a clip's appearance-owned channels still hold EXACTLY what the spec
+ * compiles to at duration `D` — i.e. nobody has hand-edited them since. The same
+ * "only touch our own work" rule refitClipToFill uses: a recompile is safe only
+ * while the keyframes are still ours.
+ */
+function appearanceIsUntouched(clip: Clip, D: number, seqW: number, seqH: number): boolean {
+  const spec = clip.appearance
+  if (!spec) return false
+  const base: AppearanceBase = {
+    opacity: channelBase(clip, 'opacity'),
+    scale: channelBase(clip, 'scale'),
+    posX: channelBase(clip, 'posX'),
+    posY: channelBase(clip, 'posY'),
+    rotation: channelBase(clip, 'rotation'),
+  }
+  const expected = buildAppearanceKeyframes(spec, D, seqW, seqH, base)
+  for (const ch of APPEARANCE_CHANNELS) {
+    if (!sameKeyframes(channelKeyframes(clip, ch), expected[ch] ?? [])) return false
+  }
+  return true
+}
+
+/**
+ * Recompile `next`'s appearance for its NEW duration, given the clip as it was
+ * (`prev`). Returns `next` untouched when the clip has no appearance, when the
+ * duration did not actually change, or when the compiled keyframes no longer
+ * match the spec — that last case means the author has since edited them by
+ * hand, and a trim must never silently overwrite hand-authored animation.
+ */
+export function retimeAppearance(prev: Clip, next: Clip, seqW: number, seqH: number): Clip {
+  const spec = next.appearance
+  if (!spec || isEmptyAppearance(spec)) return next
+  const oldD = clipDurationS(prev)
+  const newD = clipDurationS(next)
+  if (!Number.isFinite(newD) || newD <= 0) return next
+  if (Math.abs(oldD - newD) < 1e-9) return next
+  if (!appearanceIsUntouched(prev, oldD, seqW, seqH)) return next
+  return applyAppearanceToClip(next, spec, seqW, seqH)
+}
+
+/**
+ * Split an appearance spec across a cut, the same way splitClip splits every
+ * other edge-owned decoration: the LEFT half's out edge is now a hard cut so it
+ * keeps only the entrance, the RIGHT half only the exit. Returns undefined when
+ * a half animates nothing.
+ */
+export function splitAppearanceSpec(
+  spec: AppearanceSpec | undefined,
+  side: 'left' | 'right',
+): AppearanceSpec | undefined {
+  if (!spec) return undefined
+  const kept: AppearanceSpec = side === 'left' ? { ...spec, out: undefined } : { ...spec, in: undefined }
+  if (isEmptyAppearance(kept)) return undefined
+  if (kept.in === undefined) delete kept.in
+  if (kept.out === undefined) delete kept.out
+  return kept
+}
+
+/**
+ * Re-derive both halves of a cut from the split spec, so each half's SPEC and
+ * its compiled keyframes still agree — which is what lets a later trim retime
+ * them. The generic keyframe time-split already produces the right MOTION; this
+ * replaces it with the canonical compile of the same thing (identical to
+ * evaluate, minus the redundant boundary keyframe the time-split leaves behind).
+ *
+ * Declines, leaving splitClip's time-split result exactly as it was, when the
+ * original clip's appearance channels had been hand-edited — the same "only
+ * touch our own work" rule retimeAppearance uses.
+ */
+export function splitAppearanceAcrossCut(
+  original: Clip,
+  left: Clip,
+  right: Clip,
+  seqW: number,
+  seqH: number,
+): { left: Clip; right: Clip } {
+  const spec = original.appearance
+  if (!spec || isEmptyAppearance(spec)) return { left, right }
+  if (!appearanceIsUntouched(original, clipDurationS(original), seqW, seqH)) return { left, right }
+  return {
+    left: applyAppearanceToClip(left, splitAppearanceSpec(spec, 'left') ?? {}, seqW, seqH),
+    right: applyAppearanceToClip(right, splitAppearanceSpec(spec, 'right') ?? {}, seqW, seqH),
+  }
 }

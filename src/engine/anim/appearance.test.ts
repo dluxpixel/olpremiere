@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { newTitleClip, defaultTitleDef, type Clip } from '../types'
 import { evalChannel } from '../keyframes'
-import { resolveChannel } from '../effects/channels'
+import { resolveChannel, withChannelKeyframes } from '../effects/channels'
 import {
   APPEARANCE_CHANNELS,
   applyAppearanceToClip,
@@ -11,6 +11,8 @@ import {
   isEmptyAppearance,
   isEntranceId,
   isExitId,
+  retimeAppearance,
+  splitAppearanceSpec,
 } from './appearance'
 
 const W = 1920
@@ -166,5 +168,88 @@ describe('applyAppearanceToClip', () => {
     const out = applyAppearanceToClip(base, { in: 'pop' }, W, H)
     // pop settles to the clip's (new) base scale of 2, not neutral 1.
     expect(resolveChannel(out, 'scale', 4)).toBeCloseTo(2, 5)
+  })
+})
+
+describe('retimeAppearance', () => {
+  // 5s title carrying a 0.5s fade out: the window sits at [4.5, 5].
+  const faded = (): Clip =>
+    applyAppearanceToClip(newTitleClip(defaultTitleDef('Hi'), 0, 5), { out: 'fadeOut', durS: 0.5 }, W, H)
+
+  it('follows a LONGER clip — the stranded-exit bug', () => {
+    const clip = faded()
+    const longer: Clip = { ...clip, outS: 8 } // out edge dragged 5s -> 8s
+
+    // Without a recompile the fade still fires at the OLD end: the title is
+    // invisible for the entire 3s tail. This is the bug, asserted.
+    expect(resolveChannel(longer, 'opacity', 6)).toBeCloseTo(0, 5)
+
+    const fixed = retimeAppearance(clip, longer, W, H)
+    expect(resolveChannel(fixed, 'opacity', 6)).toBeCloseTo(1, 5) // visible
+    expect(resolveChannel(fixed, 'opacity', 7.5)).toBeCloseTo(1, 5) // still visible at the new window start
+    expect(resolveChannel(fixed, 'opacity', 8)).toBeCloseTo(0, 5) // gone at the new end
+  })
+
+  it('follows a SHORTER clip', () => {
+    const clip = faded()
+    const shorter = retimeAppearance(clip, { ...clip, outS: 2 }, W, H)
+    expect(resolveChannel(shorter, 'opacity', 1)).toBeCloseTo(1, 5)
+    expect(resolveChannel(shorter, 'opacity', 2)).toBeCloseTo(0, 5)
+  })
+
+  it('follows an IN-edge trim, which moves local zero as well as the duration', () => {
+    const clip = applyAppearanceToClip(
+      newTitleClip(defaultTitleDef('Hi'), 0, 5),
+      { in: 'fadeIn', out: 'fadeOut', durS: 0.5 },
+      W,
+      H,
+    )
+    // Head pulled in by 1s: startS 0 -> 1, inS 0 -> 1, duration 5 -> 4.
+    const trimmed = retimeAppearance(clip, { ...clip, startS: 1, inS: 1 }, W, H)
+    expect(resolveChannel(trimmed, 'opacity', 0)).toBeCloseTo(0, 5) // entrance restarts at the new head
+    expect(resolveChannel(trimmed, 'opacity', 0.5)).toBeCloseTo(1, 5)
+    expect(resolveChannel(trimmed, 'opacity', 2)).toBeCloseTo(1, 5)
+    expect(resolveChannel(trimmed, 'opacity', 4)).toBeCloseTo(0, 5) // exit lands on the new end
+  })
+
+  it('follows a SPEED change (duration changes without either edge moving)', () => {
+    const clip = faded()
+    const doubled = retimeAppearance(clip, { ...clip, speed: 2 }, W, H) // 5s -> 2.5s
+    expect(resolveChannel(doubled, 'opacity', 1.5)).toBeCloseTo(1, 5)
+    expect(resolveChannel(doubled, 'opacity', 2.5)).toBeCloseTo(0, 5)
+  })
+
+  it('never overwrites hand-edited keyframes', () => {
+    const clip = withChannelKeyframes(faded(), 'opacity', [
+      { t: 0, value: 1, ease: 'linear' },
+      { t: 3, value: 0.25, ease: 'linear' },
+    ])
+    const longer: Clip = { ...clip, outS: 8 }
+    // The compiled keyframes are no longer ours, so the trim leaves them alone.
+    expect(retimeAppearance(clip, longer, W, H)).toBe(longer)
+  })
+
+  it('is a no-op without an appearance, and when the duration is unchanged', () => {
+    const plain = newTitleClip(defaultTitleDef('Hi'), 0, 5)
+    const longer: Clip = { ...plain, outS: 8 }
+    expect(retimeAppearance(plain, longer, W, H)).toBe(longer)
+
+    const clip = faded()
+    const moved: Clip = { ...clip, startS: 3 } // same length, different place
+    expect(retimeAppearance(clip, moved, W, H)).toBe(moved)
+  })
+})
+
+describe('splitAppearanceSpec', () => {
+  it('gives the entrance to the left half and the exit to the right', () => {
+    const spec = { in: 'pop', out: 'fadeOut', durS: 0.3 }
+    expect(splitAppearanceSpec(spec, 'left')).toEqual({ in: 'pop', durS: 0.3 })
+    expect(splitAppearanceSpec(spec, 'right')).toEqual({ out: 'fadeOut', durS: 0.3 })
+  })
+
+  it('drops the spec entirely from the half that animates nothing', () => {
+    expect(splitAppearanceSpec({ out: 'fadeOut' }, 'left')).toBeUndefined()
+    expect(splitAppearanceSpec({ in: 'pop' }, 'right')).toBeUndefined()
+    expect(splitAppearanceSpec(undefined, 'left')).toBeUndefined()
   })
 })

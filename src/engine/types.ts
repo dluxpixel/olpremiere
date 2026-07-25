@@ -181,6 +181,19 @@ export interface Clip {
   denoise?: number
 }
 
+// Clip duration math lives HERE, next to the fields it reads, rather than in
+// engine/timeline — so modules below timeline (engine/anim/appearance) can share
+// the one definition without importing timeline back and forming a cycle.
+// engine/timeline re-exports both, so `from './timeline'` keeps working.
+
+const clipAbsSpeed = (clip: Clip): number => Math.abs(clip.speed || 1)
+
+/** How long a clip occupies the timeline, in seconds. */
+export const clipDurationS = (clip: Clip): number => (clip.outS - clip.inS) / clipAbsSpeed(clip)
+
+/** Timeline time at which a clip ends, in seconds. */
+export const clipEndS = (clip: Clip): number => clip.startS + clipDurationS(clip)
+
 /** All keyframeable channels. Names are the shared contract across engine + UI. */
 export const ANIM_CHANNELS = [
   'posX',

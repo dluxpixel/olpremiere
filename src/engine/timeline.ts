@@ -2,9 +2,12 @@
 // No React, no DOM, no store — only types. Every function takes and returns
 // immutable data; when nothing changes the input reference comes back as-is.
 
+import { retimeAppearance, splitAppearanceAcrossCut } from './anim/appearance'
 import { withChannelKeyframes, withChannelValue } from './effects/channels'
 import { evalChannel } from './keyframes'
 import {
+  clipDurationS,
+  clipEndS,
   defaultTransform,
   newClipFromAsset,
   newId,
@@ -21,15 +24,16 @@ import {
   type Track,
 } from './types'
 
+// The duration math itself lives in ./types (so engine/anim can share it without
+// importing this module back); it is re-exported here because every caller in the
+// app addresses it as part of the timeline engine.
+export { clipDurationS, clipEndS }
+
 // Float tolerance so clip edges that touch (end == next start) never read as
 // overlapping after speed/trim arithmetic.
 const EPS = 1e-9
 
 const absSpeed = (clip: Clip): number => Math.abs(clip.speed || 1)
-
-export const clipDurationS = (clip: Clip): number => (clip.outS - clip.inS) / absSpeed(clip)
-
-export const clipEndS = (clip: Clip): number => clip.startS + clipDurationS(clip)
 
 export function sequenceDurationS(seq: Sequence): number {
   let max = 0
@@ -266,7 +270,7 @@ export function rateStretchGroup(seq: Sequence, clipId: Id, edge: 'in' | 'out', 
       const speed = sign * (span / newDur)
       // Out-edge: start fixed. In-edge: END fixed, so the start moves.
       const startS = edge === 'out' ? c.startS : clipEndS(c) - newDur
-      return { ...c, speed, startS }
+      return retimeAppearance(c, { ...c, speed, startS }, seq.width, seq.height)
     })
     return { ...track, clips }
   })
@@ -292,7 +296,7 @@ export function setClipSpeed(seq: Sequence, clipId: Id, speed: number): Sequence
     const newDur = (member.outS - member.inS) / Math.abs(s)
     const delta = member.startS + newDur - oldEnd
     const clips = track.clips.map((c) => {
-      if (groupIds.has(c.id)) return { ...c, speed: s }
+      if (groupIds.has(c.id)) return retimeAppearance(c, { ...c, speed: s }, seq.width, seq.height)
       // Ripple the tail only when the member grew, to clear the overlap.
       if (delta > EPS && c.startS >= oldEnd - EPS) return { ...c, startS: c.startS + delta }
       return c
@@ -456,6 +460,7 @@ export function trimClipTo(
     if (newEndS === endS) return seq
     next = { ...clip, outS: clip.inS + (newEndS - clip.startS) * sp }
   }
+  next = retimeAppearance(clip, next, seq.width, seq.height)
 
   return withTrackClips(
     seq,
@@ -549,6 +554,10 @@ export function splitClip(seq: Sequence, clipId: Id, tS: number): Sequence {
     }))
   left = { ...left, effects: splitParamsSide(left.effects, 'left') }
   right = { ...right, effects: splitParamsSide(right.effects, 'right') }
+  // An entrance/exit animation is edge-owned like the fades above: the left half
+  // keeps only the entrance, the right half only the exit, and each is recompiled
+  // for its own new length so a later trim can retime it.
+  ;({ left, right } = splitAppearanceAcrossCut(clip, left, right, seq.width, seq.height))
   const clips = [...track.clips.slice(0, clipIndex), left, right, ...track.clips.slice(clipIndex + 1)]
   return withTrackClips(seq, trackIndex, clips)
 }
@@ -965,6 +974,7 @@ export function rippleTrimTo(
           // implied duration delta.
           { ...clip, inS: 0, outS: (clipDurationS(clip) + deltaS) * sp }
   }
+  next = retimeAppearance(clip, next, seq.width, seq.height)
 
   const clips = track.clips.map((c, i) =>
     i === clipIndex ? next : i > clipIndex ? { ...c, startS: c.startS + deltaS } : c,
@@ -1002,14 +1012,23 @@ export function rollEditTo(
   const newLeftOutS = left.clip.inS + (t - left.clip.startS) * spL
   if (newLeftOutS === left.clip.outS && t === right.clip.startS) return seq
 
-  const newLeft: Clip = { ...left.clip, outS: newLeftOutS }
+  const newLeft: Clip = retimeAppearance(
+    left.clip,
+    { ...left.clip, outS: newLeftOutS },
+    seq.width,
+    seq.height,
+  )
   const rInS = right.clip.inS + (t - right.clip.startS) * spR
-  const newRight: Clip =
+  const newRight: Clip = retimeAppearance(
+    right.clip,
     rInS >= 0
       ? { ...right.clip, startS: t, inS: rInS }
       : // Right image pulled left past source zero: floor inS, keep its end
         // fixed by widening outS.
-        { ...right.clip, startS: t, inS: 0, outS: (rightEndS - t) * spR }
+        { ...right.clip, startS: t, inS: 0, outS: (rightEndS - t) * spR },
+    seq.width,
+    seq.height,
+  )
 
   const clips = right.track.clips.map((c) =>
     c.id === leftClipId ? newLeft : c.id === rightClipId ? newRight : c,
@@ -1118,15 +1137,24 @@ export function slideClip(
   const t = Math.min(hi, Math.max(lo, tS))
   if (t === clip.startS) return seq
 
-  const newPrev: Clip = { ...prev, outS: prev.inS + (t - prev.startS) * spP }
+  const newPrev: Clip = retimeAppearance(
+    prev,
+    { ...prev, outS: prev.inS + (t - prev.startS) * spP },
+    seq.width,
+    seq.height,
+  )
   const newStartN = t + durS
   const nInS = nextClip.inS + (newStartN - nextClip.startS) * spN
-  const newNext: Clip =
+  const newNext: Clip = retimeAppearance(
+    nextClip,
     nInS >= 0
       ? { ...nextClip, startS: newStartN, inS: nInS }
       : // Image next pulled left past source zero: floor inS, keep its end
         // fixed by widening outS.
-        { ...nextClip, startS: newStartN, inS: 0, outS: (nextEndS - newStartN) * spN }
+        { ...nextClip, startS: newStartN, inS: 0, outS: (nextEndS - newStartN) * spN },
+    seq.width,
+    seq.height,
+  )
 
   const clips = track.clips.map((c, i) =>
     i === clipIndex - 1
