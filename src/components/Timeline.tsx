@@ -51,6 +51,7 @@ import {
   rollEditTo,
   slideClip,
   slipClip,
+  slipGroup,
   snapTime,
   splitGroup,
   trimClipTo,
@@ -161,13 +162,33 @@ function rulerLabel(tS: number, fps: number, majorStepS: number): string {
   return hh > 0 ? `${hh}:${pad(mm)}:${pad(ss)}` : `${mm}:${pad(ss)}`
 }
 
-function Ruler({ contentWidth, lengthS }: { contentWidth: number; lengthS: number }) {
+/**
+ * Ticks are built ONLY for the visible window and the component is memoized.
+ * Zoomed in, majorStepS drops to 0.1s, so a 5-minute project meant ~3,600 majors
+ * x 7 DOM nodes — and Ruler re-rendered with its parent, i.e. on every pointermove
+ * of a clip drag or a zoom-slider drag. It sits inside the same content div as the
+ * clips, which are already virtualized and memoized for exactly this reason.
+ */
+const Ruler = memo(function Ruler({
+  contentWidth,
+  lengthS,
+  winStartS,
+  winEndS,
+}: {
+  contentWidth: number
+  lengthS: number
+  winStartS: number
+  winEndS: number
+}) {
   const pxPerS = useStore((s) => s.ui.pxPerS)
   const fps = useStore((s) => activeSequence(s.project).fps)
   const { majorStepS, minorStepS } = tickSpecFor(pxPerS)
 
+  // Snap the window to the tick grid so labels never shift as you scroll.
+  const from = Number.isFinite(winStartS) ? Math.max(0, Math.floor(winStartS / majorStepS) * majorStepS) : 0
+  const to = Number.isFinite(winEndS) ? Math.min(lengthS, winEndS) : lengthS
   const majors: number[] = []
-  for (let t = 0; t <= lengthS; t += majorStepS) majors.push(t)
+  for (let t = from; t <= to; t += majorStepS) majors.push(t)
 
   return (
     <div
@@ -191,7 +212,7 @@ function Ruler({ contentWidth, lengthS }: { contentWidth: number; lengthS: numbe
       ))}
     </div>
   )
-}
+})
 
 // ---------------------------------------------------------------------------
 // Track header
@@ -879,7 +900,8 @@ type Drag =
   | { kind: 'trim'; clipId: Id; edge: 'in' | 'out'; ripple: boolean; solo: boolean }
   /** Alt+edge-drag: retime the clip (speed changes, source in/out stay put). */
   | { kind: 'stretch'; clipId: Id; edge: 'in' | 'out' }
-  | { kind: 'slip'; clipId: Id; startXPx: number }
+  /** `solo`: this half was singled out before the grab → slip it alone. */
+  | { kind: 'slip'; clipId: Id; startXPx: number; solo: boolean }
   /** Ctrl+Alt+edge-drag: roll the shared cut - both outer ends stay fixed. */
   | { kind: 'roll'; leftId: Id; rightId: Id }
   /** Ctrl+Alt+body-drag: slide the clip - neighbours absorb, totals preserved. */
@@ -1326,6 +1348,10 @@ export function Timeline({ height }: { height: number }) {
       return
     }
     // Selection tool: select, then start a move (or Alt = slip) drag.
+    // Read the A/V-link intent BEFORE the select below, exactly like the trim
+    // path: grabbing always selects the clip, so asking afterwards would report
+    // "solo" every time and quietly kill linked slipping.
+    const soloSlip = soloTrimIntent(clip.id)
     if (e.shiftKey) {
       setUI({
         selection: selection.includes(clip.id)
@@ -1347,7 +1373,7 @@ export function Timeline({ height }: { height: number }) {
       return
     }
     if (e.altKey) {
-      beginDrag(e, { kind: 'slip', clipId: clip.id, startXPx: x })
+      beginDrag(e, { kind: 'slip', clipId: clip.id, startXPx: x, solo: soloSlip })
       return
     }
     // Multi-selection: carry every OTHER selected unlocked clip (deduped by
@@ -1838,7 +1864,7 @@ export function Timeline({ height }: { height: number }) {
     } else if (drag.kind === 'slip') {
       const deltaS = quantizeToFrame((x - drag.startXPx) / pxPerS, seq.fps)
       dragFinal.current = { trackId: '', tS: deltaS }
-      const next = slipClip(seq, assets, drag.clipId, deltaS)
+      const next = (drag.solo ? slipClip : slipGroup)(seq, assets, drag.clipId, deltaS)
       setPreviewSeq(next)
       const slipped = next.tracks.flatMap((tr) => tr.clips).find((c) => c.id === drag.clipId)
       const slipOrig = seq.tracks.flatMap((tr) => tr.clips).find((c) => c.id === drag.clipId)
@@ -1963,7 +1989,7 @@ export function Timeline({ height }: { height: number }) {
       updateActiveSequence('Rate stretch', (sq) => rateStretchGroup(sq, drag.clipId, drag.edge, tS))
     } else if (drag.kind === 'slip' && dragFinal.current) {
       const { tS } = dragFinal.current
-      updateActiveSequence('Slip clip', (sq) => slipClip(sq, assets, drag.clipId, tS))
+      updateActiveSequence('Slip clip', (sq) => (drag.solo ? slipClip : slipGroup)(sq, assets, drag.clipId, tS))
     } else if (drag.kind === 'roll' && dragFinal.current) {
       const { tS } = dragFinal.current
       updateActiveSequence('Roll edit', (sq) => rollEditTo(sq, assets, drag.leftId, drag.rightId, tS))
@@ -2330,7 +2356,7 @@ export function Timeline({ height }: { height: number }) {
                 if (e.currentTarget.hasPointerCapture(e.pointerId)) scrubTo(e.clientX)
               }}
             >
-              <Ruler contentWidth={contentWidth} lengthS={lengthS} />
+              <Ruler contentWidth={contentWidth} lengthS={lengthS} winStartS={winStartS} winEndS={winEndS} />
               {/* Work area: the range an export renders. Drawn under the markers
                   so a marker sitting on the in point stays legible. */}
               {area.active && (

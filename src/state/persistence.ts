@@ -154,7 +154,18 @@ export async function getBlob(key: string): Promise<Blob | null> {
 
 const AUTOSAVE_DEBOUNCE_MS = 1000
 let saveTimer: number | undefined
+/** True once a background autosave has failed, until one succeeds again. */
+let autosaveFailing = false
 
+/**
+ * Write the open project. REJECTS when the write fails — every caller has to
+ * decide what a failed save means for it, because the failure modes here
+ * (origin quota exhausted, disk full, a wiped/blocked IndexedDB) all mean the
+ * user's edits exist ONLY in memory. Swallowing the error made a failed save
+ * indistinguishable from a successful one at every call site: Ctrl+S showed a
+ * green "Project saved", the updater relaunched the app, and opening another
+ * project overwrote the unsaved one.
+ */
 async function flushSave(): Promise<void> {
   const { setUI } = useStore.getState()
   setUI({ saveState: 'saving' })
@@ -164,10 +175,11 @@ async function flushSave(): Promise<void> {
   } catch (err) {
     console.error('OL Studio autosave failed', err)
     setUI({ saveState: 'unsaved' })
+    throw err
   }
 }
 
-/** Save immediately (Ctrl+S). */
+/** Save immediately (Ctrl+S). Rejects when the write failed — see flushSave. */
 export function saveNow(): Promise<void> {
   window.clearTimeout(saveTimer)
   return flushSave()
@@ -201,7 +213,25 @@ export function initPersistence(): Promise<void> {
     (s) => s.project,
     () => {
       window.clearTimeout(saveTimer)
-      saveTimer = window.setTimeout(() => void flushSave(), AUTOSAVE_DEBOUNCE_MS)
+      saveTimer = window.setTimeout(() => {
+        flushSave().then(
+          () => {
+            autosaveFailing = false
+          },
+          () => {
+            // Say it ONCE per failure streak. The save indicator's "Unsaved" dot
+            // is the same thing it shows for a second after every edit, so on its
+            // own it cannot tell the user their work is no longer being written.
+            if (autosaveFailing) return
+            autosaveFailing = true
+            useToasts.getState().show('Could not save — your work is only in memory', 'danger', {
+              label: 'Back up to a file',
+              // Imported lazily: projectFile reads blobs back out of THIS module.
+              onClick: () => void import('./projectFile').then((m) => m.exportProjectToFile()),
+            })
+          },
+        )
+      }, AUTOSAVE_DEBOUNCE_MS)
     },
   )
   return hydrated

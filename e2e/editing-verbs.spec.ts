@@ -230,3 +230,44 @@ test('trimming with nothing selected still trims the linked pair together', asyn
   expect(after.find((c) => c.id === a0.id)!.outS).toBeLessThan(a0.outS)
   expect(after.find((c) => c.id === v0.id)!.outS).toBeLessThan(v0.outS)
 })
+
+test('slip with nothing selected slips BOTH halves, so the pair stays in sync', async ({ page }) => {
+  await boot(page)
+  await page.getByTestId('asset-card').dblclick()
+  await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
+  await setUI(page, { selection: [] })
+
+  // Trim both heads together first, so the pair has source handles on the left.
+  const video = page.locator('[data-clip-kind="video"]').first()
+  let box = (await video.boundingBox())!
+  await page.mouse.move(box.x + 3, box.y + box.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(box.x + 33, box.y + box.height / 2, { steps: 6 })
+  await page.mouse.up()
+  await setUI(page, { selection: [] })
+
+  const before = await clips(page)
+  const v0 = before.find((c) => c.trackKind === 'video')!
+  const a0 = before.find((c) => c.trackKind === 'audio')!
+  expect(v0.inS).toBeGreaterThan(0)
+  expect(a0.inS).toBeGreaterThan(0)
+
+  box = (await video.boundingBox())!
+  await page.keyboard.down('Alt')
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(box.x + box.width / 2 - 15, box.y + box.height / 2, { steps: 5 })
+  await page.mouse.up()
+  await page.keyboard.up('Alt')
+
+  const after = await clips(page)
+  const v1 = after.find((c) => c.id === v0.id)!
+  const a1 = after.find((c) => c.id === a0.id)!
+  // The video's source window actually moved...
+  expect(v1.inS).toBeLessThan(v0.inS)
+  // ...and the audio followed by exactly the same amount. Slipping only the
+  // grabbed half left the picture running ahead of the voice, permanently,
+  // with no visual feedback at all.
+  expect(a1.inS - a0.inS).toBeCloseTo(v1.inS - v0.inS, 6)
+  expect(v1.startS).toBe(v0.startS) // still a slip: position unchanged
+})

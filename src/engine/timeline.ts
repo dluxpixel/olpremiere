@@ -740,7 +740,16 @@ export function addClipWithLinkedAudio(
   }
 }
 
-/** Move a clip and shift every linked group member by the same time delta. */
+/**
+ * Move a clip and shift every linked group member by the same time delta.
+ *
+ * ALL-OR-NOTHING: if any partner cannot take that exact delta on its own track,
+ * the whole move is refused (same contract as rateStretchGroup). moveClip alone
+ * would forward the partner's desired start through resolveStart, whose job is
+ * to find the NEAREST free gap — so a busy audio track silently relocated the
+ * voice seconds away from its picture, permanently out of sync, after one
+ * ordinary drag.
+ */
 export function moveGroup(seq: Sequence, clipId: Id, targetTrackId: Id, desiredStartS: number): Sequence {
   const group = clipGroupIds(seq, clipId)
   if (group.length <= 1) return moveClip(seq, clipId, targetTrackId, desiredStartS)
@@ -751,12 +760,21 @@ export function moveGroup(seq: Sequence, clipId: Id, targetTrackId: Id, desiredS
   if (!after) return next
   const delta = after.clip.startS - before.clip.startS
   if (delta === 0) return next
-  for (const id of group) {
-    if (id === clipId) continue
-    const m = findClip(next, id)
-    if (!m) continue
-    next = moveClip(next, id, m.track.id, m.clip.startS + delta)
-  }
+
+  const members = group
+    .filter((id) => id !== clipId)
+    .map((id) => findClip(next, id))
+    .filter((m): m is NonNullable<typeof m> => m !== null)
+  const targetStart = (m: (typeof members)[number]): number => Math.max(0, m.clip.startS + delta)
+  // Every partner must land exactly where the delta puts it, or nobody moves.
+  const allFit = members.every(
+    (m) =>
+      Math.abs(targetStart(m) - (m.clip.startS + delta)) < EPS &&
+      canPlace(m.track, targetStart(m), clipDurationS(m.clip), m.clip.id),
+  )
+  if (!allFit) return seq
+
+  for (const m of members) next = moveClip(next, m.clip.id, m.track.id, targetStart(m))
   return next
 }
 
@@ -992,6 +1010,51 @@ export function slipClip(
   )
 }
 
+/**
+ * Slip every member of a linked group by ONE common delta.
+ *
+ * Slipping only the grabbed clip changed the video's source window while its
+ * linked audio kept the old one — the picture ran ahead of the voice by exactly
+ * the slip amount, permanently, and with no visual feedback at all (the clip
+ * neither moves nor changes length). Every other pair-aware verb in this file
+ * operates on the group; slip was the one that did not.
+ *
+ * The members' source headroom is INTERSECTED first, so a member that runs out
+ * of handles clamps the whole group instead of the halves drifting apart.
+ */
+export function slipGroup(
+  seq: Sequence,
+  assets: Record<Id, MediaAsset>,
+  clipId: Id,
+  deltaS: number,
+): Sequence {
+  const ids = clipGroupIds(seq, clipId)
+  if (ids.length <= 1) return slipClip(seq, assets, clipId, deltaS)
+
+  let lo = -Infinity
+  let hi = Infinity
+  let slippable = 0
+  for (const id of ids) {
+    const found = findClip(seq, id)
+    if (!found) continue
+    const asset = assets[found.clip.assetId] as MediaAsset | undefined
+    if (!asset || asset.kind === 'image') continue
+    slippable++
+    // slipClip clamps in SOURCE seconds; convert the headroom to timeline
+    // seconds so one delta is comparable across members at any speed.
+    const sp = absSpeed(found.clip)
+    lo = Math.max(lo, -found.clip.inS / sp)
+    hi = Math.min(hi, (asset.durationS - found.clip.outS) / sp)
+  }
+  if (slippable === 0) return seq
+
+  const d = Math.min(Math.max(deltaS, lo), hi)
+  if (d === 0) return seq
+  let next = seq
+  for (const id of ids) next = slipClip(next, assets, id, d)
+  return next
+}
+
 export function slideClip(
   seq: Sequence,
   assets: Record<Id, MediaAsset>,
@@ -1151,6 +1214,16 @@ export function pasteClips(
   // Remap link groups to FRESH ids: clips linked in the payload stay linked to
   // each other, but never to the source clips (which would merge groups).
   const linkRemap = new Map<Id, Id>()
+  // A link only survives when the payload carries the WHOLE pair. Copying just
+  // the video half used to mint it a link group of one: a linked video clip
+  // emits no audio of its own (its partner is supposed to), so the pasted clip
+  // played and exported permanently silent while still showing the link badge.
+  // Alone, it is a standalone clip and keeps its own audio.
+  const linkCount = new Map<Id, number>()
+  for (const item of payload) {
+    const id = item.clip.linkId
+    if (id) linkCount.set(id, (linkCount.get(id) ?? 0) + 1)
+  }
   let tracks = seq.tracks
   for (const item of payload) {
     const sameKind = kindIdx[item.trackKind]
@@ -1162,7 +1235,9 @@ export function pasteClips(
     const body = structuredClone(item.clip)
     const durS = (body.outS - body.inS) / Math.abs(body.speed || 1)
     let linkId = body.linkId
-    if (linkId) {
+    if (linkId && (linkCount.get(linkId) ?? 0) < 2) {
+      linkId = undefined
+    } else if (linkId) {
       const mapped = linkRemap.get(linkId) ?? newId()
       linkRemap.set(linkId, mapped)
       linkId = mapped

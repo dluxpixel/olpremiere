@@ -46,6 +46,11 @@ export function ClipWaveform({
     ctx.clearRect(0, 0, pw, ph)
     ctx.fillStyle = 'rgba(233,245,255,0.62)'
     const sliced = slicePeaks(peaks, asset.durationS, clip.inS, clip.outS, cols)
+    // slicePeaks always walks the source left-to-right; a reversed clip PLAYS it
+    // the other way (engine/audio.ts reverseAboutContainer). Drawing the source
+    // order put the picture out of step with the sound, so razoring on a visible
+    // transient cut nowhere near it. Same step filmstrip.ts already does.
+    if (clip.speed < 0) sliced.reverse()
     const mid = ph / 2
     const colW = pw / cols
     const maxHalf = Math.max(1, (ph - 2 * dpr) / 2)
@@ -55,7 +60,7 @@ export function ClipWaveform({
       const half = Math.max(0.6 * dpr, sliced[x] * maxHalf)
       ctx.fillRect(x * colW, mid - half, Math.max(1, colW - 0.4 * dpr), half * 2)
     }
-  }, [peaks, width, height, clip.inS, clip.outS, asset.durationS])
+  }, [peaks, width, height, clip.inS, clip.outS, clip.speed, asset.durationS])
 
   return (
     <canvas

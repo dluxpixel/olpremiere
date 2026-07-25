@@ -185,7 +185,13 @@ function buildAppBindings(): Binding[] {
         description: 'Save project',
         domain: 'project',
         run: () => {
-          void saveNow().then(() => useToasts.getState().show('Project saved', 'success'))
+          void saveNow().then(
+            () => useToasts.getState().show('Project saved', 'success'),
+            () =>
+              useToasts
+                .getState()
+                .show('Could not save — your work is only in memory', 'danger'),
+          )
         },
       },
       { combo: 'space', description: 'Play / Pause', domain: 'transport', run: togglePlay },
@@ -354,7 +360,17 @@ export default function App() {
           return
         }
         useToasts.getState().show(`Updating to v${version}…`, 'info')
-        void saveNow().finally(() => olApi?.restartToUpdate?.())
+        // Restart ONLY if the flush actually landed. Relaunching after a failed
+        // save destroys every edit since the last successful write — the update
+        // can wait for a restart the user chooses.
+        void saveNow().then(
+          () => olApi?.restartToUpdate?.(),
+          () =>
+            useToasts.getState().show(`Could not save — update ${version} deferred`, 'danger', {
+              label: 'Restart anyway',
+              onClick: () => olApi?.restartToUpdate?.(),
+            }),
+        )
       }),
     [],
   )

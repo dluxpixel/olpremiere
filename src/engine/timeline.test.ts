@@ -39,6 +39,7 @@ import {
   setSequenceFormat,
   slideClip,
   slipClip,
+  slipGroup,
   snapTime,
   splitClip,
   unlockedClipIds,
@@ -2167,5 +2168,78 @@ describe('close gap — link-group aware', () => {
     const aud = r.tracks[1].clips.find((c) => c.id === 'A1')!
     expect(vid.startS).toBeCloseTo(2, 6)
     expect(aud.startS).toBeCloseTo(2, 6) // partner moved the same 3s — no A/V drift
+  })
+})
+
+describe('linked A/V groups stay in sync', () => {
+  const find = (seq: Sequence, id: string) => seq.tracks.flatMap((t) => t.clips).find((c) => c.id === id)!
+
+  it('moveGroup refuses the whole move when a partner cannot take the delta', () => {
+    // V at 0-4 on V1; its linked audio A at 0-4 on A1, plus music M at 5-9 on A1.
+    // Dragging V to 6 leaves no 4s hole at 6 on A1 — resolveStart would have
+    // relocated A to 9, three seconds away from its own picture.
+    const v = makeClip({ startS: 0, outS: 4, linkId: 'g' })
+    const a = makeClip({ startS: 0, outS: 4, linkId: 'g' })
+    const m = makeClip({ startS: 5, outS: 4 })
+    const vTrack = makeTrack({ clips: [v] })
+    const aTrack = makeTrack({ kind: 'audio', clips: [a, m] })
+    const seq = makeSeq([vTrack, aTrack])
+
+    const out = moveGroup(seq, v.id, vTrack.id, 6)
+    expect(find(out, v.id).startS).toBe(0) // nothing moved at all
+    expect(find(out, a.id).startS).toBe(0)
+    expect(find(out, m.id).startS).toBe(5)
+  })
+
+  it('moveGroup still moves the pair together when there IS room', () => {
+    const v = makeClip({ startS: 0, outS: 4, linkId: 'g' })
+    const a = makeClip({ startS: 0, outS: 4, linkId: 'g' })
+    const vTrack = makeTrack({ clips: [v] })
+    const aTrack = makeTrack({ kind: 'audio', clips: [a] })
+    const out = moveGroup(makeSeq([vTrack, aTrack]), v.id, vTrack.id, 6)
+    expect(find(out, v.id).startS).toBe(6)
+    expect(find(out, a.id).startS).toBe(6)
+  })
+
+  it('slipGroup slips BOTH halves, so the picture never runs ahead of the voice', () => {
+    const v = makeClip({ startS: 0, inS: 2, outS: 6, linkId: 'g' })
+    const a = makeClip({ startS: 0, inS: 2, outS: 6, linkId: 'g' })
+    const seq = makeSeq([makeTrack({ clips: [v] }), makeTrack({ kind: 'audio', clips: [a] })])
+    const out = slipGroup(seq, ASSETS, v.id, 1)
+    expect(find(out, v.id).inS).toBeCloseTo(3, 6)
+    expect(find(out, a.id).inS).toBeCloseTo(3, 6)
+    expect(find(out, v.id).outS).toBeCloseTo(find(out, a.id).outS, 6)
+    // and it is still a slip: position and length untouched
+    expect(find(out, v.id).startS).toBe(0)
+    expect(clipDurationS(find(out, v.id))).toBeCloseTo(4, 6)
+  })
+
+  it('slipGroup clamps to the TIGHTEST member so the halves cannot diverge', () => {
+    // The audio half has only 0.5s of tail handle left; the video has 4s.
+    const v = makeClip({ startS: 0, inS: 2, outS: 6, linkId: 'g' })
+    const a = makeClip({ startS: 0, inS: 2, outS: 9.5, linkId: 'g' })
+    const seq = makeSeq([makeTrack({ clips: [v] }), makeTrack({ kind: 'audio', clips: [a] })])
+    const out = slipGroup(seq, ASSETS, v.id, 3)
+    expect(find(out, v.id).inS).toBeCloseTo(2.5, 6)
+    expect(find(out, a.id).inS).toBeCloseTo(2.5, 6)
+  })
+
+  it('pasting only ONE half of a pair drops the link, so the copy still has sound', () => {
+    const v = makeClip({ startS: 0, outS: 4, linkId: 'g' })
+    const a = makeClip({ startS: 0, outS: 4, linkId: 'g' })
+    const vTrack = makeTrack({ clips: [v] })
+    const seq = makeSeq([vTrack, makeTrack({ kind: 'audio', clips: [a] })])
+
+    const lone = pasteClips(seq, serializeClips(seq, [v.id]), 5)
+    const pasted = find(lone.seq, lone.newIds[0])
+    expect(pasted.linkId).toBeUndefined()
+    expect(clipEmitsAudio(vTrack, pasted)).toBe(true)
+
+    // The whole pair still pastes LINKED, to each other and not to the source.
+    const both = pasteClips(seq, serializeClips(seq, [v.id, a.id]), 5)
+    const [pv, pa] = both.newIds.map((id) => find(both.seq, id))
+    expect(pv.linkId).toBeDefined()
+    expect(pv.linkId).toBe(pa.linkId)
+    expect(pv.linkId).not.toBe('g')
   })
 })

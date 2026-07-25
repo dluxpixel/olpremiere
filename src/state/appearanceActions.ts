@@ -19,28 +19,6 @@ function findClip(clipId: string): Clip | undefined {
     .find((c) => c.id === clipId)
 }
 
-/** One undo step; a locked track rejects the edit (mirrors clipEdits.mapClip). */
-function mapClip(clipId: string, label: string, fn: (clip: Clip) => Clip): void {
-  updateActiveSequence(label, (seq) => ({
-    ...seq,
-    tracks: seq.tracks.map((t) =>
-      !t.locked && t.clips.some((c) => c.id === clipId)
-        ? { ...t, clips: t.clips.map((c) => (c.id === clipId ? fn(c) : c)) }
-        : t,
-    ),
-  }))
-}
-
-/** Merge a patch into a clip's appearance and recompile its keyframes. */
-export function setClipAppearance(clipId: string, patch: Partial<AppearanceSpec>): void {
-  const clip = findClip(clipId)
-  if (!clip) return
-  const seq = activeSequence(useStore.getState().project)
-  const spec: AppearanceSpec = { ...clip.appearance, ...patch }
-  const label = 'in' in patch ? 'Set entrance' : 'out' in patch ? 'Set exit' : 'Set appearance'
-  mapClip(clipId, label, (c) => applyAppearanceToClip(c, spec, seq.width, seq.height))
-}
-
 /**
  * Merge an appearance patch into EVERY clip in `ids` and recompile, in ONE undo
  * step. Merging (not replacing) means changing the speed keeps the entrance, and
@@ -99,14 +77,6 @@ export function setClipsAppearanceDur(ids: Iterable<string>, durS: number | 'aut
     })
     return changed ? { ...seq, tracks } : seq
   })
-}
-
-/** Remove a clip's appearance animation entirely. */
-export function clearClipAppearance(clipId: string): void {
-  const clip = findClip(clipId)
-  if (!clip) return
-  const seq = activeSequence(useStore.getState().project)
-  mapClip(clipId, 'Clear animation', (c) => applyAppearanceToClip(c, {}, seq.width, seq.height))
 }
 
 // ---------------------------------------------------------------------------

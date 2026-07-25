@@ -231,8 +231,14 @@ uniform float uSeed; // resolver frame index — animates the glitch slices
 uniform float uAspect; // frame w/h — spin must rotate in ASPECT space or it shears
 out vec4 outColor;
 
+// The dip solid is weighted by LOCAL COVERAGE. Both sides are premultiplied and
+// transparent wherever their clips do not cover the frame (renderSideToFbo clears
+// to transparent so a transition on an upper track lets lower tracks show
+// through). An unweighted vec4(col, 1.0) was opaque across the WHOLE frame, so a
+// dip on a scaled PIP blacked out the full-frame background under it. A
+// full-frame clip has alpha 1 everywhere, so its dip is unchanged.
 vec4 dip(vec4 from, vec4 to, float p, vec3 col) {
-  vec4 solid = vec4(col, 1.0);
+  vec4 solid = vec4(col, 1.0) * max(from.a, to.a);
   if (p < 0.5) return mix(from, solid, clamp(p * 2.0, 0.0, 1.0));
   return mix(solid, to, clamp((p - 0.5) * 2.0, 0.0, 1.0));
 }
@@ -316,7 +322,9 @@ void main() {
     // slope — the flash pops full white then quickly settles into the footage.
     // FROM is deliberately ignored: this is an intro hit, not a blend.
     float a = (1.0 - p) * (1.0 - p);
-    col = mix(to, vec4(1.0), a);
+    // Coverage-weighted for the same reason as dip(): a white flash on a title or
+    // PIP must flash THAT clip, not blow the whole frame white.
+    col = mix(to, vec4(1.0) * max(from.a, to.a), a);
   }
   outColor = col;
 }`

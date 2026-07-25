@@ -12,7 +12,6 @@
 // missing media renders as placeholders.
 
 import * as Y from 'yjs'
-import { activeSequence } from '../engine/types'
 import { useStore } from '../state/store'
 import {
   diffEntities,
@@ -242,15 +241,6 @@ export function startCollabSession(opts: {
       transport.close()
     },
   }
-}
-
-/** The clip ids under every remote peer's playhead — for future cursor UI. */
-export function remotePlayheads(session: CollabSession): { color: string; name: string; playheadS: number }[] {
-  const seq = activeSequence(useStore.getState().project)
-  return session
-    .peers()
-    .filter((p) => p.playheadS >= 0 && p.playheadS <= seq.durationS + 60)
-    .map((p) => ({ color: p.color, name: p.name, playheadS: p.playheadS }))
 }
 
 /**

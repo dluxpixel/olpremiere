@@ -5,6 +5,8 @@ import { useStore } from './store'
 
 const saved = new Map<string, Project>()
 let roomSession: object | null = null
+/** Flip on to make the autosave flush REJECT, as a full disk / dead IDB would. */
+let saveFails = false
 
 vi.mock('./toasts', () => ({
   useToasts: { getState: () => ({ show: () => {} }) },
@@ -15,6 +17,7 @@ vi.mock('../collab/collabControl', () => ({
 }))
 vi.mock('./persistence', () => ({
   saveNow: vi.fn(async () => {
+    if (saveFails) throw new Error('quota exceeded')
     const p = useStore.getState().project
     saved.set(p.id, p)
   }),
@@ -30,6 +33,7 @@ vi.mock('./persistence', () => ({
 beforeEach(() => {
   saved.clear()
   roomSession = null
+  saveFails = false
   useStore.getState().setProject(newProject('Current'))
   useStore.getState().setUI({ selection: ['x'], playheadS: 7, playing: false })
 })
@@ -82,5 +86,28 @@ describe('removeProject', () => {
     saved.set(other.id, other)
     await removeProject(other.id)
     expect(saved.has(other.id)).toBe(false)
+  })
+})
+
+describe('a failed flush never costs the user their edits', () => {
+  it('openProject aborts instead of adopting over unsaved work', async () => {
+    const other = newProject('Other')
+    saved.set(other.id, other)
+    const currentId = useStore.getState().project.id
+    saveFails = true
+
+    await openProject(other.id)
+
+    // Still on the project that could not be written — switching would have
+    // replaced the in-memory document and dropped every edit since the last
+    // successful save.
+    expect(useStore.getState().project.id).toBe(currentId)
+  })
+
+  it('createProject aborts too', async () => {
+    const currentId = useStore.getState().project.id
+    saveFails = true
+    await createProject()
+    expect(useStore.getState().project.id).toBe(currentId)
   })
 })

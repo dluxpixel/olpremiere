@@ -192,9 +192,31 @@ export async function start(config: NativeExportConfig, win: BrowserWindow): Pro
 export function writeFrame(frame: ArrayBuffer): Promise<void> {
   return new Promise((resolve, reject) => {
     if (!job || !job.ffmpeg.stdin.writable) return reject(new Error('ffmpeg is not running'))
-    const ok = job.ffmpeg.stdin.write(Buffer.from(frame))
-    if (ok) resolve()
-    else job.ffmpeg.stdin.once('drain', () => resolve())
+    const j = job
+    const ok = j.ffmpeg.stdin.write(Buffer.from(frame))
+    if (ok) return resolve()
+    // A 4K frame is ~33 MB against a 64 KB pipe, so EVERY frame parks here. If
+    // ffmpeg dies while one is in flight, 'drain' never fires and the stdin
+    // 'error' above is swallowed — the promise would never settle, the worker
+    // would sit in waitFrameAck forever, and the export UI would freeze at N%
+    // with no error. Race the drain against the process actually ending; first
+    // settle wins, so the happy path is unchanged.
+    const cleanup = (): void => {
+      j.ffmpeg.stdin.removeListener('drain', onDrain)
+      j.ffmpeg.stdin.removeListener('close', onGone)
+      j.ffmpeg.removeListener('close', onGone)
+    }
+    const onDrain = (): void => {
+      cleanup()
+      resolve()
+    }
+    const onGone = (): void => {
+      cleanup()
+      reject(new Error('ffmpeg exited during export'))
+    }
+    j.ffmpeg.stdin.once('drain', onDrain)
+    j.ffmpeg.stdin.once('close', onGone)
+    j.ffmpeg.once('close', onGone)
   })
 }
 

@@ -408,7 +408,6 @@ export function newAdjustmentClip(startS: number, durationS = 5): Clip {
   }
 }
 
-export const isAdjustmentClip = (clip: Clip): boolean => clip.adjustment === true
 
 /** A plain clip referencing an imported asset, placed at startS (in-point 0). */
 export function newClipFromAsset(asset: MediaAsset, startS: number): Clip {

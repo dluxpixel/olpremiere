@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { resolveChannel } from './effects/channels'
 import { evalChannel } from './keyframes'
 import { impactClip, punchInClip, rampSpeedRange, whipClips, RAMP_MOTION_BLUR_PX } from './motion'
 import { clipEndS } from './timeline'
@@ -20,8 +21,14 @@ function seed(): { seq: Sequence; clip: Clip } {
   return { seq: { ...seq, durationS: 12 }, clip }
 }
 
-const scaleAt = (clip: Clip, tLocal: number) =>
-  evalChannel(clip.keyframes?.scale, tLocal, clip.transform.scale)
+const scaleAt = (clip: Clip, tLocal: number) => resolveChannel(clip, 'scale', tLocal)
+
+/**
+ * Colour channels resolve out of the EFFECT STACK, not clip.keyframes — assert
+ * where the renderer actually reads, or a write to the dead legacy address
+ * passes while nothing renders.
+ */
+const colorAt = (clip: Clip, ch: 'saturation' | 'blur', tLocal: number) => resolveChannel(clip, ch, tLocal)
 
 describe('punchInClip', () => {
   it('holds 1.0, rises fast to the target, holds, and returns', () => {
@@ -73,12 +80,14 @@ describe('impactClip', () => {
   it('desaturates, blurs, and punches at the beat, neutral before/after', () => {
     const { clip } = seed()
     const out = impactClip(clip, FPS, { atS: at, desat: 0.1, blurPx: 6, scale: 1.08 })
-    expect(evalChannel(out.keyframes?.saturation, local, 0)).toBeCloseTo(-0.9, 6)
-    expect(evalChannel(out.keyframes?.blur, local, 0)).toBeCloseTo(6, 6)
+    expect(colorAt(out, 'saturation', local)).toBeCloseTo(-0.9, 6)
+    expect(colorAt(out, 'blur', local)).toBeCloseTo(6, 6)
+    // and they are real effect instances, so resolveFrame will render them
+    expect(out.effects.map((e) => e.type).sort()).toEqual(['gaussianBlur', 'saturation'])
     expect(scaleAt(out, local)).toBeCloseTo(1.08, 6)
     // well before and after: neutral
-    expect(evalChannel(out.keyframes?.saturation, 0.5, 0)).toBeCloseTo(0, 6)
-    expect(evalChannel(out.keyframes?.blur, 9, 0)).toBeCloseTo(0, 6)
+    expect(colorAt(out, 'saturation', 0.5)).toBeCloseTo(0, 6)
+    expect(colorAt(out, 'blur', 9)).toBeCloseTo(0, 6)
     expect(scaleAt(out, 9)).toBeCloseTo(1, 6)
   })
 
@@ -150,6 +159,23 @@ describe('rampSpeedRange', () => {
     const middle = out.tracks[0].clips.find((c) => c.id === middleId)!
     expect(middle.speed).toBe(0.5)
     expect(middle.effects).toHaveLength(0)
+  })
+
+  it('slow-motion RIPPLES the tail instead of overlapping it', () => {
+    // 3s of content at 0.5x lasts 6s, so the middle piece grows from [5,8) to
+    // [5,11) and the right piece has to move. Overlapping clips on one track
+    // break the resolver's binary search: the later clip wins and the tail of
+    // the slow-motion the user just asked for is invisible.
+    const { seq, clip } = seed()
+    const { seq: out } = rampSpeedRange(seq, clip.id, 5, 8, 0.5, nextId)
+    const clips = out.tracks[0].clips
+    expect(clips).toHaveLength(3)
+    const [left, middle, right] = clips
+    expect(clipEndS(middle)).toBeCloseTo(11, 6)
+    expect(right.startS).toBeCloseTo(11, 6)
+    // and the whole track stays sorted + non-overlapping
+    expect(clipEndS(left)).toBeLessThanOrEqual(middle.startS + 1e-6)
+    expect(clipEndS(middle)).toBeLessThanOrEqual(right.startS + 1e-6)
   })
 
   it('a range covering the whole clip just re-speeds it (sliver guard folds the splits)', () => {

@@ -4,17 +4,27 @@
 // preview and export, stays fully hand-editable afterwards, and merges with
 // whatever keyframes the clip already carries. Pure: no store, no DOM.
 
-import { evalChannel, upsertKeyframe } from './keyframes'
-import { clipEndS, recomputeDuration, splitClip } from './timeline'
+import { channelKeyframes, resolveChannel, withChannelKeyframes } from './effects/channels'
+import { upsertKeyframe } from './keyframes'
+import { clipEndS, recomputeDuration, setClipSpeed, splitClip } from './timeline'
 import type { AnimChannel, Clip, EffectInstance, Id, Keyframe, Sequence } from './types'
 
 const clamp = (x: number, lo: number, hi: number): number => (x < lo ? lo : x > hi ? hi : x)
 
-/** Merge a run of keyframes into one channel of a clip (immutably). */
+/**
+ * Merge a run of keyframes into one channel of a clip (immutably).
+ *
+ * Goes through the channel adapter, NOT `clip.keyframes` directly: transform
+ * channels live on the clip but the colour channels ('saturation', 'blur') are
+ * addresses into `clip.effects`, and the renderer only ever reads colour out of
+ * the effect stack. Writing those straight to `clip.keyframes` produced
+ * keyframes nothing rendered — until a reload, when the legacy migration moved
+ * them into real effects and the same project suddenly graded differently.
+ */
 function withKeyframes(clip: Clip, channel: AnimChannel, kfs: Keyframe[]): Clip {
-  let list = clip.keyframes?.[channel]
+  let list: readonly Keyframe[] = channelKeyframes(clip, channel)
   for (const kf of kfs) list = upsertKeyframe(list, kf)
-  return { ...clip, keyframes: { ...clip.keyframes, [channel]: list! } }
+  return withChannelKeyframes(clip, channel, [...list])
 }
 
 const durS = (clip: Clip): number => (clip.outS - clip.inS) / (Math.abs(clip.speed) || 1)
@@ -47,7 +57,7 @@ export function punchInClip(clip: Clip, fps: number, options: PunchInOptions): C
   const holdS = options.holdS ?? 0.5
   const returnS = options.returnS ?? 0.25
   const at = clamp(options.atS - clip.startS, 0, Math.max(0, durS(clip) - riseS))
-  const base = evalChannel(clip.keyframes?.scale, at, clip.transform.scale)
+  const base = resolveChannel(clip, 'scale', at)
   // Envelope shape shared by scale and (when focal) position: ratio r of the
   // resting scale at each knot.
   const knots: { t: number; r: number; ease: Keyframe['ease'] }[] = [
@@ -66,8 +76,8 @@ export function punchInClip(clip: Clip, fps: number, options: PunchInOptions): C
     // scaling, so the layer shifts by -f*(r-1).
     const fx = options.focal.x - options.seqWidth / 2
     const fy = options.focal.y - options.seqHeight / 2
-    const xBase = evalChannel(clip.keyframes?.posX, at, clip.transform.x)
-    const yBase = evalChannel(clip.keyframes?.posY, at, clip.transform.y)
+    const xBase = resolveChannel(clip, 'posX', at)
+    const yBase = resolveChannel(clip, 'posY', at)
     next = withKeyframes(next, 'posX', knots.map((k) => ({ t: k.t, value: xBase - fx * (k.r - 1), ease: k.ease })))
     next = withKeyframes(next, 'posY', knots.map((k) => ({ t: k.t, value: yBase - fy * (k.r - 1), ease: k.ease })))
   }
@@ -104,9 +114,9 @@ export function impactClip(clip: Clip, fps: number, options: ImpactOptions): Cli
     { t: t2 + f3, value: baseValue, ease: 'linear' },
   ]
 
-  const satBase = evalChannel(clip.keyframes?.saturation, at, clip.filters?.saturation ?? 0)
-  const blurBase = evalChannel(clip.keyframes?.blur, at, clip.filters?.blur ?? 0)
-  const scaleBase = evalChannel(clip.keyframes?.scale, at, clip.transform.scale)
+  const satBase = resolveChannel(clip, 'saturation', at)
+  const blurBase = resolveChannel(clip, 'blur', at)
+  const scaleBase = resolveChannel(clip, 'scale', at)
 
   let next = withKeyframes(clip, 'saturation', pulse(satBase, clamp((options.desat ?? 0.1) - 1, -1, 0)))
   next = withKeyframes(next, 'blur', pulse(blurBase, options.blurPx ?? 6))
@@ -114,7 +124,7 @@ export function impactClip(clip: Clip, fps: number, options: ImpactOptions): Cli
 
   const shake = options.shakePx ?? 2
   if (shake > 0) {
-    const xBase = evalChannel(clip.keyframes?.posX, at, clip.transform.x)
+    const xBase = resolveChannel(clip, 'posX', at)
     const f1 = 1 / (fps || 30)
     next = withKeyframes(next, 'posX', [
       { t: t1, value: xBase, ease: 'linear' },
@@ -184,8 +194,8 @@ export function whipClips(
     },
   }
 
-  const aScale = evalChannel(a.keyframes?.scale, durS(a), a.transform.scale)
-  const bScale = evalChannel(b.keyframes?.scale, 0, b.transform.scale)
+  const aScale = resolveChannel(a, 'scale', durS(a))
+  const bScale = resolveChannel(b, 'scale', 0)
   const outA = withKeyframes({ ...a, effects: [...a.effects, blurOut] }, 'scale', [
     { t: Math.max(0, durS(a) - f), value: aScale, ease: 'easeIn' },
     { t: durS(a), value: aScale * push, ease: 'linear' },
@@ -212,8 +222,13 @@ export interface RampResult {
  * Speed-ramp [startS, endS) of a clip: split at both bounds, set the middle
  * piece's speed, and auto-apply a light blur when it plays fast. Split edges
  * within one frame of a clip edge no-op (the sliver guard), so the ramp simply
- * extends to that clip edge. NOTE: speeding up shortens the middle piece and
- * leaves a gap before the right piece — rate changes never ripple here.
+ * extends to that clip edge.
+ *
+ * The rate change goes through `setClipSpeed`, which ripples the tail when the
+ * middle piece GROWS. Slow motion (factor < 1) lengthens it, and without the
+ * ripple it overlapped the piece after it — two clips at the same time on one
+ * track, which breaks the resolver's sorted/non-overlapping invariant and makes
+ * the tail of the slow-motion invisible. Speeding up still just leaves a gap.
  */
 export function rampSpeedRange(
   seq: Sequence,
@@ -238,9 +253,8 @@ export function rampSpeedRange(
   const middle = nextTrack.clips.find((c) => c.startS <= midT && midT < clipEndS(c))
   if (!middle) return { seq, middleId: null }
 
-  const sped: Clip = {
+  const blurred: Clip = {
     ...middle,
-    speed: (middle.speed < 0 ? -1 : 1) * factor,
     effects:
       factor > RAMP_BLUR_THRESHOLD
         ? [
@@ -252,8 +266,10 @@ export function rampSpeedRange(
   next = {
     ...next,
     tracks: next.tracks.map((t) =>
-      t.id === track.id ? { ...t, clips: t.clips.map((c) => (c.id === middle.id ? sped : c)) } : t,
+      t.id === track.id ? { ...t, clips: t.clips.map((c) => (c.id === middle.id ? blurred : c)) } : t,
     ),
   }
+  // The rate change LAST, through the op that owns the ripple.
+  next = setClipSpeed(next, middle.id, (middle.speed < 0 ? -1 : 1) * factor)
   return { seq: recomputeDuration(next), middleId: middle.id }
 }

@@ -91,6 +91,8 @@ export function blockLayout(opts: {
 interface CacheEntry {
   key: string
   canvas: OffscreenCanvas
+  /** The def that keys this entry in identityCache, so eviction can drop it too. */
+  def: TitleDef
 }
 
 const CACHE_LIMIT = 32
@@ -101,6 +103,13 @@ const cache: CacheEntry[] = []
 // playback (the def lives on the clip, unchanged until an edit makes a new one).
 // Keying a WeakMap by that object identity skips the JSON.stringify + linear scan
 // of the string cache on every hit. An edit → new def object → miss → re-raster.
+//
+// It is a WeakMap, but its keys are the STORE's own TitleDef objects, which live
+// as long as the project does — so an entry left here pins a full sequence-
+// resolution canvas (a 1080x1920 Short = 8.3 MB) for the whole session. Every
+// eviction from the bounded list MUST delete the matching identity entry, or a
+// word-caption timeline (one title clip per word) retains one canvas per word and
+// CACHE_LIMIT bounds nothing.
 let identityCache = new WeakMap<TitleDef, { w: number; h: number; canvas: OffscreenCanvas }>()
 
 export function clearTitleCache(): void {
@@ -131,6 +140,10 @@ export function rasterizeTitle(def: TitleDef, width: number, height: number): Of
   const hitIdx = cache.findIndex((e) => e.key === key)
   if (hitIdx !== -1) {
     const [hit] = cache.splice(hitIdx, 1)
+    // Re-key the entry to the def we were just handed: that is the object the
+    // identity map now points at, so it is the one eviction has to clear.
+    if (hit.def !== def) identityCache.delete(hit.def)
+    hit.def = def
     cache.push(hit) // touch → most-recently-used
     identityCache.set(def, { w: width, h: height, canvas: hit.canvas })
     return hit.canvas
@@ -267,8 +280,11 @@ export function rasterizeTitle(def: TitleDef, width: number, height: number): Of
     if (def.shadow && !hasOutline) clearShadow()
   }
 
-  cache.push({ key, canvas })
-  if (cache.length > CACHE_LIMIT) cache.shift() // evict oldest
+  cache.push({ key, canvas, def })
+  if (cache.length > CACHE_LIMIT) {
+    const evicted = cache.shift() // evict oldest
+    if (evicted) identityCache.delete(evicted.def)
+  }
   identityCache.set(def, { w: width, h: height, canvas })
   return canvas
 }

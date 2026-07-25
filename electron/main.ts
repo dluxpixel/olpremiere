@@ -129,8 +129,15 @@ app.whenReady().then(() => {
     }
   })
 
-  // Allow the microphone (voiceover recorder + monitoring) — deny everything else.
-  session.defaultSession.setPermissionRequestHandler((_wc, permission, cb) => cb(permission === 'media'))
+  // Allowlist exactly what the editor uses, deny everything else. 'media' is the
+  // voiceover recorder + monitoring; 'fullscreen' is the Monitor's Fullscreen
+  // button (Electron routes requestFullscreen through here, so denying it made
+  // the button silently do nothing in the desktop build while working on the
+  // web); 'clipboard-sanitized-write' is the collab "copy room link".
+  const ALLOWED_PERMISSIONS = new Set(['media', 'fullscreen', 'clipboard-sanitized-write'])
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, cb) =>
+    cb(ALLOWED_PERMISSIONS.has(permission)),
+  )
 
   ipcMain.handle('app:version', () => app.getVersion())
 

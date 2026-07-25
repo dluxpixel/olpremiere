@@ -116,8 +116,16 @@ export function leaveRoom(): void {
     void (async () => {
       const { loadProjectById, saveNow, saveProject } = await import('../state/persistence')
       // Flush the ROOM project first: the debounced autosave may still hold the
-      // last second of room edits, and the restore below would cancel it.
-      await saveNow()
+      // last second of room edits, and the restore below would cancel it. If that
+      // write fails, restoring would drop those edits — stay in the room instead.
+      try {
+        await saveNow()
+      } catch {
+        useToasts
+          .getState()
+          .show('Could not save the room project — staying here so nothing is lost', 'danger')
+        return
+      }
       const mine = await loadProjectById(preJoinProjectId)
       if (!mine || token !== lifecycleToken) return // re-entered a room meanwhile
       useStore.getState().setProject(mine)
