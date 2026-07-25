@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  frameBytes,
   FrameLru,
   SEQ_REOPEN_GAP,
   boundPending,
@@ -212,5 +213,59 @@ describe('spanIndices', () => {
   it('clamps to [0, maxIndex]', () => {
     expect(spanIndices(1, 2, 2)).toEqual([1, 2, 0])
     expect(spanIndices(0, 1, 0)).toEqual([0])
+  })
+})
+
+describe('FrameLru holds a memory budget, not a frame count', () => {
+  // A count bounds nothing that matters: 96 frames of 4K RGBA is ~3 GB, the
+  // same 96 frames of a 640x360 preview is 88 MB. One number cannot be right
+  // for both.
+  const sized = (bytes: number) => ({ bytes })
+  const lru = () => new FrameLru<{ bytes: number }>(1000, (v) => v.bytes)
+
+  it('evicts by weight — one heavy frame costs many light ones', () => {
+    const c = lru()
+    c.set('small1', sized(100))
+    c.set('small2', sized(100))
+    c.set('small3', sized(100))
+    expect(c.size).toBe(3)
+    // A 900-byte frame leaves room for only the newest small one.
+    const evicted = c.set('big', sized(900))
+    expect(evicted).toEqual(['small1', 'small2'])
+    expect(c.bytes).toBeLessThanOrEqual(1000)
+    expect(c.has('small3')).toBe(true)
+  })
+
+  it('keeps the frame it was just asked to hold, even if it alone busts the budget', () => {
+    const c = lru()
+    c.set('a', sized(400))
+    c.set('huge', sized(5000))
+    expect(c.has('huge')).toBe(true)
+    expect(c.size).toBe(1)
+  })
+
+  it('accounts for an overwrite instead of double-counting it', () => {
+    const c = lru()
+    c.set('a', sized(400))
+    c.set('a', sized(100))
+    expect(c.bytes).toBe(100)
+    expect(c.size).toBe(1)
+  })
+
+  it('delete releases the bytes it was holding', () => {
+    const c = lru()
+    c.set('a', sized(400))
+    c.set('b', sized(400))
+    c.delete('a')
+    expect(c.bytes).toBe(400)
+    c.set('c', sized(400))
+    expect(c.size).toBe(2) // 'a' would have been evicted otherwise
+  })
+
+  it('measures a real frame from its dimensions', () => {
+    expect(frameBytes({ width: 1920, height: 1080 } as unknown as CanvasImageSource)).toBe(1920 * 1080 * 4)
+    expect(frameBytes({ displayWidth: 640, displayHeight: 360 } as unknown as CanvasImageSource)).toBe(640 * 360 * 4)
+    // Never zero: an unmeasurable frame must still count as SOMETHING.
+    expect(frameBytes({} as unknown as CanvasImageSource)).toBeGreaterThan(0)
   })
 })

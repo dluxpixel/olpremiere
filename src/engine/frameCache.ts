@@ -10,7 +10,25 @@ import type { CanvasSink, Input, WrappedCanvas } from 'mediabunny'
 import type { Id, MediaAsset } from './types'
 
 export const FALLBACK_FPS = 30
-export const CACHE_CAP = 96
+/**
+ * Memory the decoded-frame cache may hold, in bytes.
+ *
+ * This used to be a COUNT (96 frames), which bounds nothing that matters: 96
+ * frames of 4K RGBA is about 3 GB, while 96 frames of a 640x360 preview is 88
+ * MB. One number could not be right for both, so it was set for the small case
+ * and simply hoped for on the large one. A byte budget is the thing anybody
+ * actually cares about, and it holds whatever number of frames fits.
+ */
+export const CACHE_BUDGET_BYTES = 192 * 1024 * 1024
+
+/** RGBA bytes a decoded frame occupies, from whatever shape the source has. */
+export function frameBytes(src: CanvasImageSource): number {
+  const w = (src as { width?: number; displayWidth?: number }).width ?? (src as { displayWidth?: number }).displayWidth ?? 0
+  const h =
+    (src as { height?: number; displayHeight?: number }).height ?? (src as { displayHeight?: number }).displayHeight ?? 0
+  const n = Number(w) * Number(h) * 4
+  return Number.isFinite(n) && n > 0 ? n : 1
+}
 // With sequential decode (see pump) a queued frame is cheap, so the queue can
 // afford to be deeper than the old seek-per-frame path allowed.
 export const PENDING_CAP = 16
@@ -96,11 +114,27 @@ export function boundPending(indices: number[], latest: number, cap: number): nu
 
 /** Insertion-ordered LRU: get() touches, has() peeks, set() returns evicted keys. */
 export class FrameLru<V> {
-  private map = new Map<string, V>()
-  constructor(readonly cap: number) {}
+  private map = new Map<string, { value: V; bytes: number }>()
+  private total = 0
+
+  /**
+   * `budgetBytes` is the memory ceiling; `costOf` reports what one value weighs.
+   * The newest entry is always kept even if it alone exceeds the budget — a
+   * cache that refuses the frame it was just asked to hold is worse than one
+   * slightly over its ceiling.
+   */
+  constructor(
+    readonly budgetBytes: number,
+    private readonly costOf: (v: V) => number = () => 1,
+  ) {}
 
   get size(): number {
     return this.map.size
+  }
+
+  /** Bytes currently held. */
+  get bytes(): number {
+    return this.total
   }
 
   has(key: string): boolean {
@@ -108,20 +142,26 @@ export class FrameLru<V> {
   }
 
   get(key: string): V | undefined {
-    const v = this.map.get(key)
-    if (v === undefined) return undefined
+    const e = this.map.get(key)
+    if (e === undefined) return undefined
     this.map.delete(key)
-    this.map.set(key, v)
-    return v
+    this.map.set(key, e)
+    return e.value
   }
 
   set(key: string, value: V): string[] {
+    const prev = this.map.get(key)
+    if (prev) this.total -= prev.bytes
     this.map.delete(key)
-    this.map.set(key, value)
+    const bytes = Math.max(0, this.costOf(value))
+    this.map.set(key, { value, bytes })
+    this.total += bytes
+
     const evicted: string[] = []
-    while (this.map.size > this.cap) {
+    while (this.total > this.budgetBytes && this.map.size > 1) {
       const oldest = this.map.keys().next().value
       if (oldest === undefined) break
+      this.total -= this.map.get(oldest)!.bytes
       this.map.delete(oldest)
       evicted.push(oldest)
     }
@@ -129,6 +169,9 @@ export class FrameLru<V> {
   }
 
   delete(key: string): void {
+    const e = this.map.get(key)
+    if (!e) return
+    this.total -= e.bytes
     this.map.delete(key)
   }
 
@@ -168,7 +211,7 @@ interface AssetEntry {
   iterIdx: number
 }
 
-const cache = new FrameLru<CanvasImageSource>(CACHE_CAP)
+const cache = new FrameLru<CanvasImageSource>(CACHE_BUDGET_BYTES, frameBytes)
 const entries = new Map<Id, AssetEntry>()
 
 const cacheKey = (assetId: Id, index: number): string => `${assetId}:${index}`
@@ -390,7 +433,7 @@ export function rangeIndices(
  * pre-roll: called each rAF while a pair-transition window is near so the
  * combine pass reads exact cached frames instead of seeking a <video>. Memory
  * stays bounded: only the window's frames are requested (RANGE_REQUEST_CAP,
- * then PENDING_CAP per pump pass) and the frame LRU (CACHE_CAP) ages them out
+ * then PENDING_CAP per pump pass) and the frame LRU (CACHE_BUDGET_BYTES) ages them out
  * once the cut has passed. Anchored at the range start so decode proceeds
  * ascending; a later getFrameAt re-anchors `latest` to the live playhead.
  */

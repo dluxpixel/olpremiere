@@ -260,9 +260,22 @@ interface CacheEntry {
   def: TitleDef
 }
 
-const CACHE_LIMIT = 32
+/**
+ * Memory the rasterized-title cache may hold, in bytes.
+ *
+ * This was a COUNT of 32, which says nothing about memory: every entry is a
+ * FULL-FRAME canvas, so 32 of them is 8 MB at 640x360 and 265 MB on a 1080x1920
+ * Short. A word-caption timeline makes one entry per word, so the large case is
+ * the normal one. Counting bytes turns the guess into a policy.
+ */
+const CACHE_BUDGET_BYTES = 48 * 1024 * 1024
+
+/** RGBA bytes one rasterized title holds. */
+const canvasBytes = (c: OffscreenCanvas): number => Math.max(1, c.width * c.height * 4)
+
 // Insertion-ordered LRU-ish list; oldest at index 0, evicted first.
 const cache: CacheEntry[] = []
+let cacheBytes = 0
 
 // Per-frame fast path: the SAME TitleDef object is drawn every frame during
 // playback (the def lives on the clip, unchanged until an edit makes a new one).
@@ -279,8 +292,12 @@ let identityCache = new WeakMap<TitleDef, { w: number; h: number; canvas: Offscr
 
 export function clearTitleCache(): void {
   cache.length = 0
+  cacheBytes = 0
   identityCache = new WeakMap()
 }
+
+/** Bytes the title cache is currently holding — for tests and diagnostics. */
+export const titleCacheBytes = (): number => cacheBytes
 
 function cacheKey(def: TitleDef, width: number, height: number): string {
   return `${JSON.stringify(def)}|${width}x${height}`
@@ -434,9 +451,14 @@ export function rasterizeTitle(
   }
 
   cache.push({ key, canvas, def: defIn })
-  if (cache.length > CACHE_LIMIT) {
-    const evicted = cache.shift() // evict oldest
-    if (evicted) identityCache.delete(evicted.def)
+  cacheBytes += canvasBytes(canvas)
+  // Always keep the raster we were just asked for, even if it alone exceeds the
+  // budget — refusing it would re-rasterize it on the very next frame.
+  while (cacheBytes > CACHE_BUDGET_BYTES && cache.length > 1) {
+    const evicted = cache.shift()
+    if (!evicted) break
+    cacheBytes -= canvasBytes(evicted.canvas)
+    identityCache.delete(evicted.def)
   }
   identityCache.set(defIn, { w: width, h: height, canvas })
   return canvas

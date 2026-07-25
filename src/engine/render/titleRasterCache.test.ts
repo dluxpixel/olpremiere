@@ -46,10 +46,13 @@ class StubOffscreenCanvas {
 
 vi.stubGlobal('OffscreenCanvas', StubOffscreenCanvas)
 
-const { clearTitleCache, rasterizeTitle } = await import('./titleRaster')
+const { clearTitleCache, rasterizeTitle, titleCacheBytes } = await import('./titleRaster')
 
 const W = 320
 const H = 180
+// A 9:16 Shorts raster: 8.3 MB each, so a handful of them exceeds the budget.
+const SHORT_W = 1080
+const SHORT_H = 1920
 const defFor = (text: string): TitleDef => ({ ...defaultTitleDef(text) })
 
 describe('title raster cache', () => {
@@ -60,20 +63,41 @@ describe('title raster cache', () => {
     expect(rasterizeTitle(def, W, H)).toBe(rasterizeTitle(def, W, H))
   })
 
-  it('evicting from the bounded list also releases the identity entry', () => {
+  it('evicting from the bounded cache also releases the identity entry', () => {
     // The identity WeakMap is keyed by the STORE's own TitleDef objects, which
     // live as long as the project — so an entry left behind after eviction pins
     // its canvas forever. A word-caption timeline is one title clip per word,
     // which is how a 60s caption pass used to retain ~1.2 GB of canvases.
+    // Shorts-sized rasters: each is 8.3 MB, so a handful busts the budget.
     const first = defFor('word-0')
-    const firstCanvas = rasterizeTitle(first, W, H)
+    const firstCanvas = rasterizeTitle(first, SHORT_W, SHORT_H)
 
-    // Push strictly more than CACHE_LIMIT (32) distinct defs through.
-    for (let i = 1; i <= 40; i++) rasterizeTitle(defFor(`word-${i}`), W, H)
+    for (let i = 1; i <= 12; i++) rasterizeTitle(defFor(`word-${i}`), SHORT_W, SHORT_H)
 
     // `first` was evicted, so it must RE-RASTERIZE rather than hand back the
     // canvas the identity map was still holding.
-    expect(rasterizeTitle(first, W, H)).not.toBe(firstCanvas)
+    expect(rasterizeTitle(first, SHORT_W, SHORT_H)).not.toBe(firstCanvas)
+  })
+
+  it('bounds MEMORY, not a number of entries', () => {
+    // The old bound was a count of 32, which is 8 MB of small rasters and
+    // 265 MB of Shorts-sized ones — the same number meaning two very different
+    // things. Small rasters may now pile up far past 32 while staying cheap.
+    for (let i = 0; i < 100; i++) rasterizeTitle(defFor(`small-${i}`), W, H)
+    const smallBytes = titleCacheBytes()
+    expect(smallBytes).toBeLessThanOrEqual(48 * 1024 * 1024)
+
+    clearTitleCache()
+    expect(titleCacheBytes()).toBe(0)
+
+    for (let i = 0; i < 100; i++) rasterizeTitle(defFor(`big-${i}`), SHORT_W, SHORT_H)
+    expect(titleCacheBytes()).toBeLessThanOrEqual(48 * 1024 * 1024)
+  })
+
+  it('keeps the raster it was just asked for, even if it alone busts the budget', () => {
+    const huge = defFor('huge')
+    const canvas = rasterizeTitle(huge, 8000, 8000) // 256 MB on its own
+    expect(rasterizeTitle(huge, 8000, 8000)).toBe(canvas)
   })
 
   it('a def still inside the bound keeps its cached canvas', () => {
