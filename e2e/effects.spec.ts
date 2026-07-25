@@ -436,3 +436,80 @@ test('disabling an effect restores the original pixels; re-enabling grades again
     }, { timeout: 10_000 })
     .toBeLessThan(12)
 })
+
+// --- Transitions you can SEE and REACH --------------------------------------
+// Timeline.tsx never read transitionIn/Out, so nothing was drawn on the clip:
+// there was no way to tell which cuts already had a transition. And the only
+// way to add one to video was dragging from the Effects browser — audio had a
+// one-click "Crossfade with previous", video had nothing.
+
+test('a transition is drawn on the clip, at its own width', async ({ page }) => {
+  const clipId = await addClip(page)
+  await expect(page.getByTestId('transition-overlay')).toHaveCount(0)
+
+  await page.evaluate(async (id) => {
+    const editsMod = '/src/state/clipEdits.ts'
+    const { setClipTransition } = (await import(/* @vite-ignore */ editsMod)) as {
+      setClipTransition: (id: string, edge: 'in' | 'out', kind: string, durationS?: number) => void
+    }
+    setClipTransition(id, 'in', 'glitch')
+  }, clipId)
+
+  await expect(page.getByTestId('transition-in-mark')).toBeVisible()
+  await expect(page.getByTestId('transition-out-mark')).toHaveCount(0)
+  const narrow = await page.getByTestId('transition-in-mark').locator('rect').getAttribute('width')
+
+  // A longer transition draws a wider mark — it reports the DURATION, not just
+  // that something is there.
+  await page.evaluate(async (id) => {
+    const editsMod = '/src/state/clipEdits.ts'
+    const { setClipTransition } = (await import(/* @vite-ignore */ editsMod)) as {
+      setClipTransition: (id: string, edge: 'in' | 'out', kind: string, durationS?: number) => void
+    }
+    setClipTransition(id, 'in', 'crossDissolve', 2)
+  }, clipId)
+  await expect
+    .poll(async () => Number(await page.getByTestId('transition-in-mark').locator('rect').getAttribute('width')))
+    .toBeGreaterThan(Number(narrow))
+})
+
+test('right-clicking a video clip can add and remove a transition', async ({ page }) => {
+  const clipId = await addClip(page)
+  const menu = page.getByTestId('context-menu')
+
+  await page.getByTestId('clip').first().click({ button: 'right' })
+  await menu.getByRole('menuitem', { name: 'Transition in' }).hover()
+  await menu.getByRole('menuitem', { name: /^Glitch/ }).click()
+
+  await expect(page.getByTestId('transition-in-mark')).toBeVisible()
+  expect(await transitionOf(page, clipId, 'in')).toBe('glitch')
+
+  await page.getByTestId('clip').first().click({ button: 'right' })
+  await menu.getByRole('menuitem', { name: 'Transition in' }).hover()
+  await menu.getByRole('menuitem', { name: 'None' }).click()
+  await expect(page.getByTestId('transition-in-mark')).toHaveCount(0)
+})
+
+async function transitionOf(page: Page, clipId: string, edge: 'in' | 'out'): Promise<string | null> {
+  return page.evaluate(
+    async ({ clipId, edge }) => {
+      const storeMod = '/src/state/store.ts'
+      const typesMod = '/src/engine/types.ts'
+      const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+        useStore: { getState: () => { project: unknown } }
+      }
+      const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+        activeSequence: (p: unknown) => {
+          tracks: {
+            clips: { id: string; transitionIn?: { type: string }; transitionOut?: { type: string } }[]
+          }[]
+        }
+      }
+      const clip = activeSequence(useStore.getState().project)
+        .tracks.flatMap((t) => t.clips)
+        .find((c) => c.id === clipId)
+      return (edge === 'in' ? clip?.transitionIn?.type : clip?.transitionOut?.type) ?? null
+    },
+    { clipId, edge },
+  )
+}

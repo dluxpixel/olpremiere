@@ -55,10 +55,10 @@ import {
   trimClipTo,
   trimGroup,
 } from '../engine/timeline'
-import type { TransitionKind } from '../engine/render/types'
+import { TRANSITION_KINDS, TRANSITION_LABELS, type TransitionKind } from '../engine/render/types'
 import { formatTimecode, quantizeToFrame } from '../engine/timecode'
 import { workArea } from '../engine/workArea'
-import { applyEffect, setClipTransition } from '../state/clipEdits'
+import { applyEffect, removeClipTransition, setClipTransition } from '../state/clipEdits'
 import { ASSET_MIME, EFFECT_MIME, SFX_MIME, TRANSITION_MIME, dragHasType, edgeForOffset } from '../state/dnd'
 import { insertSfxAtPlayhead } from '../state/sfxActions'
 import { comboLabel } from '../keymap'
@@ -661,6 +661,12 @@ const ClipView = memo(function ClipView({
   const fadeInPx = fadeInS * pxPerS
   const fadeOutPx = fadeOutS * pxPerS
 
+  // A transition's mark can never be wider than the clip it sits on, or two
+  // long ones on a short clip would draw past each other.
+  const halfPx = width / 2
+  const transitionInPx = Math.min(halfPx, (clip.transitionIn?.durationS ?? 0) * pxPerS)
+  const transitionOutPx = Math.min(halfPx, (clip.transitionOut?.durationS ?? 0) * pxPerS)
+
   // Effect / transition drops land on the clip itself. A transition takes the
   // edge nearest the cursor; `fxDropEdge` previews which one while hovering.
   const [fxDropEdge, setFxDropEdge] = useState<'in' | 'out' | null>(null)
@@ -679,10 +685,11 @@ const ClipView = memo(function ClipView({
     const isEffect = dragHasType(t, EFFECT_MIME)
     const isTransition = dragHasType(t, TRANSITION_MIME)
     if (!isEffect && !isTransition) return
-    // Effects composite only on video (resolveFrame skips audio tracks), so an
-    // effect dropped on an audio clip would render nothing. Refuse it here so the
-    // cursor shows "no-drop" instead of accepting a dead effect.
-    if (isAudio && isEffect) return
+    // Neither effects nor transitions composite on audio (resolveFrame skips
+    // audio tracks entirely), so either one dropped there would render nothing.
+    // Refuse both here so the cursor shows "no-drop" instead of accepting
+    // something dead.
+    if (isAudio) return
     // Beat the track-level asset drop handler to the event.
     e.preventDefault()
     e.stopPropagation()
@@ -709,7 +716,11 @@ const ClipView = memo(function ClipView({
     const effectType = e.dataTransfer.getData(EFFECT_MIME)
     const transitionKind = e.dataTransfer.getData(TRANSITION_MIME)
     if (!effectType && !transitionKind) return
-    if (isAudio && effectType) return // effects don't composite on audio (also guarded in applyEffect)
+    // Neither composites on audio: a transition is a shader blending two
+    // PICTURES, so dropping one on an audio clip wrote a field the renderer
+    // never reads and drew a mark for a transition that could not happen. Audio
+    // has its own verb — "Crossfade with previous" in the clip menu.
+    if (isAudio) return
     e.preventDefault()
     e.stopPropagation()
     clearFxDrop()
@@ -784,6 +795,49 @@ const ClipView = memo(function ClipView({
       <span className="pointer-events-none absolute left-1.5 right-1.5 top-0.5 truncate text-[11px] font-medium text-white/90 [text-shadow:0_1px_2px_rgba(0,0,0,0.6)]">
         {label}
       </span>
+
+      {/* Transitions were INVISIBLE on the timeline: nothing read transitionIn/
+          Out, so there was no way to see which cuts already had one, or which
+          kind. A bowtie at the edge, the width of the transition, is the NLE
+          convention and costs no extra hit area (it never takes pointers). */}
+      {(transitionInPx > 0.5 || transitionOutPx > 0.5) && (
+        <svg
+          data-testid="transition-overlay"
+          className="pointer-events-none absolute inset-0"
+          width={width}
+          height={innerH}
+          preserveAspectRatio="none"
+        >
+          {transitionInPx > 0.5 && (
+            <g data-testid="transition-in-mark">
+              <rect x={0} y={0} width={transitionInPx} height={innerH} fill="rgba(255,255,255,0.14)" />
+              <path
+                d={`M0,0 L${transitionInPx},${innerH} M0,${innerH} L${transitionInPx},0`}
+                stroke="rgba(255,255,255,0.7)"
+                strokeWidth={1}
+                fill="none"
+              />
+            </g>
+          )}
+          {transitionOutPx > 0.5 && (
+            <g data-testid="transition-out-mark">
+              <rect
+                x={width - transitionOutPx}
+                y={0}
+                width={transitionOutPx}
+                height={innerH}
+                fill="rgba(255,255,255,0.14)"
+              />
+              <path
+                d={`M${width - transitionOutPx},0 L${width},${innerH} M${width - transitionOutPx},${innerH} L${width},0`}
+                stroke="rgba(255,255,255,0.7)"
+                strokeWidth={1}
+                fill="none"
+              />
+            </g>
+          )}
+        </svg>
+      )}
 
       {(fadeInPx > 0.5 || fadeOutPx > 0.5) && (
         <svg
@@ -1488,6 +1542,37 @@ export function Timeline({ height }: { height: number }) {
           ]
         : []
 
+    // Transitions had NO menu at all: audio got one-click "Crossfade with
+    // previous", video got nothing but a drag from the Effects browser. Both
+    // edges are offered on every video clip, because a lone edge now runs the
+    // real transition rather than degrading to a fade to black.
+    const transitionItems: MenuItem[] =
+      track?.kind === 'video'
+        ? (['in', 'out'] as const).map((edge) => {
+            const current = edge === 'in' ? clip.transitionIn : clip.transitionOut
+            const neighbour = edge === 'in' ? canXfadePrev : canXfadeNext
+            return {
+              label: edge === 'in' ? 'Transition in' : 'Transition out',
+              separator: edge === 'in',
+              submenu: [
+                {
+                  label: 'None',
+                  checked: !current,
+                  onClick: () => removeClipTransition(clip.id, edge),
+                },
+                ...TRANSITION_KINDS.map((kind, i) => ({
+                  // A lone edge plays the transition against nothing, which is a
+                  // real look — say so rather than hiding half the list.
+                  label: neighbour ? TRANSITION_LABELS[kind] : `${TRANSITION_LABELS[kind]} (from nothing)`,
+                  separator: i === 0,
+                  checked: current?.type === kind,
+                  onClick: () => setClipTransition(clip.id, edge, kind),
+                })),
+              ],
+            }
+          })
+        : []
+
     // One-click green-screen removal on a media clip (video/image that HAS a screen).
     // Applies the chroma-key effect, which defaults to keying green at a clean
     // strength — drop-and-done, then fine-tune in the Inspector if edges remain.
@@ -1554,6 +1639,7 @@ export function Timeline({ height }: { height: number }) {
         onClick: () => pasteClipAttributes(keepSelection ? selNow : [clip.id]),
       },
       ...crossfadeItems,
+      ...transitionItems,
       ...captionItems,
       ...motionItems,
       ...greenScreenItems,
