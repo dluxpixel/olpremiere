@@ -17,7 +17,7 @@ import { prewarmPreview, previewEpoch, renderPreview } from '../engine/preview'
 import { formatTimecode, quantizeToFrame } from '../engine/timecode'
 import { activeSequence, type Sequence } from '../engine/types'
 import { pausePlayback, subscribeShuttleRate, toggleLoop, togglePlay } from '../state/playbackControl'
-import { useSettings } from '../state/settings'
+import { setPreviewQuality, useSettings } from '../state/settings'
 import { setActiveSequenceFormat, useStore } from '../state/store'
 import { IconButton } from '../ui/Button'
 import { MasterMeter } from './MasterMeter'
@@ -47,6 +47,11 @@ function aspectKeyFor(w: number, h: number): string {
 const MAX_PREVIEW_FPS = 60
 const MIN_FRAME_MS = 1000 / MAX_PREVIEW_FPS
 
+/** How long a frame may stay unresolved before the redraw drops to a trickle. */
+const PENDING_GRACE_MS = 1500
+/** The trickle: enough to catch a very late decode, cheap enough to ignore. */
+const STALLED_POLL_MS = 250
+
 /** rAF draw loop: reads the store imperatively so playback never re-renders React. */
 function useProgramCanvas(quality: Quality) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -62,6 +67,12 @@ function useProgramCanvas(quality: Quality) {
     let prevKey = ''
     let prevSeq: Sequence | null = null
     let prevComplete = false
+    // When the SAME frame first failed to fully resolve. A frame that can never
+    // resolve — media gone missing, a source that ran out — never reports
+    // complete, so the loop kept redrawing a MOTIONLESS picture at the cap
+    // forever. After a fair window for a slow decode, back the polling right
+    // off instead of parking outright, so a late frame still lands.
+    let pendingSinceT = 0
 
     // Parent size via ResizeObserver, NOT getBoundingClientRect per rAF: a
     // per-frame rect read plus unconditional style writes forced a style/layout
@@ -99,10 +110,14 @@ function useProgramCanvas(quality: Quality) {
       const key = `${frameIdx}|${playing ? 1 : 0}|${pw}x${ph}|${box.cssW}x${box.cssH}|${previewEpoch()}`
       const changed = key !== prevKey || seq !== prevSeq
 
+      if (changed) pendingSinceT = 0
       // Parked on a fully-resolved frame with nothing new: do zero GPU work.
       if (!changed && prevComplete) return
-      // Cap the redraw rate (tames high-refresh displays and rapid scrub/drag).
-      if (now - lastDrawT < MIN_FRAME_MS) return
+      // Cap the redraw rate (tames high-refresh displays and rapid scrub/drag),
+      // and drop to a trickle once a frame has been pending far longer than any
+      // decode should take.
+      const stalled = pendingSinceT > 0 && now - pendingSinceT > PENDING_GRACE_MS
+      if (now - lastDrawT < (stalled ? STALLED_POLL_MS : MIN_FRAME_MS)) return
       lastDrawT = now
 
       if (canvas.width !== pw || canvas.height !== ph) {
@@ -122,6 +137,8 @@ function useProgramCanvas(quality: Quality) {
         canvas.style.height = hPx
       }
       prevComplete = renderPreview(canvas, seq, s.project.assets, s.ui.playheadS, playing)
+      if (prevComplete) pendingSinceT = 0
+      else if (pendingSinceT === 0) pendingSinceT = now
       prevKey = key
       prevSeq = seq
     }
@@ -228,8 +245,11 @@ export function Monitor() {
   const setUI = useStore((s) => s.setUI)
   const seq = useStore((s) => activeSequence(s.project))
   const hasContent = seq.durationS > 0
-  // Opens at the Settings default; the picker below still owns the session.
-  const [quality, setQuality] = useState<Quality>(() => useSettings.getState().previewQuality)
+  // ONE setting, two surfaces. The picker used to seed itself from Settings once
+  // and never write back, so the two disagreed the moment either was touched and
+  // Settings reported a quality the preview was not using.
+  const quality = useSettings((s) => s.previewQuality) as Quality
+  const setQuality = setPreviewQuality
   // Quality tier drives BOTH the canvas raster (dpr) and the frame-cache decode
   // resolution, so Half/Quarter genuinely cut scrub cost on large sources.
   useEffect(() => {

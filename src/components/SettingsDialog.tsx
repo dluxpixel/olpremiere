@@ -156,7 +156,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
         </Group>
 
         <Group title="Playback">
-          <Row label="Preview quality" hint="What new sequences open at. Lower is smoother on heavy footage.">
+          <Row label="Preview quality" hint="Lower is smoother on heavy footage. Never affects the export.">
             <select
               aria-label="Default preview quality"
               data-testid="settings-quality"

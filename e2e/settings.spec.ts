@@ -59,7 +59,15 @@ test('settings write through to the real preferences they consolidate', async ({
   await page.getByTestId('settings-language').selectOption('cs')
   expect(await page.evaluate(() => localStorage.getItem('reel:captions:lang'))).toBe('cs')
 
-  // Preview quality default persists.
+  // Preview quality persists — and it is ONE setting: the monitor's own picker
+  // and this one are two surfaces on it, so they can never disagree.
   await page.getByTestId('settings-quality').selectOption('0.5')
   expect(await page.evaluate(() => localStorage.getItem('reel:settings:preview-quality'))).toBe('0.5')
+  await page.getByRole('button', { name: 'Close' }).click()
+  await expect(page.getByLabel('Preview quality')).toHaveValue('0.5')
+
+  // ...and back the other way.
+  await page.getByLabel('Preview quality').selectOption('0.25')
+  await page.getByTestId('settings-open').click()
+  await expect(page.getByTestId('settings-quality')).toHaveValue('0.25')
 })
