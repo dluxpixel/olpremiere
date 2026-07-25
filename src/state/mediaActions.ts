@@ -110,8 +110,11 @@ export function insertAssetAtPlayhead(assetId: Id): void {
   const { project, ui, dispatch, setUI } = useStore.getState()
   const asset = project.assets[assetId]
   if (!asset) return
-  // Select the freshly-inserted clip so an immediate trim/effect/delete acts on
-  // it without hunting it down on the timeline (matches insertSfxAtPlayhead).
+  // A fresh insert lands UNSELECTED. Selecting the video half made the very next
+  // edit read as "I singled this one out" — so trimming the head of a clip you
+  // just dropped in shortened the picture and left the audio at full length. The
+  // link is meant to hold until you deliberately pick one half. Dropping an asset
+  // from the bin onto the timeline already worked this way; this matches it.
   let newClipId: Id | null = null
   dispatch(`Add ${asset.name}`, (p) => {
     const seq = activeSequence(p)
@@ -131,5 +134,5 @@ export function insertAssetAtPlayhead(assetId: Id): void {
     newClipId = clipId || null
     return { ...p, sequences: { ...p.sequences, [seq.id]: next } }
   })
-  if (newClipId) setUI({ selection: [newClipId] })
+  if (newClipId && ui.selection.length > 0) setUI({ selection: [] })
 }

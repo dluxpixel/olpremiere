@@ -201,7 +201,9 @@ test('a preset applies to every video clip at once, as one undo step', async ({ 
   // Right-click the preset → Apply to every clip.
   await page.getByRole('tab', { name: 'Library' }).click()
   await page.getByTestId('preset-item').click({ button: 'right' })
-  await page.getByText('Apply to every clip').click()
+  // Menu item, not the panel's hint text — with nothing selected the Library
+  // shows "…or right-click → Apply to every clip", which matches too.
+  await page.getByRole('menuitem', { name: 'Apply to every clip' }).click()
   await expect(page.getByText(/Applied .* to 3 clips/)).toBeVisible()
 
   const readSaturationCounts = () =>

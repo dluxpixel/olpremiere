@@ -271,3 +271,41 @@ test('slip with nothing selected slips BOTH halves, so the pair stays in sync', 
   expect(a1.inS - a0.inS).toBeCloseTo(v1.inS - v0.inS, 6)
   expect(v1.startS).toBe(v0.startS) // still a slip: position unchanged
 })
+
+test('a freshly inserted clip lands unselected, so trimming its head trims the pair', async ({
+  page,
+}) => {
+  await boot(page)
+  await page.getByTestId('asset-card').dblclick()
+  await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
+
+  // Nothing is selected on insert — selecting the video half would make the very
+  // next edit read as "I singled this one out".
+  const selection = await page.evaluate(async () => {
+    const storeMod = '/src/state/store.ts'
+    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+      useStore: { getState: () => { ui: { selection: string[] } } }
+    }
+    return useStore.getState().ui.selection
+  })
+  expect(selection).toEqual([])
+
+  const before = await clips(page)
+  const v0 = before.find((c) => c.trackKind === 'video')!
+  const a0 = before.find((c) => c.trackKind === 'audio')!
+
+  // Head-trim the video straight after inserting: the audio must follow.
+  const video = page.locator('[data-clip-kind="video"]').first()
+  const box = (await video.boundingBox())!
+  await page.mouse.move(box.x + 3, box.y + box.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(box.x + 33, box.y + box.height / 2, { steps: 6 })
+  await page.mouse.up()
+
+  const after = await clips(page)
+  const v1 = after.find((c) => c.id === v0.id)!
+  const a1 = after.find((c) => c.id === a0.id)!
+  expect(v1.inS).toBeGreaterThan(v0.inS)
+  expect(a1.inS - a0.inS).toBeCloseTo(v1.inS - v0.inS, 6)
+  expect(a1.startS).toBeCloseTo(v1.startS, 6)
+})
