@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { clipKeyframeTimes } from './keyframes'
+import { clipKeyframeTimes, moveKeyframeMoment } from './keyframes'
 
 const kf = (t: number) => ({ t, value: 0, ease: 'linear' as const })
 
@@ -38,5 +38,56 @@ describe('clipKeyframeTimes', () => {
 
   it('does not merge moments that are genuinely apart', () => {
     expect(clipKeyframeTimes({ keyframes: { scale: [kf(0), kf(0.001)] } })).toEqual([0, 0.001])
+  })
+})
+
+describe('moveKeyframeMoment', () => {
+  const clip = () => ({
+    keyframes: {
+      scale: [{ t: 0, value: 1, ease: 'linear' as const }, { t: 0.5, value: 1.3, ease: 'linear' as const }],
+      posX: [{ t: 0, value: 0, ease: 'linear' as const }, { t: 0.5, value: 10, ease: 'linear' as const }],
+    },
+    effects: [
+      {
+        params: {
+          blur: 4,
+          brightness: { value: 0, keyframes: [{ t: 0.5, value: 1, ease: 'linear' as const }] },
+        },
+      },
+    ],
+  })
+
+  it('moves EVERY channel at that moment, together', () => {
+    const out = moveKeyframeMoment(clip(), 0.5, 1.2, 3)
+    expect(out.keyframes.scale.map((k) => k.t)).toEqual([0, 1.2])
+    expect(out.keyframes.posX.map((k) => k.t)).toEqual([0, 1.2])
+    // ...including a keyframed effect param at the same instant.
+    const b = out.effects[0].params.brightness as { keyframes: { t: number }[] }
+    expect(b.keyframes.map((k) => k.t)).toEqual([1.2])
+    // Values ride along untouched.
+    expect(out.keyframes.scale[1].value).toBe(1.3)
+    expect((out.effects[0].params.blur as number)).toBe(4)
+  })
+
+  it('cannot pass its neighbour, so a drag can never reorder anything', () => {
+    const out = moveKeyframeMoment(clip(), 0.5, -5, 3)
+    expect(out.keyframes.scale[1].t).toBeGreaterThan(0)
+    expect(out.keyframes.scale.map((k) => k.t)).toEqual([...out.keyframes.scale.map((k) => k.t)].sort((a, b) => a - b))
+  })
+
+  it('stays inside the clip', () => {
+    const out = moveKeyframeMoment(clip(), 0.5, 99, 3)
+    expect(out.keyframes.scale[1].t).toBeLessThanOrEqual(3)
+  })
+
+  it('is a no-op for a moment that is not there, or a move that changes nothing', () => {
+    const c = clip()
+    expect(moveKeyframeMoment(c, 2.5, 1, 3)).toBe(c)
+    expect(moveKeyframeMoment(c, 0.5, 0.5, 3)).toBe(c)
+  })
+
+  it('leaves the clip animating the same way at the times it did not touch', () => {
+    const out = moveKeyframeMoment(clip(), 0.5, 1.2, 3)
+    expect(out.keyframes.scale[0]).toEqual({ t: 0, value: 1, ease: 'linear' })
   })
 })

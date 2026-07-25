@@ -13,7 +13,7 @@ import {
 } from '../engine/effects/channels'
 import * as ops from '../engine/effects/ops'
 import { getEffect } from '../engine/effects/registry'
-import { removeKeyframeNear, upsertKeyframe } from '../engine/keyframes'
+import { removeKeyframeNear, upsertKeyframe, moveKeyframeMoment } from '../engine/keyframes'
 import {
   clipDurationS,
   clipEndS,
@@ -602,4 +602,14 @@ export function topAndTail(edge: 'in' | 'out'): void {
   updateActiveSequence(edge === 'in' ? 'Trim head to playhead' : 'Trim tail to playhead', (sq) =>
     rippleTrimGroup(sq, assets, target.id, edge, t),
   )
+}
+
+/**
+ * Drag a keyframe MOMENT along the clip — every channel and effect param that
+ * animates at that instant moves together, in one undo step. The engine clamps
+ * it inside the clip and between its neighbours, so a drag can never reorder
+ * keyframes or land two on the same frame.
+ */
+export function moveClipKeyframe(clipId: string, fromT: number, toT: number): void {
+  mapClip(clipId, 'Move keyframe', (c) => moveKeyframeMoment(c, fromT, toT, clipDurationS(c)))
 }

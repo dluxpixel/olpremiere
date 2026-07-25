@@ -86,6 +86,12 @@ export function removeKeyframeNear(
   return list.filter((_, i) => i !== bestIdx)
 }
 
+/** The shape both keyframe-moment helpers read: channels plus effect params. */
+export interface KeyframeCarrier {
+  keyframes?: Partial<Record<string, readonly Keyframe[]>>
+  effects?: readonly { params: Record<string, number | { value?: number; keyframes?: readonly Keyframe[] }> }[]
+}
+
 /**
  * Every distinct LOCAL time at which this clip has a keyframe, sorted, across
  * every animated channel it has — the transform/opacity channels and any
@@ -96,10 +102,7 @@ export function removeKeyframeNear(
  * looking at it, which is how CapCut shows them and why they can be grabbed at
  * all. Pure, so the mark and the animation can never disagree.
  */
-export function clipKeyframeTimes(clip: {
-  keyframes?: Partial<Record<string, readonly Keyframe[]>>
-  effects?: readonly { params: Record<string, number | { keyframes?: readonly Keyframe[] }> }[]
-}): number[] {
+export function clipKeyframeTimes(clip: KeyframeCarrier): number[] {
   const times: number[] = []
   const add = (kfs: readonly Keyframe[] | undefined): void => {
     if (kfs) for (const k of kfs) times.push(k.t)
@@ -117,4 +120,56 @@ export function clipKeyframeTimes(clip: {
   const out: number[] = [times[0]]
   for (const t of times) if (t - out[out.length - 1] > 1e-4) out.push(t)
   return out
+}
+
+/** Two keyframe times are the same MOMENT when closer together than this. */
+export const MOMENT_EPS = 1e-4
+
+/**
+ * Move every keyframe at local time `fromT` to `toT`, across every channel and
+ * effect param at once — that is what a keyframe IS on the timeline: a moment,
+ * not one channel's entry. A punch-in animating scale and both position
+ * channels moves as one thing or it tears itself apart.
+ *
+ * `toT` is clamped inside the clip and kept strictly between the neighbouring
+ * moments, so a drag can reorder nothing and no two moments can ever collide.
+ * Returns the same clip when nothing moves.
+ */
+export function moveKeyframeMoment<C extends KeyframeCarrier>(clip: C, fromT: number, toT: number, durationS: number): C {
+  const moments = clipKeyframeTimes(clip)
+  const idx = moments.findIndex((t) => Math.abs(t - fromT) <= MOMENT_EPS)
+  if (idx < 0) return clip
+
+  // A moment may not pass its neighbours, and must stay inside the clip.
+  const lo = idx > 0 ? moments[idx - 1] + MOMENT_EPS * 2 : 0
+  const hi = idx < moments.length - 1 ? moments[idx + 1] - MOMENT_EPS * 2 : Math.max(0, durationS)
+  const t = Math.min(Math.max(toT, lo), Math.max(lo, hi))
+  if (Math.abs(t - moments[idx]) <= MOMENT_EPS) return clip
+
+  const at = moments[idx]
+  const retime = (kfs: readonly Keyframe[]): Keyframe[] =>
+    kfs.map((k) => (Math.abs(k.t - at) <= MOMENT_EPS ? { ...k, t } : k)).sort((a, b) => a.t - b.t)
+
+  const next = { ...clip } as C
+  if (clip.keyframes) {
+    const channels: Record<string, Keyframe[]> = {}
+    for (const [ch, kfs] of Object.entries(clip.keyframes)) if (kfs) channels[ch] = retime(kfs)
+    next.keyframes = channels as C['keyframes']
+  }
+  if (clip.effects) {
+    next.effects = clip.effects.map((fx) => {
+      let touched = false
+      const params: Record<string, number | { value?: number; keyframes?: readonly Keyframe[] }> = {}
+      for (const [key, p] of Object.entries(fx.params)) {
+        if (typeof p === 'number' || !p.keyframes?.length) {
+          params[key] = p
+          continue
+        }
+        touched = true
+        params[key] = { ...p, keyframes: retime(p.keyframes) }
+      }
+      return touched ? { ...fx, params } : fx
+    }) as C['effects']
+  }
+  return next
 }

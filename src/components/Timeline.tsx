@@ -59,7 +59,7 @@ import { clipKeyframeTimes } from '../engine/keyframes'
 import { TRANSITION_KINDS, TRANSITION_LABELS, type TransitionKind } from '../engine/render/types'
 import { formatTimecode, quantizeToFrame } from '../engine/timecode'
 import { workArea } from '../engine/workArea'
-import { applyEffect, removeClipTransition, setClipTransition } from '../state/clipEdits'
+import { applyEffect, moveClipKeyframe, removeClipTransition, setClipTransition } from '../state/clipEdits'
 import { ASSET_MIME, EFFECT_MIME, SFX_MIME, TRANSITION_MIME, dragHasType, edgeForOffset } from '../state/dnd'
 import { insertSfxAtPlayhead } from '../state/sfxActions'
 import { comboLabel } from '../keymap'
@@ -669,10 +669,42 @@ const ClipView = memo(function ClipView({
   // Depends on exactly the two fields keyframes can live in; taking the whole
   // clip would recompute on every move, trim and rename.
   const { keyframes: clipKfs, effects: clipFx } = clip
-  const keyframePx = useMemo(
-    () => clipKeyframeTimes({ keyframes: clipKfs, effects: clipFx }).map((t) => t * pxPerS),
-    [clipKfs, clipFx, pxPerS],
+  const keyframeTimes = useMemo(
+    () => clipKeyframeTimes({ keyframes: clipKfs, effects: clipFx }),
+    [clipKfs, clipFx],
   )
+
+  // Dragging a diamond retimes the whole MOMENT. Live position is local state so
+  // the drag is smooth; the commit is a single undo step on release, the same
+  // shape the fade handles use.
+  const kfDragRef = useRef<{ fromT: number; startX: number } | null>(null)
+  const [kfPreview, setKfPreview] = useState<{ fromT: number; t: number } | null>(null)
+  const beginKeyframeDrag = (e: ReactPointerEvent<HTMLSpanElement>, t: number) => {
+    if (e.button !== 0 || locked) return
+    e.stopPropagation()
+    e.currentTarget.setPointerCapture(e.pointerId)
+    kfDragRef.current = { fromT: t, startX: e.clientX }
+    setKfPreview({ fromT: t, t })
+  }
+  // Takes the gesture explicitly rather than reading the ref: the commit path
+  // clears the ref first, so reading it there silently produced t=0 and every
+  // drag landed on the clip's head.
+  const kfTimeAt = (d: { fromT: number; startX: number }, clientX: number): number =>
+    Math.max(0, Math.min(durS, d.fromT + (clientX - d.startX) / pxPerS))
+  const moveKeyframeDrag = (e: ReactPointerEvent<HTMLSpanElement>) => {
+    const d = kfDragRef.current
+    if (!d) return
+    setKfPreview({ fromT: d.fromT, t: kfTimeAt(d, e.clientX) })
+  }
+  const endKeyframeDrag = (e: ReactPointerEvent<HTMLSpanElement>) => {
+    const d = kfDragRef.current
+    kfDragRef.current = null
+    setKfPreview(null)
+    if (!d) return
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
+    const t = kfTimeAt(d, e.clientX)
+    if (Math.abs(t - d.fromT) > 1e-4) moveClipKeyframe(clip.id, d.fromT, t)
+  }
 
   // A transition's mark can never be wider than the clip it sits on, or two
   // long ones on a short clip would draw past each other.
@@ -809,22 +841,28 @@ const ClipView = memo(function ClipView({
         {label}
       </span>
 
-      {keyframePx.length > 0 && width > 8 && (
-        <div
-          data-testid="clip-keyframes"
-          className="pointer-events-none absolute inset-x-0 bottom-0 h-3"
-          aria-hidden
-        >
-          {keyframePx.map((x, i) =>
-            x >= -3 && x <= width + 3 ? (
+      {keyframeTimes.length > 0 && width > 8 && (
+        <div data-testid="clip-keyframes" className="absolute inset-x-0 bottom-0 h-3">
+          {keyframeTimes.map((t, i) => {
+            const live = kfPreview?.fromT === t ? kfPreview.t : t
+            const x = live * pxPerS
+            if (x < -3 || x > width + 3) return null
+            return (
               <span
                 key={i}
                 data-testid="clip-keyframe"
-                className="absolute bottom-[3px] h-[7px] w-[7px] -translate-x-1/2 rotate-45 border border-black/50 bg-white/90"
+                title="Drag to retime this keyframe"
+                className={`absolute bottom-[3px] h-[7px] w-[7px] -translate-x-1/2 rotate-45 border border-black/50 ${
+                  kfPreview?.fromT === t ? 'bg-accent' : 'bg-white/90'
+                } ${interactive && !locked ? 'cursor-ew-resize' : 'pointer-events-none'}`}
                 style={{ left: x }}
+                onPointerDown={(e) => beginKeyframeDrag(e, t)}
+                onPointerMove={moveKeyframeDrag}
+                onPointerUp={endKeyframeDrag}
+                onPointerCancel={endKeyframeDrag}
               />
-            ) : null,
-          )}
+            )
+          })}
         </div>
       )}
 

@@ -125,3 +125,45 @@ test('an animated clip shows its keyframes ON the timeline', async ({ page }) =>
   expect(channels).toBeGreaterThan(0)
   expect(marks).toBeLessThanOrEqual(channels * 4) // moments, not channel-times
 })
+
+test('dragging a keyframe on the clip retimes it, in one undo step', async ({ page }) => {
+  await page.goto('/')
+  await page.getByTestId('add-title').click()
+  await page.getByTestId('clip').click()
+  await page.keyboard.press('p') // punch in → keyframes on several channels
+  await expect.poll(async () => page.getByTestId('clip-keyframe').count()).toBeGreaterThan(1)
+
+  const timesOf = () =>
+    page.evaluate(async () => {
+      const storeMod = '/src/state/store.ts'
+      const typesMod = '/src/engine/types.ts'
+      const kfMod = '/src/engine/keyframes.ts'
+      const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+        useStore: { getState: () => { project: unknown } }
+      }
+      const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+        activeSequence: (p: unknown) => { tracks: { clips: unknown[] }[] }
+      }
+      const { clipKeyframeTimes } = (await import(/* @vite-ignore */ kfMod)) as {
+        clipKeyframeTimes: (c: unknown) => number[]
+      }
+      return clipKeyframeTimes(activeSequence(useStore.getState().project).tracks.flatMap((t) => t.clips)[0])
+    })
+
+  const before = await timesOf()
+  const marks = page.getByTestId('clip-keyframe')
+  const last = marks.nth((await marks.count()) - 1)
+  const box = (await last.boundingBox())!
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(box.x + box.width / 2 + 40, box.y + box.height / 2, { steps: 8 })
+  await page.mouse.up()
+
+  const after = await timesOf()
+  expect(after.length).toBe(before.length) // moved, not added
+  expect(after[after.length - 1]).toBeGreaterThan(before[before.length - 1])
+
+  // ONE undo step puts every channel back where it was.
+  await page.keyboard.press('Control+z')
+  await expect.poll(timesOf).toEqual(before)
+})
