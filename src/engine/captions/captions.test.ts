@@ -87,16 +87,51 @@ describe('chunkWords', () => {
 })
 
 describe('chunkWords — phrase mode (PHRASE_CAPTION_OPTIONS)', () => {
-  it('groups words into multi-word chunks, not one per word', () => {
+  it('groups into SHORT bursts — never one word each, never a subtitle line', () => {
     const words = [
       w('so', 0, 0.3), w('I', 0.3, 0.5), w('went', 0.5, 0.9), w('to', 0.9, 1.1),
       w('the', 1.1, 1.3), w('store', 1.3, 1.8), w('and', 1.8, 2.0), w('bought', 2.0, 2.5),
       w('some', 2.5, 2.8), w('milk', 2.8, 3.3),
     ]
     const chunks = chunkWords(words, PHRASE_CAPTION_OPTIONS)
-    expect(chunks.length).toBeLessThanOrEqual(3) // grouped, not 10 one-word flashes
-    for (const c of chunks) expect(c.text.split(' ').length).toBeGreaterThan(1)
+    expect(chunks.length).toBeGreaterThan(2) // still keeping pace with the voice
+    expect(chunks.length).toBeLessThan(words.length) // but genuinely grouped
+    for (const c of chunks) expect(c.text.split(' ').length).toBeLessThanOrEqual(3)
     assertNonOverlapping(chunks)
+  })
+
+  it("keeps David's cadence: fast 1-3 word bursts are NOT swallowed by the merge pass", () => {
+    // His own example of what captions should look like:
+    //   minecraft | but i'm going | to try | and find | diamonds | without | touching the | color | green!
+    // The old 1.0s readability floor merged exactly these short bursts into long
+    // lines, which is what made auto-captions read as subtitles instead.
+    const words = [
+      w('minecraft', 0.0, 0.62), w('but', 0.62, 0.78), w("i'm", 0.78, 0.9), w('going', 0.9, 1.16),
+      w('to', 1.16, 1.28), w('try', 1.28, 1.55), w('and', 1.55, 1.7), w('find', 1.7, 2.0),
+      w('diamonds', 2.0, 2.66), w('without', 2.66, 3.1), w('touching', 3.1, 3.5),
+      w('the', 3.5, 3.62), w('color', 3.62, 4.0), w('green!', 4.0, 4.5),
+    ]
+    const chunks = chunkWords(words, PHRASE_CAPTION_OPTIONS)
+    for (const c of chunks) expect(c.text.split(' ').length).toBeLessThanOrEqual(3)
+    // Bursts, not lines: 14 words must land in a run of short captions.
+    expect(chunks.length).toBeGreaterThanOrEqual(5)
+    // No caption hogs the screen for a second and a half.
+    for (const c of chunks) expect(c.endS - c.startS).toBeLessThan(1.5)
+    assertNonOverlapping(chunks)
+  })
+
+  it('a real pause lets a single word stand alone instead of being absorbed', () => {
+    // Where he actually breathes is where the caption breaks — "minecraft" on its
+    // own, then the next burst. Under the old 1.0s floor this word was merged
+    // forward regardless, because 0.62s looked "too short to show".
+    const words = [
+      w('minecraft', 0.0, 0.62),
+      w('but', 1.2, 1.36), w("i'm", 1.36, 1.5), w('going', 1.5, 1.76),
+    ]
+    const chunks = chunkWords(words, PHRASE_CAPTION_OPTIONS)
+    expect(chunks[0].text).toBe('minecraft')
+    // ...and the burst after the pause starts fresh rather than absorbing it.
+    expect(chunks[1].text.startsWith('but')).toBe(true)
   })
 
   it('never leaves a bare function word as its own chunk mid-sentence', () => {

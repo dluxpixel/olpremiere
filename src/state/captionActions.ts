@@ -19,6 +19,52 @@ import { useToasts } from './toasts'
 
 // Auto-captions group into readable PHRASES (PHRASE_CAPTION_OPTIONS); maxWords:1 = karaoke.
 
+// --- Words per caption ------------------------------------------------------
+// The one caption knob worth exposing: how many words share a caption. Cadence
+// is taste, and taste is the owner's call — 1 is one-word karaoke, 3 is the
+// short burst the house style is tuned for, 6 reads as subtitles.
+
+export const CAPTION_WORDS_MIN = 1
+export const CAPTION_WORDS_MAX = 6
+export const CAPTION_WORDS_DEFAULT = PHRASE_CAPTION_OPTIONS.maxWords
+
+const WORDS_KEY = 'reel:captions:words'
+
+const clampWords = (n: number): number =>
+  Math.min(CAPTION_WORDS_MAX, Math.max(CAPTION_WORDS_MIN, Math.round(n)))
+
+/**
+ * The live value. localStorage only PERSISTS it — the choice itself lives here,
+ * so private mode, a full quota, or a blocked store costs the user their setting
+ * across restarts but never inside the session they set it in.
+ */
+let wordsPerChunk: number | null = null
+
+/** Persisted words-per-caption, tolerant of no localStorage. */
+export function getCaptionWordsPerChunk(): number {
+  if (wordsPerChunk !== null) return wordsPerChunk
+  try {
+    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(WORDS_KEY) : null
+    const n = raw === null ? NaN : Number(raw)
+    wordsPerChunk = Number.isFinite(n) ? clampWords(n) : CAPTION_WORDS_DEFAULT
+  } catch {
+    wordsPerChunk = CAPTION_WORDS_DEFAULT
+  }
+  return wordsPerChunk
+}
+
+export function setCaptionWordsPerChunk(n: number): void {
+  const v = clampWords(n)
+  wordsPerChunk = v
+  try {
+    if (typeof localStorage === 'undefined') return
+    if (v === CAPTION_WORDS_DEFAULT) localStorage.removeItem(WORDS_KEY)
+    else localStorage.setItem(WORDS_KEY, String(v))
+  } catch {
+    // Private mode / quota — the in-memory value above still applies this run.
+  }
+}
+
 /** Place clips one by one so each lands in a real gap (never overlapping). */
 function withClips(track: Track, clips: Clip[]): Track {
   let next = track
@@ -86,12 +132,13 @@ export function addCaptionsFromWords(
 ): void {
   const s = useStore.getState()
   const seq = activeSequence(s.project)
-  // Default to grouped PHRASE captions (readable chunks, no one-frame flashes);
-  // maxWords:1 opts into the one-word "karaoke" house style.
+  // The persisted words-per-caption pick drives EVERY caption entrance — the
+  // dialog, the tap timer, and the right-click auto-caption — so the setting is
+  // read here rather than passed down from each door. 1 = the one-word karaoke
+  // house style, which keeps the legacy timings.
+  const wanted = options.maxWords ?? getCaptionWordsPerChunk()
   const chunkOpts: ChunkOptions =
-    options.maxWords === 1
-      ? { maxWords: 1 }
-      : { ...PHRASE_CAPTION_OPTIONS, ...(options.maxWords ? { maxWords: options.maxWords } : {}) }
+    wanted === 1 ? { maxWords: 1 } : { ...PHRASE_CAPTION_OPTIONS, maxWords: wanted }
   const chunks = chunkWords(words, chunkOpts)
   if (chunks.length === 0) {
     useToasts.getState().show('No words to caption', 'danger')

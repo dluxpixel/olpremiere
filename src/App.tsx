@@ -246,7 +246,6 @@ function buildAppBindings(): Binding[] {
       { combo: 'alt+c', description: 'Split only the VIDEO at playhead', domain: 'trim', run: () => splitAtPlayhead(false, 'video') },
       { combo: 'b', description: 'Razor (blade) tool', domain: 'tools', run: () => store().setUI({ tool: 'razor' }) }, // click-to-cut anywhere
       { combo: 'h', description: 'Hand tool', domain: 'tools', run: () => store().setUI({ tool: 'hand' }) },
-      { combo: 'z', description: 'Zoom tool', domain: 'tools', run: () => store().setUI({ tool: 'zoom' }) },
       { combo: 'mod+alt+c', description: 'Copy attributes', domain: 'trim', run: () => copyClipAttributes() },
       { combo: 'mod+alt+v', description: 'Paste attributes', domain: 'trim', run: () => pasteClipAttributes() },
       { combo: 'delete', description: 'Delete (lift)', domain: 'trim', run: () => deleteSelected(false) },

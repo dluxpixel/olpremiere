@@ -34,22 +34,33 @@ export function generationOptsFor(language: CaptionLanguage): Record<string, unk
 
 const LANG_KEY = 'reel:captions:lang'
 
+/**
+ * The live value. localStorage only PERSISTS it; the choice itself lives here,
+ * so a blocked store costs the setting across restarts but never inside the
+ * session it was set in — which is what the note below always claimed and did
+ * not actually do (an early return meant the pick was dropped on the floor).
+ */
+let language: CaptionLanguage | null = null
+
 /** Persisted caption language (default English), tolerant of no localStorage. */
 export function getCaptionLanguage(): CaptionLanguage {
+  if (language !== null) return language
   try {
     const v = typeof localStorage !== 'undefined' ? localStorage.getItem(LANG_KEY) : null
-    return v === 'cs' || v === 'auto' ? v : 'en'
+    language = v === 'cs' || v === 'auto' ? v : 'en'
   } catch {
-    return 'en'
+    language = 'en'
   }
+  return language
 }
 
-export function setCaptionLanguage(language: CaptionLanguage): void {
+export function setCaptionLanguage(next: CaptionLanguage): void {
+  language = next
   try {
     if (typeof localStorage === 'undefined') return
-    if (language === 'en') localStorage.removeItem(LANG_KEY)
-    else localStorage.setItem(LANG_KEY, language)
+    if (next === 'en') localStorage.removeItem(LANG_KEY)
+    else localStorage.setItem(LANG_KEY, next)
   } catch {
-    // Private mode / quota — the in-memory choice still applies for this run.
+    // Private mode / quota — the in-memory value above still applies this run.
   }
 }

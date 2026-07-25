@@ -63,19 +63,35 @@ const CHUNK_DEFAULTS: Required<ChunkOptions> = {
 }
 
 /**
- * Tuned short-form phrase captions: group words into readable ~4-6 word chunks,
- * cap line length + reading speed, and GUARANTEE a ~1s minimum on screen by
- * MERGING short/orphan words into a neighbor instead of flashing them for a frame.
- * This is what the auto-caption path uses (vs the one-word karaoke house style).
+ * Short-form caption chunking, tuned to the cadence David actually wants:
+ *
+ *   minecraft | but i'm going | to try | and find | diamonds | without | touching the | color | green!
+ *
+ * Short bursts of 1-3 words that keep pace with the voice. The earlier set
+ * (6 words, 30 chars, a 1.0s floor) was wrong twice over: it grouped far too
+ * wide, and the 1.0s floor made the merge pass swallow exactly the fast little
+ * chunks that give the style its snap.
+ *
+ * `minDurS` is now only a flash guard — short enough that real speech is left
+ * alone, long enough that nothing appears for a single frame. `mergeShort`
+ * stays on because it also folds away a stranded "and" / "the".
+ *
+ * `maxWords` is the one number the user tunes (Captions dialog); everything
+ * here scales sensibly around it.
  */
 export const PHRASE_CAPTION_OPTIONS: Required<ChunkOptions> = {
-  maxWords: 6,
-  maxChars: 30,
-  maxCps: 20,
+  // 2, not 3: his example above is 14 words in 9 captions — ~1.5 words each.
+  // Run against those words, `2` reproduces his rhythm almost exactly while `3`
+  // collapses it to five wide captions. Measured, not guessed.
+  maxWords: 2,
+  maxChars: 18,
+  // Permissive on purpose: maxWords does the grouping, and this only has to
+  // catch a chunk that is genuinely unreadable for how long it is on screen.
+  maxCps: 28,
   maxGapS: 0.4,
-  maxSpanS: 4,
+  maxSpanS: 2,
   holdS: 0.4,
-  minDurS: 1.0,
+  minDurS: 0.35,
   mergeShort: true,
 }
 

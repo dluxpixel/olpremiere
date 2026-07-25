@@ -15,7 +15,13 @@ import {
 import { parseTranscript, tapsToWords } from '../engine/captions/transcript'
 import { clipEndS } from '../engine/timeline'
 import { activeSequence } from '../engine/types'
-import { addCaptionsFromWords } from '../state/captionActions'
+import {
+  addCaptionsFromWords,
+  CAPTION_WORDS_MAX,
+  CAPTION_WORDS_MIN,
+  getCaptionWordsPerChunk,
+  setCaptionWordsPerChunk,
+} from '../state/captionActions'
 import { pausePlayback, togglePlay } from '../state/playbackControl'
 import { useStore } from '../state/store'
 import { builtinTextPresets, useTextPresets, type TextStylePreset } from '../state/textPresets'
@@ -58,6 +64,9 @@ export function CaptionsDialog({ onClose }: { onClose: () => void }) {
   const presets = [...builtinTextPresets(), ...savedPresets]
   const [presetId, setPresetId] = useState('builtin-jettism')
   const [language, setLanguage] = useState<CaptionLanguage>(getCaptionLanguage)
+  // Cadence is taste, so it is his dial. Persisted, and read by every caption
+  // entrance including the right-click auto-caption.
+  const [wordsPerCaption, setWordsPerCaption] = useState(getCaptionWordsPerChunk)
   const preset: TextStylePreset | undefined = presets.find((p) => p.id === presetId)
   // Tap mode: the words being timed and the taps collected so far.
   const [tapWords, setTapWords] = useState<string[] | null>(null)
@@ -241,6 +250,31 @@ export function CaptionsDialog({ onClose }: { onClose: () => void }) {
                 </option>
               ))}
             </select>
+          </div>
+        )}
+        {!tapping && (
+          <div className="flex items-center gap-2 border-b border-border px-4 py-2">
+            <span className="text-[11px] text-text-muted">Words per caption</span>
+            <div className="ml-auto flex w-[190px] items-center gap-2">
+              <input
+                type="range"
+                aria-label="Words per caption"
+                data-testid="captions-words"
+                min={CAPTION_WORDS_MIN}
+                max={CAPTION_WORDS_MAX}
+                step={1}
+                value={wordsPerCaption}
+                onChange={(e) => {
+                  const v = Number(e.target.value)
+                  setWordsPerCaption(v)
+                  setCaptionWordsPerChunk(v)
+                }}
+                className="h-6 flex-1 cursor-default accent-accent"
+              />
+              <span className="w-14 shrink-0 text-right text-[11px] tabular-nums text-text-secondary">
+                {wordsPerCaption === 1 ? 'one word' : `up to ${wordsPerCaption}`}
+              </span>
+            </div>
           </div>
         )}
         {!tapping && (

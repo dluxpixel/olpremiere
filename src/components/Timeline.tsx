@@ -426,7 +426,10 @@ const TOOLS: { tool: Tool; label: string; shortcut: string; icon: typeof MousePo
   { tool: 'select', label: 'Selection tool', shortcut: 'V', icon: MousePointer2 },
   { tool: 'razor', label: 'Razor (blade) tool', shortcut: 'B', icon: Scissors },
   { tool: 'hand', label: 'Hand tool', shortcut: 'H', icon: Hand },
-  { tool: 'zoom', label: 'Zoom tool', shortcut: 'Z', icon: ZoomIn },
+  // No Zoom tool: the timeline already zooms four ways that do not cost you the
+  // pointer (wheel, the slider, = / -, and zoom-to-fit). A modal tool whose only
+  // job is to zoom means clicking a clip stops selecting it until you switch
+  // back — one door per feature, and this was the worst of the four.
 ]
 
 function TimelineToolbar({ onZoomFit }: { onZoomFit: () => void }) {
@@ -1337,10 +1340,6 @@ export function Timeline({ height }: { height: number }) {
       beginHand(e)
       return
     }
-    if (tool === 'zoom') {
-      zoomAround(e.clientX, e.altKey ? 1 / 1.4 : 1.4)
-      return
-    }
     if (tool === 'razor') {
       if (track.locked) return
       const t = quantizeToFrame(contentPoint(e).x / pxPerS, seq.fps)
@@ -1695,7 +1694,6 @@ export function Timeline({ height }: { height: number }) {
   // tracks) to move the playhead there; drag to scrub. Deselects clips.
   const beginEmptyScrub = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (tool === 'hand') beginHand(e)
-    else if (tool === 'zoom') zoomAround(e.clientX, e.altKey ? 1 / 1.4 : 1.4)
     else if (tool === 'select') {
       // Shift OR Ctrl/Cmd + drag = rubber-band select; plain click/drag =
       // scrub (Vegas). Ctrl/Cmd is additive (matches desktop box-select), Shift
@@ -2187,9 +2185,7 @@ export function Timeline({ height }: { height: number }) {
         ? drag?.kind === 'hand'
           ? 'cursor-grabbing'
           : 'cursor-grab'
-        : tool === 'zoom'
-          ? 'cursor-zoom-in'
-          : ''
+        : ''
 
   // Stable identities for the ClipView handler props - without these, every
   // Timeline render (each pointermove during a drag) would hand every ClipView

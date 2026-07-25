@@ -16,7 +16,7 @@ import {
   type History,
 } from './history'
 
-export type Tool = 'select' | 'razor' | 'hand' | 'zoom'
+export type Tool = 'select' | 'razor' | 'hand'
 export type SaveState = 'saved' | 'saving' | 'unsaved'
 export type LeftTab = 'media' | 'effects' | 'library'
 

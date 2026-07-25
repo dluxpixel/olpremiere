@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Toasts touch window.setTimeout, which the node test env lacks.
 vi.mock('./toasts', () => ({
@@ -13,7 +13,13 @@ import {
   type Clip,
   type Sequence,
 } from '../engine/types'
-import { addCaptionsFromWords, splitTitleIntoWordCaptions } from './captionActions'
+import {
+  addCaptionsFromWords,
+  CAPTION_WORDS_DEFAULT,
+  getCaptionWordsPerChunk,
+  setCaptionWordsPerChunk,
+  splitTitleIntoWordCaptions,
+} from './captionActions'
 import { updateActiveSequence, useStore } from './store'
 
 const seq = (): Sequence => activeSequence(useStore.getState().project)
@@ -127,5 +133,48 @@ describe('addCaptionsFromWords', () => {
     const before = seq().tracks.length
     addCaptionsFromWords([])
     expect(seq().tracks).toHaveLength(before)
+  })
+})
+
+describe('words per caption', () => {
+  afterEach(() => setCaptionWordsPerChunk(CAPTION_WORDS_DEFAULT))
+
+  const run = [
+    { text: 'one', startS: 0.0, endS: 0.3 },
+    { text: 'two', startS: 0.3, endS: 0.6 },
+    { text: 'three', startS: 0.6, endS: 0.9 },
+    { text: 'four', startS: 0.9, endS: 1.2 },
+  ]
+
+  it('clamps to a sane range and round-trips', () => {
+    setCaptionWordsPerChunk(99)
+    expect(getCaptionWordsPerChunk()).toBe(6)
+    setCaptionWordsPerChunk(-4)
+    expect(getCaptionWordsPerChunk()).toBe(1)
+    setCaptionWordsPerChunk(4)
+    expect(getCaptionWordsPerChunk()).toBe(4)
+  })
+
+  it('drives EVERY caption entrance without the caller passing it', () => {
+    // The right-click auto-caption path calls addCaptionsFromWords with no
+    // maxWords at all — the persisted pick has to reach it anyway.
+    setCaptionWordsPerChunk(1)
+    addCaptionsFromWords(run)
+    let top = videoTracks(seq())[videoTracks(seq()).length - 1]
+    expect(top.clips.map((c) => c.title?.text)).toEqual(['ONE', 'TWO', 'THREE', 'FOUR'])
+
+    useStore.getState().undo()
+    setCaptionWordsPerChunk(4)
+    addCaptionsFromWords(run)
+    top = videoTracks(seq())[videoTracks(seq()).length - 1]
+    expect(top.clips).toHaveLength(1)
+    expect(top.clips[0].title?.text).toBe('ONE TWO THREE FOUR')
+  })
+
+  it('an explicit maxWords still wins over the setting', () => {
+    setCaptionWordsPerChunk(4)
+    addCaptionsFromWords(run, { maxWords: 1 })
+    const top = videoTracks(seq())[videoTracks(seq()).length - 1]
+    expect(top.clips).toHaveLength(4)
   })
 })
