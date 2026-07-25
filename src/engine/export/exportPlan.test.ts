@@ -68,9 +68,9 @@ describe('planExport', () => {
     // Absent fields fall back to 192 kbps in the worker, so this must be explicit.
     expect(p.settings.audioBitrate).toBe(EXPORT_AUDIO_BITRATE)
     expect(p.settings.audioCodecPref).toBe('aac')
-    // CQP is only honoured by the software encoder, which also keeps the
-    // encoder's 'quality' latency mode on the VBR fallback.
-    expect(p.settings.hardwareAcceleration).toBe('prefer-software')
+    // Hardware FIRST, because the caller's B-frame retry escapes to software.
+    // Asking for software here inverted that retry into the broken encoder.
+    expect(p.settings.hardwareAcceleration).toBe('prefer-hardware')
     expect(p.nativeEncoder).toBe('x264')
     expect(p.nativeExt).toBe('mp4')
   })

@@ -132,11 +132,12 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           handle ?? undefined,
         )
 
-      // Constant quality already pins the software encoder; the retry only
-      // matters on the VBR fallback, where a GPU B-frame crash is still possible.
+      // Constant quality pins the software encoder inside the worker; this
+      // retry is for the VBR fallback, where some GPUs emit B-frames the muxer
+      // cannot handle. It must escape hardware, never escalate into it.
       let blob: Blob | null
       try {
-        blob = await runExport('prefer-software')
+        blob = await runExport('prefer-hardware')
       } catch (err) {
         if (abort.signal.aborted || !isBFrameCrash(err)) throw err
         setStage((prev) =>
@@ -144,7 +145,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
             ? { ...prev, progress: { ...prev.progress, phase: 'preparing', framesDone: 0 }, startedAt: performance.now() }
             : prev,
         )
-        blob = await runExport('prefer-hardware')
+        blob = await runExport('prefer-software')
       }
 
       let sizeBytes: number

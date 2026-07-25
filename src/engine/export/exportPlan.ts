@@ -132,10 +132,11 @@ export function planExport(seq: Sequence): ExportPlan {
       keyframeIntervalS: EXPORT_KEYFRAME_S,
       audioBitrate: EXPORT_AUDIO_BITRATE,
       audioCodecPref: 'aac',
-      // Constant quality is only honoured reliably by the software encoder, and
-      // the worker pins software for it anyway — asking for it here keeps the
-      // encoder in its high-quality latency mode on the VBR fallback too.
-      hardwareAcceleration: 'prefer-software',
+      // Hardware first, with the software retry the caller keeps for the GPU
+      // B-frame crash. Constant quality pins software inside the worker anyway;
+      // asking for software HERE inverted that retry, so a crash would have
+      // escalated INTO the encoder the retry exists to escape.
+      hardwareAcceleration: 'prefer-hardware',
     },
     nativeEncoder: EXPORT_NATIVE_ENCODER,
     nativeExt: 'mp4',

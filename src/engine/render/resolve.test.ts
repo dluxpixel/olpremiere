@@ -827,3 +827,42 @@ describe('precedence', () => {
     expect(asLayer(resolveFrame(s, 3.5).ops[0]).opacity).toBe(1)
   })
 })
+
+describe('overlapping lone-edge windows on a short clip', () => {
+  // Both windows clamp to the clip's own length independently, so on a clip
+  // shorter than in + out they overlap. The in-edge used to return first and
+  // silence the exit AND the fades for that whole span — a visible pop mid-clip
+  // on any clip under 0.8s, which is every word caption.
+  it('the OUT edge still runs on a clip shorter than both windows', () => {
+    const c = clip({
+      startS: 0,
+      inS: 0,
+      outS: 0.5,
+      transitionIn: { type: 'crossDissolve', durationS: 0.4 },
+      transitionOut: { type: 'crossDissolve', durationS: 0.4 },
+    })
+    const s = seqOf([track({ clips: [c] })], { fps: 30 })
+    // Inside the overlap, the OUT edge owns the frame — the clip is on its way
+    // out, not on its way in.
+    const op = asTransition(resolveFrame(s, 0.4).ops[0])
+    expect(op.from.opacity).toBeCloseTo(1) // the clip
+    expect(op.to.opacity).toBe(0) // leaving into nothing
+    // ...and the IN edge still owns the frames before the overlap starts.
+    expect(asTransition(resolveFrame(s, 0.05).ops[0]).from.opacity).toBe(0)
+  })
+
+  it('a lone in-edge no longer silences the clip fade-out', () => {
+    const c = clip({
+      startS: 0,
+      inS: 0,
+      outS: 0.5,
+      fadeOutS: 0.2,
+      transitionIn: { type: 'crossDissolve', durationS: 0.5 },
+    })
+    const s = seqOf([track({ clips: [c] })], { fps: 30 })
+    // Last frame: the fade-out has to be acting, so this cannot be full opacity.
+    const op = resolveFrame(s, 0.4666).ops[0]
+    const alpha = op.type === 'transition' ? op.to.opacity * op.progress : asLayer(op).opacity
+    expect(alpha).toBeLessThan(0.9)
+  })
+})

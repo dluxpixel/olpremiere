@@ -156,17 +156,26 @@ export async function exportNative(
         // to render several frames ahead; the ORDER is enforced here, by
         // chaining every write onto the previous one.
         const data = msg.data
-        writeChain = writeChain.then(async () => {
-          if (settled) return
-          const res = await api.nativeWriteFrame(data)
-          if (settled) return
-          if (!res.ok) {
+        writeChain = writeChain
+          .then(async () => {
+            if (settled) return
+            const res = await api.nativeWriteFrame(data)
+            if (settled) return
+            if (!res.ok) {
+              void api.nativeCancel()
+              done(() => reject(new Error(res.error ?? 'frame write failed')))
+            } else {
+              worker.postMessage({ type: 'frameAck' } satisfies ExportRequest)
+            }
+          })
+          // A rejected write would leave the chain permanently rejected: every
+          // later frame would skip its ack, the worker would park on a credit
+          // that never returns, and the export promise would never settle.
+          .catch((err: unknown) => {
+            if (settled) return
             void api.nativeCancel()
-            done(() => reject(new Error(res.error ?? 'frame write failed')))
-          } else {
-            worker.postMessage({ type: 'frameAck' } satisfies ExportRequest)
-          }
-        })
+            done(() => reject(err instanceof Error ? err : new Error(String(err))))
+          })
       } else if (msg.type === 'progress') {
         // ffmpeg's native:progress owns the video phase; forward prep/audio only.
         if (msg.progress.phase !== 'video') onProgress(msg.progress)

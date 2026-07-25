@@ -199,7 +199,20 @@ function resolveTrack(track: Track, t: number, fps: number): RenderOp | null {
               to: layer,
             }
           }
-          if (!clip.adjustment) {
+          // ...but only when this instant belongs to the IN edge ALONE. Every
+          // window clamps to the clip's own length independently, so on a short
+          // clip the in edge can overlap the out edge or the fade-out handle —
+          // and one op per track means returning here would silence them for
+          // that whole span, popping the picture mid-clip. Inside an overlap
+          // both edges fall through to the opacity ramps below, which compose
+          // smoothly instead.
+          const outD =
+            clip.transitionOut && !hasNextPartner ? clamp(clip.transitionOut.durationS, 1 / fps, dur) : 0
+          const outEdgeStartsAt = Math.min(
+            outD > 0 ? endS - outD : Infinity,
+            clip.fadeOutS > 0 ? endS - clip.fadeOutS : Infinity,
+          )
+          if (!clip.adjustment && t < outEdgeStartsAt) {
             return {
               type: 'transition',
               kind: coerceKind(clip.transitionIn.type),
