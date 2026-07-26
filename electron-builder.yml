@@ -30,12 +30,22 @@ nsis:
   # all reference the EXACT same name — no sanitization mismatch to break updates.
   artifactName: OL-Premiere-${version}-setup.${ext}
 # Auto-update feed: GitHub Releases. electron-updater checks the latest published
-# release of hackedbydlux/olpremiere (public, binaries only — no source pushed).
+# release of dluxpixel/olpremiere.
+#
+# `owner`/`repo` here are the ONE source of truth for where the feed lives, and
+# scripts/publish.mjs must agree with them: the updater reads the feed from this
+# repo, so a publisher pointing anywhere else uploads a release nothing ever
+# looks at — a "successful" publish into the void, which is the worst kind of
+# failure because nothing errors.
+#
+# Changing them also strands existing installs: a build already in the wild keeps
+# polling the feed it was compiled with, so it can never auto-update onto a new
+# one and has to be replaced by hand exactly once.
 # releaseType 'draft' uploads all assets reliably (no pre-existing-tag 422); the
 # release script (scripts/release.mjs) then flips it to published, which mints the
 # tag and makes it the 'latest' the updater sees.
 publish:
   provider: github
-  owner: hackedbydlux
+  owner: dluxpixel
   repo: olpremiere
   releaseType: draft
