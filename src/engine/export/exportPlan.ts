@@ -11,6 +11,12 @@
 //             degrade with content. A bitrate target is either wasteful on a
 //             static shot or starving on a busy one. 14 is visually lossless;
 //             below it the file grows for something no eye resolves.
+//             EXCEPT below HD, where the browser pipeline deliberately keeps the
+//             legacy VBR path and 192 kbps audio so the golden 640×360 export
+//             stays byte-stable — that gate is worth more than constant quality
+//             on a raster nothing real is authored at. The plan SAYS so rather
+//             than claiming a quality the worker would quietly override; the
+//             mismatch was the actual defect, not the fence.
 //   CODEC     H.264. At constant quality the codec changes file SIZE, not
 //             picture; H.264 is the one family every player, phone, NLE and
 //             upload pipeline accepts. HEVC in MP4 is hardware-gated in Chrome.
@@ -20,11 +26,13 @@
 //             cleaner. SD footage is NOT upscaled — interpolating 360p to 1440p
 //             adds no detail, only minutes of encoding.
 //   FPS       the sequence's own rate. Every other value throws frames away.
-//   AUDIO     AAC 320 kbps — transparent, and universally playable.
+//   AUDIO     AAC 320 kbps — transparent, and universally playable (192 kbps
+//             below HD, same byte-stability reason as QUALITY).
 //   RANGE     the work area when in/out points are set, the whole sequence
 //             otherwise. Marking I/O already said which part you meant.
 
 import { losslessBitrate } from './bitrate'
+import { isHdRaster } from './messages'
 import type { ExportSettings } from './index'
 import type { NativeEncoder } from '../../../electron/ipc-types'
 import type { Sequence } from '../types'
@@ -39,6 +47,9 @@ export const EXPORT_QP = 14
 
 /** AAC at 320 kbps is transparent, and matches what the desktop ffmpeg emits. */
 export const EXPORT_AUDIO_BITRATE = 320_000
+
+/** What a sub-HD raster actually gets: the legacy rate the golden export pins. */
+export const SD_AUDIO_BITRATE = 192_000
 
 /** Two seconds is the GOP length every upload platform expects. */
 export const EXPORT_KEYFRAME_S = 2
@@ -113,6 +124,12 @@ export function planExport(seq: Sequence): ExportPlan {
   const raster = exportRaster(seq.width, seq.height)
   const area = workArea(seq)
   const fps = seq.fps
+  // Below HD the browser worker coerces rate control to VBR and audio to
+  // 192 kbps no matter what it is handed, to keep the golden 640×360 export
+  // byte-stable. The plan asks for what it will actually GET: this changes not
+  // one byte of any export, it stops the plan describing a file the app was
+  // never going to write. A plan that lies is worse than a plan that limits.
+  const hd = isHdRaster(raster.width, raster.height)
 
   return {
     settings: {
@@ -121,16 +138,15 @@ export function planExport(seq: Sequence): ExportPlan {
       fps,
       // Constant quality is the rate control; this bitrate is only the encoder's
       // fallback if it rejects or ignores QP (the worker drops to VBR at exactly
-      // this rate), and the primary rate on an SD raster, where the engine
-      // deliberately keeps the classic VBR path.
+      // this rate), and the primary rate on an SD raster.
       videoBitrate: losslessBitrate(raster.width, raster.height, fps),
       startS: area.startS,
       endS: area.endS,
-      rateControl: 'quantizer',
+      rateControl: hd ? 'quantizer' : 'variable',
       quantizer: EXPORT_QP,
       videoCodec: 'avc',
       keyframeIntervalS: EXPORT_KEYFRAME_S,
-      audioBitrate: EXPORT_AUDIO_BITRATE,
+      audioBitrate: hd ? EXPORT_AUDIO_BITRATE : SD_AUDIO_BITRATE,
       audioCodecPref: 'aac',
       // Hardware first, with the software retry the caller keeps for the GPU
       // B-frame crash. Constant quality pins software inside the worker anyway;

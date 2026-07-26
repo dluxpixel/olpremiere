@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type { Sequence } from '../types'
+import { effectiveAudioBitrate, effectiveRateControl } from './messages'
 import {
   EXPORT_AUDIO_BITRATE,
   EXPORT_KEYFRAME_S,
   EXPORT_QP,
+  SD_AUDIO_BITRATE,
   exportRaster,
   planExport,
 } from './exportPlan'
@@ -59,7 +61,7 @@ describe('exportRaster', () => {
 })
 
 describe('planExport', () => {
-  it('picks constant quality, H.264 and transparent audio — every time', () => {
+  it('picks constant quality, H.264 and transparent audio on any HD-or-better timeline', () => {
     const p = planExport(seq())
     expect(p.settings.rateControl).toBe('quantizer')
     expect(p.settings.quantizer).toBe(EXPORT_QP)
@@ -73,6 +75,22 @@ describe('planExport', () => {
     expect(p.settings.hardwareAcceleration).toBe('prefer-hardware')
     expect(p.nativeEncoder).toBe('x264')
     expect(p.nativeExt).toBe('mp4')
+  })
+
+  // Below HD the worker coerces rate control and audio no matter what it is
+  // handed, to hold the golden 640×360 export byte-stable. The plan used to ask
+  // for QP 14 and 320 kbps anyway and be silently overridden — so it described a
+  // file the app was never going to write.
+  it('states the SD truth rather than a quality the worker would override', () => {
+    const p = planExport(seq({ width: 640, height: 360 }))
+    expect(p.settings.rateControl).toBe('variable')
+    expect(p.settings.audioBitrate).toBe(SD_AUDIO_BITRATE)
+    // ...and it is HONESTY, not a behaviour change: what reaches the encoder is
+    // identical to what the fence produced from the old, untrue plan.
+    expect(effectiveRateControl(p.settings, false)).toBe('variable')
+    expect(effectiveAudioBitrate(p.settings, false)).toBe(SD_AUDIO_BITRATE)
+    expect(effectiveRateControl({ rateControl: 'quantizer' }, false)).toBe('variable')
+    expect(effectiveAudioBitrate({ audioBitrate: EXPORT_AUDIO_BITRATE }, false)).toBe(SD_AUDIO_BITRATE)
   })
 
   it('exports at the sequence frame rate, never below it', () => {
