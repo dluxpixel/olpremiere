@@ -75,4 +75,22 @@ export interface OlApi {
   onUpdateNone(cb: () => void): () => void
   /** Quit and install the downloaded update now — relaunches into the new version. */
   restartToUpdate(): void
+
+  /** One automatic backup of the project DOCUMENT to a plain file. Returns its path. */
+  backupWrite(projectName: string, json: string): Promise<string>
+  /** Newest first. */
+  backupList(): Promise<BackupEntry[]>
+  /** The folder backups live in, for showing the user where their safety net is. */
+  backupDir(): Promise<string>
+  /** Read one back for restoring. Only paths inside the backup folder are allowed. */
+  backupRead(filePath: string): Promise<string>
+  /** Open the backup folder in Explorer. */
+  backupReveal(): Promise<void>
+}
+
+export interface BackupEntry {
+  name: string
+  path: string
+  sizeBytes: number
+  modifiedMs: number
 }

@@ -7,9 +7,10 @@
 
 import { app, BrowserWindow, protocol, ipcMain, session, shell } from 'electron'
 import { fileURLToPath } from 'node:url'
-import { readFile } from 'node:fs/promises'
+import { mkdir, readFile } from 'node:fs/promises'
 import { existsSync, renameSync } from 'node:fs'
 import path from 'node:path'
+import * as backups from './backups'
 import type { NativeExportConfig } from './ipc-types'
 import * as native from './nativeExport'
 import electronUpdater from 'electron-updater'
@@ -187,6 +188,27 @@ app.whenReady().then(() => {
   })
   ipcMain.handle('native:finish', () => native.finish())
   ipcMain.handle('native:cancel', () => native.cancel())
+
+  // --- Backups -------------------------------------------------------------
+  ipcMain.handle('backup:write', (_e, projectName: string, json: string) => backups.writeBackup(projectName, json))
+  ipcMain.handle('backup:list', () => backups.listBackups())
+  ipcMain.handle('backup:dir', () => backups.backupDir())
+  ipcMain.handle('backup:read', async (_e, filePath: string) => {
+    // The renderer may only read back what WE wrote. Without this, a compromised
+    // or buggy renderer could hand over any path on the machine and have main
+    // read it out — the backup feature must not become a file-read primitive.
+    const dir = path.resolve(backups.backupDir())
+    const target = path.resolve(filePath)
+    if (!target.startsWith(dir + path.sep) || !target.endsWith('.olpbak')) {
+      throw new Error('Refused: not a backup file')
+    }
+    return readFile(target, 'utf8')
+  })
+  ipcMain.handle('backup:reveal', async () => {
+    const dir = backups.backupDir()
+    await mkdir(dir, { recursive: true }) // opening a folder that does not exist just fails silently
+    await shell.openPath(dir)
+  })
 
   // Whatever ends the app (user quit, or an auto-update install), never leave a
   // native ffmpeg child orphaned or its temp files behind. before-quit can't await,

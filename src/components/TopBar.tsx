@@ -263,8 +263,15 @@ export function TopBar() {
           two apps. Name reads OL Premiere: this is the video editor. */}
       <div className="flex items-center gap-2">
         <MelonMark size={18} />
-        <span className="text-ui font-semibold tracking-[0.08em]">OL Premiere</span>
-        <VersionTag />
+        {/* The wordmark and the version share a BASELINE, not a centre. Centring
+            two different type sizes by their boxes leaves the smaller one
+            floating — the version tag has leading-none, so its box is 10px tall
+            against the wordmark's ~17px and it sat visibly high. A version suffix
+            is read as part of the name, and names sit on one baseline. */}
+        <span className="flex items-baseline gap-2">
+          <span className="text-ui font-semibold tracking-[0.08em]">OL Premiere</span>
+          <VersionTag />
+        </span>
       </div>
       <div className="h-4 w-px bg-border" />
       <ProjectName />

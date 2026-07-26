@@ -24,27 +24,32 @@ const seq = (over: Partial<Sequence> = {}): Sequence => ({
 })
 
 describe('exportRaster', () => {
-  it('raises an HD landscape timeline one tier, into the 1440p box', () => {
-    expect(exportRaster(1920, 1080)).toEqual({ width: 2560, height: 1440 })
+  // The raster is the TIMELINE's size, always. The old rule raised HD timelines
+  // into a 1440p box for the upload-tier trick; measured against David's own
+  // footage it magnified the source's compression instead of adding detail (his
+  // 1080p source was already scaled up 1.78x to fill a vertical frame, and the
+  // export scaled it a further 1.33x — 2.37x total, every pixel invented).
+  it('exports a vertical timeline at its OWN size — no upscale', () => {
+    expect(exportRaster(1080, 1920)).toEqual({ width: 1080, height: 1920 })
   })
 
-  it('raises a Shorts timeline into the PORTRAIT box, never a stretched landscape one', () => {
-    expect(exportRaster(1080, 1920)).toEqual({ width: 1440, height: 2560 })
+  it('exports a landscape timeline at its own size', () => {
+    expect(exportRaster(1920, 1080)).toEqual({ width: 1920, height: 1080 })
   })
 
-  it('keeps a square timeline square', () => {
-    expect(exportRaster(1080, 1080)).toEqual({ width: 1440, height: 1440 })
+  it('keeps a square timeline square and its own size', () => {
+    expect(exportRaster(1080, 1080)).toEqual({ width: 1080, height: 1080 })
   })
 
-  it('leaves a timeline that is already 1440p or bigger alone', () => {
+  it('leaves a big timeline exactly as it is', () => {
     expect(exportRaster(2560, 1440)).toEqual({ width: 2560, height: 1440 })
     expect(exportRaster(3840, 2160)).toEqual({ width: 3840, height: 2160 })
   })
 
-  it('does NOT upscale sub-HD footage — interpolation invents no detail', () => {
+  it('never upscales at any size, including the old 720 boundary', () => {
     expect(exportRaster(640, 360)).toEqual({ width: 640, height: 360 })
-    expect(exportRaster(1280, 720)).toEqual({ width: 2560, height: 1440 }) // 720 is the floor, inclusive
-    expect(exportRaster(1280, 718)).toEqual({ width: 1280, height: 718 }) // just below it
+    expect(exportRaster(1280, 720)).toEqual({ width: 1280, height: 720 })
+    expect(exportRaster(1280, 718)).toEqual({ width: 1280, height: 718 })
   })
 
   it('always emits EVEN dimensions, which yuv420p requires', () => {
@@ -123,9 +128,9 @@ describe('planExport', () => {
     expect(p.settings.endS).toBe(10)
   })
 
-  it('renders a Shorts timeline at the portrait raster', () => {
+  it('renders a Shorts timeline at the timeline’s own raster', () => {
     const p = planExport(seq({ width: 1080, height: 1920 }))
-    expect(p.settings.width).toBe(1440)
-    expect(p.settings.height).toBe(2560)
+    expect(p.settings.width).toBe(1080)
+    expect(p.settings.height).toBe(1920)
   })
 })

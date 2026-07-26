@@ -16,12 +16,22 @@
   --text-dense: 11px;
   --text-dense--line-height: 1.25;
 
-  /* Radii: fields (buttons, inputs) 8px, floating overlays 10px, dialogs 12px,
-     timeline clips 5px. Pills use rounded-full. */
-  --radius-field: 8px;
-  --radius-overlay: 10px;
-  --radius-dialog: 12px;
-  --radius-clip: 5px;
+  /* Radii: ALL SQUARE. His call, 2026-07-26: "these rounded edges just confuse me
+     in the editing."
+     He is right about the timeline specifically, and it is not a matter of taste.
+     A clip is a statement about TIME — where it starts and where it ends. A
+     rounded corner makes the last few pixels of a clip ambiguous: the edge fades
+     instead of ending, so the eye cannot tell the exact frame the clip stops at,
+     and neither can the cursor when you go to trim it. Every other panel matched
+     that softness for consistency, which spread the ambiguity everywhere.
+     Square corners state the boundary exactly. Keep them at 0 — this is a
+     legibility decision, not a style one, so do not "modernise" it back.
+     Circles (rounded-full: knobs, pan dots, meter LEDs) are NOT edges and stay
+     round — they read as things you grab, which is information, not decoration. */
+  --radius-field: 0px;
+  --radius-overlay: 0px;
+  --radius-dialog: 0px;
+  --radius-clip: 0px;
 
   /* Surfaces: warm near-black studio, darkest to elevated. */
   --color-bg-app: #0f0e0d;
@@ -193,7 +203,9 @@ body {
 }
 ::-webkit-scrollbar-thumb {
   background: var(--color-border-strong);
-  border-radius: 5px;
+  /* Square, like everything else. A scrollbar thumb is a position readout: its
+     ends tell you where you are in the track, and rounding them blurs that. */
+  border-radius: 0;
   border: 2px solid transparent;
   background-clip: content-box;
 }

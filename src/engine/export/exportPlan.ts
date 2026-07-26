@@ -57,29 +57,12 @@ export const EXPORT_KEYFRAME_S = 2
 /** x264 veryslow: the best quality-per-bit of any encoder we bundle. */
 export const EXPORT_NATIVE_ENCODER: NativeEncoder = 'x264'
 
-/** Only sequences at least this tall (in their short dimension) are upscaled. */
-const UPSCALE_FLOOR_PX = 720
-
-/** The upload-tier box the raster is raised into, as [long side, short side]. */
-const UPSCALE_BOX: [number, number] = [2560, 1440]
-
-/** An upscale has to be worth it — under 2% bigger is noise. */
-const UPSCALE_MIN_GAIN = 1.02
-
 /**
- * Largest even-dimension box that fits seq within (boxW×boxH), keeping aspect.
- * With `allowUpscale`, seq may be scaled UP to fill the box; otherwise it only
- * ever scales down. Even dimensions are a hard requirement of yuv420p.
+ * Largest even-dimension box that fits seq within (boxW×boxH), keeping aspect,
+ * and never scaling UP. Even dimensions are a hard requirement of yuv420p.
  */
-function evenFit(
-  seqW: number,
-  seqH: number,
-  boxW: number,
-  boxH: number,
-  allowUpscale = false,
-): { width: number; height: number } {
-  const fit = Math.min(boxW / seqW, boxH / seqH)
-  const s = allowUpscale ? fit : Math.min(1, fit)
+function evenFit(seqW: number, seqH: number, boxW: number, boxH: number): { width: number; height: number } {
+  const s = Math.min(1, Math.min(boxW / seqW, boxH / seqH))
   return {
     width: Math.max(2, Math.round((seqW * s) / 2) * 2),
     height: Math.max(2, Math.round((seqH * s) / 2) * 2),
@@ -97,14 +80,29 @@ function evenFit(
  * would multiply the encode time for a worse-looking result.
  */
 export function exportRaster(seqW: number, seqH: number): { width: number; height: number } {
-  const native = evenFit(seqW, seqH, seqW, seqH)
-  if (Math.min(seqW, seqH) < UPSCALE_FLOOR_PX) return native
-
-  const portrait = seqH > seqW
-  const [boxW, boxH] = portrait ? [UPSCALE_BOX[1], UPSCALE_BOX[0]] : UPSCALE_BOX
-  const raised = evenFit(seqW, seqH, boxW, boxH, true)
-  const gain = (raised.width * raised.height) / (native.width * native.height)
-  return gain > UPSCALE_MIN_GAIN ? raised : native
+  // NEVER UPSCALE. Removed 2026-07-26 on David's verdict, after comparing his own
+  // source against his own export.
+  //
+  // The old rule raised any HD-or-better timeline into a 1440p box, on the theory
+  // that uploading above 1080p escapes YouTube's bitrate-starved 1080p tier. The
+  // theory is real but it was applied blind, and on the actual work it cost
+  // picture quality instead of buying it:
+  //
+  //   his source     1920x1080
+  //   his sequence   1080x1920 (vertical) -> landscape footage is already scaled
+  //                  UP 1.78x just to fill the tall frame
+  //   old export     1440x2560            -> scaled up a FURTHER 1.33x
+  //   net effect     every real pixel smeared across ~2.37 pixels
+  //
+  // There is no detail in those extra pixels. Interpolation cannot invent any, so
+  // the upscale magnifies whatever compression the source already had — and then
+  // spends a third of the bitrate describing invented pixels instead of real
+  // ones. Exporting at the timeline's own size is sharper AND smaller.
+  //
+  // If the upload-tier trick is ever wanted again it belongs behind a choice the
+  // user makes about a specific upload, not as a silent default that degrades
+  // every export. Do not reinstate it without comparing real frames first.
+  return evenFit(seqW, seqH, seqW, seqH)
 }
 
 export interface ExportPlan {

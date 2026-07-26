@@ -7,10 +7,13 @@ import { invalidatePreview } from './engine/preview'
 import { loadTitleFonts } from './engine/render/titleFonts'
 import './index.css'
 import { loadDefaultTextAppearance } from './state/appearanceActions'
+import { initAutoBackup } from './state/autoBackup'
+import { checkIntegrity, integrityMessage } from './state/dataIntegrity'
 import { migrateRenamedKeys } from './state/keyMigration'
 import { loadLibrary } from './state/library'
 import { initPersistence } from './state/persistence'
 import { initSettings } from './state/settings'
+import { useToasts } from './state/toasts'
 import { initUpdateCheck } from './state/updateCheck'
 
 // FIRST, before anything reads a setting: adopt the values that were saved under
@@ -25,7 +28,16 @@ initSettings()
 // A shared room link (#room=...) auto-joins only AFTER the local project
 // hydrates — joining against the boot placeholder captures the wrong
 // preJoinProjectId and can seed/leak the wrong document into the room.
-void initPersistence().then(joinRoomFromUrl)
+void initPersistence()
+  .then(joinRoomFromUrl)
+  .then(async () => {
+    // Only AFTER the document has hydrated, or an empty boot placeholder would
+    // look exactly like the failure this is here to detect.
+    const msg = integrityMessage(await checkIntegrity())
+    if (msg) useToasts.getState().show(msg, 'danger')
+    // Start backing up once there is something worth backing up.
+    initAutoBackup()
+  })
 void loadLibrary()
 // Register bundled title fonts (Minecraft/Monocraft) for the preview rasterizer,
 // and hydrate the saved default text animation. Once the font lands, force a
