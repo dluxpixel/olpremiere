@@ -140,9 +140,14 @@ export function moveKeyframeMoment<C extends KeyframeCarrier>(clip: C, fromT: nu
   const idx = moments.findIndex((t) => Math.abs(t - fromT) <= MOMENT_EPS)
   if (idx < 0) return clip
 
-  // A moment may not pass its neighbours, and must stay inside the clip.
+  // A moment may not pass its neighbours, and must stay inside the clip — BOTH,
+  // not either. The clip bound used to apply only to the LAST moment, so one
+  // keyframe left beyond the out point by a trim (the recompile guard leaves
+  // hand-authored animation alone) became the only ceiling every earlier moment
+  // was clamped against, and they could all be dragged past the end.
+  const dur = Math.max(0, durationS)
   const lo = idx > 0 ? moments[idx - 1] + MOMENT_EPS * 2 : 0
-  const hi = idx < moments.length - 1 ? moments[idx + 1] - MOMENT_EPS * 2 : Math.max(0, durationS)
+  const hi = Math.min(idx < moments.length - 1 ? moments[idx + 1] - MOMENT_EPS * 2 : dur, dur)
   const t = Math.min(Math.max(toT, lo), Math.max(lo, hi))
   if (Math.abs(t - moments[idx]) <= MOMENT_EPS) return clip
 

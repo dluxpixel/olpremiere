@@ -80,6 +80,23 @@ describe('moveKeyframeMoment', () => {
     expect(out.keyframes.scale[1].t).toBeLessThanOrEqual(3)
   })
 
+  // A trim can leave a keyframe beyond the out point (a recompile only happens
+  // while the keyframes still match the preset, so hand-authored animation is
+  // left alone). That stale moment used to be the ONLY ceiling for the ones
+  // before it, which let them be dragged past the end of the clip.
+  it('stays inside the clip even when a later moment is already past the end', () => {
+    const stranded = {
+      keyframes: {
+        scale: [
+          { t: 1, value: 1, ease: 'linear' as const },
+          { t: 8, value: 2, ease: 'linear' as const },
+        ],
+      },
+    }
+    const out = moveKeyframeMoment(stranded, 1, 7, 5)
+    expect(out.keyframes.scale[0].t).toBeLessThanOrEqual(5)
+  })
+
   it('is a no-op for a moment that is not there, or a move that changes nothing', () => {
     const c = clip()
     expect(moveKeyframeMoment(c, 2.5, 1, 3)).toBe(c)
