@@ -41,7 +41,7 @@ files:
     size: ${size}
 path: ${exeName}
 sha512: ${sha512}
-releaseDate: '${process.env.OLP_RELEASE_DATE || '2026-07-21T00:00:00.000Z'}'
+releaseDate: '${process.env.OLP_RELEASE_DATE || new Date().toISOString()}'
 `
 writeFileSync(feedPath, latestYml)
 console.log(`• latest.yml -> ${exeName} (${(size / 1e6).toFixed(0)} MB)`)
