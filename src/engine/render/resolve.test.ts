@@ -713,6 +713,26 @@ describe('lone-edge transitions run their REAL form', () => {
     expect(asTransition(resolveFrame(s, 1).ops[0]).progress).toBeCloseTo(0.5)
   })
 
+  // The absent side is drawn at opacity 0 into a transparent buffer, so it must
+  // not ALSO carry the things that make a picture: a spread copy kept assetId,
+  // title and the effect chain, and the renderer decoded a video frame (or
+  // rasterized a full-frame caption, the expensive one) and ran the stack for
+  // every frame of every lone-edge transition, to produce nothing.
+  it('the absent side asks the renderer for no picture at all', () => {
+    const c = clip({ startS: 0, inS: 0, outS: 4, transitionIn: { type: 'crossDissolve', durationS: 2 } })
+    const s = seqOf([track({ clips: [c] })])
+
+    const { from, to } = asTransition(resolveFrame(s, 0.5).ops[0])
+    expect(from.opacity).toBe(0)
+    // The texture source keys off exactly these; with none of them it returns
+    // null and renderSideToFbo stops after clearing to transparent.
+    expect(from.assetId).toBe('')
+    expect(from.title).toBeUndefined()
+    expect(from.effects).toEqual([])
+    // The side that IS there keeps everything.
+    expect(to.assetId).toBe(c.assetId)
+  })
+
   it('after the window it is an ordinary layer at full opacity', () => {
     const c = clip({ startS: 0, outS: 4, transitionIn: { type: 'crossDissolve', durationS: 2 } })
     const s = seqOf([track({ clips: [c] })])

@@ -81,9 +81,23 @@ function layerFor(clip: Clip, t: number, fps: number): RenderLayer {
  * The "there is no clip here" side of a lone-edge transition: the same layer at
  * zero opacity, which the renderer draws into a fully transparent side FBO.
  * Copying the layer (rather than inventing an empty one) keeps the frame seed
- * and geometry the shaders read, and costs one already-decoded texture fetch.
+ * and geometry the shaders read.
+ *
+ * It does NOT keep what makes a picture. A spread copy carried `assetId`,
+ * `title` and the whole effect chain, so every frame of every lone-edge
+ * transition decoded a video frame — or rasterized a full-frame caption canvas,
+ * the expensive one — and ran the effect stack, to composite it at opacity 0
+ * into a transparent buffer. The renderer's texture source returns null for a
+ * layer with no asset and no title, and `renderSideToFbo` then early-returns
+ * after the clear, which is the same transparent result for none of the work.
  */
-const emptySide = (layer: RenderLayer): RenderLayer => ({ ...layer, opacity: 0 })
+const emptySide = (layer: RenderLayer): RenderLayer => ({
+  ...layer,
+  opacity: 0,
+  assetId: '',
+  title: undefined,
+  effects: [],
+})
 
 /**
  * The effective transition of the pair (A → B): B's incoming wins, else A's
