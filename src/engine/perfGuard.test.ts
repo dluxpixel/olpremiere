@@ -16,17 +16,15 @@
 // linear scan of a quadratic) inflates every round, so the tripwire still
 // fires.
 //
-// Budgets are 2x the measured per-call average - honest numbers, not vanity
-// numbers. Measured 2026-07-20 on the project's Windows 11 dev machine (node
-// vitest; stable across 4 runs):
+// Budgets are RELATIVE to a calibration workload measured in the same process
+// moments earlier - see the Budgets block below for why absolute milliseconds
+// could not work here. For scale, the absolute cost when measured idle is
+// roughly 0.005 ms and 0.015 ms per call: both together are well under 0.2
+// percent of a 16.7 ms frame.
 //
-//   resolveFrame        0.0046 to 0.0049 ms/call  -> budget 0.010 ms
-//   collectSnapPoints   0.0115 to 0.0120 ms/call  -> budget 0.025 ms
-//
-// For scale: both budgets together are under 0.4 percent of a 16.7 ms frame.
-// If this test trips, something made a per-frame path at least 2x slower. Fix
-// the regression; only re-measure and raise a budget if the hot path took on
-// genuinely new required work (and document the new measurement here).
+// If this test trips, something made a per-frame path about half again slower.
+// Fix the regression; only re-measure and raise a budget if the hot path took
+// on genuinely new required work (and document the new measurement here).
 
 import { describe, expect, it } from 'vitest'
 import { collectSnapPoints } from './timeline'
@@ -41,10 +39,28 @@ import {
   type Track,
 } from './types'
 
-// --- Budgets (ms per call, best-round average) -----------------------------
+// --- Budgets ---------------------------------------------------------------
+//
+// Expressed as a MULTIPLE of a calibration workload measured in the same
+// process moments earlier, not as an absolute millisecond figure.
+//
+// Absolute budgets do not survive a parallel test runner. Vitest runs 70 files
+// across worker processes, so this file benches while the machine is saturated;
+// best-of-N rounds does not save you when all N rounds are slow. The result was
+// a guard that went red on unrelated code and green on a re-run — three of each
+// in one session — which is worse than no guard, because a gate that cries wolf
+// is a gate people stop reading.
+//
+// A ratio cancels the machine and the load: both numbers are measured under the
+// same conditions, so only the RELATIVE cost of the code under test remains.
 
-const RESOLVE_FRAME_BUDGET_MS = 0.01
-const SNAP_POINTS_BUDGET_MS = 0.025
+// Measured on this machine across six runs, idle and with all 71 files running:
+// resolveFrame 0.24-0.31x, collectSnapPoints 0.53-0.74x. The budgets sit at
+// roughly 1.7x the worst observed, which is the same headroom the absolute
+// budgets they replace were chosen with — so a real regression of half again
+// still trips it, and ordinary noise never does.
+const RESOLVE_FRAME_BUDGET_X = 0.55
+const SNAP_POINTS_BUDGET_X = 1.2
 
 // --- Fixture: a 200-clip sequence ------------------------------------------
 
@@ -192,6 +208,31 @@ function bench(fn: () => void, iterations: number, rounds: number): number {
 // eliminated, and the assertions on it double-check the fixture is real.
 let sink = 0
 
+/**
+ * The yardstick: a fixed unit of work benched exactly like the code under test,
+ * so dividing by it cancels the CPU and whatever else the machine is doing.
+ *
+ * It has to have the same CHARACTER as what it measures, or it cancels nothing.
+ * A tight arithmetic loop was tried first and was useless here: it lives in L1
+ * and barely moved under a saturated machine (0.00273 → 0.00284 ms) while
+ * collectSnapPoints — which allocates, walks objects and sorts — went up half
+ * again. So the calibration allocates, walks and sorts too.
+ */
+function calibrationMs(): number {
+  return bench(
+    () => {
+      const xs: { t: number }[] = []
+      for (let i = 0; i < 200; i++) xs.push({ t: (i * 37) % 200 })
+      xs.sort((a, b) => a.t - b.t)
+      let acc = 0
+      for (const x of xs) acc += x.t
+      sink += acc
+    },
+    200,
+    7,
+  )
+}
+
 describe('perf guard: 200-clip sequence', () => {
   const seq = bigSequence()
 
@@ -202,7 +243,7 @@ describe('perf guard: 200-clip sequence', () => {
     expect(resolveFrame(seq, 41.2).ops.length).toBe(4)
   })
 
-  it(`resolveFrame stays under ${RESOLVE_FRAME_BUDGET_MS} ms per call while scrubbing`, () => {
+  it(`resolveFrame stays under ${RESOLVE_FRAME_BUDGET_X}x the calibration while scrubbing`, () => {
     // A scrub visits scattered times, not one hot frame: stride 0.73s lands on
     // clip bodies, transition windows, fades and gaps all over the sequence.
     const times: number[] = []
@@ -216,10 +257,11 @@ describe('perf guard: 200-clip sequence', () => {
       7,
     )
     expect(sink).toBeGreaterThan(0)
-    expect(perCallMs).toBeLessThan(RESOLVE_FRAME_BUDGET_MS)
+    const cal = calibrationMs()
+    expect(perCallMs / cal).toBeLessThan(RESOLVE_FRAME_BUDGET_X)
   })
 
-  it(`collectSnapPoints stays under ${SNAP_POINTS_BUDGET_MS} ms per call while dragging`, () => {
+  it(`collectSnapPoints stays under ${SNAP_POINTS_BUDGET_X}x the calibration while dragging`, () => {
     // Shaped like Timeline.tsx's snapped drag: exclude the dragged clip's
     // group and include the playhead, every pointer-move.
     const dragged = seq.tracks[1].clips[20]
@@ -234,6 +276,7 @@ describe('perf guard: 200-clip sequence', () => {
       7,
     )
     expect(sink).toBeGreaterThan(0)
-    expect(perCallMs).toBeLessThan(SNAP_POINTS_BUDGET_MS)
+    const cal = calibrationMs()
+    expect(perCallMs / cal).toBeLessThan(SNAP_POINTS_BUDGET_X)
   })
 })
