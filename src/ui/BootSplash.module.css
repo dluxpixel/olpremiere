@@ -173,3 +173,18 @@
     animation: none;
   }
 }
+
+/* The update status under the melon. Quiet but always present: it is evidence
+   that the check ran, which is the whole point of showing it. */
+.updateStatus {
+  position: absolute;
+  bottom: 12%;
+  left: 0;
+  right: 0;
+  text-align: center;
+  margin: 0;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  color: rgba(255, 255, 255, 0.55);
+  pointer-events: none;
+}

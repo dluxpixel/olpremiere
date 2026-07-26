@@ -12,11 +12,11 @@ import { IconButton } from '../ui/Button'
 
 const KEY = 'olpremiere:quickstart'
 
-/** How long to wait for the saved project to hydrate before deciding whether
- *  this launch is actually a first run. A returning editor's project loads
- *  with media and clips already placed; teaching them "import media" would be
- *  a nag, so the card retires silently instead. */
-const HYDRATE_DEFER_MS = 600
+/** How long to wait before concluding the project really is empty. Generous,
+ *  because it is only the fallback now — an arriving project retires the card
+ *  through a store subscription however long it takes, so this timer can never
+ *  cause the nag it used to cause at 600ms. */
+const HYDRATE_DEFER_MS = 5000
 
 /** Lingers this long after the last step completes so the final check is
  *  seen, then retires forever. */
@@ -72,22 +72,49 @@ export function QuickStart() {
 
   useEffect(() => {
     if (phase !== 'defer') return
-    const id = window.setTimeout(() => {
+
+    /** An edit already exists, so this is not a first run. */
+    const hasEdit = (): boolean => {
       const s = useStore.getState()
-      const hasMedia = Object.keys(s.project.assets).length > 0
-      const hasClips = Object.values(s.project.sequences).some((sq) =>
-        sq.tracks.some((t) => t.clips.length > 0),
+      return (
+        Object.keys(s.project.assets).length > 0 &&
+        Object.values(s.project.sequences).some((sq) => sq.tracks.some((t) => t.clips.length > 0))
       )
-      if (hasMedia && hasClips) {
-        // Not a first run: an edit is already in flight. Retire without ever
-        // showing; a human cannot import AND place clips inside the defer.
-        save({ dismissed: true })
-        setPhase('gone')
-      } else {
-        setPhase('show')
+    }
+
+    // Retire the moment an edit is visible, and REMEMBER it. This used to be a
+    // single check on a 600ms timer, which is a race the user loses on exactly
+    // the projects that matter: a big project (his is 44 clips and a gigabyte of
+    // media) hydrates well after the deadline, so the card decided "first run",
+    // nagged a returning editor, and — because he closed the app rather than
+    // clicking the X — never wrote the flag. So it came back EVERY launch.
+    //
+    // Watching the store instead of guessing a duration removes the race
+    // entirely: whenever the project arrives, however long it takes, the card
+    // retires for good.
+    const retire = (): void => {
+      save({ dismissed: true })
+      setPhase('gone')
+    }
+    if (hasEdit()) {
+      retire()
+      return
+    }
+    const unsub = useStore.subscribe(() => {
+      if (hasEdit()) {
+        unsub()
+        retire()
       }
+    })
+    // Only after waiting for hydration do we conclude it is genuinely empty and
+    // show the card. The timer is now the FALLBACK, not the decision.
+    const id = window.setTimeout(() => {
+      if (!hasEdit()) setPhase('show')
     }, HYDRATE_DEFER_MS)
-    return () => window.clearTimeout(id)
+    return () => {
+      unsub()
+      window.clearTimeout(id)
+    }
   }, [phase])
 
   if (phase !== 'show') return null

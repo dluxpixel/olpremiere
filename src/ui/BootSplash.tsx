@@ -68,7 +68,60 @@ export function BootSplash({ onLaunch, onFinished }: { onLaunch: () => void; onF
         <span className={styles.halo} aria-hidden="true" />
         <MelonMark className={styles.melon} pixels={pixels} />
       </button>
+      <UpdateStatus />
     </div>
+  )
+}
+
+/**
+ * The update check, SAID OUT LOUD on the opening screen, every launch.
+ *
+ * His words, and he is right: *"every time I open this app, it shows a big
+ * loading chunk that checks for every new update, and if there is one, it
+ * downloads it automatically."* He had spent weeks on a build four versions old
+ * while the app checked silently, failed silently (the feed 404'd), and told him
+ * nothing — so from where he sat there was no update system at all.
+ *
+ * The check and the download were already automatic. What was missing was any
+ * evidence of it. This is that evidence.
+ *
+ * It deliberately does NOT hold the app hostage while it waits. Blocking the
+ * boot on a network call is how you get an editor that will not open when the
+ * wifi is bad, and after today an app that cannot start is a far worse failure
+ * than one that starts before it knows. So the status shows, the download runs
+ * itself, and the melon is clickable throughout.
+ */
+function UpdateStatus() {
+  const [text, setText] = useState<string>(() =>
+    typeof window !== 'undefined' && window.api?.isElectron ? 'Checking for updates…' : '',
+  )
+
+  useEffect(() => {
+    const api = typeof window !== 'undefined' ? window.api : undefined
+    if (!api?.isElectron) return
+    const offs = [
+      api.onUpdateNone(() => setText('Up to date')),
+      api.onUpdateReady((v) => setText(`Update ${v} downloaded — restart to install`)),
+      api.onAutoApplyUpdate((v) => setText(`Installing update ${v}…`)),
+      api.onUpdateError(() => setText('Could not check for updates')),
+    ]
+    // If the network never answers, stop claiming to be checking. Silence that
+    // looks like progress is exactly what misled him for weeks.
+    const t = window.setTimeout(
+      () => setText((s) => (s === 'Checking for updates…' ? 'Could not reach the update server' : s)),
+      15_000,
+    )
+    return () => {
+      for (const off of offs) off()
+      window.clearTimeout(t)
+    }
+  }, [])
+
+  if (!text) return null
+  return (
+    <p data-testid="boot-update-status" className={styles.updateStatus}>
+      {text}
+    </p>
   )
 }
 

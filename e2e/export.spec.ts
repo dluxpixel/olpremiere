@@ -73,7 +73,7 @@ test('streaming export writes straight to the chosen file, and it decodes', asyn
   expect(result.duration).toBeGreaterThan(1)
 })
 
-test('the YouTube 1440p upscale renders + encodes at the higher resolution', async ({ page }) => {
+test('a 1080p timeline exports at 1080p - no upscale', async ({ page }) => {
   test.setTimeout(180_000)
   await page.goto('/')
   await page.getByTestId('media-file-input').setInputFiles(FIXTURE)
@@ -102,12 +102,12 @@ test('the YouTube 1440p upscale renders + encodes at the higher resolution', asy
     })
     return { width: video.videoWidth, height: video.videoHeight, duration: video.duration }
   }, fs.readFileSync(mp4Path).toString('base64'))
-  expect(meta.width).toBe(2560)
-  expect(meta.height).toBe(1440)
+  expect(meta.width).toBe(1920)
+  expect(meta.height).toBe(1080)
   expect(meta.duration).toBeGreaterThan(1)
 })
 
-test('a 9:16 Shorts sequence exports at the default portrait 1440p (the crash case)', async ({ page }) => {
+test('a 9:16 Shorts sequence exports at its own portrait size (the crash case)', async ({ page }) => {
   test.setTimeout(180_000)
   await page.goto('/')
   await page.getByTestId('media-file-input').setInputFiles(FIXTURE)
@@ -138,8 +138,8 @@ test('a 9:16 Shorts sequence exports at the default portrait 1440p (the crash ca
     })
     return { width: video.videoWidth, height: video.videoHeight, duration: video.duration }
   }, fs.readFileSync(mp4Path).toString('base64'))
-  expect(meta.width).toBe(1440)
-  expect(meta.height).toBe(2560)
+  expect(meta.width).toBe(1080)
+  expect(meta.height).toBe(1920)
   expect(meta.duration).toBeGreaterThan(1)
 })
 
