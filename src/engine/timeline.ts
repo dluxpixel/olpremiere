@@ -2,7 +2,7 @@
 // No React, no DOM, no store — only types. Every function takes and returns
 // immutable data; when nothing changes the input reference comes back as-is.
 
-import { retimeAppearance, splitAppearanceAcrossCut } from './anim/appearance'
+import { refitAppearanceToFrame, retimeAppearance, splitAppearanceAcrossCut } from './anim/appearance'
 import { withChannelKeyframes, withChannelValue } from './effects/channels'
 import { evalChannel } from './keyframes'
 import {
@@ -161,7 +161,16 @@ export function setSequenceFormat(
   const tracks = refit
     ? seq.tracks.map((t) => {
         const clips = t.clips.map((c) =>
-          refitClipToFill(c, assets, width, height, seq.width, seq.height),
+          // The appearance rebake runs AFTER the fill refit so it settles to the
+          // base that refit just chose, and it is what keeps the four
+          // frame-relative presets honest across a format switch.
+          refitAppearanceToFrame(
+            refitClipToFill(c, assets, width, height, seq.width, seq.height),
+            width,
+            height,
+            seq.width,
+            seq.height,
+          ),
         )
         return clips.some((c, i) => c !== t.clips[i]) ? { ...t, clips } : t
       })

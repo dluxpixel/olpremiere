@@ -360,6 +360,34 @@ export function retimeAppearance(prev: Clip, next: Clip, seqW: number, seqH: num
 }
 
 /**
+ * Rebake an appearance for a NEW frame size, given the one it was compiled at.
+ *
+ * Four presets bake the frame into their keyframe VALUES — slideIn and slideOut
+ * travel `W/2`, riseUp and dropDown `H*0.35`. Switching 16:9 → 9:16 therefore
+ * left them sliding the OLD frame's distance, and, worse, permanently disarmed
+ * every later retime: the untouched-guard rebuilds its expectation from the
+ * CURRENT size, so keyframes baked at the old one could never match again and a
+ * trim silently stopped following the clip, forever.
+ *
+ * Only rebakes while the keyframes are still exactly what the spec compiled at
+ * the OLD size — the same "only touch our own work" rule as everywhere else.
+ */
+export function refitAppearanceToFrame(
+  clip: Clip,
+  seqW: number,
+  seqH: number,
+  prevW: number,
+  prevH: number,
+): Clip {
+  const spec = clip.appearance
+  if (!spec || isEmptyAppearance(spec)) return clip
+  if (prevW <= 0 || prevH <= 0) return clip
+  if (seqW === prevW && seqH === prevH) return clip
+  if (!appearanceIsUntouched(clip, clipDurationS(clip), prevW, prevH)) return clip
+  return applyAppearanceToClip(clip, spec, seqW, seqH)
+}
+
+/**
  * Hand-retiming a compiled keyframe PROMOTES the clip off its preset.
  *
  * A preset owns its channels and every later transform edit recompiles them from

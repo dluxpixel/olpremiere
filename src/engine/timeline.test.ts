@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { applyAppearanceToClip } from './anim/appearance'
+import { applyAppearanceToClip, retimeAppearance } from './anim/appearance'
 import { clipEmitsAudio } from './audio'
 import { channelKeyframes, resolveChannel } from './effects/channels'
 import {
@@ -1997,6 +1997,42 @@ describe('setSequenceFormat / refitClipToFill (Shorts aspect switch)', () => {
   it('leaves title clips alone (frame-relative already)', () => {
     const title = makeClip({ id: 't', startS: 0, outS: 4, title: { text: 'hi' } as never })
     expect(refitClipToFill(title, landscape, 1080, 1920)).toBe(title)
+  })
+
+  // slideIn/slideOut travel W/2 and riseUp/dropDown H*0.35, so they bake the
+  // frame into their VALUES. A format switch left them travelling the old
+  // frame's distance AND permanently disarmed retiming, because the
+  // untouched-guard rebuilds its expectation from the CURRENT size.
+  describe('a frame-relative preset across a format switch', () => {
+    const slid = () => {
+      const base = makeClip({
+        id: 's',
+        startS: 0,
+        outS: 4,
+        title: { text: 'hi' } as never,
+        appearance: { in: 'slideIn', out: 'slideOut', durS: 0.5 },
+      })
+      return applyAppearanceToClip(base, base.appearance!, 1920, 1080)
+    }
+
+    it('rebakes the travel distance for the new frame', () => {
+      const seq = makeSeq([makeTrack({ clips: [slid()] })])
+      const out = setSequenceFormat(seq, landscape, 1080, 1920)
+      // Travel is half the frame WIDTH: 960 landscape → 540 portrait.
+      expect(channelKeyframes(out.tracks[0].clips[0], 'posX')[0].value).toBeCloseTo(-540, 6)
+    })
+
+    it('can still be retimed by a trim afterwards', () => {
+      const seq = makeSeq([makeTrack({ clips: [slid()] })])
+      const shorts = setSequenceFormat(seq, landscape, 1080, 1920)
+      const c = shorts.tracks[0].clips[0]
+      // A trim recompiles only while the keyframes still match the spec — which
+      // is exactly what the stale bake used to make impossible. The exit is baked
+      // at [D-d, D], so shortening 4s → 2s must move its last keyframe to t=2.
+      const trimmed = retimeAppearance(c, { ...c, outS: 2 }, shorts.width, shorts.height)
+      const posX = channelKeyframes(trimmed, 'posX')
+      expect(posX[posX.length - 1].t).toBeCloseTo(2, 6)
+    })
   })
 
   it('setSequenceFormat sets the new dimensions and refits every clip', () => {
