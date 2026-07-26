@@ -848,8 +848,17 @@ const ClipView = memo(function ClipView({
         <div data-testid="clip-keyframes" className="absolute inset-x-0 bottom-0 z-20 h-3">
           {keyframeTimes.map((t, i) => {
             const live = kfPreview?.fromT === t ? kfPreview.t : t
-            const x = live * pxPerS
-            if (x < -3 || x > width + 3) return null
+            const raw = live * pxPerS
+            if (raw < -3 || raw > width + 3) return null
+            // Keep the WHOLE diamond inside the clip. It is a 7px square rotated
+            // 45°, so it reaches ~5px either side of its centre — a keyframe at
+            // the very start or end was drawn half outside and the clip's own
+            // edge cut it in half, which reads as a rendering glitch rather than
+            // as a keyframe. Showing all of it 5px in is more honest than showing
+            // half of it in the right place: the mark means "there is a keyframe
+            // at this edge", and half a mark says nothing.
+            const HALF = 5
+            const x = width >= HALF * 2 ? Math.min(Math.max(raw, HALF), width - HALF) : raw
             return (
               <span
                 key={i}
