@@ -11,6 +11,7 @@
 // holds before the first / after the last keyframe).
 
 import { channelBase, channelKeyframes, withChannelKeyframes } from '../effects/channels'
+import { MOMENT_EPS } from '../keyframes'
 import { clipDurationS } from '../types'
 import type { AnimChannel, AppearanceSpec, Clip, Keyframe } from '../types'
 
@@ -348,6 +349,30 @@ export function retimeAppearance(prev: Clip, next: Clip, seqW: number, seqH: num
   if (Math.abs(oldD - newD) < 1e-9) return next
   if (!appearanceIsUntouched(prev, oldD, seqW, seqH)) return next
   return applyAppearanceToClip(next, spec, seqW, seqH)
+}
+
+/**
+ * Hand-retiming a compiled keyframe PROMOTES the clip off its preset.
+ *
+ * A preset owns its channels and every later transform edit recompiles them from
+ * the spec, so a retimed diamond was thrown away by the very next gizmo drag —
+ * the clip showed grabbable keyframes it did not actually honour. Dragging one is
+ * an unambiguous act of authorship, so the keyframes become the AUTHOR'S: they
+ * stay exactly as retimed and nothing recompiles them again. (A trim already
+ * refused to, via appearanceIsUntouched; this closes the same hole on the gizmo.)
+ *
+ * Only a moment that actually moves an appearance-owned channel promotes — a
+ * keyframed effect param at some other instant leaves the preset alone.
+ */
+export function releaseAppearanceOnRetime(prev: Clip, next: Clip, fromT: number): Clip {
+  if (!prev.appearance) return next
+  const touched = APPEARANCE_CHANNELS.some((ch) =>
+    channelKeyframes(prev, ch).some((k) => Math.abs(k.t - fromT) <= MOMENT_EPS),
+  )
+  if (!touched) return next
+  const promoted: Clip = { ...next }
+  delete promoted.appearance
+  return promoted
 }
 
 /**

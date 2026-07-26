@@ -2,7 +2,7 @@
 // transitions. Channel names + math come from engine/keyframes; every edit is
 // one undo step. localT is always relative to the clip start.
 
-import { applyAppearanceToClip } from '../engine/anim/appearance'
+import { applyAppearanceToClip, releaseAppearanceOnRetime } from '../engine/anim/appearance'
 import {
   channelBase,
   channelDefault,
@@ -617,10 +617,30 @@ export function topAndTail(edge: 'in' | 'out'): void {
  * animates at that instant moves together, in one undo step. The engine clamps
  * it inside the clip and between its neighbours, so a drag can never reorder
  * keyframes or land two on the same frame.
+ *
+ * Retiming a keyframe a PRESET compiled promotes the clip off that preset
+ * (releaseAppearanceOnRetime), because otherwise the next gizmo drag would
+ * recompile the channel and throw the retime away.
  */
 export function moveClipKeyframe(clipId: string, fromT: number, toT: number): void {
+  const before = findClip(clipId)
+  const promotes = !!before?.appearance
   // mapClip rebuilds the track and sequence unconditionally, so returning the
   // SAME clip is not enough to stop an undo entry — a drag the engine clamps
   // straight back to where it started would still cost the user an undo press.
-  mapClip(clipId, 'Move keyframe', (c) => moveKeyframeMoment(c, fromT, toT, clipDurationS(c)), true)
+  mapClip(
+    clipId,
+    'Move keyframe',
+    (c) => {
+      const moved = moveKeyframeMoment(c, fromT, toT, clipDurationS(c))
+      return moved === c ? c : releaseAppearanceOnRetime(c, moved, fromT)
+    },
+    true,
+  )
+  // Say it out loud: the Animation menu will read "None" from here on, and a
+  // state change the user did not ask for is exactly the kind of silent surprise
+  // this app has been paying for.
+  if (promotes && !findClip(clipId)?.appearance) {
+    useToasts.getState().show('Keyframes are yours now — the preset no longer drives this clip')
+  }
 }
