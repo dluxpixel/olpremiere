@@ -135,7 +135,20 @@ export const MOMENT_EPS = 1e-4
  * moments, so a drag can reorder nothing and no two moments can ever collide.
  * Returns the same clip when nothing moves.
  */
-export function moveKeyframeMoment<C extends KeyframeCarrier>(clip: C, fromT: number, toT: number, durationS: number): C {
+export function moveKeyframeMoment<C extends KeyframeCarrier>(
+  clip: C,
+  fromT: number,
+  toT: number,
+  durationS: number,
+  /**
+   * Closest a drag may park this moment to its neighbour. The default is the
+   * bare arithmetic minimum that keeps them distinct; pass ONE FRAME from the UI
+   * so the two never land on the same pixel, because two diamonds a fifth of a
+   * millisecond apart are one diamond to the eye and the next drag grabs
+   * whichever the DOM happens to list first.
+   */
+  minGapS = MOMENT_EPS * 2,
+): C {
   const moments = clipKeyframeTimes(clip)
   const idx = moments.findIndex((t) => Math.abs(t - fromT) <= MOMENT_EPS)
   if (idx < 0) return clip
@@ -145,9 +158,10 @@ export function moveKeyframeMoment<C extends KeyframeCarrier>(clip: C, fromT: nu
   // keyframe left beyond the out point by a trim (the recompile guard leaves
   // hand-authored animation alone) became the only ceiling every earlier moment
   // was clamped against, and they could all be dragged past the end.
+  const gap = Math.max(MOMENT_EPS * 2, minGapS)
   const dur = Math.max(0, durationS)
-  const lo = idx > 0 ? moments[idx - 1] + MOMENT_EPS * 2 : 0
-  const hi = Math.min(idx < moments.length - 1 ? moments[idx + 1] - MOMENT_EPS * 2 : dur, dur)
+  const lo = idx > 0 ? moments[idx - 1] + gap : 0
+  const hi = Math.min(idx < moments.length - 1 ? moments[idx + 1] - gap : dur, dur)
   const t = Math.min(Math.max(toT, lo), Math.max(lo, hi))
   if (Math.abs(t - moments[idx]) <= MOMENT_EPS) return clip
 

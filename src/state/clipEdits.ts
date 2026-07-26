@@ -625,6 +625,10 @@ export function topAndTail(edge: 'in' | 'out'): void {
 export function moveClipKeyframe(clipId: string, fromT: number, toT: number): void {
   const before = findClip(clipId)
   const promotes = !!before?.appearance
+  // One frame is the smallest separation that can still be SEEN and clicked; the
+  // engine's bare arithmetic minimum left two diamonds a fifth of a millisecond
+  // apart, which is one diamond at any zoom.
+  const minGapS = 1 / (activeSequence(useStore.getState().project).fps || 30)
   // mapClip rebuilds the track and sequence unconditionally, so returning the
   // SAME clip is not enough to stop an undo entry — a drag the engine clamps
   // straight back to where it started would still cost the user an undo press.
@@ -632,7 +636,7 @@ export function moveClipKeyframe(clipId: string, fromT: number, toT: number): vo
     clipId,
     'Move keyframe',
     (c) => {
-      const moved = moveKeyframeMoment(c, fromT, toT, clipDurationS(c))
+      const moved = moveKeyframeMoment(c, fromT, toT, clipDurationS(c), minGapS)
       return moved === c ? c : releaseAppearanceOnRetime(c, moved, fromT)
     },
     true,

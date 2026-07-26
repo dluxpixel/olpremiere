@@ -124,6 +124,22 @@ describe('retiming a keyframe a PRESET compiled', () => {
     expect(scaleTimes()).toEqual(compiled)
   })
 
+  // Clamping used to park the dragged moment 2e-4s from its neighbour: two
+  // diamonds on the same pixel at any zoom, and the next drag grabs whichever
+  // the DOM lists first.
+  it('a drag onto a neighbour stops one FRAME short, not a fifth of a millisecond', () => {
+    const c = seedTitle()
+    useStore.getState().setUI({ playheadS: 1 })
+    toggleChannelAnimation(c.id, 'scale')
+    useStore.getState().setUI({ playheadS: 3 })
+    addKeyframeAtPlayhead(c.id, 'scale')
+
+    moveClipKeyframe(c.id, 1, 3) // drag the first moment right onto the second
+
+    const [a, b] = channelKeyframes(firstClip(), 'scale').map((k) => k.t)
+    expect(b - a).toBeGreaterThanOrEqual(1 / 30 - 1e-9) // the sequence runs at 30fps
+  })
+
   it('a moment that touches NO appearance channel leaves the preset alone', () => {
     const c = seedTitle()
     useStore.getState().setUI({ playheadS: 3 })
