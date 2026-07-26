@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { applyAppearanceToClip } from './anim/appearance'
 import { clipEmitsAudio } from './audio'
-import { resolveChannel } from './effects/channels'
+import { channelKeyframes, resolveChannel } from './effects/channels'
 import {
   defaultTitleDef,
   defaultTransform,
@@ -610,6 +610,40 @@ describe('splitClip', () => {
       [0, 5],
       [0.5, 10],
     ])
+  })
+
+  // A cut must never change what is on screen at that instant. The canonical
+  // appearance recompile only reproduces the original motion while each window
+  // sits entirely on one side of it; cut INSIDE the entrance and the right half
+  // used to have its entrance channels cleared, snapping mid-animation.
+  it('a cut INSIDE an entrance window keeps the motion instead of recompiling', () => {
+    const base = makeClip({ startS: 0, inS: 0, outS: 4, appearance: { in: 'pop', durS: 0.5 } })
+    const c = applyAppearanceToClip(base, base.appearance!, 1920, 1080)
+    const seq = makeSeq([makeTrack({ clips: [c] })])
+    const cutAt = 0.2 // well inside the 0.5s entrance
+
+    const [left, right] = splitClip(seq, c.id, cutAt).tracks[0].clips
+
+    // The picture is unchanged across the cut: the right half opens on exactly
+    // the value the original was showing there.
+    expect(resolveChannel(right, 'scale', 0)).toBeCloseTo(resolveChannel(c, 'scale', cutAt), 9)
+    // ...and it still ANIMATES the rest of the entrance rather than snapping.
+    expect(channelKeyframes(right, 'scale').length).toBeGreaterThan(1)
+    expect(resolveChannel(left, 'scale', cutAt)).toBeCloseTo(resolveChannel(c, 'scale', cutAt), 9)
+    // Neither half claims a preset it no longer matches.
+    expect(left.appearance).toBeUndefined()
+    expect(right.appearance).toBeUndefined()
+  })
+
+  it('a cut OUTSIDE both windows still recompiles each half from its own spec', () => {
+    const base = makeClip({ startS: 0, inS: 0, outS: 4, appearance: { in: 'pop', out: 'fadeOut', durS: 0.5 } })
+    const c = applyAppearanceToClip(base, base.appearance!, 1920, 1080)
+    const seq = makeSeq([makeTrack({ clips: [c] })])
+
+    const [left, right] = splitClip(seq, c.id, 2).tracks[0].clips
+
+    expect(left.appearance).toEqual({ in: 'pop', durS: 0.5 })
+    expect(right.appearance).toEqual({ out: 'fadeOut', durS: 0.5 })
   })
 
   it('fades split with their edge: left keeps fade-in only, right fade-out only', () => {

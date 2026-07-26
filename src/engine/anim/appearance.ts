@@ -225,6 +225,16 @@ function normalize(kfs: Keyframe[]): Keyframe[] {
 }
 
 /**
+ * The per-side window an appearance actually compiles into on a clip of duration
+ * `D`: at least a couple of frames, never more than half the clip so the
+ * entrance and the exit can never overlap. Shared so that anything reasoning
+ * about WHERE the animation lives reads the same number the compiler used.
+ */
+export function appearanceWindowS(spec: AppearanceSpec, D: number): number {
+  return Math.max(1 / 60, Math.min(spec.durS ?? DEFAULT_APPEARANCE_DUR, D / 2))
+}
+
+/**
  * Compile an appearance spec into concrete keyframes per channel for a clip of
  * duration `D` at sequence size `W`×`H`, settling to `base` (the clip's static
  * values). Entrance and exit are merged per channel; the window `d` is clamped so
@@ -237,9 +247,7 @@ export function buildAppearanceKeyframes(
   H: number,
   base: AppearanceBase = NEUTRAL_BASE,
 ): ChannelKeyframes {
-  const durS = spec.durS ?? DEFAULT_APPEARANCE_DUR
-  // At least a couple of frames; never more than half the clip so in ⟂ out.
-  const d = Math.max(1 / 60, Math.min(durS, D / 2))
+  const d = appearanceWindowS(spec, D)
   const ctx: BuildCtx = { d, D: Math.max(D, 2 / 60), W, H, base }
 
   const inK = isEntranceId(spec.in) ? ENTRANCE_BY_ID.get(spec.in!)!.build(ctx) : {}
@@ -369,10 +377,18 @@ export function releaseAppearanceOnRetime(prev: Clip, next: Clip, fromT: number)
   const touched = APPEARANCE_CHANNELS.some((ch) =>
     channelKeyframes(prev, ch).some((k) => Math.abs(k.t - fromT) <= MOMENT_EPS),
   )
-  if (!touched) return next
-  const promoted: Clip = { ...next }
-  delete promoted.appearance
-  return promoted
+  return touched ? withoutAppearance(next) : next
+}
+
+/** A cut landing this close to a window edge counts as landing ON it. */
+const CUT_EPS = 1e-6
+
+/** The clip with its keyframes intact but no longer owned by a preset. */
+function withoutAppearance(clip: Clip): Clip {
+  if (!clip.appearance) return clip
+  const next: Clip = { ...clip }
+  delete next.appearance
+  return next
 }
 
 /**
@@ -413,7 +429,25 @@ export function splitAppearanceAcrossCut(
 ): { left: Clip; right: Clip } {
   const spec = original.appearance
   if (!spec || isEmptyAppearance(spec)) return { left, right }
-  if (!appearanceIsUntouched(original, clipDurationS(original), seqW, seqH)) return { left, right }
+  const D = clipDurationS(original)
+  if (!appearanceIsUntouched(original, D, seqW, seqH)) return { left, right }
+
+  // The canonical recompile only reproduces the original MOTION while each
+  // window lands entirely on one side of the cut. Cut INSIDE one and the half
+  // that does not own that edge has its appearance channels cleared: cut 0.1s
+  // into a 0.25s entrance and the right half — still mid-entrance — snaps to the
+  // settled value, so the cut CHANGES THE PICTURE, the one thing a split must
+  // never do. splitClip's time-split already carries the motion across
+  // correctly, boundary keyframe and all, so keep it and let both halves off the
+  // spec: their keyframes are no longer anything this compiler can reproduce.
+  const d = appearanceWindowS(spec, D)
+  const cutAt = clipDurationS(left)
+  const insideEntrance = isEntranceId(spec.in) && cutAt < d - CUT_EPS
+  const insideExit = isExitId(spec.out) && cutAt > D - d + CUT_EPS
+  if (insideEntrance || insideExit) {
+    return { left: withoutAppearance(left), right: withoutAppearance(right) }
+  }
+
   return {
     left: applyAppearanceToClip(left, splitAppearanceSpec(spec, 'left') ?? {}, seqW, seqH),
     right: applyAppearanceToClip(right, splitAppearanceSpec(spec, 'right') ?? {}, seqW, seqH),
