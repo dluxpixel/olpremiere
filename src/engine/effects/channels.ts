@@ -13,7 +13,7 @@
 //
 // Pure: no React, no DOM, no store. Imports registry + the keyframe math only.
 
-import { evalChannel } from '../keyframes'
+import { evalChannel, upsertKeyframe } from '../keyframes'
 import type { AnimChannel, Clip, EffectInstance, Keyframe } from '../types'
 import { CANONICAL_ORDER, EFFECT_BY_TYPE, defaultParams, getEffect, isNeutral } from './registry'
 
@@ -217,4 +217,53 @@ export function withChannelKeyframes(clip: Clip, channel: AnimChannel, kfs: Keyf
   if (kfs.length === 0) delete next[channel]
   else next[channel] = kfs
   return { ...clip, keyframes: next }
+}
+
+/**
+ * At the very head of a clip there is nowhere to animate FROM, so auto-keyframe
+ * declines and writes a base instead. One frame at any sane rate is far wider
+ * than this; it only has to exclude t=0 itself.
+ */
+const AUTO_KEYFRAME_MIN_T = 1e-3
+
+/**
+ * Commit changed channel values at LOCAL clip time `localT` under ONE policy.
+ * Per channel:
+ *
+ * - **already animated** → upsert a keyframe at `localT` (the base is dead data
+ *   while keyframes exist, so writing it would silently do nothing);
+ * - **auto-keyframe, past the head** → pin the current value at t=0 and land the
+ *   new one at `localT`. It takes TWO: a lone keyframe holds everywhere, which
+ *   is just a moved base, and the whole point of the mode is that a drag makes
+ *   motion;
+ * - **otherwise** → write the static base.
+ *
+ * Shared by the single-clip gizmo and the multi-selection align so that one drag
+ * means the same thing however many clips are selected — they disagreed before,
+ * and the same gesture animated one clip while permanently moving its
+ * neighbours. Pure: the caller owns which clips, and at what time.
+ */
+export function withChannelsAtTime(
+  clip: Clip,
+  localT: number,
+  vals: readonly (readonly [AnimChannel, number])[],
+  autoKeyframe: boolean,
+): Clip {
+  let next = clip
+  for (const [channel, value] of vals) {
+    const kfs = channelKeyframes(next, channel)
+    if (kfs.length > 0) {
+      next = withChannelKeyframes(next, channel, upsertKeyframe(kfs, { t: localT, value, ease: 'linear' }))
+      continue
+    }
+    if (autoKeyframe && localT > AUTO_KEYFRAME_MIN_T) {
+      next = withChannelKeyframes(next, channel, [
+        { t: 0, value: channelBase(next, channel), ease: 'linear' },
+        { t: localT, value, ease: 'linear' },
+      ])
+      continue
+    }
+    next = withChannelValue(next, channel, value)
+  }
+  return next
 }

@@ -5,13 +5,19 @@
 // mapClip), and a no-op fan-out records no undo step (change detection below).
 
 import { applyAppearanceToClip } from '../engine/anim/appearance'
-import { channelKeyframes, withChannelKeyframes, withChannelValue } from '../engine/effects/channels'
+import {
+  channelKeyframes,
+  withChannelKeyframes,
+  withChannelValue,
+  withChannelsAtTime,
+} from '../engine/effects/channels'
 import { addEffect } from '../engine/effects/ops'
 import { getEffect } from '../engine/effects/registry'
 import { upsertKeyframe } from '../engine/keyframes'
-import { clipDurationS } from '../engine/timeline'
+import { clipDurationS, clipEndS } from '../engine/timeline'
 import { activeSequence, newId, type AnimChannel, type Clip } from '../engine/types'
 import { playheadLocalT } from './clipEdits'
+import { useSettings } from './settings'
 import { updateActiveSequence, useStore } from './store'
 import { useToasts } from './toasts'
 
@@ -61,14 +67,36 @@ export function setChannelForClips(ids: Iterable<string>, channel: AnimChannel, 
 
 /**
  * Align every selected clip to the SAME on-screen position (x, y) in one undo
- * step — dragging one caption in the preview snaps them all to that spot. A clip
- * with an entrance/exit animation re-derives its keyframes from the new base.
+ * step — dragging one caption in the preview snaps them all to that spot.
+ *
+ * Obeys the SAME per-channel policy as the single-clip gizmo
+ * (`withChannelsAtTime`): an animated clip keyframes at the playhead, and with
+ * auto-keyframe on a still clip starts animating. It used to write
+ * `transform.x/y` unconditionally, so with auto-keyframe on, one drag animated
+ * the clip under the gizmo and permanently MOVED the rest of the selection.
  */
 export function setClipsPosition(ids: Iterable<string>, x: number, y: number): void {
-  const seq = activeSequence(useStore.getState().project)
+  const { project, ui } = useStore.getState()
+  const seq = activeSequence(project)
+  const auto = useSettings.getState().autoKeyframe
   mapClips(ids, 'Align clips', (c) => {
-    const moved: Clip = { ...c, transform: { ...c.transform, x, y } }
-    return moved.appearance ? applyAppearanceToClip(moved, moved.appearance, seq.width, seq.height) : moved
+    // An appearance preset OWNS these channels and recompiles from the base, so
+    // it takes the base write — the single-clip gizmo declines to keyframe an
+    // appearance-owned clip for exactly the same reason.
+    const spec = c.appearance
+    if (spec) {
+      const moved: Clip = { ...c, transform: { ...c.transform, x, y } }
+      return applyAppearanceToClip(moved, spec, seq.width, seq.height)
+    }
+    // Only a clip the playhead is actually INSIDE has a meaningful time to key
+    // at. A selection can reach clips elsewhere on the timeline, and their local
+    // time clamps to the head or the tail — animating those would be noise the
+    // user never asked for, so they keep the plain move.
+    const localT = ui.playheadS - c.startS
+    if (localT < 0 || ui.playheadS >= clipEndS(c)) {
+      return withChannelValue(withChannelValue(c, 'posX', x), 'posY', y)
+    }
+    return withChannelsAtTime(c, localT, [['posX', x], ['posY', y]], auto)
   })
 }
 

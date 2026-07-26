@@ -20,6 +20,8 @@ import {
   setClipsGainDb,
   setClipsPosition,
 } from './bulkEdits'
+import { setClipsAppearance } from './appearanceActions'
+import { setAutoKeyframe } from './settings'
 import { updateTitles } from './titleActions'
 import { updateActiveSequence, useStore } from './store'
 
@@ -31,13 +33,18 @@ vi.mock('./toasts', () => ({
 
 const seq = (): Sequence => activeSequence(useStore.getState().project)
 const clips = () => seq().tracks[0].clips
+const clipById = (id: string): Clip =>
+  seq()
+    .tracks.flatMap((t) => t.clips)
+    .find((c) => c.id === id)!
 
-function seedTitle(startS: number, durS = 5): Clip {
+/** Seed a title on a track (V1 by default; V2 to overlap one in time). */
+function seedTitle(startS: number, durS = 5, trackIndex = 0): Clip {
   const clip = newTitleClip(defaultTitleDef('x'), startS, durS)
   updateActiveSequence('seed', (sq) =>
     recomputeDuration({
       ...sq,
-      tracks: sq.tracks.map((t, i) => (i === 0 ? { ...t, clips: [...t.clips, clip] } : t)),
+      tracks: sq.tracks.map((t, i) => (i === trackIndex ? { ...t, clips: [...t.clips, clip] } : t)),
     }),
   )
   return clip
@@ -46,6 +53,7 @@ function seedTitle(startS: number, durS = 5): Clip {
 beforeEach(() => {
   useStore.getState().setProject(newProject())
   useStore.getState().setUI({ selection: [], playheadS: 0 })
+  setAutoKeyframe(false)
 })
 
 describe('updateTitles (bulk boldness)', () => {
@@ -222,6 +230,76 @@ describe('setClipsPosition', () => {
       [0, 0],
       [0, 0],
     ])
+  })
+
+  // The multi-selection used to write transform.x/y unconditionally while the
+  // single-clip gizmo keyframed, so ONE drag animated one clip and permanently
+  // moved the others. Both paths share withChannelsAtTime now.
+  it('auto-keyframe ON animates EVERY selected clip, not just the one under the gizmo', () => {
+    const a = seedTitle(0)
+    const b = seedTitle(0, 5, 1) // V2, so both clips are live at the playhead
+    setAutoKeyframe(true)
+    useStore.getState().setUI({ playheadS: 2 })
+
+    setClipsPosition([a.id, b.id], 120, -40)
+
+    for (const c of [clipById(a.id), clipById(b.id)]) {
+      // Two keyframes: the old value pinned at the head, the new one at the playhead.
+      expect(channelKeyframes(c, 'posX').map((k) => [k.t, k.value])).toEqual([
+        [0, 0],
+        [2, 120],
+      ])
+      expect(channelKeyframes(c, 'posY').map((k) => [k.t, k.value])).toEqual([
+        [0, 0],
+        [2, -40],
+      ])
+      // ...and the base is left alone, so nothing jumps outside the animation.
+      expect([c.transform.x, c.transform.y]).toEqual([0, 0])
+    }
+    // Still ONE undo step for the whole selection.
+    useStore.getState().undo()
+    expect(channelKeyframes(clipById(a.id), 'posX')).toHaveLength(0)
+    expect(channelKeyframes(clipById(b.id), 'posX')).toHaveLength(0)
+  })
+
+  it('keys an ALREADY-animated clip at the playhead instead of a dead base write', () => {
+    const a = seedTitle(0)
+    setAutoKeyframe(false)
+    useStore.getState().setUI({ playheadS: 1 })
+    toggleChannelAnimation(a.id, 'posX') // channel is animated from here on
+    useStore.getState().setUI({ playheadS: 3 })
+
+    setClipsPosition([a.id], 200, 0)
+
+    const kfs = channelKeyframes(clipById(a.id), 'posX')
+    expect(kfs.some((k) => Math.abs(k.t - 3) < 1e-9 && k.value === 200)).toBe(true)
+  })
+
+  it('a selected clip the playhead is OUTSIDE keeps the plain move', () => {
+    const a = seedTitle(0) // [0, 5)
+    const b = seedTitle(6) // [6, 11) — nowhere near the playhead
+    setAutoKeyframe(true)
+    useStore.getState().setUI({ playheadS: 2 })
+
+    setClipsPosition([a.id, b.id], 90, 10)
+
+    expect(channelKeyframes(clipById(a.id), 'posX')).toHaveLength(2)
+    // b has no meaningful local time to key at, so it just moves.
+    expect(channelKeyframes(clipById(b.id), 'posX')).toHaveLength(0)
+    expect([clipById(b.id).transform.x, clipById(b.id).transform.y]).toEqual([90, 10])
+  })
+
+  it('an appearance-owned clip still recompiles from the new base', () => {
+    const a = seedTitle(0)
+    setAutoKeyframe(true)
+    useStore.getState().setUI({ playheadS: 2 })
+    setClipsAppearance([a.id], { in: 'pop' })
+
+    setClipsPosition([a.id], 64, 0)
+
+    const c = clipById(a.id)
+    expect(c.transform.x).toBe(64)
+    expect(c.appearance?.in).toBe('pop')
   })
 })
 

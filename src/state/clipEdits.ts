@@ -10,6 +10,7 @@ import {
   resolveChannel,
   withChannelKeyframes,
   withChannelValue,
+  withChannelsAtTime,
 } from '../engine/effects/channels'
 import * as ops from '../engine/effects/ops'
 import { getEffect } from '../engine/effects/registry'
@@ -402,31 +403,9 @@ export function setClipTransformAtPlayhead(
   if (changes.rotationDeg !== undefined) vals.push(['rotation', changes.rotationDeg])
   if (vals.length === 0) return
   const auto = useSettings.getState().autoKeyframe
-  mapClip(clipId, 'Transform at playhead', (c) => {
-    const localT = playheadLocalT(c)
-    let next = c
-    for (const [channel, value] of vals) {
-      const kfs = channelKeyframes(next, channel)
-      if (kfs.length > 0) {
-        next = withChannelKeyframes(next, channel, upsertKeyframe(kfs, { t: localT, value, ease: 'linear' }))
-        continue
-      }
-      // AUTO-KEYFRAME: a still channel becomes an animated one. A lone keyframe
-      // would just be a moved base — evalChannel holds it everywhere — so the
-      // clip's existing value is pinned at the head and the new one lands at the
-      // playhead. That is the whole point of the mode: drag, and there is motion.
-      // At the head itself there is nowhere to animate FROM, so it stays a base.
-      if (auto && localT > 1e-3) {
-        next = withChannelKeyframes(next, channel, [
-          { t: 0, value: channelBase(next, channel), ease: 'linear' },
-          { t: localT, value, ease: 'linear' },
-        ])
-        continue
-      }
-      next = withChannelValue(next, channel, value)
-    }
-    return next
-  })
+  // The per-channel policy (upsert / auto-keyframe / base) lives in channels.ts
+  // so the multi-selection align obeys exactly the same one.
+  mapClip(clipId, 'Transform at playhead', (c) => withChannelsAtTime(c, playheadLocalT(c), vals, auto))
 }
 
 // ---------------------------------------------------------------------------
