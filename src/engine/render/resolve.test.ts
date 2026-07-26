@@ -241,7 +241,7 @@ describe('identity clip', () => {
   })
 
   it('a fade + a lone-edge transition on the same edge do NOT double-fade', () => {
-    // Last clip on its track (no next partner) with BOTH a 1s dip-to-black
+    // Last clip on its track (no next partner) with BOTH a 1s glitch
     // transitionOut and a 1s fade-out handle. The transition OWNS its window,
     // so the handle cannot multiply into it (which used to risk a quadratic
     // ramp); outside the window the handle is the only thing acting.
@@ -250,13 +250,29 @@ describe('identity clip', () => {
       inS: 0,
       outS: 4,
       fadeOutS: 1,
-      transitionOut: { type: 'dipToBlack', durationS: 1 },
+      transitionOut: { type: 'glitch', durationS: 1 },
     })
     const s = seqOf([track({ clips: [c] })])
     const op = asTransition(resolveFrame(s, 3.5).ops[0])
-    expect(op.kind).toBe('dipToBlack')
+    expect(op.kind).toBe('glitch')
     expect(op.progress).toBeCloseTo(0.5, 5)
     expect(op.from.opacity).toBeCloseTo(1, 5) // NOT pre-ramped by the handle
+    expect(asLayer(resolveFrame(s, 2.5).ops[0]).opacity).toBeCloseTo(1, 5)
+  })
+
+  it('the same guard holds for a kind that RAMPS on a lone edge (dip to black)', () => {
+    // Dip to black takes the ramp path, so both the transition ramp and the
+    // fade handle land on one edge — and the handle must still stand down.
+    // Half way through: 0.5, not 0.25. A quadratic is exactly what this guards.
+    const c = clip({
+      startS: 0,
+      inS: 0,
+      outS: 4,
+      fadeOutS: 1,
+      transitionOut: { type: 'dipToBlack', durationS: 1 },
+    })
+    const s = seqOf([track({ clips: [c] })])
+    expect(asLayer(resolveFrame(s, 3.5).ops[0]).opacity).toBeCloseTo(0.5, 5)
     expect(asLayer(resolveFrame(s, 2.5).ops[0]).opacity).toBeCloseTo(1, 5)
   })
 
@@ -731,6 +747,39 @@ describe('lone-edge transitions run their REAL form', () => {
     expect(from.effects).toEqual([])
     // The side that IS there keeps everything.
     expect(to.assetId).toBe(c.assetId)
+  })
+
+  // The dip shader weights its solid by the sides' coverage, so with one side
+  // absent that collapsed to the clip's own alpha: a "Dip to Black" on a PIP
+  // painted an opaque black RECTANGLE the shape of the PIP over the video below.
+  // A full-frame solid is not the fix either — wiping the lower tracks was its
+  // own bug. Ramping the clip's opacity is correct on both tracks at once.
+  it('a lone-edge Dip to Black ramps opacity instead of painting a box', () => {
+    const c = clip({ startS: 0, inS: 0, outS: 4, transitionIn: { type: 'dipToBlack', durationS: 2 } })
+    const s = seqOf([track({ clips: [c] })])
+
+    // No transition op at all — it is an ordinary layer whose opacity ramps.
+    const op = resolveFrame(s, 1).ops[0]
+    expect(op.type).toBe('layer')
+    expect(asLayer(op).opacity).toBeCloseTo(0.5, 6)
+  })
+
+  it('a lone-edge Dip to Black on the OUT edge ramps down the same way', () => {
+    const c = clip({ startS: 0, inS: 0, outS: 4, transitionOut: { type: 'dipToBlack', durationS: 2 } })
+    const s = seqOf([track({ clips: [c] })])
+
+    const op = resolveFrame(s, 3).ops[0]
+    expect(op.type).toBe('layer')
+    expect(asLayer(op).opacity).toBeCloseTo(0.5, 6)
+  })
+
+  it('but Dip to WHITE keeps its solid — fading opacity would reveal black, not white', () => {
+    const c = clip({ startS: 0, inS: 0, outS: 4, transitionIn: { type: 'dipToWhite', durationS: 2 } })
+    const s = seqOf([track({ clips: [c] })])
+
+    const op = resolveFrame(s, 1).ops[0]
+    expect(op.type).toBe('transition')
+    expect(asTransition(op).kind).toBe('dipToWhite')
   })
 
   it('after the window it is an ordinary layer at full opacity', () => {

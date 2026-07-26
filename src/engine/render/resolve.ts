@@ -100,6 +100,27 @@ const emptySide = (layer: RenderLayer): RenderLayer => ({
 })
 
 /**
+ * Kinds that must NOT run their solid form on a LONE edge, and fall through to
+ * the opacity ramp instead.
+ *
+ * Dip to Black is the only one. The dip shader weights its solid by the sides'
+ * coverage (`max(from.a, to.a)`), so with one side absent that weight collapses
+ * to the clip's OWN alpha and the "dip" becomes an opaque black rectangle the
+ * exact shape of the clip. On a PIP that paints a black box over the video
+ * below — and a full-frame solid is not the answer either, because wiping the
+ * lower tracks was itself a bug, fixed on 2026-07-25.
+ *
+ * Ramping the clip's own opacity is right on both tracks at once: the composite
+ * background is black, so on V1 it is the same picture the dip always produced,
+ * while on an upper track the overlay simply leaves — which is what a dip to
+ * black means when there is nothing of your own to dip to.
+ *
+ * Dip to WHITE keeps its solid, because fading opacity there would reveal black,
+ * which is not white. The asymmetry belongs to the colour, not to the rule.
+ */
+const LONE_EDGE_PREFERS_RAMP: ReadonlySet<TransitionKind> = new Set<TransitionKind>(['dipToBlack'])
+
+/**
  * The effective transition of the pair (A → B): B's incoming wins, else A's
  * outgoing. Only meaningful when A and B are time-adjacent on one track.
  */
@@ -226,7 +247,11 @@ function resolveTrack(track: Track, t: number, fps: number): RenderOp | null {
             outD > 0 ? endS - outD : Infinity,
             clip.fadeOutS > 0 ? endS - clip.fadeOutS : Infinity,
           )
-          if (!clip.adjustment && t < outEdgeStartsAt) {
+          if (
+            !clip.adjustment &&
+            t < outEdgeStartsAt &&
+            !LONE_EDGE_PREFERS_RAMP.has(coerceKind(clip.transitionIn.type))
+          ) {
             return {
               type: 'transition',
               kind: coerceKind(clip.transitionIn.type),
@@ -256,7 +281,7 @@ function resolveTrack(track: Track, t: number, fps: number): RenderOp | null {
               to: layer,
             }
           }
-          if (!clip.adjustment) {
+          if (!clip.adjustment && !LONE_EDGE_PREFERS_RAMP.has(coerceKind(clip.transitionOut.type))) {
             return {
               type: 'transition',
               kind: coerceKind(clip.transitionOut.type),
