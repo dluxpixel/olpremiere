@@ -8,7 +8,7 @@ import { expect, test } from '@playwright/test'
 import fs from 'node:fs'
 
 const APP_VERSION = JSON.parse(fs.readFileSync('package.json', 'utf8')).version as string
-const KEY = 'reel:lastSeenVersion'
+const KEY = 'olpremiere:lastSeenVersion'
 
 test('the top bar shows the running build version', async ({ page }) => {
   await page.goto('/')

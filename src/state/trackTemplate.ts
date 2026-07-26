@@ -37,8 +37,8 @@ interface PresetStore {
   defaultId: string | null
 }
 
-const KEY = 'reel:track-presets'
-const LEGACY_KEY = 'reel:track-template'
+const KEY = 'olpremiere:track-presets'
+const LEGACY_KEY = 'olpremiere:track-template'
 
 /** Newest-wins cap, so a runaway save loop cannot fill the origin's quota. */
 const MAX_PRESETS = 24

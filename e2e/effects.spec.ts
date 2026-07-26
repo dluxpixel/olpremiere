@@ -140,7 +140,7 @@ test('double-clicking an effect applies it to the selected clip', async ({ page 
 
 test('dragging an effect from the browser onto a clip applies it', async ({ page }) => {
   const clipId = await addClip(page)
-  await dropOnClip(page, 'application/x-reel-effect', 'saturation')
+  await dropOnClip(page, 'application/x-olpremiere-effect', 'saturation')
   await expect(page.getByTestId('effect-card')).toHaveCount(1)
   expect(await stackTypes(page, clipId)).toEqual(['saturation'])
 })
@@ -186,8 +186,8 @@ test('right-click an effect → Apply to every clip hits them all, in one undo',
 test('dragging a transition onto a clip picks the edge nearest the cursor', async ({ page }) => {
   const clipId = await addClip(page)
 
-  await dropOnClip(page, 'application/x-reel-transition', 'crossDissolve', 0.1)
-  await dropOnClip(page, 'application/x-reel-transition', 'dipToBlack', 0.9)
+  await dropOnClip(page, 'application/x-olpremiere-transition', 'crossDissolve', 0.1)
+  await dropOnClip(page, 'application/x-olpremiere-transition', 'dipToBlack', 0.9)
 
   const edges = await page.evaluate(async (id) => {
     const storeMod = '/src/state/store.ts'
@@ -244,7 +244,7 @@ test('White Flash: drop on the in edge → opens near-white, resolves to footage
   const clipId = await addClip(page)
 
   // Drop on the LEFT half → in edge; the drop carries the kind's own default.
-  await dropOnClip(page, 'application/x-reel-transition', 'whiteFlash', 0.1)
+  await dropOnClip(page, 'application/x-olpremiere-transition', 'whiteFlash', 0.1)
   const tr = await page.evaluate(async (id) => {
     const storeMod = '/src/state/store.ts'
     const typesMod = '/src/engine/types.ts'
@@ -296,7 +296,7 @@ test('White Flash: drop on the in edge → opens near-white, resolves to footage
 test('White Flash: drop on the out edge → footage ends on near-white', async ({ page }) => {
   const clipId = await addClip(page)
   // Right half of the clip = the OUT edge.
-  await dropOnClip(page, 'application/x-reel-transition', 'whiteFlash', 0.9)
+  await dropOnClip(page, 'application/x-olpremiere-transition', 'whiteFlash', 0.9)
   const info = await page.evaluate(async (id) => {
     const storeMod = '/src/state/store.ts'
     const typesMod = '/src/engine/types.ts'
@@ -409,7 +409,7 @@ test('disabling an effect restores the original pixels; re-enabling grades again
   await expect.poll(async () => (await previewPixel(page, 0.5, 0.5)).some((c) => c > 10), { timeout: 10_000 }).toBe(true)
   const base = await previewPixel(page, 0.5, 0.5)
 
-  await dropOnClip(page, 'application/x-reel-effect', 'saturation')
+  await dropOnClip(page, 'application/x-olpremiere-effect', 'saturation')
   // Drive saturation to -1 (greyscale): R, G and B must converge.
   await page.getByTestId('field-saturation').dblclick()
   await page.getByTestId('field-saturation').fill('-1')

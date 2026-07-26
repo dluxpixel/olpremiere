@@ -1,5 +1,5 @@
 // Render public/icon.svg to a multi-resolution Windows .ico via headless
-// Chromium (no image libraries needed). Produces public/ot-premiere.ico +
+// Chromium (no image libraries needed). Produces public/ol-premiere.ico +
 // public/favicon.png. Run: node scripts/make-icon.mjs
 import { chromium } from '@playwright/test'
 import fs from 'node:fs'
@@ -50,6 +50,6 @@ pngs.forEach((p, i) => {
 })
 
 const ico = Buffer.concat([header, entries, ...dataChunks])
-fs.writeFileSync(path.join(root, 'public', 'ot-premiere.ico'), ico)
+fs.writeFileSync(path.join(root, 'public', 'ol-premiere.ico'), ico)
 fs.writeFileSync(path.join(root, 'public', 'favicon.png'), pngs.find((p) => p.size === 64).buf)
-console.log(`wrote public/ot-premiere.ico (${sizes.join('/')}) — ${ico.length} bytes`)
+console.log(`wrote public/ol-premiere.ico (${sizes.join('/')}) — ${ico.length} bytes`)

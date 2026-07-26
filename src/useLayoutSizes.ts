@@ -6,7 +6,7 @@ export interface LayoutSizes {
   bottom: number
 }
 
-const KEY = 'reel.layout.v1'
+const KEY = 'olpremiere.layout.v1'
 
 const DEFAULTS: LayoutSizes = { left: 280, right: 300, bottom: 320 }
 

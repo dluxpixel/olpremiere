@@ -4,7 +4,7 @@
 // strength only changes which samples the mixers read, so the result can be
 // A/B'd with one toggle and undone like any other edit.
 //
-// Design notes, learned the hard way (see vault ot-premiere-noise-reduction):
+// Design notes, learned the hard way (see vault ol-premiere-noise-reduction):
 //  - RNNoise ALONE. Stacking a second suppressor (Speex) measured "better" on
 //    a level bench and sounded watery on a real mic. OBS ships them either/or.
 //  - Offline buffer processing, not an AudioWorklet: one deterministic pass,

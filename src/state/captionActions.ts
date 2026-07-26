@@ -29,7 +29,7 @@ export const CAPTION_WORDS_MIN = 1
 export const CAPTION_WORDS_MAX = 6
 export const CAPTION_WORDS_DEFAULT = PHRASE_CAPTION_OPTIONS.maxWords
 
-const WORDS_KEY = 'reel:captions:words'
+const WORDS_KEY = 'olpremiere:captions:words'
 
 const clampWords = (n: number): number =>
   Math.min(CAPTION_WORDS_MAX, Math.max(CAPTION_WORDS_MIN, Math.round(n)))

@@ -56,7 +56,7 @@ const BUILTINS: TextStylePreset[] = [
   },
 ]
 
-const KEY = 'reel:textPresets'
+const KEY = 'olpremiere:textPresets'
 
 function loadSaved(): TextStylePreset[] {
   try {
@@ -117,7 +117,7 @@ export function allTextPresets(): TextStylePreset[] {
 // through to raw ALL-CAPS titles in the middle of the frame. Same feature, same
 // name, completely different output — and right-click is the one people reach for.
 
-const STYLE_KEY = 'reel:captions:style'
+const STYLE_KEY = 'olpremiere:captions:style'
 /** The house style, and what an unset install gets. */
 export const DEFAULT_CAPTION_PRESET_ID = 'builtin-jettism'
 

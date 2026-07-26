@@ -18,9 +18,9 @@ const PRESENCE_TTL_MS = 25_000
 /** Hard cap per response so a huge room log can't blow the function. */
 const MAX_UPDATES_PER_GET = 500
 
-const prefix = (room: string): string => `reel-rooms/${room}/log/`
-const presencePrefix = (room: string): string => `reel-rooms/${room}/presence/`
-const mediaPrefix = (room: string): string => `reel-rooms/${room}/media/`
+const prefix = (room: string): string => `olpremiere-rooms/${room}/log/`
+const presencePrefix = (room: string): string => `olpremiere-rooms/${room}/presence/`
+const mediaPrefix = (room: string): string => `olpremiere-rooms/${room}/media/`
 
 /** Monotonic-enough cursor: ms epoch + random suffix orders lexicographically. */
 const newSeq = (): string => `${Date.now().toString().padStart(14, '0')}-${Math.random().toString(36).slice(2, 8)}`

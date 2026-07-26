@@ -17,7 +17,7 @@ const BUILTINS: { label: string; v: number }[] = [
 ]
 
 const DEPTH_SPEC: Spec = { min: 1.01, max: 4, step: 0.01, sens: 0.01 }
-const KEY = 'reel:zoomPresets'
+const KEY = 'olpremiere:zoomPresets'
 
 function loadSaved(): number[] {
   try {

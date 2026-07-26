@@ -61,7 +61,7 @@ export class BroadcastChannelTransport implements CollabTransport {
   private pruneTimer: ReturnType<typeof setInterval>
 
   constructor(room: string) {
-    this.ch = new BroadcastChannel(`reel-collab:${room}`)
+    this.ch = new BroadcastChannel(`olpremiere-collab:${room}`)
     this.ch.onmessage = (e: MessageEvent<BcMsg>) => {
       const msg = e.data
       if (msg.kind === 'update') {

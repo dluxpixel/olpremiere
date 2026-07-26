@@ -151,7 +151,7 @@ async function uploadBlob(
   const showProgress = displayName !== null && blob.size > PROGRESS_TOAST_BYTES
   try {
     if (showProgress) setTransfer(key, `${displayName} ⇡ 0%`)
-    await upload(`reel-rooms/${room}/media/${encodeURIComponent(key)}`, blob, {
+    await upload(`olpremiere-rooms/${room}/media/${encodeURIComponent(key)}`, blob, {
       access: 'public',
       handleUploadUrl: `/api/media?room=${encodeURIComponent(room)}`,
       contentType: blob.type || 'application/octet-stream',

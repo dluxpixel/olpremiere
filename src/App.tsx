@@ -223,7 +223,7 @@ function buildAppBindings(): Binding[] {
         combo: '\\',
         description: 'Zoom to fit sequence',
         domain: 'view',
-        run: () => window.dispatchEvent(new Event('reel:zoom-fit')),
+        run: () => window.dispatchEvent(new Event('olpremiere:zoom-fit')),
       },
   ]
 }

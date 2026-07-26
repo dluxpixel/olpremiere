@@ -139,7 +139,7 @@ export function leaveRoom(): void {
 // ---------------------------------------------------------------------------
 // Display name (persisted; presence shows it to everyone in the room).
 
-const NAME_KEY = 'reel:collab:name'
+const NAME_KEY = 'olpremiere:collab:name'
 
 export function displayName(): string {
   try {

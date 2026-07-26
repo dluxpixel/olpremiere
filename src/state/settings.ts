@@ -24,9 +24,9 @@ interface SettingsState {
   autoKeyframe: boolean
 }
 
-const THEME_KEY = 'reel:settings:theme'
-const QUALITY_KEY = 'reel:settings:preview-quality'
-const AUTOKEY_KEY = 'reel:settings:auto-keyframe'
+const THEME_KEY = 'olpremiere:settings:theme'
+const QUALITY_KEY = 'olpremiere:settings:preview-quality'
+const AUTOKEY_KEY = 'olpremiere:settings:auto-keyframe'
 
 function read(key: string): string | null {
   try {

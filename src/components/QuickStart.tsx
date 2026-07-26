@@ -10,7 +10,7 @@ import { useStore } from '../state/store'
 import { useToasts } from '../state/toasts'
 import { IconButton } from '../ui/Button'
 
-const KEY = 'reel:quickstart'
+const KEY = 'olpremiere:quickstart'
 
 /** How long to wait for the saved project to hydrate before deciding whether
  *  this launch is actually a first run. A returning editor's project loads

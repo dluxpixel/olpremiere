@@ -32,8 +32,8 @@ vi.mock('./persistence', () => ({
 
 // node env has no localStorage, so back the presets with an in-memory shim.
 const bag = new Map<string, string>()
-const KEY = 'reel:track-presets'
-const LEGACY_KEY = 'reel:track-template'
+const KEY = 'olpremiere:track-presets'
+const LEGACY_KEY = 'olpremiere:track-template'
 
 beforeEach(() => {
   bag.clear()

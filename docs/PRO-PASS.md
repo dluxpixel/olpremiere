@@ -1,7 +1,7 @@
 # PRO-PASS: final verification of the pro-feel + design overhaul
 
-Date: 2026-07-20. Worktree: `reel-preview`. This is the integration gate for the
-multi-agent redesign pass driven by `OTPREMIERE-PRO-REDESIGN.md`.
+Date: 2026-07-20. Worktree: `olpremiere-preview`. This is the integration gate for the
+multi-agent redesign pass driven by `OLPREMIERE-PRO-REDESIGN.md`.
 
 ## Before / after
 

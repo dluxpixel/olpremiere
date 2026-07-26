@@ -1,6 +1,6 @@
 # OL Premiere × Jettism — Build & Workflow Spec
 
-*Rewritten after reading your actual editor source (`ol-premiere-source.zip` on your desktop — internal name "reel", a TypeScript/Vite/React + WebGL editor, self-scored 85/100).*
+*Rewritten after reading your actual editor source (`ol-premiere-source.zip` on your desktop — internal name "OL Premiere", a TypeScript/Vite/React + WebGL editor, self-scored 85/100).*
 *This replaces the generic style prompt: it maps the Jettism style onto what OL Premiere already does, what it's missing, and how to close the gap.*
 
 > **Repo reality check (added 2026-07-13 when committing, code has moved past the zip this spec read):**

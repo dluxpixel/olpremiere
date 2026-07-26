@@ -32,7 +32,7 @@ export function generationOptsFor(language: CaptionLanguage): Record<string, unk
   return { task: 'transcribe', ...(language === 'auto' ? {} : { language }) }
 }
 
-const LANG_KEY = 'reel:captions:lang'
+const LANG_KEY = 'olpremiere:captions:lang'
 
 /**
  * The live value. localStorage only PERSISTS it; the choice itself lives here,

@@ -245,7 +245,7 @@ function rendererFor(canvas: HTMLCanvasElement): Renderer | null {
 // Pair-transition pre-roll. During a pair transition the resolver samples the
 // OUTGOING clip past its cut while the INCOMING clip needs the pooled <video>
 // — and when both clips come from the SAME asset (one take split into
-// segments, the standard reel edit) they need the ONE pooled element at two
+// segments, the standard short-form edit) they need the ONE pooled element at two
 // source times at once: each rAF re-seeks it twice, the element never
 // accumulates playback, and the window degenerates into a seek-decode
 // slideshow. The cure: within TRANSITION_PRE_ROLL_S of a window the outgoing

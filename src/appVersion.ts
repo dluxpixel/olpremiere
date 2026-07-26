@@ -6,7 +6,7 @@
 export const APP_VERSION: string = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : '0.0.0'
 
 /** localStorage key holding the version the user last opened. */
-export const LAST_SEEN_VERSION_KEY = 'reel:lastSeenVersion'
+export const LAST_SEEN_VERSION_KEY = 'olpremiere:lastSeenVersion'
 
 export type UpdateCheck =
   /** First launch ever (or storage cleared): nothing to announce, just record. */

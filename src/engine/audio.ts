@@ -53,7 +53,7 @@ let sharedCtx: AudioContext | null = null
 // whole app plays to the device the user picked instead of always the OS
 // default. Routed via AudioContext.setSinkId (Chromium 110+/Electron); an engine
 // without it silently stays on the default output.
-const AUDIO_OUTPUT_KEY = 'reel:audio:output-device'
+const AUDIO_OUTPUT_KEY = 'olpremiere:audio:output-device'
 let outputDeviceId: string | null = (() => {
   try {
     return typeof localStorage !== 'undefined' ? localStorage.getItem(AUDIO_OUTPUT_KEY) : null

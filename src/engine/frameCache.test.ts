@@ -50,7 +50,7 @@ describe('previewTargetHeight', () => {
     expect(previewTargetHeight(undefined, 1)).toBeUndefined()
     expect(previewTargetHeight(0, 1)).toBeUndefined()
   })
-  it('Full follows a TALLER sequence raster (vertical reels, 4K timelines)', () => {
+  it('Full follows a TALLER sequence raster (vertical shorts, 4K timelines)', () => {
     expect(previewTargetHeight(1920, 1, 1080, 1920)).toBeUndefined() // native — no cap
     expect(previewTargetHeight(3840, 1, 1080, 1920)).toBe(1920)
     expect(previewTargetHeight(2160, 1, 1080, 2160)).toBeUndefined() // 4K seq → native 4K

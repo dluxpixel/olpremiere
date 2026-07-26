@@ -508,7 +508,7 @@ function TimelineToolbar({ onZoomFit }: { onZoomFit: () => void }) {
             // The toolbar renders outside the lanes component - route through
             // the same anchored-zoom event the keymap uses.
             window.dispatchEvent(
-              new CustomEvent('reel:zoom', { detail: { pxPerS: 2 ** Number(e.target.value) } }),
+              new CustomEvent('olpremiere:zoom', { detail: { pxPerS: 2 ** Number(e.target.value) } }),
             )
           }
         />
@@ -1361,8 +1361,8 @@ export function Timeline({ height }: { height: number }) {
       if (detail?.pxPerS !== undefined) zoomTo(detail.pxPerS)
       else zoomTo(useStore.getState().ui.pxPerS * (detail?.factor ?? 1))
     }
-    window.addEventListener('reel:zoom', onZoom)
-    return () => window.removeEventListener('reel:zoom', onZoom)
+    window.addEventListener('olpremiere:zoom', onZoom)
+    return () => window.removeEventListener('olpremiere:zoom', onZoom)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -2314,8 +2314,8 @@ export function Timeline({ height }: { height: number }) {
 
   // "\" in the central keymap.
   useEffect(() => {
-    window.addEventListener('reel:zoom-fit', zoomFit)
-    return () => window.removeEventListener('reel:zoom-fit', zoomFit)
+    window.addEventListener('olpremiere:zoom-fit', zoomFit)
+    return () => window.removeEventListener('olpremiere:zoom-fit', zoomFit)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seq.durationS])
 

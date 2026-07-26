@@ -8,12 +8,38 @@
 import { app, BrowserWindow, protocol, ipcMain, session, shell } from 'electron'
 import { fileURLToPath } from 'node:url'
 import { readFile } from 'node:fs/promises'
+import { existsSync, renameSync } from 'node:fs'
 import path from 'node:path'
 import type { NativeExportConfig } from './ipc-types'
 import * as native from './nativeExport'
 import electronUpdater from 'electron-updater'
 
 const { autoUpdater } = electronUpdater
+
+// --- userData: `reel` -> `OL Premiere`, before ANYTHING touches a path --------
+//
+// Electron derives userData from package.json `name`, so renaming the package
+// silently repoints the app at an empty directory and every saved project
+// "disappears" — 6.8 GB of them on the author's machine. The data does not need
+// copying, only re-addressing: a directory rename on the same volume is atomic
+// and instant whatever it holds.
+//
+// Must run before app.getPath('userData') is read for the first time, hence the
+// placement at module top level rather than inside whenReady.
+const LEGACY_USER_DATA_NAME = 'reel'
+try {
+  const userData = app.getPath('userData')
+  if (!existsSync(userData)) {
+    const legacy = path.join(path.dirname(userData), LEGACY_USER_DATA_NAME)
+    // Only when the legacy directory is really there and the new one is not, so
+    // this can never clobber a live profile and is a no-op on every later launch.
+    if (existsSync(legacy)) renameSync(legacy, userData)
+  }
+} catch {
+  // A locked or in-use profile: fall through and let Electron create a fresh
+  // userData rather than refusing to start. The legacy directory is untouched,
+  // so the next launch tries again.
+}
 
 // ESM main has no __dirname.
 const __dirname = path.dirname(fileURLToPath(import.meta.url))

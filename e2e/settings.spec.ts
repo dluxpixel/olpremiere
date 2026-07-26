@@ -57,12 +57,12 @@ test('settings write through to the real preferences they consolidate', async ({
 
   // Caption language persists to the same key the Captions dialog reads.
   await page.getByTestId('settings-language').selectOption('cs')
-  expect(await page.evaluate(() => localStorage.getItem('reel:captions:lang'))).toBe('cs')
+  expect(await page.evaluate(() => localStorage.getItem('olpremiere:captions:lang'))).toBe('cs')
 
   // Preview quality persists — and it is ONE setting: the monitor's own picker
   // and this one are two surfaces on it, so they can never disagree.
   await page.getByTestId('settings-quality').selectOption('0.5')
-  expect(await page.evaluate(() => localStorage.getItem('reel:settings:preview-quality'))).toBe('0.5')
+  expect(await page.evaluate(() => localStorage.getItem('olpremiere:settings:preview-quality'))).toBe('0.5')
   await page.getByRole('button', { name: 'Close' }).click()
   await expect(page.getByLabel('Preview quality')).toHaveValue('0.5')
 

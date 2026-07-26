@@ -5,7 +5,7 @@
 # with Almanac/OL Studio/etc). This standalone script is kept as a direct fallback. Port is
 # 4318 — co-typer owns 4317, and sharing it made clicking one open the other.
 $ErrorActionPreference = 'Stop'
-$repo = 'C:\Users\skyle\Desktop\reel'
+$repo = 'C:\Users\skyle\Desktop\ol-premiere'
 $port = 4318
 $url = "http://localhost:$port/"
 

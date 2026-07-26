@@ -38,7 +38,7 @@ export interface UIState {
   helpOpen: boolean
 }
 
-export interface ReelState {
+export interface AppState {
   project: Project
   history: History
   ui: UIState
@@ -69,7 +69,7 @@ export interface ReelState {
 export const MIN_PX_PER_S = 4
 export const MAX_PX_PER_S = 800
 
-export const useStore = create<ReelState>()(
+export const useStore = create<AppState>()(
   subscribeWithSelector((set, get) => ({
     project: newProject(),
     history: emptyHistory(),
@@ -201,9 +201,9 @@ export function setActiveSequenceFormat(width: number, height: number, refit = t
 // the view never drifts while zooming — raw pxPerS writes slide toward t=0.
 // The event keeps this store DOM-free; with no timeline mounted it's a no-op.
 export const zoomIn = () => {
-  window.dispatchEvent(new CustomEvent('reel:zoom', { detail: { factor: 1.4 } }))
+  window.dispatchEvent(new CustomEvent('olpremiere:zoom', { detail: { factor: 1.4 } }))
 }
 
 export const zoomOut = () => {
-  window.dispatchEvent(new CustomEvent('reel:zoom', { detail: { factor: 1 / 1.4 } }))
+  window.dispatchEvent(new CustomEvent('olpremiere:zoom', { detail: { factor: 1 / 1.4 } }))
 }

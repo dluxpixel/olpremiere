@@ -7,10 +7,17 @@ import { invalidatePreview } from './engine/preview'
 import { loadTitleFonts } from './engine/render/titleFonts'
 import './index.css'
 import { loadDefaultTextAppearance } from './state/appearanceActions'
+import { migrateRenamedKeys } from './state/keyMigration'
 import { loadLibrary } from './state/library'
 import { initPersistence } from './state/persistence'
 import { initSettings } from './state/settings'
 import { initUpdateCheck } from './state/updateCheck'
+
+// FIRST, before anything reads a setting: adopt the values that were saved under
+// the old `reel:` key names. Renaming a key does not move its data, so without
+// this the app boots as though the user had never set a preference and had never
+// saved a text or track preset.
+migrateRenamedKeys(localStorage)
 
 // Stamp the saved theme BEFORE React mounts: no flash of the wrong ground.
 initSettings()

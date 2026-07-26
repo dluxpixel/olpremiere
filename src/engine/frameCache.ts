@@ -50,14 +50,14 @@ export const PREVIEW_BASE_MAX_H = 1080
 let previewScale = 1
 // Sequence raster height, fed by renderPreview each frame (no-op unless it
 // changes). At FULL quality the decode cap follows it, so a >1080-tall
-// sequence (vertical 1080×1920 reels, 4K timelines) gets 1:1 paused frames.
+// sequence (vertical 1080×1920 shorts, 4K timelines) gets 1:1 paused frames.
 let sequenceH = 0
 
 /**
  * Target decode height for an asset's preview frames, or undefined to decode at
  * native size (never upscales). Pure — the sizing policy the sink uses.
  * At Full quality (scale >= 1) a sequence TALLER than the base cap raises the
- * cap to the sequence height — capping a 1920-tall reel to 1080 softened every
+ * cap to the sequence height — capping a 1920-tall short to 1080 softened every
  * paused frame. Half/Quarter keep the base cap: cheap scrubbing is their point.
  */
 export function previewTargetHeight(

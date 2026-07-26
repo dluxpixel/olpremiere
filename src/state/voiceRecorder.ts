@@ -48,8 +48,8 @@ interface RecorderState {
 }
 
 /** localStorage keys; survive reloads and projects. (Output lives in engine/audio.) */
-const INPUT_KEY = 'reel:recorder:input-device'
-const MONITOR_KEY = 'reel:recorder:monitor'
+const INPUT_KEY = 'olpremiere:recorder:input-device'
+const MONITOR_KEY = 'olpremiere:recorder:monitor'
 
 /** Recorded-audio bitrate. 128 kbps Opus is transparent for voice; the browser
  * default is far lower, which is a big part of why raw recordings sound bad. */

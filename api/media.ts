@@ -20,7 +20,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     res.status(400).json({ error: 'bad room id' })
     return
   }
-  const prefix = `reel-rooms/${room}/media/`
+  const prefix = `olpremiere-rooms/${room}/media/`
   try {
     const result = await handleUpload({
       body: req.body as HandleUploadBody,

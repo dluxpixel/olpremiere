@@ -1,4 +1,4 @@
-// REEL document model. Pure data — everything here must survive structuredClone
+// OL Premiere document model. Pure data — everything here must survive structuredClone
 // (IndexedDB persistence), so no getters, no class instances, no functions.
 
 export type Id = string
