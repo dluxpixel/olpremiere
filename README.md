@@ -2,7 +2,7 @@
 
 A local-first video editor for Windows. Fast timeline editing, near-lossless export, and your footage never leaves your machine.
 
-**[Download for Windows →](https://github.com/hackedbydlux/olpremiere/releases/latest)**
+**[Download for Windows →](https://github.com/dluxpixel/olpremiere/releases/latest)**
 
 Run the `OL-Premiere-*-setup.exe`. That's the whole install — it updates itself from then on.
 
