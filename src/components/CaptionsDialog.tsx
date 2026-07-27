@@ -312,7 +312,7 @@ export function CaptionsDialog({ onClose }: { onClose: () => void }) {
         )}
         <div className="flex flex-col gap-2 p-4">
           {tapping ? (
-            <div data-testid="tap-progress" className="rounded-[6px] border border-border bg-bg-panel px-3 py-4 text-center">
+            <div data-testid="tap-progress" className="rounded-overlay border border-border bg-bg-panel px-3 py-4 text-center">
               <div className="text-[11px] text-text-muted">
                 Tap <span className="text-text-primary">Enter</span> on each word · Backspace undoes · Esc cancels
               </div>

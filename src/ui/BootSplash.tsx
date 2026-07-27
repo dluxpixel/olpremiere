@@ -1,17 +1,98 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { MELON_H, MELON_W, melonPixels } from './melon'
+import { useUpdateFeed, updateLine } from '../state/updateStatus'
+import { LoadingCard } from './LoadingCard'
+import { MelonMark } from './MelonMark'
+import {
+  CARD_EXIT_MS,
+  HARD_CAP_MS,
+  MIN_CARD_MS,
+  OPTIONAL_GRACE_MS,
+  allSettled,
+  bootOverride,
+  gateReady,
+  stepsFor,
+  useBootLedger,
+  type BootOverride,
+} from './bootProgress'
+import { melonPixels } from './melon'
 import styles from './BootSplash.module.css'
 
 /** Must match the exit animation duration in BootSplash.module.css. */
 const EXIT_MS = 420
 
+export type BootPhase = 'loading' | 'closing' | 'ready'
+
+/** This page's `?boot=` override, if any (see bootOverride — a normal launch has none). */
+function currentOverride(): BootOverride {
+  return typeof window === 'undefined' ? null : bootOverride(window.location.search)
+}
+
+/** The phase an override pins us to. `show` pins nothing — it just runs for real. */
+function heldPhase(): BootPhase | null {
+  const v = currentOverride()
+  if (v === 'hold') return 'loading'
+  if (v === 'melon') return 'ready'
+  return null
+}
+
+/**
+ * Decide when the loading card gives way to the melon.
+ *
+ * Three rules, in this order: never flash by (a minimum showing), never wait on
+ * the network (the update row is optional and gets a short grace once the local
+ * work is done), and never trap him (a hard cap opens the app no matter what is
+ * still pending). Polled rather than reactive so a step that never reports at all
+ * cannot stall the transition.
+ */
+export function useBootPhase(isElectron: boolean): BootPhase {
+  const held = useMemo(heldPhase, [])
+  const [phase, setPhase] = useState<BootPhase>(() => held ?? 'loading')
+
+  useEffect(() => {
+    if (held || phase !== 'loading') return
+    const specs = stepsFor(isElectron)
+    const startedAt = performance.now()
+    let gateAt: number | null = null
+
+    const tick = (): void => {
+      const { statuses } = useBootLedger.getState()
+      const now = performance.now()
+      if (gateReady(specs, statuses) && gateAt === null) gateAt = now
+      const waitedEnough = now - startedAt >= MIN_CARD_MS
+      const optionalDone = allSettled(specs, statuses)
+      const graceUsedUp = gateAt !== null && now - gateAt >= OPTIONAL_GRACE_MS
+      const capped = now - startedAt >= HARD_CAP_MS
+      if (capped || (gateAt !== null && waitedEnough && (optionalDone || graceUsedUp))) {
+        window.clearInterval(timer)
+        setPhase('closing')
+      }
+    }
+    const timer = window.setInterval(tick, 80)
+    tick()
+    return () => window.clearInterval(timer)
+  }, [held, phase, isElectron])
+
+  // The card's pop, then the melon takes the screen.
+  useEffect(() => {
+    if (phase !== 'closing') return
+    const reduced = !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    const t = window.setTimeout(() => setPhase('ready'), reduced ? 0 : CARD_EXIT_MS)
+    return () => window.clearTimeout(t)
+  }, [phase])
+
+  return phase
+}
+
 /**
  * The opening screen, shared brand moment with the OL Studio DAW: a deep
- * near-black field with a soft coral glow and the pixel-melon floating as the
- * hero. No text, by design. Clicking the melon is also the user gesture that
- * lets the editor's AudioContext start unmuted.
+ * near-black field with a soft coral glow. It runs in two beats — the loading
+ * card while the app starts itself, then the pixel-melon floating as the hero,
+ * which is the button that opens the editor. Clicking it is also the user gesture
+ * that lets the editor's AudioContext start unmuted.
  */
 export function BootSplash({ onLaunch, onFinished }: { onLaunch: () => void; onFinished: () => void }) {
+  const isElectron = typeof window !== 'undefined' && window.api?.isElectron === true
+  const phase = useBootPhase(isElectron)
   const [leaving, setLeaving] = useState(false)
   const btnRef = useRef<HTMLButtonElement>(null)
   const launchedRef = useRef(false)
@@ -24,10 +105,11 @@ export function BootSplash({ onLaunch, onFinished }: { onLaunch: () => void; onF
     [],
   )
 
-  // Autofocus the melon so Enter/Space launches without reaching for the mouse.
+  // Autofocus the melon as soon as it exists, so Enter/Space launches without
+  // reaching for the mouse.
   useEffect(() => {
-    btnRef.current?.focus()
-  }, [])
+    if (phase === 'ready') btnRef.current?.focus()
+  }, [phase])
 
   // Once leaving, unmount the splash after the exit animation (fires once).
   useEffect(() => {
@@ -52,23 +134,32 @@ export function BootSplash({ onLaunch, onFinished }: { onLaunch: () => void; onF
 
   return (
     <div
-      className={`${styles.overlay} ${leaving ? styles.leaving : ''}`}
+      className={`${styles.overlay} ${leaving ? styles.leaving : ''} ${phase === 'ready' ? '' : styles.starting}`}
       role="dialog"
       aria-label="OL Premiere"
       data-testid="boot-splash"
+      data-phase={phase}
     >
-      <button
-        ref={btnRef}
-        type="button"
-        className={styles.melonBtn}
-        onClick={launch}
-        aria-label="Launch OL Premiere"
-        title="Launch OL Premiere"
-      >
-        <span className={styles.halo} aria-hidden="true" />
-        <MelonMark className={styles.melon} pixels={pixels} />
-      </button>
-      <UpdateStatus />
+      {phase !== 'ready' ? (
+        <LoadingCard leaving={phase === 'closing'} />
+      ) : (
+        <>
+          <div className={styles.melonStage}>
+            <button
+              ref={btnRef}
+              type="button"
+              className={styles.melonBtn}
+              onClick={launch}
+              aria-label="Launch OL Premiere"
+              title="Launch OL Premiere"
+            >
+              <span className={styles.halo} aria-hidden="true" />
+              <MelonMark className={styles.melon} pixels={pixels} />
+            </button>
+          </div>
+          <UpdateStatus />
+        </>
+      )}
     </div>
   )
 }
@@ -83,40 +174,18 @@ export function BootSplash({ onLaunch, onFinished }: { onLaunch: () => void; onF
  * nothing — so from where he sat there was no update system at all.
  *
  * The check and the download were already automatic. What was missing was any
- * evidence of it. This is that evidence.
+ * evidence of it. The loading card now narrates the check as one of its rows; this
+ * line carries whatever is still happening — a download in flight, an update
+ * staged for restart — after the card is gone.
  *
- * It deliberately does NOT hold the app hostage while it waits. Blocking the
- * boot on a network call is how you get an editor that will not open when the
- * wifi is bad, and after today an app that cannot start is a far worse failure
- * than one that starts before it knows. So the status shows, the download runs
- * itself, and the melon is clickable throughout.
+ * It deliberately does NOT hold the app hostage while it waits. Blocking the boot
+ * on a network call is how you get an editor that will not open when the wifi is
+ * bad, and an app that cannot start is a far worse failure than one that starts
+ * before it knows.
  */
 function UpdateStatus() {
-  const [text, setText] = useState<string>(() =>
-    typeof window !== 'undefined' && window.api?.isElectron ? 'Checking for updates…' : '',
-  )
-
-  useEffect(() => {
-    const api = typeof window !== 'undefined' ? window.api : undefined
-    if (!api?.isElectron) return
-    const offs = [
-      api.onUpdateNone(() => setText('Up to date')),
-      api.onUpdateReady((v) => setText(`Update ${v} downloaded — restart to install`)),
-      api.onAutoApplyUpdate((v) => setText(`Installing update ${v}…`)),
-      api.onUpdateError(() => setText('Could not check for updates')),
-    ]
-    // If the network never answers, stop claiming to be checking. Silence that
-    // looks like progress is exactly what misled him for weeks.
-    const t = window.setTimeout(
-      () => setText((s) => (s === 'Checking for updates…' ? 'Could not reach the update server' : s)),
-      15_000,
-    )
-    return () => {
-      for (const off of offs) off()
-      window.clearTimeout(t)
-    }
-  }, [])
-
+  const status = useUpdateFeed((s) => s.status)
+  const text = updateLine(status)
   if (!text) return null
   return (
     <p data-testid="boot-update-status" className={styles.updateStatus}>
@@ -125,42 +194,18 @@ function UpdateStatus() {
   )
 }
 
-/** The pixel-melon as an SVG, crisp at any size (splash hero AND topbar mark). */
-export function MelonMark({
-  className,
-  pixels,
-  size,
-}: {
-  className?: string
-  pixels?: ReturnType<typeof melonPixels>
-  size?: number
-}) {
-  const px = pixels ?? melonPixels()
-  return (
-    <svg
-      className={className}
-      viewBox={`0 0 ${MELON_W} ${MELON_H}`}
-      width={size}
-      height={size ? (size * MELON_H) / MELON_W : undefined}
-      shapeRendering="crispEdges"
-      style={{ imageRendering: 'pixelated' }}
-      aria-hidden="true"
-    >
-      {px.map((p) => (
-        <rect key={`${p.x}-${p.y}`} x={p.x} y={p.y} width={1} height={1} fill={p.color} />
-      ))}
-    </svg>
-  )
-}
-
 /**
- * Boot gate: splash first, the editor mounts on launch and the splash overlays
- * it until its exit animation lands ("opens into" the app). Skipped entirely
- * under automation (navigator.webdriver): every e2e spec and verify probe
- * drives the app directly, and a click gate would break all of them.
+ * Boot gate: the loading card and then the melon, with the editor mounting on
+ * launch and the splash overlaying it until its exit animation lands ("opens
+ * into" the app). Skipped entirely under automation (navigator.webdriver): every
+ * e2e spec and verify probe drives the app directly, and a click gate would break
+ * all of them.
  */
 export function Boot({ children }: { children: ReactNode }) {
-  const skip = typeof navigator !== 'undefined' && navigator.webdriver === true
+  // A `?boot=` override turns the automation skip off — that is how the boot
+  // screens get rendered and driven in tests instead of being taken on trust.
+  const override = useMemo(currentOverride, [])
+  const skip = !override && typeof navigator !== 'undefined' && navigator.webdriver === true
   const [launched, setLaunched] = useState(skip)
   const [finished, setFinished] = useState(skip)
   return (

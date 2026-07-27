@@ -315,7 +315,7 @@ export function KeyframeLane({
       )}
 
       {selected && selEase && (
-        <div className="mt-0.5 flex flex-col gap-1.5 rounded-[6px] bg-bg-elevated/60 p-2">
+        <div className="mt-0.5 flex flex-col gap-1.5 rounded-overlay bg-bg-elevated/60 p-2">
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-[10px] uppercase tracking-[0.04em] text-text-muted">Time</span>
             <ScrubField

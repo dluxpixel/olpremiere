@@ -11,6 +11,7 @@ import type {
   NativeProgress,
   NativeStartResult,
   OlApi,
+  UpdateStatus,
 } from './ipc-types'
 
 const api: OlApi = {
@@ -48,6 +49,12 @@ const api: OlApi = {
     return () => ipcRenderer.off('update:none', l)
   },
   restartToUpdate: () => ipcRenderer.send('update:install'),
+  getUpdateStatus: (): Promise<UpdateStatus> => ipcRenderer.invoke('update:status:get'),
+  onUpdateStatus: (cb: (status: UpdateStatus) => void) => {
+    const l = (_e: unknown, status: UpdateStatus) => cb(status)
+    ipcRenderer.on('update:status', l)
+    return () => ipcRenderer.off('update:status', l)
+  },
   // Backups: the renderer decides WHAT to save, main decides WHERE. The renderer
   // never learns a filesystem path it could write to on its own.
   backupWrite: (projectName: string, json: string) => ipcRenderer.invoke('backup:write', projectName, json),

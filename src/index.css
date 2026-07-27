@@ -16,22 +16,28 @@
   --text-dense: 11px;
   --text-dense--line-height: 1.25;
 
-  /* Radii: ALL SQUARE. His call, 2026-07-26: "these rounded edges just confuse me
-     in the editing."
-     He is right about the timeline specifically, and it is not a matter of taste.
-     A clip is a statement about TIME — where it starts and where it ends. A
-     rounded corner makes the last few pixels of a clip ambiguous: the edge fades
-     instead of ending, so the eye cannot tell the exact frame the clip stops at,
-     and neither can the cursor when you go to trim it. Every other panel matched
-     that softness for consistency, which spread the ambiguity everywhere.
-     Square corners state the boundary exactly. Keep them at 0 — this is a
-     legibility decision, not a style one, so do not "modernise" it back.
+  /* Radii: A LITTLE, never soft. His call, 2026-07-27 — "don't make it complete
+     fucking rectangles, you can round the edges a little bit, but make it a
+     minimalistic design, because the last design was just rounded everywhere."
+     This SUPERSEDES the all-square pass of 2026-07-26, which he had asked for
+     after an earlier build that was rounded everywhere. Both complaints are the
+     same complaint: the corner should not be a style statement in either
+     direction.
+     So these are deliberately 2–4px, not 8–12px. At this size a clip edge still
+     ends where it ends — a clip is a statement about TIME, and a soft corner
+     makes the last few pixels ambiguous to both the eye and the trim cursor, so
+     the timeline gets the smallest value of all. Anything larger here is the
+     "rounded everywhere" look he has now rejected twice; do not grow them.
      Circles (rounded-full: knobs, pan dots, meter LEDs) are NOT edges and stay
-     round — they read as things you grab, which is information, not decoration. */
-  --radius-field: 0px;
-  --radius-overlay: 0px;
-  --radius-dialog: 0px;
-  --radius-clip: 0px;
+     round — they read as things you grab, which is information, not decoration.
+     One system, three steps, no outliers: controls 3, surfaces and dialogs 4,
+     timeline clips 2. Hardcoded `rounded-[6px]` cards were folded onto the
+     surface token in the same pass — a lone softer corner is what made the old
+     look inconsistent rather than minimal. */
+  --radius-field: 3px;
+  --radius-overlay: 4px;
+  --radius-dialog: 4px;
+  --radius-clip: 2px;
 
   /* Surfaces: warm near-black studio, darkest to elevated. */
   --color-bg-app: #0f0e0d;
@@ -203,9 +209,10 @@ body {
 }
 ::-webkit-scrollbar-thumb {
   background: var(--color-border-strong);
-  /* Square, like everything else. A scrollbar thumb is a position readout: its
-     ends tell you where you are in the track, and rounding them blurs that. */
-  border-radius: 0;
+  /* A hair of rounding, like everything else now. A scrollbar thumb is a position
+     readout — its ends tell you where you are in the track — so it gets the small
+     value, never a pill. */
+  border-radius: 2px;
   border: 2px solid transparent;
   background-clip: content-box;
 }

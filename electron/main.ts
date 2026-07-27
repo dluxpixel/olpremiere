@@ -11,7 +11,7 @@ import { mkdir, readFile } from 'node:fs/promises'
 import { existsSync, renameSync } from 'node:fs'
 import path from 'node:path'
 import * as backups from './backups'
-import type { NativeExportConfig } from './ipc-types'
+import type { NativeExportConfig, UpdateStatus } from './ipc-types'
 import * as native from './nativeExport'
 import electronUpdater from 'electron-updater'
 
@@ -56,6 +56,18 @@ const APP_ORIGIN_HOST = 'olpremiere'
 
 /** The main window, so native-export handlers can target it (save dialog, progress). */
 let mainWindow: BrowserWindow | null = null
+
+/**
+ * Where the auto-updater stands. Held here — not just broadcast — because the
+ * renderer needs to be able to ASK: it starts up alongside the check, and the
+ * loading card must be able to say truthfully whether the check finished.
+ * `unsupported` until proven otherwise: an unpackaged build runs no updater.
+ */
+let updateStatus: UpdateStatus = { kind: 'unsupported' }
+function setUpdateStatus(status: UpdateStatus): void {
+  updateStatus = status
+  mainWindow?.webContents.send('update:status', status)
+}
 
 // Content types we must set explicitly: a `type:module` worker hard-fails if it
 // is not served as JS, and a streaming WebAssembly.instantiate needs
@@ -112,7 +124,14 @@ function createWindow(): void {
     },
   })
   mainWindow = win
-  win.once('ready-to-show', () => win.show())
+  // His ask: it should fill the screen by itself. MAXIMIZED, not true fullscreen —
+  // an editor still needs its title bar and the taskbar (and fullscreen would hide
+  // the window controls behind a gesture nobody looks for). Maximize BEFORE the
+  // first show so it opens filled instead of resizing in front of him.
+  win.once('ready-to-show', () => {
+    win.maximize()
+    win.show()
+  })
   win.on('closed', () => {
     if (mainWindow === win) mainWindow = null
   })
@@ -235,9 +254,16 @@ app.whenReady().then(() => {
   // renderer shows a "Updated to vX" toast and the always-on version tag confirms
   // exactly which build is running (App.tsx / TopBar) — the "what version am I on"
   // confusion is gone.
+  // The updater's state, kept here so the renderer can ASK as well as listen. The
+  // loading card narrates this check as one of its rows, and it mounts a beat after
+  // the check starts — without a pull, a fast answer would land before anyone was
+  // listening and the row would claim to still be checking.
+  ipcMain.handle('update:status:get', () => updateStatus)
+
   if (app.isPackaged) {
     const launchedAt = Date.now()
     const AUTO_APPLY_WINDOW_MS = 3 * 60 * 1000
+    let pendingVersion = ''
     autoUpdater.autoDownload = true
     autoUpdater.autoInstallOnAppQuit = true // a pending update also installs on any quit
     autoUpdater.on('error', (e) => {
@@ -247,9 +273,24 @@ app.whenReady().then(() => {
       const msg = e instanceof Error ? e.message : String(e)
       console.error('OL Premiere auto-update error:', e)
       mainWindow?.webContents.send('update:error', msg)
+      setUpdateStatus({ kind: 'error', message: msg })
     })
-    autoUpdater.on('update-not-available', () => mainWindow?.webContents.send('update:none'))
+    autoUpdater.on('update-not-available', () => {
+      mainWindow?.webContents.send('update:none')
+      setUpdateStatus({ kind: 'none' })
+    })
+    // Found one, and the download starts itself (autoDownload) — say so, and then
+    // say how far it has got. A 240 MB installer arriving in silence is the thing
+    // that made the app look stuck on "checking".
+    autoUpdater.on('update-available', (info) => {
+      pendingVersion = info.version
+      setUpdateStatus({ kind: 'available', version: info.version })
+    })
+    autoUpdater.on('download-progress', (p) => {
+      setUpdateStatus({ kind: 'downloading', version: pendingVersion, percent: Math.round(p.percent) })
+    })
     autoUpdater.on('update-downloaded', (info) => {
+      setUpdateStatus({ kind: 'downloaded', version: info.version })
       // Auto-apply only in the fresh-launch window AND only when no native export
       // is mid-render (a force-quit would truncate the file + orphan ffmpeg). Even
       // then we don't quit blindly: we ASK the renderer, which flushes a save and
@@ -267,9 +308,15 @@ app.whenReady().then(() => {
     // One-click apply from the toast (and the renderer's save-then-restart path):
     // quit and relaunch into the downloaded version.
     ipcMain.on('update:install', () => autoUpdater.quitAndInstall())
+    setUpdateStatus({ kind: 'checking' })
     void autoUpdater.checkForUpdatesAndNotify()
     const FIFTEEN_MIN = 15 * 60 * 1000
-    setInterval(() => void autoUpdater.checkForUpdatesAndNotify(), FIFTEEN_MIN)
+    setInterval(() => {
+      // A later check must not erase a staged update: "restart to install" is the
+      // truer answer than "checking" once a version is already on disk.
+      if (updateStatus.kind !== 'downloaded') setUpdateStatus({ kind: 'checking' })
+      void autoUpdater.checkForUpdatesAndNotify()
+    }, FIFTEEN_MIN)
   }
 })
 

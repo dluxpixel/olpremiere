@@ -37,6 +37,23 @@
   animation: ambientBreathe 6.5s ease-in-out infinite;
 }
 
+/* While the loading card is up, the ambient bloom pulls back so it doesn't wash
+   out a 660px box. */
+.overlay.starting::before {
+  width: clamp(340px, 58vmin, 760px);
+}
+
+/* The melon's own entrance, once the card has popped: it grows into the screen the
+   card just vacated. Lives on a wrapper, not the button, so the button keeps its
+   hover/press transforms afterwards. */
+.melonStage {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  animation: melonIn 480ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
 /* The mascot is the button: clicking it (or Enter/Space when focused) launches. */
 .melonBtn {
   position: relative;
@@ -148,6 +165,16 @@
     transform: scale(1.07);
   }
 }
+@keyframes melonIn {
+  from {
+    opacity: 0;
+    transform: scale(0.84);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
 @keyframes melonPop {
   0% {
     transform: scale(1);
@@ -169,6 +196,7 @@
   .overlay::before,
   .halo,
   .melon,
+  .melonStage,
   .overlay.leaving .melonBtn {
     animation: none;
   }

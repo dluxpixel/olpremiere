@@ -42,6 +42,22 @@ export interface NativeProgress {
   totalFrames: number
 }
 
+/**
+ * Where the auto-updater stands right now. Sent on every transition AND readable
+ * on demand, because the check starts when the app is ready — which can be before
+ * the renderer exists. A renderer that only subscribed would miss that answer and
+ * sit on "Checking…" forever, which is the silence that hid a dead feed for weeks.
+ */
+export type UpdateStatus =
+  | { kind: 'checking' }
+  | { kind: 'available'; version: string }
+  | { kind: 'downloading'; version: string; percent: number }
+  | { kind: 'downloaded'; version: string }
+  | { kind: 'none' }
+  | { kind: 'error'; message: string }
+  /** Unpackaged/dev build: no updater runs, so there is nothing to report. */
+  | { kind: 'unsupported' }
+
 export interface OlApi {
   /** Always true when running inside the desktop shell — the renderer's isElectron gate. */
   readonly isElectron: true
@@ -75,6 +91,10 @@ export interface OlApi {
   onUpdateNone(cb: () => void): () => void
   /** Quit and install the downloaded update now — relaunches into the new version. */
   restartToUpdate(): void
+  /** The updater's CURRENT state, pullable, so a late renderer still learns the answer. */
+  getUpdateStatus(): Promise<UpdateStatus>
+  /** Every updater transition: checking → available → downloading → downloaded / none / error. Returns an unsubscribe fn. */
+  onUpdateStatus(cb: (status: UpdateStatus) => void): () => void
 
   /** One automatic backup of the project DOCUMENT to a plain file. Returns its path. */
   backupWrite(projectName: string, json: string): Promise<string>

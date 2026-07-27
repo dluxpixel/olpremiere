@@ -51,7 +51,7 @@ function MediaSyncBanner() {
   return (
     <div
       data-testid="media-sync-banner"
-      className="mx-2 mb-1 flex flex-col gap-1 rounded-[6px] border border-border bg-bg-elevated px-2 py-1.5 text-[11px]"
+      className="mx-2 mb-1 flex flex-col gap-1 rounded-overlay border border-border bg-bg-elevated px-2 py-1.5 text-[11px]"
     >
       {transfers.map((t) => (
         <div key={t} className="text-text-secondary">
@@ -202,7 +202,7 @@ function AssetCard({ asset, fps }: { asset: MediaAsset; fps: number }) {
           },
         ])
       }
-      className="cursor-default overflow-hidden rounded-[6px] border border-border bg-bg-elevated transition-colors duration-[120ms] ease-out hover:border-border-strong focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
+      className="cursor-default overflow-hidden rounded-overlay border border-border bg-bg-elevated transition-colors duration-[120ms] ease-out hover:border-border-strong focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
     >
       <div className="relative flex aspect-video items-center justify-center bg-black">
         {thumbUrl ? (
@@ -236,7 +236,7 @@ function ImportProgress() {
   return (
     <div
       data-testid="import-progress"
-      className="mx-2 mb-1 flex items-center gap-2 rounded-[6px] border border-border bg-bg-elevated px-2 py-1.5 text-[11px]"
+      className="mx-2 mb-1 flex items-center gap-2 rounded-overlay border border-border bg-bg-elevated px-2 py-1.5 text-[11px]"
     >
       <span className="shrink-0 tabular-nums text-text-secondary">
         {total > 1 ? `Importing ${done + 1} of ${total}` : 'Importing'}
@@ -290,7 +290,7 @@ function MediaTab() {
         <div
           data-testid="media-empty"
           onDragOver={(e) => e.preventDefault()}
-          className="m-2 mt-0 flex flex-1 flex-col items-center justify-center gap-2 rounded-[6px] border border-dashed border-border-strong text-center"
+          className="m-2 mt-0 flex flex-1 flex-col items-center justify-center gap-2 rounded-overlay border border-dashed border-border-strong text-center"
         >
           <FolderOpen size={24} strokeWidth={1.5} className="text-text-muted" aria-hidden />
           <div className="text-[13px] text-text-secondary">Import media to begin</div>
@@ -530,7 +530,7 @@ function LibraryCard({ item, fps }: { item: LibraryItem; fps: number }) {
           },
         ])
       }
-      className="cursor-default overflow-hidden rounded-[6px] border border-border bg-bg-elevated transition-colors duration-[120ms] ease-out hover:border-border-strong"
+      className="cursor-default overflow-hidden rounded-overlay border border-border bg-bg-elevated transition-colors duration-[120ms] ease-out hover:border-border-strong"
     >
       <div className="relative flex aspect-video items-center justify-center bg-black">
         {thumbUrl ? (

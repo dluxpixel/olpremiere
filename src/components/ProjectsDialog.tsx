@@ -83,7 +83,7 @@ export function ProjectsDialog({ onClose }: { onClose: () => void }) {
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && !isOpen) void open(p.id)
                   }}
-                  className={`group/proj flex items-center gap-3 rounded-[6px] border px-3 py-2 transition-colors duration-[120ms] ${
+                  className={`group/proj flex items-center gap-3 rounded-overlay border px-3 py-2 transition-colors duration-[120ms] ${
                     isOpen
                       ? 'border-accent/50 bg-accent-quiet'
                       : 'border-transparent hover:border-border hover:bg-bg-panel'
