@@ -74,7 +74,7 @@ test('the wheel scrolls even with the cursor over the LEFT track headers', async
   expect(await lanes.evaluate((el) => el.scrollHeight > el.clientHeight + 4)).toBe(true)
 
   // Start at the top, then wheel while hovering the headers column (the left
-  // side, where David's cursor was) — this used to do nothing.
+  // side, where David's cursor was). This used to do nothing.
   await lanes.evaluate((el) => (el.scrollTop = 0))
   await headers.hover()
   await page.mouse.wheel(0, 600)

@@ -23,7 +23,7 @@ export interface WorkArea {
 
 /**
  * The effective render range. Falls back to the whole sequence when no points
- * are set, when they are inverted, or when they collapse to nothing — a
+ * are set, when they are inverted, or when they collapse to nothing. A
  * degenerate range must never silently export zero frames.
  */
 export function workArea(seq: Sequence): WorkArea {
@@ -50,8 +50,8 @@ export function clearWorkArea(seq: Sequence): Sequence {
 
 /**
  * Set the in point at `t`. Dropping it at or past the out point clears the out
- * point rather than producing an inverted range — the same thing Premiere does,
- * and far less surprising than silently swapping the two.
+ * point rather than producing an inverted range. Premiere does the same, and it
+ * is far less surprising than silently swapping the two.
  */
 export function setInPoint(seq: Sequence, t: number): Sequence {
   const inPointS = clamp(t, 0, Math.max(0, seq.durationS))

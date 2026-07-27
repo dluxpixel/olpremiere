@@ -63,7 +63,7 @@ test('save a project to a file and open it back (backup round-trip)', async ({ p
   const path = `${VERIFY}/backup.olstudio`
   await download.saveAs(path)
   expect(fs.statSync(path).size).toBeGreaterThan(1000) // bundles media, so it's real
-  // v2 magic at byte 0 — the binary format, not a JSON monolith.
+  // v2 magic at byte 0 proves the binary format, not a JSON monolith.
   const first8 = fs.readFileSync(path).subarray(0, 8).toString('ascii')
   expect(first8).toBe('OLSTPROJ')
 
@@ -85,7 +85,7 @@ test('a legacy v1 (.olstudio.json) project file still opens', async ({ page }) =
   await page.getByTestId('asset-card').dblclick()
   await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
 
-  // Wrap the CURRENT project in the old JSON envelope (no bundled media) —
+  // Wrap the CURRENT project in the old JSON envelope (no bundled media),
   // exactly what a pre-v2 backup file looks like.
   const project = await page.evaluate(async () => {
     const storeMod = '/src/state/store.ts'

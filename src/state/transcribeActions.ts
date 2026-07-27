@@ -55,7 +55,7 @@ export async function autoCaptionFromClip(clipId: string, preset?: TextStylePres
   try {
     const pcm = await extractClipPcm(asset, clip)
     // The persisted language pick (CaptionsDialog) also drives this right-click
-    // path — one setting, every caption entrance.
+    // path: one setting, every caption entrance.
     const run = transcribePcm(pcm, getCaptionLanguage(), (p) =>
       useTranscribe.setState({ status: p.phase, pct: p.pct }),
     )

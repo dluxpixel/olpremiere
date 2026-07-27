@@ -22,7 +22,7 @@ export interface LibraryItem {
   id: Id
   name: string
   kind: MediaAsset['kind']
-  /** 'lib/<id>' — the Library's OWN copy of the media. */
+  /** 'lib/<id>': the Library's OWN copy of the media. */
   blobKey: string
   thumbnailKey?: string
   durationS: number
@@ -175,7 +175,7 @@ export async function saveSelectionAsPreset(): Promise<void> {
   show(`Saved preset "${preset.name}"`, 'success')
 }
 
-/** Apply a preset to the selected clip — ONE undo step on the project stack. */
+/** Apply a preset to the selected clip as ONE undo step on the project stack. */
 export function applyPresetToSelection(presetId: Id): void {
   const show = useToasts.getState().show
   const preset = useLibrary.getState().presets.find((p) => p.id === presetId)
@@ -205,7 +205,7 @@ export function applyPresetToSelection(presetId: Id): void {
 }
 
 /**
- * Apply a preset to EVERY video clip in the active sequence — ONE undo step.
+ * Apply a preset to EVERY video clip in the active sequence, in ONE undo step.
  * Audio clips are skipped (visual effects don't apply to them). Each clip gets
  * its OWN fresh-id copy of the effects, appended (never replacing an existing
  * grade), exactly like applyPresetToSelection.

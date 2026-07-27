@@ -32,9 +32,9 @@ export interface CaptionChunk {
 export interface ChunkOptions {
   /** Words per caption (phrase mode groups up to this; karaoke uses 1). */
   maxWords?: number
-  /** Soft character cap per caption — split before a chunk overflows the frame. Infinity = off. */
+  /** Soft character cap per caption: split before a chunk overflows the frame. Infinity = off. */
   maxChars?: number
-  /** Reading-speed ceiling (characters/second) — split a chunk that reads too fast. Infinity = off. */
+  /** Reading-speed ceiling (characters/second). Split a chunk that reads too fast. Infinity = off. */
   maxCps?: number
   /** A silence longer than this starts a new chunk instead of joining it. */
   maxGapS?: number
@@ -42,7 +42,7 @@ export interface ChunkOptions {
   maxSpanS?: number
   /** How long a caption may linger after its last word when nothing follows. */
   holdS?: number
-  /** Readability floor — a chunk shorter than this is merged (if mergeShort) so it never flashes. */
+  /** Readability floor. A chunk shorter than this is merged (if mergeShort) so it never flashes. */
   minDurS?: number
   /** Merge a sub-minDur or lone-function-word chunk into a soft-adjacent neighbor. */
   mergeShort?: boolean
@@ -72,7 +72,7 @@ const CHUNK_DEFAULTS: Required<ChunkOptions> = {
  * wide, and the 1.0s floor made the merge pass swallow exactly the fast little
  * chunks that give the style its snap.
  *
- * `minDurS` is now only a flash guard — short enough that real speech is left
+ * `minDurS` is now only a flash guard, short enough that real speech is left
  * alone, long enough that nothing appears for a single frame. `mergeShort`
  * stays on because it also folds away a stranded "and" / "the".
  *
@@ -81,7 +81,7 @@ const CHUNK_DEFAULTS: Required<ChunkOptions> = {
  */
 export const PHRASE_CAPTION_OPTIONS: Required<ChunkOptions> = {
   // WIDTH governs, not word count. David: "if words are shorter, maybe group
-  // them together" — which word count structurally cannot do, because it cannot
+  // them together", which word count structurally cannot do, because it cannot
   // tell "to try" (6 chars, reads instantly) from "minecraft diamonds" (18, a
   // mouthful). maxChars is therefore the real limiter and maxWords is only a
   // ceiling, so short words pack up and long ones stand alone by themselves.
@@ -89,7 +89,7 @@ export const PHRASE_CAPTION_OPTIONS: Required<ChunkOptions> = {
   // Measured against his own example rather than guessed: at 12 chars / 3 words
   // his 14 words land as
   //   minecraft | but i'm | going to try | and find | diamonds | without | touching the | color green!
-  // — 8 captions against the 9 he wrote by hand, with every single word he put
+  // That is 8 captions against the 9 he wrote by hand, with every single word he put
   // alone ("minecraft", "diamonds", "without") landing alone.
   maxWords: 3,
   maxChars: 12,
@@ -129,7 +129,7 @@ const groupSpan = (ws: CaptionWord[]): number => ws[ws.length - 1].endS - ws[0].
  * reading speed, span) break too but can be UNDONE by the merge pass, which folds
  * a too-short or lone-function-word chunk into a soft-adjacent neighbor so nothing
  * flashes for a single frame. Chunks are then extended to meet their successor
- * (seamless) and clamped strictly non-overlapping — the track invariant wins.
+ * (seamless) and clamped strictly non-overlapping, because the track invariant wins.
  */
 export function chunkWords(words: CaptionWord[], options: ChunkOptions = {}): CaptionChunk[] {
   const o = { ...CHUNK_DEFAULTS, ...options }
@@ -140,7 +140,7 @@ export function chunkWords(words: CaptionWord[], options: ChunkOptions = {}): Ca
     .sort((a, b) => a.startS - b.startS)
   if (input.length === 0) return []
 
-  // Build groups, remembering whether the break BEFORE each was HARD — the merge
+  // Build groups, remembering whether the break BEFORE each was HARD. The merge
   // pass may only cross SOFT breaks, never a sentence / silence / emphasis edge.
   interface Group {
     words: CaptionWord[]
@@ -216,7 +216,7 @@ export function chunkWords(words: CaptionWord[], options: ChunkOptions = {}): Ca
 
   // Seamless hold: run each caption up to its successor (or linger holdS at a
   // real silence / the end), enforce the readability floor, and make the
-  // sequence strictly non-overlapping — the track invariant outranks minDurS.
+  // sequence strictly non-overlapping, since the track invariant outranks minDurS.
   for (let i = 0; i < chunks.length; i++) {
     const next = chunks[i + 1]
     const c = chunks[i]
@@ -272,7 +272,7 @@ export function spreadWords(text: string, startS: number, durationS: number): Ca
 export const CAPTION_EMPHASIS_COLORS = ['#FFD400', '#3B7DFF'] as const
 
 export interface CaptionStyleOptions {
-  /** Sequence frame size — the style scales off the height. */
+  /** Sequence frame size (the style scales off the height). */
   seqHeight: number
   /** Inherit this style instead of the Jettism default (manual split). */
   baseDef?: TitleDef

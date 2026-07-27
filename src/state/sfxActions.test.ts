@@ -31,7 +31,7 @@ const seq = () => activeSequence(useStore.getState().project)
 const assets = () => Object.values(useStore.getState().project.assets)
 
 describe('insertSfxAtPlayhead', () => {
-  it('first use imports the bytes and drops a clip at the playhead — one undo step', async () => {
+  it('first use imports the bytes and drops a clip at the playhead in one undo step', async () => {
     await insertSfxAtPlayhead('boom')
 
     const boom = sfxById('boom')!

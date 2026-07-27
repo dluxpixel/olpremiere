@@ -1,6 +1,6 @@
 // Caption actions: turn a title's text (manual mode) or a timed word list
 // (auto-caption / transcription) into a run of word-caption title clips.
-// Each action is ONE dispatch — a 40-clip caption pass undoes atomically.
+// Each action is ONE dispatch, so a 40-clip caption pass undoes atomically.
 
 import { applyAppearanceToClip } from '../engine/anim/appearance'
 import {
@@ -22,7 +22,7 @@ import { useToasts } from './toasts'
 
 // --- Words per caption ------------------------------------------------------
 // The one caption knob worth exposing: how many words share a caption. Cadence
-// is taste, and taste is the owner's call — 1 is one-word karaoke, 3 is the
+// is taste, and taste is the owner's call: 1 is one-word karaoke, 3 is the
 // short burst the house style is tuned for, 6 reads as subtitles.
 
 export const CAPTION_WORDS_MIN = 1
@@ -35,7 +35,7 @@ const clampWords = (n: number): number =>
   Math.min(CAPTION_WORDS_MAX, Math.max(CAPTION_WORDS_MIN, Math.round(n)))
 
 /**
- * The live value. localStorage only PERSISTS it — the choice itself lives here,
+ * The live value. localStorage only PERSISTS it. The choice itself lives here,
  * so private mode, a full quota, or a blocked store costs the user their setting
  * across restarts but never inside the session they set it in.
  */
@@ -62,7 +62,7 @@ export function setCaptionWordsPerChunk(n: number): void {
     if (v === CAPTION_WORDS_DEFAULT) localStorage.removeItem(WORDS_KEY)
     else localStorage.setItem(WORDS_KEY, String(v))
   } catch {
-    // Private mode / quota — the in-memory value above still applies this run.
+    // Private mode / quota. The in-memory value above still applies this run.
   }
 }
 
@@ -79,7 +79,7 @@ function withClips(track: Track, clips: Clip[]): Track {
 
 /**
  * Replace a title clip with one caption clip per word, spread across its
- * duration and styled like the original — the manual path to word-by-word
+ * duration and styled like the original, the manual path to word-by-word
  * captions when there is no transcript. One undo step restores the original.
  */
 export function splitTitleIntoWordCaptions(clipId: string): void {
@@ -98,7 +98,7 @@ export function splitTitleIntoWordCaptions(clipId: string): void {
     useToasts.getState().show('Type at least two words first', 'danger')
     return
   }
-  // holdS 0: the words are contiguous, so captions still hand off seamlessly —
+  // holdS 0: the words are contiguous, so captions still hand off seamlessly,
   // but the run must not outgrow the window the original clip occupied.
   const chunks = chunkWords(words, { maxWords: 1, holdS: 0 }).map((c) => ({
     ...c,
@@ -125,7 +125,7 @@ export function splitTitleIntoWordCaptions(clipId: string): void {
 
 /**
  * Lay a full caption run (Jettism house style) onto a NEW top video track from
- * absolute-timed words — the landing point for the transcriber. One undo step.
+ * absolute-timed words: the landing point for the transcriber. One undo step.
  */
 export function addCaptionsFromWords(
   words: CaptionWord[],
@@ -133,8 +133,8 @@ export function addCaptionsFromWords(
 ): void {
   const s = useStore.getState()
   const seq = activeSequence(s.project)
-  // The persisted words-per-caption pick drives EVERY caption entrance — the
-  // dialog, the tap timer, and the right-click auto-caption — so the setting is
+  // The persisted words-per-caption pick drives EVERY caption entrance (the
+  // dialog, the tap timer, and the right-click auto-caption), so the setting is
   // read here rather than passed down from each door. 1 = the one-word karaoke
   // house style, which keeps the legacy timings.
   const wanted = options.maxWords ?? getCaptionWordsPerChunk()

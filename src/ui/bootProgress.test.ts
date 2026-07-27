@@ -25,7 +25,7 @@ const spec = (id: string, extra: Partial<BootStepSpec> = {}): BootStepSpec =>
   ({ id, active: `Doing ${id}`, done: `Did ${id}`, ...extra }) as BootStepSpec
 
 describe('boot step rows', () => {
-  it('hides the update row on the web build — there is no installer to update', () => {
+  it('hides the update row on the web build, where there is no installer to update', () => {
     expect(stepsFor(false).map((s) => s.id)).not.toContain('updates')
     expect(stepsFor(true).map((s) => s.id)).toContain('updates')
     // Every other row is shared, so the two lists differ by exactly the desktop ones.
@@ -44,7 +44,7 @@ describe('progressOf', () => {
     expect(progressOf(specs, {})).toBe(0)
   })
 
-  it('counts a failed row as settled — it is finished, just not well', () => {
+  it('counts a failed row as settled: it is finished, just not well', () => {
     const statuses: BootStatuses = { a: { state: 'done' }, b: { state: 'failed' }, c: { state: 'active' } } as BootStatuses
     expect(progressOf(specs, statuses)).toBe(0.5)
   })
@@ -62,15 +62,15 @@ describe('labelOf', () => {
     expect(labelOf(spec('a'), { state: 'done' })).toBe('Did a')
   })
 
-  it('appends the row detail — "Checked for updates — up to date"', () => {
+  it('appends the row detail, as in "Checked for updates: up to date"', () => {
     const updates = BOOT_STEPS.find((s) => s.id === 'updates')!
-    expect(labelOf(updates, { state: 'done', detail: 'up to date' })).toBe('Checked for updates — up to date')
-    expect(labelOf(updates, { state: 'active', detail: 'found 0.1.15' })).toBe('Checking for updates — found 0.1.15')
+    expect(labelOf(updates, { state: 'done', detail: 'up to date' })).toBe('Checked for updates: up to date')
+    expect(labelOf(updates, { state: 'active', detail: 'found 0.1.15' })).toBe('Checking for updates: found 0.1.15')
   })
 
   it('says what failed once, not twice', () => {
-    expect(labelOf(spec('a'), { state: 'failed' })).toBe('Doing a — failed')
-    expect(labelOf(spec('a'), { state: 'failed', detail: 'offline' })).toBe('Doing a — offline')
+    expect(labelOf(spec('a'), { state: 'failed' })).toBe('Doing a: failed')
+    expect(labelOf(spec('a'), { state: 'failed', detail: 'offline' })).toBe('Doing a: offline')
   })
 })
 
@@ -95,7 +95,7 @@ describe('statusLine', () => {
 describe('the boot gate', () => {
   const specs = [spec('a'), spec('b'), spec('net', { optional: true })]
 
-  it('does not wait on an optional row — the editor must open on bad wifi', () => {
+  it('does not wait on an optional row, because the editor must open on bad wifi', () => {
     const statuses = { a: { state: 'done' }, b: { state: 'done' }, net: { state: 'active' } } as BootStatuses
     expect(gateReady(specs, statuses)).toBe(true)
     expect(allSettled(specs, statuses)).toBe(false)
@@ -118,8 +118,8 @@ describe('the ledger', () => {
   it('records begin → note → finish for one row', () => {
     bootStep.begin('updates')
     expect(useBootLedger.getState().statuses.updates).toEqual({ state: 'active', detail: undefined })
-    bootStep.note('updates', 'downloading 0.1.15 — 40%')
-    expect(useBootLedger.getState().statuses.updates).toEqual({ state: 'active', detail: 'downloading 0.1.15 — 40%' })
+    bootStep.note('updates', 'downloading 0.1.15, 40%')
+    expect(useBootLedger.getState().statuses.updates).toEqual({ state: 'active', detail: 'downloading 0.1.15, 40%' })
     bootStep.finish('updates', 'up to date')
     expect(useBootLedger.getState().statuses.updates).toEqual({ state: 'done', detail: 'up to date' })
   })
@@ -188,7 +188,7 @@ describe('trackBootStep', () => {
     expect(useBootLedger.getState().statuses.media?.state).toBe('done')
   })
 
-  it('reports a failure instead of throwing — the boot screen must not become the error', async () => {
+  it('reports a failure instead of throwing, because the boot screen must not become the error', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     await expect(trackBootStep('fonts', Promise.reject(new Error('no font')))).resolves.toBeNull()
     expect(useBootLedger.getState().statuses.fonts?.state).toBe('failed')

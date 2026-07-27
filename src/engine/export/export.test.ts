@@ -128,8 +128,8 @@ describe('firstSupported', () => {
   })
 
   it('prefers High L4.0 first, and carries higher levels for 1440p/4K', () => {
-    expect(H264_CODECS[0]).toBe('avc1.640028') // High L4.0 — ≤1080p
-    expect(H264_CODECS).toContain('avc1.640033') // High L5.1 — 4K uploads
+    expect(H264_CODECS[0]).toBe('avc1.640028') // High L4.0, ≤1080p
+    expect(H264_CODECS).toContain('avc1.640033') // High L5.1 for 4K uploads
     expect(H264_CODECS.length).toBeGreaterThanOrEqual(4)
   })
 })
@@ -167,7 +167,7 @@ describe('SD byte-stability gate', () => {
       rateControl: 'variable',
       isHd: false,
     })
-    // Deep-equal to exactly what the historical closure produced — key for key.
+    // Deep-equal to exactly what the historical closure produced, key for key.
     expect(config).toEqual({
       codec: 'avc1.640028',
       width: 640,
@@ -225,12 +225,12 @@ describe('videoEncoderConfig', () => {
 })
 
 describe('quantizerFor', () => {
-  it('passes AVC/HEVC QP straight through (shared 0–51 scale)', () => {
+  it('passes AVC/HEVC QP straight through (shared 0 to 51 scale)', () => {
     expect(quantizerFor('avc', 17)).toBe(17)
     expect(quantizerFor('hevc', 22)).toBe(22)
   })
 
-  it('rescales the UI QP onto AV1 0–255', () => {
+  it('rescales the UI QP onto AV1 0 to 255', () => {
     expect(quantizerFor('av1', 0)).toBe(0)
     expect(quantizerFor('av1', 51)).toBe(255)
     expect(quantizerFor('av1', 17)).toBe(Math.round((17 / 51) * 255))

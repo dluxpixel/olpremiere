@@ -23,7 +23,7 @@ export const EXPORT_CHANNELS = 2
 
 /**
  * Segment size for the streamed render: 30 s of 48 kHz stereo float32 is
- * ~11.5 MB per segment — peak audio memory no longer scales with export
+ * ~11.5 MB per segment, so peak audio memory no longer scales with export
  * length (a 30-minute export used to allocate ~700 MB three times over).
  * 30 s = 300 exact AUDIO_CHUNK_FRAMES chunks, so the worker's AAC framing is
  * byte-identical to the old whole-range render.
@@ -33,8 +33,8 @@ export const AUDIO_SEGMENT_FRAMES = 30 * EXPORT_SAMPLE_RATE
 /**
  * Pre-roll rendered before each segment after the first and discarded. Gain
  * envelopes (clip fades, duck) are pure functions of absolute time, so they
- * are exact at any fromS; the ONE stateful node — the per-track auto-level
- * DynamicsCompressorNode (release ≤ 0.25 s) — needs this run-in for its
+ * are exact at any fromS; the ONE stateful node, the per-track auto-level
+ * DynamicsCompressorNode (release ≤ 0.25 s), needs this run-in for its
  * envelope follower to converge to the continuous render. Audibly identical;
  * bit-identity only holds for tracks without auto-level, and for any export
  * that fits one segment (the golden-test case) which takes the zero-preroll
@@ -53,7 +53,7 @@ export interface AudioMixPlan {
  * scheduleAudio: solo wins (any solo → only solo tracks, else non-muted), clips
  * on video AND audio tracks carry audio, disabled clips and speed <= 0 are
  * skipped, and playbackRate = |speed|. Returns null when there is nothing
- * audible or the platform has no AudioEncoder (older Safari) — the export is
+ * audible or the platform has no AudioEncoder (older Safari). The export is
  * then video-only.
  *
  * `startS` is the schedule base, which is exactly what computeClipSchedule and
@@ -102,8 +102,8 @@ export async function planAudioMix(
     const prerollFrames = Math.round(prerollS * EXPORT_SAMPLE_RATE)
     // The schedule base: every envelope + schedule offset below is relative to
     // it, exactly the fromS convention of computeClipSchedule/clipGainEnvelope/
-    // duckEnvelope — all pure functions of absolute time, so a mid-mix base is
-    // exact, not approximated.
+    // duckEnvelope. Those are all pure functions of absolute time, so a mid-mix
+    // base is exact, not approximated.
     const fromS = startS + f0 / EXPORT_SAMPLE_RATE - prerollS
     const ctxFrames = prerollFrames + segFrames
     const ctx = new OfflineAudioContext(EXPORT_CHANNELS, ctxFrames, EXPORT_SAMPLE_RATE)
@@ -137,7 +137,7 @@ export async function planAudioMix(
         comp.connect(makeup)
         tail = makeup
       }
-      // Music ducks under the voiceover — identical automation to the preview.
+      // Music ducks under the voiceover, with identical automation to the preview.
       if (track.audioRole === 'music' && duckEnv) {
         const duck = ctx.createGain()
         duckEnv.forEach((pt, idx) => {
@@ -158,7 +158,7 @@ export async function planAudioMix(
       const buffer = buffers[i]
       if (!buffer) return
       const sched: ClipSchedule | null = computeClipSchedule(clip, fromS)
-      // Ends before this segment's base, or starts after its end — silent here.
+      // Ends before this segment's base, or starts after its end: silent here.
       if (!sched || sched.whenOffsetS >= ctxEndOffsetS) return
       const source = ctx.createBufferSource()
       source.buffer = buffer

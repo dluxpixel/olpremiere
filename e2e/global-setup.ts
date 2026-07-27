@@ -1,7 +1,7 @@
 // Synthesizes the e2e media fixtures once per machine, recorded with
 // MediaRecorder in headless Chrome, so no binary fixtures live in the repo:
-//  - clip.webm       — 2s 320x180, red for t<1s then blue, 440Hz tone.
-//  - greenscreen.webm — 1s 320x180 pure-green screen with a white centre block +
+//  - clip.webm:       2s 320x180, red for t<1s then blue, 440Hz tone.
+//  - greenscreen.webm: 1s 320x180 pure-green screen with a white centre block +
 //    a thin white vertical line, for the chroma-key white-edge test.
 
 import { chromium, type Page } from '@playwright/test'
@@ -46,7 +46,7 @@ async function synthesize(page: Page, outPath: string, durationS: number, kind: 
           c2d.fillText(t.toFixed(2), 20, 40)
         } else {
           // Pure-green screen with white detail: a centre block (0.5,0.5) and a
-          // thin vertical line — the white corners/lines that must survive keying.
+          // thin vertical line, which are the white corners/lines that must survive keying.
           c2d.fillStyle = '#00ff00'
           c2d.fillRect(0, 0, 320, 180)
           c2d.fillStyle = '#ffffff'

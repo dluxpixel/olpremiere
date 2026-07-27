@@ -13,7 +13,7 @@ import { IconButton } from '../ui/Button'
 const KEY = 'olpremiere:quickstart'
 
 /** How long to wait before concluding the project really is empty. Generous,
- *  because it is only the fallback now — an arriving project retires the card
+ *  because it is only the fallback now: an arriving project retires the card
  *  through a store subscription however long it takes, so this timer can never
  *  cause the nag it used to cause at 600ms. */
 const HYDRATE_DEFER_MS = 5000
@@ -86,8 +86,8 @@ export function QuickStart() {
     // single check on a 600ms timer, which is a race the user loses on exactly
     // the projects that matter: a big project (his is 44 clips and a gigabyte of
     // media) hydrates well after the deadline, so the card decided "first run",
-    // nagged a returning editor, and — because he closed the app rather than
-    // clicking the X — never wrote the flag. So it came back EVERY launch.
+    // nagged a returning editor, and (because he closed the app rather than
+    // clicking the X) never wrote the flag. So it came back EVERY launch.
     //
     // Watching the store instead of guessing a duration removes the race
     // entirely: whenever the project arrives, however long it takes, the card

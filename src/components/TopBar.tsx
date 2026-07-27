@@ -141,7 +141,7 @@ function RecordButton() {
 }
 
 /**
- * The whole export flow's entry point — one button, no settings behind it. An
+ * The whole export flow's entry point: one button, no settings behind it. An
  * empty timeline has nothing to render, so the button says so by being disabled
  * rather than opening a dialog that immediately fails. Its own component so the
  * header does not re-render on every timeline edit: the selector returns a
@@ -224,7 +224,7 @@ function VersionTag() {
   return (
     <span
       data-testid="app-version"
-      title={`OL Premiere v${APP_VERSION} — this is the build you're running`}
+      title={`OL Premiere v${APP_VERSION}. This is the build you're running`}
       className="select-text font-numeric text-[10px] leading-none text-text-muted"
     >
       v{APP_VERSION}
@@ -259,13 +259,13 @@ export function TopBar() {
       data-testid="topbar"
       className="flex h-12 shrink-0 items-center gap-3 border-b border-border bg-bg-panel px-3"
     >
-      {/* The suite's melon mark, same mascot as the OL Studio DAW — one brand,
+      {/* The suite's melon mark, same mascot as the OL Studio DAW. One brand,
           two apps. Name reads OL Premiere: this is the video editor. */}
       <div className="flex items-center gap-2">
         <MelonMark size={18} />
         {/* The wordmark and the version share a BASELINE, not a centre. Centring
             two different type sizes by their boxes leaves the smaller one
-            floating — the version tag has leading-none, so its box is 10px tall
+            floating, and the version tag has leading-none, so its box is 10px tall
             against the wordmark's ~17px and it sat visibly high. A version suffix
             is read as part of the name, and names sit on one baseline. */}
         <span className="flex items-baseline gap-2">

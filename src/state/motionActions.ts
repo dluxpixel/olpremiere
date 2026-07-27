@@ -110,7 +110,7 @@ const BEAT_PUNCH_GAP_S = 0.8
 
 /**
  * Detect beats/hits in an audio clip and punch the topmost footage clip under
- * each one — the whole run is ONE undo step. Detection is local + pure; only
+ * each one. The whole run is ONE undo step. Detection is local + pure; only
  * the decode touches WebAudio.
  */
 export async function punchOnBeats(audioClipId: string): Promise<void> {

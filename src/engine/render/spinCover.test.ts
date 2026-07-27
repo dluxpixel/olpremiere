@@ -31,7 +31,7 @@ describe('spin covers the rotation it asks for', () => {
     expect(worstCase(1)).toBeLessThanOrEqual(1)
   })
 
-  it('would NOT have held with the old constants — this is the bug', () => {
+  it('would NOT have held with the old constants: this is the bug', () => {
     // 0.5 rad of rotation against a 1.3x punch: at the midpoint 14 degrees needs
     // ~1.41x on 16:9 and only had 1.15x, so the corners were never covered.
     const need = spinCoverScale(0.5 * 0.5, 16 / 9)

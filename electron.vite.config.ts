@@ -16,7 +16,7 @@ const appVersion = JSON.parse(readFileSync(new URL('./package.json', import.meta
 export default defineConfig({
   main: {
     // Bundle electron-updater INTO main.js (exclude from externalization) so the
-    // packaged asar needs no node_modules — the app ships lean (out/** only).
+    // packaged asar needs no node_modules, so the app ships lean (out/** only).
     plugins: [externalizeDepsPlugin({ exclude: ['electron-updater'] })],
     build: {
       outDir: 'out/main',
@@ -41,7 +41,7 @@ export default defineConfig({
     },
   },
   renderer: {
-    // Keep the renderer exactly where it lives — root index.html + src/.
+    // Keep the renderer exactly where it lives: root index.html + src/.
     root: '.',
     base: '/', // absolute asset URLs, served by the app:// protocol handler
     define: { __APP_VERSION__: JSON.stringify(appVersion) },

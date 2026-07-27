@@ -114,7 +114,7 @@ describe('coalescing a continuous edit', () => {
     expect(redoCommand(u.history)!.project.name).toBe('hello')
   })
 
-  it('a long paragraph no longer evicts the session — it stays one step', () => {
+  it('a long paragraph no longer evicts the session, so it stays one step', () => {
     const { history } = typeAll('x'.repeat(MAX_HISTORY + 50))
     expect(history.undo).toHaveLength(1)
   })

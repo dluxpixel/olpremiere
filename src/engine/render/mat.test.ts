@@ -63,7 +63,7 @@ describe('croppedSize / fitScale', () => {
   })
 })
 
-describe('computeQuad — identity contain-fit', () => {
+describe('computeQuad: identity contain-fit', () => {
   it('centers the texture and fits by the limiting axis (wide tex)', () => {
     // 1000x500 tex into 1920x1080: min(1.92, 2.16) = 1.92 → 1920 x 960.
     const { corners } = computeQuad({ frameW: 1920, frameH: 1080, texW: 1000, texH: 500, transform: NEUTRAL_T })
@@ -84,7 +84,7 @@ describe('computeQuad — identity contain-fit', () => {
   })
 })
 
-describe('computeQuad — scale', () => {
+describe('computeQuad: scale', () => {
   it('scale=2 doubles the quad about the center, center fixed', () => {
     const base = computeQuad({ frameW: 1920, frameH: 1080, texW: 1000, texH: 500, transform: NEUTRAL_T }).corners
     const scaled = computeQuad({
@@ -100,7 +100,7 @@ describe('computeQuad — scale', () => {
   })
 })
 
-describe('computeQuad — position', () => {
+describe('computeQuad: position', () => {
   it('x/y offset the whole quad in seq px', () => {
     const base = computeQuad({ frameW: 1920, frameH: 1080, texW: 1000, texH: 500, transform: NEUTRAL_T }).corners
     const moved = computeQuad({
@@ -117,7 +117,7 @@ describe('computeQuad — position', () => {
   })
 })
 
-describe('computeQuad — rotation about anchor', () => {
+describe('computeQuad: rotation about anchor', () => {
   it('rotationDeg=90 about center rotates corners clockwise, center fixed', () => {
     const { corners } = computeQuad({
       frameW: 1920,
@@ -150,7 +150,7 @@ describe('computeQuad — rotation about anchor', () => {
   })
 })
 
-describe('computeQuad — crop drives the fitted size', () => {
+describe('computeQuad: crop drives the fitted size', () => {
   it('cropping the width narrows the cropped source, changing the fit', () => {
     // 1000x500 tex, crop 25% off L and R => cropped 500x500 (square).
     // Into 1920x1080: fit = min(3.84, 2.16) = 2.16 => 1080 x 1080.

@@ -98,7 +98,7 @@ describe('a failed flush never costs the user their edits', () => {
 
     await openProject(other.id)
 
-    // Still on the project that could not be written — switching would have
+    // Still on the project that could not be written, because switching would have
     // replaced the in-memory document and dropped every edit since the last
     // successful save.
     expect(useStore.getState().project.id).toBe(currentId)

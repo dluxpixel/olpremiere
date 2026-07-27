@@ -59,7 +59,7 @@ test('settings write through to the real preferences they consolidate', async ({
   await page.getByTestId('settings-language').selectOption('cs')
   expect(await page.evaluate(() => localStorage.getItem('olpremiere:captions:lang'))).toBe('cs')
 
-  // Preview quality persists — and it is ONE setting: the monitor's own picker
+  // Preview quality persists, and it is ONE setting: the monitor's own picker
   // and this one are two surfaces on it, so they can never disagree.
   await page.getByTestId('settings-quality').selectOption('0.5')
   expect(await page.evaluate(() => localStorage.getItem('olpremiere:settings:preview-quality'))).toBe('0.5')

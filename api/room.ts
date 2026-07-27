@@ -1,5 +1,5 @@
 // Collab relay: a Vercel serverless function that moves Yjs update blobs and
-// presence heartbeats between peers in a room. Deliberately dumb — CRDT merge
+// presence heartbeats between peers in a room. Deliberately dumb, because CRDT merge
 // math lives entirely in the clients; this is just an append-only mailbox on
 // Vercel Blob storage. Requires a connected Blob store (BLOB_READ_WRITE_TOKEN);
 // without one every request 500s and the app falls back to same-machine tabs.

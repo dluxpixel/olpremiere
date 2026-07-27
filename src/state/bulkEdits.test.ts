@@ -189,7 +189,7 @@ describe('setClipTransition duration envelope (whiteFlash)', () => {
     setClipTransition(a.id, 'in', 'crossDissolve')
     const dissolve = clips()[0].transitionIn!.durationS
     expect(dissolve).toBeGreaterThan(0.2)
-    // A full second is half a shot at his pacing — the old flat default is gone.
+    // A full second is half a shot at his pacing, so the old flat default is gone.
     expect(dissolve).toBeLessThanOrEqual(0.5)
   })
 
@@ -277,7 +277,7 @@ describe('setClipsPosition', () => {
 
   it('a selected clip the playhead is OUTSIDE keeps the plain move', () => {
     const a = seedTitle(0) // [0, 5)
-    const b = seedTitle(6) // [6, 11) — nowhere near the playhead
+    const b = seedTitle(6) // [6, 11), nowhere near the playhead
     setAutoKeyframe(true)
     useStore.getState().setUI({ playheadS: 2 })
 

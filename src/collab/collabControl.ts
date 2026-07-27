@@ -1,7 +1,7 @@
 // App-level collab control: one active session, room-in-URL-hash, transport
 // selection. On an origin with the relay deployed (the collab Vercel project)
 // rooms sync across machines; anywhere else they fall back to same-machine
-// tabs via BroadcastChannel — same UI, honest badge text either way.
+// tabs via BroadcastChannel: same UI, honest badge text either way.
 
 import { create } from 'zustand'
 import { useStore } from '../state/store'
@@ -19,7 +19,7 @@ interface CollabState {
   /** 'relay' = cross-machine via the Vercel relay; 'tabs' = this machine only. */
   mode: 'relay' | 'tabs' | null
   peers: PeerPresence[]
-  /** The project open BEFORE joining someone else's room — Leave restores it. */
+  /** The project open BEFORE joining someone else's room. Leave restores it. */
   preJoinProjectId: string | null
   /** False while the relay is unreachable (badge shows reconnecting). */
   connected: boolean
@@ -48,8 +48,8 @@ const newRoomId = (): string =>
 export async function enterRoom(roomId?: string): Promise<void> {
   const show = useToasts.getState().show
   const state = useCollab.getState()
-  // No id = we mint the room → creator (seeds it instantly). An id — from a
-  // shared link or our own URL after a reload — means the room may already
+  // No id = we mint the room → creator (seeds it instantly). An id (from a
+  // shared link or our own URL after a reload) means the room may already
   // have a document that must win → joiner.
   const role = roomId === undefined ? 'creator' : 'joiner'
   const room = (roomId ?? newRoomId()).toLowerCase()
@@ -109,7 +109,7 @@ export function leaveRoom(): void {
   if (roomFromHash()) window.history.replaceState(null, '', window.location.pathname)
 
   // Joining someone else's room replaced the open project (the room's copy is
-  // autosaved under ITS OWN id, so nothing was lost) — Leave brings the user's
+  // autosaved under ITS OWN id, so nothing was lost). Leave brings the user's
   // own project back. Room creators keep editing theirs; nothing to restore.
   const current = useStore.getState().project.id
   if (preJoinProjectId && preJoinProjectId !== current) {
@@ -117,13 +117,13 @@ export function leaveRoom(): void {
       const { loadProjectById, saveNow, saveProject } = await import('../state/persistence')
       // Flush the ROOM project first: the debounced autosave may still hold the
       // last second of room edits, and the restore below would cancel it. If that
-      // write fails, restoring would drop those edits — stay in the room instead.
+      // write fails, restoring would drop those edits, so stay in the room instead.
       try {
         await saveNow()
       } catch {
         useToasts
           .getState()
-          .show('Could not save the room project — staying here so nothing is lost', 'danger')
+          .show('Could not save the room project. Staying here so nothing is lost', 'danger')
         return
       }
       const mine = await loadProjectById(preJoinProjectId)
@@ -146,13 +146,13 @@ export function displayName(): string {
     const saved = localStorage.getItem(NAME_KEY)
     if (saved && saved.trim()) return saved.trim().slice(0, 24)
   } catch {
-    // storage unavailable — fall through to a generated name
+    // storage unavailable: fall through to a generated name
   }
   const generated = `Editor ${Math.floor(Math.random() * 90 + 10)}`
   try {
     localStorage.setItem(NAME_KEY, generated)
   } catch {
-    // fine — regenerate next time
+    // fine, we regenerate next time
   }
   return generated
 }
@@ -173,7 +173,7 @@ export function setDisplayName(name: string): void {
   try {
     localStorage.setItem(NAME_KEY, clean)
   } catch {
-    // storage unavailable — the session keeps the old name
+    // storage unavailable, so the session keeps the old name
   }
   useCollab.getState().session?.setName(clean)
 }
@@ -186,7 +186,7 @@ export function joinRoomFromUrl(): void {
 
 /**
  * Undo/redo entry point for the whole app. Solo: the plain snapshot undo. In a
- * room: the REBASED step (only your own command's delta reverts — everyone
+ * room: the REBASED step (only your own command's delta reverts; everyone
  * else's edits since survive). Returns the command label for the toast.
  */
 export function performHistoryStep(dir: 'undo' | 'redo'): string | null {

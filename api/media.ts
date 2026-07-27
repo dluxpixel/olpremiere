@@ -1,5 +1,5 @@
 // Client-upload token endpoint for room media. Browsers upload media BLOBS
-// directly to Vercel Blob storage (serverless bodies cap at ~4.5MB — a real
+// directly to Vercel Blob storage (serverless bodies cap at ~4.5MB, and a real
 // clip never fits), this function only signs the request. The pathname is
 // forced under the room's media prefix so a token can't write anywhere else.
 
@@ -7,7 +7,7 @@ import { handleUpload, type HandleUploadBody } from '@vercel/blob/client'
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 
 const ROOM_RE = /^[a-z0-9-]{4,40}$/i
-/** Per-file ceiling — a typical gameplay source fits; absurdities don't. */
+/** Per-file ceiling: a typical gameplay source fits; absurdities don't. */
 const MAX_MEDIA_BYTES = 512 * 1024 * 1024
 
 export default async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
@@ -31,7 +31,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
           maximumSizeInBytes: MAX_MEDIA_BYTES,
           addRandomSuffix: false,
           allowOverwrite: true,
-          // Media types only — the relay log has its own endpoint.
+          // Media types only. The relay log has its own endpoint.
           allowedContentTypes: ['video/*', 'audio/*', 'image/*', 'application/octet-stream'],
         }
       },

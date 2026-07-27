@@ -18,7 +18,7 @@ interface SettingsState {
   previewQuality: PreviewQuality
   /**
    * Auto-keyframe: moving or scaling a clip in the monitor ANIMATES it instead
-   * of moving the whole clip. Off by default — a drag should not secretly start
+   * of moving the whole clip. Off by default, because a drag should not secretly start
    * an animation until you have asked for that mode.
    */
   autoKeyframe: boolean

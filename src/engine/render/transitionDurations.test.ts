@@ -12,7 +12,7 @@ describe('transition duration envelope', () => {
   })
 
   it('no kind still defaults to the old flat one second', () => {
-    // A whole second is half a shot at Shorts pacing — the single biggest reason
+    // A whole second is half a shot at Shorts pacing, the single biggest reason
     // the transitions read amateur. Nothing may quietly regress to it.
     for (const kind of TRANSITION_KINDS) {
       expect(transitionDurationSpec(kind).def).toBeLessThanOrEqual(0.5)

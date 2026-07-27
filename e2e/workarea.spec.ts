@@ -97,7 +97,7 @@ test('the export uses the work area, and says so, without asking', async ({ page
   await page.getByRole('button', { name: 'Close' }).click()
   await expect(page.getByTestId('export-dialog')).toHaveCount(0)
 
-  // Mark an in point and it is honoured — no dropdown, no opt-out.
+  // Mark an in point and it is honoured. No dropdown, no opt-out.
   await markAt(page, 1.2, 'i')
   await page.getByTestId('export-open').click()
   await expect(page.getByTestId('export-plan')).toContainText('work area')

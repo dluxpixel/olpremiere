@@ -1,4 +1,4 @@
-// Preload — the ONLY bridge between renderer and main. Emitted as CommonJS
+// Preload: the ONLY bridge between renderer and main. Emitted as CommonJS
 // (out/preload/index.cjs) because a sandboxed preload cannot be an ES module.
 // Exposes a minimal, typed `window.api`; no fs, no child_process, no raw
 // ipcRenderer leaked to the page.

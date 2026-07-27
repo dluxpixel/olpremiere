@@ -22,8 +22,8 @@ let clipboard: ClipPayload[] = []
 export function copySelection(): boolean {
   const s = useStore.getState()
   const seq = activeSequence(s.project)
-  // Copy is the one verb with NO visible effect of its own, so it has to say so
-  // — otherwise the only way to find out whether it worked is to paste.
+  // Copy is the one verb with NO visible effect of its own, so it has to say so.
+  // Otherwise the only way to find out whether it worked is to paste.
   if (s.ui.selection.length === 0) {
     useToasts.getState().show('Select a clip to copy', 'danger')
     return false
@@ -41,7 +41,7 @@ export function cutSelection(): void {
   // Expand each selected clip to its full link group and cut a group ONLY if
   // EVERY member is unlocked. deleteGroup removes the whole linked pair, so (a)
   // both halves must land on the clipboard or a cut+paste would lose the partner,
-  // and (b) a group with any locked member is protected entirely — you can't cut
+  // and (b) a group with any locked member is protected entirely: you can't cut
   // half a linked pair, and a lock must not be bypassed via the partner.
   const isLocked = (id: string): boolean =>
     seq.tracks.find((t) => t.clips.some((c) => c.id === id))?.locked ?? false
@@ -74,7 +74,7 @@ export function pasteAtPlayhead(): void {
     (p) => p.clip.title !== undefined || p.clip.adjustment === true || s.project.assets[p.assetId],
   )
   if (payload.length === 0) {
-    useToasts.getState().show('Nothing to paste — copy a clip first', 'danger')
+    useToasts.getState().show('Nothing to paste. Copy a clip first', 'danger')
     return
   }
   let pastedIds: string[] = []
@@ -88,7 +88,7 @@ export function pasteAtPlayhead(): void {
 
 export function duplicateSelection(): void {
   const s = useStore.getState()
-  // A duplicate lands on the clip's own track — mutation, so locked filters out.
+  // A duplicate lands on the clip's own track: a mutation, so locked filters out.
   const ids = unlockedClipIds(activeSequence(s.project), s.ui.selection)
   if (ids.length === 0) return
   let newIds: string[] = []
@@ -109,7 +109,7 @@ export function selectAllClips(): void {
 }
 
 /**
- * Escape: clear the selection — but ONLY when no overlay owns Escape first. The
+ * Escape: clear the selection, but ONLY when no overlay owns Escape first. The
  * context menu and help sheet have their own Escape handlers; deselecting behind
  * them would silently drop the user's selection when they only meant to close a
  * menu. Those handlers still fire (this is additive); we just don't ALSO

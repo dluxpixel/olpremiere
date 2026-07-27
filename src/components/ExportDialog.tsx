@@ -42,7 +42,7 @@ function fmtEta(seconds: number): string {
 }
 
 /**
- * Export is ONE BUTTON. Pressing it starts the export — there is no settings
+ * Export is ONE BUTTON. Pressing it starts the export. There is no settings
  * screen, because there is nothing to decide: engine/export/exportPlan.ts picks
  * the best available settings from the sequence itself, the same way every time.
  * This component is now only the save destination, the progress, and the result.
@@ -172,7 +172,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   }
 
   // Desktop: render with the shared pipeline, encode with the bundled ffmpeg
-  // (x264 veryslow at constant quality — the best file this app can produce).
+  // (x264 veryslow at constant quality, the best file this app can produce).
   const startNative = async () => {
     const baseName = project.name.replace(/[^\w\- ]+/g, '').trim() || 'export'
     const abort = new AbortController()
@@ -258,7 +258,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
 
         {(stage.kind === 'starting' || running) && (
           <div className="flex flex-col gap-3 p-4" data-testid="export-progress">
-            {/* What the app chose — a statement, not an offer. */}
+            {/* What the app chose: a statement, not an offer. */}
             <p className="font-numeric text-[11px] text-text-muted" data-testid="export-plan">
               {plan.settings.width} × {plan.settings.height} · {plan.settings.fps} fps · H.264
               {plan.usingWorkArea ? ' · work area' : ''}

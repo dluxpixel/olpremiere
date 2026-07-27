@@ -81,8 +81,8 @@ export function RecordingStudio() {
 
   // Drag by the header. Pointer capture keeps the grab even if the cursor
   // outruns the panel; the panel is clamped into the viewport on drop. Ignore
-  // presses that land on a control inside the header (the close button) — the
-  // capture would otherwise swallow its click.
+  // presses that land on a control inside the header (the close button), since
+  // the capture would otherwise swallow its click.
   const onHeaderDown = (e: React.PointerEvent) => {
     if ((e.target as HTMLElement).closest('button')) return
     const rect = (e.currentTarget.parentElement as HTMLElement).getBoundingClientRect()
@@ -176,7 +176,7 @@ export function RecordingStudio() {
         </div>
         {recording && (
           <p className="-mt-1 text-ui-sm text-text-muted" data-testid="studio-dub-hint">
-            {paused ? 'Space resumes the take and the preview.' : 'Space pauses the take and the preview — for dubbing to picture.'}
+            {paused ? 'Space resumes the take and the preview.' : 'Space pauses the take and the preview, for dubbing to picture.'}
           </p>
         )}
 

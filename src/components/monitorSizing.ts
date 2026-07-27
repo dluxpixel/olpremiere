@@ -3,12 +3,12 @@
 
 export interface CanvasBox {
   /** CSS box (CSS px, fractional when dpr is) spanning a WHOLE number of
-   *  device pixels — a fractional device-pixel extent makes the compositor
+   *  device pixels, because a fractional device-pixel extent makes the compositor
    *  resample the finished canvas (a faint uniform blur over the preview). */
   cssW: number
   cssH: number
   /** Canvas backing-store raster. At quality 1 it equals the device-pixel
-   *  extent exactly, so canvas texels map 1:1 to screen pixels — no resample. */
+   *  extent exactly, so canvas texels map 1:1 to screen pixels with no resample. */
   pxW: number
   pxH: number
 }

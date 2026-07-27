@@ -24,7 +24,7 @@ function seed(): { seq: Sequence; clip: Clip } {
 const scaleAt = (clip: Clip, tLocal: number) => resolveChannel(clip, 'scale', tLocal)
 
 /**
- * Colour channels resolve out of the EFFECT STACK, not clip.keyframes — assert
+ * Colour channels resolve out of the EFFECT STACK, not clip.keyframes, so assert
  * where the renderer actually reads, or a write to the dead legacy address
  * passes while nothing renders.
  */

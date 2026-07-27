@@ -24,7 +24,7 @@ const asset = (id: string): MediaAsset => ({
   hasVideo: true,
 })
 
-/** A project with one clip — either the creator's, or the room's document. */
+/** A project with one clip: either the creator's, or the room's document. */
 function projectWithClip(name: string): Project {
   const p = newProject(name)
   p.assets.a1 = asset('a1')
@@ -105,7 +105,7 @@ afterEach(() => {
 })
 
 describe('creator handshake', () => {
-  it('seeds the room document immediately — sync answers are real from t=0', () => {
+  it('seeds the room document immediately, so sync answers are real from t=0', () => {
     const mine = projectWithClip('Creator project')
     useStore.getState().setProject(mine)
     const t = new FakeTransport()
@@ -134,7 +134,7 @@ describe('joiner handshake', () => {
     expect(t.syncRequests).toBeGreaterThan(3) // initial + retries
     expect(ready).toBe(false)
 
-    // The creator's answer finally lands — the room's document wins outright.
+    // The creator's answer finally lands, and the room's document wins outright.
     const room = projectWithClip('Room project')
     t.deliver(roomAnswer(room))
     expect(ready).toBe(true)
@@ -159,7 +159,7 @@ describe('joiner handshake', () => {
     expect(t.sentUpdates).toHaveLength(0)
     expect(ready).toBe(false)
 
-    vi.advanceTimersByTime(200) // cross SEED_FALLBACK_MS — room is dead
+    vi.advanceTimersByTime(200) // cross SEED_FALLBACK_MS: room is dead
     expect(ready).toBe(true)
     expect(t.sentUpdates.length).toBeGreaterThan(0)
     const seeded = decodeToProject(t.sentUpdates[0])

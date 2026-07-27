@@ -1,6 +1,6 @@
 // Cross-machine transport: polls the Vercel relay (/api/room) for Yjs updates
 // + presence. Yjs updates are commutative, so a dumb ordered mailbox is a
-// correct transport — merge math stays in the clients. Poll cadence ~1.5s is
+// correct transport. Merge math stays in the clients. Poll cadence ~1.5s is
 // the "reliable everywhere, no accounts" trade-off vs realtime sockets.
 
 import type { CollabTransport, PeerPresence } from './transport'
@@ -21,7 +21,7 @@ const fromB64 = (s: string): Uint8Array => Uint8Array.from(atob(s), (c) => c.cha
 
 /**
  * Does this origin have a working relay? Demands a JSON response with the
- * relay's shape — a dev server's SPA fallback answers 200 with HTML for
+ * relay's shape, because a dev server's SPA fallback answers 200 with HTML for
  * /api/room, and a static deploy 404s; both mean "no relay, use tabs".
  */
 export async function relayAvailable(): Promise<boolean> {
@@ -101,7 +101,7 @@ export class HttpRelayTransport implements CollabTransport {
       }
       this.reportPoll(r.ok)
     } catch {
-      // transient network failure — next poll retries
+      // transient network failure, next poll retries
       this.reportPoll(false)
     }
     void this.flush()
@@ -122,7 +122,7 @@ export class HttpRelayTransport implements CollabTransport {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ updates, ...(presence ? { presence } : {}) }),
       })
-      // A failing POST means EDITS are not reaching the room — that must flip
+      // A failing POST means EDITS are not reaching the room, and that must flip
       // the health badge just like a failing poll (silent drops are worse).
       if (!r.ok) {
         this.outbox.unshift(...updates)

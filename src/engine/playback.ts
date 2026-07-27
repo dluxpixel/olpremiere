@@ -18,7 +18,7 @@ export interface TransportOpts {
   /**
    * Loop range (in/out marks or the whole sequence), re-read every frame;
    * null/undefined = no looping. Forward play at the range end re-anchors to
-   * the start instead of pausing — the caption/beat-timing workflow replays
+   * the start instead of pausing, so the caption/beat-timing workflow replays
    * the same two seconds forever.
    */
   getLoopRange?: () => { startS: number; endS: number } | null
@@ -34,7 +34,7 @@ export class Transport {
   /**
    * Intent set SYNCHRONOUSLY by play()/pause(). play() schedules audio behind
    * an await (a long clip decodes for seconds), so `isPlaying` lags; `intended`
-   * lets togglePlay/pause react immediately — pressing pause during that window
+   * lets togglePlay/pause react immediately: pressing pause during that window
    * reliably stops instead of starting a second playback.
    */
   private intended = false
@@ -77,7 +77,7 @@ export class Transport {
     this.intended = true
 
     if (this.opts.getEndS() <= 0) {
-      // Empty sequence: don't start — immediate pause semantics.
+      // Empty sequence: don't start (immediate pause semantics).
       this.intended = false
       if (this.isPlaying) {
         this.isPlaying = false
@@ -92,7 +92,7 @@ export class Transport {
       try {
         const stop = await this.opts.schedule(fromS)
         if (token !== this.playToken) {
-          // Superseded by pause()/play() while decoding — kill the late audio.
+          // Superseded by pause()/play() while decoding. Kill the late audio.
           stop()
           return
         }
@@ -128,8 +128,8 @@ export class Transport {
         : endS
       if (rate > 0 && t >= stopAt) {
         if (loopRange) {
-          // Re-anchor and swap the audio in place — no pause/play state churn,
-          // the rAF loop never dies. Audio rejoins a scheduling-latency later;
+          // Re-anchor and swap the audio in place (no pause/play state churn,
+          // the rAF loop never dies). Audio rejoins a scheduling-latency later;
           // video restarts on this very frame.
           const fromS = Math.max(0, Math.min(loopRange.startS, stopAt))
           this.lastT = fromS
@@ -159,7 +159,7 @@ export class Transport {
       }
       this.lastT = t
       this.opts.onTick(t)
-      // onTick may have called pause()/play() — never double-schedule.
+      // onTick may have called pause()/play(), so never double-schedule.
       if (token !== this.playToken) return
       this.rafId = requestAnimationFrame(loop)
     }
@@ -171,8 +171,8 @@ export class Transport {
     this.playToken++
     this.teardown()
     // Fire the state change if we were playing OR merely intending to (audio
-    // still decoding) — the latter guarantees the video preview is paused even
-    // when the user hits pause before playback visibly started.
+    // still decoding), because the latter guarantees the video preview is
+    // paused even when the user hits pause before playback visibly started.
     const wasActive = this.isPlaying || this.intended
     this.intended = false
     this.isPlaying = false
@@ -197,7 +197,7 @@ export class Transport {
       if (ctx.state !== 'running') void ctx.resume().catch(() => undefined)
       return ctx
     } catch {
-      // No AudioContext in this environment — perf clock still works.
+      // No AudioContext in this environment. The perf clock still works.
       return null
     }
   }

@@ -6,7 +6,7 @@
 // `track-presets` it is silently losing things the user MADE. So every renamed
 // key is listed here and adopted once, on boot, before anything reads it.
 //
-// One list, one call site — a per-module fallback would be twenty places to
+// One list, one call site, because a per-module fallback would be twenty places to
 // forget. Delete this module once it is certain no machine still holds `reel:`
 // keys; nothing else depends on it.
 
@@ -33,7 +33,7 @@ export const RENAMED_KEYS: Readonly<Record<string, string>> = Object.freeze({
 
 /**
  * Move each legacy value to its new key, once. A key that already exists under
- * the new name wins and the legacy one is dropped — the new name is the source
+ * the new name wins and the legacy one is dropped: the new name is the source
  * of truth the moment it has ever been written.
  *
  * Never throws: localStorage can be unavailable (private mode, a locked-down
@@ -51,7 +51,7 @@ export function migrateRenamedKeys(store: Pick<Storage, 'getItem' | 'setItem' | 
       }
       store.removeItem(legacy)
     } catch {
-      // Quota or a blocked origin — leave the legacy value where it is so a
+      // Quota or a blocked origin. Leave the legacy value where it is so a
       // later boot can try again, and never take the app down for this.
     }
   }

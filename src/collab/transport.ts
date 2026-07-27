@@ -1,5 +1,5 @@
 // Collab transports: how Yjs update bytes and presence heartbeats move between
-// peers. The session is transport-agnostic — same bridge, swappable wire:
+// peers. The session is transport-agnostic (same bridge, swappable wire):
 //   - BroadcastChannelTransport: tabs on ONE machine (and the e2e harness).
 //   - HttpRelayTransport (httpTransport.ts): cross-machine via the Vercel relay.
 
@@ -74,7 +74,7 @@ export class BroadcastChannelTransport implements CollabTransport {
         this.peers.set(msg.peer.clientId, msg.peer)
         this.emitPresence()
       } else if (msg.kind === 'goodbye') {
-        // A departing tab announces itself — no ghost lingering until TTL.
+        // A departing tab announces itself, so no ghost lingers until TTL.
         this.peers.delete(msg.clientId)
         this.emitPresence()
       }

@@ -1,7 +1,7 @@
 // Generates the bundled SFX pack: small, original, procedurally-synthesized
 // stingers (whoosh / boom / hit / ding / ...) written as 48kHz 16-bit mono
 // WAVs into public/sfx/, plus src/engine/sfx/manifest.json describing them.
-// Everything is synthesized from scratch here — no samples, no licensing tail.
+// Everything is synthesized from scratch here: no samples, no licensing tail.
 // Deterministic (seeded PRNG), so re-running reproduces byte-identical files.
 //
 //   node scripts/gen-sfx.mjs

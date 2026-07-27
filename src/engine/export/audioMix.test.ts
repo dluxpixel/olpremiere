@@ -230,7 +230,7 @@ describe('softLimit', () => {
 
   it('never reaches or exceeds 1 for arbitrarily large input', () => {
     // The tanh knee asymptotes to full-scale 1.0 (reached in float for huge
-    // input) and never EXCEEDS it — exactly the module's documented contract.
+    // input) and never EXCEEDS it, which is exactly the module's documented contract.
     expect(softLimit(1000)).toBeLessThanOrEqual(1)
     expect(softLimit(1000)).toBeGreaterThan(0.999)
     expect(softLimit(-1000)).toBeGreaterThanOrEqual(-1)

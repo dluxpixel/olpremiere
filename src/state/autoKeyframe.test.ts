@@ -53,7 +53,7 @@ describe('auto-keyframe', () => {
     expect(kfs[1].value).toBe(120)
   })
 
-  it('ON at the clip head: still a plain move — there is nothing to animate FROM', () => {
+  it('ON at the clip head: still a plain move, because there is nothing to animate FROM', () => {
     const c = seed()
     setAutoKeyframe(true)
     useStore.getState().setUI({ playheadS: 0 })

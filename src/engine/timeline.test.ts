@@ -526,7 +526,7 @@ describe('trimClipTo', () => {
 describe('splitClip', () => {
   it('keyframes split by time: no replayed animation, seamless value at the cut', () => {
     // A punch zoom [1 → 1.3 over 0.5s]. Cutting at 0.25 must leave each half
-    // its own slice — copying the full set made the zoom REPLAY on the right.
+    // its own slice. Copying the full set made the zoom REPLAY on the right.
     const c = makeClip({
       startS: 0,
       inS: 0,
@@ -555,7 +555,7 @@ describe('splitClip', () => {
   })
 
   it('a side whose animation is constant collapses to a static base (no phantom stopwatch)', () => {
-    // Zoom finished at 0.5; cut at 2 — the right half must HOLD 1.3 statically,
+    // Zoom finished at 0.5; cut at 2, so the right half must HOLD 1.3 statically,
     // not carry a single-keyframe "animated" channel, and not replay anything.
     const c = makeClip({
       startS: 0,
@@ -648,7 +648,7 @@ describe('splitClip', () => {
 
   it('fades split with their edge: left keeps fade-in only, right fade-out only', () => {
     // Copying both fades to both halves put an audible fade-out+fade-in dip at
-    // every cut point — the cut itself must stay a hard cut.
+    // every cut point. The cut itself must stay a hard cut.
     const c = makeClip({ startS: 0, inS: 0, outS: 4, fadeInS: 0.8, fadeOutS: 0.6 })
     const seq = makeSeq([makeTrack({ clips: [c] })])
     const [left, right] = splitClip(seq, c.id, 2).tracks[0].clips
@@ -666,7 +666,7 @@ describe('splitClip', () => {
     expect(splitClip(seq, c.id, 0.5)).toBe(seq)
     expect(splitClip(seq, c.id, 7)).toBe(seq)
   })
-  it('no-ops within one frame of an edge — jitter cuts must not leave slivers', () => {
+  it('no-ops within one frame of an edge: jitter cuts must not leave slivers', () => {
     const c = makeClip({ startS: 1, inS: 0, outS: 4 })
     const seq = makeSeq([makeTrack({ clips: [c] })]) // 30fps → min piece 1/30s
     expect(splitClip(seq, c.id, 1.02)).toBe(seq) // 20ms from the start edge
@@ -2026,7 +2026,7 @@ describe('setSequenceFormat / refitClipToFill (Shorts aspect switch)', () => {
       const seq = makeSeq([makeTrack({ clips: [slid()] })])
       const shorts = setSequenceFormat(seq, landscape, 1080, 1920)
       const c = shorts.tracks[0].clips[0]
-      // A trim recompiles only while the keyframes still match the spec — which
+      // A trim recompiles only while the keyframes still match the spec, which
       // is exactly what the stale bake used to make impossible. The exit is baked
       // at [D-d, D], so shortening 4s → 2s must move its last keyframe to t=2.
       const trimmed = retimeAppearance(c, { ...c, outS: 2 }, shorts.width, shorts.height)
@@ -2109,7 +2109,7 @@ describe('splitClipOnly (cut just the selected clip)', () => {
   })
 
   it('keeps both halves LINKED so their audio never doubles the partner', () => {
-    // A video clip without a linkId plays its own audio — dropping the link
+    // A video clip without a linkId plays its own audio. Dropping the link
     // here would play the sound twice against the untouched partner clip.
     const out = splitClipOnly(linkedPair(), 'v', 2)
     const videoTrack = out.tracks[0]
@@ -2146,7 +2146,7 @@ describe('deleteScoped (one selection-aware Delete verb)', () => {
     return makeSeq([makeTrack({ clips: [v] }), makeTrack({ kind: 'audio', clips: [a] })])
   }
 
-  it('the audio half of a linked pair deletes ALONE — video survives, still silent', () => {
+  it('the audio half of a linked pair deletes ALONE: video survives, still silent', () => {
     const out = deleteScoped(pair(), 'a')
     expect(out.tracks[1].clips).toHaveLength(0)
     expect(out.tracks[0].clips).toHaveLength(1)
@@ -2234,7 +2234,7 @@ describe('close gap', () => {
   })
 })
 
-describe('close gap — link-group aware', () => {
+describe('close gap is link-group aware', () => {
   it('closeGapBefore moves a video clip AND its linked audio partner together', () => {
     const v0 = makeClip({ id: 'V0', startS: 0, inS: 0, outS: 2 }) // ends 2
     const v1 = makeClip({ id: 'V1', startS: 5, inS: 0, outS: 2, linkId: 'lg' }) // gap 3
@@ -2247,7 +2247,7 @@ describe('close gap — link-group aware', () => {
     const vid = r.tracks[0].clips.find((c) => c.id === 'V1')!
     const aud = r.tracks[1].clips.find((c) => c.id === 'A1')!
     expect(vid.startS).toBeCloseTo(2, 6)
-    expect(aud.startS).toBeCloseTo(2, 6) // partner moved the same 3s — no A/V drift
+    expect(aud.startS).toBeCloseTo(2, 6) // partner moved the same 3s, no A/V drift
   })
 })
 
@@ -2256,7 +2256,7 @@ describe('linked A/V groups stay in sync', () => {
 
   it('moveGroup refuses the whole move when a partner cannot take the delta', () => {
     // V at 0-4 on V1; its linked audio A at 0-4 on A1, plus music M at 5-9 on A1.
-    // Dragging V to 6 leaves no 4s hole at 6 on A1 — resolveStart would have
+    // Dragging V to 6 leaves no 4s hole at 6 on A1, so resolveStart would have
     // relocated A to 9, three seconds away from its own picture.
     const v = makeClip({ startS: 0, outS: 4, linkId: 'g' })
     const a = makeClip({ startS: 0, outS: 4, linkId: 'g' })
@@ -2346,7 +2346,7 @@ describe('captions survive a format switch', () => {
     })
 
   it('rescales caption metrics with the frame when switching 16:9 → 9:16', () => {
-    // Caption first, THEN hit the Look — the natural order, since the Look is
+    // Caption first, THEN hit the Look. That is the natural order, since the Look is
     // the "make it a Short" button. The caption used to be left at its
     // 1080-frame size inside a 1920-tall frame: half the intended size, thin
     // outline, wrong height, forty clips to fix by hand.
@@ -2358,7 +2358,7 @@ describe('captions survive a format switch', () => {
     expect(title.fontSizePx).toBe(Math.round(87 * ratio))
     expect(title.offsetYPx).toBe(Math.round(-21 * ratio))
     expect(title.outline!.widthPx).toBe(Math.round(5 * ratio))
-    // Style is untouched — only the measurements move.
+    // Style is untouched: only the measurements move.
     expect(title.text).toBe('diamonds')
     expect(title.vAlign).toBe('bottom')
   })

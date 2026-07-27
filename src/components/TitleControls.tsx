@@ -105,8 +105,8 @@ function Segmented<T extends string>({
 export function TitleControls({ clip }: { clip: Clip }) {
   const def = clip.title
   if (!def) return null
-  // `mergeField` marks a control that fires CONTINUOUSLY — a text box being
-  // typed into, a colour picker being dragged — so the whole run collapses to
+  // `mergeField` marks a control that fires CONTINUOUSLY (a text box being
+  // typed into, a colour picker being dragged), so the whole run collapses to
   // one undo step instead of one step per event.
   const set = (patch: Partial<TitleDef>, mergeField?: keyof TitleDef) =>
     updateTitle(clip.id, patch, mergeField)

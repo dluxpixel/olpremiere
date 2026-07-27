@@ -28,8 +28,8 @@ describe('exportRaster', () => {
   // into a 1440p box for the upload-tier trick; measured against David's own
   // footage it magnified the source's compression instead of adding detail (his
   // 1080p source was already scaled up 1.78x to fill a vertical frame, and the
-  // export scaled it a further 1.33x — 2.37x total, every pixel invented).
-  it('exports a vertical timeline at its OWN size — no upscale', () => {
+  // export scaled it a further 1.33x for 2.37x total, every pixel invented).
+  it('exports a vertical timeline at its OWN size, no upscale', () => {
     expect(exportRaster(1080, 1920)).toEqual({ width: 1080, height: 1920 })
   })
 
@@ -84,7 +84,7 @@ describe('planExport', () => {
 
   // Below HD the worker coerces rate control and audio no matter what it is
   // handed, to hold the golden 640×360 export byte-stable. The plan used to ask
-  // for QP 14 and 320 kbps anyway and be silently overridden — so it described a
+  // for QP 14 and 320 kbps anyway and be silently overridden, so it described a
   // file the app was never going to write.
   it('states the SD truth rather than a quality the worker would override', () => {
     const p = planExport(seq({ width: 640, height: 360 }))

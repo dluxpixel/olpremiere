@@ -1,6 +1,6 @@
 // "Edit together" e2e: two PAGES in one browser profile join the same room
 // (BroadcastChannel transport) and edits propagate BOTH ways live. Adding
-// clips on A must appear on B without any reload (IndexedDB can't do that —
+// clips on A must appear on B without any reload (IndexedDB can't do that,
 // only the sync can), and vice versa.
 
 import { expect, test } from '@playwright/test'
@@ -44,13 +44,13 @@ test('two tabs in a room see each other\'s edits live', async ({ context }) => {
   await expect(b.getByTestId('collab-start')).toBeVisible()
 })
 
-test('undo in a room reverts only YOUR edit — the other person\'s clip survives', async ({ context }) => {
+test('undo in a room reverts only YOUR edit, so the other person\'s clip survives', async ({ context }) => {
   test.setTimeout(120_000)
   const a = await context.newPage()
   await a.goto('/')
   await a.getByTestId('add-title').click() // A's base clip
   await a.getByTestId('collab-start').click()
-  // enterRoom sets the hash asynchronously (after the relay probe) — reading
+  // enterRoom sets the hash asynchronously (after the relay probe). Reading
   // the href before the badge renders races it and hands B a room-less URL.
   await expect(a.getByTestId('collab-badge')).toBeVisible()
   const roomUrl = await a.evaluate(() => window.location.href)
@@ -85,7 +85,7 @@ test('a title edit (not just adds) propagates', async ({ context }) => {
   await a.goto('/')
   await a.getByTestId('add-title').click()
   await a.getByTestId('collab-start').click()
-  // Same badge-then-read guard as the tests above — the hash is set async.
+  // Same badge-then-read guard as the tests above: the hash is set async.
   await expect(a.getByTestId('collab-badge')).toBeVisible()
   const roomUrl = await a.evaluate(() => window.location.href)
   expect(roomUrl).toMatch(/#room=/)

@@ -1,6 +1,6 @@
 // Language routing for local Whisper captions. English keeps the smaller,
 // better-at-English `.en` model; Czech (and auto-detect) use the multilingual
-// export. Both MUST be `_timestamped` onnx-community exports — word-level
+// export. Both MUST be `_timestamped` onnx-community exports. Word-level
 // timestamps need the cross-attention outputs only those exports carry, and
 // older Xenova exports trip onnxruntime's session validation outright (the
 // s14 lesson, re-verified for the multilingual model in
@@ -24,7 +24,7 @@ export function modelFor(language: CaptionLanguage): string {
 /**
  * Generation options per language. A `.en` pipeline rejects a `language`
  * option outright; the multilingual model needs `task: 'transcribe'` (never
- * 'translate' — captions must stay in the spoken language) and a fixed
+ * 'translate', because captions must stay in the spoken language) and a fixed
  * `language` when the user chose one. 'auto' omits it → Whisper detects.
  */
 export function generationOptsFor(language: CaptionLanguage): Record<string, unknown> {
@@ -37,7 +37,7 @@ const LANG_KEY = 'olpremiere:captions:lang'
 /**
  * The live value. localStorage only PERSISTS it; the choice itself lives here,
  * so a blocked store costs the setting across restarts but never inside the
- * session it was set in — which is what the note below always claimed and did
+ * session it was set in, which is what the note below always claimed and did
  * not actually do (an early return meant the pick was dropped on the floor).
  */
 let language: CaptionLanguage | null = null
@@ -61,6 +61,6 @@ export function setCaptionLanguage(next: CaptionLanguage): void {
     if (next === 'en') localStorage.removeItem(LANG_KEY)
     else localStorage.setItem(LANG_KEY, next)
   } catch {
-    // Private mode / quota — the in-memory value above still applies this run.
+    // Private mode / quota: the in-memory value above still applies this run.
   }
 }

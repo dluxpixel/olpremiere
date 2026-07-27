@@ -1,5 +1,5 @@
-// Stale-tab detection. A deployed tab keeps running its old JS forever — old
-// bugs included — until a HARD refresh, which nobody knows to do. This watches
+// Stale-tab detection. A deployed tab keeps running its old JS forever (old bugs
+// included) until a HARD refresh, which nobody knows to do. This watches
 // the served index.html for a different app bundle hash and offers a one-click
 // reload. Silent in dev (no hashed bundle) and on any fetch hiccup.
 
@@ -33,14 +33,14 @@ async function check(booted: string): Promise<void> {
       })
     }
   } catch {
-    // offline / transient — try again next tick
+    // offline / transient, so try again next tick
   }
 }
 
 /** Start watching for a newer deploy: on tab focus and every few minutes. */
 export function initUpdateCheck(): void {
   const booted = currentBundle()
-  if (!booted) return // dev server — nothing to compare
+  if (!booted) return // dev server, nothing to compare
   const run = (): void => void check(booted)
   window.addEventListener('focus', run)
   window.setInterval(run, CHECK_MS)

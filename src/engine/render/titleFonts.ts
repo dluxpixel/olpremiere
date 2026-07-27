@@ -1,5 +1,5 @@
-// Bundled title fonts. The title rasterizer runs in TWO contexts — the main
-// thread (live preview) and the export worker — and each has its OWN FontFaceSet
+// Bundled title fonts. The title rasterizer runs in TWO contexts: the main
+// thread (live preview) and the export worker. Each has its OWN FontFaceSet
 // (document.fonts vs self.fonts). A canvas font is only available once its
 // FontFace is registered in THAT context's set, so both call loadTitleFonts with
 // their own set. Registering in both is what keeps a custom-font title
@@ -23,7 +23,7 @@ export interface CustomTitleFont {
   url: string
 }
 
-/** Minecraft-style pixel font (Monocraft, SIL OFL — safe to ship publicly). */
+/** Minecraft-style pixel font (Monocraft, SIL OFL, so safe to ship publicly). */
 export const MONOCRAFT_STACK = "'Monocraft', 'Courier New', monospace"
 
 /**
@@ -34,10 +34,10 @@ export const MONOCRAFT_STACK = "'Monocraft', 'Courier New', monospace"
 export const CAPTION_FONT_STACK = "'Lilita One', 'Arial Black', sans-serif"
 
 /**
- * Versatile Bold (OnlineWebFonts.com, CC BY 4.0 — credited in
+ * Versatile Bold (OnlineWebFonts.com, CC BY 4.0, credited in
  * VersatileBold-License.txt). A heavy display face for punchy titles. The
  * FontFace API keys off the family name we DECLARE below, so this string is the
- * single source of truth — it need not match the file's internal name.
+ * single source of truth, and it need not match the file's internal name.
  */
 export const VERSATILE_STACK = "'Versatile Bold', 'Arial Black', sans-serif"
 
@@ -86,7 +86,7 @@ let loadPromise: Promise<void> | null = null
 /**
  * Register + load every bundled title font into `fontset` (pass `document.fonts`
  * on the main thread, `self.fonts` in the worker). Idempotent per context. Never
- * throws — a font that fails to load just falls back to its CSS stack. Clears the
+ * throws: a font that fails to load just falls back to its CSS stack. Clears the
  * title raster cache afterwards so anything drawn with the fallback re-rasters.
  */
 export function loadTitleFonts(fontset: FontFaceSet): Promise<void> {

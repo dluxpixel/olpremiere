@@ -18,7 +18,7 @@ export function loadToken() {
   return null
 }
 
-/** fetch with retries — node/undici is flaky in this env (ENOTFOUND / ECONNABORTED). */
+/** fetch with retries, because node/undici is flaky in this env (ENOTFOUND / ECONNABORTED). */
 export async function fetchRetry(url, opts = {}, tries = 4) {
   let lastErr
   for (let i = 0; i < tries; i++) {

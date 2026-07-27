@@ -71,7 +71,7 @@ function persist(list: TextStylePreset[]): void {
   try {
     if (typeof localStorage !== 'undefined') localStorage.setItem(KEY, JSON.stringify(list))
   } catch {
-    /* private mode / quota — presets just won't persist */
+    /* private mode / quota: presets just won't persist */
   }
 }
 
@@ -115,7 +115,7 @@ export function allTextPresets(): TextStylePreset[] {
 // (transcribeConfig). The STYLE was not, so the Captions dialog defaulted to the
 // Jettism look while right-click → Auto-Caption passed no preset at all and fell
 // through to raw ALL-CAPS titles in the middle of the frame. Same feature, same
-// name, completely different output — and right-click is the one people reach for.
+// name, completely different output, and right-click is the one people reach for.
 
 const STYLE_KEY = 'olpremiere:captions:style'
 /** The house style, and what an unset install gets. */
@@ -141,7 +141,7 @@ export function setCaptionPresetId(id: string): void {
     if (id === DEFAULT_CAPTION_PRESET_ID) localStorage.removeItem(STYLE_KEY)
     else localStorage.setItem(STYLE_KEY, id)
   } catch {
-    // Private mode / quota — the in-memory value above still applies this run.
+    // Private mode / quota. The in-memory value above still applies this run.
   }
 }
 

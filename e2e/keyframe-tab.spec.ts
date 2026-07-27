@@ -103,7 +103,7 @@ test('an animated clip shows its keyframes ON the timeline', async ({ page }) =>
   await expect(page.getByTestId('clip')).toBeVisible()
   await expect(page.getByTestId('clip-keyframe')).toHaveCount(0)
 
-  // A punch-in animates several channels at two moments — which is TWO marks,
+  // A punch-in animates several channels at two moments, which is TWO marks,
   // not six, because a moment is what you can see and grab.
   await page.getByTestId('clip').click()
   await page.keyboard.press('p')
@@ -187,7 +187,7 @@ test('auto-keyframe turns a monitor drag into an animation', async ({ page }) =>
       return clip.keyframes?.posX?.length ?? 0
     })
 
-  // The toggle starts off, and a drag at the head is a plain move either way —
+  // The toggle starts off, and a drag at the head is a plain move either way,
   // so park the playhead inside the clip first.
   await expect(page.getByTestId('auto-keyframe-toggle')).toBeVisible()
   await page.getByTestId('auto-keyframe-toggle').click()

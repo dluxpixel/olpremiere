@@ -71,7 +71,7 @@ function parseSrt(text: string): CaptionWord[] | null {
 
 /**
  * Parse pasted transcript text: word-timed JSON first (exact timings win),
- * then SRT. Returns null when the text is neither — the caller shows what the
+ * then SRT. Returns null when the text is neither, and the caller shows what the
  * two accepted shapes look like.
  */
 export function parseTranscript(text: string): CaptionWord[] | null {

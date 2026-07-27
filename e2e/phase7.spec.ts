@@ -229,7 +229,7 @@ test('reverse plays the clip backward in preview and export', async ({ page }) =
   // The export must WALK the source backward, not freeze on the end frame. The
   // fixture is red for source t<1s, blue after; a full reversed ~2s clip maps a
   // LATE output time → an EARLY source time = RED. A frozen-last-frame bug would
-  // show blue there. (Re-sample the same exported file — no second export.)
+  // show blue there. (Re-sample the same exported file; no second export.)
   const late = await sampleExportedAt(page, 1.6, 0.5, 0.5)
   expect(late[0]).toBeGreaterThan(late[2])
 })

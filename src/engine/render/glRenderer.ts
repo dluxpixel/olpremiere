@@ -1,5 +1,5 @@
 // The ONE shared WebGL2 renderer. Runs unchanged in a main-thread <canvas>
-// context (preview) and a worker OffscreenCanvas context (export) — so it never
+// context (preview) and a worker OffscreenCanvas context (export), so it never
 // touches document/window and takes the GL context from the caller. Given a
 // RenderFrame (pure, from resolve.ts) and a TextureSource, it draws pixel-
 // identical output in both places. This file is the sole engine exception that
@@ -42,7 +42,7 @@ const uniformName = (i: number, key: string): string => `u_fx${i}_${key}`
  * so two instances of the same effect cannot collide on a local name; their
  * uniforms are indexed, so they cannot collide either.
  *
- * An empty stack yields the identity shader — which is exactly what the old
+ * An empty stack yields the identity shader, which is exactly what the old
  * monolithic LAYER_FS computed when every filter sat at 0. Output is
  * PREMULTIPLIED alpha so the alpha-OVER blend (ONE, ONE_MINUS_SRC_ALPHA)
  * composites correctly.
@@ -58,7 +58,7 @@ function buildLayerFs(pointwise: readonly ResolvedEffect[], withMask: boolean): 
   })
   // Shape mask (source-UV space) modulates alpha before the effect chain, so
   // keys/grades see the masked layer. Compiled in only when the layer HAS a
-  // mask — unmasked layers keep the identity shader.
+  // mask. Unmasked layers keep the identity shader.
   const maskDecls = withMask
     ? `uniform vec2 uMaskCenter;
 uniform vec2 uMaskRadius;
@@ -86,9 +86,9 @@ precision highp float;
 in vec2 vUV;
 uniform sampler2D uTex;
 uniform float uOpacity;
-uniform vec4 uUVRect; // u0,v0,u1,v1 — reject samples outside the crop window
+uniform vec4 uUVRect; // u0,v0,u1,v1 (reject samples outside the crop window)
 uniform vec2 uFrame;  // frame width,height in px (shared with the VS)
-uniform float uSeed;  // resolver frame index — animates stochastic effects (grain)
+uniform float uSeed;  // resolver frame index: animates stochastic effects (grain)
 ${maskDecls}
 ${decls.join('\n')}
 out vec4 outColor;
@@ -231,7 +231,7 @@ export const SPIN = {
  * Rotating a w x h rectangle by `angle` leaves triangular gaps at the corners;
  * the gaps are what "streaking" is (the sampler clamps and smears the edge
  * pixels into them). A spin is only honest if SPIN.punch covers this at the
- * worst moment, which is the midpoint — see the unit test.
+ * worst moment, which is the midpoint (see the unit test).
  */
 export function spinCoverScale(angleRad: number, aspect: number): number {
   const c = Math.abs(Math.cos(angleRad))
@@ -248,8 +248,8 @@ uniform sampler2D uTo;
 uniform float uProgress;
 uniform int uKind;   // index into TransitionKind order
 uniform float uSoft; // edge softness in UV for wipes
-uniform float uSeed; // resolver frame index — animates the glitch slices
-uniform float uAspect; // frame w/h — spin must rotate in ASPECT space or it shears
+uniform float uSeed; // resolver frame index, animates the glitch slices
+uniform float uAspect; // frame w/h, because spin must rotate in ASPECT space or it shears
 out vec4 outColor;
 
 // The dip solid is weighted by LOCAL COVERAGE. Both sides are premultiplied and
@@ -339,7 +339,7 @@ void main() {
     vec2 gUV = vec2(clamp(vUV.x + shift, 0.0, 1.0), vUV.y);
     vec2 split = vec2(0.008 * gi, 0.0);
     // Glitch is the one kind that HARD-SWITCHES sides at the midpoint instead of
-    // blending, so on a lone edge — where one side is deliberately empty — that
+    // blending, so on a lone edge (where one side is deliberately empty) that
     // switch used to hand back a transparent frame for half the window. Falling
     // back per pixel keeps the hard cut between two real clips and keeps the
     // picture on screen when there is only one.
@@ -360,7 +360,7 @@ void main() {
     col = mix(from, to, m);
   } else {                     // whiteFlash: hard white at p=0, ease-out resolve to TO.
     // (1-p)^2 has its steepest decay at p=0 (rate 2) and lands at 0 with zero
-    // slope — the flash pops full white then quickly settles into the footage.
+    // slope. The flash pops full white then quickly settles into the footage.
     // FROM is deliberately ignored: this is an intro hit, not a blend.
     float a = (1.0 - p) * (1.0 - p);
     // Coverage-weighted for the same reason as dip(): a white flash on a title or
@@ -433,7 +433,7 @@ interface LayerProgram {
   uOpacity: WebGLUniformLocation | null
   uUVRect: WebGLUniformLocation | null
   uSeed: WebGLUniformLocation | null
-  /** Mask uniforms — present only on the masked variant of a stack program. */
+  /** Mask uniforms, present only on the masked variant of a stack program. */
   mask?: {
     center: WebGLUniformLocation | null
     radius: WebGLUniformLocation | null
@@ -478,7 +478,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
   const layerPrograms = new Map<string, LayerProgram>()
 
   function getLayerProgram(pointwise: readonly ResolvedEffect[], withMask: boolean): LayerProgram {
-    // Masked layers compile their own variant of the stack program — an
+    // Masked layers compile their own variant of the stack program, because an
     // unmasked identity clip must never pay for mask uniforms it doesn't have.
     const key = stackSignature(pointwise) + (withMask ? '#mask' : '')
     const hit = layerPrograms.get(key)
@@ -564,7 +564,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
   gl.bindBuffer(gl.ARRAY_BUFFER, fullVbo)
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW)
   // Allocate the per-layer quad store ONCE (6 verts × 4 floats) and rewrite it
-  // each draw with bufferSubData + a reused array — avoids a per-layer per-frame
+  // each draw with bufferSubData + a reused array, which avoids a per-layer per-frame
   // Float32Array allocation and VBO storage reallocation in the hot draw loop.
   gl.bindBuffer(gl.ARRAY_BUFFER, layerVbo)
   gl.bufferData(gl.ARRAY_BUFFER, 24 * 4, gl.DYNAMIC_DRAW)
@@ -579,7 +579,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
   const srcTex = gl.createTexture()
   if (!srcTex) throw new Error('createTexture failed')
   // `mipmap` may be true ONLY for source textures that get generateMipmap after
-  // every upload — a mipmap MIN_FILTER on a texture without a complete mip
+  // every upload. A mipmap MIN_FILTER on a texture without a complete mip
   // chain is incomplete and samples opaque black (why destCapTex passes false).
   const setTexParams = (mipmap: boolean): void => {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, mipmap ? gl.LINEAR_MIPMAP_LINEAR : gl.LINEAR)
@@ -592,7 +592,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
   let srcTexW = -1
   let srcTexH = -1
 
-  // Per-source texture cache for STABLE sources — stills (<img>) and the cached
+  // Per-source texture cache for STABLE sources: stills (<img>) and the cached
   // title/caption rasters (OffscreenCanvas). Their pixels never change between
   // frames, so once uploaded they're just re-BOUND, never re-uploaded. This is
   // the big playback win on caption-heavy timelines, where 10+ static title
@@ -604,7 +604,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
   /** Upload if needed, return the texture to bind. Skips upload for unchanged
    *  stills/titles. `cacheable` MUST be false for video frames: mediabunny decodes
    *  each frame into a FRESH OffscreenCanvas, so type-sniffing can't tell a reused
-   *  title raster from a one-shot video frame — the caller signals it from the layer. */
+   *  title raster from a one-shot video frame, so the caller signals it from the layer. */
   function acquireTexture(source: TexImageSource, texW: number, texH: number, cacheable: boolean): WebGLTexture {
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false)
     if (cacheable) {
@@ -619,7 +619,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
       if (!hit) setTexParams(mipmapSources)
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source)
       // Stable sources upload once, so the mip chain is built once and then
-      // only re-bound — cache hits above never pay for generateMipmap.
+      // only re-bound. Cache hits above never pay for generateMipmap.
       if (mipmapSources) gl.generateMipmap(gl.TEXTURE_2D)
       texCache.delete(source)
       texCache.set(source, { tex, w: texW, h: texH })
@@ -663,7 +663,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
       destCapTex = gl.createTexture()
       if (!destCapTex) throw new Error('createTexture failed')
       gl.bindTexture(gl.TEXTURE_2D, destCapTex)
-      setTexParams(false) // sampled 1:1, never mipmapped — see setTexParams
+      setTexParams(false) // sampled 1:1, never mipmapped (see setTexParams)
     }
     gl.bindFramebuffer(gl.FRAMEBUFFER, targetFb)
     gl.activeTexture(gl.TEXTURE0)
@@ -679,7 +679,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
 
   // Fixed-function blend for the modes that don't need to read the destination.
   // All inputs are premultiplied: multiply = dst*(src + 1 - srcA), screen =
-  // src + dst*(1 - src), add = src + dst — each is exact for opaque sources and
+  // src + dst*(1 - src), add = src + dst. Each is exact for opaque sources and
   // degrades gracefully with alpha.
   function setBlendForMode(mode: RenderLayer['blendMode']): void {
     if (mode === 'multiply') gl.blendFunc(gl.DST_COLOR, gl.ONE_MINUS_SRC_ALPHA)
@@ -738,7 +738,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
 
     // Only genuinely-reused sources are cacheable: a title/caption raster (a
     // stable OffscreenCanvas) or a still <img>. VIDEO frames are a fresh
-    // OffscreenCanvas each frame — never cache them, or the LRU floods with
+    // OffscreenCanvas each frame: never cache them, or the LRU floods with
     // one-shot full-res textures (VRAM blowup on 4K export). Signalled from the
     // layer, not the source type (both are OffscreenCanvas).
     const cacheable =
@@ -968,7 +968,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
       drawLayer(layer, source, frameW, frameH)
       for (const fx of post) applyNeighborhood(fx, layerFbo, scratch)
       // The target may be a seq-sized transition FBO (fboW×fboH), NOT the
-      // canvas — sizing the viewport to the canvas would draw into only a
+      // canvas. Sizing the viewport to the canvas would draw into only a
       // sub-rect of that FBO (the transition-preview bug).
       const tw = targetFb ? fboW : gl.canvas.width
       const th = targetFb ? fboH : gl.canvas.height
@@ -1028,7 +1028,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     clear(0, 0, 0, 0)
     if (!source) return
     // Blend modes composite against the tracks BELOW, but a transition side is
-    // isolated on transparent — multiply/overlay against nothing would black
+    // isolated on transparent, where multiply/overlay against nothing would black
     // out or vanish the clip mid-transition. Flatten to normal inside sides.
     const flat = layer.blendMode !== 'normal' ? { ...layer, blendMode: 'normal' as const } : layer
     compositeLayer(flat, source, frameW, frameH, dst.fb, layerFbo, scratch)
@@ -1090,8 +1090,8 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
 
   /**
    * Full-frame pass: run a pointwise stack (and optional mask/opacity) over a
-   * source FBO into the CURRENT framebuffer via the shared per-layer program —
-   * the exact GLSL the per-clip path compiles, so adjustment grades are
+   * source FBO into the CURRENT framebuffer via the shared per-layer program,
+   * which is the exact GLSL the per-clip path compiles, so adjustment grades are
    * pixel-identical to clip grades. UVs are v-flipped: FBO memory is
    * bottom-row-first while image textures are top-row-first.
    */
@@ -1127,7 +1127,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     gl.uniform1f(lp.uOpacity, clamp01(opacity))
     gl.uniform4f(lp.uUVRect, 0, 0, 1, 1)
     if (lp.uSeed) gl.uniform1f(lp.uSeed, frameSeed)
-    // Bind the stack's effect params — locations were resolved against THIS
+    // Bind the stack's effect params. Locations were resolved against THIS
     // program, so index i lines up with pointwise[i] by construction.
     pointwise.forEach((fx, i) => {
       const locs = lp.fx[i]
@@ -1151,7 +1151,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
   /**
    * Apply an adjustment op to the accumulated frame: pointwise chain into a
    * work FBO, neighborhood passes over it, then the processed frame composites
-   * OVER the original through mask + opacity — masked-out pixels keep the
+   * OVER the original through mask + opacity: masked-out pixels keep the
    * untouched original, and opacity fades the whole grade.
    */
   function applyAdjustment(
@@ -1196,7 +1196,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     for (const op of frame.ops) {
       if (op.type === 'layer') {
         const source = tex(op.layer)
-        if (!source) continue // still decoding — skip, never throw
+        if (!source) continue // still decoding. Skip, never throw
         compositeLayer(op.layer, source, frameW, frameH, targetFb, pool[2], pool[3])
       } else if (op.type === 'transition') {
         drawTransition(op, tex, frameW, frameH, targetFb)

@@ -1,5 +1,5 @@
 // The collab undo guarantee: in a room, undo reverts ONLY your own last
-// command — edits other people made since (which plain snapshot-undo would
+// command. Edits other people made since (which plain snapshot-undo would
 // silently wipe) survive. Exercises the real store + the real rebase.
 
 import { beforeEach, describe, expect, it } from 'vitest'
@@ -88,7 +88,7 @@ describe('rebasedHistoryStep', () => {
 
   it('does NOT drag project meta along: a clip undo leaves a remote rename/settings change alone', () => {
     const store = useStore.getState()
-    // My clip edit (meta.updatedAt bumps — the trap).
+    // My clip edit (meta.updatedAt bumps, which is the trap).
     store.dispatch('Move clip', (p) => {
       const next = structuredClone(p)
       videoClips(next).find((c) => c.id === 'c1')!.startS = 5
@@ -125,7 +125,7 @@ describe('rebasedHistoryStep', () => {
     })
     // …then a room adoption swaps in a different project id. applyRemoteProject
     // clears history on id change; simulate a stale command surviving anyway by
-    // re-pushing after adoption is not possible via public API — so instead
+    // re-pushing after adoption is not possible via public API, so instead
     // verify the id-change clears the stack outright.
     const room = seedProject()
     room.id = 'room-project-id'
@@ -148,7 +148,7 @@ describe('rebasedHistoryStep', () => {
     useStore.getState().applyRemoteProject(remote)
 
     useStore.getState().undo() // the OLD behavior
-    // The snapshot restore erased the remote clip — the bug the rebase fixes.
+    // The snapshot restore erased the remote clip: the bug the rebase fixes.
     expect(videoClips(useStore.getState().project).some((c) => c.id === 'c2')).toBe(false)
   })
 })

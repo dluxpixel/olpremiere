@@ -30,7 +30,7 @@ function isOutOfRoom(err: unknown): boolean {
   return err instanceof Error && /quota/i.test(err.message)
 }
 
-/** Live import progress — `total: 0` means nothing is importing. */
+/** Live import progress. `total: 0` means nothing is importing. */
 export const useImportProgress = create<{ total: number; done: number; name: string }>(() => ({
   total: 0,
   done: 0,
@@ -43,7 +43,7 @@ export async function importFiles(files: File[]): Promise<void> {
   const failed: string[] = []
   const outOfRoom: string[] = []
   // Probing + copying every file's bytes into IndexedDB takes real time on
-  // multi-GB captures, and until now the app showed NOTHING while it happened —
+  // multi-GB captures, and until now the app showed NOTHING while it happened:
   // the drop overlay vanished on release and the panel sat on "Import media to
   // begin". Indistinguishable from a crash, so people drop the file again.
   useImportProgress.setState({ total: files.length, done: 0, name: files[0]?.name ?? '' })
@@ -85,12 +85,12 @@ export async function importFiles(files: File[]): Promise<void> {
   } finally {
     useImportProgress.setState({ total: 0, done: 0, name: '' })
   }
-  // ONE summary toast per failure KIND — never one per file (folder-drop flood).
+  // ONE summary toast per failure KIND, never one per file (folder-drop flood).
   if (outOfRoom.length > 0) {
     show(
       outOfRoom.length === 1
-        ? `No room left for ${outOfRoom[0]} — delete an old project to free space`
-        : `No room left for ${outOfRoom.length} files — delete an old project to free space`,
+        ? `No room left for ${outOfRoom[0]}. Delete an old project to free space`
+        : `No room left for ${outOfRoom.length} files. Delete an old project to free space`,
       'danger',
     )
   }
@@ -139,7 +139,7 @@ export function deleteAsset(assetId: Id): void {
   // Drop any selection that pointed at now-removed clips.
   if (ui.selection.length > 0) setUI({ selection: [] })
   // Bin delete also nukes every clip referencing the asset across ALL sequences,
-  // which the user may not expect — so the toast carries a one-click Undo.
+  // which the user may not expect, so the toast carries a one-click Undo.
   useToasts.getState().show(`Removed ${asset.name}`, 'info', {
     label: 'Undo',
     // Routed: in a room a plain snapshot undo would wipe every edit peers made
@@ -154,7 +154,7 @@ export function insertAssetAtPlayhead(assetId: Id): void {
   const asset = project.assets[assetId]
   if (!asset) return
   // A fresh insert lands UNSELECTED. Selecting the video half made the very next
-  // edit read as "I singled this one out" — so trimming the head of a clip you
+  // edit read as "I singled this one out". Trimming the head of a clip you
   // just dropped in shortened the picture and left the audio at full length. The
   // link is meant to hold until you deliberately pick one half. Dropping an asset
   // from the bin onto the timeline already worked this way; this matches it.

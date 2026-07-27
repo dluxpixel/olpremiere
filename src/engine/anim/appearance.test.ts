@@ -229,7 +229,7 @@ describe('retimeAppearance', () => {
   const faded = (): Clip =>
     applyAppearanceToClip(newTitleClip(defaultTitleDef('Hi'), 0, 5), { out: 'fadeOut', durS: 0.5 }, W, H)
 
-  it('follows a LONGER clip — the stranded-exit bug', () => {
+  it('follows a LONGER clip (the stranded-exit bug)', () => {
     const clip = faded()
     const longer: Clip = { ...clip, outS: 8 } // out edge dragged 5s -> 8s
 

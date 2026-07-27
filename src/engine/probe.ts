@@ -16,7 +16,7 @@ const WAIT_MS = 10_000
 const THUMB_W = 320
 const THUMB_H = 180
 
-/** Wait for any of `events`, rejecting on 'error' or after 10s — corrupt files must not hang import. */
+/** Wait for any of `events`, rejecting on 'error' or after 10s: corrupt files must not hang import. */
 function waitForEvent(target: EventTarget, events: string[], what: string): Promise<void> {
   return new Promise((resolve, reject) => {
     let timer = 0

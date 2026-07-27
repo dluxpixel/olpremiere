@@ -147,11 +147,11 @@ test('dragging an effect from the browser onto a clip applies it', async ({ page
 
 test('right-click an effect → Apply to every clip hits them all, in one undo', async ({ page }) => {
   await addClip(page)
-  // A second clip on the timeline, and NOTHING selected — "every clip" must not
+  // A second clip on the timeline, and NOTHING selected: "every clip" must not
   // depend on a selection.
   await page.getByTestId('asset-card').dblclick()
   await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(2)
-  // Video-track clips only — the imported webm carries linked audio, and a
+  // Video-track clips only, because the imported webm carries linked audio, and a
   // visual effect deliberately never lands on an audio clip.
   const ids = await page.evaluate(async () => {
     // Same indirection as the helpers above: a literal specifier would make tsc
@@ -209,7 +209,7 @@ test('dragging a transition onto a clip picks the edge nearest the cursor', asyn
 })
 
 test('right-click a transition → Apply to clip start sets the in edge explicitly', async ({ page }) => {
-  // addClip leaves the clip selected — the menu items need a single selection.
+  // addClip leaves the clip selected, and the menu items need a single selection.
   const clipId = await addClip(page)
   await page.getByRole('tab', { name: 'Effects' }).click()
 
@@ -280,7 +280,7 @@ test('White Flash: drop on the in edge → opens near-white, resolves to footage
   const flash = await previewPixel(page, 0.5, 0.5)
 
   // Well past the 200 ms window the white must have fully resolved into
-  // footage — a clearly different frame from the flash.
+  // footage, a clearly different frame from the flash.
   await setPlayhead(1)
   await expect
     .poll(
@@ -440,7 +440,7 @@ test('disabling an effect restores the original pixels; re-enabling grades again
 // --- Transitions you can SEE and REACH --------------------------------------
 // Timeline.tsx never read transitionIn/Out, so nothing was drawn on the clip:
 // there was no way to tell which cuts already had a transition. And the only
-// way to add one to video was dragging from the Effects browser — audio had a
+// way to add one to video was dragging from the Effects browser. Audio had a
 // one-click "Crossfade with previous", video had nothing.
 
 test('a transition is drawn on the clip, at its own width', async ({ page }) => {
@@ -459,7 +459,7 @@ test('a transition is drawn on the clip, at its own width', async ({ page }) => 
   await expect(page.getByTestId('transition-out-mark')).toHaveCount(0)
   const narrow = await page.getByTestId('transition-in-mark').locator('rect').getAttribute('width')
 
-  // A longer transition draws a wider mark — it reports the DURATION, not just
+  // A longer transition draws a wider mark: it reports the DURATION, not just
   // that something is there.
   await page.evaluate(async (id) => {
     const editsMod = '/src/state/clipEdits.ts'

@@ -50,7 +50,7 @@ function Channel({
 /**
  * Master L/R level meter. Reads the persistent analyser chain each frame and
  * drives bars imperatively (no React re-render). The rAF is gated on
- * ui.playing — parked and zeroed while idle — and lives in its OWN column so
+ * ui.playing (parked and zeroed while idle) and lives in its OWN column so
  * it never occludes video.
  */
 export function MasterMeter() {
@@ -142,7 +142,7 @@ export function MasterMeter() {
       title="Master level (click to clear clip)"
       onClick={clearClips}
     >
-      {/* dB tick gutter, rendered once — zero per-frame cost. */}
+      {/* dB tick gutter, rendered once for zero per-frame cost. */}
       <div className="relative w-6 shrink-0 text-[8px] leading-none text-text-muted">
         {TICKS.map((t) => (
           <span

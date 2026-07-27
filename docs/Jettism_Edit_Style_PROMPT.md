@@ -1,18 +1,18 @@
-# OL Premiere × Jettism — Build & Workflow Spec
+# OL Premiere × Jettism: Build & Workflow Spec
 
-*Rewritten after reading your actual editor source (`ol-premiere-source.zip` on your desktop — internal name "OL Premiere", a TypeScript/Vite/React + WebGL editor, self-scored 85/100).*
+*Rewritten after reading your actual editor source (`ol-premiere-source.zip` on your desktop; internal name "OL Premiere", a TypeScript/Vite/React + WebGL editor, self-scored 85/100).*
 *This replaces the generic style prompt: it maps the Jettism style onto what OL Premiere already does, what it's missing, and how to close the gap.*
 
 > **Repo reality check (added 2026-07-13 when committing, code has moved past the zip this spec read):**
-> - **Backlog item 1 (title stroke/outline) is DONE** — `TitleDef.outline {color, widthPx}` renders via
+> - **Backlog item 1 (title stroke/outline) is DONE**: `TitleDef.outline {color, widthPx}` renders via
 >   `strokeText` in `titleRaster.ts`, editable in the Inspector, preview==export e2e'd (commit `71bd01a`).
 >   The white-with-black-outline look works today.
-> - **The Effects tab is NOT a stub anymore** — effect registry + browser + drag-to-clip shipped in the
+> - **The Effects tab is NOT a stub anymore.** Effect registry + browser + drag-to-clip shipped in the
 >   perfect-build P1; §B-6's "finish the stub" is stale, only the template-preset half of item 6 remains.
 > - Titles also gained **entrance/exit pop animations** (appearance presets incl. a Bounce with the exact
->   0.7→1.1→1.0 shape item 4 asks for) — per-CLIP, not yet per-word, so item 4 becomes "apply the existing
->   preset per caption chunk".
-> - Still genuinely missing, confirmed: **transcription/word-timing (items 2–3), SFX library (5),
+>   0.7→1.1→1.0 shape item 4 asks for). Those are per-CLIP, not yet per-word, so item 4 becomes "apply
+>   the existing preset per caption chunk".
+> - Still genuinely missing, confirmed: **transcription/word-timing (items 2 and 3), SFX library (5),
 >   template preset (6), auto-duck (7), beat detection (8).** The effective backlog starts at item 2.
 
 ---
@@ -21,7 +21,7 @@
 
 Your editor is **way more capable than it needs to be** for this style. Timeline, 9:16 export, keyframed transform (zoom), color grade, audio mixer, and an **in-app voice recorder** are all already built and tested. You are **~80% of the way** to one-click Jettism edits.
 
-**The missing 20% is one subsystem: captions.** Jettism's #1 signature element — auto, word-by-word, white-with-black-outline, pop-in captions synced to the voiceover — **does not exist in your code** (no transcription, no word timing, no text stroke). That's the thing worth building. Almost everything else is a preset or a small addition, not new architecture.
+**The missing 20% is one subsystem: captions.** Jettism's #1 signature element (auto, word-by-word, white-with-black-outline, pop-in captions synced to the voiceover) **does not exist in your code** (no transcription, no word timing, no text stroke). That's the thing worth building. Almost everything else is a preset or a small addition, not new architecture.
 
 ---
 
@@ -40,11 +40,11 @@ Your editor is **way more capable than it needs to be** for this style. Timeline
 | Basic on-screen text (font, size, color, bold, shadow, bg box) | ✅ Have (basic) | `TitleDef` in `engine/types.ts`, `render/titleRaster.ts`, `TitleControls.tsx` |
 | Save/apply a "look" as a preset | ✅ Have (color only) | `engine/effects/presets.ts`, `state/library.ts` |
 
-**Translation:** you can already cut a Jettism-style Short today — record VO, layer facecam over gameplay, keyframe zoom punches, grade it punchy, mix audio, export 9:16. The part that's painful today is the captions.
+**Translation:** you can already cut a Jettism-style Short today. Record VO, layer facecam over gameplay, keyframe zoom punches, grade it punchy, mix audio, export 9:16. The part that's painful today is the captions.
 
 ---
 
-## B. What it NEEDS — ranked by impact on this style
+## B. What it NEEDS, ranked by impact on this style
 
 ### 🔴 1. Auto-captions with word-level timing  *(the one that matters)*
 **Gap:** no transcription anywhere in `src` (grep for transcribe/speech/whisper/subtitle/karaoke = empty). Captions are the defining Jettism element and there's no path to them except typing titles by hand.
@@ -53,8 +53,8 @@ Your editor is **way more capable than it needs to be** for this style. Timeline
 - Output feeds the caption renderer below.
 
 ### 🔴 2. Word-by-word caption rendering
-**Gap:** a title is one static text block for its whole duration (`newTitleClip`). Jettism shows **1–3 words at a time**. Doing that today = one title clip per word by hand = unusable.
-**Build:** a new caption clip type (or extend `TitleDef`) that holds a **word list with per-word times** and renders only the active chunk at each frame. Group words into 1–3-word chunks. Render in `render/titleRaster.ts`.
+**Gap:** a title is one static text block for its whole duration (`newTitleClip`). Jettism shows **1 to 3 words at a time**. Doing that today = one title clip per word by hand = unusable.
+**Build:** a new caption clip type (or extend `TitleDef`) that holds a **word list with per-word times** and renders only the active chunk at each frame. Group words into chunks of 1 to 3 words. Render in `render/titleRaster.ts`.
 
 ### 🔴 3. Text stroke / outline on titles
 **Gap:** `TitleDef` has `shadow` (soft) and `box` (bg rectangle) but **no stroke** (`titleRaster.ts` has no `strokeText`/`lineWidth`). The white-text-with-thick-black-outline look is impossible cleanly right now.
@@ -62,7 +62,7 @@ Your editor is **way more capable than it needs to be** for this style. Timeline
 
 ### 🟠 4. Caption pop-in animation + keyword color
 **Gap:** titles don't animate except via manual transform keyframes; no per-word color.
-**Build:** a built-in caption animation (scale **70 % → 110 % → 100 %** over ~4 frames on each new chunk — reuse the existing keyframe/`transform` machinery as a preset) and an emphasis color (blue `#3B7DFF` / yellow `#FFD400`) you can toggle per word.
+**Build:** a built-in caption animation (scale **70 % → 110 % → 100 %** over ~4 frames on each new chunk; reuse the existing keyframe/`transform` machinery as a preset) and an emphasis color (blue `#3B7DFF` / yellow `#FFD400`) you can toggle per word.
 
 ### 🟠 5. SFX library (one-click stingers)
 **Gap:** no sound library (grep sfx/sound-effect = empty). You'd import hitmarker/vine-boom/whoosh/Minecraft sounds by hand every time.
@@ -84,7 +84,7 @@ Your editor is **way more capable than it needs to be** for this style. Timeline
 
 ---
 
-## C. The rewritten workflow — "Cut a Jettism Short in OL Premiere"
+## C. The rewritten workflow: "Cut a Jettism Short in OL Premiere"
 
 **Today (with current features):**
 1. Import gameplay + facecam. Put facecam on the top track, scale/position it to the top ~30 % with the monitor gizmo (`transform`).
@@ -97,7 +97,7 @@ Your editor is **way more capable than it needs to be** for this style. Timeline
 8. Export 9:16 H.264.
 
 **After you build B-1→B-4 (target):**
-1–5 same, then: click **Auto-Caption** → it transcribes the VO, lays down word-by-word caption clips (white + black outline, pop-in, keyword color) synced automatically. Tweak emphasis words, done. That single button is the whole game.
+Steps 1 to 5 stay the same, then: click **Auto-Caption** → it transcribes the VO, lays down word-by-word caption clips (white + black outline, pop-in, keyword color) synced automatically. Tweak emphasis words, done. That single button is the whole game.
 
 ---
 
@@ -121,7 +121,7 @@ Your editor is **way more capable than it needs to be** for this style. Timeline
 7. [S] Music auto-duck under VO in engine/export/audioMix.ts.
 8. [S] Optional: beat/onset detect → auto scale-punch keyframes.
 ```
-`[S]=small [M]=medium [L]=large`. Item 1 alone makes your captions *look* right; items 1–4 make them *automatic*.
+`[S]=small [M]=medium [L]=large`. Item 1 alone makes your captions *look* right; items 1 through 4 make them *automatic*.
 
 ---
 
@@ -147,11 +147,11 @@ Keep these as the defaults your new caption system produces:
 }
 ```
 
-**Structure per clip (unchanged):** Hook (0–2s) → Setup (2–8s) → Bait (8–15s) → Payoff (15–25s, biggest zoom+SFX+music) → Button (loop back). See `Jettism_Channel_Playbook.md` for the strategy behind it.
+**Structure per clip (unchanged):** Hook (0 to 2s) → Setup (2 to 8s) → Bait (8 to 15s) → Payoff (15 to 25s, biggest zoom+SFX+music) → Button (loop back). See `Jettism_Channel_Playbook.md` for the strategy behind it.
 
 ---
 
 ### Accuracy notes
 - "Have" rows were verified against the actual source (types, engine, components) and the project's own `scorecard.json`.
 - The three 🔴 gaps were confirmed by grep returning **no** transcription/word-timing/stroke code.
-- Exact font/SFX/LUFS numbers are genre-standard targets to tune by ear/eye — your scorecard already flags audio + design polish as "ear/eye-gated," which is the right instinct.
+- Exact font/SFX/LUFS numbers are genre-standard targets to tune by ear/eye. Your scorecard already flags audio + design polish as "ear/eye-gated," which is the right instinct.

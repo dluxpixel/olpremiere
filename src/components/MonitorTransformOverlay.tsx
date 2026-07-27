@@ -228,8 +228,8 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
       clip?.keyframes?.scale?.length ||
       clip?.keyframes?.rotation?.length
     )
-  // With auto-keyframe on, a STILL clip takes the keyframe path too — that is
-  // the mode: a drag animates the clip from where it was instead of moving it.
+  // With auto-keyframe on, a STILL clip takes the keyframe path too, because that
+  // is the mode: a drag animates the clip from where it was instead of moving it.
   // Read at COMMIT time, not as a hook: this component early-returns above, so a
   // hook here runs conditionally and React tears the whole tree down.
   const keyframeOnDrag = (): boolean =>

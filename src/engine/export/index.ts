@@ -86,7 +86,7 @@ export async function exportSequence(
   onProgress({ phase: 'audio', framesDone: 0, framesTotal })
   // Two-phase: the plan resolves whether audio exists (and its shape) up
   // front; the PCM itself renders in bounded segments AFTER the worker starts,
-  // streamed as `audioSegment` messages — a long export never holds its whole
+  // streamed as `audioSegment` messages, so a long export never holds its whole
   // mix in memory on either side.
   const audioPlan = await planAudioMix(sequence, project.assets, settings.startS, settings.endS)
   if (signal.aborted) throw abortError()

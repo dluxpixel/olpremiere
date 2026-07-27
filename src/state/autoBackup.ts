@@ -45,7 +45,7 @@ export interface BackupFile {
  * Nothing needs stripping: an asset record holds only metadata and `blobKey` /
  * `thumbnailKey`, which are POINTERS into local storage, never the bytes. So the
  * document is already small and already media-free, and the whole project
- * serialises to tens of kilobytes. The keys are kept deliberately — after a
+ * serialises to tens of kilobytes. The keys are kept deliberately: after a
  * restore they still resolve if the media survived, and only need re-importing
  * if it did not.
  */
@@ -73,7 +73,7 @@ let timer: number | null = null
 let lastWritten = ''
 let writing = false
 
-/** True when the desktop shell is present — only it can write files unprompted. */
+/** True when the desktop shell is present, since only it can write files unprompted. */
 const canWrite = (): boolean => typeof window !== 'undefined' && !!window.api?.isElectron
 
 async function backupNow(reason: string): Promise<void> {
@@ -96,7 +96,7 @@ async function backupNow(reason: string): Promise<void> {
   } catch {
     // Disk full, permissions, folder gone: a failed backup is not worth
     // interrupting an edit over, and the next tick will try again. It stays
-    // silent by design — the loud warning belongs to the integrity check, which
+    // silent by design. The loud warning belongs to the integrity check, which
     // tells the user when their data is actually at risk.
     void reason
   } finally {
@@ -105,9 +105,9 @@ async function backupNow(reason: string): Promise<void> {
 }
 
 /**
- * Start backing up. Runs on a timer, and once more when the window is closing —
- * the close is the one that matters most, because it catches the last minutes
- * of work that the timer has not reached yet.
+ * Start backing up. Runs on a timer, and once more when the window is closing
+ * (the close is the one that matters most, because it catches the last minutes
+ * of work that the timer has not reached yet).
  */
 export function initAutoBackup(): void {
   if (!canWrite() || timer !== null) return

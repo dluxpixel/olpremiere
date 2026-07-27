@@ -17,7 +17,7 @@
 // browser deciding to reclaim space, and someone moving folders around by hand.
 //
 // So: the document is written to disk on a timer, and kept in a rotation. The
-// MEDIA is not copied — a full self-contained project is over a gigabyte, and
+// MEDIA is not copied. A full self-contained project is over a gigabyte, and
 // writing that every few minutes would be its own disaster. What is saved is the
 // edit: every clip, cut, effect, keyframe and caption, plus the name of each
 // media file it needs. That is the part that cannot be recreated. Footage can be
@@ -33,14 +33,14 @@ const KEEP = 40
 /**
  * Documents, not userData: a backup that lives inside the thing it protects is
  * not a backup. userData is exactly what gets renamed, swept, reset by a
- * reinstall, or wiped when a profile goes wrong — the folder this whole feature
+ * reinstall, or wiped when a profile goes wrong: the folder this whole feature
  * exists because of. Documents is somewhere the user can find, copy, and sync.
  */
 export function backupDir(): string {
   return path.join(app.getPath('documents'), 'OL Premiere Backups')
 }
 
-/** `2026-07-26_1743-05_my-edit.olpbak` — sorts chronologically, reads plainly. */
+/** `2026-07-26_1743-05_my-edit.olpbak`, which sorts chronologically and reads plainly. */
 function fileName(projectName: string, when: Date): string {
   const p = (n: number): string => String(n).padStart(2, '0')
   const stamp = `${when.getFullYear()}-${p(when.getMonth() + 1)}-${p(when.getDate())}_${p(when.getHours())}${p(when.getMinutes())}-${p(when.getSeconds())}`

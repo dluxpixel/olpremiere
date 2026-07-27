@@ -1,7 +1,7 @@
 // Native ffmpeg export (main process). Receives raw RGBA frames from the renderer
 // (rendered by the SAME shared WebGL pipeline as the preview), pipes them to a
 // bundled static ffmpeg over stdin, and muxes with a temp-WAV audio mix. This is
-// the "maximum quality" path — real x264/x265/NVENC/ProRes/lossless encoders the
+// the "maximum quality" path: real x264/x265/NVENC/ProRes/lossless encoders the
 // browser's WebCodecs can't reach. ffmpeg runs ONLY here, never in the renderer.
 
 import { app, dialog, type BrowserWindow } from 'electron'
@@ -31,7 +31,7 @@ let job: Job | null = null
 let pendingAudioPath: string | null = null
 
 /**
- * True while a native ffmpeg export is actually running — the auto-updater's
+ * True while a native ffmpeg export is actually running. It is the auto-updater's
  * main-side guard. The renderer's isCriticalWorkInFlight() covers the pre-spawn
  * prep phase (before `job` exists), so this tracks only the spawned process and
  * can't get wedged true (pendingAudioPath is deliberately excluded).
@@ -62,7 +62,7 @@ export function cancelSync(): void {
     try {
       unlinkSync(p)
     } catch {
-      // best effort — a killed ffmpeg may still hold the handle for a beat
+      // best effort, since a killed ffmpeg may still hold the handle for a beat
     }
   }
 }
@@ -108,7 +108,7 @@ function videoEncoderArgs(config: NativeExportConfig): string[] {
     case 'nvenc-av1':
       return ['-c:v', 'av1_nvenc', '-preset', 'p7', '-rc', 'constqp', '-qp', String(q), '-pix_fmt', 'yuv420p']
     case 'prores':
-      // ProRes 422 HQ, 10-bit 4:2:2 — an intermediate/master format.
+      // ProRes 422 HQ, 10-bit 4:2:2, an intermediate/master format.
       return ['-c:v', 'prores_ks', '-profile:v', '3', '-pix_fmt', 'yuv422p10le']
     case 'lossless':
       // Visually lossless H.264 (QP 0). Plays everywhere; huge files.
@@ -126,10 +126,10 @@ function buildArgs(config: NativeExportConfig, audioPath: string | null, outPath
   if (audioPath) args.push('-i', audioPath)
   // GL frames are bottom-origin (vflip). Convert the full-range RGBA readback to
   // limited-range BT.709 YUV EXPLICITLY rather than letting swscale pick the
-  // RGB→YUV matrix by a resolution heuristic — which could convert with BT.601
+  // RGB→YUV matrix by a resolution heuristic, which could convert with BT.601
   // while we tag BT.709. (Verified pixel-identical to the implicit path on the
   // bundled ffmpeg, so this is version/raster-drift hardening, not a visible
-  // change — the export corruption reported separately is NOT this.)
+  // change; the export corruption reported separately is NOT this.)
   args.push('-vf', 'vflip,scale=in_range=full:out_range=tv:out_color_matrix=bt709')
   args.push(...videoEncoderArgs(config))
   args.push('-map', '0:v:0')
@@ -178,7 +178,7 @@ export async function start(config: NativeExportConfig, win: BrowserWindow): Pro
       }
     }
   })
-  // stdin EPIPE if ffmpeg dies early — swallow, the close code surfaces the error.
+  // stdin EPIPE if ffmpeg dies early. Swallow it; the close code surfaces the error.
   ffmpeg.stdin.on('error', () => {})
 
   const closed = new Promise<number | null>((resolve) => ffmpeg.on('close', (code) => resolve(code)))
@@ -197,7 +197,7 @@ export function writeFrame(frame: ArrayBuffer): Promise<void> {
     if (ok) return resolve()
     // A 4K frame is ~33 MB against a 64 KB pipe, so EVERY frame parks here. If
     // ffmpeg dies while one is in flight, 'drain' never fires and the stdin
-    // 'error' above is swallowed — the promise would never settle, the worker
+    // 'error' above is swallowed, so the promise would never settle, the worker
     // would sit in waitFrameAck forever, and the export UI would freeze at N%
     // with no error. Race the drain against the process actually ending; first
     // settle wins, so the happy path is unchanged.

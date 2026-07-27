@@ -3,7 +3,7 @@
 //
 // It PULLS the current status as well as subscribing to changes. The check starts
 // in the main process the moment the app is ready, which can be before this
-// renderer has run a line of code — subscribing alone would miss that answer and
+// renderer has run a line of code, so subscribing alone would miss that answer and
 // leave the row saying "Checking…" forever, which is the exact silence that let a
 // dead update feed hide for weeks.
 
@@ -29,11 +29,11 @@ export function updateLine(status: UpdateStatus | null): string | null {
     case 'checking':
       return 'Checking for updates…'
     case 'available':
-      return `Update ${status.version} found — downloading`
+      return `Update ${status.version} found, downloading now`
     case 'downloading':
-      return `Downloading update ${status.version} — ${status.percent}%`
+      return `Downloading update ${status.version}, ${status.percent}%`
     case 'downloaded':
-      return `Update ${status.version} downloaded — restart to install`
+      return `Update ${status.version} downloaded. Restart to install`
     case 'none':
       return 'Up to date'
     case 'error':
@@ -55,7 +55,7 @@ function reportToBoot(status: UpdateStatus): void {
       bootStep.note('updates', `found ${status.version}`)
       break
     case 'downloading':
-      bootStep.note('updates', `downloading ${status.version} — ${status.percent}%`)
+      bootStep.note('updates', `downloading ${status.version}, ${status.percent}%`)
       break
     case 'downloaded':
       bootStep.finish('updates', `update ${status.version} downloaded`)

@@ -39,7 +39,7 @@ export const emptyHistory = (): History => ({ undo: [], redo: [] })
 /**
  * Push a new command: truncates redo (a new edit forks history). Consecutive
  * commands with the same merge key, arriving within MERGE_WINDOW_MS of each
- * other, fold into the previous step — keeping its `before` (so one undo goes
+ * other, fold into the previous step, keeping its `before` (so one undo goes
  * back to where the run started) and taking the newest `after`.
  */
 export function pushCommand(h: History, cmd: Command): History {

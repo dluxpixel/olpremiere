@@ -1,7 +1,7 @@
 // TWO deletes, not three: Delete is selection-scoped (the audio half of a
 // linked pair goes alone; a video clip takes its pair), Ripple delete stays.
 // The enumerated "Delete audio only (keep video)" / "Delete video only" menu
-// items are gone — this spec pins their replacement.
+// items are gone, and this spec pins their replacement.
 
 import { expect, test, type Page } from '@playwright/test'
 

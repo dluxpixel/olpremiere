@@ -31,7 +31,7 @@ describe('resizing type brings its decoration with it', () => {
     expect(back.box!.paddingPx).toBe(styled().box!.paddingPx)
   })
 
-  it('does NOT move the title — position is not a decoration', () => {
+  it('does NOT move the title, because position is not a decoration', () => {
     const out = withTitleFontSize(styled(), 240)
     expect(out.offsetXPx).toBe(30)
     expect(out.offsetYPx).toBe(-40)
@@ -70,7 +70,7 @@ describe('resizing type brings its decoration with it', () => {
 describe('decoration survives a there-and-back size change', () => {
   it('never lets a non-zero measurement round away to nothing', () => {
     // 0 is a fixed point of a multiply, so anything that rounds to 0 on the way
-    // DOWN can never come back on the way up — the shadow would be gone for good.
+    // DOWN can never come back on the way up. The shadow would be gone for good.
     const tiny = withTitleFontSize(styled({ fontSizePx: 240 }), 8)
     expect(tiny.shadow!.blurPx).toBeGreaterThanOrEqual(1)
     expect(tiny.shadow!.dy).toBeGreaterThanOrEqual(1)
@@ -82,7 +82,7 @@ describe('decoration survives a there-and-back size change', () => {
     expect(back.box!.paddingPx).toBeGreaterThan(1)
   })
 
-  it('leaves a deliberate ZERO alone — that is how "no outline" is expressed', () => {
+  it('leaves a deliberate ZERO alone: that is how "no outline" is expressed', () => {
     const none = withTitleFontSize(styled({ outline: { color: '#000', widthPx: 0 } }), 240)
     expect(none.outline!.widthPx).toBe(0)
   })

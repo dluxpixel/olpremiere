@@ -14,7 +14,7 @@ describe('checkForUpdate', () => {
     expect(checkForUpdate('0.1.9', '0.1.10')).toEqual({ kind: 'updated', from: '0.1.9', to: '0.1.10' })
   })
 
-  it('reports a rollback too — the notification must never claim a build it is not on', () => {
+  it('reports a rollback too, because the notification must never claim a build it is not on', () => {
     expect(checkForUpdate('0.2.0', '0.1.9')).toEqual({ kind: 'updated', from: '0.2.0', to: '0.1.9' })
   })
 

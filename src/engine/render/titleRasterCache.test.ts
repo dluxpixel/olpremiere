@@ -65,7 +65,7 @@ describe('title raster cache', () => {
 
   it('evicting from the bounded cache also releases the identity entry', () => {
     // The identity WeakMap is keyed by the STORE's own TitleDef objects, which
-    // live as long as the project — so an entry left behind after eviction pins
+    // live as long as the project, so an entry left behind after eviction pins
     // its canvas forever. A word-caption timeline is one title clip per word,
     // which is how a 60s caption pass used to retain ~1.2 GB of canvases.
     // Shorts-sized rasters: each is 8.3 MB, so a handful busts the budget.
@@ -81,7 +81,7 @@ describe('title raster cache', () => {
 
   it('bounds MEMORY, not a number of entries', () => {
     // The old bound was a count of 32, which is 8 MB of small rasters and
-    // 265 MB of Shorts-sized ones — the same number meaning two very different
+    // 265 MB of Shorts-sized ones: the same number meaning two very different
     // things. Small rasters may now pile up far past 32 while staying cheap.
     for (let i = 0; i < 100; i++) rasterizeTitle(defFor(`small-${i}`), W, H)
     const smallBytes = titleCacheBytes()

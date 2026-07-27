@@ -140,7 +140,7 @@ export function ContextMenu() {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') close()
     }
-    // Scroll closes the menu (it is anchored to a point that just moved) —
+    // Scroll closes the menu (it is anchored to a point that just moved),
     // EXCEPT for the scroll the opening click itself causes. A menu opened by
     // LEFT-click from a button inside a scrollable column (the track preset
     // bookmark, auto-level, audio role) focuses that button, the browser

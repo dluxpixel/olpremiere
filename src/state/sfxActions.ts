@@ -1,6 +1,6 @@
 // One-click SFX: drop a bundled stinger onto an audio track at the playhead.
 // The first use of a sound copies its bytes into the project (an ordinary
-// audio asset — the project stays self-contained); later uses reuse that
+// audio asset, so the project stays self-contained); later uses reuse that
 // asset. Asset + clip land in ONE dispatch, so undo removes both together.
 
 import { addClipFromAsset, canPlace } from '../engine/timeline'
@@ -17,7 +17,7 @@ import { useToasts } from './toasts'
  *
  * A1 is where the gameplay audio and the voiceover already live, so always
  * targeting it meant addClipFromAsset's resolveStart quietly slid the stinger to
- * the nearest gap — sometimes seconds away, past the end of the voiceover.
+ * the nearest gap, which can be seconds away, past the end of the voiceover.
  */
 function sfxTargetTrackId(atS: number, durationS: number): string | null {
   const seq = activeSequence(useStore.getState().project)
@@ -38,7 +38,7 @@ function reportDrift(clipId: string, wantedS: number, fps: number): void {
   if (Math.abs(placed.startS - wantedS) <= 1 / Math.max(1, fps)) return
   useToasts
     .getState()
-    .show(`No room at the playhead — landed at ${formatTimecode(placed.startS, fps)}`, 'info')
+    .show(`No room at the playhead, so it landed at ${formatTimecode(placed.startS, fps)}`, 'info')
 }
 
 /** Where a dropped/inserted SFX lands. Defaults to playhead + topmost track. */

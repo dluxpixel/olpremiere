@@ -75,7 +75,7 @@ describe('merge semantics (the collab guarantees)', () => {
     const clips = rebuilt.sequences[seqId].tracks.find((t) => t.id === trackId)!.clips
     expect(clips.map((c) => c.id)).toContain('mine')
     expect(clips.map((c) => c.id)).toContain('theirs')
-    // Sorted by startS — the document invariant.
+    // Sorted by startS: the document invariant.
     const starts = clips.map((c) => c.startS)
     expect([...starts].sort((a, b) => a - b)).toEqual(starts)
   })
@@ -98,8 +98,8 @@ describe('merge semantics (the collab guarantees)', () => {
 
   it('editing different clips concurrently keeps both edits', () => {
     // Model what the bridge ACTUALLY writes into the shared map: each peer
-    // writes only its own DIFF against the base, never its full snapshot —
-    // so a peer's stale copy of an untouched clip can't clobber the other's edit.
+    // writes only its own DIFF against the base, never its full snapshot, so a
+    // peer's stale copy of an untouched clip can't clobber the other's edit.
     const base = richProject()
     const baseEntities = projectToEntities(base)
     const seqId = base.activeSequenceId

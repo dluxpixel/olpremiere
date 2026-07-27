@@ -170,7 +170,7 @@ describe('identity clip', () => {
 
   it('whiteFlash on a lone in-edge emits a transition op (white → footage), not a fade ramp', () => {
     // The FIRST clip on a timeline: no neighbor, yet the intro must open on
-    // white — the lone-edge fade-from-black ramp would be wrong for this kind.
+    // white. The lone-edge fade-from-black ramp would be wrong for this kind.
     const c = clip({ startS: 0, inS: 0, outS: 2, transitionIn: { type: 'whiteFlash', durationS: 0.2 } })
     const at = (t: number) => resolveFrame(seqOf([track({ clips: [c] })]), t).ops[0]
 
@@ -186,7 +186,7 @@ describe('identity clip', () => {
     if (mid.type !== 'transition') throw new Error('not a transition')
     expect(mid.progress).toBeCloseTo(0.5, 6)
 
-    // Past the window: a plain layer at FULL opacity — no residual fade.
+    // Past the window: a plain layer at FULL opacity, no residual fade.
     const after = at(0.3)
     expect(after.type).toBe('layer')
     expect(asLayer(after).opacity).toBe(1)
@@ -262,7 +262,7 @@ describe('identity clip', () => {
 
   it('the same guard holds for a kind that RAMPS on a lone edge (dip to black)', () => {
     // Dip to black takes the ramp path, so both the transition ramp and the
-    // fade handle land on one edge — and the handle must still stand down.
+    // fade handle land on one edge, and the handle must still stand down.
     // Half way through: 0.5, not 0.25. A quadratic is exactly what this guards.
     const c = clip({
       startS: 0,
@@ -591,7 +591,7 @@ describe('adjustment layers', () => {
     expect(f.ops.every((o) => o.type !== 'adjustment')).toBe(true)
   })
 
-  it('adjustment clips never form pair transitions — the edge falls back to the lone-edge fade', () => {
+  it('adjustment clips never form pair transitions: the edge falls back to the lone-edge fade', () => {
     // Video clip butt-joined to an adjustment clip carrying an In transition:
     // a pair side built from an adjustment clip would be fully transparent.
     const a = clip({ startS: 0, inS: 0, outS: 2 })
@@ -709,7 +709,7 @@ describe('transition duration clamping', () => {
 
 describe('lone-edge transitions run their REAL form', () => {
   // A transition with no partner used to collapse to a fade-from-black opacity
-  // ramp for every kind but White Flash — so "Glitch" on the head of the first
+  // ramp for every kind but White Flash, so "Glitch" on the head of the first
   // clip drew a black fade while the Inspector still said Glitch. The absent
   // side is now a transparent copy of the layer, which the shader treats as
   // "nothing here".
@@ -722,7 +722,7 @@ describe('lone-edge transitions run their REAL form', () => {
     const op = asTransition(resolveFrame(s, 0.5).ops[0])
     expect(op.kind).toBe('crossDissolve')
     expect(op.progress).toBeCloseTo(0.25)
-    // mix(transparent, to, p) premultiplied IS to*p — the exact opacity ramp
+    // mix(transparent, to, p) premultiplied IS to*p, the exact opacity ramp
     // this replaced, so nothing about a dissolve moved.
     expect(op.from.opacity).toBe(0)
     expect(op.to.opacity).toBeCloseTo(1)
@@ -752,13 +752,13 @@ describe('lone-edge transitions run their REAL form', () => {
   // The dip shader weights its solid by the sides' coverage, so with one side
   // absent that collapsed to the clip's own alpha: a "Dip to Black" on a PIP
   // painted an opaque black RECTANGLE the shape of the PIP over the video below.
-  // A full-frame solid is not the fix either — wiping the lower tracks was its
+  // A full-frame solid is not the fix either. Wiping the lower tracks was its
   // own bug. Ramping the clip's opacity is correct on both tracks at once.
   it('a lone-edge Dip to Black ramps opacity instead of painting a box', () => {
     const c = clip({ startS: 0, inS: 0, outS: 4, transitionIn: { type: 'dipToBlack', durationS: 2 } })
     const s = seqOf([track({ clips: [c] })])
 
-    // No transition op at all — it is an ordinary layer whose opacity ramps.
+    // No transition op at all: it is an ordinary layer whose opacity ramps.
     const op = resolveFrame(s, 1).ops[0]
     expect(op.type).toBe('layer')
     expect(asLayer(op).opacity).toBeCloseTo(0.5, 6)
@@ -773,7 +773,7 @@ describe('lone-edge transitions run their REAL form', () => {
     expect(asLayer(op).opacity).toBeCloseTo(0.5, 6)
   })
 
-  it('but Dip to WHITE keeps its solid — fading opacity would reveal black, not white', () => {
+  it('but Dip to WHITE keeps its solid: fading opacity would reveal black, not white', () => {
     const c = clip({ startS: 0, inS: 0, outS: 4, transitionIn: { type: 'dipToWhite', durationS: 2 } })
     const s = seqOf([track({ clips: [c] })])
 
@@ -841,7 +841,7 @@ describe('lone-edge transitions run their REAL form', () => {
     }
   })
 
-  it('an adjustment layer keeps the opacity ramp — it has no texture to transition', () => {
+  it('an adjustment layer keeps the opacity ramp, since it has no texture to transition', () => {
     const c = clip({
       startS: 0,
       outS: 4,
@@ -892,7 +892,7 @@ describe('precedence', () => {
     const a = clip({ startS: 0, outS: 2 })
     const b = clip({ startS: 2, outS: 4, transitionIn: { type: 'crossDissolve', durationS: 1 } })
     const s = seqOf([track({ clips: [a, b] })])
-    // Just past the window (t=3.5) B is plain at full opacity — no residual fade.
+    // Just past the window (t=3.5) B is plain at full opacity. No residual fade.
     expect(asLayer(resolveFrame(s, 3.5).ops[0]).opacity).toBe(1)
   })
 })
@@ -900,7 +900,7 @@ describe('precedence', () => {
 describe('overlapping lone-edge windows on a short clip', () => {
   // Both windows clamp to the clip's own length independently, so on a clip
   // shorter than in + out they overlap. The in-edge used to return first and
-  // silence the exit AND the fades for that whole span — a visible pop mid-clip
+  // silence the exit AND the fades for that whole span, giving a visible pop mid-clip
   // on any clip under 0.8s, which is every word caption.
   it('the OUT edge still runs on a clip shorter than both windows', () => {
     const c = clip({
@@ -911,7 +911,7 @@ describe('overlapping lone-edge windows on a short clip', () => {
       transitionOut: { type: 'crossDissolve', durationS: 0.4 },
     })
     const s = seqOf([track({ clips: [c] })], { fps: 30 })
-    // Inside the overlap, the OUT edge owns the frame — the clip is on its way
+    // Inside the overlap, the OUT edge owns the frame: the clip is on its way
     // out, not on its way in.
     const op = asTransition(resolveFrame(s, 0.4).ops[0])
     expect(op.from.opacity).toBeCloseTo(1) // the clip

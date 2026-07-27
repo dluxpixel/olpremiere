@@ -120,7 +120,7 @@ test('a reduced preview quality still paints the picture during PLAYBACK', async
   // The live path used to hand the pooled <video> straight to the renderer, so
   // it uploaded at the SOURCE's native size every frame and the quality tiers
   // did nothing for playback (only for scrubbing). It now draws down to the
-  // same cap the frame cache uses — this proves that path still renders.
+  // same cap the frame cache uses, and this proves that path still renders.
   await page.goto('/')
   await page.getByTestId('media-file-input').setInputFiles('e2e/.fixtures/clip.webm')
   await expect(page.getByTestId('asset-card')).toBeVisible({ timeout: 15_000 })
@@ -128,7 +128,7 @@ test('a reduced preview quality still paints the picture during PLAYBACK', async
   await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
 
   // Quarter caps at 270px tall, below the 320x180 fixture's own height once the
-  // sequence raster is taken into account — so the downscale path engages.
+  // sequence raster is taken into account, so the downscale path engages.
   await page.getByLabel('Preview quality').selectOption('0.25')
   await page.keyboard.press('Space')
   await expect

@@ -100,7 +100,7 @@ function buildAppBindings(): Binding[] {
             () =>
               useToasts
                 .getState()
-                .show('Could not save — your work is only in memory', 'danger'),
+                .show('Could not save. Your work is only in memory', 'danger'),
           )
         },
       },
@@ -245,7 +245,7 @@ export default function App() {
   useEffect(
     () =>
       olApi?.onUpdateReady?.((version) =>
-        useToasts.getState().show(`Update ${version} is ready — restart to install`, 'success', {
+        useToasts.getState().show(`Update ${version} is ready. Restart to install`, 'success', {
           label: 'Restart',
           onClick: () => olApi?.restartToUpdate?.(),
         }),
@@ -253,7 +253,7 @@ export default function App() {
     [],
   )
 
-  // Desktop auto-apply: main asks us to install a fresh-launch update. WE decide —
+  // Desktop auto-apply: main asks us to install a fresh-launch update. WE decide.
   // NEVER restart through an in-flight export or other critical work (that would
   // truncate the render + lose it); in that case defer to the manual restart toast.
   // Otherwise flush a save first so no edit is lost, then relaunch into the new
@@ -262,7 +262,7 @@ export default function App() {
     () =>
       olApi?.onAutoApplyUpdate?.((version) => {
         if (isCriticalWorkInFlight()) {
-          useToasts.getState().show(`Update ${version} is ready — restart to install`, 'success', {
+          useToasts.getState().show(`Update ${version} is ready. Restart to install`, 'success', {
             label: 'Restart',
             onClick: () => olApi?.restartToUpdate?.(),
           })
@@ -270,12 +270,12 @@ export default function App() {
         }
         useToasts.getState().show(`Updating to v${version}…`, 'info')
         // Restart ONLY if the flush actually landed. Relaunching after a failed
-        // save destroys every edit since the last successful write — the update
+        // save destroys every edit since the last successful write, and the update
         // can wait for a restart the user chooses.
         void saveNow().then(
           () => olApi?.restartToUpdate?.(),
           () =>
-            useToasts.getState().show(`Could not save — update ${version} deferred`, 'danger', {
+            useToasts.getState().show(`Could not save, so update ${version} is deferred`, 'danger', {
               label: 'Restart anyway',
               onClick: () => olApi?.restartToUpdate?.(),
             }),
@@ -285,7 +285,7 @@ export default function App() {
   )
 
   // Update CHECK failures must be visible. Swallowing them into console.error is
-  // indistinguishable from "you're up to date" — which is exactly how an
+  // indistinguishable from "you're up to date", which is exactly how an
   // unreachable release feed (404) hid for weeks while the app silently never
   // updated. If the check can't run, the user gets told.
   useEffect(
@@ -293,7 +293,7 @@ export default function App() {
       olApi?.onUpdateError?.((message) =>
         useToasts
           .getState()
-          .show(`Update check failed — you may not be on the newest version. ${message}`, 'danger', undefined, {
+          .show(`Update check failed. You may not be on the newest version. ${message}`, 'danger', undefined, {
             durationMs: 12_000,
           }),
       ),
@@ -301,7 +301,7 @@ export default function App() {
   )
 
   // On the FIRST launch after an auto-update, tell the user plainly that they're
-  // now on the new build — the piece that was missing, so an update no longer
+  // now on the new build: the piece that was missing, so an update no longer
   // installs invisibly. The always-on version tag in the top bar is the passive
   // half; this toast is the active "it just happened" half. Runs once, on mount.
   useEffect(() => {
@@ -309,20 +309,20 @@ export default function App() {
     try {
       lastSeen = localStorage.getItem(LAST_SEEN_VERSION_KEY)
     } catch {
-      return // storage blocked — skip silently rather than risk a bad first paint
+      return // storage blocked, so skip silently rather than risk a bad first paint
     }
     const result = checkForUpdate(lastSeen, APP_VERSION)
     if (result.kind === 'updated') {
       useToasts
         .getState()
-        .show(`🎉 Updated to v${result.to} — you're on the newest version`, 'success', undefined, {
+        .show(`🎉 Updated to v${result.to}. You're on the newest version`, 'success', undefined, {
           durationMs: 12_000,
         })
     }
     try {
       if (result.kind !== 'unchanged') localStorage.setItem(LAST_SEEN_VERSION_KEY, APP_VERSION)
     } catch {
-      // ignore storage failures — the toast already fired
+      // ignore storage failures; the toast already fired
     }
   }, [])
 

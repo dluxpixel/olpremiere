@@ -13,7 +13,7 @@ export type UpdateCheck =
   | { kind: 'first-run'; version: string }
   /** Re-opened the same version: no change. */
   | { kind: 'unchanged'; version: string }
-  /** The version changed since last launch — the app was updated. */
+  /** The version changed since last launch, so the app was updated. */
   | { kind: 'updated'; from: string; to: string }
 
 /**
@@ -21,9 +21,9 @@ export type UpdateCheck =
  * stored last-seen version and the current one. Pure: the caller owns reading
  * `lastSeen` and persisting `current` afterward.
  *
- * A version is only "updated" when it actually DIFFERS from a real prior value —
+ * A version is only "updated" when it actually DIFFERS from a real prior value:
  * a first-ever run (no stored value) is never announced, and re-opening the same
- * build is silent. Any change (up or down — a rollback still counts) is reported,
+ * build is silent. Any change (up or down, since a rollback still counts) is reported,
  * so the notification never lies about the running build.
  */
 export function checkForUpdate(lastSeen: string | null, current: string): UpdateCheck {

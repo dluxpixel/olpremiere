@@ -56,7 +56,7 @@ export function addTitleClip(text = 'Title'): void {
 
 /**
  * Add an ADJUSTMENT layer at the playhead on the topmost unlocked video track
- * (same placement rule as titles — it must sit ABOVE the footage it grades).
+ * (same placement rule as titles, since it must sit ABOVE the footage it grades).
  * Effects added to it in the Inspector apply to everything below its span.
  */
 export function addAdjustmentClip(): void {
@@ -86,8 +86,8 @@ export function addAdjustmentClip(): void {
 /**
  * Patch the selected title clip's definition (one undo step per change).
  *
- * `mergeField` names a field being edited CONTINUOUSLY — typing into the text
- * box, dragging a slider — so the run folds into a single undo step instead of
+ * `mergeField` names a field being edited CONTINUOUSLY (typing into the text
+ * box, dragging a slider) so the run folds into a single undo step instead of
  * one step per keystroke. Without it a typed sentence cost thirty undo steps and
  * a couple of paragraphs pushed the whole session off the end of the history.
  */
@@ -141,7 +141,7 @@ export function setTitlesFontSize(ids: Iterable<string>, fontSizePx: number): vo
 }
 
 /**
- * Patch the SAME field(s) on every selected title clip in ONE undo step —
+ * Patch the SAME field(s) on every selected title clip in ONE undo step:
  * bold/italic, family, size, colour across a whole multi-selection. Non-title
  * clips and locked tracks are skipped; nothing changing records no undo step.
  */

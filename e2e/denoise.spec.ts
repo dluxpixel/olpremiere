@@ -143,8 +143,8 @@ test('the Inspector toggle writes the clip, the resolver swaps samples, and undo
   expect(swap.diffFrac).toBeGreaterThan(0.5) // most samples actually changed
 
   // Undo walks the edits back off. The exact step count depends on how many
-  // commits the ScrubField interaction produced (dblclick/blur can add one) —
-  // the one-dispatch-one-step contract is pinned in clipEdits' unit tests;
+  // commits the ScrubField interaction produced (dblclick/blur can add one).
+  // The one-dispatch-one-step contract is pinned in clipEdits' unit tests;
   // here the claim is that undo RESTORES the raw-audio state.
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur?.())
   for (let i = 0; i < 4 && (await readDenoise()) !== null; i++) {

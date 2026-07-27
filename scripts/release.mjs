@@ -20,7 +20,7 @@ process.env.GH_TOKEN = token // so the build/publish subprocesses inherit it
 const version = JSON.parse(readFileSync('package.json', 'utf8')).version
 console.log(`\n▶ Releasing OL Premiere v${version}\n`)
 
-// Build the installer + blockmap (no electron-builder publish — publish.mjs owns
+// Build the installer + blockmap (no electron-builder publish, since publish.mjs owns
 // the upload so a transient network blip can't leave a half-published release).
 execSync('npm run build:electron', { stdio: 'inherit', env: process.env })
 execSync(`npx electron-builder --win --publish never -c.directories.output=${OUT}`, { stdio: 'inherit', env: process.env })

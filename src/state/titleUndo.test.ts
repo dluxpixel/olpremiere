@@ -87,7 +87,7 @@ describe('typing into a title', () => {
     expect(undoDepth()).toBe(afterA + 1)
   })
 
-  it('leaves discrete edits alone — they stay one step each', () => {
+  it('leaves discrete edits alone, so they stay one step each', () => {
     const clip = seedTitle('Hi')
     const base = undoDepth()
     updateTitle(clip.id, { bold: true })

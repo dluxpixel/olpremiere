@@ -17,11 +17,11 @@ export function losslessBitrate(width: number, height: number, fps: number): num
  * A YouTube-tuned upload bitrate: roughly DOUBLE YouTube's own recommended SDR
  * upload numbers, so their re-encode (VP9/AV1) has clean headroom and the result
  * isn't mushy. ~0.28 bits/pixel/frame lands near 2× their table across
- * resolutions — e.g. 1080p30 ≈ 17 Mbps (their rec is 8), 1440p30 ≈ 31 Mbps
- * (16), 2160p30 ≈ 70 Mbps (35–45). A browser export is IPPP (no B-frames), so
- * the extra bitrate also offsets that ~5–10% efficiency gap. The floor scales
- * with the raster (2 Mbps minimum — a flat 12 Mbps floor made an SD export
- * larger than the explicit Low preset); ceiled so 8K/high-fps stays sane.
+ * resolutions, e.g. 1080p30 ≈ 17 Mbps (their rec is 8), 1440p30 ≈ 31 Mbps
+ * (16), 2160p30 ≈ 70 Mbps (35 to 45). A browser export is IPPP (no B-frames),
+ * so the extra bitrate also offsets that ~5 to 10% efficiency gap. The floor
+ * scales with the raster (2 Mbps minimum: a flat 12 Mbps floor made an SD
+ * export larger than the explicit Low preset); ceiled so 8K/high-fps stays sane.
  */
 export function youtubeBitrate(width: number, height: number, fps: number): number {
   const BITS_PER_PIXEL = 0.28

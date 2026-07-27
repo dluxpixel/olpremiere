@@ -10,7 +10,7 @@ const MIN_BUCKETS = 200
 const MAX_BUCKETS = 16000
 
 /**
- * Abs-peak amplitude (0..1) per bucket over a mono sample array. Pure — the
+ * Abs-peak amplitude (0..1) per bucket over a mono sample array. Pure, and the
  * unit-testable core. The last bucket absorbs any remainder so no samples are
  * dropped.
  */

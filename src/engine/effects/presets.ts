@@ -1,6 +1,6 @@
 // Effect presets: a named effect stack saved OUTSIDE any project document, so a
 // grade built once ("my Shorts look") applies to any clip in any future project
-// with one action. Pure — ids and timestamps are injected, storage lives in
+// with one action. Pure: ids and timestamps are injected, storage lives in
 // state/library.ts.
 
 import type { Clip, EffectInstance, Id, Keyframeable } from '../types'
@@ -49,7 +49,7 @@ export function presetFromClip(clip: Clip, id: Id, createdAt: number, idFor: () 
 /**
  * Apply a preset by APPENDING its effects (fresh ids) after the clip's existing
  * stack. Appending, not replacing: a preset is "add my look", and the user can
- * delete what they no longer want — the reverse (silently destroying an
+ * delete what they no longer want. The reverse (silently destroying an
  * existing grade) is not undoable by intuition.
  */
 export const applyPresetToClip = (clip: Clip, preset: EffectPreset, idFor: () => Id): Clip => ({

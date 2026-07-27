@@ -11,7 +11,7 @@ import { useToasts } from './toasts'
 import { applyTemplateTracks } from './trackTemplate'
 
 /** Switching projects inside a collab room would tear the room's doc out from
- * under the peers — leave first (Leave already restores your solo project). */
+ * under the peers, so leave first (Leave already restores your solo project). */
 function guardRoom(): boolean {
   if (useCollab.getState().session !== null) {
     useToasts.getState().show('Leave the room before switching projects', 'danger')
@@ -29,7 +29,7 @@ function adopt(projectName: string, apply: () => void): void {
 
 /**
  * Flush the open project before it is replaced. Returns false when the write
- * failed — switching projects would then drop every unsaved edit, so the caller
+ * failed: switching projects would then drop every unsaved edit, so the caller
  * must abort rather than "autosave first" in name only.
  */
 async function flushOutgoing(): Promise<boolean> {
@@ -39,7 +39,7 @@ async function flushOutgoing(): Promise<boolean> {
   } catch {
     useToasts
       .getState()
-      .show('Could not save this project — staying here so nothing is lost', 'danger')
+      .show('Could not save this project. Staying here so nothing is lost', 'danger')
     return false
   }
 }

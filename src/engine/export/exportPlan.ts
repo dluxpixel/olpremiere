@@ -1,19 +1,19 @@
 // What the app decides when you press Export.
 //
 // There is one button and no settings. Every dial the dialog used to offer is a
-// rule here instead, computed from the sequence — so the answer is the same
+// rule here instead, computed from the sequence, so the answer is the same
 // every time and there is nothing to get wrong. Pure: no React, no DOM, no
 // store, so it is unit-testable and both start paths read the same plan.
 //
 // The choices, and why each one is the best available rather than merely a
 // default:
-//   QUALITY   constant-quality (QP 14) — the only mode whose picture does not
+//   QUALITY   constant-quality (QP 14), the only mode whose picture does not
 //             degrade with content. A bitrate target is either wasteful on a
 //             static shot or starving on a busy one. 14 is visually lossless;
 //             below it the file grows for something no eye resolves.
 //             EXCEPT below HD, where the browser pipeline deliberately keeps the
 //             legacy VBR path and 192 kbps audio so the golden 640×360 export
-//             stays byte-stable — that gate is worth more than constant quality
+//             stays byte-stable. That gate is worth more than constant quality
 //             on a raster nothing real is authored at. The plan SAYS so rather
 //             than claiming a quality the worker would quietly override; the
 //             mismatch was the actual defect, not the fence.
@@ -23,10 +23,10 @@
 //   RASTER    the sequence's own size, raised one tier to the 1440p box when
 //             the timeline is HD or better. Uploading above 1080p escapes
 //             YouTube's bitrate-starved 1080p tier and comes back visibly
-//             cleaner. SD footage is NOT upscaled — interpolating 360p to 1440p
+//             cleaner. SD footage is NOT upscaled: interpolating 360p to 1440p
 //             adds no detail, only minutes of encoding.
 //   FPS       the sequence's own rate. Every other value throws frames away.
-//   AUDIO     AAC 320 kbps — transparent, and universally playable (192 kbps
+//   AUDIO     AAC 320 kbps, which is transparent and universally playable (192 kbps
 //             below HD, same byte-stability reason as QUALITY).
 //   RANGE     the work area when in/out points are set, the whole sequence
 //             otherwise. Marking I/O already said which part you meant.
@@ -76,7 +76,7 @@ function evenFit(seqW: number, seqH: number, boxW: number, boxH: number): { widt
  * and it preserves the sequence aspect, so a 9:16 Short exports 1440×2560 and
  * never a stretched landscape frame.
  *
- * Sequences below HD keep their own size — upscaling 360p invents no detail and
+ * Sequences below HD keep their own size. Upscaling 360p invents no detail and
  * would multiply the encode time for a worse-looking result.
  */
 export function exportRaster(seqW: number, seqH: number): { width: number; height: number } {
@@ -95,7 +95,7 @@ export function exportRaster(seqW: number, seqH: number): { width: number; heigh
   //   net effect     every real pixel smeared across ~2.37 pixels
   //
   // There is no detail in those extra pixels. Interpolation cannot invent any, so
-  // the upscale magnifies whatever compression the source already had — and then
+  // the upscale magnifies whatever compression the source already had, and then
   // spends a third of the bitrate describing invented pixels instead of real
   // ones. Exporting at the timeline's own size is sharper AND smaller.
   //

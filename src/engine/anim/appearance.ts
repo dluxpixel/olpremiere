@@ -1,7 +1,7 @@
 // Appearance animations (entrance / exit presets). A preset compiles to plain
 // keyframes on the clip's transform + opacity channels, so it rides the SAME
 // tested keyframe path the Inspector uses and is therefore preview == export by
-// construction — this module never touches GL, DOM, or the store.
+// construction. This module never touches GL, DOM, or the store.
 //
 // Contract that makes entrance + exit composable on a shared channel:
 //   - an ENTRANCE preset animates on [0, d] and ENDS at the settled (base) value.
@@ -32,9 +32,9 @@ export const APPEARANCE_CHANNELS: readonly AnimChannel[] = [
  * Default entrance/exit window length, seconds.
  *
  * Half a second was inherited from motion-graphics defaults and reads slow on a
- * fast-cut edit — the animation is still arriving when the shot has moved on.
+ * fast-cut edit: the animation is still arriving when the shot has moved on.
  * Every path this app builds FOR ITSELF (captions, the text presets) already
- * hardcodes 0.13–0.20 s, so the code knew the default was wrong long before the
+ * hardcodes 0.13 to 0.20 s, so the code knew the default was wrong long before the
  * audit said so. A quarter second lands: quick enough to feel like an accent,
  * long enough to read as motion rather than a pop-in.
  */
@@ -56,7 +56,7 @@ interface BuildCtx {
   d: number
   /** Full clip duration (seconds). */
   D: number
-  /** Sequence width / height (px) — slide/rise offsets scale to the frame. */
+  /** Sequence width / height (px): slide/rise offsets scale to the frame. */
   W: number
   H: number
   base: AppearanceBase
@@ -82,7 +82,7 @@ export const ENTRANCE_PRESETS: AppearancePreset[] = [
     id: 'pop',
     label: 'Pop / Bang',
     build: ({ d, base }) => ({
-      // Overshoot past the base then settle back — the "bang". The overshoot is
+      // Overshoot past the base then settle back: the "bang". The overshoot is
       // a TURNING POINT: the first segment decelerates into it, so the second
       // has to leave it from rest (easeInOut) or the scale visibly kinks there.
       scale: [
@@ -130,7 +130,7 @@ export const ENTRANCE_PRESETS: AppearancePreset[] = [
     id: 'bounce',
     label: 'Bounce (pop bigger)',
     build: ({ d, base }) => ({
-      // Pops in, overshoots BIGGER than normal, dips slightly, settles — a bouncy
+      // Pops in, overshoots BIGGER than normal, dips slightly, settles. A bouncy
       // emphasis on the entrance. The peak and the dip are turning points, so
       // every segment between them starts and ends at rest; the last one used to
       // be easeIn, which meant the bounce arrived at its resting size travelling
@@ -263,7 +263,7 @@ export function buildAppearanceKeyframes(
 
 /**
  * Pure clip operation: rebuild a clip's appearance-owned channels from `spec`,
- * settling to the clip's CURRENT static base — so a manually moved/scaled clip
+ * settling to the clip's CURRENT static base, so a manually moved/scaled clip
  * still returns to where the user put it, and re-applying after a transform edit
  * re-derives the animation from the new base. An empty spec clears the animation
  * and drops the field. Reused by the menu actions, new-title creation, and the
@@ -299,8 +299,8 @@ export function applyAppearanceToClip(clip: Clip, spec: AppearanceSpec, seqW: nu
 // Keeping a compiled appearance TRUE as the clip's length changes.
 //
 // An exit preset is baked at absolute local times [D-d, D] from the duration the
-// clip had when it was applied. Every edit that changes that duration — trim,
-// ripple trim, roll, slide, rate stretch, speed — therefore strands it: extend a
+// clip had when it was applied. Every edit that changes that duration (trim,
+// ripple trim, roll, slide, rate stretch, speed) therefore strands it: extend a
 // title's out edge and the fade fires at the OLD end, leaving opacity at 0 for
 // the whole tail. The timeline engine calls retimeAppearance on both sides of
 // every such edit so the compiled keyframes follow the clip.
@@ -320,7 +320,7 @@ function sameKeyframes(a: readonly Keyframe[], b: readonly Keyframe[]): boolean 
 
 /**
  * True when a clip's appearance-owned channels still hold EXACTLY what the spec
- * compiles to at duration `D` — i.e. nobody has hand-edited them since. The same
+ * compiles to at duration `D`, i.e. nobody has hand-edited them since. The same
  * "only touch our own work" rule refitClipToFill uses: a recompile is safe only
  * while the keyframes are still ours.
  */
@@ -345,7 +345,7 @@ function appearanceIsUntouched(clip: Clip, D: number, seqW: number, seqH: number
  * Recompile `next`'s appearance for its NEW duration, given the clip as it was
  * (`prev`). Returns `next` untouched when the clip has no appearance, when the
  * duration did not actually change, or when the compiled keyframes no longer
- * match the spec — that last case means the author has since edited them by
+ * match the spec. That last case means the author has since edited them by
  * hand, and a trim must never silently overwrite hand-authored animation.
  */
 export function retimeAppearance(prev: Clip, next: Clip, seqW: number, seqH: number): Clip {
@@ -362,7 +362,7 @@ export function retimeAppearance(prev: Clip, next: Clip, seqW: number, seqH: num
 /**
  * Rebake an appearance for a NEW frame size, given the one it was compiled at.
  *
- * Four presets bake the frame into their keyframe VALUES — slideIn and slideOut
+ * Four presets bake the frame into their keyframe VALUES: slideIn and slideOut
  * travel `W/2`, riseUp and dropDown `H*0.35`. Switching 16:9 → 9:16 therefore
  * left them sliding the OLD frame's distance, and, worse, permanently disarmed
  * every later retime: the untouched-guard rebuilds its expectation from the
@@ -370,7 +370,7 @@ export function retimeAppearance(prev: Clip, next: Clip, seqW: number, seqH: num
  * trim silently stopped following the clip, forever.
  *
  * Only rebakes while the keyframes are still exactly what the spec compiled at
- * the OLD size — the same "only touch our own work" rule as everywhere else.
+ * the OLD size, the same "only touch our own work" rule as everywhere else.
  */
 export function refitAppearanceToFrame(
   clip: Clip,
@@ -391,13 +391,13 @@ export function refitAppearanceToFrame(
  * Hand-retiming a compiled keyframe PROMOTES the clip off its preset.
  *
  * A preset owns its channels and every later transform edit recompiles them from
- * the spec, so a retimed diamond was thrown away by the very next gizmo drag —
+ * the spec, so a retimed diamond was thrown away by the very next gizmo drag:
  * the clip showed grabbable keyframes it did not actually honour. Dragging one is
  * an unambiguous act of authorship, so the keyframes become the AUTHOR'S: they
  * stay exactly as retimed and nothing recompiles them again. (A trim already
  * refused to, via appearanceIsUntouched; this closes the same hole on the gizmo.)
  *
- * Only a moment that actually moves an appearance-owned channel promotes — a
+ * Only a moment that actually moves an appearance-owned channel promotes. A
  * keyframed effect param at some other instant leaves the preset alone.
  */
 export function releaseAppearanceOnRetime(prev: Clip, next: Clip, fromT: number): Clip {
@@ -439,13 +439,13 @@ export function splitAppearanceSpec(
 
 /**
  * Re-derive both halves of a cut from the split spec, so each half's SPEC and
- * its compiled keyframes still agree — which is what lets a later trim retime
+ * its compiled keyframes still agree, which is what lets a later trim retime
  * them. The generic keyframe time-split already produces the right MOTION; this
  * replaces it with the canonical compile of the same thing (identical to
  * evaluate, minus the redundant boundary keyframe the time-split leaves behind).
  *
  * Declines, leaving splitClip's time-split result exactly as it was, when the
- * original clip's appearance channels had been hand-edited — the same "only
+ * original clip's appearance channels had been hand-edited, the same "only
  * touch our own work" rule retimeAppearance uses.
  */
 export function splitAppearanceAcrossCut(
@@ -463,7 +463,7 @@ export function splitAppearanceAcrossCut(
   // The canonical recompile only reproduces the original MOTION while each
   // window lands entirely on one side of the cut. Cut INSIDE one and the half
   // that does not own that edge has its appearance channels cleared: cut 0.1s
-  // into a 0.25s entrance and the right half — still mid-entrance — snaps to the
+  // into a 0.25s entrance and the right half (still mid-entrance) snaps to the
   // settled value, so the cut CHANGES THE PICTURE, the one thing a split must
   // never do. splitClip's time-split already carries the motion across
   // correctly, boundary keyframe and all, so keep it and let both halves off the

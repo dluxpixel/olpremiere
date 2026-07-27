@@ -1,5 +1,5 @@
 // Onset (beat/hit) detection for auto-punching: energy-flux peak picking over
-// a mono PCM buffer. Deliberately simple — Shorts music beds and SFX hits have
+// a mono PCM buffer. Deliberately simple: Shorts music beds and SFX hits have
 // hard transients, and the output only seeds punch keyframes the editor can
 // move. Pure: no WebAudio, no store.
 
@@ -17,7 +17,7 @@ const HOP_S = 0.01
 
 /**
  * Times (seconds, relative to the buffer start) where the signal's energy
- * jumps — beats, hits, stingers. Steady tones and silence yield nothing.
+ * jumps (beats, hits, stingers). Steady tones and silence yield nothing.
  */
 export function detectOnsets(
   mono: Float32Array,
@@ -40,7 +40,7 @@ export function detectOnsets(
     energy[f] = Math.sqrt(sum / win)
   }
 
-  // Positive energy flux only — releases don't retrigger punches.
+  // Positive energy flux only, so releases don't retrigger punches.
   const flux = new Float64Array(frames)
   for (let f = 1; f < frames; f++) flux[f] = Math.max(0, energy[f] - energy[f - 1])
 

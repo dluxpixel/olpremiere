@@ -1,10 +1,10 @@
 // Auto-duck: music sits down whenever the voiceover speaks. Tracks opt in via
-// Track.audioRole — 'voice' drives the duck, 'music' receives it. ONE pure
+// Track.audioRole: 'voice' drives the duck, 'music' receives it. ONE pure
 // envelope builder feeds all three audio consumers (live preview, offline
 // export render, pure worker mixer), so preview == export by construction and
 // the pure mixer stays byte-deterministic. Pure: no WebAudio, no store.
 
-// Only a TYPE import from audio.ts — audio.ts imports this module at runtime,
+// Only a TYPE import from audio.ts, because audio.ts imports this module at runtime,
 // and a runtime cycle here would be a footgun waiting for a bundler change.
 import type { GainPoint } from './audio'
 import type { Sequence, Track } from './types'

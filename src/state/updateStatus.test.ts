@@ -12,12 +12,12 @@ describe('updateLine', () => {
   })
 
   it('names the version it found and how far the download has got', () => {
-    expect(updateLine({ kind: 'available', version: '0.1.15' })).toBe('Update 0.1.15 found — downloading')
+    expect(updateLine({ kind: 'available', version: '0.1.15' })).toBe('Update 0.1.15 found, downloading now')
     expect(updateLine({ kind: 'downloading', version: '0.1.15', percent: 42 })).toBe(
-      'Downloading update 0.1.15 — 42%',
+      'Downloading update 0.1.15, 42%',
     )
     expect(updateLine({ kind: 'downloaded', version: '0.1.15' })).toBe(
-      'Update 0.1.15 downloaded — restart to install',
+      'Update 0.1.15 downloaded. Restart to install',
     )
   })
 
@@ -31,7 +31,7 @@ describe('updateLine', () => {
     expect(updateLine({ kind: 'unsupported' })).toBeNull()
   })
 
-  it('covers every kind the shell can report — a new one must not fall through silently', () => {
+  it('covers every kind the shell can report, so a new one must not fall through silently', () => {
     const kinds: UpdateStatus[] = [
       { kind: 'checking' },
       { kind: 'available', version: '1' },

@@ -24,7 +24,7 @@ export interface CompressorParams {
   ratio: number
   attack: number
   release: number
-  /** Post-compression makeup gain, dB — what lifts the evened signal back up. */
+  /** Post-compression makeup gain, dB: what lifts the evened signal back up. */
   makeupDb: number
 }
 
@@ -75,7 +75,7 @@ function applyOutputSink(ctx: AudioContext, id: string | null): Promise<void> {
   return c.setSinkId(id ?? '').catch(() => {})
 }
 
-/** Lazy singleton — one AudioContext for the whole app. */
+/** Lazy singleton, one AudioContext for the whole app. */
 export function ensureAudioContext(): AudioContext {
   if (!sharedCtx) {
     sharedCtx = new AudioContext()
@@ -136,7 +136,7 @@ export async function getAudioBuffer(asset: MediaAsset): Promise<AudioBuffer | n
     return pending
   }
   pending = decodeAssetAudio(asset).then((buf) => {
-    // Account bytes when the decode actually lands (only if still cached —
+    // Account bytes when the decode actually lands (only if still cached, since
     // eviction may have raced a slow decode).
     if (buf && bufferCache.get(asset.id) === pending) {
       const bytes = buf.length * buf.numberOfChannels * 4
@@ -226,7 +226,7 @@ export function getReversedAudioBuffer(asset: MediaAsset): Promise<AudioBuffer |
  * No `denoise` → the exact same cached promises as before (golden-safe,
  * byte-identical). With `denoise`, the raw decode is crossfaded against the
  * cached RNNoise pass at the clip's strength (engine/denoise.ts); if the wasm
- * can't load the clip falls back to raw — audibly un-denoised, never silent.
+ * can't load the clip falls back to raw: audibly un-denoised, never silent.
  * Reversal applies AFTER denoise so both directions play the same samples.
  */
 export async function clipAudioBuffer(
@@ -270,7 +270,7 @@ export interface ClipSchedule {
   /**
    * SOURCE-content seconds to play. AudioBufferSourceNode.start()'s duration
    * argument is consumed in buffer-content time (independent of playbackRate),
-   * so the audible wall-clock length is durationS / |speed| — exactly the
+   * so the audible wall-clock length is durationS / |speed|, exactly the
    * clip's remaining timeline window.
    */
   durationS: number
@@ -366,7 +366,7 @@ export function clipGainEnvelope(clip: Clip, fromS: number): GainPoint[] | null 
       if (volKfs[i].ease === 'hold') {
         // Hold = freeze then SNAP: one knot just before the next keyframe, so
         // every consumer ramps over <=1ms (perceptually a step, still
-        // click-safe) — matching how the video channels honor hold exactly.
+        // click-safe), matching how the video channels honor hold exactly.
         times.add(winStart + next.t - Math.min(0.001, span / 2))
       } else if (volKfs[i].ease !== 'linear') {
         for (let s = 1; s < 8; s++) times.add(winStart + volKfs[i].t + (span * s) / 8)
@@ -411,7 +411,7 @@ export function ensureMasterChain(): MasterChain {
   return masterChain
 }
 
-/** Null until the first play has built the chain — the meter shows idle. */
+/** Null until the first play has built the chain, so the meter shows idle. */
 export function getMasterChain(): MasterChain | null {
   return masterChain
 }
@@ -459,7 +459,7 @@ export async function scheduleAudio(
   const duckEnv = duckEnvelope(seq.tracks, anySolo, fromS)
 
   // Audio comes from audio-track clips PLUS standalone (unlinked) video clips.
-  // A linked video clip is video-only — its audio plays from the linked
+  // A linked video clip is video-only: its audio plays from the linked
   // audio-track clip, so counting it here would double the sound.
   const candidates: { clip: Clip; track: Track; sched: ClipSchedule; asset: MediaAsset; reversed: boolean }[] = []
   for (const track of audibleTracks) {

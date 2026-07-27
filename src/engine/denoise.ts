@@ -1,6 +1,6 @@
 // Non-destructive voice noise reduction: RNNoise (the same model OBS's
 // "Noise Suppression" filter runs) applied OFFLINE to an asset's decoded PCM,
-// never at record time. The recording stays raw forever — a clip's `denoise`
+// never at record time. The recording stays raw forever, and a clip's `denoise`
 // strength only changes which samples the mixers read, so the result can be
 // A/B'd with one toggle and undone like any other edit.
 //
@@ -15,7 +15,7 @@
 //    output frame aligns 1:1 with its input frame (past-context model), which
 //    keeps the crossfade phase-aligned rather than comb-filtering.
 //
-// The wasm (@shiguredo/rnnoise-wasm — the binding under OBS-adjacent web
+// The wasm (@shiguredo/rnnoise-wasm, the binding under OBS-adjacent web
 // stacks) embeds its binary in the JS module: no asset plumbing, loads in any
 // environment with WebAssembly. It is imported lazily so the model only costs
 // anything once someone actually enables denoise.
@@ -26,7 +26,7 @@ import type { MediaAsset } from './types'
 const PCM_SCALE = 0x7fff
 
 /**
- * The slice of the wasm module denoiseBuffer needs — injectable so unit tests
+ * The slice of the wasm module denoiseBuffer needs, injectable so unit tests
  * can exercise the chunking/scaling with a deterministic fake processor.
  */
 export interface DenoiseEngine {
@@ -106,7 +106,7 @@ function ensureWetChannels(asset: MediaAsset, src: AudioBuffer): Promise<Float32
       })
       .catch((err: unknown) => {
         // Wasm unavailable (old browser, blocked wasm): fail SOFT to raw audio
-        // — the toggle just does nothing rather than muting the clip — but
+        // so the toggle just does nothing rather than muting the clip, but
         // clear the cache so a retry is possible.
         console.warn('OL Studio: noise reduction unavailable', err)
         wetCache.delete(asset.id)

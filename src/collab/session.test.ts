@@ -69,7 +69,7 @@ describe('two-peer convergence', () => {
     seed(a, p)
     syncBoth(a, b)
 
-    // OFFLINE: A moves c1; B adds c2 — no exchange until both are done.
+    // OFFLINE: A moves c1; B adds c2, with no exchange until both are done.
     const emA = a.getMap<EntityValue>('entities')
     const movedC1 = structuredClone((emA.get(clipKey(seqId, trackId, 'c1')) as { clip: { startS: number } }).clip)
     movedC1.startS = 7
@@ -115,7 +115,7 @@ describe('two-peer convergence', () => {
     const projB = snapshot(b)!
     expect(projA).toEqual(projB)
     const c1A = projA.sequences[seqId].tracks.find((t) => t.id === trackId)!.clips.find((c) => c.id === 'c1')!
-    // One whole-clip version won (LWW) — never a torn mix of both edits.
+    // One whole-clip version won (LWW), never a torn mix of both edits.
     const isMine = c1A.opacity === 0.25 && c1A.startS === 0
     const isTheirs = c1A.opacity === 1 && c1A.startS === 9
     expect(isMine || isTheirs).toBe(true)

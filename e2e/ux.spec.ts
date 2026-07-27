@@ -47,7 +47,7 @@ test('clicking the blank area below the tracks moves the playhead', async ({ pag
   await importAndAdd(page)
   const lanes = page.getByTestId('timeline-lanes')
   const box = (await lanes.boundingBox())!
-  // Click near the bottom of the lanes viewport — below the last track, on the
+  // Click near the bottom of the lanes viewport, below the last track, on the
   // container background (not a lane). x≈300 → t=5s @60px/s.
   await page.mouse.click(box.x + 300, box.y + box.height - 12)
   await expect(page.getByTestId('timecode')).toContainText('00:00:05:00')

@@ -86,8 +86,8 @@ describe('chunkWords', () => {
   })
 })
 
-describe('chunkWords — phrase mode (PHRASE_CAPTION_OPTIONS)', () => {
-  it('groups into SHORT bursts — never one word each, never a subtitle line', () => {
+describe('chunkWords: phrase mode (PHRASE_CAPTION_OPTIONS)', () => {
+  it('groups into SHORT bursts, never one word each, never a subtitle line', () => {
     const words = [
       w('so', 0, 0.3), w('I', 0.3, 0.5), w('went', 0.5, 0.9), w('to', 0.9, 1.1),
       w('the', 1.1, 1.3), w('store', 1.3, 1.8), w('and', 1.8, 2.0), w('bought', 2.0, 2.5),
@@ -121,7 +121,7 @@ describe('chunkWords — phrase mode (PHRASE_CAPTION_OPTIONS)', () => {
   })
 
   it('a real pause lets a single word stand alone instead of being absorbed', () => {
-    // Where he actually breathes is where the caption breaks — "minecraft" on its
+    // Where he actually breathes is where the caption breaks: "minecraft" on its
     // own, then the next burst. Under the old 1.0s floor this word was merged
     // forward regardless, because 0.62s looked "too short to show".
     const words = [
@@ -141,7 +141,7 @@ describe('chunkWords — phrase mode (PHRASE_CAPTION_OPTIONS)', () => {
     for (const c of chunks) expect(fn.has(c.text.toLowerCase())).toBe(false)
   })
 
-  it('keeps a sentence boundary — never merges across it', () => {
+  it('keeps a sentence boundary and never merges across it', () => {
     const words = [w('end.', 0, 0.5), w('new', 0.6, 1.0), w('start', 1.0, 1.5)]
     const chunks = chunkWords(words, PHRASE_CAPTION_OPTIONS)
     expect(chunks[0].text).toBe('end.')

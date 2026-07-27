@@ -30,7 +30,7 @@ function concatFloat32(parts: Float32Array[]): Float32Array {
   return out
 }
 
-/** Interleaved 32-bit float WAV (bit-exact, no quantisation) — ffmpeg reads it as a 2nd input. */
+/** Interleaved 32-bit float WAV (bit-exact, no quantisation). ffmpeg reads it as a 2nd input. */
 function buildWavF32(channels: Float32Array[], sampleRate: number): ArrayBuffer {
   const numCh = channels.length
   const numFrames = channels[0]?.length ?? 0
@@ -161,7 +161,7 @@ export async function exportNative(
             if (settled || signal.aborted) return
             const res = await api.nativeWriteFrame(data)
             // A write that fails BECAUSE the user cancelled must not latch an
-            // error over the abort — the dialog would sit on a red
+            // error over the abort, or the dialog would sit on a red
             // "ffmpeg is not running" instead of just closing.
             if (settled || signal.aborted) return
             if (!res.ok) {

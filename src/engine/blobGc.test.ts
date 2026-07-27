@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { orphanedBlobKeys, reachableBlobKeys } from './blobGc'
 import type { MediaAsset, Project } from './types'
 
-// A minimal MediaAsset — only the fields blobGc reads (blobKey, thumbnailKey)
+// A minimal MediaAsset: only the fields blobGc reads (blobKey, thumbnailKey)
 // carry meaning; the rest just satisfy the shape.
 const asset = (id: string, over: Partial<MediaAsset> = {}): MediaAsset => ({
   id,

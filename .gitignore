@@ -14,7 +14,7 @@ out/
 release/
 vendor/ffmpeg/
 
-# Release token (never committed) — put GH_TOKEN=... here to auto-publish updates.
+# Release token (never committed). Put GH_TOKEN=... here to auto-publish updates.
 # The glob, not two exact names: .env.local / .env.production / a hand-made
 # .env.release.bak are all live secrets, and naming them one at a time means the
 # first one nobody thought of gets committed. `.env.release.example` is the only

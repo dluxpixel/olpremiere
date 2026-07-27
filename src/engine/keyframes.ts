@@ -94,7 +94,7 @@ export interface KeyframeCarrier {
 
 /**
  * Every distinct LOCAL time at which this clip has a keyframe, sorted, across
- * every animated channel it has — the transform/opacity channels and any
+ * every animated channel it has: the transform/opacity channels and any
  * keyframed effect param alike.
  *
  * The timeline needs one mark per MOMENT, not per channel: a punch-in that
@@ -127,7 +127,7 @@ export const MOMENT_EPS = 1e-4
 
 /**
  * Move every keyframe at local time `fromT` to `toT`, across every channel and
- * effect param at once — that is what a keyframe IS on the timeline: a moment,
+ * effect param at once. That is what a keyframe IS on the timeline: a moment,
  * not one channel's entry. A punch-in animating scale and both position
  * channels moves as one thing or it tears itself apart.
  *
@@ -153,8 +153,8 @@ export function moveKeyframeMoment<C extends KeyframeCarrier>(
   const idx = moments.findIndex((t) => Math.abs(t - fromT) <= MOMENT_EPS)
   if (idx < 0) return clip
 
-  // A moment may not pass its neighbours, and must stay inside the clip — BOTH,
-  // not either. The clip bound used to apply only to the LAST moment, so one
+  // A moment may not pass its neighbours, and must stay inside the clip (BOTH,
+  // not either). The clip bound used to apply only to the LAST moment, so one
   // keyframe left beyond the out point by a trim (the recompile guard leaves
   // hand-authored animation alone) became the only ceiling every earlier moment
   // was clamped against, and they could all be dragged past the end.

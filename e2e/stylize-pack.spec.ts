@@ -1,6 +1,6 @@
 // Pixel proof for the depth pack: vignette/grain (stylize effects), blend
 // modes (fixed-function AND the dest-sampling overlay path), shape masks, and
-// chroma/luma keying. All sampled off the live program monitor — the same
+// chroma/luma keying. All sampled off the live program monitor, the same
 // shared renderer the export uses, so these are parity checks too.
 
 import { expect, test, type Page } from '@playwright/test'
@@ -78,7 +78,7 @@ const luma = ([r, g, b]: [number, number, number]) => 0.2126 * r + 0.7152 * g + 
 /**
  * Wait for the monitor to actually PAINT the fixture's red frame. Media
  * warmup starts when a clip enters the sequence (bounded-warmup change), so
- * the first composite lands a beat after addClip — baselines sampled before
+ * the first composite lands a beat after addClip, so baselines sampled before
  * it see the black stage.
  */
 async function waitForFirstFrame(page: Page): Promise<void> {
@@ -102,7 +102,7 @@ test('film grain perturbs pixels', async ({ page }) => {
   await waitForFirstFrame(page)
   await applyEffectWithParams(page, clipId, 'grain', { amount: 1, size: 4 })
   await page.waitForTimeout(300)
-  // Neighbouring samples on a flat red frame now differ — noise is present.
+  // Neighbouring samples on a flat red frame now differ. Noise is present.
   const samples: number[] = []
   for (const [fx, fy] of [[0.3, 0.3], [0.34, 0.31], [0.31, 0.35], [0.37, 0.36], [0.42, 0.33]] as const) {
     samples.push(luma(await px(page, fx, fy)))
@@ -163,7 +163,7 @@ test('chroma key removes the keyed colour', async ({ page }) => {
 })
 
 test('green screen keys the green but keeps white detail (corners + thin lines)', async ({ page }) => {
-  // A dedicated pure-green fixture with a white centre block + a thin white line —
+  // A dedicated pure-green fixture with a white centre block + a thin white line,
   // the exact case that used to keep a green fringe on white edges. Applied at the
   // effect's DROP defaults (no param overrides), so this also proves "just drop it
   // and it works" for a bright green screen.
@@ -291,7 +291,7 @@ test('a lone Dip to White dips through WHITE, not through black', async ({ page 
   await waitForFirstFrame(page)
 
   await setLoneTransition(page, clipId, 'dipToWhite', 1)
-  // Halfway through the window is the solid — the whole point of a dip.
+  // Halfway through the window is the solid, the whole point of a dip.
   await setPlayhead(page, 0.5)
   await expect.poll(async () => luma(await px(page, 0.5, 0.5)), { timeout: 10_000 }).toBeGreaterThan(200)
 
@@ -324,7 +324,7 @@ test('a lone Glitch is not a fade to black', async ({ page }) => {
 })
 
 // The ring/streak bugs live in the PAIR path (two real clips either side of the
-// cut), where both sides carry picture — on a lone edge the surround is empty by
+// cut), where both sides carry picture. On a lone edge the surround is empty by
 // design, so it proves nothing.
 async function addSecondClip(page: Page): Promise<string> {
   await page.getByTestId('asset-card').dblclick()
@@ -371,7 +371,7 @@ test('Cross Zoom no longer draws a dark ring round the frame', async ({ page }) 
   const cut = await cutTimeOf(page, second)
   // Late enough that the old fallback mixed the corner mostly toward black
   // (weight ~0.72), but still inside the window where the incoming shot's
-  // sample runs off the frame — which is exactly where the ring lived.
+  // sample runs off the frame, which is exactly where the ring lived.
   await setPlayhead(page, cut + 0.65)
   await expect
     .poll(async () => luma(await px(page, 0.04, 0.06)), { timeout: 10_000 })

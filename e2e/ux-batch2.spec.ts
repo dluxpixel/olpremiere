@@ -1,6 +1,6 @@
 // UX batch: repeatable field scrubbing, click-collapses-multi-selection, and
 // the editable clip Start timecode. (Roll/slide gestures wire fully-unit-tested
-// engine fns — modifier precedence is covered by the existing slip/stretch specs.)
+// engine fns; modifier precedence is covered by the existing slip/stretch specs.)
 
 import { expect, test, type Page } from '@playwright/test'
 
@@ -31,7 +31,7 @@ test('drag-scrubbing a numeric field works twice in a row (was one-shot)', async
   await expect(field).toBeVisible()
 
   const drag = async (dx: number) => {
-    // Audio sits below the fold since the effects-first reorder — the mouse
+    // Audio sits below the fold since the effects-first reorder, so the mouse
     // must drag REAL on-screen coordinates, not a clipped bounding box.
     await field.scrollIntoViewIfNeeded()
     const box = (await field.boundingBox())!

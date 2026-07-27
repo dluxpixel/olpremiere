@@ -15,7 +15,7 @@ export interface NativeExportConfig {
   fps: number
   totalFrames: number
   encoder: NativeEncoder
-  /** QP/CRF on the 0–51 scale (used by x264/x265/nvenc; ignored by prores/lossless). */
+  /** QP/CRF on the 0 to 51 scale (used by x264/x265/nvenc; ignored by prores/lossless). */
   quality: number
   hasAudio: boolean
   /** When set, skip the save dialog (used by re-export / tests). */
@@ -44,7 +44,7 @@ export interface NativeProgress {
 
 /**
  * Where the auto-updater stands right now. Sent on every transition AND readable
- * on demand, because the check starts when the app is ready — which can be before
+ * on demand, because the check starts when the app is ready, which can be before
  * the renderer exists. A renderer that only subscribed would miss that answer and
  * sit on "Checking…" forever, which is the silence that hid a dead feed for weeks.
  */
@@ -59,7 +59,7 @@ export type UpdateStatus =
   | { kind: 'unsupported' }
 
 export interface OlApi {
-  /** Always true when running inside the desktop shell — the renderer's isElectron gate. */
+  /** Always true when running inside the desktop shell (the renderer's isElectron gate). */
   readonly isElectron: true
   getVersion(): Promise<string>
   /** Which native encoders this machine's bundled ffmpeg + GPU actually offer. */
@@ -80,7 +80,7 @@ export interface OlApi {
   onUpdateReady(cb: (version: string) => void): () => void
   /**
    * Fires when an update downloaded during the fresh-launch window and main wants
-   * to apply it NOW — but the renderer arbitrates: it flushes a save and restarts
+   * to apply it NOW, but the renderer arbitrates: it flushes a save and restarts
    * only if no critical work (e.g. an export) is in flight, else it defers to the
    * "Restart to update" toast. Returns an unsubscribe fn.
    */
@@ -89,7 +89,7 @@ export interface OlApi {
   onUpdateError(cb: (message: string) => void): () => void
   /** Fires when the check succeeded and the app is already newest. Returns an unsubscribe fn. */
   onUpdateNone(cb: () => void): () => void
-  /** Quit and install the downloaded update now — relaunches into the new version. */
+  /** Quit and install the downloaded update now. Relaunches into the new version. */
   restartToUpdate(): void
   /** The updater's CURRENT state, pullable, so a late renderer still learns the answer. */
   getUpdateStatus(): Promise<UpdateStatus>

@@ -1,6 +1,6 @@
 // A beforeunload guard for work the browser would silently destroy on close.
 //
-// Scoped to CRITICAL, non-recoverable operations — an in-flight export, whose
+// Scoped to CRITICAL, non-recoverable operations like an in-flight export, whose
 // minutes of compute and unsaved output vanish on a tab close. Ordinary edits
 // are NOT guarded: autosave persists them within a debounce, so prompting on
 // every close during that window would only annoy.

@@ -38,7 +38,7 @@ function hasJettismGrade(clip: Clip): boolean {
 
 // There is deliberately NO third door to this grade. Applying the look used to
 // deposit a "Jettism Punch" preset into the user's Library, sitting among the
-// presets they actually saved — and that copy applied through applyPresetToSelection,
+// presets they actually saved, and that copy applied through applyPresetToSelection,
 // which appends unconditionally. So the one door that looked identical to the other
 // two was the only one that could grade an already-graded clip a second time and
 // blow it out. The Effects tab tile and the Inspector button both route through
@@ -52,7 +52,7 @@ export function applyPunchyGrade(clipId: string): void {
 /**
  * The punch grade on every selected clip in ONE undo step (the multi-select
  * "Punch grade" button). Title clips and already-graded clips are skipped, so a
- * second click never stacks the grade twice — and now SAYS so, instead of the
+ * second click never stacks the grade twice. It now SAYS so, instead of the
  * button flashing while nothing happens and nothing explains why.
  */
 export function applyPunchyGradeToClips(ids: Iterable<string>): void {
@@ -87,7 +87,7 @@ export function applyPunchyGradeToClips(ids: Iterable<string>): void {
 
 /**
  * Apply the Jettism look: 9:16 + punch grade on every ungraded video clip
- * (title clips stay clean — the caption style owns them) in one undo step,
+ * (title clips stay clean, since the caption style owns them) in one undo step,
  * and pop as the default text entrance.
  */
 export function applyJettismLook(): void {

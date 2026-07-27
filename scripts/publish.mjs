@@ -11,7 +11,7 @@ import { loadToken, fetchRetry } from './lib.mjs'
 
 // Must match electron-builder.yml's publish.owner/repo. The updater reads the
 // feed from THERE, so a mismatch here uploads a release to a repo nothing ever
-// checks — it reports success and no one can see it. Change both or neither.
+// checks. It reports success and no one can see it. Change both or neither.
 const OWNER = 'dluxpixel'
 const REPO = 'olpremiere'
 const OUT = process.env.OLP_OUT || 'C:/Users/skyle/AppData/Local/olp-build/release'

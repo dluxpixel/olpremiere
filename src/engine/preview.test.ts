@@ -1,6 +1,6 @@
 // Pure window math for the transition pre-roll (preview.ts). The impure parts
 // (pooled elements, GL, the frame cache runtime) need a browser; the pair
-// windows and pre-roll horizon are plain data and are pinned here — they must
+// windows and pre-roll horizon are plain data and are pinned here. They must
 // mirror resolve.ts's pair-transition rules exactly.
 
 import { describe, expect, it } from 'vitest'
@@ -46,7 +46,7 @@ const seq = (tracks: Track[], fps = 30): Sequence => ({
   markers: [],
 })
 
-// A [0,2) out of source 0..2, B [2,4) out of source 5..7 — same or different asset.
+// A [0,2) out of source 0..2, B [2,4) out of source 5..7, same or different asset.
 const a = clip({ id: 'a', assetId: 'x', startS: 0, inS: 0, outS: 2 })
 const b = clip({
   id: 'b',
@@ -65,7 +65,7 @@ describe('pairTransitionWindow', () => {
       endS: 2.5,
       fromAssetId: 'x',
       toAssetId: 'x',
-      fromSourceStartS: 2, // a.inS + 2s — the cut, then past a.outS into handle media
+      fromSourceStartS: 2, // a.inS + 2s: the cut, then past a.outS into handle media
       fromSourceEndS: 2.5,
       toSourceStartS: 5,
     })

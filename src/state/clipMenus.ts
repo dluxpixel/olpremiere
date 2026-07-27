@@ -1,4 +1,4 @@
-// Shared right-click menu builders for a clip — used by BOTH the timeline clip
+// Shared right-click menu builders for a clip, used by BOTH the timeline clip
 // menu and the preview-monitor menu, so "how it appears", the font, and the size
 // are reachable from wherever you click.
 
@@ -70,11 +70,11 @@ function isStillImageClip(clip: Clip): boolean {
 }
 
 /**
- * Entrance / Exit / speed appearance controls. Actions apply to `ids` — the
- * selected clips when several are selected — so choosing an animation on ONE
+ * Entrance / Exit / speed appearance controls. Actions apply to `ids` (the
+ * selected clips when several are selected), so choosing an animation on ONE
  * right-clicked clip applies to the rest of the selection.
  * Shown for TITLES and still IMAGES: both "appear" on screen, so a fade/pop/slide
- * entrance suits them. Empty for VIDEO and audio — video animates via transitions
+ * entrance suits them. Empty for VIDEO and audio: video animates via transitions
  * + the Motion submenu (its own set), which is the deliberate split.
  */
 export function appearanceMenuItems(clip: Clip, ids: string[] = [clip.id]): MenuItem[] {

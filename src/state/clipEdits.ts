@@ -63,7 +63,7 @@ export function playheadLocalT(clip: Clip): number {
  *
  * The lock used to be enforced by quietly mapping the track to itself, which
  * meant two things went wrong at once: the user got no signal that the track was
- * locked (every other guarded path in the app toasts — motionActions, audio,
+ * locked (every other guarded path in the app toasts: motionActions, audio,
  * captions, attributes), AND the no-op still produced a fresh sequence object, so
  * it sailed past the identity bail in updateActiveSequence and landed on the undo
  * stack. Five dead slider drags meant five phantom steps to Ctrl+Z through before
@@ -73,7 +73,7 @@ function mapClip(
   clipId: string,
   label: string,
   fn: (clip: Clip) => Clip,
-  /** Skip the edit entirely when `fn` hands back the SAME clip — otherwise the
+  /** Skip the edit entirely when `fn` hands back the SAME clip. Otherwise the
    *  rebuilt track and sequence defeat the store's identity bail and a provable
    *  no-op still costs the user an undo press. */
   bailOnNoop = false,
@@ -162,7 +162,7 @@ export function removeKeyframeAtPlayhead(clipId: string, channel: AnimChannel): 
 /**
  * Retime a keyframe: move the one nearest `fromT` on this channel to `toT`
  * (clamped to the clip span), keeping its value + easing. This is what the
- * Keyframes lane's drag-and-type calls — "set the time this happens". Landing
+ * Keyframes lane's drag-and-type calls ("set the time this happens"). Landing
  * exactly on another keyframe's time merges onto it (upsert replaces).
  */
 export function moveKeyframeTime(clipId: string, channel: AnimChannel, fromT: number, toT: number): void {
@@ -215,7 +215,7 @@ export function resetChannel(clipId: string, channel: AnimChannel): void {
  * Remove a punch/zoom. Every zoom path (PunchControl Apply, the P key, the
  * clip context menu) writes SCALE keyframes and never touches the static base,
  * so dropping those keyframes restores the pre-zoom look exactly. Unlike
- * resetChannel the base is deliberately kept — a hand-scaled clip stays at its
+ * resetChannel the base is deliberately kept: a hand-scaled clip stays at its
  * size, only the animated zoom goes away. One undo step.
  */
 export function removeZoom(clipId: string): void {
@@ -224,7 +224,7 @@ export function removeZoom(clipId: string): void {
 
 /**
  * Toggle a clip's enabled flag (Shift+E). A disabled clip renders nothing, its
- * audio is muted, and export skips it — but it keeps its place, effects, and
+ * audio is muted, and export skips it, but it keeps its place, effects, and
  * keyframes, so it's the way to A/B an overlay without deleting it. Group-aware
  * so a linked A/V pair toggles together.
  */
@@ -272,7 +272,7 @@ export function resetAllChannels(clipId: string): void {
  * Apply an effect to a clip. Returns silently for unknown types, and for clips
  * on an AUDIO track: effects only composite on video tracks (resolveFrame skips
  * audio), so a grade/key/blur dropped on an audio clip would sit dead and render
- * nothing — the "why did nothing happen?" confusion. Titles and adjustment
+ * nothing. That is the "why did nothing happen?" confusion. Titles and adjustment
  * layers DO render, so they stay eligible.
  */
 export function applyEffect(clipId: string, type: string): void {
@@ -286,7 +286,7 @@ export function applyEffect(clipId: string, type: string): void {
 
 /**
  * Set a clip's noise-reduction strength (0..1); undefined/0 turns it off.
- * Non-destructive — flips which samples the mixers read (clipAudioBuffer),
+ * Non-destructive: it flips which samples the mixers read (clipAudioBuffer),
  * the recording itself is never touched. One undo step, like any edit.
  */
 export function setClipDenoise(clipId: string, strength: number | undefined): void {
@@ -355,7 +355,7 @@ export function setClipTransition(
   durationS?: number,
 ): void {
   // Per-kind envelope: whiteFlash defaults to its 200 ms hit and lives in
-  // 100–500 ms; everything else keeps the classic 1 s default. Enforced HERE —
+  // 100 to 500 ms; everything else keeps the classic 1 s default. Enforced HERE, in
   // the one write path for drops, the Inspector select, and duration commits.
   // A duration outside the new kind's envelope (e.g. a 1 s dissolve switched
   // to White Flash) snaps to the kind's DEFAULT, not the clamp edge: the
@@ -388,7 +388,7 @@ export function setClipMask(clipId: string, mask: ClipMask | undefined): void {
 
 /**
  * Commit a gizmo drag on a KEYFRAMED clip: each changed channel upserts a
- * keyframe at the playhead when animated, or updates its base when static —
+ * keyframe at the playhead when animated, or updates its base when static,
  * all in ONE undo step. This is what lets the monitor gizmo stay alive on
  * animated clips instead of hiding (Premiere behavior: drag = keyframe).
  */
@@ -440,7 +440,7 @@ export function setClipTransform(
     }
     // A clip with an entrance/exit animation re-derives its keyframes from the
     // NEW base, so dragging it in the preview moves/scales the SETTLED clip and
-    // the animation follows — instead of the baked keyframes fighting the drag.
+    // the animation follows, instead of the baked keyframes fighting the drag.
     return moved.appearance ? applyAppearanceToClip(moved, moved.appearance, seq.width, seq.height) : moved
   })
 }
@@ -448,8 +448,8 @@ export function setClipTransform(
 /**
  * Set a clip's gain in dB. Keyframe-aware: while the volume channel is
  * animated a non-empty keyframe list OVERRIDES audioGainDb everywhere (the
- * envelope never reads the base), so writing the base would be a silent no-op
- * — instead the write upserts a keyframe at the playhead, exactly like the
+ * envelope never reads the base), so writing the base would be a silent no-op.
+ * Instead the write upserts a keyframe at the playhead, exactly like the
  * volume ScrubField.
  */
 export function setClipGainDb(clipId: string, db: number): void {
@@ -506,12 +506,12 @@ export function crossfadeWithNeighbour(clipId: Id, side: 'next' | 'prev', second
 
 /**
  * Q / W: top-and-tail. Ripple-trim the head ('in') or tail ('out') of the
- * clip under the playhead — a selected clip under the playhead wins, else the
+ * clip under the playhead. A selected clip under the playhead wins, else the
  * topmost unlocked one. Shared by the keymap and the clip context menu.
  */
 /**
  * Delete the selection (ripple or not). Shared by the Del / Shift+Del keys AND
- * the clip context menu — the menu used to reimplement this inline and skipped
+ * the clip context menu, which used to reimplement this inline and skipped
  * the lock filter, so right-click Delete removed clips the Del key refused.
  */
 export function deleteSelected(ripple: boolean): void {
@@ -563,7 +563,7 @@ export function splitAtPlayhead(allTracks = false, kind?: 'video' | 'audio'): vo
   )
   if (targets.length === 0) {
     // The usual cause is a stale selection narrowing the cut to a clip the
-    // playhead is nowhere near — invisible unless we say it.
+    // playhead is nowhere near, which is invisible unless we say it.
     useToasts
       .getState()
       .show(
@@ -613,7 +613,7 @@ export function topAndTail(edge: 'in' | 'out'): void {
 }
 
 /**
- * Drag a keyframe MOMENT along the clip — every channel and effect param that
+ * Drag a keyframe MOMENT along the clip: every channel and effect param that
  * animates at that instant moves together, in one undo step. The engine clamps
  * it inside the clip and between its neighbours, so a drag can never reorder
  * keyframes or land two on the same frame.
@@ -630,7 +630,7 @@ export function moveClipKeyframe(clipId: string, fromT: number, toT: number): vo
   // apart, which is one diamond at any zoom.
   const minGapS = 1 / (activeSequence(useStore.getState().project).fps || 30)
   // mapClip rebuilds the track and sequence unconditionally, so returning the
-  // SAME clip is not enough to stop an undo entry — a drag the engine clamps
+  // SAME clip is not enough to stop an undo entry: a drag the engine clamps
   // straight back to where it started would still cost the user an undo press.
   mapClip(
     clipId,
@@ -645,6 +645,6 @@ export function moveClipKeyframe(clipId: string, fromT: number, toT: number): vo
   // state change the user did not ask for is exactly the kind of silent surprise
   // this app has been paying for.
   if (promotes && !findClip(clipId)?.appearance) {
-    useToasts.getState().show('Keyframes are yours now — the preset no longer drives this clip')
+    useToasts.getState().show('Keyframes are yours now. The preset no longer drives this clip')
   }
 }

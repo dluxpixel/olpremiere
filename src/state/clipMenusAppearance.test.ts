@@ -21,7 +21,7 @@ beforeEach(() => {
   useStore.getState().setProject(newProject())
 })
 
-describe('appearanceMenuItems — entrances by clip kind', () => {
+describe('appearanceMenuItems: entrances by clip kind', () => {
   it('shows entrance/exit for a TITLE clip', () => {
     const clip = newTitleClip(defaultTitleDef('hi'), 0, 3)
     expect(appearanceMenuItems(clip).some((i) => i.label?.startsWith('Entrance'))).toBe(true)

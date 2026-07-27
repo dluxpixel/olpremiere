@@ -79,8 +79,8 @@ describe('tidyTranscribedWords', () => {
     ])
     expect(invented.map((x) => x.text)).toEqual(['diamonds'])
 
-    // Said straight after the previous word — that is the creator actually
-    // signing off, so it stays.
+    // Said straight after the previous word, so that is the creator actually
+    // signing off, and it stays.
     const spoken = tidyTranscribedWords([
       w('diamonds', 0.0, 0.6),
       w('thanks', 0.7, 1.0), w('for', 1.0, 1.2), w('watching', 1.2, 1.6),
@@ -88,7 +88,7 @@ describe('tidyTranscribedWords', () => {
     expect(spoken).toHaveLength(4)
   })
 
-  it('leaves ordinary punctuation attached — the chunker breaks captions on it', () => {
+  it('leaves ordinary punctuation attached, because the chunker breaks captions on it', () => {
     const out = tidyTranscribedWords([w('done.', 0, 0.5), w('next', 0.6, 1.0)])
     expect(out[0].text).toBe('done.')
   })

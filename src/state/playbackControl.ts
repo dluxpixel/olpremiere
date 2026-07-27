@@ -27,7 +27,7 @@ const transport = new Transport({
     if (!playing) pauseAllPreviewVideos()
     // Dubbing: a take in progress follows the transport. Pausing the preview
     // (Space, K, the transport button, or hitting the end) pauses the recorder;
-    // resuming resumes it — so a to-picture voiceover stays in sync and the
+    // resuming resumes it, so a to-picture voiceover stays in sync and the
     // paused span is dropped from the take. No-op when nothing is recording.
     if (isTakeInProgress()) {
       if (playing) resumeRecording()
@@ -81,7 +81,7 @@ export function pausePlayback(): void {
 }
 
 /**
- * Start playback from the playhead if it isn't already playing — used so hitting
+ * Start playback from the playhead if it isn't already playing. Used so hitting
  * Record rolls the preview for a to-picture voiceover (dub), without toggling
  * off a preview the user had already started.
  */

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Recording must coexist with playback: starting/stopping a take never touches
-// the transport. voiceRecorder has NO import of playbackControl — this mock
+// the transport. voiceRecorder has NO import of playbackControl. This mock
 // intercepts any future coupling so the spy assertion below would catch it.
 const { importFilesSpy, pausePlaybackSpy, showSpy, monitorStop, makeMonitor } = vi.hoisted(() => {
   const monitorStop = vi.fn()
@@ -71,7 +71,7 @@ describe('audioConstraintFor', () => {
   })
 })
 
-/** Real browser onstop is async — tests fire rec.onstop manually to model it. */
+/** Real browser onstop is async, so tests fire rec.onstop manually to model it. */
 class FakeMediaRecorder {
   static instances: FakeMediaRecorder[] = []
   static isTypeSupported = (): boolean => true

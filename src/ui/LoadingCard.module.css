@@ -1,10 +1,10 @@
 /*
- * The loading card. Vegas-splash shape — a compact landscape box, a diagonal seam
- * between the brand and the work, one status strip along the bottom — in this
- * app's own language: warm near-black, coral brand glow, square corners, one
- * accent and a lot of quiet.
+ * The loading card. Vegas-splash shape (a compact landscape box, a diagonal seam
+ * between the brand and the work, one status strip along the bottom) in this
+ * app's own language: warm near-black, coral brand glow, one accent, and a lot of
+ * quiet.
  *
- * Corners get a hair of rounding — his call, 2026-07-27: not rectangles, not
+ * Corners get a hair of rounding (his call, 2026-07-27): not rectangles, not
  * rounded everywhere. The token carries it (see the radius note in index.css); the
  * seam and the glow carry the character.
  */
@@ -48,7 +48,7 @@
   padding: 26px 16px 22px;
   text-align: center;
   /* The diagonal seam: the pane's right edge slants, letting the darker card
-     ground show through — Vegas's split, without borrowing its blue. */
+     ground show through. That is Vegas's split, without borrowing its blue. */
   clip-path: polygon(0 0, 100% 0, calc(100% - 30px) 100%, 0 100%);
   background:
     linear-gradient(150deg, rgba(240, 90, 70, 0.2) 0%, rgba(240, 90, 70, 0.05) 56%, transparent 80%),
@@ -71,7 +71,7 @@
   height: 100%;
 }
 
-/* Coral bloom behind the fruit — the same glow as the full splash, scaled down. */
+/* Coral bloom behind the fruit, the same glow as the full splash, scaled down. */
 .glow {
   position: absolute;
   top: 34%;

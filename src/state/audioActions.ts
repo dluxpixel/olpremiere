@@ -8,7 +8,7 @@ import { setClipGainDb } from './clipEdits'
 import { useStore } from './store'
 import { useToasts } from './toasts'
 
-/** ~ -1 dBFS ceiling — loud but leaves headroom so the export doesn't clip. */
+/** ~ -1 dBFS ceiling: loud but leaves headroom so the export doesn't clip. */
 const TARGET_PEAK = 0.891
 
 /** Set a clip's gain so its loudest sample hits the target ceiling. */

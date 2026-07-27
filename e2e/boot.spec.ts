@@ -1,4 +1,4 @@
-// The boot screen — the loading card and the melon it opens into.
+// The boot screen: the loading card and the melon it opens into.
 //
 // Under automation the boot is skipped so every other spec can drive the editor
 // directly; that skip has never had a test, and a regression in it would fail all
@@ -19,7 +19,7 @@ test('the loading card reports the real startup work, not a timer', async ({ pag
   await page.goto('/?boot=hold')
   const card = page.getByTestId('boot-loading-card')
   await expect(card).toBeVisible()
-  // The editor has NOT mounted yet — the card is the whole screen.
+  // The editor has NOT mounted yet, so the card is the whole screen.
   await expect(page.getByTestId('panel-left')).toHaveCount(0)
 
   // Six rows on the web build; the update row is desktop-only.
@@ -35,7 +35,7 @@ test('the loading card reports the real startup work, not a timer', async ({ pag
   expect(pct).toBeGreaterThan(0)
   await expect(page.getByTestId('boot-status-line')).not.toBeEmpty()
 
-  // Every row lands, so the bar reaches 100 — on real work, with the card frozen.
+  // Every row lands, so the bar reaches 100 on real work, with the card frozen.
   await expect
     .poll(async () => Number(await bar.getAttribute('aria-valuenow')), { timeout: 15_000 })
     .toBe(100)
@@ -59,6 +59,6 @@ test('the card gives way to the melon on its own', async ({ page }) => {
   // No click, no nudge: the real gate closes and the melon takes the screen.
   await expect(page.getByRole('button', { name: 'Launch OL Premiere' })).toBeVisible({ timeout: 15_000 })
   await expect(page.getByTestId('boot-loading-card')).toHaveCount(0)
-  // And it never opens the editor by itself — that click is the audio gesture.
+  // And it never opens the editor by itself. That click is the audio gesture.
   await expect(page.getByTestId('panel-left')).toHaveCount(0)
 })

@@ -1,18 +1,18 @@
 // Shared title rasterizer. Runs in BOTH the main thread (preview.ts) and the
-// export worker (exportWorker.ts), so it may only touch OffscreenCanvas — no
+// export worker (exportWorker.ts), so it may only touch OffscreenCanvas, never
 // document/window. Preview and export call rasterizeTitle with identical def +
 // dims and hit the SAME cache, so the pixels are byte-for-byte identical.
 
 import { scaleTitleDef, type TitleDef } from '../types'
 
 // ---------------------------------------------------------------------------
-// Pure helpers (no canvas) — unit-tested in node.
+// Pure helpers (no canvas), unit-tested in node.
 
 /**
  * Greedy word-wrap driven by a measure() callback instead of a canvas context,
  * so it is testable without OffscreenCanvas. Hard-wraps on '\n' first, then
  * greedily packs words into each paragraph up to maxWidthPx. A single word
- * wider than maxWidth is NOT broken — it stays alone on its own line.
+ * wider than maxWidth is NOT broken: it stays alone on its own line.
  */
 export function wrapLinesWith(
   measure: (s: string) => number,
@@ -86,7 +86,7 @@ export function blockLayout(opts: {
 }
 
 // ---------------------------------------------------------------------------
-// Layout — where the text actually lands inside the frame.
+// Layout: where the text actually lands inside the frame.
 
 export interface TitleLayout {
   sidePad: number
@@ -110,7 +110,7 @@ export interface TitleLayout {
  * injection wrapLinesWith uses, so this is testable without a canvas.
  *
  * Shared by the rasterizer and by hit-testing so the two can never disagree
- * about where a caption is — the renderer draws into a full-frame canvas, but
+ * about where a caption is. The renderer draws into a full-frame canvas, but
  * the ink is only ever a small part of it.
  */
 export function titleLayout(
@@ -283,7 +283,7 @@ let cacheBytes = 0
 // of the string cache on every hit. An edit → new def object → miss → re-raster.
 //
 // It is a WeakMap, but its keys are the STORE's own TitleDef objects, which live
-// as long as the project does — so an entry left here pins a full sequence-
+// as long as the project does, so an entry left here pins a full sequence-
 // resolution canvas (a 1080x1920 Short = 8.3 MB) for the whole session. Every
 // eviction from the bounded list MUST delete the matching identity entry, or a
 // word-caption timeline (one title clip per word) retains one canvas per word and
@@ -296,7 +296,7 @@ export function clearTitleCache(): void {
   identityCache = new WeakMap()
 }
 
-/** Bytes the title cache is currently holding — for tests and diagnostics. */
+/** Bytes the title cache is currently holding (for tests and diagnostics). */
 export const titleCacheBytes = (): number => cacheBytes
 
 function cacheKey(def: TitleDef, width: number, height: number): string {
@@ -312,7 +312,7 @@ function fontString(def: TitleDef): string {
 /**
  * Rasterize a title into a width×height OffscreenCanvas at sequence resolution
  * (so text is crisp at output res). Transparent except the optional box. Result
- * is cached by JSON(def)+dims — identical inputs return the SAME canvas
+ * is cached by JSON(def)+dims, and identical inputs return the SAME canvas
  * instance, so preview and export rasterize identically. Never throws.
  */
 export function rasterizeTitle(
@@ -324,7 +324,7 @@ export function rasterizeTitle(
    * so drawing it into a different raster has to bring them along:
    *   - the PREVIEW passes < 1 and draws a small canvas. A 1080×1920 caption is an
    *     8.3 MB allocation plus a full-frame text raster on the main thread plus a
-   *     texture upload and mipmap — and on a 2-word caption cadence that fires
+   *     texture upload and mipmap, and on a 2-word caption cadence that fires
    *     roughly twice a second DURING playback. At preview size it is a fraction
    *     of that, and identical on screen.
    *   - the EXPORT passes > 1 when it upscales, which genuinely sharpens: font
@@ -366,7 +366,7 @@ export function rasterizeTitle(
     (str) => ctx.measureText(str).width,
   )
 
-  // BOX — drawn behind the text. If there is no text but a box is set, draw a
+  // BOX: drawn behind the text. If there is no text but a box is set, draw a
   // plain rectangle centered on the block (the "basic shape" path).
   if (def.box) {
     const pad = def.box.paddingPx
@@ -408,7 +408,7 @@ export function rasterizeTitle(
     }
   }
 
-  // TEXT — optional outline (stroke) then fill, with an optional shadow. Guard
+  // TEXT: optional outline (stroke) then fill, with an optional shadow. Guard
   // against no text / bad font size.
   if (hasText) {
     const hasOutline = !!def.outline && def.outline.widthPx > 0
@@ -453,7 +453,7 @@ export function rasterizeTitle(
   cache.push({ key, canvas, def: defIn })
   cacheBytes += canvasBytes(canvas)
   // Always keep the raster we were just asked for, even if it alone exceeds the
-  // budget — refusing it would re-rasterize it on the very next frame.
+  // budget, because refusing it would re-rasterize it on the very next frame.
   while (cacheBytes > CACHE_BUDGET_BYTES && cache.length > 1) {
     const evicted = cache.shift()
     if (!evicted) break

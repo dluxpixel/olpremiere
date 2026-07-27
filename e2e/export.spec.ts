@@ -81,8 +81,8 @@ test('a 1080p timeline exports at 1080p - no upscale', async ({ page }) => {
   await page.getByTestId('asset-card').dblclick()
   await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
 
-  // An HD (1080p) timeline is raised one tier to 1440p — the YouTube sweet spot
-  // — automatically, with no dialog and nothing to choose. This is also the only
+  // An HD (1080p) timeline is raised one tier to 1440p (the YouTube sweet spot)
+  // automatically, with no dialog and nothing to choose. This is also the only
   // export test above H.264 level 4.0 in landscape, and the CQP path at HD.
   const downloadPromise = page.waitForEvent('download', { timeout: 150_000 })
   await page.getByTestId('export-open').click()
@@ -115,11 +115,11 @@ test('a 9:16 Shorts sequence exports at its own portrait size (the crash case)',
   await page.getByTestId('asset-card').dblclick()
   await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
 
-  // Switch to a vertical Shorts sequence — the format of the real-world crash.
+  // Switch to a vertical Shorts sequence, the format of the real-world crash.
   await page.getByTestId('format-select').selectOption('9:16')
 
   // Portrait timelines get a true VERTICAL upscale: 1440×2560, never a
-  // stretched landscape frame — with nothing to choose.
+  // stretched landscape frame, with nothing to choose.
   const downloadPromise = page.waitForEvent('download', { timeout: 280_000 })
   await page.getByTestId('export-open').click()
   const download = await downloadPromise
@@ -153,7 +153,7 @@ test('golden export: the MP4 matches the composited sequence', async ({ page }) 
   await page.getByTestId('asset-card').dblclick() // resolves to the gap after clip 1
   await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(2)
 
-  await shrinkSequence(page) // 640×360 — the golden raster
+  await shrinkSequence(page) // 640×360, the golden raster
 
   const downloadPromise = page.waitForEvent('download', { timeout: 150_000 })
   await page.getByTestId('export-open').click()

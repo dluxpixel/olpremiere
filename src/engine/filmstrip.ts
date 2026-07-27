@@ -1,5 +1,5 @@
 // Filmstrip planning: which source frames a video clip shows across its
-// timeline width. Pure math — the DOM capture lives in state/filmstrips.ts.
+// timeline width. Pure math: the DOM capture lives in state/filmstrips.ts.
 // Tile counts snap to buckets so zooming doesn't regenerate on every pixel,
 // and keys quantize the trim so a live trim-drag doesn't thrash the cache.
 

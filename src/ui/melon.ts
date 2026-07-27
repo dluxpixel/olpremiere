@@ -1,5 +1,5 @@
 /**
- * The OL suite's mascot (shared with the OL Studio DAW) — the pixel-art watermelon slice — as pure data.
+ * The OL suite's mascot (shared with the OL Studio DAW), the pixel-art watermelon slice, as pure data.
  *
  * Kept here as plain data (not baked into JSX) so the boot splash can render it
  * crisply at any size and a unit test can guard the art from accidental
@@ -10,7 +10,7 @@
  *
  * One character per pixel; '.' = transparent. Rows are top→bottom: flesh (the cut
  * face) at the top, then the inner rind, then the outer rind curving to a rounded
- * bottom — i.e. a watermelon slice with the cut side up.
+ * bottom, i.e. a watermelon slice with the cut side up.
  */
 export const MELON_PALETTE: Record<string, string> = {
   R: '#E2483D', // flesh, base (≈ the app's --rec coral)

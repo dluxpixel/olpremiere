@@ -12,7 +12,7 @@ import { newTitleClip, defaultTitleDef, newTrack, newSequence, type Clip, type T
 
 const DUCK = dbToGain(DUCK_DB)
 
-/** An enabled clip occupying [startS, startS+durS) — content type is irrelevant here. */
+/** An enabled clip occupying [startS, startS+durS). Content type is irrelevant here. */
 function clipAt(startS: number, durS: number, patch: Partial<Clip> = {}): Clip {
   return { ...newTitleClip(defaultTitleDef('x'), startS, durS), ...patch }
 }

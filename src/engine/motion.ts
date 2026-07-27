@@ -18,8 +18,8 @@ const clamp = (x: number, lo: number, hi: number): number => (x < lo ? lo : x > 
  * channels live on the clip but the colour channels ('saturation', 'blur') are
  * addresses into `clip.effects`, and the renderer only ever reads colour out of
  * the effect stack. Writing those straight to `clip.keyframes` produced
- * keyframes nothing rendered — until a reload, when the legacy migration moved
- * them into real effects and the same project suddenly graded differently.
+ * keyframes nothing rendered until a reload, at which point the legacy migration
+ * moved them into real effects and the same project suddenly graded differently.
  */
 function withKeyframes(clip: Clip, channel: AnimChannel, kfs: Keyframe[]): Clip {
   let list: readonly Keyframe[] = channelKeyframes(clip, channel)
@@ -98,7 +98,7 @@ export interface ImpactOptions {
 /**
  * The phonk "freeze on the drop": a brief desaturate + blur + slight punch
  * (and a 2px shake) centered on the beat, then snap back. All through clip
- * filter/transform channels — in-shader, keyframeable, hand-editable.
+ * filter/transform channels: in-shader, keyframeable, hand-editable.
  */
 export function impactClip(clip: Clip, fps: number, options: ImpactOptions): Clip {
   const winS = options.durS ?? 0.2
@@ -148,7 +148,7 @@ export interface WhipOptions {
 /**
  * Whip transition across a hard cut: directional blur ramps 0→max over the
  * last frames of A and max→0 over the first frames of B, with a small scale
- * push on each side. Both clips stay independent — it's two effect instances
+ * push on each side. Both clips stay independent, since it's two effect instances
  * plus scale keyframes, all hand-editable afterwards.
  */
 export function whipClips(
@@ -226,7 +226,7 @@ export interface RampResult {
  *
  * The rate change goes through `setClipSpeed`, which ripples the tail when the
  * middle piece GROWS. Slow motion (factor < 1) lengthens it, and without the
- * ripple it overlapped the piece after it — two clips at the same time on one
+ * ripple it overlapped the piece after it: two clips at the same time on one
  * track, which breaks the resolver's sorted/non-overlapping invariant and makes
  * the tail of the slow-motion invisible. Speeding up still just leaves a gap.
  */

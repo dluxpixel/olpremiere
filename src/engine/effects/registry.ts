@@ -1,6 +1,6 @@
 // The effect registry: the single source of truth for what an effect IS.
 //
-// Pure — no GL, no DOM, no store. Three consumers read it:
+// Pure: no GL, no DOM, no store. Three consumers read it:
 //   - glRenderer.ts turns `glsl` into a compiled program (pointwise effects are
 //     concatenated, in stack order, into one per-layer fragment shader);
 //   - the Inspector turns `params` into controls;
@@ -67,7 +67,7 @@ export interface EffectDef {
   params: EffectParamDef[]
   /**
    * Pointwise GLSL. Mutates `vec3 c` (0..1 RGB) in place; `float a` (alpha) is
-   * readable AND writable — keying effects multiply it down, and the premultiply
+   * readable AND writable. Keying effects multiply it down, and the premultiply
    * happens after the whole chain. The renderer wraps every body in its own
    * block scope, so local variable names cannot collide when an effect appears
    * in a stack twice. Uniform names come from `u`, so they cannot collide either.
@@ -207,7 +207,7 @@ export const EFFECTS: EffectDef[] = [
     params: [p('vibrance', 'Vibrance', -1, 1, 0.01, 0)],
     // Unlike plain saturation, the boost scales by (1 - current saturation), so
     // low-saturation pixels get most of it and already-saturated ones are barely
-    // touched — the "digital vibrance" look that avoids clipping vivid colours.
+    // touched, giving the "digital vibrance" look that avoids clipping vivid colours.
     glsl: (u) => `
       float vMax = max(c.r, max(c.g, c.b));
       float vMin = min(c.r, min(c.g, c.b));
@@ -289,7 +289,7 @@ export const EFFECTS: EffectDef[] = [
     pass: 'pointwise',
     // Dropped keying GREEN at a clean working strength (key-colour default is green,
     // keyR/G/B = 0/1/0); spill FULL (1.0) so no green tint survives on the kept
-    // edges — the fix for green surviving on white corners + thin white lines. A
+    // edges: the fix for green surviving on white corners + thin white lines. A
     // pure bright green screen keys cleanly at these defaults with no tuning.
     initialParams: { similarity: 0.4, smoothness: 0.08, spill: 1 },
     params: [
@@ -314,7 +314,7 @@ export const EFFECTS: EffectDef[] = [
         if (ckGreen || ckBlue) {
           // GREEN/BLUE SCREEN: key on how far the screen channel EXCEEDS the other
           // two. White, grey and any neutral have ~zero excess, so thin white lines
-          // and the CORNERS of white shapes are kept fully opaque — a chroma-distance
+          // and the CORNERS of white shapes are kept fully opaque, whereas a chroma-distance
           // key eats them because their anti-aliased edges drift toward the screen
           // colour. Excess ignores brightness, so bright detail never keys out.
           float ckChan = ckGreen ? c.g : c.b;

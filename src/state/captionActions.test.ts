@@ -157,7 +157,7 @@ describe('words per caption', () => {
 
   it('drives EVERY caption entrance without the caller passing it', () => {
     // The right-click auto-caption path calls addCaptionsFromWords with no
-    // maxWords at all — the persisted pick has to reach it anyway.
+    // maxWords at all, so the persisted pick has to reach it anyway.
     setCaptionWordsPerChunk(1)
     addCaptionsFromWords(run)
     let top = videoTracks(seq())[videoTracks(seq()).length - 1]
@@ -188,12 +188,12 @@ describe('words per caption', () => {
 
     addCaptionsFromWords(shortWords)
     const shortRun = videoTracks(seq())[videoTracks(seq()).length - 1]
-    expect(shortRun.clips).toHaveLength(1) // 12 chars — they all fit
+    expect(shortRun.clips).toHaveLength(1) // 12 chars, so they all fit
     useStore.getState().undo()
 
     addCaptionsFromWords(longWords)
     const longRun = videoTracks(seq())[videoTracks(seq()).length - 1]
-    // Same dial, same word ceiling — but these do NOT get crammed together.
+    // Same dial, same word ceiling, but these do NOT get crammed together.
     expect(longRun.clips).toHaveLength(3)
   })
 

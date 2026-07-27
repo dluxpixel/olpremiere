@@ -1,6 +1,6 @@
 // Filmstrip generation + cache: capture N small frames from a video asset
 // into one horizontal strip and hand back an object URL. Strips generate
-// lazily off a single queue (one <video> seek chain at a time — seeks are
+// lazily off a single queue (one <video> seek chain at a time, since seeks are
 // serialized per element anyway), land in an LRU, and notify the hook when
 // ready. Until then the clip shows its poster frame exactly as before.
 
@@ -89,7 +89,7 @@ export function useFilmstrip(
     if (!key || !plan || !asset) return
     if (cache.has(key) || pending.has(key)) {
       if (!cache.has(key)) {
-        // Someone else is generating it — wake this hook when it lands.
+        // Someone else is generating it, so wake this hook when it lands.
         const set = waiters.get(key) ?? new Set()
         set.add(wake)
         waiters.set(key, set)

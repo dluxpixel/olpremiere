@@ -64,7 +64,7 @@ describe('applyJettismLook', () => {
     expect(tracks[1].clips[0].effects).toHaveLength(0) // captions stay clean
   })
 
-  it('applyPunchyGrade grades just the one clip — no 9:16, no double-apply', () => {
+  it('applyPunchyGrade grades just the one clip: no 9:16, no double-apply', () => {
     const a = seedFootage(0, 5)
     seedFootage(5, 3)
     const before = seq().width

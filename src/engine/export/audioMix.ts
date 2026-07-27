@@ -89,7 +89,7 @@ export function softLimit(x: number): number {
  */
 export function sampleLinear(channel: Float32Array, pos: number): number {
   // Before the buffer start is silence (a Web Audio source plays nothing there),
-  // not a ramp-in from sample 0 — so any pos < 0 reads 0, no interpolation.
+  // not a ramp-in from sample 0, so any pos < 0 reads 0, no interpolation.
   if (pos < 0) return 0
   const i0 = Math.floor(pos)
   const s0 = i0 >= 0 && i0 < channel.length ? channel[i0] : 0
@@ -283,7 +283,7 @@ export function mixToStereo(sources: MixSourcePcm[], opts: MixOptions): Float32A
     const localPoints = env.map((p) => ({ offsetS: p.offsetS - sched.whenOffsetS, value: p.value }))
     let gained = applyGainEnvelope(clipMono, localPoints, sampleRate)
 
-    // Music ducks under the voiceover — the same shift-to-buffer-local trick,
+    // Music ducks under the voiceover with the same shift-to-buffer-local trick,
     // reproducing the duck GainNode in scheduleAudio/renderAudioMix.
     if (track.audioRole === 'music' && duckEnv) {
       const localDuck = duckEnv.map((p) => ({ offsetS: p.offsetS - sched.whenOffsetS, value: p.value }))

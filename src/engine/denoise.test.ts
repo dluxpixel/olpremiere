@@ -35,7 +35,7 @@ describe('mixDryWet', () => {
     expect(Array.from(mixDryWet(raw, wet, -1))).toEqual(Array.from(raw))
   })
 
-  it('returns a NEW array — never mutates the cached raw PCM', () => {
+  it('returns a NEW array and never mutates the cached raw PCM', () => {
     const out = mixDryWet(raw, wet, 1)
     expect(out).not.toBe(wet)
     expect(raw[0]).toBe(0.5)

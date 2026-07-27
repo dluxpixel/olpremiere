@@ -35,8 +35,8 @@ export function setClipsAppearance(ids: Iterable<string>, patch: Partial<Appeara
       if (t.locked || !t.clips.some((c) => idSet.has(c.id))) return t
       const clips = t.clips.map((c) => {
         if (!idSet.has(c.id)) return c
-        // Never touch a clip with no animation unless we're ADDING an entrance/exit
-        // — applyAppearanceToClip clears the shared transform/opacity channels, so a
+        // Never touch a clip with no animation unless we're ADDING an entrance/exit.
+        // applyAppearanceToClip clears the shared transform/opacity channels, so a
         // Speed/None/Clear op would silently wipe a clip's own manual keyframes.
         if (!c.appearance && !patch.in && !patch.out) return c
         changed = true
@@ -54,8 +54,8 @@ export const autoAppearanceDur = (clipDurS: number): number =>
 
 /**
  * Set the animation SPEED (window length) on every clip. `'auto'` sizes each
- * clip's window to ITS OWN duration — long words animate slower, short words
- * snappier — which is what David asked for.
+ * clip's window to ITS OWN duration (long words animate slower, short words
+ * snappier), which is what David asked for.
  */
 export function setClipsAppearanceDur(ids: Iterable<string>, durS: number | 'auto'): void {
   const idSet = new Set(ids)

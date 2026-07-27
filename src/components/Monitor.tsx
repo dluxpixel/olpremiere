@@ -69,7 +69,7 @@ function useProgramCanvas(quality: Quality) {
     let prevSeq: Sequence | null = null
     let prevComplete = false
     // When the SAME frame first failed to fully resolve. A frame that can never
-    // resolve — media gone missing, a source that ran out — never reports
+    // resolve (media gone missing, a source that ran out) never reports
     // complete, so the loop kept redrawing a MOTIONLESS picture at the cap
     // forever. After a fair window for a slow decode, back the polling right
     // off instead of parking outright, so a late frame still lands.

@@ -10,7 +10,7 @@ import { useStore } from './store'
 
 const DB_NAME = 'reel'
 // v2 adds the global Library ('library' media entries + 'presets' effect
-// stacks) — content that deliberately OUTLIVES any project document.
+// stacks), content that deliberately OUTLIVES any project document.
 const DB_VERSION = 2
 
 let dbPromise: Promise<IDBPDatabase> | null = null
@@ -49,7 +49,7 @@ export async function loadLastProject(): Promise<Project | null> {
   return loadProjectById(id)
 }
 
-/** Load one project by id (projects are keyed individually — a collab join
+/** Load one project by id (projects are keyed individually, so a collab join
  * never overwrites the solo project; Leave restores it through this). */
 export async function loadProjectById(id: string): Promise<Project | null> {
   const d = await db()
@@ -91,7 +91,7 @@ async function splitLegacySequences(project: Project): Promise<Project> {
   return plan.kept
 }
 
-/** Light listing for the Projects picker (docs are blob-free JSON — cheap). */
+/** Light listing for the Projects picker (docs are blob-free JSON, so it's cheap). */
 export interface ProjectSummary {
   id: string
   name: string
@@ -158,7 +158,7 @@ let saveTimer: number | undefined
 let autosaveFailing = false
 
 /**
- * Write the open project. REJECTS when the write fails — every caller has to
+ * Write the open project. REJECTS when the write fails. Every caller has to
  * decide what a failed save means for it, because the failure modes here
  * (origin quota exhausted, disk full, a wiped/blocked IndexedDB) all mean the
  * user's edits exist ONLY in memory. Swallowing the error made a failed save
@@ -179,7 +179,7 @@ async function flushSave(): Promise<void> {
   }
 }
 
-/** Save immediately (Ctrl+S). Rejects when the write failed — see flushSave. */
+/** Save immediately (Ctrl+S). Rejects when the write failed (see flushSave). */
 export function saveNow(): Promise<void> {
   window.clearTimeout(saveTimer)
   return flushSave()
@@ -187,13 +187,13 @@ export function saveNow(): Promise<void> {
 
 /**
  * Hydrate the last project and start debounced autosave. Call once at boot.
- * Returns the hydration promise — anything that must see the REAL project
+ * Returns the hydration promise: anything that must see the REAL project
  * (e.g. joining a collab room from the URL) awaits it.
  */
 export function initPersistence(): Promise<void> {
   // Ask the browser to make this origin's storage DURABLE, so projects + media
   // aren't silently evicted under storage pressure (or by a "clear site data"
-  // heuristic). Best-effort — ignored where unsupported. Matters most before a
+  // heuristic). Best-effort, and ignored where unsupported. Matters most before a
   // web→desktop migration, where un-backed work must not vanish.
   try {
     void navigator.storage?.persist?.()
@@ -224,7 +224,7 @@ export function initPersistence(): Promise<void> {
             // own it cannot tell the user their work is no longer being written.
             if (autosaveFailing) return
             autosaveFailing = true
-            useToasts.getState().show('Could not save — your work is only in memory', 'danger', {
+            useToasts.getState().show('Could not save. Your work is only in memory', 'danger', {
               label: 'Back up to a file',
               // Imported lazily: projectFile reads blobs back out of THIS module.
               onClick: () => void import('./projectFile').then((m) => m.exportProjectToFile()),

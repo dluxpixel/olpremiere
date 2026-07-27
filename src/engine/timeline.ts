@@ -1,5 +1,5 @@
 // Pure timeline engine: clip math, placement, trim/split/delete, snapping.
-// No React, no DOM, no store — only types. Every function takes and returns
+// No React, no DOM, no store: only types. Every function takes and returns
 // immutable data; when nothing changes the input reference comes back as-is.
 
 import { refitAppearanceToFrame, retimeAppearance, splitAppearanceAcrossCut } from './anim/appearance'
@@ -50,17 +50,17 @@ export function recomputeDuration(seq: Sequence): Sequence {
 
 /**
  * Scale a clip to COVER (fill) a frame of frameW×frameH, cropping the overflow
- * and centering it — the "make it a Short" refit. `transform.scale=1` is the
+ * and centering it, the "make it a Short" refit. `transform.scale=1` is the
  * renderer's contain-fit; cover needs scale = cover/contain. Titles take the
  * separate title path below (their metrics are sequence px, not frame-relative);
  * this skips clips that animate position, and clips the author
- * has manually moved or scaled (don't fight a hand-placed transform) — only
+ * has manually moved or scaled (don't fight a hand-placed transform). Only
  * identity transforms and the exact cover-fit a previous refit produced for
  * the prevW×prevH frame are refit. A punch-in zoom (scale keyframes only, no
  * position animation, clip never moved) is refit too, by the same "only touch
  * our own work" rule applied to its resting baseline (the MIN keyframe value):
  * when that baseline is 1 or the previous frame's cover ratio, every scale
- * keyframe is multiplied by newCover/baseline — so the zoom rides along and
+ * keyframe is multiplied by newCover/baseline, so the zoom rides along and
  * the switch stays reversible. Any other baseline is hand-authored and stays
  * sacred. Returns the same clip when nothing changes.
  */
@@ -74,7 +74,7 @@ function refitTitleToFrame(clip: Clip, frameW: number, frameH: number, prevW: nu
   const title = clip.title
   if (!title) return clip
   const ry = frameH / prevH
-  // scaleTitleDef is the ONE place these metrics are scaled — shared with the
+  // scaleTitleDef is the ONE place these metrics are scaled. It is shared with the
   // preview (which draws smaller) and the export (which draws larger), so the
   // three cannot drift apart. Height drives it: every title metric is authored
   // against the frame height.
@@ -97,8 +97,8 @@ export function refitClipToFill(
   // Titles carry SEQUENCE pixels, not frame-relative ones: jettismCaptionDef
   // bakes fontSizePx/outline/offset off the sequence HEIGHT at the moment the
   // caption is made. So captioning a 1920x1080 project and THEN switching to
-  // 9:16 — the natural order, since the Look is the "make it a Short" button you
-  // press last — left every caption at roughly half size, thin-outlined and at
+  // 9:16 (the natural order, since the Look is the "make it a Short" button you
+  // press last) left every caption at roughly half size, thin-outlined and at
   // the wrong height, with forty clips to fix by hand. Rescale them with the
   // frame instead. (Needs a known previous size; without one there is no ratio.)
   if (clip.title) return prevW > 0 && prevH > 0 ? refitTitleToFrame(clip, frameW, frameH, prevW, prevH) : clip
@@ -147,7 +147,7 @@ export function refitClipToFill(
 /**
  * Reformat a sequence to width×height (e.g. 9:16 Shorts). When `refit`, every
  * untouched clip is scaled to fill the new frame (hand-placed transforms are
- * left alone — see refitClipToFill). Export follows the sequence dimensions.
+ * left alone; see refitClipToFill). Export follows the sequence dimensions.
  */
 export function setSequenceFormat(
   seq: Sequence,
@@ -220,8 +220,8 @@ export function clampSpeed(s: number): number {
 /**
  * Rate stretch (Premiere's R tool as an Alt+edge-drag): move a clip's edge to
  * `tS` by CHANGING ITS SPEED, never its source window. The same source frames
- * play faster (shorter clip) or slower (longer clip); in/out stay put — that is
- * the whole difference from a trim.
+ * play faster (shorter clip) or slower (longer clip); in/out stay put, and that
+ * is the whole difference from a trim.
  *
  * In place, like a plain trim: the opposite edge is fixed, and the new length
  * clamps against the neighbour on the dragged side, one output frame minimum,
@@ -487,7 +487,7 @@ const KF_EPS = 1e-4
  * boundary keyframe holding the RESOLVED value at the cut (an existing
  * keyframe at the cut is reused verbatim), so left ends and right begins on
  * the exact same value. Eased segments spanning the cut are resampled
- * linearly at the boundary — exact for linear/hold, near for eases.
+ * linearly at the boundary: exact for linear/hold, near for eases.
  */
 export function splitKeyframeList(
   kfs: readonly Keyframe[],
@@ -508,7 +508,7 @@ export function splitClip(seq: Sequence, clipId: Id, tS: number): Sequence {
   const found = findClip(seq, clipId)
   if (!found) return seq
   const { track, clip, trackIndex, clipIndex } = found
-  // A piece shorter than one frame can never render a full frame — a cut that
+  // A piece shorter than one frame can never render a full frame. A cut that
   // close to an edge is playhead jitter (cutting during playback, double-taps),
   // and honoring it litters the timeline with unusable slivers. No-op instead.
   const minPieceS = 1 / (seq.fps || 30)
@@ -537,7 +537,7 @@ export function splitClip(seq: Sequence, clipId: Id, tS: number): Sequence {
   // motion continues seamlessly across it. Copying the full set to both halves
   // made a punch zoom REPLAY from the start on the right piece. A side left
   // with a single boundary keyframe (its half of the animation is constant)
-  // collapses to a static base — no phantom "animated" stopwatch on it.
+  // collapses to a static base, so no phantom "animated" stopwatch on it.
   for (const [ch, kfs] of Object.entries(clip.keyframes ?? {}) as [AnimChannel, Keyframe[]][]) {
     if (!kfs?.length) continue
     const s = splitKeyframeList(kfs, cutLocal)
@@ -615,7 +615,7 @@ function shiftClipsBy(seq: Sequence, deltaById: Map<Id, number>): Sequence {
 
 /**
  * Close the gap immediately BEFORE a clip: slide it (and every clip after it on
- * the same track) left to butt against the previous clip — or to 0 if it's the
+ * the same track) left to butt against the previous clip, or to 0 if it's the
  * first. LINK-GROUP AWARE: each moved clip's linked audio partner moves the same
  * distance, so a video and its split-off audio never drift apart. Preserves
  * spacing among the rippled clips. No-op when there's no gap.
@@ -634,7 +634,7 @@ export function closeGapBefore(seq: Sequence, clipId: Id): Sequence {
 
 /**
  * Remove every gap on a track: butt each clip against the previous, keeping the
- * FIRST clip where it is (its lead-in is intentional). LINK-GROUP AWARE — each
+ * FIRST clip where it is (its lead-in is intentional). LINK-GROUP AWARE: each
  * clip's linked partner shifts by that clip's own delta, so linked audio repacks
  * in lockstep. One tidy pass.
  */
@@ -673,13 +673,13 @@ export function snapTime(
 
 /**
  * Every edge a drag can magnet to: clip starts/ends on EVERY lane (video and
- * audio alike — cross-track alignment is the point), markers, t=0, and the
+ * audio alike; cross-track alignment is the point), markers, t=0, and the
  * playhead.
  *
  * `excludeClipIds` must be the dragged clip's whole LINK GROUP, not just the
  * grabbed clip. A linked A/V pair otherwise leaves its partner's stale edges in
  * the set, and the drag magnetizes back to its own origin instead of to its
- * neighbours — which reads as "snapping doesn't work across lanes".
+ * neighbours, which reads as "snapping doesn't work across lanes".
  */
 export function collectSnapPoints(
   seq: Sequence,
@@ -702,7 +702,7 @@ export function collectSnapPoints(
 /**
  * The subset of `ids` whose clips sit on UNLOCKED tracks. A locked track
  * rejects every mutation, but selection stays allowed (inspecting a locked
- * clip's values is legitimate) — so every destructive VERB filters through
+ * clip's values is legitimate), so every destructive VERB filters through
  * this instead of trusting the selection.
  */
 export function unlockedClipIds(seq: Sequence, ids: readonly Id[]): Id[] {
@@ -765,7 +765,7 @@ export function addClipWithLinkedAudio(
   const startS = resolveStart(obstacles, desiredStartS, dur)
 
   if (!canLink) {
-    // No audio track — standalone video clip keeps its own audio (no linkId).
+    // No audio track: standalone video clip keeps its own audio (no linkId).
     const clip = { ...newClipFromAsset(asset, startS) }
     return {
       seq: withTrackClips(seq, vIndex, insertSorted(vTrack.clips, clip)),
@@ -795,7 +795,7 @@ export function addClipWithLinkedAudio(
  * ALL-OR-NOTHING: if any partner cannot take that exact delta on its own track,
  * the whole move is refused (same contract as rateStretchGroup). moveClip alone
  * would forward the partner's desired start through resolveStart, whose job is
- * to find the NEAREST free gap — so a busy audio track silently relocated the
+ * to find the NEAREST free gap. So a busy audio track silently relocated the
  * voice seconds away from its picture, permanently out of sync, after one
  * ordinary drag.
  */
@@ -859,9 +859,9 @@ export function deleteGroup(seq: Sequence, clipId: Id): Sequence {
 }
 
 /**
- * Selection-scoped delete — ONE Delete verb instead of three menu entries.
+ * Selection-scoped delete: ONE Delete verb instead of three menu entries.
  * The selection already says what to remove: the AUDIO half of a linked pair
- * → just that clip (the video partner survives and stays silent — its linkId
+ * → just that clip (the video partner survives and stays silent because its linkId
  * remains, so clipEmitsAudio keeps treating it as video-only); a VIDEO clip
  * or anything unlinked → the whole link group, exactly like before. This
  * replaced the enumerated "Delete audio only (keep video)" / "Delete video
@@ -882,11 +882,11 @@ export function rippleDeleteGroup(seq: Sequence, clipId: Id): Sequence {
 }
 
 /**
- * Split ONE clip at tS and leave its linked A/V partner untouched — "cut just
+ * Split ONE clip at tS and leave its linked A/V partner untouched: "cut just
  * this clip", the verb behind an explicit selection (splitGroup cuts the pair).
  *
  * Each half gets its OWN fresh link group rather than dropping linkId, because
- * a video clip WITHOUT a linkId plays its own audio — that would double against
+ * a video clip WITHOUT a linkId plays its own audio, which would double against
  * the partner audio clip still sitting on the timeline. A group of one keeps
  * each half video-only (the sound keeps coming from the untouched partner)
  * while letting the halves move, trim and delete independently.
@@ -969,7 +969,7 @@ export function rippleTrimTo(
     deltaS = newEndS - endS
     next = { ...clip, outS: clip.inS + (newEndS - clip.startS) * sp }
   } else {
-    // Ripple-in keeps startS fixed — content slides under the head — so the
+    // Ripple-in keeps startS fixed (content slides under the head), so the
     // previous clip never constrains it: only the source head + min duration.
     const lo = boundless ? -Infinity : clip.startS - clip.inS / sp
     const t = Math.min(endS - minDurS, Math.max(lo, tS))
@@ -1073,7 +1073,7 @@ export function slipClip(
  * Slip every member of a linked group by ONE common delta.
  *
  * Slipping only the grabbed clip changed the video's source window while its
- * linked audio kept the old one — the picture ran ahead of the voice by exactly
+ * linked audio kept the old one. The picture ran ahead of the voice by exactly
  * the slip amount, permanently, and with no visual feedback at all (the clip
  * neither moves nor changes length). Every other pair-aware verb in this file
  * operates on the group; slip was the one that did not.

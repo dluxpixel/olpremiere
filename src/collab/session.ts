@@ -8,7 +8,7 @@
 // Loop safety: remote applies set `applyingRemote`, so the store subscription
 // refreshes its snapshot WITHOUT writing back into the doc; local Y.transacts
 // carry origin 'local', so the observer skips them (the store already has that
-// state). Media blobs are NOT synced — each peer keeps its own local files;
+// state). Media blobs are NOT synced: each peer keeps its own local files;
 // missing media renders as placeholders.
 
 import * as Y from 'yjs'
@@ -32,7 +32,7 @@ export interface CollabSession {
   /** Rename this editor; the next heartbeat (≤2s) carries it to everyone. */
   setName: (name: string) => void
   /**
-   * Fires ONCE when the session knows which document the room holds — either
+   * Fires ONCE when the session knows which document the room holds. Either
    * we adopted the room's state, or the room was empty and we seeded it. Media
    * sync must not start earlier: before adoption the store still holds the
    * joiner's PRIVATE project, and uploading its media to a foreign room's
@@ -46,7 +46,7 @@ const PRESENCE_INTERVAL_MS = 2_000
 /**
  * Joiner: how often to re-ask a silent room for state. A ONE-SHOT request
  * loses to any main-thread stall on either side (dev-server module storms,
- * busy host) — and the peer that answers re-answers full state, so repeats
+ * busy host), and the peer that answers re-answers full state, so repeats
  * are free (CRDT-idempotent).
  */
 const RESYNC_INTERVAL_MS = 700
@@ -72,12 +72,12 @@ function snapshotOf(map: Y.Map<EntityValue>): Entities {
 /**
  * Join (or seed) a collab room over the given transport.
  *
- * role 'creator': a freshly minted room id — nobody else can hold state, so
+ * role 'creator': a freshly minted room id. Nobody else can hold state, so
  * the local project IS the document, immediately. Seeding right away also
  * means sync requests are answered with REAL state from t=0 (the old deferred
  * seed answered early joiners with an empty doc).
  *
- * role 'joiner' (room id came from a URL): the room's document wins — ask for
+ * role 'joiner' (room id came from a URL): the room's document wins, so ask for
  * it, keep asking, and adopt what answers. The local project seeds the room
  * only after a long silence, which means the room is genuinely dead (tabs
  * mode with the creator's tab closed).
@@ -134,7 +134,7 @@ export function startCollabSession(opts: {
   const observer = (_events: unknown, tx: Y.Transaction): void => {
     if (tx.origin === 'local') return
     const rebuilt = entitiesToProject(snapshotOf(em))
-    if (!rebuilt) return // torn/partial remote state — keep the local doc
+    if (!rebuilt) return // torn/partial remote state, so keep the local doc
     applyingRemote = true
     try {
       useStore.getState().applyRemoteProject(rebuilt)
@@ -166,7 +166,7 @@ export function startCollabSession(opts: {
   // NOT symmetric, on purpose. Entities mostly merge by disjoint ids, but
   // `meta` is ONE shared key: when a joiner blind-seeds its local placeholder
   // concurrently with the room's real state, the meta LWW is a client-id coin
-  // flip — lose it and activeSequenceId points at the placeholder's empty
+  // flip: lose it and activeSequenceId points at the placeholder's empty
   // sequence on EVERY peer. So only a creator seeds eagerly; a joiner adopts.
   const seedFromLocal = (): void => {
     doc.transact(() => {
@@ -181,7 +181,7 @@ export function startCollabSession(opts: {
     resyncTimer = setInterval(() => transport.requestSync(), RESYNC_INTERVAL_MS)
     seedTimer = setTimeout(() => {
       // Silence this long = dead room. em.size > 0 without ready means SOME
-      // state arrived but never rebuilt into a valid project — keep asking
+      // state arrived but never rebuilt into a valid project, so keep asking
       // rather than merge a second identity into a live-but-torn room.
       if (!ready && em.size === 0) seedFromLocal()
     }, SEED_FALLBACK_MS)
@@ -244,7 +244,7 @@ export function startCollabSession(opts: {
 }
 
 /**
- * REBASED undo/redo for rooms. Plain undo restores a whole-project snapshot —
+ * REBASED undo/redo for rooms. Plain undo restores a whole-project snapshot, and
  * in a room that snapshot predates everyone else's recent edits, so applying
  * it would silently wipe them. Instead: pop the user's own top command, take
  * ONLY that command's entity delta, and apply its inverse onto the CURRENT
@@ -257,7 +257,7 @@ export function rebasedHistoryStep(dir: 'undo' | 'redo'): string | null {
   const cmd = store.popHistory(dir)
   if (!cmd) return null
   // A command recorded against a DIFFERENT project (before a room adoption
-  // slipped in) must never rebase into this one — discard it outright.
+  // slipped in) must never rebase into this one. Discard it outright.
   if (cmd.before.id !== store.project.id) return null
   // Undo applies after→before; redo applies before→after.
   const src = dir === 'undo' ? cmd.after : cmd.before
@@ -269,8 +269,8 @@ export function rebasedHistoryStep(dir: 'undo' | 'redo'): string | null {
   const current = projectToEntities(store.project)
   for (const [key, value] of changed) {
     if (key === META_KEY) {
-      // dispatch() bumps updatedAt, so META differs on virtually EVERY command
-      // — writing it wholesale would revert other people's project rename /
+      // dispatch() bumps updatedAt, so META differs on virtually EVERY command,
+      // and writing it wholesale would revert other people's project rename /
       // aspect switch / active-sequence on any unrelated undo. Merge only the
       // meta fields THIS command genuinely changed onto the current meta.
       const cur = current.get(META_KEY)
@@ -290,7 +290,7 @@ export function rebasedHistoryStep(dir: 'undo' | 'redo'): string | null {
   }
   for (const key of removed) current.delete(key)
   const rebuilt = entitiesToProject(current)
-  if (!rebuilt) return cmd.label // degenerate (e.g. undoing the seed itself) — drop the step
+  if (!rebuilt) return cmd.label // degenerate (e.g. undoing the seed itself), so drop the step
   // Goes through the normal store path WITHOUT a history push; the session's
   // store subscription sees it as a local change and broadcasts the delta.
   store.applyRemoteProject(rebuilt)

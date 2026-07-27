@@ -184,8 +184,8 @@ test('the Minecraft font renders in both preview and export (worker font path)',
   await expect.poll(() => rowMaxLuma(page, 0.5), { timeout: 8_000 }).toBeGreaterThan(150)
   await page.screenshot({ path: `${VERIFY}/minecraft-preview.png` })
 
-  // Export (buffered download path) and confirm the text band is bright there too
-  // — proving the font loaded in the worker's FontFaceSet without crashing.
+  // Export (buffered download path) and confirm the text band is bright there too,
+  // proving the font loaded in the worker's FontFaceSet without crashing.
   await shrinkSequence(page)
   const dl = page.waitForEvent('download', { timeout: 120_000 })
   await page.getByTestId('export-open').click()
@@ -243,7 +243,7 @@ test('animation speed shrinks the entrance window', async ({ page }) => {
   await menu.getByRole('menuitem', { name: 'Entrance' }).hover()
   // Exact: the top-level "Fade in + out" item also matches /Fade in/ (strict-mode clash).
   await menu.getByRole('menuitem', { name: 'Fade in', exact: true }).click()
-  // The default window is a quarter second — an accent, not a motion-graphics
+  // The default window is a quarter second: an accent, not a motion-graphics
   // half second that is still arriving when the shot has moved on.
   const normalEnd = (await clipData(page, id)).opacityKf!.at(-1)!.t
   expect(normalEnd).toBeCloseTo(0.25, 2)

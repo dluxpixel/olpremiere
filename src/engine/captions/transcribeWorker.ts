@@ -1,14 +1,14 @@
 /// <reference lib="webworker" />
 // Whisper speech-to-text, fully local. Runs in a dedicated worker so model
 // download + inference never touch the UI thread, and the transformers.js
-// bundle (large) is dynamic-imported HERE — the main app bundle stays lean.
+// bundle (large) is dynamic-imported HERE, so the main app bundle stays lean.
 // WebGPU when the machine has it, WASM otherwise. The model downloads once
 // from the Hugging Face CDN and lands in the browser cache; after that the
 // whole pipeline is offline. No audio ever leaves the machine.
 
 // Model + generation options route per language (transcribeConfig.ts):
 // English keeps the `.en` model, Czech/auto use the multilingual export. Both
-// are `_timestamped` onnx-community exports — word timestamps need the
+// are `_timestamped` onnx-community exports: word timestamps need the
 // cross-attention outputs only those carry, and older Xenova exports trip
 // onnxruntime's session validation outright.
 import { generationOptsFor, modelFor, type CaptionLanguage } from './transcribeConfig'
@@ -16,7 +16,7 @@ import { generationOptsFor, modelFor, type CaptionLanguage } from './transcribeC
 export interface TranscribeRequest {
   /** Mono PCM at 16kHz (the Whisper feature-extractor rate). */
   pcm: Float32Array
-  /** Caption language — picks the model AND the generation options. */
+  /** Caption language, which picks the model AND the generation options. */
   language: CaptionLanguage
 }
 
@@ -40,7 +40,7 @@ type Asr = (
 
 // Loaded pipelines are cached PER MODEL in module scope and this worker is
 // kept ALIVE across transcriptions (see transcribe.ts), so each model loads at
-// most once per session — switching English↔Czech keeps both resident rather
+// most once per session. Switching English↔Czech keeps both resident rather
 // than thrashing. The Hugging Face files live in the browser Cache Storage,
 // so downloads also survive reloads.
 const asrCache = new Map<string, Asr>()
@@ -95,7 +95,7 @@ const OPTS = { return_timestamps: 'word', chunk_length_s: 30, stride_length_s: 5
 async function run(pcm: Float32Array, language: CaptionLanguage): Promise<void> {
   try {
     const model = modelFor(language)
-    // language/task are GENERATION options (multilingual only — a `.en`
+    // language/task are GENERATION options (multilingual only, since a `.en`
     // pipeline rejects them); the model choice above is what routes Czech.
     const opts = { ...OPTS, ...generationOptsFor(language) }
     const asr = await getAsr(model)
@@ -104,7 +104,7 @@ async function run(pcm: Float32Array, language: CaptionLanguage): Promise<void> 
     try {
       out = await asr(pcm, opts)
     } catch (err) {
-      // A GPU pipeline can still fail shader compile at inference — fall back to
+      // A GPU pipeline can still fail shader compile at inference. Fall back to
       // a WASM pipeline once and cache THAT for subsequent runs.
       const { pipeline } = await import('@huggingface/transformers')
       const wasmAsr = (await pipeline('automatic-speech-recognition', model, {

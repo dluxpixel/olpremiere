@@ -26,7 +26,7 @@ test('audio clips render a waveform', async ({ page }) => {
   await expect(wave).toHaveCount(1)
   // Video clips do not draw a waveform (they show the filmstrip thumb).
   await expect(vclip(page).getByTestId('clip-waveform')).toHaveCount(0)
-  // The canvas must actually PAINT peaks — count opaque pixels so a blank
+  // The canvas must actually PAINT peaks. Count opaque pixels so a blank
   // waveform (null peaks / decode fail) can never pass silently.
   await expect
     .poll(

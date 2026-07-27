@@ -1,5 +1,5 @@
 // Settings: every persistent preference in one place. The split with the
-// command palette is deliberate and load-bearing — the palette runs ACTIONS,
+// command palette is deliberate and load-bearing: the palette runs ACTIONS,
 // this dialog holds the choices that persist between sessions. Preferences
 // that already have an in-context home (the mic chevron, the monitor's quality
 // picker) keep it; this is where they are ALSO discoverable, and where every

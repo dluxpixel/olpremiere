@@ -100,7 +100,7 @@ test('click a bin asset, press Delete → it deletes (with Undo)', async ({ page
   await importAndPlace(page)
   expect(await clipCount(page)).toBe(1)
 
-  // Clicking the card focuses it — that's the bin selection (visible ring).
+  // Clicking the card focuses it, and that's the bin selection (visible ring).
   await page.getByTestId('asset-card').click()
   await expect(page.getByTestId('asset-card')).toBeFocused()
   await page.keyboard.press('Delete')

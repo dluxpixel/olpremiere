@@ -27,7 +27,7 @@ nsis:
   perMachine: false
   allowToChangeInstallationDirectory: true
   # Hyphenated (no spaces) so the local file, the GitHub asset, and latest.yml
-  # all reference the EXACT same name — no sanitization mismatch to break updates.
+  # all reference the EXACT same name, so no sanitization mismatch can break updates.
   artifactName: OL-Premiere-${version}-setup.${ext}
 # Auto-update feed: GitHub Releases. electron-updater checks the latest published
 # release of dluxpixel/olpremiere.
@@ -35,7 +35,7 @@ nsis:
 # `owner`/`repo` here are the ONE source of truth for where the feed lives, and
 # scripts/publish.mjs must agree with them: the updater reads the feed from this
 # repo, so a publisher pointing anywhere else uploads a release nothing ever
-# looks at — a "successful" publish into the void, which is the worst kind of
+# looks at. That is a "successful" publish into the void, which is the worst kind of
 # failure because nothing errors.
 #
 # Changing them also strands existing installs: a build already in the wild keeps

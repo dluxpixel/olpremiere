@@ -45,7 +45,7 @@ export interface AppState {
   /**
    * Apply an undoable edit to the project document. Passing a `mergeKey` folds
    * this edit into the previous one when they share the key and arrive close
-   * together — that is what makes a typed sentence ONE undo step.
+   * together. That is what makes a typed sentence ONE undo step.
    */
   dispatch: (label: string, fn: (p: Project) => Project, mergeKey?: string) => void
   /** Returns the undone/redone command's label, or null when there was nothing. */
@@ -101,7 +101,7 @@ export const useStore = create<AppState>()(
     },
 
     // Return the command label (or null when there's nothing to undo/redo) so
-    // the caller can surface it — keeps the store free of any toast dependency.
+    // the caller can surface it, which keeps the store free of any toast dependency.
     undo() {
       const { history, ui } = get()
       const r = undoCommand(history)
@@ -129,7 +129,7 @@ export const useStore = create<AppState>()(
         return {
           project: p,
           // Adopting a DIFFERENT project (joining a room) invalidates history by
-          // definition — stale commands recorded against the old project would
+          // definition; stale commands recorded against the old project would
           // otherwise rebase its meta (id/name!) into the room and let autosave
           // overwrite the user's own project.
           ...(p.id !== s.project.id ? { history: emptyHistory() } : {}),
@@ -198,7 +198,7 @@ export function setActiveSequenceFormat(width: number, height: number, refit = t
 }
 
 // Zoom is anchored by the Timeline (playhead-if-visible, else view center) so
-// the view never drifts while zooming — raw pxPerS writes slide toward t=0.
+// the view never drifts while zooming (raw pxPerS writes slide toward t=0).
 // The event keeps this store DOM-free; with no timeline mounted it's a no-op.
 export const zoomIn = () => {
   window.dispatchEvent(new CustomEvent('olpremiere:zoom', { detail: { factor: 1.4 } }))

@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 // Guard the BUNDLED Minecraft font's glyph coverage. The app is used in Czech,
-// so the font must carry every Czech diacritic natively — otherwise Czech titles
+// so the font must carry every Czech diacritic natively. Otherwise Czech titles
 // silently fall back to a non-Minecraft face (and can diverge preview vs export).
 // Parses the TrueType cmap (format 4 / 12) directly, no font library needed.
 
@@ -89,7 +89,7 @@ describe('bundled caption font (Lilita One)', () => {
     for (const c of 'ABCabc0123.,!?:-*') expect(has(c.codePointAt(0)!)).toBe(true)
   })
 
-  it('documents the known Czech gaps — caron glyphs fall back down the stack', () => {
+  it('documents the known Czech gaps: caron glyphs fall back down the stack', () => {
     // Per-glyph canvas fallback is identical in preview and export (same stack
     // registered in both contexts), so this is cosmetic, not a divergence.
     const missing = [...'čďěňřťů'].filter((c) => !has(c.codePointAt(0)!))

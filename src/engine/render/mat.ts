@@ -1,4 +1,4 @@
-// Pure transform math for the GL renderer's layer quad. No GL, no DOM — this is
+// Pure transform math for the GL renderer's layer quad. No GL, no DOM. This is
 // the testable core; glRenderer.ts is a thin wrapper that feeds these corners
 // into a WebGL2 pipeline. All coordinates are SEQ-SPACE pixels: origin at the
 // frame's top-left, +x right, +y DOWN (matching the 2D-canvas convention the
@@ -148,7 +148,7 @@ export function cropUV(
 /**
  * The sub-rectangle of a quad, addressed in UV (0..1) coordinates of the quad's
  * own space. Corners are TL,TR,BR,BL and the mapping is affine, so bilinear
- * interpolation between the four corners is exact — no matrix needed.
+ * interpolation between the four corners is exact, with no matrix needed.
  *
  * Used to hit-test the part of a layer that actually has ink in it: a title
  * draws into a full-frame texture, but only a small rectangle of that frame is

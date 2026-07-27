@@ -170,7 +170,7 @@ function rulerLabel(tS: number, fps: number, majorStepS: number): string {
 /**
  * Ticks are built ONLY for the visible window and the component is memoized.
  * Zoomed in, majorStepS drops to 0.1s, so a 5-minute project meant ~3,600 majors
- * x 7 DOM nodes — and Ruler re-rendered with its parent, i.e. on every pointermove
+ * x 7 DOM nodes, and Ruler re-rendered with its parent, i.e. on every pointermove
  * of a clip drag or a zoom-slider drag. It sits inside the same content div as the
  * clips, which are already virtualized and memoized for exactly this reason.
  */
@@ -434,7 +434,7 @@ const TOOLS: { tool: Tool; label: string; shortcut: string; icon: typeof MousePo
   // No Zoom tool: the timeline already zooms four ways that do not cost you the
   // pointer (wheel, the slider, = / -, and zoom-to-fit). A modal tool whose only
   // job is to zoom means clicking a clip stops selecting it until you switch
-  // back — one door per feature, and this was the worst of the four.
+  // back. One door per feature, and this was the worst of the four.
 ]
 
 function TimelineToolbar({ onZoomFit }: { onZoomFit: () => void }) {
@@ -662,7 +662,7 @@ const ClipView = memo(function ClipView({
   const fadeInPx = fadeInS * pxPerS
   const fadeOutPx = fadeOutS * pxPerS
 
-  // Keyframes, drawn ON the clip the way CapCut does — until now they existed
+  // Keyframes, drawn ON the clip the way CapCut does. Until now they existed
   // only inside the Inspector's 240px lane, so nothing on the timeline said a
   // clip was animated at all, let alone WHERE. Clip-local seconds map straight
   // to px at the current zoom.
@@ -764,7 +764,7 @@ const ClipView = memo(function ClipView({
     // Neither composites on audio: a transition is a shader blending two
     // PICTURES, so dropping one on an audio clip wrote a field the renderer
     // never reads and drew a mark for a transition that could not happen. Audio
-    // has its own verb — "Crossfade with previous" in the clip menu.
+    // has its own verb: "Crossfade with previous" in the clip menu.
     if (isAudio) return
     e.preventDefault()
     e.stopPropagation()
@@ -851,7 +851,7 @@ const ClipView = memo(function ClipView({
             const raw = live * pxPerS
             if (raw < -3 || raw > width + 3) return null
             // Keep the WHOLE diamond inside the clip. It is a 7px square rotated
-            // 45°, so it reaches ~5px either side of its centre — a keyframe at
+            // 45°, so it reaches ~5px either side of its centre. A keyframe at
             // the very start or end was drawn half outside and the clip's own
             // edge cut it in half, which reads as a rendering glitch rather than
             // as a keyframe. Showing all of it 5px in is more honest than showing
@@ -1644,7 +1644,7 @@ export function Timeline({ height }: { height: number }) {
                 },
                 ...TRANSITION_KINDS.map((kind, i) => ({
                   // A lone edge plays the transition against nothing, which is a
-                  // real look — say so rather than hiding half the list.
+                  // real look, so we say so rather than hiding half the list.
                   label: neighbour ? TRANSITION_LABELS[kind] : `${TRANSITION_LABELS[kind]} (from nothing)`,
                   separator: i === 0,
                   checked: current?.type === kind,
@@ -1657,7 +1657,7 @@ export function Timeline({ height }: { height: number }) {
 
     // One-click green-screen removal on a media clip (video/image that HAS a screen).
     // Applies the chroma-key effect, which defaults to keying green at a clean
-    // strength — drop-and-done, then fine-tune in the Inspector if edges remain.
+    // strength: drop-and-done, then fine-tune in the Inspector if edges remain.
     const greenScreenItems: MenuItem[] =
       track?.kind === 'video' && !clip.title && !clip.adjustment
         ? [{ label: 'Remove green screen', onClick: () => applyEffect(clip.id, 'chromaKey') }]
@@ -1762,7 +1762,7 @@ export function Timeline({ height }: { height: number }) {
             : 'Delete',
         shortcut: 'Del',
         separator: true,
-        // The SAME verb the Del key runs, lock filter included — the inline copy
+        // The SAME verb the Del key runs, lock filter included. The inline copy
         // here skipped it, so right-click Delete removed clips Del refused to.
         onClick: () => deleteSelected(false),
       },

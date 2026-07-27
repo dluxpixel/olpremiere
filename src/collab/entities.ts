@@ -7,7 +7,7 @@
 //     (clips are collected by key prefix, not stored in an order array)
 //   - editing the SAME clip concurrently → last write wins on that clip only
 // Track order rides on the sequence entity (LWW), but tracks that exist as
-// entities without an order slot are APPENDED rather than dropped — a
+// entities without an order slot are APPENDED rather than dropped, so a
 // concurrent add-track never deletes the other person's track.
 //
 // Pure data-in/data-out: no Yjs, no store, no DOM. structuredClone-safe.
@@ -185,7 +185,7 @@ export function entitiesToProject(entities: Entities): Project | null {
 }
 
 /**
- * Keys whose values differ between two entity snapshots (JSON-compare — cheap
+ * Keys whose values differ between two entity snapshots (JSON-compare, cheap
  * at entity granularity thanks to the store's structural sharing) plus keys
  * removed in `next`. This is what a local edit writes into the shared doc.
  */

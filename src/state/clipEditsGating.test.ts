@@ -8,7 +8,7 @@ vi.mock('./toasts', () => ({ useToasts: { getState: () => ({ show: () => {} }) }
 
 const seq = () => activeSequence(useStore.getState().project)
 
-/** newProject() seeds tracks [V1, V2, A1, A2] — indices 0,1 are video, 2,3 audio. */
+/** newProject() seeds tracks [V1, V2, A1, A2]: indices 0,1 are video, 2,3 audio. */
 function seedClipOnTrack(trackIndex: number, asset: MediaAsset): Clip {
   const clip = newClipFromAsset(asset, 0)
   updateActiveSequence('seed', (sq) =>
@@ -27,7 +27,7 @@ beforeEach(() => {
   useStore.getState().setProject(newProject())
 })
 
-describe('applyEffect — clip-kind gating', () => {
+describe('applyEffect: clip-kind gating', () => {
   it('applies an effect to a clip on a video track', () => {
     const clip = seedClipOnTrack(0, videoAsset) // V1
     applyEffect(clip.id, 'gaussianBlur')

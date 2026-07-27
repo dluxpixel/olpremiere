@@ -6,13 +6,13 @@ import type { Id, MediaAsset, Sequence } from '../types'
 
 /**
  * How the encoder spends bits.
- * - 'variable' — VBR, `bitrate` is an average target, quality floats. This is
+ * - 'variable': VBR, `bitrate` is an average target, quality floats. This is
  *   the DEFAULT and matches the historical behaviour byte-for-byte (no
- *   `bitrateMode` key is emitted for it — see videoEncoderConfig).
- * - 'constant' — CBR, holds `bitrate`.
- * - 'quantizer' — constant-quality (the browser analogue of OBS "Constant QP"):
- *   `bitrate` is ignored and a fixed per-frame QP is passed to encode(). The
- *   quality dial the whole dialog is built around.
+ *   `bitrateMode` key is emitted for it, see videoEncoderConfig).
+ * - 'constant': CBR, holds `bitrate`.
+ * - 'quantizer': constant-quality (the browser analogue of OBS "Constant QP"),
+ *   where `bitrate` is ignored and a fixed per-frame QP is passed to encode().
+ *   The quality dial the whole dialog is built around.
  */
 export type RateControl = 'variable' | 'constant' | 'quantizer'
 
@@ -23,11 +23,11 @@ export type VideoCodecFamily = 'avc' | 'hevc' | 'av1'
  * The video DECODE preference for EXPORT: always SOFTWARE. Hardware decoders
  * (e.g. NVDEC) mis-reconstruct inter-frame (P/B) macroblocks on real long-GOP
  * capture footage (OBS/NVENC), visible as torn/sheared frames clustered in
- * high-motion areas — a clean static ground, a shredded moving sky — while flat
+ * high-motion areas (a clean static ground, a shredded moving sky) while flat
  * or all-keyframe content decodes fine, which is why the golden export never
  * caught it. Export must be pixel-CORRECT, not fast; it is already dominated by
  * libx264 -preset veryslow, so software decode costs little. Preview keeps
- * hardware decode (downscaled) for scrub speed — the two paths may differ
+ * hardware decode (downscaled) for scrub speed. The two paths may differ
  * because export must be correct. Passed as the CanvasSink `decoderOptions`.
  */
 export const EXPORT_DECODER_OPTIONS = { hardwareAcceleration: 'prefer-software' } as const
@@ -58,7 +58,7 @@ export interface ExportSettings {
    * never moves (see effectiveRateControl).
    */
   rateControl?: RateControl
-  /** Constant-quality QP on the shared H.264/HEVC 0–51 scale (lower = better). Used only in 'quantizer' mode. */
+  /** Constant-quality QP on the shared H.264/HEVC 0 to 51 scale (lower = better). Used only in 'quantizer' mode. */
   quantizer?: number
   /** Video codec family. Absent → 'avc'. HEVC/AV1 are only set when the machine can encode them. */
   videoCodec?: VideoCodecFamily
@@ -78,14 +78,14 @@ export interface ExportProgress {
 
 /**
  * Shape of the audio mix the worker will receive. The PCM itself arrives as a
- * stream of `audioSegment` messages AFTER init — the mix is rendered on the
+ * stream of `audioSegment` messages AFTER init. The mix is rendered on the
  * main thread (OfflineAudioContext is not reliably available inside workers)
  * in bounded segments, so a long export never allocates its whole PCM at once.
  */
 export interface AudioStreamMeta {
   sampleRate: number
   numberOfChannels: number
-  /** Total frames across all segments — the worker's loop-termination count. */
+  /** Total frames across all segments: the worker's loop-termination count. */
   totalFrames: number
 }
 
@@ -123,7 +123,7 @@ export type ExportRequest =
     }
   /** One rendered mix segment, in order. Buffers are transferred, not copied. */
   | { type: 'audioSegment'; channelData: Float32Array<ArrayBuffer>[] }
-  /** NATIVE mode: the page confirms one rendered RGBA frame was written to ffmpeg — the worker's render credit. */
+  /** NATIVE mode: the page confirms one rendered RGBA frame was written to ffmpeg (the worker's render credit). */
   | { type: 'frameAck' }
   | { type: 'cancel' }
 
@@ -132,9 +132,9 @@ export type ExportResponse =
   /**
    * Backpressure credit: one per audioSegment fully consumed (encoded, or
    * discarded when the worker has no audio encoder). The producer holds a
-   * small in-flight window against these, so the worker's segment queue —
-   * and therefore peak audio memory — stays bounded no matter how much
-   * faster the offline render runs than the encode.
+   * small in-flight window against these, so the worker's segment queue (and
+   * therefore peak audio memory) stays bounded no matter how much faster the
+   * offline render runs than the encode.
    */
   | { type: 'segmentDone' }
   /** NATIVE mode: one rendered RGBA frame (bottom-origin; ffmpeg -vf vflip corrects it). Transferred. */
@@ -149,15 +149,15 @@ export type ExportResponse =
 
 /**
  * H.264 candidates, best first. Higher resolutions need higher LEVELS: L4.0 maxes
- * out at 1080p, so a 1440p/4K (YouTube upscale) export needs L5.0–L5.2. The
+ * out at 1080p, so a 1440p/4K (YouTube upscale) export needs L5.0 to L5.2. The
  * encoder probe (firstSupported) picks the first the browser accepts for the
- * chosen frame size — 1080p lands on L4.0, 2K on L5.0, 4K on L5.1/L5.2.
+ * chosen frame size: 1080p lands on L4.0, 2K on L5.0, 4K on L5.1/L5.2.
  */
 export const H264_CODECS = [
-  'avc1.640028', // High L4.0 — ≤1080p (widest compatibility)
-  'avc1.640032', // High L5.0 — ≤1440p
-  'avc1.640033', // High L5.1 — ≤4K @30
-  'avc1.640034', // High L5.2 — ≤4K @60
+  'avc1.640028', // High L4.0 for ≤1080p (widest compatibility)
+  'avc1.640032', // High L5.0 for ≤1440p
+  'avc1.640033', // High L5.1 for ≤4K @30
+  'avc1.640034', // High L5.2 for ≤4K @60
   'avc1.4d0028', // Main L4.0 (fallback)
   'avc1.42001f', // Baseline L3.1 (fallback)
 ] as const
@@ -174,7 +174,7 @@ export const HEVC_CODECS = [
 ] as const
 
 // AV1 Main profile (0), 8-bit; level laddered lowest-first (4.0 → 5.0 → 6.0).
-// Software AV1 encode is always available but slow (3–5× VP9); hardware AV1 is
+// Software AV1 encode is always available but slow (3 to 5× VP9); hardware AV1 is
 // RTX-40+ only. Probe-gated either way.
 export const AV1_CODECS = ['av01.0.08M.08', 'av01.0.12M.08', 'av01.0.16M.08'] as const
 
@@ -190,7 +190,7 @@ export function isHdRaster(width: number, height: number): boolean {
 
 /**
  * The rate control that actually reaches the encoder. SD is ALWAYS coerced to
- * 'variable' — the golden 640×360 export must emit the exact legacy config, and
+ * 'variable': the golden 640×360 export must emit the exact legacy config, and
  * every new quality behaviour is a no-op below HD. Both the config builder and
  * the per-frame encode() options derive from THIS single value, so config and
  * frame options can never disagree (the bug the byte-fence guards against).
@@ -199,7 +199,7 @@ export function effectiveRateControl(settings: Pick<ExportSettings, 'rateControl
   return isHd ? (settings.rateControl ?? 'variable') : 'variable'
 }
 
-/** The codec family that reaches the encoder — SD is pinned to 'avc' to hold the golden bytes. */
+/** The codec family that reaches the encoder. SD is pinned to 'avc' to hold the golden bytes. */
 export function effectiveVideoCodec(settings: Pick<ExportSettings, 'videoCodec'>, isHd: boolean): VideoCodecFamily {
   return isHd ? (settings.videoCodec ?? 'avc') : 'avc'
 }
@@ -209,15 +209,16 @@ export function keyframeStride(fps: number, keyframeIntervalS: number | undefine
   return Math.max(1, Math.round(fps * (keyframeIntervalS ?? 2)))
 }
 
-/** Audio target bitrate that reaches the encoder — SD is forced to the legacy 192 kbps to hold the golden bytes. */
+/** Audio target bitrate that reaches the encoder; SD is forced to the legacy 192 kbps to hold the golden bytes. */
 export function effectiveAudioBitrate(settings: Pick<ExportSettings, 'audioBitrate'>, isHd: boolean): number {
   return isHd ? (settings.audioBitrate ?? 192_000) : 192_000
 }
 
 /**
- * Map the UI quantizer (shown on the H.264/HEVC 0–51 scale, lower = better) to
- * the codec-native range passed to encode(). AVC and HEVC share 0–51; AV1 uses
- * 0–255, so it is rescaled. Clamped so a bad input can never throw at encode.
+ * Map the UI quantizer (shown on the H.264/HEVC 0 to 51 scale, lower = better)
+ * to the codec-native range passed to encode(). AVC and HEVC share 0 to 51; AV1
+ * uses 0 to 255, so it is rescaled. Clamped so a bad input can never throw at
+ * encode.
  */
 export function quantizerFor(codec: VideoCodecFamily, qp: number): number {
   const clamped = Math.max(0, Math.min(51, Math.round(Number.isFinite(qp) ? qp : 18)))
@@ -225,15 +226,15 @@ export function quantizerFor(codec: VideoCodecFamily, qp: number): number {
 }
 
 /**
- * Build the EXACT VideoEncoderConfig — pure, so the SD-byte-stability test can
+ * Build the EXACT VideoEncoderConfig. Pure, so the SD-byte-stability test can
  * assert it key-for-key (including the ABSENCE of `bitrateMode` for the legacy
  * VBR path). `rateControl` here is the EFFECTIVE value (already SD-gated).
  *
  * Invariants this preserves:
- * - 'variable' emits NO `bitrateMode` key (Chrome's implicit VBR) — identical to
+ * - 'variable' emits NO `bitrateMode` key (Chrome's implicit VBR). Identical to
  *   the historical config, so SD/legacy HD exports don't move a byte.
  * - latencyMode keeps the legacy formula: 'quality' only on the software HD path
- *   (which is where CQP runs), 'realtime' everywhere else — so the HW VBR path
+ *   (which is where CQP runs), 'realtime' everywhere else, so the HW VBR path
  *   still suppresses the B-frames the Auto crash-fallback depends on.
  * - 'quantizer' omits `bitrate` (ignored in that mode); the per-frame QP is
  *   passed to encode() separately.
@@ -263,7 +264,7 @@ export function videoEncoderConfig(args: {
     config.bitrate = videoBitrate
     config.bitrateMode = 'constant'
   } else {
-    // 'variable': plain bitrate, NO bitrateMode key — byte-identical to legacy.
+    // 'variable': plain bitrate, NO bitrateMode key, byte-identical to legacy.
     config.bitrate = videoBitrate
   }
   return config
@@ -287,7 +288,7 @@ export interface FitRect {
   h: number
 }
 
-/** Contain-fit `src` into `dst`, centered — same math as the preview compositor. */
+/** Contain-fit `src` into `dst`, centered. Same math as the preview compositor. */
 export function containRect(srcW: number, srcH: number, dstW: number, dstH: number): FitRect | null {
   if (srcW <= 0 || srcH <= 0) return null
   const scale = Math.min(dstW / srcW, dstH / srcH)
@@ -307,7 +308,7 @@ export function clipFrameRange(startS: number, endS: number, fps: number): { fir
   return { first, end }
 }
 
-/** 0.1 s at 48 kHz — comfortably under AAC/Opus internal frame limits. */
+/** 0.1 s at 48 kHz, comfortably under AAC/Opus internal frame limits. */
 export const AUDIO_CHUNK_FRAMES = 4800
 
 export interface PcmChunk {

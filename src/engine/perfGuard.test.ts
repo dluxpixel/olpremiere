@@ -47,8 +47,8 @@ import {
 // Absolute budgets do not survive a parallel test runner. Vitest runs 70 files
 // across worker processes, so this file benches while the machine is saturated;
 // best-of-N rounds does not save you when all N rounds are slow. The result was
-// a guard that went red on unrelated code and green on a re-run — three of each
-// in one session — which is worse than no guard, because a gate that cries wolf
+// a guard that went red on unrelated code and green on a re-run (three of each
+// in one session), which is worse than no guard, because a gate that cries wolf
 // is a gate people stop reading.
 //
 // A ratio cancels the machine and the load: both numbers are measured under the
@@ -57,7 +57,7 @@ import {
 // Measured on this machine across six runs, idle and with all 71 files running:
 // resolveFrame 0.24-0.31x, collectSnapPoints 0.53-0.74x. The budgets sit at
 // roughly 1.7x the worst observed, which is the same headroom the absolute
-// budgets they replace were chosen with — so a real regression of half again
+// budgets they replace were chosen with, so a real regression of half again
 // still trips it, and ordinary noise never does.
 const RESOLVE_FRAME_BUDGET_X = 0.55
 const SNAP_POINTS_BUDGET_X = 1.2
@@ -215,7 +215,7 @@ let sink = 0
  * It has to have the same CHARACTER as what it measures, or it cancels nothing.
  * A tight arithmetic loop was tried first and was useless here: it lives in L1
  * and barely moved under a saturated machine (0.00273 → 0.00284 ms) while
- * collectSnapPoints — which allocates, walks objects and sorts — went up half
+ * collectSnapPoints (which allocates, walks objects and sorts) went up half
  * again. So the calibration allocates, walks and sorts too.
  */
 function calibrationMs(): number {

@@ -13,7 +13,7 @@ async function importClip(page: Page): Promise<void> {
 
 /**
  * Flush the debounced project autosave before a reload. Library writes commit
- * immediately, but the PROJECT is saved on a debounce — reloading faster than
+ * immediately, but the PROJECT is saved on a debounce. Reloading faster than
  * the debounce would revert the bin and make the test flake.
  */
 async function flushProjectSave(page: Page): Promise<void> {
@@ -201,7 +201,7 @@ test('a preset applies to every video clip at once, as one undo step', async ({ 
   // Right-click the preset → Apply to every clip.
   await page.getByRole('tab', { name: 'Library' }).click()
   await page.getByTestId('preset-item').click({ button: 'right' })
-  // Menu item, not the panel's hint text — with nothing selected the Library
+  // Menu item, not the panel's hint text: with nothing selected the Library
   // shows "…or right-click → Apply to every clip", which matches too.
   await page.getByRole('menuitem', { name: 'Apply to every clip' }).click()
   await expect(page.getByText(/Applied .* to 3 clips/)).toBeVisible()

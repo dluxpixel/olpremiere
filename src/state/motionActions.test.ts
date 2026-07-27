@@ -65,7 +65,7 @@ describe('punchInAtPlayhead / impactAtPlayhead', () => {
     useStore.getState().setUI({ playheadS: 6 })
     impactAtPlayhead(clip.id)
     const c = v1().clips[0]
-    // Colour lives in the EFFECT STACK — assert where the renderer reads.
+    // Colour lives in the EFFECT STACK, so assert where the renderer reads.
     expect(resolveChannel(c, 'saturation', 4)).toBeCloseTo(-0.9, 5)
     expect(resolveChannel(c, 'blur', 4)).toBeCloseTo(6, 5)
     expect(c.effects.map((e) => e.type).sort()).toEqual(['gaussianBlur', 'saturation'])

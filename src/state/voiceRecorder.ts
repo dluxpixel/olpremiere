@@ -1,9 +1,9 @@
 // Voiceover recorder + studio. A take is NO LONGER dropped straight into the
 // bin: it lands in the studio panel for review, where the user keeps it (into
-// the SAME import pipeline everything else uses — probe + persist + waveform +
+// the SAME import pipeline everything else uses: probe + persist + waveform +
 // drag-to-timeline) or discards it. The studio also owns a live mic stream so
 // the meter, the "hear myself" monitor, and MediaRecorder all tap one capture.
-// 100% local — the audio never leaves the machine.
+// 100% local. The audio never leaves the machine.
 
 import { create } from 'zustand'
 import { getAudioOutputDevice, setAudioOutputDevice } from '../engine/audio'
@@ -29,7 +29,7 @@ interface RecorderState {
   /**
    * Take paused mid-record (dubbing): the mic capture is held so both the take
    * and the preview can stop and resume together on Space, staying in sync and
-   * dropping the paused gap. `recording` stays true while paused — a take is
+   * dropping the paused gap. `recording` stays true while paused: a take is
    * still in progress.
    */
   paused: boolean
@@ -89,10 +89,10 @@ export const useRecorder = create<RecorderState>(() => ({
  * The `getUserMedia` audio constraint. Always captures the mic RAW: echo
  * cancellation, auto-gain AND noise suppression all OFF. Every one of those is
  * tuned for a phone/call and mangles a real mic into a pumped, muffled,
- * low-quality mess — the exact complaint. A condenser in a quiet room is best
+ * low-quality mess, the exact complaint. A condenser in a quiet room is best
  * captured pristine; clean-up (if ever wanted) belongs after the take, not baked
- * into the capture. Discord's clean suppression is Krisp — proprietary/licensed,
- * not something a local browser app can embed — so there is no honest "match
+ * into the capture. Discord's clean suppression is Krisp: proprietary/licensed, and
+ * not something a local browser app can embed, so there is no honest "match
  * Discord" toggle to offer here. A pinned device uses `exact` so we KNOW we
  * captured the mic the user picked; if it's gone `getUserMedia` throws and we
  * fall back loudly rather than record from the wrong device.
@@ -125,7 +125,7 @@ export async function listAudioInputs(): Promise<MediaDeviceInfo[]> {
       unlock.getTracks().forEach((t) => t.stop())
       inputs = await audioInputs()
     } catch {
-      // Permission denied — return the unlabeled entries; the UI names them generically.
+      // Permission denied. Return the unlabeled entries; the UI names them generically.
     }
   }
   return inputs
@@ -148,7 +148,7 @@ export function setInputDevice(deviceId: string | null): void {
 /**
  * Choose the app OUTPUT device (null = system default). App-wide: it routes BOTH
  * the main playback (engine/audio) AND the live "hear myself" monitor to the same
- * device, and engine/audio persists it — so the user picks their output once.
+ * device, and engine/audio persists it, so the user picks their output once.
  */
 export function setOutputDevice(deviceId: string | null): void {
   useRecorder.setState({ selectedOutputId: deviceId })
@@ -175,7 +175,7 @@ let takeCount = 0
 
 // Pause bookkeeping for the current take. MediaRecorder.pause() drops the paused
 // span from the file, so the take's true length is wall-time minus the paused
-// total — tracked here so the elapsed readout and the take duration both exclude
+// total, tracked here so the elapsed readout and the take duration both exclude
 // it. Reset at the start of every take.
 let pausedAccumMs = 0
 let pausedAtMs: number | null = null
@@ -192,7 +192,7 @@ export function takeElapsedMs(): number {
 /** True while a take is being recorded (including while paused). */
 export const isTakeInProgress = (): boolean => useRecorder.getState().recording
 
-/** Hold the current take — the mic capture pauses, dropping the gap. No-op if idle/already paused. */
+/** Hold the current take. The mic capture pauses, dropping the gap. No-op if idle/already paused. */
 export function pauseRecording(): void {
   const s = useRecorder.getState()
   if (!s.recording || s.paused || !recorder || recorder.state !== 'recording') return
@@ -341,7 +341,7 @@ export async function startRecording(): Promise<void> {
   discardTake()
 
   const mime = pickRecorderMime()
-  // A high, explicit bitrate — the browser default is low and a big reason raw
+  // A high, explicit bitrate. The browser default is low and a big reason raw
   // recordings sound bad.
   const options: MediaRecorderOptions = { audioBitsPerSecond: RECORDING_BITS_PER_SECOND }
   if (mime) options.mimeType = mime
@@ -370,14 +370,14 @@ export async function startRecording(): Promise<void> {
 export function stopRecording(): void {
   if (!useRecorder.getState().recording || !recorder) return
   // onstop fires finalize(); flip the UI state now so the button responds at once.
-  // stop() from a paused recorder is valid and still fires onstop — finalize uses
+  // stop() from a paused recorder is valid and still fires onstop, and finalize uses
   // the pause bookkeeping to report the true (gap-excluded) length.
   recorder.stop()
   useRecorder.setState({ recording: false, paused: false, startedAt: null })
 }
 
 /**
- * Assemble ONE take and HOLD it for review — it does not touch the bin until
+ * Assemble ONE take and HOLD it for review. It does not touch the bin until
  * the user keeps it. The mic is NOT stopped here (the studio owns the shared
  * stream and stays live for the next take + the meter). Clears the recorder
  * pointer only if this take is still the active one.

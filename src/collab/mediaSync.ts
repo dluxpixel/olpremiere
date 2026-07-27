@@ -1,7 +1,7 @@
 // Room media sync (relay rooms only). The CRDT syncs the project DOCUMENT;
 // this moves the media BYTES so collaborators actually see the footage:
 //   - every local blob a project asset references uploads to the room's media
-//     store (direct-to-Blob client upload — bypasses the 4.5MB function cap,
+//     store (direct-to-Blob client upload: bypasses the 4.5MB function cap,
 //     works to 512MB/file)
 //   - every asset whose blob is missing locally downloads from the room
 //   - anything missing on BOTH sides surfaces as "missing" for the Locate flow
@@ -17,7 +17,7 @@ import { useStore } from '../state/store'
 import { useToasts } from '../state/toasts'
 
 const SCAN_MS = 4_000
-/** Above this we don't auto-upload — the Locate/manual path still works. */
+/** Above this we don't auto-upload, but the Locate/manual path still works. */
 export const MAX_SYNC_BYTES = 512 * 1024 * 1024
 /** Uploads above this get a progress toast (small ones are instant). */
 const PROGRESS_TOAST_BYTES = 10 * 1024 * 1024
@@ -31,7 +31,7 @@ export interface MissingMedia {
 interface MediaSyncState {
   /** Human-readable transfers in flight, e.g. "clip.mp4 ⇡ 40%". */
   transfers: string[]
-  /** Assets with no local bytes and no room copy — need a human (Locate). */
+  /** Assets with no local bytes and no room copy, which need a human (Locate). */
   missing: MissingMedia[]
 }
 
@@ -52,7 +52,7 @@ interface ManifestEntry {
 
 /**
  * Auto-download ceiling by device memory: a 500MB fetch().blob() buffers the
- * whole file — fine on a 16GB desktop, an OOM tab-kill on a 4GB phone. Larger
+ * whole file. Fine on a 16GB desktop, an OOM tab-kill on a 4GB phone. Larger
  * files still reach peers via Locate (a lazy File handle, no buffering).
  */
 export function autoDownloadCap(deviceMemoryGb: number | undefined): number {
@@ -63,7 +63,7 @@ export function autoDownloadCap(deviceMemoryGb: number | undefined): number {
 /** Start the sync loop for a relay room. Returns a stop function. */
 export function startMediaSync(room: string): () => void {
   let stopped = false
-  let scanning = false // scans self-overlap when IDB/network is slow — reenter guard
+  let scanning = false // scans self-overlap when IDB/network is slow, hence the reenter guard
   const knownLocal = new Set<string>() // keys confirmed in IndexedDB
   const inFlight = new Set<string>() // keys currently uploading/downloading
   const missStreak = new Map<string, number>() // consecutive scans a key was on neither side
@@ -115,7 +115,7 @@ export function startMediaSync(room: string): () => void {
               .then(() => knownLocal.add(key), () => undefined)
               .finally(() => inFlight.delete(key))
           } else if (!local && !manifest.has(key)) {
-            // Debounced: the owner may still be UPLOADING it — only call a file
+            // Debounced: the owner may still be UPLOADING it, so only call a file
             // missing after it stayed absent across consecutive scans.
             const streak = (missStreak.get(key) ?? 0) + 1
             missStreak.set(key, streak)
@@ -125,7 +125,7 @@ export function startMediaSync(room: string): () => void {
       }
       if (!stopped) useMediaSync.setState({ missing })
     } catch {
-      // transient — next scan retries
+      // transient, next scan retries
     } finally {
       scanning = false
     }

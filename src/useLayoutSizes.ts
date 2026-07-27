@@ -44,7 +44,7 @@ export function useLayoutSizes() {
       try {
         localStorage.setItem(KEY, JSON.stringify(next))
       } catch {
-        // localStorage full/unavailable — layout just won't persist
+        // localStorage full/unavailable, so layout just won't persist
       }
       return next
     })

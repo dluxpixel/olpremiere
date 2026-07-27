@@ -12,7 +12,7 @@ import type { TranscribeResponse } from './transcribeWorker'
 /** Whisper's feature-extractor input rate. */
 export const TRANSCRIBE_SAMPLE_RATE = 16000
 
-/** One word as the ASR emits it — times relative to the transcribed slice. */
+/** One word as the ASR emits it. Times are relative to the transcribed slice. */
 export interface TranscribedWord {
   text: string
   startS: number
@@ -45,7 +45,7 @@ export function wordsFromAsrChunks(chunks: readonly AsrChunk[]): TranscribedWord
 /**
  * Whisper's classic end-of-audio hallucinations. It was trained on subtitle
  * files, so when the audio goes quiet it invents the credits it saw in that
- * data. This is a documented failure mode, not a guess — the list stays SHORT
+ * data. This is a documented failure mode, not a guess, so the list stays SHORT
  * and only ever fires at the very end after real silence, so a video that
  * genuinely ends on "thanks for watching" keeps it.
  */
@@ -76,7 +76,7 @@ const isPunctuationOnly = (t: string): boolean => !/[a-z0-9]/i.test(t)
  *    caption clip showing a full stop.
  *  - TAIL HALLUCINATIONS. See TAIL_HALLUCINATIONS above.
  *
- * What this deliberately does NOT do is fix general mishearings — telling
+ * What this deliberately does NOT do is fix general mishearings. Telling
  * "diamonds" from "diamond's" from "die-monds" needs a language model, and there
  * isn't one running locally. Punctuation is also left ALONE on purpose: the
  * chunker reads sentence-ending marks to decide where a caption must break, so
@@ -215,12 +215,12 @@ export function transcribePcm(
       if (msg.type === 'progress') onProgress({ phase: msg.phase, pct: msg.pct })
       else if (msg.type === 'done') {
         settled = true
-        cleanup() // keep the worker ALIVE — model stays loaded for next time
+        cleanup() // keep the worker ALIVE so the model stays loaded for next time
         res(msg.chunks)
       } else {
         settled = true
         cleanup()
-        killWorker() // a hard error may have corrupted the pipeline — rebuild next run
+        killWorker() // a hard error may have corrupted the pipeline; rebuild next run
         rej(new Error(msg.message))
       }
     }

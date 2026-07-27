@@ -154,7 +154,7 @@ test('C cuts the linked PAIR even when only one half is selected', async ({ page
   const v = (await clips(page)).find((c) => c.trackKind === 'video')!
 
   await setPlayhead(page, 0.5)
-  await select(page, v.id) // one half selected — C must STILL cut both
+  await select(page, v.id) // one half selected: C must STILL cut both
   await page.getByTestId('panel-left').click({ position: { x: 5, y: 5 } })
   await page.keyboard.press('c')
 
@@ -279,7 +279,7 @@ test('a freshly inserted clip lands unselected, so trimming its head trims the p
   await page.getByTestId('asset-card').dblclick()
   await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
 
-  // Nothing is selected on insert — selecting the video half would make the very
+  // Nothing is selected on insert: selecting the video half would make the very
   // next edit read as "I singled this one out".
   const selection = await page.evaluate(async () => {
     const storeMod = '/src/state/store.ts'

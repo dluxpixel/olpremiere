@@ -1,5 +1,5 @@
 // Live preview compositor. Builds a RenderFrame (pure resolve.ts) and draws it
-// with the SHARED WebGL2 renderer — the same renderer the export worker uses,
+// with the SHARED WebGL2 renderer, the same renderer the export worker uses,
 // so preview and export are pixel-identical. Textures come from pooled <video>
 // elements (playing), the WebCodecs frame cache (scrubbing), or <img> (stills).
 
@@ -29,12 +29,12 @@ interface PooledImage {
 
 // Both pools are LRU-bounded: every acquire re-inserts (touch), so anything on
 // screen can never be the eviction victim. A 100-asset library previously meant
-// 100 buffering <video> decoders alive at once — decoders are a scarce hardware
+// 100 buffering <video> decoders alive at once. Decoders are a scarce hardware
 // resource and each element buffers media.
 /**
  * Picture-vs-playhead drift past this is a real jump (a cut, a scrub, a loop
  * wrap) and gets a seek. Anything smaller is steered out by trimming the
- * element's rate, which the viewer cannot see — a seek, they can.
+ * element's rate, which the viewer cannot see. A seek, they can.
  */
 const HARD_SEEK_S = 0.35
 /** Ceiling on that trim. ±2% is inaudible and invisible. */
@@ -107,7 +107,7 @@ function warmImage(asset: MediaAsset): PooledImage {
 export function prewarmPreview(assets: MediaAsset[]): void {
   // Prewarm is best-effort: it touches what's already pooled and only creates
   // new elements while the pool has room. Only real render-loop acquires may
-  // evict — a >cap sweep here would churn the whole pool (and the on-screen
+  // evict: a >cap sweep here would churn the whole pool (and the on-screen
   // element) on every edit.
   for (const a of assets) {
     if (a.kind === 'video') {
@@ -167,7 +167,7 @@ export function previewEpoch(): number {
 
 /**
  * Force the next preview frame to redraw even if the playhead/project are
- * unchanged. Used when an out-of-band input lands — e.g. a bundled title font
+ * unchanged. Used when an out-of-band input lands, e.g. a bundled title font
  * finishing loading, which invalidates any title rasterized with the fallback.
  */
 export function invalidatePreview(): void {
@@ -190,7 +190,7 @@ const renderers = new WeakMap<HTMLCanvasElement, Renderer | null>()
 let previewRasterH = 0
 
 /**
- * The TRANSPORT's rate — 1 for normal play, ±2/±4 while shuttling on J/L.
+ * The TRANSPORT's rate: 1 for normal play, ±2/±4 while shuttling on J/L.
  *
  * Pushed in by playbackControl (which already publishes only on change) rather
  * than pulled, because playbackControl imports this module and the reverse would
@@ -213,7 +213,7 @@ function titleRasterScale(seqH: number): number {
   const wanted = (previewRasterH * 1.5) / seqH
   if (wanted >= 1) return 1
   // Quantized, so a drag-resize of the panel does not invalidate the cache on
-  // every pixel — only when it crosses a step.
+  // every pixel, only when it crosses a step.
   return Math.max(0.25, Math.ceil(wanted * 8) / 8)
 }
 
@@ -228,7 +228,7 @@ function rendererFor(canvas: HTMLCanvasElement): Renderer | null {
   let renderer: Renderer | null = null
   if (gl) {
     try {
-      // mipmapPreview: the panel raster is 3-6x below source res — mipmapped
+      // mipmapPreview: the panel raster is 3-6x below source res, so mipmapped
       // minification kills the aliasing/shimmer. PREVIEW ONLY: the export
       // renderer must stay flagless (golden byte-tests pin its LINEAR path).
       renderer = createRenderer(gl, { mipmapPreview: true })
@@ -243,14 +243,14 @@ function rendererFor(canvas: HTMLCanvasElement): Renderer | null {
 
 // ---------------------------------------------------------------------------
 // Pair-transition pre-roll. During a pair transition the resolver samples the
-// OUTGOING clip past its cut while the INCOMING clip needs the pooled <video>
-// — and when both clips come from the SAME asset (one take split into
-// segments, the standard short-form edit) they need the ONE pooled element at two
+// OUTGOING clip past its cut while the INCOMING clip needs the pooled <video>.
+// When both clips come from the SAME asset (one take split into segments, the
+// standard short-form edit) they need the ONE pooled element at two
 // source times at once: each rAF re-seeks it twice, the element never
 // accumulates playback, and the window degenerates into a seek-decode
 // slideshow. The cure: within TRANSITION_PRE_ROLL_S of a window the outgoing
 // side's window frames are decoded into the frame cache, and during the window
-// the from-layer reads the cache — the element belongs to the incoming side.
+// the from-layer reads the cache, because the element belongs to the incoming side.
 
 export const TRANSITION_PRE_ROLL_S = 1
 
@@ -273,7 +273,7 @@ export interface PairTransitionWindow {
 /**
  * The pair-transition window at B's head, or null. Pure. Duplicates the
  * resolver's pair rules (adjacency, enabled, non-adjustment, duration clamp)
- * because resolve.ts keeps them private — keep in sync with resolveTrack.
+ * because resolve.ts keeps them private. Keep in sync with resolveTrack.
  */
 export function pairTransitionWindow(a: Clip, b: Clip, fps: number): PairTransitionWindow | null {
   if (!a.enabled || !b.enabled || a.adjustment || b.adjustment) return null
@@ -346,7 +346,7 @@ function prerollTransitions(seq: Sequence, assets: Record<Id, MediaAsset>, tS: n
     const to = assets[w.toAssetId]
     if (to?.kind === 'video') {
       const pooled = warmVideo(to)
-      // Pre-seek only BEFORE the window and only a PAUSED element — a playing
+      // Pre-seek only BEFORE the window and only a PAUSED element. A playing
       // one is on screen (including the same-asset case, where the outgoing
       // clip still owns it until the cut).
       if (
@@ -366,7 +366,7 @@ function prerollTransitions(seq: Sequence, assets: Record<Id, MediaAsset>, tS: n
  * correction; paused → exact WebCodecs frame (miss returns null, a later rAF
  * catches it); stills → the decoded <img>. Side-effects (seek/play) live here.
  * `transitionFrom`: layers that are the OUTGOING side of a live pair
- * transition — served from the frame cache, never from an element seek.
+ * transition, served from the frame cache, never from an element seek.
  */
 function makeTextureSource(
   assets: Record<Id, MediaAsset>,
@@ -381,7 +381,7 @@ function makeTextureSource(
     // Titles are generated, not imported. Rasterize them at PREVIEW size, not at
     // sequence size: a 1080x1920 caption canvas is an 8.3 MB allocation plus a
     // full-frame text raster on the main thread plus a texture upload and a
-    // mipmap rebuild — and on a two-word caption cadence a NEW one lands roughly
+    // mipmap rebuild. On a two-word caption cadence a NEW one lands roughly
     // twice a second while the video is playing, which is exactly when there is
     // no budget for it. On screen it is the same picture.
     if (layer.title) {
@@ -396,7 +396,7 @@ function makeTextureSource(
     if (asset.kind === 'image') {
       const pooled = warmImage(asset)
       if (pooled.ready) return pooled.el
-      markPending() // still loading — keep polling
+      markPending() // still loading, keep polling
       return null
     }
     if (asset.kind !== 'video') return null
@@ -405,9 +405,9 @@ function makeTextureSource(
     if (playing && transitionFrom?.has(layer)) {
       // Outgoing side of a live pair transition, sampled past its cut. The
       // incoming side owns the pooled element (the SAME element when both clips
-      // come from one asset — seeking it from here too would fight it twice per
-      // rAF, the transition stutter). Serve the pre-rolled exact frame; on a
-      // miss show the element AS-IS (never seek it) until the decode lands —
+      // come from one asset, and seeking it from here too would fight it twice
+      // per rAF, the transition stutter). Serve the pre-rolled exact frame; on a
+      // miss show the element AS-IS (never seek it) until the decode lands.
       // getFrameAt already queued it. Sampling past the media end freeze-frames
       // on the last real frame, which an element cannot do.
       const exact = getFrameAt(asset, srcT)
@@ -421,10 +421,10 @@ function makeTextureSource(
       if (!pooled.el.paused) pooled.el.pause()
       const exact = getFrameAt(asset, srcT)
       prefetchAround(asset, srcT)
-      // The cache only ever yields OffscreenCanvas/ImageBitmap — valid texture
-      // sources — but its return type is the wider CanvasImageSource.
+      // The cache only ever yields OffscreenCanvas/ImageBitmap (valid texture
+      // sources), but its return type is the wider CanvasImageSource.
       if (exact) return exact as TexImageSource
-      // No exact frame yet. Fall back to a nearest <video> seek — but the seek
+      // No exact frame yet. Fall back to a nearest <video> seek, but the seek
       // is ASYNC, so this frame is NOT final: mark it pending so the draw loop
       // keeps polling until the exact decode lands (else it freezes mid-seek).
       markPending()
@@ -435,12 +435,12 @@ function makeTextureSource(
 
     const pooled = warmVideo(asset)
     if (!pooled.ready) {
-      markPending() // element still warming up — keep polling
+      markPending() // element still warming up, keep polling
       return null
     }
     const el = pooled.el
     // Match the element's rate to the clip's speed so a slowed/sped clip's
-    // picture advances exactly as fast as the compositor samples it — otherwise
+    // picture advances exactly as fast as the compositor samples it. Otherwise
     // the source drifts and the tolerance re-seek below fires every few frames,
     // which is the stutter on slow-motion. Native <video> can't play backward,
     // so a reversed clip keeps rate 1 and rides the seek path. Browsers clamp
@@ -460,13 +460,13 @@ function makeTextureSource(
     } else {
       const err = el.currentTime - srcT // > 0 = picture ahead of the playhead
       if (Math.abs(err) > HARD_SEEK_S) {
-        // A real jump — a cut, a scrub, a loop wrap. Seeking is correct here.
+        // A real jump: a cut, a scrub, a loop wrap. Seeking is correct here.
         el.currentTime = srcT
         el.playbackRate = wantRate
       } else {
         // Small drift: STEER instead of seeking. The old code did nothing at all
         // inside its tolerance, so the picture could sit a tenth of a second off
-        // the audio indefinitely and then hitch when it finally fell out — this
+        // the audio indefinitely and then hitch when it finally fell out. This
         // converges invisibly and never shows a seek.
         const corr = Math.max(1 - RATE_TRIM, Math.min(1 + RATE_TRIM, 1 - err / SERVO_TAU_S))
         const rate = wantRate * corr
@@ -481,8 +481,8 @@ function makeTextureSource(
 //
 // The PLAYING path handed the pooled <video> straight to the renderer, so every
 // frame uploaded a texture at the SOURCE's native size and rebuilt its whole mip
-// chain from it. On 4K gameplay that is a 3840×2160 upload per layer per frame —
-// 33 MB of pixels and twelve mip levels, sixty times a second — and the
+// chain from it. On 4K gameplay that is a 3840×2160 upload per layer per frame
+// (33 MB of pixels and twelve mip levels, sixty times a second), and the
 // Preview-Quality picker did not touch that path at all: only the PAUSED path
 // ever decoded at preview resolution. That asymmetry is why quality tiers helped
 // scrubbing and did nothing for playback.
@@ -507,7 +507,7 @@ function livePreviewSource(el: HTMLVideoElement, assetId: Id): TexImageSource {
   let canvas = liveScale.get(assetId)
   // Touch on a HIT as well: eviction takes the oldest INSERTED, so without this
   // the map stays in creation order and past the cap it evicts the canvas it is
-  // about to need again — reallocating every canvas every frame.
+  // about to need again, reallocating every canvas every frame.
   if (canvas) {
     liveScale.delete(assetId)
     liveScale.set(assetId, canvas)
@@ -535,7 +535,7 @@ function livePreviewSource(el: HTMLVideoElement, assetId: Id): TexImageSource {
  * Returns `true` when every referenced layer resolved to a texture this frame,
  * `false` when something was still decoding/loading (a null texture source). The
  * Monitor's draw loop uses this to keep polling a paused frame until its exact
- * decode lands, then stop — instead of redrawing on every rAF forever.
+ * decode lands, then stop instead of redrawing on every rAF forever.
  */
 export function renderPreview(
   canvas: HTMLCanvasElement,
@@ -576,7 +576,7 @@ export function renderPreview(
   }
   // Transition pre-roll + the from-layers served from the frame cache this
   // frame. whiteFlash stand-ins (from/to are the same clip) keep the element
-  // path — their "from" is the clip's own continuously-playing layer.
+  // path: their "from" is the clip's own continuously-playing layer.
   let transitionFrom: Set<RenderLayer> | undefined
   if (playing) {
     prerollTransitions(seq, assets, tS)
@@ -587,7 +587,7 @@ export function renderPreview(
     }
   }
   // A frame is "complete" only when every layer resolved to its FINAL texture
-  // (the exact decoded frame / loaded image) — not a still-seeking <video>
+  // (the exact decoded frame / loaded image), not a still-seeking <video>
   // fallback. While anything is pending, the caller keeps polling so the async
   // seek/decode lands instead of the preview freezing on a stale frame.
   let complete = true

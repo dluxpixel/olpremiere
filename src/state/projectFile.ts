@@ -1,13 +1,13 @@
-// Save/load a project as a single self-contained file — a manual backup for when
+// Save/load a project as a single self-contained file, a manual backup for when
 // the IndexedDB autosave can't be trusted (private mode, quota, corruption, a
 // wiped browser).
 //
 // Format v2 is BINARY: [magic "OLSTPROJ"][u32 header length][header JSON][raw
 // blob bytes...]. The file Blob is COMPOSED from the header + the original
-// media Blobs — browsers assemble that by reference, so saving a multi-GB
+// media Blobs. Browsers assemble that by reference, so saving a multi-GB
 // project allocates almost nothing and never builds a giant string. (v1
 // base64-JSON built the whole bundle as one string on the main thread; a real
-// gameplay capture froze the tab and then died on the string length limit —
+// gameplay capture froze the tab and then died on the string length limit:
 // "couldn't save the project file".) Import reads the header, then slices the
 // File lazily per blob. v1 files still open.
 
@@ -167,7 +167,7 @@ export async function exportProjectToFile(): Promise<void> {
       a.click()
       setTimeout(() => URL.revokeObjectURL(url), 30_000)
     }
-    show(`Saved project file — ${metas.length} media item(s) bundled`, 'success')
+    show(`Saved project file with ${metas.length} media item(s) bundled`, 'success')
   } catch (err) {
     console.warn('OL Studio: project export failed', err)
     show('Could not save the project file', 'danger')

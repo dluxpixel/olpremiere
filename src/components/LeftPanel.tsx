@@ -226,7 +226,7 @@ function AssetCard({ asset, fps }: { asset: MediaAsset; fps: number }) {
 /**
  * What the app is doing while it copies a drop in. Without this the panel sat on
  * "Import media to begin" for the whole copy, which on a multi-GB capture looks
- * exactly like a crash — so the file gets dropped a second time.
+ * exactly like a crash, so the file gets dropped a second time.
  */
 function ImportProgress() {
   const total = useImportProgress((s) => s.total)
@@ -588,13 +588,13 @@ function LibraryTab() {
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto p-2">
-      {/* Not an EMPTY state — the bundled sound effects below always fill this
+      {/* Not an EMPTY state: the bundled sound effects below always fill this
           tab, so a "Nothing saved yet" card sat on screen directly above a list
           of eight SFX and read as a bug. What is actually empty is the user's
           own saved media + presets, so say only that, in one line. */}
       {empty && (
         <div data-testid="library-empty" className="mb-3 px-0.5 text-[11px] leading-relaxed text-text-muted">
-          Nothing of your own saved yet — right-click media → Save to Library, or save a graded clip’s
+          Nothing of your own saved yet. Right-click media → Save to Library, or save a graded clip’s
           effects as a preset.
         </div>
       )}

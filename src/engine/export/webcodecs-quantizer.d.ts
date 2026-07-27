@@ -1,6 +1,6 @@
 // Per-codec quantizer encode options (the constant-QP path) and the HEVC
 // bitstream-format config landed in WebCodecs after this TypeScript lib's DOM
-// types were cut. They are real, shipped Chromium properties — declare the
+// types were cut. They are real, shipped Chromium properties, so declare the
 // exact runtime shapes the export worker uses so we don't have to cast.
 //
 // AVC already carries `avc?: AvcEncoderConfig` / encode options in lib.dom, so

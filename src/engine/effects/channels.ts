@@ -239,7 +239,7 @@ const AUTO_KEYFRAME_MIN_T = 1e-3
  * - **otherwise** → write the static base.
  *
  * Shared by the single-clip gizmo and the multi-selection align so that one drag
- * means the same thing however many clips are selected — they disagreed before,
+ * means the same thing however many clips are selected. They disagreed before,
  * and the same gesture animated one clip while permanently moving its
  * neighbours. Pure: the caller owns which clips, and at what time.
  */

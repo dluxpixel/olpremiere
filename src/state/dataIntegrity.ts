@@ -2,7 +2,7 @@
 //
 // This is the other half of the 2026-07-26 loss, and the more important half.
 // The app opened a store holding gigabytes of media and ZERO projects, and
-// reported "No media yet" — cheerful, instant, and wrong. Nothing was checked and
+// reported "No media yet": cheerful, instant, and wrong. Nothing was checked and
 // nothing was said, so the user spent hours believing their edit was deleted when
 // what had actually happened was that the project record never persisted.
 //
@@ -17,14 +17,14 @@ export interface IntegrityReport {
   blobCount: number
   /** Media exists but nothing references it: the exact state that hid the loss. */
   orphanedMedia: boolean
-  /** Storage is readable but completely empty — a genuinely new install. */
+  /** Storage is readable but completely empty, meaning a genuinely new install. */
   empty: boolean
 }
 
 /**
  * Count what is actually in storage. Cheap: counts only, never reads a blob.
  *
- * Deliberately tolerant — if this throws, the app must still start. A broken
+ * Deliberately tolerant. If this throws, the app must still start. A broken
  * integrity check that blocks boot would be a worse bug than the one it exists
  * to report.
  */

@@ -1,6 +1,6 @@
 // Multi-select bulk edits: apply ONE change to every selected clip in ONE undo
 // step. The per-clip helpers in clipEdits.ts each open their own dispatch, so
-// fanning them out would flood the undo stack — these route through a single
+// fanning them out would flood the undo stack, so these route through a single
 // mapClips() dispatch instead. Locked tracks are skipped (same choke point as
 // mapClip), and a no-op fan-out records no undo step (change detection below).
 
@@ -53,7 +53,7 @@ export function mapClips(ids: Iterable<string>, label: string, fn: (clip: Clip) 
 /**
  * Set a channel value on every selected clip. Mirrors the single-clip setChannel:
  * a STATIC channel sets the base; an ANIMATED one (a caption's pop, a punch-in)
- * keys the value at the playhead — otherwise the base write is overridden by the
+ * keys the value at the playhead. Otherwise the base write is overridden by the
  * keyframes and the bulk edit silently does nothing.
  */
 export function setChannelForClips(ids: Iterable<string>, channel: AnimChannel, value: number): void {
@@ -67,7 +67,7 @@ export function setChannelForClips(ids: Iterable<string>, channel: AnimChannel, 
 
 /**
  * Align every selected clip to the SAME on-screen position (x, y) in one undo
- * step — dragging one caption in the preview snaps them all to that spot.
+ * step: dragging one caption in the preview snaps them all to that spot.
  *
  * Obeys the SAME per-channel policy as the single-clip gizmo
  * (`withChannelsAtTime`): an animated clip keyframes at the playhead, and with
@@ -81,7 +81,7 @@ export function setClipsPosition(ids: Iterable<string>, x: number, y: number): v
   const auto = useSettings.getState().autoKeyframe
   mapClips(ids, 'Align clips', (c) => {
     // An appearance preset OWNS these channels and recompiles from the base, so
-    // it takes the base write — the single-clip gizmo declines to keyframe an
+    // it takes the base write; the single-clip gizmo declines to keyframe an
     // appearance-owned clip for exactly the same reason.
     const spec = c.appearance
     if (spec) {
@@ -90,7 +90,7 @@ export function setClipsPosition(ids: Iterable<string>, x: number, y: number): v
     }
     // Only a clip the playhead is actually INSIDE has a meaningful time to key
     // at. A selection can reach clips elsewhere on the timeline, and their local
-    // time clamps to the head or the tail — animating those would be noise the
+    // time clamps to the head or the tail, and animating those would be noise the
     // user never asked for, so they keep the plain move.
     const localT = ui.playheadS - c.startS
     if (localT < 0 || ui.playheadS >= clipEndS(c)) {
@@ -129,7 +129,7 @@ export function applyEffectToClips(ids: Iterable<string>, type: string): void {
 
 /**
  * Add one fresh instance of an effect to EVERY video clip in the active
- * sequence — ONE undo step, no selection needed. Audio clips are skipped
+ * sequence, all in ONE undo step, no selection needed. Audio clips are skipped
  * (a visual effect means nothing on them) and locked tracks are skipped by
  * mapClips. Mirrors applyPresetToAllClips in library.ts.
  */

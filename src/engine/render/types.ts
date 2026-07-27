@@ -1,7 +1,7 @@
 // The frozen render contract. resolve.ts produces a RenderFrame (pure, from a
 // Sequence + time); glRenderer.ts consumes it and draws to a WebGL2 canvas.
 // Preview (main thread) and export (worker) both go through the SAME resolver
-// and the SAME renderer — that is what keeps them pixel-identical.
+// and the SAME renderer. That is what keeps them pixel-identical.
 
 import type { BlendMode, ClipMask, Id, TitleDef } from '../types'
 
@@ -43,7 +43,7 @@ export interface RenderLayer {
   assetId: Id
   /** Source-media time to sample for this layer's texture. */
   sourceTimeS: number
-  /** Still image (no time sampling) — caller draws the image texture directly. */
+  /** Still image (no time sampling): caller draws the image texture directly. */
   isImage: boolean
   /** Generated title (Phase 5): the caller rasterizes this to a texture. */
   title?: TitleDef
@@ -51,7 +51,7 @@ export interface RenderLayer {
    * The clip's playback speed (negative = reverse). The live preview matches the
    * pooled <video>'s playbackRate to |speed| so a slowed clip's picture tracks
    * the compositor instead of drifting and re-seeking (audio already does this).
-   * The export path ignores it — it decodes exact frames, never plays.
+   * The export path ignores it: it decodes exact frames, never plays.
    */
   speed: number
   /**
@@ -104,14 +104,14 @@ export const TRANSITION_KINDS: TransitionKind[] = [
   'whiteFlash',
 ]
 
-/** Human labels for the transition kinds — shared by the Effects panel + Inspector. */
+/** Human labels for the transition kinds, shared by the Effects panel + Inspector. */
 export const TRANSITION_LABELS: Record<TransitionKind, string> = {
   crossDissolve: 'Cross Dissolve',
   dipToBlack: 'Dip to Black',
   dipToWhite: 'Dip to White',
   wipeLeft: 'Wipe Left',
   wipeRight: 'Wipe Right',
-  // Both shots travel together, which is a PUSH — calling it a slide (where
+  // Both shots travel together, which is a PUSH. Calling it a slide (where
   // only the incoming shot moves) described a transition the app does not have.
   slideLeft: 'Push Left',
   slideRight: 'Push Right',
@@ -125,34 +125,34 @@ export const TRANSITION_LABELS: Record<TransitionKind, string> = {
 /**
  * Per-kind duration envelope for the edit layer (default + clamp on set).
  *
- * Every kind used to default to a flat 1.000 second — inherited from the NLE
+ * Every kind used to default to a flat 1.000 second, inherited from the NLE
  * tradition where a dissolve joins two long takes. On a fast-cut Short a whole
  * second is HALF A SHOT, so the default made every transition read as a mistake:
  * the cut disappears into a mush instead of landing. The defaults below are per
  * VERB instead of per convention:
- *   - a HIT (glitch, flash) is over before you can name it — 150–200 ms;
+ *   - a HIT (glitch, flash) is over before you can name it, so 150 to 200 ms;
  *   - a MOVE (zoom, spin, slide, wipe) has to be readable but must not steal
- *     the incoming shot — ~300 ms;
+ *     the incoming shot, so ~300 ms;
  *   - a BLEND (dissolve, dip, luma wipe) is the only one meant to feel like
- *     time passing, and even then 400–500 ms is plenty at this pacing.
+ *     time passing, and even then 400 to 500 ms is plenty at this pacing.
  * The envelopes stay wide (a deliberate 3-second dissolve is still one drag
  * away); only the value you get for free changed. setClipTransition is the one
  * write path, so this table lands on drops, the Inspector, and every menu.
  */
 const TRANSITION_DURATIONS: Record<TransitionKind, { def: number; min: number; max: number }> = {
-  // Blends — the slowest verbs, and still well under a second.
+  // Blends: the slowest verbs, and still well under a second.
   crossDissolve: { def: 0.4, min: 0.1, max: 10 },
   dipToBlack: { def: 0.5, min: 0.1, max: 10 },
   dipToWhite: { def: 0.4, min: 0.1, max: 10 },
   lumaWipe: { def: 0.4, min: 0.1, max: 10 },
-  // Moves — readable, but they hand the frame over quickly.
+  // Moves: readable, but they hand the frame over quickly.
   wipeLeft: { def: 0.3, min: 0.1, max: 10 },
   wipeRight: { def: 0.3, min: 0.1, max: 10 },
   slideLeft: { def: 0.3, min: 0.1, max: 10 },
   slideRight: { def: 0.3, min: 0.1, max: 10 },
   zoom: { def: 0.3, min: 0.1, max: 10 },
   spin: { def: 0.28, min: 0.1, max: 10 },
-  // Hits — an accent on the cut, not a passage of time.
+  // Hits: an accent on the cut, not a passage of time.
   glitch: { def: 0.18, min: 0.06, max: 2 },
   whiteFlash: { def: 0.2, min: 0.1, max: 0.5 },
 }

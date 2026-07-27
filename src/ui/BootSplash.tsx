@@ -22,12 +22,12 @@ const EXIT_MS = 420
 
 export type BootPhase = 'loading' | 'closing' | 'ready'
 
-/** This page's `?boot=` override, if any (see bootOverride — a normal launch has none). */
+/** This page's `?boot=` override, if any (see bootOverride, a normal launch has none). */
 function currentOverride(): BootOverride {
   return typeof window === 'undefined' ? null : bootOverride(window.location.search)
 }
 
-/** The phase an override pins us to. `show` pins nothing — it just runs for real. */
+/** The phase an override pins us to. `show` pins nothing: it just runs for real. */
 function heldPhase(): BootPhase | null {
   const v = currentOverride()
   if (v === 'hold') return 'loading'
@@ -85,7 +85,7 @@ export function useBootPhase(isElectron: boolean): BootPhase {
 
 /**
  * The opening screen, shared brand moment with the OL Studio DAW: a deep
- * near-black field with a soft coral glow. It runs in two beats — the loading
+ * near-black field with a soft coral glow. It runs in two beats: the loading
  * card while the app starts itself, then the pixel-melon floating as the hero,
  * which is the button that opens the editor. Clicking it is also the user gesture
  * that lets the editor's AudioContext start unmuted.
@@ -171,12 +171,12 @@ export function BootSplash({ onLaunch, onFinished }: { onLaunch: () => void; onF
  * loading chunk that checks for every new update, and if there is one, it
  * downloads it automatically."* He had spent weeks on a build four versions old
  * while the app checked silently, failed silently (the feed 404'd), and told him
- * nothing — so from where he sat there was no update system at all.
+ * nothing, so from where he sat there was no update system at all.
  *
  * The check and the download were already automatic. What was missing was any
  * evidence of it. The loading card now narrates the check as one of its rows; this
- * line carries whatever is still happening — a download in flight, an update
- * staged for restart — after the card is gone.
+ * line carries whatever is still happening (a download in flight, an update
+ * staged for restart) after the card is gone.
  *
  * It deliberately does NOT hold the app hostage while it waits. Blocking the boot
  * on a network call is how you get an editor that will not open when the wifi is
@@ -202,7 +202,7 @@ function UpdateStatus() {
  * all of them.
  */
 export function Boot({ children }: { children: ReactNode }) {
-  // A `?boot=` override turns the automation skip off — that is how the boot
+  // A `?boot=` override turns the automation skip off. That is how the boot
   // screens get rendered and driven in tests instead of being taken on trust.
   const override = useMemo(currentOverride, [])
   const skip = !override && typeof navigator !== 'undefined' && navigator.webdriver === true

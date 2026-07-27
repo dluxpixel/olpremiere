@@ -1,11 +1,11 @@
-// The loading card — the first thing the app shows, in the spirit of the Vegas Pro
+// The loading card: the first thing the app shows, in the spirit of the Vegas Pro
 // splash he sent: a small landscape box in the middle of a dark screen, the brand
 // on one side behind a diagonal seam, the work it is doing listed on the other, a
 // status line and a real progress bar along the bottom. When the work is done the
 // card pops open into the big melon you click.
 //
 // The rows are not decoration. Each one is a real startup task reporting itself
-// (see bootProgress.ts) — so the list doubles as proof the app did what it should.
+// (see bootProgress.ts), so the list doubles as proof the app did what it should.
 
 import { useMemo } from 'react'
 import { APP_VERSION } from '../appVersion'

@@ -19,7 +19,7 @@ import { initUpdateCheck } from './state/updateCheck'
 import { initUpdateFeed } from './state/updateStatus'
 
 // Each `bootStep` call below is what the loading card shows. The rows exist to
-// prove the work happened, so they are reported HERE, around the real calls —
+// prove the work happened, so they are reported HERE, around the real calls,
 // never from a timer in the UI.
 
 // FIRST, before anything reads a setting: adopt the values that were saved under
@@ -32,12 +32,12 @@ migrateRenamedKeys(localStorage)
 initSettings()
 bootStep.finish('settings')
 
-// The desktop updater's state, pulled and watched — it drives both the card's
+// The desktop updater's state, pulled and watched. It drives both the card's
 // "Checking for updates" row and the line under the melon. No-op on the web.
 initUpdateFeed()
 
 // A shared room link (#room=...) auto-joins only AFTER the local project
-// hydrates — joining against the boot placeholder captures the wrong
+// hydrates, because joining against the boot placeholder captures the wrong
 // preJoinProjectId and can seed/leak the wrong document into the room.
 bootStep.begin('project')
 void initPersistence()
@@ -71,7 +71,7 @@ void trackBootStep('media', loadLibrary())
 // redraw so a reopened Minecraft title re-rasterizes off the real font.
 void trackBootStep('fonts', loadTitleFonts(document.fonts).then(invalidatePreview))
 void loadDefaultTextAppearance()
-// Nudge stale tabs after a deploy ("A new version is live — Reload").
+// Nudge stale tabs after a deploy ("A new version is live", with a Reload button).
 initUpdateCheck()
 
 createRoot(document.getElementById('root')!).render(

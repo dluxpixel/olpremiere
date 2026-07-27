@@ -1,5 +1,5 @@
 // The pure resolver: (Sequence, t) → RenderFrame. The single source of truth
-// both the live preview and the export worker composite from — its output IS
+// both the live preview and the export worker composite from. Its output IS
 // their identity, so this file has NO GL, NO DOM, NO store, only engine types.
 //
 // Transforms live in sequence-NATIVE px; the renderer scales the raster so a
@@ -18,7 +18,7 @@ import {
   type TransitionKind,
 } from './types'
 
-// Adjacency tolerance for "A's out edge touches B's in edge" — coarser than the
+// Adjacency tolerance for "A's out edge touches B's in edge". Coarser than the
 // timeline EPS because these times survive px→time round-trips (matches ADJ_EPS
 // in timeline.ts).
 const ADJ_EPS = 1e-6
@@ -31,7 +31,7 @@ const coerceKind = (type: string): TransitionKind =>
 /**
  * Build a fully-resolved layer for `clip` at sequence time `t`. `sourceTimeS`
  * maps sequence time to source-media time (respecting |speed|); a still's
- * TextureSource ignores it. `isImage` is ALWAYS false here — resolve has no
+ * TextureSource ignores it. `isImage` is ALWAYS false here: resolve has no
  * MediaAsset, so the caller's TextureSource keys on assetId and handles stills.
  * `t` may lie past the clip's own [startS, endS) (a transition samples A past
  * its out point); the caller clamps to the source handles.
@@ -85,8 +85,8 @@ function layerFor(clip: Clip, t: number, fps: number): RenderLayer {
  *
  * It does NOT keep what makes a picture. A spread copy carried `assetId`,
  * `title` and the whole effect chain, so every frame of every lone-edge
- * transition decoded a video frame — or rasterized a full-frame caption canvas,
- * the expensive one — and ran the effect stack, to composite it at opacity 0
+ * transition decoded a video frame (or rasterized a full-frame caption canvas,
+ * the expensive one) and ran the effect stack, to composite it at opacity 0
  * into a transparent buffer. The renderer's texture source returns null for a
  * layer with no asset and no title, and `renderSideToFbo` then early-returns
  * after the clear, which is the same transparent result for none of the work.
@@ -107,13 +107,13 @@ const emptySide = (layer: RenderLayer): RenderLayer => ({
  * coverage (`max(from.a, to.a)`), so with one side absent that weight collapses
  * to the clip's OWN alpha and the "dip" becomes an opaque black rectangle the
  * exact shape of the clip. On a PIP that paints a black box over the video
- * below — and a full-frame solid is not the answer either, because wiping the
+ * below, and a full-frame solid is not the answer either, because wiping the
  * lower tracks was itself a bug, fixed on 2026-07-25.
  *
  * Ramping the clip's own opacity is right on both tracks at once: the composite
  * background is black, so on V1 it is the same picture the dip always produced,
- * while on an upper track the overlay simply leaves — which is what a dip to
- * black means when there is nothing of your own to dip to.
+ * while on an upper track the overlay simply leaves (which is what a dip to
+ * black means when there is nothing of your own to dip to).
  *
  * Dip to WHITE keeps its solid, because fading opacity there would reveal black,
  * which is not white. The asymmetry belongs to the colour, not to the rule.
@@ -133,8 +133,8 @@ const timeAdjacent = (a: Clip, b: Clip): boolean => Math.abs(clipEndS(a) - b.sta
  * Index of the LAST clip with startS <= t, or -1 when t precedes every clip.
  * track.clips is sorted by startS and never overlaps (types.ts invariant,
  * maintained by every timeline edit op and asserted in timeline.test.ts), so
- * this clip is the ONLY one whose span or transition window can contain t —
- * which turns the per-frame track scan from O(clips) into O(log clips). On a
+ * this clip is the ONLY one whose span or transition window can contain t.
+ * That turns the per-frame track scan from O(clips) into O(log clips). On a
  * word-caption timeline (one title clip per word) resolveFrame runs 60×/s in
  * preview and once per export frame, so this is the difference between
  * hundreds of comparisons per frame and ~10.
@@ -173,7 +173,7 @@ function resolveTrack(track: Track, t: number, fps: number): RenderOp | null {
     // --- Transition INTO this clip (this clip is B). Its window sits at the
     // head of B and takes over from B's plain layer for its duration.
     // Adjustment clips NEVER form pair transitions: they have no texture, so a
-    // side built from one is fully transparent — the partner would dissolve
+    // side built from one is fully transparent: the partner would dissolve
     // against nothing and the grade would cut out. Their edges fall back to
     // the lone-edge fade, which correctly ramps the adjustment op's opacity. ---
     if (prev && prev.enabled && !prev.adjustment && !clip.adjustment && timeAdjacent(prev, clip)) {
@@ -207,8 +207,8 @@ function resolveTrack(track: Track, t: number, fps: number): RenderOp | null {
       // in over nothing, a slide slides in from off-frame, a dip dips through
       // its colour, and a cross dissolve resolves to exactly the opacity ramp
       // this used to hard-code for every kind. That fallback was the reason
-      // applying "Glitch" to the head of the FIRST clip of a Short — the most
-      // common place a Shorts editor wants a hit — silently produced a fade
+      // applying "Glitch" to the head of the FIRST clip of a Short (the most
+      // common place a Shorts editor wants a hit) silently produced a fade
       // from black while the Inspector went on saying "Glitch".
       // Adjustment clips keep the ramp: they have no texture, so a side built
       // from one is transparent and the grade would simply cut out.
@@ -236,7 +236,7 @@ function resolveTrack(track: Track, t: number, fps: number): RenderOp | null {
           }
           // ...but only when this instant belongs to the IN edge ALONE. Every
           // window clamps to the clip's own length independently, so on a short
-          // clip the in edge can overlap the out edge or the fade-out handle —
+          // clip the in edge can overlap the out edge or the fade-out handle,
           // and one op per track means returning here would silence them for
           // that whole span, popping the picture mid-clip. Inside an overlap
           // both edges fall through to the opacity ramps below, which compose
@@ -268,7 +268,7 @@ function resolveTrack(track: Track, t: number, fps: number): RenderOp | null {
         if (t >= endS - d) {
           // The outro mirror of the intro case above: footage → full white as
           // the video ends, instead of the fade-to-black ramp. INVERTED
-          // progress feeds the same shader curve — alpha=(1-progress)² becomes
+          // progress feeds the same shader curve: alpha=(1-progress)² becomes
           // pOut², so the white accelerates in and lands at 1 exactly at the
           // end. Between two clips this branch never runs (the pair window at
           // B's head owns the cut, where the flash lands as a white hit).

@@ -58,7 +58,7 @@ describe('copy / paste attributes', () => {
   it('refuses to paste when nothing was copied', () => {
     const b = seedTitle(0)
     const before = useStore.getState().project
-    pasteClipAttributes([b.id]) // clipboard empty (fresh module state may carry over — guard on selection anyway)
+    pasteClipAttributes([b.id]) // clipboard empty (fresh module state may carry over, so guard on selection anyway)
     // Either the clipboard is empty (no change) or a prior copy applied cleanly;
     // the invariant we assert is that pasting onto an EMPTY selection never throws.
     expect(() => pasteClipAttributes([])).not.toThrow()

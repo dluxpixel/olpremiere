@@ -94,7 +94,7 @@ describe('a caption does not swallow every click in the monitor', () => {
     const midY = ((uv.v0 + uv.v1) / 2) * H
     expect(pointInQuad(midX, midY, q)).toBe(true)
 
-    // The gameplay clip underneath is reachable — this is the whole point.
+    // The gameplay clip underneath is reachable. That is the whole point.
     expect(pointInQuad(W / 2, H * 0.25, q)).toBe(false)
     expect(pointInQuad(W * 0.05, H * 0.5, q)).toBe(false)
   })

@@ -1,13 +1,13 @@
 // The loading card's ledger of what the app is doing before it opens.
 //
-// Every row is driven by REAL work landing — a resolved promise, an IPC answer —
+// Every row is driven by REAL work landing (a resolved promise, an IPC answer),
 // never by a timer pretending to be progress. That is the whole point of it:
 // *"it says the progress of what it is loading ... so we 100% know it did the
 // stuff it needed to do."* A bar that just animates to 100% would prove nothing,
 // so there isn't one; if a row says "Project opened", the project is open.
 //
 // The pure functions here (progress, labels, the gate) are unit-tested; the store
-// is a thin imperative shell so `main.tsx` — which runs before React mounts — can
+// is a thin imperative shell so `main.tsx`, which runs before React mounts, can
 // report steps without importing React.
 
 import { create } from 'zustand'
@@ -20,14 +20,14 @@ export interface BootStepSpec {
   id: BootStepId
   /** Present tense, shown while the work runs. */
   active: string
-  /** Past tense, shown once it landed — a glance proves it happened. */
+  /** Past tense, shown once it landed: a glance proves it happened. */
   done: string
   /** Desktop shell only: the browser build has no installer to update. */
   electronOnly?: boolean
   /**
    * Never gates the boot. The update check is a network call, and an editor that
    * will not open on bad wifi is a far worse failure than one that opens before
-   * it knows — so the card shows the check and moves on without it.
+   * it knows, so the card shows the check and moves on without it.
    */
   optional?: boolean
 }
@@ -94,14 +94,14 @@ export function progressOf(specs: readonly BootStepSpec[], statuses: BootStatuse
 
 /** One row's own text: past tense once it landed, with any detail appended. */
 export function labelOf(spec: BootStepSpec, status: BootStepStatus): string {
-  if (status.state === 'failed') return `${spec.active} — ${status.detail ?? 'failed'}`
+  if (status.state === 'failed') return `${spec.active}: ${status.detail ?? 'failed'}`
   const base = status.state === 'done' ? spec.done : spec.active
-  return status.detail ? `${base} — ${status.detail}` : base
+  return status.detail ? `${base}: ${status.detail}` : base
 }
 
 /**
  * The single line in the card's footer, Vegas-style: what is happening right
- * now, or — when nothing is in flight — the furthest-along row that has settled,
+ * now, or (when nothing is in flight) the furthest-along row that has settled,
  * so the line is never blank and never claims work that isn't happening.
  */
 export function statusLine(specs: readonly BootStepSpec[], statuses: BootStatuses): string {
@@ -113,7 +113,7 @@ export function statusLine(specs: readonly BootStepSpec[], statuses: BootStatuse
   return specs[0] ? specs[0].active : 'Starting up'
 }
 
-/** True when every GATING row has settled — the optional ones are not waited on. */
+/** True when every GATING row has settled. The optional ones are not waited on. */
 export function gateReady(specs: readonly BootStepSpec[], statuses: BootStatuses): boolean {
   return specs.filter((s) => !s.optional).every((s) => isSettled(statusOf(statuses, s.id).state))
 }
@@ -129,7 +129,7 @@ interface BootLedger {
   note(id: BootStepId, detail: string): void
   finish(id: BootStepId, detail?: string): void
   fail(id: BootStepId, detail?: string): void
-  /** Fail a row ONLY if it hasn't already landed — a late error can't un-finish real work. */
+  /** Fail a row ONLY if it hasn't already landed: a late error can't un-finish real work. */
   failUnfinished(id: BootStepId, detail?: string): void
   reset(): void
 }

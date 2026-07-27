@@ -1,4 +1,4 @@
-// OL Premiere document model. Pure data — everything here must survive structuredClone
+// OL Premiere document model. Pure data: everything here must survive structuredClone
 // (IndexedDB persistence), so no getters, no class instances, no functions.
 
 export type Id = string
@@ -92,7 +92,7 @@ export type BlendMode = 'normal' | 'multiply' | 'screen' | 'overlay' | 'add' | '
 
 /**
  * A clip-level shape mask in source-UV space (0..1 across the clip's frame,
- * before transform — so it rides the clip's position/scale/rotation for free).
+ * before transform, so it rides the clip's position/scale/rotation for free).
  * `feather` softens the edge outward, in UV units. `invert` keeps the outside.
  */
 export interface ClipMask {
@@ -107,7 +107,7 @@ export interface ClipMask {
 
 export const BLEND_MODES: BlendMode[] = ['normal', 'multiply', 'screen', 'overlay', 'add', 'softLight']
 
-/** Human labels for the blend modes — shared by the Inspector + bulk panel. */
+/** Human labels for the blend modes, shared by the Inspector + bulk panel. */
 export const BLEND_LABELS: Record<BlendMode, string> = {
   normal: 'Normal',
   multiply: 'Multiply',
@@ -159,9 +159,9 @@ export interface Clip {
   title?: TitleDef
   /**
    * Entrance / exit animation ("how it appears"). A tiny spec that COMPILES to
-   * keyframes on transform + opacity channels (see engine/anim/appearance.ts) —
-   * kept alongside the compiled keyframes so a single side can be changed and the
-   * pair rebuilt deterministically, and so it can be saved as the text default.
+   * keyframes on transform + opacity channels (see engine/anim/appearance.ts).
+   * It is kept alongside the compiled keyframes so a single side can be changed and
+   * the pair rebuilt deterministically, and so it can be saved as the text default.
    */
   appearance?: AppearanceSpec
   /**
@@ -182,7 +182,7 @@ export interface Clip {
 }
 
 // Clip duration math lives HERE, next to the fields it reads, rather than in
-// engine/timeline — so modules below timeline (engine/anim/appearance) can share
+// engine/timeline, so modules below timeline (engine/anim/appearance) can share
 // the one definition without importing timeline back and forming a cycle.
 // engine/timeline re-exports both, so `from './timeline'` keeps working.
 
@@ -217,7 +217,7 @@ export const ANIM_CHANNELS = [
   'gain',
   'temperature',
   'tint',
-  /** Per-clip audio volume in dB — the ONLY audio channel; all three mixers
+  /** Per-clip audio volume in dB, the ONLY audio channel; all three mixers
    *  inherit it through the shared clipGainEnvelope. */
   'volume',
 ] as const
@@ -306,7 +306,7 @@ export interface Marker {
 }
 
 // ---------------------------------------------------------------------------
-// Titles (Phase 5). A title clip has `title` set and an empty assetId — it is
+// Titles (Phase 5). A title clip has `title` set and an empty assetId. It is
 // generated, not imported, and rasterized to a texture at render time.
 
 export interface TitleShadow {
@@ -341,7 +341,7 @@ export interface TitleDef {
   bold: boolean
   italic: boolean
   /**
-   * Force letter case at render time (non-destructive — the typed text is kept).
+   * Force letter case at render time (non-destructive, the typed text is kept).
    * Whisper captions come in ALL-CAPS, so 'lower' fixes a whole batch in one
    * click. Undefined = show the text exactly as typed.
    */
@@ -400,8 +400,8 @@ export const isTitleClip = (clip: Clip): boolean => clip.title !== undefined
  * Scale every SEQUENCE-pixel measurement on a title by `k`, leaving its style
  * alone. Type size, outline, shadow, box and offsets are all absolute px against
  * the sequence raster, so anything that changes the raster a title is drawn into
- * — a format switch, a preview drawn smaller than the sequence, an export drawn
- * larger — has to bring them along or the look breaks.
+ * (a format switch, a preview drawn smaller than the sequence, an export drawn
+ * larger) has to bring them along or the look breaks.
  *
  * One function so those three callers cannot drift apart.
  */
@@ -428,7 +428,7 @@ export function scaleTitleDef(def: TitleDef, k: number): TitleDef {
  * while the size ladder runs 48 → 240 px. Changing size alone therefore broke
  * the look in both directions: an outline tuned at Medium is a hairline at Huge
  * and a blob at Small, and it is the main reason text here could read cheap.
- * Position is deliberately NOT scaled — resizing type must not move the title.
+ * Position is deliberately NOT scaled: resizing type must not move the title.
  */
 export function withTitleFontSize(def: TitleDef, nextSizePx: number): TitleDef {
   const next = Math.max(1, Math.round(nextSizePx))
@@ -436,7 +436,7 @@ export function withTitleFontSize(def: TitleDef, nextSizePx: number): TitleDef {
   if (next === prev) return def
   const k = next / prev
   // Zero is a FIXED POINT of a multiply, so any measurement that rounds to 0 on
-  // the way down can never come back on the way up — the shadow or the box
+  // the way down can never come back on the way up. The shadow or the box
   // padding would be gone for good after a there-and-back size change. Keep a
   // non-zero measurement at 1px minimum, and leave a deliberate 0 (which is how
   // "no outline" is expressed) exactly where it is.
@@ -453,7 +453,7 @@ export function withTitleFontSize(def: TitleDef, nextSizePx: number): TitleDef {
 }
 
 /**
- * An adjustment layer: no source of its own — its effect stack (and optional
+ * An adjustment layer: no source of its own. Its effect stack (and optional
  * mask) applies to the COMPOSITE of everything below it for its time span,
  * like Premiere/Resolve adjustment layers. Discriminated like titles.
  */

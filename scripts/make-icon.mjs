@@ -52,4 +52,4 @@ pngs.forEach((p, i) => {
 const ico = Buffer.concat([header, entries, ...dataChunks])
 fs.writeFileSync(path.join(root, 'public', 'ol-premiere.ico'), ico)
 fs.writeFileSync(path.join(root, 'public', 'favicon.png'), pngs.find((p) => p.size === 64).buf)
-console.log(`wrote public/ol-premiere.ico (${sizes.join('/')}) — ${ico.length} bytes`)
+console.log(`wrote public/ol-premiere.ico (${sizes.join('/')}), ${ico.length} bytes`)

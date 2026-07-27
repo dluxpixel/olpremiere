@@ -90,8 +90,8 @@ function withHevcFormat(config: VideoEncoderConfig, family: VideoCodecFamily): V
 /**
  * Behavioural constant-QP probe. isConfigSupported validates the CONFIG but the
  * per-frame quantizer is passed at encode() time, so an encoder can accept
- * bitrateMode:'quantizer' and then silently rate-control to its own default —
- * an invisible failure that would defeat the whole "flawless" promise. This
+ * bitrateMode:'quantizer' and then silently rate-control to its own default, an
+ * invisible failure that would defeat the whole "flawless" promise. This
  * encodes a few noise frames at a low QP and a high QP on the REAL codec/accel
  * and returns true only if the output byte size actually responds to QP. Cheap
  * (128×72). A false negative merely falls back to high-bitrate VBR (still great),
@@ -157,7 +157,7 @@ let started = false
 const audioSegments: Float32Array[][] = []
 let audioWaiter: (() => void) | null = null
 // Set when init promised audio but no worker-side encoder exists (video-only
-// fallback): segments are dropped on arrival — but still ACKed, so the main
+// fallback): segments are dropped on arrival, but still ACKed, so the main
 // thread's credit window keeps draining instead of deadlocking.
 let audioDiscard = false
 const wakeAudioLoop = (): void => {
@@ -167,7 +167,7 @@ const wakeAudioLoop = (): void => {
 
 // NATIVE mode credit WINDOW. The render loop used to post one RGBA frame and
 // park until the page confirmed it had reached ffmpeg, so the GPU and the
-// encoder took strict turns and neither ever overlapped the other — the whole
+// encoder took strict turns and neither ever overlapped the other: the whole
 // render pipeline idled for every ffmpeg write and vice versa. A few frames may
 // now be in flight at once, which is still a hard bound on peak memory (three
 // 1440p frames ≈ 44 MB) rather than an unbounded queue.
@@ -189,7 +189,7 @@ const awaitFrameCredit = (): Promise<void> => {
     frameCreditWaiter = resolve
   })
 }
-/** Park until EVERY posted frame has been written — before ffmpeg's stdin closes. */
+/** Park until EVERY posted frame has been written, before ffmpeg's stdin closes. */
 const awaitFramesDrained = async (): Promise<void> => {
   while (!cancelled && framesInFlight > 0) {
     await new Promise<void>((resolve) => {
@@ -254,7 +254,7 @@ const nextDequeue = (enc: VideoEncoder | AudioEncoder): Promise<void> =>
 // A per-clip monotonic frame reader. Random-access getCanvas() returns null on
 // VFR / cue-less MediaRecorder webm inside a worker, so export pulls frames
 // SEQUENTIALLY (canvases()) and holds the newest frame with timestamp ≤ the
-// requested source time — classic pull-down. One Input per CLIP, so two clips
+// requested source time. Classic pull-down. One Input per CLIP, so two clips
 // of the same asset (e.g. across a cross-dissolve) read independently.
 interface ClipProvider {
   /** Kept so the iterator can be re-opened for a backward (reverse-clip) seek. */
@@ -264,7 +264,7 @@ interface ClipProvider {
   started: boolean
   current: WrappedCanvas | null
   ahead: WrappedCanvas | null
-  /** Reaped mid-export (sweep passed the clip) — guards double-dispose. */
+  /** Reaped mid-export (sweep passed the clip). Guards double-dispose. */
   disposed: boolean
 }
 
@@ -280,7 +280,7 @@ async function frameForClip(p: ClipProvider, sourceT: number): Promise<Offscreen
   // A REVERSE clip (speed < 0) requests DECREASING sourceT. The reader is
   // forward-only, so a backward jump means re-opening the sink iterator from the
   // new time (a random-access re-seek). Without this the whole reversed clip
-  // would freeze on its furthest-decoded frame — the preview reverses correctly
+  // would freeze on its furthest-decoded frame. The preview reverses correctly
   // (random-access frame cache) but the export would not.
   if (p.current && sourceT + SRC_EPS_S < p.current.timestamp) {
     void p.iterator.return?.(undefined)
@@ -307,7 +307,7 @@ async function frameForClip(p: ClipProvider, sourceT: number): Promise<Offscreen
  * render pipeline as run() so preview == export, but instead of a WebCodecs
  * encoder + muxer it reads the rendered RGBA back and streams each frame to the
  * page (which relays it to a native ffmpeg process). No WebCodecs, no muxer, no
- * audio here — audio is rendered + muxed on the page/main side.
+ * audio here: audio is rendered + muxed on the page/main side.
  */
 async function runNative(init: Extract<ExportRequest, { type: 'init' }>): Promise<void> {
   const cleanups: (() => void)[] = []
@@ -497,7 +497,7 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
     post({ type: 'progress', progress: { phase: 'preparing', framesDone: 0, framesTotal } })
 
     // Register bundled title fonts in THIS worker's FontFaceSet before any title
-    // is rasterized — otherwise a Minecraft title would fall back to a different
+    // is rasterized, otherwise a Minecraft title would fall back to a different
     // face here than in the preview, breaking preview == export.
     await loadTitleFonts(scope.fonts)
 
@@ -510,7 +510,7 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
 
     // Constant-QP forces the SOFTWARE encoder: openh264/libaom reliably honour a
     // per-frame quantizer, whereas hardware NVENC CQP is not guaranteed (it can
-    // silently ignore the QP). VBR/CBR keep the requested acceleration — and its
+    // silently ignore the QP). VBR/CBR keep the requested acceleration, and its
     // 'realtime' B-frame suppression that the Auto crash-fallback depends on.
     const accelOrderFor = (rate: RateControl): Accel[] =>
       rate === 'quantizer'
@@ -557,7 +557,7 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
     }
     if (!picked) {
       throw new Error(
-        `no ${codecFamily} encoder available for ${settings.width}x${settings.height}@${settings.fps} — try a smaller frame size`,
+        `no ${codecFamily} encoder available for ${settings.width}x${settings.height}@${settings.fps}. Try a smaller frame size`,
       )
     }
     // Constant-QP: confirm the encoder ACTUALLY honours per-frame QP; if not,
@@ -608,7 +608,7 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
       // Neither AAC nor Opus: ship a video-only file instead of failing.
       if (!audioConfig) {
         // Video-only fallback: the main thread will still stream the mix (it
-        // has no way to know the probe failed) — discard segments on arrival
+        // has no way to know the probe failed), so discard segments on arrival
         // and ACK them, or the queue retains the entire mix for the whole
         // video render.
         audioDiscard = true
@@ -673,7 +673,7 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
 
     // WebCodecs output callbacks are synchronous, but mediabunny's add() is
     // async (writer backpressure). Chain the adds per track so packets keep
-    // their decode order, and CAPTURE failures into encoderError — a throw that
+    // their decode order, and CAPTURE failures into encoderError: a throw that
     // escaped the callback surfaced as the opaque "worker crashed" error.
     let videoMux: Promise<void> = Promise.resolve()
     let audioMux: Promise<void> = Promise.resolve()
@@ -685,7 +685,7 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
 
     // Tag HD+ output as BT.709 (the MP4 `colr` box, written from this decoder
     // config) so players and YouTube interpret the colours correctly instead
-    // of guessing — the usual cause of "washed out after upload". SD stays
+    // of guessing (the usual cause of "washed out after upload"). SD stays
     // untagged: encoders work in BT.601 there, and leaving it alone keeps the
     // golden export byte-stable.
     const videoFrameDurUs = 1e6 / settings.fps
@@ -735,7 +735,7 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
       post({ type: 'progress', progress: { phase: 'audio', framesDone: 0, framesTotal } })
       // Normalize the track so its first chunk lands at t=0: AAC encoder
       // priming can stamp the first chunk slightly after zero, which used to
-      // crash the old muxer's strict mode (fixed then via 'offset' — kept here).
+      // crash the old muxer's strict mode (fixed then via 'offset', kept here).
       let audioBaseUs: number | null = null
       const audioChunkDurUs = (AUDIO_CHUNK_FRAMES / audio.sampleRate) * 1e6
       const audioEncoder = new AudioEncoder({
@@ -791,7 +791,7 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
         }
         audioFramesDone += segFrames
         // Credit back to the producer: this segment is consumed, its memory is
-        // free — the main thread may render the next one.
+        // free, so the main thread may render the next one.
         post({ type: 'segmentDone' })
       }
       await audioEncoder.flush()
@@ -861,8 +861,8 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
       clipProviders.set(clip.id, provider)
       cleanups.push(() => {
         if (provider.disposed) return // reaped mid-export
-        // provider.iterator, not the captured `iterator` — a reverse re-seek may
-        // have replaced it.
+        // provider.iterator, not the captured `iterator`, since a reverse re-seek
+        // may have replaced it.
         void provider.iterator.return?.(undefined)
         input.dispose()
       })
@@ -870,7 +870,7 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
     }
 
     // A transition into the NEXT clip samples this clip past its out point, and
-    // the transition-duration UI caps at 10s — so anything 10s behind the sweep
+    // the transition-duration UI caps at 10s, so anything 10s behind the sweep
     // can never be read again. Without reaping, a several-hundred-clip timeline
     // ends the export holding hundreds of open demuxers + hardware decoders.
     const PROVIDER_REAP_MARGIN_S = 10
@@ -945,7 +945,7 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
       for (const op of frame.ops) {
         if (op.type === 'layer') layers.push(op.layer)
         else if (op.type === 'transition') layers.push(op.from, op.to)
-        // adjustment ops carry no texture — nothing to gather
+        // adjustment ops carry no texture, so nothing to gather
       }
       const texMap = await gatherTextures(layers)
       renderer.render(frame, (layer) => texMap.get(layer) ?? null)
@@ -954,7 +954,7 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
         timestamp: Math.round((f * 1e6) / settings.fps),
         duration: Math.round(1e6 / settings.fps),
       })
-      // Constant-QP passes the fixed quantizer on EVERY frame — a missed frame
+      // Constant-QP passes the fixed quantizer on EVERY frame. A missed frame
       // silently reverts to the encoder's default QP. VBR/CBR pass no QP.
       videoEncoder.encode(vframe, {
         keyFrame: f % keyEvery === 0,

@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-/** An optional inline button on a toast — e.g. "Undo" on a destructive action. */
+/** An optional inline button on a toast, e.g. "Undo" on a destructive action. */
 export interface ToastAction {
   label: string
   onClick: () => void
@@ -36,7 +36,7 @@ export const useToasts = create<ToastState>((set, get) => ({
     const id = nextId++
     set((s) => {
       // Cap the stack: a bad folder import (one toast per file) must never
-      // wall the screen — drop the oldest actionless toast past 5.
+      // wall the screen. Drop the oldest actionless toast past 5.
       let toasts = s.toasts
       if (toasts.length >= 5) {
         const drop = toasts.find((t) => !t.action)

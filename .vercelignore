@@ -1,5 +1,5 @@
 # Web deploy: exclude desktop-only binaries, build artifacts, and test output.
-# ffmpeg.exe (138 MB) is bundled for the Electron native exporter — the web app never uses it.
+# ffmpeg.exe (138 MB) is bundled for the Electron native exporter. The web app never uses it.
 vendor/
 *.exe
 dist/

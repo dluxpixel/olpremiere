@@ -1,6 +1,6 @@
 // Copy / Paste Attributes (Premiere's Cmd+Alt+C / Cmd+Alt+V): grab one clip's
-// LOOK — its effect stack, transform, opacity, blend mode, mask, and (for a
-// title) its style + animation — and stamp it onto every selected clip in one
+// LOOK, meaning its effect stack, transform, opacity, blend mode, mask, and (for
+// a title) its style + animation, then stamp it onto every selected clip in one
 // undo step. Faster than a saved preset when you just want "make these look
 // like that one".
 
@@ -23,7 +23,7 @@ interface ClipAttrs {
   blendMode: Clip['blendMode']
   /** undefined = the source had no mask; pasting CLEARS the target's. */
   mask: Clip['mask']
-  /** Title style (everything but the text) — only for title clips. */
+  /** Title style (everything but the text), only for title clips. */
   title?: Partial<TitleDef>
   appearance?: AppearanceSpec
 }
@@ -78,7 +78,7 @@ function cloneEffects(effects: readonly EffectInstance[]): EffectInstance[] {
   return effects.map((e) => ({ ...structuredClone(e), id: newId() }))
 }
 
-/** Paste the copied attributes onto every selected clip (or `ids`) — one undo step. */
+/** Paste the copied attributes onto every selected clip (or `ids`) in one undo step. */
 export function pasteClipAttributes(ids?: Iterable<string>): void {
   const attrs = clipboard
   if (!attrs) {

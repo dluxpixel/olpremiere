@@ -51,7 +51,7 @@ describe('previewTargetHeight', () => {
     expect(previewTargetHeight(0, 1)).toBeUndefined()
   })
   it('Full follows a TALLER sequence raster (vertical shorts, 4K timelines)', () => {
-    expect(previewTargetHeight(1920, 1, 1080, 1920)).toBeUndefined() // native — no cap
+    expect(previewTargetHeight(1920, 1, 1080, 1920)).toBeUndefined() // native, no cap
     expect(previewTargetHeight(3840, 1, 1080, 1920)).toBe(1920)
     expect(previewTargetHeight(2160, 1, 1080, 2160)).toBeUndefined() // 4K seq → native 4K
   })
@@ -223,7 +223,7 @@ describe('FrameLru holds a memory budget, not a frame count', () => {
   const sized = (bytes: number) => ({ bytes })
   const lru = () => new FrameLru<{ bytes: number }>(1000, (v) => v.bytes)
 
-  it('evicts by weight — one heavy frame costs many light ones', () => {
+  it('evicts by weight, so one heavy frame costs many light ones', () => {
     const c = lru()
     c.set('small1', sized(100))
     c.set('small2', sized(100))

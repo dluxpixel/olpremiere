@@ -19,7 +19,7 @@ describe('bundled SFX pack', () => {
   it('every manifest entry has its WAV committed in public/sfx', () => {
     for (const s of SFX_LIBRARY) {
       const path = join(PUBLIC_SFX, s.file)
-      expect(existsSync(path), `${s.file} missing — run node scripts/gen-sfx.mjs`).toBe(true)
+      expect(existsSync(path), `${s.file} missing, run node scripts/gen-sfx.mjs`).toBe(true)
       expect(statSync(path).size).toBeGreaterThan(1000)
       // 16-bit mono 48kHz WAV whose data length matches the manifest duration
       const head = readFileSync(path).subarray(0, 44)

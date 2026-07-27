@@ -1,6 +1,6 @@
 // Electron main process for OL Premiere (ESM). Serves the EXISTING built
-// renderer over a registered `app://` secure standard scheme — never file:// —
-// so the app's ES module workers (export + captions), dynamic import(),
+// renderer over a registered `app://` secure standard scheme (never file://) so
+// the app's ES module workers (export + captions), dynamic import(),
 // IndexedDB, Cache Storage and other secure-context APIs behave exactly as on
 // the web. The origin (`app://olpremiere`) is PINNED forever: changing it (or
 // the appId/productName) would orphan the user's IndexedDB.
@@ -21,7 +21,7 @@ const { autoUpdater } = electronUpdater
 //
 // Electron derives userData from package.json `name`, so renaming the package
 // silently repoints the app at an empty directory and every saved project
-// "disappears" — 6.8 GB of them on the author's machine. The data does not need
+// "disappears": 6.8 GB of them on the author's machine. The data does not need
 // copying, only re-addressing: a directory rename on the same volume is atomic
 // and instant whatever it holds.
 //
@@ -50,7 +50,7 @@ const RENDERER_DIST = path.join(__dirname, '../renderer')
 const DEV_URL = process.env.ELECTRON_RENDERER_URL // set by `electron-vite dev`
 const isDev = !!DEV_URL
 
-// Stable, PINNED app origin. Never rotate the host — the IndexedDB partition is
+// Stable, PINNED app origin. Never rotate the host. The IndexedDB partition is
 // keyed on it, so a change would orphan saved projects.
 const APP_ORIGIN_HOST = 'olpremiere'
 
@@ -58,7 +58,7 @@ const APP_ORIGIN_HOST = 'olpremiere'
 let mainWindow: BrowserWindow | null = null
 
 /**
- * Where the auto-updater stands. Held here — not just broadcast — because the
+ * Where the auto-updater stands. Held here (not just broadcast) because the
  * renderer needs to be able to ASK: it starts up alongside the check, and the
  * loading card must be able to say truthfully whether the check finished.
  * `unsupported` until proven otherwise: an unpackaged build runs no updater.
@@ -71,7 +71,7 @@ function setUpdateStatus(status: UpdateStatus): void {
 
 // Content types we must set explicitly: a `type:module` worker hard-fails if it
 // is not served as JS, and a streaming WebAssembly.instantiate needs
-// application/wasm. (This is the V2 fix — we read via asar-aware fs and set the
+// application/wasm. (This is the V2 fix: we read via asar-aware fs and set the
 // MIME ourselves rather than trusting net.fetch to infer it through asar.)
 const MIME: Record<string, string> = {
   '.html': 'text/html',
@@ -119,15 +119,15 @@ function createWindow(): void {
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
-      // GPU/WebGL/WebCodecs stay ON — the compositor + fast export depend on it.
+      // GPU/WebGL/WebCodecs stay ON because the compositor + fast export depend on it.
       // NEVER call app.disableHardwareAcceleration().
     },
   })
   mainWindow = win
-  // His ask: it should fill the screen by itself. MAXIMIZED, not true fullscreen —
-  // an editor still needs its title bar and the taskbar (and fullscreen would hide
-  // the window controls behind a gesture nobody looks for). Maximize BEFORE the
-  // first show so it opens filled instead of resizing in front of him.
+  // His ask: it should fill the screen by itself. MAXIMIZED, not true fullscreen,
+  // because an editor still needs its title bar and the taskbar (and fullscreen
+  // would hide the window controls behind a gesture nobody looks for). Maximize
+  // BEFORE the first show so it opens filled instead of resizing in front of him.
   win.once('ready-to-show', () => {
     win.maximize()
     win.show()
@@ -215,7 +215,7 @@ app.whenReady().then(() => {
   ipcMain.handle('backup:read', async (_e, filePath: string) => {
     // The renderer may only read back what WE wrote. Without this, a compromised
     // or buggy renderer could hand over any path on the machine and have main
-    // read it out — the backup feature must not become a file-read primitive.
+    // read it out. The backup feature must not become a file-read primitive.
     const dir = path.resolve(backups.backupDir())
     const target = path.resolve(filePath)
     if (!target.startsWith(dir + path.sep) || !target.endsWith('.olpbak')) {
@@ -245,18 +245,18 @@ app.whenReady().then(() => {
   // (offline / no release) logs and is ignored. We re-check every 15 minutes so
   // an app left open still gets a release the same day it ships.
   //
-  // APPLY POLICY (David's ask — "every time I start, just update to the newest"):
+  // APPLY POLICY (David's ask was "every time I start, just update to the newest"):
   // if the update finishes downloading shortly after LAUNCH (before the user has
   // settled into editing), quit + install + relaunch straight into it, so every
-  // start converges to the newest build with zero clicks. If it lands LATER —
-  // mid-edit — we must not yank the app out from under active work, so we surface
+  // start converges to the newest build with zero clicks. If it lands LATER
+  // (mid-edit) we must not yank the app out from under active work, so we surface
   // the "Restart to update" toast instead. Either way, after the relaunch the
   // renderer shows a "Updated to vX" toast and the always-on version tag confirms
-  // exactly which build is running (App.tsx / TopBar) — the "what version am I on"
+  // exactly which build is running (App.tsx / TopBar). The "what version am I on"
   // confusion is gone.
   // The updater's state, kept here so the renderer can ASK as well as listen. The
   // loading card narrates this check as one of its rows, and it mounts a beat after
-  // the check starts — without a pull, a fast answer would land before anyone was
+  // the check starts. Without a pull, a fast answer would land before anyone was
   // listening and the row would claim to still be checking.
   ipcMain.handle('update:status:get', () => updateStatus)
 
@@ -279,7 +279,7 @@ app.whenReady().then(() => {
       mainWindow?.webContents.send('update:none')
       setUpdateStatus({ kind: 'none' })
     })
-    // Found one, and the download starts itself (autoDownload) — say so, and then
+    // Found one, and the download starts itself (autoDownload), so say so, and then
     // say how far it has got. A 240 MB installer arriving in silence is the thing
     // that made the app look stuck on "checking".
     autoUpdater.on('update-available', (info) => {
@@ -294,14 +294,14 @@ app.whenReady().then(() => {
       // Auto-apply only in the fresh-launch window AND only when no native export
       // is mid-render (a force-quit would truncate the file + orphan ffmpeg). Even
       // then we don't quit blindly: we ASK the renderer, which flushes a save and
-      // restarts only if no critical work is in flight — otherwise it falls back to
+      // restarts only if no critical work is in flight. Otherwise it falls back to
       // the "Restart to update" toast. Outside the window we always just offer the toast.
       const freshLaunch = Date.now() - launchedAt < AUTO_APPLY_WINDOW_MS
       if (freshLaunch && !native.isExporting()) {
-        console.log(`OL Premiere update ${info.version} downloaded at launch — asking renderer to auto-apply`)
+        console.log(`OL Premiere update ${info.version} downloaded at launch, asking renderer to auto-apply`)
         mainWindow?.webContents.send('update:autoApply', info.version)
       } else {
-        console.log(`OL Premiere update ${info.version} downloaded — offering restart`)
+        console.log(`OL Premiere update ${info.version} downloaded, offering restart`)
         mainWindow?.webContents.send('update:ready', info.version)
       }
     })

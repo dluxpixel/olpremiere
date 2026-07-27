@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { parseTranscript, tapsToWords } from './transcript'
 
-describe('parseTranscript — JSON word lists', () => {
+describe('parseTranscript: JSON word lists', () => {
   it('accepts [{text,startS,endS}] with exact timings', () => {
     const words = parseTranscript('[{"text":"so","startS":0,"endS":0.3},{"text":"I","startS":0.3,"endS":0.5}]')!
     expect(words.map((w) => w.text)).toEqual(['so', 'I'])
@@ -27,7 +27,7 @@ describe('parseTranscript — JSON word lists', () => {
   })
 })
 
-describe('parseTranscript — SRT', () => {
+describe('parseTranscript: SRT', () => {
   const SRT = `1
 00:00:01,000 --> 00:00:02,000
 so I built

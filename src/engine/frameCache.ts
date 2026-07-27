@@ -1,6 +1,6 @@
 // Frame-accurate scrub cache (spec §4.2 decode.ts): WebCodecs-backed exact
 // frames for the PAUSED/scrubbing preview path. The Monitor redraws every rAF,
-// so there is no push notification — a miss kicks an async decode and a later
+// so there is no push notification: a miss kicks an async decode and a later
 // rAF picks the frame up from the cache.
 //
 // mediabunny + persistence are loaded via dynamic import on first decode so
@@ -36,7 +36,7 @@ export const PENDING_CAP = 16
  * Reopen threshold for the sequential reader: when the target frame is at most
  * this many frames AHEAD of the iterator, decoding forward through the gap is
  * cheaper than a random-access re-seek (which decodes forward from the previous
- * KEYFRAME anyway — typically 2s ≈ 60 frames of work). Behind always reopens.
+ * KEYFRAME anyway, typically 2s ≈ 60 frames of work). Behind always reopens.
  */
 export const SEQ_REOPEN_GAP = 90
 
@@ -55,9 +55,9 @@ let sequenceH = 0
 
 /**
  * Target decode height for an asset's preview frames, or undefined to decode at
- * native size (never upscales). Pure — the sizing policy the sink uses.
+ * native size (never upscales). Pure: the sizing policy the sink uses.
  * At Full quality (scale >= 1) a sequence TALLER than the base cap raises the
- * cap to the sequence height — capping a 1920-tall short to 1080 softened every
+ * cap to the sequence height. Capping a 1920-tall short to 1080 softened every
  * paused frame. Half/Quarter keep the base cap: cheap scrubbing is their point.
  */
 export function previewTargetHeight(
@@ -82,7 +82,7 @@ export const previewCapHeight = (nativeH: number | undefined): number | undefine
   previewTargetHeight(nativeH, previewScale, PREVIEW_BASE_MAX_H, sequenceH)
 
 // ---------------------------------------------------------------------------
-// Pure helpers (exported for tests — no DOM, no mediabunny)
+// Pure helpers (exported for tests, so no DOM and no mediabunny)
 
 /** Frame index containing tS at the asset fps (fallback 30). Floor semantics with a float-error epsilon. */
 export function frameIndexAt(tS: number, fps: number | undefined): number {
@@ -128,7 +128,7 @@ export class FrameLru<V> {
 
   /**
    * `budgetBytes` is the memory ceiling; `costOf` reports what one value weighs.
-   * The newest entry is always kept even if it alone exceeds the budget — a
+   * The newest entry is always kept even if it alone exceeds the budget. A
    * cache that refuses the frame it was just asked to hold is worse than one
    * slightly over its ceiling.
    */
@@ -201,16 +201,16 @@ interface AssetEntry {
   pending: number[]
   /** Frame index currently decoding, if any. */
   decoding: number | null
-  /** Latest requested index — the ranking anchor while scrubbing. */
+  /** Latest requested index: the ranking anchor while scrubbing. */
   latest: number
   pumping: boolean
   failed: boolean
-  /** Indices the demuxer has no frame for (before track start) — never re-request. */
+  /** Indices the demuxer has no frame for (before track start). Never re-request these. */
   noFrame: Set<number>
   /**
    * Persistent sequential reader. getCanvas() is a RANDOM seek: it decodes
    * forward from the previous keyframe for EVERY requested frame (~a whole GOP
-   * of work per frame — the old scrub lag). The iterator decodes each frame
+   * of work per frame, the old scrub lag). The iterator decodes each frame
    * once and steps forward; only a backward jump or a large forward jump
    * re-seeks. Every frame it passes is cached, so a forward scrub is ~1 decode
    * per frame instead of ~GOP decodes per frame.
@@ -250,7 +250,7 @@ function ensureEntry(asset: MediaAsset): AssetEntry {
 /** Should the sequential reader re-seek to reach `target`? (Pure, tested.) */
 export function needsReopen(iterIdx: number, target: number, gap = SEQ_REOPEN_GAP): boolean {
   if (iterIdx < 0) return true // no reader yet
-  if (target < iterIdx) return true // behind — the reader is forward-only
+  if (target < iterIdx) return true // behind, and the reader is forward-only
   return target - iterIdx > gap // too far ahead to decode through
 }
 
@@ -277,7 +277,7 @@ async function openInput(e: AssetEntry): Promise<void> {
   }
   e.input = input
   // poolSize deliberately omitted: 0/undefined disables mediabunny's canvas
-  // pool, so every getCanvas yields a FRESH canvas — cached frames must never
+  // pool, so every getCanvas yields a FRESH canvas: cached frames must never
   // be recycled underneath us. Decode at PREVIEW height (downscaled) so large
   // sources scrub cheaply; export uses its own full-res decode.
   const th = previewTargetHeight(e.asset.height, previewScale, PREVIEW_BASE_MAX_H, sequenceH)
@@ -329,7 +329,7 @@ async function decodeSequential(e: AssetEntry, idx: number): Promise<void> {
     if (wIdx === idx) return // exact hit
     if (wIdx > idx) {
       // Overshot the nominal grid (sparse/VFR timestamps): the frame shown at
-      // the target time is the last one before it — clamp-to-first otherwise.
+      // the target time is the last one before it, else clamp to the first.
       cache.set(targetKey, (prev ?? w).canvas)
       return
     }
@@ -337,7 +337,7 @@ async function decodeSequential(e: AssetEntry, idx: number): Promise<void> {
   }
 }
 
-/** One serialized decode chain per asset — concurrent seeks on one demuxer corrupt state. */
+/** One serialized decode chain per asset: concurrent seeks on one demuxer corrupt state. */
 async function pump(e: AssetEntry): Promise<void> {
   e.pumping = true
   try {
@@ -417,9 +417,9 @@ export function prefetchAround(asset: MediaAsset, tS: number, spanS = 0.5): void
 export const RANGE_REQUEST_CAP = 240
 
 /**
- * Ascending frame indices covering source-time range [aS, bS] (either order —
- * a reversed clip's window runs backward), clamped to the asset's last frame
- * and capped at `cap`. Pure — the transition pre-roll's window math.
+ * Ascending frame indices covering source-time range [aS, bS] (either order,
+ * since a reversed clip's window runs backward), clamped to the asset's last
+ * frame and capped at `cap`. Pure: the transition pre-roll's window math.
  */
 export function rangeIndices(
   aS: number,

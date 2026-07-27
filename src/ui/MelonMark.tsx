@@ -1,4 +1,4 @@
-// The pixel-melon mascot as an SVG — crisp at any size, from the 24px topbar mark
+// The pixel-melon mascot as an SVG: crisp at any size, from the 24px topbar mark
 // to the boot splash hero. Its own module so the loading card and the splash can
 // both draw it without importing each other.
 

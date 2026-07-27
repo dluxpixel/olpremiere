@@ -5,7 +5,7 @@ import type { Page } from '@playwright/test'
  *
  * Export has no settings any more: one button, and the app picks everything.
  * The raster follows the SEQUENCE (and a sub-HD sequence is never upscaled), so
- * this is how a spec asks for a small file — it used to pick "SD" in a dropdown
+ * this is how a spec asks for a small file. It used to pick "SD" in a dropdown
  * that no longer exists. Refit is off: the clips must stay exactly as the test
  * placed them.
  */

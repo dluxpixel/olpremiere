@@ -87,12 +87,12 @@ describe('moveKeyframeTime', () => {
 })
 
 // A preset compiles straight into clip.keyframes, so every caption shows
-// grabbable diamonds — but a transform edit used to recompile the channel from
+// grabbable diamonds, but a transform edit used to recompile the channel from
 // the spec and throw the retime away. Retiming now takes the clip off its preset.
 describe('retiming a keyframe a PRESET compiled', () => {
   const scaleTimes = () => channelKeyframes(firstClip(), 'scale').map((k) => k.t)
 
-  it('survives the next monitor drag — the retime is not recompiled away', () => {
+  it('survives the next monitor drag: the retime is not recompiled away', () => {
     const c = seedTitle()
     setClipsAppearance([c.id], { in: 'pop' })
     const compiled = scaleTimes()
