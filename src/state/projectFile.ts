@@ -12,8 +12,9 @@
 // File lazily per blob. v1 files still open.
 
 import { migrateProjectEffects } from '../engine/effects/migrate'
-import { migrateProject, type Project } from '../engine/types'
-import { getBlob, putBlob, saveProject } from './persistence'
+import { migrateProject, newId, type Project } from '../engine/types'
+import { deleteBlob, getBlob, loadProjectById, putBlob, saveProject } from './persistence'
+import { flushOutgoing, guardRoom } from './projectActions'
 import { useStore } from './store'
 import { useToasts } from './toasts'
 
@@ -119,6 +120,103 @@ export function decodeHeader(prefix: Uint8Array): { header: ProjectFileHeader; b
 }
 
 // ---------------------------------------------------------------------------
+// Validation and copy planning (pure, unit-tested)
+
+/**
+ * True when the opening bytes look like a JSON document, which is what a legacy
+ * v1 project file is. Used INSTEAD of a size limit: v1 inlined its media as
+ * base64, so real v1 backups are large, and refusing them on size would lock him
+ * out of the oldest files he owns. A 1.3 GB file that merely lost its magic bytes
+ * does not begin with a brace, so it never reaches the whole-file read.
+ */
+export function looksLikeJson(head: Uint8Array): boolean {
+  for (const byte of head) {
+    if (byte === 0x7b) return true // '{'
+    // Skip leading whitespace: space, tab, CR, LF, and a UTF-8 BOM.
+    if (byte !== 0x20 && byte !== 0x09 && byte !== 0x0d && byte !== 0x0a && byte < 0x80) return false
+  }
+  return false
+}
+
+export interface BlobRange {
+  key: string
+  type: string
+  start: number
+  end: number
+}
+
+export type ImportPlan = { ok: true; ranges: BlobRange[] } | { ok: false; missing: number; total: number }
+
+/**
+ * Where every bundled blob's bytes live, checked against the file's REAL size.
+ *
+ * This is the guard that was missing. `Blob.slice` CLAMPS past the end of a file
+ * instead of failing, so a copy that was truncated (a half-finished transfer, a
+ * cancelled download, a full disk) used to import as a project whose media were
+ * all zero bytes, and then report "Opened ..." as a success. Losing the media is
+ * bad; being told it worked is worse, because that is what stops him keeping the
+ * original.
+ *
+ * Trailing bytes AFTER the last blob are tolerated: extra data cannot cost him
+ * anything, and refusing on it would reject files that are otherwise complete.
+ */
+export function planBlobRanges(blobs: BlobMeta[], bodyOffset: number, fileSize: number): ImportPlan {
+  const ranges: BlobRange[] = []
+  let offset = bodyOffset
+  let missing = 0
+  for (const meta of blobs) {
+    const end = offset + meta.size
+    // A size that is not a real byte count is treated as missing rather than
+    // trusted. NaN comparisons are always false and a negative size walks the
+    // offset BACKWARDS, so either one would sail past a plain `end > fileSize`
+    // check and hand slice() an empty range: silent empty media, reported as a
+    // success, which is the exact failure this function exists to stop.
+    if (!Number.isSafeInteger(meta.size) || meta.size < 0 || end > fileSize) missing++
+    else ranges.push({ key: meta.key, type: meta.type || 'application/octet-stream', start: offset, end })
+    offset = end
+  }
+  return missing > 0 ? { ok: false, missing, total: blobs.length } : { ok: true, ranges }
+}
+
+export function incompleteFileMessage(missing: number, total: number): string {
+  return `That project file is incomplete: ${missing} of ${total} media items are missing. Copy it again.`
+}
+
+/** "Gameplay cut" becomes "Gameplay cut (copy)", and stays that way if reimported. */
+export function copyName(name: string): string {
+  const trimmed = name.trim()
+  return trimmed.endsWith('(copy)') ? trimmed : `${trimmed} (copy)`
+}
+
+export interface CopyPlan {
+  project: Project
+  /** Old blob key to new blob key, for the bytes this import is about to write. */
+  keyMap: Record<string, string>
+}
+
+/**
+ * Rebuild an incoming project under fresh ids, so opening an OLD file can never
+ * overwrite a NEWER local project that happens to share its id.
+ *
+ * A project file keeps the id it was saved with, and the store is keyed by id, so
+ * reopening last week's backup of a project he has edited since used to replace
+ * the newer copy without a word. Both now survive: the file arrives beside it as
+ * a copy, with its own media keys so neither one's bytes can be clobbered.
+ */
+export function planProjectCopy(project: Project, newProjectId: string, keySuffix: string): CopyPlan {
+  const keyMap: Record<string, string> = {}
+  const rename = (key: string): string => (keyMap[key] ??= `${key}-${keySuffix}`)
+  const assets: Project['assets'] = {}
+  for (const [id, asset] of Object.entries(project.assets)) {
+    const next = { ...asset }
+    if (asset.blobKey) next.blobKey = rename(asset.blobKey)
+    if (asset.thumbnailKey) next.thumbnailKey = rename(asset.thumbnailKey)
+    assets[id] = next
+  }
+  return { project: { ...project, id: newProjectId, name: copyName(project.name), assets }, keyMap }
+}
+
+// ---------------------------------------------------------------------------
 
 /**
  * Serialize the current project + its media into one file. The Blob is composed
@@ -129,14 +227,16 @@ export async function exportProjectToFile(): Promise<void> {
   const show = useToasts.getState().show
   const project = useStore.getState().project
   try {
+    const wanted = blobKeysOf(project)
     const metas: BlobMeta[] = []
     const parts: Blob[] = []
-    for (const key of blobKeysOf(project)) {
+    for (const key of wanted) {
       const blob = await getBlob(key)
       if (!blob) continue // a missing blob just isn't bundled; the rest still restores
       metas.push({ key, type: blob.type, size: blob.size })
       parts.push(blob)
     }
+    const absent = wanted.length - metas.length
     const header = encodeHeader({
       format: PROJECT_FILE_FORMAT,
       version: PROJECT_FILE_VERSION,
@@ -151,7 +251,9 @@ export async function exportProjectToFile(): Promise<void> {
       try {
         handle = await globalThis.showSaveFilePicker({
           suggestedName: name,
-          types: [{ description: 'OL Studio project', accept: { 'application/octet-stream': [`.${PROJECT_FILE_EXT}`] } }],
+          types: [
+            { description: 'OL Premiere project', accept: { 'application/octet-stream': [`.${PROJECT_FILE_EXT}`] } },
+          ],
         })
       } catch (err) {
         if (err instanceof DOMException && err.name === 'AbortError') return // user cancelled
@@ -167,59 +269,152 @@ export async function exportProjectToFile(): Promise<void> {
       a.click()
       setTimeout(() => URL.revokeObjectURL(url), 30_000)
     }
-    show(`Saved project file with ${metas.length} media item(s) bundled`, 'success')
+    // Say when the bundle is short. A backup that quietly left media behind is
+    // the same lie as an import that quietly arrives without it.
+    if (absent > 0) {
+      show(`Saved, but ${absent} of ${wanted.length} media items were missing and are NOT in the file`, 'danger')
+    } else {
+      show(`Saved project file with ${metas.length} media item(s) bundled`, 'success')
+    }
   } catch (err) {
-    console.warn('OL Studio: project export failed', err)
+    console.warn('OL Premiere: project export failed', err)
     show('Could not save the project file', 'danger')
   }
 }
 
-/** Restore a project (+ its media) from a file, replacing the current one. */
+/**
+ * Restore a project (+ its media) from a file, replacing the current one.
+ *
+ * Opening a file replaces the open document exactly the way switching projects
+ * does, so it now takes the same care that path always took: leave a collab room
+ * first, flush the outgoing project before it is dropped, refuse a file that
+ * cannot deliver its media, and never overwrite a newer project of the same id.
+ */
 export async function importProjectFromFile(file: File): Promise<void> {
   const show = useToasts.getState().show
+  if (!guardRoom()) return
   try {
-    const first = new Uint8Array(await file.slice(0, 12).arrayBuffer())
-    if (isBinaryProjectFile(first)) {
-      // v2 binary: header length → header → lazy File.slice per blob (a slice
-      // is a view, not a read; IDB pulls each blob's bytes one at a time).
-      const headerLen = new DataView(first.buffer).getUint32(8, true)
-      const prefix = new Uint8Array(await file.slice(0, 12 + headerLen).arrayBuffer())
-      const decoded = decodeHeader(prefix)
+    const head = new Uint8Array(await file.slice(0, 12).arrayBuffer())
+    if (isBinaryProjectFile(head)) {
+      // v2 binary: header length, header, then a lazy File.slice per blob (a
+      // slice is a view, not a read; IDB pulls each blob's bytes one at a time).
+      const headerLen = new DataView(head.buffer, head.byteOffset).getUint32(8, true)
+      // Clamp BEFORE slicing: a corrupt length would otherwise ask for the whole
+      // file, and on a multi-GB project that read is the crash.
+      if (headerLen === 0 || 12 + headerLen > file.size) {
+        show('That project file is damaged', 'danger')
+        return
+      }
+      const decoded = decodeHeader(new Uint8Array(await file.slice(0, 12 + headerLen).arrayBuffer()))
       if (!decoded) {
         show('That project file is damaged', 'danger')
         return
       }
-      let offset = decoded.bodyOffset
-      for (const meta of decoded.header.blobs) {
-        const blob = file.slice(offset, offset + meta.size, meta.type || 'application/octet-stream')
-        offset += meta.size
-        await putBlob(meta.key, blob)
+      const plan = planBlobRanges(decoded.header.blobs, decoded.bodyOffset, file.size)
+      if (!plan.ok) {
+        show(incompleteFileMessage(plan.missing, plan.total), 'danger')
+        return
       }
-      await adoptProject(decoded.header.project)
-      show(`Opened "${decoded.header.project.name}"`, 'success')
+      await adoptImported(
+        decoded.header.project,
+        plan.ranges.map((r) => ({ key: r.key, blob: file.slice(r.start, r.end, r.type) })),
+        show,
+      )
       return
     }
 
-    // Legacy v1: one JSON document with base64 media.
-    const bundle = JSON.parse(await file.text()) as Partial<LegacyProjectFile>
-    if (bundle.format !== PROJECT_FILE_FORMAT || !bundle.project) {
-      show('That is not an OL Studio project file', 'danger')
+    // Legacy v1: one JSON document with base64 media, read as a string.
+    //
+    // Decided on the OPENING BYTES, not on size. A v1 file inlines every blob as
+    // base64, so a real one with any video in it is tens of megabytes: a size cap
+    // here would refuse exactly the old backups this path exists to open, and tell
+    // him his only copy was not a project file. A file that lost its magic bytes
+    // does not start with a brace, which is the cheap check that actually
+    // distinguishes them before the whole-file read.
+    if (!looksLikeJson(head)) {
+      show('That is not an OL Premiere project file', 'danger')
       return
     }
-    for (const b of bundle.blobs ?? []) {
-      await putBlob(b.key, new Blob([base64ToBytes(b.data)], { type: b.type || 'application/octet-stream' }))
+    const bundle = JSON.parse(await file.text()) as Partial<LegacyProjectFile>
+    if (bundle.format !== PROJECT_FILE_FORMAT || !bundle.project) {
+      show('That is not an OL Premiere project file', 'danger')
+      return
     }
-    await adoptProject(bundle.project)
-    show(`Opened "${bundle.project.name}"`, 'success')
+    await adoptImported(
+      bundle.project,
+      (bundle.blobs ?? []).map((b) => ({
+        key: b.key,
+        blob: new Blob([base64ToBytes(b.data)], { type: b.type || 'application/octet-stream' }),
+      })),
+      show,
+    )
   } catch (err) {
-    console.warn('OL Studio: project import failed', err)
+    console.warn('OL Premiere: project import failed', err)
     show('Could not open that project file', 'danger')
   }
 }
 
-async function adoptProject(raw: Project): Promise<void> {
-  const project = migrateProjectEffects(migrateProject(raw))
-  await saveProject(project)
+type Show = ReturnType<typeof useToasts.getState>['show']
+
+/**
+ * Write an imported project's media, then its document, then adopt it.
+ *
+ * Blobs go in first so the document never references bytes that are not there,
+ * and if the document write fails they are DELETED again: media no project points
+ * at is invisible to the user and reclaimed by nothing, which is how gigabytes go
+ * missing without anything appearing to break.
+ */
+async function adoptImported(raw: Project, writes: { key: string; blob: Blob }[], show: Show): Promise<void> {
+  // The open project is about to be replaced. If it cannot be saved, stop here
+  // rather than trading his current edit for the one in the file.
+  if (!(await flushOutgoing())) return
+
+  let project = migrateProjectEffects(migrateProject(raw))
+  let finalWrites = writes
+  let kept: string | null = null
+
+  // Only the INCOMING side can become the copy. Both documents reference the same
+  // blob keys, and it is the file's bytes that are about to be written, so giving
+  // the incoming project fresh keys is the only way to keep both projects' media
+  // intact without duplicating gigabytes.
+  const existing = await loadProjectById(project.id)
+  if (existing && existing.updatedAt > project.updatedAt) {
+    // A random suffix, not a clock one. Two imports whose timestamps agreed would
+    // mint the SAME "private" keys, and deleting one copy would then empty the
+    // other, because blobs are deleted by the keys in the document being removed
+    // with no reference counting.
+    const plan = planProjectCopy(project, newId(), newId())
+    project = plan.project
+    finalWrites = writes.map((w) => ({ key: plan.keyMap[w.key] ?? w.key, blob: w.blob }))
+    kept = existing.name
+  }
+
+  // Only bytes this import CREATED may be rolled back. When the file restores in
+  // place, it writes under the same keys the stored document already uses, and a
+  // failed `saveProject` leaves that document live and still pointing at them:
+  // deleting those keys would empty a project that survives the failure, while
+  // telling him only that the import did not work. In the copy path every key is
+  // freshly minted, so the rollback still reclaims everything it wrote.
+  const preexisting = new Set<string>()
+  for (const w of finalWrites) if (await getBlob(w.key)) preexisting.add(w.key)
+
+  const written: string[] = []
+  try {
+    for (const w of finalWrites) {
+      await putBlob(w.key, w.blob)
+      written.push(w.key)
+    }
+    await saveProject(project)
+  } catch (err) {
+    for (const key of written) if (!preexisting.has(key)) await deleteBlob(key).catch(() => {})
+    throw err
+  }
+
   useStore.getState().setProject(project)
   useStore.getState().setUI({ selection: [] })
+  // Say WHY the name changed, or a copy appearing out of nowhere reads as a bug.
+  show(
+    kept ? `Opened "${project.name}". Your newer "${kept}" was kept.` : `Opened "${project.name}"`,
+    'success',
+  )
 }

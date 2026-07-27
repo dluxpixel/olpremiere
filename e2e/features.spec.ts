@@ -72,10 +72,15 @@ test('save a project to a file and open it back (backup round-trip)', async ({ p
   await page.getByTestId('project-name').press('Enter')
 
   await page.getByTestId('open-project-input').setInputFiles(path)
-  await expect(page.getByText(/Opened "BackupTest"/)).toBeVisible({ timeout: 15_000 })
+  // The wrecked project is NEWER than the file (it was edited after the save), so
+  // the file arrives beside it as a copy instead of overwriting it, and the toast
+  // says which one was kept. See e2e/project-file-safety.spec.ts for why: an older
+  // file silently replacing newer work is the loss this guards against.
+  await expect(page.getByText(/Opened "BackupTest \(copy\)"/)).toBeVisible({ timeout: 15_000 })
+  await expect(page.getByText(/newer "WRECKED" was kept/)).toBeVisible()
 
-  // Restored: name back, the clip present, and the media usable (asset back in the bin).
-  await expect(page.getByTestId('project-name')).toHaveValue('BackupTest')
+  // Restored: the edit is back, the clip present, and the media usable (asset back in the bin).
+  await expect(page.getByTestId('project-name')).toHaveValue('BackupTest (copy)')
   await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
   await expect(page.getByTestId('asset-card')).toHaveCount(1)
 })

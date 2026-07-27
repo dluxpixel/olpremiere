@@ -152,6 +152,17 @@ export async function getBlob(key: string): Promise<Blob | null> {
   return ((await d.get('blobs', key)) as Blob | undefined) ?? null
 }
 
+/**
+ * Drop one blob's bytes. Used to roll back a half-written import: media that no
+ * project document references is invisible to the user and reclaimed by nothing,
+ * so an aborted write has to clean up after itself rather than leave gigabytes
+ * parked in the origin's quota.
+ */
+export async function deleteBlob(key: string): Promise<void> {
+  const d = await db()
+  await d.delete('blobs', key)
+}
+
 const AUTOSAVE_DEBOUNCE_MS = 1000
 let saveTimer: number | undefined
 /** True once a background autosave has failed, until one succeeds again. */
