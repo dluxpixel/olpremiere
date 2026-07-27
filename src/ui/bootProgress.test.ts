@@ -90,6 +90,23 @@ describe('statusLine', () => {
   it('opens on the first row before anything has reported', () => {
     expect(statusLine(specs, {})).toBe('Doing a')
   })
+
+  // The card is held for five seconds on his say-so, so it spends most of that
+  // with every row already ticked. Repeating the last step would read as a stall,
+  // and inventing more steps would be the fake progress this whole file refuses.
+  it('says Ready once everything has landed', () => {
+    const done = { a: { state: 'done' }, b: { state: 'done' }, c: { state: 'done' } } as BootStatuses
+    expect(statusLine(specs, done)).toBe('Ready')
+  })
+
+  it('keeps a failure on the line instead of calling it Ready', () => {
+    const oneFailed = {
+      a: { state: 'done' },
+      b: { state: 'failed', detail: 'one file is missing' },
+      c: { state: 'done' },
+    } as BootStatuses
+    expect(statusLine(specs, oneFailed)).toBe('Doing b: one file is missing')
+  })
 })
 
 describe('the boot gate', () => {

@@ -51,12 +51,24 @@ export interface BootStepStatus {
 
 export type BootStatuses = Partial<Record<BootStepId, BootStepStatus>>
 
-/** How long the card stays up at minimum, so a fast machine doesn't flash it. */
-export const MIN_CARD_MS = 900
-/** A row that never answers can never trap him on the card. */
-export const HARD_CAP_MS = 6000
-/** Extra grace for the optional (network) rows once the local work is done. */
-export const OPTIONAL_GRACE_MS = 1500
+/**
+ * How long the card stays up at minimum. His call, 2026-07-27: *"make the loading
+ * time longer, just for the effect, like five seconds, cuz I barely see it."* The
+ * real work lands in well under a second, so most of this is a brand moment rather
+ * than a wait for anything.
+ *
+ * What it must never become is fake progress. The rows still tick only when real
+ * work lands, and once everything has, the line reads "Ready" rather than
+ * dribbling out invented steps to fill the time.
+ */
+export const MIN_CARD_MS = 5000
+/** A row that never answers can never trap him on the card. Floor plus headroom. */
+export const HARD_CAP_MS = 8000
+/**
+ * Extra grace for the optional (network) rows once the local work is done. Small,
+ * because the floor above already gives the update check five seconds to answer.
+ */
+export const OPTIONAL_GRACE_MS = 1000
 /** The card's exit, before the melon takes over. Must match LoadingCard.module.css. */
 export const CARD_EXIT_MS = 300
 
@@ -107,6 +119,14 @@ export function labelOf(spec: BootStepSpec, status: BootStepStatus): string {
 export function statusLine(specs: readonly BootStepSpec[], statuses: BootStatuses): string {
   const active = specs.find((s) => statusOf(statuses, s.id).state === 'active')
   if (active) return labelOf(active, statusOf(statuses, active.id))
+  // Everything landed, and the card is still up because the floor has not passed.
+  // "Ready" is the truth and reads better than repeating the last step, BUT only
+  // when there is nothing wrong: a failure stays on the line, because the whole
+  // point of this screen is that it does not paper over what did not work.
+  if (specs.length > 0 && allSettled(specs, statuses)) {
+    const failed = specs.find((s) => statusOf(statuses, s.id).state === 'failed')
+    return failed ? labelOf(failed, statusOf(statuses, failed.id)) : 'Ready'
+  }
   const settled = specs.filter((s) => isSettled(statusOf(statuses, s.id).state))
   const last = settled.at(-1)
   if (last) return labelOf(last, statusOf(statuses, last.id))
