@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { UpdateStatus } from '../../electron/ipc-types'
-import { TIMED_OUT, updateLine } from './updateStatus'
+import { TIMED_OUT, bootDetailFor, updateLine } from './updateStatus'
 
 // This is the honesty contract for the update line: every state the updater can be
 // in must read as itself. The failure that started all of this was a check that
@@ -24,6 +24,19 @@ describe('updateLine', () => {
   it('tells "never answered" apart from "answered badly"', () => {
     expect(updateLine({ kind: 'error', message: TIMED_OUT })).toBe('Could not reach the update server')
     expect(updateLine({ kind: 'error', message: 'HttpError: 404' })).toBe('Could not check for updates')
+  })
+
+  // The card row and the splash line say the same thing at different lengths: the
+  // row is narrow and a long reason was being cut off mid-word.
+  it('has a short row detail for each failure that still tells them apart', () => {
+    expect(bootDetailFor({ kind: 'error', message: TIMED_OUT })).toBe('no answer')
+    expect(bootDetailFor({ kind: 'error', message: 'HttpError: 404' })).toBe('check failed')
+    expect(bootDetailFor({ kind: 'none' })).toBe('up to date')
+    expect(bootDetailFor({ kind: 'downloading', version: '0.1.15', percent: 7 })).toBe('downloading 0.1.15, 7%')
+    for (const kind of ['error', 'none'] as const) {
+      const detail = bootDetailFor(kind === 'none' ? { kind } : { kind, message: 'x' })
+      expect(detail.length).toBeLessThanOrEqual(24) // fits the row without an ellipsis
+    }
   })
 
   it('says nothing before there is anything to say, and nothing in a dev build', () => {

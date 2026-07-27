@@ -45,29 +45,51 @@ export function updateLine(status: UpdateStatus | null): string | null {
   }
 }
 
+/**
+ * The SHORT fact appended to the loading card's update row.
+ *
+ * Short on purpose: the row is one narrow line on a small card, and a long reason
+ * gets cut off mid-word (it did, in the packaged build). It still has to tell the
+ * failures apart, because a server that answered and failed is not the same as one
+ * that never answered. The fuller sentence lives in `updateLine`, under the melon.
+ */
+export function bootDetailFor(status: UpdateStatus): string {
+  switch (status.kind) {
+    case 'checking':
+      return ''
+    case 'available':
+      return `found ${status.version}`
+    case 'downloading':
+      return `downloading ${status.version}, ${status.percent}%`
+    case 'downloaded':
+      return `update ${status.version} downloaded`
+    case 'none':
+      return 'up to date'
+    case 'error':
+      return status.message === TIMED_OUT ? 'no answer' : 'check failed'
+    case 'unsupported':
+      return 'dev build'
+  }
+}
+
 /** Mirror a status onto the loading card's row. */
 function reportToBoot(status: UpdateStatus): void {
+  const detail = bootDetailFor(status)
   switch (status.kind) {
     case 'checking':
       bootStep.begin('updates')
       break
     case 'available':
-      bootStep.note('updates', `found ${status.version}`)
-      break
     case 'downloading':
-      bootStep.note('updates', `downloading ${status.version}, ${status.percent}%`)
+      bootStep.note('updates', detail)
       break
     case 'downloaded':
-      bootStep.finish('updates', `update ${status.version} downloaded`)
-      break
     case 'none':
-      bootStep.finish('updates', 'up to date')
+    case 'unsupported':
+      bootStep.finish('updates', detail)
       break
     case 'error':
-      bootStep.fail('updates', 'could not reach the update server')
-      break
-    case 'unsupported':
-      bootStep.finish('updates', 'dev build')
+      bootStep.fail('updates', detail)
       break
   }
 }
