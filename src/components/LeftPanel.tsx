@@ -25,6 +25,8 @@ import {
 import { healArrivedBlob, useMediaSync } from '../collab/mediaSync'
 import { useCollab } from '../collab/collabControl'
 import { deleteAsset, importFiles, insertAssetAtPlayhead, useImportProgress } from '../state/mediaActions'
+import { importProjectFromFile, routeDroppedFiles } from '../state/projectFile'
+import { useToasts } from '../state/toasts'
 import { applyJettismLook, applyPunchyGradeToClips } from '../state/lookActions'
 import { insertSfxAtPlayhead, previewSfx } from '../state/sfxActions'
 import { useStore, type LeftTab } from '../state/store'
@@ -139,7 +141,20 @@ function useOsFileDrop(): boolean {
       depth = 0
       setDragging(false)
       const files = Array.from(e.dataTransfer?.files ?? [])
-      if (files.length > 0) void importFiles(files)
+      if (files.length === 0) return
+      // A project file dropped on the window OPENS the project. It used to be
+      // handed to the media importer, which called his own backup unsupported.
+      const { project, ignored, media } = routeDroppedFiles(files)
+      if (project) {
+        if (ignored > 0) {
+          useToasts
+            .getState()
+            .show(`Opening the project file. The other ${ignored} file(s) were not imported`, 'info')
+        }
+        void importProjectFromFile(project)
+        return
+      }
+      void importFiles(media)
     }
     window.addEventListener('dragenter', onEnter)
     window.addEventListener('dragover', onOver)

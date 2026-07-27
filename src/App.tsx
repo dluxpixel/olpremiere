@@ -34,6 +34,7 @@ import { clearInOut, gotoIn, gotoOut, markIn, markOut } from './state/workAreaAc
 import { punchInAtPlayhead } from './state/motionActions'
 import { addTitleClip } from './state/titleActions'
 import { saveNow } from './state/persistence'
+import { exportProjectToFile, openProjectFilePicker } from './state/projectFile'
 import { isCriticalWorkInFlight } from './state/unloadGuard'
 import { updateActiveSequence, useStore, zoomIn, zoomOut } from './state/store'
 import { useToasts } from './state/toasts'
@@ -103,6 +104,22 @@ function buildAppBindings(): Binding[] {
                 .show('Could not save. Your work is only in memory', 'danger'),
           )
         },
+      },
+      // The project FILE, which was reachable only by two icon buttons nobody
+      // finds. These bindings also put it in the command palette, which is built
+      // from the keymap, so the one path between the browser app and the desktop
+      // app is finally something you can search for by name.
+      {
+        combo: 'mod+shift+s',
+        description: 'Back up project to a file',
+        domain: 'project',
+        run: () => void exportProjectToFile(),
+      },
+      {
+        combo: 'mod+o',
+        description: 'Open a project file',
+        domain: 'project',
+        run: () => openProjectFilePicker(),
       },
       { combo: 'space', description: 'Play / Pause', domain: 'transport', run: togglePlay },
       { combo: 'j', description: 'Shuttle reverse', domain: 'transport', run: () => shuttle(-1) },

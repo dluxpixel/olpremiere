@@ -78,6 +78,57 @@ export function blobKeysOf(project: Project): string[] {
   return [...keys]
 }
 
+/**
+ * ONE door to the file picker, shared by the toolbar button, the keyboard
+ * shortcut and the command palette. The top bar owns the actual hidden input (it
+ * is what the e2e drives), and registers it here so nothing has to grow a second
+ * way in.
+ */
+let openPicker: (() => void) | null = null
+
+export function registerProjectFilePicker(open: (() => void) | null): void {
+  openPicker = open
+}
+
+export function openProjectFilePicker(): void {
+  if (openPicker) {
+    openPicker()
+    return
+  }
+  // Fallback for anywhere the top bar is not mounted: a throwaway input.
+  const input = document.createElement('input')
+  input.type = 'file'
+  input.accept = `.${PROJECT_FILE_EXT},.json,application/octet-stream`
+  input.onchange = () => {
+    const file = input.files?.[0]
+    if (file) void importProjectFromFile(file)
+  }
+  input.click()
+}
+
+/**
+ * True when a dropped file is a PROJECT rather than media.
+ *
+ * Dropping a project file onto the window used to hand it to the media importer,
+ * which reported "couldn't import (unsupported?)" and left him believing his own
+ * backup was broken. The file is the only bridge between the browser app and the
+ * desktop app, so the most obvious gesture has to be the one that works.
+ */
+export function isProjectFileName(name: string): boolean {
+  return /\.olstudio(\.json)?$/i.test(name.trim())
+}
+
+/**
+ * Route a dropped set: a project file wins, and the rest are ignored rather than
+ * imported alongside it. Importing media INTO the document that is about to be
+ * replaced would either land in the wrong project or race the swap.
+ */
+export function routeDroppedFiles(files: File[]): { project: File | null; ignored: number; media: File[] } {
+  const project = files.find((f) => isProjectFileName(f.name)) ?? null
+  if (project) return { project, ignored: files.length - 1, media: [] }
+  return { project: null, ignored: 0, media: files }
+}
+
 /** A filesystem-safe base name from the project name. */
 export function projectFileName(name: string): string {
   const safe = name.replace(/[^\w\- ]+/g, '').trim() || 'project'

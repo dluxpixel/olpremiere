@@ -11,11 +11,13 @@ import {
   decodeHeader,
   encodeHeader,
   incompleteFileMessage,
+  isProjectFileName,
   isBinaryProjectFile,
   looksLikeJson,
   planBlobRanges,
   planProjectCopy,
   projectFileName,
+  routeDroppedFiles,
 } from './projectFile'
 
 describe('v2 binary header', () => {
@@ -203,6 +205,34 @@ describe('planProjectCopy', () => {
     expect(copyName('Gameplay cut')).toBe('Gameplay cut (copy)')
     expect(copyName('Gameplay cut (copy)')).toBe('Gameplay cut (copy)')
     expect(copyName('  spaced  ')).toBe('spaced (copy)')
+  })
+})
+
+describe('routing a dropped file', () => {
+  const file = (name: string) => new File(['x'], name)
+
+  // Dropping a project file used to hand it to the media importer, which called
+  // his own backup "unsupported". The obvious gesture has to be the one that works.
+  it('recognises a project file by name, v1 included', () => {
+    expect(isProjectFileName('MY EDIT.olstudio')).toBe(true)
+    expect(isProjectFileName('old-backup.olstudio.json')).toBe(true)
+    expect(isProjectFileName('SHOUTING.OLSTUDIO')).toBe(true)
+    expect(isProjectFileName('clip.mp4')).toBe(false)
+    expect(isProjectFileName('olstudio')).toBe(false)
+    expect(isProjectFileName('notes.json')).toBe(false)
+  })
+
+  it('opens the project and imports nothing else, so media cannot land in the doomed project', () => {
+    const dropped = [file('a.mp4'), file('edit.olstudio'), file('b.mp4')]
+    const routed = routeDroppedFiles(dropped)
+    expect(routed.project?.name).toBe('edit.olstudio')
+    expect(routed.ignored).toBe(2)
+    expect(routed.media).toEqual([])
+  })
+
+  it('sends a plain media drop to the importer untouched', () => {
+    const dropped = [file('a.mp4'), file('b.wav')]
+    expect(routeDroppedFiles(dropped)).toEqual({ project: null, ignored: 0, media: dropped })
   })
 })
 

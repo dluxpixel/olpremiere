@@ -90,3 +90,36 @@ test('an older file arrives as a copy instead of overwriting a newer project', a
   await expect(page.getByTestId('asset-card')).toHaveCount(1)
   await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
 })
+
+test('dropping a project file on the window opens it instead of failing as media', async ({ page }) => {
+  await projectWithClip(page, 'Dropped')
+  const path = await saveTo(page, 'dropped.olstudio')
+  await page.getByTestId('project-name').fill('Before drop')
+  await page.getByTestId('project-name').press('Enter')
+
+  // A real OS drop: hand the page a DataTransfer holding the file's bytes.
+  const bytes = Array.from(fs.readFileSync(path))
+  await page.evaluate(
+    async ([name, data]) => {
+      const dt = new DataTransfer()
+      dt.items.add(new File([new Uint8Array(data as number[])], name as string))
+      window.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true }))
+    },
+    ['dropped.olstudio', bytes] as const,
+  )
+
+  // It opened as a PROJECT. Before this it went to the media importer and failed.
+  await expect(page.getByText(/Opened "Dropped/)).toBeVisible({ timeout: 15_000 })
+  await expect(page.getByText(/couldn't import|unsupported/i)).toHaveCount(0)
+})
+
+test('the project file is reachable by keyboard and by name in the palette', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByTestId('timeline')).toBeVisible()
+
+  await page.keyboard.press('Control+k')
+  await page.getByPlaceholder(/type a command/i).fill('project file')
+  // Scoped to the palette rows: the toolbar tooltip carries the same words.
+  await expect(page.getByRole('option', { name: /Open a project file/ })).toBeVisible()
+  await expect(page.getByRole('option', { name: /Back up project to a file/ })).toBeVisible()
+})

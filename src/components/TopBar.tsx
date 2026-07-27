@@ -21,7 +21,7 @@ import {
 } from '../collab/collabControl'
 import { activeSequence } from '../engine/types'
 import { comboLabel } from '../keymap'
-import { exportProjectToFile, importProjectFromFile } from '../state/projectFile'
+import { exportProjectToFile, importProjectFromFile, registerProjectFilePicker } from '../state/projectFile'
 import { useStore } from '../state/store'
 import { useToasts } from '../state/toasts'
 import { canRecordVoice, closeStudio, openStudio, useRecorder } from '../state/voiceRecorder'
@@ -253,6 +253,11 @@ export function TopBar() {
   const [projectsOpen, setProjectsOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const openFileRef = useRef<HTMLInputElement>(null)
+  // The shortcut and the command palette open THIS input, so there is one door.
+  useEffect(() => {
+    registerProjectFilePicker(() => openFileRef.current?.click())
+    return () => registerProjectFilePicker(null)
+  }, [])
 
   return (
     <header
