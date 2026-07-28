@@ -50,6 +50,7 @@ const api: OlApi = {
   },
   restartToUpdate: () => ipcRenderer.send('update:install'),
   getUpdateStatus: (): Promise<UpdateStatus> => ipcRenderer.invoke('update:status:get'),
+  checkForUpdates: (): Promise<void> => ipcRenderer.invoke('update:check'),
   onUpdateStatus: (cb: (status: UpdateStatus) => void) => {
     const l = (_e: unknown, status: UpdateStatus) => cb(status)
     ipcRenderer.on('update:status', l)

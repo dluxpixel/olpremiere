@@ -93,6 +93,11 @@ export interface OlApi {
   restartToUpdate(): void
   /** The updater's CURRENT state, pullable, so a late renderer still learns the answer. */
   getUpdateStatus(): Promise<UpdateStatus>
+  /**
+   * Check for an update NOW. Runs in main, which outlives a renderer reload, so the
+   * reload button can ask and then reload without cutting its own check short.
+   */
+  checkForUpdates(): Promise<void>
   /** Every updater transition: checking → available → downloading → downloaded / none / error. Returns an unsubscribe fn. */
   onUpdateStatus(cb: (status: UpdateStatus) => void): () => void
 

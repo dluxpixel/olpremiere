@@ -67,3 +67,17 @@ test('pause reliably stops playback (timecode freezes)', async ({ page }) => {
   // And it actually advanced before pausing.
   expect(at).not.toContain('00:00:00:00 ')
 })
+
+test('the reload button sits by the gear and reloads the app', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByTestId('timeline')).toBeVisible()
+
+  // Prove it is a real reload, not a re-render: stamp the window first.
+  await page.evaluate(() => {
+    ;(window as unknown as { __stamp?: number }).__stamp = 1
+  })
+  await page.getByTestId('reload-app').click()
+  await expect(page.getByTestId('timeline')).toBeVisible()
+  const stamp = await page.evaluate(() => (window as unknown as { __stamp?: number }).__stamp)
+  expect(stamp).toBeUndefined()
+})

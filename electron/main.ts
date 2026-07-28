@@ -260,6 +260,14 @@ app.whenReady().then(() => {
   // listening and the row would claim to still be checking.
   ipcMain.handle('update:status:get', () => updateStatus)
 
+  // The reload button's half of the job. Lives in MAIN because main outlives the
+  // renderer's reload, so the check it starts is not cancelled a moment later.
+  ipcMain.handle('update:check', () => {
+    if (!app.isPackaged) return
+    if (updateStatus.kind !== 'downloaded') setUpdateStatus({ kind: 'checking' })
+    void autoUpdater.checkForUpdatesAndNotify()
+  })
+
   if (app.isPackaged) {
     const launchedAt = Date.now()
     const AUTO_APPLY_WINDOW_MS = 3 * 60 * 1000

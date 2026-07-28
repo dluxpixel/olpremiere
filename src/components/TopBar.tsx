@@ -157,6 +157,34 @@ function ExportButton({ onOpen }: { onOpen: () => void }) {
   )
 }
 
+/**
+ * Reload the app and check for updates, in one click.
+ *
+ * His ask: a melon next to the gear, without the colours so it reads as a control
+ * rather than the brand mark. The update check is asked for FIRST and runs in the
+ * main process, which survives the reload, so the fresh renderer picks the answer
+ * up through the pull channel instead of racing it.
+ */
+function ReloadButton() {
+  const [busy, setBusy] = useState(false)
+  return (
+    <IconButton
+      label="Reload and check for updates"
+      data-testid="reload-app"
+      disabled={busy}
+      onClick={() => {
+        setBusy(true)
+        const api = typeof window !== 'undefined' ? window.api : undefined
+        void Promise.resolve(api?.checkForUpdates?.())
+          .catch(() => {})
+          .then(() => window.location.reload())
+      }}
+    >
+      <MelonMark mono size={16} />
+    </IconButton>
+  )
+}
+
 function SaveIndicator() {
   const saveState = useStore((s) => s.ui.saveState)
   // Persistent risk shouts, transient states whisper: unsaved work is the one
@@ -352,6 +380,7 @@ export function TopBar() {
         >
           <Settings size={16} strokeWidth={1.5} />
         </IconButton>
+        <ReloadButton />
         <div className="mx-2 h-4 w-px bg-border" />
         <CollabButton />
         <RecordButton />
