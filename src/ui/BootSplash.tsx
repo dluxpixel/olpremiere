@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { APP_VERSION } from '../appVersion'
+import { displayVersion } from '../appVersion'
 import { useUpdateFeed, updateLine } from '../state/updateStatus'
 import { LoadingCard } from './LoadingCard'
 import { MelonMark } from './MelonMark'
@@ -236,7 +236,7 @@ function DesktopBoot({ children }: { children: ReactNode }) {
       }),
       line: statusLine(specs, statuses),
       percent: Math.round(progressOf(specs, statuses) * 100),
-      version: APP_VERSION,
+      version: displayVersion(),
     })
   }, [specs, statuses])
 

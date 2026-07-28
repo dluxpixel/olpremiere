@@ -96,10 +96,63 @@ describe('addCaptionsFromWords with a preset', () => {
     // Captions land on a new top video track.
     const caption = seq()
       .tracks.flatMap((t) => t.clips)
-      .find((c) => c.title?.text.toLowerCase().includes('hello')) // phrase mode groups "hello world" into one caption
+      .find((c) => c.title?.text.toLowerCase() === 'hello') // AUTO: one word per caption
     expect(caption).toBeTruthy()
     expect(caption!.title!.textCase).toBe('lower')
     expect(caption!.title!.outline).toEqual({ color: '#000000', widthPx: 12 })
     expect(caption!.appearance?.in).toBe('pop')
+  })
+})
+
+describe('a saved style carries its EFFECTS too', () => {
+  // His ask, 2026-07-28: "make it so I can save custom effects for each time it
+  // makes a new one." A preset used to be font + outline + animation only, so a
+  // caption he had graded came back plain on the very next run.
+  const withEffects: TextStylePreset = {
+    ...PRESET,
+    id: 'p-fx',
+    effects: [{ id: 'fx1', type: 'blur', enabled: true, params: { amount: { value: 4, keyframes: [] } } }],
+  }
+
+  it('captures the clip’s effect stack when saving', () => {
+    const a = seedTitle(0)
+    updateActiveSequence('add effect', (sq) => ({
+      ...sq,
+      tracks: sq.tracks.map((t, i) =>
+        i === 0
+          ? { ...t, clips: t.clips.map((c) => (c.id === a.id ? { ...c, effects: withEffects.effects! } : c)) }
+          : t,
+      ),
+    }))
+    const captured = captureTextPreset(a.id, 'Captured')
+    expect(captured!.effects).toHaveLength(1)
+    expect(captured!.effects![0].type).toBe('blur')
+  })
+
+  it('puts them on every caption of a new run', () => {
+    addCaptionsFromWords([{ text: 'hello', startS: 0, endS: 0.5 }], { preset: withEffects })
+    const caption = seq()
+      .tracks.flatMap((t) => t.clips)
+      .find((c) => c.title?.text.toLowerCase() === 'hello')
+    expect(caption!.effects).toHaveLength(1)
+    expect(caption!.effects[0].type).toBe('blur')
+  })
+
+  it('gives each caption its OWN copy, never a shared object', () => {
+    // Two captions pointing at one effect object would mean editing either one
+    // silently changed the other.
+    addCaptionsFromWords(
+      [
+        { text: 'hello', startS: 0, endS: 0.5 },
+        { text: 'world', startS: 0.9, endS: 1.4 },
+      ],
+      { preset: withEffects },
+    )
+    const caps = seq()
+      .tracks.flatMap((t) => t.clips)
+      .filter((c) => c.effects.length > 0)
+    expect(caps).toHaveLength(2)
+    expect(caps[0].effects[0]).not.toBe(caps[1].effects[0])
+    expect(caps[0].effects[0]).not.toBe(withEffects.effects![0])
   })
 })

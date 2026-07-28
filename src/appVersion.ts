@@ -5,6 +5,20 @@
 /** The build's version, injected from package.json at build time (see vite configs). */
 export const APP_VERSION: string = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : '0.0.0'
 
+/**
+ * The version as he wants to READ it. His call, 2026-07-28, looking at the boot
+ * card: "it says version 0.1.21, make it just 1.21."
+ *
+ * The leading zero is semver's pre-1.0 marker, and on his own app it just reads
+ * as unfinished. This is a DISPLAY name only: the real version, the update feed,
+ * the git tag and the installer filename all keep the true semver, because
+ * electron-updater compares those strings and a made-up number there would break
+ * updating outright.
+ */
+export function displayVersion(v: string = APP_VERSION): string {
+  return v.replace(/^0\./, '')
+}
+
 /** localStorage key holding the version the user last opened. */
 export const LAST_SEEN_VERSION_KEY = 'olpremiere:lastSeenVersion'
 

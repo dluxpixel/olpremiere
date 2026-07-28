@@ -9,17 +9,20 @@ import fs from 'node:fs'
 
 const APP_VERSION = JSON.parse(fs.readFileSync('package.json', 'utf8')).version as string
 const KEY = 'olpremiere:lastSeenVersion'
+// What the UI SHOWS. His call: the pre-1.0 zero reads as unfinished, so the leading
+// '0.' is dropped for display only. The stored + compared value stays real semver.
+const SHOWN = APP_VERSION.replace(/^0\./, '')
 
 test('the top bar shows the running build version', async ({ page }) => {
   await page.goto('/')
-  await expect(page.getByTestId('app-version')).toHaveText(`v${APP_VERSION}`)
+  await expect(page.getByTestId('app-version')).toHaveText(`v${SHOWN}`)
 })
 
 test('a version change since last launch shows the "Updated to" toast', async ({ page }) => {
   await page.addInitScript((key) => localStorage.setItem(key, '0.0.1'), KEY)
   await page.goto('/')
   await expect(
-    page.getByTestId('toast').filter({ hasText: `Updated to v${APP_VERSION}` }),
+    page.getByTestId('toast').filter({ hasText: `Updated to v${SHOWN}` }),
   ).toBeVisible({ timeout: 8000 })
   // The stored version is advanced to the running build so it won't fire again.
   expect(await page.evaluate((k) => localStorage.getItem(k), KEY)).toBe(APP_VERSION)

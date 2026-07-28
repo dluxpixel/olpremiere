@@ -82,7 +82,7 @@ import { normalizeClipGain } from '../state/audioActions'
 import {
   allTextPresets,
   applyTextPresetToClips,
-  captureTextPreset,
+  saveAsCaptionStyle,
   useTextPresets,
 } from '../state/textPresets'
 import {
@@ -1691,16 +1691,13 @@ export function Timeline({ height }: { height: number }) {
                   onClick: () => applyTextPresetToClips(titleIdsSel, p),
                 })),
                 {
-                  label: 'Save current as preset',
+                  label: 'Save as the caption style',
                   separator: true,
                   onClick: () => {
                     // Capture the clip you right-clicked (fallback: first selected title).
                     const src = clip.title ? clip.id : titleIdsSel[0]
-                    const p = captureTextPreset(src, `Style ${useTextPresets.getState().saved.length + 1}`)
-                    if (p) {
-                      useTextPresets.getState().add(p)
-                      show(`Saved "${p.name}"`, 'success')
-                    }
+                    const p = saveAsCaptionStyle(src, `Style ${useTextPresets.getState().saved.length + 1}`)
+                    if (p) show(`Saved. Every new caption uses "${p.name}"`, 'success')
                   },
                 },
               ],

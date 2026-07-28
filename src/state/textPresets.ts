@@ -7,7 +7,7 @@
 
 import { create } from 'zustand'
 import { applyAppearanceToClip } from '../engine/anim/appearance'
-import { activeSequence, type AppearanceSpec, type Clip, type TitleDef } from '../engine/types'
+import { activeSequence, type AppearanceSpec, type Clip, type EffectInstance, type TitleDef } from '../engine/types'
 import { updateActiveSequence, useStore } from './store'
 
 export interface TextStylePreset {
@@ -17,6 +17,15 @@ export interface TextStylePreset {
   style: Partial<TitleDef>
   /** Entrance/exit animation compiled onto the clip's keyframes. */
   appearance?: AppearanceSpec
+  /**
+   * The clip's whole effect stack, carried with the look.
+   *
+   * His ask, 2026-07-28: "make it so I can save custom effects for each time it
+   * makes a new one." A preset used to be font + outline + animation only, so a
+   * caption he had graded, blurred or glowed came back plain on the next run and
+   * he had to redo it by hand every time.
+   */
+  effects?: EffectInstance[]
   builtin?: boolean
 }
 
@@ -164,6 +173,9 @@ export function applyTextPresetToClips(ids: Iterable<string>, preset: TextStyleP
         if (!idSet.has(c.id) || !c.title) return c
         changed = true
         let nc: Clip = { ...c, title: { ...c.title, ...preset.style } }
+        // Copied per clip, never shared: two captions must not end up pointing at
+        // the same effect object, or editing one would silently change the other.
+        if (preset.effects?.length) nc = { ...nc, effects: preset.effects.map((e) => ({ ...e })) }
         if (preset.appearance) nc = applyAppearanceToClip(nc, preset.appearance, seq.width, seq.height)
         return nc
       })
@@ -198,5 +210,29 @@ export function captureTextPreset(clipId: string, name: string): TextStylePreset
     offsetXPx: d.offsetXPx,
     offsetYPx: d.offsetYPx,
   }
-  return { id: freshId(), name, style, appearance: clip.appearance }
+  return {
+    id: freshId(),
+    name,
+    style,
+    appearance: clip.appearance,
+    // The effect stack travels with the look. Cloned, so the preset can never be
+    // mutated later by editing the clip it was captured from.
+    ...(clip.effects.length ? { effects: clip.effects.map((e) => ({ ...e })) } : {}),
+  }
+}
+
+/**
+ * Save a preset AND make it the style every new caption gets, in one action.
+ *
+ * His ask, 2026-07-28: "make it so I can save custom effects for each time it
+ * makes a new one." Saving used to only add a row to a dropdown, so the very next
+ * auto-caption run still came out in the house style and he had to go and pick it
+ * by hand. Saving is the instruction, so it takes effect.
+ */
+export function saveAsCaptionStyle(clipId: string, name: string): TextStylePreset | null {
+  const preset = captureTextPreset(clipId, name)
+  if (!preset) return null
+  useTextPresets.getState().add(preset)
+  setCaptionPresetId(preset.id)
+  return preset
 }

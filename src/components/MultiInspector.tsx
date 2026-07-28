@@ -19,7 +19,7 @@ import { applyPunchyGradeToClips } from '../state/lookActions'
 import {
   applyTextPresetToClips,
   builtinTextPresets,
-  captureTextPreset,
+  saveAsCaptionStyle,
   useTextPresets,
 } from '../state/textPresets'
 import { setTitlesFontSize, updateTitles } from '../state/titleActions'
@@ -279,10 +279,9 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
               <button
                 type="button"
                 data-testid="multi-preset-save"
-                title="Save this caption's style + animation as a preset"
+                title="Save this look, its animation and its effects as the style every new caption gets"
                 onClick={() => {
-                  const p = captureTextPreset(titleIds[0], `Style ${useTextPresets.getState().saved.length + 1}`)
-                  if (p) useTextPresets.getState().add(p)
+                  saveAsCaptionStyle(titleIds[0], `Style ${useTextPresets.getState().saved.length + 1}`)
                 }}
                 className="h-6 rounded-field bg-bg-input px-2 text-ui-sm text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated hover:text-text-primary"
               >

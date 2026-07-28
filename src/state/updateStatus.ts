@@ -9,6 +9,7 @@
 
 import { create } from 'zustand'
 import type { UpdateStatus } from '../../electron/ipc-types'
+import { displayVersion } from '../appVersion'
 import { bootStep } from '../ui/bootProgress'
 
 interface UpdateFeed {
@@ -29,11 +30,11 @@ export function updateLine(status: UpdateStatus | null): string | null {
     case 'checking':
       return 'Checking for updates…'
     case 'available':
-      return `Update ${status.version} found, downloading now`
+      return `Update ${displayVersion(status.version)} found, downloading now`
     case 'downloading':
-      return `Downloading update ${status.version}, ${status.percent}%`
+      return `Downloading update ${displayVersion(status.version)}, ${status.percent}%`
     case 'downloaded':
-      return `Update ${status.version} downloaded. Restart to install`
+      return `Update ${displayVersion(status.version)} downloaded. Restart to install`
     case 'none':
       return 'Up to date'
     case 'error':
@@ -58,11 +59,11 @@ export function bootDetailFor(status: UpdateStatus): string {
     case 'checking':
       return ''
     case 'available':
-      return `found ${status.version}`
+      return `found ${displayVersion(status.version)}`
     case 'downloading':
-      return `downloading ${status.version}, ${status.percent}%`
+      return `downloading ${displayVersion(status.version)}, ${status.percent}%`
     case 'downloaded':
-      return `update ${status.version} downloaded`
+      return `update ${displayVersion(status.version)} downloaded`
     case 'none':
       return 'up to date'
     case 'error':

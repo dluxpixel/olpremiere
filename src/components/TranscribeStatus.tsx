@@ -9,6 +9,7 @@ export function TranscribeStatus() {
   const pct = useTranscribe((s) => s.pct)
   const downloading = useTranscribe((s) => s.downloading)
   const cancel = useTranscribe((s) => s.cancel)
+  const queue = useTranscribe((s) => s.queue)
   if (status === 'idle') return null
 
   // "Downloading (once)" was a lie every time after the first: the model lives in
@@ -32,6 +33,13 @@ export function TranscribeStatus() {
       {/* In-progress work is an ember state, not an accent state. */}
       <Loader2 size={13} strokeWidth={2} aria-hidden className="animate-spin text-ember" />
       <span>{label}</span>
+      {/* Captioning a whole timeline runs one clip at a time, so say where it is.
+          Without this the pill looks identical for a minute and for ten. */}
+      {queue && (
+        <span data-testid="transcribe-queue" className="font-numeric text-ui-sm text-text-secondary">
+          clip {queue.index} of {queue.total}
+        </span>
+      )}
       {status === 'model' && (
         <span className="font-numeric text-ui-sm text-text-secondary">
           {pct != null ? `${Math.round(pct)}%` : '…'}

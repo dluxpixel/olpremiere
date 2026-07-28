@@ -8,7 +8,7 @@
 // (see bootProgress.ts), so the list doubles as proof the app did what it should.
 
 import { useMemo } from 'react'
-import { APP_VERSION } from '../appVersion'
+import { displayVersion } from '../appVersion'
 import { melonPixels } from './melon'
 import { MelonMark } from './MelonMark'
 import { labelOf, progressOf, statusLine, statusOf, stepsFor, useBootLedger } from './bootProgress'
@@ -44,7 +44,7 @@ export function LoadingCard({ leaving = false }: { leaving?: boolean }) {
         <p className={styles.wordmark}>
           OL <span className={styles.wordmarkStrong}>Premiere</span>
         </p>
-        <p className={styles.version}>Version {APP_VERSION}</p>
+        <p className={styles.version}>Version {displayVersion()}</p>
       </div>
 
       {/* The lit diagonal edge between the brand and the work. Drawn as a line in

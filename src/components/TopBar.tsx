@@ -27,7 +27,7 @@ import { useToasts } from '../state/toasts'
 import { canRecordVoice, closeStudio, openStudio, useRecorder } from '../state/voiceRecorder'
 import { Button, IconButton } from '../ui/Button'
 import { MelonMark } from '../ui/MelonMark'
-import { APP_VERSION } from '../appVersion'
+import { displayVersion } from '../appVersion'
 import { ExportDialog } from './ExportDialog'
 import { ProjectsDialog } from './ProjectsDialog'
 import { SettingsDialog } from './SettingsDialog'
@@ -252,10 +252,10 @@ function VersionTag() {
   return (
     <span
       data-testid="app-version"
-      title={`OL Premiere v${APP_VERSION}. This is the build you're running`}
+      title={`OL Premiere v${displayVersion()}. This is the build you're running`}
       className="select-text font-numeric text-[10px] leading-none text-text-muted"
     >
-      v{APP_VERSION}
+      v{displayVersion()}
     </span>
   )
 }

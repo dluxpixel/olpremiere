@@ -4,13 +4,11 @@
 
 import { applyAppearanceToClip } from '../engine/anim/appearance'
 import {
+  AUTO_CAPTION_OPTIONS,
   captionClips,
   chunkWords,
-  maxCharsFor,
-  PHRASE_CAPTION_OPTIONS,
   spreadWords,
   type CaptionWord,
-  type ChunkOptions,
 } from '../engine/captions/captions'
 import { addTrack, clipDurationS, recomputeDuration, resolveStart } from '../engine/timeline'
 import { activeSequence, videoTracks, type Clip, type Track } from '../engine/types'
@@ -18,53 +16,12 @@ import { updateActiveSequence, useStore } from './store'
 import type { TextStylePreset } from './textPresets'
 import { useToasts } from './toasts'
 
-// Auto-captions group into readable PHRASES (PHRASE_CAPTION_OPTIONS); maxWords:1 = karaoke.
-
-// --- Words per caption ------------------------------------------------------
-// The one caption knob worth exposing: how many words share a caption. Cadence
-// is taste, and taste is the owner's call: 1 is one-word karaoke, 3 is the
-// short burst the house style is tuned for, 6 reads as subtitles.
-
-export const CAPTION_WORDS_MIN = 1
-export const CAPTION_WORDS_MAX = 6
-export const CAPTION_WORDS_DEFAULT = PHRASE_CAPTION_OPTIONS.maxWords
-
-const WORDS_KEY = 'olpremiere:captions:words'
-
-const clampWords = (n: number): number =>
-  Math.min(CAPTION_WORDS_MAX, Math.max(CAPTION_WORDS_MIN, Math.round(n)))
-
-/**
- * The live value. localStorage only PERSISTS it. The choice itself lives here,
- * so private mode, a full quota, or a blocked store costs the user their setting
- * across restarts but never inside the session they set it in.
- */
-let wordsPerChunk: number | null = null
-
-/** Persisted words-per-caption, tolerant of no localStorage. */
-export function getCaptionWordsPerChunk(): number {
-  if (wordsPerChunk !== null) return wordsPerChunk
-  try {
-    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(WORDS_KEY) : null
-    const n = raw === null ? NaN : Number(raw)
-    wordsPerChunk = Number.isFinite(n) ? clampWords(n) : CAPTION_WORDS_DEFAULT
-  } catch {
-    wordsPerChunk = CAPTION_WORDS_DEFAULT
-  }
-  return wordsPerChunk
-}
-
-export function setCaptionWordsPerChunk(n: number): void {
-  const v = clampWords(n)
-  wordsPerChunk = v
-  try {
-    if (typeof localStorage === 'undefined') return
-    if (v === CAPTION_WORDS_DEFAULT) localStorage.removeItem(WORDS_KEY)
-    else localStorage.setItem(WORDS_KEY, String(v))
-  } catch {
-    // Private mode / quota. The in-memory value above still applies this run.
-  }
-}
+// Captions are AUTO, full stop. There is no words-per-caption dial any more.
+//
+// His call, 2026-07-28: "I want to make it only auto captions." The dial was the
+// bug, not a feature: any word count welds words together across the pauses
+// between them, so a caption ends up on screen while he is saying something else.
+// AUTO_CAPTION_OPTIONS times every caption to the word it shows instead.
 
 /** Place clips one by one so each lands in a real gap (never overlapping). */
 function withClips(track: Track, clips: Clip[]): Track {
@@ -98,9 +55,9 @@ export function splitTitleIntoWordCaptions(clipId: string): void {
     useToasts.getState().show('Type at least two words first', 'danger')
     return
   }
-  // holdS 0: the words are contiguous, so captions still hand off seamlessly,
-  // but the run must not outgrow the window the original clip occupied.
-  const chunks = chunkWords(words, { maxWords: 1, holdS: 0 }).map((c) => ({
+  // holdS/bridgeS 0: the words are contiguous, so captions still hand off
+  // seamlessly, but the run must not outgrow the window the original clip held.
+  const chunks = chunkWords(words, { maxWords: 1, holdS: 0, bridgeS: 0 }).map((c) => ({
     ...c,
     endS: Math.min(c.endS, endS),
   }))
@@ -129,34 +86,28 @@ export function splitTitleIntoWordCaptions(clipId: string): void {
  */
 export function addCaptionsFromWords(
   words: CaptionWord[],
-  options: { label?: string; maxWords?: number; preset?: TextStylePreset } = {},
+  options: { label?: string; preset?: TextStylePreset } = {},
 ): void {
   const s = useStore.getState()
   const seq = activeSequence(s.project)
-  // The persisted words-per-caption pick drives EVERY caption entrance (the
-  // dialog, the tap timer, and the right-click auto-caption), so the setting is
-  // read here rather than passed down from each door. 1 = the one-word karaoke
-  // house style, which keeps the legacy timings.
-  const wanted = options.maxWords ?? getCaptionWordsPerChunk()
-  const chunkOpts: ChunkOptions =
-    wanted === 1
-      ? { maxWords: 1 }
-      : // The width budget scales with the dial, so turning it up groups more
-        // SHORT words rather than forcing long ones to share a caption.
-        { ...PHRASE_CAPTION_OPTIONS, maxWords: wanted, maxChars: maxCharsFor(wanted) }
-  const chunks = chunkWords(words, chunkOpts)
+  // AUTO, always, through every door: the dialog, the tap timer, the right-click
+  // auto-caption and the caption-every-clip run all land here and all get one
+  // word per caption, timed to the word.
+  const chunks = chunkWords(words, AUTO_CAPTION_OPTIONS)
   if (chunks.length === 0) {
     useToasts.getState().show('No words to caption', 'danger')
     return
   }
   let clips = captionClips(chunks, { seqWidth: seq.width, seqHeight: seq.height })
-  // Apply the chosen caption STYLE preset (case/outline/colour/position) + its
-  // entrance/exit animation to every word, so the whole run lands pre-styled.
+  // Apply the saved caption STYLE (case/outline/colour/position), its entrance
+  // and exit animation, AND its effect stack to every word, so the whole run
+  // lands looking exactly like the one he built and saved.
   const preset = options.preset
   if (preset) {
     clips = clips.map((c) => {
       if (!c.title) return c
       let nc: Clip = { ...c, title: { ...c.title, ...preset.style } }
+      if (preset.effects?.length) nc = { ...nc, effects: preset.effects.map((e) => ({ ...e })) }
       if (preset.appearance) nc = applyAppearanceToClip(nc, preset.appearance, seq.width, seq.height)
       return nc
     })

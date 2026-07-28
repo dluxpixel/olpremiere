@@ -1,5 +1,24 @@
 import { describe, expect, it } from 'vitest'
-import { checkForUpdate } from './appVersion'
+import { checkForUpdate, displayVersion } from './appVersion'
+
+describe('displayVersion', () => {
+  it('drops the pre-1.0 zero, which is the whole ask', () => {
+    // "it says version 0.1.21, make it just 1.21."
+    expect(displayVersion('0.1.21')).toBe('1.21')
+    expect(displayVersion('0.2.0')).toBe('2.0')
+  })
+
+  it('leaves a real 1.x alone', () => {
+    // Once the app ships a true 1.0 the string must not be mangled further.
+    expect(displayVersion('1.0.0')).toBe('1.0.0')
+    expect(displayVersion('12.4.1')).toBe('12.4.1')
+  })
+
+  it('only strips a leading zero SEGMENT, never a leading digit', () => {
+    expect(displayVersion('0.10.2')).toBe('10.2')
+    expect(displayVersion('10.0.2')).toBe('10.0.2')
+  })
+})
 
 describe('checkForUpdate', () => {
   it('is a silent first-run when nothing was ever stored', () => {

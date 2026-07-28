@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Toasts touch window.setTimeout, which the node test env lacks.
 vi.mock('./toasts', () => ({
@@ -13,13 +13,8 @@ import {
   type Clip,
   type Sequence,
 } from '../engine/types'
-import {
-  addCaptionsFromWords,
-  CAPTION_WORDS_DEFAULT,
-  getCaptionWordsPerChunk,
-  setCaptionWordsPerChunk,
-  splitTitleIntoWordCaptions,
-} from './captionActions'
+import { addCaptionsFromWords, splitTitleIntoWordCaptions } from './captionActions'
+import { clipDurationS } from '../engine/timeline'
 import { updateActiveSequence, useStore } from './store'
 
 const seq = (): Sequence => activeSequence(useStore.getState().project)
@@ -108,10 +103,11 @@ describe('addCaptionsFromWords', () => {
     const vids = videoTracks(seq())
     expect(vids).toHaveLength(before + 1)
     const top = vids[vids.length - 1]
-    // phrase-grouped: "so I" joins (no gap); "trapped" splits off after the 0.9s pause
-    expect(top.clips.map((c) => c.title?.text)).toEqual(['SO I', 'TRAPPED'])
+    // AUTO: one word per caption, each timed to the word. "so" and "I" used to be
+    // welded into "SO I" by the old phrase grouping.
+    expect(top.clips.map((c) => c.title?.text)).toEqual(['SO', 'I', 'TRAPPED'])
     expect(top.clips[0].startS).toBeCloseTo(0, 6)
-    expect(top.clips[1].startS).toBeCloseTo(1.5, 6)
+    expect(top.clips[2].startS).toBeCloseTo(1.5, 6)
     // house style: white 8%-height text, black outline, comic caption face
     expect(top.clips[0].title?.outline?.color).toBe('#000000')
     expect(top.clips[0].title?.fontFamily).toContain('Lilita One')
@@ -136,9 +132,7 @@ describe('addCaptionsFromWords', () => {
   })
 })
 
-describe('words per caption', () => {
-  afterEach(() => setCaptionWordsPerChunk(CAPTION_WORDS_DEFAULT))
-
+describe('captions are AUTO, one word each, timed to the voice', () => {
   const run = [
     { text: 'one', startS: 0.0, endS: 0.3 },
     { text: 'two', startS: 0.3, endS: 0.6 },
@@ -146,61 +140,45 @@ describe('words per caption', () => {
     { text: 'four', startS: 0.9, endS: 1.2 },
   ]
 
-  it('clamps to a sane range and round-trips', () => {
-    setCaptionWordsPerChunk(99)
-    expect(getCaptionWordsPerChunk()).toBe(6)
-    setCaptionWordsPerChunk(-4)
-    expect(getCaptionWordsPerChunk()).toBe(1)
-    setCaptionWordsPerChunk(4)
-    expect(getCaptionWordsPerChunk()).toBe(4)
-  })
-
-  it('drives EVERY caption entrance without the caller passing it', () => {
-    // The right-click auto-caption path calls addCaptionsFromWords with no
-    // maxWords at all, so the persisted pick has to reach it anyway.
-    setCaptionWordsPerChunk(1)
+  it('gives every word its own caption, with no dial to get it wrong', () => {
     addCaptionsFromWords(run)
-    let top = videoTracks(seq())[videoTracks(seq()).length - 1]
-    expect(top.clips.map((c) => c.title?.text)).toEqual(['ONE', 'TWO', 'THREE', 'FOUR'])
-
-    useStore.getState().undo()
-    setCaptionWordsPerChunk(4)
-    addCaptionsFromWords(run)
-    top = videoTracks(seq())[videoTracks(seq()).length - 1]
-    expect(top.clips.length).toBeLessThan(4) // grouped, not one word each
-  })
-
-  it('turning the dial up groups SHORT words, and never crams long ones', () => {
-    // The whole point of width-governed chunking: the dial buys you more room,
-    // and short words are what fit in it.
-    const shortWords = [
-      { text: 'go', startS: 0.0, endS: 0.3 },
-      { text: 'now', startS: 0.3, endS: 0.6 },
-      { text: 'get', startS: 0.6, endS: 0.9 },
-      { text: 'it', startS: 0.9, endS: 1.2 },
-    ]
-    const longWords = [
-      { text: 'minecraft', startS: 0.0, endS: 0.5 },
-      { text: 'diamonds', startS: 0.5, endS: 1.0 },
-      { text: 'underground', startS: 1.0, endS: 1.6 },
-    ]
-    setCaptionWordsPerChunk(4)
-
-    addCaptionsFromWords(shortWords)
-    const shortRun = videoTracks(seq())[videoTracks(seq()).length - 1]
-    expect(shortRun.clips).toHaveLength(1) // 12 chars, so they all fit
-    useStore.getState().undo()
-
-    addCaptionsFromWords(longWords)
-    const longRun = videoTracks(seq())[videoTracks(seq()).length - 1]
-    // Same dial, same word ceiling, but these do NOT get crammed together.
-    expect(longRun.clips).toHaveLength(3)
-  })
-
-  it('an explicit maxWords still wins over the setting', () => {
-    setCaptionWordsPerChunk(4)
-    addCaptionsFromWords(run, { maxWords: 1 })
     const top = videoTracks(seq())[videoTracks(seq()).length - 1]
-    expect(top.clips).toHaveLength(4)
+    expect(top.clips.map((c) => c.title?.text)).toEqual(['ONE', 'TWO', 'THREE', 'FOUR'])
+  })
+
+  it('keeps a short word alone instead of welding it to its neighbour', () => {
+    // HIS CASE. The screenshot showed one caption reading "evil and" while he was
+    // saying those two words a quarter-second apart: "'evil' should be alone as a
+    // word, and that's it." A 0.25s gap sat UNDER the old hard-break threshold, so
+    // the word count grouped them and the merge pass folded the stranded "and" in.
+    addCaptionsFromWords([
+      { text: 'evil', startS: 0.0, endS: 0.5 },
+      { text: 'and', startS: 0.75, endS: 0.9 },
+    ])
+    const top = videoTracks(seq())[videoTracks(seq()).length - 1]
+    expect(top.clips.map((c) => c.title?.text)).toEqual(['EVIL', 'AND'])
+  })
+
+  it('clears the screen at a real pause instead of sitting there', () => {
+    // "some of these are there for longer." A caption used to linger 0.4s past the
+    // word, so at every pause there was text on screen for nothing.
+    addCaptionsFromWords([
+      { text: 'green', startS: 0.0, endS: 0.4 },
+      { text: 'evil', startS: 3.0, endS: 3.4 },
+    ])
+    const top = videoTracks(seq())[videoTracks(seq()).length - 1]
+    const green = top.clips[0]
+    expect(green.startS + clipDurationS(green)).toBeLessThanOrEqual(0.55)
+  })
+
+  it('hands over with no blank frame inside a phrase', () => {
+    // Back-to-back speech is the hard-cut swap the style is built on: one word
+    // leaves exactly as the next arrives.
+    addCaptionsFromWords(run)
+    const top = videoTracks(seq())[videoTracks(seq()).length - 1]
+    for (let i = 0; i < top.clips.length - 1; i++) {
+      const end = top.clips[i].startS + clipDurationS(top.clips[i])
+      expect(end).toBeCloseTo(top.clips[i + 1].startS, 5)
+    }
   })
 })

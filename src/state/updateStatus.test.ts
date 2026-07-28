@@ -11,13 +11,15 @@ describe('updateLine', () => {
     expect(updateLine({ kind: 'none' })).toBe('Up to date')
   })
 
+  // Every version the user READS drops the pre-1.0 zero (his call: "make it just
+  // 1.21"). The feed still compares the real semver; only the words change.
   it('names the version it found and how far the download has got', () => {
-    expect(updateLine({ kind: 'available', version: '0.1.15' })).toBe('Update 0.1.15 found, downloading now')
+    expect(updateLine({ kind: 'available', version: '0.1.15' })).toBe('Update 1.15 found, downloading now')
     expect(updateLine({ kind: 'downloading', version: '0.1.15', percent: 42 })).toBe(
-      'Downloading update 0.1.15, 42%',
+      'Downloading update 1.15, 42%',
     )
     expect(updateLine({ kind: 'downloaded', version: '0.1.15' })).toBe(
-      'Update 0.1.15 downloaded. Restart to install',
+      'Update 1.15 downloaded. Restart to install',
     )
   })
 
@@ -32,7 +34,7 @@ describe('updateLine', () => {
     expect(bootDetailFor({ kind: 'error', message: TIMED_OUT })).toBe('no answer')
     expect(bootDetailFor({ kind: 'error', message: 'HttpError: 404' })).toBe('check failed')
     expect(bootDetailFor({ kind: 'none' })).toBe('up to date')
-    expect(bootDetailFor({ kind: 'downloading', version: '0.1.15', percent: 7 })).toBe('downloading 0.1.15, 7%')
+    expect(bootDetailFor({ kind: 'downloading', version: '0.1.15', percent: 7 })).toBe('downloading 1.15, 7%')
     for (const kind of ['error', 'none'] as const) {
       const detail = bootDetailFor(kind === 'none' ? { kind } : { kind, message: 'x' })
       expect(detail.length).toBeLessThanOrEqual(24) // fits the row without an ellipsis

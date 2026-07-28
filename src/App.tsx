@@ -38,7 +38,7 @@ import { exportProjectToFile, openProjectFilePicker } from './state/projectFile'
 import { isCriticalWorkInFlight } from './state/unloadGuard'
 import { updateActiveSequence, useStore, zoomIn, zoomOut } from './state/store'
 import { useToasts } from './state/toasts'
-import { APP_VERSION, LAST_SEEN_VERSION_KEY, checkForUpdate } from './appVersion'
+import { APP_VERSION, LAST_SEEN_VERSION_KEY, checkForUpdate, displayVersion } from './appVersion'
 import { olApi } from './platform'
 import { ContextMenu } from './ui/ContextMenu'
 import { Splitter } from './ui/Splitter'
@@ -332,7 +332,7 @@ export default function App() {
     if (result.kind === 'updated') {
       useToasts
         .getState()
-        .show(`🎉 Updated to v${result.to}. You're on the newest version`, 'success', undefined, {
+        .show(`🎉 Updated to v${displayVersion(result.to)}. You're on the newest version`, 'success', undefined, {
           durationMs: 12_000,
         })
     }

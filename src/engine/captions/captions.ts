@@ -42,6 +42,14 @@ export interface ChunkOptions {
   maxSpanS?: number
   /** How long a caption may linger after its last word when nothing follows. */
   holdS?: number
+  /**
+   * Stretch a caption to meet the NEXT one when the silence between them is at
+   * most this. Separate from holdS on purpose: inside a phrase the words should
+   * swap with no blank frame, but at a real pause the caption has to get off the
+   * screen. One number could not do both, and using holdS for both is what left
+   * a caption sitting there while he was not saying it.
+   */
+  bridgeS?: number
   /** Readability floor. A chunk shorter than this is merged (if mergeShort) so it never flashes. */
   minDurS?: number
   /** Merge a sub-minDur or lone-function-word chunk into a soft-adjacent neighbor. */
@@ -58,6 +66,7 @@ const CHUNK_DEFAULTS: Required<ChunkOptions> = {
   maxGapS: 0.35,
   maxSpanS: 1.6,
   holdS: 0.4,
+  bridgeS: 0.4, // legacy: the bridge WAS holdS, so keep them equal here
   minDurS: 0.18,
   mergeShort: false,
 }
@@ -99,8 +108,45 @@ export const PHRASE_CAPTION_OPTIONS: Required<ChunkOptions> = {
   maxGapS: 0.4,
   maxSpanS: 2,
   holdS: 0.4,
+  bridgeS: 0.4,
   minDurS: 0.35,
   mergeShort: true,
+}
+
+/**
+ * AUTO: the only caption mode there is now, and the only one he wants.
+ *
+ * 2026-07-28, looking at a run made with the old "3 words" dial: *"all of these
+ * are different sizes and some of these are there for longer... it doesn't match
+ * what I'm saying. 'Evil' should be alone as a word, and that's it. I wanted it to
+ * be perfectly just Jettism as it is."*
+ *
+ * So the rule is not a word count at all, it is the voice: ONE WORD per caption,
+ * on screen for as long as that word is being said. Grouping is what broke it.
+ * Chunking by count welds a word to the one after it and the caption then spans
+ * the pause between them, so it sits on screen through silence, which is exactly
+ * what he saw. `mergeShort` did the same thing from the other end: it is what
+ * folded a stranded "and" onto "evil".
+ *
+ * Two timings do the work:
+ *   holdS   0.12 - at a real pause a word clears the screen almost at once.
+ *   bridgeS 0.36 - inside a phrase the next word takes over with no blank frame,
+ *                  which is the hard-cut swap the style is built on.
+ * `minDurS` is only a flash guard, and it can never push a caption over the next
+ * word because the non-overlap clamp outranks it.
+ */
+export const AUTO_CAPTION_OPTIONS: Required<ChunkOptions> = {
+  maxWords: 1,
+  maxChars: Infinity,
+  maxCps: Infinity,
+  // At one word per caption nothing can group anyway; kept tight so that if this
+  // is ever widened, a pause still breaks before anything else gets a say.
+  maxGapS: 0.12,
+  maxSpanS: Infinity,
+  holdS: 0.12,
+  bridgeS: 0.36,
+  minDurS: 0.2,
+  mergeShort: false,
 }
 
 /**
@@ -221,7 +267,9 @@ export function chunkWords(words: CaptionWord[], options: ChunkOptions = {}): Ca
     const next = chunks[i + 1]
     const c = chunks[i]
     if (next) {
-      c.endS = next.startS - c.endS <= o.holdS ? next.startS : c.endS + o.holdS
+      // Inside a phrase: hand straight over, no blank frame. Across a real pause:
+      // linger only holdS, so nothing is on screen while he is not talking.
+      c.endS = next.startS - c.endS <= o.bridgeS ? next.startS : c.endS + o.holdS
     } else {
       c.endS += o.holdS
     }

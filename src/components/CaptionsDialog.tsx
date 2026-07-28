@@ -4,7 +4,7 @@
 //            voiceover plays; taps become the word timings.
 // Both funnel into addCaptionsFromWords, same as Auto-Caption.
 
-import { Sparkles, X } from 'lucide-react'
+import { Layers, Sparkles, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import {
   CAPTION_LANGUAGES,
@@ -15,13 +15,7 @@ import {
 import { parseTranscript, tapsToWords } from '../engine/captions/transcript'
 import { clipEndS } from '../engine/timeline'
 import { activeSequence } from '../engine/types'
-import {
-  addCaptionsFromWords,
-  CAPTION_WORDS_MAX,
-  CAPTION_WORDS_MIN,
-  getCaptionWordsPerChunk,
-  setCaptionWordsPerChunk,
-} from '../state/captionActions'
+import { addCaptionsFromWords } from '../state/captionActions'
 import { pausePlayback, togglePlay } from '../state/playbackControl'
 import { useStore } from '../state/store'
 import {
@@ -31,7 +25,7 @@ import {
   useTextPresets,
   type TextStylePreset,
 } from '../state/textPresets'
-import { autoCaptionFromClip } from '../state/transcribeActions'
+import { autoCaptionEveryClip, autoCaptionFromClip } from '../state/transcribeActions'
 import { Button, IconButton } from '../ui/Button'
 
 /** The voiceover clip Auto-Caption should target. Priority: the clip you have
@@ -56,6 +50,15 @@ function findVoClipId(): string | null {
   return (selected ?? under ?? audible.find(({ voice }) => voice) ?? audible[0]).c.id
 }
 
+/** How many clips "Caption every clip" would actually work on. */
+function audibleClipCount(): number {
+  const s = useStore.getState()
+  return activeSequence(s.project)
+    .tracks.filter((t) => !t.locked)
+    .flatMap((t) => t.clips)
+    .filter((c) => s.project.assets[c.assetId]?.hasAudio).length
+}
+
 const PASTE_HINT = `[{"text":"so","startS":0.1,"endS":0.4}, …]   or an .srt`
 
 type Mode = 'paste' | 'tap'
@@ -72,9 +75,6 @@ export function CaptionsDialog({ onClose }: { onClose: () => void }) {
   // pick, so the two doors cannot drift apart again.
   const [presetId, setPresetId] = useState(getCaptionPresetId)
   const [language, setLanguage] = useState<CaptionLanguage>(getCaptionLanguage)
-  // Cadence is taste, so it is his dial. Persisted, and read by every caption
-  // entrance including the right-click auto-caption.
-  const [wordsPerCaption, setWordsPerCaption] = useState(getCaptionWordsPerChunk)
   const preset: TextStylePreset | undefined = presets.find((p) => p.id === presetId)
   // Tap mode: the words being timed and the taps collected so far.
   const [tapWords, setTapWords] = useState<string[] | null>(null)
@@ -218,26 +218,44 @@ export function CaptionsDialog({ onClose }: { onClose: () => void }) {
 
         {/* The #1 Jettism step, front and center - right-click was its only
             home before, which made the flagship feature invisible. */}
+        {/* Captions are AUTO now, with no words-per-caption dial: one word per
+            caption, on screen for exactly as long as it is spoken. His call: the
+            dial welded words together across the pauses between them, so a
+            caption sat there while he was saying something else. */}
         {!tapping && (
-          <div className="flex items-center gap-2 border-b border-border px-4 py-3">
-            <Button
-              data-testid="captions-auto"
-              disabled={findVoClipId() === null}
-              onClick={() => {
-                const id = findVoClipId()
-                if (id) {
-                  void autoCaptionFromClip(id, preset)
+          <div className="flex flex-col gap-2 border-b border-border px-4 py-3">
+            <div className="flex items-center gap-2">
+              <Button
+                data-testid="captions-auto"
+                disabled={findVoClipId() === null}
+                onClick={() => {
+                  const id = findVoClipId()
+                  if (id) {
+                    void autoCaptionFromClip(id, preset)
+                    onClose()
+                  }
+                }}
+              >
+                <Sparkles size={14} strokeWidth={1.5} />
+                Caption this clip
+              </Button>
+              <Button
+                variant="secondary"
+                data-testid="captions-auto-all"
+                disabled={audibleClipCount() === 0}
+                onClick={() => {
+                  void autoCaptionEveryClip(preset)
                   onClose()
-                }
-              }}
-            >
-              <Sparkles size={14} strokeWidth={1.5} />
-              Auto-Caption from voiceover
-            </Button>
+                }}
+              >
+                <Layers size={14} strokeWidth={1.5} />
+                Caption every clip
+              </Button>
+            </div>
             <span className="text-[10px] text-text-muted">
-              {findVoClipId()
-                ? 'Local Whisper; word captions land automatically.'
-                : 'Add an audio clip with sound first.'}
+              {audibleClipCount() === 0
+                ? 'Add a clip with sound first.'
+                : `One word per caption, timed to the voice. Every clip means all ${audibleClipCount()} with sound, onto one track.`}
             </span>
           </div>
         )}
@@ -261,31 +279,6 @@ export function CaptionsDialog({ onClose }: { onClose: () => void }) {
                 </option>
               ))}
             </select>
-          </div>
-        )}
-        {!tapping && (
-          <div className="flex items-center gap-2 border-b border-border px-4 py-2">
-            <span className="text-[11px] text-text-muted">Words per caption</span>
-            <div className="ml-auto flex w-[190px] items-center gap-2">
-              <input
-                type="range"
-                aria-label="Words per caption"
-                data-testid="captions-words"
-                min={CAPTION_WORDS_MIN}
-                max={CAPTION_WORDS_MAX}
-                step={1}
-                value={wordsPerCaption}
-                onChange={(e) => {
-                  const v = Number(e.target.value)
-                  setWordsPerCaption(v)
-                  setCaptionWordsPerChunk(v)
-                }}
-                className="h-6 flex-1 cursor-default accent-accent"
-              />
-              <span className="w-14 shrink-0 text-right text-[11px] tabular-nums text-text-secondary">
-                {wordsPerCaption === 1 ? 'one word' : `up to ${wordsPerCaption}`}
-              </span>
-            </div>
           </div>
         )}
         {!tapping && (
