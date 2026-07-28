@@ -21,7 +21,7 @@ export interface TranscribeRequest {
 }
 
 export type TranscribeResponse =
-  | { type: 'progress'; phase: 'model' | 'listening'; pct: number | null }
+  | { type: 'progress'; phase: 'model' | 'listening'; pct: number | null; downloading?: boolean }
   | { type: 'done'; chunks: { text: string; timestamp: [number, number | null] }[] }
   | { type: 'error'; message: string }
 
@@ -58,12 +58,19 @@ async function getAsr(model: string): Promise<Asr> {
     ;(env as { useBrowserCache?: boolean; allowLocalModels?: boolean }).allowLocalModels = false
 
     let biggestTotal = 0
+    // Whether anything is coming off the NETWORK this time. transformers.js emits
+    // `download` only when it actually fetches a file; a load served out of the
+    // cache goes straight to progress and done. Without this the pill claimed
+    // "Downloading Whisper (once)" every single time the model was loaded from
+    // disk, which is why he saw it on every new version and stopped believing it.
+    let downloading = false
     const progress_callback = (p: { status?: string; progress?: number; total?: number; file?: string }) => {
-      if (p.status === 'initiate' && p.file) console.log('OL Studio transcribe: fetching', p.file)
+      if (p.status === 'initiate' && p.file) console.log('OL Premiere transcribe: fetching', p.file)
+      if (p.status === 'download') downloading = true
       if (p.status === 'progress' && typeof p.progress === 'number') {
         if ((p.total ?? 0) >= biggestTotal) {
           biggestTotal = p.total ?? 0
-          post({ type: 'progress', phase: 'model', pct: p.progress })
+          post({ type: 'progress', phase: 'model', pct: p.progress, downloading })
         }
       }
     }

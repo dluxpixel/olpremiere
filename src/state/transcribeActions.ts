@@ -22,18 +22,21 @@ export type TranscribeStatus = 'idle' | 'reading' | 'model' | 'listening'
 
 interface TranscribeState {
   status: TranscribeStatus
-  /** Model download percentage (0-100) when known, else null. */
+  /** Model progress percentage (0-100) when known, else null. */
   pct: number | null
+  /** True only when files are really coming off the network, not out of the cache. */
+  downloading: boolean
   cancel: (() => void) | null
 }
 
 export const useTranscribe = create<TranscribeState>(() => ({
   status: 'idle',
   pct: null,
+  downloading: false,
   cancel: null,
 }))
 
-const reset = (): void => useTranscribe.setState({ status: 'idle', pct: null, cancel: null })
+const reset = (): void => useTranscribe.setState({ status: 'idle', pct: null, downloading: false, cancel: null })
 
 /** Transcribe the audio clip locally and lay its words down as captions. */
 export async function autoCaptionFromClip(clipId: string, preset?: TextStylePreset): Promise<void> {
@@ -51,13 +54,13 @@ export async function autoCaptionFromClip(clipId: string, preset?: TextStylePres
     return
   }
 
-  useTranscribe.setState({ status: 'reading', pct: null, cancel: null })
+  useTranscribe.setState({ status: 'reading', pct: null, downloading: false, cancel: null })
   try {
     const pcm = await extractClipPcm(asset, clip)
     // The persisted language pick (CaptionsDialog) also drives this right-click
     // path: one setting, every caption entrance.
     const run = transcribePcm(pcm, getCaptionLanguage(), (p) =>
-      useTranscribe.setState({ status: p.phase, pct: p.pct }),
+      useTranscribe.setState({ status: p.phase, pct: p.pct, downloading: p.downloading ?? false }),
     )
     useTranscribe.setState({ cancel: run.cancel })
     const chunks = await run.promise

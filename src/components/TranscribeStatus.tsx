@@ -7,14 +7,20 @@ import { useTranscribe } from '../state/transcribeActions'
 export function TranscribeStatus() {
   const status = useTranscribe((s) => s.status)
   const pct = useTranscribe((s) => s.pct)
+  const downloading = useTranscribe((s) => s.downloading)
   const cancel = useTranscribe((s) => s.cancel)
   if (status === 'idle') return null
 
+  // "Downloading (once)" was a lie every time after the first: the model lives in
+  // the local cache, and loading it from there still reports progress, so he saw
+  // the download banner on every new version and reasonably stopped trusting it.
   const label =
     status === 'reading'
       ? 'Reading the clip’s audio…'
       : status === 'model'
-        ? 'Downloading Whisper (once)'
+        ? downloading
+          ? 'Downloading Whisper (first time only)'
+          : 'Loading Whisper…'
         : 'Listening for words…'
 
   return (

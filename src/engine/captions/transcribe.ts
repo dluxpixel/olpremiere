@@ -155,6 +155,12 @@ export async function extractClipPcm(asset: MediaAsset, clip: Clip): Promise<Flo
 export interface TranscribeProgress {
   phase: 'model' | 'listening'
   pct: number | null
+  /**
+   * True only when model files are really being fetched over the network. A load
+   * served out of the local cache reports false, so the pill can stop calling
+   * every startup a download.
+   */
+  downloading?: boolean
 }
 
 export interface TranscribeRun {
