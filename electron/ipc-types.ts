@@ -58,6 +58,20 @@ export type UpdateStatus =
   /** Unpackaged/dev build: no updater runs, so there is nothing to report. */
   | { kind: 'unsupported' }
 
+/**
+ * The splash window's choreography, in ONE place because three files have to
+ * agree on it: the splash page animates it, the main process resizes and swaps
+ * windows on it, and `splashTiming.test.ts` checks the stylesheet still matches.
+ * A number that drifted here used to mean a card that vanished before its
+ * animation finished, or a melon that popped into an already-closed window.
+ */
+/** The loading card's exit, before the window shrinks. Matches `.card.leaving` in splash.css. */
+export const SPLASH_CARD_EXIT_MS = 300
+/** The melon's pop on click. The splash outlives the swap by exactly this, so the fruit bursts OVER the opening editor. */
+export const SPLASH_MELON_POP_MS = 420
+/** The square the splash shrinks to once the melon is the only thing left in it. */
+export const SPLASH_MELON_PX = 360
+
 /** One frame of the loading card's state, sent to the splash window. */
 export interface BootProgress {
   rows: { id: string; label: string; state: 'pending' | 'active' | 'done' | 'failed' }[]
@@ -109,10 +123,20 @@ export interface OlApi {
 
   /** Editor renderer to main: what the loading card would be showing right now. */
   reportBootProgress(progress: BootProgress): void
-  /** Editor renderer to main: startup is finished, swap the splash for the window. */
+  /**
+   * Editor renderer to main: the startup work is done. This does NOT open the
+   * editor. The splash drops its card and puts up the melon, and HE opens the app
+   * by clicking it.
+   */
   bootFinished(): void
   /** Splash window only: every progress update, forwarded from the editor. */
   onBootProgress(cb: (progress: BootProgress) => void): () => void
+  /** Splash window only: the startup work is done, so play the card out and show the melon. */
+  onBootReady(cb: () => void): () => void
+  /** Splash to main: the card is gone, shrink the window around the melon. */
+  splashShrink(): void
+  /** Splash to main: the melon was clicked, open the editor. */
+  splashEnter(): void
   /** Every updater transition: checking → available → downloading → downloaded / none / error. Returns an unsubscribe fn. */
   onUpdateStatus(cb: (status: UpdateStatus) => void): () => void
 

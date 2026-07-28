@@ -240,8 +240,12 @@ function DesktopBoot({ children }: { children: ReactNode }) {
     })
   }, [specs, statuses])
 
+  // The card that is leaving lives in the SPLASH window, not this one, so hand over
+  // the moment the gate opens instead of sitting out an exit animation this window
+  // is not drawing. Waiting for 'ready' left the splash parked at 100% for the
+  // length of a card exit it had not started yet.
   useEffect(() => {
-    if (phase === 'ready') window.api?.bootFinished?.()
+    if (phase !== 'loading') window.api?.bootFinished?.()
   }, [phase])
 
   return <>{children}</>

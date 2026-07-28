@@ -330,3 +330,137 @@
 .card {
   -webkit-app-region: drag;
 }
+
+/* ------------------------------------------------------- beat two: the melon
+ *
+ * When the startup finishes the card leaves, the window pulls in to a small
+ * square, and the melon is left floating on his desktop. It is the door: the app
+ * opens when he clicks the fruit, not a moment before. Same brand moment as the
+ * web build's boot screen, minus the black field, because here there is no page
+ * behind it, only his desktop showing through.
+ */
+.melonStage {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  /* Everything but the fruit drags the window, so a stray click near it nudges
+     the square instead of opening the editor by accident. */
+  -webkit-app-region: drag;
+  animation: melonIn 480ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.melonBtn {
+  position: relative;
+  z-index: 1;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: none;
+  line-height: 0;
+  background: transparent;
+  cursor: pointer;
+  -webkit-app-region: no-drag; /* a drag region swallows clicks, and this one is a button */
+  transition: transform 160ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.melonBtn:hover,
+.melonBtn:focus-visible {
+  transform: scale(1.05);
+}
+.melonBtn:active {
+  transform: scale(0.97);
+}
+.melonBtn:focus-visible {
+  outline: none; /* the glow and the fruit are the affordance; no box on a floating melon */
+}
+
+/* The coral bloom hugging the fruit. On a transparent window this is the only
+   light in the square, so it reads as a lamp on his desktop rather than a panel. */
+.halo {
+  position: absolute;
+  z-index: 0;
+  width: 300px;
+  aspect-ratio: 1 / 1;
+  border-radius: 50%;
+  background: radial-gradient(
+    closest-side,
+    rgba(240, 96, 76, 0.62),
+    rgba(235, 70, 60, 0.3) 46%,
+    rgba(235, 70, 60, 0) 72%
+  );
+  filter: blur(6px);
+  pointer-events: none;
+  animation: haloPulse 3.6s ease-in-out infinite;
+}
+
+.melonHero {
+  position: relative;
+  z-index: 1;
+  display: block;
+  width: 190px;
+  height: auto;
+  image-rendering: pixelated;
+  filter: drop-shadow(0 12px 26px rgba(0, 0, 0, 0.55));
+  animation: melonBob 3.8s ease-in-out infinite;
+}
+
+/* No caption under the fruit, deliberately. This window is transparent, so any
+   text sits directly on his wallpaper and there is no colour that stays legible
+   over all of them. The melon growing under the pointer is the affordance, the
+   same as the web build's boot screen. */
+
+/* Clicked: the fruit bursts forward while the editor opens behind it. Main keeps
+   this window alive for exactly the length of this animation. */
+.melonStage.leaving {
+  pointer-events: none;
+}
+.melonStage.leaving .melonBtn {
+  animation: melonPop 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes melonIn {
+  from {
+    opacity: 0;
+    transform: scale(0.84);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes melonPop {
+  0% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  40% {
+    transform: scale(1.13);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1.5);
+    opacity: 0;
+  }
+}
+@keyframes haloPulse {
+  0%,
+  100% {
+    opacity: 0.78;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.06);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .melonStage,
+  .melonHero,
+  .halo {
+    animation: none;
+  }
+  /* The pop is kept even here: it is the only feedback that the click landed,
+     and main is closing this window on that beat either way. */
+}

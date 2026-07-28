@@ -12,6 +12,7 @@ import { existsSync, renameSync } from 'node:fs'
 import path from 'node:path'
 import * as backups from './backups'
 import type { NativeExportConfig, UpdateStatus } from './ipc-types'
+import { SPLASH_MELON_POP_MS, SPLASH_MELON_PX } from './ipc-types'
 import * as native from './nativeExport'
 import electronUpdater from 'electron-updater'
 
@@ -67,8 +68,12 @@ let mainWindow: BrowserWindow | null = null
  * rectangle with a small card in the middle is exactly what he did not want.
  */
 let splashWindow: BrowserWindow | null = null
-/** True once the editor said it finished booting, so a late splash closes at once. */
+/** True once the editor said the startup work is done, which is when the melon goes up. */
 let bootFinished = false
+/** True once the editor window has been shown, so every route into that swap is idempotent. */
+let entered = false
+/** Rescue timer: fires only if the boot never reports at all. Cleared the moment it does. */
+let bootBackstop: ReturnType<typeof setTimeout> | null = null
 
 function createSplash(): void {
   const win = new BrowserWindow({
@@ -94,25 +99,87 @@ function createSplash(): void {
   })
   splashWindow = win
   win.once('ready-to-show', () => {
-    // The editor may have finished before this window was ready on a fast disk.
-    if (bootFinished) win.close()
-    else win.show()
+    // He may already be in the editor if this window was slow off a cold disk.
+    if (entered) {
+      win.close()
+      return
+    }
+    win.show()
+    // The boot can also finish before the page is ready, on a fast disk. Tell it
+    // now, or the card would sit at 100% forever and the melon would never come.
+    if (bootFinished) win.webContents.send('boot:ready')
   })
   win.on('closed', () => {
     if (splashWindow === win) splashWindow = null
+    // The splash is frameless with no close button, but Alt+F4 still reaches it.
+    // Losing it must never leave him with a running app and no window at all.
+    if (!entered) enterEditor()
   })
   void win.loadURL(isDev ? `${DEV_URL}/splash.html` : `app://${APP_ORIGIN_HOST}/splash.html`)
 }
 
-/** Swap the splash for the editor. Safe to call twice. */
-function finishBoot(): void {
+/**
+ * The startup work is done. The editor deliberately does NOT open here.
+ *
+ * His ask: the card gives way to the melon, and the melon is the button that
+ * opens the app. So the splash keeps the screen, plays its card out and shrinks
+ * to a square around the fruit, and nothing swaps until he clicks. Waiting on a
+ * person is not a hang, so the rescue timer stands down here.
+ */
+function bootReady(): void {
+  if (bootFinished || entered) return
   bootFinished = true
-  splashWindow?.close()
-  splashWindow = null
+  if (bootBackstop) clearTimeout(bootBackstop)
+  bootBackstop = null
+  const win = splashWindow
+  // No splash to hand over to (it failed to open, or he closed it): just open.
+  if (!win || win.isDestroyed()) {
+    enterEditor()
+    return
+  }
+  win.webContents.send('boot:ready')
+}
+
+/** The card has finished its exit: pull the window in around the melon, in place. */
+function shrinkSplash(): void {
+  const win = splashWindow
+  if (!win || win.isDestroyed()) return
+  const b = win.getBounds()
+  // Shrink about the CENTRE, so a window he dragged somewhere stays where he put it.
+  const half = Math.round(SPLASH_MELON_PX / 2)
+  // A non-resizable window refuses a programmatic resize on Windows, so lift the
+  // flag for exactly this one call and put it straight back.
+  win.setResizable(true)
+  win.setBounds({
+    x: b.x + Math.round(b.width / 2) - half,
+    y: b.y + Math.round(b.height / 2) - half,
+    width: SPLASH_MELON_PX,
+    height: SPLASH_MELON_PX,
+  })
+  win.setResizable(false)
+  win.focus() // it is a button now, so it has to be the thing that has focus
+}
+
+/** Open the editor and retire the splash. Safe to call twice, from any route. */
+function enterEditor(): void {
+  if (entered) return
+  entered = true
+  bootFinished = true
+  if (bootBackstop) clearTimeout(bootBackstop)
+  bootBackstop = null
   const win = mainWindow
   if (win && !win.isDestroyed() && !win.isVisible()) {
     win.maximize()
     win.show()
+  }
+  // The splash outlives the swap by the length of the melon's pop, so the fruit
+  // bursts OVER the opening editor instead of blinking out a beat before it.
+  const splash = splashWindow
+  splashWindow = null
+  if (splash && !splash.isDestroyed()) {
+    setTimeout(() => {
+      if (!splash.isDestroyed()) splash.close()
+    }, SPLASH_MELON_POP_MS)
   }
 }
 
@@ -187,15 +254,22 @@ function createWindow(): void {
   // he sees the small card on his desktop and nothing else. It opens MAXIMIZED,
   // not fullscreen, because an editor still needs its title bar and the taskbar.
   win.once('ready-to-show', () => {
-    if (bootFinished || !splashWindow) {
+    // While a splash is up, the editor stays hidden even after the boot finishes:
+    // the melon is a deliberate gate, and he is the one who opens it.
+    if (entered || !splashWindow) {
       win.maximize()
       win.show()
     }
   })
   // Backstop: if the renderer never reports a finished boot (an old bundle, a
   // startup crash), show the editor anyway rather than stranding him on a splash.
-  const bootBackstop = setTimeout(finishBoot, 15_000)
-  win.on('closed', () => clearTimeout(bootBackstop))
+  // It does NOT police the melon: a melon waiting to be clicked is not a hang, so
+  // bootReady cancels this the moment the real boot reports in.
+  bootBackstop = setTimeout(enterEditor, 15_000)
+  win.on('closed', () => {
+    if (bootBackstop) clearTimeout(bootBackstop)
+    bootBackstop = null
+  })
   win.on('closed', () => {
     if (mainWindow === win) mainWindow = null
   })
@@ -311,7 +385,13 @@ app.whenReady().then(() => {
   ipcMain.on('boot:progress', (_e, progress) => {
     if (splashWindow && !splashWindow.isDestroyed()) splashWindow.webContents.send('boot:progress', progress)
   })
-  ipcMain.on('boot:finished', () => finishBoot())
+  ipcMain.on('boot:finished', () => bootReady())
+  // Both come from the splash window itself, driving its own two beats: the card
+  // has finished leaving, and then the melon has been clicked.
+  ipcMain.on('boot:shrink', (e) => {
+    if (e.sender === splashWindow?.webContents) shrinkSplash()
+  })
+  ipcMain.on('boot:enter', () => enterEditor())
 
   // Auto-update: on a packaged build, check GitHub Releases (electron-builder.yml
   // `publish`) and download a newer version in the background. A failed check

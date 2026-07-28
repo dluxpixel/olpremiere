@@ -10,6 +10,7 @@
 
 import { MELON_H, MELON_PALETTE, MELON_W, melonPixels } from '../ui/melon'
 import type { BootStepState } from '../ui/bootProgress'
+import { SPLASH_CARD_EXIT_MS } from '../../electron/ipc-types'
 import '@fontsource-variable/figtree'
 import '@fontsource/jetbrains-mono'
 import './splash.css'
@@ -29,12 +30,14 @@ interface SplashProgress {
 
 const MARK: Record<BootStepState, string> = { done: '✓', failed: '!', active: '›', pending: '·' }
 
-function melonSvg(): string {
+function melonSvg(className = 'melon'): string {
   const rects = melonPixels()
     .map((p) => `<rect x="${p.x}" y="${p.y}" width="1" height="1" fill="${p.color}"/>`)
     .join('')
-  return `<svg class="melon" viewBox="0 0 ${MELON_W} ${MELON_H}" shape-rendering="crispEdges" aria-hidden="true">${rects}</svg>`
+  return `<svg class="${className}" viewBox="0 0 ${MELON_W} ${MELON_H}" shape-rendering="crispEdges" aria-hidden="true">${rects}</svg>`
 }
+
+const reducedMotion = (): boolean => !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
 
 const root = document.getElementById('root')!
 root.innerHTML = `
@@ -93,6 +96,56 @@ function render(p: SplashProgress): void {
 }
 
 window.api?.onBootProgress?.(render)
+
+// --- beat two: the card leaves and the melon becomes the door -----------------
+//
+// His ask: when the startup finishes, the app does not just appear. The card pops,
+// the window pulls in to a small square on his desktop, and the melon sits there
+// waiting. Clicking the fruit is what opens the editor. Nothing here is a timer
+// racing the app: main tells us the real work is done, and then it waits for him.
+
+let leaving = false
+let launched = false
+
+function showMelon(): void {
+  // Shrink the window FIRST, so the melon's entrance plays at its final size
+  // rather than growing inside a 700px box and then being cropped to a square.
+  window.api?.splashShrink?.()
+  root.innerHTML = `
+    <div class="melonStage" data-testid="splash-melon-stage">
+      <button type="button" class="melonBtn" data-testid="splash-melon" aria-label="Open OL Premiere" title="Open OL Premiere">
+        <span class="halo" aria-hidden="true"></span>
+        ${melonSvg('melonHero')}
+      </button>
+    </div>
+  `
+  const btn = root.querySelector<HTMLButtonElement>('.melonBtn')!
+  btn.addEventListener('click', launch)
+  btn.focus() // so Enter or Space opens it too, without reaching for the mouse
+}
+
+function launch(): void {
+  if (launched) return
+  launched = true
+  // The editor is asked for NOW and the pop plays over it: main keeps this window
+  // alive for exactly the length of the animation.
+  root.querySelector('.melonStage')?.classList.add('leaving')
+  window.api?.splashEnter?.()
+}
+
+function bootReady(): void {
+  if (leaving) return
+  leaving = true
+  const card = root.querySelector('.card')
+  if (!card || reducedMotion()) {
+    showMelon()
+    return
+  }
+  card.classList.add('leaving')
+  window.setTimeout(showMelon, SPLASH_CARD_EXIT_MS)
+}
+
+window.api?.onBootReady?.(bootReady)
 
 // Colour tokens the card borrows from the app, inlined so this page pulls in no
 // stylesheet of the editor's.

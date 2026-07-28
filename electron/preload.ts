@@ -59,6 +59,13 @@ const api: OlApi = {
     ipcRenderer.on('boot:progress', l)
     return () => ipcRenderer.off('boot:progress', l)
   },
+  onBootReady: (cb: () => void) => {
+    const l = () => cb()
+    ipcRenderer.on('boot:ready', l)
+    return () => ipcRenderer.off('boot:ready', l)
+  },
+  splashShrink: () => ipcRenderer.send('boot:shrink'),
+  splashEnter: () => ipcRenderer.send('boot:enter'),
   onUpdateStatus: (cb: (status: UpdateStatus) => void) => {
     const l = (_e: unknown, status: UpdateStatus) => cb(status)
     ipcRenderer.on('update:status', l)
