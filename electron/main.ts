@@ -58,6 +58,65 @@ const APP_ORIGIN_HOST = 'olpremiere'
 let mainWindow: BrowserWindow | null = null
 
 /**
+ * The splash: its own frameless, transparent, always-on-top window, floating over
+ * his desktop the way the Vegas one does. His words, looking at the old in-app
+ * version: "no background, no X, it would just show the desktop."
+ *
+ * It is a separate WINDOW rather than a screen inside the app because the editor
+ * window cannot be shown until it has something to show, and a maximized black
+ * rectangle with a small card in the middle is exactly what he did not want.
+ */
+let splashWindow: BrowserWindow | null = null
+/** True once the editor said it finished booting, so a late splash closes at once. */
+let bootFinished = false
+
+function createSplash(): void {
+  const win = new BrowserWindow({
+    width: 700,
+    height: 344, // the 660x300 card plus room for its shadow
+    frame: false,
+    transparent: true,
+    resizable: false,
+    maximizable: false,
+    minimizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    center: true,
+    show: false,
+    backgroundColor: '#00000000',
+    webPreferences: {
+      preload: path.join(__dirname, '../preload/index.cjs'),
+      contextIsolation: true,
+      sandbox: true,
+      nodeIntegration: false,
+    },
+  })
+  splashWindow = win
+  win.once('ready-to-show', () => {
+    // The editor may have finished before this window was ready on a fast disk.
+    if (bootFinished) win.close()
+    else win.show()
+  })
+  win.on('closed', () => {
+    if (splashWindow === win) splashWindow = null
+  })
+  void win.loadURL(isDev ? `${DEV_URL}/splash.html` : `app://${APP_ORIGIN_HOST}/splash.html`)
+}
+
+/** Swap the splash for the editor. Safe to call twice. */
+function finishBoot(): void {
+  bootFinished = true
+  splashWindow?.close()
+  splashWindow = null
+  const win = mainWindow
+  if (win && !win.isDestroyed() && !win.isVisible()) {
+    win.maximize()
+    win.show()
+  }
+}
+
+/**
  * Where the auto-updater stands. Held here (not just broadcast) because the
  * renderer needs to be able to ASK: it starts up alongside the check, and the
  * loading card must be able to say truthfully whether the check finished.
@@ -124,14 +183,19 @@ function createWindow(): void {
     },
   })
   mainWindow = win
-  // His ask: it should fill the screen by itself. MAXIMIZED, not true fullscreen,
-  // because an editor still needs its title bar and the taskbar (and fullscreen
-  // would hide the window controls behind a gesture nobody looks for). Maximize
-  // BEFORE the first show so it opens filled instead of resizing in front of him.
+  // The editor window stays HIDDEN until the boot finishes, so while the app loads
+  // he sees the small card on his desktop and nothing else. It opens MAXIMIZED,
+  // not fullscreen, because an editor still needs its title bar and the taskbar.
   win.once('ready-to-show', () => {
-    win.maximize()
-    win.show()
+    if (bootFinished || !splashWindow) {
+      win.maximize()
+      win.show()
+    }
   })
+  // Backstop: if the renderer never reports a finished boot (an old bundle, a
+  // startup crash), show the editor anyway rather than stranding him on a splash.
+  const bootBackstop = setTimeout(finishBoot, 15_000)
+  win.on('closed', () => clearTimeout(bootBackstop))
   win.on('closed', () => {
     if (mainWindow === win) mainWindow = null
   })
@@ -235,10 +299,19 @@ app.whenReady().then(() => {
   // cancel() whose unlink would race the process exit.
   app.on('before-quit', () => native.cancelSync())
 
+  // Splash FIRST, so it is on screen while the editor window loads behind it.
+  createSplash()
   createWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+
+  // The editor renderer is the only thing that knows what the real startup work is
+  // doing, so it drives the splash and decides when it is done.
+  ipcMain.on('boot:progress', (_e, progress) => {
+    if (splashWindow && !splashWindow.isDestroyed()) splashWindow.webContents.send('boot:progress', progress)
+  })
+  ipcMain.on('boot:finished', () => finishBoot())
 
   // Auto-update: on a packaged build, check GitHub Releases (electron-builder.yml
   // `publish`) and download a newer version in the background. A failed check

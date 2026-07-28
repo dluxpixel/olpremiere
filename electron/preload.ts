@@ -9,6 +9,7 @@ import type {
   NativeExportConfig,
   NativeFinishResult,
   NativeProgress,
+  BootProgress,
   NativeStartResult,
   OlApi,
   UpdateStatus,
@@ -51,6 +52,13 @@ const api: OlApi = {
   restartToUpdate: () => ipcRenderer.send('update:install'),
   getUpdateStatus: (): Promise<UpdateStatus> => ipcRenderer.invoke('update:status:get'),
   checkForUpdates: (): Promise<void> => ipcRenderer.invoke('update:check'),
+  reportBootProgress: (progress: BootProgress) => ipcRenderer.send('boot:progress', progress),
+  bootFinished: () => ipcRenderer.send('boot:finished'),
+  onBootProgress: (cb: (progress: BootProgress) => void) => {
+    const l = (_e: unknown, progress: BootProgress) => cb(progress)
+    ipcRenderer.on('boot:progress', l)
+    return () => ipcRenderer.off('boot:progress', l)
+  },
   onUpdateStatus: (cb: (status: UpdateStatus) => void) => {
     const l = (_e: unknown, status: UpdateStatus) => cb(status)
     ipcRenderer.on('update:status', l)

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { APP_VERSION } from '../appVersion'
 import { useUpdateFeed, updateLine } from '../state/updateStatus'
 import { LoadingCard } from './LoadingCard'
 import { MelonMark } from './MelonMark'
@@ -10,6 +11,10 @@ import {
   allSettled,
   bootOverride,
   gateReady,
+  labelOf,
+  progressOf,
+  statusLine,
+  statusOf,
   stepsFor,
   useBootLedger,
   type BootOverride,
@@ -201,13 +206,53 @@ function UpdateStatus() {
  * e2e spec and verify probe drives the app directly, and a click gate would break
  * all of them.
  */
+/**
+ * The desktop boot: no card inside the app at all.
+ *
+ * On the desktop the card lives in its own frameless window over his desktop (see
+ * electron/main.ts), which is what he asked for: "no background, no X, it would
+ * just show the desktop". So the editor mounts straight away behind a window that
+ * is still hidden, mirrors the real ledger out to the splash, and tells main to
+ * swap the two when the same gate the web card uses is satisfied.
+ */
+function DesktopBoot({ children }: { children: ReactNode }) {
+  const phase = useBootPhase(true)
+  const statuses = useBootLedger((s) => s.statuses)
+
+  useEffect(() => {
+    const api = window.api
+    if (!api?.reportBootProgress) return
+    const specs = stepsFor(true)
+    api.reportBootProgress({
+      rows: specs.map((spec) => {
+        const status = statusOf(statuses, spec.id)
+        return { id: spec.id, label: labelOf(spec, status), state: status.state }
+      }),
+      line: statusLine(specs, statuses),
+      percent: Math.round(progressOf(specs, statuses) * 100),
+      version: APP_VERSION,
+    })
+  }, [statuses])
+
+  useEffect(() => {
+    if (phase === 'ready') window.api?.bootFinished?.()
+  }, [phase])
+
+  return <>{children}</>
+}
+
 export function Boot({ children }: { children: ReactNode }) {
   // A `?boot=` override turns the automation skip off. That is how the boot
   // screens get rendered and driven in tests instead of being taken on trust.
   const override = useMemo(currentOverride, [])
   const skip = !override && typeof navigator !== 'undefined' && navigator.webdriver === true
+  // The desktop shows the card in its OWN window, so the app must not draw a
+  // second one inside itself. An override still forces the in-app screens, which
+  // is how they get photographed in the packaged shell.
+  const desktop = !override && typeof window !== 'undefined' && window.api?.isElectron === true
   const [launched, setLaunched] = useState(skip)
   const [finished, setFinished] = useState(skip)
+  if (desktop) return <DesktopBoot>{children}</DesktopBoot>
   return (
     <>
       {launched && children}

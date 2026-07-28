@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>OL Premiere</title>
+    <!--
+      The desktop splash, in its OWN frameless window, floating over his desktop
+      the way the Vegas one does: no title bar, no close button, no big empty app
+      window behind it. Deliberately a separate tiny page rather than the React
+      app, because the whole point is that it appears INSTANTLY, before the editor
+      bundle has been read off disk.
+    -->
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: transparent;
+        overflow: hidden;
+        /* The window is dragged by the card, and nothing in it is selectable. */
+        -webkit-user-select: none;
+        user-select: none;
+        cursor: default;
+      }
+      #root {
+        height: 100%;
+        display: grid;
+        place-items: center;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/splash/splash.ts"></script>
+  </body>
+</html>

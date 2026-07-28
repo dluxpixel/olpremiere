@@ -49,7 +49,10 @@ export default defineConfig({
     worker: { format: 'es' }, // module workers, matching vite.config.ts
     build: {
       outDir: 'out/renderer',
-      rollupOptions: { input: 'index.html' },
+      // Two pages: the editor, and the frameless splash WINDOW that shows while
+      // the editor loads. The splash is its own entry so it carries none of the
+      // app bundle, which is the only way it can be on screen first.
+      rollupOptions: { input: { index: 'index.html', splash: 'splash.html' } },
     },
   },
 })

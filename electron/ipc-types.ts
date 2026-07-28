@@ -58,6 +58,14 @@ export type UpdateStatus =
   /** Unpackaged/dev build: no updater runs, so there is nothing to report. */
   | { kind: 'unsupported' }
 
+/** One frame of the loading card's state, sent to the splash window. */
+export interface BootProgress {
+  rows: { id: string; label: string; state: 'pending' | 'active' | 'done' | 'failed' }[]
+  line: string
+  percent: number
+  version: string
+}
+
 export interface OlApi {
   /** Always true when running inside the desktop shell (the renderer's isElectron gate). */
   readonly isElectron: true
@@ -98,6 +106,13 @@ export interface OlApi {
    * reload button can ask and then reload without cutting its own check short.
    */
   checkForUpdates(): Promise<void>
+
+  /** Editor renderer to main: what the loading card would be showing right now. */
+  reportBootProgress(progress: BootProgress): void
+  /** Editor renderer to main: startup is finished, swap the splash for the window. */
+  bootFinished(): void
+  /** Splash window only: every progress update, forwarded from the editor. */
+  onBootProgress(cb: (progress: BootProgress) => void): () => void
   /** Every updater transition: checking → available → downloading → downloaded / none / error. Returns an unsubscribe fn. */
   onUpdateStatus(cb: (status: UpdateStatus) => void): () => void
 
