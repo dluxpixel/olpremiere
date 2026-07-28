@@ -57,6 +57,19 @@ export interface EffectDef {
    */
   fixed?: boolean
   /**
+   * Kept out of the Effects browser, but still rendered, still migrated, still
+   * editable on any clip that already carries it.
+   *
+   * His call, 2026-07-28: "most of the effects I won't ever use. They are just
+   * stupid. There is a lot of bloat." A fifteen-item list where seven of them
+   * are pro colour tools he will never open is a list he has to read past every
+   * time. HIDDEN rather than deleted, deliberately: `filtersToEffectStack`
+   * migrates every old project through exposure, lift/gamma/gain, white balance
+   * and blur, so deleting those types would change how his saved projects look,
+   * or fail to open them at all. Hiding costs nothing and risks nothing.
+   */
+  hidden?: boolean
+  /**
    * Params to seed when the user APPLIES this effect, overriding the neutral
    * `default`s. For effects that should do something visible the moment they are
    * dropped (Auto Color), so they don't look broken sitting at identity. `reset`
@@ -130,6 +143,7 @@ export const EFFECTS: EffectDef[] = [
   },
   {
     type: 'exposure',
+    hidden: true,
     label: 'Exposure',
     description: 'Scale linear light by stops before any other grade.',
     category: 'color',
@@ -139,6 +153,7 @@ export const EFFECTS: EffectDef[] = [
   },
   {
     type: 'colorWheels',
+    hidden: true,
     label: 'Lift / Gamma / Gain',
     description: 'ASC-CDL three-way grade: out = (in * slope + offset) ^ power.',
     category: 'color',
@@ -157,6 +172,7 @@ export const EFFECTS: EffectDef[] = [
   },
   {
     type: 'whiteBalance',
+    hidden: true,
     label: 'White Balance',
     description: 'Temperature pushes red and pulls blue; tint pushes green.',
     category: 'color',
@@ -200,6 +216,7 @@ export const EFFECTS: EffectDef[] = [
   },
   {
     type: 'vibrance',
+    hidden: true,
     label: 'Vibrance',
     description: 'Smart saturation: pushes muted colours harder than already-vivid ones (Premiere-style).',
     category: 'color',
@@ -241,6 +258,7 @@ export const EFFECTS: EffectDef[] = [
   },
   {
     type: 'grain',
+    hidden: true,
     label: 'Film Grain',
     description: 'Animated luma noise. Size sets the grain cell in pixels.',
     category: 'stylize',
@@ -258,6 +276,7 @@ export const EFFECTS: EffectDef[] = [
   },
   {
     type: 'sharpen',
+    hidden: true,
     label: 'Sharpen',
     description: 'Unsharp-mask detail boost. Radius sets the detail scale.',
     category: 'stylize',
@@ -275,6 +294,7 @@ export const EFFECTS: EffectDef[] = [
   },
   {
     type: 'directionalBlur',
+    hidden: true,
     label: 'Directional Blur',
     description: 'Motion smear along an angle, the whip-transition workhorse.',
     category: 'blur',
@@ -350,6 +370,7 @@ export const EFFECTS: EffectDef[] = [
   },
   {
     type: 'lumaKey',
+    hidden: true,
     label: 'Luma Key',
     description: 'Keys out darks below the threshold (or brights, with Key Brights). Threshold 0 is off.',
     category: 'key',
@@ -408,6 +429,16 @@ export const CANONICAL_ORDER = [
   'directionalBlur',
   'glow',
 ] as const
+
+/**
+ * What the Effects browser offers. Everything else still renders, migrates and
+ * edits exactly as before; it is just not on the shelf.
+ *
+ * `EFFECTS` stays the full registry, because the renderer, the migration and the
+ * Inspector all have to know about every type that could be on a clip. Only the
+ * three PICKERS use this list.
+ */
+export const BROWSABLE_EFFECTS: EffectDef[] = EFFECTS.filter((e) => !e.hidden)
 
 export const EFFECT_BY_TYPE: Readonly<Record<string, EffectDef>> = Object.freeze(
   Object.fromEntries(EFFECTS.map((e) => [e.type, e])),

@@ -1600,7 +1600,7 @@ export function Timeline({ height }: { height: number }) {
     // Motion submenu so the menu doesn't wall up. Speed-ramp flattens INTO it
     // (one-level submenu limit) as three leaves.
     const motionItems: MenuItem[] =
-      track?.kind === 'video'
+      track?.kind === 'video' && !clip.title
         ? [
             {
               label: 'Punch in at playhead',
@@ -1629,7 +1629,7 @@ export function Timeline({ height }: { height: number }) {
     // edges are offered on every video clip, because a lone edge now runs the
     // real transition rather than degrading to a fade to black.
     const transitionItems: MenuItem[] =
-      track?.kind === 'video'
+      track?.kind === 'video' && !clip.title
         ? (['in', 'out'] as const).map((edge) => {
             const current = edge === 'in' ? clip.transitionIn : clip.transitionOut
             const neighbour = edge === 'in' ? canXfadePrev : canXfadeNext
@@ -1676,26 +1676,32 @@ export function Timeline({ height }: { height: number }) {
       ...appearanceMenuItems(clip, titleMenuIds),
     ]
 
-    // Multi-selected text also gets whole STYLE presets (font+case+colour+outline
-    // +animation together) applied to all, plus Save. (Entrance/Exit/Speed above
-    // already apply to every selected title.)
+    // Whole STYLE presets: font, size, weight, colour, outline, POSITION, the
+    // entrance/exit animation and the effect stack, saved together and reusable.
+    //
+    // This used to appear ONLY when several titles were selected, so right-clicking
+    // the one caption he had just styled offered no way to save it. His ask,
+    // 2026-07-28: "make it so when I right-click the text, I can save a preset that
+    // I can then use on the auto captions." One title is the normal case, so it is
+    // the case that has to work.
+    const presetTargets = titleIdsSel.length > 1 ? titleIdsSel : clip.title ? [clip.id] : []
     const bulkTitleItems: MenuItem[] =
-      titleIdsSel.length > 1
+      presetTargets.length > 0
         ? [
             {
-              label: `Style preset (all ${titleIdsSel.length})`,
+              label: presetTargets.length > 1 ? `Style preset (all ${presetTargets.length})` : 'Style preset',
               separator: true,
               submenu: [
                 ...allTextPresets().map((p) => ({
                   label: p.name,
-                  onClick: () => applyTextPresetToClips(titleIdsSel, p),
+                  onClick: () => applyTextPresetToClips(presetTargets, p),
                 })),
                 {
                   label: 'Save as the caption style',
                   separator: true,
                   onClick: () => {
                     // Capture the clip you right-clicked (fallback: first selected title).
-                    const src = clip.title ? clip.id : titleIdsSel[0]
+                    const src = clip.title ? clip.id : presetTargets[0]
                     const p = saveAsCaptionStyle(src, `Style ${useTextPresets.getState().saved.length + 1}`)
                     if (p) show(`Saved. Every new caption uses "${p.name}"`, 'success')
                   },

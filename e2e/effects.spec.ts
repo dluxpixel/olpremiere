@@ -129,7 +129,7 @@ test('double-clicking an effect applies it to the selected clip', async ({ page 
 
   // Screenshot the STACK itself, not panel-right: the stack sits below the fold,
   // so a panel shot proves nothing about how the cards actually look.
-  await page.locator('[data-testid="effect-item"][data-payload="colorWheels"]').dblclick()
+  await page.locator('[data-testid="effect-item"][data-payload="vignette"]').dblclick()
   await expect(page.getByTestId('effect-card')).toHaveCount(2)
   await page.getByTestId('effect-card').last().getByTestId('effect-toggle').click() // show the disabled state too
   await page.mouse.move(0, 0) // park the cursor: a hover tooltip would cover the row below it

@@ -252,8 +252,13 @@ test('the new transitions are listed in the Effects browser', async ({ page }) =
   for (const kind of ['zoom', 'spin', 'glitch', 'lumaWipe']) {
     await expect(page.locator(`[data-testid="transition-item"][data-payload="${kind}"]`)).toBeVisible()
   }
-  for (const type of ['vignette', 'grain', 'sharpen', 'glow', 'chromaKey', 'lumaKey']) {
+  for (const type of ['vignette', 'glow', 'chromaKey']) {
     await expect(page.locator(`[data-testid="effect-item"][data-payload="${type}"]`)).toBeVisible()
+  }
+  // And the ones he said he would never use are NOT on the shelf any more
+  // (2026-07-28). They still render and still migrate; they are just not offered.
+  for (const type of ['grain', 'sharpen', 'lumaKey', 'colorWheels', 'whiteBalance', 'exposure', 'vibrance']) {
+    await expect(page.locator(`[data-testid="effect-item"][data-payload="${type}"]`)).toHaveCount(0)
   }
 })
 

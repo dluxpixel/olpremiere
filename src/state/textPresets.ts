@@ -198,6 +198,10 @@ export function captureTextPreset(clipId: string, name: string): TextStylePreset
   const d = clip.title
   const style: Partial<TitleDef> = {
     fontFamily: d.fontFamily,
+    // SIZE travels with the look. His words for what a preset should hold:
+    // "location, font, boldness, and stuff like that" - and a caption at the
+    // wrong size is the most obvious way for a saved look to come back wrong.
+    fontSizePx: d.fontSizePx,
     bold: d.bold,
     italic: d.italic,
     textCase: d.textCase,

@@ -23,7 +23,7 @@ import {
   useTextPresets,
 } from '../state/textPresets'
 import { setTitlesFontSize, updateTitles } from '../state/titleActions'
-import { EFFECTS } from '../engine/effects/registry'
+import { BROWSABLE_EFFECTS } from '../engine/effects/registry'
 import { TITLE_FONT_OPTIONS } from '../engine/render/titleFonts'
 import { clipDurationS } from '../engine/timeline'
 import type { Clip, Track } from '../engine/types'
@@ -359,7 +359,7 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
             className="h-6 w-[140px] cursor-default rounded-field bg-bg-input px-1.5 text-ui-sm text-text-primary"
           >
             <option value="">Choose…</option>
-            {EFFECTS.map((ef) => (
+            {BROWSABLE_EFFECTS.map((ef) => (
               <option key={ef.type} value={ef.type}>
                 {ef.label}
               </option>

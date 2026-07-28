@@ -121,10 +121,12 @@ export function appearanceMenuItems(clip: Clip, ids: string[] = [clip.id]): Menu
       : []),
     { label: 'Clear animation', separator: !isTitle, disabled: !clip.appearance, onClick: () => setClipsAppearance(ids, { in: undefined, out: undefined }) },
   ]
+  // "Fade in + out" used to sit on top of these as a fourth row for the same
+  // idea, and its whole job is Entrance = Fade in plus Exit = Fade out, which are
+  // the first item in each list right below it. Cut, 2026-07-28: "there is an
+  // entrance and a transition in the text tab. This is a lot of bloat."
   return [
-    // One-click fade: nothing -> in -> hold -> out -> nothing (entrance + exit at once).
-    { label: 'Fade in + out', separator: true, onClick: () => setClipsAppearance(ids, { in: 'fadeIn', out: 'fadeOut' }) },
-    { label: `Entrance${suffix}`, submenu: entranceSub },
+    { label: `Entrance${suffix}`, separator: true, submenu: entranceSub },
     { label: `Exit${suffix}`, submenu: exitSub },
     { label: 'Animation', submenu: animationSub },
   ]

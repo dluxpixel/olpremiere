@@ -20,7 +20,7 @@ import {
 import { useEffect, useRef, useState, type HTMLAttributes, type ReactNode } from 'react'
 import { channelKeyframes, isChannelAnimated, resolveChannel } from '../engine/effects/channels'
 import { isParamAnimated, paramKeyframes, resolveParam } from '../engine/effects/ops'
-import { EFFECTS, getEffect, paramSens, type EffectParamDef } from '../engine/effects/registry'
+import { BROWSABLE_EFFECTS, getEffect, paramSens, type EffectParamDef } from '../engine/effects/registry'
 import { clipEndS } from '../engine/timeline'
 import {
   TRANSITION_KINDS,
@@ -635,7 +635,7 @@ function EffectStack({ clip, playheadS }: { clip: Clip; playheadS: number }) {
             className="h-6 cursor-default rounded-field bg-bg-input px-1.5 text-ui-sm text-text-secondary"
           >
             <option value="">+ Add effect…</option>
-            {EFFECTS.map((ef) => (
+            {BROWSABLE_EFFECTS.map((ef) => (
               <option key={ef.type} value={ef.type}>
                 {ef.label}
               </option>

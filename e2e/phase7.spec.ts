@@ -158,9 +158,27 @@ test('applying the colour effects exposes lift/gamma/gain/temperature/tint', asy
   await expect(page.getByTestId('effect-stack-empty')).toBeVisible()
   await expect(page.getByTestId('channel-lift')).toHaveCount(0)
 
-  await page.getByRole('tab', { name: 'Effects' }).click()
-  await page.locator('[data-testid="effect-item"][data-payload="colorWheels"]').dblclick()
-  await page.locator('[data-testid="effect-item"][data-payload="whiteBalance"]').dblclick()
+  // Applied directly, not dragged: these two came off the Effects shelf on
+  // 2026-07-28 (his call, "most of the effects I won't ever use"). They still
+  // render, and any project that already carries one still has to be editable,
+  // which is exactly what this test now guards.
+  await page.evaluate(async () => {
+    const editsMod = '/src/state/clipEdits.ts'
+    const storeMod = '/src/state/store.ts'
+    const typesMod = '/src/engine/types.ts'
+    const { applyEffect } = (await import(/* @vite-ignore */ editsMod)) as {
+      applyEffect: (clipId: string, type: string) => void
+    }
+    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+      useStore: { getState: () => { project: unknown } }
+    }
+    const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+      activeSequence: (p: unknown) => { tracks: { clips: { id: string }[] }[] }
+    }
+    const id = activeSequence(useStore.getState().project).tracks.flatMap((t) => t.clips)[0].id
+    applyEffect(id, 'colorWheels')
+    applyEffect(id, 'whiteBalance')
+  })
 
   await expect(page.getByTestId('channel-lift')).toBeVisible()
   await expect(page.getByTestId('channel-gamma')).toBeVisible()
