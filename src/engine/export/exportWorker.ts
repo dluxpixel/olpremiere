@@ -597,12 +597,25 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
               { codec: 'aac', str: 'mp4a.40.2' },
               { codec: 'opus', str: 'opus' },
             ]
-      for (const cand of candidates) {
-        const support = await AudioEncoder.isConfigSupported({ codec: cand.str, ...base })
-        if (support.supported) {
-          audioCodec = cand.codec
-          audioConfig = { codec: cand.str, ...base }
-          break
+      // A codec is worth more than a bitrate, so drop the RATE before dropping the
+      // CODEC. Chrome's AAC encoder refuses anything at or above 256 kbps
+      // (measured: 128k and 192k supported, 256k/320k/384k not), and the plan asks
+      // for 320k on every HD export. The old loop read that as "no AAC" and wrote
+      // OPUS INSIDE AN MP4, which most players and phones will not play, so every
+      // HD export he made came out silent while an SD one was fine. Ladder down
+      // the bitrate first, and only then consider another codec.
+      const ladder = [base.bitrate, 256_000, 192_000, 128_000].filter(
+        (b, i, all) => b > 0 && all.indexOf(b) === i,
+      )
+      outer: for (const cand of candidates) {
+        for (const bitrate of ladder) {
+          const config = { codec: cand.str, ...base, bitrate }
+          const support = await AudioEncoder.isConfigSupported(config)
+          if (support.supported) {
+            audioCodec = cand.codec
+            audioConfig = config
+            break outer
+          }
         }
       }
       // Neither AAC nor Opus: ship a video-only file instead of failing.

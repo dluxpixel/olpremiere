@@ -105,6 +105,15 @@ test('a 1080p timeline exports at 1080p - no upscale', async ({ page }) => {
   expect(meta.width).toBe(1920)
   expect(meta.height).toBe(1080)
   expect(meta.duration).toBeGreaterThan(1)
+
+  // The audio must be AAC, not Opus. Chrome's AAC encoder refuses 256 kbps and
+  // above, and the plan asks for 320k at HD, so the codec probe used to fall
+  // through to OPUS INSIDE AN MP4: a file most players and phones play silently.
+  // Every HD export he made was mute while the SD golden one was fine. Checked on
+  // the container bytes, so it holds without a decoder that tolerates either.
+  const container = fs.readFileSync(mp4Path).toString('latin1')
+  expect(container).toContain('mp4a')
+  expect(container).not.toContain('dOps') // the Opus-in-MP4 sample entry
 })
 
 test('a 9:16 Shorts sequence exports at its own portrait size (the crash case)', async ({ page }) => {
