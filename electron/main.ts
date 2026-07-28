@@ -466,9 +466,15 @@ app.whenReady().then(() => {
         mainWindow?.webContents.send('update:ready', info.version)
       }
     })
-    // One-click apply from the toast (and the renderer's save-then-restart path):
-    // quit and relaunch into the downloaded version.
-    ipcMain.on('update:install', () => autoUpdater.quitAndInstall())
+    // Apply from the toast (and the renderer's save-then-restart path): quit and
+    // relaunch into the downloaded version.
+    //
+    // Both arguments matter and neither is the default. Silent runs the installer
+    // with /S, so nothing is put in front of him; force-run-after starts the new
+    // version once it lands, so the app he was using comes back on its own. With
+    // the defaults, updating meant an installer window and a Finish button, which
+    // is the thing he asked to be rid of.
+    ipcMain.on('update:install', () => autoUpdater.quitAndInstall(true, true))
     setUpdateStatus({ kind: 'checking' })
     void autoUpdater.checkForUpdatesAndNotify()
     const FIFTEEN_MIN = 15 * 60 * 1000
