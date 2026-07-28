@@ -6,7 +6,6 @@ import { MelonMark } from './MelonMark'
 import {
   CARD_EXIT_MS,
   HARD_CAP_MS,
-  MIN_CARD_MS,
   OPTIONAL_GRACE_MS,
   allSettled,
   bootOverride,
@@ -19,6 +18,7 @@ import {
   useBootLedger,
   type BootOverride,
 } from './bootProgress'
+import { BOOT_DURATION_MS, allRevealed, maskStatuses, useRevealed } from './bootReveal'
 import { melonPixels } from './melon'
 import styles from './BootSplash.module.css'
 
@@ -63,7 +63,9 @@ export function useBootPhase(isElectron: boolean): BootPhase {
       const { statuses } = useBootLedger.getState()
       const now = performance.now()
       if (gateReady(specs, statuses) && gateAt === null) gateAt = now
-      const waitedEnough = now - startedAt >= MIN_CARD_MS
+      // The randomised run (4 to 8 seconds) plus every tick having landed: the
+      // card must never leave mid-reveal, or the last rows would flash past.
+      const waitedEnough = now - startedAt >= BOOT_DURATION_MS && allRevealed(specs.length)
       const optionalDone = allSettled(specs, statuses)
       const graceUsedUp = gateAt !== null && now - gateAt >= OPTIONAL_GRACE_MS
       const capped = now - startedAt >= HARD_CAP_MS
@@ -217,12 +219,16 @@ function UpdateStatus() {
  */
 function DesktopBoot({ children }: { children: ReactNode }) {
   const phase = useBootPhase(true)
-  const statuses = useBootLedger((s) => s.statuses)
+  const raw = useBootLedger((s) => s.statuses)
+  const specs = useMemo(() => stepsFor(true), [])
+  const revealed = useRevealed(specs.length)
+  // Same masking as the in-app card, so the ticks land at the same scattered
+  // moments in the splash window as they would in the page.
+  const statuses = useMemo(() => maskStatuses(specs, raw, revealed), [specs, raw, revealed])
 
   useEffect(() => {
     const api = window.api
     if (!api?.reportBootProgress) return
-    const specs = stepsFor(true)
     api.reportBootProgress({
       rows: specs.map((spec) => {
         const status = statusOf(statuses, spec.id)
@@ -232,7 +238,7 @@ function DesktopBoot({ children }: { children: ReactNode }) {
       percent: Math.round(progressOf(specs, statuses) * 100),
       version: APP_VERSION,
     })
-  }, [statuses])
+  }, [specs, statuses])
 
   useEffect(() => {
     if (phase === 'ready') window.api?.bootFinished?.()

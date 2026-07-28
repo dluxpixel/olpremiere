@@ -61,9 +61,9 @@ export type BootStatuses = Partial<Record<BootStepId, BootStepStatus>>
  * work lands, and once everything has, the line reads "Ready" rather than
  * dribbling out invented steps to fill the time.
  */
-export const MIN_CARD_MS = 5000
-/** A row that never answers can never trap him on the card. Floor plus headroom. */
-export const HARD_CAP_MS = 8000
+export const MIN_CARD_MS = 4000
+/** A row that never answers can never trap him on the card. Above the 8s ceiling. */
+export const HARD_CAP_MS = 12_000
 /**
  * Extra grace for the optional (network) rows once the local work is done. Small,
  * because the floor above already gives the update check five seconds to answer.

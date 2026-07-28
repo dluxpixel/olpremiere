@@ -12,6 +12,7 @@ import { APP_VERSION } from '../appVersion'
 import { melonPixels } from './melon'
 import { MelonMark } from './MelonMark'
 import { labelOf, progressOf, statusLine, statusOf, stepsFor, useBootLedger } from './bootProgress'
+import { maskStatuses, useRevealed } from './bootReveal'
 import styles from './LoadingCard.module.css'
 
 const MARK: Record<string, string> = { done: '✓', failed: '!', active: '›', pending: '·' }
@@ -20,7 +21,12 @@ export function LoadingCard({ leaving = false }: { leaving?: boolean }) {
   const isElectron = typeof window !== 'undefined' && window.api?.isElectron === true
   const specs = useMemo(() => stepsFor(isElectron), [isElectron])
   const pixels = useMemo(() => melonPixels(), [])
-  const statuses = useBootLedger((s) => s.statuses)
+  const raw = useBootLedger((s) => s.statuses)
+  // The ticks land on their own scattered schedule (his ask: 4 to 8 seconds, one
+  // after a second, one after 1.5, one after 4). A row still only shows what the
+  // real work did, it just waits for its moment to show it.
+  const revealed = useRevealed(specs.length)
+  const statuses = useMemo(() => maskStatuses(specs, raw, revealed), [specs, raw, revealed])
 
   const pct = Math.round(progressOf(specs, statuses) * 100)
   const line = statusLine(specs, statuses)

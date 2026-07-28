@@ -177,7 +177,10 @@ describe('the timings he actually feels', () => {
     // The network grace must still fit inside the cap, or the cap would be what
     // ends every offline boot instead of the grace.
     expect(MIN_CARD_MS + OPTIONAL_GRACE_MS).toBeLessThan(HARD_CAP_MS)
-    expect(HARD_CAP_MS).toBeLessThanOrEqual(10_000)
+    // The cap has to clear the longest run he asked for (8s, randomised) with
+    // room to spare, or the rescue would fire on a healthy boot.
+    expect(HARD_CAP_MS).toBeGreaterThan(8000)
+    expect(HARD_CAP_MS).toBeLessThanOrEqual(14_000)
   })
 
   // The card's exit and the melon's entrance are timed in JS but animated in CSS.
