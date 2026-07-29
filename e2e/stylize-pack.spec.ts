@@ -249,7 +249,7 @@ test('an adjustment layer grades the footage below it (and only inside its mask)
 test('the new transitions are listed in the Effects browser', async ({ page }) => {
   await addClip(page)
   await page.getByRole('tab', { name: 'Effects' }).click()
-  for (const kind of ['zoom', 'spin', 'glitch', 'lumaWipe']) {
+  for (const kind of ['zoom', 'glitch', 'whiteFlash']) {
     await expect(page.locator(`[data-testid="transition-item"][data-payload="${kind}"]`)).toBeVisible()
   }
   for (const type of ['vignette', 'glow', 'chromaKey']) {
@@ -259,6 +259,12 @@ test('the new transitions are listed in the Effects browser', async ({ page }) =
   // (2026-07-28). They still render and still migrate; they are just not offered.
   for (const type of ['grain', 'sharpen', 'lumaKey', 'colorWheels', 'whiteBalance', 'exposure', 'vibrance']) {
     await expect(page.locator(`[data-testid="effect-item"][data-payload="${type}"]`)).toHaveCount(0)
+  }
+  // The casual TRANSITIONS went the same way on 2026-07-29, his call: "remove
+  // any effects that will not be used in the Jettism style, like spin-outs."
+  // White Flash is deliberately absent from this list, he said he will use it.
+  for (const kind of ['spin', 'lumaWipe', 'wipeLeft', 'wipeRight']) {
+    await expect(page.locator(`[data-testid="transition-item"][data-payload="${kind}"]`)).toHaveCount(0)
   }
 })
 
@@ -305,16 +311,22 @@ test('a lone Dip to White dips through WHITE, not through black', async ({ page 
   await expect.poll(async () => (await px(page, 0.5, 0.5))[0], { timeout: 10_000 }).toBeGreaterThan(120)
 })
 
-test('a lone Wipe Left really wipes: one side of the frame is footage, the other is not', async ({ page }) => {
+// Wipe Left was CUT on 2026-07-29 along with Wipe Right, Spin and Luma Wipe.
+// This replaces the test that proved it wiped, and guards the thing that made
+// removing it safe: an OLD PROJECT still carrying one has to keep opening and
+// keep rendering. It falls back to a dissolve, which shows the whole frame at
+// once instead of a hard edge down the middle.
+test('a project still carrying a CUT transition renders as a dissolve, not broken', async ({ page }) => {
   const clipId = await addClip(page)
   await waitForFirstFrame(page)
 
   await setLoneTransition(page, clipId, 'wipeLeft', 1)
-  await setPlayhead(page, 0.5) // half wiped
-  // The revealed half shows the red fixture; the unrevealed half shows nothing.
-  await expect
-    .poll(async () => (await px(page, 0.15, 0.5))[0] - (await px(page, 0.85, 0.5))[0], { timeout: 10_000 })
-    .toBeGreaterThan(60)
+  await setPlayhead(page, 0.5)
+  // Something is genuinely on screen (it did not fail to a black frame)...
+  await expect.poll(async () => (await px(page, 0.5, 0.5))[0], { timeout: 10_000 }).toBeGreaterThan(40)
+  // ...and there is no wipe edge: both sides of the frame match.
+  const spread = Math.abs((await px(page, 0.15, 0.5))[0] - (await px(page, 0.85, 0.5))[0])
+  expect(spread).toBeLessThan(20)
 })
 
 test('a lone Glitch is not a fade to black', async ({ page }) => {

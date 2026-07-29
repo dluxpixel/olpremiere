@@ -65,8 +65,8 @@ describe('applyAppearanceToClips', () => {
   it('sets an entrance animation on all selected titles without touching style', () => {
     const a = seedTitle(0)
     const b = seedTitle(6)
-    applyAppearanceToClips([a.id, b.id], { in: 'bounce', durS: 0.2 })
-    expect(clips().every((c) => c.appearance?.in === 'bounce')).toBe(true)
+    applyAppearanceToClips([a.id, b.id], { in: 'pop', durS: 0.2 })
+    expect(clips().every((c) => c.appearance?.in === 'pop')).toBe(true)
     // Colour/case untouched.
     expect(clips()[0].title!.color).toBe(defaultTitleDef().color)
   })

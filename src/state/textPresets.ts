@@ -62,7 +62,9 @@ const BUILTINS: TextStylePreset[] = [
       color: '#FFD400',
       outline: { color: '#000000', widthPx: 14 },
     },
-    appearance: { in: 'bounce', out: 'popOut', durS: 0.16 },
+    // Was 'bounce', which was cut on 2026-07-29 as casual. Pop is the same
+    // gesture without the cartoon wobble.
+    appearance: { in: 'pop', out: 'popOut', durS: 0.16 },
   },
   {
     id: 'builtin-clean',

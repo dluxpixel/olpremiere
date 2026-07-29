@@ -89,18 +89,26 @@ export type TransitionKind =
   | 'lumaWipe'
   | 'whiteFlash'
 
+/**
+ * The transitions he is offered. CUT 2026-07-29 on his call: "remove any effects
+ * that will not be used in the Jettism style, like spin-outs, casual stuff no
+ * real editor will ever use." Gone: **Spin**, **Luma Wipe**, **Wipe Left** and
+ * **Wipe Right**, the four dated ones. **White Flash stays, he named it.**
+ *
+ * `TransitionKind` deliberately still DECLARES the cut kinds, and their shaders
+ * are untouched, because `coerceKind` in resolve.ts maps anything missing from
+ * this list onto a cross dissolve. So a project saved with a spin still opens
+ * and still renders, it just renders as a dissolve, and nothing he can reach
+ * offers him one again.
+ */
 export const TRANSITION_KINDS: TransitionKind[] = [
   'crossDissolve',
   'dipToBlack',
   'dipToWhite',
-  'wipeLeft',
-  'wipeRight',
   'slideLeft',
   'slideRight',
   'zoom',
-  'spin',
   'glitch',
-  'lumaWipe',
   'whiteFlash',
 ]
 

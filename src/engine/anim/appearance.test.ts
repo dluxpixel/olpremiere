@@ -34,8 +34,8 @@ describe('appearance presets', () => {
       'slideIn',
       'zoomIn',
       'riseUp',
-      'spinIn',
-      'bounce',
+      // Spin in and Bounce were CUT 2026-07-29 as casual. If either comes back,
+      // it comes back because he asked, not by accident.
     ])
     expect(EXIT_PRESETS.map((p) => p.id)).toEqual([
       'fadeOut',
@@ -43,7 +43,7 @@ describe('appearance presets', () => {
       'slideOut',
       'zoomOut',
       'dropDown',
-      'spinOut',
+      // Spin out was CUT 2026-07-29. It is the one he named.
     ])
   })
 
@@ -115,23 +115,29 @@ describe('appearance presets', () => {
   })
 
   it('only emits keyframes for the appearance-owned channels', () => {
-    const kfs = buildAppearanceKeyframes({ in: 'spinIn', out: 'dropDown' }, 5, W, H)
+    const kfs = buildAppearanceKeyframes({ in: 'riseUp', out: 'dropDown' }, 5, W, H)
     for (const ch of Object.keys(kfs)) {
       expect(APPEARANCE_CHANNELS).toContain(ch)
     }
   })
 
-  it('bounce overshoots bigger than base then settles', () => {
-    const kfs = buildAppearanceKeyframes({ in: 'bounce', durS: 0.5 }, 5, W, H)
+  it('pop overshoots past base then settles', () => {
+    const kfs = buildAppearanceKeyframes({ in: 'pop', durS: 0.5 }, 5, W, H)
     // Peaks above base scale mid-window, settles back to base.
     const peak = Math.max(...[0.2, 0.275, 0.35].map((t) => evalChannel(kfs.scale, t, 1)))
-    expect(peak).toBeGreaterThan(1.1)
+    expect(peak).toBeGreaterThan(1.05)
     expect(evalChannel(kfs.scale, 4, 1)).toBeCloseTo(1, 5)
+  })
+
+  it('a CUT verb is no longer offered, and reads as no appearance at all', () => {
+    for (const gone of ['spinIn', 'bounce']) expect(isEntranceId(gone)).toBe(false)
+    expect(isExitId('spinOut')).toBe(false)
+    expect(isEmptyAppearance({ in: 'spinIn' })).toBe(true)
   })
 
   it('id guards and emptiness', () => {
     expect(isEntranceId('pop')).toBe(true)
-    expect(isEntranceId('bounce')).toBe(true)
+    expect(isEntranceId('riseUp')).toBe(true)
     expect(isEntranceId('fadeOut')).toBe(false)
     expect(isExitId('fadeOut')).toBe(true)
     expect(isExitId('nope')).toBe(false)
@@ -186,11 +192,15 @@ describe('preset curves settle instead of slamming', () => {
     return max
   }
 
-  it('bounce arrives at its resting size at rest, not at full speed', () => {
-    const kfs = buildAppearanceKeyframes({ in: 'bounce', durS: d }, D, W, H).scale!
-    // The bug: the final segment was easeIn, so the fastest moment of the whole
-    // animation was the instant it stopped.
-    expect(speedAt(kfs, d - 1e-3)).toBeLessThan(0.25 * peakSpeed(kfs, 0, d))
+  it('an entrance arrives at its resting size at rest, not at full speed', () => {
+    // The bug this caught: a final easeIn segment made the fastest moment of the
+    // whole animation the instant it stopped. Checked on every surviving verb,
+    // since the one it was originally written against (bounce) has been cut.
+    for (const verb of ['pop', 'zoomIn', 'slideIn', 'riseUp']) {
+      const kfs = buildAppearanceKeyframes({ in: verb, durS: d }, D, W, H).scale
+      if (!kfs) continue
+      expect(speedAt(kfs, d - 1e-3)).toBeLessThan(0.25 * peakSpeed(kfs, 0, d))
+    }
   })
 
   it('pop leaves its overshoot from rest, so the scale does not kink there', () => {

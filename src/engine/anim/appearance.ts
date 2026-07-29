@@ -117,33 +117,11 @@ export const ENTRANCE_PRESETS: AppearancePreset[] = [
       opacity: [kf(0, 0, 'easeOut'), kf(d * 0.6, base.opacity)],
     }),
   },
-  {
-    id: 'spinIn',
-    label: 'Spin in',
-    build: ({ d, base }) => ({
-      rotation: [kf(0, base.rotation - 180, 'easeOut'), kf(d, base.rotation)],
-      scale: [kf(0, 0.2 * base.scale, 'easeOut'), kf(d, base.scale)],
-      opacity: [kf(0, 0, 'easeOut'), kf(d * 0.5, base.opacity)],
-    }),
-  },
-  {
-    id: 'bounce',
-    label: 'Bounce (pop bigger)',
-    build: ({ d, base }) => ({
-      // Pops in, overshoots BIGGER than normal, dips slightly, settles. A bouncy
-      // emphasis on the entrance. The peak and the dip are turning points, so
-      // every segment between them starts and ends at rest; the last one used to
-      // be easeIn, which meant the bounce arrived at its resting size travelling
-      // at MAXIMUM speed and simply stopped dead.
-      scale: [
-        kf(0, 0.5 * base.scale, 'easeOut'),
-        kf(d * 0.55, 1.25 * base.scale, 'easeInOut'),
-        kf(d * 0.8, 0.95 * base.scale, 'easeInOut'),
-        kf(d, base.scale, 'easeOut'),
-      ],
-      opacity: [kf(0, 0, 'easeOut'), kf(d * 0.3, base.opacity)],
-    }),
-  },
+  // CUT 2026-07-29, his call: "remove any effects that will not be used in the
+  // Jettism style, like spin-outs, casual stuff no real editor will ever use."
+  // Spin in and Bounce went with Spin out. A clip saved with one of them keeps
+  // playing exactly as before, because the appearance is COMPILED to keyframes
+  // on the clip and the id is only the label the Inspector shows.
 ]
 
 // --- Exit presets: animate on [D-d, D], start from base at the window start. ---
@@ -192,15 +170,7 @@ export const EXIT_PRESETS: AppearancePreset[] = [
       opacity: [kf(D - d, base.opacity, 'easeIn'), kf(D, 0)],
     }),
   },
-  {
-    id: 'spinOut',
-    label: 'Spin out',
-    build: ({ d, D, base }) => ({
-      rotation: [kf(D - d, base.rotation, 'easeIn'), kf(D, base.rotation + 180)],
-      scale: [kf(D - d, base.scale, 'easeIn'), kf(D, 0)],
-      opacity: [kf(D - d, base.opacity, 'easeIn'), kf(D, 0)],
-    }),
-  },
+  // Spin out CUT 2026-07-29, the one he named. See the note on ENTRANCE_PRESETS.
 ]
 
 const ENTRANCE_BY_ID = new Map(ENTRANCE_PRESETS.map((p) => [p.id, p]))

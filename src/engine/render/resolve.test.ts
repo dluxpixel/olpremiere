@@ -534,15 +534,15 @@ describe('two-clip transitions', () => {
   })
 
   it('A.transitionOut supplies the transition when B.transitionIn is absent', () => {
-    const { a, b, s } = makeAB(undefined, { type: 'wipeLeft', durationS: 1 })
+    const { a, b, s } = makeAB(undefined, { type: 'whiteFlash', durationS: 1 })
     const op = asTransition(resolveFrame(s, 2.5).ops[0])
-    expect(op.kind).toBe('wipeLeft')
+    expect(op.kind).toBe('whiteFlash')
     expect(op.from.clipId).toBe(a.id)
     expect(op.to.clipId).toBe(b.id)
   })
 
   it('B.transitionIn wins over A.transitionOut', () => {
-    const { s } = makeAB({ type: 'dipToBlack', durationS: 1 }, { type: 'wipeRight', durationS: 1 })
+    const { s } = makeAB({ type: 'dipToBlack', durationS: 1 }, { type: 'zoom', durationS: 1 })
     expect(asTransition(resolveFrame(s, 2.5).ops[0]).kind).toBe('dipToBlack')
   })
 
@@ -662,17 +662,22 @@ describe('transition kind coercion', () => {
     expect(at('dipToWhite').kind).toBe('dipToWhite')
   })
 
-  it('coerces slideLeft/slideRight/wipeRight through', () => {
+  it('coerces the offered kinds through unchanged', () => {
     expect(at('slideLeft').kind).toBe('slideLeft')
     expect(at('slideRight').kind).toBe('slideRight')
-    expect(at('wipeRight').kind).toBe('wipeRight')
+    expect(at('zoom').kind).toBe('zoom')
+    expect(at('glitch').kind).toBe('glitch')
+    expect(at('whiteFlash').kind).toBe('whiteFlash')
   })
 
-  it('coerces the stylized kinds (zoom/spin/glitch/lumaWipe) through', () => {
-    expect(at('zoom').kind).toBe('zoom')
-    expect(at('spin').kind).toBe('spin')
-    expect(at('glitch').kind).toBe('glitch')
-    expect(at('lumaWipe').kind).toBe('lumaWipe')
+  it('a CUT kind falls back to a dissolve, so an old project still opens', () => {
+    // Spin, Luma Wipe and the two Wipes were removed 2026-07-29 as casual. This
+    // is the whole reason the cut was safe: a project saved with one of them
+    // still renders, it just renders as a dissolve, and it can never be picked
+    // again. If this ever asserts the kind passing through, the cut leaked back.
+    for (const gone of ['spin', 'lumaWipe', 'wipeLeft', 'wipeRight']) {
+      expect(at(gone).kind).toBe('crossDissolve')
+    }
   })
 
   it('an unknown type falls back to crossDissolve', () => {
@@ -834,7 +839,7 @@ describe('lone-edge transitions run their REAL form', () => {
   })
 
   it('every kind keeps its own identity on a lone edge', () => {
-    for (const kind of ['wipeLeft', 'slideRight', 'zoom', 'spin', 'lumaWipe', 'dipToWhite'] as const) {
+    for (const kind of ['whiteFlash', 'slideRight', 'zoom', 'glitch', 'dipToWhite'] as const) {
       const c = clip({ startS: 0, outS: 4, transitionIn: { type: kind, durationS: 1 } })
       const s = seqOf([track({ clips: [c] })])
       expect(asTransition(resolveFrame(s, 0.5).ops[0]).kind).toBe(kind)

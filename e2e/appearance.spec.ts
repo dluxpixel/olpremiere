@@ -270,8 +270,8 @@ test('right-click IN the preview opens the clip menu, and the gizmo survives an 
   const menu = page.getByTestId('context-menu')
   await expect(menu).toBeVisible()
   await menu.getByRole('menuitem', { name: 'Entrance' }).hover()
-  await menu.getByRole('menuitem', { name: /Bounce/ }).click()
-  expect((await clipData(page, id)).appearance?.in).toBe('bounce')
+  await menu.getByRole('menuitem', { name: /Pop \/ Bang/ }).click()
+  expect((await clipData(page, id)).appearance?.in).toBe('pop')
 
   // The drag gizmo is STILL available on an animated clip (it recompiles on drag).
   await expect(page.getByTestId('gizmo-body')).toBeVisible()
