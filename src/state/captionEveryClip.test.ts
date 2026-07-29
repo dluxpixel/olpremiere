@@ -108,7 +108,7 @@ describe('autoCaptionEveryClip', () => {
     const vids = videoTracks(seq())
     expect(vids).toHaveLength(before + 1) // three clips, ONE new track
     const top = vids[vids.length - 1]
-    expect(top.clips.map((c) => c.title?.text)).toEqual(['CLIP-A', 'CLIP-B', 'CLIP-C'])
+    expect(top.clips.map((c) => c.title?.text)).toEqual(['clip-a', 'clip-b', 'clip-c'])
   })
 
   it('is one undo step for the whole run', async () => {

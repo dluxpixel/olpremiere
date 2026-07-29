@@ -5,6 +5,7 @@ import {
   CAPTION_POP_DUR_S,
   PHRASE_CAPTION_OPTIONS,
   captionClips,
+  captionHouseCase,
   chunkWords,
   jettismCaptionDef,
   spreadWords,
@@ -178,21 +179,44 @@ describe('spreadWords', () => {
 })
 
 describe('jettismCaptionDef', () => {
-  it('produces the house style at 1080x1920', () => {
-    const def = jettismCaptionDef('HELLO', 1920)
-    expect(def.fontSizePx).toBe(154)
+  // Every expectation below is a MEASURED value (reference frames, 2026-07-29),
+  // so a failure here means the house style drifted off the measurement.
+  it('produces the measured house style at 1080x1920', () => {
+    const def = jettismCaptionDef('hello', 1920)
+    expect(def.fontSizePx).toBe(105) // puts Montserrat's caps on the measured 3.8% H
     expect(def.color).toBe('#ffffff')
     expect(def.bold).toBe(true)
-    expect(def.fontFamily).toContain('Lilita One')
-    expect(def.outline).toEqual({ color: '#000000', widthPx: 9 })
-    expect(def.offsetYPx).toBe(38) // ~52% height per the brief
+    expect(def.fontFamily).toContain('Montserrat')
+    // 15 is a canvas lineWidth and a canvas stroke is centred, so about 7px of
+    // it shows outside the glyph, which is the measured 10% of cap height.
+    expect(def.outline).toEqual({ color: '#000000', widthPx: 15 })
+    expect(def.offsetYPx).toBe(0) // dead centre, not the brief's 52%
+    expect(def.vAlign).toBe('middle')
     expect(def.align).toBe('center')
+    expect(def.shadow).toEqual({ color: 'rgba(0,0,0,0.4)', blurPx: 6, dx: 6, dy: 6 })
   })
 
   it('scales with the sequence height', () => {
-    const def = jettismCaptionDef('HELLO', 960)
-    expect(def.fontSizePx).toBe(77)
-    expect(def.outline?.widthPx).toBe(5)
+    const def = jettismCaptionDef('hello', 960)
+    expect(def.fontSizePx).toBe(53)
+    expect(def.outline?.widthPx).toBe(8)
+    expect(def.offsetYPx).toBe(0)
+  })
+})
+
+describe('captionHouseCase', () => {
+  it('lowercases ordinary words and drops sentence punctuation', () => {
+    expect(captionHouseCase('Minecart kit, but you might notice.')).toBe('minecart kit but you might notice')
+  })
+
+  it('keeps acronyms and mixed-caps names', () => {
+    expect(captionHouseCase('three shulkers of TNT')).toBe('three shulkers of TNT')
+    expect(captionHouseCase('the PvP arena')).toBe('the PvP arena')
+  })
+
+  it('keeps apostrophes, question marks and exclamations', () => {
+    expect(captionHouseCase("I'm going in!")).toBe("i'm going in!")
+    expect(captionHouseCase('Ready?')).toBe('ready?')
   })
 })
 
@@ -208,7 +232,7 @@ describe('captionClips', () => {
     expect(clips).toHaveLength(2)
     expect(clips[0].startS).toBe(1)
     expect(clips[0].outS).toBeCloseTo(0.5, 9)
-    expect(clips[0].title?.text).toBe('SO I') // house style is ALL-CAPS
+    expect(clips[0].title?.text).toBe('so i') // house style is measured lowercase
     expect(clips[0].assetId).toBe('')
   })
 

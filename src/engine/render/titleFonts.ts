@@ -10,6 +10,7 @@
 
 import lilitaUrl from '../../assets/fonts/LilitaOne-Regular.ttf?url'
 import monocraftUrl from '../../assets/fonts/Monocraft.ttf?url'
+import montserratUrl from '../../assets/fonts/Montserrat-Variable.ttf?url'
 import versatileUrl from '../../assets/fonts/VersatileBold.ttf?url'
 import { clearTitleCache } from './titleRaster'
 
@@ -21,17 +22,36 @@ export interface CustomTitleFont {
   /** The value stored in TitleDef.fontFamily (a full CSS font stack). */
   stack: string
   url: string
+  /**
+   * The weight range this FontFace DECLARES. Default '1 1000' lets one file
+   * answer every weight request. A variable font can instead be pinned to one
+   * weight (e.g. '800 800'), which is how the caption face always draws
+   * ExtraBold: canvas can only ask for normal or bold, so the pin is the only
+   * way to reach 800, and it renders the same in preview and in the export
+   * worker because both register this exact descriptor.
+   */
+  weight?: string
 }
 
 /** Minecraft-style pixel font (Monocraft, SIL OFL, so safe to ship publicly). */
 export const MONOCRAFT_STACK = "'Monocraft', 'Courier New', monospace"
 
 /**
- * The Shorts-caption comic face (Lilita One, SIL OFL). The genre's exact font
- * (Obelix Pro) has an unclear commercial license, so we ship the standard
- * clean-licensed lookalike; the caption style defaults to this stack.
+ * The caption face. Measured off the reference channel on 2026-07-29 rather than
+ * guessed: a heavy UPRIGHT GEOMETRIC SANS of normal width, not a comic face and
+ * not condensed. That is Montserrat (SIL OFL), shipped as the variable file and
+ * pinned to ExtraBold below. It also covers every Czech diacritic, which the old
+ * comic face did not.
  */
-export const CAPTION_FONT_STACK = "'Lilita One', 'Arial Black', sans-serif"
+export const CAPTION_FONT_STACK = "'Montserrat', 'Arial Black', sans-serif"
+
+/**
+ * The comic display face (Lilita One, SIL OFL), the clean-licensed stand-in for
+ * Obelix Pro. It WAS the caption default, on the assumption that the genre used
+ * a comic face; the measurement said otherwise. Kept as a normal font choice
+ * because saved projects store this stack by value inside every title.
+ */
+export const COMIC_STACK = "'Lilita One', 'Arial Black', sans-serif"
 
 /**
  * Versatile Bold (OnlineWebFonts.com, CC BY 4.0, credited in
@@ -60,7 +80,15 @@ export const CUSTOM_TITLE_FONTS: CustomTitleFont[] = [
     url: '/fonts/figtree-latin-wght-normal.woff2',
   },
   { label: 'Minecraft', family: 'Monocraft', stack: MONOCRAFT_STACK, url: monocraftUrl },
-  { label: 'Comic Bold (captions)', family: 'Lilita One', stack: CAPTION_FONT_STACK, url: lilitaUrl },
+  {
+    label: 'Caption Bold',
+    family: 'Montserrat',
+    stack: CAPTION_FONT_STACK,
+    url: montserratUrl,
+    // Pinned: this face exists for captions, and captions are always ExtraBold.
+    weight: '800 800',
+  },
+  { label: 'Comic Bold', family: 'Lilita One', stack: COMIC_STACK, url: lilitaUrl },
   { label: 'Versatile Bold', family: 'Versatile Bold', stack: VERSATILE_STACK, url: versatileUrl },
 ]
 
@@ -96,8 +124,8 @@ export function loadTitleFonts(fontset: FontFaceSet): Promise<void> {
         try {
           // A weight range maps a bold (700) request onto this single file, so
           // there is no faux-bold synthesis that could differ between the two
-          // rendering contexts.
-          const face = new FontFace(f.family, `url(${f.url})`, { weight: '1 1000' })
+          // rendering contexts. A font may pin its own range (see `weight`).
+          const face = new FontFace(f.family, `url(${f.url})`, { weight: f.weight ?? '1 1000' })
           await face.load()
           fontset.add(face)
         } catch (err) {

@@ -81,19 +81,35 @@ describe('bundled Minecraft font (Monocraft)', () => {
   })
 })
 
-describe('bundled caption font (Lilita One)', () => {
+describe('bundled caption font (Montserrat)', () => {
+  const path = fileURLToPath(new URL('../../assets/fonts/Montserrat-Variable.ttf', import.meta.url))
+  const has = cmapHasFactory(readFileSync(path))
+  const CZECH = 'áčďéěíňóřšťúůýžÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ'
+
+  it('covers ASCII and common punctuation', () => {
+    for (const c of "ABCabc0123.,!?:-*'") expect(has(c.codePointAt(0)!)).toBe(true)
+  })
+
+  it('covers every Czech diacritic, which the old comic caption face did not', () => {
+    const missing = [...CZECH].filter((c) => !has(c.codePointAt(0)!))
+    expect(missing).toEqual([])
+  })
+})
+
+describe('bundled comic font (Lilita One)', () => {
   const lilitaPath = fileURLToPath(new URL('../../assets/fonts/LilitaOne-Regular.ttf', import.meta.url))
   const has = cmapHasFactory(readFileSync(lilitaPath))
 
-  it('covers ASCII and common punctuation (captions are English-first)', () => {
+  it('covers ASCII and common punctuation', () => {
     for (const c of 'ABCabc0123.,!?:-*') expect(has(c.codePointAt(0)!)).toBe(true)
   })
 
   it('documents the known Czech gaps: caron glyphs fall back down the stack', () => {
     // Per-glyph canvas fallback is identical in preview and export (same stack
-    // registered in both contexts), so this is cosmetic, not a divergence.
+    // registered in both contexts), so this is cosmetic, not a divergence. This
+    // is also why it is no longer the CAPTION face: Montserrat covers Czech.
     const missing = [...'čďěňřťů'].filter((c) => !has(c.codePointAt(0)!))
-    expect(missing.length).toBeGreaterThan(0) // flips when a fuller font lands
+    expect(missing.length).toBeGreaterThan(0)
     for (const c of 'áéíóúý') expect(has(c.codePointAt(0)!)).toBe(true)
   })
 })

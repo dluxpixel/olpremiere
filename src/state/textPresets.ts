@@ -7,6 +7,7 @@
 
 import { create } from 'zustand'
 import { applyAppearanceToClip } from '../engine/anim/appearance'
+import { CAPTION_FONT_STACK } from '../engine/render/titleFonts'
 import { activeSequence, type AppearanceSpec, type Clip, type EffectInstance, type TitleDef } from '../engine/types'
 import { updateActiveSequence, useStore } from './store'
 
@@ -29,21 +30,28 @@ export interface TextStylePreset {
   builtin?: boolean
 }
 
-// The Jettism house style: lowercase word, fat black outline, lower-third
-// position, pop in + pop out (the "two write animations").
+// The Jettism look as a preset, for turning an EXISTING title into a caption.
+// A fresh caption run does not need this: it is born in the house style already.
+//
+// Remeasured 2026-07-29 against the reference channel's own frames, which moved
+// three things here. It sat in the lower third and the captions are dead centre.
+// It popped in and out and the captions HARD CUT. And it carried no font, so a
+// restyled title kept whatever face it had instead of the caption one.
 const BUILTINS: TextStylePreset[] = [
   {
     id: 'builtin-jettism',
     name: 'Jettism caption',
     builtin: true,
     style: {
+      fontFamily: CAPTION_FONT_STACK,
       textCase: 'lower',
       color: '#ffffff',
-      outline: { color: '#000000', widthPx: 12 },
-      vAlign: 'bottom',
-      offsetYPx: -220,
+      // Absolute pixels, unlike the house style, because a preset is applied to
+      // a clip and never sees the sequence height. Sized for 1080x1920.
+      outline: { color: '#000000', widthPx: 15 },
+      vAlign: 'middle',
+      offsetYPx: 0,
     },
-    appearance: { in: 'pop', out: 'popOut', durS: 0.14 },
   },
   {
     id: 'builtin-yellow-pop',
@@ -127,8 +135,18 @@ export function allTextPresets(): TextStylePreset[] {
 // name, completely different output, and right-click is the one people reach for.
 
 const STYLE_KEY = 'olpremiere:captions:style'
-/** The house style, and what an unset install gets. */
-export const DEFAULT_CAPTION_PRESET_ID = 'builtin-jettism'
+/**
+ * What an unset install gets: NO preset, which means the measured house style
+ * lands untouched. It used to default to the 'builtin-jettism' preset, and once
+ * the house style was measured off the real frames that preset could only make
+ * it worse. Its outline is absolute pixels, so it went wrong at any size but
+ * 1080x1920, and its blanket lowercase flattened "TNT" to "tnt".
+ *
+ * An install that stored 'builtin-jettism' explicitly finds no preset by that
+ * name in the caption path and falls through to the same house style, which is
+ * the right answer, so there is nothing to migrate.
+ */
+export const DEFAULT_CAPTION_PRESET_ID = ''
 
 let captionPresetId: string | null = null
 

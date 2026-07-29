@@ -2330,8 +2330,10 @@ describe('captions survive a format switch', () => {
       assetId: '',
       title: {
         text: 'diamonds',
+        // A caption SAVED BY AN OLDER VERSION on purpose: the point of this test
+        // is that a project made before the style was remeasured still rescales.
         fontFamily: 'Lilita One',
-        fontSizePx: 87, // what jettismCaptionDef bakes for a 1080-tall frame
+        fontSizePx: 87,
         color: '#ffffff',
         align: 'center',
         vAlign: 'bottom',

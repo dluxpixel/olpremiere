@@ -1,10 +1,13 @@
 // Jettism-style captions (word-by-word "karaoke" text synced to a voiceover).
 // The engine deliberately does NOT introduce a new renderer or clip type: a
-// caption is a run of ordinary short TITLE clips, one per 1-3-word chunk, each
-// carrying the house caption style (white 900-weight text, thick black outline,
-// lower-third placement) and a pop entrance compiled through the same
-// appearance machinery every other clip uses. Preview==export therefore holds
-// by construction, and every word stays hand-editable on the timeline.
+// caption is a run of ordinary short TITLE clips, one per spoken word, each
+// carrying the house caption style (lowercase white ExtraBold text, black
+// outline, dead centre) compiled through the same appearance machinery every
+// other clip uses. Preview==export therefore holds by construction, and every
+// word stays hand-editable on the timeline.
+//
+// Every number in the house style and the timing was measured off the reference
+// channel's own frames on 2026-07-29. Nothing here is an estimate from a brief.
 // Pure: no React, no DOM, no store.
 
 import type { Clip, TitleDef } from '../types'
@@ -139,22 +142,43 @@ export const PHRASE_CAPTION_OPTIONS: Required<ChunkOptions> = {
  * Two rules still outrank the target, because a caption that does not match the
  * voice is worse than an uneven one:
  *   maxGapS 0.25 - a real pause always breaks, so a block never spans silence.
- *   maxChars 22  - a block never overflows the frame.
+ *   maxChars 14  - a block never overflows the frame.
  * And two timings finish it:
  *   holdS   0.12 - at a pause the block clears the screen almost at once.
  *   bridgeS 0.36 - inside a phrase the next block takes over with no blank frame.
  *
  * `mergeShort` stays OFF: it is what folded a stranded "and" onto "evil".
+ *
+ * MEASURED 2026-07-29, and it settles the argument: the reference channel was
+ * frame-measured over 20 consecutive blocks. Every block held ONE spoken word
+ * (two only for a short pair like "of TNT"), and the blocks ran mean 0.49s.
+ * So the mechanism above is right and stays: the length is what is held steady
+ * and the word count falls out of it. Only the target number was wrong, 0.8
+ * against a measured 0.45. holdS and bridgeS are NOT touched, because the
+ * sampled clip was continuous speech and therefore measured nothing about what
+ * a caption should do at a real pause.
  */
-/** The screen time every caption block aims for. */
-export const AUTO_CAPTION_TARGET_S = 0.8
+/**
+ * The screen time every caption block aims for. MEASURED, not guessed:
+ * 20 consecutive blocks off the reference channel on 2026-07-29 ran
+ * mean 0.49s, median 0.40s, and 17 of the 19 non-outlier blocks sat between
+ * 0.3s and 0.6s. The one 1.3s block was the single word "invisibility", which
+ * no rule can shorten, so it is not evidence of a longer target.
+ *
+ * 0.45 replaces the 0.8 that shipped in v0.1.25. 0.8 was a guess, and it was
+ * nearly DOUBLE: it packed two or three words into a block where the reference
+ * shows one. This is the one number the measurement moved.
+ */
+export const AUTO_CAPTION_TARGET_S = 0.45
 
 export const AUTO_CAPTION_OPTIONS: Required<ChunkOptions> = {
   targetS: AUTO_CAPTION_TARGET_S,
-  // A ceiling, not the rule. The target decides in every normal case; this only
-  // catches speech so fast that a block would become unreadable.
-  maxWords: 6,
-  maxChars: 22,
+  // A ceiling, not the rule. The target decides in every normal case; these only
+  // catch speech so fast that a block would become unreadable. Both are measured:
+  // across those 20 blocks the count was 1 word in 15 and 2 in the other 5, NEVER
+  // 3, and the widest block on screen was 12 characters ("invisibility").
+  maxWords: 2,
+  maxChars: 14,
   maxCps: Infinity,
   maxGapS: 0.25,
   maxSpanS: Infinity,
@@ -230,8 +254,15 @@ export function chunkWords(words: CaptionWord[], options: ChunkOptions = {}): Ca
           // block occupies the same span of timeline. That is the whole ask: 'make
           // it auto-decide how many words it needs per caption so the length of
           // every single text block is the same'.
+          // A DEAD HEAT SPLITS. When taking the word overshoots the target by
+          // exactly as much as leaving it undershoots, both blocks are equally
+          // even, so the tie is broken toward one word, which is what the
+          // reference channel does in 15 of its 20 blocks. The epsilon is not a
+          // fudge: without it the winner is decided by binary rounding noise on
+          // the order of 1e-17, so 0.3 + 0.3 against a 0.45 target came out
+          // joined while the identical case in whole cents came out split.
           const without = last.endS - cur[0].startS
-          soft = overCap || Math.abs(span - o.targetS) >= Math.abs(without - o.targetS)
+          soft = overCap || Math.abs(span - o.targetS) >= Math.abs(without - o.targetS) - 1e-9
         } else {
           soft = overCap
         }
@@ -352,21 +383,77 @@ export interface CaptionStyleOptions {
   seqHeight: number
   /** Inherit this style instead of the Jettism default (manual split). */
   baseDef?: TitleDef
-  /** ALL-CAPS the text (Jettism house style). Default: only without baseDef. */
+  /**
+   * Force ALL-CAPS. OFF by default now: the house style was measured as
+   * lowercase, so the default path runs `captionHouseCase` instead. Kept
+   * because shouting a caption is a legitimate thing to want.
+   */
   upper?: boolean
   emphasisColor?: string
+}
+
+/**
+ * House caption case, measured off the reference frames on 2026-07-29: captions
+ * are written in LOWERCASE with sentence punctuation dropped, while acronyms
+ * keep their capitals ("TNT", "PvP"). Until now the app SHOUTED every caption,
+ * which was the loudest wrong thing on the screen.
+ *
+ * A word is lowercased unless it is all-caps or carries a capital after its
+ * first letter, which is what separates a real acronym from an ordinary word
+ * that a transcriber happened to start a sentence with.
+ *
+ * Only sentence punctuation goes. Apostrophes stay, because they live inside
+ * the word ("i'm"), and ! and ? stay, because the measurement found no periods
+ * or commas but never caught him dropping a question mark.
+ */
+export function captionHouseCase(text: string): string {
+  return text
+    .split(/\s+/)
+    .map((w) => w.replace(/[.,;:"]/g, ''))
+    .filter(Boolean)
+    .map((w) => {
+      const letters = w.replace(/[^A-Za-z]/g, '')
+      const isAcronym = letters.length >= 2 && (letters === letters.toUpperCase() || /[A-Z]/.test(letters.slice(1)))
+      return isAcronym ? w : w.toLowerCase()
+    })
+    .join(' ')
 }
 
 /** Scale a 1920-height reference pixel value to this sequence. */
 const px = (ref: number, seqHeight: number): number => Math.max(1, Math.round((ref / 1920) * seqHeight))
 
-/** The house caption look: the comic caption face, white fill, thick black
- * outline, just under center (~52% height per the motion-pack brief). */
+/**
+ * The house caption look. Every number here was MEASURED off the reference
+ * channel's own frames on 2026-07-29, replacing the motion-pack brief's
+ * estimates, which were wrong in three visible ways: the text was half again
+ * too big, it sat below centre instead of on it, and it was SHOUTED in caps.
+ *
+ * Measured, as fractions of frame height so 1080x1920 and 720x1280 match:
+ *   cap height  3.8% H, which Montserrat reaches at px(105) at 1920.
+ *   position    dead centre, horizontally and vertically. No offset.
+ *   outline     10% of cap height VISIBLE, so about 7px at 1920.
+ *   shadow      +2/+2 px on a 640-tall source, so px(6) here, at 40% opacity.
+ *
+ * CAP HEIGHT is the number to hold, not point size. Cap height is what was
+ * measured off the frames (white pixel rows); the point size in the write-up
+ * was derived from it through an assumed face, so it only holds for that face.
+ * Montserrat's capitals are 0.70 of its em, so 105 is what puts this font's
+ * caps on the measured 3.8%. Rendered back and checked: 3.81% H.
+ *
+ * The outline number is DOUBLED to px(14) on purpose. `outline.widthPx` is a
+ * canvas lineWidth, and a canvas stroke is centred on the glyph edge, so only
+ * half of it lands outside the letter where the eye can see it. The measurement
+ * is of the visible black band, so the setting has to be twice it. This is also
+ * why the old 9px read thin next to the reference: it was showing 4.5px.
+ *
+ * Source resolution was 360x640, so the pixel-derived numbers carry about
+ * one source pixel of error, which is 0.15% of frame height.
+ */
 export function jettismCaptionDef(text: string, seqHeight: number): TitleDef {
   return {
     text,
     fontFamily: CAPTION_FONT_STACK,
-    fontSizePx: px(154, seqHeight), // ~8% of frame height
+    fontSizePx: px(105, seqHeight), // puts Montserrat's caps on the measured 3.8% H
     color: '#ffffff',
     align: 'center',
     vAlign: 'middle',
@@ -374,10 +461,11 @@ export function jettismCaptionDef(text: string, seqHeight: number): TitleDef {
     italic: false,
     lineHeight: 1.1,
     offsetXPx: 0,
-    // vAlign middle sits at 50%; the brief wants the caption line at ~52%.
-    offsetYPx: px(38, seqHeight),
-    shadow: { color: 'rgba(0,0,0,0.6)', blurPx: px(6, seqHeight), dx: 0, dy: px(4, seqHeight) },
-    outline: { color: '#000000', widthPx: px(9, seqHeight) },
+    // Dead centre. vAlign middle already sits at 50%, which is where the
+    // measured caption block sits, so there is nothing to nudge.
+    offsetYPx: 0,
+    shadow: { color: 'rgba(0,0,0,0.4)', blurPx: px(6, seqHeight), dx: px(6, seqHeight), dy: px(6, seqHeight) },
+    outline: { color: '#000000', widthPx: px(15, seqHeight) },
   }
 }
 
@@ -397,12 +485,18 @@ export interface CaptionClipOptions extends CaptionStyleOptions {
  * Turn chunks into ready-to-insert title clips: house style (or the inherited
  * base style), emphasis color on keyword chunks, hard-cut by default with an
  * optional pop entrance compiled through the standard appearance path.
+ *
+ * Case follows the style: the house look gets the measured lowercase, an
+ * inherited base style is left exactly as he typed it, and `upper` shouts.
  */
 export function captionClips(chunks: CaptionChunk[], options: CaptionClipOptions): Clip[] {
-  const upper = options.upper ?? options.baseDef === undefined
   const emphasisColor = options.emphasisColor ?? CAPTION_EMPHASIS_COLORS[0]
   return chunks.map((chunk) => {
-    const text = upper ? chunk.text.toUpperCase() : chunk.text
+    const text = options.upper
+      ? chunk.text.toUpperCase()
+      : options.baseDef
+        ? chunk.text
+        : captionHouseCase(chunk.text)
     const def: TitleDef = options.baseDef
       ? { ...options.baseDef, text }
       : jettismCaptionDef(text, options.seqHeight)

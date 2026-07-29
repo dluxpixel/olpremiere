@@ -14,6 +14,7 @@ import {
   type Sequence,
 } from '../engine/types'
 import { addCaptionsFromWords, splitTitleIntoWordCaptions } from './captionActions'
+import { AUTO_CAPTION_TARGET_S } from '../engine/captions/captions'
 import { clipDurationS } from '../engine/timeline'
 import { updateActiveSequence, useStore } from './store'
 
@@ -103,15 +104,17 @@ describe('addCaptionsFromWords', () => {
     const vids = videoTracks(seq())
     expect(vids).toHaveLength(before + 1)
     const top = vids[vids.length - 1]
-    // AUTO aims at a block LENGTH: "so" and "I" are said back to back and are
-    // short, so they share a block, while "trapped" is across a 0.9s pause and
-    // can never join them.
-    expect(top.clips.map((c) => c.title?.text)).toEqual(['SO I', 'TRAPPED'])
+    // AUTO aims at a block LENGTH of 0.45s. Each of these words is 0.3s, so
+    // pairing them would overshoot as far as leaving them alone undershoots,
+    // and the tie splits: one word per block, which is what the reference
+    // channel measured. "trapped" is across a 0.9s pause and could never join.
+    expect(top.clips.map((c) => c.title?.text)).toEqual(['so', 'i', 'trapped'])
     expect(top.clips[0].startS).toBeCloseTo(0, 6)
-    expect(top.clips[1].startS).toBeCloseTo(1.5, 6)
-    // house style: white 8%-height text, black outline, comic caption face
+    expect(top.clips[1].startS).toBeCloseTo(0.3, 6)
+    expect(top.clips[2].startS).toBeCloseTo(1.5, 6)
+    // house style: measured lowercase, white text, black outline, geometric sans
     expect(top.clips[0].title?.outline?.color).toBe('#000000')
-    expect(top.clips[0].title?.fontFamily).toContain('Lilita One')
+    expect(top.clips[0].title?.fontFamily).toContain('Montserrat')
     expect(top.clips[0].appearance).toBeUndefined()
     expect(useStore.getState().ui.selection).toEqual(top.clips.map((c) => c.id))
   })
@@ -133,17 +136,21 @@ describe('addCaptionsFromWords', () => {
   })
 })
 
-describe('captions are AUTO, and every block is the same length', () => {
+describe('captions are AUTO, and the block length is what is held steady', () => {
   /** On-screen length of each caption clip, in order. */
   const blockLengths = (): number[] => {
     const top = videoTracks(seq())[videoTracks(seq()).length - 1]
     return top.clips.map((c) => clipDurationS(c))
   }
 
-  it('makes the blocks even, whether he talks fast or slow', () => {
-    // THE ask, in his words: "auto-decide how many words it needs per caption so
-    // the length of every single text block is the same". Four slow words then
-    // eight fast ones: a word count cannot make those even, a target length can.
+  /** Words shown in each caption clip, in order. */
+  const blockWords = (): number[] => {
+    const top = videoTracks(seq())[videoTracks(seq()).length - 1]
+    return top.clips.map((c) => (c.title?.text ?? '').split(' ').filter(Boolean).length)
+  }
+
+  /** Four slow words, then eight fast ones. No word count can even these out. */
+  const slowThenFast = (): { text: string; startS: number; endS: number }[] => {
     const words = []
     let t = 0
     for (let i = 0; i < 4; i++) {
@@ -154,13 +161,41 @@ describe('captions are AUTO, and every block is the same length', () => {
       words.push({ text: 'fast' + i, startS: t, endS: t + 0.16 })
       t += 0.2
     }
-    addCaptionsFromWords(words)
-    // The LAST block is whatever is left over and cannot be evened out, so the
-    // claim is about the run, not the remainder.
-    const lens = blockLengths().slice(0, -1)
+    return words
+  }
+
+  it('runs long ONLY where a single word is simply that long', () => {
+    // His ask was "auto-decide how many words it needs per caption so the length
+    // of every single text block is the same", and the target does exactly that.
+    // But evenness has a floor no rule can go under: a word that takes 0.7s to
+    // say occupies 0.7s. The measured reference behaves the same way, its longest
+    // block being the single word "invisibility" at 1.3s against a 0.49s mean.
+    // So the honest invariant is not "all equal", it is "never long by CHOICE".
+    addCaptionsFromWords(slowThenFast())
+    const lens = blockLengths()
+    const counts = blockWords()
     expect(lens.length).toBeGreaterThan(2)
-    const spread = Math.max(...lens) - Math.min(...lens)
-    expect(spread).toBeLessThan(0.2)
+    for (let i = 0; i < lens.length; i++) {
+      if (lens[i] > AUTO_CAPTION_TARGET_S + 0.15) expect(counts[i]).toBe(1)
+    }
+  })
+
+  it('keeps the blocks it CAN control tight around the target', () => {
+    // Every block that holds more than one word was assembled by the rule, so
+    // those are the ones evenness is actually a claim about.
+    addCaptionsFromWords(slowThenFast())
+    const lens = blockLengths()
+    const counts = blockWords()
+    const built = lens.filter((_, i) => counts[i] > 1)
+    expect(built.length).toBeGreaterThan(2)
+    expect(Math.max(...built) - Math.min(...built)).toBeLessThan(0.2)
+    for (const len of built) expect(Math.abs(len - AUTO_CAPTION_TARGET_S)).toBeLessThan(0.2)
+  })
+
+  it('never puts three words on screen at once', () => {
+    // Measured: 1 word in 15 of 20 blocks, 2 in the other 5, never 3.
+    addCaptionsFromWords(slowThenFast())
+    expect(Math.max(...blockWords())).toBeLessThanOrEqual(2)
   })
 
   it('puts MORE words in a block when he speaks faster', () => {
@@ -182,7 +217,7 @@ describe('captions are AUTO, and every block is the same length', () => {
       { text: 'evil', startS: 2.4, endS: 2.8 },
     ])
     const top = videoTracks(seq())[videoTracks(seq()).length - 1]
-    expect(top.clips.map((c) => c.title?.text)).toEqual(['GREEN', 'EVIL'])
+    expect(top.clips.map((c) => c.title?.text)).toEqual(['green', 'evil'])
     expect(top.clips[0].startS + clipDurationS(top.clips[0])).toBeLessThanOrEqual(0.55)
   })
 

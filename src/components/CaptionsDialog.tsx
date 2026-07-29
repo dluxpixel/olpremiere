@@ -272,7 +272,7 @@ export function CaptionsDialog({ onClose }: { onClose: () => void }) {
               }}
               className="ml-auto h-6 w-[190px] cursor-default rounded-field border border-border bg-bg-input px-1.5 text-[11px] text-text-primary focus:border-accent focus:outline-none"
             >
-              <option value="">Plain (no styling)</option>
+              <option value="">Jettism (the measured look)</option>
               {presets.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name}

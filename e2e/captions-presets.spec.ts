@@ -73,6 +73,46 @@ test('applying a style preset styles the whole selection', async ({ page }) => {
   expect((await titles(page)).every((x) => (x.outline?.widthPx ?? 0) > 0)).toBe(true)
 })
 
+// The trap this guards: the house caption style is measured and scales with the
+// sequence, but every caption door ALSO passes the remembered style preset, and
+// a preset's values are absolute and win. So a preset chosen as the default can
+// silently undo the measurement, and no unit test on the style function would
+// ever see it. This drives the same call the dialog and the right-click make.
+test('a fresh caption run lands the MEASURED house style, with no preset over it', async ({ page }) => {
+  await page.goto('/')
+  const def = await page.evaluate(async () => {
+    const capMod = '/src/state/captionActions.ts'
+    const preMod = '/src/state/textPresets.ts'
+    const storeMod = '/src/state/store.ts'
+    const typesMod = '/src/engine/types.ts'
+    const { addCaptionsFromWords } = (await import(/* @vite-ignore */ capMod)) as {
+      addCaptionsFromWords: (w: unknown[], o: Record<string, unknown>) => void
+    }
+    const { rememberedCaptionPreset } = (await import(/* @vite-ignore */ preMod)) as {
+      rememberedCaptionPreset: () => unknown
+    }
+    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+      useStore: { getState: () => { project: unknown } }
+    }
+    const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+      activeSequence: (p: unknown) => { height: number; tracks: { clips: { title?: unknown }[] }[] }
+    }
+    addCaptionsFromWords([{ text: 'TNT', startS: 0, endS: 0.4 }], { preset: rememberedCaptionPreset() })
+    const seq = activeSequence(useStore.getState().project)
+    const title = seq.tracks.flatMap((t) => t.clips).find((c) => c.title)?.title
+    return { height: seq.height, title } as { height: number; title: Record<string, unknown> }
+  })
+
+  expect(def.title.fontFamily).toContain('Montserrat')
+  expect(def.title.text).toBe('TNT') // house case keeps an acronym, a preset's blanket lowercase would not
+  expect(def.title.vAlign).toBe('middle')
+  expect(def.title.offsetYPx).toBe(0) // dead centre, not the old lower third
+  expect(def.title.appearance).toBeUndefined() // hard cut
+  // Size and outline scale off the sequence, which a preset's absolute px cannot.
+  expect(def.title.fontSizePx).toBe(Math.round((105 / 1920) * def.height))
+  expect((def.title.outline as { widthPx: number }).widthPx).toBe(Math.round((15 / 1920) * def.height))
+})
+
 test('the Captions dialog offers a style-preset picker', async ({ page }) => {
   await page.goto('/')
   await page.getByTestId('open-captions').click()
