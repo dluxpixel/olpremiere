@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { defaultTitleDef } from '../types'
 import {
+  AUTO_CAPTION_OPTIONS,
   CAPTION_EMPHASIS_COLORS,
   CAPTION_POP_DUR_S,
   PHRASE_CAPTION_OPTIONS,
@@ -201,6 +202,46 @@ describe('jettismCaptionDef', () => {
     expect(def.fontSizePx).toBe(53)
     expect(def.outline?.widthPx).toBe(8)
     expect(def.offsetYPx).toBe(0)
+  })
+})
+
+// Both of these were found on his REAL footage on 2026-07-29, after the first
+// measured build shipped. The timeline showed a picket fence of hairlines with
+// the odd slab in it, and these were the two causes.
+describe('what his real transcript did to the caption run', () => {
+  it('never emits a caption with no text (bare punctuation, stage directions)', () => {
+    const words = [
+      w('minecart', 0, 0.4),
+      w('.', 0.42, 0.44),
+      w('(laughs)', 0.46, 0.9),
+      w(',', 0.92, 0.94),
+      w('[Music]', 0.96, 1.4),
+      w('kit', 1.45, 1.8),
+    ]
+    const chunks = chunkWords(words, AUTO_CAPTION_OPTIONS)
+    const clips = captionClips(chunks, { seqWidth: 1080, seqHeight: 1920 })
+    expect(clips.map((c) => c.title?.text)).toEqual(['minecart', 'kit'])
+    // The bug: "." survived chunking, then house-casing stripped it to nothing,
+    // so the run carried clips with empty text. Invisible on the frame, and a
+    // hairline on the timeline he could see and could not explain.
+    expect(clips.filter((c) => (c.title?.text ?? '').trim() === '')).toHaveLength(0)
+  })
+
+  it('no caption outstays the measured ceiling, whatever the transcriber claims', () => {
+    // A transcriber stretches a word across the pause after it. His real run had
+    // a single "i'm" at 1.9s, which parked one caption on screen for nearly two
+    // seconds. Every other limit governs GROUPING, so none of them could touch
+    // it: there was only ever one word in the block.
+    const chunks = chunkWords([w("i'm", 0, 1.9), w('burying', 4, 6.2), w('myself', 6.25, 6.5)], AUTO_CAPTION_OPTIONS)
+    for (const c of chunks) {
+      expect(c.endS - c.startS).toBeLessThanOrEqual(AUTO_CAPTION_OPTIONS.maxOnScreenS + 1e-6)
+    }
+    expect(chunks[0].endS - chunks[0].startS).toBeCloseTo(1.3, 6)
+  })
+
+  it('the ceiling is OFF for legacy callers, so the manual split is unchanged', () => {
+    const chunks = chunkWords([w('one', 0, 3)], { maxWords: 1 })
+    expect(chunks[0].endS - chunks[0].startS).toBeGreaterThan(1.3)
   })
 })
 

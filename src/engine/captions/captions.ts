@@ -62,6 +62,18 @@ export interface ChunkOptions {
   bridgeS?: number
   /** Readability floor. A chunk shorter than this is merged (if mergeShort) so it never flashes. */
   minDurS?: number
+  /**
+   * Hard ceiling on how long ONE caption may sit on the screen, whatever the
+   * transcriber claims. Infinity = off.
+   *
+   * Needed because a word's duration is not a fact, it is the transcriber's
+   * opinion, and it stretches a word across the pause that follows it. On his
+   * real footage a single "i'm" came back as 1.9 seconds, which parked one
+   * caption on screen for nearly two seconds and left a slab on the timeline
+   * next to a picket fence of ordinary words. Every other limit here governs
+   * GROUPING, so none of them could touch it: there was only ever one word.
+   */
+  maxOnScreenS?: number
   /** Merge a sub-minDur or lone-function-word chunk into a soft-adjacent neighbor. */
   mergeShort?: boolean
 }
@@ -80,6 +92,7 @@ const CHUNK_DEFAULTS: Required<ChunkOptions> = {
   bridgeS: 0.4, // legacy: the bridge WAS holdS, so keep them equal here
   minDurS: 0.18,
   mergeShort: false,
+  maxOnScreenS: Infinity, // legacy callers keep the transcriber's word length
 }
 
 /**
@@ -123,6 +136,7 @@ export const PHRASE_CAPTION_OPTIONS: Required<ChunkOptions> = {
   bridgeS: 0.4,
   minDurS: 0.35,
   mergeShort: true,
+  maxOnScreenS: Infinity,
 }
 
 /**
@@ -186,6 +200,11 @@ export const AUTO_CAPTION_OPTIONS: Required<ChunkOptions> = {
   bridgeS: 0.36,
   minDurS: 0.2,
   mergeShort: false,
+  // The longest block in the whole measured reference was 1.3s, and it was the
+  // single word "invisibility". So 1.3 is not a taste call, it is the measured
+  // ceiling, and anything longer is the transcriber's padding rather than
+  // something he actually said.
+  maxOnScreenS: 1.3,
 }
 
 /**
@@ -220,7 +239,7 @@ export function chunkWords(words: CaptionWord[], options: ChunkOptions = {}): Ca
   const o = { ...CHUNK_DEFAULTS, ...options }
   const maxWords = Math.max(1, Math.round(o.maxWords))
   const input = words
-    .filter((w) => w.text.trim().length > 0)
+    .filter((w) => w.text.trim().length > 0 && isSpeechWord(w.text))
     .slice()
     .sort((a, b) => a.startS - b.startS)
   if (input.length === 0) return []
@@ -333,6 +352,10 @@ export function chunkWords(words: CaptionWord[], options: ChunkOptions = {}): Ca
       c.endS += o.holdS
     }
     c.endS = Math.max(c.endS, c.startS + o.minDurS)
+    // The ceiling goes on LAST, after the hold and the bridge, because those are
+    // the two things that stretch a caption. It sits above minDurS on purpose:
+    // if the two ever disagree the caption leaves, rather than overstaying.
+    c.endS = Math.min(c.endS, c.startS + o.maxOnScreenS)
     if (next) {
       c.endS = Math.min(c.endS, next.startS)
       next.startS = Math.max(next.startS, c.endS)
@@ -418,6 +441,19 @@ export function captionHouseCase(text: string): string {
     })
     .join(' ')
 }
+
+/**
+ * Tokens a transcriber emits that are NOT speech and must never become a
+ * caption: bare punctuation ("." or ","), and bracketed stage directions
+ * ("(laughs)", "[Music]").
+ *
+ * Found on his real footage 2026-07-29, not in theory. A bare "." survived
+ * chunking, then `captionHouseCase` stripped it to nothing, so the run came out
+ * carrying **caption clips with no text at all**: invisible on the frame, and a
+ * hairline sliver on the timeline that he could see and could not explain.
+ */
+const NON_SPEECH = /^[^A-Za-z0-9]*$|^[([{].*[)\]}]$/
+export const isSpeechWord = (text: string): boolean => !NON_SPEECH.test(text.trim())
 
 /** Scale a 1920-height reference pixel value to this sequence. */
 const px = (ref: number, seqHeight: number): number => Math.max(1, Math.round((ref / 1920) * seqHeight))

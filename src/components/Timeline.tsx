@@ -94,7 +94,7 @@ import {
 } from '../state/clipEdits'
 import { impactAtPlayhead, punchInAtPlayhead, punchOnBeats, rampWorkArea, whipToNext } from '../state/motionActions'
 import { autoCaptionFromClip } from '../state/transcribeActions'
-import { setTrackAudioRole, setTrackAutoLevel, setTrackPan, setTrackVolumeDb } from '../state/trackEdits'
+import { deleteTrack, setTrackAudioRole, setTrackAutoLevel, setTrackPan, setTrackVolumeDb } from '../state/trackEdits'
 import {
   applyTrackPreset,
   defaultTrackPresetId,
@@ -315,10 +315,32 @@ function TrackHeader({ track }: { track: Track }) {
       })),
     )
 
+  // Right-click the header itself: the delete he asked for. It lives here and
+  // not on a button because a header is small and a delete button next to Mute
+  // is a mis-click waiting to happen.
+  const openTrackMenu = (e: ReactMouseEvent<HTMLDivElement>) =>
+    openContextMenu(e, [
+      {
+        label: track.muted ? 'Unmute track' : 'Mute track',
+        onClick: () => toggle('muted', `${track.muted ? 'Unmute' : 'Mute'} ${track.name}`),
+      },
+      {
+        label: track.locked ? 'Unlock track' : 'Lock track',
+        onClick: () => toggle('locked', `${track.locked ? 'Unlock' : 'Lock'} ${track.name}`),
+      },
+      {
+        label: track.clips.length > 0 ? `Delete ${track.name} and ${track.clips.length} clip${track.clips.length === 1 ? '' : 's'}` : `Delete ${track.name}`,
+        danger: true,
+        onClick: () => deleteTrack(track.id),
+      },
+    ])
+
   return (
     <div
       className="flex shrink-0 flex-col justify-center gap-1 border-b border-border/60 bg-bg-panel px-2"
       style={{ height: track.height }}
+      onContextMenu={openTrackMenu}
+      data-testid={`track-header-${track.name}`}
     >
       <div className="flex items-center gap-0.5">
         <span className="flex-1 text-[11px] font-medium uppercase tracking-[0.06em] text-text-secondary">
