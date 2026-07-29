@@ -473,7 +473,7 @@ function makeTextureSource(
         if (Math.abs(el.playbackRate - rate) > 1e-3) el.playbackRate = rate
       }
     }
-    return livePreviewSource(el, asset.id)
+    return livePreviewSource(el, asset.id, layer.transform.scale)
   }
 }
 
@@ -496,11 +496,59 @@ const liveScale = new Map<Id, OffscreenCanvas>()
 /** Two or three video layers can be live at once; more than this is a leak. */
 const LIVE_SCALE_CAP = 4
 
-function livePreviewSource(el: HTMLVideoElement, assetId: Id): TexImageSource {
+/**
+ * How tall the live upload actually needs to be.
+ *
+ * PROFILED, 2026-07-29: during playback `texSubImage2D` is 37% of every sample
+ * taken, and our own JavaScript is 1.3%. The preview is not slow because of
+ * resolve, keyframes or effects; it is slow because it hands the renderer a
+ * full-size video frame to upload, sixty times a second.
+ *
+ * The quality tier alone could not fix that. At Full quality a 1080p source sits
+ * exactly ON the 1080 cap, so nothing was scaled, and the frame was uploaded at
+ * 1920x1080 to be drawn into a program monitor about 700 pixels tall: over twice
+ * the pixels that can possibly be shown. The monitor's own raster is the honest
+ * ceiling, so it is now part of the cap.
+ *
+ * `LIVE_UPLOAD_HEADROOM` keeps a margin above it, because a clip can be scaled UP
+ * by its own transform and sampling a texture cut exactly to the monitor would
+ * soften a punch-in.
+ */
+/**
+ * Pure policy, so the rules can be tested without a GL context: never upscale,
+ * never exceed the quality tier, and never upload more than the monitor can
+ * actually show at this layer's zoom. `rasterH` of 0 means nothing has drawn
+ * yet, so the tier alone decides.
+ *
+ * The zoom is the LAYER's own scale, not a guess. A first attempt used a fixed
+ * 1.25 margin "for punch-ins" and it was worse on both counts, measured: it made
+ * the picture pass through TWO resamples (1080 to 868 to 694) instead of one, so
+ * edge energy fell to 0.877 where a straight 1080 to 694 gives 1.081 - sharper
+ * than the uncapped original's 0.905 - and it was slower as well. Reading the
+ * real scale costs nothing and is exact: a clip at 1x uploads exactly what the
+ * monitor shows, and a 2x punch-in uploads twice that because it needs it.
+ */
+export function liveUploadCap(
+  nativeH: number,
+  tierCapH: number | undefined,
+  rasterH: number,
+  zoom = 1,
+): number | undefined {
+  if (!nativeH || nativeH <= 0) return undefined
+  const tier = tierCapH ?? nativeH
+  const display = rasterH > 0 ? rasterH * Math.max(1, zoom || 1) : nativeH
+  const cap = Math.max(2, Math.round(Math.min(tier, display)))
+  return cap < nativeH ? cap : undefined
+}
+
+const liveUploadCapHeight = (nativeH: number, zoom: number): number | undefined =>
+  liveUploadCap(nativeH, previewCapHeight(nativeH), previewRasterH, zoom)
+
+function livePreviewSource(el: HTMLVideoElement, assetId: Id, zoom = 1): TexImageSource {
   const nativeH = el.videoHeight
   const nativeW = el.videoWidth
   if (!nativeH || !nativeW || typeof OffscreenCanvas === 'undefined') return el
-  const capH = previewCapHeight(nativeH)
+  const capH = liveUploadCapHeight(nativeH, zoom)
   if (!capH || capH >= nativeH) return el
 
   const w = Math.max(2, Math.round((nativeW / nativeH) * capH))

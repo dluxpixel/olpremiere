@@ -1,0 +1,20 @@
+# Keep searches out of generated and vendored trees.
+# Honoured by the Grep tool. Nothing here is deleted, it is just not searched.
+node_modules/
+dist/
+build/
+out/
+coverage/
+.next/
+.vite/
+.turbo/
+test-results/
+playwright-report/
+graphify-out/
+userData/
+release/
+*.min.js
+*.map
+package-lock.json
+pnpm-lock.yaml
+yarn.lock

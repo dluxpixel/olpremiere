@@ -4,7 +4,7 @@
 // mirror resolve.ts's pair-transition rules exactly.
 
 import { describe, expect, it } from 'vitest'
-import { TRANSITION_PRE_ROLL_S, pairTransitionWindow, transitionWindowsNear } from './preview'
+import { TRANSITION_PRE_ROLL_S, pairTransitionWindow, transitionWindowsNear, liveUploadCap } from './preview'
 import type { Clip, Sequence, Track } from './types'
 
 const clip = (o: Partial<Clip> & Pick<Clip, 'id' | 'assetId' | 'startS' | 'inS' | 'outS'>): Clip => ({
@@ -145,5 +145,50 @@ describe('transitionWindowsNear', () => {
   it('is empty on an empty or single-clip track', () => {
     expect(transitionWindowsNear(seq([track([])]), 0)).toHaveLength(0)
     expect(transitionWindowsNear(seq([track([a])]), 0)).toHaveLength(0)
+  })
+})
+
+describe('what the live preview actually uploads', () => {
+  // PROFILED 2026-07-29: during playback `texSubImage2D` was 37% of every sample
+  // taken while our own JavaScript was 1.3%. The preview was not slow because of
+  // resolve or effects; it handed the renderer a full-size video frame to upload
+  // sixty times a second. Measured end to end on a real 1080p clip: 26fps to
+  // 29fps on one continuous clip, and 19fps to 28fps on a run of short cuts,
+  // where gaps long enough to see went from about 50 per six seconds to 7.
+
+  it('stops uploading 1080 lines into a 700 line monitor', () => {
+    // THE case that was slow: a 1080p source sits exactly ON the Full-quality
+    // 1080 cap, so the tier scaled nothing at all.
+    expect(liveUploadCap(1080, undefined, 694)).toBe(694)
+  })
+
+  it('never upscales', () => {
+    // A source smaller than the monitor is uploaded as it is; growing it would
+    // cost more and show nothing new.
+    expect(liveUploadCap(480, undefined, 1080)).toBeUndefined()
+    expect(liveUploadCap(720, undefined, 720)).toBeUndefined()
+  })
+
+  it('follows the layer ZOOM, so a punch-in stays sharp', () => {
+    // A clip scaled up by its own transform samples MORE than one texel per
+    // screen pixel. The real scale is known, so no fixed margin has to be guessed:
+    // a fixed 1.25 margin measured WORSE on both sharpness and speed, because it
+    // put the picture through two resamples instead of one.
+    expect(liveUploadCap(2160, undefined, 1000, 1)).toBe(1000)
+    expect(liveUploadCap(2160, undefined, 1000, 2)).toBe(2000)
+    // Zooming OUT never buys a smaller upload than the monitor: the layer is
+    // still sampled across the same screen, just smaller.
+    expect(liveUploadCap(2160, undefined, 1000, 0.5)).toBe(1000)
+  })
+
+  it('still obeys the quality tier when the tier is the smaller one', () => {
+    // Half quality on 4K: the tier says 540, the monitor would allow more, and
+    // the tier has to win or the picker would do nothing during playback.
+    expect(liveUploadCap(2160, 540, 1080)).toBe(540)
+  })
+
+  it('falls back to the tier alone before anything has been drawn', () => {
+    expect(liveUploadCap(2160, 1080, 0)).toBe(1080)
+    expect(liveUploadCap(1080, undefined, 0)).toBeUndefined()
   })
 })
