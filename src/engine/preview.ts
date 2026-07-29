@@ -231,7 +231,7 @@ function rendererFor(canvas: HTMLCanvasElement): Renderer | null {
       // mipmapPreview: the panel raster is 3-6x below source res, so mipmapped
       // minification kills the aliasing/shimmer. PREVIEW ONLY: the export
       // renderer must stay flagless (golden byte-tests pin its LINEAR path).
-      renderer = createRenderer(gl, { mipmapPreview: true })
+      renderer = createRenderer(gl, { mipmapSources: true })
     } catch (err) {
       console.error('OL Studio: WebGL2 renderer init failed', err)
       renderer = null

@@ -400,7 +400,9 @@ async function runNative(init: Extract<ExportRequest, { type: 'init' }>): Promis
     const canvas = new OffscreenCanvas(W, H)
     const gl = canvas.getContext('webgl2', { premultipliedAlpha: false, preserveDrawingBuffer: true })
     if (!gl) throw new Error('WebGL2 is unavailable in this worker, cannot export')
-    const renderer = createRenderer(gl)
+    // Mipmapped minification at HD and above, matching the preview. Below HD it
+    // stays off so the golden 640x360 export keeps its exact legacy bytes.
+    const renderer = createRenderer(gl, { mipmapSources: isHdRaster(W, H) })
     cleanups.push(() => renderer.dispose())
 
     const gatherTextures = async (layers: RenderLayer[]): Promise<Map<RenderLayer, TexImageSource>> => {
@@ -913,7 +915,9 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
     const canvas = new OffscreenCanvas(settings.width, settings.height)
     const gl = canvas.getContext('webgl2', { premultipliedAlpha: false, preserveDrawingBuffer: true })
     if (!gl) throw new Error('WebGL2 is unavailable in this browser’s worker, cannot export')
-    const renderer = createRenderer(gl)
+    // See the note on the other renderer above: HD and up gets the mipmapped
+    // minification the preview already had, sub-HD holds the golden bytes.
+    const renderer = createRenderer(gl, { mipmapSources: isHdRaster(settings.width, settings.height) })
     cleanups.push(() => renderer.dispose())
 
     /** Decode every layer's texture for one frame (async), keyed by layer ref. */

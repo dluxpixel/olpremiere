@@ -453,16 +453,27 @@ const isNeighborhood = (fx: ResolvedEffect): boolean => getEffect(fx.type)?.pass
 export interface RendererOptions {
   /**
    * Mipmapped minification for SOURCE textures (video frames, stills, title
-   * rasters). The preview samples native-res sources down 3-6x to the panel
-   * raster, where plain LINEAR minification aliases and shimmers. Export must
-   * NEVER set this: the golden export e2e byte-tests pin the LINEAR-only path.
+   * rasters). Plain LINEAR minification only ever reads FOUR texels, so
+   * shrinking a 4K source into a 1080 frame throws away nearly everything in
+   * between and what survives aliases: shimmering edges, crawling detail.
+   *
+   * The preview has always set this, because it samples down 3-6x to the panel.
+   * **The EXPORT did not, so the file he actually publishes was the one aliasing
+   * while the preview next to it looked clean.** That was the "export softness"
+   * he kept reporting. It is now on for HD and above, which also keeps the
+   * preview and the export reading the same texels, the governing invariant.
+   *
+   * Gated on HD by the caller, following the same convention as every other
+   * quality behaviour here: the golden export is 640x360, so it stays on the
+   * exact legacy LINEAR path and its bytes do not move.
+   *
    * WebGL2 supports NPOT mipmaps as long as wrap stays CLAMP_TO_EDGE.
    */
-  mipmapPreview?: boolean
+  mipmapSources?: boolean
 }
 
 export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOptions): Renderer {
-  const mipmapSources = options?.mipmapPreview === true
+  const mipmapSources = options?.mipmapSources === true
   // Programs (thrown from here on failure so the caller can fall back).
   const blurProg = link(gl, FULL_VS, BLUR_FS)
   const combineProg = link(gl, FULL_VS, COMBINE_FS)
