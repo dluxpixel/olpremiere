@@ -103,11 +103,12 @@ describe('addCaptionsFromWords', () => {
     const vids = videoTracks(seq())
     expect(vids).toHaveLength(before + 1)
     const top = vids[vids.length - 1]
-    // AUTO: one word per caption, each timed to the word. "so" and "I" used to be
-    // welded into "SO I" by the old phrase grouping.
-    expect(top.clips.map((c) => c.title?.text)).toEqual(['SO', 'I', 'TRAPPED'])
+    // AUTO aims at a block LENGTH: "so" and "I" are said back to back and are
+    // short, so they share a block, while "trapped" is across a 0.9s pause and
+    // can never join them.
+    expect(top.clips.map((c) => c.title?.text)).toEqual(['SO I', 'TRAPPED'])
     expect(top.clips[0].startS).toBeCloseTo(0, 6)
-    expect(top.clips[2].startS).toBeCloseTo(1.5, 6)
+    expect(top.clips[1].startS).toBeCloseTo(1.5, 6)
     // house style: white 8%-height text, black outline, comic caption face
     expect(top.clips[0].title?.outline?.color).toBe('#000000')
     expect(top.clips[0].title?.fontFamily).toContain('Lilita One')
@@ -132,48 +133,62 @@ describe('addCaptionsFromWords', () => {
   })
 })
 
-describe('captions are AUTO, one word each, timed to the voice', () => {
-  const run = [
-    { text: 'one', startS: 0.0, endS: 0.3 },
-    { text: 'two', startS: 0.3, endS: 0.6 },
-    { text: 'three', startS: 0.6, endS: 0.9 },
-    { text: 'four', startS: 0.9, endS: 1.2 },
-  ]
-
-  it('gives every word its own caption, with no dial to get it wrong', () => {
-    addCaptionsFromWords(run)
+describe('captions are AUTO, and every block is the same length', () => {
+  /** On-screen length of each caption clip, in order. */
+  const blockLengths = (): number[] => {
     const top = videoTracks(seq())[videoTracks(seq()).length - 1]
-    expect(top.clips.map((c) => c.title?.text)).toEqual(['ONE', 'TWO', 'THREE', 'FOUR'])
+    return top.clips.map((c) => clipDurationS(c))
+  }
+
+  it('makes the blocks even, whether he talks fast or slow', () => {
+    // THE ask, in his words: "auto-decide how many words it needs per caption so
+    // the length of every single text block is the same". Four slow words then
+    // eight fast ones: a word count cannot make those even, a target length can.
+    const words = []
+    let t = 0
+    for (let i = 0; i < 4; i++) {
+      words.push({ text: 'slow' + i, startS: t, endS: t + 0.7 })
+      t += 0.75
+    }
+    for (let i = 0; i < 8; i++) {
+      words.push({ text: 'fast' + i, startS: t, endS: t + 0.16 })
+      t += 0.2
+    }
+    addCaptionsFromWords(words)
+    // The LAST block is whatever is left over and cannot be evened out, so the
+    // claim is about the run, not the remainder.
+    const lens = blockLengths().slice(0, -1)
+    expect(lens.length).toBeGreaterThan(2)
+    const spread = Math.max(...lens) - Math.min(...lens)
+    expect(spread).toBeLessThan(0.2)
   })
 
-  it('keeps a short word alone instead of welding it to its neighbour', () => {
-    // HIS CASE. The screenshot showed one caption reading "evil and" while he was
-    // saying those two words a quarter-second apart: "'evil' should be alone as a
-    // word, and that's it." A 0.25s gap sat UNDER the old hard-break threshold, so
-    // the word count grouped them and the merge pass folded the stranded "and" in.
-    addCaptionsFromWords([
-      { text: 'evil', startS: 0.0, endS: 0.5 },
-      { text: 'and', startS: 0.75, endS: 0.9 },
-    ])
-    const top = videoTracks(seq())[videoTracks(seq()).length - 1]
-    expect(top.clips.map((c) => c.title?.text)).toEqual(['EVIL', 'AND'])
+  it('puts MORE words in a block when he speaks faster', () => {
+    // The word count is an output. Same target, twice the speaking rate, so
+    // twice the words per block.
+    const fast = []
+    for (let i = 0; i < 8; i++) fast.push({ text: 'w' + i, startS: i * 0.2, endS: i * 0.2 + 0.16 })
+    addCaptionsFromWords(fast)
+    const vids = videoTracks(seq())
+    const perBlock = vids[vids.length - 1].clips.map((c) => (c.title?.text ?? '').split(' ').length)
+    expect(Math.max(...perBlock)).toBeGreaterThan(1)
   })
 
-  it('clears the screen at a real pause instead of sitting there', () => {
-    // "some of these are there for longer." A caption used to linger 0.4s past the
-    // word, so at every pause there was text on screen for nothing.
+  it('never lets a block span a real pause, even to hit the target', () => {
+    // Matching the voice outranks evenness. He says "green", stops, then says
+    // "evil" two seconds later: those can never share a block.
     addCaptionsFromWords([
-      { text: 'green', startS: 0.0, endS: 0.4 },
-      { text: 'evil', startS: 3.0, endS: 3.4 },
+      { text: 'green', startS: 0, endS: 0.4 },
+      { text: 'evil', startS: 2.4, endS: 2.8 },
     ])
     const top = videoTracks(seq())[videoTracks(seq()).length - 1]
-    const green = top.clips[0]
-    expect(green.startS + clipDurationS(green)).toBeLessThanOrEqual(0.55)
+    expect(top.clips.map((c) => c.title?.text)).toEqual(['GREEN', 'EVIL'])
+    expect(top.clips[0].startS + clipDurationS(top.clips[0])).toBeLessThanOrEqual(0.55)
   })
 
   it('hands over with no blank frame inside a phrase', () => {
-    // Back-to-back speech is the hard-cut swap the style is built on: one word
-    // leaves exactly as the next arrives.
+    const run = []
+    for (let i = 0; i < 8; i++) run.push({ text: 'w' + i, startS: i * 0.3, endS: i * 0.3 + 0.28 })
     addCaptionsFromWords(run)
     const top = videoTracks(seq())[videoTracks(seq()).length - 1]
     for (let i = 0; i < top.clips.length - 1; i++) {

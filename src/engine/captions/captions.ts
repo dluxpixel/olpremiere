@@ -38,6 +38,13 @@ export interface ChunkOptions {
   maxCps?: number
   /** A silence longer than this starts a new chunk instead of joining it. */
   maxGapS?: number
+  /**
+   * The on-screen duration every caption is aiming for. When set, THIS decides
+   * where a caption ends: words are added while doing so gets the block closer
+   * to the target, and the word count simply falls out of how fast he is
+   * talking. That is what makes every block the same length on the timeline.
+   */
+  targetS?: number
   /** No chunk spans longer than this even if the words run on. */
   maxSpanS?: number
   /** How long a caption may linger after its last word when nothing follows. */
@@ -64,6 +71,7 @@ const CHUNK_DEFAULTS: Required<ChunkOptions> = {
   maxChars: Infinity,
   maxCps: Infinity,
   maxGapS: 0.35,
+  targetS: 0, // off: legacy callers group by word count
   maxSpanS: 1.6,
   holdS: 0.4,
   bridgeS: 0.4, // legacy: the bridge WAS holdS, so keep them equal here
@@ -106,6 +114,7 @@ export const PHRASE_CAPTION_OPTIONS: Required<ChunkOptions> = {
   // chunk that is genuinely unreadable for how long it is on screen.
   maxCps: 28,
   maxGapS: 0.4,
+  targetS: 0,
   maxSpanS: 2,
   holdS: 0.4,
   bridgeS: 0.4,
@@ -114,34 +123,40 @@ export const PHRASE_CAPTION_OPTIONS: Required<ChunkOptions> = {
 }
 
 /**
- * AUTO: the only caption mode there is now, and the only one he wants.
+ * AUTO: the only caption mode there is, and EVERY BLOCK IS THE SAME LENGTH.
  *
- * 2026-07-28, looking at a run made with the old "3 words" dial: *"all of these
- * are different sizes and some of these are there for longer... it doesn't match
- * what I'm saying. 'Evil' should be alone as a word, and that's it. I wanted it to
- * be perfectly just Jettism as it is."*
+ * His words, 2026-07-29, correcting me: *"I told you to make it auto-decide how
+ * many words it needs per caption so the length of every single text block is
+ * the same."* And on 07-28, looking at the old "3 words" run: *"all of these are
+ * different sizes and some of these are there for longer."* Different SIZES. He
+ * was pointing at the blocks on the timeline, not at the grouping.
  *
- * So the rule is not a word count at all, it is the voice: ONE WORD per caption,
- * on screen for as long as that word is being said. Grouping is what broke it.
- * Chunking by count welds a word to the one after it and the caption then spans
- * the pause between them, so it sits on screen through silence, which is exactly
- * what he saw. `mergeShort` did the same thing from the other end: it is what
- * folded a stranded "and" onto "evil".
+ * So the word count is an OUTPUT, never an input. Each caption aims at
+ * `targetS` of screen time: words join while joining brings the block closer to
+ * that length and stop when they would overshoot it. Fast speech puts three or
+ * four words in a block, slow speech one, and the blocks come out even either way.
  *
- * Two timings do the work:
- *   holdS   0.12 - at a real pause a word clears the screen almost at once.
- *   bridgeS 0.36 - inside a phrase the next word takes over with no blank frame,
- *                  which is the hard-cut swap the style is built on.
- * `minDurS` is only a flash guard, and it can never push a caption over the next
- * word because the non-overlap clamp outranks it.
+ * Two rules still outrank the target, because a caption that does not match the
+ * voice is worse than an uneven one:
+ *   maxGapS 0.25 - a real pause always breaks, so a block never spans silence.
+ *   maxChars 22  - a block never overflows the frame.
+ * And two timings finish it:
+ *   holdS   0.12 - at a pause the block clears the screen almost at once.
+ *   bridgeS 0.36 - inside a phrase the next block takes over with no blank frame.
+ *
+ * `mergeShort` stays OFF: it is what folded a stranded "and" onto "evil".
  */
+/** The screen time every caption block aims for. */
+export const AUTO_CAPTION_TARGET_S = 0.8
+
 export const AUTO_CAPTION_OPTIONS: Required<ChunkOptions> = {
-  maxWords: 1,
-  maxChars: Infinity,
+  targetS: AUTO_CAPTION_TARGET_S,
+  // A ceiling, not the rule. The target decides in every normal case; this only
+  // catches speech so fast that a block would become unreadable.
+  maxWords: 6,
+  maxChars: 22,
   maxCps: Infinity,
-  // At one word per caption nothing can group anyway; kept tight so that if this
-  // is ever widened, a pause still breaks before anything else gets a say.
-  maxGapS: 0.12,
+  maxGapS: 0.25,
   maxSpanS: Infinity,
   holdS: 0.12,
   bridgeS: 0.36,
@@ -205,8 +220,21 @@ export function chunkWords(words: CaptionWord[], options: ChunkOptions = {}): Ca
       } else {
         const span = word.endS - cur[0].startS
         const chars = groupText([...cur, word]).length
-        soft =
+        // Hard ceilings first: a caption may never outgrow the frame or the word cap.
+        const overCap =
           cur.length >= maxWords || chars > o.maxChars || span > o.maxSpanS || chars / Math.max(1e-3, span) > o.maxCps
+        if (o.targetS > 0) {
+          // AIM AT THE TARGET. Take the word if it brings this block CLOSER to the
+          // target length, stop if it would overshoot past it. Fast speech puts
+          // three or four words in a block, slow speech one, and either way the
+          // block occupies the same span of timeline. That is the whole ask: 'make
+          // it auto-decide how many words it needs per caption so the length of
+          // every single text block is the same'.
+          const without = last.endS - cur[0].startS
+          soft = overCap || Math.abs(span - o.targetS) >= Math.abs(without - o.targetS)
+        } else {
+          soft = overCap
+        }
       }
     }
     if (hard || soft) {
