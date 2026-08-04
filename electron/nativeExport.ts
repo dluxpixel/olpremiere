@@ -11,6 +11,7 @@ import { unlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { NativeCaps, NativeExportConfig, NativeFinishResult, NativeStartResult } from './ipc-types'
+import { buildArgs, containerExt } from './exportArgs'
 
 /** The bundled ffmpeg.exe: extraResources in prod, vendor/ in dev. */
 function ffmpegPath(): string {
@@ -79,7 +80,10 @@ export async function probe(): Promise<NativeCaps> {
       const has = (name: string) => new RegExp('\\b' + name + '\\b').test(out)
       resolve({
         ok: true,
-        encoders: ['libx264', 'libx265', 'h264_nvenc', 'hevc_nvenc', 'av1_nvenc', 'prores_ks', 'ffv1'].filter(has),
+        // Exactly the encoders NativeEncoder can ask for, nothing else. ffv1 used
+        // to be probed here and was never selectable, so it only ever widened the
+        // codec set the bundled ffmpeg had to carry.
+        encoders: ['libx264', 'libx265', 'h264_nvenc', 'hevc_nvenc', 'av1_nvenc', 'prores_ks'].filter(has),
         nvenc: { h264: has('h264_nvenc'), hevc: has('hevc_nvenc'), av1: has('av1_nvenc') },
       })
     })
@@ -93,55 +97,6 @@ export async function prepareAudio(wav: ArrayBuffer): Promise<void> {
   pendingAudioPath = p
 }
 
-// -- ffmpeg args -----------------------------------------------------------
-function videoEncoderArgs(config: NativeExportConfig): string[] {
-  const q = Math.max(0, Math.min(51, Math.round(config.quality)))
-  switch (config.encoder) {
-    case 'x264':
-      return ['-c:v', 'libx264', '-preset', 'veryslow', '-crf', String(q), '-pix_fmt', 'yuv420p']
-    case 'x265':
-      return ['-c:v', 'libx265', '-preset', 'slow', '-crf', String(q), '-pix_fmt', 'yuv420p']
-    case 'nvenc-h264':
-      return ['-c:v', 'h264_nvenc', '-preset', 'p7', '-tune', 'hq', '-rc', 'constqp', '-qp', String(q), '-pix_fmt', 'yuv420p']
-    case 'nvenc-hevc':
-      return ['-c:v', 'hevc_nvenc', '-preset', 'p7', '-tune', 'hq', '-rc', 'constqp', '-qp', String(q), '-pix_fmt', 'yuv420p']
-    case 'nvenc-av1':
-      return ['-c:v', 'av1_nvenc', '-preset', 'p7', '-rc', 'constqp', '-qp', String(q), '-pix_fmt', 'yuv420p']
-    case 'prores':
-      // ProRes 422 HQ, 10-bit 4:2:2, an intermediate/master format.
-      return ['-c:v', 'prores_ks', '-profile:v', '3', '-pix_fmt', 'yuv422p10le']
-    case 'lossless':
-      // Visually lossless H.264 (QP 0). Plays everywhere; huge files.
-      return ['-c:v', 'libx264', '-preset', 'veryslow', '-qp', '0', '-pix_fmt', 'yuv420p']
-  }
-}
-
-function buildArgs(config: NativeExportConfig, audioPath: string | null, outPath: string): string[] {
-  const args = [
-    '-y',
-    '-hide_banner',
-    // Raw RGBA video from stdin.
-    '-f', 'rawvideo', '-pixel_format', 'rgba', '-video_size', `${config.width}x${config.height}`, '-framerate', String(config.fps), '-i', 'pipe:0',
-  ]
-  if (audioPath) args.push('-i', audioPath)
-  // GL frames are bottom-origin (vflip). Convert the full-range RGBA readback to
-  // limited-range BT.709 YUV EXPLICITLY rather than letting swscale pick the
-  // RGB→YUV matrix by a resolution heuristic, which could convert with BT.601
-  // while we tag BT.709. (Verified pixel-identical to the implicit path on the
-  // bundled ffmpeg, so this is version/raster-drift hardening, not a visible
-  // change; the export corruption reported separately is NOT this.)
-  args.push('-vf', 'vflip,scale=in_range=full:out_range=tv:out_color_matrix=bt709')
-  args.push(...videoEncoderArgs(config))
-  args.push('-map', '0:v:0')
-  if (audioPath) args.push('-map', '1:a:0', '-c:a', 'aac', '-b:a', '320k')
-  // Tag BT.709 limited range so players/YouTube don't guess (the washed-out fix).
-  args.push('-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709', '-color_range', 'tv')
-  // Machine-readable progress on stdout (the movie goes to a file).
-  args.push('-progress', 'pipe:1', '-nostats')
-  args.push(outPath)
-  return args
-}
-
 // -- start: pick destination + spawn ---------------------------------------
 export async function start(config: NativeExportConfig, win: BrowserWindow): Promise<NativeStartResult> {
   let outPath = config.outPath
@@ -149,7 +104,7 @@ export async function start(config: NativeExportConfig, win: BrowserWindow): Pro
     const res = await dialog.showSaveDialog(win, {
       title: 'Export video',
       defaultPath: config.suggestedName,
-      filters: [{ name: config.encoder === 'prores' ? 'QuickTime' : 'MP4 video', extensions: [config.encoder === 'prores' ? 'mov' : 'mp4'] }],
+      filters: [{ name: config.encoder === 'prores' ? 'QuickTime' : 'MP4 video', extensions: [containerExt(config.encoder)] }],
     })
     if (res.canceled || !res.filePath) {
       if (pendingAudioPath) void unlink(pendingAudioPath).catch(() => {})
