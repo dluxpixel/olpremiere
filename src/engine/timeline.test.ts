@@ -1839,6 +1839,36 @@ describe('group operations', () => {
     expect(rightGroup).toHaveLength(2)
     expect(rightGroup).not.toContain(vId)
   })
+
+  it('splitGroup hands back the SAME sequence when the cut is refused', () => {
+    // It used to rebuild the object even when every member refused, which pushed
+    // an undo step labelled "Split clip" that changed nothing, and hid the
+    // refusal from the razor, which reports it by reference equality. On a
+    // cut-dense timeline that is the razor appearing to stop working.
+    const { seq, vId } = linked()
+    expect(splitGroup(seq, vId, 0.001)).toBe(seq)
+    expect(splitGroup(seq, vId, 1e6)).toBe(seq)
+  })
+
+  it('splitGroup is all or nothing, so a trimmed member cannot half-split the pair', () => {
+    // Once one member has been trimmed on its own, the two can sit at different
+    // distances from the cut. Splitting only the willing one would give its right
+    // half a fresh linkId while the refused member kept the old one, and the pair
+    // would stop being a pair.
+    const { seq, vId, aId } = linked()
+    const assets = { vid: videoAsset }
+    // Pull the audio member's out edge in, so a cut near it is legal for the
+    // video and refused for the audio.
+    const trimmed = trimClipTo(seq, assets, aId, 'out', 2)
+    const aEnd = clipEndS(findClip(trimmed, aId)!.clip)
+    const vEnd = clipEndS(findClip(trimmed, vId)!.clip)
+    expect(aEnd).toBeLessThan(vEnd)
+
+    const out = splitGroup(trimmed, vId, aEnd - 0.001)
+    expect(out).toBe(trimmed)
+    // And the pair is intact: still one group, still two members.
+    expect(clipGroupIds(out, vId).sort()).toEqual([vId, aId].sort())
+  })
 })
 
 describe('setClipSpeed', () => {

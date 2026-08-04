@@ -504,15 +504,25 @@ export function splitKeyframeList(
   }
 }
 
+/**
+ * Whether a cut at `tS` would actually divide this clip into two usable pieces.
+ * A piece shorter than one frame can never render a full frame, and a cut that
+ * close to an edge is playhead jitter (cutting during playback, double-taps),
+ * so honoring it would litter the timeline with unusable slivers.
+ *
+ * One source of truth, because splitGroup has to ask the SAME question of every
+ * member before it commits to splitting any of them.
+ */
+export function canSplitClipAt(clip: Clip, fps: number, tS: number): boolean {
+  const minPieceS = 1 / (fps || 30)
+  return tS >= clip.startS + minPieceS && tS <= clipEndS(clip) - minPieceS
+}
+
 export function splitClip(seq: Sequence, clipId: Id, tS: number): Sequence {
   const found = findClip(seq, clipId)
   if (!found) return seq
   const { track, clip, trackIndex, clipIndex } = found
-  // A piece shorter than one frame can never render a full frame. A cut that
-  // close to an edge is playhead jitter (cutting during playback, double-taps),
-  // and honoring it litters the timeline with unusable slivers. No-op instead.
-  const minPieceS = 1 / (seq.fps || 30)
-  if (tS < clip.startS + minPieceS || tS > clipEndS(clip) - minPieceS) return seq
+  if (!canSplitClipAt(clip, seq.fps, tS)) return seq
 
   const cutSource = clip.inS + (tS - clip.startS) * absSpeed(clip)
   const cutLocal = tS - clip.startS
@@ -915,8 +925,21 @@ export function splitGroup(seq: Sequence, clipId: Id, tS: number): Sequence {
   const link = found.clip.linkId
   if (!link) return splitClip(seq, clipId, tS)
   const groupBefore = new Set(clipGroupIds(seq, clipId))
+  // ALL OR NOTHING. Members can sit at different distances from the cut once one
+  // of them has been trimmed on its own, so asking each in turn could split some
+  // and refuse others. That leaves the group half divided: the accepted right
+  // half gets a fresh linkId while the refused member keeps the old one, so the
+  // two sides stop being a pair.
+  for (const id of groupBefore) {
+    const member = findClip(seq, id)
+    if (!member || !canSplitClipAt(member.clip, seq.fps, tS)) return seq
+  }
   let next = seq
   for (const id of groupBefore) next = splitClip(next, id, tS)
+  // Nothing moved, so hand BACK the same object. Rebuilding it would push an
+  // undo step labelled "Split clip" that changed nothing, and would hide the
+  // refusal from the UI, which spots it by reference equality to report why.
+  if (next === seq) return seq
   // splitClip copies linkId onto both halves; the left halves keep the original
   // ids (in groupBefore). Re-link the right halves (same link, new ids) so the
   // two sides are independent groups.

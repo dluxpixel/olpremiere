@@ -1503,9 +1503,21 @@ export function Timeline({ height }: { height: number }) {
       return
     }
     if (tool === 'razor') {
-      if (track.locked) return
+      if (track.locked) {
+        show('That track is locked, so the razor cannot cut it')
+        return
+      }
       const t = quantizeToFrame(contentPoint(e).x / pxPerS, seq.fps)
+      // splitClip refuses a cut within one frame of either edge, and a refused
+      // split returns the sequence UNCHANGED, so dispatch drops it: no undo
+      // entry, no redraw, no anything. On a cut-dense timeline, where clips are
+      // routinely a few frames long, that reads as the razor having stopped
+      // working. The refusal is right, the silence was not.
+      const before = useStore.getState().project
       updateActiveSequence('Split clip', (sq) => splitGroup(sq, clip.id, t))
+      if (useStore.getState().project === before) {
+        show('Too close to the edge of the clip to cut there')
+      }
       return
     }
     // Selection tool: select, then start a move (or Alt = slip) drag.
