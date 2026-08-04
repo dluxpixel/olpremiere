@@ -11,6 +11,7 @@ import {
   wordsFromAsrChunks,
 } from '../engine/captions/transcribe'
 import { getCaptionLanguage } from '../engine/captions/transcribeConfig'
+import { clipEmitsAudio } from '../engine/audio'
 import { activeSequence, type Clip, type MediaAsset } from '../engine/types'
 import type { CaptionWord } from '../engine/captions/captions'
 import { addCaptionsFromWords } from './captionActions'
@@ -75,7 +76,13 @@ function audibleClips(): { clip: Clip; asset: MediaAsset }[] {
   const seq = activeSequence(s.project)
   return seq.tracks
     .filter((t) => !t.locked)
-    .flatMap((t) => t.clips)
+    // clipEmitsAudio, not the asset alone. A linked video clip and its audio
+    // partner share one assetId and both report hasAudio, so filtering on the
+    // asset transcribed the same take TWICE and laid both word sets at the same
+    // timeline moment: every caption came out doubled, and the Whisper wait
+    // doubled with it. Worse the more clips there are. This is the predicate the
+    // mixer and both export paths already use to stop linked A/V doubling sound.
+    .flatMap((t) => t.clips.filter((c) => clipEmitsAudio(t, c)))
     .map((clip) => ({ clip, asset: s.project.assets[clip.assetId] }))
     .filter((x): x is { clip: Clip; asset: MediaAsset } => !!x.asset?.hasAudio)
     .sort((a, b) => a.clip.startS - b.clip.startS)

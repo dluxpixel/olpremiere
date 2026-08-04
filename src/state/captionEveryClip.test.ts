@@ -152,4 +152,68 @@ describe('autoCaptionEveryClip', () => {
     await autoCaptionEveryClip()
     expect(heard).toEqual([])
   })
+
+  // Dropping a video with sound makes a LINKED PAIR: a video-track clip and an
+  // audio-track clip sharing one assetId, one linkId, and the same in/out. Both
+  // report hasAudio, because it is one asset. Filtering on the asset therefore
+  // heard the same take twice and laid both word sets at the SAME timeline
+  // moment, so every caption came out doubled and the Whisper wait doubled with
+  // it. That is the normal way footage arrives, so it hit every real project,
+  // and got worse the more clips there were.
+  it('hears a linked video plus audio pair ONCE, not once per half', async () => {
+    const av: MediaAsset = {
+      id: 'av',
+      name: 'av',
+      kind: 'video',
+      blobKey: 'b',
+      durationS: 10,
+      hasAudio: true,
+      hasVideo: true,
+    }
+    const s = useStore.getState()
+    s.setProject({ ...s.project, assets: { av } })
+    updateActiveSequence('seed linked pair', (sq) => {
+      const vId = sq.tracks.find((t) => t.kind === 'video')?.id
+      const aId = sq.tracks.find((t) => t.kind === 'audio')?.id
+      return {
+        ...sq,
+        tracks: sq.tracks.map((t) => {
+          if (t.id === vId) {
+            return { ...t, clips: [{ ...newClipFromAsset(av, 0), id: 'clip-video', outS: 1, linkId: 'pair' }] }
+          }
+          if (t.id === aId) {
+            return { ...t, clips: [{ ...newClipFromAsset(av, 0), id: 'clip-audio', outS: 1, linkId: 'pair' }] }
+          }
+          return { ...t, clips: [] }
+        }),
+      }
+    })
+    await autoCaptionEveryClip()
+    expect(heard).toEqual(['clip-audio'])
+  })
+
+  it('still hears an UNLINKED video clip, whose sound has no audio-track partner', async () => {
+    const av: MediaAsset = {
+      id: 'solo',
+      name: 'solo',
+      kind: 'video',
+      blobKey: 'b',
+      durationS: 10,
+      hasAudio: true,
+      hasVideo: true,
+    }
+    const s = useStore.getState()
+    s.setProject({ ...s.project, assets: { solo: av } })
+    updateActiveSequence('seed unlinked video', (sq) => {
+      const vId = sq.tracks.find((t) => t.kind === 'video')?.id
+      return {
+        ...sq,
+        tracks: sq.tracks.map((t) =>
+          t.id === vId ? { ...t, clips: [{ ...newClipFromAsset(av, 0), id: 'clip-solo', outS: 1 }] } : { ...t, clips: [] },
+        ),
+      }
+    })
+    await autoCaptionEveryClip()
+    expect(heard).toEqual(['clip-solo'])
+  })
 })
