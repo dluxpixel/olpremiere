@@ -362,12 +362,29 @@ export function setClipTransition(
   // carried value was tuned for a different verb, so the envelope edge would
   // be an arbitrary landing spot. In-envelope values are kept as-is.
   const spec = transitionDurationSpec(kind)
-  const d =
-    durationS !== undefined && durationS >= spec.min && durationS <= spec.max ? durationS : spec.def
-  mapClip(clipId, `Add ${edge} transition`, (c) => ({
-    ...c,
-    [edge === 'in' ? 'transitionIn' : 'transitionOut']: { type: kind, durationS: d },
-  }))
+  mapClip(clipId, `Add ${edge} transition`, (c) => {
+    const prev = edge === 'in' ? c.transitionIn : c.transitionOut
+    // A duration the user never chose must not follow the verb it was tuned for.
+    // Dip to Black defaults to 0.5 s and White Flash's ceiling is exactly 0.5 s,
+    // so switching one to the other used to carry 0.5 s across on a technicality
+    // and hand back a flash at 2.5x its own default. Half a second of white is a
+    // passage of time, not the accent a hit is meant to be. So a value that is
+    // merely the OLD kind's default counts as unchosen and takes the new kind's
+    // default; a value he actually set is still kept when it fits.
+    // Transition.type is a loose string on purpose, so an unknown kind never fails
+    // to load. transitionDurationSpec already falls back for one, so the cast is
+    // safe and an unrecognised previous kind simply never matches its default.
+    const unchosen =
+      prev !== undefined &&
+      prev.type !== kind &&
+      durationS === transitionDurationSpec(prev.type as TransitionKind).def
+    const fits = durationS !== undefined && durationS >= spec.min && durationS <= spec.max
+    const d = fits && !unchosen ? (durationS as number) : spec.def
+    return {
+      ...c,
+      [edge === 'in' ? 'transitionIn' : 'transitionOut']: { type: kind, durationS: d },
+    }
+  })
 }
 
 export function removeClipTransition(clipId: string, edge: 'in' | 'out'): void {

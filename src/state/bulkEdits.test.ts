@@ -203,6 +203,26 @@ describe('setClipTransition duration envelope (whiteFlash)', () => {
     setClipTransition(a.id, 'in', 'whiteFlash', 0.01)
     expect(clips()[0].transitionIn!.durationS).toBe(0.2)
   })
+
+  it('does not carry the OLD kind\'s default across, even when it fits the new envelope', () => {
+    // The reported case. Dip to Black defaults to 0.5 s and White Flash's ceiling
+    // is exactly 0.5 s, so the old "is it in envelope" test said yes on a
+    // technicality and handed back a flash at 2.5x its own default.
+    const a = seedTitle(0)
+    setClipTransition(a.id, 'in', 'dipToBlack')
+    expect(clips()[0].transitionIn).toEqual({ type: 'dipToBlack', durationS: 0.5 })
+    setClipTransition(a.id, 'in', 'whiteFlash', clips()[0].transitionIn!.durationS)
+    expect(clips()[0].transitionIn).toEqual({ type: 'whiteFlash', durationS: 0.2 })
+  })
+
+  it('still keeps a duration he actually chose when the kind changes', () => {
+    // 0.3 s is nobody's default, so it reads as deliberate and must survive.
+    const a = seedTitle(0)
+    setClipTransition(a.id, 'in', 'whiteFlash', 0.3)
+    expect(clips()[0].transitionIn!.durationS).toBeCloseTo(0.3, 9)
+    setClipTransition(a.id, 'in', 'crossDissolve', clips()[0].transitionIn!.durationS)
+    expect(clips()[0].transitionIn).toEqual({ type: 'crossDissolve', durationS: 0.3 })
+  })
 })
 
 describe('setClipsGainDb / setClipsFade', () => {
