@@ -9,6 +9,9 @@ e2e/.fixtures/
 
 .vercel
 
+# Dev server scratch log. Committed by accident once in v0.1.29.
+.tmp-dev.log
+
 # Electron desktop build
 out/
 release/
