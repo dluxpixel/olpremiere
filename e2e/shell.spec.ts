@@ -30,15 +30,32 @@ test('splitters resize panels and sizes persist across reload', async ({ page })
   await page.goto('/')
   const before = (await page.getByTestId('panel-left').boundingBox())!.width
 
-  const splitter = (await page.getByTestId('splitter-left').boundingBox())!
+  // Hover first: that is what buys Playwright's stability and hit-target checks, which raw
+  // page.mouse.* skips entirely. Then re-read the box, because hover() can scroll the element
+  // into view and a box read before it is exactly the stale box we are trying to avoid.
+  const splitterEl = page.getByTestId('splitter-left')
+  await splitterEl.hover()
+  const splitter = (await splitterEl.boundingBox())!
   const y = splitter.y + splitter.height / 2
-  await page.mouse.move(splitter.x, y)
+  // Press the CENTRE, not splitter.x. That was the element's left edge, a zero pixel margin, the
+  // tightest aim in the suite, and a miss here is silent: the drag simply never arms.
+  const x = splitter.x + splitter.width / 2
+  await page.mouse.move(x, y)
   await page.mouse.down()
-  await page.mouse.move(splitter.x + 80, y, { steps: 8 })
+  await page.mouse.move(x + 80, y, { steps: 8 })
   await page.mouse.up()
 
+  // Give the commit a budget instead of reading once. This asserts a settled end state, not
+  // whether the gesture fired, so polling cannot mask a dead drag: a drag that never armed still
+  // fails here, it just stops failing for the unrelated reason that we looked too early.
+  await expect
+    .poll(async () => (await page.getByTestId('panel-left').boundingBox())!.width)
+    .toBeGreaterThan(before + 80 - 5)
+
+  // Read the settled width only AFTER the poll has confirmed the drag committed. Reading it
+  // before was the second half of the same bug: the persistence check downstream compared against
+  // a number that may have been sampled mid-gesture.
   const after = (await page.getByTestId('panel-left').boundingBox())!.width
-  expect(after).toBeGreaterThan(before + 80 - 5)
 
   await page.reload()
   const persisted = (await page.getByTestId('panel-left').boundingBox())!.width
