@@ -8,11 +8,14 @@ import { useEffect, useState } from 'react'
 import { filmstripPlan, TILE_W } from '../engine/filmstrip'
 import type { MediaAsset } from '../engine/types'
 import { getBlobUrl } from './blobUrls'
+import { createStripCache } from './filmstripCache'
 
 const TILE_H = 56 // matches the video lane's usable height
 const MAX_STRIPS = 60
 
-const cache = new Map<string, string>() // plan key → object URL (LRU by insertion)
+// A real LRU that refuses to revoke a strip something is still showing. See
+// filmstripCache.ts for the blank-thumbnail bug this replaced.
+const cache = createStripCache(MAX_STRIPS, (url) => URL.revokeObjectURL(url))
 const pending = new Set<string>()
 const waiters = new Map<string, Set<() => void>>()
 let queue: Promise<void> = Promise.resolve()
@@ -22,15 +25,12 @@ function notify(key: string): void {
   waiters.delete(key)
 }
 
-function evictIfNeeded(): void {
-  while (cache.size > MAX_STRIPS) {
-    const [oldKey, url] = cache.entries().next().value as [string, string]
-    cache.delete(oldKey)
-    URL.revokeObjectURL(url)
-  }
-}
-
 async function generate(asset: MediaAsset, key: string, timesS: number[]): Promise<void> {
+  // The queue is serial, so a job can wait behind many others while the clip it
+  // was queued for scrolls out of view. Building it then costs a video element
+  // and up to 32 seeks for a strip nobody is waiting on, which is exactly the
+  // work that piles up while scrolling a cut-heavy timeline.
+  if (!cache.isLive(key)) return
   const src = await getBlobUrl(asset.blobKey)
   if (!src) return
   const video = document.createElement('video')
@@ -63,7 +63,6 @@ async function generate(asset: MediaAsset, key: string, timesS: number[]): Promi
   const blob = await new Promise<Blob | null>((res) => canvas.toBlob(res, 'image/jpeg', 0.72))
   if (!blob) return
   cache.set(key, URL.createObjectURL(blob))
-  evictIfNeeded()
 }
 
 /**
@@ -87,35 +86,34 @@ export function useFilmstrip(
 
   useEffect(() => {
     if (!key || !plan || !asset) return
-    if (cache.has(key) || pending.has(key)) {
-      if (!cache.has(key)) {
-        // Someone else is generating it, so wake this hook when it lands.
-        const set = waiters.get(key) ?? new Set()
-        set.add(wake)
-        waiters.set(key, set)
-        return () => {
-          waiters.get(key)?.delete(wake)
-        }
-      }
-      return
-    }
-    pending.add(key)
-    queue = queue
-      .then(() => generate(asset, key, plan.timesS))
-      .catch(() => {}) // a failed strip just keeps the poster
-      .finally(() => {
-        pending.delete(key)
-        notify(key)
-        wake()
-      })
     function wake(): void {
       bump((x) => x + 1)
     }
-    const set = waiters.get(key) ?? new Set()
-    set.add(wake)
-    waiters.set(key, set)
+    // Retain FIRST and release in the cleanup, so a strip on screen can never be
+    // revoked underneath its own <img>. It also marks the key as still wanted,
+    // which is what lets a queued job for a scrolled-away clip drop itself.
+    cache.retain(key)
+
+    if (!cache.has(key)) {
+      if (!pending.has(key)) {
+        pending.add(key)
+        queue = queue
+          .then(() => generate(asset, key, plan.timesS))
+          .catch(() => {}) // a failed strip just keeps the poster
+          .finally(() => {
+            pending.delete(key)
+            notify(key)
+          })
+      }
+      // Wake when it lands, whether this hook queued it or another one did.
+      const set = waiters.get(key) ?? new Set()
+      set.add(wake)
+      waiters.set(key, set)
+    }
+
     return () => {
       waiters.get(key)?.delete(wake)
+      cache.release(key)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key])
