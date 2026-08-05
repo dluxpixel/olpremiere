@@ -24,6 +24,10 @@ const api: OlApi = {
   nativeWriteFrame: (frame: ArrayBuffer) => ipcRenderer.invoke('native:writeFrame', frame),
   nativeFinish: (): Promise<NativeFinishResult> => ipcRenderer.invoke('native:finish'),
   nativeCancel: () => ipcRenderer.invoke('native:cancel'),
+  proxyBegin: () => ipcRenderer.invoke('proxy:begin'),
+  proxyChunk: (id: string, bytes: ArrayBuffer) => ipcRenderer.invoke('proxy:chunk', id, bytes),
+  proxyFinish: (id: string) => ipcRenderer.invoke('proxy:finish', id),
+  proxyCancel: (id: string) => ipcRenderer.invoke('proxy:cancel', id),
   onNativeProgress: (cb: (p: NativeProgress) => void) => {
     const l = (_e: unknown, p: NativeProgress) => cb(p)
     ipcRenderer.on('native:progress', l)

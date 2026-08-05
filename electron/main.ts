@@ -14,6 +14,7 @@ import * as backups from './backups'
 import type { NativeExportConfig, UpdateStatus } from './ipc-types'
 import { SPLASH_MELON_POP_MS, SPLASH_MELON_PX } from './ipc-types'
 import * as native from './nativeExport'
+import * as proxy from './proxy'
 import electronUpdater from 'electron-updater'
 
 const { autoUpdater } = electronUpdater
@@ -346,6 +347,20 @@ app.whenReady().then(() => {
   ipcMain.handle('native:finish', () => native.finish())
   ipcMain.handle('native:cancel', () => native.cancel())
 
+  // A preview copy is an optimisation, never a requirement: a failure here is
+  // logged and swallowed so an odd file cannot stop it being imported or edited.
+  ipcMain.handle('proxy:begin', () => proxy.beginProxy())
+  ipcMain.handle('proxy:chunk', (_e, id: string, bytes: ArrayBuffer) => proxy.chunkProxy(id, bytes))
+  ipcMain.handle('proxy:cancel', (_e, id: string) => proxy.cancelProxy(id))
+  ipcMain.handle('proxy:finish', async (_e, id: string) => {
+    try {
+      return await proxy.finishProxy(id)
+    } catch (err) {
+      console.warn('OL Premiere: preview copy failed, preview will use the original', err)
+      return null
+    }
+  })
+
   // --- Backups -------------------------------------------------------------
   ipcMain.handle('backup:write', (_e, projectName: string, json: string) => backups.writeBackup(projectName, json))
   ipcMain.handle('backup:list', () => backups.listBackups())
@@ -458,7 +473,9 @@ app.whenReady().then(() => {
       // restarts only if no critical work is in flight. Otherwise it falls back to
       // the "Restart to update" toast. Outside the window we always just offer the toast.
       const freshLaunch = Date.now() - launchedAt < AUTO_APPLY_WINDOW_MS
-      if (freshLaunch && !native.isExporting()) {
+      // proxyBusy for the same reason as isExporting: a restart mid-transcode
+      // orphans an ffmpeg child and leaves half a proxy behind.
+      if (freshLaunch && !native.isExporting() && !proxy.proxyBusy()) {
         console.log(`OL Premiere update ${info.version} downloaded at launch, asking renderer to auto-apply`)
         mainWindow?.webContents.send('update:autoApply', info.version)
       } else {

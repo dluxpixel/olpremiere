@@ -5,6 +5,7 @@
 import { create } from 'zustand'
 import { evictAsset } from '../engine/frameCache'
 import { disposePreviewAsset } from '../engine/preview'
+import { ensureProxies, forgetProxy } from '../engine/proxyMedia'
 import { probeFile } from '../engine/probe'
 import { addClipFromAsset, addClipWithLinkedAudio, recomputeDuration } from '../engine/timeline'
 import {
@@ -106,6 +107,9 @@ export async function importFiles(files: File[]): Promise<void> {
     },
   }))
   show(`Imported ${imported.length} file(s)`, 'success')
+  // Start the small preview copies in the background. Nothing waits on this: he
+  // can cut immediately, and each clip's preview gets faster as its copy lands.
+  ensureProxies(imported)
 }
 
 /** Remove an asset from the bin and every clip that references it (all sequences). */
@@ -136,6 +140,7 @@ export function deleteAsset(assetId: Id): void {
   // (The IndexedDB blob is deliberately KEPT so Undo can restore the bin item.)
   evictAsset(assetId)
   disposePreviewAsset(assetId)
+  forgetProxy(assetId)
   // Drop any selection that pointed at now-removed clips.
   if (ui.selection.length > 0) setUI({ selection: [] })
   // Bin delete also nukes every clip referencing the asset across ALL sequences,

@@ -96,6 +96,17 @@ export interface OlApi {
   nativeFinish(): Promise<NativeFinishResult>
   /** Abort + clean up a partial file. */
   nativeCancel(): Promise<void>
+  /**
+   * Build a short-GOP preview copy of a video, so the preview can jump around
+   * it instantly. The source streams over in chunks because his captures are
+   * gigabytes; the copy comes back whole because it is small by construction.
+   * `proxyFinish` resolves to null when no copy could be made, and the preview
+   * then reads the original exactly as it did before proxies existed.
+   */
+  proxyBegin(): Promise<string>
+  proxyChunk(id: string, bytes: ArrayBuffer): Promise<void>
+  proxyFinish(id: string): Promise<ArrayBuffer | null>
+  proxyCancel(id: string): Promise<void>
   /** Encode progress (frame/totalFrames) parsed from ffmpeg. Returns an unsubscribe fn. */
   onNativeProgress(cb: (p: NativeProgress) => void): () => void
   /** Fires when a newer version has downloaded and is staged to install on restart. Returns an unsubscribe fn. */

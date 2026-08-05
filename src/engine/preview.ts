@@ -11,6 +11,12 @@ import {
   previewCapHeight,
   setPreviewSequenceHeight,
 } from './frameCache'
+import {
+  attachFrameProbe,
+  recordServedFrame,
+  resetPreviewHealth,
+  type FrameProbe,
+} from './previewTruth'
 import { createRenderer, type Renderer } from './render/glRenderer'
 import { resolveFrame } from './render/resolve'
 import { rasterizeTitle } from './render/titleRaster'
@@ -21,6 +27,17 @@ import type { Clip, Id, MediaAsset, Sequence } from './types'
 interface PooledVideo {
   el: HTMLVideoElement
   ready: boolean
+  /**
+   * Which frame this element is ACTUALLY showing. `el.currentTime` is the
+   * element's playback position, not the picture; see previewTruth.ts.
+   */
+  probe: FrameProbe
+  /**
+   * The clip this element was last serving. A change means the element has been
+   * handed to a different piece of the timeline (a cut), which is a re-anchor,
+   * not drift: seeking is correct and steering is not.
+   */
+  servingClipId: Id | null
 }
 interface PooledImage {
   el: HTMLImageElement
@@ -41,6 +58,19 @@ const HARD_SEEK_S = 0.35
 const RATE_TRIM = 0.02
 /** Roughly how long the servo takes to absorb an error, in seconds. */
 const SERVO_TAU_S = 2
+/**
+ * How far the element's real presented frame may sit from the wanted frame
+ * before the exact decode is served instead. Under two frame periods is the
+ * most a viewer cannot see, and it keeps a healthy long clip on the cheap
+ * element path where it belongs.
+ */
+const ELEMENT_TOL_FRAMES = 1.5
+/**
+ * A probe that has not reported for this long means the element is not
+ * presenting frames (stalled, seeking, or throttled), so its last reported
+ * timestamp is stale and the element's own clock is the better guess.
+ */
+const PROBE_STALE_MS = 250
 
 const VIDEO_POOL_CAP = 12
 /**
@@ -49,10 +79,21 @@ const VIDEO_POOL_CAP = 12
  * playing element is never a candidate anyway.
  */
 const PREROLL_CUT_LIMIT = 4
+/**
+ * How much of an upcoming cut's head to decode ahead of it. Long enough to
+ * cover a <video> seek (which is where the picture used to be lost), short
+ * enough that four pre-rolled heads cannot evict the frames being played.
+ */
+const CUT_HEAD_PREFETCH_S = 0.75
 const IMAGE_POOL_CAP = 48
 
 const videoPool = new Map<Id, PooledVideo>()
 const imagePool = new Map<Id, PooledImage>()
+
+/** Last play/pause state renderPreview saw, so a transition can reset the health window. */
+let wasPlaying = false
+/** The cut whose head has already been queued for decode, so it is asked for once, not per rAF. */
+let prefetchedCutId: Id | null = null
 
 function lruTouch<V>(pool: Map<Id, V>, id: Id, v: V): void {
   pool.delete(id)
@@ -69,7 +110,7 @@ function warmVideo(asset: MediaAsset): PooledVideo {
   el.muted = true // audio comes from the Web Audio graph, never the elements
   el.playsInline = true
   el.preload = 'auto'
-  const pooled: PooledVideo = { el, ready: false }
+  const pooled: PooledVideo = { el, ready: false, probe: attachFrameProbe(el), servingClipId: null }
   videoPool.set(asset.id, pooled)
   // Evict the least-recently-used PAUSED element. Never dispose one that is
   // actively playing (a multi-insert sweep like prewarm would otherwise evict
@@ -168,6 +209,7 @@ function disposeVideo(assetId: Id): void {
   const v = videoPool.get(assetId)
   if (!v) return
   if (!v.el.paused) v.el.pause()
+  v.probe.stop()
   v.el.removeAttribute('src')
   v.el.load() // drops the decoder + buffered data held by the element
   videoPool.delete(assetId)
@@ -425,6 +467,20 @@ function prerollCuts(seq: Sequence, assets: Record<Id, MediaAsset>, tS: number):
   const heads = upcomingCutHeads(seq, tS)
     .sort((c1, c2) => c1.startS - c2.startS)
     .slice(0, PREROLL_CUT_LIMIT)
+  // Decode-ahead goes to the NEXT cut only, and only once per clip. All the
+  // pieces of one recording share a single serialized decode chain, so asking
+  // for four scattered heads on every rAF re-ordered that chain sixty times a
+  // second and it finished none of them: the queue is bounded, so each new
+  // request pushed out the frames the imminent cut was about to need. One small
+  // target, issued once, is a target it can actually complete.
+  const next = heads[0]
+  if (next && next.id !== prefetchedCutId) {
+    prefetchedCutId = next.id
+    const asset = assets[next.assetId]
+    if (asset?.kind === 'video') {
+      prefetchRange(asset, next.inS, next.inS + Math.min(CUT_HEAD_PREFETCH_S, clipDurationS(next)))
+    }
+  }
   for (const clip of heads) {
     const asset = assets[clip.assetId]
     if (asset?.kind !== 'video') continue
@@ -556,26 +612,61 @@ function makeTextureSource(
     // reversed shuttle) keeps rate 1 and rides the seek path.
     const speed = layer.speed * Math.abs(transportRate)
     const wantRate = layer.speed > 0 && transportRate > 0 ? Math.min(16, Math.max(0.0625, speed)) : 1
+
+    // A CUT is a re-anchor, not drift. When this element was last serving a
+    // different clip the picture it holds belongs to somewhere else entirely,
+    // and steering toward the new time is meaningless: it has to jump.
+    const cut = pooled.servingClipId !== null && pooled.servingClipId !== layer.clipId
+    pooled.servingClipId = layer.clipId
+
+    // WHAT IS ACTUALLY ON SCREEN. `el.currentTime` is the element's playback
+    // position; the frame the compositor sampled can be well behind it and
+    // nothing here controls by how much. The probe reports the real presentation
+    // timestamp. Where rVFC is unavailable (Firefox) this falls back to the old
+    // number and the whole path behaves exactly as it did before.
+    const fresh = pooled.probe.live && performance.now() - pooled.probe.at < PROBE_STALE_MS
+    const shownS = fresh ? pooled.probe.mediaTime : el.currentTime
+    const trueErr = shownS - srcT // > 0 = picture ahead of the playhead
+
     if (el.paused) {
       el.currentTime = srcT
       el.playbackRate = wantRate
       void el.play().catch(() => {})
+    } else if (cut || Math.abs(trueErr) > HARD_SEEK_S) {
+      // A real jump. Seeking is correct, but a <video> seek takes long enough
+      // that on a run of short pieces the next cut lands before this one has
+      // finished: that is how the picture ended up seconds behind the playhead
+      // and never recovered. So we ask for the seek AND stop waiting for it.
+      el.currentTime = srcT
+      el.playbackRate = wantRate
     } else {
-      const err = el.currentTime - srcT // > 0 = picture ahead of the playhead
-      if (Math.abs(err) > HARD_SEEK_S) {
-        // A real jump: a cut, a scrub, a loop wrap. Seeking is correct here.
-        el.currentTime = srcT
-        el.playbackRate = wantRate
-      } else {
-        // Small drift: STEER instead of seeking. The old code did nothing at all
-        // inside its tolerance, so the picture could sit a tenth of a second off
-        // the audio indefinitely and then hitch when it finally fell out. This
-        // converges invisibly and never shows a seek.
-        const corr = Math.max(1 - RATE_TRIM, Math.min(1 + RATE_TRIM, 1 - err / SERVO_TAU_S))
-        const rate = wantRate * corr
-        if (Math.abs(el.playbackRate - rate) > 1e-3) el.playbackRate = rate
-      }
+      // Small drift: STEER instead of seeking, on the TRUE error now. The servo
+      // used to correct against the element's own clock, so it was steering by a
+      // number that was not the picture; converging on that is why the drift felt
+      // random rather than settling.
+      const corr = Math.max(1 - RATE_TRIM, Math.min(1 + RATE_TRIM, 1 - trueErr / SERVO_TAU_S))
+      const rate = wantRate * corr
+      if (Math.abs(el.playbackRate - rate) > 1e-3) el.playbackRate = rate
     }
+
+    // THE LADDER. The element is the cheap path and stays the default whenever
+    // the frame it is really showing is the frame we asked for. When it is not
+    // (mid-seek after a cut, or fallen behind), the exact decoded frame is
+    // served instead, the same frames the export uses and the same ones the
+    // transition path has always been served. Last resort is the element anyway:
+    // never null, never a black frame.
+    const tol = ELEMENT_TOL_FRAMES / (asset.fps && asset.fps > 0 ? asset.fps : fps)
+    if (Math.abs(trueErr) <= tol) {
+      recordServedFrame(trueErr, true)
+      return livePreviewSource(el, asset.id, layer.transform.scale)
+    }
+    const exact = getFrameAt(asset, srcT)
+    if (exact) {
+      recordServedFrame(0, true)
+      return exact as TexImageSource
+    }
+    recordServedFrame(trueErr, false)
+    markPending() // the decode is queued; keep polling so it lands
     return livePreviewSource(el, asset.id, layer.transform.scale)
   }
 }
@@ -697,6 +788,12 @@ export function renderPreview(
 ): boolean {
   const renderer = rendererFor(canvas)
   if (!renderer) return true
+  // Health describes ONE continuous run of playback. Starting or stopping makes
+  // every sample before it describe a different run, so the window starts over.
+  if (playing !== wasPlaying) {
+    wasPlaying = playing
+    resetPreviewHealth()
+  }
   // Keep the scrub cache's Full-quality decode cap matched to this raster.
   setPreviewSequenceHeight(seq.height)
   // The live raster drives how big preview-only rasters (titles) need to be.

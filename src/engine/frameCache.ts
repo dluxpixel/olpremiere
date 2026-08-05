@@ -7,6 +7,7 @@
 // this module stays importable in a plain node test env (no DOM, no IDB).
 
 import type { CanvasSink, Input, WrappedCanvas } from 'mediabunny'
+import { hasProxy, proxyKeyFor } from './proxyMedia'
 import type { Id, MediaAsset } from './types'
 
 export const FALLBACK_FPS = 30
@@ -218,6 +219,13 @@ interface AssetEntry {
   iter: AsyncGenerator<WrappedCanvas, void, unknown> | null
   /** Nominal frame index the iterator will yield NEXT (advances as it reads). */
   iterIdx: number
+  /**
+   * Whether the open demuxer is reading the short-GOP preview copy. A proxy can
+   * land while an asset is already open, and the entry must then be torn down
+   * and reopened: the frames already cached came from the original and are
+   * still correct, but every future seek should be paying proxy prices.
+   */
+  usingProxy: boolean
 }
 
 const cache = new FrameLru<CanvasImageSource>(CACHE_BUDGET_BYTES, frameBytes)
@@ -241,6 +249,7 @@ function ensureEntry(asset: MediaAsset): AssetEntry {
       noFrame: new Set(),
       iter: null,
       iterIdx: -1,
+      usingProxy: false,
     }
     entries.set(asset.id, e)
   }
@@ -267,8 +276,19 @@ async function openInput(e: AssetEntry): Promise<void> {
     import('mediabunny'),
     import('../state/persistence'),
   ])
-  const blob = await getBlob(e.asset.blobKey)
+  // PREVIEW ONLY. When a short-GOP preview copy exists, decode from it: a
+  // random seek in it costs at most a dozen small frames instead of decoding
+  // through to the next keyframe of the camera original, which is the entire
+  // reason cuts could not be served in time. Export never comes through here;
+  // it resolves blobKey itself and always gets the original.
+  //
+  // The STORED COPY decides, not a flag. Asking storage directly means this is
+  // right after a reload, right across a module boundary, and right when the
+  // transcode finished a moment ago, none of which an in-memory set can promise.
+  const proxy = await getBlob(proxyKeyFor(e.asset.id))
+  const blob = proxy && proxy.size > 0 ? proxy : await getBlob(e.asset.blobKey)
   if (!blob) throw new Error(`frameCache: no blob for key ${e.asset.blobKey}`)
+  e.usingProxy = blob === proxy
   const input = new MbInput({ source: new BlobSource(blob), formats: ALL_FORMATS })
   const track = await input.getPrimaryVideoTrack()
   if (!track) {
@@ -371,6 +391,16 @@ async function pump(e: AssetEntry): Promise<void> {
 function request(asset: MediaAsset, indices: number[], latest: number): void {
   const e = ensureEntry(asset)
   if (e.failed) return
+  // A preview copy finished transcoding while this asset was already open.
+  // Reopen against it, or every seek keeps paying the original's price for the
+  // rest of the session, which is the whole cost the proxy was built to remove.
+  if (!e.usingProxy && hasProxy(asset.id) && e.ready) {
+    closeIter(e)
+    e.input?.dispose()
+    e.input = null
+    e.sink = null
+    e.ready = null
+  }
   e.latest = latest
   const fresh = indices.filter((i) => i !== e.decoding && !e.noFrame.has(i) && !cache.has(cacheKey(asset.id, i)))
   if (fresh.length === 0 && e.pending.length === 0) return

@@ -15,6 +15,7 @@ import { useEffect, useRef, useState } from 'react'
 import { prewarmAudio } from '../engine/audio'
 import { setPreviewScale } from '../engine/frameCache'
 import { prewarmPreview, previewEpoch, renderPreview } from '../engine/preview'
+import { ensureProxies } from '../engine/proxyMedia'
 import { formatTimecode, quantizeToFrame } from '../engine/timecode'
 import { activeSequence, type Sequence } from '../engine/types'
 import { pausePlayback, subscribeShuttleRate, toggleLoop, togglePlay } from '../state/playbackControl'
@@ -237,6 +238,10 @@ export function Monitor() {
     const list = Object.values(assets).filter((a) => used.has(a.id))
     prewarmAudio(list)
     prewarmPreview(list)
+    // Also covers a project OPENED from disk, whose assets were imported in some
+    // earlier session and so never passed through the import path. Cheap to
+    // repeat: anything already built or queued is skipped.
+    ensureProxies(list)
   }, [assets, usedAssetKey])
 
   // No playheadS subscription: the timecode is an imperative leaf
