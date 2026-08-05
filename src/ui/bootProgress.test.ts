@@ -16,6 +16,7 @@ import {
   statusOf,
   stepsFor,
   trackBootStep,
+  trackBootStepWith,
   useBootLedger,
   type BootStatuses,
   type BootStepSpec,
@@ -213,5 +214,85 @@ describe('trackBootStep', () => {
     await expect(trackBootStep('fonts', Promise.reject(new Error('no font')))).resolves.toBeNull()
     expect(useBootLedger.getState().statuses.fonts?.state).toBe('failed')
     warn.mockRestore()
+  })
+})
+
+describe('the warm-up rows', () => {
+  const all = stepsFor(true)
+  const ids = all.map((s) => s.id)
+
+  it('warms video and audio, and gets captions ready', () => {
+    expect(ids).toContain('warmVideo')
+    expect(ids).toContain('warmAudio')
+    expect(ids).toContain('captions')
+  })
+
+  it('runs the warm-up AFTER the project is open, because it warms what is in it', () => {
+    expect(ids.indexOf('warmVideo')).toBeGreaterThan(ids.indexOf('project'))
+    expect(ids.indexOf('warmAudio')).toBeGreaterThan(ids.indexOf('project'))
+  })
+
+  it('GATES on video and audio: they are the point of the wait', () => {
+    const statuses: BootStatuses = {}
+    for (const s of all) if (s.id !== 'warmVideo' && s.id !== 'warmAudio') statuses[s.id] = { state: 'done' }
+    expect(gateReady(all, statuses)).toBe(false)
+    statuses.warmVideo = { state: 'done' }
+    expect(gateReady(all, statuses)).toBe(false)
+    statuses.warmAudio = { state: 'done' }
+    expect(gateReady(all, statuses)).toBe(true)
+  })
+
+  it('NEVER gates on captions, so a 100MB model download cannot lock him out', () => {
+    // The whole reason that row is marked optional. If this ever goes red, a
+    // first-ever boot on slow wifi would sit on the splash waiting for Whisper.
+    const statuses: BootStatuses = {}
+    for (const s of all) if (s.id !== 'captions') statuses[s.id] = { state: 'done' }
+    expect(gateReady(all, statuses)).toBe(true)
+  })
+
+  it('a warm-up that FAILS still opens the app', () => {
+    // A file that will not decode must not be able to hold the editor shut.
+    const statuses: BootStatuses = {}
+    for (const s of all) statuses[s.id] = { state: 'done' }
+    statuses.warmVideo = { state: 'failed' }
+    statuses.warmAudio = { state: 'failed' }
+    expect(gateReady(all, statuses)).toBe(true)
+  })
+})
+
+describe('trackBootStepWith', () => {
+  it('states what it actually warmed, instead of a fixed string', async () => {
+    useBootLedger.getState().reset()
+    await trackBootStepWith('warmAudio', Promise.resolve(6), (n) => `${n} ready`)
+    expect(statusOf(useBootLedger.getState().statuses, 'warmAudio')).toEqual({ state: 'done', detail: '6 ready' })
+  })
+
+  it('reports a failure as failed and resolves null, never throwing at boot', async () => {
+    useBootLedger.getState().reset()
+    const out = await trackBootStepWith('warmVideo', Promise.reject(new Error('no')), () => 'unused')
+    expect(out).toBeNull()
+    expect(statusOf(useBootLedger.getState().statuses, 'warmVideo').state).toBe('failed')
+  })
+})
+
+describe('progressOf answers "how close am I to being let in"', () => {
+  it('ignores optional rows, so a slow model download cannot park the bar', () => {
+    // THE BUG this guards. When the caption row was added, the bar counted it,
+    // so a healthy boot sat at 89% for as long as a 100MB download took while
+    // the app was in fact ready. A bar that cannot reach 100 is worse than none.
+    const specs = [spec('a'), spec('b'), spec('slow', { optional: true })]
+    const statuses = {
+      a: { state: 'done' },
+      b: { state: 'done' },
+      slow: { state: 'active' },
+    } as unknown as BootStatuses
+    expect(progressOf(specs, statuses)).toBe(1)
+    // and it agrees with the gate, which is the thing it is describing
+    expect(gateReady(specs, statuses)).toBe(true)
+  })
+
+  it('still counts a gating row that has not landed', () => {
+    const specs = [spec('a'), spec('b'), spec('slow', { optional: true })]
+    expect(progressOf(specs, { a: { state: 'done' } } as unknown as BootStatuses)).toBe(0.5)
   })
 })

@@ -171,6 +171,18 @@ export function prewarmAudio(assets: MediaAsset[]): void {
   for (const asset of assets) void getAudioBuffer(asset)
 }
 
+/**
+ * The same decode, AWAITABLE, so the boot card can report it honestly.
+ *
+ * The card's whole rule is that a row only ticks when real work has landed, so a
+ * warm-up step needs something to wait on. Resolves with how many assets decoded,
+ * and never rejects: a file that will not decode must not hold the app shut.
+ */
+export async function warmAudio(assets: MediaAsset[]): Promise<number> {
+  const results = await Promise.all(assets.map((a) => getAudioBuffer(a).catch(() => null)))
+  return results.filter(Boolean).length
+}
+
 // Reversed buffers for reverse playback (Phase 7), cached per asset.
 const reversedCache = new Map<Id, Promise<AudioBuffer | null>>()
 

@@ -14,15 +14,22 @@
 import { generationOptsFor, modelFor, type CaptionLanguage } from './transcribeConfig'
 
 export interface TranscribeRequest {
-  /** Mono PCM at 16kHz (the Whisper feature-extractor rate). */
+  /** Mono PCM at 16kHz (the Whisper feature-extractor rate). Absent on a warm. */
   pcm: Float32Array
   /** Caption language, which picks the model AND the generation options. */
   language: CaptionLanguage
+  /**
+   * Load the model and stop. Used by the boot card so the FIRST caption run
+   * does not pay for the download and the pipeline build in the middle of an
+   * edit. Never transcribes and never touches `pcm`.
+   */
+  warm?: boolean
 }
 
 export type TranscribeResponse =
   | { type: 'progress'; phase: 'model' | 'listening'; pct: number | null; downloading?: boolean }
   | { type: 'done'; chunks: { text: string; timestamp: [number, number | null] }[] }
+  | { type: 'warmed' }
   | { type: 'error'; message: string }
 
 const post = (msg: TranscribeResponse): void => {
@@ -30,6 +37,16 @@ const post = (msg: TranscribeResponse): void => {
 }
 
 self.onmessage = (e: MessageEvent<TranscribeRequest>) => {
+  // A warm request loads the model and nothing else, so the boot card can pay
+  // for it instead of his first caption run doing it mid-edit. It goes through
+  // the SAME getAsr cache the real run uses, so warming costs the real run
+  // nothing and cannot load a second copy.
+  if (e.data.warm) {
+    void getAsr(modelFor(e.data.language ?? 'en'))
+      .then(() => post({ type: 'warmed' }))
+      .catch((err: unknown) => post({ type: 'error', message: err instanceof Error ? err.message : String(err) }))
+    return
+  }
   void run(e.data.pcm, e.data.language ?? 'en')
 }
 

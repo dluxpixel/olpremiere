@@ -2,9 +2,11 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App'
 import { Boot } from './ui/BootSplash'
-import { bootStep, trackBootStep } from './ui/bootProgress'
+import { bootStep, trackBootStep, trackBootStepWith } from './ui/bootProgress'
 import { joinRoomFromUrl } from './collab/collabControl'
-import { invalidatePreview } from './engine/preview'
+import { invalidatePreview, warmPreview } from './engine/preview'
+import { warmAudio } from './engine/audio'
+import { warmTranscriber } from './engine/captions/transcribe'
 import { loadTitleFonts } from './engine/render/titleFonts'
 import './index.css'
 import { loadDefaultTextAppearance } from './state/appearanceActions'
@@ -14,6 +16,8 @@ import { migrateRenamedKeys } from './state/keyMigration'
 import { loadLibrary } from './state/library'
 import { initPersistence } from './state/persistence'
 import { initSettings } from './state/settings'
+import { useStore } from './state/store'
+import { activeSequence } from './engine/types'
 import { useToasts } from './state/toasts'
 import { initUpdateCheck } from './state/updateCheck'
 import { initUpdateFeed } from './state/updateStatus'
@@ -56,6 +60,28 @@ void initPersistence()
     bootStep.begin('backups')
     initAutoBackup()
     bootStep.finish('backups')
+
+    // WARM-UP. Everything below used to be paid on FIRST USE, in the middle of
+    // his work: the first play decoded the video, the first play and the first
+    // playhead scrub decoded the audio, and the first caption run loaded a
+    // model. His words, 2026-08-05: "why the hell would Sony Vegas and Adobe
+    // Premiere have such long loading times, right?" They are slow because they
+    // are doing this. The card was already holding a window open, so the work
+    // moves into it.
+    //
+    // Only what the OPEN PROJECT actually needs: warming the whole media
+    // library would punish a big library for no gain, since he can only play
+    // what is on the timeline.
+    const assets = Object.values(useStore.getState().project.assets)
+    const used = new Set(
+      activeSequence(useStore.getState().project).tracks.flatMap((t) => t.clips.map((c) => c.assetId)),
+    )
+    const onTimeline = assets.filter((a) => used.has(a.id))
+    const readyDetail = (n: number): string => (n > 0 ? `${n} ready` : 'nothing to warm')
+    await Promise.all([
+      trackBootStepWith('warmVideo', warmPreview(onTimeline), readyDetail),
+      trackBootStepWith('warmAudio', warmAudio(onTimeline), readyDetail),
+    ])
   })
   .catch((err: unknown) => {
     // A broken startup must still open the app: mark whatever never landed as
@@ -64,7 +90,16 @@ void initPersistence()
     bootStep.failUnfinished('project')
     bootStep.failUnfinished('integrity')
     bootStep.failUnfinished('backups')
+    bootStep.failUnfinished('warmVideo')
+    bootStep.failUnfinished('warmAudio')
   })
+
+// The speech model is 75 to 100MB on a first ever run and lands in the browser
+// cache after that. It is started HERE, off the project chain, and its row never
+// gates the card: an editor that will not open until a model downloads is a far
+// worse app than one that opens and finishes behind him. On every boot after the
+// first this is a fast cache read, and his first caption run stops stalling.
+void trackBootStep('captions', warmTranscriber())
 void trackBootStep('media', loadLibrary())
 // Register bundled title fonts (Minecraft/Monocraft) for the preview rasterizer,
 // and hydrate the saved default text animation. Once the font lands, force a

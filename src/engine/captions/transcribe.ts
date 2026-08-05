@@ -223,6 +223,11 @@ export function transcribePcm(
         settled = true
         cleanup() // keep the worker ALIVE so the model stays loaded for next time
         res(msg.chunks)
+      } else if (msg.type === 'warmed') {
+        // Not ours. A boot warm can land in the middle of a real run, and this
+        // used to be an `else` that treated ANY other message as a failure: it
+        // would have killed the worker and failed his caption run outright.
+        // Ignore it and keep listening.
       } else {
         settled = true
         cleanup()
@@ -251,4 +256,53 @@ export function transcribePcm(
       reject({ cancelled: true })
     },
   }
+}
+
+/**
+ * Load the speech model WITHOUT transcribing, so the boot card pays for it
+ * instead of his first caption run stalling mid-edit. Resolves true once the
+ * model is resident.
+ *
+ * Deliberately outside the `busy` single-flight lock. A warm is not a run: it
+ * neither reads nor produces a transcript, and it must never be able to make a
+ * real caption run wait or fail. The worker routes it through the SAME `getAsr`
+ * cache the run uses, so if a real run starts mid-warm they share one load
+ * rather than fetching the model twice.
+ *
+ * Never rejects. A model that will not load is a caption problem to be reported
+ * when he actually asks for captions, not a reason to hold the app shut.
+ */
+export function warmTranscriber(language: CaptionLanguage = 'en'): Promise<boolean> {
+  return new Promise((resolve) => {
+    let worker: Worker
+    try {
+      worker = getWorker()
+    } catch {
+      resolve(false)
+      return
+    }
+    const cleanup = (): void => {
+      worker.removeEventListener('message', onMessage as EventListener)
+      worker.removeEventListener('error', onError as EventListener)
+    }
+    const onMessage = (e: MessageEvent<TranscribeResponse>): void => {
+      // Only 'warmed' is ours. A 'done'/'progress' belongs to a real run that
+      // started alongside this warm, and must be left for its own listener.
+      if (e.data.type === 'warmed') {
+        cleanup()
+        resolve(true)
+      } else if (e.data.type === 'error') {
+        console.warn('OL Premiere: warming the speech model failed', e.data.message)
+        cleanup()
+        resolve(false)
+      }
+    }
+    const onError = (): void => {
+      cleanup()
+      resolve(false)
+    }
+    worker.addEventListener('message', onMessage as EventListener)
+    worker.addEventListener('error', onError as EventListener)
+    worker.postMessage({ language, warm: true })
+  })
 }

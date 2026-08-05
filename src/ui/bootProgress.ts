@@ -12,7 +12,17 @@
 
 import { create } from 'zustand'
 
-export type BootStepId = 'settings' | 'project' | 'media' | 'fonts' | 'integrity' | 'backups' | 'updates'
+export type BootStepId =
+  | 'settings'
+  | 'project'
+  | 'media'
+  | 'fonts'
+  | 'integrity'
+  | 'backups'
+  | 'warmVideo'
+  | 'warmAudio'
+  | 'captions'
+  | 'updates'
 
 export type BootStepState = 'pending' | 'active' | 'done' | 'failed'
 
@@ -40,6 +50,23 @@ export const BOOT_STEPS: readonly BootStepSpec[] = [
   { id: 'fonts', active: 'Loading fonts', done: 'Fonts loaded' },
   { id: 'integrity', active: 'Checking your files', done: 'Files checked' },
   { id: 'backups', active: 'Arming auto-backup', done: 'Auto-backup on' },
+  // The warm-up rows. Everything expensive in this app used to be paid for on
+  // FIRST USE: the first play decoded the video, the first play (and now the
+  // first scrub) decoded the audio, and the first caption run downloaded a
+  // model. Every one of those was a hitch in the middle of his work. They are
+  // paid here instead, in the window the card was already holding open.
+  { id: 'warmVideo', active: 'Warming up your video', done: 'Video ready' },
+  { id: 'warmAudio', active: 'Warming up your audio', done: 'Audio ready' },
+  {
+    id: 'captions',
+    active: 'Getting captions ready',
+    done: 'Captions ready',
+    // NEVER gates. The speech model is 75 to 100MB on a first ever run, and an
+    // editor that will not open until a model downloads is a far worse app than
+    // one that opens and finishes the download behind him. Same argument as the
+    // update check below.
+    optional: true,
+  },
   { id: 'updates', active: 'Checking for updates', done: 'Checked for updates', electronOnly: true, optional: true },
 ]
 
@@ -97,11 +124,22 @@ export function statusOf(statuses: BootStatuses, id: BootStepId): BootStepStatus
 
 const isSettled = (s: BootStepState): boolean => s === 'done' || s === 'failed'
 
-/** 0..1 over the shown rows. A failed row counts as settled: it is finished, just not well. */
+/**
+ * 0..1 over the rows that are actually HOLDING THE APP SHUT. A failed row counts
+ * as settled: it is finished, just not well.
+ *
+ * Optional rows are shown but not counted, because the bar answers one question,
+ * "how close am I to being let in", and an optional row does not gate. That
+ * became load bearing on 2026-08-05 when the caption model got a row: it can be
+ * a 75 to 100MB download on a first ever run, and counting it would have parked
+ * the bar at 89% for minutes while the app was in fact ready to open. A bar that
+ * cannot reach 100 on a healthy boot is worse than no bar.
+ */
 export function progressOf(specs: readonly BootStepSpec[], statuses: BootStatuses): number {
-  if (specs.length === 0) return 1
-  const settled = specs.filter((s) => isSettled(statusOf(statuses, s.id).state)).length
-  return settled / specs.length
+  const gating = specs.filter((s) => !s.optional)
+  if (gating.length === 0) return 1
+  const settled = gating.filter((s) => isSettled(statusOf(statuses, s.id).state)).length
+  return settled / gating.length
 }
 
 /** One row's own text: past tense once it landed, with any detail appended. */
@@ -197,6 +235,30 @@ if (import.meta.env.DEV && typeof window !== 'undefined') {
  * Wrap a real startup promise in its row. Failure is reported, never thrown on:
  * the boot screen's job is to open the editor, not to become the error.
  */
+/**
+ * Same as `trackBootStep`, but the finished row's detail is computed FROM the
+ * result ("6 ready"), which a fixed string cannot do. Exists so a warm-up row
+ * can state what it actually warmed rather than finishing twice to add a fact.
+ */
+export function trackBootStepWith<T>(
+  id: BootStepId,
+  work: Promise<T>,
+  detail: (value: T) => string | undefined,
+): Promise<T | null> {
+  bootStep.begin(id)
+  return work.then(
+    (v) => {
+      bootStep.finish(id, detail(v))
+      return v
+    },
+    (err: unknown) => {
+      console.warn(`OL Premiere boot: ${id} failed`, err)
+      bootStep.fail(id)
+      return null
+    },
+  )
+}
+
 export function trackBootStep<T>(id: BootStepId, work: Promise<T>, doneDetail?: string): Promise<T | null> {
   bootStep.begin(id)
   return work.then(

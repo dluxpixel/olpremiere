@@ -22,9 +22,14 @@ test('the loading card reports the real startup work, not a timer', async ({ pag
   // The editor has NOT mounted yet, so the card is the whole screen.
   await expect(page.getByTestId('panel-left')).toHaveCount(0)
 
-  // Six rows on the web build; the update row is desktop-only.
-  await expect(card.locator('li[data-step]')).toHaveCount(6)
+  // Nine rows on the web build; the update row is desktop-only. Was six until
+  // 2026-08-05, when the three WARM-UP rows landed: the splash now pays the
+  // bills the app used to defer to his first play and his first caption run.
+  await expect(card.locator('li[data-step]')).toHaveCount(9)
   await expect(card.locator('li[data-step="updates"]')).toHaveCount(0)
+  for (const id of ['warmVideo', 'warmAudio', 'captions']) {
+    await expect(card.locator(`li[data-step="${id}"]`)).toHaveCount(1)
+  }
 
   // `settings` is already done on the first paint, because that work really does
   // run before React mounts. A decorative list could not be true this early.
@@ -61,4 +66,27 @@ test('the card gives way to the melon on its own', async ({ page }) => {
   await expect(page.getByTestId('boot-loading-card')).toHaveCount(0)
   // And it never opens the editor by itself. That click is the audio gesture.
   await expect(page.getByTestId('panel-left')).toHaveCount(0)
+})
+
+test('the warm-up rows do real work, and the app opens even if they do not finish', async ({ page }) => {
+  // His ask, 2026-08-05: make the loading actually worth it. The rows below are
+  // the answer, so they get checked the same way every other row is: by landing.
+  await page.goto('/?boot=show')
+  const card = page.getByTestId('boot-loading-card')
+  await expect(card).toBeVisible()
+
+  // Both gating warm-up rows must SETTLE. If one hung, the card would sit here
+  // and this poll would time out, which is exactly the failure worth catching.
+  for (const id of ['warmVideo', 'warmAudio']) {
+    await expect
+      .poll(async () => card.locator(`li[data-step="${id}"]`).getAttribute('data-state'), { timeout: 15_000 })
+      .toMatch(/done|failed/)
+  }
+
+  // And the editor opens regardless of the caption model, which is the whole
+  // reason that row is optional: it can still be downloading right now.
+  const melon = page.getByRole('button', { name: 'Launch OL Premiere' })
+  await expect(melon).toBeVisible({ timeout: 15_000 })
+  await melon.click()
+  await expect(page.getByTestId('panel-left')).toBeVisible()
 })

@@ -124,6 +124,36 @@ export function prewarmPreview(assets: MediaAsset[]): void {
   }
 }
 
+/**
+ * The same prewarm, AWAITABLE, so the boot card can report it honestly rather
+ * than ticking a row the instant it fired the work off.
+ *
+ * Resolves once every warmed element has actually decoded its first frame (or
+ * given up), which is the moment that matters: an element with `ready:false`
+ * draws NOTHING, and a layer with no texture is the black frame this project has
+ * already shipped two fixes for. Warming at boot means the first play is not the
+ * one paying for it.
+ *
+ * Never rejects, and never waits forever: a file that will not decode gets a
+ * few seconds and is then left behind, because the app must open.
+ */
+export async function warmPreview(assets: MediaAsset[], timeoutMs = 6000): Promise<number> {
+  prewarmPreview(assets)
+  const pooled: { ready: boolean }[] = assets
+    .map((a) => (a.kind === 'video' ? videoPool.get(a.id) : a.kind === 'image' ? imagePool.get(a.id) : undefined))
+    .filter((p): p is PooledVideo | PooledImage => p !== undefined)
+  if (pooled.length === 0) return 0
+
+  const deadline = Date.now() + timeoutMs
+  // Poll rather than race a listener per element: the `ready` flag is set by the
+  // existing one-shot listeners, so this reads the same truth the renderer does
+  // and cannot double-register on an element that is already pooled and warm.
+  while (Date.now() < deadline && pooled.some((p) => !p.ready)) {
+    await new Promise((r) => setTimeout(r, 50))
+  }
+  return pooled.filter((p) => p.ready).length
+}
+
 export function pauseAllPreviewVideos(): void {
   for (const { el } of videoPool.values()) if (!el.paused) el.pause()
 }
