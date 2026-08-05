@@ -367,6 +367,81 @@ export function resolveStart(
   return best
 }
 
+/**
+ * Clear `[startS, endS)` on one track so something can be laid straight over
+ * whatever was there. The overwrite edit every real NLE has, and the thing this
+ * app had no way to do at all.
+ *
+ * Without it every placement went through resolveStart, which hunts for the
+ * nearest gap that FITS. On a packed, cut-heavy timeline no interior gap fits,
+ * so the only candidate left is the open end after the last clip: a dragged clip
+ * snapped back where it started and a fresh drop landed at the end of the
+ * sequence. That reads as the timeline refusing to be edited.
+ *
+ * Method: split at the FAR edge, then the NEAR edge, then delete what is wholly
+ * inside. The splits reuse splitClip, so fades, transitions, keyframes and
+ * effects divide exactly as they do for a razor cut rather than by a second,
+ * hand-rolled copy of that logic. Far edge first, because splitting at `startS`
+ * leaves the `endS` straddler as the RIGHT piece under a new id.
+ *
+ * `ignoreClipIds` is the moving clip's own link group: a clip must never
+ * overwrite itself.
+ */
+export function clearSpan(
+  seq: Sequence,
+  trackId: Id,
+  startS: number,
+  endS: number,
+  ignoreClipIds: readonly Id[] = [],
+): Sequence {
+  if (!(endS > startS + EPS)) return seq
+  const ignore = new Set(ignoreClipIds)
+  const trackOf = (s: Sequence): Track | undefined => s.tracks.find((t) => t.id === trackId)
+  if (!trackOf(seq)) return seq
+
+  let next = seq
+  // Straddlers first. A sub-frame straddle is refused by splitClip's min-piece
+  // guard and is handled by the trim pass below instead.
+  for (const edge of [endS, startS]) {
+    const straddler = trackOf(next)!.clips.find(
+      (c) => !ignore.has(c.id) && c.startS < edge - EPS && clipEndS(c) > edge + EPS,
+    )
+    if (straddler) next = splitClip(next, straddler.id, edge)
+  }
+
+  const track = trackOf(next)!
+  const kept: Clip[] = []
+  for (const c of track.clips) {
+    if (ignore.has(c.id)) {
+      kept.push(c)
+      continue
+    }
+    const cs = c.startS
+    const ce = clipEndS(c)
+    if (ce <= startS + EPS || cs >= endS - EPS) {
+      kept.push(c) // no overlap
+      continue
+    }
+    if (cs >= startS - EPS && ce <= endS + EPS) continue // wholly inside, drop it
+
+    // Only a sub-frame sliver can reach here, because both edges were split
+    // above and only splitClip's min-piece guard could have refused. Trim the
+    // sliver off so no overlap survives: an overlap would break the sorted,
+    // non-overlapping invariant the resolver depends on.
+    const speed = Math.abs(c.speed) || 1
+    if (cs < startS) {
+      kept.push({ ...c, outS: c.inS + (startS - cs) * speed, transitionOut: undefined, fadeOutS: 0 })
+    } else {
+      kept.push({ ...c, startS: endS, inS: c.inS + (endS - cs) * speed, transitionIn: undefined, fadeInS: 0 })
+    }
+  }
+
+  return {
+    ...next,
+    tracks: next.tracks.map((t) => (t.id === trackId ? { ...t, clips: kept } : t)),
+  }
+}
+
 const insertSorted = (clips: Clip[], clip: Clip): Clip[] => {
   const idx = clips.findIndex((c) => c.startS > clip.startS)
   return idx === -1 ? [...clips, clip] : [...clips.slice(0, idx), clip, ...clips.slice(idx)]
@@ -383,18 +458,28 @@ export function addClipFromAsset(
   trackId: Id,
   asset: MediaAsset,
   desiredStartS: number,
+  opts: { overwrite?: boolean } = {},
 ): { seq: Sequence; clipId: Id } {
-  const trackIndex = seq.tracks.findIndex((t) => t.id === trackId)
-  if (trackIndex === -1) return { seq, clipId: '' }
-  const track = seq.tracks[trackIndex]
+  const trackIndex0 = seq.tracks.findIndex((t) => t.id === trackId)
+  if (trackIndex0 === -1) return { seq, clipId: '' }
+  const track0 = seq.tracks[trackIndex0]
   const wantKind = asset.kind === 'audio' ? 'audio' : 'video'
-  if (track.kind !== wantKind || track.locked) return { seq, clipId: '' }
+  if (track0.kind !== wantKind || track0.locked) return { seq, clipId: '' }
 
   const outS = asset.durationS || 5 // images have durationS 0 → default 5s
+  // Overwrite lays the clip exactly where he dropped it and clears what was
+  // under it. Otherwise resolveStart hunts the nearest gap that FITS, and on a
+  // packed timeline the only one is the open end, so the drop silently landed
+  // at the end of the sequence instead of where he aimed.
+  const startS = opts.overwrite ? Math.max(0, desiredStartS) : resolveStart(track0, desiredStartS, outS)
+  const base = opts.overwrite ? clearSpan(seq, trackId, startS, startS + outS) : seq
+  const trackIndex = base.tracks.findIndex((t) => t.id === trackId)
+  const track = base.tracks[trackIndex]
+
   const clip: Clip = {
     id: newId(),
     assetId: asset.id,
-    startS: resolveStart(track, desiredStartS, outS),
+    startS,
     inS: 0,
     outS,
     speed: 1,
@@ -407,7 +492,7 @@ export function addClipFromAsset(
     fadeOutS: 0,
     effects: [],
   }
-  return { seq: withTrackClips(seq, trackIndex, insertSorted(track.clips, clip)), clipId: clip.id }
+  return { seq: withTrackClips(base, trackIndex, insertSorted(track.clips, clip)), clipId: clip.id }
 }
 
 export function moveClip(seq: Sequence, clipId: Id, targetTrackId: Id, desiredStartS: number): Sequence {
@@ -756,29 +841,47 @@ export function addClipWithLinkedAudio(
   audioTrackId: Id | null,
   asset: MediaAsset,
   desiredStartS: number,
+  opts: { overwrite?: boolean } = {},
 ): { seq: Sequence; videoClipId: Id; audioClipId: Id } {
-  const vIndex = seq.tracks.findIndex((t) => t.id === videoTrackId)
-  if (vIndex === -1) return { seq, videoClipId: '', audioClipId: '' }
-  const vTrack = seq.tracks[vIndex]
-  if (vTrack.kind !== 'video' || vTrack.locked) return { seq, videoClipId: '', audioClipId: '' }
+  const vIndex0 = seq.tracks.findIndex((t) => t.id === videoTrackId)
+  if (vIndex0 === -1) return { seq, videoClipId: '', audioClipId: '' }
+  if (seq.tracks[vIndex0].kind !== 'video' || seq.tracks[vIndex0].locked) {
+    return { seq, videoClipId: '', audioClipId: '' }
+  }
 
-  const aIndex = audioTrackId ? seq.tracks.findIndex((t) => t.id === audioTrackId) : -1
-  const aTrack = aIndex === -1 ? null : seq.tracks[aIndex]
-  const canLink = !!aTrack && aTrack.kind === 'audio' && !aTrack.locked
+  const aIndex0 = audioTrackId ? seq.tracks.findIndex((t) => t.id === audioTrackId) : -1
+  const aTrack0 = aIndex0 === -1 ? null : seq.tracks[aIndex0]
+  const canLink = !!aTrack0 && aTrack0.kind === 'audio' && !aTrack0.locked
 
   const dur = clipDurationS(newClipFromAsset(asset, 0))
-  // Place at a start free on BOTH tracks so the pair stays aligned.
-  const obstacles: Track = {
-    ...vTrack,
-    clips: [...vTrack.clips, ...(canLink ? aTrack!.clips : [])],
+  // Overwrite drops the pair exactly where he aimed and clears BOTH lanes under
+  // it. Otherwise resolveStart looks for a start free on both tracks at once,
+  // and on a packed timeline that is only ever the open end.
+  let startS: number
+  let base = seq
+  if (opts.overwrite) {
+    startS = Math.max(0, desiredStartS)
+    base = clearSpan(base, videoTrackId, startS, startS + dur)
+    if (canLink) base = clearSpan(base, audioTrackId!, startS, startS + dur)
+  } else {
+    // Place at a start free on BOTH tracks so the pair stays aligned.
+    const obstacles: Track = {
+      ...seq.tracks[vIndex0],
+      clips: [...seq.tracks[vIndex0].clips, ...(canLink ? aTrack0!.clips : [])],
+    }
+    startS = resolveStart(obstacles, desiredStartS, dur)
   }
-  const startS = resolveStart(obstacles, desiredStartS, dur)
+
+  const seqB = base
+  const vIndex = seqB.tracks.findIndex((t) => t.id === videoTrackId)
+  const vTrack = seqB.tracks[vIndex]
+  const aIndex = audioTrackId ? seqB.tracks.findIndex((t) => t.id === audioTrackId) : -1
 
   if (!canLink) {
     // No audio track: standalone video clip keeps its own audio (no linkId).
     const clip = { ...newClipFromAsset(asset, startS) }
     return {
-      seq: withTrackClips(seq, vIndex, insertSorted(vTrack.clips, clip)),
+      seq: withTrackClips(seqB, vIndex, insertSorted(vTrack.clips, clip)),
       videoClipId: clip.id,
       audioClipId: '',
     }
@@ -787,13 +890,13 @@ export function addClipWithLinkedAudio(
   const linkId = newId()
   const videoClip: Clip = { ...newClipFromAsset(asset, startS), linkId }
   const audioClip: Clip = { ...newClipFromAsset(asset, startS), linkId }
-  const tracks = seq.tracks.map((t, i) => {
+  const tracks = seqB.tracks.map((t, i) => {
     if (i === vIndex) return { ...t, clips: insertSorted(t.clips, videoClip) }
     if (i === aIndex) return { ...t, clips: insertSorted(t.clips, audioClip) }
     return t
   })
   return {
-    seq: recomputeDuration({ ...seq, tracks }),
+    seq: recomputeDuration({ ...seqB, tracks }),
     videoClipId: videoClip.id,
     audioClipId: audioClip.id,
   }

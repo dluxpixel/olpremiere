@@ -38,6 +38,7 @@ import {
   recomputeDuration,
   removeMarker,
   removeMarkerNear,
+  clearSpan,
   resolveStart,
   rippleDelete,
   rippleTrimTo,
@@ -2501,5 +2502,117 @@ describe('trim/speed edits retime a clip appearance', () => {
     const out = only(trimClipTo(seq, ASSETS, plain.id, 'out', 8))
     expect(out.keyframes ?? {}).toEqual({})
     expect(out.appearance).toBeUndefined()
+  })
+})
+
+describe('clearSpan (the overwrite edit)', () => {
+  // Without this every placement went through resolveStart, which hunts for the
+  // nearest gap that FITS. On a packed timeline no interior gap fits, so a drag
+  // snapped back where it started and a drop landed at the end of the sequence.
+  const packed = () => {
+    const a = makeClip({ id: 'a', startS: 0, inS: 0, outS: 4 }) // 0 to 4
+    const b = makeClip({ id: 'b', startS: 4, inS: 0, outS: 4 }) // 4 to 8
+    const c = makeClip({ id: 'c', startS: 8, inS: 0, outS: 4 }) // 8 to 12
+    const track = makeTrack({ clips: [a, b, c] })
+    return { seq: makeSeq([track]), trackId: track.id }
+  }
+  const clipsOf = (s: Sequence, trackId: string) => s.tracks.find((t) => t.id === trackId)!.clips
+  const spans = (s: Sequence, trackId: string) =>
+    clipsOf(s, trackId).map((c) => [Number(c.startS.toFixed(6)), Number(clipEndS(c).toFixed(6))])
+
+  it('there was no way to do this before: resolveStart sends a drop to the END', () => {
+    // The bug, stated as a test. A 4s clip into a fully packed 0 to 12 track has
+    // no interior gap that fits, so the only candidate is the open end.
+    const { seq, trackId } = packed()
+    const track = seq.tracks.find((t) => t.id === trackId)!
+    expect(resolveStart(track, 4, 4)).toBe(12)
+  })
+
+  it('drops a clip that is wholly inside the span', () => {
+    const { seq, trackId } = packed()
+    const out = clearSpan(seq, trackId, 4, 8)
+    expect(clipsOf(out, trackId).map((c) => c.id)).toEqual(['a', 'c'])
+    expect(spans(out, trackId)).toEqual([[0, 4], [8, 12]])
+  })
+
+  it('trims a clip that overlaps one edge, keeping the part outside', () => {
+    const { seq, trackId } = packed()
+    const out = clearSpan(seq, trackId, 2, 6)
+    // a keeps 0 to 2, b keeps 6 to 8, c untouched.
+    expect(spans(out, trackId)).toEqual([[0, 2], [6, 8], [8, 12]])
+  })
+
+  it('punches a hole through a clip that straddles BOTH edges', () => {
+    const one = makeClip({ id: 'solo', startS: 0, inS: 0, outS: 10 })
+    const track = makeTrack({ clips: [one] })
+    const seq = makeSeq([track])
+    const out = clearSpan(seq, track.id, 3, 6)
+    expect(spans(out, track.id)).toEqual([[0, 3], [6, 10]])
+  })
+
+  it('carries source times through the trim, so the picture does not shift', () => {
+    const one = makeClip({ id: 'solo', startS: 0, inS: 5, outS: 15 }) // src 5..15
+    const track = makeTrack({ clips: [one] })
+    const out = clearSpan(makeSeq([track]), track.id, 4, 6)
+    const [left, right] = clipsOf(out, track.id)
+    expect(left.inS).toBeCloseTo(5, 9)
+    expect(left.outS).toBeCloseTo(9, 9) // 4s of source consumed
+    expect(right.startS).toBeCloseTo(6, 9)
+    expect(right.inS).toBeCloseTo(11, 9) // 6s consumed at speed 1
+  })
+
+  it('never overwrites the clip being moved, or anything in its link group', () => {
+    const { seq, trackId } = packed()
+    const out = clearSpan(seq, trackId, 0, 12, ['b'])
+    expect(clipsOf(out, trackId).map((c) => c.id)).toEqual(['b'])
+  })
+
+  it('leaves the track alone when nothing overlaps, and on an empty span', () => {
+    const { seq, trackId } = packed()
+    expect(spans(clearSpan(seq, trackId, 20, 24), trackId)).toEqual([[0, 4], [4, 8], [8, 12]])
+    expect(clearSpan(seq, trackId, 5, 5)).toBe(seq)
+    expect(clearSpan(seq, trackId, 5, 4)).toBe(seq)
+  })
+
+  it('always leaves clips sorted and non-overlapping, which the resolver assumes', () => {
+    const { seq, trackId } = packed()
+    for (const [s, e] of [[1, 3], [3.5, 8.5], [0, 12], [7, 20], [2, 2.01]]) {
+      const cl = clipsOf(clearSpan(seq, trackId, s, e), trackId)
+      for (let i = 1; i < cl.length; i++) {
+        expect(cl[i].startS).toBeGreaterThanOrEqual(clipEndS(cl[i - 1]) - 1e-6)
+      }
+    }
+  })
+})
+
+describe('addClipFromAsset with overwrite (his complaint, end to end)', () => {
+  const packedTrack = () => {
+    const a = makeClip({ id: 'a', startS: 0, inS: 0, outS: 4 })
+    const b = makeClip({ id: 'b', startS: 4, inS: 0, outS: 4 })
+    const t = makeTrack({ clips: [a, b] })
+    return { seq: makeSeq([t]), trackId: t.id }
+  }
+  const asset: MediaAsset = {
+    id: 'newvid', name: 'new', kind: 'video', blobKey: 'k',
+    durationS: 2, hasAudio: false, hasVideo: true,
+  }
+
+  it('WITHOUT overwrite it still lands at the end, which is the old behaviour', () => {
+    const { seq, trackId } = packedTrack()
+    const { seq: out, clipId } = addClipFromAsset(seq, trackId, asset, 2)
+    const placed = findClip(out, clipId)!.clip
+    expect(placed.startS).toBe(8) // dumped after everything, not at 2
+  })
+
+  it('WITH overwrite it lands exactly where he dropped it', () => {
+    const { seq, trackId } = packedTrack()
+    const { seq: out, clipId } = addClipFromAsset(seq, trackId, asset, 2, { overwrite: true })
+    const placed = findClip(out, clipId)!.clip
+    expect(placed.startS).toBe(2)
+    const spans = out.tracks
+      .find((t) => t.id === trackId)!
+      .clips.map((c) => [Number(c.startS.toFixed(6)), Number(clipEndS(c).toFixed(6))])
+    // a is trimmed to 0..2, the new clip owns 2..4, b is untouched.
+    expect(spans).toEqual([[0, 2], [2, 4], [4, 8]])
   })
 })

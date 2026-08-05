@@ -2266,12 +2266,18 @@ export function Timeline({ height }: { height: number }) {
     // Dropping a video with audio splits its sound to a linked audio clip on A1.
     if (asset.kind === 'video' && asset.hasAudio) {
       const audioTrack = audioTracks(seq).find((tr) => !tr.locked) ?? null
+      // Overwrite: lay it where he dropped it and clear what was under it, the
+      // way every real NLE does. Without this the drop hunted for the nearest
+      // gap that FITS, and on a packed timeline the only one is the open end,
+      // so the clip silently landed after everything instead of where he aimed.
       updateActiveSequence(`Add ${asset.name}`, (sq) =>
-        addClipWithLinkedAudio(sq, target.id, audioTrack?.id ?? null, asset, t).seq,
+        addClipWithLinkedAudio(sq, target.id, audioTrack?.id ?? null, asset, t, { overwrite: true }).seq,
       )
       return
     }
-    updateActiveSequence(`Add ${asset.name}`, (sq) => addClipFromAsset(sq, target.id, asset, t).seq)
+    updateActiveSequence(`Add ${asset.name}`, (sq) =>
+      addClipFromAsset(sq, target.id, asset, t, { overwrite: true }).seq,
+    )
   }
 
   // --- scroll/zoom behaviors --------------------------------------------------
