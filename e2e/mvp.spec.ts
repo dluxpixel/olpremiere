@@ -42,7 +42,12 @@ test('double-click inserts video on V1 and splits its audio to A1', async ({ pag
   await page.screenshot({ path: `${VERIFY}/clip-on-timeline.png` })
 })
 
-test('move: dragging a clip shifts its timeline position (linked audio follows)', async ({ page }) => {
+// AMENDED 2026-08-05. His words: "when I drag the video clip, it automatically
+// drags the audio clip. Can you make it so the audio and video clips can be
+// dragged separately?" Grabbing a clip and moving it in one motion now moves
+// THAT clip. Selecting both halves first is the deliberate way to move them
+// together, and the test below covers that.
+test('move: dragging a clip shifts it, and leaves its linked audio alone', async ({ page }) => {
   await addClipToTimeline(page)
   const clip = vclip(page)
   const audio = aclip(page)
@@ -61,10 +66,9 @@ test('move: dragging a clip shifts its timeline position (linked audio follows)'
     .poll(async () => (await clip.boundingBox())!.x - before.x)
     .toBeGreaterThan(120)
 
-  const after = (await clip.boundingBox())!
   const audioAfter = (await audio.boundingBox())!
-  // The linked audio clip moved by the same amount.
-  expect(Math.abs((audioAfter.x - audioBefore.x) - (after.x - before.x))).toBeLessThan(4)
+  // The linked audio stayed put: one grab, one clip.
+  expect(Math.abs(audioAfter.x - audioBefore.x)).toBeLessThan(4)
   await page.keyboard.press('Control+z')
   const undone = (await clip.boundingBox())!
   expect(Math.abs(undone.x - before.x)).toBeLessThan(3)

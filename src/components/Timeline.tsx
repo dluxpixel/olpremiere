@@ -80,7 +80,7 @@ import { pausePlayback } from '../state/playbackControl'
 import { addAdjustmentClip, addTitleClip } from '../state/titleActions'
 import { copySelection, cutSelection, duplicateSelection, pasteAtPlayhead } from '../state/clipboard'
 import { copyClipAttributes, hasClipAttributes, pasteClipAttributes } from '../state/attributes'
-import { normalizeClipGain } from '../state/audioActions'
+import { balanceAllClipLoudness, normalizeClipGain } from '../state/audioActions'
 import {
   allTextPresets,
   applyTextPresetToClips,
@@ -1536,6 +1536,22 @@ export function Timeline({ height }: { height: number }) {
     // path: grabbing always selects the clip, so asking afterwards would report
     // "solo" every time and quietly kill linked slipping.
     const soloSlip = soloTrimIntent(clip.id)
+    /**
+     * MOVE is solo by default. His words, 2026-08-05, after a first attempt that
+     * only went solo once he had selected the clip: "when I drag the video clip,
+     * it automatically drags the audio clip. Can you make it so the audio and
+     * video clips can be dragged separately?"
+     *
+     * Requiring a click before the drag was a fix that asked him to change how
+     * he works, which is not a fix. Grabbing a clip and moving it in one motion
+     * is the gesture, so that gesture has to mean "move this clip". Selecting
+     * BOTH halves still moves them together, which is the deliberate way to say
+     * "keep these in sync" and the only way it happens now.
+     *
+     * Read before the select() below, like soloSlip: after it, the grabbed clip
+     * is always selected and the question answers itself.
+     */
+    const soloMove = !clipGroupIds(seq, clip.id).every((g) => selection.includes(g))
     if (e.shiftKey) {
       setUI({
         selection: selection.includes(clip.id)
@@ -1584,11 +1600,7 @@ export function Timeline({ height }: { height: number }) {
       downClientY: e.clientY,
       others,
       collapseCandidate: !e.shiftKey && selNow.includes(clip.id) && selNow.length > 1,
-      // Singling out ONE half of a pair and dragging it means "move just this
-      // clip", the same statement the trim and slip paths already honour. Read
-      // before the select above, so grabbing an unselected clip is not mistaken
-      // for singling it out.
-      solo: soloSlip,
+      solo: soloMove,
     })
   }
 
@@ -1637,7 +1649,11 @@ export function Timeline({ height }: { height: number }) {
     const captionItems =
       track?.kind === 'audio' && assets[clip.assetId]?.hasAudio
         ? [
-            { label: 'Normalize volume', onClick: () => void normalizeClipGain(clip.id) },
+            { label: 'Level this clip', onClick: () => void normalizeClipGain(clip.id) },
+            {
+              label: 'Balance volume across all clips',
+              onClick: () => void balanceAllClipLoudness(),
+            },
             { label: 'Auto-Caption from voiceover', onClick: () => void autoCaptionFromClip(clip.id) },
             { label: 'Punch video on beats', onClick: () => void punchOnBeats(clip.id) },
           ]

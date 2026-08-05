@@ -17,6 +17,7 @@ import {
   resetPreviewHealth,
   type FrameProbe,
 } from './previewTruth'
+import { setProxyBuildingPaused } from './proxyMedia'
 import { createRenderer, type Renderer } from './render/glRenderer'
 import { resolveFrame } from './render/resolve'
 import { rasterizeTitle } from './render/titleRaster'
@@ -32,12 +33,6 @@ interface PooledVideo {
    * element's playback position, not the picture; see previewTruth.ts.
    */
   probe: FrameProbe
-  /**
-   * The clip this element was last serving. A change means the element has been
-   * handed to a different piece of the timeline (a cut), which is a re-anchor,
-   * not drift: seeking is correct and steering is not.
-   */
-  servingClipId: Id | null
 }
 interface PooledImage {
   el: HTMLImageElement
@@ -110,7 +105,7 @@ function warmVideo(asset: MediaAsset): PooledVideo {
   el.muted = true // audio comes from the Web Audio graph, never the elements
   el.playsInline = true
   el.preload = 'auto'
-  const pooled: PooledVideo = { el, ready: false, probe: attachFrameProbe(el), servingClipId: null }
+  const pooled: PooledVideo = { el, ready: false, probe: attachFrameProbe(el) }
   videoPool.set(asset.id, pooled)
   // Evict the least-recently-used PAUSED element. Never dispose one that is
   // actively playing (a multi-insert sweep like prewarm would otherwise evict
@@ -613,11 +608,20 @@ function makeTextureSource(
     const speed = layer.speed * Math.abs(transportRate)
     const wantRate = layer.speed > 0 && transportRate > 0 ? Math.min(16, Math.max(0.0625, speed)) : 1
 
-    // A CUT is a re-anchor, not drift. When this element was last serving a
-    // different clip the picture it holds belongs to somewhere else entirely,
-    // and steering toward the new time is meaningless: it has to jump.
-    const cut = pooled.servingClipId !== null && pooled.servingClipId !== layer.clipId
-    pooled.servingClipId = layer.clipId
+    // NO SPECIAL CASE FOR A CLIP CHANGE, and the reason is worth keeping.
+    //
+    // A version of this file forced a seek whenever the element started serving
+    // a different clip, on the theory that a cut is a re-anchor. He felt it as
+    // stutter within minutes. Razoring ONE clip into pieces leaves those pieces
+    // CONTIGUOUS in the source: the clip changes at every boundary while the
+    // source time runs straight on, and the element was already showing exactly
+    // the right picture. Seeking there interrupted a correct picture once per
+    // cut, on precisely the cut-dense timelines this code exists to help.
+    //
+    // The error test below already covers the case the special case was for: a
+    // cut to a DIFFERENT part of the source moves srcT by seconds, which is far
+    // past the threshold, so it seeks on the very first frame regardless. The
+    // clip change told us nothing the error did not.
 
     // WHAT IS ACTUALLY ON SCREEN. `el.currentTime` is the element's playback
     // position; the frame the compositor sampled can be well behind it and
@@ -628,11 +632,13 @@ function makeTextureSource(
     const shownS = fresh ? pooled.probe.mediaTime : el.currentTime
     const trueErr = shownS - srcT // > 0 = picture ahead of the playhead
 
+    const tol = ELEMENT_TOL_FRAMES / (asset.fps && asset.fps > 0 ? asset.fps : fps)
+
     if (el.paused) {
       el.currentTime = srcT
       el.playbackRate = wantRate
       void el.play().catch(() => {})
-    } else if (cut || Math.abs(trueErr) > HARD_SEEK_S) {
+    } else if (Math.abs(trueErr) > HARD_SEEK_S) {
       // A real jump. Seeking is correct, but a <video> seek takes long enough
       // that on a run of short pieces the next cut lands before this one has
       // finished: that is how the picture ended up seconds behind the playhead
@@ -655,7 +661,6 @@ function makeTextureSource(
     // served instead, the same frames the export uses and the same ones the
     // transition path has always been served. Last resort is the element anyway:
     // never null, never a black frame.
-    const tol = ELEMENT_TOL_FRAMES / (asset.fps && asset.fps > 0 ? asset.fps : fps)
     if (Math.abs(trueErr) <= tol) {
       recordServedFrame(trueErr, true)
       return livePreviewSource(el, asset.id, layer.transform.scale)
@@ -793,6 +798,8 @@ export function renderPreview(
   if (playing !== wasPlaying) {
     wasPlaying = playing
     resetPreviewHealth()
+    // Never transcode a preview copy while he is watching the preview.
+    setProxyBuildingPaused(playing)
   }
   // Keep the scrub cache's Full-quality decode cap matched to this raster.
   setPreviewSequenceHeight(seq.height)

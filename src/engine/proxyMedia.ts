@@ -104,10 +104,33 @@ export function ensureProxies(assets: readonly MediaAsset[]): void {
   if (!running) void drain()
 }
 
+/**
+ * True while the timeline is playing. A transcode is ffmpeg at full tilt on
+ * every core it can get, and starting one while he is WATCHING the preview
+ * takes the CPU the preview needs: he reported the stutter within minutes of
+ * the first build that did this. Building a faster preview by making the
+ * current one stutter is not a trade worth making, so the queue waits for a
+ * pause. Nothing is lost: it resumes the moment he stops.
+ */
+let playing = false
+export function setProxyBuildingPaused(isPlaying: boolean): void {
+  const wasPaused = playing
+  playing = isPlaying
+  if (wasPaused && !isPlaying && !running && queue.length > 0) void drain()
+}
+
+/** How long to wait before re-checking whether playback has stopped. */
+const PLAYBACK_RECHECK_MS = 1500
+
 async function drain(): Promise<void> {
   running = true
   try {
     while (queue.length > 0) {
+      if (playing) {
+        // Hand the machine back to the preview and look again shortly.
+        await new Promise((r) => setTimeout(r, PLAYBACK_RECHECK_MS))
+        continue
+      }
       const asset = queue.shift()
       if (!asset) break
       try {

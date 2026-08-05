@@ -78,3 +78,27 @@ test('dragging a singled-out video half leaves its audio where it was', async ({
   expect(movedVideo.x).toBeGreaterThan(box.x + 40) // the video really moved
   expect(Math.abs(audioNow.x - before.x)).toBeLessThan(4) // the audio did not
 })
+
+test('selecting BOTH halves first moves them together, which is how you keep them in sync', async ({
+  page,
+}) => {
+  const vid = page.locator('[data-clip-kind="video"]').first()
+  const aud = page.locator('[data-clip-kind="audio"]').first()
+  const vBefore = await vid.boundingBox()
+  const aBefore = await aud.boundingBox()
+  if (!vBefore || !aBefore) throw new Error('no linked pair on the timeline')
+
+  await vid.click()
+  await aud.click({ modifiers: ['Shift'] }) // both halves now selected
+  await page.mouse.move(vBefore.x + vBefore.width / 2, vBefore.y + vBefore.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(vBefore.x + vBefore.width / 2 + 120, vBefore.y + vBefore.height / 2, { steps: 12 })
+  await page.mouse.up()
+
+  const vAfter = await vid.boundingBox()
+  const aAfter = await aud.boundingBox()
+  if (!vAfter || !aAfter) throw new Error('a clip vanished during the drag')
+  expect(vAfter.x).toBeGreaterThan(vBefore.x + 40)
+  // Both moved, by the same amount.
+  expect(Math.abs(aAfter.x - aBefore.x - (vAfter.x - vBefore.x))).toBeLessThan(6)
+})
