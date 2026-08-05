@@ -555,11 +555,22 @@ export function deleteSelected(ripple: boolean): void {
 /**
  * Split at the playhead. Three explicit verbs (David, 2026-07-18 - the earlier
  * selection-scoped C was "way too confusing"):
- *   C          → split the clip(s): a linked pair always splits TOGETHER.
+ *   C          → split the clip(s); a linked pair splits TOGETHER by default.
  *   Shift+C    → split only the AUDIO half (kind: 'audio').
  *   Alt+C      → split only the VIDEO half (kind: 'video').
- * A selection still narrows WHICH clips are considered (multi-track editing),
- * but never changes what a verb splits.
+ * A selection still narrows WHICH clips are considered (multi-track editing).
+ *
+ * ONE EXCEPTION, added 2026-08-05 on his report that "when I select a specific
+ * clip, it cuts only that clip" had stopped working: singling out ONE half of a
+ * pair and pressing C cuts just that half. This is deliberately NARROWER than
+ * the July behaviour he rejected. That one let a selection anywhere re-scope the
+ * verb, which is what made it unpredictable. This fires only when he has clicked
+ * one half of a pair and left its partner unselected, which is an unambiguous
+ * statement about that clip. Nothing selected, or the whole pair selected, is
+ * completely unchanged.
+ *
+ * It is the same test trimming has always used (soloTrimIntent in Timeline.tsx),
+ * so cut, trim and move now agree about what singling a clip out means.
  *
  * Shared with the clip context menu, which used to split only the clip you
  * right-clicked while the Delete item one row below it said "Delete 5 clips".
@@ -598,7 +609,9 @@ export function splitAtPlayhead(allTracks = false, kind?: 'video' | 'audio'): vo
     const done = new Set<string>()
     for (const id of targets) {
       if (done.has(id)) continue
-      if (kind) {
+      // Singled out: he selected this clip and left its linked partner alone.
+      const solo = sel.length > 0 && !clipGroupIds(next, id).every((g) => sel.includes(g))
+      if (kind || solo) {
         done.add(id)
         next = splitClipOnly(next, id, t)
         continue

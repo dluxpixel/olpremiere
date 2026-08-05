@@ -42,6 +42,7 @@ import {
   closeGapBefore,
   collectSnapPoints,
   gapBefore,
+  moveClip,
   moveGroup,
   rateStretchGroup,
   rippleTrimGroup,
@@ -108,7 +109,6 @@ import { appearanceMenuItems, titleFontSizeItems } from '../state/clipMenus'
 import { openContextMenu, type MenuItem } from '../state/contextMenu'
 import { useBlobUrl } from '../state/blobUrls'
 import { useFilmstrip } from '../state/filmstrips'
-import { scrubAudio } from '../engine/scrubAudio'
 import { ClipWaveform } from './ClipWaveform'
 import { PlayheadLine, RemotePlayheads } from './PlayheadWidgets'
 import { pointOnScrollbar } from './scrollbarGuard'
@@ -1056,6 +1056,8 @@ type Drag =
        * selection's relative timing.
        */
       others: { id: Id; startS0: number }[]
+      /** He singled out ONE half of a linked pair: move only that half. */
+      solo?: boolean
       /**
        * Click-without-drag on an already-multi-selected clip collapses the
        * selection to just it (narrowing without deselect-all); a real drag
@@ -1477,11 +1479,17 @@ export function Timeline({ height }: { height: number }) {
     targetTrackId: Id,
     tS: number,
     others: { id: Id; startS0: number }[],
+    solo = false,
   ): Sequence => {
     const grabbed = base.tracks.flatMap((t) => t.clips).find((c) => c.id === grabbedId)
     if (!grabbed) return base
     const deltaS = tS - grabbed.startS
-    let next = moveGroup(base, grabbedId, targetTrackId, tS)
+    // Solo: he clicked one half of a pair and left the partner unselected, so
+    // the partner stays where it is. moveClip is the same verb the group move
+    // uses underneath; the only difference is that it stops at this clip.
+    let next = solo
+      ? moveClip(base, grabbedId, targetTrackId, tS)
+      : moveGroup(base, grabbedId, targetTrackId, tS)
     if (others.length === 0 || deltaS === 0) return next
     const ordered = [...others].sort((a, b) => (deltaS > 0 ? b.startS0 - a.startS0 : a.startS0 - b.startS0))
     for (const o of ordered) {
@@ -1576,6 +1584,11 @@ export function Timeline({ height }: { height: number }) {
       downClientY: e.clientY,
       others,
       collapseCandidate: !e.shiftKey && selNow.includes(clip.id) && selNow.length > 1,
+      // Singling out ONE half of a pair and dragging it means "move just this
+      // clip", the same statement the trim and slip paths already honour. Read
+      // before the select above, so grabbing an unselected clip is not mistaken
+      // for singling it out.
+      solo: soloSlip,
     })
   }
 
@@ -1892,10 +1905,6 @@ export function Timeline({ height }: { height: number }) {
     const t = Math.max(0, (clientX - rect.left) / pxPerS)
     const at = quantizeToFrame(t, seq.fps)
     setUI({ playheadS: at })
-    // Make sound under the dragged playhead. Throttled inside, so calling it at
-    // pointermove rate costs a compare. This is how a cut gets FOUND: you hear
-    // the sentence end instead of playing past it and coming back.
-    scrubAudio.scrub(seq, assets, at)
   }
 
   // Vegas-style: click empty space (a track lane, or the blank area below the
@@ -2063,7 +2072,7 @@ export function Timeline({ height }: { height: number }) {
           text: `Move  ${formatTimecode(finalT, seq.fps)}  ${fmtDelta(finalT - clip.startS, seq.fps)}`,
         })
       }
-      setPreviewSeq(moveSelectionWith(seq, drag.clipId, target.id, finalT, drag.others))
+      setPreviewSeq(moveSelectionWith(seq, drag.clipId, target.id, finalT, drag.others, drag.solo))
     } else if (drag.kind === 'slip') {
       const deltaS = quantizeToFrame((x - drag.startXPx) / pxPerS, seq.fps)
       dragFinal.current = { trackId: '', tS: deltaS }
@@ -2161,7 +2170,6 @@ export function Timeline({ height }: { height: number }) {
     setHoverLane(null)
     // Let go of the playhead and the scrubbing stops with it, including any
     // grain still decoding.
-    scrubAudio.stop()
     lanesRef.current?.releasePointerCapture(e.pointerId)
     // Marquee is selection-only (no undo dispatch) - just drop the rectangle.
     if (drag.kind === 'marquee') {
@@ -2183,7 +2191,7 @@ export function Timeline({ height }: { height: number }) {
     } else if (drag.kind === 'move' && dragFinal.current) {
       const { trackId, tS } = dragFinal.current
       updateActiveSequence(drag.others.length > 0 ? 'Move clips' : 'Move clip', (sq) =>
-        moveSelectionWith(sq, drag.clipId, trackId, tS, drag.others),
+        moveSelectionWith(sq, drag.clipId, trackId, tS, drag.others, drag.solo),
       )
     } else if (drag.kind === 'trim' && dragFinal.current) {
       const { tS } = dragFinal.current
@@ -2386,7 +2394,6 @@ export function Timeline({ height }: { height: number }) {
     const t = Math.max(0, (clientX - rect.left) / pxPerS)
     const at = quantizeToFrame(t, seq.fps)
     setUI({ playheadS: at })
-    scrubAudio.scrub(seq, assets, at)
   }
 
   // The pointer always says what a press would do: a razor blade for the
@@ -2564,8 +2571,6 @@ export function Timeline({ height }: { height: number }) {
               onPointerMove={(e) => {
                 if (e.currentTarget.hasPointerCapture(e.pointerId)) scrubTo(e.clientX)
               }}
-              onPointerUp={() => scrubAudio.stop()}
-              onPointerCancel={() => scrubAudio.stop()}
             >
               <Ruler contentWidth={contentWidth} lengthS={lengthS} winStartS={winStartS} winEndS={winEndS} />
               {/* Work area: the range an export renders. Drawn under the markers

@@ -145,22 +145,42 @@ test('Shift+E disables the clip (renders at 40%) and re-enables it', async ({ pa
 })
 
 // The split scheme (2026-07-18, replaces the earlier selection-scoped C which
-// was "way too confusing"): C = the pair, ALWAYS; Shift+C = audio only;
-// Alt+C = video only. Ctrl+C stays Copy.
-test('C cuts the linked PAIR even when only one half is selected', async ({ page }) => {
+// was "way too confusing"): C = the pair; Shift+C = audio only; Alt+C = video
+// only. Ctrl+C stays Copy.
+//
+// AMENDED 2026-08-05, on his report: "when I select a specific clip, it cuts
+// only that clip. That was a very useful feature." Singling out ONE half of a
+// pair now scopes C to that half. This is narrower than the July behaviour he
+// rejected, which let a selection anywhere re-scope the verb. The default is
+// unchanged and the test below pins it, because THAT is the part he called
+// confusing and the part that must not drift back.
+test('C cuts the linked PAIR when nothing is singled out', async ({ page }) => {
   await boot(page)
   await page.getByTestId('asset-card').dblclick()
   await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
-  const v = (await clips(page)).find((c) => c.trackKind === 'video')!
 
   await setPlayhead(page, 0.5)
-  await select(page, v.id) // one half selected: C must STILL cut both
   await page.getByTestId('panel-left').click({ position: { x: 5, y: 5 } })
   await page.keyboard.press('c')
 
   const after = await clips(page)
   expect(after.filter((c) => c.trackKind === 'video')).toHaveLength(2)
   expect(after.filter((c) => c.trackKind === 'audio')).toHaveLength(2)
+})
+
+test('C cuts ONLY the half he singled out, leaving its partner whole', async ({ page }) => {
+  await boot(page)
+  await page.getByTestId('asset-card').dblclick()
+  await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
+  const v = (await clips(page)).find((c) => c.trackKind === 'video')!
+
+  await setPlayhead(page, 0.5)
+  await select(page, v.id) // the video half, and only it
+  await page.keyboard.press('c')
+
+  const after = await clips(page)
+  expect(after.filter((c) => c.trackKind === 'video')).toHaveLength(2)
+  expect(after.filter((c) => c.trackKind === 'audio')).toHaveLength(1)
 })
 
 test('Shift+C cuts only the AUDIO; Alt+C only the VIDEO', async ({ page }) => {

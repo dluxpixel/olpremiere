@@ -3,7 +3,6 @@
 
 import { scheduleAudio } from '../engine/audio'
 import { Transport } from '../engine/playback'
-import { scrubAudio } from '../engine/scrubAudio'
 import { pauseAllPreviewVideos, setPreviewTransportRate } from '../engine/preview'
 import { activeSequence } from '../engine/types'
 import { workArea } from '../engine/workArea'
@@ -47,7 +46,6 @@ const transport = new Transport({
   schedule: (fromS) => {
     // A scrub grain still ringing would sound over the top of the transport, so
     // the two are never alive at once. Cheap and idempotent.
-    scrubAudio.stop()
     const { project } = useStore.getState()
     return scheduleAudio(activeSequence(project), project.assets, fromS)
   },

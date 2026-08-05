@@ -52,15 +52,28 @@ test('frame-accurate scrub: exact frames on both sides of the color cut', async 
 
   // Prove the WebCodecs frame cache actually served the scrub (vite dev
   // shares the module graph, so this import IS the app's instance).
-  const stats = await page.evaluate(async () => {
-    // Computed specifier: resolved by vite in the browser, invisible to tsc.
-    const spec = '/src/engine/frameCache.ts'
-    const mod = (await import(/* @vite-ignore */ spec)) as {
-      frameCacheStats: () => { entries: number; assets: number }
-    }
-    return mod.frameCacheStats()
-  })
-  expect(stats.entries).toBeGreaterThan(0)
+  // POLLED, like every other assertion in this test. A decode is asynchronous:
+  // the colour above can be on screen from the pooled <video> while the exact
+  // frame is still being decoded behind it. Reading the cache once, immediately,
+  // asked whether the decode had ALREADY landed, which under a loaded full-suite
+  // run it sometimes had not. The requirement is unchanged (the cache must serve
+  // the scrub); it is simply given the same few seconds the pixels get.
+  await expect
+    .poll(
+      async () =>
+        (
+          await page.evaluate(async () => {
+            // Computed specifier: resolved by vite in the browser, invisible to tsc.
+            const spec = '/src/engine/frameCache.ts'
+            const mod = (await import(/* @vite-ignore */ spec)) as {
+              frameCacheStats: () => { entries: number; assets: number }
+            }
+            return mod.frameCacheStats()
+          })
+        ).entries,
+      { timeout: 10_000 },
+    )
+    .toBeGreaterThan(0)
   await page.screenshot({ path: `${VERIFY}/frame-accurate-scrub.png` })
 })
 

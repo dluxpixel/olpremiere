@@ -149,6 +149,24 @@ export function refitClipToFill(
  * untouched clip is scaled to fill the new frame (hand-placed transforms are
  * left alone; see refitClipToFill). Export follows the sequence dimensions.
  */
+/**
+ * Land a NEWLY created clip filling the sequence frame.
+ *
+ * Switching format already refits every clip to fill (setSequenceFormat), so
+ * "switch to 9:16, then add a clip" and "add a clip, then switch to 9:16" used
+ * to give different results: the second filled the frame, the first left the new
+ * clip pillarboxed with bars down both sides. Same two actions, same intent,
+ * two answers. His words: the clip should insert as 9:16, not 16:9 in a 9:16
+ * window.
+ *
+ * Same math as the format switch, so the two can never drift. A source that
+ * already matches the frame gets cover === contain and is returned untouched,
+ * which is why this is a no-op for an ordinary 16:9 edit.
+ */
+export function fitNewClipToFrame(clip: Clip, asset: MediaAsset, seq: Sequence): Clip {
+  return refitClipToFill(clip, { [asset.id]: asset }, seq.width, seq.height)
+}
+
 export function setSequenceFormat(
   seq: Sequence,
   assets: Record<Id, MediaAsset>,
@@ -492,7 +510,8 @@ export function addClipFromAsset(
     fadeOutS: 0,
     effects: [],
   }
-  return { seq: withTrackClips(base, trackIndex, insertSorted(track.clips, clip)), clipId: clip.id }
+  const fitted = fitNewClipToFrame(clip, asset, seq)
+  return { seq: withTrackClips(base, trackIndex, insertSorted(track.clips, fitted)), clipId: fitted.id }
 }
 
 export function moveClip(seq: Sequence, clipId: Id, targetTrackId: Id, desiredStartS: number): Sequence {
@@ -907,7 +926,7 @@ export function addClipWithLinkedAudio(
 
   if (!canLink) {
     // No audio track: standalone video clip keeps its own audio (no linkId).
-    const clip = { ...newClipFromAsset(asset, startS) }
+    const clip = fitNewClipToFrame(newClipFromAsset(asset, startS), asset, seq)
     return {
       seq: withTrackClips(seqB, vIndex, insertSorted(vTrack.clips, clip)),
       videoClipId: clip.id,
@@ -916,7 +935,7 @@ export function addClipWithLinkedAudio(
   }
 
   const linkId = newId()
-  const videoClip: Clip = { ...newClipFromAsset(asset, startS), linkId }
+  const videoClip: Clip = { ...fitNewClipToFrame(newClipFromAsset(asset, startS), asset, seq), linkId }
   const audioClip: Clip = { ...newClipFromAsset(asset, startS), linkId }
   const tracks = seqB.tracks.map((t, i) => {
     if (i === vIndex) return { ...t, clips: insertSorted(t.clips, videoClip) }
