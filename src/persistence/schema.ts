@@ -156,6 +156,9 @@ export const ProjectSchema = z
     sequences: z.record(str, SequenceSchema),
     activeSequenceId: str,
     settings: SettingsSchema,
+    // Absent on every project saved before archiving existed, which reads as
+    // not archived. Optional, never defaulted, so a load cannot invent a date.
+    archivedAt: num.optional(),
   })
   .catchall(z.unknown())
 

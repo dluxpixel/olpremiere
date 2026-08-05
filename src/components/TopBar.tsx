@@ -1,4 +1,5 @@
 import {
+  Archive,
   Download,
   FolderOpen,
   HardDriveDownload,
@@ -29,7 +30,7 @@ import { Button, IconButton } from '../ui/Button'
 import { MelonMark } from '../ui/MelonMark'
 import { displayVersion } from '../appVersion'
 import { ExportDialog } from './ExportDialog'
-import { ProjectsDialog } from './ProjectsDialog'
+import { ProjectsDialog, type ProjectsView } from './ProjectsDialog'
 import { SettingsDialog } from './SettingsDialog'
 
 /**
@@ -278,7 +279,8 @@ export function TopBar() {
   }
   const setUI = useStore((s) => s.setUI)
   const [exporting, setExporting] = useState(false)
-  const [projectsOpen, setProjectsOpen] = useState(false)
+  // null = closed. Otherwise which half of his work the dialog opened on.
+  const [projectsOpen, setProjectsOpen] = useState<ProjectsView | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const openFileRef = useRef<HTMLInputElement>(null)
   // The shortcut and the command palette open THIS input, so there is one door.
@@ -310,10 +312,20 @@ export function TopBar() {
       <ProjectName />
       <IconButton
         label="Projects: switch or start another edit"
-        onClick={() => setProjectsOpen(true)}
+        onClick={() => setProjectsOpen('active')}
         data-testid="open-projects"
       >
         <LayoutGrid size={16} strokeWidth={1.5} />
+      </IconButton>
+      {/* Finished work, kept rather than deleted. His words: "why the hell would
+          I delete them for no reason". Its own door so the list he works from
+          stays the list he is working on. */}
+      <IconButton
+        label="Finished projects: edits you have filed away"
+        onClick={() => setProjectsOpen('archived')}
+        data-testid="open-archived"
+      >
+        <Archive size={16} strokeWidth={1.5} />
       </IconButton>
       <SaveIndicator />
 
@@ -387,7 +399,7 @@ export function TopBar() {
         <ExportButton onOpen={() => setExporting(true)} />
       </div>
       {exporting && <ExportDialog onClose={() => setExporting(false)} />}
-      {projectsOpen && <ProjectsDialog onClose={() => setProjectsOpen(false)} />}
+      {projectsOpen && <ProjectsDialog view={projectsOpen} onClose={() => setProjectsOpen(null)} />}
       {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
     </header>
   )

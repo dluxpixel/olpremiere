@@ -12,6 +12,16 @@ export interface Project {
   sequences: Record<Id, Sequence>
   activeSequenceId: Id
   settings: { fps: number; width: number; height: number; sampleRate: number }
+  /**
+   * When he ARCHIVED this project, if he has. Archived projects are finished
+   * work he does not want to delete: they are hidden from the main Projects
+   * list and live behind their own button, and they are never loaded to build
+   * that list beyond their summary.
+   *
+   * Optional on purpose. Every project saved before this existed simply has no
+   * field, which reads as not archived, so nothing needs migrating.
+   */
+  archivedAt?: number
 }
 
 /** An imported source file. */

@@ -99,6 +99,8 @@ export interface ProjectSummary {
   createdAt: number
   assetCount: number
   clipCount: number
+  /** Set only on finished work he has archived. Absent means active. */
+  archivedAt?: number
 }
 
 export async function listProjects(): Promise<ProjectSummary[]> {
@@ -115,8 +117,40 @@ export async function listProjects(): Promise<ProjectSummary[]> {
         (n, sq) => n + sq.tracks.reduce((m, t) => m + t.clips.length, 0),
         0,
       ),
+      ...(p.archivedAt ? { archivedAt: p.archivedAt } : {}),
     }))
     .sort((a, b) => b.updatedAt - a.updatedAt)
+}
+
+/** The two halves of the list: what he is working on, and what he has finished. */
+export function activeProjects(all: readonly ProjectSummary[]): ProjectSummary[] {
+  return all.filter((p) => !p.archivedAt)
+}
+
+/** Archived, newest ARCHIVED first, which is the order he last touched them as finished work. */
+export function archivedProjects(all: readonly ProjectSummary[]): ProjectSummary[] {
+  return all.filter((p) => p.archivedAt).sort((a, b) => (b.archivedAt ?? 0) - (a.archivedAt ?? 0))
+}
+
+/**
+ * Mark a project finished, or bring it back. Writes ONLY the flag: the stored
+ * document is read, stamped and put back, so archiving can never rewrite,
+ * migrate or lose the edit itself.
+ *
+ * Deliberately does NOT touch `updatedAt`. That field means "when he last
+ * changed the edit", and filing something away is not changing it; bumping it
+ * would reorder his active list every time he tidied up.
+ */
+export async function setProjectArchived(id: string, archived: boolean): Promise<void> {
+  const d = await db()
+  const p = (await d.get('projects', id)) as Project | undefined
+  if (!p) return
+  const next: Project = { ...p }
+  if (archived) next.archivedAt = Date.now()
+  else delete next.archivedAt
+  // The 'projects' store uses OUT-OF-LINE keys, so the id must be passed. Without
+  // it, put() throws DataError and the archive silently does nothing.
+  await d.put('projects', next, id)
 }
 
 /**

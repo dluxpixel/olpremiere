@@ -5,7 +5,7 @@
 import { activeSequence, newProject } from '../engine/types'
 import { useCollab } from '../collab/collabControl'
 import { pausePlayback } from './playbackControl'
-import { deleteProject, loadProjectById, saveNow, saveProject } from './persistence'
+import { deleteProject, loadProjectById, saveNow, saveProject, setProjectArchived } from './persistence'
 import { useStore } from './store'
 import { useToasts } from './toasts'
 import { applyTemplateTracks } from './trackTemplate'
@@ -83,4 +83,33 @@ export async function removeProject(id: string): Promise<void> {
   }
   await deleteProject(id)
   useToasts.getState().show('Project deleted')
+}
+
+/**
+ * File a finished project away, or bring it back out.
+ *
+ * Archiving is NOT deleting and must never feel like it: nothing is removed,
+ * no media bytes are touched, and it is one click to reverse. It exists because
+ * of what he said on 2026-08-05: *"I have a lot of projects that I finished that
+ * I just don't want to delete because, why the hell would I delete them for no
+ * reason, right?"*
+ *
+ * The OPEN project is refused, for the same reason deleting it is: the list he
+ * is looking at should never disagree with the editor behind it.
+ */
+export async function setArchived(id: string, archived: boolean): Promise<void> {
+  if (id === useStore.getState().project.id) {
+    useToasts.getState().show('Open another project first, then archive this one', 'danger')
+    return
+  }
+  try {
+    await setProjectArchived(id, archived)
+  } catch (err) {
+    // Never swallow this. The first version did, and a write that threw looked
+    // exactly like a click that did nothing: the row just stayed put.
+    console.error('OL Premiere: archiving failed', err)
+    useToasts.getState().show('Could not file that project away', 'danger')
+    return
+  }
+  useToasts.getState().show(archived ? 'Moved to finished' : 'Back in your projects')
 }
