@@ -100,24 +100,33 @@ test('ripple trim: Ctrl+drag the out edge pulls the next clip along', async ({ p
   const second = vclip(page).nth(1)
   const before2 = (await second.boundingBox())!
   const first = vclip(page).first()
+  // Hover buys the stability and hit-target checks raw page.mouse.* skips; the box is re-read
+  // after it, since hover() can scroll the clip into view.
+  await first.hover()
   const b1 = (await first.boundingBox())!
 
   await page.keyboard.down('Control')
+  // -3 is the centre of the 6px trim-out zone, not a margin: keep aiming there.
   await page.mouse.move(b1.x + b1.width - 3, b1.y + b1.height / 2)
   await page.mouse.down()
   await page.mouse.move(b1.x + b1.width - 33, b1.y + b1.height / 2, { steps: 6 })
   await page.mouse.up()
   await page.keyboard.up('Control')
 
-  const after2 = (await second.boundingBox())!
-  expect(before2.x - after2.x).toBeGreaterThan(20) // followed the ripple left
+  // Settled end state, not a check that the gesture fired: a ripple that never armed leaves
+  // the second clip where it was and still fails here.
+  await expect
+    .poll(async () => before2.x - (await second.boundingBox())!.x)
+    .toBeGreaterThan(20) // followed the ripple left
 })
 
 test('slip: Alt+drag shifts the source window, not the position', async ({ page }) => {
   await addClip(page)
   const clip = vclip(page)
   // Trim the head in ~30px first so the slip has source room on the left.
+  await clip.hover()
   let box = (await clip.boundingBox())!
+  // +3 is the centre of the 6px trim-in zone, not a margin: keep aiming there.
   await page.mouse.move(box.x + 3, box.y + box.height / 2)
   await page.mouse.down()
   await page.mouse.move(box.x + 33, box.y + box.height / 2, { steps: 6 })
@@ -125,6 +134,9 @@ test('slip: Alt+drag shifts the source window, not the position', async ({ page 
 
   await clip.click()
   const inBefore = await page.getByTestId('panel-right').textContent()
+  // The head trim just changed this clip's x and width. hover() waits for the box to stop moving,
+  // so the re-read below is the post-trim geometry and not a mid-relayout sample.
+  await clip.hover()
   box = (await clip.boundingBox())!
 
   await page.keyboard.down('Alt')

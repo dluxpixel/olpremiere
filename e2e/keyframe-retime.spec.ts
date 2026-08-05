@@ -72,13 +72,18 @@ test('dragging a keyframe diamond retimes it', async ({ page }) => {
 
   // Drag the t=3 diamond toward the t=1 diamond → lands near t≈2. Using both
   // diamond boxes makes the target robust to the track's exact geometry.
+  // Hover FIRST, then read the boxes. hover() buys the stability and hit-target
+  // checks raw page.mouse.* skips, and it can scroll the lane, which moves both
+  // diamonds; a midX measured before it is exactly the stale target we avoid.
+  const drag = diamonds.nth(1)
+  await drag.hover()
   const d1 = await diamonds.nth(0).boundingBox()
-  const d3 = await diamonds.nth(1).boundingBox()
+  const d3 = await drag.boundingBox()
   if (!d1 || !d3) throw new Error('no geometry')
   const midX = (d1.x + d1.width / 2 + d3.x + d3.width / 2) / 2
   const y = d3.y + d3.height / 2
 
-  await diamonds.nth(1).hover()
+  await page.mouse.move(d3.x + d3.width / 2, y)
   await page.mouse.down()
   await page.mouse.move(midX, y, { steps: 10 })
   await page.mouse.up()

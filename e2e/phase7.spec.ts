@@ -279,6 +279,9 @@ test('drag a corner handle in the preview to scale the selected clip', async ({ 
   const before = await readScale(page, clipId)
   // Drag the bottom-right handle outward (away from center) → scale up.
   const handle = page.getByTestId('gizmo-handle-2')
+  await handle.hover()
+  // Re-read AFTER the hover: this box comes from a ResizeObserver measure of the
+  // canvas, so a read before it can be one layout stale.
   const b = (await handle.boundingBox())!
   await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2)
   await page.mouse.down()

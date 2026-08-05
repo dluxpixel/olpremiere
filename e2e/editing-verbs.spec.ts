@@ -194,8 +194,10 @@ test('trimming a SELECTED audio clip leaves its linked video full length', async
   const a0 = before.find((c) => c.trackKind === 'audio')!
 
   await select(page, a0.id) // the AUDIO half only
-  // Drag the audio clip's right edge left by 60px (~1s at the default zoom).
+  // Drag the audio clip's right edge left by 60px (~1s at the default zoom). The -2 lands
+  // INSIDE the 6px out-trim handle, so the box is re-read after the hover, not before it.
   const audio = page.locator('[data-clip-kind="audio"]').first()
+  await audio.hover()
   const box = (await audio.boundingBox())!
   await page.mouse.move(box.x + box.width - 2, box.y + box.height / 2)
   await page.mouse.down()
@@ -219,6 +221,7 @@ test('trimming with nothing selected still trims the linked pair together', asyn
   await setUI(page, { selection: [] })
 
   const audio = page.locator('[data-clip-kind="audio"]').first()
+  await audio.hover()
   const box = (await audio.boundingBox())!
   await page.mouse.move(box.x + box.width - 2, box.y + box.height / 2)
   await page.mouse.down()
@@ -239,6 +242,8 @@ test('slip with nothing selected slips BOTH halves, so the pair stays in sync', 
 
   // Trim both heads together first, so the pair has source handles on the left.
   const video = page.locator('[data-clip-kind="video"]').first()
+  await video.hover()
+  // +3 is inside the 6px in-trim handle: keep the aim, refresh the box it comes from.
   let box = (await video.boundingBox())!
   await page.mouse.move(box.x + 3, box.y + box.height / 2)
   await page.mouse.down()
@@ -252,6 +257,8 @@ test('slip with nothing selected slips BOTH halves, so the pair stays in sync', 
   expect(v0.inS).toBeGreaterThan(0)
   expect(a0.inS).toBeGreaterThan(0)
 
+  // The head trim above moved this clip, so hover and re-read before grabbing its middle.
+  await video.hover()
   box = (await video.boundingBox())!
   await page.keyboard.down('Alt')
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
@@ -296,6 +303,7 @@ test('a freshly inserted clip lands unselected, so trimming its head trims the p
 
   // Head-trim the video straight after inserting: the audio must follow.
   const video = page.locator('[data-clip-kind="video"]').first()
+  await video.hover()
   const box = (await video.boundingBox())!
   await page.mouse.move(box.x + 3, box.y + box.height / 2)
   await page.mouse.down()

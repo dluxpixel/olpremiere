@@ -80,12 +80,18 @@ test('Ctrl+drag rubber-band selects multiple clips', async ({ page }) => {
   // up over both clips. Starting on empty background (not a clip) is what arms
   // the marquee instead of a clip move.
   await setSelection(page, [])
-  const lanes = await page.getByTestId('timeline-lanes').boundingBox()
+  const lanesEl = page.getByTestId('timeline-lanes')
+  await lanesEl.hover()
+  const lanes = await lanesEl.boundingBox()
   const c0 = await page.getByTestId('clip').first().boundingBox()
   if (!lanes || !c0) throw new Error('no timeline geometry')
+  // The lanes BOX spans the 10px scrollbar band, and a press landing on that band is
+  // rejected in SILENCE (src/components/scrollbarGuard.ts). clientHeight stops at the
+  // content area, so this aims 12px clear of the band instead of 2px.
+  const contentH = await lanesEl.evaluate((el) => el.clientHeight)
 
   const startX = lanes.x + 20
-  const startY = lanes.y + lanes.height - 12 // blank area beneath the tracks
+  const startY = lanes.y + contentH - 12 // blank area beneath the tracks
   const endX = c0.x + 340 // covers both 5s title clips (≈300px each at 60px/s)
   const endY = c0.y + 4
 
@@ -106,11 +112,16 @@ test('right-drag box-selects clips and does NOT open a context menu', async ({ p
   await addTitle(page)
   await setSelection(page, [])
 
-  const lanes = await page.getByTestId('timeline-lanes').boundingBox()
+  const lanesEl = page.getByTestId('timeline-lanes')
+  await lanesEl.hover()
+  const lanes = await lanesEl.boundingBox()
   const c0 = await page.getByTestId('clip').first().boundingBox()
   if (!lanes || !c0) throw new Error('no timeline geometry')
+  // clientHeight excludes the 10px scrollbar band that scrollbarGuard.ts rejects in
+  // silence, so measuring off it keeps the press 12px clear instead of 2px.
+  const contentH = await lanesEl.evaluate((el) => el.clientHeight)
   const startX = lanes.x + 20
-  const startY = lanes.y + lanes.height - 12
+  const startY = lanes.y + contentH - 12
   const endX = c0.x + 340
   const endY = c0.y + 4
 

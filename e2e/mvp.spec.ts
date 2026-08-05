@@ -46,15 +46,23 @@ test('move: dragging a clip shifts its timeline position (linked audio follows)'
   await addClipToTimeline(page)
   const clip = vclip(page)
   const audio = aclip(page)
+  // Hover first: that buys the stability and hit-target checks raw page.mouse.* skips, and it
+  // can scroll the clip into view, so both boxes are read AFTER it.
+  await clip.hover()
   const before = (await clip.boundingBox())!
   const audioBefore = (await audio.boundingBox())!
   await page.mouse.move(before.x + before.width / 2, before.y + before.height / 2)
   await page.mouse.down()
   await page.mouse.move(before.x + before.width / 2 + 150, before.y + before.height / 2, { steps: 10 })
   await page.mouse.up()
+
+  // A budget for the commit instead of one read. A drag that never armed still fails here.
+  await expect
+    .poll(async () => (await clip.boundingBox())!.x - before.x)
+    .toBeGreaterThan(120)
+
   const after = (await clip.boundingBox())!
   const audioAfter = (await audio.boundingBox())!
-  expect(after.x - before.x).toBeGreaterThan(120)
   // The linked audio clip moved by the same amount.
   expect(Math.abs((audioAfter.x - audioBefore.x) - (after.x - before.x))).toBeLessThan(4)
   await page.keyboard.press('Control+z')
@@ -79,13 +87,18 @@ test('C cuts at the playhead; the razor (B) tool cuts on click', async ({ page }
 test('trim: dragging the out handle shortens the clip', async ({ page }) => {
   await addClipToTimeline(page)
   const clip = vclip(page)
+  // The -3 lands INSIDE the 6px out-trim handle, which is the thing under test, so the offset
+  // stays and only the box it is computed from is made fresh.
+  await clip.hover()
   const before = (await clip.boundingBox())!
   await page.mouse.move(before.x + before.width - 3, before.y + before.height / 2)
   await page.mouse.down()
   await page.mouse.move(before.x + before.width - 45, before.y + before.height / 2, { steps: 8 })
   await page.mouse.up()
-  const after = (await clip.boundingBox())!
-  expect(before.width - after.width).toBeGreaterThan(25)
+
+  await expect
+    .poll(async () => before.width - (await clip.boundingBox())!.width)
+    .toBeGreaterThan(25)
 })
 
 test('delete lifts the clip and its linked audio; undo restores both', async ({ page }) => {
@@ -141,6 +154,7 @@ test('clicking ON a clip moves the playhead there; dragging it does not', async 
   // DRAG the clip (real movement) → the playhead must NOT follow the pointer.
   await page.keyboard.press('Home')
   await expect(page.getByTestId('timecode')).toContainText('00:00:00:00')
+  await clip.hover()
   const start = (await clip.boundingBox())!
   await page.mouse.move(start.x + 30, start.y + start.height / 2)
   await page.mouse.down()

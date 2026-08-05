@@ -48,6 +48,9 @@ async function dragEdge(page: Page, edge: 'in' | 'out', dx: number, alt: boolean
   const clip = page.locator('[data-clip-kind="video"]')
   await clip.hover() // handles appear on hover
   const handle = clip.getByTestId(`trim-${edge}`)
+  // Hover the HANDLE too, then re-read: the clip hover stabilises the clip, but only this checks
+  // that the press point itself is hit-testable and its own box has settled.
+  await handle.hover()
   const box = (await handle.boundingBox())!
   const startX = box.x + box.width / 2
   const startY = box.y + box.height / 2
@@ -73,8 +76,11 @@ test('Alt+drag the out edge inward retimes the clip instead of trimming it', asy
   expect(after.outS).toBe(before.outS)
   expect(after.startS).toBe(before.startS)
 
-  const width1 = (await page.locator('[data-clip-kind="video"]').boundingBox())!.width
-  expect(width1).toBeLessThan(width0 * 0.7)
+  // Settled end state: the retime commits to the store on pointerup but the DOM width lands on a
+  // later render. A retime that never armed keeps the original width and still fails here.
+  await expect
+    .poll(async () => (await page.locator('[data-clip-kind="video"]').boundingBox())!.width)
+    .toBeLessThan(width0 * 0.7)
 })
 
 test('rate stretch is one undo step', async ({ page }) => {

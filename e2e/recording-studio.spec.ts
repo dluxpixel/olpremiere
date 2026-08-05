@@ -55,10 +55,16 @@ test('the panel is movable and exposes input, output, and monitoring', async ({ 
   const before = (await panel.boundingBox())!
   // Grab the header title (not the close button) and drag it down-right.
   const grip = panel.getByText('Record', { exact: true })
+  await grip.hover()
   const gb = (await grip.boundingBox())!
-  await page.mouse.move(gb.x + 4, gb.y + gb.height / 2)
+  // Press the CENTRE of the title, not 4px inside its left edge: same header drag,
+  // but with margin on both sides. Travel is measured from the press point, so the
+  // panel still moves the same ~220 by 200.
+  const x = gb.x + gb.width / 2
+  const y = gb.y + gb.height / 2
+  await page.mouse.move(x, y)
   await page.mouse.down()
-  await page.mouse.move(gb.x + 220, gb.y + 200, { steps: 10 })
+  await page.mouse.move(x + 220, y + 200, { steps: 10 })
   await page.mouse.up()
   const after = (await panel.boundingBox())!
   expect(Math.abs(after.x - before.x)).toBeGreaterThan(80)

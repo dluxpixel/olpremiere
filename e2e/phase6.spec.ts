@@ -58,6 +58,9 @@ test('the Inspector shows an Audio section (gain + fades) for an audio clip', as
 test('dragging the fade-in handle creates a fade (an overlay appears)', async ({ page }) => {
   await addClip(page)
   const clip = aclip(page)
+  // Hover buys the stability and hit-target checks raw page.mouse.* skips, and the box is read
+  // after it: hover() can scroll the clip into view, so a box read first is the stale one.
+  await clip.hover()
   const box = (await clip.boundingBox())!
   // No fade yet → no fade overlay. (Bare `svg path` would also match the
   // linked-A/V badge icon, so the overlay carries its own testid.)

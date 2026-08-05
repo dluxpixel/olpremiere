@@ -153,10 +153,15 @@ test('dragging a keyframe on the clip retimes it, in one undo step', async ({ pa
   const before = await timesOf()
   const marks = page.getByTestId('clip-keyframe')
   const last = marks.nth((await marks.count()) - 1)
+  // Hover before reading the box: it runs the actionability and hit-target checks
+  // raw page.mouse.* skips, and it can scroll, which would stale the box.
+  await last.hover()
   const box = (await last.boundingBox())!
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+  const cx = box.x + box.width / 2
+  const cy = box.y + box.height / 2
+  await page.mouse.move(cx, cy)
   await page.mouse.down()
-  await page.mouse.move(box.x + box.width / 2 + 40, box.y + box.height / 2, { steps: 8 })
+  await page.mouse.move(cx + 40, cy, { steps: 8 })
   await page.mouse.up()
 
   const after = await timesOf()
@@ -201,10 +206,14 @@ test('auto-keyframe turns a monitor drag into an animation', async ({ page }) =>
 
   const gizmo = page.getByTestId('gizmo-body')
   await expect(gizmo).toBeVisible()
+  // hover() first, so the box below is read after anything it scrolls.
+  await gizmo.hover()
   const box = (await gizmo.boundingBox())!
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+  const cx = box.x + box.width / 2
+  const cy = box.y + box.height / 2
+  await page.mouse.move(cx, cy)
   await page.mouse.down()
-  await page.mouse.move(box.x + box.width / 2 + 80, box.y + box.height / 2, { steps: 8 })
+  await page.mouse.move(cx + 80, cy, { steps: 8 })
   await page.mouse.up()
 
   // Two keyframes: where it was, and where the playhead is.
