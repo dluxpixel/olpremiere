@@ -721,8 +721,9 @@ export function closeGapBefore(seq: Sequence, clipId: Id): Sequence {
   const delta = gapBefore(seq, clipId)
   if (delta <= EPS) return seq
   const deltaById = new Map<Id, number>()
+  const byLink = linkGroupIndex(seq)
   for (let i = found.clipIndex; i < found.track.clips.length; i++) {
-    for (const gid of clipGroupIds(seq, found.track.clips[i].id)) deltaById.set(gid, delta)
+    for (const gid of groupIdsOf(found.track.clips[i], byLink)) deltaById.set(gid, delta)
   }
   return shiftClipsBy(seq, deltaById)
 }
@@ -739,10 +740,11 @@ export function closeAllGaps(seq: Sequence, trackId: Id): Sequence {
   const sorted = [...seq.tracks[ti].clips].sort((a, b) => a.startS - b.startS)
   if (sorted.length === 0) return seq
   const deltaById = new Map<Id, number>()
+  const byLink = linkGroupIndex(seq)
   let cursor = sorted[0].startS
   for (const c of sorted) {
     const d = c.startS - cursor
-    if (Math.abs(d) > EPS) for (const gid of clipGroupIds(seq, c.id)) deltaById.set(gid, d)
+    if (Math.abs(d) > EPS) for (const gid of groupIdsOf(c, byLink)) deltaById.set(gid, d)
     cursor += clipDurationS(c)
   }
   return shiftClipsBy(seq, deltaById)
@@ -817,6 +819,32 @@ export const pxToTime = (px: number, pxPerS: number): number => px / pxPerS
 // Linked A/V groups (Vegas-style). Clips sharing a linkId move/trim/split/
 // delete together. A linked video clip is video-only; its audio-track partner
 // carries the sound (see clipEmitsAudio in engine/audio.ts).
+
+/**
+ * linkId -> every clip id in that group, built in ONE pass over the sequence.
+ * clipGroupIds is O(n) on its own (a findClip scan plus a full two-level scan),
+ * so calling it once per clip made closing gaps O(n^2): on a cut-heavy track the
+ * tidy-up crawled. Any loop that needs the group of MANY clips builds this once
+ * and reads it instead.
+ */
+export function linkGroupIndex(seq: Sequence): Map<Id, Id[]> {
+  const byLink = new Map<Id, Id[]>()
+  for (const track of seq.tracks) {
+    for (const c of track.clips) {
+      if (!c.linkId) continue
+      const ids = byLink.get(c.linkId)
+      if (ids) ids.push(c.id)
+      else byLink.set(c.linkId, [c.id])
+    }
+  }
+  return byLink
+}
+
+/** The group of one clip we ALREADY hold, read off a prebuilt linkGroupIndex. */
+function groupIdsOf(clip: Clip, byLink: Map<Id, Id[]>): Id[] {
+  if (!clip.linkId) return [clip.id]
+  return byLink.get(clip.linkId) ?? [clip.id]
+}
 
 /** All clip ids sharing clipId's link group (just [clipId] when unlinked). */
 export function clipGroupIds(seq: Sequence, clipId: Id): Id[] {

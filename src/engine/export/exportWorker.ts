@@ -22,6 +22,7 @@ import {
   StreamTarget,
 } from 'mediabunny'
 import type { StreamTargetChunk, WrappedCanvas } from 'mediabunny'
+import { ProviderPool } from './providerPool'
 import { createRenderer } from '../render/glRenderer'
 import { resolveFrame } from '../render/resolve'
 import { rasterizeTitle } from '../render/titleRaster'
@@ -256,6 +257,9 @@ const nextDequeue = (enc: VideoEncoder | AudioEncoder): Promise<void> =>
 // SEQUENTIALLY (canvases()) and holds the newest frame with timestamp ≤ the
 // requested source time. Classic pull-down. One Input per CLIP, so two clips
 // of the same asset (e.g. across a cross-dissolve) read independently.
+// A ProviderPool owns the lifetime of these (see providerPool.ts): it closes the
+// least recently used one once the live count passes a ceiling, so the decoder
+// count stops tracking how finely the timeline is cut.
 interface ClipProvider {
   /** Kept so the iterator can be re-opened for a backward (reverse-clip) seek. */
   sink: CanvasSink
@@ -264,8 +268,14 @@ interface ClipProvider {
   started: boolean
   current: WrappedCanvas | null
   ahead: WrappedCanvas | null
-  /** Reaped mid-export (sweep passed the clip). Guards double-dispose. */
-  disposed: boolean
+}
+
+/** Closes one provider's iterator and its demuxer. The pool calls this exactly once. */
+const closeProvider = (p: ClipProvider): void => {
+  // p.iterator, not the one captured at creation, since a reverse re-seek may
+  // have replaced it.
+  void p.iterator.return?.(undefined)
+  p.dispose()
 }
 
 const SRC_EPS_S = 1e-4
@@ -349,9 +359,10 @@ async function runNative(init: Extract<ExportRequest, { type: 'init' }>): Promis
       for (const clip of track.clips) clipById.set(clip.id, clip)
     }
 
-    const clipProviders = new Map<Id, ClipProvider>()
+    const providers = new ProviderPool<ClipProvider>({ close: closeProvider })
+    cleanups.push(() => providers.clear())
     const providerFor = async (clip: Clip): Promise<ClipProvider | null> => {
-      const existing = clipProviders.get(clip.id)
+      const existing = providers.get(clip.id)
       if (existing) return existing
       const blob = blobById.get(clip.assetId)
       if (!blob) return null
@@ -371,28 +382,9 @@ async function runNative(init: Extract<ExportRequest, { type: 'init' }>): Promis
       }
       const sink = new CanvasSink(track, { decoderOptions: EXPORT_DECODER_OPTIONS })
       const iterator = sink.canvases(Math.max(0, clip.inS))
-      const provider: ClipProvider = { sink, iterator, dispose: () => input.dispose(), started: false, current: null, ahead: null, disposed: false }
-      clipProviders.set(clip.id, provider)
-      cleanups.push(() => {
-        if (provider.disposed) return
-        void provider.iterator.return?.(undefined)
-        input.dispose()
-      })
+      const provider: ClipProvider = { sink, iterator, dispose: () => input.dispose(), started: false, current: null, ahead: null }
+      providers.set(clip.id, clip, provider)
       return provider
-    }
-    const PROVIDER_REAP_MARGIN_S = 10
-    const reapProviders = (t: number): void => {
-      for (const [id, provider] of clipProviders) {
-        const clip = clipById.get(id)
-        if (!clip) continue
-        const endS = clip.startS + (clip.outS - clip.inS) / Math.max(Math.abs(clip.speed) || 1, 1e-6)
-        if (t > endS + PROVIDER_REAP_MARGIN_S) {
-          provider.disposed = true
-          void provider.iterator.return?.(undefined)
-          provider.dispose()
-          clipProviders.delete(id)
-        }
-      }
     }
 
     // --- shared WebGL2 renderer (identical to run()) ------------------------
@@ -433,6 +425,10 @@ async function runNative(init: Extract<ExportRequest, { type: 'init' }>): Promis
     for (let f = 0; f < framesTotal; f++) {
       checkCancel()
       const t = settings.startS + f / settings.fps
+      // Close what the sweep has permanently passed BEFORE this frame opens
+      // anything new, so the ceiling has room without evicting a live provider.
+      providers.beginFrame()
+      providers.reap(t)
       const frame = resolveFrame(sequence, t)
       const layers: RenderLayer[] = []
       for (const op of frame.ops) {
@@ -454,7 +450,6 @@ async function runNative(init: Extract<ExportRequest, { type: 'init' }>): Promis
       if ((f + 1) % 3 === 0 || f + 1 === framesTotal) {
         post({ type: 'progress', progress: { phase: 'video', framesDone: f + 1, framesTotal } })
       }
-      if (f % Math.max(1, Math.round(settings.fps)) === 0) reapProviders(t)
     }
     // Every frame must be WRITTEN before 'done' lets the page close ffmpeg's
     // stdin, or the credit window would silently truncate the tail of the video.
@@ -839,9 +834,10 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
       }
     }
 
-    const clipProviders = new Map<Id, ClipProvider>()
+    const providers = new ProviderPool<ClipProvider>({ close: closeProvider })
+    cleanups.push(() => providers.clear())
     const providerFor = async (clip: Clip): Promise<ClipProvider | null> => {
-      const existing = clipProviders.get(clip.id)
+      const existing = providers.get(clip.id)
       if (existing) return existing
       const blob = blobById.get(clip.assetId)
       if (!blob) return null
@@ -871,36 +867,9 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
         started: false,
         current: null,
         ahead: null,
-        disposed: false,
       }
-      clipProviders.set(clip.id, provider)
-      cleanups.push(() => {
-        if (provider.disposed) return // reaped mid-export
-        // provider.iterator, not the captured `iterator`, since a reverse re-seek
-        // may have replaced it.
-        void provider.iterator.return?.(undefined)
-        input.dispose()
-      })
+      providers.set(clip.id, clip, provider)
       return provider
-    }
-
-    // A transition into the NEXT clip samples this clip past its out point, and
-    // the transition-duration UI caps at 10s, so anything 10s behind the sweep
-    // can never be read again. Without reaping, a several-hundred-clip timeline
-    // ends the export holding hundreds of open demuxers + hardware decoders.
-    const PROVIDER_REAP_MARGIN_S = 10
-    const reapProviders = (t: number): void => {
-      for (const [id, provider] of clipProviders) {
-        const clip = clipById.get(id)
-        if (!clip) continue
-        const endS = clip.startS + (clip.outS - clip.inS) / Math.max(Math.abs(clip.speed) || 1, 1e-6)
-        if (t > endS + PROVIDER_REAP_MARGIN_S) {
-          provider.disposed = true
-          void provider.iterator.return?.(undefined)
-          provider.dispose()
-          clipProviders.delete(id)
-        }
-      }
     }
 
     // Index enabled video clips by id so a layer's clipId resolves to its Clip.
@@ -956,6 +925,10 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
       // Sample the sequence from the work-area start, but stamp the output from
       // zero: a work-area export begins at its in point, not after startS of black.
       const t = settings.startS + f / settings.fps
+      // Close what the sweep has permanently passed BEFORE this frame opens
+      // anything new, so the ceiling has room without evicting a live provider.
+      providers.beginFrame()
+      providers.reap(t)
       const frame = resolveFrame(sequence, t)
 
       const layers: RenderLayer[] = []
@@ -983,8 +956,6 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
       if ((f + 1) % 5 === 0 || f + 1 === framesTotal) {
         post({ type: 'progress', progress: { phase: 'video', framesDone: f + 1, framesTotal } })
       }
-      // Close demuxers/decoders the sweep has permanently passed (~1×/second).
-      if (f % Math.max(1, Math.round(settings.fps)) === 0) reapProviders(t)
     }
 
     await videoEncoder.flush()

@@ -29,6 +29,7 @@ import {
   deleteScoped,
   duplicateClips,
   findClip,
+  linkGroupIndex,
   moveClip,
   moveGroup,
   moveMarker,
@@ -2279,6 +2280,87 @@ describe('close gap is link-group aware', () => {
     const aud = r.tracks[1].clips.find((c) => c.id === 'A1')!
     expect(vid.startS).toBeCloseTo(2, 6)
     expect(aud.startS).toBeCloseTo(2, 6) // partner moved the same 3s, no A/V drift
+  })
+})
+
+describe('linkGroupIndex', () => {
+  it('collects every member of a link group in one pass, across tracks', () => {
+    const seq = makeSeq([
+      makeTrack({
+        kind: 'video',
+        clips: [
+          makeClip({ id: 'V1', startS: 0, inS: 0, outS: 1, linkId: 'lg' }),
+          makeClip({ id: 'SOLO', startS: 2, inS: 0, outS: 1 }),
+        ],
+      }),
+      makeTrack({ kind: 'audio', clips: [makeClip({ id: 'A1', startS: 0, inS: 0, outS: 1, linkId: 'lg' })] }),
+    ])
+    const byLink = linkGroupIndex(seq)
+    expect(byLink.get('lg')).toEqual(['V1', 'A1'])
+    expect(byLink.size).toBe(1) // an unlinked clip contributes nothing
+  })
+
+  it('agrees with clipGroupIds for every clip, linked or not', () => {
+    const seq = makeSeq([
+      makeTrack({
+        kind: 'video',
+        clips: [
+          makeClip({ id: 'V1', startS: 0, inS: 0, outS: 1, linkId: 'lg' }),
+          makeClip({ id: 'SOLO', startS: 2, inS: 0, outS: 1 }),
+        ],
+      }),
+      makeTrack({ kind: 'audio', clips: [makeClip({ id: 'A1', startS: 0, inS: 0, outS: 1, linkId: 'lg' })] }),
+    ])
+    const byLink = linkGroupIndex(seq)
+    for (const track of seq.tracks) {
+      for (const c of track.clips) {
+        expect(byLink.get(c.linkId ?? '') ?? [c.id]).toEqual(clipGroupIds(seq, c.id))
+      }
+    }
+  })
+})
+
+describe('closing gaps stays linear in the clip count', () => {
+  // THE BUG. closeAllGaps and closeGapBefore called clipGroupIds once per clip,
+  // and clipGroupIds is itself a findClip scan plus a full two-level scan, so the
+  // tidy-up was O(n^2). Measured on this machine with the old code: 400 clips
+  // 4.1ms, 1000 clips 6.3ms, 2000 clips 20.9ms, 4000 clips 93.2ms. With the
+  // prebuilt link index: 2.2ms at 4000. Restore the old per-clip call and this
+  // budget goes red.
+  const BUDGET_MS = 40
+
+  function packedPairs(n: number): ReturnType<typeof makeSeq> {
+    const video = Array.from({ length: n }, (_, i) =>
+      makeClip({ id: `v${i}`, startS: i * 1.0, inS: 0, outS: 0.5, linkId: `lg${i}` }),
+    )
+    const audio = Array.from({ length: n }, (_, i) =>
+      makeClip({ id: `a${i}`, startS: i * 1.0, inS: 0, outS: 0.5, linkId: `lg${i}` }),
+    )
+    return makeSeq([
+      makeTrack({ kind: 'video', name: 'V1', clips: video }),
+      makeTrack({ kind: 'audio', name: 'A1', clips: audio }),
+    ])
+  }
+
+  it('closeAllGaps tidies 4000 linked clips inside the frame budget', () => {
+    const seq = packedPairs(4000)
+    const t0 = performance.now()
+    const r = closeAllGaps(seq, seq.tracks[0].id)
+    const ms = performance.now() - t0
+    expect(ms).toBeLessThan(BUDGET_MS)
+    // and it is still correct: every clip butted against the last, partners with them
+    expect(r.tracks[0].clips[3999].startS).toBeCloseTo(1999.5, 6)
+    expect(r.tracks[1].clips[3999].startS).toBeCloseTo(1999.5, 6)
+  })
+
+  it('closeGapBefore ripples 4000 linked clips inside the same budget', () => {
+    const seq = packedPairs(4000)
+    const t0 = performance.now()
+    const r = closeGapBefore(seq, 'v1')
+    const ms = performance.now() - t0
+    expect(ms).toBeLessThan(BUDGET_MS)
+    expect(r.tracks[0].clips[1].startS).toBeCloseTo(0.5, 6)
+    expect(r.tracks[1].clips[1].startS).toBeCloseTo(0.5, 6)
   })
 })
 
