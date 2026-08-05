@@ -56,6 +56,7 @@ import {
   trimGroup,
 } from '../engine/timeline'
 import { clipKeyframeTimes } from '../engine/keyframes'
+import { createSnapPointCache } from '../engine/snapPointCache'
 import { TRANSITION_KINDS, TRANSITION_LABELS, type TransitionKind } from '../engine/render/types'
 import { formatTimecode, quantizeToFrame } from '../engine/timecode'
 import { workArea } from '../engine/workArea'
@@ -1317,6 +1318,11 @@ export function Timeline({ height }: { height: number }) {
     return null
   }
 
+  // Every pointermove during a drag asks for the snap points, and rebuilding
+  // them each time walked every clip on every track. Nothing they depend on can
+  // move mid-gesture, so the walk is memoized. See snapPointCache.ts.
+  const snapPoints = useRef(createSnapPointCache()).current
+
   const snapWithIndicator = (tS: number, excludeClipId?: Id | Id[]): number => {
     if (!snapping) {
       setSnapIndicatorT(null)
@@ -1328,11 +1334,7 @@ export function Timeline({ height }: { height: number }) {
     // gesture's own origin (left+right of the cut; the slid clip + neighbours)
     // - otherwise the origin stays a snap magnet and fine adjustments no-op.
     const seeds = excludeClipId === undefined ? [] : Array.isArray(excludeClipId) ? excludeClipId : [excludeClipId]
-    const excludeClipIds = seeds.length > 0 ? seeds.flatMap((id) => clipGroupIds(seq, id)) : undefined
-    const points = collectSnapPoints(seq, {
-      ...(excludeClipIds ? { excludeClipIds } : {}),
-      playheadS: useStore.getState().ui.playheadS,
-    })
+    const points = snapPoints.points(seq, seeds, useStore.getState().ui.playheadS)
     const r = snapTime(tS, points, SNAP_PX / pxPerS)
     setSnapIndicatorT(r.snapped ? r.t : null)
     return r.t
@@ -2022,10 +2024,7 @@ export function Timeline({ height }: { height: number }) {
       // The dragged clip's whole link group is excluded: its audio partner's
       // stale edges would otherwise snap the drag back to where it started.
       const points = snapping
-        ? collectSnapPoints(seq, {
-            excludeClipIds: clipGroupIds(seq, drag.clipId),
-            playheadS: useStore.getState().ui.playheadS,
-          })
+        ? snapPoints.points(seq, [drag.clipId], useStore.getState().ui.playheadS)
         : []
       let desired = desiredRaw
       if (snapping) {
