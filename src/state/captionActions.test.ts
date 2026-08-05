@@ -14,7 +14,7 @@ import {
   type Sequence,
 } from '../engine/types'
 import { addCaptionsFromWords, splitTitleIntoWordCaptions } from './captionActions'
-import { AUTO_CAPTION_TARGET_S } from '../engine/captions/captions'
+import { AUTO_CAPTION_TARGET_S, type CaptionWord } from '../engine/captions/captions'
 import { clipDurationS } from '../engine/timeline'
 import { updateActiveSequence, useStore } from './store'
 
@@ -229,6 +229,69 @@ describe('captions are AUTO, and the block length is what is held steady', () =>
     for (let i = 0; i < top.clips.length - 1; i++) {
       const end = top.clips[i].startS + clipDurationS(top.clips[i])
       expect(end).toBeCloseTo(top.clips[i + 1].startS, 5)
+    }
+  })
+})
+
+describe('laying a caption run stays linear in the word count', () => {
+  // THE BUG. Every caption is ONE word, and "caption every clip" pools the words
+  // of the whole project into a single run, so N is everything he said. Placing
+  // them one at a time was O(N^2 log N) inside one synchronous dispatch, with the
+  // UI locked: measured 21.6ms at 750 words, 60.6ms at 1500, 168.9ms at 3000 and
+  // 540.9ms at 6000. Placing the run in one pass: 3.0, 6.9, 13.0 and 21.7ms.
+  // Disable the one-pass path and BOTH assertions below go red (596ms, ratio 3.2).
+  //
+  // Two assertions on purpose. The budget is generous so a busy machine cannot
+  // make it lie, and the ratio catches the SHAPE regardless of machine speed:
+  // doubling the words must not much more than double the cost.
+  const BUDGET_MS = 300
+  const MAX_DOUBLING_COST = 3
+
+  const speech = (n: number): CaptionWord[] =>
+    Array.from({ length: n }, (_, i) => ({ text: `w${i}`, startS: i * 0.4, endS: i * 0.4 + 0.35 }))
+
+  /** Lay `n` words onto a fresh project and return the milliseconds it took. */
+  function timeRun(n: number): number {
+    useStore.getState().setProject(newProject())
+    useStore.getState().setUI({ selection: [], playheadS: 0 })
+    const words = speech(n)
+    const t0 = performance.now()
+    addCaptionsFromWords(words)
+    return performance.now() - t0
+  }
+
+  it('lays 6000 words, about 40 minutes of talking, without the cost squaring', () => {
+    timeRun(500) // warm up, so the first real run is not paying for the JIT
+    const half = timeRun(3000)
+    const full = timeRun(6000)
+
+    expect(full).toBeLessThan(BUDGET_MS)
+    expect(full / half).toBeLessThan(MAX_DOUBLING_COST)
+
+    const top = videoTracks(seq())[videoTracks(seq()).length - 1]
+    expect(top.clips).toHaveLength(6000)
+    // and it is still a valid track: ascending, and nothing on top of anything
+    for (let i = 1; i < top.clips.length; i++) {
+      const prevEnd = top.clips[i - 1].startS + clipDurationS(top.clips[i - 1])
+      expect(top.clips[i].startS).toBeGreaterThanOrEqual(prevEnd - 1e-9)
+    }
+    expect(top.clips[0].title?.text).toBe('w0')
+    expect(top.clips[5999].title?.text).toBe('w5999')
+  })
+
+  it('falls back to placing one at a time when the run would land on something', () => {
+    // Seed a title, then seed a SECOND clip inside the window the split will fill.
+    // The one-pass path must refuse this, or a caption lands on top of a clip.
+    const title = seedTitle('one two three four five', 2, 5)
+    const blocker = seedTitle('blocker', 3, 1)
+    splitTitleIntoWordCaptions(title.id)
+
+    const track = seq().tracks[0]
+    expect(track.clips.some((c) => c.id === blocker.id)).toBe(true)
+    const sorted = [...track.clips].sort((a, b) => a.startS - b.startS)
+    for (let i = 1; i < sorted.length; i++) {
+      const prevEnd = sorted[i - 1].startS + clipDurationS(sorted[i - 1])
+      expect(sorted[i].startS).toBeGreaterThanOrEqual(prevEnd - 1e-9)
     }
   })
 })
