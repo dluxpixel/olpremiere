@@ -4,7 +4,13 @@
 // mirror resolve.ts's pair-transition rules exactly.
 
 import { describe, expect, it } from 'vitest'
-import { TRANSITION_PRE_ROLL_S, pairTransitionWindow, transitionWindowsNear, liveUploadCap } from './preview'
+import {
+  TRANSITION_PRE_ROLL_S,
+  pairTransitionWindow,
+  transitionWindowsNear,
+  upcomingCutHeads,
+  liveUploadCap,
+} from './preview'
 import type { Clip, Sequence, Track } from './types'
 
 const clip = (o: Partial<Clip> & Pick<Clip, 'id' | 'assetId' | 'startS' | 'inS' | 'outS'>): Clip => ({
@@ -106,6 +112,53 @@ describe('pairTransitionWindow', () => {
     expect(w?.fromSourceEndS).toBe(5) // 0.5s window at 2x
     const revIn = { ...b, speed: -1 }
     expect(pairTransitionWindow(a, revIn, 30)?.toSourceStartS).toBe(7) // reversed B starts at outS
+  })
+})
+
+describe('upcomingCutHeads', () => {
+  // A PLAIN cut: two touching clips with no transition between them.
+  const p0 = clip({ id: 'p0', assetId: 'x', startS: 0, inS: 0, outS: 2 })
+  const p1 = clip({ id: 'p1', assetId: 'y', startS: 2, inS: 5, outS: 7 })
+  const plain = seq([track([p0, p1])])
+
+  it('THE BUG: a plain cut has no transition window, so only this sees it coming', () => {
+    // transitionWindowsNear is blind here, because pairTransitionWindow returns
+    // null without a transition. That is why the incoming element used to be
+    // created cold AT the cut and the frame came out black.
+    expect(transitionWindowsNear(plain, 1.5)).toHaveLength(0)
+    expect(upcomingCutHeads(plain, 1.5).map((c) => c.id)).toEqual(['p1'])
+  })
+
+  it('only inside the pre-roll horizon, and never the clip already playing', () => {
+    expect(upcomingCutHeads(plain, 2 - TRANSITION_PRE_ROLL_S - 0.1)).toHaveLength(0)
+    expect(upcomingCutHeads(plain, 2 - TRANSITION_PRE_ROLL_S + 0.01).map((c) => c.id)).toEqual(['p1'])
+    // At and past the cut, p1 is the one on screen, so there is nothing to warm.
+    expect(upcomingCutHeads(plain, 2)).toHaveLength(0)
+    expect(upcomingCutHeads(plain, 2.5)).toHaveLength(0)
+  })
+
+  it('collects EVERY head inside one horizon, which is the cut-dense case', () => {
+    const many = seq([
+      track(
+        Array.from({ length: 8 }, (_, i) =>
+          clip({ id: `k${i}`, assetId: `a${i}`, startS: i * 0.25, inS: 0, outS: 0.25 }),
+        ),
+      ),
+    ])
+    // Quarter-second cuts: several elements must be warm before the playhead
+    // reaches them, which is exactly what the 12-element pool cap starved.
+    expect(upcomingCutHeads(many, 0.1).length).toBeGreaterThan(3)
+  })
+
+  it('ignores disabled clips, adjustment layers, muted and non-video tracks', () => {
+    const off = clip({ id: 'off', assetId: 'y', startS: 2, inS: 0, outS: 1, enabled: false })
+    expect(upcomingCutHeads(seq([track([p0, off])]), 1.5)).toHaveLength(0)
+
+    const adj = clip({ id: 'adj', assetId: 'y', startS: 2, inS: 0, outS: 1, adjustment: true })
+    expect(upcomingCutHeads(seq([track([p0, adj])]), 1.5)).toHaveLength(0)
+
+    expect(upcomingCutHeads(seq([track([p0, p1], { muted: true })]), 1.5)).toHaveLength(0)
+    expect(upcomingCutHeads(seq([track([p0, p1], { kind: 'audio' })]), 1.5)).toHaveLength(0)
   })
 })
 

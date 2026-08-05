@@ -43,6 +43,12 @@ const RATE_TRIM = 0.02
 const SERVO_TAU_S = 2
 
 const VIDEO_POOL_CAP = 12
+/**
+ * How many upcoming plain cuts to warm per frame. Comfortably under
+ * VIDEO_POOL_CAP so pre-rolling can never evict what it just warmed, and the
+ * playing element is never a candidate anyway.
+ */
+const PREROLL_CUT_LIMIT = 4
 const IMAGE_POOL_CAP = 48
 
 const videoPool = new Map<Id, PooledVideo>()
@@ -332,6 +338,73 @@ export function transitionWindowsNear(
     }
   }
   return out
+}
+
+/**
+ * Heads of clips about to START within the pre-roll horizon. Pure, and the same
+ * binary search and bound as transitionWindowsNear.
+ *
+ * Why this exists: pairTransitionWindow returns null when no transition joins
+ * two clips, so transitionWindowsNear sees nothing at an ORDINARY cut and the
+ * pre-roll never fired for one. The incoming element was therefore created cold
+ * at the cut, warmVideo hands back ready:false, the texture source returns null,
+ * and a layer with no texture is simply not drawn: a black frame exactly on the
+ * cut. Prewarm could not cover it either, because it only creates elements
+ * while the pool is UNDER its cap of 12, so past a dozen distinct clips the
+ * newest cut always started cold. That is the "black frames when there are a
+ * lot of clips and cuts" case.
+ */
+export function upcomingCutHeads(seq: Sequence, tS: number, preRollS = TRANSITION_PRE_ROLL_S): Clip[] {
+  const out: Clip[] = []
+  for (const track of seq.tracks) {
+    if (track.kind !== 'video' || track.muted) continue
+    const clips = track.clips
+    let lo = 0
+    let hi = clips.length - 1
+    let i = -1
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1
+      if (clips[mid].startS <= tS) {
+        i = mid
+        lo = mid + 1
+      } else {
+        hi = mid - 1
+      }
+    }
+    for (let j = Math.max(0, i + 1); j < clips.length && clips[j].startS <= tS + preRollS; j++) {
+      const c = clips[j]
+      if (c.startS > tS && c.enabled && !c.adjustment) out.push(c)
+    }
+  }
+  return out
+}
+
+/**
+ * Warm (and pre-seek) the element an upcoming PLAIN cut is about to need, the
+ * way prerollTransitions already does for the incoming side of a transition.
+ * Idempotent: warmVideo returns the pooled element when it already exists, and
+ * its eviction never touches a element that is still playing, so the on-screen
+ * one cannot be churned out from under the cut.
+ */
+function prerollCuts(seq: Sequence, assets: Record<Id, MediaAsset>, tS: number): void {
+  // Nearest cuts first, and only a few. On a very cut-dense timeline the horizon
+  // can name more distinct assets than the 12-slot pool holds, and warming all
+  // of them every frame would evict the ones just warmed: a thrash that costs
+  // more than the cold start it replaces. The imminent cut is the one that
+  // matters, so bound the work and let later heads be warmed by later frames.
+  const heads = upcomingCutHeads(seq, tS)
+    .sort((c1, c2) => c1.startS - c2.startS)
+    .slice(0, PREROLL_CUT_LIMIT)
+  for (const clip of heads) {
+    const asset = assets[clip.assetId]
+    if (asset?.kind !== 'video') continue
+    const pooled = warmVideo(asset)
+    // Same guard as the transition path: only pre-seek a PAUSED element, never
+    // one that is on screen, and only when it is meaningfully off target.
+    if (pooled.ready && pooled.el.paused && Math.abs(pooled.el.currentTime - clip.inS) > 0.15) {
+      pooled.el.currentTime = clip.inS
+    }
+  }
 }
 
 /**
@@ -628,6 +701,7 @@ export function renderPreview(
   let transitionFrom: Set<RenderLayer> | undefined
   if (playing) {
     prerollTransitions(seq, assets, tS)
+    prerollCuts(seq, assets, tS)
     for (const op of frame.ops) {
       if (op.type === 'transition' && op.from.clipId !== op.to.clipId) {
         (transitionFrom ??= new Set()).add(op.from)
