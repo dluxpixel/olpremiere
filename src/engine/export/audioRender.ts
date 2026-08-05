@@ -66,6 +66,8 @@ export async function planAudioMix(
   assets: Record<Id, MediaAsset>,
   startS = 0,
   endS = seq.durationS,
+  /** Told which files gave no sound when SOME did, so the caller can warn him before he uploads. */
+  onPartialAudio?: (fileNames: string[]) => void,
 ): Promise<AudioMixPlan | null> {
   if (!('AudioEncoder' in globalThis)) return null
   const rangeS = endS - startS
@@ -92,7 +94,36 @@ export async function planAudioMix(
   // clipAudioBuffer resolves null for silent/image assets and decode failures,
   // and routes denoised clips through the SAME resolver as live preview.
   const buffers = await Promise.all(candidates.map((c) => clipAudioBuffer(c.clip, c.asset, c.reversed)))
-  if (!buffers.some((b) => b !== null)) return null
+  if (!buffers.some((b) => b !== null)) {
+    // EVERY audible clip failed to decode, and this used to `return null`, which
+    // both export paths read as "this timeline has no audio" and happily wrote a
+    // silent video. His report, 2026-08-05: "to export audio doesn't work. It
+    // just didn't export the audio." The decode warnings went to a console he
+    // never sees, so the export looked like it worked and the file was wrong.
+    //
+    // A silent success is the worst outcome available here: he only finds out
+    // after uploading. Throwing names the files instead, and the export stops
+    // with something he can act on. An honest failure beats a quiet wrong file.
+    // Only files that CLAIM to carry sound. A still image or a silent clip
+    // sitting on an audio track decodes to nothing quite legitimately, and
+    // raising an error for it would turn a normal timeline into a failed export.
+    const names = [...new Set(candidates.filter((c) => c.asset.hasAudio).map((c) => c.asset.name))]
+    if (names.length === 0) return null
+    throw new Error(
+      `Could not read the sound from ${names.length === 1 ? names[0] : `${names.length} files (${names.slice(0, 3).join(', ')}${names.length > 3 ? ', ...' : ''})`}. ` +
+        `Re-import ${names.length === 1 ? 'it' : 'them'} and try again.`,
+    )
+  }
+  // SOME clips decoded and some did not. The export can honestly continue (the
+  // ones that worked are real audio), but he must be told which pieces will be
+  // missing rather than discovering a silent gap later.
+  const failed = candidates.filter((_, i) => buffers[i] === null && candidates[i].asset.hasAudio)
+  if (failed.length > 0) {
+    console.warn(
+      `OL Premiere export: no sound from ${failed.length} clip(s): ${[...new Set(failed.map((c) => c.asset.name))].join(', ')}`,
+    )
+    onPartialAudio?.([...new Set(failed.map((c) => c.asset.name))])
+  }
 
   const totalFrames = Math.max(1, Math.ceil(rangeS * EXPORT_SAMPLE_RATE))
 

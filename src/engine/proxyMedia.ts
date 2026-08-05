@@ -151,6 +151,14 @@ async function drain(): Promise<void> {
       } catch (err) {
         // Never fatal. No proxy just means the preview reads the original, which
         // is what it did before this file existed.
+        //
+        // But DO let it be tried again. `seen` is claimed before the transcode
+        // starts, so leaving a failed asset in it meant one ffmpeg hiccup
+        // disabled that clip's fast preview for the rest of the session with no
+        // way back short of restarting. Releasing the claim costs nothing: the
+        // next ensureProxies re-queues it, and a proxy that already exists is
+        // found in storage and skipped anyway.
+        seen.delete(asset.id)
         console.warn(`OL Premiere: no preview copy for ${asset.name}`, err)
       }
     }

@@ -6,6 +6,7 @@
 
 import type { NativeEncoder } from '../../../electron/ipc-types'
 import { getBlob } from '../../state/persistence'
+import { useToasts } from '../../state/toasts'
 import { olApi } from '../../platform'
 import type { Id, Project } from '../types'
 import { planAudioMix } from './audioRender'
@@ -96,7 +97,17 @@ export async function exportNative(
   // Render the audio mix to a WAV and hand it to main BEFORE ffmpeg spawns (it's
   // an -i input). Reuses the exact planAudioMix rules → same mix as WebCodecs.
   onProgress({ phase: 'audio', framesDone: 0, framesTotal })
-  const plan = await planAudioMix(sequence, project.assets, settings.startS, settings.endS)
+  const plan = await planAudioMix(sequence, project.assets, settings.startS, settings.endS, (names) =>
+    // Some clips gave no sound. The rest of the mix is honest audio, so the
+    // export continues, but he has to hear about the gap NOW rather than after
+    // he has uploaded it.
+    useToasts
+      .getState()
+      .show(
+        `No sound from ${names.length === 1 ? names[0] : `${names.length} clips`}. The rest of the audio exported.`,
+        'danger',
+      ),
+  )
   let hasAudio = false
   if (plan && plan.info.totalFrames > 0) {
     const perChannel: Float32Array[][] = []

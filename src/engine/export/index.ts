@@ -3,6 +3,7 @@
 // exportWorker.ts so the UI stays responsive.
 
 import { getBlob } from '../../state/persistence'
+import { useToasts } from '../../state/toasts'
 import type { Id, MediaAsset, Project } from '../types'
 import { planAudioMix } from './audioRender'
 import type { ExportAsset, ExportProgress, ExportRequest, ExportResponse, ExportSettings } from './messages'
@@ -88,7 +89,17 @@ export async function exportSequence(
   // front; the PCM itself renders in bounded segments AFTER the worker starts,
   // streamed as `audioSegment` messages, so a long export never holds its whole
   // mix in memory on either side.
-  const audioPlan = await planAudioMix(sequence, project.assets, settings.startS, settings.endS)
+  const audioPlan = await planAudioMix(sequence, project.assets, settings.startS, settings.endS, (names) =>
+    // Some clips gave no sound. The rest of the mix is honest audio, so the
+    // export continues, but he has to hear about the gap NOW rather than after
+    // he has uploaded it.
+    useToasts
+      .getState()
+      .show(
+        `No sound from ${names.length === 1 ? names[0] : `${names.length} clips`}. The rest of the audio exported.`,
+        'danger',
+      ),
+  )
   if (signal.aborted) throw abortError()
 
   return await new Promise<Blob | null>((resolve, reject) => {

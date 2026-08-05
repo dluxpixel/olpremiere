@@ -57,9 +57,29 @@ async function applyEffectWithParams(page: Page, clipId: string, type: string, p
 }
 
 /** Sample the program monitor at a fractional position. */
+/**
+ * Read one pixel off the program monitor.
+ *
+ * FORCES A REPAINT FIRST, and that is not politeness. The monitor parks once a
+ * frame is fully resolved ("do zero GPU work"), and a WebGL canvas is not
+ * created with preserveDrawingBuffer, so copying a parked canvas with drawImage
+ * can hand back BLACK long after the picture is correct on screen. That made
+ * this file fail roughly one run in three, always on a static frame, and it
+ * blocked two releases while the app itself was rendering perfectly.
+ *
+ * Bumping the preview epoch is exactly what the live gizmo drag uses to say
+ * "repaint even though nothing in the store moved". Two animation frames later
+ * the buffer is guaranteed fresh, and the read is deterministic.
+ */
 async function px(page: Page, fx: number, fy: number): Promise<[number, number, number]> {
   return page.evaluate(
-    ({ fx, fy }) => {
+    async ({ fx, fy }) => {
+      const previewMod = '/src/engine/preview.ts'
+      const { invalidatePreview } = (await import(/* @vite-ignore */ previewMod)) as {
+        invalidatePreview: () => void
+      }
+      invalidatePreview()
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
       const c = document.querySelector('[data-testid="program-canvas"]') as HTMLCanvasElement
       const scratch = document.createElement('canvas')
       scratch.width = c.width
@@ -307,8 +327,24 @@ test('a lone Dip to White dips through WHITE, not through black', async ({ page 
   await expect.poll(async () => luma(await px(page, 0.5, 0.5)), { timeout: 10_000 }).toBeGreaterThan(200)
 
   // ...and by the end of the window the footage is back.
+  //
+  // Checked as "real picture, and NOT the white solid", not as "the red channel
+  // is high". The fixture cuts from red to BLUE partway through, and 1.5 s is on
+  // the blue side (phase3.spec.ts polls for blue at exactly this time). Asserting
+  // red here only ever passed by reading a stale parked canvas from an earlier
+  // moment; once the read was made deterministic it failed every run, on an app
+  // that was rendering correctly the whole time.
   await setPlayhead(page, 1.5)
-  await expect.poll(async () => (await px(page, 0.5, 0.5))[0], { timeout: 10_000 }).toBeGreaterThan(120)
+  await expect
+    .poll(
+      async () => {
+        const [r, g, b] = await px(page, 0.5, 0.5)
+        const white = r > 200 && g > 200 && b > 200
+        return !white && Math.max(r, g, b) > 120
+      },
+      { timeout: 10_000 },
+    )
+    .toBe(true)
 })
 
 // Wipe Left was CUT on 2026-07-29 along with Wipe Right, Spin and Luma Wipe.

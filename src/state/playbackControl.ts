@@ -113,3 +113,31 @@ export function shuttle(dir: -1 | 1): void {
 }
 
 export const isPlaying = (): boolean => transport.playing
+
+/**
+ * Keep the SOUND honest while the mix is edited mid-playback.
+ *
+ * The audio graph is built once when play() starts, from each track's mute,
+ * solo, volume and pan as they were at that instant, baked into node settings.
+ * Change any of them while it is running and nothing happens until playback
+ * stops or loops: muting a track kept it audible, which reads as the mute
+ * button simply not working.
+ *
+ * A cheap fingerprint of the mix is compared on every store change. When it
+ * moves AND we are playing, the audio is rebuilt in place. Rebuilding costs a
+ * scheduling latency of silence, which is why it is gated on the fingerprint
+ * rather than run on every store write: an ordinary timeline edit must not make
+ * the sound stutter.
+ */
+const mixFingerprint = (): string => {
+  const seq = activeSequence(useStore.getState().project)
+  return seq.tracks.map((t) => `${t.id}:${t.muted ? 1 : 0}${t.solo ? 1 : 0}:${t.volumeDb ?? 0}:${t.pan ?? 0}`).join('|')
+}
+
+let lastMix = ''
+useStore.subscribe(() => {
+  const now = mixFingerprint()
+  if (now === lastMix) return
+  lastMix = now
+  if (transport.playing) transport.rescheduleAudio()
+})

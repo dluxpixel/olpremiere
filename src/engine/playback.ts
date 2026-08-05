@@ -166,6 +166,36 @@ export class Transport {
     this.rafId = requestAnimationFrame(loop)
   }
 
+  /**
+   * Rebuild the audio for the CURRENT position without touching the picture.
+   *
+   * Muting a track, or moving its volume, used to do nothing at all until
+   * playback stopped or looped: the audio graph is built once at play() from the
+   * track values as they were then, and those become fixed node settings. So he
+   * would mute a track mid-play and keep hearing it, which reads as the mute
+   * button being broken.
+   *
+   * This is the loop wrap's swap, without the wrap: tear the old sources down,
+   * schedule new ones from where we are, and leave the rAF loop and the clock
+   * completely alone. No-op when not playing, so a mix change while paused costs
+   * nothing (the next play() reads the new values anyway).
+   */
+  rescheduleAudio(): void {
+    if (!this.isPlaying || !this.intended || this.currentRate !== 1) return
+    const token = this.playToken
+    const fromS = this.liveTime()
+    this.stopAudio?.()
+    this.stopAudio = null
+    void this.opts
+      .schedule(fromS)
+      .then((stop) => {
+        // Superseded while we were decoding: kill the late audio.
+        if (token === this.playToken) this.stopAudio = stop
+        else stop()
+      })
+      .catch(() => undefined)
+  }
+
   /** Stop the loop + audio. Returns the time playback stopped at. */
   pause(): number {
     this.playToken++
