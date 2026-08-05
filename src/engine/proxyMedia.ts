@@ -87,6 +87,29 @@ export function onProxyReady(cb: () => void): () => void {
 }
 
 /**
+ * How the preview-copy work is going, for the boot card's row.
+ *
+ * Honest about the three states that look identical from outside: nothing to do,
+ * still working, and finished. Without this the first minutes after a big import
+ * are quietly slower for a reason nothing on screen explains.
+ */
+export function proxyProgress(): { queued: number; done: number; working: boolean } {
+  return { queued: queue.length, done: ready.size, working: running }
+}
+
+/** Resolves when the queue has drained. Never rejects; a failed copy is not fatal. */
+export function whenProxiesSettled(): Promise<void> {
+  if (!running && queue.length === 0) return Promise.resolve()
+  return new Promise((resolve) => {
+    const tick = (): void => {
+      if (!running && queue.length === 0) resolve()
+      else setTimeout(tick, 400)
+    }
+    tick()
+  })
+}
+
+/**
  * Queue preview copies for any of `assets` that want one.
  *
  * Cheap to call repeatedly (on import, on project load): anything already seen

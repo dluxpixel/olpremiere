@@ -22,10 +22,11 @@ test('the loading card reports the real startup work, not a timer', async ({ pag
   // The editor has NOT mounted yet, so the card is the whole screen.
   await expect(page.getByTestId('panel-left')).toHaveCount(0)
 
-  // Nine rows on the web build; the update row is desktop-only. Was six until
-  // 2026-08-05, when the three WARM-UP rows landed: the splash now pays the
-  // bills the app used to defer to his first play and his first caption run.
-  await expect(card.locator('li[data-step]')).toHaveCount(9)
+  // Ten rows on the web build; the update row is desktop-only. Was six until
+  // 2026-08-05, when the three WARM-UP rows landed and then the preview-copy
+  // row joined them: the splash now pays the bills the app used to defer to his
+  // first play, his first caption run and his first cut-heavy playback.
+  await expect(card.locator('li[data-step]')).toHaveCount(10)
   await expect(card.locator('li[data-step="updates"]')).toHaveCount(0)
   for (const id of ['warmVideo', 'warmAudio', 'captions']) {
     await expect(card.locator(`li[data-step="${id}"]`)).toHaveCount(1)

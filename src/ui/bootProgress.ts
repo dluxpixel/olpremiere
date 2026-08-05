@@ -21,6 +21,7 @@ export type BootStepId =
   | 'backups'
   | 'warmVideo'
   | 'warmAudio'
+  | 'proxies'
   | 'captions'
   | 'updates'
 
@@ -57,6 +58,18 @@ export const BOOT_STEPS: readonly BootStepSpec[] = [
   // paid here instead, in the window the card was already holding open.
   { id: 'warmVideo', active: 'Warming up your video', done: 'Video ready' },
   { id: 'warmAudio', active: 'Warming up your audio', done: 'Audio ready' },
+  {
+    // The preview copies added in v0.1.40. They are what make a cut-heavy
+    // timeline play smoothly, and they are built with ffmpeg in the background,
+    // so without a row here the first minutes after an import are quietly slower
+    // for a reason nothing on screen explains. NEVER gates: a big import takes
+    // minutes to transcode and an editor that will not open until it finishes
+    // would be a far worse app. Same argument as captions below.
+    id: 'proxies',
+    active: 'Preparing fast preview',
+    done: 'Fast preview ready',
+    optional: true,
+  },
   {
     id: 'captions',
     active: 'Getting captions ready',

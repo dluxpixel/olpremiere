@@ -82,6 +82,25 @@ void initPersistence()
       trackBootStepWith('warmVideo', warmPreview(onTimeline), readyDetail),
       trackBootStepWith('warmAudio', warmAudio(onTimeline), readyDetail),
     ])
+    // The preview copies for what is on the timeline. Queued here so the card
+    // can say it is happening; NOT awaited by the gating rows above, because a
+    // multi-gigabyte import takes minutes to transcode and the editor must open
+    // long before that.
+    const { ensureProxies, proxyProgress, whenProxiesSettled } = await import('./engine/proxyMedia')
+    ensureProxies(onTimeline)
+    if (proxyProgress().queued > 0 || proxyProgress().working) {
+      void trackBootStepWith('proxies', whenProxiesSettled(), () => {
+        const n = proxyProgress().done
+        return n > 0 ? `${n} clip${n === 1 ? '' : 's'} ready` : undefined
+      })
+    } else {
+      bootStep.finish('proxies', 'nothing to prepare')
+    }
+    // Reclaim storage from media no project references any more. Deliberately
+    // AFTER the boot card is satisfied and deliberately not awaited: it must
+    // never delay the app opening, and it must never be able to fail the boot.
+    // Once per session is plenty; the space only leaks when he deletes media.
+    void import('./state/blobSweep').then((m) => m.sweepOrphanedBlobs())
   })
   .catch((err: unknown) => {
     // A broken startup must still open the app: mark whatever never landed as

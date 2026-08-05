@@ -101,6 +101,8 @@ export interface ProjectSummary {
   clipCount: number
   /** Set only on finished work he has archived. Absent means active. */
   archivedAt?: number
+  /** Set on work parked for later. Absent means it is what he is on now. */
+  laterAt?: number
 }
 
 export async function listProjects(): Promise<ProjectSummary[]> {
@@ -118,13 +120,22 @@ export async function listProjects(): Promise<ProjectSummary[]> {
         0,
       ),
       ...(p.archivedAt ? { archivedAt: p.archivedAt } : {}),
+      ...(p.laterAt ? { laterAt: p.laterAt } : {}),
     }))
     .sort((a, b) => b.updatedAt - a.updatedAt)
 }
 
-/** The two halves of the list: what he is working on, and what he has finished. */
+/**
+ * The three shelves. Finished wins over Later: a project he has filed away is
+ * finished whatever else was set on it, so a row can never appear twice.
+ */
 export function activeProjects(all: readonly ProjectSummary[]): ProjectSummary[] {
-  return all.filter((p) => !p.archivedAt)
+  return all.filter((p) => !p.archivedAt && !p.laterAt)
+}
+
+/** Parked for later: live work he is not on today. Newest parked first. */
+export function laterProjects(all: readonly ProjectSummary[]): ProjectSummary[] {
+  return all.filter((p) => !p.archivedAt && p.laterAt).sort((a, b) => (b.laterAt ?? 0) - (a.laterAt ?? 0))
 }
 
 /** Archived, newest ARCHIVED first, which is the order he last touched them as finished work. */
@@ -141,6 +152,22 @@ export function archivedProjects(all: readonly ProjectSummary[]): ProjectSummary
  * changed the edit", and filing something away is not changing it; bumping it
  * would reorder his active list every time he tidied up.
  */
+/**
+ * Park a project for later, or bring it back to what he is working on now.
+ * Writes ONLY the flag, exactly like setProjectArchived, so moving a project
+ * between shelves can never rewrite or lose the edit itself. Deliberately does
+ * NOT touch updatedAt: parking is not editing.
+ */
+export async function setProjectLater(id: string, later: boolean): Promise<void> {
+  const d = await db()
+  const p = (await d.get('projects', id)) as Project | undefined
+  if (!p) return
+  const next: Project = { ...p }
+  if (later) next.laterAt = Date.now()
+  else delete next.laterAt
+  await d.put('projects', next, id)
+}
+
 export async function setProjectArchived(id: string, archived: boolean): Promise<void> {
   const d = await db()
   const p = (await d.get('projects', id)) as Project | undefined

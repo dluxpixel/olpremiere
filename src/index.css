@@ -301,3 +301,93 @@ body {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ---------------------------------------------------------------------------
+ * Motion.
+ *
+ * His ask, 2026-08-05: switching between tabs should animate, and the editor
+ * should feel animated throughout. Kept to two primitives rather than sprinkling
+ * one-off durations around, so everything moves at the same speed and nothing
+ * has to be re-tuned in five places.
+ *
+ * Everything here is covered by the prefers-reduced-motion block above, which
+ * flattens it to nothing for anyone who has asked their system for less motion.
+ * Durations are deliberately short: 140ms reads as responsive, 300ms reads as
+ * the app being slow, and this is a tool he uses all day.
+ * ------------------------------------------------------------------------- */
+
+@keyframes olp-swap-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Panel content that has just been swapped (a tab change, a view change). */
+.olp-swap {
+  animation: olp-swap-in 160ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+@keyframes olp-pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.98) translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Dialogs and popovers arriving. */
+.olp-pop {
+  animation: olp-pop-in 140ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+/*
+ * The shared hover/press feel. Applied broadly rather than per component so a
+ * button added next month moves like every other button without anyone
+ * remembering to add a class. Only colour, border, opacity and transform are
+ * animated: never width/height/top/left, which animate on the layout thread and
+ * would fight the preview for the very frames it needs.
+ */
+button,
+[role='button'],
+a,
+input,
+select,
+textarea,
+summary {
+  transition:
+    background-color 140ms cubic-bezier(0.2, 0, 0, 1),
+    border-color 140ms cubic-bezier(0.2, 0, 0, 1),
+    color 140ms cubic-bezier(0.2, 0, 0, 1),
+    opacity 140ms cubic-bezier(0.2, 0, 0, 1),
+    transform 140ms cubic-bezier(0.2, 0, 0, 1),
+    box-shadow 140ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* A press should feel like a press. */
+button:active:not(:disabled),
+[role='button']:active {
+  transform: scale(0.97);
+}
+
+/*
+ * NOT the timeline or the monitor. Those are dragged, scrubbed and redrawn sixty
+ * times a second, and a transition on a clip would smear every drag and every
+ * playhead move. The preview's frames matter more than any flourish.
+ */
+[data-clip-kind],
+[data-testid='program-canvas'],
+[data-testid='ruler'] {
+  transition: none !important;
+}
+
+[data-clip-kind]:active {
+  transform: none;
+}

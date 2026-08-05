@@ -22,6 +22,13 @@ export interface Project {
    * field, which reads as not archived, so nothing needs migrating.
    */
   archivedAt?: number
+  /**
+   * Set on work he has parked for LATER: still live, not finished, just not what
+   * he is on today. His words: "separate projects that are there in the
+   * background that I will work on in the future and projects that I'm working
+   * on right now". Absent means it is current work.
+   */
+  laterAt?: number
 }
 
 /** An imported source file. */

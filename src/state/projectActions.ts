@@ -5,7 +5,7 @@
 import { activeSequence, newProject } from '../engine/types'
 import { useCollab } from '../collab/collabControl'
 import { pausePlayback } from './playbackControl'
-import { deleteProject, loadProjectById, saveNow, saveProject, setProjectArchived } from './persistence'
+import { deleteProject, loadProjectById, saveNow, saveProject, setProjectArchived, setProjectLater } from './persistence'
 import { useStore } from './store'
 import { useToasts } from './toasts'
 import { applyTemplateTracks } from './trackTemplate'
@@ -97,6 +97,26 @@ export async function removeProject(id: string): Promise<void> {
  * The OPEN project is refused, for the same reason deleting it is: the list he
  * is looking at should never disagree with the editor behind it.
  */
+/**
+ * Move a project between "now" and "later". Same shape and same refusal as
+ * setArchived: the OPEN project stays put, because the list he is looking at
+ * must never disagree with the editor behind it.
+ */
+export async function setLater(id: string, later: boolean): Promise<void> {
+  if (id === useStore.getState().project.id) {
+    useToasts.getState().show('Open another project first, then park this one', 'danger')
+    return
+  }
+  try {
+    await setProjectLater(id, later)
+  } catch (err) {
+    console.error('OL Premiere: parking failed', err)
+    useToasts.getState().show('Could not move that project', 'danger')
+    return
+  }
+  useToasts.getState().show(later ? 'Parked for later' : 'Back in what you are working on')
+}
+
 export async function setArchived(id: string, archived: boolean): Promise<void> {
   if (id === useStore.getState().project.id) {
     useToasts.getState().show('Open another project first, then archive this one', 'danger')

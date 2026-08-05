@@ -1,10 +1,16 @@
 // The Projects picker: every edit lives side by side. Open another one,
 // start fresh, or delete an old one, without ever nuking current work.
 
-import { Archive, ArchiveRestore, Clapperboard, Plus, Trash2, X } from 'lucide-react'
+import { Archive, ArchiveRestore, Clapperboard, Clock, Plus, Trash2, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { activeProjects, archivedProjects, listProjects, type ProjectSummary } from '../state/persistence'
-import { createProject, openProject, removeProject, setArchived } from '../state/projectActions'
+import {
+  activeProjects,
+  archivedProjects,
+  laterProjects,
+  listProjects,
+  type ProjectSummary,
+} from '../state/persistence'
+import { createProject, openProject, removeProject, setArchived, setLater } from '../state/projectActions'
 import { useStore } from '../state/store'
 import { Button, IconButton } from '../ui/Button'
 
@@ -17,10 +23,17 @@ function ago(ts: number): string {
 }
 
 /**
- * Which half of his work the dialog is showing. Finished projects are the ones
- * he has archived: kept, never deleted, just out of the way.
+ * Which shelf the dialog is showing.
+ *
+ * THREE, not two, since 2026-08-05. His words: "separate projects that are there
+ * in the background that I will work on in the future and projects that I'm
+ * working on right now". Both of those are LIVE work, which is why parking is
+ * its own flag and not a second meaning for Finished.
+ *   active  = what he is on now
+ *   later   = live, parked, will come back to it
+ *   archived = finished, filed away, never deleted
  */
-export type ProjectsView = 'active' | 'archived'
+export type ProjectsView = 'active' | 'later' | 'archived'
 
 export function ProjectsDialog({ onClose, view = 'active' }: { onClose: () => void; view?: ProjectsView }) {
   const currentId = useStore((s) => s.project.id)
@@ -37,7 +50,15 @@ export function ProjectsDialog({ onClose, view = 'active' }: { onClose: () => vo
   useEffect(refresh, [])
 
   const archivedCount = all ? archivedProjects(all).length : 0
-  const projects = all === null ? null : tab === 'archived' ? archivedProjects(all) : activeProjects(all)
+  const laterCount = all ? laterProjects(all).length : 0
+  const projects =
+    all === null
+      ? null
+      : tab === 'archived'
+        ? archivedProjects(all)
+        : tab === 'later'
+          ? laterProjects(all)
+          : activeProjects(all)
 
   const open = async (id: string) => {
     await openProject(id)
@@ -56,12 +77,12 @@ export function ProjectsDialog({ onClose, view = 'active' }: { onClose: () => vo
         aria-modal="true"
         aria-label="Projects"
         data-testid="projects-dialog"
-        className="flex max-h-[70vh] w-[520px] flex-col rounded-dialog border border-border bg-bg-elevated shadow-pop"
+        className="olp-pop flex max-h-[70vh] w-[520px] flex-col rounded-dialog border border-border bg-bg-elevated shadow-pop"
       >
         <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-4">
-          {/* Two views of the same shelf. Finished work is never deleted, just
-              filed, so the tab always shows what is in there. */}
-          {(['active', 'archived'] as const).map((id) => (
+          {/* Three shelves of the same list. Finished work is never deleted,
+              just filed, so both counts are always on show. */}
+          {(['active', 'later', 'archived'] as const).map((id) => (
             <button
               key={id}
               type="button"
@@ -75,7 +96,11 @@ export function ProjectsDialog({ onClose, view = 'active' }: { onClose: () => vo
                 tab === id ? 'text-text-primary' : 'text-text-muted hover:text-text-primary'
               }`}
             >
-              {id === 'active' ? 'Projects' : `Finished${archivedCount ? ` (${archivedCount})` : ''}`}
+              {id === 'active'
+                ? 'Working on'
+                : id === 'later'
+                  ? `Later${laterCount ? ` (${laterCount})` : ''}`
+                  : `Finished${archivedCount ? ` (${archivedCount})` : ''}`}
             </button>
           ))}
           <div className="ml-auto flex items-center gap-2">
@@ -95,7 +120,7 @@ export function ProjectsDialog({ onClose, view = 'active' }: { onClose: () => vo
           </div>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto p-2">
+        <div key={tab} className="olp-swap min-h-0 flex-1 overflow-y-auto p-2">
           {projects === null ? (
             <div className="py-8 text-center text-[11px] text-text-muted">Loading…</div>
           ) : (
@@ -132,6 +157,26 @@ export function ProjectsDialog({ onClose, view = 'active' }: { onClose: () => vo
                     <Button variant="secondary" data-testid="project-open" onClick={() => void open(p.id)}>
                       Open
                     </Button>
+                  )}
+                  {!isOpen && tab !== 'archived' && (
+                    <button
+                      type="button"
+                      data-testid={tab === 'later' ? 'project-unpark' : 'project-park'}
+                      aria-label={tab === 'later' ? `Bring ${p.name} back to now` : `Park ${p.name} for later`}
+                      title={
+                        tab === 'later'
+                          ? 'Bring it back to what you are working on'
+                          : 'Not working on it right now? Park it under Later.'
+                      }
+                      onClick={() => void setLater(p.id, tab !== 'later').then(refresh)}
+                      className="rounded-field p-1.5 text-text-muted opacity-0 transition-[color,opacity] duration-150 hover:text-text-primary group-hover/proj:opacity-100"
+                    >
+                      {tab === 'later' ? (
+                        <ArchiveRestore size={14} strokeWidth={1.5} />
+                      ) : (
+                        <Clock size={14} strokeWidth={1.5} />
+                      )}
+                    </button>
                   )}
                   {!isOpen && (
                     <button
