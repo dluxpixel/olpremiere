@@ -108,6 +108,7 @@ import { appearanceMenuItems, titleFontSizeItems } from '../state/clipMenus'
 import { openContextMenu, type MenuItem } from '../state/contextMenu'
 import { useBlobUrl } from '../state/blobUrls'
 import { useFilmstrip } from '../state/filmstrips'
+import { scrubAudio } from '../engine/scrubAudio'
 import { ClipWaveform } from './ClipWaveform'
 import { PlayheadLine, RemotePlayheads } from './PlayheadWidgets'
 import { pointOnScrollbar } from './scrollbarGuard'
@@ -1889,7 +1890,12 @@ export function Timeline({ height }: { height: number }) {
     const rect = contentRef.current?.getBoundingClientRect()
     if (!rect) return
     const t = Math.max(0, (clientX - rect.left) / pxPerS)
-    setUI({ playheadS: quantizeToFrame(t, seq.fps) })
+    const at = quantizeToFrame(t, seq.fps)
+    setUI({ playheadS: at })
+    // Make sound under the dragged playhead. Throttled inside, so calling it at
+    // pointermove rate costs a compare. This is how a cut gets FOUND: you hear
+    // the sentence end instead of playing past it and coming back.
+    scrubAudio.scrub(seq, assets, at)
   }
 
   // Vegas-style: click empty space (a track lane, or the blank area below the
@@ -2153,6 +2159,9 @@ export function Timeline({ height }: { height: number }) {
     stopEdgeScroll()
     lastDragPointer.current = null
     setHoverLane(null)
+    // Let go of the playhead and the scrubbing stops with it, including any
+    // grain still decoding.
+    scrubAudio.stop()
     lanesRef.current?.releasePointerCapture(e.pointerId)
     // Marquee is selection-only (no undo dispatch) - just drop the rectangle.
     if (drag.kind === 'marquee') {
@@ -2375,7 +2384,9 @@ export function Timeline({ height }: { height: number }) {
     const rect = contentRef.current?.getBoundingClientRect()
     if (!rect) return
     const t = Math.max(0, (clientX - rect.left) / pxPerS)
-    setUI({ playheadS: quantizeToFrame(t, seq.fps) })
+    const at = quantizeToFrame(t, seq.fps)
+    setUI({ playheadS: at })
+    scrubAudio.scrub(seq, assets, at)
   }
 
   // The pointer always says what a press would do: a razor blade for the
@@ -2553,6 +2564,8 @@ export function Timeline({ height }: { height: number }) {
               onPointerMove={(e) => {
                 if (e.currentTarget.hasPointerCapture(e.pointerId)) scrubTo(e.clientX)
               }}
+              onPointerUp={() => scrubAudio.stop()}
+              onPointerCancel={() => scrubAudio.stop()}
             >
               <Ruler contentWidth={contentWidth} lengthS={lengthS} winStartS={winStartS} winEndS={winEndS} />
               {/* Work area: the range an export renders. Drawn under the markers
