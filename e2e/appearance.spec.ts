@@ -248,12 +248,25 @@ test('animation speed shrinks the entrance window', async ({ page }) => {
   const normalEnd = (await clipData(page, id)).opacityKf!.at(-1)!.t
   expect(normalEnd).toBeCloseTo(0.25, 2)
 
+  // The ladder is five rungs now, and every rung is a SHARE of the clip rather
+  // than a fixed number of seconds (2026-08-06: seven absolute rungs collapsed
+  // to one value on a per-word caption). So this asserts the RELATIONSHIP -
+  // Snappy is meaningfully shorter than Slow, and the window follows the value -
+  // instead of pinning a magic number the ladder no longer promises.
   await page.getByTestId('clip').click({ button: 'right' })
   await menu.getByRole('menuitem', { name: 'Animation' }).hover()
-  await menu.getByRole('menuitem', { name: 'Speed: Instant' }).click()
-  const d = await clipData(page, id)
-  expect(d.appearance?.durS).toBeCloseTo(0.1, 5)
-  expect(d.opacityKf!.at(-1)!.t).toBeCloseTo(0.1, 2) // window shrank with it
+  await menu.getByRole('menuitem', { name: 'Speed: Snappy' }).click()
+  const snappy = await clipData(page, id)
+  expect(snappy.appearance!.durS!).toBeLessThan(normalEnd)
+  expect(snappy.opacityKf!.at(-1)!.t).toBeCloseTo(snappy.appearance!.durS!, 2)
+
+  await page.getByTestId('clip').click({ button: 'right' })
+  await menu.getByRole('menuitem', { name: 'Animation' }).hover()
+  await menu.getByRole('menuitem', { name: 'Speed: Slow' }).click()
+  const slow = await clipData(page, id)
+  // The whole point of the change: Slow is VISIBLY slower than Snappy.
+  expect(slow.appearance!.durS!).toBeGreaterThan(snappy.appearance!.durS! * 1.5)
+  expect(slow.opacityKf!.at(-1)!.t).toBeCloseTo(slow.appearance!.durS!, 2)
 })
 
 test('right-click IN the preview opens the clip menu, and the gizmo survives an animation', async ({ page }) => {

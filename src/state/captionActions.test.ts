@@ -108,7 +108,7 @@ describe('addCaptionsFromWords', () => {
     // pairing them would overshoot as far as leaving them alone undershoots,
     // and the tie splits: one word per block, which is what the reference
     // channel measured. "trapped" is across a 0.9s pause and could never join.
-    expect(top.clips.map((c) => c.title?.text)).toEqual(['so', 'i', 'trapped'])
+    expect(top.clips.map((c) => c.title?.text)).toEqual(['so', 'I', 'trapped'])
     expect(top.clips[0].startS).toBeCloseTo(0, 6)
     expect(top.clips[1].startS).toBeCloseTo(0.3, 6)
     expect(top.clips[2].startS).toBeCloseTo(1.5, 6)

@@ -256,7 +256,10 @@ describe('captionHouseCase', () => {
   })
 
   it('keeps apostrophes, question marks and exclamations', () => {
-    expect(captionHouseCase("I'm going in!")).toBe("i'm going in!")
+    // The pronoun I keeps its capital (2026-08-06, his request); the rest of
+    // the lowercase house style is unchanged.
+    expect(captionHouseCase("I'm going in!")).toBe("I'm going in!")
+    expect(captionHouseCase("he's going in!")).toBe("he's going in!")
     expect(captionHouseCase('Ready?')).toBe('ready?')
   })
 })
@@ -273,7 +276,8 @@ describe('captionClips', () => {
     expect(clips).toHaveLength(2)
     expect(clips[0].startS).toBe(1)
     expect(clips[0].outS).toBeCloseTo(0.5, 9)
-    expect(clips[0].title?.text).toBe('so i') // house style is measured lowercase
+    // House style is measured lowercase, EXCEPT the pronoun I (2026-08-06).
+    expect(clips[0].title?.text).toBe('so I')
     expect(clips[0].assetId).toBe('')
   })
 
@@ -307,5 +311,40 @@ describe('captionClips', () => {
     expect(clips[0].title?.color).toBe('#ff00ff')
     // emphasis still wins over the inherited color
     expect(clips[1].title?.color).toBe(CAPTION_EMPHASIS_COLORS[0])
+  })
+})
+
+// "make it so it automatically capitalizes some characters, for example, I and
+// stuff like that." (2026-08-06)
+//
+// The house look IS lowercase, measured off his own reference frames, and that
+// is not being undone. But a lone "i" is not a style choice, it reads as a typo.
+describe('captionHouseCase capitalises the words that are wrong in lowercase', () => {
+  it('the pronoun I, on its own', () => {
+    expect(captionHouseCase('i think so')).toBe('I think so')
+    expect(captionHouseCase('so i said')).toBe('so I said')
+  })
+
+  it('and its contractions', () => {
+    expect(captionHouseCase("i'm going")).toBe("I'm going")
+    expect(captionHouseCase("i'll do it")).toBe("I'll do it")
+    expect(captionHouseCase("i've seen it")).toBe("I've seen it")
+    expect(captionHouseCase("i'd rather")).toBe("I'd rather")
+  })
+
+  it('even when the house style kept an exclamation or a question mark', () => {
+    expect(captionHouseCase('i!')).toBe('I!')
+    expect(captionHouseCase("i'm?")).toBe("I'm?")
+  })
+
+  it('but nothing else: the lowercase house look is still the look', () => {
+    expect(captionHouseCase('minecraft is good')).toBe('minecraft is good')
+    expect(captionHouseCase('It Was Fine')).toBe('it was fine')
+    // A word merely CONTAINING an i is untouched.
+    expect(captionHouseCase('it is inside')).toBe('it is inside')
+  })
+
+  it('acronyms still win, as before', () => {
+    expect(captionHouseCase('the TNT and PvP')).toBe('the TNT and PvP')
   })
 })

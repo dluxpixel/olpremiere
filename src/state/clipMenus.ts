@@ -5,7 +5,9 @@
 import { DEFAULT_APPEARANCE_DUR, ENTRANCE_PRESETS, EXIT_PRESETS } from '../engine/anim/appearance'
 import { TITLE_FONT_OPTIONS } from '../engine/render/titleFonts'
 import { isTitleClip, type Clip } from '../engine/types'
+import { clipDurationS } from '../engine/timeline'
 import {
+  appearanceDurFor,
   saveClipAppearanceAsDefault,
   setClipsAppearance,
   setClipsAppearanceDur,
@@ -22,16 +24,23 @@ const TITLE_SIZE_PRESETS = [
   { label: 'Huge', px: 240 },
 ]
 
-// More granular speed ladder + an Auto option that sizes each word's animation
-// to its own length (long words slower, short words snappier).
-const APPEARANCE_SPEEDS: { label: string; durS: number | 'auto' }[] = [
-  { label: 'Auto (fit each word)', durS: 'auto' },
-  { label: 'Instant', durS: 0.1 },
-  { label: 'Fast', durS: 0.18 },
-  { label: 'Normal', durS: DEFAULT_APPEARANCE_DUR },
-  { label: 'Relaxed', durS: 0.4 },
-  { label: 'Slow', durS: 0.6 },
-  { label: 'Very slow', durS: 1 },
+// FIVE rungs, not seven, and every one a SHARE of the clip.
+//
+// His words, 2026-08-06: "some speeds are just not actually very slow, and the
+// very fast is really, really fast. There are just too many options. Just make
+// it simpler and better. More accurate."
+//
+// Seven absolute-second rungs collapsed to four distinct results on a per-word
+// caption (see appearanceDurFor). These fractions are spaced so that every rung
+// is visibly different from its neighbours on a third-of-a-second word AND on a
+// two-second title, and the slowest stays under the half-clip ceiling so an
+// entrance can never run into its own exit.
+const APPEARANCE_SPEEDS: { label: string; spec: 'auto' | { frac: number } }[] = [
+  { label: 'Auto (fit each word)', spec: 'auto' },
+  { label: 'Snappy', spec: { frac: 0.12 } },
+  { label: 'Normal', spec: { frac: 0.22 } },
+  { label: 'Smooth', spec: { frac: 0.34 } },
+  { label: 'Slow', spec: { frac: 0.46 } },
 ]
 
 /**
@@ -111,8 +120,12 @@ export function appearanceMenuItems(clip: Clip, ids: string[] = [clip.id]): Menu
       ? APPEARANCE_SPEEDS.map((s, i) => ({
           label: `Speed: ${s.label}`,
           separator: i === 0,
-          checked: typeof s.durS === 'number' && Math.abs(curDur - s.durS) < 1e-6,
-          onClick: () => setClipsAppearanceDur(ids, s.durS),
+          // The tick compares against what this rung would MEAN for this clip,
+          // since the same rung is a different number of seconds on a long title
+          // and a short word.
+          checked:
+            s.spec !== 'auto' && Math.abs(curDur - appearanceDurFor(s.spec.frac, clipDurationS(clip))) < 1e-3,
+          onClick: () => setClipsAppearanceDur(ids, s.spec),
         }))
       : []),
     // "Save as default for new text" is text-specific, so titles only.

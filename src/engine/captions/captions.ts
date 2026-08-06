@@ -437,9 +437,34 @@ export function captionHouseCase(text: string): string {
     .map((w) => {
       const letters = w.replace(/[^A-Za-z]/g, '')
       const isAcronym = letters.length >= 2 && (letters === letters.toUpperCase() || /[A-Z]/.test(letters.slice(1)))
-      return isAcronym ? w : w.toLowerCase()
+      return isAcronym ? w : alwaysCapital(w.toLowerCase())
     })
     .join(' ')
+}
+
+/**
+ * The handful of words that are wrong in lowercase even in a lowercase style.
+ *
+ * His ask, 2026-08-06: *"make it so it automatically capitalizes some
+ * characters, for example, I and stuff like that."*
+ *
+ * The house look IS lowercase, measured off his own reference frames, and that
+ * is not being undone: "minecraft" stays lowercase because that is the style.
+ * But a lone "i" is not a style choice, it reads as a typo, and the transcriber
+ * hands it over correctly capitalised before this function flattens it. So the
+ * pronoun and its contractions are put back.
+ *
+ * Deliberately NOT a proper-noun dictionary. Guessing at names would capitalise
+ * the wrong words far more often than the right ones, and every miss is visible
+ * on screen for the whole clip.
+ */
+const ALWAYS_CAPITAL = new Set(['i', "i'm", "i'll", "i've", "i'd", 'i̇'])
+
+function alwaysCapital(word: string): string {
+  // Compare without the trailing ! or ? the house style keeps, so "i'm!" works.
+  const core = word.replace(/[!?]+$/, '')
+  if (!ALWAYS_CAPITAL.has(core)) return word
+  return word.charAt(0).toUpperCase() + word.slice(1)
 }
 
 /**
