@@ -42,8 +42,7 @@ import {
   closeGapBefore,
   collectSnapPoints,
   gapBefore,
-  moveClip,
-  moveGroup,
+  moveSelectionWith,
   rateStretchGroup,
   rippleTrimGroup,
   rippleTrimTo,
@@ -95,7 +94,7 @@ import {
   topAndTail,
 } from '../state/clipEdits'
 import { impactAtPlayhead, punchInAtPlayhead, punchOnBeats, rampWorkArea, whipToNext } from '../state/motionActions'
-import { autoCaptionFromClip } from '../state/transcribeActions'
+import { autoCaptionEveryClip, autoCaptionFromClip } from '../state/transcribeActions'
 import { deleteTrack, setTrackAudioRole, setTrackAutoLevel, setTrackPan, setTrackVolumeDb } from '../state/trackEdits'
 import {
   applyTrackPreset,
@@ -1468,38 +1467,6 @@ export function Timeline({ height }: { height: number }) {
   // A dying component must never leave a scroll loop running.
   useEffect(() => stopEdgeScroll, [])
 
-  // Move the grabbed clip's group to tS, then shift every other selected
-  // group by the same delta on its own track - direction-ordered so earlier
-  // moves never collide with clips that are themselves about to move (the
-  // same trick as nudgeSelection). ONE sequence in, one out: preview and the
-  // single-dispatch commit share it byte-for-byte.
-  const moveSelectionWith = (
-    base: Sequence,
-    grabbedId: Id,
-    targetTrackId: Id,
-    tS: number,
-    others: { id: Id; startS0: number }[],
-    solo = false,
-  ): Sequence => {
-    const grabbed = base.tracks.flatMap((t) => t.clips).find((c) => c.id === grabbedId)
-    if (!grabbed) return base
-    const deltaS = tS - grabbed.startS
-    // Solo: he clicked one half of a pair and left the partner unselected, so
-    // the partner stays where it is. moveClip is the same verb the group move
-    // uses underneath; the only difference is that it stops at this clip.
-    let next = solo
-      ? moveClip(base, grabbedId, targetTrackId, tS)
-      : moveGroup(base, grabbedId, targetTrackId, tS)
-    if (others.length === 0 || deltaS === 0) return next
-    const ordered = [...others].sort((a, b) => (deltaS > 0 ? b.startS0 - a.startS0 : a.startS0 - b.startS0))
-    for (const o of ordered) {
-      const tr = next.tracks.find((t) => t.clips.some((c) => c.id === o.id))
-      const oc = tr?.clips.find((c) => c.id === o.id)
-      if (!tr || !oc) continue
-      next = moveGroup(next, o.id, tr.id, Math.max(0, oc.startS + deltaS))
-    }
-    return next
-  }
 
   const handleClipPointerDown = (e: ReactPointerEvent<HTMLDivElement>, clip: Clip) => {
     // Any fresh press on a clip clears a stale right-drag suppression (e.g. a
@@ -1654,7 +1621,22 @@ export function Timeline({ height }: { height: number }) {
               label: 'Balance volume across all clips',
               onClick: () => void balanceAllClipLoudness(),
             },
-            { label: 'Auto-Caption from voiceover', onClick: () => void autoCaptionFromClip(clip.id) },
+            {
+              // CAPTION WHAT IS SELECTED. His words, 2026-08-06: "add an option
+              // to caption selected clips when I right-click and drag over some
+              // clips. Make it so when I click 'Caption this clip', it just
+              // captions all of them." One item, not two: the selection already
+              // says how many he means, so the label just reports it back.
+              // The many-clip path pools every word and lays them down in ONE
+              // pass, so eight clips still make one caption track and one undo.
+              label: keepSelection
+                ? `Auto-Caption ${selNow.length} clips from voiceover`
+                : 'Auto-Caption from voiceover',
+              onClick: () =>
+                keepSelection
+                  ? void autoCaptionEveryClip(undefined, new Set(selNow))
+                  : void autoCaptionFromClip(clip.id),
+            },
             { label: 'Punch video on beats', onClick: () => void punchOnBeats(clip.id) },
           ]
         : []

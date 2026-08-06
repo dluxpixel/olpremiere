@@ -8,6 +8,17 @@ import { ensureAudioContext, SCHEDULE_LATENCY_S } from './audio'
 
 export type ScheduleFn = (fromS: number) => Promise<() => void>
 
+/**
+ * How long pressing Play may wait for audio before the picture rolls anyway.
+ *
+ * Under this and the two start together, sample-aligned on the audio clock,
+ * which is the good case and the usual one on a warm project. Over it and a
+ * press of Space would start to feel broken, so the picture goes and the sound
+ * catches up. 120 ms is about four frames: long enough that a warm timeline
+ * never loses its audio clock, short enough that no press of Space feels dead.
+ */
+export const AUDIO_START_BUDGET_MS = 120
+
 export interface TransportOpts {
   /** Sequence end in seconds. Re-read every frame so edits mid-play count. */
   getEndS: () => number
@@ -90,14 +101,49 @@ export class Transport {
     let audioScheduled = false
     if (rate === 1) {
       try {
-        const stop = await this.opts.schedule(fromS)
+        // THE PICTURE MUST NOT WAIT FOR THE WHOLE TIMELINE TO DECODE.
+        //
+        // His report, 2026-08-06: "I click space or click the play button. It
+        // just doesn't work, or it's really late."
+        //
+        // This used to be a bare `await this.opts.schedule(fromS)`, and
+        // scheduleAudio decodes EVERY audible clip before it resolves. On a warm
+        // project that is instant, which is why it looked fine for a long time.
+        // The moment anything is cold - a take he just recorded, a file he just
+        // imported, a project opened from disk, a cut-heavy timeline where one
+        // asset fell out of the LRU - pressing Space sat there decoding whole
+        // files before a single frame moved. A decode that never resolves (a
+        // damaged blob) meant Space did nothing at all, forever.
+        //
+        // So the wait is now BOUNDED. Win the race and everything is exactly as
+        // it was, audio-clocked and sample-aligned. Lose it and the picture
+        // starts now on the performance clock, and the audio joins from wherever
+        // the playhead has reached by the time it is ready. That late join is
+        // not new machinery: it is rescheduleAudio, the same swap a mid-play
+        // mute already performs.
+        const pending = this.opts.schedule(fromS)
+        const stop = await Promise.race([
+          pending,
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), AUDIO_START_BUDGET_MS)),
+        ])
         if (token !== this.playToken) {
           // Superseded by pause()/play() while decoding. Kill the late audio.
-          stop()
+          if (stop) stop()
+          else void pending.then((s) => s()).catch(() => undefined)
           return
         }
-        this.stopAudio = stop
-        audioScheduled = true
+        if (stop) {
+          this.stopAudio = stop
+          audioScheduled = true
+        } else {
+          // Too slow to wait for. Roll the picture; bring the sound in behind it.
+          void pending
+            .then((late) => {
+              late()
+              if (token === this.playToken) this.rescheduleAudio()
+            })
+            .catch(() => undefined)
+        }
       } catch (err) {
         console.warn('OL Studio transport: audio scheduling failed, playing silent', err)
       }

@@ -16,6 +16,7 @@ import {
   addClipWithLinkedAudio,
   addTrack,
   adoptFrameRate,
+  moveSelectionWith,
   addMarker,
   canPlace,
   clipDurationS,
@@ -2751,5 +2752,78 @@ describe('adoptFrameRate', () => {
     expect(
       addClipWithLinkedAudio(seq, vTrack.id, aTrack.id, makeAsset({ fps: 59.94 }), 0).seq.fps,
     ).toBe(59.94)
+  })
+})
+
+// "When I drag one clip, for example, from v6 to v5, it should drag all, but it
+// doesn't." (2026-08-06)
+//
+// The carried clips were re-placed on the track they were ALREADY on, so only
+// the grabbed clip ever changed lane. And a purely vertical drag has deltaS 0,
+// which the old early-return treated as nothing to do, so dragging a selection
+// straight down moved exactly one clip and left the rest behind.
+describe('moveSelectionWith (a multi-clip drag)', () => {
+  /** V1, V2, A1, V3: video lanes deliberately NOT contiguous. */
+  const stack = () =>
+    makeSeq([
+      makeTrack({ id: 'v1', clips: [] }),
+      makeTrack({ id: 'v2', clips: [makeClip({ id: 'b', startS: 2, outS: 1 })] }),
+      makeTrack({ id: 'a1', kind: 'audio', clips: [] }),
+      makeTrack({
+        id: 'v3',
+        clips: [makeClip({ id: 'a', startS: 0, outS: 1 }), makeClip({ id: 'c', startS: 4, outS: 1 })],
+      }),
+    ])
+
+  const trackOf = (seq: Sequence, id: string) => seq.tracks.find((t) => t.clips.some((c) => c.id === id))?.id
+  const startOf = (seq: Sequence, id: string) =>
+    seq.tracks.flatMap((t) => t.clips).find((c) => c.id === id)?.startS
+
+  const others = (seq: Sequence, ids: string[]) =>
+    ids.map((id) => ({ id, startS0: startOf(seq, id)! }))
+
+  it('carries the others DOWN A LANE on a purely vertical drag', () => {
+    const seq = stack()
+    // Grab 'a' on v3, drop on v2, same time. This is his v6-to-v5.
+    const out = moveSelectionWith(seq, 'a', 'v2', 0, others(seq, ['c']))
+    expect(trackOf(out, 'a')).toBe('v2')
+    expect(trackOf(out, 'c')).toBe('v2')
+    expect(startOf(out, 'c')).toBe(4) // time untouched
+  })
+
+  it('counts the shift in VIDEO lanes, stepping over the audio track between them', () => {
+    const seq = stack()
+    // v3 -> v1 is two VIDEO lanes down, even though it is three tracks in the array.
+    const out = moveSelectionWith(seq, 'a', 'v1', 0, others(seq, ['c']))
+    expect(trackOf(out, 'a')).toBe('v1')
+    expect(trackOf(out, 'c')).toBe('v1')
+  })
+
+  it('moves lane AND time together when the drag does both', () => {
+    const seq = stack()
+    const out = moveSelectionWith(seq, 'a', 'v2', 1, others(seq, ['c']))
+    expect(trackOf(out, 'a')).toBe('v2')
+    expect(trackOf(out, 'c')).toBe('v2')
+    expect(startOf(out, 'c')).toBe(5) // carried the +1s delta too
+  })
+
+  it('still shifts time only, when the lane does not change', () => {
+    const seq = stack()
+    const out = moveSelectionWith(seq, 'a', 'v3', 1, others(seq, ['c']))
+    expect(trackOf(out, 'c')).toBe('v3')
+    expect(startOf(out, 'c')).toBe(5)
+  })
+
+  it('clamps at the top of the stack instead of dropping a clip off the end', () => {
+    const seq = stack()
+    // 'b' is already on v2; dragging 'a' from v3 to v1 would push b past the top.
+    const out = moveSelectionWith(seq, 'a', 'v1', 0, others(seq, ['b']))
+    expect(trackOf(out, 'a')).toBe('v1')
+    expect(trackOf(out, 'b')).toBe('v1') // clamped, not lost
+  })
+
+  it('does nothing at all when neither lane nor time moved', () => {
+    const seq = stack()
+    expect(moveSelectionWith(seq, 'a', 'v3', 0, others(seq, ['c']))).toBe(seq)
   })
 })

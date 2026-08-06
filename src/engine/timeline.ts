@@ -1540,3 +1540,84 @@ export function duplicateClips(seq: Sequence, clipIds: Id[]): { seq: Sequence; n
   }
   return pasteClips(seq, payload, atS)
 }
+
+/**
+ * A whole multi-clip drag, as one pure sequence-in, sequence-out step.
+ *
+ * EXTRACTED FROM Timeline.tsx on 2026-08-06 so it can actually be tested. It
+ * was a closure inside the component, which meant the only way to cover it was
+ * to drive real pointer physics in a browser, and the first attempt at that
+ * ended up re-implementing the logic inside the test: green, and proving
+ * nothing about the app. The live preview and the single-dispatch commit both
+ * call this, so what he sees while dragging is what lands.
+ */
+// Move the grabbed clip's group to tS, then shift every other selected
+// group by the same delta on its own track - direction-ordered so earlier
+// moves never collide with clips that are themselves about to move (the
+// same trick as nudgeSelection). ONE sequence in, one out: preview and the
+// single-dispatch commit share it byte-for-byte.
+export function moveSelectionWith(
+  base: Sequence,
+  grabbedId: Id,
+  targetTrackId: Id,
+  tS: number,
+  others: { id: Id; startS0: number }[],
+  solo = false,
+): Sequence {
+  const grabbed = base.tracks.flatMap((t) => t.clips).find((c) => c.id === grabbedId)
+  if (!grabbed) return base
+  const deltaS = tS - grabbed.startS
+  // Solo: he clicked one half of a pair and left the partner unselected, so
+  // the partner stays where it is. moveClip is the same verb the group move
+  // uses underneath; the only difference is that it stops at this clip.
+  let next = solo
+    ? moveClip(base, grabbedId, targetTrackId, tS)
+    : moveGroup(base, grabbedId, targetTrackId, tS)
+  if (others.length === 0) return next
+
+  // THE SELECTION CHANGES TRACK TOGETHER, NOT JUST TIME.
+  //
+  // His words, 2026-08-06: "when I drag one clip, for example, from v6 to v5,
+  // it should drag all, but it doesn't."
+  //
+  // He is right and the old code could not have done it: every carried clip
+  // was re-placed on `tr.id`, the track it was ALREADY on, so only the grabbed
+  // clip ever changed lane. Worse, a purely vertical drag has deltaS === 0, and
+  // the early return above used to bail on that, so dragging a multi-selection
+  // straight down moved exactly one clip and left the rest behind.
+  //
+  // The shift is counted in LANES OF THE SAME KIND, not raw track indices, so
+  // "down one video track" stays "down one video track" even with audio tracks
+  // interleaved, and a selected audio clip is never flung onto a video track.
+  // Clips of the other kind keep their lane and just travel in time.
+  const grabbedIdx = base.tracks.findIndex((t) => t.clips.some((c) => c.id === grabbedId))
+  const targetIdx = base.tracks.findIndex((t) => t.id === targetTrackId)
+  const kind = base.tracks[grabbedIdx]?.kind
+  const lanes = base.tracks.map((t, i) => ({ kind: t.kind, i })).filter((x) => x.kind === kind)
+  const posOf = (trackIdx: number): number => lanes.findIndex((x) => x.i === trackIdx)
+  const laneShift =
+    grabbedIdx >= 0 && targetIdx >= 0 ? posOf(targetIdx) - posOf(grabbedIdx) : 0
+
+  if (laneShift === 0 && deltaS === 0) return next
+  const ordered = [...others].sort((a, b) => (deltaS > 0 ? b.startS0 - a.startS0 : a.startS0 - b.startS0))
+  for (const o of ordered) {
+    const trIdx = next.tracks.findIndex((t) => t.clips.some((c) => c.id === o.id))
+    const tr = next.tracks[trIdx]
+    const oc = tr?.clips.find((c) => c.id === o.id)
+    if (!tr || !oc) continue
+    // Same kind: shift by the same number of lanes, clamped to the ones that
+    // exist. Clamping per clip rather than refusing the whole move means the
+    // gesture always does SOMETHING; two clips can land on one lane at the
+    // very edge of the stack, which beats the selection silently splitting up.
+    let destTrackId = tr.id
+    if (tr.kind === kind && laneShift !== 0) {
+      const p = posOf(trIdx)
+      if (p >= 0) {
+        const want = Math.max(0, Math.min(lanes.length - 1, p + laneShift))
+        destTrackId = next.tracks[lanes[want].i]?.id ?? tr.id
+      }
+    }
+    next = moveGroup(next, o.id, destTrackId, Math.max(0, oc.startS + deltaS))
+  }
+  return next
+}

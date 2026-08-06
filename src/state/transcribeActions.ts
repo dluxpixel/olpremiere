@@ -71,7 +71,15 @@ async function wordsForClip(clip: Clip, asset: MediaAsset): Promise<CaptionWord[
  * Locked tracks are skipped, because captioning them is work he cannot undo by
  * hand afterwards.
  */
-function audibleClips(): { clip: Clip; asset: MediaAsset }[] {
+/**
+ * Every clip that actually makes sound, or just the ones whose ids are given.
+ *
+ * The filter exists so captioning a SELECTION reuses the whole-timeline path
+ * instead of running the single-clip one N times: the words are pooled and laid
+ * down in ONE pass, so a selection of eight clips still produces one caption
+ * track and one undo step.
+ */
+function audibleClips(onlyIds?: ReadonlySet<string>): { clip: Clip; asset: MediaAsset }[] {
   const s = useStore.getState()
   const seq = activeSequence(s.project)
   return seq.tracks
@@ -82,7 +90,7 @@ function audibleClips(): { clip: Clip; asset: MediaAsset }[] {
     // timeline moment: every caption came out doubled, and the Whisper wait
     // doubled with it. Worse the more clips there are. This is the predicate the
     // mixer and both export paths already use to stop linked A/V doubling sound.
-    .flatMap((t) => t.clips.filter((c) => clipEmitsAudio(t, c)))
+    .flatMap((t) => t.clips.filter((c) => clipEmitsAudio(t, c) && (!onlyIds || onlyIds.has(c.id))))
     .map((clip) => ({ clip, asset: s.project.assets[clip.assetId] }))
     .filter((x): x is { clip: Clip; asset: MediaAsset } => !!x.asset?.hasAudio)
     .sort((a, b) => a.clip.startS - b.clip.startS)
@@ -140,15 +148,19 @@ export async function autoCaptionFromClip(clipId: string, preset?: TextStylePres
  * stops the whole run, and whatever was already heard is still laid down rather
  * than thrown away.
  */
-export async function autoCaptionEveryClip(preset?: TextStylePreset): Promise<void> {
+export async function autoCaptionEveryClip(
+  preset?: TextStylePreset,
+  /** When given, caption only these clips. Used by the right-click on a selection. */
+  onlyIds?: ReadonlySet<string>,
+): Promise<void> {
   const toasts = useToasts.getState()
   if (useTranscribe.getState().status !== 'idle') {
     toasts.show('A transcription is already running', 'danger')
     return
   }
-  const targets = audibleClips()
+  const targets = audibleClips(onlyIds)
   if (targets.length === 0) {
-    toasts.show('No clips with sound to caption', 'danger')
+    toasts.show(onlyIds ? 'None of those clips have sound' : 'No clips with sound to caption', 'danger')
     return
   }
 
@@ -181,7 +193,7 @@ export async function autoCaptionEveryClip(preset?: TextStylePreset): Promise<vo
     return
   }
   addCaptionsFromWords(words, {
-    label: 'Auto-caption every clip',
+    label: onlyIds ? 'Auto-caption selected clips' : 'Auto-caption every clip',
     preset: preset ?? rememberedCaptionPreset(),
   })
   if (cancelled) toasts.show('Stopped early, captioned what was heard so far')
