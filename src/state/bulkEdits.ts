@@ -26,10 +26,24 @@ import { useToasts } from './toasts'
  * single undoable edit. Unchanged clips (fn returns the same reference) are left
  * alone, and if nothing changes at all the sequence is returned untouched so no
  * empty command lands on the undo stack.
+ *
+ * `mergeField` names the PROPERTY being scrubbed ('gain', 'fade:in'). Without
+ * it every commit is its own undo step, which is why a multi-clip nudge used to
+ * cost one Ctrl+Z per arrow press while the single-clip fields cost one per run
+ * (setChannel in clipEdits.ts). The key is scoped to this EXACT selection the
+ * same way updateTitles does it, so a run on one selection folds into one step
+ * and a different selection can never merge into it.
  */
-export function mapClips(ids: Iterable<string>, label: string, fn: (clip: Clip) => Clip): void {
+export function mapClips(
+  ids: Iterable<string>,
+  label: string,
+  fn: (clip: Clip) => Clip,
+  mergeField?: string,
+): void {
   const idSet = new Set(ids)
   if (idSet.size === 0) return
+  const mergeKey =
+    mergeField === undefined ? undefined : `${mergeField}:${[...idSet].sort().join(',')}`
   updateActiveSequence(label, (seq) => {
     let changed = false
     const tracks = seq.tracks.map((t) => {
@@ -47,7 +61,7 @@ export function mapClips(ids: Iterable<string>, label: string, fn: (clip: Clip) 
       return tChanged ? { ...t, clips } : t
     })
     return changed ? { ...seq, tracks } : seq
-  })
+  }, mergeKey)
 }
 
 /**
@@ -57,12 +71,18 @@ export function mapClips(ids: Iterable<string>, label: string, fn: (clip: Clip) 
  * keyframes and the bulk edit silently does nothing.
  */
 export function setChannelForClips(ids: Iterable<string>, channel: AnimChannel, value: number): void {
-  mapClips(ids, `Set ${channel}`, (c) => {
-    const kfs = channelKeyframes(c, channel)
-    if (kfs.length === 0) return withChannelValue(c, channel, value)
-    const localT = playheadLocalT(c)
-    return withChannelKeyframes(c, channel, upsertKeyframe(kfs, { t: localT, value, ease: 'linear' }))
-  })
+  mapClips(
+    ids,
+    `Set ${channel}`,
+    (c) => {
+      const kfs = channelKeyframes(c, channel)
+      if (kfs.length === 0) return withChannelValue(c, channel, value)
+      const localT = playheadLocalT(c)
+      return withChannelKeyframes(c, channel, upsertKeyframe(kfs, { t: localT, value, ease: 'linear' }))
+    },
+    // Per channel, so nudging Opacity and then Scale still leaves two steps.
+    `channel:${channel}`,
+  )
 }
 
 /**
@@ -79,25 +99,32 @@ export function setClipsPosition(ids: Iterable<string>, x: number, y: number): v
   const { project, ui } = useStore.getState()
   const seq = activeSequence(project)
   const auto = useSettings.getState().autoKeyframe
-  mapClips(ids, 'Align clips', (c) => {
-    // An appearance preset OWNS these channels and recompiles from the base, so
-    // it takes the base write; the single-clip gizmo declines to keyframe an
-    // appearance-owned clip for exactly the same reason.
-    const spec = c.appearance
-    if (spec) {
-      const moved: Clip = { ...c, transform: { ...c.transform, x, y } }
-      return applyAppearanceToClip(moved, spec, seq.width, seq.height)
-    }
-    // Only a clip the playhead is actually INSIDE has a meaningful time to key
-    // at. A selection can reach clips elsewhere on the timeline, and their local
-    // time clamps to the head or the tail, and animating those would be noise the
-    // user never asked for, so they keep the plain move.
-    const localT = ui.playheadS - c.startS
-    if (localT < 0 || ui.playheadS >= clipEndS(c)) {
-      return withChannelValue(withChannelValue(c, 'posX', x), 'posY', y)
-    }
-    return withChannelsAtTime(c, localT, [['posX', x], ['posY', y]], auto)
-  })
+  mapClips(
+    ids,
+    'Align clips',
+    (c) => {
+      // An appearance preset OWNS these channels and recompiles from the base, so
+      // it takes the base write; the single-clip gizmo declines to keyframe an
+      // appearance-owned clip for exactly the same reason.
+      const spec = c.appearance
+      if (spec) {
+        const moved: Clip = { ...c, transform: { ...c.transform, x, y } }
+        return applyAppearanceToClip(moved, spec, seq.width, seq.height)
+      }
+      // Only a clip the playhead is actually INSIDE has a meaningful time to key
+      // at. A selection can reach clips elsewhere on the timeline, and their local
+      // time clamps to the head or the tail, and animating those would be noise the
+      // user never asked for, so they keep the plain move.
+      const localT = ui.playheadS - c.startS
+      if (localT < 0 || ui.playheadS >= clipEndS(c)) {
+        return withChannelValue(withChannelValue(c, 'posX', x), 'posY', y)
+      }
+      return withChannelsAtTime(c, localT, [['posX', x], ['posY', y]], auto)
+    },
+    // One drag of the preview gizmo commits once on release, but the arrow keys
+    // that nudge the same selection commit per press.
+    'position',
+  )
 }
 
 /** Add one fresh instance of an effect to every selected clip (own id each). */
@@ -156,13 +183,18 @@ export function clearEffectsForClips(ids: Iterable<string>): void {
  *  an animated volume channel overrides the base, so those clips get a
  *  keyframe at the playhead instead of a dead base write. */
 export function setClipsGainDb(ids: Iterable<string>, db: number): void {
-  mapClips(ids, 'Set volume', (c) => {
-    const kfs = channelKeyframes(c, 'volume')
-    if (kfs.length > 0) {
-      return withChannelKeyframes(c, 'volume', upsertKeyframe(kfs, { t: playheadLocalT(c), value: db, ease: 'linear' }))
-    }
-    return c.audioGainDb === db ? c : { ...c, audioGainDb: db }
-  })
+  mapClips(
+    ids,
+    'Set volume',
+    (c) => {
+      const kfs = channelKeyframes(c, 'volume')
+      if (kfs.length > 0) {
+        return withChannelKeyframes(c, 'volume', upsertKeyframe(kfs, { t: playheadLocalT(c), value: db, ease: 'linear' }))
+      }
+      return c.audioGainDb === db ? c : { ...c, audioGainDb: db }
+    },
+    'gain',
+  )
 }
 
 const clampFade = (s: number, dur: number): number => (s < 0 ? 0 : s > dur ? dur : s)
@@ -170,8 +202,14 @@ const clampFade = (s: number, dur: number): number => (s < 0 ? 0 : s > dur ? dur
 /** Set the same fade in/out length (seconds) on every selected clip, clamped per clip. */
 export function setClipsFade(ids: Iterable<string>, edge: 'in' | 'out', seconds: number): void {
   const key = edge === 'in' ? 'fadeInS' : 'fadeOutS'
-  mapClips(ids, edge === 'in' ? 'Set fade in' : 'Set fade out', (c) => {
-    const v = clampFade(seconds, clipDurationS(c))
-    return c[key] === v ? c : { ...c, [key]: v }
-  })
+  mapClips(
+    ids,
+    edge === 'in' ? 'Set fade in' : 'Set fade out',
+    (c) => {
+      const v = clampFade(seconds, clipDurationS(c))
+      return c[key] === v ? c : { ...c, [key]: v }
+    },
+    // Per edge, so a fade-in run and a fade-out run stay two undo steps.
+    `fade:${edge}`,
+  )
 }

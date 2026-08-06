@@ -64,6 +64,7 @@ import {
   toggleEffectParamKeyframes,
 } from '../state/clipEdits'
 import { saveSelectionAsPreset } from '../state/library'
+import { createPendingEdit, type PendingEdit } from './pendingEdit'
 import { useStore } from '../state/store'
 import { IconButton } from '../ui/Button'
 import { KeyframeLane } from './KeyframeLane'
@@ -210,6 +211,11 @@ export function PropRow({
  * Scrubbable numeric field: click-drag horizontally to change (dx * step *
  * sensitivity), type to set. Enter/blur commits; Escape reverts; double-click
  * or focus enters text-edit. Commits only fire when the value actually moved.
+ *
+ * A typed value is never lost by leaving the field: clicking the next clip
+ * commits it, with no Enter needed. The edit is frozen to the clip that owned
+ * the field when typing STARTED (see pendingEdit), so that commit can never
+ * land on the clip that was selected afterwards.
  */
 export function ScrubField({
   value,
@@ -228,14 +234,26 @@ export function ScrubField({
   const [editing, setEditing] = useState(false)
   const draggingRef = useRef<{ startX: number; startVal: number; moved: boolean } | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  // The open edit and its owner. One holder for the life of the field - the
+  // props around it change under it, that is the whole point.
+  const pendingRef = useRef<PendingEdit | null>(null)
+  if (!pendingRef.current) pendingRef.current = createPendingEdit()
+  const pending = pendingRef.current
 
   // Reflect external value changes (playhead move, undo) unless mid-edit.
   useEffect(() => {
     if (!editing) setText(fmt(value))
   }, [value, editing])
 
+  // A field can go away without ever blurring (the clip deselected, a section
+  // folded), and browsers fire no blur for a focused element that is removed.
+  // Flush there too, or the typed value dies with the panel.
+  useEffect(() => () => void pending.flush(), [pending])
+
+  const normalize = (v: number) => clamp(roundStep(v, spec.step), spec.min, spec.max)
+
   const commit = (v: number) => {
-    const next = clamp(roundStep(v, spec.step), spec.min, spec.max)
+    const next = normalize(v)
     if (Math.abs(next - value) > 1e-9) onCommit(next)
   }
 
@@ -279,15 +297,18 @@ export function ScrubField({
 
   const enterEdit = () => {
     setEditing(true)
+    // Freeze who this edit is for, before any selection change can swap the
+    // props. Already open (focus, then a double-click) keeps the first owner.
+    pending.begin({ onCommit, base: value, normalize })
     // Select-all so a fresh typed value replaces the old one.
     requestAnimationFrame(() => inputRef.current?.select())
   }
 
   const commitTyped = () => {
     setEditing(false)
-    const n = Number(text)
-    if (Number.isFinite(n)) commit(n)
-    else setText(fmt(value))
+    // Leaving edit re-runs the sync effect above, so invalid or unchanged text
+    // is redrawn from the live value without a second setText here.
+    pending.flush()
   }
 
   // Position-in-range fill: 0% at min, 100% at max. Finite ranges only - a
@@ -305,7 +326,10 @@ export function ScrubField({
         aria-label={ariaLabel}
         value={text}
         readOnly={!editing}
-        onChange={(e) => setText(e.target.value)}
+        onChange={(e) => {
+          setText(e.target.value)
+          pending.type(e.target.value)
+        }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={endDrag}
@@ -322,6 +346,8 @@ export function ScrubField({
             commitTyped()
             inputRef.current?.blur()
           } else if (e.key === 'Escape') {
+            // Abandon: the blur below, and any later unmount, write nothing.
+            pending.cancel()
             setEditing(false)
             setText(fmt(value))
             inputRef.current?.blur()
@@ -334,6 +360,9 @@ export function ScrubField({
             const next = clamp(roundStep(from + dir * spec.step * (e.shiftKey ? 10 : 1), spec.step), spec.min, spec.max)
             setText(fmt(next))
             if (Math.abs(next - value) > 1e-9) onCommit(next)
+            // The nudge committed on its own; re-baseline so the blur after it
+            // does not commit the same number again as a second undo step.
+            pending.settle(next)
           }
         }}
         onBlur={() => editing && commitTyped()}

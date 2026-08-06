@@ -1,5 +1,7 @@
-// Store helpers for the audio-mixer track controls (Phase 6). Each call is one
-// undo step; the Fader/pan controls commit on release, so a drag is not a flood.
+// Store helpers for the audio-mixer track controls (Phase 6). A pointer drag on
+// the Fader commits once, on release, but the SAME fader nudged with the arrow
+// keys commits on every press, so the continuous controls pass a merge key and
+// a run of nudges costs one Ctrl+Z (see setChannel in clipEdits.ts).
 
 import { recomputeDuration } from '../engine/timeline'
 import { activeSequence, audioTracks, videoTracks, type AutoLevel, type Id, type Track } from '../engine/types'
@@ -8,16 +10,28 @@ import { useToasts } from './toasts'
 
 const clamp = (x: number, lo: number, hi: number): number => (x < lo ? lo : x > hi ? hi : x)
 
-function mapTrack(trackId: Id, label: string, fn: (t: Track) => Track): void {
-  updateActiveSequence(label, (seq) => {
-    const idx = seq.tracks.findIndex((t) => t.id === trackId)
-    if (idx < 0) return seq
-    const next = fn(seq.tracks[idx])
-    if (next === seq.tracks[idx]) return seq
-    const tracks = seq.tracks.slice()
-    tracks[idx] = next
-    return { ...seq, tracks }
-  })
+function mapTrack(
+  trackId: Id,
+  label: string,
+  fn: (t: Track) => Track,
+  /** Folds a run of edits to the SAME control on the SAME track into one undo
+   *  step. Always scope it by trackId, or riding two faders in the same second
+   *  would collapse into a single step. */
+  mergeKey?: string,
+): void {
+  updateActiveSequence(
+    label,
+    (seq) => {
+      const idx = seq.tracks.findIndex((t) => t.id === trackId)
+      if (idx < 0) return seq
+      const next = fn(seq.tracks[idx])
+      if (next === seq.tracks[idx]) return seq
+      const tracks = seq.tracks.slice()
+      tracks[idx] = next
+      return { ...seq, tracks }
+    },
+    mergeKey,
+  )
 }
 
 /**
@@ -60,12 +74,17 @@ export function deleteTrack(trackId: Id): void {
 
 export function setTrackVolumeDb(trackId: Id, db: number): void {
   const v = clamp(db, -60, 12)
-  mapTrack(trackId, 'Set track volume', (t) => (t.volumeDb === v ? t : { ...t, volumeDb: v }))
+  mapTrack(
+    trackId,
+    'Set track volume',
+    (t) => (t.volumeDb === v ? t : { ...t, volumeDb: v }),
+    `volume:${trackId}`,
+  )
 }
 
 export function setTrackPan(trackId: Id, pan: number): void {
   const v = clamp(pan, -1, 1)
-  mapTrack(trackId, 'Set track pan', (t) => (t.pan === v ? t : { ...t, pan: v }))
+  mapTrack(trackId, 'Set track pan', (t) => (t.pan === v ? t : { ...t, pan: v }), `pan:${trackId}`)
 }
 
 export function setTrackAutoLevel(trackId: Id, level: AutoLevel): void {

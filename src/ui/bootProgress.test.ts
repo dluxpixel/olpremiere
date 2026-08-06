@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 import {
   BOOT_STEPS,
   CARD_EXIT_MS,
@@ -15,8 +15,6 @@ import {
   statusLine,
   statusOf,
   stepsFor,
-  trackBootStep,
-  trackBootStepWith,
   useBootLedger,
   type BootStatuses,
   type BootStepSpec,
@@ -201,22 +199,6 @@ describe('the timings he actually feels', () => {
   })
 })
 
-describe('trackBootStep', () => {
-  beforeEach(() => useBootLedger.getState().reset())
-
-  it('marks the row done when the real work resolves', async () => {
-    await trackBootStep('media', Promise.resolve('ok'))
-    expect(useBootLedger.getState().statuses.media?.state).toBe('done')
-  })
-
-  it('reports a failure instead of throwing, because the boot screen must not become the error', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    await expect(trackBootStep('fonts', Promise.reject(new Error('no font')))).resolves.toBeNull()
-    expect(useBootLedger.getState().statuses.fonts?.state).toBe('failed')
-    warn.mockRestore()
-  })
-})
-
 describe('the warm-up rows', () => {
   const all = stepsFor(true)
   const ids = all.map((s) => s.id)
@@ -257,21 +239,6 @@ describe('the warm-up rows', () => {
     statuses.warmVideo = { state: 'failed' }
     statuses.warmAudio = { state: 'failed' }
     expect(gateReady(all, statuses)).toBe(true)
-  })
-})
-
-describe('trackBootStepWith', () => {
-  it('states what it actually warmed, instead of a fixed string', async () => {
-    useBootLedger.getState().reset()
-    await trackBootStepWith('warmAudio', Promise.resolve(6), (n) => `${n} ready`)
-    expect(statusOf(useBootLedger.getState().statuses, 'warmAudio')).toEqual({ state: 'done', detail: '6 ready' })
-  })
-
-  it('reports a failure as failed and resolves null, never throwing at boot', async () => {
-    useBootLedger.getState().reset()
-    const out = await trackBootStepWith('warmVideo', Promise.reject(new Error('no')), () => 'unused')
-    expect(out).toBeNull()
-    expect(statusOf(useBootLedger.getState().statuses, 'warmVideo').state).toBe('failed')
   })
 })
 

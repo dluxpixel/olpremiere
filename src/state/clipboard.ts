@@ -133,6 +133,13 @@ export function nudgeSelection(deltaFrames: number): void {
   const ids = unlockedClipIds(seq, s.ui.selection)
   if (ids.length === 0) return
   const deltaS = deltaFrames / seq.fps
+  // Alt+arrow repeats while held and commits per press, so a ten press nudge used
+  // to cost ten presses of Ctrl+Z. Scoped to THIS selection the way mapClips does
+  // it, so nudging one clip can never fold into a run on another. The field is
+  // 'nudge' and not 'position' on purpose: 'position' belongs to the preview
+  // gizmo (setClipsPosition), which moves transform x/y inside the frame, and a
+  // slide along the track must never fold into a move across the frame.
+  const mergeKey = `nudge:${[...ids].sort().join(',')}`
   // Direction-ordered so clips never transiently collide with their own group:
   // moving right, shift the rightmost first; moving left, the leftmost first.
   const withStart = ids
@@ -157,7 +164,7 @@ export function nudgeSelection(deltaFrames: number): void {
       next = moveGroup(next, id, track.id, Math.max(0, clip.startS + deltaS))
     }
     return next
-  })
+  }, mergeKey)
 }
 
 /**

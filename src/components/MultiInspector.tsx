@@ -166,7 +166,7 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
                 spec={SIZE_SPEC}
                 testId="multi-fontsize"
                 ariaLabel="Font size (all)"
-                onCommit={(v) => setTitlesFontSize(titleIds, v)}
+                onCommit={(v) => setTitlesFontSize(titleIds, v, 'fontSizePx')}
               />
             </PropRow>
             <div className="flex items-center gap-2">
@@ -233,7 +233,13 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
                     spec={{ min: 0, max: 100, step: 1, sens: 0.3 }}
                     testId="multi-outline-width"
                     ariaLabel="Outline width (all)"
-                    onCommit={(v) => updateTitles(titleIds, { outline: { color: firstOutline?.color ?? '#000000', widthPx: v } })}
+                    onCommit={(v) =>
+                      updateTitles(
+                        titleIds,
+                        { outline: { color: firstOutline?.color ?? '#000000', widthPx: v } },
+                        'outline',
+                      )
+                    }
                   />
                 </PropRow>
               </>

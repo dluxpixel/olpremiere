@@ -116,11 +116,30 @@ export function updateTitle(
 }
 
 /**
+ * The key that folds a run of edits to ONE field across the SAME selection into
+ * a single undo step. Sorted, so a selection built by shift-clicking backwards
+ * is still the same gesture and not a second step.
+ */
+function titlesMergeKey(idSet: Set<string>, mergeField: keyof TitleDef | undefined): string | undefined {
+  return mergeField === undefined
+    ? undefined
+    : `titles:${mergeField}:${[...idSet].sort().join(',')}`
+}
+
+/**
  * Resize the type on every selected title, bringing each one's outline, shadow
  * and box padding with it. Not expressible as a patch: the scale factor depends
  * on the clip's CURRENT size, which differs across a selection.
+ *
+ * `mergeField` marks a CONTINUOUS run (holding an arrow key on the size field)
+ * so it costs one undo step, exactly as in updateTitle. The size presets in the
+ * clip menu pass nothing and stay one step each.
  */
-export function setTitlesFontSize(ids: Iterable<string>, fontSizePx: number): void {
+export function setTitlesFontSize(
+  ids: Iterable<string>,
+  fontSizePx: number,
+  mergeField?: keyof TitleDef,
+): void {
   const idSet = new Set(ids)
   if (idSet.size === 0) return
   updateActiveSequence('Set text size', (seq) => {
@@ -137,7 +156,7 @@ export function setTitlesFontSize(ids: Iterable<string>, fontSizePx: number): vo
       return changed ? { ...t, clips } : t
     })
     return changed ? { ...seq, tracks } : seq
-  })
+  }, titlesMergeKey(idSet, mergeField))
 }
 
 /**
@@ -152,10 +171,6 @@ export function updateTitles(
 ): void {
   const idSet = new Set(ids)
   if (idSet.size === 0) return
-  const mergeKey =
-    mergeField === undefined
-      ? undefined
-      : `titles:${mergeField}:${[...idSet].sort().join(',')}`
   updateActiveSequence('Edit titles', (seq) => {
     let changed = false
     const tracks = seq.tracks.map((t) => {
@@ -168,5 +183,5 @@ export function updateTitles(
       return changed ? { ...t, clips } : t
     })
     return changed ? { ...seq, tracks } : seq
-  }, mergeKey)
+  }, titlesMergeKey(idSet, mergeField))
 }

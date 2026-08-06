@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { channelKeyframes } from '../engine/effects/channels'
 import { recomputeDuration } from '../engine/timeline'
+import { MERGE_WINDOW_MS } from './history'
 import { setClipDenoise, setClipTransition, toggleChannelAnimation } from './clipEdits'
 import {
   activeSequence,
@@ -153,11 +154,34 @@ describe('applyEffectToAllClips', () => {
 })
 
 describe('setClipDenoise (undo granularity)', () => {
-  it('each dispatch is ONE undo step; off deletes the field entirely', () => {
+  // The strength field is a ScrubField, so an arrow key commits on every press.
+  // That run is ONE gesture and now folds into ONE undo step (see
+  // undoMerge.test.ts, which owns the rule); a pause longer than the merge
+  // window still starts the next step. This test used to fire two commits back
+  // to back and demand two entries, which is precisely the flood he asked to be
+  // rid of. The clock is driven by hand so BOTH halves are asserted.
+  let now = 0
+  beforeEach(() => {
+    now = 1_700_000_000_000
+    vi.spyOn(Date, 'now').mockImplementation(() => now)
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('a run of nudges is ONE undo step; a pause starts the next', () => {
     const a = seedTitle(0)
     setClipDenoise(a.id, 1)
+    now += 50
     setClipDenoise(a.id, 0.6)
     expect(clips()[0].denoise).toBeCloseTo(0.6, 9)
+    // Both landed inside the window, so one undo takes the WHOLE run off.
+    useStore.getState().undo()
+    expect('denoise' in clips()[0]).toBe(false)
+
+    setClipDenoise(a.id, 1)
+    now += MERGE_WINDOW_MS + 1
+    setClipDenoise(a.id, 0.6)
     useStore.getState().undo()
     expect(clips()[0].denoise).toBe(1)
     useStore.getState().undo()

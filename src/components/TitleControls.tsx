@@ -106,8 +106,9 @@ export function TitleControls({ clip }: { clip: Clip }) {
   const def = clip.title
   if (!def) return null
   // `mergeField` marks a control that fires CONTINUOUSLY (a text box being
-  // typed into, a colour picker being dragged), so the whole run collapses to
-  // one undo step instead of one step per event.
+  // typed into, a colour picker being dragged, an arrow key held down on a
+  // number field), so the whole run collapses to one undo step instead of one
+  // step per event.
   const set = (patch: Partial<TitleDef>, mergeField?: keyof TitleDef) =>
     updateTitle(clip.id, patch, mergeField)
 
@@ -138,7 +139,7 @@ export function TitleControls({ clip }: { clip: Clip }) {
             max={400}
             testId="title-fontsize"
             ariaLabel="Font size"
-            onCommit={(v) => setTitlesFontSize([clip.id], v)}
+            onCommit={(v) => setTitlesFontSize([clip.id], v, 'fontSizePx')}
           />
         </PropRow>
         <PropRow label="Family">
@@ -276,7 +277,7 @@ export function TitleControls({ clip }: { clip: Clip }) {
             min={-4000}
             max={4000}
             ariaLabel="Offset X"
-            onCommit={(v) => set({ offsetXPx: v })}
+            onCommit={(v) => set({ offsetXPx: v }, 'offsetXPx')}
           />
         </PropRow>
         <PropRow label="Offset Y" onReset={() => set({ offsetYPx: 0 })} resetLabel="Reset offset Y">
@@ -285,7 +286,7 @@ export function TitleControls({ clip }: { clip: Clip }) {
             min={-4000}
             max={4000}
             ariaLabel="Offset Y"
-            onCommit={(v) => set({ offsetYPx: v })}
+            onCommit={(v) => set({ offsetYPx: v }, 'offsetYPx')}
           />
         </PropRow>
       </Section>
@@ -320,7 +321,7 @@ export function TitleControls({ clip }: { clip: Clip }) {
                 min={0}
                 max={200}
                 ariaLabel="Shadow blur"
-                onCommit={(v) => set({ shadow: { ...def.shadow!, blurPx: v } })}
+                onCommit={(v) => set({ shadow: { ...def.shadow!, blurPx: v } }, 'shadow')}
               />
             </PropRow>
             <PropRow
@@ -333,7 +334,7 @@ export function TitleControls({ clip }: { clip: Clip }) {
                 min={-200}
                 max={200}
                 ariaLabel="Shadow offset X"
-                onCommit={(v) => set({ shadow: { ...def.shadow!, dx: v } })}
+                onCommit={(v) => set({ shadow: { ...def.shadow!, dx: v } }, 'shadow')}
               />
             </PropRow>
             <PropRow
@@ -346,7 +347,7 @@ export function TitleControls({ clip }: { clip: Clip }) {
                 min={-200}
                 max={200}
                 ariaLabel="Shadow offset Y"
-                onCommit={(v) => set({ shadow: { ...def.shadow!, dy: v } })}
+                onCommit={(v) => set({ shadow: { ...def.shadow!, dy: v } }, 'shadow')}
               />
             </PropRow>
             <PropRow label="Color" labelTitle="Shadow color">
@@ -402,7 +403,7 @@ export function TitleControls({ clip }: { clip: Clip }) {
                 min={0}
                 max={100}
                 ariaLabel="Outline width"
-                onCommit={(v) => set({ outline: { ...def.outline!, widthPx: v } })}
+                onCommit={(v) => set({ outline: { ...def.outline!, widthPx: v } }, 'outline')}
               />
             </PropRow>
           </div>
@@ -454,7 +455,7 @@ export function TitleControls({ clip }: { clip: Clip }) {
                 min={0}
                 max={400}
                 ariaLabel="Background padding"
-                onCommit={(v) => set({ box: { ...def.box!, paddingPx: v } })}
+                onCommit={(v) => set({ box: { ...def.box!, paddingPx: v } }, 'box')}
               />
             </PropRow>
             <PropRow
@@ -467,7 +468,7 @@ export function TitleControls({ clip }: { clip: Clip }) {
                 min={0}
                 max={400}
                 ariaLabel="Background radius"
-                onCommit={(v) => set({ box: { ...def.box!, radiusPx: v } })}
+                onCommit={(v) => set({ box: { ...def.box!, radiusPx: v } }, 'box')}
               />
             </PropRow>
           </div>

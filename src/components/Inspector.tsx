@@ -1,5 +1,5 @@
 import { AudioWaveform, Clock, Rewind, SlidersHorizontal } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { clipEmitsAudio } from '../engine/audio'
 import { isChannelAnimated, resolveChannel } from '../engine/effects/channels'
 import { clipDurationS, clipEndS, moveGroup } from '../engine/timeline'
@@ -17,6 +17,7 @@ import { updateActiveSequence, useStore } from '../state/store'
 import { IconButton } from '../ui/Button'
 import { EffectControls, PropRow, ScrubField, SectionLabel, type Spec } from './EffectControls'
 import { MultiInspector, type SelectedClip } from './MultiInspector'
+import { createPendingEdit, type PendingEdit } from './pendingEdit'
 import { TitleControls } from './TitleControls'
 import { MAX_GAIN_DB } from '../engine/loudness'
 
@@ -201,6 +202,12 @@ function Row({ label, value }: { label: string; value: string }) {
  * (parsed + frame-quantized), Escape reverts. The commit goes through
  * moveGroup, so linked A/V travels together and overlaps resolve to the
  * nearest free slot - typing an occupied time lands beside it, not on it.
+ *
+ * The row survives a selection change - the panel re-renders, it does not
+ * unmount - and the timeline selects on POINTERDOWN, so clicking another clip
+ * swaps `onCommit` to that clip and only then fires the blur. Left as it was,
+ * a time typed for one clip moved a different one. So the edit freezes its
+ * owner the instant it opens (see pendingEdit), exactly as ScrubField does.
  */
 function EditableTimecodeRow({
   label,
@@ -216,12 +223,41 @@ function EditableTimecodeRow({
   onCommit: (s: number) => void
 }) {
   const [text, setText] = useState<string | null>(null) // null = display mode
+  // One holder for the life of the row. The props around it change under it,
+  // that is the whole point.
+  const pendingRef = useRef<PendingEdit | null>(null)
+  if (!pendingRef.current) pendingRef.current = createPendingEdit()
+  const pending = pendingRef.current
+
+  // Deselecting the clip removes the focused input, and browsers fire no blur
+  // for a focused element that is removed. Flush here too, or the typed time
+  // dies with the panel.
+  useEffect(() => () => void pending.flush(), [pending])
+
+  const beginEdit = () => {
+    // Freeze the clip this time is being typed for, before any selection
+    // change can swap the props out from under the open edit.
+    pending.begin({
+      onCommit,
+      // What the row shows, in the space flush compares against: typing back
+      // the displayed timecode is not an edit and must write nothing.
+      base: quantizeToFrame(seconds, fps),
+      normalize: (v) => quantizeToFrame(v, fps),
+      parse: (t) => {
+        const parsed = parseTimecode(t, fps)
+        return parsed !== null && parsed >= 0 ? parsed : null
+      },
+    })
+    setText(formatTimecode(seconds, fps))
+  }
+
   const commit = () => {
-    if (text === null) return
-    const parsed = parseTimecode(text, fps)
-    if (parsed !== null && parsed >= 0) onCommit(quantizeToFrame(parsed, fps))
+    // One-shot: Enter leaves display mode, and the blur that follows it (or a
+    // later unmount) must be silent rather than move the clip twice.
+    pending.flush()
     setText(null)
   }
+
   return (
     <PropRow label={label}>
       {text === null ? (
@@ -229,7 +265,7 @@ function EditableTimecodeRow({
           type="button"
           data-testid={testId}
           className="cursor-text rounded-field px-1 font-numeric text-ui-sm text-text-primary hover:bg-bg-elevated"
-          onClick={() => setText(formatTimecode(seconds, fps))}
+          onClick={beginEdit}
         >
           {formatTimecode(seconds, fps)}
         </button>
@@ -238,10 +274,17 @@ function EditableTimecodeRow({
           autoFocus
           data-testid={`${testId}-input`}
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            setText(e.target.value)
+            pending.type(e.target.value)
+          }}
           onKeyDown={(e) => {
             if (e.key === 'Enter') commit()
-            else if (e.key === 'Escape') setText(null)
+            else if (e.key === 'Escape') {
+              // Abandon: the blur below, and any later unmount, write nothing.
+              pending.cancel()
+              setText(null)
+            }
           }}
           onBlur={commit}
           onFocus={(e) => e.currentTarget.select()}

@@ -317,12 +317,20 @@ export function setClipDenoise(clipId: string, strength: number | undefined): vo
     .tracks.flatMap((t) => t.clips)
     .find((c) => c.id === clipId)
   if (!cur || cur.denoise === s) return
-  mapClip(clipId, s === undefined ? 'Noise reduction off' : 'Reduce noise', (c) => {
-    const next = { ...c }
-    if (s === undefined) delete next.denoise
-    else next.denoise = s
-    return next
-  })
+  mapClip(
+    clipId,
+    s === undefined ? 'Noise reduction off' : 'Reduce noise',
+    (c) => {
+      const next = { ...c }
+      if (s === undefined) delete next.denoise
+      else next.denoise = s
+      return next
+    },
+    false,
+    // The strength ScrubField commits on every arrow press, so a run of nudges
+    // folds into one undo step (setChannel's rule), scoped to this clip.
+    `denoise:${clipId}`,
+  )
 }
 
 export function deleteEffect(clipId: string, effectId: Id): void {
@@ -480,9 +488,15 @@ const clampFade = (s: number, dur: number): number => (s < 0 ? 0 : s > dur ? dur
 
 /** Change a clip's playback speed (negative = reverse); ripples the tail. */
 export function setClipSpeed(clipId: string, speed: number): void {
-  updateActiveSequence('Set speed', (seq) =>
-    // Speed edits bypass mapClip (they ripple neighbours), so lock-check here.
-    unlockedClipIds(seq, [clipId]).length === 0 ? seq : setClipSpeedT(seq, clipId, speed),
+  updateActiveSequence(
+    'Set speed',
+    (seq) =>
+      // Speed edits bypass mapClip (they ripple neighbours), so lock-check here.
+      unlockedClipIds(seq, [clipId]).length === 0 ? seq : setClipSpeedT(seq, clipId, speed),
+    // The % field is a ScrubField like every other one, so a run of arrow
+    // presses is one gesture. Undo restores a whole snapshot, so the rippled
+    // tail comes back with it.
+    `speed:${clipId}`,
   )
 }
 
@@ -518,22 +532,40 @@ export function setClipTransform(
  * volume ScrubField.
  */
 export function setClipGainDb(clipId: string, db: number): void {
-  mapClip(clipId, 'Set clip gain', (c) => {
-    const kfs = channelKeyframes(c, 'volume')
-    if (kfs.length > 0) {
-      return withChannelKeyframes(c, 'volume', upsertKeyframe(kfs, { t: playheadLocalT(c), value: db, ease: 'linear' }))
-    }
-    return c.audioGainDb === db ? c : { ...c, audioGainDb: db }
-  })
+  // Same one-step-per-run rule as setChannel: the slider commits on release and
+  // the dB field commits on EVERY arrow press, so a run of nudges is one gesture
+  // and has to cost one Ctrl+Z. Scoped to the clip, or sliding clip A and then
+  // clip B a moment later would collapse into a single step.
+  mapClip(
+    clipId,
+    'Set clip gain',
+    (c) => {
+      const kfs = channelKeyframes(c, 'volume')
+      if (kfs.length > 0) {
+        return withChannelKeyframes(c, 'volume', upsertKeyframe(kfs, { t: playheadLocalT(c), value: db, ease: 'linear' }))
+      }
+      return c.audioGainDb === db ? c : { ...c, audioGainDb: db }
+    },
+    false,
+    `gain:${clipId}`,
+  )
 }
 
 /** Set a clip's fade in/out length (seconds), clamped to the clip duration. */
 export function setClipFade(clipId: string, edge: 'in' | 'out', seconds: number): void {
-  mapClip(clipId, edge === 'in' ? 'Set fade in' : 'Set fade out', (c) => {
-    const v = clampFade(seconds, clipDurationS(c))
-    const key = edge === 'in' ? 'fadeInS' : 'fadeOutS'
-    return c[key] === v ? c : { ...c, [key]: v }
-  })
+  // Keyed per clip AND per edge: nudging fade in and then fade out is two
+  // separate adjustments and must stay two undo steps.
+  mapClip(
+    clipId,
+    edge === 'in' ? 'Set fade in' : 'Set fade out',
+    (c) => {
+      const v = clampFade(seconds, clipDurationS(c))
+      const key = edge === 'in' ? 'fadeInS' : 'fadeOutS'
+      return c[key] === v ? c : { ...c, [key]: v }
+    },
+    false,
+    `fade:${clipId}:${edge}`,
+  )
 }
 
 /**

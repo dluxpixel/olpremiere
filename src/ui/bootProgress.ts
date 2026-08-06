@@ -21,9 +21,9 @@ export type BootStepId =
   | 'backups'
   | 'warmVideo'
   | 'warmAudio'
+  | 'updates'
   | 'proxies'
   | 'captions'
-  | 'updates'
 
 export type BootStepState = 'pending' | 'active' | 'done' | 'failed'
 
@@ -43,7 +43,16 @@ export interface BootStepSpec {
   optional?: boolean
 }
 
-/** In display order. This order is also the order the work is kicked off in `main.tsx`. */
+/**
+ * In display order, which is also the order the rows are REPORTED in: one at a
+ * time, top to bottom, by the single runner in `bootSequence.ts`. A row is never
+ * shown running while a row above it is still pending.
+ *
+ * The two rows that can honestly take minutes (the preview copies and the speech
+ * model) sit at the bottom on purpose. Anything under them would be stuck behind
+ * a 100MB download on a first-ever boot, which is how the update row would end up
+ * grey on the very launch it is there to narrate.
+ */
 export const BOOT_STEPS: readonly BootStepSpec[] = [
   { id: 'settings', active: 'Loading your settings', done: 'Settings loaded' },
   { id: 'project', active: 'Opening your last project', done: 'Project opened' },
@@ -58,6 +67,7 @@ export const BOOT_STEPS: readonly BootStepSpec[] = [
   // paid here instead, in the window the card was already holding open.
   { id: 'warmVideo', active: 'Warming up your video', done: 'Video ready' },
   { id: 'warmAudio', active: 'Warming up your audio', done: 'Audio ready' },
+  { id: 'updates', active: 'Checking for updates', done: 'Checked for updates', electronOnly: true, optional: true },
   {
     // The preview copies added in v0.1.40. They are what make a cut-heavy
     // timeline play smoothly, and they are built with ffmpeg in the background,
@@ -77,10 +87,9 @@ export const BOOT_STEPS: readonly BootStepSpec[] = [
     // NEVER gates. The speech model is 75 to 100MB on a first ever run, and an
     // editor that will not open until a model downloads is a far worse app than
     // one that opens and finishes the download behind him. Same argument as the
-    // update check below.
+    // update check above.
     optional: true,
   },
-  { id: 'updates', active: 'Checking for updates', done: 'Checked for updates', electronOnly: true, optional: true },
 ]
 
 export interface BootStepStatus {
@@ -244,45 +253,7 @@ if (import.meta.env.DEV && typeof window !== 'undefined') {
   ;(window as unknown as Record<string, unknown>).__bootLedger = bootStep
 }
 
-/**
- * Wrap a real startup promise in its row. Failure is reported, never thrown on:
- * the boot screen's job is to open the editor, not to become the error.
- */
-/**
- * Same as `trackBootStep`, but the finished row's detail is computed FROM the
- * result ("6 ready"), which a fixed string cannot do. Exists so a warm-up row
- * can state what it actually warmed rather than finishing twice to add a fact.
- */
-export function trackBootStepWith<T>(
-  id: BootStepId,
-  work: Promise<T>,
-  detail: (value: T) => string | undefined,
-): Promise<T | null> {
-  bootStep.begin(id)
-  return work.then(
-    (v) => {
-      bootStep.finish(id, detail(v))
-      return v
-    },
-    (err: unknown) => {
-      console.warn(`OL Premiere boot: ${id} failed`, err)
-      bootStep.fail(id)
-      return null
-    },
-  )
-}
-
-export function trackBootStep<T>(id: BootStepId, work: Promise<T>, doneDetail?: string): Promise<T | null> {
-  bootStep.begin(id)
-  return work.then(
-    (v) => {
-      bootStep.finish(id, doneDetail)
-      return v
-    },
-    (err: unknown) => {
-      console.warn(`OL Premiere boot: ${id} failed`, err)
-      bootStep.fail(id)
-      return null
-    },
-  )
-}
+// Wrapping one promise in one row used to live here, and it was called from three
+// places at once, which is how the last row on the card ended up running while the
+// rows above it were still grey. There is now exactly one way to report a row and
+// it walks them in order: `runBootSequence` in bootSequence.ts.

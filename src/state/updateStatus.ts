@@ -10,7 +10,6 @@
 import { create } from 'zustand'
 import type { UpdateStatus } from '../../electron/ipc-types'
 import { displayVersion } from '../appVersion'
-import { bootStep } from '../ui/bootProgress'
 
 interface UpdateFeed {
   status: UpdateStatus | null
@@ -73,26 +72,47 @@ export function bootDetailFor(status: UpdateStatus): string {
   }
 }
 
-/** Mirror a status onto the loading card's row. */
-function reportToBoot(status: UpdateStatus): void {
-  const detail = bootDetailFor(status)
-  switch (status.kind) {
-    case 'checking':
-      bootStep.begin('updates')
-      break
-    case 'available':
-    case 'downloading':
-      bootStep.note('updates', detail)
-      break
-    case 'downloaded':
-    case 'none':
-    case 'unsupported':
-      bootStep.finish('updates', detail)
-      break
-    case 'error':
-      bootStep.fail('updates', detail)
-      break
-  }
+/** True once the check has an answer that will not change again. */
+function isSettledStatus(status: UpdateStatus): boolean {
+  return status.kind !== 'checking' && status.kind !== 'available' && status.kind !== 'downloading'
+}
+
+/**
+ * The update row's own wait, so the boot card can report it IN ITS TURN.
+ *
+ * `initUpdateFeed` starts the check the moment the renderer loads, which is what
+ * gives it an answer by the time the card reaches this row. It used to write
+ * straight into the ledger from that callback, and because the callback fires
+ * before the project has even opened, the LAST row on the card went 'active'
+ * while every row above it was still grey. Starting the work early and reporting
+ * the row in order gets both.
+ *
+ * Always settles, and never rejects: `initUpdateFeed`'s own timeout calls an
+ * updater that says nothing at all unreachable, and a build with no updater has
+ * nothing to check, which is a row that is DONE rather than one that hangs.
+ */
+export function whenUpdateChecked(note: (detail: string) => void): Promise<{ ok: boolean; detail: string }> {
+  const answer = (status: UpdateStatus): { ok: boolean; detail: string } => ({
+    ok: status.kind !== 'error',
+    detail: bootDetailFor(status),
+  })
+  const api = typeof window !== 'undefined' ? window.api : undefined
+  if (!api?.isElectron) return Promise.resolve({ ok: true, detail: 'no updater' })
+  const current = useUpdateFeed.getState().status
+  if (current && isSettledStatus(current)) return Promise.resolve(answer(current))
+  return new Promise((resolve) => {
+    const stop = useUpdateFeed.subscribe(({ status }) => {
+      if (!status) return
+      if (isSettledStatus(status)) {
+        stop()
+        resolve(answer(status))
+      } else {
+        // Keeps the row running but updates its fact (the download percentage).
+        const detail = bootDetailFor(status)
+        if (detail) note(detail)
+      }
+    })
+  })
 }
 
 /** Start watching the desktop updater. A no-op on the web build. */
@@ -102,7 +122,6 @@ export function initUpdateFeed(): void {
 
   const apply = (status: UpdateStatus): void => {
     useUpdateFeed.setState({ status })
-    reportToBoot(status)
   }
 
   // Assume a check is under way until told otherwise, so the row appears at once.

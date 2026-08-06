@@ -59,6 +59,7 @@ import { clipKeyframeTimes } from '../engine/keyframes'
 import { createSnapPointCache } from '../engine/snapPointCache'
 import { TRANSITION_KINDS, TRANSITION_LABELS, type TransitionKind } from '../engine/render/types'
 import { formatTimecode, quantizeToFrame } from '../engine/timecode'
+import { transitionMarkPx, transitionMarkSpans } from '../engine/transitionMarks'
 import { workArea } from '../engine/workArea'
 import { applyEffect, moveClipKeyframe, removeClipTransition, setClipTransition } from '../state/clipEdits'
 import { ASSET_MIME, EFFECT_MIME, SFX_MIME, TRANSITION_MIME, dragHasType, edgeForOffset } from '../state/dnd'
@@ -575,6 +576,13 @@ interface ClipViewProps {
   /** One-shot accent pulse for a genuinely NEW clip. With virtualization a
    *  mount can also be a scroll-in, so newness is decided by the parent. */
   pop: boolean
+  /**
+   * Real transition seconds at each edge, from engine/transitionMarks. Passed
+   * as numbers rather than the neighbour clips so this memo() still skips a
+   * render when a neighbour moves without changing what crosses the cut.
+   */
+  transitionHeadS: number
+  transitionTailS: number
   onClipPointerDown: (e: ReactPointerEvent<HTMLDivElement>, clip: Clip) => void
   onTrimPointerDown: (e: ReactPointerEvent<HTMLDivElement>, clip: Clip, edge: 'in' | 'out') => void
   onClipContextMenu: (e: ReactMouseEvent<HTMLDivElement>, clip: Clip) => void
@@ -598,6 +606,8 @@ const ClipView = memo(function ClipView({
   locked,
   interactive,
   pop,
+  transitionHeadS,
+  transitionTailS,
   onClipPointerDown,
   onTrimPointerDown,
   onClipContextMenu,
@@ -731,9 +741,11 @@ const ClipView = memo(function ClipView({
 
   // A transition's mark can never be wider than the clip it sits on, or two
   // long ones on a short clip would draw past each other.
-  const halfPx = width / 2
-  const transitionInPx = Math.min(halfPx, (clip.transitionIn?.durationS ?? 0) * pxPerS)
-  const transitionOutPx = Math.min(halfPx, (clip.transitionOut?.durationS ?? 0) * pxPerS)
+  const { headPx: transitionInPx, tailPx: transitionOutPx } = transitionMarkPx(
+    { headS: transitionHeadS, tailS: transitionTailS },
+    pxPerS,
+    width,
+  )
 
   // Effect / transition drops land on the clip itself. A transition takes the
   // edge nearest the cursor; `fxDropEdge` previews which one while hovering.
@@ -904,7 +916,12 @@ const ClipView = memo(function ClipView({
       {/* Transitions were INVISIBLE on the timeline: nothing read transitionIn/
           Out, so there was no way to see which cuts already had one, or which
           kind. A bowtie at the edge, the width of the transition, is the NLE
-          convention and costs no extra hit area (it never takes pointers). */}
+          convention and costs no extra hit area (it never takes pointers).
+          Both HALVES are drawn now: a pair transition is stored on one clip but
+          plays across the cut, so the clip on the other side used to show
+          nothing at all. The widths come from engine/transitionMarks, which
+          reads the renderer's own window, so each side reports what really
+          happens to it and not the raw durationS the user typed. */}
       {(transitionInPx > 0.5 || transitionOutPx > 0.5) && (
         <svg
           data-testid="transition-overlay"
@@ -2433,8 +2450,18 @@ export function Timeline({ height }: { height: number }) {
       style={{ height: track.height }}
       onPointerDown={handleLanePointerDown}
     >
-      {track.clips.map((clip) =>
-        clipEndS(clip) < winStartS || clip.startS > winEndS ? null : (
+      {track.clips.map((clip, i) => {
+        if (clipEndS(clip) < winStartS || clip.startS > winEndS) return null
+        // A transition belongs to the CUT, not to one clip, so its geometry
+        // needs both neighbours. Resolved here and handed down as plain
+        // numbers so ClipView's memo() keeps comparing by value.
+        const marks = transitionMarkSpans(
+          clip,
+          track.clips[i - 1] as Clip | undefined,
+          track.clips[i + 1] as Clip | undefined,
+          seq.fps,
+        )
+        return (
           <ClipView
             key={clip.id}
             clip={clip}
@@ -2446,14 +2473,16 @@ export function Timeline({ height }: { height: number }) {
             locked={track.locked}
             interactive={tool === 'select' && !track.locked}
             pop={!seenClipIds.has(clip.id)}
+            transitionHeadS={marks.headS}
+            transitionTailS={marks.tailS}
             onClipPointerDown={stableClipPointerDown}
             onTrimPointerDown={stableTrimPointerDown}
             onClipContextMenu={stableClipContextMenu}
             onFadeCommit={setClipFade}
             onFadePreview={setTrimTip}
           />
-        ),
-      )}
+        )
+      })}
       {dropPreview?.trackId === track.id && (
         <div
           className="pointer-events-none absolute inset-y-0 z-20 w-[2px] bg-accent"
