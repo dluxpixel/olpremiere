@@ -105,12 +105,15 @@ test('trim: dragging the out handle shortens the clip', async ({ page }) => {
     .toBeGreaterThan(25)
 })
 
-test('delete lifts the clip and its linked audio; undo restores both', async ({ page }) => {
+// Delete takes ONLY the half you picked, since 2026-08-06. His words: "when I
+// right-click a video clip and click Delete, it deletes the audio too. When did
+// I ever say you could do that?" See e2e/linked-delete.spec.ts for the full set.
+test('delete lifts only the video; the audio stays, and undo restores it', async ({ page }) => {
   await addClipToTimeline(page)
   await vclip(page).click()
   await page.keyboard.press('Delete')
   await expect(vclip(page)).toHaveCount(0)
-  await expect(aclip(page)).toHaveCount(0)
+  await expect(aclip(page)).toHaveCount(1)
   await page.keyboard.press('Control+z')
   await expect(vclip(page)).toHaveCount(1)
   await expect(aclip(page)).toHaveCount(1)

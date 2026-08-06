@@ -1820,14 +1820,17 @@ export function Timeline({ height }: { height: number }) {
         onClick: () => splitAtPlayhead(),
       },
       {
-        // TWO deletes, not three (David, 2026-07-18): Delete is selection-
-        // scoped (deleteScoped - an audio half goes alone, a video clip takes
-        // its pair), which retired the enumerated "Delete audio only (keep
-        // video)" / "Delete video only" items. The label says which it'll be.
+        // THE LABEL NAMES WHAT GOES. Delete is selection-scoped: either half of
+        // a linked pair goes alone (see deleteScoped). It used to say plain
+        // "Delete" on a video clip and then take the audio with it, which is
+        // exactly the surprise he hit on 2026-08-06. If a clip has a partner,
+        // the item says which half this will remove.
         label: keepSelection
           ? `Delete ${selNow.length} clips`
-          : clip.linkId !== undefined && track?.kind === 'audio'
-            ? 'Delete audio'
+          : clip.linkId !== undefined
+            ? track?.kind === 'audio'
+              ? 'Delete audio'
+              : 'Delete video'
             : 'Delete',
         shortcut: 'Del',
         separator: true,

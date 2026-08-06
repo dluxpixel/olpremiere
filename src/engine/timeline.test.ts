@@ -2190,10 +2190,23 @@ describe('deleteScoped (one selection-aware Delete verb)', () => {
     expect(clipEmitsAudio(out.tracks[0], survivor)).toBe(false)
   })
 
-  it('a VIDEO clip takes its linked audio with it (the everyday click-and-Del)', () => {
+  // HIS WORDS, 2026-08-06: "when I right-click a video clip and click Delete,
+  // it deletes the audio too. When did I ever say you could do that?" This used
+  // to assert the opposite, and the opposite was never even consistent: the
+  // audio half went alone but the video half took both, so one key did two
+  // different things depending on which lane you clicked.
+  it('a VIDEO clip deletes ALONE: the audio survives and still plays', () => {
     const out = deleteScoped(pair(), 'v')
     expect(out.tracks[0].clips).toHaveLength(0)
-    expect(out.tracks[1].clips).toHaveLength(0)
+    expect(out.tracks[1].clips).toHaveLength(1)
+    const survivor = out.tracks[1].clips[0]
+    expect(survivor.id).toBe('a')
+    expect(clipEmitsAudio(out.tracks[1], survivor)).toBe(true)
+  })
+
+  it('deleting either half leaves the other one exactly where it was', () => {
+    expect(deleteScoped(pair(), 'v').tracks[1].clips[0].startS).toBe(0)
+    expect(deleteScoped(pair(), 'a').tracks[0].clips[0].startS).toBe(0)
   })
 
   it('an unlinked audio clip (music/SFX) just deletes itself', () => {

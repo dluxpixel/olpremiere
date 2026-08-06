@@ -25,10 +25,26 @@ import { useToasts } from './toasts'
  * DOMException named QuotaExceededError; Firefox has historically used
  * NS_ERROR_DOM_QUOTA_REACHED, and idb can surface it wrapped in a plain Error.
  */
+/**
+ * Is this failure about SPACE rather than about the file?
+ *
+ * Getting this wrong is expensive in a specific way: the other branch says
+ * "couldn't import (unsupported?)", which sends him off re-encoding footage
+ * that was perfectly fine. That is exactly what happened on 2026-08-06, when
+ * his drive hit ZERO bytes free and a normal mp4 was reported as unsupported.
+ *
+ * QuotaExceededError is only the tidy case. When the DISK itself is full,
+ * rather than the origin's quota being reached, Chromium's IndexedDB surfaces
+ * an UnknownError or an AbortError from the transaction, and the message often
+ * says "disk", "space" or "full" instead of "quota". A file that decoded well
+ * enough to be probed is never an unsupported file, so those all belong here.
+ */
 function isOutOfRoom(err: unknown): boolean {
   const name = err instanceof DOMException || err instanceof Error ? err.name : ''
   if (name === 'QuotaExceededError' || name === 'NS_ERROR_DOM_QUOTA_REACHED') return true
-  return err instanceof Error && /quota/i.test(err.message)
+  // The disk-full shapes: the transaction dies without a quota name on it.
+  if (name === 'UnknownError' || name === 'AbortError' || name === 'InvalidStateError') return true
+  return err instanceof Error && /quota|disk|space|full|storage/i.test(err.message)
 }
 
 /** Live import progress. `total: 0` means nothing is importing. */
@@ -89,10 +105,13 @@ export async function importFiles(files: File[]): Promise<void> {
   }
   // ONE summary toast per failure KIND, never one per file (folder-drop flood).
   if (outOfRoom.length > 0) {
+    // Say WHERE the room ran out. "Delete an old project" is the right advice
+    // when the app's own storage is full and useless advice when the DRIVE is
+    // full, and he cannot tell those apart from the message alone.
     show(
       outOfRoom.length === 1
-        ? `No room left for ${outOfRoom[0]}. Delete an old project to free space`
-        : `No room left for ${outOfRoom.length} files. Delete an old project to free space`,
+        ? `No room left for ${outOfRoom[0]}. Free up space on your drive, or delete an old project`
+        : `No room left for ${outOfRoom.length} files. Free up space on your drive, or delete an old project`,
       'danger',
     )
   }

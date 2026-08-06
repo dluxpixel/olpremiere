@@ -18,10 +18,11 @@ test('right-clicking a clip opens the app menu, not the browser menu', async ({ 
   await expect(menu).toBeVisible()
   await expect(menu).toContainText('Copy')
   await expect(menu).toContainText('Split at playhead')
-  // Delete removes the clip and its linked audio (label span has exact text).
-  await menu.getByText('Delete', { exact: true }).click()
+  // On a linked pair the item NAMES the half it will remove, and removes only
+  // that half (2026-08-06). Plain "Delete" is for a clip with no partner.
+  await menu.getByText('Delete video', { exact: true }).click()
   await expect(vclip(page)).toHaveCount(0)
-  await expect(page.locator('[data-clip-kind="audio"]')).toHaveCount(0)
+  await expect(page.locator('[data-clip-kind="audio"]')).toHaveCount(1)
 })
 
 test('right-clicking a media card can delete it from the bin', async ({ page }) => {

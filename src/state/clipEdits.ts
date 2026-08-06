@@ -567,15 +567,34 @@ export function deleteSelected(ripple: boolean): void {
     useToasts.getState().show('Those clips are on a locked track', 'danger')
     return
   }
-  // Selection-scoped: an audio half deletes alone, everything else takes its
-  // linked partner along (deleteScoped). Ripple stays group-wide - rippling
-  // one half of a pair would slide its track out of sync with the partner.
+  // Selection-scoped: either half of a linked pair deletes ALONE (deleteScoped).
+  // Ripple stays group-wide - rippling one half of a pair would slide its track
+  // out of sync with the partner.
+  //
+  // REDO THAT TAKE. His words, 2026-08-06: "when I start recording audio, it
+  // starts playing the video clip. That's nice, but when I delete that audio, it
+  // goes back to a starting point so I can instantly rerecord." Deleting ONE
+  // audio clip parks the playhead where that clip began, which is exactly where
+  // the take was recorded from, so Record rolls again over the same picture with
+  // nothing to line up by hand. Scoped to a single audio clip on purpose: moving
+  // the playhead on every delete would be its own surprise, and a multi-clip
+  // delete has no one place to go back to.
+  const before = activeSequence(s.project)
+  const soloAudio =
+    !ripple && ids.length === 1
+      ? before.tracks.find((t) => t.kind === 'audio' && t.clips.some((c) => c.id === ids[0]))
+          ?.clips.find((c) => c.id === ids[0])
+      : undefined
+
   updateActiveSequence(ripple ? 'Ripple delete' : 'Delete clip', (sq) => {
     let next = sq
     for (const id of ids) next = ripple ? rippleDeleteGroup(next, id) : deleteScoped(next, id)
     return next
   })
-  s.setUI({ selection: [] })
+  s.setUI({
+    selection: [],
+    ...(soloAudio ? { playheadS: Math.max(0, soloAudio.startS) } : {}),
+  })
 }
 
 /**

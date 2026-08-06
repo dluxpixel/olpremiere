@@ -1043,20 +1043,29 @@ export function deleteGroup(seq: Sequence, clipId: Id): Sequence {
 }
 
 /**
- * Selection-scoped delete: ONE Delete verb instead of three menu entries.
- * The selection already says what to remove: the AUDIO half of a linked pair
- * → just that clip (the video partner survives and stays silent because its linkId
- * remains, so clipEmitsAudio keeps treating it as video-only); a VIDEO clip
- * or anything unlinked → the whole link group, exactly like before. This
- * replaced the enumerated "Delete audio only (keep video)" / "Delete video
- * only (keep audio)" menu items (2026-07-18 de-bloat). Video-only deletion
- * (rare) remains reachable by unlinking first.
+ * Selection-scoped delete: what you picked is what goes.
+ *
+ * HIS WORDS, 2026-08-06: *"when I right-click a video clip and click Delete, it
+ * deletes the audio too. When did I ever say you could do that?"*
+ *
+ * He is right, and the old rule was not even consistent: deleting the AUDIO
+ * half took only that half, but deleting the VIDEO half took BOTH. So the same
+ * key did two different things depending on which lane you happened to click,
+ * and the destructive one was the unmarked case. The note that used to live
+ * here said video-only deletion was "rare" and "remains reachable by unlinking
+ * first", which is a habit change standing in for a fix.
+ *
+ * Now either half of a linked pair deletes ALONE. The survivor keeps its
+ * linkId, so a video clip whose audio is gone stays video-only exactly as it
+ * did before, and an audio clip whose video is gone still plays. Anything
+ * unlinked has no group, so it is the same single delete it always was.
+ *
+ * Deleting BOTH is still one press: Shift-click the second half so the pair is
+ * selected, then Delete. Ripple delete is unchanged and stays group-wide,
+ * because rippling one half would slide its track out of sync with the other.
  */
 export function deleteScoped(seq: Sequence, clipId: Id): Sequence {
-  const found = findClip(seq, clipId)
-  if (!found) return seq
-  if (found.clip.linkId !== undefined && found.track.kind === 'audio') return deleteClip(seq, clipId)
-  return deleteGroup(seq, clipId)
+  return deleteClip(seq, clipId)
 }
 
 export function rippleDeleteGroup(seq: Sequence, clipId: Id): Sequence {
