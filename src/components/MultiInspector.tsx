@@ -29,11 +29,12 @@ import { clipDurationS } from '../engine/timeline'
 import type { Clip, Track } from '../engine/types'
 import { IconButton } from '../ui/Button'
 import { PropRow, ScrubField, SectionLabel, type Spec } from './EffectControls'
+import { MAX_GAIN_DB } from '../engine/loudness'
 
 const OPACITY_SPEC: Spec = { min: 0, max: 1, step: 0.01, sens: 0.005 }
 const SCALE_SPEC: Spec = { min: 0, max: 5, step: 0.01, sens: 0.01 }
 const SIZE_SPEC: Spec = { min: 8, max: 400, step: 1, sens: 0.5 }
-const GAIN_SPEC: Spec = { min: -60, max: 12, step: 0.5, sens: 0.2 }
+const GAIN_SPEC: Spec = { min: -60, max: MAX_GAIN_DB, step: 0.5, sens: 0.2 }
 const FADE_SPEC: Spec = { min: 0, max: 30, step: 0.05, sens: 0.02 }
 
 const SWATCHES = [

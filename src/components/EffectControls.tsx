@@ -65,6 +65,7 @@ import { useStore } from '../state/store'
 import { IconButton } from '../ui/Button'
 import { KeyframeLane } from './KeyframeLane'
 import { PunchControl } from './PunchControl'
+import { MAX_GAIN_DB } from '../engine/loudness'
 
 // Per-channel range/step + drag sensitivity. sens = value units per pixel of
 // horizontal drag (independent of step, which only governs typed rounding).
@@ -89,7 +90,7 @@ const SPECS: Record<AnimChannel, Spec> = {
   cropB: { min: 0, max: 1, step: 0.01, sens: 0.005 },
   cropL: { min: 0, max: 1, step: 0.01, sens: 0.005 },
   opacity: { min: 0, max: 1, step: 0.01, sens: 0.005 },
-  volume: { min: -60, max: 12, step: 0.5, sens: 0.2 },
+  volume: { min: -60, max: MAX_GAIN_DB, step: 0.5, sens: 0.2 },
   brightness: { min: -1, max: 1, step: 0.01, sens: 0.005 },
   contrast: { min: -1, max: 1, step: 0.01, sens: 0.005 },
   saturation: { min: -1, max: 1, step: 0.01, sens: 0.005 },

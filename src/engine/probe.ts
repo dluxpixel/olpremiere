@@ -10,6 +10,18 @@ export interface ProbeResult {
   hasAudio: boolean
   hasVideo: boolean
   thumbnailBlob?: Blob
+  /**
+   * The source's real frame rate. Undefined only when it could not be read.
+   *
+   * NOTHING FILLED THIS IN UNTIL 2026-08-06, and everything downstream quietly
+   * assumed 30. frameCache indexes decoded frames by `frameIndexAt(t, asset.fps)`
+   * with a 30 fps fallback, so on 60 fps footage every exact-frame lookup landed
+   * on a 30 fps grid: half the frames were unaddressable and a request for one
+   * of them resolved to a different moment. The preview's tolerance
+   * (ELEMENT_TOL_FRAMES / asset.fps) was computed at 30 too, so it was twice as
+   * loose as intended on exactly the footage that needs it tightest.
+   */
+  fps?: number
 }
 
 const WAIT_MS = 10_000
@@ -122,9 +134,78 @@ async function probeVideo(file: File): Promise<ProbeResult> {
       hasAudio: detectHasAudio(video),
       hasVideo: true,
       thumbnailBlob,
+      fps: await readFrameRate(file),
     }
   } finally {
     releaseMedia(video, url)
+  }
+}
+
+/**
+ * The source's real frame rate, read from the container.
+ *
+ * A <video> element will not tell you this, which is why it went unread for so
+ * long. mediabunny is already the decoder behind the frame cache, so asking it
+ * costs one extra open of the file's index, not a decode of the file.
+ *
+ * Only the first few hundred packets are sampled: enough for a stable average
+ * on any real recording, and it keeps an import of a multi-gigabyte capture
+ * from walking the whole index. Snapped to the standard rates so a container
+ * that reports 29.9698 does not leave every frame index one off by the end of a
+ * long clip. Never throws: an unreadable rate means the old fallback, which is
+ * exactly where we were before.
+ */
+export const STANDARD_FPS = [23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60, 90, 100, 119.88, 120, 240]
+
+/**
+ * A measured rate, snapped to the standard rate it plainly is, or NOTHING.
+ *
+ * The measurement is an average over sampled packets, and it is only as good as
+ * the container's timestamps. A webm with no duration in its header measured
+ * 31.09 for a file whose every other tool reports 60. Adopting 31.09 would set
+ * a timeline to a frame rate no camera has ever produced, and then every nudge,
+ * every timecode and every export inherits it.
+ *
+ * So a rate that does not land near a real one is REFUSED, not rounded. An
+ * honest "I could not read it" costs nothing: it is exactly where the app was
+ * before any of this existed. A confident wrong number costs him a whole edit.
+ */
+export function snapFrameRate(rate: number | undefined): number | undefined {
+  if (!rate || !Number.isFinite(rate) || rate <= 0 || rate > 1000) return undefined
+  // NEAREST, not first-within-tolerance. The NTSC rates sit a TENTH of a
+  // percent from their integer twins (29.97 against 30, 59.94 against 60), so
+  // any tolerance loose enough to catch a real measurement also catches both,
+  // and first-match handed every 30 fps file back as 29.97. Nearest separates
+  // them exactly, and the tolerance is then only asked whether the answer is
+  // plausible at all.
+  let best: number | undefined
+  let bestErr = Infinity
+  for (const s of STANDARD_FPS) {
+    const err = Math.abs(s - rate) / s
+    if (err < bestErr) {
+      bestErr = err
+      best = s
+    }
+  }
+  return bestErr < 0.02 ? best : undefined
+}
+
+export async function readFrameRate(file: Blob): Promise<number | undefined> {
+  try {
+    const { ALL_FORMATS, BlobSource, Input } = await import('mediabunny')
+    const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS })
+    try {
+      const track = await input.getPrimaryVideoTrack()
+      if (!track) return undefined
+      const stats = await track.computePacketStats(400)
+      return snapFrameRate(stats?.averagePacketRate)
+    } finally {
+      input.dispose?.()
+    }
+  } catch {
+    // An exotic container is not an import failure. 30 was the assumption
+    // before this function existed and it stays the assumption here.
+    return undefined
   }
 }
 

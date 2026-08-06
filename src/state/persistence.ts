@@ -71,14 +71,41 @@ async function splitLegacySequences(project: Project): Promise<Project> {
   const plan = planSequenceSplit(project, Date.now())
   if (plan.spawned.length === 0 && plan.droppedEmpty === 0) return project
 
+  // A CONVERSION THAT RUNS TWICE MUST NEVER EAT AN EDIT.
+  //
+  // The reduced original is written LAST, so a run that dies part way leaves
+  // the source holding every sequence and simply runs again next load. The ids
+  // are derived from the input (see derivedId in sequenceSplit.ts) so the retry
+  // lands on its own earlier output instead of spawning a second copy of
+  // everything.
+  //
+  // But between those two runs he can OPEN a rescued project and work in it,
+  // and then the retry would overwrite an hour of his editing with the original
+  // sequence, silently, and stamp it as the freshest project in the list. The
+  // duplicate this replaced was clutter; that would be destruction. So a spawn
+  // whose id is already taken by something NEWER is left exactly where it is.
+  // projectFile.ts guards its import path the same way.
+  const fresh: typeof plan.spawned = []
+  for (const spawn of plan.spawned) {
+    const existing = await loadRaw(spawn.id)
+    if (existing && existing.updatedAt >= spawn.updatedAt) continue
+    fresh.push(spawn)
+  }
+
   for (const { from, to } of plan.blobCopies) {
+    // Only for spawns we are actually going to write. Copying a blob for a
+    // project we just decided to leave alone would clobber media he has since
+    // relinked, before any document write could stop it.
+    if (!fresh.some((s) => Object.values(s.assets ?? {}).some((a) => a.blobKey === to || a.thumbnailKey === to))) {
+      continue
+    }
     const blob = await getBlob(from)
     // A missing source blob means the media was already gone; the spawned
     // project keeps the asset entry and shows it as offline, exactly like any
     // other missing file, rather than failing the whole conversion.
     if (blob) await putBlob(to, blob)
   }
-  for (const spawn of plan.spawned) await saveProject(spawn)
+  for (const spawn of fresh) await saveProject(spawn)
   await saveProject(plan.kept)
 
   if (plan.spawned.length > 0) {
@@ -89,6 +116,15 @@ async function splitLegacySequences(project: Project): Promise<Project> {
       )
   }
   return plan.kept
+}
+
+/** The stored document for an id, without running any migration over it. */
+async function loadRaw(id: string): Promise<Project | undefined> {
+  try {
+    return (await (await db()).get('projects', id)) as Project | undefined
+  } catch {
+    return undefined
+  }
 }
 
 /** Light listing for the Projects picker (docs are blob-free JSON, so it's cheap). */

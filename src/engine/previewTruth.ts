@@ -184,11 +184,123 @@ export function previewHealth(withinMs = 2000): PreviewHealth {
   }
 }
 
+// --- PACING: does every timeline frame actually reach the screen? -----------
+//
+// previewHealth answers "was the picture the RIGHT frame". It cannot answer
+// "was the picture DELIVERED AT ALL", and those two fail apart. A draw loop
+// that paints every other frame scores a perfect zero error on the frames it
+// does paint, because the ones it drops are never sampled. That is exactly how
+// a stuttering preview measured clean.
+//
+// Stutter is a DELIVERY fault, so it needs a delivery measurement: every
+// timeline frame that came due while playing, and whether the loop painted it.
+
+/** rAF ticks kept. 1200 covers ten seconds at 120 Hz. */
+const TICK_WINDOW = 1200
+
+interface Tick {
+  at: number
+  /** Timeline frame index the loop saw on this tick. */
+  frame: number
+  /** True when this tick actually painted. */
+  painted: boolean
+}
+
+const ticks: Tick[] = []
+
+export interface PreviewPacing {
+  /** rAF ticks in the window. Zero means nothing has played yet. */
+  ticks: number
+  /** Distinct timeline frames that came due in the window. */
+  due: number
+  /** How many of those reached the screen. */
+  painted: number
+  /** Frames that came due and were never painted, as a ratio 0..1. THE stutter number. */
+  droppedRatio: number
+  /** Longest run of consecutive due frames that were all dropped: one visible hitch. */
+  worstHitchFrames: number
+  /** Median gap between paints, ms. */
+  medianGapMs: number
+  /** Worst gap between paints, ms. The hitch he actually sees. */
+  worstGapMs: number
+  spanS: number
+}
+
+const EMPTY_PACING: PreviewPacing = {
+  ticks: 0,
+  due: 0,
+  painted: 0,
+  droppedRatio: 0,
+  worstHitchFrames: 0,
+  medianGapMs: 0,
+  worstGapMs: 0,
+  spanS: 0,
+}
+
+/** Record one rAF tick of the draw loop. Called only while playing. */
+export function recordPreviewTick(frame: number, painted: boolean): void {
+  ticks.push({ at: performance.now(), frame, painted })
+  if (ticks.length > TICK_WINDOW) ticks.splice(0, ticks.length - TICK_WINDOW)
+}
+
+/** Forget the window. Called on play/pause alongside resetPreviewHealth. */
+export function resetPreviewPacing(): void {
+  ticks.length = 0
+}
+
+export function previewPacing(withinMs = 2000): PreviewPacing {
+  if (ticks.length === 0) return EMPTY_PACING
+  const cutoff = performance.now() - withinMs
+  const win = ticks.filter((t) => t.at >= cutoff)
+  if (win.length === 0) return EMPTY_PACING
+
+  // Walk the ticks in order, collapsing runs of the same frame index. A frame
+  // counts as painted if ANY tick that saw it painted.
+  const dueFrames: { frame: number; painted: boolean }[] = []
+  for (const t of win) {
+    const last = dueFrames[dueFrames.length - 1]
+    if (last && last.frame === t.frame) last.painted ||= t.painted
+    else dueFrames.push({ frame: t.frame, painted: t.painted })
+  }
+  let painted = 0
+  let run = 0
+  let worstHitch = 0
+  for (const f of dueFrames) {
+    if (f.painted) {
+      painted++
+      run = 0
+    } else {
+      run++
+      if (run > worstHitch) worstHitch = run
+    }
+  }
+
+  const paintTimes = win.filter((t) => t.painted).map((t) => t.at)
+  const gaps: number[] = []
+  for (let i = 1; i < paintTimes.length; i++) gaps.push(paintTimes[i] - paintTimes[i - 1])
+  gaps.sort((a, b) => a - b)
+
+  return {
+    ticks: win.length,
+    due: dueFrames.length,
+    painted,
+    droppedRatio: dueFrames.length > 0 ? (dueFrames.length - painted) / dueFrames.length : 0,
+    worstHitchFrames: worstHitch,
+    medianGapMs: Math.round(gaps[Math.floor(gaps.length / 2)] ?? 0),
+    worstGapMs: Math.round(gaps[gaps.length - 1] ?? 0),
+    spanS: Math.round(win[win.length - 1]!.at - win[0]!.at) / 1000,
+  }
+}
+
 // The measurement harness (_verify/preview-truth.mjs) reads the SAME numbers the
 // on-screen indicator does, so the thing he sees can never disagree with the
 // thing that was measured. Read-only: there is no setter here, and nothing in
 // the app reads it back.
 if (typeof window !== 'undefined') {
-  ;(window as unknown as { __previewHealth?: (withinMs?: number) => PreviewHealth }).__previewHealth =
-    previewHealth
+  const w = window as unknown as {
+    __previewHealth?: (withinMs?: number) => PreviewHealth
+    __previewPacing?: (withinMs?: number) => PreviewPacing
+  }
+  w.__previewHealth = previewHealth
+  w.__previewPacing = previewPacing
 }

@@ -77,6 +77,8 @@ function mapClip(
    *  rebuilt track and sequence defeat the store's identity bail and a provable
    *  no-op still costs the user an undo press. */
   bailOnNoop = false,
+  /** Folds a run of edits to the SAME field into one undo step. See setChannel. */
+  mergeKey?: string,
 ): void {
   const track = activeSequence(useStore.getState().project).tracks.find((t) =>
     t.clips.some((c) => c.id === clipId),
@@ -86,18 +88,22 @@ function mapClip(
     useToasts.getState().show('Track is locked', 'danger')
     return
   }
-  updateActiveSequence(label, (seq) => {
-    if (bailOnNoop) {
-      const before = seq.tracks.flatMap((t) => t.clips).find((c) => c.id === clipId)
-      if (before && fn(before) === before) return seq
-    }
-    return {
-      ...seq,
-      tracks: seq.tracks.map((t) =>
-        t.id === track.id ? { ...t, clips: t.clips.map((c) => (c.id === clipId ? fn(c) : c)) } : t,
-      ),
-    }
-  })
+  updateActiveSequence(
+    label,
+    (seq) => {
+      if (bailOnNoop) {
+        const before = seq.tracks.flatMap((t) => t.clips).find((c) => c.id === clipId)
+        if (before && fn(before) === before) return seq
+      }
+      return {
+        ...seq,
+        tracks: seq.tracks.map((t) =>
+          t.id === track.id ? { ...t, clips: t.clips.map((c) => (c.id === clipId ? fn(c) : c)) } : t,
+        ),
+      }
+    },
+    mergeKey,
+  )
 }
 
 /**
@@ -105,20 +111,33 @@ function mapClip(
  * static channel → set the base. This is what scrubbable fields call on commit.
  * Where the value LIVES (on the clip, or inside its effect stack) is the
  * adapter's problem, not this module's.
+ *
+ * ONE UNDO STEP PER RUN OF NUDGES. An arrow key in an Inspector field commits
+ * on every press, so holding it left one history entry per frame of movement
+ * and undoing a small adjustment meant twenty presses of Ctrl+Z. The store has
+ * always been able to fold a run (pushCommand's mergeKey); these fields simply
+ * never asked. The key is the exact field, so nudging Scale and then Rotation
+ * still leaves two steps, which is what he would expect.
  */
 export function setChannel(clipId: string, channel: AnimChannel, value: number): void {
   const clip = findClip(clipId)
   if (!clip) return
   const animated = channelKeyframes(clip, channel).length > 0
-  mapClip(clipId, `Set ${channel}`, (c) => {
-    if (!animated) return withChannelValue(c, channel, value)
-    const localT = playheadLocalT(c)
-    return withChannelKeyframes(
-      c,
-      channel,
-      upsertKeyframe(channelKeyframes(c, channel), { t: localT, value, ease: 'linear' }),
-    )
-  })
+  mapClip(
+    clipId,
+    `Set ${channel}`,
+    (c) => {
+      if (!animated) return withChannelValue(c, channel, value)
+      const localT = playheadLocalT(c)
+      return withChannelKeyframes(
+        c,
+        channel,
+        upsertKeyframe(channelKeyframes(c, channel), { t: localT, value, ease: 'linear' }),
+      )
+    },
+    false,
+    `channel:${clipId}:${channel}`,
+  )
 }
 
 /** Stopwatch: enable → seed a keyframe at the playhead with the current value; disable → drop all. */
@@ -323,7 +342,14 @@ export function resetEffectParams(clipId: string, effectId: Id): void {
 }
 
 export function setEffectParamValue(clipId: string, effectId: Id, key: string, value: number): void {
-  mapClip(clipId, `Set ${key}`, (c) => ops.setEffectParam(c, effectId, key, value, playheadLocalT(c)))
+  // Same one-step-per-run rule as setChannel: see the note there.
+  mapClip(
+    clipId,
+    `Set ${key}`,
+    (c) => ops.setEffectParam(c, effectId, key, value, playheadLocalT(c)),
+    false,
+    `param:${clipId}:${effectId}:${key}`,
+  )
 }
 
 export function toggleEffectParamKeyframes(clipId: string, effectId: Id, key: string): void {

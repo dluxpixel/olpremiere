@@ -71,6 +71,7 @@ export async function importFiles(files: File[]): Promise<void> {
           height: probe.height,
           hasAudio: probe.hasAudio,
           hasVideo: probe.hasVideo,
+          fps: probe.fps,
           thumbnailKey,
           codec: undefined,
         })

@@ -102,12 +102,33 @@ const HOP_S = 0.1
 const ABSOLUTE_GATE_LUFS = -70
 /** A block this far under the ungated average is a pause between words, not speech. */
 const RELATIVE_GATE_LU = 10
+/** Share of samples allowed to sit ABOVE the body peak: one in a thousand. */
+const BODY_PEAK_TOP_FRACTION = 0.001
+
+const EMPTY_RESULT: LoudnessResult = { lufs: null, peak: 0, bodyPeak: 0, noiseFloorLufs: null, blocks: 0 }
 
 export interface LoudnessResult {
   /** Integrated loudness in LUFS, or null when there was nothing above the silence gate. */
   lufs: number | null
-  /** True peak-ish sample peak in the range, linear 0..1. Used only to refuse to clip. */
+  /** Absolute sample peak in the range, linear 0..1. */
   peak: number
+  /**
+   * The level all but the loudest 0.1% of samples stay under, linear 0..1.
+   *
+   * THE PEAK IS THE WRONG NUMBER TO LEVEL AGAINST and this is why. His clip of
+   * a distant mic measured -34.8 LUFS and needed +18.8 dB. It also contained
+   * ONE desk bump: sixty samples out of four hundred thousand, at -2.5 dBFS.
+   * Levelling against the absolute peak gave that bump the whole headroom
+   * budget and allowed +1.5 dB, so the clip landed SEVENTEEN dB below every
+   * other clip on the timeline. That is peak matching wearing a loudness
+   * costume, and it is exactly the failure this whole file exists to escape.
+   *
+   * A percentile ignores the isolated transient and still respects sustained
+   * loud material, which is the thing that actually clips audibly.
+   */
+  bodyPeak: number
+  /** Roughly where the room tone sits, LUFS. Null when there is no quiet part to measure. */
+  noiseFloorLufs: number | null
   /** How many gated blocks the answer rests on. Few blocks means a short or mostly-silent clip. */
   blocks: number
 }
@@ -126,7 +147,7 @@ export function measureLoudness(
   startS = 0,
   endS = Infinity,
 ): LoudnessResult {
-  if (channels.length === 0 || sampleRate <= 0) return { lufs: null, peak: 0, blocks: 0 }
+  if (channels.length === 0 || sampleRate <= 0) return EMPTY_RESULT
   const total = channels[0].length
   const s0 = Math.max(0, Math.min(total, Math.floor(startS * sampleRate)))
   const s1 = Math.max(s0, Math.min(total, Math.ceil(endS * sampleRate)))
@@ -136,13 +157,19 @@ export function measureLoudness(
   if (n < blockLen || blockLen <= 0) {
     // Too short for even one standard block. Measure the whole range as a single
     // block instead of reporting nothing: a 200 ms word is still a real clip.
-    if (n <= 0) return { lufs: null, peak: 0, blocks: 0 }
+    if (n <= 0) return EMPTY_RESULT
   }
 
   const shelf = shelfFilter(sampleRate)
   const hp = highpassFilter(sampleRate)
   const filtered: Float32Array[] = []
   let peak = 0
+  // Magnitude histogram for the body peak, in 0.5 dB bins from -120 to 0 dBFS.
+  // A histogram rather than a sort: a sorted copy of every sample of a long
+  // clip is tens of megabytes and this runs over every clip on the timeline.
+  const BINS = 241
+  const hist = new Int32Array(BINS)
+  let counted = 0
   for (const ch of channels) {
     const a = new Float32Array(n)
     for (let i = 0; i < n; i++) {
@@ -150,11 +177,31 @@ export function measureLoudness(
       a[i] = v
       const abs = Math.abs(v)
       if (abs > peak) peak = abs
+      if (abs > 0) {
+        const db = 20 * Math.log10(abs)
+        const bin = db <= -120 ? 0 : Math.min(BINS - 1, Math.round((db + 120) * 2))
+        hist[bin]++
+        counted++
+      }
     }
     const b = new Float32Array(n)
     applyBiquad(a, b, shelf)
     applyBiquad(b, a, hp) // a is free to reuse; the shelf output lives in b
     filtered.push(a)
+  }
+
+  // Walk down from the top until 0.1% of the samples have been passed.
+  let bodyPeak = peak
+  if (counted > 0) {
+    const allowance = Math.max(1, Math.floor(counted * BODY_PEAK_TOP_FRACTION))
+    let seen = 0
+    for (let bin = BINS - 1; bin >= 0; bin--) {
+      seen += hist[bin]
+      if (seen >= allowance) {
+        bodyPeak = Math.min(peak, Math.pow(10, (bin / 2 - 120) / 20))
+        break
+      }
+    }
   }
 
   const len = Math.min(blockLen, n)
@@ -171,27 +218,59 @@ export function measureLoudness(
     }
     powers.push(sum)
   }
-  if (powers.length === 0) return { lufs: null, peak, blocks: 0 }
+  if (powers.length === 0) return { ...EMPTY_RESULT, peak, bodyPeak }
 
   const loudnessOf = (power: number): number => (power > 0 ? -0.691 + 10 * Math.log10(power) : -Infinity)
 
   // Absolute gate, then the relative gate computed from what survived it.
   const abs = powers.filter((p) => loudnessOf(p) > ABSOLUTE_GATE_LUFS)
-  if (abs.length === 0) return { lufs: null, peak, blocks: 0 }
+  if (abs.length === 0) return { ...EMPTY_RESULT, peak, bodyPeak }
   const mean = (xs: number[]): number => xs.reduce((a, b) => a + b, 0) / xs.length
   const relThreshold = loudnessOf(mean(abs)) - RELATIVE_GATE_LU
   const gated = abs.filter((p) => loudnessOf(p) > relThreshold)
   const use = gated.length > 0 ? gated : abs
-  return { lufs: loudnessOf(mean(use)), peak, blocks: use.length }
+
+  // What the room sounds like between the words. Taken from the blocks the gate
+  // THREW AWAY, which is the honest place to look for it: the quietest tenth of
+  // them, so one half-spoken syllable at the edge of the gate cannot pass for
+  // silence. It never changes the loudness answer, it only tells us how far a
+  // clip can be lifted before he starts hearing the room instead of himself.
+  const rejected = powers.filter((p) => loudnessOf(p) <= relThreshold).sort((a, b) => a - b)
+  const noiseFloorLufs =
+    rejected.length > 0 ? loudnessOf(rejected[Math.floor(rejected.length * 0.1)] ?? rejected[0]) : null
+
+  return {
+    lufs: loudnessOf(mean(use)),
+    peak,
+    bodyPeak,
+    noiseFloorLufs: noiseFloorLufs !== null && Number.isFinite(noiseFloorLufs) ? noiseFloorLufs : null,
+    blocks: use.length,
+  }
 }
 
 /**
  * The gain, in dB, that moves `lufs` to `targetLufs`.
  *
- * Clamped for two reasons that are not the same. `maxBoostDb` stops a nearly
- * silent take being lifted until its room noise is as loud as speech. The peak
- * ceiling stops a loud take being lifted into clipping, which no amount of
- * correct loudness maths excuses.
+ * WHAT CHANGED, 2026-08-06, and why. Measured with _verify/loudness-truth.mjs
+ * on four recordings of ONE voice, levelled and compared:
+ *
+ *   close mic                      landed at -16.0   correct
+ *   close mic, lots of pauses      landed at -16.0   correct
+ *   mic further away               landed at -23.0   SEVEN dB too quiet
+ *   mic further away + a desk bump landed at -33.3   SEVENTEEN dB too quiet
+ *
+ * His words: "some clips on my mic are a little bit away... I have to manually
+ * adjust it every single time, every single clip." Both misses were this
+ * function, not the measurement:
+ *
+ *   1. maxBoostDb was 12. A mic across the room needs more than that, so the
+ *      clip simply stopped short and stayed quiet.
+ *   2. the ceiling was applied to the ABSOLUTE PEAK, so one desk bump lasting
+ *      a millisecond took the entire headroom budget for an eight second clip.
+ *
+ * So the ceiling now rides `bodyPeak` (see LoudnessResult), and the boost limit
+ * is 24 dB, the same size as the cut limit, because there is no reason a quiet
+ * take may be turned down further than a loud one may be turned up.
  */
 export function gainForTarget(
   result: LoudnessResult,
@@ -199,16 +278,66 @@ export function gainForTarget(
   opts: { maxBoostDb?: number; maxCutDb?: number; peakCeilingDb?: number } = {},
 ): number | null {
   if (result.lufs === null || !Number.isFinite(result.lufs)) return null
-  const maxBoost = opts.maxBoostDb ?? 12
-  const maxCut = opts.maxCutDb ?? 24
-  const ceiling = opts.peakCeilingDb ?? -1
+  const maxBoost = opts.maxBoostDb ?? MAX_GAIN_DB
+  const maxCut = opts.maxCutDb ?? MAX_GAIN_DB
+  const ceiling = opts.peakCeilingDb ?? PEAK_CEILING_DB
   let db = targetLufs - result.lufs
   db = Math.max(-maxCut, Math.min(maxBoost, db))
-  if (result.peak > 0) {
-    const headroom = ceiling - 20 * Math.log10(result.peak)
+  const ref = result.bodyPeak > 0 ? result.bodyPeak : result.peak
+  if (ref > 0) {
+    const headroom = ceiling - 20 * Math.log10(ref)
     if (db > headroom) db = headroom
   }
   return Math.round(db * 10) / 10
+}
+
+/** As far as a clip may be moved in either direction. */
+export const MAX_GAIN_DB = 24
+/** Where the body of the loudest clip is allowed to sit, dBFS. */
+export const PEAK_CEILING_DB = -1
+
+export interface ClipLoudness {
+  id: string
+  measured: LoudnessResult
+}
+
+export interface BalancedGain {
+  id: string
+  db: number
+}
+
+/**
+ * Gains that make every clip the same loudness AS EACH OTHER, without clipping.
+ *
+ * "The auto volume doesn't really make everything the same volume" is a
+ * question about RELATIVE level, and levelling each clip on its own cannot
+ * answer it: the moment one clip runs out of headroom it stops short, and the
+ * clip beside it does not, so the two disagree by exactly the amount that was
+ * clamped. That is what he has been fixing by hand.
+ *
+ * So the target is applied to all of them first, and only then is ONE shared
+ * offset taken off every clip, just enough that the loudest body peak sits at
+ * the ceiling. The clips keep matching each other exactly, which is what he
+ * asked for, and the mix is as loud as it can honestly be. A single ugly
+ * transient no longer drags anything down, because the offset rides bodyPeak.
+ */
+export function balanceGains(clips: readonly ClipLoudness[], targetLufs: number): BalancedGain[] {
+  const raw: { id: string; db: number; peakDb: number }[] = []
+  for (const c of clips) {
+    const { lufs, bodyPeak, peak } = c.measured
+    if (lufs === null || !Number.isFinite(lufs)) continue
+    const db = Math.max(-MAX_GAIN_DB, Math.min(MAX_GAIN_DB, targetLufs - lufs))
+    const ref = bodyPeak > 0 ? bodyPeak : peak
+    raw.push({ id: c.id, db, peakDb: ref > 0 ? 20 * Math.log10(ref) : -Infinity })
+  }
+  if (raw.length === 0) return []
+  // The worst offender decides the offset for everyone, so nobody drifts apart.
+  let overshoot = 0
+  for (const r of raw) {
+    if (!Number.isFinite(r.peakDb)) continue
+    overshoot = Math.max(overshoot, r.peakDb + r.db - PEAK_CEILING_DB)
+  }
+  return raw.map((r) => ({ id: r.id, db: Math.round((r.db - overshoot) * 10) / 10 }))
 }
 
 /**

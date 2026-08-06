@@ -15,6 +15,7 @@ import {
   addClipFromAsset,
   addClipWithLinkedAudio,
   addTrack,
+  adoptFrameRate,
   addMarker,
   canPlace,
   clipDurationS,
@@ -2696,5 +2697,46 @@ describe('addClipFromAsset with overwrite (his complaint, end to end)', () => {
       .clips.map((c) => [Number(c.startS.toFixed(6)), Number(clipEndS(c).toFixed(6))])
     // a is trimmed to 0..2, the new clip owns 2..4, b is untouched.
     expect(spans).toEqual([[0, 2], [2, 4], [4, 8]])
+  })
+})
+
+// A sequence was born at 30 fps and nothing in the app could ever change it, so
+// a 60 fps recording was edited AND EXPORTED at 30. Half his frames, thrown
+// away silently, on the rate most phones and every screen recorder default to.
+describe('adoptFrameRate', () => {
+  const empty = () => makeSeq([makeTrack(), makeTrack({ kind: 'audio' })])
+
+  it('the first video onto an empty timeline sets the rate', () => {
+    expect(adoptFrameRate(empty(), makeAsset({ fps: 60 })).fps).toBe(60)
+  })
+
+  it('leaves a timeline that already has work on it alone', () => {
+    const used = makeSeq([makeTrack({ clips: [makeClip()] })])
+    expect(adoptFrameRate(used, makeAsset({ fps: 60 })).fps).toBe(30)
+  })
+
+  it('does not move when the source rate is unknown', () => {
+    expect(adoptFrameRate(empty(), makeAsset({ fps: undefined })).fps).toBe(30)
+  })
+
+  it('audio and stills never set the rate', () => {
+    expect(adoptFrameRate(empty(), makeAsset({ kind: 'audio', fps: 60 })).fps).toBe(30)
+    expect(adoptFrameRate(empty(), makeAsset({ kind: 'image', fps: 60 })).fps).toBe(30)
+  })
+
+  it('hands back the SAME sequence when nothing changes, so no edit is recorded', () => {
+    const seq = empty()
+    expect(adoptFrameRate(seq, makeAsset({ fps: 30 }))).toBe(seq)
+    expect(adoptFrameRate(seq, makeAsset({ kind: 'audio' }))).toBe(seq)
+  })
+
+  it('reaches the timeline through the real add paths', () => {
+    const seq = empty()
+    const vTrack = seq.tracks[0]
+    const aTrack = seq.tracks[1]
+    expect(addClipFromAsset(seq, vTrack.id, makeAsset({ fps: 50 }), 0).seq.fps).toBe(50)
+    expect(
+      addClipWithLinkedAudio(seq, vTrack.id, aTrack.id, makeAsset({ fps: 59.94 }), 0).seq.fps,
+    ).toBe(59.94)
   })
 })

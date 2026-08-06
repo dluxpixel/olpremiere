@@ -8,6 +8,7 @@ import { denoisedBufferFor } from './denoise'
 import { duckEnvelope } from './ducking'
 import { evalChannel } from './keyframes'
 import type { AutoLevel, Clip, Id, MediaAsset, Sequence, Track } from './types'
+import { createSoftLimiter } from './audioLimiter'
 
 /** Sources start this far in the future so scheduling jitter can't clip the head. */
 export const SCHEDULE_LATENCY_S = 0.05
@@ -415,8 +416,16 @@ export function ensureMasterChain(): MasterChain {
     a.fftSize = 1024
     a.smoothingTimeConstant = 0.5
   }
-  master.connect(ctx.destination) // the audible path
-  master.connect(splitter) // the meter tap
+  // The master limiter sits between the sum and the speakers, the same one the
+  // export uses (engine/audioLimiter.ts). Transparent below its knee, so a
+  // normal mix is untouched; past it, a levelled-up take is shaped instead of
+  // hard-clipped by the device.
+  const limiter = createSoftLimiter(ctx)
+  master.connect(limiter.input)
+  limiter.output.connect(ctx.destination) // the audible path
+  // The meter taps the LIMITED signal, not the raw sum, so what the meter shows
+  // is what he is actually hearing.
+  limiter.output.connect(splitter) // the meter tap
   splitter.connect(analyserL, 0)
   splitter.connect(analyserR, 1)
   masterChain = { master, analyserL, analyserR }

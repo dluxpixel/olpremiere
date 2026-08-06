@@ -264,6 +264,27 @@ vec4 dip(vec4 from, vec4 to, float p, vec3 col) {
   return mix(solid, to, clamp((p - 0.5) * 2.0, 0.0, 1.0));
 }
 
+/** Premultiplied sample as straight colour. Fully transparent stays black. */
+vec3 straight(vec4 s) {
+  return s.a > 0.0 ? s.rgb / s.a : vec3(0.0);
+}
+
+/**
+ * The glitch RGB split: red pulled one way, blue the other, green and alpha
+ * from the pixel being drawn. Done in STRAIGHT colour and re-premultiplied by
+ * that pixel's own alpha, so the three channels can never carry three different
+ * alphas into one premultiplied result.
+ */
+vec4 splitSample(sampler2D tex, vec2 uv, vec2 split) {
+  vec4 mid = texture(tex, uv);
+  vec3 c = vec3(
+    straight(texture(tex, clamp(uv + split, 0.0, 1.0))).r,
+    straight(mid).g,
+    straight(texture(tex, clamp(uv - split, 0.0, 1.0))).b
+  );
+  return vec4(c * mid.a, mid.a);
+}
+
 void main() {
   vec4 from = texture(uFrom, vUV);
   vec4 to = texture(uTo, vUV);
@@ -343,10 +364,16 @@ void main() {
     // switch used to hand back a transparent frame for half the window. Falling
     // back per pixel keeps the hard cut between two real clips and keeps the
     // picture on screen when there is only one.
-    vec4 gf = vec4(texture(uFrom, clamp(gUV + split, 0.0, 1.0)).r, texture(uFrom, gUV).g,
-                   texture(uFrom, clamp(gUV - split, 0.0, 1.0)).b, texture(uFrom, gUV).a);
-    vec4 gt = vec4(texture(uTo, clamp(gUV + split, 0.0, 1.0)).r, texture(uTo, gUV).g,
-                   texture(uTo, clamp(gUV - split, 0.0, 1.0)).b, texture(uTo, gUV).a);
+    // The RGB split takes each channel from a DIFFERENT pixel, and these
+    // textures are PREMULTIPLIED, so a channel carries its own pixel's alpha
+    // baked in. Taking r from one pixel and a from another mixed two alphas
+    // into one colour: on a masked or faded clip the split fringe went black
+    // where the offset pixel was transparent, and could exceed its own alpha
+    // where it was not, which is not a valid premultiplied colour at all.
+    // Unpremultiply each sample, split in straight colour, then re-premultiply
+    // by the alpha of the pixel actually being drawn.
+    vec4 gf = splitSample(uFrom, gUV, split);
+    vec4 gt = splitSample(uTo, gUV, split);
     if (p < 0.5) {
       col = gf.a > 0.0 ? gf : gt;
     } else {

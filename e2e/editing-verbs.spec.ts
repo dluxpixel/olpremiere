@@ -30,6 +30,29 @@ async function clips(page: Page) {
   })
 }
 
+/**
+ * The active sequence's frame rate.
+ *
+ * Read, never assumed. A sequence used to be 30 fps for everyone with no way to
+ * change it, so a nudge test could hardcode 1/30. It now takes the rate of the
+ * first video dropped on it, so the size of "one frame" is a property of the
+ * fixture and this must ask.
+ */
+async function seqFps(page: Page): Promise<number> {
+  return page.evaluate(async () => {
+    // Same indirection as clips(): a literal path here is resolved by tsc.
+    const storeMod = '/src/state/store.ts'
+    const typesMod = '/src/engine/types.ts'
+    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+      useStore: { getState: () => { project: unknown } }
+    }
+    const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+      activeSequence: (p: unknown) => { fps: number }
+    }
+    return activeSequence(useStore.getState().project).fps
+  })
+}
+
 async function setUI(page: Page, patch: Record<string, unknown>) {
   await page.evaluate(async (p) => {
     const storeMod = '/src/state/store.ts'
@@ -67,7 +90,7 @@ test('Alt+Right nudges the selected clip one frame; Shift+Alt is ten', async ({ 
   await select(page, v.id)
   await page.getByTestId('panel-left').click({ position: { x: 5, y: 5 } })
 
-  const frame = 1 / 30
+  const frame = 1 / (await seqFps(page))
   await page.keyboard.press('Alt+ArrowRight')
   let now = (await clips(page)).find((c) => c.id === v.id)!
   expect(now.startS).toBeCloseTo(v.startS + frame, 4)

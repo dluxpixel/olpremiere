@@ -472,12 +472,14 @@ const withTrackClips = (seq: Sequence, trackIndex: number, clips: Clip[]): Seque
   })
 
 export function addClipFromAsset(
-  seq: Sequence,
+  seq0: Sequence,
   trackId: Id,
   asset: MediaAsset,
   desiredStartS: number,
   opts: { overwrite?: boolean } = {},
 ): { seq: Sequence; clipId: Id } {
+  // The first video onto an empty timeline sets its frame rate. See adoptFrameRate.
+  const seq = adoptFrameRate(seq0, asset)
   const trackIndex0 = seq.tracks.findIndex((t) => t.id === trackId)
   if (trackIndex0 === -1) return { seq, clipId: '' }
   const track0 = seq.tracks[trackIndex0]
@@ -877,19 +879,41 @@ export function clipGroupIds(seq: Sequence, clipId: Id): Id[] {
 }
 
 /**
+ * The FIRST video onto an empty timeline sets the timeline's frame rate.
+ *
+ * A sequence was born at 30 and there was no way, anywhere in the app, to
+ * change it. So a 60 fps recording was edited at 30 and EXPORTED at 30: half
+ * his frames thrown away, silently, on footage most phones and every screen
+ * recorder produce by default. Every other editor matches the sequence to the
+ * first clip for exactly this reason.
+ *
+ * Only while the timeline is EMPTY. Once there is work on it the rate is part
+ * of that work: changing it under him would move every frame-quantised edit he
+ * has already made, which is a far worse surprise than a mixed-rate timeline
+ * (which the engine handles anyway, by sampling each source at its own rate).
+ */
+export function adoptFrameRate(seq: Sequence, asset: MediaAsset): Sequence {
+  const fps = asset.fps
+  if (asset.kind !== 'video' || !fps || fps <= 0 || fps === seq.fps) return seq
+  if (seq.tracks.some((t) => t.clips.length > 0)) return seq
+  return { ...seq, fps }
+}
+
+/**
  * Add a video asset AND split its audio to a linked clip on an audio track.
  * The video clip (video-only, linked) lands on videoTrackId; the audio clip
  * (same asset, linked) lands on audioTrackId at the same start. Falls back to
  * a standalone video clip (its own audio) when no audio track is available.
  */
 export function addClipWithLinkedAudio(
-  seq: Sequence,
+  seq0: Sequence,
   videoTrackId: Id,
   audioTrackId: Id | null,
   asset: MediaAsset,
   desiredStartS: number,
   opts: { overwrite?: boolean } = {},
 ): { seq: Sequence; videoClipId: Id; audioClipId: Id } {
+  const seq = adoptFrameRate(seq0, asset)
   const vIndex0 = seq.tracks.findIndex((t) => t.id === videoTrackId)
   if (vIndex0 === -1) return { seq, videoClipId: '', audioClipId: '' }
   if (seq.tracks[vIndex0].kind !== 'video' || seq.tracks[vIndex0].locked) {

@@ -178,10 +178,16 @@ export function setDisplayName(name: string): void {
   useCollab.getState().session?.setName(clean)
 }
 
-/** Boot hook: auto-join when the URL carries a room (a shared link). */
-export function joinRoomFromUrl(): void {
+/**
+ * Boot hook: auto-join when the URL carries a room (a shared link).
+ *
+ * Returns the join so boot can WAIT for it. It used to return void, so
+ * main.tsx's `.then(joinRoomFromUrl)` chained onto nothing and the warm-up ran
+ * against the local document while the room was still swapping it underneath.
+ */
+export function joinRoomFromUrl(): Promise<void> {
   const room = roomFromHash()
-  if (room) void enterRoom(room)
+  return room ? enterRoom(room).then(() => {}) : Promise.resolve()
 }
 
 /**

@@ -1,3 +1,4 @@
+import { LIMIT_CEILING } from '../audioLimiter'
 import { describe, expect, it } from 'vitest'
 import {
   applyGainEnvelope,
@@ -217,23 +218,25 @@ describe('softLimit', () => {
     expect(softLimit(-0.8)).toBe(-0.8)
   })
 
-  it('caps a hot sum below 1.0 without exceeding it', () => {
+  it('caps a hot sum below the ceiling without exceeding it', () => {
     const y = softLimit(1.6)
-    expect(y).toBeLessThan(1)
-    expect(y).toBeGreaterThan(0.99)
-    expect(y).toBeCloseTo(0.999866, 5)
+    expect(y).toBeLessThan(LIMIT_CEILING)
+    expect(y).toBeGreaterThan(0.95)
   })
 
   it('is symmetric', () => {
     expect(softLimit(-1.6)).toBeCloseTo(-softLimit(1.6), 12)
   })
 
-  it('never reaches or exceeds 1 for arbitrarily large input', () => {
-    // The tanh knee asymptotes to full-scale 1.0 (reached in float for huge
-    // input) and never EXCEEDS it, which is exactly the module's documented contract.
-    expect(softLimit(1000)).toBeLessThanOrEqual(1)
-    expect(softLimit(1000)).toBeGreaterThan(0.999)
-    expect(softLimit(-1000)).toBeGreaterThanOrEqual(-1)
+  // The ceiling moved off full scale on 2026-08-06. tanh REACHES 1.0 in float64
+  // once the input is about 8 dB over the knee, so the old contract of "never
+  // exceeds 1" was satisfied by landing exactly ON it, which is the one value a
+  // 16-bit encoder has to round and leaves nothing for inter-sample peaks.
+  it('never reaches full scale, however hot the input', () => {
+    expect(softLimit(1000)).toBeLessThan(1)
+    expect(softLimit(1000)).toBeCloseTo(LIMIT_CEILING, 4)
+    expect(softLimit(-1000)).toBeGreaterThan(-1)
+    expect(Math.abs(softLimit(1e9))).toBeLessThan(1)
   })
 
   it('is continuous at the knee (no jump)', () => {
@@ -247,10 +250,10 @@ describe('sumAndLimit', () => {
     expect(out[0]).toBeCloseTo(0.6, 6)
   })
 
-  it('two 0.8 buffers sum and limit to just under 1.0', () => {
+  it('two 0.8 buffers sum and limit to just under the ceiling', () => {
     const out = sumAndLimit([constMono(2, 0.8), constMono(2, 0.8)])
-    expect(out[0]).toBeLessThanOrEqual(1)
-    expect(out[0]).toBeCloseTo(0.999866, 5)
+    expect(out[0]).toBeLessThan(1)
+    expect(out[0]).toBeCloseTo(softLimit(1.6), 6)
   })
 
   it('a single buffer is limited but otherwise unchanged below the knee', () => {

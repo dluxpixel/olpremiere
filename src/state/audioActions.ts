@@ -8,7 +8,7 @@
 // leaves the shout far louder to a listener. See engine/loudness.ts.
 
 import { getAudioBuffer } from '../engine/audio'
-import { gainForTarget, measureLoudness, TARGET_LUFS } from '../engine/loudness'
+import { balanceGains, gainForTarget, measureLoudness, type ClipLoudness, TARGET_LUFS } from '../engine/loudness'
 import { activeSequence } from '../engine/types'
 import { setClipGainDb } from './clipEdits'
 import { useStore } from './store'
@@ -82,7 +82,7 @@ export async function balanceAllClipLoudness(): Promise<void> {
     return
   }
 
-  const gains: { id: string; db: number }[] = []
+  const measured: ClipLoudness[] = []
   let keyframed = 0
   let silent = 0
   for (const { clip, asset } of targets) {
@@ -95,13 +95,15 @@ export async function balanceAllClipLoudness(): Promise<void> {
       silent++
       continue
     }
-    const db = gainForTarget(
-      measureLoudness(channelsOf(buffer), buffer.sampleRate, clip.inS, clip.outS),
-      TARGET_LUFS,
-    )
-    if (db === null) silent++
-    else gains.push({ id: clip.id, db })
+    const m = measureLoudness(channelsOf(buffer), buffer.sampleRate, clip.inS, clip.outS)
+    if (m.lufs === null) silent++
+    else measured.push({ id: clip.id, measured: m })
   }
+  // ONE pass over ALL of them, not one clip at a time. Levelling each clip on
+  // its own is what let a clip that ran out of headroom stop short while the
+  // clip beside it did not, which is the disagreement he has been fixing by
+  // hand. See balanceGains.
+  const gains = balanceGains(measured, TARGET_LUFS)
   if (gains.length === 0) {
     show('Could not measure any of those clips', 'danger')
     return

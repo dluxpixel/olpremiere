@@ -18,9 +18,12 @@
 //  2. stereo sources are downmixed to mono before the equal-power pan, whereas
 //     a Web Audio StereoPanner passes a stereo source through unchanged at
 //     center. Mono sources match audioRender's panner exactly at every pan.
-//  3. a soft limiter is applied at the master bus. audioRender has none (it
-//     relies on the downstream encoder clamp). The limiter is transparent below
-//     the knee, so normal-level mixes stay bit-identical to an unlimited sum.
+//  3. (CLOSED 2026-08-06) a soft limiter is applied at the master bus. This
+//     used to say "audioRender has none (it relies on the downstream encoder
+//     clamp)", which meant the path he HEARS and the path that RENDERS
+//     disagreed on exactly the loud material where it matters. All three paths
+//     now share engine/audioLimiter.ts. The limiter is transparent below the
+//     knee, so normal-level mixes stay bit-identical to an unlimited sum.
 
 import {
   clipEmitsAudio,
@@ -30,6 +33,7 @@ import {
   dbToGain,
   type GainPoint,
 } from '../audio'
+import { softLimit } from '../audioLimiter'
 import { duckEnvelope } from '../ducking'
 import type { Clip, Track } from '../types'
 
@@ -70,17 +74,11 @@ export interface MixOptions {
 // unchanged, then a tanh knee that asymptotes to +/-1 and never exceeds it. The
 // knee is C1-continuous (slope 1 on both sides at LIMIT_KNEE), so there is no
 // audible corner where the limiter engages.
-const LIMIT_KNEE = 0.8
-const LIMIT_RANGE = 1 - LIMIT_KNEE
-
-/** Soft-limit one sample into (-1, 1); identity for |x| <= LIMIT_KNEE. */
-export function softLimit(x: number): number {
-  const a = x < 0 ? -x : x
-  if (a <= LIMIT_KNEE) return x
-  const sign = x < 0 ? -1 : 1
-  const over = a - LIMIT_KNEE
-  return sign * (LIMIT_KNEE + LIMIT_RANGE * Math.tanh(over / LIMIT_RANGE))
-}
+// The limiter itself now lives in engine/audioLimiter.ts, because the preview
+// and the OfflineAudioContext render need the SAME one: this mixer having a
+// limiter the other two paths did not was a real divergence, and it only showed
+// on loud material. Re-exported so this module's callers and tests are unmoved.
+export { softLimit }
 
 /**
  * Linear-interpolated read of `channel` at fractional sample position `pos`.

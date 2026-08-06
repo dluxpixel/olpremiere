@@ -2,6 +2,7 @@
 // thread: OfflineAudioContext is not reliably available in workers, and the
 // decoded-AudioBuffer cache in audio.ts already lives here.
 
+import { createSoftLimiter } from '../audioLimiter'
 import {
   clipEmitsAudio,
   clipGainEnvelope,
@@ -142,6 +143,12 @@ export async function planAudioMix(
     // Same duck automation as the live preview (see engine/ducking.ts).
     const duckEnv = duckEnvelope(seq.tracks, anySolo, fromS)
 
+    // One limiter per render context, built before any track so every track bus
+    // can be pointed at it. It is stateless (a waveshaper, not a compressor),
+    // so a segmented render cannot produce a seam at a segment boundary.
+    const masterLimiter = createSoftLimiter(ctx)
+    masterLimiter.output.connect(ctx.destination)
+
     // Same gain→pan-per-track → destination topology as the live preview, so
     // the exported mix matches what was heard.
     const trackNodes = new Map<Id, GainNode>()
@@ -179,7 +186,11 @@ export async function planAudioMix(
         tail = duck
       }
       tail.connect(pan)
-      pan.connect(ctx.destination)
+      // Through the SAME master limiter the preview and the worker mixer use.
+      // This path used to run straight into the destination and rely on the
+      // encoder to clamp, so the render disagreed with what he heard on exactly
+      // the loud material where it shows. See engine/audioLimiter.ts.
+      pan.connect(masterLimiter.input)
       trackNodes.set(track.id, gain)
       return gain
     }

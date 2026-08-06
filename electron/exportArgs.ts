@@ -52,6 +52,23 @@ export function videoEncoderArgs(config: NativeExportConfig): string[] {
   }
 }
 
+/**
+ * How the sound is written.
+ *
+ * ProRes is not a delivery format, it is a MASTER: something to take into
+ * another tool, grade, and export again. Writing lossy AAC into it threw away
+ * audio that every later step then had to work from, and no amount of bitrate
+ * makes a re-encode of a re-encode honest. QuickTime carries PCM natively, so a
+ * ProRes master now keeps the samples the mix actually produced.
+ *
+ * Everything else is a delivery file going to YouTube or a phone, where AAC is
+ * exactly right and 320k is transparent for a stereo voice mix.
+ */
+export function audioEncoderArgs(config: NativeExportConfig): string[] {
+  if (config.encoder === 'prores') return ['-c:a', 'pcm_s16le']
+  return ['-c:a', 'aac', '-b:a', '320k']
+}
+
 export function buildArgs(config: NativeExportConfig, audioPath: string | null, outPath: string): string[] {
   const args = [
     '-y',
@@ -69,7 +86,7 @@ export function buildArgs(config: NativeExportConfig, audioPath: string | null, 
   args.push('-vf', 'vflip,scale=in_range=full:out_range=tv:out_color_matrix=bt709')
   args.push(...videoEncoderArgs(config))
   args.push('-map', '0:v:0')
-  if (audioPath) args.push('-map', '1:a:0', '-c:a', 'aac', '-b:a', '320k')
+  if (audioPath) args.push('-map', '1:a:0', ...audioEncoderArgs(config))
   // Tag BT.709 limited range so players/YouTube don't guess (the washed-out fix).
   args.push('-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709', '-color_range', 'tv')
   // Machine-readable progress on stdout (the movie goes to a file).

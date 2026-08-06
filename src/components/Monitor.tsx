@@ -15,6 +15,7 @@ import { useEffect, useRef, useState } from 'react'
 import { prewarmAudio } from '../engine/audio'
 import { setPreviewScale } from '../engine/frameCache'
 import { prewarmPreview, previewEpoch, renderPreview } from '../engine/preview'
+import { recordPreviewTick } from '../engine/previewTruth'
 import { ensureProxies } from '../engine/proxyMedia'
 import { formatTimecode, quantizeToFrame } from '../engine/timecode'
 import { activeSequence, type Sequence } from '../engine/types'
@@ -114,13 +115,20 @@ function useProgramCanvas(quality: Quality) {
 
       if (changed) pendingSinceT = 0
       // Parked on a fully-resolved frame with nothing new: do zero GPU work.
-      if (!changed && prevComplete) return
+      if (!changed && prevComplete) {
+        if (playing) recordPreviewTick(frameIdx, false)
+        return
+      }
       // Cap the redraw rate (tames high-refresh displays and rapid scrub/drag),
       // and drop to a trickle once a frame has been pending far longer than any
       // decode should take.
       const stalled = pendingSinceT > 0 && now - pendingSinceT > PENDING_GRACE_MS
-      if (now - lastDrawT < (stalled ? STALLED_POLL_MS : MIN_FRAME_MS)) return
+      if (now - lastDrawT < (stalled ? STALLED_POLL_MS : MIN_FRAME_MS)) {
+        if (playing) recordPreviewTick(frameIdx, false)
+        return
+      }
       lastDrawT = now
+      if (playing) recordPreviewTick(frameIdx, true)
 
       if (canvas.width !== pw || canvas.height !== ph) {
         canvas.width = pw

@@ -18,8 +18,9 @@ import { IconButton } from '../ui/Button'
 import { EffectControls, PropRow, ScrubField, SectionLabel, type Spec } from './EffectControls'
 import { MultiInspector, type SelectedClip } from './MultiInspector'
 import { TitleControls } from './TitleControls'
+import { MAX_GAIN_DB } from '../engine/loudness'
 
-const GAIN_SPEC: Spec = { min: -60, max: 12, step: 0.5, sens: 0.2 }
+const GAIN_SPEC: Spec = { min: -60, max: MAX_GAIN_DB, step: 0.5, sens: 0.2 }
 const FADE_SPEC: Spec = { min: 0, max: 30, step: 0.05, sens: 0.02 }
 const DENOISE_SPEC: Spec = { min: 5, max: 100, step: 5, sens: 0.5 }
 const SPEED_SPEC: Spec = { min: 10, max: 800, step: 1, sens: 1 }

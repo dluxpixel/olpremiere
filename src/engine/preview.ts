@@ -15,6 +15,7 @@ import {
   attachFrameProbe,
   recordServedFrame,
   resetPreviewHealth,
+  resetPreviewPacing,
   type FrameProbe,
 } from './previewTruth'
 import { setProxyBuildingPaused } from './proxyMedia'
@@ -33,6 +34,8 @@ interface PooledVideo {
    * element's playback position, not the picture; see previewTruth.ts.
    */
   probe: FrameProbe
+  /** performance.now() of the last hard seek asked of this element. See the seek branch. */
+  lastSeekAt?: number
 }
 interface PooledImage {
   el: HTMLImageElement
@@ -49,6 +52,14 @@ interface PooledImage {
  * element's rate, which the viewer cannot see. A seek, they can.
  */
 const HARD_SEEK_S = 0.35
+/**
+ * Shortest interval between two hard seeks of the SAME element. A seek that has
+ * landed still needs a frame decoded and composited before the probe can report
+ * it, and re-seeking inside that window throws away the work. 120 ms is about
+ * four frames at 30: long enough for a 4K seek to present something, short
+ * enough that a genuine run of cuts still re-anchors on the next one.
+ */
+const SEEK_COOLDOWN_MS = 120
 /** Ceiling on that trim. ±2% is inaudible and invisible. */
 const RATE_TRIM = 0.02
 /** Roughly how long the servo takes to absorb an error, in seconds. */
@@ -84,6 +95,20 @@ const IMAGE_POOL_CAP = 48
 
 const videoPool = new Map<Id, PooledVideo>()
 const imagePool = new Map<Id, PooledImage>()
+
+/**
+ * Consecutive frames, per asset, where the exact-frame fallback was asked for a
+ * frame and the cache did not have it. Past LIVE_MISS_LIMIT the fallback is
+ * switched off for that asset until the picture is back inside tolerance: see
+ * the long note at the call site.
+ */
+const liveMisses = new Map<Id, number>()
+/**
+ * Eight frames is an eighth of a second at 60. Long enough that a cut, whose
+ * head is already pre-rolled, never trips it; short enough that a decoder which
+ * cannot keep up stops being asked before the picture drifts anywhere visible.
+ */
+const LIVE_MISS_LIMIT = 8
 
 /** Last play/pause state renderPreview saw, so a transition can reset the health window. */
 let wasPlaying = false
@@ -643,7 +668,21 @@ function makeTextureSource(
       // that on a run of short pieces the next cut lands before this one has
       // finished: that is how the picture ended up seconds behind the playhead
       // and never recovered. So we ask for the seek AND stop waiting for it.
-      el.currentTime = srcT
+      //
+      // ONE SEEK AT A TIME, and the reason is measured. This branch runs on
+      // EVERY rAF while the error is large, so it used to fire a fresh seek
+      // sixty times a second. A 4K seek does not complete in 16 ms, so each one
+      // cancelled the last, the decoder never presented a frame, the probe
+      // never went fresh, the error never came down, and it seeked again: 4K60
+      // sat 1.7 SECONDS behind the playhead for as long as it played. Asking
+      // once and letting it finish is the whole fix. `el.seeking` covers the
+      // seek itself; the cooldown covers a seek that lands but whose first
+      // frame has not been composited yet.
+      const now = performance.now()
+      if (!el.seeking && now - (pooled.lastSeekAt ?? 0) > SEEK_COOLDOWN_MS) {
+        pooled.lastSeekAt = now
+        el.currentTime = srcT
+      }
       el.playbackRate = wantRate
     } else {
       // Small drift: STEER instead of seeking, on the TRUE error now. The servo
@@ -662,21 +701,53 @@ function makeTextureSource(
     // transition path has always been served. Last resort is the element anyway:
     // never null, never a black frame.
     if (Math.abs(trueErr) <= tol) {
+      liveMisses.delete(asset.id)
       recordServedFrame(trueErr, true)
       return livePreviewSource(el, asset.id, layer.transform.scale)
     }
-    const exact = getFrameAt(asset, srcT)
-    if (exact) {
-      recordServedFrame(0, true)
-      return exact as TexImageSource
+    // NEVER ASK THE DECODER FOR WHAT IT CANNOT DELIVER IN TIME.
+    //
+    // MEASURED on real hardware, 2026-08-06, 4K60 on one long clip: 76% of
+    // frames were the WRONG frame and the picture ran up to 1.8 SECONDS behind
+    // the playhead, with the main thread 93% IDLE. The cost was never our
+    // JavaScript, it was a feedback loop:
+    //
+    //   element falls behind -> every rAF misses the cache and queues a decode
+    //   -> the decoder (sequential, one 4K frame at a time) can serve maybe 20
+    //   a second against 60 asked for -> the wanted index runs away from the
+    //   iterator -> past SEQ_REOPEN_GAP it REOPENS the file and seeks -> which
+    //   costs more than the frames it was behind -> further behind.
+    //
+    // Each turn of that loop makes the next one worse, so it never recovers.
+    // The fix is to stop pulling: after a short run of misses the fallback is
+    // switched off for this asset and the element free-runs on its own, which
+    // is the one thing a browser is genuinely good at. It switches back on the
+    // moment the picture is inside tolerance again (above), and on play/pause.
+    const misses = liveMisses.get(asset.id) ?? 0
+    if (misses < LIVE_MISS_LIMIT) {
+      const exact = getFrameAt(asset, srcT)
+      if (exact) {
+        liveMisses.delete(asset.id)
+        recordServedFrame(0, true)
+        return exact as TexImageSource
+      }
+      liveMisses.set(asset.id, misses + 1)
+      markPending() // the decode is queued; keep polling so it lands
     }
     recordServedFrame(trueErr, false)
-    markPending() // the decode is queued; keep polling so it lands
     return livePreviewSource(el, asset.id, layer.transform.scale)
   }
 }
 
 // --- Live-playback texture sizing -------------------------------------------
+//
+// RE-TESTED on real hardware 2026-08-06 (see _verify/preview-livescale-ab.mjs).
+// The July decision below was taken on a SOFTWARE renderer, where a texture
+// upload is the most expensive thing in the frame, so it was worth suspecting.
+// On his RTX 4060 the downscale costs 0.6% of the main thread and removing it
+// costs 1.0%, and both leave the machine 82% idle: the July choice holds, for a
+// different reason than it was made for. Keep it, and do not re-litigate it
+// without running that A/B on a GPU.
 //
 // The PLAYING path handed the pooled <video> straight to the renderer, so every
 // frame uploaded a texture at the SOURCE's native size and rebuilt its whole mip
@@ -798,6 +869,8 @@ export function renderPreview(
   if (playing !== wasPlaying) {
     wasPlaying = playing
     resetPreviewHealth()
+    resetPreviewPacing()
+    liveMisses.clear()
     // Never transcode a preview copy while he is watching the preview.
     setProxyBuildingPaused(playing)
   }
