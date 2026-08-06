@@ -38,6 +38,7 @@ import {
   type ClipMask,
   type EffectInstance,
 } from '../engine/types'
+import { isEffectRamped } from '../engine/effects/ops'
 import {
   addEffectKeyframeAtPlayhead,
   addKeyframeAtPlayhead,
@@ -45,6 +46,8 @@ import {
   deleteEffect,
   moveEffectInStack,
   removeClipTransition,
+  clearEffectRamp,
+  rampEffect,
   removeEffectKeyframeAtPlayhead,
   removeKeyframeAtPlayhead,
   removeZoom,
@@ -611,7 +614,63 @@ function EffectCard({ clip, effect, index, count, localT }: {
         {def.params.map((param) => (
           <EffectParamRow key={param.key} clip={clip} effect={effect} param={param} localT={localT} />
         ))}
+        <EffectEaseRow clip={clip} effect={effect} />
       </div>
+    </div>
+  )
+}
+
+/**
+ * Ease the effect in at the head of the clip, or out at its tail.
+ *
+ * His words, 2026-08-06: "I selected a blur, but can I somehow make it so it
+ * transitions into the blur?" It was already possible and undiscoverable:
+ * keyframe the radius by hand, twice, at the right two moments.
+ *
+ * These buttons write those keyframes for every param at once, from the
+ * registry's own neutral value. They are not a separate mode: the diamonds
+ * appear on the rows above and he can drag them afterwards like any others.
+ */
+function EffectEaseRow({ clip, effect }: { clip: Clip; effect: EffectInstance }) {
+  const ramped = isEffectRamped(clip, effect.id)
+  const [seconds, setSeconds] = useState(0.5)
+  return (
+    <div className="mt-0.5 flex items-center gap-1.5 border-t border-border pt-1.5" data-testid="effect-ease">
+      <span className="text-ui-sm text-text-secondary">Ease</span>
+      <button
+        type="button"
+        data-testid="effect-ease-in"
+        onClick={() => rampEffect(clip.id, effect.id, 'in', seconds)}
+        className="rounded-field bg-bg-input px-2 py-0.5 text-ui-sm text-text-primary transition-colors duration-[120ms] hover:bg-bg-elevated"
+      >
+        In
+      </button>
+      <button
+        type="button"
+        data-testid="effect-ease-out"
+        onClick={() => rampEffect(clip.id, effect.id, 'out', seconds)}
+        className="rounded-field bg-bg-input px-2 py-0.5 text-ui-sm text-text-primary transition-colors duration-[120ms] hover:bg-bg-elevated"
+      >
+        Out
+      </button>
+      <ScrubField
+        value={seconds}
+        spec={{ min: 0.05, max: 5, step: 0.05, sens: 0.02 }}
+        ariaLabel="Ease length in seconds"
+        testId="effect-ease-seconds"
+        onCommit={setSeconds}
+      />
+      <span className="text-ui-sm text-text-secondary">s</span>
+      {ramped && (
+        <IconButton
+          label="Remove effect ease"
+          size="compact"
+          data-testid="effect-ease-clear"
+          onClick={() => clearEffectRamp(clip.id, effect.id)}
+        >
+          <X size={13} strokeWidth={1.75} aria-hidden />
+        </IconButton>
+      )}
     </div>
   )
 }

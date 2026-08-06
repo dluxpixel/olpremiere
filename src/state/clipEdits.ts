@@ -356,6 +356,28 @@ export function toggleEffectParamKeyframes(clipId: string, effectId: Id, key: st
   mapClip(clipId, `Toggle ${key} keyframes`, (c) => ops.toggleEffectParamAnimation(c, effectId, key, playheadLocalT(c)))
 }
 
+/**
+ * Ease an effect in at the head of the clip, or out at its tail.
+ *
+ * His ask, 2026-08-06: a blur that ARRIVES instead of appearing. This writes
+ * real keyframes on the effect's own params (see ops.rampEffect), so the ramp
+ * is not a separate hidden mode: the diamonds show up in the Inspector and he
+ * can drag them afterwards like any other keyframe.
+ */
+export function rampEffect(clipId: string, effectId: Id, edge: 'in' | 'out', durationS: number): void {
+  mapClip(
+    clipId,
+    edge === 'in' ? 'Ease effect in' : 'Ease effect out',
+    (c) => ops.rampEffect(c, effectId, edge, durationS, clipDurationS(c)),
+    true,
+  )
+}
+
+/** Drop an effect's ramp, keeping the value that is on screen. */
+export function clearEffectRamp(clipId: string, effectId: Id): void {
+  mapClip(clipId, 'Remove effect ease', (c) => ops.clearEffectRamp(c, effectId, playheadLocalT(c)), true)
+}
+
 export function addEffectKeyframeAtPlayhead(clipId: string, effectId: Id, key: string): void {
   mapClip(clipId, `Add ${key} keyframe`, (c) => ops.addEffectParamKeyframe(c, effectId, key, playheadLocalT(c)))
 }

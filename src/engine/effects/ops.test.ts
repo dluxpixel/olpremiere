@@ -4,6 +4,9 @@ import { defaultTransform, type Clip, type EffectInstance, type Keyframe } from 
 import {
   addEffect,
   addEffectParamKeyframe,
+  clearEffectRamp,
+  isEffectRamped,
+  rampEffect,
   isParamAnimated,
   moveEffect,
   paramBase,
@@ -236,5 +239,94 @@ describe('resolveParam', () => {
     const inst: EffectInstance = { id: 'e1', type: 'brightnessContrast', params: {}, enabled: true }
     expect(resolveParam(inst, 'contrast', 0)).toBe(0)
     expect(paramBase(inst, 'contrast')).toBe(0)
+  })
+})
+
+// HIS WORDS, 2026-08-06: "I selected a blur, but can I somehow make it so it
+// transitions into the blur? Can you make that an option for the effects, so
+// that it has also transitions?"
+describe('rampEffect (ease an effect in or out)', () => {
+  const blurred = (radius = 20): Clip => {
+    const c = addEffect(clip(), 'gaussianBlur', 'fx1')
+    const id = c.effects![0].id
+    return setEffectParam(c, id, 'blur', radius, 0)
+  }
+  const idOf = (c: Clip) => c.effects![0].id
+
+  it('eases IN from the registry neutral to what he set', () => {
+    const c = blurred(20)
+    const id = idOf(c)
+    const out = rampEffect(c, id, 'in', 0.5, 4)
+    const kfs = paramKeyframes(out.effects![0], 'blur')
+    expect(kfs).toHaveLength(2)
+    expect(kfs[0].t).toBeCloseTo(0, 6)
+    expect(kfs[0].value).toBe(0) // the neutral radius: no blur at all
+    expect(kfs[1].t).toBeCloseTo(0.5, 6)
+    expect(kfs[1].value).toBe(20)
+  })
+
+  it('eases OUT at the TAIL of the clip, back to neutral', () => {
+    const out = rampEffect(blurred(20), idOf(blurred(20)), 'out', 0.5, 4)
+    const c = blurred(20)
+    const o2 = rampEffect(c, idOf(c), 'out', 0.5, 4)
+    const kfs = paramKeyframes(o2.effects![0], 'blur')
+    expect(kfs).toHaveLength(2)
+    expect(kfs[0].t).toBeCloseTo(3.5, 6)
+    expect(kfs[0].value).toBe(20)
+    expect(kfs[1].t).toBeCloseTo(4, 6)
+    expect(kfs[1].value).toBe(0)
+    expect(out).toBeDefined()
+  })
+
+  it('the picture really is un-blurred at the start of an ease in', () => {
+    const c = blurred(20)
+    const id = idOf(c)
+    const out = rampEffect(c, id, 'in', 0.5, 4)
+    const inst = out.effects![0]
+    expect(resolveParam(inst, 'blur', 0)).toBeCloseTo(0, 6)
+    expect(resolveParam(inst, 'blur', 0.5)).toBeCloseTo(20, 6)
+    // and it stays there afterwards, rather than sliding back
+    expect(resolveParam(inst, 'blur', 3)).toBeCloseTo(20, 6)
+  })
+
+  it('leaves a param he has ALREADY keyframed completely alone', () => {
+    let c = blurred(20)
+    const id = idOf(c)
+    c = toggleEffectParamAnimation(c, id, 'blur', 1)
+    c = setEffectParam(c, id, 'blur', 7, 2)
+    const before = paramKeyframes(c.effects![0], 'blur')
+    const out = rampEffect(c, id, 'in', 0.5, 4)
+    expect(paramKeyframes(out.effects![0], 'blur')).toEqual(before)
+  })
+
+  it('a param sitting at neutral has nothing to ramp, so nothing is written', () => {
+    const c = addEffect(clip(), 'gaussianBlur', 'fx1') // radius still 0
+    const out = rampEffect(c, idOf(c), 'in', 0.5, 4)
+    expect(isParamAnimated(out.effects![0], 'blur')).toBe(false)
+  })
+
+  it('an ease longer than the clip is capped so it stays a ramp, not a step', () => {
+    const c = blurred(20)
+    const out = rampEffect(c, idOf(c), 'in', 99, 2)
+    const kfs = paramKeyframes(out.effects![0], 'blur')
+    expect(kfs[1].t).toBeGreaterThan(kfs[0].t)
+    expect(kfs[1].t).toBeCloseTo(1, 6) // half of a 2s clip
+  })
+
+  it('isEffectRamped reports it, and clearing keeps the value on screen', () => {
+    const c = blurred(20)
+    const id = idOf(c)
+    expect(isEffectRamped(c, id)).toBe(false)
+    const ramped = rampEffect(c, id, 'in', 0.5, 4)
+    expect(isEffectRamped(ramped, id)).toBe(true)
+    // Clear while parked at 1s, where the ramp has finished: keeps 20.
+    const cleared = clearEffectRamp(ramped, id, 1)
+    expect(isEffectRamped(cleared, id)).toBe(false)
+    expect(paramBase(cleared.effects![0], 'blur')).toBeCloseTo(20, 6)
+  })
+
+  it('an unknown effect id changes nothing', () => {
+    const c = blurred(20)
+    expect(rampEffect(c, 'nope', 'in', 0.5, 4)).toBe(c)
   })
 })

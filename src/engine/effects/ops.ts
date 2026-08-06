@@ -178,3 +178,89 @@ export function setEffectParamEase(
     kfs.map((k) => (Math.abs(k.t - kfT) <= toleranceS ? { ...k, ease } : k)),
   )
 }
+
+/**
+ * Ramp an effect ON at the head of the clip, or OFF at its tail.
+ *
+ * HIS WORDS, 2026-08-06: *"I selected a blur, but can I somehow make it so it
+ * transitions into the blur? Can you make that an option for the effects, so
+ * that it has also transitions?"*
+ *
+ * It was already possible and effectively undiscoverable: keyframe the Radius
+ * by hand, twice, at the right two moments. That is not an answer for someone
+ * who wants a blur to arrive rather than appear.
+ *
+ * The trick is that the registry already carries what a ramp needs. Every param
+ * declares a `default` that is documented as its NEUTRAL value ("an effect whose
+ * params all sit here is a no-op"), so fading an effect in is just animating
+ * every param from its neutral to whatever he set, and fading it out is the
+ * same in reverse. That works for EVERY effect, present and future, with no
+ * per-effect table to keep in step.
+ *
+ * Params he has already keyframed by hand are left completely alone: he has
+ * said something more specific than "ramp this", and it wins.
+ *
+ * `durationS` is in CLIP-LOCAL seconds, the same clock the keyframes use.
+ */
+export function rampEffect(
+  clip: Clip,
+  effectId: Id,
+  edge: 'in' | 'out',
+  durationS: number,
+  clipDurationS: number,
+): Clip {
+  const inst = findEffectById(clip, effectId)
+  if (!inst) return clip
+  const def = getEffect(inst.type)
+  if (!def) return clip
+  // A ramp longer than the clip would put both knots at the same instant, which
+  // is a step, not a ramp. Half the clip is the most that can still read as one.
+  const dur = Math.min(Math.max(durationS, 1 / 240), Math.max(clipDurationS / 2, 1 / 240))
+  const [tStart, tEnd] = edge === 'in' ? [0, dur] : [Math.max(0, clipDurationS - dur), clipDurationS]
+
+  let next = clip
+  for (const param of def.params) {
+    const cur = findEffectById(next, effectId)
+    if (!cur) break
+    // Already animated: he has been more specific than this. Leave it.
+    if (isParamAnimated(cur, param.key)) continue
+    const value = paramBase(cur, param.key)
+    // A param sitting at neutral has nothing to ramp between.
+    if (Math.abs(value - param.default) < 1e-9) continue
+    const from = edge === 'in' ? param.default : value
+    const to = edge === 'in' ? value : param.default
+    next = withParamKeyframes(next, effectId, param.key, [
+      { t: tStart, value: from, ease: 'easeOut' },
+      { t: tEnd, value: to, ease: 'linear' },
+    ])
+  }
+  return next
+}
+
+/** True when any of the effect's params carries keyframes (so a ramp is already there). */
+export function isEffectRamped(clip: Clip, effectId: Id): boolean {
+  const inst = findEffectById(clip, effectId)
+  if (!inst) return false
+  const def = getEffect(inst.type)
+  if (!def) return false
+  return def.params.some((p) => isParamAnimated(inst, p.key))
+}
+
+/** Drop every keyframe on an effect, leaving each param at the value it shows now. */
+export function clearEffectRamp(clip: Clip, effectId: Id, localT: number): Clip {
+  const inst = findEffectById(clip, effectId)
+  if (!inst) return clip
+  const def = getEffect(inst.type)
+  if (!def) return clip
+  let next = clip
+  for (const param of def.params) {
+    const cur = findEffectById(next, effectId)
+    if (!cur || !isParamAnimated(cur, param.key)) continue
+    // Keep what is on screen right now, not the stored base: that is the value
+    // he is looking at when he turns the ramp off.
+    const shown = resolveParam(cur, param.key, localT)
+    next = withParamKeyframes(next, effectId, param.key, [])
+    next = withParam(next, effectId, param.key, shown)
+  }
+  return next
+}
