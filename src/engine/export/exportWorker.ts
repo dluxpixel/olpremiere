@@ -36,6 +36,7 @@ import {
   effectiveAudioBitrate,
   effectiveRateControl,
   effectiveVideoCodec,
+  exportColorSpace,
   firstSupported,
   isHdRaster,
   keyframeStride,
@@ -693,22 +694,19 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
       return new EncodedPacket(data, chunk.type, tsUs / 1e6, (chunk.duration ?? fallbackDurUs) / 1e6)
     }
 
-    // Tag HD+ output as BT.709 (the MP4 `colr` box, written from this decoder
-    // config) so players and YouTube interpret the colours correctly instead
-    // of guessing (the usual cause of "washed out after upload"). SD stays
-    // untagged: encoders work in BT.601 there, and leaving it alone keeps the
-    // golden export byte-stable.
+    // Tag HD+ output (the MP4 `colr` box is written from this decoder config) so
+    // players and YouTube interpret the colours correctly instead of guessing,
+    // the usual cause of "washed out after upload". The tag now follows what the
+    // encoder REPORTS rather than asserting BT.709 over pixels it never
+    // converted; see exportColorSpace for why that is what makes this match the
+    // desktop export. SD stays untagged to keep the golden export byte-stable.
     const videoFrameDurUs = 1e6 / settings.fps
     const videoEncoder = new VideoEncoder({
       output: (chunk, meta) => {
         try {
-          if (isHd && meta?.decoderConfig) {
-            meta.decoderConfig.colorSpace = {
-              primaries: 'bt709',
-              transfer: 'bt709',
-              matrix: 'bt709',
-              fullRange: false,
-            }
+          if (meta?.decoderConfig) {
+            const colorSpace = exportColorSpace(meta.decoderConfig.colorSpace, isHd)
+            if (colorSpace) meta.decoderConfig.colorSpace = colorSpace
           }
           const packet = packetOf(chunk, chunk.timestamp, videoFrameDurUs)
           videoMux = videoMux.then(() => videoSource.add(packet, meta)).catch(fail)

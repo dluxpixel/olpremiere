@@ -131,6 +131,41 @@ export function computeQuad(opts: {
 }
 
 /**
+ * The layer's on-screen SCALE: destination pixels per source texel.
+ *
+ * Taken from the quad's own edge LENGTHS, so a rotated layer answers with the
+ * size it actually covers rather than with its bounding box. The source side of
+ * the ratio is the CROPPED texel count, because a crop is what is being drawn.
+ *
+ * Above 1 the layer is MAGNIFIED: more destination pixels than source texels,
+ * which is the case where the choice of resampler is visible. His single most
+ * common operation lives here, a 1920x1080 clip filling a 1080x1920 frame at
+ * about 1.78x (see the note in export/exportPlan.ts).
+ *
+ * The larger of the two axes wins. The renderer's fit is uniform (contain-fit
+ * then one user scale), so the two agree today; taking the max means a future
+ * non-uniform scale would still count as magnifying when either axis does, which
+ * is the safe direction to be wrong in.
+ *
+ * Returns 0 for a degenerate (zero-area) source rather than dividing by zero.
+ */
+export function quadScale(
+  corners: readonly (readonly [number, number])[],
+  uv: { u0: number; v0: number; u1: number; v1: number },
+  texW: number,
+  texH: number,
+): number {
+  const [tl, tr, , bl] = corners
+  if (!tl || !tr || !bl) return 0
+  const srcW = texW * (uv.u1 - uv.u0)
+  const srcH = texH * (uv.v1 - uv.v0)
+  if (srcW <= 0 || srcH <= 0) return 0
+  const spanX = Math.hypot(tr[0] - tl[0], tr[1] - tl[1])
+  const spanY = Math.hypot(bl[0] - tl[0], bl[1] - tl[1])
+  return Math.max(spanX / srcW, spanY / srcH)
+}
+
+/**
  * UV rectangle to sample from the SOURCE texture given crop fractions: the
  * cropped region is [cropL, 1-cropR] x [cropT, 1-cropB]. Returned as
  * {u0,v0,u1,v1} with v0 at the TOP edge (v increases downward, matching a

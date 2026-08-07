@@ -130,6 +130,9 @@ export async function exportNative(
     totalFrames: framesTotal,
     encoder: opts.encoder,
     quality: opts.quality,
+    // The plan's keyframe interval, the same number the WebCodecs path strides
+    // by, so both pipelines put keyframes in the same places.
+    keyframeIntervalS: settings.keyframeIntervalS,
     hasAudio,
     suggestedName: opts.suggestedName,
   })

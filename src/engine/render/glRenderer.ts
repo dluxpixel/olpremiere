@@ -6,7 +6,7 @@
 // touches GL; all transform math lives in the pure, unit-tested mat.ts.
 
 import { getEffect, stackSignature } from '../effects/registry'
-import { computeQuad, cropUV } from './mat'
+import { computeQuad, cropUV, quadScale } from './mat'
 import type { RenderFrame, RenderLayer, RenderOp, ResolvedEffect, TextureSource, TransitionKind } from './types'
 
 export interface Renderer {
@@ -17,7 +17,230 @@ export interface Renderer {
 // Blur radius is bounded so a wild keyframe can't request thousands of taps.
 const MAX_BLUR_PX = 64
 
+/**
+ * Rasters that get the output dither (below): HD and up, exactly the gate
+ * `isHdRaster` in export/messages.ts draws, which dither.test.ts pins so the two
+ * cannot drift. Sub-HD stays on the untouched legacy path for the same reason
+ * `mipmapSources` does, so the golden 640x360 export keeps its exact bytes.
+ *
+ * The gate is read from the FRAME rather than taken as a RendererOptions flag,
+ * because the preview caches one renderer per canvas across sequence-format
+ * changes; a flag fixed at construction would go stale the moment he switches a
+ * project from 640x360 to 1080x1920, and preview would stop matching export.
+ */
+export function ditherRaster(width: number, height: number): boolean {
+  return height >= 720 || width >= 1280
+}
+
+/**
+ * The on-screen scale above which a layer switches from plain bilinear
+ * magnification to the bicubic path in the layer shader.
+ *
+ * It is 1.0 plus a hair. At exactly 1.0 the destination pixels land on the
+ * source texel centres, where every resampler returns the same texel and there
+ * is nothing to recover, so the identity case stays on the byte-stable LINEAR
+ * path. The hair keeps a keyframed zoom that hovers around 1.0 (and float noise
+ * in the quad arithmetic) from flickering between the two, which costs nothing
+ * to allow because the two filters are indistinguishable down there anyway.
+ */
+export const BICUBIC_MIN_SCALE = 1.001
+
+/**
+ * Does this layer take the bicubic (Catmull-Rom) magnification path? Two gates,
+ * and both must pass.
+ *
+ *   MAGNIFYING  the layer covers more destination pixels than it has source
+ *               texels. At or below 1:1 there is nothing a better resampler can
+ *               recover, and staying on LINEAR there is what keeps an
+ *               unmagnified export byte-identical to the one before this
+ *               existed.
+ *
+ *   HD AND UP   the same fence `ditherRaster` draws, and deliberately the SAME
+ *               FUNCTION rather than a second copy of one rule: the golden
+ *               640x360 export must keep its exact legacy bytes, so every
+ *               quality behaviour in this file hangs off one gate.
+ *
+ * Read from the FRAME on every draw for the same reason the dither is: the
+ * preview keeps one renderer per canvas across sequence-format changes, and a
+ * flag fixed at construction would go stale the moment he switches a project
+ * from 640x360 to 1080x1920.
+ */
+export function bicubicLayer(scale: number, frameW: number, frameH: number): boolean {
+  return scale > BICUBIC_MIN_SCALE && ditherRaster(frameW, frameH)
+}
+
+/**
+ * The resolver frame index for this frame. Every op in a frame carries the same
+ * one (resolve.ts derives it from t and fps once), so the first op answers for
+ * all of them. It seeds the dither, which is why it has to come from the frame
+ * and not from a counter: a re-render of the same timecode must produce the same
+ * noise, or preview and export would disagree and a paused scrub would crawl.
+ */
+export function frameSeedOf(ops: readonly RenderOp[]): number {
+  const op = ops[0]
+  if (!op) return 0
+  if (op.type === 'layer') return op.layer.frameSeed
+  if (op.type === 'transition') return op.from.frameSeed
+  return op.frameSeed
+}
+
 // --- Shaders ---------------------------------------------------------------
+
+// OUTPUT DITHER. The whole composite runs at 8 bits, so every value the shaders
+// INVENT rather than inherit (an opacity fade, a cross dissolve, a blur, a glow,
+// a dip to black) is a smooth ramp getting rounded to 8 bits with nothing to
+// break up the contour, which is exactly how banding is made. This is loss the
+// app introduces, not loss that came in with his footage, and no encoder setting
+// can put it back. A triangular-PDF dither added to the value that is ABOUT to
+// be rounded turns the contour into noise the eye reads as the ramp it was.
+//
+// MEASURED on his RTX 4060 with _verify/quality.mjs, the faded row (the same
+// dark ramp put through a 0.42 opacity fade, which is the app inventing values):
+// worst flat run 202 px to 110 px, and the MEAN worst run per row 202.0 px to
+// 73.2 px, against a floor of 68 px which is the source ramp's own banding. So
+// the average row now bands within 5 px of the source it came from, where before
+// it banded three times as wide. The 1:1 rows do not move and cannot: they are
+// already on codes. Encoded cost, same GPU, through the exact ffmpeg call
+// electron/exportArgs.ts builds (x264 veryslow, crf 14, 1080x1920, 30 frames):
+// his real operation, 1920x1080 cover-magnified with a dip to black, went
+// 718230 to 716983 bytes, which is 0.17% SMALLER, since the contours the dither
+// breaks up were costing more to describe than the noise costs. A synthetic
+// all-gradient clip, the worst case a dither can have, went 19176 to 192696
+// bytes: ten times, but of almost nothing, and about 1.4 Mbit/s at this raster.
+//
+// Half a code, and ONLY on channels that are not already sitting on one.
+//
+// That second half is not a nicety, it is measured. Amplitude alone was not
+// enough: on an RTX 4060 a plain plus/minus-half-a-code dither took the harness's
+// 1:1 geometry control from 100.000% bit-identical to 99.922%, because the GPU's
+// float-to-unorm8 conversion does not round a value float32 cannot hold exactly
+// the way the arithmetic says it should. Trimming the amplitude to 0.49 only got
+// 99.948% back and cost banding (worst flat run 110 px to 117 px), so the
+// amplitude stayed and ditherPm() skips on-code channels instead. That restores
+// 100.000% / Infinity dB on the control while keeping the whole banding win.
+//
+// Widening every intermediate framebuffer to RGBA16F would fix the intermediate
+// roundings too, but it costs real preview time; this costs two hashes on the one
+// pass that writes the frame he actually keeps.
+//
+// Deterministic by construction: a pure function of gl_FragCoord and uSeed (the
+// resolver frame index), so preview and export generate identical noise, which
+// is the invariant the shared renderer exists to protect.
+const DITHER_GLSL = `
+float ditherTpdf(vec2 p, float seed) {
+  vec2 q = p + fract(seed * 0.0173) * 131.0;
+  float r1 = fract(sin(dot(q, vec2(12.9898, 78.233))) * 43758.5453);
+  float r2 = fract(sin(dot(q, vec2(63.7264, 10.873))) * 24634.6345);
+  return (r1 - r2) * (0.5 / 255.0);
+}
+
+// Dither a PREMULTIPLIED rgb. Clamped back into [0, a] so anything that samples
+// this later still sees a valid premultiplied pixel. \`on\` is 0 on every pass
+// that writes an intermediate FBO, and the early return makes those passes the
+// byte-for-byte copy they were before.
+//
+// ON-CODE PIXELS ARE LEFT ALONE, which is the whole reason this is safe. A
+// channel already sitting on an 8-bit code is a value the pipeline carried
+// through EXACTLY, and noise there can only take back something it got right;
+// it is also, by definition, not banding, since banding is what happens to the
+// values BETWEEN codes. The tolerance is a 4096th of a code, far above the
+// float32 error in n/255*255 (about a 65000th) and far below any invented ramp.
+vec3 ditherPm(vec3 pm, float a, float on, vec2 p, float seed) {
+  if (on == 0.0) return pm;
+  vec3 code = pm * 255.0;
+  vec3 offCode = step(vec3(1.0 / 4096.0), abs(code - floor(code + 0.5)));
+  return clamp(pm + ditherTpdf(p, seed) * offCode, vec3(0.0), vec3(a));
+}
+`
+
+// BICUBIC MAGNIFICATION, for layers drawn LARGER than their source.
+//
+// gl.TEXTURE_MAG_FILTER = gl.LINEAR is two taps per axis, the softest resampler
+// there is, and it was what every magnified layer went through. His single most
+// common operation is cutting a vertical short from 1920x1080 footage, which
+// magnifies the source about 1.78x to fill a 1080x1920 frame (the note in
+// export/exportPlan.ts states the same figure). The softening happened BEFORE
+// the encoder ever saw a pixel, so no encoder setting could put it back.
+//
+// MEASURED on his RTX 4060 with _verify/quality.mjs, at exactly that 1.7778x:
+// the old path matched a CPU bilinear model to 56.30 dB, which is rounding, so
+// it was PROVABLY plain bilinear and not a guess; against a lanczos-3 resample
+// of the identical crop it sat at 21.71 dB / 0.9571 SSIM and kept 76.7% of the
+// reference's local contrast.
+//
+// Catmull-Rom is cubic convolution with a = -0.5 over a 4x4 neighbourhood:
+// sharper transitions than bilinear, and a small deliberate overshoot at an edge
+// that the eye reads as retained detail.
+//
+// THE OVERSHOOT IS ALSO ITS ONE DANGER. On a hard edge Catmull-Rom rings, and a
+// ring around every caption border would be a new defect, not a fix. So the
+// result is CLAMPED to the range of the four texels plain bilinear would have
+// read. Inside that box the filter is free to be sharper; outside it, it cannot
+// invent a halo. That box is the honest bound: it is exactly the interval the
+// old filter's answer was already guaranteed to lie in.
+//
+// Taps are texelFetch, not texture(): they have to be the raw texels, not what
+// the LINEAR filter or the mip chain would hand back. Level 0 is the right level
+// by construction, because this path only ever runs when the layer is MAGNIFIED,
+// which is precisely when level 0 is the level GL would pick anyway.
+//
+// Taps are clamped into the layer's own CROP window rather than into the whole
+// texture, so a cropped clip cannot pull the pixels the crop removed back in
+// along its border. Plain bilinear could not reach them; neither can this.
+const BICUBIC_GLSL = `
+vec4 olpTap(sampler2D tex, vec2 p, vec2 lo, vec2 hi) {
+  return texelFetch(tex, ivec2(clamp(p, lo, hi)), 0);
+}
+
+vec4 olpBicubic(sampler2D tex, vec2 uv, vec4 rect) {
+  vec2 size = vec2(textureSize(tex, 0));
+  vec2 lo = clamp(floor(rect.xy * size), vec2(0.0), size - 1.0);
+  vec2 hi = clamp(ceil(rect.zw * size) - 1.0, lo, size - 1.0);
+
+  // Texel i is centred at i + 0.5, so the sample sits at uv*size - 0.5 in index
+  // space and the 4x4 neighbourhood starts one texel before floor(that). Get
+  // this half-pixel wrong and the filter is measuring the mistake.
+  vec2 pos = uv * size - 0.5;
+  vec2 base = floor(pos);
+  vec2 f = pos - base;
+
+  // Cubic convolution, a = -0.5, at offsets -1, 0, 1, 2. The four weights sum to
+  // exactly 1 for every f, so a flat area stays flat and the 1:1 case is a copy.
+  vec4 wx = vec4(
+    f.x * (-0.5 + f.x * (1.0 - 0.5 * f.x)),
+    1.0 + f.x * f.x * (-2.5 + 1.5 * f.x),
+    f.x * (0.5 + f.x * (2.0 - 1.5 * f.x)),
+    f.x * f.x * (-0.5 + 0.5 * f.x));
+  vec4 wy = vec4(
+    f.y * (-0.5 + f.y * (1.0 - 0.5 * f.y)),
+    1.0 + f.y * f.y * (-2.5 + 1.5 * f.y),
+    f.y * (0.5 + f.y * (2.0 - 1.5 * f.y)),
+    f.y * f.y * (-0.5 + 0.5 * f.y));
+
+  // The bounds start inverted and the four centre taps always replace them,
+  // because an 8-bit texture's samples are in [0, 1] by definition.
+  vec4 acc = vec4(0.0);
+  vec4 lom = vec4(1.0);
+  vec4 him = vec4(0.0);
+  for (int j = 0; j < 4; j++) {
+    vec4 row = vec4(0.0);
+    for (int i = 0; i < 4; i++) {
+      vec4 s = olpTap(tex, base + vec2(float(i) - 1.0, float(j) - 1.0), lo, hi);
+      row += s * wx[i];
+      // The centre 2x2 is exactly the footprint plain bilinear reads, and
+      // clamping to its range is what stops the ringing becoming a halo. Both
+      // loop counters are the same for every fragment in the draw, so this
+      // branch costs nothing: it folds away when the compiler unrolls.
+      if (i > 0 && i < 3 && j > 0 && j < 3) {
+        lom = min(lom, s);
+        him = max(him, s);
+      }
+    }
+    acc += row * wy[j];
+  }
+  return clamp(acc, lom, him);
+}
+`
 
 // Positions arrive already in seq-space px; the vertex shader projects them to
 // clip space with origin top-left, y DOWN, matching the 2D-canvas convention.
@@ -46,8 +269,12 @@ const uniformName = (i: number, key: string): string => `u_fx${i}_${key}`
  * monolithic LAYER_FS computed when every filter sat at 0. Output is
  * PREMULTIPLIED alpha so the alpha-OVER blend (ONE, ONE_MINUS_SRC_ALPHA)
  * composites correctly.
+ *
+ * `bicubic` swaps the ONE source fetch for the clamped Catmull-Rom above and is
+ * compiled as its own variant, so a layer that is not magnified never carries
+ * the 16 taps in its program at all, not even behind a branch.
  */
-function buildLayerFs(pointwise: readonly ResolvedEffect[], withMask: boolean): string {
+function buildLayerFs(pointwise: readonly ResolvedEffect[], withMask: boolean, bicubic: boolean): string {
   const decls: string[] = []
   const bodies: string[] = []
   pointwise.forEach((fx, i) => {
@@ -89,21 +316,26 @@ uniform float uOpacity;
 uniform vec4 uUVRect; // u0,v0,u1,v1 (reject samples outside the crop window)
 uniform vec2 uFrame;  // frame width,height in px (shared with the VS)
 uniform float uSeed;  // resolver frame index: animates stochastic effects (grain)
+uniform float uDither; // 1 only when this draw writes the frame's final 8-bit target
 ${maskDecls}
 ${decls.join('\n')}
+${DITHER_GLSL}
+${bicubic ? BICUBIC_GLSL : ''}
 out vec4 outColor;
 void main() {
   if (vUV.x < uUVRect.x || vUV.x > uUVRect.z || vUV.y < uUVRect.y || vUV.y > uUVRect.w) {
     outColor = vec4(0.0);
     return;
   }
-  vec4 src = texture(uTex, vUV);
+  vec4 src = ${bicubic ? 'olpBicubic(uTex, vUV, uUVRect)' : 'texture(uTex, vUV)'};
   vec3 c = src.rgb;
   float a = src.a * uOpacity;
 ${maskBody}
 ${bodies.join('\n')}
   c = clamp(c, 0.0, 1.0);
-  outColor = vec4(c * a, a); // premultiplied
+  // Premultiply FIRST, then dither: the noise has to sit on the number the
+  // framebuffer is about to round, not on the straight colour behind it.
+  outColor = vec4(ditherPm(c * a, a, uDither, gl_FragCoord.xy, uSeed), a);
 }`
 }
 
@@ -144,12 +376,21 @@ void main() {
 }`
 
 // Blit a premultiplied FBO texture straight through (used to compose onto target).
+// uDither is 1 only on the two blits that land on the frame's final target (the
+// effected-layer composite and the adjustment accumulator); the scratch bounces
+// inside sharpen and glow pass 0 and stay the exact copy they always were.
 const BLIT_FS = `#version 300 es
 precision highp float;
 in vec2 vUV;
 uniform sampler2D uTex;
+uniform float uSeed;
+uniform float uDither;
+${DITHER_GLSL}
 out vec4 outColor;
-void main() { outColor = texture(uTex, vUV); }`
+void main() {
+  vec4 c = texture(uTex, vUV);
+  outColor = vec4(ditherPm(c.rgb, c.a, uDither, gl_FragCoord.xy, uSeed), c.a);
+}`
 
 // Unsharp mask: centre minus a 4-tap cross average = high-pass, scaled back in.
 // Premultiplied in/out; rgb clamped to alpha so the result stays valid premult.
@@ -180,6 +421,9 @@ in vec2 vUV;
 uniform sampler2D uDst;
 uniform sampler2D uSrc;
 uniform int uMode; // 0 = overlay, 1 = soft light
+uniform float uSeed;
+uniform float uDither;
+${DITHER_GLSL}
 out vec4 outColor;
 void main() {
   vec4 dst = texture(uDst, vUV);
@@ -195,7 +439,7 @@ void main() {
   }
   vec3 outRgb = mix(d, b, src.a);
   float outA = clamp(dst.a + src.a * (1.0 - dst.a), 0.0, 1.0);
-  outColor = vec4(outRgb * outA, outA);
+  outColor = vec4(ditherPm(outRgb * outA, outA, uDither, gl_FragCoord.xy, uSeed), outA);
 }`
 
 // Glow combine: base + bright-passed blurred copy as additive light. The glow's
@@ -250,6 +494,8 @@ uniform int uKind;   // index into TransitionKind order
 uniform float uSoft; // edge softness in UV for wipes
 uniform float uSeed; // resolver frame index, animates the glitch slices
 uniform float uAspect; // frame w/h, because spin must rotate in ASPECT space or it shears
+uniform float uDither; // 1 only when the combine writes the frame's final 8-bit target
+${DITHER_GLSL}
 out vec4 outColor;
 
 // The dip solid is weighted by LOCAL COVERAGE. Both sides are premultiplied and
@@ -394,7 +640,9 @@ void main() {
     // PIP must flash THAT clip, not blow the whole frame white.
     col = mix(to, vec4(1.0) * max(from.a, to.a), a);
   }
-  outColor = col;
+  // A dissolve, a dip and a whiteFlash are all ramps this shader invented, so
+  // this is the single biggest source of app-made banding in the whole path.
+  outColor = vec4(ditherPm(col.rgb, col.a, uDither, gl_FragCoord.xy, uSeed), col.a);
 }`
 
 const KIND_INDEX: Record<TransitionKind, number> = {
@@ -460,6 +708,7 @@ interface LayerProgram {
   uOpacity: WebGLUniformLocation | null
   uUVRect: WebGLUniformLocation | null
   uSeed: WebGLUniformLocation | null
+  uDither: WebGLUniformLocation | null
   /** Mask uniforms, present only on the masked variant of a stack program. */
   mask?: {
     center: WebGLUniformLocation | null
@@ -515,13 +764,18 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
   // clip compiles a second. Bounded by the number of distinct stacks in use.
   const layerPrograms = new Map<string, LayerProgram>()
 
-  function getLayerProgram(pointwise: readonly ResolvedEffect[], withMask: boolean): LayerProgram {
+  function getLayerProgram(
+    pointwise: readonly ResolvedEffect[],
+    withMask: boolean,
+    bicubic: boolean,
+  ): LayerProgram {
     // Masked layers compile their own variant of the stack program, because an
     // unmasked identity clip must never pay for mask uniforms it doesn't have.
-    const key = stackSignature(pointwise) + (withMask ? '#mask' : '')
+    // Magnified layers do the same with the bicubic fetch, for the same reason.
+    const key = stackSignature(pointwise) + (withMask ? '#mask' : '') + (bicubic ? '#bicubic' : '')
     const hit = layerPrograms.get(key)
     if (hit) return hit
-    const prog = link(gl, LAYER_VS, buildLayerFs(pointwise, withMask))
+    const prog = link(gl, LAYER_VS, buildLayerFs(pointwise, withMask, bicubic))
     const entry: LayerProgram = {
       prog,
       aPos: gl.getAttribLocation(prog, 'aPos'),
@@ -531,6 +785,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
       uOpacity: gl.getUniformLocation(prog, 'uOpacity'),
       uUVRect: gl.getUniformLocation(prog, 'uUVRect'),
       uSeed: gl.getUniformLocation(prog, 'uSeed'),
+      uDither: gl.getUniformLocation(prog, 'uDither'),
       ...(withMask
         ? {
             mask: {
@@ -568,10 +823,13 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     uSoft: gl.getUniformLocation(combineProg, 'uSoft'),
     uSeed: gl.getUniformLocation(combineProg, 'uSeed'),
     uAspect: gl.getUniformLocation(combineProg, 'uAspect'),
+    uDither: gl.getUniformLocation(combineProg, 'uDither'),
   }
   const blitLoc = {
     aPos: gl.getAttribLocation(blitProg, 'aPos'),
     uTex: gl.getUniformLocation(blitProg, 'uTex'),
+    uSeed: gl.getUniformLocation(blitProg, 'uSeed'),
+    uDither: gl.getUniformLocation(blitProg, 'uDither'),
   }
   const sharpenLoc = {
     aPos: gl.getAttribLocation(sharpenProg, 'aPos'),
@@ -592,6 +850,8 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     uDst: gl.getUniformLocation(blendModeProg, 'uDst'),
     uSrc: gl.getUniformLocation(blendModeProg, 'uSrc'),
     uMode: gl.getUniformLocation(blendModeProg, 'uMode'),
+    uSeed: gl.getUniformLocation(blendModeProg, 'uSeed'),
+    uDither: gl.getUniformLocation(blendModeProg, 'uDither'),
   }
 
   // Reusable buffers: a per-layer quad (positions+UVs, rewritten each draw) and
@@ -690,6 +950,13 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
   let fboH = 0
   const pool: Fbo[] = []
 
+  // Output-dither state for the frame currently being drawn, set once at the top
+  // of render(). `ditherAmt` is 1 above HD and 0 below it (ditherRaster), and
+  // every pass that writes the frame's FINAL target passes it through; passes
+  // that write an intermediate FBO pass 0 and stay byte-identical to before.
+  let ditherAmt = 0
+  let ditherSeed = 0
+
   // Destination capture for the dest-sampling blend modes (overlay/soft light).
   // Sized to whatever target it last captured (canvas or seq-sized FBO).
   let destCapTex: WebGLTexture | null = null
@@ -769,7 +1036,13 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
 
   // Draw one layer (transform + crop + filters, premultiplied) into the CURRENT
   // framebuffer. Alpha-over blend must already be set by the caller.
-  function drawLayer(layer: RenderLayer, source: TexImageSource, frameW: number, frameH: number): void {
+  function drawLayer(
+    layer: RenderLayer,
+    source: TexImageSource,
+    frameW: number,
+    frameH: number,
+    dither: number,
+  ): void {
     const texW = sourceW(source)
     const texH = sourceH(source)
     if (texW <= 0 || texH <= 0) return
@@ -796,7 +1069,13 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     v[20] = bl[0]; v[21] = bl[1]; v[22] = uv.u0; v[23] = uv.v1
 
     const pointwise = layer.effects.filter(isPointwise)
-    const lp = getLayerProgram(pointwise, !!layer.mask)
+    // Magnified layers sample through the clamped Catmull-Rom instead of plain
+    // bilinear. Decided per DRAW from the quad the transform just produced, so a
+    // keyframed zoom picks the right filter on every frame it crosses 1:1, and
+    // from the SEQUENCE raster (frameW/frameH), never the canvas, so the preview
+    // and the export take the same branch on the same clip.
+    const bicubic = bicubicLayer(quadScale(corners, uv, texW, texH), frameW, frameH)
+    const lp = getLayerProgram(pointwise, !!layer.mask, bicubic)
 
     gl.useProgram(lp.prog)
     gl.bindVertexArray(layerVao)
@@ -814,6 +1093,10 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     gl.uniform1f(lp.uOpacity, clamp01(layer.opacity))
     gl.uniform4f(lp.uUVRect, uv.u0, uv.v0, uv.u1, uv.v1)
     if (lp.uSeed) gl.uniform1f(lp.uSeed, layer.frameSeed)
+    // Set on EVERY draw, never conditionally: uniforms are per-program state, so
+    // a final-target draw that left uDither at 1 would dither the next
+    // intermediate draw that reuses the same compiled stack program.
+    if (lp.uDither) gl.uniform1f(lp.uDither, dither)
     if (layer.mask && lp.mask) {
       const m = layer.mask
       gl.uniform2f(lp.mask.center, m.cx, m.cy)
@@ -995,6 +1278,10 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     // Overlay/soft light must read the destination, so they always take the
     // isolated-FBO path even without neighborhood effects.
     const needsDestSample = mode === 'overlay' || mode === 'softLight'
+    // A null target IS the frame he keeps (the canvas, which export reads back).
+    // Anything else here is a transition side or the adjustment accumulator, both
+    // of which get dithered later by whichever pass writes the canvas.
+    const outDither = targetFb === null ? ditherAmt : 0
     if (post.length > 0 || needsDestSample) {
       gl.bindFramebuffer(gl.FRAMEBUFFER, layerFbo.fb)
       gl.viewport(0, 0, fboW, fboH)
@@ -1003,7 +1290,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
       // Blend within the layer FBO with premultiplied over onto transparent.
       gl.enable(gl.BLEND)
       gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
-      drawLayer(layer, source, frameW, frameH)
+      drawLayer(layer, source, frameW, frameH, 0)
       for (const fx of post) applyNeighborhood(fx, layerFbo, scratch)
       // The target may be a seq-sized transition FBO (fboW×fboH), NOT the
       // canvas. Sizing the viewport to the canvas would draw into only a
@@ -1025,6 +1312,8 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
         gl.activeTexture(gl.TEXTURE1)
         gl.bindTexture(gl.TEXTURE_2D, layerFbo.tex)
         gl.uniform1i(blendModeLoc.uMode, mode === 'overlay' ? 0 : 1)
+        if (blendModeLoc.uSeed) gl.uniform1f(blendModeLoc.uSeed, layer.frameSeed)
+        if (blendModeLoc.uDither) gl.uniform1f(blendModeLoc.uDither, outDither)
         gl.drawArrays(gl.TRIANGLES, 0, 3)
         gl.activeTexture(gl.TEXTURE0)
       } else {
@@ -1032,7 +1321,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
         gl.viewport(0, 0, tw, th)
         gl.enable(gl.BLEND)
         setBlendForMode(mode)
-        blitFbo(layerFbo)
+        blitFbo(layerFbo, outDither)
         gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
       }
     } else {
@@ -1041,7 +1330,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
       gl.viewport(0, 0, targetFb ? fboW : gl.canvas.width, targetFb ? fboH : gl.canvas.height)
       gl.enable(gl.BLEND)
       setBlendForMode(mode)
-      drawLayer(layer, source, frameW, frameH)
+      drawLayer(layer, source, frameW, frameH, outDither)
       gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
     }
   }
@@ -1072,10 +1361,18 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     compositeLayer(flat, source, frameW, frameH, dst.fb, layerFbo, scratch)
   }
 
-  function blitFbo(fbo: Fbo): void {
+  /**
+   * Copy a premultiplied FBO through. `dither` is 0 for the scratch bounces
+   * inside sharpen/glow (those write another intermediate FBO and must stay the
+   * exact copy they were) and `ditherAmt` for the two blits that land on the
+   * frame's final target.
+   */
+  function blitFbo(fbo: Fbo, dither = 0): void {
     gl.useProgram(blitProg)
     bindFull(blitLoc.aPos)
     gl.uniform1i(blitLoc.uTex, 0)
+    if (blitLoc.uSeed) gl.uniform1f(blitLoc.uSeed, ditherSeed)
+    if (blitLoc.uDither) gl.uniform1f(blitLoc.uDither, dither)
     gl.activeTexture(gl.TEXTURE0)
     gl.bindTexture(gl.TEXTURE_2D, fbo.tex)
     gl.drawArrays(gl.TRIANGLES, 0, 3)
@@ -1122,6 +1419,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     gl.uniform1f(combineLoc.uSoft, 0.004)
     if (combineLoc.uSeed) gl.uniform1f(combineLoc.uSeed, op.from.frameSeed)
     if (combineLoc.uAspect) gl.uniform1f(combineLoc.uAspect, frameW / Math.max(frameH, 1))
+    if (combineLoc.uDither) gl.uniform1f(combineLoc.uDither, targetFb === null ? ditherAmt : 0)
     gl.drawArrays(gl.TRIANGLES, 0, 3)
     gl.activeTexture(gl.TEXTURE0)
   }
@@ -1142,7 +1440,9 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     frameW: number,
     frameH: number,
   ): void {
-    const lp = getLayerProgram(pointwise, !!mask)
+    // Never bicubic: this pass reads a seq-sized FBO across a seq-sized quad, so
+    // it is 1:1 by construction and there is nothing to magnify.
+    const lp = getLayerProgram(pointwise, !!mask, false)
     gl.useProgram(lp.prog)
     gl.bindVertexArray(layerVao)
     gl.bindBuffer(gl.ARRAY_BUFFER, layerVbo)
@@ -1165,6 +1465,9 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     gl.uniform1f(lp.uOpacity, clamp01(opacity))
     gl.uniform4f(lp.uUVRect, 0, 0, 1, 1)
     if (lp.uSeed) gl.uniform1f(lp.uSeed, frameSeed)
+    // Adjustment passes always write an intermediate FBO (the work buffer, then
+    // the accumulator); the accumulator's blit to the canvas is what dithers.
+    if (lp.uDither) gl.uniform1f(lp.uDither, 0)
     // Bind the stack's effect params. Locations were resolved against THIS
     // program, so index i lines up with pointwise[i] by construction.
     pointwise.forEach((fx, i) => {
@@ -1222,6 +1525,11 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     // byte-stable straight-to-canvas path. pool[6] is the adjustment work FBO;
     // glow's lazy pool[4] stays free in both paths.
     const hasAdjustment = frame.ops.some((op) => op.type === 'adjustment')
+    // Output dither for THIS frame, decided from the sequence raster rather than
+    // the canvas so preview and export agree even when the preview panel is a
+    // third of the size. Sub-HD gets 0, which is the untouched legacy path.
+    ditherAmt = ditherRaster(frameW, frameH) ? 1 : 0
+    ditherSeed = frameSeedOf(frame.ops)
     ensurePool(frameW, frameH, hasAdjustment ? 7 : 4)
     const accum = hasAdjustment ? pool[5] : null
     const targetFb = accum ? accum.fb : null
@@ -1246,7 +1554,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
       gl.bindFramebuffer(gl.FRAMEBUFFER, null)
       gl.viewport(0, 0, gl.canvas.width, gl.canvas.height)
       gl.disable(gl.BLEND)
-      blitFbo(accum)
+      blitFbo(accum, ditherAmt)
     }
     gl.bindVertexArray(null)
   }

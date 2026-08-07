@@ -1,4 +1,4 @@
-import { LIMIT_CEILING } from '../audioLimiter'
+import { LIMIT_CEILING, LIMIT_KNEE } from '../audioLimiter'
 import { describe, expect, it } from 'vitest'
 import {
   applyGainEnvelope,
@@ -221,7 +221,13 @@ describe('softLimit', () => {
   it('caps a hot sum below the ceiling without exceeding it', () => {
     const y = softLimit(1.6)
     expect(y).toBeLessThan(LIMIT_CEILING)
-    expect(y).toBeGreaterThan(0.95)
+    // Still delivered loud, right up against the ceiling, rather than squashed
+    // back toward the knee. Said in terms of the ceiling itself: the literal
+    // that used to be here (0.95) silently encoded the OLD -0.3 dBFS ceiling and
+    // broke the day the delivery headroom moved to -1 dBTP, which is a test
+    // failing on the one number it was never about.
+    expect(y).toBeGreaterThan(LIMIT_KNEE)
+    expect(y).toBeCloseTo(LIMIT_CEILING, 4)
   })
 
   it('is symmetric', () => {

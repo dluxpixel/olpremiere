@@ -14,6 +14,7 @@ import {
   effectiveAudioBitrate,
   effectiveRateControl,
   effectiveVideoCodec,
+  exportColorSpace,
   firstSupported,
   isHdRaster,
   keyframeStride,
@@ -221,6 +222,42 @@ describe('videoEncoderConfig', () => {
     expect(videoEncoderConfig({ ...base, rateControl: 'variable' }).latencyMode).toBe('quality')
     expect(videoEncoderConfig({ ...base, accel: 'prefer-hardware', rateControl: 'variable' }).latencyMode).toBe('realtime')
     expect(videoEncoderConfig({ ...base, isHd: false, rateControl: 'variable' }).latencyMode).toBe('realtime')
+  })
+})
+
+describe('exportColorSpace', () => {
+  // The WebCodecs path cannot choose the RGB to YUV matrix: the browser's
+  // encoder does that conversion. So the colr box must report what the encoder
+  // says it did, not what this app would have preferred.
+  it('reports the matrix the encoder actually used, not an assumed BT.709', () => {
+    const cs = exportColorSpace({ primaries: 'bt709', transfer: 'iec61966-2-1', matrix: 'smpte170m', fullRange: false }, true)
+    expect(cs).toEqual({ primaries: 'bt709', transfer: 'iec61966-2-1', matrix: 'smpte170m', fullRange: false })
+  })
+
+  it('never overwrites a reported full range with a limited-range claim', () => {
+    expect(exportColorSpace({ matrix: 'bt709', fullRange: true }, true)?.fullRange).toBe(true)
+  })
+
+  it('falls back to the HD BT.709 assumption only where the encoder said nothing', () => {
+    // An encoder that reports nothing loses no ground: this is byte-for-byte the
+    // behaviour that shipped before, which is the "washed out after upload" fix.
+    expect(exportColorSpace(undefined, true)).toEqual({
+      primaries: 'bt709',
+      transfer: 'bt709',
+      matrix: 'bt709',
+      fullRange: false,
+    })
+    expect(exportColorSpace({ matrix: 'smpte170m' }, true)).toEqual({
+      primaries: 'bt709',
+      transfer: 'bt709',
+      matrix: 'smpte170m',
+      fullRange: false,
+    })
+  })
+
+  it('writes nothing at all for SD, which keeps the golden export byte-stable', () => {
+    expect(exportColorSpace({ matrix: 'bt709' }, false)).toBeNull()
+    expect(exportColorSpace(undefined, isHdRaster(640, 360))).toBeNull()
   })
 })
 

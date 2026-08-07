@@ -24,6 +24,13 @@ describe('softLimit', () => {
     expect(LIMIT_CEILING).toBeLessThan(1)
   })
 
+  it('holds the -1 dBTP delivery headroom, not just "under full scale"', () => {
+    // A lossy re-encode reconstructs a waveform that overshoots its own samples,
+    // so a file peaking at -0.3 dBFS goes over 0 dBTP once YouTube re-encodes it.
+    // -1 dB is the delivery standard, and this is the number every path reads.
+    expect(20 * Math.log10(LIMIT_CEILING)).toBeCloseTo(-1, 3)
+  })
+
   it('is monotonic: a louder sample never comes out quieter', () => {
     let prev = -Infinity
     for (let x = 0; x <= 6; x += 0.01) {
@@ -65,6 +72,16 @@ describe('softLimitCurve', () => {
 
   it('never contains a value at or past full scale', () => {
     for (const v of curve) expect(Math.abs(v)).toBeLessThan(1)
+  })
+
+  it('tops out at the SAME ceiling as the pure path, so preview cannot drift from export', () => {
+    // The preview graph and the OfflineAudioContext export render both go through
+    // this curve, while the worker mixer calls softLimit directly. One ceiling for
+    // all three is the whole point of this module: what he hears is what ships.
+    let peak = 0
+    for (const v of curve) peak = Math.max(peak, Math.abs(v))
+    expect(peak).toBeCloseTo(LIMIT_CEILING, 6)
+    expect(20 * Math.log10(peak)).toBeCloseTo(-1, 3)
   })
 
   it('passes small signals through untouched, which is what keeps old exports identical', () => {

@@ -327,8 +327,11 @@ function rendererFor(canvas: HTMLCanvasElement): Renderer | null {
   if (gl) {
     try {
       // mipmapPreview: the panel raster is 3-6x below source res, so mipmapped
-      // minification kills the aliasing/shimmer. PREVIEW ONLY: the export
-      // renderer must stay flagless (golden byte-tests pin its LINEAR path).
+      // minification kills the aliasing/shimmer. Preview asks for it ALWAYS;
+      // the export renderer asks for it at HD and up only (exportWorker.ts
+      // passes mipmapSources: isHdRaster). That raster fence, not a flagless
+      // export renderer, is what keeps the golden 640x360 export on the
+      // untouched LINEAR path.
       renderer = createRenderer(gl, { mipmapSources: true })
     } catch (err) {
       console.error('OL Studio: WebGL2 renderer init failed', err)

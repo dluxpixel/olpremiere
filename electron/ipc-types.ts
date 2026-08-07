@@ -17,6 +17,13 @@ export interface NativeExportConfig {
   encoder: NativeEncoder
   /** QP/CRF on the 0 to 51 scale (used by x264/x265/nvenc; ignored by prores/lossless). */
   quality: number
+  /**
+   * The longest the encoder may go without a keyframe, in seconds. Carried from
+   * the plan (exportPlan.ts EXPORT_KEYFRAME_S) rather than restated here, so this
+   * path and the WebCodecs path key at the same cadence. Absent falls back to the
+   * same 2 seconds keyframeStride() defaults to.
+   */
+  keyframeIntervalS?: number
   hasAudio: boolean
   /** When set, skip the save dialog (used by re-export / tests). */
   outPath?: string

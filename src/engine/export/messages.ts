@@ -270,6 +270,49 @@ export function videoEncoderConfig(args: {
   return config
 }
 
+/**
+ * What the MP4 `colr` box should say about a WebCodecs export.
+ *
+ * This path hands the browser's VideoEncoder a VideoFrame built from the WebGL2
+ * canvas, so the pixels going in are full-range sRGB and the RGB to YUV
+ * conversion happens INSIDE the encoder, where this app has no say. The encoder
+ * then reports what it actually did in `meta.decoderConfig.colorSpace`.
+ *
+ * This used to overwrite that report with bt709/bt709/bt709 limited on every HD
+ * frame, unconditionally. That is a claim, not a measurement. If the browser
+ * converted with the BT.601 matrix, which is the common default for RGB input,
+ * the file said 709 over 601 pixels and every player then decoded it with the
+ * wrong matrix: a hue and saturation shift on saturated colour.
+ *
+ * The native path has no such problem. It converts EXPLICITLY (see VIDEO_FILTER
+ * in electron/exportArgs.ts) and then tags what it converted to, so the desktop
+ * file is self-consistent and renders the intended colour. That file is the
+ * reference, and the two builds of one app must not differ.
+ *
+ * So: PREFER what the encoder reports. A file whose tag matches its own pixels
+ * renders the intended colour whichever matrix the browser picked, which is the
+ * match that matters, the one the viewer sees. Fields the encoder leaves unset
+ * fall back to the old HD BT.709 assumption, which is both what every player
+ * guesses for an HD raster and exactly the previous behaviour, so an encoder
+ * that reports nothing loses no ground.
+ *
+ * Returns null when nothing should be written: SD stays untagged, because
+ * encoders work in BT.601 there and leaving it alone keeps the golden export
+ * byte-stable.
+ */
+export function exportColorSpace(
+  reported: VideoColorSpaceInit | null | undefined,
+  isHd: boolean,
+): VideoColorSpaceInit | null {
+  if (!isHd) return null
+  return {
+    primaries: reported?.primaries ?? 'bt709',
+    transfer: reported?.transfer ?? 'bt709',
+    matrix: reported?.matrix ?? 'bt709',
+    fullRange: reported?.fullRange ?? false,
+  }
+}
+
 /** First candidate the async predicate accepts; probes stop at the first hit. */
 export async function firstSupported<T>(
   candidates: readonly T[],

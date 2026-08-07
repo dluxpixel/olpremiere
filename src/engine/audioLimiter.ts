@@ -22,16 +22,35 @@
 /** Above this the limiter starts working; below it, nothing happens at all. */
 export const LIMIT_KNEE = 0.8
 /**
- * Where the limiter asymptotes: -0.3 dBFS, not full scale.
+ * Where the limiter asymptotes: -1 dBFS, not full scale.
  *
  * It used to be 1.0, and tanh reaches 1.0 in float64 once the input is about
  * 8 dB over the knee, so a levelled clip with a desk bump in it came out at
  * EXACTLY full scale. That is the one sample value a 16-bit encoder has to
  * round, and it leaves nothing for the inter-sample peaks that appear after
- * lossy encoding. A third of a decibel is inaudible and makes "never reaches
- * full scale" true rather than nearly true.
+ * lossy encoding.
+ *
+ * -0.3 dBFS (0.9661) fixed the "exactly full scale" half of that and left the
+ * headroom half short. The delivery standard is -1 dBTP at the codec input, and
+ * it exists because a lossy re-encode reconstructs a waveform that overshoots
+ * its own samples: a file that peaks at -0.3 goes over 0 dBTP once YouTube
+ * re-encodes it, and the listener's converter clips something we never wrote.
+ * A decibel of headroom is inaudible, and it is the only part of this the app
+ * can control, because the overshoot happens on a machine we do not own.
+ *
+ * ONE constant, THREE paths. This is the ceiling for the live preview
+ * (engine/audio.ts), the OfflineAudioContext export render
+ * (export/audioRender.ts) and the pure worker mixer (export/audioMix.ts) alike,
+ * which is the point of this module: a delivery ceiling that moved without the
+ * preview moving with it would reopen exactly the divergence closed on
+ * 2026-08-06. What he hears is what ships.
+ *
+ * Honest about what it measures: this pins the SAMPLE peak at -1 dBFS. True
+ * peak is only ever estimated, and a tanh asymptote that is approached and never
+ * reached is about as gentle as a waveform gets, so the true peak sits under the
+ * sample peak's decibel of room rather than needing its own oversampled search.
  */
-export const LIMIT_CEILING = 0.9661
+export const LIMIT_CEILING = 0.8913
 const LIMIT_RANGE = LIMIT_CEILING - LIMIT_KNEE
 
 /**
