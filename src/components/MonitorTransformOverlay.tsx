@@ -10,18 +10,23 @@ import { computeQuad, pointInQuad, subQuad } from '../engine/render/mat'
 import { resolveFrame } from '../engine/render/resolve'
 import { titleInkBoxUV } from '../engine/render/titleRaster'
 import type { RenderLayer, ResolvedTransform } from '../engine/render/types'
-import { activeSequence } from '../engine/types'
+import { activeSequence, type Clip } from '../engine/types'
+import { MOMENT_EPS, clipKeyframeTimes } from '../engine/keyframes'
 import { setLivePreviewTransform } from '../engine/preview'
 import { previewClipMenu } from '../state/clipMenus'
 import { punchInAtPoint } from '../state/motionActions'
-import { resolveChannel } from '../engine/effects/channels'
-import { setClipTransform, setClipTransformAtPlayhead } from '../state/clipEdits'
+import { channelKeyframes, resolveChannel } from '../engine/effects/channels'
+import {
+  isClipArmed,
+  setClipTransform,
+  setClipTransformAtPlayhead,
+  toggleMotionAtPlayhead,
+} from '../state/clipEdits'
 import { setClipsPosition } from '../state/bulkEdits'
 import { openContextMenu } from '../state/contextMenu'
 import { pausePlayback } from '../state/playbackControl'
 import { quantizeToFrame } from '../engine/timecode'
-import { useSettings } from '../state/settings'
-import { useStore } from '../state/store'
+import { useStore, type ZoomAnchor } from '../state/store'
 
 interface Tf {
   x: number
@@ -46,6 +51,99 @@ const HANDLE_INK = 'var(--color-accent-fg)'
 const SCRUB_SLOP_PX = 4
 
 /**
+ * What the diamond badge in the gizmo's corner is showing, and therefore what
+ * one click on it does:
+ *
+ * - `off`: hollow, the clip is not animated. A click arms it by keyframing the
+ *   framing it has now.
+ * - `between`: hollow, animated with the playhead between moments. A click adds
+ *   a hold here.
+ * - `on`: filled, the playhead is ON a moment. A click takes that moment out.
+ * - `owned`: an appearance preset owns this clip's keyframes, so the badge is
+ *   dead and says why.
+ */
+export type MotionBadgeState = 'off' | 'between' | 'on' | 'owned'
+
+/** Plain reasons, one per state; the tooltip and the accessible name both read it. */
+export const BADGE_TITLE: Readonly<Record<MotionBadgeState, string>> = {
+  off: 'Animate this clip: keyframe the framing here',
+  between: 'Keyframe the framing here',
+  on: 'Remove the keyframe here',
+  owned: 'This clip uses an entrance animation, which owns its keyframes.',
+}
+
+/**
+ * A MOMENT is read with clipKeyframeTimes and one frame of tolerance, which is
+ * exactly the read toggleMotionAtPlayhead makes, so the badge can never promise
+ * something the click then does not do.
+ *
+ * An appearance animation is REFUSED rather than merged: clip.appearance is
+ * recompiled on any transform edit (releaseAppearanceOnRetime in appearance.ts),
+ * so a curve shaped by hand on such a clip would silently vanish at the next
+ * recompile. Losing his work quietly is worse than a disabled badge.
+ */
+export function motionBadgeState(clip: Clip, localT: number, fps: number): MotionBadgeState {
+  if (clip.appearance) return 'owned'
+  const tol = 1 / (fps || 30)
+  if (clipKeyframeTimes(clip).some((t) => Math.abs(t - localT) <= tol)) return 'on'
+  return isClipArmed(clip) ? 'between' : 'off'
+}
+
+/**
+ * The moment an armed drag animates FROM: the last one strictly before the
+ * playhead, or the head of the clip when it carries none. The same read
+ * withChannelsAtTime makes when it pins the outgoing keyframe, so the ghost quad
+ * shows the framing the commit will really leave from and not an invented one.
+ */
+export function previousMomentT(clip: Clip, localT: number): number {
+  return clipKeyframeTimes(clip).filter((t) => t < localT - MOMENT_EPS).pop() ?? 0
+}
+
+/** The move in his own numbers while he is still dragging it: 'Zoom 100 to 118%'. */
+export function zoomReadout(fromScale: number, toScale: number): string {
+  return `Zoom ${Math.round(fromScale * 100)} to ${Math.round(toScale * 100)}%`
+}
+
+/** Dots drawn along a motion path, however long the move is. */
+export const MAX_PATH_SAMPLES = 120
+
+/**
+ * Where the framing travels, as centre-offset points in SEQUENCE pixels, sampled
+ * between the first and last position keyframe.
+ *
+ * Frame resolution, capped, so a five-minute move costs no more than a five-frame
+ * one. NEVER sampled while the transport runs: every sample is a pair of
+ * resolveChannel calls, and paying for 240 of them per frame of playback is
+ * precisely the per-frame work this overlay is built to keep out of playback.
+ * The outer component already unmounts during playback; passing the flag keeps
+ * that guarantee true at this call site rather than two components away.
+ */
+export function motionPathDots(clip: Clip, fps: number, playing: boolean): { x: number; y: number }[] {
+  if (playing) return []
+  const ts = [...channelKeyframes(clip, 'posX'), ...channelKeyframes(clip, 'posY')].map((k) => k.t)
+  if (ts.length === 0) return []
+  const from = Math.min(...ts)
+  const to = Math.max(...ts)
+  if (to - from <= MOMENT_EPS) return []
+  const n = Math.max(2, Math.min(MAX_PATH_SAMPLES, Math.round((to - from) * (fps || 30)) + 1))
+  const dots: { x: number; y: number }[] = []
+  for (let i = 0; i < n; i++) {
+    const t = from + ((to - from) * i) / (n - 1)
+    dots.push({ x: resolveChannel(clip, 'posX', t), y: resolveChannel(clip, 'posY', t) })
+  }
+  return dots
+}
+
+/**
+ * A right-clicked point in the picture as the persisted zoom anchor. Normalized,
+ * so the point he set on his face survives a change of sequence format instead
+ * of sliding off it.
+ */
+export function normalizedAnchor(sx: number, sy: number, seqW: number, seqH: number): ZoomAnchor {
+  return { x: clamp(sx / (seqW || 1), 0, 1), y: clamp(sy / (seqH || 1), 0, 1) }
+}
+
+/**
  * Direct-manipulation transform layer over the program monitor.
  * - Click a clip in the preview to SELECT it (click the black bars to deselect).
  * - The selected clip gets a box with corner + edge handles: drag the body to
@@ -53,8 +151,10 @@ const SCRUB_SLOP_PX = 4
  *   one scale channel, so aspect is always constrained). Shift snaps the scale
  *   to 5% steps.
  * Live via a preview override; commits ONE undo step on release. Only active
- * while paused with content; the gizmo shows for a static (non-animated) clip
- * that is under the playhead.
+ * while paused with content; the gizmo shows for any clip under the playhead.
+ * - The diamond badge in its corner ARMS the clip and steps its moments, and the
+ *   border says which of the two a drag will do: solid moves the whole clip,
+ *   dashed animates it.
  *
  * The paused-only inner component holds the playheadS subscription, so during
  * PLAYBACK the transport's per-frame ticks re-render nothing here at all.
@@ -203,6 +303,13 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
           openContextMenu(e, [
             // The zoom centers on the exact point that was right-clicked.
             { label: 'Punch in here', onClick: () => punchInAtPoint(clip.id, { x: sx, y: sy }) },
+            // The same point, kept: every punch he fires from the panel, the P
+            // key or the timeline converges here from now on, instead of on the
+            // dead centre of the frame. He sets it once, on his face.
+            {
+              label: 'Set zoom point here',
+              onClick: () => setUI({ zoomAnchor: normalizedAnchor(sx, sy, seq.width, seq.height) }),
+            },
             ...previewClipMenu(clip, ids).map((item, idx) => (idx === 0 ? { ...item, separator: true } : item)),
           ])
         return
@@ -220,20 +327,14 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
   // transform at the playhead, and a drag commits keyframes there (Premiere
   // behavior) via setClipTransformAtPlayhead.
   const appearanceOwned = !!clip?.appearance
-  const manualAnimated =
-    !appearanceOwned &&
-    !!(
-      clip?.keyframes?.posX?.length ||
-      clip?.keyframes?.posY?.length ||
-      clip?.keyframes?.scale?.length ||
-      clip?.keyframes?.rotation?.length
-    )
-  // With auto-keyframe on, a STILL clip takes the keyframe path too, because that
-  // is the mode: a drag animates the clip from where it was instead of moving it.
-  // Read at COMMIT time, not as a hook: this component early-returns above, so a
+  // ARMED off the clip's own keyframes (isClipArmed), which is the same read the
+  // commit path and the multi-selection align make, so the gizmo can never
+  // disagree with what the drag actually writes.
+  const manualAnimated = !appearanceOwned && !!clip && isClipArmed(clip)
+  // Whether a drag animates is the clip's own fact, so there is no global mode to
+  // read. Kept as a call, not a hook: this component early-returns above, so a
   // hook here runs conditionally and React tears the whole tree down.
-  const keyframeOnDrag = (): boolean =>
-    manualAnimated || (!appearanceOwned && useSettings.getState().autoKeyframe)
+  const keyframeOnDrag = (): boolean => manualAnimated
   const onScreen = !!clip && playheadS >= clip.startS && playheadS < clipEndS(clip)
   // Adjustment layers have no transform in the render path (only effects/mask/
   // opacity reach applyAdjustment), so a gizmo would commit undo steps that can
@@ -365,8 +466,8 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
         tfRef.current = null
         if (!final) return
         if (keyframeOnDrag()) {
-          // Keyframed clip (or auto-keyframe): write ONLY the channels the drag
-          // changed, as keyframes at the playhead.
+          // ARMED clip: write ONLY the channels the drag changed, as keyframes
+          // at the playhead.
           const changes: Partial<Tf> = {}
           if (Math.abs(final.x - drag.startTf.x) > 1e-9) changes.x = final.x
           if (Math.abs(final.y - drag.startTf.y) > 1e-9) changes.y = final.y
@@ -417,6 +518,41 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
     }
     const cxPx = (maxX + minX) / 2
 
+    const badge = motionBadgeState(clip, gizmoLocalT, seq.fps)
+    // Just INSIDE the top-left corner: clear of that corner's 24px scale target
+    // and of the rotate zone that sits outside it, and clamped like every other
+    // handle so it stays grabbable when the clip overflows the frame.
+    const badgeX = hx(hx(minX) + 18)
+    const badgeY = hy(hy(minY) + 18)
+
+    // The framing he is LEAVING, drawn faint behind the live one while an armed
+    // drag runs. A punch is a move FROM somewhere, and the from-frame is the
+    // half of it he cannot otherwise see. Resolved at the moment the commit will
+    // pin the outgoing keyframe on, so the ghost is the truth and not a guess.
+    let ghostCorners: [number, number][] | null = null
+    let ghostScale = tf.scale
+    if (dragTf && manualAnimated) {
+      const fromT = previousMomentT(clip, gizmoLocalT)
+      ghostScale = resolveChannel(clip, 'scale', fromT)
+      ghostCorners = computeQuad({
+        frameW: seq.width,
+        frameH: seq.height,
+        texW,
+        texH,
+        transform: {
+          ...rt,
+          x: resolveChannel(clip, 'posX', fromT),
+          y: resolveChannel(clip, 'posY', fromT),
+          scale: ghostScale,
+          rotationDeg: resolveChannel(clip, 'rotation', fromT),
+        },
+      }).corners
+    }
+    // getState, not a subscription: the overlay is unmounted during playback
+    // anyway, and re-reading playing reactively here would put this component
+    // back on the per-frame path the outer gate exists to keep it off.
+    const pathDots = motionPathDots(clip, seq.fps, useStore.getState().ui.playing)
+
     gizmo = (
       <>
         <div
@@ -427,12 +563,46 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
             top: minY,
             width: maxX - minX,
             height: maxY - minY,
-            border: `1.5px solid ${ACCENT}`,
+            // SOLID means a drag moves the whole clip; DASHED means a drag
+            // animates. The border is the answer to the only question he has
+            // with his hand already on the picture, so it is on the picture.
+            border: `1.5px ${manualAnimated ? 'dashed' : 'solid'} ${ACCENT}`,
             background: ACCENT_WASH,
           }}
           onPointerDown={beginMove}
           onContextMenu={contextAt}
         />
+        {/* The ghost framing and the motion path: drawn ABOVE the body wash so
+            they stay legible, below every handle so nothing is ever occluded. */}
+        {(ghostCorners || pathDots.length > 0) && (
+          <svg
+            data-testid="gizmo-motion-path"
+            className="pointer-events-none absolute left-0 top-0"
+            width={box.w}
+            height={box.h}
+          >
+            {ghostCorners && (
+              <polygon
+                points={ghostCorners.map(([x, y]) => `${x * k},${y * k}`).join(' ')}
+                fill="none"
+                stroke={ACCENT}
+                strokeWidth={1}
+                strokeDasharray="4 4"
+                opacity={0.4}
+              />
+            )}
+            {pathDots.map((p, i) => (
+              <circle
+                key={i}
+                cx={(seq.width / 2 + p.x) * k}
+                cy={(seq.height / 2 + p.y) * k}
+                r={1.5}
+                fill={ACCENT}
+                opacity={0.55}
+              />
+            ))}
+          </svg>
+        )}
         {/* Edges render BEFORE corners so a corner wins any hit-target overlap. */}
         {edgePts.map((ep, i) =>
           ep.show ? (
@@ -500,8 +670,33 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
             style={{ background: ACCENT, borderColor: HANDLE_INK }}
           />
         </div>
+        {/* The motion badge: one target, on the picture, for the whole keyframe
+            loop. It replaces the transport-bar auto-keyframe toggle outright,
+            because a persisted global mode meant the same drag did two different
+            things on two different nights. */}
+        <button
+          type="button"
+          data-testid="gizmo-motion-badge"
+          data-state={badge}
+          disabled={badge === 'owned'}
+          title={BADGE_TITLE[badge]}
+          aria-label={BADGE_TITLE[badge]}
+          className="pointer-events-auto absolute flex h-6 w-6 -translate-x-1/2 -translate-y-1/2 cursor-pointer items-center justify-center disabled:cursor-not-allowed disabled:opacity-40"
+          style={{ left: badgeX, top: badgeY }}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={() => toggleMotionAtPlayhead(clipId)}
+        >
+          <div
+            className="h-[9px] w-[9px] rotate-45 border-2"
+            style={{
+              background: badge === 'on' ? ACCENT : 'transparent',
+              borderColor: badge === 'on' ? HANDLE_INK : ACCENT,
+            }}
+          />
+        </button>
         {/* Live readout while dragging: same chip language as the timeline's
-            trim tooltip (elevated surface, mono digits), clamped into view. */}
+            trim tooltip (elevated surface, mono digits), clamped into view. On an
+            armed drag it also names the move he is making, start to finish. */}
         {dragTf && (
           <div
             data-testid="gizmo-readout"
@@ -509,6 +704,7 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
             style={{ left: Math.max(2, minX), top: Math.max(2, minY - 26) }}
           >
             X {Math.round(tf.x)} · Y {Math.round(tf.y)} · {Math.round(tf.scale * 100)}% · {Math.round(tf.rotationDeg)}°
+            {ghostCorners ? ` · ${zoomReadout(ghostScale, tf.scale)}` : ''}
           </div>
         )}
       </>

@@ -2,6 +2,17 @@
 // Each channel row = label + stopwatch toggle + a scrubbable numeric field
 // (+ keyframe add/remove + prev/next steppers when animated). Every mutation
 // goes through the clipEdits helpers; interpolation math is never redone here.
+//
+// The panel is a MOTION DESK now, and that is one structural move: there is no
+// standalone Keyframes section any more. A row that is animated grows its own
+// KeyframeTrack directly underneath it, and the CurveEditor under THAT when a
+// segment on that property is selected, so the diamonds are always under the
+// number they animate. The whole body sits inside ONE MotionRail, so the ruler,
+// the playhead and every lane read the same x-axis, and an effect param row
+// gets a lane on it for nothing: it already shares PropRow and KeyframeNav.
+//
+// Motion leads the panel (his brief, 2026-08-06: "when you click on a clip,
+// then on the part on the right"), with the rail's ruler directly under it.
 
 import {
   Bookmark,
@@ -18,7 +29,12 @@ import {
   X,
 } from 'lucide-react'
 import { useEffect, useRef, useState, type HTMLAttributes, type ReactNode } from 'react'
-import { channelKeyframes, isChannelAnimated, resolveChannel } from '../engine/effects/channels'
+import {
+  CHANNEL_EFFECT,
+  channelKeyframes,
+  isChannelAnimated,
+  resolveChannel,
+} from '../engine/effects/channels'
 import { isParamAnimated, paramKeyframes, resolveParam } from '../engine/effects/ops'
 import { BROWSABLE_EFFECTS, getEffect, paramSens, type EffectParamDef } from '../engine/effects/registry'
 import { clipEndS } from '../engine/timeline'
@@ -29,7 +45,6 @@ import {
   type TransitionKind,
 } from '../engine/render/types'
 import {
-  ANIM_CHANNELS,
   BLEND_LABELS,
   BLEND_MODES,
   type AnimChannel,
@@ -67,7 +82,9 @@ import { saveSelectionAsPreset } from '../state/library'
 import { createPendingEdit, type PendingEdit } from './pendingEdit'
 import { useStore } from '../state/store'
 import { IconButton } from '../ui/Button'
-import { KeyframeLane } from './KeyframeLane'
+import { CurveEditor } from './CurveEditor'
+import { KeyframeTrack } from './KeyframeTrack'
+import { MotionRail } from './MotionRail'
 import { PunchControl } from './PunchControl'
 import { MAX_GAIN_DB } from '../engine/loudness'
 
@@ -408,45 +425,57 @@ function ChannelRow({
     useStore.getState().setUI({ playheadS: clip.startS + t })
   }
 
+  // PropRow itself is untouched: the lane is a SIBLING in this wrapper, so it
+  // spans the rail's full width instead of starting at the row's value column.
   return (
-    <PropRow
-      data-testid={`channel-${channel}`}
-      label={LABELS[channel]}
-      labelTitle={`${LABELS[channel]} (double-click to reset)`}
-      onLabelDoubleClick={() => resetChannel(clip.id, channel)}
-      onReset={() => resetChannel(clip.id, channel)}
-      resetLabel={`Reset ${LABELS[channel]}`}
-      lead={
-        <IconButton
-          label={animated ? `Disable ${LABELS[channel]} keyframes` : `Animate ${LABELS[channel]}`}
-          active={animated}
-          size="compact"
-          data-testid={`stopwatch-${channel}`}
-          onClick={() => toggleChannelAnimation(clip.id, channel)}
-        >
-          <Clock size={13} strokeWidth={1.75} aria-hidden />
-        </IconButton>
-      }
-    >
-      {animated && (
-        <KeyframeNav
-          kfs={kfs}
-          localT={localT}
-          onGoto={gotoT}
-          onKf={onKf}
-          onToggleKf={() =>
-            onKf ? removeKeyframeAtPlayhead(clip.id, channel) : addKeyframeAtPlayhead(clip.id, channel)
-          }
+    <div className="flex flex-col gap-1">
+      <PropRow
+        data-testid={`channel-${channel}`}
+        label={LABELS[channel]}
+        labelTitle={`${LABELS[channel]} (double-click to reset)`}
+        onLabelDoubleClick={() => resetChannel(clip.id, channel)}
+        onReset={() => resetChannel(clip.id, channel)}
+        resetLabel={`Reset ${LABELS[channel]}`}
+        lead={
+          <IconButton
+            label={animated ? `Disable ${LABELS[channel]} keyframes` : `Animate ${LABELS[channel]}`}
+            active={animated}
+            size="compact"
+            data-testid={`stopwatch-${channel}`}
+            onClick={() => toggleChannelAnimation(clip.id, channel)}
+          >
+            <Clock size={13} strokeWidth={1.75} aria-hidden />
+          </IconButton>
+        }
+      >
+        {animated && (
+          <KeyframeNav
+            kfs={kfs}
+            localT={localT}
+            onGoto={gotoT}
+            onKf={onKf}
+            onToggleKf={() =>
+              onKf ? removeKeyframeAtPlayhead(clip.id, channel) : addKeyframeAtPlayhead(clip.id, channel)
+            }
+          />
+        )}
+        <ScrubField
+          value={value}
+          spec={spec}
+          testId={`field-${channel}`}
+          ariaLabel={LABELS[channel]}
+          onCommit={(v) => setChannel(clip.id, channel, v)}
         />
+      </PropRow>
+      {animated && (
+        <>
+          <KeyframeTrack clip={clip} channel={channel} />
+          {/* Draws only for the segment that is actually selected, and only on
+              this property: it decides that from the rail, not from a flag here. */}
+          <CurveEditor clip={clip} channel={channel} />
+        </>
       )}
-      <ScrubField
-        value={value}
-        spec={spec}
-        testId={`field-${channel}`}
-        ariaLabel={LABELS[channel]}
-        onCommit={(v) => setChannel(clip.id, channel, v)}
-      />
-    </PropRow>
+    </div>
   )
 }
 
@@ -515,6 +544,24 @@ function KeyframeNav({
   )
 }
 
+/**
+ * The channel address of an effect param, when it has one.
+ *
+ * A lane speaks CHANNELS, and a channel resolves to the FIRST effect of its
+ * type in the stack (channels.ts). So the params that carry a legacy channel
+ * address get a lane, and a SECOND copy of the same effect gets none rather
+ * than a lane that quietly retimes its neighbour's keyframes. Every param keeps
+ * its KeyframeNav either way.
+ */
+export function paramChannel(clip: Clip, effect: EffectInstance, paramKey: string): AnimChannel | null {
+  const channel = (Object.keys(CHANNEL_EFFECT) as AnimChannel[]).find((ch) => {
+    const addr = CHANNEL_EFFECT[ch]
+    return addr !== undefined && addr.type === effect.type && addr.param === paramKey
+  })
+  if (!channel) return null
+  return clip.effects.find((e) => e.type === effect.type)?.id === effect.id ? channel : null
+}
+
 function EffectParamRow({
   clip,
   effect,
@@ -527,6 +574,7 @@ function EffectParamRow({
   localT: number
 }) {
   const animated = isParamAnimated(effect, param.key)
+  const lane = animated ? paramChannel(clip, effect, param.key) : null
   const value = resolveParam(effect, param.key, localT)
   const kfs = paramKeyframes(effect, param.key)
   const onKf = animated && kfs.some((k) => Math.abs(k.t - localT) <= 0.05)
@@ -535,47 +583,55 @@ function EffectParamRow({
   const gotoT = (t: number) => useStore.getState().setUI({ playheadS: clip.startS + t })
 
   return (
-    <PropRow
-      data-testid={`channel-${param.key}`}
-      data-effect-id={effect.id}
-      label={param.label}
-      labelTitle={`${param.label} (double-click to reset)`}
-      onLabelDoubleClick={() => setEffectParamValue(clip.id, effect.id, param.key, param.default)}
-      onReset={() => setEffectParamValue(clip.id, effect.id, param.key, param.default)}
-      resetLabel={`Reset ${param.label}`}
-      lead={
-        <IconButton
-          label={animated ? `Disable ${param.label} keyframes` : `Animate ${param.label}`}
-          active={animated}
-          size="compact"
-          data-testid={`stopwatch-${param.key}`}
-          onClick={() => toggleEffectParamKeyframes(clip.id, effect.id, param.key)}
-        >
-          <Clock size={13} strokeWidth={1.75} aria-hidden />
-        </IconButton>
-      }
-    >
-      {animated && (
-        <KeyframeNav
-          kfs={kfs}
-          localT={localT}
-          onGoto={gotoT}
-          onKf={onKf}
-          onToggleKf={() =>
-            onKf
-              ? removeEffectKeyframeAtPlayhead(clip.id, effect.id, param.key)
-              : addEffectKeyframeAtPlayhead(clip.id, effect.id, param.key)
-          }
+    <div className="flex flex-col gap-1">
+      <PropRow
+        data-testid={`channel-${param.key}`}
+        data-effect-id={effect.id}
+        label={param.label}
+        labelTitle={`${param.label} (double-click to reset)`}
+        onLabelDoubleClick={() => setEffectParamValue(clip.id, effect.id, param.key, param.default)}
+        onReset={() => setEffectParamValue(clip.id, effect.id, param.key, param.default)}
+        resetLabel={`Reset ${param.label}`}
+        lead={
+          <IconButton
+            label={animated ? `Disable ${param.label} keyframes` : `Animate ${param.label}`}
+            active={animated}
+            size="compact"
+            data-testid={`stopwatch-${param.key}`}
+            onClick={() => toggleEffectParamKeyframes(clip.id, effect.id, param.key)}
+          >
+            <Clock size={13} strokeWidth={1.75} aria-hidden />
+          </IconButton>
+        }
+      >
+        {animated && (
+          <KeyframeNav
+            kfs={kfs}
+            localT={localT}
+            onGoto={gotoT}
+            onKf={onKf}
+            onToggleKf={() =>
+              onKf
+                ? removeEffectKeyframeAtPlayhead(clip.id, effect.id, param.key)
+                : addEffectKeyframeAtPlayhead(clip.id, effect.id, param.key)
+            }
+          />
+        )}
+        <ScrubField
+          value={value}
+          spec={spec}
+          testId={`field-${param.key}`}
+          ariaLabel={param.label}
+          onCommit={(v) => setEffectParamValue(clip.id, effect.id, param.key, v)}
         />
+      </PropRow>
+      {lane && (
+        <>
+          <KeyframeTrack clip={clip} channel={lane} />
+          <CurveEditor clip={clip} channel={lane} />
+        </>
       )}
-      <ScrubField
-        value={value}
-        spec={spec}
-        testId={`field-${param.key}`}
-        ariaLabel={param.label}
-        onCommit={(v) => setEffectParamValue(clip.id, effect.id, param.key, v)}
-      />
-    </PropRow>
+    </div>
   )
 }
 
@@ -906,13 +962,19 @@ export function EffectControls({
   afterStack?: ReactNode
 }) {
   // Ranked by reach-for frequency (David, 2026-07-19): effects stack, Speed
-  // (slot), Transitions, Zoom/Punch, Transform, then Opacity/Blend/Crop/Mask;
-  // the Keyframes editor closes the panel.
-  const hasAnimation = ANIM_CHANNELS.some((ch) => isChannelAnimated(clip, ch))
+  // (slot), Transitions, Zoom/Punch, Transform, then Opacity/Blend/Crop/Mask.
+  // MOTION IS HOISTED ABOVE THE STACK as of the keyframes pass, which reverses
+  // that ranking: his 2026-08-06 brief opens the panel on the motion desk, and
+  // the ranking was set when this block was a depth picker with one button.
+  // Everything else keeps its 2026-07-19 order. One edit moves it back.
+  //
   // Adjustment layers render ONLY effects/mask/opacity (resolve.ts builds the
   // op from just those) - transform, crop, blend and punch would be inert
   // document edits, so they are hidden with a hint instead.
   const isAdjustment = clip.adjustment === true
+  // The rail needs a real frame rate to snap to. The Inspector always passes the
+  // sequence's; the fallback matches the one it uses for its own playhead quantize.
+  const railFps = fps && fps > 0 ? fps : 30
   return (
     <div className="flex flex-col gap-5">
       {isAdjustment && (
@@ -920,99 +982,88 @@ export function EffectControls({
           Adjustment layer: its effects, mask and opacity grade everything below it.
         </p>
       )}
-      <EffectStack clip={clip} playheadS={playheadS} />
-      {afterStack && (
-        <>
-          <div className="h-px bg-border" />
-          {afterStack}
-        </>
-      )}
-      <div className="h-px bg-border" />
-      <section className="flex flex-col gap-2">
-        <SectionLabel>Transitions</SectionLabel>
-        <div className="flex flex-col gap-1">
-          <TransitionRow clip={clip} edge="in" testId="transition-in" />
-          <TransitionRow clip={clip} edge="out" testId="transition-out" />
-        </div>
-      </section>
-      <div className="h-px bg-border" />
       {!isAdjustment && (
-        <>
-          <div className="flex flex-col gap-1.5">
-            <PunchControl clipId={clip.id} />
-            {/* A zoom is nothing but scale keyframes - give it the same escape
-                hatch an effect card's X offers. Works for zooms from Apply, the
-                P key, and the context menu alike; the static scale is kept. */}
-            {isChannelAnimated(clip, 'scale') && (
+        <PunchControl
+          clipId={clip.id}
+          headerAction={
+            // A zoom is nothing but scale keyframes - give it the same escape
+            // hatch an effect card's X offers. Works for zooms from Apply, the
+            // P key, and the context menu alike; the static scale is kept.
+            isChannelAnimated(clip, 'scale') ? (
               <button
                 type="button"
                 data-testid="punch-remove"
                 title="Clears the Scale keyframes (the zoom included) - the clip keeps its static scale"
-                className="flex h-6 items-center gap-1 self-start rounded-field bg-bg-input px-2 text-ui-sm text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated hover:text-text-primary"
+                className="flex h-5 items-center gap-1 rounded-field bg-bg-input px-1.5 text-dense text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated hover:text-text-primary"
                 onClick={() => removeZoom(clip.id)}
               >
-                <X size={12} strokeWidth={1.75} aria-hidden />
-                Remove scale animation
+                <X size={11} strokeWidth={1.75} aria-hidden />
+                Clear motion
               </button>
-            )}
-          </div>
-          {/* Keyframes ride DIRECTLY under the zoom that creates most of them
-              (David, 2026-07-18 - they were a cramped afterthought at the very
-              bottom): make a zoom, retime its diamonds without scrolling. */}
-          {hasAnimation && (
+            ) : undefined
+          }
+        />
+      )}
+      {/* ONE rail for the whole body: the effect stack, Transform, Opacity and
+          Crop all hang off the same ruler, so a lane under an effect param and a
+          lane under Zoom can never disagree about where a moment is. The ruler
+          lands directly under the Motion block, which is the order his brief
+          describes: the chips and the move buttons, then the clip's own time. */}
+      <MotionRail clip={clip} fps={railFps}>
+        <div className="flex flex-col gap-5">
+          <EffectStack clip={clip} playheadS={playheadS} />
+          {afterStack && (
             <>
               <div className="h-px bg-border" />
-              <section className="flex flex-col gap-2" data-testid="keyframes-section">
-                <SectionLabel>Keyframes</SectionLabel>
-                <KeyframeLane clip={clip} playheadS={playheadS} width={240} fps={fps} />
-              </section>
+              {afterStack}
             </>
           )}
           <div className="h-px bg-border" />
-          <Section
-            title="Transform"
-            channels={['posX', 'posY', 'scale', 'rotation', 'anchorX', 'anchorY']}
-            clip={clip}
-            playheadS={playheadS}
-          />
-          <div className="h-px bg-border" />
-        </>
-      )}
-      <Section title="Opacity" channels={['opacity']} clip={clip} playheadS={playheadS} />
-      {!isAdjustment && (
-        <>
-          <PropRow label="Blend">
-            <select
-              data-testid="blend-mode"
-              aria-label="Blend mode"
-              value={clip.blendMode ?? 'normal'}
-              onChange={(e) => setClipBlendMode(clip.id, e.target.value as BlendMode)}
-              className="h-6 w-[132px] cursor-default rounded-field bg-bg-input px-1.5 text-ui-sm text-text-primary"
-            >
-              {BLEND_MODES.map((m) => (
-                <option key={m} value={m}>
-                  {BLEND_LABELS[m]}
-                </option>
-              ))}
-            </select>
-          </PropRow>
-          <div className="h-px bg-border" />
-          <Section title="Crop" channels={['cropT', 'cropR', 'cropB', 'cropL']} clip={clip} playheadS={playheadS} />
-        </>
-      )}
-      <div className="h-px bg-border" />
-      <MaskSection clip={clip} />
-      {/* Adjustment layers have no Zoom/Punch block, so their keyframe lane
-          keeps its old home down here; regular clips render it up top. */}
-      {hasAnimation && isAdjustment && (
-        <>
-          <div className="h-px bg-border" />
-          <section className="flex flex-col gap-2" data-testid="keyframes-section">
-            <SectionLabel>Keyframes</SectionLabel>
-            <KeyframeLane clip={clip} playheadS={playheadS} width={240} fps={fps} />
+          <section className="flex flex-col gap-2">
+            <SectionLabel>Transitions</SectionLabel>
+            <div className="flex flex-col gap-1">
+              <TransitionRow clip={clip} edge="in" testId="transition-in" />
+              <TransitionRow clip={clip} edge="out" testId="transition-out" />
+            </div>
           </section>
-        </>
-      )}
+          <div className="h-px bg-border" />
+          {!isAdjustment && (
+            <>
+              <Section
+                title="Transform"
+                channels={['posX', 'posY', 'scale', 'rotation', 'anchorX', 'anchorY']}
+                clip={clip}
+                playheadS={playheadS}
+              />
+              <div className="h-px bg-border" />
+            </>
+          )}
+          <Section title="Opacity" channels={['opacity']} clip={clip} playheadS={playheadS} />
+          {!isAdjustment && (
+            <>
+              <PropRow label="Blend">
+                <select
+                  data-testid="blend-mode"
+                  aria-label="Blend mode"
+                  value={clip.blendMode ?? 'normal'}
+                  onChange={(e) => setClipBlendMode(clip.id, e.target.value as BlendMode)}
+                  className="h-6 w-[132px] cursor-default rounded-field bg-bg-input px-1.5 text-ui-sm text-text-primary"
+                >
+                  {BLEND_MODES.map((m) => (
+                    <option key={m} value={m}>
+                      {BLEND_LABELS[m]}
+                    </option>
+                  ))}
+                </select>
+              </PropRow>
+              <div className="h-px bg-border" />
+              <Section title="Crop" channels={['cropT', 'cropR', 'cropB', 'cropL']} clip={clip} playheadS={playheadS} />
+            </>
+          )}
+          <div className="h-px bg-border" />
+          <MaskSection clip={clip} />
+        </div>
+      </MotionRail>
     </div>
   )
 }

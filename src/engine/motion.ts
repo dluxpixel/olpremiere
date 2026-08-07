@@ -1,15 +1,42 @@
-// The Jettism Motion Pack's pure keyframe builders: punch-in zoom, impact hit,
-// speed ramp. Everything writes ordinary clip keyframe channels (or splits +
-// Clip.speed), so it renders through the same resolve/evalChannel path in
-// preview and export, stays fully hand-editable afterwards, and merges with
-// whatever keyframes the clip already carries. Pure: no store, no DOM.
+// The Jettism Motion Pack's pure keyframe builders: punch-in zoom, punch-out
+// fall, impact hit, speed ramp. Everything writes ordinary clip keyframe
+// channels (or splits + Clip.speed), so it renders through the same
+// resolve/evalChannel path in preview and export, stays fully hand-editable
+// afterwards, and merges with whatever keyframes the clip already carries.
+// Pure: no store, no DOM.
 
-import { channelKeyframes, resolveChannel, withChannelKeyframes } from './effects/channels'
+import { channelBase, channelKeyframes, resolveChannel, withChannelKeyframes } from './effects/channels'
 import { upsertKeyframe } from './keyframes'
 import { clipEndS, recomputeDuration, setClipSpeed, splitClip } from './timeline'
-import type { AnimChannel, Clip, EffectInstance, Id, Keyframe, Sequence } from './types'
+import type { AnimChannel, Clip, Curve, EffectInstance, Id, Keyframe, Sequence } from './types'
 
 const clamp = (x: number, lo: number, hi: number): number => (x < lo ? lo : x > hi ? hi : x)
+
+/**
+ * The one curve table, cubic-bezier in CSS `cubic-bezier(x1, y1, x2, y2)` order.
+ *
+ * The builders below and the curve chips in the Inspector both read THIS, so the
+ * move a one-click preset writes and the chip claiming to be that move can never
+ * drift apart: a second table would go stale the first time one of these six
+ * numbers is tuned.
+ */
+export const MOTION_CURVES = {
+  /** Arriving with emphasis: the punch. */
+  snapIn: [0.16, 1, 0.3, 1] as Curve,
+  /** Softer arrival: the reveal. */
+  settle: [0.23, 1, 0.32, 1] as Curve,
+  /** Continuous at both ends: the slow push. */
+  smooth: [0.37, 0, 0.63, 1] as Curve,
+  /** Leaving: the whip out. */
+  windUp: [0.5, 0, 1, 1] as Curve,
+  /** Travels past the target and comes back. y over 1 on purpose. */
+  overshoot: [0.34, 1.56, 0.64, 1] as Curve,
+  /** The generic safe default: After Effects' 33.33 percent on both sides. */
+  easyEase: [0.33, 0, 0.67, 1] as Curve,
+}
+
+/** A key of MOTION_CURVES: what the UI stores and the curve chips address. */
+export type MotionCurveName = keyof typeof MOTION_CURVES
 
 /**
  * Merge a run of keyframes into one channel of a clip (immutably).
@@ -29,6 +56,23 @@ function withKeyframes(clip: Clip, channel: AnimChannel, kfs: Keyframe[]): Clip 
 
 const durS = (clip: Clip): number => (clip.outS - clip.inS) / (Math.abs(clip.speed) || 1)
 
+/**
+ * One knot of a zoom envelope: a moment, the ratio `r` of the resting scale
+ * there, and the easing of the segment LEAVING it. `curve` wins over `ease`
+ * when both are present; the named ease stays as the shape the segment falls
+ * back to if the curve is ever cleared in the editor.
+ */
+interface Knot {
+  t: number
+  r: number
+  ease: Keyframe['ease']
+  curve?: Curve
+}
+
+/** A knot as a real keyframe, carrying `curve` only when it has one. */
+const knotKeyframe = (k: Knot, value: number): Keyframe =>
+  k.curve ? { t: k.t, value, ease: k.ease, curve: k.curve } : { t: k.t, value, ease: k.ease }
+
 export interface PunchInOptions {
   /** Sequence time of the punch. */
   atS: number
@@ -36,6 +80,14 @@ export interface PunchInOptions {
   riseFrames?: number
   holdS?: number
   returnS?: number
+  /**
+   * Arrive at the target and STAY there for the rest of the clip: the envelope
+   * stops at the top of the rise and the hold/return knots are never written.
+   * This is what a punch in actually means to him, and it is also what makes
+   * "punch out at any time in the clip" a thing he can ask for, because the
+   * frame is no longer scheduled to slide back on its own.
+   */
+  holdToEnd?: boolean
   /**
    * Zoom toward this point (sequence px, frame coordinates). The position
    * shifts so the focal point holds still while the frame scales around it.
@@ -47,9 +99,10 @@ export interface PunchInOptions {
 }
 
 /**
- * The workhorse zoom: hold, fast-in/soft-out rise to the target over
- * riseFrames, hold, ease back. Scales stack relative to whatever the scale
- * channel already evaluates to at that moment.
+ * The workhorse zoom: rise to the target over riseFrames on the snap curve,
+ * then either hold to the end of the clip (holdToEnd) or hold and ease back.
+ * Scales stack relative to whatever the scale channel already evaluates to at
+ * that moment.
  */
 export function punchInClip(clip: Clip, fps: number, options: PunchInOptions): Clip {
   const target = options.targetScale ?? 1.2
@@ -60,16 +113,24 @@ export function punchInClip(clip: Clip, fps: number, options: PunchInOptions): C
   const base = resolveChannel(clip, 'scale', at)
   // Envelope shape shared by scale and (when focal) position: ratio r of the
   // resting scale at each knot.
-  const knots: { t: number; r: number; ease: Keyframe['ease'] }[] = [
-    { t: at, r: 1, ease: 'easeOut' }, // rise segment: fast in, soft landing
+  const knots: Knot[] = [
+    // Rise segment: fast in, soft landing. The snap curve is the shape, easeOut
+    // is only the named fallback under it.
+    { t: at, r: 1, ease: 'easeOut', curve: MOTION_CURVES.snapIn },
     { t: at + riseS, r: target, ease: 'linear' },
-    { t: at + riseS + holdS, r: target, ease: 'easeInOut' },
-    { t: at + riseS + holdS + returnS, r: 1, ease: 'linear' },
   ]
+  // The hold-and-return legs survive for punchOnBeats, where a ladder of
+  // sixteen non-returning punches would climb to nonsense.
+  if (!options.holdToEnd) {
+    knots.push(
+      { t: at + riseS + holdS, r: target, ease: 'easeInOut' },
+      { t: at + riseS + holdS + returnS, r: 1, ease: 'linear' },
+    )
+  }
   let next = withKeyframes(
     clip,
     'scale',
-    knots.map((k) => ({ t: k.t, value: base * k.r, ease: k.ease })),
+    knots.map((k) => knotKeyframe(k, base * k.r)),
   )
   if (options.focal && options.seqWidth && options.seqHeight) {
     // Keep the focal point still: a point f px from center lands at f*r after
@@ -78,8 +139,55 @@ export function punchInClip(clip: Clip, fps: number, options: PunchInOptions): C
     const fy = options.focal.y - options.seqHeight / 2
     const xBase = resolveChannel(clip, 'posX', at)
     const yBase = resolveChannel(clip, 'posY', at)
-    next = withKeyframes(next, 'posX', knots.map((k) => ({ t: k.t, value: xBase - fx * (k.r - 1), ease: k.ease })))
-    next = withKeyframes(next, 'posY', knots.map((k) => ({ t: k.t, value: yBase - fy * (k.r - 1), ease: k.ease })))
+    next = withKeyframes(next, 'posX', knots.map((k) => knotKeyframe(k, xBase - fx * (k.r - 1))))
+    next = withKeyframes(next, 'posY', knots.map((k) => knotKeyframe(k, yBase - fy * (k.r - 1))))
+  }
+  return next
+}
+
+export interface PunchOutOptions {
+  /** Sequence time the fall starts. */
+  atS: number
+  /** Frames the fall takes. Same 200ms shape as the rise it undoes. */
+  riseFrames?: number
+  /** Fall away from this point, the mirror of the punch in's focal. */
+  focal?: { x: number; y: number }
+  seqWidth?: number
+  seqHeight?: number
+}
+
+/**
+ * The other half of the verb: fall from wherever the scale currently sits back
+ * to the clip's own base over riseFrames on the snap curve, and hold there.
+ *
+ * The landing is `channelBase`, not the value at some earlier keyframe, because
+ * base is the framing the clip is DEFINED to have. Anything else drifts a little
+ * further from it on every punch in and out, and the drift only shows up on
+ * export. Position lands on its base for the same reason, so a focal punch in
+ * followed by a punch out ends exactly where the clip started rather than a few
+ * pixels off centre.
+ */
+export function punchOutClip(clip: Clip, fps: number, options: PunchOutOptions): Clip {
+  const fallS = (options.riseFrames ?? 5) / (fps || 30)
+  const at = clamp(options.atS - clip.startS, 0, Math.max(0, durS(clip) - fallS))
+  const base = channelBase(clip, 'scale')
+  const from = resolveChannel(clip, 'scale', at)
+  const knots: Knot[] = [
+    { t: at, r: base !== 0 ? from / base : 1, ease: 'easeOut', curve: MOTION_CURVES.snapIn },
+    { t: at + fallS, r: 1, ease: 'linear' },
+  ]
+  let next = withKeyframes(
+    clip,
+    'scale',
+    knots.map((k) => knotKeyframe(k, base * k.r)),
+  )
+  if (options.focal && options.seqWidth && options.seqHeight) {
+    const fx = options.focal.x - options.seqWidth / 2
+    const fy = options.focal.y - options.seqHeight / 2
+    const xBase = channelBase(clip, 'posX')
+    const yBase = channelBase(clip, 'posY')
+    next = withKeyframes(next, 'posX', knots.map((k) => knotKeyframe(k, xBase - fx * (k.r - 1))))
+    next = withKeyframes(next, 'posY', knots.map((k) => knotKeyframe(k, yBase - fy * (k.r - 1))))
   }
   return next
 }
@@ -108,7 +216,7 @@ export function impactClip(clip: Clip, fps: number, options: ImpactOptions): Cli
   const t2 = at + winS / 2
 
   const pulse = (baseValue: number, hitValue: number): Keyframe[] => [
-    { t: t1 - f3, value: baseValue, ease: 'easeOut' },
+    { t: t1 - f3, value: baseValue, ease: 'easeOut', curve: MOTION_CURVES.snapIn },
     { t: t1, value: hitValue, ease: 'linear' },
     { t: t2, value: hitValue, ease: 'easeIn' },
     { t: t2 + f3, value: baseValue, ease: 'linear' },
@@ -172,7 +280,10 @@ export function whipClips(
       strength: {
         value: 0,
         keyframes: [
-          { t: Math.max(0, durS(a) - f), value: 0, ease: 'easeIn' },
+          // Leaving: windUp on the outgoing half, settle on the incoming one.
+          // The pair is deliberately asymmetric, which is what makes a whip read
+          // as one move across the cut rather than two mirrored ramps.
+          { t: Math.max(0, durS(a) - f), value: 0, ease: 'easeIn', curve: MOTION_CURVES.windUp },
           { t: durS(a), value: max, ease: 'linear' },
         ],
       },
@@ -187,7 +298,7 @@ export function whipClips(
       strength: {
         value: 0,
         keyframes: [
-          { t: 0, value: max, ease: 'easeOut' },
+          { t: 0, value: max, ease: 'easeOut', curve: MOTION_CURVES.settle },
           { t: Math.min(durS(b), f), value: 0, ease: 'linear' },
         ],
       },

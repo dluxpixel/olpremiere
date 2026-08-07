@@ -10,6 +10,7 @@ import { useRecorder } from './state/voiceRecorder'
 import { Timeline } from './components/Timeline'
 import { TopBar } from './components/TopBar'
 import { TranscribeStatus } from './components/TranscribeStatus'
+import { MOMENT_EPS, clipKeyframeTimes } from './engine/keyframes'
 import { addMarker, removeMarkerNear } from './engine/timeline'
 import { nextEditPoint, prevEditPoint } from './engine/editPoints'
 import { quantizeToFrame } from './engine/timecode'
@@ -28,10 +29,16 @@ import {
 } from './state/clipboard'
 import { copyClipAttributes, pasteClipAttributes } from './state/attributes'
 import { performHistoryStep } from './collab/collabControl'
-import { deleteSelected, splitAtPlayhead, toggleClipEnabled, topAndTail } from './state/clipEdits'
+import {
+  deleteSelected,
+  splitAtPlayhead,
+  toggleClipEnabled,
+  toggleMotionAtPlayhead,
+  topAndTail,
+} from './state/clipEdits'
 import { pausePlayback, shuttle, toggleLoop, togglePlay } from './state/playbackControl'
 import { clearInOut, gotoIn, gotoOut, markIn, markOut } from './state/workAreaActions'
-import { punchInAtPlayhead } from './state/motionActions'
+import { punchInAtPlayhead, punchOutAtPlayhead } from './state/motionActions'
 import { addTitleClip } from './state/titleActions'
 import { saveNow } from './state/persistence'
 import { exportProjectToFile, openProjectFilePicker } from './state/projectFile'
@@ -51,6 +58,40 @@ function stepFrames(frames: number) {
   const seq = activeSequence(s.project)
   const t = quantizeToFrame(s.ui.playheadS, seq.fps) + frames / seq.fps
   s.setUI({ playheadS: Math.min(Math.max(0, t), seq.durationS) })
+}
+
+/**
+ * [ and ]: park the playhead on the selected clip's previous / next keyframe.
+ *
+ * The unit is the MOMENT, which is exactly what clipKeyframeTimes hands the
+ * timeline diamonds and what D acts on. A punch animates scale and both
+ * position channels at one instant and that is ONE thing to the person looking
+ * at it, so stepping per channel would cost three presses to cross a single
+ * punch and would land the playhead on the same frame twice over. Landing where
+ * D acts is what makes the pair a loop: jump, look, keyframe it or clear it,
+ * without the mouse ever leaving the picture.
+ */
+function stepKeyframe(dir: -1 | 1) {
+  const s = useStore.getState()
+  const id = s.ui.selection[0]
+  if (!id) return
+  const clip = activeSequence(s.project)
+    .tracks.flatMap((t) => t.clips)
+    .find((c) => c.id === id)
+  if (!clip) return
+  // Keyframe times are LOCAL to the clip, the way the lanes and the marks read
+  // them; the playhead is sequence time.
+  const localT = s.ui.playheadS - clip.startS
+  const times = clipKeyframeTimes(clip)
+  // The moment already under the playhead must not catch the jump, or ] would
+  // never leave it. MOMENT_EPS is the same "same instant" test the engine uses.
+  const to =
+    dir < 0
+      ? times.filter((t) => t < localT - MOMENT_EPS).pop()
+      : times.find((t) => t > localT + MOMENT_EPS)
+  if (to === undefined) return
+  pausePlayback()
+  s.setUI({ playheadS: clip.startS + to })
 }
 
 /**
@@ -163,6 +204,29 @@ function buildAppBindings(): Binding[] {
           if (id) punchInAtPlayhead(id)
         },
       },
+      // The other half of the verb, on the key beside it: the frame falls back
+      // to the clip's own base framing and HOLDS there. "Punch out at any time
+      // in the clip" was not something the app could express before.
+      {
+        combo: 'shift+p',
+        description: 'Punch out at playhead (selected clip)',
+        domain: 'trim',
+        run: () => {
+          const id = store().ui.selection[0]
+          if (id) punchOutAtPlayhead(id)
+        },
+      },
+      // The gizmo badge on a key: off a moment it snapshots the framing here,
+      // on a moment it takes that moment out again.
+      {
+        combo: 'd',
+        description: 'Keyframe the framing here, or remove it',
+        domain: 'trim',
+        run: () => {
+          const id = store().ui.selection[0]
+          if (id) toggleMotionAtPlayhead(id)
+        },
+      },
       { combo: 'v', description: 'Selection tool', domain: 'tools', run: () => store().setUI({ tool: 'select' }) },
       // C cuts the clip(s) at the playhead right away (Premiere muscle memory). The razor
       // TOOL (click-to-cut anywhere) moved to B (Blade) so click-cutting is still available.
@@ -215,6 +279,12 @@ function buildAppBindings(): Binding[] {
         pausePlayback()
         store().setUI({ playheadS: nextEditPoint(activeSequence(store().project), store().ui.playheadS) })
       } },
+      // [ / ] are , / . one level in: the same jump, over the selected clip's
+      // keyframes instead of the sequence's cuts. The steppers in KeyframeNav
+      // do this already but had no keys, so every jump was small-target mouse
+      // work on a lane where a 5-frame punch is two pixels wide.
+      { combo: '[', description: 'Jump to previous keyframe', domain: 'transport', run: () => stepKeyframe(-1) },
+      { combo: ']', description: 'Jump to next keyframe', domain: 'transport', run: () => stepKeyframe(1) },
       // Top-and-tail: ripple the head/tail of the clip under the playhead to it.
       { combo: 'q', description: 'Trim clip head to playhead', domain: 'trim', run: () => topAndTail('in') },
       { combo: 'w', description: 'Trim clip tail to playhead', domain: 'trim', run: () => topAndTail('out') },

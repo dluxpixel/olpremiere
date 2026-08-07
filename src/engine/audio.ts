@@ -344,8 +344,9 @@ export function clipGainEnvelope(clip: Clip, fromS: number): GainPoint[] | null 
   // ramps LINEARLY IN AMPLITUDE (setValueAtTime/linearRampToValueAtTime and
   // the pure mixer's applyGainEnvelope agree, keeping all three mixers
   // byte-identical). Non-linear eases are approximated by subdividing their
-  // interval into 8 knots. Without keyframes this collapses to the old
-  // constant `g` and the envelope is byte-identical to before.
+  // interval into 8 knots, a bezier `curve` into 16. Without keyframes this
+  // collapses to the old constant `g` and the envelope is byte-identical to
+  // before.
   const volKfs = clip.keyframes?.volume
   const gAt =
     volKfs && volKfs.length > 0
@@ -381,8 +382,12 @@ export function clipGainEnvelope(clip: Clip, fromS: number): GainPoint[] | null 
         // every consumer ramps over <=1ms (perceptually a step, still
         // click-safe), matching how the video channels honor hold exactly.
         times.add(winStart + next.t - Math.min(0.001, span / 2))
-      } else if (volKfs[i].ease !== 'linear') {
-        for (let s = 1; s < 8; s++) times.add(winStart + volKfs[i].t + (span * s) / 8)
+      } else if (volKfs[i].curve || volKfs[i].ease !== 'linear') {
+        // A hand-shaped curve can overshoot its target and settle back inside
+        // one segment, which a named ease never does, so it gets twice the
+        // knots to stay within audible tolerance of what evalChannel draws.
+        const knots = volKfs[i].curve ? 16 : 8
+        for (let s = 1; s < knots; s++) times.add(winStart + volKfs[i].t + (span * s) / knots)
       }
     }
   }

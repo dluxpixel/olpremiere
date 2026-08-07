@@ -1,7 +1,9 @@
 // Keyframe-tab overhaul: selectable zoom depth applies a punch of that depth,
 // the easing explainer answers "what is Lin", and a multi-select shows the
-// align-to-same-spot box in the preview. (The applied-effects stack leads the
-// panel since the 2026-07-18 reorder; Keyframes sits last.)
+// align-to-same-spot box in the preview. (There is no standalone Keyframes
+// section any more: every animated property carries its own lane on the Motion
+// Rail, directly under the row that names it, and easing belongs to the SEGMENT
+// between two diamonds, so the explainer lives in the curve editor.)
 
 import { expect, test, type Page } from '@playwright/test'
 
@@ -58,6 +60,27 @@ async function scaleKfMax(page: Page): Promise<number> {
   })
 }
 
+/** Every Zoom keyframe's named ease, and whether a hand-shaped curve overrides it. */
+async function scaleKfEases(page: Page): Promise<{ ease: string; curve: boolean }[]> {
+  return page.evaluate(async () => {
+    const storeMod = '/src/state/store.ts'
+    const typesMod = '/src/engine/types.ts'
+    const chMod = '/src/engine/effects/channels.ts'
+    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+      useStore: { getState: () => { project: unknown } }
+    }
+    const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+      activeSequence: (p: unknown) => { tracks: { clips: { title?: unknown }[] }[] }
+    }
+    const { channelKeyframes } = (await import(/* @vite-ignore */ chMod)) as {
+      channelKeyframes: (clip: unknown, ch: string) => { ease: string; curve?: number[] }[]
+    }
+    const seq = activeSequence(useStore.getState().project)
+    const clip = seq.tracks.flatMap((t) => t.clips).find((c) => c.title)
+    return channelKeyframes(clip, 'scale').map((k) => ({ ease: k.ease, curve: k.curve !== undefined }))
+  })
+}
+
 test('selecting a zoom depth applies a punch of that depth', async ({ page }) => {
   await page.goto('/')
   const id = await addTitle(page)
@@ -69,21 +92,53 @@ test('selecting a zoom depth applies a punch of that depth', async ({ page }) =>
   await page.getByTestId('punch-apply').click()
   expect(await scaleKfMax(page)).toBeCloseTo(1.4, 2)
 
-  // The Keyframes editor is present (last section since the 2026-07-18 reorder).
-  await expect(page.getByTestId('keyframes-section')).toBeVisible()
+  // And the punch is visible and editable as keyframes: the Zoom lane under the
+  // Scale row carries the diamonds it just wrote. That is where the standalone
+  // Keyframes section went - one lane per animated property, under the row that
+  // names it, instead of one section listing every channel.
+  const zoomLane = page.locator('[data-testid="keyframe-track"][data-channel="scale"]')
+  await expect(zoomLane).toBeVisible()
+  await expect(zoomLane.getByTestId('keyframe').first()).toBeVisible()
 })
 
 test('the easing explainer answers "what is Lin"', async ({ page }) => {
   await page.goto('/')
   const id = await addTitle(page)
+
+  // Punch in at 2s and out at 4s: four Zoom diamonds, with a long hold between
+  // the second and the third that is wide enough to click without zooming the
+  // rail first. A 5-frame rise on its own is two pixels on a fitted 5s clip.
   await setUI(page, { selection: [id], playheadS: 2 })
   await page.getByTestId('punch-apply').click()
+  await setUI(page, { selection: [id], playheadS: 4 })
+  await page.getByTestId('punch-out').click()
 
-  // Select the first keyframe diamond → the explainer text appears. force: the
-  // 12px diamonds have a hover-scale transition that trips Playwright's
-  // stability check when several sit close together (real clicks are fine).
-  await page.getByTestId('keyframe').first().click({ force: true })
-  await expect(page.getByTestId('keyframe-lane')).toContainText(/Ease|Linear|Hold/)
+  const diamonds = page.locator('[data-testid="keyframe-track"][data-channel="scale"]').getByTestId('keyframe')
+  await expect(diamonds).toHaveCount(4)
+
+  // Easing belongs to the SEGMENT between two diamonds now, never to a diamond,
+  // so the segment is what he clicks. Hover FIRST, then read the boxes: hover
+  // runs the actionability and hit-target checks raw page.mouse.* skips, and it
+  // can scroll the lane, which would stale a midpoint measured before it.
+  await diamonds.nth(1).hover()
+  const a = await diamonds.nth(1).boundingBox()
+  const b = await diamonds.nth(2).boundingBox()
+  if (!a || !b) throw new Error('no geometry')
+  await page.mouse.click((a.x + a.width / 2 + b.x + b.width / 2) / 2, a.y + a.height / 2)
+
+  const editor = page.getByTestId('curve-editor')
+  await expect(editor).toBeVisible()
+  await expect(editor).toContainText(/Ease|Linear|Hold/)
+  // ...and it answers in plain language, which is what "what is Lin" asks. The
+  // hold he just clicked runs Lin, so the explainer says what Lin does.
+  await expect(page.getByTestId('ease-explainer')).toHaveText(/^Linear: constant speed/)
+
+  // Every named shape is still reachable from here, Hold included. Hold is a
+  // step, no bezier can express a step, so the six curve chips cannot stand in
+  // for it: losing this row would lose the shape outright.
+  await page.getByTestId('ease-hold').click()
+  await expect(page.getByTestId('ease-explainer')).toHaveText(/^Hold: freeze on this value/)
+  expect((await scaleKfEases(page))[1]).toEqual({ ease: 'hold', curve: false })
 })
 
 test('multi-select shows the align-to-same-spot box in the preview', async ({ page }) => {
@@ -173,7 +228,7 @@ test('dragging a keyframe on the clip retimes it, in one undo step', async ({ pa
   await expect.poll(timesOf).toEqual(before)
 })
 
-test('auto-keyframe turns a monitor drag into an animation', async ({ page }) => {
+test('arming from the gizmo badge turns a monitor drag into an animation', async ({ page }) => {
   await page.goto('/')
   await page.getByTestId('add-title').click()
   await page.getByTestId('clip').click()
@@ -192,10 +247,9 @@ test('auto-keyframe turns a monitor drag into an animation', async ({ page }) =>
       return clip.keyframes?.posX?.length ?? 0
     })
 
-  // The toggle starts off, and a drag at the head is a plain move either way,
-  // so park the playhead inside the clip first.
-  await expect(page.getByTestId('auto-keyframe-toggle')).toBeVisible()
-  await page.getByTestId('auto-keyframe-toggle').click()
+  // Park the playhead inside the clip FIRST: arming keyframes the framing where
+  // the playhead is, and a lone keyframe at the head of the clip is just a moved
+  // base, so a drag there is a plain move either way.
   await page.evaluate(async () => {
     const storeMod = '/src/state/store.ts'
     const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
@@ -203,6 +257,11 @@ test('auto-keyframe turns a monitor drag into an animation', async ({ page }) =>
     }
     useStore.getState().setUI({ playheadS: 2 })
   })
+
+  // The badge on the picture is the arming control; there is no global toggle in
+  // the transport bar any more, and armed is the clip's own fact.
+  await expect(page.getByTestId('gizmo-motion-badge')).toBeVisible()
+  await page.getByTestId('gizmo-motion-badge').click()
 
   const gizmo = page.getByTestId('gizmo-body')
   await expect(gizmo).toBeVisible()
@@ -219,4 +278,24 @@ test('auto-keyframe turns a monitor drag into an animation', async ({ page }) =>
   // Two keyframes: where it was, and where the playhead is.
   await expect.poll(posXCount).toBe(2)
   await expect(page.getByTestId('clip-keyframe')).toHaveCount(2)
+
+  // And the one the drag landed carries the snap curve, not linear. Linear is
+  // the opt-out here, which is most of the visible quality gap against the phone
+  // editors: a linear move reads as machinery, a curved one reads as an edit.
+  const lastCurve = await page.evaluate(async () => {
+    const storeMod = '/src/state/store.ts'
+    const typesMod = '/src/engine/types.ts'
+    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+      useStore: { getState: () => { project: unknown } }
+    }
+    const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+      activeSequence: (p: unknown) => {
+        tracks: { clips: { keyframes?: { posX?: { curve?: number[] }[] } }[] }[]
+      }
+    }
+    const clip = activeSequence(useStore.getState().project).tracks.flatMap((t) => t.clips)[0]
+    const kfs = clip.keyframes?.posX ?? []
+    return kfs[kfs.length - 1]?.curve ?? null
+  })
+  expect(lastCurve).toEqual([0.16, 1, 0.3, 1])
 })

@@ -94,7 +94,15 @@ import {
   splitAtPlayhead,
   topAndTail,
 } from '../state/clipEdits'
-import { impactAtPlayhead, punchInAtPlayhead, punchOnBeats, rampWorkArea, whipToNext } from '../state/motionActions'
+import {
+  cutPunchAtPlayhead,
+  impactAtPlayhead,
+  punchInAtPlayhead,
+  punchOnBeats,
+  punchOutAtPlayhead,
+  rampWorkArea,
+  whipToNext,
+} from '../state/motionActions'
 import { autoCaptionEveryClip, autoCaptionFromClip } from '../state/transcribeActions'
 import { deleteTrack, setTrackAudioRole, setTrackAutoLevel, setTrackPan, setTrackVolumeDb } from '../state/trackEdits'
 import {
@@ -701,6 +709,21 @@ const ClipView = memo(function ClipView({
   // to px at the current zoom.
   // Depends on exactly the two fields keyframes can live in; taking the whole
   // clip would recompute on every move, trim and rename.
+  //
+  // ONE MARK PER MOMENT, and that survives the lanes: a lasso in the motion
+  // rail can now slide one channel off a moment two others still sit on, and
+  // when it does clipKeyframeTimes returns two times where it returned one, so
+  // the strip draws two diamonds. The read stays true because it was never a
+  // per-channel read. What the mark could NOT keep saying is that a drag
+  // retimes "this keyframe": moveKeyframeMoment takes every channel at that
+  // instant with it, which was invisible while every channel shared every
+  // moment and is a different edit now that they need not. The title says so.
+  //
+  // Residual, deliberately not papered over here: two moments closer together
+  // than a diamond is wide (one frame is ~2px at the default 60px/s) overlap,
+  // and the later one takes the pointer. Zooming the strip in separates them,
+  // and the motion rail is the surface built to zoom; adding a merge here would
+  // mean a drag that silently retimed one of the two it stands for.
   const { keyframes: clipKfs, effects: clipFx } = clip
   const keyframeTimes = useMemo(
     () => clipKeyframeTimes({ keyframes: clipKfs, effects: clipFx }),
@@ -898,7 +921,7 @@ const ClipView = memo(function ClipView({
               <span
                 key={i}
                 data-testid="clip-keyframe"
-                title="Drag to retime this keyframe"
+                title="Drag to retime every keyframe at this moment"
                 className={`absolute bottom-[3px] h-[7px] w-[7px] -translate-x-1/2 rotate-45 border border-black/50 ${
                   kfPreview?.fromT === t ? 'bg-accent' : 'bg-white/90'
                 } ${interactive && !locked ? 'cursor-ew-resize' : 'pointer-events-none'}`}
@@ -1677,6 +1700,17 @@ export function Timeline({ height }: { height: number }) {
             {
               label: 'Motion',
               submenu: [
+                // The other two thirds of the punch verb, on the path he
+                // already right-clicks for Punch in. Punch out falls back to
+                // the clip's base framing and holds; Cut punch splits here and
+                // simply starts the right half bigger, with no animation at all.
+                {
+                  label: 'Punch out at playhead',
+                  shortcut: 'Shift+P',
+                  disabled: !playheadInside,
+                  onClick: () => punchOutAtPlayhead(clip.id),
+                },
+                { label: 'Cut punch at playhead', disabled: !playheadInside, onClick: () => cutPunchAtPlayhead(clip.id) },
                 { label: 'Impact hit at playhead', disabled: !playheadInside, onClick: () => impactAtPlayhead(clip.id) },
                 { label: 'Whip to next clip', disabled: !nextTouches, onClick: () => whipToNext(clip.id) },
                 ...[2, 3, 0.5].map((f, i) => ({

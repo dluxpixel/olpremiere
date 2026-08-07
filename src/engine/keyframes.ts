@@ -7,7 +7,7 @@
 // which is what lets effects/registry.ts depend on it. Channel resolution
 // (which needs both) lives in effects/channels.ts.
 
-import type { Keyframe } from './types'
+import type { Curve, Keyframe } from './types'
 
 export type Easing = Keyframe['ease']
 
@@ -24,13 +24,87 @@ export function ease(kind: Easing, p: number): number {
       return 1 - (1 - x) * (1 - x)
     case 'easeInOut':
       return x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2
+    // Nothing sanitizes `ease` on load, so an unknown name stored by a newer
+    // build reaches this switch, falls off the end and returns undefined, which
+    // NaNs the transform and renders a black frame. Fall back to linear.
+    default:
+      return x
   }
+}
+
+/** One axis of a cubic bezier from (0,0) to (1,1) with handles a1 and a2. */
+function bezierAxis(t: number, a1: number, a2: number): number {
+  const c = 3 * a1
+  const b = 3 * a2 - 6 * a1
+  const a = 1 - 3 * a2 + 3 * a1
+  return ((a * t + b) * t + c) * t
+}
+
+/** d/dt of bezierAxis, the slope Newton-Raphson steps along. */
+function bezierSlope(t: number, a1: number, a2: number): number {
+  const c = 3 * a1
+  const b = 3 * a2 - 6 * a1
+  const a = 1 - 3 * a2 + 3 * a1
+  return (3 * a * t + 2 * b) * t + c
+}
+
+/** Convergence epsilon for the bezier solver, on x and on the slope alike. */
+const BEZIER_EPS = 1e-6
+
+/**
+ * Map normalized progress p∈[0,1] → eased value through a cubic bezier given in
+ * CSS `cubic-bezier(x1, y1, x2, y2)` order.
+ *
+ * x1 and x2 are clamped into 0..1, which is what keeps x(t) monotonic: time has
+ * to stay a function of time or a segment plays backwards in the middle. y1 and
+ * y2 are deliberately left alone, so a curve may travel past its target and
+ * settle back. That overshoot is the whole point of a snap, and clamping y here
+ * would quietly delete it.
+ *
+ * Solves t from x by Newton-Raphson, falling back to bisection when the slope
+ * collapses (x1=1, x2=0 is flat at t=0.5 and Newton cannot move off it).
+ */
+export function bezierEase(curve: Curve, p: number): number {
+  const x = p < 0 ? 0 : p > 1 ? 1 : p
+  if (x === 0 || x === 1) return x
+  const x1 = curve[0] < 0 ? 0 : curve[0] > 1 ? 1 : curve[0]
+  const x2 = curve[2] < 0 ? 0 : curve[2] > 1 ? 1 : curve[2]
+  const y1 = curve[1]
+  const y2 = curve[3]
+
+  let t = x
+  let solved = false
+  for (let i = 0; i < 8; i++) {
+    const err = bezierAxis(t, x1, x2) - x
+    if (Math.abs(err) < BEZIER_EPS) {
+      solved = true
+      break
+    }
+    const d = bezierSlope(t, x1, x2)
+    if (Math.abs(d) < BEZIER_EPS) break
+    t -= err / d
+  }
+  if (!solved) {
+    let lo = 0
+    let hi = 1
+    t = x
+    for (let i = 0; i < 20; i++) {
+      const err = bezierAxis(t, x1, x2) - x
+      if (Math.abs(err) < BEZIER_EPS) break
+      if (err < 0) lo = t
+      else hi = t
+      t = (lo + hi) / 2
+    }
+  }
+  return bezierAxis(t, y1, y2)
 }
 
 /**
  * Value of a keyframe channel at time `t`. Empty list → `fallback`.
  * Before the first / after the last keyframe the value holds (clamps).
  * 'hold' easing steps: the value stays at the left keyframe until the right.
+ * A left keyframe carrying a `curve` runs that bezier instead of its named ease,
+ * so preview and export inherit hand-shaped curves through the one code path.
  */
 export function evalChannel(keyframes: readonly Keyframe[] | undefined, t: number, fallback: number): number {
   if (!keyframes || keyframes.length === 0) return fallback
@@ -52,7 +126,7 @@ export function evalChannel(keyframes: readonly Keyframe[] | undefined, t: numbe
   if (a.ease === 'hold') return a.value
   const span = b.t - a.t
   const p = span <= 0 ? 0 : (t - a.t) / span
-  return a.value + (b.value - a.value) * ease(a.ease, p)
+  return a.value + (b.value - a.value) * (a.curve ? bezierEase(a.curve, p) : ease(a.ease, p))
 }
 
 /** Insert or replace a keyframe at time t (exact-time replace), returning a new sorted array. */
@@ -191,4 +265,77 @@ export function moveKeyframeMoment<C extends KeyframeCarrier>(
     }) as C['effects']
   }
   return next
+}
+
+/**
+ * Put `curve` on the segment LEAVING the keyframe at `segmentStartT`, which is
+ * the keyframe that owns it. Passing undefined clears it back to the named ease.
+ * Returns the same ref when no keyframe sits at that moment, so a caller can
+ * skip the state write the way removeKeyframeNear already lets it.
+ */
+export function setSegmentCurve(
+  keyframes: readonly Keyframe[] | undefined,
+  segmentStartT: number,
+  curve: Curve | undefined,
+): Keyframe[] {
+  const list = keyframes ?? []
+  const idx = list.findIndex((k) => Math.abs(k.t - segmentStartT) <= MOMENT_EPS)
+  if (idx < 0) return list as Keyframe[]
+  return list.map((k, i) => {
+    if (i !== idx) return k
+    if (curve) return { ...k, curve }
+    if (k.curve === undefined) return k
+    return { t: k.t, value: k.value, ease: k.ease }
+  })
+}
+
+/**
+ * Stretch or squash a channel around `anchorT`: every keyframe keeps its
+ * spacing relative to the anchor, scaled by `factor`, clamped inside the clip.
+ *
+ * `factor` must be positive: a zero or negative one would fold the move through
+ * its anchor and reorder the keyframes, which is a different edit than the one
+ * the Alt-drag gesture means. Non-positive or a no-op factor returns the same
+ * ref. Clamping at either end can land two keyframes on the same moment, but it
+ * can never swap them, because the sort is stable.
+ */
+export function scaleKeyframeSpan(
+  keyframes: readonly Keyframe[] | undefined,
+  anchorT: number,
+  factor: number,
+  durationS: number,
+): Keyframe[] {
+  const list = keyframes ?? []
+  if (!Number.isFinite(factor) || factor <= 0 || factor === 1) return list as Keyframe[]
+  const dur = Math.max(0, durationS)
+  const next = list.map((k) => {
+    const t = anchorT + (k.t - anchorT) * factor
+    return { ...k, t: Math.min(Math.max(t, 0), dur) }
+  })
+  next.sort((a, b) => a.t - b.t)
+  return next
+}
+
+/**
+ * Copy the keyframe at `t` to `toT`, carrying its value, its ease AND its curve.
+ * That is what Alt-dragging a diamond means: the same shaped move, somewhere
+ * else. Same ref when there is no keyframe at `t`.
+ */
+export function duplicateKeyframeAt(
+  keyframes: readonly Keyframe[] | undefined,
+  t: number,
+  toT: number,
+): Keyframe[] {
+  const list = keyframes ?? []
+  let bestIdx = -1
+  let bestDist = Infinity
+  list.forEach((k, i) => {
+    const d = Math.abs(k.t - t)
+    if (d <= MOMENT_EPS && d < bestDist) {
+      bestDist = d
+      bestIdx = i
+    }
+  })
+  if (bestIdx === -1) return list as Keyframe[]
+  return upsertKeyframe(list, { ...list[bestIdx], t: toT })
 }

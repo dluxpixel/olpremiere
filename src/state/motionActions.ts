@@ -1,11 +1,12 @@
-// One-gesture Jettism motion: punch-in / impact at the playhead, whip across
-// a cut, speed-ramp the work area. Each action is ONE dispatch (one undo step)
-// over the pure builders in engine/motion.ts.
+// One-gesture Jettism motion: punch in / punch out / cut punch at the playhead,
+// impact, whip across a cut, speed-ramp the work area. Each action is ONE
+// dispatch (one undo step) over the pure builders in engine/motion.ts.
 
 import { getAudioBuffer } from '../engine/audio'
 import { detectOnsets } from '../engine/beats'
-import { impactClip, punchInClip, rampSpeedRange, whipClips } from '../engine/motion'
-import { clipEndS } from '../engine/timeline'
+import { withChannelValue } from '../engine/effects/channels'
+import { impactClip, punchInClip, punchOutClip, rampSpeedRange, whipClips } from '../engine/motion'
+import { clipEndS, splitGroup } from '../engine/timeline'
 import { activeSequence, newId, videoTracks, type Clip, type Sequence, type Track } from '../engine/types'
 import { hasWorkArea, workArea } from '../engine/workArea'
 import { updateActiveSequence, useStore } from './store'
@@ -38,28 +39,145 @@ const mapOne = (label: string, clipId: string, fn: (clip: Clip, seq: Sequence) =
     ),
   }))
 
+/** True when the playhead sits inside this clip, which every punch needs. */
+function insideClip(clip: Clip, atS: number): boolean {
+  return atS > clip.startS && atS < clipEndS(clip)
+}
+
+/**
+ * The point every punch converges on, in sequence pixels: the persisted zoom
+ * anchor scaled up out of normalized frame coords.
+ *
+ * The focal machinery has always been in punchInClip, but only the monitor
+ * right-click ever passed it, so every panel-fired and keyboard punch zoomed at
+ * the dead centre of the frame. The default anchor sits above centre at a framed
+ * talking head's eye line, and zooming at his face instead of the middle of the
+ * picture is most of the difference between his edit and everyone else's.
+ */
+const focalPoint = (seq: Sequence): { x: number; y: number } => {
+  const anchor = useStore.getState().ui.zoomAnchor
+  return { x: anchor.x * seq.width, y: anchor.y * seq.height }
+}
+
 /** The workhorse zoom, at the playhead on this clip. Depth = the chosen punch depth. */
 export function punchInAtPlayhead(clipId: string, targetScale?: number): void {
   const g = guarded(clipId)
   if (!g) return
-  const atS = useStore.getState().ui.playheadS
-  if (atS <= g.clip.startS || atS >= clipEndS(g.clip)) {
+  const { playheadS: atS, punchDepth, punchRiseFrames } = useStore.getState().ui
+  if (!insideClip(g.clip, atS)) {
     useToasts.getState().show('Put the playhead inside the clip first', 'danger')
     return
   }
-  const depth = targetScale ?? useStore.getState().ui.punchDepth
-  mapOne('Punch in', clipId, (c, sq) => punchInClip(c, sq.fps, { atS, targetScale: depth }))
+  const depth = targetScale ?? punchDepth
+  mapOne('Punch in', clipId, (c, sq) =>
+    punchInClip(c, sq.fps, {
+      atS,
+      targetScale: depth,
+      riseFrames: punchRiseFrames,
+      // Arrive and STAY. The old envelope scheduled the frame to slide back on
+      // its own, which is why "punch out at any time in the clip" was not
+      // something the app could express: punchOutAtPlayhead is that verb now.
+      holdToEnd: true,
+      focal: focalPoint(sq),
+      seqWidth: sq.width,
+      seqHeight: sq.height,
+    }),
+  )
 }
 
 /** Punch in toward a point (monitor right-click: the zoom centers on it). */
 export function punchInAtPoint(clipId: string, focal: { x: number; y: number }): void {
   const g = guarded(clipId)
   if (!g) return
-  const atS = useStore.getState().ui.playheadS
-  const depth = useStore.getState().ui.punchDepth
+  const { playheadS: atS, punchDepth, punchRiseFrames } = useStore.getState().ui
   mapOne('Punch in', clipId, (c, sq) =>
-    punchInClip(c, sq.fps, { atS, targetScale: depth, focal, seqWidth: sq.width, seqHeight: sq.height }),
+    punchInClip(c, sq.fps, {
+      atS,
+      targetScale: punchDepth,
+      riseFrames: punchRiseFrames,
+      // Same verb as the panel button, so the same envelope: a punch in holds.
+      holdToEnd: true,
+      focal,
+      seqWidth: sq.width,
+      seqHeight: sq.height,
+    }),
   )
+}
+
+/**
+ * The other half of the verb: fall from wherever the frame currently sits back
+ * to the clip's own base framing over the same frames and the same curve the
+ * rise used, and hold there. This is "punch out at any time in the clip".
+ *
+ * It passes the SAME focal the punch in converged on, so position lands back on
+ * its base too and a punch in followed by a punch out ends exactly where the
+ * clip started rather than a few pixels off it.
+ */
+export function punchOutAtPlayhead(clipId: string): void {
+  const g = guarded(clipId)
+  if (!g) return
+  const { playheadS: atS, punchRiseFrames } = useStore.getState().ui
+  if (!insideClip(g.clip, atS)) {
+    useToasts.getState().show('Put the playhead inside the clip first', 'danger')
+    return
+  }
+  mapOne('Punch out', clipId, (c, sq) =>
+    punchOutClip(c, sq.fps, {
+      atS,
+      riseFrames: punchRiseFrames,
+      focal: focalPoint(sq),
+      seqWidth: sq.width,
+      seqHeight: sq.height,
+    }),
+  )
+}
+
+/**
+ * The hard-cut punch, which is what most YouTube punch-ins actually are: split
+ * at the playhead and let the right half simply START bigger. No animation at
+ * all, zero frames, no curve to shape afterwards.
+ *
+ * The cut goes through `splitGroup`, never `splitClipOnly`: a punch is a picture
+ * edit he fires without thinking about the audio, and cutting the video alone
+ * would leave the linked audio whole, so the two sides desync at every cut he
+ * makes this way.
+ */
+export function cutPunchAtPlayhead(clipId: string): void {
+  const g = guarded(clipId)
+  if (!g) return
+  const { playheadS: atS, punchDepth } = useStore.getState().ui
+  if (!insideClip(g.clip, atS)) {
+    useToasts.getState().show('Put the playhead inside the clip first', 'danger')
+    return
+  }
+  let landed = false
+  updateActiveSequence('Cut punch', (sq) => {
+    const next = splitGroup(sq, clipId, atS)
+    // splitGroup hands back the SAME sequence when it refuses the cut (a sliver,
+    // or a linked partner that cannot take it there), and a right half that was
+    // never made must not be invented.
+    if (next === sq) return sq
+    const found = locate(next, clipId)
+    if (!found) return sq
+    // The left piece keeps the original id, so the right half is the clip
+    // directly after it, the same way splitClipOnly finds its pair.
+    const i = found.track.clips.findIndex((c) => c.id === clipId)
+    const right = found.track.clips[i + 1]
+    if (!right) return sq
+    landed = true
+    return {
+      ...next,
+      tracks: next.tracks.map((t) =>
+        t.id === found.track.id
+          ? {
+              ...t,
+              clips: t.clips.map((c) => (c.id === right.id ? withChannelValue(c, 'scale', punchDepth) : c)),
+            }
+          : t,
+      ),
+    }
+  })
+  if (!landed) useToasts.getState().show('Too close to a clip edge to cut there', 'danger')
 }
 
 /** The phonk impact (desat + blur + punch + shake), at the playhead. */
@@ -67,7 +185,7 @@ export function impactAtPlayhead(clipId: string): void {
   const g = guarded(clipId)
   if (!g) return
   const atS = useStore.getState().ui.playheadS
-  if (atS <= g.clip.startS || atS >= clipEndS(g.clip)) {
+  if (!insideClip(g.clip, atS)) {
     useToasts.getState().show('Put the playhead inside the clip first', 'danger')
     return
   }
@@ -112,6 +230,11 @@ const BEAT_PUNCH_GAP_S = 0.8
  * Detect beats/hits in an audio clip and punch the topmost footage clip under
  * each one. The whole run is ONE undo step. Detection is local + pure; only
  * the decode touches WebAudio.
+ *
+ * This is the ONE punch that keeps the OLD returning envelope: it calls
+ * punchInClip with no holdToEnd, so every hit rises, holds 0.5s and eases back
+ * to base over 0.25s. Sixteen non-returning punches would stack, and a ladder
+ * that climbs to nonsense is not a beat edit. Deliberate, not an oversight.
  */
 export async function punchOnBeats(audioClipId: string): Promise<void> {
   const g = guarded(audioClipId)
@@ -151,7 +274,7 @@ export async function punchOnBeats(audioClipId: string): Promise<void> {
       const vids = videoTracks(next)
       for (let i = vids.length - 1; i >= 0; i--) {
         if (vids[i].locked) continue
-        const target = vids[i].clips.find((c) => !c.title && c.enabled && t > c.startS && t < clipEndS(c))
+        const target = vids[i].clips.find((c) => !c.title && c.enabled && insideClip(c, t))
         if (!target) continue
         next = {
           ...next,

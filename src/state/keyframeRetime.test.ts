@@ -13,8 +13,12 @@ import {
   addKeyframeAtPlayhead,
   moveClipKeyframe,
   moveKeyframeTime,
+  moveKeyframes,
+  scaleKeyframeSpan,
+  setChannel,
   setClipTransform,
   toggleChannelAnimation,
+  type KeyframePick,
 } from './clipEdits'
 import { setClipsAppearance } from './appearanceActions'
 import { updateActiveSequence, useStore } from './store'
@@ -83,6 +87,125 @@ describe('moveKeyframeTime', () => {
     const projBefore = useStore.getState().project
     moveKeyframeTime(c.id, 'scale', 2, 2)
     expect(useStore.getState().project).toBe(projBefore)
+  })
+})
+
+// The lane vocabulary: lasso some diamonds, then slide them or stretch them.
+// Both edits are about SPACING, so both are worthless the moment one keyframe
+// in the selection moves further than another.
+describe('moveKeyframes', () => {
+  const posTimes = () => channelKeyframes(firstClip(), 'posX').map((k) => k.t)
+
+  it('slides a multi-selection across two channels and keeps its relative spacing', () => {
+    const c = seedTitle()
+    useStore.getState().setUI({ playheadS: 1 })
+    toggleChannelAnimation(c.id, 'scale') // scale kf at 1
+    useStore.getState().setUI({ playheadS: 3 })
+    addKeyframeAtPlayhead(c.id, 'scale') // scale kf at 3
+    useStore.getState().setUI({ playheadS: 2 })
+    toggleChannelAnimation(c.id, 'posX') // posX kf at 2, between the two
+    expect(times()).toEqual([1, 3])
+    expect(posTimes()).toEqual([2])
+
+    const picks: KeyframePick[] = [
+      { channel: 'scale', t: 1 },
+      { channel: 'scale', t: 3 },
+      { channel: 'posX', t: 2 },
+    ]
+    moveKeyframes(c.id, picks, 0.5)
+
+    const [a, b] = times()
+    expect(a).toBeCloseTo(1.5, 6)
+    expect(b).toBeCloseTo(3.5, 6)
+    expect(posTimes()[0]).toBeCloseTo(2.5, 6)
+    // The shape of the move, which is the whole point of moving it as a set.
+    expect(b - a).toBeCloseTo(2, 6)
+    expect(posTimes()[0] - a).toBeCloseTo(1, 6)
+
+    useStore.getState().undo()
+    expect(times()).toEqual([1, 3])
+    expect(posTimes()).toEqual([2])
+  })
+
+  // Clamping each keyframe on its own would bunch the selection up against
+  // whichever one hit its neighbour first, silently retiming a move he only
+  // meant to shift. One delta, clamped once, for the whole set.
+  it('clamps the whole set by one delta when a pick runs into an unpicked neighbour', () => {
+    const c = seedTitle()
+    useStore.getState().setUI({ playheadS: 1 })
+    toggleChannelAnimation(c.id, 'scale')
+    useStore.getState().setUI({ playheadS: 3 })
+    addKeyframeAtPlayhead(c.id, 'scale')
+    useStore.getState().setUI({ playheadS: 4 })
+    addKeyframeAtPlayhead(c.id, 'scale') // the wall: NOT picked
+    useStore.getState().setUI({ playheadS: 2 })
+    toggleChannelAnimation(c.id, 'posX')
+
+    const picks: KeyframePick[] = [
+      { channel: 'scale', t: 1 },
+      { channel: 'scale', t: 3 },
+      { channel: 'posX', t: 2 },
+    ]
+    moveKeyframes(c.id, picks, 2) // far past the wall at 4
+
+    const [a, b, wall] = times()
+    expect(wall).toBeCloseTo(4, 6) // the unpicked keyframe never moved
+    expect(b - a).toBeCloseTo(2, 6) // spacing survives the clamp
+    expect(posTimes()[0] - a).toBeCloseTo(1, 6)
+    // Stopped one FRAME short of the wall (30fps sequence), not on top of it.
+    expect(wall - b).toBeCloseTo(1 / 30, 6)
+  })
+})
+
+describe('scaleKeyframeSpan', () => {
+  const scaleValues = () => channelKeyframes(firstClip(), 'scale').map((k) => k.value)
+
+  it('stretches a move around its anchor without reordering the keyframes', () => {
+    const c = seedTitle()
+    useStore.getState().setUI({ playheadS: 1 })
+    toggleChannelAnimation(c.id, 'scale') // value 1 at t=1
+    useStore.getState().setUI({ playheadS: 2 })
+    setChannel(c.id, 'scale', 1.2)
+    useStore.getState().setUI({ playheadS: 3 })
+    setChannel(c.id, 'scale', 1.4)
+    expect(times()).toEqual([1, 2, 3])
+    expect(scaleValues()).toEqual([1, 1.2, 1.4])
+
+    const picks: KeyframePick[] = [
+      { channel: 'scale', t: 1 },
+      { channel: 'scale', t: 2 },
+      { channel: 'scale', t: 3 },
+    ]
+    scaleKeyframeSpan(c.id, picks, 1, 1.5) // hold the head, drag the tail out
+
+    const t = times()
+    expect(t[0]).toBeCloseTo(1, 6) // the anchor stays put
+    expect(t[1]).toBeCloseTo(2.5, 6)
+    expect(t[2]).toBeCloseTo(4, 6)
+    // Each keyframe still carries its own value, in the order it was written:
+    // a stretch that reordered them would swap the values, not just the times.
+    expect(scaleValues()).toEqual([1, 1.2, 1.4])
+    for (let i = 1; i < t.length; i++) expect(t[i]).toBeGreaterThan(t[i - 1])
+
+    useStore.getState().undo()
+    expect(times()).toEqual([1, 2, 3])
+  })
+
+  it('refuses a factor that would fold the move through its anchor', () => {
+    const c = seedTitle()
+    useStore.getState().setUI({ playheadS: 1 })
+    toggleChannelAnimation(c.id, 'scale')
+    useStore.getState().setUI({ playheadS: 3 })
+    addKeyframeAtPlayhead(c.id, 'scale')
+
+    const picks: KeyframePick[] = [
+      { channel: 'scale', t: 1 },
+      { channel: 'scale', t: 3 },
+    ]
+    const projBefore = useStore.getState().project
+    scaleKeyframeSpan(c.id, picks, 2, -1)
+    expect(useStore.getState().project).toBe(projBefore)
+    expect(times()).toEqual([1, 3])
   })
 })
 

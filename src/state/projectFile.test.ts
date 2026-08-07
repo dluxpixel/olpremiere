@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest'
 
-import { newProject, type MediaAsset, type Project } from '../engine/types'
+import { migrateProjectEffects } from '../engine/effects/migrate'
+import { MOTION_CURVES } from '../engine/motion'
+import {
+  defaultTitleDef,
+  migrateProject,
+  newProject,
+  newTitleClip,
+  type Keyframe,
+  type MediaAsset,
+  type Project,
+} from '../engine/types'
 import {
   PROJECT_FILE_FORMAT,
   PROJECT_FILE_VERSION,
@@ -52,6 +62,64 @@ describe('v2 binary header', () => {
   it('rejects a wrong-format header', () => {
     const bytes = encodeHeader({ ...header(), format: 'other' })
     expect(decodeHeader(bytes)).toBeNull()
+  })
+})
+
+// The point of this block is the day it FAILS. Nothing on the save/load path
+// touches a keyframe today, so it passes on day one; it exists so that adding a
+// strict validator, a field whitelist or a stricter migration cannot silently
+// flatten every hand-shaped curve back to its named ease. That damage is
+// invisible until he reopens a project he already shipped from.
+describe('keyframe curve round-trip', () => {
+  const SNAP = MOTION_CURVES.snapIn
+
+  /** A project whose one clip carries a curved segment and a plain named one. */
+  function curvedProject(): Project {
+    const p = newProject('Curved')
+    const scale: Keyframe[] = [
+      { t: 0, value: 1, ease: 'easeOut', curve: SNAP },
+      { t: 0.2, value: 1.2, ease: 'linear' },
+    ]
+    const clip = { ...newTitleClip(defaultTitleDef('x'), 0, 5), keyframes: { scale } }
+    const seq = p.sequences[p.activeSequenceId]
+    return {
+      ...p,
+      sequences: {
+        ...p.sequences,
+        [seq.id]: { ...seq, tracks: seq.tracks.map((t, i) => (i === 0 ? { ...t, clips: [clip] } : t)) },
+      },
+    }
+  }
+
+  /** Save, then run the exact transforms the importer runs on the way back in. */
+  function saveAndLoad(p: Project): Keyframe[] {
+    const decoded = decodeHeader(
+      encodeHeader({ format: PROJECT_FILE_FORMAT, version: PROJECT_FILE_VERSION, project: p, blobs: [] }),
+    )
+    expect(decoded).not.toBeNull()
+    const loaded = migrateProjectEffects(migrateProject(decoded!.header.project))
+    return loaded.sequences[loaded.activeSequenceId].tracks[0].clips[0].keyframes!.scale!
+  }
+
+  it('carries a hand-shaped curve through save and load intact', () => {
+    const kfs = saveAndLoad(curvedProject())
+    expect(kfs[0].curve).toEqual([...SNAP])
+    // The named ease survives beside it: it is the shape the segment falls back
+    // to if the curve is ever cleared in the editor.
+    expect(kfs[0].ease).toBe('easeOut')
+    expect(kfs.map((k) => [k.t, k.value])).toEqual([
+      [0, 1],
+      [0.2, 1.2],
+    ])
+  })
+
+  it('loads a keyframe with no curve as UNDEFINED, never null', () => {
+    const kfs = saveAndLoad(curvedProject())
+    expect(kfs[1].curve).toBeUndefined()
+    // Absent, not present-and-empty: evalChannel picks the bezier path on the
+    // mere presence of the key, so a null written in here would be read as a
+    // curve and NaN the transform.
+    expect('curve' in kfs[1]).toBe(false)
   })
 })
 

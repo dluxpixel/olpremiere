@@ -37,7 +37,6 @@ import {
   splitAtPlayhead,
 } from './clipEdits'
 import { emptyHistory, MERGE_WINDOW_MS } from './history'
-import { setAutoKeyframe } from './settings'
 import { updateActiveSequence, useStore } from './store'
 import { setTitlesFontSize } from './titleActions'
 import { setTrackPan, setTrackVolumeDb } from './trackEdits'
@@ -86,7 +85,6 @@ beforeEach(() => {
   // these tests measure undo depth and not the keyframe policy (bulkEdits.test.ts
   // owns that).
   useStore.getState().setUI({ selection: [], playheadS: 100 })
-  setAutoKeyframe(false)
 })
 
 afterEach(() => {

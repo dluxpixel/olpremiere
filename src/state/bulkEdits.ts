@@ -14,12 +14,29 @@ import {
 import { addEffect } from '../engine/effects/ops'
 import { getEffect } from '../engine/effects/registry'
 import { upsertKeyframe } from '../engine/keyframes'
+import { MOTION_CURVES } from '../engine/motion'
 import { clipDurationS, clipEndS } from '../engine/timeline'
-import { activeSequence, newId, type AnimChannel, type Clip } from '../engine/types'
-import { playheadLocalT } from './clipEdits'
-import { useSettings } from './settings'
+import { activeSequence, newId, type AnimChannel, type Clip, type Curve, type Keyframe } from '../engine/types'
+// isClipArmed comes from the SINGLE-clip module on purpose: the multi-select
+// align has to ask the exact question the gizmo asks, off the exact same code,
+// or the two paths drift the way they did when one read a global preference.
+import { isClipArmed, playheadLocalT } from './clipEdits'
 import { updateActiveSequence, useStore } from './store'
 import { useToasts } from './toasts'
+
+/**
+ * The shape every keyframe this module commits leaves behind, read from the ONE
+ * curve table so a bulk commit and the single-clip commit in clipEdits.ts can
+ * never write two different moves for the same gesture.
+ *
+ * `ease` stays the named fallback UNDER the curve: a keyframe's ease describes
+ * the segment leaving it, so it is the shape the segment falls back to if the
+ * curve is ever cleared in the editor.
+ */
+const moveCommit = (): { ease: Keyframe['ease']; curve?: Curve } => {
+  const curve: Curve | undefined = MOTION_CURVES[useStore.getState().ui.moveCurve]
+  return curve ? { ease: 'linear', curve } : { ease: 'linear' }
+}
 
 /**
  * Map `fn` over every selected clip that lives on an unlocked track, as a
@@ -71,6 +88,9 @@ export function mapClips(
  * keyframes and the bulk edit silently does nothing.
  */
 export function setChannelForClips(ids: Iterable<string>, channel: AnimChannel, value: number): void {
+  // One read for the whole fan-out, so twelve clips cannot end up carrying two
+  // different curves because the chip changed mid-dispatch.
+  const commit = moveCommit()
   mapClips(
     ids,
     `Set ${channel}`,
@@ -78,7 +98,7 @@ export function setChannelForClips(ids: Iterable<string>, channel: AnimChannel, 
       const kfs = channelKeyframes(c, channel)
       if (kfs.length === 0) return withChannelValue(c, channel, value)
       const localT = playheadLocalT(c)
-      return withChannelKeyframes(c, channel, upsertKeyframe(kfs, { t: localT, value, ease: 'linear' }))
+      return withChannelKeyframes(c, channel, upsertKeyframe(kfs, { t: localT, value, ...commit }))
     },
     // Per channel, so nudging Opacity and then Scale still leaves two steps.
     `channel:${channel}`,
@@ -90,15 +110,21 @@ export function setChannelForClips(ids: Iterable<string>, channel: AnimChannel, 
  * step: dragging one caption in the preview snaps them all to that spot.
  *
  * Obeys the SAME per-channel policy as the single-clip gizmo
- * (`withChannelsAtTime`): an animated clip keyframes at the playhead, and with
- * auto-keyframe on a still clip starts animating. It used to write
- * `transform.x/y` unconditionally, so with auto-keyframe on, one drag animated
- * the clip under the gizmo and permanently MOVED the rest of the selection.
+ * (`withChannelsAtTime`), asks the SAME armed question of each clip
+ * (`isClipArmed`), and writes the SAME curve. It used to write `transform.x/y`
+ * unconditionally, and then it read the GLOBAL auto-keyframe setting while the
+ * gizmo had already moved on: either way one drag animated the clip under the
+ * gizmo and permanently MOVED the rest of the selection. One gesture means one
+ * thing whether one clip is selected or twelve.
+ *
+ * Armed is asked PER CLIP because it is a per-clip fact: a selection can hold
+ * one clip already carrying motion and one that is still, and each takes the
+ * branch its own keyframes earn.
  */
 export function setClipsPosition(ids: Iterable<string>, x: number, y: number): void {
   const { project, ui } = useStore.getState()
   const seq = activeSequence(project)
-  const auto = useSettings.getState().autoKeyframe
+  const commit = moveCommit()
   mapClips(
     ids,
     'Align clips',
@@ -119,7 +145,7 @@ export function setClipsPosition(ids: Iterable<string>, x: number, y: number): v
       if (localT < 0 || ui.playheadS >= clipEndS(c)) {
         return withChannelValue(withChannelValue(c, 'posX', x), 'posY', y)
       }
-      return withChannelsAtTime(c, localT, [['posX', x], ['posY', y]], auto)
+      return withChannelsAtTime(c, localT, [['posX', x], ['posY', y]], isClipArmed(c), commit)
     },
     // One drag of the preview gizmo commits once on release, but the arrow keys
     // that nudge the same selection commit per press.

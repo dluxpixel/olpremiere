@@ -16,17 +16,17 @@ interface SettingsState {
   theme: ThemeChoice
   /** Preview quality, shared by the Settings dialog and the monitor's own picker. */
   previewQuality: PreviewQuality
-  /**
-   * Auto-keyframe: moving or scaling a clip in the monitor ANIMATES it instead
-   * of moving the whole clip. Off by default, because a drag should not secretly start
-   * an animation until you have asked for that mode.
-   */
-  autoKeyframe: boolean
 }
+
+// Auto-keyframe used to live here as a persisted global. It does not any more:
+// whether a drag animates is now a fact about the CLIP, derived from whether any
+// of posX, posY, scale or rotation already carries keyframes. A preference that
+// outlived the clip it was set for meant the same drag meant two different
+// things on two different nights, and it could desync from what actually
+// rendered. Derived, it is always visible in the lanes and can never lie.
 
 const THEME_KEY = 'olpremiere:settings:theme'
 const QUALITY_KEY = 'olpremiere:settings:preview-quality'
-const AUTOKEY_KEY = 'olpremiere:settings:auto-keyframe'
 
 function read(key: string): string | null {
   try {
@@ -59,13 +59,7 @@ function loadQuality(): PreviewQuality {
 export const useSettings = create<SettingsState>(() => ({
   theme: loadTheme(),
   previewQuality: loadQuality(),
-  autoKeyframe: read(AUTOKEY_KEY) === '1',
 }))
-
-export function setAutoKeyframe(on: boolean): void {
-  useSettings.setState({ autoKeyframe: on })
-  write(AUTOKEY_KEY, on ? '1' : null)
-}
 
 /** The theme actually in force: 'system' resolves against the OS preference. */
 export function resolvedTheme(choice: ThemeChoice): ResolvedTheme {

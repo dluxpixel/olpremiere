@@ -27,6 +27,12 @@ export interface IntegrityReport {
  * Deliberately tolerant. If this throws, the app must still start. A broken
  * integrity check that blocks boot would be a worse bug than the one it exists
  * to report.
+ *
+ * It validates COUNTS, never document shape, so nothing here can strip a field
+ * off a keyframe. Anything added to this file that walks a project and rejects
+ * or rewrites what it does not recognise has to carry `Keyframe.curve`, or a
+ * hand-shaped curve is flattened back to its named ease on load and the only
+ * symptom is that a project he already shipped from opens moving differently.
  */
 export async function checkIntegrity(): Promise<IntegrityReport | null> {
   try {

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { channelKeyframes } from '../engine/effects/channels'
+import { MOTION_CURVES } from '../engine/motion'
 import { recomputeDuration } from '../engine/timeline'
 import { MERGE_WINDOW_MS } from './history'
 import { setClipDenoise, setClipTransition, toggleChannelAnimation } from './clipEdits'
@@ -22,7 +23,6 @@ import {
   setClipsPosition,
 } from './bulkEdits'
 import { setClipsAppearance } from './appearanceActions'
-import { setAutoKeyframe } from './settings'
 import { updateTitles } from './titleActions'
 import { updateActiveSequence, useStore } from './store'
 
@@ -51,10 +51,21 @@ function seedTitle(startS: number, durS = 5, trackIndex = 0): Clip {
   return clip
 }
 
+/**
+ * ARM a clip the way the app does: give it motion of its own. Armed is a
+ * derived per-clip fact now (any of posX, posY, scale, rotation carrying
+ * keyframes), not a stored preference, so there is nothing to switch on.
+ */
+function arm(clipId: string): void {
+  const before = useStore.getState().ui.playheadS
+  useStore.getState().setUI({ playheadS: 0 })
+  toggleChannelAnimation(clipId, 'scale')
+  useStore.getState().setUI({ playheadS: before })
+}
+
 beforeEach(() => {
   useStore.getState().setProject(newProject())
   useStore.getState().setUI({ selection: [], playheadS: 0 })
-  setAutoKeyframe(false)
 })
 
 describe('updateTitles (bulk boldness)', () => {
@@ -278,11 +289,13 @@ describe('setClipsPosition', () => {
 
   // The multi-selection used to write transform.x/y unconditionally while the
   // single-clip gizmo keyframed, so ONE drag animated one clip and permanently
-  // moved the others. Both paths share withChannelsAtTime now.
-  it('auto-keyframe ON animates EVERY selected clip, not just the one under the gizmo', () => {
+  // moved the others. Both paths share withChannelsAtTime now, and both ask the
+  // same armed question of each clip.
+  it('an ARMED selection animates EVERY clip in it, not just the one under the gizmo', () => {
     const a = seedTitle(0)
     const b = seedTitle(0, 5, 1) // V2, so both clips are live at the playhead
-    setAutoKeyframe(true)
+    arm(a.id)
+    arm(b.id)
     useStore.getState().setUI({ playheadS: 2 })
 
     setClipsPosition([a.id, b.id], 120, -40)
@@ -306,9 +319,31 @@ describe('setClipsPosition', () => {
     expect(channelKeyframes(clipById(b.id), 'posX')).toHaveLength(0)
   })
 
+  // A STILL clip in the selection keeps the plain move: nothing about it says
+  // he wants motion, and a persisted toggle no longer speaks for it.
+  it('leaves a clip carrying no motion of its own on the base write', () => {
+    const a = seedTitle(0)
+    useStore.getState().setUI({ playheadS: 2 })
+    setClipsPosition([a.id], 120, -40)
+    expect(channelKeyframes(clipById(a.id), 'posX')).toHaveLength(0)
+    expect([clipById(a.id).transform.x, clipById(a.id).transform.y]).toEqual([120, -40])
+  })
+
+  // The heart of it: one gesture, one meaning. The bulk commit writes the SAME
+  // curve the single-clip commit writes, off the same table.
+  it('writes the chosen move curve on the keyframe the move leaves FROM', () => {
+    const a = seedTitle(0)
+    arm(a.id)
+    useStore.getState().setUI({ playheadS: 2, moveCurve: 'snapIn' })
+
+    setClipsPosition([a.id], 120, -40)
+
+    const kfs = channelKeyframes(clipById(a.id), 'posX')
+    expect(kfs[0].curve).toEqual([...MOTION_CURVES.snapIn])
+  })
+
   it('keys an ALREADY-animated clip at the playhead instead of a dead base write', () => {
     const a = seedTitle(0)
-    setAutoKeyframe(false)
     useStore.getState().setUI({ playheadS: 1 })
     toggleChannelAnimation(a.id, 'posX') // channel is animated from here on
     useStore.getState().setUI({ playheadS: 3 })
@@ -322,7 +357,8 @@ describe('setClipsPosition', () => {
   it('a selected clip the playhead is OUTSIDE keeps the plain move', () => {
     const a = seedTitle(0) // [0, 5)
     const b = seedTitle(6) // [6, 11), nowhere near the playhead
-    setAutoKeyframe(true)
+    arm(a.id)
+    arm(b.id)
     useStore.getState().setUI({ playheadS: 2 })
 
     setClipsPosition([a.id, b.id], 90, 10)
@@ -335,7 +371,6 @@ describe('setClipsPosition', () => {
 
   it('an appearance-owned clip still recompiles from the new base', () => {
     const a = seedTitle(0)
-    setAutoKeyframe(true)
     useStore.getState().setUI({ playheadS: 2 })
     setClipsAppearance([a.id], { in: 'pop' })
 

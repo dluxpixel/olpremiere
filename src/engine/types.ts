@@ -291,10 +291,24 @@ export interface EffectInstance {
  */
 export type Keyframeable = number | { value: number; keyframes: Keyframe[] }
 
+/**
+ * A cubic bezier in CSS `cubic-bezier(x1, y1, x2, y2)` order. The curve runs
+ * from (0,0) to (1,1); x1/x2 are the timing handles, y1/y2 the value handles.
+ * y is allowed outside 0..1, which is what makes overshoot expressible.
+ */
+export type Curve = readonly [number, number, number, number]
+
 export interface Keyframe {
   t: number
   value: number
   ease: 'linear' | 'hold' | 'easeIn' | 'easeOut' | 'easeInOut'
+  /**
+   * Optional hand-shaped bezier for the segment LEAVING this keyframe, which is
+   * exactly what `ease` already describes, so x1,y1 is this keyframe's outgoing
+   * handle and x2,y2 the next one's incoming handle. Present wins over `ease`;
+   * absent means the named ease runs byte-identically to how it always has.
+   */
+  curve?: Curve
 }
 
 export interface Transition {

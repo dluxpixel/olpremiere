@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { defaultTransform, type Clip, type Keyframe } from '../types'
+import { defaultTransform, type Clip, type Curve, type Keyframe } from '../types'
 import {
   channelBase,
   channelDefault,
@@ -9,6 +9,7 @@ import {
   resolveChannel,
   withChannelKeyframes,
   withChannelValue,
+  withChannelsAtTime,
 } from './channels'
 import { migrateClipEffects } from './migrate'
 
@@ -216,6 +217,62 @@ describe('withChannelKeyframes', () => {
     const c = withChannelKeyframes(clip(), 'scale', [kf(0, 1)])
     expect(c.keyframes?.scale).toHaveLength(1)
     expect(c.effects).toEqual([])
+  })
+})
+
+describe('withChannelsAtTime', () => {
+  const SNAP: Curve = [0.16, 1, 0.3, 1]
+  const snapCommit = { ease: 'linear' as const, curve: SNAP }
+
+  it('pins the previous value at the nearest existing MOMENT, not at the head of the clip', () => {
+    // The live defect: a drag four seconds in wrote t=0 and t=4, so the framing
+    // crawled linearly across four whole seconds instead of moving where he
+    // dragged. The moment is read across every channel, so the pin lands on the
+    // scale keyframe already sitting at 3.5.
+    const c = withChannelsAtTime(
+      clip({ keyframes: { scale: [kf(0, 1), kf(3.5, 1.2)] } }),
+      4,
+      [['posX', 250]] as const,
+      true,
+      snapCommit,
+    )
+    const kfs = channelKeyframes(c, 'posX')
+    expect(kfs.map((k) => k.t)).toEqual([3.5, 4])
+    expect(kfs[0].value).toBe(100)
+    expect(kfs[1].value).toBe(250)
+  })
+
+  it('falls back to the head only when the clip carries no earlier moment', () => {
+    const c = withChannelsAtTime(clip(), 4, [['posX', 250]] as const, true, snapCommit)
+    expect(channelKeyframes(c, 'posX').map((k) => k.t)).toEqual([0, 4])
+  })
+
+  it('writes the passed curve on the keyframe the move leaves FROM, not a hardcoded linear', () => {
+    const armed = withChannelsAtTime(clip(), 4, [['scale', 1.2]] as const, true, snapCommit)
+    expect(channelKeyframes(armed, 'scale')[0]).toMatchObject({ t: 0, curve: SNAP })
+
+    // An already animated channel keyframes at the playhead carrying the same
+    // shape, so the next move leaving that keyframe runs the curve too.
+    const anim = withChannelsAtTime(
+      clip({ keyframes: { scale: [kf(0, 1)] } }),
+      2,
+      [['scale', 1.4]] as const,
+      true,
+      snapCommit,
+    )
+    expect(channelKeyframes(anim, 'scale')[1]).toMatchObject({ t: 2, curve: SNAP })
+
+    // A named ease with no curve travels the same way, and leaves no curve key
+    // behind for the curve editor to draw a ghost handle from.
+    const named = withChannelsAtTime(clip(), 4, [['scale', 1.2]] as const, true, { ease: 'easeOut' })
+    expect(channelKeyframes(named, 'scale')[0].ease).toBe('easeOut')
+    expect(channelKeyframes(named, 'scale')[0].curve).toBeUndefined()
+  })
+
+  it('writes the static base when the clip is not armed', () => {
+    const c = withChannelsAtTime(clip(), 4, [['scale', 1.2]] as const, false, snapCommit)
+    expect(c.transform.scale).toBe(1.2)
+    expect(channelKeyframes(c, 'scale')).toEqual([])
   })
 })
 

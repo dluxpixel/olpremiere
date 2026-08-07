@@ -29,9 +29,11 @@
 import { describe, expect, it } from 'vitest'
 import { collectSnapPoints } from './timeline'
 import { resolveFrame } from './render/resolve'
+import { MOTION_CURVES } from './motion'
 import {
   defaultTransform,
   type Clip,
+  type Curve,
   type EffectInstance,
   type Keyframe,
   type Marker,
@@ -59,6 +61,13 @@ import {
 // roughly 1.7x the worst observed, which is the same headroom the absolute
 // budgets they replace were chosen with, so a real regression of half again
 // still trips it, and ordinary noise never does.
+//
+// Re-measured 2026-08-07 after bezier curves entered the fixture, which was the
+// open question: a curve costs a Newton-Raphson solve where a named ease costs
+// a lookup. resolveFrame came in at 0.22x, inside the range above rather than
+// past it, so the solver is not measurably on the per-frame path and the
+// budgets stand UNCHANGED. If a later change makes curves expensive, this is
+// the number that moves first.
 const RESOLVE_FRAME_BUDGET_X = 0.55
 const SNAP_POINTS_BUDGET_X = 1.2
 
@@ -71,6 +80,21 @@ const kf = (t: number, value: number, ease: Keyframe['ease'] = 'linear'): Keyfra
   t,
   value,
   ease,
+})
+
+/**
+ * A keyframe carrying a hand-shaped bezier. The budgets below were measured on
+ * a workload of named eases only, which is a lookup and some arithmetic; a
+ * curve costs a Newton-Raphson solve per evaluation instead. Curves are the
+ * default on every move the app now creates, so a fixture without them would
+ * guard a timeline nobody has, and the solver could get arbitrarily slower
+ * without this file noticing.
+ */
+const kfc = (t: number, value: number, curve: Curve): Keyframe => ({
+  t,
+  value,
+  ease: 'linear',
+  curve,
 })
 
 function clip(over: Partial<Clip>): Clip {
@@ -107,6 +131,10 @@ const gradeEffect = (): EffectInstance => ({
  * neighbour, every 7th has fade handles: the mix a real edit accumulates, so
  * the resolver exercises its keyframe, effect and transition branches instead
  * of the all-defaults fast path.
+ *
+ * The animated clips alternate between a named ease and a bezier curve, so both
+ * evaluation paths are in the measured workload in roughly the proportion a
+ * real edit has them once snapIn is the default on every move.
  */
 function videoLane(name: string, clipCount: number): Track {
   const clips: Clip[] = []
@@ -115,12 +143,23 @@ function videoLane(name: string, clipCount: number): Track {
       clip({
         startS: i * 2,
         ...(i % 3 === 0
-          ? {
-              keyframes: {
-                scale: [kf(0, 1), kf(1, 1.2, 'easeInOut'), kf(2, 1)],
-                opacity: [kf(0, 0), kf(0.4, 1)],
-              },
-            }
+          ? i % 2 === 0
+            ? {
+                keyframes: {
+                  scale: [
+                    kfc(0, 1, MOTION_CURVES.snapIn),
+                    kfc(1, 1.2, MOTION_CURVES.overshoot),
+                    kf(2, 1),
+                  ],
+                  opacity: [kfc(0, 0, MOTION_CURVES.easyEase), kf(0.4, 1)],
+                },
+              }
+            : {
+                keyframes: {
+                  scale: [kf(0, 1), kf(1, 1.2, 'easeInOut'), kf(2, 1)],
+                  opacity: [kf(0, 0), kf(0.4, 1)],
+                },
+              }
           : {}),
         ...(i % 4 === 0 ? { effects: [gradeEffect()] } : {}),
         ...(i % 10 === 5 ? { transitionIn: { type: 'crossDissolve', durationS: 0.5 } } : {}),
@@ -241,6 +280,20 @@ describe('perf guard: 200-clip sequence', () => {
     expect(clipCount).toBe(200)
     // Mid-timeline, all four video lanes are showing something.
     expect(resolveFrame(seq, 41.2).ops.length).toBe(4)
+  })
+
+  it('the measured workload really contains bezier curves, not just named eases', () => {
+    // Without this the budgets below could go on passing while measuring a
+    // timeline that no longer resembles what the app creates.
+    let curved = 0
+    for (const t of seq.tracks) {
+      for (const c of t.clips) {
+        for (const kfs of Object.values(c.keyframes ?? {})) {
+          for (const k of kfs ?? []) if (k.curve) curved++
+        }
+      }
+    }
+    expect(curved).toBeGreaterThan(0)
   })
 
   it(`resolveFrame stays under ${RESOLVE_FRAME_BUDGET_X}x the calibration while scrubbing`, () => {

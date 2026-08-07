@@ -13,8 +13,8 @@
 //
 // Pure: no React, no DOM, no store. Imports registry + the keyframe math only.
 
-import { evalChannel, upsertKeyframe } from '../keyframes'
-import type { AnimChannel, Clip, EffectInstance, Keyframe } from '../types'
+import { MOMENT_EPS, clipKeyframeTimes, evalChannel, upsertKeyframe } from '../keyframes'
+import type { AnimChannel, Clip, Curve, EffectInstance, Keyframe } from '../types'
 import { CANONICAL_ORDER, EFFECT_BY_TYPE, defaultParams, getEffect, isNeutral } from './registry'
 
 /** Which effect + param each legacy colour channel addresses. */
@@ -232,11 +232,19 @@ const AUTO_KEYFRAME_MIN_T = 1e-3
  *
  * - **already animated** → upsert a keyframe at `localT` (the base is dead data
  *   while keyframes exist, so writing it would silently do nothing);
- * - **auto-keyframe, past the head** → pin the current value at t=0 and land the
- *   new one at `localT`. It takes TWO: a lone keyframe holds everywhere, which
- *   is just a moved base, and the whole point of the mode is that a drag makes
- *   motion;
+ * - **armed, past the head** → pin the current value at the nearest MOMENT the
+ *   clip already carries before `localT`, t=0 only when it carries none, and land
+ *   the new one at `localT`. It takes TWO: a lone keyframe holds everywhere,
+ *   which is just a moved base, and the whole point of the mode is that a drag
+ *   makes motion. Pinning at the head instead of at that moment is what made a
+ *   drag four seconds in ramp linearly across all four of them rather than move
+ *   where he dragged;
  * - **otherwise** → write the static base.
+ *
+ * `commit` is the ease, and the optional hand-shaped curve, written on the
+ * keyframe the move leaves FROM: a keyframe's ease describes the segment LEAVING
+ * it, so that is the one that shapes this move. The caller owns which, so a drag,
+ * a field commit and a preset can all land the same shape.
  *
  * Shared by the single-clip gizmo and the multi-selection align so that one drag
  * means the same thing however many clips are selected. They disagreed before,
@@ -247,18 +255,26 @@ export function withChannelsAtTime(
   clip: Clip,
   localT: number,
   vals: readonly (readonly [AnimChannel, number])[],
-  autoKeyframe: boolean,
+  armed: boolean,
+  commit: { ease: Keyframe['ease']; curve?: Curve },
 ): Clip {
+  // The moment to animate FROM, read across every channel so a drag joins the
+  // motion the clip already has. A moment AT localT is the same moment, not one
+  // to leave from, so it does not count.
+  const prevT = clipKeyframeTimes(clip).filter((t) => t < localT - MOMENT_EPS).pop() ?? 0
+  const commitKf = (t: number, value: number): Keyframe =>
+    commit.curve ? { t, value, ease: commit.ease, curve: commit.curve } : { t, value, ease: commit.ease }
+
   let next = clip
   for (const [channel, value] of vals) {
     const kfs = channelKeyframes(next, channel)
     if (kfs.length > 0) {
-      next = withChannelKeyframes(next, channel, upsertKeyframe(kfs, { t: localT, value, ease: 'linear' }))
+      next = withChannelKeyframes(next, channel, upsertKeyframe(kfs, commitKf(localT, value)))
       continue
     }
-    if (autoKeyframe && localT > AUTO_KEYFRAME_MIN_T) {
+    if (armed && localT > AUTO_KEYFRAME_MIN_T) {
       next = withChannelKeyframes(next, channel, [
-        { t: 0, value: channelBase(next, channel), ease: 'linear' },
+        commitKf(prevT, channelBase(next, channel)),
         { t: localT, value, ease: 'linear' },
       ])
       continue

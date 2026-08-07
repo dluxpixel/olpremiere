@@ -4,6 +4,7 @@
 
 import { create } from 'zustand'
 import { subscribeWithSelector } from 'zustand/middleware'
+import { MOTION_CURVES, type MotionCurveName } from '../engine/motion'
 import { setSequenceFormat } from '../engine/timeline'
 import { newProject, type Id, type Project, type Sequence } from '../engine/types'
 import {
@@ -34,9 +35,34 @@ export interface UIState {
   loop: boolean
   /** Chosen punch-in / zoom depth (target scale) used by P and the Zoom control. */
   punchDepth: number
+  /**
+   * How long a punch takes to arrive, in WHOLE frames. 200ms is the number the
+   * move was designed around, which is 5 frames at 24fps and 6 at 30.
+   */
+  punchRiseFrames: number
+  /**
+   * The curve every drag, field commit and preset writes. Linear is the opt-out,
+   * not the default: that single choice is most of the visible quality gap.
+   */
+  moveCurve: MotionCurveName
+  /**
+   * Where a zoom converges, in NORMALIZED frame coords (0..1). Sits above the
+   * geometric centre because that is a framed talking head's eye line, and
+   * zooming at the face rather than the middle of the frame is the whole point.
+   */
+  zoomAnchor: ZoomAnchor
   /** Keyboard-shortcuts help overlay. */
   helpOpen: boolean
 }
+
+/** A point in normalized frame coords (0..1 across the sequence frame). */
+export interface ZoomAnchor {
+  x: number
+  y: number
+}
+
+/** Centre horizontally, eye line vertically. What Reset restores. */
+export const DEFAULT_ZOOM_ANCHOR: ZoomAnchor = { x: 0.5, y: 0.4 }
 
 export interface AppState {
   project: Project
@@ -69,6 +95,55 @@ export interface AppState {
 export const MIN_PX_PER_S = 4
 export const MAX_PX_PER_S = 800
 
+// Two of the motion preferences outlive the session, and they live beside the
+// saved depth chips under 'olpremiere:zoomPresets'. Both describe how HIS edit
+// feels rather than anything about one project, so a project file is the wrong
+// home for them: the zoom point he set with a right-click, and the curve every
+// move is written with.
+const ZOOM_ANCHOR_KEY = 'olpremiere:zoomAnchor'
+const MOVE_CURVE_KEY = 'olpremiere:moveCurve'
+
+function readPref(key: string): string | null {
+  try {
+    return typeof localStorage !== 'undefined' ? localStorage.getItem(key) : null
+  } catch {
+    return null
+  }
+}
+
+function writePref(key: string, value: string): void {
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.setItem(key, value)
+  } catch {
+    // Private mode / quota: the choice still applies for the rest of this run.
+  }
+}
+
+const clamp01 = (n: number): number => (n < 0 ? 0 : n > 1 ? 1 : n)
+
+function loadZoomAnchor(): ZoomAnchor {
+  try {
+    const raw = readPref(ZOOM_ANCHOR_KEY)
+    const parsed: unknown = raw ? JSON.parse(raw) : null
+    if (parsed && typeof parsed === 'object') {
+      const { x, y } = parsed as { x?: unknown; y?: unknown }
+      if (typeof x === 'number' && typeof y === 'number' && Number.isFinite(x) && Number.isFinite(y))
+        return { x: clamp01(x), y: clamp01(y) }
+    }
+  } catch {
+    // Corrupt JSON boots on the default rather than on NaN, which would put
+    // every punch's focal point off the frame.
+  }
+  return DEFAULT_ZOOM_ANCHOR
+}
+
+function loadMoveCurve(): MotionCurveName {
+  const raw = readPref(MOVE_CURVE_KEY)
+  // Validated against the one curve table: a name from an older or newer build
+  // falls back rather than reaching the builders as undefined.
+  return raw && Object.hasOwn(MOTION_CURVES, raw) ? (raw as MotionCurveName) : 'snapIn'
+}
+
 export const useStore = create<AppState>()(
   subscribeWithSelector((set, get) => ({
     project: newProject(),
@@ -84,6 +159,9 @@ export const useStore = create<AppState>()(
       playing: false,
       loop: false,
       punchDepth: 1.2,
+      punchRiseFrames: 5,
+      moveCurve: loadMoveCurve(),
+      zoomAnchor: loadZoomAnchor(),
       helpOpen: false,
     },
 
@@ -147,6 +225,11 @@ export const useStore = create<AppState>()(
     },
 
     setUI(patch) {
+      // The persisted pair saves through the ONE mutation path, so the monitor's
+      // 'Set zoom point here', the panel's curve chips and anything added later
+      // all survive a reload without each call site remembering to write.
+      if (patch.zoomAnchor) writePref(ZOOM_ANCHOR_KEY, JSON.stringify(patch.zoomAnchor))
+      if (patch.moveCurve) writePref(MOVE_CURVE_KEY, patch.moveCurve)
       set((s) => ({ ui: { ...s.ui, ...patch } }))
     },
 

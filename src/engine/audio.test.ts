@@ -5,8 +5,10 @@ import {
   computeClipSchedule,
   dbToGain,
   effectiveAudioClip,
+  type GainPoint,
 } from './audio'
-import { defaultTransform, type Clip } from './types'
+import { evalChannel } from './keyframes'
+import { defaultTransform, type Clip, type Keyframe } from './types'
 
 const clip = (patch: Partial<Clip> = {}): Clip => ({
   id: 'c1',
@@ -25,6 +27,24 @@ const clip = (patch: Partial<Clip> = {}): Clip => ({
   effects: [],
   ...patch,
 })
+
+/**
+ * Read a gain envelope the way every consumer plays it back: hold the first
+ * value, then ramp LINEARLY IN AMPLITUDE knot to knot. This is what the
+ * subdivision count is really being judged against.
+ */
+const rampAt = (env: GainPoint[], x: number): number => {
+  let prev = env[0]
+  for (const p of env) {
+    if (p.offsetS >= x) {
+      const span = p.offsetS - prev.offsetS
+      const f = span <= 0 ? 0 : (x - prev.offsetS) / span
+      return prev.value + (p.value - prev.value) * f
+    }
+    prev = p
+  }
+  return env[env.length - 1].value
+}
 
 describe('dbToGain', () => {
   it('0 dB is unity', () => {
@@ -264,6 +284,55 @@ describe('clipGainEnvelope', () => {
     const step = env.find((p) => Math.abs(p.offsetS - (2 - 0.001)) < 1e-9)!
     expect(step.value).toBeCloseTo(1, 9)
     expect(env.find((p) => p.offsetS === 2)!.value).toBeCloseTo(low, 9)
+  })
+
+  it('a curved segment subdivides into 16 knots and tracks evalChannel within tolerance', () => {
+    // snapIn: fast off the mark, long settle. Sixteen straight lines have to
+    // stand in for it closely enough that the picture and the mix agree.
+    const volume: Keyframe[] = [
+      { t: 0, value: 0, ease: 'linear', curve: [0.16, 1, 0.3, 1] },
+      { t: 4, value: -12, ease: 'linear' },
+    ]
+    const env = clipGainEnvelope(clip({ keyframes: { volume } }), 0)!
+    // 16 equal subdivisions of the one segment = 17 knots counting both ends.
+    expect(env.map((p) => p.offsetS)).toEqual(Array.from({ length: 17 }, (_, i) => (4 * i) / 16))
+    for (const p of env) {
+      const g = dbToGain(evalChannel(volume, p.offsetS, 0))
+      expect(p.value, `knot ${p.offsetS}`).toBeCloseTo(g, 9)
+    }
+
+    // Between the knots every consumer ramps in a straight line, so read the
+    // envelope the way they play it and compare against the real curve. The
+    // tolerance is in dB because that is the unit the error is audible in.
+    // Half the knots is the same curve sampled 8 times, which is what a named
+    // ease gets and what this segment would have got before the change.
+    const coarse = env.filter((_, i) => i % 2 === 0)
+    let worstDb = 0
+    let worstCoarseDb = 0
+    for (let i = 0; i <= 256; i++) {
+      const x = (4 * i) / 256
+      const meant = evalChannel(volume, x, 0)
+      worstDb = Math.max(worstDb, Math.abs(20 * Math.log10(rampAt(env, x)) - meant))
+      worstCoarseDb = Math.max(worstCoarseDb, Math.abs(20 * Math.log10(rampAt(coarse, x)) - meant))
+    }
+    expect(worstDb).toBeLessThan(0.5)
+    // And the extra knots earn their place: the same curve at 8 drifts past a dB.
+    expect(worstCoarseDb).toBeGreaterThan(1)
+  })
+
+  it('a named-ease segment still subdivides into 8 knots', () => {
+    const env = clipGainEnvelope(
+      clip({
+        keyframes: {
+          volume: [
+            { t: 0, value: 0, ease: 'easeOut' },
+            { t: 4, value: -12, ease: 'linear' },
+          ],
+        },
+      }),
+      0,
+    )!
+    expect(env.map((p) => p.offsetS)).toEqual(Array.from({ length: 9 }, (_, i) => (4 * i) / 8))
   })
 
   it('a clip WITHOUT volume keyframes produces the exact pre-keyframe envelope', () => {

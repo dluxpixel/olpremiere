@@ -1,13 +1,22 @@
 import { describe, expect, it } from 'vitest'
-import { resolveChannel } from './effects/channels'
+import { channelBase, resolveChannel } from './effects/channels'
 import { evalChannel } from './keyframes'
-import { impactClip, punchInClip, rampSpeedRange, whipClips, RAMP_MOTION_BLUR_PX } from './motion'
+import {
+  impactClip,
+  punchInClip,
+  punchOutClip,
+  rampSpeedRange,
+  whipClips,
+  MOTION_CURVES,
+  RAMP_MOTION_BLUR_PX,
+} from './motion'
 import { clipEndS } from './timeline'
 import {
   defaultTitleDef,
   newSequence,
   newTitleClip,
   type Clip,
+  type Keyframe,
   type Sequence,
 } from './types'
 
@@ -36,6 +45,8 @@ describe('punchInClip', () => {
     const out = punchInClip(clip, FPS, { atS: 4, targetScale: 1.2, riseFrames: 5, holdS: 0.5 })
     const at = 2 // clip-local
     const rise = 5 / FPS
+    // Without holdToEnd the four-knot envelope is exactly what it always was.
+    expect(out.keyframes?.scale).toHaveLength(4)
     expect(scaleAt(out, 0)).toBeCloseTo(1, 6)
     expect(scaleAt(out, at)).toBeCloseTo(1, 6)
     // fast-in: past halfway up well before half the rise time
@@ -44,6 +55,37 @@ describe('punchInClip', () => {
     expect(scaleAt(out, at + rise + 0.25)).toBeCloseTo(1.2, 6)
     expect(scaleAt(out, at + rise + 0.5 + 0.25)).toBeCloseTo(1, 6)
     expect(scaleAt(out, 9)).toBeCloseTo(1, 6)
+  })
+
+  /**
+   * The rise used to be the named ease 'easeOut'; it is the snap CURVE now.
+   * Asserting the curve rather than the ease is the deliberate part: a rename
+   * would have kept the old shape and quietly lost the whole point of the graft.
+   */
+  it('rises on the snap curve, not on a named ease', () => {
+    const { clip } = seed()
+    const out = punchInClip(clip, FPS, { atS: 4, targetScale: 1.2, riseFrames: 5 })
+    const at = 2
+    const rise = 5 / FPS
+    expect(out.keyframes?.scale?.[0].curve).toEqual(MOTION_CURVES.snapIn)
+    // snapIn is most of the way up at the halfway point, where easeOut was at 75%
+    expect(scaleAt(out, at + rise * 0.5)).toBeGreaterThan(1.19)
+  })
+
+  it('holdToEnd writes exactly two knots and STAYS at the target', () => {
+    const { clip } = seed()
+    const base = channelBase(clip, 'scale')
+    const out = punchInClip(clip, FPS, { atS: 4, targetScale: 1.2, riseFrames: 5, holdToEnd: true })
+    const kfs = out.keyframes?.scale ?? []
+    expect(kfs).toHaveLength(2)
+    expect(kfs[kfs.length - 1].value).toBe(base * 1.2)
+    expect(kfs[0].curve).toEqual(MOTION_CURVES.snapIn)
+    const at = 2
+    const rise = 5 / FPS
+    expect(scaleAt(out, at + rise)).toBeCloseTo(1.2, 6)
+    // where the old envelope had already slid back to base
+    expect(scaleAt(out, at + rise + 0.5 + 0.25)).toBeCloseTo(1.2, 6)
+    expect(scaleAt(out, 9)).toBeCloseTo(1.2, 6)
   })
 
   it('focal punch shifts position so the clicked point stays put', () => {
@@ -73,6 +115,41 @@ describe('punchInClip', () => {
   })
 })
 
+describe('punchOutClip', () => {
+  it('falls to the clip base EXACTLY and holds there', () => {
+    const { clip } = seed()
+    const base = channelBase(clip, 'scale')
+    const held = punchInClip(clip, FPS, { atS: 4, targetScale: 1.4, riseFrames: 5, holdToEnd: true })
+    const out = punchOutClip(held, FPS, { atS: 7, riseFrames: 5 })
+    const start = 5 // clip-local
+    const fall = 5 / FPS
+    // merged onto the punch in rather than clobbering it
+    expect(out.keyframes?.scale).toHaveLength(4)
+    expect(scaleAt(out, start)).toBeCloseTo(1.4, 6) // still up when the fall starts
+    expect(scaleAt(out, start + fall)).toBe(base) // lands ON base, not near it
+    expect(scaleAt(out, start + fall + 0.5)).toBe(base) // and holds
+    expect(scaleAt(out, 9.9)).toBe(base) // to the end of the clip
+    const fallKnot = out.keyframes?.scale?.find((k) => Math.abs(k.t - start) < 1e-6)
+    expect(fallKnot?.curve).toEqual(MOTION_CURVES.snapIn)
+  })
+
+  it('a focal fall returns the framing to its base position too', () => {
+    const { clip } = seed()
+    const focal = { x: 810, y: 960 } // 270px right of centre
+    const frame = { seqWidth: 1080, seqHeight: 1920 }
+    const held = punchInClip(clip, FPS, { atS: 4, targetScale: 1.2, holdToEnd: true, focal, ...frame })
+    expect(evalChannel(held.keyframes?.posX, 5, 0)).toBeCloseTo(-54, 4)
+    const out = punchOutClip(held, FPS, { atS: 7, ...frame, focal })
+    // continuous where the fall starts, and back on base by the time it lands
+    expect(evalChannel(out.keyframes?.posX, 5, 0)).toBeCloseTo(-54, 4)
+    expect(evalChannel(out.keyframes?.posX, 5 + 5 / FPS, 0)).toBeCloseTo(0, 6)
+    expect(evalChannel(out.keyframes?.posX, 9, 0)).toBeCloseTo(0, 6)
+    // without a focal point, position stays untouched
+    const plain = punchOutClip(clip, FPS, { atS: 7 })
+    expect(plain.keyframes?.posX).toBeUndefined()
+  })
+})
+
 describe('impactClip', () => {
   const at = 5 // sequence time → clip-local 3
   const local = 3
@@ -85,6 +162,8 @@ describe('impactClip', () => {
     // and they are real effect instances, so resolveFrame will render them
     expect(out.effects.map((e) => e.type).sort()).toEqual(['gaussianBlur', 'saturation'])
     expect(scaleAt(out, local)).toBeCloseTo(1.08, 6)
+    // the lead-in knot runs the snap curve where it used to run a named easeOut
+    expect(out.keyframes?.scale?.[0].curve).toEqual(MOTION_CURVES.snapIn)
     // well before and after: neutral
     expect(colorAt(out, 'saturation', 0.5)).toBeCloseTo(0, 6)
     expect(colorAt(out, 'blur', 9)).toBeCloseTo(0, 6)
@@ -111,8 +190,8 @@ describe('whipClips', () => {
 
     const fxA = out.a.effects.find((e) => e.type === 'directionalBlur')!
     const fxB = out.b.effects.find((e) => e.type === 'directionalBlur')!
-    const sA = fxA.params.strength as { value: number; keyframes: { t: number; value: number }[] }
-    const sB = fxB.params.strength as { value: number; keyframes: { t: number; value: number }[] }
+    const sA = fxA.params.strength as { value: number; keyframes: Keyframe[] }
+    const sB = fxB.params.strength as { value: number; keyframes: Keyframe[] }
     // A: 0 → max at its last frame; B: max at 0 → 0 after `frames`.
     expect(sA.keyframes.map((k) => [k.t.toFixed(3), k.value])).toEqual([
       [(10 - 3 / FPS).toFixed(3), 0],
@@ -120,6 +199,9 @@ describe('whipClips', () => {
     ])
     expect(sB.keyframes[0]).toMatchObject({ t: 0, value: 1 })
     expect(sB.keyframes[1].value).toBe(0)
+    // asymmetric by design: leaving winds up, arriving settles
+    expect(sA.keyframes[0].curve).toEqual(MOTION_CURVES.windUp)
+    expect(sB.keyframes[0].curve).toEqual(MOTION_CURVES.settle)
     // scale push on each side of the cut
     expect(evalChannel(out.a.keyframes?.scale, 10, 1)).toBeCloseTo(1.06, 6)
     expect(evalChannel(out.b.keyframes?.scale, 0, 1)).toBeCloseTo(1.06, 6)

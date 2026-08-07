@@ -1,5 +1,7 @@
-// Retiming keyframes in the Keyframes lane: drag a diamond along the track, or
-// type an exact time in the Time field. "Set the time this happens."
+// Retiming keyframes in the Zoom lane on the Motion Rail: drag a diamond along
+// the track, or type an exact time in the Time field. "Set the time this
+// happens." The lane is one property's own track under its PropRow now, so it
+// answers to keyframe-track; the gesture and everything it proves are unchanged.
 
 import { expect, test, type Page } from '@playwright/test'
 
@@ -65,7 +67,7 @@ test('dragging a keyframe diamond retimes it', async ({ page }) => {
   const id = await addTitle(page)
   await seedScaleKeyframes(page, id)
 
-  await expect(page.getByTestId('keyframe-lane')).toBeVisible()
+  await expect(page.locator('[data-testid="keyframe-track"][data-channel="scale"]')).toBeVisible()
   const diamonds = page.getByTestId('keyframe')
   await expect(diamonds).toHaveCount(2)
   expect(await scaleTimes(page)).toEqual([1, 3])

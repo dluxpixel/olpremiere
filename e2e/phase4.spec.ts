@@ -176,8 +176,13 @@ test('Effect Controls: stopwatch keyframes a channel and the lane shows a diamon
   await expect(page.getByTestId('channel-scale')).toBeVisible()
   await page.getByTestId('stopwatch-scale').click()
   await expect(page.getByTestId('stopwatch-scale')).toHaveAttribute('aria-pressed', 'true')
-  await expect(page.getByTestId('keyframe-lane')).toBeVisible()
-  await expect(page.getByTestId('keyframe').first()).toBeVisible()
+  // The lane is the Scale row's OWN track on the Motion Rail now, rendered
+  // directly under the PropRow the stopwatch sits in, so it is addressed by the
+  // channel it animates. Same two facts as before: the lane is there, with a
+  // diamond on it.
+  const zoomLane = page.locator('[data-testid="keyframe-track"][data-channel="scale"]')
+  await expect(zoomLane).toBeVisible()
+  await expect(zoomLane.getByTestId('keyframe').first()).toBeVisible()
 
   // The clip now carries a scale keyframe.
   const animated = await page.evaluate(async (id) => {

@@ -34,6 +34,19 @@ interface BlobMeta {
 export interface ProjectFileHeader {
   format: string
   version: number
+  /**
+   * The document, carried VERBATIM. Nothing on this path picks fields off a
+   * clip or a keyframe, so anything the engine adds rides through save and load
+   * for free. `Keyframe.curve`, the hand-shaped bezier, is the current one, and
+   * it needs no version bump for exactly that reason.
+   *
+   * If a strict validator or a field whitelist is ever added here it MUST carry
+   * `curve`, or every curve he shaped by hand silently flattens back to its
+   * named ease the next time he opens a project he already shipped from. That
+   * failure is invisible until he reopens the file, which is why
+   * projectFile.test.ts round-trips a curved keyframe: the test passes today and
+   * exists to fail on that day.
+   */
   project: Project
   blobs: BlobMeta[]
 }

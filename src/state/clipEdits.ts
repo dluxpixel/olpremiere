@@ -14,7 +14,16 @@ import {
 } from '../engine/effects/channels'
 import * as ops from '../engine/effects/ops'
 import { getEffect } from '../engine/effects/registry'
-import { moveKeyframeMoment, removeKeyframeNear, upsertKeyframe } from '../engine/keyframes'
+import {
+  clipKeyframeTimes,
+  duplicateKeyframeAt,
+  moveKeyframeMoment,
+  removeKeyframeNear,
+  scaleKeyframeSpan as scaleKeyframeSpanK,
+  setSegmentCurve as setSegmentCurveK,
+  upsertKeyframe,
+} from '../engine/keyframes'
+import { MOTION_CURVES, type MotionCurveName } from '../engine/motion'
 import {
   clipDurationS,
   clipEndS,
@@ -36,12 +45,12 @@ import {
   type BlendMode,
   type Clip,
   type ClipMask,
+  type Curve,
   type Id,
   type Keyframe,
 } from '../engine/types'
 import { transitionDurationSpec, type TransitionKind } from '../engine/render/types'
 import { updateActiveSequence, useStore } from './store'
-import { useSettings } from './settings'
 import { useToasts } from './toasts'
 
 const KEYFRAME_TOLERANCE_S = 1e-4
@@ -55,6 +64,53 @@ function findClip(clipId: string): Clip | undefined {
 export function playheadLocalT(clip: Clip): number {
   const t = useStore.getState().ui.playheadS
   return Math.max(0, Math.min(t - clip.startS, Math.max(0, clipEndS(clip) - clip.startS)))
+}
+
+/**
+ * The named ease each curve degrades to. A keyframe carrying a curve renders
+ * through that curve everywhere in this build, so `ease` is only what anything
+ * that has not learned `curve` reads: an older build, or a project opened after
+ * a validator strips the field. Paired the way motion.ts pairs them, so a punch
+ * written by a preset and one written by a drag lean the same way.
+ */
+const CURVE_EASE: Readonly<Record<MotionCurveName, Keyframe['ease']>> = {
+  snapIn: 'easeOut',
+  settle: 'easeOut',
+  smooth: 'easeInOut',
+  windUp: 'easeIn',
+  overshoot: 'easeOut',
+  easyEase: 'easeInOut',
+}
+
+/**
+ * The shape every keyframe a gesture creates is committed with: the chosen
+ * curve from `ui.moveCurve` and the ease it degrades to. Snap is the default and
+ * LINEAR IS THE OPT-OUT, which is most of the visible quality gap against the
+ * phone editors: a linear move reads as machinery, a curved one reads as an edit.
+ *
+ * A name the table does not know (a hand-edited localStorage key) falls back to
+ * linear rather than writing an undefined curve into the document.
+ */
+export function moveCommit(): { ease: Keyframe['ease']; curve?: Curve } {
+  const name = useStore.getState().ui.moveCurve
+  const curve = MOTION_CURVES[name]
+  return curve ? { ease: CURVE_EASE[name], curve } : { ease: 'linear' }
+}
+
+/** The channels whose keyframes make a clip ARMED. */
+const ARMED_CHANNELS: readonly AnimChannel[] = ['posX', 'posY', 'scale', 'rotation']
+
+/**
+ * ARMED: a drag on this clip writes keyframes instead of moving the whole clip.
+ *
+ * Read off the CLIP rather than a persisted global preference, so it can never
+ * outlive the clip it was set for (the same drag meaning two different things on
+ * two different nights), and so the state is always visible as diamonds in the
+ * lanes. Shared with the multi-selection align in bulkEdits so one gesture means
+ * one thing however many clips are in it.
+ */
+export function isClipArmed(clip: Clip): boolean {
+  return ARMED_CHANNELS.some((ch) => channelKeyframes(clip, ch).length > 0)
 }
 
 /**
@@ -123,6 +179,9 @@ export function setChannel(clipId: string, channel: AnimChannel, value: number):
   const clip = findClip(clipId)
   if (!clip) return
   const animated = channelKeyframes(clip, channel).length > 0
+  // Read once, not per callback run: a field commit is one gesture and must
+  // write one shape even if the curve chips change under a merged run.
+  const commit = moveCommit()
   mapClip(
     clipId,
     `Set ${channel}`,
@@ -132,7 +191,7 @@ export function setChannel(clipId: string, channel: AnimChannel, value: number):
       return withChannelKeyframes(
         c,
         channel,
-        upsertKeyframe(channelKeyframes(c, channel), { t: localT, value, ease: 'linear' }),
+        upsertKeyframe(channelKeyframes(c, channel), { t: localT, value, ...commit }),
       )
     },
     false,
@@ -211,15 +270,209 @@ export function removeKeyframeAtTime(clipId: string, channel: AnimChannel, t: nu
   )
 }
 
-export function setKeyframeEase(clipId: string, channel: AnimChannel, kfT: number, ease: Keyframe['ease']): void {
-  mapClip(clipId, `Set ${channel} easing`, (c) => {
-    const kfs = channelKeyframes(c, channel)
-    if (kfs.length === 0) return c
-    return withChannelKeyframes(
-      c,
-      channel,
-      kfs.map((k) => (Math.abs(k.t - kfT) <= KEYFRAME_TOLERANCE_S ? { ...k, ease } : k)),
-    )
+/**
+ * Give the segment LEAVING the keyframe at `segmentStartT` a NAMED ease, and
+ * drop any hand-shaped curve on it in the SAME step.
+ *
+ * Both halves are one edit deliberately. `evalChannel` reads `curve` first, so a
+ * name chosen while a curve is still stored would change nothing he can see, and
+ * two writes would cost him two undo presses for one click. 'hold' is why this
+ * action has to exist at all: it is a step, no bezier can express a step, so the
+ * curve chips can never stand in for it.
+ *
+ * Addressed by the segment, like setSegmentCurve, so the whole easing vocabulary
+ * speaks one language.
+ */
+export function setSegmentEase(
+  clipId: string,
+  channel: AnimChannel,
+  segmentStartT: number,
+  ease: Keyframe['ease'],
+): void {
+  mapClip(
+    clipId,
+    `Set ${channel} easing`,
+    (c) => {
+      const kfs = channelKeyframes(c, channel)
+      let hit = false
+      // Rebuilt field by field rather than spread: that is what drops `curve`.
+      const next = kfs.map((k) => {
+        if (Math.abs(k.t - segmentStartT) > KEYFRAME_TOLERANCE_S) return k
+        hit = true
+        return { t: k.t, value: k.value, ease }
+      })
+      return hit ? withChannelKeyframes(c, channel, next) : c
+    },
+    true,
+  )
+}
+
+/**
+ * Shape the segment LEAVING the keyframe at `segmentStartT`: what the curve
+ * editor commits. Passing undefined clears the hand-shaped curve and hands the
+ * segment back to its named ease.
+ *
+ * Addressed by the SEGMENT, never by a keyframe, which is what deletes the
+ * question every Premiere user has asked at least once: whether Ease Out belongs
+ * to the keyframe the move leaves or the one it lands on. The thing he clicked
+ * is the thing he is shaping.
+ */
+export function setSegmentCurve(
+  clipId: string,
+  channel: AnimChannel,
+  segmentStartT: number,
+  curve: Curve | undefined,
+): void {
+  mapClip(
+    clipId,
+    curve ? `Set ${channel} curve` : `Clear ${channel} curve`,
+    (c) => {
+      const kfs = channelKeyframes(c, channel)
+      const next = setSegmentCurveK(kfs, segmentStartT, curve)
+      // Same ref back means no keyframe sits at that moment; hand the SAME clip
+      // back so bailOnNoop can stop a dead undo step landing.
+      return next === kfs ? c : withChannelKeyframes(c, channel, next)
+    },
+    true,
+  )
+}
+
+/**
+ * Copy the keyframe at `t` to `toT`, carrying its value, its ease AND its curve:
+ * Alt-dragging a diamond. The same shaped move, somewhere else.
+ */
+export function duplicateKeyframe(clipId: string, channel: AnimChannel, t: number, toT: number): void {
+  const clip = findClip(clipId)
+  if (!clip) return
+  const to = Math.min(Math.max(toT, 0), clipDurationS(clip))
+  mapClip(
+    clipId,
+    `Duplicate ${channel} keyframe`,
+    (c) => {
+      const kfs = channelKeyframes(c, channel)
+      const next = duplicateKeyframeAt(kfs, t, to)
+      return next === kfs ? c : withChannelKeyframes(c, channel, next)
+    },
+    true,
+  )
+}
+
+/** One keyframe in a lane selection: which channel, and the moment it sits at. */
+export interface KeyframePick {
+  channel: AnimChannel
+  t: number
+}
+
+/** Picks folded onto the ACTUAL keyframe times the clip carries, per channel. */
+function pickedTimes(clip: Clip, picks: readonly KeyframePick[]): Map<AnimChannel, number[]> {
+  const out = new Map<AnimChannel, number[]>()
+  for (const p of picks) {
+    const hit = channelKeyframes(clip, p.channel).find((k) => Math.abs(k.t - p.t) <= KEYFRAME_TOLERANCE_S)
+    if (!hit) continue
+    const list = out.get(p.channel)
+    if (!list) out.set(p.channel, [hit.t])
+    else if (!list.some((t) => Math.abs(t - hit.t) <= KEYFRAME_TOLERANCE_S)) list.push(hit.t)
+  }
+  return out
+}
+
+const isPicked = (times: readonly number[], t: number): boolean =>
+  times.some((p) => Math.abs(p - t) <= KEYFRAME_TOLERANCE_S)
+
+/**
+ * Slide a whole lane selection by `deltaT` in ONE undo step. Every picked
+ * keyframe moves by the same amount, so the selection keeps its shape: the move
+ * he lassoed is the move he still has, only later or earlier.
+ *
+ * The delta is clamped ONCE against every pick before anything is written, on
+ * moveKeyframeMoment's rule: inside the clip, and never closer than one FRAME to
+ * a neighbour the selection did not pick. Clamping each keyframe on its own
+ * would bunch the selection up against whichever one hit its limit first, which
+ * silently rewrites the timing of a move he only meant to shift.
+ */
+export function moveKeyframes(clipId: string, picks: readonly KeyframePick[], deltaT: number): void {
+  const clip = findClip(clipId)
+  if (!clip) return
+  const byChannel = pickedTimes(clip, picks)
+  if (byChannel.size === 0) return
+  const dur = clipDurationS(clip)
+  // One frame is the smallest separation that can still be SEEN and clicked, the
+  // same gap moveClipKeyframe passes for the same reason.
+  const gap = 1 / (activeSequence(useStore.getState().project).fps || 30)
+  let lo = -Infinity
+  let hi = Infinity
+  for (const [channel, times] of byChannel) {
+    const kfs = channelKeyframes(clip, channel)
+    const others = kfs.filter((k) => !isPicked(times, k.t)).map((k) => k.t)
+    for (const k of kfs) {
+      if (!isPicked(times, k.t)) continue
+      const prev = others.filter((t) => t < k.t).pop()
+      const next = others.find((t) => t > k.t)
+      lo = Math.max(lo, (prev === undefined ? 0 : prev + gap) - k.t)
+      hi = Math.min(hi, (next === undefined ? dur : next - gap) - k.t)
+    }
+  }
+  // Nowhere left to go: keyframes already packed tighter than the gap.
+  if (lo > hi) return
+  const d = Math.min(Math.max(deltaT, lo), hi)
+  // Early no-op BEFORE dispatch: mapClip rebuilds the sequence either way, so a
+  // drag the clamp hands straight back would still cost the user an undo press.
+  if (Math.abs(d) <= KEYFRAME_TOLERANCE_S) return
+  mapClip(clipId, 'Move keyframes', (c) => {
+    let next = c
+    for (const [channel, times] of byChannel) {
+      const kfs = channelKeyframes(next, channel)
+      if (kfs.length === 0) continue
+      const moved = kfs
+        .map((k) => (isPicked(times, k.t) ? { ...k, t: k.t + d } : k))
+        .sort((a, b) => a.t - b.t)
+      next = withChannelKeyframes(next, channel, moved)
+    }
+    return next
+  })
+}
+
+/**
+ * Stretch or squash a lane selection around `anchorT` in ONE undo step: the
+ * Alt-drag that makes a move slower or faster without redrawing it. Every picked
+ * keyframe keeps its spacing relative to the anchor, scaled by `factor`.
+ *
+ * The math is the engine's, so this layer only decides WHICH keyframes are in
+ * the gesture; a keyframe the lasso missed stays exactly where it is, and the
+ * scaled ones merge back around it.
+ */
+export function scaleKeyframeSpan(
+  clipId: string,
+  picks: readonly KeyframePick[],
+  anchorT: number,
+  factor: number,
+): void {
+  const clip = findClip(clipId)
+  if (!clip) return
+  // A zero or negative factor would fold the move through its anchor and
+  // reorder it, which is a different edit than the one this gesture means.
+  if (!Number.isFinite(factor) || factor <= 0 || factor === 1) return
+  const byChannel = pickedTimes(clip, picks)
+  if (byChannel.size === 0) return
+  const dur = clipDurationS(clip)
+  mapClip(clipId, 'Retime keyframes', (c) => {
+    let next = c
+    for (const [channel, times] of byChannel) {
+      const kfs = channelKeyframes(next, channel)
+      if (kfs.length === 0) continue
+      const scaled = scaleKeyframeSpanK(
+        kfs.filter((k) => isPicked(times, k.t)),
+        anchorT,
+        factor,
+        dur,
+      )
+      const merged = scaled.reduce<Keyframe[]>(
+        (acc, k) => upsertKeyframe(acc, k),
+        kfs.filter((k) => !isPicked(times, k.t)),
+      )
+      next = withChannelKeyframes(next, channel, merged)
+    }
+    return next
   })
 }
 
@@ -475,10 +728,72 @@ export function setClipTransformAtPlayhead(
   if (changes.scale !== undefined) vals.push(['scale', changes.scale])
   if (changes.rotationDeg !== undefined) vals.push(['rotation', changes.rotationDeg])
   if (vals.length === 0) return
-  const auto = useSettings.getState().autoKeyframe
-  // The per-channel policy (upsert / auto-keyframe / base) lives in channels.ts
-  // so the multi-selection align obeys exactly the same one.
-  mapClip(clipId, 'Transform at playhead', (c) => withChannelsAtTime(c, playheadLocalT(c), vals, auto))
+  const clip = findClip(clipId)
+  if (!clip) return
+  // ARMED is the clip's own fact now, not a global preference (isClipArmed).
+  const armed = isClipArmed(clip)
+  // The per-channel policy (upsert / arm / base) lives in channels.ts so the
+  // multi-selection align obeys exactly the same one.
+  const commit = moveCommit()
+  mapClip(clipId, 'Transform at playhead', (c) =>
+    withChannelsAtTime(c, playheadLocalT(c), vals, armed, commit),
+  )
+}
+
+/** The channels the motion badge snapshots: the framing, and nothing else. */
+const MOTION_SNAPSHOT_CHANNELS: readonly AnimChannel[] = ['scale', 'posX', 'posY']
+
+/**
+ * The gizmo's diamond badge: keyframe the framing here, or take out the moment
+ * that is already here.
+ *
+ * OFF a moment it snapshots scale and both position channels at the playhead
+ * through withChannelsAtTime, which is also what ARMS a clip that was not
+ * animated: that path writes the keyframe the move leaves FROM as well, and it
+ * takes two, because a lone keyframe holds everywhere and is just a moved base.
+ *
+ * ON a moment it removes that moment across every channel at once. A moment is
+ * ONE thing to the person looking at it (clipKeyframeTimes is the same read the
+ * timeline marks and the lanes use), so deleting it per channel would leave a
+ * punch half-erased: scale gone, position still moving.
+ */
+export function toggleMotionAtPlayhead(clipId: string): void {
+  const clip = findClip(clipId)
+  if (!clip) return
+  const localT = playheadLocalT(clip)
+  // One frame either side. Keyframes snap to the grid and the closest two
+  // moments may ever be is one frame, so the nearest inside that window is
+  // unambiguously the one under the playhead.
+  const tol = 1 / (activeSequence(useStore.getState().project).fps || 30)
+  const at = clipKeyframeTimes(clip)
+    .filter((t) => Math.abs(t - localT) <= tol)
+    .sort((a, b) => Math.abs(a - localT) - Math.abs(b - localT))[0]
+
+  if (at !== undefined) {
+    mapClip(
+      clipId,
+      'Remove keyframe',
+      (c) => {
+        let next = c
+        for (const channel of ANIM_CHANNELS) {
+          const kfs = channelKeyframes(next, channel)
+          if (kfs.length === 0) continue
+          const cut = removeKeyframeNear(kfs, at, KEYFRAME_TOLERANCE_S)
+          if (cut !== kfs) next = withChannelKeyframes(next, channel, cut)
+        }
+        return next
+      },
+      true,
+    )
+    return
+  }
+
+  const commit = moveCommit()
+  mapClip(clipId, 'Add keyframe', (c) => {
+    const t = playheadLocalT(c)
+    const vals = MOTION_SNAPSHOT_CHANNELS.map((ch) => [ch, resolveChannel(c, ch, t)] as const)
+    return withChannelsAtTime(c, t, vals, true, commit)
+  })
 }
 
 // ---------------------------------------------------------------------------
