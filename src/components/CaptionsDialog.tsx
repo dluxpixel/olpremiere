@@ -31,7 +31,9 @@ import { Button, IconButton } from '../ui/Button'
 /** The voiceover clip Auto-Caption should target. Priority: the clip you have
  * SELECTED (so picking a clip then captioning does what you expect), then the
  * clip under the playhead on a voice-role track, then the first voice clip,
- * then the first audio clip with sound. */
+ * then the first audio clip with sound that is NOT on a marked music track.
+ * A music clip stays reachable as the very last resort rather than being cut
+ * out, so a timeline whose only sound is that track still captions something. */
 function findVoClipId(): string | null {
   const s = useStore.getState()
   const seq = activeSequence(s.project)
@@ -42,19 +44,27 @@ function findVoClipId(): string | null {
     .flatMap((tr) =>
       tr.clips
         .filter((c) => s.project.assets[c.assetId]?.hasAudio)
-        .map((c) => ({ c, voice: tr.audioRole === 'voice' })),
+        .map((c) => ({ c, voice: tr.audioRole === 'voice', music: tr.audioRole === 'music' })),
     )
   if (audible.length === 0) return null
   const selected = audible.find(({ c }) => sel.has(c.id))
   const under = audible.find(({ c, voice }) => voice && t >= c.startS && t < clipEndS(c))
-  return (selected ?? under ?? audible.find(({ voice }) => voice) ?? audible[0]).c.id
+  return (
+    selected ??
+    under ??
+    audible.find(({ voice }) => voice) ??
+    audible.find(({ music }) => !music) ??
+    audible[0]
+  ).c.id
 }
 
-/** How many clips "Caption every clip" would actually work on. */
+/** How many clips "Caption every clip" would actually work on. Skips the same
+ * tracks that door skips (audibleClips in transcribeActions), so the count on
+ * the button cannot promise work that will not happen. */
 function audibleClipCount(): number {
   const s = useStore.getState()
   return activeSequence(s.project)
-    .tracks.filter((t) => !t.locked)
+    .tracks.filter((t) => !t.locked && t.audioRole !== 'music')
     .flatMap((t) => t.clips)
     .filter((c) => s.project.assets[c.assetId]?.hasAudio).length
 }

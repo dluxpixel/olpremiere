@@ -289,7 +289,12 @@ function createWindow(): void {
 
   if (isDev) {
     void win.loadURL(DEV_URL!)
-    win.webContents.openDevTools({ mode: 'detach' })
+    // DevTools is OPT IN, not automatic. His words, 2026-08-08: "every time you reload and open
+    // something, it just opens the electron thing and it opens OL Premiere on my desktop, which is
+    // kind of annoying." He was reading something at the time, and a detached DevTools window on
+    // top of a dev shell he never asked for took his screen. He does not develop this app, he uses
+    // it, so nothing here may assume a human who wants a debugger. Set OLP_DEVTOOLS=1 to get it.
+    if (process.env.OLP_DEVTOOLS === '1') win.webContents.openDevTools({ mode: 'detach' })
   } else {
     void win.loadURL(`app://${APP_ORIGIN_HOST}/index.html`)
   }

@@ -10,6 +10,7 @@ import {
   transcribePcm,
   wordsFromAsrChunks,
 } from '../engine/captions/transcribe'
+import { dropWordsWithoutVoice, voiceTrackForClip } from '../engine/captions/voiceActivity'
 import { getCaptionLanguage } from '../engine/captions/transcribeConfig'
 import { clipEmitsAudio } from '../engine/audio'
 import { activeSequence, type Clip, type MediaAsset } from '../engine/types'
@@ -51,6 +52,13 @@ const isCancel = (err: unknown): boolean => typeof err === 'object' && err !== n
  * Transcribe ONE clip and return its words already mapped onto the timeline.
  * Shared by the single-clip door and the whole-timeline run so the two can never
  * disagree about tidying, language, or how clip time maps to timeline time.
+ *
+ * ONE analysis pass per clip, and it is started HERE, in the same tick as the
+ * Whisper worker rather than before or after it. Reading RNNoise's voice
+ * probabilities costs a measured 77 ms per second of audio in chromium (4.6 s
+ * for a 60 s clip), which would be a plainly noticeable wait if it were queued
+ * ahead of the model. Run alongside, it finishes inside an inference that takes
+ * longer, so his wait does not move.
  */
 async function wordsForClip(clip: Clip, asset: MediaAsset): Promise<CaptionWord[]> {
   useTranscribe.setState({ status: 'reading', pct: null, downloading: false, cancel: null })
@@ -59,41 +67,73 @@ async function wordsForClip(clip: Clip, asset: MediaAsset): Promise<CaptionWord[
   const run = transcribePcm(pcm, getCaptionLanguage(), (p) =>
     useTranscribe.setState({ status: p.phase, pct: p.pct, downloading: p.downloading ?? false }),
   )
+  // Aborted the moment the run fails or is cancelled, so a dead run cannot leave
+  // an analysis churning into the next clip of a whole-timeline sweep.
+  const stop = new AbortController()
+  const voice = voiceTrackForClip(asset, clip, stop.signal)
   useTranscribe.setState({ cancel: run.cancel })
-  const chunks = await run.promise
+  let chunks
+  try {
+    chunks = await run.promise
+  } catch (err) {
+    stop.abort()
+    throw err
+  }
   // tidy BEFORE the timeline mapping: loops, bare punctuation and Whisper's
   // end-of-silence inventions are recogniser artifacts, not edits.
-  return timelineWords(tidyTranscribedWords(wordsFromAsrChunks(chunks)), clip)
+  const heard = tidyTranscribedWords(wordsFromAsrChunks(chunks))
+  // Then drop what the audio says nobody said. A null track means the detector
+  // had no opinion (wasm blocked, undecodable audio), and no opinion keeps every
+  // word: this filter may only ever take words away, never rescue a caption run.
+  const track = await voice
+  return timelineWords(track ? dropWordsWithoutVoice(heard, track) : heard, clip)
 }
 
 /**
- * Every clip on the timeline that actually has sound, in the order it plays.
- * Locked tracks are skipped, because captioning them is work he cannot undo by
- * hand afterwards.
- */
-/**
- * Every clip that actually makes sound, or just the ones whose ids are given.
+ * Every clip that actually makes sound and should be captioned, or just the
+ * ones whose ids are given.
  *
- * The filter exists so captioning a SELECTION reuses the whole-timeline path
+ * The id filter exists so captioning a SELECTION reuses the whole-timeline path
  * instead of running the single-clip one N times: the words are pooled and laid
  * down in ONE pass, so a selection of eight clips still produces one caption
  * track and one undo step.
+ *
+ * Two kinds of track are passed over:
+ *  - LOCKED, because captioning them is work he cannot undo by hand afterwards.
+ *  - MUSIC. A track he has marked `audioRole: 'music'` (right-click the track
+ *    header) is a backing bed, so every word Whisper finds in it is a mishearing
+ *    of a melody. Sending it to the recogniser was the reported bug: "Caption
+ *    every clip" transcribed the song. 'voice' and UNMARKED tracks are untouched,
+ *    because unmarked is the default and skipping it would silently swallow the
+ *    voiceover of anyone who never opened that menu.
  */
-function audibleClips(onlyIds?: ReadonlySet<string>): { clip: Clip; asset: MediaAsset }[] {
+function audibleClips(onlyIds?: ReadonlySet<string>): {
+  targets: { clip: Clip; asset: MediaAsset }[]
+  /** Sounding clips passed over only because their track is marked as music. */
+  skippedMusic: number
+} {
   const s = useStore.getState()
   const seq = activeSequence(s.project)
-  return seq.tracks
-    .filter((t) => !t.locked)
-    // clipEmitsAudio, not the asset alone. A linked video clip and its audio
-    // partner share one assetId and both report hasAudio, so filtering on the
-    // asset transcribed the same take TWICE and laid both word sets at the same
-    // timeline moment: every caption came out doubled, and the Whisper wait
-    // doubled with it. Worse the more clips there are. This is the predicate the
-    // mixer and both export paths already use to stop linked A/V doubling sound.
-    .flatMap((t) => t.clips.filter((c) => clipEmitsAudio(t, c) && (!onlyIds || onlyIds.has(c.id))))
-    .map((clip) => ({ clip, asset: s.project.assets[clip.assetId] }))
-    .filter((x): x is { clip: Clip; asset: MediaAsset } => !!x.asset?.hasAudio)
-    .sort((a, b) => a.clip.startS - b.clip.startS)
+  // clipEmitsAudio, not the asset alone. A linked video clip and its audio
+  // partner share one assetId and both report hasAudio, so filtering on the
+  // asset transcribed the same take TWICE and laid both word sets at the same
+  // timeline moment: every caption came out doubled, and the Whisper wait
+  // doubled with it. Worse the more clips there are. This is the predicate the
+  // mixer and both export paths already use to stop linked A/V doubling sound.
+  const sounding = (t: (typeof seq.tracks)[number]): { clip: Clip; asset: MediaAsset }[] =>
+    t.clips
+      .filter((c) => clipEmitsAudio(t, c) && (!onlyIds || onlyIds.has(c.id)))
+      .map((clip) => ({ clip, asset: s.project.assets[clip.assetId] }))
+      .filter((x): x is { clip: Clip; asset: MediaAsset } => !!x.asset?.hasAudio)
+
+  const unlocked = seq.tracks.filter((t) => !t.locked)
+  return {
+    targets: unlocked
+      .filter((t) => t.audioRole !== 'music')
+      .flatMap(sounding)
+      .sort((a, b) => a.clip.startS - b.clip.startS),
+    skippedMusic: unlocked.filter((t) => t.audioRole === 'music').flatMap(sounding).length,
+  }
 }
 
 /** Transcribe the audio clip locally and lay its words down as captions. */
@@ -105,11 +145,19 @@ export async function autoCaptionFromClip(clipId: string, preset?: TextStylePres
   }
   const s = useStore.getState()
   const seq = activeSequence(s.project)
-  const clip = seq.tracks.flatMap((t) => t.clips).find((c) => c.id === clipId)
+  const track = seq.tracks.find((t) => t.clips.some((c) => c.id === clipId))
+  const clip = track?.clips.find((c) => c.id === clipId)
   const asset = clip ? s.project.assets[clip.assetId] : undefined
   if (!clip || !asset?.hasAudio) {
     toasts.show('Select an audio clip with sound to caption', 'danger')
     return
+  }
+  // The sweep doors skip a music track outright. This door does NOT, because one
+  // clip is him pointing at one thing on purpose and refusing would be the app
+  // arguing with him. It says out loud what it is doing instead, so the two
+  // rules never look like the same rule quietly disagreeing.
+  if (track?.audioRole === 'music') {
+    toasts.show('Captioning a clip on your music track, because you picked it')
   }
 
   try {
@@ -158,9 +206,18 @@ export async function autoCaptionEveryClip(
     toasts.show('A transcription is already running', 'danger')
     return
   }
-  const targets = audibleClips(onlyIds)
+  const { targets, skippedMusic } = audibleClips(onlyIds)
   if (targets.length === 0) {
-    toasts.show(onlyIds ? 'None of those clips have sound' : 'No clips with sound to caption', 'danger')
+    // Naming the music track matters here: without it "no clips with sound"
+    // reads as a bug on a timeline he can plainly hear.
+    toasts.show(
+      skippedMusic > 0
+        ? 'Nothing to caption, the clips with sound are on a music track'
+        : onlyIds
+          ? 'None of those clips have sound'
+          : 'No clips with sound to caption',
+      'danger',
+    )
     return
   }
 

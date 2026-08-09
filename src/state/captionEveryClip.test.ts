@@ -8,7 +8,18 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-vi.mock('./toasts', () => ({ useToasts: { getState: () => ({ show: () => {} }) } }))
+// Every toast the run raised, so the tests can prove the app SAYS what it did
+// rather than silently doing nothing.
+const toasted: string[] = []
+vi.mock('./toasts', () => ({
+  useToasts: {
+    getState: () => ({
+      show: (message: string) => {
+        toasted.push(message)
+      },
+    }),
+  },
+}))
 
 // One fake word per clip, named after the clip, so the assertions can tell which
 // clip's audio a caption came from.
@@ -26,6 +37,13 @@ vi.mock('../engine/captions/transcribe', () => ({
   ],
 }))
 vi.mock('../engine/captions/transcribeConfig', () => ({ getCaptionLanguage: () => 'en' }))
+// The voice detector has NO opinion here (no wasm in node), which is the path
+// that has to keep every word Whisper heard. Its own rule is tested against a
+// synthesised probability track in engine/captions/voiceActivity.test.ts.
+vi.mock('../engine/captions/voiceActivity', () => ({
+  voiceTrackForClip: () => Promise.resolve(null),
+  dropWordsWithoutVoice: (words: unknown[]) => words,
+}))
 
 import {
   activeSequence,
@@ -36,7 +54,7 @@ import {
   type Sequence,
 } from '../engine/types'
 import { updateActiveSequence, useStore } from './store'
-import { autoCaptionEveryClip, useTranscribe } from './transcribeActions'
+import { autoCaptionEveryClip, autoCaptionFromClip, useTranscribe } from './transcribeActions'
 
 const seq = (): Sequence => activeSequence(useStore.getState().project)
 const asset = (id: string): MediaAsset => ({
@@ -50,7 +68,10 @@ const asset = (id: string): MediaAsset => ({
 })
 
 /** Put audio clips on the first audio track, each with its own sounding asset. */
-function seedAudio(specs: { id: string; startS: number }[], opts: { locked?: boolean } = {}): void {
+function seedAudio(
+  specs: { id: string; startS: number }[],
+  opts: { locked?: boolean; audioRole?: 'voice' | 'music' } = {},
+): void {
   const s = useStore.getState()
   s.setProject({
     ...s.project,
@@ -67,6 +88,7 @@ function seedAudio(specs: { id: string; startS: number }[], opts: { locked?: boo
           ? {
               ...t,
               locked: opts.locked ?? false,
+              ...(opts.audioRole ? { audioRole: opts.audioRole } : {}),
               clips: specs.map((sp) => ({
                 ...newClipFromAsset(asset(sp.id), sp.startS),
                 id: `clip-${sp.id}`, // named, so the assertions can name it back
@@ -79,8 +101,40 @@ function seedAudio(specs: { id: string; startS: number }[], opts: { locked?: boo
   })
 }
 
+/** Two sounding audio tracks, one marked music and one marked voice. */
+function seedMusicAndVoice(): void {
+  const s = useStore.getState()
+  s.setProject({ ...s.project, assets: { bed: asset('bed'), vo: asset('vo') } })
+  updateActiveSequence('seed music + voice', (sq) => {
+    const audio = sq.tracks.filter((t) => t.kind === 'audio')
+    const musicId = audio[0]?.id
+    const voiceId = audio[1]?.id
+    return {
+      ...sq,
+      tracks: sq.tracks.map((t) => {
+        if (t.id === musicId) {
+          return {
+            ...t,
+            audioRole: 'music' as const,
+            clips: [{ ...newClipFromAsset(asset('bed'), 0), id: 'clip-bed', outS: 1 }],
+          }
+        }
+        if (t.id === voiceId) {
+          return {
+            ...t,
+            audioRole: 'voice' as const,
+            clips: [{ ...newClipFromAsset(asset('vo'), 0), id: 'clip-vo', outS: 1 }],
+          }
+        }
+        return { ...t, clips: [] }
+      }),
+    }
+  })
+}
+
 beforeEach(() => {
   heard.length = 0
+  toasted.length = 0
   useStore.getState().setProject(newProject())
   useStore.getState().setUI({ selection: [], playheadS: 0 })
   useTranscribe.setState({ status: 'idle', pct: null, downloading: false, cancel: null, queue: null })
@@ -144,6 +198,48 @@ describe('autoCaptionEveryClip', () => {
     seedAudio([{ id: 'a', startS: 0 }], { locked: true })
     await autoCaptionEveryClip()
     expect(heard).toEqual([])
+  })
+
+  // His report, 2026-08-09: "with the auto caption, it also captions music."
+  // A track he has marked as music is a backing bed, so every word Whisper finds
+  // in it is a mishearing of a melody. It must never reach the recogniser.
+  it('leaves a track marked as music alone', async () => {
+    seedAudio([{ id: 'a', startS: 0 }], { audioRole: 'music' })
+    await autoCaptionEveryClip()
+    expect(heard).toEqual([])
+  })
+
+  it('says the music track is why nothing happened, instead of claiming no sound', async () => {
+    seedAudio([{ id: 'a', startS: 0 }], { audioRole: 'music' })
+    await autoCaptionEveryClip()
+    expect(toasted.join(' ')).toContain('music track')
+  })
+
+  it('captions the voice track and skips the music bed under it', async () => {
+    seedMusicAndVoice()
+    await autoCaptionEveryClip()
+    expect(heard).toEqual(['clip-vo'])
+  })
+
+  // The failure that would cost him work is a MISSING caption, so only the
+  // explicit 'music' mark is allowed to skip anything. Unmarked is the default
+  // and nothing sets it automatically, so an unmarked voiceover must still run.
+  it('still captions a track he has not marked at all', async () => {
+    seedAudio([{ id: 'a', startS: 0 }])
+    await autoCaptionEveryClip()
+    expect(heard).toEqual(['clip-a'])
+  })
+
+  it('still captions a track he has marked as voice', async () => {
+    seedAudio([{ id: 'a', startS: 0 }], { audioRole: 'voice' })
+    await autoCaptionEveryClip()
+    expect(heard).toEqual(['clip-a'])
+  })
+
+  it('skips the music track on the selection path too', async () => {
+    seedMusicAndVoice()
+    await autoCaptionEveryClip(undefined, new Set(['clip-bed', 'clip-vo']))
+    expect(heard).toEqual(['clip-vo'])
   })
 
   it('refuses to start while another transcription is running', async () => {
@@ -215,5 +311,30 @@ describe('autoCaptionEveryClip', () => {
     })
     await autoCaptionEveryClip()
     expect(heard).toEqual(['clip-solo'])
+  })
+})
+
+// The single-clip door is him pointing at ONE thing on purpose. The sweep doors
+// skip a music track; this one deliberately does not, because refusing would be
+// the app arguing with a deliberate right-click. It says what it is doing so the
+// two rules cannot look like the same rule quietly disagreeing.
+describe('autoCaptionFromClip on a music track', () => {
+  it('still runs, because he pointed at that clip himself', async () => {
+    seedAudio([{ id: 'a', startS: 0 }], { audioRole: 'music' })
+    await autoCaptionFromClip('clip-a')
+    expect(heard).toEqual(['clip-a'])
+  })
+
+  it('says out loud that the clip is on his music track', async () => {
+    seedAudio([{ id: 'a', startS: 0 }], { audioRole: 'music' })
+    await autoCaptionFromClip('clip-a')
+    expect(toasted.join(' ')).toContain('music track')
+  })
+
+  it('says nothing about music for an ordinary clip', async () => {
+    seedAudio([{ id: 'a', startS: 0 }])
+    await autoCaptionFromClip('clip-a')
+    // The "captions added" toast is the normal one; the music note must not fire.
+    expect(toasted.join(' ')).not.toContain('music')
   })
 })

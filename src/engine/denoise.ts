@@ -22,8 +22,13 @@
 
 import type { MediaAsset } from './types'
 
-/** RNNoise expects 16-bit-PCM-range floats; AudioBuffer floats are ±1. */
-const PCM_SCALE = 0x7fff
+/**
+ * RNNoise expects 16-bit-PCM-range floats; AudioBuffer floats are ±1.
+ * Exported because captions/voiceActivity.ts feeds the SAME net to read its
+ * voice-activity output, and a second copy of this number would be a silent way
+ * for the two paths to start disagreeing about what the model was shown.
+ */
+export const PCM_SCALE = 0x7fff
 
 /**
  * The slice of the wasm module denoiseBuffer needs, injectable so unit tests
@@ -84,10 +89,15 @@ export function mixDryWet(raw: Float32Array, wet: Float32Array, strength: number
 }
 
 // ---------------------------------------------------------------------------
-// Per-asset caches. The full-wet pass is the expensive one (one RNNoise run
-// per channel, ~50-100× realtime) and is cached per asset; the crossfade is a
-// multiply-add over the PCM (~ms) cached at the latest strength only, so a
-// slider drag never accumulates one buffer per step.
+// Per-asset caches. The full-wet pass is the expensive one (one RNNoise run per
+// channel) and is cached per asset; the crossfade is a multiply-add over the PCM
+// (~ms) cached at the latest strength only, so a slider drag never accumulates
+// one buffer per step.
+//
+// This used to claim 50-100x realtime. Measured in headless chromium on his
+// machine, 2026-08-09: 77 ms per second of audio per channel, so about 13x, and
+// a stereo minute is roughly 9 s of work. The cache is doing more for him than
+// that number suggested, not less.
 
 const wetCache = new Map<string, Promise<Float32Array[] | null>>()
 const mixCache = new Map<string, { strength: number; channels: Float32Array[] }>()

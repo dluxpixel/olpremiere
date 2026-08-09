@@ -114,7 +114,54 @@ async function getAsr(model: string): Promise<Asr> {
   }
 }
 
-const OPTS = { return_timestamps: 'word', chunk_length_s: 30, stride_length_s: 5 }
+/**
+ * Hard ceiling on the tokens Whisper may generate for ONE chunk. This is what
+ * stops a music-only clip from taking the whole window down, and the mechanism
+ * is specific enough to be worth writing out.
+ *
+ * With word timestamps on, transformers.js does not simply decode a chunk. It
+ * runs a SEEK LOOP (`_generate_with_seek`, models/whisper/modeling_whisper.js):
+ * generate, find the last pair of consecutive timestamp tokens, advance `seek`
+ * to whatever time that pair points at, repeat until `seek` reaches the end of
+ * the audio. On a long uninterrupted instrumental bed Whisper falls into its
+ * documented repetition loop and emits degenerate timestamp pairs pointing back
+ * at 0.00, so the offset it computes is ZERO, `seek` never moves, and the loop
+ * never terminates. Every pass appends more tokens and allocates another set of
+ * cross-attention tensors for the timestamp alignment, so memory climbs until
+ * the worker dies. A worker shares its renderer process, which is why the page
+ * went with it instead of the run simply failing.
+ *
+ * Setting max_new_tokens fixes both halves at once. It caps the decode, and the
+ * library skips that seek loop entirely when it is set. Skipping it costs
+ * nothing here: the loop exists to walk audio LONGER than one 30 s Whisper
+ * window, and `chunk_length_s` below already hands the model exactly one window
+ * per call, so a correct run only ever made a single pass through it.
+ *
+ * The number cannot cost him a word. Whisper's decoder holds 448 positions
+ * total, so no chunk was ever going to run past that anyway. 300 tokens over a
+ * 30 s chunk is 10 per second; the fastest real speech is around 4 words a
+ * second, near 6 tokens, so ordinary speech keeps a wide margin and it is only
+ * the runaway, which repeats far faster than anyone talks, that gets cut.
+ */
+const MAX_NEW_TOKENS_PER_CHUNK = 300
+
+/**
+ * Deliberately NOT set here: `no_repeat_ngram_size`. Banning a repeated token
+ * run is the textbook answer to a Whisper repetition loop and it was measured
+ * on 2026-08-09 rather than assumed. It backfired. Stopping the loop does not
+ * stop the DECODE, so the model simply wanders and fills the same budget with
+ * varied junk instead of repeated junk: on the 60 s rigid bed the invented word
+ * count went from 9 to 242, and on the 40 s one it only fell from 296 to 234.
+ * Worse in total, so it was taken back out. The repetition is dealt with after
+ * the fact instead, in tidyTranscribedWords, where a filter can only ever
+ * remove words and can never change one.
+ */
+const OPTS = {
+  return_timestamps: 'word',
+  chunk_length_s: 30,
+  stride_length_s: 5,
+  max_new_tokens: MAX_NEW_TOKENS_PER_CHUNK,
+}
 
 async function run(pcm: Float32Array, language: CaptionLanguage): Promise<void> {
   try {
