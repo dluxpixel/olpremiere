@@ -78,12 +78,30 @@ export const SPLASH_CARD_EXIT_MS = 300
 export const SPLASH_MELON_POP_MS = 420
 /** The square the splash shrinks to once the melon is the only thing left in it. */
 export const SPLASH_MELON_PX = 360
+/**
+ * The splash WINDOW, in the one place both the window and the card can be read
+ * from. Sized to the card plus room for the drop shadow to land on a transparent
+ * background. It was still 700 by 344 on 2026-08-09, the size of the seven-row
+ * card of v0.1.16, by which point the startup had eleven rows and the card was
+ * being cut off top and bottom inside its own window.
+ */
+export const SPLASH_WINDOW_W = 700
+export const SPLASH_WINDOW_H = 460
 
 /** One frame of the loading card's state, sent to the splash window. */
 export interface BootProgress {
-  rows: { id: string; label: string; state: 'pending' | 'active' | 'done' | 'failed' }[]
+  /** `optional` is a row the app does not wait for. The splash draws those apart. */
+  rows: { id: string; label: string; state: 'pending' | 'active' | 'done' | 'failed'; optional?: boolean }[]
   line: string
   percent: number
+  /**
+   * How many rows that HOLD THE APP SHUT have settled, out of how many there are.
+   * Counted once, by the editor (`gatingCount`), and sent, rather than recounted in
+   * the splash: the desktop card and the in-app card must never be able to disagree
+   * about how full the bar is.
+   */
+  settled: number
+  total: number
   version: string
 }
 

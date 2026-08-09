@@ -6,10 +6,12 @@ import {
   HARD_CAP_MS,
   MIN_CARD_MS,
   OPTIONAL_GRACE_MS,
+  READY_BACKGROUND_LINE,
   allSettled,
   bootOverride,
   bootStep,
   gateReady,
+  gatingCount,
   labelOf,
   progressOf,
   statusLine,
@@ -261,5 +263,61 @@ describe('progressOf answers "how close am I to being let in"', () => {
   it('still counts a gating row that has not landed', () => {
     const specs = [spec('a'), spec('b'), spec('slow', { optional: true })]
     expect(progressOf(specs, { a: { state: 'done' } } as unknown as BootStatuses)).toBe(0.5)
+  })
+})
+
+describe('the bar and the list say the same thing', () => {
+  // 2026-08-09, and the second time he has caught this class of thing. His first
+  // screenshot had the bar at 100% with three rows still visibly unfinished; his
+  // second had 38% with three rows ticked out of the eleven drawn. Both numbers were
+  // right about the eight rows that gate, and neither of them said so anywhere.
+  const specs = [spec('a'), spec('b'), spec('net', { optional: true }), spec('model', { optional: true })]
+  const gateOpen = {
+    a: { state: 'done' },
+    b: { state: 'done' },
+    net: { state: 'active' },
+  } as unknown as BootStatuses
+
+  it('counts the gating rows, and says how many that is', () => {
+    expect(gatingCount(specs, {} as BootStatuses)).toEqual({ settled: 0, total: 2 })
+    expect(gatingCount(specs, { a: { state: 'done' } } as unknown as BootStatuses)).toEqual({ settled: 1, total: 2 })
+  })
+
+  it('is the same fraction the bar draws, so the count and the segments cannot part', () => {
+    const half = { a: { state: 'done' } } as unknown as BootStatuses
+    const { settled, total } = gatingCount(specs, half)
+    expect(progressOf(specs, half)).toBe(settled / total)
+  })
+
+  it('does not count a background row, however long it runs', () => {
+    expect(gatingCount(specs, gateOpen)).toEqual({ settled: 2, total: 2 })
+  })
+
+  it('says out loud that it is opening without waiting', () => {
+    // The honest half of the fix. A full bar next to "Getting captions ready" reads
+    // as a bar that gave up. This line says the app is going in and the rest is
+    // still running, which is exactly what is happening.
+    expect(statusLine(specs, gateOpen)).toBe(READY_BACKGROUND_LINE)
+    expect(READY_BACKGROUND_LINE).toContain('background')
+  })
+
+  it('still says plain Ready when nothing at all is left running', () => {
+    const all = {
+      a: { state: 'done' },
+      b: { state: 'done' },
+      net: { state: 'done' },
+      model: { state: 'done' },
+    } as unknown as BootStatuses
+    expect(statusLine(specs, all)).toBe('Ready')
+  })
+
+  it('keeps a failure on the line instead of the ready message', () => {
+    // The gate opens ON a failed row, so "Ready" would otherwise cover it up.
+    const broken = {
+      a: { state: 'done' },
+      b: { state: 'failed', detail: 'IndexedDB is gone' },
+      net: { state: 'active' },
+    } as unknown as BootStatuses
+    expect(statusLine(specs, broken)).toBe('Doing b: IndexedDB is gone')
   })
 })

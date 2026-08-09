@@ -91,3 +91,27 @@ test('the warm-up rows do real work, and the app opens even if they do not finis
   await melon.click()
   await expect(page.getByTestId('panel-left')).toBeVisible()
 })
+
+test('the bar counts exactly the rows drawn under it', async ({ page }) => {
+  // The fault he caught twice: a full bar over three unfinished rows, and 38% over
+  // three ticks out of eleven. Both were counting the eight rows that gate and
+  // neither said which eight. The bar now has one segment per gating row, those rows
+  // are their own group, and this asserts the three readings agree.
+  await page.goto('/?boot=hold')
+  const card = page.getByTestId('boot-loading-card')
+  const gating = card.locator('ul[data-group="gating"] li[data-step]')
+  const bar = card.getByRole('progressbar')
+
+  const total = await gating.count()
+  expect(total).toBeGreaterThan(0)
+  await expect(bar.locator('span')).toHaveCount(total)
+
+  // The rows the app does not wait for are drawn apart, and are NOT in the count.
+  await expect(card.locator('ul[data-group="background"] li[data-step="captions"]')).toHaveCount(1)
+  await expect(card.locator('ul[data-group="gating"] li[data-step="captions"]')).toHaveCount(0)
+
+  // And when the bar is full, every row it counts really is ticked.
+  await expect.poll(async () => Number(await bar.getAttribute('aria-valuenow')), { timeout: 15_000 }).toBe(100)
+  await expect(card.getByTestId('boot-step-count')).toHaveText(`${total} of ${total}`)
+  await expect(card.locator('ul[data-group="gating"] li[data-state="pending"]')).toHaveCount(0)
+})

@@ -5,7 +5,13 @@
 
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { SPLASH_CARD_EXIT_MS, SPLASH_MELON_POP_MS, SPLASH_MELON_PX } from '../../electron/ipc-types'
+import {
+  SPLASH_CARD_EXIT_MS,
+  SPLASH_MELON_POP_MS,
+  SPLASH_MELON_PX,
+  SPLASH_WINDOW_H,
+  SPLASH_WINDOW_W,
+} from '../../electron/ipc-types'
 
 const css = readFileSync(new URL('./splash.css', import.meta.url), 'utf8')
 const main = readFileSync(new URL('../../electron/main.ts', import.meta.url), 'utf8')
@@ -65,5 +71,25 @@ describe('the melon is a button, not a drag handle', () => {
     // without this the melon would look like a button and do nothing at all.
     expect(css).toMatch(/\.melonStage\s*\{[^}]*-webkit-app-region:\s*drag/)
     expect(css).toMatch(/\.melonBtn\s*\{[^}]*-webkit-app-region:\s*no-drag/)
+  })
+})
+
+describe('the window is big enough for the card in it', () => {
+  it('takes its size from ipc-types rather than a number typed into main.ts', () => {
+    // main.ts was still opening a 344px window for a card that had grown from seven
+    // rows to eleven, so the top and bottom of the card were being cut off inside its
+    // own window and nothing in the suite could see it. One number, next to the card.
+    expect(main).toContain('SPLASH_WINDOW_W')
+    expect(main).toContain('SPLASH_WINDOW_H')
+    expect(main).not.toMatch(/height:\s*344/)
+  })
+
+  it('leaves the fixed-width card room to breathe', () => {
+    const [cardWidth] = pxIn('card', 'width')
+    expect(cardWidth).toBe(660)
+    expect(SPLASH_WINDOW_W).toBeGreaterThan(cardWidth)
+    // Eleven rows in two groups plus the footer come to roughly 400px tall. Clear of
+    // this, or the card is clipped again and only a screenshot would ever notice.
+    expect(SPLASH_WINDOW_H).toBeGreaterThanOrEqual(440)
   })
 })

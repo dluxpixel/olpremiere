@@ -10,6 +10,7 @@ import {
   allSettled,
   bootOverride,
   gateReady,
+  gatingCount,
   labelOf,
   progressOf,
   statusLine,
@@ -229,13 +230,19 @@ function DesktopBoot({ children }: { children: ReactNode }) {
   useEffect(() => {
     const api = window.api
     if (!api?.reportBootProgress) return
+    // `optional` travels with each row so the splash can draw the same two groups
+    // this card does, and the gating tally travels as a NUMBER rather than being
+    // recounted over there, so the two cards cannot end up counting different sets.
+    const { settled, total } = gatingCount(specs, statuses)
     api.reportBootProgress({
       rows: specs.map((spec) => {
         const status = statusOf(statuses, spec.id)
-        return { id: spec.id, label: labelOf(spec, status), state: status.state }
+        return { id: spec.id, label: labelOf(spec, status), state: status.state, optional: spec.optional === true }
       }),
       line: statusLine(specs, statuses),
       percent: Math.round(progressOf(specs, statuses) * 100),
+      settled,
+      total,
       version: displayVersion(),
     })
   }, [specs, statuses])

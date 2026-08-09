@@ -58,12 +58,24 @@ export async function loadLibrary(): Promise<void> {
 // ---------------------------------------------------------------------------
 // Media
 
+/**
+ * Is this media already in the Library? Name plus duration IS the Library's
+ * identity for a piece of media: the bytes are copied on save, so blob keys
+ * never match, and re-importing the same file gives it a fresh asset id.
+ *
+ * Exported so the bin's permanent Save button can show the answer BEFORE the
+ * click instead of re-deriving the rule and drifting from the one below.
+ */
+export function isInLibrary(items: readonly LibraryItem[], name: string, durationS: number): boolean {
+  return items.some((i) => i.name === name && i.durationS === durationS)
+}
+
 /** Save a bin asset to the Library (copy-on-save). */
 export async function saveAssetToLibrary(assetId: Id): Promise<void> {
   const show = useToasts.getState().show
   const asset = useStore.getState().project.assets[assetId]
   if (!asset) return
-  if (useLibrary.getState().items.some((i) => i.name === asset.name && i.durationS === asset.durationS)) {
+  if (isInLibrary(useLibrary.getState().items, asset.name, asset.durationS)) {
     show(`${asset.name} is already in the Library`)
     return
   }

@@ -12,7 +12,7 @@ import { existsSync, renameSync } from 'node:fs'
 import path from 'node:path'
 import * as backups from './backups'
 import type { NativeExportConfig, UpdateStatus } from './ipc-types'
-import { SPLASH_MELON_POP_MS, SPLASH_MELON_PX } from './ipc-types'
+import { SPLASH_MELON_POP_MS, SPLASH_MELON_PX, SPLASH_WINDOW_H, SPLASH_WINDOW_W } from './ipc-types'
 import * as native from './nativeExport'
 import * as proxy from './proxy'
 import electronUpdater from 'electron-updater'
@@ -78,8 +78,12 @@ let bootBackstop: ReturnType<typeof setTimeout> | null = null
 
 function createSplash(): void {
   const win = new BrowserWindow({
-    width: 700,
-    height: 344, // the 660x300 card plus room for its shadow
+    width: SPLASH_WINDOW_W,
+    // The card is 660 wide and about 400 tall now that the startup has eleven rows
+    // in two groups, and the window is deliberately larger so the drop shadow has
+    // somewhere to land on a transparent background. This was still 344, sized for
+    // the seven-row card of v0.1.16, so the card was being clipped in its own window.
+    height: SPLASH_WINDOW_H,
     frame: false,
     transparent: true,
     resizable: false,

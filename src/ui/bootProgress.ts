@@ -11,6 +11,7 @@
 // report steps without importing React.
 
 import { create } from 'zustand'
+import { splitRows } from './bootCopy'
 
 export type BootStepId =
   | 'settings'
@@ -39,6 +40,10 @@ export interface BootStepSpec {
    * Never gates the boot. The update check is a network call, and an editor that
    * will not open on bad wifi is a far worse failure than one that opens before
    * it knows, so the card shows the check and moves on without it.
+   *
+   * The card draws these rows in their OWN group, under `BACKGROUND_TITLE`, so
+   * "does not hold the app shut" is something he can see rather than something
+   * only this comment knows. See the note on `progressOf`.
    */
   optional?: boolean
 }
@@ -52,6 +57,9 @@ export interface BootStepSpec {
  * model) sit at the bottom on purpose. Anything under them would be stuck behind
  * a 100MB download on a first-ever boot, which is how the update row would end up
  * grey on the very launch it is there to narrate.
+ *
+ * The optional rows are also, by construction, the LAST rows in the list, which
+ * is what lets the card draw them as a second group without reordering anything.
  */
 export const BOOT_STEPS: readonly BootStepSpec[] = [
   { id: 'settings', active: 'Loading your settings', done: 'Settings loaded' },
@@ -121,6 +129,15 @@ export const OPTIONAL_GRACE_MS = 1000
 /** The card's exit, before the melon takes over. Must match LoadingCard.module.css. */
 export const CARD_EXIT_MS = 300
 
+/** Every gating row has landed and nothing else is running. */
+export const READY_LINE = 'Ready'
+/**
+ * Every gating row has landed and a background row is still going. The app IS
+ * opening, and it is opening without waiting for that row, so the line says so
+ * instead of leaving a full bar next to a sentence about work still in flight.
+ */
+export const READY_BACKGROUND_LINE = 'Ready · finishing in the background'
+
 /** The rows this build actually shows. */
 export function stepsFor(isElectron: boolean): BootStepSpec[] {
   return BOOT_STEPS.filter((s) => isElectron || !s.electronOnly)
@@ -147,21 +164,46 @@ export function statusOf(statuses: BootStatuses, id: BootStepId): BootStepStatus
 const isSettled = (s: BootStepState): boolean => s === 'done' || s === 'failed'
 
 /**
- * 0..1 over the rows that are actually HOLDING THE APP SHUT. A failed row counts
- * as settled: it is finished, just not well.
+ * How many rows that are HOLDING THE APP SHUT have settled, out of how many there
+ * are. A failed row counts as settled: it is finished, just not well.
  *
- * Optional rows are shown but not counted, because the bar answers one question,
- * "how close am I to being let in", and an optional row does not gate. That
- * became load bearing on 2026-08-05 when the caption model got a row: it can be
- * a 75 to 100MB download on a first ever run, and counting it would have parked
- * the bar at 89% for minutes while the app was in fact ready to open. A bar that
- * cannot reach 100 on a healthy boot is worse than no bar.
+ * The bar's segments, the "3 of 8" under it and the percentage handed to assistive
+ * tech are all drawn from this one count, so no part of the card can quietly
+ * measure a different set of rows from another part.
+ */
+export function gatingCount(
+  specs: readonly BootStepSpec[],
+  statuses: BootStatuses,
+): { settled: number; total: number } {
+  const { gating } = splitRows(specs)
+  return {
+    settled: gating.filter((s) => isSettled(statusOf(statuses, s.id).state)).length,
+    total: gating.length,
+  }
+}
+
+/**
+ * 0..1 over the rows that are actually HOLDING THE APP SHUT.
+ *
+ * Optional rows are not counted, because the bar answers one question, "how close
+ * am I to being let in", and an optional row does not gate. That became load
+ * bearing on 2026-08-05 when the caption model got a row: it can be a 75 to 100MB
+ * download on a first ever run, and counting it would have parked the bar at 89%
+ * for minutes while the app was in fact ready to open. A bar that cannot reach 100
+ * on a healthy boot is worse than no bar.
+ *
+ * What was WRONG until 2026-08-09 was not this number, it was drawing it under a
+ * list of eleven rows without ever saying that three of them were not in it. He
+ * saw the bar full with three rows still visibly unfinished, and 38% with three of
+ * eleven ticked, and both readings were correct and both looked like a lie. The
+ * fix is in the card, not here: the eight rows this counts are drawn as their own
+ * group, the bar has one segment per one of them, and the readout is "3 of 8"
+ * rather than a percentage that never named its denominator.
  */
 export function progressOf(specs: readonly BootStepSpec[], statuses: BootStatuses): number {
-  const gating = specs.filter((s) => !s.optional)
-  if (gating.length === 0) return 1
-  const settled = gating.filter((s) => isSettled(statusOf(statuses, s.id).state)).length
-  return settled / gating.length
+  const { settled, total } = gatingCount(specs, statuses)
+  if (total === 0) return 1
+  return settled / total
 }
 
 /** One row's own text: past tense once it landed, with any detail appended. */
@@ -172,21 +214,27 @@ export function labelOf(spec: BootStepSpec, status: BootStepStatus): string {
 }
 
 /**
- * The single line in the card's footer, Vegas-style: what is happening right
- * now, or (when nothing is in flight) the furthest-along row that has settled,
- * so the line is never blank and never claims work that isn't happening.
+ * The single line in the card's footer: what is happening right now, in the
+ * order that matters.
+ *
+ * 1. A FAILURE, first and for the rest of the boot. The whole point of this
+ *    screen is that it does not paper over what did not work, and a failure that
+ *    scrolls off the line the moment the next row starts is papering over it.
+ * 2. The gate being open, which is the honest thing to say once the app can be
+ *    entered. If background work is still running the line says that too, rather
+ *    than pairing a full bar with a sentence about a download.
+ * 3. Otherwise the row in flight, or (when nothing is in flight) the
+ *    furthest-along row that has settled, so the line is never blank and never
+ *    claims work that isn't happening.
  */
 export function statusLine(specs: readonly BootStepSpec[], statuses: BootStatuses): string {
+  const failed = specs.find((s) => statusOf(statuses, s.id).state === 'failed')
+  if (failed) return labelOf(failed, statusOf(statuses, failed.id))
+  if (specs.length > 0 && gateReady(specs, statuses)) {
+    return allSettled(specs, statuses) ? READY_LINE : READY_BACKGROUND_LINE
+  }
   const active = specs.find((s) => statusOf(statuses, s.id).state === 'active')
   if (active) return labelOf(active, statusOf(statuses, active.id))
-  // Everything landed, and the card is still up because the floor has not passed.
-  // "Ready" is the truth and reads better than repeating the last step, BUT only
-  // when there is nothing wrong: a failure stays on the line, because the whole
-  // point of this screen is that it does not paper over what did not work.
-  if (specs.length > 0 && allSettled(specs, statuses)) {
-    const failed = specs.find((s) => statusOf(statuses, s.id).state === 'failed')
-    return failed ? labelOf(failed, statusOf(statuses, failed.id)) : 'Ready'
-  }
   const settled = specs.filter((s) => isSettled(statusOf(statuses, s.id).state))
   const last = settled.at(-1)
   if (last) return labelOf(last, statusOf(statuses, last.id))
@@ -195,7 +243,7 @@ export function statusLine(specs: readonly BootStepSpec[], statuses: BootStatuse
 
 /** True when every GATING row has settled. The optional ones are not waited on. */
 export function gateReady(specs: readonly BootStepSpec[], statuses: BootStatuses): boolean {
-  return specs.filter((s) => !s.optional).every((s) => isSettled(statusOf(statuses, s.id).state))
+  return splitRows(specs).gating.every((s) => isSettled(statusOf(statuses, s.id).state))
 }
 
 /** True when everything, optional rows included, has settled. */

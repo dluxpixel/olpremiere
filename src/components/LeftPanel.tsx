@@ -6,6 +6,7 @@ import { SFX_LIBRARY, type SfxDef } from '../engine/sfx/sfx'
 import { formatTimecode } from '../engine/timecode'
 import { activeSequence, type MediaAsset } from '../engine/types'
 import { useBlobUrl } from '../state/blobUrls'
+import { createArmedDelete, type ArmedDelete } from './armedDelete'
 import { CaptionsDialog } from './CaptionsDialog'
 import { applyEffectToAllClips } from '../state/bulkEdits'
 import { applyEffectToClips } from '../state/bulkEdits'
@@ -16,6 +17,7 @@ import {
   addLibraryItemToProject,
   applyPresetToAllClips,
   applyPresetToSelection,
+  isInLibrary,
   removeLibraryItem,
   removePreset,
   saveAssetToLibrary,
@@ -172,6 +174,117 @@ function useOsFileDrop(): boolean {
 
 const KIND_ICONS = { video: Film, audio: Music, image: ImageIcon } as const
 
+/** Both halves of the action box: one shape, so neither can drift from the other. */
+const ACTION_BUTTON =
+  'min-w-0 flex-1 cursor-default truncate px-1 py-1 text-center text-[10px] transition-colors duration-[120ms] disabled:opacity-40'
+
+/**
+ * The permanent action box under every bin item. His call, 2026-08-09: "These
+ * items on the left, I think they should all have a little box under them
+ * permanently. I know this will make the space a little more cramped, but make
+ * a box with two options: Save to library, Delete. Of course, the delete thing
+ * you'd have to click twice."
+ *
+ * PERMANENT is the whole of it. No hover reveal, no selection gate, no density
+ * setting: he weighed the cramping himself and chose it, so the cheapest way to
+ * get this wrong is to "solve" a problem he already decided about.
+ *
+ * Both verbs already existed on this card's right-click menu, and this calls
+ * the SAME two functions. It is a second surface for two actions, never a
+ * second implementation of them, so the guards, the undo step and the toasts
+ * stay in one place.
+ *
+ * The delete keeps the app's word for taking something out of a list, "Remove",
+ * because the right-click menu on this very card says "Remove from bin" and the
+ * toast says "Removed <name>". In this app Delete is what happens to clips on
+ * the timeline. One word, one meaning.
+ */
+function AssetActions({ asset }: { asset: MediaAsset }) {
+  const [armed, setArmed] = useState(false)
+  // One holder for the life of the card: the timer must survive the re-renders
+  // an import or an undo causes, without re-arming and without losing the
+  // pending disarm.
+  const armRef = useRef<ArmedDelete | null>(null)
+  if (!armRef.current) armRef.current = createArmedDelete({ onChange: setArmed })
+  const arm = armRef.current
+  useEffect(() => () => arm.dispose(), [arm])
+
+  // Name + duration is the Library's own identity for media (isInLibrary), so
+  // the button can say "already there" up front instead of only on the click.
+  const saved = useLibrary((s) => isInLibrary(s.items, asset.name, asset.durationS))
+
+  return (
+    <div
+      data-testid="asset-actions"
+      className="flex items-stretch border-t border-border"
+      // The card around this is draggable and its double-click drops the asset
+      // on the timeline. Neither belongs to the box: a second click HERE is the
+      // delete confirmation, and a slip while pressing must not start a drag.
+      // draggable makes this row the drag source, so cancelling it here cancels
+      // the card's drag before it starts.
+      draggable
+      onDragStart={(e) => {
+        e.preventDefault()
+        e.stopPropagation()
+      }}
+      onDoubleClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') {
+          // Escape is the way out of an armed delete. Stopping it here also
+          // keeps the global "Deselect all" off a keypress that meant this box.
+          e.stopPropagation()
+          arm.disarm()
+        } else if (e.key === 'Enter') {
+          // Enter already activates the focused button. The card's own Enter
+          // would ALSO drop the asset at the playhead.
+          e.stopPropagation()
+        }
+      }}
+    >
+      <button
+        type="button"
+        data-testid="asset-save-to-library"
+        disabled={saved}
+        aria-label={saved ? `${asset.name} is already in the Library` : `Save ${asset.name} to Library`}
+        title={
+          saved
+            ? 'Already in the Library'
+            : 'Save a copy to the Library, so it outlives this project'
+        }
+        onClick={() => void saveAssetToLibrary(asset.id)}
+        className={`${ACTION_BUTTON} text-text-secondary hover:bg-bg-input hover:text-text-primary active:bg-border disabled:hover:bg-transparent disabled:hover:text-text-secondary`}
+      >
+        Save
+      </button>
+      <button
+        type="button"
+        data-testid="asset-remove"
+        data-armed={armed ? 'true' : undefined}
+        aria-label={armed ? `Confirm removing ${asset.name} from the bin` : `Remove ${asset.name} from the bin`}
+        title={
+          armed
+            ? 'Click again to remove it. It stops asking after a few seconds.'
+            : 'Remove from the bin, and from every clip using it. Takes two clicks, and the toast can undo it.'
+        }
+        onClick={() => {
+          if (arm.press() === 'confirmed') deleteAsset(asset.id)
+        }}
+        // An armed delete must never sit waiting on screen for a click that was
+        // aimed at something else. Leaving the button takes the safety back on,
+        // as does the timer inside press().
+        onBlur={() => arm.disarm()}
+        className={`${ACTION_BUTTON} border-l border-border ${
+          armed
+            ? 'bg-danger/20 font-medium text-danger hover:bg-danger/30 active:bg-danger/40'
+            : 'text-text-secondary hover:bg-danger/15 hover:text-danger active:bg-danger/25'
+        }`}
+      >
+        {armed ? 'Confirm' : 'Remove'}
+      </button>
+    </div>
+  )
+}
+
 function AssetCard({ asset, fps }: { asset: MediaAsset; fps: number }) {
   const thumbUrl = useBlobUrl(asset.thumbnailKey)
   const Icon = KIND_ICONS[asset.kind]
@@ -234,6 +347,7 @@ function AssetCard({ asset, fps }: { asset: MediaAsset; fps: number }) {
       <div title={asset.name} className="truncate px-1.5 py-1 text-[11px] text-text-secondary">
         {asset.name}
       </div>
+      <AssetActions asset={asset} />
     </div>
   )
 }
@@ -609,7 +723,7 @@ function LibraryTab() {
           own saved media + presets, so say only that, in one line. */}
       {empty && (
         <div data-testid="library-empty" className="mb-3 px-0.5 text-[11px] leading-relaxed text-text-muted">
-          Nothing of your own saved yet. Right-click media → Save to Library, or save a graded clip’s
+          Nothing of your own saved yet. Use Save under any media item, or save a graded clip’s
           effects as a preset.
         </div>
       )}
