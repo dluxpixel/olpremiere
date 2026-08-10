@@ -26,6 +26,7 @@ import { setTitlesFontSize, updateTitles } from '../state/titleActions'
 import { BROWSABLE_EFFECTS } from '../engine/effects/registry'
 import { TITLE_FONT_OPTIONS } from '../engine/render/titleFonts'
 import { clipDurationS } from '../engine/timeline'
+import { useEffectDrop } from './effectDrop'
 import type { Clip, Track } from '../engine/types'
 import { IconButton } from '../ui/Button'
 import { PropRow, ScrubField, SectionLabel, type Spec } from './EffectControls'
@@ -62,6 +63,10 @@ function Header({ label, icon: Icon }: { label: string; icon?: typeof Bold }) {
 
 export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
   const allIds = selected.map((s) => s.clip.id)
+  // The effects section takes a dragged effect here too, on the whole selection:
+  // the panel is the same panel, and an effect that lands on one clip but is
+  // refused the moment a second is selected is the same broken promise.
+  const effectDrop = useEffectDrop(allIds)
   const titles = selected.filter((s) => s.clip.title)
   const titleIds = titles.map((s) => s.clip.id)
   const audio = selected.filter((s) => s.emitsAudio)
@@ -350,7 +355,12 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
       </section>
 
       <div className="h-px bg-border" />
-      <section className="flex flex-col gap-2" data-testid="multi-effects">
+      <section
+        className={`flex flex-col gap-2 rounded-field ${effectDrop.hot ? 'ring-2 ring-inset ring-accent-hover' : ''}`}
+        data-testid="multi-effects"
+        data-drop-hot={effectDrop.hot ? 'true' : undefined}
+        {...effectDrop.dropProps}
+      >
         <Header label="Effects" icon={Sparkles} />
         <div className="flex flex-wrap items-center gap-1.5">
           <button

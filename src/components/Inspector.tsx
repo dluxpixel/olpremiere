@@ -16,6 +16,7 @@ import {
 import { updateActiveSequence, useStore } from '../state/store'
 import { IconButton } from '../ui/Button'
 import { EffectControls, PropRow, ScrubField, SectionLabel, type Spec } from './EffectControls'
+import { useEffectDrop } from './effectDrop'
 import { MultiInspector, type SelectedClip } from './MultiInspector'
 import { createPendingEdit, type PendingEdit } from './pendingEdit'
 import { TitleControls } from './TitleControls'
@@ -392,6 +393,29 @@ function ClipPanel({
   )
 }
 
+/**
+ * Nothing selected. The area still ACCEPTS an effect dragged from the browser,
+ * and the action it lands on answers in words ("Select a clip first"). Refusing
+ * at the cursor would repeat the bug this whole target exists to fix: a drag
+ * that ends in nothing, with no reason given.
+ */
+function InspectorEmpty() {
+  const { hot, dropProps } = useEffectDrop([])
+  return (
+    <div
+      data-testid="inspector-empty"
+      data-drop-hot={hot ? 'true' : undefined}
+      className={`flex flex-1 flex-col items-center justify-center gap-2 rounded-field p-4 text-center ${
+        hot ? 'ring-2 ring-inset ring-accent-hover' : ''
+      }`}
+      {...dropProps}
+    >
+      <SlidersHorizontal size={24} strokeWidth={1.5} className="text-text-muted" aria-hidden />
+      <div className="text-ui text-text-muted">Select a clip to edit its properties</div>
+    </div>
+  )
+}
+
 export function Inspector({ width }: { width: number }) {
   const project = useStore((s) => s.project)
   const selection = useStore((s) => s.ui.selection)
@@ -484,10 +508,7 @@ export function Inspector({ width }: { width: number }) {
           <MultiInspector selected={multi} />
         </div>
       ) : (
-        <div className="flex flex-1 flex-col items-center justify-center gap-2 p-4 text-center">
-          <SlidersHorizontal size={24} strokeWidth={1.5} className="text-text-muted" aria-hidden />
-          <div className="text-ui text-text-muted">Select a clip to edit its properties</div>
-        </div>
+        <InspectorEmpty />
       )}
     </aside>
   )

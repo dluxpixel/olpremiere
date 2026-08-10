@@ -54,6 +54,7 @@ import {
   type EffectInstance,
 } from '../engine/types'
 import { isEffectRamped } from '../engine/effects/ops'
+import { useEffectDrop } from './effectDrop'
 import {
   addEffectKeyframeAtPlayhead,
   addKeyframeAtPlayhead,
@@ -769,9 +770,18 @@ function EffectEaseRow({ clip, effect }: { clip: Clip; effect: EffectInstance })
 function EffectStack({ clip, playheadS }: { clip: Clip; playheadS: number }) {
   const durS = Math.max(0, clipEndS(clip) - clip.startS)
   const localT = Math.max(0, Math.min(playheadS - clip.startS, durS))
+  // The WHOLE section takes the drop, not a thin strip: the header, the empty
+  // card that makes the promise, and every card already in the stack. Anywhere
+  // sensible in this block is somewhere he might let go.
+  const { hot, dropProps } = useEffectDrop([clip.id])
 
   return (
-    <section className="flex flex-col gap-2" data-testid="effect-stack">
+    <section
+      className={`flex flex-col gap-2 rounded-field ${hot ? 'ring-2 ring-inset ring-accent-hover' : ''}`}
+      data-testid="effect-stack"
+      data-drop-hot={hot ? 'true' : undefined}
+      {...dropProps}
+    >
       <div className="flex items-center gap-1.5">
         <SectionLabel>Effects</SectionLabel>
         <span className="ml-auto flex items-center gap-1">
@@ -807,9 +817,15 @@ function EffectStack({ clip, playheadS }: { clip: Clip; playheadS: number }) {
       {clip.effects.length === 0 ? (
         <div
           data-testid="effect-stack-empty"
-          className="flex flex-col items-center gap-1.5 rounded-field border border-dashed border-border-strong px-2 py-4 text-center"
+          data-drop-hot={hot ? 'true' : undefined}
+          // The card is what he aims at, so the card is what answers: the same
+          // dashed-accent-on-quiet-fill the media import overlay uses to say
+          // "let go here".
+          className={`flex flex-col items-center gap-1.5 rounded-field border border-dashed px-2 py-4 text-center transition-colors duration-[120ms] ${
+            hot ? 'border-accent bg-accent-quiet' : 'border-border-strong'
+          }`}
         >
-          <Sparkles size={18} strokeWidth={1.5} className="text-text-muted" aria-hidden />
+          <Sparkles size={18} strokeWidth={1.5} className={hot ? 'text-accent' : 'text-text-muted'} aria-hidden />
           <div className="text-ui-sm text-text-secondary">No effects applied</div>
           <div className="text-dense text-text-muted">Drag one from the Effects panel, or double-click it</div>
         </div>
