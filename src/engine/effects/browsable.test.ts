@@ -21,7 +21,7 @@ describe('the Effects browser is short', () => {
   })
 
   it('keeps the ones he actually reaches for', () => {
-    for (const type of ['autoColor', 'brightnessContrast', 'saturation', 'chromaKey', 'glow', 'vignette', 'gaussianBlur']) {
+    for (const type of ['autoColor', 'brightness', 'contrast', 'saturation', 'chromaKey', 'glow', 'vignette', 'gaussianBlur']) {
       expect(types(BROWSABLE_EFFECTS)).toContain(type)
     }
   })
@@ -30,7 +30,9 @@ describe('the Effects browser is short', () => {
     // Exposure and white balance overlap Brightness; vibrance overlaps Saturation;
     // lift/gamma/gain and luma key are colourist tools; directional blur is a
     // building block the whip uses, not something to drag onto a clip.
-    for (const type of ['exposure', 'colorWheels', 'whiteBalance', 'vibrance', 'lumaKey', 'directionalBlur']) {
+    // brightnessContrast joined them on 2026-08-10: it is the frozen additive
+    // version, kept alive only so clips cut before the split still render.
+    for (const type of ['exposure', 'colorWheels', 'whiteBalance', 'vibrance', 'lumaKey', 'directionalBlur', 'brightnessContrast']) {
       expect(types(BROWSABLE_EFFECTS)).not.toContain(type)
     }
   })

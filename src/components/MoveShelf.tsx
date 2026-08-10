@@ -10,20 +10,51 @@
 //    person understands, and every tile SHOWS what it does rather than
 //    describing it. There is no word on this panel he would have to look up.
 // 2. THE LIT TILE IS DERIVED, NEVER REMEMBERED. It is worked out fresh from the
-//    clip's own keyframes on every draw, so the panel cannot lie about a clip
-//    that was edited by hand: nudge one diamond and it says Hand edited instead.
+//    clip's own keyframes, so the panel cannot lie about a clip that was edited
+//    by hand: nudge one diamond and it says Hand edited instead.
 // 3. ONE GESTURE, ONE UNDO STEP. A tile click, a slider drag, a bar drag.
 //
 // Everything the motion desk used to open with is still here, one click away
 // under "Tune it by hand": the punch buttons, the lanes, the curve editor.
+//
+// WHAT CHANGED AFTER v0.1.55, AND WHY. He said the pictures "look just bad", and
+// rule 1 was the half of it that was not built: all ten tiles drew the SAME grey
+// box with the same pale bar in it, and the only thing that told Shake from
+// Drift right was the hover animation. At rest, which is how the shelf spends
+// almost all of its life, and permanently for anyone who has asked their system
+// for less motion, it was a word list with decoration on it. moveGlyph.ts now
+// draws every tile FROM ITS OWN MOVE, standing still: where the picture starts,
+// how deep it goes and where it travels on top, and when all of that happens
+// underneath. Cover the labels and the ten are still ten.
+//
+// WHAT IT COSTS, AND WHEN IT DRAWS. The ten pictures are worked out ONCE per
+// (depth, rise, tile size) and are plain SVG after that: no images, no video, no
+// canvas, no timers, nothing per frame, and no new dependency. The hover loop is
+// the only moving part: it runs on ONE tile, writes two attributes per frame
+// with no React render behind it, and does not start at all while the transport
+// is playing, while a move preview is sweeping, or under reduced motion. The
+// lit-tile lookup, which is ten small rebuilds per selected clip, is cached on
+// the clip OBJECTS, so a shelf that is re-rendered for some other reason costs
+// nothing and a clip whose keyframes changed is recomputed on the very next
+// draw.
 
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+  type RefObject,
+} from 'react'
 import { channelKeyframes } from '../engine/effects/channels'
-import { MOVES, moveSamples, type MoveDef, type MoveId } from '../engine/moves'
+import { MOVES, type MoveDef, type MoveId, type MoveMatch } from '../engine/moves'
 import { clipDurationS } from '../engine/timeline'
 import { activeSequence, type Clip } from '../engine/types'
 import { applyMoveToSelection, moveOnClips, setMoveDepth, setMoveWindow } from '../state/moveActions'
 import { useStore } from '../state/store'
+import { liveFrame, shelfGlyphs, TAPE_UNITS, type MoveGlyph } from './moveGlyph'
 import { headroomCeiling, overHeadroom } from './punchPresets'
 
 /** The slider's ends. 105 percent is the smallest move that reads at all; 200 is as far as his footage stretches. */
@@ -32,94 +63,208 @@ const DEPTH_MAX = 2
 /** The four numbers that were on the shipped chips, kept as notches under the slider. */
 const NOTCHES = [1.1, 1.2, 1.4, 1.7]
 
-/** How long the little pictures take to run through their move, and the pause before they loop. */
+/** How long a hovered tile takes to run through its move, and the pause before it loops. */
 const PREVIEW_RUN_S = 1.9
 const PREVIEW_LOOP_S = 2.5
+
+/** The timing strip under each picture, in px. Its own units are percent of the move, so it can be any width. */
+const TAPE_H = 11
 
 const pct = (v: number): string => `${Math.round(v * 100)}%`
 
 /**
- * One tile: a small frame with a smaller picture inside it that actually makes
- * the move. The picture is driven by ONE shared animation loop that only runs
- * while the pointer is over the shelf, writing a transform straight onto the
- * element. Zero React renders per frame, the same rule the rail's playhead
- * follows, which is why the shelf costs nothing during playback.
+ * His system setting, read where the loop would start. Nothing is lost by
+ * honouring it: the tile is a complete, readable picture standing still, and the
+ * hover loop only ever added a moving copy of what it already says.
  */
-function MoveTile({
+const reducedMotion = (): boolean =>
+  typeof window !== 'undefined' && !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+
+/**
+ * The little frame, in the shape of HIS sequence. A Short is 9:16, so the tile
+ * is tall and narrow, and a move that looks right in a wide box would be a lie
+ * about what it does to his picture.
+ *
+ * These two numbers are load bearing beyond this file: the right panel's default
+ * width is measured from them (see useLayoutSizes), so changing them changes how
+ * many tiles fit across.
+ */
+function frameSize(aspect: number): { w: number; h: number } {
+  const h = aspect >= 1 ? 44 : 68
+  return { w: Math.round(h * aspect), h }
+}
+
+/**
+ * ONE TILE: the move itself, drawn.
+ *
+ * The top pane is the picture that is actually on screen, at up to three moments
+ * of the move: where it starts (dashed), its deepest point when that is
+ * somewhere neither end is, and where it ends (solid), with the route it travels
+ * and an arrow on the longest leg of that route. The strip underneath is how
+ * deep the move is across its own length, with a tick standing on it for every
+ * moment the move has. Every number in both comes out of the move table through
+ * the same builder that writes the keyframes.
+ *
+ * Memoised, so moving the pointer along the shelf re-renders the two tiles whose
+ * state actually changed and not the other eight.
+ */
+const MoveTile = memo(function MoveTile({
   def,
+  glyph,
   lit,
-  aspect,
+  stage,
+  live,
   onPick,
-  register,
+  onHover,
+  liveRef,
+  headRef,
 }: {
   def: MoveDef
+  glyph: MoveGlyph
   lit: boolean
-  aspect: number
-  onPick: () => void
-  register: (id: MoveId, el: HTMLElement | null) => void
+  stage: { w: number; h: number }
+  live: boolean
+  onPick: (id: MoveId) => void
+  onHover: (id: MoveId | null) => void
+  liveRef: RefObject<SVGGElement>
+  headRef: RefObject<SVGLineElement>
 }) {
-  const frame = frameSize(aspect)
+  const ink = lit ? 'text-accent' : 'text-text-muted group-hover:text-text-secondary'
   return (
     <button
       type="button"
       data-testid={`move-tile-${def.id}`}
       aria-pressed={lit}
+      aria-keyshortcuts={String(def.digit)}
       title={`${def.name}: ${def.hint} (press ${def.digit})`}
-      onClick={onPick}
-      className={`group relative flex flex-col items-center gap-1 rounded-field border p-1.5 transition-colors duration-[120ms] ${
+      onClick={() => onPick(def.id)}
+      onPointerEnter={() => onHover(def.id)}
+      onPointerLeave={() => onHover(null)}
+      onFocus={() => onHover(def.id)}
+      onBlur={() => onHover(null)}
+      className={`group flex flex-col items-center gap-1 rounded-field border p-1.5 transition-colors duration-[120ms] ${
         lit
           ? 'border-accent bg-accent-quiet'
           : 'border-transparent bg-bg-input hover:border-border-strong hover:bg-bg-elevated'
       }`}
     >
       <span
-        className={`absolute right-1 top-1 z-10 font-numeric text-[9px] leading-none ${
-          lit ? 'text-accent' : 'text-text-muted'
-        } opacity-60`}
-        aria-hidden
+        className={`block shrink-0 overflow-hidden rounded-[3px] bg-bg-app ring-1 transition-colors duration-[120ms] ${
+          lit ? 'ring-accent/60' : 'ring-border'
+        }`}
+        style={{ width: stage.w, height: stage.h }}
       >
-        {def.digit}
-      </span>
-      <span
-        className="relative block shrink-0 overflow-hidden rounded-[3px] bg-bg-app ring-1 ring-border"
-        style={{ width: frame.w, height: frame.h }}
-      >
-        <span
-          ref={(el) => register(def.id, el)}
-          className="absolute inset-0 block will-change-transform"
-          style={{ transform: 'translate(0%, 0%) scale(1)' }}
+        <svg
+          data-testid={`move-glyph-${def.id}`}
+          width={stage.w}
+          height={stage.h}
+          viewBox={`0 0 ${stage.w} ${stage.h}`}
+          className={`block transition-colors duration-[120ms] ${ink}`}
           aria-hidden
         >
-          {/* A stand-in for his footage. Not a photograph: a horizon, a bright
-              thing left of centre and a band along the bottom, which is the
-              least it takes for a zoom AND a slide across to both be obvious at
-              forty pixels tall. */}
-          <span className="absolute inset-0 block bg-gradient-to-b from-accent-quiet via-transparent to-transparent" />
-          <span className="absolute inset-x-0 top-[46%] block h-px bg-border-strong" />
-          <span className="absolute left-[20%] top-[22%] block h-[30%] w-[24%] rounded-[2px] bg-accent/70" />
-          <span className="absolute bottom-[14%] left-[12%] right-[12%] block h-[16%] rounded-[2px] bg-text-muted/30" />
-        </span>
+          {glyph.marks.map((mark) => (
+            <rect
+              key={mark.kind}
+              x={mark.rect.x}
+              y={mark.rect.y}
+              width={mark.rect.w}
+              height={mark.rect.h}
+              rx={1}
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={mark.kind === 'to' ? 1.25 : 1}
+              strokeDasharray={mark.kind === 'from' ? '2 2' : undefined}
+              opacity={mark.kind === 'to' ? 1 : mark.kind === 'peak' ? 0.72 : 0.5}
+            />
+          ))}
+          {glyph.route !== '' && (
+            <path d={glyph.route} fill="none" stroke="currentColor" strokeWidth={1} opacity={0.75} />
+          )}
+          {glyph.head !== '' && <path d={glyph.head} fill="currentColor" />}
+          {live && (
+            <g ref={liveRef} data-testid={`move-live-${def.id}`} className="text-accent">
+              <rect
+                x={0}
+                y={0}
+                width={stage.w}
+                height={stage.h}
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={1.25}
+                vectorEffect="non-scaling-stroke"
+              />
+            </g>
+          )}
+        </svg>
       </span>
+
+      {/* The digit that picks this move, on the strip rather than over the
+          picture, where the shipped one sat on the corner of the frame. Ten of
+          them line up down the left of the shelf and read as an index. */}
+      <span className="flex w-full items-center gap-1">
+        <span
+          className={`w-2 shrink-0 text-right font-numeric text-[9px] leading-none ${
+            lit ? 'text-accent' : 'text-text-muted'
+          }`}
+          aria-hidden
+        >
+          {def.digit}
+        </span>
+        <svg
+          data-testid={`move-tape-${def.id}`}
+          viewBox={`0 0 ${TAPE_UNITS} ${TAPE_H}`}
+          preserveAspectRatio="none"
+          className={`h-[11px] min-w-0 flex-1 transition-colors duration-[120ms] ${ink}`}
+          aria-hidden
+        >
+          {glyph.tape !== '' && <path d={glyph.tape} fill="currentColor" opacity={0.16} />}
+          <path
+            d={glyph.tapeLine}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={1}
+            vectorEffect="non-scaling-stroke"
+            opacity={0.85}
+          />
+          {glyph.beats.map((beat, i) => (
+            <line
+              key={i}
+              x1={beat.x}
+              x2={beat.x}
+              y1={beat.y1}
+              y2={beat.y2}
+              stroke="currentColor"
+              strokeWidth={1}
+              vectorEffect="non-scaling-stroke"
+              opacity={0.6}
+            />
+          ))}
+          {live && (
+            <line
+              ref={headRef}
+              x1={0}
+              x2={0}
+              y1={0}
+              y2={TAPE_H}
+              className="text-accent"
+              stroke="currentColor"
+              strokeWidth={1}
+              vectorEffect="non-scaling-stroke"
+            />
+          )}
+        </svg>
+      </span>
+
       <span
-        className={`flex h-[22px] items-center text-center text-[9.5px] leading-[1.15] ${
-          lit ? 'text-accent' : 'text-text-secondary'
+        className={`flex min-h-[26px] items-center justify-center text-center text-dense leading-[1.15] ${
+          lit ? 'font-medium text-text-primary' : 'text-text-secondary'
         }`}
       >
         {def.name}
       </span>
     </button>
   )
-}
-
-/**
- * The little frame, in the shape of HIS sequence. A Short is 9:16, so the tile
- * is tall and narrow, and a move that looks right in a wide box would be a lie
- * about what it does to his picture.
- */
-function frameSize(aspect: number): { w: number; h: number } {
-  const h = aspect >= 1 ? 44 : 68
-  return { w: Math.round(h * aspect), h }
-}
+})
 
 /**
  * The bar under the tiles: what is on this clip, drawn across the clip itself,
@@ -187,12 +332,16 @@ function MoveRibbon({ clip, def, startS, endS }: { clip: Clip; def: MoveDef; sta
           <div className={handle} style={{ left: `calc(${right}% - 6px)` }} data-testid="move-ribbon-end" onPointerDown={drag('end')} />
         )}
       </div>
-      <p className="text-[10px] leading-tight text-text-muted">
+      <p className="text-dense text-text-muted">
         {moment ? 'Drag the block to move when it happens' : 'Drag either end to move where it starts and ends'}
       </p>
     </div>
   )
 }
+
+/** Two selections are the same selection when they hold the same clip OBJECTS, in the same order. */
+const sameClips = (a: readonly Clip[], b: readonly Clip[]): boolean =>
+  a.length === b.length && a.every((clip, i) => clip === b[i])
 
 /**
  * The shelf. `clips` is every clip the tiles will act on: one when he has one
@@ -205,59 +354,96 @@ export function MoveShelf({ clips }: { clips: Clip[] }) {
   const setUI = useStore((s) => s.setUI)
   const seqWidth = useStore((s) => activeSequence(s.project).width)
   const seqHeight = useStore((s) => activeSequence(s.project).height)
+  const fps = useStore((s) => activeSequence(s.project).fps)
+  // The transport, so a tile can never be animating while he is watching the
+  // monitor. Both of these change twice per playback, not once per frame.
+  const playing = useStore((s) => s.ui.playing)
+  const previewing = useStore((s) => s.ui.previewingMove)
   // Scalars only, so the shelf redraws when the format or the media changes and
   // on nothing else.
   const assetWidth = useStore((s) => (clips[0] ? s.project.assets[clips[0].assetId]?.width : undefined))
 
-  const framesRef = useRef(new Map<MoveId, HTMLElement>())
-  const [hot, setHot] = useState(false)
+  const liveRef = useRef<SVGGElement>(null)
+  const headRef = useRef<SVGLineElement>(null)
+  const [hover, setHover] = useState<MoveId | null>(null)
 
   const aspect = seqHeight > 0 ? seqWidth / seqHeight : 16 / 9
   const ceiling = headroomCeiling(assetWidth, seqWidth)
   const over = overHeadroom(depth, ceiling)
 
-  // The lit tile, worked out fresh from the clips themselves on every draw.
-  // Not memoised: it is nine small rebuilds per clip and it has to be right the
-  // instant a keyframe changes, which is exactly what a cache would get wrong.
-  const match = moveOnClips(clips)
+  const stage = useMemo(() => frameSize(aspect), [aspect])
+  // The ten pictures, worked out once. Everything downstream of this is static
+  // SVG: a re-render costs a reconcile and not a single sample.
+  const shelf = useMemo(() => shelfGlyphs(MOVES, depth, riseFrames, stage, TAPE_H), [depth, riseFrames, stage])
+
+  // The lit tile, worked out fresh from the clips themselves, then remembered
+  // against the CLIP OBJECTS it was worked out from. Object identity is the one
+  // cache key that cannot go stale here: every edit in this app replaces the clip
+  // it touches, so a diamond nudged by hand is a new object and the answer is
+  // recomputed on the very next draw, which is the objection that killed saved
+  // presets the first time round. Without the cache the shelf pays ten rebuilds
+  // per selected clip on every re-render, including every frame of the move
+  // preview that runs the instant a tile is clicked.
+  const cache = useRef<{ clips: readonly Clip[]; key: string; value: MoveMatch | null } | null>(null)
+  const cacheKey = `${fps} ${riseFrames} ${seqWidth} ${seqHeight}`
+  let match: MoveMatch | null
+  const cached = cache.current
+  if (cached && cached.key === cacheKey && sameClips(cached.clips, clips)) {
+    match = cached.value
+  } else {
+    match = moveOnClips(clips)
+    cache.current = { clips, key: cacheKey, value: match }
+  }
+
   const single = clips.length === 1 ? clips[0] : null
   const lit = match?.id ?? null
   const litDef = MOVES.find((m) => m.id === lit) ?? null
 
-  const samples = useMemo(
-    () => new Map(MOVES.map((m) => [m.id, moveSamples(m, depth, riseFrames)])),
-    [depth, riseFrames],
+  // WHICH tile is allowed to move, if any. Playback wins, the move preview wins,
+  // and his reduced-motion setting wins over both.
+  const liveId = playing || previewing || reducedMotion() ? null : hover
+
+  // Both handlers have to keep the same identity across renders or every tile
+  // re-renders whenever any of them does, which is the whole point of memoising
+  // the tile. The ids are UUIDs, so one string is a safe stand-in for the list.
+  const idKey = clips.map((c) => c.id).join(' ')
+  const pick = useCallback(
+    (id: MoveId) => applyMoveToSelection(id, idKey === '' ? [] : idKey.split(' ')),
+    [idKey],
   )
+  const hoverTile = useCallback((id: MoveId | null) => setHover(id), [])
 
-  const register = (id: MoveId, el: HTMLElement | null): void => {
-    if (el) framesRef.current.set(id, el)
-    else framesRef.current.delete(id)
-  }
-
-  // ONE loop for the whole grid, and only while he is looking at it.
+  // ONE loop, on ONE tile, and only the tile under the pointer. It writes a
+  // transform and two coordinates straight onto the elements, so there is no
+  // React render behind any of it: the same rule the rail's playhead follows.
   useEffect(() => {
-    const frames = framesRef.current
-    const paint = (id: MoveId, p: number): void => {
-      const el = frames.get(id)
-      const table = samples.get(id)
-      if (!el || !table) return
-      const s = table[Math.min(table.length - 1, Math.max(0, Math.round(p * (table.length - 1))))]
-      el.style.transform = `translate(${(s.dx * 100).toFixed(3)}%, ${(s.dy * 100).toFixed(3)}%) scale(${s.scale.toFixed(4)})`
+    const g = liveRef.current
+    const head = headRef.current
+    if (!liveId || !g || !head) return
+    const table = shelf.tables.get(liveId)
+    if (!table || table.length === 0) return
+    const paint = (p: number): void => {
+      const { rect, tapeX } = liveFrame(table, p, shelf.axes)
+      g.setAttribute(
+        'transform',
+        `translate(${rect.x.toFixed(2)} ${rect.y.toFixed(2)}) scale(${(rect.w / shelf.axes.stage.w).toFixed(4)} ${(
+          rect.h / shelf.axes.stage.h
+        ).toFixed(4)})`,
+      )
+      head.setAttribute('x1', tapeX.toFixed(2))
+      head.setAttribute('x2', tapeX.toFixed(2))
     }
-    if (!hot) {
-      for (const id of frames.keys()) paint(id, 0)
-      return
-    }
+    paint(0)
     let raf = 0
     const t0 = performance.now()
     const step = (now: number): void => {
-      const p = Math.min(1, ((now - t0) / 1000) % PREVIEW_LOOP_S / PREVIEW_RUN_S)
-      for (const id of frames.keys()) paint(id, p)
+      const cycle = ((now - t0) / 1000) % PREVIEW_LOOP_S
+      paint(Math.min(1, cycle / PREVIEW_RUN_S))
       raf = requestAnimationFrame(step)
     }
     raf = requestAnimationFrame(step)
     return () => cancelAnimationFrame(raf)
-  }, [hot, samples])
+  }, [liveId, shelf])
 
   // What is on the clip, in one word, for nothing. A selection whose clips do
   // not agree says so rather than picking one of them to speak for the rest.
@@ -271,32 +457,41 @@ export function MoveShelf({ clips }: { clips: Clip[] }) {
         : (litDef?.name ?? '')
 
   return (
-    <section className="flex flex-col gap-2.5 rounded-field bg-bg-elevated/50 p-2.5" data-testid="move-shelf">
+    <section className="flex flex-col gap-3 rounded-field bg-bg-elevated/50 p-2.5" data-testid="move-shelf">
+      {/* Label on the left, value on the right, the same shape as the How big
+          row underneath. The shipped header put the state immediately after the
+          word Moves, so the panel usually read "MOVES No move" and the state
+          looked like part of the title. */}
       <div className="flex items-baseline gap-2">
         <h4 className="text-[10px] font-semibold uppercase tracking-[0.12em] text-text-muted">Moves</h4>
-        <span className="text-dense text-text-secondary" data-testid="move-state">
-          {stateWord}
+        <span className="ml-auto flex items-baseline gap-1.5">
+          {clips.length > 1 && <span className="text-dense text-text-muted">all {clips.length}</span>}
+          <span className="text-dense text-text-secondary" data-testid="move-state">
+            {stateWord}
+          </span>
         </span>
-        {clips.length > 1 && (
-          <span className="text-dense text-text-muted">· all {clips.length}</span>
-        )}
       </div>
 
+      {/* The column gap stays at 4px because the right panel's default width was
+          measured against it (useLayoutSizes). The crowding he was looking at is
+          vertical: one tile's label was four pixels off the next row's picture. */}
       <div
-        className="grid gap-1"
-        style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${Math.max(66, frameSize(aspect).w + 16)}px, 1fr))` }}
-        onPointerEnter={() => setHot(true)}
-        onPointerLeave={() => setHot(false)}
+        className="grid gap-x-1 gap-y-2"
+        style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${Math.max(66, stage.w + 16)}px, 1fr))` }}
         data-testid="move-grid"
       >
-        {MOVES.map((def) => (
+        {MOVES.map((def, i) => (
           <MoveTile
             key={def.id}
             def={def}
+            glyph={shelf.glyphs[i]}
             lit={lit === def.id}
-            aspect={aspect}
-            register={register}
-            onPick={() => applyMoveToSelection(def.id, clips.map((c) => c.id))}
+            stage={stage}
+            live={liveId === def.id}
+            liveRef={liveRef}
+            headRef={headRef}
+            onPick={pick}
+            onHover={hoverTile}
           />
         ))}
       </div>
@@ -348,7 +543,7 @@ export function MoveShelf({ clips }: { clips: Clip[] }) {
         type="button"
         data-testid="tune-by-hand"
         aria-expanded={handTuneOpen}
-        className="self-start text-[10px] text-text-muted underline decoration-dotted underline-offset-2 transition-colors duration-[120ms] hover:text-text-secondary"
+        className="self-start text-dense text-text-muted underline decoration-dotted underline-offset-2 transition-colors duration-[120ms] hover:text-text-secondary"
         onClick={() => setUI({ handTuneOpen: !handTuneOpen })}
       >
         {handTuneOpen ? 'Hide the hand controls' : 'Tune it by hand'}

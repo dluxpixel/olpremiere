@@ -11,30 +11,52 @@
 // effect it does not actually use: a colour channel materialises its effect on
 // first non-neutral write, and the effect evaporates when it returns to neutral.
 //
+// CHANNEL_EFFECT is the LIVE map: where a channel written TODAY lands. It is not
+// the map a legacy `filters` bag migrates through. Those were the same table
+// until Brightness split into Brightness and Contrast, and migrate.ts now owns
+// its own frozen copy for exactly that reason. Read the comment there before
+// tying them back together.
+//
 // Pure: no React, no DOM, no store. Imports registry + the keyframe math only.
 
 import { MOMENT_EPS, clipKeyframeTimes, evalChannel, upsertKeyframe } from '../keyframes'
 import type { AnimChannel, Clip, Curve, EffectInstance, Keyframe } from '../types'
 import { CANONICAL_ORDER, EFFECT_BY_TYPE, defaultParams, getEffect, isNeutral } from './registry'
 
+/**
+ * One param of one effect: the thing a channel resolves to, and the unit both
+ * the channel API and the legacy-filters migration address the stack by.
+ */
+export interface EffectAddr {
+  type: string
+  param: string
+}
+
 /** Which effect + param each legacy colour channel addresses. */
-export const CHANNEL_EFFECT: Readonly<Partial<Record<AnimChannel, { type: string; param: string }>>> = Object.freeze({
+export const CHANNEL_EFFECT: Readonly<Partial<Record<AnimChannel, EffectAddr>>> = Object.freeze({
   exposure: { type: 'exposure', param: 'exposure' },
   lift: { type: 'colorWheels', param: 'lift' },
   gamma: { type: 'colorWheels', param: 'gamma' },
   gain: { type: 'colorWheels', param: 'gain' },
   temperature: { type: 'whiteBalance', param: 'temperature' },
   tint: { type: 'whiteBalance', param: 'tint' },
-  brightness: { type: 'brightnessContrast', param: 'brightness' },
-  contrast: { type: 'brightnessContrast', param: 'contrast' },
+  // Their own effects since 2026-08-10. A write through these channels lands on
+  // the MULTIPLICATIVE brightness and the standalone contrast, never on the
+  // legacy `brightnessContrast`, which is frozen and hidden.
+  brightness: { type: 'brightness', param: 'brightness' },
+  contrast: { type: 'contrast', param: 'contrast' },
   saturation: { type: 'saturation', param: 'saturation' },
   blur: { type: 'gaussianBlur', param: 'blur' },
 })
 
+/** Neutral value of one effect param, straight from the registry. */
+export const addrDefault = (addr: EffectAddr): number =>
+  getEffect(addr.type)?.params.find((p) => p.key === addr.param)?.default ?? 0
+
 /** Neutral value for a channel, from the registry for effects and by hand otherwise. */
 export function channelDefault(channel: AnimChannel): number {
   const addr = CHANNEL_EFFECT[channel]
-  if (addr) return getEffect(addr.type)?.params.find((p) => p.key === addr.param)?.default ?? 0
+  if (addr) return addrDefault(addr)
   switch (channel) {
     case 'scale':
       return 1
@@ -56,16 +78,20 @@ export function channelDefault(channel: AnimChannel): number {
 const findEffect = (clip: Clip, type: string): EffectInstance | undefined =>
   clip.effects.find((e) => e.type === type)
 
+/** Static (non-keyframed) value at an address, or `fallback` when nothing is there. */
+export function effectParamBase(clip: Clip, addr: EffectAddr, fallback: number): number {
+  const raw = findEffect(clip, addr.type)?.params[addr.param]
+  if (typeof raw === 'number') return raw
+  // An animated param retains the base it had before the stopwatch went on.
+  if (raw) return raw.value
+  return fallback
+}
+
 /** Static (non-keyframed) value of a channel. */
 export function channelBase(clip: Clip, channel: AnimChannel): number {
   const addr = CHANNEL_EFFECT[channel]
-  if (addr) {
-    const raw = findEffect(clip, addr.type)?.params[addr.param]
-    if (typeof raw === 'number') return raw
-    // An animated param retains the base it had before the stopwatch went on.
-    if (raw) return raw.value
-    return channelDefault(channel)
-  }
+  if (addr) return effectParamBase(clip, addr, channelDefault(channel))
+
   const tf = clip.transform
   switch (channel) {
     case 'posX':
@@ -157,10 +183,32 @@ function withEffect(clip: Clip, type: string, patch: (inst: EffectInstance) => E
   return { ...clip, effects }
 }
 
+/**
+ * Set one effect param by ADDRESS, materialising or removing its effect as
+ * needed. The channel writes below go through here, and so does the legacy
+ * `filters` migration, which has to address `brightnessContrast` rather than the
+ * effect the `brightness` channel points at today.
+ */
+export function withEffectParamValue(clip: Clip, addr: EffectAddr, value: number): Clip {
+  return withEffect(clip, addr.type, (i) => ({ ...i, params: { ...i.params, [addr.param]: value } }))
+}
+
+/**
+ * Set one effect param's keyframes by ADDRESS. `base` is carried INTO the
+ * animated param so de-animating later restores it rather than snapping to
+ * neutral; an empty list collapses the param back to that static number.
+ */
+export function withEffectParamKeyframes(clip: Clip, addr: EffectAddr, base: number, kfs: Keyframe[]): Clip {
+  return withEffect(clip, addr.type, (i) => ({
+    ...i,
+    params: { ...i.params, [addr.param]: kfs.length === 0 ? base : { value: base, keyframes: kfs } },
+  }))
+}
+
 /** Set a channel's static value, materialising or removing its effect as needed. */
 export function withChannelValue(clip: Clip, channel: AnimChannel, value: number): Clip {
   const addr = CHANNEL_EFFECT[channel]
-  if (addr) return withEffect(clip, addr.type, (i) => ({ ...i, params: { ...i.params, [addr.param]: value } }))
+  if (addr) return withEffectParamValue(clip, addr, value)
 
   const tf = clip.transform
   const setTf = (patch: Partial<Clip['transform']>): Clip => ({ ...clip, transform: { ...tf, ...patch } })
@@ -204,15 +252,8 @@ export function withChannelValue(clip: Clip, channel: AnimChannel, value: number
  */
 export function withChannelKeyframes(clip: Clip, channel: AnimChannel, kfs: Keyframe[]): Clip {
   const addr = CHANNEL_EFFECT[channel]
-  if (addr) {
-    // Carry the current base INTO the animated param, so de-animating later
-    // restores it rather than snapping to neutral.
-    const base = channelBase(clip, channel)
-    return withEffect(clip, addr.type, (i) => ({
-      ...i,
-      params: { ...i.params, [addr.param]: kfs.length === 0 ? base : { value: base, keyframes: kfs } },
-    }))
-  }
+  if (addr) return withEffectParamKeyframes(clip, addr, channelBase(clip, channel), kfs)
+
   const next: Partial<Record<AnimChannel, Keyframe[]>> = { ...clip.keyframes }
   if (kfs.length === 0) delete next[channel]
   else next[channel] = kfs

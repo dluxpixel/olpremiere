@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { migrateClipEffects } from '../engine/effects/migrate'
 import { activeSequence, defaultTitleDef, newProject, newTitleClip, videoTracks } from '../engine/types'
 import { applyJettismLook, applyPunchyGrade, jettismGradeEffects } from './lookActions'
 import { updateActiveSequence, useStore } from './store'
@@ -37,7 +38,7 @@ describe('applyJettismLook', () => {
     expect([s.width, s.height]).toEqual([1080, 1920])
     for (const clip of videoTracks(s)[0].clips) {
       const types = clip.effects.map((e) => e.type)
-      expect(types).toEqual(expect.arrayContaining(['exposure', 'brightnessContrast', 'saturation']))
+      expect(types).toEqual(expect.arrayContaining(['exposure', 'contrast', 'saturation']))
       const sat = clip.effects.find((e) => e.type === 'saturation')!
       expect(sat.params.saturation).toBe(0.13)
     }
@@ -74,6 +75,54 @@ describe('applyJettismLook', () => {
     expect(clips[0].effects).toHaveLength(3)
     expect(clips[1].effects).toHaveLength(0)
     expect(seq().width).toBe(before) // format untouched
+  })
+
+  it('does not stack the grade on a clip graded BEFORE the brightness split', () => {
+    // The end of the chain migrate.test.ts starts. The old punch grade deposited
+    // `brightnessContrast { brightness: 0, contrast: 0.1 }` on every clip it
+    // touched. `hasJettismGrade` recognises an already-graded clip by matching
+    // type + JSON.stringify(params) against what `jettismGradeEffects()` emits
+    // TODAY, which is the standalone `contrast`. The load-time migration is the
+    // only thing keeping those clips recognisable. Break it and a second click
+    // stacks the grade twice and blows out footage he has already published.
+    const id = seedFootage(0, 5)
+    updateActiveSequence('seed a pre-split punch grade', (sq) => ({
+      ...sq,
+      tracks: sq.tracks.map((t, i) =>
+        i === 0
+          ? {
+              ...t,
+              clips: t.clips.map((c) =>
+                c.id === id
+                  ? {
+                      ...c,
+                      effects: [
+                        { id: 'old_e', type: 'exposure' as const, enabled: true, params: { exposure: 0.1 } },
+                        { id: 'old_bc', type: 'brightnessContrast' as const, enabled: true, params: { brightness: 0, contrast: 0.1 } },
+                        { id: 'old_s', type: 'saturation' as const, enabled: true, params: { saturation: 0.13 } },
+                      ],
+                    }
+                  : c,
+              ),
+            }
+          : t,
+      ),
+    }))
+
+    // Exactly what load does (persistence.ts, projectFile.ts).
+    updateActiveSequence('load migration', (sq) => ({
+      ...sq,
+      tracks: sq.tracks.map((t) => ({ ...t, clips: t.clips.map(migrateClipEffects) })),
+    }))
+
+    applyPunchyGrade(id)
+    applyPunchyGrade(id)
+
+    const clip = videoTracks(seq())[0].clips.find((c) => c.id === id)!
+    expect(clip.effects).toHaveLength(3) // not 6
+    expect(clip.effects.map((e) => e.type)).toEqual(['exposure', 'contrast', 'saturation'])
+    // Still the ORIGINAL instances, rewritten in place: nothing was appended.
+    expect(clip.effects.map((e) => e.id)).toEqual(['old_e', 'old_bc', 'old_s'])
   })
 
   it('grade instances get fresh ids per call', () => {

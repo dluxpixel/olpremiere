@@ -12,6 +12,7 @@ import {
   withChannelsAtTime,
 } from './channels'
 import { migrateClipEffects } from './migrate'
+import { resolveEffect } from './registry'
 
 const kf = (t: number, value: number, e: Keyframe['ease'] = 'linear'): Keyframe => ({ t, value, ease: e })
 
@@ -85,15 +86,28 @@ describe('resolveChannel', () => {
       effects: [
         {
           id: 'x',
-          type: 'brightnessContrast',
-          params: { brightness: { value: 0, keyframes: [kf(0, 0), kf(2, 0.5)] }, contrast: 0 },
+          type: 'brightness',
+          params: { brightness: { value: 0, keyframes: [kf(0, 0), kf(2, 0.5)] } },
           enabled: true,
         },
       ],
     })
     expect(resolveChannel(c, 'brightness', 1)).toBeCloseTo(0.25)
-    // Its sibling param stays static.
+    // A channel whose own effect is not on the clip reads its neutral.
     expect(resolveChannel(c, 'contrast', 1)).toBe(0)
+  })
+
+  it('a LEGACY brightnessContrast is deliberately NOT addressable by these channels', () => {
+    // Not an oversight. The channels write to the new split effects; the legacy
+    // additive one is frozen and hidden. It still RENDERS and still animates,
+    // because resolve.ts reads clip.effects and never asks a channel. What it
+    // loses is the Motion Rail lane, the Reset-all sweep and the playhead
+    // keyframe sweep, all of which are channel-driven. See migrate.ts.
+    const c = clip({
+      effects: [{ id: 'x', type: 'brightnessContrast', params: { brightness: 0.3, contrast: 0.2 }, enabled: true }],
+    })
+    expect(channelBase(c, 'brightness')).toBe(0)
+    expect(isChannelAnimated(c, 'brightness')).toBe(false)
   })
 
   it('leaves an unrelated animated channel on the base for others', () => {
@@ -142,12 +156,25 @@ describe('withChannelValue', () => {
   })
 
   it('keeps an effect alive while any sibling param is non-neutral', () => {
+    // Brightness and Contrast are two effects now, so the pairing has to come
+    // from an effect that really does own several params.
+    let c = withChannelValue(clip(), 'lift', 0.5)
+    c = withChannelValue(c, 'gain', 0.5)
+    expect(c.effects).toHaveLength(1)
+    c = withChannelValue(c, 'lift', 0)
+    expect(c.effects).toHaveLength(1)
+    expect(c.effects[0].params).toEqual({ lift: 0, gamma: 0, gain: 0.5 })
+  })
+
+  it('brightness and contrast now materialise as two SEPARATE effects', () => {
+    // HIS INSTRUCTION, 2026-08-10: "do brightness and contrast as a separate
+    // effect. I don't know why you have to pack them together."
     let c = withChannelValue(clip(), 'brightness', 0.5)
     c = withChannelValue(c, 'contrast', 0.5)
-    expect(c.effects).toHaveLength(1)
+    expect(c.effects.map((e) => e.type)).toEqual(['brightness', 'contrast'])
+    // Zeroing one evaporates only that one.
     c = withChannelValue(c, 'brightness', 0)
-    expect(c.effects).toHaveLength(1)
-    expect(c.effects[0].params).toEqual({ brightness: 0, contrast: 0.5 })
+    expect(c.effects.map((e) => e.type)).toEqual(['contrast'])
   })
 
   it('inserts effects so canonical math order is preserved regardless of write order', () => {
@@ -163,7 +190,7 @@ describe('withChannelValue', () => {
       'exposure',
       'colorWheels',
       'whiteBalance',
-      'brightnessContrast',
+      'brightness',
       'saturation',
       'gaussianBlur',
     ])
@@ -294,7 +321,15 @@ describe('migrateClipEffects', () => {
   it('moves animated colour channels into their effect params and clears them off the clip', () => {
     const c = migrateClipEffects(clip({ keyframes: { brightness: [kf(0, 0), kf(2, 0.5)] } }))
     expect(c.keyframes?.brightness).toBeUndefined()
-    expect(resolveChannel(c, 'brightness', 1)).toBeCloseTo(0.25)
+    // Read off the EFFECT, not through the `brightness` channel. An ancient bag
+    // lands on the additive brightnessContrast, because that is the only effect
+    // that reads a stored brightness the way it was written (migrate.ts,
+    // LEGACY_FILTER_ADDR), while the channel now addresses the multiplicative
+    // one. resolveEffect is the path the renderer itself takes, so this pins the
+    // pixels rather than the Inspector wiring. resolve.test.ts asserts the same
+    // 0.25 through resolveFrame.
+    expect(c.effects.map((e) => e.type)).toEqual(['brightnessContrast'])
+    expect(resolveEffect(c.effects[0], 1)!.params.brightness).toBeCloseTo(0.25)
   })
 
   it('preserves the resolved value across the migration, static and animated alike', () => {
@@ -302,7 +337,9 @@ describe('migrateClipEffects', () => {
     const migrated = migrateClipEffects(legacy)
     expect(resolveChannel(migrated, 'saturation', 1)).toBe(-0.5)
     expect(resolveChannel(migrated, 'blur', 1)).toBe(8)
-    expect(resolveChannel(migrated, 'brightness', 1)).toBeCloseTo(0.25)
+    // Same as above: the legacy additive brightness is read where it now lives.
+    const bc = migrated.effects.find((e) => e.type === 'brightnessContrast')!
+    expect(resolveEffect(bc, 1)!.params.brightness).toBeCloseTo(0.25)
   })
 
   it('leaves transform keyframes untouched', () => {

@@ -313,3 +313,111 @@ test('the shelf tells the truth after a hand edit, and the hand controls are one
   await expect(page.getByTestId('move-state')).toHaveText('Hand edited')
   await expect(page.getByTestId('move-tile-leftThenRight')).toHaveAttribute('aria-pressed', 'false')
 })
+
+// --- WHAT THE TILES SHOW -----------------------------------------------------
+//
+// v0.1.55 drew the same grey box with the same pale bar on all ten tiles, and
+// the only thing that told Shake from Drift right was an animation that ran
+// while the pointer was over the grid. So at rest, which is how the shelf spends
+// almost all of its life, the feature was a word list with decoration on it.
+//
+// These three hold the fix to the thing he actually asked for: cover the labels
+// and the ten are still ten, standing still, and nothing on the shelf moves
+// while he is watching the monitor.
+
+/** Every id on the shelf, in the order the tiles sit in. */
+const TILE_IDS = [
+  'none',
+  'holdBig',
+  'pushIn',
+  'punchIn',
+  'inAndOut',
+  'pop',
+  'leftThenRight',
+  'rightThenLeft',
+  'shake',
+  'driftRight',
+] as const
+
+/** What ONE tile actually draws: both panes of its picture, straight out of the DOM. */
+async function picture(page: Page, id: string): Promise<string> {
+  const stage = await page.getByTestId(`move-glyph-${id}`).innerHTML()
+  const tape = await page.getByTestId(`move-tape-${id}`).innerHTML()
+  return `${stage}|${tape}`
+}
+
+async function selectFirstClip(page: Page): Promise<void> {
+  await page.getByTestId('clip').first().click({ position: { x: 20, y: 10 } })
+  await expect(page.getByTestId('move-grid')).toBeVisible()
+}
+
+test('cover the labels and the ten tiles are still ten different pictures', async ({ page }) => {
+  await seedClips(page, 1, 6)
+  await selectFirstClip(page)
+
+  const drawn = new Map<string, string>()
+  for (const id of TILE_IDS) {
+    const key = await picture(page, id)
+    const clash = drawn.get(key)
+    expect(clash, `${id} draws exactly what ${clash} draws`).toBeUndefined()
+    drawn.set(key, id)
+  }
+  expect(drawn.size, 'ten moves, ten pictures').toBe(10)
+
+  // And the selected tile is the PICTURE going accent, not a hairline border:
+  // nine grey drawings and one lavender one.
+  await page.getByTestId('move-tile-pushIn').click()
+  await expect(page.getByTestId('move-glyph-pushIn')).toHaveClass(/text-accent/)
+  await expect(page.getByTestId('move-glyph-shake')).not.toHaveClass(/text-accent/)
+})
+
+test('nothing on the shelf moves while it plays, with the pointer sitting on a tile', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' })
+  await seedClips(page, 1, 20)
+  await selectFirstClip(page)
+
+  // Hovering IS allowed to animate. It is the one moving part on the shelf and
+  // it runs on the hovered tile alone.
+  await page.getByTestId('move-tile-shake').hover()
+  await expect(page.getByTestId('move-live-shake')).toHaveCount(1)
+
+  const playheadS = async (): Promise<number> =>
+    page.evaluate(async () => {
+      const storeMod = '/src/state/store.ts'
+      const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+        useStore: { getState: () => { ui: { playheadS: number } } }
+      }
+      return useStore.getState().ui.playheadS
+    })
+
+  await page.keyboard.press('Space')
+  // The pointer has not moved. The loop still has to stand down: the shelf is on
+  // screen for the whole of playback, and the Inspector around it already returns
+  // a sentinel rather than re-render at frame rate.
+  await expect(page.locator('[data-testid^="move-live-"]')).toHaveCount(0)
+  const before = await picture(page, 'shake')
+  const t0 = await playheadS()
+  await page.waitForTimeout(600)
+  expect(await playheadS(), 'the transport really did run').toBeGreaterThan(t0)
+  expect(await picture(page, 'shake'), 'a tile must not redraw while the transport runs').toBe(before)
+  await page.keyboard.press('Space')
+})
+
+test('reduced motion gets the same ten pictures, and the digits still pick a move', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await seedClips(page, 1, 6)
+  await selectFirstClip(page)
+
+  // No loop at all, which is exactly why the still tile has to be the whole
+  // picture rather than the first frame of one.
+  await page.getByTestId('move-tile-shake').hover()
+  await expect(page.locator('[data-testid^="move-live-"]')).toHaveCount(0)
+  const drawn = new Set<string>()
+  for (const id of TILE_IDS) drawn.add(await picture(page, id))
+  expect(drawn.size, 'still ten pictures with the motion off').toBe(10)
+
+  // And the keyboard path is untouched: the digits still put a move on the clip.
+  await page.keyboard.press('3')
+  await expect(page.getByTestId('move-tile-punchIn')).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.getByTestId('move-state')).toHaveText('Punch in')
+})

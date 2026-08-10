@@ -482,6 +482,15 @@ export function matchMove(
   return null
 }
 
+/**
+ * The little picture's own clock, shared by everything a tile is drawn from so
+ * the samples and the beat times can never be measured against different
+ * rulers. A `moment` move gets a tail on purpose: the hold AFTER the hit is
+ * what tells Punch in apart from Push in, so it has to be part of the picture.
+ */
+const TILE_FPS = 30
+const tileDurS = (def: MoveDef): number => (def.window === 'moment' ? 1.4 : 2)
+
 /** One sampled instant of a move, for drawing it: a size and a shift in FRAME shares. */
 export interface MoveSample {
   /** 0..1 through the move. */
@@ -501,9 +510,8 @@ export interface MoveSample {
  * drop into a CSS translate untouched, at any aspect.
  */
 export function moveSamples(def: MoveDef, depth: number, riseFrames: number, steps = 48): MoveSample[] {
-  const fps = 30
-  const durS = def.window === 'moment' ? 1.4 : 2
-  const tracks = buildMove(def, fps, durS, { scale: 1, posX: 0, posY: 0 }, {
+  const durS = tileDurS(def)
+  const tracks = buildMove(def, TILE_FPS, durS, { scale: 1, posX: 0, posY: 0 }, {
     depth,
     riseFrames,
     seqWidth: 1,
@@ -525,4 +533,24 @@ export function moveSamples(def: MoveDef, depth: number, riseFrames: number, ste
     })
   }
   return out
+}
+
+/**
+ * WHEN a move's moments land, on the same clock its samples use, read off the
+ * keyframes buildMove actually writes rather than off the beat table. A beat
+ * the builder DROPS because two of them would land on one frame is therefore a
+ * tick the tile does not draw either, which is the whole reason this reads the
+ * built keyframes and not `def.beats`.
+ */
+export function moveBeatTimes(def: MoveDef, depth: number, riseFrames: number): { durS: number; timesS: number[] } {
+  const durS = tileDurS(def)
+  const tracks = buildMove(def, TILE_FPS, durS, { scale: 1, posX: 0, posY: 0 }, {
+    depth,
+    riseFrames,
+    seqWidth: 1,
+    seqHeight: 1,
+  })
+  const seen = new Set<number>()
+  for (const track of tracks) for (const k of track.kfs) seen.add(Math.round(k.t * 1e6) / 1e6)
+  return { durS, timesS: [...seen].sort((a, b) => a - b) }
 }

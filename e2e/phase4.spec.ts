@@ -184,6 +184,44 @@ test('brightness filter darkens preview and export by the same amount', async ({
   await page.screenshot({ path: `${VERIFY}/brightness.png` })
 })
 
+test('brightness GAINS the picture instead of fading it to white', async ({ page }) => {
+  // HIS REPORT, 2026-08-10: "instead of actually putting the brightness up, it
+  // just makes the screen whiter." The old shader did `c += brightness`, so at
+  // full up EVERY channel hit 255 and the frame became flat white. The new one
+  // multiplies, so the law below holds on the real GPU: each channel scales by
+  // pow(2, b) and a channel sitting at zero stays at zero.
+  const clipId = await addClip(page)
+  await page.getByTestId('ruler').click({ position: { x: 30, y: 10 } }) // 0.5s, red
+
+  await expect
+    .poll(async () => (await previewPixel(page, 0.5, 0.5))[0], { timeout: 10_000 })
+    .toBeGreaterThan(140)
+  const base = await previewPixel(page, 0.5, 0.5)
+
+  // Full up. Additive would have put all three channels on 255.
+  await setChannel(page, clipId, 'brightness', 1)
+  await expect
+    .poll(async () => (await previewPixel(page, 0.5, 0.5))[0], { timeout: 10_000 })
+    .toBeGreaterThan(base[0] + 10)
+  const up = await previewPixel(page, 0.5, 0.5)
+
+  // The gain law, on real pixels: out = clamp(in * 2). Tolerance covers the
+  // dither pass and byte rounding.
+  const predicted = base.map((v) => Math.min(255, Math.round(v * 2)))
+  for (let i = 0; i < 3; i++) {
+    expect(Math.abs(up[i] - predicted[i]), `channel ${i}: got ${up[i]}, predicted ${predicted[i]} from base ${base[i]}`).toBeLessThanOrEqual(6)
+  }
+
+  // The complaint itself: at FULL brightness the frame is still coloured, not
+  // white. A channel the source left dark is still dark, because 0 * g == 0.
+  const darkest = Math.min(...base)
+  expect(darkest, `base pixel ${base.join(',')} has no dark channel to test with`).toBeLessThan(80)
+  expect(Math.min(...up)).toBeLessThan(160) // additive at +1 would have made this 255
+  expect(up.every((v) => v === 255)).toBe(false)
+
+  await page.screenshot({ path: `${VERIFY}/brightness-gain.png` })
+})
+
 test('Effect Controls: stopwatch keyframes a channel and the lane shows a diamond', async ({ page }) => {
   const clipId = await addClip(page)
   await openHandControls(page)

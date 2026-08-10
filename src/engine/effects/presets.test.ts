@@ -57,7 +57,7 @@ describe('copyEffects', () => {
 describe('autoPresetName', () => {
   it('names from registry labels', () => {
     expect(autoPresetName([sat(-1)])).toBe('Saturation')
-    expect(autoPresetName([sat(-1), animated()])).toBe('Saturation + Brightness & Contrast')
+    expect(autoPresetName([sat(-1), animated()])).toBe('Saturation + Brightness & Contrast (legacy)')
   })
   it('summarises long stacks', () => {
     const four = [sat(-1), animated(), sat(0.5), animated()]

@@ -272,12 +272,12 @@ test('the new transitions are listed in the Effects browser', async ({ page }) =
   for (const kind of ['zoom', 'glitch', 'whiteFlash']) {
     await expect(page.locator(`[data-testid="transition-item"][data-payload="${kind}"]`)).toBeVisible()
   }
-  for (const type of ['vignette', 'glow', 'chromaKey']) {
+  for (const type of ['vignette', 'glow', 'chromaKey', 'brightness', 'contrast']) {
     await expect(page.locator(`[data-testid="effect-item"][data-payload="${type}"]`)).toBeVisible()
   }
   // And the ones he said he would never use are NOT on the shelf any more
   // (2026-07-28). They still render and still migrate; they are just not offered.
-  for (const type of ['grain', 'sharpen', 'lumaKey', 'colorWheels', 'whiteBalance', 'exposure', 'vibrance']) {
+  for (const type of ['grain', 'sharpen', 'lumaKey', 'colorWheels', 'whiteBalance', 'exposure', 'vibrance', 'brightnessContrast']) {
     await expect(page.locator(`[data-testid="effect-item"][data-payload="${type}"]`)).toHaveCount(0)
   }
   // The casual TRANSITIONS went the same way on 2026-07-29, his call: "remove

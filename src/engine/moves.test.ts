@@ -15,6 +15,7 @@ import {
   applyMove,
   clearMoveChannels,
   matchMove,
+  moveBeatTimes,
   moveByDigit,
   moveSamples,
   type MoveDef,
@@ -337,6 +338,33 @@ describe('the little picture on a tile', () => {
       const moved = Math.max(...spread) - Math.min(...spread)
       if (move.id === 'none') expect(moved).toBeCloseTo(0, 9)
       else if (move.id !== 'holdBig') expect(moved).toBeGreaterThan(0.05)
+    }
+  })
+})
+
+describe('the moments a tile marks', () => {
+  it('gives every move on the shelf every beat it has, at the tile length', () => {
+    // The tile draws a tick per moment, so a beat quietly dropped for want of a
+    // frame of daylight would be a tile that lies about the move. At the tile's
+    // own length nothing is dropped, and this is where that is held.
+    for (const move of MOVES) {
+      const { durS, timesS } = moveBeatTimes(move, DEPTH, RISE)
+      expect(timesS, move.id).toHaveLength(move.beats.length)
+      expect(durS).toBeGreaterThan(0)
+      for (const t of timesS) {
+        expect(t, move.id).toBeGreaterThanOrEqual(0)
+        expect(t, move.id).toBeLessThanOrEqual(durS + 1e-9)
+      }
+      for (let i = 1; i < timesS.length; i++) expect(timesS[i], move.id).toBeGreaterThan(timesS[i - 1])
+    }
+  })
+
+  it('measures those moments on the same clock the samples are drawn on', () => {
+    // A tick measured against a different length would stand in the wrong place
+    // on the strip with nothing to catch it, so the two share tileDurS.
+    for (const move of MOVES) {
+      expect(moveBeatTimes(move, DEPTH, RISE).durS, move.id).toBe(move.window === 'moment' ? 1.4 : 2)
+      expect(moveSamples(move, DEPTH, RISE, 4)).toHaveLength(5)
     }
   })
 })

@@ -17,11 +17,19 @@ const LOOK_H = 1920
 /**
  * The grade, straight from the channel spec: +13% saturation, +10% contrast,
  * +0.1 stops. Fresh instance ids per call (instances live on clips).
+ *
+ * The contrast used to ride on `brightnessContrast { brightness: 0, contrast:
+ * 0.1 }`. It is the standalone `contrast` effect now, and the two render
+ * identically because the new shader IS the old one's contrast line. This
+ * signature is load-bearing: `hasJettismGrade` below matches on it, and
+ * migrate.ts rewrites the old instance to this exact shape on load so clips
+ * graded before the split still read as graded. Change one without the other
+ * and a second click double-grades every old clip.
  */
 export function jettismGradeEffects(): EffectInstance[] {
   return [
     { id: newId(), type: 'exposure', enabled: true, params: { exposure: 0.1 } },
-    { id: newId(), type: 'brightnessContrast', enabled: true, params: { brightness: 0, contrast: 0.1 } },
+    { id: newId(), type: 'contrast', enabled: true, params: { contrast: 0.1 } },
     { id: newId(), type: 'saturation', enabled: true, params: { saturation: 0.13 } },
   ]
 }

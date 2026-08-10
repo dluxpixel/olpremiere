@@ -9,6 +9,14 @@
 //
 // Adding an effect means adding an entry here. That is the whole point: chroma
 // key, luma curve, and masks become registry entries, not new architecture.
+//
+// WHAT `c` IS, because every colour effect below depends on the answer and the
+// comments used to get it wrong. `c` is sRGB-ENCODED, gamma-companded, 0..1. It
+// is NOT linear light. Source frames upload as gl.RGBA / gl.UNSIGNED_BYTE
+// (glRenderer.ts acquireTexture), never gl.SRGB8_ALPHA8, so sampling performs no
+// decode; the per-layer FBOs are RGBA8 too; and there is no srgbToLinear, no
+// pow(c, 2.2) and no EXT_sRGB anywhere in src/engine. exportWorker.ts says the
+// same thing from the other end ("the pixels going in are full-range sRGB").
 
 import { evalChannel } from '../keyframes'
 import type { ResolvedEffect } from '../render/types'
@@ -79,11 +87,12 @@ export interface EffectDef {
   initialParams?: Record<string, number>
   params: EffectParamDef[]
   /**
-   * Pointwise GLSL. Mutates `vec3 c` (0..1 RGB) in place; `float a` (alpha) is
-   * readable AND writable. Keying effects multiply it down, and the premultiply
-   * happens after the whole chain. The renderer wraps every body in its own
-   * block scope, so local variable names cannot collide when an effect appears
-   * in a stack twice. Uniform names come from `u`, so they cannot collide either.
+   * Pointwise GLSL. Mutates `vec3 c` (0..1 sRGB-encoded RGB, see the file
+   * header); `float a` (alpha) is readable AND writable. Keying effects multiply
+   * it down, and the premultiply happens after the whole chain. The renderer
+   * wraps every body in its own block scope, so local variable names cannot
+   * collide when an effect appears in a stack twice. Uniform names come from
+   * `u`, so they cannot collide either.
    */
   glsl?: (u: UniformNamer) => string
 }
@@ -145,9 +154,21 @@ export const EFFECTS: EffectDef[] = [
     type: 'exposure',
     hidden: true,
     label: 'Exposure',
-    description: 'Scale linear light by stops before any other grade.',
+    description: 'Scale the picture by stops before any other grade.',
     category: 'color',
     pass: 'pointwise',
+    // The description used to claim "linear light". It was never true: see the
+    // file header. This is the same gain Brightness applies, over a wider range
+    // (-4..4 rather than -1..1), which makes it a duplicate of Brightness in
+    // everything but reach. It is KEPT, hidden and unchanged, because it is not
+    // a second DOOR (nothing on the shelf offers it) and three live things
+    // depend on its exact behaviour: the `exposure` channel in the Inspector's
+    // colour rows, `filtersToEffectStack` migrating `filters.exposure`, and
+    // `jettismGradeEffects()` (lookActions.ts), which puts +0.1 on every clip
+    // the punch grade has ever touched. Deleting it would quietly flatten all of
+    // them; folding it into Brightness would change the punch grade's signature
+    // and make `hasJettismGrade` stop recognising clips it already graded, so a
+    // second click would stack the grade twice.
     params: [p('exposure', 'Exposure', -4, 4, 0.01, 0, 'stops', 0.02)],
     glsl: (u) => `c *= pow(2.0, ${u('exposure')});`,
   },
@@ -189,10 +210,26 @@ export const EFFECTS: EffectDef[] = [
   },
   {
     type: 'brightnessContrast',
-    label: 'Brightness & Contrast',
-    description: 'Additive brightness, then contrast pivoted on mid grey.',
+    hidden: true,
+    label: 'Brightness & Contrast (legacy)',
+    description: 'Additive brightness, then contrast pivoted on mid grey. Kept only so clips graded before the split render exactly as they were cut.',
     category: 'color',
     pass: 'pointwise',
+    // FROZEN. Not one character of `params` or `glsl` may change.
+    //
+    // HIS REPORT, 2026-08-10: "instead of actually putting the brightness up, it
+    // just makes the screen whiter." He was right, and the description said so
+    // out loud. `c += b` lifts black to grey, crushes every ratio in the picture,
+    // and clips everything above 1 - b to one flat white. It is a fade to white,
+    // not a brightness control, and it is replaced by the `brightness` entry
+    // below.
+    //
+    // It is not DELETED, and no stored value is converted, because there is no
+    // faithful conversion: matching `in + b == in * g` needs `g = 1 + b/in`,
+    // which depends on the pixel. See migrate.ts for the whole argument. His
+    // saved projects keep pointing at this type and keep rendering byte for
+    // byte, which is the only outcome where he cannot be silently regraded on
+    // footage he has already published. Hidden, so nothing new can reach it.
     params: [
       p('brightness', 'Brightness', -1, 1, 0.01, 0),
       p('contrast', 'Contrast', -1, 1, 0.01, 0),
@@ -201,6 +238,61 @@ export const EFFECTS: EffectDef[] = [
       c += ${u('brightness')};
       c = (c - 0.5) * (1.0 + ${u('contrast')}) + 0.5;
     `,
+  },
+  {
+    type: 'brightness',
+    label: 'Brightness',
+    description: 'Scales the picture, so black stays black and nothing washes out. 0 is neutral.',
+    category: 'color',
+    pass: 'pointwise',
+    params: [p('brightness', 'Brightness', -1, 1, 0.01, 0)],
+    // MULTIPLY, never add. HIS INSTRUCTION, 2026-08-10: "do brightness and
+    // contrast as a separate effect."
+    //
+    // WHY A PLAIN MULTIPLY IS THE HONEST MATHS HERE. `c` is sRGB-encoded, not
+    // linear light (file header). For a power-law transfer function, scaling
+    // linear light and scaling the encoded value are the SAME operation with a
+    // different constant: ((c^g) * k)^(1/g) == c * (k^(1/g)). So one multiply is
+    // real exposure with the exponent folded into the gain. Decoding, scaling
+    // and re-encoding would cost two pow() per pixel per instance in a chain
+    // that is inlined into one shader, and would buy a difference only in the
+    // deepest shadows, where sRGB's linear toe is the one place the identity is
+    // inexact, and that difference is under one 255th.
+    //
+    // WHY pow(2, b) IS THE GAIN. It is exactly reciprocal at the two ends,
+    // pow(2, -b) == 1.0 / pow(2, b), so the slider is symmetric by construction:
+    // +0.4 then -0.4 lands back on the pixel it started from, and neither end is
+    // a wipe (at +1 a dark 0.2 pixel is still only 0.4; at -1 a light 0.8 pixel
+    // is still 0.4). The full travel is a factor of two either way on the code
+    // value, which is mid grey to white at the top, and it puts the end stop
+    // somewhere useful instead of at total white the way `c += 1.0` did.
+    //
+    // b = 0 compiles to `c *= pow(2.0, 0.0)`, and pow is exp2(y * log2(x)) with
+    // log2(2.0) exactly 1.0, so it is bit-exact `c *= 1.0`: a true no-op for a
+    // keyframed brightness passing through zero. (A STATIC zero never reaches
+    // the shader at all; `isNeutral` drops it before the program is built.)
+    glsl: (u) => `c *= pow(2.0, ${u('brightness')});`,
+  },
+  {
+    type: 'contrast',
+    label: 'Contrast',
+    description: 'Pushes values away from mid grey, or toward it below 0. -1 is flat grey.',
+    category: 'color',
+    pass: 'pointwise',
+    params: [p('contrast', 'Contrast', -1, 1, 0.01, 0)],
+    // Byte-identical to the second line of `brightnessContrast`, deliberately.
+    // That identity is what lets migrate.ts rewrite an old instance whose
+    // brightness sits at a static 0 onto this type without a single pixel
+    // moving, and brightness.test.ts pins the two strings against each other so
+    // nobody can edit one and not the other.
+    //
+    // THE PIVOT STAYS AT 0.5, and it is not wrong. In the encoded domain 0.5 is
+    // code 128, which is the pivot every consumer contrast control uses
+    // (Photoshop's, Premiere's own Brightness & Contrast). Pivoting on a linear
+    // 18% grey would land at an encoded 0.46: a difference nobody can see,
+    // bought by regrading every project he owns. There is no evidence to change
+    // it, so it does not change.
+    glsl: (u) => `c = (c - 0.5) * (1.0 + ${u('contrast')}) + 0.5;`,
   },
   {
     type: 'saturation',
@@ -410,6 +502,11 @@ export const EFFECTS: EffectDef[] = [
  * The order a migrated `filters` bag becomes a stack in. This is the frozen
  * math order of the pre-registry LAYER_FS shader; do not reorder it without a
  * golden-test re-baseline.
+ *
+ * `brightnessContrast` keeps the exact slot it always had, so a clip that still
+ * carries it grades in the same place in the chain. The two effects it split
+ * into follow it, which is also the old shader's own order (brightness, then
+ * contrast, then saturation).
  */
 export const CANONICAL_ORDER = [
   // Keys run first: they read the ORIGINAL colours, before any grade shifts them.
@@ -420,6 +517,8 @@ export const CANONICAL_ORDER = [
   'colorWheels',
   'whiteBalance',
   'brightnessContrast',
+  'brightness',
+  'contrast',
   'saturation',
   'vibrance',
   'vignette',
@@ -502,7 +601,13 @@ export function isNeutral(inst: EffectInstance): boolean {
 // ---------------------------------------------------------------------------
 // Migration from the pre-registry `ClipFilters` bag.
 
-/** Which ClipFilters keys feed which effect, in canonical order. */
+/**
+ * Which ClipFilters keys feed which effect, in canonical order.
+ *
+ * `brightnessContrast` stays here on purpose. A number in `filters.brightness`
+ * was written for the ADDITIVE shader, so the additive effect is the only one
+ * that reads it correctly. See migrate.ts for the full argument.
+ */
 const FILTER_KEYS: Readonly<Record<string, readonly (keyof ClipFilters)[]>> = {
   exposure: ['exposure'],
   colorWheels: ['lift', 'gamma', 'gain'],
