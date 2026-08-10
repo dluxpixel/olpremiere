@@ -71,10 +71,37 @@ describe('pairTransitionWindow', () => {
       endS: 2.5,
       fromAssetId: 'x',
       toAssetId: 'x',
+      fromClipId: 'a',
+      toClipId: 'b',
       fromSourceStartS: 2, // a.inS + 2s: the cut, then past a.outS into handle media
       fromSourceEndS: 2.5,
       toSourceStartS: 5,
+      toSourceEndS: 5.5,
     })
+  })
+
+  // BOTH sides are named, and per CLIP rather than per asset. A razored take is
+  // one asset in two clips (the fixture above is exactly that: both are 'x'),
+  // so an asset-keyed hold would hand the outgoing side the incoming side's
+  // frame. The clip ids are what keep the two apart.
+  it('names both clips, which is what a razored one-asset pair needs', () => {
+    const w = pairTransitionWindow(a, b, 30)
+    expect(w?.fromAssetId).toBe(w?.toAssetId)
+    expect(w?.fromClipId).not.toBe(w?.toClipId)
+  })
+
+  // The incoming side gets an END time so its window can be decoded ahead, the
+  // way the outgoing side always has been. Without it there is nothing to
+  // prefetch and the first frames of every dissolve depend on a seek landing.
+  it('maps the incoming source window, including |speed| and reverse', () => {
+    const fastIn = { ...b, speed: 2 }
+    const w = pairTransitionWindow(a, fastIn, 30)
+    expect(w?.toSourceStartS).toBe(5)
+    expect(w?.toSourceEndS).toBe(6) // 0.5s window at 2x
+    const revIn = { ...b, speed: -1 }
+    const r = pairTransitionWindow(a, revIn, 30)
+    expect(r?.toSourceStartS).toBe(7) // reversed B starts at outS
+    expect(r?.toSourceEndS).toBe(6.5) // and walks backward
   })
 
   it("B's transitionIn wins over A's transitionOut (resolver rule)", () => {

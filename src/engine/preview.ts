@@ -13,6 +13,7 @@ import {
 } from './frameCache'
 import {
   attachFrameProbe,
+  hasFrameIdentity,
   recordServedFrame,
   resetPreviewHealth,
   resetPreviewPacing,
@@ -364,11 +365,16 @@ export interface PairTransitionWindow {
   endS: number
   fromAssetId: Id
   toAssetId: Id
+  /** The two clips, so their last good frames can be held. Per CLIP, not per asset. */
+  fromClipId: Id
+  toClipId: Id
   /** Outgoing clip's source time at startS/endS (start > end when reversed). */
   fromSourceStartS: number
   fromSourceEndS: number
   /** Incoming clip's source time at startS. */
   toSourceStartS: number
+  /** Incoming clip's source time at endS (start > end when reversed). */
+  toSourceEndS: number
 }
 
 /**
@@ -385,14 +391,19 @@ export function pairTransitionWindow(a: Clip, b: Clip, fps: number): PairTransit
   const d = Math.min(Math.max(tr.durationS, 1 / fps), maxD)
   const rate = Math.abs(a.speed || 1)
   const srcA = (t: number): number => (a.speed < 0 ? a.outS - (t - a.startS) * rate : a.inS + (t - a.startS) * rate)
+  const rateB = Math.abs(b.speed || 1)
+  const srcB = (t: number): number => (b.speed < 0 ? b.outS - (t - b.startS) * rateB : b.inS + (t - b.startS) * rateB)
   return {
     startS: b.startS,
     endS: b.startS + d,
     fromAssetId: a.assetId,
     toAssetId: b.assetId,
+    fromClipId: a.id,
+    toClipId: b.id,
     fromSourceStartS: srcA(b.startS),
     fromSourceEndS: srcA(b.startS + d),
-    toSourceStartS: b.speed < 0 ? b.outS : b.inS,
+    toSourceStartS: srcB(b.startS),
+    toSourceEndS: srcB(b.startS + d),
   }
 }
 
@@ -521,12 +532,31 @@ function prerollCuts(seq: Sequence, assets: Record<Id, MediaAsset>, tS: number):
  * ahead of the cut and warm the incoming element so the window's first frame
  * doesn't cold-start a seek. No window near the playhead → near no-op.
  */
-function prerollTransitions(seq: Sequence, assets: Record<Id, MediaAsset>, tS: number): void {
-  for (const w of transitionWindowsNear(seq, tS)) {
+function prerollTransitions(
+  windows: readonly PairTransitionWindow[],
+  assets: Record<Id, MediaAsset>,
+  tS: number,
+): void {
+  for (const w of windows) {
     const from = assets[w.fromAssetId]
     if (from?.kind === 'video') prefetchRange(from, w.fromSourceStartS, w.fromSourceEndS)
     const to = assets[w.toAssetId]
     if (to?.kind === 'video') {
+      // The incoming side gets its window decoded ahead too, not just a warm
+      // element. A pre-seek is a REQUEST: it can still be in flight when the
+      // window opens, and the guard then leaves the side untextured, so the
+      // dissolve would start on one clip. Cached frames are the thing that
+      // makes the window correct from its first frame rather than its third.
+      //
+      // NOT WHEN BOTH SIDES ARE ONE ASSET, and that is the razored take again.
+      // An asset has ONE decode queue, bounded and ordered by nearness to the
+      // latest request (frameCache request/boundPending). Two windows eight
+      // seconds apart asked for on every rAF would each re-anchor that queue and
+      // evict the other's frames, finishing neither: the same thrash the cut
+      // pre-roll below is bounded to avoid. The OUTGOING side wins the tie,
+      // because it is the one that cannot fall back to the element (the
+      // incoming side owns it), so the cache is its only route to a picture.
+      if (w.toAssetId !== w.fromAssetId) prefetchRange(to, w.toSourceStartS, w.toSourceEndS)
       const pooled = warmVideo(to)
       // Pre-seek only BEFORE the window and only a PAUSED element. A playing
       // one is on screen (including the same-asset case, where the outgoing
@@ -550,6 +580,43 @@ function prerollTransitions(seq: Sequence, assets: Record<Id, MediaAsset>, tS: n
  * `transitionFrom`: layers that are the OUTGOING side of a live pair
  * transition, served from the frame cache, never from an element seek.
  */
+/**
+ * MAY THIS ELEMENT'S CURRENT PICTURE STAND IN FOR THE FRAME `srcT` ASKS FOR?
+ * Only on POSITIVE EVIDENCE, and only for a layer that is one side of a live
+ * pair transition. This is the whole of the cross dissolve bug he reported on
+ * 2026-08-10, so the reasoning is worth keeping.
+ *
+ * `el.currentTime` is the position the element has been ASKED to play from, not
+ * the frame it is showing. The seek branch below assigns it `srcT` a few lines
+ * before the error is computed from it, so a COLD element reports a perfect
+ * error of zero for a picture that is still the head of the file. Absence of
+ * evidence was reading as tolerance, and the ladder then handed the compositor
+ * frame 0.
+ *
+ * At a plain cut that costs a frame or two of stale picture and nobody sees it,
+ * which is the trade the ladder's last rung was built for and still keeps. In a
+ * DISSOLVE the same wrong picture is held at rising opacity for the whole
+ * window, so it does not read as a blip, it reads as a flash of footage the
+ * editor already trimmed away. On a razored source it is worse again: both
+ * sides are one asset, so they share ONE pooled element, and the side that does
+ * not own it is handed whatever the other side parked it on.
+ *
+ * An untextured side is transparent, which is a shorter dissolve. Deleted
+ * footage at 60% opacity is a defect. The first is worth the second.
+ *
+ * Where the engine reports no frame identity at all (Firefox has no
+ * requestVideoFrameCallback) there is no evidence to be had, so the old
+ * behaviour stands byte for byte rather than blanking every transition.
+ */
+function elementShowsNear(pooled: PooledVideo, srcT: number): boolean {
+  if (!hasFrameIdentity()) return true
+  if (!pooled.probe.live) return false
+  // A probe that has stopped reporting is not stale for THIS question: the last
+  // frame it presented is still the frame on screen. It is the right number to
+  // judge, however old it is.
+  return Math.abs(pooled.probe.mediaTime - srcT) <= HARD_SEEK_S
+}
+
 function makeTextureSource(
   assets: Record<Id, MediaAsset>,
   fps: number,
@@ -558,6 +625,8 @@ function makeTextureSource(
   frameH: number,
   markPending: () => void,
   transitionFrom?: ReadonlySet<RenderLayer>,
+  transitionSides?: ReadonlySet<RenderLayer>,
+  holdClips?: ReadonlySet<Id>,
 ): TextureSource {
   return (layer: RenderLayer): TexImageSource | null => {
     // Titles are generated, not imported. Rasterize them at PREVIEW size, not at
@@ -584,6 +653,21 @@ function makeTextureSource(
     if (asset.kind !== 'video') return null
 
     const srcT = layer.sourceTimeS
+    // One side of a live pair transition. Its picture is composited against the
+    // other clip for the whole window, so it may only ever be the RIGHT frame.
+    const guarded = transitionSides?.has(layer) === true
+    // Near enough a transition that this clip's last good frame is worth
+    // keeping. Covers the pre-roll as well as the window itself, which is what
+    // gives the OUTGOING side something to hold the moment the window opens.
+    const holding = holdClips?.has(layer.clipId) === true
+    /** A picture the ladder is confident is this clip's own frame. */
+    const confident = (src: TexImageSource): TexImageSource => {
+      if (holding) holdGoodFrame(layer.clipId, src)
+      return src
+    }
+    /** No provable picture: the last one there was, never a wrong one. */
+    const held = (): TexImageSource | null => heldFrames.get(layer.clipId) ?? null
+
     if (playing && transitionFrom?.has(layer)) {
       // Outgoing side of a live pair transition, sampled past its cut. The
       // incoming side owns the pooled element (the SAME element when both clips
@@ -593,10 +677,15 @@ function makeTextureSource(
       // getFrameAt already queued it. Sampling past the media end freeze-frames
       // on the last real frame, which an element cannot do.
       const exact = getFrameAt(asset, srcT)
-      if (exact) return exact as TexImageSource
+      if (exact) return confident(exact as TexImageSource)
       markPending()
       const pooled = videoPool.get(asset.id)
-      return pooled?.ready ? pooled.el : null
+      if (!pooled?.ready) return held()
+      // MEASURED 2026-08-10: this rung served the outgoing side a picture 0.8 s
+      // from the frame asked for, four times inside one 1 s dissolve, and
+      // nothing here looked. On a razored source that element belongs to the
+      // INCOMING side, so "as-is" means the wrong part of the same take.
+      return elementShowsNear(pooled, srcT) ? confident(pooled.el) : held()
     }
     if (!playing) {
       const pooled = warmVideo(asset)
@@ -605,13 +694,18 @@ function makeTextureSource(
       prefetchAround(asset, srcT)
       // The cache only ever yields OffscreenCanvas/ImageBitmap (valid texture
       // sources), but its return type is the wider CanvasImageSource.
-      if (exact) return exact as TexImageSource
+      if (exact) return confident(exact as TexImageSource)
       // No exact frame yet. Fall back to a nearest <video> seek, but the seek
       // is ASYNC, so this frame is NOT final: mark it pending so the draw loop
       // keeps polling until the exact decode lands (else it freezes mid-seek).
       markPending()
-      if (!pooled.ready) return null
+      if (!pooled.ready) return guarded ? held() : null
+      // Ask for the seek either way: parking the element on the wanted frame is
+      // how the NEXT draw gets it right. Only the handing over is guarded.
       if (Math.abs(pooled.el.currentTime - srcT) > 1 / (2 * fps)) pooled.el.currentTime = srcT
+      // Scrubbing across a dissolve is the same defect standing still: the seek
+      // has not landed, so the element is showing some other part of the take.
+      if (guarded && !elementShowsNear(pooled, srcT)) return held()
       return pooled.el
     }
 
@@ -703,10 +797,28 @@ function makeTextureSource(
     // served instead, the same frames the export uses and the same ones the
     // transition path has always been served. Last resort is the element anyway:
     // never null, never a black frame.
+    // THE GUARD SITS ABOVE THE WHOLE LADDER, NOT JUST ITS LAST RUNG. `trueErr`
+    // is computed from `shownS`, which falls back to `el.currentTime` whenever
+    // the probe has never reported, and the seek branch just above assigned
+    // `el.currentTime = srcT`. So a cold element inside a transition reaches the
+    // "in tolerance" rung with an error of zero and a picture of frame 0. The
+    // side is left untextured until the element can prove otherwise.
+    if (guarded && !elementShowsNear(pooled, srcT)) {
+      const exact = getFrameAt(asset, srcT)
+      if (exact) {
+        recordServedFrame(0, true)
+        return confident(exact as TexImageSource)
+      }
+      // Only NOW is the frame unfinished. Marking it before asking the cache
+      // made every exact hit inside a dissolve schedule a redundant redraw.
+      markPending()
+      return held()
+    }
+
     if (Math.abs(trueErr) <= tol) {
       liveMisses.delete(asset.id)
       recordServedFrame(trueErr, true)
-      return livePreviewSource(el, asset.id, layer.transform.scale)
+      return confident(livePreviewSource(el, asset.id, layer.transform.scale))
     }
     // NEVER ASK THE DECODER FOR WHAT IT CANNOT DELIVER IN TIME.
     //
@@ -732,7 +844,7 @@ function makeTextureSource(
       if (exact) {
         liveMisses.delete(asset.id)
         recordServedFrame(0, true)
-        return exact as TexImageSource
+        return confident(exact as TexImageSource)
       }
       liveMisses.set(asset.id, misses + 1)
       markPending() // the decode is queued; keep polling so it lands
@@ -768,6 +880,67 @@ function makeTextureSource(
 const liveScale = new Map<Id, OffscreenCanvas>()
 /** Two or three video layers can be live at once; more than this is a leak. */
 const LIVE_SCALE_CAP = 4
+
+// --- Held frames: what a dissolve shows when a side cannot prove its picture --
+//
+// The guard above refuses to composite an element that cannot show it is on the
+// right frame. Returning NOTHING for that side is not good enough, and the
+// measurement says so: a cross dissolve weights `from*(1-p) + to*p`, so a
+// transparent side does not mean "show the other clip", it means "blend the
+// other clip toward black". Measured 2026-08-10 on the razored fixture, the
+// second half of a one second dissolve came back rgb(0,0,0) on every sampled
+// frame. Trading a flash of deleted footage for a fade to black is not a fix.
+//
+// So each side of a transition holds the last picture it was served that was
+// PROVABLY its own frame, and falls back to that. A freeze on the outgoing
+// clip's final frame for a fraction of a second is what a freeze-frame
+// transition looks like on purpose, and it is invisible next to the two things
+// it replaces.
+//
+// KEYED PER CLIP, NOT PER ASSET, and that is the whole point on his footage.
+// One take razored into pieces is ONE asset, so an asset-keyed hold would give
+// the outgoing side the INCOMING side's frame: the same defect with extra
+// steps.
+//
+// Held only for clips near a transition window (see holdClips), so an ordinary
+// timeline never pays the extra blit, and only ever from a picture the ladder
+// was already confident in.
+const heldFrames = new Map<Id, OffscreenCanvas>()
+/** Both sides of at most a couple of overlapping windows. */
+const HELD_FRAME_CAP = 4
+
+const sourceSize = (src: TexImageSource): { w: number; h: number } => {
+  if (typeof HTMLVideoElement !== 'undefined' && src instanceof HTMLVideoElement) {
+    return { w: src.videoWidth, h: src.videoHeight }
+  }
+  const s = src as { width?: number; height?: number }
+  return { w: s.width ?? 0, h: s.height ?? 0 }
+}
+
+/** Copy a picture the ladder was confident in, so this clip can fall back to it. */
+function holdGoodFrame(clipId: Id, src: TexImageSource): void {
+  if (typeof OffscreenCanvas === 'undefined') return
+  const { w, h } = sourceSize(src)
+  if (!w || !h) return
+  let canvas = heldFrames.get(clipId)
+  if (canvas) heldFrames.delete(clipId)
+  if (!canvas || canvas.width !== w || canvas.height !== h) canvas = new OffscreenCanvas(w, h)
+  heldFrames.set(clipId, canvas)
+  while (heldFrames.size > HELD_FRAME_CAP) {
+    const oldest = heldFrames.keys().next().value
+    if (oldest === undefined) break
+    heldFrames.delete(oldest)
+  }
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return
+  try {
+    ctx.drawImage(src as CanvasImageSource, 0, 0, w, h)
+  } catch {
+    // A video element that has not decoded anything yet throws rather than
+    // drawing. Nothing to hold, and the next good frame will fill it.
+    heldFrames.delete(clipId)
+  }
+}
 
 /**
  * How tall the live upload actually needs to be.
@@ -905,18 +1078,37 @@ export function renderPreview(
     }
     for (const [id, { el }] of videoPool) if (!active.has(id) && !el.paused) el.pause()
   }
-  // Transition pre-roll + the from-layers served from the frame cache this
-  // frame. whiteFlash stand-ins (from/to are the same clip) keep the element
-  // path: their "from" is the clip's own continuously-playing layer.
+  // ONE walk of the transition windows near the playhead, shared by the
+  // pre-roll and by the held-frame bookkeeping below.
+  const windows = transitionWindowsNear(seq, tS)
+  // Which clips should keep their last good frame. Taken from the windows NEAR
+  // the playhead, not from the ops AT it, so the outgoing clip is already
+  // holding frames when the window opens: at the window's first frame it is too
+  // late to start remembering. Empty on a timeline with no transitions, which
+  // is what keeps the extra blit off the ordinary path.
+  let holdClips: Set<Id> | undefined
+  for (const w of windows) {
+    ;(holdClips ??= new Set()).add(w.fromClipId)
+    holdClips.add(w.toClipId)
+  }
+
+  // The from-layers served from the frame cache this frame, and BOTH sides of
+  // every live pair transition. whiteFlash and lone-edge stand-ins (from/to are
+  // the same clip) are excluded from both: their "from" is a copy of the clip's
+  // own continuously-playing layer, so it needs neither the cache route nor the
+  // guard. `transitionSides` is built while PAUSED too, because scrubbing
+  // across a dissolve composites the same two layers from the same elements.
   let transitionFrom: Set<RenderLayer> | undefined
+  let transitionSides: Set<RenderLayer> | undefined
+  for (const op of frame.ops) {
+    if (op.type !== 'transition' || op.from.clipId === op.to.clipId) continue
+    ;(transitionSides ??= new Set()).add(op.from)
+    transitionSides.add(op.to)
+    if (playing) (transitionFrom ??= new Set()).add(op.from)
+  }
   if (playing) {
-    prerollTransitions(seq, assets, tS)
+    prerollTransitions(windows, assets, tS)
     prerollCuts(seq, assets, tS)
-    for (const op of frame.ops) {
-      if (op.type === 'transition' && op.from.clipId !== op.to.clipId) {
-        (transitionFrom ??= new Set()).add(op.from)
-      }
-    }
   }
   // A frame is "complete" only when every layer resolved to its FINAL texture
   // (the exact decoded frame / loaded image), not a still-seeking <video>
@@ -933,6 +1125,8 @@ export function renderPreview(
       complete = false
     },
     transitionFrom,
+    transitionSides,
+    holdClips,
   )
   renderer.render(frame, source)
   return complete
