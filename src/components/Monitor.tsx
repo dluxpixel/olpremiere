@@ -24,6 +24,7 @@ import { setActiveSequenceFormat, useStore } from '../state/store'
 import { IconButton } from '../ui/Button'
 import { MasterMeter } from './MasterMeter'
 import { fitCanvasBox } from './monitorSizing'
+import { drawIsDue, previewFrameMs } from './previewCap'
 import { MonitorTransformOverlay } from './MonitorTransformOverlay'
 import { PlayheadTimecode } from './PlayheadWidgets'
 
@@ -44,10 +45,14 @@ function aspectKeyFor(w: number, h: number): string {
 // The preview never needs to redraw faster than this. The <video> upload +
 // composite is the frame's real cost, so on a 144/240 Hz display an uncapped
 // rAF loop did that work 2-4x more often than any content changed: the "laggy
-// preview". 60 fps is smoother than any timeline footage and imperceptible next
-// to it. (Scrub/drag bursts and playback all coalesce to this ceiling.)
+// preview". (Scrub/drag bursts and playback all coalesce to this ceiling.)
+//
+// It is a FLOOR, not a fixed rate, and the comparison against it allows a tick
+// to run a hair early. Both of those are load bearing and both are measured:
+// as a fixed 60 compared with a hard deadline, this cap beat against a 60 Hz
+// display's own vsync and threw away a third of every 60 fps timeline he
+// played. previewCap.ts holds the arithmetic and the numbers.
 const MAX_PREVIEW_FPS = 60
-const MIN_FRAME_MS = 1000 / MAX_PREVIEW_FPS
 
 /** How long a frame may stay unresolved before the redraw drops to a trickle. */
 const PENDING_GRACE_MS = 1500
@@ -63,9 +68,13 @@ function useProgramCanvas(quality: Quality) {
     let raf = 0
     // Dirty-check state: only repaint when a real input changed (playhead frame,
     // play/pause, canvas size, project edit, or a live gizmo drag), and never
-    // faster than MAX_PREVIEW_FPS. A frame that's still decoding leaves
+    // faster than the redraw cap. A frame that's still decoding leaves
     // `prevComplete=false` so we keep polling until its exact frame lands.
     let lastDrawT = -Infinity
+    // The previous rAF tick, which is how the cap learns the DISPLAY interval.
+    // Recorded on every tick, before any early-out, or a parked frame would make
+    // the next interval read as the whole time the preview sat still.
+    let lastTickT = 0
     let prevKey = ''
     let prevSeq: Sequence | null = null
     let prevComplete = false
@@ -94,6 +103,8 @@ function useProgramCanvas(quality: Quality) {
 
     const draw = (now: number) => {
       raf = requestAnimationFrame(draw)
+      const tickMs = lastTickT > 0 ? now - lastTickT : 0
+      lastTickT = now
       const s = useStore.getState()
       const seq = activeSequence(s.project)
       // CSS box AND raster snapped to whole device pixels (fitCanvasBox): a
@@ -122,7 +133,8 @@ function useProgramCanvas(quality: Quality) {
       // and drop to a trickle once a frame has been pending far longer than any
       // decode should take.
       const stalled = pendingSinceT > 0 && now - pendingSinceT > PENDING_GRACE_MS
-      if (now - lastDrawT < (stalled ? STALLED_POLL_MS : MIN_FRAME_MS)) {
+      const frameMs = stalled ? STALLED_POLL_MS : previewFrameMs(MAX_PREVIEW_FPS, fps)
+      if (!drawIsDue(now - lastDrawT, frameMs, tickMs)) {
         if (playing) recordPreviewTick(frameIdx, false)
         return
       }
