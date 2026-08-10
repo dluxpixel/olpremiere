@@ -271,12 +271,20 @@ export function tidyTranscribedWords(words: readonly TranscribedWord[]): Transcr
  * slice starts at the clip's in point, so timeline time = clip start + word
  * time compressed by the clip's playback speed.
  */
-export function timelineWords(words: readonly TranscribedWord[], clip: Clip): CaptionWord[] {
+export function timelineWords(
+  // The emphasis flag rides through because the picker (captions/emphasis.ts)
+  // has to run in CLIP time, where the words and the PCM share one clock. Doing
+  // it here rather than re-zipping the two lists by index afterwards means there
+  // is only ever one mapping, so the flag cannot end up on the wrong word.
+  words: readonly (TranscribedWord & { emphasis?: boolean })[],
+  clip: Clip,
+): CaptionWord[] {
   const speed = Math.abs(clip.speed) || 1
   return words.map((w) => ({
     text: w.text,
     startS: clip.startS + w.startS / speed,
     endS: clip.startS + w.endS / speed,
+    ...(w.emphasis ? { emphasis: true } : {}),
   }))
 }
 

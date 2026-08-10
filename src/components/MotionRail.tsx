@@ -88,6 +88,12 @@ export interface MotionRailValue {
   /** The same multi-select as moveKeyframes / scaleKeyframeSpan want it. */
   picks: readonly KeyframePick[]
   clearPicks: () => void
+  /**
+   * Whether the LANES draw at all. The rail is always mounted, so a lane never
+   * has to ask whether it has an axis; what folds away under the shelf's 'Tune
+   * it by hand' is the drawing, not the wiring.
+   */
+  lanesVisible: boolean
 }
 
 export const MotionRailContext = createContext<MotionRailValue | null>(null)
@@ -155,10 +161,13 @@ export function MotionRail({
   clip,
   fps,
   children,
+  lanes = true,
 }: {
   clip: Clip
   fps: number
   children: ReactNode
+  /** Draw the ruler, the lanes and the curve editors. Off is the closed shelf. */
+  lanes?: boolean
 }) {
   const rootRef = useRef<HTMLDivElement>(null)
   const rulerRef = useRef<HTMLDivElement>(null)
@@ -371,6 +380,7 @@ export function MotionRail({
     isPicked: (channel, tS) => picked.has(keyframeKey(channel, tS)),
     picks,
     clearPicks: () => setPicks([]),
+    lanesVisible: lanes,
   }
 
   const ticks = railTicks(view, viewW, durS, fps)
@@ -379,6 +389,7 @@ export function MotionRail({
     <MotionRailContext.Provider value={ctx}>
       <div ref={rootRef} data-testid="motion-rail" className="relative flex flex-col gap-1.5">
         <div
+          hidden={!lanes}
           ref={rulerRef}
           data-testid="motion-rail-ruler"
           title="Time from the head of the clip · wheel to zoom · drag to pan · double-click to fit"
@@ -409,6 +420,7 @@ export function MotionRail({
         {/* ONE playhead for the ruler and every lane under it, moved by the CSS
             custom property this component writes on the container above. */}
         <div
+          hidden={!lanes}
           data-testid="motion-rail-playhead"
           className="pointer-events-none absolute inset-y-0 z-20 w-px bg-playhead"
           style={{ left: 'var(--rail-playhead, 0px)', opacity: 'var(--rail-playhead-on, 0)' }}

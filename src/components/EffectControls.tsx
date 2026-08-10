@@ -84,8 +84,10 @@ import { useStore } from '../state/store'
 import { IconButton } from '../ui/Button'
 import { CurveEditor } from './CurveEditor'
 import { KeyframeTrack } from './KeyframeTrack'
-import { MotionRail } from './MotionRail'
+import { MotionRail, useMotionRail } from './MotionRail'
+import { MoveShelf } from './MoveShelf'
 import { PunchControl } from './PunchControl'
+import { MOVE_CHANNELS } from '../engine/moves'
 import { MAX_GAIN_DB } from '../engine/loudness'
 
 // Per-channel range/step + drag sensitivity. sens = value units per pixel of
@@ -411,6 +413,9 @@ function ChannelRow({
 }) {
   const spec = SPECS[channel]
   const animated = isChannelAnimated(clip, channel)
+  // The lane and its curve editor are hand controls: they draw only while the
+  // shelf's 'Tune it by hand' is open. The keyframes are always there.
+  const { lanesVisible } = useMotionRail()
   // Local playhead time, clamped to the clip span (mirrors playheadLocalT);
   // derived from the reactive playheadS prop so the field tracks the playhead.
   const durS = Math.max(0, clipEndS(clip) - clip.startS)
@@ -467,7 +472,7 @@ function ChannelRow({
           onCommit={(v) => setChannel(clip.id, channel, v)}
         />
       </PropRow>
-      {animated && (
+      {animated && lanesVisible && (
         <>
           <KeyframeTrack clip={clip} channel={channel} />
           {/* Draws only for the segment that is actually selected, and only on
@@ -575,6 +580,7 @@ function EffectParamRow({
 }) {
   const animated = isParamAnimated(effect, param.key)
   const lane = animated ? paramChannel(clip, effect, param.key) : null
+  const { lanesVisible } = useMotionRail()
   const value = resolveParam(effect, param.key, localT)
   const kfs = paramKeyframes(effect, param.key)
   const onKf = animated && kfs.some((k) => Math.abs(k.t - localT) <= 0.05)
@@ -625,7 +631,7 @@ function EffectParamRow({
           onCommit={(v) => setEffectParamValue(clip.id, effect.id, param.key, v)}
         />
       </PropRow>
-      {lane && (
+      {lane && lanesVisible && (
         <>
           <KeyframeTrack clip={clip} channel={lane} />
           <CurveEditor clip={clip} channel={lane} />
@@ -975,6 +981,10 @@ export function EffectControls({
   // The rail needs a real frame rate to snap to. The Inspector always passes the
   // sequence's; the fallback matches the one it uses for its own playhead quantize.
   const railFps = fps && fps > 0 ? fps : 30
+  // The lanes, the ruler and the curve editor are hand controls now: still
+  // wired, still tested, one click away under the shelf, and no longer the first
+  // thing he sees when he clicks a clip.
+  const handTuneOpen = useStore((s) => s.ui.handTuneOpen)
   return (
     <div className="flex flex-col gap-5">
       {isAdjustment && (
@@ -982,18 +992,22 @@ export function EffectControls({
           Adjustment layer: its effects, mask and opacity grade everything below it.
         </p>
       )}
-      {!isAdjustment && (
+      {/* THE FRONT DOOR. Ten finished moves with plain names, one slider, and
+          the hand controls folded away underneath. */}
+      {!isAdjustment && <MoveShelf clips={[clip]} />}
+      {!isAdjustment && handTuneOpen && (
         <PunchControl
           clipId={clip.id}
           headerAction={
-            // A zoom is nothing but scale keyframes - give it the same escape
-            // hatch an effect card's X offers. Works for zooms from Apply, the
-            // P key, and the context menu alike; the static scale is kept.
-            isChannelAnimated(clip, 'scale') ? (
+            // A move is nothing but keyframes - give it the same escape hatch an
+            // effect card's X offers. Gated on ALL THREE move channels, not scale
+            // alone: a punch writes position too, so gating on scale meant the
+            // button vanished while the clip was still left sitting off centre.
+            MOVE_CHANNELS.some((ch) => isChannelAnimated(clip, ch)) ? (
               <button
                 type="button"
                 data-testid="punch-remove"
-                title="Clears the Scale keyframes (the zoom included) - the clip keeps its static scale"
+                title="Clears the move's keyframes - the clip keeps the size and position it has standing still"
                 className="flex h-5 items-center gap-1 rounded-field bg-bg-input px-1.5 text-dense text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated hover:text-text-primary"
                 onClick={() => removeZoom(clip.id)}
               >
@@ -1009,7 +1023,7 @@ export function EffectControls({
           lane under Zoom can never disagree about where a moment is. The ruler
           lands directly under the Motion block, which is the order his brief
           describes: the chips and the move buttons, then the clip's own time. */}
-      <MotionRail clip={clip} fps={railFps}>
+      <MotionRail clip={clip} fps={railFps} lanes={handTuneOpen}>
         <div className="flex flex-col gap-5">
           <EffectStack clip={clip} playheadS={playheadS} />
           {afterStack && (

@@ -38,7 +38,9 @@ import {
 } from './state/clipEdits'
 import { pausePlayback, shuttle, toggleLoop, togglePlay } from './state/playbackControl'
 import { clearInOut, gotoIn, gotoOut, markIn, markOut } from './state/workAreaActions'
-import { punchInAtPlayhead, punchOutAtPlayhead } from './state/motionActions'
+import { cutPunchAtPlayhead, punchInAtPlayhead, punchOutAtPlayhead } from './state/motionActions'
+import { MOVES } from './engine/moves'
+import { applyMoveToSelection } from './state/moveActions'
 import { addTitleClip } from './state/titleActions'
 import { saveNow } from './state/persistence'
 import { exportProjectToFile, openProjectFilePicker } from './state/projectFile'
@@ -216,6 +218,28 @@ function buildAppBindings(): Binding[] {
           if (id) punchOutAtPlayhead(id)
         },
       },
+      // The hard-cut punch on a key at last. It is the one most YouTube
+      // punch-ins actually are, it was the only one of the three verbs with no
+      // key, and "park the playhead, tap a key" is the whole gesture.
+      {
+        combo: 'alt+p',
+        description: 'Cut punch at playhead (selected clip)',
+        domain: 'trim',
+        run: () => {
+          const id = store().ui.selection[0]
+          if (id) cutPunchAtPlayhead(id)
+        },
+      },
+      // THE SHELF, ON THE NUMBER ROW. Click a clip, press a digit, the whole
+      // move is on it. The second clip and every clip after it in the same Short
+      // is ONE key. Digits 0 to 9 were completely unbound, and the keymap
+      // already refuses to fire while he is typing in a field.
+      ...MOVES.map<Binding>((move) => ({
+        combo: String(move.digit),
+        description: `Move: ${move.name}`,
+        domain: 'trim',
+        run: () => applyMoveToSelection(move.id),
+      })),
       // The gizmo badge on a key: off a moment it snapshots the framing here,
       // on a moment it takes that moment out again.
       {

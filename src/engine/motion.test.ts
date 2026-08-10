@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { channelBase, resolveChannel } from './effects/channels'
+import { channelBase, channelKeyframes, resolveChannel, withChannelKeyframes } from './effects/channels'
 import { evalChannel } from './keyframes'
 import {
   impactClip,
@@ -147,6 +147,57 @@ describe('punchOutClip', () => {
     // without a focal point, position stays untouched
     const plain = punchOutClip(clip, FPS, { atS: 7 })
     expect(plain.keyframes?.posX).toBeUndefined()
+  })
+
+  /**
+   * His own sentence, end to end: push in on the LEFT, travel the framing across
+   * to the RIGHT, then zoom out. Three beats, and the shipped build ate the
+   * middle one with the third.
+   *
+   * The fall used to derive its STARTING position from the clip's static base
+   * and the aim, instead of reading where the picture actually was. So the
+   * travel he had just built by hand was written over the moment he fired the
+   * last beat of his own move: the picture slid back toward centre first and
+   * only then zoomed out. Nothing errored, nothing turned red, and no lane could
+   * show it, because what was wrong was the VALUE on a keyframe that was
+   * supposed to be there.
+   */
+  it('starts the fall on the framing he travelled to, not on one derived from the aim', () => {
+    const { clip } = seed()
+    const frame = { seqWidth: 1080, seqHeight: 1920 }
+    const focal = { x: 270, y: 960 } // 270px LEFT of centre: he aims at the left
+    const travelledTo = -300 // and then drags the picture over to look right
+
+    // 1. push in on the left, and stay there
+    const pushed = punchInClip(clip, FPS, { atS: 4, targetScale: 1.5, holdToEnd: true, focal, ...frame })
+    // aiming left pushes the picture right, and it holds there
+    expect(resolveChannel(pushed, 'posX', 5)).toBeCloseTo(135, 6)
+
+    // 2. travel the framing across by hand, arriving at clip-local 4.5s
+    const travelled = withChannelKeyframes(pushed, 'posX', [
+      ...channelKeyframes(pushed, 'posX'),
+      { t: 4.5, value: travelledTo, ease: 'linear' },
+    ])
+    expect(resolveChannel(travelled, 'posX', 5)).toBeCloseTo(travelledTo, 6)
+
+    // 3. zoom out, at 7s, which is clip-local 5s
+    const out = punchOutClip(travelled, FPS, { atS: 7, riseFrames: 5, focal, ...frame })
+    const fallStart = 5
+    const landing = fallStart + 5 / FPS
+
+    // The fall picks the picture up exactly where he left it. The old code wrote
+    // `channelBase - fx * (r - 1)` at this moment, which for this aim and this
+    // depth is 0 - (-270) * 0.5 = +135: a 435px lurch away from his own framing,
+    // and the whole reason the travel vanished.
+    const aimDerived = 135
+    expect(resolveChannel(out, 'posX', fallStart)).toBeCloseTo(travelledTo, 6)
+    expect(resolveChannel(out, 'posX', fallStart)).not.toBeCloseTo(aimDerived, 6)
+
+    // And the punch out still does its own job: base scale, base framing, held
+    // to the end of the clip.
+    expect(scaleAt(out, landing)).toBe(channelBase(clip, 'scale'))
+    expect(resolveChannel(out, 'posX', landing)).toBeCloseTo(channelBase(clip, 'posX'), 6)
+    expect(resolveChannel(out, 'posX', 9.9)).toBeCloseTo(channelBase(clip, 'posX'), 6)
   })
 })
 

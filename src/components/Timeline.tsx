@@ -103,6 +103,8 @@ import {
   rampWorkArea,
   whipToNext,
 } from '../state/motionActions'
+import { MOVES } from '../engine/moves'
+import { applyMoveToSelection } from '../state/moveActions'
 import { autoCaptionEveryClip, autoCaptionFromClip } from '../state/transcribeActions'
 import { deleteTrack, setTrackAudioRole, setTrackAutoLevel, setTrackPan, setTrackVolumeDb } from '../state/trackEdits'
 import {
@@ -1690,10 +1692,20 @@ export function Timeline({ height }: { height: number }) {
     const motionItems: MenuItem[] =
       track?.kind === 'video' && !clip.title
         ? [
+            // The shelf, on the path he already right-clicks. Built from the
+            // same table the tiles are, so the two can never drift apart.
+            {
+              label: selNow.length > 1 ? `Moves · all ${selNow.length}` : 'Moves',
+              separator: true,
+              submenu: MOVES.map((move) => ({
+                label: move.name,
+                shortcut: String(move.digit),
+                onClick: () => applyMoveToSelection(move.id, selNow),
+              })),
+            },
             {
               label: 'Punch in at playhead',
               shortcut: 'P',
-              separator: true,
               disabled: !playheadInside,
               onClick: () => punchInAtPlayhead(clip.id),
             },

@@ -25,6 +25,7 @@ vi.mock('./toasts', () => ({
 // clip's audio a caption came from.
 const heard: string[] = []
 vi.mock('../engine/captions/transcribe', () => ({
+  TRANSCRIBE_SAMPLE_RATE: 16000,
   extractClipPcm: (_asset: unknown, clip: { id: string }) => {
     heard.push(clip.id)
     return Promise.resolve(new Float32Array(8))
@@ -36,7 +37,13 @@ vi.mock('../engine/captions/transcribe', () => ({
     { text: clip.id, startS: clip.startS, endS: clip.startS + 0.4 },
   ],
 }))
-vi.mock('../engine/captions/transcribeConfig', () => ({ getCaptionLanguage: () => 'en' }))
+// The keyword highlight is ON by default, so this orchestration test walks the
+// same path he does. The picker itself is real (it is pure and cheap); what is
+// faked here is only the recogniser.
+vi.mock('../engine/captions/transcribeConfig', () => ({
+  getCaptionLanguage: () => 'en',
+  getCaptionEmphasis: () => true,
+}))
 // The voice detector has NO opinion here (no wasm in node), which is the path
 // that has to keep every word Whisper heard. Its own rule is tested against a
 // synthesised probability track in engine/captions/voiceActivity.test.ts.

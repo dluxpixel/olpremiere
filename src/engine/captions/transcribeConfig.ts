@@ -64,3 +64,39 @@ export function setCaptionLanguage(next: CaptionLanguage): void {
     // Private mode / quota: the in-memory value above still applies this run.
   }
 }
+
+const EMPHASIS_KEY = 'olpremiere:captions:emphasis'
+
+/**
+ * Highlight the one word he leaned on, per caption phrase. Same shape as the
+ * language pick above on purpose: live value in memory, localStorage only
+ * persists it, and every caption door reads it from here so the dialog and the
+ * clip right-click can never disagree.
+ *
+ * DEFAULT ON. A flat caption is what he has today and it is the worse of the
+ * two: the renderer has had the emphasis colour all along and the auto path
+ * never once set the flag. Only the non-default is stored, so an untouched
+ * install writes nothing.
+ */
+let emphasis: boolean | null = null
+
+export function getCaptionEmphasis(): boolean {
+  if (emphasis !== null) return emphasis
+  try {
+    emphasis = (typeof localStorage !== 'undefined' ? localStorage.getItem(EMPHASIS_KEY) : null) !== 'off'
+  } catch {
+    emphasis = true
+  }
+  return emphasis
+}
+
+export function setCaptionEmphasis(next: boolean): void {
+  emphasis = next
+  try {
+    if (typeof localStorage === 'undefined') return
+    if (next) localStorage.removeItem(EMPHASIS_KEY)
+    else localStorage.setItem(EMPHASIS_KEY, 'off')
+  } catch {
+    // Private mode / quota: the in-memory value above still applies this run.
+  }
+}

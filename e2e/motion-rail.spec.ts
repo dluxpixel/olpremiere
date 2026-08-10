@@ -190,11 +190,25 @@ async function punchXInRuler(page: Page): Promise<number> {
   })
 }
 
+
+/**
+ * The lanes, the curve editor and the punch buttons are hand controls now: they
+ * fold away under the move shelf's 'Tune it by hand' so the panel opens on ten
+ * finished moves instead of on a desk of parameters. Everything below is still
+ * exactly one click away, and this is that click.
+ */
+async function openHandControls(page: Page): Promise<void> {
+  const toggle = page.getByTestId('tune-by-hand')
+  await expect(toggle).toBeVisible()
+  if ((await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click()
+}
+
 test('zooming the rail earns the click between two diamonds, and that segment opens the curve editor', async ({
   page,
 }) => {
   await addTwentySecondClip(page)
   await selectTheClip(page)
+  await openHandControls(page)
   await setUI(page, { playheadS: 4 })
 
   // One click. The frame rises to 120 percent over 5 frames and STAYS there for
@@ -273,6 +287,7 @@ test('zooming the rail earns the click between two diamonds, and that segment op
 test('punch out at an arbitrary moment mid clip falls to base size and HOLDS there', async ({ page }) => {
   await addTwentySecondClip(page)
   await selectTheClip(page)
+  await openHandControls(page)
 
   // Punch in four seconds in, on the key.
   await setUI(page, { playheadS: 4 })
@@ -371,6 +386,7 @@ test('cut punch splits the clip with its linked audio, and the right half simply
   await expect(page.locator('[data-clip-kind="audio"]')).toHaveCount(1)
 
   await page.locator('[data-clip-kind="video"]').click({ position: { x: 20, y: 10 } })
+  await openHandControls(page)
   const before = await splitHalves(page)
   expect(before.video).toHaveLength(1)
   expect(before.video[0].animated).toBe(false)

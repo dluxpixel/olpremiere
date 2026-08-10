@@ -20,7 +20,12 @@ test('shell renders the four regions at the design spec', async ({ page }) => {
   const left = (await page.getByTestId('panel-left').boundingBox())!
   expect(left.width).toBe(280)
   const right = (await page.getByTestId('panel-right').boundingBox())!
-  expect(right.width).toBe(300)
+  // 450, up from 300 on 2026-08-10. The right panel opens on the shelf of ten
+  // moves, and this number is the grid's, not a taste: a 16:9 tile column is
+  // 94px, four across plus three 4px gaps is 388px of grid, and the panel loses
+  // 54px to the scrollbar and two rings of padding before the grid sees any of
+  // it. 442 is the threshold, 450 carries slack. See useLayoutSizes.ts.
+  expect(right.width).toBe(450)
 
   await page.screenshot({ path: `${VERIFY_DIR}/app.png` })
   await page.getByTestId('timeline').screenshot({ path: `${VERIFY_DIR}/timeline.png` })
@@ -61,6 +66,38 @@ test('splitters resize panels and sizes persist across reload', async ({ page })
   const persisted = (await page.getByTestId('panel-left').boundingBox())!.width
   expect(Math.abs(persisted - after)).toBeLessThan(3)
   await page.screenshot({ path: `${VERIFY_DIR}/resized.png` })
+})
+
+// The RIGHT handle gets its own walk, not a shrug at "same component as the
+// left one". Its delta is inverted at the call site (`adjust('right', -d)`),
+// which is a sign the left test can never exercise: with it flipped, dragging
+// the handle away from the panel would make the panel smaller, and the motion
+// desk would get NARROWER the harder he pulled. He asked for this handle by
+// name ("make the keyframe menu bigger to the sides too"), so it is tested by
+// name.
+test('the motion panel can be pulled wider and stays where he put it', async ({ page }) => {
+  await page.goto('/')
+  const before = (await page.getByTestId('panel-right').boundingBox())!.width
+
+  const splitterEl = page.getByTestId('splitter-right')
+  await splitterEl.hover()
+  const splitter = (await splitterEl.boundingBox())!
+  const y = splitter.y + splitter.height / 2
+  const x = splitter.x + splitter.width / 2
+  await page.mouse.move(x, y)
+  await page.mouse.down()
+  // LEFT, which is away from the panel, so the panel grows.
+  await page.mouse.move(x - 80, y, { steps: 8 })
+  await page.mouse.up()
+
+  await expect
+    .poll(async () => (await page.getByTestId('panel-right').boundingBox())!.width)
+    .toBeGreaterThan(before + 80 - 5)
+
+  const after = (await page.getByTestId('panel-right').boundingBox())!.width
+  await page.reload()
+  const persisted = (await page.getByTestId('panel-right').boundingBox())!.width
+  expect(Math.abs(persisted - after)).toBeLessThan(3)
 })
 
 test('project rename is undoable and autosaves to IndexedDB', async ({ page }) => {

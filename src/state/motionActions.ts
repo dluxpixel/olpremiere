@@ -109,9 +109,10 @@ export function punchInAtPoint(clipId: string, focal: { x: number; y: number }):
  * to the clip's own base framing over the same frames and the same curve the
  * rise used, and hold there. This is "punch out at any time in the clip".
  *
- * It passes the SAME focal the punch in converged on, so position lands back on
- * its base too and a punch in followed by a punch out ends exactly where the
- * clip started rather than a few pixels off it.
+ * It brings POSITION home as well as scale, so a punch in followed by a punch
+ * out ends exactly where the clip started rather than a few pixels off it. The
+ * fall starts from wherever the framing actually is at that moment, so a framing
+ * moved by hand in between survives the way out instead of being written over.
  */
 export function punchOutAtPlayhead(clipId: string): void {
   const g = guarded(clipId)

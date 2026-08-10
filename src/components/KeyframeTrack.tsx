@@ -187,7 +187,11 @@ export function KeyframeTrack({ clip, channel }: { clip: Clip; channel: AnimChan
         data-channel={channel}
         onClick={onRailClick}
         title={`${name} keyframes · drag to retime · Alt-drag to duplicate · click between two diamonds to shape that move`}
-        className="relative h-5 w-full rounded-[3px] bg-bg-input"
+        // 28px, up from 20. The band BETWEEN two diamonds is what he clicks to
+        // shape a move, and it was the thinnest deliberate target in the app.
+        // Height is free here: the lane is as wide as the panel either way, and
+        // three lanes at 28 still cost less vertical than one row of tiles.
+        className="relative h-7 w-full rounded-[3px] bg-bg-input"
       >
         {/* mid-line rail */}
         <div className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-border" />
@@ -217,7 +221,10 @@ export function KeyframeTrack({ clip, channel }: { clip: Clip; channel: AnimChan
               aria-label={`${name} keyframe at ${t.toFixed(2)}s, value ${k.value}`}
               title={`${name} = ${Math.round(k.value * 100) / 100} @ ${t.toFixed(2)}s · ${k.ease} · drag to retime · Alt-drag to duplicate`}
               onPointerDown={(e) => onDiamondDown(e, k)}
-              className="absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rotate-45 cursor-ew-resize rounded-[2px] border border-black/30 transition-[background,box-shadow,transform] duration-[120ms] hover:scale-110"
+              // 14px, up from 12: half again the area to aim at, and still
+              // small enough that two moments a frame apart do not merge into
+              // one blob the way a 16px diamond would.
+              className="absolute top-1/2 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rotate-45 cursor-ew-resize rounded-[2px] border border-black/30 transition-[background,box-shadow,transform] duration-[120ms] hover:scale-110"
               style={{
                 left: px,
                 touchAction: 'none',
@@ -231,7 +238,7 @@ export function KeyframeTrack({ clip, channel }: { clip: Clip; channel: AnimChan
         {dragView?.copy && onScreen(rail.tToPx(dragView.t)) && (
           <div
             data-testid="keyframe-ghost"
-            className="pointer-events-none absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rotate-45 rounded-[2px] border border-accent"
+            className="pointer-events-none absolute top-1/2 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rotate-45 rounded-[2px] border border-accent"
             style={{ left: rail.tToPx(dragView.t), background: 'var(--color-accent-quiet)' }}
           />
         )}

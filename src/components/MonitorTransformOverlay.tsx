@@ -161,7 +161,11 @@ export function normalizedAnchor(sx: number, sy: number, seqW: number, seqH: num
  */
 export function MonitorTransformOverlay({ canvas }: { canvas: HTMLCanvasElement | null }) {
   const playing = useStore((s) => s.ui.playing)
-  if (playing) return null
+  // A move replaying itself after a tile click drives the playhead exactly the
+  // way the transport does, so the gizmo stands down for it too. Without this
+  // the overlay re-renders on every frame of the sweep.
+  const previewing = useStore((s) => s.ui.previewingMove)
+  if (playing || previewing) return null
   return <OverlayInner canvas={canvas} />
 }
 
@@ -303,13 +307,11 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
           openContextMenu(e, [
             // The zoom centers on the exact point that was right-clicked.
             { label: 'Punch in here', onClick: () => punchInAtPoint(clip.id, { x: sx, y: sy }) },
-            // The same point, kept: every punch he fires from the panel, the P
-            // key or the timeline converges here from now on, instead of on the
-            // dead centre of the frame. He sets it once, on his face.
-            {
-              label: 'Set zoom point here',
-              onClick: () => setUI({ zoomAnchor: normalizedAnchor(sx, sy, seq.width, seq.height) }),
-            },
+            // 'Set zoom point here' was cut on 2026-08-10. It wrote a PERSISTED
+            // GLOBAL aim, so one click quietly changed every punch everywhere,
+            // for good, from a menu item that read as a local action. The aim
+            // belongs to the move: the shelf's moves each carry their own, and
+            // 'Punch in here' above still aims one punch at one point.
             ...previewClipMenu(clip, ids).map((item, idx) => (idx === 0 ? { ...item, separator: true } : item)),
           ])
         return

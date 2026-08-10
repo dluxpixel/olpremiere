@@ -8,7 +8,9 @@ import { Layers, Sparkles, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import {
   CAPTION_LANGUAGES,
+  getCaptionEmphasis,
   getCaptionLanguage,
+  setCaptionEmphasis,
   setCaptionLanguage,
   type CaptionLanguage,
 } from '../engine/captions/transcribeConfig'
@@ -85,6 +87,9 @@ export function CaptionsDialog({ onClose }: { onClose: () => void }) {
   // pick, so the two doors cannot drift apart again.
   const [presetId, setPresetId] = useState(getCaptionPresetId)
   const [language, setLanguage] = useState<CaptionLanguage>(getCaptionLanguage)
+  // Keyword highlight, remembered the same way the language is, so the
+  // right-click Auto-Caption door reads the same pick.
+  const [emphasis, setEmphasis] = useState(getCaptionEmphasis)
   const preset: TextStylePreset | undefined = presets.find((p) => p.id === presetId)
   // Tap mode: the words being timed and the taps collected so far.
   const [tapWords, setTapWords] = useState<string[] | null>(null)
@@ -311,6 +316,28 @@ export function CaptionsDialog({ onClose }: { onClose: () => void }) {
                 </option>
               ))}
             </select>
+          </div>
+        )}
+        {!tapping && (
+          <div className="flex flex-col gap-1 border-b border-border px-4 py-2">
+            <label className="flex items-center gap-2 text-[11px] text-text-muted">
+              <span>Highlight the key word</span>
+              <input
+                type="checkbox"
+                aria-label="Highlight the key word"
+                data-testid="captions-emphasis"
+                checked={emphasis}
+                onChange={(e) => {
+                  setEmphasis(e.target.checked)
+                  setCaptionEmphasis(e.target.checked) // persists; the clip right-click path reads it too
+                }}
+                className="ml-auto h-3.5 w-3.5 cursor-default accent-accent"
+              />
+            </label>
+            <span className="text-[10px] text-text-muted">
+              Colours the one word you leaned on in a phrase, and leaves the phrase plain when you did not lean on
+              one. Auto-Caption only.
+            </span>
           </div>
         )}
         <div className="flex flex-col gap-2 p-4">

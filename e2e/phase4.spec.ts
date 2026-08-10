@@ -118,6 +118,19 @@ async function exportSamples(
 
 const near = (a: number, b: number, tol = 40) => Math.abs(a - b) <= tol
 
+
+/**
+ * The lanes, the curve editor and the punch buttons are hand controls now: they
+ * fold away under the move shelf's 'Tune it by hand' so the panel opens on ten
+ * finished moves instead of on a desk of parameters. Everything below is still
+ * exactly one click away, and this is that click.
+ */
+async function openHandControls(page: Page): Promise<void> {
+  const toggle = page.getByTestId('tune-by-hand')
+  await expect(toggle).toBeVisible()
+  if ((await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click()
+}
+
 test('transform scale renders identically in preview and export', async ({ page }) => {
   const clipId = await addClip(page)
   await setChannel(page, clipId, 'scale', 0.5)
@@ -173,6 +186,7 @@ test('brightness filter darkens preview and export by the same amount', async ({
 
 test('Effect Controls: stopwatch keyframes a channel and the lane shows a diamond', async ({ page }) => {
   const clipId = await addClip(page)
+  await openHandControls(page)
   await expect(page.getByTestId('channel-scale')).toBeVisible()
   await page.getByTestId('stopwatch-scale').click()
   await expect(page.getByTestId('stopwatch-scale')).toHaveAttribute('aria-pressed', 'true')

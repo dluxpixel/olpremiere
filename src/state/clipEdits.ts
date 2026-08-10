@@ -23,7 +23,8 @@ import {
   setSegmentCurve as setSegmentCurveK,
   upsertKeyframe,
 } from '../engine/keyframes'
-import { MOTION_CURVES, type MotionCurveName } from '../engine/motion'
+import { CURVE_EASE, MOTION_CURVES } from '../engine/motion'
+import { clearMoveChannels } from '../engine/moves'
 import {
   clipDurationS,
   clipEndS,
@@ -64,22 +65,6 @@ function findClip(clipId: string): Clip | undefined {
 export function playheadLocalT(clip: Clip): number {
   const t = useStore.getState().ui.playheadS
   return Math.max(0, Math.min(t - clip.startS, Math.max(0, clipEndS(clip) - clip.startS)))
-}
-
-/**
- * The named ease each curve degrades to. A keyframe carrying a curve renders
- * through that curve everywhere in this build, so `ease` is only what anything
- * that has not learned `curve` reads: an older build, or a project opened after
- * a validator strips the field. Paired the way motion.ts pairs them, so a punch
- * written by a preset and one written by a drag lean the same way.
- */
-const CURVE_EASE: Readonly<Record<MotionCurveName, Keyframe['ease']>> = {
-  snapIn: 'easeOut',
-  settle: 'easeOut',
-  smooth: 'easeInOut',
-  windUp: 'easeIn',
-  overshoot: 'easeOut',
-  easyEase: 'easeInOut',
 }
 
 /**
@@ -484,14 +469,21 @@ export function resetChannel(clipId: string, channel: AnimChannel): void {
 }
 
 /**
- * Remove a punch/zoom. Every zoom path (PunchControl Apply, the P key, the
- * clip context menu) writes SCALE keyframes and never touches the static base,
- * so dropping those keyframes restores the pre-zoom look exactly. Unlike
- * resetChannel the base is deliberately kept: a hand-scaled clip stays at its
- * size, only the animated zoom goes away. One undo step.
+ * Remove a punch/zoom. Every zoom path (the shelf, the P key, the clip context
+ * menu) writes keyframes and never touches the static base, so dropping those
+ * keyframes restores the pre-zoom look exactly. Unlike resetChannel the base is
+ * deliberately kept: a hand-scaled clip stays at its size, only the animated
+ * zoom goes away. One undo step.
+ *
+ * ALL THREE MOVE CHANNELS, not scale alone. Every punch has written position
+ * keyframes as well as scale ever since punches learned to aim, so clearing
+ * scale by itself left the clip pinned a few pixels off centre at 100 percent
+ * AND took the button away with it (it only shows while scale is animated), so
+ * there was no route back from the panel at all. It read as the app breaking
+ * the clip.
  */
 export function removeZoom(clipId: string): void {
-  mapClip(clipId, 'Remove zoom', (c) => withChannelKeyframes(c, 'scale', []))
+  mapClip(clipId, 'Remove zoom', (c) => clearMoveChannels(c))
 }
 
 /**

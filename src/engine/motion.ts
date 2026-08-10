@@ -39,6 +39,24 @@ export const MOTION_CURVES = {
 export type MotionCurveName = keyof typeof MOTION_CURVES
 
 /**
+ * The named ease each curve degrades to, beside the curve table so there is ONE
+ * pairing rather than two that drift.
+ *
+ * A keyframe carrying a curve renders through that curve everywhere in this
+ * build, so `ease` is only what anything that has not learned `curve` reads: an
+ * older build, or a project opened after a validator strips the field. A punch
+ * written by a preset and one written by a drag therefore lean the same way.
+ */
+export const CURVE_EASE: Readonly<Record<MotionCurveName, Keyframe['ease']>> = {
+  snapIn: 'easeOut',
+  settle: 'easeOut',
+  smooth: 'easeInOut',
+  windUp: 'easeIn',
+  overshoot: 'easeOut',
+  easyEase: 'easeInOut',
+}
+
+/**
  * Merge a run of keyframes into one channel of a clip (immutably).
  *
  * Goes through the channel adapter, NOT `clip.keyframes` directly: transform
@@ -48,7 +66,7 @@ export type MotionCurveName = keyof typeof MOTION_CURVES
  * keyframes nothing rendered until a reload, at which point the legacy migration
  * moved them into real effects and the same project suddenly graded differently.
  */
-function withKeyframes(clip: Clip, channel: AnimChannel, kfs: Keyframe[]): Clip {
+export function withKeyframes(clip: Clip, channel: AnimChannel, kfs: Keyframe[]): Clip {
   let list: readonly Keyframe[] = channelKeyframes(clip, channel)
   for (const kf of kfs) list = upsertKeyframe(list, kf)
   return withChannelKeyframes(clip, channel, [...list])
@@ -150,7 +168,16 @@ export interface PunchOutOptions {
   atS: number
   /** Frames the fall takes. Same 200ms shape as the rise it undoes. */
   riseFrames?: number
-  /** Fall away from this point, the mirror of the punch in's focal. */
+  /**
+   * Bring the framing home as part of the fall, not just the scale.
+   *
+   * The fall used to need an AIM here, because it re-derived its starting
+   * position from the clip's static base and this point. It does not any more:
+   * it reads where the picture actually is at that moment and carries that, so
+   * there is nothing left to aim (see the position block below). The three
+   * fields survive only as the caller's opt-in to moving position at all, and
+   * the values are no longer read.
+   */
   focal?: { x: number; y: number }
   seqWidth?: number
   seqHeight?: number
@@ -163,9 +190,9 @@ export interface PunchOutOptions {
  * The landing is `channelBase`, not the value at some earlier keyframe, because
  * base is the framing the clip is DEFINED to have. Anything else drifts a little
  * further from it on every punch in and out, and the drift only shows up on
- * export. Position lands on its base for the same reason, so a focal punch in
- * followed by a punch out ends exactly where the clip started rather than a few
- * pixels off centre.
+ * export. Position lands on its base for the same reason, so a punch in followed
+ * by a punch out ends exactly where the clip started rather than a few pixels
+ * off centre.
  */
 export function punchOutClip(clip: Clip, fps: number, options: PunchOutOptions): Clip {
   const fallS = (options.riseFrames ?? 5) / (fps || 30)
@@ -182,12 +209,29 @@ export function punchOutClip(clip: Clip, fps: number, options: PunchOutOptions):
     knots.map((k) => knotKeyframe(k, base * k.r)),
   )
   if (options.focal && options.seqWidth && options.seqHeight) {
-    const fx = options.focal.x - options.seqWidth / 2
-    const fy = options.focal.y - options.seqHeight / 2
-    const xBase = channelBase(clip, 'posX')
-    const yBase = channelBase(clip, 'posY')
-    next = withKeyframes(next, 'posX', knots.map((k) => knotKeyframe(k, xBase - fx * (k.r - 1))))
-    next = withKeyframes(next, 'posY', knots.map((k) => knotKeyframe(k, yBase - fy * (k.r - 1))))
+    // Start the fall from where the picture ACTUALLY IS, and land it on base.
+    //
+    // This used to re-derive the starting position from `channelBase` and the
+    // aim, which is the same number only when nothing has touched the framing
+    // since the punch in. Move the framing by hand first (push in on the left,
+    // then travel across to the right) and that derived value was written over
+    // the top of the travel: the picture snapped back toward centre at the
+    // punch-out moment and the whole middle of the move disappeared, with no
+    // toast, no warning and nothing on any lane to show what had gone. Reading
+    // the live value at the knot's OWN time with `resolveChannel` is what
+    // punchInClip does, and this now matches it.
+    //
+    // The LANDING stays `channelBase` on purpose: at the base scale there is
+    // nowhere left to look, base is the framing the clip is defined to have,
+    // and anything else drifts a little further from it on every in/out pair.
+    for (const channel of ['posX', 'posY'] as const) {
+      const live = resolveChannel(clip, channel, at)
+      const home = channelBase(clip, channel)
+      // Already home: writing two identical keyframes would only add a flat
+      // lane of diamonds that do nothing.
+      if (Math.abs(live - home) < 1e-6) continue
+      next = withKeyframes(next, channel, [knotKeyframe(knots[0], live), knotKeyframe(knots[1], home)])
+    }
   }
   return next
 }

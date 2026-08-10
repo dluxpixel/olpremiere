@@ -29,6 +29,7 @@ import { clipDurationS } from '../engine/timeline'
 import type { Clip, Track } from '../engine/types'
 import { IconButton } from '../ui/Button'
 import { PropRow, ScrubField, SectionLabel, type Spec } from './EffectControls'
+import { MoveShelf } from './MoveShelf'
 import { MAX_GAIN_DB } from '../engine/loudness'
 
 const OPACITY_SPEC: Spec = { min: 0, max: 1, step: 0.01, sens: 0.005 }
@@ -66,6 +67,17 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
   const audio = selected.filter((s) => s.emitsAudio)
   const audioIds = audio.map((s) => s.clip.id)
 
+  // Every selected clip a camera move can be written onto: picture on a video
+  // track, no entrance animation owning its keyframes.
+  //
+  // FOOTAGE WINS A MIXED SELECTION. Select a whole Short and the captions come
+  // with it, and a caption that zooms along with the shot underneath it is not
+  // what he asked for: the shipped Motion menu leaves titles alone for the same
+  // reason. When the selection is nothing but text, the shelf acts on the text.
+  const movable = selected.filter((s) => s.track.kind === 'video' && !s.clip.adjustment && !s.clip.appearance)
+  const footage = movable.filter((s) => !s.clip.title)
+  const moveClips = (footage.length > 0 ? footage : movable).map((s) => s.clip)
+
   const nTitle = titles.length
   const nVideo = selected.filter((s) => s.track.kind === 'video' && !s.clip.title).length
   const nAudio = selected.filter((s) => s.track.kind === 'audio').length
@@ -97,6 +109,11 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
           {parts.join(' · ')} (edits apply to all)
         </div>
       </div>
+
+      {/* THE SHELF, on the selection. His Short is twenty clips, so one tile
+          click has to put the move on every one of them in ONE undo step, or the
+          whole win evaporates at the second clip. */}
+      {moveClips.length > 0 && <MoveShelf clips={moveClips} />}
 
       {nTitle > 0 && (
         <>

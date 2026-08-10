@@ -63,9 +63,23 @@ async function scaleTimes(page: Page): Promise<number[]> {
   })
 }
 
+
+/**
+ * The lanes, the curve editor and the punch buttons are hand controls now: they
+ * fold away under the move shelf's 'Tune it by hand' so the panel opens on ten
+ * finished moves instead of on a desk of parameters. Everything below is still
+ * exactly one click away, and this is that click.
+ */
+async function openHandControls(page: Page): Promise<void> {
+  const toggle = page.getByTestId('tune-by-hand')
+  await expect(toggle).toBeVisible()
+  if ((await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click()
+}
+
 test('dragging a keyframe diamond retimes it', async ({ page }) => {
   const id = await addTitle(page)
   await seedScaleKeyframes(page, id)
+  await openHandControls(page)
 
   await expect(page.locator('[data-testid="keyframe-track"][data-channel="scale"]')).toBeVisible()
   const diamonds = page.getByTestId('keyframe')
@@ -100,6 +114,7 @@ test('dragging a keyframe diamond retimes it', async ({ page }) => {
 test('typing in the Time field sets an exact keyframe time', async ({ page }) => {
   const id = await addTitle(page)
   await seedScaleKeyframes(page, id)
+  await openHandControls(page)
 
   // Select the second diamond to reveal the Time field.
   await page.getByTestId('keyframe').nth(1).click()

@@ -217,13 +217,26 @@ export const maxCharsFor = (maxWords: number): number => Math.max(4, Math.round(
 /** Ends a sentence → the next word starts a fresh chunk. */
 const SENTENCE_END = /[.!?…]["')\]]*$/
 
+/**
+ * Exported so the emphasis picker splits phrases on exactly the rule that breaks
+ * a block here. Two copies of this regex would be free to drift apart, and the
+ * moment they did, a phrase could span a block and put two flags in one caption.
+ */
+export const endsSentence = (text: string): boolean => SENTENCE_END.test(text)
+
 /** Short function words that shouldn't stand alone as a caption or end a chunk. */
 const FUNCTION_WORDS = new Set([
   'a', 'an', 'the', 'to', 'of', 'in', 'on', 'for', 'and', 'but', 'or', 'so', 'is', 'it', 'at', 'by',
   'as', 'my', 'your', 'with', 'that', 'this', 'i', 'we', 'you', 'are', 'was', 'be', 'if', 'our',
 ])
 const normalizeWord = (t: string): string => t.toLowerCase().replace(/[^a-z']/g, '')
-const isFunctionWord = (t: string): boolean => FUNCTION_WORDS.has(normalizeWord(t))
+/**
+ * The ONE stop list. Exported because the emphasis picker's hard veto has to be
+ * this exact set: measured 2026-08-09, raw loudness picks a function word in 7
+ * of 14 phrases, so a second list that drifted by one word would put the
+ * highlight on "it".
+ */
+export const isFunctionWord = (t: string): boolean => FUNCTION_WORDS.has(normalizeWord(t))
 const groupText = (ws: CaptionWord[]): string => ws.map((w) => w.text.trim()).join(' ')
 const groupSpan = (ws: CaptionWord[]): number => ws[ws.length - 1].endS - ws[0].startS
 
@@ -258,7 +271,7 @@ export function chunkWords(words: CaptionWord[], options: ChunkOptions = {}): Ca
     let hard = false
     let soft = false
     if (cur.length > 0) {
-      if (SENTENCE_END.test(last.text) || !!word.emphasis !== !!last.emphasis || word.startS - last.endS > o.maxGapS) {
+      if (endsSentence(last.text) || !!word.emphasis !== !!last.emphasis || word.startS - last.endS > o.maxGapS) {
         hard = true
       } else {
         const span = word.endS - cur[0].startS

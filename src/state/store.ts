@@ -53,6 +53,20 @@ export interface UIState {
   zoomAnchor: ZoomAnchor
   /** Keyboard-shortcuts help overlay. */
   helpOpen: boolean
+  /**
+   * The hand controls under the shelf: the punch buttons, the rail, the lanes
+   * and the curve editor. Closed by default, because four ways to do one thing
+   * stacked on top of each other is what made the motion desk hard to read. It
+   * lives in the UI state rather than in the panel so it stays open across every
+   * clip he touches once he has opened it.
+   */
+  handTuneOpen: boolean
+  /**
+   * A move is playing itself back after being picked off the shelf. Read like
+   * `playing`: anything that would cost a React render per frame stands down for
+   * the length of the sweep. Never persisted, never undoable.
+   */
+  previewingMove: boolean
 }
 
 /** A point in normalized frame coords (0..1 across the sequence frame). */
@@ -163,6 +177,8 @@ export const useStore = create<AppState>()(
       moveCurve: loadMoveCurve(),
       zoomAnchor: loadZoomAnchor(),
       helpOpen: false,
+      handTuneOpen: false,
+      previewingMove: false,
     },
 
     dispatch(label, fn, mergeKey) {

@@ -81,10 +81,24 @@ async function scaleKfEases(page: Page): Promise<{ ease: string; curve: boolean 
   })
 }
 
+
+/**
+ * The lanes, the curve editor and the punch buttons are hand controls now: they
+ * fold away under the move shelf's 'Tune it by hand' so the panel opens on ten
+ * finished moves instead of on a desk of parameters. Everything below is still
+ * exactly one click away, and this is that click.
+ */
+async function openHandControls(page: Page): Promise<void> {
+  const toggle = page.getByTestId('tune-by-hand')
+  await expect(toggle).toBeVisible()
+  if ((await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click()
+}
+
 test('selecting a zoom depth applies a punch of that depth', async ({ page }) => {
   await page.goto('/')
   const id = await addTitle(page)
   await setUI(page, { selection: [id], playheadS: 2 })
+  await openHandControls(page)
 
   // Pick "Deep" (1.4×), then Apply → the scale keyframes peak near 1.4.
   await page.getByTestId('punch-preset-deep').click()
@@ -109,6 +123,7 @@ test('the easing explainer answers "what is Lin"', async ({ page }) => {
   // the second and the third that is wide enough to click without zooming the
   // rail first. A 5-frame rise on its own is two pixels on a fitted 5s clip.
   await setUI(page, { selection: [id], playheadS: 2 })
+  await openHandControls(page)
   await page.getByTestId('punch-apply').click()
   await setUI(page, { selection: [id], playheadS: 4 })
   await page.getByTestId('punch-out').click()
