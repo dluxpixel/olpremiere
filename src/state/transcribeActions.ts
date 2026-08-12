@@ -124,7 +124,7 @@ async function wordsForClip(clip: Clip, asset: MediaAsset): Promise<CaptionWord[
  *    because unmarked is the default and skipping it would silently swallow the
  *    voiceover of anyone who never opened that menu.
  */
-function audibleClips(onlyIds?: ReadonlySet<string>): {
+export function audibleClips(onlyIds?: ReadonlySet<string>): {
   targets: { clip: Clip; asset: MediaAsset }[]
   /** Sounding clips passed over only because their track is marked as music. */
   skippedMusic: number

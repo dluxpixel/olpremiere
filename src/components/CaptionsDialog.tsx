@@ -27,7 +27,7 @@ import {
   useTextPresets,
   type TextStylePreset,
 } from '../state/textPresets'
-import { autoCaptionEveryClip, autoCaptionFromClip } from '../state/transcribeActions'
+import { audibleClips, autoCaptionEveryClip, autoCaptionFromClip } from '../state/transcribeActions'
 import { Button, IconButton } from '../ui/Button'
 
 /** The voiceover clip Auto-Caption should target. Priority: the clip you have
@@ -60,15 +60,17 @@ function findVoClipId(): string | null {
   ).c.id
 }
 
-/** How many clips "Caption every clip" would actually work on. Skips the same
- * tracks that door skips (audibleClips in transcribeActions), so the count on
- * the button cannot promise work that will not happen. */
+/** How many clips "Caption every clip" would actually work on.
+ *
+ * It ASKS THE DOOR now. It used to keep its own copy of the rule, and the copy
+ * had the bug the door was fixed for: it filtered on the asset, so a linked
+ * video and its audio partner, which share one assetId and both report
+ * hasAudio, counted as two. Dropping a video with sound is how footage normally
+ * arrives, so the button was promising roughly double the work it would do on
+ * every real project. The comment here used to claim it skipped the same tracks
+ * the door skips. It did not, and a promise in a comment is not a promise. */
 function audibleClipCount(): number {
-  const s = useStore.getState()
-  return activeSequence(s.project)
-    .tracks.filter((t) => !t.locked && t.audioRole !== 'music')
-    .flatMap((t) => t.clips)
-    .filter((c) => s.project.assets[c.assetId]?.hasAudio).length
+  return audibleClips().targets.length
 }
 
 const PASTE_HINT = `[{"text":"so","startS":0.1,"endS":0.4}, …]   or an .srt`

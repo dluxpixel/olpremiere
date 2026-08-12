@@ -61,7 +61,7 @@ import {
   type Sequence,
 } from '../engine/types'
 import { updateActiveSequence, useStore } from './store'
-import { autoCaptionEveryClip, autoCaptionFromClip, useTranscribe } from './transcribeActions'
+import { audibleClips, autoCaptionEveryClip, autoCaptionFromClip, useTranscribe } from './transcribeActions'
 
 const seq = (): Sequence => activeSequence(useStore.getState().project)
 const asset = (id: string): MediaAsset => ({
@@ -291,6 +291,12 @@ describe('autoCaptionEveryClip', () => {
         }),
       }
     })
+    // The NUMBER on the button and the WORK the door does have to be the same
+    // number. They were not: the Captions dialog kept its own copy of the rule,
+    // filtered on the asset, and counted this one take as two. On a real edit,
+    // where nearly every clip arrives as a linked pair, the button offered to
+    // caption roughly twice what it would caption.
+    expect(audibleClips().targets.map((t) => t.clip.id)).toEqual(['clip-audio'])
     await autoCaptionEveryClip()
     expect(heard).toEqual(['clip-audio'])
   })
