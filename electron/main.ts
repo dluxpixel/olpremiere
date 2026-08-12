@@ -305,6 +305,11 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  // A transcode that died mid-flight leaves its temp behind forever, because the
+  // only cleanup is a finally that a killed process never reaches. One of his was
+  // 427 MB. Fire and forget: tidying up must never delay the window.
+  void proxy.sweepProxyTemps()
+
   // Serve the built renderer from out/renderer over app://. Read with the
   // asar-aware fs and set Content-Type ourselves so module workers + wasm load.
   protocol.handle('app', async (req) => {

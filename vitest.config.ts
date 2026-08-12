@@ -9,7 +9,11 @@ export default defineConfig({
     // `scripts` is in for the same reason: the ship script is what ships
     // everything else, and its retry only ever runs inside a 25 minute release,
     // where "check it by eye" means never.
-    include: ['src/**/*.test.ts', '_verify/**/*.test.mjs', 'scripts/**/*.test.mjs'],
+    // electron/ joined for the same reason as the other two: the proxy sweep
+    // DELETES files in his user data folder, and what it leaves alone is the
+    // half worth proving. Only files that avoid importing 'electron' itself can
+    // be tested here, which is why the sweep lives in its own module.
+    include: ['src/**/*.test.ts', '_verify/**/*.test.mjs', 'scripts/**/*.test.mjs', 'electron/**/*.test.ts'],
     environment: 'node',
   },
 })

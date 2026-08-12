@@ -27,6 +27,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, open, readFile, rm } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
 import path from 'node:path'
+import { sweepProxyDir } from './proxyTemp'
 import { app } from 'electron'
 
 /** The bundled ffmpeg.exe: extraResources in prod, vendor/ in dev. Same rule as native export. */
@@ -83,6 +84,25 @@ interface Upload {
   handle: FileHandle
 }
 const uploads = new Map<string, Upload>()
+
+/**
+ * Delete temp files left behind by a transcode that never finished.
+ *
+ * ⛔ FOUND ON HIS MACHINE, 2026-08-12: his proxies folder held ONE file, a
+ * **427 MB `in-` temp dated 6 August**, and no `out-` proxy at all. So a build
+ * streamed a whole source across, then died before ffmpeg produced anything, and
+ * **the 427 MB has been sitting there ever since on a C drive at 98 percent.**
+ *
+ * The existing cleanup is a `finally` inside `finishProxy`, which is exactly the
+ * code that does NOT run when the app is closed or killed mid-transcode. Nothing
+ * ever looked at the folder again, so a crash cost him a permanent copy of his
+ * own footage.
+ *
+ * Safe to run at startup and only at startup: `uploads` is empty then, so every
+ * temp in there belongs to a run that is already over. Failures are swallowed,
+ * because tidying up must never be the thing that stops the app opening.
+ */
+export const sweepProxyTemps = (): Promise<number> => sweepProxyDir(proxyDir())
 
 /** Open a temp file to stream a source into. Returns the id every later call quotes. */
 export async function beginProxy(): Promise<string> {
