@@ -38,6 +38,10 @@ test('Space starts the picture promptly even on a stone-cold clip', async ({ pag
     .poll(async () => await playhead(page), { timeout: 2500, intervals: [50, 50, 100] })
     .toBeGreaterThan(0)
   const latency = Date.now() - t0
+  // Printed, not just asserted. A budget only ever tells you "still under the
+  // line"; the number tells you whether the headroom is shrinking, and this is
+  // the single interaction he feels most, so it is worth watching drift.
+  console.log(`PLAY LATENCY (cold clip, no settle): ${latency}ms  budget 1500ms`)
   expect(latency).toBeLessThan(1500)
 
   await page.keyboard.press(' ')

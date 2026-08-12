@@ -153,7 +153,31 @@ export class Transport {
     // (scheduleAudio already awaited its own resume for the rate-1 path).
     const ctx = this.attemptResume()
     if (token !== this.playToken) return
-    const useAudioClock = ctx !== null && ctx.state === 'running'
+    // ⛔ `state === 'running'` DOES NOT MEAN THE CLOCK IS RUNNING, and believing
+    // it cost him a third of a second on every cold press of Space.
+    //
+    // MEASURED 2026-08-12, his machine, a freshly imported clip:
+    //   space -> video reports playing        28 ms
+    //   space -> the audio clock first ticks 333 ms   <- currentTime pinned at 0
+    //   space -> the playhead moves          384 ms   = 333 + the latency below
+    // The same press on a warm context is 77 ms. So ~300 ms of a cold start was
+    // the picture waiting on a clock that called itself running and was not.
+    //
+    // A brand new context reports 'running' the moment it is resumed, but its
+    // currentTime stays at exactly 0 until the audio device actually opens.
+    // Anchoring the picture to a clock stuck at 0 means liveTime() keeps
+    // returning fromS, so the playhead sits still while the video plays behind
+    // it. That is his 2026-08-06 report, "I click space and it's really late",
+    // in the one place the bounded-wait fix above could not reach: that fix
+    // bounds how long we WAIT for audio, and this is a clock that answers
+    // instantly with a number that does not move.
+    //
+    // So the test is whether the clock has actually STARTED, not what the
+    // context calls itself. When it has not, the picture rolls on the
+    // performance clock and the sound joins behind it, which is not new
+    // machinery: it is the same late-join the lost-the-race path above uses.
+    const ctxClockStarted = ctx !== null && ctx.state === 'running' && ctx.currentTime > 0
+    const useAudioClock = ctxClockStarted
     this.readClock = useAudioClock ? () => ctx.currentTime : perfClock
 
     this.startS = fromS
@@ -165,7 +189,25 @@ export class Transport {
     this.currentRate = rate
     this.opts.onStateChange?.(true, rate)
 
+    // ⛔ THE SOUND WAS SCHEDULED AGAINST A CLOCK THAT HAD NOT STARTED.
+    //
+    // Rolling the picture on the performance clock (above) fixes the wait, and
+    // on its own it would trade a late start for a WORSE fault: the audio
+    // sources were scheduled at `ctx.currentTime + latency`, so they begin when
+    // the device opens, about a third of a second after the picture. Silent
+    // desync is worse than a slow start, and it is the kind of fault he would
+    // only find after uploading.
+    //
+    // So the sound re-joins the picture the moment the clock actually starts.
+    // rescheduleAudio re-schedules from liveTime(), which is where the picture
+    // has got to, and it is the same swap a mid-play mute already performs.
+    let realignAudio = audioScheduled && !ctxClockStarted && ctx !== null
+
     const loop = (): void => {
+      if (realignAudio && ctx !== null && ctx.currentTime > 0) {
+        realignAudio = false
+        this.rescheduleAudio()
+      }
       const endS = Math.max(0, this.opts.getEndS())
       const t = this.liveTime()
       const loopRange = rate > 0 ? (this.opts.getLoopRange?.() ?? null) : null
