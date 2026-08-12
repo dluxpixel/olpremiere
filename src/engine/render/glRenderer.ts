@@ -84,6 +84,64 @@ export function frameSeedOf(ops: readonly RenderOp[]): number {
   return op.frameSeed
 }
 
+/**
+ * Where a transition may sit when one of its sides has NO PICTURE AT ALL.
+ *
+ * ⛔ A MISSING SIDE IS NOT A TRANSPARENT SIDE, and the combine shader cannot
+ * tell them apart. Both sides are premultiplied, so a cross dissolve weights
+ * `mix(from, to, p)`: against a side that is genuinely see-through (a scaled PIP
+ * over a background) that is right and lets the lower tracks through. Against a
+ * side with no texture it means the picture we DO have is scaled by (1-p), which
+ * on the frame reads as a fade to BLACK.
+ *
+ * That is not theoretical. `preview.ts` guards both sides of a live pair
+ * transition: a side that cannot prove it is showing its own frame is served its
+ * last confident frame instead. A side that has never had one yet has nothing to
+ * hold, so it resolves to null, and on 2026-08-12 his ship gate caught exactly
+ * that: rgb(0,29,0) decaying to (0,11,0) across a dissolve whose incoming clip
+ * was still cold. It reproduced under load and not on a quiet machine, so the
+ * hole is real and only its timing is luck.
+ *
+ * So the rule is the same one the held frames already state, carried to the case
+ * where there is nothing held: **a transition never weights toward a side that
+ * has no picture.** It waits at the last point it can honestly draw and moves on
+ * the moment the picture arrives, which is a fraction of a second later and
+ * invisible next to a black flash.
+ *
+ * Kind-agnostic on purpose. A dip whose incoming side is cold holds before the
+ * dip rather than dipping into a hole it cannot come out of, and a wipe holds
+ * its edge, with no per-kind rule to keep in step.
+ *
+ * It cannot mask a broken transition: the same spec asserts that at least one
+ * frame carries BOTH clips, so a side that never arrives still fails, on the
+ * assertion that means it.
+ *
+ * ⛔ `isPair` IS NOT OPTIONAL, and the gate is why it exists. The first cut of
+ * this applied to every transition, and `a lone Dip to White dips through WHITE,
+ * not through black` went red. **A lone edge has no second clip on purpose**:
+ * `from` and `to` are the same clip, one side is a stand-in, and its empty side
+ * is what the dip solid is weighted against, not a picture we failed to prove.
+ * Forcing progress to an end there deletes the dip.
+ *
+ * That boundary is not a new one. `preview.ts` builds `transitionSides` for PAIR
+ * transitions only and skips lone edges and whiteFlash stand-ins, so a guarded
+ * null can only ever happen on a pair. **This is the same line drawn in the same
+ * place**, and drawing it anywhere else breaks a transition that works.
+ */
+export function progressWithSides(
+  progress: number,
+  hasFrom: boolean,
+  hasTo: boolean,
+  isPair: boolean,
+): number {
+  const p = progress < 0 ? 0 : progress > 1 ? 1 : progress
+  // A lone edge or a stand-in: an empty side is the design, not a missing frame.
+  if (!isPair) return p
+  // Nothing either way: no picture to protect, so leave the frame as resolved.
+  if (hasFrom === hasTo) return p
+  return hasFrom ? 0 : 1
+}
+
 // --- Shaders ---------------------------------------------------------------
 
 // OUTPUT DITHER. The whole composite runs at 8 bits, so every value the shaders
@@ -1414,7 +1472,10 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     gl.bindTexture(gl.TEXTURE_2D, fromFbo.tex)
     gl.activeTexture(gl.TEXTURE1)
     gl.bindTexture(gl.TEXTURE_2D, toFbo.tex)
-    gl.uniform1f(combineLoc.uProgress, clamp01(op.progress))
+    gl.uniform1f(
+      combineLoc.uProgress,
+      progressWithSides(op.progress, !!fromSrc, !!toSrc, op.from.clipId !== op.to.clipId),
+    )
     gl.uniform1i(combineLoc.uKind, KIND_INDEX[op.kind])
     gl.uniform1f(combineLoc.uSoft, 0.004)
     if (combineLoc.uSeed) gl.uniform1f(combineLoc.uSeed, op.from.frameSeed)
