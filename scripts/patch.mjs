@@ -20,7 +20,7 @@
 
 import { execFileSync, execSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
-import { loadToken } from './lib.mjs'
+import { loadToken, openShipLog, runLogged, SHIP_LOG } from './lib.mjs'
 
 const args = process.argv.slice(2)
 const fast = args.includes('--fast')
@@ -31,10 +31,11 @@ if (!message) {
   process.exit(2)
 }
 
-const run = (cmd, label) => {
-  process.stdout.write(`\n▶ ${label}\n`)
-  execSync(cmd, { stdio: 'inherit' })
-}
+// Every step is shown live AND kept in the ship log, so a failure after a 25
+// minute gate can always be read back. See runLogged in lib.mjs for the day
+// that cost.
+const shipLog = openShipLog(`ship: ${new Date().toISOString()}`)
+const run = (cmd, label) => runLogged(cmd, label, shipLog)
 
 const git = (...a) => execFileSync('git', a, { encoding: 'utf8' }).trim()
 
@@ -79,20 +80,21 @@ if (!dirty && unpushed === '0') {
 
 // --- 1. the gate ------------------------------------------------------------
 try {
-  run('npx tsc --noEmit', 'typecheck (renderer)')
-  run('npx tsc -p tsconfig.electron.json --noEmit', 'typecheck (electron)')
-  run('npx eslint .', 'lint')
-  run('npx vitest run', 'unit tests')
-  run('npx vite build', 'web build')
-  if (!fast) run('npx playwright test', 'end to end')
+  await run('npx tsc --noEmit', 'typecheck (renderer)')
+  await run('npx tsc -p tsconfig.electron.json --noEmit', 'typecheck (electron)')
+  await run('npx eslint .', 'lint')
+  await run('npx vitest run', 'unit tests')
+  await run('npx vite build', 'web build')
+  if (!fast) await run('npx playwright test', 'end to end')
 } catch {
   console.error('\n❌ The gate failed, so NOTHING was committed or released.')
+  console.error(`   The whole run is in ${SHIP_LOG}`)
   console.error('   Fix it and run the same command again.')
   process.exit(1)
 }
 
 // --- 2. bump, commit, push --------------------------------------------------
-run('npm version patch --no-git-tag-version', 'version bump')
+await run('npm version patch --no-git-tag-version', 'version bump')
 const version = JSON.parse(readFileSync('package.json', 'utf8')).version
 
 execFileSync('git', ['add', '-A'], { stdio: 'inherit' })
@@ -102,6 +104,17 @@ execFileSync('git', ['commit', '-m', `${message}\n\nReleased as v${version} by s
 pushMain()
 
 // --- 3. build + publish -----------------------------------------------------
-run('node scripts/release.mjs', `release v${version}`)
+// Past this line the commit is already PUSHED, so a failure here leaves the
+// version bumped and public with no release behind it. That happened on
+// 2026-08-12. The repair is `npm run release` on its own, and the log says why.
+try {
+  await run('node scripts/release.mjs', `release v${version}`)
+} catch (e) {
+  console.error(`\n❌ v${version} is committed and PUSHED, but the build did not publish.`)
+  console.error(`   ${e.message}`)
+  console.error(`   The whole run is in ${SHIP_LOG}`)
+  console.error('   Repair: cd into the repo and run `npm run release`. Nothing else is needed.')
+  process.exit(1)
+}
 
 console.log(`\n✅ v${version} is out. His app picks it up on the next launch.`)
