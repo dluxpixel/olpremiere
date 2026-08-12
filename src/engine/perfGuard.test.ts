@@ -7,6 +7,9 @@
 //   collectSnapPoints  runs on every pointer-move of a snapped drag or trim
 //                      (Timeline.tsx snapping helpers), so it shares the same
 //                      16.7ms with React work and paint.
+//   moveSelectionWith  runs on every pointer-move of a clip drag to build the
+//                      preview, and again once on the commit. Added 2026-08-12
+//                      when finding 6 was finally measured. Same 16.7ms.
 //
 // Methodology: build a 200-clip sequence (160 video clips across 4 tracks with
 // keyframes, effects, transitions and fades sprinkled in, plus 40 audio clips
@@ -27,7 +30,7 @@
 // on genuinely new required work (and document the new measurement here).
 
 import { describe, expect, it } from 'vitest'
-import { collectSnapPoints } from './timeline'
+import { collectSnapPoints, moveSelectionWith } from './timeline'
 import { resolveFrame } from './render/resolve'
 import { MOTION_CURVES } from './motion'
 import {
@@ -70,6 +73,13 @@ import {
 // the number that moves first.
 const RESOLVE_FRAME_BUDGET_X = 0.55
 const SNAP_POINTS_BUDGET_X = 1.2
+
+// Measured 2026-08-12 across four runs, three idle and one with all 71 files
+// running: 0.92x, 0.92x, 1.03x, 0.72x, so 1.03x is the worst observed. The
+// budget sits at roughly 1.7x that, the same headroom the two above were chosen
+// with. Absolute, for scale: 0.012 to 0.022 ms per call, which is 0.07 to 0.13
+// percent of a 16.7 ms frame while moving 9 clips in a 200 clip sequence.
+const MOVE_SELECTION_BUDGET_X = 1.75
 
 // --- Fixture: a 200-clip sequence ------------------------------------------
 
@@ -312,6 +322,41 @@ describe('perf guard: 200-clip sequence', () => {
     expect(sink).toBeGreaterThan(0)
     const cal = calibrationMs()
     expect(perCallMs / cal).toBeLessThan(RESOLVE_FRAME_BUDGET_X)
+  })
+
+  // FINDING 6, MEASURED 2026-08-12 AND CLOSED. It sat on the open list from
+  // 2026-08-04 as "the real one, and it cannot be measured yet", because
+  // moveSelectionWith was described as a closure inside the Timeline component.
+  // It is not: it is exported from timeline.ts, pure, every argument passed in.
+  // So it was measured instead of argued about.
+  //
+  //   0.012 to 0.022 ms per call, 0.07 to 0.13 percent of a 16.7 ms frame,
+  //   moving 9 clips in a 200 clip sequence. Ratio 0.72x to 1.03x across four
+  //   runs, idle and with all 71 test files running.
+  //
+  // **That is not what makes a big edit feel slow**, which is the same verdict
+  // finding 7 and finding 13 got, and the same reason: the finding read the code
+  // and never timed it. It stays here as a GUARD rather than a note, so the
+  // decision gets revisited with a number if the cost ever moves.
+  it(`moveSelectionWith stays under ${MOVE_SELECTION_BUDGET_X}x the calibration while dragging a multi-clip selection`, () => {
+    // Shaped like the drag itself: the grabbed clip plus eight more selected
+    // clips on another track, re-run at a new time on every pointer-move, which
+    // is exactly what Timeline.tsx does to build the drag preview.
+    const dragged = seq.tracks[1].clips[20]
+    const targetTrack = seq.tracks[1].id
+    const others = seq.tracks[0].clips.slice(0, 8).map((c) => ({ id: c.id, startS0: c.startS }))
+    let t = 0
+    const perCallMs = bench(
+      () => {
+        t += 0.01
+        sink += moveSelectionWith(seq, dragged.id, targetTrack, dragged.startS + (t % 3), others, false).tracks.length
+      },
+      500,
+      7,
+    )
+    expect(sink).toBeGreaterThan(0)
+    const cal = calibrationMs()
+    expect(perCallMs / cal).toBeLessThan(MOVE_SELECTION_BUDGET_X)
   })
 
   it(`collectSnapPoints stays under ${SNAP_POINTS_BUDGET_X}x the calibration while dragging`, () => {
