@@ -1,6 +1,5 @@
 import { Link2 } from 'lucide-react'
 import { memo, useMemo, useRef, useState, type DragEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
-import { clipShowsOwnWaveform } from '../engine/audio'
 import { clipDurationS } from '../engine/timeline'
 import { clipKeyframeTimes } from '../engine/keyframes'
 import { type TransitionKind } from '../engine/render/types'
@@ -88,10 +87,6 @@ export const ClipView = memo(function ClipView({
   const isTitle = clip.title !== undefined
   const isAdjustment = clip.adjustment === true
   const isAudio = !isTitle && !isAdjustment && trackKind === 'audio'
-  // The band a video clip's own waveform sits in: a bottom strip, so the
-  // filmstrip above it still reads. Floored so it stays a waveform and not a
-  // line on a short track, and capped so it never eats the picture.
-  const waveBandH = Math.max(10, Math.min(Math.round(innerH * 0.36), 26))
   // Colour by the TRACK: an audio-track clip is audio-family even when it
   // references a video asset (a linked-audio split).
   const { bg, bd } = isTitle
@@ -325,34 +320,6 @@ export const ClipView = memo(function ClipView({
         />
       )}
       {isAudio && asset && <ClipWaveform clip={clip} asset={asset} width={width} height={innerH} />}
-      {/*
-        A VIDEO CLIP THAT PLAYS ITS OWN SOUND GETS A WAVEFORM TOO, along the
-        bottom, the way every other editor draws it.
-
-        ⛔ NOT every video clip, and the difference is the whole point. A clip
-        with a linked audio partner has its sound drawn on that partner already,
-        so drawing it here as well would say the same thing twice and imply two
-        sources where there is one. **`clipEmitsAudioOn` is the same rule the
-        mixer, the export and the Inspector use** to decide whether this clip is
-        audible at all, so the timeline can never disagree with what he hears.
-
-        The app already knew: the Inspector shows an Audio section for exactly
-        these clips. The timeline was the one place that did not say so, and he
-        cuts to sound.
-
-        ⛔ `z-10` IS LOAD-BEARING. The filmstrip is a LATER absolute sibling
-        covering the whole clip, so in DOM order it paints straight over this
-        band and the waveform is drawn but invisible. Below the keyframe
-        diamonds' z-20, which must stay on top and stay grabbable.
-      */}
-      {clipShowsOwnWaveform(trackKind, clip, asset) && asset && (
-        <div
-          className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-black/35"
-          style={{ height: waveBandH }}
-        >
-          <ClipWaveform clip={clip} asset={asset} width={width} height={waveBandH} />
-        </div>
-      )}
       {clip.linkId && (
         <span
           className="pointer-events-none absolute bottom-1 right-1 rounded-[3px] bg-black/45 p-0.5 text-white/80"
