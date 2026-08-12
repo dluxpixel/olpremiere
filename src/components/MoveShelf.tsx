@@ -55,7 +55,7 @@ import { activeSequence, type Clip } from '../engine/types'
 import { applyMoveToSelection, moveOnClips, setMoveDepth, setMoveWindow } from '../state/moveActions'
 import { useStore } from '../state/store'
 import { liveFrame, shelfGlyphs, TAPE_UNITS, type MoveGlyph } from './moveGlyph'
-import { headroomCeiling, overHeadroom } from './punchPresets'
+import { headroomCeiling, overHeadroom } from './headroom'
 
 /** The slider's ends. 105 percent is the smallest move that reads at all; 200 is as far as his footage stretches. */
 const DEPTH_MIN = 1.05
