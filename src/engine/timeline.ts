@@ -536,6 +536,100 @@ export function moveClip(seq: Sequence, clipId: Id, targetTrackId: Id, desiredSt
   return recomputeDuration({ ...seq, tracks })
 }
 
+/**
+ * CLEAR A WINDOW ON ONE TRACK so something can be dropped into it.
+ *
+ * His words, 2026-08-12: "Click-dragging is so fucking bad. Oh my god, it's just
+ * so buggy. It has one function, and it can't even do that." Proven on his own
+ * project: **on a packed track a dragged clip has nowhere it fits**, so
+ * `resolveStart` hands back the slot it came from, `moveClip` sees an unchanged
+ * start and returns the sequence untouched. He drags, lets go, and the clip sits
+ * back down with nothing on screen saying why. **A finished edit is packed by
+ * definition, so dragging never worked on real work.** He picked overwrite.
+ *
+ * ⛔ SPLITTING IS DELEGATED TO `splitClip`, NOT REIMPLEMENTED. A clip cut in the
+ * middle has to divide its keyframes, fades and transitions by time, and there is
+ * one tested implementation of that. Carving a window by hand here would have
+ * been a second copy of the hardest maths in this file.
+ *
+ * A split the min-piece guard refuses leaves a sliver under a frame long; the
+ * sweep below removes it with the rest rather than leaving a crumb behind.
+ */
+export function carveWindow(seq: Sequence, trackId: Id, fromS: number, toS: number, ignoreClipId?: Id): Sequence {
+  if (toS - fromS <= EPS) return seq
+  const idxOf = (s: Sequence) => s.tracks.findIndex((t) => t.id === trackId)
+  if (idxOf(seq) === -1) return seq
+  const frame = 1 / (seq.fps || 30)
+
+  let next = seq
+  // Cut any clip straddling an edge of the window, so what remains is either
+  // wholly inside it or wholly outside. Re-read the track each pass: a split
+  // rewrites the clip list.
+  for (const edge of [fromS, toS]) {
+    for (;;) {
+      const track = next.tracks[idxOf(next)]
+      const straddler = track.clips.find(
+        (c) => c.id !== ignoreClipId && c.startS < edge - EPS && clipEndS(c) > edge + EPS,
+      )
+      if (!straddler || !canSplitClipAt(straddler, next.fps, edge)) break
+      const after = splitClip(next, straddler.id, edge)
+      if (after === next) break // refused: leave it to the sweep below
+      next = after
+    }
+  }
+
+  const track = next.tracks[idxOf(next)]
+  const kept = track.clips.filter(
+    (c) => c.id === ignoreClipId || !(c.startS >= fromS - frame && clipEndS(c) <= toS + frame),
+  )
+  return kept.length === track.clips.length ? next : withTrackClips(next, idxOf(next), kept)
+}
+
+/**
+ * Move a clip and OVERWRITE whatever it lands on, the way an NLE does.
+ *
+ * The difference from `moveClip` is the whole point: that one hunts for a gap the
+ * clip fits in and gives up when there is none. This one puts the clip exactly
+ * where it was dropped and clears the space for it.
+ */
+export function moveClipOverwrite(seq: Sequence, clipId: Id, targetTrackId: Id, desiredStartS: number): Sequence {
+  const found = findClip(seq, clipId)
+  if (!found) return seq
+  const targetIndex = seq.tracks.findIndex((t) => t.id === targetTrackId)
+  if (targetIndex === -1) return seq
+  const target = seq.tracks[targetIndex]
+  if (found.track.kind !== target.kind || found.track.locked || target.locked) return seq
+
+  const startS = Math.max(0, desiredStartS)
+  if (found.trackIndex === targetIndex && Math.abs(startS - found.clip.startS) < EPS) return seq
+  const moved: Clip = { ...found.clip, startS }
+  const endS = startS + clipDurationS(moved)
+
+  // ⛔ THE CHEAP PATH IS NOT AN OPTIMISATION, IT IS REQUIRED. This runs on EVERY
+  // pointer-move of a drag to build the live preview, and the perf guard caught
+  // the first version at FOURTEEN times its budget on a 200-clip sequence.
+  // Landing on empty space is the common case and needs no carving at all, so it
+  // costs exactly what the old move cost.
+  const target2 = seq.tracks[targetIndex]
+  const hits = target2.clips.some(
+    (c) => c.id !== clipId && c.startS < endS - EPS && clipEndS(c) > startS + EPS,
+  )
+  if (!hits) {
+    const tracks = seq.tracks.map((t, i) => {
+      const without = i === found.trackIndex ? t.clips.filter((c) => c.id !== clipId) : t.clips
+      const clips = i === targetIndex ? insertSorted(without, moved) : without
+      return clips === t.clips ? t : { ...t, clips }
+    })
+    return recomputeDuration({ ...seq, tracks })
+  }
+
+  // Lift it out FIRST, so a move within one track cannot carve itself away.
+  const lifted = deleteClip(seq, clipId)
+  const carved = carveWindow(lifted, targetTrackId, startS, endS, clipId)
+  const ti = carved.tracks.findIndex((t) => t.id === targetTrackId)
+  return recomputeDuration(withTrackClips(carved, ti, insertSorted(carved.tracks[ti].clips, moved)))
+}
+
 export function trimClipTo(
   seq: Sequence,
   assets: Record<Id, MediaAsset>,
@@ -983,6 +1077,33 @@ export function addClipWithLinkedAudio(
  * voice seconds away from its picture, permanently out of sync, after one
  * ordinary drag.
  */
+/**
+ * `moveGroup` that overwrites instead of refusing.
+ *
+ * ⛔ The plain group move is ALL OR NOTHING: if any linked partner cannot be
+ * placed, `canPlace` fails and NOBODY moves. On a packed timeline that is a
+ * SECOND reason a linked drag did nothing at all, on top of the gap search in
+ * `moveClip`. Overwrite always fits, so the gate goes with it.
+ */
+export function moveGroupOverwrite(seq: Sequence, clipId: Id, targetTrackId: Id, desiredStartS: number): Sequence {
+  const group = clipGroupIds(seq, clipId)
+  if (group.length <= 1) return moveClipOverwrite(seq, clipId, targetTrackId, desiredStartS)
+  const before = findClip(seq, clipId)
+  if (!before) return seq
+  let next = moveClipOverwrite(seq, clipId, targetTrackId, desiredStartS)
+  const after = findClip(next, clipId)
+  if (!after) return next
+  const delta = after.clip.startS - before.clip.startS
+  if (delta === 0) return next
+  for (const id of group) {
+    if (id === clipId) continue
+    const m = findClip(next, id)
+    if (!m) continue
+    next = moveClipOverwrite(next, m.clip.id, m.track.id, Math.max(0, m.clip.startS + delta))
+  }
+  return next
+}
+
 export function moveGroup(seq: Sequence, clipId: Id, targetTrackId: Id, desiredStartS: number): Sequence {
   const group = clipGroupIds(seq, clipId)
   if (group.length <= 1) return moveClip(seq, clipId, targetTrackId, desiredStartS)
@@ -1571,8 +1692,8 @@ export function moveSelectionWith(
   // the partner stays where it is. moveClip is the same verb the group move
   // uses underneath; the only difference is that it stops at this clip.
   let next = solo
-    ? moveClip(base, grabbedId, targetTrackId, tS)
-    : moveGroup(base, grabbedId, targetTrackId, tS)
+    ? moveClipOverwrite(base, grabbedId, targetTrackId, tS)
+    : moveGroupOverwrite(base, grabbedId, targetTrackId, tS)
   if (others.length === 0) return next
 
   // THE SELECTION CHANGES TRACK TOGETHER, NOT JUST TIME.
@@ -1617,7 +1738,7 @@ export function moveSelectionWith(
         destTrackId = next.tracks[lanes[want].i]?.id ?? tr.id
       }
     }
-    next = moveGroup(next, o.id, destTrackId, Math.max(0, oc.startS + deltaS))
+    next = moveGroupOverwrite(next, o.id, destTrackId, Math.max(0, oc.startS + deltaS))
   }
   return next
 }

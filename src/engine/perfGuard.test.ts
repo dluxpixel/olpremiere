@@ -74,12 +74,31 @@ import {
 const RESOLVE_FRAME_BUDGET_X = 0.55
 const SNAP_POINTS_BUDGET_X = 1.2
 
-// Measured 2026-08-12 across four runs, three idle and one with all 71 files
-// running: 0.92x, 0.92x, 1.03x, 0.72x, so 1.03x is the worst observed. The
-// budget sits at roughly 1.7x that, the same headroom the two above were chosen
-// with. Absolute, for scale: 0.012 to 0.022 ms per call, which is 0.07 to 0.13
-// percent of a 16.7 ms frame while moving 9 clips in a 200 clip sequence.
-const MOVE_SELECTION_BUDGET_X = 1.75
+// ⚠️ SUPERSEDED THE SAME DAY, kept because it is the before-number. Measured
+// 2026-08-12 across four runs, three idle and one with all 71 files running:
+// 0.92x, 0.92x, 1.03x, 0.72x, worst 1.03x, and 0.012 to 0.022 ms per call. That
+// was the cost when a drag only searched for a gap to sit in. It overwrites now.
+// See the block below for the new measurement and why the budget moved.
+/**
+ * RE-BASELINED 2026-08-12, from 1.75, with the number this guard asked for.
+ *
+ * ⛔ NOT a gate weakened so it would stop firing. The work this measures got
+ * BIGGER ON PURPOSE the same day: a drag now overwrites what it lands on, which
+ * means clearing the window it is dropped into, and on a packed track that is a
+ * split at each edge. The comment below always said the decision gets revisited
+ * with a number if the cost moved. It moved, so here is the number.
+ *
+ *   Measured: 0.1433 ms per call, calibration 0.0139 ms, ratio 10.3,
+ *   **0.86 percent of a 16.7 ms frame**, moving 9 clips in a 200-clip sequence
+ *   on every pointer-move. Before the change it was ~0.014 ms and ratio ~1.
+ *
+ * Ten times a very small number is still a very small number, and the absolute
+ * assertion below is the one that actually protects him: a ratio drifts with
+ * whatever else the box is doing, a share of a frame does not.
+ */
+const MOVE_SELECTION_BUDGET_X = 16
+/** Hard ceiling on what a drag may cost in real time, whatever the ratio says. */
+const MOVE_SELECTION_FRAME_SHARE_MAX = 0.05
 
 // --- Fixture: a 200-clip sequence ------------------------------------------
 
@@ -357,6 +376,8 @@ describe('perf guard: 200-clip sequence', () => {
     expect(sink).toBeGreaterThan(0)
     const cal = calibrationMs()
     expect(perCallMs / cal).toBeLessThan(MOVE_SELECTION_BUDGET_X)
+    // The one that matters to him: a drag must never eat a real slice of a frame.
+    expect(perCallMs / 16.7).toBeLessThan(MOVE_SELECTION_FRAME_SHARE_MAX)
   })
 
   it(`collectSnapPoints stays under ${SNAP_POINTS_BUDGET_X}x the calibration while dragging`, () => {
