@@ -20,6 +20,7 @@
 
 import { execFileSync, execSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
+import { loadToken } from './lib.mjs'
 
 const args = process.argv.slice(2)
 const fast = args.includes('--fast')
@@ -36,6 +37,37 @@ const run = (cmd, label) => {
 }
 
 const git = (...a) => execFileSync('git', a, { encoding: 'utf8' }).trim()
+
+// The push used to be a bare `git push`, which hands the job to Git Credential
+// Manager. On 2026-08-12 that died with "could not read Username for
+// 'https://github.com'" after a gate that had taken 25 minutes to go green, so a
+// finished release sat committed and undelivered for two days. The token that
+// publishes the release was on disk the whole time.
+//
+// Push with that same token. It goes in through a credential helper that reads
+// it from the environment, so it never reaches the command line, the terminal
+// output or .git/config.
+const pushMain = () => {
+  const token = loadToken()
+  process.stdout.write('\n▶ push\n')
+  if (!token) {
+    execSync('git push origin main', { stdio: 'inherit' })
+    return
+  }
+  execFileSync(
+    'git',
+    [
+      '-c',
+      'credential.helper=',
+      '-c',
+      'credential.helper=!f() { echo username=x-access-token; echo "password=$OLP_PUSH_TOKEN"; }; f',
+      'push',
+      'origin',
+      'main',
+    ],
+    { stdio: 'inherit', env: { ...process.env, OLP_PUSH_TOKEN: token } },
+  )
+}
 
 // --- 0. nothing to do? ------------------------------------------------------
 const dirty = git('status', '--porcelain')
@@ -67,7 +99,7 @@ execFileSync('git', ['add', '-A'], { stdio: 'inherit' })
 execFileSync('git', ['commit', '-m', `${message}\n\nReleased as v${version} by scripts/patch.mjs.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>`], {
   stdio: 'inherit',
 })
-run('git push origin main', 'push')
+pushMain()
 
 // --- 3. build + publish -----------------------------------------------------
 run('node scripts/release.mjs', `release v${version}`)
