@@ -309,12 +309,28 @@ test('a cross dissolve on a razored source shows the outgoing clip, not another 
   // AND THE OUTGOING CLIP IS REALLY THERE. A dissolve that never shows clip A
   // is clip B dissolving into itself, which is the same defect wearing a colour
   // that happens not to be red.
+  //
+  // ⛔ THIS WAS A COUNT OF SAMPLES AND IT WENT RED IN HIS SHIP PATH ON HEALTHY
+  // CODE, twice, 2026-08-10 and 2026-08-12. It was measuring the machine, not
+  // the picture. How many frames land inside a 2 second window is a property of
+  // how busy the box is: alone, this spec sees about 41 samples in the dissolve
+  // and 24 of them green; late in a 243 spec suite it saw 2. **In that failing
+  // run the two assertions that carry HIS bug both passed**, zero frames of
+  // trimmed-off footage and zero black frames. Only the evidence count failed.
+  //
+  // It asks for a SHARE now, which is what the sentence above always meant, and
+  // a share does not care how fast the machine is. A cross dissolve weights
+  // from*(1-p) + to*p, so A sits above the floor for roughly the first half of
+  // the window. A third is a floor no real dissolve can miss while still being a
+  // dissolve. **This is stricter, not looser, wherever there is evidence to be
+  // strict with:** at 41 samples the old rule wanted 3 green and this wants 14.
   const carryingA = inWindow.filter((s) => s.g > 60)
   expect(
-    carryingA.length,
-    `frames carrying the outgoing clip's own footage (green): the dissolve must show clip A, ` +
-      `not another part of the same source`,
-  ).toBeGreaterThan(2)
+    carryingA.length / inWindow.length,
+    `the share of the dissolve carrying the outgoing clip's own footage: the dissolve must ` +
+      `show clip A, not another part of the same source ` +
+      `(${carryingA.length} green of ${inWindow.length} frames sampled inside the window)`,
+  ).toBeGreaterThan(1 / 3)
 
   // NOT BLACK. Refusing to composite a wrong picture is only half a fix: a
   // cross dissolve weights from*(1-p) + to*p, so a side with no texture fades
