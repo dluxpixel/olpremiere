@@ -287,6 +287,26 @@ export function Timeline({ height }: { height: number }) {
     return 0
   }
 
+  /**
+   * The same rule DOWN the lanes, so a drag that runs off the top or bottom
+   * brings the other tracks into view.
+   *
+   * His words, 2026-08-12: "when I'm making a right-click drag up on the preview
+   * down there, the clips also go up so I can see what I'm selecting when I have
+   * a lot of V1s and audio lines." Edge scrolling existed and was **sideways
+   * only**, so on a tall stack he was drawing a box around tracks he could not
+   * see. Slower than the horizontal speed on purpose: lanes are tall, so the same
+   * pixels-per-frame flies past far more content.
+   */
+  const edgeSpeedY = (el: HTMLElement, clientY: number): number => {
+    const r = el.getBoundingClientRect()
+    const topGap = clientY - r.top
+    const botGap = r.bottom - clientY
+    if (topGap < EDGE_ZONE_PX) return -(2 + (8 * (EDGE_ZONE_PX - Math.max(0, topGap))) / EDGE_ZONE_PX)
+    if (botGap < EDGE_ZONE_PX) return 2 + (8 * (EDGE_ZONE_PX - Math.max(0, botGap))) / EDGE_ZONE_PX
+    return 0
+  }
+
   const stopEdgeScroll = () => {
     if (edgeScrollRaf.current !== null) cancelAnimationFrame(edgeScrollRaf.current)
     edgeScrollRaf.current = null
@@ -295,7 +315,7 @@ export function Timeline({ height }: { height: number }) {
   const maybeEdgeScroll = () => {
     const el = lanesRef.current
     const p = lastDragPointer.current
-    if (!el || !p || edgeSpeed(el, p.clientX) === 0) {
+    if (!el || !p || (edgeSpeed(el, p.clientX) === 0 && edgeSpeedY(el, p.clientY) === 0)) {
       stopEdgeScroll()
       return
     }
@@ -308,15 +328,18 @@ export function Timeline({ height }: { height: number }) {
         return
       }
       const sp = edgeSpeed(el2, p2.clientX)
-      if (sp === 0) {
+      const spY = edgeSpeedY(el2, p2.clientY)
+      if (sp === 0 && spY === 0) {
         edgeScrollRaf.current = null
         return
       }
       const before = el2.scrollLeft
+      const beforeY = el2.scrollTop
       programmaticScroll.current = true
-      el2.scrollLeft = Math.max(0, before + sp)
+      if (sp !== 0) el2.scrollLeft = Math.max(0, before + sp)
+      if (spY !== 0) el2.scrollTop = Math.max(0, beforeY + spY)
       // At the rail ends nothing moved - don't spin the loop for free.
-      if (el2.scrollLeft === before) {
+      if (el2.scrollLeft === before && el2.scrollTop === beforeY) {
         edgeScrollRaf.current = null
         return
       }
