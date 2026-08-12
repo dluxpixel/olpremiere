@@ -6,6 +6,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react'
 import { clipEndS } from '../engine/timeline'
+import { boxFromQuad, snapTransformMove, type SnapBox } from '../engine/snapTransform'
 import { computeQuad, pointInQuad, subQuad } from '../engine/render/mat'
 import { resolveFrame } from '../engine/render/resolve'
 import { titleInkBoxUV } from '../engine/render/titleRaster'
@@ -35,7 +36,11 @@ interface Tf {
   rotationDeg: number
 }
 type Drag =
-  | { mode: 'move'; startX: number; startY: number; startTf: Tf }
+  // startBox is the clip's box in SEQUENCE px as the drag began. Measured once
+  // and never re-read: a move is a translation, so the box only ever shifts, and
+  // reading it back from an already-snapped position would feed the snap its own
+  // output.
+  | { mode: 'move'; startX: number; startY: number; startTf: Tf; startBox: SnapBox }
   // axis: edge handles scale along the edge's outward normal (travel along the
   // edge is ignored); corners omit it and use radial distance from center.
   | { mode: 'scale'; startTf: Tf; cx: number; cy: number; startDist: number; axis?: { x: number; y: number } }
@@ -205,7 +210,10 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
   const cleanupRef = useRef<(() => void) | null>(null)
   const [dragTf, setDragTf] = useState<Tf | null>(null)
   // Which axes are currently snapped to frame center (drives the guide lines).
-  const [centerSnap, setCenterSnap] = useState<{ x: boolean; y: boolean }>({ x: false, y: false })
+  // Where the snap guides sit, in SEQUENCE px along each axis, or null for an
+  // axis that is not snapped. Sequence px rather than a boolean because the
+  // guide now lands on an edge as well as the centre.
+  const [snapGuides, setSnapGuides] = useState<{ x: number | null; y: number | null }>({ x: null, y: null })
   useEffect(() => () => cleanupRef.current?.(), [])
 
   // Playing is handled by the outer gate; here we are always paused.
@@ -432,15 +440,12 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
             if (Math.abs(p.x - drag.startX) >= Math.abs(p.y - drag.startY)) y = drag.startTf.y
             else x = drag.startTf.x
           }
-          // Snap to frame center: x/y are offsets from center, so |v| < 8
-          // screen px means "you clearly meant centered".
-          const snapSeqPx = 8 / k
-          const sx = Math.abs(x) < snapSeqPx
-          const sy = Math.abs(y) < snapSeqPx
-          if (sx) x = 0
-          if (sy) y = 0
-          setCenterSnap({ x: sx, y: sy })
-          apply({ ...drag.startTf, x, y })
+          // Snap to the frame: its centre, and now its EDGES, so a clip lands
+          // flush in a corner instead of near one. 8 screen px of tolerance,
+          // converted to sequence px so it feels the same at any zoom.
+          const snapped = snapTransformMove(x, y, drag.startTf.x, drag.startTf.y, drag.startBox, seq.width, seq.height, 8 / k)
+          setSnapGuides({ x: snapped.guideX, y: snapped.guideY })
+          apply({ ...drag.startTf, x: snapped.x, y: snapped.y })
         } else if (drag.mode === 'scale') {
           // Engine scale is uniform, so aspect stays constrained by
           // construction on every handle. Shift snaps to 5% steps, the scale
@@ -464,7 +469,7 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
         const final = tfRef.current
         setLivePreviewTransform(null)
         setDragTf(null)
-        setCenterSnap({ x: false, y: false })
+        setSnapGuides({ x: null, y: null })
         tfRef.current = null
         if (!final) return
         if (keyframeOnDrag()) {
@@ -494,7 +499,7 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
       e.preventDefault()
       e.stopPropagation()
       const p = localPt(e.clientX, e.clientY)
-      startDrag({ mode: 'move', startX: p.x, startY: p.y, startTf: tf })
+      startDrag({ mode: 'move', startX: p.x, startY: p.y, startTf: tf, startBox: boxFromQuad(corners) })
     }
     const beginScale = (e: ReactPointerEvent, axis?: { x: number; y: number }) => {
       if (e.button !== 0) return
@@ -730,6 +735,7 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
       const minY = Math.min(...ys)
       const maxY = Math.max(...ys)
       const startTf = { x: pClip.transform.x, y: pClip.transform.y, scale: pClip.transform.scale, rotationDeg: pClip.transform.rotationDeg }
+      const startBox = boxFromQuad(quadFor(primary))
 
       const beginMulti = (e: ReactPointerEvent) => {
         if (e.button !== 0) return
@@ -747,7 +753,13 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
             if (Math.abs(p.x - start.x) >= Math.abs(p.y - start.y)) y = startTf.y
             else x = startTf.x
           }
-          last = { ...startTf, x, y }
+          // The same snapping the single-clip gizmo has, his ask 2026-08-12:
+          // moving several texts at once must catch the frame's edges and
+          // corners too. The box is the PRIMARY clip's, which is the one this
+          // whole gesture already aligns everything else onto.
+          const snapped = snapTransformMove(x, y, startTf.x, startTf.y, startBox, seq.width, seq.height, 8 / k)
+          setSnapGuides({ x: snapped.guideX, y: snapped.guideY })
+          last = { ...startTf, x: snapped.x, y: snapped.y }
           setDragTf(last)
           setLivePreviewTransform({ clipId: primary.clipId, ...last })
         }
@@ -756,6 +768,7 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
           window.removeEventListener('pointerup', onUp)
           setLivePreviewTransform(null)
           setDragTf(null)
+          setSnapGuides({ x: null, y: null })
           if (last) setClipsPosition(selection, last.x, last.y)
         }
         window.addEventListener('pointermove', onMove)
@@ -795,12 +808,22 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
         onPointerDown={selectAt}
         onContextMenu={contextAt}
       />
-      {/* Center-snap guides: shown only while a move-drag holds the snap. */}
-      {centerSnap.x && (
-        <div className="pointer-events-none absolute inset-y-0 w-px bg-accent/80" style={{ left: box.w / 2 }} />
+      {/* Snap guides: shown only while a move-drag holds the snap. An edge guide
+          sits ON the frame edge, so it is pulled a pixel inward to stay visible
+          rather than being clipped away by the frame's own boundary. */}
+      {snapGuides.x !== null && (
+        <div
+          data-testid="snap-guide-x"
+          className="pointer-events-none absolute inset-y-0 w-px bg-accent/80"
+          style={{ left: clamp(snapGuides.x * k, 0, box.w - 1) }}
+        />
       )}
-      {centerSnap.y && (
-        <div className="pointer-events-none absolute inset-x-0 h-px bg-accent/80" style={{ top: box.h / 2 }} />
+      {snapGuides.y !== null && (
+        <div
+          data-testid="snap-guide-y"
+          className="pointer-events-none absolute inset-x-0 h-px bg-accent/80"
+          style={{ top: clamp(snapGuides.y * k, 0, box.h - 1) }}
+        />
       )}
       {gizmo}
       {multiGizmo}

@@ -922,8 +922,22 @@ export function Timeline({ height }: { height: number }) {
       // Snap the leading edge, then the trailing edge; keep the closer catch.
       // The dragged clip's whole link group is excluded: its audio partner's
       // stale edges would otherwise snap the drag back to where it started.
+      // ⛔ EVERY CLIP THAT IS MOVING IS EXCLUDED, not just the grabbed one.
+      //
+      // The grabbed clip's link group was already excluded, for exactly the
+      // right reason: an audio partner travelling with the drag would otherwise
+      // offer its OLD edges as snap targets and yank the drag back to where it
+      // started. **The clips carried in `drag.others` travel too, and they were
+      // still in the points.** So dragging a multi-selection fought the user:
+      // every carried clip's original edges pulled the whole selection back
+      // toward the spot it was trying to leave, and the harder the selection,
+      // the stickier it felt.
       const points = snapping
-        ? snapPoints.points(seq, [drag.clipId], useStore.getState().ui.playheadS)
+        ? snapPoints.points(
+            seq,
+            [drag.clipId, ...drag.others.map((o) => o.id)],
+            useStore.getState().ui.playheadS,
+          )
         : []
       let desired = desiredRaw
       if (snapping) {
