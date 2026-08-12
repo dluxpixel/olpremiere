@@ -4,7 +4,7 @@
 // devices, watch the level, and hear yourself while you work. Movable so it
 // can sit beside the preview during a to-picture voiceover.
 
-import { Check, GripHorizontal, Headphones, Mic, Square, Trash2, X } from 'lucide-react'
+import { Check, GripHorizontal, Headphones, Mic, Play, Square, Trash2, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import {
   closeStudio,
@@ -12,6 +12,7 @@ import {
   keepTake,
   listAudioInputs,
   setInputDevice,
+  setAutoPlay,
   setMonitoring,
   setOutputDevice,
   startRecording,
@@ -20,7 +21,6 @@ import {
   useRecorder,
 } from '../state/voiceRecorder'
 import { canPickOutput, listAudioOutputs } from '../state/recordingMonitor'
-import { ensurePlaying, pausePlayback } from '../state/playbackControl'
 import { IconButton } from '../ui/Button'
 
 const SELECT_CLS =
@@ -54,6 +54,7 @@ export function RecordingStudio() {
   const startedAt = useRecorder((s) => s.startedAt)
   const pending = useRecorder((s) => s.pendingTake)
   const monitoring = useRecorder((s) => s.monitoring)
+  const autoPlay = useRecorder((s) => s.autoPlay)
   const selectedInputId = useRecorder((s) => s.selectedInputId)
   const selectedOutputId = useRecorder((s) => s.selectedOutputId)
   const [inputs, setInputs] = useState<MediaDeviceInfo[]>([])
@@ -136,16 +137,13 @@ export function RecordingStudio() {
             data-testid="studio-record"
             aria-label={recording ? 'Stop recording' : 'Record'}
             onClick={() => {
-              if (recording) {
-                // End the take and stop the preview together.
-                stopRecording()
-                pausePlayback()
-              } else {
-                // Roll the preview so you can dub to picture; Space then pauses
-                // both and resumes both.
-                void startRecording()
-                ensurePlaying()
-              }
+              // ⛔ THE PREVIEW IS THE RECORDER'S JOB NOW, not this button's. It
+              // used to call ensurePlaying/pausePlayback here unconditionally,
+              // which would have overridden the "play while recording" option and
+              // left the switch doing nothing. startRecording honours the option
+              // and remembers the spot so a discard can go back to it.
+              if (recording) stopRecording()
+              else void startRecording()
             }}
             className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full transition-colors duration-[120ms] ${
               recording ? 'bg-ember text-black' : 'bg-danger text-white hover:brightness-110'
@@ -268,6 +266,25 @@ export function RecordingStudio() {
           {monitoring && (
             <p className="text-ui-sm text-text-muted">Use headphones. On speakers this feeds back.</p>
           )}
+
+          {/* His ask, 2026-08-12: an option to NOT start the preview. It sits
+              beside "hear myself" because they are the same kind of choice,
+              what happens around a take rather than what is captured. */}
+          <button
+            type="button"
+            data-testid="studio-autoplay"
+            aria-pressed={autoPlay}
+            onClick={() => setAutoPlay(!autoPlay)}
+            className={`flex h-8 items-center justify-center gap-1.5 rounded-field text-ui-sm transition-colors duration-[120ms] ${
+              autoPlay
+                ? 'bg-accent text-accent-fg'
+                : 'border border-border text-text-secondary hover:text-text-primary'
+            }`}
+            title="Play the timeline while you record, so you can perform against your edit. Throwing a take away puts the playhead back where you started it."
+          >
+            <Play size={14} strokeWidth={1.75} />
+            {autoPlay ? 'Playing while you record' : 'Play while recording'}
+          </button>
         </div>
       </div>
     </div>

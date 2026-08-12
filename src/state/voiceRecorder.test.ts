@@ -1,13 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// Recording must coexist with playback: starting/stopping a take never touches
-// the transport. voiceRecorder has NO import of playbackControl. This mock
-// intercepts any future coupling so the spy assertion below would catch it.
-const { importFilesSpy, pausePlaybackSpy, showSpy, monitorStop, makeMonitor } = vi.hoisted(() => {
+// Recording DRIVES the transport now, at his ask on 2026-08-12: starting a take
+// rolls the preview so he can perform against his own edit, stopping it stops
+// what the take started, and discarding puts him back where he began. This file
+// used to assert the exact opposite, that the recorder never touched playback,
+// and that assertion was correct until he asked for the coupling. The spies stay
+// so the coupling that exists is the coupling that was asked for and no more.
+const { importFilesSpy, pausePlaybackSpy, ensurePlayingSpy, showSpy, monitorStop, makeMonitor } = vi.hoisted(() => {
   const monitorStop = vi.fn()
   return {
     importFilesSpy: vi.fn(() => Promise.resolve()),
     pausePlaybackSpy: vi.fn(),
+    ensurePlayingSpy: vi.fn(),
     showSpy: vi.fn(),
     monitorStop,
     // A fake MonitorGraph: a stream whose one track's stop() is the spy, plus
@@ -22,7 +26,7 @@ const { importFilesSpy, pausePlaybackSpy, showSpy, monitorStop, makeMonitor } = 
   }
 })
 vi.mock('./mediaActions', () => ({ importFiles: importFilesSpy }))
-vi.mock('./playbackControl', () => ({ pausePlayback: pausePlaybackSpy }))
+vi.mock('./playbackControl', () => ({ pausePlayback: pausePlaybackSpy, ensurePlaying: ensurePlayingSpy }))
 vi.mock('./toasts', () => ({ useToasts: { getState: () => ({ show: showSpy }) } }))
 vi.mock('./recordingMonitor', () => ({
   createMonitorGraph: vi.fn(async () => makeMonitor()),
@@ -127,8 +131,9 @@ describe('studio capture: review-then-keep, and coexistence with playback', () =
     expect(useRecorder.getState().pendingTake).not.toBeNull()
     expect(importFilesSpy).not.toHaveBeenCalled()
     expect(monitorStop).not.toHaveBeenCalled()
-    // The recorder never touches the transport, on start, stop, or flush.
-    expect(pausePlaybackSpy).not.toHaveBeenCalled()
+    // The take rolled the preview, and stopping it stopped what it started.
+    expect(ensurePlayingSpy).toHaveBeenCalled()
+    expect(pausePlaybackSpy).toHaveBeenCalled()
   })
 
   it('keeping a take imports it once and clears the review slot', async () => {
@@ -198,5 +203,37 @@ describe('studio capture: review-then-keep, and coexistence with playback', () =
     expect(() => stopRecording()).not.toThrow()
     expect(useRecorder.getState().recording).toBe(false)
     expect(pausePlaybackSpy).not.toHaveBeenCalled()
+  })
+
+  // ⛔ HIS ASK, 2026-08-12: "when you stop the recording and you discard it, you
+  // see it's not good enough. Make it go back to the start of the preview."
+  it('discarding puts the playhead back where the take began', async () => {
+    const { useStore } = await import('./store')
+    useStore.getState().setUI({ playheadS: 7 })
+    await startRecording()
+    // The take rolled on; pretend it ran.
+    useStore.getState().setUI({ playheadS: 11.5 })
+    const rec = FakeMediaRecorder.instances[0]
+    rec.ondataavailable?.({ data: new Blob(['x']) })
+    stopRecording()
+    rec.onstop?.()
+
+    discardTake()
+    expect(useStore.getState().ui.playheadS).toBe(7)
+  })
+
+  // And keeping it does NOT drag him backwards: he kept that take on purpose.
+  it('keeping a take leaves the playhead alone', async () => {
+    const { useStore } = await import('./store')
+    useStore.getState().setUI({ playheadS: 3 })
+    await startRecording()
+    useStore.getState().setUI({ playheadS: 9 })
+    const rec = FakeMediaRecorder.instances[0]
+    rec.ondataavailable?.({ data: new Blob(['x']) })
+    stopRecording()
+    rec.onstop?.()
+
+    await keepTake()
+    expect(useStore.getState().ui.playheadS).toBe(9)
   })
 })

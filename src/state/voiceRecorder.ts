@@ -10,6 +10,8 @@ import { getAudioOutputDevice, setAudioOutputDevice } from '../engine/audio'
 import { importFiles } from './mediaActions'
 import { createMonitorGraph, type MonitorGraph } from './recordingMonitor'
 import { useToasts } from './toasts'
+import { ensurePlaying, pausePlayback } from './playbackControl'
+import { useStore } from './store'
 
 /** A captured take held for review before it is kept or thrown away. */
 export interface PendingTake {
@@ -39,6 +41,8 @@ interface RecorderState {
   pendingTake: PendingTake | null
   /** Hear yourself: route the mic to the output while the studio is open. Persisted. */
   monitoring: boolean
+  /** Roll the preview when recording starts. Default on. */
+  autoPlay: boolean
   /** Live input peak 0..1 for the meter (updated each frame while the studio is open). */
   level: number
   /** Chosen audio-input `deviceId`, or null for the system default. Persisted. */
@@ -50,6 +54,8 @@ interface RecorderState {
 /** localStorage keys; survive reloads and projects. (Output lives in engine/audio.) */
 const INPUT_KEY = 'olpremiere:recorder:input-device'
 const MONITOR_KEY = 'olpremiere:recorder:monitor'
+// Stored INVERTED: present means he turned the preview off. See setAutoPlay.
+const AUTOPLAY_OFF_KEY = 'olpremiere:recorder:autoplay-off'
 
 /** Recorded-audio bitrate. 128 kbps Opus is transparent for voice; the browser
  * default is far lower, which is a big part of why raw recordings sound bad. */
@@ -79,6 +85,7 @@ export const useRecorder = create<RecorderState>(() => ({
   startedAt: null,
   pendingTake: null,
   monitoring: loadFlag(MONITOR_KEY),
+  autoPlay: !loadFlag(AUTOPLAY_OFF_KEY),
   level: 0,
   selectedInputId: loadSavedInputId(),
   // Output is app-wide (playback + monitor) and owned/persisted by engine/audio.
@@ -154,6 +161,34 @@ export function setOutputDevice(deviceId: string | null): void {
   useRecorder.setState({ selectedOutputId: deviceId })
   void setAudioOutputDevice(deviceId) // route + remember app playback
   void monitor?.setOutput(deviceId) // route the live monitor to the same device
+}
+
+/**
+ * Where the playhead was when the current take began, so a discard can go back.
+ * Null once there is nothing to go back to.
+ */
+let takeStartPlayheadS: number | null = null
+/** Did WE roll the preview for this take? Only then do we stop it again. */
+let startedPlaybackForTake = false
+
+/**
+ * Roll the preview when recording starts. ON unless he turns it off.
+ *
+ * ⛔ Stored as an OFF flag (`'0'` means off, anything else means on) rather than
+ * reusing `loadFlag`, which reads a missing key as false. Every existing install
+ * has no key at all, and reading that as "he turned the preview off" would ship
+ * the feature already disabled for everyone who has ever run the app.
+ */
+export function setAutoPlay(on: boolean): void {
+  useRecorder.setState({ autoPlay: on })
+  try {
+    if (typeof localStorage !== 'undefined') {
+      if (on) localStorage.removeItem(AUTOPLAY_OFF_KEY)
+      else localStorage.setItem(AUTOPLAY_OFF_KEY, '1')
+    }
+  } catch {
+    // Ignore storage failures; the in-memory choice still applies.
+  }
 }
 
 /** Hear yourself: route the live mic to the output while the studio is open. */
@@ -338,7 +373,8 @@ export async function startRecording(): Promise<void> {
     if (!monitor) return // openStudio already surfaced the error
   }
   // A held take is replaced by the new one; reviewing is per-take, not a queue.
-  discardTake()
+  // dropTake, NOT discardTake: see the comment on discardTake.
+  dropTake()
 
   const mime = pickRecorderMime()
   // A high, explicit bitrate. The browser default is low and a big reason raw
@@ -365,6 +401,16 @@ export async function startRecording(): Promise<void> {
   pausedAccumMs = 0
   pausedAtMs = null
   useRecorder.setState({ recording: true, paused: false, startedAt })
+
+  // WHERE HE STARTED, remembered before anything moves, so a discard can put him
+  // back. Kept even when the preview does not roll: he still wants the spot back.
+  takeStartPlayheadS = useStore.getState().ui.playheadS
+  if (useRecorder.getState().autoPlay) {
+    // His words: "when you start recording, it starts the preview too", so he can
+    // perform against his own edit instead of against silence.
+    ensurePlaying()
+    startedPlaybackForTake = true
+  }
 }
 
 export function stopRecording(): void {
@@ -374,6 +420,12 @@ export function stopRecording(): void {
   // the pause bookkeeping to report the true (gap-excluded) length.
   recorder.stop()
   useRecorder.setState({ recording: false, paused: false, startedAt: null })
+  // Only stop what WE started. If he had the preview rolling before he hit
+  // record, it is his and it keeps rolling.
+  if (startedPlaybackForTake) {
+    pausePlayback()
+    startedPlaybackForTake = false
+  }
 }
 
 /**
@@ -418,15 +470,43 @@ export async function keepTake(): Promise<void> {
   const take = useRecorder.getState().pendingTake
   if (!take) return
   useRecorder.setState({ pendingTake: null })
+  // Kept, so there is nothing to go back FROM: a later discard must not fling
+  // him to where this take began.
+  takeStartPlayheadS = null
   URL.revokeObjectURL(take.url)
   const file = new File([take.blob], take.name, { type: take.blob.type })
   await importFiles([file])
 }
 
-/** Throw the held take away (bad take). No-op when there is nothing held. */
-export function discardTake(): void {
+/** Drop the held take and nothing else. The playhead is NOT touched. */
+function dropTake(): void {
   const take = useRecorder.getState().pendingTake
   if (!take) return
   URL.revokeObjectURL(take.url)
   useRecorder.setState({ pendingTake: null })
+}
+
+/**
+ * Throw the take away AND put him back where he started recording.
+ *
+ * His words, 2026-08-12: "when you stop the recording and you discard it, you
+ * see it's not good enough. Make it go back to the start of the preview."
+ * Discarding always means "that one was no good, going again", so the retry has
+ * to be instant instead of hunting for the spot he began at.
+ *
+ * ⛔ `startRecording` must NOT call this. It drops the previous take on its way
+ * into a new one, and restoring the playhead there would drag him back to where
+ * the LAST take began the moment he starts the next. That is what `dropTake` is
+ * for.
+ */
+export function discardTake(): void {
+  // Only a REAL discard moves him. With nothing held this is a no-op, or a
+  // stray click would fling the playhead back to some take he already kept.
+  if (!useRecorder.getState().pendingTake) return
+  dropTake()
+  const back = takeStartPlayheadS
+  takeStartPlayheadS = null
+  if (back === null) return
+  pausePlayback()
+  useStore.getState().setUI({ playheadS: back })
 }
