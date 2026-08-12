@@ -26,6 +26,7 @@ import { MOTION_CURVES, type MotionCurveName } from '../engine/motion'
 import type { AnimChannel, Clip, Curve, Keyframe } from '../engine/types'
 import { setSegmentCurve, setSegmentEase } from '../state/clipEdits'
 import { IconButton } from '../ui/Button'
+import { friendly as friendlyChannelName } from './keyframeMarks'
 import { useMotionRail } from './MotionRail'
 
 // --- geometry ---------------------------------------------------------------
@@ -54,32 +55,15 @@ const snap = (v: number): number => Math.round(v / SNAP) * SNAP
 // --- naming -----------------------------------------------------------------
 
 // "scale" reads as Zoom, which is the word he uses and the one in the header he
-// asked for. Same list the lanes label their rows with.
-const FRIENDLY: Partial<Record<AnimChannel, string>> = {
-  scale: 'Zoom',
-  posX: 'Position X',
-  posY: 'Position Y',
-  rotation: 'Rotation',
-  opacity: 'Opacity',
-  anchorX: 'Anchor X',
-  anchorY: 'Anchor Y',
-  cropT: 'Crop Top',
-  cropR: 'Crop Right',
-  cropB: 'Crop Bottom',
-  cropL: 'Crop Left',
-  brightness: 'Brightness',
-  contrast: 'Contrast',
-  saturation: 'Saturation',
-  exposure: 'Exposure',
-  blur: 'Blur',
-  lift: 'Lift',
-  gamma: 'Gamma',
-  gain: 'Gain',
-  temperature: 'Temperature',
-  tint: 'Tint',
-  volume: 'Volume (dB)',
-}
-const friendly = (ch: AnimChannel): string => FRIENDLY[ch] ?? ch
+// asked for.
+//
+// ⛔ This file used to type the whole 22 entry list out again, under a comment
+// saying "same list the lanes label their rows with". They were the same, letter
+// for letter, on 2026-08-12. That is luck: renaming a channel in one of them
+// puts one name on the keyframe lane and a different name in the curve editor
+// header, on the same clip, and only one of the two copies had a test. It reads
+// the lanes' own list now.
+const friendly = friendlyChannelName
 
 /** Channels a person reads as a percentage: 1.2 is "120", not "1.2". */
 const PERCENT: Partial<Record<AnimChannel, true>> = {
