@@ -337,3 +337,91 @@ test('a cross dissolve on a razored source shows the outgoing clip, not another 
       `and holding one clip flat then snapping to the other is what this looked like when broken`,
   ).toBeGreaterThan(0)
 })
+
+// THE LONE EDGE, which is the coldest an element ever gets.
+//
+// A transition at the head of a clip with NO neighbour is not a pair, so the
+// routing rules above do not apply to it: nothing pre-rolls it, nothing serves
+// it from the cache, and the clip has never been on screen, so its pooled
+// element is still sitting at the head of the file. That is exactly the footage
+// he trimmed away, held at rising opacity for the length of the fade.
+//
+// A single clip, trimmed to keep 30..40 (BLUE), with a cross dissolve on its
+// head and nothing before it. Every frame of that fade must be blue or nothing.
+// Red is seconds 0..10 and can only be the part he cut off.
+test('a transition on a clip with no neighbour never fades in the trimmed-off head', async ({ page }) => {
+  await page.goto('/')
+  await page.getByTestId('media-file-input').setInputFiles(FIXTURE)
+  await expect(page.getByTestId('asset-card')).toHaveCount(1, { timeout: 60_000 })
+  await page.getByTestId('asset-card').dblclick()
+  await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
+
+  // One clip, trimmed to the blue block, starting a second into the timeline so
+  // there is genuinely nothing before it and no neighbour to pair with.
+  const clipId = await page.evaluate(
+    async ({ bIn, bOut, startS }) => {
+      const storeMod = '/src/state/store.ts'
+      const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+        useStore: {
+          getState: () => { dispatch: (l: string, f: (p: unknown) => unknown) => void; project: unknown }
+        }
+      }
+      useStore.getState().dispatch('test: one trimmed clip, lone edge', (p) => {
+        const proj = p as { activeSequenceId: string; sequences: Record<string, unknown> }
+        const seq = proj.sequences[proj.activeSequenceId] as {
+          tracks: { kind: string; clips: Record<string, unknown>[] }[]
+        }
+        return {
+          ...proj,
+          sequences: {
+            ...proj.sequences,
+            [proj.activeSequenceId]: {
+              ...seq,
+              tracks: seq.tracks.map((track) =>
+                track.kind === 'video' && track.clips.length === 1
+                  ? { ...track, clips: [{ ...track.clips[0], startS, inS: bIn, outS: bOut }] }
+                  : track,
+              ),
+            },
+          },
+        }
+      })
+      const proj = useStore.getState().project as { activeSequenceId: string; sequences: Record<string, unknown> }
+      const seq = proj.sequences[proj.activeSequenceId] as { tracks: { kind: string; clips: { id: string }[] }[] }
+      return seq.tracks.find((t) => t.clips.length === 1)!.clips[0].id
+    },
+    { bIn: B_IN_S, bOut: B_OUT_S, startS: A_OUT_S },
+  )
+
+  await page.evaluate(
+    async ({ id, d }) => {
+      const editsMod = '/src/state/clipEdits.ts'
+      const { setClipTransition } = (await import(/* @vite-ignore */ editsMod)) as {
+        setClipTransition: (id: string, edge: 'in' | 'out', kind: string, durationS?: number) => void
+      }
+      setClipTransition(id, 'in', 'crossDissolve', d)
+    },
+    { id: clipId, d: DISSOLVE_S },
+  )
+  await shrinkSequence(page, 640, 360)
+
+  // Play from BEFORE the clip exists, so its element is created cold inside the
+  // fade. Nothing here may touch the clip first: parking on it would seek the
+  // element into place and hide the whole thing.
+  const samples = await playAndSample(page, A_OUT_S - 1.5, 6000)
+  const inWindow = report(samples, 'lone edge, cold element')
+  expect(inWindow.length, 'the fade was actually played through').toBeGreaterThan(8)
+
+  const flashes = inWindow.filter((s) => s.r > RED_FLOOR)
+  const worstRed = flashes.reduce((m, s) => (s.r > m ? s.r : m), 0)
+  expect(
+    flashes.length,
+    `frames showing the trimmed-off head while fading in (worst red ${worstRed}, ` +
+      `a clip trimmed to 30..40 is blue and can only be 0): ${JSON.stringify(flashes.slice(0, 6))}`,
+  ).toBe(0)
+
+  // And the clip really does arrive, so a clean run cannot be a fade that drew
+  // nothing at all for its whole length.
+  const arrived = samples.filter((s) => s.tS > A_OUT_S + DISSOLVE_S && s.b > 120)
+  expect(arrived.length, 'the clip is on screen once the fade is over').toBeGreaterThan(2)
+})

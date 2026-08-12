@@ -1101,6 +1101,19 @@ export function renderPreview(
   let transitionFrom: Set<RenderLayer> | undefined
   let transitionSides: Set<RenderLayer> | undefined
   for (const op of frame.ops) {
+    // PAIR TRANSITIONS ONLY, and that boundary was TESTED rather than assumed.
+    //
+    // A lone edge (a transition on a clip with no neighbour) looks like it
+    // should be the worst case: the clip has never been on screen, so its
+    // element should still be parked at the head of the file. The guard was
+    // widened to cover it, and `a transition on a clip with no neighbour never
+    // fades in the trimmed-off head` was written to prove the widening earned
+    // its place. **It passes with the widening and without it**, because
+    // prerollCuts warms and pre-seeks an upcoming clip's element, and the paused
+    // render at the playhead warms it again before play ever starts. The case
+    // does not reproduce, so the widening was reverted: a change to a measured
+    // trade with no measurement behind it is exactly what this file's history
+    // warns about. The spec stays as a standing guard on the invariant.
     if (op.type !== 'transition' || op.from.clipId === op.to.clipId) continue
     ;(transitionSides ??= new Set()).add(op.from)
     transitionSides.add(op.to)
