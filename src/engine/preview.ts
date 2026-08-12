@@ -21,10 +21,10 @@ import {
 } from './previewTruth'
 import { setProxyBuildingPaused } from './proxyMedia'
 import { createRenderer, type Renderer } from './render/glRenderer'
-import { resolveFrame } from './render/resolve'
+import { pairTransitionAt, resolveFrame } from './render/resolve'
 import { rasterizeTitle } from './render/titleRaster'
 import type { RenderLayer, TextureSource } from './render/types'
-import { clipDurationS, clipEndS } from './timeline'
+import { clipDurationS } from './timeline'
 import type { Clip, Id, MediaAsset, Sequence } from './types'
 
 interface PooledVideo {
@@ -356,9 +356,6 @@ function rendererFor(canvas: HTMLCanvasElement): Renderer | null {
 
 export const TRANSITION_PRE_ROLL_S = 1
 
-/** Mirrors resolve.ts ADJ_EPS: pair windows must match the resolver's. */
-const PAIR_ADJ_EPS = 1e-6
-
 export interface PairTransitionWindow {
   /** Sequence-time window [startS, endS) at the incoming clip's head. */
   startS: number
@@ -378,17 +375,20 @@ export interface PairTransitionWindow {
 }
 
 /**
- * The pair-transition window at B's head, or null. Pure. Duplicates the
- * resolver's pair rules (adjacency, enabled, non-adjustment, duration clamp)
- * because resolve.ts keeps them private. Keep in sync with resolveTrack.
+ * The pair-transition window at B's head, or null. Pure.
+ *
+ * It ASKS THE RESOLVER now. It used to keep its own hand-written copy of the
+ * pair rules (adjacency, enabled, non-adjustment, duration clamp) with a comment
+ * saying "keep in sync with resolveTrack", because resolve.ts kept them private.
+ * The two copies were compared on 2026-08-12 and still agreed, which is luck
+ * rather than a property, and the same shape elsewhere in the app had already
+ * shipped a wrong number to him. What this file adds is the SOURCE TIMES either
+ * side is showing, which is a preview concern and stays here.
  */
 export function pairTransitionWindow(a: Clip, b: Clip, fps: number): PairTransitionWindow | null {
-  if (!a.enabled || !b.enabled || a.adjustment || b.adjustment) return null
-  if (Math.abs(clipEndS(a) - b.startS) >= PAIR_ADJ_EPS) return null
-  const tr = b.transitionIn ?? a.transitionOut
-  if (!tr) return null
-  const maxD = Math.min(clipDurationS(a), clipDurationS(b))
-  const d = Math.min(Math.max(tr.durationS, 1 / fps), maxD)
+  const pair = pairTransitionAt(a, b, fps)
+  if (!pair) return null
+  const d = pair.d
   const rate = Math.abs(a.speed || 1)
   const srcA = (t: number): number => (a.speed < 0 ? a.outS - (t - a.startS) * rate : a.inS + (t - a.startS) * rate)
   const rateB = Math.abs(b.speed || 1)

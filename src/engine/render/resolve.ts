@@ -8,7 +8,7 @@
 import { resolveChannel } from '../effects/channels'
 import { isNeutral, resolveEffect } from '../effects/registry'
 import { clipDurationS, clipEndS } from '../timeline'
-import type { Clip, Sequence, Track } from '../types'
+import type { Clip, Sequence, Track, Transition } from '../types'
 import {
   TRANSITION_KINDS,
   type RenderFrame,
@@ -130,6 +130,32 @@ const pairTransition = (a: Clip, b: Clip) => b.transitionIn ?? a.transitionOut
 const timeAdjacent = (a: Clip, b: Clip): boolean => Math.abs(clipEndS(a) - b.startS) < ADJ_EPS
 
 /**
+ * THE pair transition rule: is there a two-clip transition at B's head, and how
+ * long does it really run? Null when there is not one.
+ *
+ * ⛔ THIS IS THE ONLY COPY. `preview.ts` used to carry a second one, written by
+ * hand, with a comment asking whoever changed one to remember the other. They
+ * happened to still agree when they were compared on 2026-08-12, which is luck,
+ * not a property. The same shape one room over (a count of captionable clips
+ * keeping its own copy of the door's rule) shipped a wrong number to him for
+ * weeks: see the caption count fix of the same day. A promise in a comment is
+ * not a promise.
+ *
+ * Adjustment clips NEVER form pair transitions: they have no texture, so a side
+ * built from one is fully transparent, the partner would dissolve against
+ * nothing and the grade would cut out. Their edges fall back to the lone-edge
+ * fade, which correctly ramps the adjustment op's opacity.
+ */
+export function pairTransitionAt(a: Clip, b: Clip, fps: number): { tr: Transition; d: number } | null {
+  if (!a.enabled || !b.enabled || a.adjustment || b.adjustment) return null
+  if (!timeAdjacent(a, b)) return null
+  const tr = pairTransition(a, b)
+  if (!tr) return null
+  const maxD = Math.min(clipDurationS(a), clipDurationS(b))
+  return { tr, d: clamp(tr.durationS, 1 / fps, maxD) }
+}
+
+/**
  * Index of the LAST clip with startS <= t, or -1 when t precedes every clip.
  * track.clips is sorted by startS and never overlaps (types.ts invariant,
  * maintained by every timeline edit op and asserted in timeline.test.ts), so
@@ -176,20 +202,16 @@ function resolveTrack(track: Track, t: number, fps: number): RenderOp | null {
     // side built from one is fully transparent: the partner would dissolve
     // against nothing and the grade would cut out. Their edges fall back to
     // the lone-edge fade, which correctly ramps the adjustment op's opacity. ---
-    if (prev && prev.enabled && !prev.adjustment && !clip.adjustment && timeAdjacent(prev, clip)) {
-      const tr = pairTransition(prev, clip)
-      if (tr) {
-        const maxD = Math.min(clipDurationS(prev), clipDurationS(clip))
-        const d = clamp(tr.durationS, 1 / fps, maxD)
-        if (t >= clip.startS && t < clip.startS + d) {
-          return {
-            type: 'transition',
-            kind: coerceKind(tr.type),
-            progress: (t - clip.startS) / d,
-            // A sampled PAST its out point (t is beyond A's end).
-            from: layerFor(prev, t, fps),
-            to: layerFor(clip, t, fps),
-          }
+    if (prev) {
+      const pair = pairTransitionAt(prev, clip, fps)
+      if (pair && t >= clip.startS && t < clip.startS + pair.d) {
+        return {
+          type: 'transition',
+          kind: coerceKind(pair.tr.type),
+          progress: (t - clip.startS) / pair.d,
+          // A sampled PAST its out point (t is beyond A's end).
+          from: layerFor(prev, t, fps),
+          to: layerFor(clip, t, fps),
         }
       }
     }
