@@ -7,7 +7,7 @@
 // (Claude runs this when you say "ship it".)
 
 import { readFileSync } from 'node:fs'
-import { loadToken, openShipLog, runLogged, SHIP_LOG } from './lib.mjs'
+import { loadToken, openShipLog, runLogged, runLoggedRetry, SHIP_LOG } from './lib.mjs'
 
 const OUT = process.env.OLP_OUT || 'C:/Users/skyle/AppData/Local/olp-build/release'
 const token = loadToken()
@@ -26,13 +26,20 @@ console.log(`\n▶ Releasing OL Premiere v${version}\n`)
 const shipLog = openShipLog(`release: ${new Date().toISOString()}`)
 
 try {
+  // Purely local: a failure here is the code, so it fails once and says so.
+  await runLogged('npm run build:electron', 'compile the desktop bundle', shipLog)
+
   // Build the installer + blockmap (no electron-builder publish, since publish.mjs owns
   // the upload so a transient network blip can't leave a half-published release).
-  await runLogged('npm run build:electron', 'compile the desktop bundle', shipLog)
-  await runLogged(`npx electron-builder --win --publish never -c.directories.output=${OUT}`, 'package the installer', shipLog)
+  //
+  // ⛔ IT TOUCHES THE NETWORK, which is easy to forget because it reads like a
+  // local build. electron-builder downloads its own toolchain, and on 2026-08-12
+  // that download died on `socket hang up` AFTER the gate had gone green and the
+  // commit was already pushed. Retried, and only on a network signature.
+  await runLoggedRetry(`npx electron-builder --win --publish never -c.directories.output=${OUT}`, 'package the installer', shipLog)
 
   // Generate latest.yml + create the tag + published release + upload all assets.
-  await runLogged('node scripts/publish.mjs', 'upload to GitHub', shipLog)
+  await runLoggedRetry('node scripts/publish.mjs', 'upload to GitHub', shipLog)
 } catch (e) {
   console.error(`\n❌ v${version} did not publish. ${e.message}`)
   console.error(`   The whole run is in ${SHIP_LOG}`)

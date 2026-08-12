@@ -46,20 +46,79 @@ export function runLogged(cmd, label, log) {
     process.stdout.write(banner)
     log?.write(banner)
     const child = spawn(cmd, { shell: true, stdio: ['inherit', 'pipe', 'pipe'] })
+    // The last of what the command said, kept so a caller can ask WHY it failed
+    // rather than only that it did. Bounded, because a packaging run prints
+    // megabytes and none of it is worth holding in memory.
+    let tail = ''
+    const keep = (d) => {
+      tail = (tail + d).slice(-TAIL_CHARS)
+    }
     child.stdout.on('data', (d) => {
       process.stdout.write(d)
       log?.write(d)
+      keep(d)
     })
     child.stderr.on('data', (d) => {
       process.stderr.write(d)
       log?.write(d)
+      keep(d)
     })
     child.on('error', reject)
     child.on('close', (code) => {
       if (code === 0) resolve()
-      else reject(new Error(`${label} exited ${code}`))
+      else {
+        const err = new Error(`${label} exited ${code}`)
+        err.output = tail
+        reject(err)
+      }
     })
   })
+}
+
+const TAIL_CHARS = 8000
+
+/**
+ * A failure that is the network having a bad moment, not the build being wrong.
+ *
+ * Deliberately a LIST OF SIGNATURES and not "retry anything". A real compile
+ * error retried three times is six wasted minutes and a confusing log, and worse,
+ * it turns a repeatable failure into something that looks intermittent.
+ */
+const TRANSIENT = /socket hang up|ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EPIPE|ERR_STREAM_PREMATURE_CLOSE|RequestError|\b50[234]\b/i
+
+export function isTransientFailure(output) {
+  return TRANSIENT.test(output ?? '')
+}
+
+/**
+ * `runLogged`, but a network drop gets another go.
+ *
+ * ⛔ WHY THIS EXISTS. On 2026-08-12 two ships were thrown away by one dropped
+ * packet each. The second one had ALREADY passed a 25 minute gate, committed and
+ * pushed, and then died on `socket hang up` while electron-builder downloaded its
+ * own toolchain, which left the version public with no release behind it. The
+ * note for that says "run `npm run release` again", **so the repair was already
+ * known to be safe to repeat: this does it without waiting for a human to read
+ * the note.**
+ *
+ * ⛔ THIS IS NOT A RETRY ON THE GATE, and it must never become one. The tests
+ * either pass or they do not, and trying again until they agree is how a red
+ * suite gets shipped. This only wraps steps that are a local build or an upload,
+ * where the only thing that failed was the wire.
+ */
+export async function runLoggedRetry(cmd, label, log, { tries = 3, baseDelayMs = 15_000 } = {}) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await runLogged(cmd, attempt === 1 ? label : `${label}, try ${attempt} of ${tries}`, log)
+    } catch (e) {
+      if (attempt >= tries || !isTransientFailure(e.output)) throw e
+      const waitMs = baseDelayMs * attempt
+      const msg = `\n⚠ ${label} failed on what looks like a dropped connection, not a broken build.\n  Waiting ${Math.round(waitMs / 1000)}s, then try ${attempt + 1} of ${tries}.\n`
+      process.stdout.write(msg)
+      log?.write(msg)
+      await new Promise((r) => setTimeout(r, waitMs))
+    }
+  }
 }
 
 /**
