@@ -299,23 +299,37 @@ describe('no move can ever show the edge of his footage', () => {
    */
   it('holds |shift| under the room the zoom made, at every depth and every length', () => {
     const depths = [1.05, 1.1, 1.2, 1.4, 1.7, 2]
+    // MEASURED 2026-08-12: this one test was 1,658 ms of the file's 1,700 ms, and
+    // under a full parallel run it reached 5,376 ms against a 5,000 ms budget, so
+    // it went red in his ship path on untouched code. The sweep is 57,840 sample
+    // points and it was calling expect() three times at each one: the geometry is
+    // nothing and the matcher is everything. Comparing in plain JS and reporting
+    // at the end keeps every point, every tolerance and a better message, since
+    // this now names every offender instead of dying on the first.
+    // The alternative was raising the timeout, which is widening a budget to hide
+    // a slow instrument rather than fixing it.
+    const failures: string[] = []
     for (const move of MOVES) {
       for (const durS of [0.4, 2, 6, 20]) {
-        for (const depth of [...depths]) {
+        for (const depth of depths) {
           const out = build(move.id, durS, { depth })
           for (let i = 0; i <= 240; i++) {
             const t = (i / 240) * durS
             const s = resolveChannel(out, 'scale', t)
             const x = resolveChannel(out, 'posX', t)
             const y = resolveChannel(out, 'posY', t)
+            const roomX = (W * (s - 1)) / 2 + 1e-6
+            const roomY = (H * (s - 1)) / 2 + 1e-6
+            if (s >= 1 - 1e-9 && Math.abs(x) <= roomX && Math.abs(y) <= roomY) continue
             const where = `${move.id} ${durS}s x${depth} @${t.toFixed(3)}`
-            expect(s, where).toBeGreaterThanOrEqual(1 - 1e-9)
-            expect(Math.abs(x), where).toBeLessThanOrEqual((W * (s - 1)) / 2 + 1e-6)
-            expect(Math.abs(y), where).toBeLessThanOrEqual((H * (s - 1)) / 2 + 1e-6)
+            if (s < 1 - 1e-9) failures.push(`${where}: scale ${s} is under 1`)
+            if (Math.abs(x) > roomX) failures.push(`${where}: posX ${x} needs ${roomX}`)
+            if (Math.abs(y) > roomY) failures.push(`${where}: posY ${y} needs ${roomY}`)
           }
         }
       }
     }
+    expect(failures.slice(0, 12), 'a move showed the edge of his footage').toEqual([])
   })
 })
 
