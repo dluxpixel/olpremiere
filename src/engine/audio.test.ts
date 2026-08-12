@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+  clipEmitsAudioOn,
   clipGainEnvelope,
+  clipShowsOwnWaveform,
   compressorParamsFor,
   computeClipSchedule,
   dbToGain,
@@ -8,7 +10,7 @@ import {
   type GainPoint,
 } from './audio'
 import { evalChannel } from './keyframes'
-import { defaultTransform, type Clip, type Keyframe } from './types'
+import { defaultTransform, type Clip, type Keyframe, type MediaAsset } from './types'
 
 const clip = (patch: Partial<Clip> = {}): Clip => ({
   id: 'c1',
@@ -423,5 +425,55 @@ describe('compressorParamsFor (loudness equalization)', () => {
       expect(p.attack).toBeGreaterThanOrEqual(0)
       expect(p.release).toBeGreaterThanOrEqual(0)
     }
+  })
+})
+
+describe('clipShowsOwnWaveform (the timeline draws a video clip its own waveform)', () => {
+  const asset = (patch: Partial<MediaAsset> = {}): MediaAsset => ({
+    id: 'a1',
+    name: 'a.webm',
+    kind: 'video',
+    blobKey: 'b1',
+    durationS: 10,
+    hasAudio: true,
+    hasVideo: true,
+    ...patch,
+  })
+
+  it('draws it for a standalone video clip that carries its own sound', () => {
+    expect(clipShowsOwnWaveform('video', clip(), asset())).toBe(true)
+  })
+
+  it('does NOT draw it on an audio track, which already has the full-height one', () => {
+    expect(clipShowsOwnWaveform('audio', clip(), asset({ kind: 'audio', hasVideo: false }))).toBe(false)
+  })
+
+  it('does NOT draw it for a LINKED video clip, whose sound is on its partner', () => {
+    expect(clipShowsOwnWaveform('video', clip({ linkId: 'l1' }), asset())).toBe(false)
+  })
+
+  // The band is a dark strip over a canvas that can never paint: getAssetPeaks
+  // returns null when the asset has no audio, so it would eat a third of the
+  // clip's height to say nothing at all.
+  it('does NOT draw it for a SILENT video, which has no peaks to show', () => {
+    expect(clipShowsOwnWaveform('video', clip(), asset({ hasAudio: false }))).toBe(false)
+  })
+
+  it('does NOT draw it for a title or an adjustment clip, which reference no media', () => {
+    expect(clipShowsOwnWaveform('video', clip({ title: { text: 'hi' } as never }), asset())).toBe(false)
+    expect(clipShowsOwnWaveform('video', clip({ adjustment: true }), asset())).toBe(false)
+  })
+
+  it('does NOT draw it when the media is missing entirely', () => {
+    expect(clipShowsOwnWaveform('video', clip(), undefined)).toBe(false)
+  })
+
+  // Audibility is NOT restated in the gate: it defers to clipEmitsAudioOn, so a
+  // change to what he hears can never leave the timeline showing the old rule.
+  it('agrees with what the mixer and the export decide is audible', () => {
+    const standalone = clip()
+    const linked = clip({ linkId: 'l1' })
+    expect(clipShowsOwnWaveform('video', standalone, asset())).toBe(clipEmitsAudioOn('video', standalone))
+    expect(clipShowsOwnWaveform('video', linked, asset())).toBe(clipEmitsAudioOn('video', linked))
   })
 })

@@ -301,8 +301,44 @@ export interface ClipSchedule {
  * linked audio-track partner). Keeps linked A/V from doubling the sound.
  */
 export function clipEmitsAudio(track: Track, clip: Clip): boolean {
-  if (track.kind === 'audio') return true
+  return clipEmitsAudioOn(track.kind, clip)
+}
+
+/**
+ * The same rule for a caller that has the track's KIND and not the track: the
+ * timeline draws clips from a kind and a height, and it needs this to know
+ * whether a clip's own sound is audible and therefore worth drawing.
+ *
+ * One rule, one copy. D74's shape: two callers agreeing today is not a reason
+ * to write it twice, because what he hears while editing and what the timeline
+ * shows him must never be able to drift.
+ */
+export function clipEmitsAudioOn(kind: Track['kind'], clip: Clip): boolean {
+  if (kind === 'audio') return true
   return clip.linkId === undefined
+}
+
+/**
+ * Does the timeline draw a clip's OWN waveform along the bottom of the clip?
+ *
+ * Four ways this is false and only one way it is true, which is why it is a
+ * function and not a line of JSX:
+ *  - an AUDIO-track clip already gets the full-height waveform, so a second
+ *    band on top of it would be the same sound drawn twice;
+ *  - a title or an adjustment clip references no media at all;
+ *  - a LINKED video clip has its sound drawn on its audio partner, and saying
+ *    it twice implies two sources where there is one;
+ *  - a SILENT video carries no peaks, so the band would be a dark strip over a
+ *    canvas that can never paint.
+ *
+ * Audibility itself is still `clipEmitsAudioOn` and is not restated here, so
+ * what he sees on the timeline cannot drift from what he hears.
+ */
+export function clipShowsOwnWaveform(kind: Track['kind'], clip: Clip, asset: MediaAsset | undefined): boolean {
+  if (kind === 'audio') return false
+  if (clip.title !== undefined || clip.adjustment === true) return false
+  if (!asset?.hasAudio) return false
+  return clipEmitsAudioOn(kind, clip)
 }
 
 export function computeClipSchedule(clip: Clip, fromS: number): ClipSchedule | null {
