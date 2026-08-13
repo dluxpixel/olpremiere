@@ -52,7 +52,7 @@
 // deliberately conservative because of it. Record 30 s of his own voiceover into
 // _verify/ and re-run that one command before loosening anything.
 
-import { AUTO_CAPTION_OPTIONS, endsSentence, isFunctionWord, isSpeechWord, type CaptionWord } from './captions'
+import { endsSentence, isFunctionWord, isSpeechWord, type CaptionWord } from './captions'
 
 /**
  * The analysis window. 20 ms is short enough to sit inside a 100 ms word and
@@ -102,8 +102,27 @@ export interface EmphasisOptions {
  * phrase: 1.4 dB of range over four words is indistinguishable from the 0.9 to
  * 1.1 dB floor the null control measured, so nothing there is real.
  */
+/**
+ * The silence that ends a PHRASE for the highlight picker.
+ *
+ * ⛔ THIS USED TO BE `AUTO_CAPTION_OPTIONS.maxGapS` AND IT CANNOT BE ANY MORE.
+ * That number dropped to 0.05 on 2026-08-13 so a caption never spans one of his
+ * pauses, and following it here would have cut his phrases at every comma:
+ * measured on his own takes, about 34 phrases where there were 20, so a quarter
+ * of every sentence would come out coloured instead of a sixth. The highlight is
+ * meant to be the one word he leaned on.
+ *
+ * ⚠️ THE ONE-FLAG-PER-BLOCK GUARANTEE STILL HOLDS, and it is worth being sure
+ * about because it is the reason these two ever shared a number. The rule needs
+ * a phrase never to be SHORTER than a block. This is now LARGER than the
+ * chunker's gap, so a phrase spans whole blocks instead of splitting one, one
+ * flag per phrase still puts at most one flag in any block, and the invariant is
+ * safer than it was rather than weaker.
+ */
+export const EMPHASIS_PHRASE_GAP_S = 0.25
+
 export const EMPHASIS_DEFAULTS: Required<EmphasisOptions> = {
-  maxGapS: AUTO_CAPTION_OPTIONS.maxGapS,
+  maxGapS: EMPHASIS_PHRASE_GAP_S,
   minSpreadDb: 3,
   minMarginDb: 2,
   minChars: 3,

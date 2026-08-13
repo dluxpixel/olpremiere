@@ -347,4 +347,109 @@ describe('captionHouseCase capitalises the words that are wrong in lowercase', (
   it('acronyms still win, as before', () => {
     expect(captionHouseCase('the TNT and PvP')).toBe('the TNT and PvP')
   })
+
+  it("capitalises I even when the recogniser used a curly apostrophe", () => {
+    // His ask, 2026-08-06: "make it so it automatically capitalizes some
+    // characters, for example, I". Whisper often writes U+2019, which the lookup
+    // did not hold, so exactly that word came out lowercase on screen.
+    expect(captionHouseCase('i’m going')).toBe('I’m going')
+    expect(captionHouseCase("i'm going")).toBe("I'm going")
+    expect(captionHouseCase('i’ll try')).toBe('I’ll try')
+  })
+
+  it('keeps a short acronym whose letters are accented', () => {
+    // The acronym test stripped everything outside A-Za-z, so a two letter Czech
+    // acronym had nothing left to judge and was flattened.
+    expect(captionHouseCase('ČR')).toBe('ČR')
+    expect(captionHouseCase('ŠKODA')).toBe('ŠKODA')
+    // and an ordinary accented word still goes lowercase, which is the house style
+    expect(captionHouseCase('Žije')).toBe('žije')
+  })
+})
+
+// A CAPTION MUST NOT END ON A FUNCTION WORD.
+//
+// `FUNCTION_WORDS` says these "shouldn't stand alone as a caption OR END A
+// CHUNK" and only the first half was ever built. He was looking at the second
+// half on 2026-08-13: his own line came out as `we have | to be | careful of |
+// these.`, and "careful of" is a phrase cut in the middle, because grouping is
+// decided by clock time and "of" belongs with "these" rather than "careful".
+describe('a caption never ends on a function word', () => {
+  it('hands a trailing preposition forward to the words it belongs with', () => {
+    const chunks = chunkWords([w('careful', 0, 0.3), w('of', 0.3, 0.42), w('these.', 0.42, 0.9)], AUTO_CAPTION_OPTIONS)
+    expect(chunks.map((c) => c.text)).toEqual(['careful', 'of these.'])
+  })
+
+  it('never hands one across a pause', () => {
+    // A real gap is a HARD break and nothing may cross one: the word belongs to
+    // the phrase he said it in, not to the one after his breath.
+    const chunks = chunkWords([w('careful', 0, 0.3), w('of', 0.3, 0.42), w('these.', 0.9, 1.4)], AUTO_CAPTION_OPTIONS)
+    expect(chunks.map((c) => c.text)).toEqual(['careful of', 'these.'])
+  })
+
+  it('never trades one lone function word for another', () => {
+    // Moving "be" would leave "to" alone, which is the exact thing the merge
+    // pass exists to prevent, and the two could ping-pong forever.
+    const chunks = chunkWords([w('to', 0, 0.2), w('be', 0.2, 0.4), w('careful', 0.4, 0.8)], AUTO_CAPTION_OPTIONS)
+    expect(chunks.map((c) => c.text)).toEqual(['to be', 'careful'])
+  })
+
+  it('never leaves a caption too short to read behind it', () => {
+    // ⛔ This pass runs AFTER the merge, which is the only thing that repairs a
+    // short group, so anything it shortens past the floor STAYS short. Measured
+    // over 6000 takes before the guard: 8.5% gained a caption under 0.2s, the
+    // worst at 0.10s, three frames. That is the hairline picket fence on the
+    // timeline and a word nobody can read.
+    const chunks = chunkWords(
+      [w('diamonds', 0, 0.15), w('and', 0.15, 0.21), w('green', 0.21, 1.0)],
+      AUTO_CAPTION_OPTIONS,
+    )
+    for (const c of chunks) expect(c.endS - c.startS).toBeGreaterThanOrEqual(AUTO_CAPTION_OPTIONS.minDurS - 1e-6)
+  })
+
+  it('never merges a caption past the on-screen ceiling, which would blank it mid-word', () => {
+    // ⛔ `maxOnScreenS` is measured from the block's START, so merging a word
+    // onto the front moves the start earlier and the ceiling can cut the caption
+    // off while its own last word is still being said. Over 3000 takes this one
+    // interaction added 30% more blank screen time, all of it from merges that
+    // outgrew the ceiling.
+    const chunks = chunkWords([w('be', 2.04, 2.64), w('but', 2.64, 3.54), w('green', 3.54, 4.0)], AUTO_CAPTION_OPTIONS)
+    for (let i = 0; i < chunks.length - 1; i++) {
+      // No blank: each caption hands straight over to the next one.
+      expect(chunks[i + 1].startS - chunks[i].endS).toBeLessThanOrEqual(1e-6)
+    }
+  })
+
+  it('keeps a word that has no plain latin letter in it', () => {
+    // ⛔ `isSpeechWord` was ASCII-only, so it threw away "Ó" out of a Czech line
+    // and EVERY word of a Russian, Japanese, Korean, Greek or Arabic one. The
+    // app offers Czech and Auto-detect, and Auto-detect is the 99 language
+    // model, so that path paid for a whole Whisper run and returned nothing.
+    expect(chunkWords([w('Ó', 0, 0.3), w('ať', 0.3, 0.6), w('žije', 0.6, 1)], AUTO_CAPTION_OPTIONS).length).toBe(2)
+    expect(chunkWords([w('Ó', 0, 0.3), w('ať', 0.3, 0.6), w('žije', 0.6, 1)], AUTO_CAPTION_OPTIONS)[0].text).toContain(
+      'Ó',
+    )
+    for (const word of ['привет', 'こんにちは', '안녕하세요', 'مرحبا', 'γεια', 'ě', '42']) {
+      expect(chunkWords([w(word, 0, 0.4)], AUTO_CAPTION_OPTIONS).map((c) => c.text)).toEqual([word])
+    }
+  })
+
+  it('still throws away a token that is only punctuation or a stage direction', () => {
+    // The reason isSpeechWord exists: a bare "." reached the screen as a caption
+    // clip with no text, invisible on the frame and a sliver on the timeline.
+    for (const junk of ['.', ',', '...', '(laughs)', '[Music]', '♪']) {
+      expect(chunkWords([w('real', 0, 0.4), w(junk, 0.4, 0.8)], AUTO_CAPTION_OPTIONS).map((c) => c.text)).toEqual([
+        'real',
+      ])
+    }
+  })
+
+  it('leaves it alone when the caption it would join cannot take it', () => {
+    // "of extraordinary" is 16 characters against a 14 character frame budget.
+    const chunks = chunkWords(
+      [w('careful', 0, 0.3), w('of', 0.3, 0.42), w('extraordinary', 0.42, 0.9)],
+      AUTO_CAPTION_OPTIONS,
+    )
+    expect(chunks.map((c) => c.text)).toEqual(['careful of', 'extraordinary'])
+  })
 })

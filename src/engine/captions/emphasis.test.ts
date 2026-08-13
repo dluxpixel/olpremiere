@@ -342,19 +342,26 @@ describe('markEmphasis, one highlight per caption block', () => {
 })
 
 describe('markEmphasis, the invariant the guarantee rests on', () => {
-  it('splits phrases on exactly the silence the chunker breaks blocks on', () => {
-    // The whole one-per-block guarantee is this one equality. Every auto caption
-    // door lands in `addCaptionsFromWords`, which chunks with
-    // AUTO_CAPTION_OPTIONS, so a phrase boundary here is a block boundary there.
-    // Smaller here and a phrase could END inside a block, which is how two
-    // highlights land in one caption.
-    expect(EMPHASIS_DEFAULTS.maxGapS).toBe(AUTO_CAPTION_OPTIONS.maxGapS)
+  it('never splits a phrase more finely than the chunker splits blocks', () => {
+    // ⛔ THIS WAS AN EQUALITY AND IT IS NOW AN INEQUALITY, which is the honest
+    // form of what it was always protecting. Its own words: "Smaller here and a
+    // phrase could END inside a block, which is how two highlights land in one
+    // caption." SMALLER is the danger. Equal was one safe answer, not the rule.
+    //
+    // The chunker's gap dropped to 0.05 on 2026-08-13, measured on his own
+    // voice, so a caption never spans one of his pauses. Following it here would
+    // have cut a phrase at every comma and coloured a quarter of his words
+    // instead of a sixth. Larger is safe: a phrase now spans whole blocks rather
+    // than ending inside one, so one flag per phrase still means at most one
+    // flag per block.
+    expect(EMPHASIS_DEFAULTS.maxGapS).toBeGreaterThanOrEqual(AUTO_CAPTION_OPTIONS.maxGapS)
   })
 
-  it('a gap the chunker breaks on is a gap the picker breaks on', () => {
+  it('a gap the picker breaks a phrase on is a gap the chunker breaks a block on', () => {
     // Behavioural version of the same thing, so the pin above cannot be kept
-    // true by editing one number in two places.
-    const gap = AUTO_CAPTION_OPTIONS.maxGapS + 0.1
+    // true by editing one number in two places. The direction that matters is
+    // this one: every PHRASE boundary must be a BLOCK boundary.
+    const gap = EMPHASIS_DEFAULTS.maxGapS + 0.1
     const t = take(
       [
         { text: 'trapped' },

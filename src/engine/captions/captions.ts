@@ -194,12 +194,43 @@ export const AUTO_CAPTION_OPTIONS: Required<ChunkOptions> = {
   maxWords: 2,
   maxChars: 14,
   maxCps: Infinity,
-  maxGapS: 0.25,
+  /**
+   * ⛔ ANY MEASURABLE PAUSE BREAKS, and 0.05 is not a guess. His words,
+   * 2026-08-13: *"sometimes it just groups them together when it doesn't need
+   * to ... then it just looks messy."*
+   *
+   * MEASURED on 75 seconds of his own voiceover, run through this exact
+   * chunker: 131 word boundaries, and they fall into TWO groups with nothing at
+   * all in between.
+   *
+   *   97 of 131 are EXACTLY 0.00s      every one of them inside a phrase
+   *   the other 34 are 0.06s or more   every single one a phrase boundary
+   *
+   * Not one mid-phrase boundary carries a gap, and not one gap sits mid-phrase.
+   * The pairs he was complaining about are "Okay, | so" at 0.16s and
+   * "Okay, | nice." at 0.24s, both of which the old 0.25 waved through.
+   *
+   * So this only has to be small enough to catch the smallest real gap and big
+   * enough to ignore floating point. It does NOT stop short words pairing up:
+   * they tile exactly, which is what he asked to keep.
+   */
+  maxGapS: 0.05,
   maxSpanS: Infinity,
   holdS: 0.12,
   bridgeS: 0.36,
   minDurS: 0.2,
-  mergeShort: false,
+  /**
+   * ⛔ ON, and this REVERSES the call above it at his word.
+   *
+   * The note that turned it off said it "folded a stranded 'and' onto 'evil'",
+   * treating that as the defect. Shown his own captions on 2026-08-13 he chose
+   * the opposite: a lone filler word sitting on screen by itself is what looks
+   * messy, and 9 of his 97 captions were exactly that ("and", "this", "are").
+   *
+   * It can only ever merge across a SOFT break, so a word left alone by one of
+   * his pauses stays alone. It tidies the ones that were split by width.
+   */
+  mergeShort: true,
   // The longest block in the whole measured reference was 1.3s, and it was the
   // single word "invisibility". So 1.3 is not a taste call, it is the measured
   // ceiling, and anything longer is the transcriber's padding rather than
@@ -251,10 +282,52 @@ const groupSpan = (ws: CaptionWord[]): number => ws[ws.length - 1].endS - ws[0].
 export function chunkWords(words: CaptionWord[], options: ChunkOptions = {}): CaptionChunk[] {
   const o = { ...CHUNK_DEFAULTS, ...options }
   const maxWords = Math.max(1, Math.round(o.maxWords))
-  const input = words
+  const sorted = words
     .filter((w) => w.text.trim().length > 0 && isSpeechWord(w.text))
     .slice()
     .sort((a, b) => a.startS - b.startS)
+
+  // ⛔ A WORD CANNOT STILL BE BEING SAID AFTER THE NEXT ONE HAS STARTED.
+  //
+  // The recogniser says otherwise, and it does it on his real audio: 8 of the 61
+  // word boundaries in one of his takes OVERLAP, including the same word twice
+  // 0.02 s apart ("my"[20.72,21] then "my"[20.74,21], "god!"[21,21.24] then
+  // "god,"[21,21.34]). Nothing downstream expected that. The seamless-hold pass
+  // clamps a caption to the start of the next one, so an overlap became a
+  // caption on screen for 0.02 SECONDS, less than a frame, and a hard enough
+  // overlap deleted the word outright.
+  //
+  // Fixed at the door instead of guarded for in three places further down: the
+  // ends are pulled back to the next word's start, and a stutter that the pull
+  // reduces to nothing is dropped, which loses no text because the word after it
+  // says the same thing. A word that is genuinely distinct is always kept, even
+  // if the recogniser left it no room, because losing his words is the one thing
+  // this pipeline may never do.
+  // ⛔ ONLY AN OVERLAPPING REPEAT, and that word is doing all the work.
+  //
+  // A repeat the model emitted TWICE OVER THE SAME MOMENT is the model skipping
+  // at a chunk seam: "my"[20.72,21] then "my"[20.74,21], "we" then "We". Both
+  // reached his screen. `transcribe.ts` already collapses stutters, but it walks
+  // the recogniser's EMISSION order, and at a seam that is not time order, so
+  // the two halves are not neighbours when it looks. Sorted, they always are.
+  //
+  // ⚠️ REPEATED SPEECH NEVER OVERLAPS ITSELF. Saying "very very good" gives two
+  // "very"s back to back, not on top of each other, so this cannot reach them.
+  // A first cut of this used the same 0.12 s nearness test `transcribe.ts` uses
+  // and would have eaten one of them: the tests caught it.
+  const input: CaptionWord[] = []
+  for (let i = 0; i < sorted.length; i++) {
+    let w = sorted[i]!
+    while (i + 1 < sorted.length) {
+      const next = sorted[i + 1]!
+      if (normalizeWord(w.text) !== normalizeWord(next.text) || next.startS >= w.endS - 1e-9) break
+      w = { ...w, endS: Math.max(w.endS, next.endS) }
+      i++
+    }
+    const after = sorted[i + 1]
+    const endS = after ? Math.min(w.endS, after.startS) : w.endS
+    input.push(endS === w.endS ? w : { ...w, endS })
+  }
   if (input.length === 0) return []
 
   // Build groups, remembering whether the break BEFORE each was HARD. The merge
@@ -313,8 +386,33 @@ export function chunkWords(words: CaptionWord[], options: ChunkOptions = {}): Ca
   // shares a SOFT break with (prefer the shorter-span side), while the merge still
   // respects maxWords + maxChars. Never crosses a hard break, so sentence/silence/
   // emphasis edges are preserved and an isolated word is extended (not merged).
+  /**
+   * May these words share ONE caption? Used by both merge passes below.
+   *
+   * ⛔ IT HAS TO RESPECT EVERY CEILING THE GROUPING PASS RESPECTS, and it used to
+   * check only the word count and the width. `maxOnScreenS` is the one that
+   * matters and the failure is ugly: the ceiling is measured from the block's
+   * START, so merging a word onto the front moves the start earlier and the
+   * ceiling can then cut the caption off WHILE ITS LAST WORD IS STILL BEING
+   * SPOKEN. Measured over 3000 takes, that alone added 30 percent more blank
+   * screen time, and every bit of it came from a merge that outgrew the ceiling.
+   *
+   *   "be"(2.04-2.64) + "but"(2.64-3.54) merged spans 1.5s against a 1.3s
+   *   ceiling, so the caption left the screen at 3.34 and the next one did not
+   *   arrive until 3.54: a fifth of a second of nothing while he is talking.
+   *
+   * Refusing the merge is right rather than raising the ceiling: the ceiling is
+   * measured off the reference channel and the merge is the optional part.
+   */
+  const fits = (ws: CaptionWord[]): boolean => {
+    if (ws.length > maxWords) return false
+    const chars = groupText(ws).length
+    if (chars > o.maxChars) return false
+    const span = groupSpan(ws)
+    if (span > o.maxSpanS || span > o.maxOnScreenS) return false
+    return chars / Math.max(1e-3, span) <= o.maxCps
+  }
   if (o.mergeShort) {
-    const fits = (ws: CaptionWord[]): boolean => ws.length <= maxWords && groupText(ws).length <= o.maxChars
     let i = 0
     while (i < groups.length && groups.length > 1) {
       const g = groups[i]
@@ -341,6 +439,44 @@ export function chunkWords(words: CaptionWord[], options: ChunkOptions = {}): Ca
         }
       }
       i++
+    }
+  }
+
+  // A CAPTION MUST NOT END ON A FUNCTION WORD.
+  //
+  // `FUNCTION_WORDS` says in its own comment that these "shouldn't stand alone
+  // as a caption OR END A CHUNK", and only the first half was ever built. The
+  // second half is what he was looking at on 2026-08-13: his own line came out
+  // as `we have | to be | careful of | these.`, and "careful of" is a phrase cut
+  // in the middle, because grouping is decided by clock time and "of" belongs to
+  // "these" rather than to "careful".
+  //
+  // So a trailing function word is handed FORWARD to the caption it belongs
+  // with. Only across a SOFT break, so it can never cross one of his pauses, and
+  // never when it would leave a lone function word behind, which would trade one
+  // of these for the other and could ping-pong with the merge pass above. One
+  // pass, no loop.
+  if (o.mergeShort) {
+    for (let i = 0; i < groups.length - 1; i++) {
+      const g = groups[i]!
+      const next = groups[i + 1]!
+      if (next.breakBeforeHard || g.words.length < 2) continue
+      const tail = g.words[g.words.length - 1]!
+      // A word that ends the sentence is a boundary, not a dangling preposition.
+      if (!isFunctionWord(tail.text) || endsSentence(tail.text)) continue
+      const left = g.words.slice(0, -1)
+      if (left.length === 1 && isFunctionWord(left[0]!.text)) continue
+      // ⛔ AND NEVER LEAVE A FLASH BEHIND. This pass runs AFTER the merge above,
+      // which is the only thing that repairs a too-short group, so anything it
+      // shortens past the readability floor stays shortened. Measured over 6000
+      // takes before this guard: 8.5 percent of them gained a caption under the
+      // floor, the worst at 0.10s, which is three frames. That is the hairline
+      // picket fence on his timeline, and a word he cannot read.
+      if (groupSpan(left) < o.minDurS) continue
+      const moved = [tail, ...next.words]
+      if (!fits(moved)) continue
+      g.words = left
+      next.words = moved
     }
   }
 
@@ -448,8 +584,13 @@ export function captionHouseCase(text: string): string {
     .map((w) => w.replace(/[.,;:"]/g, ''))
     .filter(Boolean)
     .map((w) => {
-      const letters = w.replace(/[^A-Za-z]/g, '')
-      const isAcronym = letters.length >= 2 && (letters === letters.toUpperCase() || /[A-Z]/.test(letters.slice(1)))
+      // Letters in ANY script. With `A-Za-z` a Czech acronym whose letters are
+      // accented had nothing left to test and was lowercased: "ČR" came out
+      // "čr". Longer ones like ŠKODA survived only because they had enough plain
+      // letters left over, which is luck rather than a rule.
+      const letters = w.replace(/[^\p{L}]/gu, '')
+      const isAcronym =
+        letters.length >= 2 && (letters === letters.toUpperCase() || /\p{Lu}/u.test(letters.slice(1)))
       return isAcronym ? w : alwaysCapital(w.toLowerCase())
     })
     .join(' ')
@@ -474,8 +615,12 @@ export function captionHouseCase(text: string): string {
 const ALWAYS_CAPITAL = new Set(['i', "i'm", "i'll", "i've", "i'd", 'i̇'])
 
 function alwaysCapital(word: string): string {
-  // Compare without the trailing ! or ? the house style keeps, so "i'm!" works.
-  const core = word.replace(/[!?]+$/, '')
+  // Compare without the trailing ! or ? the house style keeps, so "i'm!" works,
+  // and with a CURLY apostrophe folded to a straight one. Whisper writes U+2019
+  // often, and the set below only holds the straight form, so "i’m" fell through
+  // and rendered lowercase: the exact typo the 2026-08-06 request was about,
+  // still on screen whenever the recogniser chose the nicer quote.
+  const core = word.replace(/[!?]+$/, '').replace(/[’ʼ]/g, "'")
   if (!ALWAYS_CAPITAL.has(core)) return word
   return word.charAt(0).toUpperCase() + word.slice(1)
 }
@@ -489,8 +634,19 @@ function alwaysCapital(word: string): string {
  * chunking, then `captionHouseCase` stripped it to nothing, so the run came out
  * carrying **caption clips with no text at all**: invisible on the frame, and a
  * hairline sliver on the timeline that he could see and could not explain.
+ *
+ * ⛔ LETTERS AND DIGITS IN ANY SCRIPT, not `A-Za-z0-9`. The ASCII version threw
+ * away every word without a plain latin letter in it, so this quietly deleted
+ * "Ó" out of a Czech line and EVERY word of a Russian, Japanese, Korean, Greek
+ * or Arabic one. The app offers Czech and Auto-detect, and Auto-detect is backed
+ * by the 99 language model, so that path paid for a full Whisper run and then
+ * came back with "No words to caption".
+ *
+ * `transcribe.ts` had this exact bug and was rewritten to `\p{L}\p{N}` to fix
+ * it. This copy one layer down was missed, so `tidyTranscribedWords` carefully
+ * kept a word that `chunkWords` then dropped. Same escape, same reason.
  */
-const NON_SPEECH = /^[^A-Za-z0-9]*$|^[([{].*[)\]}]$/
+const NON_SPEECH = /^[^\p{L}\p{N}]*$|^[([{].*[)\]}]$/u
 export const isSpeechWord = (text: string): boolean => !NON_SPEECH.test(text.trim())
 
 /** Scale a 1920-height reference pixel value to this sequence. */
