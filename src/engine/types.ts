@@ -101,9 +101,47 @@ export interface Track {
    * neither. Applied identically in preview + export.
    */
   audioRole?: 'voice' | 'music'
+  /**
+   * Does this track follow a ripple that happened on ANOTHER one?
+   *
+   * His ask, 2026-08-13. Until then a ripple delete or ripple trim shifted only
+   * the track it happened on, so everything else stayed where it was and a
+   * finished edit slid quietly out of sync. That is silent damage to work he has
+   * already done, which is worse than a missing feature.
+   *
+   * ⛔ OPTIONAL, AND `undefined` IS NOT "OFF". It means he has never touched this
+   * track's switch, so the answer is DERIVED by `syncLockOf`. That gives every
+   * project he already has sync on everywhere except its music beds, with no
+   * migration and without writing a field into a file that never carried one.
+   *
+   * The moment he clicks the switch this becomes an explicit boolean and the
+   * derivation stops applying, so marking a track as music LATER can never
+   * silently undo a choice he made.
+   */
+  syncLock?: boolean
   /** Sorted by startS; clips never overlap on one track. */
   clips: Clip[]
 }
+
+/**
+ * Does this track move with a ripple on another one?
+ *
+ * ⛔ NEVER READ `t.syncLock` DIRECTLY. One direct read is all it takes for his
+ * music to start following his cuts.
+ *
+ * ⛔ BOTH DEFAULTS ARE HIS, ASKED BEFORE BUILDING AND ANSWERED, 2026-08-13. ON by
+ * default, over "off until switched on" and over "always, with no switch"; and a
+ * track he has marked as music starts OFF, so his backing track keeps its own
+ * timing while the gameplay and the voice stay locked together. He can still
+ * switch it on.
+ *
+ * Written out because this comment used to credit them to what Premiere, Resolve
+ * and Final Cut do "rather than from asking him", which is backwards and would
+ * have left the next session free to overturn a choice he actually made. What
+ * DID come from the reference editors is the semantics of the follow itself, and
+ * that is marked as such where it lives, on `syncFollow`.
+ */
+export const syncLockOf = (t: Track): boolean => t.syncLock ?? t.audioRole !== 'music'
 
 export type BlendMode = 'normal' | 'multiply' | 'screen' | 'overlay' | 'add' | 'softLight'
 

@@ -7,6 +7,7 @@ import {
   defaultTransform,
   newTitleClip,
   type Clip,
+  type Id,
   type MediaAsset,
   type Sequence,
   type Track,
@@ -44,6 +45,9 @@ import {
   clearSpan,
   resolveStart,
   rippleDelete,
+  rippleDeleteGroup,
+  rippleDeleteMany,
+  rippleTrimGroup,
   rippleTrimTo,
   rollEditTo,
   sequenceDurationS,
@@ -2332,6 +2336,207 @@ describe('linkGroupIndex', () => {
         expect(byLink.get(c.linkId ?? '') ?? [c.id]).toEqual(clipGroupIds(seq, c.id))
       }
     }
+  })
+})
+
+// EVERY TRACK MOVES TOGETHER ON A RIPPLE, unless he switches one off.
+//
+// His ask, 2026-08-13. Before this a ripple shifted only the track it happened
+// on, so a finished edit slid quietly out of sync: silent damage to work he had
+// already done, which is worse than a missing feature.
+//
+// On by default and off for a music bed, which is Premiere's model and his
+// choice when shown the two.
+describe('a ripple carries the other tracks with it', () => {
+  /** V1 and V2, each with two one-second clips at 0 and 2. */
+  const twoTracks = (over: Partial<Track> = {}): Sequence =>
+    makeSeq([
+      makeTrack({
+        name: 'V1',
+        clips: [makeClip({ id: 'v1a', startS: 0, inS: 0, outS: 1 }), makeClip({ id: 'v1b', startS: 2, inS: 0, outS: 1 })],
+      }),
+      makeTrack({
+        name: 'V2',
+        clips: [makeClip({ id: 'v2a', startS: 0, inS: 0, outS: 1 }), makeClip({ id: 'v2b', startS: 2, inS: 0, outS: 1 })],
+        ...over,
+      }),
+    ])
+
+  const startOf = (seq: Sequence, id: Id): number => findClip(seq, id)!.clip.startS
+
+  it('a ripple delete pulls the other track left by the same amount', () => {
+    const r = rippleDeleteGroup(twoTracks(), 'v1a')
+    expect(startOf(r, 'v1b')).toBeCloseTo(1, 6)
+    // The clip on the OTHER track started after the cut, so it comes too.
+    expect(startOf(r, 'v2b')).toBeCloseTo(1, 6)
+  })
+
+  it('leaves a clip that started BEFORE the cut exactly where it is', () => {
+    // Shifting it would open a hole behind it and splitting it would destroy
+    // work he never asked to have touched.
+    const r = rippleDeleteGroup(twoTracks(), 'v1b')
+    expect(startOf(r, 'v2a')).toBeCloseTo(0, 6)
+  })
+
+  it('a music track keeps its own timing', () => {
+    const r = rippleDeleteGroup(twoTracks({ kind: 'audio', name: 'A1', audioRole: 'music' }), 'v1a')
+    expect(startOf(r, 'v1b')).toBeCloseTo(1, 6)
+    expect(startOf(r, 'v2b')).toBeCloseTo(2, 6)
+  })
+
+  it('a track he switched off keeps its own timing, even if it is not music', () => {
+    const r = rippleDeleteGroup(twoTracks({ syncLock: false }), 'v1a')
+    expect(startOf(r, 'v2b')).toBeCloseTo(2, 6)
+  })
+
+  it('a track he switched ON follows, even when it is marked as music', () => {
+    // The music default is a DEFAULT, not a rule. An explicit choice wins.
+    const r = rippleDeleteGroup(twoTracks({ kind: 'audio', name: 'A1', audioRole: 'music', syncLock: true }), 'v1a')
+    expect(startOf(r, 'v2b')).toBeCloseTo(1, 6)
+  })
+
+  it('a locked track is left alone', () => {
+    const r = rippleDeleteGroup(twoTracks({ locked: true }), 'v1a')
+    expect(startOf(r, 'v2b')).toBeCloseTo(2, 6)
+  })
+
+  it('⛔ a linked A/V pair moves the other tracks ONCE, not twice', () => {
+    // THE TRAP, and a previous session named it before anyone built this. The
+    // group wrapper calls the single-track ripple once per linked member, so a
+    // follow that asked "which track did he click" instead of "which tracks has
+    // the ripple already moved" would shift his music by DOUBLE, and only on
+    // linked clips, which is the kind of bug that looks random.
+    const seq = makeSeq([
+      makeTrack({
+        name: 'V1',
+        clips: [
+          makeClip({ id: 'v1a', startS: 0, inS: 0, outS: 1, linkId: 'pair' }),
+          makeClip({ id: 'v1b', startS: 2, inS: 0, outS: 1 }),
+        ],
+      }),
+      makeTrack({
+        kind: 'audio',
+        name: 'A1',
+        clips: [
+          makeClip({ id: 'a1a', startS: 0, inS: 0, outS: 1, linkId: 'pair' }),
+          makeClip({ id: 'a1b', startS: 2, inS: 0, outS: 1 }),
+        ],
+      }),
+      makeTrack({ name: 'V2', clips: [makeClip({ id: 'v2b', startS: 2, inS: 0, outS: 1 })] }),
+    ])
+    const r = rippleDeleteGroup(seq, 'v1a')
+    expect(startOf(r, 'v1b')).toBeCloseTo(1, 6)
+    expect(startOf(r, 'a1b')).toBeCloseTo(1, 6)
+    // ONE second, not two.
+    expect(startOf(r, 'v2b')).toBeCloseTo(1, 6)
+  })
+
+  it('⛔ never drags a following clip back past ZERO', () => {
+    // MEASURED 2026-08-13, and it landed at MINUS ONE SECOND. The follow point
+    // was read off the deleted clip's START, so an overlay that began at the
+    // same moment and simply ran longer got shifted into the hole the delete had
+    // just made. The origin track can never do this, because its own clips all
+    // begin at or after the deleted clip's END, which is what the point has to
+    // be measured from.
+    const seq = makeSeq([
+      makeTrack({ name: 'V1', clips: [makeClip({ id: 'v1a', startS: 0, inS: 0, outS: 1 })] }),
+      makeTrack({ name: 'V2', clips: [makeClip({ id: 'v2long', startS: 0, inS: 0, outS: 5 })] }),
+    ])
+    expect(startOf(rippleDeleteGroup(seq, 'v1a'), 'v2long')).toBeCloseTo(0, 6)
+  })
+
+  it('⛔ a track whose clip STRADDLES the cut keeps its own timing, rather than overlapping itself', () => {
+    // The other half of the same reading. A clip that spans the cut is left
+    // alone on purpose, but letting the clip AFTER it follow anyway pulled that
+    // one back underneath it: a real overlap on one track, which is the
+    // invariant every other verb here is written against. Out of sync is
+    // recoverable and visible; two clips in one place is neither.
+    const seq = makeSeq([
+      makeTrack({
+        name: 'V1',
+        clips: [makeClip({ id: 'v1a', startS: 0, inS: 0, outS: 1 }), makeClip({ id: 'v1b', startS: 2, inS: 0, outS: 1 })],
+      }),
+      makeTrack({
+        name: 'V2',
+        clips: [makeClip({ id: 'v2long', startS: 0, inS: 0, outS: 5 }), makeClip({ id: 'v2b', startS: 5, inS: 0, outS: 1 })],
+      }),
+    ])
+    const r = rippleDeleteGroup(seq, 'v1b')
+    expect(startOf(r, 'v2long')).toBeCloseTo(0, 6)
+    expect(startOf(r, 'v2b')).toBeCloseTo(5, 6)
+  })
+
+  it('⛔ a selection spanning two tracks removes that second ONCE, not once per clip', () => {
+    // MEASURED 2026-08-13: a third track landed at 0 when the answer was 1.
+    // Ripple deleting a selection runs one delete per clip, and the follow used
+    // to be paid per call, so counting the clips he picked stood in for counting
+    // the time removed. Two clips over the same second is one second.
+    const seq = makeSeq([
+      makeTrack({
+        name: 'V1',
+        clips: [makeClip({ id: 'v1a', startS: 0, inS: 0, outS: 1 }), makeClip({ id: 'v1b', startS: 2, inS: 0, outS: 1 })],
+      }),
+      makeTrack({
+        name: 'V2',
+        clips: [makeClip({ id: 'v2a', startS: 0, inS: 0, outS: 1 }), makeClip({ id: 'v2b', startS: 2, inS: 0, outS: 1 })],
+      }),
+      makeTrack({ name: 'V3', clips: [makeClip({ id: 'v3b', startS: 2, inS: 0, outS: 1 })] }),
+    ])
+    const r = rippleDeleteMany(seq, ['v1a', 'v2a'])
+    expect(startOf(r, 'v1b')).toBeCloseTo(1, 6)
+    expect(startOf(r, 'v2b')).toBeCloseTo(1, 6)
+    expect(startOf(r, 'v3b')).toBeCloseTo(1, 6)
+  })
+
+  it('two separate cuts on two tracks add up', () => {
+    // The other side of the merge: spans that do NOT overlap are two seconds of
+    // real time, and the track that follows owes both of them.
+    const seq = makeSeq([
+      makeTrack({ name: 'V1', clips: [makeClip({ id: 'v1a', startS: 0, inS: 0, outS: 1 })] }),
+      makeTrack({ name: 'V2', clips: [makeClip({ id: 'v2a', startS: 4, inS: 0, outS: 1 })] }),
+      makeTrack({ name: 'V3', clips: [makeClip({ id: 'v3b', startS: 8, inS: 0, outS: 1 })] }),
+    ])
+    expect(startOf(rippleDeleteMany(seq, ['v1a', 'v2a']), 'v3b')).toBeCloseTo(6, 6)
+  })
+
+  it('slowing a clip down carries the other track with it', () => {
+    // The quietest of the four ways in. Typing a number into the speed box does
+    // not look like an edit that moves other tracks, and its own track ripples
+    // to clear the overlap the longer clip would otherwise make.
+    const seq = makeSeq([
+      makeTrack({ name: 'V1', clips: [makeClip({ id: 'v1a', startS: 0, inS: 0, outS: 2 }), makeClip({ id: 'v1b', startS: 4, inS: 0, outS: 1 })] }),
+      makeTrack({ name: 'V2', clips: [makeClip({ id: 'v2b', startS: 4, inS: 0, outS: 1 })] }),
+    ])
+    const r = setClipSpeed(seq, 'v1a', 0.5)
+    expect(startOf(r, 'v1b')).toBeCloseTo(6, 6)
+    expect(startOf(r, 'v2b')).toBeCloseTo(6, 6)
+  })
+
+  it('speeding a clip UP leaves the other track alone, because nothing moved', () => {
+    // Its own track does not pull the tail back either, it just leaves a gap.
+    // Following a movement that never happened would be inventing one.
+    const seq = makeSeq([
+      makeTrack({ name: 'V1', clips: [makeClip({ id: 'v1a', startS: 0, inS: 0, outS: 2 }), makeClip({ id: 'v1b', startS: 4, inS: 0, outS: 1 })] }),
+      makeTrack({ name: 'V2', clips: [makeClip({ id: 'v2b', startS: 4, inS: 0, outS: 1 })] }),
+    ])
+    const r = setClipSpeed(seq, 'v1a', 2)
+    expect(startOf(r, 'v1b')).toBeCloseTo(4, 6)
+    expect(startOf(r, 'v2b')).toBeCloseTo(4, 6)
+  })
+
+  it('a ripple trim that makes a clip LONGER pushes the other track along too', () => {
+    // The follow point for a trim is the clip's OLD end, whichever way the edge
+    // went. Taking the later of the old and new ends instead meant a growing
+    // trim only moved clips beyond its NEW end, so anything sitting in the
+    // stretch it had just grown across stood still while its own track moved.
+    const seq = makeSeq([
+      makeTrack({ name: 'V1', clips: [makeClip({ id: 'v1a', startS: 0, inS: 0, outS: 2 }), makeClip({ id: 'v1b', startS: 5, inS: 0, outS: 1 })] }),
+      makeTrack({ name: 'V2', clips: [makeClip({ id: 'v2b', startS: 3, inS: 0, outS: 1 })] }),
+    ])
+    const r = rippleTrimGroup(seq, ASSETS, 'v1a', 'out', 4)
+    expect(startOf(r, 'v1b')).toBeCloseTo(7, 6)
+    // Sat between the old end (2) and the new one (4), and still owes the delta.
+    expect(startOf(r, 'v2b')).toBeCloseTo(5, 6)
   })
 })
 

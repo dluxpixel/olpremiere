@@ -30,7 +30,20 @@ export type TranscribeResponse =
   | { type: 'progress'; phase: 'model' | 'listening'; pct: number | null; downloading?: boolean }
   | { type: 'done'; chunks: { text: string; timestamp: [number, number | null] }[] }
   | { type: 'warmed' }
-  | { type: 'error'; message: string }
+  /**
+   * ⛔ `warm` SAYS WHOSE FAILURE THIS IS, and without it a warm could kill a run.
+   *
+   * The worker is shared and kept alive, and it has no request id, so every
+   * message goes to whoever is listening. `'warmed'` was already special-cased
+   * for exactly that reason and the error path was left as the catch-all: a boot
+   * warm that failed while a real caption run was mid-inference made the RUN
+   * treat the warm's failure as its own. It terminated the worker, rejected with
+   * the name of a model it was not even using, and the next run paid for a full
+   * pipeline rebuild.
+   *
+   * Now each side ignores the other's errors, in both directions.
+   */
+  | { type: 'error'; message: string; warm?: boolean }
 
 const post = (msg: TranscribeResponse): void => {
   ;(self as unknown as Worker).postMessage(msg)
@@ -44,7 +57,9 @@ self.onmessage = (e: MessageEvent<TranscribeRequest>) => {
   if (e.data.warm) {
     void getAsr(modelFor(e.data.language ?? 'en'))
       .then(() => post({ type: 'warmed' }))
-      .catch((err: unknown) => post({ type: 'error', message: err instanceof Error ? err.message : String(err) }))
+      .catch((err: unknown) =>
+        post({ type: 'error', message: err instanceof Error ? err.message : String(err), warm: true }),
+      )
     return
   }
   void run(e.data.pcm, e.data.language ?? 'en')

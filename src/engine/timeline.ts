@@ -13,6 +13,7 @@ import {
   newId,
   newTrack,
   scaleTitleDef,
+  syncLockOf,
   type AnimChannel,
   type Clip,
   type Id,
@@ -316,9 +317,20 @@ export function setClipSpeed(seq: Sequence, clipId: Id, speed: number): Sequence
     for (const t of seq.tracks) for (const c of t.clips) if (c.linkId === linkId) groupIds.add(c.id)
   }
 
+  // ⛔ SLOWING A CLIP DOWN IS A RIPPLE, so it owes the other tracks a follow like
+  // any other. Read off the clip he actually grabbed, before anything moves.
+  // Missing this was the quietest of the four ways in: nothing about typing a
+  // number into the speed box looks like an edit that moves other tracks, and it
+  // is the one he would be least likely to catch happening.
+  const moved = new Set<Id>()
+  const grabbedOldEnd = clipEndS(found.clip)
+  const grabbedNewDur = (found.clip.outS - found.clip.inS) / Math.abs(s)
+  const grabbedDelta = found.clip.startS + grabbedNewDur - grabbedOldEnd
+
   const tracks = seq.tracks.map((track) => {
     const member = track.clips.find((c) => groupIds.has(c.id))
     if (!member) return track
+    moved.add(track.id)
     const oldEnd = clipEndS(member)
     const newDur = (member.outS - member.inS) / Math.abs(s)
     const delta = member.startS + newDur - oldEnd
@@ -330,7 +342,15 @@ export function setClipSpeed(seq: Sequence, clipId: Id, speed: number): Sequence
     })
     return { ...track, clips }
   })
-  return recomputeDuration({ ...seq, tracks })
+  // Only the growing direction shifts anything: speeding a clip UP leaves a gap
+  // on its own track rather than pulling the tail back, so there is no movement
+  // for another track to match and following would invent one.
+  return syncFollow(
+    recomputeDuration({ ...seq, tracks }),
+    moved,
+    grabbedOldEnd,
+    grabbedDelta > EPS ? grabbedDelta : 0,
+  )
 }
 
 export function findClip(
@@ -824,6 +844,117 @@ function shiftClipsBy(seq: Sequence, deltaById: Map<Id, number>): Sequence {
 }
 
 /**
+ * MOVE EVERY OTHER TRACK ALONG WITH A RIPPLE, so his edit does not slide out of
+ * sync behind his back.
+ *
+ * His ask, 2026-08-13. A ripple used to shift only the track it happened on.
+ *
+ * `atS` is where the ripple happened in SEQUENCE time and `deltaS` is how far
+ * everything after it moves, negative when the timeline gets shorter. Every clip
+ * that STARTS at or after that point, on a track that follows, moves by it.
+ *
+ * ⛔ `atS` IS THE FAR EDGE OF THE EDIT, NEVER THE NEAR ONE. For a delete that is
+ * the deleted clip's END, not its start; for a trim it is the clip's OLD end,
+ * whichever direction the edge went. Passing the near edge lets a follower land
+ * inside the span the ripple just removed, which is how a clip on his second
+ * track ended up at MINUS ONE SECOND: the origin track never does that, because
+ * its own clips all begin at or after that far edge already.
+ *
+ * ⛔ A CLIP THAT STARTS BEFORE THE POINT AND RUNS PAST IT IS LEFT ALONE.
+ * Shifting it would open a hole behind it and splitting it would destroy work he
+ * did not ask to have touched. Conservative is right here, and it is what the
+ * reference editors do.
+ *
+ * ⛔⛔ AND A TRACK HOLDING SUCH A CLIP DOES NOT FOLLOW AT ALL. Leaving the
+ * spanning clip while its neighbours slide left is not a compromise, it is an
+ * OVERLAP: a five second overlay over his cut, with the clip after it pulled
+ * back underneath it, and "clips never overlap on one track" is the invariant
+ * the whole engine is written against. That track is already out of sync at the
+ * cut, so the honest answer is that it keeps its own timing, exactly as it did
+ * before any of this existed, and nothing he has already finished is damaged.
+ *
+ * Locked tracks are skipped for the same reason `unlockedClipIds` exists: a lock
+ * is him saying leave this alone, and every verb honours it rather than trusting
+ * the caller.
+ *
+ * ⛔⛔ CALL THIS ONCE PER USER ACTION, AT THE GROUP LEVEL, NEVER INSIDE
+ * `rippleDelete` OR `rippleTrimTo`. Those are single-track primitives and the
+ * `*Group` wrappers call them ONCE PER LINKED MEMBER, so a follow buried inside
+ * them shifts every other track TWICE for a linked A/V pair: his music jumps by
+ * double, and only on linked clips, which is the kind of bug that looks random.
+ * A previous session hit exactly this and named it the trap in the sync lock.
+ */
+function syncFollow(seq: Sequence, alreadyMoved: ReadonlySet<Id>, atS: number, deltaS: number): Sequence {
+  return syncFollowEdits(seq, alreadyMoved, [{ atS, deltaS }])
+}
+
+/** One ripple: everything at or after `atS` moves by `deltaS`, negative for left. */
+interface RippleEdit {
+  atS: number
+  deltaS: number
+}
+
+/**
+ * The general form: SEVERAL ripples that were all one press of his keyboard.
+ *
+ * ⛔ THIS EXISTS BECAUSE COUNTING THE CLIPS HE PICKED IS NOT COUNTING THE TIME
+ * REMOVED. Ripple deleting a selection runs one delete per clip, so two clips
+ * covering the SAME second on two tracks used to shift every other track by two
+ * seconds: measured 2026-08-13, a third track landed at 0 when the answer was 1.
+ * Overlapping edits are merged to the time actually removed before anything
+ * moves, which is also, on its own, what stops a linked A/V pair counting twice.
+ */
+function syncFollowEdits(seq: Sequence, alreadyMoved: ReadonlySet<Id>, edits: readonly RippleEdit[]): Sequence {
+  const real = edits.filter((e) => Math.abs(e.deltaS) > EPS)
+  if (real.length === 0) return seq
+  const deltaById = new Map<Id, number>()
+  for (const t of seq.tracks) {
+    // ⛔ `alreadyMoved` is EVERY track the ripple itself touched, not just the
+    // one he clicked on. A linked A/V pair is rippled on BOTH its tracks by the
+    // group wrapper, so skipping only the origin would shift the audio half a
+    // second time: the same double-shift trap, one level up from where it was
+    // expected. Whichever way this is wired, the question to ask is "which
+    // tracks has the ripple already moved", never "which track did he click".
+    if (alreadyMoved.has(t.id) || t.locked || !syncLockOf(t)) continue
+    // Straddling the cut, per the block comment: this track keeps its own
+    // timing rather than tearing itself in half. Touching `>` and `<` and not
+    // their epsilon-slack forms is deliberate, a clip that ends exactly ON the
+    // point does not straddle it and is the ordinary butted-up case.
+    if (t.clips.some((c) => real.some((e) => c.startS < e.atS - EPS && clipEndS(c) > e.atS + EPS))) continue
+    for (const c of t.clips) {
+      // Every edit at or before this clip applies to it, and they add up.
+      let deltaS = 0
+      for (const e of real) if (c.startS >= e.atS - EPS) deltaS += e.deltaS
+      // `shiftClipsBy` SUBTRACTS, so a ripple that pulls the timeline left is a
+      // positive entry here. Getting this sign backwards is the easiest mistake
+      // in this whole feature.
+      if (Math.abs(deltaS) > EPS) deltaById.set(c.id, -deltaS)
+    }
+  }
+  return shiftClipsBy(seq, deltaById)
+}
+
+/**
+ * Merge ripple deletes that cover the same stretch of time into the time
+ * ACTUALLY removed, as `[far edge, how far everything after it moves]`.
+ *
+ * A linked A/V pair is two deletes of one second at the same second: one second
+ * removed, not two. Two clips he box-selected across two tracks are the same
+ * again. Spans that merely touch end to end stay separate, because they already
+ * add up correctly and merging them would change nothing.
+ */
+function mergeRemovals(spans: ReadonlyArray<{ startS: number; endS: number }>): RippleEdit[] {
+  const sorted = [...spans].sort((a, b) => a.startS - b.startS)
+  const merged: Array<{ startS: number; endS: number }> = []
+  for (const s of sorted) {
+    const last = merged[merged.length - 1]
+    if (last && s.startS < last.endS - EPS) last.endS = Math.max(last.endS, s.endS)
+    else merged.push({ ...s })
+  }
+  return merged.map((s) => ({ atS: s.endS, deltaS: s.startS - s.endS }))
+}
+
+/**
  * Close the gap immediately BEFORE a clip: slide it (and every clip after it on
  * the same track) left to butt against the previous clip, or to 0 if it's the
  * first. LINK-GROUP AWARE: each moved clip's linked audio partner moves the same
@@ -1145,6 +1276,37 @@ export function trimGroup(
   return next
 }
 
+/**
+ * Ripple-trim ONE clip and leave its linked partner's LENGTH alone, then carry
+ * the other tracks along. The verb behind Ctrl+dragging an edge with one half of
+ * a pair explicitly selected.
+ *
+ * ⛔ THE UI MUST CALL THIS, NEVER `rippleTrimTo` DIRECTLY. The primitive is
+ * single-track on purpose, so a UI wired straight to it left every other track
+ * standing still on exactly the gesture a sync lock exists for, and only when he
+ * had picked one half of a pair. That is the sort of hole nobody finds by using
+ * the app, because it looks like it works everywhere else.
+ */
+export function rippleTrimSolo(
+  seq: Sequence,
+  assets: Record<Id, MediaAsset>,
+  clipId: Id,
+  edge: 'in' | 'out',
+  tS: number,
+): Sequence {
+  const before = findClip(seq, clipId)
+  if (!before) return seq
+  const next = rippleTrimTo(seq, assets, clipId, edge, tS)
+  const after = findClip(next, clipId)
+  if (!after) return next
+  return syncFollow(
+    next,
+    new Set([before.track.id]),
+    clipEndS(before.clip),
+    clipEndS(after.clip) - clipEndS(before.clip),
+  )
+}
+
 export function rippleTrimGroup(
   seq: Sequence,
   assets: Record<Id, MediaAsset>,
@@ -1152,9 +1314,33 @@ export function rippleTrimGroup(
   edge: 'in' | 'out',
   tS: number,
 ): Sequence {
+  const before = findClip(seq, clipId)
+  const ids = clipGroupIds(seq, clipId)
+  const moved = new Set<Id>()
+  for (const id of ids) {
+    const f = findClip(seq, id)
+    if (f) moved.add(f.track.id)
+  }
+
   let next = seq
-  for (const id of clipGroupIds(seq, clipId)) next = rippleTrimTo(next, assets, id, edge, tS)
-  return next
+  for (const id of ids) next = rippleTrimTo(next, assets, id, edge, tS)
+
+  // ⛔ MEASURE THE DELTA OFF WHAT ACTUALLY HAPPENED, never off `tS`. A trim is
+  // clamped by the source head and tail and by the one-frame minimum, so asking
+  // for a second of trim can move the edge by a tenth. Reading the clip's real
+  // end before and after is the only number that matches what the primitive did,
+  // and a sync lock that shifted by the ASKED amount would tear his other tracks
+  // away from this one exactly when a clamp bit.
+  const after = before ? findClip(next, clipId) : null
+  if (!before || !after) return next
+  // The clip's OLD end, in both directions. `rippleTrimTo` pins startS on either
+  // edge and moves the END by the delta, and its own track shifts everything at
+  // or after that old end, so this is simply the same point the primitive used.
+  // Taking the later of the two ends instead would leave a clip sitting between
+  // the old and new end standing still while its neighbours moved around it.
+  const atS = clipEndS(before.clip)
+  const deltaS = clipEndS(after.clip) - clipEndS(before.clip)
+  return syncFollow(next, moved, atS, deltaS)
 }
 
 export function deleteGroup(seq: Sequence, clipId: Id): Sequence {
@@ -1190,9 +1376,41 @@ export function deleteScoped(seq: Sequence, clipId: Id): Sequence {
 }
 
 export function rippleDeleteGroup(seq: Sequence, clipId: Id): Sequence {
+  return rippleDeleteMany(seq, [clipId])
+}
+
+/**
+ * Ripple delete a WHOLE SELECTION as ONE action, so the tracks that follow move
+ * by the time that was actually removed.
+ *
+ * ⛔ THE UI MUST CALL THIS ONCE, NEVER `rippleDeleteGroup` IN A LOOP. Each call
+ * follows on its own, so a loop over his selection pays the follow once per clip
+ * he picked: two clips covering the same second on two tracks shifted a third
+ * track by two seconds instead of one. Measured 2026-08-13.
+ *
+ * Every span is read off the ORIGINAL sequence before a single clip moves, which
+ * is what makes them comparable at all, and linked partners come along by the
+ * same route rather than by a separate rule.
+ */
+export function rippleDeleteMany(seq: Sequence, clipIds: readonly Id[]): Sequence {
+  const targets = new Set<Id>()
+  const moved = new Set<Id>()
+  const spans: Array<{ startS: number; endS: number }> = []
+  for (const clipId of clipIds) {
+    for (const id of clipGroupIds(seq, clipId)) {
+      if (targets.has(id)) continue
+      const f = findClip(seq, id)
+      if (!f) continue
+      targets.add(id)
+      moved.add(f.track.id)
+      spans.push({ startS: f.clip.startS, endS: clipEndS(f.clip) })
+    }
+  }
+  if (targets.size === 0) return seq
+
   let next = seq
-  for (const id of clipGroupIds(seq, clipId)) next = rippleDelete(next, id)
-  return next
+  for (const id of targets) next = rippleDelete(next, id)
+  return syncFollowEdits(next, moved, mergeRemovals(spans))
 }
 
 /**

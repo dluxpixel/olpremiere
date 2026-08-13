@@ -103,6 +103,12 @@ const TrackSchema = z
     pan: num.optional(),
     // Auto-duck opt-in (engine/ducking.ts); absent on older documents.
     audioRole: z.enum(['voice', 'music']).optional(),
+    // ⛔ OPTIONAL, and absent does NOT mean off: it means he has never touched
+    // the switch, and `syncLockOf` derives the answer. Written as a required
+    // bool it would open every project he already has with sync silently OFF,
+    // which is the opposite of what he asked for. Same shape and same reason as
+    // volumeDb / pan above.
+    syncLock: bool.optional(),
     clips: z.array(ClipSchema),
   })
   .catchall(z.unknown())

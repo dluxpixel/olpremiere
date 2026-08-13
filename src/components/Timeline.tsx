@@ -1,6 +1,6 @@
 import { Plus } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
-import { addClipFromAsset, addClipWithLinkedAudio, addTrack, clipDurationS, clipEndS, clipGroupIds, closeAllGaps, closeGapBefore, collectSnapPoints, gapBefore, moveSelectionWith, rateStretchGroup, rippleTrimGroup, rippleTrimTo, rollEditTo, slideClip, slipClip, slipGroup, snapTime, splitGroup, trimClipTo, trimGroup } from '../engine/timeline'
+import { addClipFromAsset, addClipWithLinkedAudio, addTrack, clipDurationS, clipEndS, clipGroupIds, closeAllGaps, closeGapBefore, collectSnapPoints, gapBefore, moveSelectionWith, rateStretchGroup, rippleTrimGroup, rippleTrimSolo, rollEditTo, slideClip, slipClip, slipGroup, snapTime, splitGroup, trimClipTo, trimGroup } from '../engine/timeline'
 import { createSnapPointCache } from '../engine/snapPointCache'
 import { TRANSITION_KINDS, TRANSITION_LABELS } from '../engine/render/types'
 import { formatTimecode, quantizeToFrame } from '../engine/timecode'
@@ -73,7 +73,7 @@ export function Timeline({ height }: { height: number }) {
    * moving together - only their lengths differ.
    */
   const trimFnFor = (solo: boolean, ripple: boolean) => {
-    if (solo) return ripple ? rippleTrimTo : trimClipTo
+    if (solo) return ripple ? rippleTrimSolo : trimClipTo
     return ripple ? rippleTrimGroup : trimGroup
   }
 

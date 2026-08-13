@@ -362,11 +362,28 @@ function getWorker(): Worker {
   }
   return sharedWorker
 }
+/**
+ * Warms currently waiting on the shared worker, so killing it under them settles
+ * them instead of leaving them pending forever.
+ *
+ * ⛔ WITHOUT THIS, IGNORING SOMEBODY ELSE'S ERROR MEANS WAITING FOR A REPLY THAT
+ * IS NEVER COMING. A failing run does not just fail: it TERMINATES the worker, so
+ * the `'warmed'` the boot warm is still listening for can never arrive, and the
+ * startup card's captions row hangs on it. The test double keeps delivering
+ * messages after `terminate()`, which is exactly why this was invisible there.
+ */
+const warmWaiters = new Set<() => void>()
+
 function killWorker(): void {
   if (sharedWorker) {
     sharedWorker.terminate()
     sharedWorker = null
   }
+  // After the worker is gone, so a waiter that starts another one gets a live
+  // one rather than the corpse.
+  const waiting = [...warmWaiters]
+  warmWaiters.clear()
+  for (const release of waiting) release()
 }
 
 // The shared worker has no per-request id and routes each message to whoever is
@@ -471,11 +488,13 @@ export function transcribePcm(
         settled = true
         cleanup() // keep the worker ALIVE so the model stays loaded for next time
         res(msg.chunks)
-      } else if (msg.type === 'warmed') {
-        // Not ours. A boot warm can land in the middle of a real run, and this
-        // used to be an `else` that treated ANY other message as a failure: it
-        // would have killed the worker and failed his caption run outright.
-        // Ignore it and keep listening.
+      } else if (msg.type === 'warmed' || (msg.type === 'error' && msg.warm)) {
+        // NOT OURS, and the error half of this was the hole. A boot warm can
+        // land in the middle of a real run. `'warmed'` was already ignored here
+        // for that reason, but an error was not: a warm that failed while this
+        // run was mid-inference killed the worker and failed his captions,
+        // reporting the name of a model this run was not even using. Ignore it
+        // and keep listening.
       } else {
         settled = true
         cleanup()
@@ -540,16 +559,31 @@ export function warmTranscriber(language: CaptionLanguage = getCaptionLanguage()
       return
     }
     const cleanup = (): void => {
+      warmWaiters.delete(release)
       worker.removeEventListener('message', onMessage as EventListener)
       worker.removeEventListener('error', onError as EventListener)
     }
+    // The worker died under us, almost always because a real caption run failed
+    // and rebuilt the pipeline. The model itself may be perfectly fine, but this
+    // warm can no longer find out, and saying so is the only honest answer left:
+    // a green tick here for something never confirmed is the decoration the
+    // startup card exists to avoid. The next real run rebuilds and reports for
+    // itself.
+    const release = (): void => {
+      cleanup()
+      resolve(false)
+    }
+    warmWaiters.add(release)
     const onMessage = (e: MessageEvent<TranscribeResponse>): void => {
       // Only 'warmed' is ours. A 'done'/'progress' belongs to a real run that
       // started alongside this warm, and must be left for its own listener.
       if (e.data.type === 'warmed') {
         cleanup()
         resolve(true)
-      } else if (e.data.type === 'error') {
+      } else if (e.data.type === 'error' && e.data.warm) {
+        // And the same in this direction: a REAL run's error is not the warm's
+        // business either, so the warm no longer gives up on someone else's
+        // failure and leave the boot card reporting a model problem there is not.
         console.warn('OL Premiere: warming the speech model failed', e.data.message)
         cleanup()
         resolve(false)

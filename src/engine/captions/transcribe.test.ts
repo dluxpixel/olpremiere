@@ -5,6 +5,7 @@ import {
   tidyTranscribedWords,
   timelineWords,
   transcribePcm,
+  warmTranscriber,
   wordsFromAsrChunks,
   type AsrChunk,
 } from './transcribe'
@@ -260,6 +261,51 @@ describe('transcribePcm run lifecycle', () => {
     expect(FakeWorker.last).not.toBe(worker)
     next.promise.catch(() => {})
     next.cancel()
+  })
+
+  it('a failing model WARM does not kill the caption run alongside it', async () => {
+    // ⛔ The worker is shared and has no request id, so every message reaches
+    // whoever is listening. 'warmed' was already special-cased for that reason
+    // and the error path was left as the catch-all: a boot warm that failed
+    // mid-inference made the RUN treat the failure as its own, terminate the
+    // worker, and reject naming a model the run was not even using. The next run
+    // then paid for a whole pipeline rebuild.
+    const run = transcribePcm(minute(), 'en', () => {})
+    const worker = FakeWorker.last!
+    worker.emit({ type: 'progress', phase: 'listening', pct: null })
+
+    // The warm for a DIFFERENT model gives up.
+    worker.emit({ type: 'error', message: 'could not load whisper-base.en_timestamped', warm: true })
+
+    // The run is untouched: still listening, worker still alive, and it finishes.
+    expect(worker.terminated).toBe(false)
+    worker.emit({ type: 'done', chunks: [{ text: 'diamonds', timestamp: [0, 0.4] }] })
+    await expect(run.promise).resolves.toHaveLength(1)
+  })
+
+  it("a real run's error settles the warm alongside it instead of hanging it forever", async () => {
+    // The same hole in the other direction, and it does NOT end in the warm
+    // getting its own answer later.
+    //
+    // ⛔ A FAILING RUN TERMINATES THE WORKER. So a warm that politely ignores
+    // the run's error is then waiting on a 'warmed' that can never be sent, and
+    // the startup card's captions row waits on that promise. This double lies in
+    // wait behind a real one: it keeps delivering messages after `terminate()`,
+    // so a test can "prove" the warm recovers when in the app it would hang.
+    const run = transcribePcm(minute(), 'en', () => {})
+    const worker = FakeWorker.last!
+    const warm = warmTranscriber('en')
+    const failed = expect(run.promise).rejects.toThrow('the audio would not decode')
+
+    worker.emit({ type: 'error', message: 'the audio would not decode' })
+    await failed
+
+    // Settled, and false: the model was never confirmed, and the row says so
+    // rather than showing a tick for something nobody checked.
+    expect(worker.terminated).toBe(true)
+    await expect(warm).resolves.toBe(false)
+    // And it let go of the dead worker on the way out.
+    expect(worker.count()).toBe(0)
   })
 
   it('keeps the worker alive on a normal finish and stops the clock', async () => {

@@ -1,6 +1,6 @@
-import { Gauge, Headphones, Lock, LockOpen, Mic, Music as MusicIcon, Volume2, VolumeX } from 'lucide-react'
+import { Gauge, Headphones, Link2, Lock, LockOpen, Mic, Music as MusicIcon, Unlink, Volume2, VolumeX } from 'lucide-react'
 import { useState, type MouseEvent as ReactMouseEvent } from 'react'
-import { type AutoLevel, type Track } from '../engine/types'
+import { syncLockOf, type AutoLevel, type Track } from '../engine/types'
 import { deleteTrack, setTrackAudioRole, setTrackAutoLevel, setTrackPan, setTrackVolumeDb } from '../state/trackEdits'
 import { openContextMenu } from '../state/contextMenu'
 import { updateActiveSequence } from '../state/store'
@@ -80,6 +80,20 @@ export function TrackHeader({ track }: { track: Track }) {
     updateActiveSequence(label, (seq) => ({
       ...seq,
       tracks: seq.tracks.map((t) => (t.id === track.id ? { ...t, [field]: !t[field] } : t)),
+    }))
+  /**
+   * Sync is its own toggle rather than a fourth entry in `toggle` above, because
+   * it is the one field where ABSENT is not FALSE: absent means he has never
+   * touched it and `syncLockOf` derives the answer, so `!t[field]` would read
+   * "undefined" as off and switch a following track off by turning it on.
+   * Writing the explicit opposite of what he can currently see is the only
+   * correct flip.
+   */
+  const syncOn = syncLockOf(track)
+  const toggleSync = () =>
+    updateActiveSequence(`${syncOn ? 'Unsync' : 'Sync'} ${track.name}`, (seq) => ({
+      ...seq,
+      tracks: seq.tracks.map((t) => (t.id === track.id ? { ...t, syncLock: !syncOn } : t)),
     }))
   const isAudio = track.kind === 'audio'
   const level = track.autoLevel ?? 'off'
@@ -170,6 +184,19 @@ export function TrackHeader({ track }: { track: Track }) {
           ) : (
             <LockOpen size={14} strokeWidth={1.5} />
           )}
+        </IconButton>
+        <IconButton
+          size="compact"
+          label={
+            syncOn
+              ? 'This track moves when you ripple another one. Click to hold it still'
+              : 'This track holds still when you ripple another one. Click to make it follow'
+          }
+          active={syncOn}
+          onClick={toggleSync}
+          data-testid={`track-sync-${track.name}`}
+        >
+          {syncOn ? <Link2 size={14} strokeWidth={1.5} /> : <Unlink size={14} strokeWidth={1.5} />}
         </IconButton>
         {isAudio && (
           <IconButton

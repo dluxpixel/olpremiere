@@ -30,7 +30,7 @@ import {
   clipEndS,
   clipGroupIds,
   deleteScoped,
-  rippleDeleteGroup,
+  rippleDeleteMany,
   rippleTrimGroup,
   setClipSpeed as setClipSpeedT,
   splitClipOnly,
@@ -948,8 +948,13 @@ export function deleteSelected(ripple: boolean): void {
       : undefined
 
   updateActiveSequence(ripple ? 'Ripple delete' : 'Delete clip', (sq) => {
+    // ⛔ The ripple side takes the WHOLE selection in one call. Looping it made
+    // every other track move once per clip he picked, so two clips covering the
+    // same second dragged his untouched tracks twice as far as the time he
+    // actually removed. See `rippleDeleteMany`.
+    if (ripple) return rippleDeleteMany(sq, ids)
     let next = sq
-    for (const id of ids) next = ripple ? rippleDeleteGroup(next, id) : deleteScoped(next, id)
+    for (const id of ids) next = deleteScoped(next, id)
     return next
   })
   s.setUI({
