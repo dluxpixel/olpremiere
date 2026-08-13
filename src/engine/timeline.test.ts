@@ -2342,7 +2342,38 @@ describe('closing gaps stays linear in the clip count', () => {
   // 4.1ms, 1000 clips 6.3ms, 2000 clips 20.9ms, 4000 clips 93.2ms. With the
   // prebuilt link index: 2.2ms at 4000. Restore the old per-clip call and this
   // budget goes red.
-  const BUDGET_MS = 40
+  //
+  // ⛔ BEST OF FIVE, NOT ONE SHOT, AND THAT IS WHY THIS BUDGET IS NOW TIGHTER
+  // RATHER THAN LOOSER. Timing ONE call times the COLD JIT, and this was the
+  // first thing in the file to touch that code. Benched ten runs on 2026-08-13:
+  //
+  //   v0.1.69   41.8, 7.8, 5.2, 5.9, 3.3, 3.2, 5.5, 3.2, 3.2, 6.6
+  //   HEAD      37.0, 8.3, 9.6, 4.6, 6.2, 4.1, 3.9, 3.8, 3.4, 3.5
+  //
+  // The first run is the outlier every time and everything after it is 3 to 9
+  // ms. Against a 40 ms budget that is a COIN FLIP, and it flipped wrong twice
+  // in one ship gate. It is not the code: those two columns are the same, taken
+  // either side of a day's work, in a worktree built for the comparison.
+  //
+  // So the machine comes out of the measurement instead of the number going up.
+  // 20 ms against a warm 3 to 9 leaves plenty of room, and it still catches the
+  // defect this exists for by more than four times, because the O(n^2) version
+  // measured 93 ms at this size. `perfGuard.test.ts` learned the same lesson and
+  // divides by a calibration; best-of-N is the cheaper half of it and enough
+  // here, because this budget is about a shape, not about a share of a frame.
+  const BUDGET_MS = 20
+  const RUNS = 5
+
+  /** Fastest of several runs: the one that is not paying for the cold JIT. */
+  function bestMs(fn: () => void): number {
+    let best = Infinity
+    for (let i = 0; i < RUNS; i++) {
+      const t0 = performance.now()
+      fn()
+      best = Math.min(best, performance.now() - t0)
+    }
+    return best
+  }
 
   function packedPairs(n: number): ReturnType<typeof makeSeq> {
     const video = Array.from({ length: n }, (_, i) =>
@@ -2359,9 +2390,10 @@ describe('closing gaps stays linear in the clip count', () => {
 
   it('closeAllGaps tidies 4000 linked clips inside the frame budget', () => {
     const seq = packedPairs(4000)
-    const t0 = performance.now()
-    const r = closeAllGaps(seq, seq.tracks[0].id)
-    const ms = performance.now() - t0
+    let r = closeAllGaps(seq, seq.tracks[0].id)
+    const ms = bestMs(() => {
+      r = closeAllGaps(seq, seq.tracks[0].id)
+    })
     expect(ms).toBeLessThan(BUDGET_MS)
     // and it is still correct: every clip butted against the last, partners with them
     expect(r.tracks[0].clips[3999].startS).toBeCloseTo(1999.5, 6)
@@ -2370,9 +2402,10 @@ describe('closing gaps stays linear in the clip count', () => {
 
   it('closeGapBefore ripples 4000 linked clips inside the same budget', () => {
     const seq = packedPairs(4000)
-    const t0 = performance.now()
-    const r = closeGapBefore(seq, 'v1')
-    const ms = performance.now() - t0
+    let r = closeGapBefore(seq, 'v1')
+    const ms = bestMs(() => {
+      r = closeGapBefore(seq, 'v1')
+    })
     expect(ms).toBeLessThan(BUDGET_MS)
     expect(r.tracks[0].clips[1].startS).toBeCloseTo(0.5, 6)
     expect(r.tracks[1].clips[1].startS).toBeCloseTo(0.5, 6)
