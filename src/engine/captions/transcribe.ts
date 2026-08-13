@@ -6,7 +6,7 @@
 import { getAudioBuffer } from '../audio'
 import type { Clip, MediaAsset } from '../types'
 import type { CaptionWord } from './captions'
-import type { CaptionLanguage } from './transcribeConfig'
+import { getCaptionLanguage, type CaptionLanguage } from './transcribeConfig'
 import type { TranscribeResponse } from './transcribeWorker'
 
 /** Whisper's feature-extractor input rate. */
@@ -260,6 +260,17 @@ export function tidyTranscribedWords(words: readonly TranscribedWord[]): Transcr
     if (!TAIL_HALLUCINATIONS.includes(phrase)) continue
     const before = kept[kept.length - take - 1]
     if (before && tail[0].startS - before.endS < 0.6) continue // spoken, not invented
+    // ⛔ NEVER DELETE THE WHOLE TRANSCRIPT. With no word before the phrase there
+    // was nothing to measure a pause against, the guard above was skipped
+    // entirely, and every word went: an outro clip that says only "Thanks for
+    // watching!" came back EMPTY, with "No speech found in the clip" on top of
+    // it. That is an ordinary thing to have as its own clip in a Shorts edit,
+    // and the promise three lines up is that a video which really does end on
+    // those words keeps them.
+    //
+    // A phrase that IS the clip cannot be a trailing invention: Whisper invents
+    // these into silence at the END of audio, after something real. So it stays.
+    if (!before) continue
     kept.length = kept.length - take
     break
   }
@@ -401,7 +412,21 @@ export function transcribePcm(
   // Read the length BEFORE the postMessage below, which TRANSFERS the buffer
   // and leaves this Float32Array detached with a length of zero.
   const audioS = pcm.length / TRANSCRIBE_SAMPLE_RATE
-  const worker = getWorker()
+  // ⛔ THE LOCK IS TAKEN, SO EVERY THROW FROM HERE MUST HAND IT BACK.
+  // `getWorker()` constructs a Worker and can throw outright: a CSP that blocks
+  // worker-src, a missing worker chunk in a packaged build, an engine with no
+  // module workers. It sat outside every try, so one throw left `busy` stuck
+  // true and EVERY later caption run in that session answered "A transcription
+  // is already running" with nothing running at all. Only restarting the app
+  // cleared it. `warmTranscriber` already wrapped the identical call, which is
+  // how we know the throw is real.
+  let worker: Worker
+  try {
+    worker = getWorker()
+  } catch (err) {
+    busy = false
+    return { promise: Promise.reject(err instanceof Error ? err : new Error(String(err))), cancel: () => {} }
+  }
   let settled = false
   let watchdog: ReturnType<typeof setTimeout> | null = null
   const stopWatchdog = (): void => {
@@ -505,7 +530,7 @@ export function transcribePcm(
  * Never rejects. A model that will not load is a caption problem to be reported
  * when he actually asks for captions, not a reason to hold the app shut.
  */
-export function warmTranscriber(language: CaptionLanguage = 'en'): Promise<boolean> {
+export function warmTranscriber(language: CaptionLanguage = getCaptionLanguage()): Promise<boolean> {
   return new Promise((resolve) => {
     let worker: Worker
     try {

@@ -13,7 +13,7 @@ import {
   type Clip,
   type Sequence,
 } from '../engine/types'
-import { addCaptionsFromWords, splitTitleIntoWordCaptions } from './captionActions'
+import { CAPTION_TRACK_NAME, addCaptionsFromWords, splitTitleIntoWordCaptions } from './captionActions'
 import { AUTO_CAPTION_TARGET_S, type CaptionWord } from '../engine/captions/captions'
 import { clipDurationS } from '../engine/timeline'
 import { updateActiveSequence, useStore } from './store'
@@ -106,12 +106,17 @@ describe('addCaptionsFromWords', () => {
     const top = vids[vids.length - 1]
     // AUTO aims at a block LENGTH of 0.45s. Each of these words is 0.3s, so
     // pairing them would overshoot as far as leaving them alone undershoots,
-    // and the tie splits: one word per block, which is what the reference
-    // channel measured. "trapped" is across a 0.9s pause and could never join.
-    expect(top.clips.map((c) => c.title?.text)).toEqual(['so', 'I', 'trapped'])
+    // and the tie splits toward one word, which is what the reference channel
+    // measured. "trapped" is across a 0.9s pause and could never join.
+    //
+    // ⛔ "so" AND "I" COME BACK TOGETHER ANYWAY, and that is `mergeShort`, which
+    // was turned ON on 2026-08-13. Shown his own captions he chose it: 9 of his
+    // 97 blocks were a single filler word sitting on screen alone ("and",
+    // "this", "are"), and he called that the messy part. The merge only ever
+    // crosses a SOFT break, so "trapped" stays on its own side of his pause.
+    expect(top.clips.map((c) => c.title?.text)).toEqual(['so I', 'trapped'])
     expect(top.clips[0].startS).toBeCloseTo(0, 6)
-    expect(top.clips[1].startS).toBeCloseTo(0.3, 6)
-    expect(top.clips[2].startS).toBeCloseTo(1.5, 6)
+    expect(top.clips[1].startS).toBeCloseTo(1.5, 6)
     // house style: measured lowercase, white text, black outline, geometric sans
     expect(top.clips[0].title?.outline?.color).toBe('#000000')
     expect(top.clips[0].title?.fontFamily).toContain('Montserrat')
@@ -133,6 +138,42 @@ describe('addCaptionsFromWords', () => {
     const before = seq().tracks.length
     addCaptionsFromWords([])
     expect(seq().tracks).toHaveLength(before)
+  })
+
+  it('a second run REPLACES the first instead of stacking another track on it', () => {
+    // ⛔ Caption, notice the language was wrong, caption again. Both runs used to
+    // land at the same timecodes in the same style, so the screen looked almost
+    // right while drawing every word twice: fatter, darker text from the doubled
+    // outline, captions that would not go away when he deleted "the" caption
+    // track, and two undo steps back with no reason to expect a second.
+    const before = videoTracks(seq()).length
+    addCaptionsFromWords(words)
+    expect(videoTracks(seq())).toHaveLength(before + 1)
+
+    addCaptionsFromWords(words)
+    expect(videoTracks(seq())).toHaveLength(before + 1)
+    const captionTracks = videoTracks(seq()).filter((t) => t.name === CAPTION_TRACK_NAME)
+    expect(captionTracks).toHaveLength(1)
+    expect(captionTracks[0].clips.map((c) => c.title?.text)).toEqual(['so I', 'trapped'])
+  })
+
+  it('names the caption track, so the next run can find it and he can read it', () => {
+    addCaptionsFromWords(words)
+    const top = videoTracks(seq())[videoTracks(seq()).length - 1]
+    expect(top.name).toBe(CAPTION_TRACK_NAME)
+  })
+
+  it('a replacing run is still ONE undo step', () => {
+    addCaptionsFromWords(words)
+    addCaptionsFromWords([{ text: 'different', startS: 0, endS: 0.4 }])
+    expect(videoTracks(seq()).find((t) => t.name === CAPTION_TRACK_NAME)?.clips.map((c) => c.title?.text)).toEqual([
+      'different',
+    ])
+    useStore.getState().undo()
+    expect(videoTracks(seq()).find((t) => t.name === CAPTION_TRACK_NAME)?.clips.map((c) => c.title?.text)).toEqual([
+      'so I',
+      'trapped',
+    ])
   })
 })
 

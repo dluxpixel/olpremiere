@@ -372,3 +372,32 @@ describe('tidyTranscribedWords, phrase loops', () => {
     expect(tidyTranscribedWords(words)).toHaveLength(9)
   })
 })
+
+// ⛔ A CLIP THAT IS NOTHING BUT THE OUTRO KEEPS IT.
+//
+// The trailing-invention filter measures the pause before the phrase to tell a
+// real sign-off from one Whisper dreamed into the silence at the end. With NO
+// word before it there was nothing to measure, the guard was skipped outright,
+// and the whole transcript went: an outro clip saying only "Thanks for
+// watching!" came back empty with "No speech found in the clip" over it. That
+// is an ordinary clip to have in a Shorts edit.
+describe('the trailing-invention filter never empties a clip', () => {
+  const w = (text: string, startS: number, endS: number) => ({ text, startS, endS })
+
+  it('keeps an outro that IS the whole clip', () => {
+    const words = [w('Thanks', 0, 0.3), w('for', 0.3, 0.5), w('watching!', 0.5, 1.0)]
+    expect(tidyTranscribedWords(words).map((x) => x.text)).toEqual(['Thanks', 'for', 'watching!'])
+  })
+
+  it('still drops one invented after a real silence', () => {
+    // The case it exists for: he stops talking, the audio runs on, and Whisper
+    // fills the quiet with the credits it was trained on.
+    const words = [w('diamonds', 0, 0.5), w('Thanks', 3, 3.3), w('for', 3.3, 3.5), w('watching!', 3.5, 4)]
+    expect(tidyTranscribedWords(words).map((x) => x.text)).toEqual(['diamonds'])
+  })
+
+  it('keeps one he actually said, straight after his last word', () => {
+    const words = [w('diamonds', 0, 0.5), w('Thanks', 0.6, 0.9), w('for', 0.9, 1.1), w('watching!', 1.1, 1.6)]
+    expect(tidyTranscribedWords(words)).toHaveLength(4)
+  })
+})

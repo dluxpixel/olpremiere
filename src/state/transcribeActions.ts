@@ -51,6 +51,27 @@ const reset = (): void =>
 const isCancel = (err: unknown): boolean => typeof err === 'object' && err !== null && 'cancelled' in err
 
 /**
+ * What to tell him when a caption run throws, in the words of the thing that
+ * actually broke.
+ *
+ * Everything used to come out as "the model downloads once and needs a
+ * connection", which is true of exactly one of these and sends him to his router
+ * for the other three. Fifth-grade words, no error codes: the raw message is for
+ * the console, this is for him.
+ */
+function captionFailureMessage(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err ?? '')
+  if (/decodable audio|no audio|leaves no audio/i.test(raw)) {
+    return 'That clip has no sound the app can read, so there is nothing to caption'
+  }
+  if (/stopped responding|watchdog/i.test(raw)) {
+    return 'The speech model stopped responding, so nothing was captioned. Try that clip again'
+  }
+  if (/already running/i.test(raw)) return 'A transcription is already running'
+  return 'Captions failed. The speech model downloads once and needs a connection the first time'
+}
+
+/**
  * Transcribe ONE clip and return its words already mapped onto the timeline.
  * Shared by the single-clip door and the whole-timeline run so the two can never
  * disagree about tidying, language, or how clip time maps to timeline time.
@@ -115,19 +136,44 @@ async function wordsForClip(clip: Clip, asset: MediaAsset): Promise<CaptionWord[
  * down in ONE pass, so a selection of eight clips still produces one caption
  * track and one undo step.
  *
- * Two kinds of track are passed over:
- *  - LOCKED, because captioning them is work he cannot undo by hand afterwards.
+ * ⛔ "MAKES SOUND" IS THE MIXER'S RULE, NOT A SECOND OPINION, and it used not to
+ * be. `engine/audio.ts` decides audibility with `anySolo ? t.solo : !t.muted`
+ * plus `clip.enabled`, and none of that was mirrored here, so a MUTED track was
+ * transcribed and captioned.
+ *
+ * That is not a corner case, it is how a voiceover gets recorded: keep take 1
+ * muted on A1, record take 2 on A2. Captioning both pooled the two takes into
+ * ONE word list and sorted it by time, so the same sentence arrived twice
+ * interleaved, and the non-overlap clamp in `chunkWords` then pushed every later
+ * caption further right for the whole timeline. Doubled text at the top, seconds
+ * of drift by the end, and double the wait to produce it.
+ *
+ * Three kinds of clip are passed over, and every one of them is COUNTED so the
+ * run can say what it did rather than look broken:
+ *  - NOT AUDIBLE. Muted, or unsoloed while something else is soloed, or a clip
+ *    switched off. If he cannot hear it, it is not in his video.
  *  - MUSIC. A track he has marked `audioRole: 'music'` (right-click the track
  *    header) is a backing bed, so every word Whisper finds in it is a mishearing
  *    of a melody. Sending it to the recogniser was the reported bug: "Caption
  *    every clip" transcribed the song. 'voice' and UNMARKED tracks are untouched,
  *    because unmarked is the default and skipping it would silently swallow the
  *    voiceover of anyone who never opened that menu.
+ *  - LOCKED. ⚠️ The old reason given here, "work he cannot undo by hand
+ *    afterwards", does not survive reading: captions land on a BRAND NEW track
+ *    and the locked one is never touched. The skip stays anyway, because a lock
+ *    is him saying leave this alone and the app should not argue. What changes
+ *    is that it is no longer SILENT: locking a finished voiceover used to make
+ *    the whole dialog say "Add a clip with sound first" on a timeline he could
+ *    plainly hear.
  */
 export function audibleClips(onlyIds?: ReadonlySet<string>): {
   targets: { clip: Clip; asset: MediaAsset }[]
   /** Sounding clips passed over only because their track is marked as music. */
   skippedMusic: number
+  /** Sounding clips passed over only because their track is locked. */
+  skippedLocked: number
+  /** Clips passed over because he cannot hear them: muted, unsoloed, or switched off. */
+  skippedSilent: number
 } {
   const s = useStore.getState()
   const seq = activeSequence(s.project)
@@ -143,13 +189,31 @@ export function audibleClips(onlyIds?: ReadonlySet<string>): {
       .map((clip) => ({ clip, asset: s.project.assets[clip.assetId] }))
       .filter((x): x is { clip: Clip; asset: MediaAsset } => !!x.asset?.hasAudio)
 
-  const unlocked = seq.tracks.filter((t) => !t.locked)
+  // The mixer's own rule, verbatim: solo wins, otherwise every unmuted track.
+  const anySolo = seq.tracks.some((t) => t.solo)
+  const heard = (t: (typeof seq.tracks)[number]): boolean => (anySolo ? t.solo : !t.muted)
+  // And a clip he has switched off is not in his video either.
+  const playing = (x: { clip: Clip }): boolean => x.clip.enabled
+
+  const audible = seq.tracks.filter((t) => heard(t) && !t.locked)
+  const all = seq.tracks.flatMap(sounding)
+  const targets = audible
+    .filter((t) => t.audioRole !== 'music')
+    .flatMap(sounding)
+    .filter(playing)
+    .sort((a, b) => a.clip.startS - b.clip.startS)
+
   return {
-    targets: unlocked
-      .filter((t) => t.audioRole !== 'music')
-      .flatMap(sounding)
-      .sort((a, b) => a.clip.startS - b.clip.startS),
-    skippedMusic: unlocked.filter((t) => t.audioRole === 'music').flatMap(sounding).length,
+    targets,
+    skippedMusic: audible.filter((t) => t.audioRole === 'music').flatMap(sounding).filter(playing).length,
+    skippedLocked: seq.tracks.filter((t) => t.locked && heard(t)).flatMap(sounding).filter(playing).length,
+    // Whatever is left over: muted, unsoloed, or switched off. Counted by
+    // difference so a fourth reason added later cannot go unreported.
+    skippedSilent:
+      all.length -
+      targets.length -
+      audible.filter((t) => t.audioRole === 'music').flatMap(sounding).filter(playing).length -
+      seq.tracks.filter((t) => t.locked && heard(t)).flatMap(sounding).filter(playing).length,
   }
 }
 
@@ -191,7 +255,13 @@ export async function autoCaptionFromClip(clipId: string, preset?: TextStylePres
     }
   } catch (err) {
     if (!isCancel(err)) {
-      toasts.show('Transcription failed, the model downloads once and needs a connection', 'danger')
+      // ⛔ SAY WHICH FAILURE IT WAS. Every non-cancel throw used to be reported
+      // as a network problem, so an audio file that would not decode, or a clip
+      // trimmed down to nothing, sent him off to check his internet. The throws
+      // that reach here include "clip has no decodable audio", "clip trim leaves
+      // no audio" and the model watchdog, and only one of them is about a
+      // connection.
+      toasts.show(captionFailureMessage(err), 'danger')
       console.error('auto-caption:', err)
     }
   } finally {
@@ -223,16 +293,21 @@ export async function autoCaptionEveryClip(
     toasts.show('A transcription is already running', 'danger')
     return
   }
-  const { targets, skippedMusic } = audibleClips(onlyIds)
+  const { targets, skippedMusic, skippedLocked, skippedSilent } = audibleClips(onlyIds)
   if (targets.length === 0) {
-    // Naming the music track matters here: without it "no clips with sound"
-    // reads as a bug on a timeline he can plainly hear.
+    // ⛔ NAME THE REASON. Without it "no clips with sound" reads as a bug on a
+    // timeline he can plainly hear, and he goes looking in the wrong place. A
+    // locked voiceover track used to produce exactly that.
     toasts.show(
-      skippedMusic > 0
-        ? 'Nothing to caption, the clips with sound are on a music track'
-        : onlyIds
-          ? 'None of those clips have sound'
-          : 'No clips with sound to caption',
+      skippedLocked > 0
+        ? 'Nothing to caption, the track with the sound on it is locked'
+        : skippedMusic > 0
+          ? 'Nothing to caption, the clips with sound are on a music track'
+          : skippedSilent > 0
+            ? 'Nothing to caption, the clips with sound are muted or switched off'
+            : onlyIds
+              ? 'None of those clips have sound'
+              : 'No clips with sound to caption',
       'danger',
     )
     return

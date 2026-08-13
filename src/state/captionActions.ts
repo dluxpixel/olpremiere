@@ -130,8 +130,18 @@ export function splitTitleIntoWordCaptions(clipId: string): void {
 }
 
 /**
- * Lay a full caption run (Jettism house style) onto a NEW top video track from
+ * What the caption track is called, and how the next run finds it.
+ *
+ * Also just better to look at: the header used to read "V3" for the one track
+ * whose contents are obvious.
+ */
+export const CAPTION_TRACK_NAME = 'Captions'
+
+/**
+ * Lay a full caption run (Jettism house style) onto the caption track from
  * absolute-timed words: the landing point for the transcriber. One undo step.
+ *
+ * A run REPLACES the previous one rather than stacking a second track over it.
  */
 export function addCaptionsFromWords(
   words: CaptionWord[],
@@ -161,15 +171,41 @@ export function addCaptionsFromWords(
       return nc
     })
   }
+  // ⛔ A SECOND RUN REPLACES THE FIRST INSTEAD OF STACKING ON TOP OF IT.
+  //
+  // Every run used to call `addTrack` unconditionally with nothing anywhere
+  // checking for a previous one. Captioning, noticing the language was wrong,
+  // and captioning again left TWO full runs at the same timecodes in the same
+  // style, so on screen it looked almost right and was drawing every word twice:
+  // fatter, darker text from the doubled outline, text that would not go away
+  // when he deleted "the" caption track, and two undo steps to get back with no
+  // reason to expect a second. The toast said "N captions added" either way.
+  //
+  // The track is NAMED so the next run can find it. `addTrack` numbers V1, V2
+  // by reading digits off the name and skips anything that does not parse, so a
+  // named track cannot disturb the numbering of the others.
+  let replaced = 0
   updateActiveSequence(options.label ?? 'Auto-caption', (sq) => {
+    const existing = videoTracks(sq).filter((t) => t.name === CAPTION_TRACK_NAME)
+    const reuse = existing[existing.length - 1]
+    if (reuse) {
+      replaced = reuse.clips.length
+      // EMPTIED first. `withClips` MERGES into whatever is already on the track,
+      // so reusing it without clearing would have interleaved the new run with
+      // the old one, which is the doubling this exists to stop wearing a hat.
+      const filled = withClips({ ...reuse, clips: [] }, clips)
+      return recomputeDuration({ ...sq, tracks: sq.tracks.map((t) => (t.id === reuse.id ? filled : t)) })
+    }
     const grown = addTrack(sq, 'video')
     const target = videoTracks(grown)[videoTracks(grown).length - 1]
-    const filled = withClips(target, clips)
+    const filled = { ...withClips(target, clips), name: CAPTION_TRACK_NAME }
     return recomputeDuration({
       ...grown,
       tracks: grown.tracks.map((t) => (t.id === target.id ? filled : t)),
     })
   })
   s.setUI({ selection: clips.map((c) => c.id) })
-  useToasts.getState().show(`${clips.length} captions added`)
+  useToasts
+    .getState()
+    .show(replaced > 0 ? `${clips.length} captions, replacing the last run` : `${clips.length} captions added`)
 }
