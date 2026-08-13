@@ -7,6 +7,7 @@ import { evictAsset } from '../engine/frameCache'
 import { disposePreviewAsset } from '../engine/preview'
 import { ensureProxies, forgetProxy } from '../engine/proxyMedia'
 import { probeFile } from '../engine/probe'
+import { canImport, remuxIfNeeded } from '../engine/remuxSource'
 import { addClipFromAsset, addClipWithLinkedAudio, recomputeDuration } from '../engine/timeline'
 import {
   activeSequence,
@@ -59,6 +60,12 @@ export async function importFiles(files: File[]): Promise<void> {
   const imported: MediaAsset[] = []
   const failed: string[] = []
   const outOfRoom: string[] = []
+  // A recording whose conversion failed, and one this build cannot convert at
+  // all. Both are kept apart from the "unsupported" bucket, because that word
+  // would send him off re-encoding footage that is perfectly fine, which is the
+  // same mistake the out-of-room branch below already exists to avoid.
+  const convertFailed: string[] = []
+  const needsDesktop: string[] = []
   // Probing + copying every file's bytes into IndexedDB takes real time on
   // multi-GB captures, and until now the app showed NOTHING while it happened:
   // the drop overlay vanished on release and the panel sat on "Import media to
@@ -68,10 +75,31 @@ export async function importFiles(files: File[]): Promise<void> {
     for (const [i, file] of files.entries()) {
       useImportProgress.setState({ total: files.length, done: i, name: file.name })
       try {
-        const probe = await probeFile(file)
+        // ⛔ HIS OWN OBS CAPTURES LAND HERE. A .mkv cannot be opened by Chromium
+        // at all, so `probeFile` fails on it and the import used to end as
+        // "unsupported" on footage that was perfectly fine. The desktop shell
+        // changes the container first, copying the video rather than re-encoding
+        // it, and everything below is then the same code an .mp4 has always run.
+        // An .mp4 never enters this: `remuxIfNeeded` returns it untouched.
+        if (!canImport(file.name)) {
+          needsDesktop.push(file.name)
+          continue
+        }
+        let source: File
+        try {
+          source = (await remuxIfNeeded(file)).file
+        } catch (err) {
+          // NOT "unsupported". The format is supported, the conversion of THIS
+          // file failed, and those want opposite things from him. Same lesson as
+          // the out-of-room branch below.
+          console.warn('OL Premiere: could not convert', file.name, err)
+          convertFailed.push(file.name)
+          continue
+        }
+        const probe = await probeFile(source)
         const id = newId()
         const blobKey = 'asset/' + id
-        await putBlob(blobKey, file)
+        await putBlob(blobKey, source)
         let thumbnailKey: string | undefined
         if (probe.thumbnailBlob) {
           thumbnailKey = 'thumb/' + id
@@ -79,7 +107,10 @@ export async function importFiles(files: File[]): Promise<void> {
         }
         imported.push({
           id,
-          name: file.name,
+          // What the asset actually IS now. The stem is his, so a capture is still
+          // obviously his capture, and nothing claims to be a container the
+          // stored bytes are not.
+          name: source.name,
           kind: probe.kind,
           blobKey,
           durationS: probe.durationS,
@@ -112,6 +143,25 @@ export async function importFiles(files: File[]): Promise<void> {
       outOfRoom.length === 1
         ? `No room left for ${outOfRoom[0]}. Free up space on your drive, or delete an old project`
         : `No room left for ${outOfRoom.length} files. Free up space on your drive, or delete an old project`,
+      'danger',
+    )
+  }
+  // Says what actually went wrong and what would fix it. A recording that needs
+  // converting is not an unsupported file, and telling him it is would send him
+  // re-encoding a capture that was always fine.
+  if (convertFailed.length > 0) {
+    show(
+      convertFailed.length === 1
+        ? `${convertFailed[0]}: this recording could not be converted. It may still be being written, or the end of it is damaged`
+        : `${convertFailed.length} recordings could not be converted`,
+      'danger',
+    )
+  }
+  if (needsDesktop.length > 0) {
+    show(
+      needsDesktop.length === 1
+        ? `${needsDesktop[0]}: recordings like this need the desktop app, the browser cannot open them`
+        : `${needsDesktop.length} recordings need the desktop app`,
       'danger',
     )
   }

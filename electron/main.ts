@@ -15,6 +15,7 @@ import type { NativeExportConfig, UpdateStatus } from './ipc-types'
 import { SPLASH_MELON_POP_MS, SPLASH_MELON_PX, SPLASH_WINDOW_H, SPLASH_WINDOW_W } from './ipc-types'
 import * as native from './nativeExport'
 import * as proxy from './proxy'
+import * as remux from './remux'
 import electronUpdater from 'electron-updater'
 
 const { autoUpdater } = electronUpdater
@@ -309,6 +310,9 @@ app.whenReady().then(() => {
   // only cleanup is a finally that a killed process never reaches. One of his was
   // 427 MB. Fire and forget: tidying up must never delay the window.
   void proxy.sweepProxyTemps()
+  // Same reason, and the stakes are higher: a remux temp is a FULL SIZE copy of
+  // his source, not a downscaled preview, so one abandoned run is gigabytes.
+  void remux.sweepRemuxTemps()
 
   // Serve the built renderer from out/renderer over app://. Read with the
   // asar-aware fs and set Content-Type ourselves so module workers + wasm load.
@@ -374,6 +378,18 @@ app.whenReady().then(() => {
       return null
     }
   })
+
+  // ⛔ A conversion is NOT optional the way a preview copy is. Without it his
+  // .mkv cannot be imported at all, so a failure here must reach the renderer
+  // with its reason attached and be reported, never swallowed into a null the
+  // way `proxy:finish` is.
+  ipcMain.handle('remux:begin', () => remux.beginRemux())
+  ipcMain.handle('remux:chunk', (_e, id: string, bytes: ArrayBuffer) => remux.chunkRemux(id, bytes))
+  ipcMain.handle('remux:finish', (_e, id: string) => remux.finishRemux(id))
+  ipcMain.handle('remux:read', (_e, id: string, offset: number, length: number) =>
+    remux.readRemux(id, offset, length),
+  )
+  ipcMain.handle('remux:release', (_e, id: string) => remux.releaseRemux(id))
 
   // --- Backups -------------------------------------------------------------
   ipcMain.handle('backup:write', (_e, projectName: string, json: string) => backups.writeBackup(projectName, json))
@@ -489,7 +505,7 @@ app.whenReady().then(() => {
       const freshLaunch = Date.now() - launchedAt < AUTO_APPLY_WINDOW_MS
       // proxyBusy for the same reason as isExporting: a restart mid-transcode
       // orphans an ffmpeg child and leaves half a proxy behind.
-      if (freshLaunch && !native.isExporting() && !proxy.proxyBusy()) {
+      if (freshLaunch && !native.isExporting() && !proxy.proxyBusy() && !remux.remuxBusy()) {
         console.log(`OL Premiere update ${info.version} downloaded at launch, asking renderer to auto-apply`)
         mainWindow?.webContents.send('update:autoApply', info.version)
       } else {

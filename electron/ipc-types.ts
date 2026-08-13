@@ -132,6 +132,22 @@ export interface OlApi {
   proxyChunk(id: string, bytes: ArrayBuffer): Promise<void>
   proxyFinish(id: string): Promise<ArrayBuffer | null>
   proxyCancel(id: string): Promise<void>
+  /**
+   * Convert a recording Chromium cannot open (his OBS .mkv) into an MP4, once,
+   * on import. The video is COPIED, so this is a container change at disk speed
+   * and not a re-encode.
+   *
+   * ⛔ THE RESULT IS READ BACK IN CHUNKS, unlike a proxy. A proxy is small by
+   * construction; this is a lossless copy of his source, so a 6 GB capture comes
+   * back as 6 GB and returning it whole would need it in memory twice.
+   * `remuxRelease` must be called when the read is done, or a full sized temp
+   * stays on a drive that is already nearly full.
+   */
+  remuxBegin(): Promise<string>
+  remuxChunk(id: string, bytes: ArrayBuffer): Promise<void>
+  remuxFinish(id: string): Promise<{ size: number; copied: boolean; durationS: number }>
+  remuxRead(id: string, offset: number, length: number): Promise<ArrayBuffer>
+  remuxRelease(id: string): Promise<void>
   /** Encode progress (frame/totalFrames) parsed from ffmpeg. Returns an unsubscribe fn. */
   onNativeProgress(cb: (p: NativeProgress) => void): () => void
   /** Fires when a newer version has downloaded and is staged to install on restart. Returns an unsubscribe fn. */

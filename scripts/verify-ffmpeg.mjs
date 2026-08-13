@@ -44,6 +44,10 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const { buildArgs, NATIVE_ENCODERS, NVENC_ENCODERS, containerExt } = await import(
   pathToFileURL(path.join(root, 'electron', 'exportArgs.ts')).href
 )
+// The import path's argument builders, for the same reason: never restate them.
+const { probeArgs, parseSourceStreams, remuxPlan, remuxArgs } = await import(
+  pathToFileURL(path.join(root, 'electron', 'remuxArgs.ts')).href
+)
 
 const candidate = process.argv[2]
   ? path.resolve(process.argv[2])
@@ -67,10 +71,22 @@ const SAMPLE_RATE = 48_000
 // 'x264' and nothing ever overrides it, so x264 plus aac is the whole shipping
 // surface. Missing any of this breaks the only export a user can actually run,
 // so this list, and only this list, decides red or green.
+// ⛔ `matroska` IS ON THIS LIST AND IT IS NOT OPTIONAL. Importing his own OBS
+// recordings is a shipping feature (electron/remuxArgs.ts), and it is a DEMUX,
+// not an encode: a minimal build stripped for export alone would drop the
+// Matroska demuxer, every ffmpeg export would still pass, and the only symptom
+// would be that his .mkv captures stopped importing. That is exactly the shape
+// of failure this script exists to catch before a binary is swapped in.
+//
+// `h264` and `aac` as DECODERS are the same story from the other side. The
+// header comment above says decoding the output is deliberately not checked
+// because a minimal build may drop those decoders, and that is still true of the
+// EXPORT path. It is not true of import: a recording that must have its audio
+// rebuilt has to be decoded first.
 const REQUIRED = {
   encoders: ['libx264', 'aac'],
-  decoders: ['rawvideo', 'pcm_f32le'],
-  demuxers: ['rawvideo', 'wav'],
+  decoders: ['rawvideo', 'pcm_f32le', 'h264', 'aac'],
+  demuxers: ['rawvideo', 'wav', 'matroska'],
   muxers: ['mp4'],
   filters: ['vflip', 'scale'],
 }
@@ -236,18 +252,69 @@ async function main() {
       : `${r.err.split(/\r?\n/).filter(Boolean).slice(-1)[0] || `exit ${r.code}`}`
     console.log(`${status}${r.encoder.padEnd(11)}${detail}${tag}`)
   }
+  // -- importing his own recordings -----------------------------------------
+  //
+  // ⛔ AN EXPORT-ONLY CHECK WOULD PASS A BINARY THAT BROKE HIS IMPORTS. This is
+  // a DEMUX and a stream copy, so it shares almost nothing with the sweep above,
+  // and a build stripped for export alone can drop the Matroska demuxer with
+  // every export row still green. The only symptom would be that his .mkv
+  // captures stopped importing.
+  //
+  // It runs the SAME argument builders the app runs (electron/remuxArgs.ts),
+  // for the same reason the export sweep imports buildArgs: a check that
+  // restates the arguments can drift from the shipping code and then proves
+  // nothing.
+  const importDir = await mkdtemp(path.join(tmpdir(), 'olp-import-'))
+  const importFails = []
+  console.log()
+  for (const [label, audio] of [
+    ['aac (what OBS writes by default)', 'aac'],
+    ['opus (the case that must be rebuilt)', 'libopus'],
+  ]) {
+    const src = path.join(importDir, `cap-${audio}.mkv`)
+    const out = path.join(importDir, `cap-${audio}.mp4`)
+    const made = await run([
+      '-hide_banner', '-loglevel', 'error', '-y',
+      '-f', 'lavfi', '-i', `testsrc=size=${W}x${H}:rate=${FPS}:duration=1`,
+      '-f', 'lavfi', '-i', 'sine=frequency=440:duration=1',
+      '-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', audio, src,
+    ])
+    if (made.code !== 0) {
+      // Could not even build the fixture, which for libopus means this binary
+      // has no opus encoder. That is not the app's path, so say so and move on.
+      console.log(`n/a   import ${label}: cannot make the fixture on this build`)
+      continue
+    }
+    const probe = await run(probeArgs(src))
+    const streams = parseSourceStreams(probe.err)
+    const plan = remuxPlan(streams)
+    const t0 = Date.now()
+    const conv = await run(remuxArgs(src, out, plan))
+    const bytes = conv.code === 0 ? (await stat(out).catch(() => ({ size: 0 }))).size : 0
+    const ok = conv.code === 0 && bytes > 0
+    if (!ok) importFails.push(label)
+    const how = plan.canCopyVideo ? (plan.reencodeAudio ? 'video copied, audio rebuilt' : 'both copied') : 'RE-ENCODED'
+    console.log(
+      ok
+        ? `ok    import ${label}: ${how}, ${(bytes / 1024).toFixed(0)} KB in ${Date.now() - t0} ms`
+        : `FAIL  import ${label}: ${conv.err.split(/\r?\n/).filter(Boolean).slice(-1)[0] || `exit ${conv.code}`}`,
+    )
+  }
+  await rm(importDir, { recursive: true, force: true })
   await rm(dir, { recursive: true, force: true })
 
   const hardFails = results.filter((r) => !r.ok && r.reachable)
   console.log()
   console.log('Only x264 is reachable (exportPlan.ts EXPORT_NATIVE_ENCODER). The rows marked n/a are')
   console.log('code paths the UI cannot select, so they never decide this result either way.')
-  if (hardFails.length || missing.length) {
-    console.log(`RED: ${hardFails.length} reachable export path(s) broken, ${missing.length} capability gap(s).`)
+  if (hardFails.length || missing.length || importFails.length) {
+    console.log(
+      `RED: ${hardFails.length} reachable export path(s) broken, ${importFails.length} import path(s) broken, ${missing.length} capability gap(s).`,
+    )
     console.log('This binary cannot ship.')
     process.exit(1)
   }
-  console.log('GREEN: the export this app actually runs works on this binary.')
+  console.log('GREEN: the export this app actually runs works on this binary, and his recordings import.')
 }
 
 await main()
