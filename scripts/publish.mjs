@@ -62,15 +62,61 @@ const api = async (path, opts = {}) => {
   if (!res.ok) throw new Error(`GitHub ${res.status} ${path}: ${body.message || text}`)
   return body
 }
-// curl handles the large binary reliably; -f fails on non-2xx, --retry rides out
-// the transient network blips (ENOTFOUND / connection reset) seen in this env.
-const upload = (name, file, type) =>
-  execSync(
-    `curl -sf --retry 5 --retry-all-errors --retry-connrefused -X POST -H "Authorization: token ${token}" ` +
-      `-H "Content-Type: ${type}" --data-binary @"${file}" ` +
-      `"https://uploads.github.com/repos/${OWNER}/${REPO}/releases/${releaseId}/assets?name=${encodeURIComponent(name)}"`,
-    { stdio: 'pipe' },
-  )
+/**
+ * Upload one asset, and ⛔ ASK GITHUB WHETHER IT ARRIVED RATHER THAN ASKING CURL.
+ *
+ * MEASURED 2026-08-13, and this cost two failed ships in a row. On this machine
+ * the 243 MB installer reaches GitHub and is stored COMPLETE, and then the client
+ * connection is aborted before curl reads the response. curl exits 55 (send
+ * error) or 6, the old code took that as failure, and the release was published
+ * with ZERO assets while the file was actually sitting on it.
+ *
+ * ⛔⛔ AND THAT IS WHY THE REPAIR COULD NEVER WORK. The retry re-posted an asset
+ * that was already there, GitHub answered 422 `already_exists`, `-f` turned that
+ * into another non-zero exit, and `npm run release` failed forever on a release
+ * that was one API call from being finished. Running it again could not help. Any
+ * fix that only makes the upload more reliable would have left that trap in
+ * place, because the trap is believing the wrong witness.
+ *
+ * So: attempt, then ask the API what is actually on the release. A complete asset
+ * of the right size IS success no matter what curl said. A partial or duplicate
+ * one is deleted and re-attempted, which is also what makes a re-run of an
+ * interrupted ship idempotent.
+ */
+const assetList = () => api(`/repos/${OWNER}/${REPO}/releases/${releaseId}/assets?per_page=100`)
+
+const upload = async (name, file, type) => {
+  const bytes = statSync(file).size
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    let curlExit = 0
+    try {
+      // No -f: a 422 is information, not a crash. No --retry either, because a
+      // blind retry is what produced the duplicate that then wedged the repair.
+      execSync(
+        `curl -sS -X POST -H "Authorization: token ${token}" ` +
+          `-H "Content-Type: ${type}" --data-binary @"${file}" ` +
+          `"https://uploads.github.com/repos/${OWNER}/${REPO}/releases/${releaseId}/assets?name=${encodeURIComponent(name)}"`,
+        { stdio: 'pipe' },
+      )
+    } catch (e) {
+      curlExit = e.status ?? 1
+    }
+
+    const landed = (await assetList()).find((a) => a.name === name)
+    if (landed && landed.state === 'uploaded' && landed.size === bytes) {
+      if (curlExit) console.log(`  ${name}: curl exited ${curlExit}, but GitHub has it complete. Believing GitHub.`)
+      return
+    }
+    // Half an asset, or one whose size disagrees, is worse than none: the updater
+    // would download it and fail a hash check. Clear it before trying again.
+    if (landed) {
+      console.log(`  ${name}: on the release but ${landed.state} at ${landed.size}/${bytes} bytes, removing and retrying`)
+      await api(`/repos/${OWNER}/${REPO}/releases/assets/${landed.id}`, { method: 'DELETE' }).catch(() => {})
+    }
+    if (attempt < 3) console.log(`  ${name}: attempt ${attempt} did not land, retrying`)
+  }
+  throw new Error(`${name} did not upload after 3 attempts`)
+}
 
 // --- clean any prior release + tag for this version ---
 const existing = (await api(`/repos/${OWNER}/${REPO}/releases`)).find((r) => r.tag_name === tag)
@@ -93,10 +139,17 @@ const rel = await api(`/repos/${OWNER}/${REPO}/releases`, {
 const releaseId = rel.id
 
 // --- upload the three assets ---
+// ⛔ latest.yml goes LAST on purpose. It is the file the updater reads, so if a
+// run dies part way the feed is simply absent and no installed copy is told
+// about a version whose installer is not there yet.
 console.log('• Uploading installer (this is the big one)…')
-upload(exeName, exePath, 'application/octet-stream')
-upload('latest.yml', feedPath, 'text/yaml')
-upload(blockName, blockPath, 'application/octet-stream')
+await upload(exeName, exePath, 'application/octet-stream')
+await upload(blockName, blockPath, 'application/octet-stream')
+await upload('latest.yml', feedPath, 'text/yaml')
+
+const final = await assetList()
+console.log(`✅ ${tag} published with ${final.length} assets: ${final.map((a) => a.name).join(', ')}`)
+if (final.length !== 3) throw new Error(`expected 3 assets on ${tag}, found ${final.length}`)
 
 // --- verify ---
 const check = await api(`/repos/${OWNER}/${REPO}/releases/${releaseId}`)
