@@ -43,6 +43,18 @@ export interface ContextWindow {
    * compared against the wrong frames.
    */
   offsetS: number
+  /**
+   * How much of the window is the CLIP itself.
+   *
+   * ⛔ EVERY STATISTIC ABOUT THE CLIP MUST BE MEASURED OVER THIS, not over the
+   * whole window. The padding exists to make each frame's voiced-or-not call
+   * reliable; it is not evidence about the clip. Without this, a quiet stretch
+   * of 0.3 s inside the clip borrowed the rest of its length from the recording
+   * either side of the cut and passed a test that asks for a whole second, which
+   * is the file's own rule turned inside out: `voiceActivity.ts` says infinity
+   * may satisfy the margin and must "never manufacture the second of evidence".
+   */
+  clipS: number
 }
 
 /**
@@ -54,11 +66,24 @@ export interface ContextWindow {
  * instead of half of one.
  */
 export function contextWindowFor(inS: number, outS: number, sourceDurationS: number): ContextWindow {
-  const srcEnd = Math.max(0, sourceDurationS)
+  // ⛔ A SOURCE WITH NO KNOWN LENGTH GETS THE CLIP'S OWN WINDOW, NOT AN EMPTY
+  // ONE. `durationS` falls back to 0 in two places in `probe.ts`, and a project
+  // restored or synced from a peer can carry it. Clamping to a zero-length
+  // source produced `{0, 0}`, `extractClipPcmAt` then threw "clip trim leaves no
+  // audio", and voice detection switched itself off for that asset behind a
+  // single console warning. Falling back to the clip is what the code did before
+  // this file existed, so the worst case is the old behaviour rather than none.
+  const known = Number.isFinite(sourceDurationS) && sourceDurationS > 0
+  const clipFrom = Math.max(0, Math.min(inS, outS))
+  const clipTo = Math.max(clipFrom, Math.max(inS, outS))
+  if (!known) return { fromS: clipFrom, toS: clipTo, offsetS: 0, clipS: clipTo - clipFrom }
+
+  const srcEnd = sourceDurationS
   const from = Math.max(0, Math.min(inS, srcEnd))
   const to = Math.max(from, Math.min(outS, srcEnd))
-  const want = VOICE_CONTEXT_TARGET_S - (to - from)
-  if (want <= 0) return { fromS: from, toS: to, offsetS: 0 }
+  const clipS = to - from
+  const want = VOICE_CONTEXT_TARGET_S - clipS
+  if (want <= 0) return { fromS: from, toS: to, offsetS: 0, clipS }
 
   // Ask for half either side, then spend what one side refuses on the other.
   const left = Math.min(want / 2, from)
@@ -69,5 +94,5 @@ export function contextWindowFor(inS: number, outS: number, sourceDurationS: num
   const snap = (v: number, edge: number) => (Math.abs(v - edge) < 1e-9 ? edge : v)
   const fromS = snap(Math.max(0, from - Math.min(want - right, from)), 0)
   const toS = snap(Math.min(srcEnd, to + right), srcEnd)
-  return { fromS, toS, offsetS: from - fromS }
+  return { fromS, toS, offsetS: from - fromS, clipS }
 }

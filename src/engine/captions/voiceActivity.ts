@@ -91,6 +91,18 @@ export interface VoiceTrack {
    * added, which is every clip already long enough to judge on its own.
    */
   readonly offsetS: number
+  /**
+   * How many seconds of the analysed audio are the CLIP. Zero means "the whole
+   * track is the clip", which is what a raw-PCM track built by
+   * `voiceTrackFromPcm` is.
+   *
+   * ⛔ EVERY STATISTIC ABOUT THE CLIP IS MEASURED OVER THIS WINDOW ONLY. The
+   * padding is here so each frame's voiced-or-not call is reliable; it is not
+   * evidence about the clip, and letting it act as evidence is how a 0.3 second
+   * pause inside a clip borrowed the rest of a whole second from the recording
+   * next to it and got a real word deleted.
+   */
+  readonly clipS: number
 }
 
 const nextTask = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
@@ -137,7 +149,7 @@ export async function voiceTrackFromPcm(
   }
   // Zero here: this builds a track from raw PCM and knows nothing about clips.
   // voiceTrackForClip stamps the real offset on after widening the window.
-  return { probs, frameS: size / sampleRate, offsetS: 0 }
+  return { probs, frameS: size / sampleRate, offsetS: 0, clipS: 0 }
 }
 
 /**
@@ -170,7 +182,7 @@ export async function voiceTrackForClip(
     const pcm = await extractClipPcmAt(asset, { ...clip, inS: win.fromS, outS: win.toS }, VOICE_SAMPLE_RATE)
     if (signal?.aborted) return null
     const track = await voiceTrackFromPcm(engine, pcm, VOICE_SAMPLE_RATE, { signal })
-    return track && { ...track, offsetS: win.offsetS }
+    return track && { ...track, offsetS: win.offsetS, clipS: win.clipS }
   } catch (err) {
     console.warn('OL Premiere: voice detection unavailable, captioning everything Whisper heard', err)
     return null
@@ -198,6 +210,9 @@ interface QuietSpan {
 function qualifyingQuietSpans(track: VoiceTrack): QuietSpan[] {
   const { probs, frameS } = track
   const n = probs.length
+  // The CLIP inside the analysed audio. `clipS` 0 means the track IS the clip.
+  const clipFromS = track.clipS > 0 ? track.offsetS : 0
+  const clipToS = track.clipS > 0 ? track.offsetS + track.clipS : n * frameS
   const spans: QuietSpan[] = []
   let f = 0
   while (f < n) {
@@ -207,7 +222,19 @@ function qualifyingQuietSpans(track: VoiceTrack): QuietSpan[] {
     }
     let end = f
     while (end < n && probs[end]! <= VOICE_THRESHOLD) end++
-    if ((end - f) * frameS >= MIN_QUIET_RUN_S) {
+    // ⛔ THE LENGTH IS MEASURED INSIDE THE CLIP ONLY, and this is the whole of
+    // the rule the padding nearly broke. The doc above says infinity may satisfy
+    // the MARGIN and must "never manufacture the second of evidence"; once the
+    // window was widened with the recording either side of the cut, ordinary
+    // padding could manufacture it just as well as infinity could. A 0.3 second
+    // pause inside the clip would borrow the other 0.7 from audio that is not in
+    // his video, qualify, and take a real word with it.
+    //
+    // The span itself still reaches out into the padding, because reaching past
+    // the word by QUIET_MARGIN_S on both sides is exactly what the padding is
+    // FOR. Only the length test is confined to the clip.
+    const insideS = Math.max(0, Math.min(end * frameS, clipToS) - Math.max(f * frameS, clipFromS))
+    if (insideS >= MIN_QUIET_RUN_S) {
       spans.push({
         fromS: f === 0 ? -Infinity : f * frameS,
         toS: end === n ? Infinity : end * frameS,
@@ -297,8 +324,17 @@ export function dropWordsWithoutVoice(
   if (words.length === 0 || n === 0) return [...words]
   if (n * track.frameS < MIN_ANALYSED_CLIP_S) return [...words]
 
+  // ⛔ COUNTED INSIDE THE CLIP, not across the padding. This bail is the
+  // broken-analysis guard: a flat zero is what a wrong sample rate, wrong
+  // scaling, or a wasm that loaded but does nothing all look like. Counted over
+  // twelve seconds of neighbouring audio, ONE stray voiced frame anywhere near
+  // the cut disarms it for a clip that measured nothing at all.
+  const clipFrom = track.clipS > 0 ? Math.floor(track.offsetS / track.frameS) : 0
+  const clipTo = track.clipS > 0 ? Math.ceil((track.offsetS + track.clipS) / track.frameS) : n
   let voiced = 0
-  for (let f = 0; f < n; f++) if (track.probs[f]! > VOICE_THRESHOLD) voiced++
+  for (let f = Math.max(0, clipFrom); f < Math.min(n, clipTo); f++) {
+    if (track.probs[f]! > VOICE_THRESHOLD) voiced++
+  }
   if (voiced === 0) return [...words]
 
   const spans = qualifyingQuietSpans(track)
@@ -308,9 +344,17 @@ export function dropWordsWithoutVoice(
   // which now starts before the clip does. Without the shift every word would be
   // compared against frames from the wrong moment.
   const off = track.offsetS
-  const drop = words.map((w) =>
-    spans.some((s) => s.fromS <= w.startS + off - QUIET_MARGIN_S && s.toS >= w.endS + off + QUIET_MARGIN_S),
-  )
+  const analysedToS = n * track.frameS
+  const drop = words.map((w) => {
+    // ⛔ NO EVIDENCE MEANS KEEP. A word can sit past the end of the analysed
+    // audio when the clip's out point runs beyond the source's known duration,
+    // or when a video's audio stream is shorter than the video itself: the
+    // window gets clamped and the word times do not. The last quiet run then
+    // reaches to Infinity and would swallow a word whose audio was never once
+    // looked at. Silence nobody measured is not silence.
+    if (w.endS + off > analysedToS || w.startS + off < 0) return false
+    return spans.some((s) => s.fromS <= w.startS + off - QUIET_MARGIN_S && s.toS >= w.endS + off + QUIET_MARGIN_S)
+  })
   for (let changed = true; changed; ) {
     changed = false
     for (let i = 0; i < words.length; i++) {

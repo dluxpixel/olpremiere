@@ -31,7 +31,7 @@ describe('contextWindowFor', () => {
 
   it('leaves a clip that is already long enough completely alone', () => {
     const w = contextWindowFor(30, 54, src)
-    expect(w).toEqual({ fromS: 30, toS: 54, offsetS: 0 })
+    expect(w).toEqual({ fromS: 30, toS: 54, offsetS: 0, clipS: 24 })
   })
 
   // ⛔ There is no audio before zero, and asking for some would shift every word
@@ -53,11 +53,11 @@ describe('contextWindowFor', () => {
   // A recording SHORTER than the target: take all of it and no more.
   it('never invents audio a short recording does not have', () => {
     const w = contextWindowFor(1, 2, 4)
-    expect(w).toEqual({ fromS: 0, toS: 4, offsetS: 1 })
+    expect(w).toEqual({ fromS: 0, toS: 4, offsetS: 1, clipS: 1 })
   })
 
   it('is a no-op when the clip already spans the whole recording', () => {
-    expect(contextWindowFor(0, 4, 4)).toEqual({ fromS: 0, toS: 4, offsetS: 0 })
+    expect(contextWindowFor(0, 4, 4)).toEqual({ fromS: 0, toS: 4, offsetS: 0, clipS: 4 })
   })
 
   // The window is BOUNDED, so a caption sweep cannot get slower per clip as the

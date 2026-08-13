@@ -26,7 +26,7 @@ const track = (totalS: number, voiced: [number, number][]): VoiceTrack => {
   for (const [fromS, toS] of voiced) {
     for (let f = Math.round(fromS / FRAME_S); f < Math.round(toS / FRAME_S); f++) probs[f] = 1
   }
-  return { probs, frameS: FRAME_S, offsetS: 0 }
+  return { probs, frameS: FRAME_S, offsetS: 0, clipS: 0 }
 }
 
 const w = (text: string, startS: number, endS: number): TranscribedWord => ({ text, startS, endS })
@@ -118,7 +118,7 @@ describe('dropWordsWithoutVoice, what it refuses to do', () => {
   })
 
   it('returns the words untouched when there is no track at all', () => {
-    const empty: VoiceTrack = { probs: new Float32Array(0), frameS: FRAME_S, offsetS: 0 }
+    const empty: VoiceTrack = { probs: new Float32Array(0), frameS: FRAME_S, offsetS: 0, clipS: 0 }
     expect(texts(dropWordsWithoutVoice([w('hey', 0, 0.4)], empty))).toEqual(['hey'])
     expect(dropWordsWithoutVoice([], track(6, [[0, 6]]))).toEqual([])
   })
