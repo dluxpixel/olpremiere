@@ -16,7 +16,12 @@ vi.stubGlobal('localStorage', {
   clear: () => store.clear(),
 })
 
-describe('the play-while-recording option survives a reload the right way round', () => {
+// 20s, not the 5s default. Each test's FIRST act is a cold dynamic import of
+// voiceRecorder, which drags in the store, playback and the audio engine behind
+// it. Alone that is instant; inside the full suite, with 70 files competing for
+// the machine, it timed out at 5s. A gate that cries wolf is a gate people stop
+// reading, and nothing here is measuring speed.
+describe('the play-while-recording option survives a reload the right way round', { timeout: 20_000 }, () => {
   beforeEach(() => {
     store.clear()
   })

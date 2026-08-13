@@ -59,6 +59,7 @@
 import { PCM_SCALE, ensureRnnoise, type DenoiseEngine } from '../denoise'
 import type { Clip, MediaAsset } from '../types'
 import { extractClipPcmAt, type TranscribedWord } from './transcribe'
+import { contextWindowFor } from './voiceContext'
 
 /** RNNoise wants 10 ms frames, and frameSize is 480 samples. */
 export const VOICE_SAMPLE_RATE = 48000
@@ -83,6 +84,13 @@ export interface VoiceTrack {
   readonly probs: Float32Array
   /** Seconds of audio one frame covers. */
   readonly frameS: number
+  /**
+   * Where the CLIP begins inside the analysed audio. The window is widened with
+   * the recording either side of the cut (see voiceContext.ts), so a word at
+   * clip time t sits at t + offsetS in these frames. Zero when nothing was
+   * added, which is every clip already long enough to judge on its own.
+   */
+  readonly offsetS: number
 }
 
 const nextTask = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
@@ -127,7 +135,9 @@ export async function voiceTrackFromPcm(
   } finally {
     state.destroy()
   }
-  return { probs, frameS: size / sampleRate }
+  // Zero here: this builds a track from raw PCM and knows nothing about clips.
+  // voiceTrackForClip stamps the real offset on after widening the window.
+  return { probs, frameS: size / sampleRate, offsetS: 0 }
 }
 
 /**
@@ -145,9 +155,22 @@ export async function voiceTrackForClip(
   try {
     const engine = await ensureRnnoise()
     if (signal?.aborted) return null
-    const pcm = await extractClipPcmAt(asset, clip, VOICE_SAMPLE_RATE)
+    // ⛔ WIDEN THE WINDOW WITH THE RECORDING EITHER SIDE OF THE CUT. Measured on
+    // his own project, 2026-08-12: 30 of his 44 clips are under three seconds,
+    // median 1.43 s, and `dropWordsWithoutVoice` hands every word straight back
+    // when the analysed audio is shorter than MIN_ANALYSED_CLIP_S. **So on two
+    // thirds of his timeline this filter did nothing at all** and whatever the
+    // recogniser imagined over the music stayed in.
+    //
+    // The floor is NOT lowered: a short window really does make the statistic
+    // meaningless, and every guard in this file leans one way on purpose because
+    // a stray caption is annoying and a deleted sentence is his work gone. This
+    // buys the confidence the floor was asking for instead of waiving it.
+    const win = contextWindowFor(clip.inS, clip.outS, asset.durationS)
+    const pcm = await extractClipPcmAt(asset, { ...clip, inS: win.fromS, outS: win.toS }, VOICE_SAMPLE_RATE)
     if (signal?.aborted) return null
-    return await voiceTrackFromPcm(engine, pcm, VOICE_SAMPLE_RATE, { signal })
+    const track = await voiceTrackFromPcm(engine, pcm, VOICE_SAMPLE_RATE, { signal })
+    return track && { ...track, offsetS: win.offsetS }
   } catch (err) {
     console.warn('OL Premiere: voice detection unavailable, captioning everything Whisper heard', err)
     return null
@@ -281,8 +304,12 @@ export function dropWordsWithoutVoice(
   const spans = qualifyingQuietSpans(track)
   if (spans.length === 0) return [...words]
 
+  // Word times are CLIP-relative; the spans are relative to the analysed window,
+  // which now starts before the clip does. Without the shift every word would be
+  // compared against frames from the wrong moment.
+  const off = track.offsetS
   const drop = words.map((w) =>
-    spans.some((s) => s.fromS <= w.startS - QUIET_MARGIN_S && s.toS >= w.endS + QUIET_MARGIN_S),
+    spans.some((s) => s.fromS <= w.startS + off - QUIET_MARGIN_S && s.toS >= w.endS + off + QUIET_MARGIN_S),
   )
   for (let changed = true; changed; ) {
     changed = false

@@ -26,7 +26,7 @@ const track = (totalS: number, voiced: [number, number][]): VoiceTrack => {
   for (const [fromS, toS] of voiced) {
     for (let f = Math.round(fromS / FRAME_S); f < Math.round(toS / FRAME_S); f++) probs[f] = 1
   }
-  return { probs, frameS: FRAME_S }
+  return { probs, frameS: FRAME_S, offsetS: 0 }
 }
 
 const w = (text: string, startS: number, endS: number): TranscribedWord => ({ text, startS, endS })
@@ -118,7 +118,7 @@ describe('dropWordsWithoutVoice, what it refuses to do', () => {
   })
 
   it('returns the words untouched when there is no track at all', () => {
-    const empty: VoiceTrack = { probs: new Float32Array(0), frameS: FRAME_S }
+    const empty: VoiceTrack = { probs: new Float32Array(0), frameS: FRAME_S, offsetS: 0 }
     expect(texts(dropWordsWithoutVoice([w('hey', 0, 0.4)], empty))).toEqual(['hey'])
     expect(dropWordsWithoutVoice([], track(6, [[0, 6]]))).toEqual([])
   })
@@ -162,5 +162,35 @@ describe('voiceTrackFromPcm', () => {
       },
     })
     expect(out).toBeNull()
+  })
+})
+
+// ⛔ THE FIX FOR HIS IMAGINARY WORDS, 2026-08-12. Measured on his own project:
+// 30 of 44 clips under three seconds, median 1.43 s, so `MIN_ANALYSED_CLIP_S`
+// handed every word straight back on two thirds of his timeline and whatever the
+// recogniser invented over the music stayed in. The window is widened with the
+// recording either side of the cut instead of the floor being lowered.
+describe('a clip judged on the recording around it', () => {
+  // 12s analysed: a music bed everywhere except 7.0-9.0 where he speaks. The
+  // clip starts 5.6s into that window, so clip time t is window time t + 5.6.
+  const padded = (offsetS: number): VoiceTrack => ({ ...track(12, [[7, 9]]), offsetS })
+  const line = [w('imagined', 0, 0.3), w('i', 1.5, 1.8), w('am', 2.0, 2.3), w('here', 2.6, 2.9)]
+
+  it('a short clip is now long enough to judge, and the junk over the music goes', () => {
+    expect(texts(dropWordsWithoutVoice(line, padded(5.6)))).toEqual(['i', 'am', 'here'])
+  })
+
+  // ⛔ Throw the offset away and every word is compared against the wrong moment.
+  // Here that puts the whole line in the bed, more than half of it wants
+  // deleting, and the never-gut-a-clip guard hands it all back: the filter goes
+  // silently useless rather than loudly wrong. That is what offsetS prevents.
+  it('the offset is applied, not ignored', () => {
+    expect(texts(dropWordsWithoutVoice(line, padded(0)))).toEqual(['imagined', 'i', 'am', 'here'])
+  })
+
+  it('an unpadded track still behaves exactly as it did', () => {
+    const plain = track(6, [[0, 6]])
+    expect(plain.offsetS).toBe(0)
+    expect(texts(dropWordsWithoutVoice([w('hey', 1, 1.4)], plain))).toEqual(['hey'])
   })
 })
