@@ -568,6 +568,62 @@ const LEGACY_AUDIO_TRACK_H = 48
  * structuredClone-safe; returns the SAME object when nothing needed patching so
  * callers can skip a needless store write.
  */
+/**
+ * GIVE A VIDEO CLIP ITS SOUND BACK WHEN ITS AUDIO PARTNER IS GONE.
+ *
+ * A video clip carrying a `linkId` means "my sound lives on my audio partner",
+ * so the mixer and the export both skip it (`clipEmitsAudio`). **Delete that
+ * partner and the video half keeps pointing at it, and the clip goes silent
+ * everywhere with nothing on screen saying so.** Found 2026-08-12 in his own
+ * 44-clip edit: 14 video clips pointing at partners that no longer existed, and
+ * their sound was missing from every render.
+ *
+ * ⛔ A LINK GROUP OF ONE IS NOT ENOUGH TO CALL IT DAMAGE, and assuming that would
+ * double his audio. `splitClipOnly` deliberately gives each half its own fresh
+ * `linkId` precisely so the halves stay video-only while an untouched audio
+ * partner keeps playing their sound. Those clips are alone in their group ON
+ * PURPOSE and must not be touched.
+ *
+ * **What separates them is the ASSET.** A deliberate video-only clip still has an
+ * audio clip from the SAME asset somewhere on the timeline. A clip whose partner
+ * was deleted has none. So the link is only cleared when the group has one member
+ * AND no audio clip anywhere references that asset, which is the conservative
+ * side: an unrepaired clip is silent, a wrongly repaired one plays twice.
+ *
+ * Returns the SAME array when nothing needed repair.
+ */
+export function repairLostAudioLinks(tracks: Track[]): Track[] {
+  const members = new Map<Id, number>()
+  const assetsWithAudio = new Set<Id>()
+  for (const t of tracks) {
+    for (const c of t.clips) {
+      if (c.linkId !== undefined) members.set(c.linkId, (members.get(c.linkId) ?? 0) + 1)
+      if (t.kind === 'audio') assetsWithAudio.add(c.assetId)
+    }
+  }
+  let changed = false
+  const next = tracks.map((t) => {
+    if (t.kind !== 'video') return t
+    let trackChanged = false
+    const clips = t.clips.map((c) => {
+      if (c.linkId === undefined) return c
+      if (members.get(c.linkId) !== 1) return c
+      if (assetsWithAudio.has(c.assetId)) return c
+      trackChanged = true
+      // The key is REMOVED rather than set to undefined: `clipEmitsAudio` tests
+      // `linkId === undefined`, which both satisfy, but a project file round
+      // trips through JSON and an explicit undefined would not survive it.
+      const rest = { ...c }
+      delete rest.linkId
+      return rest
+    })
+    if (!trackChanged) return t
+    changed = true
+    return { ...t, clips }
+  })
+  return changed ? next : tracks
+}
+
 export function migrateProject(p: Project): Project {
   let changed = false
   const sequences: Record<Id, Sequence> = {}
@@ -586,9 +642,11 @@ export function migrateProject(p: Project): Project {
         height: needsHeight ? 60 : t.height,
       }
     })
+    const relinked = repairLostAudioLinks(tracks)
+    if (relinked !== tracks) seqChanged = true
     if (seqChanged) {
       changed = true
-      sequences[id] = { ...seq, tracks }
+      sequences[id] = { ...seq, tracks: relinked }
     } else {
       sequences[id] = seq
     }
