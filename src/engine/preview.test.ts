@@ -148,24 +148,28 @@ describe('pairTransitionWindow', () => {
 
 describe('upcomingCutHeads', () => {
   // A PLAIN cut: two touching clips with no transition between them.
-  const p0 = clip({ id: 'p0', assetId: 'x', startS: 0, inS: 0, outS: 2 })
-  const p1 = clip({ id: 'p1', assetId: 'y', startS: 2, inS: 5, outS: 7 })
+  // The cut sits at 4, not at 2, so a time BEFORE the pre-roll horizon still
+  // exists on the timeline. The horizon went to 2.5 on 2026-08-13, and with a
+  // cut at 2 "before the horizon" would be -0.6, which is not a time anything
+  // can be asked about. The fixture moved; the rule being checked did not.
+  const p0 = clip({ id: 'p0', assetId: 'x', startS: 0, inS: 0, outS: 4 })
+  const p1 = clip({ id: 'p1', assetId: 'y', startS: 4, inS: 5, outS: 7 })
   const plain = seq([track([p0, p1])])
 
   it('THE BUG: a plain cut has no transition window, so only this sees it coming', () => {
     // transitionWindowsNear is blind here, because pairTransitionWindow returns
     // null without a transition. That is why the incoming element used to be
     // created cold AT the cut and the frame came out black.
-    expect(transitionWindowsNear(plain, 1.5)).toHaveLength(0)
-    expect(upcomingCutHeads(plain, 1.5).map((c) => c.id)).toEqual(['p1'])
+    expect(transitionWindowsNear(plain, 3.5)).toHaveLength(0)
+    expect(upcomingCutHeads(plain, 3.5).map((c) => c.id)).toEqual(['p1'])
   })
 
   it('only inside the pre-roll horizon, and never the clip already playing', () => {
-    expect(upcomingCutHeads(plain, 2 - TRANSITION_PRE_ROLL_S - 0.1)).toHaveLength(0)
-    expect(upcomingCutHeads(plain, 2 - TRANSITION_PRE_ROLL_S + 0.01).map((c) => c.id)).toEqual(['p1'])
+    expect(upcomingCutHeads(plain, 4 - TRANSITION_PRE_ROLL_S - 0.1)).toHaveLength(0)
+    expect(upcomingCutHeads(plain, 4 - TRANSITION_PRE_ROLL_S + 0.01).map((c) => c.id)).toEqual(['p1'])
     // At and past the cut, p1 is the one on screen, so there is nothing to warm.
-    expect(upcomingCutHeads(plain, 2)).toHaveLength(0)
-    expect(upcomingCutHeads(plain, 2.5)).toHaveLength(0)
+    expect(upcomingCutHeads(plain, 4)).toHaveLength(0)
+    expect(upcomingCutHeads(plain, 4.5)).toHaveLength(0)
   })
 
   it('collects EVERY head inside one horizon, which is the cut-dense case', () => {

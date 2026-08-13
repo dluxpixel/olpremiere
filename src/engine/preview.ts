@@ -410,7 +410,46 @@ function rendererFor(canvas: HTMLCanvasElement): Renderer | null {
 // side's window frames are decoded into the frame cache, and during the window
 // the from-layer reads the cache, because the element belongs to the incoming side.
 
-export const TRANSITION_PRE_ROLL_S = 1
+/**
+ * How far ahead BOTH the pair-transition sides and the upcoming plain cut heads
+ * start being prepared. **One number on purpose. Splitting it was tried and
+ * measured worse.**
+ *
+ * ⛔ ONE SECOND WAS NOT ENOUGH ON A BUSY MACHINE. Driven deliberately with all
+ * 32 cores saturated, `e2e/transition-stale-frame.spec.ts` failed 2 runs in 4
+ * with ZERO frames carrying both clips: the dissolve held one clip flat and then
+ * snapped, which is a hard cut wearing a transition's name. He would see it
+ * while editing with a game or a render going. **The assertion was not touched.**
+ * It was measuring the right thing and it caught this.
+ *
+ * ⛔⛔ ALL FOUR CONFIGURATIONS WERE MEASURED, under the same saturation, and the
+ * two horizons only work RAISED TOGETHER:
+ *
+ * | transition lead | cut horizon | result       |
+ * |---|---|---|
+ * | 1   | 1   | 2 of 4 failed |
+ * | 2.5 | 1   | 2 of 4 failed, no better than leaving it alone |
+ * | 1   | 2.5 | **5 of 5 FAILED, worse than either** |
+ * | 2.5 | 2.5 | 5 of 5 passed |
+ *
+ * The middle two are the interesting ones and they are why this is not two
+ * knobs. Warming the cut heads earlier while the transition lead stays short
+ * makes things WORSE: the incoming clip's head gets warmed as an ordinary cut,
+ * on the SHARED element key, competing with the transition's own `#to` element
+ * for the same asset's one decode queue. Raising only the transition lead does
+ * nothing, because the pre-seek below is gated on `pooled.ready` and the element
+ * has not finished loading yet on a busy box.
+ *
+ * ⚠️ So a future change that raises one of these must raise both, or measure
+ * again under saturation. A quiet box cannot tell any of these apart: every
+ * configuration above passes 3 of 3 when nothing else is running.
+ *
+ * Raising the horizon starts bounded work SOONER, it does not make it bigger:
+ * `PREROLL_CUT_LIMIT` still caps it at four heads and `CUT_HEAD_PREFETCH_S`
+ * still caps each at 0.75 s of footage. Those two are the eviction guards, not
+ * this.
+ */
+export const TRANSITION_PRE_ROLL_S = 2.5
 
 export interface PairTransitionWindow {
   /** Sequence-time window [startS, endS) at the incoming clip's head. */
