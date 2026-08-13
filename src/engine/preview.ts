@@ -121,10 +121,62 @@ function lruTouch<V>(pool: Map<Id, V>, id: Id, v: V): void {
   pool.set(id, v)
 }
 
-function warmVideo(asset: MediaAsset): PooledVideo {
-  const existing = videoPool.get(asset.id)
+/**
+ * A SECOND ELEMENT FOR THE INCOMING SIDE OF A TRANSITION, when both sides are
+ * one take. The pool is keyed by this, not by the asset id alone.
+ *
+ * ⛔ MEASURED 2026-08-13, and it is the whole of the dissolve that never mixed.
+ * Razoring one take leaves two clips on ONE asset, so they shared ONE element,
+ * and the outgoing clip owns it: it has been playing it into the cut. The
+ * incoming side was then left with nothing at all. No prefetch (an asset has one
+ * decode queue and it goes to the outgoing side), no element, and no held frame
+ * either, because a held frame is banked by being DRAWN and this clip has not
+ * been on screen yet. Three routes, all shut.
+ *
+ * The route tally, per frame, inside a two second window:
+ *   FAILING  TO:guard-NULL-no-held 26   PASSING  TO:LAST-RUNG-element 20
+ * The incoming side drew NOTHING for the whole window, `progressWithSides` then
+ * correctly pinned the dissolve to the only side with a picture, and on screen
+ * that is the outgoing clip held flat and then snapping. It failed about three
+ * runs in four, and the passes differed only by luck about where the shared
+ * element happened to be sitting.
+ *
+ * ⛔ THE CACHE IS NOT A SUBSTITUTE HERE and two fixes were spent proving it:
+ * giving the incoming side the decode queue, and banking its first frame ahead,
+ * neither moved the measurement. Real footage is written with sparse keyframes,
+ * so reaching its frame means decoding a long way from one and it does not
+ * finish inside the window. **Every passing run was served by the ELEMENT.** So
+ * the fix is to give it one, rather than to keep asking the decoder for what it
+ * cannot deliver in time.
+ */
+export const TO_SIDE_SUFFIX = '#to'
+
+/** The asset a pool key belongs to, whichever side of a transition it is. */
+export const assetIdOfKey = (key: Id): Id => {
+  const cut = key.indexOf('#')
+  return cut < 0 ? key : key.slice(0, cut)
+}
+
+/** Which element a layer plays on. */
+export const videoPoolKeyFor = (assetId: Id, ownElement: boolean): Id =>
+  ownElement ? `${assetId}${TO_SIDE_SUFFIX}` : assetId
+
+/**
+ * Does the INCOMING side of this transition need an element of its own?
+ *
+ * Only when the two sides are different clips off the SAME take. A lone edge
+ * (one clip, a stand-in for its other side) is excluded for the reason the ops
+ * loop already excludes it: there is no second clip competing for anything.
+ */
+export const incomingNeedsOwnElement = (
+  from: { clipId: Id; assetId: Id },
+  to: { clipId: Id; assetId: Id },
+): boolean => from.clipId !== to.clipId && from.assetId === to.assetId
+
+function warmVideo(asset: MediaAsset, key: Id = asset.id): PooledVideo {
+  const existing = videoPool.get(key)
   if (existing) {
-    lruTouch(videoPool, asset.id, existing)
+    lruTouch(videoPool, key, existing)
     return existing
   }
   const el = document.createElement('video')
@@ -132,7 +184,7 @@ function warmVideo(asset: MediaAsset): PooledVideo {
   el.playsInline = true
   el.preload = 'auto'
   const pooled: PooledVideo = { el, ready: false, probe: attachFrameProbe(el) }
-  videoPool.set(asset.id, pooled)
+  videoPool.set(key, pooled)
   // Evict the least-recently-used PAUSED element. Never dispose one that is
   // actively playing (a multi-insert sweep like prewarm would otherwise evict
   // the on-screen video regardless of how recently a frame touched it);
@@ -140,7 +192,7 @@ function warmVideo(asset: MediaAsset): PooledVideo {
   if (videoPool.size > VIDEO_POOL_CAP) {
     for (const [id, v] of videoPool) {
       if (videoPool.size <= VIDEO_POOL_CAP) break
-      if (id === asset.id || !v.el.paused) continue
+      if (id === key || !v.el.paused) continue
       disposeVideo(id)
     }
   }
@@ -245,6 +297,10 @@ function disposeImage(assetId: Id): void {
 
 export function disposePreviewAsset(assetId: Id): void {
   disposeVideo(assetId)
+  // An asset can hold a second element for the incoming side of a transition on
+  // its own footage, so removing the asset has to take that one too. Leaving it
+  // behind would keep a decoder and its buffers alive for media that is gone.
+  disposeVideo(videoPoolKeyFor(assetId, true))
   disposeImage(assetId)
 }
 
@@ -557,10 +613,24 @@ function prerollTransitions(
       // because it is the one that cannot fall back to the element (the
       // incoming side owns it), so the cache is its only route to a picture.
       if (w.toAssetId !== w.fromAssetId) prefetchRange(to, w.toSourceStartS, w.toSourceEndS)
-      const pooled = warmVideo(to)
-      // Pre-seek only BEFORE the window and only a PAUSED element. A playing
-      // one is on screen (including the same-asset case, where the outgoing
-      // clip still owns it until the cut).
+      // ⛔ WARM THE ELEMENT THE INCOMING SIDE WILL ACTUALLY BE DRAWN ON, which on
+      // a same-asset window is its OWN one (see TO_SIDE_SUFFIX), not the shared
+      // one the outgoing clip is still playing. Warming the wrong element is
+      // what left the new one cold: it was created at the window's first frame
+      // and then had to load and seek with the dissolve already running, so the
+      // fade started late or not at all. Measured: giving it an element took the
+      // spec from one pass in four to two in three, and warming it here is the
+      // other half.
+      const toKey = videoPoolKeyFor(w.toAssetId, w.toAssetId === w.fromAssetId)
+      const pooled = warmVideo(to, toKey)
+      // Pre-seek only BEFORE the window and only a PAUSED element.
+      //
+      // On a same-asset window this now FIRES, and it could not before. The test
+      // was written for the shared element, which is playing the outgoing clip
+      // into the cut and so is never paused: the incoming side silently got no
+      // pre-seek at all in exactly the case that needed one most. Its own
+      // element is paused until the window opens, which is what the condition
+      // was always asking about.
       if (
         tS < w.startS &&
         pooled.ready &&
@@ -627,6 +697,7 @@ function makeTextureSource(
   transitionFrom?: ReadonlySet<RenderLayer>,
   transitionSides?: ReadonlySet<RenderLayer>,
   holdClips?: ReadonlySet<Id>,
+  ownElementSides?: ReadonlySet<RenderLayer>,
 ): TextureSource {
   return (layer: RenderLayer): TexImageSource | null => {
     // Titles are generated, not imported. Rasterize them at PREVIEW size, not at
@@ -656,6 +727,9 @@ function makeTextureSource(
     // One side of a live pair transition. Its picture is composited against the
     // other clip for the whole window, so it may only ever be the RIGHT frame.
     const guarded = transitionSides?.has(layer) === true
+    // Which element this layer plays on. Its own when it is the incoming half of
+    // a transition on one take, otherwise the asset's shared one.
+    const poolKey: Id = videoPoolKeyFor(asset.id, ownElementSides?.has(layer) === true)
     // Near enough a transition that this clip's last good frame is worth
     // keeping. Covers the pre-roll as well as the window itself, which is what
     // gives the OUTGOING side something to hold the moment the window opens.
@@ -679,7 +753,7 @@ function makeTextureSource(
       const exact = getFrameAt(asset, srcT)
       if (exact) return confident(exact as TexImageSource)
       markPending()
-      const pooled = videoPool.get(asset.id)
+      const pooled = videoPool.get(poolKey)
       if (!pooled?.ready) return held()
       // MEASURED 2026-08-10: this rung served the outgoing side a picture 0.8 s
       // from the frame asked for, four times inside one 1 s dissolve, and
@@ -688,7 +762,7 @@ function makeTextureSource(
       return elementShowsNear(pooled, srcT) ? confident(pooled.el) : held()
     }
     if (!playing) {
-      const pooled = warmVideo(asset)
+      const pooled = warmVideo(asset, poolKey)
       if (!pooled.el.paused) pooled.el.pause()
       const exact = getFrameAt(asset, srcT)
       prefetchAround(asset, srcT)
@@ -709,7 +783,7 @@ function makeTextureSource(
       return pooled.el
     }
 
-    const pooled = warmVideo(asset)
+    const pooled = warmVideo(asset, poolKey)
     if (!pooled.ready) {
       markPending() // element still warming up, keep polling
       return null
@@ -816,9 +890,9 @@ function makeTextureSource(
     }
 
     if (Math.abs(trueErr) <= tol) {
-      liveMisses.delete(asset.id)
+      liveMisses.delete(poolKey)
       recordServedFrame(trueErr, true)
-      return confident(livePreviewSource(el, asset.id, layer.transform.scale))
+      return confident(livePreviewSource(el, poolKey, layer.transform.scale))
     }
     // NEVER ASK THE DECODER FOR WHAT IT CANNOT DELIVER IN TIME.
     //
@@ -838,19 +912,19 @@ function makeTextureSource(
     // switched off for this asset and the element free-runs on its own, which
     // is the one thing a browser is genuinely good at. It switches back on the
     // moment the picture is inside tolerance again (above), and on play/pause.
-    const misses = liveMisses.get(asset.id) ?? 0
+    const misses = liveMisses.get(poolKey) ?? 0
     if (misses < LIVE_MISS_LIMIT) {
       const exact = getFrameAt(asset, srcT)
       if (exact) {
-        liveMisses.delete(asset.id)
+        liveMisses.delete(poolKey)
         recordServedFrame(0, true)
         return confident(exact as TexImageSource)
       }
-      liveMisses.set(asset.id, misses + 1)
+      liveMisses.set(poolKey, misses + 1)
       markPending() // the decode is queued; keep polling so it lands
     }
     recordServedFrame(trueErr, false)
-    return livePreviewSource(el, asset.id, layer.transform.scale)
+    return livePreviewSource(el, poolKey, layer.transform.scale)
   }
 }
 
@@ -1076,7 +1150,7 @@ export function renderPreview(
       }
       // adjustment ops reference no asset
     }
-    for (const [id, { el }] of videoPool) if (!active.has(id) && !el.paused) el.pause()
+    for (const [id, { el }] of videoPool) if (!active.has(assetIdOfKey(id)) && !el.paused) el.pause()
   }
   // ONE walk of the transition windows near the playhead, shared by the
   // pre-roll and by the held-frame bookkeeping below.
@@ -1100,6 +1174,8 @@ export function renderPreview(
   // across a dissolve composites the same two layers from the same elements.
   let transitionFrom: Set<RenderLayer> | undefined
   let transitionSides: Set<RenderLayer> | undefined
+  /** Incoming sides whose other half is the same asset, so they need their own element. */
+  let ownElementSides: Set<RenderLayer> | undefined
   for (const op of frame.ops) {
     // PAIR TRANSITIONS ONLY, and that boundary was TESTED rather than assumed.
     //
@@ -1118,6 +1194,10 @@ export function renderPreview(
     ;(transitionSides ??= new Set()).add(op.from)
     transitionSides.add(op.to)
     if (playing) (transitionFrom ??= new Set()).add(op.from)
+    // ONE TAKE ON BOTH SIDES: the incoming clip needs its OWN element, because
+    // the outgoing one is still playing the shared one into the cut and will not
+    // give it up. See TO_SIDE_SUFFIX for the measurement this comes from.
+    if (incomingNeedsOwnElement(op.from, op.to)) (ownElementSides ??= new Set()).add(op.to)
   }
   if (playing) {
     prerollTransitions(windows, assets, tS)
@@ -1140,6 +1220,7 @@ export function renderPreview(
     transitionFrom,
     transitionSides,
     holdClips,
+    ownElementSides,
   )
   renderer.render(frame, source)
   return complete

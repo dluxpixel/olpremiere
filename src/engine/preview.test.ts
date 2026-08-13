@@ -10,6 +10,10 @@ import {
   transitionWindowsNear,
   upcomingCutHeads,
   liveUploadCap,
+  assetIdOfKey,
+  incomingNeedsOwnElement,
+  videoPoolKeyFor,
+  TO_SIDE_SUFFIX,
 } from './preview'
 import type { Clip, Sequence, Track } from './types'
 
@@ -270,5 +274,54 @@ describe('what the live preview actually uploads', () => {
   it('falls back to the tier alone before anything has been drawn', () => {
     expect(liveUploadCap(2160, 1080, 0)).toBe(1080)
     expect(liveUploadCap(1080, undefined, 0)).toBeUndefined()
+  })
+})
+
+// WHICH ELEMENT EACH SIDE OF A TRANSITION PLAYS ON.
+//
+// Razoring one take leaves two clips on ONE asset. They used to share ONE pooled
+// <video>, and the outgoing clip owns it because it has been playing it into the
+// cut, so the incoming side had nowhere to get a picture: no element, no
+// prefetch (an asset has one decode queue), and no held frame either, because a
+// held frame is banked by being drawn and it has not been on screen yet.
+//
+// MEASURED 2026-08-13: the incoming side drew NOTHING for 26 of 26 frames inside
+// a two second window, the compositor correctly pinned the dissolve to the only
+// side that had a picture, and on screen the fade simply did not happen. It
+// failed about three runs in four. With its own element it passed 7 of 7,
+// including three under deliberate load.
+//
+// e2e/transition-stale-frame.spec.ts is the standing proof in pixels. These pin
+// the rule itself, so a refactor cannot quietly put the two sides back on one
+// element and leave the pixels to notice months later.
+describe('the element a transition side plays on', () => {
+  const A = { clipId: 'a', assetId: 'take1' }
+  const B = { clipId: 'b', assetId: 'take1' }
+  const OTHER = { clipId: 'c', assetId: 'take2' }
+
+  it('gives the incoming side its own element when both sides are one take', () => {
+    expect(incomingNeedsOwnElement(A, B)).toBe(true)
+    expect(videoPoolKeyFor(B.assetId, true)).not.toBe(videoPoolKeyFor(A.assetId, false))
+  })
+
+  it('leaves two different takes sharing nothing to fight over', () => {
+    expect(incomingNeedsOwnElement(A, OTHER)).toBe(false)
+    expect(videoPoolKeyFor(OTHER.assetId, false)).toBe(OTHER.assetId)
+  })
+
+  it('never splits a lone edge, whose two sides are the same clip', () => {
+    // A transition on a clip with no neighbour uses that clip as its own other
+    // side. There is no second clip, so there is nothing to give an element to,
+    // and handing it one would break a transition that works.
+    expect(incomingNeedsOwnElement(A, { clipId: 'a', assetId: 'take1' })).toBe(false)
+  })
+
+  it('can still name the asset a second element belongs to', () => {
+    // disposePreviewAsset and the pause sweep both key by asset, so a pool key
+    // that could not be read back would leak a decoder or pause a playing clip.
+    const key = videoPoolKeyFor('take1', true)
+    expect(key).toContain(TO_SIDE_SUFFIX)
+    expect(assetIdOfKey(key)).toBe('take1')
+    expect(assetIdOfKey('take1')).toBe('take1')
   })
 })
