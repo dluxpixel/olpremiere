@@ -80,7 +80,11 @@ export interface Track {
   kind: 'video' | 'audio'
   /** "V1", "A1", … */
   name: string
-  /** Lane height in px, resizable. */
+  /**
+   * Lane height in px. ⚠️ NOT resizable, whatever this comment used to claim:
+   * it is set at creation (64 for video, 60 for audio) and by one legacy
+   * migration below, and nothing a user can touch ever changes it.
+   */
   height: number
   muted: boolean
   solo: boolean

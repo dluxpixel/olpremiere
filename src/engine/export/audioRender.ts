@@ -54,7 +54,8 @@ export interface AudioMixPlan {
  * Mixes every audible clip over [startS, endS) with the exact rules of
  * scheduleAudio: solo wins (any solo → only solo tracks, else non-muted), clips
  * on video AND audio tracks carry audio, disabled clips and speed <= 0 are
- * skipped, and playbackRate = |speed|. Returns null when there is nothing
+ * skipped, and a clip at |speed| plays a pitch-preserving stretch of its slice
+ * at playbackRate 1 (see pitchPreservedSource). Returns null when there is nothing
  * audible or the platform has no AudioEncoder (older Safari). The export is
  * then video-only.
  *

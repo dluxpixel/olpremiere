@@ -5,7 +5,8 @@
 //
 // Determinism is the whole point: same inputs give byte-identical output. The
 // per-clip chain mirrors audioRender.ts exactly (schedule window, per-sample
-// gain envelope, |speed| resample), and the per-track chain applies track
+// gain envelope, and a pitch-preserving time stretch at |speed|, NOT a resample:
+// see engine/timeStretch.ts), and the per-track chain applies track
 // volume, optional auto-level MAKEUP gain, and an equal-power pan before every
 // clip is summed and soft-limited into L/R.
 //
