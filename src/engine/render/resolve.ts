@@ -400,7 +400,16 @@ function blurBackdropOp(ops: readonly RenderOp[]): RenderOp | null {
     type: 'layer',
     layer: {
       ...source,
-      clipId: `${source.clipId}:blur-backdrop`,
+      // ⛔ THE REAL CLIP'S ID, NEVER A MADE-UP ONE. This carried
+      // `${clipId}:blur-backdrop` for one version and the export came out with
+      // the black bars still on it: `exportWorker.ts:413` finds a layer's video
+      // by looking its clipId up in a map of the sequence's clips, so a
+      // synthetic id found nothing, drew nothing, and left the frame empty
+      // exactly where the blur was supposed to be. The preview reaches its
+      // picture another way, which is why it looked right on his screen and
+      // wrong in the file. Sharing the id is safe: textures are cached by
+      // source and the texture map is keyed by the layer object, not by id.
+      clipId: source.clipId,
       transform: {
         ...source.transform,
         x: 0,

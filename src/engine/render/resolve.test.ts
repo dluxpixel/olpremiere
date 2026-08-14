@@ -1025,3 +1025,36 @@ describe('the blurred background', () => {
     expect(backdropOf(ops)).toBeNull()
   })
 })
+
+// The blurred background exported as black bars in v0.1.79: the backdrop
+// carried a made-up clipId, and the export finds a layer's video by looking its
+// clipId up among the sequence's real clips (exportWorker.ts:413). It found
+// nothing and drew nothing. The preview reaches its picture another way, so it
+// looked right on screen and wrong in the file.
+describe('every layer can be resolved to a real clip', () => {
+  it('the blurred backdrop carries the id of the clip it came from', () => {
+    const c = clip()
+    const seq = seqOf([track({ clips: [c] })], { width: 1080, height: 1920, blurBackground: true })
+    const ops = resolveFrame(seq, 0.5).ops
+    const backdrop = ops[0] as { type: 'layer'; layer: RenderLayer }
+    expect(backdrop.layer.transform.fit).toBe('cover')
+    expect(backdrop.layer.clipId).toBe(c.id)
+  })
+
+  it('NO op anywhere invents a clip id the export could not look up', () => {
+    const a = clip()
+    const b = clip()
+    const seq = seqOf(
+      [track({ clips: [a] }), track({ name: 'V2', clips: [b] })],
+      { width: 1080, height: 1920, blurBackground: true },
+    )
+    const real = new Set([a.id, b.id])
+    for (const op of resolveFrame(seq, 0.5).ops) {
+      if (op.type === 'layer') expect(real.has(op.layer.clipId)).toBe(true)
+      if (op.type === 'transition') {
+        expect(real.has(op.from.clipId)).toBe(true)
+        expect(real.has(op.to.clipId)).toBe(true)
+      }
+    }
+  })
+})
