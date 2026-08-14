@@ -134,3 +134,72 @@ describe('timeStretchChannels', () => {
     expect(peak).toBeLessThanOrEqual(1.02)
   })
 })
+
+// Speeding a clip up has to throw half of it away, and the version that shipped
+// as v0.1.76 threw away half his GUNSHOTS with it: measured 52% surviving at 2x
+// where the old pitch-moving code kept every one. These pin the repair.
+describe('timeStretchChannels keeps the hits', () => {
+  /** A noise bed with impacts on top: the shape of gameplay audio. */
+  const gameplay = (frames: number, perSec: number, seed0: number): Float32Array => {
+    const out = new Float32Array(frames)
+    let seed = seed0
+    const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff) * 2 - 1
+    for (let i = 0; i < frames; i++) out[i] = 0.08 * rnd()
+    const period = Math.round(SR / perSec)
+    for (let k = 0; k * period < frames; k++) {
+      // Jittered off the grid, so no result can come from rhyming with the hop.
+      const at = Math.round(k * period + (rnd() * period) / 6)
+      for (let i = 0; i < 800 && at + i < frames; i++) {
+        if (at + i >= 0) out[at + i] += Math.exp(-i / 120) * 0.9 * Math.sin(2 * Math.PI * 180 * (i / SR))
+      }
+    }
+    return out
+  }
+
+  /** Count impacts: one per event, re-arming only after a real gap of quiet. */
+  const countHits = (buf: Float32Array, threshold: number): number => {
+    let n = 0
+    let quiet = Infinity
+    for (let i = 0; i < buf.length; i++) {
+      if (Math.abs(buf[i]) > threshold) {
+        if (quiet > SR / 60) n++
+        quiet = 0
+      } else quiet++
+    }
+    return n
+  }
+
+  /** Mean survival over several signals: one clip's worth of hits is noise. */
+  const survival = (speed: number, level = 1): number => {
+    let total = 0
+    let cases = 0
+    for (const seed of [12345, 777, 90210]) {
+      for (const rate of [2, 4, 8]) {
+        const input = gameplay(SR * 4, rate, seed)
+        if (level !== 1) for (let i = 0; i < input.length; i++) input[i] *= level
+        const before = countHits(input, 0.25 * level)
+        const [out] = timeStretchChannels([input], Math.round((SR * 4) / speed), SR)
+        total += countHits(out, 0.25 * level) / before
+        cases++
+      }
+    }
+    return total / cases
+  }
+
+  it('keeps nearly every impact when he speeds gameplay up', () => {
+    // Without the onset step these measure 0.65, 0.52 and 0.39.
+    expect(survival(1.5)).toBeGreaterThan(0.9)
+    expect(survival(2)).toBeGreaterThan(0.9)
+    expect(survival(3)).toBeGreaterThan(0.9)
+  })
+
+  it('keeps them on a QUIET recording too, which an absolute threshold would not', () => {
+    // The first detector used a fixed energy floor and silently did nothing
+    // here, handing back the unfixed 0.52 while looking healthy.
+    expect(survival(2, 0.05)).toBeGreaterThan(0.9)
+  })
+
+  it('never invents impacts that were not there', () => {
+    for (const speed of [1.5, 2, 3]) expect(survival(speed)).toBeLessThan(1.1)
+  })
+})
