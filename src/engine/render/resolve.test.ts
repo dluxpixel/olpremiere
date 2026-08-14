@@ -940,3 +940,88 @@ describe('overlapping lone-edge windows on a short clip', () => {
     expect(alpha).toBeLessThan(0.9)
   })
 })
+
+// His ask, 2026-08-14, with a Shorts screenshot: 16:9 gameplay in a 9:16 frame
+// leaves black bars, and he wants the blurred fill instead. The claim that
+// matters is not "a blur exists", it is that the blur STAYS PUT while the clip
+// in front of it moves: *"It doesn't zoom out into nothingness and blackness.
+// It zooms out to this blur."*
+describe('the blurred background', () => {
+  const shorts = (tracks: Track[], on = true): Sequence =>
+    seqOf(tracks, { width: 1080, height: 1920, blurBackground: on })
+
+  const backdropOf = (ops: RenderOp[]): RenderLayer | null =>
+    ops[0]?.type === 'layer' && ops[0].layer.transform.fit === 'cover' ? ops[0].layer : null
+
+  it('is off unless he turns it on, so no existing project changes', () => {
+    const c = clip()
+    const ops = resolveFrame(shorts([track({ clips: [c] })], false), 0.5).ops
+    expect(backdropOf(ops)).toBeNull()
+    expect(ops).toHaveLength(1)
+  })
+
+  it('goes BEHIND everything, covering the frame, blurred', () => {
+    const c = clip()
+    const ops = resolveFrame(shorts([track({ clips: [c] })]), 0.5).ops
+    const bg = backdropOf(ops)
+    expect(bg).not.toBeNull()
+    expect(ops).toHaveLength(2)
+    expect(bg!.transform.fit).toBe('cover')
+    expect(bg!.effects).toEqual([{ type: 'gaussianBlur', params: { blur: expect.any(Number) } }])
+    expect(bg!.effects[0].params.blur).toBeGreaterThan(0)
+    // Same picture, same instant, or it is a blur of the wrong frame.
+    expect(bg!.assetId).toBe(c.assetId)
+    expect(bg!.sourceTimeS).toBe((ops[1] as { layer: RenderLayer }).layer.sourceTimeS)
+  })
+
+  it('⛔ does NOT shrink when he keyframes a zoom out: that is the whole feature', () => {
+    // Scale ramps 1 -> 0.4 over the clip. At the end the picture is small and
+    // the frame around it must be blur, not black, so the backdrop stays at 1.
+    const c = clip({ outS: 4, keyframes: { scale: [kf(0, 1), kf(2, 0.4)] } })
+    const ops = resolveFrame(shorts([track({ clips: [c] })]), 2).ops
+    const bg = backdropOf(ops)
+    const front = (ops[1] as { layer: RenderLayer }).layer
+
+    expect(front.transform.scale).toBeCloseTo(0.4, 5)
+    expect(bg!.transform.scale).toBe(1)
+  })
+
+  it('stays still when he keyframes a move or a spin, for the same reason', () => {
+    const c = clip({ outS: 4, keyframes: { posX: [kf(0, 0), kf(2, 400)], rotation: [kf(0, 0), kf(2, 30)] } })
+    const bg = backdropOf(resolveFrame(shorts([track({ clips: [c] })]), 2).ops)
+    expect(bg!.transform.x).toBe(0)
+    expect(bg!.transform.y).toBe(0)
+    expect(bg!.transform.rotationDeg).toBe(0)
+  })
+
+  it('blurs the whole frame even when the clip is cropped', () => {
+    const c = clip({ transform: { ...defaultTransform(), crop: { t: 0.2, r: 0, b: 0, l: 0.3 } } })
+    const bg = backdropOf(resolveFrame(shorts([track({ clips: [c] })]), 0.5).ops)
+    expect([bg!.transform.cropT, bg!.transform.cropR, bg!.transform.cropB, bg!.transform.cropL]).toEqual([0, 0, 0, 0])
+  })
+
+  it('⛔ drops the clip\'s own effects: a green screen would hole-punch it', () => {
+    const c = clip({ effects: [{ id: 'k', type: 'chromaKey', enabled: true, params: { similarity: 0.4 } }] })
+    const bg = backdropOf(resolveFrame(shorts([track({ clips: [c] })]), 0.5).ops)
+    expect(bg!.effects.every((e) => e.type === 'gaussianBlur')).toBe(true)
+  })
+
+  it('is ONE backdrop from the bottom track, not one per track', () => {
+    const lower = clip()
+    const upper = clip()
+    const ops = resolveFrame(
+      shorts([track({ clips: [lower] }), track({ name: 'V2', clips: [upper] })]),
+      0.5,
+    ).ops
+    // backdrop + two tracks, and it is the BOTTOM clip that feeds it.
+    expect(ops).toHaveLength(3)
+    expect(backdropOf(ops)!.assetId).toBe(lower.assetId)
+    expect(ops.filter((o) => o.type === 'layer' && o.layer.transform.fit === 'cover')).toHaveLength(1)
+  })
+
+  it('does not try to blur a title, which has no frame to blur', () => {
+    const t = clip({ title: { text: 'Hi' } as never, assetId: '' })
+    const ops = resolveFrame(shorts([track({ clips: [t] })]), 0.5).ops
+    expect(backdropOf(ops)).toBeNull()
+  })
+})

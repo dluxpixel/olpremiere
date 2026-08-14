@@ -296,6 +296,18 @@ export function setActiveSequenceFormat(width: number, height: number, refit = t
   })
 }
 
+/**
+ * Fill the empty frame with a blurred copy of the picture instead of black.
+ * Undoable like any other edit, because it changes what the video looks like.
+ */
+export function setActiveSequenceBlurBackground(on: boolean): void {
+  useStore.getState().dispatch('Blurred background', (p) => {
+    const seq = p.sequences[p.activeSequenceId]
+    if ((seq.blurBackground === true) === on) return p
+    return { ...p, sequences: { ...p.sequences, [seq.id]: { ...seq, blurBackground: on } } }
+  })
+}
+
 // Zoom is anchored by the Timeline (playhead-if-visible, else view center) so
 // the view never drifts while zooming (raw pxPerS writes slide toward t=0).
 // The event keeps this store DOM-free; with no timeline mounted it's a no-op.

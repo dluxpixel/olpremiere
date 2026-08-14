@@ -20,6 +20,17 @@ export interface ResolvedTransform {
   cropR: number
   cropB: number
   cropL: number
+  /**
+   * How the source sits in the frame BEFORE `scale` is applied.
+   *  - undefined / 'contain' (the default, and what every clip has always
+   *    done): the whole picture fits inside the frame, letterboxed when the
+   *    shapes disagree.
+   *  - 'cover': the picture is grown until it fills the frame with nothing left
+   *    over, cropping the overflow. Only the blurred backdrop uses this, which
+   *    is the one thing that must never letterbox: a backdrop with bars on it
+   *    is just bars.
+   */
+  fit?: 'contain' | 'cover'
 }
 
 /**

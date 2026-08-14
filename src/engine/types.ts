@@ -57,6 +57,19 @@ export interface Sequence {
   width: number
   height: number
   sampleRate: number
+  /**
+   * Fill the empty frame with a blurred copy of the picture instead of black.
+   *
+   * His ask, 2026-08-14, with a Shorts screenshot: 16:9 gameplay in a 9:16
+   * frame leaves bars, and he wants the soft blurred fill everyone uses there.
+   * It has to survive a keyframed zoom out: *"It doesn't zoom out into
+   * nothingness and blackness. It zooms out to this blur."* So it is a backdrop
+   * behind everything, not a letterbox baked onto the clip.
+   *
+   * A sequence setting, not a clip one, because that is where he asked for the
+   * switch: beside the 16:9 / 9:16 / 1:1 picker. One flip per short.
+   */
+  blurBackground?: boolean
   /** Derived: end of the last clip. Kept in sync by timeline operations. */
   durationS: number
   /**

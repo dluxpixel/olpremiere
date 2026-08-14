@@ -361,5 +361,65 @@ export function resolveFrame(seq: Sequence, t: number): RenderFrame {
     const op = resolveTrack(track, t, seq.fps)
     if (op) ops.push(op)
   }
+  const backdrop = seq.blurBackground ? blurBackdropOp(ops) : null
+  if (backdrop) ops.unshift(backdrop)
   return { width: seq.width, height: seq.height, ops }
+}
+
+/** Blur radius for the backdrop, in sequence px. The renderer caps at 64. */
+export const BLUR_BACKDROP_PX = 48
+
+/**
+ * The blurred fill that sits behind everything, built from the picture already
+ * being drawn. Returns null when there is nothing to blur.
+ *
+ * ⛔ IT COMES FROM THE BOTTOM-MOST LAYER, NOT FROM EVERY LAYER. Giving each clip
+ * its own backdrop would stack them, and an overlay on V2 would hide the
+ * gameplay on V1 behind that overlay's own blur. One backdrop, from the picture
+ * underneath everything, is also what the look actually is. **Mine, not his:**
+ * he asked for the effect, not for which layer feeds it.
+ *
+ * ⛔ IT IGNORES THE CLIP'S TRANSFORM, AND THAT IS THE WHOLE FEATURE. Position,
+ * scale and rotation are dropped so the backdrop stays still and full-frame
+ * while the clip in front of it moves. That is exactly what he asked for: a
+ * keyframed zoom out reveals more blur instead of more black. Carrying the
+ * transform through would shrink the backdrop in step and put the bars right
+ * back.
+ *
+ * The CROP is dropped with them, so a cropped clip still blurs its whole frame
+ * rather than a blurred sliver stretched over the screen.
+ */
+function blurBackdropOp(ops: readonly RenderOp[]): RenderOp | null {
+  const bottom = ops[0]
+  const source =
+    bottom?.type === 'layer' ? bottom.layer : bottom?.type === 'transition' ? bottom.to : null
+  // Nothing with a picture in it: a title has no frame worth blurring, and an
+  // empty side of a lone-edge transition has no asset at all.
+  if (!source || !source.assetId || source.title !== undefined) return null
+  return {
+    type: 'layer',
+    layer: {
+      ...source,
+      clipId: `${source.clipId}:blur-backdrop`,
+      transform: {
+        ...source.transform,
+        x: 0,
+        y: 0,
+        scale: 1,
+        rotationDeg: 0,
+        cropT: 0,
+        cropR: 0,
+        cropB: 0,
+        cropL: 0,
+        fit: 'cover',
+      },
+      opacity: 1,
+      blendMode: 'normal',
+      mask: undefined,
+      // Its own stack, not the clip's: a green screen or a colour grade on the
+      // gameplay has no business deciding what the wallpaper behind it looks
+      // like, and a chroma key would punch a hole straight through it.
+      effects: [{ type: 'gaussianBlur', params: { blur: BLUR_BACKDROP_PX } }],
+    },
+  }
 }

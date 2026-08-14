@@ -81,6 +81,16 @@ export function fitScale(frameW: number, frameH: number, croppedW: number, cropp
 }
 
 /**
+ * Cover-fit scale: grow until nothing is left over, cropping the overflow. The
+ * mirror of fitScale, max where that takes min. Used only by the blurred
+ * backdrop, which exists precisely to have no bars on it.
+ */
+export function coverScale(frameW: number, frameH: number, croppedW: number, croppedH: number): number {
+  if (croppedW <= 0 || croppedH <= 0) return 0
+  return Math.max(frameW / croppedW, frameH / croppedH)
+}
+
+/**
  * Compose the full layer transform and return the four quad corners in seq-space
  * pixels, in the order [TL, TR, BR, BL] (matching UV order [0,0],[1,0],[1,1],[0,1]).
  *
@@ -98,7 +108,10 @@ export function computeQuad(opts: {
 }): { corners: [number, number][] } {
   const { frameW, frameH, texW, texH, transform: tf } = opts
   const { w: cw, h: ch } = croppedSize(texW, texH, tf.cropT, tf.cropR, tf.cropB, tf.cropL)
-  const fit = fitScale(frameW, frameH, cw, ch)
+  // 'cover' only ever grows the base rectangle; `scale` still multiplies it
+  // afterwards exactly as before, so a keyframed zoom behaves the same either way.
+  const fit =
+    tf.fit === 'cover' ? coverScale(frameW, frameH, cw, ch) : fitScale(frameW, frameH, cw, ch)
   // Fitted rectangle size in seq px (before the user scale).
   const rw = cw * fit
   const rh = ch * fit

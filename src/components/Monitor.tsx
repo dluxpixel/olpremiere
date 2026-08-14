@@ -1,4 +1,5 @@
 import {
+  Aperture,
   ChevronLeft,
   ChevronRight,
   Maximize,
@@ -20,7 +21,7 @@ import { formatTimecode, quantizeToFrame } from '../engine/timecode'
 import { activeSequence, type Sequence } from '../engine/types'
 import { pausePlayback, subscribeShuttleRate, toggleLoop, togglePlay } from '../state/playbackControl'
 import { setPreviewQuality, useSettings } from '../state/settings'
-import { setActiveSequenceFormat, useStore } from '../state/store'
+import { setActiveSequenceBlurBackground, setActiveSequenceFormat, useStore } from '../state/store'
 import { IconButton } from '../ui/Button'
 import { MasterMeter } from './MasterMeter'
 import { fitCanvasBox } from './monitorSizing'
@@ -387,6 +388,15 @@ export function Monitor() {
               </option>
             ))}
           </select>
+          <IconButton
+            label="Blurred background: fills the empty frame with a soft blur of your footage instead of black"
+            active={seq.blurBackground === true}
+            onClick={() => setActiveSequenceBlurBackground(seq.blurBackground !== true)}
+            data-testid="blur-background-toggle"
+            className={seq.blurBackground ? 'bg-accent-quiet! text-accent!' : ''}
+          >
+            <Aperture size={16} strokeWidth={1.5} />
+          </IconButton>
           <IconButton
             label="Loop playback: repeats the In/Out range"
             shortcut="/"

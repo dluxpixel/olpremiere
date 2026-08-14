@@ -201,3 +201,54 @@ describe('pointInQuad', () => {
     expect(pointInQuad(1, 1, diamond)).toBe(false) // corner region cut off
   })
 })
+
+// The blurred backdrop's whole job is to have no bars on it, so it fits the
+// other way round from every other layer: grow until the frame is full and let
+// the overflow fall off the edges.
+describe('cover fit, for the blurred backdrop', () => {
+  const tf = (over: Partial<ResolvedTransform> = {}): ResolvedTransform => ({
+    x: 0, y: 0, scale: 1, rotationDeg: 0, anchorX: 0.5, anchorY: 0.5,
+    cropT: 0, cropR: 0, cropB: 0, cropL: 0, ...over,
+  })
+
+  it('16:9 gameplay in a 9:16 frame CONTAINS with bars, which is the bug he sees', () => {
+    const { corners } = computeQuad({ frameW: 1080, frameH: 1920, texW: 1920, texH: 1080, transform: tf() })
+    const top = Math.min(...corners.map((c) => c[1]))
+    const bottom = Math.max(...corners.map((c) => c[1]))
+    // Fills the width, leaves a band above and below: the black bars.
+    expect(bottom - top).toBeCloseTo(1080 * (1080 / 1920), 3)
+    expect(top).toBeGreaterThan(0)
+  })
+
+  it("and COVERS the same frame with nothing left over", () => {
+    const { corners } = computeQuad({
+      frameW: 1080, frameH: 1920, texW: 1920, texH: 1080, transform: tf({ fit: 'cover' }),
+    })
+    const xs = corners.map((c) => c[0])
+    const ys = corners.map((c) => c[1])
+    // Reaches or passes every edge: no bar anywhere.
+    expect(Math.min(...xs)).toBeLessThanOrEqual(0)
+    expect(Math.max(...xs)).toBeGreaterThanOrEqual(1080)
+    expect(Math.min(...ys)).toBeLessThanOrEqual(0)
+    expect(Math.max(...ys)).toBeGreaterThanOrEqual(1920)
+  })
+
+  it('covers a 9:16 source in a 16:9 frame too, the other way round', () => {
+    const { corners } = computeQuad({
+      frameW: 1920, frameH: 1080, texW: 1080, texH: 1920, transform: tf({ fit: 'cover' }),
+    })
+    const xs = corners.map((c) => c[0])
+    const ys = corners.map((c) => c[1])
+    expect(Math.min(...xs)).toBeLessThanOrEqual(0)
+    expect(Math.max(...xs)).toBeGreaterThanOrEqual(1920)
+    expect(Math.min(...ys)).toBeLessThanOrEqual(0)
+    expect(Math.max(...ys)).toBeGreaterThanOrEqual(1080)
+  })
+
+  it('leaves a matching source alone: cover and contain agree when shapes match', () => {
+    const opts = { frameW: 1080, frameH: 1920, texW: 1080, texH: 1920 }
+    const contain = computeQuad({ ...opts, transform: tf() }).corners
+    const cover = computeQuad({ ...opts, transform: tf({ fit: 'cover' }) }).corners
+    expect(cover).toEqual(contain)
+  })
+})
