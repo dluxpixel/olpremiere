@@ -11,6 +11,7 @@ import {
   computeClipSchedule,
   dbToGain,
   effectiveAudioClip,
+  pitchPreservedSource,
   type ClipSchedule,
 } from '../audio'
 import { duckEnvelope } from '../ducking'
@@ -203,8 +204,11 @@ export async function planAudioMix(
       // Ends before this segment's base, or starts after its end: silent here.
       if (!sched || sched.whenOffsetS >= ctxEndOffsetS) return
       const source = ctx.createBufferSource()
-      source.buffer = buffer
-      source.playbackRate.value = Math.abs(clip.speed)
+      // The same pitch-preserving slice the live preview schedules, so the
+      // render cannot disagree with what he heard while editing.
+      const play = pitchPreservedSource(ctx, buffer, clip.speed, sched)
+      source.buffer = play.buffer
+      source.playbackRate.value = play.playbackRate
       const gain = ctx.createGain()
       const env = clipGainEnvelope(clip, fromS) ?? [{ offsetS: 0, value: dbToGain(clip.audioGainDb) }]
       env.forEach((pt, idx) => {
@@ -213,7 +217,7 @@ export async function planAudioMix(
       })
       source.connect(gain)
       gain.connect(trackInputFor(track))
-      source.start(sched.whenOffsetS, sched.sourceOffsetS, sched.durationS)
+      source.start(sched.whenOffsetS, play.offsetS, play.durationS)
     })
 
     const rendered = await ctx.startRendering()

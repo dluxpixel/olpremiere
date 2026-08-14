@@ -35,6 +35,7 @@ import {
 } from '../audio'
 import { softLimit } from '../audioLimiter'
 import { duckEnvelope } from '../ducking'
+import { timeStretchChannels } from '../timeStretch'
 import type { Clip, Track } from '../types'
 
 const clamp = (x: number, lo: number, hi: number): number => (x < lo ? lo : x > hi ? hi : x)
@@ -208,7 +209,20 @@ export function sumAndLimit(buffers: Float32Array[]): Float32Array {
   return out
 }
 
-/** Per-sample source read of one clip: offset + |speed| resample to output rate. */
+/**
+ * One clip's audible mono at the output rate: read from `sourceOffsetS`, run at
+ * `speed`, WITHOUT moving the pitch.
+ *
+ * The rate change and the speed change are two different jobs and are done in
+ * that order. First the source region is read to the output rate at speed 1,
+ * which is pure format conversion and moves nothing. Then the time stretch
+ * squeezes that region to the frame count the timeline asked for, which is
+ * where the speed happens and where the pitch is protected.
+ *
+ * ⛔ Folding the two together (`step = srcRate * speed / dstRate`) is what this
+ * used to do, and it is exactly the chipmunk: a resample cannot change the
+ * length without changing the pitch. See engine/timeStretch.ts.
+ */
 function renderClipMono(
   mono: Float32Array,
   srcRate: number,
@@ -220,9 +234,15 @@ function renderClipMono(
   const out = new Float32Array(Math.max(0, dstFrames))
   if (out.length === 0 || mono.length === 0 || dstRate <= 0) return out
   const startPos = sourceOffsetS * srcRate
-  const step = (srcRate * speed) / dstRate
-  for (let j = 0; j < out.length; j++) out[j] = sampleLinear(mono, startPos + j * step)
-  return out
+  const step = srcRate / dstRate
+  if (speed === 1) {
+    for (let j = 0; j < out.length; j++) out[j] = sampleLinear(mono, startPos + j * step)
+    return out
+  }
+  const regionFrames = Math.max(1, Math.round(dstFrames * speed))
+  const region = new Float32Array(regionFrames)
+  for (let j = 0; j < regionFrames; j++) region[j] = sampleLinear(mono, startPos + j * step)
+  return timeStretchChannels([region], dstFrames, dstRate)[0]
 }
 
 /**

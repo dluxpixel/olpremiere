@@ -5,6 +5,7 @@ import {
   computeClipSchedule,
   dbToGain,
   effectiveAudioClip,
+  pitchPreservedSource,
   type GainPoint,
 } from './audio'
 import { evalChannel } from './keyframes'
@@ -423,5 +424,215 @@ describe('compressorParamsFor (loudness equalization)', () => {
       expect(p.attack).toBeGreaterThanOrEqual(0)
       expect(p.release).toBeGreaterThanOrEqual(0)
     }
+  })
+})
+
+// The buffer, rate and window the preview and the offline render both schedule
+// with. A speed change must shorten the clip and leave his voice alone; a 1x
+// clip must cost nothing at all.
+describe('pitchPreservedSource', () => {
+  const SR = 48000
+
+  const fakeBuffer = (channels: Float32Array[], sampleRate = SR): AudioBuffer =>
+    ({
+      numberOfChannels: channels.length,
+      length: channels[0].length,
+      sampleRate,
+      duration: channels[0].length / sampleRate,
+      getChannelData: (ch: number) => channels[ch],
+    }) as unknown as AudioBuffer
+
+  const fakeCtx = (): BaseAudioContext =>
+    ({
+      createBuffer: (numberOfChannels: number, length: number, sampleRate: number) => {
+        const data = Array.from({ length: numberOfChannels }, () => new Float32Array(length))
+        return {
+          numberOfChannels,
+          length,
+          sampleRate,
+          duration: length / sampleRate,
+          getChannelData: (ch: number) => data[ch],
+          copyToChannel: (src: Float32Array, ch: number) =>
+            data[ch].set(src.subarray(0, Math.min(src.length, length))),
+        } as unknown as AudioBuffer
+      },
+    }) as unknown as BaseAudioContext
+
+  const sine = (freq: number, frames: number): Float32Array => {
+    const out = new Float32Array(frames)
+    for (let i = 0; i < frames; i++) out[i] = Math.sin(2 * Math.PI * freq * (i / SR))
+    return out
+  }
+
+  const dominantHz = (buf: Float32Array): number => {
+    const a = Math.floor(buf.length * 0.2)
+    const b = Math.floor(buf.length * 0.8)
+    let crossings = 0
+    for (let i = a + 1; i < b; i++) if (buf[i - 1] <= 0 && buf[i] > 0) crossings++
+    return (crossings * SR) / (b - a)
+  }
+
+  it('hands a 1x clip straight back: same buffer, rate 1, window untouched', () => {
+    const buf = fakeBuffer([sine(440, SR * 2)])
+    const sched = { whenOffsetS: 0, sourceOffsetS: 0.5, durationS: 1 }
+    const play = pitchPreservedSource(fakeCtx(), buf, 1, sched)
+    expect(play.buffer).toBe(buf)
+    expect(play.playbackRate).toBe(1)
+    expect(play.offsetS).toBe(0.5)
+    expect(play.durationS).toBe(1)
+  })
+
+  it('plays a sped-up clip at rate 1, so nothing can resample his voice', () => {
+    const buf = fakeBuffer([sine(440, SR * 2)])
+    const play = pitchPreservedSource(fakeCtx(), buf, 2, {
+      whenOffsetS: 0,
+      sourceOffsetS: 0,
+      durationS: 2,
+    })
+    expect(play.playbackRate).toBe(1)
+    expect(play.buffer).not.toBe(buf)
+    expect(play.offsetS).toBe(0)
+  })
+
+  it('is exactly as long as the timeline window, so audio cannot drift off the picture', () => {
+    const buf = fakeBuffer([sine(440, SR * 4)])
+    for (const speed of [0.5, 1.25, 2, 3]) {
+      const durationS = 2
+      const play = pitchPreservedSource(fakeCtx(), buf, speed, {
+        whenOffsetS: 0,
+        sourceOffsetS: 0,
+        durationS,
+      })
+      expect(play.durationS).toBeCloseTo(durationS / speed, 4)
+      expect(play.buffer.length).toBe(Math.round((durationS * SR) / speed))
+    }
+  })
+
+  // ⚠️ This one is only half the proof and cannot stand alone: it reads the
+  // buffer's content, and the OLD code handed back a buffer at 440 Hz too. It
+  // is the "rate 1" test above that stops that buffer being resampled on the
+  // way out. Content at 440 plus rate 1 is what he hears at 440.
+  it('keeps 440 Hz at 440 Hz through the buffer the preview actually schedules', () => {
+    const buf = fakeBuffer([sine(440, SR * 2)])
+    const play = pitchPreservedSource(fakeCtx(), buf, 2, {
+      whenOffsetS: 0,
+      sourceOffsetS: 0,
+      durationS: 2,
+    })
+    expect(dominantHz(play.buffer.getChannelData(0))).toBeGreaterThan(415)
+    expect(dominantHz(play.buffer.getChannelData(0))).toBeLessThan(465)
+  })
+
+  it('carries every channel of a stereo clip', () => {
+    const buf = fakeBuffer([sine(440, SR), sine(660, SR)])
+    const play = pitchPreservedSource(fakeCtx(), buf, 2, {
+      whenOffsetS: 0,
+      sourceOffsetS: 0,
+      durationS: 1,
+    })
+    expect(play.buffer.numberOfChannels).toBe(2)
+    expect(dominantHz(play.buffer.getChannelData(0))).toBeLessThan(500)
+    expect(dominantHz(play.buffer.getChannelData(1))).toBeGreaterThan(600)
+  })
+
+  it('reads from the right place in the source', () => {
+    // First second silent, second second a tone: asking for the second second
+    // must give a tone, not silence.
+    const data = new Float32Array(SR * 2)
+    data.set(sine(440, SR), SR)
+    const play = pitchPreservedSource(fakeCtx(), fakeBuffer([data]), 2, {
+      whenOffsetS: 0,
+      sourceOffsetS: 1,
+      durationS: 1,
+    })
+    let peak = 0
+    for (const v of play.buffer.getChannelData(0)) peak = Math.max(peak, Math.abs(v))
+    expect(peak).toBeGreaterThan(0.5)
+  })
+
+  it('clamps a clip that runs past the end of its asset instead of inventing audio', () => {
+    const buf = fakeBuffer([sine(440, SR)])
+    const play = pitchPreservedSource(fakeCtx(), buf, 2, {
+      whenOffsetS: 0,
+      sourceOffsetS: 0.5,
+      // Asks for 3 s of a 1 s asset; only 0.5 s is really there.
+      durationS: 3,
+    })
+    expect(play.buffer.length).toBe(Math.round((0.5 * SR) / 2))
+  })
+})
+
+// Pressing play must not redo the stretch every time. The clips ahead of the
+// playhead are scheduled from their own in point, so their key never moves.
+describe('pitchPreservedSource caching', () => {
+  const SR = 48000
+  const buf = (frames: number): AudioBuffer => {
+    const data = new Float32Array(frames)
+    for (let i = 0; i < frames; i++) data[i] = Math.sin(2 * Math.PI * 440 * (i / SR))
+    return {
+      numberOfChannels: 1,
+      length: frames,
+      sampleRate: SR,
+      duration: frames / SR,
+      getChannelData: () => data,
+    } as unknown as AudioBuffer
+  }
+  const countingCtx = (): { ctx: BaseAudioContext; made: () => number } => {
+    let made = 0
+    const ctx = {
+      createBuffer: (numberOfChannels: number, length: number, sampleRate: number) => {
+        made++
+        const data = Array.from({ length: numberOfChannels }, () => new Float32Array(length))
+        return {
+          numberOfChannels,
+          length,
+          sampleRate,
+          duration: length / sampleRate,
+          getChannelData: (ch: number) => data[ch],
+          copyToChannel: (src: Float32Array, ch: number) => data[ch].set(src),
+        } as unknown as AudioBuffer
+      },
+    } as unknown as BaseAudioContext
+    return { ctx, made: () => made }
+  }
+
+  it('does the work once for the same clip at the same speed', () => {
+    const source = buf(SR * 2)
+    const { ctx, made } = countingCtx()
+    const sched = { whenOffsetS: 0, sourceOffsetS: 0, durationS: 2 }
+    const a = pitchPreservedSource(ctx, source, 2, sched)
+    const b = pitchPreservedSource(ctx, source, 2, sched)
+    expect(made()).toBe(1)
+    expect(b.buffer).toBe(a.buffer)
+    expect(b.playbackRate).toBe(1)
+    expect(b.offsetS).toBe(0)
+    expect(b.durationS).toBeCloseTo(1, 4)
+  })
+
+  it('re-stretches when he changes the speed', () => {
+    const source = buf(SR * 2)
+    const { ctx, made } = countingCtx()
+    const sched = { whenOffsetS: 0, sourceOffsetS: 0, durationS: 2 }
+    pitchPreservedSource(ctx, source, 2, sched)
+    pitchPreservedSource(ctx, source, 1.5, sched)
+    expect(made()).toBe(2)
+  })
+
+  it('does not grow without limit as he fiddles with the speed', () => {
+    const source = buf(SR)
+    const { ctx } = countingCtx()
+    for (const speed of [1.25, 1.5, 1.75, 2, 2.5, 3]) {
+      pitchPreservedSource(ctx, source, speed, {
+        whenOffsetS: 0,
+        sourceOffsetS: 0,
+        durationS: 1,
+      })
+    }
+    // The earliest speeds have been dropped; the most recent are still there.
+    const { ctx: probe, made } = countingCtx()
+    pitchPreservedSource(probe, source, 3, { whenOffsetS: 0, sourceOffsetS: 0, durationS: 1 })
+    expect(made()).toBe(0)
+    pitchPreservedSource(probe, source, 1.25, { whenOffsetS: 0, sourceOffsetS: 0, durationS: 1 })
+    expect(made()).toBe(1)
   })
 })

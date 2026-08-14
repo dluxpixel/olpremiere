@@ -9,6 +9,7 @@ import { duckEnvelope } from './ducking'
 import { evalChannel } from './keyframes'
 import type { AutoLevel, Clip, Id, MediaAsset, Sequence, Track } from './types'
 import { createSoftLimiter } from './audioLimiter'
+import { timeStretchChannels } from './timeStretch'
 
 /** Sources start this far in the future so scheduling jitter can't clip the head. */
 export const SCHEDULE_LATENCY_S = 0.05
@@ -332,6 +333,94 @@ export function computeClipSchedule(clip: Clip, fromS: number): ClipSchedule | n
   return { whenOffsetS, sourceOffsetS, durationS: clip.outS - sourceOffsetS }
 }
 
+/** What to hand an AudioBufferSourceNode for one clip. */
+export interface ScheduledSource {
+  buffer: AudioBuffer
+  playbackRate: number
+  /** Offset into `buffer`, seconds. */
+  offsetS: number
+  /** Seconds of `buffer` to play, in ITS content time. */
+  durationS: number
+}
+
+/**
+ * The buffer, rate and window to schedule one clip with, keeping his voice
+ * where it is.
+ *
+ * ⛔ `playbackRate` alone cannot do this. It resamples, so 2x speed is also an
+ * octave up, and that is the chipmunk. So a clip that is not at 1x gets its
+ * audible slice time-stretched ahead of time and is then played at rate 1: the
+ * length is unchanged and the pitch is his. A 1x clip is handed back untouched,
+ * same buffer, no copy and no work, which is nearly every clip in a project.
+ *
+ * The stretched slice is exactly `durationS / speed` long, the same number
+ * `computeClipSchedule` already promised the picture, so audio cannot drift
+ * away from the frames it was cut against.
+ */
+export function pitchPreservedSource(
+  ctx: BaseAudioContext,
+  buffer: AudioBuffer,
+  speed: number,
+  sched: ClipSchedule,
+): ScheduledSource {
+  const rate = Math.abs(speed) || 1
+  if (rate === 1) {
+    return { buffer, playbackRate: 1, offsetS: sched.sourceOffsetS, durationS: sched.durationS }
+  }
+  const cacheKey = `${rate}|${sched.sourceOffsetS}|${sched.durationS}`
+  const cached = stretchCache.get(buffer)?.get(cacheKey)
+  if (cached) return { buffer: cached, playbackRate: 1, offsetS: 0, durationS: cached.duration }
+  const sr = buffer.sampleRate
+  const startFrame = Math.max(0, Math.min(buffer.length, Math.round(sched.sourceOffsetS * sr)))
+  // Never promise more source than the buffer holds: a clip that runs off the
+  // end of its asset went quiet before this change too.
+  const srcFrames = Math.max(0, Math.min(Math.round(sched.durationS * sr), buffer.length - startFrame))
+  const outFrames = Math.round(srcFrames / rate)
+  if (srcFrames === 0 || outFrames === 0) {
+    return { buffer, playbackRate: rate, offsetS: sched.sourceOffsetS, durationS: sched.durationS }
+  }
+
+  const channels: Float32Array[] = []
+  for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
+    channels.push(buffer.getChannelData(ch).subarray(startFrame, startFrame + srcFrames))
+  }
+  const stretched = timeStretchChannels(channels, outFrames, sr)
+  const out = ctx.createBuffer(buffer.numberOfChannels, outFrames, sr)
+  for (let ch = 0; ch < stretched.length; ch++) out.copyToChannel(stretched[ch], ch)
+  rememberStretch(buffer, cacheKey, out)
+  return { buffer: out, playbackRate: 1, offsetS: 0, durationS: outFrames / sr }
+}
+
+/**
+ * Stretched slices, kept so pressing play twice does not do the work twice.
+ *
+ * Measured 2026-08-14: a minute of stereo at 2x is about 70 ms, and a five
+ * minute one is 600 ms. Every clip AHEAD of the playhead is scheduled from its
+ * own in point, so its key does not move and every play after the first is
+ * free; only the clip the playhead is sitting inside re-stretches, and only the
+ * part of it still to come.
+ *
+ * A WeakMap on the decoded buffer means these die exactly when the asset's
+ * audio does, and holding only a few per buffer keeps a session of speed
+ * fiddling from growing without limit.
+ */
+const STRETCH_CACHE_PER_BUFFER = 3
+const stretchCache = new WeakMap<AudioBuffer, Map<string, AudioBuffer>>()
+
+function rememberStretch(buffer: AudioBuffer, key: string, value: AudioBuffer): void {
+  let slot = stretchCache.get(buffer)
+  if (!slot) {
+    slot = new Map()
+    stretchCache.set(buffer, slot)
+  }
+  slot.set(key, value)
+  while (slot.size > STRETCH_CACHE_PER_BUFFER) {
+    const oldest = slot.keys().next()
+    if (oldest.done) break
+    slot.delete(oldest.value)
+  }
+}
+
 export interface GainPoint {
   /** Seconds after the schedule base time (baseT for preview, 0 for export). */
   offsetS: number
@@ -574,8 +663,10 @@ export async function scheduleAudio(
     const buffer = buffers[i]
     if (!buffer) return
     const source = ctx.createBufferSource()
-    source.buffer = buffer
-    source.playbackRate.value = Math.abs(clip.speed)
+    // Speed changes the length, not the pitch. See pitchPreservedSource.
+    const play = pitchPreservedSource(ctx, buffer, clip.speed, sched)
+    source.buffer = play.buffer
+    source.playbackRate.value = play.playbackRate
     const gain = ctx.createGain()
     // Fade in/out + static gain, shared with the export mix by construction.
     const env = clipGainEnvelope(clip, fromS) ?? [{ offsetS: 0, value: dbToGain(clip.audioGainDb) }]
@@ -586,7 +677,7 @@ export async function scheduleAudio(
     })
     source.connect(gain)
     gain.connect(trackInputFor(track))
-    source.start(baseT + sched.whenOffsetS, sched.sourceOffsetS, sched.durationS)
+    source.start(baseT + sched.whenOffsetS, play.offsetS, play.durationS)
     clipNodes.push({ source, gain })
   })
 

@@ -418,7 +418,13 @@ describe('mixToStereo', () => {
     expect(l[47999]).toBeCloseTo(0.5 * HALF_POWER, 5)
   })
 
-  it('resamples a speed-2 clip by reading every other source sample', () => {
+  // ⚠️ The next two run at 4 Hz, where a clip is far shorter than one analysis
+  // frame and the pitch-preserving stretch deliberately degenerates to a plain
+  // resample (engine/timeStretch.ts). They pin the sample WINDOW: which part of
+  // the source a speed change reads and how many output frames it fills. What a
+  // speed change does to the PITCH is pinned at a real rate further down, where
+  // the stretch is actually in play.
+  it('reads a speed-2 clip from every other source sample: the window is right', () => {
     // src at 4 Hz, output at 4 Hz, speed 2 -> step 2 through the source.
     const mono = new Float32Array([0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]) // 2 s of source
     const [l] = mixToStereo(
@@ -440,7 +446,7 @@ describe('mixToStereo', () => {
     expect(l[3]).toBeCloseTo(0.6 * HALF_POWER, 5)
   })
 
-  it('resamples a half-speed clip by interpolating between source samples', () => {
+  it('reads a half-speed clip by interpolating between source samples', () => {
     // src at 4 Hz, output at 4 Hz, speed 0.5 -> step 0.5, window is stretched 2x.
     const mono = new Float32Array([0, 0.4, 0.8, 0.6]) // 1 s of source
     const [l] = mixToStereo(
@@ -457,6 +463,68 @@ describe('mixToStereo', () => {
     const expected = [0, 0.2, 0.4, 0.6, 0.8, 0.7, 0.6, 0.3]
     expect(l.length).toBe(8)
     expected.forEach((e, i) => expect(l[i]).toBeCloseTo(e * HALF_POWER, 5))
+  })
+
+  // What an export SOUNDS like at a speed other than 1x. This is the mixer the
+  // worker uses, so it is the render he would actually download.
+  describe('a speed change does not move his voice', () => {
+    const sine = (freq: number, frames: number, rate: number): Float32Array => {
+      const out = new Float32Array(frames)
+      for (let i = 0; i < frames; i++) out[i] = Math.sin(2 * Math.PI * freq * (i / rate))
+      return out
+    }
+    /** Rising zero crossings over the steady middle, in Hz. */
+    const dominantHz = (buf: Float32Array, rate: number): number => {
+      const a = Math.floor(buf.length * 0.2)
+      const b = Math.floor(buf.length * 0.8)
+      let crossings = 0
+      for (let i = a + 1; i < b; i++) if (buf[i - 1] <= 0 && buf[i] > 0) crossings++
+      return (crossings * rate) / (b - a)
+    }
+
+    it('stays at 440 Hz at double speed instead of jumping the octave to 880', () => {
+      // 2 s of source at 2x fills a 1 s timeline window.
+      const [l] = mixToStereo(
+        [
+          source({
+            channelData: [sine(440, 96000, 48000)],
+            sampleRate: 48000,
+            clip: clip({ inS: 0, outS: 2, speed: 2 }),
+          }),
+        ],
+        { startS: 0, endS: 1, sampleRate: 48000, soloActive: false },
+      )
+      expect(l.length).toBe(48000)
+      expect(dominantHz(l, 48000)).toBeGreaterThan(415)
+      expect(dominantHz(l, 48000)).toBeLessThan(465)
+    })
+
+    it('stays at 440 Hz at half speed instead of dropping to 220', () => {
+      const [l] = mixToStereo(
+        [
+          source({
+            channelData: [sine(440, 48000, 48000)],
+            sampleRate: 48000,
+            clip: clip({ inS: 0, outS: 1, speed: 0.5 }),
+          }),
+        ],
+        { startS: 0, endS: 2, sampleRate: 48000, soloActive: false },
+      )
+      expect(l.length).toBe(96000)
+      expect(dominantHz(l, 48000)).toBeGreaterThan(415)
+      expect(dominantHz(l, 48000)).toBeLessThan(465)
+    })
+
+    it('leaves a 1x clip alone, sample for sample', () => {
+      const mono = sine(440, 48000, 48000)
+      const [l] = mixToStereo(
+        [source({ channelData: [mono], sampleRate: 48000, clip: clip({ inS: 0, outS: 1 }) })],
+        { startS: 0, endS: 1, sampleRate: 48000, soloActive: false },
+      )
+      for (let i = 0; i < 48000; i += 997) {
+        expect(l[i]).toBeCloseTo(mono[i] * HALF_POWER, 5)
+      }
+    })
   })
 
   it('downmixes a stereo source before panning', () => {
