@@ -346,12 +346,18 @@ export function buildMove(
     const r = 1 + beat.d * (depth - 1)
     const fx = (beat.aim.x - 0.5) * options.seqWidth
     const fy = (beat.aim.y - 0.5) * options.seqHeight
+    // ⛔ ABS, NOT (r - 1). Below 1 the picture SHRINKS and (r - 1) goes negative,
+    // which silently flips every sideways move: measured 2026-08-14, "Left, then
+    // right" at depth 0.8 travelled right then left. The aim is a DIRECTION he
+    // picked off a tile, so it has to read the same whether the move grows or
+    // shrinks. The magnitude still scales with how far from neutral it goes.
+    const travel = Math.abs(r - 1)
     return {
       t,
       curve: beat.curve,
       scale: bases.scale * r,
-      posX: bases.posX - fx * (r - 1),
-      posY: bases.posY - fy * (r - 1),
+      posX: bases.posX - fx * travel,
+      posY: bases.posY - fy * travel,
     }
   })
 
@@ -359,6 +365,18 @@ export function buildMove(
   for (const channel of MOVE_CHANNELS) {
     const base = bases[channel as 'scale' | 'posX' | 'posY']
     const values = rows.map((row) => row[channel as 'scale' | 'posX' | 'posY'])
+    // A channel that never leaves its base is dropped, so an ungraded clip stays
+    // cheap and a sideways-free move writes no posX/posY.
+    //
+    // ⚠️ AT DEPTH EXACTLY 1.0 THIS DROPS EVERYTHING and the clip ends up with no
+    // keyframes at all, so `matchMove` reports 'none' and the move is forgotten.
+    // Keeping a flat scale track was tried and is WORSE: at depth 1 every move
+    // compiles to the same flat keyframes, so `matchMove` cannot tell them
+    // apart. Measured 2026-08-14: `rightThenLeft` came back as `leftThenRight`
+    // and `driftRight` as `pushIn`, which would then silently rebuild as the
+    // wrong move the moment the slider left 1.0. **The depth control is what
+    // keeps 1.0 out of reach instead** (NEUTRAL_BAND in MoveShelf.tsx), because
+    // a move at 100 percent is no move and that is what the None tile is for.
     if (values.every((v) => Math.abs(v - base) < 1e-6)) continue
     tracks.push({
       channel,
@@ -454,11 +472,11 @@ export function matchMove(
 ): MoveMatch | null {
   const durS = clipDurationS(clip)
   const times: number[] = []
-  let peak = Number.NEGATIVE_INFINITY
+  const scales: number[] = []
   for (const channel of MOVE_CHANNELS) {
     for (const k of channelKeyframes(clip, channel)) {
       times.push(k.t)
-      if (channel === 'scale') peak = Math.max(peak, k.value)
+      if (channel === 'scale') scales.push(k.value)
     }
   }
   if (times.length === 0) return { id: 'none', depth: 1, startS: 0, endS: durS }
@@ -466,7 +484,17 @@ export function matchMove(
   const startS = Math.min(...times)
   const endS = Math.max(...times)
   const base = channelBase(clip, 'scale')
-  const depth = base !== 0 && Number.isFinite(peak) ? peak / base : 1
+  // ⛔ THE DEPTH IS THE VALUE FURTHEST FROM THE BASE, NOT THE LARGEST. This used
+  // to be Math.max, which is the same thing only while every move grows. A move
+  // that SHRINKS has its extreme at the bottom, so the max was just the base
+  // again, depth read as 1, the rebuild came out flat and the move matched
+  // nothing: measured 2026-08-14, every zoom-out failed recognition and the
+  // tile went dark. Furthest-from-base is right in both directions.
+  let extreme = base
+  for (const v of scales) {
+    if (Math.abs(v - base) > Math.abs(extreme - base)) extreme = v
+  }
+  const depth = base !== 0 && Number.isFinite(extreme) ? extreme / base : 1
   for (const def of MOVES) {
     if (def.beats.length === 0) continue
     const rebuilt = applyMove(clip, fps, def, {

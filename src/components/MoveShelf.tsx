@@ -57,11 +57,38 @@ import { useStore } from '../state/store'
 import { liveFrame, shelfGlyphs, TAPE_UNITS, type MoveGlyph } from './moveGlyph'
 import { headroomCeiling, overHeadroom } from './headroom'
 
-/** The slider's ends. 105 percent is the smallest move that reads at all; 200 is as far as his footage stretches. */
-const DEPTH_MIN = 1.05
+/**
+ * The slider's ends. It used to start at 1.05, and THAT ONE CONSTANT was the
+ * whole reason a move could never pull back: the engine has always handled a
+ * depth below 1, it was simply unreachable. His ask, 2026-08-14: *"go out and
+ * go more out than it can before."*
+ *
+ * 50 percent is as far back as is worth going; past that the picture is a stamp
+ * in the middle of the frame. 200 is as far as his footage stretches forward.
+ */
+const DEPTH_MIN = 0.5
 const DEPTH_MAX = 2
+/**
+ * ⛔ EXACTLY 100 PERCENT IS NOT SETTLEABLE, and this band is what keeps it out
+ * of reach. A move at 100 percent is no move: every preset compiles to flat
+ * keyframes, they are then indistinguishable from each other, and the shelf
+ * would light the wrong tile and rebuild the WRONG MOVE the moment the slider
+ * left the middle. Measured 2026-08-14: `rightThenLeft` came back as
+ * `leftThenRight`. Crossing the middle jumps to the far side, so a drag still
+ * feels continuous and every value the engine sees makes a real move.
+ * "No move at all" already has a control: the None tile.
+ */
+const NEUTRAL_BAND = 0.04
 /** The four numbers that were on the shipped chips, kept as notches under the slider. */
-const NOTCHES = [1.1, 1.2, 1.4, 1.7]
+const NOTCHES = [0.6, 0.8, 1.2, 1.4, 1.7]
+
+/** Push a depth out of the dead middle, to whichever side it is nearer. */
+function outOfNeutral(v: number, from: number): number {
+  if (Math.abs(v - 1) >= NEUTRAL_BAND) return v
+  // Coming from above, land below, and the other way round, so a drag crosses
+  // rather than sticking to the edge it arrived at.
+  return from > 1 ? 1 - NEUTRAL_BAND : 1 + NEUTRAL_BAND
+}
 
 /** How long a hovered tile takes to run through its move, and the pause before it loops. */
 const PREVIEW_RUN_S = 1.9
@@ -275,7 +302,7 @@ const MoveTile = memo(function MoveTile({
  * start the sweep three seconds in. Retiming is a PARAMETER of the move, so the
  * tile stays lit through it.
  */
-function MoveRibbon({ clip, def, startS, endS }: { clip: Clip; def: MoveDef; startS: number; endS: number }) {
+function MoveRibbon({ clip, def, depth, startS, endS }: { clip: Clip; def: MoveDef; depth: number; startS: number; endS: number }) {
   const durS = Math.max(1e-6, clipDurationS(clip))
   const barRef = useRef<HTMLDivElement>(null)
   const [draft, setDraft] = useState<{ startS: number; endS: number } | null>(null)
@@ -301,7 +328,9 @@ function MoveRibbon({ clip, def, startS, endS }: { clip: Clip; def: MoveDef; sta
           ? { startS: moment ? t : Math.min(t, shown.endS - 1 / 30), endS: moment ? t + span : shown.endS }
           : { startS: shown.startS, endS: Math.max(t, shown.startS + 1 / 30) }
       setDraft(next)
-      setMoveWindow(clip.id, next.startS, next.endS)
+      // The move is CARRIED, never re-guessed mid drag. Guessing is what made
+      // the bar die under his cursor and the tile go dark.
+      setMoveWindow(clip.id, next.startS, next.endS, { id: def.id, depth })
     }
     const up = (): void => {
       window.removeEventListener('pointermove', move)
@@ -497,7 +526,7 @@ export function MoveShelf({ clips }: { clips: Clip[] }) {
       </div>
 
       {single && litDef && litDef.beats.length > 0 && match && (
-        <MoveRibbon clip={single} def={litDef} startS={match.startS} endS={match.endS} />
+        <MoveRibbon clip={single} def={litDef} depth={match.depth} startS={match.startS} endS={match.endS} />
       )}
 
       <div className="flex flex-col gap-1">
@@ -530,7 +559,9 @@ export function MoveShelf({ clips }: { clips: Clip[] }) {
           step={0.01}
           value={depth}
           list="move-depth-notches"
-          onChange={(e) => setMoveDepth(Number(e.target.value), clips.map((c) => c.id))}
+          onChange={(e) =>
+            setMoveDepth(outOfNeutral(Number(e.target.value), depth), clips.map((c) => c.id))
+          }
         />
         <datalist id="move-depth-notches">
           {NOTCHES.map((v) => (

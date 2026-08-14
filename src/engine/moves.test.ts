@@ -382,3 +382,75 @@ describe('the moments a tile marks', () => {
     }
   })
 })
+
+// His ask, 2026-08-14: *"go out and go more out than it can before."* The slider
+// used to start at 105 percent, so a move could only ever grow. The engine
+// always handled shrinking; it was simply unreachable. These pin the three
+// things that were actually wrong underneath, all three found by PROBING the
+// compiler at depths below 1 rather than by reading it.
+describe('moves that pull back', () => {
+  const ctx = { riseFrames: 5, seqWidth: 1080, seqHeight: 1920 }
+  const scaleOf = (c: Clip): number[] => channelKeyframes(c, 'scale').map((k) => +k.value.toFixed(4))
+  const posXOf = (c: Clip): number[] => channelKeyframes(c, 'posX').map((k) => +k.value.toFixed(1))
+  const byId = (id: string): MoveDef => MOVES.find((m) => m.id === id)!
+
+  it('a zoom-out compiles to a shrinking scale track', () => {
+    const out = applyMove(seed(4), FPS, byId('pushIn'), { depth: 0.5, ...ctx })
+    expect(scaleOf(out)).toEqual([1, 0.5])
+  })
+
+  it('⛔ a sideways move keeps its DIRECTION when it shrinks', () => {
+    // The bug: posX = base - fx * (r - 1), and (r - 1) flips sign below 1, so
+    // "Left, then right" travelled right then left. Measured before the fix:
+    // depth 0.8 gave [0, -47.5, -47.5, +47.5, +47.5, 0], the mirror of 1.2.
+    const inward = posXOf(applyMove(seed(4), FPS, byId('leftThenRight'), { depth: 1.2, ...ctx }))
+    const outward = posXOf(applyMove(seed(4), FPS, byId('leftThenRight'), { depth: 0.8, ...ctx }))
+    expect(inward.length).toBeGreaterThan(2)
+    expect(outward).toEqual(inward)
+    // ...and it is genuinely the left-then-right shape, not a flat line.
+    expect(Math.max(...inward)).toBeGreaterThan(0)
+    expect(Math.min(...inward)).toBeLessThan(0)
+  })
+
+  it('travels FURTHER the further from normal it goes, in both directions', () => {
+    const near = posXOf(applyMove(seed(4), FPS, byId('leftThenRight'), { depth: 0.8, ...ctx }))
+    const far = posXOf(applyMove(seed(4), FPS, byId('leftThenRight'), { depth: 0.5, ...ctx }))
+    expect(Math.max(...far)).toBeGreaterThan(Math.max(...near))
+  })
+
+  it('⛔ a zoom-out is still RECOGNISED as its own move, so the tile stays lit', () => {
+    // The bug: matchMove took Math.max of the scale keyframes, which for a
+    // shrinking move is just the base, so depth read as 1 and nothing matched.
+    // Every zoom-out came back null and the shelf went dark.
+    for (const id of ['pushIn', 'inAndOut', 'leftThenRight', 'rightThenLeft', 'driftRight']) {
+      for (const depth of [0.8, 0.6, 0.5]) {
+        const out = applyMove(seed(4), FPS, byId(id), { depth, ...ctx })
+        const m = matchMove(out, FPS, ctx)
+        expect(m, `${id} at ${depth}`).not.toBeNull()
+        expect(m!.id, `${id} at ${depth}`).toBe(id)
+        expect(m!.depth, `${id} at ${depth}`).toBeCloseTo(depth, 2)
+      }
+    }
+  })
+
+  it('still recognises every move that grows, exactly as before', () => {
+    for (const id of ['pushIn', 'inAndOut', 'leftThenRight', 'rightThenLeft', 'driftRight']) {
+      for (const depth of [1.2, 1.5, 2]) {
+        const out = applyMove(seed(4), FPS, byId(id), { depth, ...ctx })
+        const m = matchMove(out, FPS, ctx)
+        expect(m!.id, `${id} at ${depth}`).toBe(id)
+        expect(m!.depth, `${id} at ${depth}`).toBeCloseTo(depth, 2)
+      }
+    }
+  })
+
+  it('⛔ exactly 1.0 is NO MOVE, and distinct moves are indistinguishable there', () => {
+    // Why the depth control refuses to sit on 100 percent. Keeping flat
+    // keyframes so the tile stayed lit was tried and is worse: every preset
+    // compiles to the same thing, so the shelf lights whichever matches first
+    // and then rebuilds THAT one when the slider moves off.
+    const a = applyMove(seed(4), FPS, byId('rightThenLeft'), { depth: 1, ...ctx })
+    expect(scaleOf(a)).toEqual([])
+    expect(matchMove(a, FPS, ctx)?.id).toBe('none')
+  })
+})

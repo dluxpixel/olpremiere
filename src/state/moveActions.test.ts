@@ -215,3 +215,55 @@ describe('the same move on the next clip', () => {
     expect(a).toEqual(b)
   })
 })
+
+// His report, 2026-08-14: dragging the ends of the bar loses the clip's move.
+// It was never the SELECTION. setMoveWindow re-derived the move from the
+// keyframes on every pointermove, and recognition fails at many window widths
+// because the rebuilt beats quantise a frame differently. At the first such
+// width the function returned, so the drag died under his cursor, the tile went
+// dark and the depth slider went inert. A real drag crosses those widths
+// constantly, which is why it felt random.
+describe('a retime can never lose the move it is retiming', () => {
+  /** Every width a real drag passes through, not the two that happen to work. */
+  const sweep = (id: 'leftThenRight' | 'inAndOut' | 'pushIn'): string[] => {
+    const broken: string[] = []
+    for (let i = 1; i <= 34; i++) {
+      const [clip] = seedClips(1, 6)
+      useStore.getState().setUI({ selection: [clip.id] })
+      applyMoveToSelection(id)
+      const endS = (i / 35) * 6
+      setMoveWindow(clip.id, 0, endS, { id, depth: 1.2 })
+      // His complaint, precisely: the move must still BE there afterwards.
+      const n = channelKeyframes(clipById(clip.id), 'scale').length
+      if (n === 0) broken.push(`${endS.toFixed(2)}:wiped`)
+    }
+    return broken
+  }
+
+  it('keeps the move at EVERY window width a drag passes through', () => {
+    // Before the fix the drag went dead at the first bad width and every later
+    // pointermove was ignored, so the gesture died under his cursor.
+    // ⚠️ The TILE can still go dark at a few widths: recognition compares the
+    // keyframe COUNT (moves.ts:439) and a rebuild can collapse two beats onto
+    // one frame. That is a separate defect and is written up, not fixed here.
+    expect(sweep('leftThenRight')).toEqual([])
+    expect(sweep('inAndOut')).toEqual([])
+    expect(sweep('pushIn')).toEqual([])
+  })
+
+  it('refuses a window too small to hold the move, rather than deleting it', () => {
+    const [clip] = seedClips(1, 6)
+    useStore.getState().setUI({ selection: [clip.id] })
+    applyMoveToSelection('inAndOut')
+    const before = channelKeyframes(clipById(clip.id), 'scale')
+    expect(before.length).toBeGreaterThan(0)
+
+    // A hair of a window: every beat lands on one frame, so a rebuild would
+    // produce nothing at all and the move would be gone with no way back.
+    setMoveWindow(clip.id, 0, 0.02, { id: 'inAndOut', depth: 1.2 })
+
+    const after = clipById(clip.id)
+    expect(channelKeyframes(after, 'scale').length).toBeGreaterThan(0)
+    expect(moveOnClip(after)?.id).toBe('inAndOut')
+  })
+})

@@ -9,7 +9,8 @@
 // and read back off them (matchMove), so a clip edited by hand afterwards simply
 // stops matching, and the shelf can never claim a move the clip is not making.
 
-import { MOVE_BY_ID, applyMove, matchMove, type MoveId, type MoveMatch } from '../engine/moves'
+import { MOVE_BY_ID, MOVE_CHANNELS, applyMove, matchMove, type MoveId, type MoveMatch } from '../engine/moves'
+import { channelKeyframes } from '../engine/effects/channels'
 import { clipDurationS, unlockedClipIds } from '../engine/timeline'
 import { activeSequence, type Clip, type Sequence } from '../engine/types'
 import { mapClips } from './bulkEdits'
@@ -147,22 +148,50 @@ export function setMoveDepth(depth: number, ids?: readonly string[]): void {
   )
 }
 
+/** How many keyframes a clip's move channels carry between them. 0 means no move. */
+function moveKeyframeCount(clip: Clip): number {
+  return MOVE_CHANNELS.reduce((n, ch) => n + channelKeyframes(clip, ch).length, 0)
+}
+
 /**
  * Move where a move starts and ends, by dragging the ends of the bar under the
  * tiles. Retiming is a PARAMETER of the move, not a hand edit, so the tile stays
  * lit: the window is read back from the first and last keyframe, so putting them
  * somewhere else simply moves the window.
+ *
+ * Pass `known` when the caller already knows which move it is dragging. It
+ * should: see the comment below.
  */
-export function setMoveWindow(clipId: string, startS: number, endS: number): void {
+export function setMoveWindow(
+  clipId: string,
+  startS: number,
+  endS: number,
+  known?: { id: MoveId; depth: number },
+): void {
   const ctx = moveContext()
   const { clips } = targets([clipId])
   const clip = clips[0]
   if (!clip) return
-  const found = matchMove(clip, ctx.fps, {
-    riseFrames: ctx.riseFrames,
-    seqWidth: ctx.seqWidth,
-    seqHeight: ctx.seqHeight,
-  })
+  // ⛔ THE CALLER'S MOVE WINS, AND THIS IS THE WHOLE BUG HE REPORTED.
+  //
+  // This used to re-derive the move from the keyframes on EVERY pointermove.
+  // Recognition rebuilds the preset at the window it reads back and compares
+  // frame by frame, so at a great many window widths the quantised beats differ
+  // by a frame and it matches nothing. Measured 2026-08-14 by sweeping the end
+  // handle across a 6 second clip: "Left, then right" failed recognition at
+  // ELEVEN widths spread over the whole bar, "In and out" at three. At the
+  // first of them this function returned, the drag went dead under his cursor,
+  // the tile went dark and the depth slider went inert.
+  //
+  // The ribbon already knows which move it is dragging, because it is drawing
+  // it. Carrying that through means a retime can no longer depend on guessing.
+  const found =
+    known ??
+    matchMove(clip, ctx.fps, {
+      riseFrames: ctx.riseFrames,
+      seqWidth: ctx.seqWidth,
+      seqHeight: ctx.seqHeight,
+    })
   if (!found || found.id === 'none') return
   const def = MOVE_BY_ID[found.id]
   const durS = clipDurationS(clip)
@@ -171,15 +200,23 @@ export function setMoveWindow(clipId: string, startS: number, endS: number): voi
   mapClips(
     [clipId],
     'Move timing',
-    (c) =>
-      applyMove(c, ctx.fps, def, {
+    (c) => {
+      const next = applyMove(c, ctx.fps, def, {
         depth: found.depth,
         riseFrames: ctx.riseFrames,
         seqWidth: ctx.seqWidth,
         seqHeight: ctx.seqHeight,
         startS: lo,
         endS: hi,
-      }),
+      })
+      // ⛔ A RETIME MUST NEVER DELETE THE MOVE IT IS RETIMING. Squeeze the window
+      // small enough and every beat lands on one frame, so every channel comes
+      // out flat and `buildMove` drops all of them: the clip keeps nothing and
+      // there is no way back except undo, which also throws away the drag.
+      // Measured at a 0.15 s window. Refusing the write leaves the handle
+      // looking stuck, which is the honest thing for a window that small.
+      return moveKeyframeCount(next) === 0 ? c : next
+    },
     'move-window',
   )
 }
