@@ -28,6 +28,9 @@ vi.mock('./persistence', () => ({
   deleteProject: vi.fn(async (id: string) => {
     saved.delete(id)
   }),
+  listProjects: vi.fn(async () =>
+    [...saved.values()].map((p, i) => ({ id: p.id, name: p.name, updatedAt: i })),
+  ),
 }))
 
 beforeEach(() => {
@@ -74,9 +77,53 @@ describe('createProject', () => {
 })
 
 describe('removeProject', () => {
-  it('never deletes the open project', async () => {
+  // ⛔ THIS USED TO SAY 'never deletes the open project'. He asked for the
+  // opposite on 2026-08-14: the delete button is on the open row now, and
+  // having to open something else first purely to satisfy the app was the bug.
+  // What must still hold is that the editor is never left holding a corpse.
+  it('deletes the open project, landing on another one first', async () => {
     const current = useStore.getState().project
     saved.set(current.id, current)
+    const other = newProject('Other')
+    saved.set(other.id, other)
+
+    await removeProject(current.id)
+
+    expect(saved.has(current.id)).toBe(false)
+    expect(useStore.getState().project.id).toBe(other.id)
+  })
+
+  it('deletes the open project when it is the last one, onto a fresh one', async () => {
+    const current = useStore.getState().project
+    saved.set(current.id, current)
+
+    await removeProject(current.id)
+
+    expect(saved.has(current.id)).toBe(false)
+    // Somewhere real to be, not an empty editor.
+    expect(useStore.getState().project.id).not.toBe(current.id)
+    expect(saved.has(useStore.getState().project.id)).toBe(true)
+  })
+
+  it('⛔ deletes NOTHING when the switch away could not save', async () => {
+    // The order is the whole safety property: a delete that went ahead here
+    // would pull the file out from under an editor still showing it.
+    const current = useStore.getState().project
+    saved.set(current.id, current)
+    const other = newProject('Other')
+    saved.set(other.id, other)
+    saveFails = true
+
+    await removeProject(current.id)
+
+    expect(saved.has(current.id)).toBe(true)
+    expect(useStore.getState().project.id).toBe(current.id)
+  })
+
+  it('refuses inside a collab room, where switching would tear the doc away', async () => {
+    const current = useStore.getState().project
+    saved.set(current.id, current)
+    roomSession = {}
     await removeProject(current.id)
     expect(saved.has(current.id)).toBe(true)
   })

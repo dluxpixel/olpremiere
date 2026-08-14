@@ -158,7 +158,7 @@ export function ProjectsDialog({ onClose, view = 'active' }: { onClose: () => vo
                       Open
                     </Button>
                   )}
-                  {!isOpen && tab !== 'archived' && (
+                  {tab !== 'archived' && (
                     <button
                       type="button"
                       data-testid={tab === 'later' ? 'project-unpark' : 'project-park'}
@@ -178,50 +178,52 @@ export function ProjectsDialog({ onClose, view = 'active' }: { onClose: () => vo
                       )}
                     </button>
                   )}
-                  {!isOpen && (
-                    <button
-                      type="button"
-                      data-testid={tab === 'archived' ? 'project-unarchive' : 'project-archive'}
-                      aria-label={tab === 'archived' ? `Put ${p.name} back` : `Mark ${p.name} finished`}
-                      title={
-                        tab === 'archived'
-                          ? 'Put it back in your projects'
-                          : 'Finished with it? File it away. Nothing is deleted.'
+                  <button
+                    type="button"
+                    data-testid={tab === 'archived' ? 'project-unarchive' : 'project-archive'}
+                    aria-label={tab === 'archived' ? `Put ${p.name} back` : `Mark ${p.name} finished`}
+                    title={
+                      tab === 'archived'
+                        ? 'Put it back in your projects'
+                        : 'Finished with it? File it away. Nothing is deleted.'
+                    }
+                    onClick={() => void setArchived(p.id, tab !== 'archived').then(refresh)}
+                    className="rounded-field p-1.5 text-text-muted opacity-0 transition-colors duration-[120ms] hover:text-text-primary group-hover/proj:opacity-100"
+                  >
+                    {tab === 'archived' ? (
+                      <ArchiveRestore size={14} strokeWidth={1.5} />
+                    ) : (
+                      <Archive size={14} strokeWidth={1.5} />
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="project-delete"
+                    aria-label={armedDelete === p.id ? 'Confirm delete' : `Delete ${p.name}`}
+                    title={
+                      armedDelete === p.id
+                        ? 'Click again to delete for good'
+                        : isOpen
+                          ? 'Delete this project. It will open another one first.'
+                          : 'Delete project'
+                    }
+                    onClick={() => {
+                      if (armedDelete === p.id) {
+                        setArmedDelete(null)
+                        void removeProject(p.id).then(refresh)
+                      } else {
+                        setArmedDelete(p.id)
                       }
-                      onClick={() => void setArchived(p.id, tab !== 'archived').then(refresh)}
-                      className="rounded-field p-1.5 text-text-muted opacity-0 transition-colors duration-[120ms] hover:text-text-primary group-hover/proj:opacity-100"
-                    >
-                      {tab === 'archived' ? (
-                        <ArchiveRestore size={14} strokeWidth={1.5} />
-                      ) : (
-                        <Archive size={14} strokeWidth={1.5} />
-                      )}
-                    </button>
-                  )}
-                  {!isOpen && (
-                    <button
-                      type="button"
-                      data-testid="project-delete"
-                      aria-label={armedDelete === p.id ? 'Confirm delete' : `Delete ${p.name}`}
-                      title={armedDelete === p.id ? 'Click again to delete for good' : 'Delete project'}
-                      onClick={() => {
-                        if (armedDelete === p.id) {
-                          setArmedDelete(null)
-                          void removeProject(p.id).then(refresh)
-                        } else {
-                          setArmedDelete(p.id)
-                        }
-                      }}
-                      onBlur={() => setArmedDelete(null)}
-                      className={`rounded-field p-1.5 transition-colors duration-[120ms] ${
-                        armedDelete === p.id
-                          ? 'bg-danger/20 text-danger'
-                          : 'text-text-muted opacity-0 hover:text-danger group-hover/proj:opacity-100'
-                      }`}
-                    >
-                      <Trash2 size={14} strokeWidth={1.5} />
-                    </button>
-                  )}
+                    }}
+                    onBlur={() => setArmedDelete(null)}
+                    className={`rounded-field p-1.5 transition-colors duration-[120ms] ${
+                      armedDelete === p.id
+                        ? 'bg-danger/20 text-danger'
+                        : 'text-text-muted opacity-0 hover:text-danger group-hover/proj:opacity-100'
+                    }`}
+                  >
+                    <Trash2 size={14} strokeWidth={1.5} />
+                  </button>
                 </div>
               )
             })

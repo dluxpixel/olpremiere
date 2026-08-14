@@ -5,7 +5,7 @@
 import { activeSequence, newProject } from '../engine/types'
 import { useCollab } from '../collab/collabControl'
 import { pausePlayback } from './playbackControl'
-import { deleteProject, loadProjectById, saveNow, saveProject, setProjectArchived, setProjectLater } from './persistence'
+import { deleteProject, listProjects, loadProjectById, saveNow, saveProject, setProjectArchived, setProjectLater } from './persistence'
 import { useStore } from './store'
 import { useToasts } from './toasts'
 import { applyTemplateTracks } from './trackTemplate'
@@ -75,10 +75,37 @@ export async function createProject(): Promise<void> {
   await saveProject(p)
 }
 
-/** Delete a NON-open project and its media bytes. */
+/**
+ * Delete a project and its media bytes, INCLUDING the one that is open.
+ *
+ * His ask, 2026-08-14: the archive, later and delete buttons should be there on
+ * the row he is looking at even when that project is the open one. This used to
+ * refuse, so he had to open something else first purely to satisfy the app.
+ *
+ * ⛔ THE ORDER IS THE WHOLE THING. Deleting first would leave the editor holding
+ * a project that no longer exists, and the very next autosave would write it
+ * straight back. So the successor is opened FIRST, and only a switch that
+ * actually happened earns the delete: `openProject` aborts when the outgoing
+ * save fails, and this must abort with it rather than delete anyway.
+ */
 export async function removeProject(id: string): Promise<void> {
-  if (id === useStore.getState().project.id) {
-    useToasts.getState().show('Open another project first, then delete this one', 'danger')
+  if (id !== useStore.getState().project.id) {
+    await deleteProject(id)
+    useToasts.getState().show('Project deleted')
+    return
+  }
+  if (!guardRoom()) return
+
+  // Land somewhere before the ground goes: the most recently touched project
+  // that is not this one, or a fresh one when this was the last.
+  const others = (await listProjects()).filter((p) => p.id !== id)
+  const successor = others.sort((a, b) => b.updatedAt - a.updatedAt)[0]
+  if (successor) await openProject(successor.id)
+  else await createProject()
+
+  if (useStore.getState().project.id === id) {
+    // The switch was refused, and it has already said why. Deleting now would
+    // pull the file out from under the editor still showing it.
     return
   }
   await deleteProject(id)
@@ -94,19 +121,18 @@ export async function removeProject(id: string): Promise<void> {
  * I just don't want to delete because, why the hell would I delete them for no
  * reason, right?"*
  *
- * The OPEN project is refused, for the same reason deleting it is: the list he
- * is looking at should never disagree with the editor behind it.
+ * ⛔ THE OPEN PROJECT USED TO BE REFUSED and is not any more, at his ask on
+ * 2026-08-14. The old reason was that "the list should never disagree with the
+ * editor behind it", and that was the wrong worry: filing a project away only
+ * moves which shelf its row sits on. Nothing closes, nothing is lost, he keeps
+ * editing, and it is one click back. Having to open some other project first
+ * purely to satisfy the app was the actual disagreement.
  */
 /**
- * Move a project between "now" and "later". Same shape and same refusal as
- * setArchived: the OPEN project stays put, because the list he is looking at
- * must never disagree with the editor behind it.
+ * Move a project between "now" and "later". Same shape as setArchived, and the
+ * open project is allowed here for the same reason.
  */
 export async function setLater(id: string, later: boolean): Promise<void> {
-  if (id === useStore.getState().project.id) {
-    useToasts.getState().show('Open another project first, then park this one', 'danger')
-    return
-  }
   try {
     await setProjectLater(id, later)
   } catch (err) {
@@ -118,10 +144,6 @@ export async function setLater(id: string, later: boolean): Promise<void> {
 }
 
 export async function setArchived(id: string, archived: boolean): Promise<void> {
-  if (id === useStore.getState().project.id) {
-    useToasts.getState().show('Open another project first, then archive this one', 'danger')
-    return
-  }
   try {
     await setProjectArchived(id, archived)
   } catch (err) {
