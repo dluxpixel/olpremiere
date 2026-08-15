@@ -10,6 +10,12 @@
 // dragging never worked on real work.
 //
 // He chose overwrite.
+//
+// ⛔ AND HE UNCHOSE IT ON 2026-08-15. Read the note on the assertions below
+// before touching anything in here: overwrite CARVED the clip underneath, he saw
+// it happen on his own edit, and he asked for it gone in the strongest terms he
+// has used about this app. The story above is why it existed, not what the code
+// does now. Nothing may reintroduce carving to make a packed drag move.
 
 import { expect, test, type Page } from '@playwright/test'
 
