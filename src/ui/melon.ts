@@ -45,13 +45,41 @@ interface MelonPixel {
   color: string;
 }
 
-/** Flatten the grid into positioned, coloured pixels (transparent cells skipped). */
-export function melonPixels(): MelonPixel[] {
+/**
+ * The bite: a round chomp out of the top right of the slice, as a circle in
+ * pixel space rather than a second hand-drawn grid.
+ *
+ * His ask, 2026-08-14: when the melon finds an update, it should show a piece
+ * bitten off while the update comes down.
+ *
+ * Geometry, not a copy of the art, on purpose. A second set of rows would be a
+ * duplicate of MELON_ROWS that could drift from it silently, and the art is
+ * guarded by a test precisely because it matters. Carving the one grid means
+ * the bitten melon is always the same melon.
+ *
+ * Centred off the top-right corner so the bite opens outward and leaves the
+ * rind at the bottom whole: a slice with a mouthful gone, not a broken one.
+ */
+const BITE = { cx: 15.2, cy: 1.2, r: 4.6 };
+
+/** Is this cell inside the chomp? Measured from the pixel's CENTRE. */
+function bitten(x: number, y: number): boolean {
+  const dx = x + 0.5 - BITE.cx;
+  const dy = y + 0.5 - BITE.cy;
+  return dx * dx + dy * dy < BITE.r * BITE.r;
+}
+
+/**
+ * Flatten the grid into positioned, coloured pixels (transparent cells skipped).
+ * `bite` carves the chomp out; everything else is untouched.
+ */
+export function melonPixels(opts?: { bite?: boolean }): MelonPixel[] {
   const out: MelonPixel[] = [];
   MELON_ROWS.forEach((row, y) => {
     for (let x = 0; x < row.length; x++) {
       const ch = row[x];
       if (ch === '.') continue;
+      if (opts?.bite && bitten(x, y)) continue;
       const color = MELON_PALETTE[ch];
       if (color) out.push({ x, y, color });
     }

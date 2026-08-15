@@ -322,8 +322,17 @@ export function MotionRail({
     const box = marqueeRef.current
     if (!root || !box) return
     // A diamond, a field or a button owns its own drag; the lasso starts on
-    // empty rail only.
-    if ((e.target as HTMLElement).closest('button, input, select, textarea, [data-kf-channel]')) return
+    // empty rail only. The curve editor is listed WHOLE rather than by its
+    // parts: its handles are bare <circle>s that match none of the others, so
+    // dragging one used to start a lasso as well and the empty box then cleared
+    // the selection the editor needs to exist at all. Naming the panel means a
+    // control added to it later cannot re-open that hole.
+    if (
+      (e.target as HTMLElement).closest(
+        'button, input, select, textarea, [data-kf-channel], [data-testid="curve-editor"]',
+      )
+    )
+      return
     const additive = e.shiftKey || e.ctrlKey || e.metaKey
     const x0 = e.clientX
     const y0 = e.clientY

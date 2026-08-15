@@ -24,14 +24,17 @@ export function MelonMark({
   pixels,
   size,
   mono = false,
+  bite = false,
 }: {
   className?: string
   pixels?: ReturnType<typeof melonPixels>
   size?: number
   /** Draw the shape in the current text colour, so it sits with the other icons. */
   mono?: boolean
+  /** Take a chomp out of the top right. Used to say an update was found. */
+  bite?: boolean
 }) {
-  const px = pixels ?? melonPixels()
+  const px = pixels ?? melonPixels(bite ? { bite: true } : undefined)
   return (
     <svg
       className={className}

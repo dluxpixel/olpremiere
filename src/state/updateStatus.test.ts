@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { UpdateStatus } from '../../electron/ipc-types'
-import { TIMED_OUT, bootDetailFor, updateLine } from './updateStatus'
+import { TIMED_OUT, bootDetailFor, updateLine, updateInHand } from './updateStatus'
 
 // This is the honesty contract for the update line: every state the updater can be
 // in must read as itself. The failure that started all of this was a check that
@@ -57,5 +57,26 @@ describe('updateLine', () => {
       { kind: 'unsupported' },
     ]
     for (const k of kinds) expect(updateLine(k)).not.toBeUndefined()
+  })
+})
+
+// The melon shows a bite once an update is in hand. "In hand" is a fact about
+// the feed, so it lives with the feed.
+describe('updateInHand', () => {
+  it('is true once there is something to install', () => {
+    expect(updateInHand({ kind: 'available', version: '0.1.82' })).toBe(true)
+    expect(updateInHand({ kind: 'downloading', version: '0.1.82', percent: 12 })).toBe(true)
+    expect(updateInHand({ kind: 'downloaded', version: '0.1.82' })).toBe(true)
+  })
+
+  it('⛔ is FALSE while merely checking, or the melon would bite on every click', () => {
+    expect(updateInHand({ kind: 'checking' })).toBe(false)
+  })
+
+  it('is false when there is nothing to say', () => {
+    expect(updateInHand(null)).toBe(false)
+    expect(updateInHand({ kind: 'none' })).toBe(false)
+    expect(updateInHand({ kind: 'unsupported' })).toBe(false)
+    expect(updateInHand({ kind: 'error', message: 'nope' })).toBe(false)
   })
 })

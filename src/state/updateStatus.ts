@@ -17,6 +17,22 @@ interface UpdateFeed {
 
 export const useUpdateFeed = create<UpdateFeed>(() => ({ status: null }))
 
+/**
+ * Is there an update in hand, as opposed to none, an error, or still looking?
+ *
+ * His ask, 2026-08-14: the melon should show a piece bitten out of it once a
+ * check finds something, and stay bitten while it comes down. So this is the
+ * one question the mark asks, and it is here rather than in the topbar because
+ * "found something" is a fact about the feed, not about a button.
+ *
+ * `checking` is deliberately NOT bitten: nothing has been found yet, and a
+ * melon that bites itself on every click would stop meaning anything.
+ */
+export function updateInHand(status: UpdateStatus | null): boolean {
+  if (!status) return false
+  return status.kind === 'available' || status.kind === 'downloading' || status.kind === 'downloaded'
+}
+
 /** How long to let "Checking…" stand before calling it unreachable. */
 export const CHECK_TIMEOUT_MS = 15_000
 /** Marks the "nothing ever answered" failure apart from a reported one. */

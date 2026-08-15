@@ -306,6 +306,14 @@ export function CurveEditor({ clip, channel }: { clip: Clip; channel: AnimChanne
   const onHandleDown = (e: React.PointerEvent<SVGCircleElement>, which: 0 | 1) => {
     if (e.button !== 0) return
     e.preventDefault()
+    // ⛔ AND STOP IT THERE, OR THE EDITOR CLOSES ITSELF EVERY TIME HE LETS GO.
+    // The rail below starts a lasso on any pointerdown that is not a button, an
+    // input or a keyframe diamond, and a handle is a bare <circle>, so pressing
+    // one used to start BOTH the handle drag and a box select. The box is empty,
+    // so on release MotionRail clears the selection, and this editor renders
+    // nothing without a selection: the shaped curve was saved but the panel
+    // vanished, so every single adjustment cost a re-click of the segment.
+    e.stopPropagation()
     dragRef.current = { which, next: handles }
 
     const onMove = (ev: PointerEvent) => {

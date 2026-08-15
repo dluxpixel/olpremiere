@@ -282,6 +282,25 @@ test('zooming the rail earns the click between two diamonds, and that segment op
   expect(keys[1].value).toBeCloseTo(DEPTH, 6)
   expect(keys[1].t - keys[0].t).toBeCloseTo(RISE_S, 6)
   await expect(page.getByTestId('curve-editor-header')).toHaveText('Zoom 100 to 120 over 5f')
+
+  // ⛔ AND THE EDITOR IS STILL THERE AFTER DRAGGING A HANDLE. It used not to be.
+  // A handle is a bare <circle>, which matched nothing in the rail's "not a
+  // lasso" list, so pressing one started a box select as well as the drag; the
+  // empty box cleared the selection on release and this panel renders nothing
+  // without one. The curve was saved and the editor vanished, so every single
+  // adjustment cost a re-click of the segment. Asserting the SHAPE MOVED as
+  // well, because an editor that survived by not dragging would prove nothing.
+  const before = (await scaleKeys(page))[0].curve
+  const h = await page.getByTestId('curve-handle-1').boundingBox()
+  if (!h) throw new Error('no handle')
+  await page.mouse.move(h.x + h.width / 2, h.y + h.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(h.x + h.width / 2 + 26, h.y + h.height / 2 - 18, { steps: 8 })
+  await page.mouse.up()
+
+  await expect(page.getByTestId('curve-editor')).toBeVisible()
+  await expect(page.getByTestId('curve-editor-header')).toHaveText('Zoom 100 to 120 over 5f')
+  await expect.poll(async () => (await scaleKeys(page))[0].curve).not.toEqual(before)
 })
 
 test('punch out at an arbitrary moment mid clip falls to base size and HOLDS there', async ({ page }) => {

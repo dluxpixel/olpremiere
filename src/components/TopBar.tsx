@@ -25,6 +25,7 @@ import { comboLabel } from '../keymap'
 import { exportProjectToFile, importProjectFromFile, registerProjectFilePicker } from '../state/projectFile'
 import { useStore } from '../state/store'
 import { useToasts } from '../state/toasts'
+import { updateInHand, updateLine, useUpdateFeed } from '../state/updateStatus'
 import { canRecordVoice, closeStudio, openStudio, useRecorder } from '../state/voiceRecorder'
 import { Button, IconButton } from '../ui/Button'
 import { MelonMark } from '../ui/MelonMark'
@@ -168,20 +169,53 @@ function ExportButton({ onOpen }: { onOpen: () => void }) {
  */
 function ReloadButton() {
   const [busy, setBusy] = useState(false)
+  const status = useUpdateFeed((s) => s.status)
+  const found = updateInHand(status)
+  // Pop once, on the frame the bite appears, not on every re-render while it
+  // downloads: the percent ticks constantly and a mark that flinched at each
+  // tick would be a fidget rather than a moment.
+  const [popped, setPopped] = useState(false)
+  useEffect(() => {
+    if (!found) {
+      setPopped(false)
+      return
+    }
+    setPopped(true)
+    // Say it in words as well as in the shape. Fired on the TRANSITION, so an
+    // update the app found on its own at startup announces itself too, not only
+    // one he went looking for.
+    useToasts.getState().show(updateLine(useUpdateFeed.getState().status) ?? 'Update found, downloading now')
+    const t = setTimeout(() => setPopped(false), 520)
+    return () => clearTimeout(t)
+  }, [found])
+
   return (
     <IconButton
-      label="Reload and check for updates"
+      label={found ? (updateLine(status) ?? 'Update found, downloading now') : 'Reload and check for updates'}
       data-testid="reload-app"
+      data-update-found={found ? 'true' : undefined}
       disabled={busy}
+      className={found ? 'text-accent!' : undefined}
       onClick={() => {
         setBusy(true)
         const api = typeof window !== 'undefined' ? window.api : undefined
         void Promise.resolve(api?.checkForUpdates?.())
           .catch(() => {})
-          .then(() => window.location.reload())
+          .then(() => {
+            setBusy(false)
+            // ⛔ DO NOT RELOAD ON TOP OF A FOUND UPDATE. This used to reload
+            // unconditionally, which is right when there is nothing to report
+            // and wrong the moment there is: it would throw away the bitten
+            // melon and the toast before he could see either, and restart the
+            // renderer underneath a download that is already running. Read
+            // fresh from the store rather than the closure, because the answer
+            // arrives DURING this promise.
+            if (updateInHand(useUpdateFeed.getState().status)) return
+            window.location.reload()
+          })
       }}
     >
-      <MelonMark mono size={16} />
+      <MelonMark mono size={16} bite={found} className={popped ? 'melon-pop' : undefined} />
     </IconButton>
   )
 }
