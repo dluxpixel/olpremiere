@@ -64,39 +64,131 @@ const BEZIER_EPS = 1e-6
  * Solves t from x by Newton-Raphson, falling back to bisection when the slope
  * collapses (x1=1, x2=0 is flat at t=0.5 and Newton cannot move off it).
  */
+function solveBezierT(x: number, x1: number, x2: number): number {
+  let t = x
+  for (let i = 0; i < 8; i++) {
+    const err = bezierAxis(t, x1, x2) - x
+    if (Math.abs(err) < BEZIER_EPS) return t
+    const d = bezierSlope(t, x1, x2)
+    if (Math.abs(d) < BEZIER_EPS) break
+    t -= err / d
+  }
+  let lo = 0
+  let hi = 1
+  t = x
+  for (let i = 0; i < 20; i++) {
+    const err = bezierAxis(t, x1, x2) - x
+    if (Math.abs(err) < BEZIER_EPS) break
+    if (err < 0) lo = t
+    else hi = t
+    t = (lo + hi) / 2
+  }
+  return t
+}
+
 export function bezierEase(curve: Curve, p: number): number {
   const x = p < 0 ? 0 : p > 1 ? 1 : p
   if (x === 0 || x === 1) return x
   const x1 = curve[0] < 0 ? 0 : curve[0] > 1 ? 1 : curve[0]
   const x2 = curve[2] < 0 ? 0 : curve[2] > 1 ? 1 : curve[2]
-  const y1 = curve[1]
-  const y2 = curve[3]
+  return bezierAxis(solveBezierT(x, x1, x2), curve[1], curve[3])
+}
 
-  let t = x
-  let solved = false
-  for (let i = 0; i < 8; i++) {
-    const err = bezierAxis(t, x1, x2) - x
-    if (Math.abs(err) < BEZIER_EPS) {
-      solved = true
-      break
-    }
-    const d = bezierSlope(t, x1, x2)
-    if (Math.abs(d) < BEZIER_EPS) break
-    t -= err / d
+/**
+ * The named eases as the SAME cubic bezier the renderer would run.
+ *
+ * `ease()` writes them as quadratics, and a quadratic in x is expressible
+ * exactly as a cubic bezier timing function. x1 = 1/3 and x2 = 2/3 make x(t) = t,
+ * and then y(t) = 3y1 t(1-t)^2 + 3y2 t^2(1-t) + t^3. Solving that for y = t^2
+ * gives y1 = 0, y2 = 1/3, and for y = 2t - t^2 gives y1 = 2/3, y2 = 1.
+ *
+ * ⛔ `easeInOut` IS DELIBERATELY ABSENT. It is piecewise, two quadratics either
+ * side of the midpoint, and no single cubic reproduces it. Claiming one here
+ * would make a cut silently reshape it, which is the exact bug this table exists
+ * to fix, so it is left out and the caller falls back honestly.
+ */
+const CURVE_FOR_EASE: Partial<Record<Easing, Curve>> = {
+  easeIn: [1 / 3, 0, 2 / 3, 1 / 3],
+  easeOut: [1 / 3, 2 / 3, 2 / 3, 1],
+}
+
+/** One control point of the unit-square cubic, during the split. */
+type Pt = { x: number; y: number }
+const lerp = (a: Pt, b: Pt, t: number): Pt => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t })
+
+/**
+ * Cut one eased segment in two AT progress `atP`, exactly.
+ *
+ * ⛔ WHY THIS EXISTS. Splitting a clip used to keep the left half's ease and run
+ * it over the shortened half, and hand the right half a plain linear. Both
+ * endpoints matched, so it looked right in a still, and the PATH between them
+ * was wrong at every cut he made: the audit measured a push off about 4 percent,
+ * a pop about 10, and a hold turned into a ramp. Every cut degraded the motion a
+ * little more, silently, and the docstring above it claimed the split was exact.
+ *
+ * De Casteljau at the bezier parameter that lands on `atP`, then each half is
+ * renormalised back into its own unit square. The two halves played back to back
+ * reproduce the original curve, so a cut costs nothing at all.
+ *
+ * Returns null when there is no exact answer (`easeInOut`, or a degenerate split
+ * where the value at the cut is the same as one of the ends). The caller then
+ * does what it always did, rather than inventing a shape.
+ */
+export function splitEaseAt(
+  kf: Pick<Keyframe, 'ease' | 'curve'>,
+  atP: number,
+): { left: Pick<Keyframe, 'ease' | 'curve'>; right: Pick<Keyframe, 'ease' | 'curve'> } | null {
+  if (!(atP > 0 && atP < 1)) return null
+  // Both halves of a hold are a hold, and both halves of a linear are linear.
+  // Exact, and no bezier needed for either.
+  if (!kf.curve && (kf.ease === 'hold' || kf.ease === 'linear')) {
+    return { left: { ease: kf.ease }, right: { ease: kf.ease } }
   }
-  if (!solved) {
-    let lo = 0
-    let hi = 1
-    t = x
-    for (let i = 0; i < 20; i++) {
-      const err = bezierAxis(t, x1, x2) - x
-      if (Math.abs(err) < BEZIER_EPS) break
-      if (err < 0) lo = t
-      else hi = t
-      t = (lo + hi) / 2
-    }
+  const curve = kf.curve ?? CURVE_FOR_EASE[kf.ease]
+  if (!curve) return null
+
+  const x1 = curve[0] < 0 ? 0 : curve[0] > 1 ? 1 : curve[0]
+  const x2 = curve[2] < 0 ? 0 : curve[2] > 1 ? 1 : curve[2]
+  const t = solveBezierT(atP, x1, x2)
+  const p0: Pt = { x: 0, y: 0 }
+  const p1: Pt = { x: x1, y: curve[1] }
+  const p2: Pt = { x: x2, y: curve[3] }
+  const p3: Pt = { x: 1, y: 1 }
+  const a = lerp(p0, p1, t)
+  const b = lerp(p1, p2, t)
+  const c = lerp(p2, p3, t)
+  const d = lerp(a, b, t)
+  const e = lerp(b, c, t)
+  const mid = lerp(d, e, t)
+
+  const zx = mid.x
+  const zy = mid.y
+  // A cut where the value has not moved, or has already arrived, cannot be
+  // renormalised: the half would be divided by zero. Left to the fallback.
+  if (!(zx > 1e-9 && zx < 1 - 1e-9)) return null
+  if (Math.abs(zy) < 1e-9 || Math.abs(1 - zy) < 1e-9) return null
+
+  const left: Curve = [a.x / zx, a.y / zy, d.x / zx, d.y / zy]
+  const right: Curve = [
+    (e.x - zx) / (1 - zx),
+    (e.y - zy) / (1 - zy),
+    (c.x - zx) / (1 - zx),
+    (c.y - zy) / (1 - zy),
+  ]
+
+  // ⛔ A HALF THE RENDERER CANNOT DRAW IS NOT AN ANSWER. `bezierEase` clamps both
+  // x control points into 0..1, which is what keeps time a function of time. A
+  // curve whose own x handles are OUT OF ORDER (x2 below x1, the hard S a hand
+  // can drag in the curve editor) splits into halves that need an x handle
+  // outside that range, and the clamp then quietly reshapes them: measured at
+  // 1.2e-2 off, two hundred times the solver's own floor. Say so instead.
+  const drawable = (c2: Curve): boolean => c2[0] >= 0 && c2[0] <= 1 && c2[2] >= 0 && c2[2] <= 1
+  if (!drawable(left) || !drawable(right)) return null
+
+  return {
+    left: { ease: kf.ease === 'hold' ? 'linear' : kf.ease, curve: left },
+    right: { ease: kf.ease === 'hold' ? 'linear' : kf.ease, curve: right },
   }
-  return bezierAxis(t, y1, y2)
 }
 
 /**

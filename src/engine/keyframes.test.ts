@@ -7,6 +7,7 @@ import {
   removeKeyframeNear,
   scaleKeyframeSpan,
   setSegmentCurve,
+  splitEaseAt,
   upsertKeyframe,
   upsertKeyframeValue,
 } from './keyframes'
@@ -412,6 +413,81 @@ describe('upsertKeyframe / removeKeyframeNear', () => {
  * shaping a segment by hand and then correcting the value at the same moment
  * threw the hand-drawn curve away. Audit item 4, 2026-08-14.
  */
+/**
+ * ⛔ CUTTING A CLIP USED TO RESHAPE ITS MOTION, AT EVERY CUT.
+ *
+ * The proof that it no longer does is a round trip: the two halves, played back
+ * to back over their own halves of the time, have to reproduce the ORIGINAL
+ * curve. Endpoints alone prove nothing, which is exactly why the old split
+ * looked right in a still frame and was wrong in motion.
+ */
+describe('splitEaseAt', () => {
+  /**
+   * Every curve the app itself writes, plus an overshoot, held to 1e-3. That
+   * bound is the SOLVER, not the split: De Casteljau is exact, and reading the
+   * halves back solves t from x to 1e-6 twice over.
+   */
+  const CURVES: { curve: Curve; what: string }[] = [
+    { curve: [0.16, 1, 0.3, 1], what: 'snapIn, the one his punches carry' },
+    { curve: [0.34, 1.56, 0.64, 1], what: 'overshoot: past the target and back' },
+    { curve: [0.42, 0, 0.58, 1], what: 'a plain ease' },
+    { curve: [0.25, 0.1, 0.25, 1], what: 'css ease' },
+  ]
+
+  it('reproduces the original curve from its two halves, exactly', () => {
+    for (const { curve, what } of CURVES) {
+      for (const z of [0.1, 0.25, 0.5, 0.73, 0.9]) {
+        const halves = splitEaseAt({ ease: 'linear', curve }, z)
+        expect(halves, `${what} @ ${z}`).not.toBeNull()
+        const zy = bezierEase(curve, z)
+        for (let i = 0; i <= 20; i++) {
+          const p = i / 20
+          const want = bezierEase(curve, p)
+          const got =
+            p <= z
+              ? zy * bezierEase(halves!.left.curve!, p / z)
+              : zy + (1 - zy) * bezierEase(halves!.right.curve!, (p - z) / (1 - z))
+          expect(got, `${what} @ ${z}, p=${p}`).toBeCloseTo(want, 3)
+        }
+      }
+    }
+  })
+
+  it('splits a hold into two holds and a linear into two linears', () => {
+    expect(splitEaseAt({ ease: 'hold' }, 0.4)).toEqual({ left: { ease: 'hold' }, right: { ease: 'hold' } })
+    expect(splitEaseAt({ ease: 'linear' }, 0.4)).toEqual({ left: { ease: 'linear' }, right: { ease: 'linear' } })
+  })
+
+  it('handles the named quadratic eases exactly too', () => {
+    for (const kind of ['easeIn', 'easeOut'] as const) {
+      const halves = splitEaseAt({ ease: kind }, 0.4)
+      expect(halves, kind).not.toBeNull()
+      const zy = ease(kind, 0.4)
+      for (let i = 0; i <= 10; i++) {
+        const p = i / 10
+        const want = ease(kind, p)
+        const got =
+          p <= 0.4
+            ? zy * bezierEase(halves!.left.curve!, p / 0.4)
+            : zy + (1 - zy) * bezierEase(halves!.right.curve!, (p - 0.4) / 0.6)
+        expect(got, `${kind} p=${p}`).toBeCloseTo(want, 3)
+      }
+    }
+  })
+
+  // ⛔ Saying "no exact answer" is a FEATURE. easeInOut is two quadratics either
+  // side of the midpoint and no single cubic is it, so inventing one here would
+  // be the same silent reshaping this whole thing exists to stop.
+  it('refuses rather than inventing a shape it cannot make', () => {
+    expect(splitEaseAt({ ease: 'easeInOut' }, 0.4)).toBeNull()
+    // A hard S: its own x handles are out of order, so a half needs an x handle
+    // outside 0..1 and the renderer would clamp it into a different shape.
+    expect(splitEaseAt({ ease: 'linear', curve: [0.9, 0, 0.1, 1] }, 0.25)).toBeNull()
+    expect(splitEaseAt({ ease: 'linear', curve: [0.16, 1, 0.3, 1] }, 0)).toBeNull()
+    expect(splitEaseAt({ ease: 'linear', curve: [0.16, 1, 0.3, 1] }, 1)).toBeNull()
+  })
+})
+
 describe('upsertKeyframeValue', () => {
   const shaped = { t: 1, value: 10, ease: 'easeOut' as const, curve: [0.2, 0, 0, 1] as const }
   const preference = { ease: 'easeIn' as const, curve: [0.9, 0, 1, 1] as Curve }

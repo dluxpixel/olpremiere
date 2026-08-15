@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { applyAppearanceToClip, retimeAppearance } from './anim/appearance'
 import { clipEmitsAudio } from './audio'
 import { channelKeyframes, resolveChannel } from './effects/channels'
+import { evalChannel } from './keyframes'
 import {
   defaultTitleDef,
   defaultTransform,
@@ -618,6 +619,44 @@ describe('splitClip', () => {
       [0, 5],
       [0.5, 10],
     ])
+  })
+
+  /**
+   * ⛔ A CUT MUST NOT RESHAPE THE MOTION, AND IT USED TO, EVERY TIME.
+   *
+   * The old split kept the left half's ease and re-ran the whole of it over the
+   * shortened half, then handed the right half a plain linear. Both endpoints
+   * matched, so a still frame looked right and the PATH between them was wrong
+   * at every cut he made. Nothing checked the path, which is why it survived.
+   *
+   * So this walks the WHOLE clip, frame by frame, and asks the cut halves for
+   * the same picture the uncut clip gave.
+   */
+  it('cutting a curved move leaves the motion identical, all the way along', () => {
+    const c = makeClip({
+      startS: 0,
+      inS: 0,
+      outS: 2,
+      keyframes: {
+        scale: [
+          { t: 0, value: 1, ease: 'linear', curve: [0.16, 1, 0.3, 1] },
+          { t: 2, value: 1.2, ease: 'linear' },
+        ],
+      },
+    })
+    const seq = makeSeq([makeTrack({ clips: [c] })])
+    for (const cutAt of [0.4, 1, 1.7]) {
+      const [left, right] = splitClip(seq, c.id, cutAt).tracks[0].clips
+      for (let i = 0; i <= 60; i++) {
+        const t = (i / 60) * 2
+        const want = evalChannel(c.keyframes!.scale, t, 1)
+        const got =
+          t <= cutAt
+            ? evalChannel(left.keyframes!.scale, t, 1)
+            : evalChannel(right.keyframes!.scale, t - cutAt, 1)
+        expect(got, `cut at ${cutAt}, t=${t.toFixed(3)}`).toBeCloseTo(want, 3)
+      }
+    }
   })
 
   // A cut must never change what is on screen at that instant. The canonical

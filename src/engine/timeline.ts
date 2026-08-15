@@ -4,7 +4,7 @@
 
 import { refitAppearanceToFrame, retimeAppearance, splitAppearanceAcrossCut } from './anim/appearance'
 import { withChannelKeyframes, withChannelValue } from './effects/channels'
-import { evalChannel } from './keyframes'
+import { evalChannel, splitEaseAt } from './keyframes'
 import {
   clipDurationS,
   clipEndS,
@@ -702,12 +702,30 @@ export function trimClipTo(
 // clipEdits keyframe tolerance).
 const KF_EPS = 1e-4
 
+/** Put `shape` on a keyframe, dropping a curve it no longer has. */
+function withShape(k: Keyframe, shape: Pick<Keyframe, 'ease' | 'curve'>): Keyframe {
+  const next: Keyframe = { t: k.t, value: k.value, ease: shape.ease }
+  return shape.curve ? { ...next, curve: shape.curve } : next
+}
+
 /**
  * Split one channel's keyframes at clip-local time `cutT`. Both sides get a
- * boundary keyframe holding the RESOLVED value at the cut (an existing
- * keyframe at the cut is reused verbatim), so left ends and right begins on
- * the exact same value. Eased segments spanning the cut are resampled
- * linearly at the boundary: exact for linear/hold, near for eases.
+ * boundary keyframe holding the RESOLVED value at the cut (an existing keyframe
+ * at the cut is reused verbatim), so left ends and right begins on the exact
+ * same value.
+ *
+ * ⛔ AND THE SHAPE BETWEEN THOSE VALUES SURVIVES THE CUT NOW. It used not to.
+ * The left half kept its ease and re-ran the whole of it over half the distance,
+ * and the right half was handed a plain linear. The endpoints matched, so a
+ * still frame looked correct, while the PATH between them was wrong at every cut
+ * he made: measured by the keyframe audit as a push off about 4 percent, a pop
+ * about 10, and a hold arriving as a ramp. Every cut degraded his motion a
+ * little more, silently, and this docstring used to call it exact.
+ *
+ * `splitEaseAt` cuts the curve itself in two, so the halves played back to back
+ * are the original. Where no exact answer exists (`easeInOut`, or a cut where
+ * the value has not moved) it says so and the old linear boundary stands, which
+ * is the honest fallback rather than an invented shape.
  */
 export function splitKeyframeList(
   kfs: readonly Keyframe[],
@@ -718,10 +736,20 @@ export function splitKeyframeList(
   const v = atCut ? atCut.value : evalChannel(kfs, cutT, kfs[0]?.value ?? 0)
   const before = kfs.filter((k) => k.t < cutT - KF_EPS)
   const after = kfs.filter((k) => k.t > cutT + KF_EPS).map((k) => ({ ...k, t: k.t - cutT }))
-  return {
-    left: [...before, atCut ? { ...atCut, t: cutT } : { t: cutT, value: v, ease: 'linear' as const }],
-    right: [atCut ? { ...atCut, t: 0 } : { t: 0, value: v, ease: 'linear' as const }, ...after],
-  }
+
+  // The segment the cut lands inside, if there is one on both sides of it.
+  const from = before[before.length - 1]
+  const to = kfs.find((k) => k.t > cutT + KF_EPS)
+  const split =
+    !atCut && from && to ? splitEaseAt(from, (cutT - from.t) / (to.t - from.t)) : null
+
+  const leftBody = split ? [...before.slice(0, -1), withShape(from, split.left)] : before
+  const leftEnd = atCut ? { ...atCut, t: cutT } : { t: cutT, value: v, ease: 'linear' as const }
+  const rightHead = atCut
+    ? { ...atCut, t: 0 }
+    : withShape({ t: 0, value: v, ease: 'linear' }, split ? split.right : { ease: 'linear' })
+
+  return { left: [...leftBody, leftEnd], right: [rightHead, ...after] }
 }
 
 /**
