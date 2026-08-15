@@ -544,4 +544,10 @@ test('a move he performs by hand becomes his own tile, and that tile works', asy
   // something it knows.
   await expect(mine.first()).toHaveAttribute('aria-pressed', 'true')
   await expect(page.getByTestId('move-state')).toHaveText('My swoop')
+
+  // And he can take it off the shelf again. A shelf that only ever grows is one
+  // he comes to resent, and removeMyMove was written and called by nothing.
+  const id = await mine.first().getAttribute('data-testid')
+  await page.getByTestId((id ?? '').replace('move-tile-', 'forget-move-')).click()
+  await expect(mine).toHaveCount(0)
 })

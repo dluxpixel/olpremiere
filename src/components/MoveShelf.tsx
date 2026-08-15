@@ -49,11 +49,11 @@ import {
   type RefObject,
 } from 'react'
 import { channelKeyframes } from '../engine/effects/channels'
-import { MOVES, MOVE_CHANNELS, type MoveDef, type MoveId, type MoveMatch } from '../engine/moves'
+import { MOVES, MOVE_CHANNELS, isBuiltInMoveId, type MoveDef, type MoveId, type MoveMatch } from '../engine/moves'
 import { clipDurationS } from '../engine/timeline'
 import { activeSequence, type Clip } from '../engine/types'
 import { applyMoveToSelection, moveOnClips, setMoveDepth, setMoveWindow } from '../state/moveActions'
-import { listMyMoves, saveMyMove, type MyMove } from '../state/myMoves'
+import { listMyMoves, removeMyMove, saveMyMove, type MyMove } from '../state/myMoves'
 import { normaliseRecording } from '../engine/recordMove'
 import { useStore } from '../state/store'
 import { liveFrame, shelfGlyphs, TAPE_UNITS, type MoveGlyph } from './moveGlyph'
@@ -544,20 +544,48 @@ export function MoveShelf({ clips }: { clips: Clip[] }) {
         style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${Math.max(66, stage.w + 16)}px, 1fr))` }}
         data-testid="move-grid"
       >
-        {tiles.map((def, i) => (
-          <MoveTile
-            key={def.id}
-            def={def}
-            glyph={shelf.glyphs[i]}
-            lit={lit === def.id}
-            stage={stage}
-            live={liveId === def.id}
-            liveRef={liveRef}
-            headRef={headRef}
-            onPick={pick}
-            onHover={hoverTile}
-          />
-        ))}
+        {tiles.map((def, i) => {
+          const tile = (
+            <MoveTile
+              key={def.id}
+              def={def}
+              glyph={shelf.glyphs[i]}
+              lit={lit === def.id}
+              stage={stage}
+              live={liveId === def.id}
+              liveRef={liveRef}
+              headRef={headRef}
+              onPick={pick}
+              onHover={hoverTile}
+            />
+          )
+          if (isBuiltInMoveId(def.id)) return tile
+          // ⛔ A SHELF THAT ONLY EVER GROWS IS ONE HE COMES TO RESENT. `removeMyMove`
+          // was written and tested the same hour the saving was, and nothing called
+          // it, which is exactly the shape the lasso was in: a thing the app could
+          // do with no gesture leading to it.
+          //
+          // A SIBLING of the tile, never a child: a button inside a button is not
+          // valid, and nesting one would swallow the tile's own click.
+          return (
+            <div key={def.id} className="group/mine relative">
+              {tile}
+              <button
+                type="button"
+                data-testid={`forget-move-${def.id}`}
+                title={`Forget ${def.name}`}
+                aria-label={`Forget ${def.name}`}
+                onClick={() => {
+                  removeMyMove(def.id)
+                  setMine(listMyMoves())
+                }}
+                className="absolute -right-0.5 -top-0.5 rounded-[3px] bg-bg-elevated px-1 text-[9px] leading-[14px] text-text-muted opacity-0 transition-opacity hover:text-danger focus-visible:opacity-100 group-hover/mine:opacity-100"
+              >
+                ✕
+              </button>
+            </div>
+          )
+        })}
       </div>
 
       {single && hasMotion && (
