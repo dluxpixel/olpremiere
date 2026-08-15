@@ -474,3 +474,67 @@ test('reduced motion gets the same pictures, and the digits still pick a move', 
   await expect(page.getByTestId('move-tile-punchIn')).toHaveAttribute('aria-pressed', 'true')
   await expect(page.getByTestId('move-state')).toHaveText('Punch in')
 })
+
+/**
+ * ⛔ HIS ENDGAME, ALL THE WAY THROUGH, IN ONE TEST.
+ *
+ * His words, 2026-08-14: *"I can animate how I want it, and then I save it, and
+ * you just save the movements, and then I can completely customize it."* And on
+ * what shape it takes, 2026-08-15: *"I want it to be just like the built-in ten."*
+ *
+ * So: perform a move on the picture by hand, save it, and it is a TILE. Clicking
+ * that tile on another clip puts the same move on it. Nothing here calls an
+ * engine helper: it is his hands, through the app.
+ */
+test('a move he performs by hand becomes his own tile, and that tile works', async ({ page }) => {
+  await seedClips(page, 2, 6)
+  const hands = new Hands(page)
+  await hands.clickClip()
+
+  // Park, arm, drag. Park later, drag the other way. That is the recorder.
+  const park = (s: number) =>
+    page.evaluate(async (playheadS) => {
+      const storeMod = '/src/state/store.ts'
+      const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+        useStore: { getState: () => { setUI: (p: unknown) => void } }
+      }
+      useStore.getState().setUI({ playheadS })
+    }, s)
+  const dragPicture = async (dx: number) => {
+    const gizmo = page.getByTestId('gizmo-body')
+    await gizmo.hover()
+    const box = (await gizmo.boundingBox())!
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+    await page.mouse.down()
+    await page.mouse.move(box.x + box.width / 2 + dx, box.y + box.height / 2, { steps: 8 })
+    await page.mouse.up()
+  }
+
+  await park(1)
+  await page.getByTestId('gizmo-motion-badge').click()
+  await dragPicture(70)
+  await park(4)
+  await dragPicture(-120)
+  const performed = (await facts(page)).posX
+  expect(performed.length, 'he performed a path').toBeGreaterThanOrEqual(3)
+
+  // Save it under a name. The control only exists because the clip carries motion.
+  await expect(page.getByTestId('save-my-move')).toBeVisible()
+  await page.getByTestId('save-my-move-name').fill('My swoop')
+  await page.getByTestId('save-my-move-go').click()
+
+  // ⛔ IT IS A TILE NOW, sitting on the same shelf as the built-ins.
+  const mine = page.locator('[data-testid^="move-tile-mym-"]')
+  await expect(mine).toHaveCount(1)
+
+  // And it WORKS on another clip: click the second clip, click his tile.
+  await hands.clickClip(1)
+  await mine.first().click()
+  await expect.poll(async () => (await facts(page, 1)).posX.length).toBeGreaterThanOrEqual(3)
+
+  // The shape he performed, not some other move: it goes one way then the other,
+  // which is what he did with his hand.
+  const applied = (await facts(page, 1)).posX.map((k) => k.value)
+  expect(applied[1]).toBeGreaterThan(applied[0])
+  expect(applied[applied.length - 1]).toBeLessThan(applied[1])
+})

@@ -41,11 +41,30 @@ export interface Beat {
   d: number
   /** Where in the frame the move looks, as a share of it. 0.5 is dead centre. */
   aim: { x: number; y: number }
+  /**
+   * A shift that does NOT depend on the zoom, as a share of the frame. Right and
+   * down are positive. Absent on every built-in move, and that is deliberate.
+   *
+   * ⛔ WHY THIS EXISTS, 2026-08-15. `aim` is multiplied by how far the zoom sits
+   * from normal, so at normal size that multiplier is ZERO and the aim carries no
+   * position at all. The ten built-ins are fine with that: every one of them
+   * travels only while it is zoomed. **It means the beat model cannot express
+   * "slide across at normal size", and it is why a move he records by hand could
+   * not round-trip into a tile.** His ask, 2026-08-15: *"I want it to be just
+   * like the built-in ten."*
+   *
+   * So position gained a term that stands on its own. A recorded move puts ALL of
+   * its travel here and leaves `aim` at centre, which inverts exactly whatever
+   * the zoom is doing. The ten keep `aim` and never set this, so they build the
+   * identical keyframes they always did, and a test pins that.
+   */
+  shift?: { x: number; y: number }
   /** Shape of the segment LEAVING this beat, by name from MOTION_CURVES. 'linear' writes no curve. */
   curve: MotionCurveName | 'linear'
 }
 
-export type MoveId =
+/** The ten and the tiles shipped beside them. A CLOSED union: MOVE_BY_ID is keyed by it. */
+export type BuiltInMoveId =
   | 'none'
   | 'holdBig'
   | 'pushIn'
@@ -59,6 +78,15 @@ export type MoveId =
   | 'pullBack'
   | 'punchOut'
   | 'outAndIn'
+
+/**
+ * Any move a tile can be, including one HE recorded.
+ *
+ * ⛔ A saved move carries its own id (`mym-...`, from state/myMoves.ts) so two of
+ * his own moves are told apart. The built-in union stays closed underneath,
+ * because MOVE_BY_ID is keyed by it and must stay exhaustive.
+ */
+export type MoveId = BuiltInMoveId | `mym-${string}`
 
 export interface MoveDef {
   id: MoveId
@@ -76,6 +104,12 @@ export interface MoveDef {
   name: string
   /** One plain line, for the tooltip and the screen reader. Still no jargon. */
   hint: string
+  /**
+   * The size a RECORDED move was performed at, so re-applying it hands him back
+   * what he saw rather than whatever the shelf slider happens to say. Absent on
+   * every built-in: those take the slider, which is the point of them.
+   */
+  recordedDepth?: number
   /**
    * How long the move is:
    *
@@ -285,7 +319,10 @@ export const MOVES: readonly MoveDef[] = [
   },
 ]
 
-export const MOVE_BY_ID: Readonly<Record<MoveId, MoveDef>> = Object.freeze(
+/** True when this id names one of the shipped tiles rather than one he recorded. */
+export const isBuiltInMoveId = (id: MoveId): id is BuiltInMoveId => !String(id).startsWith(`mym-`)
+
+export const MOVE_BY_ID: Readonly<Record<BuiltInMoveId, MoveDef>> = Object.freeze(
   Object.fromEntries(MOVES.map((m) => [m.id, m])) as Record<MoveId, MoveDef>,
 )
 
@@ -408,12 +445,16 @@ export function buildMove(
     // picked off a tile, so it has to read the same whether the move grows or
     // shrinks. The magnitude still scales with how far from neutral it goes.
     const travel = Math.abs(r - 1)
+    // The zoom-independent term. Absent on every built-in, so those arrive here
+    // as exactly `- fx * travel` and cannot have moved. See Beat.shift.
+    const sx = (beat.shift?.x ?? 0) * options.seqWidth
+    const sy = (beat.shift?.y ?? 0) * options.seqHeight
     return {
       t,
       curve: beat.curve,
       scale: bases.scale * r,
-      posX: bases.posX - fx * travel,
-      posY: bases.posY - fy * travel,
+      posX: bases.posX - fx * travel + sx,
+      posY: bases.posY - fy * travel + sy,
     }
   })
 

@@ -9,11 +9,21 @@
 // and read back off them (matchMove), so a clip edited by hand afterwards simply
 // stops matching, and the shelf can never claim a move the clip is not making.
 
-import { MOVE_BY_ID, MOVE_CHANNELS, applyMove, matchMove, type MoveId, type MoveMatch } from '../engine/moves'
+import {
+  MOVE_BY_ID,
+  MOVE_CHANNELS,
+  applyMove,
+  isBuiltInMoveId,
+  matchMove,
+  type MoveDef,
+  type MoveId,
+  type MoveMatch,
+} from '../engine/moves'
 import { channelKeyframes } from '../engine/effects/channels'
 import { clipDurationS, unlockedClipIds } from '../engine/timeline'
 import { activeSequence, type Clip, type Sequence } from '../engine/types'
 import { mapClips } from './bulkEdits'
+import { getMyMove } from './myMoves'
 import { playMovePreview } from './movePreview'
 import { useStore } from './store'
 import { useToasts } from './toasts'
@@ -77,8 +87,20 @@ const selectionIds = (ids?: readonly string[]): string[] => ids ? [...ids] : [..
  * twelve clips of different lengths all end up with a move that fits, which is
  * what makes selecting the whole Short and clicking once the right gesture.
  */
+/**
+ * The definition behind a move id, whether it is one of the shipped tiles or one
+ * HE recorded and saved.
+ *
+ * ⛔ ONE PLACE KNOWS THE DIFFERENCE, and this is it. His own moves live in
+ * localStorage rather than in the table, so every lookup that used to index
+ * MOVE_BY_ID directly would silently answer undefined for one of his and take
+ * the tile off the shelf under him.
+ */
+const defOf = (id: MoveId): MoveDef | null =>
+  isBuiltInMoveId(id) ? MOVE_BY_ID[id] : (getMyMove(id)?.def ?? null)
+
 export function applyMoveToSelection(moveId: MoveId, ids?: readonly string[], options?: { preview?: boolean }): void {
-  const def = MOVE_BY_ID[moveId]
+  const def = defOf(moveId)
   if (!def) return
   const wanted = selectionIds(ids)
   if (wanted.length === 0) {
@@ -133,7 +155,9 @@ export function setMoveDepth(depth: number, ids?: readonly string[]): void {
         seqHeight: ctx.seqHeight,
       })
       if (!found || found.id === 'none') return clip
-      return applyMove(clip, ctx.fps, MOVE_BY_ID[found.id], {
+      const fdef = defOf(found.id)
+      if (!fdef) return clip
+      return applyMove(clip, ctx.fps, fdef, {
         depth,
         riseFrames: ctx.riseFrames,
         seqWidth: ctx.seqWidth,
@@ -193,7 +217,8 @@ export function setMoveWindow(
       seqHeight: ctx.seqHeight,
     })
   if (!found || found.id === 'none') return
-  const def = MOVE_BY_ID[found.id]
+  const def = defOf(found.id)
+  if (!def) return
   const durS = clipDurationS(clip)
   const lo = Math.max(0, Math.min(startS, durS))
   const hi = Math.max(lo + 1 / ctx.fps, Math.min(endS, durS))

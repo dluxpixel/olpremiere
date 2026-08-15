@@ -31,8 +31,19 @@ const RISE = 5
 /** A clip of `durS` seconds sitting at 0, at its own natural framing. */
 const seed = (durS: number): Clip => newTitleClip(defaultTitleDef('x'), 0, durS)
 
-const build = (id: MoveDef['id'], durS: number, over?: Partial<{ depth: number; startS: number; endS: number }>): Clip =>
+const build = (id: keyof typeof MOVE_BY_ID, durS: number, over?: Partial<{ depth: number; startS: number; endS: number }>): Clip =>
   applyMove(seed(durS), FPS, MOVE_BY_ID[id], {
+    depth: over?.depth ?? DEPTH,
+    riseFrames: RISE,
+    seqWidth: W,
+    seqHeight: H,
+    startS: over?.startS,
+    endS: over?.endS,
+  })
+
+/** Same as build, given the def itself: the sweeps walk MOVES and already hold it. */
+const buildDef = (def: MoveDef, durS: number, over?: Partial<{ depth: number; startS: number; endS: number }>): Clip =>
+  applyMove(seed(durS), FPS, def, {
     depth: over?.depth ?? DEPTH,
     riseFrames: RISE,
     seqWidth: W,
@@ -232,7 +243,7 @@ describe('applying a move', () => {
 
   it('snaps every moment onto the frame grid', () => {
     for (const move of MOVES) {
-      const out = build(move.id, 3.37)
+      const out = buildDef(move, 3.37)
       for (const k of keys(out, 'scale')) expect(k.t * FPS).toBeCloseTo(Math.round(k.t * FPS), 6)
     }
   })
@@ -263,12 +274,89 @@ describe('applying a move', () => {
   })
 })
 
+/**
+ * The zoom-independent shift, added 2026-08-15 so a move he RECORDS can hold a
+ * path the built-in ten cannot express. His ask: *"I want it to be just like the
+ * built-in ten."*
+ *
+ * ⛔ THE FIRST TEST IS THE ONE THAT MATTERS. The ten in his hands, and every
+ * project already on his disk, must build byte for byte what they always did.
+ * They do that by never setting `shift`, so the new term is multiplied by
+ * nothing. Assert the premise rather than trusting it: a beat that quietly
+ * gained a shift would move thousands of frames that nobody would look at.
+ */
+describe('a beat can carry a shift that does not depend on the zoom', () => {
+  const ctx = { riseFrames: RISE, seqWidth: W, seqHeight: H }
+
+  it('⛔ NO BUILT-IN MOVE SETS ONE, so all of them are unchanged', () => {
+    for (const move of MOVES) {
+      for (const beat of move.beats) {
+        expect(beat.shift, `${move.id} gained a shift`).toBeUndefined()
+      }
+    }
+  })
+
+  it('writing zero is the same as writing nothing', () => {
+    const withNone: MoveDef = { ...MOVE_BY_ID.pushIn, id: 'pushIn' }
+    const withZero: MoveDef = {
+      ...withNone,
+      beats: withNone.beats.map((b) => ({ ...b, shift: { x: 0, y: 0 } })),
+    }
+    const a = applyMove(seed(4), FPS, withNone, { depth: DEPTH, ...ctx })
+    const b = applyMove(seed(4), FPS, withZero, { depth: DEPTH, ...ctx })
+    expect(keys(b, 'scale')).toEqual(keys(a, 'scale'))
+    expect(keys(b, 'posX')).toEqual(keys(a, 'posX'))
+  })
+
+  /**
+   * ⛔ THE WHOLE REASON IT EXISTS: travel at NORMAL SIZE. `aim` is multiplied by
+   * how far the zoom is from normal, so a move that never zooms can never pan
+   * through `aim`, however the aim is written. This is that move.
+   */
+  it('carries a pan at depth 1, which aim alone cannot do at all', () => {
+    const slide: MoveDef = {
+      id: 'pushIn',
+      name: 'x',
+      hint: 'x',
+      window: 'clip',
+      beats: [
+        { at: { frames: 0 }, d: 0, aim: { x: 0.5, y: 0.5 }, shift: { x: -0.1, y: 0 }, curve: 'linear' },
+        { at: { fromEnd: 0 }, d: 0, aim: { x: 0.5, y: 0.5 }, shift: { x: 0.1, y: 0 }, curve: 'linear' },
+      ],
+    }
+    // depth 1 means r is 1 everywhere, so travel is 0 and aim contributes nothing.
+    const out = applyMove(seed(4), FPS, slide, { depth: 1, ...ctx })
+    const xs = keys(out, 'posX')
+    expect(xs, 'a pan with no zoom must still be written').toHaveLength(2)
+    expect(xs[1].value - xs[0].value).toBeCloseTo(0.2 * W, 6)
+    // And it really did not zoom: a flat scale lane is dropped entirely.
+    expect(keys(out, 'scale')).toHaveLength(0)
+  })
+
+  it('adds to the aim rather than replacing it, when a move uses both', () => {
+    const both: MoveDef = {
+      id: 'pushIn',
+      name: 'x',
+      hint: 'x',
+      window: 'clip',
+      beats: [
+        { at: { frames: 0 }, d: 0, aim: { x: 0.5, y: 0.5 }, curve: 'linear' },
+        { at: { fromEnd: 0 }, d: 1, aim: { x: 0.3, y: 0.5 }, shift: { x: 0.05, y: 0 }, curve: 'linear' },
+      ],
+    }
+    const out = applyMove(seed(4), FPS, both, { depth: DEPTH, ...ctx })
+    const last = keys(out, 'posX')[1]
+    const aimPart = -((0.3 - 0.5) * W) * Math.abs(DEPTH - 1)
+    expect(last.value).toBeCloseTo(aimPart + 0.05 * W, 4)
+  })
+})
+
 describe('matchMove: the lit tile is worked out, never remembered', () => {
   it('names every move back, at any length and any depth', () => {
     for (const move of MOVES) {
       for (const durS of [0.6, 2, 6, 20]) {
         for (const depth of [1.1, 1.2, 1.7]) {
-          const out = build(move.id, durS, { depth })
+          const out = buildDef(move, durS, { depth })
           const found = matchMove(out, FPS, { riseFrames: RISE, seqWidth: W, seqHeight: H })
           expect(found?.id, `${move.id} @ ${durS}s x${depth}`).toBe(move.id)
           if (move.beats.length > 0) expect(found?.depth).toBeCloseTo(depth, 4)
@@ -352,7 +440,7 @@ describe('no move can ever show the edge of his footage', () => {
     for (const move of MOVES) {
       for (const durS of [0.4, 2, 6, 20]) {
         for (const depth of depths) {
-          const out = build(move.id, durS, { depth })
+          const out = buildDef(move, durS, { depth })
           for (let i = 0; i <= 240; i++) {
             const t = (i / 240) * durS
             const s = resolveChannel(out, 'scale', t)

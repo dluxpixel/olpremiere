@@ -49,13 +49,16 @@ import {
   type RefObject,
 } from 'react'
 import { channelKeyframes } from '../engine/effects/channels'
-import { MOVES, type MoveDef, type MoveId, type MoveMatch } from '../engine/moves'
+import { MOVES, MOVE_CHANNELS, type MoveDef, type MoveId, type MoveMatch } from '../engine/moves'
 import { clipDurationS } from '../engine/timeline'
 import { activeSequence, type Clip } from '../engine/types'
 import { applyMoveToSelection, moveOnClips, setMoveDepth, setMoveWindow } from '../state/moveActions'
+import { listMyMoves, saveMyMove, type MyMove } from '../state/myMoves'
+import { normaliseRecording } from '../engine/recordMove'
 import { useStore } from '../state/store'
 import { liveFrame, shelfGlyphs, TAPE_UNITS, type MoveGlyph } from './moveGlyph'
 import { headroomCeiling, overHeadroom } from './headroom'
+import { Button } from '../ui/Button'
 
 /**
  * The slider's ends. It used to start at 1.05, and THAT ONE CONSTANT was the
@@ -423,7 +426,12 @@ export function MoveShelf({ clips }: { clips: Clip[] }) {
   const stage = useMemo(() => frameSize(aspect), [aspect])
   // The ten pictures, worked out once. Everything downstream of this is static
   // SVG: a re-render costs a reconcile and not a single sample.
-  const shelf = useMemo(() => shelfGlyphs(MOVES, depth, riseFrames, stage, TAPE_H), [depth, riseFrames, stage])
+  // HIS OWN MOVES, beside the shipped ones. Kept in state rather than read on
+  // every render: localStorage is synchronous and this component redraws on
+  // every playhead tick that changes the selection.
+  const [mine, setMine] = useState<MyMove[]>(() => listMyMoves())
+  const tiles = useMemo(() => [...MOVES, ...mine.map((m) => m.def)], [mine])
+  const shelf = useMemo(() => shelfGlyphs(tiles, depth, riseFrames, stage, TAPE_H), [tiles, depth, riseFrames, stage])
 
   // The lit tile, worked out fresh from the clips themselves, then remembered
   // against the CLIP OBJECTS it was worked out from. Object identity is the one
@@ -445,6 +453,10 @@ export function MoveShelf({ clips }: { clips: Clip[] }) {
   }
 
   const single = clips.length === 1 ? clips[0] : null
+  // Something to save: the clip carries motion of its own, whether a tile put it
+  // there or he performed it by hand in the preview.
+  const hasMotion = !!single && MOVE_CHANNELS.some((ch) => channelKeyframes(single, ch).length > 0)
+  const [saveName, setSaveName] = useState('')
   const lit = match?.id ?? null
   const litDef = MOVES.find((m) => m.id === lit) ?? null
 
@@ -529,7 +541,7 @@ export function MoveShelf({ clips }: { clips: Clip[] }) {
         style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${Math.max(66, stage.w + 16)}px, 1fr))` }}
         data-testid="move-grid"
       >
-        {MOVES.map((def, i) => (
+        {tiles.map((def, i) => (
           <MoveTile
             key={def.id}
             def={def}
@@ -544,6 +556,34 @@ export function MoveShelf({ clips }: { clips: Clip[] }) {
           />
         ))}
       </div>
+
+      {single && hasMotion && (
+        <div className="flex items-center gap-1.5" data-testid="save-my-move">
+          <input
+            value={saveName}
+            onChange={(e) => setSaveName(e.target.value)}
+            placeholder="Name this move"
+            aria-label="Name this move"
+            data-testid="save-my-move-name"
+            className="min-w-0 flex-1 rounded-field border border-border bg-bg-input px-1.5 py-1 text-dense text-text-primary"
+          />
+          <Button
+            variant="secondary"
+            data-testid="save-my-move-go"
+            disabled={saveName.trim() === ''}
+            onClick={() => {
+              const def = normaliseRecording(single, { seqWidth, seqHeight })
+              if (!def) return
+              const saved = saveMyMove(saveName, def)
+              if (!saved) return
+              setMine(listMyMoves())
+              setSaveName('')
+            }}
+          >
+            Save this move
+          </Button>
+        </div>
+      )}
 
       {single && litDef && litDef.beats.length > 0 && match && (
         <MoveRibbon clip={single} def={litDef} depth={match.depth} startS={match.startS} endS={match.endS} />
