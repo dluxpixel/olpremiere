@@ -12,6 +12,7 @@ import {
   newClipFromAsset,
   newId,
   newTrack,
+  ANIM_CHANNELS,
   scaleTitleDef,
   syncLockOf,
   type AnimChannel,
@@ -298,11 +299,55 @@ export function rateStretchGroup(seq: Sequence, clipId: Id, edge: 'in' | 'out', 
       const speed = sign * (span / newDur)
       // Out-edge: start fixed. In-edge: END fixed, so the start moves.
       const startS = edge === 'out' ? c.startS : clipEndS(c) - newDur
-      return retimeAppearance(c, { ...c, speed, startS }, seq.width, seq.height)
+      // A rate stretch IS a speed change, so his keyframes follow the picture
+      // here exactly as they do when he types a number into the speed box.
+      // Fixing only setClipSpeed would leave this edge stranding them.
+      const rescaled = rescaleKeyframesForSpeed(c, c.speed, speed)
+      return retimeAppearance(c, { ...rescaled, speed, startS }, seq.width, seq.height)
     })
     return { ...track, clips }
   })
   return recomputeDuration({ ...seq, tracks })
+}
+
+/**
+ * Slide every raw keyframe so it stays on the SOURCE FRAME it was authored on,
+ * after a speed change has moved the picture under it.
+ *
+ * ⛔ WHY THIS EXISTS. Keyframe times are local to the clip's TIMELINE duration,
+ * and speed changes that duration while the source range does not move.
+ * `render/resolve.ts` reads source time as `inS + localT * rate` and hands the
+ * SAME localT to `resolveChannel`, so doubling the speed leaves a keyframe
+ * sitting on a frame twice as deep into the shot, and on a shortened clip it can
+ * fall off the end entirely. `retimeAppearance` covers the compiled entrance and
+ * exit presets and explicitly bails on anything touched by hand, so a move he
+ * built himself was the one thing nothing carried. Keyframe audit item 3.
+ *
+ * Pinning a keyframe to its source frame gives `t' = t * rate/rate'`, and since
+ * a clip's duration is `span/rate`, that is exactly `newDur/oldDur`. ⛔ A
+ * REVERSED clip needs no separate case: the renderer walks `outS - localT * rate`
+ * there, and the same substitution falls out unchanged.
+ *
+ * ⛔ SPEED ONLY, NEVER A TRIM. A trim changes the duration too, and there the
+ * motion must stay anchored where he put it rather than stretch to fit.
+ */
+export function rescaleKeyframesForSpeed(clip: Clip, oldRate: number, newRate: number): Clip {
+  if (!clip.keyframes) return clip
+  const from = Math.abs(oldRate) || 1
+  const to = Math.abs(newRate) || 1
+  const factor = from / to
+  if (!Number.isFinite(factor) || factor <= 0 || Math.abs(factor - 1) < 1e-9) return clip
+  let next = clip
+  for (const channel of ANIM_CHANNELS) {
+    const kfs = clip.keyframes[channel]
+    if (!kfs || kfs.length === 0) continue
+    next = withChannelKeyframes(
+      next,
+      channel,
+      kfs.map((k) => ({ ...k, t: k.t * factor })),
+    )
+  }
+  return next
 }
 
 export function setClipSpeed(seq: Sequence, clipId: Id, speed: number): Sequence {
@@ -335,7 +380,13 @@ export function setClipSpeed(seq: Sequence, clipId: Id, speed: number): Sequence
     const newDur = (member.outS - member.inS) / Math.abs(s)
     const delta = member.startS + newDur - oldEnd
     const clips = track.clips.map((c) => {
-      if (groupIds.has(c.id)) return retimeAppearance(c, { ...c, speed: s }, seq.width, seq.height)
+      if (groupIds.has(c.id)) {
+        // The hand-made keyframes first, then the compiled appearance: the
+        // appearance retimer reads the clip's duration off the new speed, and it
+        // must not see a half-updated clip.
+        const rescaled = rescaleKeyframesForSpeed(c, c.speed, s)
+        return retimeAppearance(c, { ...rescaled, speed: s }, seq.width, seq.height)
+      }
       // Ripple the tail only when the member grew, to clear the overlap.
       if (delta > EPS && c.startS >= oldEnd - EPS) return { ...c, startS: c.startS + delta }
       return c

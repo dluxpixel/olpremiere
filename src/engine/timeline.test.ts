@@ -894,6 +894,64 @@ describe('rateStretchGroup', () => {
     expect(out.startS).toBe(0)
   })
 
+  /**
+   * ⛔ A SPEED CHANGE MUST NOT STRAND HIS KEYFRAMES, AND IT DID.
+   *
+   * Keyframe times are local to the TIMELINE duration, and speed changes that
+   * duration while the source window stays put. `render/resolve.ts` reads source
+   * time as `inS + localT * rate` and hands the same localT to resolveChannel,
+   * so a move authored on a given frame ended up on a frame twice as deep, and
+   * on a shortened clip it could fall off the end. `retimeAppearance` only ever
+   * covered compiled presets. Audit item 3.
+   *
+   * The invariant is the only one that means anything here: a keyframe stays on
+   * the SOURCE FRAME it was authored on. Asserted through both speed doors,
+   * because fixing one and not the other is the shape of half a fix.
+   */
+  const sourceFrameOf = (c: Clip, t: number) => c.inS + t * Math.abs(c.speed)
+
+  it('keyframes stay on the same source frame through a rate stretch', () => {
+    const c = makeClip({
+      startS: 0,
+      inS: 0,
+      outS: 4,
+      keyframes: {
+        scale: [
+          { t: 0.5, value: 1, ease: 'linear' },
+          { t: 3, value: 1.2, ease: 'linear' },
+        ],
+      },
+    })
+    const want = c.keyframes!.scale!.map((k) => sourceFrameOf(c, k.t))
+    const seq = makeSeq([makeTrack({ clips: [c] })])
+
+    for (const newDur of [2, 8]) {
+      const out = find(rateStretchGroup(seq, c.id, 'out', newDur), c.id)
+      const got = out.keyframes!.scale!.map((k) => sourceFrameOf(out, k.t))
+      expect(got[0], `stretched to ${newDur}s`).toBeCloseTo(want[0], 6)
+      expect(got[1], `stretched to ${newDur}s`).toBeCloseTo(want[1], 6)
+      // And nothing hangs past the end of the shortened clip.
+      for (const k of out.keyframes!.scale!) expect(k.t).toBeLessThanOrEqual(clipDurationS(out) + 1e-9)
+    }
+  })
+
+  it('and through the speed box, forwards and reversed alike', () => {
+    for (const startSpeed of [1, -1]) {
+      const c = makeClip({
+        startS: 0,
+        inS: 0,
+        outS: 4,
+        speed: startSpeed,
+        keyframes: { scale: [{ t: 1, value: 1.2, ease: 'linear' }] },
+      })
+      const want = sourceFrameOf(c, 1)
+      const seq = makeSeq([makeTrack({ clips: [c] })])
+      const out = find(setClipSpeed(seq, c.id, startSpeed * 2), c.id)
+      expect(Math.abs(out.speed)).toBeCloseTo(2)
+      expect(sourceFrameOf(out, out.keyframes!.scale![0].t), `from ${startSpeed}`).toBeCloseTo(want, 6)
+    }
+  })
+
   it('dragging the out edge outward slows it down', () => {
     const c = makeClip({ startS: 0, outS: 4 })
     const seq = makeSeq([makeTrack({ clips: [c] })])
