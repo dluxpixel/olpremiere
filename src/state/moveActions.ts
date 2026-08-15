@@ -23,7 +23,7 @@ import { channelKeyframes } from '../engine/effects/channels'
 import { clipDurationS, unlockedClipIds } from '../engine/timeline'
 import { activeSequence, type Clip, type Sequence } from '../engine/types'
 import { mapClips } from './bulkEdits'
-import { getMyMove } from './myMoves'
+import { getMyMove, listMyMoves } from './myMoves'
 import { playMovePreview } from './movePreview'
 import { useStore } from './store'
 import { useToasts } from './toasts'
@@ -96,6 +96,9 @@ const selectionIds = (ids?: readonly string[]): string[] => ids ? [...ids] : [..
  * MOVE_BY_ID directly would silently answer undefined for one of his and take
  * the tile off the shelf under him.
  */
+/** The defs of every move he has saved, for the recogniser to search after the ten. */
+const myMoveDefs = (): MoveDef[] => listMyMoves().map((m) => m.def)
+
 const defOf = (id: MoveId): MoveDef | null =>
   isBuiltInMoveId(id) ? MOVE_BY_ID[id] : (getMyMove(id)?.def ?? null)
 
@@ -153,6 +156,7 @@ export function setMoveDepth(depth: number, ids?: readonly string[]): void {
         riseFrames: ctx.riseFrames,
         seqWidth: ctx.seqWidth,
         seqHeight: ctx.seqHeight,
+        extraMoves: myMoveDefs(),
       })
       if (!found || found.id === 'none') return clip
       const fdef = defOf(found.id)
@@ -215,6 +219,7 @@ export function setMoveWindow(
       riseFrames: ctx.riseFrames,
       seqWidth: ctx.seqWidth,
       seqHeight: ctx.seqHeight,
+      extraMoves: myMoveDefs(),
     })
   if (!found || found.id === 'none') return
   const def = defOf(found.id)
@@ -249,10 +254,14 @@ export function setMoveWindow(
 /** Which move a clip is making, worked out fresh. Null means it was edited by hand. */
 export function moveOnClip(clip: Clip): MoveMatch | null {
   const ctx = moveContext()
+  // ⛔ HIS OWN MOVES BELONG IN THIS ONE ESPECIALLY. This is the call the SHELF
+  // lights a tile from, so leaving them out here is the version where he saves a
+  // move, puts it on a clip, and the shelf still calls it hand edited.
   return matchMove(clip, ctx.fps, {
     riseFrames: ctx.riseFrames,
     seqWidth: ctx.seqWidth,
     seqHeight: ctx.seqHeight,
+    extraMoves: myMoveDefs(),
   })
 }
 

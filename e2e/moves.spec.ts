@@ -537,4 +537,11 @@ test('a move he performs by hand becomes his own tile, and that tile works', asy
   const applied = (await facts(page, 1)).posX.map((k) => k.value)
   expect(applied[1]).toBeGreaterThan(applied[0])
   expect(applied[applied.length - 1]).toBeLessThan(applied[1])
+
+  // ⛔ AND THE SHELF SAYS SO. A tile he owns has to LIGHT on a clip carrying it,
+  // exactly as a built-in does. Without this the app knows his move is a preset
+  // and still calls the clip hand edited, which is the shelf going quiet about
+  // something it knows.
+  await expect(mine.first()).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.getByTestId('move-state')).toHaveText('My swoop')
 })

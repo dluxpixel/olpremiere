@@ -581,7 +581,24 @@ function sameTracks(a: Clip, b: Clip, fps: number): boolean {
 export function matchMove(
   clip: Clip,
   fps: number,
-  options: { riseFrames?: number; seqWidth: number; seqHeight: number },
+  options: {
+    riseFrames?: number
+    seqWidth: number
+    seqHeight: number
+    /**
+     * Moves HE recorded, searched after the shipped ones.
+     *
+     * ⛔ THE ENGINE CANNOT GO AND FETCH THESE. They live in localStorage, which
+     * is the state layer's business, and this file is pure on purpose. So they
+     * arrive as an argument, and a caller that forgets them gets exactly the old
+     * behaviour: his clip reads as hand edited rather than as his own tile.
+     *
+     * The built-ins are searched FIRST. If he saves something that happens to be
+     * a push in, the shelf lights Push in, which is the tile with a digit on it
+     * and the one he is more likely to mean.
+     */
+    extraMoves?: readonly MoveDef[]
+  },
 ): MoveMatch | null {
   const durS = clipDurationS(clip)
   const times: number[] = []
@@ -608,7 +625,7 @@ export function matchMove(
     if (Math.abs(v - base) > Math.abs(extreme - base)) extreme = v
   }
   const depth = base !== 0 && Number.isFinite(extreme) ? extreme / base : 1
-  for (const def of MOVES) {
+  for (const def of [...MOVES, ...(options.extraMoves ?? [])]) {
     if (def.beats.length === 0) continue
     const rebuilt = applyMove(clip, fps, def, {
       depth,

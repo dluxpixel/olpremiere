@@ -458,7 +458,10 @@ export function MoveShelf({ clips }: { clips: Clip[] }) {
   const hasMotion = !!single && MOVE_CHANNELS.some((ch) => channelKeyframes(single, ch).length > 0)
   const [saveName, setSaveName] = useState('')
   const lit = match?.id ?? null
-  const litDef = MOVES.find((m) => m.id === lit) ?? null
+  // ⛔ SEARCHED ACROSS THE WHOLE SHELF, not just the shipped table. This read
+  // MOVES alone, so a clip carrying one of HIS moves lit the tile and left the
+  // name beside it blank: the shelf recognised the move and then said nothing.
+  const litDef = tiles.find((m) => m.id === lit) ?? null
 
   // WHICH tile is allowed to move, if any. Playback wins, the move preview wins,
   // and his reduced-motion setting wins over both.
