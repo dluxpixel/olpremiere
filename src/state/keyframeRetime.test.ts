@@ -16,6 +16,8 @@ import {
   moveKeyframeTime,
   moveKeyframes,
   scaleKeyframeSpan,
+  setKeyframeValueAt,
+  setSegmentCurve,
   setChannel,
   setClipTransform,
   toggleChannelAnimation,
@@ -193,6 +195,62 @@ describe('moveKeyframes', () => {
     toggleChannelAnimation(c.id, 'scale')
     expect(clampKeyframesDelta(firstClip(), [{ channel: 'posY', t: 9 }], 1, 30)).toBe(0)
     expect(clampKeyframesDelta(firstClip(), [], 1, 30)).toBe(0)
+  })
+})
+
+/**
+ * ⛔ HE COULD TYPE WHEN A MOMENT HAPPENS AND NOT WHAT IT IS.
+ *
+ * Correcting a number already set meant parking the playhead exactly on that
+ * moment and using the property row, which is doable and which nobody finds.
+ * The audit named it beside the lasso as the other half of the customizability
+ * gap.
+ */
+describe('setKeyframeValueAt', () => {
+  const values = () => channelKeyframes(firstClip(), 'scale').map((k) => k.value)
+
+  it('retypes one moment and leaves every other one alone', () => {
+    const c = seedTitle()
+    useStore.getState().setUI({ playheadS: 1 })
+    toggleChannelAnimation(c.id, 'scale')
+    useStore.getState().setUI({ playheadS: 3 })
+    setChannel(c.id, 'scale', 1.4)
+    expect(values()).toEqual([1, 1.4])
+
+    setKeyframeValueAt(c.id, 'scale', 3, 1.8)
+    expect(values()).toEqual([1, 1.8])
+    expect(times()).toEqual([1, 3]) // the moment did not move
+
+    useStore.getState().undo()
+    expect(values()).toEqual([1, 1.4])
+  })
+
+  // ⛔ The same rule upsertKeyframeValue exists for: a number he corrects must
+  // never redraw a curve he shaped.
+  it('keeps the ease and the curve the moment was carrying', () => {
+    const c = seedTitle()
+    useStore.getState().setUI({ playheadS: 1 })
+    toggleChannelAnimation(c.id, 'scale')
+    useStore.getState().setUI({ playheadS: 3 })
+    setChannel(c.id, 'scale', 1.4)
+    setSegmentCurve(c.id, 'scale', 1, [0.16, 1, 0.3, 1])
+    const shaped = channelKeyframes(firstClip(), 'scale')[0]
+
+    setKeyframeValueAt(c.id, 'scale', 1, 1.1)
+    const after = channelKeyframes(firstClip(), 'scale')[0]
+    expect(after.value).toBe(1.1)
+    expect(after.ease).toBe(shaped.ease)
+    expect(after.curve).toEqual(shaped.curve)
+  })
+
+  it('costs nothing when the number is already what he typed', () => {
+    const c = seedTitle()
+    useStore.getState().setUI({ playheadS: 1 })
+    toggleChannelAnimation(c.id, 'scale')
+    const depth = useStore.getState().history.undo.length
+    setKeyframeValueAt(c.id, 'scale', 1, channelKeyframes(firstClip(), 'scale')[0].value)
+    setKeyframeValueAt(c.id, 'scale', 9, 2) // no keyframe there at all
+    expect(useStore.getState().history.undo.length).toBe(depth)
   })
 })
 

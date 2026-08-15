@@ -251,6 +251,42 @@ export function moveKeyframeTime(clipId: string, channel: AnimChannel, fromT: nu
   })
 }
 
+/**
+ * Retype ONE moment's value, leaving its time and its shape exactly alone.
+ *
+ * He could type a keyframe's TIME and not its VALUE, which meant the only way to
+ * correct a number he had already set was to park the playhead exactly on that
+ * moment and use the property row: doable, and nobody would find it. The audit
+ * called it out beside the lasso as the other half of the customizability gap.
+ *
+ * ⛔ The ease and the curve are the keyframe's OWN and are never touched here,
+ * for the same reason `upsertKeyframeValue` exists: a number he corrects must not
+ * redraw a curve he shaped.
+ */
+export function setKeyframeValueAt(
+  clipId: string,
+  channel: AnimChannel,
+  t: number,
+  value: number,
+): void {
+  const clip = findClip(clipId)
+  if (!clip) return
+  const kf = channelKeyframes(clip, channel).find((k) => Math.abs(k.t - t) <= KEYFRAME_TOLERANCE_S)
+  // Early no-op BEFORE dispatch, as moveKeyframeTime does: retyping the number
+  // that is already there must not cost him an undo press.
+  if (!kf || Math.abs(kf.value - value) <= 1e-9) return
+  mapClip(clipId, `Set ${channel} keyframe`, (c) => {
+    const kfs = channelKeyframes(c, channel)
+    const cur = kfs.find((k) => Math.abs(k.t - t) <= KEYFRAME_TOLERANCE_S)
+    if (!cur) return c
+    return withChannelKeyframes(
+      c,
+      channel,
+      kfs.map((k) => (k === cur ? { ...k, value } : k)),
+    )
+  })
+}
+
 /** Remove the keyframe nearest time `t` on a channel (the Keyframes-lane trash button). */
 export function removeKeyframeAtTime(clipId: string, channel: AnimChannel, t: number): void {
   const clip = findClip(clipId)

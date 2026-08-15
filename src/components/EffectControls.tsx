@@ -102,7 +102,11 @@ export interface Spec {
 
 // Only the FIXED channels live here now: transform, crop, opacity. Colour and
 // blur are applied effects, and their ranges come from the effect registry.
-const SPECS: Record<AnimChannel, Spec> = {
+//
+// Exported so the keyframe lane can type a MOMENT'S value against the same
+// bounds the property row scrubs against. Two tables would drift, and the pair
+// that drifted would be the one he typed into and the one that clamped it.
+export const SPECS: Record<AnimChannel, Spec> = {
   posX: { min: -2000, max: 2000, step: 1, sens: 1 },
   posY: { min: -2000, max: 2000, step: 1, sens: 1 },
   scale: { min: 0, max: 5, step: 0.01, sens: 0.01 },

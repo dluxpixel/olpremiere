@@ -38,10 +38,11 @@ import {
   moveKeyframeTime,
   moveKeyframes,
   removeKeyframeAtTime,
+  setKeyframeValueAt,
   type KeyframePick,
 } from '../state/clipEdits'
 import { IconButton } from '../ui/Button'
-import { ScrubField, type Spec } from './EffectControls'
+import { ScrubField, SPECS, type Spec } from './EffectControls'
 import {
   CULL_PAD_PX,
   DRAG_SLOP_PX,
@@ -357,6 +358,19 @@ export function KeyframeTrack({ clip, channel }: { clip: Clip; channel: AnimChan
               moveKeyframeTime(clip.id, channel, selKf.t, t)
               rail.select({ channel, kind: 'key', t })
             }}
+          />
+          {/* He could type WHEN a moment happens and not WHAT it is. Correcting a
+              number already set meant parking the playhead exactly on that
+              moment and using the property row: doable, and nobody would find
+              it. Same bounds table the property row scrubs against, so the two
+              cannot disagree about what is a legal value. */}
+          <span className="text-[10px] uppercase tracking-[0.04em] text-text-muted">{name}</span>
+          <ScrubField
+            value={selKf.value}
+            spec={SPECS[channel]}
+            testId="keyframe-value"
+            ariaLabel={`${name} at this keyframe`}
+            onCommit={(v) => setKeyframeValueAt(clip.id, channel, selKf.t, v)}
           />
           <IconButton
             size="compact"
