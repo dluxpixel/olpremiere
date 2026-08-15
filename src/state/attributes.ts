@@ -110,10 +110,20 @@ export function pasteClipAttributes(ids?: Iterable<string>): void {
         }
         // Titles also inherit the style (never the text) + animation.
         if (c.title && attrs.title) nc = { ...nc, title: { ...c.title, ...attrs.title } }
-        // Always recompile: a source with NO animation must CLEAR the target's
-        // (an empty spec deletes the appearance channels), or leftover keyframes
-        // would override the pasted static transform.
-        nc = applyAppearanceToClip(nc, attrs.appearance ?? {}, seq.width, seq.height)
+        // ⛔ ONLY WHEN THE SOURCE ACTUALLY CARRIES ONE. This used to run on every
+        // paste with `attrs.appearance ?? {}`, and an EMPTY spec makes
+        // applyAppearanceToClip clear APPEARANCE_CHANNELS: opacity, scale, posX,
+        // posY, rotation. Those are the channels a MOVE lives on, so copying a
+        // look off a plain clip and pasting it onto one he had animated deleted
+        // the move, silently, on a gesture he thinks is about colour and opacity.
+        // Keyframe audit item 5, 2026-08-14.
+        //
+        // The comment that used to sit here argued the clear was needed or
+        // "leftover keyframes would override the pasted static transform". That
+        // tension is real and the cure was worse: one outcome destroys work he
+        // did by hand with nothing said, the other leaves a move playing around
+        // a base that just changed, which he can see and can undo. → D99.
+        if (attrs.appearance) nc = applyAppearanceToClip(nc, attrs.appearance, seq.width, seq.height)
         return nc
       })
       return { ...t, clips }

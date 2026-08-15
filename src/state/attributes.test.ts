@@ -9,7 +9,9 @@ import {
   type Sequence,
 } from '../engine/types'
 import { copyClipAttributes, hasClipAttributes, pasteClipAttributes } from './attributes'
-import { applyEffect, setChannel } from './clipEdits'
+import { channelKeyframes } from '../engine/effects/channels'
+import { setClipsAppearance } from './appearanceActions'
+import { applyEffect, setChannel, toggleChannelAnimation } from './clipEdits'
 import { updateActiveSequence, useStore } from './store'
 
 vi.mock('./toasts', () => ({ useToasts: { getState: () => ({ show: () => {} }) } }))
@@ -53,6 +55,57 @@ describe('copy / paste attributes', () => {
 
     useStore.getState().undo()
     expect(clips()[1].effects).toHaveLength(0)
+  })
+
+  /**
+   * ⛔ PASTING A LOOK MUST NOT DELETE A MOVE HE MADE BY HAND.
+   *
+   * The paste used to end with `applyAppearanceToClip(nc, attrs.appearance ?? {})`,
+   * and an empty spec CLEARS the appearance channels: opacity, scale, posX, posY,
+   * rotation. Those are the channels a move lives on, so copying a look off a
+   * plain clip and stamping it on an animated one wiped the animation, with a
+   * toast that said the paste had worked. Audit item 5, 2026-08-14. → D99.
+   */
+  it('leaves the target keyframes alone when the source carries no appearance', () => {
+    const a = seedTitle(0)
+    const b = seedTitle(6)
+    applyEffect(a.id, 'saturation')
+
+    // b gets a move by hand: two Zoom moments.
+    useStore.getState().setUI({ playheadS: 6.5 })
+    toggleChannelAnimation(b.id, 'scale')
+    useStore.getState().setUI({ playheadS: 8 })
+    setChannel(b.id, 'scale', 1.2)
+    const before = channelKeyframes(clips()[1], 'scale').map((k) => [k.t, k.value])
+    expect(before).toHaveLength(2)
+
+    copyClipAttributes(a.id)
+    pasteClipAttributes([b.id])
+
+    // The look landed AND the move survived.
+    expect(clips()[1].effects[0].type).toBe('saturation')
+    expect(channelKeyframes(clips()[1], 'scale').map((k) => [k.t, k.value])).toEqual(before)
+  })
+
+  it('still replaces the animation when the source HAS an appearance', () => {
+    const a = seedTitle(0)
+    const b = seedTitle(6)
+    setClipsAppearance([a.id], { in: 'pop', durS: 0.4 })
+    useStore.getState().setUI({ playheadS: 6.5 })
+    toggleChannelAnimation(b.id, 'scale')
+    useStore.getState().setUI({ playheadS: 8 })
+    setChannel(b.id, 'scale', 1.2)
+
+    copyClipAttributes(a.id)
+    pasteClipAttributes([b.id])
+
+    // The source's entrance owns those channels now, so b's hand move is gone
+    // and what replaced it is a compiled appearance rather than nothing.
+    expect(clips()[1].appearance).toBeTruthy()
+    expect(channelKeyframes(clips()[1], 'scale').map((k) => [k.t, k.value])).not.toEqual([
+      [6.5 - 6, 1],
+      [8 - 6, 1.2],
+    ])
   })
 
   it('refuses to paste when nothing was copied', () => {
