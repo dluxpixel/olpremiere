@@ -397,8 +397,16 @@ export function shelfGlyphs(
   stage: Box,
   tapeH: number,
 ): ShelfGlyphs {
-  const tables = moves.map((def) => moveSamples(def, depth, riseFrames, STEPS))
-  const axes: GlyphAxes = { depth, reach: panReach(tables), stage }
+  // ⛔ EACH TILE DRAWN AT THE DEPTH IT WILL ACTUALLY BE APPLIED AT. An out tile
+  // takes the slider's magnitude the other way, so drawing it at the raw slider
+  // value made Pull back and Push in the SAME PICTURE on the shelf: identical
+  // beats, identical depth, nothing to tell them apart. The tile has to show what
+  // the tile does. Same rule as `depthFor` in moveActions.
+  const applied = (def: MoveDef): number => (def.out ? 1 / (depth || 1) : depth)
+  const tables = moves.map((def) => moveSamples(def, applied(def), riseFrames, STEPS))
+  // The axes span BOTH directions now, so a tile that shrinks and a tile that
+  // grows are drawn to one scale and read as opposites rather than as twins.
+  const axes: GlyphAxes = { depth: Math.max(depth, 1 / (depth || 1)), reach: panReach(tables), stage }
   return {
     axes,
     glyphs: moves.map((def, i) => glyphFor(def, tables[i], axes, riseFrames, tapeH)),

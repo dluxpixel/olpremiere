@@ -129,6 +129,27 @@ export interface MoveDef {
    */
   recordedDepth?: number
   /**
+   * This move goes OUT: it takes the slider's magnitude and applies it BELOW his
+   * framing, so the picture ends smaller than the frame.
+   *
+   * ⛔ WHY IT EXISTS, 2026-08-15, AND MY FIRST VERSION OF THESE TILES WAS WRONG.
+   * They were time-mirrors, running from the depth back down to his own framing,
+   * so at his 120 percent they went 1.20 to 1.00 and stopped exactly at full
+   * frame. His words: *"when it goes out, I want it to go out to the blur."* The
+   * renderer's own note says the same thing from the other side: a keyframed zoom
+   * out reveals more blur instead of more black. **A move that stops at full
+   * frame never reaches it.**
+   *
+   * So these run the same shape as their push counterparts and are handed 1/depth
+   * instead: 120 percent out is 83, and the blurred background fills the sides.
+   *
+   * ⛔ AND `matchMove` USES THIS TO TELL THEM APART. Pull back and Push in are
+   * now the same beats, so without a direction the shelf would light Push in on a
+   * clip he made with Pull back. A move with this flag only ever matches a clip
+   * whose depth came back BELOW his framing, and a move without it only above.
+   */
+  out?: boolean
+  /**
    * How long the move is:
    *
    * - `clip` fills its window, so it stretches with the clip and its window has
@@ -295,44 +316,53 @@ export const MOVES: readonly MoveDef[] = [
   //
   // HIS ASK, 2026-08-15: *"I want more presets to zoom out."*
   //
-  // ⛔ AND THEY CANNOT BE THE PUSH TILES WITH A SMALLER SLIDER. `d` is a share of
-  // the depth he picked, so a tile that ran 0 to 1 with the slider under 100
-  // would build the SAME keyframes as one of the ten above, and `matchMove`
-  // rebuilds every preset and compares: two tiles with one shape means the shelf
-  // cannot say which one he is on. So these are TIME MIRRORS with their own
-  // shape, and every one of them starts at the depth and comes back down.
+  // ⛔ MY FIRST VERSION OF THESE WAS WRONG AND HE CAUGHT IT THE SAME DAY. They
+  // were time-mirrors running from the depth back down to his own framing, so at
+  // 120 percent they went 1.20 to 1.00 and stopped dead at full frame. His
+  // words: *"when it goes out, I want it to go out to the blur, to the sides."*
+  // The renderer says the same thing from the other end: a keyframed zoom out
+  // reveals more blur instead of more black. **A move that stops at full frame
+  // never reaches it.**
+  //
+  // So they run the same shape as their push counterparts and carry `out`, which
+  // hands them 1/depth: his 120 percent becomes 83, the picture ends smaller than
+  // the frame, and the blurred background fills the sides. `matchMove` uses the
+  // same flag to tell them from the push tiles they now share a shape with.
   //
   // No digits. See MoveDef.digit: the ten in his hands keep theirs.
   {
     id: 'pullBack',
     name: 'Pull back',
-    hint: 'Starts big and creeps back to normal the whole way through',
+    hint: 'Creeps outward the whole way, until the blur shows around it',
     window: 'clip',
+    out: true,
     beats: [
-      { at: { frames: 0 }, d: 1, aim: C, curve: 'smooth' },
-      { at: { fromEnd: 0 }, d: 0, aim: C, curve: 'linear' },
+      { at: { frames: 0 }, d: 0, aim: C, curve: 'smooth' },
+      { at: { fromEnd: 0 }, d: 1, aim: C, curve: 'linear' },
     ],
   },
   {
     id: 'punchOut',
     name: 'Punch out',
-    hint: 'Starts big and snaps back to normal right away, then stays',
+    hint: 'Snaps outward right at the start and stays there',
     window: 'moment',
+    out: true,
     beats: [
-      { at: { frames: 0 }, d: 1, aim: C, curve: 'snapIn' },
-      { at: { frames: 5 }, d: 0, aim: C, curve: 'linear' },
+      { at: { frames: 0 }, d: 0, aim: C, curve: 'snapIn' },
+      { at: { frames: 5 }, d: 1, aim: C, curve: 'linear' },
     ],
   },
   {
     id: 'outAndIn',
     name: 'Out and in',
-    hint: 'Starts big, drops to normal, then grows back at the end',
+    hint: 'Snaps outward, sits there in the blur, comes back at the end',
     window: 'clip',
+    out: true,
     beats: [
-      { at: { frames: 0 }, d: 1, aim: C, curve: 'snapIn' },
-      { at: { frames: 5 }, d: 0, aim: C, curve: 'linear' },
-      { at: { fromEnd: 5 }, d: 0, aim: C, curve: 'snapIn' },
-      { at: { fromEnd: 0 }, d: 1, aim: C, curve: 'linear' },
+      { at: { frames: 0 }, d: 0, aim: C, curve: 'snapIn' },
+      { at: { frames: 5 }, d: 1, aim: C, curve: 'linear' },
+      { at: { fromEnd: 5 }, d: 1, aim: C, curve: 'snapIn' },
+      { at: { fromEnd: 0 }, d: 0, aim: C, curve: 'linear' },
     ],
   },
 ]
@@ -646,7 +676,22 @@ export function matchMove(
     if (Math.abs(v - base) > Math.abs(extreme - base)) extreme = v
   }
   const depth = base !== 0 && Number.isFinite(extreme) ? extreme / base : 1
-  for (const def of [...MOVES, ...(options.extraMoves ?? [])]) {
+  // ⛔ ORDERED BY DIRECTION, NEVER FILTERED BY IT, and the difference is a bug I
+  // wrote and caught on 2026-08-15.
+  //
+  // Pull back is Push in run at 1/depth, so at the read-back depth they rebuild
+  // IDENTICALLY and whichever sits first in the table would always win. Trying
+  // the ones that go his way first settles that.
+  //
+  // ⛔ BUT SKIPPING THE OTHERS ENTIRELY BREAKS THE MOVES WITH NO TWIN. "Left,
+  // then right" has no out version, so a filter made it unrecognisable below 100
+  // percent and the shelf went dark, which is the exact bug the zoom-out work of
+  // 2026-08-14 exists to have fixed.
+  const goesOut = depth < 1
+  const candidates = [...MOVES, ...(options.extraMoves ?? [])]
+    .filter((d) => d.beats.length > 0)
+    .sort((a, b) => Number(!!b.out === goesOut) - Number(!!a.out === goesOut))
+  for (const def of candidates) {
     if (def.beats.length === 0) continue
     const rebuilt = applyMove(clip, fps, def, {
       depth,

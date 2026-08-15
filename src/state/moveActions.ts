@@ -99,6 +99,28 @@ const selectionIds = (ids?: readonly string[]): string[] => ids ? [...ids] : [..
 /** The defs of every move he has saved, for the recogniser to search after the ten. */
 const myMoveDefs = (): MoveDef[] => listMyMoves().map((m) => m.def)
 
+/**
+ * The depth a tile actually gets, given where his slider sits.
+ *
+ * ⛔ THE SLIDER IS MAGNITUDE NOW. THE TILE OWNS THE DIRECTION. His ask,
+ * 2026-08-15: *"when it goes out, I want it to go out to the blur."*
+ *
+ * Push in at 80 percent and Pull back at 120 produce the SAME keyframes, because
+ * they are the same move. While direction lived in the slider, the shelf could
+ * not say which tile a clip came from, and one of them was always going to light
+ * wrongly. Moving it onto the tile makes every one of them do what its name says,
+ * always, and makes the read-back exact: a clip smaller than its frame came from
+ * an out tile, and nothing else can have made it.
+ *
+ * 1/depth rather than 2-depth, so the slider's own top lands on its own bottom
+ * and both ends of his range stay reachable.
+ */
+export const depthFor = (def: MoveDef, sliderDepth: number): number => {
+  const d = sliderDepth || 1
+  const magnitude = d < 1 ? 1 / d : d
+  return def.out ? 1 / magnitude : magnitude
+}
+
 const defOf = (id: MoveId): MoveDef | null =>
   isBuiltInMoveId(id) ? MOVE_BY_ID[id] : (getMyMove(id)?.def ?? null)
 
@@ -121,7 +143,7 @@ export function applyMoveToSelection(moveId: MoveId, ids?: readonly string[], op
     def.name,
     (clip) =>
       applyMove(clip, ctx.fps, def, {
-        depth: ctx.depth,
+        depth: depthFor(def, ctx.depth),
         riseFrames: ctx.riseFrames,
         seqWidth: ctx.seqWidth,
         seqHeight: ctx.seqHeight,
@@ -162,7 +184,9 @@ export function setMoveDepth(depth: number, ids?: readonly string[]): void {
       const fdef = defOf(found.id)
       if (!fdef) return clip
       return applyMove(clip, ctx.fps, fdef, {
-        depth,
+        // Through the same direction rule the tile click uses, or dragging the
+        // slider would flip an out move back inward under his hand.
+        depth: depthFor(fdef, depth),
         riseFrames: ctx.riseFrames,
         seqWidth: ctx.seqWidth,
         seqHeight: ctx.seqHeight,

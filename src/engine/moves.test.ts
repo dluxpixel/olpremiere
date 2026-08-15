@@ -352,13 +352,26 @@ describe('a beat can carry a shift that does not depend on the zoom', () => {
 })
 
 describe('matchMove: the lit tile is worked out, never remembered', () => {
+  /**
+   * ⛔ EACH MOVE APPLIED THE WAY THE APP APPLIES IT, WHICH IS NOT THE SAME AS THE
+   * RAW SLIDER SINCE 2026-08-15.
+   *
+   * An out tile takes the slider's magnitude the OTHER way, so Pull back at his
+   * 120 percent runs at 83. Handing it 1.1 directly builds a push in, and it
+   * would rightly come back named Push in: the two are the same keyframes. The
+   * direction lives on the tile now, so the sweep has to respect it or it is
+   * measuring a move the app can never make.
+   */
+  const appliedDepth = (move: MoveDef, slider: number): number => (move.out ? 1 / slider : slider)
+
   it('names every move back, at any length and any depth', () => {
     for (const move of MOVES) {
       for (const durS of [0.6, 2, 6, 20]) {
-        for (const depth of [1.1, 1.2, 1.7]) {
+        for (const slider of [1.1, 1.2, 1.7]) {
+          const depth = appliedDepth(move, slider)
           const out = buildDef(move, durS, { depth })
           const found = matchMove(out, FPS, { riseFrames: RISE, seqWidth: W, seqHeight: H })
-          expect(found?.id, `${move.id} @ ${durS}s x${depth}`).toBe(move.id)
+          expect(found?.id, `${move.id} @ ${durS}s x${slider}`).toBe(move.id)
           if (move.beats.length > 0) expect(found?.depth).toBeCloseTo(depth, 4)
         }
       }
@@ -546,16 +559,29 @@ describe('moves that pull back', () => {
     expect(Math.max(...far)).toBeGreaterThan(Math.max(...near))
   })
 
-  it('⛔ a zoom-out is still RECOGNISED as its own move, so the tile stays lit', () => {
-    // The bug: matchMove took Math.max of the scale keyframes, which for a
-    // shrinking move is just the base, so depth read as 1 and nothing matched.
-    // Every zoom-out came back null and the shelf went dark.
+  /**
+   * ⛔ THE ORIGINAL BUG THIS GUARDS, UNCHANGED: matchMove took Math.max of the
+   * scale keyframes, which for a shrinking move is just the base, so depth read
+   * as 1, nothing matched, every zoom-out came back null and the shelf went dark.
+   *
+   * ⛔ WHAT CHANGED ON 2026-08-15: the moves that HAVE an out twin now come back
+   * named as that twin. Push in at 80 percent and Pull back at 120 are the same
+   * keyframes, because they are the same move, and the shelf can only light one.
+   * Direction moved onto the tile, so a clip smaller than its own frame is a Pull
+   * back and nothing else could have made it. That is his ask of that morning:
+   * *"when it goes out, I want it to go out to the blur."*
+   *
+   * The moves with NO out twin still answer with themselves, which is the half
+   * of this test that must never move again.
+   */
+  it('⛔ a zoom-out is still RECOGNISED, so the tile stays lit', () => {
+    const twin: Record<string, string> = { pushIn: 'pullBack', inAndOut: 'outAndIn' }
     for (const id of ['pushIn', 'inAndOut', 'leftThenRight', 'rightThenLeft', 'driftRight']) {
       for (const depth of [0.8, 0.6, 0.5]) {
         const out = applyMove(seed(4), FPS, byId(id), { depth, ...ctx })
         const m = matchMove(out, FPS, ctx)
         expect(m, `${id} at ${depth}`).not.toBeNull()
-        expect(m!.id, `${id} at ${depth}`).toBe(id)
+        expect(m!.id, `${id} at ${depth}`).toBe(twin[id] ?? id)
         expect(m!.depth, `${id} at ${depth}`).toBeCloseTo(depth, 2)
       }
     }
