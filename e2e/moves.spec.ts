@@ -271,6 +271,54 @@ test('changing his mind, and taking it off again, are one action each', async ({
   await expect(page.getByTestId('move-state')).toHaveText('No move')
 })
 
+/**
+ * ⛔ THE CAPTION UNDER THE RIBBON PROMISED A GESTURE THE CODE DID NOT HAVE.
+ *
+ * For a moment-long move it reads "Drag the block to move when it happens", and
+ * only the 7px handle at the block's left edge did anything: he was aiming at a
+ * sliver to do the thing the sentence under it described. Keyframe audit item 8.
+ *
+ * Driven through the block itself, and asserting the move MOVED and KEPT ITS
+ * LENGTH, because a block that merely accepted the press would prove nothing.
+ */
+test('dragging the block of a moment move slides it without changing its length', async ({ page }) => {
+  await seedClips(page, 1, 20)
+  const hands = new Hands(page)
+  await hands.clickClip()
+  // Park the punch away from the head of the clip. A move sitting at 0 cannot
+  // prove a slide: it has a wall on one side and nothing to say about the other.
+  await page.evaluate(async () => {
+    const storeMod = '/src/state/store.ts'
+    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+      useStore: { getState: () => { setUI: (p: unknown) => void } }
+    }
+    useStore.getState().setUI({ playheadS: 5 })
+  })
+  await hands.click('move-tile-shake')
+
+  const times = async () => (await facts(page)).scale.map((k: { t: number }) => k.t)
+  const before = await times()
+  expect(before.length).toBeGreaterThan(1)
+  const spanBefore = before[before.length - 1] - before[0]
+
+  // The premise, asserted rather than assumed: the ribbon must be drawing this
+  // as a MOMENT move, or the block carries no handler and everything below is
+  // testing the wrong thing.
+  await expect(page.getByTestId('move-ribbon-end')).toHaveCount(0)
+  const block = page.getByTestId('move-ribbon-block')
+  await expect(block).toBeVisible()
+  const box = (await block.boundingBox())!
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(box.x + box.width / 2 + 90, box.y + box.height / 2, { steps: 8 })
+  await page.mouse.up()
+
+  await expect.poll(async () => (await times())[0]).not.toBeCloseTo(before[0], 4)
+  const after = await times()
+  expect(after[0]).toBeGreaterThan(before[0]) // it went the way he dragged
+  expect(after[after.length - 1] - after[0]).toBeCloseTo(spanBefore, 4) // same length
+})
+
 test('the shelf tells the truth after a hand edit, and the hand controls are one click away', async ({ page }) => {
   await seedClips(page, 1, 20)
   const hands = new Hands(page)

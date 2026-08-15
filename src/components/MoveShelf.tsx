@@ -313,6 +313,13 @@ function MoveRibbon({ clip, def, depth, startS, endS }: { clip: Clip; def: MoveD
   const span = endS - startS
 
   const drag = (edge: 'start' | 'end') => (e: ReactPointerEvent) => {
+    // ⛔ LEFT BUTTON ONLY. Every other drag in the app already checks this, and
+    // these two handles were the ones that did not: a right-click on the end of
+    // a move started a real retime, swallowed the context menu, and left the
+    // window listeners armed until he happened to press and release the left
+    // button somewhere. Keyframe audit item 8, and the same handles that used to
+    // lose the move outright. → olp-retime-cannot-lose-the-move
+    if (e.button !== 0) return
     e.preventDefault()
     e.stopPropagation()
     const bar = barRef.current
@@ -349,8 +356,18 @@ function MoveRibbon({ clip, def, depth, startS, endS }: { clip: Clip; def: MoveD
   return (
     <div className="flex flex-col gap-1" data-testid="move-ribbon">
       <div ref={barRef} className="relative h-5 w-full overflow-hidden rounded-field bg-bg-input">
+        {/* ⛔ THE BLOCK IS THE GESTURE THE CAPTION ALREADY PROMISED. For a
+            moment-long move the caption says "drag the block", and until now
+            only the 7px handle at its left edge did anything, so he was aiming
+            at a sliver to do the thing the sentence under it described. Sliding
+            it is what `drag('start')` already means for a moment move: it keeps
+            its length and lands somewhere else. Keyframe audit item 8. */}
         <div
-          className="absolute top-0 h-full rounded-[3px] bg-accent/25 ring-1 ring-inset ring-accent/40"
+          className={`absolute top-0 h-full rounded-[3px] bg-accent/25 ring-1 ring-inset ring-accent/40${
+            moment ? ' cursor-ew-resize' : ''
+          }`}
+          data-testid={moment ? 'move-ribbon-block' : undefined}
+          onPointerDown={moment ? drag('start') : undefined}
           style={{ left: `${left}%`, width: `${Math.max(1.5, right - left)}%` }}
         />
         {beats.map((px, i) => (
