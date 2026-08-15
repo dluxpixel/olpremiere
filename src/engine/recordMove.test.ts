@@ -19,7 +19,7 @@ const W = 1920
 const H = 1080
 const DEPTH = 1.2
 const RISE = 5
-const CTX = { seqWidth: W, seqHeight: H }
+const CTX = { seqWidth: W, seqHeight: H, fps: FPS }
 
 const seed = (durS: number): Clip => newTitleClip(defaultTitleDef('x'), 0, durS)
 const keys = (c: Clip, ch: 'scale' | 'posX' | 'posY') =>
@@ -152,5 +152,66 @@ describe('normaliseRecording', () => {
       expect(b[i].ease, `ease ${i}`).toBe(k.ease)
       expect(b[i].curve, `curve ${i}`).toEqual(k.curve)
     })
+  })
+})
+
+/**
+ * ⛔ A BURST HE PERFORMED MUST NOT BECOME A SLOW PUSH ON A LONGER CLIP.
+ *
+ * The first version of the recorder made EVERY recording a clip-length move, so
+ * a half second punch performed on a 6 second clip stretched to twenty seconds
+ * the moment it was applied to a twenty second one. Measured, not suspected.
+ *
+ * The rule is the one the built-in table already answers for itself: a
+ * clip-length move runs from the window start to the window end. A performance
+ * that starts late or stops early is a moment, and it keeps its own timing.
+ */
+describe('a performance that does not fill the clip stays a burst', () => {
+  const punch = () =>
+    withKeyframes(seed(6), 'scale', [
+      { t: 1, value: 1, ease: 'linear' },
+      { t: 1.5, value: 1.3, ease: 'linear' },
+    ])
+
+  it('keeps its real length when it lands on a much longer clip', () => {
+    const def = normaliseRecording(punch(), CTX)!
+    expect(def.window).toBe('moment')
+    const onLong = applyMove(seed(20), FPS, def, {
+      depth: def.recordedDepth ?? DEPTH,
+      riseFrames: RISE,
+      seqWidth: W,
+      seqHeight: H,
+    })
+    const ks = keys(onLong, 'scale')
+    expect(ks[ks.length - 1].t - ks[0].t, 'half a second stays half a second').toBeCloseTo(0.5, 5)
+  })
+
+  /**
+   * ⛔ AND HIS RISE SETTING MUST NOT STRETCH IT EITHER. A `frames` beat is scaled
+   * by the rise (`scaledFrames`), which is right for a hand-authored table
+   * written at a rise of 5 and wrong for a performance: turning the rise up would
+   * lengthen a move he had already recorded.
+   */
+  it('is not stretched by his rise setting', () => {
+    const def = normaliseRecording(punch(), CTX)!
+    const spanAt = (riseFrames: number) => {
+      const out = applyMove(seed(20), FPS, def, {
+        depth: def.recordedDepth ?? DEPTH,
+        riseFrames,
+        seqWidth: W,
+        seqHeight: H,
+      })
+      const ks = keys(out, 'scale')
+      return ks[ks.length - 1].t - ks[0].t
+    }
+    expect(spanAt(10)).toBeCloseTo(spanAt(5), 5)
+  })
+
+  it('still calls a performance that fills the clip a clip move', () => {
+    const full = withKeyframes(seed(6), 'scale', [
+      { t: 0, value: 1, ease: 'linear' },
+      { t: 6, value: 1.3, ease: 'linear' },
+    ])
+    expect(normaliseRecording(full, CTX)!.window).toBe('clip')
   })
 })

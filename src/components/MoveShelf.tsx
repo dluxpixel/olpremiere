@@ -603,7 +603,7 @@ export function MoveShelf({ clips }: { clips: Clip[] }) {
             data-testid="save-my-move-go"
             disabled={saveName.trim() === ''}
             onClick={() => {
-              const def = normaliseRecording(single, { seqWidth, seqHeight })
+              const def = normaliseRecording(single, { seqWidth, seqHeight, fps })
               if (!def) return
               const saved = saveMyMove(saveName, def)
               if (!saved) return

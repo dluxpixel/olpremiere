@@ -32,7 +32,25 @@ export const MOVE_CHANNELS: readonly AnimChannel[] = ['scale', 'posX', 'posY']
  * - `fromEnd` counts back from the window's end (the fall)
  * - `frac` is a share of the window (the travel, which SHOULD stretch)
  */
-export type BeatAt = { frames: number } | { fromEnd: number } | { frac: number }
+export type BeatAt =
+  | { frames: number }
+  | { fromEnd: number }
+  | { frac: number }
+  | {
+      /**
+       * Seconds from the window start, held EXACTLY. Only a recorded move uses
+       * this, and no built-in ever will.
+       *
+       * ⛔ WHY THE OTHER THREE CANNOT DO IT, 2026-08-15. `frac` stretches with the
+       * window, so a half second punch he performed became a twenty second slow
+       * push the moment it was applied to a longer clip. `frames` is scaled by
+       * his rise setting (`scaledFrames`), which is right for a hand-authored
+       * table written at a rise of 5 and wrong for a performance: turning his
+       * rise up would stretch a move he had already recorded. He performed a
+       * specific timing, and this is the only form that keeps it.
+       */
+      secondsFromStart: number
+    }
 
 /** One moment of a move: when, how deep, where it looks, and how it leaves. */
 export interface Beat {
@@ -368,6 +386,9 @@ const scaledFrames = (frames: number, riseFrames: number): number =>
 function beatTimeS(at: BeatAt, fps: number, riseFrames: number, w0: number, w1: number): number {
   if ('frames' in at) return w0 + scaledFrames(at.frames, riseFrames) / fps
   if ('fromEnd' in at) return w1 - scaledFrames(at.fromEnd, riseFrames) / fps
+  // Untouched by the rise and untouched by the window's length: a performance
+  // keeps the timing it was performed at. See BeatAt.secondsFromStart.
+  if ('secondsFromStart' in at) return w0 + at.secondsFromStart
   return w0 + at.frac * (w1 - w0)
 }
 

@@ -52,6 +52,9 @@ function sanitizeAt(raw: unknown): BeatAt | null {
   if (finite(o.frames)) return { frames: o.frames }
   if (finite(o.fromEnd)) return { fromEnd: o.fromEnd }
   if (finite(o.frac)) return { frac: o.frac }
+  // ⛔ A PERFORMED BURST USES THIS ONE. Leaving it out of the sanitiser would let
+  // him save a punch and find it gone the next time the shelf loaded.
+  if (finite(o.secondsFromStart)) return { secondsFromStart: o.secondsFromStart }
   return null
 }
 

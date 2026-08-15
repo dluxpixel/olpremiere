@@ -49,6 +49,8 @@ export function curveName(curve: Curve | undefined): MotionCurveName | 'linear' 
 export interface RecordContext {
   seqWidth: number
   seqHeight: number
+  /** The sequence rate, for deciding whether his performance fills the clip. */
+  fps: number
 }
 
 /**
@@ -116,6 +118,24 @@ export function normaliseRecording(clip: Clip, ctx: RecordContext): MoveDef | nu
   const w1 = times[times.length - 1]
   const span = w1 - w0
 
+  /**
+   * ⛔ DOES HIS PERFORMANCE FILL THE CLIP, OR IS IT A BURST INSIDE IT?
+   *
+   * This decides whether his tile STRETCHES to a new clip or keeps the length he
+   * performed it at, and the first version got it wrong for every burst: it made
+   * everything a clip move, so a half second punch became a twenty second slow
+   * push the moment it landed on a longer clip.
+   *
+   * The rule is the one the built-in table already states for itself: a
+   * clip-length move starts at the window start and ends at the window end,
+   * which is what lets the window be read back off the keyframes. So a
+   * performance that runs the whole clip is a clip move, and anything that
+   * starts late or stops early is a moment that keeps its own timing. No
+   * invented threshold: it is the same test the ten already answer.
+   */
+  const frame = 1 / (ctx.fps > 0 ? ctx.fps : 30)
+  const fillsClip = w0 <= frame && w1 >= durS - frame
+
   const beats: Beat[] = times.map((t) => {
     const r = at(scaleK, t, baseScale) / baseScale
     // A recording that never resized has depth 1, and then every beat is at the
@@ -123,7 +143,11 @@ export function normaliseRecording(clip: Clip, ctx: RecordContext): MoveDef | nu
     const d = Math.abs(depth - 1) <= 1e-9 ? 0 : (r - 1) / (depth - 1)
     const curve = curveName(scaleK.find((k) => Math.abs(k.t - t) <= 1e-9)?.curve)
     return {
-      at: span > 0 ? { frac: (t - w0) / span } : { frames: 0 },
+      at: fillsClip
+        ? span > 0
+          ? { frac: (t - w0) / span }
+          : { frames: 0 }
+        : { secondsFromStart: t - w0 },
       d,
       aim: { x: 0.5, y: 0.5 },
       shift: {
@@ -140,7 +164,7 @@ export function normaliseRecording(clip: Clip, ctx: RecordContext): MoveDef | nu
     id: 'mym-draft',
     name: 'My move',
     hint: 'The move you performed on the picture, saved',
-    window: 'clip',
+    window: fillsClip ? 'clip' : 'moment',
     beats,
     // The size he recorded it at, so re-applying it with the slider untouched
     // gives back what he saw rather than the shelf's current preference.
