@@ -385,6 +385,11 @@ const TILE_IDS = [
   'rightThenLeft',
   'shake',
   'driftRight',
+  // His ask, 2026-08-15: more presets to zoom out. Mirrors, so a glyph that came
+  // out looking like the tile it mirrors would fail right here.
+  'pullBack',
+  'punchOut',
+  'outAndIn',
 ] as const
 
 /** What ONE tile actually draws: both panes of its picture, straight out of the DOM. */
@@ -399,7 +404,7 @@ async function selectFirstClip(page: Page): Promise<void> {
   await expect(page.getByTestId('move-grid')).toBeVisible()
 }
 
-test('cover the labels and the ten tiles are still ten different pictures', async ({ page }) => {
+test('cover the labels and every tile is still its own picture', async ({ page }) => {
   await seedClips(page, 1, 6)
   await selectFirstClip(page)
 
@@ -410,7 +415,7 @@ test('cover the labels and the ten tiles are still ten different pictures', asyn
     expect(clash, `${id} draws exactly what ${clash} draws`).toBeUndefined()
     drawn.set(key, id)
   }
-  expect(drawn.size, 'ten moves, ten pictures').toBe(10)
+  expect(drawn.size, 'every tile draws its own picture').toBe(TILE_IDS.length)
 
   // And the selected tile is the PICTURE going accent, not a hairline border:
   // nine grey drawings and one lavender one.
@@ -451,7 +456,7 @@ test('nothing on the shelf moves while it plays, with the pointer sitting on a t
   await page.keyboard.press('Space')
 })
 
-test('reduced motion gets the same ten pictures, and the digits still pick a move', async ({ page }) => {
+test('reduced motion gets the same pictures, and the digits still pick a move', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' })
   await seedClips(page, 1, 6)
   await selectFirstClip(page)
@@ -462,7 +467,7 @@ test('reduced motion gets the same ten pictures, and the digits still pick a mov
   await expect(page.locator('[data-testid^="move-live-"]')).toHaveCount(0)
   const drawn = new Set<string>()
   for (const id of TILE_IDS) drawn.add(await picture(page, id))
-  expect(drawn.size, 'still ten pictures with the motion off').toBe(10)
+  expect(drawn.size, 'still one picture each with the motion off').toBe(TILE_IDS.length)
 
   // And the keyboard path is untouched: the digits still put a move on the clip.
   await page.keyboard.press('3')

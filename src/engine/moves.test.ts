@@ -44,9 +44,21 @@ const build = (id: MoveDef['id'], durS: number, over?: Partial<{ depth: number; 
 const keys = (clip: Clip, channel: 'scale' | 'posX' | 'posY') => channelKeyframes(clip, channel)
 
 describe('the table itself', () => {
-  it('gives every digit 0 to 9 exactly one move', () => {
-    expect(MOVES).toHaveLength(10)
-    for (let d = 0; d <= 9; d++) expect(moveByDigit(d)?.digit).toBe(d)
+  /**
+   * ⛔ THE TEN IN HIS HANDS KEEP THEIR KEYS, FOREVER.
+   *
+   * This used to read `expect(MOVES).toHaveLength(10)`, which was the same
+   * statement while there were exactly ten. There are more now, because he asked
+   * for zoom-out presets on 2026-08-15, and there are still only ten digits. So
+   * the invariant is stated as what it always meant: every digit 0 to 9 picks
+   * exactly one move, no digit is shared, and a move added later is shelf-only
+   * rather than renumbering something already under his fingers.
+   */
+  it('gives every digit 0 to 9 exactly one move, and never two', () => {
+    for (let d = 0; d <= 9; d++) expect(moveByDigit(d)?.digit, `digit ${d}`).toBe(d)
+    const digits = MOVES.map((m) => m.digit).filter((d) => d !== undefined)
+    expect(new Set(digits).size, 'no digit is shared').toBe(digits.length)
+    expect(digits).toHaveLength(10)
   })
 
   /**

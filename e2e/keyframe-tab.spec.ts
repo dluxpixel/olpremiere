@@ -243,6 +243,88 @@ test('dragging a keyframe on the clip retimes it, in one undo step', async ({ pa
   await expect.poll(timesOf).toEqual(before)
 })
 
+/**
+ * ⛔ HIS ENDGAME, DRIVEN RATHER THAN ASSUMED.
+ *
+ * His words, 2026-08-14: *"I wanted to maybe animate it with the preview. I can
+ * animate how I want it, and then I save it, and you just save the movements,
+ * and then I can completely customize it."*
+ *
+ * Research on 2026-08-14 read `withChannelsAtTime` and concluded the RECORDING
+ * half already works: arm the clip, park the playhead, drag the picture, park,
+ * drag again. It also said, in its own words, that none of it had been driven in
+ * the app. **Everything a recorder gets built on rests on this being true**, so
+ * it is worth one test rather than one paragraph.
+ *
+ * Two drags at two different moments, which is the smallest thing that is a
+ * MOTION rather than a single pose.
+ */
+test('parking the playhead and dragging twice records a path, which is his recorder', async ({
+  page,
+}) => {
+  await page.goto('/')
+  await page.getByTestId('add-title').click()
+  await page.getByTestId('clip').click()
+
+  const posX = () =>
+    page.evaluate(async () => {
+      const storeMod = '/src/state/store.ts'
+      const typesMod = '/src/engine/types.ts'
+      const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+        useStore: { getState: () => { project: unknown } }
+      }
+      const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+        activeSequence: (p: unknown) => {
+          tracks: { clips: { keyframes?: { posX?: { t: number; value: number }[] } }[] }[]
+        }
+      }
+      const clip = activeSequence(useStore.getState().project).tracks.flatMap((t) => t.clips)[0]
+      return clip.keyframes?.posX ?? []
+    })
+
+  const park = (s: number) =>
+    page.evaluate(async (playheadS) => {
+      const storeMod = '/src/state/store.ts'
+      const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+        useStore: { getState: () => { setUI: (p: unknown) => void } }
+      }
+      useStore.getState().setUI({ playheadS })
+    }, s)
+
+  const dragPicture = async (dx: number) => {
+    const gizmo = page.getByTestId('gizmo-body')
+    await gizmo.hover()
+    const box = (await gizmo.boundingBox())!
+    const cx = box.x + box.width / 2
+    const cy = box.y + box.height / 2
+    await page.mouse.move(cx, cy)
+    await page.mouse.down()
+    await page.mouse.move(cx + dx, cy, { steps: 8 })
+    await page.mouse.up()
+  }
+
+  await park(1)
+  await page.getByTestId('gizmo-motion-badge').click()
+  await dragPicture(60)
+  await expect.poll(async () => (await posX()).length).toBe(2)
+
+  // Park somewhere LATER and move it again. This is the whole loop he described,
+  // and the second drag must ADD a moment rather than rewrite the first.
+  await park(3)
+  await dragPicture(-110)
+  await expect.poll(async () => (await posX()).length).toBe(3)
+
+  const path = await posX()
+  const ts = path.map((k) => k.t)
+  expect(ts, 'three distinct moments, in order').toEqual([...ts].sort((a, b) => a - b))
+  expect(new Set(ts).size).toBe(3)
+  // A real path: it went one way, then the other. A recorder that only ever
+  // appended the newest pose would pass a count check and fail this.
+  const [a, b, c] = path.map((k) => k.value)
+  expect(b).toBeGreaterThan(a)
+  expect(c).toBeLessThan(b)
+})
+
 test('arming from the gizmo badge turns a monitor drag into an animation', async ({ page }) => {
   await page.goto('/')
   await page.getByTestId('add-title').click()

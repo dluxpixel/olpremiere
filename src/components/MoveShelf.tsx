@@ -162,8 +162,11 @@ const MoveTile = memo(function MoveTile({
       type="button"
       data-testid={`move-tile-${def.id}`}
       aria-pressed={lit}
-      aria-keyshortcuts={String(def.digit)}
-      title={`${def.name}: ${def.hint} (press ${def.digit})`}
+      // A shelf-only move has no key, and must not claim one. `String(undefined)`
+      // would put the word "undefined" into the tooltip and hand a screen reader
+      // a shortcut that does nothing.
+      aria-keyshortcuts={def.digit === undefined ? undefined : String(def.digit)}
+      title={def.digit === undefined ? `${def.name}: ${def.hint}` : `${def.name}: ${def.hint} (press ${def.digit})`}
       onClick={() => onPick(def.id)}
       onPointerEnter={() => onHover(def.id)}
       onPointerLeave={() => onHover(null)}

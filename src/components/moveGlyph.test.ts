@@ -45,11 +45,20 @@ const wholeOf = (g: MoveGlyph): string => `${stageOf(g)}|${tapeOf(g)}`
 /** The last rectangle a tile draws is always where the move ENDS up. */
 const endRect = (g: MoveGlyph) => g.marks[g.marks.length - 1].rect
 
-describe('cover the labels and the ten tiles are still ten different pictures', () => {
+/**
+ * ⛔ THE COUNT WAS NEVER THE POINT, AND IT USED TO BE WRITTEN AS IF IT WERE.
+ *
+ * These read `toHaveLength(10)` while there were exactly ten moves, so the two
+ * statements looked the same. He asked for zoom-out presets on 2026-08-15 and
+ * there are thirteen now. The invariant that matters is that NO TWO TILES DRAW
+ * THE SAME PICTURE, whatever the shelf holds, and stated that way it gets
+ * harder every time a move is added rather than needing an edit.
+ */
+describe('cover the labels and every tile is still its own picture', () => {
   for (const stage of [TALL, WIDE]) {
     it(`draws no two tiles the same at ${stage.w}x${stage.h}`, () => {
       const glyphs = [...shelf(MOVES, DEPTH, stage).values()]
-      expect(glyphs).toHaveLength(10)
+      expect(glyphs).toHaveLength(MOVES.length)
       const seen = new Map<string, MoveId>()
       for (const g of glyphs) {
         const key = wholeOf(g)
@@ -251,10 +260,10 @@ describe('dragging How big moves the number, not the pictures', () => {
   })
 
   /** The travel is the one thing that does move, because a deeper zoom really does carry the picture further. */
-  it('still tells the ten apart at both ends of the slider', () => {
+  it('still tells every tile apart at both ends of the slider', () => {
     for (const depth of [1.05, 2]) {
       const keys = new Set([...shelf(MOVES, depth).values()].map(wholeOf))
-      expect(keys.size, `at ${depth}`).toBe(10)
+      expect(keys.size, `at ${depth}`).toBe(MOVES.length)
     }
   })
 })

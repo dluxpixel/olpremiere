@@ -56,11 +56,22 @@ export type MoveId =
   | 'rightThenLeft'
   | 'shake'
   | 'driftRight'
+  | 'pullBack'
+  | 'punchOut'
+  | 'outAndIn'
 
 export interface MoveDef {
   id: MoveId
-  /** The key on his keyboard. Digits 0 to 9 were completely unbound. */
-  digit: number
+  /**
+   * The key on his keyboard. Digits 0 to 9 were completely unbound.
+   *
+   * ⛔ OPTIONAL SINCE 2026-08-15, AND THE TEN THAT HAVE ONE NEVER MOVE. There are
+   * ten digits and there are more than ten moves now, so a move added later is
+   * shelf-only rather than renumbering the ten already in his hands. Muscle
+   * memory beats tidiness: shifting `Push in` off 2 to make room would cost him
+   * something real to gain nothing.
+   */
+  digit?: number
   /** His words. No tile name contains a word he would have to look up. */
   name: string
   /** One plain line, for the tooltip and the screen reader. Still no jargon. */
@@ -225,6 +236,51 @@ export const MOVES: readonly MoveDef[] = [
     beats: [
       { at: { frames: 0 }, d: 0.35, aim: { x: 0.34, y: 0.5 }, curve: 'smooth' },
       { at: { fromEnd: 0 }, d: 1, aim: { x: 0.68, y: 0.5 }, curve: 'linear' },
+    ],
+  },
+
+  // --- The way back out ------------------------------------------------------
+  //
+  // HIS ASK, 2026-08-15: *"I want more presets to zoom out."*
+  //
+  // ⛔ AND THEY CANNOT BE THE PUSH TILES WITH A SMALLER SLIDER. `d` is a share of
+  // the depth he picked, so a tile that ran 0 to 1 with the slider under 100
+  // would build the SAME keyframes as one of the ten above, and `matchMove`
+  // rebuilds every preset and compares: two tiles with one shape means the shelf
+  // cannot say which one he is on. So these are TIME MIRRORS with their own
+  // shape, and every one of them starts at the depth and comes back down.
+  //
+  // No digits. See MoveDef.digit: the ten in his hands keep theirs.
+  {
+    id: 'pullBack',
+    name: 'Pull back',
+    hint: 'Starts big and creeps back to normal the whole way through',
+    window: 'clip',
+    beats: [
+      { at: { frames: 0 }, d: 1, aim: C, curve: 'smooth' },
+      { at: { fromEnd: 0 }, d: 0, aim: C, curve: 'linear' },
+    ],
+  },
+  {
+    id: 'punchOut',
+    name: 'Punch out',
+    hint: 'Starts big and snaps back to normal right away, then stays',
+    window: 'moment',
+    beats: [
+      { at: { frames: 0 }, d: 1, aim: C, curve: 'snapIn' },
+      { at: { frames: 5 }, d: 0, aim: C, curve: 'linear' },
+    ],
+  },
+  {
+    id: 'outAndIn',
+    name: 'Out and in',
+    hint: 'Starts big, drops to normal, then grows back at the end',
+    window: 'clip',
+    beats: [
+      { at: { frames: 0 }, d: 1, aim: C, curve: 'snapIn' },
+      { at: { frames: 5 }, d: 0, aim: C, curve: 'linear' },
+      { at: { fromEnd: 5 }, d: 0, aim: C, curve: 'snapIn' },
+      { at: { fromEnd: 0 }, d: 1, aim: C, curve: 'linear' },
     ],
   },
 ]
