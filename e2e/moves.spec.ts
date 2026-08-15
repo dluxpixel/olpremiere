@@ -527,6 +527,19 @@ test('a move he performs by hand becomes his own tile, and that tile works', asy
   const mine = page.locator('[data-testid^="move-tile-mym-"]')
   await expect(mine).toHaveCount(1)
 
+  // ⛔ AND CLICKING IT BACK ON THE SAME CLIP GIVES HIM WHAT HE PERFORMED. His
+  // move takes the depth slider like a built-in, so saving parks the slider at
+  // the size he performed at: otherwise his own tile hands back a shallower
+  // version of the thing he just called finished.
+  await page.getByTestId('move-tile-none').click()
+  await mine.first().click()
+  // He performed a PAN here, with no resize, so the pan is what has to come
+  // back. Its far edge is the whole shape of what he did.
+  const replayed = (await facts(page)).posX.map((k) => k.value)
+  const was = performed.map((k) => k.value)
+  expect(Math.min(...replayed)).toBeCloseTo(Math.min(...was), 0)
+  expect(Math.max(...replayed)).toBeCloseTo(Math.max(...was), 0)
+
   // And it WORKS on another clip: click the second clip, click his tile.
   await hands.clickClip(1)
   await mine.first().click()

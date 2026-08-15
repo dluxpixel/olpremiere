@@ -609,6 +609,18 @@ export function MoveShelf({ clips }: { clips: Clip[] }) {
               if (!saved) return
               setMine(listMyMoves())
               setSaveName('')
+              // ⛔ AND THE SLIDER GOES TO THE SIZE HE PERFORMED AT.
+              //
+              // His move takes the depth slider like every built-in, which is
+              // what he asked for. But he performed it at one size and the slider
+              // may be sitting at another, so clicking his own tile straight
+              // after saving would hand him a shallower or deeper version of the
+              // thing he had just made and called finished. `recordedDepth` is
+              // the size his beats are measured against, and this is the one
+              // place it is worth spending: after this, the slider governs.
+              if (def.recordedDepth && Math.abs(def.recordedDepth - 1) > NEUTRAL_BAND) {
+                setMoveDepth(def.recordedDepth)
+              }
             }}
           >
             Save this move
