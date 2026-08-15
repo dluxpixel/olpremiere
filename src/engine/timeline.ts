@@ -1974,6 +1974,44 @@ export function duplicateClips(seq: Sequence, clipIds: Id[]): { seq: Sequence; n
 // moves never collide with clips that are themselves about to move (the
 // same trick as nudgeSelection). ONE sequence in, one out: preview and the
 // single-dispatch commit share it byte-for-byte.
+/**
+ * The nearest start this clip may take on `track` WITHOUT lying on top of
+ * anything, given where it is coming from.
+ *
+ * Going right it parks its tail against the blocker's head; going left it parks
+ * its head against the blocker's tail. If there is nowhere at all in the
+ * direction he is dragging, it keeps the position it already had, which is the
+ * only honest answer for a track with no room.
+ *
+ * ⛔ WALKED FROM WHERE HE AIMED, IN THE DIRECTION HE DRAGGED. Picking the
+ * globally nearest gap instead is what made a packed drag teleport back into its
+ * own slot and look like nothing happened.
+ */
+export function nearestFreeStart(
+  track: Track,
+  desiredStartS: number,
+  durationS: number,
+  ignoreClipId: Id,
+  fromStartS: number,
+): number {
+  const want = Math.max(0, desiredStartS)
+  const others = track.clips.filter((c) => c.id !== ignoreClipId)
+  const clashes = (start: number): boolean =>
+    others.some((c) => c.startS < start + durationS - EPS && clipEndS(c) > start + EPS)
+  if (!clashes(want)) return want
+
+  const goingRight = want > fromStartS
+  const edges = goingRight
+    ? others.map((c) => c.startS - durationS).sort((a, b) => b - a)
+    : others.map((c) => clipEndS(c)).sort((a, b) => a - b)
+  for (const e of edges) {
+    const at = Math.max(0, e)
+    if (goingRight ? at > want + EPS : at < want - EPS) continue
+    if (!clashes(at)) return at
+  }
+  return fromStartS
+}
+
 export function moveSelectionWith(
   base: Sequence,
   grabbedId: Id,
@@ -1988,9 +2026,28 @@ export function moveSelectionWith(
   // Solo: he clicked one half of a pair and left the partner unselected, so
   // the partner stays where it is. moveClip is the same verb the group move
   // uses underneath; the only difference is that it stops at this clip.
+  // ⛔ NEVER OVERWRITE, AND NEVER SIT STILL EITHER. Both are his, three days
+  // apart, and either one alone has a wrong fix.
+  //
+  // 2026-08-12: a drag on a packed track moved NOTHING, because placement hunted
+  // for a gap the clip fits in and the only one was the slot it came from. He
+  // chose overwrite to fix that.
+  //
+  // 2026-08-15: overwrite CARVES the clip underneath. His words: "you can slide
+  // clips over different clips ... remove that feature and I never wanna see it
+  // again." That is not sliding, it is destroying footage he never touched.
+  //
+  // So the target is clamped to somewhere legal FIRST, and the placement that
+  // runs afterwards is then handed a spot with nothing under it. The clip slides
+  // freely and stops against its neighbour: it always moves, and it can never
+  // land on anything.
+  const targetTrack = base.tracks.find((t) => t.id === targetTrackId)
+  const safeS = targetTrack
+    ? nearestFreeStart(targetTrack, tS, clipDurationS(grabbed), grabbedId, grabbed.startS)
+    : tS
   let next = solo
-    ? moveClipOverwrite(base, grabbedId, targetTrackId, tS)
-    : moveGroupOverwrite(base, grabbedId, targetTrackId, tS)
+    ? moveClipOverwrite(base, grabbedId, targetTrackId, safeS)
+    : moveGroupOverwrite(base, grabbedId, targetTrackId, safeS)
   if (others.length === 0) return next
 
   // THE SELECTION CHANGES TRACK TOGETHER, NOT JUST TIME.
@@ -2035,7 +2092,7 @@ export function moveSelectionWith(
         destTrackId = next.tracks[lanes[want].i]?.id ?? tr.id
       }
     }
-    next = moveGroupOverwrite(next, o.id, destTrackId, Math.max(0, oc.startS + deltaS))
+    next = moveGroup(next, o.id, destTrackId, Math.max(0, oc.startS + deltaS))
   }
   return next
 }

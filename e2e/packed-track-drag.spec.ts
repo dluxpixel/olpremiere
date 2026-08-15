@@ -30,7 +30,7 @@ async function starts(page: Page): Promise<number[]> {
   })
 }
 
-test('a clip on a packed track actually moves when dragged', async ({ page }) => {
+test('a drag on a packed track never eats the clip it lands on', async ({ page }) => {
   await page.goto('/')
   await page.getByTestId('media-file-input').setInputFiles(FIXTURE)
   await expect(page.getByTestId('asset-card')).toBeVisible({ timeout: 15_000 })
@@ -56,10 +56,46 @@ test('a clip on a packed track actually moves when dragged', async ({ page }) =>
   await page.mouse.up()
 
   const after = await starts(page)
-  // ⛔ THE WHOLE POINT: it went somewhere. Before this change `after` came back
-  // identical to `before` and he was left dragging a clip that would not budge.
-  expect(after).not.toEqual(before)
-  expect(Math.max(...after), 'the dragged clip landed further right than it began').toBeGreaterThan(
-    Math.max(...before) - 0.001,
-  )
+  // ⛔ THE CONTRACT CHANGED ON 2026-08-15, AT HIS WORD, AND THIS IS THE RECORD.
+  //
+  // This used to assert only "it went somewhere", and on a track packed this
+  // tight the ONLY way to go somewhere was to CARVE the neighbour. His words
+  // that day: "you can slide clips over different clips ... it's the stupidest
+  // thing I have ever seen. Please remove that feature and I never wanna see it
+  // again."
+  //
+  // So movement at any cost is no longer the thing worth pinning. What is worth
+  // pinning is that NOTHING IS EVER DESTROYED and nothing ever lies on top of
+  // anything. Three clips went in, three are still here, none shortened, none
+  // overlapping. ⚠️ On a track with no room at all a clip therefore has nowhere
+  // to slide to and stays put, which is the direct cost of what he asked for.
+  expect(after).toHaveLength(before.length)
+  await expect(vclip(page)).toHaveCount(3)
+
+  const spans = await page.evaluate(async () => {
+    const storeMod = '/src/state/store.ts'
+    const typesMod = '/src/engine/types.ts'
+    const tlMod = '/src/engine/timeline.ts'
+    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+      useStore: { getState: () => { project: unknown } }
+    }
+    const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+      activeSequence: (p: unknown) => { tracks: { kind: string; clips: unknown[] }[] }
+    }
+    const { clipDurationS } = (await import(/* @vite-ignore */ tlMod)) as {
+      clipDurationS: (c: unknown) => number
+    }
+    return activeSequence(useStore.getState().project)
+      .tracks.filter((t) => t.kind === 'video')
+      .flatMap((t) =>
+        t.clips.map((c) => ({ a: (c as { startS: number }).startS, d: clipDurationS(c) })),
+      )
+      .sort((x, y) => x.a - y.a)
+  })
+  for (const s of spans) expect(s.d, 'no clip was shortened by the drag').toBeGreaterThan(0.001)
+  for (let i = 1; i < spans.length; i++) {
+    expect(spans[i].a, 'no clip starts before the one before it ends').toBeGreaterThanOrEqual(
+      spans[i - 1].a + spans[i - 1].d - 0.001,
+    )
+  }
 })
