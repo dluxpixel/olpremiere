@@ -303,6 +303,88 @@ test('zooming the rail earns the click between two diamonds, and that segment op
   await expect.poll(async () => (await scaleKeys(page))[0].curve).not.toEqual(before)
 })
 
+/**
+ * ⛔ THE LASSO WAS DECORATIVE. He could select five diamonds and then only ever
+ * drag them one at a time, which is not a selection, it is a highlight.
+ *
+ * `moveKeyframes` was written, clamped, tested and called by nothing. This is the
+ * gesture that reaches it: press a diamond that is already in the selection and
+ * the whole set travels, keeping its spacing, in ONE undo step.
+ *
+ * Driven through the real diamonds rather than by calling the action, because
+ * the bug was never in the action. It was that no gesture led to it.
+ */
+test('dragging a diamond that is already selected moves the whole selection together', async ({
+  page,
+}) => {
+  await addTwentySecondClip(page)
+  await selectTheClip(page)
+  await openHandControls(page)
+  await setUI(page, { playheadS: 4 })
+  await page.getByTestId('punch-apply').click()
+
+  const lane = page.locator('[data-testid="keyframe-track"][data-channel="scale"]')
+  const diamonds = lane.getByTestId('keyframe')
+  await expect(diamonds).toHaveCount(2)
+
+  // Same earned zoom as the test above: on a fitted 20 second rail these two
+  // diamonds overlap, and a drag has to start somewhere he could actually aim.
+  const ruler = page.getByTestId('motion-rail-ruler')
+  await ruler.dblclick()
+  for (let i = 0; i < 40 && (await railGapPx(page)) < GRABBABLE_PX; i++) {
+    await ruler.hover({ position: { x: await punchXInRuler(page), y: 10 } })
+    await page.mouse.wheel(0, -120)
+  }
+  expect(await railGapPx(page)).toBeGreaterThanOrEqual(GRABBABLE_PX)
+
+  const before = await scaleKeys(page)
+  expect(before).toHaveLength(2)
+
+  // Both diamonds in the selection: click one, Shift-click the other.
+  await diamonds.nth(0).click()
+  await diamonds.nth(1).click({ modifiers: ['Shift'] })
+
+  // Now drag the SECOND one. The first is nowhere near the pointer and must
+  // travel anyway, by exactly the same amount.
+  const grab = await diamonds.nth(1).boundingBox()
+  if (!grab) throw new Error('no geometry')
+  const cx = grab.x + grab.width / 2
+  const cy = grab.y + grab.height / 2
+  await page.mouse.move(cx, cy)
+  await page.mouse.down()
+  await page.mouse.move(cx + 48, cy, { steps: 10 })
+  await page.mouse.up()
+
+  await expect
+    .poll(async () => (await scaleKeys(page))[0].t)
+    .not.toBeCloseTo(before[0].t, 6)
+
+  const after = await scaleKeys(page)
+  expect(after).toHaveLength(2)
+  const d0 = after[0].t - before[0].t
+  const d1 = after[1].t - before[1].t
+  expect(d0).toBeGreaterThan(0) // it went the way he dragged
+  expect(d1).toBeCloseTo(d0, 6) // ONE delta for the set, so the shape survives
+  expect(after[1].t - after[0].t).toBeCloseTo(RISE_S, 6)
+  // A retime moves moments, never values or shapes.
+  expect(after[0].value).toBeCloseTo(before[0].value, 6)
+  expect(after[1].value).toBeCloseTo(before[1].value, 6)
+  expect(after[0].curve).toEqual(before[0].curve)
+
+  // ⛔ ONE undo press, not two. A set that came back one diamond at a time would
+  // mean each keyframe wrote its own history entry.
+  await page.evaluate(async () => {
+    const storeMod = '/src/state/store.ts'
+    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+      useStore: { getState: () => { undo: () => void } }
+    }
+    useStore.getState().undo()
+  })
+  const undone = await scaleKeys(page)
+  expect(undone[0].t).toBeCloseTo(before[0].t, 6)
+  expect(undone[1].t).toBeCloseTo(before[1].t, 6)
+})
+
 test('punch out at an arbitrary moment mid clip falls to base size and HOLDS there', async ({ page }) => {
   await addTwentySecondClip(page)
   await selectTheClip(page)

@@ -32,7 +32,14 @@ import { channelKeyframes, isChannelAnimated } from '../engine/effects/channels'
 import { MOMENT_EPS } from '../engine/keyframes'
 import { formatTimecode } from '../engine/timecode'
 import type { AnimChannel, Clip, Keyframe } from '../engine/types'
-import { duplicateKeyframe, moveKeyframeTime, removeKeyframeAtTime } from '../state/clipEdits'
+import {
+  clampKeyframesDelta,
+  duplicateKeyframe,
+  moveKeyframeTime,
+  moveKeyframes,
+  removeKeyframeAtTime,
+  type KeyframePick,
+} from '../state/clipEdits'
 import { IconButton } from '../ui/Button'
 import { ScrubField, type Spec } from './EffectControls'
 import {
@@ -56,6 +63,15 @@ interface DragState {
   moved: boolean
   /** Alt was down on the press: this drag copies the diamond instead of moving it. */
   copy: boolean
+  /**
+   * The picks this drag carries, frozen at the press.
+   *
+   * Empty means an ordinary single diamond drag. Non-empty means he pressed a
+   * diamond that was already in the lasso, so the whole selection travels and
+   * commits as ONE undo step. Frozen because the selection must not change
+   * under a gesture already in flight.
+   */
+  group: readonly KeyframePick[]
 }
 
 /** What the render needs to draw the diamond mid-drag (the ref holds the truth). */
@@ -72,6 +88,16 @@ export function KeyframeTrack({ clip, channel }: { clip: Clip; channel: AnimChan
   // pre-drag state). `dragView` mirrors just enough for the render.
   const dragRef = useRef<DragState | null>(null)
   const [dragView, setDragView] = useState<DragView | null>(null)
+  // Moments this lane has just committed a retime to, so they can ring once as
+  // they land. Cleared on a timer: it is a one-shot, not a state the diamond is
+  // in, and a diamond left ringing would read as a warning.
+  const [landed, setLanded] = useState<readonly number[]>([])
+  const landTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const ring = (times: readonly number[]): void => {
+    if (landTimerRef.current) clearTimeout(landTimerRef.current)
+    setLanded(times)
+    landTimerRef.current = setTimeout(() => setLanded([]), 260)
+  }
   // A drag that ends over the rail still fires a click there; without this the
   // retime he just made would also open the curve editor on whatever segment
   // he happened to release over. Same one-shot trap the rail's lasso uses.
@@ -100,6 +126,16 @@ export function KeyframeTrack({ clip, channel }: { clip: Clip; channel: AnimChan
     if (e.button !== 0) return
     e.preventDefault()
     const additive = e.shiftKey || e.ctrlKey || e.metaKey
+    // ⛔ PRESSING A DIAMOND THAT IS ALREADY LASSOED DRAGS THE WHOLE SELECTION.
+    // He could lasso five diamonds and then only ever move them one at a time,
+    // which made the lasso decorative: `moveKeyframes` was written, clamped and
+    // tested months ago and nothing in the app called it.
+    //
+    // Alt is left out on purpose. Alt already means "copy this diamond", and a
+    // gesture that both copies and moves a whole selection is two edits wearing
+    // one drag. Alt keeps its old single-diamond meaning.
+    const group: readonly KeyframePick[] =
+      !e.altKey && rail.picks.length > 1 && rail.isPicked(channel, k.t) ? rail.picks : []
     dragRef.current = {
       origT: k.t,
       draftT: k.t,
@@ -107,6 +143,7 @@ export function KeyframeTrack({ clip, channel }: { clip: Clip; channel: AnimChan
       startX: e.clientX,
       moved: false,
       copy: e.altKey,
+      group,
     }
 
     const onMove = (ev: PointerEvent) => {
@@ -114,8 +151,18 @@ export function KeyframeTrack({ clip, channel }: { clip: Clip; channel: AnimChan
       if (!d) return
       const dx = ev.clientX - d.startX
       d.moved = d.moved || Math.abs(dx) > DRAG_SLOP_PX
-      d.draftT = rail.snapT(dragTargetT(d.origT, dx, d.pxPerS))
-      if (d.moved) setDragView({ origT: d.origT, t: d.draftT, copy: d.copy })
+      if (d.group.length > 0) {
+        // Clamp the LIVE delta through the same function the commit uses, so
+        // the diamonds never travel somewhere the release will not honour.
+        const raw = rail.snapT(dragTargetT(d.origT, dx, d.pxPerS)) - d.origT
+        d.draftT = d.origT + clampKeyframesDelta(clip, d.group, raw, rail.fps)
+      } else {
+        d.draftT = rail.snapT(dragTargetT(d.origT, dx, d.pxPerS))
+      }
+      if (d.moved) {
+        setDragView({ origT: d.origT, t: d.draftT, copy: d.copy })
+        if (d.group.length > 0) rail.setGroupDelta(d.draftT - d.origT)
+      }
     }
     const onUp = () => {
       window.removeEventListener('pointermove', onMove)
@@ -123,6 +170,7 @@ export function KeyframeTrack({ clip, channel }: { clip: Clip; channel: AnimChan
       const d = dragRef.current
       dragRef.current = null
       setDragView(null)
+      rail.setGroupDelta(null)
       if (!d) return
       if (d.moved) {
         swallowClickRef.current = true
@@ -131,10 +179,22 @@ export function KeyframeTrack({ clip, channel }: { clip: Clip; channel: AnimChan
         }, 0)
       }
       if (d.moved && Math.abs(d.draftT - d.origT) > 1e-6) {
-        // Alt: the same shaped moment, value, ease and curve, somewhere else.
-        if (d.copy) duplicateKeyframe(clip.id, channel, d.origT, d.draftT)
-        else moveKeyframeTime(clip.id, channel, d.origT, d.draftT)
-        rail.select({ channel, kind: 'key', t: d.draftT })
+        if (d.group.length > 0) {
+          // The whole lasso, in one undo step, keeping its shape. The picks
+          // travel with it rather than being replaced, or the selection would
+          // collapse to this one diamond the instant he let go.
+          const delta = d.draftT - d.origT
+          moveKeyframes(clip.id, d.group, delta)
+          rail.shiftPicks(delta)
+          // Every moment THIS lane just moved rings, not only the one he held.
+          ring(d.group.filter((p) => p.channel === channel).map((p) => p.t + delta))
+        } else {
+          // Alt: the same shaped moment, value, ease and curve, somewhere else.
+          if (d.copy) duplicateKeyframe(clip.id, channel, d.origT, d.draftT)
+          else moveKeyframeTime(clip.id, channel, d.origT, d.draftT)
+          rail.select({ channel, kind: 'key', t: d.draftT })
+          ring([d.draftT])
+        }
       } else {
         // A click (no meaningful drag): toggle selection. The rail owns it now,
         // so the toggle compares against the selection as it was on the press.
@@ -197,21 +257,36 @@ export function KeyframeTrack({ clip, channel }: { clip: Clip; channel: AnimChan
         <div className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-border" />
         {segBand && (
           <div
+            // Keyed on the segment so picking a DIFFERENT one replays the grow.
+            // Without the key React reuses the node, and the band would slide to
+            // the new move without ever saying it had changed.
+            key={`band-${selSeg}`}
             data-testid="keyframe-segment"
-            className="pointer-events-none absolute inset-y-0 rounded-[2px] bg-accent-quiet"
+            className="olp-band pointer-events-none absolute inset-y-0 rounded-[2px] bg-accent-quiet"
             style={{ left: segBand.left, width: Math.max(2, segBand.right - segBand.left) }}
           />
         )}
         {kfs.map((k, i) => {
           const dragging = dragView !== null && Math.abs(dragView.origT - k.t) <= MOMENT_EPS
+          const picked = rail.isPicked(channel, k.t)
+          // A GROUP drag moves every picked diamond by the same amount, on every
+          // lane at once, so the selection keeps its shape while it travels. It
+          // is read off the rail rather than off this lane's own drag, because
+          // the gesture may have started on a different lane entirely.
+          const travelling = rail.groupDeltaS !== null && picked
           // A copy drag leaves the original exactly where it is and carries a ghost.
-          const t = dragging && !dragView!.copy ? dragView!.t : k.t
+          const t = travelling
+            ? k.t + rail.groupDeltaS!
+            : dragging && !dragView!.copy
+              ? dragView!.t
+              : k.t
           const px = rail.tToPx(t)
           if (!onScreen(px)) return null
           const isSel = selKey !== null && Math.abs(selKey - k.t) <= MOMENT_EPS
-          const picked = rail.isPicked(channel, k.t)
           const color =
-            dragging && !dragView!.copy ? 'var(--color-accent)' : diamondColor(channel, kfs, i, isSel)
+            (dragging && !dragView!.copy) || travelling
+              ? 'var(--color-accent)'
+              : diamondColor(channel, kfs, i, isSel)
           return (
             <button
               key={k.t}
@@ -224,7 +299,9 @@ export function KeyframeTrack({ clip, channel }: { clip: Clip; channel: AnimChan
               // 14px, up from 12: half again the area to aim at, and still
               // small enough that two moments a frame apart do not merge into
               // one blob the way a 16px diamond would.
-              className="absolute top-1/2 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rotate-45 cursor-ew-resize rounded-[2px] border border-black/30 transition-[background,box-shadow,transform] duration-[120ms] hover:scale-110"
+              className={`absolute top-1/2 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rotate-45 cursor-ew-resize rounded-[2px] border border-black/30 transition-[background,box-shadow,transform] duration-[120ms] hover:scale-110${
+                landed.some((lt) => Math.abs(lt - k.t) <= MOMENT_EPS) ? ' olp-kf-land' : ''
+              }`}
               style={{
                 left: px,
                 touchAction: 'none',

@@ -140,6 +140,40 @@ export function upsertKeyframe(
   return next
 }
 
+/**
+ * Write a VALUE at `t`, keeping whatever shape already lives at that moment.
+ *
+ * ⛔ TYPING A NUMBER MUST NOT REDRAW A CURVE HE SHAPED BY HAND. Both write paths
+ * used to stamp the shelf's current curve preference onto every write, so
+ * shaping a segment in the curve editor and then correcting the Zoom in the
+ * field silently threw the shape away and replaced it with whatever the dropdown
+ * happened to say. Found by the keyframe audit, 2026-08-14, item 4.
+ *
+ * `shape` is what a moment gets when it has no shape of its OWN to keep.
+ *
+ * ⛔ AND "LINEAR WITH NO CURVE" IS NOT A SHAPE ANYONE CHOSE. It is the neutral
+ * placeholder the arming path writes, and the write straight after it is what
+ * gives the landed keyframe its snap curve. Treating that placeholder as a
+ * decision made arming a clip from the gizmo produce a linear move, which is the
+ * exact "reads as machinery" gap the curve is there to close: caught by
+ * keyframe-tab.spec.ts on 2026-08-15, one ship after this function was written.
+ *
+ * So a moment keeps what it has only when it HAS something: a curve, or an ease
+ * that is not the default. That is the line between a decision and a placeholder.
+ */
+export function upsertKeyframeValue(
+  keyframes: readonly Keyframe[] | undefined,
+  t: number,
+  value: number,
+  shape: { ease: Keyframe['ease']; curve?: Curve },
+): Keyframe[] {
+  const existing = (keyframes ?? []).find((k) => Math.abs(k.t - t) <= 1e-6)
+  const chosen = existing && (existing.curve !== undefined || existing.ease !== 'linear')
+  const kept = chosen ? existing : shape
+  const kf: Keyframe = kept.curve ? { t, value, ease: kept.ease, curve: kept.curve } : { t, value, ease: kept.ease }
+  return upsertKeyframe(keyframes, kf)
+}
+
 /** Remove the keyframe nearest to t within tolerance; returns the same ref when nothing matches. */
 export function removeKeyframeNear(
   keyframes: readonly Keyframe[] | undefined,

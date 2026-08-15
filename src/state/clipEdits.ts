@@ -22,6 +22,7 @@ import {
   scaleKeyframeSpan as scaleKeyframeSpanK,
   setSegmentCurve as setSegmentCurveK,
   upsertKeyframe,
+  upsertKeyframeValue,
 } from '../engine/keyframes'
 import { CURVE_EASE, MOTION_CURVES } from '../engine/motion'
 import { clearMoveChannels } from '../engine/moves'
@@ -173,10 +174,14 @@ export function setChannel(clipId: string, channel: AnimChannel, value: number):
     (c) => {
       if (!animated) return withChannelValue(c, channel, value)
       const localT = playheadLocalT(c)
+      // ⛔ THE SHAPE AT THAT MOMENT IS HIS, NOT THE DROPDOWN'S. Typing a number
+      // into the field corrects the VALUE; a curve he drew by hand at the same
+      // moment used to be overwritten by whatever the shelf's curve preference
+      // said. See upsertKeyframeValue.
       return withChannelKeyframes(
         c,
         channel,
-        upsertKeyframe(channelKeyframes(c, channel), { t: localT, value, ...commit }),
+        upsertKeyframeValue(channelKeyframes(c, channel), localT, value, commit),
       )
     },
     false,
@@ -375,15 +380,32 @@ const isPicked = (times: readonly number[], t: number): boolean =>
  * would bunch the selection up against whichever one hit its limit first, which
  * silently rewrites the timing of a move he only meant to shift.
  */
-export function moveKeyframes(clipId: string, picks: readonly KeyframePick[], deltaT: number): void {
-  const clip = findClip(clipId)
-  if (!clip) return
+/**
+ * How far the selection is ACTUALLY allowed to slide, given where it sits.
+ *
+ * Exported because the lane draws the drag live and must land exactly where the
+ * commit does. Compute the limit twice, in two files, and the diamonds jump on
+ * release: the rail's whole contract is that a live draft and its commit agree.
+ *
+ * Clamped ONCE against every pick rather than per keyframe. Clamping each on its
+ * own bunches the selection up against whichever one hit its limit first, which
+ * silently rewrites the timing of a move he only meant to shift.
+ *
+ * Returns 0 when there is nowhere left to go, which is the honest answer for
+ * keyframes already packed tighter than one frame.
+ */
+export function clampKeyframesDelta(
+  clip: Clip,
+  picks: readonly KeyframePick[],
+  deltaT: number,
+  fps: number,
+): number {
   const byChannel = pickedTimes(clip, picks)
-  if (byChannel.size === 0) return
+  if (byChannel.size === 0) return 0
   const dur = clipDurationS(clip)
   // One frame is the smallest separation that can still be SEEN and clicked, the
   // same gap moveClipKeyframe passes for the same reason.
-  const gap = 1 / (activeSequence(useStore.getState().project).fps || 30)
+  const gap = 1 / (fps || 30)
   let lo = -Infinity
   let hi = Infinity
   for (const [channel, times] of byChannel) {
@@ -397,9 +419,16 @@ export function moveKeyframes(clipId: string, picks: readonly KeyframePick[], de
       hi = Math.min(hi, (next === undefined ? dur : next - gap) - k.t)
     }
   }
-  // Nowhere left to go: keyframes already packed tighter than the gap.
-  if (lo > hi) return
-  const d = Math.min(Math.max(deltaT, lo), hi)
+  if (lo > hi) return 0
+  return Math.min(Math.max(deltaT, lo), hi)
+}
+
+export function moveKeyframes(clipId: string, picks: readonly KeyframePick[], deltaT: number): void {
+  const clip = findClip(clipId)
+  if (!clip) return
+  const byChannel = pickedTimes(clip, picks)
+  if (byChannel.size === 0) return
+  const d = clampKeyframesDelta(clip, picks, deltaT, activeSequence(useStore.getState().project).fps)
   // Early no-op BEFORE dispatch: mapClip rebuilds the sequence either way, so a
   // drag the clamp hands straight back would still cost the user an undo press.
   if (Math.abs(d) <= KEYFRAME_TOLERANCE_S) return

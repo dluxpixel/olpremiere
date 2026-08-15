@@ -89,6 +89,26 @@ export interface MotionRailValue {
   picks: readonly KeyframePick[]
   clearPicks: () => void
   /**
+   * How far a live GROUP drag has slid the multi-select, in seconds, or null
+   * when no group drag is running.
+   *
+   * It lives on the RAIL rather than on the lane that started it because a
+   * selection crosses lanes: lasso a scale diamond and a position diamond, drag
+   * either one, and both have to travel. A lane holding its own delta would move
+   * only its own, and he would let go to find the selection torn apart.
+   */
+  groupDeltaS: number | null
+  setGroupDelta: (deltaS: number | null) => void
+  /**
+   * Slide every pick by `deltaS`, because the keyframes underneath just moved by
+   * exactly that much.
+   *
+   * Without it a group drag lands and the selection collapses to whichever
+   * diamond he happened to have hold of, so nudging the same five twice means
+   * lassoing them again in between.
+   */
+  shiftPicks: (deltaS: number) => void
+  /**
    * Whether the LANES draw at all. The rail is always mounted, so a lane never
    * has to ask whether it has an axis; what folds away under the shelf's 'Tune
    * it by hand' is the drawing, not the wiring.
@@ -178,6 +198,7 @@ export function MotionRail({
   const [view, setView] = useState<RailView>(() => fitView(durS, 0))
   const [selection, setSelection] = useState<MotionSelection | null>(null)
   const [picks, setPicks] = useState<readonly KeyframePick[]>([])
+  const [groupDeltaS, setGroupDeltaS] = useState<number | null>(null)
 
   // The pointer handlers read the CURRENT view, width and clip through refs, not
   // through the closure they were installed with: the first pointermove after a
@@ -220,10 +241,12 @@ export function MotionRail({
     })
   }, [clip.id, durS, viewW])
 
-  // A different clip is a different set of moments: nothing stays selected.
+  // A different clip is a different set of moments: nothing stays selected, and
+  // a group drag that was running belongs to keyframes no longer on screen.
   useEffect(() => {
     setSelection(null)
     setPicks([])
+    setGroupDeltaS(null)
   }, [clip.id])
 
   // --- the playhead, drawn once -----------------------------------------------
@@ -312,6 +335,18 @@ export function MotionRail({
 
   const picked = new Set(picks.map((p) => keyframeKey(p.channel, p.t)))
 
+  const shiftPicks = (deltaS: number): void => {
+    if (!Number.isFinite(deltaS) || deltaS === 0) return
+    setPicks((prev) => prev.map((p) => ({ ...p, t: p.t + deltaS })))
+    // The highlighted moment follows only if it TRAVELLED. A key selection
+    // outside the lasso stayed exactly where it was.
+    setSelection((prev) => {
+      if (!prev || prev.kind !== 'key') return prev
+      if (!picked.has(keyframeKey(prev.channel, prev.t))) return prev
+      return { ...prev, t: prev.t + deltaS }
+    })
+  }
+
   // --- the lasso --------------------------------------------------------------
 
   // Drawn imperatively for the same reason as the playhead: a lasso across four
@@ -389,6 +424,9 @@ export function MotionRail({
     isPicked: (channel, tS) => picked.has(keyframeKey(channel, tS)),
     picks,
     clearPicks: () => setPicks([]),
+    groupDeltaS,
+    setGroupDelta: setGroupDeltaS,
+    shiftPicks,
     lanesVisible: lanes,
   }
 

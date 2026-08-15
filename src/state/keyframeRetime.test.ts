@@ -11,6 +11,7 @@ import {
 } from '../engine/types'
 import {
   addKeyframeAtPlayhead,
+  clampKeyframesDelta,
   moveClipKeyframe,
   moveKeyframeTime,
   moveKeyframes,
@@ -154,6 +155,44 @@ describe('moveKeyframes', () => {
     expect(posTimes()[0] - a).toBeCloseTo(1, 6)
     // Stopped one FRAME short of the wall (30fps sequence), not on top of it.
     expect(wall - b).toBeCloseTo(1 / 30, 6)
+  })
+
+  /**
+   * ⛔ THE LANE DRAWS THE DRAG LIVE, AND IT MUST LAND WHERE THE COMMIT LANDS.
+   *
+   * The lane clamps each pointermove through this exact function and the commit
+   * clamps through it too. Compute the limit twice, in two files, and the
+   * diamonds visibly jump back on release, which reads as the app undoing the
+   * drag he just made. So the two are pinned to each other here.
+   */
+  it('hands the lane the same delta the commit will use, at the wall and inside it', () => {
+    const c = seedTitle()
+    useStore.getState().setUI({ playheadS: 1 })
+    toggleChannelAnimation(c.id, 'scale')
+    useStore.getState().setUI({ playheadS: 3 })
+    addKeyframeAtPlayhead(c.id, 'scale')
+    useStore.getState().setUI({ playheadS: 4 })
+    addKeyframeAtPlayhead(c.id, 'scale') // the wall: NOT picked
+
+    const picks: KeyframePick[] = [
+      { channel: 'scale', t: 1 },
+      { channel: 'scale', t: 3 },
+    ]
+    for (const asked of [0.25, 2, -5]) {
+      const preview = clampKeyframesDelta(firstClip(), picks, asked, 30)
+      const before = times()[1]
+      moveKeyframes(c.id, picks, asked)
+      expect(times()[1] - before, `asked for ${asked}`).toBeCloseTo(preview, 6)
+      useStore.getState().undo()
+    }
+  })
+
+  it('answers zero rather than a guess when the picks are not on the clip', () => {
+    const c = seedTitle()
+    useStore.getState().setUI({ playheadS: 1 })
+    toggleChannelAnimation(c.id, 'scale')
+    expect(clampKeyframesDelta(firstClip(), [{ channel: 'posY', t: 9 }], 1, 30)).toBe(0)
+    expect(clampKeyframesDelta(firstClip(), [], 1, 30)).toBe(0)
   })
 })
 

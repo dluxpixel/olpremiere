@@ -19,7 +19,7 @@
 //
 // Pure: no React, no DOM, no store. Imports registry + the keyframe math only.
 
-import { MOMENT_EPS, clipKeyframeTimes, evalChannel, upsertKeyframe } from '../keyframes'
+import { MOMENT_EPS, clipKeyframeTimes, evalChannel, upsertKeyframeValue } from '../keyframes'
 import type { AnimChannel, Clip, Curve, EffectInstance, Keyframe } from '../types'
 import { CANONICAL_ORDER, EFFECT_BY_TYPE, defaultParams, getEffect, isNeutral } from './registry'
 
@@ -310,7 +310,10 @@ export function withChannelsAtTime(
   for (const [channel, value] of vals) {
     const kfs = channelKeyframes(next, channel)
     if (kfs.length > 0) {
-      next = withChannelKeyframes(next, channel, upsertKeyframe(kfs, commitKf(localT, value)))
+      // The commit shape is for a moment that is NOT already there. Dragging the
+      // gizmo onto an existing keyframe changes where the picture sits, never
+      // how it eases into it. See upsertKeyframeValue.
+      next = withChannelKeyframes(next, channel, upsertKeyframeValue(kfs, localT, value, commit))
       continue
     }
     if (armed && localT > AUTO_KEYFRAME_MIN_T) {

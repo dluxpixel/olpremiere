@@ -278,6 +278,34 @@ describe('matchMove: the lit tile is worked out, never remembered', () => {
     expect(matchMove(hand, FPS, { riseFrames: RISE, seqWidth: W, seqHeight: H })).toBeNull()
   })
 
+  /**
+   * ⛔ AND IT GOES BLANK AT 60 FPS TOO, WHICH IT DID NOT. His footage IS 60.
+   *
+   * The tolerance was hardcoded to 1/60 under a comment claiming "half a frame
+   * at 30fps". At 60 that is a WHOLE frame, so nudging a diamond by the smallest
+   * amount the app can express left the tile lit, still claiming the clip held
+   * the untouched preset while the picture on screen said otherwise. Audit item
+   * 7, 2026-08-14. Both rates are pinned here so a future edit cannot quietly
+   * make one of them right at the other's expense.
+   */
+  it('goes blank on a ONE FRAME hand retime, at 30 and at 60', () => {
+    for (const fps of [30, 60]) {
+      const out = applyMove(seed(20), fps, MOVE_BY_ID.leftThenRight, {
+        depth: DEPTH,
+        riseFrames: RISE,
+        seqWidth: W,
+        seqHeight: H,
+      })
+      const ctx = { riseFrames: RISE, seqWidth: W, seqHeight: H }
+      expect(matchMove(out, fps, ctx)?.id, `untouched @ ${fps}`).toBe('leftThenRight')
+
+      const scale = [...keys(out, 'scale')]
+      scale[2] = { ...scale[2], t: scale[2].t + 1 / fps }
+      const hand: Clip = { ...out, keyframes: { ...out.keyframes, scale } }
+      expect(matchMove(hand, fps, ctx), `one frame moved @ ${fps}`).toBeNull()
+    }
+  })
+
   /** Retiming the WINDOW is a parameter of the move, not a hand edit. */
   it('still names a move whose window was dragged in from both ends', () => {
     const out = build('leftThenRight', 20, { startS: 4, endS: 12 })

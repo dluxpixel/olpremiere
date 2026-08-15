@@ -349,6 +349,68 @@ body {
 }
 
 /*
+ * Arrival for a panel you REACH INTO while it is still moving.
+ *
+ * ⛔ OPACITY ONLY, AND THAT IS THE WHOLE POINT. The curve editor wore `.olp-swap`
+ * for about ten minutes on 2026-08-15 and its 4px slide made the bezier handles
+ * unmissable-to-miss: they are 5px circles, so for the first 160ms of every
+ * opening they sat up to four pixels from where they looked. The e2e caught it
+ * by failing to grab one, which is exactly what his hand would have done.
+ *
+ * A panel whose controls are small and immediately grabbable fades. A panel he
+ * reads before touching may slide.
+ */
+.olp-fade {
+  animation: fade-in 160ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* ---------------------------------------------------------------------------
+ * Motion on the keyframe lanes.
+ *
+ * His ask, 2026-08-15: more animation, and better keyframes. These are the same
+ * request: the lanes are where he works a move out, and every one of these says
+ * something he currently has to infer.
+ *
+ * ⛔ NONE OF THEM ANIMATE `transform` ON A DIAMOND. A diamond carries its
+ * position AND its 45 degree rotation in transform, so an animation on that
+ * property would fight the layout it sits in and spin the mark flat. The ring is
+ * the house device for exactly this reason, already used by clip-pop and
+ * snap-pulse, and it costs no layout.
+ * ------------------------------------------------------------------------- */
+
+/* A retime that COMMITTED. The ring collapses inward onto the diamond as it
+   lands, so a drag that took hold reads differently from one the clamp refused. */
+@keyframes olp-kf-land {
+  from {
+    box-shadow: 0 0 0 5px var(--color-accent-quiet);
+  }
+  to {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+.olp-kf-land {
+  animation: olp-kf-land 240ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* The band under a segment he just opened, growing from the diamond it starts
+   at rather than blinking into existence at full width. The direction is the
+   information: the move runs THAT way, from this moment to the next. */
+@keyframes olp-band-in {
+  from {
+    transform: scaleX(0);
+    opacity: 0;
+  }
+  to {
+    transform: scaleX(1);
+    opacity: 1;
+  }
+}
+.olp-band {
+  animation: olp-band-in 160ms cubic-bezier(0.2, 0, 0, 1);
+  transform-origin: left center;
+}
+
+/*
  * The shared hover/press feel. Applied broadly rather than per component so a
  * button added next month moves like every other button without anyone
  * remembering to add a class. Only colour, border, opacity and transform are

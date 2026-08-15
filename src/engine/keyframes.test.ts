@@ -8,6 +8,7 @@ import {
   scaleKeyframeSpan,
   setSegmentCurve,
   upsertKeyframe,
+  upsertKeyframeValue,
 } from './keyframes'
 import { type Curve, type Keyframe } from './types'
 
@@ -401,5 +402,64 @@ describe('upsertKeyframe / removeKeyframeNear', () => {
     const ch = [kf(0, 0), kf(1, 10), kf(2, 20)]
     expect(removeKeyframeNear(ch, 1.0001, 0.01).map((k) => k.t)).toEqual([0, 2])
     expect(removeKeyframeNear(ch, 5, 0.01)).toBe(ch)
+  })
+})
+
+/**
+ * ⛔ A NUMBER HE TYPES CHANGES THE NUMBER, NEVER THE SHAPE HE DREW.
+ *
+ * Both write paths used to stamp the shelf's current curve onto every write, so
+ * shaping a segment by hand and then correcting the value at the same moment
+ * threw the hand-drawn curve away. Audit item 4, 2026-08-14.
+ */
+describe('upsertKeyframeValue', () => {
+  const shaped = { t: 1, value: 10, ease: 'easeOut' as const, curve: [0.2, 0, 0, 1] as const }
+  const preference = { ease: 'easeIn' as const, curve: [0.9, 0, 1, 1] as Curve }
+
+  it('keeps the ease AND the curve already at that moment', () => {
+    const ch = upsertKeyframeValue([{ ...shaped, curve: [...shaped.curve] as Curve }], 1, 99, preference)
+    expect(ch).toHaveLength(1)
+    expect(ch[0].value).toBe(99)
+    expect(ch[0].ease).toBe('easeOut')
+    expect(ch[0].curve).toEqual([0.2, 0, 0, 1])
+  })
+
+  it('gives a BRAND NEW moment the shape it was handed', () => {
+    const ch = upsertKeyframeValue([{ ...shaped, curve: [...shaped.curve] as Curve }], 3, 20, preference)
+    expect(ch.map((k) => k.t)).toEqual([1, 3])
+    expect(ch[1].ease).toBe('easeIn')
+    expect(ch[1].curve).toEqual([0.9, 0, 1, 1])
+  })
+
+  /**
+   * ⛔ THE PLACEHOLDER IS NOT A DECISION, AND THIS COST A SHIP TO LEARN.
+   *
+   * Arming a clip from the gizmo writes the landed keyframe as linear with no
+   * curve, and the very next write of the same drag is what gives it the snap
+   * curve. Reading that placeholder as something he chose turned every armed
+   * gizmo drag back into a linear move.
+   */
+  it('UPGRADES a moment still carrying the neutral placeholder', () => {
+    const ch = upsertKeyframeValue([{ t: 1, value: 10, ease: 'linear' }], 1, 42, preference)
+    expect(ch).toHaveLength(1)
+    expect(ch[0].value).toBe(42)
+    expect(ch[0].ease).toBe('easeIn')
+    expect(ch[0].curve).toEqual([0.9, 0, 1, 1])
+  })
+
+  it('keeps a named ease he chose even with no curve on it', () => {
+    const ch = upsertKeyframeValue([{ t: 1, value: 10, ease: 'hold' }], 1, 42, preference)
+    expect(ch[0].ease).toBe('hold')
+    expect(ch[0].curve).toBeUndefined()
+  })
+
+  it('does not invent a curve when neither the moment nor the shape has one', () => {
+    const ch = upsertKeyframeValue([kf(1, 10)], 1, 5, { ease: 'linear' })
+    expect(ch[0].curve).toBeUndefined()
+    expect(ch[0].ease).toBe('linear')
+  })
+
+  it('works from nothing at all', () => {
+    expect(upsertKeyframeValue(undefined, 2, 7, { ease: 'linear' })).toEqual([{ t: 2, value: 7, ease: 'linear' }])
   })
 })

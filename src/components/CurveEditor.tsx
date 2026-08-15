@@ -373,7 +373,15 @@ export function CurveEditor({ clip, channel }: { clip: Clip; channel: AnimChanne
 
   return (
     <div
-      className="mt-1 flex flex-col gap-2 rounded-overlay bg-bg-elevated/60 p-2"
+      // Keyed on the SEGMENT so moving to a different move replays the arrival.
+      // The panel is the same component either way, and without the key React
+      // reuses the node: the numbers in the header would change under him with
+      // nothing saying the editor was now pointed somewhere else.
+      key={`curve-${channel}-${segT}`}
+      // Fades rather than slides. The handles are 5px circles he grabs the
+      // instant the panel appears, and a panel that arrives by moving puts them
+      // somewhere other than where they look. See .olp-fade.
+      className="olp-fade mt-1 flex flex-col gap-2 rounded-overlay bg-bg-elevated/60 p-2"
       data-testid="curve-editor"
       data-channel={channel}
     >

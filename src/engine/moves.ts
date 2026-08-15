@@ -427,19 +427,35 @@ export interface MoveMatch {
   endS: number
 }
 
-/** Half a frame at 30fps: two keyframes closer than this are the same moment. */
-const TIME_TOL_S = 1 / 60
+/**
+ * Half a frame AT THIS SEQUENCE'S OWN RATE: two keyframes closer than this are
+ * the same moment.
+ *
+ * ⛔ THIS WAS HARDCODED TO 1/60 UNDER A COMMENT SAYING "half a frame at 30fps",
+ * AND HIS FOOTAGE IS 60. At 60fps one whole frame IS 1/60, so a one frame hand
+ * retime landed exactly on the tolerance and the panel could not see it: he
+ * nudged a diamond, the shape on screen changed, and the tile stayed lit
+ * claiming the clip still held the untouched preset. Found by the keyframe
+ * audit, 2026-08-14, item 7.
+ *
+ * Derived from the rate instead, so it is half a frame at whatever he is
+ * cutting. Keyframes are quantised to frame boundaries on both sides of this
+ * comparison, so the only thing left inside the tolerance is float noise, which
+ * is smaller than this by ten orders of magnitude.
+ */
+const timeTolS = (fps: number): number => 1 / (2 * (fps > 0 ? fps : 30))
 const SCALE_TOL = 1e-3
 const POS_TOL_PX = 0.5
 
-function sameTracks(a: Clip, b: Clip): boolean {
+function sameTracks(a: Clip, b: Clip, fps: number): boolean {
+  const timeTol = timeTolS(fps)
   for (const channel of MOVE_CHANNELS) {
     const ka = channelKeyframes(a, channel)
     const kb = channelKeyframes(b, channel)
     if (ka.length !== kb.length) return false
     const tol = channel === 'scale' ? SCALE_TOL : POS_TOL_PX
     for (let i = 0; i < ka.length; i++) {
-      if (Math.abs(ka[i].t - kb[i].t) > TIME_TOL_S) return false
+      if (Math.abs(ka[i].t - kb[i].t) > timeTol) return false
       if (Math.abs(ka[i].value - kb[i].value) > tol) return false
       // The SHAPE counts too, or two moves that happen to land the same two
       // numbers (a punch and a very short push) read as each other, and shaping
@@ -505,7 +521,7 @@ export function matchMove(
       startS,
       endS,
     })
-    if (sameTracks(clip, rebuilt)) return { id: def.id, depth, startS, endS }
+    if (sameTracks(clip, rebuilt, fps)) return { id: def.id, depth, startS, endS }
   }
   return null
 }

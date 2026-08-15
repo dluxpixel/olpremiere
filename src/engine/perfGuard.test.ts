@@ -257,21 +257,6 @@ function bigSequence(): Sequence {
 
 // --- Timing ----------------------------------------------------------------
 
-/**
- * Per-call average of the BEST of `rounds` rounds, ms. The first rounds double
- * as JIT warmup; taking the minimum discards GC pauses and scheduler noise
- * while a genuine slowdown still shows in every round.
- */
-function bench(fn: () => void, iterations: number, rounds: number): number {
-  let best = Infinity
-  for (let r = 0; r < rounds; r++) {
-    const t0 = performance.now()
-    for (let i = 0; i < iterations; i++) fn()
-    best = Math.min(best, (performance.now() - t0) / iterations)
-  }
-  return best
-}
-
 // Results feed this sink so the benched calls can never be dead-code
 // eliminated, and the assertions on it double-check the fixture is real.
 let sink = 0
@@ -286,19 +271,57 @@ let sink = 0
  * collectSnapPoints (which allocates, walks objects and sorts) went up half
  * again. So the calibration allocates, walks and sorts too.
  */
-function calibrationMs(): number {
-  return bench(
-    () => {
-      const xs: { t: number }[] = []
-      for (let i = 0; i < 200; i++) xs.push({ t: (i * 37) % 200 })
-      xs.sort((a, b) => a.t - b.t)
-      let acc = 0
-      for (const x of xs) acc += x.t
-      sink += acc
-    },
-    200,
-    7,
-  )
+const CAL_ITERATIONS = 200
+
+function calibrationWork(): void {
+  const xs: { t: number }[] = []
+  for (let i = 0; i < 200; i++) xs.push({ t: (i * 37) % 200 })
+  xs.sort((a, b) => a.t - b.t)
+  let acc = 0
+  for (const x of xs) acc += x.t
+  sink += acc
+}
+
+/** One round of the yardstick, per call, ms. */
+function calibrationRoundMs(): number {
+  const t0 = performance.now()
+  for (let i = 0; i < CAL_ITERATIONS; i++) calibrationWork()
+  return (performance.now() - t0) / CAL_ITERATIONS
+}
+
+/**
+ * The work measured AGAINST the yardstick, both timed in the SAME window.
+ *
+ * ⛔ THIS USED TO BE TWO SEPARATE BENCHES DIVIDED AFTERWARDS, AND IT THREW AWAY
+ * TWO SHIPS ON 2026-08-15. The workload was benched, then the calibration was
+ * benched, and each took the best of its own seven rounds. On an idle machine
+ * that is fine. Inside the ship gate, where electron-builder is packaging beside
+ * the tests, the load swings hard enough that the two bests can land in
+ * different weather: `collectSnapPoints` read 1.4997x against a 1.2x budget
+ * while the same commit passed three times running on a quiet machine.
+ *
+ * ⛔ AND THE ANSWER WAS NOT A LOOSER BUDGET. Every budget below is unchanged.
+ * What changed is that each ROUND now times the work and the yardstick back to
+ * back and forms its own ratio, and the best of those ratios is the answer. A
+ * genuine slowdown still shows in every round, so it still fires; load that
+ * arrives between two measurements no longer counts as one.
+ */
+function benchRatio(
+  fn: () => void,
+  iterations: number,
+  rounds: number,
+): { ratio: number; perCallMs: number } {
+  let ratio = Infinity
+  let perCallMs = Infinity
+  for (let r = 0; r < rounds; r++) {
+    const t0 = performance.now()
+    for (let i = 0; i < iterations; i++) fn()
+    const workMs = (performance.now() - t0) / iterations
+    const calMs = calibrationRoundMs()
+    if (calMs > 0) ratio = Math.min(ratio, workMs / calMs)
+    perCallMs = Math.min(perCallMs, workMs)
+  }
+  return { ratio, perCallMs }
 }
 
 describe('perf guard: 200-clip sequence', () => {
@@ -331,7 +354,7 @@ describe('perf guard: 200-clip sequence', () => {
     const times: number[] = []
     for (let i = 0; i < 512; i++) times.push((i * 0.73) % seq.durationS)
     let cursor = 0
-    const perCallMs = bench(
+    const { ratio } = benchRatio(
       () => {
         sink += resolveFrame(seq, times[cursor++ % times.length]).ops.length
       },
@@ -339,8 +362,7 @@ describe('perf guard: 200-clip sequence', () => {
       7,
     )
     expect(sink).toBeGreaterThan(0)
-    const cal = calibrationMs()
-    expect(perCallMs / cal).toBeLessThan(RESOLVE_FRAME_BUDGET_X)
+    expect(ratio).toBeLessThan(RESOLVE_FRAME_BUDGET_X)
   })
 
   // FINDING 6, MEASURED 2026-08-12 AND CLOSED. It sat on the open list from
@@ -365,7 +387,7 @@ describe('perf guard: 200-clip sequence', () => {
     const targetTrack = seq.tracks[1].id
     const others = seq.tracks[0].clips.slice(0, 8).map((c) => ({ id: c.id, startS0: c.startS }))
     let t = 0
-    const perCallMs = bench(
+    const { ratio, perCallMs } = benchRatio(
       () => {
         t += 0.01
         sink += moveSelectionWith(seq, dragged.id, targetTrack, dragged.startS + (t % 3), others, false).tracks.length
@@ -374,8 +396,7 @@ describe('perf guard: 200-clip sequence', () => {
       7,
     )
     expect(sink).toBeGreaterThan(0)
-    const cal = calibrationMs()
-    expect(perCallMs / cal).toBeLessThan(MOVE_SELECTION_BUDGET_X)
+    expect(ratio).toBeLessThan(MOVE_SELECTION_BUDGET_X)
     // The one that matters to him: a drag must never eat a real slice of a frame.
     expect(perCallMs / 16.7).toBeLessThan(MOVE_SELECTION_FRAME_SHARE_MAX)
   })
@@ -384,7 +405,7 @@ describe('perf guard: 200-clip sequence', () => {
     // Shaped like Timeline.tsx's snapped drag: exclude the dragged clip's
     // group and include the playhead, every pointer-move.
     const dragged = seq.tracks[1].clips[20]
-    const perCallMs = bench(
+    const { ratio } = benchRatio(
       () => {
         sink += collectSnapPoints(seq, {
           excludeClipIds: [dragged.id],
@@ -395,7 +416,6 @@ describe('perf guard: 200-clip sequence', () => {
       7,
     )
     expect(sink).toBeGreaterThan(0)
-    const cal = calibrationMs()
-    expect(perCallMs / cal).toBeLessThan(SNAP_POINTS_BUDGET_X)
+    expect(ratio).toBeLessThan(SNAP_POINTS_BUDGET_X)
   })
 })
