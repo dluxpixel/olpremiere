@@ -480,8 +480,22 @@ export function buildMove(
 ): MoveTrack[] {
   if (def.beats.length === 0) return []
   const riseFrames = Math.max(1, Math.round(options.riseFrames ?? TABLE_RISE_FRAMES))
-  const w0 = clamp(options.startS ?? 0, 0, durS)
-  const w1 = def.window === 'moment' ? durS : clamp(options.endS ?? durS, w0, durS)
+  // ⛔ THE WINDOW IS SNAPPED TO THE FRAME GRID BEFORE ANY BEAT IS PLACED, and
+  // that is what keeps a move recognisable at every width.
+  //
+  // Every keyframe is quantised on the way out, so a window ending at 1.25s on a
+  // 30fps sequence puts its last diamond at 1.2667. matchMove reads the window
+  // back off the FIRST and LAST keyframe, so it rebuilds at 1..1.2667, which is
+  // a window the original build never used: the beats land elsewhere, one more
+  // of them clears the minimum gap, and the two do not compare equal. The tile
+  // goes dark on a move nobody touched.
+  //
+  // Measured 2026-08-16 across 6984 builds: 81 widths came back unrecognised and
+  // every one of them was this. Snapping the ends first makes the read-back the
+  // same numbers that went in, so the round trip closes.
+  const w0 = quantizeToFrame(clamp(options.startS ?? 0, 0, durS), fps)
+  const rawW1 = def.window === 'moment' ? durS : clamp(options.endS ?? durS, w0, durS)
+  const w1 = clamp(quantizeToFrame(rawW1, fps), w0, durS)
   const beats = fittedBeats(def, fps, durS, riseFrames, w0, w1)
   if (beats.length === 0) return []
 

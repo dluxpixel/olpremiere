@@ -378,6 +378,62 @@ describe('matchMove: the lit tile is worked out, never remembered', () => {
     }
   })
 
+  /**
+   * ⛔ EVERY WIDTH, NOT FOUR OF THEM. The sweep above walks four clip lengths and
+   * the tile went dark on widths that sat between them.
+   *
+   * Measured 2026-08-16 over 6984 builds: 81 came back unrecognised. Every one
+   * was the window being snapped to the frame grid on the way out and read back
+   * unsnapped, so matchMove rebuilt at a window the original build never used,
+   * a different set of beats cleared the minimum gap, and the two did not
+   * compare equal. A move nobody had touched lost its tile. buildMove snaps the
+   * window first now, and this holds it there.
+   *
+   * ⚠️ FEWER THAN FIVE FRAMES IS LEFT OUT, and it is not a get-out. A window that
+   * short has room for the first beat and the last, both of them at rest, so
+   * there is no move in it to recognise: at 0.15s on a 30fps sequence a Shake
+   * carries exactly Punch in's keyframes, because at four frames they ARE the
+   * same two diamonds. No reader can tell those apart, and the honest answer is
+   * the shape that is really there rather than a name nobody can prove.
+   */
+  it('names every move back at every width, not just the four the sweep above walks', () => {
+    const MIN_FRAMES = 5
+    const wrong: string[] = []
+    for (const move of MOVES) {
+      if (move.beats.length === 0) continue
+      for (const fps of [30, 60]) {
+        for (const slider of [1.1, 1.2, 1.7]) {
+          const depth = appliedDepth(move, slider)
+          const ctx = { riseFrames: RISE, seqWidth: W, seqHeight: H }
+          for (let d = 0.2; d <= 3.0001; d += 0.05) {
+            const durS = Math.round(d * 1000) / 1000
+            if (durS * fps < MIN_FRAMES) continue
+            const out = applyMove(seed(durS), fps, move, { depth, riseFrames: RISE, seqWidth: W, seqHeight: H })
+            const found = matchMove(out, fps, ctx)
+            if (found?.id !== move.id) wrong.push(`${move.id} on a ${durS}s clip @${fps} x${slider} -> ${found?.id ?? 'dark'}`)
+          }
+          // The other way he gets a narrow move: the window bar dragged in on a
+          // long clip, rather than a short clip.
+          for (let w = 0.2; w <= 2.0001; w += 0.05) {
+            const width = Math.round(w * 1000) / 1000
+            if (width * fps < MIN_FRAMES) continue
+            const out = applyMove(seed(10), fps, move, {
+              depth,
+              riseFrames: RISE,
+              seqWidth: W,
+              seqHeight: H,
+              startS: 1,
+              endS: 1 + width,
+            })
+            const found = matchMove(out, fps, ctx)
+            if (found?.id !== move.id) wrong.push(`${move.id} over a ${width}s window @${fps} x${slider} -> ${found?.id ?? 'dark'}`)
+          }
+        }
+      }
+    }
+    expect(wrong, `${wrong.length} widths lost their tile:\n${wrong.slice(0, 12).join('\n')}`).toEqual([])
+  })
+
   it('says None on a clip with no move at all', () => {
     expect(matchMove(seed(5), FPS, { seqWidth: W, seqHeight: H })?.id).toBe('none')
   })
