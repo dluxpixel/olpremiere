@@ -19,7 +19,12 @@ vi.mock('./toasts', () => ({
   useToasts: { getState: () => ({ show: () => {} }) },
 }))
 
-const released = vi.hoisted(() => ({ frameCache: [] as string[], preview: [] as string[], proxy: [] as string[], denoise: [] as string[] }))
+const released = vi.hoisted(() => ({ frameCache: [] as string[], preview: [] as string[], proxy: [] as string[], denoise: [] as string[], audio: [] as string[] }))
+
+vi.mock('../engine/audio', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  forgetAssetAudio: (id: string) => released.audio.push(id),
+}))
 
 vi.mock('../engine/frameCache', () => ({ evictAsset: (id: string) => released.frameCache.push(id) }))
 vi.mock('../engine/preview', async (orig) => ({
@@ -70,6 +75,9 @@ describe('deleteAsset', () => {
     // ⛔ THE ONE THAT WAS MISSING. Take the call back out of mediaActions and
     // this is the only assertion that fails, which is the whole point of it.
     expect(released.denoise, 'the denoised audio, the biggest of the four').toContain(ASSET)
+    // The decoded audio, forward and reversed. Bounded by its own budget, so
+    // this one is about not holding a share of it for media that is gone.
+    expect(released.audio, 'the decoded audio').toContain(ASSET)
   })
 
   it('does nothing at all for an asset that is not there', () => {

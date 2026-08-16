@@ -155,6 +155,20 @@ const bufferBytes = new Map<Id, number>()
 let bufferTotalBytes = 0
 
 function evictAudioOverflow(keepId: Id): void {
+  // ⛔ REVERSED COPIES GO FIRST, and they used to not be here at all.
+  //
+  // A reversed buffer is the same size as the forward one and used to sit
+  // OUTSIDE this budget entirely, never counted and never dropped, so the 256 MB
+  // cap only ever guarded half of what this file holds. It is also the cheaper
+  // of the two to lose: rebuilding it reverses a buffer that is usually still
+  // resident, while dropping a forward buffer costs a decode from disk.
+  for (const id of reversedCache.keys()) {
+    if (bufferTotalBytes <= AUDIO_CACHE_MAX_BYTES) return
+    if (id === keepId) continue
+    bufferTotalBytes -= reversedBytes.get(id) ?? 0
+    reversedBytes.delete(id)
+    reversedCache.delete(id)
+  }
   for (const id of bufferCache.keys()) {
     if (bufferTotalBytes <= AUDIO_CACHE_MAX_BYTES) return
     if (id === keepId) continue // never evict the entry we just decoded
@@ -162,6 +176,22 @@ function evictAudioOverflow(keepId: Id): void {
     bufferBytes.delete(id)
     bufferCache.delete(id)
   }
+}
+
+/**
+ * Drop everything this file holds for one asset, for the moment it is deleted.
+ *
+ * The budget above bounds the total, so this is not what stops the cache growing
+ * without end. What it stops is media he has thrown away holding a share of a
+ * 256 MB budget that his remaining clips could be using.
+ */
+export function forgetAssetAudio(assetId: Id): void {
+  bufferTotalBytes -= bufferBytes.get(assetId) ?? 0
+  bufferBytes.delete(assetId)
+  bufferCache.delete(assetId)
+  bufferTotalBytes -= reversedBytes.get(assetId) ?? 0
+  reversedBytes.delete(assetId)
+  reversedCache.delete(assetId)
 }
 
 export async function getAudioBuffer(asset: MediaAsset): Promise<AudioBuffer | null> {
@@ -222,6 +252,8 @@ export async function warmAudio(assets: MediaAsset[]): Promise<number> {
 
 // Reversed buffers for reverse playback (Phase 7), cached per asset.
 const reversedCache = new Map<Id, Promise<AudioBuffer | null>>()
+/** Bytes held per reversed copy, counted into the same total as the forward ones. */
+const reversedBytes = new Map<Id, number>()
 
 /**
  * Mirror a decoded buffer about the CONTAINER duration, not the decoded length.
@@ -260,7 +292,17 @@ export function getReversedAudioBuffer(asset: MediaAsset): Promise<AudioBuffer |
     pending = (async () => {
       const src = await getAudioBuffer(asset)
       if (!src) return null
-      return reverseAboutContainer(src, asset)
+      const rev = reverseAboutContainer(src, asset)
+      // Accounted against the SAME budget as the forward buffers, on the same
+      // terms: only if this entry is still the cached one, since an eviction can
+      // race a slow reverse.
+      if (reversedCache.get(asset.id) === pending) {
+        const bytes = rev.length * rev.numberOfChannels * 4
+        reversedBytes.set(asset.id, bytes)
+        bufferTotalBytes += bytes
+        evictAudioOverflow(asset.id)
+      }
+      return rev
     })()
     reversedCache.set(asset.id, pending)
   }

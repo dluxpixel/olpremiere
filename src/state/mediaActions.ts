@@ -3,6 +3,7 @@
 // onto the timeline at the playhead.
 
 import { create } from 'zustand'
+import { forgetAssetAudio } from '../engine/audio'
 import { invalidateDenoise } from '../engine/denoise'
 import { evictAsset } from '../engine/frameCache'
 import { disposePreviewAsset } from '../engine/preview'
@@ -228,6 +229,10 @@ export function deleteAsset(assetId: Id): void {
   // clip is roughly 230 MB of Float32 sitting there for the rest of the session,
   // and it survived the delete that was supposed to release everything else.
   invalidateDenoise(assetId)
+  // And the decoded audio, forward and reversed. Bounded by a 256 MB budget, so
+  // this is not a leak, but media he has thrown away should not be holding a
+  // share of a budget his remaining clips could use.
+  forgetAssetAudio(assetId)
   // Drop any selection that pointed at now-removed clips.
   if (ui.selection.length > 0) setUI({ selection: [] })
   // Bin delete also nukes every clip referencing the asset across ALL sequences,
