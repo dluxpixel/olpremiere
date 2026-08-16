@@ -21,6 +21,7 @@ import { cutPunchAtPlayhead, impactAtPlayhead, punchInAtPlayhead, punchOnBeats, 
 import { MOVES } from '../engine/moves'
 import { applyMoveToSelection } from '../state/moveActions'
 import { autoCaptionEveryClip, autoCaptionFromClip } from '../state/transcribeActions'
+import { cutQuietParts } from '../state/silenceActions'
 import { appearanceMenuItems, titleFontSizeItems } from '../state/clipMenus'
 import { openContextMenu, type MenuItem } from '../state/contextMenu'
 import { PlayheadLine, RemotePlayheads } from './PlayheadWidgets'
@@ -523,6 +524,9 @@ export function Timeline({ height }: { height: number }) {
                   : void autoCaptionFromClip(clip.id),
             },
             { label: 'Punch video on beats', onClick: () => void punchOnBeats(clip.id) },
+            // Same door as the caption item on purpose: both need a transcript,
+            // so they share the wait and the mental model.
+            { label: 'Cut the quiet parts', onClick: () => void cutQuietParts(clip.id) },
           ]
         : []
 

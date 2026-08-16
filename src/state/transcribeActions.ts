@@ -83,7 +83,7 @@ function captionFailureMessage(err: unknown): string {
  * ahead of the model. Run alongside, it finishes inside an inference that takes
  * longer, so his wait does not move.
  */
-async function wordsForClip(clip: Clip, asset: MediaAsset): Promise<CaptionWord[]> {
+export async function wordsForClip(clip: Clip, asset: MediaAsset): Promise<CaptionWord[]> {
   useTranscribe.setState({ status: 'reading', pct: null, downloading: false, cancel: null })
   const pcm = await extractClipPcm(asset, clip)
   // The loudness envelope for the keyword highlight, taken HERE and nowhere
