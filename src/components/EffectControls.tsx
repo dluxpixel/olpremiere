@@ -46,7 +46,7 @@ import {
 } from '../engine/effects/channels'
 import { isParamAnimated, paramKeyframes, resolveParam } from '../engine/effects/ops'
 import { INNER_ZOOM } from '../engine/innerZoom'
-import { BROWSABLE_EFFECTS, getEffect, paramSens, type EffectParamDef } from '../engine/effects/registry'
+import { getEffect, paramSens, type EffectParamDef } from '../engine/effects/registry'
 import { clipEndS } from '../engine/timeline'
 import {
   TRANSITION_KINDS,
@@ -69,7 +69,6 @@ import {
   addEffectKeyframeAtPlayhead,
   addInnerZoomKeyframeAtPlayhead,
   addKeyframeAtPlayhead,
-  applyEffect,
   deleteEffect,
   innerZoomAt,
   innerZoomKeyframes,
@@ -103,11 +102,11 @@ import {
 import { EFFECT_CARD_MIME, dragHasType } from '../state/dnd'
 import { allFolded, setEffectsFolded, toggleEffectFold, useEffectFold } from '../state/effectFold'
 import { saveSelectionAsPreset } from '../state/library'
-import { useRecentEffects } from '../state/recentEffects'
 import { EASE_SECONDS, setEaseSeconds, useSettings } from '../state/settings'
 import { createPendingEdit, type PendingEdit } from './pendingEdit'
 import { useStore } from '../state/store'
 import { IconButton } from '../ui/Button'
+import { AddEffectMenu } from './AddEffectMenu'
 import { CurveEditor } from './CurveEditor'
 import { KeyframeTrack } from './KeyframeTrack'
 import { MotionRail, useMotionRail } from './MotionRail'
@@ -955,10 +954,6 @@ function EffectStack({ clip, playheadS }: { clip: Clip; playheadS: number }) {
   const everyFolded = allFolded(folded, ids)
   // Any one still live means the button's job is to turn the look OFF.
   const anyEnabled = clip.effects.some((e) => e.enabled)
-  const recentTypes = useRecentEffects((s) => s.types)
-  const recent = recentTypes
-    .map((t) => BROWSABLE_EFFECTS.find((ef) => ef.type === t))
-    .filter((ef): ef is (typeof BROWSABLE_EFFECTS)[number] => ef !== undefined)
 
   return (
     <section
@@ -1012,40 +1007,9 @@ function EffectStack({ clip, playheadS }: { clip: Clip; playheadS: number }) {
               </IconButton>
             </>
           )}
-          {/* Add an effect without leaving for the Effects tab. */}
-          <select
-            aria-label="Add effect"
-            data-testid="inspector-add-effect"
-            value=""
-            onChange={(e) => {
-              if (e.target.value) applyEffect(clip.id, e.target.value)
-            }}
-            className="h-6 cursor-default rounded-field bg-bg-input px-1.5 text-ui-sm text-text-secondary"
-          >
-            <option value="">+ Add effect…</option>
-            {/* The ones he actually reaches for, at the top. Filtered against
-                the registry so a type that stopped being browsable cannot
-                linger here as an option that adds nothing. */}
-            {recent.length > 0 && (
-              <optgroup label="Recent">
-                {recent.map((ef) => (
-                  <option key={`recent-${ef.type}`} value={ef.type}>
-                    {ef.label}
-                  </option>
-                ))}
-              </optgroup>
-            )}
-            <optgroup label="All effects">
-              {BROWSABLE_EFFECTS.map((ef) => (
-                // The browser panel shows each effect's description and this
-                // list showed none, so the same effect was two different amounts
-                // of explained depending on which door he came through.
-                <option key={ef.type} value={ef.type} title={ef.description}>
-                  {ef.label}
-                </option>
-              ))}
-            </optgroup>
-          </select>
+          {/* Add an effect without leaving for the Effects tab, and find it by
+              what it does rather than by remembering its name. */}
+          <AddEffectMenu clipId={clip.id} />
           {clip.effects.length > 0 && (
             <IconButton
               label="Save effects as preset"

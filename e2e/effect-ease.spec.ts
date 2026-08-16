@@ -15,6 +15,8 @@
 
 import { expect, test, type Page } from '@playwright/test'
 
+import { addEffect } from './addEffect'
+
 /** The blur radius the app's resolver reports at clip-local time `t`. */
 async function radiusAt(page: Page, t: number): Promise<number> {
   return page.evaluate(async (tt) => {
@@ -47,7 +49,7 @@ test('Ease In makes the blur ARRIVE instead of appearing', async ({ page }) => {
   await page.locator('[data-clip-kind="video"]').first().click({ position: { x: 20, y: 10 } })
 
   // Add the blur the way he does: the Inspector's own picker.
-  await page.getByTestId('inspector-add-effect').selectOption('gaussianBlur')
+  await addEffect(page, 'gaussianBlur')
   await expect(page.getByTestId('effect-ease').first()).toBeVisible()
 
   // Turn the radius up, through the real action, so there is something to ease into.
@@ -91,7 +93,7 @@ test('Ease Out returns the picture to normal at the tail', async ({ page }) => {
   await expect(page.getByTestId('asset-card')).toBeVisible({ timeout: 15_000 })
   await page.getByTestId('asset-card').dblclick()
   await page.locator('[data-clip-kind="video"]').first().click({ position: { x: 20, y: 10 } })
-  await page.getByTestId('inspector-add-effect').selectOption('gaussianBlur')
+  await addEffect(page, 'gaussianBlur')
   await expect(page.getByTestId('effect-ease').first()).toBeVisible()
 
   const durS = await page.evaluate(async () => {

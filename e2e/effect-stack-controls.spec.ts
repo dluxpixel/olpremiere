@@ -4,6 +4,8 @@
 
 import { expect, test, type Page } from '@playwright/test'
 
+import { addEffect } from './addEffect'
+
 const FIXTURE = 'e2e/.fixtures/clip.webm'
 
 async function clipWithTwoEffects(page: Page): Promise<void> {
@@ -13,8 +15,8 @@ async function clipWithTwoEffects(page: Page): Promise<void> {
   await page.getByTestId('asset-card').dblclick()
   await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
   await page.locator('[data-clip-kind="video"]').click()
-  await page.getByTestId('inspector-add-effect').selectOption('gaussianBlur')
-  await page.getByTestId('inspector-add-effect').selectOption('glow')
+  await addEffect(page, 'gaussianBlur')
+  await addEffect(page, 'glow')
   await expect(page.getByTestId('effect-card')).toHaveCount(2)
 }
 
@@ -66,6 +68,8 @@ test('the effect he just added rides at the top of the add list', async ({ page 
   await clipWithTwoEffects(page)
   // Recent is remembered across clips and sessions, so the group is there and
   // the last one applied is its first entry.
-  const firstRecent = page.locator('[data-testid="inspector-add-effect"] optgroup[label="Recent"] option').first()
-  await expect(firstRecent).toHaveAttribute('value', 'glow')
+  await page.getByTestId('inspector-add-effect').click()
+  const firstRow = page.getByTestId('add-effect-row').first()
+  await expect(firstRow).toHaveAttribute('data-group', 'recent')
+  await expect(firstRow).toHaveAttribute('data-type', 'glow')
 })
