@@ -120,6 +120,39 @@ async function dragCost(page: Page): Promise<number> {
   return ms
 }
 
+/**
+ * The other half of his sentence, and the half the drag test does not touch.
+ *
+ * The drag path is interaction cost. This is what the PICTURE does while it
+ * plays across a lot of cuts, which is the older note's number: 19 fps rising to
+ * 26 on 16 short cuts. It reads the app's own instrument rather than a counter
+ * invented here: `previewHealth` records what was really put on screen, and
+ * `wrongRatio` is the share of drawn frames that were not the frame asked for.
+ */
+async function playHealth(page: Page, forMs: number): Promise<{ served: number; perS: number; wrongPct: number; p95: number }> {
+  await page.evaluate(async () => {
+    const mod = '/src/engine/previewTruth.ts'
+    const { resetPreviewHealth } = (await import(/* @vite-ignore */ mod)) as { resetPreviewHealth: () => void }
+    resetPreviewHealth()
+  })
+  await page.keyboard.press(' ')
+  await page.waitForTimeout(forMs)
+  await page.keyboard.press(' ')
+  return page.evaluate(async (forMs: number) => {
+    const mod = '/src/engine/previewTruth.ts'
+    const { previewHealth } = (await import(/* @vite-ignore */ mod)) as {
+      previewHealth: (withinMs?: number) => { count: number; spanS: number; wrongRatio: number; p95ErrMs: number }
+    }
+    const h = previewHealth(forMs + 1000)
+    return {
+      served: h.count,
+      perS: h.spanS > 0 ? +(h.count / h.spanS).toFixed(1) : 0,
+      wrongPct: +(h.wrongRatio * 100).toFixed(1),
+      p95: Math.round(h.p95ErrMs),
+    }
+  }, forMs)
+}
+
 test('a drag does not get dramatically dearer as the timeline fills up', async ({ page }) => {
   test.setTimeout(180_000)
   await page.goto('/')
@@ -159,4 +192,35 @@ test('a drag does not get dramatically dearer as the timeline fills up', async (
     `${small.clips} clips cost ${small.ms} ms and ${large.clips} cost ${large.ms} ms, ` +
       `which is ${costRatio.toFixed(1)}x the cost for ${clipRatio}x the clips\n${table}`,
   ).toBeLessThan(clipRatio * 2)
+})
+
+test('the picture keeps up while it plays across a lot of cuts', async ({ page }) => {
+  test.setTimeout(180_000)
+  await page.goto('/')
+  await page.getByTestId('media-file-input').setInputFiles(FIXTURE)
+  await expect(page.getByTestId('asset-card')).toBeVisible({ timeout: 15_000 })
+  await page.getByTestId('asset-card').dblclick()
+  await expect(page.locator('[data-clip-kind="video"]').first()).toBeVisible()
+
+  const rows: string[] = []
+  const perS: { clips: number; perS: number; wrongPct: number }[] = []
+  for (const wanted of [10, 100, 400]) {
+    const clips = await fill(page, wanted)
+    await page.locator('[data-clip-kind="video"]').first().click()
+    await page.keyboard.press('Home')
+    const h = await playHealth(page, 2500)
+    rows.push(`${String(clips).padStart(4)} cuts: ${h.perS}/s served, ${h.wrongPct}% were the wrong frame, p95 error ${h.p95} ms`)
+    perS.push({ clips, perS: h.perS, wrongPct: h.wrongPct })
+  }
+  const table = rows.join('\n')
+  console.log(`\nwhat the picture did while playing:\n${table}\n`)
+
+  // ⛔ MEASUREMENT FIRST. The only thing asserted is that playback did not stop
+  // dead and did not start serving mostly wrong frames, because those are the
+  // two shapes his sentence could mean. A frame rate threshold would be a guess
+  // about his machine rather than a fact about the app.
+  const worst = perS.reduce((a, b) => (a.perS < b.perS ? a : b))
+  expect(worst.perS, `playback served almost nothing at ${worst.clips} cuts\n${table}`).toBeGreaterThan(1)
+  const wrongest = perS.reduce((a, b) => (a.wrongPct > b.wrongPct ? a : b))
+  expect(wrongest.wrongPct, `most drawn frames were the wrong ones at ${wrongest.clips} cuts\n${table}`).toBeLessThan(90)
 })
