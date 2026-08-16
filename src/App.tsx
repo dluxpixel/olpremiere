@@ -34,6 +34,7 @@ import {
   setAllEffectsEnabled,
   splitAtPlayhead,
   toggleClipEnabled,
+  toggleClipFreeze,
   toggleMotionAtPlayhead,
   topAndTail,
 } from './state/clipEdits'
@@ -349,6 +350,11 @@ function buildAppBindings(): Binding[] {
       { combo: 'shift+e', description: 'Enable / disable clip', domain: 'trim', run: () => {
         const id = store().ui.selection[0]
         if (id) toggleClipEnabled(id)
+      } },
+      // Park on the moment, press F, it holds. Press again and it runs.
+      { combo: 'f', description: 'Freeze this frame, or let it run', domain: 'trim', run: () => {
+        const id = store().ui.selection[0]
+        if (id) toggleClipFreeze(id)
       } },
       { combo: '=', description: 'Zoom in timeline', domain: 'view', run: zoomIn },
       { combo: 'shift++', description: 'Zoom in timeline', domain: 'view', run: zoomIn },

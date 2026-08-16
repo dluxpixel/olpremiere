@@ -295,6 +295,9 @@ export const ClipView = memo(function ClipView({
       data-testid="clip"
       data-clip-id={clip.id}
       data-clip-kind={kind}
+      // A frozen clip looks exactly like a running one, and a hold you cannot
+      // see is a hold you forget you left on. The snowflake says it.
+      data-frozen={clip.freezeAtS !== undefined ? 'true' : undefined}
       // A one-shot accent pulse for a genuinely new clip (add / paste / undo-
       // restore). Mount is NOT meaningful anymore - virtualization remounts
       // clips as they scroll in - so the parent decides newness by id.
@@ -318,6 +321,15 @@ export const ClipView = memo(function ClipView({
           data-testid="transition-drop-hint"
           className={`pointer-events-none absolute inset-y-0 w-1/2 bg-accent/25 ${fxDropEdge === 'in' ? 'left-0' : 'right-0'}`}
         />
+      )}
+      {clip.freezeAtS !== undefined && (
+        <span
+          data-testid="clip-frozen-badge"
+          className="pointer-events-none absolute left-1 top-1 rounded-[3px] bg-black/45 px-1 text-[10px] leading-[14px] text-white/85"
+          title="This clip is holding one frame. Press F to let it run again."
+        >
+          ❄
+        </span>
       )}
       {isAudio && asset && <ClipWaveform clip={clip} asset={asset} width={width} height={innerH} />}
       {clip.linkId && (

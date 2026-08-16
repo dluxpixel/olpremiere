@@ -987,6 +987,41 @@ export function innerZoomKeyframes(clip: Clip): readonly Keyframe[] {
   return channelKeyframes(clip, 'cropT')
 }
 
+/**
+ * Hold the frame under the playhead for the whole clip, or let it run again.
+ *
+ * A toggle, not a destructive edit: the footage is untouched underneath and one
+ * more press gives it back. The frame it holds is the one he is LOOKING at, not
+ * the clip's first, because he parks on the moment and freezes that.
+ */
+export function toggleClipFreeze(clipId: string): void {
+  const clip = findClip(clipId)
+  if (!clip) return
+  const frozen = clip.freezeAtS !== undefined
+  mapClip(clipId, frozen ? 'Let the frame run' : 'Freeze this frame', (c) => {
+    if (frozen) {
+      // DELETED, not set to undefined: an undefined key still serialises into
+      // the project file and would read as a frozen clip that holds nothing.
+      const next = { ...c }
+      delete next.freezeAtS
+      return next
+    }
+    // The SAME arithmetic splitClip uses for its cut point, so a freeze and a
+    // cut at the same instant agree on which frame that instant is.
+    const localT = playheadLocalT(c)
+    const held = c.inS + localT * Math.abs(c.speed || 1)
+    // Playhead off the clip: hold its first frame rather than a time outside the
+    // source, which would decode nothing and show black.
+    const inside = localT > 0 && localT < clipDurationS(c)
+    return { ...c, freezeAtS: inside ? held : c.inS }
+  })
+}
+
+/** True when the clip is holding a frame. What the menu and the badge read. */
+export function isClipFrozen(clip: Clip): boolean {
+  return clip.freezeAtS !== undefined
+}
+
 /** The channels the motion badge snapshots: the framing, and nothing else. */
 const MOTION_SNAPSHOT_CHANNELS: readonly AnimChannel[] = ['scale', 'posX', 'posY']
 

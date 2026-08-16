@@ -223,6 +223,24 @@ export interface Clip {
   mask?: ClipMask
   /** True = adjustment layer: the effect stack grades everything below it. */
   adjustment?: boolean
+  /**
+   * Freeze frame: the SOURCE second this clip holds for its whole length.
+   * Undefined means it runs normally.
+   *
+   * ⛔ A TIME, NOT A FLAG, and that is the whole design. `splitClip` moves the
+   * right half's `inS` forward at the cut (timeline.ts, `cutSource`), because
+   * `inS`/`outS` are what give a clip its length. A flag meaning "hold `inS`"
+   * would therefore make the two halves of a cut freeze show DIFFERENT frames.
+   * Holding the time instead needs no change to the splitter at all: both halves
+   * inherit it, and cutting a freeze cannot change what it shows.
+   *
+   * ⛔ AND NOT `speed: 0`, which silently does nothing: the resolver reads
+   * `Math.abs(clip.speed || 1)` and zero is falsy, so it plays at normal rate.
+   *
+   * Cheap to play: a constant source time is one decoded frame that the frame
+   * cache hands back for every frame of the hold.
+   */
+  freezeAtS?: number
   audioGainDb: number
   fadeInS: number
   fadeOutS: number

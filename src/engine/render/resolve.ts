@@ -40,7 +40,10 @@ function layerFor(clip: Clip, t: number, fps: number): RenderLayer {
   const localT = t - clip.startS
   const rate = Math.abs(clip.speed || 1)
   // Reverse (speed < 0): walk the source backward from outS as time advances.
-  const sourceTimeS = clip.speed < 0 ? clip.outS - localT * rate : clip.inS + localT * rate
+  // A freeze holds one source second for the clip's whole length, and it wins
+  // over both directions: frozen and reversed is still frozen.
+  const sourceTimeS =
+    clip.freezeAtS ?? (clip.speed < 0 ? clip.outS - localT * rate : clip.inS + localT * rate)
   // The clip's effect stack, sampled at this instant. A disabled or unknown
   // effect resolves to null; a neutral one is dropped because every GLSL body is
   // the identity at its defaults, so an ungraded clip compiles one program.
