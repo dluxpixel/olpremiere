@@ -13,7 +13,22 @@ export default defineConfig({
     // DELETES files in his user data folder, and what it leaves alone is the
     // half worth proving. Only files that avoid importing 'electron' itself can
     // be tested here, which is why the sweep lives in its own module.
-    include: ['src/**/*.test.ts', '_verify/**/*.test.mjs', 'scripts/**/*.test.mjs', 'electron/**/*.test.ts'],
+    // ⛔ `.test.tsx` IS THE COMPONENT LAYER AND IT WAS MISSING UNTIL 2026-08-16.
+    // Every piece of interface behaviour used to be reachable only through a 20
+    // minute Playwright run, which is why the Add effect menu was reverted rather
+    // than debugged: four end to end runs, four different failures, and no way to
+    // ask "does this popup open" in under a second.
+    //
+    // A component test says which environment it needs in its own docblock
+    // (`@vitest-environment jsdom`), so the several thousand node tests keep
+    // running in node and stay fast.
+    include: [
+      'src/**/*.test.ts',
+      'src/**/*.test.tsx',
+      '_verify/**/*.test.mjs',
+      'scripts/**/*.test.mjs',
+      'electron/**/*.test.ts',
+    ],
     environment: 'node',
   },
 })
