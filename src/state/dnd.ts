@@ -8,6 +8,14 @@ export const ASSET_MIME = 'application/x-olpremiere-asset'
 export const EFFECT_MIME = 'application/x-olpremiere-effect'
 export const TRANSITION_MIME = 'application/x-olpremiere-transition'
 export const SFX_MIME = 'application/x-olpremiere-sfx'
+/**
+ * An effect CARD being dragged within one clip's stack, to reorder it.
+ *
+ * Its own MIME, deliberately not EFFECT_MIME: the inspector's effect area
+ * already accepts that one from the browser panel and would answer a card drag
+ * by applying a second copy of the effect instead of moving the one he grabbed.
+ */
+export const EFFECT_CARD_MIME = 'application/x-olpremiere-effect-card'
 
 export const dragHasType = (types: readonly string[], mime: string): boolean => types.includes(mime)
 

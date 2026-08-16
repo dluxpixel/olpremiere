@@ -55,7 +55,16 @@ export const useImportProgress = create<{ total: number; done: number; name: str
   name: '',
 }))
 
-export async function importFiles(files: File[]): Promise<void> {
+/** Optional tuning for one import batch. */
+export interface ImportOptions {
+  /**
+   * Replaces "Imported 1 file(s)" on success. A still he just took is not a
+   * file he went and found, and the toast should say the thing that happened.
+   */
+  successMessage?: string
+}
+
+export async function importFiles(files: File[], opts?: ImportOptions): Promise<void> {
   const show = useToasts.getState().show
   const imported: MediaAsset[] = []
   const failed: string[] = []
@@ -176,7 +185,7 @@ export async function importFiles(files: File[]): Promise<void> {
       ...Object.fromEntries(imported.map((a): [Id, MediaAsset] => [a.id, a])),
     },
   }))
-  show(`Imported ${imported.length} file(s)`, 'success')
+  show(opts?.successMessage ?? `Imported ${imported.length} file(s)`, 'success')
   // Start the small preview copies in the background. Nothing waits on this: he
   // can cut immediately, and each clip's preview gets faster as its copy lands.
   ensureProxies(imported)

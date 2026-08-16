@@ -509,6 +509,14 @@ export function evictAsset(assetId: Id): void {
  * it drops every open demuxer + cached frame so subsequent decodes use the new
  * size. No-op when unchanged.
  */
+/**
+ * The decode scale in force right now (1 = Full). The still grab reads it so it
+ * can lift the tier to Full for one frame and put his own tier back after.
+ */
+export function currentPreviewScale(): number {
+  return previewScale
+}
+
 export function setPreviewScale(scale: number): void {
   const s = scale > 0 ? scale : 1
   if (s === previewScale) return

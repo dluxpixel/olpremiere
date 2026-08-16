@@ -21,6 +21,7 @@ import { activeSequence, newId, type AnimChannel, type Clip, type Curve, type Ke
 // align has to ask the exact question the gizmo asks, off the exact same code,
 // or the two paths drift the way they did when one read a global preference.
 import { isClipArmed, playheadLocalT } from './clipEdits'
+import { noteRecentEffect } from './recentEffects'
 import { updateActiveSequence, useStore } from './store'
 import { useToasts } from './toasts'
 
@@ -178,6 +179,9 @@ export function applyEffectToClips(ids: Iterable<string>, type: string): void {
     return
   }
   mapClips(visual, `Add ${label}`, (c) => addEffect(c, type, newId()))
+  // The browser's double-click, its right-click menu and the drop all arrive
+  // here, so this is where most of his real usage gets remembered.
+  noteRecentEffect(type)
 }
 
 /**

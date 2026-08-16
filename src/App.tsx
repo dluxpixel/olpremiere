@@ -31,11 +31,13 @@ import { copyClipAttributes, pasteClipAttributes } from './state/attributes'
 import { performHistoryStep } from './collab/collabControl'
 import {
   deleteSelected,
+  setAllEffectsEnabled,
   splitAtPlayhead,
   toggleClipEnabled,
   toggleMotionAtPlayhead,
   topAndTail,
 } from './state/clipEdits'
+import { screenshotToMedia } from './state/screenshot'
 import { pausePlayback, shuttle, toggleLoop, togglePlay } from './state/playbackControl'
 import { clearInOut, gotoIn, gotoOut, markIn, markOut } from './state/workAreaActions'
 import { cutPunchAtPlayhead, punchInAtPlayhead, punchOutAtPlayhead } from './state/motionActions'
@@ -250,6 +252,28 @@ function buildAppBindings(): Binding[] {
           const id = store().ui.selection[0]
           if (id) toggleMotionAtPlayhead(id)
         },
+      },
+      // The A/B, on a key. Comparing a look against the untouched footage is
+      // something he does constantly, and it used to mean clicking every eye in
+      // the stack and then clicking them all back.
+      {
+        combo: 'shift+b',
+        description: 'Turn this clip’s effects off, or back on',
+        domain: 'tools',
+        run: () => {
+          const id = store().ui.selection[0]
+          if (!id) return
+          const seq = activeSequence(store().project)
+          const clip = seq.tracks.flatMap((t) => t.clips).find((c) => c.id === id)
+          if (!clip || clip.effects.length === 0) return
+          setAllEffectsEnabled(id, !clip.effects.some((e) => e.enabled))
+        },
+      },
+      {
+        combo: 'shift+s',
+        description: 'Screenshot this frame into your media',
+        domain: 'project',
+        run: () => void screenshotToMedia(),
       },
       { combo: 'v', description: 'Selection tool', domain: 'tools', run: () => store().setUI({ tool: 'select' }) },
       // C cuts the clip(s) at the playhead right away (Premiere muscle memory). The razor

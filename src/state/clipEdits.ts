@@ -52,6 +52,7 @@ import {
   type Keyframe,
 } from '../engine/types'
 import { transitionDurationSpec, type TransitionKind } from '../engine/render/types'
+import { noteRecentEffect } from './recentEffects'
 import { updateActiveSequence, useStore } from './store'
 import { useToasts } from './toasts'
 
@@ -611,6 +612,11 @@ export function applyEffect(clipId: string, type: string): void {
   const label = getEffect(type)?.label ?? type
   const id = newId()
   mapClip(clipId, `Add ${label}`, (c) => ops.addEffect(c, type, id))
+  // Noted only once it actually landed, and noted in BOTH doors: this one and
+  // applyEffectToClips. A recents list that misses the door he uses most is
+  // worse than none, because it looks like it is working. The id check is what
+  // keeps a locked track, which mapClip refuses, out of his recents.
+  if (findClip(clipId)?.effects.some((e) => e.id === id)) noteRecentEffect(type)
 }
 
 /**
@@ -644,7 +650,24 @@ export function setClipDenoise(clipId: string, strength: number | undefined): vo
 }
 
 export function deleteEffect(clipId: string, effectId: Id): void {
+  // Read the name BEFORE the removal, or there is nothing left to name it by.
+  const gone = findClip(clipId)?.effects.find((e) => e.id === effectId)
   mapClip(clipId, 'Remove effect', (c) => ops.removeEffect(c, effectId))
+  // ⛔ SPEAK ONLY IF IT ACTUALLY WENT. mapClip refuses on a locked track and says
+  // "Track is locked" itself, so announcing a removal here would contradict it
+  // AND hand him an Undo that rolls back whatever he did before this. Still in
+  // the stack means nothing happened.
+  if (!gone || findClip(clipId)?.effects.some((e) => e.id === effectId)) return
+  // The X sits between two other icons and takes one click, with the effect's
+  // whole set of params and keyframes behind it. Undo has always covered that,
+  // silently, which is the same as not covering it.
+  useToasts.getState().show(`${getEffect(gone.type)?.label ?? 'Effect'} removed`, 'info', {
+    label: 'Undo',
+    // Routed, for the same reason the bin delete is: in a room a snapshot undo
+    // would take peers' later edits with it. (Dynamic import keeps collab out
+    // of the graph for solo paths.)
+    onClick: () => void import('../collab/collabControl').then((m) => m.performHistoryStep('undo')),
+  })
 }
 
 export function toggleEffectEnabled(clipId: string, effectId: Id): void {
@@ -653,6 +676,41 @@ export function toggleEffectEnabled(clipId: string, effectId: Id): void {
 
 export function moveEffectInStack(clipId: string, effectId: Id, delta: -1 | 1): void {
   mapClip(clipId, 'Reorder effect', (c) => ops.moveEffect(c, effectId, delta))
+}
+
+/** Drop an effect at `index` in the stack, for a drag that reorders the cards. */
+export function reorderEffect(clipId: string, effectId: Id, index: number): void {
+  mapClip(clipId, 'Reorder effect', (c) => {
+    const from = c.effects.findIndex((e) => e.id === effectId)
+    if (from < 0) return c
+    const to = Math.max(0, Math.min(index, c.effects.length - 1))
+    if (to === from) return c
+    const effects = [...c.effects]
+    const [moved] = effects.splice(from, 1)
+    effects.splice(to, 0, moved)
+    return { ...c, effects }
+  })
+}
+
+/**
+ * Turn every effect on the clip on, or every one off, in ONE undo step.
+ *
+ * The A/B. Comparing a look against the untouched footage used to mean clicking
+ * each eye in turn and then clicking each one back, which is not a comparison,
+ * it is a chore with an error in it.
+ */
+export function setAllEffectsEnabled(clipId: string, enabled: boolean): void {
+  mapClip(clipId, enabled ? 'Turn every effect on' : 'Turn every effect off', (c) => ({
+    ...c,
+    effects: c.effects.map((e) => (e.enabled === enabled ? e : { ...e, enabled })),
+  }))
+}
+
+/** Every effect back to its registry defaults, in ONE undo step. */
+export function resetAllEffectParams(clipId: string): void {
+  mapClip(clipId, 'Reset every effect', (c) =>
+    c.effects.reduce((acc, e) => ops.resetEffect(acc, e.id), c),
+  )
 }
 
 export function resetEffectParams(clipId: string, effectId: Id): void {
@@ -683,12 +741,35 @@ export function toggleEffectParamKeyframes(clipId: string, effectId: Id, key: st
  * can drag them afterwards like any other keyframe.
  */
 export function rampEffect(clipId: string, effectId: Id, edge: 'in' | 'out', durationS: number): void {
+  const eased = findClip(clipId)?.effects.find((e) => e.id === effectId)
   mapClip(
     clipId,
     edge === 'in' ? 'Ease effect in' : 'Ease effect out',
     (c) => ops.rampEffect(c, effectId, edge, durationS, clipDurationS(c)),
     true,
   )
+  // Ease writes keyframes and says nothing, so the only sign it worked was the
+  // diamonds appearing on rows he may have scrolled past. Say what it did, with
+  // the length, because the length is the part he chose.
+  //
+  // Same rule as deleteEffect: only if it landed. A locked track leaves the very
+  // same instance in place, so identity is the honest test.
+  const after = findClip(clipId)?.effects.find((e) => e.id === effectId)
+  if (!eased || !after || after === eased) {
+    // ⛔ EASE ON A FRESH EFFECT IS A DEAD BUTTON, and it always has been. A param
+    // still sitting on its default has nothing to ramp between (ops.rampEffect),
+    // so every param gets skipped and the click does nothing whatsoever. It said
+    // nothing either, which made it read as broken rather than as premature.
+    const editable = unlockedClipIds(activeSequence(useStore.getState().project), [clipId]).length > 0
+    if (eased && editable) {
+      useToasts
+        .getState()
+        .show('Turn the effect up first, then Ease will bring it in from nothing', 'info')
+    }
+    return
+  }
+  const name = getEffect(eased.type)?.label ?? 'Effect'
+  useToasts.getState().show(`${name} eases ${edge === 'in' ? 'in' : 'out'} over ${durationS}s`, 'info')
 }
 
 /** Drop an effect's ramp, keeping the value that is on screen. */

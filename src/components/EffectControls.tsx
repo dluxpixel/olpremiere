@@ -22,13 +22,22 @@ import {
   ChevronRight,
   ChevronUp,
   ChevronDown,
+  ChevronsDownUp,
+  ChevronsUpDown,
   Eye,
   EyeOff,
   RotateCcw,
   Sparkles,
   X,
 } from 'lucide-react'
-import { useEffect, useRef, useState, type HTMLAttributes, type ReactNode } from 'react'
+import {
+  useEffect,
+  useRef,
+  useState,
+  type DragEvent,
+  type HTMLAttributes,
+  type ReactNode,
+} from 'react'
 import {
   CHANNEL_EFFECT,
   channelKeyframes,
@@ -61,6 +70,9 @@ import {
   applyEffect,
   deleteEffect,
   moveEffectInStack,
+  reorderEffect,
+  resetAllEffectParams,
+  setAllEffectsEnabled,
   removeClipTransition,
   clearEffectRamp,
   rampEffect,
@@ -79,7 +91,11 @@ import {
   toggleEffectEnabled,
   toggleEffectParamKeyframes,
 } from '../state/clipEdits'
+import { EFFECT_CARD_MIME, dragHasType } from '../state/dnd'
+import { allFolded, setEffectsFolded, toggleEffectFold, useEffectFold } from '../state/effectFold'
 import { saveSelectionAsPreset } from '../state/library'
+import { useRecentEffects } from '../state/recentEffects'
+import { EASE_SECONDS, setEaseSeconds, useSettings } from '../state/settings'
 import { createPendingEdit, type PendingEdit } from './pendingEdit'
 import { useStore } from '../state/store'
 import { IconButton } from '../ui/Button'
@@ -348,6 +364,10 @@ export function ScrubField({
         inputMode="decimal"
         data-testid={testId}
         aria-label={ariaLabel}
+        // The fill bar says WHERE in the range he is and never says what the
+        // range IS, so a value that will not move any further looks broken.
+        // Hovering now answers it, everywhere a scrub field appears.
+        title={`${ariaLabel}: ${fmt(spec.min)} to ${fmt(spec.max)} (drag to change, Shift for fine)`}
         value={text}
         readOnly={!editing}
         onChange={(e) => {
@@ -654,6 +674,11 @@ function EffectCard({ clip, effect, index, count, localT }: {
   localT: number
 }) {
   const def = getEffect(effect.type)
+  // Both hooks sit ABOVE the unknown-effect return. An early return over them
+  // would change the hook order between one card and the next.
+  const folded = useEffectFold((s) => s.folded[effect.id] === true)
+  const [dragOver, setDragOver] = useState(false)
+
   // An effect type the registry no longer knows: show it honestly, let it be
   // removed, but never pretend to render controls for it.
   if (!def) {
@@ -669,14 +694,57 @@ function EffectCard({ clip, effect, index, count, localT }: {
     )
   }
 
+  // Reordering by drag. The card is the TARGET and the name is the GRIP, so a
+  // drag that starts on a scrub field still scrubs. The chevrons stay: they are
+  // the keyboard-reachable way to do the same thing.
+  const onCardDragOver = (e: DragEvent<HTMLDivElement>) => {
+    if (!dragHasType(e.dataTransfer.types, EFFECT_CARD_MIME)) return
+    e.preventDefault()
+    e.stopPropagation()
+    e.dataTransfer.dropEffect = 'move'
+    setDragOver(true)
+  }
+  // dragleave fires crossing the card's own children too, which would flicker.
+  const onCardDragLeave = (e: DragEvent<HTMLDivElement>) => {
+    const to = e.relatedTarget
+    if (to instanceof Node && e.currentTarget.contains(to)) return
+    setDragOver(false)
+  }
+  const onCardDrop = (e: DragEvent<HTMLDivElement>) => {
+    const dragged = e.dataTransfer.getData(EFFECT_CARD_MIME)
+    setDragOver(false)
+    if (!dragged || dragged === effect.id) return
+    e.preventDefault()
+    e.stopPropagation()
+    reorderEffect(clip.id, dragged, index)
+  }
+
   return (
     <div
-      className="flex flex-col gap-2 rounded-field border border-border bg-bg-elevated p-2"
+      className={`flex flex-col gap-2 rounded-field border bg-bg-elevated p-2 ${
+        dragOver ? 'border-accent' : 'border-border'
+      }`}
       data-testid="effect-card"
       data-effect-type={effect.type}
       data-effect-id={effect.id}
+      data-folded={folded ? 'true' : undefined}
+      onDragOver={onCardDragOver}
+      onDragLeave={onCardDragLeave}
+      onDrop={onCardDrop}
     >
       <div className="flex items-center gap-1">
+        <IconButton
+          label={folded ? `Open ${def.label}` : `Fold ${def.label}`}
+          size="compact"
+          data-testid="effect-fold"
+          onClick={() => toggleEffectFold(effect.id)}
+        >
+          {folded ? (
+            <ChevronRight size={13} strokeWidth={1.75} aria-hidden />
+          ) : (
+            <ChevronDown size={13} strokeWidth={1.75} aria-hidden />
+          )}
+        </IconButton>
         <IconButton
           label={effect.enabled ? `Disable ${def.label}` : `Enable ${def.label}`}
           active={effect.enabled}
@@ -687,11 +755,37 @@ function EffectCard({ clip, effect, index, count, localT }: {
           {effect.enabled ? <Eye size={13} strokeWidth={1.75} aria-hidden /> : <EyeOff size={13} strokeWidth={1.75} aria-hidden />}
         </IconButton>
         <span
-          title={def.description}
-          className={`flex-1 truncate text-ui font-medium ${effect.enabled ? 'text-text-primary' : 'text-text-muted line-through'}`}
+          draggable
+          data-testid="effect-grip"
+          onDragStart={(e) => {
+            e.dataTransfer.setData(EFFECT_CARD_MIME, effect.id)
+            e.dataTransfer.effectAllowed = 'move'
+          }}
+          onDragEnd={() => setDragOver(false)}
+          title={`${def.description} (drag to reorder)`}
+          className={`flex-1 cursor-grab truncate text-ui font-medium active:cursor-grabbing ${
+            effect.enabled ? 'text-text-primary' : 'text-text-muted line-through'
+          }`}
         >
           {def.label}
         </span>
+        {/* A switched-off effect still takes his drags, and it should: the value
+            he sets now is the value that arrives when he switches it back on.
+            What was missing was the REASON the picture did not move. The word
+            says it, and the word is also the switch back on. Blocking the rows
+            instead would have cost him the curve editor on a bypassed effect,
+            which is a worse trade than a moment of confusion. */}
+        {!effect.enabled && (
+          <button
+            type="button"
+            data-testid="effect-off-chip"
+            title={`${def.label} is switched off, so it is not in the picture. Click to turn it back on.`}
+            onClick={() => toggleEffectEnabled(clip.id, effect.id)}
+            className="shrink-0 rounded-full border border-border-strong px-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted transition-colors duration-[120ms] hover:border-accent hover:text-accent"
+          >
+            Off
+          </button>
+        )}
         <IconButton label={`Move ${def.label} earlier`} size="compact" disabled={index === 0} data-testid="effect-up" onClick={() => moveEffectInStack(clip.id, effect.id, -1)}>
           <ChevronUp size={13} strokeWidth={1.75} aria-hidden />
         </IconButton>
@@ -706,12 +800,14 @@ function EffectCard({ clip, effect, index, count, localT }: {
         </IconButton>
       </div>
 
-      <div className={`flex flex-col gap-1 ${effect.enabled ? '' : 'opacity-40'}`}>
-        {def.params.map((param) => (
-          <EffectParamRow key={param.key} clip={clip} effect={effect} param={param} localT={localT} />
-        ))}
-        <EffectEaseRow clip={clip} effect={effect} />
-      </div>
+      {!folded && (
+        <div className={`flex flex-col gap-1 ${effect.enabled ? '' : 'opacity-40'}`}>
+          {def.params.map((param) => (
+            <EffectParamRow key={param.key} clip={clip} effect={effect} param={param} localT={localT} />
+          ))}
+          <EffectEaseRow clip={clip} effect={effect} />
+        </div>
+      )}
     </div>
   )
 }
@@ -729,7 +825,9 @@ function EffectCard({ clip, effect, index, count, localT }: {
  */
 function EffectEaseRow({ clip, effect }: { clip: Clip; effect: EffectInstance }) {
   const ramped = isEffectRamped(clip, effect.id)
-  const [seconds, setSeconds] = useState(0.5)
+  // App-level, not component state: the length he dialled in has to outlive the
+  // card, which unmounts the moment he clicks the next clip. See settings.ts.
+  const seconds = useSettings((s) => s.easeSeconds)
   return (
     <div className="mt-0.5 flex items-center gap-1.5 border-t border-border pt-1.5" data-testid="effect-ease">
       <span className="text-ui-sm text-text-secondary">Ease</span>
@@ -751,10 +849,10 @@ function EffectEaseRow({ clip, effect }: { clip: Clip; effect: EffectInstance })
       </button>
       <ScrubField
         value={seconds}
-        spec={{ min: 0.05, max: 5, step: 0.05, sens: 0.02 }}
+        spec={EASE_SECONDS}
         ariaLabel="Ease length in seconds"
         testId="effect-ease-seconds"
-        onCommit={setSeconds}
+        onCommit={setEaseSeconds}
       />
       <span className="text-ui-sm text-text-secondary">s</span>
       {ramped && (
@@ -778,6 +876,15 @@ function EffectStack({ clip, playheadS }: { clip: Clip; playheadS: number }) {
   // card that makes the promise, and every card already in the stack. Anywhere
   // sensible in this block is somewhere he might let go.
   const { hot, dropProps } = useEffectDrop([clip.id])
+  const folded = useEffectFold((s) => s.folded)
+  const ids = clip.effects.map((e) => e.id)
+  const everyFolded = allFolded(folded, ids)
+  // Any one still live means the button's job is to turn the look OFF.
+  const anyEnabled = clip.effects.some((e) => e.enabled)
+  const recentTypes = useRecentEffects((s) => s.types)
+  const recent = recentTypes
+    .map((t) => BROWSABLE_EFFECTS.find((ef) => ef.type === t))
+    .filter((ef): ef is (typeof BROWSABLE_EFFECTS)[number] => ef !== undefined)
 
   return (
     <section
@@ -789,6 +896,48 @@ function EffectStack({ clip, playheadS }: { clip: Clip; playheadS: number }) {
       <div className="flex items-center gap-1.5">
         <SectionLabel>Effects</SectionLabel>
         <span className="ml-auto flex items-center gap-1">
+          {clip.effects.length > 0 && (
+            <>
+              <IconButton
+                label={everyFolded ? 'Open every effect' : 'Fold every effect'}
+                size="compact"
+                data-testid="fold-all-effects"
+                onClick={() => setEffectsFolded(ids, !everyFolded)}
+              >
+                {everyFolded ? (
+                  <ChevronsUpDown size={13} strokeWidth={1.75} aria-hidden />
+                ) : (
+                  <ChevronsDownUp size={13} strokeWidth={1.75} aria-hidden />
+                )}
+              </IconButton>
+              {/* The A/B. One click to see the footage underneath the whole
+                  look, one click to put it back, and it is a single undo step
+                  either way rather than one per effect. */}
+              <IconButton
+                label={anyEnabled ? 'Turn every effect off' : 'Turn every effect on'}
+                shortcut="Shift+B"
+                active={!anyEnabled}
+                size="compact"
+                data-testid="bypass-all-effects"
+                className={anyEnabled ? '' : 'bg-accent-quiet! text-accent!'}
+                onClick={() => setAllEffectsEnabled(clip.id, !anyEnabled)}
+              >
+                {anyEnabled ? (
+                  <Eye size={13} strokeWidth={1.75} aria-hidden />
+                ) : (
+                  <EyeOff size={13} strokeWidth={1.75} aria-hidden />
+                )}
+              </IconButton>
+              <IconButton
+                label="Reset every effect"
+                size="compact"
+                data-testid="reset-all-effects"
+                onClick={() => resetAllEffectParams(clip.id)}
+              >
+                <RotateCcw size={13} strokeWidth={1.75} aria-hidden />
+              </IconButton>
+            </>
+          )}
           {/* Add an effect without leaving for the Effects tab. */}
           <select
             aria-label="Add effect"
@@ -800,11 +949,28 @@ function EffectStack({ clip, playheadS }: { clip: Clip; playheadS: number }) {
             className="h-6 cursor-default rounded-field bg-bg-input px-1.5 text-ui-sm text-text-secondary"
           >
             <option value="">+ Add effect…</option>
-            {BROWSABLE_EFFECTS.map((ef) => (
-              <option key={ef.type} value={ef.type}>
-                {ef.label}
-              </option>
-            ))}
+            {/* The ones he actually reaches for, at the top. Filtered against
+                the registry so a type that stopped being browsable cannot
+                linger here as an option that adds nothing. */}
+            {recent.length > 0 && (
+              <optgroup label="Recent">
+                {recent.map((ef) => (
+                  <option key={`recent-${ef.type}`} value={ef.type}>
+                    {ef.label}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+            <optgroup label="All effects">
+              {BROWSABLE_EFFECTS.map((ef) => (
+                // The browser panel shows each effect's description and this
+                // list showed none, so the same effect was two different amounts
+                // of explained depending on which door he came through.
+                <option key={ef.type} value={ef.type} title={ef.description}>
+                  {ef.label}
+                </option>
+              ))}
+            </optgroup>
           </select>
           {clip.effects.length > 0 && (
             <IconButton

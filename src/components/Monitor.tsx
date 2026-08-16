@@ -1,5 +1,6 @@
 import {
   Aperture,
+  Camera,
   ChevronLeft,
   ChevronRight,
   Maximize,
@@ -20,6 +21,7 @@ import { ensureProxies } from '../engine/proxyMedia'
 import { formatTimecode, quantizeToFrame } from '../engine/timecode'
 import { activeSequence, type Sequence } from '../engine/types'
 import { pausePlayback, subscribeShuttleRate, toggleLoop, togglePlay } from '../state/playbackControl'
+import { screenshotToMedia } from '../state/screenshot'
 import { setPreviewQuality, useSettings } from '../state/settings'
 import { setActiveSequenceBlurBackground, setActiveSequenceFormat, useStore } from '../state/store'
 import { IconButton } from '../ui/Button'
@@ -282,6 +284,9 @@ export function Monitor() {
     setPreviewScale(quality)
   }, [quality])
   const [safeMargins, setSafeMargins] = useState(false)
+  // A grab can wait several seconds on a decode, so the button says it is busy
+  // rather than sitting there looking like nothing happened.
+  const [shooting, setShooting] = useState(false)
   const regionRef = useRef<HTMLDivElement>(null)
   const canvasRef = useProgramCanvas(quality)
 
@@ -371,6 +376,22 @@ export function Monitor() {
         </div>
 
         <div className="ml-auto flex items-center gap-2">
+          {/* Left of the aspect picker, alongside the blur: the frame he can
+              see is the frame it takes, at the sequence's own size. */}
+          <IconButton
+            label="Screenshot: saves this exact frame into your media, full size"
+            shortcut="Shift+S"
+            data-testid="screenshot-button"
+            disabled={!hasContent || shooting}
+            active={shooting}
+            className={shooting ? 'bg-accent-quiet! text-accent!' : ''}
+            onClick={() => {
+              setShooting(true)
+              void screenshotToMedia().finally(() => setShooting(false))
+            }}
+          >
+            <Camera size={16} strokeWidth={1.5} />
+          </IconButton>
           <select
             data-testid="format-select"
             aria-label="Aspect ratio"

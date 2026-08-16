@@ -16,7 +16,22 @@ interface SettingsState {
   theme: ThemeChoice
   /** Preview quality, shared by the Settings dialog and the monitor's own picker. */
   previewQuality: PreviewQuality
+  /**
+   * How long an effect's Ease In / Ease Out runs, in seconds.
+   *
+   * A TOOL setting, like a brush size, not a fact about any one clip. It used to
+   * be component state inside the ease row, so it snapped back to 0.5 every time
+   * the card went away: click the next clip, fold the panel, and the length he
+   * had just dialled in was gone. Living here it survives the panel and the
+   * session, and it stays off the project file and out of the undo stack, where
+   * a tool setting has no business being.
+   */
+  easeSeconds: number
 }
+
+/** The ease field's own envelope. Shared by the store clamp and the scrub field. */
+export const EASE_SECONDS = { min: 0.05, max: 5, step: 0.05, sens: 0.02 } as const
+const EASE_DEFAULT = 0.5
 
 // Auto-keyframe used to live here as a persisted global. It does not any more:
 // whether a drag animates is now a fact about the CLIP, derived from whether any
@@ -27,6 +42,7 @@ interface SettingsState {
 
 const THEME_KEY = 'olpremiere:settings:theme'
 const QUALITY_KEY = 'olpremiere:settings:preview-quality'
+const EASE_KEY = 'olpremiere:settings:ease-seconds'
 
 function read(key: string): string | null {
   try {
@@ -56,9 +72,22 @@ function loadQuality(): PreviewQuality {
   return v === 0.5 || v === 0.25 ? v : 1
 }
 
+/** Clamp to the field's own envelope, so a hand-edited key can never wedge it. */
+function clampEase(v: number): number {
+  if (!Number.isFinite(v)) return EASE_DEFAULT
+  return Math.min(EASE_SECONDS.max, Math.max(EASE_SECONDS.min, v))
+}
+
+function loadEaseSeconds(): number {
+  const raw = read(EASE_KEY)
+  if (raw === null) return EASE_DEFAULT
+  return clampEase(Number(raw))
+}
+
 export const useSettings = create<SettingsState>(() => ({
   theme: loadTheme(),
   previewQuality: loadQuality(),
+  easeSeconds: loadEaseSeconds(),
 }))
 
 /** The theme actually in force: 'system' resolves against the OS preference. */
@@ -89,6 +118,13 @@ export function setTheme(choice: ThemeChoice): void {
 export function setPreviewQuality(q: PreviewQuality): void {
   useSettings.setState({ previewQuality: q })
   write(QUALITY_KEY, q === 1 ? null : String(q))
+}
+
+/** Remember the ease length he last dialled in, for every effect card after it. */
+export function setEaseSeconds(seconds: number): void {
+  const next = clampEase(seconds)
+  useSettings.setState({ easeSeconds: next })
+  write(EASE_KEY, next === EASE_DEFAULT ? null : String(next))
 }
 
 /**
