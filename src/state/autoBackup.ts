@@ -119,5 +119,3 @@ export function initAutoBackup(): void {
   window.setTimeout(() => void backupNow('startup'), 20_000)
 }
 
-/** For the Settings/restore UI and for tests. */
-export const _internals = { backupNow }

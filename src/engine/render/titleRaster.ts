@@ -44,15 +44,6 @@ export function wrapLinesWith(
   return out
 }
 
-/** Canvas-backed wrap used by rasterizeTitle; delegates to wrapLinesWith. */
-export function wrapLines(
-  ctx: { measureText: (s: string) => { width: number } },
-  text: string,
-  maxWidthPx: number,
-): string[] {
-  return wrapLinesWith((s) => ctx.measureText(s).width, text, maxWidthPx)
-}
-
 /**
  * Vertical placement of the text block. Returns the baseline y of the FIRST
  * line plus the block's bounding box (top + height). Baselines advance by

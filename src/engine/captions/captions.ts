@@ -238,13 +238,6 @@ export const AUTO_CAPTION_OPTIONS: Required<ChunkOptions> = {
   maxOnScreenS: 1.3,
 }
 
-/**
- * The width budget for a given words-per-caption setting. Four characters per
- * word is what makes the dial behave the way its label reads: raising it lets
- * MORE short words share a caption rather than forcing long ones together.
- */
-export const maxCharsFor = (maxWords: number): number => Math.max(4, Math.round(maxWords * 4))
-
 /** Ends a sentence → the next word starts a fresh chunk. */
 const SENTENCE_END = /[.!?…]["')\]]*$/
 

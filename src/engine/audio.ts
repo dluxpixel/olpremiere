@@ -49,6 +49,41 @@ export function compressorParamsFor(level: AutoLevel | undefined): CompressorPar
   }
 }
 
+/**
+ * Hang the loudness-equalization chain off `tail` and hand back the new tail.
+ *
+ * ⛔ ONE COPY, AND THAT IS THE ENTIRE POINT. These fifteen lines were written
+ * twice, once in the live mixer and once in the export renderer, and each copy
+ * carried a comment saying it matched the other. **A comment is not a
+ * guarantee.** This repo has already shipped a preview that sounded right over
+ * an export that did not, twice, and both times the cause was two pieces of code
+ * that were supposed to agree and had no reason to.
+ *
+ * `collect` is handed every node it builds, because the live mixer has to
+ * disconnect them again and the export renderer does not.
+ */
+export function connectAutoLevel(
+  ctx: BaseAudioContext,
+  tail: AudioNode,
+  level: AutoLevel | undefined,
+  collect?: (...made: AudioNode[]) => void,
+): AudioNode {
+  const cp = compressorParamsFor(level)
+  if (!cp) return tail
+  const comp = ctx.createDynamicsCompressor()
+  comp.threshold.value = cp.threshold
+  comp.knee.value = cp.knee
+  comp.ratio.value = cp.ratio
+  comp.attack.value = cp.attack
+  comp.release.value = cp.release
+  const makeup = ctx.createGain()
+  makeup.gain.value = dbToGain(cp.makeupDb)
+  tail.connect(comp)
+  comp.connect(makeup)
+  collect?.(comp, makeup)
+  return makeup
+}
+
 let sharedCtx: AudioContext | null = null
 
 // The chosen playback OUTPUT device (null = system default), persisted so the
@@ -620,23 +655,9 @@ export async function scheduleAudio(
     const pan = ctx.createStereoPanner()
     pan.pan.value = clamp(track.pan ?? 0, -1, 1)
     const nodes: AudioNode[] = [gain, pan]
-    let tail: AudioNode = gain
-    // Loudness equalization: a compressor + makeup gain on the track bus.
-    const cp = compressorParamsFor(track.autoLevel)
-    if (cp) {
-      const comp = ctx.createDynamicsCompressor()
-      comp.threshold.value = cp.threshold
-      comp.knee.value = cp.knee
-      comp.ratio.value = cp.ratio
-      comp.attack.value = cp.attack
-      comp.release.value = cp.release
-      const makeup = ctx.createGain()
-      makeup.gain.value = dbToGain(cp.makeupDb)
-      tail.connect(comp)
-      comp.connect(makeup)
-      nodes.push(comp, makeup)
-      tail = makeup
-    }
+    // Loudness equalization: a compressor + makeup gain on the track bus. The
+    // export renderer calls this same function, see connectAutoLevel.
+    let tail: AudioNode = connectAutoLevel(ctx, gain, track.autoLevel, (...made) => nodes.push(...made))
     // Music sits down under the voiceover: the shared duck automation rides a
     // dedicated gain so the fader/auto-level stay untouched.
     if (track.audioRole === 'music' && duckEnv) {

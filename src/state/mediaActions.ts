@@ -3,6 +3,7 @@
 // onto the timeline at the playhead.
 
 import { create } from 'zustand'
+import { invalidateDenoise } from '../engine/denoise'
 import { evictAsset } from '../engine/frameCache'
 import { disposePreviewAsset } from '../engine/preview'
 import { ensureProxies, forgetProxy } from '../engine/proxyMedia'
@@ -220,6 +221,13 @@ export function deleteAsset(assetId: Id): void {
   evictAsset(assetId)
   disposePreviewAsset(assetId)
   forgetProxy(assetId)
+  // ⛔ AND THE DENOISED AUDIO, WHICH THIS LINE USED TO MISS ENTIRELY.
+  // `invalidateDenoise` was written for exactly this moment and nothing had ever
+  // called it: found 2026-08-16 by sweeping for exports with no caller. The two
+  // caches behind it hold FULL decoded channel data, so one ten minute stereo
+  // clip is roughly 230 MB of Float32 sitting there for the rest of the session,
+  // and it survived the delete that was supposed to release everything else.
+  invalidateDenoise(assetId)
   // Drop any selection that pointed at now-removed clips.
   if (ui.selection.length > 0) setUI({ selection: [] })
   // Bin delete also nukes every clip referencing the asset across ALL sequences,

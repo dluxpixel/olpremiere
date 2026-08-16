@@ -584,16 +584,6 @@ export function resetChannels(clipId: string, channels: AnimChannel[]): void {
   )
 }
 
-/** Reset every channel a clip can animate, in one undo step. */
-export function resetAllChannels(clipId: string): void {
-  mapClip(clipId, 'Reset all', (c) =>
-    ANIM_CHANNELS.reduce<Clip>(
-      (acc, ch) => withChannelValue(withChannelKeyframes(acc, ch, []), ch, channelDefault(ch)),
-      c,
-    ),
-  )
-}
-
 // ---------------------------------------------------------------------------
 // Effect stack. Addressed by effect INSTANCE id, so a clip can carry the same
 // effect twice. Every call is one named undo step; the math lives in

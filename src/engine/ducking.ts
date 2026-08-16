@@ -17,8 +17,6 @@ export const DUCK_ATTACK_S = 0.15
 /** Ramp back up over this long after the voice stops. */
 export const DUCK_RELEASE_S = 0.35
 
-export type TrackAudioRole = 'voice' | 'music'
-
 interface WindowS {
   startS: number
   endS: number

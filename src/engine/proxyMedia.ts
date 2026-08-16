@@ -75,16 +75,19 @@ const ready = new Set<Id>()
 const seen = new Set<Id>()
 const queue: MediaAsset[] = []
 let running = false
-const listeners = new Set<() => void>()
-
 /** True once this asset has a preview copy ready to decode from. */
 export const hasProxy = (assetId: Id): boolean => ready.has(assetId)
 
-/** Notified when a proxy lands, so the preview can drop its stale decode state and use it. */
-export function onProxyReady(cb: () => void): () => void {
-  listeners.add(cb)
-  return () => listeners.delete(cb)
-}
+// ⛔ THERE IS NO onProxyReady SUBSCRIPTION AND THERE MUST NOT BE ONE.
+// It existed here for a year with no subscriber, and its docstring promised the
+// preview would "drop its stale decode state" when a copy landed. That promise
+// is already kept, and better, in `frameCache.request`: it notices on the next
+// frame that the entry is not on the proxy and one now exists, and reopens
+// against it. Asking at request time is right after a reload and across a module
+// boundary, which a subscription is not.
+//
+// It is written down because the dead API cost a reader fifteen minutes on
+// 2026-08-16 looking for the bug it implied.
 
 /**
  * How the preview-copy work is going, for the boot card's row.
@@ -192,7 +195,6 @@ async function drain(): Promise<void> {
 
 function markReady(assetId: Id): void {
   ready.add(assetId)
-  for (const cb of listeners) cb()
 }
 
 /** Drop a removed asset's proxy state (pair with evictAsset). */
@@ -201,9 +203,3 @@ export function forgetProxy(assetId: Id): void {
   seen.delete(assetId)
 }
 
-/** Test seam: forget everything, as if the app had just started. */
-export function resetProxyState(): void {
-  ready.clear()
-  seen.clear()
-  queue.length = 0
-}

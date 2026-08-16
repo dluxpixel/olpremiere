@@ -7,8 +7,8 @@ import {
   clipEmitsAudio,
   clipGainEnvelope,
   clipAudioBuffer,
-  compressorParamsFor,
   computeClipSchedule,
+  connectAutoLevel,
   dbToGain,
   effectiveAudioClip,
   pitchPreservedSource,
@@ -161,22 +161,9 @@ export async function planAudioMix(
       gain.gain.value = dbToGain(track.volumeDb ?? 0)
       const pan = ctx.createStereoPanner()
       pan.pan.value = clamp(track.pan ?? 0, -1, 1)
-      let tail: AudioNode = gain
-      // Same loudness-equalization chain as the live mix → export matches preview.
-      const cp = compressorParamsFor(track.autoLevel)
-      if (cp) {
-        const comp = ctx.createDynamicsCompressor()
-        comp.threshold.value = cp.threshold
-        comp.knee.value = cp.knee
-        comp.ratio.value = cp.ratio
-        comp.attack.value = cp.attack
-        comp.release.value = cp.release
-        const makeup = ctx.createGain()
-        makeup.gain.value = dbToGain(cp.makeupDb)
-        tail.connect(comp)
-        comp.connect(makeup)
-        tail = makeup
-      }
+      // ⛔ THE SAME FUNCTION THE LIVE MIX CALLS, not a copy of it that claims to
+      // match. The claim used to live in a comment here and nothing enforced it.
+      let tail: AudioNode = connectAutoLevel(ctx, gain, track.autoLevel)
       // Music ducks under the voiceover, with identical automation to the preview.
       if (track.audioRole === 'music' && duckEnv) {
         const duck = ctx.createGain()
