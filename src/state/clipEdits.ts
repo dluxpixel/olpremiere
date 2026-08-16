@@ -14,6 +14,7 @@ import {
 } from '../engine/effects/channels'
 import * as ops from '../engine/effects/ops'
 import { getEffect } from '../engine/effects/registry'
+import { cropForZoom, isSymmetricCrop, zoomFromCrop } from '../engine/innerZoom'
 import {
   clipKeyframeTimes,
   duplicateKeyframeAt,
@@ -876,6 +877,114 @@ export function setClipTransformAtPlayhead(
   mapClip(clipId, 'Transform at playhead', (c) =>
     withChannelsAtTime(c, playheadLocalT(c), vals, armed, commit),
   )
+}
+
+// ---------------------------------------------------------------------------
+// Zoom inside the picture. One number he sets, four crop channels underneath.
+//
+// Deliberately NOT a new animated channel. These four already keyframe, already
+// draw lanes, already export and already survive a cut, and the renderer already
+// turns a symmetric crop into exactly the magnification he described. A fifth
+// channel would have been a schema change, a migration, and a second way to say
+// the same thing. See engine/innerZoom.ts.
+
+const INNER_ZOOM_CHANNELS: readonly AnimChannel[] = ['cropT', 'cropR', 'cropB', 'cropL']
+
+/** The zoom a clip is showing right now, read back out of its crops. */
+export function innerZoomAt(clip: Clip, localT: number): number {
+  return zoomFromCrop(
+    resolveChannel(clip, 'cropT', localT),
+    resolveChannel(clip, 'cropB', localT),
+  )
+}
+
+/** True when the crops are the symmetric shape the zoom writes, so the row can speak for them. */
+export function innerZoomOwnsCrop(clip: Clip, localT: number): boolean {
+  return isSymmetricCrop(
+    resolveChannel(clip, 'cropT', localT),
+    resolveChannel(clip, 'cropR', localT),
+    resolveChannel(clip, 'cropB', localT),
+    resolveChannel(clip, 'cropL', localT),
+  )
+}
+
+/** True when any of the four is animated, which is what the stopwatch reports. */
+export function isInnerZoomAnimated(clip: Clip): boolean {
+  return INNER_ZOOM_CHANNELS.some((ch) => channelKeyframes(clip, ch).length > 0)
+}
+
+/**
+ * Set the zoom at the playhead: a keyframe when the clip is armed or already
+ * animated, the base otherwise, and ONE undo step either way. Same road the
+ * monitor gizmo takes, so an inner zoom joins whatever motion is already there.
+ */
+export function setInnerZoomAtPlayhead(clipId: string, zoom: number): void {
+  const clip = findClip(clipId)
+  if (!clip) return
+  const inset = cropForZoom(zoom)
+  const vals: [AnimChannel, number][] = INNER_ZOOM_CHANNELS.map((ch) => [ch, inset])
+  const armed = isClipArmed(clip)
+  const commit = moveCommit()
+  mapClip(clipId, 'Zoom inside the picture', (c) =>
+    withChannelsAtTime(c, playheadLocalT(c), vals, armed, commit),
+  )
+}
+
+/** Stopwatch: start animating the zoom here, or drop its keyframes and keep what shows. */
+export function toggleInnerZoomAnimation(clipId: string): void {
+  const clip = findClip(clipId)
+  if (!clip) return
+  const animated = isInnerZoomAnimated(clip)
+  mapClip(clipId, animated ? 'Disable zoom inside keyframes' : 'Enable zoom inside keyframes', (c) => {
+    const localT = playheadLocalT(c)
+    return INNER_ZOOM_CHANNELS.reduce((acc, ch) => {
+      if (!animated) {
+        return withChannelKeyframes(acc, ch, [
+          { t: localT, value: channelBase(acc, ch), ease: 'linear' },
+        ])
+      }
+      // Keep the crop that is on SCREEN, not the stored base: that is the zoom
+      // he is looking at when he switches the animation off.
+      const shown = resolveChannel(acc, ch, localT)
+      return withChannelValue(withChannelKeyframes(acc, ch, []), ch, shown)
+    }, c)
+  })
+}
+
+/** Add or replace a zoom moment at the playhead, across all four crops at once. */
+export function addInnerZoomKeyframeAtPlayhead(clipId: string): void {
+  mapClip(clipId, 'Add zoom inside keyframe', (c) => {
+    const localT = playheadLocalT(c)
+    return INNER_ZOOM_CHANNELS.reduce(
+      (acc, ch) =>
+        withChannelKeyframes(
+          acc,
+          ch,
+          upsertKeyframe(channelKeyframes(acc, ch), {
+            t: localT,
+            value: resolveChannel(acc, ch, localT),
+            ease: 'linear',
+          }),
+        ),
+      c,
+    )
+  })
+}
+
+/** Take the zoom moment at the playhead back out, across all four crops at once. */
+export function removeInnerZoomKeyframeAtPlayhead(clipId: string): void {
+  mapClip(clipId, 'Remove zoom inside keyframe', (c) => {
+    const localT = playheadLocalT(c)
+    return INNER_ZOOM_CHANNELS.reduce(
+      (acc, ch) => withChannelKeyframes(acc, ch, removeKeyframeNear(channelKeyframes(acc, ch), localT, 0.05)),
+      c,
+    )
+  })
+}
+
+/** The moments the zoom sits on, for the prev/next steppers. Read off one channel: they agree. */
+export function innerZoomKeyframes(clip: Clip): readonly Keyframe[] {
+  return channelKeyframes(clip, 'cropT')
 }
 
 /** The channels the motion badge snapshots: the framing, and nothing else. */

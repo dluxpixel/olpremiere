@@ -45,6 +45,7 @@ import {
   resolveChannel,
 } from '../engine/effects/channels'
 import { isParamAnimated, paramKeyframes, resolveParam } from '../engine/effects/ops'
+import { INNER_ZOOM } from '../engine/innerZoom'
 import { BROWSABLE_EFFECTS, getEffect, paramSens, type EffectParamDef } from '../engine/effects/registry'
 import { clipEndS } from '../engine/timeline'
 import {
@@ -66,9 +67,17 @@ import { isEffectRamped } from '../engine/effects/ops'
 import { useEffectDrop } from './effectDrop'
 import {
   addEffectKeyframeAtPlayhead,
+  addInnerZoomKeyframeAtPlayhead,
   addKeyframeAtPlayhead,
   applyEffect,
   deleteEffect,
+  innerZoomAt,
+  innerZoomKeyframes,
+  innerZoomOwnsCrop,
+  isInnerZoomAnimated,
+  removeInnerZoomKeyframeAtPlayhead,
+  setInnerZoomAtPlayhead,
+  toggleInnerZoomAnimation,
   moveEffectInStack,
   reorderEffect,
   resetAllEffectParams,
@@ -506,6 +515,71 @@ function ChannelRow({
         </>
       )}
     </div>
+  )
+}
+
+/**
+ * Zoom INSIDE the picture: the footage magnifies, its rectangle does not move.
+ *
+ * His ask, 2026-08-16. On a 9:16 short, Scale grows the picture out over the
+ * blurred bands and changes the whole framing; this holds the framing and pushes
+ * into the shot, and the backdrop behind it never so much as flickers.
+ *
+ * It writes the four crops together (see clipEdits), so its keyframes are
+ * ordinary crop keyframes: they draw lanes, they survive a cut, they export.
+ */
+function InnerZoomRow({ clip, playheadS }: { clip: Clip; playheadS: number }) {
+  const durS = Math.max(0, clipEndS(clip) - clip.startS)
+  const localT = Math.max(0, Math.min(playheadS - clip.startS, durS))
+  const animated = isInnerZoomAnimated(clip)
+  const owns = innerZoomOwnsCrop(clip, localT)
+  const zoom = innerZoomAt(clip, localT)
+  const kfs = innerZoomKeyframes(clip)
+  const onKf = animated && kfs.some((k) => Math.abs(k.t - localT) <= 0.05)
+
+  return (
+    <PropRow
+      data-testid="channel-innerZoom"
+      label="Zoom inside"
+      labelTitle={
+        owns
+          ? 'Zoom inside the picture: the shot gets closer, the picture stays exactly where it is and the blur behind it never changes (double-click to reset)'
+          : 'The crops were set one at a time, so this cannot speak for them. Setting it here evens them up again.'
+      }
+      onLabelDoubleClick={() => setInnerZoomAtPlayhead(clip.id, 1)}
+      onReset={() => setInnerZoomAtPlayhead(clip.id, 1)}
+      resetLabel="Reset zoom inside"
+      lead={
+        <IconButton
+          label={animated ? 'Disable zoom inside keyframes' : 'Animate zoom inside'}
+          active={animated}
+          size="compact"
+          data-testid="stopwatch-innerZoom"
+          onClick={() => toggleInnerZoomAnimation(clip.id)}
+        >
+          <Clock size={13} strokeWidth={1.75} aria-hidden />
+        </IconButton>
+      }
+    >
+      {animated && (
+        <KeyframeNav
+          kfs={kfs}
+          localT={localT}
+          onGoto={(t) => useStore.getState().setUI({ playheadS: clip.startS + t })}
+          onKf={onKf}
+          onToggleKf={() =>
+            onKf ? removeInnerZoomKeyframeAtPlayhead(clip.id) : addInnerZoomKeyframeAtPlayhead(clip.id)
+          }
+        />
+      )}
+      <ScrubField
+        value={zoom}
+        spec={INNER_ZOOM}
+        testId="field-innerZoom"
+        ariaLabel="Zoom inside"
+        onCommit={(v) => setInnerZoomAtPlayhead(clip.id, v)}
+      />
+    </PropRow>
   )
 }
 
@@ -1235,6 +1309,9 @@ export function EffectControls({
                 clip={clip}
                 playheadS={playheadS}
               />
+              {/* Directly under Scale, because that is where he looks for a zoom
+                  and because the difference between the two is the point. */}
+              <InnerZoomRow clip={clip} playheadS={playheadS} />
               <div className="h-px bg-border" />
             </>
           )}

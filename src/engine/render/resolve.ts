@@ -367,7 +367,27 @@ export function resolveFrame(seq: Sequence, t: number): RenderFrame {
 }
 
 /** Blur radius for the backdrop, in sequence px. The renderer caps at 64. */
-export const BLUR_BACKDROP_PX = 48
+export const BLUR_BACKDROP_PX = 64
+
+/**
+ * How far past cover-fit the backdrop is grown, before the blur.
+ *
+ * ⛔ COVER ALONE PUTS THE HUD IN THE BAND. A 16:9 frame cover-fitted into a 9:16
+ * short spans the full height, so the BOTTOM of the source lands in the bottom
+ * band, and on Minecraft footage the bottom of the source is the hotbar and the
+ * hearts. Blurred at 48 they stayed obviously a hotbar: ten little boxes and a
+ * row of red, smeared but readable, which is exactly what his own shorts showed
+ * and what the reference channel's never do.
+ *
+ * 1.4 keeps the middle ~71% of the source height, so everything below about the
+ * bottom 14% is cropped away before the blur ever runs. The HUD sits inside the
+ * bottom 12% of a Minecraft frame, so it is gone rather than smeared, and the
+ * band is the SCENE out of focus, which is the look being matched.
+ *
+ * It also raises the magnification of what is left, which softens the band on
+ * its own, and that is why the two numbers were chosen together.
+ */
+export const BACKDROP_ZOOM = 1.4
 
 /**
  * The blurred fill that sits behind everything, built from the picture already
@@ -414,7 +434,8 @@ function blurBackdropOp(ops: readonly RenderOp[]): RenderOp | null {
         ...source.transform,
         x: 0,
         y: 0,
-        scale: 1,
+        // Past cover on purpose, so the HUD never reaches the band. See BACKDROP_ZOOM.
+        scale: BACKDROP_ZOOM,
         rotationDeg: 0,
         cropT: 0,
         cropR: 0,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { migrateClipEffects } from '../effects/migrate'
-import { resolveFrame, _activeIndexForTest } from './resolve'
+import { BACKDROP_ZOOM, resolveFrame, _activeIndexForTest } from './resolve'
 import type { RenderLayer, RenderOp } from './types'
 import { defaultTransform, type Clip, type Keyframe, type Sequence, type Track } from '../types'
 
@@ -976,14 +976,40 @@ describe('the blurred background', () => {
 
   it('⛔ does NOT shrink when he keyframes a zoom out: that is the whole feature', () => {
     // Scale ramps 1 -> 0.4 over the clip. At the end the picture is small and
-    // the frame around it must be blur, not black, so the backdrop stays at 1.
+    // the frame around it must be blur, not black, so the backdrop keeps its own
+    // fixed zoom no matter what the clip's scale is doing.
     const c = clip({ outS: 4, keyframes: { scale: [kf(0, 1), kf(2, 0.4)] } })
     const ops = resolveFrame(shorts([track({ clips: [c] })]), 2).ops
     const bg = backdropOf(ops)
     const front = (ops[1] as { layer: RenderLayer }).layer
 
     expect(front.transform.scale).toBeCloseTo(0.4, 5)
-    expect(bg!.transform.scale).toBe(1)
+    expect(bg!.transform.scale).toBe(BACKDROP_ZOOM)
+  })
+
+  // The same guarantee stated the way it actually matters: the backdrop is the
+  // SAME whatever the clip's scale is. Pinning the constant above would pass on
+  // a backdrop that had quietly started following the clip by coincidence.
+  it('is identical at both ends of that zoom', () => {
+    const c = clip({ outS: 4, keyframes: { scale: [kf(0, 1), kf(2, 0.4)] } })
+    const seq = shorts([track({ clips: [c] })])
+    const at0 = backdropOf(resolveFrame(seq, 0).ops)
+    const at2 = backdropOf(resolveFrame(seq, 2).ops)
+    expect(at0!.transform.scale).toBe(at2!.transform.scale)
+  })
+
+  // ⛔ WHY THE BACKDROP IS ZOOMED PAST COVER AT ALL. Cover alone spans the full
+  // height of a 9:16 frame, so the bottom of a 16:9 source lands in the bottom
+  // band, and on his gameplay that is the hotbar and the hearts. Blurred, they
+  // stayed readable. This keeps the middle of the source instead.
+  it('crops past the HUD before the blur ever runs', () => {
+    const c = clip({})
+    const bg = backdropOf(resolveFrame(shorts([track({ clips: [c] })]), 0.5).ops)
+    expect(bg!.transform.scale).toBeGreaterThan(1)
+    // The bottom eighth of the source, where the HUD lives, is outside what the
+    // band can show once the extra zoom is applied.
+    const keptFraction = 1 / bg!.transform.scale
+    expect((1 - keptFraction) / 2).toBeGreaterThan(0.12)
   })
 
   it('stays still when he keyframes a move or a spin, for the same reason', () => {
