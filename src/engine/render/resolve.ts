@@ -361,7 +361,7 @@ export function resolveFrame(seq: Sequence, t: number): RenderFrame {
     const op = resolveTrack(track, t, seq.fps)
     if (op) ops.push(op)
   }
-  const backdrop = seq.blurBackground ? blurBackdropOp(ops) : null
+  const backdrop = seq.blurBackground ? blurBackdropOp(ops, seq.blurBackdropZoom ?? BACKDROP_ZOOM) : null
   if (backdrop) ops.unshift(backdrop)
   return { width: seq.width, height: seq.height, ops }
 }
@@ -389,6 +389,9 @@ export const BLUR_BACKDROP_PX = 64
  */
 export const BACKDROP_ZOOM = 1.4
 
+/** The band's own envelope. 1 is plain cover-fit, which is where the HUD creeps in. */
+export const BLUR_BACKDROP_ZOOM = { min: 1, max: 3, step: 0.05, sens: 0.01 } as const
+
 /**
  * The blurred fill that sits behind everything, built from the picture already
  * being drawn. Returns null when there is nothing to blur.
@@ -409,7 +412,7 @@ export const BACKDROP_ZOOM = 1.4
  * The CROP is dropped with them, so a cropped clip still blurs its whole frame
  * rather than a blurred sliver stretched over the screen.
  */
-function blurBackdropOp(ops: readonly RenderOp[]): RenderOp | null {
+function blurBackdropOp(ops: readonly RenderOp[], zoom: number): RenderOp | null {
   const bottom = ops[0]
   const source =
     bottom?.type === 'layer' ? bottom.layer : bottom?.type === 'transition' ? bottom.to : null
@@ -434,8 +437,9 @@ function blurBackdropOp(ops: readonly RenderOp[]): RenderOp | null {
         ...source.transform,
         x: 0,
         y: 0,
-        // Past cover on purpose, so the HUD never reaches the band. See BACKDROP_ZOOM.
-        scale: BACKDROP_ZOOM,
+        // Past cover on purpose, so the HUD never reaches the band. His number
+        // now, per sequence, defaulting to BACKDROP_ZOOM.
+        scale: zoom,
         rotationDeg: 0,
         cropT: 0,
         cropR: 0,

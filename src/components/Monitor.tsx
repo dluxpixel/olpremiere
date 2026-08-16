@@ -23,7 +23,14 @@ import { activeSequence, type Sequence } from '../engine/types'
 import { pausePlayback, subscribeShuttleRate, toggleLoop, togglePlay } from '../state/playbackControl'
 import { screenshotToMedia } from '../state/screenshot'
 import { setPreviewQuality, useSettings } from '../state/settings'
-import { setActiveSequenceBlurBackground, setActiveSequenceFormat, useStore } from '../state/store'
+import {
+  setActiveSequenceBlurBackdropZoom,
+  setActiveSequenceBlurBackground,
+  setActiveSequenceFormat,
+  useStore,
+} from '../state/store'
+import { BACKDROP_ZOOM, BLUR_BACKDROP_ZOOM } from '../engine/render/resolve'
+import { ScrubField } from './EffectControls'
 import { IconButton } from '../ui/Button'
 import { MasterMeter } from './MasterMeter'
 import { fitCanvasBox } from './monitorSizing'
@@ -418,6 +425,19 @@ export function Monitor() {
           >
             <Aperture size={16} strokeWidth={1.5} />
           </IconButton>
+          {/* His ask, 2026-08-16: "make it so I can change it each single time."
+              How far past the frame the band is grown before it blurs, which is
+              what decides whether your hotbar shows up in it. Only here when the
+              blur is actually on, so it never sits there meaning nothing. */}
+          {seq.blurBackground === true && (
+            <ScrubField
+              value={seq.blurBackdropZoom ?? BACKDROP_ZOOM}
+              spec={BLUR_BACKDROP_ZOOM}
+              testId="blur-backdrop-zoom"
+              ariaLabel="Blur band tightness"
+              onCommit={setActiveSequenceBlurBackdropZoom}
+            />
+          )}
           <IconButton
             label="Loop playback: repeats the In/Out range"
             shortcut="/"

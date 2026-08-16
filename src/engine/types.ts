@@ -70,6 +70,19 @@ export interface Sequence {
    * switch: beside the 16:9 / 9:16 / 1:1 picker. One flip per short.
    */
   blurBackground?: boolean
+  /**
+   * How far past cover-fit the blurred backdrop is grown, before it blurs.
+   *
+   * His ask, 2026-08-16: *"make it so I can change it each single time."* It was
+   * a constant, and a constant is the wrong shape for a number whose only judge
+   * is his eye on that particular clip.
+   *
+   * ⛔ IT IS WHAT KEEPS THE HUD OUT OF THE BAND. Cover-fit alone spans the whole
+   * height of a 9:16 frame, so the bottom of a 16:9 source lands in the bottom
+   * band, and on gameplay that is the hotbar and the hearts. Undefined means the
+   * default (BACKDROP_ZOOM), so every project made before this reads the same.
+   */
+  blurBackdropZoom?: number
   /** Derived: end of the last clip. Kept in sync by timeline operations. */
   durationS: number
   /**

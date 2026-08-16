@@ -6,6 +6,7 @@ import { create } from 'zustand'
 import { subscribeWithSelector } from 'zustand/middleware'
 import { MOTION_CURVES, type MotionCurveName } from '../engine/motion'
 import { setSequenceFormat } from '../engine/timeline'
+import { BACKDROP_ZOOM, BLUR_BACKDROP_ZOOM } from '../engine/render/resolve'
 import { newProject, type Id, type Project, type Sequence } from '../engine/types'
 import {
   emptyHistory,
@@ -306,6 +307,24 @@ export function setActiveSequenceBlurBackground(on: boolean): void {
     if ((seq.blurBackground === true) === on) return p
     return { ...p, sequences: { ...p.sequences, [seq.id]: { ...seq, blurBackground: on } } }
   })
+}
+
+/**
+ * How tight the blurred band is, per sequence. Undoable, because it changes what
+ * the video looks like, and merged into one step per drag the way a scrub should
+ * be: a slow pull across the range is one press of undo, not forty.
+ */
+export function setActiveSequenceBlurBackdropZoom(zoom: number): void {
+  const next = Math.min(BLUR_BACKDROP_ZOOM.max, Math.max(BLUR_BACKDROP_ZOOM.min, zoom))
+  useStore.getState().dispatch(
+    'Blur band tightness',
+    (p) => {
+      const seq = p.sequences[p.activeSequenceId]
+      if ((seq.blurBackdropZoom ?? BACKDROP_ZOOM) === next) return p
+      return { ...p, sequences: { ...p.sequences, [seq.id]: { ...seq, blurBackdropZoom: next } } }
+    },
+    'blur-backdrop-zoom',
+  )
 }
 
 // Zoom is anchored by the Timeline (playhead-if-visible, else view center) so

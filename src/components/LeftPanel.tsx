@@ -1,6 +1,6 @@
 import { Bookmark, Captions, Film, FolderOpen, Image as ImageIcon, Music, Plus, Sparkles, Upload, Volume2, Wand2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { BROWSABLE_EFFECTS } from '../engine/effects/registry'
+import { filterEffects, matchesQuery } from '../engine/effects/search'
 import { TRANSITION_KINDS, TRANSITION_LABELS } from '../engine/render/types'
 import { SFX_LIBRARY, type SfxDef } from '../engine/sfx/sfx'
 import { formatTimecode } from '../engine/timecode'
@@ -495,12 +495,13 @@ function EffectsTab() {
   const hasTarget = targets.length > 0
   const applyLabel = targets.length > 1 ? `Apply to ${targets.length} clips` : 'Apply to selected clip'
 
-  const q = query.trim().toLowerCase()
-  const matches = (s: string): boolean => q === '' || s.toLowerCase().includes(q)
-
-  const effects = BROWSABLE_EFFECTS.filter((e) => matches(e.label) || matches(e.type))
-  const transitions = TRANSITION_KINDS.filter((k) => matches(TRANSITION_LABELS[k]) || matches(k))
-  const showLook = matches('Jettism') || matches('look')
+  // ONE filter, shared with the inspector's Add effect box (effects/search.ts),
+  // so the two surfaces cannot answer the same search differently. It reads the
+  // DESCRIPTION as well now, which is how "grain" reaches Noise and "vignette"
+  // reaches the effect that darkens toward the edges.
+  const effects = filterEffects(query)
+  const transitions = TRANSITION_KINDS.filter((k) => matchesQuery(query, TRANSITION_LABELS[k], k))
+  const showLook = matchesQuery(query, 'Jettism', 'look')
   // The Motion tiles were removed in the 2026-07-18 de-bloat: punch-in/impact/
   // whip live on the clip right-click Motion submenu, the P key, and (with a
   // depth control) the Inspector's PunchControl - this was a fourth, least
