@@ -604,6 +604,60 @@ export function applyMove(clip: Clip, fps: number, def: MoveDef, options: MoveBu
   return next
 }
 
+/**
+ * The keyframe span a clip's move already occupies, in local clip seconds, or null
+ * when it carries none.
+ */
+export function moveSpan(clip: Clip): { startS: number; endS: number } | null {
+  const times: number[] = []
+  for (const channel of MOVE_CHANNELS) for (const k of channelKeyframes(clip, channel)) times.push(k.t)
+  if (times.length === 0) return null
+  return { startS: Math.min(...times), endS: Math.max(...times) }
+}
+
+/**
+ * Add a SECOND move after the one already on the clip, rather than replacing it.
+ *
+ * His decision, 2026-08-17. Asked whether two moves may touch, he said *"Look at what
+ * other editors have and copy that option"*, and CapCut is the only editor of four
+ * that names the moves on a clip at all: an In slot and an Out slot, allowed to touch,
+ * never to overlap. Chain length, his word: *"Two"*.
+ * → [[olp-chained-moves-design]]
+ *
+ * ⛔ TOUCHING IS ALLOWED, OVERLAPPING IS REFUSED, and the difference is not taste. Two
+ * moves over the same seconds sum into keyframes that cannot be taken apart again, so
+ * recognition would have to fall back on a stored record of what was applied, which is
+ * the thing this whole design exists to avoid. Returns the clip UNCHANGED on an
+ * overlap: the caller decides what to say about it.
+ *
+ * At a touching boundary both moves want a keyframe at the same instant. The later
+ * move wins it, because that is the one whose shape is about to run.
+ */
+export function appendMove(clip: Clip, fps: number, def: MoveDef, options: MoveBuildOptions): Clip {
+  const existing = moveSpan(clip)
+  if (!existing) return applyMove(clip, fps, def, options)
+  if (def.beats.length === 0) return clip
+  const startS = options.startS ?? existing.endS
+  if (startS < existing.endS - timeTolS(fps)) return clip // overlap, refused
+
+  const bases = {
+    scale: channelBase(clip, 'scale'),
+    posX: channelBase(clip, 'posX'),
+    posY: channelBase(clip, 'posY'),
+  }
+  const tracks = buildMove(def, fps || 30, clipDurationS(clip), bases, { ...options, startS })
+  const tol = timeTolS(fps)
+  let next = clip
+  for (const track of tracks) {
+    const kept = channelKeyframes(clip, track.channel).filter(
+      (k) => !track.kfs.some((n) => Math.abs(n.t - k.t) <= tol),
+    )
+    const merged = [...kept, ...track.kfs].sort((a, b) => a.t - b.t)
+    next = withChannelKeyframes(next, track.channel, merged)
+  }
+  return next
+}
+
 /** What a clip's move looks like from the outside: which one, how deep, and over what window. */
 export interface MoveMatch {
   id: MoveId
@@ -740,6 +794,66 @@ export function matchMove(
       endS,
     })
     if (sameTracks(clip, rebuilt, fps)) return { id: def.id, depth, startS, endS }
+  }
+  return null
+}
+
+/** Every distinct keyframe instant on the move channels, in order. */
+function moveTimes(clip: Clip, fps: number): number[] {
+  const tol = timeTolS(fps)
+  const times: number[] = []
+  for (const channel of MOVE_CHANNELS) for (const k of channelKeyframes(clip, channel)) times.push(k.t)
+  times.sort((a, b) => a - b)
+  const out: number[] = []
+  for (const t of times) if (out.length === 0 || t - out[out.length - 1] > tol) out.push(t)
+  return out
+}
+
+/** The clip with only the keyframes inside [fromS, toS], for matching one run alone. */
+function clipSlice(clip: Clip, fromS: number, toS: number, fps: number): Clip {
+  const tol = timeTolS(fps)
+  let out = clip
+  for (const channel of MOVE_CHANNELS) {
+    const kept = channelKeyframes(clip, channel).filter((k) => k.t >= fromS - tol && k.t <= toS + tol)
+    out = withChannelKeyframes(out, channel, kept)
+  }
+  return out
+}
+
+/**
+ * The TWO moves on a clip, when it carries a chain. Null when it does not.
+ *
+ * ⛔ NOTHING IS STORED, exactly as with a single move, and this is the part the design
+ * said could not be done. The old note claimed two moves that TOUCH cannot be read
+ * back, so his tile would go dark on the edit that feels best. That is only true if
+ * recognition insists on finding the boundary from a rest. **A chain is exactly two**,
+ * his word, so every keyframe instant can be TRIED as the boundary: cut there, rebuild
+ * both halves independently, and keep the pair that matches. A hand edit inside either
+ * half still darkens that half alone.
+ *
+ * The boundary instant belongs to BOTH halves, because a touching chain stores one
+ * keyframe where two moves meet.
+ *
+ * ⛔ CALL IT ONLY AFTER `matchMove` HAS FAILED. A single move is the common case and
+ * this walks up to (n-3) splits times the shelf, so spending it on every clip in a
+ * finished edit would be paying for a chain nobody made.
+ */
+export function matchChain(
+  clip: Clip,
+  fps: number,
+  options: Parameters<typeof matchMove>[2],
+): [MoveMatch, MoveMatch] | null {
+  const times = moveTimes(clip, fps)
+  // Two keyframes is the smallest a move can be, so a chain needs four instants, and
+  // a split has to leave at least two on each side.
+  if (times.length < 4) return null
+  for (let i = 1; i < times.length - 1; i++) {
+    if (i < 1 || times.length - i < 2) continue
+    const first = matchMove(clipSlice(clip, times[0], times[i], fps), fps, options)
+    if (!first || first.id === 'none') continue
+    const second = matchMove(clipSlice(clip, times[i], times[times.length - 1], fps), fps, options)
+    if (!second || second.id === 'none') continue
+    return [first, second]
   }
   return null
 }
