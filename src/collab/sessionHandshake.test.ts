@@ -166,3 +166,64 @@ describe('joiner handshake', () => {
     expect(seeded?.id).toBe(useStore.getState().project.id) // OUR project became the doc
   })
 })
+
+// ⛔ THE 2026-08-17 CASE. One red test in the 2.0.3 gate showed a peer sitting at
+// ONE clip for nine seconds after it had added a second, and the other peer had
+// already seen that second clip. The mechanism was proven with an exit code
+// before any of this was written: `em.delete` is the only destructive half of the
+// store-to-doc publish, and a DIFF cannot tell "the user deleted this clip" from
+// "my snapshot is older than the room". So any wholesale project replacement in a
+// live session published the other peer's clips as deletions.
+//
+// The rule under test: a project with no history was REPLACED, not edited, so its
+// absences never reach the room. A real edit's deletions still do.
+const clipIdsOf = (p: Project | null): string[] =>
+  p ? p.sequences[p.activeSequenceId].tracks.flatMap((tr) => tr.clips.map((c) => c.id)) : []
+
+/** The same project, plus a clip the OTHER peer added. Same id on purpose. */
+function plusPeerClip(base: Project, id: string, startS: number): Project {
+  const next = structuredClone(base)
+  const seq = next.sequences[next.activeSequenceId]
+  seq.tracks.find((tr) => tr.kind === 'video')!.clips.push({ ...newClipFromAsset(asset('a1'), startS), id })
+  seq.durationS = startS + 4
+  return next
+}
+
+describe('a replaced project never publishes deletions', () => {
+  it('a stale load cannot take the other peer\'s clip out of the room', () => {
+    const room = projectWithClip('Room') // c1
+    useStore.getState().setProject(room)
+    const t = new FakeTransport()
+    session = startCollabSession({ room: 'r9', transport: t, name: 'A', role: 'creator' })
+
+    // The other peer adds c2, and it reaches us, so our adopted view is two clips.
+    t.deliver(roomAnswer(plusPeerClip(room, 'c2', 4)))
+    expect(clipIdsOf(decodeToProject(t.provider!()))).toEqual(['c1', 'c2'])
+    expect(clipIdsOf(useStore.getState().project)).toEqual(['c1', 'c2'])
+
+    // Now the store is REPLACED by an older snapshot of the SAME project, which
+    // is what a load from disk or opening a project does. Before the guard this
+    // published a delete for c2 and the room lost it for everybody.
+    useStore.getState().setProject(room)
+    expect(clipIdsOf(decodeToProject(t.provider!()))).toContain('c2')
+  })
+
+  it('but a real edit still publishes its deletion, so undo in a room still works', () => {
+    const room = projectWithClip('Room')
+    useStore.getState().setProject(room)
+    const t = new FakeTransport()
+    session = startCollabSession({ room: 'r10', transport: t, name: 'A', role: 'creator' })
+    t.deliver(roomAnswer(plusPeerClip(room, 'c2', 4)))
+    expect(clipIdsOf(decodeToProject(t.provider!()))).toEqual(['c1', 'c2'])
+
+    // A genuine edit: the user removes c2. This one MUST reach the room.
+    useStore.getState().dispatch('Delete clip', (p) => {
+      const next = structuredClone(p)
+      const seq = next.sequences[next.activeSequenceId]
+      const video = seq.tracks.find((tr) => tr.kind === 'video')!
+      video.clips = video.clips.filter((c) => c.id !== 'c2')
+      return next
+    })
+    expect(clipIdsOf(decodeToProject(t.provider!()))).toEqual(['c1'])
+  })
+})

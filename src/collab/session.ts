@@ -155,9 +155,31 @@ export function startCollabSession(opts: {
       const { changed, removed } = diffEntities(lastEntities, next)
       lastEntities = next
       if (changed.length === 0 && removed.length === 0) return
+      // ⛔ A DIFF CANNOT TELL A DELETION FROM A STALE SNAPSHOT, and only one of
+      // those two should ever reach the room. `removed` is the destructive half:
+      // once `em.delete` lands, the other peer's clip is gone for everybody.
+      //
+      // A project carrying NO history was REPLACED rather than edited. That is
+      // `setProject`: a load from disk, opening another project, a fresh one. Its
+      // absences are not the user deleting anything, they are just an older view
+      // of the world, so publishing them takes the other peer's work away.
+      // Proven with a real exit code before this was written, see the vault note
+      // olp-collab-a-diff-can-delete-a-peers-clip: peer A's own clip was deleted
+      // by peer B publishing from a project older than the one it had adopted.
+      //
+      // ⛔ NOT A TIMESTAMP COMPARISON, and that was the first idea. `updatedAt`
+      // comes from whichever machine made the edit, so two peers with a few
+      // seconds of clock skew would silently stop syncing, which is worse than
+      // the bug. History is local and needs no agreement about the time.
+      //
+      // Undo and redo keep their history, so a real undo in a room still
+      // publishes its deletions. That is what `dispatch`, `undo` and `redo` have
+      // in common and what `setProject` does not.
+      const { undo, redo } = useStore.getState().history
+      const replaced = undo.length === 0 && redo.length === 0
       doc.transact(() => {
         for (const [key, value] of changed) em.set(key, value)
-        for (const key of removed) em.delete(key)
+        if (!replaced) for (const key of removed) em.delete(key)
       }, 'local')
     },
   )

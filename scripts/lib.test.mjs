@@ -7,7 +7,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { isTransientFailure, runLoggedRetry } from './lib.mjs'
+import { isTransientFailure, releaseWork, runLoggedRetry } from './lib.mjs'
 
 /**
  * A command that fails `failures` times and then succeeds, printing `message`
@@ -83,5 +83,32 @@ describe('runLoggedRetry', () => {
     await expect(runLoggedRetry(cmd, 'package', null, QUIET)).rejects.toMatchObject({
       output: expect.stringContaining('TS2345'),
     })
+  })
+})
+
+// ⛔ THE CASE THAT MATTERS HERE IS THE THIRD ONE. On 2026-08-17 five commits of
+// finished work were stranded on main because the ship script asked "is anything
+// uncommitted or unpushed" instead of "is anything unreleased", so it answered
+// "nothing to release" while his app stayed a version behind. A script that can
+// refuse to publish finished work needs the refusal pinned, not eyeballed.
+describe('releaseWork', () => {
+  it('ships an uncommitted tree', () => {
+    expect(releaseWork({ dirty: ' M src/App.tsx', unpushed: '0', unreleased: '0' })).toMatch(/uncommitted/)
+  })
+
+  it('ships commits that never got pushed', () => {
+    expect(releaseWork({ dirty: '', unpushed: '2', unreleased: '2' })).toMatch(/not yet pushed/)
+  })
+
+  it('ships commits that are pushed but were never released', () => {
+    expect(releaseWork({ dirty: '', unpushed: '0', unreleased: '5' })).toMatch(/above the last released tag/)
+  })
+
+  it('does nothing when the last tag is HEAD', () => {
+    expect(releaseWork({ dirty: '', unpushed: '0', unreleased: '0' })).toBeNull()
+  })
+
+  it('treats whitespace from git as a clean tree', () => {
+    expect(releaseWork({ dirty: '\n', unpushed: '0', unreleased: '0' })).toBeNull()
   })
 })

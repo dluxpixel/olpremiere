@@ -7,18 +7,50 @@ productName: OL Premiere
 directories:
   output: release/${version}
   buildResources: build
-# Lean asar: only the built output + package.json. The renderer is fully bundled
-# by Vite into out/renderer, and the main process externalizes only electron +
-# node builtins (runtime-provided), so no node_modules ship.
+# Lean asar: the built output + package.json. The renderer is fully bundled by
+# Vite into out/renderer, and the main process externalizes only electron + node
+# builtins (runtime-provided).
+#
+# ⛔ THIS COMMENT USED TO END "so no node_modules ship", AND THAT WAS FALSE.
+# Measured 2026-08-17 on release/0.1.10: app.asar was 226 MB and
+# app.asar.unpacked carried the whole of onnxruntime-node, because
+# electron-builder copies production dependencies whatever this list says. The
+# patterns below are subtractions from that, not additions to it.
 files:
   - out/**/*
   - package.json
+  # onnxruntime-node arrives as a dependency of @huggingface/transformers and
+  # weighs 210 MB, because it carries a native runtime for EVERY platform. This
+  # is a Windows x64 installer, so three of those four can never be loaded:
+  # 36 MB of macOS .dylib, 55 MB of Linux .so, and the Windows-on-ARM half of
+  # win32. That is about 137 MB of his every upload that cannot execute.
+  #
+  # Dropping the platforms he does not ship is safe by construction. Dropping
+  # the module outright is probably also safe (captions run in the renderer on
+  # onnxruntime-web, and the name appears in src/ only inside comments), but
+  # "probably" is not proof, so win32/x64 stays until a packaged build has
+  # actually transcribed something.
+  - "!node_modules/onnxruntime-node/bin/napi-v6/darwin/**"
+  - "!node_modules/onnxruntime-node/bin/napi-v6/linux/**"
+  - "!node_modules/onnxruntime-node/bin/napi-v6/win32/arm64/**"
 asar: true
 # The bundled ffmpeg ships OUTSIDE app.asar (you cannot spawn an exe from a
 # virtual asar path). Resolved at runtime via process.resourcesPath/ffmpeg.
 extraResources:
   - from: vendor/ffmpeg/win-x64/ffmpeg.exe
     to: ffmpeg/ffmpeg.exe
+# Every patch uploads the WHOLE installer, because GitHub Releases has no such
+# thing as a differential upload. So the only lever on his upload time is the
+# size of this file, and the two settings below cost nothing but build minutes.
+#
+# electronLanguages: Electron ships about 50 locale .pak files, 48.9 MB of them,
+# and the app is English throughout. A missing locale falls back to en-US, so
+# this changes nothing a user can see.
+electronLanguages:
+  - en-US
+# compression: the default is `normal`. `maximum` is a slower LZMA pass over the
+# same bytes and cannot change what the app does.
+compression: maximum
 win:
   target: nsis
   icon: build/icon.ico

@@ -61,10 +61,20 @@ test('undo in a room reverts only YOUR edit, so the other person\'s clip survive
   await expect(b.getByTestId('clip')).toHaveCount(1, { timeout: 15_000 })
 
   // A adds a second title (undoable on A), then B adds a third.
+  //
+  // ⛔ THE THREE ASSERTIONS BELOW USED TO BE ONE, AND THE ONE COULD NOT SAY WHAT
+  // BROKE. In the 2.0.3 gate this failed with "expected 3, received 2" on A, and
+  // its retry log showed A sitting at ONE clip for nine seconds first, which means
+  // A had briefly lost its OWN second title rather than merely missing B's third.
+  // A single assertion at the end of a three step handshake reports the last step
+  // and hides which one actually went wrong. None of these is weaker than what it
+  // replaced: the final count is still 3 on A.
   await a.getByTestId('add-title').click()
-  await expect(b.getByTestId('clip')).toHaveCount(2, { timeout: 15_000 })
+  await expect(a.getByTestId('clip')).toHaveCount(2, { timeout: 15_000 }) // A keeps its own edit
+  await expect(b.getByTestId('clip')).toHaveCount(2, { timeout: 15_000 }) // and it reaches B
   await b.getByTestId('add-title').click()
-  await expect(a.getByTestId('clip')).toHaveCount(3, { timeout: 15_000 })
+  await expect(b.getByTestId('clip')).toHaveCount(3, { timeout: 15_000 }) // B's own click landed
+  await expect(a.getByTestId('clip')).toHaveCount(3, { timeout: 15_000 }) // and it reaches A
 
   // A undoes: A's OWN last add disappears everywhere; B's clip stays everywhere.
   // (Snapshot undo would have wiped B's clip from A's timeline too.)

@@ -91,6 +91,31 @@ export function isTransientFailure(output) {
 }
 
 /**
+ * Is there anything for a release to carry, and what is it?
+ *
+ * Returns a reason to ship, or null to mean genuinely nothing to do.
+ *
+ * ⛔ WHY THIS EXISTS. This test used to live inline in patch.mjs as
+ * `!dirty && unpushed === '0'`, and on 2026-08-17 five commits of finished work
+ * sat on main for a day because of it: a component test layer, two measurement
+ * specs and both halves of a memory fix. **Committed and pushed is not the same
+ * as RELEASED.** A session that lands work with `npm run ci` and a plain commit
+ * leaves the tree clean and main pushed, and after that every `npm run patch`
+ * answered "nothing to release" while the app on his machine stayed a version
+ * behind, with no way back except a hand rolled release.
+ *
+ * So the question is asked properly now: anything above the last released tag
+ * counts. `unreleased` is the caller's count for that, because only the caller
+ * can talk to git.
+ */
+export function releaseWork({ dirty, unpushed, unreleased }) {
+  if (dirty && dirty.trim()) return 'uncommitted changes in the tree'
+  if (Number(unpushed) > 0) return `${unpushed} commit(s) not yet pushed`
+  if (Number(unreleased) > 0) return `${unreleased} commit(s) above the last released tag`
+  return null
+}
+
+/**
  * `runLogged`, but a network drop gets another go.
  *
  * ⛔ WHY THIS EXISTS. On 2026-08-12 two ships were thrown away by one dropped

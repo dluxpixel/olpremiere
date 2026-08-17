@@ -20,7 +20,7 @@
 
 import { execFileSync, execSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
-import { loadToken, openShipLog, runLogged, SHIP_LOG } from './lib.mjs'
+import { loadToken, openShipLog, releaseWork, runLogged, SHIP_LOG } from './lib.mjs'
 
 const args = process.argv.slice(2)
 const fast = args.includes('--fast')
@@ -71,12 +71,25 @@ const pushMain = () => {
 }
 
 // --- 0. nothing to do? ------------------------------------------------------
+// ⛔ "Clean and pushed" is NOT "released". See releaseWork in lib.mjs for the
+// day five finished commits could not be published by this script at all.
+const lastTag = (() => {
+  try {
+    return git('describe', '--tags', '--abbrev=0', '--match', 'v*')
+  } catch {
+    return '' // no release has ever been tagged, so everything is unreleased
+  }
+})()
 const dirty = git('status', '--porcelain')
 const unpushed = git('rev-list', '--count', 'origin/main..HEAD')
-if (!dirty && unpushed === '0') {
-  console.log('Nothing to release: the tree is clean and main is already pushed.')
+const unreleased = lastTag ? git('rev-list', '--count', `${lastTag}..HEAD`) : '1'
+
+const work = releaseWork({ dirty, unpushed, unreleased })
+if (!work) {
+  console.log(`Nothing to release: the tree is clean and ${lastTag} is HEAD.`)
   process.exit(0)
 }
+console.log(`Releasing, because there are ${work}.`)
 
 // --- 1. the gate ------------------------------------------------------------
 try {
