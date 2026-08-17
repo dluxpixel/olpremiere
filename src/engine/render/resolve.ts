@@ -8,6 +8,7 @@
 import { resolveChannel } from '../effects/channels'
 import { isNeutral, resolveEffect } from '../effects/registry'
 import { clipDurationS, clipEndS } from '../timeline'
+import { DEFAULT_SHUTTER_ANGLE, shutterSeconds } from './motionBlur'
 import type { Clip, Sequence, Track, Transition } from '../types'
 import {
   TRANSITION_KINDS,
@@ -36,7 +37,7 @@ const coerceKind = (type: string): TransitionKind =>
  * `t` may lie past the clip's own [startS, endS) (a transition samples A past
  * its out point); the caller clamps to the source handles.
  */
-function layerFor(clip: Clip, t: number, fps: number): RenderLayer {
+function layerFor(clip: Clip, t: number, fps: number, shutterS = 0): RenderLayer {
   const localT = t - clip.startS
   const rate = Math.abs(clip.speed || 1)
   // Reverse (speed < 0): walk the source backward from outS as time advances.
@@ -53,6 +54,24 @@ function layerFor(clip: Clip, t: number, fps: number): RenderLayer {
     const resolved = resolveEffect(inst, localT)
     if (resolved) effects.push(resolved)
   }
+  const transformAt = (at: number): RenderLayer['transform'] => ({
+    x: resolveChannel(clip, 'posX', at),
+    y: resolveChannel(clip, 'posY', at),
+    scale: resolveChannel(clip, 'scale', at),
+    rotationDeg: resolveChannel(clip, 'rotation', at),
+    anchorX: resolveChannel(clip, 'anchorX', at),
+    anchorY: resolveChannel(clip, 'anchorY', at),
+    cropT: resolveChannel(clip, 'cropT', at),
+    cropR: resolveChannel(clip, 'cropR', at),
+    cropB: resolveChannel(clip, 'cropB', at),
+    cropL: resolveChannel(clip, 'cropL', at),
+  })
+  // Where this same picture sits one shutter later. The renderer turns the
+  // difference into the motion blur, because only it knows how many pixels a
+  // scale change is worth. Skipped entirely for a clip with no keyframes: an
+  // unanimated layer cannot move, so the second sample would be the first.
+  // → engine/render/motionBlur.ts
+  const animated = shutterS > 0 && clip.keyframes !== undefined && Object.keys(clip.keyframes).length > 0
   return {
     clipId: clip.id,
     assetId: clip.assetId,
@@ -61,18 +80,8 @@ function layerFor(clip: Clip, t: number, fps: number): RenderLayer {
     title: clip.title,
     speed: clip.speed,
     frameSeed: Math.round(t * fps),
-    transform: {
-      x: resolveChannel(clip, 'posX', localT),
-      y: resolveChannel(clip, 'posY', localT),
-      scale: resolveChannel(clip, 'scale', localT),
-      rotationDeg: resolveChannel(clip, 'rotation', localT),
-      anchorX: resolveChannel(clip, 'anchorX', localT),
-      anchorY: resolveChannel(clip, 'anchorY', localT),
-      cropT: resolveChannel(clip, 'cropT', localT),
-      cropR: resolveChannel(clip, 'cropR', localT),
-      cropB: resolveChannel(clip, 'cropB', localT),
-      cropL: resolveChannel(clip, 'cropL', localT),
-    },
+    transform: transformAt(localT),
+    ...(animated ? { transformAtShutter: transformAt(localT + shutterS) } : {}),
     opacity: clamp(resolveChannel(clip, 'opacity', localT), 0, 1),
     blendMode: clip.blendMode ?? 'normal',
     mask: clip.mask,
@@ -189,7 +198,7 @@ function activeIndex(clips: readonly Clip[], t: number): number {
  * track shows nothing (no active clip, or the only candidate is fully inside a
  * transition it does not own).
  */
-function resolveTrack(track: Track, t: number, fps: number): RenderOp | null {
+function resolveTrack(track: Track, t: number, fps: number, shutterS = 0): RenderOp | null {
   const clips = track.clips
   const i = activeIndex(clips, t)
   if (i >= 0) {
@@ -213,8 +222,8 @@ function resolveTrack(track: Track, t: number, fps: number): RenderOp | null {
           kind: coerceKind(pair.tr.type),
           progress: (t - clip.startS) / pair.d,
           // A sampled PAST its out point (t is beyond A's end).
-          from: layerFor(prev, t, fps),
-          to: layerFor(clip, t, fps),
+          from: layerFor(prev, t, fps, shutterS),
+          to: layerFor(clip, t, fps, shutterS),
         }
       }
     }
@@ -224,7 +233,7 @@ function resolveTrack(track: Track, t: number, fps: number): RenderOp | null {
     // there is no double-draw. ---
     const endS = clipEndS(clip)
     if (t >= clip.startS && t < endS) {
-      const layer = layerFor(clip, t, fps)
+      const layer = layerFor(clip, t, fps, shutterS)
       const dur = clipDurationS(clip)
 
       // A transitionIn/Out with NO partner clip still runs its REAL form: the
@@ -361,7 +370,7 @@ export function resolveFrame(seq: Sequence, t: number): RenderFrame {
   const ops: RenderOp[] = []
   for (const track of seq.tracks) {
     if (track.kind !== 'video' || track.muted) continue
-    const op = resolveTrack(track, t, seq.fps)
+    const op = resolveTrack(track, t, seq.fps, shutterSeconds(seq.shutterAngle ?? DEFAULT_SHUTTER_ANGLE, seq.fps))
     if (op) ops.push(op)
   }
   const backdrop = seq.blurBackground ? blurBackdropOp(ops, seq.blurBackdropZoom ?? BACKDROP_ZOOM) : null

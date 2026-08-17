@@ -394,6 +394,28 @@ export const EFFECTS: EffectDef[] = [
     params: [p('angleDeg', 'Angle', 0, 360, 1, 0, '°'), p('strength', 'Strength', 0, 1, 0.01, 0)],
   },
   {
+    // ⛔ HE NEVER ADDS THIS ONE. The renderer builds it per frame out of how far his
+    // picture actually travelled, which is why it is hidden and why its numbers are
+    // pixels rather than a 0 to 1 strength: see engine/render/motionBlur.ts.
+    //
+    // It carries BOTH terms because a shutter is open once, not twice: the picture
+    // slides and grows during the same interval, so integrating them together in one
+    // pass is both cheaper and truer than a sideways blur stacked on a zoom blur.
+    type: 'motionSmear',
+    hidden: true,
+    label: 'Motion Smear',
+    description: 'Camera shutter smear, taken from the move itself rather than typed in.',
+    category: 'blur',
+    pass: 'neighborhood',
+    params: [
+      p('dxPx', 'Travel X', -512, 512, 1, 0, 'px'),
+      p('dyPx', 'Travel Y', -512, 512, 1, 0, 'px'),
+      p('zoom', 'Growth', -1, 1, 0.001, 0),
+      p('cx', 'Centre X', 0, 1, 0.001, 0.5),
+      p('cy', 'Centre Y', 0, 1, 0.001, 0.5),
+    ],
+  },
+  {
     type: 'chromaKey',
     label: 'Green Screen',
     description: 'Removes a green (or blue) screen behind the clip. Drop it on the clip that HAS the screen; raise Similarity if green edges remain, Spill kills green fringe.',
@@ -527,6 +549,12 @@ export const CANONICAL_ORDER = [
   'gaussianBlur',
   'directionalBlur',
   'glow',
+  // ⛔ LAST, and it has to be. A camera blurs the FINISHED picture: a glow or a
+  // grain applied after the shutter smear would come out razor sharp on top of a
+  // moving frame, which is exactly the tell this feature exists to remove. It is
+  // also the only entry here the renderer adds by itself, per frame, out of how far
+  // his picture travelled. → engine/render/motionBlur.ts
+  'motionSmear',
 ] as const
 
 /**

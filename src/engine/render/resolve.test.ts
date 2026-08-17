@@ -1084,3 +1084,56 @@ describe('every layer can be resolved to a real clip', () => {
     }
   })
 })
+
+// The resolver's half of the motion blur: hand the renderer the SAME layer one
+// shutter later, and only when there is something that could have moved. The pixels
+// are the renderer's job; this is about who gets a second sample and who does not.
+describe('the shutter sample', () => {
+  const layerAt = (seq: Sequence, t: number): RenderLayer => {
+    const op = resolveFrame(seq, t).ops[0]
+    if (op.type !== 'layer') throw new Error('expected a layer op')
+    return op.layer
+  }
+
+  const zooming = () =>
+    clip({ outS: 2, keyframes: { scale: [kf(0, 1), kf(1, 1.4)] } })
+
+  it('an animated clip is sampled again half a frame later', () => {
+    const l = layerAt(seqOf([track({ clips: [zooming()] })]), 0.5)
+    expect(l.transformAtShutter).toBeDefined()
+    // 180 degrees at 30fps is 1/60 s, and the scale ramps 1 to 1.4 over one second.
+    expect(l.transformAtShutter!.scale).toBeCloseTo(l.transform.scale + 0.4 / 60, 6)
+  })
+
+  it('a clip with no keyframes gets no second sample, so a locked shot costs nothing', () => {
+    const l = layerAt(seqOf([track({ clips: [clip({ outS: 2 })] })]), 0.5)
+    expect(l.transformAtShutter).toBeUndefined()
+  })
+
+  it('shutterAngle 0 turns it off completely, even on an animated clip', () => {
+    const l = layerAt(seqOf([track({ clips: [zooming()] })], { shutterAngle: 0 }), 0.5)
+    expect(l.transformAtShutter).toBeUndefined()
+  })
+
+  it('a wider shutter samples further ahead, which is what the angle MEANS', () => {
+    const at180 = layerAt(seqOf([track({ clips: [zooming()] })]), 0.5)
+    const at360 = layerAt(seqOf([track({ clips: [zooming()] })], { shutterAngle: 360 }), 0.5)
+    const d180 = at180.transformAtShutter!.scale - at180.transform.scale
+    const d360 = at360.transformAtShutter!.scale - at360.transform.scale
+    expect(d360).toBeCloseTo(d180 * 2, 6)
+  })
+
+  it('both sides of a transition get it, because both are moving pictures', () => {
+    const a = clip({ startS: 0, outS: 2, keyframes: { scale: [kf(0, 1), kf(1, 1.4)] } })
+    const b = clip({
+      startS: 2,
+      outS: 2,
+      keyframes: { scale: [kf(0, 1), kf(1, 1.4)] },
+      transitionIn: { type: 'crossDissolve', durationS: 0.5 },
+    })
+    const op = resolveFrame(seqOf([track({ clips: [a, b] })]), 2.1).ops[0]
+    if (op.type !== 'transition') throw new Error('expected a transition op')
+    expect(op.from.transformAtShutter).toBeDefined()
+    expect(op.to.transformAtShutter).toBeDefined()
+  })
+})

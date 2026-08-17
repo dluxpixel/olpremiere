@@ -7,6 +7,7 @@
 
 import { getEffect, stackSignature } from '../effects/registry'
 import { computeQuad, cropUV, quadScale } from './mat'
+import { deriveMotionBlur, quadCentre, quadRadius } from './motionBlur'
 import type { RenderFrame, RenderLayer, RenderOp, ResolvedEffect, TextureSource, TransitionKind } from './types'
 
 export interface Renderer {
@@ -452,6 +453,53 @@ void main() {
 
 // Unsharp mask: centre minus a 4-tap cross average = high-pass, scaled back in.
 // Premultiplied in/out; rgb clamped to alpha so the result stays valid premult.
+// Camera shutter smear, integrated along the path the picture actually travelled.
+// The numbers come from engine/render/motionBlur.ts, never from him.
+//
+// ⛔ A BOX, NOT A GAUSSIAN, and that is the physics rather than a preference. A
+// shutter is open for one interval and every instant inside it contributes equally,
+// so the samples are averaged flat. The gaussian in BLUR_FS is right for a lens
+// defocus and wrong for a move; using it here would give a soft halo instead of a
+// streak.
+//
+// ⛔ AND IT IS CENTRED ON THE FRAME, f running from -0.5 to +0.5. Integrating only
+// forwards drags the picture half a shutter behind where his keyframe says it is,
+// which on a fast punch reads as the move lagging his music. Centring keeps the
+// apparent position exactly where he put it, which is also what After Effects does
+// with its default shutter phase.
+//
+// Both terms in ONE pass because the shutter opens once: the picture slides and
+// grows over the same interval, so undoing both per sample is truer than stacking a
+// sideways blur on top of a zoom blur, and it costs one pass instead of three.
+const MAX_SMEAR_TAPS = 24
+const MOTION_SMEAR_FS = `#version 300 es
+precision highp float;
+in vec2 vUV;
+uniform sampler2D uTex;
+uniform vec2 uOffset;  // travel over one shutter, in UV
+uniform float uZoom;   // radius growth over one shutter, as a fraction
+uniform vec2 uCenter;  // the quad's centre, in UV
+uniform int uTaps;
+out vec4 outColor;
+void main() {
+  int taps = uTaps;
+  if (taps < 1) { outColor = texture(uTex, vUV); return; }
+  vec4 sum = vec4(0.0);
+  float wsum = 0.0;
+  for (int i = 0; i <= ${MAX_SMEAR_TAPS}; i++) {
+    if (i > taps) break;
+    float f = float(i) / float(taps) - 0.5;
+    vec2 pos = vUV - uOffset * f;
+    // Undo the growth about the centre. 1 + zoom*f, so a positive zoom (a punch in)
+    // pulls samples back TOWARDS the centre, which is what streaks the edges.
+    float g = 1.0 + uZoom * f;
+    pos = uCenter + (pos - uCenter) / max(g, 0.0001);
+    sum += texture(uTex, pos);
+    wsum += 1.0;
+  }
+  outColor = sum / wsum;
+}`
+
 const SHARPEN_FS = `#version 300 es
 precision highp float;
 in vec2 vUV;
@@ -813,6 +861,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
   const combineProg = link(gl, FULL_VS, COMBINE_FS)
   const blitProg = link(gl, FULL_VS, BLIT_FS)
   const sharpenProg = link(gl, FULL_VS, SHARPEN_FS)
+  const smearProg = link(gl, FULL_VS, MOTION_SMEAR_FS)
   const glowProg = link(gl, FULL_VS, GLOW_FS)
   const blendModeProg = link(gl, FULL_VS, BLENDMODE_FS)
 
@@ -895,6 +944,14 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     uTexel: gl.getUniformLocation(sharpenProg, 'uTexel'),
     uAmount: gl.getUniformLocation(sharpenProg, 'uAmount'),
     uRadius: gl.getUniformLocation(sharpenProg, 'uRadius'),
+  }
+  const smearLoc = {
+    aPos: gl.getAttribLocation(smearProg, 'aPos'),
+    uTex: gl.getUniformLocation(smearProg, 'uTex'),
+    uOffset: gl.getUniformLocation(smearProg, 'uOffset'),
+    uZoom: gl.getUniformLocation(smearProg, 'uZoom'),
+    uCenter: gl.getUniformLocation(smearProg, 'uCenter'),
+    uTaps: gl.getUniformLocation(smearProg, 'uTaps'),
   }
   const glowLoc = {
     aPos: gl.getAttribLocation(glowProg, 'aPos'),
@@ -1092,6 +1149,48 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     gl.clear(gl.COLOR_BUFFER_BIT)
   }
 
+  /**
+   * The camera shutter smear for this layer, or null when it barely moved.
+   *
+   * Worked out from where this SAME picture sits one shutter later. `resolve` hands
+   * over the second transform and never any pixels, because it is resolution
+   * independent on purpose; the quad is what turns a scale, a drift and a crop into
+   * a distance a viewer can actually see. → engine/render/motionBlur.ts
+   *
+   * ⛔ IT IS COMPUTED BEFORE THE DRAW, NOT DURING IT. A smear is a neighborhood pass,
+   * so it needs the layer isolated in its own FBO, and that decision is made before
+   * anything is drawn. Deriving it inside `drawLayer` would find out too late.
+   */
+  function layerMotionSmear(
+    layer: RenderLayer,
+    source: TexImageSource,
+    frameW: number,
+    frameH: number,
+  ): ResolvedEffect | null {
+    if (!layer.transformAtShutter) return null
+    const texW = sourceW(source)
+    const texH = sourceH(source)
+    if (texW <= 0 || texH <= 0) return null
+    const at = computeQuad({ frameW, frameH, texW, texH, transform: layer.transform }).corners
+    const soon = computeQuad({ frameW, frameH, texW, texH, transform: layer.transformAtShutter }).corners
+    const smear = deriveMotionBlur(at, soon)
+    if (!smear) return null
+    const centre = quadCentre(at)
+    return {
+      type: 'motionSmear',
+      params: {
+        dxPx: smear.translatePx * Math.cos((smear.angleDeg * Math.PI) / 180),
+        dyPx: smear.translatePx * Math.sin((smear.angleDeg * Math.PI) / 180),
+        // The growth as a FRACTION of the quad's own radius, which is what the shader
+        // divides by. Off the quad rather than the frame, so a 4K sequence and a 1080
+        // one smear the same punch by the same amount of PICTURE.
+        zoom: smear.radialPx / Math.max(1, quadRadius(at, centre)),
+        cx: centre[0] / frameW,
+        cy: centre[1] / frameH,
+      },
+    }
+  }
+
   // Draw one layer (transform + crop + filters, premultiplied) into the CURRENT
   // framebuffer. Alpha-over blend must already be set by the caller.
   function drawLayer(
@@ -1251,6 +1350,48 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     blitFbo(scratch)
   }
 
+  /**
+   * One pass, one bounce through scratch, exactly like sharpen.
+   *
+   * Taps scale with how far the picture actually travelled: a two pixel drift needs
+   * three samples and a sixty pixel whip needs all of them. Fixing the count high
+   * would pay for a whip on every gentle push, and fixing it low bands a fast one
+   * into visible steps.
+   */
+  function motionSmearFbo(
+    srcFbo: Fbo,
+    scratch: Fbo,
+    dxPx: number,
+    dyPx: number,
+    zoom: number,
+    cx: number,
+    cy: number,
+  ): void {
+    const travelPx = Math.max(Math.abs(dxPx), Math.abs(dyPx), Math.abs(zoom) * Math.max(fboW, fboH) * 0.5)
+    const taps = Math.max(2, Math.min(MAX_SMEAR_TAPS, Math.ceil(travelPx / 2)))
+    gl.useProgram(smearProg)
+    bindFull(smearLoc.aPos)
+    gl.uniform1i(smearLoc.uTex, 0)
+    gl.activeTexture(gl.TEXTURE0)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, scratch.fb)
+    gl.viewport(0, 0, fboW, fboH)
+    gl.disable(gl.BLEND)
+    gl.bindTexture(gl.TEXTURE_2D, srcFbo.tex)
+    // ⛔ THE Y FLIP LIVES HERE AND NOWHERE ELSE. The params arrive in SEQUENCE pixel
+    // space, y DOWN, which is what `computeQuad` and every keyframe speak. FBO
+    // textures in this renderer are bottom-row-first, so vUV is y UP (see FULL_VS).
+    // Getting this wrong smears a punch up-left instead of up-right, which looks
+    // plausible in a still and wrong the moment it plays.
+    gl.uniform2f(smearLoc.uOffset, dxPx / fboW, -dyPx / fboH)
+    gl.uniform1f(smearLoc.uZoom, zoom)
+    gl.uniform2f(smearLoc.uCenter, cx, 1 - cy)
+    gl.uniform1i(smearLoc.uTaps, taps)
+    gl.drawArrays(gl.TRIANGLES, 0, 3)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, srcFbo.fb)
+    gl.viewport(0, 0, fboW, fboH)
+    blitFbo(scratch)
+  }
+
   // Glow: copy the layer into `extra`, blur it there, then additively combine
   // the bright-passed blur with the original. Needs a third seq-sized FBO.
   function glowFbo(
@@ -1303,6 +1444,16 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
         const angle = ((fx.params.angleDeg ?? 0) * Math.PI) / 180
         directionalBlurFbo(fbo, scratch, angle, strength * MAX_BLUR_PX)
       }
+    } else if (fx.type === 'motionSmear') {
+      const dxPx = fx.params.dxPx ?? 0
+      const dyPx = fx.params.dyPx ?? 0
+      const zoom = fx.params.zoom ?? 0
+      // The floor already ran in deriveMotionBlur; this second one is the guard
+      // against a project file that carries a smear of nothing, which would cost a
+      // full pass to change no pixels.
+      if (Math.abs(dxPx) > 0.5 || Math.abs(dyPx) > 0.5 || Math.abs(zoom) > 0.0005) {
+        motionSmearFbo(fbo, scratch, dxPx, dyPx, zoom, fx.params.cx ?? 0.5, fx.params.cy ?? 0.5)
+      }
     } else if (fx.type === 'sharpen') {
       const amount = fx.params.amount ?? 0
       if (amount > 0.001) sharpenFbo(fbo, scratch, amount, fx.params.radius ?? 1)
@@ -1331,7 +1482,12 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     layerFbo: Fbo,
     scratch: Fbo,
   ): void {
+    // His own effects first, then the shutter smear LAST, because a camera blurs the
+    // finished picture: a glow or a grain applied after the smear would come out
+    // razor sharp on top of a moving frame, which is the giveaway.
+    const smear = layerMotionSmear(layer, source, frameW, frameH)
     const post = layer.effects.filter(isNeighborhood)
+    if (smear) post.push(smear)
     const mode = layer.blendMode
     // Overlay/soft light must read the destination, so they always take the
     // isolated-FBO path even without neighborhood effects.

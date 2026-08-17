@@ -11,6 +11,7 @@ import {
   Scan,
   SkipBack,
   SkipForward,
+  Wind,
 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { prewarmAudio } from '../engine/audio'
@@ -27,9 +28,11 @@ import {
   setActiveSequenceBlurBackdropZoom,
   setActiveSequenceBlurBackground,
   setActiveSequenceFormat,
+  setActiveSequenceShutterAngle,
   useStore,
 } from '../state/store'
 import { BACKDROP_ZOOM, BLUR_BACKDROP_ZOOM } from '../engine/render/resolve'
+import { DEFAULT_SHUTTER_ANGLE, SHUTTER_ANGLE } from '../engine/render/motionBlur'
 import { ScrubField } from './EffectControls'
 import { IconButton } from '../ui/Button'
 import { MasterMeter } from './MasterMeter'
@@ -436,6 +439,34 @@ export function Monitor() {
               testId="blur-backdrop-zoom"
               ariaLabel="Blur band tightness"
               onCommit={setActiveSequenceBlurBackdropZoom}
+            />
+          )}
+          {/* Motion blur. ON by default at the film standard, because a move with
+              perfectly sharp edges is the single thing that reads as made by a
+              computer, and a feature he has to go and switch on is a feature that
+              does not change his edits. The renderer works the smear out from how
+              far his picture actually travelled, so it needs no keyframes of its
+              own. → engine/render/motionBlur.ts */}
+          <IconButton
+            label="Motion blur: a move smears like a real camera instead of stepping sharply"
+            active={(seq.shutterAngle ?? DEFAULT_SHUTTER_ANGLE) > 0}
+            onClick={() =>
+              setActiveSequenceShutterAngle(
+                (seq.shutterAngle ?? DEFAULT_SHUTTER_ANGLE) > 0 ? 0 : DEFAULT_SHUTTER_ANGLE,
+              )
+            }
+            data-testid="motion-blur-toggle"
+            className={(seq.shutterAngle ?? DEFAULT_SHUTTER_ANGLE) > 0 ? 'bg-accent-quiet! text-accent!' : ''}
+          >
+            <Wind size={16} strokeWidth={1.5} />
+          </IconButton>
+          {(seq.shutterAngle ?? DEFAULT_SHUTTER_ANGLE) > 0 && (
+            <ScrubField
+              value={seq.shutterAngle ?? DEFAULT_SHUTTER_ANGLE}
+              spec={SHUTTER_ANGLE}
+              testId="shutter-angle"
+              ariaLabel="Shutter angle in degrees"
+              onCommit={setActiveSequenceShutterAngle}
             />
           )}
           <IconButton

@@ -72,6 +72,12 @@ export interface RenderLayer {
    */
   frameSeed: number
   transform: ResolvedTransform
+  /**
+   * The SAME layer's transform one shutter later, present only when the sequence
+   * has motion blur on and this clip is animated. The renderer turns the difference
+   * between the two into the smear. → engine/render/motionBlur.ts
+   */
+  transformAtShutter?: ResolvedTransform
   opacity: number
   /** How this layer composites over the tracks below it. */
   blendMode: BlendMode

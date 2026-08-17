@@ -7,6 +7,7 @@ import { subscribeWithSelector } from 'zustand/middleware'
 import { MOTION_CURVES, type MotionCurveName } from '../engine/motion'
 import { setSequenceFormat } from '../engine/timeline'
 import { BACKDROP_ZOOM, BLUR_BACKDROP_ZOOM } from '../engine/render/resolve'
+import { DEFAULT_SHUTTER_ANGLE, SHUTTER_ANGLE } from '../engine/render/motionBlur'
 import { newProject, type Id, type Project, type Sequence } from '../engine/types'
 import {
   emptyHistory,
@@ -314,6 +315,26 @@ export function setActiveSequenceBlurBackground(on: boolean): void {
  * the video looks like, and merged into one step per drag the way a scrub should
  * be: a slow pull across the range is one press of undo, not forty.
  */
+/**
+ * The shutter angle every move's motion blur is derived from.
+ *
+ * 0 turns it off. It lives on the SEQUENCE rather than in app settings because an
+ * export has to reproduce exactly what he saw, and a preference on this machine
+ * would not travel with the project. → engine/render/motionBlur.ts
+ */
+export function setActiveSequenceShutterAngle(deg: number): void {
+  const next = Math.min(SHUTTER_ANGLE.max, Math.max(SHUTTER_ANGLE.min, Math.round(deg)))
+  useStore.getState().dispatch(
+    'Motion blur',
+    (p) => {
+      const seq = p.sequences[p.activeSequenceId]
+      if ((seq.shutterAngle ?? DEFAULT_SHUTTER_ANGLE) === next) return p
+      return { ...p, sequences: { ...p.sequences, [seq.id]: { ...seq, shutterAngle: next } } }
+    },
+    'shutter-angle',
+  )
+}
+
 export function setActiveSequenceBlurBackdropZoom(zoom: number): void {
   const next = Math.min(BLUR_BACKDROP_ZOOM.max, Math.max(BLUR_BACKDROP_ZOOM.min, zoom))
   useStore.getState().dispatch(

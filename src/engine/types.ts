@@ -83,6 +83,19 @@ export interface Sequence {
    * default (BACKDROP_ZOOM), so every project made before this reads the same.
    */
   blurBackdropZoom?: number
+  /**
+   * Shutter angle for the motion blur every move gets for free, in degrees.
+   *
+   * 180 is the film standard and the After Effects default: the shutter is open for
+   * half of each frame, so a move smears by half a frame of travel. 0 turns it off
+   * entirely. Undefined means the default, so nothing needs migrating.
+   *
+   * ⛔ IT IS NOT AN EFFECT HE ADDS. The renderer derives the smear from how far his
+   * picture actually travelled between one frame and half a frame later, which is
+   * why it applies to the built in ten, to every move he records himself, and to a
+   * keyframe he nudged by hand. → engine/render/motionBlur.ts
+   */
+  shutterAngle?: number
   /** Derived: end of the last clip. Kept in sync by timeline operations. */
   durationS: number
   /**
