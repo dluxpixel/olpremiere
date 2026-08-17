@@ -24,10 +24,16 @@ vi.mock('./toasts', () => ({
 // One fake word per clip, named after the clip, so the assertions can tell which
 // clip's audio a caption came from.
 const heard: string[] = []
+/** Where each clip's words actually landed, so a stale position is visible. */
+const heardAt: Record<string, number> = {}
+/** A hook the tests use to edit the timeline WHILE the run is working through it. */
+const midRun: { fn: (() => void) | null } = { fn: null }
 vi.mock('../engine/captions/transcribe', () => ({
   TRANSCRIBE_SAMPLE_RATE: 16000,
-  extractClipPcm: (_asset: unknown, clip: { id: string }) => {
+  extractClipPcm: (_asset: unknown, clip: { id: string; startS: number }) => {
     heard.push(clip.id)
+    heardAt[clip.id] = clip.startS
+    midRun.fn?.()
     return Promise.resolve(new Float32Array(8))
   },
   transcribePcm: () => ({ promise: Promise.resolve([]), cancel: () => {} }),
@@ -141,6 +147,8 @@ function seedMusicAndVoice(): void {
 
 beforeEach(() => {
   heard.length = 0
+  for (const k of Object.keys(heardAt)) delete heardAt[k]
+  midRun.fn = null
   toasted.length = 0
   useStore.getState().setProject(newProject())
   useStore.getState().setUI({ selection: [], playheadS: 0 })
@@ -349,5 +357,100 @@ describe('autoCaptionFromClip on a music track', () => {
     await autoCaptionFromClip('clip-a')
     // The "captions added" toast is the normal one; the music note must not fire.
     expect(toasted.join(' ')).not.toContain('music')
+  })
+})
+
+/**
+ * ⛔ ONE MENU ITEM MUST NOT MEAN TWO THINGS DEPENDING ON HOW MANY CLIPS ARE
+ * SELECTED, and until 2026-08-17 it did.
+ *
+ * The sweep refuses a locked track and says so. The single-clip door had no lock
+ * check at all, so right-clicking ONE clip on a locked track captioned it in
+ * silence while right-clicking TWO refused. Same label, same menu, opposite
+ * answers, decided by the size of his selection.
+ *
+ * Settled the way the music case above was settled: a lock says do not CHANGE
+ * this track, and reading its sound changes nothing on it, because the captions
+ * are written as their own clips on their own track. So it runs, and it says so.
+ */
+describe('autoCaptionFromClip on a locked track', () => {
+  it('still runs, because reading a track is not changing it', async () => {
+    seedAudio([{ id: 'a', startS: 0 }], { locked: true })
+    await autoCaptionFromClip('clip-a')
+    expect(heard).toEqual(['clip-a'])
+  })
+
+  it('says out loud that the track is locked, and that it stays untouched', async () => {
+    seedAudio([{ id: 'a', startS: 0 }], { locked: true })
+    await autoCaptionFromClip('clip-a')
+    expect(toasted.join(' ')).toContain('locked track')
+    expect(toasted.join(' ')).toContain('untouched')
+  })
+
+  it('leaves the locked track exactly as it was', async () => {
+    seedAudio([{ id: 'a', startS: 0 }], { locked: true })
+    const before = seq().tracks.find((t) => t.kind === 'audio')
+    await autoCaptionFromClip('clip-a')
+    const after = seq().tracks.find((t) => t.kind === 'audio')
+    expect(after?.locked).toBe(true)
+    expect(after?.clips.map((c) => c.id)).toEqual(before?.clips.map((c) => c.id))
+  })
+
+  it('says nothing about a lock for an ordinary clip', async () => {
+    seedAudio([{ id: 'a', startS: 0 }])
+    await autoCaptionFromClip('clip-a')
+    expect(toasted.join(' ')).not.toContain('locked')
+  })
+})
+
+/**
+ * ⛔ THE TIMELINE IS NOT FROZEN WHILE A SWEEP RUNS, and it never was.
+ *
+ * His 44 clip sweep takes the better part of a minute and nothing blocks the
+ * timeline during it. The target list is built once, before the loop, and words
+ * used to be placed with the position the clip had THEN. So a ripple delete
+ * anywhere ahead of the run shifted every clip it had not reached and their
+ * captions landed at a timecode the clip no longer sat at, and a clip deleted
+ * outright was still transcribed and still captioned.
+ */
+describe('editing the timeline while a sweep is running', () => {
+  it('captions a clip where it is NOW, not where it was when the run started', async () => {
+    seedAudio([
+      { id: 'a', startS: 0 },
+      { id: 'b', startS: 5 },
+    ])
+    // While the first clip is being heard, the second one moves. This is what a
+    // ripple delete does to everything ahead of it.
+    midRun.fn = () => {
+      if (heard.length !== 1) return
+      updateActiveSequence('he edited', (sq) => ({
+        ...sq,
+        tracks: sq.tracks.map((t) => ({
+          ...t,
+          clips: t.clips.map((c) => (c.id === 'clip-b' ? { ...c, startS: 2 } : c)),
+        })),
+      }))
+    }
+    await autoCaptionEveryClip()
+    expect(heard).toEqual(['clip-a', 'clip-b'])
+    expect(heardAt['clip-b'], 'the moved clip is read at its new position').toBe(2)
+  })
+
+  it('skips a clip that was deleted mid-run, and says how many', async () => {
+    seedAudio([
+      { id: 'a', startS: 0 },
+      { id: 'b', startS: 5 },
+    ])
+    midRun.fn = () => {
+      if (heard.length !== 1) return
+      updateActiveSequence('he deleted it', (sq) => ({
+        ...sq,
+        tracks: sq.tracks.map((t) => ({ ...t, clips: t.clips.filter((c) => c.id !== 'clip-b') })),
+      }))
+    }
+    await autoCaptionEveryClip()
+    // It was never transcribed, so no captions exist for footage that is gone.
+    expect(heard).toEqual(['clip-a'])
+    expect(toasted.join(' ')).toContain('left the timeline while this ran')
   })
 })

@@ -240,6 +240,22 @@ export async function autoCaptionFromClip(clipId: string, preset?: TextStylePres
   if (track?.audioRole === 'music') {
     toasts.show('Captioning a clip on your music track, because you picked it')
   }
+  // ⛔ AND A LOCKED TRACK GOES THE SAME WAY, which it did not until now.
+  //
+  // The sweep refuses a locked track out loud, this door had no lock check at
+  // all, and neither said anything: right-click ONE clip on a locked track and it
+  // captioned silently, right-click TWO and the identical menu item refused. One
+  // label, two rules, decided by how many clips he happened to have selected.
+  //
+  // Settled the way the music case above was settled, and for the same reason:
+  // **a lock says do not CHANGE this track, and reading its sound changes
+  // nothing.** The captions are written as their own clips elsewhere, so the
+  // locked track is untouched either way, and refusing would be the app arguing
+  // with a clip he pointed at on purpose. It says so, so the two doors read as
+  // one rule with a stated exception rather than as a bug.
+  if (track?.locked) {
+    toasts.show('Captioning a clip on a locked track, because you picked it. The track itself is untouched')
+  }
 
   try {
     const words = await wordsForClip(clip, asset)
@@ -316,12 +332,33 @@ export async function autoCaptionEveryClip(
   const words: CaptionWord[] = []
   let cancelled = false
   let failed = 0
+  let vanished = 0
   try {
     for (let i = 0; i < targets.length; i++) {
-      const { clip, asset } = targets[i]
+      const { clip: listed, asset } = targets[i]
+      // ⛔ THE CLIP IS READ AGAIN HERE, NOT TAKEN FROM THE LIST, and this is a real
+      // defect rather than tidiness.
+      //
+      // The list is built before the loop and his 44 clip sweep takes the better
+      // part of a minute, with nothing blocking the timeline while it runs. Words
+      // are placed with the clip's `startS`, so a ripple delete anywhere ahead of
+      // the run shifted every clip it had not reached yet and their captions
+      // landed at the timecode the clip used to sit at. Delete a clip outright and
+      // it was still transcribed, and captions appeared for footage that is gone.
+      //
+      // Reading it fresh costs one lookup per clip against a minute of inference,
+      // and it closes both: a moved clip is captioned where it is NOW, and a clip
+      // that no longer exists is skipped and counted.
+      const live = activeSequence(useStore.getState().project)
+        .tracks.flatMap((t) => t.clips)
+        .find((c) => c.id === listed.id)
+      if (!live) {
+        vanished++
+        continue
+      }
       useTranscribe.setState({ queue: { index: i + 1, total: targets.length } })
       try {
-        words.push(...(await wordsForClip(clip, asset)))
+        words.push(...(await wordsForClip(live, asset)))
       } catch (err) {
         if (isCancel(err)) {
           cancelled = true
@@ -347,4 +384,11 @@ export async function autoCaptionEveryClip(
   })
   if (cancelled) toasts.show('Stopped early, captioned what was heard so far')
   else if (failed > 0) toasts.show(`${failed} clip${failed === 1 ? '' : 's'} could not be read`, 'danger')
+  // Deleting a clip while the run is working through the timeline is a perfectly
+  // reasonable thing to do, and silently captioning one fewer clip than the
+  // counter promised is not. Said plainly, and not as a failure, because nothing
+  // failed.
+  else if (vanished > 0) {
+    toasts.show(`${vanished} clip${vanished === 1 ? '' : 's'} left the timeline while this ran, so ${vanished === 1 ? 'it was' : 'they were'} skipped`)
+  }
 }
