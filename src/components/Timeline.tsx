@@ -433,15 +433,20 @@ export function Timeline({ height }: { height: number }) {
     // Multi-selection: carry every OTHER selected unlocked clip (deduped by
     // link group - moveGroup moves partners) so the whole selection travels.
     const selNow = useStore.getState().ui.selection
-    const others: { id: Id; startS0: number }[] = []
+    const others: { id: Id; startS0: number; solo: boolean }[] = []
     if (selNow.includes(clip.id) && selNow.length > 1) {
       const seen = new Set<Id>(clipGroupIds(seq, clip.id))
       for (const tr of seq.tracks) {
         if (tr.locked) continue
         for (const c of tr.clips) {
           if (!selNow.includes(c.id) || seen.has(c.id)) continue
-          for (const gid of clipGroupIds(seq, c.id)) seen.add(gid)
-          others.push({ id: c.id, startS0: c.startS })
+          const group = clipGroupIds(seq, c.id)
+          for (const gid of group) seen.add(gid)
+          // The SAME question soloMove asks of the grabbed clip, asked of every
+          // clip travelling with it. Without it a multi-clip drag moved partners
+          // he never selected, which is his linked-drag report of 2026-08-05 and
+          // 2026-08-12. See the note in moveSelectionWith.
+          others.push({ id: c.id, startS0: c.startS, solo: !group.every((g) => selNow.includes(g)) })
         }
       }
     }

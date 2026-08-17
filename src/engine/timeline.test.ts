@@ -3117,6 +3117,51 @@ describe('moveSelectionWith (a multi-clip drag)', () => {
   const others = (seq: Sequence, ids: string[]) =>
     ids.map((id) => ({ id, startS0: startOf(seq, id)! }))
 
+  /**
+   * ⛔ HIS LINKED DRAG REPORT, 2026-08-05 AND AGAIN 2026-08-12, reproduced at last.
+   *
+   * *"When I fucking drag, it drags the audio with the video clip to and other the
+   * way around."* Hunted twice from a SINGLE clip and never reproduced, because a
+   * single clip was the case that already worked: the solo flag stops the GRABBED
+   * clip taking its partner. Every OTHER clip in the selection was then moved
+   * with moveGroup regardless, so their partners came along uninvited.
+   *
+   * One gesture, two rules. Select two video clips, drag one, and two audio clips
+   * he never selected move with them.
+   */
+  it('leaves the unselected partner of a CARRIED clip exactly where it is', () => {
+    const seq = makeSeq([
+      makeTrack({
+        id: 'v1',
+        clips: [makeClip({ id: 'v-one', startS: 0, outS: 1, linkId: 'L1' }), makeClip({ id: 'v-two', startS: 4, outS: 1, linkId: 'L2' })],
+      }),
+      makeTrack({
+        id: 'a1',
+        kind: 'audio',
+        clips: [makeClip({ id: 'a-one', startS: 0, outS: 1, linkId: 'L1' }), makeClip({ id: 'a-two', startS: 4, outS: 1, linkId: 'L2' })],
+      }),
+    ])
+    // He selected the two VIDEO halves and neither audio half, so both answers
+    // are solo: the one under his cursor and the one travelling with it.
+    const out = moveSelectionWith(seq, 'v-one', 'v1', 8, [{ id: 'v-two', startS0: 4, solo: true }], true)
+
+    expect(startOf(out, 'v-one')).toBe(8)
+    expect(startOf(out, 'v-two')).toBe(12)
+    expect(startOf(out, 'a-one'), 'the grabbed clip already left its partner alone').toBe(0)
+    expect(startOf(out, 'a-two'), 'and now the carried clip does too').toBe(4)
+  })
+
+  /** Both halves selected is the deliberate way to say keep these in sync, and it still works. */
+  it('still moves a partner that IS selected, which is how he asks for sync', () => {
+    const seq = makeSeq([
+      makeTrack({ id: 'v1', clips: [makeClip({ id: 'v-one', startS: 0, outS: 1 }), makeClip({ id: 'v-two', startS: 4, outS: 1, linkId: 'L2' })] }),
+      makeTrack({ id: 'a1', kind: 'audio', clips: [makeClip({ id: 'a-two', startS: 4, outS: 1, linkId: 'L2' })] }),
+    ])
+    const out = moveSelectionWith(seq, 'v-one', 'v1', 8, [{ id: 'v-two', startS0: 4, solo: false }], true)
+    expect(startOf(out, 'v-two')).toBe(12)
+    expect(startOf(out, 'a-two'), 'selected together, so it travels together').toBe(12)
+  })
+
   it('carries the others DOWN A LANE on a purely vertical drag', () => {
     const seq = stack()
     // Grab 'a' on v3, drop on v2, same time. This is his v6-to-v5.

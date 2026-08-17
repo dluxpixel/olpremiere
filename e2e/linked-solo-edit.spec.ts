@@ -102,3 +102,48 @@ test('selecting BOTH halves first moves them together, which is how you keep the
   // Both moved, by the same amount.
   expect(Math.abs(aAfter.x - aBefore.x - (vAfter.x - vBefore.x))).toBeLessThan(6)
 })
+
+/**
+ * ⛔ THE CASE THAT WAS MISSING, AND IT IS THE ONE HE KEPT HITTING.
+ *
+ * The two tests above cover ONE clip, and one clip was always right. He reported
+ * the linked drag twice, 2026-08-05 and 2026-08-12, and it could never be
+ * reproduced because nobody dragged a MULTI-selection: the grabbed clip left its
+ * partner alone while every other selected clip took its partner with it. One
+ * gesture, two rules.
+ */
+test('dragging a multi-selection of video halves leaves every audio partner alone', async ({ page }) => {
+  // A second linked pair, so the selection has something to carry.
+  await page.getByTestId('asset-card').dblclick()
+  await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(2)
+  await expect(page.locator('[data-clip-kind="audio"]')).toHaveCount(2)
+
+  const v1 = page.locator('[data-clip-kind="video"]').first()
+  const v2 = page.locator('[data-clip-kind="video"]').nth(1)
+  const a1 = page.locator('[data-clip-kind="audio"]').first()
+  const a2 = page.locator('[data-clip-kind="audio"]').nth(1)
+
+  const v1Before = await v1.boundingBox()
+  const v2Before = await v2.boundingBox()
+  const a1Before = await a1.boundingBox()
+  const a2Before = await a2.boundingBox()
+  if (!v1Before || !v2Before || !a1Before || !a2Before) throw new Error('two linked pairs did not land')
+
+  // Both VIDEO halves selected. Neither audio half is.
+  await v1.click()
+  await v2.click({ modifiers: ['Shift'] })
+
+  await page.mouse.move(v1Before.x + v1Before.width / 2, v1Before.y + v1Before.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(v1Before.x + v1Before.width / 2 + 120, v1Before.y + v1Before.height / 2, { steps: 12 })
+  await page.mouse.up()
+
+  const a1After = await a1.boundingBox()
+  const a2After = await a2.boundingBox()
+  if (!a1After || !a2After) throw new Error('an audio clip vanished during the drag')
+
+  // Neither audio half moved. The second one is the whole bug: it used to travel
+  // with the clip that was carried rather than grabbed.
+  expect(Math.abs(a1After.x - a1Before.x), 'the grabbed clip left its partner').toBeLessThan(4)
+  expect(Math.abs(a2After.x - a2Before.x), 'and so did the carried clip').toBeLessThan(4)
+})

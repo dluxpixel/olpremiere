@@ -2017,7 +2017,7 @@ export function moveSelectionWith(
   grabbedId: Id,
   targetTrackId: Id,
   tS: number,
-  others: { id: Id; startS0: number }[],
+  others: { id: Id; startS0: number; solo?: boolean }[],
   solo = false,
 ): Sequence {
   const grabbed = base.tracks.flatMap((t) => t.clips).find((c) => c.id === grabbedId)
@@ -2092,7 +2092,27 @@ export function moveSelectionWith(
         destTrackId = next.tracks[lanes[want].i]?.id ?? tr.id
       }
     }
-    next = moveGroup(next, o.id, destTrackId, Math.max(0, oc.startS + deltaS))
+    // ⛔ EVERY CARRIED CLIP ANSWERS THE SAME QUESTION THE GRABBED ONE DOES, and
+    // this line is the bug he reported twice.
+    //
+    // 2026-08-05 and again 2026-08-12: *"When I fucking drag, it drags the audio
+    // with the video clip to and other the way around."* It was hunted twice from
+    // a SINGLE clip and could never be reproduced, because a single clip is the
+    // one case that was already right: `solo` above stops the grabbed clip taking
+    // its partner. This loop then moved every OTHER selected clip with
+    // `moveGroup`, unconditionally, which drags each of their partners along
+    // whether or not he ever selected them.
+    //
+    // So one gesture obeyed two different rules: the clip under his cursor left
+    // its audio alone and the rest of the selection did not. Select three video
+    // clips, drag one, and three audio clips move that he never touched.
+    //
+    // The rule is the one `soloMove` states in Timeline.tsx: a partner travels
+    // only when it is selected too. The caller answers it per clip, because only
+    // the caller knows the selection and this file stays pure.
+    next = o.solo
+      ? moveClip(next, o.id, destTrackId, Math.max(0, oc.startS + deltaS))
+      : moveGroup(next, o.id, destTrackId, Math.max(0, oc.startS + deltaS))
   }
   return next
 }
