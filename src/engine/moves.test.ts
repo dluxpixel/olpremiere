@@ -8,13 +8,16 @@
 // kind of thing nobody finds by clicking around.
 
 import { describe, expect, it } from 'vitest'
-import { channelBase, channelKeyframes, resolveChannel } from './effects/channels'
+import { channelBase, channelKeyframes, resolveChannel, withChannelKeyframes } from './effects/channels'
 import {
   MOVES,
   MOVE_BY_ID,
   applyMove,
+  appendMove,
   clearMoveChannels,
+  matchChain,
   matchMove,
+  moveSpan,
   moveBeatTimes,
   moveByDigit,
   moveSamples,
@@ -662,5 +665,111 @@ describe('moves that pull back', () => {
     const a = applyMove(seed(4), FPS, byId('rightThenLeft'), { depth: 1, ...ctx })
     expect(scaleOf(a)).toEqual([])
     expect(matchMove(a, FPS, ctx)?.id).toBe('none')
+  })
+})
+
+// ⛔ THE CHAIN, AND THE OBJECTION IT ANSWERS. The design note said two moves that
+// TOUCH cannot be read back, so his tile would go dark on exactly the edit that
+// feels best: a punch landing straight into a slide. That is only true while
+// recognition insists on finding the boundary from a rest. His answer set the chain
+// length at "Two", which is what makes the boundary SEARCHABLE: try every keyframe
+// instant, rebuild both halves, keep the pair that matches. Nothing is stored, so a
+// hand edit still darkens the half it touched. → olp-chained-moves-design
+describe('chained moves', () => {
+  const ctx = { riseFrames: RISE, seqWidth: W, seqHeight: H }
+  const byId = (id: string): MoveDef => MOVES.find((m) => m.id === id)!
+  /**
+   * A real chain: the first move is given a window that ENDS before the second one
+   * starts, because appending into an occupied window is refused by design.
+   */
+  const chain = (firstId: string, secondId: string, durS: number, firstEndS: number, secondStartS: number): Clip => {
+    const first = applyMove(seed(durS), FPS, byId(firstId), { depth: DEPTH, ...ctx, endS: firstEndS })
+    return appendMove(first, FPS, byId(secondId), { depth: DEPTH, ...ctx, startS: secondStartS })
+  }
+
+  it('two moves with a rest between them read back as BOTH, by name', () => {
+    const c = chain('leftThenRight', 'outAndIn', 4, 1.5, 2)
+    const pair = matchChain(c, FPS, ctx)
+    expect(pair).not.toBeNull()
+    expect(pair![0].id).toBe('leftThenRight')
+    // outAndIn and inAndOut compile IDENTICALLY at a depth above 1, which the
+    // matcher documents and orders by direction rather than filtering on. Either
+    // name is the truth here.
+    expect(['outAndIn', 'inAndOut']).toContain(pair![1].id)
+  })
+
+  it('⛔ a TOUCHING chain reads back only its SECOND move, and that is an OPEN DECISION', () => {
+    // His answer was to copy CapCut, where two animations may touch. Built, and this
+    // is what actually happens, measured rather than assumed.
+    //
+    // A keyframe's curve describes the segment LEAVING it. Where two moves touch they
+    // share one instant, and the clip can only store ONE outgoing curve there, which
+    // belongs to the move that FOLLOWS. So the first run's own last keyframe now
+    // carries the next move's curve, and rebuilding the first move produces something
+    // that differs in exactly that one field: it reads as hand edited.
+    //
+    // Two ways out, and the choice is HIS because it touches the rule the whole
+    // shelf's honesty rests on:
+    //   A. recognition ignores the outgoing curve of a run's FINAL keyframe, which is
+    //      principled (that curve has no effect inside the run) and delivers what he
+    //      asked for
+    //   B. a chain must have a REST between its moves, and touching is not offered
+    // Queued for him. Until then this pins the truth instead of a wish.
+    const first = applyMove(seed(4), FPS, byId('leftThenRight'), { depth: DEPTH, ...ctx, endS: 1.5 })
+    const at = moveSpan(first)!.endS
+    const c = appendMove(first, FPS, byId('outAndIn'), { depth: DEPTH, ...ctx, startS: at })
+    expect(matchChain(c, FPS, ctx)).toBeNull()
+    // The second run alone is still perfectly readable, which is what makes option A
+    // a one field relaxation rather than a redesign.
+    const tailOnly = applyMove(seed(4), FPS, byId('outAndIn'), { depth: DEPTH, ...ctx, startS: at })
+    expect(matchMove(tailOnly, FPS, ctx)).not.toBeNull()
+  })
+
+  it('an OVERLAPPING append is refused, and refused by leaving the clip alone', () => {
+    const first = applyMove(seed(4), FPS, byId('pushIn'), { depth: DEPTH, ...ctx })
+    const span = moveSpan(first)!
+    const attempted = appendMove(first, FPS, byId('shake'), {
+      depth: DEPTH,
+      ...ctx,
+      startS: span.startS + (span.endS - span.startS) / 2,
+    })
+    // Byte for byte the clip that went in: summed keyframes cannot be taken apart
+    // again, so recognition would have to start storing what was applied.
+    expect(keys(attempted, 'scale')).toEqual(keys(first, 'scale'))
+    expect(keys(attempted, 'posX')).toEqual(keys(first, 'posX'))
+  })
+
+  it('appending to a clip with NO move is just applying it', () => {
+    const appended = appendMove(seed(4), FPS, byId('punchIn'), { depth: DEPTH, ...ctx })
+    const applied = applyMove(seed(4), FPS, byId('punchIn'), { depth: DEPTH, ...ctx })
+    expect(keys(appended, 'scale')).toEqual(keys(applied, 'scale'))
+  })
+
+  it('a hand edit anywhere in the chain darkens it, rather than lying about a preset', () => {
+    const c = chain('leftThenRight', 'outAndIn', 4, 1.5, 2)
+    const kfs = keys(c, 'scale')
+    const nudged = withChannelKeyframes(
+      c,
+      'scale',
+      kfs.map((k, i) => (i === kfs.length - 2 ? { ...k, t: k.t + 3 / FPS } : k)),
+    )
+    expect(matchChain(nudged, FPS, ctx)).toBeNull()
+  })
+
+  it('a single move is NOT a chain, so the shelf keeps saying one thing', () => {
+    const one = applyMove(seed(4), FPS, byId('pushIn'), { depth: DEPTH, ...ctx })
+    expect(matchChain(one, FPS, ctx)).toBeNull()
+  })
+
+  it('a clip with no move at all is not a chain either', () => {
+    expect(matchChain(seed(4), FPS, ctx)).toBeNull()
+  })
+
+  it('moveSpan says where the existing move sits, and nothing when there is none', () => {
+    expect(moveSpan(seed(4))).toBeNull()
+    const one = applyMove(seed(4), FPS, byId('pushIn'), { depth: DEPTH, ...ctx })
+    const span = moveSpan(one)!
+    expect(span.startS).toBeCloseTo(0, 6)
+    expect(span.endS).toBeGreaterThan(0)
   })
 })

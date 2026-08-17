@@ -809,13 +809,22 @@ function moveTimes(clip: Clip, fps: number): number[] {
   return out
 }
 
-/** The clip with only the keyframes inside [fromS, toS], for matching one run alone. */
+/**
+ * The clip with only the keyframes inside [fromS, toS], for matching one run alone.
+ *
+ * ⛔ A CHANNEL LEFT WITH ONE KEYFRAME IS DROPPED, and forgetting that is what made
+ * every chain unreadable on the first attempt. Two moves that touch share the instant
+ * where they meet, and the earlier move usually animates channels the later one says
+ * nothing about: chaining a slide into a zoom leaves ONE stray posX keyframe sitting
+ * on the boundary inside the zoom's half. A move needs at least two keyframes to be a
+ * move, so a lone one is the neighbour's edge, not part of this run.
+ */
 function clipSlice(clip: Clip, fromS: number, toS: number, fps: number): Clip {
   const tol = timeTolS(fps)
   let out = clip
   for (const channel of MOVE_CHANNELS) {
     const kept = channelKeyframes(clip, channel).filter((k) => k.t >= fromS - tol && k.t <= toS + tol)
-    out = withChannelKeyframes(out, channel, kept)
+    out = withChannelKeyframes(out, channel, kept.length >= 2 ? kept : [])
   }
   return out
 }
@@ -847,13 +856,21 @@ export function matchChain(
   // Two keyframes is the smallest a move can be, so a chain needs four instants, and
   // a split has to leave at least two on each side.
   if (times.length < 4) return null
-  for (let i = 1; i < times.length - 1; i++) {
-    if (i < 1 || times.length - i < 2) continue
+  const last = times.length - 1
+  for (let i = 1; i < last; i++) {
     const first = matchMove(clipSlice(clip, times[0], times[i], fps), fps, options)
     if (!first || first.id === 'none') continue
-    const second = matchMove(clipSlice(clip, times[i], times[times.length - 1], fps), fps, options)
-    if (!second || second.id === 'none') continue
-    return [first, second]
+    // ⛔ TWO SPLIT STYLES, AND THE FIRST VERSION ONLY HAD ONE, which made every
+    // chain with a REST between its moves unreadable.
+    //
+    // Touching: the two moves meet at one instant, and the clip stores ONE keyframe
+    // there, so that instant belongs to BOTH halves.
+    // Resting: the first move ends, nothing happens, the second begins. Those are two
+    // distinct instants and neither half may claim the other's.
+    for (const from of i + 1 <= last ? [times[i + 1], times[i]] : [times[i]]) {
+      const second = matchMove(clipSlice(clip, from, times[last], fps), fps, options)
+      if (second && second.id !== 'none') return [first, second]
+    }
   }
   return null
 }
