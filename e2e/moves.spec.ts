@@ -564,3 +564,97 @@ test('a move he performs by hand becomes his own tile, and that tile works', asy
   await page.getByTestId((id ?? '').replace('move-tile-', 'forget-move-')).click()
   await expect(mine).toHaveCount(0)
 })
+
+/**
+ * TWO MOVES ON ONE CLIP, in the real app.
+ *
+ * Shipped in v2.0.8 with unit tests and a rendered panel test, and neither of
+ * those drives the actual browser. The budget line for it:
+ *
+ *   two moves on one clip .................. 3 clicks after the clip is picked
+ *   find out which two, and in what order ... 0
+ *
+ * The state layer proves the keyframes. This proves the PANEL: that the offer
+ * appears, that one click spends it, and that the shelf then names both.
+ */
+test('a second move after the first, and the shelf names both', async ({ page }) => {
+  await seedClips(page, 1, 6)
+  const hands = new Hands(page)
+  await hands.clickClip()
+
+  await hands.click('move-tile-inAndOut')
+  await expect(page.getByTestId('move-state')).toHaveText('In and out')
+
+  // The offer is there for a move something can follow, and one click spends it.
+  const at = hands.moves
+  await hands.click('add-second-move')
+  await hands.click('move-tile-leftThenRight')
+  expect(hands.moves - at, 'a second move costs two clicks').toBe(2)
+
+  // ⛔ BOTH, BY NAME, IN THE ORDER THEY RUN. Nothing is stored about either one:
+  // this sentence is worked out from the clip's own keyframes every draw.
+  await expect(page.getByTestId('move-state')).toHaveText('In and out, then Left, then right')
+  await expect(page.getByTestId('move-ribbon')).toHaveCount(2)
+  await expect(page.getByTestId('move-tile-inAndOut')).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.getByTestId('move-tile-leftThenRight')).toHaveAttribute('aria-pressed', 'true')
+
+  // A clip holds two, so the offer is gone.
+  await expect(page.getByTestId('add-second-move')).toHaveCount(0)
+
+  // The picture really does both: it zooms, and it travels, which a single move
+  // on this shelf never does at once.
+  const f = await facts(page)
+  expect(f.scale.length).toBeGreaterThan(4)
+  expect(f.posX.length).toBeGreaterThan(1)
+
+  // ⛔ AND ONE UNDO PRESS TAKES THE SECOND MOVE OFF, not the whole clip.
+  await hands.press('Control+z')
+  await expect(page.getByTestId('move-state')).toHaveText('In and out')
+})
+
+/**
+ * ⛔ THE OFFER IS ABSENT WHERE IT COULD NOT WORK, rather than a button that
+ * always says no.
+ *
+ * Every move is written against the framing the clip RESTS at, so two moves can
+ * only be joined where the picture is standing still. Push in ends up close and
+ * stays there: anything after it would slide back out on its own in between, and
+ * that slide belongs to neither move.
+ */
+test('nothing is offered after a move that stays where it lands', async ({ page }) => {
+  await seedClips(page, 1, 6)
+  const hands = new Hands(page)
+  await hands.clickClip()
+
+  await hands.click('move-tile-pushIn')
+  await expect(page.getByTestId('move-state')).toHaveText('Push in')
+  await expect(page.getByTestId('add-second-move')).toHaveCount(0)
+
+  // In and out comes home, so it can be followed.
+  await hands.click('move-tile-inAndOut')
+  await expect(page.getByTestId('add-second-move')).toBeVisible()
+})
+
+/** Either half comes off on its own, and the other stays exactly where it was. */
+test('taking one of the two off leaves the other alone', async ({ page }) => {
+  await seedClips(page, 1, 6)
+  const hands = new Hands(page)
+  await hands.clickClip()
+  await hands.click('move-tile-inAndOut')
+  await hands.click('add-second-move')
+  await hands.click('move-tile-leftThenRight')
+  await expect(page.getByTestId('move-ribbon')).toHaveCount(2)
+
+  const travelBefore = (await facts(page)).posX.map((k) => k.t)
+  await page.getByTestId('drop-move-inAndOut').click()
+
+  await expect(page.getByTestId('move-state')).toHaveText('Left, then right')
+  await expect(page.getByTestId('move-ribbon')).toHaveCount(1)
+  // The half that stays keeps its own window: he put it there, and a move that
+  // silently grew to fill the clip would be the app editing on his behalf.
+  //
+  // Polled rather than read once. The click commits through the store and the
+  // panel redraws after it, so a straight read here is a race that would pass on
+  // a quiet machine and fail inside the gate.
+  await expect.poll(async () => (await facts(page)).posX.map((k) => k.t)).toEqual(travelBefore)
+})
