@@ -698,31 +698,45 @@ describe('chained moves', () => {
     expect(['outAndIn', 'inAndOut']).toContain(pair![1].id)
   })
 
-  it('⛔ a TOUCHING chain reads back only its SECOND move, and that is an OPEN DECISION', () => {
-    // His answer was to copy CapCut, where two animations may touch. Built, and this
-    // is what actually happens, measured rather than assumed.
-    //
-    // A keyframe's curve describes the segment LEAVING it. Where two moves touch they
-    // share one instant, and the clip can only store ONE outgoing curve there, which
-    // belongs to the move that FOLLOWS. So the first run's own last keyframe now
-    // carries the next move's curve, and rebuilding the first move produces something
-    // that differs in exactly that one field: it reads as hand edited.
-    //
-    // Two ways out, and the choice is HIS because it touches the rule the whole
-    // shelf's honesty rests on:
-    //   A. recognition ignores the outgoing curve of a run's FINAL keyframe, which is
-    //      principled (that curve has no effect inside the run) and delivers what he
-    //      asked for
-    //   B. a chain must have a REST between its moves, and touching is not offered
-    // Queued for him. Until then this pins the truth instead of a wish.
+  /**
+   * ⛔ THE DECISION THAT WAS OPEN HERE ON 2026-08-17, TAKEN AS OPTION A, and it is
+   * MINE rather than his. It is queued for him to overturn.
+   *
+   * A keyframe's curve describes the segment LEAVING it. Where two moves touch they
+   * share one instant, and the clip can store only ONE outgoing curve there, which
+   * belongs to the move that FOLLOWS. So the head's own last keyframe came back
+   * carrying the tail's curve, the head rebuilt differently in exactly that one
+   * field, and a touching chain could never name its first move.
+   *
+   * Option A: recognition stops comparing the outgoing curve of a run's FINAL
+   * keyframe, because nothing leaves it and the run has no opinion about it.
+   * Option B was to forbid touching, which throws away the edit he said feels best
+   * to keep a comparison that describes nothing. Everything else in this file
+   * passed unchanged, which is the evidence that A costs no honesty: a hand edit
+   * anywhere it can be SEEN still darkens the tile.
+   */
+  it('a TOUCHING chain reads back as BOTH moves, by name', () => {
     const first = applyMove(seed(4), FPS, byId('leftThenRight'), { depth: DEPTH, ...ctx, endS: 1.5 })
     const at = moveSpan(first)!.endS
     const c = appendMove(first, FPS, byId('outAndIn'), { depth: DEPTH, ...ctx, startS: at })
-    expect(matchChain(c, FPS, ctx)).toBeNull()
-    // The second run alone is still perfectly readable, which is what makes option A
-    // a one field relaxation rather than a redesign.
-    const tailOnly = applyMove(seed(4), FPS, byId('outAndIn'), { depth: DEPTH, ...ctx, startS: at })
-    expect(matchMove(tailOnly, FPS, ctx)).not.toBeNull()
+    const pair = matchChain(c, FPS, ctx)
+    expect(pair).not.toBeNull()
+    expect(pair![0].id).toBe('leftThenRight')
+    expect(['outAndIn', 'inAndOut']).toContain(pair![1].id)
+    // They TOUCH: one instant, owned by both, with no rest in between.
+    expect(pair![1].startS).toBeCloseTo(pair![0].endS, 6)
+  })
+
+  /** A curve edit anywhere the eye can SEE it still takes the tile off. */
+  it('still darkens on a curve edit inside the move', () => {
+    const c = applyMove(seed(4), FPS, byId('leftThenRight'), { depth: DEPTH, ...ctx })
+    const kfs = keys(c, 'scale')
+    const bent = withChannelKeyframes(
+      c,
+      'scale',
+      kfs.map((k, i) => (i === 0 ? { ...k, ease: 'linear' as const, curve: undefined } : k)),
+    )
+    expect(matchMove(bent, FPS, ctx)).toBeNull()
   })
 
   it('an OVERLAPPING append is refused, and refused by leaving the clip alone', () => {

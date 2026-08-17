@@ -16,7 +16,15 @@ import {
   type Clip,
   type Sequence,
 } from '../engine/types'
-import { applyMoveToSelection, moveOnClip, setMoveDepth, setMoveWindow } from './moveActions'
+import {
+  appendMoveToSelection,
+  applyMoveToSelection,
+  dropMove,
+  moveOnClip,
+  movesOnClip,
+  setMoveDepth,
+  setMoveWindow,
+} from './moveActions'
 import { updateActiveSequence, useStore } from './store'
 
 const toasted: string[] = []
@@ -265,5 +273,202 @@ describe('a retime can never lose the move it is retiming', () => {
     const after = clipById(clip.id)
     expect(channelKeyframes(after, 'scale').length).toBeGreaterThan(0)
     expect(moveOnClip(after)?.id).toBe('inAndOut')
+  })
+})
+
+/**
+ * TWO MOVES ON ONE CLIP, and the shelf still names both of them.
+ *
+ * His call, 2026-08-17: a chain is exactly two, they may touch, they may never
+ * overlap. Nothing is stored about either one, so every test here reads the pair
+ * back off the keyframes the same way the panel does.
+ */
+describe('a second move after the first', () => {
+  const names = (id: string): string[] => movesOnClip(clipById(id)).map((m) => m.id)
+
+  it('reads back as both moves, in the order they run', () => {
+    const [clip] = seedClips(1, 6)
+    useStore.getState().setUI({ selection: [clip.id] })
+    applyMoveToSelection('inAndOut')
+    appendMoveToSelection('leftThenRight')
+    expect(names(clip.id)).toEqual(['inAndOut', 'leftThenRight'])
+  })
+
+  /**
+   * ⛔ THE PAIR THE OLD ENGINE TEST SAID WAS IMPOSSIBLE. Where two moves touch they
+   * share one instant, and it can hold only one outgoing curve, so the head used to
+   * read as hand edited. Recognition stopped comparing a field the run does not own
+   * (moves.ts, sameTracks) and the head keeps its name.
+   */
+  it('lets the two of them TOUCH, with nothing in between', () => {
+    const [clip] = seedClips(1, 6)
+    useStore.getState().setUI({ selection: [clip.id] })
+    applyMoveToSelection('leftThenRight')
+    appendMoveToSelection('punchIn')
+    const [head, tail] = movesOnClip(clipById(clip.id))
+    expect([head.id, tail.id]).toEqual(['leftThenRight', 'punchIn'])
+    expect(tail.startS).toBeCloseTo(head.endS, 6)
+  })
+
+  /**
+   * ⛔ AND THE PICTURE MUST BE STILL WHERE THEY MEET. Both moves are written against
+   * the framing the clip rests at, so a move that ends up close cannot be followed:
+   * the picture would slide back out between the two on its own, which is motion
+   * neither of them names. Refused out loud rather than written.
+   */
+  it('refuses to follow a move that stays where it lands', () => {
+    const [clip] = seedClips(1, 6)
+    useStore.getState().setUI({ selection: [clip.id] })
+    applyMoveToSelection('pushIn')
+    const before = clipById(clip.id)
+    toasted.length = 0
+    appendMoveToSelection('leftThenRight')
+    expect(clipById(clip.id)).toBe(before)
+    expect(toasted).toContain('That move stays where it lands, so nothing can follow it')
+  })
+
+  it('refuses a second move that does not start from normal', () => {
+    const [clip] = seedClips(1, 6)
+    useStore.getState().setUI({ selection: [clip.id] })
+    applyMoveToSelection('leftThenRight')
+    const before = clipById(clip.id)
+    toasted.length = 0
+    appendMoveToSelection('holdBig')
+    expect(clipById(clip.id)).toBe(before)
+    expect(toasted).toContain('Hold big does not start from normal, so it cannot follow another move')
+  })
+
+  /**
+   * ⛔ THE ONE THAT MAKES THE FEATURE REACHABLE AT ALL. Every clip-window move
+   * already runs the whole length of the clip, so a tail asked to start where the
+   * head ends would start where the clip ends and write nothing. The head is
+   * squeezed into the front half instead, and the two touch.
+   */
+  it('makes room when the first move already fills the clip', () => {
+    const [clip] = seedClips(1, 6)
+    useStore.getState().setUI({ selection: [clip.id] })
+    applyMoveToSelection('inAndOut')
+    expect(moveOnClip(clipById(clip.id))?.endS).toBeCloseTo(6, 6)
+    appendMoveToSelection('leftThenRight')
+    const [head, tail] = movesOnClip(clipById(clip.id))
+    expect([head.id, tail.id]).toEqual(['inAndOut', 'leftThenRight'])
+    expect(head.endS).toBeLessThan(6)
+    // Touching, which is the edit he asked for: no gap between them.
+    expect(tail.startS).toBeCloseTo(head.endS, 6)
+  })
+
+  it('is one undo step across a whole selection', () => {
+    const clips = seedClips(12, 6)
+    useStore.getState().setUI({ selection: clips.map((c) => c.id) })
+    applyMoveToSelection('inAndOut')
+    const before = undoDepth()
+    appendMoveToSelection('leftThenRight')
+    expect(undoDepth()).toBe(before + 1)
+    for (const c of clips) expect(names(c.id)).toEqual(['inAndOut', 'leftThenRight'])
+  })
+
+  /** A clip holds two. The third is refused out loud rather than written and left unnameable. */
+  it('refuses a third move and says so', () => {
+    const [clip] = seedClips(1, 6)
+    useStore.getState().setUI({ selection: [clip.id] })
+    applyMoveToSelection('inAndOut')
+    appendMoveToSelection('leftThenRight')
+    const full = clipById(clip.id)
+    toasted.length = 0
+    appendMoveToSelection('shake')
+    expect(clipById(clip.id)).toBe(full)
+    expect(toasted).toContain('A clip holds two moves, and this one is full')
+  })
+
+  /** Nothing to chain after: an empty clip simply takes the move, and says nothing. */
+  it('puts the move on a clip that has none', () => {
+    const [clip] = seedClips(1, 6)
+    useStore.getState().setUI({ selection: [clip.id] })
+    toasted.length = 0
+    appendMoveToSelection('punchIn')
+    expect(names(clip.id)).toEqual(['punchIn'])
+    expect(toasted).toEqual([])
+  })
+
+  it('leaves a hand-edited clip exactly as he shaped it', () => {
+    const [clip] = seedClips(1, 6)
+    useStore.getState().setUI({ selection: [clip.id] })
+    applyMoveToSelection('leftThenRight')
+    updateActiveSequence('hand edit', (sq) => ({
+      ...sq,
+      tracks: sq.tracks.map((t, i) =>
+        i === 0
+          ? {
+              ...t,
+              clips: t.clips.map((c) => {
+                const scale = [...channelKeyframes(c, 'scale')]
+                scale[2] = { ...scale[2], t: scale[2].t + 0.5 }
+                return { ...c, keyframes: { ...c.keyframes, scale } }
+              }),
+            }
+          : t,
+      ),
+    }))
+    const handEdited = clipById(clip.id)
+    expect(movesOnClip(handEdited)).toHaveLength(0)
+    appendMoveToSelection('pop')
+    expect(clipById(clip.id)).toBe(handEdited)
+  })
+
+  /** The slider says how big the move on this clip is, so both halves answer it. */
+  it('takes the depth slider through both halves at once', () => {
+    const [clip] = seedClips(1, 6)
+    useStore.getState().setUI({ selection: [clip.id] })
+    applyMoveToSelection('inAndOut')
+    appendMoveToSelection('leftThenRight')
+    setMoveDepth(1.6, [clip.id])
+    const runs = movesOnClip(clipById(clip.id))
+    expect(runs.map((r) => r.id)).toEqual(['inAndOut', 'leftThenRight'])
+    for (const run of runs) expect(run.depth).toBeCloseTo(1.6, 4)
+  })
+
+  /**
+   * ⛔ RETIMING ONE HALF MUST NOT DELETE THE OTHER. `applyMove` clears the move
+   * channels before it writes, so a retime that did not carry the neighbour
+   * through would take it off the clip and leave a chain he cannot get back.
+   */
+  it('retimes one half and leaves the other where it was', () => {
+    const [clip] = seedClips(1, 6)
+    useStore.getState().setUI({ selection: [clip.id] })
+    applyMoveToSelection('inAndOut')
+    appendMoveToSelection('leftThenRight')
+    const [head, tail] = movesOnClip(clipById(clip.id))
+    setMoveWindow(clip.id, 0.5, head.endS, { id: head.id, depth: head.depth, other: tail })
+    const after = movesOnClip(clipById(clip.id))
+    expect(after.map((r) => r.id)).toEqual(['inAndOut', 'leftThenRight'])
+    expect(after[0].startS).toBeCloseTo(0.5, 2)
+    expect(after[1].startS).toBeCloseTo(tail.startS, 6)
+    expect(after[1].endS).toBeCloseTo(tail.endS, 6)
+  })
+
+  /** Touching is allowed. Crossing is not: the neighbour's edge is the wall. */
+  it('will not drag one half across the other', () => {
+    const [clip] = seedClips(1, 6)
+    useStore.getState().setUI({ selection: [clip.id] })
+    applyMoveToSelection('inAndOut')
+    appendMoveToSelection('leftThenRight')
+    const [head, tail] = movesOnClip(clipById(clip.id))
+    setMoveWindow(clip.id, 0, 5.5, { id: head.id, depth: head.depth, other: tail })
+    const after = movesOnClip(clipById(clip.id))
+    expect(after.map((r) => r.id)).toEqual(['inAndOut', 'leftThenRight'])
+    expect(after[0].endS).toBeLessThanOrEqual(tail.startS + 1e-6)
+  })
+
+  it('takes one half off and leaves the other where it is', () => {
+    const [clip] = seedClips(1, 6)
+    useStore.getState().setUI({ selection: [clip.id] })
+    applyMoveToSelection('inAndOut')
+    appendMoveToSelection('leftThenRight')
+    const [, tail] = movesOnClip(clipById(clip.id))
+    dropMove(clip.id, 0)
+    const left = movesOnClip(clipById(clip.id))
+    expect(left.map((r) => r.id)).toEqual(['leftThenRight'])
+    expect(left[0].startS).toBeCloseTo(tail.startS, 6)
+    expect(left[0].endS).toBeCloseTo(tail.endS, 6)
   })
 })

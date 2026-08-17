@@ -700,8 +700,23 @@ function sameTracks(a: Clip, b: Clip, fps: number): boolean {
       // The SHAPE counts too, or two moves that happen to land the same two
       // numbers (a punch and a very short push) read as each other, and shaping
       // a curve by hand would not unlight the tile it no longer describes.
-      if (ka[i].ease !== kb[i].ease) return false
-      if (String(ka[i].curve ?? '') !== String(kb[i].curve ?? '')) return false
+      //
+      // ⛔ EXCEPT ON THE LAST KEYFRAME, WHOSE CURVE THE RUN DOES NOT OWN. A
+      // keyframe's curve shapes the segment LEAVING it, and nothing leaves the
+      // last one: `buildMove` writes plain linear there for exactly that reason.
+      // Comparing it is comparing a field the move has no opinion about.
+      //
+      // This is the open decision the chain tests pinned on 2026-08-17, taken as
+      // option A, and it is MY call rather than his. Where two moves TOUCH they
+      // share one instant, and a shared instant can hold only one outgoing curve,
+      // which belongs to the move that follows. So the head's own final keyframe
+      // came back carrying the tail's curve and the head read as hand edited: a
+      // touching chain could never name its first move, which is the edit he said
+      // feels best. The alternative was to forbid touching outright, which throws
+      // away his answer to keep a comparison that describes nothing.
+      const last = i === ka.length - 1
+      if (!last && ka[i].ease !== kb[i].ease) return false
+      if (!last && String(ka[i].curve ?? '') !== String(kb[i].curve ?? '')) return false
     }
   }
   return true

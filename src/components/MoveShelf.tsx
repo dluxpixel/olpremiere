@@ -52,7 +52,15 @@ import { channelKeyframes } from '../engine/effects/channels'
 import { MOVES, MOVE_CHANNELS, isBuiltInMoveId, type MoveDef, type MoveId, type MoveMatch } from '../engine/moves'
 import { clipDurationS } from '../engine/timeline'
 import { activeSequence, type Clip } from '../engine/types'
-import { applyMoveToSelection, moveOnClips, setMoveDepth, setMoveWindow } from '../state/moveActions'
+import {
+  appendMoveToSelection,
+  applyMoveToSelection,
+  canTakeASecondMove,
+  dropMove,
+  movesOnClips,
+  setMoveDepth,
+  setMoveWindow,
+} from '../state/moveActions'
 import { listMyMoves, removeMyMove, saveMyMove, type MyMove } from '../state/myMoves'
 import { normaliseRecording } from '../engine/recordMove'
 import { useStore } from '../state/store'
@@ -308,7 +316,27 @@ const MoveTile = memo(function MoveTile({
  * start the sweep three seconds in. Retiming is a PARAMETER of the move, so the
  * tile stays lit through it.
  */
-function MoveRibbon({ clip, def, depth, startS, endS }: { clip: Clip; def: MoveDef; depth: number; startS: number; endS: number }) {
+function MoveRibbon({
+  clip,
+  def,
+  depth,
+  startS,
+  endS,
+  other,
+  name,
+  onRemove,
+}: {
+  clip: Clip
+  def: MoveDef
+  depth: number
+  startS: number
+  endS: number
+  /** The other half of a chain, carried into the retime so it is rewritten rather than cleared. */
+  other?: { id: MoveId; depth: number; startS: number; endS: number }
+  /** Named only on a chain, where two identical bars would otherwise say nothing about which is which. */
+  name?: string
+  onRemove?: () => void
+}) {
   const durS = Math.max(1e-6, clipDurationS(clip))
   const barRef = useRef<HTMLDivElement>(null)
   const [draft, setDraft] = useState<{ startS: number; endS: number } | null>(null)
@@ -342,8 +370,9 @@ function MoveRibbon({ clip, def, depth, startS, endS }: { clip: Clip; def: MoveD
           : { startS: shown.startS, endS: Math.max(t, shown.startS + 1 / 30) }
       setDraft(next)
       // The move is CARRIED, never re-guessed mid drag. Guessing is what made
-      // the bar die under his cursor and the tile go dark.
-      setMoveWindow(clip.id, next.startS, next.endS, { id: def.id, depth })
+      // the bar die under his cursor and the tile go dark. The other half of a
+      // chain rides along for the same reason.
+      setMoveWindow(clip.id, next.startS, next.endS, { id: def.id, depth, other })
     }
     const up = (): void => {
       window.removeEventListener('pointermove', move)
@@ -355,8 +384,15 @@ function MoveRibbon({ clip, def, depth, startS, endS }: { clip: Clip; def: MoveD
   }
 
   // The beats, drawn where they actually are: these are the clip's OWN keyframe
-  // times, so the bar cannot show a shape the clip is not making.
-  const beats = channelKeyframes(clip, 'scale').map((k) => (k.t / durS) * 100)
+  // times, so the bar cannot show a shape the clip is not making. On a chain each
+  // bar draws only the beats inside its own window, or both bars would claim
+  // every diamond on the clip and neither would describe the move it names.
+  //
+  // Told apart by the NEIGHBOUR's window rather than by this one, because this
+  // one is moving under his cursor while the neighbour's is standing still.
+  const beats = channelKeyframes(clip, 'scale')
+    .filter((k) => !other || k.t < other.startS || k.t > other.endS)
+    .map((k) => (k.t / durS) * 100)
   const handle =
     'absolute top-0 h-full w-[7px] cursor-ew-resize rounded-[2px] bg-accent shadow-[0_0_0_1px_rgba(0,0,0,0.35)]'
   return (
@@ -384,9 +420,23 @@ function MoveRibbon({ clip, def, depth, startS, endS }: { clip: Clip; def: MoveD
           <div className={handle} style={{ left: `calc(${right}% - 6px)` }} data-testid="move-ribbon-end" onPointerDown={drag('end')} />
         )}
       </div>
-      <p className="text-dense text-text-muted">
-        {moment ? 'Drag the block to move when it happens' : 'Drag either end to move where it starts and ends'}
-      </p>
+      <div className="flex items-baseline gap-2">
+        <p className="text-dense text-text-muted">
+          {name ?? (moment ? 'Drag the block to move when it happens' : 'Drag either end to move where it starts and ends')}
+        </p>
+        {onRemove && (
+          <button
+            type="button"
+            data-testid={`drop-move-${def.id}`}
+            title={`Take ${def.name} off this clip`}
+            aria-label={`Take ${def.name} off this clip`}
+            onClick={onRemove}
+            className="ml-auto text-dense text-text-muted transition-colors hover:text-danger"
+          >
+            ✕
+          </button>
+        )}
+      </div>
     </div>
   )
 }
@@ -441,16 +491,17 @@ export function MoveShelf({ clips }: { clips: Clip[] }) {
   // presets the first time round. Without the cache the shelf pays ten rebuilds
   // per selected clip on every re-render, including every frame of the move
   // preview that runs the instant a tile is clicked.
-  const cache = useRef<{ clips: readonly Clip[]; key: string; value: MoveMatch | null } | null>(null)
+  const cache = useRef<{ clips: readonly Clip[]; key: string; value: MoveMatch[] } | null>(null)
   const cacheKey = `${fps} ${riseFrames} ${seqWidth} ${seqHeight}`
-  let match: MoveMatch | null
+  let runs: MoveMatch[]
   const cached = cache.current
   if (cached && cached.key === cacheKey && sameClips(cached.clips, clips)) {
-    match = cached.value
+    runs = cached.value
   } else {
-    match = moveOnClips(clips)
-    cache.current = { clips, key: cacheKey, value: match }
+    runs = movesOnClips(clips)
+    cache.current = { clips, key: cacheKey, value: runs }
   }
+  const match = runs.length === 1 ? runs[0] : null
 
   const single = clips.length === 1 ? clips[0] : null
   // Something to save: the clip carries motion of its own, whether a tile put it
@@ -462,6 +513,17 @@ export function MoveShelf({ clips }: { clips: Clip[] }) {
   // MOVES alone, so a clip carrying one of HIS moves lit the tile and left the
   // name beside it blank: the shelf recognised the move and then said nothing.
   const litDef = tiles.find((m) => m.id === lit) ?? null
+  // Every tile the clip is using, so a chain lights BOTH of the two it is made of.
+  const litIds = useMemo(() => new Set(runs.map((r) => r.id)), [runs])
+  /** The runs that can be drawn as bars: a move with beats in it, and one we still have the def for. */
+  const bars = useMemo(
+    () =>
+      runs
+        .map((run, index) => ({ run, index, def: tiles.find((m) => m.id === run.id) ?? null }))
+        .filter((b): b is { run: MoveMatch; index: number; def: MoveDef } => !!b.def && b.def.beats.length > 0),
+    [runs, tiles],
+  )
+  const chained = bars.length > 1
 
   // WHICH tile is allowed to move, if any. Playback wins, the move preview wins,
   // and his reduced-motion setting wins over both.
@@ -471,9 +533,36 @@ export function MoveShelf({ clips }: { clips: Clip[] }) {
   // re-renders whenever any of them does, which is the whole point of memoising
   // the tile. The ids are UUIDs, so one string is a safe stand-in for the list.
   const idKey = clips.map((c) => c.id).join(' ')
+  /**
+   * Waiting for the SECOND move of a chain, and it lasts exactly one click.
+   *
+   * ⛔ A ONE SHOT, NEVER A MODE. A head/tail switch left sitting above the tiles
+   * is a thing he sets on Tuesday and is caught by on Thursday, and this panel's
+   * whole promise is that a tile does what its picture shows. So the shelf asks
+   * for the second move, takes it, and forgets it was asking.
+   *
+   * The ref is what the handler reads, so arming cannot change `pick`'s identity
+   * and re-render all ten memoised tiles under his pointer.
+   */
+  const [arming, setArming] = useState(false)
+  const armed = useRef(false)
+  const arm = useCallback((on: boolean) => {
+    armed.current = on
+    setArming(on)
+  }, [])
+  // A different selection is a different question, so the shelf stops waiting.
+  useEffect(() => arm(false), [idKey, arm])
   const pick = useCallback(
-    (id: MoveId) => applyMoveToSelection(id, idKey === '' ? [] : idKey.split(' ')),
-    [idKey],
+    (id: MoveId) => {
+      const ids = idKey === '' ? [] : idKey.split(' ')
+      if (armed.current) {
+        arm(false)
+        appendMoveToSelection(id, ids)
+        return
+      }
+      applyMoveToSelection(id, ids)
+    },
+    [idKey, arm],
   )
   const hoverTile = useCallback((id: MoveId | null) => setHover(id), [])
 
@@ -511,8 +600,10 @@ export function MoveShelf({ clips }: { clips: Clip[] }) {
 
   // What is on the clip, in one word, for nothing. A selection whose clips do
   // not agree says so rather than picking one of them to speak for the rest.
-  const stateWord =
-    lit === null
+  // A chain names BOTH of its moves, in the order they run.
+  const stateWord = chained
+    ? bars.map((b) => b.def.name).join(', then ')
+    : lit === null
       ? clips.length > 1
         ? 'Different moves'
         : 'Hand edited'
@@ -550,7 +641,7 @@ export function MoveShelf({ clips }: { clips: Clip[] }) {
               key={def.id}
               def={def}
               glyph={shelf.glyphs[i]}
-              lit={lit === def.id}
+              lit={litIds.has(def.id)}
               stage={stage}
               live={liveId === def.id}
               liveRef={liveRef}
@@ -628,8 +719,37 @@ export function MoveShelf({ clips }: { clips: Clip[] }) {
         </div>
       )}
 
-      {single && litDef && litDef.beats.length > 0 && match && (
-        <MoveRibbon clip={single} def={litDef} depth={match.depth} startS={match.startS} endS={match.endS} />
+      {single &&
+        bars.map((bar, i) => (
+          <MoveRibbon
+            key={`${bar.run.id}-${bar.index}`}
+            clip={single}
+            def={bar.def}
+            depth={bar.run.depth}
+            startS={bar.run.startS}
+            endS={bar.run.endS}
+            other={chained ? bars[i === 0 ? 1 : 0].run : undefined}
+            name={chained ? bar.def.name : undefined}
+            onRemove={chained ? () => dropMove(single.id, bar.index) : undefined}
+          />
+        ))}
+
+      {/* The second move, which is the whole of chaining as a gesture: one line
+          that is only there when the clip has room for it, and which asks for the
+          move rather than describing a slot. A clip holds two, his word, so the
+          line disappears once the second one has landed. */}
+      {bars.length === 1 && canTakeASecondMove(clips[0], bars[0].run.endS) && (
+        <button
+          type="button"
+          data-testid="add-second-move"
+          aria-pressed={arming}
+          onClick={() => arm(!arming)}
+          className={`self-start text-dense underline decoration-dotted underline-offset-2 transition-colors duration-[120ms] ${
+            arming ? 'text-accent' : 'text-text-muted hover:text-text-secondary'
+          }`}
+        >
+          {arming ? 'Pick the move that comes after it' : 'Add a second move'}
+        </button>
       )}
 
       <div className="flex flex-col gap-1">
