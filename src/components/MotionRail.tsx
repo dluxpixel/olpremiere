@@ -22,6 +22,7 @@
 // x = 0 is the rail's left edge for the ruler, every lane and the playhead alike.
 
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { ensureBeats, knownBeats } from '../engine/beatCache'
 import { MOMENT_EPS } from '../engine/keyframes'
 import { formatTimecode } from '../engine/timecode'
 import { clipDurationS, collectSnapPoints } from '../engine/timeline'
@@ -433,6 +434,31 @@ export function MotionRail({
   // same trick `engine/snapPointCache.ts` plays for the timeline drag and for the
   // same reason: one gesture asks hundreds of times and the answer cannot change
   // underneath it, because drag maths reads the COMMITTED project.
+  // ⛔ THE BEATS ARE FETCHED HERE, WHICH IS OFF THE DRAG PATH ON PURPOSE. Working
+  // them out means decoding the clip's audio, and a diamond being dragged cannot
+  // wait for that between two mouse moves. So the ask happens when the rail meets
+  // the clip, and the drag reads whatever has arrived: nothing on the first drag of
+  // a freshly imported take, every beat on the next one, and no spinner either way.
+  useEffect(() => {
+    const asset = useStore.getState().project.assets[clip.assetId]
+    if (asset) void ensureBeats(asset, clip.inS, clip.outS)
+  }, [clip.assetId, clip.inS, clip.outS])
+
+  // The beats in LOCAL clip seconds. `knownBeats` holds SOURCE seconds, because a
+  // speed change moves where a beat lands and not where it is, so the division is
+  // here rather than in the cache: exactly what `punchOnBeats` does with `t / speed`.
+  const beatCache = useRef<{ src: readonly number[] | null; local: number[] } | null>(null)
+  const beatPoints = (): number[] => {
+    const src = knownBeats(clip.assetId, clip.inS, clip.outS)
+    if (!src || src.length === 0) return []
+    const hit = beatCache.current
+    if (hit && hit.src === src) return hit.local
+    const speed = Math.abs(clip.speed) || 1
+    const local = src.map((tS) => tS / speed).filter((tS) => tS > 0 && tS < durS)
+    beatCache.current = { src, local }
+    return local
+  }
+
   const snapCache = useRef<{ project: unknown; points: number[] } | null>(null)
   const pullPoints = (): number[] => {
     const project = useStore.getState().project
@@ -463,7 +489,8 @@ export function MotionRail({
       const { ui } = useStore.getState()
       if (!ui.snapping) return railSnap(tS, fps, durS)
       const playheadT = ui.playheadS - clip.startS
-      const points = playheadT > 0 && playheadT < durS ? [...pullPoints(), playheadT] : pullPoints()
+      const points = [...pullPoints(), ...beatPoints()]
+      if (playheadT > 0 && playheadT < durS) points.push(playheadT)
       return railDragSnap(tS, fps, durS, points, SNAP_PX / view.pxPerS)
     },
     minGapS: railMinGapS(fps),

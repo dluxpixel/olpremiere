@@ -4,6 +4,7 @@
 
 import { getAudioBuffer } from '../engine/audio'
 import { detectOnsets } from '../engine/beats'
+import { monoSlice } from '../engine/beatCache'
 import { withChannelValue } from '../engine/effects/channels'
 import { impactClip, punchInClip, punchOutClip, rampSpeedRange, whipClips } from '../engine/motion'
 import { clipEndS, splitGroup } from '../engine/timeline'
@@ -251,14 +252,15 @@ export async function punchOnBeats(audioClipId: string): Promise<void> {
     return
   }
   // Mono mixdown of the clip's trimmed slice.
+  //
+  // ⛔ THE SAME FUNCTION THE SNAP USES, and that is why it moved out of here. A
+  // dragged diamond is pulled toward these same beats, so two mixdowns that
+  // differed by a rounding would put the magnets where the punches are not, and it
+  // would read as the snap being broken rather than as two functions disagreeing.
   const sr = buffer.sampleRate
-  const s0 = Math.max(0, Math.floor(g.clip.inS * sr))
-  const s1 = Math.min(buffer.length, Math.ceil(g.clip.outS * sr))
-  const mono = new Float32Array(Math.max(0, s1 - s0))
-  for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
-    const data = buffer.getChannelData(ch)
-    for (let i = 0; i < mono.length; i++) mono[i] += data[s0 + i] / buffer.numberOfChannels
-  }
+  const channels: Float32Array[] = []
+  for (let ch = 0; ch < buffer.numberOfChannels; ch++) channels.push(buffer.getChannelData(ch))
+  const mono = monoSlice(channels, sr, g.clip.inS, g.clip.outS)
   const onsets = detectOnsets(mono, sr, { minGapS: BEAT_PUNCH_GAP_S, maxOnsets: 16 })
   if (onsets.length === 0) {
     useToasts.getState().show('No beats found in the clip', 'danger')
