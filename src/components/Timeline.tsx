@@ -14,6 +14,7 @@ import { activeSequence, audioTracks, videoTracks, type Clip, type Id, type Sequ
 import { pausePlayback } from '../state/playbackControl'
 import { copySelection, cutSelection, duplicateSelection, pasteAtPlayhead } from '../state/clipboard'
 import { copyClipAttributes, hasClipAttributes, pasteClipAttributes } from '../state/attributes'
+import { copyClipMove, hasClipMove, pasteClipMove } from '../state/moveClipboard'
 import { balanceAllClipLoudness, normalizeClipGain } from '../state/audioActions'
 import { allTextPresets, applyTextPresetToClips, saveAsCaptionStyle, useTextPresets } from '../state/textPresets'
 import { crossfadeWithNeighbour, deleteSelected, setClipFade, splitAtPlayhead, topAndTail } from '../state/clipEdits'
@@ -680,6 +681,16 @@ export function Timeline({ height }: { height: number }) {
         shortcut: comboLabel('mod+alt+v'),
         disabled: !hasClipAttributes(),
         onClick: () => pasteClipAttributes(keepSelection ? selNow : [clip.id]),
+      },
+      // The MOVE has its own pair, because Paste attributes deliberately leaves a
+      // move alone (D99): a paste he thinks is about colour must never delete motion
+      // he shaped by hand. Before this, reusing a hand made move meant performing it
+      // again on every clip.
+      { label: 'Copy move', onClick: () => copyClipMove(clip.id) },
+      {
+        label: keepSelection ? `Paste move to ${selNow.length}` : 'Paste move',
+        disabled: !hasClipMove(),
+        onClick: () => pasteClipMove(keepSelection ? selNow : [clip.id]),
       },
       ...crossfadeItems,
       ...transitionItems,

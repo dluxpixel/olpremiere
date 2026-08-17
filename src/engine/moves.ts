@@ -555,6 +555,30 @@ export function buildMove(
  * still. An empty keyframe list de-animates a channel and leaves its base alone,
  * which is what shipped `removeZoom` relies on.
  */
+/**
+ * A copied move's keyframes, refitted for a clip of a different length.
+ *
+ * ⛔ IT KEEPS ITS TIMING WHEN IT FITS, and that is the rule his own moves already
+ * follow: *"a quick move you recorded stays quick on a longer clip instead of
+ * stretching"*. A punch pasted onto a ten second clip is still a punch.
+ *
+ * ⛔ AND IT SQUEEZES WHEN IT DOES NOT FIT, rather than dropping the keyframes that
+ * fall off the end. Dropping them is the tempting version and it strands the
+ * picture: the move never comes home, so the clip ends zoomed in on nothing, which
+ * is the same class of bug as a speed change stranding a move. Squeezing keeps the
+ * shape and always lands.
+ */
+export function fitMoveKeyframes(
+  kfs: readonly Keyframe[],
+  targetDurS: number,
+): Keyframe[] {
+  if (kfs.length === 0 || targetDurS <= 0) return []
+  const span = Math.max(...kfs.map((k) => k.t))
+  if (span <= targetDurS) return kfs.map((k) => ({ ...k }))
+  const factor = targetDurS / span
+  return kfs.map((k) => ({ ...k, t: k.t * factor }))
+}
+
 export function clearMoveChannels(clip: Clip): Clip {
   return MOVE_CHANNELS.reduce((c, channel) => withChannelKeyframes(c, channel, []), clip)
 }
