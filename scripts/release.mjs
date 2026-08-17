@@ -6,8 +6,22 @@
 // Or in one go:           GH_TOKEN=<token> npm run release:patch
 // (Claude runs this when you say "ship it".)
 
+import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
-import { loadToken, openShipLog, runLogged, runLoggedRetry, SHIP_LOG } from './lib.mjs'
+import { isBigUpdate, loadToken, openShipLog, runLogged, runLoggedRetry, SHIP_LOG } from './lib.mjs'
+
+/**
+ * The last released tag, or '' when git cannot say. Never throws: a missing tag
+ * makes `isBigUpdate` answer yes, which runs the stronger check rather than
+ * skipping it.
+ */
+const previousTag = () => {
+  try {
+    return execFileSync('git', ['describe', '--tags', '--abbrev=0', '--match', 'v*'], { encoding: 'utf8' }).trim()
+  } catch {
+    return ''
+  }
+}
 
 const OUT = process.env.OLP_OUT || 'C:/Users/skyle/AppData/Local/olp-build/release'
 const token = loadToken()
@@ -44,6 +58,24 @@ try {
   // that download died on `socket hang up` AFTER the gate had gone green and the
   // commit was already pushed. Retried, and only on a network signature.
   await runLoggedRetry(`npx electron-builder --win --publish never -c.directories.output=${OUT}`, 'package the installer', shipLog)
+
+  // On a BIG update, open the finished app once, prove it starts, and close it.
+  // His ask, 2026-08-17: "you can check the app every time it does a big thing, and
+  // then it automatically goes." Nothing had ever checked the packaged app, and no
+  // e2e spec can: they all drive the web build through the dev server, which cannot
+  // see a file missing from the asar or a path that only breaks inside an installer.
+  //
+  // ⛔ Gated to a minor or major bump on purpose. He streams, and a window on camera
+  // is the thing he asked me to stop doing. A patch ships on the static proof above.
+  if (isBigUpdate(previousTag(), version)) {
+    await runLogged(
+      `node scripts/smoke-packaged.mjs "${OUT}/win-unpacked/OL Premiere.exe"`,
+      'the packaged app starts',
+      shipLog,
+    )
+  } else {
+    console.log('▶ patch release, so the packaged app check is skipped (no window on his screen)')
+  }
 
   // Generate latest.yml + create the tag + published release + upload all assets.
   await runLoggedRetry('node scripts/publish.mjs', 'upload to GitHub', shipLog)

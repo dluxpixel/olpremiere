@@ -5,7 +5,7 @@
 // the web. The origin (`app://olpremiere`) is PINNED forever: changing it (or
 // the appId/productName) would orphan the user's IndexedDB.
 
-import { app, BrowserWindow, protocol, ipcMain, session, shell } from 'electron'
+import { app, BrowserWindow, protocol, ipcMain, powerMonitor, session, shell } from 'electron'
 import { fileURLToPath } from 'node:url'
 import { mkdir, readFile } from 'node:fs/promises'
 import { existsSync, renameSync } from 'node:fs'
@@ -16,6 +16,7 @@ import { SPLASH_MELON_POP_MS, SPLASH_MELON_PX, SPLASH_WINDOW_H, SPLASH_WINDOW_W 
 import * as native from './nativeExport'
 import * as proxy from './proxy'
 import * as remux from './remux'
+import { IDLE_POLL_MS, updateApplyDecision } from './updateApply'
 import electronUpdater from 'electron-updater'
 
 const { autoUpdater } = electronUpdater
@@ -470,6 +471,9 @@ app.whenReady().then(() => {
     const launchedAt = Date.now()
     const AUTO_APPLY_WINDOW_MS = 3 * 60 * 1000
     let pendingVersion = ''
+    // Set once an update is downloaded and waiting for him to step away. See
+    // ./updateApply for why idleness is the second door.
+    let idleApplyTimer: ReturnType<typeof setInterval> | null = null
     autoUpdater.autoDownload = true
     autoUpdater.autoInstallOnAppQuit = true // a pending update also installs on any quit
     autoUpdater.on('error', (e) => {
@@ -502,16 +506,36 @@ app.whenReady().then(() => {
       // then we don't quit blindly: we ASK the renderer, which flushes a save and
       // restarts only if no critical work is in flight. Otherwise it falls back to
       // the "Restart to update" toast. Outside the window we always just offer the toast.
-      const freshLaunch = Date.now() - launchedAt < AUTO_APPLY_WINDOW_MS
       // proxyBusy for the same reason as isExporting: a restart mid-transcode
       // orphans an ffmpeg child and leaves half a proxy behind.
-      if (freshLaunch && !native.isExporting() && !proxy.proxyBusy() && !remux.remuxBusy()) {
+      const busy = (): boolean => native.isExporting() || proxy.proxyBusy() || remux.remuxBusy()
+      const decide = (): 'now' | 'when-idle' | 'never' =>
+        updateApplyDecision({
+          freshLaunch: Date.now() - launchedAt < AUTO_APPLY_WINDOW_MS,
+          idleSeconds: powerMonitor.getSystemIdleTime(),
+          busy: busy(),
+        })
+
+      if (decide() === 'now') {
         console.log(`OL Premiere update ${info.version} downloaded at launch, asking renderer to auto-apply`)
         mainWindow?.webContents.send('update:autoApply', info.version)
-      } else {
-        console.log(`OL Premiere update ${info.version} downloaded, offering restart`)
-        mainWindow?.webContents.send('update:ready', info.version)
+        return
       }
+
+      // He asked for the click to go, 2026-08-17: "Make it automatic." So the toast
+      // is the FALLBACK now rather than the plan. The update also applies itself the
+      // moment he is not using the machine, and `getSystemIdleTime` is the whole
+      // machine rather than this app, so it cannot fire while he is typing anywhere.
+      console.log(`OL Premiere update ${info.version} downloaded, offering restart and watching for idle`)
+      mainWindow?.webContents.send('update:ready', info.version)
+      if (idleApplyTimer) clearInterval(idleApplyTimer)
+      idleApplyTimer = setInterval(() => {
+        if (decide() !== 'now') return
+        if (idleApplyTimer) clearInterval(idleApplyTimer)
+        idleApplyTimer = null
+        console.log(`OL Premiere update ${info.version}: he has been idle, applying it`)
+        mainWindow?.webContents.send('update:autoApply', info.version)
+      }, IDLE_POLL_MS)
     })
     // Apply from the toast (and the renderer's save-then-restart path): quit and
     // relaunch into the downloaded version.

@@ -108,6 +108,28 @@ export function isTransientFailure(output) {
  * counts. `unreleased` is the caller's count for that, because only the caller
  * can talk to git.
  */
+/**
+ * Is this a BIG update, meaning the minor or major number moved?
+ *
+ * His words, 2026-08-17: *"every time it does a huge update, you can check the app
+ * every time it does a big thing."* A big thing is not every patch: he streams, and
+ * the packaged app check puts a window on his screen, so it is gated to the releases
+ * where a whole slab of the app changed.
+ *
+ * An unparseable or missing previous tag counts as big, because "I do not know what
+ * changed" deserves the stronger check rather than the weaker one.
+ */
+export function isBigUpdate(prevTag, version) {
+  const parse = (s) => {
+    const m = /(\d+)\.(\d+)\.(\d+)/.exec(String(s ?? ''))
+    return m ? { major: Number(m[1]), minor: Number(m[2]) } : null
+  }
+  const prev = parse(prevTag)
+  const next = parse(version)
+  if (!prev || !next) return true
+  return next.major !== prev.major || next.minor !== prev.minor
+}
+
 export function releaseWork({ dirty, unpushed, unreleased }) {
   if (dirty && dirty.trim()) return 'uncommitted changes in the tree'
   if (Number(unpushed) > 0) return `${unpushed} commit(s) not yet pushed`

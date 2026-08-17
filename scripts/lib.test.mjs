@@ -7,7 +7,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { isTransientFailure, releaseWork, runLoggedRetry } from './lib.mjs'
+import { isBigUpdate, isTransientFailure, releaseWork, runLoggedRetry } from './lib.mjs'
 
 /**
  * A command that fails `failures` times and then succeeds, printing `message`
@@ -110,5 +110,29 @@ describe('releaseWork', () => {
 
   it('treats whitespace from git as a clean tree', () => {
     expect(releaseWork({ dirty: '\n', unpushed: '0', unreleased: '0' })).toBeNull()
+  })
+})
+
+// This one decides whether a window appears on his screen during a ship, so the
+// boundary is worth pinning rather than eyeballing.
+describe('isBigUpdate', () => {
+  it('a patch is not big', () => {
+    expect(isBigUpdate('v2.0.3', '2.0.4')).toBe(false)
+    expect(isBigUpdate('v2.0.9', '2.0.10')).toBe(false)
+  })
+
+  it('a minor or a major is big', () => {
+    expect(isBigUpdate('v2.0.4', '2.1.0')).toBe(true)
+    expect(isBigUpdate('v2.9.9', '3.0.0')).toBe(true)
+  })
+
+  it('going BACKWARDS is still big, because something odd happened', () => {
+    expect(isBigUpdate('v3.0.0', '2.9.0')).toBe(true)
+  })
+
+  it('no previous tag at all counts as big, so the stronger check runs', () => {
+    expect(isBigUpdate('', '1.0.0')).toBe(true)
+    expect(isBigUpdate(null, '1.0.0')).toBe(true)
+    expect(isBigUpdate('not-a-version', '1.0.0')).toBe(true)
   })
 })
