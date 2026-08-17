@@ -54,7 +54,6 @@ export interface UIState {
    */
   zoomAnchor: ZoomAnchor
   /** Keyboard-shortcuts help overlay. */
-  helpOpen: boolean
   /**
    * The hand controls under the shelf: the punch buttons, the rail, the lanes
    * and the curve editor. Closed by default, because four ways to do one thing
@@ -178,7 +177,6 @@ export const useStore = create<AppState>()(
       punchRiseFrames: 5,
       moveCurve: loadMoveCurve(),
       zoomAnchor: loadZoomAnchor(),
-      helpOpen: false,
       handTuneOpen: false,
       previewingMove: false,
     },

@@ -113,13 +113,29 @@ test('dropping a project file on the window opens it instead of failing as media
   await expect(page.getByText(/couldn't import|unsupported/i)).toHaveCount(0)
 })
 
-test('the project file is reachable by keyboard and by name in the palette', async ({ page }) => {
+/**
+ * ⛔ THIS ASKED THE COMMAND PALETTE UNTIL 2026-08-17, and the palette was cut that day
+ * on his word. What the test was really for survives: the project file has to be
+ * reachable without the mouse, and he has to be able to FIND OUT that it is.
+ *
+ * ⛔ AND THE CUT TOOK THE ONLY PLACE THAT SAID SO. The palette and the shortcut sheet
+ * were the two surfaces listing keys, so the tooltip on the button is now the whole of
+ * discovery, and neither of these two buttons carried its shortcut. They do now, which
+ * is a consequence of the cut being repaired rather than a feature. → D114
+ */
+test('the project file is reachable by keyboard, and the toolbar says which key', async ({ page }) => {
   await page.goto('/')
   await expect(page.getByTestId('timeline')).toBeVisible()
 
-  await page.keyboard.press('Control+k')
-  await page.getByPlaceholder(/type a command/i).fill('project file')
-  // Scoped to the palette rows: the toolbar tooltip carries the same words.
-  await expect(page.getByRole('option', { name: /Open a project file/ })).toBeVisible()
-  await expect(page.getByRole('option', { name: /Back up project to a file/ })).toBeVisible()
+  const open = page.getByTestId('open-project-file')
+  const backup = page.getByTestId('save-project-file')
+  await expect(open).toBeVisible()
+  await expect(backup).toBeVisible()
+
+  // Hovering is how he meets a shortcut now. The tooltip is display:none until then,
+  // so asking for the visible one is asking whether the hover really revealed it.
+  await open.hover()
+  await expect(page.getByRole('tooltip')).toContainText('Ctrl+O')
+  await backup.hover()
+  await expect(page.getByRole('tooltip')).toContainText('Ctrl+Shift+S')
 })

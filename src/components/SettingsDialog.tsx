@@ -1,6 +1,7 @@
-// Settings: every persistent preference in one place. The split with the
-// command palette is deliberate and load-bearing: the palette runs ACTIONS,
-// this dialog holds the choices that persist between sessions. Preferences
+// Settings: every persistent preference in one place. The split it was built
+// against was ACTIONS on the command palette, CHOICES here. ⛔ The palette was
+// cut on 2026-08-17, so the actions live on keys and buttons now and this
+// dialog is unchanged: it still holds only what persists between sessions. Preferences
 // that already have an in-context home (the mic chevron, the monitor's quality
 // picker) keep it; this is where they are ALSO discoverable, and where every
 // new preference lands so they stop breeding in dropdown corners.
@@ -15,7 +16,6 @@ import {
 } from '../engine/captions/transcribeConfig'
 import { resolvedTheme, setPreviewQuality, setTheme, useSettings, type PreviewQuality, type ThemeChoice } from '../state/settings'
 import { useStore } from '../state/store'
-import { useToasts } from '../state/toasts'
 import {
   defaultTrackPresetId,
   listTrackPresets,
@@ -26,7 +26,6 @@ import { listAudioInputs, setInputDevice, setOutputDevice, useRecorder } from '.
 import { listAudioOutputs } from '../state/recordingMonitor'
 import { canPickAudioOutput } from '../engine/audio'
 import { Button, IconButton } from '../ui/Button'
-import { resetQuickStart } from './QuickStart'
 
 /** One labelled preference row on the settings grid. */
 function Row({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
@@ -74,7 +73,6 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   // copy and re-reads after every action it takes.
   const [presets, setPresets] = useState(listTrackPresets)
   const [defaultId, setDefaultId] = useState(defaultTrackPresetId)
-  const show = useToasts((s) => s.show)
 
   const refreshPresets = () => {
     setPresets(listTrackPresets())
@@ -284,18 +282,6 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
             >
               <Bookmark size={14} strokeWidth={1.5} />
               Save current
-            </Button>
-          </Row>
-          <Row label="Quick start" hint="The three-step intro shown on a first visit.">
-            <Button
-              variant="secondary"
-              data-testid="settings-reset-quickstart"
-              onClick={() => {
-                resetQuickStart()
-                show('Quick start will show again on the next reload')
-              }}
-            >
-              Show again
             </Button>
           </Row>
         </Group>

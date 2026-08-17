@@ -326,10 +326,15 @@ test('the shelf tells the truth after a hand edit, and the hand controls are one
   await hands.click('move-tile-leftThenRight')
 
   // The lanes are folded away by default: this is the whole point of the pass.
-  await expect(page.getByTestId('punch-control')).toBeHidden()
+  //
+  // ⛔ IT ASKS THE LANE ITSELF NOW. It used to ask the punch panel, which was cut on
+  // 2026-08-17, and that panel was never what the door is for: `handTuneOpen` gates
+  // the lanes and the curve editor, which are the hand controls this test is named
+  // after. Asking the thing the sentence is about. → D114
+  const lane = page.locator('[data-testid="keyframe-track"][data-channel="scale"]')
+  await expect(lane).toBeHidden()
   await page.getByTestId('tune-by-hand').click()
-  await expect(page.getByTestId('punch-control')).toBeVisible()
-  await expect(page.locator('[data-testid="keyframe-track"][data-channel="scale"]')).toBeVisible()
+  await expect(lane).toBeVisible()
 
   // Nudge one diamond by hand and no tile is lit any more. The shelf never
   // claims a move the clip is not actually making.
@@ -613,30 +618,34 @@ test('a second move after the first, and the shelf names both', async ({ page })
 })
 
 /**
- * ⛔ THE OFFER IS ABSENT WHERE IT COULD NOT WORK, rather than a button that
- * always says no.
+ * ⛔ THE OFFER IS THERE ON A MOVE THAT ENDS UP CLOSE, AND THIS TEST USED TO ASSERT
+ * THE OPPOSITE. His call, 2026-08-17: *"Look at what the best programs have."* They
+ * chain from where the picture is, so the tail is written against the head's landing
+ * and Push in can be followed like anything else. The sentence that used to stand in
+ * the offer's place is gone with the rule behind it. → D113
  *
- * Every move is written against the framing the clip RESTS at, so two moves can
- * only be joined where the picture is standing still. Push in ends up close and
- * stays there: anything after it would slide back out on its own in between, and
- * that slide belongs to neither move.
+ * The real thing to hold now is that the pair LANDS and the shelf still names both
+ * halves, because a rule that stops refusing is only good news if what it lets
+ * through is readable afterwards.
  */
-test('nothing is offered after a move that stays where it lands', async ({ page }) => {
+test('a move that stays where it lands can still be followed', async ({ page }) => {
   await seedClips(page, 1, 6)
   const hands = new Hands(page)
   await hands.clickClip()
 
   await hands.click('move-tile-pushIn')
   await expect(page.getByTestId('move-state')).toHaveText('Push in')
-  await expect(page.getByTestId('add-second-move')).toHaveCount(0)
-  // ⛔ AND THE PANEL SAYS WHY, in its place. Seven of the twelve tiles land this
-  // way, so a missing control with nothing beside it is what he would meet most
-  // of the time, and it reads as broken rather than as a rule.
-  await expect(page.getByTestId('no-second-move')).toHaveText(
-    'Push in ends up there and stays, so nothing can follow it',
-  )
+  await expect(page.getByTestId('add-second-move')).toBeVisible()
+  await expect(page.getByTestId('no-second-move')).toHaveCount(0)
 
-  // In and out comes home, so it can be followed.
+  // And it goes on: two bars, both named, off a clip whose first move never comes
+  // home. That is the whole of what changed.
+  await hands.click('add-second-move')
+  await hands.click('move-tile-leftThenRight')
+  await expect(page.getByTestId('move-ribbon')).toHaveCount(2)
+  await expect(page.getByTestId('move-state')).toHaveText('Push in, then Left, then right')
+
+  // In and out comes home, and is offered on exactly the same terms.
   await hands.click('move-tile-inAndOut')
   await expect(page.getByTestId('add-second-move')).toBeVisible()
 })

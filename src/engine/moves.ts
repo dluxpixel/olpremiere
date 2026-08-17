@@ -13,7 +13,7 @@
 //
 // Pure: no store, no DOM, no React. Same rule as motion.ts.
 
-import { channelBase, channelKeyframes, withChannelKeyframes } from './effects/channels'
+import { channelBase, channelKeyframes, resolveChannel, withChannelKeyframes } from './effects/channels'
 import { evalChannel } from './keyframes'
 import { CURVE_EASE, MOTION_CURVES, withKeyframes, type MotionCurveName } from './motion'
 import { quantizeToFrame } from './timecode'
@@ -584,6 +584,59 @@ export function clearMoveChannels(clip: Clip): Clip {
 }
 
 /**
+ * The framing a move is written against: the size and shift it treats as normal.
+ *
+ * Every number `buildMove` writes is this framing times a ratio, never an absolute,
+ * which is what lets one table of moves fit a clip resting at any size.
+ */
+export interface MoveBases {
+  scale: number
+  posX: number
+  posY: number
+}
+
+/** The framing the clip RESTS at: where a move that follows nothing starts from. */
+export const restingBases = (clip: Clip): MoveBases => ({
+  scale: channelBase(clip, 'scale'),
+  posX: channelBase(clip, 'posX'),
+  posY: channelBase(clip, 'posY'),
+})
+
+/**
+ * The framing actually on screen at one instant, which is where a move that
+ * FOLLOWS another one starts from.
+ *
+ * ⛔ THIS IS THE ANCHOR THAT LETS ANY MOVE BE FOLLOWED, and it is still derived,
+ * which is the whole point. A head that ends up close leaves the picture at some
+ * size, that size is sitting in the head's own last keyframe, and reading it back
+ * costs nothing and stores nothing. So the tail can be written against where the
+ * picture IS and recognition can rebuild it against the same number later.
+ *
+ * His call, 2026-08-17, asked whether a move that ends up close should be
+ * followable: *"Look at what the best programs have."* They chain from where the
+ * picture is. Apple Motion combines behaviours in the order they were added, each
+ * one reading the value the one before it produced, and a keyframed parameter and a
+ * behaviour on the same channel COMBINE rather than one snapping the other back to
+ * neutral. Premiere and Resolve reach the same place through plain keyframes: the
+ * value at an instant is whatever the last diamond said, so a second gesture starts
+ * there by construction. Not one of the four snaps the picture home first.
+ * → [[olp-chained-moves-design]]
+ */
+export const framingAt = (clip: Clip, atS: number): MoveBases => ({
+  scale: resolveChannel(clip, 'scale', atS),
+  posX: resolveChannel(clip, 'posX', atS),
+  posY: resolveChannel(clip, 'posY', atS),
+})
+
+/** The keyframes of one move written onto a clip, against a stated framing. */
+function writeMove(clip: Clip, fps: number, def: MoveDef, bases: MoveBases, options: MoveBuildOptions): Clip {
+  const tracks = buildMove(def, fps || 30, clipDurationS(clip), bases, options)
+  let next = clip
+  for (const track of tracks) next = withKeyframes(next, track.channel, track.kfs)
+  return next
+}
+
+/**
  * Put a move on a clip. ONE clip, pure, immutable.
  *
  * CLEARS FIRST, always. Clicking a second tile REPLACES the first rather than
@@ -593,15 +646,7 @@ export function clearMoveChannels(clip: Clip): Clip {
 export function applyMove(clip: Clip, fps: number, def: MoveDef, options: MoveBuildOptions): Clip {
   const cleared = clearMoveChannels(clip)
   if (def.beats.length === 0) return cleared
-  const bases = {
-    scale: channelBase(cleared, 'scale'),
-    posX: channelBase(cleared, 'posX'),
-    posY: channelBase(cleared, 'posY'),
-  }
-  const tracks = buildMove(def, fps || 30, clipDurationS(clip), bases, options)
-  let next = cleared
-  for (const track of tracks) next = withKeyframes(next, track.channel, track.kfs)
-  return next
+  return writeMove(cleared, fps, def, restingBases(cleared), options)
 }
 
 /**
@@ -632,6 +677,13 @@ export function moveSpan(clip: Clip): { startS: number; endS: number } | null {
  *
  * At a touching boundary both moves want a keyframe at the same instant. The later
  * move wins it, because that is the one whose shape is about to run.
+ *
+ * ⛔ AND IT STARTS FROM WHERE THE PICTURE IS, not from where the clip rests. That is
+ * the difference between 47 of the 144 pairs joining and all of them. A head that
+ * ends up close used to be unfollowable, because the tail was written against the
+ * resting framing and its first keyframe snapped the picture home in one frame.
+ * `framingAt` reads the head's landing off the head's own last keyframe, so the two
+ * meet with the picture standing exactly still and nothing is stored to do it.
  */
 export function appendMove(clip: Clip, fps: number, def: MoveDef, options: MoveBuildOptions): Clip {
   const existing = moveSpan(clip)
@@ -640,12 +692,10 @@ export function appendMove(clip: Clip, fps: number, def: MoveDef, options: MoveB
   const startS = options.startS ?? existing.endS
   if (startS < existing.endS - timeTolS(fps)) return clip // overlap, refused
 
-  const bases = {
-    scale: channelBase(clip, 'scale'),
-    posX: channelBase(clip, 'posX'),
-    posY: channelBase(clip, 'posY'),
-  }
-  const tracks = buildMove(def, fps || 30, clipDurationS(clip), bases, { ...options, startS })
+  const tracks = buildMove(def, fps || 30, clipDurationS(clip), framingAt(clip, startS), {
+    ...options,
+    startS,
+  })
   const tol = timeTolS(fps)
   let next = clip
   for (const track of tracks) {
@@ -706,14 +756,24 @@ function sameTracks(a: Clip, b: Clip, fps: number): boolean {
       // last one: `buildMove` writes plain linear there for exactly that reason.
       // Comparing it is comparing a field the move has no opinion about.
       //
-      // This is the open decision the chain tests pinned on 2026-08-17, taken as
-      // option A, and it is MY call rather than his. Where two moves TOUCH they
+      // ⛔ SETTLED 2026-08-17 AND NO LONGER MINE ALONE. Where two moves TOUCH they
       // share one instant, and a shared instant can hold only one outgoing curve,
       // which belongs to the move that follows. So the head's own final keyframe
       // came back carrying the tail's curve and the head read as hand edited: a
       // touching chain could never name its first move, which is the edit he said
       // feels best. The alternative was to forbid touching outright, which throws
       // away his answer to keep a comparison that describes nothing.
+      //
+      // Asked to keep it or put it back, his answer was *"Look at what the best
+      // programs have."* They have nothing to copy here, and that is the finding:
+      // not one of Premiere, Resolve, Final Cut, CapCut or Motion works out what a
+      // clip is doing by reading its curves back. Every one of them STORES the thing
+      // it applied, as a behaviour in Motion's layer list, a Dynamic Zoom control in
+      // Resolve, an animation slot in CapCut, a Ken Burns crop in Final Cut. So no
+      // editor has an opinion about an outgoing curve on a final keyframe, and the
+      // arithmetic is left standing on its own: a curve shapes the segment leaving a
+      // keyframe, nothing leaves the last one, and a field the run does not own
+      // cannot be evidence about the run. Kept.
       const last = i === ka.length - 1
       if (!last && ka[i].ease !== kb[i].ease) return false
       if (!last && String(ka[i].curve ?? '') !== String(kb[i].curve ?? '')) return false
@@ -756,6 +816,16 @@ export function matchMove(
      * and the one he is more likely to mean.
      */
     extraMoves?: readonly MoveDef[]
+    /**
+     * The framing this run is written against, when it is not the clip's resting one.
+     *
+     * ⛔ ONLY A CHAIN'S SECOND HALF PASSES THIS, and it is derived from the first
+     * half's own last keyframe, never stored. A tail that begins with the picture
+     * already at 140 percent is a perfectly ordinary move written against 140
+     * percent: rebuild it against the resting framing instead and every number comes
+     * out wrong, the comparison fails, and the shelf calls his edit a hand edit.
+     */
+    anchor?: MoveBases
   },
 ): MoveMatch | null {
   const durS = clipDurationS(clip)
@@ -771,7 +841,8 @@ export function matchMove(
 
   const startS = Math.min(...times)
   const endS = Math.max(...times)
-  const base = channelBase(clip, 'scale')
+  const bases = options.anchor ?? restingBases(clip)
+  const base = bases.scale
   // ⛔ THE DEPTH IS THE VALUE FURTHEST FROM THE BASE, NOT THE LARGEST. This used
   // to be Math.max, which is the same thing only while every move grows. A move
   // that SHRINKS has its extreme at the bottom, so the max was just the base
@@ -800,7 +871,7 @@ export function matchMove(
     .sort((a, b) => Number(!!b.out === goesOut) - Number(!!a.out === goesOut))
   for (const def of candidates) {
     if (def.beats.length === 0) continue
-    const rebuilt = applyMove(clip, fps, def, {
+    const rebuilt = writeMove(clearMoveChannels(clip), fps, def, bases, {
       depth,
       riseFrames: options.riseFrames,
       seqWidth: options.seqWidth,
@@ -868,12 +939,20 @@ export function matchChain(
   options: Parameters<typeof matchMove>[2],
 ): [MoveMatch, MoveMatch] | null {
   const times = moveTimes(clip, fps)
-  // Two keyframes is the smallest a move can be, so a chain needs four instants, and
-  // a split has to leave at least two on each side.
-  if (times.length < 4) return null
+  // ⛔ THREE, NOT FOUR, and four cost fourteen of the 144 pairs. Two keyframes is the
+  // smallest a move can be, so two moves look like four instants until they TOUCH,
+  // and a touching pair stores ONE keyframe where they meet. Push in followed by
+  // punch in is three moments in total, and the guard was throwing it out before the
+  // search had a chance to split it. A split still has to leave two on each side,
+  // which the loop below already enforces.
+  if (times.length < 3) return null
   const last = times.length - 1
   for (let i = 1; i < last; i++) {
-    const first = matchMove(clipSlice(clip, times[0], times[i], fps), fps, options)
+    // The HEAD is always read against the framing the clip rests at. That is what
+    // keeps the whole chain derivable with nothing stored: the head has to start
+    // from rest, its landing falls out of its own last keyframe, and that landing is
+    // the only anchor the tail needs.
+    const first = matchMove(clipSlice(clip, times[0], times[i], fps), fps, { ...options, anchor: undefined })
     if (!first || first.id === 'none') continue
     // ⛔ TWO SPLIT STYLES, AND THE FIRST VERSION ONLY HAD ONE, which made every
     // chain with a REST between its moves unreadable.
@@ -883,7 +962,14 @@ export function matchChain(
     // Resting: the first move ends, nothing happens, the second begins. Those are two
     // distinct instants and neither half may claim the other's.
     for (const from of i + 1 <= last ? [times[i + 1], times[i]] : [times[i]]) {
-      const second = matchMove(clipSlice(clip, from, times[last], fps), fps, options)
+      // ⛔ AND THE TAIL IS READ AGAINST WHERE THE PICTURE ACTUALLY IS at the join,
+      // which is what lets a head that ends up close be followed at all. Read off
+      // the clip in front of us, so a hand edit anywhere in the head moves this
+      // number and the tail stops matching too, exactly as it should.
+      const second = matchMove(clipSlice(clip, from, times[last], fps), fps, {
+        ...options,
+        anchor: framingAt(clip, from),
+      })
       if (second && second.id !== 'none') return [first, second]
     }
   }

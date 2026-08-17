@@ -1,6 +1,7 @@
 // App-level preferences: the things you ARE, as opposed to the things you DO
-// (those live on the command palette). One persisted home so preferences stop
-// breeding in the corners of dialogs and dropdown chevrons.
+// (those are keys and buttons; the command palette that used to list them was
+// cut on 2026-08-17). One persisted home so preferences stop breeding in the
+// corners of dialogs and dropdown chevrons.
 
 import { create } from 'zustand'
 

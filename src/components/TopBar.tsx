@@ -4,7 +4,6 @@ import {
   FolderOpen,
   HardDriveDownload,
   LayoutGrid,
-  Keyboard,
   Mic,
   Redo2,
   Settings,
@@ -311,13 +310,13 @@ export function TopBar() {
     const label = performHistoryStep('redo')
     if (label) useToasts.getState().show(`Redo: ${label}`)
   }
-  const setUI = useStore((s) => s.setUI)
   const [exporting, setExporting] = useState(false)
   // null = closed. Otherwise which half of his work the dialog opened on.
   const [projectsOpen, setProjectsOpen] = useState<ProjectsView | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const openFileRef = useRef<HTMLInputElement>(null)
-  // The shortcut and the command palette open THIS input, so there is one door.
+  // The shortcut opens THIS input, so there is one door. The palette was the
+  // other caller until it was cut on 2026-08-17.
   useEffect(() => {
     registerProjectFilePicker(() => openFileRef.current?.click())
     return () => registerProjectFilePicker(null)
@@ -379,6 +378,7 @@ export function TopBar() {
       />
       <IconButton
         label="Back up project to a file"
+        shortcut={comboLabel('mod+shift+s')}
         onClick={() => void exportProjectToFile()}
         data-testid="save-project-file"
       >
@@ -386,6 +386,7 @@ export function TopBar() {
       </IconButton>
       <IconButton
         label="Open a project file (.olstudio)"
+        shortcut={comboLabel('mod+o')}
         onClick={() => openFileRef.current?.click()}
         data-testid="open-project-file"
       >
@@ -410,14 +411,6 @@ export function TopBar() {
           data-testid="redo"
         >
           <Redo2 size={16} strokeWidth={1.5} />
-        </IconButton>
-        <IconButton
-          label="Keyboard shortcuts"
-          shortcut="?"
-          onClick={() => setUI({ helpOpen: true })}
-          data-testid="help-open"
-        >
-          <Keyboard size={16} strokeWidth={1.5} />
         </IconButton>
         <IconButton
           label="Settings"

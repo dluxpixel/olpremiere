@@ -44,7 +44,7 @@ const show = (id: string): void => {
 }
 
 describe('the second move, from the panel', () => {
-  it('offers the line only for a move something can follow', async () => {
+  it('offers the line on any move, and only once there is one', async () => {
     const clip = seedClip(6)
     useStore.getState().setUI({ selection: [clip.id] })
 
@@ -52,18 +52,13 @@ describe('the second move, from the panel', () => {
     show(clip.id)
     expect(screen.queryByTestId('add-second-move')).toBeNull()
 
-    // Push in ends up close and stays there, so the picture would have to slide
-    // back out on its own between the two. Not offered rather than refused.
-    //
-    // ⛔ AND IT SAYS WHY. Seven of the twelve tiles end up somewhere and stay, so
-    // for most clips this is what he sees, and an absent control with no sentence
-    // beside it reads as a broken feature rather than as a rule.
+    // ⛔ PUSH IN IS OFFERED NOW, and the sentence that used to stand in its place is
+    // gone with the rule behind it. His call, 2026-08-17: the tail starts from where
+    // the head landed, so a move that ends up close can be followed like any other.
     applyMoveToSelection('pushIn')
     show(clip.id)
-    expect(screen.queryByTestId('add-second-move')).toBeNull()
-    expect(screen.getByTestId('no-second-move').textContent).toBe(
-      'Push in ends up there and stays, so nothing can follow it',
-    )
+    expect(screen.getByTestId('add-second-move')).toBeTruthy()
+    expect(screen.queryByTestId('no-second-move')).toBeNull()
 
     applyMoveToSelection('inAndOut')
     show(clip.id)

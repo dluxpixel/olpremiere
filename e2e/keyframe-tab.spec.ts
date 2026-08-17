@@ -94,16 +94,18 @@ async function openHandControls(page: Page): Promise<void> {
   if ((await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click()
 }
 
-test('selecting a zoom depth applies a punch of that depth', async ({ page }) => {
+test('the depth slider says how big the move goes, and the keyframes agree', async ({ page }) => {
   await page.goto('/')
   const id = await addTitle(page)
   await setUI(page, { selection: [id], playheadS: 2 })
   await openHandControls(page)
 
-  // Pick "Deep" (1.4×), then Apply → the scale keyframes peak near 1.4.
-  await page.getByTestId('punch-preset-deep').click()
-  await expect(page.getByTestId('punch-depth-readout')).toHaveText('140%')
-  await page.getByTestId('punch-apply').click()
+  // ⛔ THROUGH THE SHELF, because the punch panel's four depth presets were cut on
+  // 2026-08-17 on his word. Its one slider is the surviving control and it needs no
+  // playhead parked, which is why the presets went. → D114
+  await page.getByTestId('move-tile-punchIn').click()
+  await page.getByTestId('move-depth').fill('1.4')
+  await expect(page.getByTestId('move-depth-readout')).toHaveText('140%')
   expect(await scaleKfMax(page)).toBeCloseTo(1.4, 2)
 
   // And the punch is visible and editable as keyframes: the Zoom lane under the
@@ -119,14 +121,15 @@ test('the easing explainer answers "what is Lin"', async ({ page }) => {
   await page.goto('/')
   const id = await addTitle(page)
 
-  // Punch in at 2s and out at 4s: four Zoom diamonds, with a long hold between
-  // the second and the third that is wide enough to click without zooming the
-  // rail first. A 5-frame rise on its own is two pixels on a fitted 5s clip.
+  // ⛔ THE KEYS, NOT THE BUTTONS. The punch panel was cut on 2026-08-17 and its
+  // three verbs were only ever the mouse copy of `p`, `shift+p` and `alt+p`, which
+  // stay. Same two punches at the same two moments, so the geometry this test
+  // measures is untouched. → D114
   await setUI(page, { selection: [id], playheadS: 2 })
   await openHandControls(page)
-  await page.getByTestId('punch-apply').click()
+  await page.keyboard.press('p')
   await setUI(page, { selection: [id], playheadS: 4 })
-  await page.getByTestId('punch-out').click()
+  await page.keyboard.press('Shift+P')
 
   const diamonds = page.locator('[data-testid="keyframe-track"][data-channel="scale"]').getByTestId('keyframe')
   await expect(diamonds).toHaveCount(4)

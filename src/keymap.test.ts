@@ -1,108 +1,49 @@
+// What is left of the keymap after 2026-08-17: the shape, the dispatch and the label.
+//
+// ⛔ THIS FILE USED TO TEST THE SEARCH AND THE GROUPING, and every one of those tests
+// went with the code. The command palette and the shortcut sheet were cut on his word,
+// they were the only readers of `searchBindings`, `groupBindings`, `fuzzyScore`,
+// `dedupeBindings` and the two domain tables, and a test of deleted code is worse than
+// no test because it reads as coverage. → D114
+//
+// What replaced them is coverage the file never had. `comboLabel` survived the cut with
+// three callers, all of them tooltips, and **a tooltip is now the only way a shortcut
+// reaches him**, so it is the one function here that is load bearing.
+
 import { describe, expect, it } from 'vitest'
-import {
-  comboLabel,
-  dedupeBindings,
-  DOMAIN_ORDER,
-  fuzzyScore,
-  groupBindings,
-  searchBindings,
-  type Binding,
-  type BindingDomain,
-} from './keymap'
+import { comboFromEvent, comboLabel } from './keymap'
 
-const noop = () => {}
-const b = (combo: string, description: string, domain: BindingDomain): Binding => ({
-  combo,
-  description,
-  domain,
-  run: noop,
-})
+const press = (key: string, mods: Partial<KeyboardEvent> = {}): string =>
+  comboFromEvent({ key, ctrlKey: false, metaKey: false, shiftKey: false, altKey: false, ...mods } as KeyboardEvent)
 
-const SAMPLE: Binding[] = [
-  b('space', 'Play / Pause', 'transport'),
-  b('mod+z', 'Undo', 'project'),
-  b('mod+shift+z', 'Redo', 'project'),
-  b('mod+y', 'Redo', 'project'),
-  b('s', 'Toggle snapping', 'tools'),
-  b('c', 'Split at playhead', 'trim'),
-  b('mod+a', 'Select all clips', 'selection'),
-  b('=', 'Zoom in timeline', 'view'),
-]
-
-describe('fuzzyScore', () => {
-  it('matches subsequences case-insensitively', () => {
-    expect(fuzzyScore('tsn', 'Toggle snapping')).not.toBeNull()
-    expect(fuzzyScore('SNAP', 'Toggle snapping')).not.toBeNull()
+describe('comboFromEvent', () => {
+  it('reads a bare key in lower case', () => {
+    expect(press('P')).toBe('p')
+    expect(press('p')).toBe('p')
   })
 
-  it('rejects non-subsequences', () => {
-    expect(fuzzyScore('xyz', 'Toggle snapping')).toBeNull()
-    expect(fuzzyScore('pans', 'snap')).toBeNull()
+  it('names the space bar rather than passing a blank through', () => {
+    expect(press(' ')).toBe('space')
   })
 
-  it('empty query matches everything with a zero score', () => {
-    expect(fuzzyScore('', 'anything')).toBe(0)
-  })
-
-  it('ignores spaces in the query', () => {
-    expect(fuzzyScore('toggle snapping', 'Toggle snapping')).not.toBeNull()
-  })
-
-  it('ranks contiguous word-start hits above scattered hits', () => {
-    const tight = fuzzyScore('snap', 'Toggle snapping')
-    const scattered = fuzzyScore('snap', 'Selection and play')
-    expect(tight).not.toBeNull()
-    expect(scattered).not.toBeNull()
-    expect(tight!).toBeGreaterThan(scattered!)
+  it('orders the modifiers the way a binding is written', () => {
+    expect(press('p', { ctrlKey: true, shiftKey: true, altKey: true })).toBe('mod+shift+alt+p')
   })
 })
 
-describe('dedupeBindings', () => {
-  it('collapses aliases to the first combo per description', () => {
-    const rows = dedupeBindings(SAMPLE)
-    const redos = rows.filter((r) => r.description === 'Redo')
-    expect(redos).toHaveLength(1)
-    expect(redos[0].combo).toBe('mod+shift+z')
-  })
-})
-
-describe('groupBindings', () => {
-  it('groups deduped rows by domain in display order and drops empty domains', () => {
-    const groups = groupBindings(SAMPLE)
-    const domains = groups.map((g) => g.domain)
-    expect(domains).toEqual(
-      DOMAIN_ORDER.filter((d) => SAMPLE.some((x) => x.domain === d)),
-    )
-    const project = groups.find((g) => g.domain === 'project')!
-    expect(project.rows.map((r) => r.description)).toEqual(['Undo', 'Redo'])
-  })
-})
-
-describe('searchBindings', () => {
-  it('returns every deduped command in keymap order for an empty query', () => {
-    const rows = searchBindings(SAMPLE, '')
-    expect(rows.map((r) => r.description)).toEqual([
-      'Play / Pause',
-      'Undo',
-      'Redo',
-      'Toggle snapping',
-      'Split at playhead',
-      'Select all clips',
-      'Zoom in timeline',
-    ])
+describe('comboLabel', () => {
+  /**
+   * The tooltip is the last surface that tells him a key exists, so this is the
+   * sentence he actually reads. Off mac, where he works.
+   */
+  it('writes a combo the way a keyboard is labelled', () => {
+    expect(comboLabel('mod+s')).toBe('Ctrl+S')
+    expect(comboLabel('shift+alt+p')).toBe('Shift+Alt+P')
+    expect(comboLabel('space')).toBe('Space')
   })
 
-  it('filters to fuzzy matches and puts the tightest match first', () => {
-    const rows = searchBindings(SAMPLE, 'snap')
-    expect(rows.length).toBeGreaterThan(0)
-    expect(rows[0].description).toBe('Toggle snapping')
-    expect(rows.map((r) => r.description)).not.toContain('Undo')
-  })
-
-  it('matches on the shortcut label too', () => {
-    // comboLabel('mod+a') is 'Ctrl+A' off-mac; 'ctrl+a' should surface it.
-    const label = comboLabel('mod+a').toLowerCase()
-    const rows = searchBindings(SAMPLE, label)
-    expect(rows.map((r) => r.description)).toContain('Select all clips')
+  it('capitalises a named key without shouting it', () => {
+    expect(comboLabel('arrowleft')).toBe('Arrowleft')
+    expect(comboLabel('alt+arrowright')).toBe('Alt+Arrowright')
   })
 })

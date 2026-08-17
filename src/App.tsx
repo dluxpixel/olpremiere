@@ -1,10 +1,7 @@
 import { useEffect, useMemo } from 'react'
-import { CommandPalette, togglePalette } from './components/CommandPalette'
 import { Inspector } from './components/Inspector'
-import { KeyboardHelp } from './components/KeyboardHelp'
 import { LeftPanel } from './components/LeftPanel'
 import { Monitor } from './components/Monitor'
-import { QuickStart } from './components/QuickStart'
 import { RecordingStudio } from './components/RecordingStudio'
 import { useRecorder } from './state/voiceRecorder'
 import { Timeline } from './components/Timeline'
@@ -110,19 +107,6 @@ function stepKeyframe(dir: -1 | 1) {
 function buildAppBindings(): Binding[] {
   const store = () => useStore.getState()
   return [
-      // comboFromEvent reads the PRODUCED character (e.key), so the '?' help key
-      // arrives as 'shift+?' on US and plain '?' from synthetic events; on Czech
-      // QWERTZ '?' isn't Shift+/ at all. Register every interpretation, including
-      // the legacy 'shift+/', so it fires on real keyboards and stays testable.
-      ...['shift+?', '?', 'shift+/'].map<Binding>((combo) => ({
-        combo,
-        description: 'Keyboard shortcuts',
-        domain: 'view',
-        run: () => store().setUI({ helpOpen: !store().ui.helpOpen }),
-      })),
-      // The palette owns mod+k (the old 'Split at playhead' alias was redundant
-      // bloat: C is the split key). Lists every command here with its shortcut.
-      { combo: 'mod+k', description: 'Command palette', domain: 'view', run: () => togglePalette() },
       // Routed: solo = snapshot undo; in a room = rebased (only YOUR command
       // reverts, other people's edits survive).
       { combo: 'mod+z', description: 'Undo', domain: 'project', run: () => {
@@ -152,9 +136,10 @@ function buildAppBindings(): Binding[] {
         },
       },
       // The project FILE, which was reachable only by two icon buttons nobody
-      // finds. These bindings also put it in the command palette, which is built
-      // from the keymap, so the one path between the browser app and the desktop
-      // app is finally something you can search for by name.
+      // finds. ⛔ THESE BINDINGS ARE NOW THE WHOLE OF IT: they used to feed the
+      // command palette too, and that was cut on 2026-08-17, so a key and the
+      // tooltip on the button that shares it are the only two ways in. Both of
+      // those buttons carry their shortcut in the tooltip for that reason. → D114
       {
         combo: 'mod+shift+s',
         description: 'Back up project to a file',
@@ -376,8 +361,9 @@ function RecordingStudioMount() {
 
 export default function App() {
   const { sizes, adjust } = useLayoutSizes()
-  // One binding list feeds the keymap, the palette, and the help sheet, so the
-  // three can never disagree.
+  // One binding list, and since 2026-08-17 the keymap is its only reader: the
+  // palette and the help sheet were both cut. Still built in one place, because
+  // the tooltips read their labels off the same combos. → D114
   const bindings = useMemo(() => buildAppBindings(), [])
   useEffect(() => installKeymap(bindings), [bindings])
 
@@ -499,12 +485,9 @@ export default function App() {
         <Timeline height={sizes.bottom} />
       </div>
       <Toaster />
-      <QuickStart />
       <RecordingStudioMount />
       <TranscribeStatus />
       <ContextMenu />
-      <CommandPalette bindings={bindings} />
-      <KeyboardHelp bindings={bindings} />
     </div>
   )
 }

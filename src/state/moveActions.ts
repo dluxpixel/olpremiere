@@ -23,7 +23,7 @@ import {
   type MoveId,
   type MoveMatch,
 } from '../engine/moves'
-import { channelBase, channelKeyframes, resolveChannel } from '../engine/effects/channels'
+import { channelKeyframes, resolveChannel } from '../engine/effects/channels'
 import { clipDurationS, unlockedClipIds } from '../engine/timeline'
 import { activeSequence, type Clip, type Sequence } from '../engine/types'
 import { mapClips } from './bulkEdits'
@@ -196,29 +196,34 @@ const stillBetween = (clip: Clip, fromS: number, toS: number): boolean =>
   MOVE_CHANNELS.every((ch) => sameValue(ch, resolveChannel(clip, ch, fromS), resolveChannel(clip, ch, toS)))
 
 /**
- * Is the picture back at the framing it rests at, at this instant?
+ * ⛔ THE RULE THAT USED TO LIVE HERE IS GONE, AND IT WAS HIS CALL, 2026-08-17.
  *
- * ⛔ THIS IS THE WHOLE RULE FOR WHAT CAN BE CHAINED, and it is not a policy, it is
- * arithmetic. Every move is written against the framing the clip RESTS at, because
- * that is the only anchor recognition can rebuild one from. So two moves can only
- * be joined where the picture is resting: a head that ends up close has to slide
- * back out on its own before the next move starts, and that slide belongs to
- * neither of them. Measured across all 144 pairs of the shipped twelve on
- * 2026-08-17: 47 join, and every refusal is one end or the other of this.
+ * A move that ended up close could not be followed, because both halves were written
+ * against the framing the clip RESTS at, so the tail's first keyframe snapped the
+ * picture home in one frame. 47 of the 144 pairs joined and 97 were refused. Asked
+ * whether to keep that, his answer was *"Look at what the best programs have."*
  *
- * CapCut has the same shape for the same reason. Its In arrives at rest and its Out
- * leaves from rest, which is what makes them composable at all.
+ * They chain from where the picture is. Apple Motion combines behaviours in the order
+ * they were added, each reading the value the one before it produced, and a behaviour
+ * and keyframes on one channel COMBINE rather than either snapping the other back to
+ * neutral. Premiere and Resolve arrive at the same place through plain keyframes,
+ * where the value at an instant is simply whatever the last diamond said. Not one of
+ * the four returns the picture home between two gestures.
+ *
+ * So the anchor moved instead of the rule being kept: `framingAt` in moves.ts reads
+ * the head's landing off the head's own last keyframe and the tail is written against
+ * that. Nothing is stored, recognition still rebuilds both halves from the keyframes
+ * alone, and all 144 pairs join. What is left that can refuse a pair is a TAIL that
+ * does not start from normal, which is a property of the tail and not of the head, and
+ * a clip with no room in it. Both are still refused out loud.
+ * → [[olp-chained-moves-design]]
  */
-const atRest = (clip: Clip, atS: number): boolean =>
-  MOVE_CHANNELS.every((ch) => sameValue(ch, resolveChannel(clip, ch, atS), channelBase(clip, ch)))
 
 /**
- * Can a second move follow the one this clip is making, at all?
- *
- * The shelf asks before it offers, so the line is simply absent on a clip whose
- * move stays where it lands rather than being a button that always says no.
+ * Does this move begin at the framing it was written against, rather than already
+ * somewhere else? Only a move that does can follow another one.
  */
-export const canTakeASecondMove = (clip: Clip, endS: number): boolean => atRest(clip, endS)
+const startsFromNormal = (def: MoveDef): boolean => def.beats.length > 0 && def.beats[0].d === 0
 
 /** What a run needs to be written: which move, how deep, over what window. */
 interface MoveRun {
@@ -347,8 +352,9 @@ export function appendMoveToSelection(moveId: MoveId, ids?: readonly string[]): 
   const tailDepth = depthFor(def, ctx.depth)
   let landedOn: string | null = null
   let full = 0
-  /** Which end of the join failed, for a refusal that says something he can act on. */
-  let blocked: 'head' | 'tail' | null = null
+  /** Why the join failed, for a refusal that says something he can act on. */
+  let blocked: 'head' | 'tail' | 'room' | null = null
+  let headName = ''
   mapClips(
     clips.map((c) => c.id),
     `Add ${def.name}`,
@@ -366,26 +372,52 @@ export function appendMoveToSelection(moveId: MoveId, ids?: readonly string[]): 
         landedOn = clip.id
         return applyMove(clip, ctx.fps, def, { ...seqOptions(ctx), depth: tailDepth })
       }
+      // ⛔ THE TWO REFUSALS LEFT ARE BOTH PROPERTIES OF ONE MOVE, not of the join, so
+      // both are read off the table before anything is written rather than inferred
+      // from a failure afterwards. Measured across all 144 pairs on 2026-08-17: 99
+      // join and 45 are one of these two.
+      //
+      // A move needs two keyframes to be a run the shelf can see, and Hold big is one
+      // keyframe holding one size, so it can be a whole clip's move but never half of
+      // a pair.
+      if (head.def.beats.length < 2) {
+        blocked = blocked ?? 'head'
+        headName = headName || head.def.name
+        return clip
+      }
+      // And a tail has to begin where the picture already is. Hold big, Pop and Drift
+      // right all open somewhere other than normal, so following anything with one
+      // jumps the picture there in a single frame.
+      if (!startsFromNormal(def)) {
+        blocked = blocked ?? 'tail'
+        return clip
+      }
       const durS = clipDurationS(clip)
+      let why: 'tail' | 'room' | null = null
       for (const boundary of [head.endS, (head.startS + durS) / 2]) {
         const next = writeRuns(clip, ctx, [
           { ...head, endS: boundary },
           { def, depth: tailDepth, startS: boundary, endS: durS },
         ])
-        if (!next) continue
+        if (!next) {
+          why = why ?? 'room'
+          continue
+        }
         const back = runsOf(next, ctx, options)
-        if (back.length !== 2) continue
-        // ⛔ AND NOTHING MAY HAPPEN BETWEEN THEM. Both moves are written against
-        // the framing the clip RESTS at, which is the only anchor recognition can
-        // rebuild them from, so they can only meet where the picture is resting.
-        // Join a move that stays big to one that starts from normal and the
-        // picture slides between the two on its own: it reads back as a tidy pair
-        // of names while doing a long unnamed drift he never asked for.
-        if (!stillBetween(next, back[0].endS, back[1].startS)) continue
+        // ⛔ AND NOTHING MAY HAPPEN BETWEEN THEM, still. The tail now starts from
+        // where the head landed, so a freshly written pair always touches and this
+        // passes. It stays because the pair is read back by the same search the shelf
+        // uses, and that search is free to find a DIFFERENT boundary than the one
+        // just written: a decomposition with a gap in it would read back as a tidy
+        // pair of names while the picture drifts through the gap unnamed.
+        if (back.length !== 2 || !stillBetween(next, back[0].endS, back[1].startS)) {
+          why = 'tail'
+          continue
+        }
         landedOn = clip.id
         return next
       }
-      blocked = blocked ?? (atRest(clip, head.endS) ? 'tail' : 'head')
+      blocked = blocked ?? why
       return clip
     },
   )
@@ -395,7 +427,7 @@ export function appendMoveToSelection(moveId: MoveId, ids?: readonly string[]): 
       full > 0
         ? 'A clip holds two moves, and this one is full'
         : blocked === 'head'
-          ? 'That move stays where it lands, so nothing can follow it'
+          ? `${headName} holds one size, so it cannot be the first of two`
           : blocked === 'tail'
             ? `${def.name} does not start from normal, so it cannot follow another move`
             : 'No room here for a second move'

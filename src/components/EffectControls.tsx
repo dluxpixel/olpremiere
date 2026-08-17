@@ -86,7 +86,6 @@ import {
   rampEffect,
   removeEffectKeyframeAtPlayhead,
   removeKeyframeAtPlayhead,
-  removeZoom,
   resetChannel,
   resetChannels,
   resetEffectParams,
@@ -111,8 +110,6 @@ import { CurveEditor } from './CurveEditor'
 import { KeyframeTrack } from './KeyframeTrack'
 import { MotionRail, useMotionRail } from './MotionRail'
 import { MoveShelf } from './MoveShelf'
-import { PunchControl } from './PunchControl'
-import { MOVE_CHANNELS } from '../engine/moves'
 import { MAX_GAIN_DB } from '../engine/loudness'
 
 // Per-channel range/step + drag sensitivity. sens = value units per pixel of
@@ -1219,29 +1216,15 @@ export function EffectControls({
       {/* THE FRONT DOOR. Ten finished moves with plain names, one slider, and
           the hand controls folded away underneath. */}
       {!isAdjustment && <MoveShelf clips={[clip]} />}
-      {!isAdjustment && handTuneOpen && (
-        <PunchControl
-          clipId={clip.id}
-          headerAction={
-            // A move is nothing but keyframes - give it the same escape hatch an
-            // effect card's X offers. Gated on ALL THREE move channels, not scale
-            // alone: a punch writes position too, so gating on scale meant the
-            // button vanished while the clip was still left sitting off centre.
-            MOVE_CHANNELS.some((ch) => isChannelAnimated(clip, ch)) ? (
-              <button
-                type="button"
-                data-testid="punch-remove"
-                title="Clears the move's keyframes - the clip keeps the size and position it has standing still"
-                className="flex h-5 items-center gap-1 rounded-field bg-bg-input px-1.5 text-dense text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated hover:text-text-primary"
-                onClick={() => removeZoom(clip.id)}
-              >
-                <X size={11} strokeWidth={1.75} aria-hidden />
-                Clear motion
-              </button>
-            ) : undefined
-          }
-        />
-      )}
+      {/* ⛔ THE PUNCH PANEL STOOD HERE AND HE CUT IT, 2026-08-17, asked which of the
+          features are useless. Three verbs and four depth presets that each needed the
+          playhead parked on the right frame first, which the shelf above answers in one
+          click and now with a second move on top of that. Its three verbs were only ever
+          the mouse copy of `p`, `shift+p` and `alt+p`, and those keys stay.
+
+          ⛔ `handTuneOpen` STAYS, and it is not what he cut. That door also gates the
+          keyframe lanes and the curve editor on the rail below, which is the hand editing
+          surface itself. The option he was shown described the punch buttons alone. → D114 */}
       {/* ONE rail for the whole body: the effect stack, Transform, Opacity and
           Crop all hang off the same ruler, so a lane under an effect param and a
           lane under Zoom can never disagree about where a moment is. The ruler

@@ -213,7 +213,7 @@ test('zooming the rail earns the click between two diamonds, and that segment op
 
   // One click. The frame rises to 120 percent over 5 frames and STAYS there for
   // the remaining 16 seconds, so the Zoom lane carries exactly two diamonds.
-  await page.getByTestId('punch-apply').click()
+  await page.keyboard.press('p')
 
   const lane = page.locator('[data-testid="keyframe-track"][data-channel="scale"]')
   await expect(lane).toBeVisible()
@@ -321,7 +321,7 @@ test('dragging a diamond that is already selected moves the whole selection toge
   await selectTheClip(page)
   await openHandControls(page)
   await setUI(page, { playheadS: 4 })
-  await page.getByTestId('punch-apply').click()
+  await page.keyboard.press('p')
 
   const lane = page.locator('[data-testid="keyframe-track"][data-channel="scale"]')
   const diamonds = lane.getByTestId('keyframe')
@@ -510,7 +510,7 @@ test('cut punch splits the clip with its linked audio, and the right half simply
   })
   await setUI(page, { playheadS: cutAt })
 
-  await page.getByTestId('cut-punch').click()
+  await page.keyboard.press('Alt+p')
 
   // The picture splits, and the sound splits WITH it. Cutting the video alone is
   // what desyncs a linked pair at every punch he fires this way.

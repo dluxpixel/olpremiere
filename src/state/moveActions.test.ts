@@ -6,7 +6,8 @@
 // whole two-move claim collapses at the second clip.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { channelKeyframes, resolveChannel } from '../engine/effects/channels'
+import { channelBase, channelKeyframes, resolveChannel } from '../engine/effects/channels'
+import { MOVES } from '../engine/moves'
 import { recomputeDuration } from '../engine/timeline'
 import {
   activeSequence,
@@ -311,20 +312,57 @@ describe('a second move after the first', () => {
   })
 
   /**
-   * ⛔ AND THE PICTURE MUST BE STILL WHERE THEY MEET. Both moves are written against
-   * the framing the clip rests at, so a move that ends up close cannot be followed:
-   * the picture would slide back out between the two on its own, which is motion
-   * neither of them names. Refused out loud rather than written.
+   * ⛔ A MOVE THAT ENDS UP CLOSE CAN BE FOLLOWED, his call of 2026-08-17: *"Look at
+   * what the best programs have."* They chain from where the picture is, so the tail
+   * is written against the head's landing instead of against the resting framing.
+   * This exact pair was refused out loud until then.
    */
-  it('refuses to follow a move that stays where it lands', () => {
+  it('follows a move that stays where it lands, from where it landed', () => {
     const [clip] = seedClips(1, 6)
     useStore.getState().setUI({ selection: [clip.id] })
     applyMoveToSelection('pushIn')
-    const before = clipById(clip.id)
     toasted.length = 0
     appendMoveToSelection('leftThenRight')
-    expect(clipById(clip.id)).toBe(before)
-    expect(toasted).toContain('That move stays where it lands, so nothing can follow it')
+    const [head, tail] = movesOnClip(clipById(clip.id))
+    expect([head.id, tail.id]).toEqual(['pushIn', 'leftThenRight'])
+    expect(toasted).toEqual([])
+    // Touching, and the picture standing still across the join: the tail starts at
+    // the size the head left it at rather than snapping home in one frame.
+    expect(tail.startS).toBeCloseTo(head.endS, 6)
+    const written = clipById(clip.id)
+    const at = (t: number): number => resolveChannel(written, 'scale', t)
+    expect(at(head.endS)).toBeCloseTo(at(tail.startS), 6)
+    expect(at(head.endS)).toBeGreaterThan(channelBase(written, 'scale') + 1e-3)
+  })
+
+  /**
+   * ⛔ AND THE HALF THAT MOVED IS STILL THE HALF THAT GOES DARK. The tail's anchor is
+   * read off the head's own last keyframe, so a hand edit in the head could have
+   * quietly taken the tail's name with it. One diamond dragged inside the head, and
+   * the shelf names neither half rather than naming the wrong thing.
+   */
+  it('goes dark on a chain he has edited by hand', () => {
+    const [clip] = seedClips(1, 6)
+    useStore.getState().setUI({ selection: [clip.id] })
+    applyMoveToSelection('pushIn')
+    appendMoveToSelection('leftThenRight')
+    expect(movesOnClip(clipById(clip.id))).toHaveLength(2)
+    updateActiveSequence('hand edit', (sq) => ({
+      ...sq,
+      tracks: sq.tracks.map((t, i) =>
+        i === 0
+          ? {
+              ...t,
+              clips: t.clips.map((c) => {
+                const scale = [...channelKeyframes(c, 'scale')]
+                scale[1] = { ...scale[1], value: scale[1].value * 1.13 }
+                return { ...c, keyframes: { ...c.keyframes, scale } }
+              }),
+            }
+          : t,
+      ),
+    }))
+    expect(movesOnClip(clipById(clip.id))).toEqual([])
   })
 
   it('refuses a second move that does not start from normal', () => {
@@ -336,6 +374,18 @@ describe('a second move after the first', () => {
     appendMoveToSelection('holdBig')
     expect(clipById(clip.id)).toBe(before)
     expect(toasted).toContain('Hold big does not start from normal, so it cannot follow another move')
+  })
+
+  /** And the other way round: one held size cannot be the first of two either. */
+  it('refuses to follow a move that is one held size, and names IT', () => {
+    const [clip] = seedClips(1, 6)
+    useStore.getState().setUI({ selection: [clip.id] })
+    applyMoveToSelection('holdBig')
+    const before = clipById(clip.id)
+    toasted.length = 0
+    appendMoveToSelection('punchIn')
+    expect(clipById(clip.id)).toBe(before)
+    expect(toasted).toContain('Hold big holds one size, so it cannot be the first of two')
   })
 
   /**
@@ -365,6 +415,135 @@ describe('a second move after the first', () => {
     appendMoveToSelection('leftThenRight')
     expect(undoDepth()).toBe(before + 1)
     for (const c of clips) expect(names(c.id)).toEqual(['inAndOut', 'leftThenRight'])
+  })
+
+  /**
+   * ⛔ EVERY ORDERED PAIR OF THE SHIPPED TWELVE, MEASURED RATHER THAN ARGUED. 47 of
+   * the 144 joined while both halves were written against the resting framing. The
+   * tail is written against the head's landing since, which is his call of 2026-08-17,
+   * so the only refusals left are tails that do not start from normal.
+   */
+  it('joins every pair except the two a move itself rules out', () => {
+    const defs = MOVES.filter((m) => m.beats.length > 0)
+    // The expectation comes off the table rather than being a number typed in, so
+    // adding a move to the shelf cannot quietly shrink what chains.
+    const canLead = (d: (typeof defs)[number]): boolean => d.beats.length >= 2
+    const canFollow = (d: (typeof defs)[number]): boolean => d.beats[0].d === 0
+    const joined: string[] = []
+    const refused: string[] = []
+    for (const head of defs) {
+      for (const tail of defs) {
+        useStore.getState().setProject(newProject())
+        const [clip] = seedClips(1, 6)
+        useStore.getState().setUI({ selection: [clip.id], playheadS: 0, punchDepth: 1.2, punchRiseFrames: 5 })
+        applyMoveToSelection(head.id)
+        appendMoveToSelection(tail.id)
+        const back = movesOnClip(clipById(clip.id)).map((m) => m.id)
+        const pair = `${head.id}>${tail.id}`
+        ;(back.length === 2 && back[0] === head.id && back[1] === tail.id ? joined : refused).push(pair)
+        // Whatever happened, it happened for the reason the table predicts.
+        expect(refused.includes(pair)).toBe(!canLead(head) || !canFollow(tail))
+      }
+    }
+    expect(joined.length + refused.length).toBe(144)
+    expect(joined).toHaveLength(defs.filter(canLead).length * defs.filter(canFollow).length)
+    // 99 of 144 on 2026-08-17, against 47 while both halves were written from rest.
+    expect(joined).toHaveLength(99)
+  })
+
+  /**
+   * ⛔ THE COST OF THE LOOSER ANCHOR, MEASURED RATHER THAN HOPED FOR. The tail is now
+   * rebuilt against wherever the picture is at the join instead of always against the
+   * resting framing, so there are strictly more ways a set of keyframes could fall
+   * apart into a nameable pair. The thing that would break is the promise the whole
+   * panel rests on: that a clip he has touched by hand stops claiming a preset.
+   *
+   * So every joining pair is written and every diamond that carries its SHAPE is
+   * dragged in time, one at a time, and the shelf has to stop naming the pair.
+   *
+   * ⛔ WHICH DIAMONDS COUNT IS THE WHOLE CARE OF THIS TEST, and getting it wrong is a
+   * false alarm rather than a bug found. Three diamonds cannot be hand edits: the two
+   * ends of a half are its window and dragging them is a retime the panel supports on
+   * purpose, and the one where the halves meet is both of their windows at once. A
+   * VALUE cannot be one either, because a push in at 130 percent is still a push in
+   * and the depth is read back rather than stored. What is left is the interior
+   * timing, which no depth and no window can absorb, and that is what is swept here.
+   */
+  it('stops naming a pair once a diamond that carries its shape moves', () => {
+    const defs = MOVES.filter((m) => m.beats.length > 0)
+    let swept = 0
+    for (const head of defs.filter((d) => d.beats.length >= 2)) {
+      for (const tail of defs.filter((d) => d.beats[0].d === 0)) {
+        useStore.getState().setProject(newProject())
+        const [clip] = seedClips(1, 6)
+        useStore.getState().setUI({ selection: [clip.id], playheadS: 0, punchDepth: 1.2, punchRiseFrames: 5 })
+        applyMoveToSelection(head.id)
+        appendMoveToSelection(tail.id)
+        const pair = clipById(clip.id)
+        const runs = movesOnClip(pair)
+        expect(runs.map((m) => m.id)).toEqual([head.id, tail.id])
+        const ends = [runs[0].startS, runs[0].endS, runs[1].startS, runs[1].endS]
+        const kfs = channelKeyframes(pair, 'scale')
+        const shape = kfs
+          .map((_, i) => i)
+          .filter((i) => !ends.some((e) => Math.abs(kfs[i].t - e) < 1e-6))
+        for (const i of shape) {
+          updateActiveSequence('nudge', (sq) => ({
+            ...sq,
+            tracks: sq.tracks.map((t, ti) =>
+              ti === 0
+                ? {
+                    ...t,
+                    clips: t.clips.map((c) => {
+                      if (c.id !== clip.id) return c
+                      const scale = [...channelKeyframes(pair, 'scale')]
+                      scale[i] = { ...scale[i], t: scale[i].t + 4 / 30 }
+                      return { ...c, keyframes: { ...c.keyframes, scale } }
+                    }),
+                  }
+                : t,
+            ),
+          }))
+          expect(movesOnClip(clipById(clip.id)).map((m) => m.id)).not.toEqual([head.id, tail.id])
+          swept++
+        }
+      }
+    }
+    // Not every pair has an interior diamond: two two-keyframe moves that touch are
+    // three diamonds and all three are windows. The ones that do are swept.
+    expect(swept).toBeGreaterThan(140)
+  })
+
+  /**
+   * ⛔ AND THE HONEST OTHER HALF OF IT, WRITTEN DOWN RATHER THAN LEFT AS A GAP. Push in
+   * twice over is three diamonds and every one of them is a window or a depth, so
+   * there is no hand edit of it for the shelf to catch: whatever he drags, the clip
+   * really is still a push in followed by a push in. Better said out loud here than
+   * discovered as a surprise later.
+   */
+  it('keeps naming two push ins when the diamond between them moves, because that is the truth', () => {
+    const [clip] = seedClips(1, 6)
+    useStore.getState().setUI({ selection: [clip.id] })
+    applyMoveToSelection('pushIn')
+    appendMoveToSelection('pushIn')
+    const pair = clipById(clip.id)
+    expect(movesOnClip(pair).map((m) => m.id)).toEqual(['pushIn', 'pushIn'])
+    updateActiveSequence('nudge', (sq) => ({
+      ...sq,
+      tracks: sq.tracks.map((t, ti) =>
+        ti === 0
+          ? {
+              ...t,
+              clips: t.clips.map((c) => {
+                const scale = [...channelKeyframes(c, 'scale')]
+                scale[1] = { ...scale[1], value: scale[1].value * 1.09 }
+                return { ...c, keyframes: { ...c.keyframes, scale } }
+              }),
+            }
+          : t,
+      ),
+    }))
+    expect(movesOnClip(clipById(clip.id)).map((m) => m.id)).toEqual(['pushIn', 'pushIn'])
   })
 
   /** A clip holds two. The third is refused out loud rather than written and left unnameable. */

@@ -121,13 +121,3 @@ test('undo announces what it reverted', async ({ page }) => {
   await expect(page.getByTestId('toast').filter({ hasText: /Undo:/ })).toBeVisible()
 })
 
-test('the ? key opens the keyboard help overlay', async ({ page }) => {
-  await page.goto('/')
-  // Click a neutral panel first: this both moves focus off any field AND lets
-  // the keymap's mount effect install before we press (a bare press right after
-  // goto can beat it).
-  await page.getByTestId('panel-left').click({ position: { x: 5, y: 5 } })
-  // '?' is synthesised as the produced character, matching real keyboards.
-  await page.keyboard.press('?')
-  await expect(page.getByTestId('keyboard-help')).toBeVisible()
-})

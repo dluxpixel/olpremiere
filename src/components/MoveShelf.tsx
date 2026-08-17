@@ -55,7 +55,6 @@ import { activeSequence, type Clip } from '../engine/types'
 import {
   appendMoveToSelection,
   applyMoveToSelection,
-  canTakeASecondMove,
   dropMove,
   movesOnClips,
   setMoveDepth,
@@ -743,23 +742,17 @@ export function MoveShelf({ clips }: { clips: Clip[] }) {
         <p className="-mt-2 text-dense text-text-muted">Drag either end of either bar to move when it happens</p>
       )}
 
-      {/* ⛔ AND WHEN IT CANNOT BE FOLLOWED, IT SAYS SO RATHER THAN SHOWING NOTHING.
-          Seven of the twelve tiles end up somewhere and stay there, so on most
-          clips the offer above is simply absent, and an absent control teaches him
-          nothing: he would look for it, not find it, and conclude the feature is
-          broken. One sentence in its place gives the reason in his own terms, and
-          the reason happens to be the rule the whole panel runs on. */}
-      {bars.length === 1 && !canTakeASecondMove(clips[0], bars[0].run.endS) && (
-        <p className="text-dense text-text-muted" data-testid="no-second-move">
-          {bars[0].def.name} ends up there and stays, so nothing can follow it
-        </p>
-      )}
+      {/* The second move, which is the whole of chaining as a gesture: one line that
+          asks for the move rather than describing a slot. A clip holds two, his word,
+          so the line disappears once the second one has landed.
 
-      {/* The second move, which is the whole of chaining as a gesture: one line
-          that is only there when the clip has room for it, and which asks for the
-          move rather than describing a slot. A clip holds two, his word, so the
-          line disappears once the second one has landed. */}
-      {bars.length === 1 && canTakeASecondMove(clips[0], bars[0].run.endS) && (
+          ⛔ AND IT IS OFFERED ON EVERY MOVE NOW, his call of 2026-08-17. A sentence
+          used to stand here instead on the seven tiles that end up somewhere and stay,
+          because a tail written against the resting framing snapped the picture home.
+          The tail starts from where the head landed since, so every move can be
+          followed and that sentence would be a lie. What can still refuse a pair is
+          the tail, or a clip with no room, and both say so when he picks one. */}
+      {bars.length === 1 && (
         <button
           type="button"
           data-testid="add-second-move"

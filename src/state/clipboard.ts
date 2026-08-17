@@ -118,7 +118,6 @@ export function selectAllClips(): void {
 export function deselectAll(): void {
   if (useContextMenu.getState().open) return
   const s = useStore.getState()
-  if (s.ui.helpOpen) return
   if (s.ui.selection.length > 0) s.setUI({ selection: [] })
 }
 

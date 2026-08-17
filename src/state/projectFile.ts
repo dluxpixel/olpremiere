@@ -92,8 +92,9 @@ export function blobKeysOf(project: Project): string[] {
 }
 
 /**
- * ONE door to the file picker, shared by the toolbar button, the keyboard
- * shortcut and the command palette. The top bar owns the actual hidden input (it
+ * ONE door to the file picker, shared by the toolbar button and the keyboard
+ * shortcut. The command palette was the third caller until it was cut on
+ * 2026-08-17. The top bar owns the actual hidden input (it
  * is what the e2e drives), and registers it here so nothing has to grow a second
  * way in.
  */
