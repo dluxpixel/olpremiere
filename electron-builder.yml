@@ -19,20 +19,25 @@ directories:
 files:
   - out/**/*
   - package.json
-  # onnxruntime-node arrives as a dependency of @huggingface/transformers and
-  # weighs 210 MB, because it carries a native runtime for EVERY platform. This
-  # is a Windows x64 installer, so three of those four can never be loaded:
-  # 36 MB of macOS .dylib, 55 MB of Linux .so, and the Windows-on-ARM half of
-  # win32. That is about 137 MB of his every upload that cannot execute.
+  # ⛔ NO node_modules SHIP AT ALL, and here is the proof rather than the hope.
+  # Measured 2026-08-17: app.asar was 238.9 MB while the whole built app, out/,
+  # was 36.5 MB. The rest was production dependencies the packaged app can never
+  # load, riding along in every upload. Chiefly onnxruntime-node at 210 MB, which
+  # carries a native runtime for macOS, Linux, Windows on ARM and Windows x64.
   #
-  # Dropping the platforms he does not ship is safe by construction. Dropping
-  # the module outright is probably also safe (captions run in the renderer on
-  # onnxruntime-web, and the name appears in src/ only inside comments), but
-  # "probably" is not proof, so win32/x64 stays until a packaged build has
-  # actually transcribed something.
-  - "!node_modules/onnxruntime-node/bin/napi-v6/darwin/**"
-  - "!node_modules/onnxruntime-node/bin/napi-v6/linux/**"
-  - "!node_modules/onnxruntime-node/bin/napi-v6/win32/arm64/**"
+  # Three facts, each checked in the built output rather than assumed:
+  #   - out/main imports node builtins and `electron`, nothing else, and its one
+  #     createRequire call loads "stream"
+  #   - out/preload is 3.8 KB and does the same
+  #   - the renderer runs sandbox: true, contextIsolation: true and
+  #     nodeIntegration: false, so it CANNOT require a node module, and Vite has
+  #     already bundled every dependency into out/renderer
+  #
+  # `scripts/check-self-contained.mjs` re-checks the first two in front of every
+  # packaging step, so a future native dependency fails the BUILD instead of
+  # shipping an installer that breaks on his machine. Read its header before
+  # touching this line.
+  - "!node_modules/**"
 asar: true
 # The bundled ffmpeg ships OUTSIDE app.asar (you cannot spawn an exe from a
 # virtual asar path). Resolved at runtime via process.resourcesPath/ffmpeg.

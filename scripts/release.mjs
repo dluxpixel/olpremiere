@@ -29,6 +29,13 @@ try {
   // Purely local: a failure here is the code, so it fails once and says so.
   await runLogged('npm run build:electron', 'compile the desktop bundle', shipLog)
 
+  // The installer ships NO node_modules, which is 200 MB he no longer uploads, and
+  // that is only safe while the desktop bundle reaches for nothing but node
+  // builtins and electron. Checked HERE, right after the bundle is built and
+  // before anything is packaged, so a new dependency costs a build rather than a
+  // release that installs and then fails on his machine.
+  await runLogged('node scripts/check-self-contained.mjs', 'the bundle needs no node_modules', shipLog)
+
   // Build the installer + blockmap (no electron-builder publish, since publish.mjs owns
   // the upload so a transient network blip can't leave a half-published release).
   //
