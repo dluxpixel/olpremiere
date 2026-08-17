@@ -553,7 +553,7 @@ export function buildMove(
 /**
  * Take every move off a clip, keeping the framing it has when it is standing
  * still. An empty keyframe list de-animates a channel and leaves its base alone,
- * which is what shipped `removeZoom` relies on.
+ * which is what the shelf's None tile relies on.
  */
 /**
  * A copied move's keyframes, refitted for a clip of a different length.

@@ -26,7 +26,6 @@ import {
   upsertKeyframeValue,
 } from '../engine/keyframes'
 import { CURVE_EASE, MOTION_CURVES } from '../engine/motion'
-import { clearMoveChannels } from '../engine/moves'
 import {
   clipDurationS,
   clipEndS,
@@ -535,23 +534,6 @@ export function resetChannel(clipId: string, channel: AnimChannel): void {
   )
 }
 
-/**
- * Remove a punch/zoom. Every zoom path (the shelf, the P key, the clip context
- * menu) writes keyframes and never touches the static base, so dropping those
- * keyframes restores the pre-zoom look exactly. Unlike resetChannel the base is
- * deliberately kept: a hand-scaled clip stays at its size, only the animated
- * zoom goes away. One undo step.
- *
- * ALL THREE MOVE CHANNELS, not scale alone. Every punch has written position
- * keyframes as well as scale ever since punches learned to aim, so clearing
- * scale by itself left the clip pinned a few pixels off centre at 100 percent
- * AND took the button away with it (it only shows while scale is animated), so
- * there was no route back from the panel at all. It read as the app breaking
- * the clip.
- */
-export function removeZoom(clipId: string): void {
-  mapClip(clipId, 'Remove zoom', (c) => clearMoveChannels(c))
-}
 
 /**
  * Toggle a clip's enabled flag (Shift+E). A disabled clip renders nothing, its

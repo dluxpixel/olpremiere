@@ -139,6 +139,47 @@ export function railSnap(tS: number, fps: number, durS: number): number {
 }
 
 /**
+ * A DRAGGED diamond's landing: pulled to the nearest moment that matters, then
+ * frame snapped and held inside the clip.
+ *
+ * ⛔ THE FRAME QUANTISE RUNS LAST AND THAT IS NOT A COMPROMISE. Every keyframe in
+ * this app sits on a frame boundary, and `matchMove` compares those times exactly
+ * to work out which move a clip is making, so a diamond pulled to a marker still
+ * has to land on a frame or the shelf stops naming a move nobody edited.
+ *
+ * ⛔ AND IT IS SEPARATE FROM `railSnap` BECAUSE ONLY DRAGS GET THE PULL. `railSnap`
+ * also commits the keyframe time he TYPES into the field under a selected diamond,
+ * and a typed number that quietly lands somewhere else answers a question he did
+ * not ask.
+ *
+ * `points` are LOCAL clip seconds and `withinS` is the pull radius, which the rail
+ * works out from pixels because only the rail knows the zoom. An empty list, or a
+ * radius of zero, is exactly `railSnap`.
+ */
+export function railDragSnap(
+  tS: number,
+  fps: number,
+  durS: number,
+  points: readonly number[],
+  withinS: number,
+): number {
+  if (points.length === 0 || !(withinS > 0)) return railSnap(tS, fps, durS)
+  let best = tS
+  let bestDist = withinS
+  for (const p of points) {
+    const dist = Math.abs(p - tS)
+    // Strict <, so the earliest point wins an exact tie: the same rule the
+    // timeline's own snapTime follows, and a tie that flipped with list order
+    // would make the same drag land in two places on two nights.
+    if (dist < bestDist) {
+      bestDist = dist
+      best = p
+    }
+  }
+  return railSnap(best, fps, durS)
+}
+
+/**
  * Closest two moments may be parked by a drag: ONE FRAME, not the engine's bare
  * arithmetic minimum. Two diamonds a fifth of a millisecond apart are one
  * diamond at every zoom, and the next drag grabs whichever the DOM lists first.

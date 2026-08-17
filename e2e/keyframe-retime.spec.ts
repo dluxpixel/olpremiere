@@ -43,6 +43,17 @@ async function seedScaleKeyframes(page: Page, id: string): Promise<void> {
   }, id)
 }
 
+/** Set UI state from the browser side. The import path lives INSIDE the callback. */
+async function setUI(page: Page, patch: Record<string, unknown>): Promise<void> {
+  await page.evaluate(async (p) => {
+    const storeMod = '/src/state/store.ts'
+    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+      useStore: { getState: () => { setUI: (patch: unknown) => void } }
+    }
+    useStore.getState().setUI(p)
+  }, patch)
+}
+
 async function scaleTimes(page: Page): Promise<number[]> {
   return page.evaluate(async () => {
     const storeMod = '/src/state/store.ts'
@@ -127,4 +138,79 @@ test('typing in the Time field sets an exact keyframe time', async ({ page }) =>
   await page.keyboard.press('Enter')
 
   expect(await scaleTimes(page)).toEqual([1, 2])
+})
+
+/**
+ * ⛔ HIS SNAPPING SWITCH REACHES THE DIAMONDS NOW, and until 2026-08-17 the motion
+ * rail was the only surface in the app that ignored it. The timeline, its toolbar
+ * and the monitor overlay all read `ui.snapping`; a dragged diamond got the frame
+ * grid and nothing else, on a switch he had already pressed. → D116
+ *
+ * The pull radius is 8px, the same as the timeline's, so the target below is aimed
+ * a few pixels off the playhead: far enough that no frame snap would land on it,
+ * close enough to be inside the magnet.
+ */
+test('a dragged diamond is pulled to the playhead while snapping is on', async ({ page }) => {
+  const id = await addTitle(page)
+  await seedScaleKeyframes(page, id)
+  await openHandControls(page)
+
+  const diamonds = page.getByTestId('keyframe')
+  await expect(diamonds).toHaveCount(2)
+  expect(await scaleTimes(page)).toEqual([1, 3])
+
+  // Park the playhead at 2s, halfway between the two diamonds.
+  await setUI(page, { playheadS: 2 })
+
+  // The rail's own scale, read off the two diamonds: they are exactly 2s apart.
+  const drag = diamonds.nth(1)
+  await drag.hover()
+  const d1 = await diamonds.nth(0).boundingBox()
+  const d3 = await drag.boundingBox()
+  if (!d1 || !d3) throw new Error('no geometry')
+  const x1 = d1.x + d1.width / 2
+  const x3 = d3.x + d3.width / 2
+  const pxPerS = (x3 - x1) / 2
+  const y = d3.y + d3.height / 2
+  // 4px past the playhead: inside the 8px magnet, and more than a frame away from
+  // it, so a landing exactly on 2 can only be the pull.
+  const target = x1 + pxPerS + 4
+
+  await page.mouse.move(x3, y)
+  await page.mouse.down()
+  await page.mouse.move(target, y, { steps: 10 })
+  await page.mouse.up()
+
+  const snapped = await scaleTimes(page)
+  expect(snapped[0]).toBe(1)
+  expect(snapped[1]).toBeCloseTo(2, 6)
+})
+
+/** And the switch is a switch: off, the same drag lands where he actually let go. */
+test('with snapping off the same drag lands where he dropped it', async ({ page }) => {
+  const id = await addTitle(page)
+  await seedScaleKeyframes(page, id)
+  await openHandControls(page)
+
+  await setUI(page, { playheadS: 2, snapping: false })
+
+  const diamonds = page.getByTestId('keyframe')
+  const drag = diamonds.nth(1)
+  await drag.hover()
+  const d1 = await diamonds.nth(0).boundingBox()
+  const d3 = await drag.boundingBox()
+  if (!d1 || !d3) throw new Error('no geometry')
+  const x1 = d1.x + d1.width / 2
+  const x3 = d3.x + d3.width / 2
+  const pxPerS = (x3 - x1) / 2
+  const y = d3.y + d3.height / 2
+
+  await page.mouse.move(x3, y)
+  await page.mouse.down()
+  await page.mouse.move(x1 + pxPerS + 4, y, { steps: 10 })
+  await page.mouse.up()
+
+  const landed = await scaleTimes(page)
+  // Past the playhead by about the 4px he dragged it, not sitting on top of it.
+  expect(landed[1]).toBeGreaterThan(2)
 })

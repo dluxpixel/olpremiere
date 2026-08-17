@@ -155,10 +155,10 @@ export function KeyframeTrack({ clip, channel }: { clip: Clip; channel: AnimChan
       if (d.group.length > 0) {
         // Clamp the LIVE delta through the same function the commit uses, so
         // the diamonds never travel somewhere the release will not honour.
-        const raw = rail.snapT(dragTargetT(d.origT, dx, d.pxPerS)) - d.origT
+        const raw = rail.snapDragT(dragTargetT(d.origT, dx, d.pxPerS)) - d.origT
         d.draftT = d.origT + clampKeyframesDelta(clip, d.group, raw, rail.fps)
       } else {
-        d.draftT = rail.snapT(dragTargetT(d.origT, dx, d.pxPerS))
+        d.draftT = rail.snapDragT(dragTargetT(d.origT, dx, d.pxPerS))
       }
       if (d.moved) {
         setDragView({ origT: d.origT, t: d.draftT, copy: d.copy })

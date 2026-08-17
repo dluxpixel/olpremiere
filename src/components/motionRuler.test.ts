@@ -8,6 +8,7 @@ import {
   keyframeKey,
   panBy,
   railMinGapS,
+  railDragSnap,
   railSnap,
   railTicks,
   tickStepS,
@@ -178,6 +179,48 @@ describe('railSnap', () => {
   it('holds the snapped time inside the clip', () => {
     expect(railSnap(-3, 30, DUR)).toBe(0)
     expect(railSnap(DUR + 3, 30, DUR)).toBe(DUR)
+  })
+})
+
+describe('railDragSnap', () => {
+  // 30fps, so a frame is 1/30 and the pull radius below is a comfortable 0.1s.
+  const PTS = [1, 2.5, 4]
+
+  it('pulls a dragged diamond onto a nearby moment', () => {
+    expect(railDragSnap(1.04, 30, DUR, PTS, 0.1)).toBeCloseTo(1, 9)
+    expect(railDragSnap(2.46, 30, DUR, PTS, 0.1)).toBeCloseTo(2.5, 9)
+  })
+
+  it('leaves it alone when nothing is within reach', () => {
+    // 1.5 is half a second from the nearest point, so it only frame snaps.
+    expect(railDragSnap(1.504, 30, DUR, PTS, 0.1)).toBeCloseTo(railSnap(1.504, 30, DUR), 9)
+  })
+
+  /**
+   * ⛔ THE ORDER MATTERS AND THIS IS THE TEST THAT SAYS SO. A point that is not on
+   * a frame boundary must still land on one, because `matchMove` compares keyframe
+   * times exactly to name a move. Pull first, quantise second.
+   */
+  it('still lands on a frame when the moment it was pulled to does not', () => {
+    const odd = 1.0031 // between two frames at 30fps
+    const landed = railDragSnap(1.004, 30, DUR, [odd], 0.1)
+    expect(landed).toBeCloseTo(Math.round(odd * 30) / 30, 9)
+    expect(landed * 30).toBeCloseTo(Math.round(landed * 30), 6)
+  })
+
+  it('is exactly railSnap with no points, or with no reach', () => {
+    expect(railDragSnap(1.04, 30, DUR, [], 0.1)).toBe(railSnap(1.04, 30, DUR))
+    expect(railDragSnap(1.04, 30, DUR, PTS, 0)).toBe(railSnap(1.04, 30, DUR))
+  })
+
+  it('holds the result inside the clip, the way railSnap does', () => {
+    expect(railDragSnap(-3, 30, DUR, [-1], 5)).toBe(0)
+    expect(railDragSnap(DUR + 3, 30, DUR, [DUR + 1], 5)).toBe(DUR)
+  })
+
+  /** The earliest point wins an exact tie, so the same drag never lands two ways. */
+  it('breaks a tie toward the earlier moment', () => {
+    expect(railDragSnap(2, 30, DUR, [1.9, 2.1], 0.5)).toBeCloseTo(1.9, 9)
   })
 })
 

@@ -24,16 +24,18 @@
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { MOMENT_EPS } from '../engine/keyframes'
 import { formatTimecode } from '../engine/timecode'
-import { clipDurationS } from '../engine/timeline'
-import type { AnimChannel, Clip } from '../engine/types'
+import { clipDurationS, collectSnapPoints } from '../engine/timeline'
+import { activeSequence, type AnimChannel, type Clip } from '../engine/types'
 import type { KeyframePick } from '../state/clipEdits'
 import { useStore } from '../state/store'
+import { SNAP_PX } from './timelineGeometry'
 import {
   RAIL_ZOOM_STEP,
   clampStart,
   fitView,
   keyframeKey,
   panBy,
+  railDragSnap,
   railMinGapS,
   railSnap,
   railTicks,
@@ -74,6 +76,21 @@ export interface MotionRailValue {
   pxToT: (px: number) => number
   /** Frame-snap a local time and hold it inside the clip. */
   snapT: (tS: number) => number
+  /**
+   * The same, plus a pull toward the moments that matter, while HIS snapping
+   * switch is on. **Drags only.**
+   *
+   * ⛔ IT IS A SECOND FUNCTION ON PURPOSE, and merging the two would be a bug.
+   * `snapT` also commits the keyframe TIME he types into the field under a
+   * selected diamond, and a typed number that quietly lands somewhere else is
+   * the app answering a different question than the one he asked.
+   *
+   * ⛔ AND THE PLAYHEAD IS READ IMPERATIVELY, never subscribed. This component
+   * deliberately does not re-render on the playhead: it writes a CSS property
+   * instead, because lanes re-rendering at the display's refresh rate was a big
+   * part of playback lag. One `getState()` inside a drag costs nothing.
+   */
+  snapDragT: (tS: number) => number
   /**
    * Closest a drag may park two moments: ONE FRAME. The state actions clamp to
    * the same rule, so a lane's live draft lands exactly where the commit does.
@@ -405,6 +422,31 @@ export function MotionRail({
     window.addEventListener('pointerup', onUp)
   }
 
+  // --- what a dragged diamond is pulled toward --------------------------------
+  //
+  // ⛔ NOT ONE SUBSCRIPTION IS ADDED HERE, and that is the whole care of it. This
+  // component's reason for existing is that lanes must not re-render while the
+  // picture plays, so the project, the playhead and his snapping switch are all
+  // read with `getState()` at the moment a drag asks, never with a hook.
+  //
+  // The sequence walk is cached against the project's own identity, which is the
+  // same trick `engine/snapPointCache.ts` plays for the timeline drag and for the
+  // same reason: one gesture asks hundreds of times and the answer cannot change
+  // underneath it, because drag maths reads the COMMITTED project.
+  const snapCache = useRef<{ project: unknown; points: number[] } | null>(null)
+  const pullPoints = (): number[] => {
+    const project = useStore.getState().project
+    const hit = snapCache.current
+    if (hit && hit.project === project) return hit.points
+    // The clip's own edges are left out: `railSnap` already clamps to them, and
+    // including them would give every drag a magnet at each end.
+    const points = collectSnapPoints(activeSequence(project), { excludeClipIds: [clip.id] })
+      .map((tS) => tS - clip.startS)
+      .filter((tS) => tS > 0 && tS < durS)
+    snapCache.current = { project, points }
+    return points
+  }
+
   // --- the axis itself --------------------------------------------------------
 
   const ctx: MotionRailValue = {
@@ -417,6 +459,13 @@ export function MotionRail({
     tToPx: (tS) => (tS - view.startS) * view.pxPerS,
     pxToT: (px) => view.startS + (view.pxPerS > 0 ? px / view.pxPerS : 0),
     snapT: (tS) => railSnap(tS, fps, durS),
+    snapDragT: (tS) => {
+      const { ui } = useStore.getState()
+      if (!ui.snapping) return railSnap(tS, fps, durS)
+      const playheadT = ui.playheadS - clip.startS
+      const points = playheadT > 0 && playheadT < durS ? [...pullPoints(), playheadT] : pullPoints()
+      return railDragSnap(tS, fps, durS, points, SNAP_PX / view.pxPerS)
+    },
     minGapS: railMinGapS(fps),
     selection,
     select,
