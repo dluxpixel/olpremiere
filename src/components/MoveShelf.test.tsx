@@ -54,9 +54,16 @@ describe('the second move, from the panel', () => {
 
     // Push in ends up close and stays there, so the picture would have to slide
     // back out on its own between the two. Not offered rather than refused.
+    //
+    // ⛔ AND IT SAYS WHY. Seven of the twelve tiles end up somewhere and stay, so
+    // for most clips this is what he sees, and an absent control with no sentence
+    // beside it reads as a broken feature rather than as a rule.
     applyMoveToSelection('pushIn')
     show(clip.id)
     expect(screen.queryByTestId('add-second-move')).toBeNull()
+    expect(screen.getByTestId('no-second-move').textContent).toBe(
+      'Push in ends up there and stays, so nothing can follow it',
+    )
 
     applyMoveToSelection('inAndOut')
     show(clip.id)

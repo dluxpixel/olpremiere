@@ -1,7 +1,7 @@
 {
   "name": "ol-premiere",
   "private": true,
-  "version": "2.0.9",
+  "version": "2.0.10",
   "type": "module",
   "main": "out/main/main.js",
   "scripts": {

@@ -421,6 +421,12 @@ function MoveRibbon({
         )}
       </div>
       <div className="flex items-baseline gap-2">
+        {/* ⛔ THE NAME REPLACES THE HINT, AND THE HINT STILL HAS TO BE SOMEWHERE.
+            On a chain two identical bars say nothing about which is which, so each
+            one takes its move's name. Printing the gesture under both as well is
+            the same sentence twice; printing it under neither is how a chained
+            clip quietly loses the only instruction the bar ever carried. So the
+            LAST bar keeps it, and the name sits above it. */}
         <p className="text-dense text-text-muted">
           {name ?? (moment ? 'Drag the block to move when it happens' : 'Drag either end to move where it starts and ends')}
         </p>
@@ -733,6 +739,21 @@ export function MoveShelf({ clips }: { clips: Clip[] }) {
             onRemove={chained ? () => dropMove(single.id, bar.index) : undefined}
           />
         ))}
+      {single && chained && (
+        <p className="-mt-2 text-dense text-text-muted">Drag either end of either bar to move when it happens</p>
+      )}
+
+      {/* ⛔ AND WHEN IT CANNOT BE FOLLOWED, IT SAYS SO RATHER THAN SHOWING NOTHING.
+          Seven of the twelve tiles end up somewhere and stay there, so on most
+          clips the offer above is simply absent, and an absent control teaches him
+          nothing: he would look for it, not find it, and conclude the feature is
+          broken. One sentence in its place gives the reason in his own terms, and
+          the reason happens to be the rule the whole panel runs on. */}
+      {bars.length === 1 && !canTakeASecondMove(clips[0], bars[0].run.endS) && (
+        <p className="text-dense text-text-muted" data-testid="no-second-move">
+          {bars[0].def.name} ends up there and stays, so nothing can follow it
+        </p>
+      )}
 
       {/* The second move, which is the whole of chaining as a gesture: one line
           that is only there when the clip has room for it, and which asks for the

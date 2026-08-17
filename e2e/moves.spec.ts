@@ -629,6 +629,12 @@ test('nothing is offered after a move that stays where it lands', async ({ page 
   await hands.click('move-tile-pushIn')
   await expect(page.getByTestId('move-state')).toHaveText('Push in')
   await expect(page.getByTestId('add-second-move')).toHaveCount(0)
+  // ⛔ AND THE PANEL SAYS WHY, in its place. Seven of the twelve tiles land this
+  // way, so a missing control with nothing beside it is what he would meet most
+  // of the time, and it reads as broken rather than as a rule.
+  await expect(page.getByTestId('no-second-move')).toHaveText(
+    'Push in ends up there and stays, so nothing can follow it',
+  )
 
   // In and out comes home, so it can be followed.
   await hands.click('move-tile-inAndOut')
