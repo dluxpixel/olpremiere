@@ -35,6 +35,17 @@ import {
   toggleMotionAtPlayhead,
   topAndTail,
 } from './state/clipEdits'
+import {
+  addKeyframeInSegment,
+  copyPicks,
+  deletePicks,
+  motionKeyTarget,
+  nudgePicks,
+  pastePicks,
+  stretchPicks,
+  walkSelection,
+  STRETCH_STEP,
+} from './state/motionKeys'
 import { screenshotToMedia } from './state/screenshot'
 import { pausePlayback, shuttle, toggleLoop, togglePlay } from './state/playbackControl'
 import { clearInOut, gotoIn, gotoOut, markIn, markOut } from './state/workAreaActions'
@@ -73,6 +84,29 @@ function stepFrames(frames: number) {
  * D acts is what makes the pair a loop: jump, look, keyframe it or clear it,
  * without the mouse ever leaving the picture.
  */
+/**
+ * One arrow, one meaning: move whatever is selected by `frames`. Diamonds when
+ * the hand controls are open and some are picked, the clip otherwise.
+ */
+function nudge(frames: number) {
+  if (motionKeyTarget()) nudgePicks(frames)
+  else nudgeSelection(frames)
+}
+
+/**
+ * Escape lets go of the smallest thing first: the lasso of diamonds, then the
+ * clip. Clearing both on one press would mean he could never drop a selection
+ * of moments without also losing the clip he is working on.
+ */
+function escapeSelection() {
+  const s = useStore.getState()
+  if (s.ui.motionPicks.length > 0 || s.ui.motionSelection) {
+    s.setUI({ motionSelection: null, motionPicks: [], motionGroupDeltaS: null })
+    return
+  }
+  deselectAll()
+}
+
 function stepKeyframe(dir: -1 | 1) {
   const s = useStore.getState()
   const id = s.ui.selection[0]
@@ -104,7 +138,12 @@ function stepKeyframe(dir: -1 | 1) {
  */
 // topAndTail moved to state/clipEdits.ts so the clip context menu shares it.
 
-function buildAppBindings(): Binding[] {
+/**
+ * Exported for the keymap wiring test ONLY. A verb can be perfect and still be
+ * unreachable if its combo collides with an older one or never made the list,
+ * and neither of those shows up in a test of the verb itself.
+ */
+export function buildAppBindings(): Binding[] {
   const store = () => useStore.getState()
   return [
       // Routed: solo = snapshot undo; in a room = rebased (only YOUR command
@@ -222,7 +261,15 @@ function buildAppBindings(): Binding[] {
       // move is on it. The second clip and every clip after it in the same Short
       // is ONE key. Digits 0 to 9 were completely unbound, and the keymap
       // already refuses to fire while he is typing in a field.
-      ...MOVES.map<Binding>((move) => ({
+      //
+      // ⛔ ONLY THE ONES WITH A DIGIT. `digit` is optional and three moves
+      // deliberately have none: there are ten digits and more than ten moves.
+      // Without the filter those three each became a binding on the literal key
+      // "undefined", so three of them shared one dead entry and this list, which
+      // is the only audit of the keyboard left since the sheet was cut, said
+      // they were bound when nothing could press them. Found 2026-08-18 by the
+      // duplicate-combo check in appKeymap.test.ts.
+      ...MOVES.filter((move) => move.digit !== undefined).map<Binding>((move) => ({
         combo: String(move.digit),
         description: `Move: ${move.name}`,
         domain: 'trim',
@@ -271,10 +318,19 @@ function buildAppBindings(): Binding[] {
       { combo: 'alt+c', description: 'Split only the VIDEO at playhead', domain: 'trim', run: () => splitAtPlayhead(false, 'video') },
       { combo: 'b', description: 'Razor (blade) tool', domain: 'tools', run: () => store().setUI({ tool: 'razor' }) }, // click-to-cut anywhere
       { combo: 'h', description: 'Hand tool', domain: 'tools', run: () => store().setUI({ tool: 'hand' }) },
-      { combo: 'mod+alt+c', description: 'Copy attributes', domain: 'trim', run: () => copyClipAttributes() },
-      { combo: 'mod+alt+v', description: 'Paste attributes', domain: 'trim', run: () => pasteClipAttributes() },
-      { combo: 'delete', description: 'Delete (lift)', domain: 'trim', run: () => deleteSelected(false) },
-      { combo: 'backspace', description: 'Delete (lift)', domain: 'trim', run: () => deleteSelected(false) },
+      // Copy and paste the LOOK of a clip, or the picked diamonds when the hand
+      // controls are open and he has some. Same rule as the arrows and Delete:
+      // the key means "the selection", and the selection is diamonds at that
+      // moment. Paste falls through to attributes when there is nothing copied
+      // to drop, so the pair never gets stuck answering the wrong question.
+      { combo: 'mod+alt+c', description: 'Copy attributes', domain: 'trim', run: () => { if (!copyPicks()) copyClipAttributes() } },
+      { combo: 'mod+alt+v', description: 'Paste attributes', domain: 'trim', run: () => { if (!pastePicks()) pasteClipAttributes() } },
+      // Delete follows the same rule as the arrows: picked diamonds go, and the
+      // clip they sit on survives. Ripple delete is deliberately NOT overloaded:
+      // there is no such thing as rippling a keyframe, so Shift+Delete keeps its
+      // one meaning and always means the clip.
+      { combo: 'delete', description: 'Delete (lift)', domain: 'trim', run: () => (motionKeyTarget() ? deletePicks() : deleteSelected(false)) },
+      { combo: 'backspace', description: 'Delete (lift)', domain: 'trim', run: () => (motionKeyTarget() ? deletePicks() : deleteSelected(false)) },
       { combo: 'shift+delete', description: 'Ripple delete', domain: 'trim', run: () => deleteSelected(true) },
       { combo: 'mod+c', description: 'Copy clip(s)', domain: 'trim', run: () => void copySelection() },
       { combo: 'mod+x', description: 'Cut clip(s)', domain: 'trim', run: cutSelection },
@@ -323,15 +379,30 @@ function buildAppBindings(): Binding[] {
       { combo: 'q', description: 'Trim clip head to playhead', domain: 'trim', run: () => topAndTail('in') },
       { combo: 'w', description: 'Trim clip tail to playhead', domain: 'trim', run: () => topAndTail('out') },
       // Nudge the selection along its track (Alt = 1 frame, Shift+Alt = 10).
-      { combo: 'alt+arrowleft', description: 'Nudge clip 1 frame left', domain: 'trim', run: () => nudgeSelection(-1) },
-      { combo: 'alt+arrowright', description: 'Nudge clip 1 frame right', domain: 'trim', run: () => nudgeSelection(1) },
-      { combo: 'shift+alt+arrowleft', description: 'Nudge clip 10 frames left', domain: 'trim', run: () => nudgeSelection(-10) },
-      { combo: 'shift+alt+arrowright', description: 'Nudge clip 10 frames right', domain: 'trim', run: () => nudgeSelection(10) },
+      //
+      // ⛔ THE SAME FOUR KEYS NUDGE DIAMONDS when the hand controls are open and
+      // he has some picked. One key, one meaning: "move what is selected". The
+      // selection IS diamonds at that moment, so aiming these at the clip
+      // underneath instead would be the app ignoring what he just lassoed.
+      // `nudge` asks that question once and every arrow reads the answer.
+      { combo: 'alt+arrowleft', description: 'Nudge 1 frame left', domain: 'trim', run: () => nudge(-1) },
+      { combo: 'alt+arrowright', description: 'Nudge 1 frame right', domain: 'trim', run: () => nudge(1) },
+      { combo: 'shift+alt+arrowleft', description: 'Nudge 10 frames left', domain: 'trim', run: () => nudge(-10) },
+      { combo: 'shift+alt+arrowright', description: 'Nudge 10 frames right', domain: 'trim', run: () => nudge(10) },
+      // The rest of the motion keyboard. These have no clip meaning to share
+      // with, so they do nothing at all unless the hand controls are open.
+      { combo: 'alt+[', description: 'Select the diamond before', domain: 'motion', run: () => walkSelection(-1) },
+      { combo: 'alt+]', description: 'Select the diamond after', domain: 'motion', run: () => walkSelection(1) },
+      { combo: 'alt+a', description: 'Add a diamond in the middle of this segment', domain: 'motion', run: addKeyframeInSegment },
+      // Retime the picked run without redrawing it: the move slower or faster,
+      // its shape untouched. The only door scaleKeyframeSpan has.
+      { combo: 'alt+,', description: 'Make the picked move faster', domain: 'motion', run: () => stretchPicks(1 / STRETCH_STEP) },
+      { combo: 'alt+.', description: 'Make the picked move slower', domain: 'motion', run: () => stretchPicks(STRETCH_STEP) },
       // Move the selected clip to the adjacent same-kind track.
       { combo: 'alt+arrowup', description: 'Move clip to track above', domain: 'trim', run: () => moveSelectionToAdjacentTrack(-1) },
       { combo: 'alt+arrowdown', description: 'Move clip to track below', domain: 'trim', run: () => moveSelectionToAdjacentTrack(1) },
       { combo: 'mod+a', description: 'Select all clips', domain: 'selection', run: selectAllClips },
-      { combo: 'escape', description: 'Deselect all', domain: 'selection', run: deselectAll },
+      { combo: 'escape', description: 'Deselect all', domain: 'selection', run: escapeSelection },
       { combo: 'shift+e', description: 'Enable / disable clip', domain: 'trim', run: () => {
         const id = store().ui.selection[0]
         if (id) toggleClipEnabled(id)

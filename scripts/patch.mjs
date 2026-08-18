@@ -20,7 +20,7 @@
 
 import { execFileSync, execSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
-import { loadToken, openShipLog, releaseWork, runLogged, SHIP_LOG } from './lib.mjs'
+import { isTransientFailure, loadToken, openShipLog, releaseWork, runLogged, SHIP_LOG } from './lib.mjs'
 
 const args = process.argv.slice(2)
 const fast = args.includes('--fast')
@@ -48,11 +48,24 @@ const git = (...a) => execFileSync('git', a, { encoding: 'utf8' }).trim()
 // Push with that same token. It goes in through a credential helper that reads
 // it from the environment, so it never reaches the command line, the terminal
 // output or .git/config.
-const pushMain = () => {
-  const token = loadToken()
-  process.stdout.write('\n▶ push\n')
+//
+// ⛔ AND IT RETRIES A DROPPED CONNECTION, since 2026-08-17. That night the push died
+// on `socket hang up` after a gate that had taken nine minutes to go green, and
+// `socket hang up` is the FIRST signature in `isTransientFailure`. The retry that
+// knows it has wrapped the package step since it was written and never wrapped this
+// one, so the version was bumped, the commit was made, nothing reached the remote
+// and nothing was released. **Exactly the scar the paragraph above describes, one
+// step earlier in the same failure.**
+//
+// ⛔ STDERR IS CAPTURED RATHER THAN INHERITED, because it has to be READ to be
+// classified: with `stdio: 'inherit'` git's own words go to the terminal and the
+// error object carries none of them, so nothing can tell a dead network from a
+// rejected push. It is echoed straight back out, so he sees exactly what he saw
+// before.
+const pushOnce = (token) => {
+  const opts = { stdio: ['inherit', 'inherit', 'pipe'], encoding: 'utf8' }
   if (!token) {
-    execSync('git push origin main', { stdio: 'inherit' })
+    execSync('git push origin main', opts)
     return
   }
   execFileSync(
@@ -66,8 +79,29 @@ const pushMain = () => {
       'origin',
       'main',
     ],
-    { stdio: 'inherit', env: { ...process.env, OLP_PUSH_TOKEN: token } },
+    { ...opts, env: { ...process.env, OLP_PUSH_TOKEN: token } },
   )
+}
+
+const pushMain = async () => {
+  const token = loadToken()
+  process.stdout.write('\n▶ push\n')
+  for (let attempt = 1; ; attempt++) {
+    try {
+      pushOnce(token)
+      return
+    } catch (e) {
+      // Everything git said, whichever field it landed in.
+      const said = `${e.stderr ?? ''}${e.stdout ?? ''}${e.message ?? ''}`
+      process.stderr.write(said.endsWith('\n') ? said : `${said}\n`)
+      if (attempt >= 3 || !isTransientFailure(said)) throw e
+      const waitMs = 15_000 * attempt
+      process.stdout.write(
+        `\n⚠ push failed on what looks like a dropped connection, not a rejected push.\n  Waiting ${Math.round(waitMs / 1000)}s, then try ${attempt + 1} of 3.\n`,
+      )
+      await new Promise((r) => setTimeout(r, waitMs))
+    }
+  }
 }
 
 // --- 0. nothing to do? ------------------------------------------------------
@@ -114,7 +148,7 @@ execFileSync('git', ['add', '-A'], { stdio: 'inherit' })
 execFileSync('git', ['commit', '-m', `${message}\n\nReleased as v${version} by scripts/patch.mjs.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>`], {
   stdio: 'inherit',
 })
-pushMain()
+await pushMain()
 
 // --- 3. build + publish -----------------------------------------------------
 // Past this line the commit is already PUSHED, so a failure here leaves the

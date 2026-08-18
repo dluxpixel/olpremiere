@@ -54,6 +54,26 @@ import {
   segmentIndexAt,
 } from './keyframeMarks'
 import { keyframeMarkProps, useMotionRail } from './MotionRail'
+import { comboLabel } from '../keymap'
+
+// The keyboard, written the way a keyboard is labelled. Kept here rather than
+// inlined twice so the two tooltips can never drift apart, and built from
+// `comboLabel` so a combo reads the same in a tooltip as it does anywhere else.
+const key = (combo: string): string => comboLabel(combo)
+
+/** What the whole lane answers to, once a diamond is picked. */
+const LANE_KEYS = [
+  `${key('alt+arrowleft')} / ${key('alt+arrowright')} nudge a frame`,
+  `${key('delete')} removes`,
+  `${key('alt+a')} adds one mid-move`,
+].join(' · ')
+
+/** The same, plus what only makes sense with one diamond in hand. */
+const DIAMOND_KEYS = [
+  `${key('alt+arrowleft')} / ${key('alt+arrowright')} nudge a frame`,
+  `${key('alt+[')} / ${key('alt+]')} step to the next`,
+  `${key('alt+,')} / ${key('alt+.')} faster or slower`,
+].join(' · ')
 
 interface DragState {
   origT: number
@@ -247,7 +267,11 @@ export function KeyframeTrack({ clip, channel }: { clip: Clip; channel: AnimChan
         data-testid="keyframe-track"
         data-channel={channel}
         onClick={onRailClick}
-        title={`${name} keyframes · drag to retime · Alt-drag to duplicate · click between two diamonds to shape that move`}
+        // ⛔ THE TOOLTIP IS THE ONLY PLACE A SHORTCUT REACHES HIM, since the
+        // shortcut sheet was cut on 2026-08-17. Five keys landed on this lane on
+        // 2026-08-18 and every one of them would have been invisible without
+        // this line. → D114, D118
+        title={`${name} keyframes · drag to retime · Alt-drag to duplicate · click between two diamonds to shape that move · ${LANE_KEYS}`}
         // 28px, up from 20. The band BETWEEN two diamonds is what he clicks to
         // shape a move, and it was the thinnest deliberate target in the app.
         // Height is free here: the lane is as wide as the panel either way, and
@@ -295,7 +319,7 @@ export function KeyframeTrack({ clip, channel }: { clip: Clip; channel: AnimChan
               data-testid="keyframe"
               {...keyframeMarkProps(channel, k.t)}
               aria-label={`${name} keyframe at ${t.toFixed(2)}s, value ${k.value}`}
-              title={`${name} = ${Math.round(k.value * 100) / 100} @ ${t.toFixed(2)}s · ${k.ease} · drag to retime · Alt-drag to duplicate`}
+              title={`${name} = ${Math.round(k.value * 100) / 100} @ ${t.toFixed(2)}s · ${k.ease} · drag to retime · Alt-drag to duplicate · ${DIAMOND_KEYS}`}
               onPointerDown={(e) => onDiamondDown(e, k)}
               // 14px, up from 12: half again the area to aim at, and still
               // small enough that two moments a frame apart do not merge into

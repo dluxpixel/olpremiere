@@ -18,7 +18,7 @@
  * this file has to say what a key is about, and the keyframe work adds a seventh
  * group to it. First thing to delete if that work lands without needing it.
  */
-export type BindingDomain = 'transport' | 'selection' | 'trim' | 'tools' | 'view' | 'project'
+export type BindingDomain = 'transport' | 'selection' | 'trim' | 'tools' | 'view' | 'project' | 'motion'
 
 export interface Binding {
   combo: string

@@ -28,7 +28,7 @@ import { formatTimecode } from '../engine/timecode'
 import { clipDurationS, collectSnapPoints } from '../engine/timeline'
 import { activeSequence, type AnimChannel, type Clip } from '../engine/types'
 import type { KeyframePick } from '../state/clipEdits'
-import { useStore } from '../state/store'
+import { useStore, type MotionSelection } from '../state/store'
 import { SNAP_PX } from './timelineGeometry'
 import {
   RAIL_ZOOM_STEP,
@@ -44,20 +44,11 @@ import {
   type RailView,
 } from './motionRuler'
 
-/** What the rail is pointed at: a keyframe, or the segment leaving one. */
-export type MotionSelectKind = 'key' | 'segment'
-
-/**
- * The one thing the motion desk is currently shaping. A SEGMENT is addressed by
- * the keyframe it leaves, which is what the curve editor opens on: the thing he
- * clicked is the thing he is shaping.
- */
-export interface MotionSelection {
-  channel: AnimChannel
-  kind: MotionSelectKind
-  /** LOCAL clip time of the keyframe, or of the keyframe the segment leaves. */
-  t: number
-}
+// The selection TYPES moved into the store on 2026-08-18, along with the values
+// themselves, because the store is the only thing the central keymap can see.
+// Re-exported here so every lane and editor that already imports them from the
+// rail keeps working. → D118
+export type { MotionSelectKind, MotionSelection } from '../state/store'
 
 /** Everything a lane, a curve editor or anything else on the rail needs. */
 export interface MotionRailValue {
@@ -214,9 +205,29 @@ export function MotionRail({
   const durS = clipDurationS(clip)
   const [viewW, setViewW] = useState(0)
   const [view, setView] = useState<RailView>(() => fitView(durS, 0))
-  const [selection, setSelection] = useState<MotionSelection | null>(null)
-  const [picks, setPicks] = useState<readonly KeyframePick[]>([])
-  const [groupDeltaS, setGroupDeltaS] = useState<number | null>(null)
+  // ⛔ THESE THREE LIVE IN THE STORE, not in this component, since 2026-08-18.
+  // The central keymap in App.tsx can only see the store, so a keyboard verb
+  // aimed at "whatever is selected" was impossible while they were useState
+  // here. Each is selected on its OWN, never as `s.ui`, so the rail still
+  // re-renders on exactly what it re-rendered on before and still never on the
+  // playhead. → D118
+  const selection = useStore((s) => s.ui.motionSelection)
+  const picks = useStore((s) => s.ui.motionPicks)
+  const groupDeltaS = useStore((s) => s.ui.motionGroupDeltaS)
+  const setUI = useStore((s) => s.setUI)
+
+  // The functional-update form `setPicks(prev => ...)` has no equivalent on a
+  // patch-shaped setter, so the previous value is read back off the store. Same
+  // imperative getState() the snapping switch and the playhead already use.
+  const setPicks = (
+    next: readonly KeyframePick[] | ((prev: readonly KeyframePick[]) => readonly KeyframePick[]),
+  ): void =>
+    setUI({ motionPicks: typeof next === 'function' ? next(useStore.getState().ui.motionPicks) : next })
+  const setSelection = (next: MotionSelection | null | ((prev: MotionSelection | null) => MotionSelection | null)): void =>
+    setUI({
+      motionSelection: typeof next === 'function' ? next(useStore.getState().ui.motionSelection) : next,
+    })
+  const setGroupDeltaS = (deltaS: number | null): void => setUI({ motionGroupDeltaS: deltaS })
 
   // The pointer handlers read the CURRENT view, width and clip through refs, not
   // through the closure they were installed with: the first pointermove after a
@@ -261,10 +272,17 @@ export function MotionRail({
 
   // A different clip is a different set of moments: nothing stays selected, and
   // a group drag that was running belongs to keyframes no longer on screen.
+  //
+  // ⛔ IT CLEARS ON THE WAY OUT, not on the way in, and that is the difference
+  // the move into the store made. A component's own useState died with the
+  // component; store state does not, so a rail that unmounts while five
+  // diamonds are lassoed would leave those five sitting in the store with no
+  // rail on screen, and the keyboard verbs would happily nudge keyframes he can
+  // no longer see. Leaving a clip clears the clip's picks, unmounting included.
   useEffect(() => {
-    setSelection(null)
-    setPicks([])
-    setGroupDeltaS(null)
+    return () => {
+      useStore.getState().setUI({ motionSelection: null, motionPicks: [], motionGroupDeltaS: null })
+    }
   }, [clip.id])
 
   // --- the playhead, drawn once -----------------------------------------------
@@ -338,30 +356,41 @@ export function MotionRail({
 
   // --- selection --------------------------------------------------------------
 
+  // ⛔ ONE WRITE, not two. While these lived in `useState` React batched a pair
+  // of setters inside an event handler into one render; a pair of store writes
+  // is two renders, and the first of them shows a selection whose picks are
+  // still the previous click's. The keyboard verbs read both in the same breath,
+  // so that half-applied moment is a state they could be asked to act on.
   const select = (next: MotionSelection | null, additive = false): void => {
-    setSelection(next)
+    const prev = useStore.getState().ui.motionPicks
     if (!next || next.kind === 'segment') {
-      if (!additive) setPicks([])
+      setUI({ motionSelection: next, ...(additive ? {} : { motionPicks: [] }) })
       return
     }
     const pick: KeyframePick = { channel: next.channel, t: next.t }
-    setPicks((prev) => {
-      if (!additive) return [pick]
-      return prev.some((p) => samePick(p, pick)) ? prev.filter((p) => !samePick(p, pick)) : [...prev, pick]
-    })
+    const picksNext = !additive
+      ? [pick]
+      : prev.some((p) => samePick(p, pick))
+        ? prev.filter((p) => !samePick(p, pick))
+        : [...prev, pick]
+    setUI({ motionSelection: next, motionPicks: picksNext })
   }
 
   const picked = new Set(picks.map((p) => keyframeKey(p.channel, p.t)))
 
   const shiftPicks = (deltaS: number): void => {
     if (!Number.isFinite(deltaS) || deltaS === 0) return
-    setPicks((prev) => prev.map((p) => ({ ...p, t: p.t + deltaS })))
+    const s = useStore.getState()
+    const sel = s.ui.motionSelection
     // The highlighted moment follows only if it TRAVELLED. A key selection
-    // outside the lasso stayed exactly where it was.
-    setSelection((prev) => {
-      if (!prev || prev.kind !== 'key') return prev
-      if (!picked.has(keyframeKey(prev.channel, prev.t))) return prev
-      return { ...prev, t: prev.t + deltaS }
+    // outside the lasso stayed exactly where it was. One write, same reason as
+    // `select` above.
+    setUI({
+      motionPicks: s.ui.motionPicks.map((p) => ({ ...p, t: p.t + deltaS })),
+      motionSelection:
+        sel && sel.kind === 'key' && picked.has(keyframeKey(sel.channel, sel.t))
+          ? { ...sel, t: sel.t + deltaS }
+          : sel,
     })
   }
 

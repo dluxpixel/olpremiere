@@ -14,9 +14,22 @@
 import { channelKeyframes, withChannelKeyframes } from '../engine/effects/channels'
 import { fitMoveKeyframes, MOVE_CHANNELS } from '../engine/moves'
 import { clipDurationS } from '../engine/timeline'
-import { activeSequence, type AnimChannel, type Clip, type Keyframe } from '../engine/types'
+import { ANIM_CHANNELS, activeSequence, type AnimChannel, type Clip, type Keyframe } from '../engine/types'
 import { updateActiveSequence, useStore } from './store'
 import { useToasts } from './toasts'
+
+/**
+ * Everything a copy carries BESIDES the three move channels: rotation, the
+ * anchor, all four crop edges, opacity and every colour and blur parameter.
+ *
+ * ⛔ VOLUME IS DELIBERATELY OUT. It is the one audio channel, and a verb he
+ * reaches for to reuse a zoom must not quietly drag a clip's loudness along with
+ * it. Nothing on screen would say it had happened, and he would find it much
+ * later in a mix he did not change.
+ */
+const EXTRA_CHANNELS: readonly AnimChannel[] = ANIM_CHANNELS.filter(
+  (ch) => !MOVE_CHANNELS.includes(ch) && ch !== 'volume',
+)
 
 type MoveTracks = Partial<Record<AnimChannel, Keyframe[]>>
 
@@ -39,11 +52,25 @@ export function copyClipMove(clipId?: string): void {
   }
   const tracks: MoveTracks = {}
   let count = 0
+  let extras = 0
   for (const channel of MOVE_CHANNELS) {
     const kfs = channelKeyframes(clip, channel)
     if (kfs.length > 0) {
       tracks[channel] = kfs.map((k) => ({ ...k }))
       count += kfs.length
+    }
+  }
+  // ⛔ AND EVERYTHING ELSE HE ANIMATED, since 2026-08-18. This pair carried the
+  // three move channels only, so a clip whose rotation, crop, fade or colour he
+  // had shaped by hand copied as a zoom and arrived with all of that missing,
+  // silently. Copying the WORK is the point of the verb; three of the twenty
+  // three channels was an accident of which one got built first.
+  for (const channel of EXTRA_CHANNELS) {
+    const kfs = channelKeyframes(clip, channel)
+    if (kfs.length > 0) {
+      tracks[channel] = kfs.map((k) => ({ ...k }))
+      count += kfs.length
+      extras++
     }
   }
   if (count === 0) {
@@ -53,7 +80,9 @@ export function copyClipMove(clipId?: string): void {
     return
   }
   clipboard = tracks
-  useToasts.getState().show('Move copied', 'success')
+  useToasts
+    .getState()
+    .show(extras === 0 ? 'Move copied' : 'Move copied, with the rest of its animation', 'success')
 }
 
 /**
@@ -83,9 +112,20 @@ export function pasteClipMove(ids?: Iterable<string>): void {
         if (!targets.has(clip.id)) return clip
         const durS = clipDurationS(clip)
         let next = clip
+        // The three move channels are REPLACED, present or not: one clip means
+        // one move, so a paste that stacked would make the lit shelf tile a lie.
         for (const channel of MOVE_CHANNELS) {
           const kfs = tracks[channel]
           next = withChannelKeyframes(next, channel, kfs ? fitMoveKeyframes(kfs, durS) : [])
+        }
+        // ⛔ EVERY OTHER CHANNEL IS STAMPED, NEVER CLEARED, and the difference
+        // matters. Clearing them the same way would mean pasting a plain zoom
+        // onto a graded clip deleted the colour animation on it, which is not
+        // what he asked the verb for and there is no shelf tile whose honesty
+        // depends on it. Absent from the clipboard = the target keeps its own.
+        for (const channel of EXTRA_CHANNELS) {
+          const kfs = tracks[channel]
+          if (kfs) next = withChannelKeyframes(next, channel, fitMoveKeyframes(kfs, durS))
         }
         done++
         return next

@@ -8,7 +8,8 @@ import { MOTION_CURVES, type MotionCurveName } from '../engine/motion'
 import { setSequenceFormat } from '../engine/timeline'
 import { BACKDROP_ZOOM, BLUR_BACKDROP_ZOOM } from '../engine/render/resolve'
 import { DEFAULT_SHUTTER_ANGLE, SHUTTER_ANGLE } from '../engine/render/motionBlur'
-import { newProject, type Id, type Project, type Sequence } from '../engine/types'
+import { newProject, type AnimChannel, type Id, type Project, type Sequence } from '../engine/types'
+import type { KeyframePick } from './clipEdits'
 import {
   emptyHistory,
   popCommand,
@@ -18,6 +19,21 @@ import {
   type Command,
   type History,
 } from './history'
+
+/** What the motion rail is pointed at: a keyframe, or the segment leaving one. */
+export type MotionSelectKind = 'key' | 'segment'
+
+/**
+ * The one moment the motion desk is currently shaping. A SEGMENT is addressed by
+ * the keyframe it leaves, which is what the curve editor opens on: the thing he
+ * clicked is the thing he is shaping. Times are LOCAL to the clip, the way
+ * keyframe times are.
+ */
+export interface MotionSelection {
+  channel: AnimChannel
+  kind: MotionSelectKind
+  t: number
+}
 
 export type Tool = 'select' | 'razor' | 'hand'
 export type SaveState = 'saved' | 'saving' | 'unsaved'
@@ -68,6 +84,36 @@ export interface UIState {
    * the length of the sweep. Never persisted, never undoable.
    */
   previewingMove: boolean
+  /**
+   * ⛔ THE MOTION RAIL'S OWN SELECTION LIVES HERE, AND HERE IS THE WHOLE POINT.
+   * These three were component-local `useState` inside MotionRail.tsx until
+   * 2026-08-18. The central keymap in App.tsx reaches the store and nothing
+   * else, so while they sat in the component NOT ONE keyboard verb could tell
+   * which diamond was selected, and the keyframe keyboard could not be built at
+   * all. → D118
+   *
+   * ⛔ AND IT DOES NOT TOUCH THE PLAYHEAD RULE. Nothing subscribes to `ui`
+   * whole, so a component that selects one of these fields re-renders on that
+   * field alone. The rail still never re-renders on the playhead.
+   *
+   * The one moment being shaped, or null. LOCAL clip time.
+   */
+  motionSelection: MotionSelection | null
+  /** Everything lassoed, in the shape moveKeyframes and scaleKeyframeSpan want. */
+  motionPicks: readonly KeyframePick[]
+  /**
+   * How far a live GROUP drag has slid the picks, in seconds, or null when no
+   * group drag is running.
+   *
+   * Written on EVERY pointermove of that drag, which costs exactly what the
+   * `useState` it replaced cost: only the rail reads it. Timeline's marquee has
+   * written ui.selection the same way for months.
+   *
+   * It is one value for the whole rail rather than one per lane because a
+   * selection crosses lanes: lasso a scale diamond and a position diamond, drag
+   * either one, and both have to travel.
+   */
+  motionGroupDeltaS: number | null
 }
 
 /** A point in normalized frame coords (0..1 across the sequence frame). */
@@ -179,6 +225,9 @@ export const useStore = create<AppState>()(
       zoomAnchor: loadZoomAnchor(),
       handTuneOpen: false,
       previewingMove: false,
+      motionSelection: null,
+      motionPicks: [],
+      motionGroupDeltaS: null,
     },
 
     dispatch(label, fn, mergeKey) {
@@ -227,7 +276,16 @@ export const useStore = create<AppState>()(
           // otherwise rebase its meta (id/name!) into the room and let autosave
           // overwrite the user's own project.
           ...(p.id !== s.project.id ? { history: emptyHistory() } : {}),
-          ui: { ...s.ui, selection: s.ui.selection.filter((id) => alive.has(id)), saveState: 'unsaved' as const },
+          // The rail's picks go with the clip selection: they are moments on a
+          // clip, so a clip that no longer exists cannot have any.
+          ui: {
+            ...s.ui,
+            selection: s.ui.selection.filter((id) => alive.has(id)),
+            motionSelection: null,
+            motionPicks: [],
+            motionGroupDeltaS: null,
+            saveState: 'unsaved' as const,
+          },
         }
       })
     },
@@ -254,7 +312,16 @@ export const useStore = create<AppState>()(
         if (!s.project.sequences[id] || s.project.activeSequenceId === id) return s
         return {
           project: { ...s.project, activeSequenceId: id, updatedAt: Date.now() },
-          ui: { ...s.ui, playheadS: 0, selection: [], playing: false, saveState: 'unsaved' as const },
+          ui: {
+            ...s.ui,
+            playheadS: 0,
+            selection: [],
+            motionSelection: null,
+            motionPicks: [],
+            motionGroupDeltaS: null,
+            playing: false,
+            saveState: 'unsaved' as const,
+          },
         }
       })
     },

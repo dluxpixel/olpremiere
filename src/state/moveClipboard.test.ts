@@ -13,6 +13,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { channelKeyframes } from '../engine/effects/channels'
 import { fitMoveKeyframes } from '../engine/moves'
 import { newClipFromAsset, newProject, type Keyframe, type MediaAsset, type Project } from '../engine/types'
+import { addEffectKeyframeAtPlayhead, applyEffect } from './clipEdits'
 import { copyClipMove, hasClipMove, pasteClipMove } from './moveClipboard'
 import { useStore } from './store'
 
@@ -150,5 +151,110 @@ describe('copy and paste a move', () => {
     expect(hasClipMove()).toBe(true)
     pasteClipMove(['short'])
     expect(channelKeyframes(clipById('short'), 'scale').length).toBe(3) // still LONG's move
+  })
+})
+
+/**
+ * Widened on 2026-08-18. The pair carried the three move channels only, so a
+ * clip whose rotation, crop, fade or colour he had shaped by hand copied as a
+ * bare zoom and arrived with all of that missing, and nothing said so.
+ */
+describe('the channels that are not scale, posX and posY', () => {
+  /** The long clip, plus a rotation ramp, a fade and a colour move on it. */
+  function seedRichClip(): void {
+    const p = projectWithTwoClips()
+    const seq = p.sequences[p.activeSequenceId]
+    const video = seq.tracks.find((t) => t.kind === 'video')!
+    const long = video.clips.find((c) => c.id === 'long')!
+    long.keyframes = {
+      ...long.keyframes,
+      rotation: [kf(0, 0), kf(1, 15)],
+      opacity: [kf(0, 0), kf(0.5, 1)],
+      cropL: [kf(0, 0), kf(1, 0.2)],
+      volume: [kf(0, 0), kf(1, -6)],
+    }
+    useStore.getState().setProject(p)
+    // ⛔ AN EFFECT PARAMETER CANNOT BE SEEDED BY HAND. `saturation` and every
+    // other colour channel live in the clip's EFFECT STACK, not in
+    // `clip.keyframes`, so writing that bag directly reads back empty and the
+    // test would pass for the wrong reason. Effect parameters are the biggest
+    // half of the gap this block describes, so it goes in through the app's own
+    // door.
+    applyEffect('long', 'saturation')
+    const fx = clipById('long').effects.find((e) => e.type === 'saturation')!
+    useStore.getState().setUI({ playheadS: 0 })
+    addEffectKeyframeAtPlayhead('long', fx.id, 'saturation')
+    useStore.getState().setUI({ playheadS: 1 })
+    addEffectKeyframeAtPlayhead('long', fx.id, 'saturation')
+  }
+
+  it('carries rotation, opacity, crop and colour along with the move', () => {
+    seedRichClip()
+    copyClipMove('long')
+    pasteClipMove(['short'])
+    const short = clipById('short')
+    expect(channelKeyframes(short, 'rotation')).toHaveLength(2)
+    expect(channelKeyframes(short, 'opacity')).toHaveLength(2)
+    expect(channelKeyframes(short, 'cropL')).toHaveLength(2)
+    expect(channelKeyframes(short, 'saturation')).toHaveLength(2)
+  })
+
+  it('does NOT carry volume, which is the one audio channel', () => {
+    seedRichClip()
+    copyClipMove('long')
+    pasteClipMove(['short'])
+    // Reusing a zoom must not quietly change how loud a clip is.
+    expect(channelKeyframes(clipById('short'), 'volume')).toEqual([])
+  })
+
+  it('squeezes them onto a shorter clip the same way it squeezes the move', () => {
+    seedRichClip()
+    copyClipMove('long')
+    pasteClipMove(['short']) // 'short' is 1s, the animation spans 1s, so it fits
+    expect(channelKeyframes(clipById('short'), 'rotation').map((k) => k.t)).toEqual([0, 1])
+  })
+
+  it('⛔ does NOT wipe animation the target had that the copied clip did not', () => {
+    const p = projectWithTwoClips()
+    const seq = p.sequences[p.activeSequenceId]
+    const video = seq.tracks.find((t) => t.kind === 'video')!
+    const short = video.clips.find((c) => c.id === 'short')!
+    short.keyframes = { rotation: [kf(0, 0), kf(0.5, 30)] }
+    useStore.getState().setProject(p)
+    copyClipMove('long') // scale only
+    pasteClipMove(['short'])
+    // The move landed AND his rotation survived: a paste he thinks is about a
+    // zoom must not delete animation he made by hand on a different channel.
+    expect(channelKeyframes(clipById('short'), 'scale')).toHaveLength(3)
+    expect(channelKeyframes(clipById('short'), 'rotation')).toHaveLength(2)
+  })
+
+  it('still REPLACES the three move channels, so the lit shelf tile stays honest', () => {
+    const p = projectWithTwoClips()
+    const seq = p.sequences[p.activeSequenceId]
+    const video = seq.tracks.find((t) => t.kind === 'video')!
+    const long = video.clips.find((c) => c.id === 'long')!
+    long.keyframes = { rotation: [kf(0, 0), kf(1, 15)] } // no move at all
+    const short = video.clips.find((c) => c.id === 'short')!
+    short.keyframes = { scale: [kf(0, 1), kf(0.5, 2), kf(1, 1)] }
+    useStore.getState().setProject(p)
+    copyClipMove('long')
+    pasteClipMove(['short'])
+    expect(channelKeyframes(clipById('short'), 'scale')).toEqual([])
+    expect(channelKeyframes(clipById('short'), 'rotation')).toHaveLength(2)
+  })
+
+  it('copies a clip that has ONLY non-move animation, instead of refusing it', () => {
+    const p = projectWithTwoClips()
+    const seq = p.sequences[p.activeSequenceId]
+    const video = seq.tracks.find((t) => t.kind === 'video')!
+    const long = video.clips.find((c) => c.id === 'long')!
+    long.keyframes = { opacity: [kf(0, 0), kf(0.5, 1)] }
+    useStore.getState().setProject(p)
+    copyClipMove('long')
+    // It used to say "That clip has no move on it" and copy nothing at all.
+    expect(hasClipMove()).toBe(true)
+    pasteClipMove(['short'])
+    expect(channelKeyframes(clipById('short'), 'opacity')).toHaveLength(2)
   })
 })

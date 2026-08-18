@@ -54,6 +54,29 @@ describe('isTransientFailure', () => {
     }
     expect(isTransientFailure(undefined)).toBe(false)
   })
+
+  /**
+   * ⛔ AND A PUSH THAT WAS REFUSED IS NOT A DROPPED WIRE EITHER, which matters more
+   * since 2026-08-17, when the push learned to retry. It died on `socket hang up`
+   * that night after a nine minute gate, and the version was bumped and committed
+   * with nothing on the remote and nothing released.
+   *
+   * ⛔ THE RETRY MUST NOT SWALLOW THE 2026-08-12 SCAR. That day the push died on
+   * "could not read Username", and a bare credential failure retried three times is
+   * 45 seconds of waiting for the same certain no, with the real reason pushed three
+   * screens up the log. Both of these have to fail on the FIRST attempt.
+   */
+  it('does NOT call a refused push transient', () => {
+    for (const s of [
+      "fatal: could not read Username for 'https://github.com': No such device or address",
+      '! [rejected] main -> main (fetch first)',
+      'Updates were rejected because the remote contains work that you do not have',
+      'fatal: Authentication failed',
+      'remote: Permission to dluxpixel/olpremiere.git denied',
+    ]) {
+      expect(isTransientFailure(s), s).toBe(false)
+    }
+  })
 })
 
 describe('runLoggedRetry', () => {

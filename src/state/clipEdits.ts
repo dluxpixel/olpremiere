@@ -18,6 +18,7 @@ import { cropForZoom, isSymmetricCrop, zoomFromCrop } from '../engine/innerZoom'
 import {
   clipKeyframeTimes,
   duplicateKeyframeAt,
+  MOMENT_EPS,
   moveKeyframeMoment,
   removeKeyframeNear,
   scaleKeyframeSpan as scaleKeyframeSpanK,
@@ -214,6 +215,29 @@ export function addKeyframeAtPlayhead(clipId: string, channel: AnimChannel): voi
       c,
       channel,
       upsertKeyframe(channelKeyframes(c, channel), { t: localT, value, ease: 'linear' }),
+    )
+  })
+}
+
+/**
+ * Add a keyframe at a GIVEN local time, at the value the animation already has
+ * there, so the picture does not change: a new handle, not a new shape.
+ *
+ * The sibling above is the same edit aimed at the playhead. This one exists
+ * because the middle of a segment is a place on screen he can point at without
+ * parking the playhead on it first, which is what Alt+A means.
+ */
+export function addKeyframeAtTime(clipId: string, channel: AnimChannel, localT: number): void {
+  const clip = findClip(clipId)
+  if (!clip) return
+  const dur = clipDurationS(clip)
+  const t = Math.min(Math.max(localT, 0), dur)
+  mapClip(clipId, `Add ${channel} keyframe`, (c) => {
+    const value = resolveChannel(c, channel, t)
+    return withChannelKeyframes(
+      c,
+      channel,
+      upsertKeyframe(channelKeyframes(c, channel), { t, value, ease: 'linear' }),
     )
   })
 }
@@ -478,6 +502,68 @@ export function moveKeyframes(clipId: string, picks: readonly KeyframePick[], de
         .map((k) => (isPicked(times, k.t) ? { ...k, t: k.t + d } : k))
         .sort((a, b) => a.t - b.t)
       next = withChannelKeyframes(next, channel, moved)
+    }
+    return next
+  })
+}
+
+/**
+ * Stamp a set of keyframes onto a clip in ONE undo step, each on its own
+ * channel, merging onto anything already at the same moment.
+ *
+ * ⛔ IT CARRIES THE SHAPE, not just the time and the value. A pasted move whose
+ * eases and hand-shaped curves were dropped comes out linear, which is the
+ * "reads as machinery" gap the curve vocabulary exists to close: he would paste
+ * a move he liked and get a worse one, with nothing on screen saying why.
+ */
+export function stampKeyframes(
+  clipId: string,
+  drops: readonly { channel: AnimChannel; kf: Keyframe }[],
+): void {
+  const clip = findClip(clipId)
+  if (!clip || drops.length === 0) return
+  const dur = clipDurationS(clip)
+  const inside = drops.filter((d) => d.kf.t >= -MOMENT_EPS && d.kf.t <= dur + MOMENT_EPS)
+  if (inside.length === 0) return
+  mapClip(clipId, inside.length === 1 ? 'Paste keyframe' : `Paste ${inside.length} keyframes`, (c) => {
+    let next = c
+    for (const { channel, kf } of inside) {
+      next = withChannelKeyframes(
+        next,
+        channel,
+        upsertKeyframe(channelKeyframes(next, channel), { ...kf, t: Math.min(Math.max(kf.t, 0), dur) }),
+      )
+    }
+    return next
+  })
+}
+
+/**
+ * Drop a whole lane selection in ONE undo step: what Delete does when the rail
+ * has diamonds picked rather than a clip.
+ *
+ * Deleting the LAST diamond on a channel de-animates it, and that is
+ * `withChannelKeyframes` doing what it has always done: the channel collapses to
+ * a static number holding the value it had. The lane's own trash button lands in
+ * exactly the same place, so the keyboard and the mouse agree. It does NOT reset
+ * the channel to neutral; `resetChannel` is the verb that means that.
+ */
+export function removeKeyframes(clipId: string, picks: readonly KeyframePick[]): void {
+  const clip = findClip(clipId)
+  if (!clip) return
+  const byChannel = pickedTimes(clip, picks)
+  if (byChannel.size === 0) return
+  const n = [...byChannel.values()].reduce((sum, times) => sum + times.length, 0)
+  mapClip(clipId, n === 1 ? 'Remove keyframe' : `Remove ${n} keyframes`, (c) => {
+    let next = c
+    for (const [channel, times] of byChannel) {
+      const kfs = channelKeyframes(next, channel)
+      if (kfs.length === 0) continue
+      next = withChannelKeyframes(
+        next,
+        channel,
+        kfs.filter((k) => !isPicked(times, k.t)),
+      )
     }
     return next
   })
