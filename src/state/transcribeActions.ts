@@ -13,7 +13,7 @@ import {
 } from '../engine/captions/transcribe'
 import { markEmphasis, speechEnvelope } from '../engine/captions/emphasis'
 import { dropWordsWithoutVoice, voiceTrackForClip } from '../engine/captions/voiceActivity'
-import { dropWordsInMusic } from '../engine/captions/musicGate'
+import { dropWordsInMusic, isPureMusic, type SpeechTrack } from '../engine/captions/musicGate'
 import { musicTrackForClip } from '../engine/captions/musicAnalysis'
 import { getCaptionEmphasis, getCaptionLanguage, modelFor } from '../engine/captions/transcribeConfig'
 import { clipEmitsAudio } from '../engine/audio'
@@ -25,7 +25,7 @@ import { useStore } from './store'
 import type { TextStylePreset } from './textPresets'
 import { useToasts } from './toasts'
 
-export type TranscribeStatus = 'idle' | 'reading' | 'model' | 'listening'
+export type TranscribeStatus = 'idle' | 'reading' | 'screening' | 'model' | 'listening'
 
 interface TranscribeState {
   status: TranscribeStatus
@@ -85,8 +85,40 @@ function captionFailureMessage(err: unknown): string {
  * ahead of the model. Run alongside, it finishes inside an inference that takes
  * longer, so his wait does not move.
  */
-export async function wordsForClip(clip: Clip, asset: MediaAsset): Promise<CaptionWord[]> {
+export async function wordsForClip(
+  clip: Clip,
+  asset: MediaAsset,
+  opts: { screenFirst?: boolean } = {},
+): Promise<CaptionWord[]> {
   useTranscribe.setState({ status: 'reading', pct: null, downloading: false, cancel: null })
+
+  // ⛔ ON A WHOLE-TIMELINE SWEEP, ASK WHO IS TALKING BEFORE LISTENING TO WORDS.
+  //
+  // His words, 2026-08-19, looking at "Listening for words… clip 4 of 41":
+  // *"I think when it says 'listening for words,' it also listens to video
+  // clips. It's kinda weird."* He is right, and the waste was real: every clip
+  // got a full Whisper run, so forty clips of gameplay with nobody talking cost
+  // forty runs of the biggest model in the app, and everything it invented was
+  // then thrown away by the song gate at the end anyway.
+  //
+  // The classifier that already answers "is somebody talking here" is a small
+  // fraction of that, so on a sweep it goes FIRST and a clip with nobody talking
+  // in it never reaches the recogniser. The outcome is identical: on a clip
+  // where `isPureMusic` holds, the gate below would have dropped every word.
+  //
+  // It stays ALONGSIDE Whisper for a single clip. There is no queue to save
+  // there, so putting it in front would only add to a wait he is watching.
+  const screenStop = new AbortController()
+  let screened: SpeechTrack | null = null
+  if (opts.screenFirst) {
+    useTranscribe.setState({ status: 'screening', pct: null, downloading: false, cancel: () => screenStop.abort() })
+    screened = await musicTrackForClip(asset, clip, screenStop.signal)
+    if (screenStop.signal.aborted) throw { cancelled: true }
+    // A null track means the detector had no opinion, and no opinion is never an
+    // opinion against him: fall through and listen properly.
+    if (screened && isPureMusic(screened)) return []
+  }
+
   const pcm = await extractClipPcm(asset, clip)
   // The loudness envelope for the keyword highlight, taken HERE and nowhere
   // else, because transcribePcm below TRANSFERS this buffer to its worker and
@@ -109,8 +141,10 @@ export async function wordsForClip(clip: Clip, asset: MediaAsset): Promise<Capti
   const voice = voiceTrackForClip(asset, clip, stop.signal)
   // ⛔ STARTED ALONGSIDE WHISPER, NEVER BEFORE IT, for the same reason the voice
   // analysis is: both run while the recogniser is busy, so their cost is hidden
-  // inside a wait he is already having rather than added to the end of it.
-  const music = musicTrackForClip(asset, clip, stop.signal)
+  // inside a wait he is already having rather than added to the end of it. The
+  // exception is a sweep, which has already paid for this answer above and must
+  // not pay twice.
+  const music = screened ? Promise.resolve(screened) : musicTrackForClip(asset, clip, stop.signal)
   useTranscribe.setState({ cancel: run.cancel })
   let chunks
   try {
@@ -347,6 +381,8 @@ export async function autoCaptionEveryClip(
   let cancelled = false
   let failed = 0
   let vanished = 0
+  /** Clips nobody said anything in. Counted so the run can say so instead of looking short. */
+  let silent = 0
   try {
     for (let i = 0; i < targets.length; i++) {
       const { clip: listed, asset } = targets[i]
@@ -372,7 +408,9 @@ export async function autoCaptionEveryClip(
       }
       useTranscribe.setState({ queue: { index: i + 1, total: targets.length } })
       try {
-        words.push(...(await wordsForClip(live, asset)))
+        const heard = await wordsForClip(live, asset, { screenFirst: true })
+        if (heard.length === 0) silent++
+        words.push(...heard)
       } catch (err) {
         if (isCancel(err)) {
           cancelled = true
@@ -405,5 +443,10 @@ export async function autoCaptionEveryClip(
   // failed.
   else if (vanished > 0) {
     toasts.show(`${vanished} clip${vanished === 1 ? '' : 's'} left the timeline while this ran, so ${vanished === 1 ? 'it was' : 'they were'} skipped`)
+  }
+  // Why forty one clips produced captions from six of them. Without this the run
+  // looks like it quietly missed most of the timeline.
+  else if (silent > 0) {
+    toasts.show(`${silent} clip${silent === 1 ? '' : 's'} had nobody talking, so ${silent === 1 ? 'it was' : 'they were'} passed over`)
   }
 }

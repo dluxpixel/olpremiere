@@ -109,12 +109,32 @@ export function isTransientFailure(output) {
  * can talk to git.
  */
 /**
- * Is this a BIG update, meaning the minor or major number moved?
+ * Is this a BIG update, meaning more than one ordinary step forward?
  *
  * His words, 2026-08-17: *"every time it does a huge update, you can check the app
- * every time it does a big thing."* A big thing is not every patch: he streams, and
+ * every time it does a big thing."* A big thing is not every release: he streams, and
  * the packaged app check puts a window on his screen, so it is gated to the releases
  * where a whole slab of the app changed.
+ *
+ * ⛔ THIS ASKS ABOUT THE SIZE OF THE STEP, NOT ABOUT WHICH NUMBER MOVED, and the
+ * difference is the whole point. It used to read "the minor or major moved", which
+ * was the same question back when an ordinary ship bumped the PATCH: seventeen
+ * releases went out as 2.0.x and this answered no to every one of them.
+ *
+ * His numbering, 2026-08-19, moved the ordinary ship onto the MINOR (2.17 becomes
+ * 2.18). Left as it was, this would have answered YES to every release from then on
+ * and put a window on his screen every single time, which is the thing it exists to
+ * avoid, in the same session he said *"it keeps popping up every single time I work
+ * with you."*
+ *
+ * So a step of exactly one minor is ordinary, a fix on top of a release is ordinary,
+ * and anything larger is big:
+ *
+ *   2.17.0 -> 2.18.0   one step, an ordinary ship        no
+ *   2.17.0 -> 2.17.1   a fix on top of one               no
+ *   2.0.18 -> 2.17.0   a seventeen step jump             yes
+ *   2.9.0  -> 3.0.0    the major moved                   yes
+ *   3.0.0  -> 2.9.0    backwards, so something is wrong  yes
  *
  * An unparseable or missing previous tag counts as big, because "I do not know what
  * changed" deserves the stronger check rather than the weaker one.
@@ -127,7 +147,9 @@ export function isBigUpdate(prevTag, version) {
   const prev = parse(prevTag)
   const next = parse(version)
   if (!prev || !next) return true
-  return next.major !== prev.major || next.minor !== prev.minor
+  if (next.major !== prev.major) return true
+  const step = next.minor - prev.minor
+  return step < 0 || step > 1
 }
 
 export function releaseWork({ dirty, unpushed, unreleased }) {

@@ -7,11 +7,23 @@
 import { expect, test } from '@playwright/test'
 import fs from 'node:fs'
 
+import { displayVersion } from '../src/appVersion'
+
 const APP_VERSION = JSON.parse(fs.readFileSync('package.json', 'utf8')).version as string
 const KEY = 'olpremiere:lastSeenVersion'
-// What the UI SHOWS. His call: the pre-1.0 zero reads as unfinished, so the leading
-// '0.' is dropped for display only. The stored + compared value stays real semver.
-const SHOWN = APP_VERSION.replace(/^0\./, '')
+// What the UI SHOWS, ASKED OF THE APP RATHER THAN COPIED.
+//
+// ⛔ THIS LINE USED TO RE-IMPLEMENT THE RULE BY HAND, as
+// `APP_VERSION.replace(/^0\./, '')`, and that is exactly how it went red on
+// 2026-08-19. His numbering changed, `displayVersion` learned to drop the
+// trailing `.0` as well, and this copy of the rule did not. A test that
+// re-states the behaviour it is checking cannot catch that behaviour changing;
+// it can only go stale and then fail for the wrong reason. Ask the source.
+//
+// Importing it here is safe in node: `APP_VERSION` inside that module is behind
+// a `typeof __APP_VERSION__` guard, and `displayVersion` is being handed the
+// version explicitly anyway.
+const SHOWN = displayVersion(APP_VERSION)
 
 test('the top bar shows the running build version', async ({ page }) => {
   await page.goto('/')

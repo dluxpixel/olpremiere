@@ -91,12 +91,26 @@ export function speechScore(results: readonly { label: string; score: number }[]
 }
 
 /**
- * Score every whole window of `pcm`.
+ * Score every window of `pcm`, INCLUDING the last part window.
  *
- * A trailing part window is skipped rather than padded: padding reads as
- * silence, which would score near zero and could take a real word with it at
- * the very end of a clip. An unscored tail is treated as speech by the rule
- * below, which is the safe direction.
+ * ⛔ THE TAIL IS SCORED, AND IT USED NOT TO BE. Skipping it looked like the safe
+ * choice and the old comment argued for it: an unscored tail is treated as
+ * speech by `scoreForWord`, which is the direction that cannot delete his work.
+ *
+ * What that actually bought was up to five seconds of invented captions
+ * surviving at the END of every single clip, because on a clip that is nothing
+ * but music the tail rule keeps whatever the recogniser wrote there. On a
+ * timeline of forty short clips that is forty little runs of junk, which is the
+ * bug he reported rather than a safety margin.
+ *
+ * It is also what stopped "this clip has nobody talking in it" from ever being
+ * a complete answer, and that answer is worth having: it lets a whole-timeline
+ * sweep skip the recogniser on a clip instead of spending a minute listening to
+ * a song.
+ *
+ * The tail is only scored when there is at least a SECOND of it, which is the
+ * same floor this function already used to decide it had an opinion at all.
+ * Anything shorter is still left unscored and still reads as speech.
  *
  * Yields between windows so a long clip does not lock the interface, the same
  * way the voice analysis does. Resolves null if `signal` aborts.
@@ -118,17 +132,32 @@ export async function speechTrackFromPcm(
     return { scores: Float32Array.from([speechScore(res)]), windowS: pcm.length / sampleRate }
   }
   const count = Math.floor(pcm.length / size)
-  const scores = new Float32Array(count)
+  // The tail sits at index `count`, which is exactly where `scoreForWord` looks
+  // for a word inside it, so nothing downstream needs to know it is shorter.
+  const tail = pcm.length - count * size
+  const scoreTail = tail >= sampleRate
+  const scores = new Float32Array(count + (scoreTail ? 1 : 0))
   for (let i = 0; i < count; i++) {
     if (opts.signal?.aborted) return null
     const res = await classify(pcm.subarray(i * size, (i + 1) * size))
     scores[i] = speechScore(res)
     if (opts.onWindow) await opts.onWindow()
   }
+  if (scoreTail) {
+    if (opts.signal?.aborted) return null
+    scores[count] = speechScore(await classify(pcm.subarray(count * size)))
+  }
   return { scores, windowS }
 }
 
-/** True when not one window in the clip shows anybody talking. */
+/**
+ * True when not one window in the clip shows anybody talking.
+ *
+ * Since the tail is scored too, this covers the WHOLE clip rather than most of
+ * it, which is what makes it safe to act on: a caller can skip the recogniser
+ * outright and know the answer matches what `dropWordsInMusic` would have done
+ * to every word it returned.
+ */
 export function isPureMusic(track: SpeechTrack, bar = SPEECH_BAR): boolean {
   if (track.scores.length === 0) return false
   for (const s of track.scores) if (s >= bar) return false

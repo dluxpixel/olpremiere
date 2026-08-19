@@ -139,13 +139,23 @@ describe('releaseWork', () => {
 // This one decides whether a window appears on his screen during a ship, so the
 // boundary is worth pinning rather than eyeballing.
 describe('isBigUpdate', () => {
-  it('a patch is not big', () => {
+  it('a fix on top of a release is not big', () => {
     expect(isBigUpdate('v2.0.3', '2.0.4')).toBe(false)
     expect(isBigUpdate('v2.0.9', '2.0.10')).toBe(false)
+    expect(isBigUpdate('v2.17.0', '2.17.1')).toBe(false)
   })
 
-  it('a minor or a major is big', () => {
-    expect(isBigUpdate('v2.0.4', '2.1.0')).toBe(true)
+  // Under his numbering (2026-08-19) the ORDINARY ship moves the minor by one, so
+  // this is the case that must stay quiet. Pinned because the old rule answered
+  // yes to it, which would have meant a window on his screen at every release.
+  it('one ordinary step forward is not big', () => {
+    expect(isBigUpdate('v2.17.0', '2.18.0')).toBe(false)
+    expect(isBigUpdate('v2.0.4', '2.1.0')).toBe(false)
+  })
+
+  it('a jump of more than one, or any major move, is big', () => {
+    expect(isBigUpdate('v2.0.18', '2.17.0')).toBe(true)
+    expect(isBigUpdate('v2.17.0', '2.19.0')).toBe(true)
     expect(isBigUpdate('v2.9.9', '3.0.0')).toBe(true)
   })
 

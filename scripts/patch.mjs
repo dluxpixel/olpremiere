@@ -24,10 +24,15 @@ import { isTransientFailure, loadToken, openShipLog, releaseWork, runLogged, SHI
 
 const args = process.argv.slice(2)
 const fast = args.includes('--fast')
-const message = args.filter((a) => a !== '--fast').join(' ').trim()
+// ⛔ EVERY FLAG COMES OUT OF THE MESSAGE. `--fast` was filtered and `--fix` was
+// not when it was added, which would have put the word "--fix" in the middle of
+// a release commit and in the GitHub release body.
+const FLAGS = ['--fast', '--fix']
+const message = args.filter((a) => !FLAGS.includes(a)).join(' ').trim()
 
 if (!message) {
-  console.error('Usage: npm run patch -- "type(scope): what changed"   [--fast]')
+  console.error('Usage: npm run patch -- "type(scope): what changed"   [--fast] [--fix]')
+  console.error('  --fix  a small fix on top of the last release: 2.17.0 becomes 2.17.1 instead of 2.18.0')
   process.exit(2)
 }
 
@@ -141,7 +146,23 @@ try {
 }
 
 // --- 2. bump, commit, push --------------------------------------------------
-await run('npm version patch --no-git-tag-version', 'version bump')
+//
+// ⛔ MINOR BY DEFAULT, NOT PATCH, AND THE NAME OF THIS SCRIPT IS A RED HERRING.
+// His numbering, 2026-08-19, looking at v2.0.17: *"let's change the format of
+// this to 2.17 and when we do smaller updates, more like patch fixes, let's
+// make it 2.17.1 and so on when we do a bigger update, let's turn it into
+// 2.18."*
+//
+// So the ORDINARY ship, which is what this script is, moves the middle number:
+// 2.17.0 becomes 2.18.0 and he reads it as "2.18". A small fix on top of one
+// takes `--fix` and moves the last number instead: 2.17.1, which he reads whole
+// because a third number only appears when it means something.
+//
+// The trailing `.0` is trimmed for HIM by `displayVersion` and never anywhere a
+// machine reads. The tag, the installer filename and the update feed stay true
+// three part semver, because electron-updater COMPARES those strings.
+const bump = process.argv.includes('--fix') ? 'patch' : 'minor'
+await run(`npm version ${bump} --no-git-tag-version`, `version bump (${bump})`)
 const version = JSON.parse(readFileSync('package.json', 'utf8')).version
 
 execFileSync('git', ['add', '-A'], { stdio: 'inherit' })

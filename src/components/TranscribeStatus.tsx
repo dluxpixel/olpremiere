@@ -15,14 +15,21 @@ export function TranscribeStatus() {
   // "Downloading (once)" was a lie every time after the first: the model lives in
   // the local cache, and loading it from there still reports progress, so he saw
   // the download banner on every new version and reasonably stopped trusting it.
+  // "Listening for words" was said while the app was still deciding whether
+  // anybody was talking at all, which is how it came to claim it was listening
+  // for words in a clip of gameplay. His words, 2026-08-19: *"I think when it
+  // says 'listening for words,' it also listens to video clips. It's kinda
+  // weird."* Each step says what it is really doing now.
   const label =
     status === 'reading'
       ? 'Reading the clip’s audio…'
-      : status === 'model'
-        ? downloading
-          ? 'Downloading Whisper (first time only)'
-          : 'Loading Whisper…'
-        : 'Listening for words…'
+      : status === 'screening'
+        ? 'Checking if anyone is talking…'
+        : status === 'model'
+          ? downloading
+            ? 'Downloading Whisper (first time only)'
+            : 'Loading Whisper…'
+          : 'Listening for words…'
 
   return (
     <div

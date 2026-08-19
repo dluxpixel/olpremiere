@@ -112,15 +112,39 @@ describe('speechTrackFromPcm', () => {
     return vi.fn(async () => [{ label: 'Speech', score: perWindow[Math.min(i++, perWindow.length - 1)] }])
   }
 
-  it('scores one window per WINDOW_S of audio and skips a part window', () => {
-    const pcm = new Float32Array(16000 * 12) // 12 s at 16 kHz = two whole 5 s windows
-    const classify = fake([0.8, 0.02])
+  it('scores one window per WINDOW_S of audio, AND the part window at the end', () => {
+    const pcm = new Float32Array(16000 * 12) // 12 s at 16 kHz = two whole 5 s windows, 2 s left
+    const classify = fake([0.8, 0.02, 0.01])
     return speechTrackFromPcm(classify, pcm, 16000).then((t) => {
-      expect(t?.scores.length).toBe(2)
-      expect(classify).toHaveBeenCalledTimes(2)
+      expect(t?.scores.length).toBe(3)
+      expect(classify).toHaveBeenCalledTimes(3)
       // Float32Array, so 0.8 reads back as 0.800000011920929.
       expect(t!.scores[0]).toBeCloseTo(0.8, 6)
       expect(t!.scores[1]).toBeCloseTo(0.02, 6)
+      expect(t!.scores[2]).toBeCloseTo(0.01, 6)
+    })
+  })
+
+  // The tail used to be skipped on purpose, and an unscored tail reads as speech,
+  // so every clip kept up to five seconds of whatever the recogniser invented at
+  // the end of it. On a music-only clip that is junk captions, every clip, which
+  // is the thing he reported.
+  it('a music-only clip is called pure music all the way to its end', () => {
+    const pcm = new Float32Array(16000 * 12)
+    return speechTrackFromPcm(fake([0.01]), pcm, 16000).then((t) => {
+      expect(isPureMusic(t!)).toBe(true)
+      // The last word in the clip is inside a scored window, so it can be dropped.
+      expect(scoreForWord(t!, 11, 11.4)).toBeCloseTo(0.01, 6)
+    })
+  })
+
+  it('⛔ a tail under a second is still left unscored, so it still reads as speech', () => {
+    const pcm = new Float32Array(16000 * 10.5) // two whole windows, half a second left
+    const classify = fake([0.01])
+    return speechTrackFromPcm(classify, pcm, 16000).then((t) => {
+      expect(t?.scores.length).toBe(2)
+      expect(classify).toHaveBeenCalledTimes(2)
+      expect(scoreForWord(t!, 10.2, 10.4)).toBe(1)
     })
   })
 
