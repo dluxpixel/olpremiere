@@ -59,6 +59,7 @@ const api: OlApi = {
     return () => ipcRenderer.off('update:none', l)
   },
   restartToUpdate: () => ipcRenderer.send('update:install'),
+  setUpdateBusy: (on: boolean) => ipcRenderer.send('update:busy', on),
   getUpdateStatus: (): Promise<UpdateStatus> => ipcRenderer.invoke('update:status:get'),
   checkForUpdates: (): Promise<void> => ipcRenderer.invoke('update:check'),
   reportBootProgress: (progress: BootProgress) => ipcRenderer.send('boot:progress', progress),

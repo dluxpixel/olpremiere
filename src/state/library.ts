@@ -197,6 +197,17 @@ export function applyPresetToSelection(presetId: Id): void {
     if (!clipId) show('Select a clip first')
     return
   }
+  // ⛔ A LOCKED TRACK IS REFUSED, like everywhere else in the app. Clicking a
+  // clip on a locked track still selects it, on purpose, so the selection this
+  // runs on can easily be one: the preset landed on the very clips he locked the
+  // track to protect, and said "Applied" as if nothing were unusual.
+  const lockedOut = activeSequence(useStore.getState().project).tracks.some(
+    (t) => t.locked && t.clips.some((c) => c.id === clipId),
+  )
+  if (lockedOut) {
+    show('That clip is on a locked track', 'danger')
+    return
+  }
   dispatch(`Apply preset ${preset.name}`, (p) => {
     const seq = activeSequence(p)
     const tracks = seq.tracks.map((t) =>
@@ -227,8 +238,10 @@ export function applyPresetToAllClips(presetId: Id): void {
   const preset = useLibrary.getState().presets.find((p) => p.id === presetId)
   const { project, dispatch } = useStore.getState()
   if (!preset) return
+  // Locked tracks are neither changed nor COUNTED. Counting them made the toast
+  // over-report by however many clips he had protected.
   const targetCount = activeSequence(project)
-    .tracks.filter((t) => t.kind === 'video')
+    .tracks.filter((t) => t.kind === 'video' && !t.locked)
     .reduce((n, t) => n + t.clips.length, 0)
   if (targetCount === 0) {
     show('No video clips to apply the preset to')
@@ -237,7 +250,7 @@ export function applyPresetToAllClips(presetId: Id): void {
   dispatch(`Apply preset ${preset.name} to all clips`, (p) => {
     const seq = activeSequence(p)
     const tracks = seq.tracks.map((t) =>
-      t.kind !== 'video'
+      t.kind !== 'video' || t.locked
         ? t
         : {
             ...t,

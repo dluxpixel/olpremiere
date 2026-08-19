@@ -16,6 +16,8 @@ import type { MusicRequest, MusicResponse } from './musicWorker'
 export const MUSIC_SAMPLE_RATE = 16000
 
 let worker: Worker | null = null
+/** Ticks once per request, so a reply can be matched to the run that asked for it. */
+let nextRequestId = 1
 
 function getWorker(): Worker {
   if (!worker) {
@@ -33,7 +35,12 @@ export function killMusicWorker(): void {
 /** Load the model without doing any work, so the first caption run is not the one that waits. */
 export function warmMusicModel(): void {
   try {
-    getWorker().postMessage({ warm: true, windowS: WINDOW_S, sampleRate: MUSIC_SAMPLE_RATE } satisfies MusicRequest)
+    getWorker().postMessage({
+      warm: true,
+      windowS: WINDOW_S,
+      sampleRate: MUSIC_SAMPLE_RATE,
+      id: nextRequestId++,
+    } satisfies MusicRequest)
   } catch {
     // A CSP that blocks workers, or no worker support. The gate simply never
     // has an opinion, and every word survives.
@@ -73,6 +80,12 @@ export async function musicTrackForClip(
     return null
   }
 
+  // ONE ID PER RUN, BECAUSE THERE IS ONE WORKER FOR THE WHOLE APP. Every
+  // caller listens on the same port, so without an id a reply is handed to every
+  // listener alive. A cancelled run keeps its listener until its OWN reply lands,
+  // so the run he started next read the cancelled clip's scores: words kept or
+  // dropped on the strength of music in a completely different clip.
+  const id = nextRequestId++
   return new Promise<SpeechTrack | null>((resolve) => {
     const done = (value: SpeechTrack | null) => {
       w.removeEventListener('message', onMessage)
@@ -81,13 +94,14 @@ export async function musicTrackForClip(
     }
     const onMessage = (e: MessageEvent<MusicResponse>) => {
       const r = e.data
+      if (r.id !== id) return // another run's reply, or a warm
       if (!r.ok) {
         // A hard error may have left the pipeline half built.
         killMusicWorker()
         done(null)
         return
       }
-      if ('warmed' in r) return // not ours; a warm can land while a run is in flight
+      if ('warmed' in r) return // a warm this run did not ask for
       done(signal?.aborted ? null : { scores: r.scores, windowS: r.windowS })
     }
     const onError = () => {
@@ -99,7 +113,9 @@ export async function musicTrackForClip(
     try {
       // Transferred: the caller has no use for this copy afterwards, and a clip
       // of PCM is megabytes.
-      w.postMessage({ pcm, windowS: WINDOW_S, sampleRate: MUSIC_SAMPLE_RATE } satisfies MusicRequest, [pcm.buffer])
+      w.postMessage({ pcm, windowS: WINDOW_S, sampleRate: MUSIC_SAMPLE_RATE, id } satisfies MusicRequest, [
+        pcm.buffer,
+      ])
     } catch {
       done(null)
     }

@@ -24,7 +24,7 @@ import { channelKeyframes } from '../engine/effects/channels'
 import { bezierEase, ease, MOMENT_EPS } from '../engine/keyframes'
 import { MOTION_CURVES, type MotionCurveName } from '../engine/motion'
 import type { AnimChannel, Clip, Curve, Keyframe } from '../engine/types'
-import { setSegmentCurve, setSegmentEase } from '../state/clipEdits'
+import { setAllSegmentCurves, setSegmentCurve, setSegmentEase } from '../state/clipEdits'
 import { IconButton } from '../ui/Button'
 import { friendly as friendlyChannelName } from './keyframeMarks'
 import { useMotionRail } from './MotionRail'
@@ -345,14 +345,13 @@ export function CurveEditor({ clip, channel }: { clip: Clip; channel: AnimChanne
   }
 
   /**
-   * Every segment on this property gets the shape he just made. One call per
-   * segment through the same single-segment action, so a locked track refuses it
-   * the same way and nothing needs a second write path. The last keyframe is
-   * skipped: it leaves no segment.
+   * Every segment on this property gets the shape he just made, as ONE undo step.
+   * The loop that used to live here pushed one command per segment, so undoing
+   * one button press took as many presses as he happened to have keyframes.
    */
   const applyToAll = () => {
     if (!live) return
-    for (let i = 0; i < kfs.length - 1; i++) setSegmentCurve(clip.id, channel, kfs[i].t, live)
+    setAllSegmentCurves(clip.id, channel, live)
   }
 
   const chip = (active: boolean) =>

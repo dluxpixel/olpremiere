@@ -389,6 +389,37 @@ export function setSegmentCurve(
 }
 
 /**
+ * Give EVERY segment on this property the same shape, in ONE undo step.
+ *
+ * ⛔ NOT A LOOP OVER setSegmentCurve, and that is the whole point of it existing.
+ * The panel used to call the single-segment action once per segment, and each
+ * call pushes its own command with no merge key: six keyframes meant five undo
+ * entries for one button press, so one Ctrl+Z put back only the last segment and
+ * he had to guess how many more to press. Every other bulk verb in that panel
+ * already takes the whole set for this reason.
+ *
+ * Goes through `mapClip` like its single-segment twin, so a locked track refuses
+ * it the same way and there is still only one write path.
+ */
+export function setAllSegmentCurves(clipId: string, channel: AnimChannel, curve: Curve | undefined): void {
+  mapClip(
+    clipId,
+    curve ? `Set every ${channel} curve` : `Clear every ${channel} curve`,
+    (c) => {
+      const kfs = channelKeyframes(c, channel)
+      // One keyframe or none leaves no segment to shape, so hand the SAME clip
+      // back and let bailOnNoop stop a dead undo step landing.
+      if (kfs.length < 2) return c
+      // The last keyframe owns no segment after it, hence length - 1.
+      let next = setSegmentCurveK(kfs, kfs[0].t, curve)
+      for (let i = 1; i < kfs.length - 1; i++) next = setSegmentCurveK(next, kfs[i].t, curve)
+      return withChannelKeyframes(c, channel, next)
+    },
+    true,
+  )
+}
+
+/**
  * Copy the keyframe at `t` to `toT`, carrying its value, its ease AND its curve:
  * Alt-dragging a diamond. The same shaped move, somewhere else.
  */

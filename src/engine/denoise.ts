@@ -118,7 +118,7 @@ function ensureWetChannels(asset: MediaAsset, src: AudioBuffer): Promise<Float32
         // Wasm unavailable (old browser, blocked wasm): fail SOFT to raw audio
         // so the toggle just does nothing rather than muting the clip, but
         // clear the cache so a retry is possible.
-        console.warn('OL Studio: noise reduction unavailable', err)
+        console.warn('OL Premiere: noise reduction unavailable', err)
         wetCache.delete(asset.id)
         return null
       })

@@ -46,7 +46,7 @@ class StubOffscreenCanvas {
 
 vi.stubGlobal('OffscreenCanvas', StubOffscreenCanvas)
 
-const { clearTitleCache, rasterizeTitle, titleCacheBytes } = await import('./titleRaster')
+const { clearTitleCache, rasterizeTitle, titleCacheBytes, TITLE_CACHE_BUDGET_BYTES } = await import('./titleRaster')
 
 const W = 320
 const H = 180
@@ -72,7 +72,11 @@ describe('title raster cache', () => {
     const first = defFor('word-0')
     const firstCanvas = rasterizeTitle(first, SHORT_W, SHORT_H)
 
-    for (let i = 1; i <= 12; i++) rasterizeTitle(defFor(`word-${i}`), SHORT_W, SHORT_H)
+    // Enough to bust whatever the budget IS, rather than a count copied from
+    // whatever it was on the day this was written.
+    const perRaster = SHORT_W * SHORT_H * 4
+    const enough = Math.ceil(TITLE_CACHE_BUDGET_BYTES / perRaster) + 1
+    for (let i = 1; i <= enough; i++) rasterizeTitle(defFor(`word-${i}`), SHORT_W, SHORT_H)
 
     // `first` was evicted, so it must RE-RASTERIZE rather than hand back the
     // canvas the identity map was still holding.
@@ -85,13 +89,16 @@ describe('title raster cache', () => {
     // things. Small rasters may now pile up far past 32 while staying cheap.
     for (let i = 0; i < 100; i++) rasterizeTitle(defFor(`small-${i}`), W, H)
     const smallBytes = titleCacheBytes()
-    expect(smallBytes).toBeLessThanOrEqual(48 * 1024 * 1024)
+    expect(smallBytes).toBeLessThanOrEqual(TITLE_CACHE_BUDGET_BYTES)
 
     clearTitleCache()
     expect(titleCacheBytes()).toBe(0)
 
-    for (let i = 0; i < 100; i++) rasterizeTitle(defFor(`big-${i}`), SHORT_W, SHORT_H)
-    expect(titleCacheBytes()).toBeLessThanOrEqual(48 * 1024 * 1024)
+    // Enough big ones to pass the budget whatever it is, so this cannot go quiet
+    // the day the number moves.
+    const bigCount = Math.ceil(TITLE_CACHE_BUDGET_BYTES / (SHORT_W * SHORT_H * 4)) + 20
+    for (let i = 0; i < bigCount; i++) rasterizeTitle(defFor(`big-${i}`), SHORT_W, SHORT_H)
+    expect(titleCacheBytes()).toBeLessThanOrEqual(TITLE_CACHE_BUDGET_BYTES)
   })
 
   it('keeps the raster it was just asked for, even if it alone busts the budget', () => {

@@ -258,8 +258,21 @@ interface CacheEntry {
  * FULL-FRAME canvas, so 32 of them is 8 MB at 640x360 and 265 MB on a 1080x1920
  * Short. A word-caption timeline makes one entry per word, so the large case is
  * the normal one. Counting bytes turns the guess into a policy.
+ *
+ * ⛔ ONE NUMBER COULD NOT SERVE BOTH SIDES. 48 MB is six rasters on a 1080x1920
+ * Short, and one word caption is one raster: a captioned Short thrashes the whole
+ * cache several times a second while he scrubs, re-drawing text that has not
+ * changed. But the EXPORT worker rasterises the same titles while it also holds
+ * the encoder, the frame pipeline and the audio mix, and it has no business
+ * taking a quarter of a gigabyte for cached text.
+ *
+ * So the budget is per context. A worker has no `window`, which is exactly the
+ * line between the two: the export worker keeps the old careful number, the
+ * interface he is looking at gets thirty-odd captions of headroom on a machine
+ * with 32 GB in it.
  */
-const CACHE_BUDGET_BYTES = 48 * 1024 * 1024
+export const TITLE_CACHE_BUDGET_BYTES = typeof window === 'undefined' ? 48 * 1024 * 1024 : 256 * 1024 * 1024
+const CACHE_BUDGET_BYTES = TITLE_CACHE_BUDGET_BYTES
 
 /** RGBA bytes one rasterized title holds. */
 const canvasBytes = (c: OffscreenCanvas): number => Math.max(1, c.width * c.height * 4)

@@ -139,22 +139,69 @@ export function ensureProxies(assets: readonly MediaAsset[]): void {
  * pause. Nothing is lost: it resumes the moment he stops.
  */
 let playing = false
+/**
+ * Set by the parked drain loop, called by the stop. Only one drain runs at a
+ * time (guarded by `running`), so one slot is all there can ever be.
+ */
+let wakeOnStop: (() => void) | null = null
+
 export function setProxyBuildingPaused(isPlaying: boolean): void {
-  const wasPaused = playing
   playing = isPlaying
-  if (wasPaused && !isPlaying && !running && queue.length > 0) void drain()
+  if (isPlaying) return
+  // ⛔ THE OLD RESUME COULD NEVER FIRE, and its docblock above promised it did.
+  // It asked for `!running`, but a parked drain holds `running` true for its
+  // whole loop, the sleep included, so the stop event was received and thrown
+  // away every time. The only thing that ever restarted the work was the timer,
+  // which is why a preview copy could sit idle for a second and a half after he
+  // stopped playing. Waking the loop directly is what the comment always claimed.
+  const wake = wakeOnStop
+  wakeOnStop = null
+  if (wake) wake()
+  else if (!running && queue.length > 0) void drain()
 }
 
 /** How long to wait before re-checking whether playback has stopped. */
 const PLAYBACK_RECHECK_MS = 1500
+
+/**
+ * Build this asset's preview copy NEXT, ahead of everything else waiting.
+ *
+ * ⛔ THE ORDER OF THE QUEUE IS THE ORDER HE IMPORTED IN, which has nothing to do
+ * with what he is looking at. Import forty recordings and start editing the
+ * fifteenth, and its copy is thirty-nine transcodes away: he edits the one clip
+ * that is still slow while the app carefully speeds up thirty-nine he is not
+ * touching. The frame cache calls this whenever it is asked for a frame of an
+ * asset that has no copy yet, so "what he is looking at" needs no new plumbing.
+ *
+ * Cheap and idempotent: an asset not in the queue (already built, already
+ * building, never wanted one) is left exactly as it is.
+ */
+export function bumpProxyPriority(assetId: Id): void {
+  if (queue.length < 2) return
+  const at = queue.findIndex((a) => a.id === assetId)
+  if (at <= 0) return
+  queue.unshift(queue.splice(at, 1)[0])
+}
 
 async function drain(): Promise<void> {
   running = true
   try {
     while (queue.length > 0) {
       if (playing) {
-        // Hand the machine back to the preview and look again shortly.
-        await new Promise((r) => setTimeout(r, PLAYBACK_RECHECK_MS))
+        // Hand the machine back to the preview and look again on the stop, or
+        // shortly, whichever comes first.
+        await new Promise<void>((resolve) => {
+          let done = false
+          const finish = () => {
+            if (done) return
+            done = true
+            wakeOnStop = null
+            clearTimeout(timer)
+            resolve()
+          }
+          const timer = setTimeout(finish, PLAYBACK_RECHECK_MS)
+          wakeOnStop = finish
+        })
         continue
       }
       const asset = queue.shift()

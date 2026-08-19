@@ -54,9 +54,31 @@ const RENDERER_DIST = path.join(__dirname, '../renderer')
 const DEV_URL = process.env.ELECTRON_RENDERER_URL // set by `electron-vite dev`
 const isDev = !!DEV_URL
 
+/**
+ * THE LAB BUILD: a second copy of the app that shares nothing with his.
+ *
+ * His ask, 2026-08-19: *"Can you work on a separate version of the OL Premiere
+ * so I can work on edits while you work on making the program better?"* Fair,
+ * and the shape of the answer is that every place two apps could collide has to
+ * be different, not just the icon:
+ *
+ *   - a different product name, so Windows installs it beside his rather than
+ *     over it, and the two have separate folders
+ *   - a different saved-projects origin, right below, because a browser engine
+ *     keys storage on the origin and NOTHING else. Same origin means the same
+ *     projects, so a test run in the lab would be editing his real work
+ *   - no auto-update, further down, because the lab is built from whatever is
+ *     on the bench and must never replace itself with the shipped app
+ *
+ * The flavour is decided by the packaged name, which `scripts/lab.mjs` sets. His
+ * build never passes it, so his build is untouched by all of this.
+ */
+export const IS_LAB = app.getName().toLowerCase().includes('lab')
+
 // Stable, PINNED app origin. Never rotate the host. The IndexedDB partition is
-// keyed on it, so a change would orphan saved projects.
-const APP_ORIGIN_HOST = 'olpremiere'
+// keyed on it, so a change would orphan saved projects. The lab's own host is
+// pinned in exactly the same way, and the two must never meet.
+const APP_ORIGIN_HOST = IS_LAB ? 'olpremierelab' : 'olpremiere'
 
 /** The main window, so native-export handlers can target it (save dialog, progress). */
 let mainWindow: BrowserWindow | null = null
@@ -246,7 +268,9 @@ function createWindow(): void {
     backgroundColor: '#0f0e0d',
     show: false,
     autoHideMenuBar: true,
-    title: 'OL Premiere',
+    // Named apart on the taskbar too, so a window on his screen is never a
+    // question. See IS_LAB.
+    title: IS_LAB ? 'OL Premiere Lab' : 'OL Premiere',
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.cjs'),
       contextIsolation: true,
@@ -467,10 +491,23 @@ app.whenReady().then(() => {
     void autoUpdater.checkForUpdatesAndNotify()
   })
 
-  if (app.isPackaged) {
+  // What the RENDERER says it is doing, because main cannot see it: an export
+  // that runs in the browser engine, a live microphone, a take he has not kept.
+  // Any of them makes an automatic relaunch destructive.
+  let rendererBusy = false
+  ipcMain.on('update:busy', (_e, on: boolean) => {
+    rendererBusy = !!on
+  })
+
+  // ⛔ NOT IN THE LAB. It is built from the bench, so the shipped release is
+  // usually OLDER than what it is running, and letting it update would quietly
+  // replace the thing under test with the thing it was being tested against.
+  if (app.isPackaged && !IS_LAB) {
     const launchedAt = Date.now()
     const AUTO_APPLY_WINDOW_MS = 3 * 60 * 1000
     let pendingVersion = ''
+    /** The version he has already been told is ready. Empty until one is. */
+    let announcedVersion = ''
     // Set once an update is downloaded and waiting for him to step away. See
     // ./updateApply for why idleness is the second door.
     let idleApplyTimer: ReturnType<typeof setInterval> | null = null
@@ -500,6 +537,14 @@ app.whenReady().then(() => {
       setUpdateStatus({ kind: 'downloading', version: pendingVersion, percent: Math.round(p.percent) })
     })
     autoUpdater.on('update-downloaded', (info) => {
+      // ⛔ ONCE PER VERSION, AND HE WAS GETTING IT FOUR TIMES AN HOUR.
+      // A staged update stays on disk, so every later check finds it there and
+      // says "downloaded" again straight away. Nothing here cared, so the
+      // "Restart to install" toast came back every fifteen minutes, all day,
+      // over whatever he was doing. Announcing a version he has already been
+      // told about is never news.
+      if (announcedVersion === info.version) return
+      announcedVersion = info.version
       setUpdateStatus({ kind: 'downloaded', version: info.version })
       // Auto-apply only in the fresh-launch window AND only when no native export
       // is mid-render (a force-quit would truncate the file + orphan ffmpeg). Even
@@ -508,7 +553,7 @@ app.whenReady().then(() => {
       // the "Restart to update" toast. Outside the window we always just offer the toast.
       // proxyBusy for the same reason as isExporting: a restart mid-transcode
       // orphans an ffmpeg child and leaves half a proxy behind.
-      const busy = (): boolean => native.isExporting() || proxy.proxyBusy() || remux.remuxBusy()
+      const busy = (): boolean => rendererBusy || native.isExporting() || proxy.proxyBusy() || remux.remuxBusy()
       const decide = (): 'now' | 'when-idle' | 'never' =>
         updateApplyDecision({
           freshLaunch: Date.now() - launchedAt < AUTO_APPLY_WINDOW_MS,
@@ -549,10 +594,15 @@ app.whenReady().then(() => {
     setUpdateStatus({ kind: 'checking' })
     void autoUpdater.checkForUpdatesAndNotify()
     const FIFTEEN_MIN = 15 * 60 * 1000
-    setInterval(() => {
-      // A later check must not erase a staged update: "restart to install" is the
-      // truer answer than "checking" once a version is already on disk.
-      if (updateStatus.kind !== 'downloaded') setUpdateStatus({ kind: 'checking' })
+    const poll = setInterval(() => {
+      // Once a version is staged, the answer cannot improve: it installs on the
+      // next restart either way, and asking again only re-finds the same file.
+      // The reload button still forces a check whenever he wants one.
+      if (updateStatus.kind === 'downloaded') {
+        clearInterval(poll)
+        return
+      }
+      setUpdateStatus({ kind: 'checking' })
       void autoUpdater.checkForUpdatesAndNotify()
     }, FIFTEEN_MIN)
   }

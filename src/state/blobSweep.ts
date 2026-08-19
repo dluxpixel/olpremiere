@@ -19,7 +19,8 @@
 // It runs ONCE per session, after boot, off the critical path.
 
 import { orphanedBlobKeys } from '../engine/blobGc'
-import { db } from './persistence'
+import { blobKeysWrittenThisSession, db } from './persistence'
+import { useStore } from './store'
 import type { Project } from '../engine/types'
 
 export interface SweepResult {
@@ -49,14 +50,40 @@ export async function sweepOrphanedBlobs(): Promise<SweepResult> {
     if (projects.length === 0) return result
     result.projectsScanned = projects.length
 
-    const keys = (await d.getAllKeys('blobs')) as string[]
-    result.examined = keys.length
+    const allKeys = (await d.getAllKeys('blobs')) as string[]
+    result.examined = allKeys.length
+    if (allKeys.length === 0) return result
+
+    // ANYTHING WRITTEN THIS SESSION IS OFF LIMITS. An import puts the bytes in
+    // storage before the asset reaches the project and long before the project
+    // reaches the disk, so a file that is still importing is invisible to every
+    // stored document. That gap is how a running import lost its footage.
+    const fresh = blobKeysWrittenThisSession()
+    const keys = allKeys.filter((k) => !fresh.has(k))
     if (keys.length === 0) return result
 
-    // Intersect: a key must be an orphan of EVERY project to be an orphan at all.
-    let orphans = orphanedBlobKeys(keys, projects[0])
-    for (let i = 1; i < projects.length && orphans.length > 0; i++) {
-      const stillOrphan = new Set(orphanedBlobKeys(orphans, projects[i]))
+    // ⛔ THE UNION IS EVERY DOCUMENT HE CAN STILL GET BACK TO, not only the ones
+    // on disk. Deleting a bin item saves a project without it, and one Ctrl+Z
+    // brings the item back; sweeping against the saved copies alone threw the
+    // bytes away in between, so the undo restored a card with nothing behind it
+    // and the media was gone for good. The open project counts for the same
+    // reason: it can be seconds ahead of what was written.
+    //
+    // Snapshots share structure, so the same document object appears in many
+    // commands. Deduping by identity keeps a 200 step history down to the
+    // handful of distinct documents it really holds.
+    const { project: liveProject, history } = useStore.getState()
+    const documents = new Set<Project>([liveProject, ...projects])
+    for (const c of [...history.undo, ...history.redo]) {
+      documents.add(c.before)
+      documents.add(c.after)
+    }
+
+    // Intersect: a key must be an orphan of EVERY document to be an orphan at all.
+    let orphans = keys
+    for (const doc of documents) {
+      if (orphans.length === 0) break
+      const stillOrphan = new Set(orphanedBlobKeys(orphans, doc))
       orphans = orphans.filter((k) => stillOrphan.has(k))
     }
     if (orphans.length === 0) return result

@@ -74,22 +74,52 @@ export async function cutQuietParts(clipId: string, opts: SilenceOptions = SILEN
     return
   }
 
+  // ⛔ THE CLIP IS READ AGAIN HERE, because reading it took tens of seconds and
+  // NOTHING blocked the timeline while it ran. Every cut below is placed with
+  // `clip.startS`, an absolute timeline second, and then applied to whatever the
+  // sequence looks like NOW. Drag the clip during the run, or ripple delete
+  // anything ahead of it, and those seconds point at different footage: the cuts
+  // came out of a clip he never pointed at. The sweep in transcribeActions.ts
+  // already re-reads for exactly this reason.
+  const liveFound = locate(activeSequence(useStore.getState().project), clipId)
+  if (!liveFound) {
+    show('That clip is gone now, so nothing was cut', 'info')
+    return
+  }
+  if (liveFound.locked) {
+    show('Track is locked', 'danger')
+    return
+  }
+  const live = liveFound.clip
+  // A trim or a speed change moves what the word timings MEAN: they are source
+  // seconds measured from the `inS` the reading started with. Placing them against
+  // a different span would cut in the wrong places while looking like it worked.
+  const sameSpan =
+    Math.abs(live.inS - clip.inS) < EPS &&
+    Math.abs(live.outS - clip.outS) < EPS &&
+    Math.abs((live.speed || 1) - (clip.speed || 1)) < EPS
+  if (!sameSpan) {
+    show('That clip changed while it was being read, so nothing was cut', 'info')
+    return
+  }
+
   // ⛔ THE SOURCE SPAN, NOT THE TIMELINE DURATION. extractClipPcm renders
   // `clip.inS -> clip.outS` of the SOURCE at offset 0 and ignores speed, so the
   // word timings are source seconds measured from `inS`. Handing this
   // clipDurationS (which divides by speed) would misplace every cut on any clip
   // that is not at 1x.
-  const sourceSpanS = Math.max(0, clip.outS - clip.inS)
+  const sourceSpanS = Math.max(0, live.outS - live.inS)
   const ranges = silentRanges(words, sourceSpanS, opts)
   if (ranges.length === 0) {
     show('No quiet parts long enough to cut', 'info')
     return
   }
 
-  const speed = Math.abs(clip.speed || 1)
-  const fps = seq0.fps > 0 ? seq0.fps : 30
+  const speed = Math.abs(live.speed || 1)
+  const seqNow = activeSequence(useStore.getState().project)
+  const fps = seqNow.fps > 0 ? seqNow.fps : 30
   const minPieceS = MIN_PIECE_FRAMES / fps
-  const trackId = seq0.tracks.find((t) => t.clips.some((c) => c.id === clipId))?.id
+  const trackId = seqNow.tracks.find((t) => t.clips.some((c) => c.id === clipId))?.id
   if (!trackId) return
 
   let cutS = 0
@@ -98,8 +128,8 @@ export async function cutQuietParts(clipId: string, opts: SilenceOptions = SILEN
     let next = seq
     const doomed: string[] = []
     for (const r of ranges) {
-      const startT = clip.startS + r.startS / speed
-      const endT = clip.startS + r.endS / speed
+      const startT = live.startS + r.startS / speed
+      const endT = live.startS + r.endS / speed
       if (endT - startT < minPieceS) continue
 
       const a = idCovering(next, trackId, startT)

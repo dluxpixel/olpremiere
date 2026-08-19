@@ -25,12 +25,22 @@ export interface MusicRequest {
   sampleRate: number
   /** Load the model and stop, so the first real run does not pay for it. */
   warm?: boolean
+  /**
+   * Which run asked. Echoed back untouched.
+   *
+   * There is ONE worker for the whole app and every caller listens on it, so
+   * without this a reply is delivered to every listener alive at the time. A
+   * cancelled run keeps its listener until its own reply lands, which means the
+   * next run read the CANCELLED clip's scores and dropped or kept words on the
+   * strength of a different clip's music.
+   */
+  id?: number
 }
 
 export type MusicResponse =
-  | { ok: true; scores: Float32Array; windowS: number }
-  | { ok: true; warmed: true }
-  | { ok: false; error: string }
+  | { ok: true; scores: Float32Array; windowS: number; id?: number }
+  | { ok: true; warmed: true; id?: number }
+  | { ok: false; error: string; id?: number }
 
 type Classifier = (pcm: Float32Array, opts: { top_k: number }) => Promise<{ label: string; score: number }[]>
 
@@ -69,20 +79,32 @@ self.onmessage = async (e: MessageEvent<MusicRequest>) => {
   try {
     const clf = await load()
     if (req.warm || !req.pcm) {
-      ;(self as unknown as Worker).postMessage({ ok: true, warmed: true } satisfies MusicResponse)
+      ;(self as unknown as Worker).postMessage({ ok: true, warmed: true, id: req.id } satisfies MusicResponse)
       return
     }
     const { pcm, sampleRate, windowS } = req
     const size = Math.round(windowS * sampleRate)
     const whole = size > 0 && pcm.length >= size
     const count = whole ? Math.floor(pcm.length / size) : 1
-    const scores = new Float32Array(count)
+    // THE LAST PART WINDOW IS SCORED TOO, and leaving it out threw his words
+    // away. Flooring drops everything past the last whole window, so a 12 second
+    // clip was judged on its first 10 seconds. isPureMusic then reads "not one
+    // window has anybody talking" and the caller skips the recogniser for the
+    // WHOLE clip: a clip with music over it that he speaks over only at the end
+    // was binned unheard. Under a second there is not enough audio to ask, so
+    // that much tail stays unscored, and scoreForWord keeps any word past the
+    // last score. Same rule as musicGate.speechTrackFromPcm, deliberately: the
+    // pure helper and the live worker must not disagree about what was heard.
+    const tail = whole ? pcm.length - count * size : 0
+    const scoreTail = whole && tail >= sampleRate
+    const scores = new Float32Array(count + (scoreTail ? 1 : 0))
     for (let i = 0; i < count; i++) {
       const slice = whole ? pcm.subarray(i * size, (i + 1) * size) : pcm
       scores[i] = speechScore(await clf(slice, { top_k: 527 }))
     }
+    if (scoreTail) scores[count] = speechScore(await clf(pcm.subarray(count * size), { top_k: 527 }))
     ;(self as unknown as Worker).postMessage(
-      { ok: true, scores, windowS: whole ? windowS : pcm.length / sampleRate } satisfies MusicResponse,
+      { ok: true, scores, windowS: whole ? windowS : pcm.length / sampleRate, id: req.id } satisfies MusicResponse,
       // Transferred, like the Whisper worker's reply: the caller is the only
       // reader and copying a score per five seconds is pointless work.
       [scores.buffer],
@@ -91,6 +113,7 @@ self.onmessage = async (e: MessageEvent<MusicRequest>) => {
     ;(self as unknown as Worker).postMessage({
       ok: false,
       error: err instanceof Error ? err.message : String(err),
+      id: req.id,
     } satisfies MusicResponse)
   }
 }

@@ -92,6 +92,10 @@ export async function probe(): Promise<NativeCaps> {
 
 // -- audio: write the mix to a temp WAV BEFORE ffmpeg spawns (it's an -i input) --
 export async function prepareAudio(wav: ArrayBuffer): Promise<void> {
+  // Whatever was waiting here is now unreachable: only one path can be pending,
+  // and the caller is about to replace it. Dropping it first means a second
+  // export attempt cannot strand the first attempt's mix on his disk.
+  if (pendingAudioPath) void unlink(pendingAudioPath).catch(() => {})
   const p = path.join(tmpdir(), `olp-audio-${process.pid}-${Date.now()}.wav`)
   await writeFile(p, Buffer.from(wav))
   pendingAudioPath = p

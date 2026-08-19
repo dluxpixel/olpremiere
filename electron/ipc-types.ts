@@ -165,6 +165,12 @@ export interface OlApi {
   onUpdateNone(cb: () => void): () => void
   /** Quit and install the downloaded update now. Relaunches into the new version. */
   restartToUpdate(): void
+  /**
+   * Tell main that a restart right now would destroy something: an in-browser
+   * export, a live microphone, a take waiting to be kept. Main cannot see any of
+   * those, so without this it would keep offering to relaunch mid take.
+   */
+  setUpdateBusy(on: boolean): void
   /** The updater's CURRENT state, pullable, so a late renderer still learns the answer. */
   getUpdateStatus(): Promise<UpdateStatus>
   /**

@@ -129,7 +129,7 @@ export function loadTitleFonts(fontset: FontFaceSet): Promise<void> {
           await face.load()
           fontset.add(face)
         } catch (err) {
-          console.error(`OL Studio: failed to load title font "${f.label}"`, err)
+          console.error(`OL Premiere: failed to load title font "${f.label}"`, err)
         }
       }),
     )

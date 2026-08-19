@@ -56,6 +56,12 @@ export class Transport {
   private lastT = 0
   /** Bumped by play()/pause() so in-flight async play() setups self-cancel. */
   private playToken = 0
+  /**
+   * Which audio graph is the LIVE one. Bumped by every schedule and by every
+   * teardown, so a build that lands after a newer one started kills itself
+   * instead of playing on top. See claimAudio.
+   */
+  private audioToken = 0
 
   constructor(opts: TransportOpts) {
     this.opts = opts
@@ -121,6 +127,7 @@ export class Transport {
         // the playhead has reached by the time it is ready. That late join is
         // not new machinery: it is rescheduleAudio, the same swap a mid-play
         // mute already performs.
+        const claim = this.claimAudio()
         const pending = this.opts.schedule(fromS)
         const stop = await Promise.race([
           pending,
@@ -133,7 +140,7 @@ export class Transport {
           return
         }
         if (stop) {
-          this.stopAudio = stop
+          this.adoptAudio(claim, stop)
           audioScheduled = true
         } else {
           // Too slow to wait for. Roll the picture; bring the sound in behind it.
@@ -145,7 +152,7 @@ export class Transport {
             .catch(() => undefined)
         }
       } catch (err) {
-        console.warn('OL Studio transport: audio scheduling failed, playing silent', err)
+        console.warn('OL Premiere transport: audio scheduling failed, playing silent', err)
       }
     }
 
@@ -223,12 +230,11 @@ export class Transport {
           this.lastT = fromS
           this.startS = fromS
           this.anchor = this.readClock()
-          this.stopAudio?.()
-          this.stopAudio = null
-          void this.opts.schedule(fromS).then((stop) => {
-            if (token === this.playToken) this.stopAudio = stop
-            else stop()
-          })
+          const claim = this.claimAudio()
+          void this.opts
+            .schedule(fromS)
+            .then((stop) => this.adoptAudio(claim, stop))
+            .catch(() => undefined)
           this.opts.onTick(fromS)
           if (token !== this.playToken) return
           this.rafId = requestAnimationFrame(loop)
@@ -255,6 +261,36 @@ export class Transport {
   }
 
   /**
+   * Take the audio graph over: silence whatever is playing now, and mark every
+   * build still in flight as stale so it silences itself the moment it lands.
+   *
+   * ⛔ WITHOUT THIS HE COULD END UP HEARING HIS TIMELINE TWICE AT ONCE.
+   * Building a graph means decoding, which takes time, and three separate paths
+   * start one while the picture keeps rolling: a late audio join, a loop
+   * wrapping round, and a mix change mid-play. All three used to guard on the
+   * play token alone, and that token does not move when playback simply
+   * CONTINUES. So two builds started close together both believed they were
+   * current: the second overwrote the handle to the first, and the first went on
+   * playing with nothing left that could ever stop it. Nudging a volume slider
+   * during playback did exactly that, and every nudge added another voice, all
+   * of them a few milliseconds apart. Nothing but a full stop cleared it.
+   *
+   * Every scheduler now claims first and hands over through adoptAudio, so the
+   * newest build is the only one that survives, whatever order they finish in.
+   */
+  private claimAudio(): number {
+    this.stopAudio?.()
+    this.stopAudio = null
+    return ++this.audioToken
+  }
+
+  /** Keep a finished build only while it is still the newest one. */
+  private adoptAudio(claim: number, stop: () => void): void {
+    if (claim === this.audioToken) this.stopAudio = stop
+    else stop()
+  }
+
+  /**
    * Rebuild the audio for the CURRENT position without touching the picture.
    *
    * Muting a track, or moving its volume, used to do nothing at all until
@@ -270,17 +306,11 @@ export class Transport {
    */
   rescheduleAudio(): void {
     if (!this.isPlaying || !this.intended || this.currentRate !== 1) return
-    const token = this.playToken
+    const claim = this.claimAudio()
     const fromS = this.liveTime()
-    this.stopAudio?.()
-    this.stopAudio = null
     void this.opts
       .schedule(fromS)
-      .then((stop) => {
-        // Superseded while we were decoding: kill the late audio.
-        if (token === this.playToken) this.stopAudio = stop
-        else stop()
-      })
+      .then((stop) => this.adoptAudio(claim, stop))
       .catch(() => undefined)
   }
 
@@ -325,6 +355,9 @@ export class Transport {
       cancelAnimationFrame(this.rafId)
       this.rafId = null
     }
+    // Bumped even when nothing is playing: a build still decoding has to know
+    // its playback is over by the time it lands.
+    this.audioToken++
     if (this.stopAudio) {
       this.stopAudio()
       this.stopAudio = null

@@ -552,7 +552,12 @@ export function Timeline({ height }: { height: number }) {
               separator: true,
               submenu: MOVES.map((move) => ({
                 label: move.name,
-                shortcut: String(move.digit),
+                // ⛔ NOT String(move.digit). Three shipped moves deliberately have
+                // no digit, and String(undefined) is the word "undefined", which
+                // the menu happily printed where the keyboard shortcut goes. The
+                // keyboard side of this exact slip was fixed on 2026-08-18 (it was
+                // binding the literal key "undefined"); the menu was missed.
+                shortcut: move.digit === undefined ? undefined : String(move.digit),
                 onClick: () => applyMoveToSelection(move.id, selNow),
               })),
             },

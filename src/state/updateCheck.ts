@@ -27,7 +27,10 @@ async function check(booted: string): Promise<void> {
     const served = servedBundleOf(await r.text())
     if (served && served !== booted) {
       notified = true
-      useToasts.getState().show('A new version of OL Studio is live', 'info', {
+      // ⛔ THE NAME OF THE APP HE IS LOOKING AT. This said "OL Studio", the DAW,
+      // which is a different product in the same suite: the only update message
+      // in OL Premiere named the wrong program.
+      useToasts.getState().show('A new version of OL Premiere is live', 'info', {
         label: 'Reload',
         onClick: () => window.location.reload(),
       })

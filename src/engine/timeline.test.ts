@@ -2635,6 +2635,164 @@ describe('a ripple carries the other tracks with it', () => {
     // Sat between the old end (2) and the new one (4), and still owes the delta.
     expect(startOf(r, 'v2b')).toBeCloseTo(5, 6)
   })
+
+  describe('a ripple trim moves both halves of a pair by the SAME amount', () => {
+    // ⛔ The scar: the two halves are two different files, so they run out of
+    // tail at different moments. Trimming each of them to the same TIME let the
+    // picture take the full move and the sound take a shorter one, and from that
+    // moment his lip sync was gone with nothing on screen to say so.
+
+    // The voice ran out half a second after the picture's cut point.
+    const find = (sq: Sequence, id: string) => findClip(sq, id)!.clip
+    const SHORT_AUDIO = makeAsset({ id: 'ashort', kind: 'audio', durationS: 2.5, hasVideo: false })
+    const PAIR_ASSETS = { ...ASSETS, ashort: SHORT_AUDIO }
+
+    /** A linked pair at 0-2, each with a neighbour behind it at 5. */
+    const pairSeq = () =>
+      makeSeq([
+        makeTrack({
+          name: 'V1',
+          clips: [
+            makeClip({ id: 'v', assetId: 'av', startS: 0, inS: 0, outS: 2, linkId: 'L' }),
+            makeClip({ id: 'vNext', startS: 5, inS: 0, outS: 1 }),
+          ],
+        }),
+        makeTrack({
+          name: 'A1',
+          kind: 'audio',
+          clips: [
+            makeClip({ id: 'a', assetId: 'ashort', startS: 0, inS: 0, outS: 2, linkId: 'L' }),
+            makeClip({ id: 'aNext', startS: 5, inS: 0, outS: 1 }),
+          ],
+        }),
+      ])
+
+    it('stops where the SHORTER source stops, on both tracks', () => {
+      // He asks for 2 more seconds. The voice has half a second of tail left.
+      const r = rippleTrimGroup(pairSeq(), PAIR_ASSETS, 'v', 'out', 4)
+      expect(clipEndS(find(r, 'v'))).toBeCloseTo(2.5, 6)
+      expect(clipEndS(find(r, 'a'))).toBeCloseTo(2.5, 6)
+      // And the two tracks rippled by the same half second, so what follows
+      // stays lined up too.
+      expect(startOf(r, 'vNext')).toBeCloseTo(5.5, 6)
+      expect(startOf(r, 'aNext')).toBeCloseTo(5.5, 6)
+    })
+
+    it('still takes the whole move when both halves have the room', () => {
+      const r = rippleTrimGroup(pairSeq(), PAIR_ASSETS, 'v', 'out', 2.4)
+      expect(clipEndS(find(r, 'v'))).toBeCloseTo(2.4, 6)
+      expect(clipEndS(find(r, 'a'))).toBeCloseTo(2.4, 6)
+      expect(startOf(r, 'vNext')).toBeCloseTo(5.4, 6)
+      expect(startOf(r, 'aNext')).toBeCloseTo(5.4, 6)
+    })
+
+    it('trimming the head moves both halves together as well', () => {
+      const r = rippleTrimGroup(pairSeq(), PAIR_ASSETS, 'v', 'in', 0.5)
+      expect(find(r, 'v').startS).toBeCloseTo(0, 6)
+      expect(clipEndS(find(r, 'v'))).toBeCloseTo(1.5, 6)
+      expect(clipEndS(find(r, 'a'))).toBeCloseTo(1.5, 6)
+      expect(startOf(r, 'vNext')).toBeCloseTo(4.5, 6)
+      expect(startOf(r, 'aNext')).toBeCloseTo(4.5, 6)
+    })
+  })
+})
+
+describe('a linked partner is never shoved on top of anything', () => {
+  // The rule the whole file is written against: two clips may not occupy the
+  // same second of the same track. Every one of these used to break it through a
+  // verb that only ever looked at the track he was pointing at.
+
+  /** V1: `video`, A1: its linked partner plus whatever else is named. */
+  const linkedPair = (videoStartS: number, partnerStartS: number, extraAudio: Clip[]): Sequence => {
+    const v = makeClip({ id: 'v', startS: videoStartS, outS: 5, linkId: 'L' })
+    const a = makeClip({ id: 'a', startS: partnerStartS, outS: 5, linkId: 'L' })
+    return makeSeq([
+      makeTrack({ id: 'V1', kind: 'video', clips: [v] }),
+      makeTrack({ id: 'A1', kind: 'audio', name: 'A1', clips: [a, ...extraAudio] }),
+    ])
+  }
+
+  const overlaps = (seq: Sequence): boolean =>
+    seq.tracks.some((t) => {
+      const sorted = [...t.clips].sort((x, y) => x.startS - y.startS)
+      return sorted.some((c, i) => i > 0 && c.startS < clipEndS(sorted[i - 1]) - 1e-6)
+    })
+
+  it('dragging a selected pair stops against the music instead of carving it', () => {
+    // V1 is empty at 10s so the video half is free to land there. A1 already
+    // holds a music bed at 10-20s, and the audio half was carving a hole in it.
+    const music = makeClip({ id: 'music', startS: 10, outS: 10 })
+    const seq = linkedPair(0, 0, [music])
+    const out = moveSelectionWith(seq, 'v', 'V1', 10, [])
+
+    expect(overlaps(out)).toBe(false)
+    const kept = findClip(out, 'music')
+    expect(kept).not.toBeNull()
+    expect(kept?.clip.startS).toBe(10)
+    expect(clipEndS(kept!.clip)).toBe(20)
+    // It still MOVES: it slides as far as the audio half can go, which is up
+    // against the music, and the two halves stay together.
+    const v = findClip(out, 'v')!.clip
+    const a = findClip(out, 'a')!.clip
+    expect(v.startS).toBe(5)
+    expect(a.startS).toBe(5)
+  })
+
+  it('a drag with a clear partner track is untouched by the clamp', () => {
+    const seq = linkedPair(0, 0, [])
+    const out = moveSelectionWith(seq, 'v', 'V1', 10, [])
+    expect(findClip(out, 'v')?.clip.startS).toBe(10)
+    expect(findClip(out, 'a')?.clip.startS).toBe(10)
+  })
+
+  it('closing a gap holds the pair back rather than sliding the voice into the bed', () => {
+    // V1: clip at 0-5, gap, the pair's video at 10-15.
+    // A1: a bed at 0-9, and the pair's audio at 10-15. Closing the gap wants a
+    // 5 second slide; the audio can only take one.
+    const first = makeClip({ id: 'first', startS: 0, outS: 5 })
+    const v = makeClip({ id: 'v', startS: 10, outS: 5, linkId: 'L' })
+    const bed = makeClip({ id: 'bed', startS: 0, outS: 9 })
+    const a = makeClip({ id: 'a', startS: 10, outS: 5, linkId: 'L' })
+    const seq = makeSeq([
+      makeTrack({ id: 'V1', kind: 'video', clips: [first, v] }),
+      makeTrack({ id: 'A1', kind: 'audio', name: 'A1', clips: [bed, a] }),
+    ])
+    const out = closeGapBefore(seq, 'v')
+
+    expect(overlaps(out)).toBe(false)
+    expect(findClip(out, 'v')?.clip.startS).toBe(9)
+    expect(findClip(out, 'a')?.clip.startS).toBe(9)
+    expect(findClip(out, 'bed')?.clip.startS).toBe(0)
+    expect(clipEndS(findClip(out, 'bed')!.clip)).toBe(9)
+  })
+
+  it('closes the whole gap when the partner track is clear', () => {
+    const first = makeClip({ id: 'first', startS: 0, outS: 5 })
+    const v = makeClip({ id: 'v', startS: 10, outS: 5, linkId: 'L' })
+    const a = makeClip({ id: 'a', startS: 10, outS: 5, linkId: 'L' })
+    const seq = makeSeq([
+      makeTrack({ id: 'V1', kind: 'video', clips: [first, v] }),
+      makeTrack({ id: 'A1', kind: 'audio', name: 'A1', clips: [a] }),
+    ])
+    const out = closeGapBefore(seq, 'v')
+    expect(findClip(out, 'v')?.clip.startS).toBe(5)
+    expect(findClip(out, 'a')?.clip.startS).toBe(5)
+  })
+
+  it('closeAllGaps repacks without pushing a partner through a bed', () => {
+    const v1 = makeClip({ id: 'v1', startS: 0, outS: 4 })
+    const v2 = makeClip({ id: 'v2', startS: 10, outS: 4, linkId: 'L' })
+    const bed = makeClip({ id: 'bed', startS: 0, outS: 8 })
+    const a2 = makeClip({ id: 'a2', startS: 10, outS: 4, linkId: 'L' })
+    const seq = makeSeq([
+      makeTrack({ id: 'V1', kind: 'video', clips: [v1, v2] }),
+      makeTrack({ id: 'A1', kind: 'audio', name: 'A1', clips: [bed, a2] }),
+    ])
+    const out = closeAllGaps(seq, 'V1')
+    expect(overlaps(out)).toBe(false)
+    expect(findClip(out, 'v2')?.clip.startS).toBe(8)
+    expect(findClip(out, 'a2')?.clip.startS).toBe(8)
+  })
 })
 
 describe('closing gaps stays linear in the clip count', () => {
@@ -2784,6 +2942,64 @@ describe('linked A/V groups stay in sync', () => {
     expect(pv.linkId).toBeDefined()
     expect(pv.linkId).toBe(pa.linkId)
     expect(pv.linkId).not.toBe('g')
+  })
+
+  it('a pasted pair lands on ONE spot, even when only one track is busy', () => {
+    // V1 is clear from 5s on. A1 has a music bed sitting right where the audio
+    // half was asked to go, so the two halves used to choose different homes.
+    const v = makeClip({ id: 'v', startS: 0, outS: 4, linkId: 'g' })
+    const a = makeClip({ id: 'a', startS: 0, outS: 4, linkId: 'g' })
+    const bed = makeClip({ id: 'bed', startS: 5, outS: 9 })
+    const seq = makeSeq([
+      makeTrack({ clips: [v] }),
+      makeTrack({ kind: 'audio', clips: [a, bed] }),
+    ])
+
+    const out = pasteClips(seq, serializeClips(seq, [v.id, a.id]), 5)
+    const [pv, pa] = out.newIds.map((id) => find(out.seq, id))
+    expect(out.newIds).toHaveLength(2)
+    // Same start: the picture and the sound stay together, wherever they fit.
+    expect(pa.startS).toBeCloseTo(pv.startS, 6)
+    // And they cleared the bed rather than sitting on it.
+    expect(pa.startS).toBeGreaterThanOrEqual(9 - 1e-6)
+  })
+
+  it('a pasted pair lands exactly on the playhead when both tracks are free', () => {
+    const v = makeClip({ id: 'v', startS: 0, outS: 4, linkId: 'g' })
+    const a = makeClip({ id: 'a', startS: 0, outS: 4, linkId: 'g' })
+    const seq = makeSeq([makeTrack({ clips: [v] }), makeTrack({ kind: 'audio', clips: [a] })])
+    const out = pasteClips(seq, serializeClips(seq, [v.id, a.id]), 20)
+    const [pv, pa] = out.newIds.map((id) => find(out.seq, id))
+    expect(pv.startS).toBeCloseTo(20, 6)
+    expect(pa.startS).toBeCloseTo(20, 6)
+  })
+
+  it('a locked track for one half stops the whole pair, and says so', () => {
+    // The old behaviour pasted the video alone, still linked, and a linked video
+    // clip makes no sound of its own: a silent copy that looked perfectly normal.
+    const v = makeClip({ id: 'v', startS: 0, outS: 4, linkId: 'g' })
+    const a = makeClip({ id: 'a', startS: 0, outS: 4, linkId: 'g' })
+    const seq = makeSeq([
+      makeTrack({ clips: [v] }),
+      makeTrack({ kind: 'audio', locked: true, clips: [a] }),
+    ])
+    const out = pasteClips(seq, serializeClips(seq, [v.id, a.id]), 10)
+    expect(out.newIds).toHaveLength(0)
+    expect(out.blockedByLock).toBe(1)
+    expect(out.seq).toBe(seq)
+  })
+
+  it('a lone clip bound for a locked track is counted too, and the rest still pastes', () => {
+    const v = makeClip({ id: 'v', startS: 0, outS: 4 })
+    const a = makeClip({ id: 'a', startS: 0, outS: 4 })
+    const seq = makeSeq([
+      makeTrack({ clips: [v] }),
+      makeTrack({ kind: 'audio', locked: true, clips: [a] }),
+    ])
+    const out = pasteClips(seq, serializeClips(seq, [v.id, a.id]), 10)
+    expect(out.newIds).toHaveLength(1)
+    expect(out.blockedByLock).toBe(1)
+    expect(find(out.seq, out.newIds[0]).startS).toBeCloseTo(10, 6)
   })
 })
 

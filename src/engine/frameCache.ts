@@ -7,7 +7,7 @@
 // this module stays importable in a plain node test env (no DOM, no IDB).
 
 import type { CanvasSink, Input, WrappedCanvas } from 'mediabunny'
-import { hasProxy, proxyKeyFor } from './proxyMedia'
+import { bumpProxyPriority, hasProxy, proxyKeyFor } from './proxyMedia'
 import type { Id, MediaAsset } from './types'
 
 export const FALLBACK_FPS = 30
@@ -19,8 +19,17 @@ export const FALLBACK_FPS = 30
  * MB. One number could not be right for both, so it was set for the small case
  * and simply hoped for on the large one. A byte budget is the thing anybody
  * actually cares about, and it holds whatever number of frames fits.
+ *
+ * 512 MB, raised from 192 MB on 2026-08-19. A 1080x1920 frame is 8.3 MB, so the
+ * old budget held twenty-three of them: a half second dissolve wants fifteen
+ * frames from EACH side at 30 fps, so a single transition could not fit in the
+ * cache at all and every frame of it was decoded twice. The preview copy now
+ * keeps a vertical short at its full size rather than shrinking it to 608x1080,
+ * which makes each cached frame three times bigger again, so the old number
+ * would have held seven. His machine has 32 GB. This is the one place where
+ * paying memory buys back decoding he can see.
  */
-export const CACHE_BUDGET_BYTES = 192 * 1024 * 1024
+export const CACHE_BUDGET_BYTES = 512 * 1024 * 1024
 
 /** RGBA bytes a decoded frame occupies, from whatever shape the source has. */
 export function frameBytes(src: CanvasImageSource): number {
@@ -400,6 +409,12 @@ function request(asset: MediaAsset, indices: number[], latest: number): void {
     e.input = null
     e.sink = null
     e.ready = null
+  } else if (!e.usingProxy && !hasProxy(asset.id)) {
+    // Being asked for a frame of this asset is the app's best evidence about
+    // which clip he is on, and it is exactly the asset whose copy is worth
+    // building first. Costs an index lookup on a list that is only long right
+    // after a big import, which is the one time it matters.
+    bumpProxyPriority(asset.id)
   }
   e.latest = latest
   const fresh = indices.filter((i) => i !== e.decoding && !e.noFrame.has(i) && !cache.has(cacheKey(asset.id, i)))

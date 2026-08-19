@@ -68,7 +68,8 @@ export function cutSelection(): void {
 export function pasteAtPlayhead(): void {
   const s = useStore.getState()
   // Assets can be gone if the payload outlived them (future bin deletes).
-  // pasteClips itself skips locked destination tracks, so no lock guard here.
+  // pasteClips itself refuses locked destination tracks and reports how many it
+  // turned away, so no lock guard here.
   // Title and adjustment clips carry no asset (assetId===''), keep them regardless.
   const payload = clipboard.filter(
     (p) => p.clip.title !== undefined || p.clip.adjustment === true || s.project.assets[p.assetId],
@@ -78,12 +79,21 @@ export function pasteAtPlayhead(): void {
     return
   }
   let pastedIds: string[] = []
+  let blocked = 0
   updateActiveSequence('Paste clip(s)', (sq) => {
     const r = pasteClips(sq, payload, s.ui.playheadS)
     pastedIds = r.newIds
+    blocked = r.blockedByLock
     return r.seq
   })
   if (pastedIds.length > 0) s.setUI({ selection: pastedIds })
+  // A locked track refusing the paste is a decision he made, but a paste that
+  // quietly does nothing reads as a broken keyboard shortcut.
+  if (blocked > 0) {
+    useToasts
+      .getState()
+      .show(blocked === 1 ? 'That clip belongs on a locked track' : `${blocked} clips belong on locked tracks`, 'danger')
+  }
 }
 
 export function duplicateSelection(): void {

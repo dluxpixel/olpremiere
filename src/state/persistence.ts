@@ -202,6 +202,32 @@ export async function setProjectLater(id: string, later: boolean): Promise<void>
   if (later) next.laterAt = Date.now()
   else delete next.laterAt
   await d.put('projects', next, id)
+  stampOpenProject(id, 'laterAt', later)
+}
+
+/**
+ * Put the same shelf flag on the OPEN project, when it is the one being moved.
+ *
+ * ⛔ WITHOUT THIS THE NEXT AUTOSAVE UNDID THE MOVE, and moving the project he
+ * has open is allowed on purpose. These two functions write the flag straight
+ * onto the stored record, and the record in memory never hears about it; the
+ * autosave a second later is a whole-document `put`, so it wrote the project
+ * back with no flag on it. He filed a finished project away, carried on editing,
+ * and found it sitting at the top of his active list again.
+ *
+ * Written with the store's raw setter rather than through `dispatch` or
+ * `setProject`: filing a project is not an edit, so it must not become an undo
+ * step, and it must not throw away the undo stack he is still using. Changing
+ * the project object is what wakes the autosave, so the flag reaches the disk on
+ * its own even if this call and the put above ever disagreed.
+ */
+function stampOpenProject(id: string, field: 'laterAt' | 'archivedAt', on: boolean): void {
+  const live = useStore.getState().project
+  if (live.id !== id) return
+  const next: Project = { ...live }
+  if (on) next[field] = Date.now()
+  else delete next[field]
+  useStore.setState({ project: next })
 }
 
 export async function setProjectArchived(id: string, archived: boolean): Promise<void> {
@@ -214,6 +240,7 @@ export async function setProjectArchived(id: string, archived: boolean): Promise
   // The 'projects' store uses OUT-OF-LINE keys, so the id must be passed. Without
   // it, put() throws DataError and the archive silently does nothing.
   await d.put('projects', next, id)
+  stampOpenProject(id, 'archivedAt', archived)
 }
 
 /**
@@ -239,7 +266,28 @@ export async function deleteProject(id: string): Promise<void> {
   await tx.done
 }
 
+/**
+ * Every media key written since the app opened.
+ *
+ * THE SWEEP MUST NEVER TOUCH ONE OF THESE. An import writes the bytes first and
+ * only then puts the asset in the project, and the project is only written to
+ * disk a moment after that. In the gap the key is reachable from NO stored
+ * project, which is the sweep's entire definition of rubbish: importing forty
+ * files while the boot sweep ran deleted the footage of whichever ones were
+ * mid-flight, and the bin showed cards with nothing behind them.
+ *
+ * A key written this session is either in use or about to be, so keeping the
+ * lot costs one session's worth of housekeeping and closes the race completely.
+ */
+const writtenThisSession = new Set<string>()
+
+/** Read-only view for the sweep. */
+export function blobKeysWrittenThisSession(): ReadonlySet<string> {
+  return writtenThisSession
+}
+
 export async function putBlob(key: string, blob: Blob): Promise<void> {
+  writtenThisSession.add(key)
   const d = await db()
   await d.put('blobs', blob, key)
 }
@@ -281,7 +329,7 @@ async function flushSave(): Promise<void> {
     await saveProject(useStore.getState().project)
     setUI({ saveState: 'saved' })
   } catch (err) {
-    console.error('OL Studio autosave failed', err)
+    console.error('OL Premiere autosave failed', err)
     setUI({ saveState: 'unsaved' })
     throw err
   }
@@ -315,7 +363,7 @@ export function initPersistence(): Promise<void> {
       // Only hydrate if the user hasn't already started editing.
       if (p && s.history.undo.length === 0) s.setProject(p)
     })
-    .catch((err) => console.error('OL Studio project load failed', err))
+    .catch((err) => console.error('OL Premiere project load failed', err))
 
   useStore.subscribe(
     (s) => s.project,

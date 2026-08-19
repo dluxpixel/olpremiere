@@ -139,7 +139,7 @@ export async function loadDefaultTextAppearance(): Promise<void> {
     const raw = (await d.get('meta', DEFAULT_KEY)) as AppearanceSpec | undefined
     defaultTextAppearance = raw && !isEmptyAppearance(raw) ? raw : null
   } catch (err) {
-    console.error('OL Studio: failed to load default text animation', err)
+    console.error('OL Premiere: failed to load default text animation', err)
   }
 }
 
@@ -150,7 +150,7 @@ async function persistDefault(spec: AppearanceSpec | null): Promise<void> {
     if (spec) await d.put('meta', spec, DEFAULT_KEY)
     else await d.delete('meta', DEFAULT_KEY)
   } catch (err) {
-    console.error('OL Studio: failed to save default text animation', err)
+    console.error('OL Premiere: failed to save default text animation', err)
   }
 }
 

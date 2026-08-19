@@ -12,6 +12,7 @@ import { createMonitorGraph, type MonitorGraph } from './recordingMonitor'
 import { useToasts } from './toasts'
 import { ensurePlaying, pausePlayback } from './playbackControl'
 import { useStore } from './store'
+import { beginRestartHold } from './unloadGuard'
 
 /** A captured take held for review before it is kept or thrown away. */
 export interface PendingTake {
@@ -104,6 +105,24 @@ export const useRecorder = create<RecorderState>(() => ({
  * captured the mic the user picked; if it's gone `getUserMedia` throws and we
  * fall back loudly rather than record from the wrong device.
  */
+/**
+ * A live take, or one held for review, blocks an automatic restart until it is
+ * kept or thrown away. See beginRestartHold: an update applying itself while he
+ * speaks used to swallow the whole take.
+ *
+ * Driven off the store rather than the start/stop verbs, so a recorder that
+ * stops on its own (the mic unplugged) releases the hold too.
+ */
+let releaseRestartHold: (() => void) | null = null
+useRecorder.subscribe((s) => {
+  const precious = s.recording || s.pendingTake !== null
+  if (precious && !releaseRestartHold) releaseRestartHold = beginRestartHold()
+  else if (!precious && releaseRestartHold) {
+    releaseRestartHold()
+    releaseRestartHold = null
+  }
+})
+
 export function audioConstraintFor(deviceId: string | null): MediaTrackConstraints {
   const c: MediaTrackConstraints = {
     echoCancellation: false,
@@ -393,7 +412,7 @@ export async function startRecording(): Promise<void> {
     rec.start()
   } catch (err) {
     recorder = null
-    console.warn('OL Studio: could not start MediaRecorder', err)
+    console.warn('OL Premiere: could not start MediaRecorder', err)
     show('Could not start recording on this device', 'danger')
     return
   }

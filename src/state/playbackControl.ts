@@ -129,9 +129,16 @@ export const isPlaying = (): boolean => transport.playing
  * rather than run on every store write: an ordinary timeline edit must not make
  * the sound stutter.
  */
+// ⛔ EVERY TRACK SETTING THE GRAPH BAKES IN HAS TO BE NAMED HERE. The audio
+// graph reads the track object once, when it is scheduled, so a setting missing
+// from this line simply does nothing until he stops and starts again. Auto Level
+// and Audio Role sit in the same panel as mute, solo, volume and pan and were
+// both missing: turning one on mid-play changed nothing he could hear, which
+// reads as the control being broken. Same defect the note above describes for
+// mute, left half closed.
 const mixFingerprint = (): string => {
   const seq = activeSequence(useStore.getState().project)
-  return seq.tracks.map((t) => `${t.id}:${t.muted ? 1 : 0}${t.solo ? 1 : 0}:${t.volumeDb ?? 0}:${t.pan ?? 0}`).join('|')
+  return seq.tracks.map((t) => `${t.id}:${t.muted ? 1 : 0}${t.solo ? 1 : 0}:${t.volumeDb ?? 0}:${t.pan ?? 0}:${t.autoLevel ?? 0}:${t.audioRole ?? 0}`).join('|')
 }
 
 let lastMix = ''

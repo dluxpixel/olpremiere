@@ -910,6 +910,74 @@ export function gapBefore(seq: Sequence, clipId: Id): number {
 }
 
 /** Shift a set of clip ids by −delta[id] across ALL tracks, then re-sort + recompute. */
+/**
+ * Trim a proposed LEFT shift until nothing lands on top of anything.
+ *
+ * ⛔ CLOSING A GAP USED TO DRAG A LINKED PARTNER STRAIGHT THROUGH ITS NEIGHBOURS.
+ * The shift map is built from the link index alone and `shiftClipsBy` only
+ * subtracts and re-sorts: it never asks whether the destination is free. So
+ * closing a gap in front of a clip whose audio partner sits behind a music bed
+ * slid the voice four seconds INTO the bed, producing the one state the rest of
+ * this file is written to make impossible.
+ *
+ * Members of one link group are always trimmed to the SAME distance, because the
+ * point of the group is that they arrive together. A partner with no room
+ * therefore holds its whole group back, which leaves part of the gap uncloseable
+ * and is the honest answer: the alternative is losing his audio.
+ *
+ * ⛔ IT HAS TO STAY LINEAR. There is a gate on this path measuring 4000 linked
+ * clips against a single frame, so the work per pass is one sort of each track
+ * (done ONCE, up front) and one walk. A pass reduces at least one group or it is
+ * the last one.
+ *
+ * Reductions cascade, so this iterates. It cannot loop forever, because a delta
+ * only ever falls and only ever onto one of a finite set of gaps, but a
+ * pathological arrangement could take many passes and this runs on a gesture. So
+ * the passes are capped, and an arrangement that has not settled by then closes
+ * NO gap at all rather than a wrong one. Nothing observed has needed more than
+ * two.
+ */
+const CLAMP_PASSES = 8
+
+function clampShiftForCollisions(seq: Sequence, deltaById: Map<Id, number>, byLink: Map<Id, Id[]>): Map<Id, number> {
+  const out = new Map(deltaById)
+  // Sorted once: the walk below needs start order and nothing here changes it.
+  const lanes = seq.tracks
+    .filter((t) => t.clips.some((c) => out.has(c.id)))
+    .map((t) => [...t.clips].sort((a, b) => a.startS - b.startS))
+  if (lanes.length === 0) return out
+
+  for (let pass = 0; ; pass++) {
+    let changed = false
+    for (const clips of lanes) {
+      // Where the previous clip on this track ENDS once its own shift is applied.
+      let projectedEnd = 0
+      for (const c of clips) {
+        const want = out.get(c.id) ?? 0
+        const room = Math.max(0, c.startS - projectedEnd)
+        if (want > room + EPS) {
+          // The whole link group comes down to what this member can manage.
+          for (const gid of groupIdsOf(c, byLink)) {
+            if ((out.get(gid) ?? 0) > room) {
+              out.set(gid, room)
+              changed = true
+            }
+          }
+          projectedEnd = clipEndS(c) - room
+        } else {
+          projectedEnd = clipEndS(c) - want
+        }
+      }
+    }
+    if (!changed) return out
+    if (pass >= CLAMP_PASSES) {
+      // Too tangled to settle. Moving nothing is always safe; moving something
+      // half-resolved is not.
+      return new Map()
+    }
+  }
+}
+
 function shiftClipsBy(seq: Sequence, deltaById: Map<Id, number>): Sequence {
   if (deltaById.size === 0) return seq
   const tracks = seq.tracks.map((t) => {
@@ -1050,7 +1118,7 @@ export function closeGapBefore(seq: Sequence, clipId: Id): Sequence {
   for (let i = found.clipIndex; i < found.track.clips.length; i++) {
     for (const gid of groupIdsOf(found.track.clips[i], byLink)) deltaById.set(gid, delta)
   }
-  return shiftClipsBy(seq, deltaById)
+  return shiftClipsBy(seq, clampShiftForCollisions(seq, deltaById, byLink))
 }
 
 /**
@@ -1072,7 +1140,9 @@ export function closeAllGaps(seq: Sequence, trackId: Id): Sequence {
     if (Math.abs(d) > EPS) for (const gid of groupIdsOf(c, byLink)) deltaById.set(gid, d)
     cursor += clipDurationS(c)
   }
-  return shiftClipsBy(seq, deltaById)
+  // Same guard as closeGapBefore: a partner on another track may not be shoved
+  // through whatever is already sitting there just because this track repacks.
+  return shiftClipsBy(seq, clampShiftForCollisions(seq, deltaById, byLink))
 }
 
 export function snapTime(
@@ -1401,25 +1471,53 @@ export function rippleTrimGroup(
     if (f) moved.add(f.track.id)
   }
 
-  let next = seq
-  for (const id of ids) next = rippleTrimTo(next, assets, id, edge, tS)
+  // ⛔ EVERY HALF OF THE PAIR MOVES BY THE SAME AMOUNT, OR IT IS NOT A PAIR.
+  //
+  // Each half used to be trimmed to the SAME TIME, one after the other, and a
+  // trim is clamped by its own source: how much head and tail that particular
+  // file has left. A video half and an audio half are usually two different
+  // files, and a separately recorded voice track almost always is. So asking
+  // for a second and a half of trim could take a second and a half off the
+  // picture and only nine tenths off the sound, and from that moment the two
+  // were different lengths and everything after them on the two tracks sat at
+  // different times. That is lip sync gone, from one drag, with nothing on
+  // screen to say it happened.
+  //
+  // So the amount is agreed BEFORE anything is cut: try it on each half, keep
+  // the smallest move anyone can manage, and give every half that. The trim is
+  // as long as the most constrained member allows, which is the only length
+  // they can all actually reach.
+  const probe = (id: Id): number | null => {
+    const beforeOne = findClip(seq, id)
+    if (!beforeOne) return null
+    const afterOne = findClip(rippleTrimTo(seq, assets, id, edge, tS), id)
+    return afterOne ? clipEndS(afterOne.clip) - clipEndS(beforeOne.clip) : null
+  }
+  const deltas = ids.map(probe).filter((d): d is number => d !== null)
+  if (deltas.length === 0) return seq
+  const sign = Math.sign(deltas[0])
+  // A half that would move the other way, or not at all, means there is no move
+  // they can share. Doing nothing is the only answer that keeps them together.
+  if (sign === 0 || deltas.some((d) => Math.sign(d) !== sign)) return seq
+  const agreedS = sign * Math.min(...deltas.map(Math.abs))
 
-  // ⛔ MEASURE THE DELTA OFF WHAT ACTUALLY HAPPENED, never off `tS`. A trim is
-  // clamped by the source head and tail and by the one-frame minimum, so asking
-  // for a second of trim can move the edge by a tenth. Reading the clip's real
-  // end before and after is the only number that matches what the primitive did,
-  // and a sync lock that shifted by the ASKED amount would tear his other tracks
-  // away from this one exactly when a clamp bit.
-  const after = before ? findClip(next, clipId) : null
-  if (!before || !after) return next
+  let next = seq
+  for (const id of ids) {
+    const f = findClip(next, id)
+    if (!f) continue
+    // Read off each half's own geometry, so halves that were never exactly
+    // aligned keep whatever offset they had.
+    const targetS = edge === 'out' ? clipEndS(f.clip) + agreedS : f.clip.startS - agreedS
+    next = rippleTrimTo(next, assets, id, edge, targetS)
+  }
+
+  if (!before) return next
   // The clip's OLD end, in both directions. `rippleTrimTo` pins startS on either
   // edge and moves the END by the delta, and its own track shifts everything at
   // or after that old end, so this is simply the same point the primitive used.
   // Taking the later of the two ends instead would leave a clip sitting between
   // the old and new end standing still while its neighbours moved around it.
-  const atS = clipEndS(before.clip)
-  const deltaS = clipEndS(after.clip) - clipEndS(before.clip)
-  return syncFollow(next, moved, atS, deltaS)
+  return syncFollow(next, moved, clipEndS(before.clip), agreedS)
 }
 
 export function deleteGroup(seq: Sequence, clipId: Id): Sequence {
@@ -1894,11 +1992,47 @@ export function serializeClips(seq: Sequence, clipIds: Id[]): ClipPayload[] {
   })
 }
 
+/**
+ * Where a whole linked group can land, as ONE offset shared by every member.
+ *
+ * ⛔ PASTING A LINKED PAIR USED TO PULL THE PICTURE OFF THE SOUND.
+ * Each half looked for a free spot on its own track and took the nearest one.
+ * When the video track was clear at the playhead and the audio track was not,
+ * the video landed where he asked and the voice landed somewhere else, still
+ * wearing the link badge that says these two belong together. Every later edit
+ * then moved them as a pair, keeping them permanently out of step, and lip sync
+ * that is out by a fifth of a second is not obvious until it is published.
+ *
+ * The candidates are the offsets each member would have chosen for itself, plus
+ * the clear ground past the end of every track the group touches, which always
+ * fits. The smallest move that suits ALL of them wins, so a pair whose tracks
+ * are both free still lands exactly on the playhead.
+ */
+function groupPasteOffset(
+  tracks: readonly Track[],
+  members: { trackIndex: number; desiredS: number; durS: number }[],
+): number {
+  const candidates: number[] = [0]
+  let clearGround = 0
+  for (const m of members) {
+    const track = tracks[m.trackIndex]
+    candidates.push(resolveStart(track, m.desiredS, m.durS) - m.desiredS)
+    for (const c of track.clips) clearGround = Math.max(clearGround, clipEndS(c) - m.desiredS)
+  }
+  candidates.push(clearGround)
+  // Nearest first, so the pair moves as little as it can get away with.
+  candidates.sort((x, y) => Math.abs(x) - Math.abs(y))
+  for (const shift of candidates) {
+    if (members.every((m) => canPlace(tracks[m.trackIndex], Math.max(0, m.desiredS + shift), m.durS))) return shift
+  }
+  return clearGround
+}
+
 export function pasteClips(
   seq: Sequence,
   payload: ClipPayload[],
   atS: number,
-): { seq: Sequence; newIds: Id[] } {
+): { seq: Sequence; newIds: Id[]; blockedByLock: number } {
   const kindIdx: Record<'video' | 'audio', number[]> = { video: [], audio: [] }
   seq.tracks.forEach((t, i) => kindIdx[t.kind].push(i))
 
@@ -1916,36 +2050,86 @@ export function pasteClips(
     const id = item.clip.linkId
     if (id) linkCount.set(id, (linkCount.get(id) ?? 0) + 1)
   }
-  let tracks = seq.tracks
-  for (const item of payload) {
-    const sameKind = kindIdx[item.trackKind]
-    if (sameKind.length === 0) continue
-    const ti = sameKind[Math.min(Math.max(0, item.trackOffset), sameKind.length - 1)]
-    const track = tracks[ti]
-    if (track.locked) continue
-    // Clone so the payload stays reusable; fresh clip + effect-instance ids.
-    const body = structuredClone(item.clip)
-    const durS = (body.outS - body.inS) / Math.abs(body.speed || 1)
-    let linkId = body.linkId
-    if (linkId && (linkCount.get(linkId) ?? 0) < 2) {
-      linkId = undefined
-    } else if (linkId) {
-      const mapped = linkRemap.get(linkId) ?? newId()
-      linkRemap.set(linkId, mapped)
-      linkId = mapped
-    }
-    const clip: Clip = {
-      ...body,
-      id: newId(),
-      startS: resolveStart(track, atS + item.offsetS, durS),
-      effects: body.effects.map((e) => ({ ...e, id: newId() })),
-      linkId,
-    }
-    tracks = tracks.map((t, i) => (i === ti ? { ...t, clips: insertSorted(t.clips, clip) } : t))
-    newIds.push(clip.id)
+  const groupOf = (item: ClipPayload): Id | null => {
+    const id = item.clip.linkId
+    return id && (linkCount.get(id) ?? 0) >= 2 ? id : null
   }
-  if (newIds.length === 0) return { seq, newIds }
-  return { seq: recomputeDuration({ ...seq, tracks }), newIds }
+
+  // A link group is placed as one thing, so it is gathered up first. Everything
+  // else keeps the payload's own order, and a group takes the place of its
+  // earliest member.
+  const units: ClipPayload[][] = []
+  const unitOfGroup = new Map<Id, ClipPayload[]>()
+  for (const item of payload) {
+    const g = groupOf(item)
+    if (!g) {
+      units.push([item])
+      continue
+    }
+    const existing = unitOfGroup.get(g)
+    if (existing) existing.push(item)
+    else {
+      const unit = [item]
+      unitOfGroup.set(g, unit)
+      units.push(unit)
+    }
+  }
+
+  let tracks = seq.tracks
+  let blockedByLock = 0
+  for (const unit of units) {
+    const placed = unit.map((item) => {
+      const sameKind = kindIdx[item.trackKind]
+      if (sameKind.length === 0) return null
+      const ti = sameKind[Math.min(Math.max(0, item.trackOffset), sameKind.length - 1)]
+      const body = structuredClone(item.clip)
+      return {
+        item,
+        body,
+        trackIndex: ti,
+        desiredS: atS + item.offsetS,
+        durS: (body.outS - body.inS) / Math.abs(body.speed || 1),
+      }
+    })
+    // ⛔ A LOCKED HALF TAKES THE WHOLE PAIR WITH IT.
+    // Pasting a linked pair onto a locked audio track used to drop the audio
+    // and paste the video on its own, still linked, which is the one shape a
+    // linked video clip cannot survive: it makes no sound of its own, because
+    // its partner is meant to, and the partner never arrived. It played silent,
+    // exported silent, and looked completely normal.
+    if (placed.some((m) => m === null || tracks[m.trackIndex].locked)) {
+      blockedByLock += 1
+      continue
+    }
+    const members = placed as NonNullable<(typeof placed)[number]>[]
+    const shift = members.length > 1 ? groupPasteOffset(tracks, members) : 0
+
+    for (const m of members) {
+      const track = tracks[m.trackIndex]
+      let linkId = m.body.linkId
+      if (linkId && (linkCount.get(linkId) ?? 0) < 2) {
+        linkId = undefined
+      } else if (linkId) {
+        const mapped = linkRemap.get(linkId) ?? newId()
+        linkRemap.set(linkId, mapped)
+        linkId = mapped
+      }
+      const clip: Clip = {
+        ...m.body,
+        id: newId(),
+        startS:
+          members.length > 1
+            ? Math.max(0, m.desiredS + shift)
+            : resolveStart(track, m.desiredS, m.durS),
+        effects: m.body.effects.map((e) => ({ ...e, id: newId() })),
+        linkId,
+      }
+      tracks = tracks.map((t, i) => (i === m.trackIndex ? { ...t, clips: insertSorted(t.clips, clip) } : t))
+      newIds.push(clip.id)
+    }
+  }
+  if (newIds.length === 0) return { seq, newIds, blockedByLock }
+  return { seq: recomputeDuration({ ...seq, tracks }), newIds, blockedByLock }
 }
 
 export function duplicateClips(seq: Sequence, clipIds: Id[]): { seq: Sequence; newIds: Id[] } {
@@ -1987,6 +2171,29 @@ export function duplicateClips(seq: Sequence, clipIds: Id[]): { seq: Sequence; n
  * globally nearest gap instead is what made a packed drag teleport back into its
  * own slot and look like nothing happened.
  */
+/**
+ * How far this clip may slide along its OWN track before it touches something
+ * that is not travelling with it. Infinity when the track is otherwise clear.
+ *
+ * `travelling` is every clip moving by the same delta in the same gesture, so a
+ * linked pair or a repacked run never blocks itself.
+ *
+ * Going left it also stops at zero, because there is no timeline before it.
+ */
+export function slideRoom(track: Track, clip: Clip, forward: boolean, travelling: ReadonlySet<Id>): number {
+  const end = clipEndS(clip)
+  let room = forward ? Infinity : clip.startS
+  for (const other of track.clips) {
+    if (other.id === clip.id || travelling.has(other.id)) continue
+    if (forward) {
+      if (other.startS >= end - EPS) room = Math.min(room, other.startS - end)
+    } else if (clipEndS(other) <= clip.startS + EPS) {
+      room = Math.min(room, clip.startS - clipEndS(other))
+    }
+  }
+  return Math.max(0, room)
+}
+
 export function nearestFreeStart(
   track: Track,
   desiredStartS: number,
@@ -2041,10 +2248,37 @@ export function moveSelectionWith(
   // runs afterwards is then handed a spot with nothing under it. The clip slides
   // freely and stops against its neighbour: it always moves, and it can never
   // land on anything.
+  // ⛔ AND THE CLAMP COVERS THE WHOLE LINKED PAIR, NOT ONLY THE HALF HE GRABBED.
+  //
+  // The clamp below was applied to the grabbed clip alone. Its partner was then
+  // shifted by the same delta through moveGroupOverwrite, which has no clamp at
+  // all: it carves whatever is already sitting there. So dragging a linked pair
+  // into an empty stretch of video, with a music bed under it on the audio
+  // track, silently deleted the slice of music the audio half landed on. That is
+  // the same destruction he banned on 2026-08-15, surviving on the half of the
+  // gesture nobody looked at.
+  //
+  // So the group slides as far as its MOST CONSTRAINED member allows. Every
+  // member is free where it stands, and sliding a shorter distance in the same
+  // direction from a free position is always free, so shortening the delta can
+  // never create a new overlap. The pair keeps its sync, it always moves, and it
+  // stops against a neighbour rather than eating one.
+  const travelling = new Set(solo ? [grabbedId] : clipGroupIds(base, grabbedId))
+  let want = tS
+  if (!solo && travelling.size > 1 && Math.abs(deltaS) > EPS) {
+    const forward = deltaS > 0
+    let room = Math.abs(deltaS)
+    for (const id of travelling) {
+      if (id === grabbedId) continue
+      const m = findClip(base, id)
+      if (m) room = Math.min(room, slideRoom(m.track, m.clip, forward, travelling))
+    }
+    want = grabbed.startS + (forward ? room : -room)
+  }
   const targetTrack = base.tracks.find((t) => t.id === targetTrackId)
   const safeS = targetTrack
-    ? nearestFreeStart(targetTrack, tS, clipDurationS(grabbed), grabbedId, grabbed.startS)
-    : tS
+    ? nearestFreeStart(targetTrack, want, clipDurationS(grabbed), grabbedId, grabbed.startS)
+    : want
   let next = solo
     ? moveClipOverwrite(base, grabbedId, targetTrackId, safeS)
     : moveGroupOverwrite(base, grabbedId, targetTrackId, safeS)

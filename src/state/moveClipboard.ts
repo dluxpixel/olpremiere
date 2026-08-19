@@ -110,6 +110,13 @@ export function pasteClipMove(ids?: Iterable<string>): void {
       ...track,
       clips: track.clips.map((clip) => {
         if (!targets.has(clip.id)) return clip
+        // ⛔ A LOCKED TRACK IS REFUSED, like everywhere else. Selecting a clip on a
+        // locked track is allowed on purpose, so the selection this verb runs on
+        // can easily contain one, and without this the paste REPLACED the move he
+        // locked the track to protect and then said "Move pasted". Its neighbour
+        // one row up the same menu, Paste attributes, has refused locked tracks
+        // all along.
+        if (track.locked) return clip
         const durS = clipDurationS(clip)
         let next = clip
         // The three move channels are REPLACED, present or not: one clip means
@@ -132,5 +139,9 @@ export function pasteClipMove(ids?: Iterable<string>): void {
       }),
     })),
   }))
+  if (done === 0) {
+    useToasts.getState().show('Those clips are on a locked track', 'danger')
+    return
+  }
   useToasts.getState().show(done === 1 ? 'Move pasted' : `Move pasted onto ${done} clips`, 'success')
 }

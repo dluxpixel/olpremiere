@@ -1,7 +1,7 @@
 // The Projects picker: every edit lives side by side. Open another one,
 // start fresh, or delete an old one, without ever nuking current work.
 
-import { Archive, ArchiveRestore, Clapperboard, Clock, Plus, Trash2, X } from 'lucide-react'
+import { Archive, ArchiveRestore, Clapperboard, Clock, FolderOpen, LifeBuoy, Plus, Trash2, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import {
   activeProjects,
@@ -10,6 +10,7 @@ import {
   listProjects,
   type ProjectSummary,
 } from '../state/persistence'
+import { listBackups, readBackup, restoreBackup, type BackupContents, type BackupRow } from '../state/backupRestore'
 import { createProject, openProject, removeProject, setArchived, setLater } from '../state/projectActions'
 import { useStore } from '../state/store'
 import { Button, IconButton } from '../ui/Button'
@@ -33,7 +34,7 @@ function ago(ts: number): string {
  *   later   = live, parked, will come back to it
  *   archived = finished, filed away, never deleted
  */
-export type ProjectsView = 'active' | 'later' | 'archived'
+export type ProjectsView = 'active' | 'later' | 'archived' | 'backups'
 
 export function ProjectsDialog({ onClose, view = 'active' }: { onClose: () => void; view?: ProjectsView }) {
   const currentId = useStore((s) => s.project.id)
@@ -42,12 +43,35 @@ export function ProjectsDialog({ onClose, view = 'active' }: { onClose: () => vo
   // Two-step delete: first click arms, second click within the same render
   // actually deletes. No modal-on-modal.
   const [armedDelete, setArmedDelete] = useState<string | null>(null)
+  // ⛔ THE SAFETY NET HAD NO WAY BACK UP UNTIL 2026-08-19. The app has been
+  // writing the whole edit to a plain file every couple of minutes since July,
+  // and the only thing it ever offered him was a button that opens the folder.
+  // So on the evening his projects were not in the picker, forty copies of his
+  // work were sitting on his disk and there was no way to open one.
+  const [backups, setBackups] = useState<BackupRow[] | null>(null)
+  // What each file turns out to hold. Forty near-identical names say nothing;
+  // "115 clips, 40 media" is what tells him which afternoon this is.
+  const [inside, setInside] = useState<Record<string, BackupContents | null>>({})
+  const [recovering, setRecovering] = useState<string | null>(null)
 
   const refresh = () =>
     void listProjects()
       .then(setAll)
-      .catch((err) => console.error('OL Studio: projects list failed', err))
+      .catch((err) => console.error('OL Premiere: projects list failed', err))
   useEffect(refresh, [])
+
+  // Only when he asks for them: reading forty files is not free, and nobody
+  // opening the picker to switch projects should pay for it.
+  useEffect(() => {
+    if (tab !== 'backups' || backups !== null) return
+    void listBackups().then(async (rows) => {
+      setBackups(rows)
+      for (const row of rows) {
+        const contents = await readBackup(row.path)
+        setInside((prev) => ({ ...prev, [row.path]: contents }))
+      }
+    })
+  }, [tab, backups])
 
   const archivedCount = all ? archivedProjects(all).length : 0
   const laterCount = all ? laterProjects(all).length : 0
@@ -82,7 +106,7 @@ export function ProjectsDialog({ onClose, view = 'active' }: { onClose: () => vo
         <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-4">
           {/* Three shelves of the same list. Finished work is never deleted,
               just filed, so both counts are always on show. */}
-          {(['active', 'later', 'archived'] as const).map((id) => (
+          {(['active', 'later', 'archived', 'backups'] as const).map((id) => (
             <button
               key={id}
               type="button"
@@ -100,20 +124,34 @@ export function ProjectsDialog({ onClose, view = 'active' }: { onClose: () => vo
                 ? 'Working on'
                 : id === 'later'
                   ? `Later${laterCount ? ` (${laterCount})` : ''}`
-                  : `Finished${archivedCount ? ` (${archivedCount})` : ''}`}
+                  : id === 'archived'
+                    ? `Finished${archivedCount ? ` (${archivedCount})` : ''}`
+                    : 'Recover'}
             </button>
           ))}
           <div className="ml-auto flex items-center gap-2">
-            <Button
-              variant="secondary"
-              data-testid="project-new"
-              onClick={() => {
-                void createProject().then(onClose)
-              }}
-            >
-              <Plus size={14} strokeWidth={1.5} />
-              New project
-            </Button>
+            {tab === 'backups' ? (
+              <Button
+                variant="secondary"
+                data-testid="backups-reveal"
+                title="They are ordinary files. Copy them anywhere you like."
+                onClick={() => void window.api?.backupReveal?.()}
+              >
+                <FolderOpen size={14} strokeWidth={1.5} />
+                Open the folder
+              </Button>
+            ) : (
+              <Button
+                variant="secondary"
+                data-testid="project-new"
+                onClick={() => {
+                  void createProject().then(onClose)
+                }}
+              >
+                <Plus size={14} strokeWidth={1.5} />
+                New project
+              </Button>
+            )}
             <IconButton label="Close" onClick={onClose}>
               <X size={16} strokeWidth={1.5} />
             </IconButton>
@@ -121,7 +159,20 @@ export function ProjectsDialog({ onClose, view = 'active' }: { onClose: () => vo
         </div>
 
         <div key={tab} className="olp-swap min-h-0 flex-1 overflow-y-auto p-2">
-          {projects === null ? (
+          {tab === 'backups' ? (
+            <BackupList
+              rows={backups}
+              inside={inside}
+              recovering={recovering}
+              onRecover={(path) => {
+                setRecovering(path)
+                void restoreBackup(path).then((ok) => {
+                  setRecovering(null)
+                  if (ok) onClose()
+                })
+              }}
+            />
+          ) : projects === null ? (
             <div className="py-8 text-center text-[11px] text-text-muted">Loading…</div>
           ) : (
             projects.map((p) => {
@@ -233,13 +284,101 @@ export function ProjectsDialog({ onClose, view = 'active' }: { onClose: () => vo
               Nothing finished yet. When an edit is done, file it here instead of deleting it.
             </div>
           )}
-          {projects !== null && tab === 'active' && projects.length <= 1 && (
+          {tab !== 'backups' && projects !== null && tab === 'active' && projects.length <= 1 && (
             <div className="px-3 py-4 text-center text-[11px] text-text-muted">
-              Each edit lives here. Start a new project any time, your current one stays put.
+              Each edit lives here. Start a new project any time, your current one stays put.{' '}
+              <button
+                type="button"
+                data-testid="projects-missing"
+                onClick={() => setTab('backups')}
+                className="underline decoration-dotted underline-offset-2 hover:text-text-primary"
+              >
+                Missing a project?
+              </button>
             </div>
           )}
         </div>
       </div>
     </div>
+  )
+}
+
+function whenSaved(ms: number): string {
+  const d = new Date(ms)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const today = new Date()
+  const sameDay =
+    d.getFullYear() === today.getFullYear() && d.getMonth() === today.getMonth() && d.getDate() === today.getDate()
+  const clock = `${pad(d.getHours())}:${pad(d.getMinutes())}`
+  return sameDay ? `Today ${clock}` : `${pad(d.getDate())}/${pad(d.getMonth() + 1)} ${clock}`
+}
+
+/**
+ * Every automatic copy of his work, newest first.
+ *
+ * Recovering NEVER overwrites: it lands as a new project, so picking the wrong
+ * one costs him a click and nothing else. That is why there is no confirmation
+ * step here, and why there should not be one.
+ */
+function BackupList({
+  rows,
+  inside,
+  recovering,
+  onRecover,
+}: {
+  rows: BackupRow[] | null
+  inside: Record<string, BackupContents | null>
+  recovering: string | null
+  onRecover: (path: string) => void
+}) {
+  if (rows === null) return <div className="py-8 text-center text-[11px] text-text-muted">Looking…</div>
+  if (rows.length === 0) {
+    return (
+      <div className="px-3 py-8 text-center text-[11px] text-text-muted">
+        No copies yet. The app starts saving one every couple of minutes as soon as you edit something.
+      </div>
+    )
+  }
+  return (
+    <>
+      <div className="px-3 pb-2 pt-1 text-[11px] text-text-muted">
+        Your edit is copied to a file every couple of minutes, on its own. Open any of them: it comes back as a new
+        project and nothing you have now is touched.
+      </div>
+      {rows.map((row) => {
+        const contents = inside[row.path]
+        const busy = recovering === row.path
+        return (
+          <div
+            key={row.path}
+            data-testid="backup-row"
+            className="flex items-center gap-3 rounded-overlay border border-transparent px-3 py-2 transition-colors duration-[120ms] hover:border-border hover:bg-bg-panel"
+          >
+            <LifeBuoy size={18} strokeWidth={1.5} className="shrink-0 text-text-muted" aria-hidden />
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-[13px] font-medium text-text-primary">
+                {contents?.project.name ?? row.name.replace(/\.olpbak$/, '')}
+              </div>
+              <div className="text-[11px] text-text-muted">
+                {whenSaved(row.savedAtMs)}
+                {contents === undefined
+                  ? ' · reading…'
+                  : contents === null
+                    ? ' · could not be read'
+                    : ` · ${contents.clipCount} clip${contents.clipCount === 1 ? '' : 's'} · ${contents.assetCount} media`}
+              </div>
+            </div>
+            <Button
+              variant="secondary"
+              data-testid="backup-recover"
+              disabled={busy || contents === null}
+              onClick={() => onRecover(row.path)}
+            >
+              {busy ? 'Recovering…' : 'Recover'}
+            </Button>
+          </div>
+        )
+      })}
+    </>
   )
 }

@@ -77,6 +77,28 @@ type Asr = (
 // so downloads also survive reloads.
 const asrCache = new Map<string, Asr>()
 const loadingAsr = new Map<string, Promise<Asr>>()
+/** Which device each cached pipeline is really on, so nothing has to guess. */
+const asrDevice = new Map<string, 'webgpu' | 'wasm'>()
+/**
+ * How many times the GPU pipeline has failed AT INFERENCE for a model this session.
+ *
+ * ⛔ ONE FAILURE USED TO CONDEMN THE WHOLE SESSION, SILENTLY. The catch below builds
+ * a wasm pipeline when a GPU one throws mid-inference, which is right, and then wrote
+ * it into `asrCache` as the pipeline for that model, which is not. A single shader
+ * compile hiccup on clip 3 of a 41 clip sweep therefore ran clips 4 to 41 on the q8
+ * encoder and q4 decoder, the worst quality the app has, with nothing said anywhere.
+ *
+ * That is a very good candidate for his oldest complaint about this feature, 2026-08-18:
+ * *"It reads words bad, like really fucking bad."* It would be intermittent, it would
+ * affect most of a batch but not the first clips, and nothing on screen would differ.
+ *
+ * So a failure is COUNTED instead. The next clip rebuilds on the GPU and gets the good
+ * weights back. Only after this many failures does the session settle on wasm, because
+ * at that point the GPU path really is broken on this machine and rebuilding it every
+ * clip would cost him more than the accuracy is worth.
+ */
+const gpuFailures = new Map<string, number>()
+const GPU_GIVE_UP_AFTER = 2
 
 async function getAsr(model: string): Promise<Asr> {
   const cached = asrCache.get(model)
@@ -117,8 +139,22 @@ async function getAsr(model: string): Promise<Asr> {
 
     const gpu = (navigator as { gpu?: { requestAdapter(): Promise<unknown> } }).gpu
     const hasWebgpu = !!gpu && !!(await gpu.requestAdapter().catch(() => null))
-    const asr = await makeAsr(hasWebgpu ? 'webgpu' : 'wasm')
+    const givenUp = (gpuFailures.get(model) ?? 0) >= GPU_GIVE_UP_AFTER
+    const device: 'webgpu' | 'wasm' = hasWebgpu && !givenUp ? 'webgpu' : 'wasm'
+    const asr = await makeAsr(device)
     asrCache.set(model, asr)
+    asrDevice.set(model, device)
+    // Said out loud, always. Which weights produced a transcript is the single
+    // most useful fact about it when he says the words came out wrong, and it
+    // used to be unknowable from outside.
+    console.log(
+      `OL Premiere transcribe: ${model} on ${device}` +
+        (device === 'wasm'
+          ? hasWebgpu
+            ? ' (q8 encoder, q4 decoder) because the GPU pipeline failed twice this session'
+            : ' (q8 encoder, q4 decoder) because this machine has no WebGPU'
+          : ' (fp32/fp16 weights)'),
+    )
     return asr
   })()
   loadingAsr.set(model, load)
@@ -190,16 +226,33 @@ async function run(pcm: Float32Array, language: CaptionLanguage): Promise<void> 
     try {
       out = await asr(pcm, opts)
     } catch (err) {
-      // A GPU pipeline can still fail shader compile at inference. Fall back to
-      // a WASM pipeline once and cache THAT for subsequent runs.
+      // A GPU pipeline can still fail shader compile at inference. Run THIS clip
+      // on wasm so he does not lose it.
+      //
+      // ⛔ AND THEN LET THE NEXT CLIP TRY THE GPU AGAIN. See gpuFailures above for
+      // what caching the fallback used to cost: one hiccup silently ran the rest
+      // of a whole-timeline sweep on the worst weights in the app.
+      const failures = (gpuFailures.get(model) ?? 0) + 1
+      gpuFailures.set(model, failures)
+      console.warn(
+        `OL Premiere transcribe: the GPU pipeline for ${model} failed at inference (${failures} of ${GPU_GIVE_UP_AFTER} before this session settles on the slower weights).`,
+        err,
+      )
       const { pipeline } = await import('@huggingface/transformers')
       const wasmAsr = (await pipeline('automatic-speech-recognition', model, {
         device: 'wasm',
         dtype: { encoder_model: 'q8', decoder_model_merged: 'q4' },
       })) as unknown as Asr
-      asrCache.set(model, wasmAsr)
+      if (failures >= GPU_GIVE_UP_AFTER) {
+        asrCache.set(model, wasmAsr)
+        asrDevice.set(model, 'wasm')
+      } else {
+        // Drop the broken GPU pipeline without putting wasm in its place, so the
+        // next call rebuilds on the GPU and gets the good weights back.
+        asrCache.delete(model)
+        asrDevice.delete(model)
+      }
       out = await wasmAsr(pcm, opts)
-      void err
     }
     post({ type: 'done', chunks: out.chunks ?? [] })
   } catch (err) {

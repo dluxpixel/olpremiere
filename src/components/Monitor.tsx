@@ -250,6 +250,19 @@ function ShuttleBadge() {
   )
 }
 
+/**
+ * The last answer `usedAssetKey` worked out, and the project it was worked out
+ * from.
+ *
+ * ⛔ A ZUSTAND SELECTOR RUNS ON EVERY STORE WRITE, not only on the ones that
+ * change what it returns. Walking every clip on every track and sorting the ids
+ * is cheap once and is not cheap sixty times a second, which is what a
+ * forty-clip timeline was paying while he played. The project document is
+ * replaced wholesale on every edit, so its identity is an exact answer to "could
+ * this possibly have changed": same object, same key, no walk.
+ */
+let lastUsedKeyFor: { project: unknown; key: string } | null = null
+
 export function Monitor() {
   const assets = useStore((s) => s.project.assets)
   // Decode audio + spin up pooled elements so the first Space press starts
@@ -259,10 +272,13 @@ export function Monitor() {
   // asset ids (stable string), not the sequence object: every edit replaces
   // the sequence reference, and re-sweeping per keystroke churned the pools.
   const usedAssetKey = useStore((s) => {
+    if (lastUsedKeyFor?.project === s.project) return lastUsedKeyFor.key
     const sq = activeSequence(s.project)
     const used = new Set<string>()
     for (const t of sq.tracks) for (const c of t.clips) if (c.assetId) used.add(c.assetId)
-    return [...used].sort().join('|')
+    const key = [...used].sort().join('|')
+    lastUsedKeyFor = { project: s.project, key }
+    return key
   })
   useEffect(() => {
     if (!usedAssetKey) return

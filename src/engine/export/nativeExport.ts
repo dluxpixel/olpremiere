@@ -4,7 +4,7 @@
 // rendered RGBA frame to ffmpeg with serialized backpressure. Web builds never
 // call this (isElectron gate).
 
-import type { NativeEncoder } from '../../../electron/ipc-types'
+import type { NativeEncoder, NativeStartResult } from '../../../electron/ipc-types'
 import { getBlob } from '../../state/persistence'
 import { useToasts } from '../../state/toasts'
 import { olApi } from '../../platform'
@@ -120,24 +120,53 @@ export async function exportNative(
       hasAudio = true
     }
   }
-  if (signal.aborted) throw abortError()
+  // ⛔ THE MIX IS ALREADY A FILE ON HIS DISK BY HERE, so every way out of the
+  // next few lines has to take it with it.
+  //
+  // Rendering the audio for a long timeline is not quick, and pressing Cancel
+  // during it threw straight past this point. Nothing else knows that file
+  // exists: the tidy-up lives on the export job, and there is no job yet,
+  // because ffmpeg has not been asked to start. So a cancelled export left the
+  // whole uncompressed mix sitting in his temp folder, minutes of stereo float
+  // at about ten megabytes a second, and cancelling twice left two. Windows
+  // clears that folder when it feels like it, which on his machine is never.
+  //
+  // Cancelling with nothing running is exactly what deletes it, so the cleanup
+  // is the same call the running case already makes.
+  const dropPreparedAudio = async (): Promise<void> => {
+    if (hasAudio) await api.nativeCancel().catch(() => undefined)
+  }
+  if (signal.aborted) {
+    await dropPreparedAudio()
+    throw abortError()
+  }
 
   // Start ffmpeg (native save dialog in main).
-  const startRes = await api.nativeStart({
-    width: settings.width,
-    height: settings.height,
-    fps: settings.fps,
-    totalFrames: framesTotal,
-    encoder: opts.encoder,
-    quality: opts.quality,
-    // The plan's keyframe interval, the same number the WebCodecs path strides
-    // by, so both pipelines put keyframes in the same places.
-    keyframeIntervalS: settings.keyframeIntervalS,
-    hasAudio,
-    suggestedName: opts.suggestedName,
-  })
+  let startRes: NativeStartResult
+  try {
+    startRes = await api.nativeStart({
+      width: settings.width,
+      height: settings.height,
+      fps: settings.fps,
+      totalFrames: framesTotal,
+      encoder: opts.encoder,
+      quality: opts.quality,
+      // The plan's keyframe interval, the same number the WebCodecs path strides
+      // by, so both pipelines put keyframes in the same places.
+      keyframeIntervalS: settings.keyframeIntervalS,
+      hasAudio,
+      suggestedName: opts.suggestedName,
+    })
+  } catch (err) {
+    await dropPreparedAudio()
+    throw err
+  }
+  // A cancelled save dialog is cleaned up by main, which owns the file.
   if (startRes.cancelled) return null
-  if (!startRes.started) throw new Error(startRes.error ?? 'could not start ffmpeg')
+  if (!startRes.started) {
+    await dropPreparedAudio()
+    throw new Error(startRes.error ?? 'could not start ffmpeg')
+  }
 
   // ffmpeg's own frame counter drives the video %; the worker covers prep/audio.
   const unsub = api.onNativeProgress((p) => onProgress({ phase: 'video', framesDone: p.frame, framesTotal }))

@@ -55,7 +55,7 @@ import { applyMoveToSelection } from './state/moveActions'
 import { addTitleClip } from './state/titleActions'
 import { saveNow } from './state/persistence'
 import { exportProjectToFile, openProjectFilePicker } from './state/projectFile'
-import { isCriticalWorkInFlight } from './state/unloadGuard'
+import { isRestartUnsafe } from './state/unloadGuard'
 import { updateActiveSequence, useStore, zoomIn, zoomOut } from './state/store'
 import { useToasts } from './state/toasts'
 import { APP_VERSION, LAST_SEEN_VERSION_KEY, checkForUpdate, displayVersion } from './appVersion'
@@ -459,7 +459,7 @@ export default function App() {
   useEffect(
     () =>
       olApi?.onAutoApplyUpdate?.((version) => {
-        if (isCriticalWorkInFlight()) {
+        if (isRestartUnsafe()) {
           useToasts.getState().show(`Update ${version} is ready. Restart to install`, 'success', {
             label: 'Restart',
             onClick: () => olApi?.restartToUpdate?.(),

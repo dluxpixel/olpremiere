@@ -177,9 +177,17 @@ export function addCaptionsFromWords(
   // lands looking exactly like the one he built and saved.
   const preset = options.preset
   if (preset) {
-    clips = clips.map((c) => {
+    clips = clips.map((c, i) => {
       if (!c.title) return c
-      let nc: Clip = { ...c, title: { ...c.title, ...preset.style } }
+      // ⛔ THE HIGHLIGHT COLOUR SURVIVES THE STYLE. captionClips paints the
+      // emphasised word in the highlight colour, and a saved style ALWAYS
+      // carries a colour of its own, so spreading it over the top repainted the
+      // one word that had earned the highlight back to the ordinary colour. The
+      // dialog still showed the highlight switched on, so it read as the feature
+      // simply not working. One clip per chunk, in order, is what captionClips
+      // returns, which is what makes the index safe to read here.
+      const style = chunks[i]?.emphasis ? { ...preset.style, color: c.title.color } : preset.style
+      let nc: Clip = { ...c, title: { ...c.title, ...style } }
       if (preset.effects?.length) nc = { ...nc, effects: preset.effects.map((e) => ({ ...e })) }
       if (preset.appearance) nc = applyAppearanceToClip(nc, preset.appearance, seq.width, seq.height)
       return nc
@@ -199,9 +207,19 @@ export function addCaptionsFromWords(
   // by reading digits off the name and skips anything that does not parse, so a
   // named track cannot disturb the numbering of the others.
   let replaced = 0
+  /** Set when his Captions track is locked, so the run says so instead of going quiet. */
+  let lockedOut = false
   updateActiveSequence(options.label ?? 'Auto-caption', (sq) => {
     const existing = videoTracks(sq).filter((t) => t.name === CAPTION_TRACK_NAME)
     const reuse = existing[existing.length - 1]
+    // ⛔ A LOCKED CAPTIONS TRACK IS NOT EMPTIED. Reuse below clears the track and
+    // refills it, which is exactly the edit a lock exists to refuse, and it went
+    // through silently: he would lock the captions he had hand corrected, run the
+    // verb again, and every correction was gone with the toast reading as normal.
+    if (reuse?.locked) {
+      lockedOut = true
+      return sq
+    }
     if (reuse) {
       replaced = reuse.clips.length
       // EMPTIED first. `withClips` MERGES into whatever is already on the track,
@@ -218,6 +236,10 @@ export function addCaptionsFromWords(
       tracks: grown.tracks.map((t) => (t.id === target.id ? filled : t)),
     })
   })
+  if (lockedOut) {
+    useToasts.getState().show('Your Captions track is locked, so nothing was changed', 'danger')
+    return
+  }
   s.setUI({ selection: clips.map((c) => c.id) })
 
   // ⛔ THE SUGGESTION IS OFFERED, NEVER APPLIED. His words, 2026-08-19:

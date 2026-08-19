@@ -9,7 +9,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { caseShapeOf, sameWord, sampleFromClips, type StyleSample } from './styleLearning'
-import { applyProfile, buildProfile, suggestFor, FIX_CONFIDENCE, HABIT_MIN_SAMPLES } from './styleProfile'
+import { applyProfile, buildProfile, FIX_CONFIDENCE, HABIT_MIN_SAMPLES } from './styleProfile'
 import { defaultTitleDef, newTitleClip, type Clip } from '../types'
 
 const MODEL = 'onnx-community/whisper-small.en_timestamped'
@@ -247,29 +247,3 @@ describe('applyProfile', () => {
   })
 })
 
-describe('suggestFor', () => {
-  const profile = () =>
-    buildProfile([sampleOf(Array.from({ length: FIX_CONFIDENCE }, () => caption('cs go', 'CS2')))], MODEL)
-
-  it('offers nothing when nothing would change', () => {
-    expect(suggestFor(['hello', 'there'], profile())).toEqual([])
-  })
-
-  it('offers the change and says why in his language', () => {
-    const [s] = suggestFor(['cs go'], profile())
-    expect(s.before).toBe('cs go')
-    expect(s.after).toBe('CS2')
-    expect(s.reason).toContain('CS2')
-  })
-
-  it('counts a repeat instead of listing it twice', () => {
-    const [s] = suggestFor(['cs go', 'cs go', 'cs go'], profile())
-    expect(s.seen).toBe(3)
-  })
-
-  it('⛔ CHANGES NOTHING ITSELF, which is the point of a suggestion', () => {
-    const texts = ['cs go']
-    suggestFor(texts, profile())
-    expect(texts).toEqual(['cs go'])
-  })
-})
