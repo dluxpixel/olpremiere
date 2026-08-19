@@ -13,7 +13,7 @@ import {
   type Clip,
   type Sequence,
 } from '../engine/types'
-import { CAPTION_TRACK_NAME, addCaptionsFromWords, splitTitleIntoWordCaptions } from './captionActions'
+import { CAPTION_TRACK_NAME, addCaptionsFromWords, applyCandidateSpellings, splitTitleIntoWordCaptions } from './captionActions'
 import { AUTO_CAPTION_TARGET_S, type CaptionWord } from '../engine/captions/captions'
 import { clipDurationS } from '../engine/timeline'
 import { updateActiveSequence, useStore } from './store'
@@ -334,5 +334,81 @@ describe('laying a caption run stays linear in the word count', () => {
       const prevEnd = sorted[i - 1].startS + clipDurationS(sorted[i - 1])
       expect(sorted[i].startS).toBeGreaterThanOrEqual(prevEnd - 1e-9)
     }
+  })
+})
+
+describe('applyCandidateSpellings', () => {
+  const profile = {
+    model: 'm',
+    captions: 20,
+    fixes: [],
+    candidates: [{ from: 'cs go', to: 'CS2', seen: 1 }],
+    caseHabit: null,
+    stripsPunctuation: null,
+    fontSizePx: null,
+    animation: null,
+    medianDurS: null,
+  }
+
+  /** Put one caption on the caption track, with the machine's own word stamped on it. */
+  const seedCaption = (machine: string, shown: string) => {
+    updateActiveSequence('seed captions', (sq) => ({
+      ...sq,
+      tracks: sq.tracks.map((t, i) =>
+        i === 0
+          ? {
+              ...t,
+              name: CAPTION_TRACK_NAME,
+              clips: [
+                {
+                  ...newTitleClip(defaultTitleDef(shown), 0, 1),
+                  captionOrigin: { text: machine, model: 'm' },
+                },
+              ],
+            }
+          : t,
+      ),
+    }))
+  }
+
+  it('rewrites a caption to the spelling he used once', () => {
+    seedCaption('cs go', 'cs go')
+    applyCandidateSpellings(profile)
+    expect(allClips()[0].title?.text).toBe('CS2')
+  })
+
+  it('⛔ matches on the MACHINE word, not the styled text on screen', () => {
+    // The visible text has been through the house casing and his saved preset,
+    // so matching against it would miss every caption whose look he changed.
+    seedCaption('cs go', 'CS GO')
+    applyCandidateSpellings(profile)
+    expect(allClips()[0].title?.text).toBe('CS2')
+  })
+
+  it('leaves a caption with no origin alone, because nothing can be compared', () => {
+    updateActiveSequence('seed hand typed', (sq) => ({
+      ...sq,
+      tracks: sq.tracks.map((t, i) =>
+        i === 0 ? { ...t, name: CAPTION_TRACK_NAME, clips: [newTitleClip(defaultTitleDef('cs go'), 0, 1)] } : t,
+      ),
+    }))
+    applyCandidateSpellings(profile)
+    expect(allClips()[0].title?.text).toBe('cs go')
+  })
+
+  it('⛔ never touches a track that is not the caption track', () => {
+    updateActiveSequence('seed elsewhere', (sq) => ({
+      ...sq,
+      tracks: sq.tracks.map((t, i) =>
+        i === 0
+          ? {
+              ...t,
+              clips: [{ ...newTitleClip(defaultTitleDef('cs go'), 0, 1), captionOrigin: { text: 'cs go', model: 'm' } }],
+            }
+          : t,
+      ),
+    }))
+    applyCandidateSpellings(profile)
+    expect(allClips()[0].title?.text).toBe('cs go')
   })
 })

@@ -8,6 +8,7 @@ import { joinRoomFromUrl } from './collab/collabControl'
 import { invalidatePreview, warmPreview } from './engine/preview'
 import { warmAudio } from './engine/audio'
 import { warmTranscriber } from './engine/captions/transcribe'
+import { warmMusicModel } from './engine/captions/musicAnalysis'
 import { loadTitleFonts } from './engine/render/titleFonts'
 import './index.css'
 import { loadDefaultTextAppearance } from './state/appearanceActions'
@@ -83,6 +84,11 @@ const work: BootWork = {
     // finishes behind him. On every boot after the first this is a fast cache
     // read, and his first caption run stops stalling.
     transcriberReady = started(warmTranscriber())
+    // And the song classifier beside it, for exactly the same reason and on the
+    // same terms: it never gates the card, it is a cache read after the first
+    // boot, and it is the difference between his first caption run waiting on a
+    // download and it already being there. Roughly 90 MB quantised.
+    warmMusicModel()
   },
   project: async () => {
     await initPersistence()

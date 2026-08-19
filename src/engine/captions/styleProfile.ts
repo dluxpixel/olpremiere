@@ -207,6 +207,24 @@ export function wordFixFor(machineText: string, profile: StyleProfile | null): W
 }
 
 /**
+ * A rewrite he has made ONCE, which is real but not yet trusted to apply
+ * unasked.
+ *
+ * His words, 2026-08-19: *"Sometimes, even suggest improvements. For example,
+ * auto-captioning text on a newer video. Maybe I'll apply them."* That is this
+ * list exactly: a word he did retype, in finished work, that has not yet cleared
+ * the two caption bar. Offering it costs him one glance and applying it is his
+ * call, which is the difference between a suggestion and a decision made for
+ * him.
+ */
+export function candidateFixFor(machineText: string, profile: StyleProfile | null): WordFix | null {
+  if (!profile) return null
+  const raw = machineText.trim().toLowerCase()
+  if (!raw) return null
+  return profile.candidates.find((f) => f.from === raw) ?? null
+}
+
+/**
  * Apply the settled half of the profile to one freshly transcribed caption.
  *
  * ⛔ WORD REWRITES ONLY MATCH THE WHOLE CAPTION. Every caption in this app is

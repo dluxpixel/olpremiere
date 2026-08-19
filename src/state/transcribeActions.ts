@@ -13,6 +13,8 @@ import {
 } from '../engine/captions/transcribe'
 import { markEmphasis, speechEnvelope } from '../engine/captions/emphasis'
 import { dropWordsWithoutVoice, voiceTrackForClip } from '../engine/captions/voiceActivity'
+import { dropWordsInMusic } from '../engine/captions/musicGate'
+import { musicTrackForClip } from '../engine/captions/musicAnalysis'
 import { getCaptionEmphasis, getCaptionLanguage, modelFor } from '../engine/captions/transcribeConfig'
 import { clipEmitsAudio } from '../engine/audio'
 import { activeSequence, type Clip, type MediaAsset } from '../engine/types'
@@ -105,6 +107,10 @@ export async function wordsForClip(clip: Clip, asset: MediaAsset): Promise<Capti
   // an analysis churning into the next clip of a whole-timeline sweep.
   const stop = new AbortController()
   const voice = voiceTrackForClip(asset, clip, stop.signal)
+  // ⛔ STARTED ALONGSIDE WHISPER, NEVER BEFORE IT, for the same reason the voice
+  // analysis is: both run while the recogniser is busy, so their cost is hidden
+  // inside a wait he is already having rather than added to the end of it.
+  const music = musicTrackForClip(asset, clip, stop.signal)
   useTranscribe.setState({ cancel: run.cancel })
   let chunks
   try {
@@ -121,10 +127,17 @@ export async function wordsForClip(clip: Clip, asset: MediaAsset): Promise<Capti
   // word: this filter may only ever take words away, never rescue a caption run.
   const track = await voice
   const kept = track ? dropWordsWithoutVoice(heard, track) : heard
+  // Then the song filter, which answers a different question from the one above.
+  // The voice detector asks "is anything voiced here" and cannot tell a band
+  // from him, measured: a rigid bed reads 18.3 percent voiced against 17.7 for
+  // clean speech. This one asks a classifier "is somebody TALKING here", and on
+  // the same fixtures the worst case containing his voice outscores the best
+  // case containing none by twenty times. → D123.
+  const withoutSongs = dropWordsInMusic(kept, await music)
   // Then the keyword highlight, LAST, in clip time, where these words and that
   // envelope share one clock. After the voice filter on purpose: a word the
   // audio says nobody said must not be able to win the colour.
-  return timelineWords(envelope ? markEmphasis(kept, envelope) : kept, clip)
+  return timelineWords(envelope ? markEmphasis(withoutSongs, envelope) : withoutSongs, clip)
 }
 
 /**

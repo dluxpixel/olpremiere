@@ -10,7 +10,7 @@ import {
   spreadWords,
   type CaptionWord,
 } from '../engine/captions/captions'
-import { wordFixFor } from '../engine/captions/styleProfile'
+import { candidateFixFor, wordFixFor, type StyleProfile } from '../engine/captions/styleProfile'
 import { learnedProfile } from '../engine/captions/styleStore'
 import { addTrack, clipDurationS, clipEndS, recomputeDuration, resolveStart } from '../engine/timeline'
 import { activeSequence, videoTracks, type Clip, type Track } from '../engine/types'
@@ -219,6 +219,14 @@ export function addCaptionsFromWords(
     })
   })
   s.setUI({ selection: clips.map((c) => c.id) })
+
+  // ⛔ THE SUGGESTION IS OFFERED, NEVER APPLIED. His words, 2026-08-19:
+  // *"Sometimes, even suggest improvements... Maybe I'll apply them."* A
+  // candidate is a word he retyped ONCE, which is real evidence and not yet a
+  // habit, so putting it in his video unasked would be the app inventing a
+  // spelling off a single sample. The button is the whole difference.
+  const suggested = profile ? chunks.filter((c) => candidateFixFor(c.text, profile)).length : 0
+
   useToasts
     .getState()
     .show(
@@ -230,5 +238,44 @@ export function addCaptionsFromWords(
       ]
         .filter(Boolean)
         .join(', '),
+      'info',
+      suggested > 0 && profile
+        ? {
+            label: `Spell ${suggested} more your way`,
+            onClick: () => applyCandidateSpellings(profile),
+          }
+        : undefined,
     )
+}
+
+/**
+ * Rewrite the captions of the last run that match a candidate, on his say so.
+ *
+ * ⛔ IT READS `captionOrigin`, NOT THE TEXT ON SCREEN. The visible text has been
+ * through the house casing and his saved preset, so matching against it would
+ * miss every caption whose look he had changed. The origin is what the machine
+ * wrote, which is the key the whole profile is built on, and it is stamped on
+ * the clip rather than kept in a side log for exactly this reason.
+ *
+ * One undo step for the lot: he pressed one button.
+ */
+export function applyCandidateSpellings(profile: StyleProfile): void {
+  let changed = 0
+  updateActiveSequence('Spell captions his way', (sq) => ({
+    ...sq,
+    tracks: sq.tracks.map((t) => {
+      if (t.name !== CAPTION_TRACK_NAME) return t
+      return {
+        ...t,
+        clips: t.clips.map((c) => {
+          if (!c.title || !c.captionOrigin) return c
+          const hit = candidateFixFor(c.captionOrigin.text, profile)
+          if (!hit || c.title.text === hit.to) return c
+          changed++
+          return { ...c, title: { ...c.title, text: hit.to } }
+        }),
+      }
+    }),
+  }))
+  useToasts.getState().show(changed > 0 ? `${changed} spelled your way` : 'Nothing left to change')
 }
