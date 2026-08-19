@@ -75,6 +75,38 @@ describe('tidyTranscribedWords', () => {
     expect(real).toHaveLength(2)
   })
 
+  describe('a bare stage direction, which no bracket filter can see', () => {
+    it('⛔ drops a lone "Music" over a backing track', () => {
+      // His words, 2026-08-19: "it says music when there's music".
+      expect(tidyTranscribedWords([w('Music', 1.0, 1.6)])).toEqual([])
+      expect(tidyTranscribedWords([w('Music.', 2.0, 2.7)])).toEqual([])
+    })
+
+    it('⛔ keeps the same word when he actually says it in a sentence', () => {
+      const out = tidyTranscribedWords([
+        w('the', 0.0, 0.2), w('music', 0.25, 0.6), w('hits', 0.65, 0.95),
+      ])
+      expect(out.map((x) => x.text)).toEqual(['the', 'music', 'hits'])
+    })
+
+    it('keeps it when only ONE side is close, because that is still speech', () => {
+      const out = tidyTranscribedWords([w('music', 5.0, 5.4), w('everywhere', 5.5, 6.1)])
+      expect(out.map((x) => x.text)).toEqual(['music', 'everywhere'])
+    })
+
+    it('drops it when it sits alone in the middle of a long quiet stretch', () => {
+      const out = tidyTranscribedWords([
+        w('go', 0.0, 0.3), w('Applause', 8.0, 8.7), w('right', 20.0, 20.4),
+      ])
+      expect(out.map((x) => x.text)).toEqual(['go', 'right'])
+    })
+
+    it('leaves an ordinary word alone however isolated it is', () => {
+      const out = tidyTranscribedWords([w('boom', 0.0, 0.4), w('clutch', 30.0, 30.5)])
+      expect(out.map((x) => x.text)).toEqual(['boom', 'clutch'])
+    })
+  })
+
   it('drops tokens that are only punctuation', () => {
     const out = tidyTranscribedWords([w('hi', 0, 0.3), w('.', 0.3, 0.35), w('there', 0.4, 0.8)])
     expect(out.map((x) => x.text)).toEqual(['hi', 'there'])

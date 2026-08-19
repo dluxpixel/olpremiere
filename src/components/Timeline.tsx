@@ -1398,6 +1398,17 @@ export function Timeline({ height }: { height: number }) {
   const stableTrimPointerDown = useStableCallback(handleTrimPointerDown)
   const stableClipContextMenu = useStableCallback(handleClipContextMenu)
 
+  // ⛔ WHETHER A LANE IS BEING HEARD, and until 2026-08-18 nothing on the
+  // timeline said. Muting a track, or soloing another one, changed the sound and
+  // left the lanes pixel-identical, so the only record of it was a small button
+  // in the header he had to go and read.
+  //
+  // The rule is the ENGINE's, copied nowhere: `engine/audio.ts` decides
+  // audibility with exactly this expression, so the picture cannot disagree with
+  // the mix.
+  const anySolo = seq.tracks.some((t) => t.solo)
+  const isSilenced = (track: Track): boolean => (anySolo ? !track.solo : track.muted)
+
   const renderLane = (track: Track, tint: string) => {
     // Drop-target feedback during a cross-track move: green valid, red no-go.
     const hov = hoverLane?.trackId === track.id ? hoverLane : null
@@ -1410,7 +1421,13 @@ export function Timeline({ height }: { height: number }) {
     <div
       key={track.id}
       className={`relative border-b border-border ${tint} ${hovClass} ${track.locked ? 'opacity-60' : ''}`}
-      style={{ height: track.height }}
+      // ⛔ DESATURATE, NEVER FADE. Opacity is already spoken for twice on this
+      // surface, by a locked lane just above and by a disabled clip inside, and
+      // those two compound to about 0.24, at which point a third meaning is
+      // indistinguishable from the other two. Draining the colour says "not
+      // being heard" without touching the channel either of them uses, and it
+      // leaves the clip's edges exactly as crisp for trimming.
+      style={{ height: track.height, filter: isSilenced(track) ? 'saturate(0.15)' : undefined }}
       onPointerDown={handleLanePointerDown}
     >
       {track.clips.map((clip, i) => {

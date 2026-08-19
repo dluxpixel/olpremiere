@@ -274,6 +274,29 @@ export interface Clip {
   /** Phase 5 title. When set, this is a generated title clip (assetId is ''). */
   title?: TitleDef
   /**
+   * What the speech model actually produced at this moment, before he touched
+   * it. Present only on clips a caption run made.
+   *
+   * ⛔ THE WHOLE LEARNING LOOP RESTS ON THIS ONE FIELD, and without it that loop
+   * is impossible rather than merely harder. His ask, 2026-08-19: *"compare that
+   * to what the base model would do and adjust based off of that."* The moment
+   * he retypes a caption, the machine's version is gone forever unless something
+   * wrote it down first, and no amount of cleverness afterwards can recover what
+   * was never kept. So it is stamped at birth and never updated again.
+   *
+   * ⛔ IT LIVES ON THE CLIP, NOT IN A SIDE LOG, on purpose. A log has to re-find
+   * which caption it belonged to by matching timecodes, and by the time he has
+   * retimed, split and deleted his way to a finished video those timecodes no
+   * longer agree with anything. On the clip, the pairing cannot come apart, and
+   * it survives a save, an archive and a reopen for free.
+   *
+   * `model` is recorded because a correction against whisper-base means
+   * something different from the same correction against whisper-small, and a
+   * profile that mixes the two learns the difference between the models rather
+   * than his style.
+   */
+  captionOrigin?: { text: string; model: string }
+  /**
    * Entrance / exit animation ("how it appears"). A tiny spec that COMPILES to
    * keyframes on transform + opacity channels (see engine/anim/appearance.ts).
    * It is kept alongside the compiled keyframes so a single side can be changed and

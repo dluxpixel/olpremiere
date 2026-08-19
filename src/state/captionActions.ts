@@ -10,6 +10,8 @@ import {
   spreadWords,
   type CaptionWord,
 } from '../engine/captions/captions'
+import { wordFixFor } from '../engine/captions/styleProfile'
+import { learnedProfile } from '../engine/captions/styleStore'
 import { addTrack, clipDurationS, clipEndS, recomputeDuration, resolveStart } from '../engine/timeline'
 import { activeSequence, videoTracks, type Clip, type Track } from '../engine/types'
 import { updateActiveSequence, useStore } from './store'
@@ -145,7 +147,7 @@ export const CAPTION_TRACK_NAME = 'Captions'
  */
 export function addCaptionsFromWords(
   words: CaptionWord[],
-  options: { label?: string; preset?: TextStylePreset } = {},
+  options: { label?: string; preset?: TextStylePreset; model?: string } = {},
 ): void {
   const s = useStore.getState()
   const seq = activeSequence(s.project)
@@ -157,7 +159,19 @@ export function addCaptionsFromWords(
     useToasts.getState().show('No words to caption', 'danger')
     return
   }
-  let clips = captionClips(chunks, { seqWidth: seq.width, seqHeight: seq.height })
+  // What he has taught the captions, for THIS model only. Null until he has
+  // archived a project captioned by it, which is the honest first-run state:
+  // nothing has been learned yet, so nothing is changed.
+  const profile = options.model ? learnedProfile(options.model) : null
+  const relearned = profile ? chunks.filter((c) => wordFixFor(c.text, profile)).length : 0
+  let clips = captionClips(chunks, {
+    seqWidth: seq.width,
+    seqHeight: seq.height,
+    // Stamped here because this is the ONE place every caption door lands, so
+    // no route can produce captions the learning cannot later read.
+    model: options.model,
+    profile,
+  })
   // Apply the saved caption STYLE (case/outline/colour/position), its entrance
   // and exit animation, AND its effect stack to every word, so the whole run
   // lands looking exactly like the one he built and saved.
@@ -207,5 +221,14 @@ export function addCaptionsFromWords(
   s.setUI({ selection: clips.map((c) => c.id) })
   useToasts
     .getState()
-    .show(replaced > 0 ? `${clips.length} captions, replacing the last run` : `${clips.length} captions added`)
+    .show(
+      // He asked to be told when it used what it learned, and told nothing
+      // otherwise. A run that changed no words says exactly what it always said.
+      [
+        replaced > 0 ? `${clips.length} captions, replacing the last run` : `${clips.length} captions added`,
+        relearned > 0 ? `${relearned} spelled your way` : '',
+      ]
+        .filter(Boolean)
+        .join(', '),
+    )
 }

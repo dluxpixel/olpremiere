@@ -65,10 +65,20 @@ test('dragging the fade-in handle creates a fade (an overlay appears)', async ({
   // No fade yet → no fade overlay. (Bare `svg path` would also match the
   // linked-A/V badge icon, so the overlay carries its own testid.)
   await expect(clip.locator('[data-testid="fade-overlay"]')).toHaveCount(0)
-  // Grab the fade-in handle (top-left, above the trim handle) and drag right.
-  await page.mouse.move(box.x + 1, box.y + 2)
+  // Grab the fade-in handle and drag right.
+  //
+  // ⛔ READ THE HANDLE'S OWN BOX, NEVER `box.x + 1`. That offset encoded where
+  // the dot USED to sit, and a zero fade no longer parks on the clip's edge:
+  // the trim strip owns those pixels on purpose, because he trims hundreds of
+  // times an hour and a wrong one costs him an undo. Pressing 1px in trims now,
+  // correctly, and this test was asserting the old geometry rather than the
+  // behaviour. Asking the handle where it is tests the thing he actually does,
+  // and keeps passing when the dot is moved again.
+  const handle = clip.getByTestId('fade-in-handle')
+  const hb = (await handle.boundingBox())!
+  await page.mouse.move(hb.x + hb.width / 2, hb.y + hb.height / 2)
   await page.mouse.down()
-  await page.mouse.move(box.x + 60, box.y + 2, { steps: 10 })
+  await page.mouse.move(box.x + 60, hb.y + hb.height / 2, { steps: 10 })
   await page.mouse.up()
   // A fade overlay (triangle path) is now drawn.
   await expect(clip.locator('[data-testid="fade-overlay"] path')).toHaveCount(1)

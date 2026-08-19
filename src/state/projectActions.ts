@@ -3,6 +3,8 @@
 // flipping between edits is lossless in both directions.
 
 import { activeSequence, newProject } from '../engine/types'
+import { sampleFromClips } from '../engine/captions/styleLearning'
+import { rememberProjectStyle } from '../engine/captions/styleStore'
 import { useCollab } from '../collab/collabControl'
 import { pausePlayback } from './playbackControl'
 import { deleteProject, listProjects, loadProjectById, saveNow, saveProject, setProjectArchived, setProjectLater } from './persistence'
@@ -143,6 +145,34 @@ export async function setLater(id: string, later: boolean): Promise<void> {
   useToasts.getState().show(later ? 'Parked for later' : 'Back in what you are working on')
 }
 
+/**
+ * Read a finished project's captions and keep what they teach.
+ *
+ * His ask, 2026-08-19: *"Whenever I archive a project and I use captions in it,
+ * make sure it learns from my speech patterns."* Archiving is the moment he
+ * says a video is done, which is the only moment its captions are finished
+ * enough to learn from.
+ *
+ * ⛔ IT CAN NEVER FAIL THE ARCHIVE. Filing a project away is his action and it
+ * has to work whatever the learning does, so every error here is swallowed
+ * after being logged. A project that teaches nothing is a project that teaches
+ * nothing; a project he cannot file away is a bug he would feel.
+ */
+async function learnFromArchived(id: string): Promise<void> {
+  try {
+    const project = await loadProjectById(id)
+    if (!project) return
+    const clips = Object.values(project.sequences).flatMap((seq) =>
+      seq.tracks.flatMap((t) => t.clips),
+    )
+    const sample = sampleFromClips(clips)
+    if (!sample) return
+    rememberProjectStyle(id, sample, project.archivedAt ?? Date.now())
+  } catch (err) {
+    console.error('OL Premiere: learning from the archived captions failed', err)
+  }
+}
+
 export async function setArchived(id: string, archived: boolean): Promise<void> {
   try {
     await setProjectArchived(id, archived)
@@ -153,5 +183,10 @@ export async function setArchived(id: string, archived: boolean): Promise<void> 
     useToasts.getState().show('Could not file that project away', 'danger')
     return
   }
+  // AFTER the archive has actually landed, and only on the way in. Un-archiving
+  // is him pulling the work back out to change it, and forgetting what it
+  // taught at that moment would throw away a finished video's worth of his
+  // style over an edit he may not even make.
+  if (archived) await learnFromArchived(id)
   useToasts.getState().show(archived ? 'Moved to finished' : 'Back in your projects')
 }

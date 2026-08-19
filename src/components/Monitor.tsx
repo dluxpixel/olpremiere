@@ -402,11 +402,20 @@ export function Monitor() {
           >
             <Camera size={16} strokeWidth={1.5} />
           </IconButton>
+          {/* ⛔ pr-6, NOT px-2, and the reason is not decoration. A <select>
+              sizes itself to its LONGEST option, so when the option he has
+              chosen happens to be that longest one there is no slack left, and
+              the browser paints its own dropdown arrow straight through the end
+              of the label. '9:16 Shorts' is the longest entry in FORMATS, which
+              is why the one control he changes most was the one that read as
+              garbage while 'Preview: Full' next to it looked fine: that list has
+              'Preview: Quarter' behind it holding the width open.
+              He caught this in a screenshot on 2026-08-18. */}
           <select
             data-testid="format-select"
             aria-label="Aspect ratio"
             title="Aspect ratio: 9:16 makes a vertical Shorts video"
-            className="h-7 cursor-default rounded-field border border-border bg-bg-input px-2 text-ui-sm text-text-secondary transition-colors duration-[120ms] hover:border-border-strong hover:text-text-primary focus:border-accent focus:outline-none"
+            className="h-7 cursor-default rounded-field border border-border bg-bg-input pl-2 pr-6 text-ui-sm text-text-secondary transition-colors duration-[120ms] hover:border-border-strong hover:text-text-primary focus:border-accent focus:outline-none"
             value={aspectKeyFor(seq.width, seq.height)}
             onChange={(e) => {
               const f = FORMATS.find((x) => x.key === e.target.value)
@@ -493,7 +502,7 @@ export function Monitor() {
           <select
             aria-label="Preview quality"
             title="Preview quality: lower = smoother scrubbing on big footage. Never affects the export."
-            className="h-7 cursor-default rounded-field border border-border bg-bg-input px-2 text-ui-sm text-text-secondary transition-colors duration-[120ms] hover:border-border-strong hover:text-text-primary focus:border-accent focus:outline-none"
+            className="h-7 cursor-default rounded-field border border-border bg-bg-input pl-2 pr-6 text-ui-sm text-text-secondary transition-colors duration-[120ms] hover:border-border-strong hover:text-text-primary focus:border-accent focus:outline-none"
             value={String(quality)}
             onChange={(e) => setQuality(Number(e.target.value) as Quality)}
           >

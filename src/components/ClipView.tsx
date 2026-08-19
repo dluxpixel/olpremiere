@@ -160,6 +160,27 @@ export const ClipView = memo(function ClipView({
   const fadeInPx = fadeInS * pxPerS
   const fadeOutPx = fadeOutS * pxPerS
 
+  // How wide the grab zone at each end is. Hoisted out of the two trim zones
+  // below because the fade dots have to know it: they are round, they are
+  // centred on their value, and at a fade of zero that puts half a dot on top
+  // of this exact strip.
+  const trimPx = width < 24 ? Math.max(3, Math.floor(width / 4)) : 6
+
+  /**
+   * Half a fade dot. `w-2.5` is 10px and `-translate-x-1/2` centres it on its
+   * value, so a dot parked at `left: trimPx` still has HALF of itself under the
+   * strip, and its middle sits exactly on the strip's edge.
+   *
+   * ⛔ PARKING AT `trimPx` WAS NOT ENOUGH AND THE BROWSER GATE IS WHAT SAID SO.
+   * The fix on 2026-08-18 moved the dot to `trimPx` and gave the strip z-20, so
+   * the only grabbable part of a zero fade was the 5px between the strip's edge
+   * and the dot's right edge. `phase6.spec.ts` pressing 1px in went to the trim,
+   * exactly as it had before, and the fade still could not be started there.
+   * Adding the radius is what actually clears it: the dot now begins where the
+   * strip ends and the whole 10px of it is his to grab.
+   */
+  const dotR = 5
+
   // Keyframes, drawn ON the clip the way CapCut does. Until now they existed
   // only inside the Inspector's 240px lane, so nothing on the timeline said a
   // clip was animated at all, let alone WHERE. Clip-local seconds map straight
@@ -358,10 +379,17 @@ export const ClipView = memo(function ClipView({
           />
         )
       )}
-      {/* Solid name strip, only over footage imagery: a text-shadow alone
-          can't hold 11px text over bright frames, and flat family fills must
-          stay flat (no gradients anywhere). */}
-      {width > 48 && (strip || thumb) && (
+      {/* Solid name strip, only over imagery: a text-shadow alone can't hold
+          11px text over bright frames, and flat family fills must stay flat
+          (no gradients anywhere).
+          ⛔ A WAVEFORM IS IMAGERY TOO, and it was excluded until 2026-08-18.
+          Audio tracks force both `strip` and `thumb` to undefined (lines 110
+          and 113), so audio was exactly the case this test could never be true
+          for, and the white name sat straight on the bars at about 2.1:1 with
+          full-scale peaks running through the letters. The rule above was right
+          and the condition under it named the wrong thing. Flat fills (titles,
+          adjustments, audio with nothing decoded yet) still get no strip. */}
+      {width > 48 && (strip || thumb || (isAudio && asset)) && (
         <div className="pointer-events-none absolute inset-x-0 top-0 h-[15px] bg-black/45" />
       )}
       <span className="pointer-events-none absolute left-1.5 right-1.5 top-0.5 truncate text-[11px] font-medium text-white/90 [text-shadow:0_1px_2px_rgba(0,0,0,0.6)]">
@@ -477,13 +505,27 @@ export const ClipView = memo(function ClipView({
       )}
 
       {/* Fade dots share the clip's corners with the trim zones - on narrow
-          clips they'd fight for the same pixels, so they step aside. */}
+          clips they'd fight for the same pixels, so they step aside.
+          ⛔ AND THEY STEP ASIDE ON WIDE ONES TOO, since 2026-08-18, because A
+          FADE COULD NOT BE STARTED AT ALL. The dot is 10px and centred on its
+          value, so at a fade of zero it sat on x 0..5, entirely inside the 6px
+          trim strip. Pressing there trimmed, every time. **So the fade-in handle
+          was unreachable from zero**, and the only way to get a fade was to
+          already have one.
+          ⚠️ THE DOT HAD z-10 AND THE STRIP HAD NOTHING, so the obvious reading
+          was the opposite one, that the dot was stealing the trim. It is not:
+          benched on 2026-08-18 by putting the old geometry back, and the drag at
+          the clip head trimmed correctly both before and after. Do not "fix"
+          this back on the z-index alone.
+          ⛔ CLAMPING THE DOT DOES NOT LIE ABOUT THE FADE. The fade's real extent
+          is the SVG triangle above; the dot is only the handle you grab. The
+          handle moves clear of the trim strip, the readout does not move. */}
       {width >= 32 && interactive && (
         <>
           <div
             data-testid="fade-in-handle"
             className="absolute top-0 z-10 h-2.5 w-2.5 -translate-x-1/2 cursor-ew-resize rounded-full border border-white/80 bg-white/40 opacity-0 transition-opacity duration-[120ms] group-hover/clip:opacity-100"
-            style={{ left: Math.min(width, Math.max(0, fadeInPx)) }}
+            style={{ left: Math.min(width - trimPx - dotR, Math.max(trimPx + dotR, fadeInPx)) }}
             title="Drag to fade in"
             onPointerDown={(e) => beginFade(e, 'in')}
             onPointerMove={moveFade}
@@ -493,7 +535,7 @@ export const ClipView = memo(function ClipView({
           <div
             data-testid="fade-out-handle"
             className="absolute top-0 z-10 h-2.5 w-2.5 -translate-x-1/2 cursor-ew-resize rounded-full border border-white/80 bg-white/40 opacity-0 transition-opacity duration-[120ms] group-hover/clip:opacity-100"
-            style={{ left: Math.max(0, width - fadeOutPx) }}
+            style={{ left: Math.min(width - trimPx - dotR, Math.max(trimPx + dotR, width - fadeOutPx)) }}
             title="Drag to fade out"
             onPointerDown={(e) => beginFade(e, 'out')}
             onPointerMove={moveFade}
@@ -506,13 +548,17 @@ export const ClipView = memo(function ClipView({
       {/* Trim zones shrink on short clips so at least half the body stays
           grabbable - a 0.2s SFX at default zoom is 12px wide, and two fixed
           6px handles used to swallow it whole. Below ~10px, trim by keyboard
-          (Q/W) or zoom in; the whole clip is for moving. */}
+          (Q/W) or zoom in; the whole clip is for moving.
+          ⛔ z-20 SO THE EDGE ALWAYS TRIMS. It sits above the fade dots' z-10
+          deliberately: these two overlap by design at the corners, and DOM
+          order is not a decision anybody made. Trimming wins because he does it
+          hundreds of times an hour and a wrong one costs an undo. */}
       {width >= 10 && interactive && (
         <>
           <div
             data-testid="trim-in"
-            className="absolute inset-y-0 left-0 cursor-w-resize bg-white/25 opacity-0 transition-opacity duration-[120ms] group-hover/clip:opacity-100"
-            style={{ width: width < 24 ? Math.max(3, Math.floor(width / 4)) : 6 }}
+            className="absolute inset-y-0 left-0 z-20 cursor-w-resize bg-white/25 opacity-0 transition-opacity duration-[120ms] group-hover/clip:opacity-100"
+            style={{ width: trimPx }}
             onPointerDown={(e) => {
               e.stopPropagation()
               onTrimPointerDown(e, clip, 'in')
@@ -520,8 +566,8 @@ export const ClipView = memo(function ClipView({
           />
           <div
             data-testid="trim-out"
-            className="absolute inset-y-0 right-0 cursor-e-resize bg-white/25 opacity-0 transition-opacity duration-[120ms] group-hover/clip:opacity-100"
-            style={{ width: width < 24 ? Math.max(3, Math.floor(width / 4)) : 6 }}
+            className="absolute inset-y-0 right-0 z-20 cursor-e-resize bg-white/25 opacity-0 transition-opacity duration-[120ms] group-hover/clip:opacity-100"
+            style={{ width: trimPx }}
             onPointerDown={(e) => {
               e.stopPropagation()
               onTrimPointerDown(e, clip, 'out')

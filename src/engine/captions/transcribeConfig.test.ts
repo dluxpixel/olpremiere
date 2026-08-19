@@ -4,9 +4,9 @@ import { generationOptsFor, getCaptionLanguage, modelFor, setCaptionLanguage } f
 
 describe('caption language routing', () => {
   it('English keeps the .en model; Czech and auto use the multilingual export', () => {
-    expect(modelFor('en')).toBe('onnx-community/whisper-base.en_timestamped')
-    expect(modelFor('cs')).toBe('onnx-community/whisper-base_timestamped')
-    expect(modelFor('auto')).toBe('onnx-community/whisper-base_timestamped')
+    expect(modelFor('en')).toBe('onnx-community/whisper-small.en_timestamped')
+    expect(modelFor('cs')).toBe('onnx-community/whisper-small_timestamped')
+    expect(modelFor('auto')).toBe('onnx-community/whisper-small_timestamped')
     // Both MUST stay _timestamped exports, because word timestamps need the
     // cross-attention outputs only those carry (the s14 constraint).
     expect(modelFor('en')).toMatch(/_timestamped$/)

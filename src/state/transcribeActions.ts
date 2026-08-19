@@ -13,7 +13,7 @@ import {
 } from '../engine/captions/transcribe'
 import { markEmphasis, speechEnvelope } from '../engine/captions/emphasis'
 import { dropWordsWithoutVoice, voiceTrackForClip } from '../engine/captions/voiceActivity'
-import { getCaptionEmphasis, getCaptionLanguage } from '../engine/captions/transcribeConfig'
+import { getCaptionEmphasis, getCaptionLanguage, modelFor } from '../engine/captions/transcribeConfig'
 import { clipEmitsAudio } from '../engine/audio'
 import { activeSequence, type Clip, type MediaAsset } from '../engine/types'
 import type { CaptionWord } from '../engine/captions/captions'
@@ -267,6 +267,7 @@ export async function autoCaptionFromClip(clipId: string, preset?: TextStylePres
       addCaptionsFromWords(words, {
         label: 'Auto-caption from voiceover',
         preset: preset ?? rememberedCaptionPreset(),
+        model: modelFor(getCaptionLanguage()),
       })
     }
   } catch (err) {
@@ -381,6 +382,7 @@ export async function autoCaptionEveryClip(
   addCaptionsFromWords(words, {
     label: onlyIds ? 'Auto-caption selected clips' : 'Auto-caption every clip',
     preset: preset ?? rememberedCaptionPreset(),
+    model: modelFor(getCaptionLanguage()),
   })
   if (cancelled) toasts.show('Stopped early, captioned what was heard so far')
   else if (failed > 0) toasts.show(`${failed} clip${failed === 1 ? '' : 's'} could not be read`, 'danger')

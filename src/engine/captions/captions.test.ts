@@ -281,6 +281,44 @@ describe('captionClips', () => {
     expect(clips[0].assetId).toBe('')
   })
 
+  describe('what he taught it', () => {
+    const profile = {
+      model: 'm',
+      captions: 40,
+      fixes: [{ from: 'boom', to: 'BOOM!!', seen: 4 }],
+      candidates: [],
+      caseHabit: 'lower' as const,
+      stripsPunctuation: null,
+      fontSizePx: null,
+      animation: null,
+      medianDurS: null,
+    }
+
+    it('spells a word the way he respells it', () => {
+      const clips = captionClips(chunks, { ...opts, profile })
+      expect(clips[1].title?.text).toBe('BOOM!!')
+    })
+
+    it('⛔ does not re-case his own rewrite, whatever the casing habit says', () => {
+      // 'lower' above would hand back "boom!!", which is the feature undoing
+      // the one thing it learned.
+      const clips = captionClips(chunks, { ...opts, profile, upper: false })
+      expect(clips[1].title?.text).toBe('BOOM!!')
+    })
+
+    it('⛔ still stamps the MACHINE word as the origin, not his rewrite', () => {
+      // Otherwise the next archive reads "he changed nothing" and the habit
+      // slowly starves itself out of the profile.
+      const clips = captionClips(chunks, { ...opts, profile, model: 'm' })
+      expect(clips[1].captionOrigin).toEqual({ text: 'boom', model: 'm' })
+    })
+
+    it('leaves everything alone when nothing has been learned', () => {
+      const clips = captionClips(chunks, { ...opts, profile: null })
+      expect(clips[1].title?.text).toBe('boom')
+    })
+  })
+
   it('colors emphasis chunks with the highlight color', () => {
     const clips = captionClips(chunks, opts)
     expect(clips[0].title?.color).toBe('#ffffff')

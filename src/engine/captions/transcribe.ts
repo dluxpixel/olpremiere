@@ -4,6 +4,7 @@
 // caption pipeline is testable without a model.
 
 import { getAudioBuffer } from '../audio'
+import { clipDurationS } from '../types'
 import type { Clip, MediaAsset } from '../types'
 import type { CaptionWord } from './captions'
 import { getCaptionLanguage, type CaptionLanguage } from './transcribeConfig'
@@ -274,13 +275,91 @@ export function tidyTranscribedWords(words: readonly TranscribedWord[]): Transcr
     kept.length = kept.length - take
     break
   }
-  return kept
+  return dropLoneStageDirections(kept)
+}
+
+/**
+ * Subtitle notes Whisper writes as BARE WORDS, with no brackets around them at
+ * all, so nothing above this line can see them.
+ *
+ * His report, 2026-08-19: *"it says music when there's music."* The bracket
+ * filter is good and it was never the problem. Whisper was trained on subtitle
+ * files where the convention is inconsistent, and over a music bed it writes
+ * "Music" or "Music." on its own about as often as it writes "[Music]". The
+ * bracketed one was caught from the first day; the bare one has been reaching
+ * his timeline the whole time.
+ *
+ * Kept deliberately short. Every entry is a word he could also SAY, so the
+ * isolation rule below is what makes the list safe, not the list itself.
+ */
+const LONE_TAG_WORDS = new Set([
+  'music',
+  'applause',
+  'laughter',
+  'laughs',
+  'laughing',
+  'cheering',
+  'cheers',
+  'chuckles',
+  'sighs',
+  'coughs',
+  'coughing',
+  'silence',
+])
+
+/**
+ * How far a word must be from anything else said before it counts as standing
+ * alone. Consecutive words in real speech are about a quarter of a second
+ * apart, so a second and a bit is many times the ordinary gap and nowhere near
+ * a pause between sentences.
+ */
+const LONE_TAG_GAP_S = 1.2
+
+/**
+ * Drop a stage-direction noun that nobody said anything near.
+ *
+ * ⛔ THE ISOLATION IS THE WHOLE GUARD, and without it this would be a list of
+ * ordinary English words that his captions quietly delete. "the music hits
+ * different" leaves "music" a quarter of a second from two real words, so it
+ * stays. A "Music" alone in three seconds of backing track has nothing near it,
+ * and that is not a word anyone said.
+ *
+ * ⛔ A MISSING NEIGHBOUR COUNTS AS FAR AWAY. A clip that transcribes to the
+ * single word "Music" is the exact case he is complaining about, and treating
+ * the open end as "close enough" would keep every one of them.
+ */
+function dropLoneStageDirections(words: readonly TranscribedWord[]): TranscribedWord[] {
+  return words.filter((w, i) => {
+    const bare = w.text.toLowerCase().replace(/[^\p{L}]/gu, '')
+    if (!LONE_TAG_WORDS.has(bare)) return true
+    const prev = words[i - 1]
+    const next = words[i + 1]
+    const gapBefore = prev ? w.startS - prev.endS : Infinity
+    const gapAfter = next ? next.startS - w.endS : Infinity
+    return gapBefore < LONE_TAG_GAP_S || gapAfter < LONE_TAG_GAP_S
+  })
 }
 
 /**
  * Map slice-relative word times onto the sequence timeline. The transcribed
  * slice starts at the clip's in point, so timeline time = clip start + word
  * time compressed by the clip's playback speed.
+ *
+ * ⛔ AND IT HOLDS THE WORDS INSIDE THE CLIP, since 2026-08-18. This mapping used
+ * to trust Whisper's timestamps completely, and Whisper's most familiar failure
+ * is inventing words at the end of audio and stamping them PAST the end of what
+ * it was given. Multiplied out onto the timeline, those landed after the clip
+ * finished: on bare timeline where no clip exists at all, and on the last clip
+ * of a sequence they piled up at the very end.
+ *
+ * His report, 2026-08-18: *"sometimes it captions clips that aren't even there,
+ * or they are at the end. It's completely broken."* That is this function.
+ *
+ * ⛔ A WORD THAT BEGINS AFTER THE CLIP ENDS WAS NEVER SAID, so it is dropped
+ * rather than pulled back to the edge. Clamping its start would stack every
+ * invention on the last frame, which reads as a burst of nonsense at the cut and
+ * would be a different bug wearing the same clothes. Only the END is clamped,
+ * because a real final word can legitimately run a few milliseconds long.
  */
 export function timelineWords(
   // The emphasis flag rides through because the picker (captions/emphasis.ts)
@@ -291,13 +370,33 @@ export function timelineWords(
   clip: Clip,
 ): CaptionWord[] {
   const speed = Math.abs(clip.speed) || 1
-  return words.map((w) => ({
-    text: w.text,
-    startS: clip.startS + w.startS / speed,
-    endS: clip.startS + w.endS / speed,
-    ...(w.emphasis ? { emphasis: true } : {}),
-  }))
+  const startS = clip.startS
+  const endS = clip.startS + clipDurationS(clip)
+  const out: CaptionWord[] = []
+  for (const w of words) {
+    const s = startS + w.startS / speed
+    // Outside the clip in either direction: not a word this clip said.
+    if (s >= endS - WORD_EPS || s < startS - WORD_EPS) continue
+    const e = Math.min(startS + w.endS / speed, endS)
+    // A word whose end has been clamped back onto its own start carries no time
+    // at all, and a zero-length caption cannot be shown or clicked.
+    if (e <= s) continue
+    out.push({
+      text: w.text,
+      startS: Math.max(s, startS),
+      endS: e,
+      ...(w.emphasis ? { emphasis: true } : {}),
+    })
+  }
+  return out
 }
+
+/**
+ * How far past a clip's end a word may START and still be believed: nothing.
+ * The tolerance only absorbs float error in the speed division, so a word that
+ * genuinely lands on the last sample is not thrown away by arithmetic.
+ */
+const WORD_EPS = 1e-6
 
 /**
  * Decode the clip's trimmed slice ([inS, outS) of its asset) to mono at

@@ -49,6 +49,10 @@ vi.mock('../engine/captions/transcribe', () => ({
 vi.mock('../engine/captions/transcribeConfig', () => ({
   getCaptionLanguage: () => 'en',
   getCaptionEmphasis: () => true,
+  // Stamped onto every caption so the style learning can compare his wording
+  // against the machine's. A mock missing it fails the run at the call site
+  // rather than at the assertion, which reads like the feature is broken.
+  modelFor: () => 'onnx-community/whisper-small.en_timestamped',
 }))
 // The voice detector has NO opinion here (no wasm in node), which is the path
 // that has to keep every word Whisper heard. Its own rule is tested against a

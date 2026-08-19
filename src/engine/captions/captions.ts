@@ -14,6 +14,7 @@ import type { Clip, TitleDef } from '../types'
 import { newTitleClip } from '../types'
 import { applyAppearanceToClip } from '../anim/appearance'
 import { CAPTION_FONT_STACK } from '../render/titleFonts'
+import { wordFixFor, type StyleProfile } from './styleProfile'
 
 /** One spoken word with its absolute timeline window, seconds. */
 export interface CaptionWord {
@@ -702,6 +703,21 @@ export interface CaptionClipOptions extends CaptionStyleOptions {
    * HARD CUT (instant word swap), so this is off by default.
    */
   popIn?: boolean
+  /**
+   * The speech model these chunks came out of, e.g.
+   * `onnx-community/whisper-small.en_timestamped`. Given, every caption is
+   * stamped with what the machine said before he touched it, which is the raw
+   * material the style learning compares against. Absent for callers that are
+   * not a transcription (a hand-built run), and then nothing is stamped: an
+   * origin nobody can attribute to a model is worse than none.
+   */
+  model?: string
+  /**
+   * What he has taught the captions across every project he archived, or null
+   * the first time. Only its settled word rewrites are used here: see
+   * `wordFixFor` for why the casing half is deliberately left out.
+   */
+  profile?: StyleProfile | null
 }
 
 /**
@@ -715,16 +731,29 @@ export interface CaptionClipOptions extends CaptionStyleOptions {
 export function captionClips(chunks: CaptionChunk[], options: CaptionClipOptions): Clip[] {
   const emphasisColor = options.emphasisColor ?? CAPTION_EMPHASIS_COLORS[0]
   return chunks.map((chunk) => {
-    const text = options.upper
-      ? chunk.text.toUpperCase()
-      : options.baseDef
-        ? chunk.text
-        : captionHouseCase(chunk.text)
+    // ⛔ HIS OWN REWRITE WINS AND IS NOT RE-CASED. He typed "CS2" twice in his
+    // finished work, so putting "CS2" back is repeating him rather than
+    // guessing at him. Running it through the house case afterwards would hand
+    // back "cs2", which is the feature undoing the only thing it learned.
+    const learned = wordFixFor(chunk.text, options.profile ?? null)
+    const text = learned
+      ? learned.to
+      : options.upper
+        ? chunk.text.toUpperCase()
+        : options.baseDef
+          ? chunk.text
+          : captionHouseCase(chunk.text)
     const def: TitleDef = options.baseDef
       ? { ...options.baseDef, text }
       : jettismCaptionDef(text, options.seqHeight)
     if (chunk.emphasis) def.color = emphasisColor
-    const clip = newTitleClip(def, chunk.startS, chunk.endS - chunk.startS)
+    let clip = newTitleClip(def, chunk.startS, chunk.endS - chunk.startS)
+    // ⛔ THE RAW CHUNK TEXT, NOT `text` ABOVE. `text` has already been through
+    // the app's own casing, and stamping that would teach the profile the
+    // difference between OUR house style and his, which he never asked about
+    // and can read off the preset anyway. What is wanted is his delta from the
+    // MACHINE, so the machine's own words are what get kept.
+    if (options.model) clip = { ...clip, captionOrigin: { text: chunk.text, model: options.model } }
     if (!options.popIn) return clip
     return applyAppearanceToClip(clip, { in: 'pop', durS: CAPTION_POP_DUR_S }, options.seqWidth, options.seqHeight)
   })

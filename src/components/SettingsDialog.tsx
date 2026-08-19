@@ -50,7 +50,7 @@ function Group({ title, children }: { title: string; children: React.ReactNode }
 }
 
 const SELECT_CLS =
-  'h-7 cursor-default rounded-field border border-border bg-bg-input px-2 text-ui-sm text-text-primary'
+  'h-7 cursor-default rounded-field border border-border bg-bg-input pl-2 pr-6 text-ui-sm text-text-primary'
 
 const THEMES: { value: ThemeChoice; label: string; Icon: typeof Moon }[] = [
   { value: 'dark', label: 'Dark', Icon: Moon },

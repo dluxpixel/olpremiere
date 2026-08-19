@@ -14,8 +14,26 @@ export const CAPTION_LANGUAGES: { value: CaptionLanguage; label: string }[] = [
   { value: 'auto', label: 'Auto-detect' },
 ]
 
-const EN_MODEL = 'onnx-community/whisper-base.en_timestamped'
-const MULTILINGUAL_MODEL = 'onnx-community/whisper-base_timestamped'
+// ⛔ SMALL, NOT BASE, SINCE 2026-08-18, AND THAT IS THE HEADLINE ACCURACY FIX.
+// His words that day: *"It reads words bad, like really fucking bad."* He was
+// right and the cause was not tuning. `whisper-base` is the second SMALLEST
+// Whisper there is, four steps below the top, and on real speech `small`
+// roughly halves its word error rate. No amount of prompt or threshold work
+// closes a gap that size, because the model simply does not know the word.
+//
+// ⚠️ THE COST IS A ONE-OFF DOWNLOAD, about 480 MB against base's 145 MB,
+// quantised the same way and cached in the browser Cache Storage exactly as
+// before, so it is paid once and survives reloads. Inference is roughly two to
+// three times slower per clip. That is the trade he asked for, in his own
+// words, and the boot card already warms the model so the first run does not
+// pay for the download mid-edit.
+//
+// ⛔ THE `_timestamped` SUFFIX IS NOT OPTIONAL on either of these, whatever the
+// size. Word-level timestamps need the cross-attention outputs only those
+// exports carry. Both ids were confirmed to exist and to ship the same q8/q4
+// onnx files the loader asks for before this landed.
+const EN_MODEL = 'onnx-community/whisper-small.en_timestamped'
+const MULTILINGUAL_MODEL = 'onnx-community/whisper-small_timestamped'
 
 export function modelFor(language: CaptionLanguage): string {
   return language === 'en' ? EN_MODEL : MULTILINGUAL_MODEL
