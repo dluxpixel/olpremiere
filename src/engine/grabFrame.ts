@@ -11,7 +11,7 @@
 // So the grab renders its own frame at seq.width x seq.height, waits for every
 // layer to actually resolve, and reads THAT back.
 
-import { currentPreviewScale, setPreviewScale } from './frameCache'
+import { currentPreviewScale, setPreviewScale, withFullQuality } from './frameCache'
 import { renderPreview } from './preview'
 import type { Id, MediaAsset, Sequence } from './types'
 
@@ -72,21 +72,32 @@ export async function grabFrame(
   if (lifted) setPreviewScale(1)
 
   try {
-    const deadline = Date.now() + GRAB_TIMEOUT_MS
-    let complete = false
-    // renderPreview reports whether every layer resolved this frame. False means
-    // something was still decoding, and a still of a half-decoded frame is a
-    // still of the wrong picture, so keep drawing until it lands.
-    for (;;) {
-      complete = renderPreview(canvas, seq, assets, tS, false)
-      if (complete || Date.now() >= deadline) break
-      await wait(GRAB_POLL_MS)
-    }
-    // The preview context is created with preserveDrawingBuffer, so the last
-    // drawn frame is still there to be read.
-    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'))
-    if (!blob) return null
-    return { blob, width, height, complete }
+    // ⛔ AND THE PREVIEW COPY IS NOT THE PICTURE EITHER, which lifting the tier
+    // does nothing about. Every decode in here comes through the frame cache,
+    // and the frame cache prefers the short GOP proxy whenever one exists. That
+    // proxy is capped at 1080 lines and re-encoded at crf, so a still of a
+    // 1080x1920 short was full size and UPSCALED out of a compressed half
+    // height copy. His words, 2026-08-19: *"the screenshot quality from the app
+    // is really bad."* He was right and the header above was wrong: this did
+    // NOT match the export, which resolves `blobKey` and always gets the
+    // original. Now it does.
+    return await withFullQuality(async () => {
+      const deadline = Date.now() + GRAB_TIMEOUT_MS
+      let complete = false
+      // renderPreview reports whether every layer resolved this frame. False means
+      // something was still decoding, and a still of a half-decoded frame is a
+      // still of the wrong picture, so keep drawing until it lands.
+      for (;;) {
+        complete = renderPreview(canvas, seq, assets, tS, false)
+        if (complete || Date.now() >= deadline) break
+        await wait(GRAB_POLL_MS)
+      }
+      // The preview context is created with preserveDrawingBuffer, so the last
+      // drawn frame is still there to be read.
+      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'))
+      if (!blob) return null
+      return { blob, width, height, complete }
+    })
   } finally {
     if (lifted) setPreviewScale(tier)
   }

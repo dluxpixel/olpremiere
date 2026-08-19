@@ -285,7 +285,7 @@ async function openInput(e: AssetEntry): Promise<void> {
   // The STORED COPY decides, not a flag. Asking storage directly means this is
   // right after a reload, right across a module boundary, and right when the
   // transcode finished a moment ago, none of which an in-memory set can promise.
-  const proxy = await getBlob(proxyKeyFor(e.asset.id))
+  const proxy = fullQuality ? null : await getBlob(proxyKeyFor(e.asset.id))
   const blob = proxy && proxy.size > 0 ? proxy : await getBlob(e.asset.blobKey)
   if (!blob) throw new Error(`frameCache: no blob for key ${e.asset.blobKey}`)
   e.usingProxy = blob === proxy
@@ -483,6 +483,65 @@ export function prefetchRange(asset: MediaAsset, aS: number, bS: number): void {
     if (indices.length > 0) request(asset, indices, indices[0])
   } catch {
     // same guarantee as getFrameAt
+  }
+}
+
+/**
+ * While this is on, every decode opens the CAMERA ORIGINAL and the preview copy
+ * is ignored.
+ *
+ * ⛔ HIS SCREENSHOTS WERE COMING OUT OF THE PROXY, AND HE SAW IT. 2026-08-19:
+ * *"the screenshot quality from the app is really bad."* `grabFrame` renders at
+ * the sequence's own size and its header says it goes "through the renderer the
+ * export uses", but it does not: it comes through here, and here preferred the
+ * proxy. The proxy is capped at 1080 lines and re-encoded at crf, so a still of
+ * a 1080x1920 short was being UPSCALED out of a compressed half height copy.
+ * Full size and soft, which reads as a broken feature rather than a setting.
+ *
+ * ⚠️ IT IS A SESSION WIDE SWITCH AND IT MUST BE TURNED BACK OFF. Anything
+ * decoded while it is on pays the original's seek cost, which is exactly what
+ * the proxy exists to avoid. `withFullQuality` is the only thing that should
+ * touch it, because it puts it back in a finally.
+ */
+let fullQuality = false
+
+/**
+ * Run `fn` with every decode reading the original.
+ *
+ * ⛔ THE OPEN DEMUXERS ARE THROWN AWAY ON BOTH SIDES. A clip already open
+ * against its proxy would keep serving proxy frames however this flag is set,
+ * and on the way back out the same clip would keep paying the original's price
+ * for the rest of the session. Reopening twice costs one seek each and buys a
+ * still that is actually his footage.
+ */
+export async function withFullQuality<T>(fn: () => Promise<T>): Promise<T> {
+  fullQuality = true
+  reopenProxyBacked()
+  try {
+    return await fn()
+  } finally {
+    fullQuality = false
+    reopenProxyBacked()
+  }
+}
+
+/**
+ * Close every demuxer whose source no longer matches what we now want.
+ *
+ * What we want is `usingProxy === !fullQuality`, so a clip is closed exactly
+ * when `usingProxy` still equals `fullQuality`. Going back to normal, a clip
+ * with no proxy on disk is left alone: reopening it would land on the same file
+ * it already has and cost a seek for nothing.
+ */
+function reopenProxyBacked(): void {
+  for (const e of entries.values()) {
+    if (e.usingProxy !== fullQuality) continue
+    if (!fullQuality && !hasProxy(e.asset.id)) continue
+    closeIter(e)
+    e.input?.dispose()
+    e.input = null
+    e.sink = null
+    e.ready = null
   }
 }
 

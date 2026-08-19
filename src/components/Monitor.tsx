@@ -32,7 +32,7 @@ import {
   useStore,
 } from '../state/store'
 import { BACKDROP_ZOOM, BLUR_BACKDROP_ZOOM } from '../engine/render/resolve'
-import { DEFAULT_SHUTTER_ANGLE, SHUTTER_ANGLE } from '../engine/render/motionBlur'
+import { DEFAULT_SHUTTER_ANGLE } from '../engine/render/motionBlur'
 import { ScrubField } from './EffectControls'
 import { IconButton } from '../ui/Button'
 import { MasterMeter } from './MasterMeter'
@@ -338,14 +338,35 @@ export function Monitor() {
         <MasterMeter />
       </div>
 
-      <div className="relative flex h-11 shrink-0 items-center gap-2 border-t border-border bg-bg-panel px-3">
-        <span data-testid="timecode" className="font-numeric text-ui-sm text-text-primary">
-          <PlayheadTimecode fps={seq.fps} editable testId="monitor-timecode" />
-          <span className="text-text-muted"> / {formatTimecode(seq.durationS, seq.fps)}</span>
-        </span>
-        <ShuttleBadge />
+      {/* ⛔ A GRID, NOT AN ABSOLUTELY CENTRED GROUP. The transport used to be
+          `absolute left-1/2 -translate-x-1/2`, which centres it perfectly and
+          takes no part in the layout, so it simply floated ON TOP of whatever
+          the right hand group grew into. He photographed the result on
+          2026-08-19: the Skip Forward arrow drawn straight through the words
+          "9:16 Shorts" inside the aspect picker, which is why that control read
+          as garbage. Reproduced and photographed in
+          `_verify/monitor-toolbar-shot.mjs`.
+          ⚠️ AND A THREE COLUMN GRID WAS NOT THE ANSWER EITHER, measured before
+          this line was written. `1fr auto 1fr` gave the settings a 336px column
+          for about 480px of buttons, and a flex overflow under `justify-end`
+          spills out of the START edge, so the aspect picker was painted 110px
+          to the LEFT of its own column, straight through the transport again.
+          The bar genuinely does not fit at a narrow panel width; the absolute
+          centring was only hiding that.
+          So: one flex row, spread apart. Nothing is positioned out of flow, the
+          row is clipped rather than allowed to spill, and the TIMECODE is the
+          part that gives up room first, because a truncated timecode is
+          readable and an icon painted through a label is not. */}
+      <div className="flex h-11 shrink-0 items-center justify-between gap-2 overflow-hidden border-t border-border bg-bg-panel px-3">
+        <div className="flex min-w-0 shrink items-center gap-2 overflow-hidden whitespace-nowrap">
+          <span data-testid="timecode" className="font-numeric text-ui-sm text-text-primary">
+            <PlayheadTimecode fps={seq.fps} editable testId="monitor-timecode" />
+            <span className="text-text-muted"> / {formatTimecode(seq.durationS, seq.fps)}</span>
+          </span>
+          <ShuttleBadge />
+        </div>
 
-        <div className="absolute left-1/2 flex -translate-x-1/2 items-center gap-1">
+        <div className="flex shrink-0 items-center gap-1">
           <IconButton
             label="Go to start"
             shortcut="Home"
@@ -385,7 +406,9 @@ export function Monitor() {
           </IconButton>
         </div>
 
-        <div className="ml-auto flex items-center gap-2">
+        {/* `justify-end` rather than `ml-auto`: this is its own grid column now,
+            so it is pushed to the right by the column and not by a margin. */}
+        <div className="flex shrink-0 items-center gap-2">
           {/* Left of the aspect picker, alongside the blur: the frame he can
               see is the frame it takes, at the sequence's own size. */}
           <IconButton
@@ -469,15 +492,16 @@ export function Monitor() {
           >
             <Wind size={16} strokeWidth={1.5} />
           </IconButton>
-          {(seq.shutterAngle ?? DEFAULT_SHUTTER_ANGLE) > 0 && (
-            <ScrubField
-              value={seq.shutterAngle ?? DEFAULT_SHUTTER_ANGLE}
-              spec={SHUTTER_ANGLE}
-              testId="shutter-angle"
-              ariaLabel="Shutter angle in degrees"
-              onCommit={setActiveSequenceShutterAngle}
-            />
-          )}
+          {/* ⛔ NO SHUTTER ANGLE BOX. His call, 2026-08-19, looking at the bar:
+              *"commands like these, the motion blur and that, that's just
+              useless, no?"* A shutter angle in DEGREES is a cinematographer's
+              dial and it sat in the one strip he reads at a glance, next to the
+              timecode. The toggle stays, because whether a move smears is a real
+              choice he makes; the number goes, because 180 is the film standard,
+              it was MY number rather than his, and no edit of his has ever
+              wanted a different one. `setActiveSequenceShutterAngle` still
+              carries the whole range, so this is a surface cut and not a
+              feature cut. */}
           <IconButton
             label="Loop playback: repeats the In/Out range"
             shortcut="/"

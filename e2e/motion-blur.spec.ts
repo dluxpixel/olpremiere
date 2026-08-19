@@ -145,7 +145,9 @@ async function animate(page: Page, channel: string, from: number, to: number): P
 /** Flip motion blur off and let the preview repaint. */
 async function blurOff(page: Page): Promise<void> {
   await page.getByTestId('motion-blur-toggle').click()
-  await expect(page.getByTestId('shutter-angle')).toBeHidden()
+  // The toggle's own lit state is the readout now: the shutter angle BOX was cut
+  // on 2026-08-19 as clutter in the strip he reads at a glance.
+  await expect(page.getByTestId('motion-blur-toggle')).not.toHaveClass(/bg-accent-quiet/)
   await page.waitForTimeout(400)
 }
 
@@ -155,7 +157,8 @@ test('the control is there and starts at the film standard', async ({ page }) =>
   await expect(page.getByTestId('clip')).toHaveCount(1)
   await expect(page.getByTestId('motion-blur-toggle')).toBeVisible()
   // ON by default. If this fails, the feature exists and changes nothing he sees.
-  await expect(page.getByTestId('shutter-angle')).toHaveValue(/180/)
+  // Read off the toggle, because the degrees box was cut on 2026-08-19.
+  await expect(page.getByTestId('motion-blur-toggle')).toHaveClass(/bg-accent-quiet/)
 })
 
 test('a fast slide smears, and switching motion blur off makes it sharp again', async ({ page }) => {

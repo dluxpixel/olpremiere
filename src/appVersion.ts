@@ -6,17 +6,32 @@
 export const APP_VERSION: string = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : '0.0.0'
 
 /**
- * The version as he wants to READ it. His call, 2026-07-28, looking at the boot
- * card: "it says version 0.1.21, make it just 1.21."
+ * The version as he wants to READ it.
  *
- * The leading zero is semver's pre-1.0 marker, and on his own app it just reads
- * as unfinished. This is a DISPLAY name only: the real version, the update feed,
- * the git tag and the installer filename all keep the true semver, because
- * electron-updater compares those strings and a made-up number there would break
- * updating outright.
+ * His call, 2026-07-28, looking at the boot card: *"it says version 0.1.21,
+ * make it just 1.21."* The leading zero is semver's pre-1.0 marker and on his
+ * own app it just reads as unfinished.
+ *
+ * His call, 2026-08-19, looking at v2.0.17: *"let's change the format of this
+ * to 2.17 and when we do smaller updates, more like patch fixes, let's make it
+ * 2.17.1 and so on when we do a bigger update, let's turn it into 2.18."* So an
+ * ordinary release is `2.18`, a fix on top of it is `2.18.1`, and the trailing
+ * `.0` that says "no fixes yet" is noise he should not have to read.
+ *
+ * ⛔ THIS IS A DISPLAY NAME AND NOTHING ELSE. The real version, the update feed,
+ * the git tag and the installer filename all keep the true three part semver,
+ * because electron-updater COMPARES those strings and a made up number there
+ * would break updating outright. Every number he sees goes through here; every
+ * number a machine reads never does.
  */
 export function displayVersion(v: string = APP_VERSION): string {
-  return v.replace(/^0\./, '')
+  const noPreRelease = v.replace(/^0\./, '')
+  // ⛔ ONLY A THREE PART VERSION LOSES ITS TRAILING ZERO. A bare `.replace(/\.0$/)`
+  // turns the historical `0.2.0` into "2", because the leading strip has already
+  // taken it down to two parts and there is nothing left to spare. Requiring
+  // two segments in front is what keeps "2.17.0" reading as "2.17" and stops
+  // anything reading as a single number.
+  return noPreRelease.replace(/^(\d+\.\d+)\.0$/, '$1')
 }
 
 /** localStorage key holding the version the user last opened. */
