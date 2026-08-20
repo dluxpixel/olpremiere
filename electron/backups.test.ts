@@ -48,8 +48,10 @@ describe('the backup folder', () => {
     expect(dir).not.toContain('Documents')
   })
 
-  it('gives the lab build its own folder beside his, since the lab keeps real backups', () => {
+  it('keeps the lab build out of his Documents entirely, folder and all', () => {
     appName = 'OL Premiere Lab'
-    expect(withArgv().replace(/\\/g, '/')).toBe('C:/Users/skyle/Documents/OL Premiere Lab Backups')
+    const dir = withArgv().replace(/\\/g, '/')
+    expect(dir).toBe('C:/profile/Backups')
+    expect(dir).not.toContain('Documents')
   })
 })

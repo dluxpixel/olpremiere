@@ -48,11 +48,15 @@ const KEEP = 40
  * instead, and his folder is only ever written by his app.
  */
 export function backupDir(): string {
+  // ⛔ ONLY HIS APP WRITES INTO HIS DOCUMENTS. Nothing else, not a test run and
+  // not the bench copy. His words, 2026-08-20: *"make sure i dont ever
+  // accidentally click your version."* A folder of mine sitting beside his in
+  // Documents is a smaller version of the same mistake, so the lab keeps its
+  // backups inside its own profile where he will never meet them.
   const throwaway = process.argv.some((a) => a.startsWith('--user-data-dir='))
-  if (throwaway) return path.join(app.getPath('userData'), 'Backups')
-  // The lab is a second real app, so it keeps real backups, just not his.
-  const folder = `${app.getName()} Backups`
-  return path.join(app.getPath('documents'), folder)
+  const name = app.getName()
+  if (throwaway || name.toLowerCase().includes('lab')) return path.join(app.getPath('userData'), 'Backups')
+  return path.join(app.getPath('documents'), `${name} Backups`)
 }
 
 /** `2026-07-26_1743-05_my-edit.olpbak`, which sorts chronologically and reads plainly. */

@@ -7,42 +7,56 @@
 //   - installs to its own folder, so it never overwrites his app
 //   - saves to its own projects store, because electron/main.ts gives the lab a
 //     different origin and a browser engine keys storage on the origin alone
-//   - keeps its own automatic backups, in its own folder beside his
+//   - keeps its own automatic backups, inside its own folder, so nothing of mine
+//     ever appears next to his
 //   - never auto-updates, so it stays whatever was on the bench when it was built
 //
 // NOT AN INSTALLER, ON PURPOSE. electron-builder's NSIS step is the slow half of
 // a release and it RUNS the app when it finishes, which would put a window in
-// front of him. `--dir` writes a plain folder with an exe in it, and the shortcut
-// below points straight at that. Rebuilding is then just this script again: no
-// uninstall, no version numbers, nothing to click.
+// front of him. `--dir` writes a plain folder with an exe in it. Rebuilding is
+// the same one command: no uninstall, no version numbers, nothing to click.
 
 import { spawn } from 'node:child_process'
-import { cpSync, existsSync, mkdirSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const HOME = process.env.USERPROFILE || 'C:/Users/skyle'
 
-// ⛔ BUILD OUTSIDE THE REPO, AND OUTSIDE HIS DESKTOP ENTIRELY.
+// ⛔ BUILD OUTSIDE THE REPO, AND NOWHERE HE CLICKS.
 //
-// electron-builder unpacks three hundred megabytes of Electron into a temporary
-// folder and then renames it into place. Inside the repo, which lives on his
-// Desktop, that rename comes back EPERM every single time and the build dies
-// having done all the work. Windows guards the Desktop and Documents trees
-// against exactly this kind of move by a process it does not recognise, and this
-// one is spawned by an agent shell. The release script has always built to this
-// same place, and now the reason is written down.
+// Two reasons, and both are hard rules.
+//
+// His words, 2026-08-20: *"make sure i dont ever accidentally click your
+// version."* The first cut of this script put a shortcut on his Desktop right
+// beside the real app and a copy in `.launchers` next to the tools he actually
+// uses, which is exactly the accident he means. The lab now lives in the build
+// folder and NOTHING of his points at it. It is launched by path, by me.
+//
+// And it cannot be built inside the repo anyway. electron-builder unpacks three
+// hundred megabytes of Electron into a temporary folder and then renames it into
+// place; inside the repo, which lives on his Desktop, that rename comes back
+// EPERM every single time with the work already done. Windows guards the Desktop
+// and Documents trees against that move by a process it does not recognise, and
+// this one is spawned by an agent shell. The release script has always built
+// here for the same reason, and now the reason is written down.
 const OUT = 'C:/Users/skyle/AppData/Local/olp-build/lab'
 const APP_DIR = path.join(OUT, 'win-unpacked')
-const EXE_NAME = 'OL Premiere Lab.exe'
+// ⛔ THE FILE ON DISK IS NOT CALLED OL PREMIERE ANYTHING. Windows Search indexes
+// executables, so an exe named after his app is one Start menu search away from
+// being clicked by mistake, wherever it is parked. electron-builder takes the
+// binary name separately from the product name, so the app still KNOWS it is the
+// lab (app.getName drives the origin, the profile and the title bar) while the
+// file itself answers to nothing he would ever type.
+const EXE_NAME = 'olp-bench.exe'
 
-// Where he can actually reach it. The build path above is redirected for the
-// agent's shell, so Explorer cannot follow a shortcut into it; the finished app
-// is copied here, beside his other launchers, and the shortcut points at THIS.
-const VISIBLE = path.join(HOME, 'Desktop', '.launchers', 'OL Premiere Lab')
-const VISIBLE_EXE = path.join(VISIBLE, EXE_NAME)
-const SHORTCUT = path.join(HOME, 'Desktop', 'OL Premiere Lab.lnk')
+/** Places an older build of this script left the lab. Cleared on every run. */
+const STRAYS = [
+  path.join(HOME, 'Desktop', 'OL Premiere Lab.lnk'),
+  path.join(HOME, 'Desktop', '.launchers', 'OL Premiere Lab'),
+  path.join(HOME, 'Documents', 'OL Premiere Lab Backups'),
+]
 
 /**
  * Run a command, inheriting stdio, and reject on a non-zero exit.
@@ -81,30 +95,24 @@ async function main() {
     '-c.extraMetadata.productName=OL Premiere Lab',
     '-c.extraMetadata.name=ol-premiere-lab',
     '-c.appId=com.olpremiere.lab',
+    '-c.win.executableName=olp-bench',
     `-c.directories.output=${OUT}`,
   ])
 
   const built = path.join(APP_DIR, EXE_NAME)
   if (!existsSync(built)) throw new Error(`lab: expected an app at ${built} and there is none`)
 
-  console.log('lab: copying it somewhere he can see')
-  if (existsSync(VISIBLE)) rmSync(VISIBLE, { recursive: true, force: true })
-  mkdirSync(path.dirname(VISIBLE), { recursive: true })
-  cpSync(APP_DIR, VISIBLE, { recursive: true })
-  if (!existsSync(VISIBLE_EXE)) throw new Error(`lab: the copy did not land at ${VISIBLE_EXE}`)
+  // Every run, not just the first: a stale shortcut from an older build must
+  // never outlive the rule above.
+  for (const stray of STRAYS) {
+    if (existsSync(stray)) {
+      rmSync(stray, { recursive: true, force: true })
+      console.log(`lab: cleared a stray copy at ${stray}`)
+    }
+  }
 
-  console.log('lab: putting a shortcut on his Desktop')
-  const ps = [
-    '$s = (New-Object -ComObject WScript.Shell).CreateShortcut(' + JSON.stringify(SHORTCUT) + ')',
-    '$s.TargetPath = ' + JSON.stringify(VISIBLE_EXE),
-    '$s.WorkingDirectory = ' + JSON.stringify(VISIBLE),
-    '$s.Description = "OL Premiere Lab: the bench copy. Separate projects, never auto-updates."',
-    '$s.Save()',
-  ].join('; ')
-  await run('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', `"${ps.replace(/"/g, '\\"')}"`])
-
-  console.log(`lab: ready at ${VISIBLE_EXE}`)
-  console.log(`lab: shortcut at ${SHORTCUT}`)
+  console.log(`lab: ready at ${built}`)
+  console.log('lab: nothing of his points at it, launch it by path')
 }
 
 main().catch((err) => {
