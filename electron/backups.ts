@@ -35,9 +35,24 @@ const KEEP = 40
  * not a backup. userData is exactly what gets renamed, swept, reset by a
  * reinstall, or wiped when a profile goes wrong: the folder this whole feature
  * exists because of. Documents is somewhere the user can find, copy, and sync.
+ *
+ * ⛔ A THROWAWAY PROFILE GETS ITS OWN FOLDER, AND THIS IS NOT A DETAIL.
+ *
+ * `--user-data-dir` moves the saved projects somewhere disposable, which is how
+ * the test harnesses and the lab build keep away from his editor. It does NOT
+ * move Documents. So every automated run was writing its fixture backups into
+ * HIS backup folder, and with a rotation of forty the fixtures pushed his real
+ * ones out: on 2026-08-19 roughly half of what was left in there belonged to a
+ * caption harness rather than to him. A safety net that a test run can empty is
+ * not one. So the moment the profile is not the real one, the backups follow it
+ * instead, and his folder is only ever written by his app.
  */
 export function backupDir(): string {
-  return path.join(app.getPath('documents'), 'OL Premiere Backups')
+  const throwaway = process.argv.some((a) => a.startsWith('--user-data-dir='))
+  if (throwaway) return path.join(app.getPath('userData'), 'Backups')
+  // The lab is a second real app, so it keeps real backups, just not his.
+  const folder = `${app.getName()} Backups`
+  return path.join(app.getPath('documents'), folder)
 }
 
 /** `2026-07-26_1743-05_my-edit.olpbak`, which sorts chronologically and reads plainly. */

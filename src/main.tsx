@@ -16,7 +16,8 @@ import { initAutoBackup } from './state/autoBackup'
 import { checkIntegrity, integrityMessage } from './state/dataIntegrity'
 import { migrateRenamedKeys } from './state/keyMigration'
 import { loadLibrary } from './state/library'
-import { initPersistence } from './state/persistence'
+import { initPersistence, listProjects } from './state/persistence'
+import { recoverFromWipe } from './state/backupRestore'
 import { initSettings } from './state/settings'
 import { useStore } from './state/store'
 import { activeSequence, type MediaAsset } from './engine/types'
@@ -108,6 +109,15 @@ const work: BootWork = {
   integrity: async () => {
     // Only AFTER the document has hydrated, or an empty boot placeholder would
     // look exactly like the failure this is here to detect.
+    // The recovery goes FIRST. A store that came up with nothing in it while
+    // forty backups sit on his disk is not something to report, it is something
+    // to undo, and he should never reach the empty shelf at all. It can only
+    // ever ADD a project, so the worst case is one he closes again.
+    const recovered = await recoverFromWipe(await listProjects()).catch((err: unknown) => {
+      console.warn('OL Premiere boot: could not check the backups', err)
+      return null
+    })
+    if (recovered) return { detail: `brought ${recovered.name} back, ${recovered.clipCount} clips` }
     const msg = integrityMessage(await checkIntegrity())
     if (msg) useToasts.getState().show(msg, 'danger')
   },

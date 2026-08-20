@@ -24,6 +24,7 @@ import { migrateProject, newId, type Project } from '../engine/types'
 import type { BackupFile } from './autoBackup'
 import { getBlob, saveProject } from './persistence'
 import { openProject } from './projectActions'
+import { doNotAutoRecover, markDoNotAutoRecover } from './recoveryMemory'
 import { useToasts } from './toasts'
 
 export interface BackupRow {
@@ -107,13 +108,7 @@ async function countLiveMedia(project: Project): Promise<{ have: number; missing
  * id would have them saving over each other, which is a worse bug than the one
  * being recovered from.
  */
-export async function restoreBackup(filePath: string): Promise<boolean> {
-  const contents = await readBackup(filePath)
-  if (!contents) {
-    useToasts.getState().show('That backup could not be read', 'danger')
-    return false
-  }
-  const { project } = contents
+async function landRestored(project: Project): Promise<Project | null> {
   const sequenceIdMap = new Map<string, string>()
   const sequences: Project['sequences'] = {}
   for (const [oldId, sq] of Object.entries(project.sequences ?? {})) {
@@ -142,8 +137,19 @@ export async function restoreBackup(filePath: string): Promise<boolean> {
   } catch (err) {
     console.error('OL Premiere: could not save the restored project', err)
     useToasts.getState().show('The recovered project could not be saved', 'danger')
+    return null
+  }
+  return restored
+}
+
+export async function restoreBackup(filePath: string): Promise<boolean> {
+  const contents = await readBackup(filePath)
+  if (!contents) {
+    useToasts.getState().show('That backup could not be read', 'danger')
     return false
   }
+  const restored = await landRestored(contents.project)
+  if (!restored) return false
 
   await openProject(restored.id)
 
@@ -161,4 +167,128 @@ export async function restoreBackup(filePath: string): Promise<boolean> {
       })
   }
   return true
+}
+
+// --- Opening blank when copies exist -----------------------------------------
+//
+// ⛔ THE APP MUST NEVER OPEN EMPTY WHILE HIS WORK IS SITTING ON THE DISK.
+//
+// 2026-08-19, the evening this was written. His editor opened with an empty
+// project list. The store had been rebuilt underneath the app: the browser
+// engine's database was thrown away and started again from nothing, which is a
+// thing it does on its own when it decides the files are unreadable, and no code
+// in this app can stop it or be told about it. What survived is what always
+// survives, the plain backup files, and forty of them were on his disk holding
+// an edit of a hundred and eighteen clips.
+//
+// The old integrity check had a hole exactly the shape of that night: it treated
+// an empty store as a NEW INSTALL and said nothing. An install with forty
+// backups behind it is not new. It has been wiped, and the difference is the
+// whole thing.
+//
+// So: nothing in storage, backups on the disk, put the newest one back before he
+// ever sees the empty shelf. It costs a second and it turns the worst moment the
+// app has into something he never notices happened.
+
+/** What was brought back, for the sentence he reads. */
+export interface WipeRecovery {
+  /** The biggest edit that came back, which is the one he is looking for. */
+  name: string
+  clipCount: number
+  assetCount: number
+  /** How many projects were put back in total. */
+  projectCount: number
+}
+
+/** Never put back more than this in one go, whatever the folder holds. */
+const MAX_RECOVERED = 12
+
+/**
+ * Bring back everything the wipe took, when storage came up with nothing in it.
+ *
+ * ⛔ EVERY PROJECT, NOT THE NEWEST FILE. A wipe does not take one project, it
+ * takes the store, so restoring only the most recent backup would hand him back
+ * whatever he happened to touch last and quietly leave the rest gone. On the
+ * night this was written the newest real file held a three clip test and the
+ * edit he actually wanted, a hundred and eighteen clips, was two files further
+ * down. So the folder is grouped by the id inside each file and the NEWEST file
+ * of each project is put back, which is the same set the store held.
+ *
+ * Returns null in every case where the app should stay out of the way: he has
+ * work, there are no backups, the backups hold nothing, or these projects have
+ * been handed back once already.
+ *
+ * The emptiness test is deliberately about CONTENT rather than count. Boot
+ * creates a blank Untitled Project and the autosave writes it within a second,
+ * so by the time this runs a wiped store usually holds exactly one project with
+ * nothing in it. Counting rows would call that "not empty" and stay silent,
+ * which is the same silence that cost him the evening.
+ */
+export async function recoverFromWipe(
+  projects: readonly { clipCount: number; assetCount: number }[],
+): Promise<WipeRecovery | null> {
+  if (projects.some((p) => p.clipCount > 0 || p.assetCount > 0)) return null
+
+  const rows = await listBackups()
+  if (rows.length === 0) return null
+
+  // Newest first, so the first file seen for an id is the newest one it has.
+  const done = doNotAutoRecover()
+  const newestOf = new Map<string, BackupContents>()
+  for (const row of rows) {
+    const contents = await readBackup(row.path)
+    // Skip the blank ones. A wiped app writes its own empty project to a backup
+    // too, and handing that back would be theatre.
+    if (!contents || contents.clipCount === 0) continue
+    const id = contents.project.id
+    if (!id || done.has(id) || newestOf.has(id)) continue
+    newestOf.set(id, contents)
+    if (newestOf.size >= MAX_RECOVERED) break
+  }
+  if (newestOf.size === 0) return null
+
+  // Said BEFORE anything lands, and said plainly. Work reappearing on its own is
+  // only reassuring if he knows why it went and why it is back; unexplained is
+  // exactly how the app felt on the night this was written.
+  const n = newestOf.size
+  useToasts
+    .getState()
+    .show(
+      `Your ${n === 1 ? 'project was' : `${n} projects were`} missing when the app opened, so the latest backup${n === 1 ? '' : 's'} came back`,
+      'info',
+      undefined,
+      { durationMs: 12_000 },
+    )
+
+  // Biggest first, so the one he is looking for is the one left open.
+  const ordered = [...newestOf.values()].sort((a, b) => a.clipCount - b.clipCount)
+  const landed: { project: Project; contents: BackupContents }[] = []
+  for (const contents of ordered) {
+    const project = await landRestored(contents.project)
+    if (project) landed.push({ project, contents })
+  }
+  if (landed.length === 0) return null
+  markDoNotAutoRecover(landed.map((l) => l.contents.project.id))
+
+  const biggest = landed[landed.length - 1]
+  await openProject(biggest.project.id)
+
+  const { missing } = await countLiveMedia(biggest.project)
+  if (missing.length > 0) {
+    // Naming the files is the difference between a fixable problem and a mystery.
+    const head = missing.slice(0, 3).join(', ')
+    const rest = missing.length > 3 ? ` and ${missing.length - 3} more` : ''
+    useToasts
+      .getState()
+      .show(`${missing.length} media files need importing again: ${head}${rest}`, 'info', undefined, {
+        durationMs: 15_000,
+      })
+  }
+
+  return {
+    name: biggest.contents.project.name ?? 'Untitled Project',
+    clipCount: biggest.contents.clipCount,
+    assetCount: biggest.contents.assetCount,
+    projectCount: landed.length,
+  }
 }

@@ -3,6 +3,7 @@
 
 import { openDB, type IDBPDatabase } from 'idb'
 import { migrateProjectEffects } from '../engine/effects/migrate'
+import { markDoNotAutoRecover } from './recoveryMemory'
 import { planSequenceSplit } from './sequenceSplit'
 import { useToasts } from './toasts'
 import { migrateProject, type Project } from '../engine/types'
@@ -264,6 +265,11 @@ export async function deleteProject(id: string): Promise<void> {
   const last = (await meta.get('lastProjectId')) as string | undefined
   if (last === id) void meta.delete('lastProjectId')
   await tx.done
+  // The backup files outlive the project, on purpose, so the automatic recovery
+  // has to be told this one went deliberately. A wipe and a clear-out look
+  // identical from the outside, and an app that puts back work he binned would
+  // be arguing with him rather than protecting him.
+  markDoNotAutoRecover([id])
 }
 
 /**

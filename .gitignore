@@ -16,7 +16,6 @@ e2e/.fixtures/
 out/
 release/
 # The bench copy of the app. Built on demand by scripts/lab.mjs, never shipped.
-release-lab/
 vendor/ffmpeg/
 
 # Release token (never committed). Put GH_TOKEN=... here to auto-publish updates.

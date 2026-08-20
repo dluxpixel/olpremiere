@@ -32,7 +32,14 @@ vi.mock('./toasts', () => ({
   useToasts: { getState: () => ({ show: (text: string, kind = 'info') => void toasts.push({ text, kind }) }) },
 }))
 
-const { readBackup, restoreBackup } = await import('./backupRestore')
+/** Backups keyed by path, for the tests that need more than one file on disk. */
+let backupFiles: Record<string, string> = {}
+let backupRows: { path: string; name: string; modifiedMs: number; sizeBytes: number }[] = []
+/** The one thing the auto recovery remembers between boots. */
+const store = new Map<string, string>()
+
+const { readBackup, restoreBackup, recoverFromWipe } = await import('./backupRestore')
+const { markDoNotAutoRecover } = await import('./recoveryMemory')
 
 const backupOf = (project: unknown, mediaNames: Record<string, string> = {}) =>
   JSON.stringify({ kind: 'ol-premiere-backup', version: 1, savedAt: '', appVersion: 'desktop', project, mediaNames })
@@ -73,8 +80,18 @@ beforeEach(() => {
   toasts.length = 0
   liveBlobKeys = new Set(['blob-1'])
   backupText = backupOf(projectFixture())
+  backupFiles = {}
+  backupRows = []
+  store.clear()
   ;(globalThis as { window?: unknown }).window = {
-    api: { backupRead: () => Promise.resolve(backupText), backupList: () => Promise.resolve([]) },
+    api: {
+      backupRead: (p: string) => Promise.resolve(backupFiles[p] ?? backupText),
+      backupList: () => Promise.resolve(backupRows),
+    },
+    localStorage: {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, v),
+    },
   }
 })
 
@@ -143,5 +160,128 @@ describe('recovering never destroys', () => {
     expect(await restoreBackup('C:/backups/broken.olpbak')).toBe(false)
     expect(saved).toHaveLength(0)
     expect(opened).toHaveLength(0)
+  })
+})
+
+// --- Opening blank while the copies are on the disk ---------------------------
+
+describe('the app never opens empty while his backups exist', () => {
+  const rows = (...paths: string[]) =>
+    paths.map((p, i) => ({ path: p, name: p, modifiedMs: 1000 - i, sizeBytes: 10 }))
+
+  /** Storage as `listProjects` reports it: an empty store, or one blank project. */
+  const emptyStore = [{ clipCount: 0, assetCount: 0 }]
+
+  beforeEach(() => {
+    store.clear()
+  })
+
+  it('brings the newest real backup back when storage came up with nothing', async () => {
+    backupFiles = { 'C:/b/new.olpbak': backupOf(projectFixture({ name: 'Pear' })) }
+    backupRows = rows('C:/b/new.olpbak')
+    const got = await recoverFromWipe(emptyStore)
+    expect(got).toEqual({ name: 'Pear', clipCount: 1, assetCount: 1, projectCount: 1 })
+    expect(saved).toHaveLength(1)
+    expect(saved[0].name).toBe('Pear (recovered)')
+  })
+
+  /** Two clips on one track, so this project is plainly the bigger of the two. */
+  const bigFixture = (over: Record<string, unknown> = {}) => {
+    const base = projectFixture(over) as { sequences: Record<string, { tracks: { clips: unknown[] }[] }> }
+    const track = Object.values(base.sequences)[0].tracks[0]
+    track.clips = [...track.clips, { id: 'c2', assetId: 'a1', startS: 6, inS: 0, outS: 5, speed: 1, effects: [] }]
+    return base
+  }
+
+  it('brings back EVERY project the wipe took, not just the newest file', async () => {
+    backupFiles = {
+      'C:/b/small.olpbak': backupOf(projectFixture({ id: 'p-small', name: 'Test' })),
+      'C:/b/big.olpbak': backupOf(bigFixture({ id: 'p-big', name: 'The Short' })),
+    }
+    backupRows = rows('C:/b/small.olpbak', 'C:/b/big.olpbak')
+    const got = await recoverFromWipe(emptyStore)
+    expect(got?.projectCount).toBe(2)
+    expect(saved.map((p) => p.name).sort()).toEqual(['Test (recovered)', 'The Short (recovered)'])
+  })
+
+  it('leaves the BIGGEST edit open, because that is the one he is looking for', async () => {
+    backupFiles = {
+      'C:/b/small.olpbak': backupOf(projectFixture({ id: 'p-small', name: 'Test' })),
+      'C:/b/big.olpbak': backupOf(bigFixture({ id: 'p-big', name: 'The Short' })),
+    }
+    backupRows = rows('C:/b/small.olpbak', 'C:/b/big.olpbak')
+    const got = await recoverFromWipe(emptyStore)
+    expect(got?.name).toBe('The Short')
+    const bigOne = saved.find((p) => p.name === 'The Short (recovered)')!
+    expect(opened).toEqual([bigOne.id])
+  })
+
+  it('keeps only the NEWEST file of each project, never forty copies of one', async () => {
+    backupFiles = {
+      'C:/b/newer.olpbak': backupOf(projectFixture({ name: 'Pear now' })),
+      'C:/b/older.olpbak': backupOf(projectFixture({ name: 'Pear then' })),
+    }
+    backupRows = rows('C:/b/newer.olpbak', 'C:/b/older.olpbak')
+    const got = await recoverFromWipe(emptyStore)
+    expect(got?.projectCount).toBe(1)
+    expect(saved[0].name).toBe('Pear now (recovered)')
+  })
+
+  it('says WHY the work came back, before it comes back', async () => {
+    backupFiles = { 'C:/b/new.olpbak': backupOf(projectFixture()) }
+    backupRows = rows('C:/b/new.olpbak')
+    await recoverFromWipe(emptyStore)
+    expect(toasts[0].text).toContain('missing when the app opened')
+  })
+
+  it('stays out of the way when he already has work', async () => {
+    backupFiles = { 'C:/b/new.olpbak': backupOf(projectFixture()) }
+    backupRows = rows('C:/b/new.olpbak')
+    expect(await recoverFromWipe([{ clipCount: 12, assetCount: 4 }])).toBeNull()
+    expect(saved).toHaveLength(0)
+  })
+
+  it('treats media with no clips as work too, so an import in progress is not overwritten', async () => {
+    backupFiles = { 'C:/b/new.olpbak': backupOf(projectFixture()) }
+    backupRows = rows('C:/b/new.olpbak')
+    expect(await recoverFromWipe([{ clipCount: 0, assetCount: 3 }])).toBeNull()
+    expect(saved).toHaveLength(0)
+  })
+
+  it('does nothing on a genuinely new install, where there are no backups at all', async () => {
+    backupRows = []
+    expect(await recoverFromWipe(emptyStore)).toBeNull()
+    expect(toasts).toHaveLength(0)
+  })
+
+  it('skips the blank backups a wiped app writes about itself', async () => {
+    const blank = projectFixture({ assets: {}, sequences: { s: { id: 's', name: 'S', fps: 30, width: 1920, height: 1080, durationS: 0, markers: [], tracks: [] } }, activeSequenceId: 's' })
+    backupFiles = {
+      'C:/b/blank.olpbak': backupOf(blank),
+      'C:/b/real.olpbak': backupOf(projectFixture({ name: 'Pear' })),
+    }
+    backupRows = rows('C:/b/blank.olpbak', 'C:/b/real.olpbak')
+    const got = await recoverFromWipe(emptyStore)
+    expect(got?.name).toBe('Pear')
+    expect(saved).toHaveLength(1)
+  })
+
+  it('hands the same file back ONCE, so throwing away a recovery is respected', async () => {
+    backupFiles = { 'C:/b/new.olpbak': backupOf(projectFixture()) }
+    backupRows = rows('C:/b/new.olpbak')
+    expect(await recoverFromWipe(emptyStore)).not.toBeNull()
+    saved.length = 0
+    expect(await recoverFromWipe(emptyStore)).toBeNull()
+    expect(saved).toHaveLength(0)
+  })
+})
+
+describe('work he threw away himself stays thrown away', () => {
+  it('never hands back a project he deleted, however many backups it has', async () => {
+    backupFiles = { 'C:/b/gone.olpbak': backupOf(projectFixture({ id: 'binned', name: 'Binned' })) }
+    backupRows = [{ path: 'C:/b/gone.olpbak', name: 'gone', modifiedMs: 5, sizeBytes: 10 }]
+    markDoNotAutoRecover(['binned'])
+    expect(await recoverFromWipe([{ clipCount: 0, assetCount: 0 }])).toBeNull()
+    expect(saved).toHaveLength(0)
   })
 })

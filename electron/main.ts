@@ -127,6 +127,13 @@ function createSplash(): void {
     },
   })
   splashWindow = win
+  // The splash is the window he actually looks at while the app loads, so it is
+  // the FIRST thing that has to say which app this is. See the editor window for
+  // why the page does not get to override it.
+  if (IS_LAB) {
+    win.setTitle('OL Premiere Lab')
+    win.on('page-title-updated', (e) => e.preventDefault())
+  }
   win.once('ready-to-show', () => {
     // He may already be in the editor if this window was slow off a cold disk.
     if (entered) {
@@ -281,6 +288,12 @@ function createWindow(): void {
     },
   })
   mainWindow = win
+  // ⛔ AND THE PAGE DOES NOT GET TO ARGUE. The renderer sets `document.title`, and
+  // Electron follows it, so the lab came up on the taskbar reading "OL Premiere"
+  // like his real editor: two identical windows, one of them a bench copy, and no
+  // way to tell them apart at a glance. Which window is which is the entire point
+  // of building a second one.
+  if (IS_LAB) win.on('page-title-updated', (e) => e.preventDefault())
   // The editor window stays HIDDEN until the boot finishes, so while the app loads
   // he sees the small card on his desktop and nothing else. It opens MAXIMIZED,
   // not fullscreen, because an editor still needs its title bar and the taskbar.
