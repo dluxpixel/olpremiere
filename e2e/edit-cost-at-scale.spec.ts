@@ -202,6 +202,21 @@ test('the picture keeps up while it plays across a lot of cuts', async ({ page }
   await page.getByTestId('asset-card').dblclick()
   await expect(page.locator('[data-clip-kind="video"]').first()).toBeVisible()
 
+  // ⛔ ONE UNMEASURED WINDOW FIRST, for the same reason the drag test above takes
+  // an unmeasured drag. The FIRST row pays for the very first open and decode of
+  // the source, which the other two never pay again, so without this the
+  // smallest timeline is the only one being asked about a cold decoder.
+  //
+  // It read `20 cuts: 0/s, 200 cuts: 100/s, 800 cuts: 88.9/s` inside a ship on
+  // 2026-08-22 and `50.6/s, 42.9/s, 64.5/s` alone minutes later. A real
+  // regression gets WORSE with scale; zero at the smallest and fine at the
+  // largest is the instrument. **The assertion and the budget below are
+  // unchanged**, because loosening them would be hiding the very thing this test
+  // exists to catch.
+  await page.locator('[data-clip-kind="video"]').first().click()
+  await page.keyboard.press('Home')
+  await playHealth(page, 2500)
+
   const rows: string[] = []
   const perS: { clips: number; perS: number; wrongPct: number }[] = []
   for (const wanted of [10, 100, 400]) {

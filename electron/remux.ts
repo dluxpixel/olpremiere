@@ -34,13 +34,17 @@ let working = 0
 export const remuxBusy = (): boolean => working > 0
 
 /**
- * ⛔ THE OUTPUT IS **NOT** RETURNED WHOLE, AND THAT IS THE DIFFERENCE FROM THE
- * PROXY. A proxy is small by construction, so `finishProxy` can hand back one
- * ArrayBuffer. A remux is a LOSSLESS copy of his source, so a 6 GB capture comes
- * back as 6 GB: returning that whole would need it in memory twice, in main and
- * in the renderer, and the biggest captures, the ones that most need this, are
- * exactly the ones that would die. So the source streams IN as chunks and the
- * result is read back OUT as chunks, and peak memory is one chunk either way.
+ * ⛔ THE OUTPUT IS **NOT** RETURNED WHOLE. A remux is a LOSSLESS copy of his
+ * source, so a 6 GB capture comes back as 6 GB: returning that whole would need
+ * it in memory twice, in main and in the renderer, and the biggest captures, the
+ * ones that most need this, are exactly the ones that would die. So the source
+ * streams IN as chunks and the result is read back OUT as chunks, and peak
+ * memory is one chunk either way.
+ *
+ * ⛔ THIS USED TO SAY THE PROXY WAS DIFFERENT BECAUSE "a proxy is small by
+ * construction". It is not, and that sentence cost him every preview copy he
+ * never got: measured 2026-08-22, his own capture makes a 423 MB one. Both paths
+ * now read back in chunks and there is no difference left to explain.
  */
 interface Job {
   inPath: string
@@ -111,6 +115,17 @@ export async function readRemux(id: string, offset: number, length: number): Pro
   } finally {
     await handle.close().catch(() => undefined)
   }
+}
+
+/**
+ * Every job at once, because the renderer that owned them is gone.
+ *
+ * ⛔ A REMUX TEMP IS A FULL SIZE COPY OF HIS SOURCE, so one orphaned by a reload
+ * is gigabytes sitting on a drive he keeps close to full. `jobs` lives in main
+ * and outlives the page, and nothing can ever ask for those bytes again.
+ */
+export async function releaseAllRemuxes(): Promise<void> {
+  await Promise.all([...jobs.keys()].map((id) => releaseRemux(id)))
 }
 
 /** Done reading, or gave up. Never throws, and always removes both temps. */

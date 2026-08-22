@@ -28,7 +28,7 @@
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { constants as osConstants, setPriority } from 'node:os'
-import { mkdir, open, readFile, rm } from 'node:fs/promises'
+import { mkdir, open, rm, stat } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
 import path from 'node:path'
 import { sweepProxyDir } from './proxyTemp'
@@ -78,7 +78,20 @@ const PROXY_MAX_PIXELS = 1920 * 1080
 export const PROXY_MIN_HEIGHT = 540
 
 let building = 0
-/** True while any proxy transcode is running; the updater must not restart underneath one. */
+/**
+ * True while any preview copy is being MADE, and that starts at `beginProxy`,
+ * not at the transcode.
+ *
+ * ⛔ IT USED TO COUNT ONLY THE ffmpeg RUN, AND THE UPLOAD IS THE LONGER HALF.
+ * His source is 1.37 GB, which streams across in a hundred and seventy odd
+ * chunks before ffmpeg sees a byte, and during all of it this said "not busy".
+ * The updater applies itself once the machine has been quiet for five minutes,
+ * and quiet means no mouse and no keyboard: streaming a file is exactly that. So
+ * the one job that most needed to finish was the one most likely to be restarted
+ * out from under, and the startup sweep then deleted what it had got through.
+ * The same hole was found and closed for a held voice take; this is that hole
+ * again, one file over.
+ */
 export const proxyBusy = (): boolean => building > 0
 
 function proxyDir(): string {
@@ -93,10 +106,22 @@ function proxyDir(): string {
 // one chunk regardless of source size. The OUTPUT is returned whole, which is
 // safe because a proxy is small by construction.
 
+// ⛔ AND THE OUTPUT IS READ BACK IN CHUNKS TOO. "A proxy is small by
+// construction" was written here and in remux.ts as the reason this one file
+// could hand its result over whole, and MEASURED ON HIS OWN FOOTAGE, 2026-08-22,
+// IT IS NOT TRUE. His 4 minute 38 second 1080p60 capture is 1.37 GB and its
+// preview copy is 423 MB, because a keyframe every twelve frames on a sixty
+// frame source is five keyframes a second at full size. Handing that back whole
+// needs it alive four times at once: the Buffer read off disk, the copy out of
+// the pool, the message in flight, and the ArrayBuffer the renderer receives.
+// His store has held zero preview copies since July, which is exactly what this
+// costs. Reading it back the way remux already does keeps peak memory at one
+// chunk, so the copy the preview needs most is no longer the one that cannot
+// arrive.
 interface Upload {
   inPath: string
   outPath: string
-  handle: FileHandle
+  handle: FileHandle | null
 }
 const uploads = new Map<string, Upload>()
 
@@ -126,50 +151,97 @@ export async function beginProxy(): Promise<string> {
   const id = randomUUID()
   const inPath = path.join(dir, `in-${id}`)
   uploads.set(id, { inPath, outPath: path.join(dir, `out-${id}.mp4`), handle: await open(inPath, 'w') })
+  building++
   return id
 }
 
-/** Append one chunk of the source. */
+/**
+ * Append one chunk of the source.
+ *
+ * A null handle means the upload is already closed, which is a chunk arriving
+ * after `finishProxy` rather than a chunk for a job nobody knows. Both are the
+ * caller's bug and both must refuse rather than write into the finished file.
+ */
 export async function chunkProxy(id: string, bytes: ArrayBuffer): Promise<void> {
-  const up = uploads.get(id)
-  if (!up) throw new Error('proxy: unknown upload')
-  await up.handle.write(Buffer.from(bytes))
+  const handle = uploads.get(id)?.handle
+  if (!handle) throw new Error('proxy: unknown upload')
+  await handle.write(Buffer.from(bytes))
 }
 
 /**
- * Transcode what was uploaded and return the preview copy.
+ * Transcode what was uploaded and say how big the preview copy is.
  *
- * Runs to completion or throws, and always cleans up both temp files. The
- * caller decides what a failure means; here it must never be fatal, because a
- * missing proxy only means the preview reads the original, which is exactly
+ * Runs to completion or throws. The SOURCE temp goes immediately, because it is
+ * full size and keeping it for a failure nobody will read is how this folder ate
+ * 427 MB of his drive. The OUTPUT stays until `releaseProxy`, because the
+ * renderer still has to read it back a chunk at a time.
+ *
+ * The caller decides what a failure means; here it must never be fatal, because
+ * a missing proxy only means the preview reads the original, which is exactly
  * what it did before proxies existed.
  */
-export async function finishProxy(id: string): Promise<ArrayBuffer> {
+export async function finishProxy(id: string): Promise<{ size: number }> {
   const up = uploads.get(id)
-  if (!up) throw new Error('proxy: unknown upload')
-  uploads.delete(id)
-  building++
+  const handle = up?.handle
+  if (!up || !handle) throw new Error('proxy: unknown upload')
   try {
-    await up.handle.close()
+    await handle.close()
+    up.handle = null
     await runFfmpeg(up.inPath, up.outPath)
-    const out = await readFile(up.outPath)
-    // Copy out of the Buffer's pooled backing store: handing the pool itself
-    // across the IPC boundary would send whatever else shares that allocation.
-    return out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength) as ArrayBuffer
+    return { size: (await stat(up.outPath)).size }
   } finally {
-    building--
+    // The busy count is NOT dropped here. The renderer still has to read the
+    // copy back, and a restart during that loses the whole job just as surely as
+    // one during the transcode. It goes in `releaseProxy`, which is the end.
     await rm(up.inPath, { force: true }).catch(() => undefined)
-    await rm(up.outPath, { force: true }).catch(() => undefined)
   }
 }
 
-/** Abandon an upload (the renderer gave up, or a chunk failed). Never throws. */
-export async function cancelProxy(id: string): Promise<void> {
+/** Read one slice of the finished preview copy back. */
+export async function readProxy(id: string, offset: number, length: number): Promise<ArrayBuffer> {
+  const up = uploads.get(id)
+  if (!up) throw new Error('proxy: unknown upload')
+  const handle = await open(up.outPath, 'r')
+  try {
+    const buf = Buffer.alloc(length)
+    const { bytesRead } = await handle.read(buf, 0, length, offset)
+    // Copy out of the Buffer's pooled backing store: handing the pool itself
+    // across the IPC boundary would send whatever else shares that allocation.
+    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + bytesRead) as ArrayBuffer
+  } finally {
+    await handle.close().catch(() => undefined)
+  }
+}
+
+/**
+ * Done reading, or gave up part way. Never throws, and always removes both
+ * temps. This is also `cancelProxy`: abandoning an upload and finishing with a
+ * copy are the same tidying job, and two names for it is how one of them ends up
+ * missing a file.
+ */
+export async function releaseProxy(id: string): Promise<void> {
   const up = uploads.get(id)
   if (!up) return
   uploads.delete(id)
-  await up.handle.close().catch(() => undefined)
+  // Deleted first, so a second release cannot take the count below zero and
+  // leave the updater believing a job is running that ended long ago.
+  building--
+  await up.handle?.close().catch(() => undefined)
   await rm(up.inPath, { force: true }).catch(() => undefined)
+  await rm(up.outPath, { force: true }).catch(() => undefined)
+}
+
+/**
+ * Every job at once, because the renderer that owned them is gone.
+ *
+ * ⛔ A JOB OUTLIVES THE PAGE THAT STARTED IT. `uploads` lives in main, so a
+ * reload leaves its temps on disk until the next app start sweeps them, and now
+ * that the busy count runs for a whole job it would also leave the updater
+ * believing a copy is still being made. Neither is true: nothing can ever ask
+ * for those bytes again.
+ */
+export async function releaseAllProxies(): Promise<void> {
+  await Promise.all([...uploads.keys()].map((id) => releaseProxy(id)))
 }
 
 /**

@@ -28,8 +28,9 @@ const CHUNK_BYTES = 8 * 1024 * 1024
 interface ProxyApi {
   proxyBegin(): Promise<string>
   proxyChunk(id: string, bytes: ArrayBuffer): Promise<void>
-  proxyFinish(id: string): Promise<ArrayBuffer | null>
-  proxyCancel(id: string): Promise<void>
+  proxyFinish(id: string): Promise<{ size: number } | null>
+  proxyRead(id: string, offset: number, length: number): Promise<ArrayBuffer>
+  proxyRelease(id: string): Promise<void>
 }
 const desktop = (): ProxyApi | null => {
   const api = (globalThis as { api?: Partial<ProxyApi> & { isElectron?: boolean } }).api
@@ -37,23 +38,43 @@ const desktop = (): ProxyApi | null => {
 }
 
 /**
- * Stream one source across and get its preview copy back.
+ * Stream one source across and get its preview copy back, a chunk each way.
  *
  * Slices the Blob rather than reading it: `blob.slice()` is a view, so only the
  * chunk being sent is ever real bytes in the renderer. Reading a multi-gigabyte
  * capture into one ArrayBuffer first would defeat the whole arrangement.
+ *
+ * ⛔ AND THE COPY COMES BACK THE SAME WAY, WHICH IT DID NOT USED TO. This asked
+ * for the finished proxy as ONE ArrayBuffer on the belief that a proxy is small.
+ * Measured on his own capture, 2026-08-22: 1.37 GB in, **423 MB out**, so that
+ * one call needed the copy alive four times over, in main's read buffer, in the
+ * copy out of the pool, in the message, and here. His store has held zero
+ * preview copies since July.
+ *
+ * ⛔ EACH CHUNK BECOMES A Blob IMMEDIATELY, exactly as `remuxIfNeeded` does, and
+ * that is the whole point. Collecting the ArrayBuffers and wrapping them at the
+ * end reads like chunking but keeps every byte on the JS heap; wrapping each one
+ * as it lands puts the bytes in the browser's disk backed blob store and lets
+ * the buffer be collected.
  */
-async function transcode(api: ProxyApi, source: Blob): Promise<ArrayBuffer | null> {
+async function transcode(api: ProxyApi, source: Blob): Promise<Blob | null> {
   const id = await api.proxyBegin()
   try {
     for (let off = 0; off < source.size; off += CHUNK_BYTES) {
       await api.proxyChunk(id, await source.slice(off, off + CHUNK_BYTES).arrayBuffer())
     }
-  } catch (err) {
-    await api.proxyCancel(id).catch(() => undefined)
-    throw err
+    const done = await api.proxyFinish(id)
+    if (!done || done.size <= 0) return null
+    const parts: Blob[] = []
+    for (let off = 0; off < done.size; off += CHUNK_BYTES) {
+      parts.push(new Blob([await api.proxyRead(id, off, Math.min(CHUNK_BYTES, done.size - off))]))
+    }
+    return new Blob(parts, { type: 'video/mp4' })
+  } finally {
+    // Both temps go whether this worked or not. The source copy alone is full
+    // size, and this folder has already left 427 MB of his footage behind once.
+    await api.proxyRelease(id).catch(() => undefined)
   }
-  return api.proxyFinish(id)
 }
 
 /**
@@ -218,8 +239,8 @@ async function drain(): Promise<void> {
         const source = api ? await getBlob(asset.blobKey) : null
         if (!api || !source) continue
         const out = await transcode(api, source)
-        if (!out || out.byteLength === 0) continue
-        await putBlob(proxyKeyFor(asset.id), new Blob([out], { type: 'video/mp4' }))
+        if (!out || out.size === 0) continue
+        await putBlob(proxyKeyFor(asset.id), out)
         markReady(asset.id)
       } catch (err) {
         // Never fatal. No proxy just means the preview reads the original, which

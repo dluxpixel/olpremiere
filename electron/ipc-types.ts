@@ -123,15 +123,19 @@ export interface OlApi {
   nativeCancel(): Promise<void>
   /**
    * Build a short-GOP preview copy of a video, so the preview can jump around
-   * it instantly. The source streams over in chunks because his captures are
-   * gigabytes; the copy comes back whole because it is small by construction.
+   * it instantly. Both directions stream in chunks: his captures are gigabytes,
+   * and ⛔ **a preview copy is NOT small.** Measured on his own 1.37 GB capture,
+   * 2026-08-22: the copy is 423 MB, because a keyframe every twelve frames on
+   * sixty frame footage is five keyframes a second at full size.
    * `proxyFinish` resolves to null when no copy could be made, and the preview
    * then reads the original exactly as it did before proxies existed.
+   * `proxyRelease` must be called either way, or a temp stays on his drive.
    */
   proxyBegin(): Promise<string>
   proxyChunk(id: string, bytes: ArrayBuffer): Promise<void>
-  proxyFinish(id: string): Promise<ArrayBuffer | null>
-  proxyCancel(id: string): Promise<void>
+  proxyFinish(id: string): Promise<{ size: number } | null>
+  proxyRead(id: string, offset: number, length: number): Promise<ArrayBuffer>
+  proxyRelease(id: string): Promise<void>
   /**
    * Convert a recording Chromium cannot open (his OBS .mkv) into an MP4, once,
    * on import. The video is COPIED, so this is a container change at disk speed

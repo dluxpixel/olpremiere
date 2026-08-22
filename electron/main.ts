@@ -330,6 +330,22 @@ function createWindow(): void {
     if (!url.startsWith(target)) e.preventDefault()
   })
 
+  // ⛔ A PREVIEW COPY OR A CONVERSION OUTLIVES THE PAGE THAT STARTED IT, because
+  // both live in main. A reload leaves their temps on disk until the next app
+  // start sweeps them, and a remux temp is a FULL SIZE copy of his source. It
+  // would also leave the updater believing work is in flight that nothing can
+  // ever ask for again. The page going away is the moment they are certainly
+  // dead: this fires BEFORE the new page exists, so it can never take a job the
+  // new one started.
+  const dropOrphans = (): void => {
+    void proxy.releaseAllProxies()
+    void remux.releaseAllRemuxes()
+  }
+  win.webContents.on('did-start-navigation', (e) => {
+    if (e.isMainFrame && !e.isSameDocument) dropOrphans()
+  })
+  win.webContents.on('render-process-gone', dropOrphans)
+
   if (isDev) {
     void win.loadURL(DEV_URL!)
     // DevTools is OPT IN, not automatic. His words, 2026-08-08: "every time you reload and open
@@ -407,7 +423,7 @@ app.whenReady().then(() => {
   // logged and swallowed so an odd file cannot stop it being imported or edited.
   ipcMain.handle('proxy:begin', () => proxy.beginProxy())
   ipcMain.handle('proxy:chunk', (_e, id: string, bytes: ArrayBuffer) => proxy.chunkProxy(id, bytes))
-  ipcMain.handle('proxy:cancel', (_e, id: string) => proxy.cancelProxy(id))
+  ipcMain.handle('proxy:release', (_e, id: string) => proxy.releaseProxy(id))
   ipcMain.handle('proxy:finish', async (_e, id: string) => {
     try {
       return await proxy.finishProxy(id)
@@ -416,6 +432,10 @@ app.whenReady().then(() => {
       return null
     }
   })
+  // The copy is read back a chunk at a time, like a remux. See proxy.ts: his own
+  // footage makes a 423 MB preview copy, so the whole-buffer hand back this used
+  // to do was four live copies of it at once.
+  ipcMain.handle('proxy:read', (_e, id: string, offset: number, length: number) => proxy.readProxy(id, offset, length))
 
   // ⛔ A conversion is NOT optional the way a preview copy is. Without it his
   // .mkv cannot be imported at all, so a failure here must reach the renderer
