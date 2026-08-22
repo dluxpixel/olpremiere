@@ -22,7 +22,7 @@
 import { migrateProjectEffects } from '../engine/effects/migrate'
 import { migrateProject, newId, type Project } from '../engine/types'
 import type { BackupFile } from './autoBackup'
-import { getBlob, saveProject } from './persistence'
+import { deleteProject, getBlob, listProjects, loadProjectById, saveProject } from './persistence'
 import { openProject } from './projectActions'
 import { doNotAutoRecover, markDoNotAutoRecover } from './recoveryMemory'
 import { useToasts } from './toasts'
@@ -224,6 +224,57 @@ const MAX_RECOVERED = 12
  * nothing in it. Counting rows would call that "not empty" and stay silent,
  * which is the same silence that cost him the evening.
  */
+/**
+ * Clear away recovered projects that turned out to be nothing but a name.
+ *
+ * ⛔ THIS IS CLEANING UP AFTER MYSELF, NOT A FEATURE. On 2026-08-22 the recovery
+ * put six rows on his shelf, five of them caption harness projects whose media
+ * have never existed in his store, and it opened one of them over his own edit.
+ * The rule that stops it happening again is in `recoverFromWipe`; this is for the
+ * ones already sitting there, because leaving him to bin them by hand is handing
+ * him my mistake as a chore.
+ *
+ * ⛔ AND IT IS DELIBERATELY THE NARROWEST SWEEP THAT DOES THE JOB. All four must
+ * hold, and each one is there to stop it eating something real:
+ *  - the name ends in "(recovered)", so only the automatic restore's own output
+ *    is ever in scope
+ *  - it HAS assets and NONE of their bytes exist, so there is nothing to open
+ *  - `updatedAt` equals `createdAt`, so he has never touched it since it landed
+ *  - it is not the project currently open
+ *
+ * ⚠️ A real edit of his whose media were ALSO lost would match the first three,
+ * and deleting it would cost him the edit while leaving the useless media. That
+ * is why the store's own backups are untouched by this and why the fourth guard
+ * exists. It cannot fire on anything he has opened, named or edited.
+ */
+export async function sweepEmptyRecoveries(openId: string | null): Promise<number> {
+  const summaries = await listProjects()
+  let gone = 0
+  for (const s of summaries) {
+    if (s.id === openId) continue
+    if (!s.name?.endsWith('(recovered)')) continue
+    if (s.assetCount === 0) continue
+    if (s.updatedAt !== s.createdAt) continue
+    const project = await loadProjectById(s.id)
+    if (!project) continue
+    const { have } = await countLiveMedia(project)
+    if (have > 0) continue
+    await deleteProject(s.id)
+    gone += 1
+  }
+  if (gone > 0) {
+    useToasts
+      .getState()
+      .show(
+        `Cleared ${gone} recovered ${gone === 1 ? 'project that had' : 'projects that had'} no media left`,
+        'info',
+        undefined,
+        { durationMs: 8000 },
+      )
+  }
+  return gone
+}
+
 export async function recoverFromWipe(
   projects: readonly { clipCount: number; assetCount: number }[],
 ): Promise<WipeRecovery | null> {

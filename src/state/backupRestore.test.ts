@@ -15,12 +15,33 @@ let backupText = ''
 /** Blob keys that still have their bytes. Everything else counts as missing. */
 let liveBlobKeys = new Set<string>()
 
+/** The projects the store holds, for the sweep. */
+let shelf: Project[] = []
+const deleted: string[] = []
+
 vi.mock('./persistence', () => ({
   saveProject: (p: Project) => {
     saved.push(p)
     return Promise.resolve()
   },
   getBlob: (key: string) => Promise.resolve(liveBlobKeys.has(key) ? new Blob(['x']) : null),
+  listProjects: () =>
+    Promise.resolve(
+      shelf.map((p) => ({
+        id: p.id,
+        name: p.name,
+        updatedAt: p.updatedAt,
+        createdAt: p.createdAt,
+        assetCount: Object.keys(p.assets ?? {}).length,
+        clipCount: 0,
+      })),
+    ),
+  loadProjectById: (id: string) => Promise.resolve(shelf.find((p) => p.id === id) ?? null),
+  deleteProject: (id: string) => {
+    deleted.push(id)
+    shelf = shelf.filter((p) => p.id !== id)
+    return Promise.resolve()
+  },
 }))
 vi.mock('./projectActions', () => ({
   openProject: (id: string) => {
@@ -38,7 +59,7 @@ let backupRows: { path: string; name: string; modifiedMs: number; sizeBytes: num
 /** The one thing the auto recovery remembers between boots. */
 const store = new Map<string, string>()
 
-const { readBackup, restoreBackup, recoverFromWipe } = await import('./backupRestore')
+const { readBackup, restoreBackup, recoverFromWipe, sweepEmptyRecoveries } = await import('./backupRestore')
 const { markDoNotAutoRecover } = await import('./recoveryMemory')
 
 const backupOf = (project: unknown, mediaNames: Record<string, string> = {}) =>
@@ -357,5 +378,73 @@ describe('work he threw away himself stays thrown away', () => {
     markDoNotAutoRecover(['binned'])
     expect(await recoverFromWipe([{ clipCount: 0, assetCount: 0 }])).toBeNull()
     expect(saved).toHaveLength(0)
+  })
+})
+
+// ⛔ CLEANING UP AFTER AN EARLIER VERSION OF MYSELF. A restore before 2.23 handed
+// back projects whose media had never existed in this store, and his shelf ended
+// up with five he could not open and did not ask for. Leaving him to bin them by
+// hand would be handing him my mistake as a chore, and until 2.23 binning one
+// could also have taken the footage of the row beside it.
+describe('the recovered projects that turned out to be nothing get cleared away', () => {
+  const proj = (over: Partial<Project> & { id: string }): Project =>
+    ({
+      name: 'Untitled Project (recovered)',
+      createdAt: 100,
+      updatedAt: 100,
+      assets: { a1: { id: 'a1', name: 'x.wav', kind: 'audio', blobKey: 'gone', durationS: 1 } },
+      sequences: {},
+      ...over,
+    }) as unknown as Project
+
+  beforeEach(() => {
+    deleted.length = 0
+    toasts.length = 0
+    liveBlobKeys = new Set(['blob-1'])
+  })
+
+  it('clears a recovered project whose media are all missing', async () => {
+    shelf = [proj({ id: 'junk' })]
+    expect(await sweepEmptyRecoveries(null)).toBe(1)
+    expect(deleted).toEqual(['junk'])
+    expect(toasts[0].text).toContain('Cleared 1 recovered project')
+  })
+
+  it('never touches a project he named himself, however empty it looks', async () => {
+    shelf = [proj({ id: 'his', name: 'MY EDIT' })]
+    expect(await sweepEmptyRecoveries(null)).toBe(0)
+    expect(deleted).toEqual([])
+  })
+
+  it('never touches one whose media are still there', async () => {
+    shelf = [proj({ id: 'alive', assets: { a1: { id: 'a1', name: 'c.mp4', kind: 'video', blobKey: 'blob-1', durationS: 5 } } as unknown as Project['assets'] })]
+    expect(await sweepEmptyRecoveries(null)).toBe(0)
+    expect(deleted).toEqual([])
+  })
+
+  // ⛔ The guard that stops this ever eating a real edit whose media were also
+  // lost: he has opened or changed it since it landed.
+  it('never touches one he has touched since it landed', async () => {
+    shelf = [proj({ id: 'edited', updatedAt: 999 })]
+    expect(await sweepEmptyRecoveries(null)).toBe(0)
+    expect(deleted).toEqual([])
+  })
+
+  it('never closes the project he is looking at', async () => {
+    shelf = [proj({ id: 'open-one' })]
+    expect(await sweepEmptyRecoveries('open-one')).toBe(0)
+    expect(deleted).toEqual([])
+  })
+
+  it('leaves a recovered project that carries no media at all, because that is a title card edit', async () => {
+    shelf = [proj({ id: 'titles', assets: {} as Project['assets'] })]
+    expect(await sweepEmptyRecoveries(null)).toBe(0)
+    expect(deleted).toEqual([])
+  })
+
+  it('says nothing when there was nothing to clear', async () => {
+    shelf = []
+    expect(await sweepEmptyRecoveries(null)).toBe(0)
+    expect(toasts).toEqual([])
   })
 })

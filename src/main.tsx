@@ -17,7 +17,7 @@ import { checkIntegrity, integrityMessage } from './state/dataIntegrity'
 import { migrateRenamedKeys } from './state/keyMigration'
 import { loadLibrary } from './state/library'
 import { initPersistence, listProjects } from './state/persistence'
-import { recoverFromWipe } from './state/backupRestore'
+import { recoverFromWipe, sweepEmptyRecoveries } from './state/backupRestore'
 import { initSettings } from './state/settings'
 import { useStore } from './state/store'
 import { activeSequence, type MediaAsset } from './engine/types'
@@ -118,6 +118,17 @@ const work: BootWork = {
       return null
     })
     if (recovered) return { detail: `brought ${recovered.name} back, ${recovered.clipCount} clips` }
+    // ⛔ CLEANING UP AFTER AN EARLIER VERSION OF MYSELF. A restore before 2.23
+    // handed back projects whose media had never existed in this store, and his
+    // shelf ended up with five he could not open and did not ask for. The rule
+    // that stops it is in the recovery itself; this clears the ones already
+    // there, because leaving him to bin them is handing him my mistake as a job.
+    // It runs after the recovery so it can never race what that just landed.
+    const swept = await sweepEmptyRecoveries(useStore.getState().project?.id ?? null).catch((err: unknown) => {
+      console.warn('OL Premiere boot: could not clear the empty recoveries', err)
+      return 0
+    })
+    if (swept > 0) return { detail: `cleared ${swept} empty ${swept === 1 ? 'recovery' : 'recoveries'}` }
     const msg = integrityMessage(await checkIntegrity())
     if (msg) useToasts.getState().show(msg, 'danger')
   },
