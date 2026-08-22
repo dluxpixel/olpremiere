@@ -610,6 +610,15 @@ export function setPreviewSequenceHeight(h: number): void {
   if (previewScale >= 1) for (const id of [...entries.keys()]) evictAsset(id)
 }
 
-export function frameCacheStats(): { entries: number; assets: number } {
-  return { entries: cache.size, assets: entries.size }
+/**
+ * What the decoded-frame cache is actually holding.
+ *
+ * ⛔ `bytes` AND `budget` ARE HERE BECAUSE THE COUNT ALONE LIES. Measured on his
+ * own 44 clip edit, 2026-08-22: twenty scrub steps left the cache holding ONE
+ * frame against a 512 MB budget, and one entry is the exact signature of the
+ * LRU evicting down to its floor. Without the weight there is no way to tell
+ * that from "nothing was ever decoded", and those two want opposite fixes.
+ */
+export function frameCacheStats(): { entries: number; assets: number; bytes: number; budget: number } {
+  return { entries: cache.size, assets: entries.size, bytes: cache.bytes, budget: cache.budgetBytes }
 }
