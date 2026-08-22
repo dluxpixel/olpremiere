@@ -216,6 +216,80 @@ describe('the app never opens empty while his backups exist', () => {
     expect(opened).toEqual([bigOne.id])
   })
 
+  // ⛔ FOUND ON HIS SCREEN, 2026-08-22. He opened the app and got SIX rows all
+  // called "Untitled Project (recovered)", and the one that OPENED was a wall of
+  // caption harness fixtures a test run had left in his backups folder. Their
+  // media were imported into a throwaway profile and have never existed in his
+  // store, so each came back as a shell he cannot play, cannot export, and did
+  // not ask for.
+  it('leaves behind a project whose media are ALL gone, because there is no edit left to rescue', async () => {
+    backupFiles = {
+      'C:/b/his.olpbak': backupOf(projectFixture({ id: 'p-his', name: 'The Short' })),
+      'C:/b/junk.olpbak': backupOf(
+        bigFixture({ id: 'p-junk', name: 'harness', assets: { a1: { id: 'a1', name: '9-music-only-rigid-60s.wav', kind: 'audio', blobKey: 'gone', durationS: 60 } } }),
+      ),
+    }
+    backupRows = rows('C:/b/his.olpbak', 'C:/b/junk.olpbak')
+    const got = await recoverFromWipe(emptyStore)
+    expect(got?.projectCount).toBe(1)
+    expect(saved.map((p) => p.name)).toEqual(['The Short (recovered)'])
+  })
+
+  // Some missing media is a different thing: the edit took him hours and the
+  // files can be imported again.
+  it('still brings back a project that is only PARTLY missing its media', async () => {
+    backupFiles = {
+      'C:/b/part.olpbak': backupOf(
+        projectFixture({
+          id: 'p-part',
+          name: 'Half here',
+          assets: {
+            a1: { id: 'a1', name: 'clip.mp4', kind: 'video', blobKey: 'blob-1', durationS: 5 },
+            a2: { id: 'a2', name: 'gone.mp4', kind: 'video', blobKey: 'vanished', durationS: 5 },
+          },
+        }),
+      ),
+    }
+    backupRows = rows('C:/b/part.olpbak')
+    expect((await recoverFromWipe(emptyStore))?.projectCount).toBe(1)
+  })
+
+  // ⛔ It used to sort on clip count alone, which is exactly why a 122 clip
+  // harness timeline opened over his own 44 clip edit.
+  it('opens the one that most nearly WORKS, even when a deader project is longer', async () => {
+    backupFiles = {
+      'C:/b/his.olpbak': backupOf(projectFixture({ id: 'p-his', name: 'The Short' })),
+      'C:/b/halfdead.olpbak': backupOf(
+        bigFixture({
+          id: 'p-halfdead',
+          name: 'Mostly gone',
+          assets: {
+            a1: { id: 'a1', name: 'clip.mp4', kind: 'video', blobKey: 'blob-1', durationS: 5 },
+            a2: { id: 'a2', name: 'gone.mp4', kind: 'video', blobKey: 'vanished', durationS: 5 },
+          },
+        }),
+      ),
+    }
+    backupRows = rows('C:/b/his.olpbak', 'C:/b/halfdead.olpbak')
+    const got = await recoverFromWipe(emptyStore)
+    expect(got?.projectCount).toBe(2)
+    // Both have exactly one live file, so the longer one wins the tie as before.
+    expect(got?.name).toBe('Mostly gone')
+  })
+
+  it('counts what will actually come back, never what was found', async () => {
+    backupFiles = {
+      'C:/b/his.olpbak': backupOf(projectFixture({ id: 'p-his', name: 'The Short' })),
+      'C:/b/junk.olpbak': backupOf(
+        projectFixture({ id: 'p-junk', name: 'harness', assets: { a1: { id: 'a1', name: 'x.wav', kind: 'audio', blobKey: 'gone', durationS: 1 } } }),
+      ),
+    }
+    backupRows = rows('C:/b/his.olpbak', 'C:/b/junk.olpbak')
+    await recoverFromWipe(emptyStore)
+    expect(toasts[0].text).toContain('project was')
+    expect(toasts[0].text).not.toContain('2 projects')
+  })
+
   it('keeps only the NEWEST file of each project, never forty copies of one', async () => {
     backupFiles = {
       'C:/b/newer.olpbak': backupOf(projectFixture({ name: 'Pear now' })),

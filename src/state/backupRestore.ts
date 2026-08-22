@@ -247,10 +247,36 @@ export async function recoverFromWipe(
   }
   if (newestOf.size === 0) return null
 
+  // ⛔ A PROJECT WHOSE MEDIA ARE ALL GONE IS NOT RECOVERY, IT IS LITTER.
+  //
+  // FOUND ON HIS SCREEN, 2026-08-22. He opened the app and got SIX rows all
+  // called "Untitled Project (recovered)", and the one that opened was a wall of
+  // `9-music-only-rigid-60s.wav` and `1-speech-...`: caption HARNESS fixtures,
+  // which a test run had written into his backups folder before that was fixed.
+  // Their media were imported into a throwaway profile and have never existed in
+  // his store, so every one of them came back as a named shell he cannot play,
+  // cannot export, and did not ask for.
+  //
+  // Some missing media is still worth restoring, because the edit is the part
+  // that took him hours and the files can be imported again. NONE alive is a
+  // different thing entirely: there is no edit left to rescue, only a name.
+  const alive = new Map<BackupContents, number>()
+  const keep: BackupContents[] = []
+  for (const contents of newestOf.values()) {
+    const { have } = await countLiveMedia(contents.project)
+    const wanted = Object.values(contents.project.assets ?? {}).filter((a) => a?.blobKey).length
+    if (wanted > 0 && have === 0) continue
+    alive.set(contents, have)
+    keep.push(contents)
+  }
+  if (keep.length === 0) return null
+
   // Said BEFORE anything lands, and said plainly. Work reappearing on its own is
   // only reassuring if he knows why it went and why it is back; unexplained is
   // exactly how the app felt on the night this was written.
-  const n = newestOf.size
+  // ⛔ AND IT COUNTS WHAT WILL ACTUALLY COME BACK, not what was found. Saying six
+  // and landing one is worse than saying nothing.
+  const n = keep.length
   useToasts
     .getState()
     .show(
@@ -260,8 +286,11 @@ export async function recoverFromWipe(
       { durationMs: 12_000 },
     )
 
-  // Biggest first, so the one he is looking for is the one left open.
-  const ordered = [...newestOf.values()].sort((a, b) => a.clipCount - b.clipCount)
+  // ⛔ AND THE ONE LEFT OPEN IS THE ONE THAT MOST NEARLY WORKS, NOT THE LONGEST.
+  // This used to sort on clip count alone, which is why a 122 clip harness
+  // timeline opened over his own 44 clip edit. Live media first, clips only to
+  // break a tie.
+  const ordered = [...keep].sort((a, b) => (alive.get(a)! - alive.get(b)!) || a.clipCount - b.clipCount)
   const landed: { project: Project; contents: BackupContents }[] = []
   for (const contents of ordered) {
     const project = await landRestored(contents.project)
