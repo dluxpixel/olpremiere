@@ -240,6 +240,25 @@ interface AssetEntry {
 const cache = new FrameLru<CanvasImageSource>(CACHE_BUDGET_BYTES, frameBytes)
 const entries = new Map<Id, AssetEntry>()
 
+/**
+ * Running tallies, so a scrub can be asked what it DID rather than guessed at.
+ *
+ * ⛔ TWENTY SCRUB STEPS ACROSS HIS OWN EDIT LEFT ONE FRAME IN A 512 MB CACHE,
+ * 2026-08-22, holding 1.5 percent of its budget. That rules out eviction for
+ * size, and it leaves three stories that look identical from outside: frames
+ * were never decoded, they were decoded and stored under a key nothing ever asks
+ * for, or they were stored and then dropped. These separate the three in one
+ * run, and a hit rate near zero while the picture is being drawn means he is
+ * watching a held stale frame, which is exactly what "laggy" feels like.
+ */
+const tally = { hits: 0, misses: 0, stores: 0, lruDropped: 0, assetDropped: 0, decodes: 0, doneEarly: 0, noFramed: 0 }
+
+/** Cache a decoded frame, counting it and anything the LRU had to drop to fit. */
+function keep(key: string, canvas: CanvasImageSource): void {
+  tally.stores++
+  tally.lruDropped += cache.set(key, canvas).length
+}
+
 const cacheKey = (assetId: Id, index: number): string => `${assetId}:${index}`
 
 function ensureEntry(asset: MediaAsset): AssetEntry {
@@ -279,6 +298,7 @@ function closeIter(e: AssetEntry): void {
   }
   e.iterIdx = -1
 }
+
 
 async function openInput(e: AssetEntry): Promise<void> {
   const [{ ALL_FORMATS, BlobSource, CanvasSink: Sink, Input: MbInput }, { getBlob }] = await Promise.all([
@@ -333,6 +353,7 @@ function failAsset(e: AssetEntry, err: unknown): void {
  */
 async function decodeSequential(e: AssetEntry, idx: number): Promise<void> {
   if (!e.sink) return
+  tally.decodes++
   if (needsReopen(e.iterIdx, idx)) {
     closeIter(e)
     e.iter = e.sink.canvases(frameMidTimeS(idx, e.asset.fps))
@@ -346,20 +367,24 @@ async function decodeSequential(e: AssetEntry, idx: number): Promise<void> {
     if (r.done) {
       // Source exhausted before the target: the last decoded frame IS the
       // display at the target time (freeze on last), else mark no-frame.
-      if (prev) cache.set(targetKey, prev.canvas)
-      else e.noFrame.add(idx)
+      tally.doneEarly++
+      if (prev) keep(targetKey, prev.canvas)
+      else {
+        tally.noFramed++
+        e.noFrame.add(idx)
+      }
       closeIter(e)
       return
     }
     const w = r.value
     const wIdx = frameIndexAt(w.timestamp, e.asset.fps)
-    cache.set(cacheKey(e.asset.id, wIdx), w.canvas)
+    keep(cacheKey(e.asset.id, wIdx), w.canvas)
     e.iterIdx = wIdx + 1
     if (wIdx === idx) return // exact hit
     if (wIdx > idx) {
       // Overshot the nominal grid (sparse/VFR timestamps): the frame shown at
       // the target time is the last one before it, else clamp to the first.
-      cache.set(targetKey, (prev ?? w).canvas)
+      keep(targetKey, (prev ?? w).canvas)
       return
     }
     prev = w
@@ -436,7 +461,11 @@ export function getFrameAt(asset: MediaAsset, tS: number): CanvasImageSource | n
   try {
     const idx = frameIndexAt(tS, asset.fps)
     const hit = cache.get(cacheKey(asset.id, idx))
-    if (hit) return hit
+    if (hit) {
+      tally.hits++
+      return hit
+    }
+    tally.misses++
     request(asset, [idx], idx)
   } catch {
     // decode path must never break the draw loop
@@ -574,7 +603,10 @@ export function evictAsset(assetId: Id): void {
   }
   const prefix = `${assetId}:`
   for (const key of cache.keys()) {
-    if (key.startsWith(prefix)) cache.delete(key)
+    if (key.startsWith(prefix)) {
+      cache.delete(key)
+      tally.assetDropped++
+    }
   }
 }
 
@@ -619,6 +651,21 @@ export function setPreviewSequenceHeight(h: number): void {
  * LRU evicting down to its floor. Without the weight there is no way to tell
  * that from "nothing was ever decoded", and those two want opposite fixes.
  */
-export function frameCacheStats(): { entries: number; assets: number; bytes: number; budget: number } {
-  return { entries: cache.size, assets: entries.size, bytes: cache.bytes, budget: cache.budgetBytes }
+export function frameCacheStats(): Record<string, number> {
+  const live = [...entries.values()]
+  return {
+    entries: cache.size,
+    assets: entries.size,
+    bytes: cache.bytes,
+    budget: cache.budgetBytes,
+    ...tally,
+    // ⛔ THE TWO THAT SEPARATE "IDLE" FROM "STUCK". A pump holds `pumping` for
+    // its whole loop, so a pump that never returns blocks every later request
+    // from starting one: the queue grows and nothing drains it. Idle looks the
+    // same from the outside and wants the opposite fix.
+    pumping: live.filter((e) => e.pumping).length,
+    queued: live.reduce((n, e) => n + e.pending.length, 0),
+    decodingNow: live.filter((e) => e.decoding !== null).length,
+    failed: live.filter((e) => e.failed).length,
+  }
 }
