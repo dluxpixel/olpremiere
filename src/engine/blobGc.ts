@@ -31,6 +31,28 @@ const isProjectMediaKey = (key: string): boolean =>
  * so scanning `project.assets` is the whole reachable set. Clips carry only an
  * `assetId` and never a blob key of their own.
  */
+/**
+ * The media of `project` that no OTHER project still points at, so deleting the
+ * project cannot take bytes another one needs.
+ *
+ * ⛔ "PER PROJECT COPIES" STOPPED BEING TRUE THE DAY THE AUTOMATIC RECOVERY
+ * LANDED. `landRestored` gives a recovered project a fresh id and fresh sequence
+ * ids and keeps its ASSETS exactly as they were, same asset ids and same
+ * blobKeys. On 2026-08-22 that put six recovered projects on his shelf, several
+ * of them the same edit of his at different times, every one pointing at one set
+ * of bytes. Deleting any one row would have taken the media out from under his
+ * real 44 clip edit, and the row he would most want gone is exactly the one
+ * sharing with it.
+ */
+export function blobKeysOnlyUsedBy(project: Project, others: readonly Project[]): string[] {
+  const shared = new Set<string>()
+  for (const o of others) {
+    if (!o || o.id === project.id) continue
+    for (const key of reachableBlobKeys(o)) shared.add(key)
+  }
+  return [...reachableBlobKeys(project)].filter((k) => !shared.has(k))
+}
+
 export function reachableBlobKeys(project: Project): Set<string> {
   const keys = new Set<string>()
   for (const asset of Object.values(project.assets)) {

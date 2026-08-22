@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { orphanedBlobKeys, reachableBlobKeys } from './blobGc'
+import { blobKeysOnlyUsedBy, orphanedBlobKeys, reachableBlobKeys } from './blobGc'
 import type { MediaAsset, Project } from './types'
 
 // A minimal MediaAsset: only the fields blobGc reads (blobKey, thumbnailKey)
@@ -22,6 +22,42 @@ const project = (assets: MediaAsset[]): Project =>
   ({
     assets: Object.fromEntries(assets.map((a) => [a.id, a])),
   }) as Project
+
+// ⛔ THE ONE THAT PROTECTS HIS FOOTAGE. Deleting a project deletes its media, and
+// the automatic recovery keeps every restored project's asset ids and blobKeys
+// exactly as they were. On 2026-08-22 that put six recovered projects on his
+// shelf pointing at one set of bytes, so binning the junk row would have taken
+// his real 44 clip edit's media with it.
+describe('blobKeysOnlyUsedBy', () => {
+  const withId = (id: string, assets: MediaAsset[]): Project => ({ ...project(assets), id }) as Project
+
+  it('keeps every byte a surviving project still points at', () => {
+    const junk = withId('p-junk', [asset('shared'), asset('own')])
+    const his = withId('p-his', [asset('shared')])
+    expect(blobKeysOnlyUsedBy(junk, [his]).sort()).toEqual(['asset/own', 'thumb/own'])
+  })
+
+  it('deletes everything when nothing else points at any of it', () => {
+    const only = withId('p-only', [asset('a')])
+    expect(blobKeysOnlyUsedBy(only, []).sort()).toEqual(['asset/a', 'thumb/a'])
+  })
+
+  it('keeps a thumbnail another project shares even when the video is not shared', () => {
+    const going = withId('p-going', [asset('a', { thumbnailKey: 'thumb/shared' })])
+    const staying = withId('p-stay', [asset('b', { thumbnailKey: 'thumb/shared' })])
+    expect(blobKeysOnlyUsedBy(going, [staying])).toEqual(['asset/a'])
+  })
+
+  it('does not count the project against itself, however it is passed in', () => {
+    const p = withId('p-self', [asset('a')])
+    expect(blobKeysOnlyUsedBy(p, [p]).sort()).toEqual(['asset/a', 'thumb/a'])
+  })
+
+  it('survives a missing row in the list rather than throwing mid delete', () => {
+    const p = withId('p', [asset('a')])
+    expect(blobKeysOnlyUsedBy(p, [undefined as unknown as Project]).sort()).toEqual(['asset/a', 'thumb/a'])
+  })
+})
 
 describe('reachableBlobKeys', () => {
   it('includes both the blob key and thumbnail key of every asset', () => {

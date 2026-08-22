@@ -2,6 +2,7 @@
 // IndexedDB. Nothing ever leaves the machine.
 
 import { openDB, type IDBPDatabase } from 'idb'
+import { blobKeysOnlyUsedBy } from '../engine/blobGc'
 import { migrateProjectEffects } from '../engine/effects/migrate'
 import { markDoNotAutoRecover } from './recoveryMemory'
 import { planSequenceSplit } from './sequenceSplit'
@@ -248,18 +249,30 @@ export async function setProjectArchived(id: string, archived: boolean): Promise
  * Delete a project AND its media bytes. Blobs are per-project copies
  * ('asset/<id>', 'thumb/<id>'); the Library keeps its own 'lib/*' copies, so
  * this never touches saved Library media.
+ *
+ * ⛔ A BLOB ANOTHER PROJECT STILL POINTS AT IS NEVER DELETED, AND THAT IS NOT
+ * PARANOIA. "Per-project copies" stopped being true the moment the automatic
+ * recovery landed: `landRestored` gives the project a fresh id and fresh
+ * sequence ids but keeps its ASSETS exactly as they were, same asset ids and
+ * same blobKeys. On 2026-08-22 that put SIX recovered projects on his shelf,
+ * several of them the same edit of his at different times, all pointing at one
+ * set of bytes. Deleting any one of those rows would have taken the media out
+ * from under his real 44 clip edit, and the row he would most want to delete is
+ * exactly the one sharing with it.
+ *
+ * Reading every other project first costs one pass over a store that holds a
+ * handful of rows, against silently destroying the footage the app exists to
+ * protect.
  */
 export async function deleteProject(id: string): Promise<void> {
   const d = await db()
   const p = (await d.get('projects', id)) as Project | undefined
+  const others = ((await d.getAll('projects')) as Project[]).filter((o) => o?.id !== id)
   const tx = d.transaction(['projects', 'blobs', 'meta'], 'readwrite')
   void tx.objectStore('projects').delete(id)
   if (p) {
     const blobs = tx.objectStore('blobs')
-    for (const asset of Object.values(p.assets ?? {})) {
-      void blobs.delete(asset.blobKey)
-      if (asset.thumbnailKey) void blobs.delete(asset.thumbnailKey)
-    }
+    for (const key of blobKeysOnlyUsedBy(p, others)) void blobs.delete(key)
   }
   const meta = tx.objectStore('meta')
   const last = (await meta.get('lastProjectId')) as string | undefined
