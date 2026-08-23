@@ -57,6 +57,7 @@ import { saveNow } from './state/persistence'
 import { exportProjectToFile, openProjectFilePicker } from './state/projectFile'
 import { isRestartUnsafe } from './state/unloadGuard'
 import { updateActiveSequence, useStore, zoomIn, zoomOut } from './state/store'
+import { reloadAndCheckForUpdates } from './state/reloadApp'
 import { useToasts } from './state/toasts'
 import { APP_VERSION, LAST_SEEN_VERSION_KEY, checkForUpdate, displayVersion } from './appVersion'
 import { olApi } from './platform'
@@ -179,6 +180,12 @@ export function buildAppBindings(): Binding[] {
       // command palette too, and that was cut on 2026-08-17, so a key and the
       // tooltip on the button that shares it are the only two ways in. Both of
       // those buttons carry their shortcut in the tooltip for that reason. → D114
+      {
+        combo: 'f5',
+        description: 'Reload the app',
+        domain: 'project',
+        run: () => void reloadAndCheckForUpdates(),
+      },
       {
         combo: 'mod+shift+s',
         description: 'Back up project to a file',

@@ -75,6 +75,15 @@ beforeEach(() => {
 })
 
 describe('the central keymap', () => {
+  // His ask, 2026-08-23: *"Let's make F5 a button that refreshes the app."*
+  // Bound to the SAME action as the melon, which checks for an update first and
+  // declines to reload on top of one it found.
+  it('refreshes the app on F5', () => {
+    expect(combos()).toContain('f5')
+    const b = bindings().find((x) => x.combo === 'f5')
+    expect(b?.description).toBe('Reload the app')
+  })
+
   it('has no two bindings on the same combo', () => {
     const seen = new Map<string, string>()
     const clashes: string[] = []

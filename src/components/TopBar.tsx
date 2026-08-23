@@ -24,6 +24,7 @@ import { comboLabel } from '../keymap'
 import { exportProjectToFile, importProjectFromFile, registerProjectFilePicker } from '../state/projectFile'
 import { useStore } from '../state/store'
 import { useToasts } from '../state/toasts'
+import { reloadAndCheckForUpdates } from '../state/reloadApp'
 import { updateInHand, updateLine, useUpdateFeed } from '../state/updateStatus'
 import { canRecordVoice, closeStudio, openStudio, useRecorder } from '../state/voiceRecorder'
 import { Button, IconButton } from '../ui/Button'
@@ -197,21 +198,10 @@ function ReloadButton() {
       className={found ? 'text-accent!' : undefined}
       onClick={() => {
         setBusy(true)
-        const api = typeof window !== 'undefined' ? window.api : undefined
-        void Promise.resolve(api?.checkForUpdates?.())
-          .catch(() => {})
-          .then(() => {
-            setBusy(false)
-            // ⛔ DO NOT RELOAD ON TOP OF A FOUND UPDATE. This used to reload
-            // unconditionally, which is right when there is nothing to report
-            // and wrong the moment there is: it would throw away the bitten
-            // melon and the toast before he could see either, and restart the
-            // renderer underneath a download that is already running. Read
-            // fresh from the store rather than the closure, because the answer
-            // arrives DURING this promise.
-            if (updateInHand(useUpdateFeed.getState().status)) return
-            window.location.reload()
-          })
+        // ⛔ DO NOT RELOAD ON TOP OF A FOUND UPDATE, and do not keep a second
+        // copy of that rule here. `reloadAndCheckForUpdates` is the one
+        // implementation, shared with F5, which he asked for on 2026-08-23.
+        void reloadAndCheckForUpdates().finally(() => setBusy(false))
       }}
     >
       <MelonMark mono size={16} bite={found} className={popped ? 'melon-pop' : undefined} />
