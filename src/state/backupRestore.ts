@@ -22,6 +22,7 @@
 import { migrateProjectEffects } from '../engine/effects/migrate'
 import { migrateProject, newId, type Project } from '../engine/types'
 import type { BackupFile } from './autoBackup'
+import { mirroredIds } from './mediaMirror'
 import { deleteProject, getBlob, listProjects, loadProjectById, saveProject } from './persistence'
 import { openProject } from './projectActions'
 import { doNotAutoRecover, markDoNotAutoRecover } from './recoveryMemory'
@@ -87,14 +88,33 @@ export async function readBackup(filePath: string): Promise<BackupContents | nul
 }
 
 /** How many of this project's assets still have their bytes in local storage. */
-async function countLiveMedia(project: Project): Promise<{ have: number; missing: string[] }> {
+/**
+ * ⛔ IT ASKS THE DISK TOO, AND THAT IS THE WHOLE POINT.
+ *
+ * FOUND ON HIS MACHINE, 2026-08-23 17:50. The engine rebuilt its database under
+ * the running app for the second time in four days. The recovery woke up, read
+ * his backups, asked IndexedDB whether their media were still there, and got
+ * "no" for every asset of every project, because IndexedDB WAS the thing that
+ * had just been emptied. So the litter guard below threw away his 44 clip edit
+ * and his 118 clip edit as shells and handed him a blank app. His footage,
+ * 7.1 GB of it, was sitting in the mirror folder the entire time.
+ *
+ * The mirror is the second home that a rebuild cannot touch, so it is the only
+ * honest answer to "do these bytes still exist". Asking one store when there are
+ * two is how the recovery came to reject the exact case it was written for.
+ */
+async function countLiveMedia(
+  project: Project,
+  mirrored?: ReadonlySet<string>,
+): Promise<{ have: number; missing: string[] }> {
   const assets = Object.values(project.assets ?? {})
+  const onDisk = mirrored ?? (await mirroredIds())
   let have = 0
   const missing: string[] = []
   for (const a of assets) {
     if (!a?.blobKey) continue
     // Title and adjustment clips carry no media, so they are not counted either way.
-    if (await getBlob(a.blobKey)) have += 1
+    if ((await getBlob(a.blobKey)) || onDisk.has(a.id)) have += 1
     else missing.push(a.name ?? a.blobKey)
   }
   return { have, missing }
@@ -311,10 +331,14 @@ export async function recoverFromWipe(
   // Some missing media is still worth restoring, because the edit is the part
   // that took him hours and the files can be imported again. NONE alive is a
   // different thing entirely: there is no edit left to rescue, only a name.
+  // One listing for every project weighed below. His mirror is 7.1 GB across
+  // twenty three files and this decides whether he sees his edit or a blank app,
+  // so it is not somewhere to pay per asset.
+  const onDisk = await mirroredIds()
   const alive = new Map<BackupContents, number>()
   const keep: BackupContents[] = []
   for (const contents of newestOf.values()) {
-    const { have } = await countLiveMedia(contents.project)
+    const { have } = await countLiveMedia(contents.project, onDisk)
     const wanted = Object.values(contents.project.assets ?? {}).filter((a) => a?.blobKey).length
     if (wanted > 0 && have === 0) continue
     alive.set(contents, have)

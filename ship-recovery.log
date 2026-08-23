@@ -1,0 +1,280 @@
+
+> ol-premiere@2.31.0 patch
+> node scripts/patch.mjs fix(recovery): a wiped database no longer looks like lost footage, so his edits come back
+
+Releasing, because there are uncommitted changes in the tree.
+
+▶ typecheck (renderer)
+
+▶ typecheck (electron)
+
+▶ lint
+
+▶ unit tests
+
+[1m[46m RUN [49m[22m [36mv3.2.6 [39m[90mC:/Users/skyle/Desktop/ol-premiere[39m
+
+
+▶ package
+ [32m✓[39m src/engine/export/providerPool.test.ts [2m([22m[2m15 tests[22m[2m)[22m[32m 39[2mms[22m[39m
+ [32m✓[39m src/engine/render/titleRasterCache.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 48[2mms[22m[39m
+ [32m✓[39m _verify/quality/pattern.test.mjs [2m([22m[2m12 tests[22m[2m)[22m[32m 91[2mms[22m[39m
+
+⚠ package failed on what looks like a dropped connection, not a broken build.
+  Waiting 0s, then try 2 of 3.
+
+▶ package, try 2 of 3
+ [32m✓[39m src/engine/audioLimiter.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 223[2mms[22m[39m
+ [32m✓[39m src/engine/keyframes.test.ts [2m([22m[2m51 tests[22m[2m)[22m[32m 225[2mms[22m[39m
+ [32m✓[39m electron/mediaStore.test.ts [2m([22m[2m19 tests[22m[2m)[22m[32m 180[2mms[22m[39m
+ [32m✓[39m electron/proxy.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 120[2mms[22m[39m
+ [32m✓[39m src/engine/loudness.test.ts [2m([22m[2m19 tests[22m[2m)[22m[33m 369[2mms[22m[39m
+
+⚠ package failed on what looks like a dropped connection, not a broken build.
+  Waiting 0s, then try 3 of 3.
+
+▶ package, try 3 of 3
+ [32m✓[39m src/engine/render/resolve.test.ts [2m([22m[2m94 tests[22m[2m)[22m[32m 70[2mms[22m[39m
+ [32m✓[39m src/engine/previewTruth.test.ts [2m([22m[2m12 tests[22m[2m)[22m[32m 74[2mms[22m[39m
+ok
+
+▶ package
+ [32m✓[39m src/components/moveGlyph.test.ts [2m([22m[2m17 tests[22m[2m)[22m[32m 255[2mms[22m[39m
+ [32m✓[39m src/state/silenceActions.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 240[2mms[22m[39m
+ [32m✓[39m src/engine/captions/emphasis.test.ts [2m([22m[2m29 tests[22m[2m)[22m[32m 88[2mms[22m[39m
+ [32m✓[39m src/collab/sessionHandshake.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 69[2mms[22m[39m
+
+▶ package
+
+⚠ package failed on what looks like a dropped connection, not a broken build.
+  Waiting 0s, then try 2 of 3.
+
+▶ package, try 2 of 3
+ [32m✓[39m src/engine/timeStretch.test.ts [2m([22m[2m12 tests[22m[2m)[22m[33m 1177[2mms[22m[39m
+   [33m[2m✓[22m[39m timeStretchChannels[2m > [22mreads every channel from the SAME place, so a stereo image cannot smear [33m 409[2mms[22m[39m
+   [33m[2m✓[22m[39m timeStretchChannels keeps the hits[2m > [22mkeeps nearly every impact when he speeds gameplay up [33m 324[2mms[22m[39m
+ [32m✓[39m src/engine/moves.test.ts [2m([22m[2m45 tests[22m[2m)[22m[33m 721[2mms[22m[39m
+   [33m[2m✓[22m[39m matchMove: the lit tile is worked out, never remembered[2m > [22mnames every move back at every width, not just the four the sweep above walks [33m 516[2mms[22m[39m
+
+⚠ package failed on what looks like a dropped connection, not a broken build.
+  Waiting 0s, then try 3 of 3.
+
+▶ package, try 3 of 3
+ [32m✓[39m src/engine/audio.test.ts [2m([22m[2m51 tests[22m[2m)[22m[32m 191[2mms[22m[39m
+ [32m✓[39m src/engine/perfGuard.test.ts [2m([22m[2m5 tests[22m[2m)[22m[33m 892[2mms[22m[39m
+   [33m[2m✓[22m[39m perf guard: 200-clip sequence[2m > [22mresolveFrame stays under 0.55x the calibration while scrubbing [33m 391[2mms[22m[39m
+ [32m✓[39m src/engine/captions/transcribe.test.ts [2m([22m[2m40 tests[22m[2m)[22m[32m 54[2mms[22m[39m
+
+▶ package
+ [32m✓[39m src/state/captionEveryClip.test.ts [2m([22m[2m23 tests[22m[2m)[22m[32m 53[2mms[22m[39m
+ [32m✓[39m src/state/captionActions.test.ts [2m([22m[2m21 tests[22m[2m)[22m[33m 360[2mms[22m[39m
+   [33m[2m✓[22m[39m laying a caption run stays linear in the word count[2m > [22mlays 6000 words, about 40 minutes of talking, without the cost squaring [33m 320[2mms[22m[39m
+ [32m✓[39m src/engine/timeline.test.ts [2m([22m[2m307 tests[22m[2m)[22m[33m 437[2mms[22m[39m
+ [32m✓[39m src/engine/captions/captions.test.ts [2m([22m[2m50 tests[22m[2m)[22m[32m 36[2mms[22m[39m
+ [32m✓[39m src/ui/melon.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 40[2mms[22m[39m
+ [32m✓[39m scripts/lib.test.mjs [2m([22m[2m18 tests[22m[2m)[22m[33m 1592[2mms[22m[39m
+   [33m[2m✓[22m[39m runLoggedRetry[2m > [22mrides out a dropped connection and succeeds [33m 578[2mms[22m[39m
+   [33m[2m✓[22m[39m runLoggedRetry[2m > [22mgives up after the last try rather than looping forever [33m 565[2mms[22m[39m
+ [32m✓[39m src/engine/proxyMedia.test.ts [2m([22m[2m11 tests[22m[2m)[22m[33m 1672[2mms[22m[39m
+   [33m[2m✓[22m[39m the preview copy crosses in chunks, both ways[2m > [22mreads a big copy back in bounded slices and never in one call [33m 424[2mms[22m[39m
+   [33m[2m✓[22m[39m the preview copy crosses in chunks, both ways[2m > [22masks for the last slice SHORT, so a copy that is not a whole number of chunks is not over-read [33m 411[2mms[22m[39m
+   [33m[2m✓[22m[39m the preview copy crosses in chunks, both ways[2m > [22mreleases the temp even when no copy could be made, or a full sized one stays on his drive [33m 416[2mms[22m[39m
+   [33m[2m✓[22m[39m the preview copy crosses in chunks, both ways[2m > [22mnever transcodes a copy that already exists, whatever session built it [33m 413[2mms[22m[39m
+ [32m✓[39m src/state/mediaMirror.test.ts [2m([22m[2m17 tests[22m[2m)[22m[32m 31[2mms[22m[39m
+ [32m✓[39m src/collab/session.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 42[2mms[22m[39m
+ [32m✓[39m src/persistence/schema.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 25[2mms[22m[39m
+ [32m✓[39m src/state/backupRestore.test.ts [2m([22m[2m33 tests[22m[2m)[22m[32m 43[2mms[22m[39m
+ [32m✓[39m src/state/bulkEdits.test.ts [2m([22m[2m25 tests[22m[2m)[22m[32m 45[2mms[22m[39m
+ [32m✓[39m src/engine/effects/channels.test.ts [2m([22m[2m36 tests[22m[2m)[22m[32m 33[2mms[22m[39m
+ [32m✓[39m src/engine/export/audioMix.test.ts [2m([22m[2m57 tests[22m[2m)[22m[33m 994[2mms[22m[39m
+   [33m[2m✓[22m[39m mixToStereo[2m > [22mis deterministic: identical inputs give byte-identical output [33m 613[2mms[22m[39m
+ [32m✓[39m src/state/projectArchive.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 22[2mms[22m[39m
+ [32m✓[39m src/state/undoMerge.test.ts [2m([22m[2m35 tests[22m[2m)[22m[32m 62[2mms[22m[39m
+ [32m✓[39m src/engine/export/audioMixDucking.test.ts [2m([22m[2m4 tests[22m[2m)[22m[33m 1107[2mms[22m[39m
+   [33m[2m✓[22m[39m mixToStereo ducking[2m > [22mstays byte-deterministic with ducking active [33m 985[2mms[22m[39m
+ [32m✓[39m src/engine/sfx/sfx.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 28[2mms[22m[39m
+ [32m✓[39m src/engine/captions/styleProfile.test.ts [2m([22m[2m31 tests[22m[2m)[22m[32m 28[2mms[22m[39m
+ [32m✓[39m src/state/moveActions.test.ts [2m([22m[2m32 tests[22m[2m)[22m[33m 1195[2mms[22m[39m
+   [33m[2m✓[22m[39m a second move after the first[2m > [22mstops naming a pair once a diamond that carries its shape moves [33m 809[2mms[22m[39m
+ [32m✓[39m electron/proxyTemp.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 30[2mms[22m[39m
+ [32m✓[39m src/engine/effects/registry.test.ts [2m([22m[2m28 tests[22m[2m)[22m[32m 27[2mms[22m[39m
+ [32m✓[39m src/state/store.test.ts [2m([22m[2m7 tests[22m[2m)[22m[33m 2216[2mms[22m[39m
+   [33m[2m✓[22m[39m persisted motion preferences[2m > [22mboots on the default rather than on NaN when the stored anchor is junk [33m 829[2mms[22m[39m
+   [33m[2m✓[22m[39m persisted motion preferences[2m > [22mfalls back when the stored curve is not one of the six [33m 828[2mms[22m[39m
+ [32m✓[39m src/ui/bootSequence.test.ts [2m([22m[2m13 tests[22m[2m)[22m[32m 32[2mms[22m[39m
+ [32m✓[39m src/engine/beats.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 28[2mms[22m[39m
+ [32m✓[39m src/engine/motion.test.ts [2m([22m[2m16 tests[22m[2m)[22m[32m 28[2mms[22m[39m
+ [32m✓[39m src/state/keyframeRetime.test.ts [2m([22m[2m16 tests[22m[2m)[22m[32m 30[2mms[22m[39m
+ [32m✓[39m src/engine/anim/appearance.test.ts [2m([22m[2m27 tests[22m[2m)[22m[32m 26[2mms[22m[39m
+ [32m✓[39m src/engine/effects/ops.test.ts [2m([22m[2m34 tests[22m[2m)[22m[32m 19[2mms[22m[39m
+ [32m✓[39m src/state/myMoves.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 24[2mms[22m[39m
+ [32m✓[39m src/components/motionRuler.test.ts [2m([22m[2m30 tests[22m[2m)[22m[32m 27[2mms[22m[39m
+ [32m✓[39m src/state/motionKeys.test.ts [2m([22m[2m30 tests[22m[2m)[22m[32m 29[2mms[22m[39m
+ [32m✓[39m src/engine/recordMove.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 25[2mms[22m[39m
+ [32m✓[39m src/ui/bootProgress.test.ts [2m([22m[2m37 tests[22m[2m)[22m[32m 25[2mms[22m[39m
+ [32m✓[39m src/components/previewCap.test.ts [2m([22m[2m14 tests[22m[2m)[22m[32m 13[2mms[22m[39m
+ [32m✓[39m src/engine/frameCache.test.ts [2m([22m[2m42 tests[22m[2m)[22m[32m 20[2mms[22m[39m
+ [32m✓[39m src/engine/render/mat.test.ts [2m([22m[2m20 tests[22m[2m)[22m[32m 14[2mms[22m[39m
+ [32m✓[39m src/state/autoKeyframe.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 20[2mms[22m[39m
+ [32m✓[39m src/engine/preview.test.ts [2m([22m[2m26 tests[22m[2m)[22m[32m 21[2mms[22m[39m
+ [32m✓[39m src/components/pendingEdit.test.ts [2m([22m[2m19 tests[22m[2m)[22m[32m 17[2mms[22m[39m
+ [32m✓[39m src/state/voiceRecorder.test.ts [2m([22m[2m13 tests[22m[2m)[22m[32m 27[2mms[22m[39m
+ [32m✓[39m src/state/effectStack.test.ts [2m([22m[2m13 tests[22m[2m)[22m[32m 29[2mms[22m[39m
+ [32m✓[39m src/state/history.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 20[2mms[22m[39m
+ [32m✓[39m src/state/innerZoomEdits.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 27[2mms[22m[39m
+ [32m✓[39m src/state/trackTemplate.test.ts [2m([22m[2m21 tests[22m[2m)[22m[32m 47[2mms[22m[39m
+ [32m✓[39m _verify/quality/resample.test.mjs [2m([22m[2m14 tests[22m[2m)[22m[32m 24[2mms[22m[39m
+ [32m✓[39m src/engine/effects/migrate.test.ts [2m([22m[2m17 tests[22m[2m)[22m[32m 19[2mms[22m[39m
+ [32m✓[39m src/state/sfxActions.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 21[2mms[22m[39m
+ [32m✓[39m src/engine/actionScan.test.ts [2m([22m[2m12 tests[22m[2m)[22m[32m 17[2mms[22m[39m
+ [32m✓[39m src/state/textPresets.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 28[2mms[22m[39m
+ [32m✓[39m src/state/sequenceSplit.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 19[2mms[22m[39m
+ [32m✓[39m src/engine/export/nativeArgs.test.ts [2m([22m[2m21 tests[22m[2m)[22m[32m 22[2mms[22m[39m
+ [32m✓[39m src/state/attributes.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 22[2mms[22m[39m
+ [32m✓[39m src/state/motionActions.test.ts [2m([22m[2m14 tests[22m[2m)[22m[32m 34[2mms[22m[39m
+ [32m✓[39m src/state/recorderAutoPlay.test.ts [2m([22m[2m2 tests[22m[2m)[22m[33m 4699[2mms[22m[39m
+   [33m[2m✓[22m[39m the play-while-recording option survives a reload the right way round[2m > [22mis ON for an install that has never seen the option [33m 4693[2mms[22m[39m
+ [32m✓[39m src/engine/export/export.test.ts [2m([22m[2m36 tests[22m[2m)[22m[32m 24[2mms[22m[39m
+ [32m✓[39m src/engine/captions/voiceActivity.test.ts [2m([22m[2m16 tests[22m[2m)[22m[32m 19[2mms[22m[39m
+ [32m✓[39m src/state/relinkMedia.test.ts [2m([22m[2m14 tests[22m[2m)[22m[32m 18[2mms[22m[39m
+ [32m✓[39m src/engine/effects/brightness.test.ts [2m([22m[2m17 tests[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m src/state/lookActions.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 20[2mms[22m[39m
+ [32m✓[39m src/state/trackDelete.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 16[2mms[22m[39m
+ [32m✓[39m src/engine/moveOverwrite.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 13[2mms[22m[39m
+ [32m✓[39m src/engine/clipKeyframeTimes.test.ts [2m([22m[2m12 tests[22m[2m)[22m[32m 9[2mms[22m[39m
+ [32m✓[39m src/engine/render/titleFonts.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 12[2mms[22m[39m
+ [32m✓[39m src/collab/entities.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 13[2mms[22m[39m
+ [32m✓[39m src/state/freezeFrame.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 15[2mms[22m[39m
+ [32m✓[39m src/components/CurveEditor.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 18[2mms[22m[39m
+ [32m✓[39m electron/remuxArgs.test.ts [2m([22m[2m16 tests[22m[2m)[22m[32m 10[2mms[22m[39m
+ [32m✓[39m src/engine/blobGc.test.ts [2m([22m[2m20 tests[22m[2m)[22m[32m 14[2mms[22m[39m
+ [32m✓[39m src/state/appearanceBulk.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 10[2mms[22m[39m
+ [32m✓[39m src/engine/render/titleInkBox.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 15[2mms[22m[39m
+ [32m✓[39m src/engine/beatCache.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 17[2mms[22m[39m
+ [32m✓[39m src/engine/editPoints.test.ts [2m([22m[2m27 tests[22m[2m)[22m[32m 14[2mms[22m[39m
+ [32m✓[39m src/engine/snapPointCache.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m src/state/titleUndo.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 14[2mms[22m[39m
+ [32m✓[39m src/components/armedDelete.test.ts [2m([22m[2m12 tests[22m[2m)[22m[32m 13[2mms[22m[39m
+ [32m✓[39m src/engine/ducking.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m src/engine/effects/presets.test.ts [2m([22m[2m12 tests[22m[2m)[22m[32m 14[2mms[22m[39m
+ [32m✓[39m src/state/projectFile.test.ts [2m([22m[2m27 tests[22m[2m)[22m[32m 49[2mms[22m[39m
+[90mstdout[2m | electron/proxyTranscode.test.ts[2m > [22m[2ma preview copy actually gets made and comes back whole[2m > [22m[2mtranscodes a real source and returns it byte for byte, with a short GOP
+[22m[39mOL Premiere: preview copies are being built on the processor's built in graphics
+
+ [32m✓[39m src/ui/bootReveal.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 17[2mms[22m[39m
+ [32m✓[39m src/engine/workArea.test.ts [2m([22m[2m21 tests[22m[2m)[22m[32m 16[2mms[22m[39m
+ [32m✓[39m src/engine/effects/browsable.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m src/state/projectActions.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 17[2mms[22m[39m
+ [32m✓[39m src/engine/render/motionBlur.test.ts [2m([22m[2m12 tests[22m[2m)[22m[32m 13[2mms[22m[39m
+ [32m✓[39m src/engine/effects/addMenu.test.ts [2m([22m[2m12 tests[22m[2m)[22m[32m 16[2mms[22m[39m
+ [32m✓[39m src/engine/captions/transcript.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 17[2mms[22m[39m
+ [32m✓[39m src/engine/effects/search.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 15[2mms[22m[39m
+ [32m✓[39m src/state/keyMigration.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 15[2mms[22m[39m
+ [32m✓[39m src/components/MonitorTransformOverlay.test.ts [2m([22m[2m13 tests[22m[2m)[22m[32m 20[2mms[22m[39m
+ [32m✓[39m _verify/quality/imageMetrics.test.mjs [2m([22m[2m27 tests[22m[2m)[22m[32m 20[2mms[22m[39m
+ [32m✓[39m src/engine/export/exportPlan.test.ts [2m([22m[2m14 tests[22m[2m)[22m[32m 16[2mms[22m[39m
+ [32m✓[39m src/engine/render/titleRaster.test.ts [2m([22m[2m17 tests[22m[2m)[22m[32m 15[2mms[22m[39m
+ [32m✓[39m src/engine/render/transitionMissingSide.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 12[2mms[22m[39m
+ [32m✓[39m src/useLayoutSizes.test.ts [2m([22m[2m13 tests[22m[2m)[22m[32m 14[2mms[22m[39m
+ [32m✓[39m src/ui/bootCopy.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 12[2mms[22m[39m
+ [32m✓[39m src/engine/titleFontSize.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 13[2mms[22m[39m
+ [32m✓[39m src/engine/denoise.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 13[2mms[22m[39m
+ [32m✓[39m src/appVersion.test.ts [2m([22m[2m12 tests[22m[2m)[22m[32m 13[2mms[22m[39m
+ [32m✓[39m src/engine/captions/transcribeConfig.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 10[2mms[22m[39m
+ [32m✓[39m src/engine/silence.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 13[2mms[22m[39m
+ [32m✓[39m src/components/effectDrop.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 22[2mms[22m[39m
+ [32m✓[39m src/engine/transitionMarks.test.ts [2m([22m[2m12 tests[22m[2m)[22m[32m 13[2mms[22m[39m
+ [32m✓[39m src/engine/snapTransform.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 12[2mms[22m[39m
+ [32m✓[39m src/engine/actionFraming.test.ts [2m([22m[2m13 tests[22m[2m)[22m[32m 14[2mms[22m[39m
+ [32m✓[39m src/state/blobSweep.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 14[2mms[22m[39m
+ [32m✓[39m src/state/filmstripCache.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 13[2mms[22m[39m
+ [32m✓[39m src/engine/captions/musicGate.test.ts [2m([22m[2m19 tests[22m[2m)[22m[32m 23[2mms[22m[39m
+ [32m✓[39m src/engine/captions/voiceContext.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m src/engine/timecode.test.ts [2m([22m[2m12 tests[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m src/engine/render/spinCover.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 8[2mms[22m[39m
+ [32m✓[39m src/state/projectShelves.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m src/state/clipEditsGating.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 12[2mms[22m[39m
+ [32m✓[39m src/engine/render/dither.test.ts [2m([22m[2m16 tests[22m[2m)[22m[32m 9[2mms[22m[39m
+ [32m✓[39m src/components/keyframeMarks.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m src/collab/rebasedUndo.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 21[2mms[22m[39m
+ [32m✓[39m src/state/recentEffects.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 10[2mms[22m[39m
+ [32m✓[39m src/state/blurBackdropZoom.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 9[2mms[22m[39m
+ [32m✓[39m src/engine/probeFps.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m src/engine/render/magnify.test.ts [2m([22m[2m16 tests[22m[2m)[22m[32m 14[2mms[22m[39m
+ [32m✓[39m src/components/monitorSizing.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 9[2mms[22m[39m
+ [32m✓[39m src/state/effectFold.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 10[2mms[22m[39m
+ [32m✓[39m src/engine/waveform.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m src/splash/splashTiming.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m src/engine/render/transitionDurations.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 10[2mms[22m[39m
+ [32m✓[39m src/engine/repairLostAudioLinks.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 10[2mms[22m[39m
+ [32m✓[39m src/state/deleteAssetReleases.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m src/engine/export/audioFailure.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 12[2mms[22m[39m
+ [32m✓[39m src/engine/innerZoom.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 12[2mms[22m[39m
+ [32m✓[39m src/ui/loadingCardParity.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 12[2mms[22m[39m
+ [32m✓[39m src/engine/captions/trimTiming.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m src/state/updateStatus.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 13[2mms[22m[39m
+ [32m✓[39m src/state/appearanceSpeed.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 13[2mms[22m[39m
+ [32m✓[39m src/engine/playback.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 9[2mms[22m[39m
+ [32m✓[39m src/desktopInstall.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 8[2mms[22m[39m
+ [32m✓[39m src/engine/filmstrip.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 10[2mms[22m[39m
+ [32m✓[39m electron/backups.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 7[2mms[22m[39m
+ [32m✓[39m src/state/settings.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 8[2mms[22m[39m
+ [32m✓[39m src/engine/export/bitrate.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 9[2mms[22m[39m
+ [32m✓[39m src/components/headroom.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 7[2mms[22m[39m
+ [32m✓[39m src/keymap.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 9[2mms[22m[39m
+ [32m✓[39m src/state/dnd.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 8[2mms[22m[39m
+ [32m✓[39m electron/updateApply.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 9[2mms[22m[39m
+ [32m✓[39m src/components/scrollbarGuard.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 8[2mms[22m[39m
+ [32m✓[39m src/state/clipMenusAppearance.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 9[2mms[22m[39m
+ [32m✓[39m src/state/screenshot.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 7[2mms[22m[39m
+ [32m✓[39m src/components/EffectControls.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 9[2mms[22m[39m
+ [32m✓[39m electron/proxyTranscode.test.ts [2m([22m[2m1 test[22m[2m)[22m[33m 10232[2mms[22m[39m
+   [33m[2m✓[22m[39m a preview copy actually gets made and comes back whole[2m > [22mtranscodes a real source and returns it byte for byte, with a short GOP [33m 10229[2mms[22m[39m
+ [32m✓[39m src/engine/captions/styleStore.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 27[2mms[22m[39m
+ [32m✓[39m src/state/moveClipboard.test.ts [2m([22m[2m16 tests[22m[2m)[22m[32m 32[2mms[22m[39m
+ [32m✓[39m src/components/MoveShelf.test.tsx [2m([22m[2m4 tests[22m[2m)[22m[33m 1584[2mms[22m[39m
+   [33m[2m✓[22m[39m the second move, from the panel[2m > [22moffers the line on any move, and only once there is one [33m 412[2mms[22m[39m
+   [33m[2m✓[22m[39m the second move, from the panel[2m > [22mspends the arming on ONE click, and chains what he picks [33m 617[2mms[22m[39m
+   [33m[2m✓[22m[39m the second move, from the panel[2m > [22mtakes one half off and leaves the other [33m 333[2mms[22m[39m
+ [32m✓[39m src/components/ProjectsDialogBackups.test.tsx [2m([22m[2m4 tests[22m[2m)[22m[33m 687[2mms[22m[39m
+   [33m[2m✓[22m[39m the Recover shelf[2m > [22mrecovers the one he picks [33m 414[2mms[22m[39m
+ [32m✓[39m src/components/AddEffectMenu.test.tsx [2m([22m[2m10 tests[22m[2m)[22m[33m 3121[2mms[22m[39m
+   [33m[2m✓[22m[39m AddEffectMenu[2m > [22mstays open after the click that opened it [33m 399[2mms[22m[39m
+   [33m[2m✓[22m[39m AddEffectMenu[2m > [22mopens and closes ten times without missing one [33m 1286[2mms[22m[39m
+   [33m[2m✓[22m[39m AddEffectMenu[2m > [22msays so when nothing matches, instead of showing everything [33m 375[2mms[22m[39m
+ [32m✓[39m src/appKeymap.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 43[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m172 passed[39m[22m[90m (172)[39m
+[2m      Tests [22m [1m[32m2675 passed[39m[22m[90m (2675)[39m
+[2m   Start at [22m 18:14:51
+[2m   Duration [22m 20.45s[2m (transform 37.88s, setup 0ms, collect 141.20s, tests 37.62s, environment 24.91s, prepare 57.57s)[22m
+
+
+▶ web build
+[36mvite v6.4.3 [32mbuilding for production...[36m[39m
+transforming...
+[32m✓[39m 1985 modules transformed.
+rendering chunks...
+computing gzip size...
+[2mdist/[22m[32mindex.html                                            [39m[1m[2m     0.86 kB[22m[1m[22m[2m │ gzip:     0.43 kB[22m
+[2mdist/[22m[32massets/musicWorker-BzhK0c5c.js                        [39m[1m[2m     1.06 kB[22m[1m[22m
+[2mdist/[22m[32massets/transcribeWorker-DLh6jOp5.js                   [39m[1m[2m     2.42 kB[22m[1m[22m
+[2mdist/[22m[32massets/LilitaOne-Regular-DWEPn4H6.ttf                 [39m[1m[2m    28.09 kB[22m[1m[22m
+[2mdist/[22m[32massets/Monocraft-DA7zf1Uv.ttf                         [39m[1m[2m   210.19 kB[22m[1m[22m
+[2mdist/[22m[32massets/VersatileBold-JODLRRDa.ttf                     [39m[1m[2m   265.12 kB[22m[1m[22m
+[2mdist/[22m[32massets/exportWorker-VzVrix1d.js                       [39m[1m[2m   523.49 kB[22m[1m[22m
+[2mdist/[22m[32massets/transformers.web-zTrlc8P4.js                   [39m[1m[2m   557.80 kB[22m[1m[22m
+[2mdist/[22m[32massets/transformers.web-DrMYcrOt.js                   [39m[1m[2m   568.13 kB[22m[1m[22m
+[2mdist/[22m[32massets/Montserrat-Variable-BB6x-mlj.ttf               [39m[1m[2m   744.94 kB[22m[1m[22m
+[2mdist/[22m[32massets/ort-wasm-simd-threaded.asyncify-DMmc6YqF.wasm  [39m[1m[2m23,567.05 kB[22m[1m[22m[2m │ gzip: 5,757.04 kB[22m
+[2mdist/[22m[35massets/index-B69yzAj4.css                             [39m[1m[2m    58.50 kB[22m[1m[22m[2m │ gzip:    12.14 kB[22m
+[2mdist/[22m[36massets/blobSweep-CJwxsKvR.js                          [39m[1m[2m     0.92 kB[22m[1m[22m[2m │ gzip:     0.51 kB[22m
+[2mdist/[22m[36massets/index-DnvKdNca.js                              [39m[1m[33m   667.99 kB[39m[22m[2m │ gzip:   168.07 kB[22m
+[2mdist/[22m[36massets/index-1KV1qllc.js                              [39m[1m[33m   953.56 kB[39m[22m[2m │ gzip:   300.05 kB[22m
+[2mdist/[22m[36massets/rnnoise-s2Kj4xA3.js                            [39m[1m[33m 4,820.56 kB[39m[22m[2m │ gzip: 3,174.57 kB[22m
+[32m✓ built in 36.73s[39m
+
+▶ end to end
+
+Running 282 tests using 1 worker
+

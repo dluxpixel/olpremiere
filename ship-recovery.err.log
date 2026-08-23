@@ -1,0 +1,50 @@
+socket hang up
+socket hang up
+error TS2345: Argument of type
+socket hang up
+socket hang up
+socket hang up
+error TS2345: Argument of type
+[90mstderr[2m | src/state/mediaMirror.test.ts[2m > [22m[2mkeeping the second copy[2m > [22m[2mnever lets a disk failure break the import
+[22m[39mOL Premiere: could not keep a spare copy of this media Error: no disk
+    at Object.mediaBegin [90m(C:\Users\skyle\Desktop\ol-premiere\[39msrc\state\mediaMirror.test.ts:34:49[90m)[39m
+    at mirrorAsset [90m(C:\Users\skyle\Desktop\ol-premiere\[39msrc\state\mediaMirror.ts:89:21[90m)[39m
+    at [90mC:\Users\skyle\Desktop\ol-premiere\[39msrc\state\mediaMirror.test.ts:105:18
+    at [90mfile:///C:/Users/skyle/Desktop/ol-premiere/[39mnode_modules/[4m@vitest[24m/runner/dist/chunk-hooks.js:155:11
+    at [90mfile:///C:/Users/skyle/Desktop/ol-premiere/[39mnode_modules/[4m@vitest[24m/runner/dist/chunk-hooks.js:752:26
+    at [90mfile:///C:/Users/skyle/Desktop/ol-premiere/[39mnode_modules/[4m@vitest[24m/runner/dist/chunk-hooks.js:1897:20
+    at new Promise (<anonymous>)
+    at runWithTimeout [90m(file:///C:/Users/skyle/Desktop/ol-premiere/[39mnode_modules/[4m@vitest[24m/runner/dist/chunk-hooks.js:1863:10[90m)[39m
+    at runTest [90m(file:///C:/Users/skyle/Desktop/ol-premiere/[39mnode_modules/[4m@vitest[24m/runner/dist/chunk-hooks.js:1574:12[90m)[39m
+[90m    at processTicksAndRejections (node:internal/process/task_queues:105:5)[39m
+
+[90mstderr[2m | src/state/mediaMirror.test.ts[2m > [22m[2mputting his edit back on launch[2m > [22m[2msays WHY when it cannot even read the folder
+[22m[39mOL Premiere: could not read the spare media folder Error: EPERM
+    at Object.globalThis.api.mediaList [90m(C:\Users\skyle\Desktop\ol-premiere\[39msrc\state\mediaMirror.test.ts:185:22[90m)[39m
+    at healProjectMedia [90m(C:\Users\skyle\Desktop\ol-premiere\[39msrc\state\mediaMirror.ts:170:25[90m)[39m
+    at [90mC:\Users\skyle\Desktop\ol-premiere\[39msrc\state\mediaMirror.test.ts:186:21
+    at [90mfile:///C:/Users/skyle/Desktop/ol-premiere/[39mnode_modules/[4m@vitest[24m/runner/dist/chunk-hooks.js:155:11
+    at [90mfile:///C:/Users/skyle/Desktop/ol-premiere/[39mnode_modules/[4m@vitest[24m/runner/dist/chunk-hooks.js:752:26
+    at [90mfile:///C:/Users/skyle/Desktop/ol-premiere/[39mnode_modules/[4m@vitest[24m/runner/dist/chunk-hooks.js:1897:20
+    at new Promise (<anonymous>)
+    at runWithTimeout [90m(file:///C:/Users/skyle/Desktop/ol-premiere/[39mnode_modules/[4m@vitest[24m/runner/dist/chunk-hooks.js:1863:10[90m)[39m
+    at runTest [90m(file:///C:/Users/skyle/Desktop/ol-premiere/[39mnode_modules/[4m@vitest[24m/runner/dist/chunk-hooks.js:1574:12[90m)[39m
+[90m    at processTicksAndRejections (node:internal/process/task_queues:105:5)[39m
+
+[33m[plugin vite:reporter] 
+(!) C:/Users/skyle/Desktop/ol-premiere/src/state/persistence.ts is dynamically imported by C:/Users/skyle/Desktop/ol-premiere/src/collab/collabControl.ts, C:/Users/skyle/Desktop/ol-premiere/src/engine/frameCache.ts but also statically imported by C:/Users/skyle/Desktop/ol-premiere/src/App.tsx, C:/Users/skyle/Desktop/ol-premiere/src/collab/mediaSync.ts, C:/Users/skyle/Desktop/ol-premiere/src/components/LeftPanel.tsx, C:/Users/skyle/Desktop/ol-premiere/src/components/ProjectsDialog.tsx, C:/Users/skyle/Desktop/ol-premiere/src/engine/audio.ts, C:/Users/skyle/Desktop/ol-premiere/src/engine/export/index.ts, C:/Users/skyle/Desktop/ol-premiere/src/engine/export/nativeExport.ts, C:/Users/skyle/Desktop/ol-premiere/src/engine/proxyMedia.ts, C:/Users/skyle/Desktop/ol-premiere/src/main.tsx, C:/Users/skyle/Desktop/ol-premiere/src/state/appearanceActions.ts, C:/Users/skyle/Desktop/ol-premiere/src/state/autoBackup.ts, C:/Users/skyle/Desktop/ol-premiere/src/state/backupRestore.ts, C:/Users/skyle/Desktop/ol-premiere/src/state/blobSweep.ts, C:/Users/skyle/Desktop/ol-premiere/src/state/blobUrls.ts, C:/Users/skyle/Desktop/ol-premiere/src/state/dataIntegrity.ts, C:/Users/skyle/Desktop/ol-premiere/src/state/library.ts, C:/Users/skyle/Desktop/ol-premiere/src/state/mediaActions.ts, C:/Users/skyle/Desktop/ol-premiere/src/state/mediaMirror.ts, C:/Users/skyle/Desktop/ol-premiere/src/state/projectActions.ts, C:/Users/skyle/Desktop/ol-premiere/src/state/projectFile.ts, C:/Users/skyle/Desktop/ol-premiere/src/state/relinkMedia.ts, C:/Users/skyle/Desktop/ol-premiere/src/state/sfxActions.ts, dynamic import will not move module into another chunk.
+[39m
+[33m[plugin vite:reporter] 
+(!) C:/Users/skyle/Desktop/ol-premiere/src/engine/proxyMedia.ts is dynamically imported by C:/Users/skyle/Desktop/ol-premiere/src/main.tsx but also statically imported by C:/Users/skyle/Desktop/ol-premiere/src/components/Monitor.tsx, C:/Users/skyle/Desktop/ol-premiere/src/engine/frameCache.ts, C:/Users/skyle/Desktop/ol-premiere/src/engine/preview.ts, C:/Users/skyle/Desktop/ol-premiere/src/state/mediaActions.ts, dynamic import will not move module into another chunk.
+[39m
+[33m[plugin vite:reporter] 
+(!) C:/Users/skyle/Desktop/ol-premiere/src/collab/collabControl.ts is dynamically imported by C:/Users/skyle/Desktop/ol-premiere/src/state/clipEdits.ts, C:/Users/skyle/Desktop/ol-premiere/src/state/mediaActions.ts, C:/Users/skyle/Desktop/ol-premiere/src/state/silenceActions.ts but also statically imported by C:/Users/skyle/Desktop/ol-premiere/src/App.tsx, C:/Users/skyle/Desktop/ol-premiere/src/components/LeftPanel.tsx, C:/Users/skyle/Desktop/ol-premiere/src/components/PlayheadWidgets.tsx, C:/Users/skyle/Desktop/ol-premiere/src/components/TopBar.tsx, C:/Users/skyle/Desktop/ol-premiere/src/main.tsx, C:/Users/skyle/Desktop/ol-premiere/src/state/projectActions.ts, dynamic import will not move module into another chunk.
+[39m
+[33m[plugin vite:reporter] 
+(!) C:/Users/skyle/Desktop/ol-premiere/src/state/projectFile.ts is dynamically imported by C:/Users/skyle/Desktop/ol-premiere/src/state/persistence.ts but also statically imported by C:/Users/skyle/Desktop/ol-premiere/src/App.tsx, C:/Users/skyle/Desktop/ol-premiere/src/components/LeftPanel.tsx, C:/Users/skyle/Desktop/ol-premiere/src/components/TopBar.tsx, dynamic import will not move module into another chunk.
+[39m
+[33m
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.[39m

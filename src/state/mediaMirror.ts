@@ -53,6 +53,29 @@ export function mirrorApi(): MediaApi | null {
 }
 
 /**
+ * The asset ids whose bytes are in the folder outside the database.
+ *
+ * ⛔ THE ONE QUESTION THE RECOVERY HAD NO WAY TO ASK. Deciding whether a backup
+ * is worth handing back means asking whether its media still exist, and until
+ * now the only thing that could be asked was IndexedDB, the store that a
+ * rebuild has just emptied. So on the one morning the recovery exists for, every
+ * one of his projects looked like a shell with nothing behind it. His bytes were
+ * on the disk the whole time and nothing was allowed to look there.
+ *
+ * One listing, not one read per asset: this runs while he is staring at a blank
+ * app and his mirror is seven gigabytes.
+ *
+ * Never throws. A shell that cannot answer leaves the caller exactly where it
+ * was before this existed, which is the old behaviour and not a new failure.
+ */
+export async function mirroredIds(): Promise<Set<string>> {
+  const api = mirrorApi()
+  if (!api) return new Set()
+  const listing = await api.mediaList().catch(() => null)
+  return new Set((listing?.files ?? []).map((f) => f.id))
+}
+
+/**
  * Write one asset's bytes to the folder outside the database.
  *
  * Never throws and never blocks an import: a mirror that fails costs him the

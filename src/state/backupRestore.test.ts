@@ -104,6 +104,9 @@ beforeEach(() => {
   backupFiles = {}
   backupRows = []
   store.clear()
+  // No desktop shell unless a test asks for one, so the mirror stays out of the
+  // way of every case that is not about it.
+  delete (globalThis as { api?: unknown }).api
   ;(globalThis as { window?: unknown }).window = {
     api: {
       backupRead: (p: string) => Promise.resolve(backupFiles[p] ?? backupText),
@@ -359,6 +362,39 @@ describe('the app never opens empty while his backups exist', () => {
     const got = await recoverFromWipe(emptyStore)
     expect(got?.name).toBe('Pear')
     expect(saved).toHaveLength(1)
+  })
+
+  // ⛔ HIS MACHINE, 2026-08-23 17:50. The engine rebuilt its database under the
+  // running app and every blob key went unreachable at once. The recovery asked
+  // IndexedDB whether his media survived, got "no" for all of it because
+  // IndexedDB was the casualty, and binned his 44 clip edit and his 118 clip
+  // edit as empty shells. 7.1 GB of his footage was in the mirror folder the
+  // whole time. These two pin the difference.
+  it('hands back an edit whose blobs are gone but whose bytes are on disk', async () => {
+    liveBlobKeys = new Set()
+    ;(globalThis as { api?: unknown }).api = {
+      mediaBegin: () => Promise.resolve(true),
+      mediaRead: () => Promise.resolve(null),
+      mediaList: () => Promise.resolve({ dir: 'C:/m', files: [{ id: 'a1', size: 99 }] }),
+    }
+    backupFiles = { 'C:/b/his.olpbak': backupOf(projectFixture({ name: 'His edit' })) }
+    backupRows = rows('C:/b/his.olpbak')
+    const got = await recoverFromWipe(emptyStore)
+    expect(got?.name).toBe('His edit')
+    expect(saved).toHaveLength(1)
+  })
+
+  it('still bins a shell whose bytes are in neither store', async () => {
+    liveBlobKeys = new Set()
+    ;(globalThis as { api?: unknown }).api = {
+      mediaBegin: () => Promise.resolve(true),
+      mediaRead: () => Promise.resolve(null),
+      mediaList: () => Promise.resolve({ dir: 'C:/m', files: [] as { id: string; size: number }[] }),
+    }
+    backupFiles = { 'C:/b/junk.olpbak': backupOf(projectFixture({ name: 'harness' })) }
+    backupRows = rows('C:/b/junk.olpbak')
+    expect(await recoverFromWipe(emptyStore)).toBeNull()
+    expect(saved).toHaveLength(0)
   })
 
   it('hands the same file back ONCE, so throwing away a recovery is respected', async () => {
