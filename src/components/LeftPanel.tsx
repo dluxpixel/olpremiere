@@ -29,6 +29,7 @@ import { useCollab } from '../collab/collabControl'
 import { deleteAsset, importFiles, insertAssetAtPlayhead, useImportProgress } from '../state/mediaActions'
 import { importProjectFromFile, routeDroppedFiles } from '../state/projectFile'
 import { matchFilesToMissing, missingMedia, relink, relinkSummary, type MissingAsset } from '../state/relinkMedia'
+import { healProjectMedia } from '../state/mediaMirror'
 import { evictAsset } from '../engine/frameCache'
 import { invalidatePreview } from '../engine/preview'
 import { useToasts } from '../state/toasts'
@@ -398,11 +399,41 @@ function FindMyMedia() {
   const [busy, setBusy] = useState(false)
   const pick = useRef<HTMLInputElement>(null)
 
+  const [why, setWhy] = useState('')
+
   useEffect(() => {
     let live = true
-    void missingMedia(useStore.getState().project).then((m) => {
-      if (live) setMissing(m)
-    })
+    void (async () => {
+      const found = await missingMedia(useStore.getState().project)
+      if (!live || found.length === 0) {
+        if (live) setMissing([])
+        return
+      }
+      // ⛔ TRY THE SPARE COPIES BEFORE ASKING HIM FOR ANYTHING. The same repair
+      // runs at boot, and on 2026-08-23 it did not fire for him: he opened v2.27
+      // and got this banner instead of his edit. This is a SECOND, independent
+      // trigger, from a place that provably runs, because it only exists once the
+      // panel has mounted and the project is loaded. Whatever went wrong at boot,
+      // it does not get a second chance to cost him the day.
+      const healed = await healProjectMedia(useStore.getState().project)
+      if (!live) return
+      if (healed.healed.length > 0) {
+        useToasts
+          .getState()
+          .show(
+            `Put ${healed.healed.length} media ${healed.healed.length === 1 ? 'file' : 'files'} back on your edit`,
+            'success',
+            undefined,
+            { durationMs: 10_000 },
+          )
+        for (const a of Object.values(useStore.getState().project.assets)) evictAsset(a.id)
+        invalidatePreview()
+      }
+      // ⛔ AND IF IT COULD NOT, SAY WHY ON THE BANNER. A banner that only says
+      // "no media" with no reason is what he read as "you did nothing".
+      setWhy(healed.failure ?? '')
+      setMissing(await missingMedia(useStore.getState().project))
+    })()
     return () => {
       live = false
     }
@@ -417,6 +448,7 @@ function FindMyMedia() {
       <div className="mb-1.5">
         {missing.length} {missing.length === 1 ? 'file' : 'files'} on this edit have no media. Your cuts are all still
         here.
+        {why !== '' && <span className="mt-1 block text-text-muted">The spare copies could not be used: {why}</span>}
       </div>
       <Button
         variant="secondary"

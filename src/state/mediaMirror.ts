@@ -90,6 +90,14 @@ export interface HealResult {
   healed: string[]
   /** Assets the database had lost and the disk did not have either. */
   lost: string[]
+  /**
+   * Why the repair could not even look, in words.
+   *
+   * ⛔ A SILENT FAILURE IS THE ONE THING THIS MUST NEVER DO. He opened v2.27 to a
+   * banner saying his media was gone and nothing anywhere saying what had been
+   * tried, which cost another round of his patience.
+   */
+  failure?: string
 }
 
 /**
@@ -116,8 +124,22 @@ export async function healProjectMedia(
   if (missing.length === 0) return { healed, lost }
 
   // One listing, not one existence check per asset.
+  //
+  // ⛔ AND IF THE LISTING ITSELF FAILS, SAY SO. It used to swallow the error and
+  // return an empty map, which reads downstream as "nothing on disk" and puts
+  // every asset in `lost` with no reason attached anywhere. He opened v2.27 to a
+  // banner and no explanation, which is the worst possible way to find out.
   const onDisk = new Map<string, number>()
-  for (const m of await api.mediaList().catch(() => [])) onDisk.set(m.id, m.size)
+  try {
+    for (const m of await api.mediaList()) onDisk.set(m.id, m.size)
+  } catch (err) {
+    const why = err instanceof Error ? err.message : String(err)
+    console.warn('OL Premiere: could not read the spare media folder', err)
+    return { healed, lost: missing.map((a) => a.name ?? a.id), failure: `could not read the spare copies: ${why}` }
+  }
+  if (onDisk.size === 0) {
+    return { healed, lost: missing.map((a) => a.name ?? a.id), failure: 'there are no spare copies on this machine yet' }
+  }
 
   // ⛔ COUNT WHAT IS ACTUALLY GOING TO BE MOVED BEFORE MOVING ANY OF IT. His own
   // repair is 1.38 GB across twenty files, which is the better part of a minute,
@@ -125,8 +147,17 @@ export async function healProjectMedia(
   // his editor would read as "still broken".
   const toHeal: MediaAsset[] = []
   for (const a of missing) {
-    if (await getBlob(a.blobKey)) continue
-    toHeal.push(a)
+    // ⛔ ASKED PER ASSET, INSIDE A TRY. A store that has been rebuilt underneath
+    // the app can REJECT a read rather than answer null, and one throw here used
+    // to abandon the whole repair: he opened v2.27 and got the banner instead of
+    // his edit, with nothing on screen saying why.
+    let has = false
+    try {
+      has = (await getBlob(a.blobKey)) !== null
+    } catch {
+      has = false
+    }
+    if (!has) toHeal.push(a)
   }
   let done = 0
 

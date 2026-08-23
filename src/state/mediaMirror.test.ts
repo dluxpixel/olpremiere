@@ -176,6 +176,42 @@ describe('putting his edit back on launch', () => {
     expect(seen).toEqual([])
   })
 
+  // ⛔ HE OPENED v2.27 TO A BANNER SAYING HIS MEDIA WAS GONE AND NOTHING ANYWHERE
+  // SAYING WHAT HAD BEEN TRIED. A silent failure is the one thing this must never
+  // do.
+  it('says WHY when it cannot even read the folder', async () => {
+    fakeShell()
+    ;(globalThis as { api?: { mediaList: () => Promise<never> } }).api!.mediaList = () =>
+      Promise.reject(new Error('EPERM'))
+    const r = await healProjectMedia(p)
+    expect(r.healed).toEqual([])
+    expect(r.failure).toContain('EPERM')
+    expect(r.lost.sort()).toEqual(['clip.mp4', 'voice.webm'])
+  })
+
+  it('says so plainly when there are no spare copies yet, rather than nothing', async () => {
+    fakeShell()
+    const r = await healProjectMedia(p)
+    expect(r.failure).toBe('there are no spare copies on this machine yet')
+  })
+
+  // A rebuilt store can REJECT a read rather than answer null, and one throw used
+  // to abandon the whole repair.
+  it('carries on when the database THROWS instead of answering', async () => {
+    fakeShell()
+    disk.set('a', new Uint8Array(30))
+    disk.set('b', new Uint8Array(10))
+    blobs.set('asset/a', new Blob(['x']))
+    const real = blobs.get.bind(blobs)
+    vi.spyOn(blobs, 'get').mockImplementation((k: string) => {
+      if (k === 'asset/a') throw new Error('store is broken')
+      return real(k)
+    })
+    const r = await healProjectMedia(p)
+    vi.restoreAllMocks()
+    expect(r.healed.sort()).toEqual(['clip.mp4', 'voice.webm'])
+  })
+
   it('costs one listing, not one question per asset', async () => {
     fakeShell()
     blobs.set('asset/a', new Blob(['x']))
