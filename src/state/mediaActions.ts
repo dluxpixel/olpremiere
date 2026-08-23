@@ -9,6 +9,7 @@ import { evictAsset } from '../engine/frameCache'
 import { disposePreviewAsset } from '../engine/preview'
 import { ensureProxies, forgetProxy } from '../engine/proxyMedia'
 import { probeFile } from '../engine/probe'
+import { backfillMirror, mirrorApi } from './mediaMirror'
 import { canImport, remuxIfNeeded } from '../engine/remuxSource'
 import { addClipFromAsset, addClipWithLinkedAudio, recomputeDuration } from '../engine/timeline'
 import {
@@ -188,6 +189,11 @@ export async function importFiles(files: File[], opts?: ImportOptions): Promise<
     },
   }))
   show(opts?.successMessage ?? `Imported ${imported.length} file(s)`, 'success')
+  // ⛔ AND A SECOND COPY ON DISK, OUTSIDE THE DATABASE. On 2026-08-18 the engine
+  // threw its own IndexedDB away and his footage became unreachable: the bytes
+  // were still on the disk and nothing could name them. Nothing waits on this
+  // either, and a failure costs the safety net rather than the import.
+  void backfillMirror(useStore.getState().project)
   // Start the small preview copies in the background. Nothing waits on this: he
   // can cut immediately, and each clip's preview gets faster as its copy lands.
   ensureProxies(imported)
@@ -214,6 +220,8 @@ export function deleteAsset(assetId: Id): void {
     delete assets[assetId]
     return { ...p, assets, sequences }
   })
+  // The spare copy on disk goes with it, or the mirror would only ever grow.
+  void mirrorApi()?.mediaDelete(assetId).catch(() => undefined)
   // Release the decode resources keyed by this asset: the frameCache demuxer +
   // WebCodecs decoder and the pooled preview <video>/<img>. Without this they
   // stay open for the whole session (a hardware-decoder + memory leak across

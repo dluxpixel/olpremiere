@@ -15,6 +15,7 @@ import type { NativeExportConfig, UpdateStatus } from './ipc-types'
 import { SPLASH_MELON_POP_MS, SPLASH_MELON_PX, SPLASH_WINDOW_H, SPLASH_WINDOW_W } from './ipc-types'
 import * as native from './nativeExport'
 import * as proxy from './proxy'
+import * as mediaStore from './mediaStore'
 import * as remux from './remux'
 import { IDLE_POLL_MS, updateApplyDecision } from './updateApply'
 import electronUpdater from 'electron-updater'
@@ -367,6 +368,8 @@ app.whenReady().then(() => {
   // Same reason, and the stakes are higher: a remux temp is a FULL SIZE copy of
   // his source, not a downscaled preview, so one abandoned run is gigabytes.
   void remux.sweepRemuxTemps()
+  // Half written media mirrors from a run that died.
+  void mediaStore.sweepMediaTemps()
 
   // Serve the built renderer from out/renderer over app://. Read with the
   // asar-aware fs and set Content-Type ourselves so module workers + wasm load.
@@ -421,6 +424,16 @@ app.whenReady().then(() => {
 
   // A preview copy is an optimisation, never a requirement: a failure here is
   // logged and swallowed so an odd file cannot stop it being imported or edited.
+  // The media mirror: his footage as real files, so a rebuilt database cannot
+  // orphan it again. See electron/mediaStore.ts for why this exists at all.
+  ipcMain.handle('media:list', () => mediaStore.listMedia())
+  ipcMain.handle('media:begin', (_e, id: string) => mediaStore.beginMedia(id))
+  ipcMain.handle('media:chunk', (_e, id: string, bytes: ArrayBuffer) => mediaStore.chunkMedia(id, bytes))
+  ipcMain.handle('media:finish', (_e, id: string) => mediaStore.finishMedia(id))
+  ipcMain.handle('media:cancel', (_e, id: string) => mediaStore.cancelMedia(id))
+  ipcMain.handle('media:read', (_e, id: string, offset: number, length: number) => mediaStore.readMedia(id, offset, length))
+  ipcMain.handle('media:delete', (_e, id: string) => mediaStore.deleteMedia(id))
+
   ipcMain.handle('proxy:begin', () => proxy.beginProxy())
   ipcMain.handle('proxy:chunk', (_e, id: string, bytes: ArrayBuffer) => proxy.chunkProxy(id, bytes))
   ipcMain.handle('proxy:release', (_e, id: string) => proxy.releaseProxy(id))

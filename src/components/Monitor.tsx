@@ -373,7 +373,23 @@ export function Monitor() {
           row is clipped rather than allowed to spill, and the TIMECODE is the
           part that gives up room first, because a truncated timecode is
           readable and an icon painted through a label is not. */}
-      <div className="flex h-11 shrink-0 items-center justify-between gap-2 overflow-hidden border-t border-border bg-bg-panel px-3">
+      {/* ⛔ HIS ASK, 2026-08-23: *"Make the play fucking centered so when I make
+          the inspector bigger, it just makes the icon smaller. The play thing
+          should be always in the middle."*
+
+          THREE GRID COLUMNS, `1fr auto 1fr`, NOT absolute positioning. The two
+          side columns are given an EQUAL share of whatever is left, so the middle
+          column sits on the true centre of the bar at every width, and nothing is
+          taken out of flow. That last part is the whole reason the previous
+          attempt was reverted: an absolutely centred transport let the aspect
+          picker spill out of its own column and paint straight through the play
+          buttons. A grid column clips instead of spilling.
+
+          Both sides carry `min-w-0`, so as the inspector grows they give up room
+          and the controls narrow. The timecode is still the first thing to give,
+          because a truncated timecode is readable and an icon painted through a
+          label is not. */}
+      <div className="grid h-11 shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-2 overflow-hidden border-t border-border bg-bg-panel px-3">
         <div className="flex min-w-0 shrink items-center gap-2 overflow-hidden whitespace-nowrap">
           <span data-testid="timecode" className="font-numeric text-ui-sm text-text-primary">
             <PlayheadTimecode fps={seq.fps} editable testId="monitor-timecode" />
@@ -382,7 +398,7 @@ export function Monitor() {
           <ShuttleBadge />
         </div>
 
-        <div className="flex shrink-0 items-center gap-1">
+        <div className="flex shrink-0 items-center justify-self-center gap-1">
           <IconButton
             label="Go to start"
             shortcut="Home"
@@ -422,9 +438,10 @@ export function Monitor() {
           </IconButton>
         </div>
 
-        {/* `justify-end` rather than `ml-auto`: this is its own grid column now,
-            so it is pushed to the right by the column and not by a margin. */}
-        <div className="flex shrink-0 items-center gap-2">
+        {/* Its own grid column, so it is pushed right by the column and not by a
+            margin. `min-w-0` so it NARROWS as the inspector grows rather than
+            shoving the centre column off the middle, which is the whole ask. */}
+        <div className="flex min-w-0 items-center justify-self-end gap-2 overflow-hidden">
           {/* Left of the aspect picker, alongside the blur: the frame he can
               see is the frame it takes, at the sequence's own size. */}
           <IconButton

@@ -131,6 +131,23 @@ export interface OlApi {
    * then reads the original exactly as it did before proxies existed.
    * `proxyRelease` must be called either way, or a temp stays on his drive.
    */
+  /**
+   * His media as real files, mirrored OUTSIDE IndexedDB and keyed by asset id.
+   *
+   * ⛔ ON 2026-08-18 THE DATABASE THREW ITSELF AWAY AND TOOK THE ONLY COPY OF HIS
+   * FOOTAGE WITH IT. The bytes were still on his disk in Chromium's blob folder
+   * and nothing was left able to name them, so forty four cuts pointed at video
+   * the app could not reach and he stopped opening it for five days. This folder
+   * is the second home a rebuild cannot touch: written on import, read back when
+   * the database has lost its copy.
+   */
+  mediaList(): Promise<{ id: string; size: number }[]>
+  mediaBegin(id: string): Promise<boolean>
+  mediaChunk(id: string, bytes: ArrayBuffer): Promise<void>
+  mediaFinish(id: string): Promise<number>
+  mediaCancel(id: string): Promise<void>
+  mediaRead(id: string, offset: number, length: number): Promise<ArrayBuffer | null>
+  mediaDelete(id: string): Promise<void>
   proxyBegin(): Promise<string>
   proxyChunk(id: string, bytes: ArrayBuffer): Promise<void>
   proxyFinish(id: string): Promise<{ size: number } | null>

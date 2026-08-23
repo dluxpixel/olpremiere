@@ -18,6 +18,7 @@ import { migrateRenamedKeys } from './state/keyMigration'
 import { loadLibrary } from './state/library'
 import { initPersistence, listProjects } from './state/persistence'
 import { recoverFromWipe, sweepEmptyRecoveries } from './state/backupRestore'
+import { backfillMirror, healProjectMedia } from './state/mediaMirror'
 import { initSettings } from './state/settings'
 import { useStore } from './state/store'
 import { activeSequence, type MediaAsset } from './engine/types'
@@ -113,6 +114,37 @@ const work: BootWork = {
     // forty backups sit on his disk is not something to report, it is something
     // to undo, and he should never reach the empty shelf at all. It can only
     // ever ADD a project, so the worst case is one he closes again.
+    // ⛔ BEFORE ANYTHING ELSE: put back any media the database has lost.
+    //
+    // His words, 2026-08-23, after five days of not opening the app: *"This is
+    // the reason I haven't opened the app in five days."* The engine threw its
+    // own IndexedDB away and his footage became unreachable, so his forty four
+    // cuts drew as named clips with no picture and no sound. The bytes were on
+    // his disk the whole time with nothing left able to name them.
+    //
+    // The mirror gives them a second home a rebuild cannot touch, and this reads
+    // it back under the key the document already points at, so nothing in the
+    // edit moves. A healthy project costs one storage read per asset.
+    const healed = await healProjectMedia(useStore.getState().project).catch((err: unknown) => {
+      console.warn('OL Premiere boot: could not put the missing media back', err)
+      return { healed: [], lost: [] as string[] }
+    })
+    if (healed.healed.length > 0) {
+      useToasts
+        .getState()
+        .show(
+          `Put ${healed.healed.length} missing media ${healed.healed.length === 1 ? 'file' : 'files'} back on your edit`,
+          'success',
+          undefined,
+          { durationMs: 10_000 },
+        )
+      invalidatePreview()
+    }
+    // And make sure everything he already had is mirrored, not just what he
+    // imports from now on, or the edit he has been cutting for a month would
+    // still have exactly one copy. Nothing waits on it.
+    void backfillMirror(useStore.getState().project)
+
     const recovered = await recoverFromWipe(await listProjects()).catch((err: unknown) => {
       console.warn('OL Premiere boot: could not check the backups', err)
       return null
