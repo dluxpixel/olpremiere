@@ -34,10 +34,22 @@ interface MediaApi {
   mediaDelete(id: string): Promise<void>
 }
 
-/** The desktop shell, or null on the web build, which has no disk to mirror to. */
+/**
+ * The desktop shell, or null on the web build, which has no disk to mirror to.
+ *
+ * ⛔ IT ASKS FOR THE METHODS, NOT FOR `isElectron`. The methods ARE the
+ * capability: a shell that cannot answer `mediaBegin` cannot mirror whatever it
+ * calls itself. It also used to demand the flag, which meant nothing could stand
+ * in for the shell without ALSO claiming to be Electron, and claiming that makes
+ * the boot sequence reach for a dozen other calls that are not there. That is
+ * not a testing detail: it is the difference between this path being provable
+ * and being taken on trust, and it has already gone wrong on his machine twice.
+ */
 export function mirrorApi(): MediaApi | null {
-  const api = (globalThis as { api?: Partial<MediaApi> & { isElectron?: boolean } }).api
-  return api?.isElectron && typeof api.mediaBegin === 'function' ? (api as MediaApi) : null
+  const api = (globalThis as { api?: Partial<MediaApi> }).api
+  if (!api) return null
+  const has = (k: keyof MediaApi): boolean => typeof api[k] === 'function'
+  return has('mediaBegin') && has('mediaList') && has('mediaRead') ? (api as MediaApi) : null
 }
 
 /**
