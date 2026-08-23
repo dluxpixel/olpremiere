@@ -28,6 +28,33 @@ export function mediaDir(): string {
 }
 
 /**
+ * Everywhere a copy might be, newest arrangement first.
+ *
+ * ⛔ BECAUSE `userData` IS NOT AS FIXED AS IT LOOKS. This app has already renamed
+ * its own profile once (`reel` to `OL Premiere`, see main.ts), a `--user-data-dir`
+ * moves it wholesale, and on 2026-08-23 his app reported no spare copies while
+ * 23 files and 7.1 GB sat in the folder the default path resolves to. Reading the
+ * one place and calling it settled is what turned that into two more days.
+ *
+ * The fallbacks are DERIVED, never guessed: the roaming folder under the app's
+ * own name, and the legacy profile this app is already known to have used. A
+ * folder that is not there costs one failed `readdir`.
+ */
+function mediaDirs(): string[] {
+  const dirs = [mediaDir()]
+  try {
+    const roaming = app.getPath('appData')
+    for (const name of [app.getName(), 'OL Premiere', 'reel']) {
+      const d = path.join(roaming, name, 'media')
+      if (!dirs.includes(d)) dirs.push(d)
+    }
+  } catch {
+    // getPath can throw before the app is ready; the primary is enough then.
+  }
+  return dirs
+}
+
+/**
  * The file for one asset. The id is the whole name.
  *
  * ⛔ THE ID IS VALIDATED, NOT TRUSTED. It arrives from the renderer, and a name
@@ -52,28 +79,38 @@ function fileFor(assetId: string): string | null {
  * the screen, and he has spent days on that.
  */
 export async function listMedia(): Promise<{ dir: string; error?: string; files: { id: string; size: number }[] }> {
-  const dir = mediaDir()
-  let names: string[]
-  try {
-    names = await readdir(dir)
-  } catch (err) {
-    return { dir, error: err instanceof Error ? err.message : String(err), files: [] }
-  }
-  const files: { id: string; size: number }[] = []
-  let skipped = 0
-  for (const name of names) {
-    if (!SAFE_ID.test(name)) {
-      skipped += 1
+  const tried: string[] = []
+  for (const dir of mediaDirs()) {
+    let names: string[]
+    try {
+      names = await readdir(dir)
+    } catch (err) {
+      tried.push(`${dir} (${err instanceof Error ? err.message : String(err)})`)
       continue
     }
-    const s = await stat(path.join(dir, name)).catch(() => null)
-    if (s?.isFile() && s.size > 0) files.push({ id: name, size: s.size })
-    else skipped += 1
+    const files: { id: string; size: number }[] = []
+    let skipped = 0
+    for (const name of names) {
+      if (!SAFE_ID.test(name)) {
+        skipped += 1
+        continue
+      }
+      const s = await stat(path.join(dir, name)).catch(() => null)
+      if (s?.isFile() && s.size > 0) files.push({ id: name, size: s.size })
+      else skipped += 1
+    }
+    // ⛔ THE FIRST FOLDER THAT ACTUALLY HAS SOMETHING WINS, and which one it was
+    // is reported. Reading only the default path is what left him staring at
+    // "there are no spare copies" with 7.1 GB of them on the disk.
+    if (files.length > 0) return { dir, files }
+    tried.push(`${dir} (${names.length} files, none usable, ${skipped} skipped)`)
   }
-  if (files.length === 0 && names.length > 0) {
-    return { dir, error: `${names.length} files there, none usable (${skipped} skipped)`, files }
-  }
-  return { dir, files }
+  return { dir: tried.join(' | '), error: 'no spare copies found', files: [] }
+}
+
+/** Where a NEW copy goes. Always the primary, whatever the fallbacks turned up. */
+export function mediaWriteDir(): string {
+  return mediaDir()
 }
 
 // Writing streams in, exactly like every other big-file path in this app: his
@@ -126,9 +163,14 @@ export async function cancelMedia(assetId: string): Promise<void> {
 
 /** Read one slice of an asset's copy back. */
 export async function readMedia(assetId: string, offset: number, length: number): Promise<ArrayBuffer | null> {
-  const file = fileFor(assetId)
-  if (!file) return null
-  const handle = await open(file, 'r').catch(() => null)
+  if (!SAFE_ID.test(assetId)) return null
+  // ⛔ THE SAME FOLDERS `listMedia` SEARCHES, or a copy it found would be one this
+  // cannot open, which is a worse failure than not finding it at all.
+  let handle: FileHandle | null = null
+  for (const dir of mediaDirs()) {
+    handle = await open(path.join(dir, assetId), 'r').catch(() => null)
+    if (handle) break
+  }
   if (!handle) return null
   try {
     const buf = Buffer.alloc(length)
@@ -143,9 +185,10 @@ export async function readMedia(assetId: string, offset: number, length: number)
 
 /** Drop an asset's copy, for when he deletes the media for good. */
 export async function deleteMedia(assetId: string): Promise<void> {
-  const file = fileFor(assetId)
-  if (!file) return
-  await rm(file, { force: true }).catch(() => undefined)
+  if (!SAFE_ID.test(assetId)) return
+  // Every folder it could be in, or a delete would leave a copy behind that the
+  // next repair would happily put back.
+  for (const dir of mediaDirs()) await rm(path.join(dir, assetId), { force: true }).catch(() => undefined)
 }
 
 /** Half written files from a run that died. Startup only, when no write is live. */

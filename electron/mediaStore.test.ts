@@ -1,23 +1,28 @@
 // The folder that holds his footage outside the database. It writes files, so
 // what it REFUSES to write matters as much as what it writes.
 
-import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 let userData = ''
+let appData = 'C:/appData'
 vi.mock('electron', () => ({
-  app: { getPath: (k: string) => (k === 'userData' ? userData : `C:/${k}`), getName: () => 'OL Premiere' },
+  app: {
+    getPath: (k: string) => (k === 'userData' ? userData : k === 'appData' ? appData : `C:/${k}`),
+    getName: () => 'OL Premiere',
+  },
 }))
 
-const { beginMedia, chunkMedia, cancelMedia, deleteMedia, finishMedia, listMedia, mediaDir, readMedia, sweepMediaTemps } =
+const { beginMedia, chunkMedia, cancelMedia, deleteMedia, finishMedia, listMedia, mediaDir, mediaWriteDir, readMedia, sweepMediaTemps } =
   await import('./mediaStore')
 
 const bytes = (n: number, fill: number): ArrayBuffer => new Uint8Array(n).fill(fill).buffer
 
 beforeEach(async () => {
   userData = await mkdtemp(join(tmpdir(), 'olp-media-'))
+  appData = 'C:/appData-that-is-not-there'
 })
 afterEach(async () => {
   await rm(userData, { recursive: true, force: true }).catch(() => undefined)
@@ -117,5 +122,44 @@ describe('the real bytes', () => {
     await finishMedia('big')
     const onDisk = await readFile(join(mediaDir(), 'big'))
     expect([...onDisk]).toEqual([...payload])
+  })
+})
+
+// ⛔ `userData` IS NOT AS FIXED AS IT LOOKS. This app has renamed its own profile
+// once already, `--user-data-dir` moves it wholesale, and on 2026-08-23 his app
+// reported no spare copies while 7.1 GB of them sat on the disk. Reading one
+// place and calling it settled cost him two more days.
+describe('a copy in a profile the app used to use is still found', () => {
+  it('falls back to the roaming folder under the app name, and says which it used', async () => {
+    // The primary is empty; the copy is where an older arrangement put it.
+    const roaming = await mkdtemp(join(tmpdir(), 'olp-roaming-'))
+    const older = join(roaming, 'OL Premiere', 'media')
+    await mkdir(older, { recursive: true })
+    await writeFile(join(older, 'abc'), 'hello')
+    appData = roaming
+
+    const listed = await listMedia()
+    expect(listed.files).toEqual([{ id: 'abc', size: 5 }])
+    expect(listed.dir).toBe(older)
+
+    // And it can actually be READ from there, or finding it would be worse than
+    // not finding it.
+    expect(new Uint8Array((await readMedia('abc', 0, 5))!).length).toBe(5)
+    await rm(roaming, { recursive: true, force: true })
+  })
+
+  it('names every folder it tried when there is nothing anywhere', async () => {
+    const listed = await listMedia()
+    expect(listed.files).toEqual([])
+    expect(listed.error).toBe('no spare copies found')
+    expect(listed.dir).toContain(userData)
+  })
+
+  it('always WRITES to the primary, whatever the fallbacks turned up', async () => {
+    await beginMedia('abc')
+    await chunkMedia('abc', bytes(4, 1))
+    await finishMedia('abc')
+    expect(mediaWriteDir()).toBe(mediaDir())
+    expect((await listMedia()).dir).toBe(mediaDir())
   })
 })
