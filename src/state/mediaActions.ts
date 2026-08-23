@@ -9,7 +9,7 @@ import { evictAsset } from '../engine/frameCache'
 import { disposePreviewAsset } from '../engine/preview'
 import { ensureProxies, forgetProxy } from '../engine/proxyMedia'
 import { probeFile } from '../engine/probe'
-import { backfillMirror, mirrorApi } from './mediaMirror'
+import { backfillMirror, mirrorApi, mirrorAsset } from './mediaMirror'
 import { canImport, remuxIfNeeded } from '../engine/remuxSource'
 import { addClipFromAsset, addClipWithLinkedAudio, recomputeDuration } from '../engine/timeline'
 import {
@@ -112,6 +112,24 @@ export async function importFiles(files: File[], opts?: ImportOptions): Promise<
         const id = newId()
         const blobKey = 'asset/' + id
         await putBlob(blobKey, source)
+        // ⛔ AND ON TO THE DISK, THE MOMENT IT ARRIVES. THIS IS THE ONE.
+        //
+        // 2026-08-23, after two days of his work being unreachable: the mirror
+        // that the whole recovery story rests on was called from exactly two
+        // places, `backfillMirror` at boot and the hand relink. NOT FROM IMPORT.
+        // So every clip he ever brought in lived in IndexedDB and nowhere else,
+        // and `backfillMirror` could only copy out what IndexedDB still had, so
+        // the one moment it was needed, after a rebuild, there was nothing left
+        // to copy and the folder did not even exist. His app said
+        // `ENOENT: no such file or directory, scandir '...\OL Premiere\media'`
+        // while a recovery designed around that folder tried to read it.
+        //
+        // A second copy that is only ever made FROM the first copy is not a
+        // second copy. It has to be written here, from the bytes in his hand.
+        //
+        // Not awaited: a 2.5 GB capture must not make him wait on a disk write to
+        // see his clip land, and a mirror that fails must never fail the import.
+        void mirrorAsset(id, source).catch(() => undefined)
         let thumbnailKey: string | undefined
         if (probe.thumbnailBlob) {
           thumbnailKey = 'thumb/' + id
