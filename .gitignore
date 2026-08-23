@@ -26,3 +26,4 @@ vendor/ffmpeg/
 # retroactively drop it.
 .env*
 !.env.release.example
+ship-*.log
