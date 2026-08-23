@@ -41,7 +41,7 @@ const FAKE_SHELL = `
   const disk = load()
   window.__disk = disk
   window.api = {
-    mediaList: async () => [...disk].map(([id, b]) => ({ id, size: b.length })),
+    mediaList: async () => ({ dir: 'C:/fake/media', files: [...disk].map(([id, b]) => ({ id, size: b.length })) }),
     mediaBegin: async (id) => { disk.set(id, new Uint8Array(0)); return true },
     mediaChunk: async (id, bytes) => {
       const prev = disk.get(id) ?? new Uint8Array(0)

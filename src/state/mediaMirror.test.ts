@@ -27,7 +27,7 @@ function fakeShell(opts: { failWrite?: boolean; failRead?: boolean } = {}) {
     isElectron: true,
     mediaList: () => {
       calls.lists++
-      return Promise.resolve([...disk].map(([id, b]) => ({ id, size: b.length })))
+      return Promise.resolve({ dir: 'C:/fake/media', files: [...disk].map(([id, b]) => ({ id, size: b.length })) })
     },
     mediaBegin: (id: string) => {
       calls.begins.push(id)
@@ -192,7 +192,7 @@ describe('putting his edit back on launch', () => {
   it('says so plainly when there are no spare copies yet, rather than nothing', async () => {
     fakeShell()
     const r = await healProjectMedia(p)
-    expect(r.failure).toBe('there are no spare copies on this machine yet')
+    expect(r.failure).toContain('nothing in C:/fake/media')
   })
 
   // A rebuilt store can REJECT a read rather than answer null, and one throw used

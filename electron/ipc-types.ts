@@ -141,7 +141,7 @@ export interface OlApi {
    * is the second home a rebuild cannot touch: written on import, read back when
    * the database has lost its copy.
    */
-  mediaList(): Promise<{ id: string; size: number }[]>
+  mediaList(): Promise<{ dir: string; error?: string; files: { id: string; size: number }[] }>
   mediaBegin(id: string): Promise<boolean>
   mediaChunk(id: string, bytes: ArrayBuffer): Promise<void>
   mediaFinish(id: string): Promise<number>

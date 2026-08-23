@@ -106,7 +106,13 @@ export function ProjectsDialog({ onClose, view = 'active' }: { onClose: () => vo
         <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-4">
           {/* Three shelves of the same list. Finished work is never deleted,
               just filed, so both counts are always on show. */}
-          {(['active', 'later', 'archived', 'backups'] as const).map((id) => (
+          {/* ⛔ NO 'backups' TAB. His words, 2026-08-23: *"you better remove the fucking
+              recover tab entirely"*. It listed forty near identical rows called
+              "Untitled Project" and offered him a lottery, at the exact moment he
+              was already frightened about losing work. The app repairs itself from
+              the media mirror now, and a door he cannot read is worse than no door.
+              The backup FILES are untouched, and so is the code that reads one. */}
+          {(['active', 'later', 'archived'] as const).map((id) => (
             <button
               key={id}
               type="button"
@@ -286,15 +292,10 @@ export function ProjectsDialog({ onClose, view = 'active' }: { onClose: () => vo
           )}
           {tab !== 'backups' && projects !== null && tab === 'active' && projects.length <= 1 && (
             <div className="px-3 py-4 text-center text-[11px] text-text-muted">
-              Each edit lives here. Start a new project any time, your current one stays put.{' '}
-              <button
-                type="button"
-                data-testid="projects-missing"
-                onClick={() => setTab('backups')}
-                className="underline decoration-dotted underline-offset-2 hover:text-text-primary"
-              >
-                Missing a project?
-              </button>
+              {/* ⛔ AND NO "Missing a project?" EITHER. It was the last door into
+                  the recover list, and pointing a frightened man at forty rows all
+                  called "Untitled Project" is not help. */}
+              Each edit lives here. Start a new project any time, your current one stays put.
             </div>
           )}
         </div>

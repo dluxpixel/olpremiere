@@ -40,17 +40,40 @@ function fileFor(assetId: string): string | null {
   return path.join(mediaDir(), assetId)
 }
 
-/** Which assets have a copy on disk, and how big each one is. */
-export async function listMedia(): Promise<{ id: string; size: number }[]> {
+/**
+ * Which assets have a copy on disk, and how big each one is.
+ *
+ * ⛔ IT REPORTS THE FOLDER IT LOOKED IN AND WHY IT FOUND NOTHING. This swallowed
+ * its own `readdir` error and answered with an empty list, which reads everywhere
+ * downstream as "there are no copies". On 2026-08-23 his app said exactly that
+ * while 23 files and 7.1 GB sat in the folder I had filled, and there was no way
+ * to tell a missing folder from an unreadable one from the wrong path entirely.
+ * A repair that cannot say WHERE it looked cannot be debugged from his side of
+ * the screen, and he has spent days on that.
+ */
+export async function listMedia(): Promise<{ dir: string; error?: string; files: { id: string; size: number }[] }> {
   const dir = mediaDir()
-  const names = await readdir(dir).catch(() => [] as string[])
-  const out: { id: string; size: number }[] = []
-  for (const name of names) {
-    if (!SAFE_ID.test(name)) continue
-    const s = await stat(path.join(dir, name)).catch(() => null)
-    if (s?.isFile() && s.size > 0) out.push({ id: name, size: s.size })
+  let names: string[]
+  try {
+    names = await readdir(dir)
+  } catch (err) {
+    return { dir, error: err instanceof Error ? err.message : String(err), files: [] }
   }
-  return out
+  const files: { id: string; size: number }[] = []
+  let skipped = 0
+  for (const name of names) {
+    if (!SAFE_ID.test(name)) {
+      skipped += 1
+      continue
+    }
+    const s = await stat(path.join(dir, name)).catch(() => null)
+    if (s?.isFile() && s.size > 0) files.push({ id: name, size: s.size })
+    else skipped += 1
+  }
+  if (files.length === 0 && names.length > 0) {
+    return { dir, error: `${names.length} files there, none usable (${skipped} skipped)`, files }
+  }
+  return { dir, files }
 }
 
 // Writing streams in, exactly like every other big-file path in this app: his
@@ -140,7 +163,7 @@ export async function sweepMediaTemps(): Promise<number> {
 
 /** Bytes on disk for every asset copy, so the size of this can be reported honestly. */
 export async function mediaBytes(): Promise<number> {
-  return (await listMedia()).reduce((n, m) => n + m.size, 0)
+  return (await listMedia()).files.reduce((n, m) => n + m.size, 0)
 }
 
 export { createReadStream }

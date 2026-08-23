@@ -42,10 +42,10 @@ describe('keeping a copy', () => {
   it('is invisible until the last byte lands', async () => {
     await beginMedia('abc')
     await chunkMedia('abc', bytes(4, 1))
-    expect(await listMedia()).toEqual([])
+    expect((await listMedia()).files).toEqual([])
     expect(await readMedia('abc', 0, 4)).toBeNull()
     await finishMedia('abc')
-    expect(await listMedia()).toEqual([{ id: 'abc', size: 4 }])
+    expect((await listMedia()).files).toEqual([{ id: 'abc', size: 4 }])
   })
 
   it('leaves nothing behind when a write is abandoned', async () => {
@@ -61,7 +61,7 @@ describe('keeping a copy', () => {
     await finishMedia('abc')
     await writeFile(join(mediaDir(), 'ghost.part'), 'x')
     expect(await sweepMediaTemps()).toBe(1)
-    expect(await listMedia()).toEqual([{ id: 'abc', size: 4 }])
+    expect((await listMedia()).files).toEqual([{ id: 'abc', size: 4 }])
   })
 
   it('forgets one for good when he deletes the media', async () => {
@@ -69,7 +69,7 @@ describe('keeping a copy', () => {
     await chunkMedia('abc', bytes(4, 1))
     await finishMedia('abc')
     await deleteMedia('abc')
-    expect(await listMedia()).toEqual([])
+    expect((await listMedia()).files).toEqual([])
   })
 })
 
@@ -89,18 +89,18 @@ describe('it cannot be talked into writing somewhere else', () => {
     await chunkMedia('abc', bytes(4, 1))
     await finishMedia('abc')
     await writeFile(join(mediaDir(), 'notes.txt'), 'hello')
-    expect((await listMedia()).map((m) => m.id)).toEqual(['abc'])
+    expect((await listMedia()).files.map((m) => m.id)).toEqual(['abc'])
   })
 
   it('never lists an empty file as a usable copy', async () => {
     await beginMedia('abc')
     await finishMedia('abc')
-    expect(await listMedia()).toEqual([])
+    expect((await listMedia()).files).toEqual([])
   })
 
   it('answers null for an asset it has never heard of', async () => {
     expect(await readMedia('nothere', 0, 4)).toBeNull()
-    expect(await listMedia()).toEqual([])
+    expect((await listMedia()).files).toEqual([])
   })
 
   it('refuses a chunk or a finish for a write that was never begun', async () => {

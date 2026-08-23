@@ -21,6 +21,7 @@
 //
 // Only writes when the document actually changed, so an idle app writes nothing.
 
+import { listProjects, loadProjectById } from './persistence'
 import { useStore } from './store'
 import type { Project } from '../engine/types'
 
@@ -76,6 +77,54 @@ let writing = false
 /** True when the desktop shell is present, since only it can write files unprompted. */
 const canWrite = (): boolean => typeof window !== 'undefined' && !!window.api?.isElectron
 
+/**
+ * What was last written for each project, keyed by project id.
+ *
+ * ⛔ PER PROJECT, NOT ONE STRING. It used to hold a single fingerprint for the
+ * open document, which was all this ever backed up.
+ */
+const lastWrittenFor = new Map<string, string>()
+
+/**
+ * Back up EVERY project he has, not only the one on screen.
+ *
+ * ⛔ THIS IS THE FAULT THAT COST HIM HIS FINISHED WORK. 2026-08-23: *"I had a ton
+ * of finished projects. I had a ton of projects on later and working on."* When
+ * the browser threw its database away, the only thing with a copy on disk was
+ * whatever he happened to have OPEN. Everything filed under Later or Finished had
+ * never been written to a file at all, so there was nothing anywhere to bring
+ * back and no honest way to tell him otherwise.
+ *
+ * Each project carries its own fingerprint, so one that has not changed writes
+ * nothing: the cost of covering ten projects instead of one is ten reads and zero
+ * writes. And the prune in `electron/backups.ts` will never delete the last copy
+ * a project has, or this would age his finished work out a slower way.
+ */
+async function backupEveryProject(): Promise<void> {
+  if (!canWrite()) return
+  const openId = useStore.getState().project?.id
+  let summaries: { id: string }[]
+  try {
+    summaries = await listProjects()
+  } catch {
+    return
+  }
+  for (const s of summaries) {
+    if (s.id === openId) continue // the open one has just been written above
+    try {
+      const p = await loadProjectById(s.id)
+      if (!p) continue
+      const json = serialize(p, 'desktop')
+      const fingerprint = json.replace(/"savedAt":"[^"]*"/, '')
+      if (lastWrittenFor.get(s.id) === fingerprint) continue
+      await window.api!.backupWrite(p.name ?? 'project', json)
+      lastWrittenFor.set(s.id, fingerprint)
+    } catch {
+      // One unreadable project must never stop the others being written.
+    }
+  }
+}
+
 async function backupNow(reason: string): Promise<void> {
   if (!canWrite() || writing) return
   const project = useStore.getState().project
@@ -88,11 +137,21 @@ async function backupNow(reason: string): Promise<void> {
   }
   // Compare the payload MINUS its timestamp, or every tick looks like a change.
   const fingerprint = json.replace(/"savedAt":"[^"]*"/, '')
-  if (fingerprint === lastWritten) return
+  // ⛔ THE SWEEP RUNS EVEN WHEN THE OPEN PROJECT HAS NOT CHANGED, and that is the
+  // whole point of it. He can sit on one edit for an hour while nine others have
+  // never been written to a file at all, which is exactly the state his machine
+  // was in when the database threw itself away.
+  if (fingerprint === lastWritten) {
+    await backupEveryProject()
+    return
+  }
   writing = true
   try {
     await window.api!.backupWrite(project.name ?? 'project', json)
     lastWritten = fingerprint
+    if (project.id) lastWrittenFor.set(project.id, fingerprint)
+    // Then everything he is NOT looking at, which is what had no copy at all.
+    await backupEveryProject()
   } catch {
     // Disk full, permissions, folder gone: a failed backup is not worth
     // interrupting an edit over, and the next tick will try again. It stays

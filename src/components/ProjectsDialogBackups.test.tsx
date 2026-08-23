@@ -117,10 +117,19 @@ describe('the Recover shelf', () => {
     expect(revealed).toBe(1)
   })
 
-  it('offers the way there from an empty project list, which is where he starts looking', async () => {
+  // ⛔ HIS CALL, 2026-08-23: *"you better remove the fucking recover tab
+  // entirely."* This test used to assert the opposite, that an empty project list
+  // OFFERS the way there. It was written for a man who wanted to browse his
+  // backups; he had just spent a week losing work to a list of forty rows all
+  // called "Untitled Project", and being pointed at that lottery is not help.
+  //
+  // The tab and the link are gone. `restoreBackup` and the files are NOT: what
+  // was removed is the door, not the data.
+  it('never offers the recover list, not from the tabs and not from an empty shelf', async () => {
     render(<ProjectsDialog onClose={() => undefined} />)
-    const link = await screen.findByTestId('projects-missing')
-    await userEvent.click(link)
-    expect(await screen.findByTestId('backup-row')).toBeTruthy()
+    await screen.findByTestId('projects-dialog')
+    expect(screen.queryByTestId('projects-missing')).toBeNull()
+    expect(screen.queryByRole('button', { name: /recover/i })).toBeNull()
+    expect(screen.queryByTestId('backup-row')).toBeNull()
   })
 })

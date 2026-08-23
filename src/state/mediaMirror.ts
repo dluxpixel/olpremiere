@@ -25,7 +25,7 @@ import type { MediaAsset, Project } from '../engine/types'
 const CHUNK = 8 * 1024 * 1024
 
 interface MediaApi {
-  mediaList(): Promise<{ id: string; size: number }[]>
+  mediaList(): Promise<{ dir: string; error?: string; files: { id: string; size: number }[] }>
   mediaBegin(id: string): Promise<boolean>
   mediaChunk(id: string, bytes: ArrayBuffer): Promise<void>
   mediaFinish(id: string): Promise<number>
@@ -142,15 +142,23 @@ export async function healProjectMedia(
   // every asset in `lost` with no reason attached anywhere. He opened v2.27 to a
   // banner and no explanation, which is the worst possible way to find out.
   const onDisk = new Map<string, number>()
+  let listing: { dir: string; error?: string; files: { id: string; size: number }[] }
   try {
-    for (const m of await api.mediaList()) onDisk.set(m.id, m.size)
+    listing = await api.mediaList()
   } catch (err) {
     const why = err instanceof Error ? err.message : String(err)
     console.warn('OL Premiere: could not read the spare media folder', err)
     return { healed, lost: missing.map((a) => a.name ?? a.id), failure: `could not read the spare copies: ${why}` }
   }
+  for (const m of listing.files) onDisk.set(m.id, m.size)
   if (onDisk.size === 0) {
-    return { healed, lost: missing.map((a) => a.name ?? a.id), failure: 'there are no spare copies on this machine yet' }
+    // ⛔ NAME THE FOLDER IT LOOKED IN. On 2026-08-23 this said "there are no spare
+    // copies" while 23 files and 7.1 GB sat in the folder I had filled by hand,
+    // and there was no way to tell a wrong path from an unreadable one from an
+    // empty one. A repair that cannot say WHERE it looked cannot be diagnosed
+    // from his side of the screen, and he has lost days to exactly that.
+    const why = listing.error ? `${listing.error} in ${listing.dir}` : `nothing in ${listing.dir}`
+    return { healed, lost: missing.map((a) => a.name ?? a.id), failure: why }
   }
 
   // ⛔ COUNT WHAT IS ACTUALLY GOING TO BE MOVED BEFORE MOVING ANY OF IT. His own
@@ -208,7 +216,8 @@ export async function healProjectMedia(
 export async function backfillMirror(project: Project): Promise<number> {
   const api = mirrorApi()
   if (!api) return 0
-  const onDisk = new Set((await api.mediaList().catch(() => [])).map((m) => m.id))
+  const listed = await api.mediaList().catch(() => ({ dir: '', files: [] as { id: string; size: number }[] }))
+  const onDisk = new Set(listed.files.map((m) => m.id))
   let done = 0
   for (const a of Object.values(project.assets ?? {}) as MediaAsset[]) {
     if (!a?.blobKey || onDisk.has(a.id)) continue

@@ -24,7 +24,7 @@
 // re-imported; four hundred decisions cannot.
 
 import { app } from 'electron'
-import { mkdir, readdir, stat, unlink, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
 /** How many backups to keep. Small files, so keep enough to walk back a session. */
@@ -93,9 +93,35 @@ export async function writeBackup(projectName: string, json: string): Promise<st
       }),
     )
     withTime.sort((a, b) => a.t - b.t)
-    for (const { f } of withTime.slice(0, withTime.length - KEEP)) {
+    // ⛔ NEVER DELETE THE LAST COPY A PROJECT HAS.
+    //
+    // 2026-08-23: his store was wiped and his finished work was simply gone,
+    // because only the OPEN project was ever backed up and the forty slots were
+    // all versions of it. Now that every project is written, a straight
+    // newest-forty prune would do the same damage a different way: an edit he
+    // finished last month, correctly written once and never changed again, would
+    // age out while forty copies of today's edit crowd it out.
+    //
+    // So a file is only ever pruned when a NEWER file for the same project
+    // exists. Read from the file itself, not from its name: every one of his is
+    // called "Untitled Project".
+    const newestOf = new Map<string, string>()
+    const idOf = new Map<string, string>()
+    for (const { f } of [...withTime].reverse()) {
+      const id = await projectIdIn(path.join(dir, f))
+      if (!id) continue
+      idOf.set(f, id)
+      if (!newestOf.has(id)) newestOf.set(id, f)
+    }
+    let over = withTime.length - KEEP
+    for (const { f } of withTime) {
+      if (over <= 0) break
+      const id = idOf.get(f)
+      // Unreadable, or the only copy this project has: it stays.
+      if (!id || newestOf.get(id) === f) continue
       try {
         await unlink(path.join(dir, f))
+        over -= 1
       } catch {
         // A locked or already-gone file must never fail the backup that just
         // succeeded. Pruning is housekeeping, not the job.
@@ -120,5 +146,27 @@ export async function listBackups(): Promise<{ name: string; path: string; sizeB
     return out.sort((a, b) => b.modifiedMs - a.modifiedMs)
   } catch {
     return [] // no directory yet = no backups, not an error
+  }
+}
+
+/**
+ * The project id inside a backup file, or null when it cannot be read.
+ *
+ * ⛔ READ FROM THE FILE, NOT FROM THE NAME. Every one of his backups is called
+ * "Untitled Project", so the name says nothing about which edit it holds, and a
+ * prune that grouped by name would treat all of them as one project and delete
+ * the last copy of everything else.
+ *
+ * Only the id is taken, and a file that will not parse is treated as unknown so
+ * that it is never the one thrown away.
+ */
+async function projectIdIn(file: string): Promise<string | null> {
+  try {
+    const raw = await readFile(file, 'utf8')
+    const parsed = JSON.parse(raw) as { project?: { id?: string } }
+    const id = parsed?.project?.id
+    return typeof id === 'string' && id.length > 0 ? id : null
+  } catch {
+    return null
   }
 }
