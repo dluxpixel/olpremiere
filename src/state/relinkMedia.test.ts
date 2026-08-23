@@ -16,6 +16,17 @@ vi.mock('./persistence', () => ({
   },
 }))
 
+/** What reached the disk mirror, by asset id. */
+const mirrored = new Map<string, Blob>()
+let mirrorThrows = false
+vi.mock('./mediaMirror', () => ({
+  mirrorAsset: (id: string, bytes: Blob) => {
+    if (mirrorThrows) return Promise.reject(new Error('no disk'))
+    mirrored.set(id, bytes)
+    return Promise.resolve(true)
+  },
+}))
+
 const { matchFilesToMissing, missingMedia, relink, relinkSummary } = await import('./relinkMedia')
 
 const file = (name: string, bytes = 8): File => new File([new Uint8Array(bytes)], name)
@@ -23,6 +34,40 @@ const asset = (id: string, name: string) => ({ id, name, blobKey: `asset/${id}` 
 
 beforeEach(() => {
   store.clear()
+  mirrored.clear()
+  mirrorThrows = false
+})
+
+// ⛔ HIS MACHINE, 2026-08-23. He repaired an edit by hand, the bytes went into
+// IndexedDB and nowhere else, the engine rebuilt its database, and the whole
+// repair went with it. A repair that does not reach the disk is a repair he gets
+// to do again.
+describe('a repair survives the next wipe', () => {
+  it('writes the bytes to the disk mirror as well as the store', async () => {
+    const f = file('Voice recording 12.webm')
+    const { done } = await relink([{ asset: asset('v12', 'Voice recording 12.webm'), file: f }])
+    expect(done).toBe(1)
+    expect(store.get('asset/v12')).toBe(f)
+    expect(mirrored.get('v12')).toBe(f)
+  })
+
+  it('mirrors every file of a multi-file repair, under the asset id', async () => {
+    await relink([
+      { asset: asset('a', 'one.mp4'), file: file('one.mp4') },
+      { asset: asset('b', 'two.webm'), file: file('two.webm') },
+      { asset: asset('c', 'three.mp3'), file: file('three.mp3') },
+    ])
+    expect([...mirrored.keys()].sort()).toEqual(['a', 'b', 'c'])
+  })
+
+  it('still repairs the edit when the disk mirror cannot be written', async () => {
+    mirrorThrows = true
+    const f = file('one.mp4')
+    const { done, failed } = await relink([{ asset: asset('a', 'one.mp4'), file: f }])
+    expect(done).toBe(1)
+    expect(failed).toEqual([])
+    expect(store.get('asset/a')).toBe(f)
+  })
 })
 
 describe('finding what is missing', () => {

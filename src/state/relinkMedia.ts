@@ -13,6 +13,7 @@
 // thing that moves is what `getBlob` answers with.
 
 import type { MediaAsset, Project } from '../engine/types'
+import { mirrorAsset } from './mediaMirror'
 import { getBlob, putBlob } from './persistence'
 
 /** An asset whose record is here and whose bytes are not. */
@@ -103,6 +104,24 @@ export async function relink(matches: readonly Match[]): Promise<{ done: number;
   for (const m of matches) {
     try {
       await putBlob(m.asset.blobKey, m.file)
+      // ⛔ AND ON TO THE DISK, IN THE SAME BREATH.
+      //
+      // HIS WORDS, 2026-08-23, after the fourth blank app of the day: *"it still
+      // says [40] for the media error, which fuckin' sucks. We should fix that
+      // somehow."* He was about to hand this function every file for a hundred
+      // and seven cuts. Until now those bytes went into IndexedDB and NOWHERE
+      // ELSE, so the next time the engine rebuilt its database his whole repair
+      // went with it and he would be picking the same files again.
+      //
+      // `backfillMirror` was supposed to cover this, but it only runs at boot on
+      // the project already open, and a boot is exactly when the rebuild happens.
+      // The repair has to be durable at the moment he makes it, not one restart
+      // later.
+      //
+      // Never awaited for correctness and never throws: a mirror that fails costs
+      // him the safety net, and a mirror that failed the RELINK would cost him
+      // the repair itself, which is the thing he just did the work for.
+      void mirrorAsset(m.asset.id, m.file).catch(() => undefined)
       done += 1
     } catch {
       failed.push(m.asset.name)
