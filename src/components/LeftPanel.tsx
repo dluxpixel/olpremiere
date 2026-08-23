@@ -28,6 +28,9 @@ import { healArrivedBlob, useMediaSync } from '../collab/mediaSync'
 import { useCollab } from '../collab/collabControl'
 import { deleteAsset, importFiles, insertAssetAtPlayhead, useImportProgress } from '../state/mediaActions'
 import { importProjectFromFile, routeDroppedFiles } from '../state/projectFile'
+import { matchFilesToMissing, missingMedia, relink, relinkSummary, type MissingAsset } from '../state/relinkMedia'
+import { evictAsset } from '../engine/frameCache'
+import { invalidatePreview } from '../engine/preview'
 import { useToasts } from '../state/toasts'
 import { applyJettismLook, applyPunchyGradeToClips } from '../state/lookActions'
 import { insertSfxAtPlayhead, previewSfx } from '../state/sfxActions'
@@ -377,6 +380,82 @@ function ImportProgress() {
   )
 }
 
+/**
+ * The way back when a project's media has lost its bytes.
+ *
+ * ⛔ HIS WORDS, 2026-08-23: *"The recovered file doesn't even fucking work. The
+ * audio is not there, and the video isn't."* Until now the app named the files
+ * and left it there, and importing them again would have made NEW assets, so
+ * every one of his forty four cuts would still point at nothing. This puts the
+ * bytes back under the key the edit already uses.
+ *
+ * It only appears when something really is missing, checked against storage
+ * rather than against a flag, so a healthy project never sees it.
+ */
+function FindMyMedia() {
+  const assets = useStore((s) => s.project.assets)
+  const [missing, setMissing] = useState<MissingAsset[]>([])
+  const [busy, setBusy] = useState(false)
+  const pick = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    let live = true
+    void missingMedia(useStore.getState().project).then((m) => {
+      if (live) setMissing(m)
+    })
+    return () => {
+      live = false
+    }
+  }, [assets])
+
+  if (missing.length === 0) return null
+  return (
+    <div
+      data-testid="find-my-media"
+      className="mx-2 mb-2 rounded-field border border-warning/40 bg-warning/10 px-2 py-2 text-[11px] text-text-primary"
+    >
+      <div className="mb-1.5">
+        {missing.length} {missing.length === 1 ? 'file' : 'files'} on this edit have no media. Your cuts are all still
+        here.
+      </div>
+      <Button
+        variant="secondary"
+        data-testid="find-my-media-go"
+        disabled={busy}
+        onClick={() => pick.current?.click()}
+      >
+        {busy ? 'Putting them back' : 'Find my media'}
+      </Button>
+      <input
+        ref={pick}
+        type="file"
+        multiple
+        accept="video/*,audio/*,image/*"
+        data-testid="find-my-media-input"
+        className="hidden"
+        onChange={(e) => {
+          const files = Array.from(e.currentTarget.files ?? [])
+          e.currentTarget.value = ''
+          if (files.length === 0) return
+          setBusy(true)
+          void (async () => {
+            const result = matchFilesToMissing(missing, files)
+            const { done, failed } = await relink(result.matched)
+            useToasts.getState().show(relinkSummary(result, done), done > 0 ? 'success' : 'info')
+            if (failed.length > 0) useToasts.getState().show(`Could not write: ${failed.join(', ')}`, 'danger')
+            // Ask storage again rather than assuming, and make the preview drop
+            // whatever it decided when the bytes were not there.
+            for (const m of result.matched) evictAsset(m.asset.id)
+            invalidatePreview()
+            setMissing(await missingMedia(useStore.getState().project))
+            setBusy(false)
+          })()
+        }}
+      />
+    </div>
+  )
+}
+
 function MediaTab() {
   const assets = useStore((s) => s.project.assets)
   const fps = useStore((s) => activeSequence(s.project).fps)
@@ -413,6 +492,7 @@ function MediaTab() {
           }}
         />
       </div>
+      <FindMyMedia />
       <MediaSyncBanner />
       <ImportProgress />
       {list.length === 0 && importing === 0 ? (
