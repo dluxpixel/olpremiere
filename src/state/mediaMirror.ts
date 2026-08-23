@@ -102,7 +102,10 @@ export interface HealResult {
  * A project with nothing missing costs one storage read per asset and writes
  * nothing, so this is safe to run on every launch.
  */
-export async function healProjectMedia(project: Project): Promise<HealResult> {
+export async function healProjectMedia(
+  project: Project,
+  onProgress?: (done: number, total: number, name: string) => void,
+): Promise<HealResult> {
   const api = mirrorApi()
   const healed: string[] = []
   const lost: string[] = []
@@ -116,8 +119,20 @@ export async function healProjectMedia(project: Project): Promise<HealResult> {
   const onDisk = new Map<string, number>()
   for (const m of await api.mediaList().catch(() => [])) onDisk.set(m.id, m.size)
 
+  // ⛔ COUNT WHAT IS ACTUALLY GOING TO BE MOVED BEFORE MOVING ANY OF IT. His own
+  // repair is 1.38 GB across twenty files, which is the better part of a minute,
+  // and the boot card showing a silent row for that long after five days without
+  // his editor would read as "still broken".
+  const toHeal: MediaAsset[] = []
   for (const a of missing) {
     if (await getBlob(a.blobKey)) continue
+    toHeal.push(a)
+  }
+  let done = 0
+
+  for (const a of toHeal) {
+    onProgress?.(done, toHeal.length, a.name ?? a.id)
+    done += 1
     const size = onDisk.get(a.id)
     if (!size) {
       lost.push(a.name ?? a.id)

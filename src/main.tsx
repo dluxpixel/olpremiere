@@ -125,7 +125,12 @@ const work: BootWork = {
     // The mirror gives them a second home a rebuild cannot touch, and this reads
     // it back under the key the document already points at, so nothing in the
     // edit moves. A healthy project costs one storage read per asset.
-    const healed = await healProjectMedia(useStore.getState().project).catch((err: unknown) => {
+    const healed = await healProjectMedia(useStore.getState().project, (done, total, name) => {
+      // ⛔ SAY IT WHILE IT HAPPENS. His repair is 1.38 GB across twenty files,
+      // the better part of a minute, and a silent row for that long after five
+      // days without his editor would read as "still broken".
+      bootStep.note('integrity', `putting your media back, ${done + 1} of ${total}: ${name}`)
+    }).catch((err: unknown) => {
       console.warn('OL Premiere boot: could not put the missing media back', err)
       return { healed: [], lost: [] as string[] }
     })

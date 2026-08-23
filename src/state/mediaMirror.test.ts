@@ -155,6 +155,27 @@ describe('putting his edit back on launch', () => {
     expect(r.lost.sort()).toEqual(['clip.mp4', 'voice.webm'])
   })
 
+  // ⛔ 1.38 GB across twenty files is the better part of a minute. A silent row
+  // for that long, after five days without his editor, reads as still broken.
+  it('says which file it is on while it works, and only for the ones it moves', async () => {
+    fakeShell()
+    blobs.set('asset/a', new Blob(['already here']))
+    disk.set('a', new Uint8Array(30))
+    disk.set('b', new Uint8Array(10))
+    const seen: string[] = []
+    await healProjectMedia(p, (done, total, name) => seen.push(`${done + 1}/${total} ${name}`))
+    expect(seen).toEqual(['1/1 voice.webm'])
+  })
+
+  it('says nothing at all when there is nothing to put back', async () => {
+    fakeShell()
+    blobs.set('asset/a', new Blob(['x']))
+    blobs.set('asset/b', new Blob(['x']))
+    const seen: string[] = []
+    await healProjectMedia(p, (d, t, n) => seen.push(`${d}${t}${n}`))
+    expect(seen).toEqual([])
+  })
+
   it('costs one listing, not one question per asset', async () => {
     fakeShell()
     blobs.set('asset/a', new Blob(['x']))
