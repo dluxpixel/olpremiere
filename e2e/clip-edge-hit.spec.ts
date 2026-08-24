@@ -110,8 +110,49 @@ test('a fade can be started from zero, because its handle is clear of the trim s
   const box = (await clip.boundingBox())!
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
 
-  // The fix parks a zero fade at the trim strip's edge rather than on top of it,
-  // so the dot has to still be grabbable or this traded one broken gesture for
-  // another. Its centre is at 6, its box spans 1..11, and 6..11 is clear.
+  // The fix parks a zero fade's GRAB at the trim strip's edge rather than on top
+  // of it, so it has to still be grabbable or this traded one broken gesture for
+  // another. The pad spans 6..20 and every pixel of it is clear of the strip.
+  //
+  // ⛔ ASK `elementFromPoint`, NOT THE RECTANGLES. Since 2026-08-24 there are two
+  // elements here, a pointer-events-none MARK at z-30 and the transparent pad at
+  // z-10, and the mark is drawn ON TOP of the strip. If hit testing ever started
+  // reaching it, a press at the clip head would fade instead of trim and the
+  // rectangles would still all look right, which is the same shape of bug this
+  // file was written for.
   expect(await hitAt(page, box.x + 9, box.y + 4)).toBe('fade-in-handle')
+})
+
+/**
+ * The other half of his 2026-08-24 note: *"these dots are not at the edge, and if
+ * they were attached, it would not match the design, so make it so it actually
+ * fits."* The grab has to dodge the trim strip; the MARK does not, and while the
+ * two were one element the mark inherited the dodge and a clip with no fade drew
+ * its handle six px in from its own corner.
+ */
+test('a clip with no fade draws its fade marks ON the edges, flat-sided so they fit', async ({
+  page,
+}) => {
+  await boot(page)
+  const clip = page.locator('[data-clip-kind="video"]').first()
+  const box = (await clip.boundingBox())!
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+
+  const inMark = (await clip.getByTestId('fade-in-mark').boundingBox())!
+  const outMark = (await clip.getByTestId('fade-out-mark').boundingBox())!
+  // Flush with the clip's own edges, not parked inside them.
+  //
+  // ⚠️ ONE PIXEL OF SLACK, AND IT IS THE BORDER, NOT SLOP. `box` is the clip's
+  // BORDER box; the marks are absolutely positioned, so they live in the PADDING
+  // box, which starts one px in behind `border border-black/40`. Flush means
+  // flush with the visible fill, which is exactly that one px. The geometry this
+  // test exists to catch was SEVEN px of clear air, so a 1.5px window cannot let
+  // it back through.
+  expect(Math.abs(inMark.x - box.x)).toBeLessThanOrEqual(1.5)
+  expect(Math.abs(outMark.x + outMark.width - (box.x + box.width))).toBeLessThanOrEqual(1.5)
+  // And flat-sided, so all ten px paint instead of half being cut away by the
+  // clip's overflow-hidden. The attribute is what the component decided; the
+  // geometry above is what it drew.
+  await expect(clip.getByTestId('fade-in-mark')).toHaveAttribute('data-flush', 'true')
+  await expect(clip.getByTestId('fade-out-mark')).toHaveAttribute('data-flush', 'true')
 })

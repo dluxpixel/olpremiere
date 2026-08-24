@@ -2,12 +2,51 @@
 // place Space / J / K / L and the transport buttons act through.
 
 import { scheduleAudio } from '../engine/audio'
+import { diagnoseSilence, type SilenceFix } from '../engine/audioSilence'
 import { Transport } from '../engine/playback'
 import { pauseAllPreviewVideos, setPreviewTransportRate } from '../engine/preview'
 import { activeSequence } from '../engine/types'
 import { workArea } from '../engine/workArea'
 import { isTakeInProgress, pauseRecording, resumeRecording } from './voiceRecorder'
-import { useStore } from './store'
+import { useToasts } from './toasts'
+import { updateActiveSequence, useStore } from './store'
+
+/**
+ * ⛔ SILENCE HAS TO SAY WHY, 2026-08-24. He reported the audio simply not
+ * working, and there was no regression to find: a left-over solo, or every
+ * track muted, turns the sound off completely while the picture, the transport
+ * and the meter all look exactly as they do when it works. Nothing said a word.
+ *
+ * The rule lives in `engine/audioSilence.ts` so it can be tested without an
+ * AudioContext; this is only the part that speaks and the one-click way out.
+ * Said at most once per distinct cause, so a loop cannot nag him.
+ */
+let lastSilenceKey = ''
+
+function clearSilence(fix: SilenceFix): void {
+  updateActiveSequence(fix === 'unsolo' ? 'Turn solo off' : 'Unmute every track', (seq) => ({
+    ...seq,
+    tracks: seq.tracks.map((t) => (fix === 'unsolo' ? { ...t, solo: false } : { ...t, muted: false })),
+  }))
+}
+
+function warnIfSilent(): void {
+  const found = diagnoseSilence(activeSequence(useStore.getState().project).tracks)
+  if (!found) {
+    lastSilenceKey = ''
+    return
+  }
+  if (found.key === lastSilenceKey) return
+  lastSilenceKey = found.key
+  const fix = found.fix
+  useToasts
+    .getState()
+    .show(
+      found.message,
+      'info',
+      fix ? { label: fix === 'unsolo' ? 'Turn solo off' : 'Unmute', onClick: () => clearSilence(fix) } : undefined,
+    )
+}
 
 // Current shuttle rate, published only on state CHANGE (never per tick) so the
 // transport badge can subscribe imperatively without any per-frame React.
@@ -47,6 +86,10 @@ const transport = new Transport({
     // A scrub grain still ringing would sound over the top of the transport, so
     // the two are never alive at once. Cheap and idempotent.
     const { project } = useStore.getState()
+    // Before the graph is built, not after: if the mix cannot make a sound, he
+    // hears the same nothing either way and the only difference is whether the
+    // app told him which switch is doing it.
+    warnIfSilent()
     return scheduleAudio(activeSequence(project), project.assets, fromS)
   },
   // Loop toggle: the in/out range when set, else the whole sequence.

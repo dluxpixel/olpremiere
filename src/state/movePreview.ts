@@ -32,6 +32,10 @@ let parkedAtS: number | null = null
  * he does during the sweep cancels it, and because the listener is on the
  * capture phase the restore lands before his own click is handled, so a scrub
  * that interrupts the replay still wins.
+ *
+ * ⛔ THAT IS ABOUT INTERRUPTION AND ONLY ABOUT INTERRUPTION. A sweep that ran to
+ * the end clears `parkedAtS` first (see `step`), so this leaves the playhead at
+ * the end of the move rather than yanking it back into the move he just watched.
  */
 export function stopMovePreview(): void {
   if (raf) cancelAnimationFrame(raf)
@@ -78,6 +82,23 @@ export function playMovePreview(clipId: string, fromS?: number): void {
   const step = (now: number): void => {
     const t = startS + (now - t0) / 1000
     if (t >= endS) {
+      // ⛔ A REPLAY THAT RAN TO THE END DOES NOT HAND THE PLAYHEAD BACK, AND
+      // UNTIL 2026-08-24 IT DID.
+      //
+      // `stopMovePreview` restores `parkedAtS`, which is exactly right when he
+      // INTERRUPTS the sweep: the replay borrowed his playhead and a pointer,
+      // key or wheel means he wants it back. It is wrong when the sweep simply
+      // finished. The line above set the playhead to the end of the move and the
+      // restore below immediately undid it, so the picture ran the move out and
+      // then jumped back INTO the move, which is what he was looking at:
+      // *"When the preview goes over it, it snaps right back into it, but in the
+      // export it's fine."* The export never runs this file, which is why only
+      // the picture was wrong.
+      //
+      // The tell was already here: `setUI({ playheadS: endS })` was dead, every
+      // time, overwritten one call later. Dropping the park makes it mean what
+      // it says.
+      parkedAtS = null
       setUI({ playheadS: endS })
       stopMovePreview()
       return

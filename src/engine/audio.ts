@@ -105,11 +105,51 @@ type SinkableCtx = AudioContext & { setSinkId?: (id: string) => Promise<void> }
 export const canPickAudioOutput = (): boolean =>
   typeof AudioContext !== 'undefined' && 'setSinkId' in AudioContext.prototype
 
-function applyOutputSink(ctx: AudioContext, id: string | null): Promise<void> {
+/**
+ * ⛔ A REMEMBERED OUTPUT DEVICE THAT IS NO LONGER PLUGGED IN IS SILENT, AND
+ * `setSinkId` DOES NOT ALWAYS COMPLAIN ABOUT IT, 2026-08-24.
+ *
+ * The chosen device is persisted, so it outlives the headphones he picked it on.
+ * Come back without them and the app can route the whole mix at a device that is
+ * not there: no error to catch, no log, a flat meter and a perfect picture. That
+ * is one of the ways "the audio doesn't seem to be working" happens with nothing
+ * wrong in the code, and it survives every restart because the id is in storage.
+ *
+ * So the id is checked against the devices that actually exist before it is
+ * used, and forgotten when it is gone.
+ *
+ * ⚠️ ONLY WHEN THE LIST IS NON-EMPTY. Without microphone permission Chromium
+ * hands back a list with no outputs in it at all, and treating that as "your
+ * device is gone" would throw away a perfectly good choice the first time he
+ * opened the app on a fresh profile.
+ */
+async function stillExists(id: string): Promise<boolean> {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices()
+    const outputs = devices.filter((d) => d.kind === 'audiooutput')
+    if (outputs.length === 0) return true
+    return outputs.some((d) => d.deviceId === id)
+  } catch {
+    return true
+  }
+}
+
+async function applyOutputSink(ctx: AudioContext, id: string | null): Promise<void> {
   const c = ctx as SinkableCtx
-  if (typeof c.setSinkId !== 'function') return Promise.resolve()
+  if (typeof c.setSinkId !== 'function') return
+  let target = id
+  if (target && !(await stillExists(target))) {
+    // Forget it, so this is decided once and not on every play.
+    target = null
+    outputDeviceId = null
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.removeItem(AUDIO_OUTPUT_KEY)
+    } catch {
+      // Storage unavailable: the in-memory reset still gets him his sound back.
+    }
+  }
   // Device gone / permission denied: stay on the current sink rather than throw.
-  return c.setSinkId(id ?? '').catch(() => {})
+  await c.setSinkId(target ?? '').catch(() => {})
 }
 
 /** Lazy singleton, one AudioContext for the whole app. */

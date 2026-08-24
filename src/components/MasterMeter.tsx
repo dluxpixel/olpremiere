@@ -48,6 +48,19 @@ function Channel({
 }
 
 /**
+ * The meter's exact column width: the w-6 tick gutter (24) + gap-1.5 (6) + a
+ * w-[11px] channel + gap-1.5 (6) + the second channel = 58.
+ *
+ * ⛔ EXPORTED BECAUSE THE MONITOR MIRRORS IT, AND THE PICTURE'S CENTRE DEPENDS
+ * ON THE TWO MATCHING. The meter is a column in the same row as the video, so
+ * every pixel of it comes off the RIGHT of the picture's box and nothing off the
+ * left. Monitor.tsx reserves this same width on the left to put the picture back
+ * on the panel's centre; a number typed twice would drift the day this meter
+ * grows a third channel and quietly de-centre the video again.
+ */
+export const MASTER_METER_W = 58
+
+/**
  * Master L/R level meter. Reads the persistent analyser chain each frame and
  * drives bars imperatively (no React re-render). The rAF is gated on
  * ui.playing (parked and zeroed while idle) and lives in its OWN column so
@@ -139,6 +152,9 @@ export function MasterMeter() {
     <div
       data-testid="master-meter"
       className="flex shrink-0 items-stretch gap-1.5 select-none"
+      // Pinned to the exported constant so the meter and the monitor's mirror
+      // can never disagree about how wide this column is.
+      style={{ width: MASTER_METER_W }}
       title="Master level (click to clear clip)"
       onClick={clearClips}
     >

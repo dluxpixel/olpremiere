@@ -82,7 +82,38 @@ export const ClipView = memo(function ClipView({
   const left = clip.startS * pxPerS
   const durS = clipDurationS(clip)
   const width = Math.max(4, durS * pxPerS)
-  const innerH = Math.max(1, trackHeight - 6)
+  /**
+   * The clip's DRAWN height: the root is `top-[3px] bottom-[3px]` inside the
+   * track, less the 1px border top and bottom.
+   *
+   * ⛔ IT WAS `trackHeight - 6` UNTIL 2026-08-24, WHICH IS THE BORDER BOX, and
+   * every consumer of it draws in the PADDING box. See `innerW` below: the two
+   * are one mistake and they are fixed together, so a later reader finds a pair
+   * that agree rather than one of each.
+   */
+  const innerH = Math.max(1, trackHeight - 8)
+  /**
+   * ⛔ WHAT EVERY ABSOLUTELY POSITIONED CHILD IN HERE ACTUALLY SEES, 2026-08-24.
+   *
+   * `width` is the clip's BORDER-box width: it is written straight onto the root
+   * (`style={{ left, width }}`), the root carries `border border-black/40`, and
+   * Tailwind's preflight makes everything `box-sizing: border-box`. But an
+   * absolutely positioned child's containing block is the PADDING box, so its
+   * coordinate space runs 0..width-2 and its origin is one px in from the clip's
+   * outer edge.
+   *
+   * Handing `width` to a child therefore aims two px past the visible edge, and
+   * `overflow-hidden` on the root eats the difference silently. It had bitten at
+   * least three things at once: the trailing keyframe diamond lost ~2px, the
+   * fade RAMP's diagonal never reached the visible bottom corner, and the two
+   * fade ends were never symmetric (the head cleared the trim strip by the full
+   * radius the 2026-08-18 scar promised, the tail by two px less, which is why
+   * only the head was ever benched).
+   *
+   * Use this for anything positioned inside the clip. `width` is still right for
+   * the clip's own box and for anything measured against the timeline.
+   */
+  const innerW = Math.max(0, width - 2)
   // Titles are generated (no asset): a distinct violet family + the text label.
   const isTitle = clip.title !== undefined
   const isAdjustment = clip.adjustment === true
@@ -160,6 +191,13 @@ export const ClipView = memo(function ClipView({
   const fadeInPx = fadeInS * pxPerS
   const fadeOutPx = fadeOutS * pxPerS
 
+  // Where each fade REALLY ends, in the coordinate space the handles live in
+  // (`innerW`, the padding box), clamped to the clip and to nothing else. A fade
+  // of zero is AT the edge and the mark has to say so; the old single clamped
+  // element could not, because it was also the grab.
+  const fadeInX = Math.max(0, Math.min(innerW, fadeInPx))
+  const fadeOutX = Math.max(0, Math.min(innerW, innerW - fadeOutPx))
+
   // How wide the grab zone at each end is. Hoisted out of the two trim zones
   // below because the fade dots have to know it: they are round, they are
   // centred on their value, and at a fade of zero that puts half a dot on top
@@ -176,10 +214,57 @@ export const ClipView = memo(function ClipView({
    * the only grabbable part of a zero fade was the 5px between the strip's edge
    * and the dot's right edge. `phase6.spec.ts` pressing 1px in went to the trim,
    * exactly as it had before, and the fade still could not be started there.
-   * Adding the radius is what actually clears it: the dot now begins where the
-   * strip ends and the whole 10px of it is his to grab.
+   * Adding the radius is what actually clears it: the grab now begins where the
+   * strip ends and the whole of it is his to press.
+   *
+   * ⚠️ IT SAID "THE DOT" UNTIL 2026-08-24 AND THAT SENTENCE IS NOW ONLY TRUE OF
+   * THE GRAB. The dot and the grab are two elements from that day on (see
+   * `padW` below); `dotR` is still half the dot, and it is the clearance the PAD
+   * inherits, so both numbers still come from here.
    */
   const dotR = 5
+
+  /**
+   * ⛔ THE MARK AND THE GRAB ARE TWO DIFFERENT THINGS, 2026-08-24, AND CLAMPING
+   * ONE ELEMENT FOR BOTH IS WHAT HE WAS LOOKING AT.
+   *
+   * The block above is still true: the grab has to clear the z-20 trim strip or
+   * a fade cannot be STARTED. What it also did, because the dot was the handle,
+   * was park a fade of ZERO eleven px inside the clip, six clear of the edge. So
+   * a clip with no fade drew a handle sitting in from its own corner, which reads
+   * as a fade that is already there. His words: *"these dots are not at the edge,
+   * and if they were attached, it would not match the design, so make it so it
+   * actually fits."*
+   *
+   * Both halves of that are right, which is why this is two elements now:
+   *   - the MARK is drawn on the fade's REAL anchor and is pointer-events-none,
+   *   - the PAD is transparent, carries the gesture, and still owes the strip its
+   *     clearance.
+   *
+   * "Attached would not match the design" is the second half: a disc centred on
+   * x=0 is half outside a box that is `overflow-hidden rounded-clip` (line 328),
+   * so half the handle would simply be cut away. At the extremes the mark is
+   * drawn FLAT-SIDED instead - its straight edge lies on the clip's edge and its
+   * round side points inward - so all ten px of it paint, it hugs the corner
+   * radius, and it is unambiguously AT the end. The moment the fade leaves zero
+   * it is a full disc again, on the ramp's apex.
+   */
+  const PAD_W = 14
+  /**
+   * The pad narrows on a clip too small to seat two of them, so the two ends can
+   * never overlap and steal each other's gesture. The block below renders at
+   * `width >= 32`, i.e. `innerW >= 30`, and 30 less the two 6px strips leaves 18
+   * to share: 9 each at the floor, 14 each from `innerW >= 40` up. A fixed 14
+   * would have put the out-pad across the in-pad's right half for the whole
+   * 32..39px band, and the later sibling would have taken the shared pixels.
+   */
+  const padW = Math.min(PAD_W, Math.floor((innerW - 2 * trimPx) / 2))
+  /** The whole disc, always inside the box, because half a mark says nothing. */
+  const markLeft = (x: number): number =>
+    Math.min(Math.max(x - dotR, 0), Math.max(0, innerW - dotR * 2))
+  /** The gesture, always clear of both z-20 trim strips. */
+  const padLeft = (x: number): number =>
+    Math.min(Math.max(x - padW / 2, trimPx), Math.max(trimPx, innerW - trimPx - padW))
 
   // Keyframes, drawn ON the clip the way CapCut does. Until now they existed
   // only inside the Inspector's 240px lane, so nothing on the timeline said a
@@ -352,7 +437,7 @@ export const ClipView = memo(function ClipView({
           ❄
         </span>
       )}
-      {isAudio && asset && <ClipWaveform clip={clip} asset={asset} width={width} height={innerH} />}
+      {isAudio && asset && <ClipWaveform clip={clip} asset={asset} width={innerW} height={innerH} />}
       {clip.linkId && (
         <span
           className="pointer-events-none absolute bottom-1 right-1 rounded-[3px] bg-black/45 p-0.5 text-white/80"
@@ -396,11 +481,22 @@ export const ClipView = memo(function ClipView({
         {label}
       </span>
 
-      {/* z-20: the trim zones are later siblings with no stacking of their own,
-          so without it the FIRST diamond sits UNDER the trim-in handle and
-          dragging it silently trims the clip's head instead of retiming. */}
+      {/* z-20 was here because the trim zones are later siblings with no
+          stacking of their own, so without it the FIRST diamond sat UNDER the
+          trim-in handle and dragging it silently trimmed the clip's head instead
+          of retiming.
+          ⛔ z-30 SINCE 2026-08-24, AND THE OLD NUMBER HAD STOPPED WORKING. The
+          trim zones were given `z-20` of their own on 2026-08-18 so the edge
+          would always win over the FADE dots, which is right and stays. But it
+          put them level with this strip, and level plus later-in-DOM means they
+          won here too, at BOTH ends: about six of the last diamond's ten
+          grabbable px sat under `trim-out`, so pressing the right half of a
+          keyframe trimmed the clip. z-30 restores what the paragraph above was
+          written to guarantee without touching the trim zones' win over the
+          fades, because these two never share a band: the diamonds are the
+          bottom 12px, the fade handles the top 10. */}
       {keyframeTimes.length > 0 && width > 8 && (
-        <div data-testid="clip-keyframes" className="absolute inset-x-0 bottom-0 z-20 h-3">
+        <div data-testid="clip-keyframes" className="absolute inset-x-0 bottom-0 z-30 h-3">
           {keyframeTimes.map((t, i) => {
             const live = kfPreview?.fromT === t ? kfPreview.t : t
             const raw = live * pxPerS
@@ -412,8 +508,14 @@ export const ClipView = memo(function ClipView({
             // as a keyframe. Showing all of it 5px in is more honest than showing
             // half of it in the right place: the mark means "there is a keyframe
             // at this edge", and half a mark says nothing.
+            // ⚠️ `innerW`, NOT `width`, SINCE 2026-08-24. This clamp exists to
+            // keep the whole diamond inside the clip, and it was measuring
+            // against the BORDER box while sitting in the padding box, so the
+            // trailing diamond was pushed 2px past the visible edge and
+            // `overflow-hidden` sliced exactly the ~2px this line was written to
+            // save. The head diamond was fine, which is why it read as correct.
             const HALF = 5
-            const x = width >= HALF * 2 ? Math.min(Math.max(raw, HALF), width - HALF) : raw
+            const x = innerW >= HALF * 2 ? Math.min(Math.max(raw, HALF), innerW - HALF) : raw
             return (
               <span
                 key={i}
@@ -446,7 +548,7 @@ export const ClipView = memo(function ClipView({
         <svg
           data-testid="transition-overlay"
           className="pointer-events-none absolute inset-0"
-          width={width}
+          width={innerW}
           height={innerH}
           preserveAspectRatio="none"
         >
@@ -464,14 +566,14 @@ export const ClipView = memo(function ClipView({
           {transitionOutPx > 0.5 && (
             <g data-testid="transition-out-mark">
               <rect
-                x={width - transitionOutPx}
+                x={innerW - transitionOutPx}
                 y={0}
                 width={transitionOutPx}
                 height={innerH}
                 fill="rgba(255,255,255,0.14)"
               />
               <path
-                d={`M${width - transitionOutPx},0 L${width},${innerH} M${width - transitionOutPx},${innerH} L${width},0`}
+                d={`M${innerW - transitionOutPx},0 L${innerW},${innerH} M${innerW - transitionOutPx},${innerH} L${innerW},0`}
                 stroke="rgba(255,255,255,0.7)"
                 strokeWidth={1}
                 fill="none"
@@ -485,7 +587,7 @@ export const ClipView = memo(function ClipView({
         <svg
           data-testid="fade-overlay"
           className="pointer-events-none absolute inset-0"
-          width={width}
+          width={innerW}
           height={innerH}
           preserveAspectRatio="none"
         >
@@ -497,8 +599,8 @@ export const ClipView = memo(function ClipView({
           )}
           {fadeOutPx > 0.5 && (
             <>
-              <path d={`M${width},0 L${width - fadeOutPx},0 L${width},${innerH} Z`} fill="rgba(0,0,0,0.4)" />
-              <line x1={width - fadeOutPx} y1={0} x2={width} y2={innerH} stroke="rgba(255,255,255,0.85)" strokeWidth={1} />
+              <path d={`M${innerW},0 L${innerW - fadeOutPx},0 L${innerW},${innerH} Z`} fill="rgba(0,0,0,0.4)" />
+              <line x1={innerW - fadeOutPx} y1={0} x2={innerW} y2={innerH} stroke="rgba(255,255,255,0.85)" strokeWidth={1} />
             </>
           )}
         </svg>
@@ -519,29 +621,60 @@ export const ClipView = memo(function ClipView({
           this back on the z-index alone.
           ⛔ CLAMPING THE DOT DOES NOT LIE ABOUT THE FADE. The fade's real extent
           is the SVG triangle above; the dot is only the handle you grab. The
-          handle moves clear of the trim strip, the readout does not move. */}
+          handle moves clear of the trim strip, the readout does not move.
+          ⛔ AND SINCE 2026-08-24 THE DOT DOES NOT MOVE EITHER, because it is no
+          longer the handle. The clamp lives on the transparent PAD; the mark is
+          drawn on the fade's own anchor and is flat-sided when that anchor is the
+          clip's edge. See the docblock on `padW` above for why both are needed.
+          ⚠️ THE MARK IS z-30, ABOVE THE TRIM STRIP'S z-20, AND THAT DOES NOT
+          GIVE IT THE POINTER: it is pointer-events-none, so hit testing skips it
+          entirely and the strip still wins every press. What z-30 buys is being
+          SEEN. The strip's own `bg-white/25` wash lights up on exactly the same
+          hover as the mark, so at z-10 the flush mark's left five px were painted
+          over by it and the one state this change exists to show was the one
+          state that stayed invisible. */}
       {width >= 32 && interactive && (
         <>
-          <div
-            data-testid="fade-in-handle"
-            className="absolute top-0 z-10 h-2.5 w-2.5 -translate-x-1/2 cursor-ew-resize rounded-full border border-white/80 bg-white/40 opacity-0 transition-opacity duration-[120ms] group-hover/clip:opacity-100"
-            style={{ left: Math.min(width - trimPx - dotR, Math.max(trimPx + dotR, fadeInPx)) }}
-            title="Drag to fade in"
-            onPointerDown={(e) => beginFade(e, 'in')}
-            onPointerMove={moveFade}
-            onPointerUp={endFade}
-            onPointerCancel={endFade}
-          />
-          <div
-            data-testid="fade-out-handle"
-            className="absolute top-0 z-10 h-2.5 w-2.5 -translate-x-1/2 cursor-ew-resize rounded-full border border-white/80 bg-white/40 opacity-0 transition-opacity duration-[120ms] group-hover/clip:opacity-100"
-            style={{ left: Math.min(width - trimPx - dotR, Math.max(trimPx + dotR, width - fadeOutPx)) }}
-            title="Drag to fade out"
-            onPointerDown={(e) => beginFade(e, 'out')}
-            onPointerMove={moveFade}
-            onPointerUp={endFade}
-            onPointerCancel={endFade}
-          />
+          {(
+            [
+              ['in', fadeInX],
+              ['out', fadeOutX],
+            ] as const
+          ).map(([edge, x]) => {
+            // Flush against the edge it belongs to means the flat side goes ON
+            // that edge and only the inward side is rounded, so the whole mark
+            // paints instead of half of it being cut away by `overflow-hidden`.
+            const flush = edge === 'in' ? x <= 0.5 : x >= innerW - 0.5
+            const round = !flush
+              ? 'rounded-full'
+              : edge === 'in'
+                ? 'rounded-l-none rounded-r-full'
+                : 'rounded-r-none rounded-l-full'
+            return (
+              <div key={edge} className="contents">
+                <div
+                  data-testid={`fade-${edge}-mark`}
+                  data-flush={flush ? 'true' : undefined}
+                  aria-hidden
+                  className={`pointer-events-none absolute top-0 z-30 h-2.5 w-2.5 border border-white/80 bg-white/40 opacity-0 transition-opacity duration-[120ms] group-hover/clip:opacity-100 ${round}`}
+                  style={{ left: markLeft(x) }}
+                />
+                {/* Transparent and always hit-testable: only the mark's TINT is
+                    hover-gated, the same way the trim strips below are always
+                    live and only their wash waits for the hover. */}
+                <div
+                  data-testid={`fade-${edge}-handle`}
+                  className="absolute top-0 z-10 h-2.5 cursor-ew-resize"
+                  style={{ left: padLeft(x), width: padW }}
+                  title={`Drag to fade ${edge}`}
+                  onPointerDown={(e) => beginFade(e, edge)}
+                  onPointerMove={moveFade}
+                  onPointerUp={endFade}
+                  onPointerCancel={endFade}
+                />
+              </div>
+            )
+          })}
         </>
       )}
 

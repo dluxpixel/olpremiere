@@ -35,7 +35,7 @@ import { BACKDROP_ZOOM, BLUR_BACKDROP_ZOOM } from '../engine/render/resolve'
 import { DEFAULT_SHUTTER_ANGLE } from '../engine/render/motionBlur'
 import { ScrubField } from './EffectControls'
 import { IconButton } from '../ui/Button'
-import { MasterMeter } from './MasterMeter'
+import { MASTER_METER_W, MasterMeter } from './MasterMeter'
 import { fitCanvasBox } from './monitorSizing'
 import { drawIsDue, previewFrameMs } from './previewCap'
 import { MonitorTransformOverlay } from './MonitorTransformOverlay'
@@ -170,7 +170,38 @@ function useProgramCanvas(quality: Quality) {
         styleH = hPx
         canvas.style.height = hPx
       }
-      prevComplete = renderPreview(canvas, seq, s.project.assets, s.ui.playheadS, playing)
+      // ⛔ THE FRAME GRID, NOT THE RAW PLAYHEAD, BECAUSE THE EXPORT SAMPLES THE
+      // GRID. The export walks whole frames (`exportWorker.ts`, t = startS +
+      // f / fps), and a paused preview already matches it because scrubbing
+      // quantizes (Timeline.tsx). PLAYBACK did not: it handed `renderPreview`
+      // whatever sub-frame instant the rAF happened to land on, so an animation
+      // was sampled up to a FULL FRAME away from where the export samples it. On
+      // a five frame punch that is a fifth of the move, and it shows up as the
+      // picture leading or lagging the file he gets out.
+      //
+      // The redraw gate above already keys on `frameIdx`, so this draws no more
+      // often than before; it only makes the instant it draws deterministic and
+      // equal to the export's.
+      //
+      // ⚠️ `frameIdx / fps`, NOT `quantizeToFrame`, which ROUNDS. The export's
+      // frame index counts forward in whole frames, which is a FLOOR, and
+      // rounding would sit half a frame ahead of it for half of every frame.
+      //
+      // ⛔ WHILE PLAYING ONLY, AND THE BROWSER GATE IS WHAT SAID SO. Quantizing
+      // a PARKED playhead too broke `effects.spec.ts` "White Flash: drop on the
+      // out edge": it parks 0.01s before the clip ends to sit 5% into a 0.2s
+      // flash, and a floor to the frame grid threw that away and landed 22% in,
+      // nowhere near white. Scrubbing already quantizes upstream, so a parked
+      // playhead is either on the grid already or somewhere a caller MEANT to
+      // put it exactly. Playback is the only case that was off the grid by
+      // accident, and it is the only case this touches.
+      prevComplete = renderPreview(
+        canvas,
+        seq,
+        s.project.assets,
+        playing ? frameIdx / fps : s.ui.playheadS,
+        playing,
+      )
       if (prevComplete) pendingSinceT = 0
       else if (pendingSinceT === 0) pendingSinceT = now
       prevKey = key
@@ -330,6 +361,28 @@ export function Monitor() {
       aria-label="Program monitor"
     >
       <div className="flex min-h-0 flex-1 items-stretch gap-2 p-3">
+        {/* ⛔ A MIRROR OF THE METER COLUMN, NOT PADDING AND NOT DECORATION.
+            The meter is 58px and the row's gap is 8, so 66px came off the RIGHT
+            of the picture's box and nothing off the left. The picture was
+            therefore centred 33px LEFT of the panel's centre at every width and
+            in every format, while the transport bar below spans the full width
+            and puts Play on the true centre. That 33px IS the complaint that
+            the play button does not sit under the middle of the picture: the
+            bar was already right, measured, and the picture was not.
+            His ask, 2026-08-24: *"Lift the video to the center in 16:9 and in
+            9:16."* Same 33px in both, which is why he named both.
+
+            ⛔ NOT `pl-` ON THE VIDEO BOX, which is the shorter-looking fix. The
+            draw loop seeds parentW from `parent.clientWidth`, which INCLUDES
+            padding, and only then updates it from `contentRect.width`, which
+            does not (lines 104-112). Padding would size the first frame's canvas
+            66px too wide and it would settle a frame later, a visible pop on
+            every mount and every format switch.
+            ⛔ AND NOT by floating the meter over the video to win the width
+            back: the rule on the meter's own line below is that it never sits
+            over the picture, and out-of-flow is the mistake photographed on the
+            bar itself on 2026-08-19. */}
+        <div aria-hidden data-testid="meter-mirror" className="shrink-0" style={{ width: MASTER_METER_W }} />
         <div className="relative flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden">
           <canvas ref={canvasRef} data-testid="program-canvas" className="rounded-[2px] bg-black" />
           {safeMargins && <SafeMargins canvas={canvasRef.current} />}
@@ -350,7 +403,9 @@ export function Monitor() {
             </div>
           )}
         </div>
-        {/* Meter lives in its OWN column, never over the video. */}
+        {/* Meter lives in its OWN column, never over the video. The dead spacer
+            at the top of this row mirrors its width so the picture stays on the
+            panel's centre instead of being pushed left by it. */}
         <MasterMeter />
       </div>
 
@@ -389,7 +444,19 @@ export function Monitor() {
           and the controls narrow. The timecode is still the first thing to give,
           because a truncated timecode is readable and an icon painted through a
           label is not. */}
-      <div className="grid h-11 shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-2 overflow-hidden border-t border-border bg-bg-panel px-3">
+      {/* ⛔ `minmax(0,1fr)`, NOT A BARE `1fr`, AND THE DIFFERENCE IS THE WHOLE
+          CENTRING. A bare `1fr` is `minmax(auto,1fr)`: the track refuses to go
+          below its item's min-content size unless that item ALSO sets
+          `min-width:0` or a non-visible overflow. Both side columns happen to
+          set both today, so the two tracks split the free space evenly and Play
+          lands on the exact centre, measured 540 of 1080. But that means the
+          centring is being held up by a utility class on a CHILD, and column 3's
+          min-content is within a few px of its share: delete one `min-w-0` while
+          tidying and the right track wins the argument and shoves the transport
+          left, which is the 2026-08-24 photograph described below.
+          Writing the floor into the track definition makes it structural, and it
+          moves zero pixels today. */}
+      <div className="grid h-11 shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 overflow-hidden border-t border-border bg-bg-panel px-3">
         <div className="flex min-w-0 shrink items-center gap-2 overflow-hidden whitespace-nowrap">
           <span data-testid="timecode" className="font-numeric text-ui-sm text-text-primary">
             <PlayheadTimecode fps={seq.fps} editable testId="monitor-timecode" />

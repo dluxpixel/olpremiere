@@ -9,6 +9,7 @@
 // in both the app bundle and the worker bundle.
 
 import lilitaUrl from '../../assets/fonts/LilitaOne-Regular.ttf?url'
+import luckiestGuyUrl from '../../assets/fonts/LuckiestGuy-Regular.ttf?url'
 import monocraftUrl from '../../assets/fonts/Monocraft.ttf?url'
 import montserratUrl from '../../assets/fonts/Montserrat-Variable.ttf?url'
 import versatileUrl from '../../assets/fonts/VersatileBold.ttf?url'
@@ -62,6 +63,17 @@ export const COMIC_STACK = "'Lilita One', 'Arial Black', sans-serif"
 export const VERSATILE_STACK = "'Versatile Bold', 'Arial Black', sans-serif"
 
 /**
+ * Luckiest Guy (Astigmatic, SIL OFL, licence in LuckiestGuy-OFL.txt), his ask
+ * 2026-08-24. The fat cartoon caps face that half of YouTube and every gaming
+ * Short is titled in, and the closest thing in the list to what a thumbnail
+ * wants. It is CAPS ONLY by design: lowercase letters in the file are drawn as
+ * capitals, so a title typed in lower case still comes out shouting. That is the
+ * font, not a bug, and it is why the fallback is 'Arial Black' rather than a
+ * mixed-case face that would change shape completely if the file ever failed.
+ */
+export const LUCKIEST_GUY_STACK = "'Luckiest Guy', 'Arial Black', sans-serif"
+
+/**
  * Figtree (the UI family) doubling as the default title face. Served from the
  * same self-hosted woff2 the UI loads (public/fonts), and registered in the
  * export worker's own FontFaceSet so titled text matches preview == export.
@@ -90,6 +102,7 @@ export const CUSTOM_TITLE_FONTS: CustomTitleFont[] = [
   },
   { label: 'Comic Bold', family: 'Lilita One', stack: COMIC_STACK, url: lilitaUrl },
   { label: 'Versatile Bold', family: 'Versatile Bold', stack: VERSATILE_STACK, url: versatileUrl },
+  { label: 'Luckiest Guy', family: 'Luckiest Guy', stack: LUCKIEST_GUY_STACK, url: luckiestGuyUrl },
 ]
 
 /** Every selectable title font (bundled + system stacks), for the Inspector

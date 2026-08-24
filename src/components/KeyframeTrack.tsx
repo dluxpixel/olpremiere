@@ -280,6 +280,38 @@ export function KeyframeTrack({ clip, channel }: { clip: Clip; channel: AnimChan
       >
         {/* mid-line rail */}
         <div className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-border" />
+        {/* ⛔ WHERE THE ANIMATION STOPS, DRAWN AT LAST, 2026-08-24.
+            His words: *"the keyframe that ends, but it's bugged ... The design
+            also is kind of weird."*
+            Until now a run of keyframes had NO visual extent. The hairline above
+            is `inset-x-0`, so it ran the whole lane, identically before the first
+            diamond, between them, and after the last: the last diamond was drawn
+            exactly like the first and the rail carried on past it unchanged.
+            Nothing on the surface said where the move began or ended.
+            Worse, that dead tail was a trap. `segmentIndexAt` returns -1 past the
+            last diamond and `onRailClick` turns -1 into a CLEAR, while this
+            lane's own tooltip and the legend below both invite him to "click
+            between two diamonds". The full-width line advertised a clickable
+            rail for the whole clip, and clicking the half of it that lies past
+            the animation silently threw his selection away.
+            So the run gets its own brighter bar between the first and last
+            moment. It is `pointer-events-none`: what a click does is unchanged,
+            it is only no longer a surprise. One step up from `--color-border`,
+            which is the same relationship the selected band already has to the
+            rail, so nothing new is invented to look at. */}
+        {kfs.length > 1 &&
+          (() => {
+            const runL = clampPx(rail.tToPx(kfs[0].t))
+            const runR = clampPx(rail.tToPx(kfs[kfs.length - 1].t))
+            return runR > runL ? (
+              <div
+                data-testid="keyframe-run"
+                aria-hidden
+                className="pointer-events-none absolute top-1/2 h-[2px] -translate-y-1/2 rounded-full bg-border-strong"
+                style={{ left: runL, width: runR - runL }}
+              />
+            ) : null
+          })()}
         {segBand && (
           <div
             // Keyed on the segment so picking a DIFFERENT one replays the grow.
