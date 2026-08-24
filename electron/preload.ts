@@ -84,6 +84,10 @@ const api: OlApi = {
   },
   splashShrink: () => ipcRenderer.send('boot:shrink'),
   splashEnter: () => ipcRenderer.send('boot:enter'),
+  updateShow: () => ipcRenderer.send('update:show'),
+  updateShrink: () => ipcRenderer.send('update:shrink'),
+  updateApply: () => ipcRenderer.send('update:apply'),
+  updateDismiss: () => ipcRenderer.send('update:dismiss'),
   onUpdateStatus: (cb: (status: UpdateStatus) => void) => {
     const l = (_e: unknown, status: UpdateStatus) => cb(status)
     ipcRenderer.on('update:status', l)

@@ -10,7 +10,8 @@
 // to the main process, which forwards it here, so this window is a view of the
 // same honest ledger rather than a timer pretending to load something.
 
-import { MELON_H, MELON_PALETTE, MELON_W, melonPixels } from '../ui/melon'
+import { MELON_PALETTE } from '../ui/melon'
+import { melonSvg } from './melonSvg'
 import { BACKGROUND_TITLE, GATING_TITLE, LEGAL_LINE, MARK, cursorIndex, splitRows } from '../ui/bootCopy'
 import type { BootStepState } from '../ui/bootProgress'
 import { SPLASH_CARD_EXIT_MS } from '../../electron/ipc-types'
@@ -39,13 +40,6 @@ interface SplashProgress {
   settled: number
   total: number
   version: string
-}
-
-function melonSvg(className = 'melon'): string {
-  const rects = melonPixels()
-    .map((p) => `<rect x="${p.x}" y="${p.y}" width="1" height="1" fill="${p.color}"/>`)
-    .join('')
-  return `<svg class="${className}" viewBox="0 0 ${MELON_W} ${MELON_H}" shape-rendering="crispEdges" aria-hidden="true">${rects}</svg>`
 }
 
 const reducedMotion = (): boolean => !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches

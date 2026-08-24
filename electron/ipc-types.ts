@@ -58,7 +58,14 @@ export interface NativeProgress {
 export type UpdateStatus =
   | { kind: 'checking' }
   | { kind: 'available'; version: string }
-  | { kind: 'downloading'; version: string; percent: number }
+  /**
+   * `transferred` and `total` are bytes, and they are OPTIONAL so nothing that
+   * already reads this type has to change. electron-updater hands them over on the
+   * same event it takes `percent` from and they were being thrown away; carrying
+   * them is what lets the update card print "112 of 240 MB" instead of a bare
+   * percent that names no denominator.
+   */
+  | { kind: 'downloading'; version: string; percent: number; transferred?: number; total?: number }
   | { kind: 'downloaded'; version: string }
   | { kind: 'none' }
   | { kind: 'error'; message: string }
@@ -87,6 +94,58 @@ export const SPLASH_MELON_PX = 360
  */
 export const SPLASH_WINDOW_W = 700
 export const SPLASH_WINDOW_H = 460
+
+/**
+ * The UPDATE card's choreography, here for the same reason the splash block above
+ * is here: main opens the window, the page animates it, and a test asserts the
+ * stylesheet still agrees. His ask, 2026-08-24: *"when its downloading it does a
+ * downloading screen similiar to the opening of the app screen."*
+ */
+/**
+ * How long a download must have been running before the window opens. A small
+ * delta finishes in under a second, and a 700x460 always-on-top window that
+ * flashed for it would be worse than no window at all.
+ */
+export const UPDATE_SCREEN_DELAY_MS = 900
+/**
+ * Past this, the download is nearly done and the card would open only to leave.
+ * The toast already carries a finished update.
+ */
+export const UPDATE_SCREEN_MAX_PCT = 90
+/**
+ * How long the card stands on its LAST frame, downloaded or failed, before it
+ * goes. One sentence has to be readable; a card that vanished on the beat it
+ * finished would have said nothing at all.
+ */
+export const UPDATE_CARD_HOLD_MS = 1600
+/**
+ * No progress and no answer for this long: the card leaves, quietly. The window is
+ * frameless, skipTaskbar and always-on-top with no close button, so it must never
+ * be able to sit at 63% forever with Escape as its only undocumented exit.
+ */
+export const UPDATE_STALL_MS = 90_000
+/**
+ * How long the melon waits to be clicked before the window closes itself. The boot
+ * melon waits forever because nothing else is on screen; this one is sitting on top
+ * of his timeline, and the update installs itself at the next start either way.
+ */
+export const UPDATE_MELON_TIMEOUT_MS = 20_000
+/**
+ * Twentieths of one file. ⛔ MUST DIVIDE 100, or the last segment cannot light at
+ * 100% and the bar reads full at 95, which is the boot bar's old lie in a new shape.
+ */
+export const UPDATE_BAR_SEGMENTS = 20
+/**
+ * ⛔ A RECOMMENDATION, AND A SWITCH. False: the card opens only for a check HE
+ * started with the melon.
+ *
+ * Two of the three routes into `downloading` are unbidden, the check at app-ready
+ * and the fifteen minute poll, so without this the card appears a second after
+ * every launch and again mid-afternoon over his timeline, asked for by nobody. He
+ * asked for a screen WHEN HE CLICKS THE MELON. The unbidden case is already
+ * narrated: the topbar mark takes the bite and the toast fires either way.
+ */
+export const UPDATE_SCREEN_UNBIDDEN = false
 
 /** One frame of the loading card's state, sent to the splash window. */
 export interface BootProgress {
@@ -216,6 +275,20 @@ export interface OlApi {
   splashShrink(): void
   /** Splash to main: the melon was clicked, open the editor. */
   splashEnter(): void
+
+  /** Update window only: the card has painted, so it is safe to show. */
+  updateShow(): void
+  /** Update window to main: the card is gone, shrink the window around the melon. */
+  updateShrink(): void
+  /**
+   * Update window to main: the melon was clicked, restart into the new version.
+   *
+   * ⛔ NOT `update:install`. This routes into the renderer's existing decision, so
+   * it can never quit through an in-flight export or an unsaved edit.
+   */
+  updateApply(): void
+  /** Update window to main: nothing more to say, close me. */
+  updateDismiss(): void
   /** Every updater transition: checking → available → downloading → downloaded / none / error. Returns an unsubscribe fn. */
   onUpdateStatus(cb: (status: UpdateStatus) => void): () => void
 

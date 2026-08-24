@@ -440,8 +440,26 @@ export function Monitor() {
 
         {/* Its own grid column, so it is pushed right by the column and not by a
             margin. `min-w-0` so it NARROWS as the inspector grows rather than
-            shoving the centre column off the middle, which is the whole ask. */}
-        <div className="flex min-w-0 items-center justify-self-end gap-2 overflow-hidden">
+            shoving the centre column off the middle, which is the whole ask.
+
+            ⛔ `w-full`, AND THAT IS THE WHOLE FIX. It was `justify-self-end`,
+            which sizes the box to its CONTENT and then hangs it off the right
+            edge of the column. This group is wider than its column at every
+            window size, so the box started well to the LEFT of its own column and
+            `overflow-hidden` clipped nothing, because nothing was overflowing the
+            box, only the column. Measured 2026-08-24 at a 1600px window: the play
+            button sat at 701-729 and the aspect picker at 691-805, a 28px overlap,
+            which is the Play icon drawn straight through the words "9:16 Shorts".
+            He photographed exactly that, and the same failure was photographed on
+            2026-08-19 and 2026-08-18 before it.
+
+            The comment above already names this: *"a flex overflow under
+            justify-end spills out of the START edge."* It was fixed for the
+            absolutely-centred layout and reintroduced here by the grid rewrite.
+            `w-full` pins the box to the column, so the content is clipped at the
+            column edge instead of painted over the transport, and the row stays
+            readable at any width. */}
+        <div className="flex w-full min-w-0 items-center justify-end gap-2 overflow-hidden">
           {/* Left of the aspect picker, alongside the blur: the frame he can
               see is the frame it takes, at the sequence's own size. */}
           <IconButton

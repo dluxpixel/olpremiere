@@ -12,7 +12,16 @@ import { existsSync, renameSync } from 'node:fs'
 import path from 'node:path'
 import * as backups from './backups'
 import type { NativeExportConfig, UpdateStatus } from './ipc-types'
-import { SPLASH_MELON_POP_MS, SPLASH_MELON_PX, SPLASH_WINDOW_H, SPLASH_WINDOW_W } from './ipc-types'
+import {
+  SPLASH_MELON_POP_MS,
+  SPLASH_MELON_PX,
+  SPLASH_WINDOW_H,
+  SPLASH_WINDOW_W,
+  UPDATE_MELON_TIMEOUT_MS,
+  UPDATE_SCREEN_DELAY_MS,
+  UPDATE_SCREEN_MAX_PCT,
+  UPDATE_SCREEN_UNBIDDEN,
+} from './ipc-types'
 import * as native from './nativeExport'
 import * as proxy from './proxy'
 import * as mediaStore from './mediaStore'
@@ -232,6 +241,111 @@ let updateStatus: UpdateStatus = { kind: 'unsupported' }
 function setUpdateStatus(status: UpdateStatus): void {
   updateStatus = status
   mainWindow?.webContents.send('update:status', status)
+  if (updateWindow && !updateWindow.isDestroyed()) updateWindow.webContents.send('update:status', status)
+  if (status.kind === 'downloading') armUpdateWindow(status)
+  // A terminal answer ends his click's authority. Without this the flag leaks into
+  // the fifteen minute poll and a card opens over his timeline unbidden, which is
+  // the exact thing the flag exists to prevent.
+  if (status.kind === 'none' || status.kind === 'downloaded' || status.kind === 'error') userAsked = false
+}
+
+/**
+ * The update card: the same screen he opens the app with, while a version
+ * downloads. His ask, 2026-08-24.
+ *
+ * ⛔ IT IS NOT `createSplash`. That function's `closed` handler calls
+ * `enterEditor()` and its `ready-to-show` sends `boot:ready`, both of which are
+ * exactly wrong here.
+ */
+let updateWindow: BrowserWindow | null = null
+/** His melon click, and only his. Cleared by any terminal status. */
+let userAsked = false
+let updateOpenTimer: ReturnType<typeof setTimeout> | null = null
+
+/** Every gate, in order, before a card is allowed over his editor. */
+function armUpdateWindow(s: Extract<UpdateStatus, { kind: 'downloading' }>): void {
+  if (updateWindow || updateOpenTimer) return
+  // Never two frameless transparent always-on-top windows at once.
+  if (!entered || splashWindow) return
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  if (!userAsked && !UPDATE_SCREEN_UNBIDDEN) return
+  if (s.percent >= UPDATE_SCREEN_MAX_PCT) return
+  updateOpenTimer = setTimeout(() => {
+    updateOpenTimer = null
+    if (updateStatus.kind === 'downloading') createUpdateWindow()
+  }, UPDATE_SCREEN_DELAY_MS)
+}
+
+function createUpdateWindow(): void {
+  const win = new BrowserWindow({
+    width: SPLASH_WINDOW_W,
+    height: SPLASH_WINDOW_H,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    maximizable: false,
+    minimizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    center: true,
+    show: false,
+    backgroundColor: '#00000000',
+    webPreferences: {
+      preload: path.join(__dirname, '../preload/index.cjs'),
+      contextIsolation: true,
+      sandbox: true,
+      nodeIntegration: false,
+    },
+  })
+  updateWindow = win
+  if (IS_LAB) {
+    win.setTitle('OL Premiere Lab')
+    win.on('page-title-updated', (e) => e.preventDefault())
+  }
+  win.once('ready-to-show', () => {
+    // So the first painted frame is true rather than an empty card.
+    win.webContents.send('update:status', updateStatus)
+    // Backstop: if the page never says it painted, show it anyway rather than
+    // leaving an invisible always-on-top window holding a download nobody can see.
+    setTimeout(() => {
+      if (!win.isDestroyed() && !win.isVisible()) win.showInactive()
+    }, 1500)
+  })
+  win.on('closed', () => {
+    if (updateWindow === win) updateWindow = null
+  })
+  void win.loadURL(isDev ? `${DEV_URL}/update.html` : `app://${APP_ORIGIN_HOST}/update.html`)
+}
+
+/**
+ * `shrinkSplash` without the focus call.
+ *
+ * ⛔ THE UPDATE WINDOW NEVER TAKES FOCUS. The splash may, because nothing else is
+ * on screen when it runs. This one opens over a timeline he is working in, and
+ * stealing the keyboard mid-caption is worse than any amount of polish. The cost
+ * is that Enter and Escape only reach the melon after he clicks the window, and
+ * the melon is a mouse target anyway.
+ */
+function shrinkUpdate(): void {
+  const win = updateWindow
+  if (!win || win.isDestroyed()) return
+  const b = win.getBounds()
+  const half = Math.round(SPLASH_MELON_PX / 2)
+  win.setResizable(true)
+  win.setBounds({
+    x: b.x + Math.round(b.width / 2) - half,
+    y: b.y + Math.round(b.height / 2) - half,
+    width: SPLASH_MELON_PX,
+    height: SPLASH_MELON_PX,
+  })
+  win.setResizable(false)
+  // The boot melon waits forever because nothing else is on screen. This one is
+  // sitting on his timeline, and the update installs itself at the next start
+  // either way, so it lets itself out.
+  setTimeout(() => {
+    if (updateWindow === win && !win.isDestroyed()) win.close()
+  }, UPDATE_MELON_TIMEOUT_MS)
 }
 
 // Content types we must set explicitly: a `type:module` worker hard-fails if it
@@ -514,6 +628,27 @@ app.whenReady().then(() => {
   })
   ipcMain.on('boot:enter', () => enterEditor())
 
+  // The update card. Every one guarded on the SENDER, the way boot:shrink is: any
+  // other renderer asking to shrink or quit this window is not this window.
+  ipcMain.on('update:show', (e) => {
+    if (e.sender === updateWindow?.webContents) updateWindow?.showInactive()
+  })
+  ipcMain.on('update:shrink', (e) => {
+    if (e.sender === updateWindow?.webContents) shrinkUpdate()
+  })
+  ipcMain.on('update:dismiss', (e) => {
+    if (e.sender === updateWindow?.webContents) updateWindow?.close()
+  })
+  ipcMain.on('update:apply', (e) => {
+    if (e.sender !== updateWindow?.webContents) return
+    // ⛔ NOT quitAndInstall. This goes through the renderer's own decision, which
+    // refuses to restart through an in-flight export and flushes a save first.
+    const v = 'version' in updateStatus ? updateStatus.version : ''
+    mainWindow?.webContents.send('update:autoApply', v)
+    // The fruit bursts over the restart, the same beat the splash melon plays.
+    setTimeout(() => updateWindow?.close(), SPLASH_MELON_POP_MS)
+  })
+
   // Auto-update: on a packaged build, check GitHub Releases (electron-builder.yml
   // `publish`) and download a newer version in the background. A failed check
   // (offline / no release) logs and is ignored. We re-check every 15 minutes so
@@ -538,6 +673,11 @@ app.whenReady().then(() => {
   // renderer's reload, so the check it starts is not cancelled a moment later.
   ipcMain.handle('update:check', () => {
     if (!app.isPackaged) return
+    // Re-finding a file that is already arriving would write {checking} over the
+    // percent and blank the card mid-download.
+    if (updateStatus.kind === 'downloading') return
+    // HIS click, and only his: this is what allows the card to open at all.
+    userAsked = true
     if (updateStatus.kind !== 'downloaded') setUpdateStatus({ kind: 'checking' })
     void autoUpdater.checkForUpdatesAndNotify()
   })
@@ -585,7 +725,15 @@ app.whenReady().then(() => {
       setUpdateStatus({ kind: 'available', version: info.version })
     })
     autoUpdater.on('download-progress', (p) => {
-      setUpdateStatus({ kind: 'downloading', version: pendingVersion, percent: Math.round(p.percent) })
+      // transferred/total ride along so the card can print a named denominator,
+      // "112 of 240 MB", instead of a bare percent that says which of nothing.
+      setUpdateStatus({
+        kind: 'downloading',
+        version: pendingVersion,
+        percent: Math.round(p.percent),
+        transferred: p.transferred,
+        total: p.total,
+      })
     })
     autoUpdater.on('update-downloaded', (info) => {
       // ⛔ ONCE PER VERSION, AND HE WAS GETTING IT FOUR TIMES AN HOUR.
@@ -653,6 +801,10 @@ app.whenReady().then(() => {
         clearInterval(poll)
         return
       }
+      // ⛔ AND NEVER OVER A LIVE DOWNLOAD. At minute fifteen of a long one this
+      // used to write {checking} across the percent, blanking the card while the
+      // file was still arriving perfectly well.
+      if (updateStatus.kind === 'downloading') return
       setUpdateStatus({ kind: 'checking' })
       void autoUpdater.checkForUpdatesAndNotify()
     }, FIFTEEN_MIN)

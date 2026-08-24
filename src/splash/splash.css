@@ -586,3 +586,45 @@
   /* The pop is kept even here: it is the only feedback that the click landed,
      and main is closing this window on that beat either way. */
 }
+
+/* ------------------------------------------------------------ the update card
+ *
+ * His ask, 2026-08-24: "when its downloading it does a downloading screen similiar
+ * to the opening of the app screen design it man".
+ *
+ * SIMILAR WAS NEVER THE JOB. update.html loads THIS stylesheet and builds the same
+ * .card out of the same .brand, .panel, .steps, .footer, .bar, .seg and .melonStage,
+ * in a window opened from the same SPLASH_WINDOW_W/H. There is nothing for the two
+ * screens to drift apart on, because there is only one of them. The difference
+ * between them is words, and words are not in here.
+ *
+ * Two rules, both scoped to [data-card='update'], so the boot card cannot see
+ * either one. And no third rule, deliberately: neither of the two properties this
+ * file bans outright may reappear here. One of them cut the diagonal into the brand
+ * pane he complained about; the other drew the bar as a single filled width, which
+ * is what let it read full while three rows under it were plainly unfinished. A
+ * continuous bar is not available on this card and should not be: this one is
+ * segmented like the other.
+ */
+
+/* THE SAME BOX HE OPENS THE APP WITH. Two rows would let the card fall back on its
+ * own 300px floor, and that is not merely smaller: the brand pane would then be
+ * shorter than .glow, which is a 252px circle breathing to 267, and .card is
+ * overflow:hidden. The bloom would be clipped top and bottom, and the clip would
+ * BREATHE. At 400 the pane is whole. It is also the height the boot card actually
+ * renders at, which is the point of the whole screen. */
+.card[data-card='update'] {
+  min-height: 400px;
+}
+
+/* The boot bar has eight segments because eight rows hold the app shut. This one
+ * has twenty because it counts ONE file in twentieths, so a real percent moves it
+ * about every 12 MB of a 240 MB installer instead of once a minute. Twenty segments
+ * at the boot's 4px gap read as a dotted line rather than a bar; closing the gap to
+ * the clip radius puts the air back to roughly what the boot bar has, so the finer
+ * ruler still reads as the same instrument. The gap is the radius token rather than
+ * a number because they are the same decision: this is how much the segments are
+ * allowed to not touch. */
+.card[data-card='update'] .bar {
+  gap: var(--radius-clip);
+}

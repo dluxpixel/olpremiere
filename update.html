@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>OL Premiere</title>
+    <!--
+      The update window. Deliberately the SAME page as the splash in every way that
+      shows: it loads src/splash/splash.css and builds the same card out of the same
+      classes. His ask, 2026-08-24: "when its downloading it does a downloading
+      screen similiar to the opening of the app screen". Similar was never the job,
+      this IS that screen, with two rows in it instead of eleven.
+
+      The style block below is the same as splash.html's. It has to be: the card is
+      centred by #root and the window is transparent, and a difference here would be
+      a difference in where the card sits on his desktop.
+    -->
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: transparent;
+        overflow: hidden;
+        /* The window is dragged by the card, and nothing in it is selectable. */
+        -webkit-user-select: none;
+        user-select: none;
+        cursor: default;
+      }
+      #root {
+        height: 100%;
+        display: grid;
+        place-items: center;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/splash/update.ts"></script>
+  </body>
+</html>

@@ -49,10 +49,12 @@ export default defineConfig({
     worker: { format: 'es' }, // module workers, matching vite.config.ts
     build: {
       outDir: 'out/renderer',
-      // Two pages: the editor, and the frameless splash WINDOW that shows while
-      // the editor loads. The splash is its own entry so it carries none of the
-      // app bundle, which is the only way it can be on screen first.
-      rollupOptions: { input: { index: 'index.html', splash: 'splash.html' } },
+      // Three pages: the editor, the frameless splash WINDOW that shows while the
+      // editor loads, and the update card that shows while a version downloads.
+      // Each is its own entry so it carries none of the app bundle, which is the
+      // only way the splash can be on screen first and the only way the update
+      // card can open over a running editor without paying for it twice.
+      rollupOptions: { input: { index: 'index.html', splash: 'splash.html', update: 'update.html' } },
     },
   },
 })
