@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { denoiseChannel, mixDryWet, type DenoiseEngine } from './denoise'
+import { denoiseChannel, denoiseEvictionPlan, mixDryWet, type DenoiseEngine } from './denoise'
 
 // A deterministic stand-in for the wasm: halves every sample in place. Lets
 // the chunking/scaling logic be pinned without loading RNNoise in node.
@@ -65,4 +65,38 @@ describe('denoiseChannel (chunking + 16-bit scaling)', () => {
 
   // The REAL wasm is browser-only (emscripten env check), so determinism +
   // "actually reduces noise" against real RNNoise live in e2e/denoise.spec.ts.
+})
+
+// ⛔ THE DENOISE CACHES HAVE A CEILING NOW.
+//
+// They held the full decoded audio of every clip he had ever denoised, twice
+// over, and nothing ever dropped them but deleting the asset. Roughly 230 MB per
+// ten minute stereo clip, beside a frame cache capped at 512 MB and an audio
+// cache capped at 256 MB. His words, 2026-08-24: *"it also somehow takes 99% of
+// my fucking RAM"*, then *"the lag sucks tho"*. The app was measured holding
+// 3.9 GB with 4 GB free of 32 while he said it.
+describe('the denoise caches cannot grow without end', () => {
+  const MB = 1024 * 1024
+  const sizes: Record<string, number> = { a: 100 * MB, b: 100 * MB, c: 100 * MB, d: 100 * MB }
+  const bytesOf = (id: string): number => sizes[id] ?? 0
+
+  it('drops nothing while it is inside the budget', () => {
+    expect(denoiseEvictionPlan(['a', 'b'], bytesOf, 200 * MB, 400 * MB, 'b')).toEqual([])
+  })
+
+  it('drops the oldest first, and only as many as it takes', () => {
+    // 400 MB held against a 250 MB budget: dropping 'a' and 'b' is enough.
+    expect(denoiseEvictionPlan(['a', 'b', 'c', 'd'], bytesOf, 400 * MB, 250 * MB, 'd')).toEqual(['a', 'b'])
+  })
+
+  it('never evicts the clip it was just asked to keep', () => {
+    // 'a' is both the oldest and the one just computed, so 'b' goes instead.
+    const plan = denoiseEvictionPlan(['a', 'b', 'c'], bytesOf, 300 * MB, 150 * MB, 'a')
+    expect(plan).not.toContain('a')
+    expect(plan).toEqual(['b', 'c'])
+  })
+
+  it('would empty everything else rather than sit over the budget', () => {
+    expect(denoiseEvictionPlan(['a', 'b', 'c'], bytesOf, 300 * MB, 0, 'c')).toEqual(['a', 'b'])
+  })
 })

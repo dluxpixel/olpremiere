@@ -91,19 +91,32 @@ const EMPHASIS_KEY = 'olpremiere:captions:emphasis'
  * persists it, and every caption door reads it from here so the dialog and the
  * clip right-click can never disagree.
  *
- * DEFAULT ON. A flat caption is what he has today and it is the worse of the
- * two: the renderer has had the emphasis colour all along and the auto path
- * never once set the flag. Only the non-default is stored, so an untouched
- * install writes nothing.
+ * ⛔ DEFAULT OFF, CHANGED 2026-08-24, AND THE OLD DEFAULT WAS A MISTAKE.
+ *
+ * It shipped ON, on the argument that a flat caption is the worse of the two.
+ * That was a judgement about taste made on his behalf about the colour of words
+ * in videos he publishes, and he was never plainly told it was running. His
+ * words when he finally noticed: *"it sometimes randomly makes the text yellow"*,
+ * and then *"why the fuck are you only now telling me about this feature that
+ * you added, and it's been fucking on my edits for quite some time?"*
+ *
+ * It is not random, it colours the word he leaned on, but from the outside a
+ * feature nobody mentioned looks exactly like a fault. A thing that changes what
+ * his audience sees is his to switch on.
+ *
+ * The switch keeps working and the memory is unchanged: only the NON default is
+ * stored, so now 'on' is what gets written and an untouched install writes
+ * nothing. Anyone who had already turned it off stays off, because their stored
+ * value is not 'on' either.
  */
 let emphasis: boolean | null = null
 
 export function getCaptionEmphasis(): boolean {
   if (emphasis !== null) return emphasis
   try {
-    emphasis = (typeof localStorage !== 'undefined' ? localStorage.getItem(EMPHASIS_KEY) : null) !== 'off'
+    emphasis = (typeof localStorage !== 'undefined' ? localStorage.getItem(EMPHASIS_KEY) : null) === 'on'
   } catch {
-    emphasis = true
+    emphasis = false
   }
   return emphasis
 }
@@ -112,8 +125,10 @@ export function setCaptionEmphasis(next: boolean): void {
   emphasis = next
   try {
     if (typeof localStorage === 'undefined') return
-    if (next) localStorage.removeItem(EMPHASIS_KEY)
-    else localStorage.setItem(EMPHASIS_KEY, 'off')
+    // The non-default is what gets stored, and the default is now OFF, so this
+    // is the mirror of what it was: 'on' is written, and off clears the key.
+    if (next) localStorage.setItem(EMPHASIS_KEY, 'on')
+    else localStorage.removeItem(EMPHASIS_KEY)
   } catch {
     // Private mode / quota: the in-memory value above still applies this run.
   }

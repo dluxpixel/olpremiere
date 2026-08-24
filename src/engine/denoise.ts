@@ -99,8 +99,82 @@ export function mixDryWet(raw: Float32Array, wet: Float32Array, strength: number
 // a stereo minute is roughly 9 s of work. The cache is doing more for him than
 // that number suggested, not less.
 
+// ⛔ BUDGETED, AND UNTIL 2026-08-24 THESE TWO WERE THE ONLY CACHES IN THE APP
+// THAT WERE NOT.
+//
+// Both hold FULL decoded channel data as Float32: roughly 230 MB for one ten
+// minute stereo clip, twice over, because the wet copy and the mixed copy are
+// each the length of the source. Nothing ever dropped them but deleting the
+// asset outright, so every clip he ever denoised stayed resident for the life of
+// the session. The frame cache is capped at 512 MB and the audio cache at
+// 256 MB; these grew without end beside them.
+//
+// His words, 2026-08-24: *"it also somehow takes 99% of my fucking RAM"* and
+// then *"the lag sucks tho"*. Measured while he said it: the app was holding
+// 3.9 GB with 4 GB free of 32.
+//
+// Insertion ordered, so the first key out of `keys()` is the least recently
+// ADDED. Re-reading a cached entry does not refresh it, which is the honest
+// simple thing: an evicted entry costs one re-run of the wasm over that clip,
+// never a wrong answer.
+const DENOISE_CACHE_MAX_BYTES = 192 * 1024 * 1024
 const wetCache = new Map<string, Promise<Float32Array[] | null>>()
 const mixCache = new Map<string, { strength: number; channels: Float32Array[] }>()
+/** Bytes charged per asset, counting both copies, so the budget is the truth. */
+const denoiseBytes = new Map<string, number>()
+let denoiseTotalBytes = 0
+
+const channelsBytes = (channels: readonly Float32Array[]): number =>
+  channels.reduce((n, c) => n + c.byteLength, 0)
+
+function chargeDenoise(assetId: string, bytes: number): void {
+  denoiseBytes.set(assetId, (denoiseBytes.get(assetId) ?? 0) + bytes)
+  denoiseTotalBytes += bytes
+}
+
+/**
+ * WHICH assets to drop, as a pure decision, so it can be tested without the
+ * wasm. Same split `blobGc.ts` uses for the same reason: the planner decides and
+ * the caller does the deleting.
+ *
+ * `order` is insertion order, oldest first. `keepId` is the asset just computed
+ * and is never chosen: evicting it would make the call that triggered this
+ * pointless and the next one would rebuild it immediately.
+ */
+export function denoiseEvictionPlan(
+  order: readonly string[],
+  bytesOf: (id: string) => number,
+  total: number,
+  budget: number,
+  keepId: string,
+): string[] {
+  const drop: string[] = []
+  let running = total
+  for (const id of order) {
+    if (running <= budget) break
+    if (id === keepId) continue
+    drop.push(id)
+    running -= bytesOf(id)
+  }
+  return drop
+}
+
+/** Drop least-recently-added assets until the total is inside the budget. */
+function evictDenoiseOverflow(keepId: string): void {
+  const drop = denoiseEvictionPlan(
+    [...wetCache.keys()],
+    (id) => denoiseBytes.get(id) ?? 0,
+    denoiseTotalBytes,
+    DENOISE_CACHE_MAX_BYTES,
+    keepId,
+  )
+  for (const id of drop) {
+    denoiseTotalBytes -= denoiseBytes.get(id) ?? 0
+    denoiseBytes.delete(id)
+    wetCache.delete(id)
+    mixCache.delete(id)
+  }
+}
 
 /** Denoised (full-wet) channels for an asset's decoded buffer, cached. */
 function ensureWetChannels(asset: MediaAsset, src: AudioBuffer): Promise<Float32Array[] | null> {
@@ -112,6 +186,8 @@ function ensureWetChannels(asset: MediaAsset, src: AudioBuffer): Promise<Float32
         for (let ch = 0; ch < src.numberOfChannels; ch++) {
           channels.push(denoiseChannel(engine, src.getChannelData(ch)))
         }
+        chargeDenoise(asset.id, channelsBytes(channels))
+        evictDenoiseOverflow(asset.id)
         return channels
       })
       .catch((err: unknown) => {
@@ -144,11 +220,18 @@ export async function denoisedBufferFor(
   const s = Math.min(1, Math.max(0, strength))
   let mixed = mixCache.get(asset.id)
   if (!mixed || mixed.strength !== s) {
+    // A replaced mix at a new strength is the same size, so only a NEW entry
+    // adds to the total. Charging both would double count every slider move.
+    const had = mixCache.has(asset.id)
     mixed = {
       strength: s,
       channels: wet.map((w, ch) => mixDryWet(src.getChannelData(ch), w, s)),
     }
     mixCache.set(asset.id, mixed)
+    if (!had) {
+      chargeDenoise(asset.id, channelsBytes(mixed.channels))
+      evictDenoiseOverflow(asset.id)
+    }
   }
   const out = createBuffer(src.numberOfChannels, src.length, src.sampleRate)
   for (let ch = 0; ch < src.numberOfChannels; ch++) out.getChannelData(ch).set(mixed.channels[ch]!)
@@ -157,6 +240,15 @@ export async function denoisedBufferFor(
 
 /** Drop cached denoise work for an asset (asset deleted / replaced). */
 export function invalidateDenoise(assetId: string): void {
+  // The running total has to come down with them, or the budget slowly counts
+  // bytes that no longer exist and starts evicting live work to pay for ghosts.
+  denoiseTotalBytes -= denoiseBytes.get(assetId) ?? 0
+  denoiseBytes.delete(assetId)
   wetCache.delete(assetId)
   mixCache.delete(assetId)
+}
+
+/** What the denoise caches are holding, for the test that guards the budget. */
+export function denoiseCacheBytesForTests(): number {
+  return denoiseTotalBytes
 }
