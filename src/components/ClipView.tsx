@@ -496,7 +496,67 @@ export const ClipView = memo(function ClipView({
           fades, because these two never share a band: the diamonds are the
           bottom 12px, the fade handles the top 10. */}
       {keyframeTimes.length > 0 && width > 8 && (
-        <div data-testid="clip-keyframes" className="absolute inset-x-0 bottom-0 z-30 h-3">
+        <div
+          data-testid="clip-keyframes"
+          // ⛔ `pointer-events-none` ON THE BOX, AND ITS ABSENCE WAS A REGRESSION
+          // I SHIPPED THE SAME DAY, 2026-08-24. Raising this strip to z-30 fixed
+          // the diamonds being stolen by the trim strips, and it also put a
+          // full-width, 12px tall, z-30 HIT TARGET across the bottom of every
+          // animated clip. The gaps BETWEEN the diamonds swallowed the press, it
+          // bubbled to the clip root, and the bottom of the clip moved instead of
+          // trimming: the exact opposite of the 2026-08-18 rule below that
+          // trimming always wins, because he does it hundreds of times an hour.
+          // The box is see-through to the pointer now and each diamond turns its
+          // own events back on, so z-30 buys the diamonds their priority and buys
+          // the empty space nothing at all.
+          className="pointer-events-none absolute inset-x-0 bottom-0 z-30 h-3"
+        >
+          {/* ⛔ WHERE THE ANIMATION RUNS, AND WHERE IT ENDS, 2026-08-24. His
+              words: *"fix the keyframe design thing. Make it actually make sense,
+              just like you did with the fade-in and fade-out volume thing."*
+              He sent a picture of two bare diamonds on a clip with nothing
+              between them, which is all this strip has ever drawn: moments, and
+              no run. No extent, no direction, nothing saying the clip is animated
+              at all until you find the dots.
+              The fade design he is comparing it to works because the RAMP is
+              always drawn and its area IS the extent; only the small handle waits
+              for a hover. So this is the same shape of answer, and it is the same
+              one the motion rail got an hour earlier: a bar from the first moment
+              to the last, with a cap at each end, white over a dark hairline like
+              every other mark this app draws on arbitrary footage.
+              `pointer-events-none`, so what a press does is unchanged. */}
+          {keyframeTimes.length > 1 &&
+            (() => {
+              const clampX = (v: number): number =>
+                innerW >= 10 ? Math.min(Math.max(v, 5), innerW - 5) : v
+              const first = keyframeTimes[0]
+              const last = keyframeTimes[keyframeTimes.length - 1]
+              const liveAt = (t: number): number => (kfPreview?.fromT === t ? kfPreview.t : t)
+              const l = clampX(liveAt(first) * pxPerS)
+              const r = clampX(liveAt(last) * pxPerS)
+              if (!(r > l + 0.5)) return null
+              return (
+                <>
+                  <div
+                    data-testid="clip-keyframe-run"
+                    aria-hidden
+                    className="pointer-events-none absolute bottom-[5px] h-[3px] rounded-full bg-white/45 shadow-[0_0_0_1px_rgba(0,0,0,0.45)]"
+                    style={{ left: l, width: r - l }}
+                  />
+                  {/* The end caps. A run that simply stops dead is what he called
+                      weird on the rail, and a 3px bar fading into a diamond says
+                      nothing about which diamond is the last one. */}
+                  {[l, r].map((x, n) => (
+                    <div
+                      key={n}
+                      aria-hidden
+                      className="pointer-events-none absolute bottom-[2px] h-[9px] w-px bg-white/70"
+                      style={{ left: x }}
+                    />
+                  ))}
+                </>
+              )
+            })()}
           {keyframeTimes.map((t, i) => {
             const live = kfPreview?.fromT === t ? kfPreview.t : t
             const raw = live * pxPerS
@@ -523,7 +583,12 @@ export const ClipView = memo(function ClipView({
                 title="Drag to retime every keyframe at this moment"
                 className={`absolute bottom-[3px] h-[7px] w-[7px] -translate-x-1/2 rotate-45 border border-black/50 ${
                   kfPreview?.fromT === t ? 'bg-accent' : 'bg-white/90'
-                } ${interactive && !locked ? 'cursor-ew-resize' : 'pointer-events-none'}`}
+                // ⚠️ `pointer-events-auto` IS LOAD BEARING. The container is
+                // `pointer-events-none` so the empty space between diamonds does
+                // not steal the trim strips, and `none` INHERITS, so each
+                // diamond has to turn its own events back on or nothing on this
+                // strip can be dragged at all.
+                } ${interactive && !locked ? 'pointer-events-auto cursor-ew-resize' : 'pointer-events-none'}`}
                 style={{ left: x }}
                 onPointerDown={(e) => beginKeyframeDrag(e, t)}
                 onPointerMove={moveKeyframeDrag}

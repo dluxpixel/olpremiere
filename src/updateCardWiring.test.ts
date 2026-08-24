@@ -85,6 +85,43 @@ describe('a check can never blank a live download', () => {
   })
 })
 
+describe('his click always registers, whatever the updater is already doing', () => {
+  // ⛔ HIS WORDS, 2026-08-24: "clicking the melon doesn't really update the app.
+  // There's still no updating animation." `autoDownload` is on, so a version is
+  // usually ALREADY arriving by the time he clicks. `userAsked = true` sat BELOW
+  // the downloading guard, so on the one path he was most likely to take, his
+  // click returned before it registered: no card, because armUpdateWindow needs
+  // the flag, and no reload either, because reloadAndCheckForUpdates refuses to
+  // reload on top of a found update. The melon did nothing at all.
+  const handler = main.slice(main.indexOf("ipcMain.handle('update:check'"), main.indexOf("ipcMain.on('update:busy'"))
+
+  it('sets his flag before any early return in the check handler', () => {
+    const flag = handler.indexOf('userAsked = true')
+    const guard = handler.indexOf("updateStatus.kind === 'downloading'")
+    expect(flag).toBeGreaterThan(-1)
+    expect(guard).toBeGreaterThan(-1)
+    expect(flag).toBeLessThan(guard)
+  })
+
+  it('answers a click during a live download by arming the card, not by returning', () => {
+    expect(handler).toContain('armUpdateWindow(updateStatus)')
+  })
+
+  it('answers a click on an already-downloaded update by opening the card', () => {
+    // There is no download left to animate; silence is not the honest answer,
+    // the card in its finished state is, and its melon is what applies it.
+    const done = handler.slice(handler.indexOf("updateStatus.kind === 'downloaded'"))
+    expect(done).toContain('createUpdateWindow()')
+  })
+
+  it('still refuses to open a second card, or one over the boot splash', () => {
+    const done = handler.slice(handler.indexOf("updateStatus.kind === 'downloaded'"))
+    expect(done).toContain('!updateWindow')
+    expect(done).toContain('!splashWindow')
+    expect(done).toContain('entered')
+  })
+})
+
 describe('the card borrows every beat rather than inventing one', () => {
   // If a raw 300 is typed into update.ts, the card will one day vanish mid-exit.
   it('uses the shared exit timing, not a number', () => {

@@ -673,12 +673,36 @@ app.whenReady().then(() => {
   // renderer's reload, so the check it starts is not cancelled a moment later.
   ipcMain.handle('update:check', () => {
     if (!app.isPackaged) return
-    // Re-finding a file that is already arriving would write {checking} over the
-    // percent and blank the card mid-download.
-    if (updateStatus.kind === 'downloading') return
-    // HIS click, and only his: this is what allows the card to open at all.
+    // ⛔ THE FLAG IS SET BEFORE EVERY EARLY RETURN, AND IT USED TO BE SET AFTER
+    // ONE, 2026-08-24. His words: *"clicking the melon doesn't really update the
+    // app. There's still no updating animation."*
+    //
+    // `autoDownload` is on, so a version is usually ALREADY arriving by the time
+    // he clicks. The guard below returned before this line, so `userAsked` stayed
+    // false, `armUpdateWindow` refused (it needs his click while
+    // UPDATE_SCREEN_UNBIDDEN is false), and the melon did nothing he could see:
+    // no reload, because `reloadAndCheckForUpdates` refuses to reload on top of a
+    // found update, and no card, because the click never registered. The one
+    // moment he asks to be shown something was the one moment nothing could be.
     userAsked = true
-    if (updateStatus.kind !== 'downloaded') setUpdateStatus({ kind: 'checking' })
+    // Re-finding a file that is already arriving would write {checking} over the
+    // percent and blank the card mid-download. But his click still has to be
+    // ANSWERED, so the card is armed off the status that is already live.
+    if (updateStatus.kind === 'downloading') {
+      armUpdateWindow(updateStatus)
+      return
+    }
+    // Already sitting on disk waiting for a restart: there is no download left to
+    // animate, and the honest answer is the card in its finished state rather
+    // than silence. `update.html` reads the same status feed, so it opens on
+    // "ready" and the melon pops.
+    if (updateStatus.kind === 'downloaded') {
+      if (!updateWindow && !updateOpenTimer && entered && !splashWindow && mainWindow && !mainWindow.isDestroyed()) {
+        createUpdateWindow()
+      }
+      return
+    }
+    setUpdateStatus({ kind: 'checking' })
     void autoUpdater.checkForUpdatesAndNotify()
   })
 

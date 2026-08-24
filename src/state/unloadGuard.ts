@@ -79,6 +79,21 @@ export const isCriticalWorkInFlight = (): boolean => criticalCount > 0
 export const isRestartUnsafe = (): boolean => criticalCount > 0 || holdCount > 0
 
 /**
+ * CRITICAL work only, which today means an export in flight.
+ *
+ * ⛔ NOT `isRestartUnsafe`, AND THE DIFFERENCE IS THE WHOLE POINT. That one also
+ * counts HOLDS, and a hold is an unkept voice take: he is sitting looking at the
+ * picture while it is up, so anything that stands the preview down under a hold
+ * would break the thing he is watching.
+ *
+ * A critical operation is minutes of compute he started and is waiting on, and
+ * during one the preview is competing with it for the same GPU and the same main
+ * thread for nothing. His words, 2026-08-24: *"while exporting, it's just so
+ * fucking laggy, everything."*
+ */
+export const isCriticalWorkRunning = (): boolean => criticalCount > 0
+
+/**
  * Tell the desktop shell, so it does not even ASK.
  *
  * The renderer can refuse an update on its own, but main stops watching for a

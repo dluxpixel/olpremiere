@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
   clipGainEnvelope,
@@ -634,5 +636,128 @@ describe('pitchPreservedSource caching', () => {
     expect(made()).toBe(0)
     pitchPreservedSource(probe, source, 1.25, { whenOffsetS: 0, sourceOffsetS: 0, durationS: 1 })
     expect(made()).toBe(1)
+  })
+})
+
+// ⛔ THE CLOCK IS READ AFTER THE LAST SLOW CALL, AND UNTIL 2026-08-24 IT WAS NOT.
+//
+// His words: *"sometimes I know it's just popping off. It's not working."* The
+// time-stretch is synchronous and can run for hundreds of milliseconds against a
+// 50 ms latency budget, so a `baseT` captured above the loop was already in the
+// past by the time sources were started: they all fired at once and every fade
+// snapped to its target.
+//
+// This is a SOURCE-ORDER test on purpose. The failure needs a real AudioContext
+// and a real several-hundred-millisecond stall to reproduce, which no unit test
+// can stage honestly, but the invariant that prevents it is a plain ordering fact
+// and that IS checkable. Same shape as `updateCardWiring.test.ts`.
+describe('the audio schedule reads its clock last', () => {
+  const src = readFileSync(fileURLToPath(new URL('./audio.ts', import.meta.url)), 'utf8')
+  const body = src.slice(src.indexOf('export async function scheduleAudio'))
+
+  it('does every time-stretch before it reads ctx.currentTime for baseT', () => {
+    // The CALL, not its argument list: the anchor argument was added the same
+    // day and a literal match would have gone stale within the hour.
+    const stretch = body.indexOf('pitchPreservedSource(ctx, buffer, clip.speed, sched')
+    const base = body.indexOf('const baseT = ctx.currentTime + SCHEDULE_LATENCY_S')
+    expect(stretch).toBeGreaterThan(-1)
+    expect(base).toBeGreaterThan(-1)
+    expect(stretch).toBeLessThan(base)
+  })
+
+  it('calls the stretch exactly once, so the hoist did not leave a second copy', () => {
+    const calls = body.match(/pitchPreservedSource\(/g) ?? []
+    expect(calls).toHaveLength(1)
+  })
+
+  it('starts every source against that one base time', () => {
+    expect(body).toContain('source.start(baseT + sched.whenOffsetS')
+  })
+})
+
+// ⛔ THE STRETCH CACHE KEY MUST NOT MOVE WHEN THE PLAYHEAD DOES, 2026-08-24.
+//
+// The key used to carry `sourceOffsetS`, which comes from the transport's live
+// time, so the clip under the playhead was a guaranteed MISS on every reschedule
+// and re-ran WSOLA over its whole remainder, synchronously, on the main thread.
+// A mute, a fader nudge or a loop wrap cost hundreds of milliseconds of frozen
+// UI. Anchoring at the clip's in point makes the key stand still.
+describe('a stretched clip is stretched once, not once per reschedule', () => {
+  const sr = 48_000
+  const makeBuffer = (seconds: number): AudioBuffer => {
+    const length = Math.round(seconds * sr)
+    const data = [new Float32Array(length), new Float32Array(length)]
+    for (let i = 0; i < length; i++) {
+      const v = Math.sin((i / sr) * 2 * Math.PI * 220)
+      data[0][i] = v
+      data[1][i] = v
+    }
+    return {
+      sampleRate: sr,
+      length,
+      duration: seconds,
+      numberOfChannels: 2,
+      getChannelData: (ch: number) => data[ch],
+      copyToChannel: (src: Float32Array, ch: number) => data[ch].set(src),
+    } as unknown as AudioBuffer
+  }
+
+  /** A context that counts the buffers it is asked to allocate. */
+  const countingCtx = (): { ctx: BaseAudioContext; made: () => number } => {
+    let made = 0
+    const ctx = {
+      sampleRate: sr,
+      createBuffer: (channels: number, length: number, rate: number) => {
+        made += 1
+        const data = Array.from({ length: channels }, () => new Float32Array(length))
+        return {
+          sampleRate: rate,
+          length,
+          duration: length / rate,
+          numberOfChannels: channels,
+          getChannelData: (ch: number) => data[ch],
+          copyToChannel: (src: Float32Array, ch: number) => data[ch].set(src),
+        } as unknown as AudioBuffer
+      },
+    } as unknown as BaseAudioContext
+    return { ctx, made: () => made }
+  }
+
+  it('hits the cache when the playhead moves inside the same clip', () => {
+    const buffer = makeBuffer(4)
+    const { ctx, made } = countingCtx()
+    const OUT = 4
+    // Play from the clip's head, then from a second in, then from two: one clip,
+    // three transport positions, which is exactly what a reschedule does.
+    const first = pitchPreservedSource(ctx, buffer, 2, { whenOffsetS: 0, sourceOffsetS: 0, durationS: OUT }, 0)
+    expect(made()).toBe(1)
+    const second = pitchPreservedSource(ctx, buffer, 2, { whenOffsetS: 0, sourceOffsetS: 1, durationS: OUT - 1 }, 0)
+    const third = pitchPreservedSource(ctx, buffer, 2, { whenOffsetS: 0, sourceOffsetS: 2, durationS: OUT - 2 }, 0)
+    // Still one allocation: the two later calls came out of the cache.
+    expect(made()).toBe(1)
+    expect(second.buffer).toBe(first.buffer)
+    expect(third.buffer).toBe(first.buffer)
+  })
+
+  it('slices into the cached buffer at the right place, so nothing is replayed', () => {
+    const buffer = makeBuffer(4)
+    const { ctx } = countingCtx()
+    pitchPreservedSource(ctx, buffer, 2, { whenOffsetS: 0, sourceOffsetS: 0, durationS: 4 }, 0)
+    const mid = pitchPreservedSource(ctx, buffer, 2, { whenOffsetS: 0, sourceOffsetS: 1, durationS: 3 }, 0)
+    // One second of source at 2x is half a second of output.
+    expect(mid.offsetS).toBeCloseTo(0.5, 6)
+    // And what is left is exactly the rest of the clip's window, so the audible
+    // length still matches what computeClipSchedule promised the picture.
+    expect(mid.offsetS + mid.durationS).toBeCloseTo(2, 3)
+    expect(mid.playbackRate).toBe(1)
+  })
+
+  it('leaves a 1x clip completely alone, which is nearly every clip he has', () => {
+    const buffer = makeBuffer(2)
+    const { ctx, made } = countingCtx()
+    const play = pitchPreservedSource(ctx, buffer, 1, { whenOffsetS: 0, sourceOffsetS: 0.5, durationS: 1 }, 0)
+    expect(made()).toBe(0)
+    expect(play.buffer).toBe(buffer)
+    expect(play.offsetS).toBe(0.5)
   })
 })

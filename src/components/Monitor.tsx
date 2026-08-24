@@ -23,6 +23,7 @@ import { formatTimecode, quantizeToFrame } from '../engine/timecode'
 import { activeSequence, type Sequence } from '../engine/types'
 import { pausePlayback, subscribeShuttleRate, toggleLoop, togglePlay } from '../state/playbackControl'
 import { screenshotToMedia } from '../state/screenshot'
+import { isCriticalWorkRunning } from '../state/unloadGuard'
 import { setPreviewQuality, useSettings } from '../state/settings'
 import {
   setActiveSequenceBlurBackdropZoom,
@@ -71,6 +72,8 @@ const MAX_PREVIEW_FPS = 60
 const PENDING_GRACE_MS = 1500
 /** The trickle: enough to catch a very late decode, cheap enough to ignore. */
 const STALLED_POLL_MS = 250
+/** Preview frame budget while an export is running: four a second, enough to look alive. */
+const EXPORT_PREVIEW_FRAME_MS = 250
 
 /** rAF draw loop: reads the store imperatively so playback never re-renders React. */
 function useProgramCanvas(quality: Quality) {
@@ -146,7 +149,26 @@ function useProgramCanvas(quality: Quality) {
       // and drop to a trickle once a frame has been pending far longer than any
       // decode should take.
       const stalled = pendingSinceT > 0 && now - pendingSinceT > PENDING_GRACE_MS
-      const frameMs = stalled ? STALLED_POLL_MS : previewFrameMs(MAX_PREVIEW_FPS, fps)
+      // ⛔ THE PREVIEW STANDS DOWN WHILE AN EXPORT RUNS, 2026-08-24. His words:
+      // *"while exporting, it's just so fucking laggy, everything."*
+      //
+      // An export drives hardware decoders, a WebGL composite and an encoder for
+      // minutes. The preview was drawing the SAME composite at up to the full
+      // preview rate the whole time, on the same GPU and the same main thread, to
+      // show him a still frame he is not looking at because he is watching a
+      // progress bar. It is not parked outright, because a frozen picture during
+      // a long job reads as a hung app, but four frames a second is enough to
+      // stay alive and gives the export back everything else.
+      //
+      // ⚠️ PLAYBACK STILL WINS. If he presses space during an export he means it,
+      // and a transport that stutters on purpose is a worse bug than a slow
+      // export.
+      const exportBusy = !playing && isCriticalWorkRunning()
+      const frameMs = stalled
+        ? STALLED_POLL_MS
+        : exportBusy
+          ? EXPORT_PREVIEW_FRAME_MS
+          : previewFrameMs(MAX_PREVIEW_FPS, fps)
       if (!drawIsDue(now - lastDrawT, frameMs, tickMs)) {
         if (playing) recordPreviewTick(frameIdx, false)
         return

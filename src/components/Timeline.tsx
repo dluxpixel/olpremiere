@@ -96,6 +96,31 @@ export function Timeline({ height }: { height: number }) {
   const [hoverLane, setHoverLane] = useState<{ trackId: Id; valid: boolean } | null>(null)
   const [razorHover, setRazorHover] = useState<{ t: number; top: number } | null>(null)
   const dragFinal = useRef<{ trackId: Id; tS: number } | null>(null)
+  /**
+   * ⛔ DID THIS GESTURE EVER ACTUALLY MOVE THE CLIP, 2026-08-24. His words: *"I
+   * drag, I let go, and it goes back sometimes."*
+   *
+   * Drag-versus-click used to be decided ONCE, at release, from the straight-line
+   * distance between the pointer-up and the pointer-down in CLIENT space. The
+   * split itself is right and stays: a click on a clip should scrub to it, not
+   * write a no-op move into his undo history.
+   *
+   * What was wrong is measuring it against a viewport that moves on its own. The
+   * drag position is computed in CONTENT space, and two things scroll the lanes
+   * under a stationary hand: the edge auto-scroll, which arms on the first
+   * pointermove and runs whenever the pointer is within 32px of a lane edge at up
+   * to 20px a frame, and the playback auto-follow, which is not suspended during
+   * a drag. Grab a clip near the edge, twitch one pixel, watch it fly seconds
+   * across the timeline, let go: the pointer is 1px from where it started, the
+   * release is read as a CLICK, the commit branch is skipped, and `setPreviewSeq`
+   * throws the whole move away. Nothing is logged and there is nothing to undo,
+   * because the edit never reached the store. A drag that wanders out and back
+   * inside 4px lost the same way.
+   *
+   * So it is a LATCH on the thing that actually matters, the clip's own position,
+   * not a re-measurement of where his hand ended up.
+   */
+  const dragMoved = useRef(false)
   // Right-drag box-select: a right-button drag on empty timeline rubber-bands a
   // selection (David finds this easier than Ctrl+drag). rightMarqueeRef marks an
   // in-flight right-drag; suppressContextRef swallows the contextmenu that fires
@@ -418,6 +443,7 @@ export function Timeline({ height }: { height: number }) {
     if (track.locked) return
     const { x } = contentPoint(e)
     dragFinal.current = null
+    dragMoved.current = false
     // Ctrl+Alt = the advanced-trim pair (roll on an edge, slide on the body).
     // Checked before plain Alt: a Ctrl+Alt press has altKey === true too.
     if ((e.ctrlKey || e.metaKey) && e.altKey) {
@@ -789,6 +815,7 @@ export function Timeline({ height }: { height: number }) {
     const solo = soloTrimIntent(clip.id)
     setUI({ selection: [clip.id] })
     dragFinal.current = null
+    dragMoved.current = false
     // Edge modifiers: Ctrl = ripple trim, Alt = rate stretch, Ctrl+Alt = roll.
     // Roll is checked FIRST - a Ctrl+Alt press satisfies both single checks.
     if ((e.ctrlKey || e.metaKey) && e.altKey) {
@@ -1009,9 +1036,14 @@ export function Timeline({ height }: { height: number }) {
       setHoverLane(hovered && hovered.id !== current.id ? { trackId: hovered.id, valid } : null)
       const finalT = Math.max(0, desired)
       dragFinal.current = { trackId: target.id, tS: finalT }
+      // ⛔ THE LATCH. Once a move has genuinely moved, it is a DRAG for the rest
+      // of the gesture, and it stays one however the pointer ends up on release.
+      // See the comment on `dragMoved` for what this was costing him.
+      if (!dragMoved.current && Math.abs(finalT - clip.startS) > 1e-6) dragMoved.current = true
+      if (!dragMoved.current && target.id !== current.id) dragMoved.current = true
       // Moves get the live readout too: new start timecode + signed delta.
       // Suppressed inside the click slop so a plain click never flashes it.
-      if (Math.hypot(e.clientX - drag.downClientX, e.clientY - drag.downClientY) >= CLICK_SLOP_PX) {
+      if (dragMoved.current) {
         setTrimTip({
           x: e.clientX,
           y: e.clientY - 34,
@@ -1127,8 +1159,14 @@ export function Timeline({ height }: { height: number }) {
     // A release within the slop of the pointer-down is a CLICK on the clip, not
     // a drag: move the playhead there so the preview shows the spot you clicked
     // (CapCut-style), and skip the no-op move commit (keeps undo history clean).
+    // ⚠️ THE LATCH, NOT THE POINTER. `dragMoved` is set the moment the clip's own
+    // start or track actually changes, so a move the lanes scrolled out from
+    // under his hand still commits. See its declaration for what that cost.
+    // A gesture that never moved the clip is still a click, which is the half of
+    // this that was always right.
     const isClipClick =
       drag.kind === 'move' &&
+      !dragMoved.current &&
       Math.hypot(e.clientX - drag.downClientX, e.clientY - drag.downClientY) < CLICK_SLOP_PX
     if (isClipClick) {
       // Narrow a multi-selection to the clicked clip (drags keep the group).

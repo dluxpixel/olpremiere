@@ -479,19 +479,49 @@ export function pitchPreservedSource(
   buffer: AudioBuffer,
   speed: number,
   sched: ClipSchedule,
+  anchorS?: number,
 ): ScheduledSource {
   const rate = Math.abs(speed) || 1
   if (rate === 1) {
     return { buffer, playbackRate: 1, offsetS: sched.sourceOffsetS, durationS: sched.durationS }
   }
-  const cacheKey = `${rate}|${sched.sourceOffsetS}|${sched.durationS}`
+  // ⛔ THE STRETCH IS ANCHORED TO THE CLIP, NOT TO THE PLAYHEAD, 2026-08-24, AND
+  // UNTIL TODAY IT WAS THE OTHER WAY ROUND. That single choice is what made a
+  // fader nudge cost hundreds of milliseconds of frozen main thread.
+  //
+  // The old key was `rate|sourceOffsetS|durationS`, and `sourceOffsetS` is
+  // derived from the transport's `fromS`. A reschedule passes the LIVE time, so
+  // the clip under the playhead produced a brand new key EVERY time and
+  // re-stretched its whole remainder, synchronously, on the main thread. Every
+  // mute, every fader move, every loop wrap. The comment below used to claim only
+  // the first play paid; it was true of the clips AHEAD of the playhead and false
+  // of the one he is listening to.
+  //
+  // Anchoring at the clip's own in point makes the key stand still: `end` is
+  // `sourceOffsetS + durationS`, which is the clip's out point and never moves,
+  // so one stretch per clip per session and every reschedule after it is free.
+  // Slicing into an already stretched buffer is exact, because output time is
+  // just source time over the rate.
+  //
+  // ⚠️ OPTIONAL, AND THE EXPORT DOES NOT PASS IT. The export renders each clip
+  // once, into an offline context, so it has nothing to gain and the old
+  // behaviour is one less thing to have changed underneath a byte-stability gate.
+  const endS = sched.sourceOffsetS + sched.durationS
+  const anchor =
+    typeof anchorS === 'number' && Number.isFinite(anchorS)
+      ? Math.max(0, Math.min(anchorS, sched.sourceOffsetS))
+      : sched.sourceOffsetS
+  const cacheKey = `${rate}|${anchor}|${endS}`
   const cached = stretchCache.get(buffer)?.get(cacheKey)
-  if (cached) return { buffer: cached, playbackRate: 1, offsetS: 0, durationS: cached.duration }
+  if (cached) {
+    const into = Math.max(0, (sched.sourceOffsetS - anchor) / rate)
+    return { buffer: cached, playbackRate: 1, offsetS: into, durationS: Math.max(0, cached.duration - into) }
+  }
   const sr = buffer.sampleRate
-  const startFrame = Math.max(0, Math.min(buffer.length, Math.round(sched.sourceOffsetS * sr)))
+  const startFrame = Math.max(0, Math.min(buffer.length, Math.round(anchor * sr)))
   // Never promise more source than the buffer holds: a clip that runs off the
   // end of its asset went quiet before this change too.
-  const srcFrames = Math.max(0, Math.min(Math.round(sched.durationS * sr), buffer.length - startFrame))
+  const srcFrames = Math.max(0, Math.min(Math.round((endS - anchor) * sr), buffer.length - startFrame))
   const outFrames = Math.round(srcFrames / rate)
   if (srcFrames === 0 || outFrames === 0) {
     return { buffer, playbackRate: rate, offsetS: sched.sourceOffsetS, durationS: sched.durationS }
@@ -505,7 +535,8 @@ export function pitchPreservedSource(
   const out = ctx.createBuffer(buffer.numberOfChannels, outFrames, sr)
   for (let ch = 0; ch < stretched.length; ch++) out.copyToChannel(stretched[ch], ch)
   rememberStretch(buffer, cacheKey, out)
-  return { buffer: out, playbackRate: 1, offsetS: 0, durationS: outFrames / sr }
+  const into = Math.max(0, (sched.sourceOffsetS - anchor) / rate)
+  return { buffer: out, playbackRate: 1, offsetS: into, durationS: Math.max(0, outFrames / sr - into) }
 }
 
 /**
@@ -760,14 +791,49 @@ export async function scheduleAudio(
   }
 
   const clipNodes: { source: AudioBufferSourceNode; gain: GainNode }[] = []
-  // One base time shared by every clip so relative offsets stay exact.
+
+  // ⛔ EVERY STRETCH HAPPENS BEFORE THE CLOCK IS READ, 2026-08-24, AND IT USED TO
+  // HAPPEN AFTER. His words: *"sometimes I know it's just popping off. It's not
+  // working."*
+  //
+  // `pitchPreservedSource` runs WSOLA SYNCHRONOUSLY on any clip that is not at 1x
+  // and is not already in the stretch cache. This file's own measurement: about
+  // 70 ms per stereo minute at 2x, 600 ms for a five minute one. The schedule
+  // latency is 50 ms. So one long un-cached clip spent the whole budget while
+  // `baseT` sat frozen above the loop, and by the time `start()` was called
+  // `ctx.currentTime` had walked past it. Everything that follows from that is
+  // exactly what he described:
+  //   - a start time in the past plays IMMEDIATELY, so every clip inside the
+  //     overrun fires at once, which is the burst,
+  //   - `linearRampToValueAtTime` to a past time SNAPS to its target, so every
+  //     fade-in collapses into a step, which is the click,
+  //   - the transport then anchors the picture to a base the sound never used,
+  //     so the two drift apart and stay apart.
+  //
+  // And the reschedule is the common path, not the rare one: the stretch cache
+  // key carries `sourceOffsetS`, which comes from `fromS`, and a reschedule
+  // passes the LIVE time, so the clip under the playhead is always a miss and
+  // re-stretches its whole remainder. Every fader nudge, every mute, every loop
+  // wrap paid that cost with the clock running.
+  //
+  // The export never had this: it starts sources at absolute offsets into an
+  // OfflineAudioContext, where the same stall costs render time and nothing else.
+  // That is why he says the export is fine.
+  const plays = candidates.map(({ clip, sched }, i) => {
+    const buffer = buffers[i]
+    // `clip.inS` is the anchor: it makes the stretch cache key stand still across
+    // a reschedule, so a fader nudge mid-playback costs nothing. See the docblock
+    // on pitchPreservedSource.
+    return buffer ? pitchPreservedSource(ctx, buffer, clip.speed, sched, clip.inS) : null
+  })
+
+  // One base time shared by every clip so relative offsets stay exact. Read AFTER
+  // the last slow call above, so nothing can walk the clock past it.
   const baseT = ctx.currentTime + SCHEDULE_LATENCY_S
   candidates.forEach(({ clip, track, sched }, i) => {
-    const buffer = buffers[i]
-    if (!buffer) return
+    const play = plays[i]
+    if (!play) return
     const source = ctx.createBufferSource()
-    // Speed changes the length, not the pitch. See pitchPreservedSource.
-    const play = pitchPreservedSource(ctx, buffer, clip.speed, sched)
     source.buffer = play.buffer
     source.playbackRate.value = play.playbackRate
     const gain = ctx.createGain()

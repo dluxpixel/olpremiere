@@ -65,6 +65,7 @@ import { normaliseRecording } from '../engine/recordMove'
 import { useStore } from '../state/store'
 import { liveFrame, shelfGlyphs, TAPE_UNITS, type MoveGlyph } from './moveGlyph'
 import { headroomCeiling, overHeadroom } from './headroom'
+import { depthLabel, depthTrackFrac } from './moveDepthLabel'
 import { Button } from '../ui/Button'
 
 /**
@@ -782,10 +783,23 @@ export function MoveShelf({ clips }: { clips: Clip[] }) {
                 : undefined
             }
           >
-            {pct(depth)}
+            {depthLabel(depth).text}
           </span>
         </div>
-        <input
+        {/* ⛔ THE MIDDLE IS MARKED NOW, BECAUSE THE HANDLE JUMPS OVER IT.
+            `outOfNeutral` refuses to settle within 4% of neutral and throws the
+            value to the far side, so a slow drag through the middle makes the
+            handle and the number LEAP. That is deliberate and it stays, but until
+            2026-08-24 nothing on screen said the middle was there, so the leap
+            read as the control breaking. His words: *"When I drag it, it just
+            breaks and shows different percentages."* */}
+        <div className="relative">
+          <div
+            aria-hidden
+            className="pointer-events-none absolute -top-px h-3 w-px bg-border-strong"
+            style={{ left: `${depthTrackFrac(1, DEPTH_MIN, DEPTH_MAX) * 100}%` }}
+          />
+          <input
           id="move-depth"
           type="range"
           data-testid="move-depth"
@@ -800,11 +814,12 @@ export function MoveShelf({ clips }: { clips: Clip[] }) {
             setMoveDepth(outOfNeutral(Number(e.target.value), depth), clips.map((c) => c.id))
           }
         />
-        <datalist id="move-depth-notches">
-          {NOTCHES.map((v) => (
-            <option key={v} value={v} />
-          ))}
-        </datalist>
+          <datalist id="move-depth-notches">
+            {NOTCHES.map((v) => (
+              <option key={v} value={v} />
+            ))}
+          </datalist>
+        </div>
       </div>
 
       <button

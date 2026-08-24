@@ -105,7 +105,10 @@ test('the depth slider says how big the move goes, and the keyframes agree', asy
   // playhead parked, which is why the presets went. → D114
   await page.getByTestId('move-tile-punchIn').click()
   await page.getByTestId('move-depth').fill('1.4')
-  await expect(page.getByTestId('move-depth-readout')).toHaveText('140%')
+  // 'in 40%', not '140%': the readout says which way the move goes now, because a
+  // bare percentage sat at the same eye level as a handle whose position
+  // contradicted it. See src/components/moveDepthLabel.ts.
+  await expect(page.getByTestId('move-depth-readout')).toHaveText('in 40%')
   expect(await scaleKfMax(page)).toBeCloseTo(1.4, 2)
 
   // And the punch is visible and editable as keyframes: the Zoom lane under the
