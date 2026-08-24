@@ -72,7 +72,12 @@ export function cancelSync(): void {
 export async function probe(): Promise<NativeCaps> {
   return new Promise((resolve) => {
     let out = ''
-    const p = spawn(ffmpegPath(), ['-hide_banner', '-encoders'])
+    // ⛔ windowsHide, LIKE EVERY OTHER FFMPEG SPAWN IN THIS APP. Without it
+    // Windows gives the child its own console, and a black box flashes over his
+    // editor. `proxy.ts` and `remuxRun.ts` both pass it; these two were missed,
+    // which is why he still saw one after the scheduled tasks were silenced.
+    // His words, 2026-08-24: *"CMD still sometimes pops up."*
+    const p = spawn(ffmpegPath(), ['-hide_banner', '-encoders'], { windowsHide: true })
     p.stdout.on('data', (d) => (out += d))
     p.stderr.on('data', (d) => (out += d))
     p.on('error', () => resolve({ ok: false, encoders: [], nvenc: { h264: false, hevc: false, av1: false } }))
@@ -120,7 +125,12 @@ export async function start(config: NativeExportConfig, win: BrowserWindow): Pro
 
   const audioPath = config.hasAudio ? pendingAudioPath : null
   pendingAudioPath = null
-  const ffmpeg = spawn(ffmpegPath(), buildArgs(config, audioPath, outPath), { stdio: ['pipe', 'pipe', 'pipe'] })
+  // windowsHide as above: an export is the longest ffmpeg run in the app, so a
+  // console here sits over his editor for the whole encode.
+  const ffmpeg = spawn(ffmpegPath(), buildArgs(config, audioPath, outPath), {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
+  })
 
   let stderr = ''
   ffmpeg.stderr.on('data', (d) => {

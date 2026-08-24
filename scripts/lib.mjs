@@ -45,7 +45,10 @@ export function runLogged(cmd, label, log) {
     const banner = `\n▶ ${label}\n`
     process.stdout.write(banner)
     log?.write(banner)
-    const child = spawn(cmd, { shell: true, stdio: ['inherit', 'pipe', 'pipe'] })
+    // windowsHide: shell:true means cmd.exe on Windows, and a ship launched
+    // detached has no console of its own, so each gate step opened a black box
+    // on his screen. The output is piped and logged either way.
+    const child = spawn(cmd, { shell: true, stdio: ['inherit', 'pipe', 'pipe'], windowsHide: true })
     // The last of what the command said, kept so a caller can ask WHY it failed
     // rather than only that it did. Bounded, because a packaging run prints
     // megabytes and none of it is worth holding in memory.

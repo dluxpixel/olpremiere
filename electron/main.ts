@@ -71,7 +71,9 @@ const isDev = !!DEV_URL
  *   - no auto-update, further down, because the lab is built from whatever is
  *     on the bench and must never replace itself with the shipped app
  *
- * The flavour is decided by the packaged name, which `scripts/lab.mjs` sets. His
+ * The flavour is decided by the packaged name. The lab build that set it was
+ * removed on 2026-08-24 at his request; the branch stays because APP_ORIGIN_HOST
+ * below is the IndexedDB partition key and changing it orphans every project. His
  * build never passes it, so his build is untouched by all of this.
  */
 export const IS_LAB = app.getName().toLowerCase().includes('lab')

@@ -4,7 +4,7 @@
 // + blockmap via curl (reliable for the ~242MB binary). Idempotent: re-running a
 // version replaces its release cleanly. Used by scripts/release.mjs after the build.
 
-import { execSync } from 'node:child_process'
+import { execSync, execFileSync } from 'node:child_process'
 import { readFileSync, writeFileSync, statSync } from 'node:fs'
 import { createHash as hash } from 'node:crypto'
 import { loadToken, fetchRetry } from './lib.mjs'
@@ -132,6 +132,25 @@ await api(`/repos/${OWNER}/${REPO}/git/refs`, {
   method: 'POST',
   body: JSON.stringify({ ref: `refs/tags/${tag}`, sha: main.object.sha }),
 })
+// ⛔ AND WRITE THE TAG LOCALLY TOO, or `git describe` never learns it happened.
+//
+// The tag above is minted through the API, so nothing ever landed in his clone.
+// `previousTag()` in release.mjs reads LOCAL tags only, so it kept answering
+// v2.0.18 while package.json said 2.36.0, `isBigUpdate` was therefore true on
+// every single release since 2.2.0, and the packaged-app smoke test opened a
+// real OL Premiere window over whatever he was doing, every time. The branch
+// that prints "no window on his screen" had never once run. The same stale
+// answer made `patch.mjs`'s "Nothing to release" exit unreachable, so a stray
+// `npm run patch` always went through to a full bump and publish.
+//
+// Best effort: a clone that will not take the tag must not fail a release that
+// has already been published.
+try {
+  execFileSync('git', ['tag', '-f', tag], { stdio: 'ignore' })
+} catch {
+  console.warn(`could not write the local tag ${tag}; git describe will lag until it is fetched`)
+}
+
 const rel = await api(`/repos/${OWNER}/${REPO}/releases`, {
   method: 'POST',
   body: JSON.stringify({ tag_name: tag, name: `OL Premiere ${tag}`, draft: false, prerelease: false, make_latest: 'true' }),
