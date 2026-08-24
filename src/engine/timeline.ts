@@ -2307,8 +2307,32 @@ export function moveSelectionWith(
   const laneShift =
     grabbedIdx >= 0 && targetIdx >= 0 ? posOf(targetIdx) - posOf(grabbedIdx) : 0
 
-  if (laneShift === 0 && deltaS === 0) return next
-  const ordered = [...others].sort((a, b) => (deltaS > 0 ? b.startS0 - a.startS0 : a.startS0 - b.startS0))
+  // ⛔ THE CARRIED CLIPS MOVE BY WHAT THE GRABBED CLIP ACTUALLY DID, NOT BY WHAT
+  // HE ASKED FOR. This is the drag he has reported over and over.
+  //
+  // `deltaS` is the RAW request. The grabbed clip then gets clamped twice before
+  // it lands: once so the whole linked group stays legal, and again by
+  // `nearestFreeStart` so it stops against its neighbour instead of eating it.
+  // So the clip under his cursor routinely travels LESS than he asked. Every
+  // other selected clip was still being shifted by the full `deltaS`.
+  //
+  // What that looks like on his timeline: he grabs one caption, it stops dead
+  // against the next clip, and the rest of the selection sails on past it. The
+  // one thing that does not follow the mouse is the one he is holding, which is
+  // his words exactly: *"it just doesn't drag the thing I click on in the first
+  // place."* On a packed caption track, where every clip has a neighbour a few
+  // frames away, this fires on almost every multi-clip drag.
+  //
+  // The applied delta also makes the fully-blocked case correct for free: if the
+  // grabbed clip could not move at all, nothing else moves either, instead of
+  // the selection tearing itself apart around a clip that stayed put.
+  const appliedS = safeS - grabbed.startS
+  if (laneShift === 0 && appliedS === 0) return next
+  // ⛔ AND FROM startS0, THE POSITION AT MOUSE-DOWN, not from wherever the clip
+  // sits in `next`. The grabbed clip's own move has already rewritten this
+  // sequence, and reading a live start would compound the shift on any clip that
+  // placement had nudged.
+  const ordered = [...others].sort((a, b) => (appliedS > 0 ? b.startS0 - a.startS0 : a.startS0 - b.startS0))
   for (const o of ordered) {
     const trIdx = next.tracks.findIndex((t) => t.clips.some((c) => c.id === o.id))
     const tr = next.tracks[trIdx]
@@ -2345,8 +2369,8 @@ export function moveSelectionWith(
     // only when it is selected too. The caller answers it per clip, because only
     // the caller knows the selection and this file stays pure.
     next = o.solo
-      ? moveClip(next, o.id, destTrackId, Math.max(0, oc.startS + deltaS))
-      : moveGroup(next, o.id, destTrackId, Math.max(0, oc.startS + deltaS))
+      ? moveClip(next, o.id, destTrackId, Math.max(0, o.startS0 + appliedS))
+      : moveGroup(next, o.id, destTrackId, Math.max(0, o.startS0 + appliedS))
   }
   return next
 }

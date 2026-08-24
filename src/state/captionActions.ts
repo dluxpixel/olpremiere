@@ -221,11 +221,26 @@ export function addCaptionsFromWords(
       return sq
     }
     if (reuse) {
-      replaced = reuse.clips.length
-      // EMPTIED first. `withClips` MERGES into whatever is already on the track,
-      // so reusing it without clearing would have interleaved the new run with
-      // the old one, which is the doubling this exists to stop wearing a hat.
-      const filled = withClips({ ...reuse, clips: [] }, clips)
+      // ⛔ ONLY THE STRETCH THIS RUN COVERS IS REPLACED. THE REST IS HIS.
+      //
+      // His words, 2026-08-24: *"every time I start the caption thing, it
+      // deletes the last caption, so I can't caption them one by one, which
+      // fucking sucks."* The track was EMPTIED here on every run, so captioning
+      // his second clip threw away the captions he had just made, and often
+      // hand-corrected, for his first. Captioning a video a clip at a time was
+      // impossible, and that is how he actually works.
+      //
+      // Emptying was there to stop a re-run of the SAME stretch interleaving
+      // with the old one, which is a real fault and stays fixed: anything
+      // overlapping this run's span still goes. Outside the span nothing is
+      // touched, so a second clip ADDS and a repeat of the same clip REPLACES.
+      // Captioning the whole timeline still clears the lot, because its span is
+      // the lot.
+      const runStart = Math.min(...clips.map((c) => c.startS))
+      const runEnd = Math.max(...clips.map((c) => clipEndS(c)))
+      const kept = reuse.clips.filter((c) => clipEndS(c) <= runStart + EPS || c.startS >= runEnd - EPS)
+      replaced = reuse.clips.length - kept.length
+      const filled = withClips({ ...reuse, clips: kept }, clips)
       return recomputeDuration({ ...sq, tracks: sq.tracks.map((t) => (t.id === reuse.id ? filled : t)) })
     }
     const grown = addTrack(sq, 'video')
@@ -255,7 +270,12 @@ export function addCaptionsFromWords(
       // He asked to be told when it used what it learned, and told nothing
       // otherwise. A run that changed no words says exactly what it always said.
       [
-        replaced > 0 ? `${clips.length} captions, replacing the last run` : `${clips.length} captions added`,
+        // "over this part" and not "the last run": captioning a second clip now
+        // keeps the first clip's captions, so the old wording would have claimed
+        // it threw away work it did not touch.
+        replaced > 0
+          ? `${clips.length} captions, replacing ${replaced} over this part`
+          : `${clips.length} captions added`,
         relearned > 0 ? `${relearned} spelled your way` : '',
       ]
         .filter(Boolean)

@@ -459,7 +459,7 @@ export function Monitor() {
             `w-full` pins the box to the column, so the content is clipped at the
             column edge instead of painted over the transport, and the row stays
             readable at any width. */}
-        <div className="flex w-full min-w-0 items-center justify-end gap-2 overflow-hidden">
+        <div className="flex w-full min-w-0 items-center justify-end gap-1.5 overflow-hidden">
           {/* Left of the aspect picker, alongside the blur: the frame he can
               see is the frame it takes, at the sequence's own size. */}
           <IconButton
@@ -489,7 +489,7 @@ export function Monitor() {
             data-testid="format-select"
             aria-label="Aspect ratio"
             title="Aspect ratio: 9:16 makes a vertical Shorts video"
-            className="h-7 cursor-default rounded-field border border-border bg-bg-input pl-2 pr-6 text-ui-sm text-text-secondary transition-colors duration-[120ms] hover:border-border-strong hover:text-text-primary focus:border-accent focus:outline-none"
+            className="h-7 min-w-0 shrink cursor-default rounded-field border border-border bg-bg-input pl-2 pr-6 text-ui-sm text-text-secondary transition-colors duration-[120ms] hover:border-border-strong hover:text-text-primary focus:border-accent focus:outline-none"
             value={aspectKeyFor(seq.width, seq.height)}
             onChange={(e) => {
               const f = FORMATS.find((x) => x.key === e.target.value)
@@ -577,7 +577,7 @@ export function Monitor() {
           <select
             aria-label="Preview quality"
             title="Preview quality: lower = smoother scrubbing on big footage. Never affects the export."
-            className="h-7 cursor-default rounded-field border border-border bg-bg-input pl-2 pr-6 text-ui-sm text-text-secondary transition-colors duration-[120ms] hover:border-border-strong hover:text-text-primary focus:border-accent focus:outline-none"
+            className="h-7 min-w-0 shrink cursor-default rounded-field border border-border bg-bg-input pl-2 pr-6 text-ui-sm text-text-secondary transition-colors duration-[120ms] hover:border-border-strong hover:text-text-primary focus:border-accent focus:outline-none"
             value={String(quality)}
             onChange={(e) => setQuality(Number(e.target.value) as Quality)}
           >

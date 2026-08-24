@@ -3423,3 +3423,76 @@ describe('moveSelectionWith (a multi-clip drag)', () => {
     expect(moveSelectionWith(seq, 'a', 'v3', 0, others(seq, ['c']))).toBe(seq)
   })
 })
+
+// ⛔ THE SELECTION TRAVELS WITH THE CLIP HE IS HOLDING, EVEN WHEN IT IS BLOCKED.
+//
+// His words, 2026-08-24, after reporting this more than once: *"I drag multiple
+// stuff. It just doesn't drag the thing I click on in the first place."*
+//
+// The grabbed clip gets clamped twice before it lands, once so a linked group
+// stays legal and again so it stops against its neighbour instead of carving it.
+// The carried clips were still shifted by the RAW requested delta. So the clip
+// under his cursor stopped dead and the rest of the selection sailed past it,
+// which on a packed caption track is almost every multi-clip drag.
+describe('a multi-clip drag keeps the grabbed clip and its selection together', () => {
+  // 'a' is boxed in on V1 by a long wall. Its travelling partner sits on V2 with
+  // a clear runway, so the only thing that can shorten IT is the applied delta.
+  const packed = (): Sequence =>
+    makeSeq([
+      makeTrack({
+        id: 'V1',
+        kind: 'video',
+        clips: [
+          makeClip({ id: 'a', startS: 0, outS: 2 }),
+          // The wall, and it runs long: 20s is INSIDE it, so the drop he asked
+          // for is not available and the clamp has to shorten his travel.
+          makeClip({ id: 'wall', startS: 8, outS: 40 }),
+        ],
+      }),
+      makeTrack({ id: 'V2', kind: 'video', name: 'V2', clips: [makeClip({ id: 'b', startS: 2, outS: 2 })] }),
+    ])
+
+  it('holds the carried clip to the distance the grabbed clip actually travelled', () => {
+    const seq = packed()
+    // Ask to drop 'a' at 20s. It cannot get there: the wall is in the way.
+    const out = moveSelectionWith(seq, 'a', 'V1', 20, [{ id: 'b', startS0: 2, solo: true }], true)
+    const a = findClip(out, 'a')!.clip
+    const b = findClip(out, 'b')!.clip
+    const travelled = a.startS - 0
+    // Whatever the clamp allowed, both moved by the SAME amount. Before the fix
+    // 'a' stopped short and 'b' was shifted by the full 20, tearing them apart.
+    expect(travelled).toBeLessThan(20)
+    expect(b.startS).toBeCloseTo(2 + travelled, 6)
+  })
+
+  it('moves nothing at all when the grabbed clip cannot move', () => {
+    const seq = makeSeq([
+      makeTrack({
+        id: 'V1',
+        kind: 'video',
+        clips: [
+          makeClip({ id: 'a', startS: 0, outS: 2 }),
+          makeClip({ id: 'b', startS: 2, outS: 2 }),
+        ],
+      }),
+    ])
+    // 'a' is already at 0 and asked to go to 0: nothing applied, so 'b' holds.
+    const out = moveSelectionWith(seq, 'a', 'V1', 0, [{ id: 'b', startS0: 2, solo: true }], true)
+    expect(findClip(out, 'a')!.clip.startS).toBe(0)
+    expect(findClip(out, 'b')!.clip.startS).toBe(2)
+  })
+
+  it('still carries the selection when the drag is unobstructed', () => {
+    const seq = makeSeq([
+      makeTrack({
+        id: 'V1',
+        kind: 'video',
+        clips: [makeClip({ id: 'a', startS: 0, outS: 2 }), makeClip({ id: 'b', startS: 2, outS: 2 })],
+      }),
+    ])
+    const out = moveSelectionWith(seq, 'a', 'V1', 10, [{ id: 'b', startS0: 2, solo: true }], true)
+    const a = findClip(out, 'a')!.clip
+    const b = findClip(out, 'b')!.clip
+    expect(b.startS - a.startS).toBeCloseTo(2, 6)
+  })
+})

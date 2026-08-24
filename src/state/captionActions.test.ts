@@ -163,17 +163,42 @@ describe('addCaptionsFromWords', () => {
     expect(top.name).toBe(CAPTION_TRACK_NAME)
   })
 
-  it('a replacing run is still ONE undo step', () => {
+  // ⛔ THIS EXPECTATION CHANGED ON 2026-08-24, AND THE OLD ONE WAS THE BUG.
+  //
+  // It used to assert that a second run left ONLY 'different', i.e. that
+  // captioning four tenths of a second threw away every caption on the track.
+  // His words: *"every time I start the caption thing, it deletes the last
+  // caption, so I can't caption them one by one."* A run now replaces only the
+  // stretch it covers, so 'trapped', which sits later, survives. The undo
+  // guarantee below is untouched and is why this test exists.
+  it('replaces only what it covers, and is still ONE undo step', () => {
     addCaptionsFromWords(words)
     addCaptionsFromWords([{ text: 'different', startS: 0, endS: 0.4 }])
-    expect(videoTracks(seq()).find((t) => t.name === CAPTION_TRACK_NAME)?.clips.map((c) => c.title?.text)).toEqual([
-      'different',
-    ])
+    const after = videoTracks(seq()).find((t) => t.name === CAPTION_TRACK_NAME)?.clips.map((c) => c.title?.text)
+    expect(after).toContain('different')
+    // Outside the run's span, and therefore his: it stays.
+    expect(after).toContain('trapped')
+    // The one it landed on top of is gone rather than doubled.
+    expect(after).not.toContain('so I')
     useStore.getState().undo()
     expect(videoTracks(seq()).find((t) => t.name === CAPTION_TRACK_NAME)?.clips.map((c) => c.title?.text)).toEqual([
       'so I',
       'trapped',
     ])
+  })
+
+  it('captions a second clip without touching the first, which is how he works', () => {
+    addCaptionsFromWords([{ text: 'first', startS: 0, endS: 1 }])
+    addCaptionsFromWords([{ text: 'second', startS: 10, endS: 11 }])
+    const texts = videoTracks(seq()).find((t) => t.name === CAPTION_TRACK_NAME)?.clips.map((c) => c.title?.text)
+    expect(texts).toEqual(['first', 'second'])
+  })
+
+  it('still replaces cleanly when he re-runs the same stretch', () => {
+    addCaptionsFromWords([{ text: 'take one', startS: 0, endS: 1 }])
+    addCaptionsFromWords([{ text: 'take two', startS: 0, endS: 1 }])
+    const texts = videoTracks(seq()).find((t) => t.name === CAPTION_TRACK_NAME)?.clips.map((c) => c.title?.text)
+    expect(texts).toEqual(['take two'])
   })
 })
 
