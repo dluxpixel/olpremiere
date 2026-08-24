@@ -13,6 +13,7 @@
 
 import { migrateProjectEffects } from '../engine/effects/migrate'
 import { migrateProject, newId, type Project } from '../engine/types'
+import { backfillMirror } from './mediaMirror'
 import { deleteBlob, getBlob, loadProjectById, putBlob, saveProject } from './persistence'
 import { flushOutgoing, guardRoom } from './projectActions'
 import { useStore } from './store'
@@ -474,6 +475,15 @@ async function adoptImported(raw: Project, writes: { key: string; blob: Blob }[]
     for (const key of written) if (!preexisting.has(key)) await deleteBlob(key).catch(() => {})
     throw err
   }
+
+  // ⛔ AND ON TO THE DISK. Opening a project file is the path he reaches for
+  // AFTER losing a store, so bytes that arrive this way having only one copy
+  // would leave him one rebuild from doing it all again. `backfillMirror` reads
+  // them straight back out of IndexedDB, where they were written a moment ago,
+  // and skips anything already on disk, so it needs no key map of its own and
+  // handles the copy path's suffixed keys by reading the final document.
+  // Fire and forget: a mirror must never fail an import.
+  void backfillMirror(project).catch(() => undefined)
 
   useStore.getState().setProject(project)
   useStore.getState().setUI({ selection: [] })

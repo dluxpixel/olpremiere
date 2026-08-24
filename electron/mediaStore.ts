@@ -128,11 +128,29 @@ const writers = new Map<string, { handle: FileHandle; tmp: string; final: string
 export async function beginMedia(assetId: string): Promise<boolean> {
   const final = fileFor(assetId)
   if (!final) return false
+  // ⛔ NEVER REPLACE A LIVE WRITER. This used to remove the part file the first
+  // writer still held open and take over its slot, so the rest of that stream
+  // was written through the second handle and the rename published two
+  // interleaved streams under the asset's real name. The renderer refuses to
+  // start a second write for one id, and this is the half that survives a
+  // renderer reload, which the renderer's own guard cannot.
+  if (writers.has(assetId)) return false
   await mkdir(mediaDir(), { recursive: true })
   const tmp = `${final}.part`
   await rm(tmp, { force: true }).catch(() => undefined)
   writers.set(assetId, { handle: await open(tmp, 'w'), tmp, final })
   return true
+}
+
+/**
+ * Abandon every open write and leave no part files behind.
+ *
+ * The page going away is the moment those writes are certainly dead, and without
+ * this a reload mid import would pin that asset's writer slot for the life of
+ * the main process, so the guard above would refuse it forever.
+ */
+export async function dropWriters(): Promise<void> {
+  for (const assetId of [...writers.keys()]) await cancelMedia(assetId)
 }
 
 export async function chunkMedia(assetId: string, bytes: ArrayBuffer): Promise<void> {
@@ -146,6 +164,14 @@ export async function finishMedia(assetId: string): Promise<number> {
   const w = writers.get(assetId)
   if (!w) throw new Error('media: unknown write')
   writers.delete(assetId)
+  // ⛔ FLUSH BEFORE THE RENAME. NTFS journals metadata, not data: the rename and
+  // the file's length become durable well before its contents do. The part file
+  // dance protects against the PROCESS dying, and this protects against the
+  // MACHINE dying, which is the worse of the two, because a leftover part file
+  // is swept and written again while a full length file of zeros under the real
+  // name is indistinguishable from good footage to every reader in the app.
+  // One flush per import, at the end, not per chunk.
+  await w.handle.datasync().catch(() => undefined)
   await w.handle.close()
   const { rename } = await import('node:fs/promises')
   await rename(w.tmp, w.final)

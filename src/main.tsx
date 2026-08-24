@@ -16,9 +16,9 @@ import { initAutoBackup } from './state/autoBackup'
 import { checkIntegrity, integrityMessage } from './state/dataIntegrity'
 import { migrateRenamedKeys } from './state/keyMigration'
 import { loadLibrary } from './state/library'
-import { initPersistence, listProjects } from './state/persistence'
+import { initPersistence, listProjects, loadProjectById } from './state/persistence'
 import { recoverFromWipe, sweepEmptyRecoveries } from './state/backupRestore'
-import { backfillMirror, healProjectMedia } from './state/mediaMirror'
+import { backfillEveryProject, healProjectMedia } from './state/mediaMirror'
 import { initSettings } from './state/settings'
 import { useStore } from './state/store'
 import { activeSequence, type MediaAsset } from './engine/types'
@@ -148,7 +148,11 @@ const work: BootWork = {
     // And make sure everything he already had is mirrored, not just what he
     // imports from now on, or the edit he has been cutting for a month would
     // still have exactly one copy. Nothing waits on it.
-    void backfillMirror(useStore.getState().project)
+    //
+    // ⛔ EVERY PROJECT ON THE SHELF, not only the open one. A finished edit he
+    // has not opened since the mirror shipped would otherwise keep exactly one
+    // copy of its footage while the app told him it was protected.
+    void backfillEveryProject(listProjects, loadProjectById)
 
     const recovered = await recoverFromWipe(await listProjects()).catch((err: unknown) => {
       console.warn('OL Premiere boot: could not check the backups', err)

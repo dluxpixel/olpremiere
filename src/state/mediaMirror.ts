@@ -82,7 +82,35 @@ export async function mirroredIds(): Promise<Set<string>> {
  * safety net, and a mirror that THROWS would cost him the import itself, which
  * is far worse. Returns whether the copy landed.
  */
-export async function mirrorAsset(assetId: string, bytes: Blob): Promise<boolean> {
+/**
+ * One write per asset id, ever, at a time.
+ *
+ * ⛔ TWO WRITERS FOR ONE ID PRODUCE A FILE THAT IS NOT HIS FOOTAGE AND LOOKS
+ * EXACTLY LIKE IT. `importFiles` fires this un-awaited so a 2.5 GB capture does
+ * not make him wait, then fires `backfillMirror` after the loop. Backfill asks
+ * the disk what is already mirrored, and the in-flight `<id>.part` does not
+ * appear in that listing, so the id reads as unmirrored and gets a second
+ * writer. The second `beginMedia` removes the part file the first one still
+ * holds open and takes over the writer slot, so the remaining chunks of the
+ * first stream are written through the second handle. The rename then publishes
+ * one file containing two interleaved streams, at a plausible size, which
+ * `listMedia` reports as a good spare copy and `healProjectMedia` later writes
+ * back into IndexedDB under his real key while toasting that it put his media
+ * back. Corrupt, and announced as a success.
+ *
+ * Single-flight makes the second caller await the first instead of racing it.
+ */
+const inFlight = new Map<string, Promise<boolean>>()
+
+export function mirrorAsset(assetId: string, bytes: Blob): Promise<boolean> {
+  const running = inFlight.get(assetId)
+  if (running) return running
+  const p = writeMirror(assetId, bytes).finally(() => inFlight.delete(assetId))
+  inFlight.set(assetId, p)
+  return p
+}
+
+async function writeMirror(assetId: string, bytes: Blob): Promise<boolean> {
   const api = mirrorApi()
   if (!api || bytes.size === 0) return false
   try {
@@ -241,12 +269,53 @@ export async function backfillMirror(project: Project): Promise<number> {
   if (!api) return 0
   const listed = await api.mediaList().catch(() => ({ dir: '', files: [] as { id: string; size: number }[] }))
   const onDisk = new Set(listed.files.map((m) => m.id))
+  return backfillInto(project, onDisk)
+}
+
+/** The per-project half, so a sweep can share one listing across the shelf. */
+async function backfillInto(project: Project, onDisk: Set<string>): Promise<number> {
   let done = 0
   for (const a of Object.values(project.assets ?? {}) as MediaAsset[]) {
     if (!a?.blobKey || onDisk.has(a.id)) continue
     const blob = await getBlob(a.blobKey)
     if (!blob || blob.size === 0) continue
-    if (await mirrorAsset(a.id, blob)) done += 1
+    if (await mirrorAsset(a.id, blob)) {
+      onDisk.add(a.id)
+      done += 1
+    }
+  }
+  return done
+}
+
+/**
+ * Copy the media of EVERY project on his shelf into the mirror, not just the one
+ * that happens to be open.
+ *
+ * ⛔ HIS WORDS, 2026-08-23: *"I had some projects archived, some projects
+ * Working on and a few on later."* Both backfill callers passed the OPEN
+ * project, so a finished edit he had not opened since the mirror shipped had
+ * exactly one copy of its footage and would go with the next rebuild, silently,
+ * while the app told him its safety net was working. Opening every project just
+ * to protect it is not something he should have to think of.
+ *
+ * One listing for the whole shelf, and each project skips what is already there,
+ * so a shelf that is already mirrored costs one `mediaList` and a walk of the
+ * documents. Never throws: this runs at boot, behind everything else.
+ */
+export async function backfillEveryProject(
+  listProjects: () => Promise<readonly { id: string }[]>,
+  loadProjectById: (id: string) => Promise<Project | null>,
+): Promise<number> {
+  const api = mirrorApi()
+  if (!api) return 0
+  const listed = await api.mediaList().catch(() => ({ dir: '', files: [] as { id: string; size: number }[] }))
+  const onDisk = new Set(listed.files.map((m) => m.id))
+  let done = 0
+  const rows = await listProjects().catch(() => [] as readonly { id: string }[])
+  for (const row of rows) {
+    const project = await loadProjectById(row.id).catch(() => null)
+    if (!project) continue
+    done += await backfillInto(project, onDisk)
   }
   return done
 }

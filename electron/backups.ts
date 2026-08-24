@@ -59,12 +59,26 @@ export function backupDir(): string {
   return path.join(app.getPath('documents'), `${name} Backups`)
 }
 
-/** `2026-07-26_1743-05_my-edit.olpbak`, which sorts chronologically and reads plainly. */
-function fileName(projectName: string, when: Date): string {
+/**
+ * `2026-07-26_1743-05_ab9fe413_my-edit.olpbak`, which sorts chronologically and
+ * reads plainly.
+ *
+ * ⛔ THE PROJECT ID IS IN THE NAME BECAUSE EVERY PROJECT OF HIS IS CALLED THE
+ * SAME THING. The stamp is seconds-resolution and `backupEveryProject` writes
+ * the whole shelf in one tight loop, so several land inside the same second,
+ * and a name built from the timestamp and "Untitled Project" is the same name
+ * for all of them. `writeFile` then overwrites, and the sweep still records
+ * every one as written, so the losers are marked done and never retried. A
+ * finished project never changes again, so its fingerprint never changes, and
+ * it would sit there unbacked forever. Found 2026-08-24, after the wipe that
+ * cost him three days, in the very code added to stop that happening again.
+ */
+function fileName(projectName: string, when: Date, projectId?: string): string {
   const p = (n: number): string => String(n).padStart(2, '0')
   const stamp = `${when.getFullYear()}-${p(when.getMonth() + 1)}-${p(when.getDate())}_${p(when.getHours())}${p(when.getMinutes())}-${p(when.getSeconds())}`
   const safe = (projectName || 'project').replace(/[^a-z0-9-_ ]/gi, '').trim().slice(0, 40) || 'project'
-  return `${stamp}_${safe}.olpbak`
+  const short = (projectId ?? '').replace(/[^a-z0-9]/gi, '').slice(0, 8)
+  return short ? `${stamp}_${short}_${safe}.olpbak` : `${stamp}_${safe}.olpbak`
 }
 
 /**
@@ -77,7 +91,16 @@ function fileName(projectName: string, when: Date): string {
 export async function writeBackup(projectName: string, json: string): Promise<string> {
   const dir = backupDir()
   await mkdir(dir, { recursive: true })
-  const target = path.join(dir, fileName(projectName, new Date()))
+  // The id is already in the bytes being written, so this costs one parse and
+  // no new IPC. A file that will not parse keeps the old name rather than
+  // failing the backup: a backup with a colliding name still beats none.
+  let projectId: string | undefined
+  try {
+    projectId = (JSON.parse(json) as { project?: { id?: string } })?.project?.id
+  } catch {
+    projectId = undefined
+  }
+  const target = path.join(dir, fileName(projectName, new Date(), projectId))
   await writeFile(target, json, 'utf8')
 
   const entries = await readdir(dir)

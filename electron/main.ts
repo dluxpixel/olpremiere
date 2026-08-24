@@ -341,6 +341,9 @@ function createWindow(): void {
   const dropOrphans = (): void => {
     void proxy.releaseAllProxies()
     void remux.releaseAllRemuxes()
+    // A half written mirror copy is in the same boat, and its writer slot would
+    // otherwise be pinned for the life of main, refusing that asset forever.
+    void mediaStore.dropWriters()
   }
   win.webContents.on('did-start-navigation', (e) => {
     if (e.isMainFrame && !e.isSameDocument) dropOrphans()

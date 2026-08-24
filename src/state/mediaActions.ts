@@ -9,7 +9,7 @@ import { evictAsset } from '../engine/frameCache'
 import { disposePreviewAsset } from '../engine/preview'
 import { ensureProxies, forgetProxy } from '../engine/proxyMedia'
 import { probeFile } from '../engine/probe'
-import { backfillMirror, mirrorApi, mirrorAsset } from './mediaMirror'
+import { backfillMirror, mirrorAsset } from './mediaMirror'
 import { canImport, remuxIfNeeded } from '../engine/remuxSource'
 import { addClipFromAsset, addClipWithLinkedAudio, recomputeDuration } from '../engine/timeline'
 import {
@@ -238,8 +238,24 @@ export function deleteAsset(assetId: Id): void {
     delete assets[assetId]
     return { ...p, assets, sequences }
   })
-  // The spare copy on disk goes with it, or the mirror would only ever grow.
-  void mirrorApi()?.mediaDelete(assetId).catch(() => undefined)
+  // ⛔ THE SPARE COPY ON DISK STAYS. It used to be deleted here, "or the mirror
+  // would only ever grow", and that was wrong twice over.
+  //
+  // Undo. Twelve lines below, this same function deliberately KEEPS the
+  // IndexedDB blob so undo can bring the bin item back, and the toast offers him
+  // an Undo button. Deleting the disk copy meant Delete then Ctrl+Z handed the
+  // clip back with exactly ONE copy of its bytes, silently, for the rest of the
+  // session: the precise configuration that lost him eight voice recordings.
+  //
+  // Sharing. `landRestored` gives a recovered project a fresh id and keeps its
+  // ASSETS byte for byte, so several rows on his shelf point at one set of
+  // bytes. Both IndexedDB delete paths were taught that; this one never was, and
+  // `deleteMedia` loops every folder the app has ever used, so there is no
+  // second chance.
+  //
+  // Size is not a constraint on his machine and a mirror that only grows is the
+  // right trade. If reclamation is ever wanted it belongs in `blobSweep`, beside
+  // the reachability union it already computes.
   // Release the decode resources keyed by this asset: the frameCache demuxer +
   // WebCodecs decoder and the pooled preview <video>/<img>. Without this they
   // stay open for the whole session (a hardware-decoder + memory leak across

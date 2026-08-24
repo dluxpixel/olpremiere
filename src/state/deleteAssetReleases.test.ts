@@ -40,6 +40,13 @@ vi.mock('../engine/denoise', async (orig) => ({
   invalidateDenoise: (id: string) => released.denoise.push(id),
 }))
 
+const mirror = vi.hoisted(() => ({ deleted: [] as string[] }))
+vi.mock('./mediaMirror', () => ({
+  backfillMirror: () => Promise.resolve(0),
+  mirrorAsset: () => Promise.resolve(true),
+  mirrorApi: () => ({ mediaDelete: (id: string) => { mirror.deleted.push(id); return Promise.resolve() } }),
+}))
+
 import { deleteAsset } from './mediaActions'
 import { useStore } from './store'
 
@@ -84,5 +91,24 @@ describe('deleteAsset', () => {
     deleteAsset('no-such-asset')
     expect(released.denoise).toEqual([])
     expect(released.frameCache).toEqual([])
+  })
+})
+
+// ⛔ DELETING A BIN ITEM MUST NOT TAKE THE SPARE COPY.
+//
+// The same function deliberately keeps the IndexedDB blob so Undo can bring the
+// clip back, and the toast offers Undo. Deleting the disk copy meant Delete then
+// Ctrl+Z handed it back on exactly ONE copy, silently, which is the shape that
+// lost him eight voice recordings. Recovered rows also share asset ids, so a
+// delete on one row could take the bytes another row still needs.
+describe('deleting an asset leaves the disk copy alone', () => {
+  it('never asks the shell to delete the mirrored file', () => {
+    mirror.deleted.length = 0
+    const project = newProject()
+    const id = 'a1'
+    project.assets[id] = { id, name: 'clip.mp4', kind: 'video', blobKey: 'asset/' + id, durationS: 1 } as never
+    useStore.setState({ project })
+    deleteAsset(id)
+    expect(mirror.deleted).toEqual([])
   })
 })
