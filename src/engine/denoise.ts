@@ -20,6 +20,7 @@
 // environment with WebAssembly. It is imported lazily so the model only costs
 // anything once someone actually enables denoise.
 
+import { budgets } from './memoryBudget'
 import type { MediaAsset } from './types'
 
 /**
@@ -117,7 +118,8 @@ export function mixDryWet(raw: Float32Array, wet: Float32Array, strength: number
 // ADDED. Re-reading a cached entry does not refresh it, which is the honest
 // simple thing: an evicted entry costs one re-run of the wasm over that clip,
 // never a wrong answer.
-const DENOISE_CACHE_MAX_BYTES = 192 * 1024 * 1024
+// Follows the machine now, see engine/memoryBudget.ts.
+const denoiseCacheMaxBytes = (): number => budgets().denoise
 const wetCache = new Map<string, Promise<Float32Array[] | null>>()
 const mixCache = new Map<string, { strength: number; channels: Float32Array[] }>()
 /** Bytes charged per asset, counting both copies, so the budget is the truth. */
@@ -165,7 +167,7 @@ function evictDenoiseOverflow(keepId: string): void {
     [...wetCache.keys()],
     (id) => denoiseBytes.get(id) ?? 0,
     denoiseTotalBytes,
-    DENOISE_CACHE_MAX_BYTES,
+    denoiseCacheMaxBytes(),
     keepId,
   )
   for (const id of drop) {

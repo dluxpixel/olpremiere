@@ -8,6 +8,7 @@
 
 import type { CanvasSink, Input, WrappedCanvas } from 'mediabunny'
 import { bumpProxyPriority, hasProxy, proxyKeyFor } from './proxyMedia'
+import { budgets } from './memoryBudget'
 import type { Id, MediaAsset } from './types'
 
 export const FALLBACK_FPS = 30
@@ -142,10 +143,27 @@ export class FrameLru<V> {
    * cache that refuses the frame it was just asked to hold is worse than one
    * slightly over its ceiling.
    */
+  /**
+   * ⛔ A FUNCTION IS ACCEPTED, NOT JUST A NUMBER, SINCE 2026-08-24. The ceiling
+   * was fixed at construction and therefore fixed for the life of the session,
+   * which is how 512 MB of frames was taken on a machine that had 7.6 GB spare
+   * and was already paging. A budget that cannot change cannot respond to the
+   * machine. A plain number still works and still means "this, forever", which is
+   * what every test wants.
+   */
+  private readonly budgetOf: () => number
+
   constructor(
-    readonly budgetBytes: number,
+    budget: number | (() => number),
     private readonly costOf: (v: V) => number = () => 1,
-  ) {}
+  ) {
+    this.budgetOf = typeof budget === 'function' ? budget : () => budget
+  }
+
+  /** The ceiling in force right now. */
+  get budgetBytes(): number {
+    return this.budgetOf()
+  }
 
   get size(): number {
     return this.map.size
@@ -237,7 +255,10 @@ interface AssetEntry {
   usingProxy: boolean
 }
 
-const cache = new FrameLru<CanvasImageSource>(CACHE_BUDGET_BYTES, frameBytes)
+// The ceiling follows the machine now, see engine/memoryBudget.ts. CACHE_BUDGET_BYTES
+// is still exported as what it used to be, and is still the ceiling that share can
+// never exceed.
+const cache = new FrameLru<CanvasImageSource>(() => budgets().frames, frameBytes)
 const entries = new Map<Id, AssetEntry>()
 
 /**

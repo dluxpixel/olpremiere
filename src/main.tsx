@@ -7,9 +7,18 @@ import { bootTasks, runBootSequence, started, type BootWork } from './ui/bootSeq
 import { joinRoomFromUrl } from './collab/collabControl'
 import { invalidatePreview, warmPreview } from './engine/preview'
 import { warmAudio } from './engine/audio'
+import { watchSystemMemory } from './engine/memoryBudget'
 import { warmTranscriber } from './engine/captions/transcribe'
 import { warmMusicModel } from './engine/captions/musicAnalysis'
 import { loadTitleFonts } from './engine/render/titleFonts'
+
+// ⛔ FIRST, AND BEFORE ANYTHING DECODES. Every cache in the app sizes itself
+// against what the machine has spare, and until this answers they run on
+// navigator.deviceMemory, which is capped at 8 GB and reports total rather than
+// free. Measured on his machine with the editor closed: 7.6 GB spare of 31.7 GB,
+// commit charge 47 GB. Sizing against the total is how a fixed 960 MB of cache
+// looked reasonable on a machine that was already paging.
+watchSystemMemory()
 import './index.css'
 import { loadDefaultTextAppearance } from './state/appearanceActions'
 import { initAutoBackup } from './state/autoBackup'

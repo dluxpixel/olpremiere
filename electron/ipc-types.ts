@@ -257,6 +257,8 @@ export interface OlApi {
    * Check for an update NOW. Runs in main, which outlives a renderer reload, so the
    * reload button can ask and then reload without cutting its own check short.
    */
+  /** Real machine memory in KB, so the caches can be sized against it. */
+  systemMemory(): Promise<{ totalKb: number; freeKb: number }>
   checkForUpdates(): Promise<void>
 
   /** Editor renderer to main: what the loading card would be showing right now. */

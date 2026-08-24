@@ -7,6 +7,7 @@ import { getBlob } from '../state/persistence'
 import { denoisedBufferFor } from './denoise'
 import { duckEnvelope } from './ducking'
 import { evalChannel } from './keyframes'
+import { budgets } from './memoryBudget'
 import type { AutoLevel, Clip, Id, MediaAsset, Sequence, Track } from './types'
 import { createSoftLimiter } from './audioLimiter'
 import { timeStretchChannels } from './timeStretch'
@@ -189,7 +190,9 @@ export async function setAudioOutputDevice(id: string | null): Promise<void> {
 // asset's full float32 PCM in RAM forever (~23MB per stereo minute). Evicted
 // entries simply re-decode on next use; anything actively scheduled is kept
 // alive by the graph's own references.
-const AUDIO_CACHE_MAX_BYTES = 256 * 1024 * 1024
+// Follows the machine now, see engine/memoryBudget.ts: this was a constant taken
+// on a machine that had 7.6 GB spare and was already paging.
+const audioCacheMaxBytes = (): number => budgets().audio
 const bufferCache = new Map<Id, Promise<AudioBuffer | null>>()
 const bufferBytes = new Map<Id, number>()
 let bufferTotalBytes = 0
@@ -203,14 +206,14 @@ function evictAudioOverflow(keepId: Id): void {
   // of the two to lose: rebuilding it reverses a buffer that is usually still
   // resident, while dropping a forward buffer costs a decode from disk.
   for (const id of reversedCache.keys()) {
-    if (bufferTotalBytes <= AUDIO_CACHE_MAX_BYTES) return
+    if (bufferTotalBytes <= audioCacheMaxBytes()) return
     if (id === keepId) continue
     bufferTotalBytes -= reversedBytes.get(id) ?? 0
     reversedBytes.delete(id)
     reversedCache.delete(id)
   }
   for (const id of bufferCache.keys()) {
-    if (bufferTotalBytes <= AUDIO_CACHE_MAX_BYTES) return
+    if (bufferTotalBytes <= audioCacheMaxBytes()) return
     if (id === keepId) continue // never evict the entry we just decoded
     bufferTotalBytes -= bufferBytes.get(id) ?? 0
     bufferBytes.delete(id)

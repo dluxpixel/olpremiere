@@ -18,6 +18,9 @@ import type {
 const api: OlApi = {
   isElectron: true,
   getVersion: () => ipcRenderer.invoke('app:version'),
+  // Real machine memory, because navigator.deviceMemory is capped at 8 GB by the
+  // spec and reports TOTAL rather than free. See engine/memoryBudget.ts.
+  systemMemory: (): Promise<{ totalKb: number; freeKb: number }> => ipcRenderer.invoke('system:memory'),
   nativeProbe: (): Promise<NativeCaps> => ipcRenderer.invoke('native:probe'),
   nativePrepareAudio: (wav: ArrayBuffer) => ipcRenderer.invoke('native:prepareAudio', wav),
   nativeStart: (config: NativeExportConfig): Promise<NativeStartResult> => ipcRenderer.invoke('native:start', config),

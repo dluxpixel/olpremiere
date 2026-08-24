@@ -667,6 +667,16 @@ app.whenReady().then(() => {
   // loading card narrates this check as one of its rows, and it mounts a beat after
   // the check starts. Without a pull, a fast answer would land before anyone was
   // listening and the row would claim to still be checking.
+  // ⛔ THE RENDERER CANNOT SEE THIS. navigator.deviceMemory is capped at 8 GB by
+  // the spec and reports TOTAL, not free, so on his 32 GB machine it says 8 and
+  // on a 4 GB one it says 4. Measured 2026-08-24 with the app closed: 7.6 GB
+  // available and a commit charge of 47 GB against 31.7 GB of RAM, which is a
+  // machine already paging. The caches were taking 960 MB of that on a constant.
+  ipcMain.handle('system:memory', () => {
+    const m = process.getSystemMemoryInfo()
+    return { totalKb: m.total, freeKb: m.free }
+  })
+
   ipcMain.handle('update:status:get', () => updateStatus)
 
   // The reload button's half of the job. Lives in MAIN because main outlives the
