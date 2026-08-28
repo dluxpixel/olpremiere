@@ -219,6 +219,24 @@ function evictAudioOverflow(keepId: Id): void {
     bufferBytes.delete(id)
     bufferCache.delete(id)
   }
+
+  // ⛔ ONE ITEM BIGGER THAN THE WHOLE CACHE WILL EMPTY IT, EVERY TIME, AND HE HAS
+  // ONE. Measured on his project 2026-08-24: a 30 minute music track decodes to
+  // 674 MB of float32, against a 256 MB budget. `keepId` is protected, correctly,
+  // so decoding it evicted all sixteen other assets, and the next asset then
+  // evicted it. Every reschedule was sixteen fresh misses and a multi-gigabyte
+  // re-read: the cache was not slow, it was doing negative work.
+  //
+  // It cannot be kept and it must not take the rest down with it, so it is
+  // dropped the moment the pass that protected it is over. It stays live for the
+  // caller that asked, because the graph holds its own reference; what goes is
+  // the CACHE entry, so the next asset finds room instead of an empty cache.
+  const keepBytes = bufferBytes.get(keepId) ?? 0
+  if (keepBytes > audioCacheMaxBytes() && bufferCache.size > 1) {
+    bufferTotalBytes -= keepBytes
+    bufferBytes.delete(keepId)
+    bufferCache.delete(keepId)
+  }
 }
 
 /**
@@ -260,6 +278,26 @@ export async function getAudioBuffer(asset: MediaAsset): Promise<AudioBuffer | n
   return pending
 }
 
+/**
+ * ⛔ `blob.arrayBuffer()` CANNOT RETURN MORE THAN THIS, AND HIS FILES ARE BIGGER.
+ *
+ * A JS ArrayBuffer tops out at 2,147,483,647 bytes. Two of the three screen
+ * recordings in his project on 2026-08-24 were 2,578,361,290 and 2,339,661,548
+ * bytes, so this call THREW for both, the throw landed in the catch below, and
+ * the catch returned null. Their audio was silently absent, after paying for the
+ * allocation attempt first. That is a large part of *"the audio doesn't seem to
+ * be working for some reason"*: not a mixer state, not a device, the file was
+ * simply too big to read the way this function reads it.
+ *
+ * It is checked BEFORE the read rather than caught after, because the failed
+ * attempt is itself expensive on a machine that is already paging, and because a
+ * limit is worth saying out loud rather than discovering as a stack trace.
+ */
+const MAX_ARRAY_BUFFER_BYTES = 2_147_483_647
+
+/** Reported once per asset, so a long timeline cannot fill the console. */
+const oversizeWarned = new Set<Id>()
+
 async function decodeAssetAudio(asset: MediaAsset): Promise<AudioBuffer | null> {
   if (asset.kind === 'image' || !asset.hasAudio) return null
   const blob = await getBlob(asset.blobKey)
@@ -267,7 +305,24 @@ async function decodeAssetAudio(asset: MediaAsset): Promise<AudioBuffer | null> 
     console.warn(`OL Premiere audio: missing blob for "${asset.name}" (${asset.blobKey})`)
     return null
   }
+  if (blob.size > MAX_ARRAY_BUFFER_BYTES) {
+    if (!oversizeWarned.has(asset.id)) {
+      oversizeWarned.add(asset.id)
+      console.warn(
+        `OL Premiere audio: "${asset.name}" is ${(blob.size / 1024 ** 3).toFixed(2)} GB, past the ` +
+          `${(MAX_ARRAY_BUFFER_BYTES / 1024 ** 3).toFixed(2)} GB a single buffer can hold, so its sound cannot be read this way.`,
+      )
+    }
+    return null
+  }
   try {
+    // ⚠️ THIS READS THE WHOLE CONTAINER TO GET THE AUDIO TRACK, and for a screen
+    // recording that is gigabytes of video to reach a few MB of sound. The
+    // picture never pays this: `blobUrls.ts` keeps the same file lazy and
+    // file-backed. Measured on his project 2026-08-24: 5.78 GiB of ArrayBuffer
+    // read in one pass for three video assets. Replacing this with a demuxed
+    // audio-only read is the real fix and is a bigger change than this one; the
+    // guards around it exist so the burst is at least bounded and never silent.
     const bytes = await blob.arrayBuffer()
     return await ensureAudioContext().decodeAudioData(bytes)
   } catch (err) {
@@ -276,9 +331,45 @@ async function decodeAssetAudio(asset: MediaAsset): Promise<AudioBuffer | null> 
   }
 }
 
-/** Fire-and-forget decode so the first play() doesn't stall on decoding. */
+/**
+ * ⛔ HOW MANY SOURCE FILES MAY BE IN MEMORY AT ONCE.
+ *
+ * `decodeAssetAudio` holds a whole container in one ArrayBuffer, so N parallel
+ * decodes is N whole files resident simultaneously, and no cache budget can bound
+ * that: eviction only runs as each decode LANDS, while every landed buffer is
+ * still pinned by the pending array that asked for it.
+ *
+ * Measured on his project: 17 audible assets, 5.78 GiB of container reads, all
+ * launched at once by a bare `Promise.all`, on a machine whose commit charge was
+ * already 47 GB against 31.7 GB of RAM. That burst IS *"it just sometimes
+ * stutters and it just fucking lags for a minute"*.
+ *
+ * Two at a time keeps the disk busy without ever holding more than two files.
+ */
+const DECODE_CONCURRENCY = 2
+
+/** Run `work` over `items`, at most `limit` in flight. Never rejects. */
+async function mapLimit<T>(items: readonly T[], limit: number, work: (item: T) => Promise<unknown>): Promise<void> {
+  let next = 0
+  const runner = async (): Promise<void> => {
+    for (;;) {
+      const i = next++
+      if (i >= items.length) return
+      await work(items[i]).catch(() => undefined)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, runner))
+}
+
+/**
+ * Fire-and-forget decode so the first play() doesn't stall on decoding.
+ *
+ * ⚠️ BOUNDED SINCE 2026-08-27. This was `for (const asset of assets) void
+ * getAudioBuffer(asset)`, which starts every decode in the same tick. A cached
+ * asset costs nothing either way; an uncached one costs its whole file.
+ */
 export function prewarmAudio(assets: MediaAsset[]): void {
-  for (const asset of assets) void getAudioBuffer(asset)
+  void mapLimit(assets, DECODE_CONCURRENCY, (a) => getAudioBuffer(a))
 }
 
 /**
@@ -289,8 +380,14 @@ export function prewarmAudio(assets: MediaAsset[]): void {
  * and never rejects: a file that will not decode must not hold the app shut.
  */
 export async function warmAudio(assets: MediaAsset[]): Promise<number> {
-  const results = await Promise.all(assets.map((a) => getAudioBuffer(a).catch(() => null)))
-  return results.filter(Boolean).length
+  // ⚠️ BOUNDED, for the reason on DECODE_CONCURRENCY. This ran at boot, so every
+  // launch of his project read 5.78 GiB into the heap in one burst while the
+  // boot card said "Warming up your audio".
+  let decoded = 0
+  await mapLimit(assets, DECODE_CONCURRENCY, async (a) => {
+    if (await getAudioBuffer(a)) decoded += 1
+  })
+  return decoded
 }
 
 // Reversed buffers for reverse playback (Phase 7), cached per asset.
@@ -756,7 +853,23 @@ export async function scheduleAudio(
     }
   }
 
-  const buffers = await Promise.all(candidates.map((c) => clipAudioBuffer(c.clip, c.asset, c.reversed)))
+  // ⚠️ BOUNDED, same reason as prewarmAudio. Pressing Space on his project used
+  // to launch every audible asset's decode in one tick; a cold set of 17 meant
+  // 5.78 GiB of container reads all resident at once. The transport does not wait
+  // for this either way (playback.ts caps its wait at AUDIO_START_BUDGET_MS and
+  // lets the picture roll), so the only thing the burst ever bought was the
+  // freeze that arrived a few seconds after the picture started moving.
+  // Indices, not the objects: two clips of the same asset are separate entries
+  // and indexOf would hand them both the same slot.
+  const buffers: (AudioBuffer | null)[] = new Array<AudioBuffer | null>(candidates.length).fill(null)
+  await mapLimit(
+    candidates.map((_, i) => i),
+    DECODE_CONCURRENCY,
+    async (i) => {
+      const c = candidates[i]
+      buffers[i] = await clipAudioBuffer(c.clip, c.asset, c.reversed)
+    },
+  )
 
   const { master } = ensureMasterChain()
 

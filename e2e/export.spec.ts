@@ -248,3 +248,73 @@ test('export cancel closes the dialog without a file', async ({ page }) => {
   await page.getByTestId('export-cancel').click({ timeout: 10_000 })
   await expect(page.getByTestId('export-dialog')).toHaveCount(0, { timeout: 10_000 })
 })
+
+/**
+ * ⛔ THE ONE THING NOTHING IN THIS REPO MEASURED, 2026-08-27.
+ *
+ * There is a real perf gate: `perfGuard.test.ts` benches the frame resolver, the
+ * snap points and the drag preview, and `play-cost`, `scrub-cost`, `play-latency`
+ * and `edit-cost-at-scale` bench the picture end to end. Every one of them was
+ * green through the week his editor was holding 3.9 GB with 4 GB free of 32, and
+ * green through the day he said *"this app is going completely shit."* They
+ * measure TIME. Nothing measured MEMORY, so 960 MB of fixed cache budget grew
+ * under them without a single red run.
+ *
+ * An export is where this bites hardest and where it is easiest to catch: it runs
+ * for minutes, touches every cache the app owns, and is the one operation whose
+ * cost is supposed to be flat in its own length. `MAX_ENCODE_QUEUE = 4` and
+ * `FRAME_CREDIT = 3` bound the encoder by construction; this asserts the rest of
+ * the app does not quietly grow beside them.
+ *
+ * ⚠️ IT IS A TRIPWIRE, NOT A BENCHMARK. `performance.memory` is Chromium-only,
+ * coarse, and reports the JS heap rather than the process, so it will never see a
+ * GPU texture or a decoded frame held in a native buffer. The budget is
+ * deliberately loose: it is here to catch an order-of-magnitude regression, the
+ * kind that reaches him, not to police a few MB. If it trips, something started
+ * holding on to whole frames or whole buffers. Find that; do not raise the number
+ * without a measurement written down here.
+ */
+test('an export does not grow the heap without bound', async ({ page }) => {
+  test.setTimeout(180_000)
+  await page.goto('/')
+
+  const heapMb = async (): Promise<number | null> =>
+    page.evaluate(() => {
+      const m = (performance as Performance & { memory?: { usedJSHeapSize: number } }).memory
+      return m ? Math.round(m.usedJSHeapSize / 1048576) : null
+    })
+
+  const supported = (await heapMb()) !== null
+  test.skip(!supported, 'performance.memory is Chromium-only; nothing to measure here')
+
+  await page.getByTestId('media-file-input').setInputFiles(FIXTURE)
+  await expect(page.getByTestId('asset-card')).toBeVisible({ timeout: 15_000 })
+  // Four clips, so the sweep opens and closes several providers rather than one.
+  for (let i = 0; i < 4; i++) await page.getByTestId('asset-card').dblclick()
+  await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(4)
+  await shrinkSequence(page)
+
+  const before = (await heapMb())!
+
+  const downloadPromise = page.waitForEvent('download', { timeout: 150_000 })
+  await page.getByTestId('export-open').click()
+  const download = await downloadPromise
+  await download.saveAs(`${VERIFY}/heap.mp4`)
+
+  const after = (await heapMb())!
+  const grew = after - before
+
+  // Reported on every run, pass or fail. A number in the log is what lets a
+  // later session see a trend instead of only a breach, which is the whole
+  // reason the cache growth went unnoticed for a week.
+  console.log(`[export heap] before ${before} MB, after ${after} MB, grew ${grew} MB, budget 150 MB`)
+
+  // MEASURED 2026-08-27 ON THIS FIXTURE: before 25 MB, after 25 MB, grew 0.
+  // The export really is flat, which is what MAX_ENCODE_QUEUE and FRAME_CREDIT
+  // promise. 150 MB is therefore not a budget it is anywhere near, it is a
+  // tripwire three times looser than the export's own bounded peak (about 44 MB
+  // of frames in flight plus four queued encodes) so a busy machine cannot make
+  // it flake. If this ever trips, something began holding whole frames or whole
+  // buffers; find that rather than raising the number.
+  expect(grew).toBeLessThan(150)
+})

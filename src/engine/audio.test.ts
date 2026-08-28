@@ -761,3 +761,60 @@ describe('a stretched clip is stretched once, not once per reschedule', () => {
     expect(play.offsetS).toBe(0.5)
   })
 })
+
+// ⛔ THE THREE GUARDS ON THE DECODE BURST, 2026-08-27. Measured on his own project
+// ("Green", 112 clips, backed up the day he said the app was lagging for a
+// minute): 17 audible assets, 5.78 GiB of container bytes read into the JS heap
+// in ONE pass, 1,114 MB of decoded PCM wanted against a 256 MB budget, and a
+// single 674 MB music track that is 2.6x the whole cache on its own.
+//
+// These are SOURCE-ORDER tests, like the schedule-clock one above, and for the
+// same reason: reproducing the real failure needs gigabytes of real media and a
+// machine already paging. What can be checked honestly is that the three guards
+// are present and that none of them was quietly removed by a later tidy.
+describe('the audio decode burst is bounded', () => {
+  const src = readFileSync(fileURLToPath(new URL('./audio.ts', import.meta.url)), 'utf8')
+
+  it('never starts every decode in one tick', () => {
+    // Each of these held a whole source file per entry, so a bare Promise.all
+    // over them is N whole files resident at once, and no cache budget can bound
+    // it: eviction runs as each decode LANDS, while every landed buffer is still
+    // pinned by the pending array that asked for it.
+    for (const fn of ['export function prewarmAudio', 'export async function warmAudio']) {
+      const body = src.slice(src.indexOf(fn), src.indexOf(fn) + 700)
+      expect(body).toContain('mapLimit')
+      expect(body).not.toMatch(/Promise\.all/)
+    }
+  })
+
+  it('bounds the schedule own decodes too, which is what Space triggers', () => {
+    const body = src.slice(src.indexOf('export async function scheduleAudio'))
+    const upToStart = body.slice(0, body.indexOf('const baseT'))
+    expect(upToStart).toContain('mapLimit')
+    expect(upToStart).not.toMatch(/const buffers = await Promise\.all/)
+  })
+
+  it('refuses a file too big for a single ArrayBuffer instead of throwing into a catch', () => {
+    // Two of his three screen recordings were past this limit, so the read threw,
+    // the catch returned null, and their sound was simply absent with nothing
+    // said. Checked BEFORE the read: the failed attempt is itself expensive on a
+    // machine that is paging.
+    expect(src).toContain('MAX_ARRAY_BUFFER_BYTES = 2_147_483_647')
+    const decode = src.slice(src.indexOf('async function decodeAssetAudio'))
+    const guard = decode.indexOf('blob.size > MAX_ARRAY_BUFFER_BYTES')
+    const read = decode.indexOf('await blob.arrayBuffer()')
+    expect(guard).toBeGreaterThan(-1)
+    expect(guard).toBeLessThan(read)
+  })
+
+  it('drops an item larger than the whole cache rather than letting it empty the cache', () => {
+    // keepId protection is right and stays; what it must not do is let a 674 MB
+    // entry evict sixteen useful ones and then be evicted itself by the next
+    // asset, which turned every reschedule into sixteen fresh misses.
+    const evict = src.slice(src.indexOf('function evictAudioOverflow'))
+    const end = evict.indexOf('\n}\n')
+    const body = evict.slice(0, end)
+    expect(body).toContain('keepBytes > audioCacheMaxBytes()')
+    expect(body).toContain('bufferCache.delete(keepId)')
+  })
+})
