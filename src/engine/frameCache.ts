@@ -282,8 +282,76 @@ function keep(key: string, canvas: CanvasImageSource): void {
 
 const cacheKey = (assetId: Id, index: number): string => `${assetId}:${index}`
 
+/**
+ * ⛔ HOW MANY HARDWARE DECODERS THE PREVIEW MAY HOLD OPEN AT ONCE, 2026-08-28.
+ *
+ * Every `AssetEntry` owns an open mediabunny `Input` plus a `CanvasSink`, and a
+ * CanvasSink owns a hardware VideoDecoder. Nothing closed them. Scrub across a
+ * timeline and every asset the playhead touches opens one and keeps it for the
+ * rest of the session.
+ *
+ * That is not merely memory. **Past the platform's concurrent-decoder limit
+ * Chromium falls back to SOFTWARE decode**, which costs more RAM and is slower,
+ * so after enough scrubbing the app permanently downgrades its own decoding and
+ * only a restart clears it. The person with the most footage pays the most.
+ *
+ * ⚠️ THIS APP ALREADY SOLVED THIS, 300 LINES AWAY, AND ONLY FOR THE EXPORT.
+ * `export/providerPool.ts` is a bounded LRU pool with
+ * `DEFAULT_MAX_LIVE_PROVIDERS = 8` under a docblock that predicts this exact
+ * failure. The same number for the same reason: one clip per video track plus
+ * one for the far side of a transition, with headroom.
+ */
+const MAX_LIVE_DECODERS = 8
+
+/**
+ * Close an entry's demuxer and decoder but KEEP its decoded frames.
+ *
+ * Not `evictAsset`, which also drops the cached frames: those are separately
+ * budgeted, they are the expensive thing to rebuild, and throwing them away to
+ * free a decoder would trade the cheap resource for the dear one. Same shape as
+ * `reopenProxyBacked`, so the next `request` reopens through `e.ready ??=`.
+ */
+function closeDecoder(e: AssetEntry): void {
+  e.pending = []
+  closeIter(e)
+  e.input?.dispose()
+  e.input = null
+  e.sink = null
+  e.ready = null
+}
+
+/**
+ * Bring the live decoder count back under the ceiling, oldest first.
+ *
+ * ⚠️ NEVER TAKES ONE MID-DECODE. An entry that is pumping or has a frame in
+ * flight is skipped: closing it would strand the pump on a disposed input and
+ * the frame he is waiting for would never arrive. The ceiling can therefore be
+ * exceeded briefly, exactly as the export pool allows, rather than break a frame
+ * that is genuinely being decoded.
+ */
+function reapDecoders(keepId: Id): void {
+  const open = [...entries.values()].filter((e) => e.input !== null)
+  let live = open.length
+  if (live <= MAX_LIVE_DECODERS) return
+  for (const e of open) {
+    if (live <= MAX_LIVE_DECODERS) return
+    if (e.asset.id === keepId) continue
+    if (e.pumping || e.decoding !== null) continue
+    closeDecoder(e)
+    live -= 1
+  }
+}
+
 function ensureEntry(asset: MediaAsset): AssetEntry {
   let e = entries.get(asset.id)
+  if (e) {
+    // Touch: re-inserting moves it to the end, so `entries` reads oldest-first
+    // and `reapDecoders` above closes the least recently ASKED FOR rather than
+    // the least recently opened. Without this a decoder opened early and used
+    // constantly would be the first one taken.
+    entries.delete(asset.id)
+    entries.set(asset.id, e)
+  }
   if (!e) {
     e = {
       asset,
@@ -352,6 +420,10 @@ async function openInput(e: AssetEntry): Promise<void> {
   // sources scrub cheaply; export uses its own full-res decode.
   const th = previewTargetHeight(e.asset.height, previewScale, PREVIEW_BASE_MAX_H, sequenceH)
   e.sink = th ? new Sink(track, { height: th }) : new Sink(track)
+  // The decoder exists from this line on, so this is where the ceiling is
+  // enforced. See MAX_LIVE_DECODERS: unbounded, this is where Chromium quietly
+  // drops the whole app to software decode.
+  reapDecoders(e.asset.id)
 }
 
 function failAsset(e: AssetEntry, err: unknown): void {
@@ -688,5 +760,12 @@ export function frameCacheStats(): Record<string, number> {
     queued: live.reduce((n, e) => n + e.pending.length, 0),
     decodingNow: live.filter((e) => e.decoding !== null).length,
     failed: live.filter((e) => e.failed).length,
+    // ⛔ THE ONE THAT SAYS WHETHER CHROMIUM HAS DROPPED US TO SOFTWARE DECODE.
+    // `assets` above counts entries, most of which hold no decoder; this counts
+    // the ones that do, which is the number the platform has a ceiling on. It is
+    // the only way to see the failure from outside, because a software fallback
+    // is not an error: it is silent, permanent for the session, and just slow.
+    openDecoders: live.filter((e) => e.input !== null).length,
+    decoderCap: MAX_LIVE_DECODERS,
   }
 }
