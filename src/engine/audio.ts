@@ -298,6 +298,106 @@ const MAX_ARRAY_BUFFER_BYTES = 2_147_483_647
 /** Reported once per asset, so a long timeline cannot fill the console. */
 const oversizeWarned = new Set<Id>()
 
+/**
+ * The demuxer's read window. mediabunny's own default is 8 MB; halved because
+ * DECODE_CONCURRENCY lets two of these run at once.
+ */
+const DEMUX_CACHE_BYTES = 4 * 1024 * 1024
+
+/**
+ * Read ONLY the audio track, without pulling the container into memory.
+ *
+ * ⛔ THIS IS THE FIX FOR THE THING THAT MADE HIS SOUND DISAPPEAR, 2026-08-29.
+ * The old path did `blob.arrayBuffer()` on the whole file: for a 2.4 GB screen
+ * recording that is gigabytes of VIDEO pulled into the JS heap to reach a few MB
+ * of sound, and past 2,147,483,647 bytes it cannot be done at all, so two of his
+ * three recordings had no audio and nothing said so.
+ *
+ * mediabunny is already the demuxer for the picture (`frameCache.ts`), and
+ * `BlobSource` is lazy and file-backed: it retains only a bounded read cache.
+ * Container bytes resident go from ~1.29 GB per readable asset to about 4 MB,
+ * and the >2 GB wall disappears because no single buffer is ever asked for.
+ *
+ * ⚠️ THE DECODED PCM DOES NOT MOVE BY ONE BYTE. His 1839 s music track is still
+ * 673.5 MiB of float32 against a 256 MiB budget. This fixes the CONTAINER read
+ * and the size wall. Nothing more, and it should not be sold as more.
+ *
+ * Returns null rather than throwing when this file is not something mediabunny
+ * can index or decode, so the caller can fall back.
+ */
+async function demuxAssetAudio(asset: MediaAsset, blob: Blob): Promise<AudioBuffer | null> {
+  const { ALL_FORMATS, AudioSampleSink, BlobSource, Input: MbInput } = await import('mediabunny')
+  const input = new MbInput({
+    formats: ALL_FORMATS,
+    source: new BlobSource(blob, { maxCacheSize: DEMUX_CACHE_BYTES }),
+  })
+  try {
+    const track = await input.getPrimaryAudioTrack()
+    if (!track || !(await track.canDecode())) return null
+    const sampleRate = await track.getSampleRate()
+    const channels = await track.getNumberOfChannels()
+    if (!(sampleRate > 0) || !(channels > 0)) return null
+
+    // ⛔ SIZED FROM `asset.durationS`, NOT FROM THE CONTAINER. It costs no reads,
+    // it avoids `computeDuration()` possibly walking the whole file, it avoids
+    // the null that `getDurationFromMetadata()` can return, and it puts this
+    // buffer on the SAME time axis that `reverseAboutContainer` below and
+    // `waveform.ts` already assume. Falling back to the container's own duration
+    // only when the asset has none.
+    const durationS = asset.durationS > 0 ? asset.durationS : await track.computeDuration()
+    const length = Math.max(1, Math.round(durationS * sampleRate))
+
+    // ⛔ SUBTRACT THE HEAD, OR EVERY AAC VIDEO GAINS A CONSTANT OFFSET. An AAC
+    // track's first packet does not start at zero, and `decodeAudioData` used to
+    // trim that for us. Left in, it is 21 to 44 ms of lip sync, 0.6 to 1.3 frames
+    // at 30 fps, on every video asset, and nothing in this repo would have caught
+    // it. Found by the adversarial pass on 2026-08-28, not by a test.
+    const firstTs = await track.getFirstTimestamp()
+
+    const out = ensureAudioContext().createBuffer(channels, length, sampleRate)
+    const planes: Float32Array[] = []
+    for (let ch = 0; ch < channels; ch++) planes.push(out.getChannelData(ch))
+
+    for await (const sample of sink(AudioSampleSink, track)) {
+      try {
+        const at = Math.round((sample.timestamp - firstTs) * sampleRate)
+        if (at >= length) break // past the end of the buffer we promised
+        // ⚠️ CLAMPED, BECAUSE `copyTo` THROWS RATHER THAN TRUNCATING. A
+        // RangeError here would land in the caller's catch and fall back to a
+        // whole-file read, which is exactly the read that cannot work on the
+        // files this function exists for.
+        const start = Math.max(0, at)
+        const skip = start - at // frames of this sample that land before zero
+        const frameCount = Math.min(sample.numberOfFrames - skip, length - start)
+        if (frameCount <= 0) continue
+        for (let ch = 0; ch < Math.min(channels, sample.numberOfChannels); ch++) {
+          sample.copyTo(planes[ch].subarray(start, start + frameCount), {
+            planeIndex: ch,
+            format: 'f32-planar',
+            frameOffset: skip,
+            frameCount,
+          })
+        }
+      } finally {
+        sample.close()
+      }
+    }
+    return out
+  } finally {
+    // An undisposed Input retains its read orchestrator, its workers and an open
+    // stream reader on the blob.
+    input.dispose()
+  }
+}
+
+/** The sink, in its own call so the generator is easy to read above. */
+function sink(
+  Sink: typeof import('mediabunny').AudioSampleSink,
+  track: import('mediabunny').InputAudioTrack,
+): AsyncGenerator<import('mediabunny').AudioSample, void, unknown> {
+  return new Sink(track).samples()
+}
+
 async function decodeAssetAudio(asset: MediaAsset): Promise<AudioBuffer | null> {
   if (asset.kind === 'image' || !asset.hasAudio) return null
   const blob = await getBlob(asset.blobKey)
@@ -305,24 +405,34 @@ async function decodeAssetAudio(asset: MediaAsset): Promise<AudioBuffer | null> 
     console.warn(`OL Premiere audio: missing blob for "${asset.name}" (${asset.blobKey})`)
     return null
   }
+
+  // The demuxed read FIRST, and for any size. This is the path that works on his
+  // 2.4 GB recordings.
+  try {
+    const demuxed = await demuxAssetAudio(asset, blob)
+    if (demuxed) return demuxed
+  } catch (err) {
+    console.warn(`OL Premiere audio: demux failed for "${asset.name}", falling back to a whole-file read`, err)
+  }
+
+  // ⛔ THE FALLBACK IS KEPT, NOT DELETED. `ALL_FORMATS` is wide but not
+  // everything, `canDecode()` can be false for a codec Chromium's own decoder
+  // still handles, and a container mediabunny cannot index must never go silent:
+  // silent absence is the exact failure this whole change exists to end. The
+  // size guard belongs HERE, gating only this branch, because it is only this
+  // branch that has a size limit.
   if (blob.size > MAX_ARRAY_BUFFER_BYTES) {
     if (!oversizeWarned.has(asset.id)) {
       oversizeWarned.add(asset.id)
       console.warn(
-        `OL Premiere audio: "${asset.name}" is ${(blob.size / 1024 ** 3).toFixed(2)} GB, past the ` +
-          `${(MAX_ARRAY_BUFFER_BYTES / 1024 ** 3).toFixed(2)} GB a single buffer can hold, so its sound cannot be read this way.`,
+        `OL Premiere audio: "${asset.name}" is ${(blob.size / 1024 ** 3).toFixed(2)} GB and could not be ` +
+          `read one track at a time, and it is past the ${(MAX_ARRAY_BUFFER_BYTES / 1024 ** 3).toFixed(2)} GB ` +
+          `a single buffer can hold, so its sound cannot be read at all.`,
       )
     }
     return null
   }
   try {
-    // ⚠️ THIS READS THE WHOLE CONTAINER TO GET THE AUDIO TRACK, and for a screen
-    // recording that is gigabytes of video to reach a few MB of sound. The
-    // picture never pays this: `blobUrls.ts` keeps the same file lazy and
-    // file-backed. Measured on his project 2026-08-24: 5.78 GiB of ArrayBuffer
-    // read in one pass for three video assets. Replacing this with a demuxed
-    // audio-only read is the real fix and is a bigger change than this one; the
-    // guards around it exist so the burst is at least bounded and never silent.
     const bytes = await blob.arrayBuffer()
     return await ensureAudioContext().decodeAudioData(bytes)
   } catch (err) {
@@ -346,10 +456,10 @@ async function decodeAssetAudio(asset: MediaAsset): Promise<AudioBuffer | null> 
  *
  * Two at a time keeps the disk busy without ever holding more than two files.
  */
-const DECODE_CONCURRENCY = 2
+export const DECODE_CONCURRENCY = 2
 
 /** Run `work` over `items`, at most `limit` in flight. Never rejects. */
-async function mapLimit<T>(items: readonly T[], limit: number, work: (item: T) => Promise<unknown>): Promise<void> {
+export async function mapLimit<T>(items: readonly T[], limit: number, work: (item: T) => Promise<unknown>): Promise<void> {
   let next = 0
   const runner = async (): Promise<void> => {
     for (;;) {

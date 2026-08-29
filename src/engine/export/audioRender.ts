@@ -9,8 +9,10 @@ import {
   clipAudioBuffer,
   computeClipSchedule,
   connectAutoLevel,
+  DECODE_CONCURRENCY,
   dbToGain,
   effectiveAudioClip,
+  mapLimit,
   pitchPreservedSource,
   type ClipSchedule,
 } from '../audio'
@@ -96,7 +98,19 @@ export async function planAudioMix(
 
   // clipAudioBuffer resolves null for silent/image assets and decode failures,
   // and routes denoised clips through the SAME resolver as live preview.
-  const buffers = await Promise.all(candidates.map((c) => clipAudioBuffer(c.clip, c.asset, c.reversed)))
+  // ⛔ BOUNDED, 2026-08-29, and this was the last unfenced burst in the app. The
+  // three preview call sites were capped on 2026-08-27; this one was missed, so
+  // an export still opened one demux per distinct audible asset at once. On his
+  // project that is seventeen.
+  const buffers: (AudioBuffer | null)[] = new Array<AudioBuffer | null>(candidates.length).fill(null)
+  await mapLimit(
+    candidates.map((_, i) => i),
+    DECODE_CONCURRENCY,
+    async (i) => {
+      const c = candidates[i]
+      buffers[i] = await clipAudioBuffer(c.clip, c.asset, c.reversed)
+    },
+  )
   if (!buffers.some((b) => b !== null)) {
     // EVERY audible clip failed to decode, and this used to `return null`, which
     // both export paths read as "this timeline has no audio" and happily wrote a

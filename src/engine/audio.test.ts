@@ -794,6 +794,38 @@ describe('the audio decode burst is bounded', () => {
     expect(upToStart).not.toMatch(/const buffers = await Promise\.all/)
   })
 
+  it('reads the audio track without pulling the container in, and tries that FIRST', () => {
+    // ⛔ THE ORDER IS THE WHOLE POINT SINCE 2026-08-29. The demuxed read works at
+    // any size; the whole-file read has a 2 GiB wall. If the size guard ever
+    // moves back above the demux, his 2.4 GB recordings go silent again and the
+    // guard below would still pass, fencing a branch nothing reaches.
+    const decode = src.slice(src.indexOf('async function decodeAssetAudio'))
+    const demux = decode.indexOf('demuxAssetAudio(asset, blob)')
+    const guard = decode.indexOf('blob.size > MAX_ARRAY_BUFFER_BYTES')
+    expect(demux).toBeGreaterThan(-1)
+    expect(demux).toBeLessThan(guard)
+    // And the demuxed path must not be the one reading whole files.
+    const body = src.slice(src.indexOf('async function demuxAssetAudio'), src.indexOf('async function decodeAssetAudio'))
+    expect(body).not.toMatch(/arrayBuffer\(\)/)
+    expect(body).toContain('maxCacheSize: DEMUX_CACHE_BYTES')
+    expect(body).toContain('input.dispose()')
+  })
+
+  it('lines the demuxed buffer up with the same axis everything else assumes', () => {
+    const body = src.slice(src.indexOf('async function demuxAssetAudio'), src.indexOf('async function decodeAssetAudio'))
+    // Sized from the asset, not from a container walk.
+    expect(body).toContain('asset.durationS > 0 ? asset.durationS')
+    // ⛔ THE HEAD IS SUBTRACTED. Without this every AAC video gains a constant
+    // 21 to 44 ms offset that decodeAudioData used to trim: 0.6 to 1.3 frames of
+    // lip sync at 30 fps, on every video asset, invisible to every other test in
+    // this repo. It was found by an adversarial read, not by a failure.
+    expect(body).toContain('getFirstTimestamp()')
+    expect(body).toContain('sample.timestamp - firstTs')
+    // copyTo THROWS rather than truncating, and that throw would fall back to a
+    // read that cannot work on the files this function exists for.
+    expect(body).toContain('length - start')
+  })
+
   it('refuses a file too big for a single ArrayBuffer instead of throwing into a catch', () => {
     // Two of his three screen recordings were past this limit, so the read threw,
     // the catch returned null, and their sound was simply absent with nothing
@@ -816,5 +848,16 @@ describe('the audio decode burst is bounded', () => {
     const body = evict.slice(0, end)
     expect(body).toContain('keepBytes > audioCacheMaxBytes()')
     expect(body).toContain('bufferCache.delete(keepId)')
+  })
+})
+
+// The export had the same burst and was missed when the preview was capped.
+describe('the export decodes on the same leash as the preview', () => {
+  const src = readFileSync(fileURLToPath(new URL('./export/audioRender.ts', import.meta.url)), 'utf8')
+
+  it('does not resolve every audible clip at once', () => {
+    expect(src).toContain('mapLimit(')
+    expect(src).toContain('DECODE_CONCURRENCY')
+    expect(src).not.toMatch(/const buffers = await Promise\.all/)
   })
 })
