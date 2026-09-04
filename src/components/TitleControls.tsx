@@ -12,6 +12,7 @@ import {
   Bold,
   CaseLower,
   CaseUpper,
+  Contrast,
   Italic,
 } from 'lucide-react'
 import { ensureTitleFont, TITLE_FONT_OPTIONS } from '../engine/render/titleFonts'
@@ -249,7 +250,40 @@ export function TitleControls({ clip }: { clip: Clip }) {
               style={{ backgroundColor: c.hex }}
             />
           ))}
+          {/* ⛔ IT LIVES BESIDE THE COLOUR CONTROLS BECAUSE IT TURNS THEM OFF.
+              The whole meaning of this switch is "the letters are not a colour
+              any more", and the control it overrides is the picker three inches
+              above it. Put under Shadow or Outline it would hide the fact that
+              turning it on makes `color` inert. It is also the fourth member of
+              the one-click family the swatches above belong to.
+              His ask, 2026-08-31, from a reel: every glyph pixel is the inverse
+              of the video behind it, so over a tan shirt the word reads pale
+              blue. */}
+          <div className="mx-0.5 h-4 w-px bg-border" />
+          <IconButton
+            size="compact"
+            label="Inverted backdrop: the letters show the picture behind them, flipped"
+            active={def.invertBackdrop === true}
+            data-testid="title-invert-backdrop"
+            // `undefined` on the off-click, never `false`: it keeps the def
+            // byte-identical to a pre-feature def, so the raster cache key
+            // (JSON.stringify(def)) returns to its old string and the cached
+            // canvas is reused instead of duplicated. Same idiom as the case
+            // buttons above.
+            onClick={() => set({ invertBackdrop: def.invertBackdrop ? undefined : true })}
+          >
+            <Contrast size={14} strokeWidth={1.5} />
+          </IconButton>
         </div>
+        {def.invertBackdrop && (
+          // A control that still moves while nothing on screen changes reads as a
+          // broken app, so the rasterizer ignoring colour, outline, shadow and box
+          // is said out loud rather than left to be discovered.
+          <p className="text-[10px] leading-snug text-text-muted">
+            The letters take the picture behind them and flip it, so colour, outline, shadow and box
+            are off while this is on.
+          </p>
+        )}
       </Section>
 
       <div className="h-px bg-border" />

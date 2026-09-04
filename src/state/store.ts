@@ -376,6 +376,29 @@ export function setActiveSequenceBlurBackground(on: boolean): void {
 }
 
 /**
+ * The picture frame INSIDE the export frame, as a width/height ratio.
+ *
+ * null clears it and the footage fills the frame again, which is what every
+ * sequence does until he picks something. Undoable like the aspect ratio itself,
+ * because it changes what the video looks like.
+ *
+ * ⛔ IT DOES NOT TOUCH THE SEQUENCE SIZE. Reformatting refits every clip and
+ * rewrites the project default; this only changes the box they are laid out in,
+ * so switching it back leaves his framing exactly where it was.
+ */
+export function setActiveSequenceContentAspect(aspect: number | null): void {
+  useStore.getState().dispatch('Inner aspect ratio', (p) => {
+    const seq = p.sequences[p.activeSequenceId]
+    const next = aspect === null || !Number.isFinite(aspect) || aspect <= 0 ? undefined : aspect
+    if (seq.contentAspect === next) return p
+    const updated = { ...seq }
+    if (next === undefined) delete updated.contentAspect
+    else updated.contentAspect = next
+    return { ...p, sequences: { ...p.sequences, [seq.id]: updated } }
+  })
+}
+
+/**
  * How tight the blurred band is, per sequence. Undoable, because it changes what
  * the video looks like, and merged into one step per drag the way a scrub should
  * be: a slow pull across the range is one press of undo, not forty.

@@ -108,15 +108,21 @@ export function computeQuad(opts: {
 }): { corners: [number, number][] } {
   const { frameW, frameH, texW, texH, transform: tf } = opts
   const { w: cw, h: ch } = croppedSize(texW, texH, tf.cropT, tf.cropR, tf.cropB, tf.cropL)
+  // The box this layer is laid out in. Normally the whole frame; a sequence with
+  // an inner content ratio hands each picture layer a smaller one, centred.
+  // ⛔ ONLY THESE FOUR NUMBERS CHANGE. The fit, the pivot, the rotation and the
+  // user offset all read off the box, so an inner frame is genuinely the same
+  // layout arithmetic against a smaller rectangle rather than a second code path.
+  const boxW = tf.frame ? tf.frame.w : frameW
+  const boxH = tf.frame ? tf.frame.h : frameH
   // 'cover' only ever grows the base rectangle; `scale` still multiplies it
   // afterwards exactly as before, so a keyframed zoom behaves the same either way.
-  const fit =
-    tf.fit === 'cover' ? coverScale(frameW, frameH, cw, ch) : fitScale(frameW, frameH, cw, ch)
+  const fit = tf.fit === 'cover' ? coverScale(boxW, boxH, cw, ch) : fitScale(boxW, boxH, cw, ch)
   // Fitted rectangle size in seq px (before the user scale).
   const rw = cw * fit
   const rh = ch * fit
-  const cx = frameW / 2
-  const cy = frameH / 2
+  const cx = tf.frame ? tf.frame.x + boxW / 2 : frameW / 2
+  const cy = tf.frame ? tf.frame.y + boxH / 2 : frameH / 2
 
   // Base rectangle corners, centered on the frame, TL,TR,BR,BL.
   const base: [number, number][] = [

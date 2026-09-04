@@ -5,6 +5,7 @@
 // Transforms live in sequence-NATIVE px; the renderer scales the raster so a
 // 1920×1080 preview and a 1920×1080 export match proportionally.
 
+import { contentBox, type ContentBox } from '../contentFrame'
 import { resolveChannel } from '../effects/channels'
 import { isNeutral, resolveEffect } from '../effects/registry'
 import { clipDurationS, clipEndS } from '../timeline'
@@ -83,7 +84,14 @@ function layerFor(clip: Clip, t: number, fps: number, shutterS = 0): RenderLayer
     transform: transformAt(localT),
     ...(animated ? { transformAtShutter: transformAt(localT + shutterS) } : {}),
     opacity: clamp(resolveChannel(clip, 'opacity', localT), 0, 1),
-    blendMode: clip.blendMode ?? 'normal',
+    // ⛔ THE ONE DECISION, AND IT IS IN THE PURE RESOLVER ON PURPOSE. An
+    // inverted-backdrop title is not a colour, it is a compositing operation, so
+    // it resolves to the dest-sampling `invert` mode and overrides whatever blend
+    // the clip carries. Decided HERE means the preview and the export worker
+    // receive the identical RenderFrame and there is no second place that could
+    // disagree. Nothing writes clip.blendMode, so the Inspector's blend dropdown
+    // still shows exactly what he set.
+    blendMode: clip.title?.invertBackdrop ? 'invert' : (clip.blendMode ?? 'normal'),
     mask: clip.mask,
     effects,
   }
@@ -366,6 +374,29 @@ export const _activeIndexForTest = activeIndex
  * bottom→top: a lower video track (earlier in seq.tracks) appears earlier in
  * the array. Audio tracks and muted video tracks contribute nothing visual.
  */
+/**
+ * Lay one layer out inside the inner content box instead of the whole frame.
+ *
+ * ⛔ PICTURE LAYERS ONLY, NEVER TITLES. A title is rasterized at the sequence
+ * size and drawn as a full-frame quad, so squeezing that quad into the box
+ * would scale the type down rather than lay it out inside. Leaving titles on
+ * the full frame is also the more useful answer: it is what lets him put a
+ * caption in the band above or below the square, which is half of why anyone
+ * uses this look.
+ */
+function inFrame(layer: RenderLayer, box: ContentBox): RenderLayer {
+  if (layer.title !== undefined) return layer
+  return {
+    ...layer,
+    transform: { ...layer.transform, frame: box },
+    // The motion-blur sample is the same picture half a frame later, so it is
+    // laid out in the same box or the smear pulls out of it.
+    ...(layer.transformAtShutter
+      ? { transformAtShutter: { ...layer.transformAtShutter, frame: box } }
+      : {}),
+  }
+}
+
 export function resolveFrame(seq: Sequence, t: number): RenderFrame {
   const ops: RenderOp[] = []
   for (const track of seq.tracks) {
@@ -373,9 +404,27 @@ export function resolveFrame(seq: Sequence, t: number): RenderFrame {
     const op = resolveTrack(track, t, seq.fps, shutterSeconds(seq.shutterAngle ?? DEFAULT_SHUTTER_ANGLE, seq.fps))
     if (op) ops.push(op)
   }
+  // The inner content box, if this sequence has one. Computed ONCE here and
+  // stamped onto each picture layer, so nothing downstream has to know the
+  // sequence exists.
+  const box = contentBox(seq.width, seq.height, seq.contentAspect)
+  const framed = box
+    ? ops.map((op) =>
+        op.type === 'layer'
+          ? { ...op, layer: inFrame(op.layer, box) }
+          : op.type === 'transition'
+            ? { ...op, from: inFrame(op.from, box), to: inFrame(op.to, box) }
+            : op,
+      )
+    : ops
+
+  // ⛔ THE BACKDROP IS BUILT FROM THE UNFRAMED OPS AND UNSHIFTED AFTERWARDS.
+  // It is the thing that FILLS the bands the content box creates, so it has to
+  // stay full-frame. Reading it off `ops` rather than `framed` is what makes
+  // that structural instead of remembered.
   const backdrop = seq.blurBackground ? blurBackdropOp(ops, seq.blurBackdropZoom ?? BACKDROP_ZOOM) : null
-  if (backdrop) ops.unshift(backdrop)
-  return { width: seq.width, height: seq.height, ops }
+  if (backdrop) framed.unshift(backdrop)
+  return { width: seq.width, height: seq.height, ops: framed }
 }
 
 /** Blur radius for the backdrop, in sequence px. The renderer caps at 64. */
@@ -458,6 +507,12 @@ function blurBackdropOp(ops: readonly RenderOp[], zoom: number): RenderOp | null
         cropB: 0,
         cropL: 0,
         fit: 'cover',
+        // ⛔ NEVER THE INNER CONTENT BOX. The transform is spread from the
+        // source layer, so if that layer were ever framed this would inherit
+        // the box and the backdrop would stop filling the very bands it
+        // exists to fill. resolveFrame already feeds this the unframed ops;
+        // this line means a reordering there cannot break it silently.
+        frame: undefined,
       },
       opacity: 1,
       blendMode: 'normal',

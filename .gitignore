@@ -27,3 +27,6 @@ vendor/ffmpeg/
 .env*
 !.env.release.example
 ship-*.log
+
+# Scratch launcher for the detached ship. Never part of the app.
+ship-now.cmd

@@ -209,9 +209,12 @@ export function titleInkBoxUV(
   if (L.hasText) {
     const left = textLeftOf(L.anchorX, L.textW, def.align)
     // The outline strokes OUTWARD by half its width; the shadow offsets and blurs.
-    const grow = def.outline && def.outline.widthPx > 0 ? def.outline.widthPx / 2 : 0
+    // Suppressed decorations do not grow the CLICK TARGET either, or an
+    // inverted caption is selectable well outside the only pixels it draws.
+    const grow =
+      !def.invertBackdrop && def.outline && def.outline.widthPx > 0 ? def.outline.widthPx / 2 : 0
     add(left - grow, L.blockTop - grow, left + L.textW + grow, L.blockTop + L.blockH + grow)
-    if (def.shadow) {
+    if (def.shadow && !def.invertBackdrop) {
       const b = def.shadow.blurPx
       add(
         left - grow + def.shadow.dx - b,
@@ -222,7 +225,7 @@ export function titleInkBoxUV(
     }
   }
 
-  if (def.box) {
+  if (def.box && !def.invertBackdrop) {
     const pad = def.box.paddingPx
     const boxW = L.hasText ? L.textW + 2 * pad : L.maxWidth + 2 * pad
     const boxLeft = L.hasText
@@ -372,7 +375,10 @@ export function rasterizeTitle(
 
   // BOX: drawn behind the text. If there is no text but a box is set, draw a
   // plain rectangle centered on the block (the "basic shape" path).
-  if (def.box) {
+  // Suppressed with the rest of the decorations: a box behind an inverted
+  // word would be inverted along with it, which is a solid inverse-backdrop
+  // rectangle rather than a caption.
+  if (def.box && !def.invertBackdrop) {
     const pad = def.box.paddingPx
     let boxW: number
     let boxLeft: number
@@ -414,7 +420,28 @@ export function rasterizeTitle(
 
   // TEXT: optional outline (stroke) then fill, with an optional shadow. Guard
   // against no text / bad font size.
-  if (hasText) {
+  if (hasText && def.invertBackdrop) {
+    // ⛔ A COVERAGE STENCIL, NOT A PICTURE. The renderer keys the inversion on
+    // src.a ALONE, so the fill is opaque white and the shadow, outline and box
+    // are skipped entirely.
+    //
+    // The decorations are not skipped for tidiness. They write ALPHA, and the
+    // invert keys on alpha, so an inverted shadow is a soft halo of
+    // inverse-backdrop around every letter rather than a shadow. That is not
+    // the look in the reel he sent, and it is not a look anybody wants.
+    //
+    // ⚠️ WHITE IS THE GRACEFUL VALUE, and it is chosen rather than arbitrary.
+    // `renderSideToFbo` in glRenderer flattens a non-normal blend to `normal`
+    // inside a transition window, so an inverted title caught mid-transition
+    // draws its raster directly. White text is a readable fallback; black
+    // would vanish into the letterbox.
+    ctx.fillStyle = "#ffffff"
+    let y = firstBaselineY
+    for (const line of lines) {
+      if (line !== "") ctx.fillText(line, anchorX, y)
+      y += lineHeightPx
+    }
+  } else if (hasText) {
     const hasOutline = !!def.outline && def.outline.widthPx > 0
     const clearShadow = (): void => {
       ctx.shadowColor = 'transparent'

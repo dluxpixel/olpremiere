@@ -20,6 +20,7 @@ import { prewarmPreview, previewEpoch, renderPreview } from '../engine/preview'
 import { recordPreviewTick } from '../engine/previewTruth'
 import { ensureProxies } from '../engine/proxyMedia'
 import { formatTimecode, quantizeToFrame } from '../engine/timecode'
+import { CONTENT_ASPECTS, aspectLabel, parseAspect } from '../engine/contentFrame'
 import { activeSequence, type Sequence } from '../engine/types'
 import { pausePlayback, subscribeShuttleRate, toggleLoop, togglePlay } from '../state/playbackControl'
 import { screenshotToMedia } from '../state/screenshot'
@@ -28,6 +29,7 @@ import { setPreviewQuality, useSettings } from '../state/settings'
 import {
   setActiveSequenceBlurBackdropZoom,
   setActiveSequenceBlurBackground,
+  setActiveSequenceContentAspect,
   setActiveSequenceFormat,
   setActiveSequenceShutterAngle,
   useStore,
@@ -51,9 +53,47 @@ const FORMATS = [
   { key: '1:1', label: '1:1 Square', w: 1080, h: 1080 },
 ] as const
 
+/** Shown when the sequence is a shape no preset covers. Never selectable. */
+const CUSTOM_FORMAT_KEY = '__custom'
+
+/**
+ * Which preset this sequence IS, by its actual shape.
+ *
+ * ⛔ IT USED TO ASK WHETHER h > w, WHICH IS NOT A RATIO. Any tall sequence that
+ * was not exactly 9:16 read back as "9:16 Shorts": a 4:5 project showed the
+ * wrong label in the one control that tells him what he is exporting, and
+ * touching anything else in the row would have snapped it to a real 9:16.
+ */
+/** The entry that reveals the free-text ratio field. His "completely custom ratios". */
+const CUSTOM_CONTENT_KEY = '__customContent'
+
+/**
+ * Which inner-frame entry this sequence is on. 'full' is no inner frame, and
+ * CUSTOM_CONTENT_KEY is a ratio he typed that no preset covers.
+ *
+ * ⛔ A SET RATIO MUST NEVER READ BACK AS 'full'. That would show him "Fill the
+ * frame" over a frame that is plainly not filled, and the next thing he touched
+ * in the row would have thrown his ratio away.
+ */
+function contentAspectKeyFor(seq: Sequence, customOpen: boolean): string {
+  const a = seq.contentAspect
+  // ⛔ CUSTOM IS A MODE, NOT A VALUE, AND THAT IS THE WHOLE FIX. Derived purely
+  // from the ratio, picking "Custom..." while a preset was set did nothing at
+  // all: 1:1 is still 1:1, so the entry snapped straight back and the field
+  // never appeared. The flag is what lets him open it from any starting point.
+  if (customOpen) return CUSTOM_CONTENT_KEY
+  if (a === undefined) return 'full'
+  return (
+    CONTENT_ASPECTS.find((x) => x.aspect !== null && Math.abs(x.aspect - a) < 1e-4)?.key ??
+    CUSTOM_CONTENT_KEY
+  )
+}
+
 function aspectKeyFor(w: number, h: number): string {
-  if (w === h) return '1:1'
-  return h > w ? '9:16' : '16:9'
+  if (!(w > 0) || !(h > 0)) return CUSTOM_FORMAT_KEY
+  const a = w / h
+  const hit = FORMATS.find((f) => Math.abs(f.w / f.h - a) < 1e-4)
+  return hit ? hit.key : CUSTOM_FORMAT_KEY
 }
 
 // The preview never needs to redraw faster than this. The <video> upload +
@@ -362,6 +402,11 @@ export function Monitor() {
   useEffect(() => {
     setPreviewScale(quality)
   }, [quality])
+  // What he is typing into the custom inner-ratio field. A draft, not the
+  // truth: the sequence carries the ratio, this carries the half-typed text.
+  const [customRatio, setCustomRatio] = useState('')
+  /** The custom ratio field is showing. Cleared by picking any preset. */
+  const [customOpen, setCustomOpen] = useState(false)
   const [safeMargins, setSafeMargins] = useState(false)
   // A grab can wait several seconds on a decode, so the button says it is busy
   // rather than sitting there looking like nothing happened.
@@ -590,7 +635,74 @@ export function Monitor() {
                 {f.label}
               </option>
             ))}
+            {aspectKeyFor(seq.width, seq.height) === CUSTOM_FORMAT_KEY && (
+              <option value={CUSTOM_FORMAT_KEY} disabled>
+                {`${seq.width} x ${seq.height}`}
+              </option>
+            )}
           </select>
+          {/* The picture frame INSIDE that one. His ask, 2026-09-04: a short is
+              still exported at 9:16, and the footage sits in a square inside it
+              with the bands above and below. The export stays the shape the
+              platform wants, which is the whole reason this is not just a
+              smaller sequence. */}
+          <select
+            data-testid="content-aspect-select"
+            aria-label="Inner frame"
+            title="Inner frame: keeps the export shape and lays your footage inside a smaller one, like a square inside a Short"
+            className="h-7 min-w-0 shrink cursor-default rounded-field border border-border bg-bg-input pl-2 pr-6 text-ui-sm text-text-secondary transition-colors duration-[120ms] hover:border-border-strong hover:text-text-primary focus:border-accent focus:outline-none"
+            value={contentAspectKeyFor(seq, customOpen)}
+            onChange={(e) => {
+              if (e.target.value === CUSTOM_CONTENT_KEY) {
+                // Seed the field with what is on screen now, so the number he
+                // starts editing is the number he is looking at, and change
+                // NOTHING else: opening the field must not move his picture.
+                setCustomRatio(seq.contentAspect ? String(Number(seq.contentAspect.toFixed(4))) : '')
+                setCustomOpen(true)
+                return
+              }
+              setCustomOpen(false)
+              const a = CONTENT_ASPECTS.find((x) => x.key === e.target.value)
+              if (a) setActiveSequenceContentAspect(a.aspect)
+            }}
+          >
+            {CONTENT_ASPECTS.map((a) => (
+              <option key={a.key} value={a.key}>
+                {a.label}
+              </option>
+            ))}
+            <option value={CUSTOM_CONTENT_KEY}>
+              {contentAspectKeyFor(seq, customOpen) === CUSTOM_CONTENT_KEY && seq.contentAspect
+                ? aspectLabel(seq.contentAspect)
+                : 'Custom...'}
+            </option>
+          </select>
+          {/* His words were "completely custom ratios that I can select", so the
+              presets alone are not the ask. Applied on Enter and on blur, never
+              per keystroke: "16:9" passes through "16:" and "16:9" typed one
+              character at a time would otherwise redraw the frame four times
+              and land on nonsense in between. */}
+          {contentAspectKeyFor(seq, customOpen) === CUSTOM_CONTENT_KEY && (
+            <input
+              data-testid="content-aspect-custom"
+              aria-label="Custom inner frame ratio"
+              title="Type a ratio like 4:5 or 2.39:1"
+              value={customRatio}
+              placeholder="4:5"
+              onChange={(e) => setCustomRatio(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') e.currentTarget.blur()
+              }}
+              onBlur={() => {
+                const a = parseAspect(customRatio)
+                // Nonsense leaves the picture alone and puts the real number
+                // back in the field, rather than silently clearing his frame.
+                if (a === null) setCustomRatio(seq.contentAspect ? seq.contentAspect.toFixed(4) : '')
+                else setActiveSequenceContentAspect(a)
+              }}
+              className="h-7 w-16 shrink-0 rounded-field border border-border bg-bg-input px-2 text-ui-sm text-text-secondary transition-colors duration-[120ms] hover:border-border-strong focus:border-accent focus:text-text-primary focus:outline-none"
+            />
+          )}
           <IconButton
             label="Blurred background: fills the empty frame with a soft blur of your footage instead of black"
             active={seq.blurBackground === true}

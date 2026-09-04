@@ -309,10 +309,16 @@ in vec2 aPos;   // seq-space pixels
 in vec2 aUV;
 uniform vec2 uFrame; // frame width,height in px
 out vec2 vUV;
+// The same position in SEQ PX, so the fragment stage can clip to a rectangle
+// given in sequence coordinates. gl_FragCoord would be in TARGET px, which is
+// the canvas on the preview and the export size in the worker, so a box
+// expressed against it would land in a different place on each.
+out vec2 vSeqPos;
 void main() {
   vec2 clip = vec2(aPos.x / uFrame.x * 2.0 - 1.0, 1.0 - aPos.y / uFrame.y * 2.0);
   gl_Position = vec4(clip, 0.0, 1.0);
   vUV = aUV;
+  vSeqPos = aPos;
 }`
 
 /** Uniform name for one param of the effect sitting at stack index `i`. */
@@ -370,9 +376,15 @@ uniform float uMaskInvert;`
   return `#version 300 es
 precision highp float;
 in vec2 vUV;
+in vec2 vSeqPos;
 uniform sampler2D uTex;
 uniform float uOpacity;
 uniform vec4 uUVRect; // u0,v0,u1,v1 (reject samples outside the crop window)
+// x,y,w,h in seq px of the inner content box, or w<=0 for "the whole frame".
+// A layer laid out inside a smaller box must not draw outside it: a keyframed
+// zoom past 1 would otherwise spill the picture into the bands and the nested
+// ratio would look like a bug rather than a frame.
+uniform vec4 uContentBox;
 uniform vec2 uFrame;  // frame width,height in px (shared with the VS)
 uniform float uSeed;  // resolver frame index: animates stochastic effects (grain)
 uniform float uDither; // 1 only when this draw writes the frame's final 8-bit target
@@ -383,6 +395,13 @@ ${bicubic ? BICUBIC_GLSL : ''}
 out vec4 outColor;
 void main() {
   if (vUV.x < uUVRect.x || vUV.x > uUVRect.z || vUV.y < uUVRect.y || vUV.y > uUVRect.w) {
+    outColor = vec4(0.0);
+    return;
+  }
+  // Uniform branch, so it costs nothing on any real GPU when the box is off.
+  if (uContentBox.z > 0.0 &&
+      (vSeqPos.x < uContentBox.x || vSeqPos.x > uContentBox.x + uContentBox.z ||
+       vSeqPos.y < uContentBox.y || vSeqPos.y > uContentBox.y + uContentBox.w)) {
     outColor = vec4(0.0);
     return;
   }
@@ -526,7 +545,7 @@ precision highp float;
 in vec2 vUV;
 uniform sampler2D uDst;
 uniform sampler2D uSrc;
-uniform int uMode; // 0 = overlay, 1 = soft light
+uniform int uMode; // 0 = overlay, 1 = soft light, 2 = inverted backdrop
 uniform float uSeed;
 uniform float uDither;
 ${DITHER_GLSL}
@@ -539,9 +558,22 @@ void main() {
   vec3 b;
   if (uMode == 0) {
     b = mix(2.0 * d * s, 1.0 - 2.0 * (1.0 - d) * (1.0 - s), step(0.5, d));
-  } else {
+  } else if (uMode == 1) {
     vec3 dd = mix(((16.0 * d - 12.0) * d + 4.0) * d, sqrt(d), step(0.25, d));
     b = mix(d - (1.0 - 2.0 * s) * d * (1.0 - d), d + (2.0 * s - 1.0) * (dd - d), step(0.5, s));
+  } else {
+    // INVERTED BACKDROP. s is deliberately unused: the source is a coverage
+    // stencil and the only thing that reaches the frame is 1 - backdrop, carried
+    // by the glyph's alpha through the mix below.
+    //
+    // THE EDGES ARE WHY THIS RUNS HERE AND NOT AS A gl.blendFunc.
+    // outRgb = mix(d, b, src.a) interpolates between the backdrop and its OWN
+    // inverse and nothing else, so an antialiased glyph pixel at a = 0.5 lands on
+    // exactly 0.5 grey over any backdrop and a colour fringe is not
+    // representable. A fixed-function ONE_MINUS_DST_COLOR blend reads the
+    // source's premultiplied RGB instead of its coverage and fringes on every
+    // edge as soon as the fill is not pure white.
+    b = vec3(1.0) - d;
   }
   vec3 outRgb = mix(d, b, src.a);
   float outA = clamp(dst.a + src.a * (1.0 - dst.a), 0.0, 1.0);
@@ -813,6 +845,7 @@ interface LayerProgram {
   uTex: WebGLUniformLocation | null
   uOpacity: WebGLUniformLocation | null
   uUVRect: WebGLUniformLocation | null
+  uContentBox: WebGLUniformLocation | null
   uSeed: WebGLUniformLocation | null
   uDither: WebGLUniformLocation | null
   /** Mask uniforms, present only on the masked variant of a stack program. */
@@ -891,6 +924,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
       uTex: gl.getUniformLocation(prog, 'uTex'),
       uOpacity: gl.getUniformLocation(prog, 'uOpacity'),
       uUVRect: gl.getUniformLocation(prog, 'uUVRect'),
+      uContentBox: gl.getUniformLocation(prog, 'uContentBox'),
       uSeed: gl.getUniformLocation(prog, 'uSeed'),
       uDither: gl.getUniformLocation(prog, 'uDither'),
       ...(withMask
@@ -1249,6 +1283,13 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     gl.bindTexture(gl.TEXTURE_2D, tex)
     gl.uniform1f(lp.uOpacity, clamp01(layer.opacity))
     gl.uniform4f(lp.uUVRect, uv.u0, uv.v0, uv.u1, uv.v1)
+    // ⛔ SET ON EVERY DRAW, NEVER CONDITIONALLY. Uniforms are per-PROGRAM
+    // state, so a framed layer that left a box behind would clip the next
+    // unframed layer that happens to reuse the same compiled stack program:
+    // one clip with an inner ratio would silently crop a different clip that
+    // has none. The zero width is what means "the whole frame".
+    const cb = layer.transform.frame
+    gl.uniform4f(lp.uContentBox, cb?.x ?? 0, cb?.y ?? 0, cb?.w ?? 0, cb?.h ?? 0)
     if (lp.uSeed) gl.uniform1f(lp.uSeed, layer.frameSeed)
     // Set on EVERY draw, never conditionally: uniforms are per-program state, so
     // a final-target draw that left uDither at 1 would dither the next
@@ -1491,7 +1532,10 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     const mode = layer.blendMode
     // Overlay/soft light must read the destination, so they always take the
     // isolated-FBO path even without neighborhood effects.
-    const needsDestSample = mode === 'overlay' || mode === 'softLight'
+    // `invert` joins the dest-sampling modes because it is defined against
+    // what is already composited beneath it: the isolated-FBO path is what
+    // captures the target so the shader can read it.
+    const needsDestSample = mode === 'overlay' || mode === 'softLight' || mode === 'invert'
     // A null target IS the frame he keeps (the canvas, which export reads back).
     // Anything else here is a transition side or the adjustment accumulator, both
     // of which get dithered later by whichever pass writes the canvas.
@@ -1525,7 +1569,11 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
         gl.bindTexture(gl.TEXTURE_2D, destCapTex!)
         gl.activeTexture(gl.TEXTURE1)
         gl.bindTexture(gl.TEXTURE_2D, layerFbo.tex)
-        gl.uniform1i(blendModeLoc.uMode, mode === 'overlay' ? 0 : 1)
+        // ⛔ THREE-WAY, AND THE TWO-WAY VERSION MISCOMPILES IN SILENCE. Leaving this
+        // as `? 0 : 1` renders every inverted title as SOFT LIGHT, in preview and
+        // in the export alike, with no type error, no runtime error and nothing in
+        // the golden e2e to catch it. Any test for this feature asserts the NUMBER.
+        gl.uniform1i(blendModeLoc.uMode, mode === 'overlay' ? 0 : mode === 'softLight' ? 1 : 2)
         if (blendModeLoc.uSeed) gl.uniform1f(blendModeLoc.uSeed, layer.frameSeed)
         if (blendModeLoc.uDither) gl.uniform1f(blendModeLoc.uDither, outDither)
         gl.drawArrays(gl.TRIANGLES, 0, 3)
@@ -1681,6 +1729,10 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     gl.bindTexture(gl.TEXTURE_2D, src.tex)
     gl.uniform1f(lp.uOpacity, clamp01(opacity))
     gl.uniform4f(lp.uUVRect, 0, 0, 1, 1)
+    // An adjustment pass covers the whole frame by definition: it is a grade
+    // applied to what is already drawn, not a picture being laid out. Cleared
+    // for the same per-program reason as above.
+    gl.uniform4f(lp.uContentBox, 0, 0, 0, 0)
     if (lp.uSeed) gl.uniform1f(lp.uSeed, frameSeed)
     // Adjustment passes always write an intermediate FBO (the work buffer, then
     // the accumulator); the accumulator's blit to the canvas is what dithers.

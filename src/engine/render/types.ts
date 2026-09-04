@@ -3,6 +3,7 @@
 // Preview (main thread) and export (worker) both go through the SAME resolver
 // and the SAME renderer. That is what keeps them pixel-identical.
 
+import type { ContentBox } from '../contentFrame'
 import type { BlendMode, ClipMask, Id, TitleDef } from '../types'
 
 /** A transform fully resolved to numbers at a specific time (no keyframes left). */
@@ -31,6 +32,21 @@ export interface ResolvedTransform {
    *    is just bars.
    */
   fit?: 'contain' | 'cover'
+  /**
+   * The box this layer is laid out inside, in sequence px, when the sequence
+   * has an inner content ratio. Undefined is the whole frame, which is what
+   * every layer has always had.
+   *
+   * ⛔ IT IS STAMPED BY THE RESOLVER, NEVER READ FROM THE SEQUENCE DOWNSTREAM.
+   * Both the preview and the export worker receive this same RenderFrame, so
+   * the box is computed once, in one pure function, and there is no second
+   * place that could compute it differently.
+   *
+   * ⚠️ THE BLURRED BACKDROP MUST NOT HAVE ONE. It is the thing that fills the
+   * bands, so a backdrop confined to the inner box would leave the bands black
+   * and the feature would look broken exactly where it matters most.
+   */
+  frame?: ContentBox
 }
 
 /**

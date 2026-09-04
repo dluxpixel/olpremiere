@@ -71,6 +71,24 @@ export interface Sequence {
    */
   blurBackground?: boolean
   /**
+   * The picture frame INSIDE the export frame, as a width/height ratio.
+   *
+   * His ask, 2026-09-04, off a reel: *"if I want a short, like 9:16, I can
+   * choose so it's inside that 9:16. Let's say, for example, 1:1."* The file
+   * stays the shape the platform wants and the footage is laid out inside a
+   * smaller box of a different shape, centred, with the bands left to black or
+   * to the blurred backdrop.
+   *
+   * ⛔ IT IS NOT THE SEQUENCE SIZE AND IT MUST NOT BECOME ONE. Shrinking the
+   * sequence to 1:1 makes the FILE square, and then the platform pillarboxes
+   * it itself, at its own quality, with its own bars. The whole point is that
+   * the export is still a full 9:16 with the square baked into it.
+   *
+   * Undefined means fill the frame, which is what every project made before
+   * this does, so nothing needs migrating.
+   */
+  contentAspect?: number
+  /**
    * How far past cover-fit the blurred backdrop is grown, before it blurs.
    *
    * His ask, 2026-08-16: *"make it so I can change it each single time."* It was
@@ -186,7 +204,18 @@ export interface Track {
  */
 export const syncLockOf = (t: Track): boolean => t.syncLock ?? t.audioRole !== 'music'
 
-export type BlendMode = 'normal' | 'multiply' | 'screen' | 'overlay' | 'add' | 'softLight'
+/**
+ * ⛔ `invert` IS DELIBERATELY UNREACHABLE FROM THE BLEND DROPDOWN. It is what an
+ * inverted-backdrop TITLE resolves to, not a mode he picks for a video clip, so
+ * it is declared here and left out of `BLEND_MODES` below. Same shape as
+ * `TransitionKind` vs `TRANSITION_KINDS` in render/types.ts, and for the same
+ * reason: a project saved with one still opens and still renders, and nothing he
+ * can reach offers him one again.
+ *
+ * It ignores the source's colour entirely and paints `1 - backdrop` through the
+ * source's ALPHA.
+ */
+export type BlendMode = 'normal' | 'multiply' | 'screen' | 'overlay' | 'add' | 'softLight' | 'invert'
 
 /**
  * A clip-level shape mask in source-UV space (0..1 across the clip's frame,
@@ -213,6 +242,7 @@ export const BLEND_LABELS: Record<BlendMode, string> = {
   overlay: 'Overlay',
   add: 'Add',
   softLight: 'Soft Light',
+  invert: 'Inverted Backdrop',
 }
 
 /** Per-track loudness equalization strength (Phase 6+). 'off' = bypass. */
@@ -507,6 +537,24 @@ export interface TitleDef {
   shadow?: TitleShadow
   outline?: TitleOutline
   box?: TitleBox
+  /**
+   * Draw every glyph as the PER-PIXEL INVERSE of whatever is composited behind
+   * it, 255 minus the backdrop, clipped to the glyph shapes. Not a colour: over
+   * a tan shirt the letters come out pale blue; over a silver chain they show
+   * the chain with its brightness flipped. His ask, 2026-08-31, from a reel he
+   * sent; the frames were read to confirm it is an inversion and not a gradient.
+   *
+   * ⛔ `color`, `outline` and `shadow` ARE IGNORED while this is on, and the
+   * rasterizer does not draw them. They are ALPHA, and the invert keys on alpha,
+   * so an inverted shadow would halo every letter in inverse-backdrop, which is
+   * not the look. The clip’s own blendMode is overridden too, in resolve.ts.
+   *
+   * Undefined = the ordinary coloured title, so every project saved before this
+   * field opens and renders exactly as it did. Written back as `undefined` and
+   * never `false`, so the title raster cache key returns to the exact string it
+   * had before and the cached canvas is reused rather than duplicated.
+   */
+  invertBackdrop?: boolean
 }
 
 export function defaultTitleDef(text = 'Title'): TitleDef {
