@@ -28,7 +28,7 @@ import { resolveFrame } from '../render/resolve'
 import { rasterizeTitle } from '../render/titleRaster'
 
 
-import { loadTitleFonts } from '../render/titleFonts'
+import { loadTitleFonts, titleFontStacksIn } from '../render/titleFonts'
 import type { RenderLayer } from '../render/types'
 import type { Clip, Id, TitleDef } from '../types'
 import {
@@ -330,7 +330,13 @@ async function runNative(init: Extract<ExportRequest, { type: 'init' }>): Promis
     const H = settings.height
     const framesTotal = Math.max(1, Math.ceil((settings.endS - settings.startS) * settings.fps))
     post({ type: 'progress', progress: { phase: 'preparing', framesDone: 0, framesTotal } })
-    await loadTitleFonts(scope.fonts)
+        // ⚠️ THE SEQUENCE IS PASSED IN, and it has to be. The library went to
+    // thirty-eight faces on 2026-08-31 and loading them all here would be
+    // thirty-eight fetches in front of an export. `titleFontStacksIn` reads the
+    // families off the document, which is the only source that is true in both
+    // contexts, so the worker registers exactly what the preview registered and
+    // preview == export still holds.
+    await loadTitleFonts(scope.fonts, titleFontStacksIn(sequence))
 
     // --- open media (identical to run()) -----------------------------------
     stage = 'opening media'
@@ -497,7 +503,13 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
     // Register bundled title fonts in THIS worker's FontFaceSet before any title
     // is rasterized, otherwise a Minecraft title would fall back to a different
     // face here than in the preview, breaking preview == export.
-    await loadTitleFonts(scope.fonts)
+        // ⚠️ THE SEQUENCE IS PASSED IN, and it has to be. The library went to
+    // thirty-eight faces on 2026-08-31 and loading them all here would be
+    // thirty-eight fetches in front of an export. `titleFontStacksIn` reads the
+    // families off the document, which is the only source that is true in both
+    // contexts, so the worker registers exactly what the preview registered and
+    // preview == export still holds.
+    await loadTitleFonts(scope.fonts, titleFontStacksIn(sequence))
 
     // --- codec + rate-control picks ---------------------------------------
     stage = 'probing encoder support'

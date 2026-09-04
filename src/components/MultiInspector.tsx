@@ -24,7 +24,7 @@ import {
 } from '../state/textPresets'
 import { setTitlesFontSize, updateTitles } from '../state/titleActions'
 import { BROWSABLE_EFFECTS } from '../engine/effects/registry'
-import { TITLE_FONT_OPTIONS } from '../engine/render/titleFonts'
+import { ensureTitleFont, TITLE_FONT_OPTIONS } from '../engine/render/titleFonts'
 import { clipDurationS } from '../engine/timeline'
 import { useEffectDrop } from './effectDrop'
 import type { Clip, Track } from '../engine/types'
@@ -169,13 +169,23 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
                 aria-label="Font family (all)"
                 data-testid="multi-family"
                 value={firstTitle?.fontFamily ?? ''}
-                onChange={(e) => updateTitles(titleIds, { fontFamily: e.target.value })}
+                onChange={(e) => {
+                  // ⚠️ THE FACE IS FETCHED WHEN HE PICKS IT. Only the six core
+                  // faces load at boot since the library went to thirty-eight;
+                  // this is what turns a name in the list into glyphs on screen.
+                  void ensureTitleFont(document.fonts, e.target.value)
+                  updateTitles(titleIds, { fontFamily: e.target.value })
+                }}
                 className="h-6 w-[140px] cursor-default rounded-field bg-bg-input px-1.5 text-ui-sm text-text-primary"
               >
-                {TITLE_FONT_OPTIONS.map((f) => (
-                  <option key={f.value} value={f.value}>
-                    {f.label}
-                  </option>
+                {[...new Set(TITLE_FONT_OPTIONS.map((f) => f.group))].map((g) => (
+                  <optgroup key={g} label={g}>
+                    {TITLE_FONT_OPTIONS.filter((f) => f.group === g).map((f) => (
+                      <option key={f.value} value={f.value}>
+                        {f.label}
+                      </option>
+                    ))}
+                  </optgroup>
                 ))}
                 {firstTitle && !TITLE_FONT_OPTIONS.some((f) => f.value === firstTitle.fontFamily) && (
                   <option value={firstTitle.fontFamily}>Custom</option>

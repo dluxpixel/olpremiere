@@ -14,7 +14,7 @@ import {
   CaseUpper,
   Italic,
 } from 'lucide-react'
-import { TITLE_FONT_OPTIONS } from '../engine/render/titleFonts'
+import { ensureTitleFont, TITLE_FONT_OPTIONS } from '../engine/render/titleFonts'
 import { defaultTitleDef, type Clip, type TitleDef } from '../engine/types'
 import { setTitlesFontSize, updateTitle } from '../state/titleActions'
 import { IconButton } from '../ui/Button'
@@ -146,13 +146,24 @@ export function TitleControls({ clip }: { clip: Clip }) {
           <select
             aria-label="Font family"
             value={def.fontFamily}
-            onChange={(e) => set({ fontFamily: e.target.value })}
+            onChange={(e) => {
+              // ⚠️ THE FACE IS FETCHED WHEN HE PICKS IT. Only the six core faces
+              // load at boot since the library went to thirty-eight; this is what
+              // turns a name in the list into glyphs on screen, and it clears the
+              // title raster so the fallback shapes do not stay cached.
+              void ensureTitleFont(document.fonts, e.target.value)
+              set({ fontFamily: e.target.value })
+            }}
             className="h-6 w-[140px] cursor-default rounded-field bg-bg-input px-1.5 text-ui-sm text-text-primary"
           >
-            {FONT_FAMILIES.map((f) => (
-              <option key={f.value} value={f.value}>
-                {f.label}
-              </option>
+            {[...new Set(FONT_FAMILIES.map((f) => f.group))].map((g) => (
+              <optgroup key={g} label={g}>
+                {FONT_FAMILIES.filter((f) => f.group === g).map((f) => (
+                  <option key={f.value} value={f.value}>
+                    {f.label}
+                  </option>
+                ))}
+              </optgroup>
             ))}
             {/* Preserve an unknown family so the select never blanks out. */}
             {!FONT_FAMILIES.some((f) => f.value === def.fontFamily) && (

@@ -3,7 +3,7 @@
 // are reachable from wherever you click.
 
 import { DEFAULT_APPEARANCE_DUR, ENTRANCE_PRESETS, EXIT_PRESETS } from '../engine/anim/appearance'
-import { TITLE_FONT_OPTIONS } from '../engine/render/titleFonts'
+import { ensureTitleFont, TITLE_FONT_OPTIONS } from '../engine/render/titleFonts'
 import { isTitleClip, type Clip } from '../engine/types'
 import { clipDurationS } from '../engine/timeline'
 import {
@@ -55,7 +55,13 @@ export function titleFontSizeItems(clip: Clip, ids: string[] = [clip.id]): MenuI
   const fontSub: MenuItem[] = TITLE_FONT_OPTIONS.map((f) => ({
     label: f.label,
     checked: def.fontFamily === f.value,
-    onClick: () => updateTitles(ids, { fontFamily: f.value }),
+    onClick: () => {
+      // ⚠️ SAME AS THE INSPECTOR'S PICKER. Only the six core faces load at boot
+      // since the library went to thirty-eight, so choosing one here has to
+      // fetch it or the title draws in the fallback and caches that raster.
+      void ensureTitleFont(document.fonts, f.value)
+      updateTitles(ids, { fontFamily: f.value })
+    },
   }))
   const sizeSub: MenuItem[] = TITLE_SIZE_PRESETS.map((s) => ({
     label: `${s.label} (${s.px}px)`,

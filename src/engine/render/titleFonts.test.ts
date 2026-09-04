@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { CUSTOM_TITLE_FONTS, LUCKIEST_GUY_STACK, TITLE_FONT_OPTIONS } from './titleFonts'
+import { CUSTOM_TITLE_FONTS, LUCKIEST_GUY_STACK, TITLE_FONT_OPTIONS, titleFontStacksIn } from './titleFonts'
 
 // Guard the BUNDLED Minecraft font's glyph coverage. The app is used in Czech,
 // so the font must carry every Czech diacritic natively. Otherwise Czech titles
@@ -143,5 +143,56 @@ describe('bundled display font (Luckiest Guy)', () => {
     // one face all the way through instead of changing shape mid-word.
     const missing = [...'áčďéěíňóřšťúůýžÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ'].filter((c) => !has(c.codePointAt(0)!))
     expect(missing).toEqual([])
+  })
+})
+
+// The library went from five faces to thirty-eight on 2026-08-31, at his ask for
+// "a huge variety of fonts influencers use". Three things have to stay true.
+describe('the bundled font library', () => {
+  it('ships every face with a licence line, because shipping one is redistributing it', () => {
+    const manifest = readFileSync(fileURLToPath(new URL('../../assets/fonts/BUNDLED-FONTS.md', import.meta.url)), 'utf8')
+    for (const f of CUSTOM_TITLE_FONTS) {
+      // The core five predate the manifest and carry their own licence files.
+      if (!f.group) continue
+      expect(manifest, `${f.label} is bundled with no licence line`).toContain(f.label)
+    }
+  })
+
+  it('does not load thirty-eight faces before he has asked for anything', () => {
+    // ⛔ THE SAME EVERYTHING-AT-ONCE SHAPE that was taken out of the audio path
+    // all of last week. Only the faces a saved project can ALREADY be using load
+    // eagerly; the rest arrive when he picks them.
+    const src = readFileSync(fileURLToPath(new URL('./titleFonts.ts', import.meta.url)), 'utf8')
+    const loader = src.slice(src.indexOf('export function loadTitleFonts'))
+    expect(loader).toContain('CORE_FAMILIES')
+    expect(loader).not.toMatch(/CUSTOM_TITLE_FONTS\.map\(/)
+    const core = src.slice(src.indexOf('const CORE_FAMILIES'), src.indexOf('const inFlight'))
+    expect(core.match(/'/g)!.length / 2).toBeLessThanOrEqual(8)
+  })
+
+  it('gives the export a way to load exactly what the sequence uses', () => {
+    // The worker has no font picker. Without this it would either load all
+    // thirty-eight or draw a fallback the preview never drew, and the second one
+    // breaks preview == export silently.
+    const seq = {
+      tracks: [
+        { clips: [{ title: { fontFamily: LUCKIEST_GUY_STACK } }, { title: { fontFamily: LUCKIEST_GUY_STACK } }] },
+        { clips: [{ title: { fontFamily: "'Anton', 'Arial Black', sans-serif" } }, { clips: undefined } as never] },
+      ],
+    }
+    const stacks = titleFontStacksIn(seq)
+    expect(stacks).toHaveLength(2)
+    expect(stacks).toContain(LUCKIEST_GUY_STACK)
+  })
+
+  it('groups the picker, because thirty-eight names in one list is a scroll not a choice', () => {
+    const groups = new Set(TITLE_FONT_OPTIONS.map((o) => o.group))
+    expect(groups.size).toBeGreaterThanOrEqual(5)
+    expect(TITLE_FONT_OPTIONS.every((o) => o.group.length > 0)).toBe(true)
+    // Every bundled face is reachable from the picker. A font that ships and
+    // cannot be chosen is dead weight in the installer.
+    for (const f of CUSTOM_TITLE_FONTS) {
+      expect(TITLE_FONT_OPTIONS.map((o) => o.value), `${f.label} is not in the picker`).toContain(f.stack)
+    }
   })
 })

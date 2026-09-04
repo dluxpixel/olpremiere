@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { benchRatio } from './perfRatio'
 import { applyAppearanceToClip, retimeAppearance } from './anim/appearance'
 import { clipEmitsAudio } from './audio'
 import { channelKeyframes, resolveChannel } from './effects/channels'
@@ -2821,20 +2822,34 @@ describe('closing gaps stays linear in the clip count', () => {
   // measured 93 ms at this size. `perfGuard.test.ts` learned the same lesson and
   // divides by a calibration; best-of-N is the cheaper half of it and enough
   // here, because this budget is about a shape, not about a share of a frame.
-  const BUDGET_MS = 20
+  /**
+   * ⛔ A RATIO, NOT MILLISECONDS, SINCE 2026-08-31, AND THE COMMENT ABOVE USED TO
+   * SAY BEST-OF-N WAS "ENOUGH HERE". It was not. This budget threw away two ship
+   * gates, on 2026-08-28 and 2026-08-31, reading 29.7 ms against 20 while the
+   * machine was packaging an installer beside the tests, and passing three times
+   * running the moment it was idle. Best-of-N cannot save you when every round is
+   * slow; a ratio can, because the yardstick is measured in the same weather.
+   *
+   * The shape being guarded is unchanged: the O(n^2) version this exists to catch
+   * measured 93 ms against 20, so it was more than four times over. In ratio terms
+   * that is over 40x the yardstick against a budget of 9, which is the same
+   * headroom expressed in a unit that survives the gate.
+   *
+   * MEASURED ON THIS MACHINE, 2026-08-31, and the numbers are the argument:
+   *
+   *   closeAllGaps    idle 195-202x (8.2 ms)   full suite 212x (15.7 ms)
+   *   closeGapBefore  idle 151-171x (4.8 ms)   full suite 163x (9.8 ms)
+   *
+   * The MILLISECONDS nearly double under load. The RATIO moves about five per
+   * cent. That is the whole case for this change, measured rather than argued.
+   *
+   * The budget is 360, roughly 1.7x the worst observed, the same headroom the
+   * absolute budget it replaces was chosen with. The O(n^2) version this exists
+   * to catch measured 93 ms where the fixed one measures 8.2, so it would read
+   * around 2300x and still trip this by more than six times over.
+   */
+  const BUDGET_RATIO = 360
   const RUNS = 5
-
-  /** Fastest of several runs: the one that is not paying for the cold JIT. */
-  function bestMs(fn: () => void): number {
-    let best = Infinity
-    for (let i = 0; i < RUNS; i++) {
-      const t0 = performance.now()
-      fn()
-      best = Math.min(best, performance.now() - t0)
-    }
-    return best
-  }
-
   function packedPairs(n: number): ReturnType<typeof makeSeq> {
     const video = Array.from({ length: n }, (_, i) =>
       makeClip({ id: `v${i}`, startS: i * 1.0, inS: 0, outS: 0.5, linkId: `lg${i}` }),
@@ -2851,10 +2866,16 @@ describe('closing gaps stays linear in the clip count', () => {
   it('closeAllGaps tidies 4000 linked clips inside the frame budget', () => {
     const seq = packedPairs(4000)
     let r = closeAllGaps(seq, seq.tracks[0].id)
-    const ms = bestMs(() => {
-      r = closeAllGaps(seq, seq.tracks[0].id)
-    })
-    expect(ms).toBeLessThan(BUDGET_MS)
+    const { ratio, perCallMs } = benchRatio(
+      () => {
+        r = closeAllGaps(seq, seq.tracks[0].id)
+      },
+      1,
+      RUNS,
+    )
+    expect(ratio, `closeAllGaps ran at ${ratio.toFixed(1)}x the yardstick (${perCallMs.toFixed(1)} ms)`).toBeLessThan(
+      BUDGET_RATIO,
+    )
     // and it is still correct: every clip butted against the last, partners with them
     expect(r.tracks[0].clips[3999].startS).toBeCloseTo(1999.5, 6)
     expect(r.tracks[1].clips[3999].startS).toBeCloseTo(1999.5, 6)
@@ -2863,10 +2884,16 @@ describe('closing gaps stays linear in the clip count', () => {
   it('closeGapBefore ripples 4000 linked clips inside the same budget', () => {
     const seq = packedPairs(4000)
     let r = closeGapBefore(seq, 'v1')
-    const ms = bestMs(() => {
-      r = closeGapBefore(seq, 'v1')
-    })
-    expect(ms).toBeLessThan(BUDGET_MS)
+    const { ratio, perCallMs } = benchRatio(
+      () => {
+        r = closeGapBefore(seq, 'v1')
+      },
+      1,
+      RUNS,
+    )
+    expect(ratio, `closeGapBefore ran at ${ratio.toFixed(1)}x the yardstick (${perCallMs.toFixed(1)} ms)`).toBeLessThan(
+      BUDGET_RATIO,
+    )
     expect(r.tracks[0].clips[1].startS).toBeCloseTo(0.5, 6)
     expect(r.tracks[1].clips[1].startS).toBeCloseTo(0.5, 6)
   })
