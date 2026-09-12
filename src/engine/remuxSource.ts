@@ -8,7 +8,7 @@
 // The decision about WHICH files and WHAT ffmpeg does lives in
 // `electron/remuxArgs.ts` and is unit tested there.
 
-import { needsRemux } from '../../electron/remuxArgs'
+import { canRescueByRemux, needsRemux } from '../../electron/remuxArgs'
 
 /** 8 MB. Big enough that a multi-gigabyte capture is not millions of round trips, small enough to stay off the heap. */
 const CHUNK = 8 * 1024 * 1024
@@ -43,8 +43,52 @@ export function canImport(fileName: string): boolean {
  * single byte of copying, and a .webm is left alone because Chromium reads it.
  */
 export async function remuxIfNeeded(file: File, onProgress?: (frac: number) => void): Promise<RemuxOutcome> {
+  if (!needsRemux(file.name) || !desktop()) return { file, copied: true }
+  return runRemux(file, 'convert', onProgress)
+}
+
+/**
+ * Is there anything left to try on a file the browser has already refused?
+ *
+ * The web build has no ffmpeg, so there it is always no, and saying so plainly
+ * beats a second identical failure.
+ */
+export function canRescue(fileName: string): boolean {
+  return canRescueByRemux(fileName) && desktop() !== null
+}
+
+/**
+ * Last resort: hand ffmpeg a file Chromium could not open and re-encode it.
+ *
+ * ⛔ THIS IS THE PHONE VIDEO PATH, AND IT IS WHY THE APP WAS UNUSABLE FOR
+ * EVERYBODY ELSE. An iPhone or modern Android clip is HEVC in a .mov or .mp4.
+ * `needsRemux` skips those by design, because converting every ordinary .mp4
+ * up front would turn a one second import into a five minute one. So the file
+ * went straight to `probeFile`, Chromium refused to decode HEVC, and the import
+ * ended with "couldn't import (unsupported?)" while the 137.9 MB ffmpeg inside
+ * the installer sat there perfectly able to convert it.
+ *
+ * Nobody but David had ever opened this app, and David records with OBS, so the
+ * one format nobody tested was the one everybody else has.
+ *
+ * ⚠️ IT RE-ENCODES, and that is slow and slightly lossy on purpose. By the
+ * time this runs, the decoder has already said no to the video stream as it
+ * stands, so a container change would produce a file that fails in exactly the
+ * same way, having spent the same minutes proving it. → `rescuePlan`.
+ */
+export async function rescueByRemux(file: File, onProgress?: (frac: number) => void): Promise<RemuxOutcome> {
+  if (!desktop()) return { file, copied: true }
+  return runRemux(file, 'rescue', onProgress)
+}
+
+/** The streaming upload, convert and read back. Shared so the two reasons cannot drift. */
+async function runRemux(
+  file: File,
+  mode: 'convert' | 'rescue',
+  onProgress?: (frac: number) => void,
+): Promise<RemuxOutcome> {
   const api = desktop()
-  if (!needsRemux(file.name) || !api) return { file, copied: true }
+  if (!api) return { file, copied: true }
 
   const id = await api.remuxBegin()
   try {
@@ -56,7 +100,7 @@ export async function remuxIfNeeded(file: File, onProgress?: (frac: number) => v
       onProgress?.((offset / file.size) * 0.5)
     }
 
-    const { size, copied } = await api.remuxFinish(id)
+    const { size, copied } = await api.remuxFinish(id, mode)
 
     // ⛔ EACH CHUNK BECOMES A Blob IMMEDIATELY, AND THAT IS THE WHOLE POINT.
     // Keeping the ArrayBuffers in an array and handing the array to `new File`

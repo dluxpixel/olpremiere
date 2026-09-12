@@ -8,7 +8,7 @@
 
 import { spawn } from 'node:child_process'
 import { stat } from 'node:fs/promises'
-import { parseSourceStreams, probeArgs, remuxArgs, remuxPlan } from './remuxArgs'
+import { parseSourceStreams, probeArgs, remuxArgs, remuxPlan, rescuePlan } from './remuxArgs'
 
 /** ffmpeg says everything on stderr, including when it is succeeding. */
 export function runFfmpeg(ffmpegPath: string, args: string[]): Promise<{ code: number; stderr: string }> {
@@ -38,7 +38,14 @@ export interface ConvertResult {
  * Turn one recording into an MP4 the app can open. Throws with a reason a person
  * could act on, because a failure here means his footage did not import.
  */
-export async function convertToMp4(ffmpegPath: string, inPath: string, outPath: string): Promise<ConvertResult> {
+export type ConvertMode = 'convert' | 'rescue'
+
+export async function convertToMp4(
+  ffmpegPath: string,
+  inPath: string,
+  outPath: string,
+  mode: ConvertMode = 'convert',
+): Promise<ConvertResult> {
   // ⛔ The probe exits NON-ZERO by design: ffmpeg was asked to open the file and
   // write nothing, so it reports and then complains that it had no output.
   // Reading its exit code here would fail every healthy capture.
@@ -49,7 +56,10 @@ export async function convertToMp4(ffmpegPath: string, inPath: string, outPath: 
     throw new Error(`no video or audio could be read from this recording: ${why}`)
   }
 
-  const plan = remuxPlan(streams)
+  // ⛔ 'rescue' MEANS THE BROWSER ALREADY REFUSED THIS FILE, so copying the
+  // video stream would hand the same decoder the same codec a second time. See
+  // rescuePlan in remuxArgs.ts: it forces H.264 for exactly that reason.
+  const plan = mode === 'rescue' ? rescuePlan(streams) : remuxPlan(streams)
   const out = await runFfmpeg(ffmpegPath, remuxArgs(inPath, outPath, plan))
   if (out.code !== 0) throw new Error(out.stderr.trim().split('\n').pop() || 'the conversion failed')
 

@@ -225,7 +225,14 @@ export interface OlApi {
    */
   remuxBegin(): Promise<string>
   remuxChunk(id: string, bytes: ArrayBuffer): Promise<void>
-  remuxFinish(id: string): Promise<{ size: number; copied: boolean; durationS: number }>
+  /**
+   * `mode` is why the conversion is happening, and it changes what ffmpeg does.
+   * 'convert' is the up-front path for containers Chromium cannot demux at all
+   * (his OBS .mkv), and it COPIES the video. 'rescue' runs after a real decode
+   * failure, so it re-encodes to H.264: copying would hand the same codec back
+   * to the decoder that just refused it.
+   */
+  remuxFinish(id: string, mode?: 'convert' | 'rescue'): Promise<{ size: number; copied: boolean; durationS: number }>
   remuxRead(id: string, offset: number, length: number): Promise<ArrayBuffer>
   remuxRelease(id: string): Promise<void>
   /** Encode progress (frame/totalFrames) parsed from ffmpeg. Returns an unsubscribe fn. */

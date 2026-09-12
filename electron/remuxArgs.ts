@@ -60,6 +60,48 @@ export function remuxPlan(streams: SourceStreams): RemuxPlan {
 }
 
 /**
+ * The plan for a file CHROMIUM ALREADY REFUSED, where copying would change nothing.
+ *
+ * ⛔ IT FORCES A RE-ENCODE, AND THAT IS THE ENTIRE POINT. `MP4_SAFE_VIDEO`
+ * contains `hevc`, so an iPhone .mov run through `remuxPlan` would have its HEVC
+ * COPIED into an MP4 and handed back to the same decoder that just failed on it.
+ * The import would fail a second time, having spent minutes proving it.
+ *
+ * This path is only ever reached after a real decode failure, so the one thing
+ * known for certain is that the video stream as it stands cannot be played here.
+ * H.264 is the codec every Chromium build can decode, so that is what it becomes.
+ *
+ * The audio rule is unchanged: it is about what MP4 and Chromium accept, and a
+ * decode failure on the video says nothing about the sound.
+ */
+export function rescuePlan(streams: SourceStreams): RemuxPlan {
+  return { ...remuxPlan(streams), canCopyVideo: false }
+}
+
+/**
+ * Is this worth handing to ffmpeg after the browser has already failed on it?
+ *
+ * ⛔ DELIBERATELY MUCH WIDER THAN `needsRemux`, and the two answer different
+ * questions. `needsRemux` asks "convert this before even trying", which must stay
+ * narrow or every ordinary .mp4 pays for a conversion it never needed. This one
+ * asks "the browser said no, is there anything left to try", and by then the only
+ * alternatives are ffmpeg or telling somebody their video is unsupported.
+ *
+ * ⛔ AND THE FILE THAT SENT ME HERE IS THE ONE EVERYBODY HAS. An iPhone or
+ * modern Android clip is HEVC in a .mov or .mp4, which `needsRemux` skips by
+ * design, which Chromium often cannot decode, and which therefore reached
+ * "couldn't import (unsupported?)" while the 137.9 MB ffmpeg in the installer sat
+ * there able to convert it. Nobody but David had ever opened this app, and David
+ * records with OBS.
+ *
+ * It is a list rather than "try everything" only so a dropped .txt or .zip does
+ * not cost a full upload to a temp file before ffmpeg says no.
+ */
+export function canRescueByRemux(fileName: string): boolean {
+  return /\.(mp4|mov|m4v|avi|wmv|mpg|mpeg|3gp|3g2|webm|ogv|mxf|asf|vob|divx)$/i.test(fileName.trim())
+}
+
+/**
  * Read what ffmpeg says about a source. ffmpeg is asked to open the file and
  * produce no output, so it prints its report and exits NON-ZERO by design: the
  * exit code carries no meaning here and the caller must not read one.

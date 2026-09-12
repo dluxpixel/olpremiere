@@ -73,6 +73,22 @@ try {
       'the packaged app starts',
       shipLog,
     )
+    // ⛔ AND THEN THE PART NOTHING HAS EVER CHECKED: does it work for somebody who
+    // has never run it? The line above proves a window renders. This one drives the
+    // finished app against a profile that has never existed, through an import, a
+    // cut and an export, and reads the file that lands on disk.
+    //
+    // Every e2e spec exports through the BROWSER path (ExportDialog branches
+    // `isElectron ? startNative() : start()`), so until this existed the ffmpeg
+    // path his installed app actually uses had only ever been run by his own hands.
+    //
+    // Same gate and the same reason: it opens a window, so it waits for a big
+    // update rather than riding on every patch.
+    await runLogged(
+      `node scripts/cold-start.mjs "${OUT}/win-unpacked/OL Premiere.exe"`,
+      'a stranger could actually use it',
+      shipLog,
+    )
   } else {
     console.log('▶ patch release, so the packaged app check is skipped (no window on his screen)')
   }

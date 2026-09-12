@@ -14,6 +14,7 @@ import {
   effectiveAudioClip,
   mapLimit,
   pitchPreservedSource,
+  isProvedSilent,
   type ClipSchedule,
 } from '../audio'
 import { duckEnvelope } from '../ducking'
@@ -124,7 +125,19 @@ export async function planAudioMix(
     // Only files that CLAIM to carry sound. A still image or a silent clip
     // sitting on an audio track decodes to nothing quite legitimately, and
     // raising an error for it would turn a normal timeline into a failed export.
-    const names = [...new Set(candidates.filter((c) => c.asset.hasAudio).map((c) => c.asset.name))]
+    // ⛔ AND NOT THE ONES PROVED SILENT. `asset.hasAudio` is TRUE for every
+    // video because probe.ts cannot tell at preload=metadata and defaults
+    // honestly rather than guessing low. Reading that as a claim meant a clip
+    // with no sound — gameplay with the mic off, a screen recording, a phone
+    // clip in silent mode — could not be exported AT ALL, and the message told
+    // him to re-import the file, which hands back the same silent file.
+    // `isProvedSilent` is only true once the demuxer has OPENED the container and
+    // found no audio stream, which outranks the guess.
+    const names = [
+      ...new Set(
+        candidates.filter((c) => c.asset.hasAudio && !isProvedSilent(c.asset.id)).map((c) => c.asset.name),
+      ),
+    ]
     if (names.length === 0) return null
     throw new Error(
       `Could not read the sound from ${names.length === 1 ? names[0] : `${names.length} files (${names.slice(0, 3).join(', ')}${names.length > 3 ? ', ...' : ''})`}. ` +
@@ -134,7 +147,9 @@ export async function planAudioMix(
   // SOME clips decoded and some did not. The export can honestly continue (the
   // ones that worked are real audio), but he must be told which pieces will be
   // missing rather than discovering a silent gap later.
-  const failed = candidates.filter((_, i) => buffers[i] === null && candidates[i].asset.hasAudio)
+  const failed = candidates.filter(
+    (_, i) => buffers[i] === null && candidates[i].asset.hasAudio && !isProvedSilent(candidates[i].asset.id),
+  )
   if (failed.length > 0) {
     console.warn(
       `OL Premiere export: no sound from ${failed.length} clip(s): ${[...new Set(failed.map((c) => c.asset.name))].join(', ')}`,

@@ -575,7 +575,7 @@ app.whenReady().then(() => {
   // way `proxy:finish` is.
   ipcMain.handle('remux:begin', () => remux.beginRemux())
   ipcMain.handle('remux:chunk', (_e, id: string, bytes: ArrayBuffer) => remux.chunkRemux(id, bytes))
-  ipcMain.handle('remux:finish', (_e, id: string) => remux.finishRemux(id))
+  ipcMain.handle('remux:finish', (_e, id: string, mode?: 'convert' | 'rescue') => remux.finishRemux(id, mode))
   ipcMain.handle('remux:read', (_e, id: string, offset: number, length: number) =>
     remux.readRemux(id, offset, length),
   )

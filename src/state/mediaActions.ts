@@ -10,7 +10,7 @@ import { disposePreviewAsset } from '../engine/preview'
 import { ensureProxies, forgetProxy } from '../engine/proxyMedia'
 import { probeFile } from '../engine/probe'
 import { backfillMirror, mirrorAsset } from './mediaMirror'
-import { canImport, remuxIfNeeded } from '../engine/remuxSource'
+import { canImport, remuxIfNeeded, canRescue, rescueByRemux } from '../engine/remuxSource'
 import { addClipFromAsset, addClipWithLinkedAudio, recomputeDuration } from '../engine/timeline'
 import {
   activeSequence,
@@ -108,7 +108,43 @@ export async function importFiles(files: File[], opts?: ImportOptions): Promise<
           convertFailed.push(file.name)
           continue
         }
-        const probe = await probeFile(source)
+        // ⛔ A DECODE FAILURE IS NOT THE SAME AS AN UNSUPPORTED FILE, and until
+        // 2026-09-11 this app could not tell them apart. `needsRemux` converts the
+        // containers Chromium cannot demux at ALL (his OBS .mkv) and skips .mp4
+        // and .mov on purpose, because converting every ordinary mp4 up front
+        // turns a one second import into a five minute one.
+        //
+        // But an iPhone or modern Android clip is HEVC in a .mov or .mp4. It
+        // sails past that gate, Chromium refuses to decode it, and the import
+        // used to end at "couldn't import (unsupported?)" while the 137.9 MB
+        // ffmpeg in the installer sat there able to convert it in seconds.
+        // The most likely first file a new person has, rejected by the one
+        // component that could have opened it.
+        //
+        // So the probe failing is not the end any more: if there is an ffmpeg
+        // here and the file looks like a video at all, it gets converted and
+        // probed again. The cost is paid ONLY by files that already failed, so
+        // an ordinary import is byte for byte the same work it always was.
+        let probe
+        try {
+          probe = await probeFile(source)
+        } catch (probeErr) {
+          if (isOutOfRoom(probeErr) || !canRescue(source.name)) throw probeErr
+          console.warn('OL Premiere: the browser could not open', source.name, '- converting it', probeErr)
+          // A rescue that itself fails must read as a conversion failure, not as
+          // "unsupported": the format IS supported, this file did not survive it.
+          let rescued
+          try {
+            rescued = (await rescueByRemux(source)).file
+          } catch (rescueErr) {
+            console.warn('OL Premiere: could not convert', source.name, rescueErr)
+            convertFailed.push(file.name)
+            continue
+          }
+          // If the converted file ALSO will not open, it is genuinely beyond us.
+          probe = await probeFile(rescued)
+          source = rescued
+        }
         const id = newId()
         const blobKey = 'asset/' + id
         await putBlob(blobKey, source)

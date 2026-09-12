@@ -325,6 +325,32 @@ const DEMUX_CACHE_BYTES = 4 * 1024 * 1024
  * Returns null rather than throwing when this file is not something mediabunny
  * can index or decode, so the caller can fall back.
  */
+/**
+ * Assets the demuxer opened and found to hold no audio track at all.
+ *
+ * ⛔ THIS EXISTS BECAUSE `asset.hasAudio` IS A GUESS, AND SOMETHING DOWNSTREAM
+ * TREATS IT AS A CLAIM. `probe.ts` cannot tell whether a video has sound at
+ * `preload=metadata` (Chromium exposes no `mozHasAudio`, no `audioTracks` and a
+ * zero decoded-byte counter), so it returns TRUE by design and says so. The
+ * export then reads that optimistic default as "this file says it has sound",
+ * finds none, and refuses to export at all with "Re-import it and try again" —
+ * advice that cannot work, because re-importing hands back the same silent file.
+ *
+ * Opening the container and finding no audio stream is PROOF, not a guess, so
+ * once that has happened the guess must not be allowed to fail an export.
+ *
+ * ⚠️ ONLY THE POSITIVE CASE GOES IN HERE. A decode that fails for any other
+ * reason leaves the set alone, so the 2026-08-05 scar still holds: a file that
+ * really does carry sound we could not read still stops the export loudly rather
+ * than writing a silent video he only discovers after uploading.
+ */
+const provedSilent = new Set<string>()
+
+/** Has the demuxer positively established that this asset carries no audio track? */
+export function isProvedSilent(assetId: string): boolean {
+  return provedSilent.has(assetId)
+}
+
 async function demuxAssetAudio(asset: MediaAsset, blob: Blob): Promise<AudioBuffer | null> {
   const { ALL_FORMATS, AudioSampleSink, BlobSource, Input: MbInput } = await import('mediabunny')
   const input = new MbInput({
@@ -333,7 +359,13 @@ async function demuxAssetAudio(asset: MediaAsset, blob: Blob): Promise<AudioBuff
   })
   try {
     const track = await input.getPrimaryAudioTrack()
-    if (!track || !(await track.canDecode())) return null
+    // No track at all is PROOF of silence. A track this build cannot decode is
+    // not: that one still has to fail loudly, so only the first case is recorded.
+    if (!track) {
+      provedSilent.add(asset.id)
+      return null
+    }
+    if (!(await track.canDecode())) return null
     const sampleRate = await track.getSampleRate()
     const channels = await track.getNumberOfChannels()
     if (!(sampleRate > 0) || !(channels > 0)) return null
