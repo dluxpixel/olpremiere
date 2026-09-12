@@ -447,6 +447,13 @@ async function runNative(init: Extract<ExportRequest, { type: 'init' }>): Promis
 
       // Read the rendered pixels (bottom-origin RGBA; ffmpeg -vf vflip corrects the
       // row order). A fresh buffer per frame because it's transferred to the page.
+      // ⛔ A LOST CONTEXT WRITES A BLACK VIDEO AND CALLS IT DONE. readPixels is
+      // a no-op by spec once the context is lost, so the zero-filled buffer
+      // below would go to ffmpeg as a perfectly valid black frame, every frame,
+      // and the export would finish green. He would find out after uploading.
+      // A driver reset, a GPU under memory pressure, or a laptop switching
+      // adapters mid-export all do this. Refusing here is the only honest move.
+      if (gl.isContextLost()) throw new Error('the graphics context was lost during the export, so the frames would have come out black')
       const pixels = new Uint8Array(W * H * 4)
       gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, pixels)
       post({ type: 'frame', index: f, data: pixels.buffer }, [pixels.buffer])
@@ -950,6 +957,9 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
       const texMap = await gatherTextures(layers)
       renderer.render(frame, (layer) => texMap.get(layer) ?? null)
 
+      // Same guard as the native path: a lost context leaves the canvas black
+      // and VideoFrame would happily wrap it.
+      if (gl.isContextLost()) throw new Error('the graphics context was lost during the export, so the frames would have come out black')
       const vframe = new VideoFrame(canvas, {
         timestamp: Math.round((f * 1e6) / settings.fps),
         duration: Math.round(1e6 / settings.fps),

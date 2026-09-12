@@ -338,6 +338,28 @@ export function setLivePreviewTransform(v: { clipId: Id; x: number; y: number; s
 const renderers = new WeakMap<HTMLCanvasElement, Renderer | null>()
 
 /**
+ * WHY a canvas has no renderer, in words a person can read.
+ *
+ * ⛔ THIS EXISTS BECAUSE A BLACK MONITOR USED TO REPORT ITSELF AS PERFECT.
+ * `rendererFor` cached a null when WebGL2 was unavailable, said nothing at all
+ * when `getContext` itself returned null, and `renderPreview` then returned
+ * `true` ("frame complete") on that null, so the Monitor stopped polling and
+ * sat on a black rectangle with no message anywhere. On a machine with weak or
+ * broken graphics, or after a driver reset mid-session, that reads as "the app
+ * is broken" and nothing in the app disagrees.
+ *
+ * Found 2026-09-11 by asking what happens on a machine that is not his. Kept
+ * beside `renderers` so a canvas cannot have a reason without also having had
+ * its one and only attempt.
+ */
+const noPictureReasons = new WeakMap<HTMLCanvasElement, string>()
+
+/** The plain-English reason this canvas cannot show a picture, or null when it can. */
+export function noPictureReason(canvas: HTMLCanvasElement): string | null {
+  return noPictureReasons.get(canvas) ?? null
+}
+
+/**
  * The raster the LIVE canvas is actually drawing into, in device px. Titles are
  * rasterized against this instead of the sequence, so a small monitor does not
  * pay for a full 1080x1920 text canvas per caption.
@@ -381,7 +403,12 @@ function rendererFor(canvas: HTMLCanvasElement): Renderer | null {
     preserveDrawingBuffer: true,
   })
   let renderer: Renderer | null = null
-  if (gl) {
+  if (!gl) {
+    // Not an exception, so nothing below would have logged it: the one silent
+    // branch, and the most likely one on a machine without real graphics.
+    console.error('OL Premiere: this browser gave no WebGL2 context, so the preview cannot draw')
+    noPictureReasons.set(canvas, 'This computer is not giving the app any graphics to draw with')
+  } else {
     try {
       // mipmapPreview: the panel raster is 3-6x below source res, so mipmapped
       // minification kills the aliasing/shimmer. Preview asks for it ALWAYS;
@@ -392,6 +419,7 @@ function rendererFor(canvas: HTMLCanvasElement): Renderer | null {
       renderer = createRenderer(gl, { mipmapSources: true })
     } catch (err) {
       console.error('OL Premiere: WebGL2 renderer init failed', err)
+      noPictureReasons.set(canvas, 'The graphics on this computer refused to start the preview')
       renderer = null
     }
   }

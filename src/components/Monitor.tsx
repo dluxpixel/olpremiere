@@ -16,7 +16,7 @@ import {
 import { useEffect, useRef, useState } from 'react'
 import { prewarmAudio } from '../engine/audio'
 import { setPreviewScale } from '../engine/frameCache'
-import { prewarmPreview, previewEpoch, renderPreview } from '../engine/preview'
+import { noPictureReason, prewarmPreview, previewEpoch, renderPreview } from '../engine/preview'
 import { recordPreviewTick } from '../engine/previewTruth'
 import { ensureProxies } from '../engine/proxyMedia'
 import { formatTimecode, quantizeToFrame } from '../engine/timecode'
@@ -118,6 +118,13 @@ const EXPORT_PREVIEW_FRAME_MS = 250
 /** rAF draw loop: reads the store imperatively so playback never re-renders React. */
 function useProgramCanvas(quality: Quality) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  /**
+   * Why the picture is black, when it is black for a reason the app can name.
+   * Null is the normal case. Set once, from the draw loop, the first time a
+   * draw finds there is nothing to draw with; it never clears, because a
+   * renderer that failed to start does not start later.
+   */
+  const [noPicture, setNoPicture] = useState<string | null>(null)
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
@@ -127,6 +134,7 @@ function useProgramCanvas(quality: Quality) {
     // faster than the redraw cap. A frame that's still decoding leaves
     // `prevComplete=false` so we keep polling until its exact frame lands.
     let lastDrawT = -Infinity
+    let reportedNoPicture = false
     // The previous rAF tick, which is how the cap learns the DISPLAY interval.
     // Recorded on every tick, before any early-out, or a parked frame would make
     // the next interval read as the whole time the preview sat still.
@@ -264,6 +272,17 @@ function useProgramCanvas(quality: Quality) {
         playing ? frameIdx / fps : s.ui.playheadS,
         playing,
       )
+      // ⛔ A BLACK MONITOR MUST SAY WHY. renderPreview returns "complete" on a
+      // canvas with no renderer, which is right for the polling loop and wrong
+      // for a person looking at a black rectangle. Read the reason once and put
+      // it on the picture, where the black is.
+      if (!reportedNoPicture) {
+        const why = noPictureReason(canvas)
+        if (why) {
+          reportedNoPicture = true
+          setNoPicture(why)
+        }
+      }
       if (prevComplete) pendingSinceT = 0
       else if (pendingSinceT === 0) pendingSinceT = now
       prevKey = key
@@ -275,7 +294,7 @@ function useProgramCanvas(quality: Quality) {
       ro.disconnect()
     }
   }, [quality])
-  return canvasRef
+  return { canvasRef, noPicture }
 }
 
 /**
@@ -412,7 +431,7 @@ export function Monitor() {
   // rather than sitting there looking like nothing happened.
   const [shooting, setShooting] = useState(false)
   const regionRef = useRef<HTMLDivElement>(null)
-  const canvasRef = useProgramCanvas(quality)
+  const { canvasRef, noPicture } = useProgramCanvas(quality)
 
   const stepFrames = (frames: number) => {
     pausePlayback()
@@ -453,6 +472,23 @@ export function Monitor() {
         <div className="relative flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden">
           <canvas ref={canvasRef} data-testid="program-canvas" className="rounded-[2px] bg-black" />
           {safeMargins && <SafeMargins canvas={canvasRef.current} />}
+          {/* The one honest thing to show over a picture that cannot be drawn.
+              It sits ON the monitor because the monitor is what looks broken;
+              a toast in the corner would vanish and leave the black behind. */}
+          {noPicture && (
+            <div
+              data-testid="no-picture"
+              role="status"
+              className="absolute inset-0 flex items-center justify-center p-6 text-center"
+            >
+              <div className="max-w-[28rem] rounded-field border border-border bg-bg-elevated/95 px-4 py-3 text-ui-sm text-text-primary shadow-lg">
+                <div className="font-medium">No picture: {noPicture}.</div>
+                <div className="mt-1 text-text-secondary">
+                  Your edit is safe and everything else still works. Updating the graphics driver usually fixes this.
+                </div>
+              </div>
+            </div>
+          )}
           {/* Click the picture to pause; every video player teaches this.
               (Paused, the overlay's select layer handles click/scrub instead.) */}
           {playing && (
