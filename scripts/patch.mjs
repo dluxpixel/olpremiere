@@ -20,7 +20,7 @@
 
 import { execFileSync, execSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
-import { isTransientFailure, loadToken, openShipLog, releaseWork, runLogged, SHIP_LOG } from './lib.mjs'
+import { isTransientFailure, loadToken, nextVersion, openShipLog, releaseWork, runLogged, SHIP_LOG } from './lib.mjs'
 
 const args = process.argv.slice(2)
 const fast = args.includes('--fast')
@@ -161,9 +161,16 @@ try {
 // The trailing `.0` is trimmed for HIM by `displayVersion` and never anywhere a
 // machine reads. The tag, the installer filename and the update feed stay true
 // three part semver, because electron-updater COMPARES those strings.
-const bump = process.argv.includes('--fix') ? 'patch' : 'minor'
-await run(`npm version ${bump} --no-git-tag-version`, `version bump (${bump})`)
-const version = JSON.parse(readFileSync('package.json', 'utf8')).version
+//
+// And the middle number stops at 39. His rule, 2026-09-14: 2.39 is followed by
+// 3.0, never 2.40, and 3.39 by 4.0. `nextVersion` in lib.mjs is the one place
+// that knows it, and `isBigUpdate` asks the same function, so the rollover
+// ships as the ordinary release it is rather than as a "big" one that opens a
+// window on his screen.
+const bump = process.argv.includes('--fix') ? 'fix' : 'minor'
+const current = JSON.parse(readFileSync('package.json', 'utf8')).version
+const version = nextVersion(current, bump)
+await run(`npm version ${version} --no-git-tag-version`, `version bump (${bump}): ${current} to ${version}`)
 
 execFileSync('git', ['add', '-A'], { stdio: 'inherit' })
 execFileSync('git', ['commit', '-m', `${message}\n\nReleased as v${version} by scripts/patch.mjs.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>`], {

@@ -103,6 +103,12 @@ const api: OlApi = {
   backupDir: () => ipcRenderer.invoke('backup:dir'),
   backupRead: (filePath: string) => ipcRenderer.invoke('backup:read', filePath),
   backupReveal: () => ipcRenderer.invoke('backup:reveal'),
+  projectWrite: (id: string, projectName: string, json: string) =>
+    ipcRenderer.invoke('project:write', id, projectName, json),
+  projectList: () => ipcRenderer.invoke('project:list'),
+  projectRead: (filePath: string) => ipcRenderer.invoke('project:read', filePath),
+  projectTrash: (id: string) => ipcRenderer.invoke('project:trash', id),
+  projectDir: () => ipcRenderer.invoke('project:dir'),
 }
 
 contextBridge.exposeInMainWorld('api', api)

@@ -7,7 +7,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { isBigUpdate, isTransientFailure, releaseWork, runLoggedRetry } from './lib.mjs'
+import { isBigUpdate, isTransientFailure, MINOR_ROLLOVER, nextVersion, releaseWork, runLoggedRetry } from './lib.mjs'
 
 /**
  * A command that fails `failures` times and then succeeds, printing `message`
@@ -159,6 +159,16 @@ describe('isBigUpdate', () => {
     expect(isBigUpdate('v2.9.9', '3.0.0')).toBe(true)
   })
 
+  // The rollover IS the ordinary ship, so it must not open a window on his
+  // screen. 2.50 is where his app actually stood when the rule arrived.
+  it('the rollover to a new front number is one ordinary step, not big', () => {
+    expect(isBigUpdate('v2.39.0', '3.0.0')).toBe(false)
+    expect(isBigUpdate('v2.50.0', '3.0.0')).toBe(false)
+    expect(isBigUpdate('v3.39.2', '4.0.0')).toBe(false)
+    // A major move that is NOT the rollover is still a big thing.
+    expect(isBigUpdate('v2.38.0', '3.0.0')).toBe(true)
+  })
+
   it('going BACKWARDS is still big, because something odd happened', () => {
     expect(isBigUpdate('v3.0.0', '2.9.0')).toBe(true)
   })
@@ -167,5 +177,37 @@ describe('isBigUpdate', () => {
     expect(isBigUpdate('', '1.0.0')).toBe(true)
     expect(isBigUpdate(null, '1.0.0')).toBe(true)
     expect(isBigUpdate('not-a-version', '1.0.0')).toBe(true)
+  })
+})
+
+// His rule, 2026-09-14: "let's say the version is 2.39, the second it hits 2.40,
+// it doesn't say 2.40, and it just goes to 3.0. Okay? same with 3.40 and so on."
+describe('nextVersion', () => {
+  it('an ordinary ship moves the middle number', () => {
+    expect(nextVersion('2.17.0', 'minor')).toBe('2.18.0')
+    expect(nextVersion('2.17.3', 'minor')).toBe('2.18.0')
+    expect(nextVersion('2.38.0', 'minor')).toBe('2.39.0')
+  })
+
+  it('⛔ 2.39 is followed by 3.0, never 2.40', () => {
+    expect(nextVersion('2.39.0', 'minor')).toBe('3.0.0')
+    expect(nextVersion('2.39.4', 'minor')).toBe('3.0.0')
+    expect(nextVersion('3.39.0', 'minor')).toBe('4.0.0')
+    expect(MINOR_ROLLOVER).toBe(40)
+  })
+
+  it('a version already past the line rolls over on its next ship, so 2.50 goes to 3.0', () => {
+    expect(nextVersion('2.50.0', 'minor')).toBe('3.0.0')
+  })
+
+  it('a fix moves the last number only and never rolls anything', () => {
+    expect(nextVersion('2.17.0', 'fix')).toBe('2.17.1')
+    expect(nextVersion('2.39.9', 'fix')).toBe('2.39.10')
+    expect(nextVersion('2.50.0', 'fix')).toBe('2.50.1')
+  })
+
+  it('refuses what it cannot read rather than inventing a number', () => {
+    expect(() => nextVersion('banana', 'minor')).toThrow()
+    expect(() => nextVersion('2.17.0', 'major')).toThrow()
   })
 })

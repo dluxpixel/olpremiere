@@ -135,24 +135,57 @@ export function isTransientFailure(output) {
  *
  *   2.17.0 -> 2.18.0   one step, an ordinary ship        no
  *   2.17.0 -> 2.17.1   a fix on top of one               no
+ *   2.39.0 -> 3.0.0    one step that rolled over         no
  *   2.0.18 -> 2.17.0   a seventeen step jump             yes
- *   2.9.0  -> 3.0.0    the major moved                   yes
+ *   2.9.0  -> 3.0.0    the major moved on its own        yes
  *   3.0.0  -> 2.9.0    backwards, so something is wrong  yes
+ *
+ * "Ordinary" is defined in one place, `nextVersion`: a step is ordinary when it is
+ * exactly what an ordinary ship or a fix would have produced from the previous tag.
+ * So the rollover at 40 (below) is ordinary, because it IS the ordinary ship.
  *
  * An unparseable or missing previous tag counts as big, because "I do not know what
  * changed" deserves the stronger check rather than the weaker one.
  */
 export function isBigUpdate(prevTag, version) {
-  const parse = (s) => {
-    const m = /(\d+)\.(\d+)\.(\d+)/.exec(String(s ?? ''))
-    return m ? { major: Number(m[1]), minor: Number(m[2]) } : null
-  }
-  const prev = parse(prevTag)
-  const next = parse(version)
+  const prev = parseVersion(prevTag)
+  const next = parseVersion(version)
   if (!prev || !next) return true
-  if (next.major !== prev.major) return true
-  const step = next.minor - prev.minor
-  return step < 0 || step > 1
+  const asString = `${next.major}.${next.minor}.${next.patch}`
+  return asString !== nextVersion(prev, 'minor') && asString !== nextVersion(prev, 'fix')
+}
+
+export function parseVersion(s) {
+  const m = /(\d+)\.(\d+)\.(\d+)/.exec(String(s ?? ''))
+  return m ? { major: Number(m[1]), minor: Number(m[2]), patch: Number(m[3]) } : null
+}
+
+/**
+ * The middle number never reaches 40. His rule, 2026-09-14: *"when it goes up,
+ * let's say the version is 2.39, the second it hits 2.40, it doesn't say 2.40,
+ * and it just goes to 3.0. Okay? same with 3.40 and so on."*
+ */
+export const MINOR_ROLLOVER = 40
+
+/**
+ * The version an ordinary ship (`minor`) or a fix (`fix`) produces from `current`.
+ *
+ * An ordinary ship moves the middle number: 2.17.0 becomes 2.18.0. When that
+ * would reach MINOR_ROLLOVER the front number moves instead and the rest reset:
+ * 2.39.0 becomes 3.0.0, and 3.39.x becomes 4.0.0. A fix moves the last number
+ * only and never rolls anything: 2.17.0 becomes 2.17.1.
+ *
+ * Takes a version string or a parsed one. Returns a plain three part string,
+ * the only shape electron-updater compares.
+ */
+export function nextVersion(current, kind) {
+  const v = typeof current === 'string' ? parseVersion(current) : current
+  if (!v) throw new Error(`cannot bump "${current}": not a version`)
+  if (kind === 'fix') return `${v.major}.${v.minor}.${v.patch + 1}`
+  if (kind !== 'minor') throw new Error(`unknown bump "${kind}"`)
+  const minor = v.minor + 1
+  if (minor >= MINOR_ROLLOVER) return `${v.major + 1}.0.0`
+  return `${v.major}.${minor}.0`
 }
 
 export function releaseWork({ dirty, unpushed, unreleased }) {

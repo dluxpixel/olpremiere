@@ -11,6 +11,7 @@ import { mkdir, readFile } from 'node:fs/promises'
 import { existsSync, renameSync } from 'node:fs'
 import path from 'node:path'
 import * as backups from './backups'
+import * as projectFiles from './projectFiles'
 import type { NativeExportConfig, UpdateStatus } from './ipc-types'
 import {
   SPLASH_MELON_POP_MS,
@@ -94,6 +95,12 @@ const APP_ORIGIN_HOST = IS_LAB ? 'olpremierelab' : 'olpremiere'
 
 /** The main window, so native-export handlers can target it (save dialog, progress). */
 let mainWindow: BrowserWindow | null = null
+/** Set once an update install has begun closing the window. See 'update:install'. */
+let installing = false
+/** After the window is gone, how long the engine gets to finish writing before the installer runs. */
+const INSTALL_FLUSH_MS = 1500
+/** How long to wait for the window to close before installing the old way regardless. */
+const INSTALL_CLOSE_TIMEOUT_MS = 5000
 
 /**
  * The splash: its own frameless, transparent, always-on-top window, floating over
@@ -602,6 +609,21 @@ app.whenReady().then(() => {
     await shell.openPath(dir)
   })
 
+  // --- Project files ----------------------------------------------------------
+  // One file per project, current on every save. See electron/projectFiles.ts
+  // for why the browser store stopped being the only copy.
+  ipcMain.handle('project:write', (_e, id: string, projectName: string, json: string) =>
+    projectFiles.writeProjectFile(id, projectName, json),
+  )
+  ipcMain.handle('project:list', () => projectFiles.listProjectFiles())
+  ipcMain.handle('project:read', async (_e, filePath: string) => {
+    // Same guard as backup:read, same reason: main reads back only what it wrote.
+    if (!projectFiles.isProjectFilePath(filePath)) throw new Error('Refused: not a project file')
+    return readFile(filePath, 'utf8')
+  })
+  ipcMain.handle('project:trash', (_e, id: string) => projectFiles.trashProjectFile(id))
+  ipcMain.handle('project:dir', () => projectFiles.projectDir())
+
   // Whatever ends the app (user quit, or an auto-update install), never leave a
   // native ffmpeg child orphaned or its temp files behind. before-quit can't await,
   // so use the synchronous teardown (SIGKILL + unlinkSync) rather than the async
@@ -823,7 +845,39 @@ app.whenReady().then(() => {
     // version once it lands, so the app he was using comes back on its own. With
     // the defaults, updating meant an installer window and a Finish button, which
     // is the thing he asked to be rid of.
-    ipcMain.on('update:install', () => autoUpdater.quitAndInstall(true, true))
+    //
+    // ⛔ THE WINDOW CLOSES FIRST, AND THE INSTALLER IS NOT SPAWNED UNTIL IT HAS.
+    // quitAndInstall starts the installer and quits in the same breath, and the
+    // installer gives a running app a few seconds before it kills it. The
+    // browser engine closes its databases during that quit. A kill that lands
+    // inside that close leaves a half written database, and the engine's answer
+    // to a half written database is to throw it away and start a new one. That
+    // is the leading explanation for the four times his projects vanished
+    // (2026-07-26, 08-19, 08-23, and once between 08-24 and 09-12), each one on
+    // or near an update. It is not proven from here. What is certain is that a
+    // window that has already closed has no database open to be killed.
+    //
+    // So: close the window, wait for it to be gone, give the engine a moment to
+    // finish writing, and only then install. If the window will not close (an
+    // export he chose to restart through anyway), fall back to the old path
+    // after five seconds rather than leave the update stuck.
+    ipcMain.on('update:install', () => {
+      const win = mainWindow
+      if (!win || win.isDestroyed()) {
+        autoUpdater.quitAndInstall(true, true)
+        return
+      }
+      installing = true
+      let done = false
+      const go = (): void => {
+        if (done) return
+        done = true
+        autoUpdater.quitAndInstall(true, true)
+      }
+      win.once('closed', () => setTimeout(go, INSTALL_FLUSH_MS))
+      setTimeout(go, INSTALL_CLOSE_TIMEOUT_MS)
+      win.close()
+    })
     setUpdateStatus({ kind: 'checking' })
     void autoUpdater.checkForUpdatesAndNotify()
     const FIFTEEN_MIN = 15 * 60 * 1000
@@ -846,5 +900,9 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
+  // An update install closes the window itself and quits through quitAndInstall,
+  // which relaunches the app afterwards. A plain quit here would install too
+  // (autoInstallOnAppQuit) but would NOT bring the app back.
+  if (installing) return
   if (process.platform !== 'darwin') app.quit()
 })

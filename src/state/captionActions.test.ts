@@ -312,6 +312,24 @@ describe('laying a caption run stays linear in the word count', () => {
   // doubling the words must not much more than double the cost.
   const BUDGET_MS = 300
   const MAX_DOUBLING_COST = 3
+  /**
+   * How many times each size is timed. The reading kept is the FASTEST.
+   *
+   * ⛔ ONE TIMING OF EACH SIZE COULD NOT TELL HEALTHY-UNDER-LOAD FROM BROKEN,
+   * and the comment above says so without noticing: it records that DISABLING the
+   * one-pass path gives ratio 3.2, against a threshold of 3. On 2026-09-13 the
+   * ship gate measured **3.224 on the healthy code**, because `half` and `full`
+   * were timed once each, at different moments, while a full browser suite ran
+   * beside them. A garbage-collection pause landing inside one of the two moves
+   * the ratio further than the bug this guard exists to catch.
+   *
+   * Three, not more: this test got to five while it was being fixed and the extra
+   * timings pushed two other timing-sensitive tests in the suite past their own
+   * limits. The minimum of three runs is the least-contaminated sample: noise only ever
+   * makes a run slower, never faster. A genuine O(N^2 log N) shape cannot be
+   * hidden by it, because the quadratic cost is in every run including the best.
+   */
+  const TIMED_RUNS = 3
 
   const speech = (n: number): CaptionWord[] =>
     Array.from({ length: n }, (_, i) => ({ text: `w${i}`, startS: i * 0.4, endS: i * 0.4 + 0.35 }))
@@ -328,11 +346,23 @@ describe('laying a caption run stays linear in the word count', () => {
 
   it('lays 6000 words, about 40 minutes of talking, without the cost squaring', () => {
     timeRun(500) // warm up, so the first real run is not paying for the JIT
-    const half = timeRun(3000)
-    const full = timeRun(6000)
+    // ⛔ INTERLEAVED, NOT ONE BLOCK EACH. Timing all the 3000s and then all the
+    // 6000s lets a slow STRETCH of the machine land entirely on one side and
+    // move the ratio on its own. Alternating makes both sizes share whatever the
+    // machine is doing.
+    const halves: number[] = []
+    const fulls: number[] = []
+    for (let i = 0; i < TIMED_RUNS; i++) {
+      halves.push(timeRun(3000))
+      fulls.push(timeRun(6000))
+    }
+    const half = Math.min(...halves)
+    const full = Math.min(...fulls)
 
     expect(full).toBeLessThan(BUDGET_MS)
-    expect(full / half).toBeLessThan(MAX_DOUBLING_COST)
+    expect(full / half, `ratio ${(full / half).toFixed(2)} from ${half.toFixed(1)}ms and ${full.toFixed(1)}ms`).toBeLessThan(
+      MAX_DOUBLING_COST,
+    )
 
     const top = videoTracks(seq())[videoTracks(seq()).length - 1]
     expect(top.clips).toHaveLength(6000)

@@ -143,11 +143,21 @@ async function animate(page: Page, channel: string, from: number, to: number): P
 }
 
 /** Flip motion blur off and let the preview repaint. */
+/**
+ * The four frame settings live behind the Frame button since 2026-09-13: the bar
+ * under the picture held eleven controls in an overflow-hidden cell and clipped
+ * them off the end. Opening the menu is what a person now does, so the specs do
+ * it too rather than reaching past the interface.
+ */
 async function blurOff(page: Page): Promise<void> {
-  await page.getByTestId('motion-blur-toggle').click()
-  // The toggle's own lit state is the readout now: the shutter angle BOX was cut
-  // on 2026-08-19 as clutter in the strip he reads at a glance.
-  await expect(page.getByTestId('motion-blur-toggle')).not.toHaveClass(/bg-accent-quiet/)
+  await page.getByTestId('frame-settings-button').click()
+  const toggle = page.getByTestId('motion-blur-toggle')
+  await expect(toggle).toBeVisible()
+  await toggle.setChecked(false)
+  // The checkbox itself is the readout: the shutter angle BOX was cut on
+  // 2026-08-19 as clutter in the strip he reads at a glance.
+  await expect(toggle).not.toBeChecked()
+  await page.keyboard.press('Escape')
   await page.waitForTimeout(400)
 }
 
@@ -155,10 +165,11 @@ test('the control is there and starts at the film standard', async ({ page }) =>
   await page.goto('/')
   await page.getByTestId('add-title').click()
   await expect(page.getByTestId('clip')).toHaveCount(1)
+  await page.getByTestId('frame-settings-button').click()
   await expect(page.getByTestId('motion-blur-toggle')).toBeVisible()
   // ON by default. If this fails, the feature exists and changes nothing he sees.
-  // Read off the toggle, because the degrees box was cut on 2026-08-19.
-  await expect(page.getByTestId('motion-blur-toggle')).toHaveClass(/bg-accent-quiet/)
+  // Read off the checkbox, because the degrees box was cut on 2026-08-19.
+  await expect(page.getByTestId('motion-blur-toggle')).toBeChecked()
 })
 
 test('a fast slide smears, and switching motion blur off makes it sharp again', async ({ page }) => {

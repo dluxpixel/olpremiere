@@ -196,9 +196,15 @@ test('title text is drawn (bright strokes) in preview and export', async ({ page
 test('safe-margins overlay toggles in the monitor', async ({ page }) => {
   await addTitle(page)
   await expect(page.getByTestId('safe-margins')).toHaveCount(0)
-  await page.getByTestId('safe-margins-toggle').click()
+  // Behind the Frame button since 2026-09-13, with the other three settings
+  // that are set once per short rather than touched while editing.
+  await page.getByTestId('frame-settings-button').click()
+  await page.getByTestId('safe-margins-toggle').setChecked(true)
+  await page.keyboard.press('Escape')
   await expect(page.getByTestId('safe-margins')).toBeVisible()
   await page.screenshot({ path: `${VERIFY}/safe-margins.png` })
-  await page.getByTestId('safe-margins-toggle').click()
+  await page.getByTestId('frame-settings-button').click()
+  await page.getByTestId('safe-margins-toggle').setChecked(false)
+  await page.keyboard.press('Escape')
   await expect(page.getByTestId('safe-margins')).toHaveCount(0)
 })

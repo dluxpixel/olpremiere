@@ -311,6 +311,28 @@ export interface OlApi {
   backupRead(filePath: string): Promise<string>
   /** Open the backup folder in Explorer. */
   backupReveal(): Promise<void>
+
+  /**
+   * The project as a plain file, kept current on every save (electron/projectFiles.ts).
+   * The browser store is a cache of these; when it is gone, these are the store.
+   */
+  projectWrite(id: string, projectName: string, json: string): Promise<string>
+  /** Every project file, newest first, one per project id. */
+  projectList(): Promise<ProjectFileEntry[]>
+  /** Read one back. Only paths inside the project folder are allowed. */
+  projectRead(filePath: string): Promise<string>
+  /** His delete: the file moves into Trash, it is never unlinked. */
+  projectTrash(id: string): Promise<number>
+  /** The folder, for telling him where his projects are. */
+  projectDir(): Promise<string>
+}
+
+export interface ProjectFileEntry {
+  id: string
+  name: string
+  path: string
+  updatedAt: number
+  sizeBytes: number
 }
 
 export interface BackupEntry {

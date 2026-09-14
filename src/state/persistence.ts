@@ -2,6 +2,7 @@
 // IndexedDB. Nothing ever leaves the machine.
 
 import { openDB, type IDBPDatabase } from 'idb'
+import { diskApi, healStoreFromDisk, trashProjectOnDisk, writeProjectToDisk } from './diskProjects'
 import { blobKeysOnlyUsedBy } from '../engine/blobGc'
 import { migrateProjectEffects } from '../engine/effects/migrate'
 import { markDoNotAutoRecover } from './recoveryMemory'
@@ -42,13 +43,52 @@ export async function saveProject(p: Project): Promise<void> {
   void tx.objectStore('projects').put(p, p.id)
   void tx.objectStore('meta').put(p.id, 'lastProjectId')
   await tx.done
+  // ⛔ AND THE FILE, EVERY TIME. The store above is the one the engine has
+  // rebuilt under him four times. The file in Documents is the copy that
+  // survives that, and a save is not a save until it is there too. Rejects
+  // when the file cannot be written, so the caller shows "Could not save"
+  // rather than a green Saved over a copy that only exists in the store.
+  await writeProjectToDisk(p)
+}
+
+/**
+ * Put back every project whose file is on disk but whose record is not in the
+ * store. Runs before the store is read at boot and before every listing, so a
+ * store the engine has rebuilt is refilled before anything can notice it was
+ * empty. Cheap when nothing is missing: one folder listing, one key listing.
+ */
+async function healFromDisk(): Promise<string[]> {
+  const api = diskApi()
+  if (!api) return []
+  const d = await db()
+  const { names } = await healStoreFromDisk(
+    api,
+    async () => new Set((await d.getAllKeys('projects')).map(String)),
+    async (project) => {
+      await d.put('projects', project, project.id)
+    },
+  )
+  if (names.length > 0) console.log(`OL Premiere: put ${names.length} project(s) back from their files: ${names.join(', ')}`)
+  return names
 }
 
 export async function loadLastProject(): Promise<Project | null> {
+  await healFromDisk()
   const d = await db()
   const id = (await d.get('meta', 'lastProjectId')) as string | undefined
-  if (!id) return null
-  return loadProjectById(id)
+  if (id) {
+    const p = await loadProjectById(id)
+    if (p) return p
+  }
+  // The pointer lives in the same store as the projects, so after a rebuild it
+  // is gone even though the projects have just been put back. Open the newest
+  // one he was working on rather than a blank Untitled Project over the top of
+  // it, which is exactly what he saw every time it happened.
+  const all = (await d.getAll('projects')) as Project[]
+  const newest = all
+    .filter((p) => p && !p.archivedAt)
+    .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))[0]
+  return newest ? loadProjectById(newest.id) : null
 }
 
 /** Load one project by id (projects are keyed individually, so a collab join
@@ -144,6 +184,7 @@ export interface ProjectSummary {
 }
 
 export async function listProjects(): Promise<ProjectSummary[]> {
+  await healFromDisk()
   const d = await db()
   const all = (await d.getAll('projects')) as Project[]
   return all
@@ -204,6 +245,7 @@ export async function setProjectLater(id: string, later: boolean): Promise<void>
   if (later) next.laterAt = Date.now()
   else delete next.laterAt
   await d.put('projects', next, id)
+  await writeProjectToDisk(next)
   stampOpenProject(id, 'laterAt', later)
 }
 
@@ -242,6 +284,7 @@ export async function setProjectArchived(id: string, archived: boolean): Promise
   // The 'projects' store uses OUT-OF-LINE keys, so the id must be passed. Without
   // it, put() throws DataError and the archive silently does nothing.
   await d.put('projects', next, id)
+  await writeProjectToDisk(next)
   stampOpenProject(id, 'archivedAt', archived)
 }
 
@@ -283,6 +326,10 @@ export async function deleteProject(id: string): Promise<void> {
   // identical from the outside, and an app that puts back work he binned would
   // be arguing with him rather than protecting him.
   markDoNotAutoRecover([id])
+  // The file goes to Trash rather than being unlinked. If this fails the
+  // project comes back on the next listing and he deletes it again, which is
+  // the right way round for a mistake.
+  await trashProjectOnDisk(id)
 }
 
 /**
@@ -376,7 +423,17 @@ export function initPersistence(): Promise<void> {
     // ignore
   }
 
-  const hydrated = loadLastProject()
+  // The files come back before the store is read, and he is told when they did:
+  // a project that is simply there again is the point, but a blank app that
+  // silently refilled itself is the kind of quiet that made him stop trusting it.
+  const hydrated = healFromDisk()
+    .then((names) => {
+      if (names.length > 0) {
+        const what = names.length === 1 ? `${names[0]} came back from its file` : `${names.length} projects came back from their files`
+        useToasts.getState().show(what, 'success', undefined, { durationMs: 10_000 })
+      }
+      return loadLastProject()
+    })
     .then((p) => {
       const s = useStore.getState()
       // Only hydrate if the user hasn't already started editing.

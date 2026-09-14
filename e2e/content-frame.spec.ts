@@ -50,6 +50,20 @@ async function setup(page: Page): Promise<void> {
   await expect.poll(async () => lit(await pixel(page, 0.5, 0.5)), { timeout: 15_000 }).toBe(true)
 }
 
+/**
+ * The four frame settings live behind the Frame button since 2026-09-13: the bar
+ * under the picture held eleven controls in an overflow-hidden cell and clipped
+ * them off the end. Opening the menu is what a person now does, so the specs do
+ * it too rather than reaching past the interface.
+ */
+async function setInner(page: Page, value: string): Promise<void> {
+  await page.getByTestId('frame-settings-button').click()
+  await page.getByTestId('content-aspect-select').selectOption(value)
+  // Custom leaves the menu OPEN on purpose: the caller still has to type a
+  // ratio into the field that entry reveals.
+  if (value !== '__customContent') await page.keyboard.press('Escape')
+}
+
 /** Zoom the one clip, so the picture wants to cover the whole 9:16 frame. */
 async function zoom(page: Page, scale: number): Promise<void> {
   await page.evaluate(async (scale) => {
@@ -83,7 +97,7 @@ test('a square inner frame keeps the bands black even under a zoom', async ({ pa
   // Now the square. Same zoom, same frame, and the top band must go dark: a
   // 1:1 box in a 1080x1920 frame runs from y 420 to y 1500, so 0.1 down is
   // outside it.
-  await page.getByTestId('content-aspect-select').selectOption('1:1')
+  await setInner(page, '1:1')
   await expect.poll(async () => lit(await pixel(page, 0.5, 0.1)), { timeout: 15_000 }).toBe(false)
 
   const band = await pixel(page, 0.5, 0.1)
@@ -98,12 +112,12 @@ test('a square inner frame keeps the bands black even under a zoom', async ({ pa
 test('clearing the inner frame gives the whole frame back', async ({ page }) => {
   await setup(page)
   await zoom(page, 3)
-  await page.getByTestId('content-aspect-select').selectOption('1:1')
+  await setInner(page, '1:1')
   await expect.poll(async () => lit(await pixel(page, 0.5, 0.1)), { timeout: 15_000 }).toBe(false)
 
   // ⛔ THE UNIFORM IS PER-PROGRAM STATE. If it were only ever set and never
   // cleared, the box would outlive the setting and keep cropping.
-  await page.getByTestId('content-aspect-select').selectOption('full')
+  await setInner(page, 'full')
   await expect.poll(async () => lit(await pixel(page, 0.5, 0.1)), { timeout: 15_000 }).toBe(true)
 })
 
@@ -113,17 +127,18 @@ test('a typed ratio is honoured, and it is not the preset rounded off', async ({
 
   // A square first, so the row below has a known reading to differ from. Its
   // box runs 420..1500 in a 1080x1920 frame, so 19% down is in the top band.
-  await page.getByTestId('content-aspect-select').selectOption('1:1')
+  await setInner(page, '1:1')
   await expect.poll(async () => lit(await pixel(page, 0.5, 0.19)), { timeout: 15_000 }).toBe(false)
 
   // Now 4:5 typed by hand. Its box runs 285..1635, so the SAME point is now
   // inside the picture. A custom ratio that quietly fell back to a preset, or
   // to no frame at all, cannot produce this pair of readings.
-  await page.getByTestId('content-aspect-select').selectOption('__customContent')
+  await setInner(page, '__customContent')
   const field = page.getByTestId('content-aspect-custom')
   await expect(field).toBeVisible()
   await field.fill('4:5')
   await field.press('Enter')
+  await page.keyboard.press('Escape')
 
   await expect.poll(async () => lit(await pixel(page, 0.5, 0.19)), { timeout: 15_000 }).toBe(true)
   // ...and 10% down is still band, so it really is a frame and not a clearing.
@@ -133,13 +148,14 @@ test('a typed ratio is honoured, and it is not the preset rounded off', async ({
 test('nonsense in the ratio field leaves his frame alone', async ({ page }) => {
   await setup(page)
   await zoom(page, 3)
-  await page.getByTestId('content-aspect-select').selectOption('1:1')
+  await setInner(page, '1:1')
   await expect.poll(async () => lit(await pixel(page, 0.5, 0.1)), { timeout: 15_000 }).toBe(false)
 
-  await page.getByTestId('content-aspect-select').selectOption('__customContent')
+  await setInner(page, '__customContent')
   const field = page.getByTestId('content-aspect-custom')
   await field.fill('wide please')
   await field.press('Enter')
+  await page.keyboard.press('Escape')
 
   // ⛔ SILENTLY CLEARING THE FRAME IS THE FAILURE THIS GUARDS. A typo must cost
   // him a retype, never the framing he already set.

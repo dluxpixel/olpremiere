@@ -29,13 +29,20 @@ async function rowMaxLuma(page: Page, fy: number): Promise<number> {
   }, fy)
 }
 
+/**
+ * The four frame settings live behind the Frame button since 2026-09-13: the bar
+ * under the picture held eleven controls in an overflow-hidden cell and clipped
+ * them off the end. Opening the menu is what a person now does, so the specs do
+ * it too rather than reaching past the interface.
+ */
 async function setBlurBackground(page: Page, on: boolean): Promise<void> {
+  await page.getByTestId('frame-settings-button').click()
   const toggle = page.getByTestId('blur-background-toggle')
-  // IconButton omits aria-pressed entirely when it is off rather than writing
-  // "false", so absent IS off and a plain string compare gets it backwards.
-  const isOn = async (): Promise<boolean> => (await toggle.getAttribute('aria-pressed')) === 'true'
-  if ((await isOn()) !== on) await toggle.click()
-  expect(await isOn()).toBe(on)
+  await expect(toggle).toBeVisible()
+  if ((await toggle.isChecked()) !== on) await toggle.setChecked(on)
+  expect(await toggle.isChecked()).toBe(on)
+  await page.keyboard.press('Escape')
+  await expect(page.getByTestId('frame-settings-menu')).toHaveCount(0)
 }
 
 test('the blurred background fills the bars a wide clip leaves in a Shorts frame', async ({ page }) => {

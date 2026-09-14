@@ -23,52 +23,12 @@
 
 import { listProjects, loadProjectById } from './persistence'
 import { useStore } from './store'
-import type { Project } from '../engine/types'
 
 /** Quiet period between backups. Frequent enough to lose only minutes of work. */
 const INTERVAL_MS = 2 * 60 * 1000
 
-/** What a backup file contains. Versioned so a future reader can adapt. */
-export interface BackupFile {
-  kind: 'ol-premiere-backup'
-  version: 1
-  savedAt: string
-  appVersion: string
-  /** The project document, media stripped. */
-  project: Project
-  /** Asset id -> file name, so a restore can name the files to re-import. */
-  mediaNames: Record<string, string>
-}
-
-/**
- * Collect each asset's file name for the restore message.
- *
- * Nothing needs stripping: an asset record holds only metadata and `blobKey` /
- * `thumbnailKey`, which are POINTERS into local storage, never the bytes. So the
- * document is already small and already media-free, and the whole project
- * serialises to tens of kilobytes. The keys are kept deliberately: after a
- * restore they still resolve if the media survived, and only need re-importing
- * if it did not.
- */
-export function mediaNamesOf(project: Project): Record<string, string> {
-  const names: Record<string, string> = {}
-  for (const [id, a] of Object.entries(project.assets ?? {})) {
-    if (a) names[id] = a.name ?? id
-  }
-  return names
-}
-
-export function serialize(project: Project, appVersion: string): string {
-  const payload: BackupFile = {
-    kind: 'ol-premiere-backup',
-    version: 1,
-    savedAt: new Date().toISOString(),
-    appVersion,
-    project,
-    mediaNames: mediaNamesOf(project),
-  }
-  return JSON.stringify(payload)
-}
+export { mediaNamesOf, serialize, type BackupFile } from './backupFormat'
+import { serialize } from './backupFormat'
 
 let timer: number | null = null
 let lastWritten = ''

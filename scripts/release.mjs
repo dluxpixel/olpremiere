@@ -1,10 +1,10 @@
 // One-command release: build the desktop app, then publish it to GitHub Releases
 // (via scripts/publish.mjs, which generates latest.yml + uploads reliably). Every
 // installed copy then auto-updates. Usage:
-//   1. bump the version:  npm version patch --no-git-tag-version
-//   2. ship it:           GH_TOKEN=<token> npm run release
-// Or in one go:           GH_TOKEN=<token> npm run release:patch
-// (Claude runs this when you say "ship it".)
+//   the whole thing:      npm run patch -- "<message>"   (scripts/patch.mjs, which bumps
+//                         the version by his rule, commits, pushes, then runs this)
+//   repair after a push:  npm run release            (version already bumped and committed)
+// Never `npm version` by hand: the middle number stops at 39 (lib.mjs nextVersion).
 
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
