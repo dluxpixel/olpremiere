@@ -334,6 +334,45 @@ export async function autoCaptionFromClip(clipId: string, preset?: TextStylePres
 }
 
 /**
+ * Listen to ONE clip and hand back its words on the timeline, through the same
+ * doors, toasts and tidy up as Auto-caption, but WITHOUT laying captions down.
+ * The Words panel keeps what it hears on the media (transcriptActions.ts), so
+ * this is the one listening that both captions and cutting by words share.
+ * Null when the run was refused, cancelled, or heard nothing.
+ */
+export async function listenToClip(clipId: string): Promise<CaptionWord[] | null> {
+  const toasts = useToasts.getState()
+  if (useTranscribe.getState().status !== 'idle') {
+    toasts.show('A transcription is already running', 'danger')
+    return null
+  }
+  const s = useStore.getState()
+  const seq = activeSequence(s.project)
+  const clip = seq.tracks.flatMap((t) => t.clips).find((c) => c.id === clipId)
+  const asset = clip ? s.project.assets[clip.assetId] : undefined
+  if (!clip || !asset?.hasAudio) {
+    toasts.show('That clip has no sound to listen to', 'danger')
+    return null
+  }
+  try {
+    const words = await wordsForClip(clip, asset)
+    if (words.length === 0) {
+      toasts.show('No speech found in the clip', 'danger')
+      return null
+    }
+    return words
+  } catch (err) {
+    if (!isCancel(err)) {
+      toasts.show(captionFailureMessage(err), 'danger')
+      console.error('listen for words:', err)
+    }
+    return null
+  } finally {
+    reset()
+  }
+}
+
+/**
  * Caption EVERY clip on the timeline in one action.
  *
  * His ask, 2026-07-28: "I want it so that I can select an option that adds

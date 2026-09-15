@@ -48,6 +48,20 @@ export interface MediaAsset {
   /** IndexedDB key of the cached poster frame. */
   thumbnailKey?: string
   codec?: string
+  /**
+   * What the media says, in SOURCE seconds, once a clip of it has been listened
+   * to (state/transcriptActions.ts). Sorted by startS. A clip maps these onto
+   * the timeline through its own in point and speed (engine/transcriptCut.ts),
+   * so every clip cut from the same file shares one listening.
+   */
+  words?: SpokenWord[]
+}
+
+/** One spoken word, in source seconds. The same shape the recogniser hands back. */
+export interface SpokenWord {
+  text: string
+  startS: number
+  endS: number
 }
 
 export interface Sequence {

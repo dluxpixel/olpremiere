@@ -8,8 +8,9 @@ import { overlapCrossfadeS, trimIntoNeighbour } from '../engine/overlapCrossfade
 import { transitionMarkSpans } from '../engine/transitionMarks'
 import { workArea } from '../engine/workArea'
 import { applyEffect, removeClipTransition, setClipTransition } from '../state/clipEdits'
-import { ASSET_MIME, SFX_MIME } from '../state/dnd'
+import { ASSET_MIME, SFX_MIME, TITLE_MIME } from '../state/dnd'
 import { insertSfxAtPlayhead } from '../state/sfxActions'
+import { addTitleFromShelf } from '../state/titleActions'
 import { comboLabel } from '../keymap'
 import { activeSequence, audioTracks, videoTracks, type Clip, type Id, type Sequence, type Track } from '../engine/types'
 import { pausePlayback } from '../state/playbackControl'
@@ -1218,7 +1219,8 @@ export function Timeline({ height }: { height: number }) {
   const handleDragOver = (e: DragEvent<HTMLDivElement>) => {
     const isAsset = e.dataTransfer.types.includes(ASSET_MIME)
     const isSfx = e.dataTransfer.types.includes(SFX_MIME)
-    if (!isAsset && !isSfx) return
+    const isTitle = e.dataTransfer.types.includes(TITLE_MIME)
+    if (!isAsset && !isSfx && !isTitle) return
     e.preventDefault()
     e.dataTransfer.dropEffect = 'copy'
     // Bin drags edge-scroll too (the loop only scrolls here - the preview line
@@ -1227,7 +1229,7 @@ export function Timeline({ height }: { height: number }) {
     maybeEdgeScroll()
     const { x, y } = contentPoint(e)
     const lane = laneAt(y)
-    if (!lane || (isSfx && lane.kind !== 'audio')) {
+    if (!lane || (isSfx && lane.kind !== 'audio') || (isTitle && lane.kind !== 'video')) {
       setDropPreview(null)
       return
     }
@@ -1239,10 +1241,21 @@ export function Timeline({ height }: { height: number }) {
   const handleDrop = (e: DragEvent<HTMLDivElement>) => {
     const sfxId = e.dataTransfer.getData(SFX_MIME)
     const assetId = e.dataTransfer.getData(ASSET_MIME)
+    const lookId = e.dataTransfer.getData(TITLE_MIME)
     stopEdgeScroll()
     lastDragPointer.current = null
     setDropPreview(null)
     setSnapIndicatorT(null)
+    // A shelf title lands at the drop time, on the track every title goes to.
+    if (lookId) {
+      e.preventDefault()
+      const { x } = contentPoint(e)
+      const tRaw = quantizeToFrame(Math.max(0, x / pxPerS), seq.fps)
+      const points = snapping ? collectSnapPoints(seq, { playheadS: useStore.getState().ui.playheadS }) : []
+      const t = snapping ? snapTime(tRaw, points, SNAP_PX / pxPerS).t : tRaw
+      addTitleFromShelf(lookId, t)
+      return
+    }
     // A dragged SFX lands on the hovered audio lane at the drop time.
     if (sfxId) {
       e.preventDefault()

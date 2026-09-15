@@ -8,6 +8,8 @@ export const ASSET_MIME = 'application/x-olpremiere-asset'
 export const EFFECT_MIME = 'application/x-olpremiere-effect'
 export const TRANSITION_MIME = 'application/x-olpremiere-transition'
 export const SFX_MIME = 'application/x-olpremiere-sfx'
+/** A ready made title off the shelf (titleShelf.ts), dropped onto the timeline at a time. */
+export const TITLE_MIME = 'application/x-olpremiere-title'
 /**
  * An effect CARD being dragged within one clip's stack, to reorder it.
  *

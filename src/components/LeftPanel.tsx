@@ -6,14 +6,17 @@ import { SFX_LIBRARY, type SfxDef } from '../engine/sfx/sfx'
 import { formatTimecode } from '../engine/timecode'
 import { activeSequence, type MediaAsset } from '../engine/types'
 import { useBlobUrl } from '../state/blobUrls'
+import { addTitleFromShelf } from '../state/titleActions'
+import { TITLE_SHELF } from '../state/titleShelf'
 import { useHoverScrub } from './useHoverScrub'
+import { WordsTab } from './WordsTab'
 import { createArmedDelete, type ArmedDelete } from './armedDelete'
 import { CaptionsDialog } from './CaptionsDialog'
 import { applyEffectToAllClips } from '../state/bulkEdits'
 import { applyEffectToClips } from '../state/bulkEdits'
 import { setClipTransition } from '../state/clipEdits'
 import { openContextMenu, type MenuItem } from '../state/contextMenu'
-import { ASSET_MIME, EFFECT_MIME, SFX_MIME, TRANSITION_MIME } from '../state/dnd'
+import { ASSET_MIME, EFFECT_MIME, SFX_MIME, TITLE_MIME, TRANSITION_MIME } from '../state/dnd'
 import {
   addLibraryItemToProject,
   applyPresetToAllClips,
@@ -648,7 +651,8 @@ function EffectsTab() {
   // whip live on the clip right-click Motion submenu, the P key, and (with a
   // depth control) the Inspector's PunchControl - this was a fourth, least
   // capable surface for the same verbs.
-  const empty = effects.length === 0 && transitions.length === 0 && !showLook
+  const titles = TITLE_SHELF.filter((l) => matchesQuery(query, l.name, 'title'))
+  const empty = effects.length === 0 && transitions.length === 0 && !showLook && titles.length === 0
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -675,6 +679,27 @@ function EffectsTab() {
           <div className="px-2 py-6 text-center text-[11px] text-text-muted">No match for &ldquo;{query}&rdquo;</div>
         ) : (
           <>
+            {titles.length > 0 && (
+              <section className="mb-2">
+                <h3 className="px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">
+                  Titles
+                </h3>
+                {/* Ready made titles (state/titleShelf.ts): double click or Enter
+                    adds one at the playhead, a drag lands it at the drop time. */}
+                {titles.map((l) => (
+                  <BrowserItem
+                    key={l.id}
+                    testId="title-item"
+                    name={l.name}
+                    title={l.hint}
+                    mime={TITLE_MIME}
+                    payload={l.id}
+                    onApply={() => addTitleFromShelf(l.id)}
+                    menu={[{ label: 'Add at playhead', shortcut: 'Enter', onClick: () => addTitleFromShelf(l.id) }]}
+                  />
+                ))}
+              </section>
+            )}
             {showLook && (
               <section className="mb-2">
                 <h3 className="px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">
@@ -949,10 +974,11 @@ export function LeftPanel({ width }: { width: number }) {
         <Tab tab="media" label="Media" />
         <Tab tab="effects" label="Effects" />
         <Tab tab="library" label="Library" />
+        <Tab tab="words" label="Words" />
       </div>
       {/* key on the tab so the content fades in on each switch (hard cut → soft). */}
       <div key={leftTab} className="flex min-h-0 flex-1 animate-[fade-in_100ms_ease-out] flex-col">
-        {leftTab === 'media' ? <MediaTab /> : leftTab === 'effects' ? <EffectsTab /> : <LibraryTab />}
+        {leftTab === 'media' ? <MediaTab /> : leftTab === 'effects' ? <EffectsTab /> : leftTab === 'words' ? <WordsTab /> : <LibraryTab />}
       </div>
       {dragging && (
         <div className="pointer-events-none fixed inset-0 z-50 flex bg-black/60 p-4">

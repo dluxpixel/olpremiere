@@ -10,12 +10,14 @@ import {
   newTitleClip,
   videoTracks,
   withTitleFontSize,
+  type AppearanceSpec,
   type Clip,
   type TitleDef,
   type Track,
 } from '../engine/types'
 import { applyAppearanceToClip, getDefaultTextAppearance } from './appearanceActions'
 import { updateActiveSequence, useStore } from './store'
+import { titleLookById } from './titleShelf'
 import { useToasts } from './toasts'
 
 const DEFAULT_TITLE_S = 5
@@ -27,6 +29,20 @@ function titleTargetTrack(tracks: Track[]): Track | undefined {
 }
 
 export function addTitleClip(text = 'Title'): void {
+  addTitle(defaultTitleDef(text), getDefaultTextAppearance() ?? undefined, DEFAULT_TITLE_S, 'Add title')
+}
+
+/**
+ * A ready made title off the shelf (titleShelf.ts): its own style, entrance,
+ * exit and starting text, at the playhead or at `atS` when it was dropped.
+ */
+export function addTitleFromShelf(lookId: string, atS?: number): void {
+  const look = titleLookById(lookId)
+  if (!look) return
+  addTitle({ ...defaultTitleDef(look.text), ...look.style }, look.appearance, look.durationS, `Add ${look.name}`, atS)
+}
+
+function addTitle(def: TitleDef, appearance: AppearanceSpec | undefined, durationS: number, label: string, atS?: number): void {
   const s = useStore.getState()
   const seq = activeSequence(s.project)
   const target = titleTargetTrack(seq.tracks)
@@ -34,15 +50,15 @@ export function addTitleClip(text = 'Title'): void {
     useToasts.getState().show('No unlocked video track for the title', 'danger')
     return
   }
-  let clip = newTitleClip(defaultTitleDef(text), s.ui.playheadS, DEFAULT_TITLE_S)
+  const wantS = atS ?? s.ui.playheadS
+  let clip = newTitleClip(def, wantS, durationS)
   // New titles inherit the saved default entrance/exit, so a chosen "how it
   // appears" applies every time (compiled to keyframes up front).
-  const def = getDefaultTextAppearance()
-  if (def && !isEmptyAppearance(def)) clip = applyAppearanceToClip(clip, def, seq.width, seq.height)
-  updateActiveSequence('Add title', (sq) => {
+  if (appearance && !isEmptyAppearance(appearance)) clip = applyAppearanceToClip(clip, appearance, seq.width, seq.height)
+  updateActiveSequence(label, (sq) => {
     const track = sq.tracks.find((t) => t.id === target.id)
     if (!track) return sq
-    const startS = resolveStart(track, s.ui.playheadS, clipDurationS(clip))
+    const startS = resolveStart(track, wantS, clipDurationS(clip))
     const placed: Clip = { ...clip, startS }
     const tracks = sq.tracks.map((t) =>
       t.id === track.id
