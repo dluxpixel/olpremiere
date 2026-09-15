@@ -1,9 +1,10 @@
 import { Plus } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
-import { addClipFromAsset, addClipWithLinkedAudio, addTrack, clipDurationS, clipEndS, clipGroupIds, closeAllGaps, closeGapBefore, collectSnapPoints, gapBefore, moveSelectionWith, rateStretchGroup, rippleTrimGroup, rippleTrimSolo, rollEditTo, slideClip, slipClip, slipGroup, snapTime, splitGroup, trimClipTo, trimGroup } from '../engine/timeline'
+import { addClipFromAsset, addClipWithLinkedAudio, addTrack, clipDurationS, clipEndS, clipGroupIds, closeAllGaps, closeGapBefore, collectSnapPoints, gapBefore, moveSelectionWith, rateStretchGroup, rippleTrimGroup, rippleTrimSolo, rollEditTo, slideClip, slipClip, slipGroup, snapTime, splitGroup } from '../engine/timeline'
 import { createSnapPointCache } from '../engine/snapPointCache'
 import { TRANSITION_KINDS, TRANSITION_LABELS } from '../engine/render/types'
 import { formatTimecode, quantizeToFrame } from '../engine/timecode'
+import { overlapCrossfadeS, trimIntoNeighbour } from '../engine/overlapCrossfade'
 import { transitionMarkSpans } from '../engine/transitionMarks'
 import { workArea } from '../engine/workArea'
 import { applyEffect, removeClipTransition, setClipTransition } from '../state/clipEdits'
@@ -75,8 +76,12 @@ export function Timeline({ height }: { height: number }) {
    * moving together - only their lengths differ.
    */
   const trimFnFor = (solo: boolean, ripple: boolean) => {
-    if (solo) return ripple ? rippleTrimSolo : trimClipTo
-    return ripple ? rippleTrimGroup : trimGroup
+    if (ripple) return solo ? rippleTrimSolo : rippleTrimGroup
+    // A plain edge drag may go INTO the neighbour: the overlap becomes a
+    // crossfade, the Vegas gesture (engine/overlapCrossfade.ts). Short of the
+    // neighbour it is trimClipTo / trimGroup exactly as before.
+    return (sq: Sequence, a: typeof assets, id: Id, edge: 'in' | 'out', t: number) =>
+      trimIntoNeighbour(sq, a, id, edge, t, solo)
   }
 
   const lanesRef = useRef<HTMLDivElement>(null)
@@ -1126,7 +1131,12 @@ export function Timeline({ height }: { height: number }) {
       setPreviewSeq(next)
       const trimmed = next.tracks.flatMap((tr) => tr.clips).find((c) => c.id === drag.clipId)
       const orig = seq.tracks.flatMap((tr) => tr.clips).find((c) => c.id === drag.clipId)
-      if (trimmed && orig) {
+      const crossfadeS = drag.ripple ? 0 : overlapCrossfadeS(seq, assets, drag.clipId, drag.edge, t, drag.solo)
+      if (crossfadeS > 0) {
+        // Past the neighbour the edge is no longer trimming, it is sizing the
+        // crossfade, so the readout says that and nothing else.
+        setTrimTip({ x: e.clientX, y: e.clientY - 34, text: `Crossfade  ${formatTimecode(crossfadeS, seq.fps)}` })
+      } else if (trimmed && orig) {
         const edgeT = drag.edge === 'in' ? trimmed.startS : clipEndS(trimmed)
         const origT = drag.edge === 'in' ? orig.startS : clipEndS(orig)
         // Ripple-in keeps startS fixed; show the source-window edge instead.
@@ -1179,7 +1189,8 @@ export function Timeline({ height }: { height: number }) {
       )
     } else if (drag.kind === 'trim' && dragFinal.current) {
       const { tS } = dragFinal.current
-      updateActiveSequence(drag.ripple ? 'Ripple trim' : 'Trim clip', (sq) =>
+      const crossfaded = !drag.ripple && overlapCrossfadeS(seq, assets, drag.clipId, drag.edge, tS, drag.solo) > 0
+      updateActiveSequence(drag.ripple ? 'Ripple trim' : crossfaded ? 'Crossfade' : 'Trim clip', (sq) =>
         trimFnFor(drag.solo, drag.ripple)(sq, assets, drag.clipId, drag.edge, tS),
       )
     } else if (drag.kind === 'stretch' && dragFinal.current) {
