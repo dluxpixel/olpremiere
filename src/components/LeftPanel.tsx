@@ -6,6 +6,7 @@ import { SFX_LIBRARY, type SfxDef } from '../engine/sfx/sfx'
 import { formatTimecode } from '../engine/timecode'
 import { activeSequence, type MediaAsset } from '../engine/types'
 import { useBlobUrl } from '../state/blobUrls'
+import { useHoverScrub } from './useHoverScrub'
 import { createArmedDelete, type ArmedDelete } from './armedDelete'
 import { CaptionsDialog } from './CaptionsDialog'
 import { applyEffectToAllClips } from '../state/bulkEdits'
@@ -292,6 +293,10 @@ function AssetActions({ asset }: { asset: MediaAsset }) {
 function AssetCard({ asset, fps }: { asset: MediaAsset; fps: number }) {
   const thumbUrl = useBlobUrl(asset.thumbnailKey)
   const Icon = KIND_ICONS[asset.kind]
+  // Slide the pointer across the picture and see the frame under it
+  // (useHoverScrub.ts). The poster stays underneath, so a clip that is still
+  // decoding its first seek shows its poster rather than a black box.
+  const scrub = useHoverScrub(asset, fps)
   return (
     <div
       data-testid="asset-card"
@@ -336,15 +341,40 @@ function AssetCard({ asset, fps }: { asset: MediaAsset; fps: number }) {
       }
       className="cursor-default overflow-hidden rounded-overlay border border-border bg-bg-elevated transition-colors duration-[120ms] ease-out hover:border-border-strong focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
     >
-      <div className="relative flex aspect-video items-center justify-center bg-black">
+      <div
+        data-testid="asset-thumb"
+        className="relative flex aspect-video items-center justify-center bg-black"
+        {...scrub.handlers}
+      >
         {thumbUrl ? (
           <img src={thumbUrl} alt="" draggable={false} className="h-full w-full object-contain" />
         ) : (
           <Icon size={16} strokeWidth={1.5} className="text-text-muted" aria-hidden />
         )}
+        {scrub.active && scrub.url && (
+          <video
+            ref={scrub.videoRef}
+            data-testid="asset-scrub"
+            data-scrub-t={scrub.tS}
+            src={scrub.url}
+            muted
+            playsInline
+            preload="auto"
+            onLoadedMetadata={scrub.onReady}
+            onSeeked={scrub.onReady}
+            className="pointer-events-none absolute inset-0 h-full w-full object-contain"
+          />
+        )}
+        {scrub.active && (
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-y-0 w-px bg-accent"
+            style={{ left: scrub.xPx }}
+          />
+        )}
         {asset.kind !== 'image' && (
           <span className="absolute right-1 bottom-1 rounded-[3px] bg-black/70 px-1 text-[10px] text-text-primary tabular-nums">
-            {formatTimecode(asset.durationS, fps)}
+            {formatTimecode(scrub.active ? scrub.tS : asset.durationS, fps)}
           </span>
         )}
       </div>
