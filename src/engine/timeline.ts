@@ -331,6 +331,31 @@ export function rateStretchGroup(seq: Sequence, clipId: Id, edge: 'in' | 'out', 
  * ⛔ SPEED ONLY, NEVER A TRIM. A trim changes the duration too, and there the
  * motion must stay anchored where he put it rather than stretch to fit.
  */
+/**
+ * Keep hand made keyframes on the SOURCE FRAMES they were authored on when the
+ * clip's first frame moves: a head trim, a ripple trim at the head, the right
+ * side of a roll. `deltaS` is how far the first frame moved, in clip local
+ * seconds: positive means the clip now starts deeper into its media, negative
+ * means earlier. Trimming the head used to leave every keyframe at its old
+ * offset from the clip start, so a move authored on one picture slid onto
+ * another. This is the same slice a split makes for its right half: keyframes
+ * that now sit before the head fold into one boundary keyframe carrying the
+ * value at the new first frame, and everything after it shifts with the media.
+ * The compiled entrance and exit are rebuilt by retimeAppearance afterwards,
+ * exactly as before.
+ */
+export function retimeKeyframesForHead(clip: Clip, deltaS: number): Clip {
+  if (!clip.keyframes || Math.abs(deltaS) < KF_EPS) return clip
+  let next = clip
+  for (const channel of ANIM_CHANNELS) {
+    const kfs = clip.keyframes[channel]
+    if (!kfs || kfs.length === 0) continue
+    const moved = deltaS > 0 ? splitKeyframeList(kfs, deltaS).right : kfs.map((k) => ({ ...k, t: k.t - deltaS }))
+    next = withChannelKeyframes(next, channel, moved)
+  }
+  return next
+}
+
 export function rescaleKeyframesForSpeed(clip: Clip, oldRate: number, newRate: number): Clip {
   if (!clip.keyframes) return clip
   const from = Math.abs(oldRate) || 1
@@ -732,6 +757,7 @@ export function trimClipTo(
         : // Image extended left past source zero: floor inS, grow outS so the
           // out edge stays fixed at endS.
           { ...clip, startS, inS: 0, outS: (endS - startS) * sp }
+    next = retimeKeyframesForHead(next, startS - clip.startS)
   } else {
     const nextClip = track.clips[clipIndex + 1] as Clip | undefined
     let hi = nextClip ? nextClip.startS : Infinity
@@ -883,11 +909,25 @@ export function splitClip(seq: Sequence, clipId: Id, tS: number): Sequence {
 export function deleteClip(seq: Sequence, clipId: Id): Sequence {
   const found = findClip(seq, clipId)
   if (!found) return seq
-  return withTrackClips(
+  const next = withTrackClips(
     seq,
     found.trackIndex,
     found.track.clips.filter((c) => c.id !== clipId),
   )
+  // Deleting the SOUND of a linked pair is a decision, and it has to survive
+  // the next load: the video half keeps its linkId (so its own audio stays off
+  // now) AND is marked, so repairLostAudioLinks does not read the missing
+  // partner as a lost link and hand the clip its voice back tomorrow.
+  const link = found.clip.linkId
+  if (found.track.kind !== 'audio' || link === undefined) return next
+  return {
+    ...next,
+    tracks: next.tracks.map((t) =>
+      t.kind !== 'video' || !t.clips.some((c) => c.linkId === link)
+        ? t
+        : { ...t, clips: t.clips.map((c) => (c.linkId === link ? { ...c, ownAudioOff: true as const } : c)) },
+    ),
+  }
 }
 
 export function rippleDelete(seq: Sequence, clipId: Id): Sequence {
@@ -1704,6 +1744,7 @@ export function rippleTrimTo(
         : // Image grown past source zero: floor inS, widen outS to keep the
           // implied duration delta.
           { ...clip, inS: 0, outS: (clipDurationS(clip) + deltaS) * sp }
+    next = retimeKeyframesForHead(next, t - clip.startS)
   }
   next = retimeAppearance(clip, next, seq.width, seq.height)
 
@@ -1752,11 +1793,14 @@ export function rollEditTo(
   const rInS = right.clip.inS + (t - right.clip.startS) * spR
   const newRight: Clip = retimeAppearance(
     right.clip,
-    rInS >= 0
-      ? { ...right.clip, startS: t, inS: rInS }
-      : // Right image pulled left past source zero: floor inS, keep its end
-        // fixed by widening outS.
-        { ...right.clip, startS: t, inS: 0, outS: (rightEndS - t) * spR },
+    retimeKeyframesForHead(
+      rInS >= 0
+        ? { ...right.clip, startS: t, inS: rInS }
+        : // Right image pulled left past source zero: floor inS, keep its end
+          // fixed by widening outS.
+          { ...right.clip, startS: t, inS: 0, outS: (rightEndS - t) * spR },
+      t - right.clip.startS,
+    ),
     seq.width,
     seq.height,
   )

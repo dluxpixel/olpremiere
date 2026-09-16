@@ -13,7 +13,7 @@ import {
 } from '../engine/effects/channels'
 import { addEffect } from '../engine/effects/ops'
 import { getEffect } from '../engine/effects/registry'
-import { upsertKeyframe } from '../engine/keyframes'
+import { upsertKeyframe, upsertKeyframeValue } from '../engine/keyframes'
 import { MOTION_CURVES } from '../engine/motion'
 import { clipDurationS, clipEndS } from '../engine/timeline'
 import { activeSequence, newId, type AnimChannel, type Clip, type Curve, type Keyframe } from '../engine/types'
@@ -99,7 +99,9 @@ export function setChannelForClips(ids: Iterable<string>, channel: AnimChannel, 
       const kfs = channelKeyframes(c, channel)
       if (kfs.length === 0) return withChannelValue(c, channel, value)
       const localT = playheadLocalT(c)
-      return withChannelKeyframes(c, channel, upsertKeyframe(kfs, { t: localT, value, ...commit }))
+      // upsertKeyframeValue, not upsertKeyframe: a keyframe he shaped by hand keeps
+      // its curve, and only a NEW one takes the shelf's current preference.
+      return withChannelKeyframes(c, channel, upsertKeyframeValue(kfs, localT, value, commit))
     },
     // Per channel, so nudging Opacity and then Scale still leaves two steps.
     `channel:${channel}`,

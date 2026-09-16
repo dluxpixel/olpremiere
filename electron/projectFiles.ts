@@ -55,7 +55,8 @@ export function shortId(id: string): string {
  * from either folder opens in the Recover shelf.
  */
 export function projectFileName(projectName: string, id: string): string {
-  const safe = (projectName || 'project').replace(/[^a-z0-9-_ ]/gi, '').trim().slice(0, 40) || 'project'
+  // Letters and digits from any language stay, so a project named in Czech keeps its name on disk.
+  const safe = (projectName || 'project').replace(/[^\p{L}\p{N}\-_ ]/gu, '').trim().slice(0, 40) || 'project'
   return `${safe}_${shortId(id)}${EXT}`
 }
 

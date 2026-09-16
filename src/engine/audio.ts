@@ -675,7 +675,7 @@ export function clipEmitsAudio(track: Track, clip: Clip): boolean {
  */
 export function clipEmitsAudioOn(kind: Track['kind'], clip: Clip): boolean {
   if (kind === 'audio') return true
-  return clip.linkId === undefined
+  return clip.linkId === undefined && !clip.ownAudioOff
 }
 
 
@@ -826,6 +826,9 @@ export interface GainPoint {
  * down proportionally so the envelope stays a clean trapezoid. Returns null in
  * exactly the cases computeClipSchedule does (no audible contribution).
  */
+/** Segments a fade is drawn with. Eight keeps a sine within 0.05 dB between knots. */
+export const FADE_KNOTS = 8
+
 export function clipGainEnvelope(clip: Clip, fromS: number): GainPoint[] | null {
   if (!computeClipSchedule(clip, fromS)) return null
   const speed = Math.abs(clip.speed) || 1
@@ -854,16 +857,28 @@ export function clipGainEnvelope(clip: Clip, fromS: number): GainPoint[] | null 
     fout *= k
   }
 
+  const ep = (u: number): number => Math.sin(clamp(u, 0, 1) * (Math.PI / 2))
   const envAt = (x: number): number => {
-    const fi = fin > 0 ? clamp((x - winStart) / fin, 0, 1) : 1
-    const fo = fout > 0 ? clamp((winEnd - x) / fout, 0, 1) : 1
+    // EQUAL POWER, not a straight line: sin(u * pi/2) of the fade's progress.
+    // Two fades that overlap the same span (an audio crossfade, made by
+    // crossfadeWithNeighbour or by dragging one clip's edge into the next) then
+    // sum to one in POWER all the way across, sin^2 + cos^2 = 1. Two straight
+    // lines summed to half power at the middle, a 3 dB hole in every crossfade
+    // in the app. A lone fade to or from silence is the same curve, which is
+    // what every editor's "constant power" fade is. Consumers still ramp
+    // linearly BETWEEN knots (the mixers stay identical to each other), so each
+    // fade is drawn with FADE_KNOTS segments, within 0.05 dB of the curve.
+    const fi = fin > 0 ? ep((x - winStart) / fin) : 1
+    const fo = fout > 0 ? ep((winEnd - x) / fout) : 1
     return gAt(x) * Math.min(fi, fo)
   }
 
   const audibleStart = Math.max(fromS, winStart)
   const times = new Set<number>([audibleStart, winEnd])
-  if (fin > 0) times.add(winStart + fin)
-  if (fout > 0) times.add(winEnd - fout)
+  for (let s = 1; s <= FADE_KNOTS; s++) {
+    if (fin > 0) times.add(winStart + (fin * s) / FADE_KNOTS)
+    if (fout > 0) times.add(winEnd - (fout * s) / FADE_KNOTS)
+  }
   if (volKfs) {
     for (let i = 0; i < volKfs.length; i++) {
       times.add(winStart + volKfs[i].t)

@@ -8,6 +8,7 @@ import { activeSequence, type MediaAsset } from '../engine/types'
 import { useBlobUrl } from '../state/blobUrls'
 import { addTitleFromShelf } from '../state/titleActions'
 import { TITLE_SHELF } from '../state/titleShelf'
+import { entriesOf, filesOf } from './dropWalk'
 import { useHoverScrub } from './useHoverScrub'
 import { WordsTab } from './WordsTab'
 import { createArmedDelete, type ArmedDelete } from './armedDelete'
@@ -150,21 +151,27 @@ function useOsFileDrop(): boolean {
       e.preventDefault()
       depth = 0
       setDragging(false)
-      const files = Array.from(e.dataTransfer?.files ?? [])
-      if (files.length === 0) return
-      // A project file dropped on the window OPENS the project. It used to be
-      // handed to the media importer, which called his own backup unsupported.
-      const { project, ignored, media } = routeDroppedFiles(files)
-      if (project) {
-        if (ignored > 0) {
-          useToasts
-            .getState()
-            .show(`Opening the project file. The other ${ignored} file(s) were not imported`, 'info')
+      // Folders open: a dropped folder used to arrive as one typeless File and
+      // be called unsupported. The entries are grabbed now, while the drop is
+      // still readable, and walked after (dropWalk.ts).
+      const dropped = entriesOf(e.dataTransfer)
+      void (async () => {
+        const files = dropped.entries.length > 0 ? await filesOf(dropped.entries) : dropped.files
+        if (files.length === 0) return
+        // A project file dropped on the window OPENS the project. It used to be
+        // handed to the media importer, which called his own backup unsupported.
+        const { project, ignored, media } = routeDroppedFiles(files)
+        if (project) {
+          if (ignored > 0) {
+            useToasts
+              .getState()
+              .show(`Opening the project file. The other ${ignored} file(s) were not imported`, 'info')
+          }
+          void importProjectFromFile(project)
+          return
         }
-        void importProjectFromFile(project)
-        return
-      }
-      void importFiles(media)
+        void importFiles(media)
+      })()
     }
     window.addEventListener('dragenter', onEnter)
     window.addEventListener('dragover', onOver)
@@ -309,6 +316,7 @@ function AssetCard({ asset, fps }: { asset: MediaAsset; fps: number }) {
       onDragStart={(e) => {
         e.dataTransfer.setData(ASSET_MIME, asset.id)
         e.dataTransfer.effectAllowed = 'copy'
+        scrub.handlers.onPointerLeave() // the drag takes the pointer; the scrub video goes
       }}
       onDoubleClick={(e) => {
         // Inserting moves the user's working context to the TIMELINE - drop the

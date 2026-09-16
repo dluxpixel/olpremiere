@@ -23,7 +23,8 @@ import { setProxyBuildingPaused } from './proxyMedia'
 import { createRenderer, type Renderer } from './render/glRenderer'
 import { pairTransitionAt, resolveFrame } from './render/resolve'
 import { rasterizeTitle } from './render/titleRaster'
-import type { RenderLayer, TextureSource } from './render/types'
+import { coverScale, croppedSize, fitScale } from './render/mat'
+import type { RenderLayer, ResolvedTransform, TextureSource } from './render/types'
 import { clipDurationS } from './timeline'
 import type { Clip, Id, MediaAsset, Sequence } from './types'
 
@@ -394,15 +395,58 @@ function titleRasterScale(seqH: number): number {
   return Math.max(0.25, Math.ceil(wanted * 8) / 8)
 }
 
+/** The context behind each cached renderer, so a lost one can be noticed. */
+const contexts = new WeakMap<HTMLCanvasElement, WebGL2RenderingContext>()
+const watchedCanvases = new WeakSet<HTMLCanvasElement>()
+
+/**
+ * A GPU reset mid session (a driver update, a laptop switching graphics, a
+ * crash in another app) loses the WebGL context. Every gl call then becomes
+ * a silent no-op: nothing throws, the renderer reports the frame complete, and
+ * the monitor parks on the last picture with play, pause and scrubbing all
+ * dead and nothing on screen saying why. So the canvas is watched: on loss the
+ * cached renderer is dropped, the picture says what happened, and the preview
+ * is bumped so it tries again; when the browser restores the context the next
+ * frame builds a fresh renderer and the picture comes back on its own.
+ */
+function watchContext(canvas: HTMLCanvasElement): void {
+  if (watchedCanvases.has(canvas)) return
+  watchedCanvases.add(canvas)
+  canvas.addEventListener('webglcontextlost', (e) => {
+    e.preventDefault() // without this the browser never restores it
+    renderers.delete(canvas)
+    noPictureReasons.set(canvas, 'The graphics reset. The preview is starting again')
+    epoch++
+  })
+  canvas.addEventListener('webglcontextrestored', () => {
+    renderers.delete(canvas)
+    noPictureReasons.delete(canvas)
+    epoch++
+  })
+}
+
 function rendererFor(canvas: HTMLCanvasElement): Renderer | null {
   const cached = renderers.get(canvas)
-  if (cached !== undefined) return cached
+  if (cached !== undefined) {
+    const live = contexts.get(canvas)
+    if (!live || !live.isContextLost()) return cached
+    // Lost between frames without the event landing yet: same road as the event.
+    renderers.delete(canvas)
+    noPictureReasons.set(canvas, 'The graphics reset. The preview is starting again')
+  }
+  watchContext(canvas)
   // preserveDrawingBuffer so tests/screenshots can sample the last frame.
   const gl = canvas.getContext('webgl2', {
     premultipliedAlpha: false,
     preserveDrawingBuffer: true,
   })
   let renderer: Renderer | null = null
+  if (gl && gl.isContextLost()) {
+    // Still lost: say so and try again next frame rather than caching a dead
+    // renderer, which is what the silent no-op path used to do.
+    noPictureReasons.set(canvas, 'The graphics reset. The preview is starting again')
+    return null
+  }
   if (!gl) {
     // Not an exception, so nothing below would have logged it: the one silent
     // branch, and the most likely one on a machine without real graphics.
@@ -417,6 +461,8 @@ function rendererFor(canvas: HTMLCanvasElement): Renderer | null {
       // export renderer, is what keeps the golden 640x360 export on the
       // untouched LINEAR path.
       renderer = createRenderer(gl, { mipmapSources: true })
+      contexts.set(canvas, gl)
+      noPictureReasons.delete(canvas)
     } catch (err) {
       console.error('OL Premiere: WebGL2 renderer init failed', err)
       noPictureReasons.set(canvas, 'The graphics on this computer refused to start the preview')
@@ -959,7 +1005,7 @@ function makeTextureSource(
     if (Math.abs(trueErr) <= tol) {
       liveMisses.delete(poolKey)
       recordServedFrame(trueErr, true)
-      return confident(livePreviewSource(el, poolKey, layer.transform.scale))
+      return confident(livePreviewSource(el, poolKey, liveZoom(layer.transform, el.videoWidth, el.videoHeight, frameW, frameH)))
     }
     // NEVER ASK THE DECODER FOR WHAT IT CANNOT DELIVER IN TIME.
     //
@@ -991,7 +1037,7 @@ function makeTextureSource(
       markPending() // the decode is queued; keep polling so it lands
     }
     recordServedFrame(trueErr, false)
-    return livePreviewSource(el, poolKey, layer.transform.scale)
+    return livePreviewSource(el, poolKey, liveZoom(layer.transform, el.videoWidth, el.videoHeight, frameW, frameH))
   }
 }
 
@@ -1047,8 +1093,17 @@ const LIVE_SCALE_CAP = 4
 // timeline never pays the extra blit, and only ever from a picture the ladder
 // was already confident in.
 const heldFrames = new Map<Id, OffscreenCanvas>()
-/** Both sides of at most a couple of overlapping windows. */
+/** The floor: both sides of a couple of overlapping windows. */
 const HELD_FRAME_CAP = 4
+/**
+ * The cap in force, raised each frame to the number of clips actually near a
+ * window (renderPreview sets it from holdClips). A fixed four was sized for
+ * calmer edits than his: sub second clips with a dissolve at every cut put
+ * three windows inside the pre roll at once, six clips wanting a hold, and the
+ * fourth insert evicted a clip that was still guarded, which then fell to
+ * black. One small canvas per held clip is the whole cost.
+ */
+let heldCap = HELD_FRAME_CAP
 
 const sourceSize = (src: TexImageSource): { w: number; h: number } => {
   if (typeof HTMLVideoElement !== 'undefined' && src instanceof HTMLVideoElement) {
@@ -1067,7 +1122,7 @@ function holdGoodFrame(clipId: Id, src: TexImageSource): void {
   if (canvas) heldFrames.delete(clipId)
   if (!canvas || canvas.width !== w || canvas.height !== h) canvas = new OffscreenCanvas(w, h)
   heldFrames.set(clipId, canvas)
-  while (heldFrames.size > HELD_FRAME_CAP) {
+  while (heldFrames.size > heldCap) {
     const oldest = heldFrames.keys().next().value
     if (oldest === undefined) break
     heldFrames.delete(oldest)
@@ -1126,6 +1181,39 @@ export function liveUploadCap(
   const display = rasterH > 0 ? rasterH * Math.max(1, zoom || 1) : nativeH
   const cap = Math.max(2, Math.round(Math.min(tier, display)))
   return cap < nativeH ? cap : undefined
+}
+
+/**
+ * How much of the source's own height the monitor really shows, as a multiple
+ * of the monitor: the zoom `liveUploadCap` needs. Not the clip's `scale` alone.
+ * The renderer fits the CROPPED source into its box first (contain, or cover
+ * for a backdrop) and only then applies `scale`, and that fit is where his most
+ * common shot gets its magnification: a 16:9 clip cropped to fill a 9:16 frame
+ * is blown up 1.78x with `scale` still at 1, and a clip cropped top and bottom
+ * as well is blown up more again. Feeding `scale` alone to the cap shrank the
+ * upload to the monitor's own height, then the shader cropped and magnified
+ * that, so the picture went soft exactly while it was playing (a paused frame
+ * takes the other road and never did). Pure, so it is tested without a GL.
+ *
+ * Reads as: the cropped rows fill `fit * ch` sequence rows, the monitor draws
+ * the sequence's `frameH` rows across its own raster, so the source rows per
+ * monitor row is (texH / ch) * (ch * fit * scale / frameH) = texH * fit * scale / frameH.
+ */
+export function liveZoom(
+  tf: Pick<ResolvedTransform, 'scale' | 'cropT' | 'cropR' | 'cropB' | 'cropL' | 'fit' | 'frame'>,
+  texW: number,
+  texH: number,
+  frameW: number,
+  frameH: number,
+): number {
+  const scale = Math.max(0, tf.scale || 1)
+  if (!(texW > 0) || !(texH > 0) || !(frameH > 0)) return scale
+  const { w: cw, h: ch } = croppedSize(texW, texH, tf.cropT, tf.cropR, tf.cropB, tf.cropL)
+  if (!(cw > 0) || !(ch > 0)) return scale
+  const boxW = tf.frame ? tf.frame.w : frameW
+  const boxH = tf.frame ? tf.frame.h : frameH
+  const fit = tf.fit === 'cover' ? coverScale(boxW, boxH, cw, ch) : fitScale(boxW, boxH, cw, ch)
+  return (scale * fit * texH) / frameH
 }
 
 const liveUploadCapHeight = (nativeH: number, zoom: number): number | undefined =>
@@ -1232,6 +1320,7 @@ export function renderPreview(
     ;(holdClips ??= new Set()).add(w.fromClipId)
     holdClips.add(w.toClipId)
   }
+  heldCap = Math.max(HELD_FRAME_CAP, holdClips?.size ?? 0)
 
   // The from-layers served from the frame cache this frame, and BOTH sides of
   // every live pair transition. whiteFlash and lone-edge stand-ins (from/to are

@@ -80,3 +80,11 @@ describe('repairLostAudioLinks', () => {
     expect(repairLostAudioLinks(before)).toBe(before)
   })
 })
+
+describe('a sound he deleted on purpose', () => {
+  it('stays gone across a load: the marked video half is never freed', () => {
+    const v: Clip = { ...clip('v', 'asset-a', 'g1'), ownAudioOff: true }
+    const tracks = [track('video', 'V1', [v]), track('audio', 'A1', [])]
+    expect(repairLostAudioLinks(tracks)).toBe(tracks)
+  })
+})

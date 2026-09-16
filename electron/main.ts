@@ -5,7 +5,17 @@
 // the web. The origin (`app://olpremiere`) is PINNED forever: changing it (or
 // the appId/productName) would orphan the user's IndexedDB.
 
-import { app, BrowserWindow, protocol, ipcMain, powerMonitor, session, shell } from 'electron'
+import { app, BrowserWindow, Menu, protocol, ipcMain, powerMonitor, session, shell } from 'electron'
+
+// ⛔ ONE COPY OF THE APP AT A TIME. Two launches, a slow first start plus an
+// impatient second click, or a copy still alive after a crash, used to start a
+// second whole engine on the SAME profile: the same IndexedDB, the same project
+// files in Documents, the same backups, all written by two processes that know
+// nothing of each other. That is the shape of every "the store rebuilt itself"
+// that was never explained. The second copy now hands over and quits; the first
+// one comes to the front.
+const singleInstance = app.requestSingleInstanceLock()
+if (!singleInstance) app.quit()
 import { fileURLToPath } from 'node:url'
 import { mkdir, readFile } from 'node:fs/promises'
 import { existsSync, renameSync } from 'node:fs'
@@ -486,7 +496,19 @@ function createWindow(): void {
   }
 }
 
+app.on('second-instance', () => {
+  const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed())
+  if (!win) return
+  if (win.isMinimized()) win.restore()
+  win.focus()
+})
+
 app.whenReady().then(() => {
+  // No application menu at all. The bar was hidden, but Electron's default menu
+  // stayed live behind it, so Ctrl+W (Close Window) quit the whole app from a
+  // browser habit, and Ctrl+R reloaded the editor under an edit. The app's own
+  // keymap owns every shortcut; text fields keep native copy and paste.
+  Menu.setApplicationMenu(null)
   // A transcode that died mid-flight leaves its temp behind forever, because the
   // only cleanup is a finally that a killed process never reaches. One of his was
   // 427 MB. Fire and forget: tidying up must never delay the window.
@@ -588,6 +610,14 @@ app.whenReady().then(() => {
   )
   ipcMain.handle('remux:release', (_e, id: string) => remux.releaseRemux(id))
 
+  // The file he just exported, selected in Explorer. The path comes back from
+  // the export itself; here it is only opened in the shell, never read, and
+  // only when it is a finished movie that exists.
+  ipcMain.handle('export:reveal', (_e, filePath: string) => {
+    if (typeof filePath !== 'string' || !/\.(mp4|mov)$/i.test(filePath) || !existsSync(filePath)) return
+    shell.showItemInFolder(filePath)
+  })
+
   // --- Backups -------------------------------------------------------------
   ipcMain.handle('backup:write', (_e, projectName: string, json: string) => backups.writeBackup(projectName, json))
   ipcMain.handle('backup:list', () => backups.listBackups())
@@ -628,7 +658,13 @@ app.whenReady().then(() => {
   // native ffmpeg child orphaned or its temp files behind. before-quit can't await,
   // so use the synchronous teardown (SIGKILL + unlinkSync) rather than the async
   // cancel() whose unlink would race the process exit.
-  app.on('before-quit', () => native.cancelSync())
+  app.on('before-quit', () => {
+    native.cancelSync()
+    // And the preview copies: a proxy build that outlived the app kept its
+    // ffmpeg running to the end, holding a temp file open that the sweep could
+    // not delete.
+    proxy.killAllProxyChildren()
+  })
 
   // Splash FIRST, so it is on screen while the editor window loads behind it.
   createSplash()

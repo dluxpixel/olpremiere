@@ -105,7 +105,7 @@ describe('healing the store', () => {
     // there, one project has 66 media files none of which the store can see.
     // It comes back. Media is healed separately when it opens.
     const green = project('ab9fe413', 'Green', 3)
-    green.assets = { m1: { id: 'm1', name: 'clip.mp4', blobKey: 'asset/m1' } as never }
+    green.assets = { m1: { id: 'm1', name: 'clip.mp4', kind: 'video', blobKey: 'asset/m1', durationS: 3, hasAudio: true, hasVideo: true } }
     const spirit = project('73819893', 'Spirit', 2)
     const disk = fakeDisk([green, spirit])
     const store = new Map<string, Project>()
@@ -185,5 +185,11 @@ describe('the disk side of a save and a delete', () => {
   it('does nothing without a disk', async () => {
     await expect(writeProjectToDisk(project('a1', 'Green'), null)).resolves.toBeUndefined()
     await expect(trashProjectOnDisk('a1', null)).resolves.toBeUndefined()
+  })
+})
+
+describe('the schema gate on a file', () => {
+  it('⛔ refuses a file whose spine is broken, so a half written file is never put back as a project', () => {
+    expect(parseProjectFile('{"project":{"id":"a1","name":"x","sequences":{"s":{"tracks":"bad"}}}}', 'a1')).toBeNull()
   })
 })

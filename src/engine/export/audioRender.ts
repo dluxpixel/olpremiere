@@ -67,6 +67,21 @@ export interface AudioMixPlan {
  * drops out, and the rest report offsets relative to it. So the rendered PCM
  * begins at the work-area in point, matching the video's zero-based timestamps.
  */
+/**
+ * How many audio samples the mix renders for a range the video renders as
+ * whole frames. The video path rounds the range UP to whole frames
+ * (exportWorker.ts, nativeExport.ts: ceil(rangeS * fps)); the audio used to
+ * round the same range up to whole SAMPLES on its own, and the two ceilings
+ * land on different fractions, so a file could carry up to a frame of picture
+ * with no sound under it. Derive the sample count from the frame count and the
+ * two tracks end together, to within one sample.
+ */
+export function audioFramesFor(rangeS: number, fps: number, sampleRate: number): number {
+  const rate = fps > 0 ? fps : 30
+  const videoFrames = Math.max(1, Math.ceil(rangeS * rate))
+  return Math.max(1, Math.round((videoFrames / rate) * sampleRate))
+}
+
 export async function planAudioMix(
   seq: Sequence,
   assets: Record<Id, MediaAsset>,
@@ -157,7 +172,7 @@ export async function planAudioMix(
     onPartialAudio?.([...new Set(failed.map((c) => c.asset.name))])
   }
 
-  const totalFrames = Math.max(1, Math.ceil(rangeS * EXPORT_SAMPLE_RATE))
+  const totalFrames = audioFramesFor(rangeS, seq.fps, EXPORT_SAMPLE_RATE)
 
   /** Render one segment: [f0, f0 + segFrames) of the mix, with pre-roll. */
   const renderSegment = async (f0: number, segFrames: number): Promise<Float32Array<ArrayBuffer>[]> => {
@@ -223,7 +238,13 @@ export async function planAudioMix(
       const source = ctx.createBufferSource()
       // The same pitch-preserving slice the live preview schedules, so the
       // render cannot disagree with what he heard while editing.
-      const play = pitchPreservedSource(ctx, buffer, clip.speed, sched)
+      // `clip.inS` is the anchor, the same one the live preview passes: the mix
+      // renders in 30 s segments, each its own context, and without the anchor
+      // every segment ran a fresh time stretch from its own edge, so a sped up
+      // clip that outlived one segment was two independent stretches butted
+      // together with a click at the seam. Anchored, every segment slices the
+      // one cached stretch, and the seam is not there.
+      const play = pitchPreservedSource(ctx, buffer, clip.speed, sched, clip.inS)
       source.buffer = play.buffer
       source.playbackRate.value = play.playbackRate
       const gain = ctx.createGain()

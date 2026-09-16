@@ -1355,7 +1355,6 @@ export function Timeline({ height }: { height: number }) {
   const pxPerSRef = useRef(pxPerS)
   pxPerSRef.current = pxPerS
   useEffect(() => {
-    if (!playing) return
     return useStore.subscribe(
       (s) => s.ui.playheadS,
       (t) => {
@@ -1365,12 +1364,20 @@ export function Timeline({ height }: { height: number }) {
         const px = t * pxPerSRef.current
         const left = el.scrollLeft
         const right = left + el.clientWidth
-        // Page forward when the playhead runs off the right edge; re-centre only
-        // when it is fully off-screen (e.g. after Home). Do NOT tug back when the
-        // user has scrolled ahead of the playhead.
-        if (px > right - 40 || px < left - el.clientWidth) {
+        // Playing: page forward when the playhead runs off the right edge, and
+        // re-centre only when it is fully off-screen (e.g. after Home). Do NOT
+        // tug back when the user has scrolled ahead of the playhead.
+        //
+        // Paused: this used to be switched off entirely, so Home, End, the
+        // previous and next cut keys and a click on a word in the Words tab
+        // moved the picture while the timeline stayed where it was, with the
+        // playhead somewhere off screen. A jump that lands out of view now
+        // brings the view to it; a jump inside the view moves nothing.
+        const offScreen = px < left || px > right
+        const shouldFollow = playing ? px > right - 40 || px < left - el.clientWidth : offScreen
+        if (shouldFollow) {
           programmaticScroll.current = true
-          el.scrollLeft = Math.max(0, px - 80)
+          el.scrollLeft = Math.max(0, px - (playing ? 80 : el.clientWidth / 2))
         }
       },
     )

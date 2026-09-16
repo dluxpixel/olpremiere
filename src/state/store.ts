@@ -262,7 +262,18 @@ export const useStore = create<AppState>()(
     },
 
     setProject(p) {
-      set({ project: p, history: emptyHistory() })
+      // A different project is a different timeline: the clip ids, the picked
+      // moves and the playhead from the last one mean nothing here, and left in
+      // place they pointed a "Cut 3 words" button and a Delete key at clips
+      // that were never in this project. The collab path already did this.
+      set((s) => ({
+        project: p,
+        history: emptyHistory(),
+        ui:
+          p.id === s.project.id
+            ? s.ui
+            : { ...s.ui, selection: [], motionSelection: null, motionPicks: [], motionGroupDeltaS: null, playheadS: 0 },
+      }))
     },
 
     applyRemoteProject(p) {
@@ -419,7 +430,7 @@ export function setActiveSequenceShutterAngle(deg: number): void {
       if ((seq.shutterAngle ?? DEFAULT_SHUTTER_ANGLE) === next) return p
       return { ...p, sequences: { ...p.sequences, [seq.id]: { ...seq, shutterAngle: next } } }
     },
-    'shutter-angle',
+    `shutter-angle:${useStore.getState().project.activeSequenceId}`,
   )
 }
 
@@ -432,7 +443,7 @@ export function setActiveSequenceBlurBackdropZoom(zoom: number): void {
       if ((seq.blurBackdropZoom ?? BACKDROP_ZOOM) === next) return p
       return { ...p, sequences: { ...p.sequences, [seq.id]: { ...seq, blurBackdropZoom: next } } }
     },
-    'blur-backdrop-zoom',
+    `blur-backdrop-zoom:${useStore.getState().project.activeSequenceId}`,
   )
 }
 

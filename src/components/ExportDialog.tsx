@@ -26,7 +26,7 @@ type Stage =
   | { kind: 'starting' }
   | { kind: 'running'; progress: ExportProgress; startedAt: number }
   /** `streamed` distinguishes "written where you chose" from "in your downloads". */
-  | { kind: 'done'; sizeBytes: number; fileName: string; streamed: boolean }
+  | { kind: 'done'; sizeBytes: number; fileName: string; streamed: boolean; path?: string }
   | { kind: 'error'; message: string }
 
 function fmtBytes(n: number): string {
@@ -100,7 +100,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   const onProgress = (progress: ExportProgress) =>
     setStage((prev) => (prev.kind === 'running' ? { ...prev, progress } : prev))
 
-  const fileName = `${project.name.replace(/[^\w\- ]+/g, '').trim() || 'export'}.mp4`
+  const fileName = `${project.name.replace(/[^\p{L}\p{N}\-_ ]+/gu, '').trim() || 'export'}.mp4`
 
   const start = async () => {
     let handle: FileSystemFileHandle | null = null
@@ -174,7 +174,8 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   // Desktop: render with the shared pipeline, encode with the bundled ffmpeg
   // (x264 veryslow at constant quality, the best file this app can produce).
   const startNative = async () => {
-    const baseName = project.name.replace(/[^\w\- ]+/g, '').trim() || 'export'
+    // Letters and digits from any language stay, so the file is named after the project even in Czech.
+    const baseName = project.name.replace(/[^\p{L}\p{N}\-_ ]+/gu, '').trim() || 'export'
     const abort = new AbortController()
     abortRef.current = abort
     const endCritical = beginCriticalWork()
@@ -196,7 +197,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
         return
       }
       const savedAs = res.outPath.split(/[\\/]/).pop() ?? `${baseName}.${plan.nativeExt}`
-      setStage({ kind: 'done', sizeBytes: res.sizeBytes, fileName: savedAs, streamed: true })
+      setStage({ kind: 'done', sizeBytes: res.sizeBytes, fileName: savedAs, streamed: true, path: res.outPath })
       show(`Exported ${savedAs} (${fmtBytes(res.sizeBytes)})`, 'success')
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') onClose()
@@ -308,7 +309,18 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
               <span className="text-text-secondary">({fmtBytes(stage.sizeBytes)})</span>{' '}
               {stage.streamed ? 'where you chose.' : 'to your downloads.'}
             </p>
-            <div className="flex justify-end">
+            <div className="flex justify-end gap-2">
+              {stage.path && window.api?.exportReveal && (
+                // The file was named but never the folder, and there was no way to
+                // get to it from here: Explorer opens with it selected.
+                <Button
+                  variant="secondary"
+                  data-testid="export-reveal"
+                  onClick={() => void window.api?.exportReveal?.(stage.path!)}
+                >
+                  Show in folder
+                </Button>
+              )}
               <Button variant="primary" onClick={onClose}>
                 Done
               </Button>

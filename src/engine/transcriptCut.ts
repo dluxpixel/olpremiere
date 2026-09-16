@@ -9,7 +9,7 @@
 // onto the timeline through its in point and speed. Pure: no store, no DOM.
 
 import { clipEmitsAudioOn } from './audio'
-import { findClip, recomputeDuration, splitGroup } from './timeline'
+import { findClip, recomputeDuration, splitClipOnly, splitGroup } from './timeline'
 import { clipEndS, type Clip, type Id, type MediaAsset, type Sequence, type SpokenWord } from './types'
 
 const EPS = 1e-6
@@ -28,13 +28,21 @@ export interface ClipWords {
   words: TimelineWord[]
 }
 
-/** Source time to timeline time for `clip`, the same line captions use. */
-export const toTimeline = (clip: Clip, sourceS: number): number =>
-  clip.startS + (sourceS - clip.inS) / (Math.abs(clip.speed) || 1)
+/**
+ * Source time to timeline time for `clip`, the same line captions use. A
+ * reversed clip walks its source BACKWARDS from outS (timeline.ts,
+ * rescaleKeyframesForSpeed), so its words come out in the order they play.
+ */
+export const toTimeline = (clip: Clip, sourceS: number): number => {
+  const rate = Math.abs(clip.speed) || 1
+  return clip.speed < 0 ? clip.startS + (clip.outS - sourceS) / rate : clip.startS + (sourceS - clip.inS) / rate
+}
 
-/** Timeline time to source time for `clip`. */
-export const toSource = (clip: Clip, timelineS: number): number =>
-  clip.inS + (timelineS - clip.startS) * (Math.abs(clip.speed) || 1)
+/** Timeline time to source time for `clip`, the inverse of toTimeline. */
+export const toSource = (clip: Clip, timelineS: number): number => {
+  const rate = Math.abs(clip.speed) || 1
+  return clip.speed < 0 ? clip.outS - (timelineS - clip.startS) * rate : clip.inS + (timelineS - clip.startS) * rate
+}
 
 /**
  * Every clip that plays sound, in timeline order, with the words it says. A
@@ -52,8 +60,12 @@ export function wordsOnTimeline(seq: Sequence, assets: Record<Id, MediaAsset>): 
       for (const w of asset.words ?? []) {
         // A word that starts inside the clip's source span is a word this clip says.
         if (w.startS < clip.inS - EPS || w.startS >= clip.outS - EPS) continue
-        words.push({ ...w, atS: toTimeline(clip, w.startS), endAtS: toTimeline(clip, w.endS), clipId: clip.id })
+        const a = toTimeline(clip, w.startS)
+        const b = toTimeline(clip, w.endS)
+        // Reversed, the word's end plays before its start; the span is still the span.
+        words.push({ ...w, atS: Math.min(a, b), endAtS: Math.max(a, b), clipId: clip.id })
       }
+      words.sort((x, y) => x.atS - y.atS)
       out.push({ clip, asset, words })
     }
   }
@@ -114,7 +126,13 @@ export function cutRange(seq: Sequence, startS: number, endS: number): Sequence 
     const ids = next.tracks.filter((t) => !t.locked).flatMap((t) => t.clips.filter((c) => spans(c, tS)).map((c) => c.id))
     for (const id of ids) {
       const f = findClip(next, id)
-      if (f && spans(f.clip, tS)) next = splitGroup(next, id, tS)
+      if (!f || !spans(f.clip, tS)) continue
+      // A locked track is untouchable, partner or not: a linked half on a
+      // locked track stays whole and only the unlocked half is cut.
+      const partnerLocked = next.tracks.some(
+        (t) => t.locked && f.clip.linkId !== undefined && t.clips.some((c) => c.linkId === f.clip.linkId),
+      )
+      next = partnerLocked ? splitClipOnly(next, id, tS) : splitGroup(next, id, tS)
     }
   }
   const removedS = endS - startS

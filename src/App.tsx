@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { Inspector } from './components/Inspector'
 import { LeftPanel } from './components/LeftPanel'
 import { Monitor } from './components/Monitor'
@@ -409,7 +409,18 @@ export function buildAppBindings(): Binding[] {
       { combo: 'alt+arrowup', description: 'Move clip to track above', domain: 'trim', run: () => moveSelectionToAdjacentTrack(-1) },
       { combo: 'alt+arrowdown', description: 'Move clip to track below', domain: 'trim', run: () => moveSelectionToAdjacentTrack(1) },
       { combo: 'mod+a', description: 'Select all clips', domain: 'selection', run: selectAllClips },
-      { combo: 'escape', description: 'Deselect all', domain: 'selection', run: escapeSelection },
+      {
+        combo: 'escape',
+        description: 'Deselect all',
+        domain: 'selection',
+        // Escape with a dialog open closes the dialog and nothing else: it used
+        // to also drop the clip he had selected underneath, because the dialog
+        // and this keymap both listen on the window.
+        run: () => {
+          if (document.querySelector('[role="dialog"]')) return
+          escapeSelection()
+        },
+      },
       { combo: 'shift+e', description: 'Enable / disable clip', domain: 'trim', run: () => {
         const id = store().ui.selection[0]
         if (id) toggleClipEnabled(id)
@@ -438,6 +449,8 @@ function RecordingStudioMount() {
 }
 
 export default function App() {
+  // The offline update toast, once per session (see onUpdateError below).
+  const updateErrorShown = useRef(false)
   const { sizes, adjust } = useLayoutSizes()
   // One binding list, and since 2026-08-17 the keymap is its only reader: the
   // palette and the help sheet were both cut. Still built in one place, because
@@ -469,7 +482,17 @@ export default function App() {
         if (isRestartUnsafe()) {
           useToasts.getState().show(`Update ${version} is ready. Restart to install`, 'success', {
             label: 'Restart',
-            onClick: () => olApi?.restartToUpdate?.(),
+            // Checked AGAIN on the click: the toast can sit there through a
+            // whole export, and the restart path forces the window shut after
+            // five seconds whether or not the export let it close. Restarting
+            // through a running export truncates the file.
+            onClick: () => {
+              if (isRestartUnsafe()) {
+                useToasts.getState().show('An export is still running. Restart once it has finished', 'info')
+                return
+              }
+              olApi?.restartToUpdate?.()
+            },
           })
           return
         }
@@ -495,13 +518,18 @@ export default function App() {
   // updated. If the check can't run, the user gets told.
   useEffect(
     () =>
-      olApi?.onUpdateError?.((message) =>
+      olApi?.onUpdateError?.((message) => {
+        // Once per session. The check runs every fifteen minutes, so offline
+        // this used to be a red toast every fifteen minutes for as long as the
+        // app was open, saying the same thing each time.
+        if (updateErrorShown.current) return
+        updateErrorShown.current = true
         useToasts
           .getState()
           .show(`Update check failed. You may not be on the newest version. ${message}`, 'danger', undefined, {
             durationMs: 12_000,
-          }),
-      ),
+          })
+      }),
     [],
   )
 

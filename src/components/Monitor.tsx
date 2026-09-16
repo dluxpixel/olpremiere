@@ -238,12 +238,15 @@ function useProgramCanvas(quality: Quality) {
       // canvas with no renderer, which is right for the polling loop and wrong
       // for a person looking at a black rectangle. Read the reason once and put
       // it on the picture, where the black is.
-      if (!reportedNoPicture) {
-        const why = noPictureReason(canvas)
-        if (why) {
-          reportedNoPicture = true
-          setNoPicture(why)
-        }
+      const why = noPictureReason(canvas)
+      if (why && !reportedNoPicture) {
+        reportedNoPicture = true
+        setNoPicture(why)
+      } else if (!why && reportedNoPicture) {
+        // The reason went away (a lost graphics context came back), so the
+        // message goes with it; the picture underneath is drawing again.
+        reportedNoPicture = false
+        setNoPicture(null)
       }
       if (prevComplete) pendingSinceT = 0
       else if (pendingSinceT === 0) pendingSinceT = now

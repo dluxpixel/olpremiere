@@ -85,3 +85,30 @@ describe('persisted motion preferences', () => {
     expect((await reboot()).moveCurve).toBe('snapIn')
   })
 })
+
+describe('opening a different project', () => {
+  it('drops the old selection, the picked moves and the playhead, which meant nothing in the new one', async () => {
+    const { useStore } = await import('./store')
+    const { newProject } = await import('../engine/types')
+    const first = newProject()
+    const second = newProject()
+    useStore.getState().setProject(first)
+    useStore.getState().setUI({ selection: ['ghost'], playheadS: 12, motionPicks: [{ clipId: 'ghost', channel: 'scale', t: 1 }] as never })
+    useStore.getState().setProject(second)
+    const ui = useStore.getState().ui
+    expect(ui.selection).toEqual([])
+    expect(ui.playheadS).toBe(0)
+    expect(ui.motionPicks).toEqual([])
+  })
+
+  it('leaves the view alone when the same project is set again (a hydration of the open one)', async () => {
+    const { useStore } = await import('./store')
+    const { newProject } = await import('../engine/types')
+    const p = newProject()
+    useStore.getState().setProject(p)
+    useStore.getState().setUI({ selection: ['a'], playheadS: 3 })
+    useStore.getState().setProject({ ...p })
+    expect(useStore.getState().ui.selection).toEqual(['a'])
+    expect(useStore.getState().ui.playheadS).toBe(3)
+  })
+})

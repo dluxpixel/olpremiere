@@ -102,7 +102,12 @@ async function backupNow(reason: string): Promise<void> {
   // never been written to a file at all, which is exactly the state his machine
   // was in when the database threw itself away.
   if (fingerprint === lastWritten) {
-    await backupEveryProject()
+    // Not while he is watching: the sweep reads and serialises every other
+    // project on the same thread the monitor draws on, and a paint hitch at
+    // the two minute mark is exactly what that looks like. The other projects
+    // are files in Documents since v3.0.0 anyway, so waiting for the next quiet
+    // tick costs nothing.
+    if (!useStore.getState().ui.playing) await backupEveryProject()
     return
   }
   writing = true

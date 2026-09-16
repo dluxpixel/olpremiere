@@ -17,6 +17,7 @@
 
 import type { ProjectFileEntry } from '../../electron/ipc-types'
 import type { Project } from '../engine/types'
+import { parseStoredProject } from '../persistence/schema'
 import { serialize } from './backupFormat'
 
 export interface DiskApi {
@@ -82,8 +83,9 @@ export function parseProjectFile(raw: string, expectedId: string): Project | nul
   const p = parsed?.project
   if (!p || typeof p !== 'object') return null
   if (p.id !== expectedId) return null
-  if (!p.sequences || typeof p.sequences !== 'object') return null
-  return p
+  // The same gate the store load uses: a half written or hand edited file must
+  // not be put back into the store as if it were a project.
+  return parseStoredProject(p)
 }
 
 export interface HealedProjects {

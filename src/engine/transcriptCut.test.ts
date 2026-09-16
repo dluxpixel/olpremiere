@@ -153,3 +153,29 @@ describe('cutRange', () => {
     expect(cutRange(seq, 5, 3)).toBe(seq)
   })
 })
+
+describe('reversed clips', () => {
+  it('lay their words out in the order they play, from the out point backwards', () => {
+    // Source 0 to 4 played backwards at 10 s: "four" is heard first.
+    const clip = makeClip({ startS: 10, inS: 0, outS: 4, speed: -1 })
+    const [row] = wordsOnTimeline(makeSeq([makeTrack({ kind: 'audio', clips: [clip] })]), ASSETS)
+    expect(row.words.map((x) => x.text)).toEqual(['four', 'three', 'two', 'one'])
+    expect(row.words[0].atS).toBeCloseTo(10.1, 6) // 3.9 from the out point of 4
+    expect(row.words[0].endAtS).toBeCloseTo(10.5, 6)
+    expect(row.words[3].atS).toBeCloseTo(13.1, 6)
+  })
+})
+
+describe('a locked partner', () => {
+  it('is left whole while the unlocked half is cut', () => {
+    const v = makeClip({ startS: 0, inS: 0, outS: 10, linkId: 'L' })
+    const au = makeClip({ startS: 0, inS: 0, outS: 10, linkId: 'L' })
+    const seq = makeSeq([makeTrack({ clips: [v] }), makeTrack({ kind: 'audio', locked: true, clips: [au] })])
+    const next = cutRange(seq, 2, 3)
+    expect(next.tracks[0].clips.map((c) => [c.startS, clipEndS(c)])).toEqual([
+      [0, 2],
+      [2, 9],
+    ])
+    expect(next.tracks[1].clips.map((c) => [c.startS, clipEndS(c)])).toEqual([[0, 10]])
+  })
+})

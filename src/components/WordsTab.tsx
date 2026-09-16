@@ -11,7 +11,7 @@
 // state/transcriptActions.ts. This file is only the surface.
 
 import { Ear, Scissors } from 'lucide-react'
-import { useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react'
 import { formatTimecode } from '../engine/timecode'
 import { wordSpan, wordsOnTimeline, type TimelineWord } from '../engine/transcriptCut'
 import { activeSequence } from '../engine/types'
@@ -56,6 +56,12 @@ export function WordsTab() {
     setAnchor(null)
     setFocus(null)
   }
+  // A different project is different words; a run picked in the last one must
+  // not arm the Cut button against this one.
+  useEffect(() => {
+    setAnchor(null)
+    setFocus(null)
+  }, [project.id])
   const cut = (): void => {
     if (!span) return
     cutWords(span.startS, span.endS, count)

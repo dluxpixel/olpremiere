@@ -10,6 +10,7 @@ import {
   transitionWindowsNear,
   upcomingCutHeads,
   liveUploadCap,
+  liveZoom,
   assetIdOfKey,
   incomingNeedsOwnElement,
   videoPoolKeyFor,
@@ -327,5 +328,41 @@ describe('the element a transition side plays on', () => {
     expect(key).toContain(TO_SIDE_SUFFIX)
     expect(assetIdOfKey(key)).toBe('take1')
     expect(assetIdOfKey('take1')).toBe('take1')
+  })
+})
+
+describe('what the live upload cap is told about zoom', () => {
+  const tf = { scale: 1, cropT: 0, cropR: 0, cropB: 0, cropL: 0 } as const
+  it('a landscape clip let sit in a vertical frame is smaller than the frame, so no extra rows', () => {
+    // 1920x1080 contain fit into 1080x1920 is 0.5625: the picture is 607 rows of 1920.
+    expect(liveZoom(tf, 1920, 1080, 1080, 1920)).toBeCloseTo(0.316, 2)
+  })
+  it('the same clip cropped at the sides to fill the frame is blown up 1.78x, and the cap must know', () => {
+    // Crop 34.4% off each side: 607 wide of 1920, fit grows it 1.78x to fill the height.
+    const cropped = { ...tf, cropL: 0.342, cropR: 0.342 }
+    expect(liveZoom(cropped, 1920, 1080, 1080, 1920)).toBeCloseTo(1, 1)
+  })
+  it('a tighter crop on every side magnifies more, by the side that limits the fit', () => {
+    // 384 wide of 1920 and 540 tall of 1080: the width limits, 1080/384 = 2.81, so 2.81 * 1080 / 1920.
+    const cropped = { ...tf, cropL: 0.4, cropR: 0.4, cropT: 0.25, cropB: 0.25 }
+    expect(liveZoom(cropped, 1920, 1080, 1080, 1920)).toBeCloseTo(1.58, 1)
+  })
+  it('a cover fit backdrop cropped top and bottom is blown up to fill the height', () => {
+    // 540 rows grown to fill 1920: 3.56x, and the monitor draws 1080 source rows across 1920 frame rows.
+    const backdrop = { ...tf, cropT: 0.25, cropB: 0.25, fit: 'cover' as const }
+    expect(liveZoom(backdrop, 1920, 1080, 1080, 1920)).toBeCloseTo(2, 1)
+  })
+  it('the clip\'s own scale still multiplies on top', () => {
+    const cropped = { ...tf, cropL: 0.342, cropR: 0.342, scale: 2 }
+    expect(liveZoom(cropped, 1920, 1080, 1080, 1920)).toBeCloseTo(2, 1)
+  })
+  it('an inner content box fits inside the box, not the whole frame', () => {
+    // A 1080x1080 square inside the 1080x1920 short: the cropped clip fills the square's 1080 rows of 1920.
+    const boxed = { ...tf, cropL: 0.219, cropR: 0.219, frame: { x: 0, y: 420, w: 1080, h: 1080 } }
+    expect(liveZoom(boxed, 1920, 1080, 1080, 1920)).toBeCloseTo(0.5625, 2)
+  })
+  it('falls back to the plain scale when the source or frame has no size yet', () => {
+    expect(liveZoom({ ...tf, scale: 1.5 }, 0, 0, 1080, 1920)).toBe(1.5)
+    expect(liveZoom(tf, 1920, 1080, 0, 0)).toBe(1)
   })
 })

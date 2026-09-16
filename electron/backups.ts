@@ -76,7 +76,9 @@ export function backupDir(): string {
 function fileName(projectName: string, when: Date, projectId?: string): string {
   const p = (n: number): string => String(n).padStart(2, '0')
   const stamp = `${when.getFullYear()}-${p(when.getMonth() + 1)}-${p(when.getDate())}_${p(when.getHours())}${p(when.getMinutes())}-${p(when.getSeconds())}`
-  const safe = (projectName || 'project').replace(/[^a-z0-9-_ ]/gi, '').trim().slice(0, 40) || 'project'
+  // Letters and digits from any language stay: a Czech or Japanese project name
+  // used to collapse to "project" and every backup of it shared one name.
+  const safe = (projectName || 'project').replace(/[^\p{L}\p{N}\-_ ]/gu, '').trim().slice(0, 40) || 'project'
   const short = (projectId ?? '').replace(/[^a-z0-9]/gi, '').slice(0, 8)
   return short ? `${stamp}_${short}_${safe}.olpbak` : `${stamp}_${safe}.olpbak`
 }

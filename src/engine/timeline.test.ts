@@ -8,6 +8,7 @@ import {
   defaultTitleDef,
   defaultTransform,
   newTitleClip,
+  repairLostAudioLinks,
   type Clip,
   type Id,
   type MediaAsset,
@@ -3521,5 +3522,71 @@ describe('a multi-clip drag keeps the grabbed clip and its selection together', 
     const a = findClip(out, 'a')!.clip
     const b = findClip(out, 'b')!.clip
     expect(b.startS - a.startS).toBeCloseTo(2, 6)
+  })
+})
+
+describe('deleting the sound of a linked pair on purpose', () => {
+  it('marks the video half so the next load does not hand its voice back', () => {
+    const v = makeClip({ startS: 0, outS: 4, linkId: 'g2' })
+    const a = makeClip({ startS: 0, outS: 4, linkId: 'g2' })
+    const seq = makeSeq([makeTrack({ clips: [v] }), makeTrack({ kind: 'audio', clips: [a] })])
+    const next = deleteClip(seq, a.id)
+    const survivor = findClip(next, v.id)!.clip
+    expect(survivor.linkId).toBe('g2')
+    expect(survivor.ownAudioOff).toBe(true)
+    // The same repair that runs on every load leaves it alone.
+    expect(repairLostAudioLinks(next.tracks)).toBe(next.tracks)
+  })
+
+  it('deleting the VIDEO half marks nothing: the audio clip keeps playing as before', () => {
+    const v = makeClip({ startS: 0, outS: 4, linkId: 'g3' })
+    const a = makeClip({ startS: 0, outS: 4, linkId: 'g3' })
+    const seq = makeSeq([makeTrack({ clips: [v] }), makeTrack({ kind: 'audio', clips: [a] })])
+    const next = deleteClip(seq, v.id)
+    expect(findClip(next, a.id)!.clip.ownAudioOff).toBeUndefined()
+  })
+})
+
+describe('hand made keyframes through a head trim', () => {
+  // A rotation keyframed 3 s into a 4 s clip, then the head trimmed by 1 s:
+  // the move was authored on the picture at source 3, which is now 2 s in.
+  const kf = (t: number, value: number) => ({ t, value, ease: 'linear' as const })
+
+  it('trimClipTo at the head keeps a keyframe on its source frame', () => {
+    const c = makeClip({ startS: 0, inS: 0, outS: 4, keyframes: { rotation: [kf(0, 0), kf(3, 90)] } })
+    const seq = makeSeq([makeTrack({ clips: [c] })])
+    const next = findClip(trimClipTo(seq, ASSETS, c.id, 'in', 1), c.id)!.clip
+    expect(next.startS).toBe(1)
+    expect(next.keyframes?.rotation?.map((k) => [k.t, k.value])).toEqual([
+      [0, 30], // the value at the new first frame, so nothing jumps
+      [2, 90],
+    ])
+  })
+
+  it('extending the head earlier shifts every keyframe later by the same amount', () => {
+    const c = makeClip({ startS: 2, inS: 2, outS: 6, keyframes: { rotation: [kf(0, 0), kf(3, 90)] } })
+    const seq = makeSeq([makeTrack({ clips: [c] })])
+    const next = findClip(trimClipTo(seq, ASSETS, c.id, 'in', 1), c.id)!.clip
+    expect(next.startS).toBe(1)
+    expect(next.keyframes?.rotation?.map((k) => k.t)).toEqual([1, 4])
+  })
+
+  it('a tail trim leaves keyframes where they are', () => {
+    const c = makeClip({ startS: 0, inS: 0, outS: 4, keyframes: { rotation: [kf(0, 0), kf(3, 90)] } })
+    const seq = makeSeq([makeTrack({ clips: [c] })])
+    const next = findClip(trimClipTo(seq, ASSETS, c.id, 'out', 2), c.id)!.clip
+    expect(next.keyframes?.rotation?.map((k) => k.t)).toEqual([0, 3])
+  })
+
+  it('the right side of a roll moves its keyframes with its first frame', () => {
+    const l = makeClip({ startS: 0, inS: 0, outS: 2 })
+    const r = makeClip({ startS: 2, inS: 2, outS: 6, keyframes: { rotation: [kf(0, 0), kf(2, 90)] } })
+    const seq = makeSeq([makeTrack({ clips: [l, r] })])
+    const next = findClip(rollEditTo(seq, ASSETS, l.id, r.id, 3), r.id)!.clip
+    expect(next.startS).toBe(3)
+    expect(next.keyframes?.rotation?.map((k) => [k.t, k.value])).toEqual([
+      [0, 45],
+      [1, 90],
+    ])
   })
 })

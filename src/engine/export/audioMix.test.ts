@@ -323,7 +323,7 @@ describe('mixToStereo', () => {
       opts,
     )
     expect(l[0]).toBeCloseTo(0, 6) // fade starts at silence
-    expect(l[12000]).toBeCloseTo(0.5 * 0.5 * HALF_POWER, 4) // halfway up the fade
+    expect(l[12000]).toBeCloseTo(0.5 * Math.SQRT1_2 * HALF_POWER, 4) // halfway up an equal power fade
     expect(l[24000]).toBeCloseTo(0.5 * HALF_POWER, 4) // full gain reached
   })
 

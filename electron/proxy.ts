@@ -364,9 +364,26 @@ function proxyArgs(inPath: string, outPath: string, encoder: 'qsv' | 'nvenc' | '
   ]
 }
 
+/** Every ffmpeg this module has running, so a quit can take them with it. */
+const children = new Set<ReturnType<typeof spawn>>()
+
+/** Kill every proxy encoder still running. For before-quit: synchronous, best effort. */
+export function killAllProxyChildren(): void {
+  for (const child of children) {
+    try {
+      child.kill()
+    } catch {
+      // Already gone.
+    }
+  }
+  children.clear()
+}
+
 function spawnFfmpeg(args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn(ffmpegPath(), args, { windowsHide: true })
+    children.add(child)
+    child.once('close', () => children.delete(child))
     // ⛔ IT RUNS BELOW EVERYTHING ELSE, ON PURPOSE. The pause in
     // src/engine/proxyMedia.ts can only stop the NEXT copy starting; it has no
     // handle on this one, and on a long recording this one is minutes of work. So

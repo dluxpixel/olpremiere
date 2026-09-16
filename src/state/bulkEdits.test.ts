@@ -402,3 +402,24 @@ describe('no-op guard', () => {
     expect(useStore.getState().project).toBe(before)
   })
 })
+
+describe('a hand shaped curve survives a bulk value nudge', () => {
+  it('keeps the keyframe curve he set, and only takes the shelf preference for a NEW keyframe', () => {
+    const a = seedTitle(0)
+    useStore.getState().setUI({ playheadS: 2 })
+    toggleChannelAnimation(a.id, 'scale')
+    // Shape the keyframe at the playhead by hand.
+    const shaped = channelKeyframes(clips()[0], 'scale').map((k) => ({ ...k, ease: 'easeInOut' as const }))
+    useStore.getState().dispatch('shape', (p) => {
+      const seq = p.sequences[p.activeSequenceId]
+      const tracks = seq.tracks.map((t) => ({
+        ...t,
+        clips: t.clips.map((c) => (c.id === a.id ? { ...c, keyframes: { ...c.keyframes, scale: shaped } } : c)),
+      }))
+      return { ...p, sequences: { ...p.sequences, [seq.id]: { ...seq, tracks } } }
+    })
+    setChannelForClips([a.id], 'scale', 3)
+    const kf = channelKeyframes(clips()[0], 'scale').find((k) => Math.abs(k.value - 3) < 1e-9)
+    expect(kf?.ease).toBe('easeInOut')
+  })
+})

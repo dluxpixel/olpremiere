@@ -311,6 +311,8 @@ export interface OlApi {
   backupRead(filePath: string): Promise<string>
   /** Open the backup folder in Explorer. */
   backupReveal(): Promise<void>
+  /** Open Explorer with the exported file selected, so he can find what he just made. */
+  exportReveal(filePath: string): Promise<void>
 
   /**
    * The project as a plain file, kept current on every save (electron/projectFiles.ts).

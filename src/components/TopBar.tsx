@@ -152,7 +152,13 @@ function RecordButton() {
 function ExportButton({ onOpen }: { onOpen: () => void }) {
   const canExport = useStore((s) => activeSequence(s.project).durationS > 0)
   return (
-    <Button variant="primary" data-testid="export-open" onClick={onOpen} disabled={!canExport}>
+    <Button
+      variant="primary"
+      data-testid="export-open"
+      onClick={onOpen}
+      disabled={!canExport}
+      title={canExport ? 'Export the video' : 'Put a clip on the timeline first, then this exports it'}
+    >
       <Download size={16} strokeWidth={1.5} />
       Export
     </Button>

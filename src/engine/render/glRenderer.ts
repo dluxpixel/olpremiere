@@ -636,6 +636,36 @@ uniform float uDither; // 1 only when the combine writes the frame's final 8-bit
 ${DITHER_GLSL}
 out vec4 outColor;
 
+// EVERY BLEND IN HERE RUNS IN LINEAR LIGHT. The inputs are sRGB encoded, and
+// the average of two encoded values is not the average of the two lights:
+// mixing black and white at 50% in encoded space gives 128, which is about a
+// fifth of the light, so a dissolve sagged dark through its middle and a fade
+// from black fell off a cliff at the end. Decode both sides once (in straight
+// colour, premultiplied alpha put back), mix, and encode the result before the
+// dither. Black, white and alpha are the same in both spaces, so the dips, the
+// flash and every coverage rule are untouched. The transfer is the exact
+// piecewise sRGB curve, which is what the pixels the app composes actually are.
+vec3 srgbToLinear(vec3 c) {
+  vec3 lo = c / 12.92;
+  vec3 hi = pow((c + 0.055) / 1.055, vec3(2.4));
+  return mix(lo, hi, step(vec3(0.04045), c));
+}
+vec3 linearToSrgb(vec3 c) {
+  vec3 lo = c * 12.92;
+  vec3 hi = 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055;
+  return mix(lo, hi, step(vec3(0.0031308), c));
+}
+/** Premultiplied sRGB sample to premultiplied linear light. Transparent stays black. */
+vec4 lin(vec4 s) {
+  return s.a > 0.0 ? vec4(srgbToLinear(clamp(s.rgb / s.a, 0.0, 1.0)) * s.a, s.a) : vec4(0.0);
+}
+/** Premultiplied linear light back to premultiplied sRGB, for the 8-bit write. */
+vec4 enc(vec4 s) {
+  return s.a > 0.0 ? vec4(linearToSrgb(clamp(s.rgb / s.a, 0.0, 1.0)) * s.a, s.a) : vec4(0.0);
+}
+vec4 fromAt(vec2 uv) { return lin(texture(uFrom, uv)); }
+vec4 toAt(vec2 uv) { return lin(texture(uTo, uv)); }
+
 // The dip solid is weighted by LOCAL COVERAGE. Both sides are premultiplied and
 // transparent wherever their clips do not cover the frame (renderSideToFbo clears
 // to transparent so a transition on an upper track lets lower tracks show
@@ -660,18 +690,18 @@ vec3 straight(vec4 s) {
  * alphas into one premultiplied result.
  */
 vec4 splitSample(sampler2D tex, vec2 uv, vec2 split) {
-  vec4 mid = texture(tex, uv);
+  vec4 mid = lin(texture(tex, uv));
   vec3 c = vec3(
-    straight(texture(tex, clamp(uv + split, 0.0, 1.0))).r,
+    straight(lin(texture(tex, clamp(uv + split, 0.0, 1.0)))).r,
     straight(mid).g,
-    straight(texture(tex, clamp(uv - split, 0.0, 1.0))).b
+    straight(lin(texture(tex, clamp(uv - split, 0.0, 1.0)))).b
   );
   return vec4(c * mid.a, mid.a);
 }
 
 void main() {
-  vec4 from = texture(uFrom, vUV);
-  vec4 to = texture(uTo, vUV);
+  vec4 from = fromAt(vUV);
+  vec4 to = toAt(vUV);
   float p = uProgress;
   vec4 col;
   if (uKind == 0) {            // crossDissolve
@@ -693,29 +723,29 @@ void main() {
     float lp = smoothstep(0.0, 1.0, p);
     vec2 fromUV = vec2(vUV.x + lp, vUV.y);
     vec2 toUV = vec2(vUV.x - (1.0 - lp), vUV.y);
-    vec4 f = (fromUV.x <= 1.0) ? texture(uFrom, fromUV) : vec4(0.0);
-    vec4 t = (toUV.x >= 0.0) ? texture(uTo, toUV) : vec4(0.0);
+    vec4 f = (fromUV.x <= 1.0) ? fromAt(fromUV) : vec4(0.0);
+    vec4 t = (toUV.x >= 0.0) ? toAt(toUV) : vec4(0.0);
     col = (toUV.x >= 0.0) ? t : f;
   } else if (uKind == 6) {     // slideRight: TO pushes in from the left
     float rp = smoothstep(0.0, 1.0, p);
     vec2 fromUV = vec2(vUV.x - rp, vUV.y);
     vec2 toUV = vec2(vUV.x + (1.0 - rp), vUV.y);
-    vec4 f = (fromUV.x >= 0.0) ? texture(uFrom, fromUV) : vec4(0.0);
-    vec4 t = (toUV.x <= 1.0) ? texture(uTo, toUV) : vec4(0.0);
+    vec4 f = (fromUV.x >= 0.0) ? fromAt(fromUV) : vec4(0.0);
+    vec4 t = (toUV.x <= 1.0) ? toAt(toUV) : vec4(0.0);
     col = (toUV.x <= 1.0) ? t : f;
   } else if (uKind == 7) {     // zoom: FROM punches in while TO settles from a deeper punch
     float zp = smoothstep(0.0, 1.0, p);
     vec2 ctr = vec2(0.5);
     vec2 fromUV = ctr + (vUV - ctr) / (1.0 + 0.6 * zp);
     vec2 toUV = ctr + (vUV - ctr) * (1.0 + 0.4 * (1.0 - zp));
-    vec4 f = texture(uFrom, fromUV);
+    vec4 f = fromAt(fromUV);
     // TO starts SHRUNK, so early in the transition its sample lands outside the
     // frame all the way round. Falling back to transparent black there mixed a
     // dark ring into all four edges; falling back to FROM means the incoming
     // shot punches in OVER the outgoing one, which is what a cross zoom is. The
     // ring closes on its own: at p=1 toUV == vUV, so nothing is out of range.
     bool tin = toUV.x >= 0.0 && toUV.x <= 1.0 && toUV.y >= 0.0 && toUV.y <= 1.0;
-    vec4 t = tin ? texture(uTo, toUV) : f;
+    vec4 t = tin ? toAt(toUV) : f;
     col = mix(f, t, zp);
   } else if (uKind == 8) {     // spin: whip-rotate FROM out while TO rotates in, both punched
     float sp = smoothstep(0.0, 1.0, p);
@@ -732,8 +762,8 @@ void main() {
     vec2 dF = (vUV - ctr) * vec2(asp, 1.0);
     vec2 rF = vec2(dF.x * cos(angF) - dF.y * sin(angF), dF.x * sin(angF) + dF.y * cos(angF));
     vec2 rT = vec2(dF.x * cos(angT) - dF.y * sin(angT), dF.x * sin(angT) + dF.y * cos(angT));
-    vec4 f = texture(uFrom, ctr + (rF / (1.0 + ${SPIN.punch.toFixed(4)} * sp)) * vec2(1.0 / asp, 1.0));
-    vec4 t = texture(uTo, ctr + (rT / (1.0 + ${SPIN.punch.toFixed(4)} * (1.0 - sp))) * vec2(1.0 / asp, 1.0));
+    vec4 f = fromAt(ctr + (rF / (1.0 + ${SPIN.punch.toFixed(4)} * sp)) * vec2(1.0 / asp, 1.0));
+    vec4 t = toAt(ctr + (rT / (1.0 + ${SPIN.punch.toFixed(4)} * (1.0 - sp))) * vec2(1.0 / asp, 1.0));
     col = mix(f, t, sp);
   } else if (uKind == 9) {     // glitch: sliced displacement + RGB split, peaking mid-cut
     float gi = p * (1.0 - p) * 4.0;
@@ -778,8 +808,10 @@ void main() {
     // PIP must flash THAT clip, not blow the whole frame white.
     col = mix(to, vec4(1.0) * max(from.a, to.a), a);
   }
-  // A dissolve, a dip and a whiteFlash are all ramps this shader invented, so
-  // this is the single biggest source of app-made banding in the whole path.
+  // Back to the encoding the 8-bit target stores, THEN the dither: a dissolve,
+  // a dip and a whiteFlash are all ramps this shader invented, so this is the
+  // single biggest source of app-made banding in the whole path.
+  col = enc(col);
   outColor = vec4(ditherPm(col.rgb, col.a, uDither, gl_FragCoord.xy, uSeed), col.a);
 }`
 

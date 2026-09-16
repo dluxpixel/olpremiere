@@ -9,6 +9,7 @@ import { markDoNotAutoRecover } from './recoveryMemory'
 import { planSequenceSplit } from './sequenceSplit'
 import { useToasts } from './toasts'
 import { migrateProject, type Project } from '../engine/types'
+import { parseStoredProject } from '../persistence/schema'
 import { useStore } from './store'
 
 const DB_NAME = 'reel'
@@ -95,10 +96,21 @@ export async function loadLastProject(): Promise<Project | null> {
  * never overwrites the solo project; Leave restores it through this). */
 export async function loadProjectById(id: string): Promise<Project | null> {
   const d = await db()
-  const p = (await d.get('projects', id)) as Project | undefined
+  const raw = await d.get('projects', id)
+  if (!raw) return null
+  // The gate the schema was written for and never wired to: a torn write, a
+  // hand edited record or a document from a future build must be refused here,
+  // not handed to migrate and the render engine, where a string where a number
+  // should be poisons the whole session. Checked against every project file on
+  // his disk before it went in (2026-09-16), and permissive by design: only
+  // the load bearing spine is typed, everything else passes through.
+  const p = parseStoredProject(raw)
+  if (!p) {
+    console.error(`OL Premiere: project ${id} is not a readable document and was not opened`)
+    return null
+  }
   // Shape migration first (tracks/mixer fields), then the colour bag -> effect
   // stack move. Both are idempotent, so a re-load is free.
-  if (!p) return null
   return splitLegacySequences(migrateProjectEffects(migrateProject(p)))
 }
 
@@ -388,17 +400,40 @@ let autosaveFailing = false
  * green "Project saved", the updater relaunched the app, and opening another
  * project overwrote the unsaved one.
  */
-async function flushSave(): Promise<void> {
-  const { setUI } = useStore.getState()
-  setUI({ saveState: 'saving' })
-  try {
-    await saveProject(useStore.getState().project)
-    setUI({ saveState: 'saved' })
-  } catch (err) {
-    console.error('OL Premiere autosave failed', err)
-    setUI({ saveState: 'unsaved' })
-    throw err
+let saving: Promise<void> | null = null
+let saveAgain = false
+
+/**
+ * One save at a time. A second edit landing while the file write is still on
+ * its way to disk used to start a second write beside it, and two writes of
+ * the same file with no order between them can leave the older one on disk
+ * under a newer store. Now a request during a save waits for it and runs once
+ * more after, with whatever the project is by then.
+ */
+function flushSave(): Promise<void> {
+  if (saving) {
+    saveAgain = true
+    return saving
   }
+  saving = (async () => {
+    const { setUI } = useStore.getState()
+    setUI({ saveState: 'saving' })
+    try {
+      await saveProject(useStore.getState().project)
+      setUI({ saveState: 'saved' })
+    } catch (err) {
+      console.error('OL Premiere autosave failed', err)
+      setUI({ saveState: 'unsaved' })
+      throw err
+    } finally {
+      saving = null
+      if (saveAgain) {
+        saveAgain = false
+        void flushSave().catch(() => undefined)
+      }
+    }
+  })()
+  return saving
 }
 
 /** Save immediately (Ctrl+S). Rejects when the write failed (see flushSave). */
@@ -440,6 +475,16 @@ export function initPersistence(): Promise<void> {
       if (p && s.history.undo.length === 0) s.setProject(p)
     })
     .catch((err) => console.error('OL Premiere project load failed', err))
+
+  // An edit made in the last second before the window closes was inside the
+  // debounce and never written. pagehide fires on close where beforeunload is
+  // unreliable; the backup path already listens for it. Best effort: the store
+  // write lands, and the file write gets whatever time the close allows.
+  window.addEventListener('pagehide', () => {
+    if (useStore.getState().ui.saveState === 'saved') return
+    window.clearTimeout(saveTimer)
+    void flushSave().catch(() => undefined)
+  })
 
   useStore.subscribe(
     (s) => s.project,

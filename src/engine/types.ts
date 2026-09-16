@@ -355,6 +355,13 @@ export interface Clip {
    */
   linkId?: Id
   /**
+   * He deleted this clip's sound on purpose (the audio half of its linked pair
+   * went, this half stayed). Set by the delete, honoured by clipEmitsAudio, and
+   * what tells repairLostAudioLinks on the next load that the missing partner
+   * is not a lost link to put back. Without it the clip came back talking.
+   */
+  ownAudioOff?: true
+  /**
    * Noise-reduction strength 0..1 (RNNoise dry/wet). Absent = off. NON-
    * destructive: the recording stays raw; this only changes which samples the
    * mixers read (engine/audio.ts clipAudioBuffer), so it can be A/B'd and
@@ -791,6 +798,8 @@ export function repairLostAudioLinks(tracks: Track[]): Track[] {
     let trackChanged = false
     const clips = t.clips.map((c) => {
       if (c.linkId === undefined) return c
+      // His own delete, not a lost link: the sound stays gone.
+      if (c.ownAudioOff) return c
       if (members.get(c.linkId) !== 1) return c
       if (assetsWithAudio.has(c.assetId)) return c
       trackChanged = true

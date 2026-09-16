@@ -26,6 +26,7 @@ export interface HoverScrub {
     onPointerEnter: (e: ReactPointerEvent<HTMLElement>) => void
     onPointerMove: (e: ReactPointerEvent<HTMLElement>) => void
     onPointerLeave: () => void
+    onPointerCancel: () => void
   }
   /** Wire to the <video>'s onLoadedMetadata and onSeeked. */
   onReady: () => void
@@ -86,7 +87,10 @@ export function useHoverScrub(asset: MediaAsset, fps: number): HoverScrub {
     tS,
     xPx,
     videoRef,
-    handlers: { onPointerEnter: onPointerMove, onPointerMove, onPointerLeave },
+    // pointercancel too: the card is draggable, and a native drag that starts on
+    // the picture never sends the leave, so without this the video stayed mounted
+    // and decoding through the whole drag.
+    handlers: { onPointerEnter: onPointerMove, onPointerMove, onPointerLeave, onPointerCancel: onPointerLeave },
     onReady,
   }
 }

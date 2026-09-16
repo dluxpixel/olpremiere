@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
   clipGainEnvelope,
+  FADE_KNOTS,
   compressorParamsFor,
   computeClipSchedule,
   dbToGain,
@@ -177,6 +178,10 @@ describe('computeClipSchedule', () => {
   })
 })
 
+/** The envelope's value at an exact knot time. */
+const at = (env: { offsetS: number; value: number }[], t: number): number =>
+  env.find((p) => Math.abs(p.offsetS - t) < 1e-9)!.value
+
 describe('clipGainEnvelope', () => {
   // clip [0,4) at unity gain unless overridden.
   it('no fades → flat at the static gain across the window', () => {
@@ -193,42 +198,53 @@ describe('clipGainEnvelope', () => {
     expect(env.at(-1)!.value).toBeCloseTo(0.501, 3)
   })
 
-  it('fade in only: 0 → g over fadeInS', () => {
-    const env = clipGainEnvelope(clip({ fadeInS: 1 }), 0)
-    expect(env).toEqual([
-      { offsetS: 0, value: 0 },
-      { offsetS: 1, value: 1 },
-      { offsetS: 4, value: 1 },
-    ])
+  // Fades are EQUAL POWER: sin(u * pi/2) of the fade's progress, drawn with
+  // FADE_KNOTS linear segments. Two of them overlapping (an audio crossfade)
+  // therefore sum to one in power all the way across, where two straight
+  // lines left a 3 dB hole in the middle.
+
+  it('fade in only: 0 to g over fadeInS on the equal power curve, then flat', () => {
+    const env = clipGainEnvelope(clip({ fadeInS: 1 }), 0)!
+    expect(env[0]).toEqual({ offsetS: 0, value: 0 })
+    expect(at(env, 0.5)).toBeCloseTo(Math.SQRT1_2, 6) // half way is -3 dB, not -6
+    expect(at(env, 1)).toBeCloseTo(1, 9)
+    expect(env.at(-1)).toEqual({ offsetS: 4, value: 1 })
+    expect(env.filter((p) => p.offsetS > 0 && p.offsetS < 1)).toHaveLength(FADE_KNOTS - 1)
   })
 
-  it('fade out only: g → 0 over fadeOutS', () => {
-    const env = clipGainEnvelope(clip({ fadeOutS: 1 }), 0)
-    expect(env).toEqual([
-      { offsetS: 0, value: 1 },
-      { offsetS: 3, value: 1 },
-      { offsetS: 4, value: 0 },
-    ])
+  it('fade out only: g to 0 over fadeOutS on the same curve', () => {
+    const env = clipGainEnvelope(clip({ fadeOutS: 1 }), 0)!
+    expect(env[0]).toEqual({ offsetS: 0, value: 1 })
+    expect(at(env, 3)).toBeCloseTo(1, 9)
+    expect(at(env, 3.5)).toBeCloseTo(Math.SQRT1_2, 6)
+    expect(env.at(-1)).toEqual({ offsetS: 4, value: 0 })
   })
 
-  it('both fades: trapezoid 0 → g → g → 0', () => {
-    const env = clipGainEnvelope(clip({ fadeInS: 1, fadeOutS: 1 }), 0)
-    expect(env).toEqual([
-      { offsetS: 0, value: 0 },
-      { offsetS: 1, value: 1 },
-      { offsetS: 3, value: 1 },
-      { offsetS: 4, value: 0 },
-    ])
+  it('a crossfade holds its level: the outgoing fade and the incoming fade sum to one in power', () => {
+    const out = clipGainEnvelope(clip({ fadeOutS: 1 }), 0)!
+    const inn = clipGainEnvelope(clip({ fadeInS: 1 }), 0)!
+    for (let s = 0; s <= FADE_KNOTS; s++) {
+      const u = s / FADE_KNOTS
+      const a = at(out, 3 + u) // progress u through the fade out
+      const b = at(inn, u) // progress u through the fade in
+      expect(a * a + b * b).toBeCloseTo(1, 6)
+    }
+  })
+
+  it('both fades: 0 up to g, flat, then down to 0', () => {
+    const env = clipGainEnvelope(clip({ fadeInS: 1, fadeOutS: 1 }), 0)!
+    expect(env[0]).toEqual({ offsetS: 0, value: 0 })
+    expect(at(env, 1)).toBeCloseTo(1, 9)
+    expect(at(env, 3)).toBeCloseTo(1, 9)
+    expect(env.at(-1)).toEqual({ offsetS: 4, value: 0 })
   })
 
   it('overlapping fades on a short clip scale down proportionally (no overlap)', () => {
-    // window length 2, fades 2+2 → scaled to 1+1, peak g at the center
-    const env = clipGainEnvelope(clip({ outS: 2, fadeInS: 2, fadeOutS: 2 }), 0)
-    expect(env).toEqual([
-      { offsetS: 0, value: 0 },
-      { offsetS: 1, value: 1 },
-      { offsetS: 2, value: 0 },
-    ])
+    // window length 2, fades 2+2 scale to 1+1, peak g at the centre
+    const env = clipGainEnvelope(clip({ outS: 2, fadeInS: 2, fadeOutS: 2 }), 0)!
+    expect(env[0]).toEqual({ offsetS: 0, value: 0 })
+    expect(at(env, 1)).toBeCloseTo(1, 9)
+    expect(env.at(-1)).toEqual({ offsetS: 2, value: 0 })
   })
 
   it('volume keyframes bake into the envelope as dB sampled at each knot', () => {
@@ -343,29 +359,31 @@ describe('clipGainEnvelope', () => {
     // constant-gain math when no keyframes exist.
     const env = clipGainEnvelope(clip({ audioGainDb: -6, fadeInS: 1, fadeOutS: 1 }), 0)!
     const g = 10 ** (-6 / 20)
-    expect(env.map((p) => p.offsetS)).toEqual([0, 1, 3, 4])
-    expect(env[0].value).toBe(0)
-    expect(env[1].value).toBeCloseTo(g, 9)
-    expect(env[2].value).toBeCloseTo(g, 9)
-    expect(env[3].value).toBe(0)
+    // The two fades are drawn with FADE_KNOTS segments each; between them the plateau is the static gain.
+    expect(env.map((p) => p.offsetS)).toHaveLength(2 * FADE_KNOTS + 2)
+    expect(env[0]).toEqual({ offsetS: 0, value: 0 })
+    expect(at(env, 1)).toBeCloseTo(g, 9)
+    expect(at(env, 3)).toBeCloseTo(g, 9)
+    expect(at(env, 0.5)).toBeCloseTo(g * Math.SQRT1_2, 9)
+    expect(env.at(-1)).toEqual({ offsetS: 4, value: 0 })
   })
 
   it('starting mid fade-in sets the partial level then ramps to g', () => {
     // fromS=1 lands halfway through a 2s fade-in on clip [0,4)
     const env = clipGainEnvelope(clip({ fadeInS: 2 }), 1)!
-    expect(env[0]).toEqual({ offsetS: 0, value: 0.5 })
-    expect(env[1]).toEqual({ offsetS: 1, value: 1 }) // reaches g at t=2 → offset 1
+    expect(env[0].offsetS).toBe(0)
+    expect(env[0].value).toBeCloseTo(Math.SQRT1_2, 9) // half way up an equal power fade is -3 dB
+    expect(at(env, 1)).toBeCloseTo(1, 9) // reaches g at t=2, offset 1
     expect(env.at(-1)).toEqual({ offsetS: 3, value: 1 })
   })
 
   it('half-speed clip fades over the STRETCHED timeline window', () => {
     // source [0,2) at speed 0.5 → timeline window [0,4); fade-out 1s ends at t=4
-    const env = clipGainEnvelope(clip({ outS: 2, speed: 0.5, fadeOutS: 1 }), 0)
-    expect(env).toEqual([
-      { offsetS: 0, value: 1 },
-      { offsetS: 3, value: 1 },
-      { offsetS: 4, value: 0 },
-    ])
+    const env = clipGainEnvelope(clip({ outS: 2, speed: 0.5, fadeOutS: 1 }), 0)!
+    expect(env[0]).toEqual({ offsetS: 0, value: 1 })
+    expect(at(env, 3)).toBeCloseTo(1, 9)
+    expect(at(env, 3.5)).toBeCloseTo(Math.SQRT1_2, 9)
+    expect(env.at(-1)).toEqual({ offsetS: 4, value: 0 })
   })
 
   it('returns null when the clip contributes no audio', () => {

@@ -24,7 +24,10 @@ describe('the preview names the reason it cannot draw', () => {
     // so nothing downstream ever logged it.
     const fn = preview.slice(preview.indexOf('function rendererFor('), preview.indexOf('// Pair-transition pre-roll'))
     expect(fn).toContain('if (!gl) {')
-    expect((fn.match(/noPictureReasons\.set\(/g) ?? []).length).toBe(2)
+    // Four since 2026-09-16: the two ways a renderer never exists, and the two
+    // ways a lost graphics context is caught (the event, and the check before
+    // a cached renderer is handed back).
+    expect((fn.match(/noPictureReasons\.set\(/g) ?? []).length).toBe(4)
   })
 
   it('exposes the reason to the Monitor', () => {
@@ -42,7 +45,7 @@ describe('the preview names the reason it cannot draw', () => {
 
   it('says it once, not on every frame', () => {
     expect(monitor).toContain('let reportedNoPicture = false')
-    expect(monitor).toContain('if (!reportedNoPicture) {')
+    expect(monitor).toContain('if (why && !reportedNoPicture) {')
   })
 })
 
