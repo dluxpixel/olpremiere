@@ -3590,3 +3590,27 @@ describe('hand made keyframes through a head trim', () => {
     ])
   })
 })
+
+describe('trimGroup agrees the edge before cutting', () => {
+  it('⛔ a linked pair stays one length when only the audio neighbour blocks', () => {
+    // Video is free to reach 5; the audio half has a neighbour at 3.5. The old
+    // code took the video to 5 and the audio to 3.5, and the pair was out of
+    // sync from then on with nothing on screen to say so.
+    const v = makeClip({ startS: 0, inS: 0, outS: 3, linkId: 'p1' })
+    const a = makeClip({ startS: 0, inS: 0, outS: 3, linkId: 'p1' })
+    const later = makeClip({ startS: 3.5, inS: 0, outS: 2 })
+    const seq = makeSeq([makeTrack({ clips: [v] }), makeTrack({ kind: 'audio', clips: [a, later] })])
+    const next = trimGroup(seq, ASSETS, v.id, 'out', 5)
+    expect(clipEndS(findClip(next, v.id)!.clip)).toBe(3.5)
+    expect(clipEndS(findClip(next, a.id)!.clip)).toBe(3.5)
+  })
+
+  it('an unblocked pair still reaches the drag', () => {
+    const v = makeClip({ startS: 0, inS: 0, outS: 3, linkId: 'p2' })
+    const a = makeClip({ startS: 0, inS: 0, outS: 3, linkId: 'p2' })
+    const seq = makeSeq([makeTrack({ clips: [v] }), makeTrack({ kind: 'audio', clips: [a] })])
+    const next = trimGroup(seq, ASSETS, v.id, 'out', 5)
+    expect(clipEndS(findClip(next, v.id)!.clip)).toBe(5)
+    expect(clipEndS(findClip(next, a.id)!.clip)).toBe(5)
+  })
+})

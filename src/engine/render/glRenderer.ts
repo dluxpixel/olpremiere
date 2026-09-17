@@ -185,6 +185,38 @@ export function progressWithSides(
 // Deterministic by construction: a pure function of gl_FragCoord and uSeed (the
 // resolver frame index), so preview and export generate identical noise, which
 // is the invariant the shared renderer exists to protect.
+// THE WHOLE COMPOSITE RUNS IN LINEAR LIGHT, since 2026-09-17.
+//
+// Every source texture and every framebuffer is SRGB8_ALPHA8: the GPU decodes
+// on every sample and encodes on every write, so filtering, blending, opacity,
+// fades, dissolves, blurs and glows all happen on light, and the 8 bit storage
+// stays perceptual so nothing bands. The one place values are encoded by hand
+// is the final blit to the canvas (the canvas cannot be sRGB), which is also
+// the one place the dither belongs, on the number the canvas is about to round.
+//
+// The pointwise effects (exposure, curves, saturation, the grades he has
+// tuned on his own projects) still see ENCODED values: the layer shader
+// encodes what it sampled before the stack and decodes after it, so every look
+// he saved renders as it did. Blend modes are wrapped the same way, because
+// overlay and soft light are defined on encoded values. Blur, glow, sharpen
+// and the motion smear run on light, which is what they always should have.
+const SRGB_GLSL = `
+vec3 srgbToLinear(vec3 c) {
+  vec3 lo = c / 12.92;
+  vec3 hi = pow((c + 0.055) / 1.055, vec3(2.4));
+  return mix(lo, hi, step(vec3(0.04045), c));
+}
+vec3 linearToSrgb(vec3 c) {
+  vec3 lo = c * 12.92;
+  vec3 hi = 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055;
+  return mix(lo, hi, step(vec3(0.0031308), c));
+}
+/** Premultiplied linear light to premultiplied encoded, for the canvas write. */
+vec4 encodePm(vec4 s) {
+  return s.a > 0.0 ? vec4(linearToSrgb(clamp(s.rgb / s.a, 0.0, 1.0)) * s.a, s.a) : vec4(0.0);
+}
+`
+
 const DITHER_GLSL = `
 float ditherTpdf(vec2 p, float seed) {
   vec2 q = p + fract(seed * 0.0173) * 131.0;
@@ -391,6 +423,7 @@ uniform float uDither; // 1 only when this draw writes the frame's final 8-bit t
 ${maskDecls}
 ${decls.join('\n')}
 ${DITHER_GLSL}
+${SRGB_GLSL}
 ${bicubic ? BICUBIC_GLSL : ''}
 out vec4 outColor;
 void main() {
@@ -406,11 +439,18 @@ void main() {
     return;
   }
   vec4 src = ${bicubic ? 'olpBicubic(uTex, vUV, uUVRect)' : 'texture(uTex, vUV)'};
-  vec3 c = src.rgb;
+  // The sample is LINEAR light (sRGB texture, decoded and filtered by the
+  // GPU). The effect stack was written for encoded values and his saved looks
+  // depend on that, so when there IS a stack it runs on the encoded picture
+  // and the result is decoded again before it is premultiplied and blended,
+  // in light. A layer with no pointwise effect, which is most of them, skips
+  // the two conversions: the program is built per stack, so this is decided
+  // once at compile time and costs nothing per pixel.
+  vec3 c = ${bodies.length > 0 ? 'linearToSrgb(clamp(src.rgb, 0.0, 1.0))' : 'clamp(src.rgb, 0.0, 1.0)'};
   float a = src.a * uOpacity;
 ${maskBody}
 ${bodies.join('\n')}
-  c = clamp(c, 0.0, 1.0);
+  c = ${bodies.length > 0 ? 'srgbToLinear(clamp(c, 0.0, 1.0))' : 'clamp(c, 0.0, 1.0)'};
   // Premultiply FIRST, then dither: the noise has to sit on the number the
   // framebuffer is about to round, not on the straight colour behind it.
   outColor = vec4(ditherPm(c * a, a, uDither, gl_FragCoord.xy, uSeed), a);
@@ -463,10 +503,13 @@ in vec2 vUV;
 uniform sampler2D uTex;
 uniform float uSeed;
 uniform float uDither;
+uniform float uEncode; // 1 on the one blit that lands on the canvas, which is not sRGB
 ${DITHER_GLSL}
+${SRGB_GLSL}
 out vec4 outColor;
 void main() {
   vec4 c = texture(uTex, vUV);
+  if (uEncode > 0.5) c = encodePm(c);
   outColor = vec4(ditherPm(c.rgb, c.a, uDither, gl_FragCoord.xy, uSeed), c.a);
 }`
 
@@ -549,12 +592,16 @@ uniform int uMode; // 0 = overlay, 1 = soft light, 2 = inverted backdrop
 uniform float uSeed;
 uniform float uDither;
 ${DITHER_GLSL}
+${SRGB_GLSL}
 out vec4 outColor;
 void main() {
   vec4 dst = texture(uDst, vUV);
   vec4 src = texture(uSrc, vUV);
-  vec3 d = dst.a > 0.0 ? dst.rgb / dst.a : vec3(0.0);
-  vec3 s = src.a > 0.0 ? src.rgb / src.a : vec3(0.0);
+  // Overlay and soft light are defined on ENCODED values (the Photoshop
+  // formulas), so both sides are encoded for the formula and the result is
+  // decoded again before the premultiplied write, which the sRGB target encodes.
+  vec3 d = linearToSrgb(clamp(dst.a > 0.0 ? dst.rgb / dst.a : vec3(0.0), 0.0, 1.0));
+  vec3 s = linearToSrgb(clamp(src.a > 0.0 ? src.rgb / src.a : vec3(0.0), 0.0, 1.0));
   vec3 b;
   if (uMode == 0) {
     b = mix(2.0 * d * s, 1.0 - 2.0 * (1.0 - d) * (1.0 - s), step(0.5, d));
@@ -575,7 +622,7 @@ void main() {
     // edge as soon as the fill is not pure white.
     b = vec3(1.0) - d;
   }
-  vec3 outRgb = mix(d, b, src.a);
+  vec3 outRgb = srgbToLinear(clamp(mix(d, b, src.a), 0.0, 1.0));
   float outA = clamp(dst.a + src.a * (1.0 - dst.a), 0.0, 1.0);
   outColor = vec4(ditherPm(outRgb * outA, outA, uDither, gl_FragCoord.xy, uSeed), outA);
 }`
@@ -636,35 +683,15 @@ uniform float uDither; // 1 only when the combine writes the frame's final 8-bit
 ${DITHER_GLSL}
 out vec4 outColor;
 
-// EVERY BLEND IN HERE RUNS IN LINEAR LIGHT. The inputs are sRGB encoded, and
-// the average of two encoded values is not the average of the two lights:
-// mixing black and white at 50% in encoded space gives 128, which is about a
-// fifth of the light, so a dissolve sagged dark through its middle and a fade
-// from black fell off a cliff at the end. Decode both sides once (in straight
-// colour, premultiplied alpha put back), mix, and encode the result before the
-// dither. Black, white and alpha are the same in both spaces, so the dips, the
-// flash and every coverage rule are untouched. The transfer is the exact
-// piecewise sRGB curve, which is what the pixels the app composes actually are.
-vec3 srgbToLinear(vec3 c) {
-  vec3 lo = c / 12.92;
-  vec3 hi = pow((c + 0.055) / 1.055, vec3(2.4));
-  return mix(lo, hi, step(vec3(0.04045), c));
-}
-vec3 linearToSrgb(vec3 c) {
-  vec3 lo = c * 12.92;
-  vec3 hi = 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055;
-  return mix(lo, hi, step(vec3(0.0031308), c));
-}
-/** Premultiplied sRGB sample to premultiplied linear light. Transparent stays black. */
-vec4 lin(vec4 s) {
-  return s.a > 0.0 ? vec4(srgbToLinear(clamp(s.rgb / s.a, 0.0, 1.0)) * s.a, s.a) : vec4(0.0);
-}
-/** Premultiplied linear light back to premultiplied sRGB, for the 8-bit write. */
-vec4 enc(vec4 s) {
-  return s.a > 0.0 ? vec4(linearToSrgb(clamp(s.rgb / s.a, 0.0, 1.0)) * s.a, s.a) : vec4(0.0);
-}
-vec4 fromAt(vec2 uv) { return lin(texture(uFrom, uv)); }
-vec4 toAt(vec2 uv) { return lin(texture(uTo, uv)); }
+// EVERY BLEND IN HERE RUNS IN LINEAR LIGHT. Both sides are sRGB framebuffers,
+// so the sampler hands back light and the target encodes on the write: the
+// average of two encoded values is not the average of two lights (black and
+// white mixed at 50% in encoded space is 128, a fifth of the light), which is
+// why a dissolve used to sag dark through its middle and a fade from black
+// fell off a cliff at the end. Black, white and alpha are the same in both
+// spaces, so the dips, the flash and every coverage rule are untouched.
+vec4 fromAt(vec2 uv) { return texture(uFrom, uv); }
+vec4 toAt(vec2 uv) { return texture(uTo, uv); }
 
 // The dip solid is weighted by LOCAL COVERAGE. Both sides are premultiplied and
 // transparent wherever their clips do not cover the frame (renderSideToFbo clears
@@ -690,11 +717,11 @@ vec3 straight(vec4 s) {
  * alphas into one premultiplied result.
  */
 vec4 splitSample(sampler2D tex, vec2 uv, vec2 split) {
-  vec4 mid = lin(texture(tex, uv));
+  vec4 mid = texture(tex, uv);
   vec3 c = vec3(
-    straight(lin(texture(tex, clamp(uv + split, 0.0, 1.0)))).r,
+    straight(texture(tex, clamp(uv + split, 0.0, 1.0))).r,
     straight(mid).g,
-    straight(lin(texture(tex, clamp(uv - split, 0.0, 1.0)))).b
+    straight(texture(tex, clamp(uv - split, 0.0, 1.0))).b
   );
   return vec4(c * mid.a, mid.a);
 }
@@ -808,10 +835,9 @@ void main() {
     // PIP must flash THAT clip, not blow the whole frame white.
     col = mix(to, vec4(1.0) * max(from.a, to.a), a);
   }
-  // Back to the encoding the 8-bit target stores, THEN the dither: a dissolve,
-  // a dip and a whiteFlash are all ramps this shader invented, so this is the
-  // single biggest source of app-made banding in the whole path.
-  col = enc(col);
+  // The target is an sRGB framebuffer and encodes the write itself; the dither
+  // for a dissolve, a dip and a whiteFlash, the ramps this shader invents,
+  // happens once, on the final blit to the canvas.
   outColor = vec4(ditherPm(col.rgb, col.a, uDither, gl_FragCoord.xy, uSeed), col.a);
 }`
 
@@ -1003,6 +1029,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     uTex: gl.getUniformLocation(blitProg, 'uTex'),
     uSeed: gl.getUniformLocation(blitProg, 'uSeed'),
     uDither: gl.getUniformLocation(blitProg, 'uDither'),
+    uEncode: gl.getUniformLocation(blitProg, 'uEncode'),
   }
   const sharpenLoc = {
     aPos: gl.getAttribLocation(sharpenProg, 'aPos'),
@@ -1096,7 +1123,9 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
       const tex = hit?.tex ?? gl.createTexture()!
       gl.bindTexture(gl.TEXTURE_2D, tex)
       if (!hit) setTexParams(mipmapSources)
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source)
+      // An sRGB texture: the GPU decodes on every sample, so bilinear, bicubic
+      // and the mip chain all filter light, not encoded numbers.
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.SRGB8_ALPHA8, gl.RGBA, gl.UNSIGNED_BYTE, source)
       // Stable sources upload once, so the mip chain is built once and then
       // only re-bound. Cache hits above never pay for generateMipmap.
       if (mipmapSources) gl.generateMipmap(gl.TEXTURE_2D)
@@ -1116,7 +1145,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     if (srcTexW === texW && srcTexH === texH) {
       gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, source)
     } else {
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source)
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.SRGB8_ALPHA8, gl.RGBA, gl.UNSIGNED_BYTE, source)
       srcTexW = texW
       srcTexH = texH
     }
@@ -1155,7 +1184,8 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     gl.activeTexture(gl.TEXTURE0)
     gl.bindTexture(gl.TEXTURE_2D, destCapTex)
     if (w !== destCapW || h !== destCapH) {
-      gl.copyTexImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 0, 0, w, h, 0)
+      // The same sRGB storage as the target it copies, so a sample of it is light too.
+      gl.copyTexImage2D(gl.TEXTURE_2D, 0, gl.SRGB8_ALPHA8, 0, 0, w, h, 0)
       destCapW = w
       destCapH = h
     } else {
@@ -1179,7 +1209,8 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     const fb = gl.createFramebuffer()
     if (!tex || !fb) throw new Error('FBO alloc failed')
     gl.bindTexture(gl.TEXTURE_2D, tex)
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null)
+    // sRGB storage: blends land in linear light and the bytes stay perceptual.
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.SRGB8_ALPHA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
@@ -1661,12 +1692,13 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
    * exact copy they were) and `ditherAmt` for the two blits that land on the
    * frame's final target.
    */
-  function blitFbo(fbo: Fbo, dither = 0): void {
+  function blitFbo(fbo: Fbo, dither = 0, encode = 0): void {
     gl.useProgram(blitProg)
     bindFull(blitLoc.aPos)
     gl.uniform1i(blitLoc.uTex, 0)
     if (blitLoc.uSeed) gl.uniform1f(blitLoc.uSeed, ditherSeed)
     if (blitLoc.uDither) gl.uniform1f(blitLoc.uDither, dither)
+    if (blitLoc.uEncode) gl.uniform1f(blitLoc.uEncode, encode)
     gl.activeTexture(gl.TEXTURE0)
     gl.bindTexture(gl.TEXTURE_2D, fbo.tex)
     gl.drawArrays(gl.TRIANGLES, 0, 3)
@@ -1821,19 +1853,21 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
   function render(frame: RenderFrame, tex: TextureSource): void {
     const frameW = frame.width
     const frameH = frame.height
-    // Adjustment frames composite into an accumulation FBO (pool[5]) so the
-    // adjustment stack can re-read the whole frame; everything else keeps the
-    // byte-stable straight-to-canvas path. pool[6] is the adjustment work FBO;
-    // glow's lazy pool[4] stays free in both paths.
+    // EVERY frame composites into the sRGB accumulator (pool[5]) and is blitted
+    // to the canvas at the end. The canvas cannot be sRGB, so a layer blended
+    // straight onto it blended in encoded space, which is the fade that fell
+    // off a cliff; the straight-to-canvas path is gone. pool[6] is the
+    // adjustment work FBO; glow's lazy pool[4] stays free. One extra full frame
+    // copy per frame is the whole cost.
     const hasAdjustment = frame.ops.some((op) => op.type === 'adjustment')
     // Output dither for THIS frame, decided from the sequence raster rather than
     // the canvas so preview and export agree even when the preview panel is a
     // third of the size. Sub-HD gets 0, which is the untouched legacy path.
     ditherAmt = ditherRaster(frameW, frameH) ? 1 : 0
     ditherSeed = frameSeedOf(frame.ops)
-    ensurePool(frameW, frameH, hasAdjustment ? 7 : 4)
-    const accum = hasAdjustment ? pool[5] : null
-    const targetFb = accum ? accum.fb : null
+    ensurePool(frameW, frameH, 7)
+    const accum = pool[5]
+    const targetFb = accum.fb
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, targetFb)
     gl.viewport(0, 0, targetFb ? fboW : gl.canvas.width, targetFb ? fboH : gl.canvas.height)
@@ -1847,16 +1881,15 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
         compositeLayer(op.layer, source, frameW, frameH, targetFb, pool[2], pool[3])
       } else if (op.type === 'transition') {
         drawTransition(op, tex, frameW, frameH, targetFb)
-      } else if (accum) {
+      } else if (hasAdjustment) {
         applyAdjustment(op, accum, pool[6], pool[3], frameW, frameH)
       }
     }
-    if (accum) {
-      gl.bindFramebuffer(gl.FRAMEBUFFER, null)
-      gl.viewport(0, 0, gl.canvas.width, gl.canvas.height)
-      gl.disable(gl.BLEND)
-      blitFbo(accum, ditherAmt)
-    }
+    // The one write the canvas rounds: encode from light here, and dither here.
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+    gl.viewport(0, 0, gl.canvas.width, gl.canvas.height)
+    gl.disable(gl.BLEND)
+    blitFbo(accum, ditherAmt, 1)
     gl.bindVertexArray(null)
   }
 

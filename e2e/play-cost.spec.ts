@@ -94,6 +94,15 @@ async function measure(page: Page, wanted: number): Promise<{ clips: number; nod
     const state = useStore.getState() as { project: { assets: unknown } }
     const seq = activeSequence(state.project)
     const clips = audioClips(seq).length
+    // Let the app finish what the edit above started BEFORE the clock starts:
+    // React laying out 400 clip views, their waveforms, and the monitor's frame
+    // of them. scheduleAudio awaits, and any of that landing inside one of its
+    // awaits was counted as scheduling; measured on the shipped code, one in
+    // three runs carried a 120 to 180 ms block that was never the scheduler,
+    // and under the software GL these tests run on a frame is heavier still.
+    // This waits until the main thread is idle, it does not sleep.
+    await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))
+    await new Promise<void>((r) => requestIdleCallback(() => r(), { timeout: 3000 }))
     const t0 = performance.now()
     const stop = await scheduleAudio(seq, state.project.assets, 0)
     const ms = performance.now() - t0

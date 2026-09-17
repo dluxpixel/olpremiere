@@ -117,9 +117,14 @@ export function MasterMeter() {
       if (rFill.current) rFill.current.style.height = `${(1 - fr) * 100}%`
       if (lHold.current) lHold.current.style.bottom = `${holdL * 100}%`
       if (rHold.current) rHold.current.style.bottom = `${holdR * 100}%`
-      // Clip latch: ≥0dBFS lights the LED for ~2s (120 frames).
-      if (peakL >= 0.999) clipUntilL = frame + 120
-      if (peakR >= 0.999) clipUntilR = frame + 120
+      // Clip latch: the SUM at or past 0 dBFS lights the LED for ~2s (120
+      // frames). Read before the limiter: the bars show the limited signal,
+      // which is what he hears, and that one stops a decibel short of full
+      // scale, so a light wired to it never came on however hot the mix ran.
+      if (chain) {
+        if (readAnalyserPeak(chain.clipL, bufL) >= 0.999) clipUntilL = frame + 120
+        if (readAnalyserPeak(chain.clipR, bufR) >= 0.999) clipUntilR = frame + 120
+      }
       lClip.current?.classList.toggle('!bg-danger', frame < clipUntilL)
       rClip.current?.classList.toggle('!bg-danger', frame < clipUntilR)
     }

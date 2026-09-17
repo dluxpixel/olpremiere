@@ -85,6 +85,34 @@ test('halfway through a dissolve from black to white the picture is half the LIG
   expect((await centrePixel(page))[1]).toBeLessThan(srgb(0.25) + 8)
 })
 
+test('a white clip at half opacity over black is half the LIGHT of white, so a fade no longer falls off a cliff', async ({ page }) => {
+  // Opacity and the corner fade handles go through the layer composite, not
+  // the transition combine. With the composite in encoded space a clip at 50%
+  // opacity over black drew 128; in linear light it draws 188.
+  await page.goto('/')
+  await page.getByTestId('media-file-input').setInputFiles([WHITE])
+  await expect(page.getByTestId('asset-card')).toHaveCount(1, { timeout: 15_000 })
+  await page.getByTestId('asset-card').dblclick()
+  await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
+  await page.evaluate(async () => {
+    const storeMod = '/src/state/store.ts'
+    const { useStore, updateActiveSequence } = (await import(/* @vite-ignore */ storeMod)) as {
+      useStore: { getState: () => { setUI: (p: { playheadS: number }) => void } }
+      updateActiveSequence: (label: string, fn: (s: Seq) => Seq) => void
+    }
+    type Seq = { tracks: { kind: string; clips: { opacity: number }[] }[] }
+    updateActiveSequence('half', (s) => ({
+      ...s,
+      tracks: s.tracks.map((t) => (t.kind !== 'video' ? t : { ...t, clips: t.clips.map((c) => ({ ...c, opacity: 0.5 })) })),
+    }))
+    useStore.getState().setUI({ playheadS: 1 })
+  })
+  await expect
+    .poll(async () => (await centrePixel(page))[1], { timeout: 10_000 })
+    .toBeGreaterThan(srgb(0.5) - 8)
+  expect((await centrePixel(page))[1]).toBeLessThan(srgb(0.5) + 8)
+})
+
 test('halfway from mid grey to white the inputs are decoded too, not only the output re-encoded', async ({ page }) => {
   // Black and white are the same in both spaces, so the first test cannot tell
   // a decoded input from a raw one. Grey 128 can: it is 21.6% light, so half way

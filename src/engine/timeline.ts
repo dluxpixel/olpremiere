@@ -1460,8 +1460,30 @@ export function trimGroup(
   edge: 'in' | 'out',
   tS: number,
 ): Sequence {
+  const ids = clipGroupIds(seq, clipId)
+  if (ids.length <= 1) return trimClipTo(seq, assets, clipId, edge, tS)
+  // ⛔ THE EDGE IS AGREED BEFORE ANYTHING IS CUT, the same rule rippleTrimGroup
+  // keeps. Each half used to be trimmed to the same time one after the other,
+  // and a trim is clamped by its own track: the neighbour beside it, the media
+  // it has left. When only the audio half's neighbour was in the way, the video
+  // ran on to the drag and the sound stopped short, and from that moment the
+  // pair was two lengths, out of sync with nothing on screen to say so. So
+  // every member is tried alone, the edge that moved LEAST wins, and every
+  // member is trimmed to that one edge.
+  const origin = findClip(seq, clipId)
+  if (!origin) return seq
+  const edgeOf = (c: Clip): number => (edge === 'in' ? c.startS : clipEndS(c))
+  const from = edgeOf(origin.clip)
+  let agreed: number | null = null
+  for (const id of ids) {
+    const after = findClip(trimClipTo(seq, assets, id, edge, tS), id)
+    if (!after) continue
+    const e = edgeOf(after.clip)
+    if (agreed === null || Math.abs(e - from) < Math.abs(agreed - from)) agreed = e
+  }
+  if (agreed === null) return seq
   let next = seq
-  for (const id of clipGroupIds(seq, clipId)) next = trimClipTo(next, assets, id, edge, tS)
+  for (const id of ids) next = trimClipTo(next, assets, id, edge, agreed)
   return next
 }
 

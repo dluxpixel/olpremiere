@@ -914,6 +914,15 @@ export interface MasterChain {
   master: GainNode
   analyserL: AnalyserNode
   analyserR: AnalyserNode
+  /**
+   * The raw sum BEFORE the limiter, for the meter's clip light only. The bars
+   * show the limited signal, which is what he hears, and that signal can never
+   * reach 0 dBFS (the limiter's ceiling is a decibel under it), so a clip light
+   * wired to it could never come on. "The mix would have clipped" is a fact
+   * about the sum, so the light reads the sum.
+   */
+  clipL: AnalyserNode
+  clipR: AnalyserNode
 }
 
 let masterChain: MasterChain | null = null
@@ -941,7 +950,18 @@ export function ensureMasterChain(): MasterChain {
   limiter.output.connect(splitter) // the meter tap
   splitter.connect(analyserL, 0)
   splitter.connect(analyserR, 1)
-  masterChain = { master, analyserL, analyserR }
+  // The clip light's tap, off the sum before the limiter (see MasterChain).
+  const clipSplitter = ctx.createChannelSplitter(2)
+  const clipL = ctx.createAnalyser()
+  const clipR = ctx.createAnalyser()
+  for (const a of [clipL, clipR]) {
+    a.fftSize = 1024
+    a.smoothingTimeConstant = 0
+  }
+  master.connect(clipSplitter)
+  clipSplitter.connect(clipL, 0)
+  clipSplitter.connect(clipR, 1)
+  masterChain = { master, analyserL, analyserR, clipL, clipR }
   return masterChain
 }
 
