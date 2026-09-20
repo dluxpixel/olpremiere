@@ -138,7 +138,7 @@ export function TrackHeader({ track }: { track: Track }) {
 
   return (
     <div
-      className="flex shrink-0 flex-col justify-center gap-1 border-b border-border/60 bg-bg-panel px-2"
+      className="flex shrink-0 flex-col justify-center gap-1 border-b border-border/60 bg-bg-elevated px-2"
       style={{ height: track.height }}
       onContextMenu={openTrackMenu}
       data-testid={`track-header-${track.name}`}

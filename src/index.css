@@ -39,18 +39,25 @@
   --radius-dialog: 4px;
   --radius-clip: 2px;
 
-  /* Surfaces: warm near-black studio, darkest to elevated. */
-  --color-bg-app: #0f0e0d;
-  --color-bg-panel: #141312;
-  --color-bg-elevated: #1b1a18;
-  --color-bg-input: #232120;
-  --color-border: #2a2825;
-  --color-border-strong: #3a3733;
+  /* Surfaces: cool studio blue grey, darkest to elevated. His call, 2026-09-20:
+     "i dont like the dark theme", then "make it cool studio blue grey".
+     The warm ladder before this (#0f0e0d, #141312, #1b1a18) sat inside a 5%
+     band of lightness with almost no chroma, so the three columns, the monitor
+     bed and the timeline read as one black sheet, worse still on his OLED. These
+     step 13 / 23 / 28 / 33 / 38 / 48 percent (OKLCH, hue 255) so every surface
+     is its own layer, and bg-app stays the darkest thing on screen so the
+     picture sits in a well. Chroma rises with lightness so the tint reads. */
+  --color-bg-app: #060709;
+  --color-bg-panel: #1a1d21;
+  --color-bg-elevated: #26292d;
+  --color-bg-input: #32363b;
+  --color-border: #3e4348;
+  --color-border-strong: #595e65;
 
-  /* Text: warm neutrals, AA on every surface up to bg-input. */
-  --color-text-primary: #ede9e3;
-  --color-text-secondary: #a8a199;
-  --color-text-muted: #8d877e;
+  /* Text: cool neutrals on the same hue, AA on every surface up to bg-input. */
+  --color-text-primary: #e8ebf1;
+  --color-text-secondary: #acb2b9;
+  --color-text-muted: #8d939b;
 
   /* Accent: lavender. Primary action, selection ring, active tool, focus.
      Light fill, so text on it is dark (accent-fg), never white. */
@@ -73,7 +80,7 @@
   --color-danger: #ff6155;
   --color-warning: #ffa946;
 
-  /* Timeline clip families: fill + brighter top edge, tuned for the warm
+  /* Timeline clip families: fill + brighter top edge, tuned for the dark
      ground so none of them fight the lavender selection ring. */
   --color-clip-video: #2c4a60;
   --color-clip-video-bd: #4f82ab;
@@ -86,9 +93,9 @@
   --color-clip-title: #7c3a6c;
   --color-clip-title-bd: #b357a0;
 
-  /* Overlay-only shadow (menus, toasts, dialogs): soft and warm, never a
-     blue-black bloom. Panels never get shadows. */
-  --shadow-pop: 0 12px 32px rgba(15, 10, 5, 0.55), 0 2px 8px rgba(15, 10, 5, 0.35);
+  /* Overlay-only shadow (menus, toasts, dialogs): soft, on the ground's own
+     near-black, never a coloured bloom. Panels never get shadows. */
+  --shadow-pop: 0 12px 32px rgba(3, 5, 9, 0.6), 0 2px 8px rgba(3, 5, 9, 0.4);
 }
 
 /*

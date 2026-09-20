@@ -1559,7 +1559,10 @@ export function Timeline({ height }: { height: number }) {
         <div
           ref={headersRef}
           data-testid="track-headers"
-          className="flex shrink-0 flex-col overflow-hidden border-r border-border"
+          // One step up from the lanes, so the headers read as a column of
+          // controls and the lanes as the surface the clips sit on (2026-09-20,
+          // the dark theme pass: on the old ladder both were one sheet).
+          className="flex shrink-0 flex-col overflow-hidden border-r border-border bg-bg-elevated"
           style={{ width: HEADERS_W }}
           // The headers column is overflow-hidden (no scrollbar of its own) and is
           // kept in sync by the lanes' onScroll. But a wheel over the headers must
