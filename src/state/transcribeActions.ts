@@ -221,6 +221,8 @@ export function audibleClips(onlyIds?: ReadonlySet<string>): {
   skippedLocked: number
   /** Clips passed over because he cannot hear them: muted, unsoloed, or switched off. */
   skippedSilent: number
+  /** Sounding clips passed over because they play BACKWARDS (or not at all, speed 0). */
+  skippedReversed: number
 } {
   const s = useStore.getState()
   const seq = activeSequence(s.project)
@@ -242,23 +244,32 @@ export function audibleClips(onlyIds?: ReadonlySet<string>): {
   // And a clip he has switched off is not in his video either.
   const playing = (x: { clip: Clip }): boolean => x.clip.enabled
 
+  // ⛔ ONLY A CLIP PLAYING FORWARDS (2026-09-23, from the open caption findings).
+  // A reversed clip's sound is his voice backwards: the recogniser either finds
+  // nothing or invents words, and the ones it finds were laid down forwards, so
+  // content and order were both wrong. Speed 0 makes no sound at all in the mixer
+  // (computeClipSchedule refuses it), and captioning silence is how imaginary
+  // words get in. Both are counted and said, never dropped quietly.
+  const forward = (x: { clip: Clip }): boolean => x.clip.speed > 0
+
   const audible = seq.tracks.filter((t) => heard(t) && !t.locked)
   const all = seq.tracks.flatMap(sounding)
-  const targets = audible
+  const eligible = audible
     .filter((t) => t.audioRole !== 'music')
     .flatMap(sounding)
     .filter(playing)
-    .sort((a, b) => a.clip.startS - b.clip.startS)
+  const targets = eligible.filter(forward).sort((a, b) => a.clip.startS - b.clip.startS)
 
   return {
     targets,
+    skippedReversed: eligible.length - targets.length,
     skippedMusic: audible.filter((t) => t.audioRole === 'music').flatMap(sounding).filter(playing).length,
     skippedLocked: seq.tracks.filter((t) => t.locked && heard(t)).flatMap(sounding).filter(playing).length,
     // Whatever is left over: muted, unsoloed, or switched off. Counted by
     // difference so a fourth reason added later cannot go unreported.
     skippedSilent:
       all.length -
-      targets.length -
+      eligible.length -
       audible.filter((t) => t.audioRole === 'music').flatMap(sounding).filter(playing).length -
       seq.tracks.filter((t) => t.locked && heard(t)).flatMap(sounding).filter(playing).length,
   }
@@ -302,6 +313,13 @@ export async function autoCaptionFromClip(clipId: string, preset?: TextStylePres
   // one rule with a stated exception rather than as a bug.
   if (track?.locked) {
     toasts.show('Captioning a clip on a locked track, because you picked it. The track itself is untouched')
+  }
+  // Backwards or stopped: see audibleClips. Pointing at it on purpose does not
+  // change what the recogniser can do with reversed speech, so this door refuses
+  // too, and says why.
+  if (clip.speed <= 0) {
+    toasts.show(clip.speed < 0 ? 'This clip plays backwards, so there are no words to caption' : 'This clip is stopped, so there is no sound to caption', 'danger')
+    return
   }
 
   try {
@@ -396,7 +414,7 @@ export async function autoCaptionEveryClip(
     toasts.show('A transcription is already running', 'danger')
     return
   }
-  const { targets, skippedMusic, skippedLocked, skippedSilent } = audibleClips(onlyIds)
+  const { targets, skippedMusic, skippedLocked, skippedSilent, skippedReversed } = audibleClips(onlyIds)
   if (targets.length === 0) {
     // ⛔ NAME THE REASON. Without it "no clips with sound" reads as a bug on a
     // timeline he can plainly hear, and he goes looking in the wrong place. A
@@ -408,6 +426,8 @@ export async function autoCaptionEveryClip(
           ? 'Nothing to caption, the clips with sound are on a music track'
           : skippedSilent > 0
             ? 'Nothing to caption, the clips with sound are muted or switched off'
+            : skippedReversed > 0
+              ? 'Nothing to caption, the clips with sound play backwards'
             : onlyIds
               ? 'None of those clips have sound'
               : 'No clips with sound to caption',

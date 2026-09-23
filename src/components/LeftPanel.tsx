@@ -32,6 +32,7 @@ import {
 import { healArrivedBlob, useMediaSync } from '../collab/mediaSync'
 import { useCollab } from '../collab/collabControl'
 import { deleteAsset, importFiles, insertAssetAtPlayhead, useImportProgress } from '../state/mediaActions'
+import { showPhoneTab } from './PhoneShell'
 import { importProjectFromFile, routeDroppedFiles } from '../state/projectFile'
 import { matchFilesToMissing, missingMedia, relink, relinkSummary, type MissingAsset } from '../state/relinkMedia'
 import { healProjectMedia } from '../state/mediaMirror'
@@ -256,6 +257,22 @@ function AssetActions({ asset }: { asset: MediaAsset }) {
         }
       }}
     >
+      {/* A finger cannot double click or drag a card across to a timeline that
+          is on another tab, so on a phone the card says it: Add puts the clip
+          at the playhead and shows the timeline it landed on. Hidden on the
+          desktop, where the double click and the drag are the gesture. */}
+      <button
+        type="button"
+        data-testid="asset-add"
+        aria-label={`Add ${asset.name} to the timeline`}
+        onClick={() => {
+          insertAssetAtPlayhead(asset.id)
+          showPhoneTab('timeline')
+        }}
+        className={`${ACTION_BUTTON} hidden border-r border-border font-medium text-accent active:bg-border phone:block`}
+      >
+        Add
+      </button>
       <button
         type="button"
         data-testid="asset-save-to-library"

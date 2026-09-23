@@ -53,46 +53,45 @@ export const autoAppearanceDur = (clipDurS: number): number =>
   Math.max(0.08, Math.min(0.6, clipDurS * 0.4))
 
 /**
- * EVERY SPEED IS A SHARE OF THE CLIP, not a fixed number of seconds.
+ * EVERY SPEED IS THE SAME NUMBER OF SECONDS ON EVERY CLIP (2026-09-23).
  *
- * His words, 2026-08-06: "some speeds are just not actually very slow, and the
- * very fast is really, really fast. There are just too many options."
+ * His words: "Let's make it universal: the text speed thing. For example, if
+ * the word clip is too long, then why should the normal animation still be very
+ * slow just because the text is long?"
  *
- * Both halves of that were one bug. The ladder was absolute seconds (0.1 up to
- * 1.0) while appearanceWindowS clamps the window to HALF the clip, and the
- * clips this is used on are per-word captions about a third of a second long.
- * So on a real caption, Normal, Relaxed, Slow and Very slow all clamped to the
- * SAME 0.15s: four rungs of the ladder that did nothing, which is exactly "some
- * speeds are not actually very slow". Meanwhile Instant stayed a true 0.1s and
- * so was the only one that visibly changed anything, which is "very fast is
- * really, really fast".
+ * ⛔ THIS OVERTURNS THE 2026-08-06 LADDER, and the record says so on purpose.
+ * That ladder made every rung a SHARE of the clip, because absolute rungs
+ * collapsed on per-word captions: the window was capped at half the clip, so on
+ * a third of a second word Normal, Relaxed, Slow and Very slow all came out as
+ * the same 0.15 s. Sizing the rungs to the clip kept them apart, and made Normal
+ * mean 0.07 s on one word and 0.38 s on a longer title, which is what he has now
+ * seen and rejected: a speed that changes with the length of the text.
  *
- * Sizing each rung to the clip is what 'auto' has always done. Doing it for all
- * of them makes every rung distinct on a short word AND on a long title, and it
- * needs no new field and no migration: what is stored is still plain seconds.
+ * What keeps the rungs apart now is the other half of the fix, in
+ * appearanceWindowS: a clip with only an entrance (every word caption) may use
+ * its whole length, not half. So on a third of a second word Snappy, Normal and
+ * Smooth are three different speeds, each the same as on every other clip, and
+ * only a rung longer than the word itself is cut short, because nothing can
+ * animate for longer than it is on screen.
+ *
+ * The rungs are anchored on numbers this app already stands behind: Snappy is
+ * the caption pop measured off his reference (CAPTION_POP_DUR_S), Normal is the
+ * quarter second every new title starts with (DEFAULT_APPEARANCE_DUR).
  */
-/** The slowest rung the menu offers. The whole ladder is scaled against it. */
-export const SLOWEST_APPEARANCE_FRAC = 0.46
-/** However long the clip, the slowest animation stops here. */
-const MAX_APPEARANCE_S = 0.8
-
-export const appearanceDurFor = (frac: number, clipDurS: number): number => {
-  // SCALE the ladder, never clamp the rungs individually. A per-rung clamp
-  // reintroduces the exact bug this replaced, just at the other end: on a two
-  // and a half second title, Smooth (0.34) and Slow (0.46) both wanted more
-  // than the 0.8s ceiling and both got 0.8, so two rungs did the same thing
-  // again. Working out what the SLOWEST rung is allowed on this clip and
-  // placing the others in proportion keeps every rung distinct at both ends.
-  const span = Math.min(clipDurS * SLOWEST_APPEARANCE_FRAC, MAX_APPEARANCE_S)
-  return Math.max(1 / 30, span * (frac / SLOWEST_APPEARANCE_FRAC))
-}
+export const APPEARANCE_SPEEDS: readonly { label: string; seconds: number }[] = [
+  { label: 'Snappy', seconds: 0.1 },
+  { label: 'Normal', seconds: 0.25 },
+  { label: 'Smooth', seconds: 0.4 },
+  { label: 'Slow', seconds: 0.6 },
+]
 
 /**
- * Set the animation SPEED (window length) on every clip. `'auto'` sizes each
- * clip's window to ITS OWN duration (long words animate slower, short words
- * snappier), which is what David asked for.
+ * Set the animation SPEED (window length) on every clip: the same seconds on
+ * each one. `'auto'` is the one deliberate exception, and says so in its name:
+ * it sizes each clip's window to ITS OWN duration (long words slower, short
+ * words snappier), which is what he asked for on 2026-08-06.
  */
-export function setClipsAppearanceDur(ids: Iterable<string>, durS: number | 'auto' | { frac: number }): void {
+export function setClipsAppearanceDur(ids: Iterable<string>, durS: number | 'auto'): void {
   const idSet = new Set(ids)
   if (idSet.size === 0) return
   updateActiveSequence('Animation speed', (seq) => {
@@ -105,12 +104,7 @@ export function setClipsAppearanceDur(ids: Iterable<string>, durS: number | 'aut
         // it to an un-animated clip would wipe its manual keyframes for nothing.
         if (!c.appearance) return c
         changed = true
-        const d =
-          durS === 'auto'
-            ? autoAppearanceDur(clipDurationS(c))
-            : typeof durS === 'number'
-              ? durS
-              : appearanceDurFor(durS.frac, clipDurationS(c))
+        const d = durS === 'auto' ? autoAppearanceDur(clipDurationS(c)) : durS
         return applyAppearanceToClip(c, { ...c.appearance, durS: d }, seq.width, seq.height)
       })
       return { ...t, clips }

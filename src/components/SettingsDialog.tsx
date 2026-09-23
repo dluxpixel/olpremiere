@@ -109,7 +109,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
         aria-modal="true"
         aria-label="Settings"
         data-testid="settings-dialog"
-        className="max-h-[86vh] w-[480px] overflow-y-auto rounded-dialog border border-border bg-bg-elevated shadow-pop"
+        className="max-h-[86vh] w-[480px] max-w-[calc(100vw-24px)] overflow-y-auto rounded-dialog border border-border bg-bg-elevated shadow-pop"
       >
         <div className="sticky top-0 flex h-11 items-center gap-2 border-b border-border bg-bg-elevated px-4">
           <span className="text-ui font-semibold text-text-primary">Settings</span>

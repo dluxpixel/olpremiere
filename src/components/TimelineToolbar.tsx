@@ -1,4 +1,5 @@
-import { Expand, Hand, Magnet, MousePointer2, Scissors, SlidersHorizontal, Type, ZoomIn, ZoomOut } from 'lucide-react'
+import { Expand, Hand, Magnet, MousePointer2, Scissors, SlidersHorizontal, Trash2, Type, ZoomIn, ZoomOut } from 'lucide-react'
+import { deleteSelected, splitAtPlayhead } from '../state/clipEdits'
 import { addAdjustmentClip, addTitleClip } from '../state/titleActions'
 import { MAX_PX_PER_S, MIN_PX_PER_S, useStore, zoomIn, zoomOut, type Tool } from '../state/store'
 import { IconButton } from '../ui/Button'
@@ -21,10 +22,30 @@ export function TimelineToolbar({ onZoomFit }: { onZoomFit: () => void }) {
   const snapping = useStore((s) => s.ui.snapping)
   const pxPerS = useStore((s) => s.ui.pxPerS)
   const setUI = useStore((s) => s.setUI)
-
+  const hasSelection = useStore((s) => s.ui.selection.length > 0)
 
   return (
-    <div className="flex h-8 shrink-0 items-center gap-0.5 border-b border-border bg-bg-panel px-2">
+    <div className="flex h-8 shrink-0 items-center gap-0.5 border-b border-border bg-bg-panel px-2 phone:h-10 phone:gap-1">
+      {/* ON A PHONE THE KEYS ARE BUTTONS (2026-09-23). There is no C to split,
+          no Delete key and no right click on a phone, so the two edits every cut
+          needs sit first in the row: split at the playhead, and delete what is
+          selected, the same calls C and Delete make. The tool modes, snapping
+          and the adjustment layer are the desktop's and hidden here: a finger
+          already pans, taps select and a selected clip drags. */}
+      <span className="hidden items-center gap-1 phone:flex">
+        <IconButton label="Split at the playhead" onClick={() => splitAtPlayhead()} data-testid="phone-split">
+          <Scissors size={18} strokeWidth={1.5} />
+        </IconButton>
+        <IconButton
+          label="Delete the selected clip"
+          onClick={() => deleteSelected(false)}
+          disabled={!hasSelection}
+          data-testid="phone-delete"
+        >
+          <Trash2 size={18} strokeWidth={1.5} />
+        </IconButton>
+        <div className="mx-1 h-4 w-px bg-border" />
+      </span>
       {TOOLS.map(({ tool: t, label, shortcut, icon: Icon }) => (
         <IconButton
           key={t}
@@ -33,11 +54,12 @@ export function TimelineToolbar({ onZoomFit }: { onZoomFit: () => void }) {
           shortcut={shortcut}
           active={tool === t}
           onClick={() => setUI({ tool: t })}
+          className="phone:hidden"
         >
           <Icon size={14} strokeWidth={1.5} />
         </IconButton>
       ))}
-      <div className="mx-1.5 h-4 w-px bg-border" />
+      <div className="mx-1.5 h-4 w-px bg-border phone:hidden" />
       <IconButton
         size="compact"
         label={snapping ? 'Snapping on' : 'Snapping off'}
@@ -45,6 +67,7 @@ export function TimelineToolbar({ onZoomFit }: { onZoomFit: () => void }) {
         active={snapping}
         onClick={() => setUI({ snapping: !snapping })}
         data-testid="snap-toggle"
+        className="phone:hidden"
       >
         <Magnet size={14} strokeWidth={1.5} />
       </IconButton>
@@ -52,7 +75,7 @@ export function TimelineToolbar({ onZoomFit }: { onZoomFit: () => void }) {
           that purpose, and a second nesting level with no delete affordance
           was bloat. Projects saved with extras are split on load, see
           state/sequenceSplit.ts. */}
-      <div className="mx-1.5 h-4 w-px bg-border" />
+      <div className="mx-1.5 h-4 w-px bg-border phone:hidden" />
       <IconButton
         size="compact"
         label="Add title"
@@ -67,6 +90,7 @@ export function TimelineToolbar({ onZoomFit }: { onZoomFit: () => void }) {
         label="Add adjustment layer (grades everything below it)"
         onClick={() => addAdjustmentClip()}
         data-testid="add-adjustment"
+        className="phone:hidden"
       >
         <SlidersHorizontal size={14} strokeWidth={1.5} />
       </IconButton>
@@ -78,7 +102,7 @@ export function TimelineToolbar({ onZoomFit }: { onZoomFit: () => void }) {
         <input
           type="range"
           aria-label="Timeline zoom"
-          className="h-1 w-28 accent-accent"
+          className="h-1 w-28 accent-accent phone:hidden"
           min={Math.log2(MIN_PX_PER_S)}
           max={Math.log2(MAX_PX_PER_S)}
           step={0.01}

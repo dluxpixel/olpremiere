@@ -14,6 +14,7 @@ import { activeSequence } from '../engine/types'
 import { useStore } from '../state/store'
 import { useToasts } from '../state/toasts'
 import { Button, IconButton } from '../ui/Button'
+import { isPhoneLayout } from '../ui/phoneLayout'
 
 /** The specific GPU-B-frame crash that a software retry fixes. */
 function isBFrameCrash(err: unknown): boolean {
@@ -26,7 +27,7 @@ type Stage =
   | { kind: 'starting' }
   | { kind: 'running'; progress: ExportProgress; startedAt: number }
   /** `streamed` distinguishes "written where you chose" from "in your downloads". */
-  | { kind: 'done'; sizeBytes: number; fileName: string; streamed: boolean; path?: string }
+  | { kind: 'done'; sizeBytes: number; fileName: string; streamed: boolean; path?: string; share?: File }
   | { kind: 'error'; message: string }
 
 function fmtBytes(n: number): string {
@@ -104,7 +105,9 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
 
   const start = async () => {
     let handle: FileSystemFileHandle | null = null
-    if (canStreamToDisk()) {
+    // A phone has no save dialog worth the name: the finished video goes to the
+    // share sheet instead, where "Save Video" puts it in Photos (see below).
+    if (canStreamToDisk() && !isPhoneLayout()) {
       try {
         handle = await pickExportDestination(fileName)
       } catch (err) {
@@ -149,6 +152,19 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
       }
 
       let sizeBytes: number
+      // ON A PHONE THE VIDEO GOES TO PHOTOS (2026-09-23). A download on an
+      // iPhone lands in the Files app, two apps away from where a Short gets
+      // posted from. The share sheet has "Save Video", which puts it in Photos.
+      // It needs a tap of its own (a share must come from a gesture), so the
+      // file waits on the done screen for him to press Save to Photos.
+      const shareFile = blob && isPhoneLayout() ? new File([blob], fileName, { type: 'video/mp4' }) : null
+      const canShare = !!shareFile && typeof navigator.canShare === 'function' && navigator.canShare({ files: [shareFile] })
+      if (blob && canShare) {
+        sizeBytes = blob.size
+        setStage({ kind: 'done', sizeBytes, fileName, streamed: false, share: shareFile! })
+        show(`Exported ${fileName} (${fmtBytes(sizeBytes)})`, 'success')
+        return
+      }
       if (blob) {
         const url = URL.createObjectURL(blob)
         const a = document.createElement('a')
@@ -246,7 +262,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
         aria-modal="true"
         aria-label="Export"
         data-testid="export-dialog"
-        className="flex max-h-[88vh] w-[440px] flex-col rounded-dialog border border-border bg-bg-elevated shadow-pop"
+        className="flex max-h-[88vh] w-[440px] max-w-[calc(100vw-24px)] flex-col rounded-dialog border border-border bg-bg-elevated shadow-pop"
       >
         <div className="flex h-11 shrink-0 items-center border-b border-border px-4">
           <span className="text-ui font-semibold text-text-primary">Export</span>
@@ -305,11 +321,29 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
         {stage.kind === 'done' && (
           <div className="flex flex-col gap-3 p-4">
             <p className="text-[13px] text-text-primary">
-              Saved <span className="font-medium">{stage.fileName}</span>{' '}
+              {stage.share ? '' : 'Saved '}
+              <span className="font-medium">{stage.fileName}</span>{' '}
               <span className="text-text-secondary">({fmtBytes(stage.sizeBytes)})</span>{' '}
-              {stage.streamed ? 'where you chose.' : 'to your downloads.'}
+              {stage.share ? 'is ready.' : stage.streamed ? 'where you chose.' : 'to your downloads.'}
             </p>
             <div className="flex justify-end gap-2">
+              {stage.share && (
+                <Button
+                  variant="primary"
+                  data-testid="export-share"
+                  onClick={() => {
+                    // Dismissing the sheet rejects with AbortError: not a failure,
+                    // the video is still here to save on the next tap.
+                    navigator.share({ files: [stage.share!] }).catch((err: unknown) => {
+                      if (!(err instanceof DOMException && err.name === 'AbortError')) {
+                        show('Could not open the share sheet. Try the button again', 'danger')
+                      }
+                    })
+                  }}
+                >
+                  Save to Photos
+                </Button>
+              )}
               {stage.path && window.api?.exportReveal && (
                 // The file was named but never the folder, and there was no way to
                 // get to it from here: Explorer opens with it selected.
@@ -321,7 +355,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
                   Show in folder
                 </Button>
               )}
-              <Button variant="primary" onClick={onClose}>
+              <Button variant={stage.share ? 'secondary' : 'primary'} onClick={onClose}>
                 Done
               </Button>
             </div>

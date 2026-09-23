@@ -224,6 +224,19 @@ const booted = runBootSequence(bootTasks(work, isElectron))
 // local startup; its ROW is reported in its own turn, further down the card.
 initUpdateFeed()
 
+// THE WEB BUILD KEEPS A COPY OF ITSELF (2026-09-23, editing on the bus). Only
+// over https, which is the published web address: the desktop app loads from
+// app:// and the test server is plain http, so neither ever registers it. After
+// boot, so the download of the copy never competes with the app opening. The
+// same moment asks the browser to keep his media for good: an iPhone may clear
+// a site's storage when space runs low unless the site asked to be kept.
+if (!isElectron && typeof navigator !== 'undefined' && location.protocol === 'https:') {
+  void booted.then(() => {
+    if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/sw.js').catch(() => undefined)
+    void navigator.storage?.persist?.().catch(() => false)
+  })
+}
+
 void booted.then(() => {
   // Reclaim storage from media no project references any more. Deliberately AFTER
   // the whole startup ledger has settled and deliberately not awaited: it must

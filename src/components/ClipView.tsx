@@ -415,7 +415,9 @@ export const ClipView = memo(function ClipView({
         // drop is an INSET ring - the two states must never look alike.
         selected ? 'ring-2 ring-accent ring-offset-1 ring-offset-bg-app brightness-110' : ''
       } ${clip.enabled ? '' : 'opacity-40'} ${fxDropHot ? 'ring-2 ring-inset ring-accent-hover' : ''}`}
-      style={{ left, width, background: bg, borderTopColor: bd }}
+      // A selected clip owns a finger drag (move or trim). Any other clip lets
+      // the finger scroll the timeline, and a tap on it selects it.
+      style={{ left, width, background: bg, borderTopColor: bd, touchAction: selected ? 'none' : undefined }}
       onPointerDown={(e) => onClipPointerDown(e, clip)}
       onContextMenu={(e) => onClipContextMenu(e, clip)}
       onDragOver={fxDragOver}

@@ -65,6 +65,8 @@ import { ContextMenu } from './ui/ContextMenu'
 import { Splitter } from './ui/Splitter'
 import { Toaster } from './ui/Toaster'
 import { useLayoutSizes } from './useLayoutSizes'
+import { PhoneShell } from './components/PhoneShell'
+import { usePhoneLayout } from './ui/phoneLayout'
 
 function stepFrames(frames: number) {
   pausePlayback()
@@ -452,6 +454,7 @@ export default function App() {
   // The offline update toast, once per session (see onUpdateError below).
   const updateErrorShown = useRef(false)
   const { sizes, adjust } = useLayoutSizes()
+  const phone = usePhoneLayout()
   // One binding list, and since 2026-08-17 the keymap is its only reader: the
   // palette and the help sheet were both cut. Still built in one place, because
   // the tooltips read their labels off the same combos. → D114
@@ -561,35 +564,41 @@ export default function App() {
 
   return (
     <div
-      className="flex h-full select-none flex-col overflow-hidden text-[12px] text-text-primary"
+      // On a phone the notch and the rounded corners are not screen: the safe
+      // area insets keep the top bar and the edges clear of them.
+      className="flex h-full select-none flex-col overflow-hidden text-[12px] text-text-primary phone:pt-[env(safe-area-inset-top)] phone:pr-[env(safe-area-inset-right)] phone:pl-[env(safe-area-inset-left)]"
       // Suppress the browser's context menu app-wide; specific elements open
       // our own menu instead (media cards, clips).
       onContextMenu={(e) => e.preventDefault()}
     >
       <TopBar />
-      <div className="flex min-h-0 flex-1 flex-col">
-        <div className="flex min-h-0 flex-1">
-          <LeftPanel width={sizes.left} />
+      {phone ? (
+        <PhoneShell />
+      ) : (
+        <div className="flex min-h-0 flex-1 flex-col">
+          <div className="flex min-h-0 flex-1">
+            <LeftPanel width={sizes.left} />
+            <Splitter
+              orientation="vertical"
+              testId="splitter-left"
+              onDrag={(d) => adjust('left', d)}
+            />
+            <Monitor />
+            <Splitter
+              orientation="vertical"
+              testId="splitter-right"
+              onDrag={(d) => adjust('right', -d)}
+            />
+            <Inspector width={sizes.right} />
+          </div>
           <Splitter
-            orientation="vertical"
-            testId="splitter-left"
-            onDrag={(d) => adjust('left', d)}
+            orientation="horizontal"
+            testId="splitter-bottom"
+            onDrag={(d) => adjust('bottom', -d)}
           />
-          <Monitor />
-          <Splitter
-            orientation="vertical"
-            testId="splitter-right"
-            onDrag={(d) => adjust('right', -d)}
-          />
-          <Inspector width={sizes.right} />
+          <Timeline height={sizes.bottom} />
         </div>
-        <Splitter
-          orientation="horizontal"
-          testId="splitter-bottom"
-          onDrag={(d) => adjust('bottom', -d)}
-        />
-        <Timeline height={sizes.bottom} />
-      </div>
+      )}
       <Toaster />
       <RecordingStudioMount />
       <TranscribeStatus />

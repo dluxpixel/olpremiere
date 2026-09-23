@@ -4,6 +4,7 @@ import { syncLockOf, type AutoLevel, type Track } from '../engine/types'
 import { deleteTrack, setTrackAudioRole, setTrackAutoLevel, setTrackPan, setTrackVolumeDb } from '../state/trackEdits'
 import { openContextMenu } from '../state/contextMenu'
 import { updateActiveSequence } from '../state/store'
+import { usePhoneLayout } from '../ui/phoneLayout'
 import { IconButton } from '../ui/Button'
 
 // ---------------------------------------------------------------------------
@@ -76,6 +77,7 @@ const AUDIO_ROLES: { key: Track['audioRole']; label: string }[] = [
 ]
 
 export function TrackHeader({ track }: { track: Track }) {
+  const phone = usePhoneLayout()
   const toggle = (field: 'muted' | 'solo' | 'locked', label: string) =>
     updateActiveSequence(label, (seq) => ({
       ...seq,
@@ -135,6 +137,29 @@ export function TrackHeader({ track }: { track: Track }) {
         onClick: () => deleteTrack(track.id),
       },
     ])
+
+  // On a phone the column is 44px: the track's name and its mute, the one
+  // control a finger needs on a bus. Everything else is the desktop's.
+  if (phone) {
+    return (
+      <div
+        className="flex shrink-0 flex-col items-center justify-center gap-0.5 border-b border-border/60 bg-bg-elevated"
+        style={{ height: track.height }}
+        data-testid={`track-header-${track.name}`}
+      >
+        <span className="text-[11px] font-medium uppercase tracking-[0.06em] text-text-secondary">{track.name}</span>
+        <IconButton
+          size="compact"
+          label={track.muted ? 'Unmute track' : 'Mute track'}
+          active={track.muted}
+          style={track.muted ? { color: 'var(--color-danger)', background: 'rgba(255, 97, 85, 0.15)' } : undefined}
+          onClick={() => toggle('muted', `${track.muted ? 'Unmute' : 'Mute'} ${track.name}`)}
+        >
+          {track.muted ? <VolumeX size={14} strokeWidth={1.5} /> : <Volume2 size={14} strokeWidth={1.5} />}
+        </IconButton>
+      </div>
+    )
+  }
 
   return (
     <div

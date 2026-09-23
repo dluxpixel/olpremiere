@@ -257,7 +257,7 @@ function ProjectName() {
     <input
       data-testid="project-name"
       aria-label="Project name"
-      className="h-7 w-52 rounded-field border border-transparent bg-transparent px-2 text-ui font-medium text-text-primary transition-colors duration-[120ms] hover:bg-bg-elevated focus:border-accent focus:bg-bg-input focus:outline-none"
+      className="h-7 w-52 min-w-0 phone:w-auto phone:flex-1 rounded-field border border-transparent bg-transparent px-2 text-ui font-medium text-text-primary transition-colors duration-[120ms] hover:bg-bg-elevated focus:border-accent focus:bg-bg-input focus:outline-none"
       value={draft}
       onChange={(e) => setDraft(e.target.value)}
       onBlur={commit}
@@ -321,7 +321,10 @@ export function TopBar() {
   return (
     <header
       data-testid="topbar"
-      className="flex h-12 shrink-0 items-center gap-3 border-b border-border bg-bg-panel px-3"
+      // On a phone only what a bus ride needs stays in the bar: the melon, the
+      // project's name, projects, undo, redo and export. The rest is the
+      // desktop's, hidden here and untouched there.
+      className="flex h-12 shrink-0 items-center gap-3 border-b border-border bg-bg-panel px-3 phone:gap-1 phone:px-2"
     >
       {/* The suite's melon mark, same mascot as the OL Studio DAW. One brand,
           two apps. Name reads OL Premiere: this is the video editor. */}
@@ -332,12 +335,12 @@ export function TopBar() {
             floating, and the version tag has leading-none, so its box is 10px tall
             against the wordmark's ~17px and it sat visibly high. A version suffix
             is read as part of the name, and names sit on one baseline. */}
-        <span className="flex items-baseline gap-2">
+        <span className="flex items-baseline gap-2 phone:hidden">
           <span className="text-ui font-semibold tracking-[0.08em]">OL Premiere</span>
           <VersionTag />
         </span>
       </div>
-      <div className="h-4 w-px bg-border" />
+      <div className="h-4 w-px bg-border phone:hidden" />
       <ProjectName />
       <IconButton
         label="Projects: switch or start another edit"
@@ -353,10 +356,13 @@ export function TopBar() {
         label="Finished projects: edits you have filed away"
         onClick={() => setProjectsOpen('archived')}
         data-testid="open-archived"
+        className="phone:hidden"
       >
         <Archive size={16} strokeWidth={1.5} />
       </IconButton>
-      <SaveIndicator />
+      <span className="contents phone:hidden">
+        <SaveIndicator />
+      </span>
 
       {/* Manual save/restore to a self-contained file: a backup for when the
           in-browser autosave can't be trusted. */}
@@ -377,6 +383,7 @@ export function TopBar() {
         shortcut={comboLabel('mod+shift+s')}
         onClick={() => void exportProjectToFile()}
         data-testid="save-project-file"
+        className="phone:hidden"
       >
         <HardDriveDownload size={16} strokeWidth={1.5} />
       </IconButton>
@@ -385,11 +392,12 @@ export function TopBar() {
         shortcut={comboLabel('mod+o')}
         onClick={() => openFileRef.current?.click()}
         data-testid="open-project-file"
+        className="phone:hidden"
       >
         <FolderOpen size={16} strokeWidth={1.5} />
       </IconButton>
 
-      <div className="ml-auto flex items-center gap-1">
+      <div className="ml-auto flex shrink-0 items-center gap-1">
         <IconButton
           label={nextUndo ? `Undo: ${nextUndo}` : 'Undo'}
           shortcut={comboLabel('mod+z')}
@@ -412,13 +420,16 @@ export function TopBar() {
           label="Settings"
           onClick={() => setSettingsOpen(true)}
           data-testid="settings-open"
+          className="phone:hidden"
         >
           <Settings size={16} strokeWidth={1.5} />
         </IconButton>
-        <ReloadButton />
-        <div className="mx-2 h-4 w-px bg-border" />
-        <CollabButton />
-        <RecordButton />
+        <span className="contents phone:hidden">
+          <ReloadButton />
+          <div className="mx-2 h-4 w-px bg-border" />
+          <CollabButton />
+          <RecordButton />
+        </span>
         <ExportButton onOpen={() => setExporting(true)} />
       </div>
       {exporting && <ExportDialog onClose={() => setExporting(false)} />}

@@ -101,7 +101,7 @@ export function ProjectsDialog({ onClose, view = 'active' }: { onClose: () => vo
         aria-modal="true"
         aria-label="Projects"
         data-testid="projects-dialog"
-        className="olp-pop flex max-h-[70vh] w-[520px] flex-col rounded-dialog border border-border bg-bg-elevated shadow-pop"
+        className="olp-pop flex max-h-[70vh] w-[520px] max-w-[calc(100vw-24px)] flex-col rounded-dialog border border-border bg-bg-elevated shadow-pop"
       >
         <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-4">
           {/* Three shelves of the same list. Finished work is never deleted,

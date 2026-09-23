@@ -240,12 +240,25 @@ function normalize(kfs: Keyframe[]): Keyframe[] {
 
 /**
  * The per-side window an appearance actually compiles into on a clip of duration
- * `D`: at least a couple of frames, never more than half the clip so the
- * entrance and the exit can never overlap. Shared so that anything reasoning
- * about WHERE the animation lives reads the same number the compiler used.
+ * `D`: at least a couple of frames, and never longer than the clip can hold.
+ * Shared so that anything reasoning about WHERE the animation lives reads the
+ * same number the compiler used.
+ *
+ * ⛔ HALF THE CLIP ONLY WHEN THERE ARE TWO SIDES (2026-09-23). His words: "if
+ * the word clip is too long, then why should the normal animation still be very
+ * slow just because the text is long?" A speed is now the same number of
+ * seconds on every clip, and the half-clip ceiling was the other thing still
+ * tying it to length: it exists so an entrance cannot run into its own exit, yet
+ * it also squeezed a clip that HAS no exit. A word caption only pops in, so on
+ * any word shorter than twice the pop the pop ran faster than on its neighbours.
+ * With one side, the whole clip is the room it has. `halfCeiling` is the old
+ * rule, kept only so saved work compiled under it can be recognised
+ * (upgradeLegacyAppearance).
  */
-export function appearanceWindowS(spec: AppearanceSpec, D: number): number {
-  return Math.max(1 / 60, Math.min(spec.durS ?? DEFAULT_APPEARANCE_DUR, D / 2))
+export function appearanceWindowS(spec: AppearanceSpec, D: number, halfCeiling = false): number {
+  const twoSided = isEntranceId(spec.in) && isExitId(spec.out)
+  const ceiling = twoSided || halfCeiling ? D / 2 : D
+  return Math.max(1 / 60, Math.min(spec.durS ?? DEFAULT_APPEARANCE_DUR, ceiling))
 }
 
 /**
@@ -265,20 +278,27 @@ export function buildAppearanceKeyframes(
 }
 
 /**
- * The compiler itself. `entranceBuild`, when given, stands in for the current
- * build of `spec.in`: it is how an OLD compile of a preset is reproduced, for
- * recognising work this module did before the preset changed. Nothing else
- * passes it.
+ * A past version of the compiler, for recognising work it did. `entranceBuild`
+ * stands in for the current build of `spec.in`; `halfCeiling` restores the
+ * half-clip window on a one-sided appearance. Nothing but the legacy checks
+ * passes one.
  */
+interface PastCompiler {
+  entranceBuild?: AppearancePreset['build']
+  halfCeiling?: boolean
+}
+
+/** The compiler itself, or with `past`, a version of it this module used to be. */
 function compileWith(
   spec: AppearanceSpec,
   D: number,
   W: number,
   H: number,
   base: AppearanceBase,
-  entranceBuild?: AppearancePreset['build'],
+  past: PastCompiler = {},
 ): ChannelKeyframes {
-  const d = appearanceWindowS(spec, D)
+  const { entranceBuild, halfCeiling } = past
+  const d = appearanceWindowS(spec, D, halfCeiling)
   const ctx: BuildCtx = { d, D: Math.max(D, 2 / 60), W, H, base }
 
   const inK = !isEntranceId(spec.in) ? {} : (entranceBuild ?? ENTRANCE_BY_ID.get(spec.in!)!.build)(ctx)
@@ -372,19 +392,12 @@ function baseOf(clip: Clip): AppearanceBase {
 
 /**
  * True when the clip's appearance channels are exactly what its spec compiles
- * to, with the CURRENT builds or, given `entranceBuild`, with that build of the
- * entrance instead.
+ * to, with the CURRENT compiler or, given `past`, with that past version.
  */
-function compiledBy(
-  clip: Clip,
-  D: number,
-  seqW: number,
-  seqH: number,
-  entranceBuild?: AppearancePreset['build'],
-): boolean {
+function compiledBy(clip: Clip, D: number, seqW: number, seqH: number, past?: PastCompiler): boolean {
   const spec = clip.appearance
   if (!spec) return false
-  const expected = compileWith(spec, D, seqW, seqH, baseOf(clip), entranceBuild)
+  const expected = compileWith(spec, D, seqW, seqH, baseOf(clip), past)
   for (const ch of APPEARANCE_CHANNELS) {
     if (!sameKeyframes(channelKeyframes(clip, ch), expected[ch] ?? [])) return false
   }
@@ -412,19 +425,29 @@ const LEGACY_ENTRANCE_BUILDS: Readonly<Record<string, readonly AppearancePreset[
 }
 
 /**
- * The clip rebuilt with the current build of its entrance, when its keyframes
- * are exactly an older build's untouched output. Otherwise the same object.
+ * Every past compiler a saved clip could have been made by, newest first. Every
+ * one of them had the half-clip window (it changed on 2026-09-23, after them
+ * all), so each old entrance build is tried under it, and the current builds
+ * are tried under it too.
+ */
+function pastCompilersFor(spec: AppearanceSpec): PastCompiler[] {
+  const builds = spec.in ? (LEGACY_ENTRANCE_BUILDS[spec.in] ?? []) : []
+  return [{ halfCeiling: true }, ...builds.map((entranceBuild) => ({ entranceBuild, halfCeiling: true }))]
+}
+
+/**
+ * The clip rebuilt with the current compiler, when its keyframes are exactly
+ * the untouched output of a past one (an older pop, or the half-clip window on
+ * a clip with only one side). Otherwise the same object.
  */
 export function upgradeLegacyAppearance(clip: Clip, seqW: number, seqH: number): Clip {
-  const inId = clip.appearance?.in
-  if (!inId) return clip
-  const legacy = LEGACY_ENTRANCE_BUILDS[inId]
-  if (!legacy) return clip
+  const spec = clip.appearance
+  if (!spec || isEmptyAppearance(spec)) return clip
   const D = clipDurationS(clip)
   if (!Number.isFinite(D) || D <= 0) return clip
   if (compiledBy(clip, D, seqW, seqH)) return clip
-  for (const build of legacy) {
-    if (compiledBy(clip, D, seqW, seqH, build)) return applyAppearanceToClip(clip, clip.appearance!, seqW, seqH)
+  for (const past of pastCompilersFor(spec)) {
+    if (compiledBy(clip, D, seqW, seqH, past)) return applyAppearanceToClip(clip, spec, seqW, seqH)
   }
   return clip
 }

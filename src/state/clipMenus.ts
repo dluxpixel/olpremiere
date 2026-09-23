@@ -5,9 +5,8 @@
 import { DEFAULT_APPEARANCE_DUR, ENTRANCE_PRESETS, EXIT_PRESETS } from '../engine/anim/appearance'
 import { ensureTitleFont, TITLE_FONT_OPTIONS } from '../engine/render/titleFonts'
 import { isTitleClip, type Clip } from '../engine/types'
-import { clipDurationS } from '../engine/timeline'
 import {
-  appearanceDurFor,
+  APPEARANCE_SPEEDS,
   saveClipAppearanceAsDefault,
   setClipsAppearance,
   setClipsAppearanceDur,
@@ -24,23 +23,14 @@ const TITLE_SIZE_PRESETS = [
   { label: 'Huge', px: 240 },
 ]
 
-// FIVE rungs, not seven, and every one a SHARE of the clip.
-//
-// His words, 2026-08-06: "some speeds are just not actually very slow, and the
-// very fast is really, really fast. There are just too many options. Just make
-// it simpler and better. More accurate."
-//
-// Seven absolute-second rungs collapsed to four distinct results on a per-word
-// caption (see appearanceDurFor). These fractions are spaced so that every rung
-// is visibly different from its neighbours on a third-of-a-second word AND on a
-// two-second title, and the slowest stays under the half-clip ceiling so an
-// entrance can never run into its own exit.
-const APPEARANCE_SPEEDS: { label: string; spec: 'auto' | { frac: number } }[] = [
+// FIVE rungs (2026-08-06: "there are just too many options"), and since
+// 2026-09-23 each named one is the SAME number of seconds on every clip: "why
+// should the normal animation still be very slow just because the text is
+// long?" See APPEARANCE_SPEEDS for the whole account. Auto is the one that fits
+// each clip, and its name says so.
+const SPEED_MENU: { label: string; spec: 'auto' | number }[] = [
   { label: 'Auto (fit each word)', spec: 'auto' },
-  { label: 'Snappy', spec: { frac: 0.12 } },
-  { label: 'Normal', spec: { frac: 0.22 } },
-  { label: 'Smooth', spec: { frac: 0.34 } },
-  { label: 'Slow', spec: { frac: 0.46 } },
+  ...APPEARANCE_SPEEDS.map((s) => ({ label: s.label, spec: s.seconds })),
 ]
 
 /**
@@ -123,14 +113,11 @@ export function appearanceMenuItems(clip: Clip, ids: string[] = [clip.id]): Menu
   // (the menu only renders ONE submenu level, so Speed flattens in as leaves).
   const animationSub: MenuItem[] = [
     ...(hasAppearance
-      ? APPEARANCE_SPEEDS.map((s, i) => ({
+      ? SPEED_MENU.map((s, i) => ({
           label: `Speed: ${s.label}`,
           separator: i === 0,
-          // The tick compares against what this rung would MEAN for this clip,
-          // since the same rung is a different number of seconds on a long title
-          // and a short word.
-          checked:
-            s.spec !== 'auto' && Math.abs(curDur - appearanceDurFor(s.spec.frac, clipDurationS(clip))) < 1e-3,
+          // A rung is its seconds on every clip, so the tick is a plain match.
+          checked: s.spec !== 'auto' && Math.abs(curDur - s.spec) < 1e-3,
           onClick: () => setClipsAppearanceDur(ids, s.spec),
         }))
       : []),

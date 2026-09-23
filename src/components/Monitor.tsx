@@ -523,15 +523,20 @@ export function Monitor() {
         <div className="flex min-w-0 shrink items-center gap-2 overflow-hidden whitespace-nowrap">
           <span data-testid="timecode" className="font-numeric text-ui-sm text-text-primary">
             <PlayheadTimecode fps={seq.fps} editable testId="monitor-timecode" />
-            <span className="text-text-muted"> / {formatTimecode(seq.durationS, seq.fps)}</span>
+            <span className="text-text-muted phone:hidden"> / {formatTimecode(seq.durationS, seq.fps)}</span>
           </span>
           <ShuttleBadge />
         </div>
 
         <div className="flex shrink-0 items-center justify-self-center gap-1">
+          {/* On a phone the row keeps what a thumb uses: the time, a frame back,
+              play, a frame forward, and the shape picker (9:16 is the Short).
+              The rest is the desktop's and is hidden here, never removed. An
+              iPhone cannot put a page fullscreen at all. */}
           <IconButton
             label="Go to start"
             shortcut="Home"
+            className="phone:hidden"
             onClick={() => {
               pausePlayback()
               setUI({ playheadS: 0 })
@@ -558,6 +563,7 @@ export function Monitor() {
           <IconButton
             label="Go to end"
             shortcut="End"
+            className="phone:hidden"
             onClick={() => {
               pausePlayback()
               // Last real frame, not durationS (which resolves to a black frame).
@@ -598,7 +604,7 @@ export function Monitor() {
             data-testid="screenshot-button"
             disabled={!hasContent || shooting}
             active={shooting}
-            className={shooting ? 'bg-accent-quiet! text-accent!' : ''}
+            className={`phone:hidden ${shooting ? 'bg-accent-quiet! text-accent!' : ''}`}
             onClick={() => {
               setShooting(true)
               void screenshotToMedia().finally(() => setShooting(false))
@@ -643,14 +649,16 @@ export function Monitor() {
               they simply clipped off the end with nothing to say they had.
               ⛔ NOTHING MOVED. His call, 2026-09-13: the base is good, improve it
               in place. → FrameSettingsMenu.tsx carries the whole account. */}
-          <FrameSettingsMenu seq={seq} safeMargins={safeMargins} onSafeMargins={setSafeMargins} />
+          <span className="contents phone:hidden">
+            <FrameSettingsMenu seq={seq} safeMargins={safeMargins} onSafeMargins={setSafeMargins} />
+          </span>
           <IconButton
             label="Loop playback: repeats the In/Out range"
             shortcut="/"
             active={loop}
             onClick={toggleLoop}
             data-testid="loop-toggle"
-            className={loop ? 'bg-ember-quiet! text-ember!' : ''}
+            className={`phone:hidden ${loop ? 'bg-ember-quiet! text-ember!' : ''}`}
           >
             <Repeat size={16} strokeWidth={1.5} />
           </IconButton>
@@ -660,7 +668,7 @@ export function Monitor() {
           <select
             aria-label="Preview quality"
             title="Preview quality: lower = smoother scrubbing on big footage. Never affects the export."
-            className="h-7 min-w-0 shrink cursor-default rounded-field border border-border bg-bg-input pl-2 pr-6 text-ui-sm text-text-secondary transition-colors duration-[120ms] hover:border-border-strong hover:text-text-primary focus:border-accent focus:outline-none"
+            className="phone:hidden h-7 min-w-0 shrink cursor-default rounded-field border border-border bg-bg-input pl-2 pr-6 text-ui-sm text-text-secondary transition-colors duration-[120ms] hover:border-border-strong hover:text-text-primary focus:border-accent focus:outline-none"
             value={String(quality)}
             onChange={(e) => setQuality(Number(e.target.value) as Quality)}
           >
@@ -671,6 +679,7 @@ export function Monitor() {
           <IconButton
             label="Fullscreen"
             onClick={() => void regionRef.current?.requestFullscreen?.()}
+            className="phone:hidden"
           >
             <Maximize size={16} strokeWidth={1.5} />
           </IconButton>

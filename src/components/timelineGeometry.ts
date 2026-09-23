@@ -2,6 +2,8 @@ import { formatTimecode } from '../engine/timecode'
 
 export const RULER_H = 28
 export const HEADERS_W = 178
+/** The header column on a phone: the track's name and nothing else. */
+export const PHONE_HEADERS_W = 44
 export const SNAP_PX = 8
 /** Pointer travel below this is a click (move playhead), not a clip drag. */
 export const CLICK_SLOP_PX = 4

@@ -5,6 +5,9 @@ import {
   CAPTION_EMPHASIS_COLORS,
   CAPTION_POP_DUR_S,
   PHRASE_CAPTION_OPTIONS,
+  SOFT_COST,
+  endsSentence,
+  isFunctionWord,
   captionClips,
   captionHouseCase,
   chunkWords,
@@ -489,5 +492,111 @@ describe('a caption never ends on a function word', () => {
       AUTO_CAPTION_OPTIONS,
     )
     expect(chunks.map((c) => c.text)).toEqual(['careful of', 'extraordinary'])
+  })
+})
+
+// ⛔ 2026-09-23. His words: "i add one rule like split words and it breaks
+// another." Grouping is one global choice now (see chunkWords), and these pin
+// the two halves of that: the hard rules cannot be broken by ANY input, and the
+// soft rules trade on one scale instead of undoing each other.
+describe('rules compose instead of fighting', () => {
+  /** Deterministic pseudo-random, so a failure reproduces. */
+  const rng = (seed: number) => () => {
+    seed = (seed * 1103515245 + 12345) % 2147483648
+    return seed / 2147483648
+  }
+  const VOCAB = ['okay,', 'so', 'we', 'have', 'to', 'be', 'careful', 'of', 'these.', 'and', 'the', 'extraordinary', 'diamonds!', 'wait,', "there's", 'a', 'pyramid', 'green', 'any', 'i', 'mean,']
+  const randomTake = (seed: number) => {
+    const r = rng(seed)
+    const ws: CaptionWord[] = []
+    let t = r() * 0.5
+    const n = 3 + Math.floor(r() * 40)
+    for (let k = 0; k < n; k++) {
+      const text = VOCAB[Math.floor(r() * VOCAB.length)]!
+      const dur = 0.06 + r() * r() * 1.6
+      ws.push({ text, startS: t, endS: t + dur, ...(r() < 0.08 ? { emphasis: true } : {}) })
+      // Most boundaries tile exactly, like his real audio; some carry a pause.
+      t += dur + (r() < 0.7 ? 0 : r() * 0.9)
+    }
+    return ws
+  }
+
+  it('over 3000 random takes, no caption ever breaks a hard rule or loses a word', () => {
+    const o = AUTO_CAPTION_OPTIONS
+    for (let seed = 1; seed <= 3000; seed++) {
+      const words = randomTake(seed)
+      const chunks = chunkWords(words, o)
+      // Every word, once, in order.
+      expect(chunks.map((c) => c.text).join(' ')).toBe(words.map((x) => x.text).join(' '))
+      // Never overlapping, always forward.
+      for (let i = 1; i < chunks.length; i++) expect(chunks[i]!.startS).toBeGreaterThanOrEqual(chunks[i - 1]!.endS - 1e-9)
+      let k = 0
+      for (const c of chunks) {
+        const n = c.text.split(' ').length
+        const mine = words.slice(k, k + n)
+        k += n
+        if (n === 1) continue
+        expect(n).toBeLessThanOrEqual(o.maxWords)
+        expect(c.text.length).toBeLessThanOrEqual(o.maxChars)
+        for (let m = 1; m < mine.length; m++) {
+          // No pause, no sentence end and no highlight edge inside a caption.
+          expect(mine[m]!.startS - mine[m - 1]!.endS).toBeLessThanOrEqual(o.maxGapS + 1e-9)
+          expect(endsSentence(mine[m - 1]!.text)).toBe(false)
+          expect(!!mine[m]!.emphasis).toBe(!!mine[m - 1]!.emphasis)
+        }
+        // The last word always gets a readable moment before the ceiling.
+        expect(mine[mine.length - 1]!.startS - mine[0]!.startS).toBeLessThanOrEqual(o.maxOnScreenS - o.minDurS + 1e-9)
+      }
+    }
+  })
+
+  it('the soft rules are ordered by how bad each looks, and that order is the decision', () => {
+    expect(SOFT_COST.flash).toBeGreaterThan(SOFT_COST.loneFunctionWord)
+    expect(SOFT_COST.loneFunctionWord).toBeGreaterThan(SOFT_COST.pairAcrossComma)
+    expect(SOFT_COST.pairAcrossComma).toBeGreaterThan(SOFT_COST.endsOnFunctionWord)
+  })
+
+  it('still reads his pace: two quick words share a caption, two slower ones do not', () => {
+    const quick = chunkWords([w('go', 0, 0.25), w('now', 0.25, 0.5), w('okay.', 0.5, 1)], AUTO_CAPTION_OPTIONS)
+    expect(quick.map((c) => c.text)).toEqual(['go now', 'okay.'])
+    const slow = chunkWords([w('go', 0, 0.3), w('now', 0.3, 0.6), w('okay.', 0.6, 1.1)], AUTO_CAPTION_OPTIONS)
+    expect(slow.map((c) => c.text)).toEqual(['go', 'now', 'okay.'])
+  })
+
+  it("keeps a natural pair even when its last word swallowed the pause after it (his take: 'and like')", () => {
+    // His take 13, measured: "like" came back 1.5 s long, swallowing the pause
+    // before "for more". The old engine showed "subscribe and | like".
+    const chunks = chunkWords(
+      [w('subscribe', 34.34, 34.76), w('and', 34.76, 35.0), w('like', 35.0, 36.5), w('for', 36.5, 36.66), w('more', 36.66, 37.14)],
+      AUTO_CAPTION_OPTIONS,
+    )
+    expect(chunks.map((c) => c.text).slice(0, 2)).toEqual(['subscribe', 'and like'])
+  })
+
+  it("keeps 'this block.' together at the end of a sentence (his take 16)", () => {
+    const chunks = chunkWords(
+      [w("Let's", 13.36, 13.62), w('break', 13.62, 13.84), w('this', 13.84, 14.14), w('block.', 14.14, 14.6)],
+      AUTO_CAPTION_OPTIONS,
+    )
+    expect(chunks.map((c) => c.text)).toEqual(["Let's break", 'this block.'])
+  })
+
+  it('does not weld a pair across his comma when the words can stand alone', () => {
+    const chunks = chunkWords(
+      [w('wait,', 0, 0.25), w("there's", 0.25, 0.5), w('the', 0.5, 0.6), w('pyramid!', 0.6, 1.0)],
+      AUTO_CAPTION_OPTIONS,
+    )
+    expect(chunks.map((c) => c.text)).not.toContain("wait, there's")
+    expect(chunks.map((c) => c.text)).toContain('wait,')
+  })
+
+  it('a determiner is handed forward with the words it belongs to', () => {
+    expect(isFunctionWord('any')).toBe(true)
+    expect(isFunctionWord('these')).toBe(true)
+    const chunks = chunkWords(
+      [w('we', 0, 0.2), w('found', 0.2, 0.45), w('these', 0.45, 0.6), w('gems!', 0.6, 1.0)],
+      AUTO_CAPTION_OPTIONS,
+    )
+    expect(chunks.map((c) => c.text)).toEqual(['we found', 'these gems!'])
   })
 })

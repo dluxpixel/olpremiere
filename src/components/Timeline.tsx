@@ -31,8 +31,9 @@ import { PlayheadLine, RemotePlayheads } from './PlayheadWidgets'
 import { pointOnScrollbar } from './scrollbarGuard'
 import { MAX_PX_PER_S, MIN_PX_PER_S, updateActiveSequence, useStore } from '../state/store'
 import { useToasts } from '../state/toasts'
-import { RULER_H, HEADERS_W, SNAP_PX, CLICK_SLOP_PX, fmtDelta, ADD_TRACK_ROW_H } from './timelineGeometry'
+import { RULER_H, HEADERS_W, PHONE_HEADERS_W, SNAP_PX, CLICK_SLOP_PX, fmtDelta, ADD_TRACK_ROW_H } from './timelineGeometry'
 import { Ruler } from './TimelineRuler'
+import { usePhoneLayout } from '../ui/phoneLayout'
 import { TrackHeader } from './TrackHeaderControls'
 import { TimelineToolbar } from './TimelineToolbar'
 import { ClipView } from './ClipView'
@@ -45,6 +46,7 @@ import { TrackPresetMenuButton } from './TrackPresetMenuButton'
 
 
 export function Timeline({ height }: { height: number }) {
+  const phone = usePhoneLayout()
   const project = useStore((s) => s.project)
   const seq = activeSequence(project)
   const assets = project.assets
@@ -1214,6 +1216,30 @@ export function Timeline({ height }: { height: number }) {
     dragFinal.current = null
   }
 
+  /**
+   * A finger the browser took back to scroll never meant an edit (2026-09-23,
+   * the phone). On a phone a swipe that starts on a clip scrolls the timeline,
+   * and the browser sends pointercancel once it decides so. The few moves before
+   * that decision must not nudge the clip, so a cancelled touch is dropped, not
+   * committed. A mouse keeps its old ending.
+   */
+  const handleLanesPointerCancel = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.pointerType === 'mouse' || !drag) {
+      handleLanesPointerUp(e)
+      return
+    }
+    stopEdgeScroll()
+    lastDragPointer.current = null
+    rightMarqueeRef.current = false
+    setHoverLane(null)
+    setMarquee(null)
+    setDrag(null)
+    setPreviewSeq(null)
+    setSnapIndicatorT(null)
+    setTrimTip(null)
+    dragFinal.current = null
+  }
+
   // --- drop from the media bin ----------------------------------------------
 
   const handleDragOver = (e: DragEvent<HTMLDivElement>) => {
@@ -1563,7 +1589,9 @@ export function Timeline({ height }: { height: number }) {
           // controls and the lanes as the surface the clips sit on (2026-09-20,
           // the dark theme pass: on the old ladder both were one sheet).
           className="flex shrink-0 flex-col overflow-hidden border-r border-border bg-bg-elevated"
-          style={{ width: HEADERS_W }}
+          // On a phone the column keeps only the track's name: the controls
+          // would take half the screen from the clips.
+          style={{ width: phone ? PHONE_HEADERS_W : HEADERS_W }}
           // The headers column is overflow-hidden (no scrollbar of its own) and is
           // kept in sync by the lanes' onScroll. But a wheel over the headers must
           // still scroll: forward it to the lanes, which mirrors back here. Without
@@ -1627,7 +1655,11 @@ export function Timeline({ height }: { height: number }) {
           onPointerMove={handleLanesPointerMove}
           onPointerLeave={() => razorHover && setRazorHover(null)}
           onPointerUp={handleLanesPointerUp}
-          onPointerCancel={handleLanesPointerUp}
+          onPointerCancel={handleLanesPointerCancel}
+          // A finger pans the lanes and never pinch zooms the whole page. A
+          // SELECTED clip turns panning off under itself (ClipView), so tap to
+          // pick a clip, then drag it.
+          style={{ touchAction: 'pan-x pan-y' }}
           onScroll={(e) => {
             // Track headers share vertical scroll with the lanes.
             if (headersRef.current) headersRef.current.scrollTop = e.currentTarget.scrollTop
@@ -1651,6 +1683,8 @@ export function Timeline({ height }: { height: number }) {
             <div
               className="sticky top-0 z-20 cursor-ew-resize"
               data-testid="ruler"
+              // A finger on the ruler scrubs, it does not scroll.
+              style={{ touchAction: 'none' }}
               onPointerDown={(e) => {
                 e.currentTarget.setPointerCapture(e.pointerId)
                 scrubTo(e.clientX)

@@ -2,7 +2,16 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <!-- On a phone it installs to the Home Screen and opens like an app, with no
+         browser bars (2026-09-23). The desktop app ignores all of these. -->
+    <meta name="theme-color" content="#1a1d21" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="OL Premiere" />
+    <link rel="apple-touch-icon" href="/icon-180.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
     <meta name="color-scheme" content="dark" />
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
     <link rel="alternate icon" type="image/png" href="/favicon.png" />

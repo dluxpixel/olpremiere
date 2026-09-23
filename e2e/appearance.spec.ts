@@ -280,11 +280,11 @@ test('animation speed shrinks the entrance window', async ({ page }) => {
   const normalEnd = (await clipData(page, id)).opacityKf!.at(-1)!.t
   expect(normalEnd).toBeCloseTo(0.25, 2)
 
-  // The ladder is five rungs now, and every rung is a SHARE of the clip rather
-  // than a fixed number of seconds (2026-08-06: seven absolute rungs collapsed
-  // to one value on a per-word caption). So this asserts the RELATIONSHIP -
-  // Snappy is meaningfully shorter than Slow, and the window follows the value -
-  // instead of pinning a magic number the ladder no longer promises.
+  // Five rungs, and since 2026-09-23 each named one is the SAME seconds on every
+  // clip ("why should the normal animation still be very slow just because the
+  // text is long?"). The exact numbers are pinned in appearanceSpeed.test.ts;
+  // this asserts what he sees through the real menu: Snappy is shorter than the
+  // default, Slow is visibly slower, and the window follows the value.
   await page.getByTestId('clip').click({ button: 'right' })
   await menu.getByRole('menuitem', { name: 'Animation' }).hover()
   await menu.getByRole('menuitem', { name: 'Speed: Snappy' }).click()

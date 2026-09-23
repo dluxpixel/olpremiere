@@ -411,3 +411,67 @@ describe('saved pops are brought onto the new pop on load', () => {
     expect(migrateProjectAppearance(p)).toBe(p)
   })
 })
+
+describe('a one-sided animation may use the whole clip (2026-09-23)', () => {
+  // "why should the normal animation still be very slow just because the text
+  // is long?" A speed is now the same seconds on every clip, and the half-clip
+  // ceiling was the last thing tying a word's pop to its length.
+  const word = (D: number, durS: number): Clip =>
+    applyAppearanceToClip(newTitleClip(defaultTitleDef('Hi'), 0, D), { in: 'pop', durS }, W, H)
+
+  it('a word caption pops at its full speed even when shorter than twice the pop', () => {
+    const kfs = buildAppearanceKeyframes({ in: 'pop', durS: 0.25 }, 0.3, W, H).scale!
+    expect(kfs.at(-1)!.t).toBeCloseTo(0.25, 9)
+  })
+
+  it('with an exit as well, the half-clip ceiling still keeps the two apart', () => {
+    const kfs = buildAppearanceKeyframes({ in: 'pop', out: 'popOut', durS: 0.25 }, 0.3, W, H).scale!
+    const entranceEnd = kfs.find((k) => Math.abs(k.value - 1) < 1e-9)!.t
+    expect(entranceEnd).toBeCloseTo(0.15, 9)
+  })
+
+  it('never longer than the clip itself', () => {
+    const kfs = buildAppearanceKeyframes({ in: 'pop', durS: 0.6 }, 0.2, W, H).scale!
+    expect(kfs.at(-1)!.t).toBeCloseTo(0.2, 9)
+  })
+
+  it('a saved word squeezed by the old half-clip rule is given its full pop on load', () => {
+    // Compiled the old way: the window was min(0.25, 0.3 / 2) = 0.15.
+    const fresh = word(0.3, 0.25)
+    const old = withChannelKeyframes(fresh, 'scale', buildAppearanceKeyframes({ in: 'pop', durS: 0.15 }, 0.3, W, H).scale!)
+    const up = upgradeLegacyAppearance(old, W, H)
+    expect(up).not.toBe(old)
+    expect(up.appearance).toEqual({ in: 'pop', durS: 0.25 })
+    expect(up.keyframes?.scale).toEqual(fresh.keyframes?.scale)
+  })
+
+  it('a pre-2026-09-23 pop under the half-clip rule is brought onto both changes at once', () => {
+    const fresh = word(0.3, 0.25)
+    let old = withChannelKeyframes(fresh, 'scale', [
+      { t: 0, value: 0.3, ease: 'easeOut' },
+      { t: 0.15 * 0.6, value: 1.12, ease: 'easeInOut' },
+      { t: 0.15, value: 1, ease: 'linear' },
+    ])
+    old = withChannelKeyframes(old, 'opacity', [
+      { t: 0, value: 0, ease: 'easeOut' },
+      { t: 0.15 * 0.45, value: 1, ease: 'linear' },
+    ])
+    const up = upgradeLegacyAppearance(old, W, H)
+    expect(up.keyframes?.scale).toEqual(fresh.keyframes?.scale)
+    expect(resolveChannel(up, 'opacity', 0)).toBeCloseTo(1, 5)
+  })
+
+  it('a word the old rule never squeezed is the same object', () => {
+    const fits = word(0.6, 0.25)
+    expect(upgradeLegacyAppearance(fits, W, H)).toBe(fits)
+  })
+
+  it('a squeezed pop he reshaped by hand is his, and is left alone', () => {
+    const fresh = word(0.3, 0.25)
+    const scale = buildAppearanceKeyframes({ in: 'pop', durS: 0.15 }, 0.3, W, H).scale!.map((k, i) =>
+      i === 1 ? { ...k, value: 1.2 } : k,
+    )
+    const hand = withChannelKeyframes(fresh, 'scale', scale)
+    expect(upgradeLegacyAppearance(hand, W, H)).toBe(hand)
+  })
+})

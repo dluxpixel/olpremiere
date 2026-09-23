@@ -203,7 +203,7 @@ export function CaptionsDialog({ onClose }: { onClose: () => void }) {
         aria-modal="true"
         aria-label="Captions"
         data-testid="captions-dialog"
-        className="w-[460px] rounded-dialog border border-border bg-bg-elevated shadow-pop"
+        className="w-[460px] max-w-[calc(100vw-24px)] rounded-dialog border border-border bg-bg-elevated shadow-pop"
       >
         <div className="flex h-11 items-center gap-2 border-b border-border px-4">
           <span className="text-ui font-semibold text-text-primary">Captions</span>

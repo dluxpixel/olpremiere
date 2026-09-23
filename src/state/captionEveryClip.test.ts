@@ -458,3 +458,47 @@ describe('editing the timeline while a sweep is running', () => {
     expect(toasted.join(' ')).toContain('left the timeline while this ran')
   })
 })
+
+// ⛔ 2026-09-23, an open caption finding closed. A reversed clip's sound is his
+// voice backwards, so the recogniser either finds nothing or invents words, and
+// those were laid down forwards. Speed 0 makes no sound in the mixer at all.
+describe('a clip playing backwards or not at all is not captioned', () => {
+  const setSpeed = (id: string, speed: number): void =>
+    updateActiveSequence('speed', (sq) => ({
+      ...sq,
+      tracks: sq.tracks.map((t) => ({ ...t, clips: t.clips.map((c) => (c.id === id ? { ...c, speed } : c)) })),
+    }))
+
+  it('the sweep passes over a reversed clip and captions the rest', async () => {
+    seedAudio([
+      { id: 'fwd', startS: 0 },
+      { id: 'rev', startS: 2 },
+    ])
+    setSpeed('clip-rev', -1)
+    expect(audibleClips().targets.map((t) => t.clip.id)).toEqual(['clip-fwd'])
+    expect(audibleClips().skippedReversed).toBe(1)
+    await autoCaptionEveryClip()
+    expect(heard).not.toContain('clip-rev')
+    expect(heard).toContain('clip-fwd')
+  })
+
+  it('says why when the only sound on the timeline plays backwards', async () => {
+    seedAudio([{ id: 'rev', startS: 0 }])
+    setSpeed('clip-rev', -2)
+    await autoCaptionEveryClip()
+    expect(heard).toEqual([])
+    expect(toasted.join(' ')).toContain('play backwards')
+  })
+
+  it('the single clip door refuses a reversed or stopped clip out loud', async () => {
+    seedAudio([{ id: 'rev', startS: 0 }])
+    setSpeed('clip-rev', -1)
+    await autoCaptionFromClip('clip-rev')
+    expect(heard).toEqual([])
+    expect(toasted.join(' ')).toContain('plays backwards')
+    setSpeed('clip-rev', 0)
+    await autoCaptionFromClip('clip-rev')
+    expect(heard).toEqual([])
+    expect(toasted.join(' ')).toContain('stopped')
+  })
+})

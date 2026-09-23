@@ -1,6 +1,18 @@
 @import 'tailwindcss';
 @import './fonts.css';
 
+/* THE PHONE (2026-09-23). His words: "I am on the bus for 2 hours a day, and
+   I'm thinking: what if I edit videos on my phone?" A screen this narrow, or a
+   phone held sideways, gets the phone layout (PhoneShell). The same query lives
+   in src/ui/phoneLayout.ts, so the CSS and the component tree never disagree.
+   The height half asks for a coarse pointer so a short desktop window is never
+   mistaken for a phone. */
+@custom-variant phone {
+  @media (max-width: 640px), (max-height: 500px) and (pointer: coarse) {
+    @slot;
+  }
+}
+
 /* Static so every token is emitted even before a utility references it:
    sweep agents and runtime var() reads rely on the full set being present. */
 @theme static {
@@ -200,6 +212,16 @@ body {
   font-size: var(--text-ui);
   line-height: 1.35;
   overflow: hidden;
+}
+
+/* On a phone a double tap must not zoom the page and a long press must not
+   pop the system's copy callout over a clip: the editor owns every gesture. */
+@media (max-width: 640px), (max-height: 500px) and (pointer: coarse) {
+  body {
+    touch-action: manipulation;
+    -webkit-touch-callout: none;
+    -webkit-text-size-adjust: 100%;
+  }
 }
 
 :focus-visible {

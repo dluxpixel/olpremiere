@@ -9,3 +9,9 @@ _verify/
 playwright-report/
 test-results/
 e2e/.fixtures/
+# Local only, and never sent to the web host: release secrets, session files, logs.
+.env*
+!.env.release.example
+.claude/
+*.log
+scorecard.json

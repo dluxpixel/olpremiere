@@ -1,75 +1,81 @@
-// "Some speeds are just not actually very slow, and the very fast is really,
-// really fast. There are just too many options." (2026-08-06)
+// "Let's make it universal: the text speed thing. For example, if the word clip
+// is too long, then why should the normal animation still be very slow just
+// because the text is long?" (2026-09-23)
 //
-// Both halves were one bug. The ladder was absolute seconds (0.1 to 1.0) while
-// appearanceWindowS clamps the window to HALF the clip, and this is used on
-// per-word captions about a third of a second long. So four of the seven rungs
-// clamped to the SAME value on a real caption.
+// Until then every speed was a SHARE of the clip (the 2026-08-06 ladder), so
+// Normal was a different speed on every word. Now a named speed is the same
+// number of seconds on every clip, and a clip with only an entrance may use its
+// whole length, which is what keeps the rungs apart on a short word.
+//
+// The 2026-08-06 complaint still holds as a test: "some speeds are just not
+// actually very slow". Rungs must stay DIFFERENT on a real word caption.
 
 import { describe, expect, it } from 'vitest'
-import { appearanceDurFor, autoAppearanceDur } from './appearanceActions'
+import { APPEARANCE_SPEEDS, autoAppearanceDur } from './appearanceActions'
 import { appearanceWindowS } from '../engine/anim/appearance'
 
-/** The fractions the menu offers, in order. Kept in step with clipMenus.ts. */
-const RUNGS = [0.12, 0.22, 0.34, 0.46]
-/** What a per-word caption actually looks like. */
+const RUNGS = APPEARANCE_SPEEDS.map((s) => s.seconds)
+/** What a per-word caption actually looks like: a pop in, nothing out. */
 const WORD_S = 0.32
 const TITLE_S = 2.5
 
-/** What the compiler REALLY animates over, clamp included. */
-const windowFor = (frac: number, clipS: number) =>
-  appearanceWindowS({ durS: appearanceDurFor(frac, clipS) }, clipS)
+/** What the compiler REALLY animates over, ceiling included. */
+const entranceOnly = (durS: number, clipS: number) => appearanceWindowS({ in: 'pop', durS }, clipS)
+const bothSides = (durS: number, clipS: number) => appearanceWindowS({ in: 'pop', out: 'popOut', durS }, clipS)
 
-describe('the animation speed ladder', () => {
-  it('THE BUG: the old absolute ladder collapsed to one value on a word', () => {
-    // Normal 0.25, Relaxed 0.4, Slow 0.6, Very slow 1.0 on a 0.32s word.
-    const old = [0.25, 0.4, 0.6, 1].map((durS) => appearanceWindowS({ durS }, WORD_S))
-    expect(new Set(old).size).toBe(1)
-    expect(old[0]).toBeCloseTo(WORD_S / 2, 6)
+describe('the animation speed is the same on every clip', () => {
+  it('Normal is one speed on a short word, a long word and a title', () => {
+    const normal = APPEARANCE_SPEEDS.find((s) => s.label === 'Normal')!.seconds
+    const got = [0.3, 0.6, 1.2, TITLE_S, 10].map((clipS) => entranceOnly(normal, clipS))
+    expect(new Set(got.map((n) => n.toFixed(6))).size).toBe(1)
+    expect(got[0]).toBeCloseTo(normal, 9)
   })
 
-  it('every rung is now a DIFFERENT length on a per-word caption', () => {
-    const got = RUNGS.map((f) => windowFor(f, WORD_S))
-    expect(new Set(got.map((n) => n.toFixed(4))).size).toBe(RUNGS.length)
+  it('THE OLD BUG: a share of the clip made Normal three times slower on a longer word', () => {
+    // The 2026-08-06 ladder: Normal was 22% of the clip.
+    const share = (clipS: number) => 0.22 * clipS
+    expect(share(1.2) / share(0.4)).toBeCloseTo(3, 6)
   })
 
-  it('and they are in order, each meaningfully slower than the last', () => {
-    const got = RUNGS.map((f) => windowFor(f, WORD_S))
-    for (let i = 1; i < got.length; i++) {
-      expect(got[i]).toBeGreaterThan(got[i - 1])
-      // "Meaningfully": at least a 20% step, so he can SEE the difference.
-      expect(got[i]).toBeGreaterThan(got[i - 1] * 1.2)
+  it('every rung is a DIFFERENT speed on a per-word caption', () => {
+    const fits = RUNGS.filter((d) => d <= WORD_S)
+    const got = fits.map((d) => entranceOnly(d, WORD_S))
+    expect(new Set(got.map((n) => n.toFixed(4))).size).toBe(fits.length)
+    // Snappy, Normal and a word-length Smooth: at least three of the four.
+    expect(new Set(RUNGS.map((d) => entranceOnly(d, WORD_S).toFixed(4))).size).toBeGreaterThanOrEqual(3)
+  })
+
+  it('the rungs climb in real steps, so he can see the difference', () => {
+    for (let i = 1; i < RUNGS.length; i++) expect(RUNGS[i]).toBeGreaterThan(RUNGS[i - 1] * 1.4)
+  })
+
+  it('every rung is distinct on a long title, entrance and exit both', () => {
+    const got = RUNGS.map((d) => bothSides(d, TITLE_S))
+    expect(got).toEqual(RUNGS)
+  })
+
+  it('an entrance can still never run into its own exit', () => {
+    for (const clipS of [0.2, 0.32, 1, TITLE_S]) {
+      for (const d of RUNGS) expect(bothSides(d, clipS)).toBeLessThanOrEqual(clipS / 2 + 1e-9)
     }
   })
 
-  it('the slowest still cannot run into its own exit', () => {
-    for (const clipS of [0.2, 0.32, 1, TITLE_S, 10]) {
-      expect(windowFor(0.46, clipS)).toBeLessThanOrEqual(clipS / 2 + 1e-9)
+  it('no animation outlasts its clip', () => {
+    for (const clipS of [0.05, 0.2, WORD_S]) {
+      for (const d of RUNGS) expect(entranceOnly(d, clipS)).toBeLessThanOrEqual(clipS + 1e-9)
     }
   })
 
-  it('every rung stays distinct on a long title too', () => {
-    const got = RUNGS.map((f) => windowFor(f, TITLE_S))
-    expect(new Set(got.map((n) => n.toFixed(4))).size).toBe(RUNGS.length)
+  it('the rungs sit on the numbers the app already stands behind', () => {
+    // Snappy is the measured caption pop, Normal the default for a new title.
+    expect(RUNGS[0]).toBe(0.1)
+    expect(RUNGS[1]).toBe(0.25)
   })
 
-  it('no rung is absurd at the extremes: never under a frame, never over 0.8s', () => {
-    for (const clipS of [0.05, 0.32, 2.5, 30]) {
-      for (const f of RUNGS) {
-        const d = appearanceDurFor(f, clipS)
-        expect(d).toBeGreaterThanOrEqual(1 / 30 - 1e-9)
-        expect(d).toBeLessThanOrEqual(0.8 + 1e-9)
-        // and the slowest rung is the one that actually reaches the ceiling
-        if (f === 0.46 && clipS >= 2) expect(d).toBeCloseTo(0.8, 6)
-      }
-    }
-  })
-
-  it('Auto still sits inside the ladder rather than off the end of it', () => {
+  it('Auto is the one that fits each clip, and it still sits inside the ladder', () => {
     const auto = autoAppearanceDur(WORD_S)
-    const slowest = appearanceDurFor(0.46, WORD_S)
-    const fastest = appearanceDurFor(0.12, WORD_S)
-    expect(auto).toBeGreaterThanOrEqual(fastest)
-    expect(auto).toBeLessThanOrEqual(slowest * 3)
+    expect(auto).toBeGreaterThanOrEqual(RUNGS[0] * 0.8)
+    expect(auto).toBeLessThanOrEqual(RUNGS.at(-1)!)
+    expect(autoAppearanceDur(2)).toBeGreaterThan(autoAppearanceDur(0.3))
   })
 })

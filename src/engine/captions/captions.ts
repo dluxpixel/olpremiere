@@ -253,6 +253,10 @@ export const endsSentence = (text: string): boolean => SENTENCE_END.test(text)
 const FUNCTION_WORDS = new Set([
   'a', 'an', 'the', 'to', 'of', 'in', 'on', 'for', 'and', 'but', 'or', 'so', 'is', 'it', 'at', 'by',
   'as', 'my', 'your', 'with', 'that', 'this', 'i', 'we', 'you', 'are', 'was', 'be', 'if', 'our',
+  // Added 2026-09-23: determiners, possessives and prepositions that belong to
+  // the word AFTER them, so a caption stops ending on them ("see any | green").
+  'any', 'some', 'these', 'those', 'his', 'her', 'their', 'its', 'from', 'into', 'onto', 'than', 'about',
+  'they', 'he', 'she', 'were',
 ])
 const normalizeWord = (t: string): string => t.toLowerCase().replace(/[^a-z']/g, '')
 /**
@@ -262,6 +266,39 @@ const normalizeWord = (t: string): string => t.toLowerCase().replace(/[^a-z']/g,
  * highlight on "it".
  */
 export const isFunctionWord = (t: string): boolean => FUNCTION_WORDS.has(normalizeWord(t))
+
+/**
+ * The words that belong to the word AFTER them, so a caption should not end on
+ * one: articles, prepositions, conjunctions, determiners and subject pronouns.
+ * Narrower than FUNCTION_WORDS on purpose: "could be", "to be" and "do it" end
+ * naturally, so the verbs and object pronouns are not in here.
+ */
+const LEANS_FORWARD = new Set([
+  'a', 'an', 'the', 'to', 'of', 'in', 'on', 'for', 'at', 'by', 'as', 'with', 'from', 'into', 'onto', 'than', 'about',
+  'and', 'but', 'or', 'so', 'if', 'my', 'your', 'our', 'his', 'her', 'their', 'its', 'any', 'some', 'these',
+  'those', 'this', 'that', 'i', 'we', 'you', 'they', 'he', 'she',
+])
+export const leansForward = (t: string): boolean => LEANS_FORWARD.has(normalizeWord(t))
+
+/** A word the recogniser ended with a phrase mark: where the speaker himself broke. */
+const PHRASE_COMMA = /[,;:\u2013\u2014]["')\]]*$/
+
+/**
+ * What each soft rule costs, on the same scale as the length rule (a block 50%
+ * over its target length costs 1.5, one 50% under it 0.5). `flash` is the floor
+ * of the cost of a caption more than a frame shorter than readable, and it grows
+ * with the shortfall. Ordered by how bad each looks on screen:
+ * a caption too brief to read is worst, then a stranded "and", then a pair welded
+ * across his comma, then a caption ending on a word that belongs to the next one.
+ * Exported so the tests can pin the ORDER, which is the actual decision.
+ */
+export const SOFT_COST = {
+  flash: 4,
+  loneFunctionWord: 3,
+  pairAcrossComma: 2.5,
+  endsOnFunctionWord: 2,
+  blankPerSecond: 8,
+} as const
 const groupText = (ws: CaptionWord[]): string => ws.map((w) => w.text.trim()).join(' ')
 const groupSpan = (ws: CaptionWord[]): number => ws[ws.length - 1].endS - ws[0].startS
 
@@ -324,161 +361,164 @@ export function chunkWords(words: CaptionWord[], options: ChunkOptions = {}): Ca
   }
   if (input.length === 0) return []
 
-  // Build groups, remembering whether the break BEFORE each was HARD. The merge
-  // pass may only cross SOFT breaks, never a sentence / silence / emphasis edge.
-  interface Group {
-    words: CaptionWord[]
-    breakBeforeHard: boolean
-  }
-  const groups: Group[] = []
-  let cur: CaptionWord[] = []
-  let curBreakHard = false
-  for (const word of input) {
-    const last = cur[cur.length - 1]
-    let hard = false
-    let soft = false
-    if (cur.length > 0) {
-      if (endsSentence(last.text) || !!word.emphasis !== !!last.emphasis || word.startS - last.endS > o.maxGapS) {
-        hard = true
-      } else {
-        const span = word.endS - cur[0].startS
-        const chars = groupText([...cur, word]).length
-        // Hard ceilings first: a caption may never outgrow the frame or the word cap.
-        const overCap =
-          cur.length >= maxWords || chars > o.maxChars || span > o.maxSpanS || chars / Math.max(1e-3, span) > o.maxCps
-        if (o.targetS > 0) {
-          // AIM AT THE TARGET. Take the word if it brings this block CLOSER to the
-          // target length, stop if it would overshoot past it. Fast speech puts
-          // three or four words in a block, slow speech one, and either way the
-          // block occupies the same span of timeline. That is the whole ask: 'make
-          // it auto-decide how many words it needs per caption so the length of
-          // every single text block is the same'.
-          // A DEAD HEAT SPLITS. When taking the word overshoots the target by
-          // exactly as much as leaving it undershoots, both blocks are equally
-          // even, so the tie is broken toward one word, which is what the
-          // reference channel does in 15 of its 20 blocks. The epsilon is not a
-          // fudge: without it the winner is decided by binary rounding noise on
-          // the order of 1e-17, so 0.3 + 0.3 against a 0.45 target came out
-          // joined while the identical case in whole cents came out split.
-          const without = last.endS - cur[0].startS
-          soft = overCap || Math.abs(span - o.targetS) >= Math.abs(without - o.targetS) - 1e-9
-        } else {
-          soft = overCap
-        }
-      }
-    }
-    if (hard || soft) {
-      groups.push({ words: cur, breakBeforeHard: curBreakHard })
-      cur = []
-      curBreakHard = hard
-    }
-    cur.push(word)
-  }
-  if (cur.length > 0) groups.push({ words: cur, breakBeforeHard: curBreakHard })
+  // ⛔ ONE DECISION, NOT A CHAIN OF REPAIRS (2026-09-23).
+  //
+  // His words: *"this still sucks, cuz i add one rule like split words and it
+  // breaks another."* He was right about the mechanism, and the history in this
+  // file is the proof. Grouping used to be a greedy pass followed by two repair
+  // passes (merge the short ones, hand a trailing "of" forward), and every rule
+  // added since needed a guard in the others: the merge learned to respect the
+  // on-screen ceiling, the hand-forward learned not to leave a flash behind, and
+  // the hand-forward had to be forbidden from ever looping with the merge. Each
+  // fix was a new way for two rules to disagree about the same words.
+  //
+  // So grouping is now ONE global choice. Every way of cutting a phrase into
+  // captions is scored, and the cheapest wins (dynamic programming, so it is
+  // exact and costs only words x maxWords). Rules come in exactly two kinds:
+  //
+  //   HARD, and never broken, because a cut that breaks one is simply not a
+  //   candidate: a sentence end, a real pause, a highlight edge, and the
+  //   ceilings (words per caption, width, reading speed, time on screen).
+  //
+  //   SOFT, as costs that trade against each other on one scale: even block
+  //   lengths, no lone "and", no caption ending on a word that belongs to the
+  //   next one, no pair welded across a comma, nothing on screen too briefly to
+  //   read.
+  //
+  // Adding a rule is adding a cost. It can make the others trade differently,
+  // it can never make a caption break a hard rule, and there is no order for two
+  // rules to fight over.
+  const n = input.length
+  // A hard break BEFORE word k: a sentence ended, the highlight flips, or he paused.
+  const hardBefore: boolean[] = input.map(
+    (w, k) =>
+      k > 0 &&
+      (endsSentence(input[k - 1]!.text) ||
+        !!w.emphasis !== !!input[k - 1]!.emphasis ||
+        w.startS - input[k - 1]!.endS > o.maxGapS),
+  )
+  const maxSeg = Math.max(1, maxWords)
 
-  // Merge pass: fold a too-short or lone-function-word group into the neighbor it
-  // shares a SOFT break with (prefer the shorter-span side), while the merge still
-  // respects maxWords + maxChars. Never crosses a hard break, so sentence/silence/
-  // emphasis edges are preserved and an isolated word is extended (not merged).
   /**
-   * May these words share ONE caption? Used by both merge passes below.
-   *
-   * ⛔ IT HAS TO RESPECT EVERY CEILING THE GROUPING PASS RESPECTS, and it used to
-   * check only the word count and the width. `maxOnScreenS` is the one that
-   * matters and the failure is ugly: the ceiling is measured from the block's
-   * START, so merging a word onto the front moves the start earlier and the
-   * ceiling can then cut the caption off WHILE ITS LAST WORD IS STILL BEING
-   * SPOKEN. Measured over 3000 takes, that alone added 30 percent more blank
-   * screen time, and every bit of it came from a merge that outgrew the ceiling.
-   *
-   *   "be"(2.04-2.64) + "but"(2.64-3.54) merged spans 1.5s against a 1.3s
-   *   ceiling, so the caption left the screen at 3.34 and the next one did not
-   *   arrive until 3.54: a fifth of a second of nothing while he is talking.
-   *
-   * Refusing the merge is right rather than raising the ceiling: the ceiling is
-   * measured off the reference channel and the merge is the optional part.
+   * How long this block will actually SIT ON SCREEN, which is what he sees on
+   * the timeline and what "every block the same length" is about. The timing
+   * stage below turns a block into exactly this: inside a phrase it runs to the
+   * next caption, at a pause it lingers holdS, and nothing outstays the ceiling.
    */
-  const fits = (ws: CaptionWord[]): boolean => {
+  const shownFor = (i: number, j: number): number => {
+    const start = input[i]!.startS
+    const lastEnd = input[j - 1]!.endS
+    const next = input[j]
+    const until = next && next.startS - lastEnd <= o.bridgeS ? next.startS : lastEnd + o.holdS
+    return Math.min(Math.max(0, until - start), input[j - 1]!.startS - start + o.maxOnScreenS)
+  }
+
+  /**
+   * Seconds of empty screen the on-screen ceiling leaves between this caption
+   * and the next one INSIDE a phrase. At a real pause a gap is correct and costs
+   * nothing; mid-phrase it is the screen going blank while he talks. Since the
+   * ceiling counts from the last word, grouping can no longer add any, so this
+   * only weighs the blank a padded last word brings with it.
+   */
+  const blankAfter = (j: number): number => {
+    const next = input[j]
+    if (!next || next.startS - input[j - 1]!.endS > o.bridgeS) return 0
+    return Math.max(0, next.startS - input[j - 1]!.startS - o.maxOnScreenS)
+  }
+
+  /** May words [i, j) share one caption at all? The hard rules, all of them. */
+  const allowed = (i: number, j: number): boolean => {
+    for (let k = i + 1; k < j; k++) if (hardBefore[k]) return false
+    // One word is always allowed: a long word has to go SOMEWHERE, and losing his
+    // words is the one thing this pipeline may never do.
+    if (j - i === 1) return true
+    const ws = input.slice(i, j)
     if (ws.length > maxWords) return false
     const chars = groupText(ws).length
     if (chars > o.maxChars) return false
     const span = groupSpan(ws)
-    if (span > o.maxSpanS || span > o.maxOnScreenS) return false
+    if (span > o.maxSpanS) return false
+    // ⛔ THE CEILING ASKS WHEN THE LAST WORD STARTS, NOT WHEN IT ENDS. A word's
+    // end is the recogniser's opinion and it swallows the pause after it: his
+    // "like" at the end of a take came back 1.5 s long. Measuring the pair by that
+    // end refused "and like" and left a lone "and". What the ceiling protects is
+    // the last word getting read before the caption is cut, so that is the rule.
+    if (ws[ws.length - 1]!.startS - ws[0]!.startS > o.maxOnScreenS - o.minDurS) return false
     return chars / Math.max(1e-3, span) <= o.maxCps
   }
-  if (o.mergeShort) {
-    let i = 0
-    while (i < groups.length && groups.length > 1) {
-      const g = groups[i]
-      const tooShort = groupSpan(g.words) < o.minDurS || (g.words.length === 1 && isFunctionWord(g.words[0].text))
-      if (tooShort) {
-        const left = i > 0 && !g.breakBeforeHard ? groups[i - 1] : null
-        const right = i < groups.length - 1 && !groups[i + 1].breakBeforeHard ? groups[i + 1] : null
-        const leftOk = left ? fits([...left.words, ...g.words]) : false
-        const rightOk = right ? fits([...g.words, ...right.words]) : false
-        let side: 'left' | 'right' | null = null
-        if (leftOk && rightOk) side = groupSpan(left!.words) <= groupSpan(right!.words) ? 'left' : 'right'
-        else if (leftOk) side = 'left'
-        else if (rightOk) side = 'right'
-        if (side === 'left') {
-          left!.words = [...left!.words, ...g.words]
-          groups.splice(i, 1)
-          continue
-        }
-        if (side === 'right') {
-          right!.words = [...g.words, ...right!.words]
-          right!.breakBeforeHard = g.breakBeforeHard
-          groups.splice(i, 1)
-          continue
-        }
+
+  /** What words [i, j) cost as one caption. Every soft rule is one line here. */
+  const cost = (i: number, j: number): number => {
+    const ws = input.slice(i, j)
+    const shown = shownFor(i, j)
+    let c = 0
+    if (o.targetS > 0) {
+      // EVEN LENGTHS. Overshooting the target costs three times what falling
+      // short does: that ratio is what reproduces the measured reference, where a
+      // pair of 0.3 s words shows as two blocks and a pair of 0.25 s words as one.
+      // LINEAR, not squared: squared, one long final word (his last word plus
+      // the hold after it) outweighed every phrasing rule put together and left
+      // "subscribe and | like" on screen instead of "subscribe | and like".
+      const d = (shown - o.targetS) / o.targetS
+      c += d > 0 ? 3 * d : -d
+    } else {
+      // No target (the legacy and phrase callers): fewer, fuller blocks.
+      c += 1
+    }
+    if (o.mergeShort) {
+      const last = ws[ws.length - 1]!
+      const midPhrase = j < n && !hardBefore[j]
+      // A lone "and" / "the" / "to" on screen by itself.
+      if (ws.length === 1 && isFunctionWord(last.text) && !endsSentence(last.text) && midPhrase) c += SOFT_COST.loneFunctionWord
+      // "careful of | these": the "of" belongs to the words after it.
+      if (ws.length > 1 && leansForward(last.text) && !endsSentence(last.text) && midPhrase) c += SOFT_COST.endsOnFunctionWord
+      // "wait, there's": the comma is where HE put the break.
+      for (let k = 0; k < ws.length - 1; k++) if (PHRASE_COMMA.test(ws[k]!.text)) c += SOFT_COST.pairAcrossComma
+      // Too brief to read: the full weight from the floor down, growing with the
+      // shortfall. The worst thing a caption can be is unreadable.
+      if (shown < o.minDurS) c += SOFT_COST.flash * (1 + (o.minDurS - shown) / Math.max(1e-3, o.minDurS))
+      // Blank screen while he is still talking: the ceiling cut this caption
+      // before the next one arrives mid-phrase. Charged per second of blank.
+      const blank = blankAfter(j)
+      if (blank > 0) c += SOFT_COST.blankPerSecond * blank
+    }
+    return c
+  }
+
+  // best[j]: cheapest way to caption words [0, j). from[j]: where its last caption starts.
+  const best = new Array<number>(n + 1).fill(Infinity)
+  const from = new Array<number>(n + 1).fill(0)
+  best[0] = 0
+  for (let j = 1; j <= n; j++) {
+    for (let i = j - 1; i >= Math.max(0, j - maxSeg); i--) {
+      if (!allowed(i, j)) {
+        // A hard break inside means no longer block can be allowed either.
+        if (i < j - 1 && hardBefore[i + 1]) break
+        continue
       }
-      i++
+      const total = best[i]! + cost(i, j)
+      // Ties go to the SHORTER last block, so equal-cost choices fill the early
+      // blocks first, which is what the old greedy grouping did and every legacy
+      // caller expects.
+      if (total < best[j]! - 1e-9) {
+        best[j] = total
+        from[j] = i
+      }
     }
   }
+  const groups: CaptionWord[][] = []
+  for (let j = n; j > 0; j = from[j]!) groups.unshift(input.slice(from[j]!, j))
 
-  // A CAPTION MUST NOT END ON A FUNCTION WORD.
-  //
-  // `FUNCTION_WORDS` says in its own comment that these "shouldn't stand alone
-  // as a caption OR END A CHUNK", and only the first half was ever built. The
-  // second half is what he was looking at on 2026-08-13: his own line came out
-  // as `we have | to be | careful of | these.`, and "careful of" is a phrase cut
-  // in the middle, because grouping is decided by clock time and "of" belongs to
-  // "these" rather than to "careful".
-  //
-  // So a trailing function word is handed FORWARD to the caption it belongs
-  // with. Only across a SOFT break, so it can never cross one of his pauses, and
-  // never when it would leave a lone function word behind, which would trade one
-  // of these for the other and could ping-pong with the merge pass above. One
-  // pass, no loop.
-  if (o.mergeShort) {
-    for (let i = 0; i < groups.length - 1; i++) {
-      const g = groups[i]!
-      const next = groups[i + 1]!
-      if (next.breakBeforeHard || g.words.length < 2) continue
-      const tail = g.words[g.words.length - 1]!
-      // A word that ends the sentence is a boundary, not a dangling preposition.
-      if (!isFunctionWord(tail.text) || endsSentence(tail.text)) continue
-      const left = g.words.slice(0, -1)
-      if (left.length === 1 && isFunctionWord(left[0]!.text)) continue
-      // ⛔ AND NEVER LEAVE A FLASH BEHIND. This pass runs AFTER the merge above,
-      // which is the only thing that repairs a too-short group, so anything it
-      // shortens past the readability floor stays shortened. Measured over 6000
-      // takes before this guard: 8.5 percent of them gained a caption under the
-      // floor, the worst at 0.10s, which is three frames. That is the hairline
-      // picket fence on his timeline, and a word he cannot read.
-      if (groupSpan(left) < o.minDurS) continue
-      const moved = [tail, ...next.words]
-      if (!fits(moved)) continue
-      g.words = left
-      next.words = moved
-    }
-  }
-
-  const chunks: CaptionChunk[] = groups.map((g) => ({
-    text: groupText(g.words),
-    startS: g.words[0].startS,
-    endS: Math.max(g.words[0].startS, g.words[g.words.length - 1].endS),
-    emphasis: g.words.some((w) => w.emphasis),
+  // Where each caption's LAST word starts: the on-screen ceiling counts from
+  // there (see the timing stage below).
+  const lastStarts = groups.map((ws) => ws[ws.length - 1]!.startS)
+  const chunks: CaptionChunk[] = groups.map((ws) => ({
+    text: groupText(ws),
+    startS: ws[0]!.startS,
+    // The LATEST end among its words, not the last word's: with overlapping
+    // recogniser spans the last word can end before an earlier one does.
+    endS: Math.max(ws[0]!.startS, ...ws.map((w) => w.endS)),
+    emphasis: ws.some((w) => w.emphasis),
   }))
 
   // Seamless hold: run each caption up to its successor (or linger holdS at a
@@ -498,7 +538,14 @@ export function chunkWords(words: CaptionWord[], options: ChunkOptions = {}): Ca
     // The ceiling goes on LAST, after the hold and the bridge, because those are
     // the two things that stretch a caption. It sits above minDurS on purpose:
     // if the two ever disagree the caption leaves, rather than overstaying.
-    c.endS = Math.min(c.endS, c.startS + o.maxOnScreenS)
+    //
+    // ⛔ COUNTED FROM THE LAST WORD'S START (2026-09-23), which for one word is
+    // exactly what it always was. Counted from the caption's START, a pair was
+    // cut sooner than its last word alone would have been, so pairing a word
+    // made the screen go blank mid-phrase: 42.7 s of it across 3000 test takes.
+    // The ceiling exists so a word the recogniser padded with a pause does not
+    // park on screen, and that is a question about the last word.
+    c.endS = Math.min(c.endS, lastStarts[i]! + o.maxOnScreenS)
     if (next) {
       c.endS = Math.min(c.endS, next.startS)
       next.startS = Math.max(next.startS, c.endS)
