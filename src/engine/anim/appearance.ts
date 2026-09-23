@@ -13,7 +13,7 @@
 import { channelBase, channelKeyframes, withChannelKeyframes } from '../effects/channels'
 import { MOMENT_EPS } from '../keyframes'
 import { clipDurationS } from '../types'
-import type { AnimChannel, AppearanceSpec, Clip, Keyframe } from '../types'
+import type { AnimChannel, AppearanceSpec, Clip, Id, Keyframe, Project, Sequence } from '../types'
 
 export type { AppearanceSpec }
 
@@ -70,6 +70,52 @@ export interface AppearancePreset {
 
 const kf = (t: number, value: number, ease: Keyframe['ease'] = 'linear'): Keyframe => ({ t, value, ease })
 
+/**
+ * THE POP, MEASURED OFF THE REFERENCE HE CHOSE, 2026-09-23.
+ *
+ * His words: "remember how we have the text animation called pop and bounce? I
+ * don't think it's good enough. I wanted it to be something like in this
+ * video", a word-by-word caption short (youtube.com/shorts/dq0fNTU-Nto).
+ *
+ * Measured, not eyeballed: the 1080x1920 60 fps copy was read frame by frame,
+ * the white caption's width taken only from pixels touching its black outline
+ * (so the background glare could not count), and six clean word entrances
+ * averaged. Every one has the same shape:
+ *
+ *   frame @60fps   0      1      2      3      4      5      6
+ *   reference      0.907  0.943  0.986  1.023  1.028  1.008  1.001
+ *   this curve     0.910  0.948  0.986  1.024  1.030  1.010  1.000
+ *
+ * The word is there on its very first frame, fully opaque, just a touch small.
+ * It grows at an even rate past full size, overshoots by a few percent a little
+ * after the middle of the window, and eases back onto its resting size. That
+ * fit is within a quarter of a percent on every frame (RMS 0.0025).
+ *
+ * What it replaced, and why it read as "not good enough": the old pop started
+ * at 30% of the size and INVISIBLE, faded in, and overshot by 12%. On a word
+ * that is on screen for a third of a second, most of its life was spent
+ * growing, and the 12% swell is what made it read as a cartoon bounce rather
+ * than a snap. The reference never fades and never shrinks the word below 91%.
+ *
+ * The easeInOut on the way back is deliberate: it leaves the overshoot from
+ * rest and lands on the resting size at rest, the two things the curve tests
+ * below hold every preset to, and it is inside the measurement noise.
+ */
+export const POP_FROM = 0.91
+export const POP_PEAK = 1.035
+/** Where in the window the overshoot lands, as a fraction of it. */
+export const POP_PEAK_AT = 0.55
+
+/**
+ * The pop as it was compiled until 2026-09-23. It is not offered anywhere. It
+ * exists ONLY so migrateProjectAppearance can recognise a clip it compiled, and
+ * so a saved project's untouched pops can be rebuilt as the new one.
+ */
+const LEGACY_POP_BUILD = ({ d, base }: BuildCtx): ChannelKeyframes => ({
+  scale: [kf(0, 0.3 * base.scale, 'easeOut'), kf(d * 0.6, 1.12 * base.scale, 'easeInOut'), kf(d, base.scale)],
+  opacity: [kf(0, 0, 'easeOut'), kf(d * 0.45, base.opacity)],
+})
+
 // --- Entrance presets: animate on [0, d], settle to base at the window end. ---
 
 export const ENTRANCE_PRESETS: AppearancePreset[] = [
@@ -81,16 +127,14 @@ export const ENTRANCE_PRESETS: AppearancePreset[] = [
   {
     id: 'pop',
     label: 'Pop / Bang',
+    // See POP_FROM: fitted to his reference. Scale only. There is no opacity
+    // channel on purpose: the word is fully there on its first frame.
     build: ({ d, base }) => ({
-      // Overshoot past the base then settle back: the "bang". The overshoot is
-      // a TURNING POINT: the first segment decelerates into it, so the second
-      // has to leave it from rest (easeInOut) or the scale visibly kinks there.
       scale: [
-        kf(0, 0.3 * base.scale, 'easeOut'),
-        kf(d * 0.6, 1.12 * base.scale, 'easeInOut'),
+        kf(0, POP_FROM * base.scale, 'linear'),
+        kf(d * POP_PEAK_AT, POP_PEAK * base.scale, 'easeInOut'),
         kf(d, base.scale),
       ],
-      opacity: [kf(0, 0, 'easeOut'), kf(d * 0.45, base.opacity)],
     }),
   },
   {
@@ -217,10 +261,27 @@ export function buildAppearanceKeyframes(
   H: number,
   base: AppearanceBase = NEUTRAL_BASE,
 ): ChannelKeyframes {
+  return compileWith(spec, D, W, H, base)
+}
+
+/**
+ * The compiler itself. `entranceBuild`, when given, stands in for the current
+ * build of `spec.in`: it is how an OLD compile of a preset is reproduced, for
+ * recognising work this module did before the preset changed. Nothing else
+ * passes it.
+ */
+function compileWith(
+  spec: AppearanceSpec,
+  D: number,
+  W: number,
+  H: number,
+  base: AppearanceBase,
+  entranceBuild?: AppearancePreset['build'],
+): ChannelKeyframes {
   const d = appearanceWindowS(spec, D)
   const ctx: BuildCtx = { d, D: Math.max(D, 2 / 60), W, H, base }
 
-  const inK = isEntranceId(spec.in) ? ENTRANCE_BY_ID.get(spec.in!)!.build(ctx) : {}
+  const inK = !isEntranceId(spec.in) ? {} : (entranceBuild ?? ENTRANCE_BY_ID.get(spec.in!)!.build)(ctx)
   const outK = isExitId(spec.out) ? EXIT_BY_ID.get(spec.out!)!.build(ctx) : {}
 
   const result: ChannelKeyframes = {}
@@ -295,20 +356,104 @@ function sameKeyframes(a: readonly Keyframe[], b: readonly Keyframe[]): boolean 
  * while the keyframes are still ours.
  */
 function appearanceIsUntouched(clip: Clip, D: number, seqW: number, seqH: number): boolean {
-  const spec = clip.appearance
-  if (!spec) return false
-  const base: AppearanceBase = {
+  return compiledBy(clip, D, seqW, seqH)
+}
+
+/** The clip's settled values, the base every compile is relative to. */
+function baseOf(clip: Clip): AppearanceBase {
+  return {
     opacity: channelBase(clip, 'opacity'),
     scale: channelBase(clip, 'scale'),
     posX: channelBase(clip, 'posX'),
     posY: channelBase(clip, 'posY'),
     rotation: channelBase(clip, 'rotation'),
   }
-  const expected = buildAppearanceKeyframes(spec, D, seqW, seqH, base)
+}
+
+/**
+ * True when the clip's appearance channels are exactly what its spec compiles
+ * to, with the CURRENT builds or, given `entranceBuild`, with that build of the
+ * entrance instead.
+ */
+function compiledBy(
+  clip: Clip,
+  D: number,
+  seqW: number,
+  seqH: number,
+  entranceBuild?: AppearancePreset['build'],
+): boolean {
+  const spec = clip.appearance
+  if (!spec) return false
+  const expected = compileWith(spec, D, seqW, seqH, baseOf(clip), entranceBuild)
   for (const ch of APPEARANCE_CHANNELS) {
     if (!sameKeyframes(channelKeyframes(clip, ch), expected[ch] ?? [])) return false
   }
   return true
+}
+
+// ---------------------------------------------------------------------------
+// Bringing saved work onto a preset that has since changed.
+//
+// A preset COMPILES to keyframes on the clip, so changing its build changes
+// nothing that was already made: every caption in a saved project would keep
+// the old pop forever, and he would open his project, see the old bounce, and
+// reasonably conclude the fix did not work. Worse, the untouched-check above
+// would stop recognising those clips as its own, so a trim would no longer move
+// their exit with the clip.
+//
+// So on load, a clip whose appearance channels are EXACTLY what an old build of
+// its entrance produced is rebuilt with the current one. Anything that differs
+// at all (a hand-dragged diamond, a curve he shaped) is his, and is left alone,
+// the same "only touch our own work" rule every recompile in this file follows.
+
+/** Earlier builds of an entrance, by preset id, newest first. */
+const LEGACY_ENTRANCE_BUILDS: Readonly<Record<string, readonly AppearancePreset['build'][]>> = {
+  pop: [LEGACY_POP_BUILD],
+}
+
+/**
+ * The clip rebuilt with the current build of its entrance, when its keyframes
+ * are exactly an older build's untouched output. Otherwise the same object.
+ */
+export function upgradeLegacyAppearance(clip: Clip, seqW: number, seqH: number): Clip {
+  const inId = clip.appearance?.in
+  if (!inId) return clip
+  const legacy = LEGACY_ENTRANCE_BUILDS[inId]
+  if (!legacy) return clip
+  const D = clipDurationS(clip)
+  if (!Number.isFinite(D) || D <= 0) return clip
+  if (compiledBy(clip, D, seqW, seqH)) return clip
+  for (const build of legacy) {
+    if (compiledBy(clip, D, seqW, seqH, build)) return applyAppearanceToClip(clip, clip.appearance!, seqW, seqH)
+  }
+  return clip
+}
+
+/** upgradeLegacyAppearance over every clip. Returns the same object when nothing changed. */
+export function migrateProjectAppearance(p: Project): Project {
+  let changed = false
+  const sequences: Record<Id, Sequence> = {}
+  for (const [id, seq] of Object.entries(p.sequences)) {
+    let seqChanged = false
+    const tracks = seq.tracks.map((track) => {
+      let trackChanged = false
+      const clips = track.clips.map((clip) => {
+        const next = upgradeLegacyAppearance(clip, seq.width, seq.height)
+        if (next !== clip) trackChanged = true
+        return next
+      })
+      if (!trackChanged) return track
+      seqChanged = true
+      return { ...track, clips }
+    })
+    if (seqChanged) {
+      changed = true
+      sequences[id] = { ...seq, tracks }
+    } else {
+      sequences[id] = seq
+    }
+  }
+  return changed ? { ...p, sequences } : p
 }
 
 /**

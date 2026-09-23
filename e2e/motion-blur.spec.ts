@@ -191,8 +191,15 @@ test('a fast slide smears, and switching motion blur off makes it sharp again', 
 
 test('a fast zoom changes the picture too, which is the shader other half', async ({ page }) => {
   await page.goto('/')
-  await page.getByTestId('add-title').click()
-  await expect(page.getByTestId('clip')).toHaveCount(1)
+  // FOOTAGE, not a title. Until 2026-09-23 this used a title as a handy picture,
+  // but a title growing in place is now drawn sharp on purpose (the pop he chose,
+  // see the next test), so the radial branch is proved on a moving picture: the
+  // green screen fixture, whose white centre block stays in frame through the zoom
+  // (the red and blue clip zooms into a flat field with no edge left to smear).
+  await page.getByTestId('media-file-input').setInputFiles('e2e/.fixtures/greenscreen.webm')
+  await expect(page.getByTestId('asset-card')).toBeVisible({ timeout: 15_000 })
+  await page.getByTestId('asset-card').dblclick()
+  await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
 
   // 1 to 2.4 over four frames. The radial half of the shader is a different branch
   // from the sideways half, so it gets its own proof.
@@ -207,6 +214,20 @@ test('a fast zoom changes the picture too, which is the shader other half', asyn
   // noise and well under the real signal, rather than at a round number nobody
   // measured.
   expect(meanDiff(smeared, sharp)).toBeGreaterThan(0.1)
+})
+
+test('a title growing in place stays sharp, the way his reference pop is', async ({ page }) => {
+  await page.goto('/')
+  await page.getByTestId('add-title').click()
+  await expect(page.getByTestId('clip')).toHaveCount(1)
+
+  // The same fast zoom that smears footage above. A caption is read, not tracked by
+  // a camera, so its shutter sample holds its scale and the blur has nothing to do.
+  await animate(page, 'scale', 1, 2.4)
+  const withBlurOn = await lumaGrid(page)
+  await blurOff(page)
+  const withBlurOff = await lumaGrid(page)
+  expect(meanDiff(withBlurOn, withBlurOff)).toBeLessThan(0.01)
 })
 
 test('a still clip is untouched, so nothing he has not animated goes soft', async ({ page }) => {

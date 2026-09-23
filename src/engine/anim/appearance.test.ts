@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { newTitleClip, defaultTitleDef, type Clip } from '../types'
+import { newProject, newTitleClip, defaultTitleDef, type Clip, type Keyframe, type Project } from '../types'
 import { evalChannel } from '../keyframes'
 import { resolveChannel, withChannelKeyframes } from '../effects/channels'
 import {
@@ -12,8 +12,12 @@ import {
   isEmptyAppearance,
   isEntranceId,
   isExitId,
+  migrateProjectAppearance,
+  POP_FROM,
+  POP_PEAK_AT,
   retimeAppearance,
   splitAppearanceSpec,
+  upgradeLegacyAppearance,
 } from './appearance'
 
 const W = 1920
@@ -50,16 +54,16 @@ describe('appearance presets', () => {
   it('an entrance settles to base at the window end', () => {
     const kfs = buildAppearanceKeyframes({ in: 'pop', durS: 0.5 }, 5, W, H)
     expect(kfs.scale).toBeDefined()
-    expect(kfs.opacity).toBeDefined()
     assertSortedUnique(kfs.scale!)
-    // Starts small, ends at base scale (1) exactly at t=d.
-    expect(evalChannel(kfs.scale, 0, 1)).toBeCloseTo(0.3, 5)
+    // Starts a touch small, ends at base scale (1) exactly at t=d.
+    expect(evalChannel(kfs.scale, 0, 1)).toBeCloseTo(POP_FROM, 5)
     expect(evalChannel(kfs.scale, 0.5, 1)).toBeCloseTo(1, 5)
     // And holds base afterwards.
     expect(evalChannel(kfs.scale, 4, 1)).toBeCloseTo(1, 5)
-    // Opacity ramps 0 -> 1 and holds.
-    expect(evalChannel(kfs.opacity, 0, 1)).toBeCloseTo(0, 5)
-    expect(evalChannel(kfs.opacity, 4, 1)).toBeCloseTo(1, 5)
+    // An entrance that fades ramps opacity 0 -> 1 and holds.
+    const fade = buildAppearanceKeyframes({ in: 'fadeIn', durS: 0.5 }, 5, W, H)
+    expect(evalChannel(fade.opacity, 0, 1)).toBeCloseTo(0, 5)
+    expect(evalChannel(fade.opacity, 4, 1)).toBeCloseTo(1, 5)
   })
 
   it('an exit starts from base and leaves at 0 opacity', () => {
@@ -73,13 +77,13 @@ describe('appearance presets', () => {
   })
 
   it('merges entrance + exit on a shared channel without colliding keyframes', () => {
-    // pop (scale, opacity) + zoomOut (scale, opacity) both touch scale + opacity.
+    // pop (scale) + zoomOut (scale, opacity) share the scale channel.
     const D = 5
     const kfs = buildAppearanceKeyframes({ in: 'pop', out: 'zoomOut', durS: 0.5 }, D, W, H)
     assertSortedUnique(kfs.scale!)
     assertSortedUnique(kfs.opacity!)
     // Base held in the middle, animates at both ends.
-    expect(evalChannel(kfs.scale, 0, 1)).toBeCloseTo(0.3, 5) // pop start
+    expect(evalChannel(kfs.scale, 0, 1)).toBeCloseTo(POP_FROM, 5) // pop start
     expect(evalChannel(kfs.scale, 2.5, 1)).toBeCloseTo(1, 5) // settled middle
     expect(evalChannel(kfs.scale, D, 1)).toBeCloseTo(0, 5) // zoomed out
     expect(evalChannel(kfs.opacity, 2.5, 1)).toBeCloseTo(1, 5)
@@ -121,12 +125,28 @@ describe('appearance presets', () => {
     }
   })
 
-  it('pop overshoots past base then settles', () => {
+  it('pop overshoots past base by a few percent, then settles', () => {
     const kfs = buildAppearanceKeyframes({ in: 'pop', durS: 0.5 }, 5, W, H)
-    // Peaks above base scale mid-window, settles back to base.
-    const peak = Math.max(...[0.2, 0.275, 0.35].map((t) => evalChannel(kfs.scale, t, 1)))
-    expect(peak).toBeGreaterThan(1.05)
+    // A snap, not a bounce: a few percent past base, never the old 12%.
+    const peak = Math.max(...Array.from({ length: 51 }, (_, i) => evalChannel(kfs.scale, (0.5 * i) / 50, 1)))
+    expect(peak).toBeGreaterThan(1.02)
+    expect(peak).toBeLessThan(1.05)
     expect(evalChannel(kfs.scale, 4, 1)).toBeCloseTo(1, 5)
+  })
+
+  it('pop matches the reference he picked, frame by frame', () => {
+    // Six clean word entrances from youtube.com/shorts/dq0fNTU-Nto, 60 fps,
+    // averaged, width measured off the caption's outline. See POP_FROM.
+    const reference = [0.907, 0.943, 0.986, 1.023, 1.028, 1.008, 1.001]
+    const kfs = buildAppearanceKeyframes({ in: 'pop', durS: 0.1 }, 2, W, H)
+    reference.forEach((want, frame) => {
+      expect(Math.abs(evalChannel(kfs.scale, frame / 60, 1) - want)).toBeLessThan(0.008)
+    })
+  })
+
+  it('pop never fades: the word is fully there on its first frame', () => {
+    const kfs = buildAppearanceKeyframes({ in: 'pop', durS: 0.1 }, 2, W, H)
+    expect(kfs.opacity).toBeUndefined()
   })
 
   it('a CUT verb is no longer offered, and reads as no appearance at all', () => {
@@ -156,10 +176,13 @@ describe('applyAppearanceToClip', () => {
     const out = applyAppearanceToClip(titleClip(), { in: 'pop' }, W, H)
     expect(out.appearance).toEqual({ in: 'pop' })
     expect(out.keyframes?.scale?.length).toBeGreaterThan(0)
-    expect(out.keyframes?.opacity?.length).toBeGreaterThan(0)
-    // Invisible at the first frame, base by the settle point.
-    expect(resolveChannel(out, 'opacity', 0)).toBeCloseTo(0, 5)
+    // Fully visible and a touch small on the first frame, base by the settle point.
+    expect(resolveChannel(out, 'opacity', 0)).toBeCloseTo(1, 5)
+    expect(resolveChannel(out, 'scale', 0)).toBeCloseTo(POP_FROM, 5)
     expect(resolveChannel(out, 'scale', 4)).toBeCloseTo(1, 5)
+    // A fading entrance does write opacity.
+    const faded = applyAppearanceToClip(titleClip(), { in: 'fadeIn' }, W, H)
+    expect(faded.keyframes?.opacity?.length).toBeGreaterThan(0)
   })
 
   it('an empty spec clears the keyframes and drops the field', () => {
@@ -205,7 +228,7 @@ describe('preset curves settle instead of slamming', () => {
 
   it('pop leaves its overshoot from rest, so the scale does not kink there', () => {
     const kfs = buildAppearanceKeyframes({ in: 'pop', durS: d }, D, W, H).scale!
-    const peak = d * 0.6
+    const peak = d * POP_PEAK_AT
     // Both sides of the turning point are slow; a kink shows up as one side fast.
     expect(speedAt(kfs, peak + 1e-3)).toBeLessThan(0.4 * peakSpeed(kfs, 0, d))
   })
@@ -314,5 +337,77 @@ describe('splitAppearanceSpec', () => {
     expect(splitAppearanceSpec({ out: 'fadeOut' }, 'left')).toBeUndefined()
     expect(splitAppearanceSpec({ in: 'pop' }, 'right')).toBeUndefined()
     expect(splitAppearanceSpec(undefined, 'left')).toBeUndefined()
+  })
+})
+
+describe('saved pops are brought onto the new pop on load', () => {
+  // What the pop compiled to until 2026-09-23, written out by hand so the test
+  // does not trust the module to remember its own past.
+  const legacyPop = (d: number): { scale: Keyframe[]; opacity: Keyframe[] } => ({
+    scale: [
+      { t: 0, value: 0.3, ease: 'easeOut' },
+      { t: d * 0.6, value: 1.12, ease: 'easeInOut' },
+      { t: d, value: 1, ease: 'linear' },
+    ],
+    opacity: [
+      { t: 0, value: 0, ease: 'easeOut' },
+      { t: d * 0.45, value: 1, ease: 'linear' },
+    ],
+  })
+
+  /** A 5 s title carrying the OLD pop (and, optionally, the current pop out). */
+  const oldPopTitle = (d: number, withOut = false): Clip => {
+    let c = newTitleClip(defaultTitleDef('Hi'), 0, 5)
+    const old = legacyPop(d)
+    const exit = withOut ? buildAppearanceKeyframes({ out: 'popOut', durS: d }, 5, W, H) : {}
+    c = withChannelKeyframes(c, 'scale', [...old.scale, ...(exit.scale ?? [])])
+    c = withChannelKeyframes(c, 'opacity', [...old.opacity, ...(exit.opacity ?? [])])
+    return { ...c, appearance: withOut ? { in: 'pop', out: 'popOut', durS: d } : { in: 'pop', durS: d } }
+  }
+
+  it('an untouched old caption pop becomes the new pop, with its spec kept', () => {
+    const up = upgradeLegacyAppearance(oldPopTitle(0.13), W, H)
+    expect(up.appearance).toEqual({ in: 'pop', durS: 0.13 })
+    expect(resolveChannel(up, 'scale', 0)).toBeCloseTo(POP_FROM, 5)
+    expect(resolveChannel(up, 'opacity', 0)).toBeCloseTo(1, 5)
+    expect(up.keyframes?.scale).toEqual(buildAppearanceKeyframes({ in: 'pop', durS: 0.13 }, 5, W, H).scale)
+  })
+
+  it('an old pop with a pop out keeps its exit exactly', () => {
+    const up = upgradeLegacyAppearance(oldPopTitle(0.16, true), W, H)
+    const want = buildAppearanceKeyframes({ in: 'pop', out: 'popOut', durS: 0.16 }, 5, W, H)
+    expect(up.keyframes?.scale).toEqual(want.scale)
+    expect(up.keyframes?.opacity).toEqual(want.opacity)
+  })
+
+  it('a pop he tuned by hand is his, and is left alone', () => {
+    const tuned = oldPopTitle(0.13)
+    const scale = [...tuned.keyframes!.scale!]
+    scale[1] = { ...scale[1], value: 1.2 }
+    const hand = withChannelKeyframes(tuned, 'scale', scale)
+    expect(upgradeLegacyAppearance(hand, W, H)).toBe(hand)
+  })
+
+  it('a clip already on the new pop is the same object', () => {
+    const fresh = applyAppearanceToClip(newTitleClip(defaultTitleDef('Hi'), 0, 5), { in: 'pop', durS: 0.1 }, W, H)
+    expect(upgradeLegacyAppearance(fresh, W, H)).toBe(fresh)
+  })
+
+  it('the project pass upgrades inside tracks and is free when there is nothing to do', () => {
+    const p: Project = newProject()
+    const seq = p.sequences[p.activeSequenceId]
+    const withOld: Project = {
+      ...p,
+      sequences: {
+        [seq.id]: { ...seq, tracks: seq.tracks.map((t, i) => (i === 0 ? { ...t, clips: [oldPopTitle(0.13)] } : t)) },
+      },
+    }
+    const once = migrateProjectAppearance(withOld)
+    expect(once).not.toBe(withOld)
+    const clip = once.sequences[seq.id].tracks[0].clips[0]
+    expect(resolveChannel(clip, 'scale', 0)).toBeCloseTo(POP_FROM, 5)
+    // Idempotent: a second load changes nothing and allocates nothing.
+    expect(migrateProjectAppearance(once)).toBe(once)
+    expect(migrateProjectAppearance(p)).toBe(p)
   })
 })

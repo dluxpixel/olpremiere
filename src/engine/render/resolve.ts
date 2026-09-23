@@ -73,6 +73,17 @@ function layerFor(clip: Clip, t: number, fps: number, shutterS = 0): RenderLayer
   // unanimated layer cannot move, so the second sample would be the first.
   // → engine/render/motionBlur.ts
   const animated = shutterS > 0 && clip.keyframes !== undefined && Object.keys(clip.keyframes).length > 0
+  const now = transformAt(localT)
+  // ⛔ TEXT GROWS SHARP. His reference for the pop (2026-09-23, a word-by-word
+  // caption short) is razor sharp on every frame, and rendering it here showed
+  // why ours was not: a word that grows 91% to 103.5% in three frames is a fast
+  // SCALE, so the derived blur smeared it radially on exactly the frames it has
+  // to be read on. A caption is read, not tracked by a camera. So a title's
+  // shutter sample holds its scale: growing in place draws sharp, while a title
+  // that TRAVELS still smears along its path. Footage and stills keep the full
+  // derivation. Decided in the pure resolver so preview and export agree.
+  const later = animated ? transformAt(localT + shutterS) : null
+  const atShutter = later && clip.title ? { ...later, scale: now.scale } : later
   return {
     clipId: clip.id,
     assetId: clip.assetId,
@@ -81,8 +92,8 @@ function layerFor(clip: Clip, t: number, fps: number, shutterS = 0): RenderLayer
     title: clip.title,
     speed: clip.speed,
     frameSeed: Math.round(t * fps),
-    transform: transformAt(localT),
-    ...(animated ? { transformAtShutter: transformAt(localT + shutterS) } : {}),
+    transform: now,
+    ...(atShutter ? { transformAtShutter: atShutter } : {}),
     opacity: clamp(resolveChannel(clip, 'opacity', localT), 0, 1),
     // ⛔ THE ONE DECISION, AND IT IS IN THE PURE RESOLVER ON PURPOSE. An
     // inverted-backdrop title is not a colour, it is a compositing operation, so

@@ -107,6 +107,32 @@ async function rowMaxLuma(page: Page, fy: number): Promise<number> {
   }, fy)
 }
 
+/**
+ * Width of the bright text across a program-monitor row: first to last pixel
+ * brighter than 180. It scales with the title, so it is how the preview's own
+ * pixels say how big the word is drawn at that moment.
+ */
+async function rowBrightSpan(page: Page, fy: number): Promise<number> {
+  return page.evaluate((fy) => {
+    const c = document.querySelector('[data-testid="program-canvas"]') as HTMLCanvasElement
+    const s = document.createElement('canvas')
+    s.width = c.width
+    s.height = c.height
+    const ctx = s.getContext('2d')!
+    ctx.drawImage(c, 0, 0)
+    const row = ctx.getImageData(0, Math.floor(c.height * fy), c.width, 1).data
+    let first = -1
+    let last = -1
+    for (let i = 0, x = 0; i < row.length; i += 4, x++) {
+      if ((row[i] + row[i + 1] + row[i + 2]) / 3 > 180) {
+        if (first < 0) first = x
+        last = x
+      }
+    }
+    return first < 0 ? 0 : last - first + 1
+  }, fy)
+}
+
 /** Strongest "redness" (R − max(G,B)) across a program-monitor row. */
 async function rowMaxRedness(page: Page, fy: number): Promise<number> {
   return page.evaluate((fy) => {
@@ -136,18 +162,24 @@ test('entrance preset compiles to keyframes and animates in the preview', async 
 
   const data = await clipData(page, id)
   expect(data.appearance?.in).toBe('pop')
-  expect(data.opacityKf?.[0].value).toBeCloseTo(0, 5) // starts invisible
-  expect(data.scaleKf).not.toBeNull() // pop also drives scale
+  expect(data.scaleKf).not.toBeNull() // pop drives scale
+  // His reference, 2026-09-23: the word is fully there on its first frame and
+  // never fades in. The pop this replaced started invisible and at 30% size.
+  expect(data.opacityKf ?? []).toHaveLength(0)
 
-  // Mid-clip: fully visible (bright text). Start-of-clip: near-invisible.
+  // Mid-clip: settled at full size.
   await setPlayhead(page, 1)
   await expect.poll(() => rowMaxLuma(page, 0.5), { timeout: 8_000 }).toBeGreaterThan(180)
-  const mid = await rowMaxLuma(page, 0.5)
+  const midSpan = await rowBrightSpan(page, 0.5)
+  expect(midSpan).toBeGreaterThan(40)
 
+  // First frame: already bright, just a touch smaller (POP_FROM is 0.91).
   await setPlayhead(page, 0.01)
-  await expect.poll(() => rowMaxLuma(page, 0.5), { timeout: 8_000 }).toBeLessThan(120)
-  const start = await rowMaxLuma(page, 0.5)
-  expect(mid - start).toBeGreaterThan(80)
+  await expect.poll(() => rowBrightSpan(page, 0.5), { timeout: 8_000 }).toBeLessThan(midSpan * 0.97)
+  expect(await rowMaxLuma(page, 0.5)).toBeGreaterThan(180)
+  const startSpan = await rowBrightSpan(page, 0.5)
+  expect(startSpan / midSpan).toBeGreaterThan(0.85)
+  expect(startSpan / midSpan).toBeLessThan(0.97)
   await page.screenshot({ path: `${VERIFY}/pop-start.png` })
 })
 

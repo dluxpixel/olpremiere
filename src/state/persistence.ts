@@ -5,6 +5,7 @@ import { openDB, type IDBPDatabase } from 'idb'
 import { diskApi, healStoreFromDisk, trashProjectOnDisk, writeProjectToDisk } from './diskProjects'
 import { blobKeysOnlyUsedBy } from '../engine/blobGc'
 import { migrateProjectEffects } from '../engine/effects/migrate'
+import { migrateProjectAppearance } from '../engine/anim/appearance'
 import { markDoNotAutoRecover } from './recoveryMemory'
 import { planSequenceSplit } from './sequenceSplit'
 import { useToasts } from './toasts'
@@ -110,8 +111,9 @@ export async function loadProjectById(id: string): Promise<Project | null> {
     return null
   }
   // Shape migration first (tracks/mixer fields), then the colour bag -> effect
-  // stack move. Both are idempotent, so a re-load is free.
-  return splitLegacySequences(migrateProjectEffects(migrateProject(p)))
+  // stack move, then untouched old pops onto the current pop. All idempotent,
+  // so a re-load is free.
+  return splitLegacySequences(migrateProjectAppearance(migrateProjectEffects(migrateProject(p))))
 }
 
 /**

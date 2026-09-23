@@ -12,6 +12,7 @@
 // File lazily per blob. v1 files still open.
 
 import { migrateProjectEffects } from '../engine/effects/migrate'
+import { migrateProjectAppearance } from '../engine/anim/appearance'
 import { migrateProject, newId, type Project } from '../engine/types'
 import { backfillMirror } from './mediaMirror'
 import { deleteBlob, getBlob, loadProjectById, putBlob, saveProject } from './persistence'
@@ -435,7 +436,7 @@ async function adoptImported(raw: Project, writes: { key: string; blob: Blob }[]
   // rather than trading his current edit for the one in the file.
   if (!(await flushOutgoing())) return
 
-  let project = migrateProjectEffects(migrateProject(raw))
+  let project = migrateProjectAppearance(migrateProjectEffects(migrateProject(raw)))
   let finalWrites = writes
   let kept: string | null = null
 

@@ -20,6 +20,7 @@
 // work it out from a timeline full of black rectangles.
 
 import { migrateProjectEffects } from '../engine/effects/migrate'
+import { migrateProjectAppearance } from '../engine/anim/appearance'
 import { migrateProject, newId, type Project } from '../engine/types'
 import type { BackupFile } from './autoBackup'
 import { mirroredIds } from './mediaMirror'
@@ -74,7 +75,7 @@ export async function readBackup(filePath: string): Promise<BackupContents | nul
   if (!raw || typeof raw !== 'object') return null
   // The same two migrations a project gets when it is loaded from storage. A
   // backup can be weeks old, so it arrives in whatever shape that version wrote.
-  const project = migrateProjectEffects(migrateProject(raw))
+  const project = migrateProjectAppearance(migrateProjectEffects(migrateProject(raw)))
   const clipCount = Object.values(project.sequences ?? {}).reduce(
     (n, sq) => n + sq.tracks.reduce((m, t) => m + t.clips.length, 0),
     0,

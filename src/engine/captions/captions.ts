@@ -693,8 +693,13 @@ export function jettismCaptionDef(text: string, seqHeight: number): TitleDef {
   }
 }
 
-/** Pop-in length: ~4 frames at 30fps, matching the genre's snap. */
-export const CAPTION_POP_DUR_S = 0.13
+/**
+ * Pop-in length: 0.1 s, three frames at 30 fps, measured off the caption
+ * short he picked as the reference on 2026-09-23 (see POP_FROM in
+ * anim/appearance.ts). Was 0.13, which with the old curve spent most of a
+ * short word's screen time still growing.
+ */
+export const CAPTION_POP_DUR_S = 0.1
 
 export interface CaptionClipOptions extends CaptionStyleOptions {
   seqWidth: number

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { migrateClipEffects } from '../effects/migrate'
 import { BACKDROP_ZOOM, resolveFrame, _activeIndexForTest } from './resolve'
 import type { RenderLayer, RenderOp } from './types'
-import { defaultTransform, type Clip, type Keyframe, type Sequence, type Track } from '../types'
+import { defaultTitleDef, defaultTransform, type Clip, type Keyframe, type Sequence, type Track } from '../types'
 
 // --- Fixtures -------------------------------------------------------------
 
@@ -1121,6 +1121,22 @@ describe('the shutter sample', () => {
     const d180 = at180.transformAtShutter!.scale - at180.transform.scale
     const d360 = at360.transformAtShutter!.scale - at360.transform.scale
     expect(d360).toBeCloseTo(d180 * 2, 6)
+  })
+
+  it('a title growing in place is sampled at the same scale, so a pop draws sharp', () => {
+    const title = { ...clip({ outS: 2, keyframes: { scale: [kf(0, 0.91), kf(0.1, 1)] } }), title: defaultTitleDef('Hi') }
+    const l = layerAt(seqOf([track({ clips: [title] })]), 0.05)
+    expect(l.transformAtShutter).toBeDefined()
+    expect(l.transformAtShutter!.scale).toBe(l.transform.scale)
+    // The same keyframes on footage still smear, which is the rule for pictures.
+    const footage = layerAt(seqOf([track({ clips: [clip({ outS: 2, keyframes: { scale: [kf(0, 0.91), kf(0.1, 1)] } })] })]), 0.05)
+    expect(footage.transformAtShutter!.scale).toBeGreaterThan(footage.transform.scale)
+  })
+
+  it('a title that travels still smears along its path', () => {
+    const title = { ...clip({ outS: 2, keyframes: { posX: [kf(0, -500), kf(0.5, 0)] } }), title: defaultTitleDef('Hi') }
+    const l = layerAt(seqOf([track({ clips: [title] })]), 0.2)
+    expect(l.transformAtShutter!.x).toBeGreaterThan(l.transform.x)
   })
 
   it('both sides of a transition get it, because both are moving pictures', () => {
