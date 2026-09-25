@@ -22,7 +22,7 @@ This is a Windows Electron app. This machine is Linux with no GPU.
 Runs here:
 
 ```bash
-npm ci
+ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm ci
 npx tsc --noEmit -p tsconfig.json
 npx tsc --noEmit -p tsconfig.electron.json
 npx eslint .
@@ -30,7 +30,7 @@ npx vitest run
 npx vite build
 ```
 
-`npm ci` needs `ELECTRON_SKIP_BINARY_DOWNLOAD=1`, set on the cloud environment.
+Install with `ELECTRON_SKIP_BINARY_DOWNLOAD=1` exactly as above: without it the Electron postinstall tries to fetch a binary from GitHub releases, which this machine cannot reach.
 
 Never run here: `npx playwright test` (several specs are timing and GPU sensitive and lie on
 software rendering), anything under `_verify/`, `npm run dist`, `npm run dist:dir`,
