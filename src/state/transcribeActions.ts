@@ -17,6 +17,7 @@ import { dropWordsInMusic, isPureMusic, type SpeechTrack } from '../engine/capti
 import { musicTrackForClip } from '../engine/captions/musicAnalysis'
 import { getCaptionEmphasis, getCaptionLanguage, modelFor } from '../engine/captions/transcribeConfig'
 import { clipEmitsAudio } from '../engine/audio'
+import { clipEndS } from '../engine/timeline'
 import { activeSequence, type Clip, type MediaAsset } from '../engine/types'
 import type { CaptionWord } from '../engine/captions/captions'
 import { addCaptionsFromWords } from './captionActions'
@@ -455,6 +456,16 @@ export async function autoCaptionEveryClip(
   }
 
   const words: CaptionWord[] = []
+  // ⛔ ONE SPAN PER CLIP THIS RUN ACTUALLY LISTENED TO, NOT ONE BOX AROUND ALL
+  // OF THEM. The words above are pooled flat for one dispatch, which used to
+  // lose every clip boundary: addCaptionsFromWords then took the single
+  // min/max of the whole pooled run as "the stretch it covers" and wiped
+  // anything sitting between two captioned clips, including a caption he had
+  // hand corrected on a clip this run never touched (a skipped music bed or a
+  // clip nobody selected, sitting between two he did). Recorded only once a
+  // clip is actually heard (not on a vanished or failed one), so a transient
+  // failure never wipes what was already there with nothing to replace it.
+  const coveredSpans: { startS: number; endS: number }[] = []
   let cancelled = false
   let failed = 0
   let vanished = 0
@@ -488,6 +499,7 @@ export async function autoCaptionEveryClip(
         const heard = await wordsForClip(live, asset, { screenFirst: true })
         if (heard.length === 0) silent++
         words.push(...heard)
+        coveredSpans.push({ startS: live.startS, endS: clipEndS(live) })
       } catch (err) {
         if (isCancel(err)) {
           cancelled = true
@@ -511,6 +523,7 @@ export async function autoCaptionEveryClip(
     label: onlyIds ? 'Auto-caption selected clips' : 'Auto-caption every clip',
     preset: preset ?? rememberedCaptionPreset(),
     model: modelFor(getCaptionLanguage()),
+    coveredSpans,
   })
   if (cancelled) toasts.show('Stopped early, captioned what was heard so far')
   else if (failed > 0) toasts.show(`${failed} clip${failed === 1 ? '' : 's'} could not be read`, 'danger')

@@ -70,6 +70,7 @@ import {
   type MediaAsset,
   type Sequence,
 } from '../engine/types'
+import { addCaptionsFromWords, CAPTION_TRACK_NAME } from './captionActions'
 import { updateActiveSequence, useStore } from './store'
 import { audibleClips, autoCaptionEveryClip, autoCaptionFromClip, useTranscribe } from './transcribeActions'
 
@@ -500,5 +501,49 @@ describe('a clip playing backwards or not at all is not captioned', () => {
     await autoCaptionFromClip('clip-rev')
     expect(heard).toEqual([])
     expect(toasted.join(' ')).toContain('stopped')
+  })
+})
+
+// A pooled sweep flattens every target clip's words into ONE array and makes
+// ONE addCaptionsFromWords call, so with no clip boundaries the old "replace
+// only the stretch this run covers" code took a single min/max box around the
+// whole pooled run. Two clips ten seconds apart wiped everything sitting
+// between them, including a caption he had hand corrected on a clip the run
+// never touched at all.
+describe('a pooled sweep does not wipe a caption sitting between the clips it covers', () => {
+  it('keeps a hand caption between two non-adjacent clips this run captions', async () => {
+    seedAudio([
+      { id: 'a', startS: 0 },
+      { id: 'c', startS: 10 },
+    ])
+    // Stands in for a caption he already hand corrected, sitting well outside
+    // either clip and squarely between them.
+    addCaptionsFromWords([{ text: 'hand corrected', startS: 5, endS: 5.4 }])
+
+    await autoCaptionEveryClip()
+
+    const texts = videoTracks(seq())
+      .find((t) => t.name === CAPTION_TRACK_NAME)
+      ?.clips.map((c) => c.title?.text)
+    expect(texts).toContain('hand corrected')
+    expect(texts).toContain('clip-a')
+    expect(texts).toContain('clip-c')
+  })
+
+  it('still replaces a caption that sits ON one of the clips this run covers', async () => {
+    seedAudio([
+      { id: 'a', startS: 0 },
+      { id: 'c', startS: 10 },
+    ])
+    // Sits inside clip a's own span (0 to 1), so a re-run must still clear it.
+    addCaptionsFromWords([{ text: 'stale', startS: 0.1, endS: 0.3 }])
+
+    await autoCaptionEveryClip()
+
+    const texts = videoTracks(seq())
+      .find((t) => t.name === CAPTION_TRACK_NAME)
+      ?.clips.map((c) => c.title?.text)
+    expect(texts).not.toContain('stale')
+    expect(texts).toContain('clip-a')
   })
 })
