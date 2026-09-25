@@ -1,5 +1,5 @@
 import { Plus } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { useMemo, useRef, useState, type DragEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { addClipFromAsset, addClipWithLinkedAudio, addTrack, clipDurationS, clipEndS, moveSelectionWith, snapTime, splitGroup } from '../engine/timeline'
 import { createSnapPointCache } from '../engine/snapPointCache'
 import { formatTimecode, quantizeToFrame } from '../engine/timecode'
@@ -26,7 +26,6 @@ import { useStableCallback, type Drag } from './timelineDrag'
 import { TrackPresetMenuButton } from './TrackPresetMenuButton'
 import { clipContextMenuItems } from './timelineClipMenu'
 import { assetDropTrack, dropKinds, laneTakesDrop, sfxDropTrack, snappedDropTime } from './timelineDrop'
-import { edgeSpeedX, edgeSpeedY } from './timelineEdgeScroll'
 import {
   carriedOthers,
   dragCommit,
@@ -50,11 +49,17 @@ import {
   laneHoverClass,
   lanesCursorClass,
   marqueeHitIds,
-  modifierMods,
   silencedTest,
   timelineLengthS,
 } from './timelineLanes'
-import { followScrollLeft, frameAtOffset, zoomAroundPlan, zoomFitPxPerS, zoomToPlan } from './timelineZoom'
+import { frameAtOffset } from './timelineZoom'
+import { useCoalescedScrub } from './useCoalescedScrub'
+import { useEdgeScroll } from './useEdgeScroll'
+import { useLanesViewport } from './useLanesViewport'
+import { useModifierMods } from './useModifierMods'
+import { usePlayheadFollow } from './usePlayheadFollow'
+import { useSeenClipIds } from './useSeenClipIds'
+import { useTimelineZoom } from './useTimelineZoom'
 
 // ---------------------------------------------------------------------------
 // Timeline
@@ -139,44 +144,10 @@ export function Timeline({ height }: { height: number }) {
   const lengthS = timelineLengthS(seq.durationS)
   const contentWidth = lengthS * pxPerS
 
-  // --- Clip virtualization -------------------------------------------------
-  // Only clips intersecting the visible time range (+ one full viewport of
-  // margin each side, so ordinary scrolling never pops clips in at the edge)
-  // are mounted. Until the first measure, everything renders (null viewport).
-  const [viewport, setViewport] = useState<{ left: number; width: number } | null>(null)
-  const scrollRafRef = useRef(0)
-  const scheduleViewportMeasure = useCallback(() => {
-    if (scrollRafRef.current) return
-    scrollRafRef.current = requestAnimationFrame(() => {
-      scrollRafRef.current = 0
-      const el = lanesRef.current
-      if (el) setViewport({ left: el.scrollLeft, width: el.clientWidth })
-    })
-  }, [])
-  useEffect(() => {
-    const el = lanesRef.current
-    if (!el) return
-    setViewport({ left: el.scrollLeft, width: el.clientWidth })
-    const ro = new ResizeObserver(scheduleViewportMeasure)
-    ro.observe(el)
-    return () => {
-      ro.disconnect()
-      if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current)
-      scrollRafRef.current = 0
-    }
-  }, [scheduleViewportMeasure])
+  // --- Clip virtualization (useLanesViewport) and pop gating (useSeenClipIds)
+  const { viewport, scheduleViewportMeasure, measureViewportNow } = useLanesViewport(lanesRef)
   const { winStartS, winEndS } = clipWindowS(viewport, pxPerS)
-
-  // Pop gating: ids seen on the previous commit. A clip id NOT in the set is
-  // genuinely new (add / paste / undo-restore) and gets the one-shot pulse; a
-  // virtualization remount is already in the set and stays quiet.
-  const seenClipIdsRef = useRef<Set<string>>(new Set())
-  const seenClipIds = seenClipIdsRef.current
-  useEffect(() => {
-    const ids = new Set<string>()
-    for (const t of seq.tracks) for (const c of t.clips) ids.add(c.id)
-    seenClipIdsRef.current = ids
-  }, [seq])
+  const seenClipIds = useSeenClipIds(seq)
 
   // Lane geometry in content space (below the ruler), for pointer hit tests.
   const laneInfos = useMemo(() => buildLaneInfos(vTracks, aTracks), [vTracks, aTracks])
@@ -211,53 +182,7 @@ export function Timeline({ height }: { height: number }) {
     return r.t
   }
 
-  // Zoom re-anchors scrollLeft in the SAME event as the pxPerS change, so the
-  // virtualization window must be re-measured synchronously too - the async
-  // scroll-event measure lands after paint, and one frame culled against the
-  // stale scrollLeft blanks every visible clip.
-  const measureViewportNow = () => {
-    const el = lanesRef.current
-    if (!el) return
-    if (scrollRafRef.current) {
-      cancelAnimationFrame(scrollRafRef.current)
-      scrollRafRef.current = 0
-    }
-    setViewport({ left: el.scrollLeft, width: el.clientWidth })
-  }
-
-  const zoomAround = (clientX: number, factor: number) => {
-    const el = lanesRef.current
-    if (!el) return
-    const plan = zoomAroundPlan(useStore.getState().ui.pxPerS, factor, clientX - el.getBoundingClientRect().left, el.scrollLeft)
-    if (!plan) return
-    setUI({ pxPerS: plan.pxPerS })
-    el.scrollLeft = plan.scrollLeft
-    measureViewportNow()
-  }
-
-  // Keyboard / toolbar / slider zoom, anchored on the playhead (see zoomToPlan).
-  const zoomTo = (nextRaw: number) => {
-    const el = lanesRef.current
-    if (!el) return
-    const { pxPerS: old, playheadS } = useStore.getState().ui
-    const plan = zoomToPlan(old, nextRaw, el.scrollLeft, el.clientWidth, playheadS)
-    if (!plan) return
-    setUI({ pxPerS: plan.pxPerS })
-    el.scrollLeft = plan.scrollLeft
-    measureViewportNow()
-  }
-
-  // "=" / "-" in the central keymap (store.zoomIn/zoomOut dispatch this).
-  useEffect(() => {
-    const onZoom = (e: Event) => {
-      const detail = (e as CustomEvent<{ factor?: number; pxPerS?: number }>).detail
-      if (detail?.pxPerS !== undefined) zoomTo(detail.pxPerS)
-      else zoomTo(useStore.getState().ui.pxPerS * (detail?.factor ?? 1))
-    }
-    window.addEventListener('olpremiere:zoom', onZoom)
-    return () => window.removeEventListener('olpremiere:zoom', onZoom)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  const { zoomFit } = useTimelineZoom(lanesRef, measureViewportNow, seq.durationS)
 
   // --- pointer interactions -------------------------------------------------
 
@@ -266,57 +191,8 @@ export function Timeline({ height }: { height: number }) {
     setDrag(d)
   }
 
-  // --- edge auto-scroll during drags (speeds: timelineEdgeScroll.ts) --------
-  const lastDragPointer = useRef<{ clientX: number; clientY: number } | null>(null)
-  const edgeScrollRaf = useRef<number | null>(null)
-  const edgeSpeed = (el: HTMLElement, clientX: number): number => edgeSpeedX(el.getBoundingClientRect(), clientX)
-  const edgeSpeedYOf = (el: HTMLElement, clientY: number): number => edgeSpeedY(el.getBoundingClientRect(), clientY)
-
-  const stopEdgeScroll = () => {
-    if (edgeScrollRaf.current !== null) cancelAnimationFrame(edgeScrollRaf.current)
-    edgeScrollRaf.current = null
-  }
-
-  const maybeEdgeScroll = () => {
-    const el = lanesRef.current
-    const p = lastDragPointer.current
-    if (!el || !p || (edgeSpeed(el, p.clientX) === 0 && edgeSpeedYOf(el, p.clientY) === 0)) {
-      stopEdgeScroll()
-      return
-    }
-    if (edgeScrollRaf.current !== null) return // loop already alive
-    const step = () => {
-      const el2 = lanesRef.current
-      const p2 = lastDragPointer.current
-      if (!el2 || !p2) {
-        edgeScrollRaf.current = null
-        return
-      }
-      const sp = edgeSpeed(el2, p2.clientX)
-      const spY = edgeSpeedYOf(el2, p2.clientY)
-      if (sp === 0 && spY === 0) {
-        edgeScrollRaf.current = null
-        return
-      }
-      const before = el2.scrollLeft
-      const beforeY = el2.scrollTop
-      programmaticScroll.current = true
-      if (sp !== 0) el2.scrollLeft = Math.max(0, before + sp)
-      if (spY !== 0) el2.scrollTop = Math.max(0, beforeY + spY)
-      // At the rail ends nothing moved - don't spin the loop for free.
-      if (el2.scrollLeft === before && el2.scrollTop === beforeY) {
-        edgeScrollRaf.current = null
-        return
-      }
-      handleLanesPointerMove(p2)
-      edgeScrollRaf.current = requestAnimationFrame(step)
-    }
-    edgeScrollRaf.current = requestAnimationFrame(step)
-  }
-
-  // A dying component must never leave a scroll loop running.
-  useEffect(() => stopEdgeScroll, [])
-
+  // --- edge auto-scroll during drags (useEdgeScroll) -----------------------
+  const { lastDragPointer, maybeEdgeScroll, stopEdgeScroll } = useEdgeScroll(lanesRef, programmaticScroll)
 
   const handleClipPointerDown = (e: ReactPointerEvent<HTMLDivElement>, clip: Clip) => {
     // Any fresh press on a clip clears a stale right-drag suppression (e.g. a
@@ -566,7 +442,7 @@ export function Timeline({ height }: { height: number }) {
     // view travels, re-running this handler from the parked coordinates so the
     // clip/trim/scrub keeps following. Pro-NLE table stakes.
     lastDragPointer.current = { clientX: e.clientX, clientY: e.clientY }
-    maybeEdgeScroll()
+    maybeEdgeScroll(handleLanesPointerMove)
     if (drag.kind === 'scrub') {
       scrubPlayheadTo(e.clientX)
       return
@@ -741,7 +617,7 @@ export function Timeline({ height }: { height: number }) {
     // Bin drags edge-scroll too (the loop only scrolls here - the preview line
     // is content-anchored, and dragover re-fires on the next mouse move).
     lastDragPointer.current = { clientX: e.clientX, clientY: e.clientY }
-    maybeEdgeScroll()
+    maybeEdgeScroll(handleLanesPointerMove)
     const { x, y } = contentPoint(e)
     const lane = laneAt(y)
     if (!laneTakesDrop(lane, isSfx, isTitle)) {
@@ -810,87 +686,9 @@ export function Timeline({ height }: { height: number }) {
     )
   }
 
-  // --- scroll/zoom behaviors --------------------------------------------------
-
-  useEffect(() => {
-    const el = lanesRef.current
-    if (!el) return
-    const onWheel = (e: WheelEvent) => {
-      if (!e.ctrlKey) return
-      e.preventDefault()
-      zoomAround(e.clientX, e.deltaY < 0 ? 1.2 : 1 / 1.2)
-    }
-    el.addEventListener('wheel', onWheel, { passive: false })
-    return () => el.removeEventListener('wheel', onWheel)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  // Modifier-hover cursor language: holding Alt arms slip (clip body) and rate
-  // stretch (edge), Ctrl+Alt arms slide (body) and roll (edge), and Alt flips
-  // the zoom tool to zoom-out. Written straight to the container's dataset so
-  // a held key never touches React state; index.css keys on
-  // [data-tool][data-mods] to re-cursor the targets.
-  useEffect(() => {
-    const write = (ctrl: boolean, alt: boolean) => {
-      const el = lanesRef.current
-      if (!el) return
-      const mods = modifierMods(ctrl, alt)
-      if (mods) el.dataset.mods = mods
-      else delete el.dataset.mods
-    }
-    const onKey = (e: KeyboardEvent) => write(e.ctrlKey || e.metaKey, e.altKey)
-    // Alt+Tab and friends can steal the keyup: clear on window blur too.
-    const clear = () => write(false, false)
-    window.addEventListener('keydown', onKey)
-    window.addEventListener('keyup', onKey)
-    window.addEventListener('blur', clear)
-    return () => {
-      window.removeEventListener('keydown', onKey)
-      window.removeEventListener('keyup', onKey)
-      window.removeEventListener('blur', clear)
-    }
-  }, [])
-
-  // Keep the playhead visible while playing (page-scroll like Premiere), but
-  // never fight a manual scroll: suspend auto-follow for a moment after the
-  // user scrolls the lanes themselves.
-  // Auto-follow rides an IMPERATIVE playhead subscription (not a React effect
-  // keyed on playheadS - that re-ran per transport tick). pxPerS via ref so
-  // zoom changes mid-play take effect without resubscribing.
-  const pxPerSRef = useRef(pxPerS)
-  pxPerSRef.current = pxPerS
-  useEffect(() => {
-    return useStore.subscribe(
-      (s) => s.ui.playheadS,
-      (t) => {
-        const el = lanesRef.current
-        if (!el) return
-        if (performance.now() < manualScrollUntil.current) return
-        // Page forward while playing, bring an off-screen jump into view while
-        // paused (see followScrollLeft).
-        const next = followScrollLeft(t * pxPerSRef.current, el.scrollLeft, el.clientWidth, playing)
-        if (next !== null) {
-          programmaticScroll.current = true
-          el.scrollLeft = next
-        }
-      },
-    )
-  }, [playing])
-
-  const zoomFit = () => {
-    const el = lanesRef.current
-    if (!el || seq.durationS <= 0) return
-    setUI({ pxPerS: zoomFitPxPerS(el.clientWidth, seq.durationS) })
-    el.scrollLeft = 0
-    measureViewportNow()
-  }
-
-  // "\" in the central keymap.
-  useEffect(() => {
-    window.addEventListener('olpremiere:zoom-fit', zoomFit)
-    return () => window.removeEventListener('olpremiere:zoom-fit', zoomFit)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [seq.durationS])
+  // --- scroll behaviors -----------------------------------------------------
+  useModifierMods(lanesRef)
+  usePlayheadFollow(lanesRef, pxPerS, playing, manualScrollUntil, programmaticScroll)
 
   const scrubTo = (clientX: number) => {
     pausePlayback()
@@ -899,45 +697,8 @@ export function Timeline({ height }: { height: number }) {
     setUI({ playheadS: frameAtOffset(clientX - rect.left, pxPerS, seq.fps) })
   }
 
-  /**
-   * Dragging the playhead, coalesced to ONE scrub per animation frame.
-   *
-   * ⛔ A POINTER REPORTS FAR FASTER THAN A SCREEN REDRAWS. An ordinary mouse is
-   * 125 Hz and a gaming mouse is 1000, while the display is 60 to 165. This used
-   * to call `scrubTo` on every single pointermove, and each call is a store write
-   * plus a React render of a timeline holding every clip in the sequence. So most
-   * of that work could never be seen: it was only ever competing with the work
-   * that could. **Measured 2026-08-13: 61 store writes for 60 pointer moves.**
-   * His words, and the reason this was looked at: "scrubbing with the playhead is
-   * still laggy."
-   *
-   * `Monitor.tsx` already caps its own redraw for exactly this reason. The
-   * timeline did not, which is why the lag survived that cap.
-   *
-   * ⚠️ The DOWN press deliberately still calls `scrubTo` directly. A click has to
-   * land on the frame it happened on, and coalescing it would put the playhead a
-   * frame behind every click for no gain, since one click is not a stream.
-   */
-  const scrubFrame = useRef<number | null>(null)
-  const scrubX = useRef(0)
-  const scrubDrag = (clientX: number) => {
-    // Always keep the NEWEST position: a coalesced frame must land where the
-    // pointer is now, not where it was when the frame was booked.
-    scrubX.current = clientX
-    if (scrubFrame.current !== null) return
-    scrubFrame.current = requestAnimationFrame(() => {
-      scrubFrame.current = null
-      scrubTo(scrubX.current)
-    })
-  }
-  // A frame booked by the last move can still be owed when the timeline goes
-  // away. Firing it into an unmounted component would write to a dead store.
-  useEffect(
-    () => () => {
-      if (scrubFrame.current !== null) cancelAnimationFrame(scrubFrame.current)
-    },
-    [],
-  )
+  // Dragging the playhead: one scrub per animation frame (useCoalescedScrub).
+  const scrubDrag = useCoalescedScrub(scrubTo)
 
   const cursorClass = lanesCursorClass(tool, drag?.kind)
 
