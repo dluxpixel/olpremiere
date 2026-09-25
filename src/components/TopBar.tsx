@@ -32,6 +32,7 @@ import { MelonMark } from '../ui/MelonMark'
 import { displayVersion } from '../appVersion'
 import { ExportDialog } from './ExportDialog'
 import { ProjectsDialog, type ProjectsView } from './ProjectsDialog'
+import { usePhoneLayout } from '../ui/phoneLayout'
 import { SettingsDialog } from './SettingsDialog'
 
 /**
@@ -307,6 +308,7 @@ export function TopBar() {
     if (label) useToasts.getState().show(`Redo: ${label}`)
   }
   const [exporting, setExporting] = useState(false)
+  const phone = usePhoneLayout()
   // null = closed. Otherwise which half of his work the dialog opened on.
   const [projectsOpen, setProjectsOpen] = useState<ProjectsView | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -369,7 +371,12 @@ export function TopBar() {
       <input
         ref={openFileRef}
         type="file"
-        accept=".olstudio,.json,.olstudio.json,application/json,application/octet-stream"
+        // An iPhone turns this list into file types it knows, and it does not
+        // know .olstudio, so a project file sent to it would sit greyed out and
+        // unpickable in the Files app. On a phone any file may be picked; the
+        // import reads the first bytes and turns away anything that is not a
+        // project, the same check a dropped file gets.
+        accept={phone ? undefined : '.olstudio,.json,.olstudio.json,application/json,application/octet-stream'}
         className="hidden"
         data-testid="open-project-input"
         onChange={(e) => {

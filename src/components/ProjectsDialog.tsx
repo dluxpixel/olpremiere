@@ -1,7 +1,7 @@
 // The Projects picker: every edit lives side by side. Open another one,
 // start fresh, or delete an old one, without ever nuking current work.
 
-import { Archive, ArchiveRestore, Clapperboard, Clock, FolderOpen, LifeBuoy, Plus, Trash2, X } from 'lucide-react'
+import { Archive, ArchiveRestore, Clapperboard, Clock, Download, FolderOpen, LifeBuoy, Plus, Share, Trash2, Upload, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import {
   activeProjects,
@@ -13,7 +13,16 @@ import {
 import { listBackups, readBackup, restoreBackup, type BackupContents, type BackupRow } from '../state/backupRestore'
 import { createProject, openProject, removeProject, setArchived, setLater } from '../state/projectActions'
 import { useStore } from '../state/store'
+import {
+  buildProjectFile,
+  canShareProjectFile,
+  exportProjectToFile,
+  openProjectFilePicker,
+  shareProjectFile,
+  type BuiltProjectFile,
+} from '../state/projectFile'
 import { Button, IconButton } from '../ui/Button'
+import { usePhoneLayout } from '../ui/phoneLayout'
 
 function ago(ts: number): string {
   const s = Math.max(0, (Date.now() - ts) / 1000)
@@ -35,6 +44,89 @@ function ago(ts: number): string {
  *   archived = finished, filed away, never deleted
  */
 export type ProjectsView = 'active' | 'later' | 'archived' | 'backups'
+
+function fmtSize(n: number): string {
+  if (n >= 1e9) return `${(n / 1e9).toFixed(1)} GB`
+  if (n >= 1e6) return `${Math.round(n / 1e6)} MB`
+  return `${Math.max(1, Math.round(n / 1e3))} KB`
+}
+
+/**
+ * COPY A PROJECT BETWEEN HIS PC AND HIS PHONE (2026-09-25). His words: "make it
+ * so I can copy projects from one to another".
+ *
+ * Send packs the OPEN project into one file with every clip's footage inside
+ * it; Open takes such a file and adds the project it holds (a newer copy
+ * already here is kept, and the incoming one arrives beside it, see
+ * adoptImported). On the desktop Send is the save dialog, so the file can go
+ * straight into a folder his phone can reach. On a phone it is the share sheet,
+ * and it takes two taps on purpose: packing reads every clip first, and a share
+ * has to come from a fresh tap (see shareProjectFile).
+ */
+function CopyToAnotherDevice({ onClose }: { onClose: () => void }) {
+  const phone = usePhoneLayout()
+  const [packing, setPacking] = useState(false)
+  const [ready, setReady] = useState<BuiltProjectFile | null>(null)
+
+  const send = async () => {
+    if (!phone) {
+      await exportProjectToFile()
+      return
+    }
+    setPacking(true)
+    try {
+      const built = await buildProjectFile()
+      if (canShareProjectFile(built)) setReady(built)
+      else await exportProjectToFile() // no share sheet: the download is the way out
+    } finally {
+      setPacking(false)
+    }
+  }
+
+  return (
+    <div
+      data-testid="project-copy"
+      className="flex shrink-0 flex-wrap items-center gap-2 border-t border-border px-4 py-2.5"
+    >
+      <span className="mr-auto min-w-0 text-[11px] text-text-muted">
+        Copy the open project to your {phone ? 'PC' : 'phone'}, footage and all
+      </span>
+      {ready ? (
+        <Button
+          variant="primary"
+          data-testid="project-copy-share"
+          onClick={() => {
+            void shareProjectFile(ready).then((sent) => {
+              if (sent) setReady(null)
+            })
+          }}
+        >
+          <Share size={14} strokeWidth={1.5} />
+          Send ({fmtSize(ready.file.size)})
+        </Button>
+      ) : (
+        <Button variant="secondary" data-testid="project-copy-send" disabled={packing} onClick={() => void send()}>
+          <Upload size={14} strokeWidth={1.5} />
+          {packing ? 'Packing it up…' : 'Send a copy'}
+        </Button>
+      )}
+      <Button
+        variant="secondary"
+        data-testid="project-copy-open"
+        title="Open a project file sent from your phone or another computer"
+        onClick={() => {
+          // The one door every project file comes in by (the top bar's input),
+          // so a copy lands exactly as a backup opened on the desktop does.
+          openProjectFilePicker()
+          onClose()
+        }}
+      >
+        <Download size={14} strokeWidth={1.5} />
+        Open a copy
+      </Button>
+    </div>
+  )
+}
 
 export function ProjectsDialog({ onClose, view = 'active' }: { onClose: () => void; view?: ProjectsView }) {
   const currentId = useStore((s) => s.project.id)
@@ -299,6 +391,7 @@ export function ProjectsDialog({ onClose, view = 'active' }: { onClose: () => vo
             </div>
           )}
         </div>
+        <CopyToAnotherDevice onClose={onClose} />
       </div>
     </div>
   )

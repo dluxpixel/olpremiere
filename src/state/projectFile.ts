@@ -285,33 +285,94 @@ export function planProjectCopy(project: Project, newProjectId: string, keySuffi
 
 // ---------------------------------------------------------------------------
 
+/** The open project packed as one file, footage included, ready to hand over. */
+export interface BuiltProjectFile {
+  file: File
+  /** Media items that went into it. */
+  bundled: number
+  /** Media items the project uses that could not be read, so are NOT in it. */
+  absent: number
+}
+
 /**
- * Serialize the current project + its media into one file. The Blob is composed
- * by REFERENCE (no copies); with the File System picker it streams to disk,
- * otherwise it downloads. Never builds the media into strings.
+ * Pack the current project + its media into one file. The Blob is composed by
+ * REFERENCE (no copies), so a multi-GB project costs almost nothing to build.
+ * Never builds the media into strings.
+ */
+export async function buildProjectFile(): Promise<BuiltProjectFile> {
+  const project = useStore.getState().project
+  const wanted = blobKeysOf(project)
+  const metas: BlobMeta[] = []
+  const parts: Blob[] = []
+  for (const key of wanted) {
+    const blob = await getBlob(key)
+    if (!blob) continue // a missing blob just isn't bundled; the rest still restores
+    metas.push({ key, type: blob.type, size: blob.size })
+    parts.push(blob)
+  }
+  const header = encodeHeader({
+    format: PROJECT_FILE_FORMAT,
+    version: PROJECT_FILE_VERSION,
+    project,
+    blobs: metas,
+  })
+  const file = new File([header, ...parts], projectFileName(project.name), { type: 'application/octet-stream' })
+  return { file, bundled: metas.length, absent: wanted.length - metas.length }
+}
+
+/** Say when the bundle is short. A copy that quietly left media behind is a lie. */
+function reportBuilt(built: BuiltProjectFile, verb: string): void {
+  const show = useToasts.getState().show
+  const total = built.bundled + built.absent
+  if (built.absent > 0) {
+    show(`${verb}, but ${built.absent} of ${total} media items were missing and are NOT in the file`, 'danger')
+  } else {
+    show(`${verb} with ${built.bundled} media item(s) bundled`, 'success')
+  }
+}
+
+/** True where the system share sheet can take a whole project file. */
+export function canShareProjectFile(built: BuiltProjectFile): boolean {
+  return typeof navigator !== 'undefined' && typeof navigator.canShare === 'function' && navigator.canShare({ files: [built.file] })
+}
+
+/**
+ * COPY A PROJECT TO ANOTHER DEVICE (2026-09-25). His words: "make it so I can
+ * copy projects from one to another". The project file already carried every
+ * clip and all its footage, and opening one anywhere adds the project, so the
+ * copy was always possible on the desktop; the phone could neither send nor
+ * open one. On a phone the file goes to the SHARE SHEET (Telegram, Save to
+ * Files, anything he has), because a phone has no save dialog.
+ *
+ * ⛔ CALLED FROM ITS OWN TAP, with the file already built. A share must come
+ * from a gesture, and building a big project reads every clip first, long
+ * enough for Safari to decide the tap is over. So the caller builds, shows a
+ * Send button, and this runs from that second tap.
+ */
+export async function shareProjectFile(built: BuiltProjectFile): Promise<boolean> {
+  try {
+    await navigator.share({ files: [built.file], title: built.file.name })
+    reportBuilt(built, 'Sent the project')
+    return true
+  } catch (err) {
+    // Closing the sheet is not a failure: the copy is still ready to send.
+    if (err instanceof DOMException && err.name === 'AbortError') return false
+    console.warn('OL Premiere: project share failed', err)
+    useToasts.getState().show('Could not open the share sheet for the project. Try again', 'danger')
+    return false
+  }
+}
+
+/**
+ * Serialize the current project + its media into one file. With the File
+ * System picker it streams to disk, otherwise it downloads.
  */
 export async function exportProjectToFile(): Promise<void> {
   const show = useToasts.getState().show
-  const project = useStore.getState().project
   try {
-    const wanted = blobKeysOf(project)
-    const metas: BlobMeta[] = []
-    const parts: Blob[] = []
-    for (const key of wanted) {
-      const blob = await getBlob(key)
-      if (!blob) continue // a missing blob just isn't bundled; the rest still restores
-      metas.push({ key, type: blob.type, size: blob.size })
-      parts.push(blob)
-    }
-    const absent = wanted.length - metas.length
-    const header = encodeHeader({
-      format: PROJECT_FILE_FORMAT,
-      version: PROJECT_FILE_VERSION,
-      project,
-      blobs: metas,
-    })
-    const file = new Blob([header, ...parts], { type: 'application/octet-stream' })
-    const name = projectFileName(project.name)
+    const built = await buildProjectFile()
+    const file = built.file
+    const name = file.name
 
     if (typeof globalThis.showSaveFilePicker === 'function') {
       let handle: FileSystemFileHandle
@@ -336,13 +397,7 @@ export async function exportProjectToFile(): Promise<void> {
       a.click()
       setTimeout(() => URL.revokeObjectURL(url), 30_000)
     }
-    // Say when the bundle is short. A backup that quietly left media behind is
-    // the same lie as an import that quietly arrives without it.
-    if (absent > 0) {
-      show(`Saved, but ${absent} of ${wanted.length} media items were missing and are NOT in the file`, 'danger')
-    } else {
-      show(`Saved project file with ${metas.length} media item(s) bundled`, 'success')
-    }
+    reportBuilt(built, 'Saved project file')
   } catch (err) {
     console.warn('OL Premiere: project export failed', err)
     show('Could not save the project file', 'danger')

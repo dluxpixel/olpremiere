@@ -130,3 +130,47 @@ test('the desktop never gets the phone layout', async ({ page }) => {
   await expect(page.getByTestId('asset-card')).toBeVisible({ timeout: 15_000 })
   await expect(page.getByTestId('asset-add')).toBeHidden()
 })
+
+// "make it so I can copy projects from one to another" (2026-09-25). The whole
+// trip, two separate browsers standing in for two devices: a project made on a
+// phone is sent through the share sheet, and a PC that has never seen it opens
+// the file and gets the project, clip and footage.
+test('a project made on the phone copies to a PC, footage and all', async ({ browser }, testInfo) => {
+  const phone = await browser.newContext(IPHONE)
+  await phone.addInitScript(() => {
+    navigator.canShare = () => true
+    navigator.share = async (data?: ShareData) => {
+      const f = data!.files![0]!
+      const bytes = Array.from(new Uint8Array(await f.arrayBuffer()))
+      ;(window as { __copy?: unknown }).__copy = { name: f.name, bytes }
+    }
+  })
+  const page = await phone.newPage()
+  await addClip(page)
+  // An iPhone greys out a file type it does not know, so the phone's picker
+  // must not narrow the list to .olstudio.
+  expect(await page.getByTestId('open-project-input').getAttribute('accept')).toBeNull()
+
+  await page.getByTestId('open-projects').tap()
+  await page.getByTestId('project-copy-send').tap()
+  await page.getByTestId('project-copy-share').tap()
+  const copy = await expect
+    .poll(() => page.evaluate(() => (window as { __copy?: { name: string; bytes: number[] } }).__copy))
+    .toBeTruthy()
+    .then(() => page.evaluate(() => (window as unknown as { __copy: { name: string; bytes: number[] } }).__copy))
+  expect(copy.name).toMatch(/\.olstudio$/)
+  const file = testInfo.outputPath(copy.name)
+  const { writeFileSync } = await import('node:fs')
+  writeFileSync(file, Buffer.from(copy.bytes))
+  await phone.close()
+
+  const pc = await browser.newContext({ viewport: { width: 1600, height: 900 } })
+  const desk = await pc.newPage()
+  await desk.goto('/')
+  await expect(desk.getByTestId('splitter-left')).toBeVisible()
+  await expect(desk.locator('[data-clip-kind="video"]')).toHaveCount(0)
+  await desk.getByTestId('open-project-input').setInputFiles(file)
+  await expect(desk.locator('[data-clip-kind="video"]')).toHaveCount(1, { timeout: 15_000 })
+  await expect(desk.getByTestId('asset-card')).toHaveCount(1)
+  await pc.close()
+})
