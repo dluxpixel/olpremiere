@@ -372,6 +372,24 @@ export async function listenToClip(clipId: string): Promise<CaptionWord[] | null
     toasts.show('That clip has no sound to listen to', 'danger')
     return null
   }
+  // ⛔ THE SAME REFUSAL autoCaptionFromClip GOT ON 2026-09-23, and this door had
+  // none. Both call wordsForClip, and a reversed clip's audio is extracted
+  // FORWARD (extractClipPcm does not know about playback direction), so Whisper
+  // hears it correctly, but timelineWords places the words assuming forward
+  // playback too: it maps them onto the timeline using |speed|, never the sign.
+  // That is exactly backwards for a reversed clip, and this door feeds the
+  // result straight into transcriptActions.toSource, corrupting the asset's
+  // stored words with positions that do not match how the clip actually plays.
+  // Speed 0 makes no sound in the mixer at all, so there is nothing to hear.
+  if (clip.speed <= 0) {
+    toasts.show(
+      clip.speed < 0
+        ? 'This clip plays backwards, so there are no words to listen for'
+        : 'This clip is stopped, so there is no sound to listen for',
+      'danger',
+    )
+    return null
+  }
   try {
     const words = await wordsForClip(clip, asset)
     if (words.length === 0) {
