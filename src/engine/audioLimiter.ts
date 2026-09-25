@@ -1,17 +1,19 @@
-// The one master limiter, shared by all three audio paths.
+// The one master limiter, shared by both audio paths.
 //
-// WHY IT MOVED HERE. There are three places a mix is summed: the live preview
-// graph (engine/audio.ts), the OfflineAudioContext export render
-// (export/audioRender.ts), and the pure worker mixer (export/audioMix.ts).
-// Only the third had a limiter. audioMix's own header said so out loud:
+// WHY IT MOVED HERE. There were three places a mix was summed: the live
+// preview graph (engine/audio.ts), the OfflineAudioContext export render
+// (export/audioRender.ts), and a pure worker mixer (export/audioMix.ts, later
+// deleted as dead code once both real export paths turned out to use
+// audioRender.ts instead). Only the third had a limiter. Its own header said
+// so out loud:
 //
 //   "a soft limiter is applied at the master bus. audioRender has none (it
 //    relies on the downstream encoder clamp)."
 //
-// So the two paths he actually hears disagreed with the one that renders, and
-// the disagreement only showed up on loud material, which is precisely when it
-// matters. Everything below the knee is IDENTITY, so a normal mix is unchanged
-// to the bit and no existing export moves.
+// So the two paths he actually hears disagreed with the one that rendered,
+// and the disagreement only showed up on loud material, which is precisely
+// when it matters. Everything below the knee is IDENTITY, so a normal mix is
+// unchanged to the bit and no existing export moves.
 //
 // It became load-bearing on 2026-08-06. Levelling every clip to the same
 // loudness (see loudness.ts) is what he asked for, and a correct loudness match

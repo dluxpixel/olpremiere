@@ -1,55 +1,64 @@
 {
-  "project": "OL Studio",
-  "updated": "2026-07-10",
+  "project": "OL Premiere",
+  "updated": "2026-09-25",
   "overall": 85,
-  "note": "Honest distance-to-world-class. 100 = a world-class homemade Premiere per the spec Definition of Done. ALL 8 spec phases are implemented (the spec is DONE), plus a real-use run: 9:16 Shorts format + aspect-correct export, audio auto-level, C=cut, a monitor transform gizmo + click-preview-to-select, add-track buttons. The remaining gap is ear/eye-gated quality, deeper perf (full proxy/streaming decode), and the Effects tab still being a stub. Never inflated to cross a review threshold.",
+  "overall_measured": "2026-07-10",
+  "note": "Honest distance-to-world-class. 100 = a world-class homemade Premiere per the spec Definition of Done. ALL 8 spec phases are implemented (the spec is DONE), plus a real-use run: 9:16 Shorts format + aspect-correct export, audio auto-level, C=cut, a monitor transform gizmo + click-preview-to-select, add-track buttons. The remaining gap is ear/eye-gated quality, deeper perf (full proxy/streaming decode), and the Effects tab still being a stub. Never inflated to cross a review threshold. Scores below are a qualitative judgement call, dated to when they were last assessed by eye/ear; they are not re-measured by an automated check.",
   "dimensions": [
     {
       "key": "editing-core",
       "label": "Editing core (timeline, trim/split/ripple/roll/slip/slide, snapping, markers, multi-seq)",
       "score": 90,
+      "measured": "2026-07-10",
       "left": "Marquee multi-select; a track-height resize grip; roll/slide are engine+tests but not surfaced as dedicated UI."
     },
     {
       "key": "export",
       "label": "Export fidelity (real MP4, preview==export by construction)",
       "score": 90,
+      "measured": "2026-07-10",
       "left": "Worker pool / throughput tuning; AV1/HEVC honesty is stated but codec set is H.264-first."
     },
     {
       "key": "effects-color",
       "label": "Effects, transitions, titles, color",
       "score": 84,
+      "measured": "2026-07-10",
       "left": "Color is lift/gamma/gain + white balance (no curves/scopes); effect/transition/title presets aren't drag-from-Effects-tab yet (Inspector instead)."
     },
     {
       "key": "audio",
       "label": "Audio (mixer, fades, waveforms, pan, meter, crossfade, reverse)",
       "score": 82,
+      "measured": "2026-07-10",
       "left": "EAR-GATED: mix/fade/pan math is built + tested + preview==export, but how it SOUNDS needs David's ears. No sub-mix buses, no EQ, master fader is unity (meter only)."
     },
     {
       "key": "performance",
       "label": "Performance on long/large media",
       "score": 74,
+      "measured": "2026-07-10",
       "left": "Preview decode now scales by quality tier (real scrub win). NOT done: full proxy transcode for the PLAYING path, and streaming audio decode (whole-file decode still costs memory on very long clips)."
     },
     {
       "key": "ux-a11y",
       "label": "UX, keyboard workflow, a11y",
       "score": 82,
+      "measured": "2026-07-10",
       "left": "Full keymap + a live help sheet + aria-live/roles. NOT axe-audited to 'axe-clean'; no first-run coach tour."
     },
     {
       "key": "reliability",
       "label": "Reliability (tests, autosave, crash recovery)",
       "score": 88,
-      "left": "375 vitest + 47 e2e incl. golden export + preview==export + crash-recovery. More edge-case coverage on the new audio/color/speed paths would help."
+      "measured": "2026-07-10",
+      "left": "2851 vitest tests (2850 passing) as of 2026-09-25; the one failure is environment-only (electron/proxyTranscode.test.ts shells out to a Windows ffmpeg.exe, which does not run on this Linux checker). e2e count not re-verified here: Playwright is not run in this environment. More edge-case coverage on the new audio/color/speed paths would help."
     },
     {
       "key": "design-craft",
       "label": "Design / craft (dark pro editor)",
       "score": 85,
+      "measured": "2026-07-10",
       "left": "Cohesive dark theme, real waveforms, machined controls. Eye-gated polish pass + an icon/spacing sweep would lift it further."
     }
   ],
@@ -57,5 +66,5 @@
     "Audio mix/kit sound quality (needs David's ears)",
     "Design polish pass (needs David's eye)"
   ],
-  "autonomous_ceiling": "The spec is complete and gate-green (389 vitest + 52 e2e). The last ~5 points: (1) ear-gated audio sound quality, (2) full proxy media + streaming audio decode for very long media, (3) the Effects tab is still a stub saying \"Arriving in Phase 4\" (effects work only via the Inspector; no drag-onto-clip flow), (4) axe a11y + eye-gated design polish."
+  "autonomous_ceiling": "The spec is complete (2850 of 2851 vitest tests passing as of 2026-09-25; the one failure is the environment-only ffmpeg.exe case above, not a code regression; e2e count not re-verified here). The last ~5 points: (1) ear-gated audio sound quality, (2) full proxy media + streaming audio decode for very long media, (3) the Effects tab is still a stub saying \"Arriving in Phase 4\" (effects work only via the Inspector; no drag-onto-clip flow), (4) axe a11y + eye-gated design polish."
 }
