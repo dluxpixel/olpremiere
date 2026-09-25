@@ -17,20 +17,28 @@
 //
 // Skip the slow half with --fast for a docs-only or comment-only change. It still
 // typechecks, lints and unit tests; it just does not drive a browser.
+//
+// `npm run verify` (--verify) runs the gate alone and stamps the tree it passed
+// on. A ship of that exact tree then skips straight to publishing, and a ship
+// that died after its gate (a dropped push, a failed upload) picks up where it
+// stopped. See planShip in lib.mjs for why, measured.
 
 import { execFileSync, execSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
-import { isTransientFailure, loadToken, nextVersion, openShipLog, releaseWork, runLogged, SHIP_LOG } from './lib.mjs'
+import { copyFileSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { isTransientFailure, loadToken, nextVersion, openShipLog, planShip, runLogged, SHIP_LOG } from './lib.mjs'
 
 const args = process.argv.slice(2)
 const fast = args.includes('--fast')
+const verifyOnly = args.includes('--verify')
 // ⛔ EVERY FLAG COMES OUT OF THE MESSAGE. `--fast` was filtered and `--fix` was
 // not when it was added, which would have put the word "--fix" in the middle of
 // a release commit and in the GitHub release body.
-const FLAGS = ['--fast', '--fix']
+const FLAGS = ['--fast', '--fix', '--verify']
 const message = args.filter((a) => !FLAGS.includes(a)).join(' ').trim()
 
-if (!message) {
+if (!message && !verifyOnly) {
   console.error('Usage: npm run patch -- "type(scope): what changed"   [--fast] [--fix]')
   console.error('  --fix  a small fix on top of the last release: 2.17.0 becomes 2.17.1 instead of 2.18.0')
   process.exit(2)
@@ -43,6 +51,57 @@ const shipLog = openShipLog(`ship: ${new Date().toISOString()}`)
 const run = (cmd, label) => runLogged(cmd, label, shipLog)
 
 const git = (...a) => execFileSync('git', a, { encoding: 'utf8' }).trim()
+
+// --- the stamp: which exact tree last passed the WHOLE gate ------------------
+// The tree hash of everything a commit would take (tracked and new files, the
+// ignore list honoured), computed in a throwaway index so the real one is never
+// touched. Same hash means same bytes, so the gate's answer still holds.
+const STAMP = join(git('rev-parse', '--git-dir'), 'olp-verified.json')
+const treeHash = () => {
+  const index = join(tmpdir(), `olp-verify-index-${process.pid}`)
+  try {
+    copyFileSync(join(git('rev-parse', '--git-dir'), 'index'), index)
+    const env = { ...process.env, GIT_INDEX_FILE: index }
+    execFileSync('git', ['add', '-A'], { env, stdio: 'ignore' })
+    return execFileSync('git', ['write-tree'], { env, encoding: 'utf8' }).trim()
+  } finally {
+    rmSync(index, { force: true })
+  }
+}
+const stampedTree = () => {
+  try {
+    return existsSync(STAMP) ? JSON.parse(readFileSync(STAMP, 'utf8')).tree : ''
+  } catch {
+    return ''
+  }
+}
+const writeStamp = (tree) => writeFileSync(STAMP, JSON.stringify({ tree, at: new Date().toISOString() }))
+
+// The gate, in one place, for a ship and for --verify alike. Only a FULL gate
+// stamps: --fast skipped the browser, so it proved less than a stamp promises.
+const gate = async () => {
+  const tree = treeHash()
+  try {
+    await run('npx tsc --noEmit', 'typecheck (renderer)')
+    await run('npx tsc -p tsconfig.electron.json --noEmit', 'typecheck (electron)')
+    await run('npx eslint .', 'lint')
+    await run('npx vitest run', 'unit tests')
+    await run('npx vite build', 'web build')
+    if (!fast) await run('npx playwright test', 'end to end')
+  } catch {
+    console.error('\n❌ The gate failed, so NOTHING was committed or released.')
+    console.error(`   The whole run is in ${SHIP_LOG}`)
+    console.error('   Fix it and run the same command again.')
+    process.exit(1)
+  }
+  if (!fast) writeStamp(tree)
+}
+
+if (verifyOnly) {
+  await gate()
+  console.log(`\n✅ Verified${fast ? ' without the browser suite, so nothing was stamped' : ': this exact code passed every check, and a ship of it goes straight to publishing'}.`)
+  process.exit(0)
+}
 
 // The push used to be a bare `git push`, which hands the job to Git Credential
 // Manager. On 2026-08-12 that died with "could not read Username for
@@ -122,27 +181,35 @@ const lastTag = (() => {
 const dirty = git('status', '--porcelain')
 const unpushed = git('rev-list', '--count', 'origin/main..HEAD')
 const unreleased = lastTag ? git('rev-list', '--count', `${lastTag}..HEAD`) : '1'
+const shippedVersion = JSON.parse(readFileSync('package.json', 'utf8')).version
+// Only this script writes that line, and only after a gate passed.
+const headIsRelease = git('log', '-1', '--format=%B').includes(`Released as v${shippedVersion} by scripts/patch.mjs`)
+const verified = !!(dirty && dirty.trim()) && stampedTree() === treeHash()
 
-const work = releaseWork({ dirty, unpushed, unreleased })
-if (!work) {
+const plan = planShip({ dirty, unpushed, unreleased, headIsRelease, verified })
+if (!plan) {
   console.log(`Nothing to release: the tree is clean and ${lastTag} is HEAD.`)
   process.exit(0)
 }
-console.log(`Releasing, because there are ${work}.`)
+console.log(`Releasing, because there is ${plan.why}.`)
 
 // --- 1. the gate ------------------------------------------------------------
-try {
-  await run('npx tsc --noEmit', 'typecheck (renderer)')
-  await run('npx tsc -p tsconfig.electron.json --noEmit', 'typecheck (electron)')
-  await run('npx eslint .', 'lint')
-  await run('npx vitest run', 'unit tests')
-  await run('npx vite build', 'web build')
-  if (!fast) await run('npx playwright test', 'end to end')
-} catch {
-  console.error('\n❌ The gate failed, so NOTHING was committed or released.')
-  console.error(`   The whole run is in ${SHIP_LOG}`)
-  console.error('   Fix it and run the same command again.')
-  process.exit(1)
+if (plan.gate) await gate()
+else if (plan.bump) console.log('\n✓ This exact code already passed every check (npm run verify), so the gate is not run twice.')
+else console.log(`\n✓ v${shippedVersion} already passed its gate and was committed. Picking up where it stopped.`)
+
+if (!plan.bump) {
+  if (plan.push) await pushMain()
+  try {
+    await run('node scripts/release.mjs', `release v${shippedVersion}`)
+  } catch (e) {
+    console.error(`\n❌ v${shippedVersion} is committed and PUSHED, but the build did not publish.`)
+    console.error(`   ${e.message}`)
+    console.error('   Run the same command again: it will only publish.')
+    process.exit(1)
+  }
+  console.log(`\n✅ v${shippedVersion} is out. His app picks it up on the next launch.`)
+  process.exit(0)
 }
 
 // --- 2. bump, commit, push --------------------------------------------------

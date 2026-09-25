@@ -28,6 +28,29 @@ async function centrePixel(page: Page): Promise<[number, number, number]> {
   })
 }
 
+/**
+ * ⛔ WAIT UNTIL THE PIXEL IS INSIDE THE BAND, NOT MERELY PAST ONE EDGE OF IT
+ * (2026-09-25). Every check here used to poll "brighter than the low edge" and
+ * then read once for the high edge. The frame ALREADY on the canvas often
+ * passes the low edge on its own (the halfway frame, 188, is brighter than the
+ * quarter-way floor of 129; a full white clip, 255, is brighter than the half
+ * opacity floor of 180), so the poll returned at once and the one read could
+ * still be that stale frame. Red alone one run in two, and twice in a ship gate
+ * on a change that never touched the renderer. Waiting for the value to land in
+ * the band waits for the re-render, and a wrong render still times out red.
+ */
+async function expectCentreNear(page: Page, want: number, tolerance: number): Promise<void> {
+  await expect
+    .poll(
+      async () => {
+        const g = (await centrePixel(page))[1]
+        return Math.abs(g - want) < tolerance ? 'in band' : g
+      },
+      { timeout: 10_000 },
+    )
+    .toBe('in band')
+}
+
 /** Put a 2 s cross dissolve on the second clip and park the playhead a fraction of the way through it. */
 async function dissolveAt(page: Page, fraction: number): Promise<void> {
   await page.evaluate(
@@ -69,20 +92,14 @@ test('halfway through a dissolve from black to white the picture is half the LIG
   await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(2)
 
   await dissolveAt(page, 0.5)
-  await expect
-    .poll(async () => (await centrePixel(page))[1], { timeout: 10_000 })
-    .toBeGreaterThan(srgb(0.5) - 8)
+  await expectCentreNear(page, srgb(0.5), 8) // 188, give or take the dither
   const [r, g, b] = await centrePixel(page)
-  expect(g).toBeLessThan(srgb(0.5) + 8) // 188, give or take the dither
   expect(Math.abs(r - g)).toBeLessThan(4)
   expect(Math.abs(b - g)).toBeLessThan(4)
 
   // A quarter of the way in, a quarter of the light: 137, nowhere near 64.
   await dissolveAt(page, 0.25)
-  await expect
-    .poll(async () => (await centrePixel(page))[1], { timeout: 10_000 })
-    .toBeGreaterThan(srgb(0.25) - 8)
-  expect((await centrePixel(page))[1]).toBeLessThan(srgb(0.25) + 8)
+  await expectCentreNear(page, srgb(0.25), 8)
 })
 
 test('a white clip at half opacity over black is half the LIGHT of white, so a fade no longer falls off a cliff', async ({ page }) => {
@@ -107,10 +124,7 @@ test('a white clip at half opacity over black is half the LIGHT of white, so a f
     }))
     useStore.getState().setUI({ playheadS: 1 })
   })
-  await expect
-    .poll(async () => (await centrePixel(page))[1], { timeout: 10_000 })
-    .toBeGreaterThan(srgb(0.5) - 8)
-  expect((await centrePixel(page))[1]).toBeLessThan(srgb(0.5) + 8)
+  await expectCentreNear(page, srgb(0.5), 8)
 })
 
 test('halfway from mid grey to white the inputs are decoded too, not only the output re-encoded', async ({ page }) => {
@@ -131,8 +145,5 @@ test('halfway from mid grey to white the inputs are decoded too, not only the ou
   const grey = 128 / 255
   const greyLinear = grey <= 0.04045 ? grey / 12.92 : Math.pow((grey + 0.055) / 1.055, 2.4)
   const want = srgb((greyLinear + 1) / 2)
-  await expect
-    .poll(async () => (await centrePixel(page))[1], { timeout: 10_000 })
-    .toBeGreaterThan(want - 5)
-  expect((await centrePixel(page))[1]).toBeLessThan(want + 5)
+  await expectCentreNear(page, want, 5)
 })

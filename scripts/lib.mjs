@@ -196,6 +196,40 @@ export function releaseWork({ dirty, unpushed, unreleased }) {
 }
 
 /**
+ * WHAT A SHIP STILL HAS TO DO, AND NOTHING IT HAS ALREADY DONE (2026-09-25).
+ *
+ * His words: "when you upload to GitHub, it always takes a ton, a ton, and a
+ * ton of time... every single ol premiere patch takes time". Measured on the
+ * v3.9.0 ship: about 30 minutes, 17 of them the browser suite. Two ways that
+ * time was being spent twice:
+ *
+ * 1. THE SAME CODE, CHECKED AGAIN. The gate ran in full even when this exact
+ *    tree had just passed it (`verified`: the tree hash matches the stamp the
+ *    last passing gate wrote). Same bytes, same result: skipping it weakens
+ *    nothing, the gate still ran on exactly what ships.
+ * 2. A DROPPED CONNECTION STARTED OVER. v3.8.0 passed its gate, committed, and
+ *    lost the internet at the push. Running the ship again would have run the
+ *    whole gate AGAIN and then bumped a SECOND version over the first. It was
+ *    finished by hand. Now a release commit this script made (`headIsRelease`)
+ *    that never left the machine only needs the push and the publish, and one
+ *    that was pushed but never published only needs the publish.
+ *
+ * Returns null when there is nothing to ship, else the steps still to run.
+ */
+export function planShip({ dirty, unpushed, unreleased, headIsRelease, verified }) {
+  const why = releaseWork({ dirty, unpushed, unreleased })
+  if (!why) return null
+  const clean = !(dirty && dirty.trim())
+  if (clean && headIsRelease && Number(unpushed) > 0) {
+    return { why: 'a release commit that never reached GitHub', gate: false, bump: false, push: true, release: true }
+  }
+  if (clean && headIsRelease && Number(unreleased) > 0) {
+    return { why: 'a pushed release commit that was never published', gate: false, bump: false, push: false, release: true }
+  }
+  return { why, gate: !verified, bump: true, push: true, release: true }
+}
+
+/**
  * `runLogged`, but a network drop gets another go.
  *
  * ⛔ WHY THIS EXISTS. On 2026-08-12 two ships were thrown away by one dropped

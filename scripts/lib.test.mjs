@@ -7,7 +7,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { isBigUpdate, isTransientFailure, MINOR_ROLLOVER, nextVersion, releaseWork, runLoggedRetry } from './lib.mjs'
+import { isBigUpdate, isTransientFailure, MINOR_ROLLOVER, nextVersion, planShip, releaseWork, runLoggedRetry } from './lib.mjs'
 
 /**
  * A command that fails `failures` times and then succeeds, printing `message`
@@ -133,6 +133,46 @@ describe('releaseWork', () => {
 
   it('treats whitespace from git as a clean tree', () => {
     expect(releaseWork({ dirty: '\n', unpushed: '0', unreleased: '0' })).toBeNull()
+  })
+})
+
+// "when you upload to GitHub, it always takes a ton, a ton, and a ton of time"
+// (2026-09-25). A ship now runs only the steps that are still owed.
+describe('planShip', () => {
+  const steps = (p) => p && { gate: p.gate, bump: p.bump, push: p.push, release: p.release }
+
+  it('an ordinary change runs everything', () => {
+    const p = planShip({ dirty: ' M src/App.tsx', unpushed: '0', unreleased: '0', headIsRelease: true, verified: false })
+    expect(steps(p)).toEqual({ gate: true, bump: true, push: true, release: true })
+  })
+
+  it('code that already passed every check on this exact tree skips the gate, nothing else', () => {
+    const p = planShip({ dirty: ' M src/App.tsx', unpushed: '0', unreleased: '0', headIsRelease: false, verified: true })
+    expect(steps(p)).toEqual({ gate: false, bump: true, push: true, release: true })
+  })
+
+  it('THE v3.8.0 CASE: a release commit stranded by a dropped push only pushes and publishes', () => {
+    const p = planShip({ dirty: '', unpushed: '1', unreleased: '1', headIsRelease: true, verified: false })
+    expect(steps(p)).toEqual({ gate: false, bump: false, push: true, release: true })
+  })
+
+  it('a pushed release commit that never published only publishes', () => {
+    const p = planShip({ dirty: '', unpushed: '0', unreleased: '1', headIsRelease: true, verified: false })
+    expect(steps(p)).toEqual({ gate: false, bump: false, push: false, release: true })
+  })
+
+  it('commits made by hand are still gated and get a version of their own', () => {
+    const p = planShip({ dirty: '', unpushed: '2', unreleased: '2', headIsRelease: false, verified: false })
+    expect(steps(p)).toEqual({ gate: true, bump: true, push: true, release: true })
+  })
+
+  it('a dirty tree over a stranded release commit is new work, gated as usual', () => {
+    const p = planShip({ dirty: ' M src/App.tsx', unpushed: '1', unreleased: '1', headIsRelease: true, verified: false })
+    expect(steps(p)).toEqual({ gate: true, bump: true, push: true, release: true })
+  })
+
+  it('nothing to do is still nothing to do', () => {
+    expect(planShip({ dirty: '', unpushed: '0', unreleased: '0', headIsRelease: true, verified: true })).toBeNull()
   })
 })
 

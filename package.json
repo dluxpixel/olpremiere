@@ -1,7 +1,7 @@
 {
   "name": "ol-premiere",
   "private": true,
-  "version": "3.9.0",
+  "version": "3.10.0",
   "type": "module",
   "main": "out/main/main.js",
   "scripts": {
@@ -19,6 +19,7 @@
     "dist": "npm run build:electron && electron-builder --win",
     "verify:ffmpeg": "node scripts/verify-ffmpeg.mjs",
     "patch": "node scripts/patch.mjs",
+    "verify": "node scripts/patch.mjs --verify",
     "release": "node scripts/release.mjs"
   },
   "dependencies": {
