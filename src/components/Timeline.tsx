@@ -1,31 +1,23 @@
-import { Plus } from 'lucide-react'
-import { useMemo, useRef, useState, type DragEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
-import { addClipFromAsset, addClipWithLinkedAudio, addTrack, clipDurationS, clipEndS, moveSelectionWith, snapTime, splitGroup } from '../engine/timeline'
+import { useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { clipDurationS, moveSelectionWith, snapTime, splitGroup } from '../engine/timeline'
 import { createSnapPointCache } from '../engine/snapPointCache'
-import { formatTimecode, quantizeToFrame } from '../engine/timecode'
-import { transitionMarkSpans } from '../engine/transitionMarks'
-import { workArea } from '../engine/workArea'
-import { setClipFade } from '../state/clipEdits'
-import { ASSET_MIME, SFX_MIME, TITLE_MIME } from '../state/dnd'
-import { insertSfxAtPlayhead } from '../state/sfxActions'
-import { addTitleFromShelf } from '../state/titleActions'
+import { quantizeToFrame } from '../engine/timecode'
 import { activeSequence, audioTracks, videoTracks, type Clip, type Id, type Sequence, type Track } from '../engine/types'
-import { pausePlayback } from '../state/playbackControl'
 import { openContextMenu } from '../state/contextMenu'
-import { PlayheadLine, RemotePlayheads } from './PlayheadWidgets'
-import { pointOnScrollbar } from './scrollbarGuard'
+import { pausePlayback } from '../state/playbackControl'
 import { updateActiveSequence, useStore } from '../state/store'
 import { useToasts } from '../state/toasts'
-import { RULER_H, HEADERS_W, PHONE_HEADERS_W, SNAP_PX, CLICK_SLOP_PX, ADD_TRACK_ROW_H } from './timelineGeometry'
-import { Ruler } from './TimelineRuler'
 import { usePhoneLayout } from '../ui/phoneLayout'
-import { TrackHeader } from './TrackHeaderControls'
+import { PlayheadLine, RemotePlayheads } from './PlayheadWidgets'
+import { pointOnScrollbar } from './scrollbarGuard'
+import { TimelineLane } from './TimelineLane'
+import { EmptyTimelineHint, MarqueeBox, RazorLine, SnapLine, TrimTip } from './TimelineOverlays'
+import { TimelineRulerBar } from './TimelineRulerBar'
 import { TimelineToolbar } from './TimelineToolbar'
-import { ClipView } from './ClipView'
-import { useStableCallback, type Drag } from './timelineDrag'
-import { TrackPresetMenuButton } from './TrackPresetMenuButton'
+import { TimelineTrackHeaders } from './TimelineTrackHeaders'
 import { clipContextMenuItems } from './timelineClipMenu'
-import { assetDropTrack, dropKinds, laneTakesDrop, sfxDropTrack, snappedDropTime } from './timelineDrop'
+import { useStableCallback, type Drag } from './timelineDrag'
+import { ADD_TRACK_ROW_H, CLICK_SLOP_PX, SNAP_PX } from './timelineGeometry'
 import {
   carriedOthers,
   dragCommit,
@@ -42,16 +34,7 @@ import {
   trimStep,
   type DragStep,
 } from './timelineGestures'
-import {
-  buildLaneInfos,
-  clipWindowS,
-  laneAtY,
-  laneHoverClass,
-  lanesCursorClass,
-  marqueeHitIds,
-  silencedTest,
-  timelineLengthS,
-} from './timelineLanes'
+import { buildLaneInfos, clipWindowS, laneAtY, lanesCursorClass, marqueeHitIds, silencedTest, timelineLengthS } from './timelineLanes'
 import { frameAtOffset } from './timelineZoom'
 import { useCoalescedScrub } from './useCoalescedScrub'
 import { useEdgeScroll } from './useEdgeScroll'
@@ -59,6 +42,7 @@ import { useLanesViewport } from './useLanesViewport'
 import { useModifierMods } from './useModifierMods'
 import { usePlayheadFollow } from './usePlayheadFollow'
 import { useSeenClipIds } from './useSeenClipIds'
+import { useTimelineDrop } from './useTimelineDrop'
 import { useTimelineZoom } from './useTimelineZoom'
 
 // ---------------------------------------------------------------------------
@@ -95,7 +79,6 @@ export function Timeline({ height }: { height: number }) {
   const [previewSeq, setPreviewSeq] = useState<Sequence | null>(null)
   const [snapIndicatorT, setSnapIndicatorT] = useState<number | null>(null)
   const [trimTip, setTrimTip] = useState<{ x: number; y: number; text: string } | null>(null)
-  const [dropPreview, setDropPreview] = useState<{ trackId: Id; tS: number } | null>(null)
   const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null)
   const [hoverLane, setHoverLane] = useState<{ trackId: Id; valid: boolean } | null>(null)
   const [razorHover, setRazorHover] = useState<{ t: number; top: number } | null>(null)
@@ -139,7 +122,6 @@ export function Timeline({ height }: { height: number }) {
   const vTracks = useMemo(() => [...videoTracks(renderSeq)].reverse(), [renderSeq])
   const aTracks = useMemo(() => audioTracks(renderSeq), [renderSeq])
   const hasClips = seq.tracks.some((t) => t.clips.length > 0)
-  const area = workArea(seq)
 
   const lengthS = timelineLengthS(seq.durationS)
   const contentWidth = lengthS * pxPerS
@@ -607,84 +589,21 @@ export function Timeline({ height }: { height: number }) {
     dragFinal.current = null
   }
 
-  // --- drop from the media bin ----------------------------------------------
-
-  const handleDragOver = (e: DragEvent<HTMLDivElement>) => {
-    const { isAsset, isSfx, isTitle } = dropKinds(e.dataTransfer.types)
-    if (!isAsset && !isSfx && !isTitle) return
-    e.preventDefault()
-    e.dataTransfer.dropEffect = 'copy'
-    // Bin drags edge-scroll too (the loop only scrolls here - the preview line
-    // is content-anchored, and dragover re-fires on the next mouse move).
-    lastDragPointer.current = { clientX: e.clientX, clientY: e.clientY }
-    maybeEdgeScroll(handleLanesPointerMove)
-    const { x, y } = contentPoint(e)
-    const lane = laneAt(y)
-    if (!laneTakesDrop(lane, isSfx, isTitle)) {
-      setDropPreview(null)
-      return
-    }
-    const t = snapWithIndicator(frameAtOffset(x, pxPerS, seq.fps))
-    setDropPreview({ trackId: lane.id, tS: t })
-  }
-
-  const dropTimeAt = (x: number): number =>
-    snappedDropTime(frameAtOffset(x, pxPerS, seq.fps), seq, snapping, useStore.getState().ui.playheadS, pxPerS)
-
-  const handleDrop = (e: DragEvent<HTMLDivElement>) => {
-    const sfxId = e.dataTransfer.getData(SFX_MIME)
-    const assetId = e.dataTransfer.getData(ASSET_MIME)
-    const lookId = e.dataTransfer.getData(TITLE_MIME)
-    stopEdgeScroll()
-    lastDragPointer.current = null
-    setDropPreview(null)
-    setSnapIndicatorT(null)
-    // A shelf title lands at the drop time, on the track every title goes to.
-    if (lookId) {
-      e.preventDefault()
-      const { x } = contentPoint(e)
-      addTitleFromShelf(lookId, dropTimeAt(x))
-      return
-    }
-    // A dragged SFX lands on the hovered audio lane at the drop time.
-    if (sfxId) {
-      e.preventDefault()
-      const { x, y } = contentPoint(e)
-      const lane = laneAt(y)
-      const target = sfxDropTrack(lane, seq)
-      const t = dropTimeAt(x)
-      void insertSfxAtPlayhead(sfxId, { atS: t, ...(target ? { trackId: target.id } : {}) })
-      return
-    }
-    if (!assetId) return
-    e.preventDefault()
-    const asset = assets[assetId]
-    if (!asset) return
-    const wantKind = asset.kind === 'audio' ? 'audio' : 'video'
-    const { x, y } = contentPoint(e)
-    const hovered = laneAt(y)
-    const target = assetDropTrack(hovered, seq, wantKind)
-    if (!target) {
-      show(`No unlocked ${wantKind} track for ${asset.name}`, 'danger')
-      return
-    }
-    const t = dropTimeAt(x)
-    // Dropping a video with audio splits its sound to a linked audio clip on A1.
-    if (asset.kind === 'video' && asset.hasAudio) {
-      const audioTrack = audioTracks(seq).find((tr) => !tr.locked) ?? null
-      // Overwrite: lay it where he dropped it and clear what was under it, the
-      // way every real NLE does. Without this the drop hunted for the nearest
-      // gap that FITS, and on a packed timeline the only one is the open end,
-      // so the clip silently landed after everything instead of where he aimed.
-      updateActiveSequence(`Add ${asset.name}`, (sq) =>
-        addClipWithLinkedAudio(sq, target.id, audioTrack?.id ?? null, asset, t, { overwrite: true }).seq,
-      )
-      return
-    }
-    updateActiveSequence(`Add ${asset.name}`, (sq) =>
-      addClipFromAsset(sq, target.id, asset, t, { overwrite: true }).seq,
-    )
-  }
+  // --- drop from the media bin (useTimelineDrop) ---------------------------
+  const { dropPreview, setDropPreview, handleDragOver, handleDrop } = useTimelineDrop({
+    seq,
+    assets,
+    pxPerS,
+    snapping,
+    contentPoint,
+    laneAt,
+    snapWithIndicator,
+    setSnapIndicatorT,
+    lastDragPointer,
+    maybeEdgeScroll,
+    stopEdgeScroll,
+    onEdgeStep: (p: { clientX: number; clientY: number }) => handleLanesPointerMove(p),
+  })
 
   // --- scroll behaviors -----------------------------------------------------
   useModifierMods(lanesRef)
@@ -711,63 +630,29 @@ export function Timeline({ height }: { height: number }) {
 
   const isSilenced = silencedTest(seq.tracks)
 
-  const renderLane = (track: Track, tint: string) => {
-    const hovClass = laneHoverClass(hoverLane?.trackId === track.id ? hoverLane : null)
-    return (
-    <div
+  const renderLane = (track: Track, tint: string) => (
+    <TimelineLane
       key={track.id}
-      className={`relative border-b border-border ${tint} ${hovClass} ${track.locked ? 'opacity-60' : ''}`}
-      // ⛔ DESATURATE, NEVER FADE. Opacity is already spoken for twice on this
-      // surface, by a locked lane just above and by a disabled clip inside, and
-      // those two compound to about 0.24, at which point a third meaning is
-      // indistinguishable from the other two. Draining the colour says "not
-      // being heard" without touching the channel either of them uses, and it
-      // leaves the clip's edges exactly as crisp for trimming.
-      style={{ height: track.height, filter: isSilenced(track) ? 'saturate(0.15)' : undefined }}
-      onPointerDown={handleLanePointerDown}
-    >
-      {track.clips.map((clip, i) => {
-        if (clipEndS(clip) < winStartS || clip.startS > winEndS) return null
-        // A transition belongs to the CUT, not to one clip, so its geometry
-        // needs both neighbours. Resolved here and handed down as plain
-        // numbers so ClipView's memo() keeps comparing by value.
-        const marks = transitionMarkSpans(
-          clip,
-          track.clips[i - 1] as Clip | undefined,
-          track.clips[i + 1] as Clip | undefined,
-          seq.fps,
-        )
-        return (
-          <ClipView
-            key={clip.id}
-            clip={clip}
-            asset={assets[clip.assetId]}
-            trackKind={track.kind}
-            trackHeight={track.height}
-            pxPerS={pxPerS}
-            selected={selection.includes(clip.id)}
-            locked={track.locked}
-            interactive={tool === 'select' && !track.locked}
-            pop={!seenClipIds.has(clip.id)}
-            transitionHeadS={marks.headS}
-            transitionTailS={marks.tailS}
-            onClipPointerDown={stableClipPointerDown}
-            onTrimPointerDown={stableTrimPointerDown}
-            onClipContextMenu={stableClipContextMenu}
-            onFadeCommit={setClipFade}
-            onFadePreview={setTrimTip}
-          />
-        )
-      })}
-      {dropPreview?.trackId === track.id && (
-        <div
-          className="pointer-events-none absolute inset-y-0 z-20 w-[2px] bg-accent"
-          style={{ left: dropPreview.tS * pxPerS }}
-        />
-      )}
-    </div>
-    )
-  }
+      track={track}
+      tint={tint}
+      fps={seq.fps}
+      assets={assets}
+      pxPerS={pxPerS}
+      selection={selection}
+      tool={tool}
+      seenClipIds={seenClipIds}
+      winStartS={winStartS}
+      winEndS={winEndS}
+      hoverLane={hoverLane}
+      dropPreview={dropPreview}
+      silenced={isSilenced(track)}
+      onLanePointerDown={handleLanePointerDown}
+      onClipPointerDown={stableClipPointerDown}
+      onTrimPointerDown={stableTrimPointerDown}
+      onClipContextMenu={stableClipContextMenu}
+      onFadePreview={setTrimTip}
+    />
+  )
 
   return (
     <section
@@ -778,63 +663,7 @@ export function Timeline({ height }: { height: number }) {
     >
       <TimelineToolbar onZoomFit={zoomFit} />
       <div className="flex min-h-0 flex-1">
-        <div
-          ref={headersRef}
-          data-testid="track-headers"
-          // One step up from the lanes, so the headers read as a column of
-          // controls and the lanes as the surface the clips sit on (2026-09-20,
-          // the dark theme pass: on the old ladder both were one sheet).
-          className="flex shrink-0 flex-col overflow-hidden border-r border-border bg-bg-elevated"
-          // On a phone the column keeps only the track's name: the controls
-          // would take half the screen from the clips.
-          style={{ width: phone ? PHONE_HEADERS_W : HEADERS_W }}
-          // The headers column is overflow-hidden (no scrollbar of its own) and is
-          // kept in sync by the lanes' onScroll. But a wheel over the headers must
-          // still scroll: forward it to the lanes, which mirrors back here. Without
-          // this, scrolling only works with the cursor over the lanes - "can't
-          // scroll on the left" once there are more tracks than fit.
-          onWheel={(e) => {
-            if (lanesRef.current) lanesRef.current.scrollTop += e.deltaY
-          }}
-        >
-          <div className="shrink-0 border-b border-border" style={{ height: RULER_H }} />
-          {vTracks.map((t) => (
-            <TrackHeader key={t.id} track={t} />
-          ))}
-          <div className="h-[2px] shrink-0 bg-border-strong" />
-          {aTracks.map((t) => (
-            <TrackHeader key={t.id} track={t} />
-          ))}
-          {/* Blank space below the tracks: buttons to add a video or audio track.
-              Fixed height, mirrored by a spacer in the lanes so the shared scroll
-              can always bring these into view (see ADD_TRACK_ROW_H). */}
-          <div
-            className="flex shrink-0 items-center gap-1.5 border-t border-border/60 px-2"
-            style={{ height: ADD_TRACK_ROW_H }}
-          >
-            <button
-              type="button"
-              data-testid="add-video-track"
-              className="flex flex-1 items-center justify-center gap-1 rounded-[4px] border border-border py-1 text-[11px] font-medium text-text-secondary transition-colors duration-[120ms] hover:border-border-strong hover:bg-bg-elevated hover:text-text-primary"
-              onClick={() => updateActiveSequence('Add video track', (sq) => addTrack(sq, 'video'))}
-              title="Add a video track"
-            >
-              <Plus size={12} strokeWidth={1.75} />
-              Video
-            </button>
-            <button
-              type="button"
-              data-testid="add-audio-track"
-              className="flex flex-1 items-center justify-center gap-1 rounded-[4px] border border-border py-1 text-[11px] font-medium text-text-secondary transition-colors duration-[120ms] hover:border-border-strong hover:bg-bg-elevated hover:text-text-primary"
-              onClick={() => updateActiveSequence('Add audio track', (sq) => addTrack(sq, 'audio'))}
-              title="Add an audio track"
-            >
-              <Plus size={12} strokeWidth={1.75} />
-              Audio
-            </button>
-            <TrackPresetMenuButton />
-          </div>
-        </div>
+        <TimelineTrackHeaders columnRef={headersRef} lanesRef={lanesRef} phone={phone} vTracks={vTracks} aTracks={aTracks} />
 
         <div
           ref={lanesRef}
@@ -876,57 +705,16 @@ export function Timeline({ height }: { height: number }) {
           }}
         >
           <div ref={contentRef} className="relative" style={{ width: contentWidth }}>
-            <div
-              className="sticky top-0 z-20 cursor-ew-resize"
-              data-testid="ruler"
-              // A finger on the ruler scrubs, it does not scroll.
-              style={{ touchAction: 'none' }}
-              onPointerDown={(e) => {
-                e.currentTarget.setPointerCapture(e.pointerId)
-                scrubTo(e.clientX)
-              }}
-              onPointerMove={(e) => {
-                if (e.currentTarget.hasPointerCapture(e.pointerId)) scrubDrag(e.clientX)
-              }}
-            >
-              <Ruler contentWidth={contentWidth} lengthS={lengthS} winStartS={winStartS} winEndS={winEndS} />
-              {/* Work area: the range an export renders. Drawn under the markers
-                  so a marker sitting on the in point stays legible. */}
-              {area.active && (
-                <>
-                  <div
-                    data-testid="work-area"
-                    className="pointer-events-none absolute top-0 border-x border-accent bg-accent/20"
-                    style={{
-                      left: area.startS * pxPerS,
-                      width: Math.max(1, (area.endS - area.startS) * pxPerS),
-                      height: RULER_H,
-                    }}
-                  />
-                  <div
-                    data-testid="work-area-in"
-                    title={`In ${formatTimecode(area.startS, seq.fps)}`}
-                    className="pointer-events-none absolute h-2 w-2 bg-accent"
-                    style={{ left: area.startS * pxPerS, top: 0, clipPath: 'polygon(0 0, 100% 0, 0 100%)' }}
-                  />
-                  <div
-                    data-testid="work-area-out"
-                    title={`Out ${formatTimecode(area.endS, seq.fps)}`}
-                    className="pointer-events-none absolute h-2 w-2 bg-accent"
-                    style={{ left: area.endS * pxPerS - 8, top: 0, clipPath: 'polygon(100% 0, 100% 100%, 0 0)' }}
-                  />
-                </>
-              )}
-              {seq.markers.map((m) => (
-                <div
-                  key={m.id}
-                  data-testid="marker"
-                  title={m.label || formatTimecode(m.t, seq.fps)}
-                  className="pointer-events-none absolute h-2 w-2 rotate-45 rounded-[1px]"
-                  style={{ left: m.t * pxPerS - 4, top: RULER_H - 11, background: m.color }}
-                />
-              ))}
-            </div>
+            <TimelineRulerBar
+              seq={seq}
+              pxPerS={pxPerS}
+              contentWidth={contentWidth}
+              lengthS={lengthS}
+              winStartS={winStartS}
+              winEndS={winEndS}
+              onScrubStart={scrubTo}
+              onScrubDrag={scrubDrag}
+            />
 
             {/* Alternating lane tints: with 3+ tracks a flat wash makes lane
                 targeting during drags pure guesswork. Audio lanes carry a
@@ -938,61 +726,22 @@ export function Timeline({ height }: { height: number }) {
                 same depth and those buttons stay reachable with many tracks. */}
             <div className="shrink-0" style={{ height: ADD_TRACK_ROW_H }} />
 
-            {/* Snap lock line: keyed on the snapped time so landing on a NEW
-                edge remounts it and re-fires the one-shot pulse. Reduced
-                motion collapses the pulse; the line itself always shows. */}
-            {snapIndicatorT !== null && (
-              <div
-                key={snapIndicatorT}
-                data-testid="snap-line"
-                className="pointer-events-none absolute bottom-0 z-30 w-px animate-[snap-pulse_240ms_ease-out] bg-accent"
-                style={{ left: snapIndicatorT * pxPerS, top: RULER_H }}
-              />
-            )}
+            {/* Keyed on the snapped time: a NEW edge re-fires the pulse. */}
+            {snapIndicatorT !== null && <SnapLine key={snapIndicatorT} t={snapIndicatorT} pxPerS={pxPerS} />}
 
-            {razorHover && tool === 'razor' && (
-              <div
-                data-testid="razor-line"
-                className="pointer-events-none absolute bottom-0 z-30 w-px bg-text-primary/70"
-                style={{ left: razorHover.t * pxPerS, top: RULER_H }}
-              />
-            )}
+            {razorHover && tool === 'razor' && <RazorLine t={razorHover.t} pxPerS={pxPerS} />}
 
-            {marquee && (
-              <div
-                className="pointer-events-none absolute z-30 rounded-[2px] border border-accent bg-accent/10"
-                style={{
-                  left: Math.min(marquee.x0, marquee.x1),
-                  top: Math.min(marquee.y0, marquee.y1),
-                  width: Math.abs(marquee.x1 - marquee.x0),
-                  height: Math.abs(marquee.y1 - marquee.y0),
-                }}
-              />
-            )}
+            {marquee && <MarqueeBox box={marquee} />}
 
             <RemotePlayheads pxPerS={pxPerS} />
             <PlayheadLine pxPerS={pxPerS} />
           </div>
 
-          {!hasClips && (
-            <div
-              className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex items-center justify-center"
-              style={{ top: RULER_H }}
-            >
-              <span className="text-[12px] text-text-muted">Drag a clip here to start</span>
-            </div>
-          )}
+          {!hasClips && <EmptyTimelineHint />}
         </div>
       </div>
 
-      {trimTip && (
-        <div
-          className="pointer-events-none fixed z-[90] rounded-[4px] border border-border bg-bg-elevated px-2 py-1 font-numeric text-[11px] text-text-primary shadow-pop"
-          style={{ left: trimTip.x, top: trimTip.y }}
-        >
-          {trimTip.text}
-        </div>
-      )}
+      {trimTip && <TrimTip tip={trimTip} />}
     </section>
   )
 }
