@@ -15,6 +15,24 @@ import type { MusicRequest, MusicResponse } from './musicWorker'
 /** What the classifier was measured at, and what AudioSet models expect. */
 export const MUSIC_SAMPLE_RATE = 16000
 
+/**
+ * How long a request may run before it is given up on and the worker torn
+ * down. The same shape as transcribe.ts's Whisper watchdog, and for the same
+ * reason: this worker runs the identical class of wasm/ML inference, load
+ * then repeated classifier calls, and a hung inference does not throw. With
+ * no watchdog nothing downstream would ever resolve: `wordsForClip` awaits
+ * this AFTER Whisper already finished, so a stuck classifier would leave the
+ * progress pill stuck and every later caption run reporting the same clip is
+ * still being listened to, recoverable only by reloading the app.
+ *
+ * Generous on purpose, so it can only ever fire on a genuine fault: model
+ * load is the expensive part and is paid at most once per session (the
+ * classifier is cached at module scope in musicWorker.ts), and inference
+ * itself is windowed at WINDOW_S seconds a call.
+ */
+const MUSIC_TIMEOUT_FLOOR_MS = 60_000
+const MUSIC_TIMEOUT_MS_PER_AUDIO_SECOND = 4_000
+
 let worker: Worker | null = null
 /** Ticks once per request, so a reply can be matched to the run that asked for it. */
 let nextRequestId = 1
@@ -87,11 +105,26 @@ export async function musicTrackForClip(
   // dropped on the strength of music in a completely different clip.
   const id = nextRequestId++
   return new Promise<SpeechTrack | null>((resolve) => {
+    let settled = false
     const done = (value: SpeechTrack | null) => {
+      if (settled) return
+      settled = true
+      clearTimeout(watchdog)
       w.removeEventListener('message', onMessage)
       w.removeEventListener('error', onError)
       resolve(value)
     }
+    // No opinion is always safe here (see the file header), so a run that
+    // stopped making progress gives up the same way the Whisper one does:
+    // terminate, which is what actually hands the memory back, and resolve
+    // null rather than leave the caller waiting forever.
+    const watchdog = setTimeout(
+      () => {
+        killMusicWorker()
+        done(null)
+      },
+      MUSIC_TIMEOUT_FLOOR_MS + (pcm.length / MUSIC_SAMPLE_RATE) * MUSIC_TIMEOUT_MS_PER_AUDIO_SECOND,
+    )
     const onMessage = (e: MessageEvent<MusicResponse>) => {
       const r = e.data
       if (r.id !== id) return // another run's reply, or a warm

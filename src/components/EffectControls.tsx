@@ -1047,7 +1047,7 @@ function EffectStack({ clip, playheadS }: { clip: Clip; playheadS: number }) {
 
 const NONE = 'none'
 
-function TransitionRow({
+export function TransitionRow({
   clip,
   edge,
   testId,
@@ -1062,7 +1062,15 @@ function TransitionRow({
 
   const onKind = (v: string) => {
     if (v === NONE) removeClipTransition(clip.id, edge)
-    else setClipTransition(clip.id, edge, v as TransitionKind, durationS)
+    // ⛔ UNDEFINED, NOT durationS. When there was no prior transition (t is
+    // undefined), durationS above falls back to a UI-only placeholder of 1,
+    // which is inside every kind's envelope except White Flash and Glitch, so
+    // setClipTransition kept it as if he had scrubbed to exactly 1s. An
+    // Inspector-added Cross Dissolve landed at 1.0s while a dropped one is
+    // 0.4s. Passing undefined here lets setClipTransition apply the kind's
+    // own default, the same as every other door. Committing an actual
+    // duration (the ScrubField below) still passes durationS as before.
+    else setClipTransition(clip.id, edge, v as TransitionKind, t?.durationS)
   }
 
   return (

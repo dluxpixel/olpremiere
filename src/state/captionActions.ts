@@ -147,7 +147,29 @@ export const CAPTION_TRACK_NAME = 'Captions'
  */
 export function addCaptionsFromWords(
   words: CaptionWord[],
-  options: { label?: string; preset?: TextStylePreset; model?: string } = {},
+  options: {
+    label?: string
+    preset?: TextStylePreset
+    model?: string
+    /**
+     * The exact stretches this run actually listened to, e.g. one per source
+     * clip in a pooled "caption every clip" sweep. When given, only a previous
+     * caption overlapping one of THESE spans is replaced. Omit it (a single
+     * clip, or manual text split into words) and the run falls back to the one
+     * bounding box its own words cover, same as before.
+     *
+     * ⛔ WITHOUT THIS, A POOLED MULTI-CLIP RUN DELETED CAPTIONS BETWEEN THE
+     * CLIPS IT COVERS. "Caption every clip" and "caption selected clips" pool
+     * every target clip's words into ONE flat array and make ONE call here, so
+     * with no clip boundaries the old code took the single min/max span of
+     * every word in the whole run: two captioned clips ten seconds apart wiped
+     * anything sitting in the nine seconds between them, including a caption he
+     * had hand corrected on a clip this run never touched. "Only the stretch
+     * this run covers is replaced" meant the stretch each clip covers, not the
+     * bounding box around clips this run happened to skip.
+     */
+    coveredSpans?: { startS: number; endS: number }[]
+  } = {},
 ): void {
   const s = useStore.getState()
   const seq = activeSequence(s.project)
@@ -236,9 +258,18 @@ export function addCaptionsFromWords(
       // touched, so a second clip ADDS and a repeat of the same clip REPLACES.
       // Captioning the whole timeline still clears the lot, because its span is
       // the lot.
-      const runStart = Math.min(...clips.map((c) => c.startS))
-      const runEnd = Math.max(...clips.map((c) => clipEndS(c)))
-      const kept = reuse.clips.filter((c) => clipEndS(c) <= runStart + EPS || c.startS >= runEnd - EPS)
+      //
+      // The span is per COVERED STRETCH, not one box around all of them: a
+      // pooled sweep passes one per source clip, so a stretch it never touched
+      // (a skipped clip between two captioned ones) is not "inside the run"
+      // just because it sits between two spans this run does cover.
+      const spans =
+        options.coveredSpans && options.coveredSpans.length > 0
+          ? options.coveredSpans
+          : [{ startS: Math.min(...clips.map((c) => c.startS)), endS: Math.max(...clips.map((c) => clipEndS(c))) }]
+      const overlapsRun = (c: Clip): boolean =>
+        spans.some((span) => clipEndS(c) > span.startS + EPS && c.startS < span.endS - EPS)
+      const kept = reuse.clips.filter((c) => !overlapsRun(c))
       replaced = reuse.clips.length - kept.length
       const filled = withClips({ ...reuse, clips: kept }, clips)
       return recomputeDuration({ ...sq, tracks: sq.tracks.map((t) => (t.id === reuse.id ? filled : t)) })
