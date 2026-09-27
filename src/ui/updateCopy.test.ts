@@ -73,7 +73,7 @@ describe('the rows say what is true and nothing more', () => {
 
 describe('the line under the bar says what happens next', () => {
   it('promises no click while it downloads', () => {
-    expect(updateStatusLine(downloading(30), '2.38.0')).toBe('Installs the next time OL Premiere starts')
+    expect(updateStatusLine(downloading(30), '2.38.0')).toBe('Installs when you close OL Premiere')
   })
 
   it('explains the melon before it appears', () => {

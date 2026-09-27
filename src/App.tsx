@@ -474,7 +474,8 @@ export default function App() {
     [],
   )
 
-  // Desktop auto-apply: main asks us to install a fresh-launch update. WE decide.
+  // Desktop auto-apply: main asks us to install an update once he has stepped away
+  // from the machine, or from the update card. WE decide.
   // NEVER restart through an in-flight export or other critical work (that would
   // truncate the render + lose it); in that case defer to the manual restart toast.
   // Otherwise flush a save first so no edit is lost, then relaunch into the new

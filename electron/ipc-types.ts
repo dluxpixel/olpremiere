@@ -240,7 +240,7 @@ export interface OlApi {
   /** Fires when a newer version has downloaded and is staged to install on restart. Returns an unsubscribe fn. */
   onUpdateReady(cb: (version: string) => void): () => void
   /**
-   * Fires when an update downloaded during the fresh-launch window and main wants
+   * Fires when an update is downloaded and he has stepped away, and main wants
    * to apply it NOW, but the renderer arbitrates: it flushes a save and restarts
    * only if no critical work (e.g. an export) is in flight, else it defers to the
    * "Restart to update" toast. Returns an unsubscribe fn.

@@ -712,15 +712,15 @@ app.whenReady().then(() => {
   // (offline / no release) logs and is ignored. We re-check every 15 minutes so
   // an app left open still gets a release the same day it ships.
   //
-  // APPLY POLICY (David's ask was "every time I start, just update to the newest"):
-  // if the update finishes downloading shortly after LAUNCH (before the user has
-  // settled into editing), quit + install + relaunch straight into it, so every
-  // start converges to the newest build with zero clicks. If it lands LATER
-  // (mid-edit) we must not yank the app out from under active work, so we surface
-  // the "Restart to update" toast instead. Either way, after the relaunch the
-  // renderer shows a "Updated to vX" toast and the always-on version tag confirms
-  // exactly which build is running (App.tsx / TopBar). The "what version am I on"
-  // confusion is gone.
+  // APPLY POLICY, his pick 2026-09-27: "Only when I close it". A downloaded
+  // update goes on when he closes the app (autoInstallOnAppQuit, with the same
+  // settle as a restart, see window-all-closed) or once he has been away from
+  // the machine for five minutes (./updateApply). It NEVER applies because the
+  // app has just been opened: until 2026-09-27 it did, inside a three minute
+  // window after launch, and opening the app meant watching it restart into a
+  // patch. The "Restart to update" toast stays as his own shortcut. After an
+  // update the renderer shows a "Updated to vX" toast and the always-on version
+  // tag confirms exactly which build is running (App.tsx / TopBar).
   // The updater's state, kept here so the renderer can ASK as well as listen. The
   // loading card narrates this check as one of its rows, and it mounts a beat after
   // the check starts. Without a pull, a fast answer would land before anyone was
@@ -786,13 +786,11 @@ app.whenReady().then(() => {
   // usually OLDER than what it is running, and letting it update would quietly
   // replace the thing under test with the thing it was being tested against.
   if (app.isPackaged && !IS_LAB) {
-    const launchedAt = Date.now()
-    const AUTO_APPLY_WINDOW_MS = 3 * 60 * 1000
     let pendingVersion = ''
     /** The version he has already been told is ready. Empty until one is. */
     let announcedVersion = ''
     // Set once an update is downloaded and waiting for him to step away. See
-    // ./updateApply for why idleness is the second door.
+    // ./updateApply for why idleness is the one door besides closing the app.
     let idleApplyTimer: ReturnType<typeof setInterval> | null = null
     autoUpdater.autoDownload = true
     autoUpdater.autoInstallOnAppQuit = true // a pending update also installs on any quit
@@ -837,23 +835,22 @@ app.whenReady().then(() => {
       if (announcedVersion === info.version) return
       announcedVersion = info.version
       setUpdateStatus({ kind: 'downloaded', version: info.version })
-      // Auto-apply only in the fresh-launch window AND only when no native export
-      // is mid-render (a force-quit would truncate the file + orphan ffmpeg). Even
-      // then we don't quit blindly: we ASK the renderer, which flushes a save and
-      // restarts only if no critical work is in flight. Otherwise it falls back to
-      // the "Restart to update" toast. Outside the window we always just offer the toast.
-      // proxyBusy for the same reason as isExporting: a restart mid-transcode
-      // orphans an ffmpeg child and leaves half a proxy behind.
+      // Auto-apply only once he has been away from the machine AND only when no
+      // native export is mid-render (a force-quit would truncate the file + orphan
+      // ffmpeg). Even then we don't quit blindly: we ASK the renderer, which
+      // flushes a save and restarts only if no critical work is in flight.
+      // Otherwise it falls back to the "Restart to update" toast. proxyBusy for
+      // the same reason as isExporting: a restart mid-transcode orphans an ffmpeg
+      // child and leaves half a proxy behind.
       const busy = (): boolean => rendererBusy || native.isExporting() || proxy.proxyBusy() || remux.remuxBusy()
       const decide = (): 'now' | 'when-idle' | 'never' =>
         updateApplyDecision({
-          freshLaunch: Date.now() - launchedAt < AUTO_APPLY_WINDOW_MS,
           idleSeconds: powerMonitor.getSystemIdleTime(),
           busy: busy(),
         })
 
       if (decide() === 'now') {
-        console.log(`OL Premiere update ${info.version} downloaded at launch, asking renderer to auto-apply`)
+        console.log(`OL Premiere update ${info.version} downloaded while he is away, asking renderer to auto-apply`)
         mainWindow?.webContents.send('update:autoApply', info.version)
         return
       }
@@ -940,5 +937,16 @@ app.on('window-all-closed', () => {
   // which relaunches the app afterwards. A plain quit here would install too
   // (autoInstallOnAppQuit) but would NOT bring the app back.
   if (installing) return
-  if (process.platform !== 'darwin') app.quit()
+  if (process.platform === 'darwin') return
+  // ⛔ CLOSING IS THE MAIN WAY AN UPDATE GOES ON NOW (his pick 2026-09-27), so it
+  // gets the restart path's settle. The installer is started on quit and gives a
+  // running app a few seconds before it kills it; a kill inside the engine's
+  // database close is the leading suspect for his vanished projects. The window
+  // is already gone here, so waiting the same beat before quitting means the
+  // installer starts on an engine that has finished writing.
+  if (updateStatus.kind === 'downloaded' && app.isPackaged && !IS_LAB) {
+    setTimeout(() => app.quit(), INSTALL_FLUSH_MS)
+    return
+  }
+  app.quit()
 })

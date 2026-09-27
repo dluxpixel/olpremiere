@@ -38,8 +38,8 @@ export function updateTitle(version: string): string {
  * sentence he read on the splash is the sentence he reads here. Neither row names
  * the version: the heading above them does, once.
  *
- * ⛔ NO ROW PROMISES A RESTART. The update applies at the next fresh launch, or the
- * moment he steps away, or on quit. A pending "Restart to install" row would be the
+ * ⛔ NO ROW PROMISES A RESTART. The update applies when he closes the app, or the
+ * moment he steps away. A pending "Restart to install" row would be the
  * card narrating a policy that was replaced on 2026-08-17. What happens next is one
  * line in the footer, not a row.
  */
@@ -60,9 +60,9 @@ export function updateRows(s: UpdateStatus): UpdateRow[] {
 export function updateStatusLine(s: UpdateStatus, version: string): string {
   if (s.kind === 'downloaded') return `Update ${version} downloaded. Restart to install`
   if (s.kind === 'error') return 'Could not download the update'
-  // True of all three doors: the fresh-launch apply, the idle apply, and the quit
-  // install. It never promises a click he has to make.
-  return 'Installs the next time OL Premiere starts'
+  // True of both doors, the quit install and the idle apply, since 2026-09-27
+  // when the launch apply went. It never promises a click he has to make.
+  return 'Installs when you close OL Premiere'
 }
 
 /**
