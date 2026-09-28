@@ -1,40 +1,16 @@
 import { X } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect } from 'react'
 import {
-  canStreamToDisk,
-  exportSequence,
-  pickExportDestination,
-  type ExportProgress,
-} from '../engine/export'
-import { planExport } from '../engine/export/exportPlan'
-import { exportNative } from '../engine/export/nativeExport'
-import { isElectron } from '../platform'
-import { beginCriticalWork } from '../state/unloadGuard'
-import { activeSequence } from '../engine/types'
-import { useStore } from '../state/store'
+  cancelExport,
+  closeExportDialog,
+  exportPercent,
+  fmtBytes,
+  isExportActive,
+  retryExport,
+  useExportJob,
+} from '../state/exportJob'
 import { useToasts } from '../state/toasts'
 import { Button, IconButton } from '../ui/Button'
-import { isPhoneLayout } from '../ui/phoneLayout'
-
-/** The specific GPU-B-frame crash that a software retry fixes. */
-function isBFrameCrash(err: unknown): boolean {
-  const m = err instanceof Error ? err.message : String(err)
-  return /monotonically|Timestamps must be|\bDTS\b|B-?frame/i.test(m)
-}
-
-type Stage =
-  /** The save dialog is up; nothing is encoding yet, so the modal still closes. */
-  | { kind: 'starting' }
-  | { kind: 'running'; progress: ExportProgress; startedAt: number }
-  /** `streamed` distinguishes "written where you chose" from "in your downloads". */
-  | { kind: 'done'; sizeBytes: number; fileName: string; streamed: boolean; path?: string; share?: File }
-  | { kind: 'error'; message: string }
-
-function fmtBytes(n: number): string {
-  if (n >= 1e9) return `${(n / 1e9).toFixed(2)} GB`
-  if (n >= 1e6) return `${(n / 1e6).toFixed(1)} MB`
-  return `${Math.round(n / 1e3)} KB`
-}
 
 function fmtEta(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return '--'
@@ -46,215 +22,49 @@ function fmtEta(seconds: number): string {
  * Export is ONE BUTTON. Pressing it starts the export. There is no settings
  * screen, because there is nothing to decide: engine/export/exportPlan.ts picks
  * the best available settings from the sequence itself, the same way every time.
- * This component is now only the save destination, the progress, and the result.
+ *
+ * This component only SHOWS the export: the save destination, the progress and
+ * the result. The export itself lives in state/exportJob.ts and outlives it, so
+ * on the desktop he can close this and keep working while the file is made.
+ * His words, 2026-09-28: *"Make it so that while the video is exporting, I can
+ * work on other videos too, because the export time is sometimes very long."*
  */
-export function ExportDialog({ onClose }: { onClose: () => void }) {
-  const project = useStore((s) => s.project)
+export function ExportDialog() {
+  const open = useExportJob((s) => s.dialogOpen)
+  const job = useExportJob((s) => s.job)
+  const alreadyRunning = useExportJob((s) => s.alreadyRunning)
   const show = useToasts((s) => s.show)
 
-  // Frozen when the dialog opens: an edit landing mid-encode must not change
-  // what is being rendered.
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- frozen on purpose
-  const plan = useMemo(() => planExport(activeSequence(project)), [])
-  const [stage, setStage] = useState<Stage>({ kind: 'starting' })
-  const abortRef = useRef<AbortController | null>(null)
-  const startedRef = useRef(false)
-  const mountedRef = useRef(false)
-
-  // Stop the encode if the dialog is destroyed under it. StrictMode mounts,
-  // unmounts and remounts every component in dev, so a naive cleanup would abort
-  // the export it had just started (the controller exists synchronously on the
-  // no-picker path). Deferring one task and cancelling on the remount tells a
-  // real unmount apart from StrictMode's rehearsal.
-  useEffect(() => {
-    mountedRef.current = true
-    return () => {
-      mountedRef.current = false
-      setTimeout(() => {
-        if (!mountedRef.current) abortRef.current?.abort()
-      }, 0)
-    }
-  }, [])
-
-  const running = stage.kind === 'running'
+  const stage = job?.stage
+  // The desktop export carries on without this dialog, so it closes at any
+  // point. The browser's stays up while it encodes, as it always has: its
+  // finished file needs a tap on this screen to reach Photos on a phone.
+  const canClose = !job || !stage || !isExportActive(stage) || job.background || stage.kind === 'starting'
 
   useEffect(() => {
-    if (running) return
+    if (!open || !canClose) return
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape') closeExportDialog()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [running, onClose])
+  }, [open, canClose])
 
-  const beginRunning = () =>
-    setStage({
-      kind: 'running',
-      progress: {
-        phase: 'preparing',
-        framesDone: 0,
-        framesTotal: Math.ceil((plan.settings.endS - plan.settings.startS) * plan.settings.fps),
-      },
-      startedAt: performance.now(),
-    })
+  if (!open || !job || !stage) return null
+  const { plan } = job
 
-  const onProgress = (progress: ExportProgress) =>
-    setStage((prev) => (prev.kind === 'running' ? { ...prev, progress } : prev))
-
-  const fileName = `${project.name.replace(/[^\p{L}\p{N}\-_ ]+/gu, '').trim() || 'export'}.mp4`
-
-  const start = async () => {
-    let handle: FileSystemFileHandle | null = null
-    // A phone has no save dialog worth the name: the finished video goes to the
-    // share sheet instead, where "Save Video" puts it in Photos (see below).
-    if (canStreamToDisk() && !isPhoneLayout()) {
-      try {
-        handle = await pickExportDestination(fileName)
-      } catch (err) {
-        setStage({ kind: 'error', message: err instanceof Error ? err.message : String(err) })
-        return
-      }
-      // Picker dismissed: there is nothing to export to, and nothing to show.
-      if (!handle) {
-        onClose()
-        return
-      }
-    }
-
-    const abort = new AbortController()
-    abortRef.current = abort
-    const endCritical = beginCriticalWork()
-    beginRunning()
-    try {
-      const runExport = (hw: 'prefer-hardware' | 'prefer-software') =>
-        exportSequence(
-          project,
-          { ...plan.settings, hardwareAcceleration: hw },
-          onProgress,
-          abort.signal,
-          handle ?? undefined,
-        )
-
-      // Constant quality pins the software encoder inside the worker; this
-      // retry is for the VBR fallback, where some GPUs emit B-frames the muxer
-      // cannot handle. It must escape hardware, never escalate into it.
-      let blob: Blob | null
-      try {
-        blob = await runExport('prefer-hardware')
-      } catch (err) {
-        if (abort.signal.aborted || !isBFrameCrash(err)) throw err
-        setStage((prev) =>
-          prev.kind === 'running'
-            ? { ...prev, progress: { ...prev.progress, phase: 'preparing', framesDone: 0 }, startedAt: performance.now() }
-            : prev,
-        )
-        blob = await runExport('prefer-software')
-      }
-
-      let sizeBytes: number
-      // ON A PHONE THE VIDEO GOES TO PHOTOS (2026-09-23). A download on an
-      // iPhone lands in the Files app, two apps away from where a Short gets
-      // posted from. The share sheet has "Save Video", which puts it in Photos.
-      // It needs a tap of its own (a share must come from a gesture), so the
-      // file waits on the done screen for him to press Save to Photos.
-      const shareFile = blob && isPhoneLayout() ? new File([blob], fileName, { type: 'video/mp4' }) : null
-      const canShare = !!shareFile && typeof navigator.canShare === 'function' && navigator.canShare({ files: [shareFile] })
-      if (blob && canShare) {
-        sizeBytes = blob.size
-        setStage({ kind: 'done', sizeBytes, fileName, streamed: false, share: shareFile! })
-        show(`Exported ${fileName} (${fmtBytes(sizeBytes)})`, 'success')
-        return
-      }
-      if (blob) {
-        const url = URL.createObjectURL(blob)
-        const a = document.createElement('a')
-        a.href = url
-        a.download = fileName
-        a.click()
-        setTimeout(() => URL.revokeObjectURL(url), 30_000)
-        sizeBytes = blob.size
-      } else {
-        sizeBytes = (await handle!.getFile()).size
-      }
-      const savedAs = handle?.name ?? fileName
-      setStage({ kind: 'done', sizeBytes, fileName: savedAs, streamed: !!handle })
-      show(`Exported ${savedAs} (${fmtBytes(sizeBytes)})`, 'success')
-    } catch (err) {
-      if (err instanceof DOMException && err.name === 'AbortError') onClose()
-      else setStage({ kind: 'error', message: err instanceof Error ? err.message : String(err) })
-    } finally {
-      endCritical()
-    }
-  }
-
-  // Desktop: render with the shared pipeline, encode with the bundled ffmpeg
-  // (x264 veryslow at constant quality, the best file this app can produce).
-  const startNative = async () => {
-    // Letters and digits from any language stay, so the file is named after the project even in Czech.
-    const baseName = project.name.replace(/[^\p{L}\p{N}\-_ ]+/gu, '').trim() || 'export'
-    const abort = new AbortController()
-    abortRef.current = abort
-    const endCritical = beginCriticalWork()
-    beginRunning()
-    try {
-      const res = await exportNative(
-        project,
-        plan.settings,
-        {
-          encoder: plan.nativeEncoder,
-          quality: plan.qp,
-          suggestedName: `${baseName}.${plan.nativeExt}`,
-        },
-        onProgress,
-        abort.signal,
-      )
-      if (res === null) {
-        onClose() // save dialog dismissed
-        return
-      }
-      const savedAs = res.outPath.split(/[\\/]/).pop() ?? `${baseName}.${plan.nativeExt}`
-      setStage({ kind: 'done', sizeBytes: res.sizeBytes, fileName: savedAs, streamed: true, path: res.outPath })
-      show(`Exported ${savedAs} (${fmtBytes(res.sizeBytes)})`, 'success')
-    } catch (err) {
-      if (err instanceof DOMException && err.name === 'AbortError') onClose()
-      else setStage({ kind: 'error', message: err instanceof Error ? err.message : String(err) })
-    } finally {
-      endCritical()
-    }
-  }
-
-  const run = () => void (isElectron ? startNative() : start())
-
-  // Start the moment the dialog opens. The ref guard survives StrictMode's
-  // double mount in dev, which would otherwise open two save dialogs and run
-  // two encodes over the same file.
-  useEffect(() => {
-    if (startedRef.current) return
-    startedRef.current = true
-    run()
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once, by the ref guard
-  }, [])
-
-  const pct =
-    stage.kind === 'running' && stage.progress.framesTotal > 0
-      ? Math.min(100, Math.round((stage.progress.framesDone / stage.progress.framesTotal) * 100))
-      : 0
+  const pct = exportPercent(stage)
   const eta =
     stage.kind === 'running' && stage.progress.framesDone > 3
       ? ((performance.now() - stage.startedAt) / 1000 / stage.progress.framesDone) *
         (stage.progress.framesTotal - stage.progress.framesDone)
       : NaN
 
-  const retry = () => {
-    setStage({ kind: 'starting' })
-    run()
-  }
-
   return (
     <div
       className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60"
       onPointerDown={(e) => {
-        if (e.target === e.currentTarget && !running) onClose()
+        if (e.target === e.currentTarget && canClose) closeExportDialog()
       }}
     >
       <div
@@ -264,26 +74,38 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
         data-testid="export-dialog"
         className="flex max-h-[88vh] w-[440px] max-w-[calc(100vw-24px)] flex-col rounded-dialog border border-border bg-bg-elevated shadow-pop"
       >
-        <div className="flex h-11 shrink-0 items-center border-b border-border px-4">
+        <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-4">
           <span className="text-ui font-semibold text-text-primary">Export</span>
+          {/* Which project this is: by the time he looks, he may have another
+              one open behind it. */}
+          <span className="min-w-0 truncate text-ui-sm text-text-muted" data-testid="export-project">
+            {job.projectName}
+          </span>
           <span className="ml-auto">
-            <IconButton label="Close" onClick={onClose} disabled={running}>
+            <IconButton label="Close" onClick={closeExportDialog} disabled={!canClose}>
               <X size={16} strokeWidth={1.5} />
             </IconButton>
           </span>
         </div>
 
-        {(stage.kind === 'starting' || running) && (
+        {isExportActive(stage) && (
           <div className="flex flex-col gap-3 p-4" data-testid="export-progress">
+            {alreadyRunning && (
+              // One at a time: a second ffmpeg would fight the first for the
+              // same machine. So Export shows the running one and says why.
+              <p className="text-[12px] leading-5 text-text-primary" data-testid="export-already-running">
+                A video is already exporting. Only one can export at a time, so press Export again when
+                this one is done.
+              </p>
+            )}
             {/* What the app chose: a statement, not an offer. */}
             <p className="font-numeric text-[11px] text-text-muted" data-testid="export-plan">
               {plan.settings.width} × {plan.settings.height} · {plan.settings.fps} fps · H.264
               {plan.usingWorkArea ? ' · work area' : ''}
             </p>
 
-            {stage.kind === 'starting' ? (
-              <p className="text-[12px] text-text-secondary">Choose where to save it…</p>
-            ) : (
+            {stage.kind === 'starting' && <p className="text-[12px] text-text-secondary">Choose where to save it…</p>}
+            {stage.kind === 'running' && (
               <>
                 <div className="flex items-center justify-between text-[12px]">
                   <span className="flex items-center gap-1.5 capitalize text-ember">
@@ -304,14 +126,18 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
                   </span>
                   <span>ETA {fmtEta(eta)}</span>
                 </div>
-                <div className="mt-1 flex justify-end">
-                  <Button
-                    variant="secondary"
-                    data-testid="export-cancel"
-                    onClick={() => abortRef.current?.abort()}
-                  >
+                <div className="mt-1 flex justify-end gap-2">
+                  <Button variant="secondary" data-testid="export-cancel" onClick={cancelExport}>
                     Cancel
                   </Button>
+                  {/* The dialog is only a window onto the export, so it can go
+                      and the file keeps being made. The chip in the top bar
+                      brings it back. */}
+                  {job.background && (
+                    <Button variant="primary" data-testid="export-keep-working" onClick={closeExportDialog}>
+                      Keep working
+                    </Button>
+                  )}
                 </div>
               </>
             )}
@@ -355,7 +181,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
                   Show in folder
                 </Button>
               )}
-              <Button variant={stage.share ? 'secondary' : 'primary'} onClick={onClose}>
+              <Button variant={stage.share ? 'secondary' : 'primary'} onClick={closeExportDialog}>
                 Done
               </Button>
             </div>
@@ -366,10 +192,10 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           <div className="flex flex-col gap-3 p-4">
             <p className="text-[12px] leading-5 text-danger">{stage.message}</p>
             <div className="flex justify-end gap-2">
-              <Button variant="secondary" onClick={onClose}>
+              <Button variant="secondary" onClick={closeExportDialog}>
                 Close
               </Button>
-              <Button variant="primary" data-testid="export-retry" onClick={retry}>
+              <Button variant="primary" data-testid="export-retry" onClick={retryExport}>
                 Try again
               </Button>
             </div>

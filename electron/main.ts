@@ -5,7 +5,7 @@
 // the web. The origin (`app://olpremiere`) is PINNED forever: changing it (or
 // the appId/productName) would orphan the user's IndexedDB.
 
-import { app, BrowserWindow, Menu, protocol, ipcMain, powerMonitor, session, shell } from 'electron'
+import { app, BrowserWindow, dialog, Menu, protocol, ipcMain, powerMonitor, session, shell } from 'electron'
 
 // ⛔ ONE COPY OF THE APP AT A TIME. Two launches, a slow first start plus an
 // impatient second click, or a copy still alive after a crash, used to start a
@@ -478,11 +478,40 @@ function createWindow(): void {
     // A half written mirror copy is in the same boat, and its writer slot would
     // otherwise be pinned for the life of main, refusing that asset forever.
     void mediaStore.dropWriters()
+    // And an export. The page feeds ffmpeg its frames, so with the page gone
+    // ffmpeg would wait on its pipe forever, the half made file would stay,
+    // and the updater would believe an export is running until the app quits.
+    // A reload he chose over a running export (below) is exactly this.
+    void native.cancel()
   }
   win.webContents.on('did-start-navigation', (e) => {
     if (e.isMainFrame && !e.isSameDocument) dropOrphans()
   })
   win.webContents.on('render-process-gone', dropOrphans)
+
+  // ⛔ LEAVING DURING AN EXPORT ASKS FIRST. The page refuses to unload while one
+  // runs (src/state/unloadGuard.ts), and on its own that refusal is silent: the
+  // window just stays open. That read fine while the export dialog covered the
+  // editor and said why. Since 2026-09-28 the export runs behind his work, his
+  // words: *"Make it so that while the video is exporting, I can work on other
+  // videos too, because the export time is sometimes very long."* So a close
+  // can now be refused with nothing on screen to explain it, and it looks like
+  // a broken window. Asking turns the refusal into his choice. A reload lands
+  // here too, which is why the words fit both.
+  win.webContents.on('will-prevent-unload', (e) => {
+    const choice = dialog.showMessageBoxSync(win, {
+      type: 'warning',
+      buttons: ['Keep exporting', 'Stop the export'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+      title: 'Still exporting',
+      message: 'A video is still exporting.',
+      detail: 'If you leave now, the export stops and the video will not be finished.',
+    })
+    // Here preventDefault means "overrule the page": the close goes ahead.
+    if (choice === 1) e.preventDefault()
+  })
 
   if (isDev) {
     void win.loadURL(DEV_URL!)

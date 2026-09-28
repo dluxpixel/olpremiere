@@ -30,6 +30,8 @@ import { canRecordVoice, closeStudio, openStudio, useRecorder } from '../state/v
 import { Button, IconButton } from '../ui/Button'
 import { MelonMark } from '../ui/MelonMark'
 import { displayVersion } from '../appVersion'
+import { requestExport } from '../state/exportJob'
+import { ExportChip } from './ExportChip'
 import { ExportDialog } from './ExportDialog'
 import { ProjectsDialog, type ProjectsView } from './ProjectsDialog'
 import { usePhoneLayout } from '../ui/phoneLayout'
@@ -149,14 +151,17 @@ function RecordButton() {
  * rather than opening a dialog that immediately fails. Its own component so the
  * header does not re-render on every timeline edit: the selector returns a
  * boolean, not the project.
+ *
+ * The press itself starts the export, from the project as it is at that moment
+ * (state/exportJob.ts). With one already running it shows that one instead.
  */
-function ExportButton({ onOpen }: { onOpen: () => void }) {
+function ExportButton() {
   const canExport = useStore((s) => activeSequence(s.project).durationS > 0)
   return (
     <Button
       variant="primary"
       data-testid="export-open"
-      onClick={onOpen}
+      onClick={() => requestExport()}
       disabled={!canExport}
       title={canExport ? 'Export the video' : 'Put a clip on the timeline first, then this exports it'}
     >
@@ -307,7 +312,6 @@ export function TopBar() {
     const label = performHistoryStep('redo')
     if (label) useToasts.getState().show(`Redo: ${label}`)
   }
-  const [exporting, setExporting] = useState(false)
   const phone = usePhoneLayout()
   // null = closed. Otherwise which half of his work the dialog opened on.
   const [projectsOpen, setProjectsOpen] = useState<ProjectsView | null>(null)
@@ -437,9 +441,11 @@ export function TopBar() {
           <CollabButton />
           <RecordButton />
         </span>
-        <ExportButton onOpen={() => setExporting(true)} />
+        <ExportChip />
+        <ExportButton />
       </div>
-      {exporting && <ExportDialog onClose={() => setExporting(false)} />}
+      {/* Mounted always: it shows itself while the export job says it is open. */}
+      <ExportDialog />
       {projectsOpen && <ProjectsDialog view={projectsOpen} onClose={() => setProjectsOpen(null)} />}
       {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
     </header>

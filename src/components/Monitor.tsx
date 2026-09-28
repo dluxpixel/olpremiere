@@ -21,6 +21,7 @@ import { activeSequence, type Sequence } from '../engine/types'
 import { pausePlayback, subscribeShuttleRate, toggleLoop, togglePlay } from '../state/playbackControl'
 import { screenshotToMedia } from '../state/screenshot'
 import { isCriticalWorkRunning } from '../state/unloadGuard'
+import { isExportWatched } from '../state/exportJob'
 import { setPreviewQuality, useSettings } from '../state/settings'
 import { setActiveSequenceFormat, useStore } from '../state/store'
 import { IconButton } from '../ui/Button'
@@ -173,7 +174,14 @@ function useProgramCanvas(quality: Quality) {
       // ⚠️ PLAYBACK STILL WINS. If he presses space during an export he means it,
       // and a transport that stutters on purpose is a worse bug than a slow
       // export.
-      const exportBusy = !playing && isCriticalWorkRunning()
+      //
+      // ⚠️ AND ONLY WHILE HE IS WATCHING IT. Since 2026-09-28 the export runs in
+      // the background while he edits, his words: *"Make it so that while the
+      // video is exporting, I can work on other videos too, because the export
+      // time is sometimes very long."* Once he closes the dialog to keep working
+      // he IS looking at this picture, and four frames a second under a scrub
+      // would make the editing he asked for feel broken.
+      const exportBusy = !playing && isCriticalWorkRunning() && isExportWatched()
       const frameMs = stalled
         ? STALLED_POLL_MS
         : exportBusy

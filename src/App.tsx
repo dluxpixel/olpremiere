@@ -468,7 +468,18 @@ export default function App() {
       olApi?.onUpdateReady?.((version) =>
         useToasts.getState().show(`Update ${version} is ready. Restart to install`, 'success', {
           label: 'Restart',
-          onClick: () => olApi?.restartToUpdate?.(),
+          // Checked on the click, like the auto-apply toast below: the restart
+          // path forces the window shut after five seconds whether or not the
+          // export let it close. Since 2026-09-28 an export runs behind his
+          // work for as long as it takes, so a Restart pressed in the middle of
+          // one is the ordinary case, not the odd one.
+          onClick: () => {
+            if (isRestartUnsafe()) {
+              useToasts.getState().show('An export is still running. Restart once it has finished', 'info')
+              return
+            }
+            olApi?.restartToUpdate?.()
+          },
         }),
       ),
     [],

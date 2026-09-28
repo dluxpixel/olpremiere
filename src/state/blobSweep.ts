@@ -19,6 +19,7 @@
 // It runs ONCE per session, after boot, off the critical path.
 
 import { orphanedBlobKeys } from '../engine/blobGc'
+import { isBlobHeld } from './exportHolds'
 import { blobKeysWrittenThisSession, db } from './persistence'
 import { useStore } from './store'
 import type { Project } from '../engine/types'
@@ -59,7 +60,10 @@ export async function sweepOrphanedBlobs(): Promise<SweepResult> {
     // reaches the disk, so a file that is still importing is invisible to every
     // stored document. That gap is how a running import lost its footage.
     const fresh = blobKeysWrittenThisSession()
-    const keys = allKeys.filter((k) => !fresh.has(k))
+    // And anything a running export is still reading. Its frozen copy of the
+    // project is in no stored document, so an edit or a delete since he pressed
+    // Export can make its media look like rubbish here (exportHolds.ts).
+    const keys = allKeys.filter((k) => !fresh.has(k) && !isBlobHeld(k))
     if (keys.length === 0) return result
 
     // ⛔ THE UNION IS EVERY DOCUMENT HE CAN STILL GET BACK TO, not only the ones
