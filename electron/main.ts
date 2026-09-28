@@ -21,6 +21,7 @@ import { mkdir, readFile } from 'node:fs/promises'
 import { existsSync, renameSync } from 'node:fs'
 import path from 'node:path'
 import * as backups from './backups'
+import { createCutstudio, realCutstudioDeps } from './cutstudio'
 import * as projectFiles from './projectFiles'
 import * as saveFiles from './saveFiles'
 import type { NativeExportConfig, UpdateStatus } from './ipc-types'
@@ -667,6 +668,19 @@ app.whenReady().then(() => {
   ipcMain.handle('file:writeChunk', (_e, id: number, chunk: ArrayBuffer) => saveFiles.writeChunk(id, chunk))
   ipcMain.handle('file:close', (_e, id: number, ok: boolean) => saveFiles.closeWrite(id, ok))
 
+  // --- A pasted picture, cut out by CutStudio (electron/cutstudio.ts) ---------
+  // His words, 2026-09-28: *"When I paste something, I can select, when pasting
+  // it, to remove the background automatically."* Only picture bytes are passed
+  // on, and only to CutStudio on this computer.
+  const cutstudio = createCutstudio(realCutstudioDeps(app.getPath('desktop')))
+  ipcMain.handle('cutstudio:removeBackground', (_e, bytes: unknown, mime: unknown) => {
+    const isBytes = bytes instanceof ArrayBuffer || ArrayBuffer.isView(bytes)
+    if (!isBytes || typeof mime !== 'string' || !mime.startsWith('image/')) {
+      return { ok: false, reason: 'failed', detail: 'that is not a picture' }
+    }
+    return cutstudio.removeBackground(bytes, mime)
+  })
+
   // Whatever ends the app (user quit, or an auto-update install), never leave a
   // native ffmpeg child orphaned or its temp files behind. before-quit can't await,
   // so use the synchronous teardown (SIGKILL + unlinkSync) rather than the async
@@ -677,6 +691,9 @@ app.whenReady().then(() => {
     // ffmpeg running to the end, holding a temp file open that the sweep could
     // not delete.
     proxy.killAllProxyChildren()
+    // And CutStudio's server, when this app is the one that started it. One he
+    // started himself stays running.
+    cutstudio.stop()
   })
 
   // Splash FIRST, so it is on screen while the editor window loads behind it.

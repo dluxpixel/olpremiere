@@ -16,6 +16,7 @@ import { recomputeDuration } from '../src/engine/timeline'
 import { channelKeyframes } from './engine/effects/channels'
 import { activeSequence, defaultTitleDef, newProject, newTitleClip, type Clip } from './engine/types'
 import { addKeyframeAtPlayhead, toggleChannelAnimation } from './state/clipEdits'
+import { cancelPicturePaste, installPasteListener, usePastePicture } from './state/picturePaste'
 import { updateActiveSequence, useStore } from './state/store'
 
 vi.mock('./state/toasts', () => ({ useToasts: { getState: () => ({ show: () => {} }) } }))
@@ -178,5 +179,92 @@ describe('the keys reach the keyframe verbs', () => {
     press('Escape')
     uninstall()
     expect(useStore.getState().ui.selection).toEqual([])
+  })
+})
+
+// Ctrl+V after 2026-09-28. His words: *"Make it so I can just paste pictures"*.
+// A copied picture only ever arrives on the browser's paste event, and the
+// browser fires that event only when the keydown is left alone. So the key and
+// the event both see every press, and the one thing that must never happen is
+// both of them pasting.
+describe('Ctrl+V pastes clips or a picture, once', () => {
+  function pasteEvent(opts: { text?: string; files?: File[] } = {}): Event {
+    const e = new Event('paste', { bubbles: true, cancelable: true })
+    const items = (opts.files ?? []).map((f) => ({ kind: 'file', type: f.type, getAsFile: () => f }))
+    Object.defineProperty(e, 'clipboardData', {
+      value: { getData: (type: string) => (type === 'text/plain' ? (opts.text ?? '') : ''), items },
+    })
+    return e
+  }
+  const allClips = () => activeSequence(useStore.getState().project).tracks.flatMap((t) => t.clips)
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 5))
+
+  function seedCopiedClip(): void {
+    const clip = newTitleClip(defaultTitleDef('x'), 0, 5)
+    updateActiveSequence('seed', (sq) =>
+      recomputeDuration({
+        ...sq,
+        tracks: sq.tracks.map((t, i) => (i === 0 ? { ...t, clips: [...t.clips, clip] } : t)),
+      }),
+    )
+    useStore.getState().setUI({ selection: [clip.id] })
+  }
+
+  it('leaves the keydown alone, so the browser still fires its paste event', async () => {
+    const uninstall = installKeymap(bindings())
+    const e = new KeyboardEvent('keydown', { key: 'v', ctrlKey: true, bubbles: true, cancelable: true })
+    window.dispatchEvent(e)
+    uninstall()
+    // Its fallback paste runs here, not in the middle of the next test.
+    await settle()
+    expect(e.defaultPrevented).toBe(false)
+  })
+
+  it('one press with its paste event pastes the copied clip ONCE', async () => {
+    seedCopiedClip()
+    const offKeys = installKeymap(bindings())
+    const offPaste = installPasteListener()
+    press('c', { ctrl: true })
+    press('v', { ctrl: true })
+    window.dispatchEvent(pasteEvent({ text: 'OL Premiere: 1 clip copied' }))
+    await settle()
+    offKeys()
+    offPaste()
+    expect(allClips()).toHaveLength(2)
+  })
+
+  it('one press with no paste event still pastes the copied clip', async () => {
+    seedCopiedClip()
+    const offKeys = installKeymap(bindings())
+    press('c', { ctrl: true })
+    press('v', { ctrl: true })
+    await settle()
+    offKeys()
+    expect(allClips()).toHaveLength(2)
+  })
+
+  it('a picture copied after the clips asks about the picture and pastes no clips', async () => {
+    const createObjectURL = URL.createObjectURL
+    const revokeObjectURL = URL.revokeObjectURL
+    URL.createObjectURL = vi.fn(() => 'blob:picture')
+    URL.revokeObjectURL = vi.fn()
+    try {
+      seedCopiedClip()
+      const offKeys = installKeymap(bindings())
+      const offPaste = installPasteListener()
+      press('c', { ctrl: true })
+      press('v', { ctrl: true })
+      const shot = new File([new Uint8Array([1])], 'image.png', { type: 'image/png' })
+      window.dispatchEvent(pasteEvent({ text: '', files: [shot] }))
+      await settle()
+      offKeys()
+      offPaste()
+      expect(usePastePicture.getState().picture?.file.type).toBe('image/png')
+      expect(allClips()).toHaveLength(1)
+    } finally {
+      cancelPicturePaste()
+      URL.createObjectURL = createObjectURL
+      URL.revokeObjectURL = revokeObjectURL
+    }
   })
 })

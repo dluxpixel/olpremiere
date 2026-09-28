@@ -147,6 +147,30 @@ export const UPDATE_BAR_SEGMENTS = 20
  */
 export const UPDATE_SCREEN_UNBIDDEN = false
 
+/**
+ * Why CutStudio could not cut a pasted picture out. The renderer turns each one
+ * into its own plain sentence, because "it failed" would leave him guessing
+ * whether to install something, wait a moment, or just keep the background.
+ */
+export type CutoutFailure =
+  /** No cutstudio.exe in any place we know to look. */
+  | 'not-found'
+  /** It was found and started, and it quit before it ever answered. */
+  | 'no-start'
+  /** It started and has not answered yet. The first start loads a model. */
+  | 'slow-start'
+  /** Something that is not CutStudio answers on its port. */
+  | 'port-taken'
+  /** CutStudio runs, but has no cutout model downloaded yet. */
+  | 'no-model'
+  /** CutStudio answered and could not do this picture. */
+  | 'failed'
+
+/** A pasted picture sent through CutStudio: PNG bytes with a see-through background, or why not. */
+export type CutoutResult =
+  | { ok: true; png: ArrayBuffer }
+  | { ok: false; reason: CutoutFailure; detail: string }
+
 /** One frame of the loading card's state, sent to the splash window. */
 export interface BootProgress {
   /** `optional` is a row the app does not wait for. The splash draws those apart. */
@@ -338,6 +362,13 @@ export interface OlApi {
   fileWriteChunk(id: number, chunk: ArrayBuffer): Promise<void>
   /** `ok` false throws the partial file away instead of keeping it. */
   fileClose(id: number, ok: boolean): Promise<void>
+
+  /**
+   * Cut a pasted picture out with CutStudio, his own offline background remover
+   * (electron/cutstudio.ts). Main starts CutStudio's local server when nothing is
+   * listening and stops it again when the app quits.
+   */
+  removeBackground(bytes: ArrayBuffer, mime: string): Promise<CutoutResult>
 }
 
 export interface ProjectFileEntry {

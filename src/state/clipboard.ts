@@ -14,10 +14,36 @@ import {
 } from '../engine/timeline'
 import { activeSequence } from '../engine/types'
 import { useContextMenu } from './contextMenu'
+import { clipMarker } from './pasteRules'
 import { updateActiveSequence, useStore } from './store'
 import { useToasts } from './toasts'
 
 let clipboard: ClipPayload[] = []
+/** What the last clip copy wrote to the SYSTEM clipboard. See pasteRules.clipMarker. */
+let systemMarker: string | null = null
+
+/**
+ * Tell the system clipboard that clips are now the newest thing he copied.
+ *
+ * Without it, a picture he copied an hour ago would still be sitting on the
+ * system clipboard and would hijack the next Ctrl+V meant for these clips. Fire
+ * and forget: a write the browser refuses only means an older picture there can
+ * win, never that the copy itself fails.
+ */
+function markSystemClipboard(count: number): void {
+  const text = clipMarker(count)
+  systemMarker = text
+  try {
+    void navigator.clipboard?.writeText(text).catch(() => undefined)
+  } catch {
+    // No clipboard on this page at all.
+  }
+}
+
+/** The text the last clip copy put on the system clipboard, or null before any. */
+export function clipMarkerOnSystemClipboard(): string | null {
+  return systemMarker
+}
 
 export function copySelection(): boolean {
   const s = useStore.getState()
@@ -31,6 +57,7 @@ export function copySelection(): boolean {
   const payload = serializeClips(seq, s.ui.selection)
   if (payload.length === 0) return false
   clipboard = payload
+  markSystemClipboard(payload.length)
   useToasts.getState().show(`Copied ${payload.length} clip(s)`, 'info')
   return true
 }
@@ -57,6 +84,7 @@ export function cutSelection(): void {
   const payload = serializeClips(seq, ids)
   if (payload.length === 0) return
   clipboard = payload
+  markSystemClipboard(payload.length)
   updateActiveSequence('Cut clip(s)', (sq) => {
     let next = sq
     for (const id of ids) next = deleteGroup(next, id)
