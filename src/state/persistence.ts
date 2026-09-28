@@ -4,6 +4,7 @@
 import { openDB, type IDBPDatabase } from 'idb'
 import { diskApi, healStoreFromDisk, trashProjectOnDisk, writeProjectToDisk } from './diskProjects'
 import { blobKeysOnlyUsedBy } from '../engine/blobGc'
+import { isBlobHeld } from './exportHolds'
 import { migrateProjectEffects } from '../engine/effects/migrate'
 import { migrateProjectAppearance } from '../engine/anim/appearance'
 import { markDoNotAutoRecover } from './recoveryMemory'
@@ -329,7 +330,9 @@ export async function deleteProject(id: string): Promise<void> {
   void tx.objectStore('projects').delete(id)
   if (p) {
     const blobs = tx.objectStore('blobs')
-    for (const key of blobKeysOnlyUsedBy(p, others)) void blobs.delete(key)
+    // A key the running export still reads stays: he may delete the very
+    // project he is exporting (exportHolds.ts). The next sweep reclaims it.
+    for (const key of blobKeysOnlyUsedBy(p, others)) if (!isBlobHeld(key)) void blobs.delete(key)
   }
   const meta = tx.objectStore('meta')
   const last = (await meta.get('lastProjectId')) as string | undefined

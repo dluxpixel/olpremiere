@@ -9,9 +9,9 @@
 // and the guard must stay armed until the last one finishes.
 //
 // There is a SECOND counter beside it, and the difference matters. Blocking the
-// window from closing is a heavy thing to do: nothing asks him, the window
-// simply refuses, so it is only right for work measured in minutes that he
-// started and is watching. A voice take is just as destructible but it is not
+// window from closing is a heavy thing to do: he has to stop and answer a
+// question (on the desktop, electron/main.ts asks whether to stop the export),
+// so it is only right for work measured in minutes that he started. A voice take is just as destructible but it is not
 // that: he may well want to close with an unkept take on screen, and an app that
 // would not shut would be a worse bug than the one being fixed. So a HOLD says
 // "do not restart under this" without saying "do not close".
