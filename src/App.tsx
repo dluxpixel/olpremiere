@@ -62,6 +62,7 @@ import { useToasts } from './state/toasts'
 import { APP_VERSION, LAST_SEEN_VERSION_KEY, checkForUpdate, displayVersion } from './appVersion'
 import { olApi } from './platform'
 import { ContextMenu } from './ui/ContextMenu'
+import { NamePrompt } from './ui/NamePrompt'
 import { Splitter } from './ui/Splitter'
 import { Toaster } from './ui/Toaster'
 import { useLayoutSizes } from './useLayoutSizes'
@@ -615,6 +616,7 @@ export default function App() {
       <RecordingStudioMount />
       <TranscribeStatus />
       <ContextMenu />
+      <NamePrompt />
     </div>
   )
 }

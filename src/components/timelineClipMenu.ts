@@ -9,6 +9,7 @@ import { copySelection, cutSelection, duplicateSelection, pasteAtPlayhead } from
 import { applyEffect, crossfadeWithNeighbour, deleteSelected, removeClipTransition, setClipTransition, splitAtPlayhead, topAndTail } from '../state/clipEdits'
 import { appearanceMenuItems, titleFontSizeItems } from '../state/clipMenus'
 import type { MenuItem } from '../state/contextMenu'
+import { saveToCategoryItems } from '../state/libraryMenus'
 import { cutPunchAtPlayhead, impactAtPlayhead, punchInAtPlayhead, punchOnBeats, punchOutAtPlayhead, rampWorkArea, whipToNext } from '../state/motionActions'
 import { applyMoveToSelection } from '../state/moveActions'
 import { copyClipMove, hasClipMove, pasteClipMove } from '../state/moveClipboard'
@@ -236,6 +237,16 @@ export function clipContextMenuItems({ clip, seq, assets, selNow, keepSelection,
         ]
       : []
 
+  // Save the clip's media to the Library, into a category he names. His words,
+  // 2026-09-28: *"when I want to save a sound effect for Battle Cats, I can."*
+  // The sound is usually already cut into the edit when he decides it is a
+  // keeper, so the timeline is where he is when he wants this. It saves the
+  // whole media file, the same thing the bin's Save does, never just the trim.
+  const media = !clip.title && !clip.adjustment ? assets[clip.assetId] : undefined
+  const libraryItems: MenuItem[] = media
+    ? [{ label: 'Save to Library', separator: true, submenu: saveToCategoryItems(media.id) }]
+    : []
+
   return [
     { label: 'Copy', shortcut: comboLabel('mod+c'), onClick: () => copySelection() },
     { label: 'Cut', shortcut: comboLabel('mod+x'), onClick: cutSelection },
@@ -265,6 +276,7 @@ export function clipContextMenuItems({ clip, seq, assets, selNow, keepSelection,
     ...greenScreenItems,
     ...appearanceItems,
     ...bulkTitleItems,
+    ...libraryItems,
     {
       label: 'Trim head to playhead',
       shortcut: 'Q',

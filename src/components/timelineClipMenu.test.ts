@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { MOVES } from '../engine/moves'
 import { defaultTitleDef, newTitleClip, type Clip, type Sequence } from '../engine/types'
 import type { MenuItem } from '../state/contextMenu'
+import { useLibrary } from '../state/library'
 import { clipContextMenuItems, type ClipMenuContext } from './timelineClipMenu'
 import { ASSETS, makeClip, makeSeq, makeTrack } from './timelineTestFixtures'
 
@@ -114,5 +115,31 @@ describe('the clip right-click menu', () => {
     expect(labels(items)).toContain('Style preset')
     expect(labels(items)).not.toContain('Moves')
     expect(labels(items)).not.toContain('Remove green screen')
+  })
+
+  // His words, 2026-09-28: *"when I want to save a sound effect for Battle
+  // Cats, I can."* The sound is often already on the timeline when he decides.
+  it('saves a clip with media to the Library, into any of his categories', () => {
+    useLibrary.setState({
+      categories: [
+        { id: 'mc', name: 'Minecraft', createdAt: 2 },
+        { id: 'bc', name: 'Battle Cats', createdAt: 1 },
+      ],
+      lastCategoryId: 'bc',
+    })
+    const { a, v, seq } = fixture()
+    for (const clip of [a, v]) {
+      const save = item(menu(clip, seq), 'Save to Library')
+      expect(save.submenu?.map((m) => m.label)).toEqual(['Unsorted', 'Battle Cats', 'Minecraft', 'New category...'])
+      // The tick is where a one-click save would go: the category he used last.
+      expect(save.submenu?.find((m) => m.checked)?.label).toBe('Battle Cats')
+    }
+  })
+
+  it('offers no Library save on a clip with no media behind it', () => {
+    const title = newTitleClip(defaultTitleDef('Hi'), 0, 2)
+    expect(labels(menu(title, makeSeq([makeTrack({ clips: [title] })])))).not.toContain('Save to Library')
+    const orphan = makeClip({ assetId: 'gone' })
+    expect(labels(menu(orphan, makeSeq([makeTrack({ clips: [orphan] })])))).not.toContain('Save to Library')
   })
 })
