@@ -361,7 +361,7 @@ export function Monitor() {
     if (!usedAssetKey) return
     const used = new Set(usedAssetKey.split('|'))
     const list = Object.values(assets).filter((a) => used.has(a.id))
-    prewarmAudio(list)
+    prewarmAudio(activeSequence(useStore.getState().project), assets)
     prewarmPreview(list)
     // Also covers a project OPENED from disk, whose assets were imported in some
     // earlier session and so never passed through the import path. Cheap to

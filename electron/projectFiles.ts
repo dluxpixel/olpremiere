@@ -80,6 +80,7 @@ export async function writeProjectFile(id: string, projectName: string, json: st
   const tmp = `${target}.tmp`
   await writeFile(tmp, json, 'utf8')
   await rename(tmp, target)
+  rememberWritten(target, id, projectName, json)
   // A rename of the project leaves the file under its old name behind. Clear it
   // now that the new one is safely down.
   const mine = path.basename(target)
@@ -110,6 +111,25 @@ interface Parsed {
 
 /** Parsed once per (path, mtime): a rename or a rewrite changes the mtime. */
 const parsedCache = new Map<string, { mtimeMs: number; parsed: Parsed | null }>()
+
+/**
+ * ⛔ A FILE THIS PROCESS JUST WROTE IS NEVER READ BACK TO LEARN WHAT IT SAYS,
+ * 2026-09-28. Every save changes the open project's mtime, so every listing
+ * after a save missed the cache above and parsed his whole open project again,
+ * on the main process, which is also the thread that carries his input to the
+ * window. What it would find is already in hand here.
+ */
+function rememberWritten(target: string, id: string, projectName: string, json: string): void {
+  // The project's own stamp sits before its assets; anything after could be an asset's.
+  const head = json.slice(0, 4096)
+  const cut = head.indexOf('"assets"')
+  const m = /"updatedAt"\s*:\s*(\d+)/.exec(cut > 0 ? head.slice(0, cut) : head)
+  if (!m) return
+  void stat(target).then(
+    (s) => parsedCache.set(target, { mtimeMs: s.mtimeMs, parsed: { id, name: projectName, updatedAt: Number(m[1]) } }),
+    () => undefined,
+  )
+}
 
 async function parseHeader(file: string, mtimeMs: number): Promise<Parsed | null> {
   const hit = parsedCache.get(file)

@@ -118,17 +118,16 @@ export function useTimelineDrop({
     // Dropping a video with audio splits its sound to a linked audio clip on A1.
     if (asset.kind === 'video' && asset.hasAudio) {
       const audioTrack = audioTracks(seq).find((tr) => !tr.locked) ?? null
-      // Overwrite: lay it where he dropped it and clear what was under it, the
-      // way every real NLE does. Without this the drop hunted for the nearest
-      // gap that FITS, and on a packed timeline the only one is the open end,
-      // so the clip silently landed after everything instead of where he aimed.
+      // Exactly when he dropped it, and never on top of anything: a lane that is
+      // taken there passes it to the next free line (his pick, 2026-09-28: a
+      // finished recording dropped on V4 used to delete what V4 had under it).
       updateActiveSequence(`Add ${asset.name}`, (sq) =>
-        addClipWithLinkedAudio(sq, target.id, audioTrack?.id ?? null, asset, t, { overwrite: true }).seq,
+        addClipWithLinkedAudio(sq, target.id, audioTrack?.id ?? null, asset, t, { exact: true }).seq,
       )
       return
     }
     updateActiveSequence(`Add ${asset.name}`, (sq) =>
-      addClipFromAsset(sq, target.id, asset, t, { overwrite: true }).seq,
+      addClipFromAsset(sq, target.id, asset, t, { exact: true }).seq,
     )
   }
 

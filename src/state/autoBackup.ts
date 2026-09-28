@@ -46,6 +46,14 @@ const canWrite = (): boolean => typeof window !== 'undefined' && !!window.api?.i
 const lastWrittenFor = new Map<string, string>()
 
 /**
+ * The `updatedAt` each project had when it was last written. A project whose
+ * stamp has not moved is skipped before it is even read: the sweep used to load
+ * and serialise every project he has every two minutes just to find out nothing
+ * had changed, on the thread that draws the picture.
+ */
+const writtenAt = new Map<string, number>()
+
+/**
  * Back up EVERY project he has, not only the one on screen.
  *
  * ⛔ THIS IS THE FAULT THAT COST HIM HIS FINISHED WORK. 2026-08-23: *"I had a ton
@@ -63,7 +71,7 @@ const lastWrittenFor = new Map<string, string>()
 async function backupEveryProject(): Promise<void> {
   if (!canWrite()) return
   const openId = useStore.getState().project?.id
-  let summaries: { id: string }[]
+  let summaries: { id: string; updatedAt: number }[]
   try {
     summaries = await listProjects()
   } catch {
@@ -71,14 +79,22 @@ async function backupEveryProject(): Promise<void> {
   }
   for (const s of summaries) {
     if (s.id === openId) continue // the open one has just been written above
+    if (writtenAt.get(s.id) === s.updatedAt) continue
+    // Never mid playback: this reads and serialises on the thread the monitor
+    // draws on. The next quiet tick picks it up.
+    if (useStore.getState().ui.playing) return
     try {
       const p = await loadProjectById(s.id)
       if (!p) continue
       const json = serialize(p, 'desktop')
       const fingerprint = json.replace(/"savedAt":"[^"]*"/, '')
-      if (lastWrittenFor.get(s.id) === fingerprint) continue
+      if (lastWrittenFor.get(s.id) === fingerprint) {
+        writtenAt.set(s.id, s.updatedAt)
+        continue
+      }
       await window.api!.backupWrite(p.name ?? 'project', json)
       lastWrittenFor.set(s.id, fingerprint)
+      writtenAt.set(s.id, s.updatedAt)
     } catch {
       // One unreadable project must never stop the others being written.
     }

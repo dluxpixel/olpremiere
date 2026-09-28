@@ -217,9 +217,22 @@ function activeIndex(clips: readonly Clip[], t: number): number {
  * track shows nothing (no active clip, or the only candidate is fully inside a
  * transition it does not own).
  */
-function resolveTrack(track: Track, t: number, fps: number, shutterS = 0): RenderOp | null {
+function resolveTrack(track: Track, at: number, fps: number, shutterS = 0): RenderOp | null {
   const clips = track.clips
-  const i = activeIndex(clips, t)
+  let t = at
+  let i = activeIndex(clips, t)
+  // ⛔ A SEAM IS NOT A GAP, 2026-09-28. His words, with a picture of the monitor
+  // black on a cut: *"it seems like it has dark cuts even though clips are
+  // completely together."* Touching clips are stored a hair apart: in his own
+  // projects A ends at 9.099999999999966 and B starts at 9.100000000000001, and
+  // the frame at 273/30 = 9.0999999999999996 lands between them, in NEITHER
+  // clip, so the monitor drew black and the export wrote a black frame. A time
+  // within ADJ_EPS of the next clip's start is that clip's first frame.
+  const upcoming = clips[i + 1]
+  if (upcoming && upcoming.startS > t && upcoming.startS - t < ADJ_EPS) {
+    i += 1
+    t = upcoming.startS
+  }
   if (i >= 0) {
     const clip = clips[i]
     if (!clip.enabled) return null

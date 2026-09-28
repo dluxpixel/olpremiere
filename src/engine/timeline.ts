@@ -572,7 +572,7 @@ export function addClipFromAsset(
   trackId: Id,
   asset: MediaAsset,
   desiredStartS: number,
-  opts: { overwrite?: boolean } = {},
+  opts: { exact?: boolean } = {},
 ): { seq: Sequence; clipId: Id } {
   // The first video onto an empty timeline sets its frame rate. See adoptFrameRate.
   const seq = adoptFrameRate(seq0, asset)
@@ -583,13 +583,19 @@ export function addClipFromAsset(
   if (track0.kind !== wantKind || track0.locked) return { seq, clipId: '' }
 
   const outS = asset.durationS || 5 // images have durationS 0 → default 5s
-  // Overwrite lays the clip exactly where he dropped it and clears what was
-  // under it. Otherwise resolveStart hunts the nearest gap that FITS, and on a
-  // packed timeline the only one is the open end, so the drop silently landed
-  // at the end of the sequence instead of where he aimed.
-  const startS = opts.overwrite ? Math.max(0, desiredStartS) : resolveStart(track0, desiredStartS, outS)
-  const base = opts.overwrite ? clearSpan(seq, trackId, startS, startS + outS) : seq
-  const trackIndex = base.tracks.findIndex((t) => t.id === trackId)
+  // `exact` lays the clip exactly WHEN he dropped it. Where something is already
+  // there, it goes on the next free line (freeTrackFor) instead of clearing what
+  // was under it, his pick 2026-09-28. Without `exact`, resolveStart hunts the
+  // nearest gap that FITS on this one track.
+  const startS = opts.exact ? Math.max(0, desiredStartS) : resolveStart(track0, desiredStartS, outS)
+  let base = seq
+  let homeId = trackId
+  if (opts.exact) {
+    const home = freeTrackFor(seq, wantKind, trackIndex0, startS, outS)
+    base = home.seq
+    homeId = base.tracks[home.trackIndex]!.id
+  }
+  const trackIndex = base.tracks.findIndex((t) => t.id === homeId)
   const track = base.tracks[trackIndex]
 
   const clip: Clip = {
@@ -1325,7 +1331,7 @@ export function addClipWithLinkedAudio(
   audioTrackId: Id | null,
   asset: MediaAsset,
   desiredStartS: number,
-  opts: { overwrite?: boolean } = {},
+  opts: { exact?: boolean } = {},
 ): { seq: Sequence; videoClipId: Id; audioClipId: Id } {
   const seq = adoptFrameRate(seq0, asset)
   const vIndex0 = seq.tracks.findIndex((t) => t.id === videoTrackId)
@@ -1339,15 +1345,24 @@ export function addClipWithLinkedAudio(
   const canLink = !!aTrack0 && aTrack0.kind === 'audio' && !aTrack0.locked
 
   const dur = clipDurationS(newClipFromAsset(asset, 0))
-  // Overwrite drops the pair exactly where he aimed and clears BOTH lanes under
-  // it. Otherwise resolveStart looks for a start free on both tracks at once,
-  // and on a packed timeline that is only ever the open end.
+  // `exact` drops the pair exactly WHEN he aimed, each half on the next free
+  // line of its kind when its own lane is taken there, and nothing under it is
+  // cleared (his pick 2026-09-28). Otherwise resolveStart looks for a start free
+  // on both tracks at once, and on a packed timeline that is only the open end.
   let startS: number
   let base = seq
-  if (opts.overwrite) {
+  let vId = videoTrackId
+  let aId = audioTrackId
+  if (opts.exact) {
     startS = Math.max(0, desiredStartS)
-    base = clearSpan(base, videoTrackId, startS, startS + dur)
-    if (canLink) base = clearSpan(base, audioTrackId!, startS, startS + dur)
+    const vHome = freeTrackFor(base, 'video', vIndex0, startS, dur)
+    base = vHome.seq
+    vId = base.tracks[vHome.trackIndex]!.id
+    if (canLink) {
+      const aHome = freeTrackFor(base, 'audio', base.tracks.findIndex((t) => t.id === audioTrackId), startS, dur)
+      base = aHome.seq
+      aId = base.tracks[aHome.trackIndex]!.id
+    }
   } else {
     // Place at a start free on BOTH tracks so the pair stays aligned.
     const obstacles: Track = {
@@ -1358,9 +1373,9 @@ export function addClipWithLinkedAudio(
   }
 
   const seqB = base
-  const vIndex = seqB.tracks.findIndex((t) => t.id === videoTrackId)
+  const vIndex = seqB.tracks.findIndex((t) => t.id === vId)
   const vTrack = seqB.tracks[vIndex]
-  const aIndex = audioTrackId ? seqB.tracks.findIndex((t) => t.id === audioTrackId) : -1
+  const aIndex = aId ? seqB.tracks.findIndex((t) => t.id === aId) : -1
 
   if (!canLink) {
     // No audio track: standalone video clip keeps its own audio (no linkId).
@@ -2059,48 +2074,72 @@ export function serializeClips(seq: Sequence, clipIds: Id[]): ClipPayload[] {
 }
 
 /**
- * Where a whole linked group can land, as ONE offset shared by every member.
+ * ⛔ NOTHING THAT LANDS ON THE TIMELINE MAY COVER WHAT IS ALREADY THERE,
+ * 2026-09-28. His words: *"when I finish recording or paste a picture into a
+ * line like V4 that already has stuff in it, it just deletes what it had under
+ * it."* Asked where it should go instead, he picked "the next free line".
  *
- * ⛔ PASTING A LINKED PAIR USED TO PULL THE PICTURE OFF THE SOUND.
- * Each half looked for a free spot on its own track and took the nearest one.
- * When the video track was clear at the playhead and the audio track was not,
- * the video landed where he asked and the voice landed somewhere else, still
- * wearing the link badge that says these two belong together. Every later edit
- * then moved them as a pair, keeping them permanently out of step, and lip sync
- * that is out by a fifth of a second is not obvious until it is published.
- *
- * The candidates are the offsets each member would have chosen for itself, plus
- * the clear ground past the end of every track the group touches, which always
- * fits. The smallest move that suits ALL of them wins, so a pair whose tracks
- * are both free still lands exactly on the playhead.
+ * The track a clip of `kind` spanning [startS, startS + durS) can land on
+ * without touching anything: `fromIndex` when it is free and unlocked, else the
+ * next free unlocked track of the same kind moving AWAY from the middle of the
+ * timeline (up through video, down through audio), else a brand new track. The
+ * clip keeps its time exactly: nothing is moved, cut or removed.
  */
-function groupPasteOffset(
-  tracks: readonly Track[],
-  members: { trackIndex: number; desiredS: number; durS: number }[],
-): number {
-  const candidates: number[] = [0]
-  let clearGround = 0
-  for (const m of members) {
-    const track = tracks[m.trackIndex]
-    candidates.push(resolveStart(track, m.desiredS, m.durS) - m.desiredS)
-    for (const c of track.clips) clearGround = Math.max(clearGround, clipEndS(c) - m.desiredS)
+export function freeTrackFor(
+  seq: Sequence,
+  kind: 'video' | 'audio',
+  fromIndex: number,
+  startS: number,
+  durS: number,
+): { seq: Sequence; trackIndex: number } {
+  const same: number[] = []
+  seq.tracks.forEach((t, i) => {
+    if (t.kind === kind) same.push(i)
+  })
+  const from = Math.max(0, same.indexOf(fromIndex))
+  for (let k = from; k < same.length; k++) {
+    const t = seq.tracks[same[k]!]!
+    if (!t.locked && canPlace(t, startS, durS)) return { seq, trackIndex: same[k]! }
   }
-  candidates.push(clearGround)
-  // Nearest first, so the pair moves as little as it can get away with.
-  candidates.sort((x, y) => Math.abs(x) - Math.abs(y))
-  for (const shift of candidates) {
-    if (members.every((m) => canPlace(tracks[m.trackIndex], Math.max(0, m.desiredS + shift), m.durS))) return shift
-  }
-  return clearGround
+  const grown = addTrack(seq, kind)
+  const made = grown.tracks.find((t) => !seq.tracks.includes(t))!
+  return { seq: grown, trackIndex: grown.tracks.indexOf(made) }
 }
 
+/**
+ * Paste the clipboard at `atS`.
+ *
+ * With a `target` (his right click on a lane) the payload lands on the track he
+ * clicked: the lowest copied track of that kind goes there and the rest keep
+ * their distance from it. Without one (Ctrl+V) each clip goes back to the track
+ * it was copied from. Either way it lands at exactly the time asked, and a clip
+ * whose spot is taken moves to the next free line (freeTrackFor), never in time
+ * and never on top of anything. His words: *"it pastes it where I clicked it. It
+ * doesn't just paste it randomly."*
+ */
 export function pasteClips(
   seq: Sequence,
   payload: ClipPayload[],
   atS: number,
+  target?: { trackIndex: number },
 ): { seq: Sequence; newIds: Id[]; blockedByLock: number } {
-  const kindIdx: Record<'video' | 'audio', number[]> = { video: [], audio: [] }
-  seq.tracks.forEach((t, i) => kindIdx[t.kind].push(i))
+  const kindIdx = (sq: Sequence): Record<'video' | 'audio', number[]> => {
+    const out: Record<'video' | 'audio', number[]> = { video: [], audio: [] }
+    sq.tracks.forEach((t, i) => out[t.kind].push(i))
+    return out
+  }
+  const start = kindIdx(seq)
+
+  // Which same-kind track a payload item asks for. A target shifts every item of
+  // the target's kind by the same amount, so their stacking survives the move.
+  const targetKind = target ? seq.tracks[target.trackIndex]?.kind : undefined
+  const targetPos = target && targetKind ? start[targetKind].indexOf(target.trackIndex) : -1
+  const ofTargetKind = payload.filter((p) => p.trackKind === targetKind).map((p) => p.trackOffset)
+  const anchorOffset = ofTargetKind.length > 0 ? Math.min(...ofTargetKind) : -1
+  const wantedOffset = (item: ClipPayload): number =>
+    targetKind && item.trackKind === targetKind && anchorOffset >= 0 && targetPos >= 0
+      ? targetPos + (item.trackOffset - anchorOffset)
+      : item.trackOffset
 
   const newIds: Id[] = []
   // Remap link groups to FRESH ids: clips linked in the payload stay linked to
@@ -2141,38 +2180,36 @@ export function pasteClips(
     }
   }
 
-  let tracks = seq.tracks
+  let cur = seq
   let blockedByLock = 0
   for (const unit of units) {
-    const placed = unit.map((item) => {
-      const sameKind = kindIdx[item.trackKind]
+    // Indices come from the CURRENT sequence: an earlier clip may have added a
+    // track, which shifts everything after it.
+    const idx = kindIdx(cur)
+    const asked = unit.map((item) => {
+      const sameKind = idx[item.trackKind]
       if (sameKind.length === 0) return null
-      const ti = sameKind[Math.min(Math.max(0, item.trackOffset), sameKind.length - 1)]
-      const body = structuredClone(item.clip)
-      return {
-        item,
-        body,
-        trackIndex: ti,
-        desiredS: atS + item.offsetS,
-        durS: (body.outS - body.inS) / Math.abs(body.speed || 1),
-      }
+      return sameKind[Math.min(Math.max(0, wantedOffset(item)), sameKind.length - 1)]!
     })
     // ⛔ A LOCKED HALF TAKES THE WHOLE PAIR WITH IT.
     // Pasting a linked pair onto a locked audio track used to drop the audio
     // and paste the video on its own, still linked, which is the one shape a
     // linked video clip cannot survive: it makes no sound of its own, because
-    // its partner is meant to, and the partner never arrived. It played silent,
-    // exported silent, and looked completely normal.
-    if (placed.some((m) => m === null || tracks[m.trackIndex].locked)) {
+    // its partner is meant to, and the partner never arrived.
+    if (asked.some((ti) => ti === null || cur.tracks[ti].locked)) {
       blockedByLock += 1
       continue
     }
-    const members = placed as NonNullable<(typeof placed)[number]>[]
-    const shift = members.length > 1 ? groupPasteOffset(tracks, members) : 0
-
-    for (const m of members) {
-      const track = tracks[m.trackIndex]
-      let linkId = m.body.linkId
+    // Pinned by identity, so a track added for one half cannot shift the other's.
+    const askedTracks = asked.map((ti) => cur.tracks[ti!]!)
+    for (let m = 0; m < unit.length; m++) {
+      const item = unit[m]!
+      const body = structuredClone(item.clip)
+      const desiredS = Math.max(0, atS + item.offsetS)
+      const durS = (body.outS - body.inS) / Math.abs(body.speed || 1)
+      const home = freeTrackFor(cur, item.trackKind, cur.tracks.indexOf(askedTracks[m]!), desiredS, durS)
+      cur = home.seq
+      let linkId = body.linkId
       if (linkId && (linkCount.get(linkId) ?? 0) < 2) {
         linkId = undefined
       } else if (linkId) {
@@ -2181,21 +2218,22 @@ export function pasteClips(
         linkId = mapped
       }
       const clip: Clip = {
-        ...m.body,
+        ...body,
         id: newId(),
-        startS:
-          members.length > 1
-            ? Math.max(0, m.desiredS + shift)
-            : resolveStart(track, m.desiredS, m.durS),
-        effects: m.body.effects.map((e) => ({ ...e, id: newId() })),
+        startS: desiredS,
+        effects: body.effects.map((e) => ({ ...e, id: newId() })),
         linkId,
       }
-      tracks = tracks.map((t, i) => (i === m.trackIndex ? { ...t, clips: insertSorted(t.clips, clip) } : t))
+      const placedTrack = cur.tracks[home.trackIndex]!
+      const withClip = { ...placedTrack, clips: insertSorted(placedTrack.clips, clip) }
+      cur = { ...cur, tracks: cur.tracks.map((t, i) => (i === home.trackIndex ? withClip : t)) }
+      // Keep the identity pins pointing at the live track objects.
+      for (let k = 0; k < askedTracks.length; k++) if (askedTracks[k] === placedTrack) askedTracks[k] = withClip
       newIds.push(clip.id)
     }
   }
   if (newIds.length === 0) return { seq, newIds, blockedByLock }
-  return { seq: recomputeDuration({ ...seq, tracks }), newIds, blockedByLock }
+  return { seq: recomputeDuration(cur), newIds, blockedByLock }
 }
 
 export function duplicateClips(seq: Sequence, clipIds: Id[]): { seq: Sequence; newIds: Id[] } {

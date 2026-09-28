@@ -24,7 +24,7 @@
 // re-imported; four hundred decisions cannot.
 
 import { app } from 'electron'
-import { mkdir, readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises'
+import { mkdir, open, readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
 /** How many backups to keep. Small files, so keep enough to walk back a session. */
@@ -96,12 +96,7 @@ export async function writeBackup(projectName: string, json: string): Promise<st
   // The id is already in the bytes being written, so this costs one parse and
   // no new IPC. A file that will not parse keeps the old name rather than
   // failing the backup: a backup with a colliding name still beats none.
-  let projectId: string | undefined
-  try {
-    projectId = (JSON.parse(json) as { project?: { id?: string } })?.project?.id
-  } catch {
-    projectId = undefined
-  }
+  const projectId = idFromHead(json.slice(0, HEAD_BYTES)) ?? idFromWhole(json) ?? undefined
   const target = path.join(dir, fileName(projectName, new Date(), projectId))
   await writeFile(target, json, 'utf8')
 
@@ -187,11 +182,53 @@ export async function listBackups(): Promise<{ name: string; path: string; sizeB
  */
 async function projectIdIn(file: string): Promise<string | null> {
   try {
-    const raw = await readFile(file, 'utf8')
-    const parsed = JSON.parse(raw) as { project?: { id?: string } }
-    const id = parsed?.project?.id
+    const s = await stat(file)
+    const known = idCache.get(file)
+    if (known && known.mtimeMs === s.mtimeMs && known.size === s.size) return known.id
+    const id = (await idFromFileHead(file)) ?? idFromWhole(await readFile(file, 'utf8'))
+    idCache.set(file, { mtimeMs: s.mtimeMs, size: s.size, id })
+    return id
+  } catch {
+    return null
+  }
+}
+
+/**
+ * ⛔ THE ID IS READ FROM THE FIRST FEW HUNDRED BYTES, AND REMEMBERED, 2026-09-28.
+ *
+ * Every backup write used to parse the whole payload for its id, and every prune
+ * read and parsed every one of the forty files. This is the Electron main
+ * process, which is also the thread that routes his mouse and keyboard to the
+ * window, and the sweep writes one backup per project, so each sweep froze
+ * input for a burst of whole file parses. The serializer writes the project's
+ * id before anything else (backupFormat.ts `serialize`), so the head of the file
+ * holds it; a file whose head does not is parsed whole, exactly as before.
+ */
+const HEAD_BYTES = 1024
+const idCache = new Map<string, { mtimeMs: number; size: number; id: string | null }>()
+
+/** The project id from the opening bytes of a backup, or null when it is not there. */
+export function idFromHead(head: string): string | null {
+  const m = /"project"\s*:\s*\{\s*"id"\s*:\s*"([^"\\]+)"/.exec(head)
+  return m ? m[1]! : null
+}
+
+function idFromWhole(raw: string): string | null {
+  try {
+    const id = (JSON.parse(raw) as { project?: { id?: string } })?.project?.id
     return typeof id === 'string' && id.length > 0 ? id : null
   } catch {
     return null
+  }
+}
+
+async function idFromFileHead(file: string): Promise<string | null> {
+  const fh = await open(file, 'r')
+  try {
+    const buf = Buffer.alloc(HEAD_BYTES)
+    const { bytesRead } = await fh.read(buf, 0, HEAD_BYTES, 0)
+    return idFromHead(buf.subarray(0, bytesRead).toString('utf8'))
+  } finally {
+    await fh.close()
   }
 }

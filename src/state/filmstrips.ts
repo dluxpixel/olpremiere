@@ -11,7 +11,13 @@ import { getBlobUrl } from './blobUrls'
 import { createStripCache } from './filmstripCache'
 
 const TILE_H = 56 // matches the video lane's usable height
-const MAX_STRIPS = 60
+/**
+ * ⛔ 400, WAS 60, 2026-09-28. A strip is a few tens of KB of JPEG and every miss
+ * is a video load plus up to 32 seeks. At 60, zooming in and out across his
+ * biggest project threw strips away and rebuilt them over and over; memory was
+ * never the constraint, the rebuilds were.
+ */
+const MAX_STRIPS = 400
 
 // A real LRU that refuses to revoke a strip something is still showing. See
 // filmstripCache.ts for the blank-thumbnail bug this replaced.
@@ -25,6 +31,84 @@ function notify(key: string): void {
   waiters.delete(key)
 }
 
+/**
+ * ⛔ THE JPEG ENCODE RUNS IN A WORKER, 2026-09-28. `canvas.toBlob` encoded on the
+ * main thread: 536 ms of it in the first seconds after opening his biggest
+ * project, measured, right when he starts to scroll and click.
+ */
+let encoder: Worker | null | undefined
+let encodeId = 1
+const encodes = new Map<number, (b: Blob | null) => void>()
+
+function encodeOffThread(canvas: HTMLCanvasElement): Promise<Blob | null> {
+  const onMain = (): Promise<Blob | null> => new Promise((res) => canvas.toBlob(res, 'image/jpeg', 0.72))
+  if (encoder === undefined) {
+    try {
+      encoder = typeof Worker === 'undefined' || typeof OffscreenCanvas === 'undefined' ? null : new Worker(new URL('./stripEncodeWorker.ts', import.meta.url), { type: 'module' })
+      if (encoder) {
+        encoder.onmessage = (e: MessageEvent<{ id: number; blob?: Blob }>) => {
+          encodes.get(e.data.id)?.(e.data.blob ?? null)
+          encodes.delete(e.data.id)
+        }
+        encoder.onerror = () => {
+          encoder = null
+          for (const done of encodes.values()) done(null)
+          encodes.clear()
+        }
+      }
+    } catch {
+      encoder = null
+    }
+  }
+  const worker = encoder
+  if (!worker) return onMain()
+  return createImageBitmap(canvas).then(
+    (bitmap) =>
+      new Promise<Blob | null>((res) => {
+        const id = encodeId++
+        encodes.set(id, res)
+        worker.postMessage({ id, bitmap }, [bitmap])
+      }).then((b) => b ?? onMain()),
+    () => onMain(),
+  )
+}
+
+/**
+ * One loaded <video> per asset, kept for the next strip of the same asset: a
+ * fresh element per strip meant loading his hour long recordings again for
+ * every zoom step. Three is enough for a serial queue.
+ */
+const stripVideos = new Map<string, Promise<HTMLVideoElement>>()
+const STRIP_VIDEOS = 3
+
+function stripVideo(asset: MediaAsset, src: string): Promise<HTMLVideoElement> {
+  const hit = stripVideos.get(asset.id)
+  if (hit) {
+    stripVideos.delete(asset.id)
+    stripVideos.set(asset.id, hit)
+    return hit
+  }
+  const made = new Promise<HTMLVideoElement>((res, rej) => {
+    const video = document.createElement('video')
+    video.muted = true
+    video.preload = 'auto'
+    video.onloadeddata = () => res(video)
+    video.onerror = () => rej(new Error('video load failed'))
+    video.src = src
+  })
+  made.catch(() => stripVideos.delete(asset.id))
+  stripVideos.set(asset.id, made)
+  while (stripVideos.size > STRIP_VIDEOS) {
+    const [oldId, old] = stripVideos.entries().next().value as [string, Promise<HTMLVideoElement>]
+    stripVideos.delete(oldId)
+    void old.then((v) => {
+      v.removeAttribute('src')
+      v.load()
+    }, () => undefined)
+  }
+  return made
+}
+
 async function generate(asset: MediaAsset, key: string, timesS: number[]): Promise<void> {
   // The queue is serial, so a job can wait behind many others while the clip it
   // was queued for scrolls out of view. Building it then costs a video element
@@ -33,14 +117,7 @@ async function generate(asset: MediaAsset, key: string, timesS: number[]): Promi
   if (!cache.isLive(key)) return
   const src = await getBlobUrl(asset.blobKey)
   if (!src) return
-  const video = document.createElement('video')
-  video.muted = true
-  video.preload = 'auto'
-  video.src = src
-  await new Promise<void>((res, rej) => {
-    video.onloadeddata = () => res()
-    video.onerror = () => rej(new Error('video load failed'))
-  })
+  const video = await stripVideo(asset, src)
   const canvas = document.createElement('canvas')
   canvas.width = TILE_W * timesS.length
   canvas.height = TILE_H
@@ -59,8 +136,7 @@ async function generate(asset: MediaAsset, key: string, timesS: number[]): Promi
     const dh = vh * scale
     ctx.drawImage(video, i * TILE_W + (TILE_W - dw) / 2, (TILE_H - dh) / 2, dw, dh)
   }
-  video.src = ''
-  const blob = await new Promise<Blob | null>((res) => canvas.toBlob(res, 'image/jpeg', 0.72))
+  const blob = await encodeOffThread(canvas)
   if (!blob) return
   cache.set(key, URL.createObjectURL(blob))
 }

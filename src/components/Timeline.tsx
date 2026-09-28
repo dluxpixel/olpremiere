@@ -3,7 +3,9 @@ import { clipDurationS, moveSelectionWith, snapTime, splitGroup } from '../engin
 import { createSnapPointCache } from '../engine/snapPointCache'
 import { quantizeToFrame } from '../engine/timecode'
 import { activeSequence, audioTracks, videoTracks, type Clip, type Id, type Sequence, type Track } from '../engine/types'
-import { openContextMenu } from '../state/contextMenu'
+import { openContextMenu, type MenuItem } from '../state/contextMenu'
+import { hasClipboard, pasteAt } from '../state/clipboard'
+import { comboLabel } from '../keymap'
 import { pausePlayback } from '../state/playbackControl'
 import { updateActiveSequence, useStore } from '../state/store'
 import { useToasts } from '../state/toasts'
@@ -213,12 +215,22 @@ export function Timeline({ height }: { height: number }) {
     const soloSlip = soloTrimIntent(seq, selection, clip.id)
     // MOVE is solo by default; read before the select() below (see soloMoveIntent).
     const soloMove = soloMoveIntent(seq, selection, clip.id)
+    // ⛔ CTRL ADDS TO THE SELECTION, LIKE SHIFT, 2026-09-28. His words: *"when I
+    // hold and drag control while selecting multiple things ... I can click
+    // anywhere and it still drags"*. Ctrl-click used to REPLACE the selection
+    // with the one clip, so by the time he grabbed one of them to drag, it was
+    // the only one selected. Ctrl on a clip that is already selected keeps it
+    // for now: a drag carries everything, and only a plain release drops it.
+    const additive = (e.ctrlKey || e.metaKey) && !e.altKey
+    const wasSelected = selection.includes(clip.id)
     if (e.shiftKey) {
       setUI({
         selection: selection.includes(clip.id)
           ? selection.filter((id) => id !== clip.id)
           : [...selection, clip.id],
       })
+    } else if (additive) {
+      if (!wasSelected) setUI({ selection: [...selection, clip.id] })
     } else if (!selection.includes(clip.id)) {
       setUI({ selection: [clip.id] })
     }
@@ -248,9 +260,40 @@ export function Timeline({ height }: { height: number }) {
       downClientX: e.clientX,
       downClientY: e.clientY,
       others,
-      collapseCandidate: !e.shiftKey && selNow.includes(clip.id) && selNow.length > 1,
+      collapseCandidate: !e.shiftKey && !additive && selNow.includes(clip.id) && selNow.length > 1,
+      toggleOffCandidate: additive && wasSelected,
       solo: soloMove,
     })
+  }
+
+  /**
+   * A right click on EMPTY timeline: paste right here, and when clips are
+   * selected, the same menu a selected clip gives, acting on all of them. His
+   * words, 2026-09-28: *"when I select multiple things and right-click, the
+   * context menu should actually appear everywhere, not just one clip"*, and
+   * *"I click Paste on V4 ... it pastes it where I clicked it."*
+   */
+  const handleLaneContextMenu = (e: ReactMouseEvent<HTMLDivElement>) => {
+    const { x, y } = contentPoint(e)
+    const lane = laneAt(y)
+    const atS = quantizeToFrame(Math.max(0, x / pxPerS), seq.fps)
+    const trackIndex = lane ? seq.tracks.findIndex((t) => t.id === lane.id) : -1
+    const items: MenuItem[] = [
+      {
+        label: 'Paste here',
+        shortcut: comboLabel('mod+v'),
+        disabled: !hasClipboard() || trackIndex < 0,
+        onClick: () => pasteAt(trackIndex, atS),
+      },
+    ]
+    const selNow = useStore.getState().ui.selection
+    const anchor = selNow.length > 0 ? seq.tracks.flatMap((t) => t.clips).find((c) => selNow.includes(c.id)) : undefined
+    if (anchor) {
+      const playheadS = useStore.getState().ui.playheadS
+      const more = clipContextMenuItems({ clip: anchor, seq, assets, selNow, keepSelection: true, playheadS, show })
+      if (more.length > 0) items.push({ ...more[0]!, separator: true }, ...more.slice(1))
+    }
+    openContextMenu(e, items)
   }
 
   const handleClipContextMenu = (e: ReactMouseEvent<HTMLDivElement>, clip: Clip) => {
@@ -552,7 +595,9 @@ export function Timeline({ height }: { height: number }) {
       Math.hypot(e.clientX - drag.downClientX, e.clientY - drag.downClientY) < CLICK_SLOP_PX
     if (isClipClick) {
       // Narrow a multi-selection to the clicked clip (drags keep the group).
-      if (drag.kind === 'move' && drag.collapseCandidate) setUI({ selection: [drag.clipId] })
+      if (drag.kind === 'move' && drag.toggleOffCandidate) {
+        setUI({ selection: useStore.getState().ui.selection.filter((id) => id !== drag.clipId) })
+      } else if (drag.kind === 'move' && drag.collapseCandidate) setUI({ selection: [drag.clipId] })
       scrubTo(drag.downClientX)
     } else if (dragFinal.current) {
       const commit = dragCommit(drag, dragFinal.current, seq, assets)
@@ -674,7 +719,12 @@ export function Timeline({ height }: { height: number }) {
             // No browser menu on the timeline background; also clears the
             // right-drag-select suppression flag after it's served its purpose.
             e.preventDefault()
+            const boxed = suppressContextRef.current > 0 && performance.now() - suppressContextRef.current < 500
             suppressContextRef.current = 0
+            // A clip's own menu already opened for a click on a clip, and a
+            // right-drag box select must not pop a menu when it lets go.
+            if (boxed || (e.target as HTMLElement).closest('[data-testid="clip"]')) return
+            handleLaneContextMenu(e)
           }}
           onPointerDown={handleLanesBackgroundPointerDown}
           onPointerMove={handleLanesPointerMove}

@@ -22,6 +22,7 @@ import { existsSync, renameSync } from 'node:fs'
 import path from 'node:path'
 import * as backups from './backups'
 import * as projectFiles from './projectFiles'
+import * as saveFiles from './saveFiles'
 import type { NativeExportConfig, UpdateStatus } from './ipc-types'
 import {
   SPLASH_MELON_POP_MS,
@@ -653,6 +654,18 @@ app.whenReady().then(() => {
   })
   ipcMain.handle('project:trash', (_e, id: string) => projectFiles.trashProjectFile(id))
   ipcMain.handle('project:dir', () => projectFiles.projectDir())
+
+  // --- Files he saves himself (saveFiles.ts) ---------------------------------
+  // A numbered name in his last folder, then the bytes streamed in chunks, and
+  // only ever to the path he picked in that dialog.
+  ipcMain.handle('file:pickSave', (e, kind: saveFiles.SaveKind, base: string, ext: string, filterName: string) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    if (!win) return null
+    return saveFiles.pickSavePath(win, kind, base, ext, filterName)
+  })
+  ipcMain.handle('file:openWrite', (_e, target: string) => saveFiles.openForWrite(target))
+  ipcMain.handle('file:writeChunk', (_e, id: number, chunk: ArrayBuffer) => saveFiles.writeChunk(id, chunk))
+  ipcMain.handle('file:close', (_e, id: number, ok: boolean) => saveFiles.closeWrite(id, ok))
 
   // Whatever ends the app (user quit, or an auto-update install), never leave a
   // native ffmpeg child orphaned or its temp files behind. before-quit can't await,

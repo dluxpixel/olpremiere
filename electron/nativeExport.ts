@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { NativeCaps, NativeExportConfig, NativeFinishResult, NativeStartResult } from './ipc-types'
 import { buildArgs, containerExt } from './exportArgs'
+import { rememberFolder, suggestedPath } from './saveFiles'
 
 /** The bundled ffmpeg.exe: extraResources in prod, vendor/ in dev. */
 function ffmpegPath(): string {
@@ -112,7 +113,9 @@ export async function start(config: NativeExportConfig, win: BrowserWindow): Pro
   if (!outPath) {
     const res = await dialog.showSaveDialog(win, {
       title: 'Export video',
-      defaultPath: config.suggestedName,
+      // His last export folder and a name nothing there has yet (saveFiles.ts):
+      // never the same 'Untitled Project.mp4' and a replace prompt.
+      defaultPath: suggestedPath('export', config.suggestedName.replace(/\.[^.]+$/, ''), containerExt(config.encoder)),
       filters: [{ name: config.encoder === 'prores' ? 'QuickTime' : 'MP4 video', extensions: [containerExt(config.encoder)] }],
     })
     if (res.canceled || !res.filePath) {
@@ -121,6 +124,7 @@ export async function start(config: NativeExportConfig, win: BrowserWindow): Pro
       return { started: false, cancelled: true }
     }
     outPath = res.filePath
+    rememberFolder('export', outPath)
   }
 
   const audioPath = config.hasAudio ? pendingAudioPath : null

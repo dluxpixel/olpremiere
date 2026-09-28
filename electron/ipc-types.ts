@@ -327,6 +327,17 @@ export interface OlApi {
   projectTrash(id: string): Promise<number>
   /** The folder, for telling him where his projects are. */
   projectDir(): Promise<string>
+
+  /**
+   * A save dialog in his last folder for this kind of file, suggesting a name
+   * nothing there has (`_1`, `_2`, never a replace prompt). Null when cancelled.
+   */
+  pickSavePath(kind: 'export' | 'project', base: string, ext: string, filterName: string): Promise<string | null>
+  /** Open a path he just picked for writing. Any other path is refused. */
+  fileOpenWrite(target: string): Promise<number>
+  fileWriteChunk(id: number, chunk: ArrayBuffer): Promise<void>
+  /** `ok` false throws the partial file away instead of keeping it. */
+  fileClose(id: number, ok: boolean): Promise<void>
 }
 
 export interface ProjectFileEntry {

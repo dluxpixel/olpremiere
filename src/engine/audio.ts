@@ -10,6 +10,7 @@ import { evalChannel } from './keyframes'
 import { budgets } from './memoryBudget'
 import type { AutoLevel, Clip, Id, MediaAsset, Sequence, Track } from './types'
 import { createSoftLimiter } from './audioLimiter'
+import { decodeAudioOffThread } from './audioDecodeClient'
 import { timeStretchChannels } from './timeStretch'
 
 /** Sources start this far in the future so scheduling jitter can't clip the head. */
@@ -247,6 +248,7 @@ function evictAudioOverflow(keepId: Id): void {
  * 256 MB budget that his remaining clips could be using.
  */
 export function forgetAssetAudio(assetId: Id): void {
+  forgetAssetRanges(assetId)
   bufferTotalBytes -= bufferBytes.get(assetId) ?? 0
   bufferBytes.delete(assetId)
   bufferCache.delete(assetId)
@@ -278,6 +280,109 @@ export async function getAudioBuffer(asset: MediaAsset): Promise<AudioBuffer | n
   return pending
 }
 
+/** A decoded stretch of one asset's sound. Sample 0 of `buffer` is `startS` of source time. */
+export interface AudioRange {
+  buffer: AudioBuffer
+  startS: number
+}
+
+/**
+ * ⛔ PLAYBACK READS ONLY THE SECONDS A CLIP USES, 2026-09-28.
+ *
+ * Measured on a copy of his biggest project: its audible clips use 163 s of
+ * sound, and the assets behind them hold 3042 s. Decoding whole assets for
+ * playback meant 1141 MB of float32 against a 256 MB budget, so the cache threw
+ * buffers away as fast as it made them and every press of Space re-read files
+ * the size of his 30 minute music track. Cut to the clips, the same project
+ * needs about 61 MB and the cache holds all of it.
+ *
+ * Ranges are padded and snapped to a grid, so a small trim or a nudge lands
+ * inside a range already decoded instead of asking for a new one.
+ */
+const RANGE_ALIGN_S = 2
+const RANGE_PAD_S = 0.5
+
+interface RangeEntry {
+  assetId: Id
+  fromS: number
+  toS: number
+  pending: Promise<AudioRange | null>
+  bytes: number
+}
+const rangeCache = new Map<string, RangeEntry>()
+let rangeTotalBytes = 0
+
+function evictRangeOverflow(keepKey: string): void {
+  for (const [key, e] of rangeCache) {
+    if (rangeTotalBytes <= audioCacheMaxBytes()) return
+    if (key === keepKey) continue
+    rangeTotalBytes -= e.bytes
+    rangeCache.delete(key)
+  }
+}
+
+function forgetAssetRanges(assetId: Id): void {
+  for (const [key, e] of rangeCache) {
+    if (e.assetId !== assetId) continue
+    rangeTotalBytes -= e.bytes
+    rangeCache.delete(key)
+  }
+}
+
+/** `owned` is false when the range IS the whole asset buffer, which the whole cache already counts. */
+async function decodeRange(asset: MediaAsset, fromS: number, toS: number): Promise<{ range: AudioRange; owned: boolean } | null> {
+  if (asset.kind === 'image' || !asset.hasAudio) return null
+  const blob = await getBlob(asset.blobKey)
+  if (!blob) return null
+  try {
+    const r = await demuxAssetAudio(asset, blob, fromS, toS)
+    if (r) return { range: r, owned: true }
+  } catch (err) {
+    console.warn(`OL Premiere audio: ranged read failed for "${asset.name}", reading the whole file`, err)
+  }
+  if (provedSilent.has(asset.id)) return null
+  // A container the demuxer cannot read in pieces still has to play: the whole
+  // file read below is the fallback it always had.
+  const whole = await getAudioBuffer(asset)
+  return whole ? { range: { buffer: whole, startS: 0 }, owned: false } : null
+}
+
+/**
+ * The decoded sound for source seconds [fromS, toS) of `asset`, or a buffer that
+ * contains them. A whole asset that is already decoded (a transcription, a beat
+ * scan) serves every range for free.
+ */
+export function getAudioRange(asset: MediaAsset, fromS: number, toS: number): Promise<AudioRange | null> {
+  if (bufferBytes.has(asset.id)) {
+    const whole = bufferCache.get(asset.id)
+    if (whole) return whole.then((buffer) => (buffer ? { buffer, startS: 0 } : null))
+  }
+  const lo = Math.min(fromS, toS)
+  const hi = Math.max(fromS, toS)
+  for (const [key, e] of rangeCache) {
+    if (e.assetId !== asset.id || e.fromS > lo + 1e-6 || e.toS < hi - 1e-6) continue
+    rangeCache.delete(key)
+    rangeCache.set(key, e)
+    return e.pending
+  }
+  const end = asset.durationS > 0 ? asset.durationS : Infinity
+  const a = Math.max(0, Math.floor((lo - RANGE_PAD_S) / RANGE_ALIGN_S) * RANGE_ALIGN_S)
+  const b = Math.min(end, Math.ceil((hi + RANGE_PAD_S) / RANGE_ALIGN_S) * RANGE_ALIGN_S)
+  const key = `${asset.id}|${a}|${b}`
+  const entry: RangeEntry = { assetId: asset.id, fromS: a, toS: b, bytes: 0, pending: Promise.resolve(null) }
+  entry.pending = decodeRange(asset, a, b).then((r) => {
+    if (!r) return null
+    if (r.owned && rangeCache.get(key) === entry) {
+      entry.bytes = r.range.buffer.length * r.range.buffer.numberOfChannels * 4
+      rangeTotalBytes += entry.bytes
+      evictRangeOverflow(key)
+    }
+    return r.range
+  })
+  rangeCache.set(key, entry)
+  return entry.pending
+}
+
 /**
  * ⛔ `blob.arrayBuffer()` CANNOT RETURN MORE THAN THIS, AND HIS FILES ARE BIGGER.
  *
@@ -298,33 +403,6 @@ const MAX_ARRAY_BUFFER_BYTES = 2_147_483_647
 /** Reported once per asset, so a long timeline cannot fill the console. */
 const oversizeWarned = new Set<Id>()
 
-/**
- * The demuxer's read window. mediabunny's own default is 8 MB; halved because
- * DECODE_CONCURRENCY lets two of these run at once.
- */
-const DEMUX_CACHE_BYTES = 4 * 1024 * 1024
-
-/**
- * Read ONLY the audio track, without pulling the container into memory.
- *
- * ⛔ THIS IS THE FIX FOR THE THING THAT MADE HIS SOUND DISAPPEAR, 2026-08-29.
- * The old path did `blob.arrayBuffer()` on the whole file: for a 2.4 GB screen
- * recording that is gigabytes of VIDEO pulled into the JS heap to reach a few MB
- * of sound, and past 2,147,483,647 bytes it cannot be done at all, so two of his
- * three recordings had no audio and nothing said so.
- *
- * mediabunny is already the demuxer for the picture (`frameCache.ts`), and
- * `BlobSource` is lazy and file-backed: it retains only a bounded read cache.
- * Container bytes resident go from ~1.29 GB per readable asset to about 4 MB,
- * and the >2 GB wall disappears because no single buffer is ever asked for.
- *
- * ⚠️ THE DECODED PCM DOES NOT MOVE BY ONE BYTE. His 1839 s music track is still
- * 673.5 MiB of float32 against a 256 MiB budget. This fixes the CONTAINER read
- * and the size wall. Nothing more, and it should not be sold as more.
- *
- * Returns null rather than throwing when this file is not something mediabunny
- * can index or decode, so the caller can fall back.
- */
 /**
  * Assets the demuxer opened and found to hold no audio track at all.
  *
@@ -351,83 +429,37 @@ export function isProvedSilent(assetId: string): boolean {
   return provedSilent.has(assetId)
 }
 
-async function demuxAssetAudio(asset: MediaAsset, blob: Blob): Promise<AudioBuffer | null> {
-  const { ALL_FORMATS, AudioSampleSink, BlobSource, Input: MbInput } = await import('mediabunny')
-  const input = new MbInput({
-    formats: ALL_FORMATS,
-    source: new BlobSource(blob, { maxCacheSize: DEMUX_CACHE_BYTES }),
-  })
-  try {
-    const track = await input.getPrimaryAudioTrack()
-    // No track at all is PROOF of silence. A track this build cannot decode is
-    // not: that one still has to fail loudly, so only the first case is recorded.
-    if (!track) {
-      provedSilent.add(asset.id)
-      return null
-    }
-    if (!(await track.canDecode())) return null
-    const sampleRate = await track.getSampleRate()
-    const channels = await track.getNumberOfChannels()
-    if (!(sampleRate > 0) || !(channels > 0)) return null
-
-    // ⛔ SIZED FROM `asset.durationS`, NOT FROM THE CONTAINER. It costs no reads,
-    // it avoids `computeDuration()` possibly walking the whole file, it avoids
-    // the null that `getDurationFromMetadata()` can return, and it puts this
-    // buffer on the SAME time axis that `reverseAboutContainer` below and
-    // `waveform.ts` already assume. Falling back to the container's own duration
-    // only when the asset has none.
-    const durationS = asset.durationS > 0 ? asset.durationS : await track.computeDuration()
-    const length = Math.max(1, Math.round(durationS * sampleRate))
-
-    // ⛔ SUBTRACT THE HEAD, OR EVERY AAC VIDEO GAINS A CONSTANT OFFSET. An AAC
-    // track's first packet does not start at zero, and `decodeAudioData` used to
-    // trim that for us. Left in, it is 21 to 44 ms of lip sync, 0.6 to 1.3 frames
-    // at 30 fps, on every video asset, and nothing in this repo would have caught
-    // it. Found by the adversarial pass on 2026-08-28, not by a test.
-    const firstTs = await track.getFirstTimestamp()
-
-    const out = ensureAudioContext().createBuffer(channels, length, sampleRate)
-    const planes: Float32Array[] = []
-    for (let ch = 0; ch < channels; ch++) planes.push(out.getChannelData(ch))
-
-    for await (const sample of sink(AudioSampleSink, track)) {
-      try {
-        const at = Math.round((sample.timestamp - firstTs) * sampleRate)
-        if (at >= length) break // past the end of the buffer we promised
-        // ⚠️ CLAMPED, BECAUSE `copyTo` THROWS RATHER THAN TRUNCATING. A
-        // RangeError here would land in the caller's catch and fall back to a
-        // whole-file read, which is exactly the read that cannot work on the
-        // files this function exists for.
-        const start = Math.max(0, at)
-        const skip = start - at // frames of this sample that land before zero
-        const frameCount = Math.min(sample.numberOfFrames - skip, length - start)
-        if (frameCount <= 0) continue
-        for (let ch = 0; ch < Math.min(channels, sample.numberOfChannels); ch++) {
-          sample.copyTo(planes[ch].subarray(start, start + frameCount), {
-            planeIndex: ch,
-            format: 'f32-planar',
-            frameOffset: skip,
-            frameCount,
-          })
-        }
-      } finally {
-        sample.close()
-      }
-    }
-    return out
-  } finally {
-    // An undisposed Input retains its read orchestrator, its workers and an open
-    // stream reader on the blob.
-    input.dispose()
+/**
+ * Read ONLY the audio track, without pulling the container into memory, and
+ * since 2026-09-28 OFF THE MAIN THREAD (audioDecodeClient.ts, audioDemux.ts).
+ *
+ * ⛔ THIS IS THE FIX FOR THE THING THAT MADE HIS SOUND DISAPPEAR, 2026-08-29.
+ * The old path did `blob.arrayBuffer()` on the whole file: for a 2.4 GB screen
+ * recording that is gigabytes of VIDEO pulled into the JS heap to reach a few MB
+ * of sound, and past 2,147,483,647 bytes it cannot be done at all. mediabunny's
+ * `BlobSource` is lazy and file-backed, so container bytes resident stay about
+ * 4 MB whatever the file size.
+ *
+ * Here the worker hands back float32 planes and the main thread only copies them
+ * into an AudioBuffer, which is a memory copy rather than a demux.
+ *
+ * Returns null rather than throwing when this file is not something mediabunny
+ * can index or decode, so the caller can fall back.
+ */
+async function demuxAssetAudio(asset: MediaAsset, blob: Blob, fromS?: number, toS?: number): Promise<{ buffer: AudioBuffer; startS: number } | null> {
+  const r = await decodeAudioOffThread(blob, asset.durationS, fromS, toS)
+  // No track at all is PROOF of silence. A track this build cannot decode is
+  // not: that one still has to fail loudly, so only the first case is recorded.
+  if (r.kind === 'silent') {
+    provedSilent.add(asset.id)
+    return null
   }
-}
-
-/** The sink, in its own call so the generator is easy to read above. */
-function sink(
-  Sink: typeof import('mediabunny').AudioSampleSink,
-  track: import('mediabunny').InputAudioTrack,
-): AsyncGenerator<import('mediabunny').AudioSample, void, unknown> {
-  return new Sink(track).samples()
+  if (r.kind !== 'pcm') return null
+  const length = r.planes[0]?.length ?? 0
+  if (length === 0) return null
+  const out = ensureAudioContext().createBuffer(r.planes.length, length, r.sampleRate)
+  r.planes.forEach((p, ch) => out.copyToChannel(p, ch))
+  return { buffer: out, startS: r.startS }
 }
 
 async function decodeAssetAudio(asset: MediaAsset): Promise<AudioBuffer | null> {
@@ -442,7 +474,7 @@ async function decodeAssetAudio(asset: MediaAsset): Promise<AudioBuffer | null> 
   // 2.4 GB recordings.
   try {
     const demuxed = await demuxAssetAudio(asset, blob)
-    if (demuxed) return demuxed
+    if (demuxed) return demuxed.buffer
   } catch (err) {
     console.warn(`OL Premiere audio: demux failed for "${asset.name}", falling back to a whole-file read`, err)
   }
@@ -504,30 +536,47 @@ export async function mapLimit<T>(items: readonly T[], limit: number, work: (ite
 }
 
 /**
+ * The sound every audible clip of `seq` will ask for, as ranges. Reversed and
+ * denoised clips are left to play time: they need whole assets, and are rare.
+ */
+function warmList(seq: Sequence, assets: Record<Id, MediaAsset>): { asset: MediaAsset; fromS: number; toS: number }[] {
+  const out: { asset: MediaAsset; fromS: number; toS: number }[] = []
+  for (const track of seq.tracks) {
+    for (const clip of track.clips) {
+      if (!clipEmitsAudio(track, clip) || clip.speed < 0 || (clip.denoise ?? 0) > 0) continue
+      const asset = assets[clip.assetId]
+      if (asset) out.push({ asset, fromS: clip.inS, toS: clip.outS })
+    }
+  }
+  return out
+}
+
+/**
  * Fire-and-forget decode so the first play() doesn't stall on decoding.
  *
  * ⚠️ BOUNDED SINCE 2026-08-27. This was `for (const asset of assets) void
- * getAudioBuffer(asset)`, which starts every decode in the same tick. A cached
- * asset costs nothing either way; an uncached one costs its whole file.
+ * getAudioBuffer(asset)`, which starts every decode in the same tick.
+ *
+ * ⛔ RANGES SINCE 2026-09-28, the seconds each clip plays and nothing else. The
+ * whole asset warm read 3042 s of sound on his biggest project to play 163 s of
+ * it, and did it on the main thread for the first 16 s after every open.
  */
-export function prewarmAudio(assets: MediaAsset[]): void {
-  void mapLimit(assets, DECODE_CONCURRENCY, (a) => getAudioBuffer(a))
+export function prewarmAudio(seq: Sequence, assets: Record<Id, MediaAsset>): void {
+  void mapLimit(warmList(seq, assets), DECODE_CONCURRENCY, (w) => getAudioRange(w.asset, w.fromS, w.toS))
 }
 
 /**
  * The same decode, AWAITABLE, so the boot card can report it honestly.
  *
  * The card's whole rule is that a row only ticks when real work has landed, so a
- * warm-up step needs something to wait on. Resolves with how many assets decoded,
- * and never rejects: a file that will not decode must not hold the app shut.
+ * warm-up step needs something to wait on. Resolves with how many clips are
+ * ready, and never rejects: a file that will not decode must not hold the app shut.
  */
-export async function warmAudio(assets: MediaAsset[]): Promise<number> {
-  // ⚠️ BOUNDED, for the reason on DECODE_CONCURRENCY. This ran at boot, so every
-  // launch of his project read 5.78 GiB into the heap in one burst while the
-  // boot card said "Warming up your audio".
+export async function warmAudio(seq: Sequence, assets: Record<Id, MediaAsset>): Promise<number> {
+  // ⚠️ BOUNDED, for the reason on DECODE_CONCURRENCY.
   let decoded = 0
-  await mapLimit(assets, DECODE_CONCURRENCY, async (a) => {
-    if (await getAudioBuffer(a)) decoded += 1
+  await mapLimit(warmList(seq, assets), DECODE_CONCURRENCY, async (w) => {
+    if (await getAudioRange(w.asset, w.fromS, w.toS)) decoded += 1
   })
   return decoded
 }
@@ -602,6 +651,19 @@ export function getReversedAudioBuffer(asset: MediaAsset): Promise<AudioBuffer |
  * can't load the clip falls back to raw: audibly un-denoised, never silent.
  * Reversal applies AFTER denoise so both directions play the same samples.
  */
+/**
+ * What the LIVE mixer plays one clip from: just the seconds the clip uses, unless
+ * it needs the whole asset anyway (a reversed clip mirrors about the whole file,
+ * and a denoised one is cached per asset). The export keeps reading
+ * clipAudioBuffer, unchanged, so its bytes cannot move.
+ */
+function playbackAudioFor(clip: Clip, asset: MediaAsset, reversed: boolean): Promise<AudioRange | null> {
+  if (reversed || (clip.denoise ?? 0) > 0) {
+    return clipAudioBuffer(clip, asset, reversed).then((buffer) => (buffer ? { buffer, startS: 0 } : null))
+  }
+  return getAudioRange(asset, clip.inS, clip.outS)
+}
+
 export async function clipAudioBuffer(
   clip: Clip,
   asset: MediaAsset,
@@ -1038,13 +1100,13 @@ export async function scheduleAudio(
   // freeze that arrived a few seconds after the picture started moving.
   // Indices, not the objects: two clips of the same asset are separate entries
   // and indexOf would hand them both the same slot.
-  const buffers: (AudioBuffer | null)[] = new Array<AudioBuffer | null>(candidates.length).fill(null)
+  const buffers: (AudioRange | null)[] = new Array<AudioRange | null>(candidates.length).fill(null)
   await mapLimit(
     candidates.map((_, i) => i),
     DECODE_CONCURRENCY,
     async (i) => {
       const c = candidates[i]
-      buffers[i] = await clipAudioBuffer(c.clip, c.asset, c.reversed)
+      buffers[i] = await playbackAudioFor(c.clip, c.asset, c.reversed)
     },
   )
 
@@ -1113,11 +1175,15 @@ export async function scheduleAudio(
   // OfflineAudioContext, where the same stall costs render time and nothing else.
   // That is why he says the export is fine.
   const plays = candidates.map(({ clip, sched }, i) => {
-    const buffer = buffers[i]
+    const got = buffers[i]
+    if (!got) return null
+    // A ranged buffer starts at `got.startS` of source time, so every source
+    // offset moves by that same amount and nothing else changes.
+    const onBuffer = got.startS ? { ...sched, sourceOffsetS: sched.sourceOffsetS - got.startS } : sched
     // `clip.inS` is the anchor: it makes the stretch cache key stand still across
     // a reschedule, so a fader nudge mid-playback costs nothing. See the docblock
     // on pitchPreservedSource.
-    return buffer ? pitchPreservedSource(ctx, buffer, clip.speed, sched, clip.inS) : null
+    return pitchPreservedSource(ctx, got.buffer, clip.speed, onBuffer, clip.inS - got.startS)
   })
 
   // One base time shared by every clip so relative offsets stay exact. Read AFTER

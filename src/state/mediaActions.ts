@@ -337,7 +337,10 @@ export function insertAssetAtPlayhead(assetId: Id): void {
   dispatch(`Add ${asset.name}`, (p) => {
     const seq = activeSequence(p)
     // Video with audio → linked pair (video on V1, audio split to A1); other
-    // assets → a single clip on the matching track.
+    // assets → a single clip on the matching track. It never covers anything:
+    // a taken playhead lays it in the nearest gap on the line, so adding one
+    // file after another builds the edit in order. (Paste, drops and finished
+    // recordings take the next free LINE instead, his pick 2026-09-28.)
     if (asset.kind === 'video' && asset.hasAudio) {
       const vTrack = videoTracks(seq)[0]
       if (!vTrack) return p

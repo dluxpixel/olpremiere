@@ -22,24 +22,30 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 const audioSrc = readFileSync(fileURLToPath(new URL('../audio.ts', import.meta.url)), 'utf8')
+const demuxSrc = readFileSync(fileURLToPath(new URL('../audioDemux.ts', import.meta.url)), 'utf8')
 const renderSrc = readFileSync(fileURLToPath(new URL('./audioRender.ts', import.meta.url)), 'utf8')
 
 describe('only a missing TRACK counts as proof of silence', () => {
   it('records an asset as silent when the container holds no audio stream', () => {
     // The demuxer opened the file and there was no audio track in it. That is a
     // fact about the file, not a guess about it, which is the whole distinction.
-    const branch = audioSrc.slice(audioSrc.indexOf('const track = await input.getPrimaryAudioTrack()'))
-    expect(branch.slice(0, 400)).toContain('provedSilent.add(asset.id)')
+    // Since 2026-09-28 the read lives in audioDemux.ts (it runs in a worker) and
+    // says 'silent' only for a missing track; audio.ts records that and nothing else.
+    expect(demuxSrc).toMatch(/if \(!track\) return \{ kind: 'silent' \}/)
+    const branch = audioSrc.slice(audioSrc.indexOf("if (r.kind === 'silent')"))
+    expect(branch.slice(0, 120)).toContain('provedSilent.add(asset.id)')
   })
 
   it('⛔ does NOT record one whose track merely cannot be decoded here', () => {
     // A codec this build cannot handle is a real failure and has to stay loud.
     // If `canDecode` ever starts feeding provedSilent, an unreadable soundtrack
     // becomes a silently silent export, which is the 2026-08-05 scar exactly.
-    const i = audioSrc.indexOf('if (!(await track.canDecode())) return null')
+    const i = demuxSrc.indexOf("if (!(await track.canDecode())) return { kind: 'undecodable' }")
     expect(i).toBeGreaterThan(-1)
-    const decodeBranch = audioSrc.slice(i, i + 200)
-    expect(decodeBranch).not.toContain('provedSilent')
+    // audio.ts treats anything but pcm, after the silent branch, as plain null.
+    const j = audioSrc.indexOf("if (r.kind !== 'pcm') return null")
+    expect(j).toBeGreaterThan(audioSrc.indexOf("if (r.kind === 'silent')"))
+    expect(audioSrc.slice(j, j + 80)).not.toContain('provedSilent')
   })
 
   it('keeps the proof in one place, so nothing can set it by another route', () => {

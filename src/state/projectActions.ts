@@ -3,6 +3,7 @@
 // flipping between edits is lossless in both directions.
 
 import { activeSequence, newProject } from '../engine/types'
+import { nextFreeName } from '../engine/uniqueName'
 import { sampleFromClips } from '../engine/captions/styleLearning'
 import { rememberProjectStyle } from '../engine/captions/styleStore'
 import { useCollab } from '../collab/collabControl'
@@ -67,7 +68,15 @@ export async function openProject(id: string): Promise<void> {
 export async function createProject(): Promise<void> {
   if (!guardRoom()) return
   if (!(await flushOutgoing())) return
-  const p = newProject()
+  // A name no other project has, so its exports and files are told apart
+  // (engine/uniqueName.ts, his ask 2026-09-28).
+  let taken = new Set<string>()
+  try {
+    taken = new Set((await listProjects()).map((s) => s.name))
+  } catch {
+    // Unknown names only cost the plain name, never the new project.
+  }
+  const p = newProject(nextFreeName('Untitled Project', taken))
   // A saved track template replaces the stock V1/V2/A1/A2 layout. `p` is
   // still private here, so patching it before adopt() touches no shared state.
   const seq = activeSequence(p)

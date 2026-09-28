@@ -37,6 +37,12 @@ export type Drag =
        * still moves the whole group.
        */
       collapseCandidate: boolean
+      /**
+       * Ctrl-click without a drag on a clip that was ALREADY selected takes it
+       * out of the selection. Deciding on release, not on press, is what lets a
+       * Ctrl-held grab of any selected clip drag the whole selection.
+       */
+      toggleOffCandidate?: boolean
     }
   /** `solo`: this half was singled out before the grab → trim it alone. */
   | { kind: 'trim'; clipId: Id; edge: 'in' | 'out'; ripple: boolean; solo: boolean }

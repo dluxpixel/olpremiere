@@ -20,13 +20,13 @@ import {
   type FrameProbe,
 } from './previewTruth'
 import { setProxyBuildingPaused } from './proxyMedia'
-import { createRenderer, type Renderer } from './render/glRenderer'
+import { createRenderer, type LayerShape, type Renderer } from './render/glRenderer'
 import { pairTransitionAt, resolveFrame } from './render/resolve'
 import { rasterizeTitle } from './render/titleRaster'
 import { coverScale, croppedSize, fitScale } from './render/mat'
 import type { RenderLayer, ResolvedTransform, TextureSource } from './render/types'
 import { clipDurationS } from './timeline'
-import type { Clip, Id, MediaAsset, Sequence } from './types'
+import { clipEndS, type Clip, type Id, type MediaAsset, type Sequence } from './types'
 
 interface PooledVideo {
   el: HTMLVideoElement
@@ -460,7 +460,7 @@ function rendererFor(canvas: HTMLCanvasElement): Renderer | null {
       // passes mipmapSources: isHdRaster). That raster fence, not a flagless
       // export renderer, is what keeps the golden 640x360 export on the
       // untouched LINEAR path.
-      renderer = createRenderer(gl, { mipmapSources: true })
+      renderer = createRenderer(gl, { mipmapSources: true, fastSourceUpload: true })
       contexts.set(canvas, gl)
       noPictureReasons.delete(canvas)
     } catch (err) {
@@ -1260,6 +1260,47 @@ function livePreviewSource(el: HTMLVideoElement, assetId: Id, zoom = 1): TexImag
  * Monitor's draw loop uses this to keep polling a paused frame until its exact
  * decode lands, then stop instead of redrawing on every rAF forever.
  */
+/**
+ * Every layer shape the sequence can draw, found by resolving one frame in the
+ * middle of every video clip: the renderer's own view of the clip, so the warmed
+ * programs are exactly the ones the draw will ask for.
+ */
+export function layerShapesOf(seq: Sequence): LayerShape[] {
+  const seen = new Map<string, LayerShape>()
+  const add = (effects: readonly { type: string }[], mask: boolean): void => {
+    const key = effects.map((e) => e.type).join('|') + (mask ? '#mask' : '')
+    if (!seen.has(key)) seen.set(key, { effects: effects as LayerShape['effects'], mask })
+  }
+  for (const track of seq.tracks) {
+    if (track.kind !== 'video') continue
+    for (const clip of track.clips) {
+      const mid = clip.startS + (clipEndS(clip) - clip.startS) / 2
+      for (const op of resolveFrame(seq, mid).ops) {
+        if (op.type === 'layer') add(op.layer.effects, !!op.layer.mask)
+        else if (op.type === 'transition') {
+          add(op.from.effects, !!op.from.mask)
+          add(op.to.effects, !!op.to.mask)
+        }
+      }
+    }
+  }
+  return [...seen.values()]
+}
+
+/** The sequence each renderer last warmed for. A new edit makes a new sequence, and a new warm. */
+const warmedFor = new WeakMap<Renderer, Sequence>()
+
+function warmSoon(renderer: Renderer, seq: Sequence): void {
+  if (warmedFor.get(renderer) === seq) return
+  warmedFor.set(renderer, seq)
+  const run = (): void => {
+    if (warmedFor.get(renderer) !== seq) return
+    renderer.warm(layerShapesOf(seq))
+  }
+  if (typeof requestIdleCallback === 'function') requestIdleCallback(run, { timeout: 1000 })
+  else setTimeout(run, 0)
+}
+
 export function renderPreview(
   canvas: HTMLCanvasElement,
   seq: Sequence,
@@ -1269,6 +1310,7 @@ export function renderPreview(
 ): boolean {
   const renderer = rendererFor(canvas)
   if (!renderer) return true
+  warmSoon(renderer, seq)
   // Health describes ONE continuous run of playback. Starting or stopping makes
   // every sample before it describe a different run, so the window starts over.
   if (playing !== wasPlaying) {
@@ -1378,6 +1420,40 @@ export function renderPreview(
     holdClips,
     ownElementSides,
   )
-  renderer.render(frame, source)
+  // ⛔ A CUT NEVER FLASHES BLACK, 2026-09-28. His words: *"it seems like it has
+  // dark cuts even though clips are completely together."* At a plain cut the
+  // incoming clip's element can still be loading on its first frames, and a
+  // layer with no picture is simply not drawn, over the renderer's opaque black
+  // clear. Transitions already hold the last good frame; plain cuts did not.
+  // So every picture is asked for BEFORE drawing, and when the playing frame is
+  // missing one at a cut that has only just happened, the last complete frame
+  // stays on screen (the canvas keeps its drawing buffer) until it is ready.
+  const pictures = new Map<RenderLayer, TexImageSource | null>()
+  let missingAtCut = false
+  for (const op of frame.ops) {
+    const layers = op.type === 'layer' ? [op.layer] : op.type === 'transition' ? [op.from, op.to] : []
+    for (const l of layers) {
+      const pic = source(l)
+      pictures.set(l, pic)
+      if (!pic && playing && !l.title && justCut(seq, l.clipId, tS)) missingAtCut = true
+    }
+  }
+  if (missingAtCut && lastComplete.get(canvas) === true) return false
+  renderer.render(frame, (l) => (pictures.has(l) ? pictures.get(l)! : source(l)))
+  lastComplete.set(canvas, complete)
   return complete
+}
+
+/** Whether the canvas's last drawn frame had every picture it needed. */
+const lastComplete = new WeakMap<HTMLCanvasElement, boolean>()
+
+/** How long after a cut a missing picture is covered by the frame before it. */
+const CUT_HOLD_S = 0.5
+
+function justCut(seq: Sequence, clipId: Id, tS: number): boolean {
+  for (const t of seq.tracks) {
+    const c = t.clips.find((x) => x.id === clipId)
+    if (c) return tS - c.startS >= 0 && tS - c.startS < CUT_HOLD_S
+  }
+  return false
 }

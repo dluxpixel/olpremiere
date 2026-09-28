@@ -374,6 +374,31 @@ export async function exportProjectToFile(): Promise<void> {
     const file = built.file
     const name = file.name
 
+    // ⛔ ON THE DESKTOP, A NUMBERED NAME IN HIS LAST FOLDER, NEVER A REPLACE
+    // PROMPT, 2026-09-28 (electron/saveFiles.ts). The browser's own picker cannot
+    // look in the folder first, so the desktop app asks main, which can.
+    const api = typeof window !== 'undefined' ? window.api : undefined
+    if (api?.isElectron && api.pickSavePath && api.fileOpenWrite && api.fileWriteChunk && api.fileClose) {
+      const target = await api.pickSavePath('project', name.replace(/\.[^.]+$/, ''), PROJECT_FILE_EXT, 'OL Premiere project')
+      if (!target) return // he cancelled
+      const id = await api.fileOpenWrite(target)
+      let ok = false
+      try {
+        const reader = file.stream().getReader()
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) break
+          // A copy, so the buffer that crosses is exactly this chunk and nothing around it.
+          await api.fileWriteChunk(id, value.slice().buffer)
+        }
+        ok = true
+      } finally {
+        await api.fileClose(id, ok)
+      }
+      reportBuilt(built, 'Saved project file')
+      return
+    }
+
     if (typeof globalThis.showSaveFilePicker === 'function') {
       let handle: FileSystemFileHandle
       try {

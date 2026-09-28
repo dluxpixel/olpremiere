@@ -55,3 +55,18 @@ describe('the backup folder', () => {
     expect(dir).not.toContain('Documents')
   })
 })
+
+describe('reading a backup id without parsing the whole file', () => {
+  it('finds the id in the head exactly where the serializer puts it', async () => {
+    const { idFromHead } = await import('./backups')
+    const { serialize } = await import('../src/state/backupFormat')
+    const json = serialize({ id: 'abc-123', name: 'Green', assets: {}, sequences: {} } as never, 'desktop')
+    expect(idFromHead(json.slice(0, 1024))).toBe('abc-123')
+  })
+
+  it('says nothing rather than guessing when the head does not hold it', async () => {
+    const { idFromHead } = await import('./backups')
+    expect(idFromHead('{"kind":"ol-premiere-backup","project":{"name":"x","id":"late"}}')).toBeNull()
+    expect(idFromHead('not json at all')).toBeNull()
+  })
+})

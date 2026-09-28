@@ -1,9 +1,67 @@
-// Waveform peaks for audio clips. The decoded AudioBuffer (shared with the
-// mixer's cache in audio.ts) is reduced to an abs-peak-per-bucket array once
-// per asset; the timeline samples a clip's trimmed sub-range from it to draw.
+// Waveform peaks for audio clips: an abs-peak-per-bucket array once per asset;
+// the timeline samples a clip's trimmed sub-range from it to draw.
+//
+// ⛔ NEVER ON THE MAIN THREAD, AND NEVER TWICE, 2026-09-28. These used to come
+// from the mixer's whole asset AudioBuffer, so drawing one clip of his 30 minute
+// music track decoded all 674 MB of it on the main thread, on every open of the
+// project, and the first 16 s after opening his biggest project went to that.
+// Now a worker reduces the sound to peaks as it decodes (audioDemux.ts), and the
+// peaks are kept with his media, so the next open draws them without decoding.
 
 import { getAudioBuffer } from './audio'
+import { peaksOffThread } from './audioDecodeClient'
+import { db, getBlob } from '../state/persistence'
 import type { Id, MediaAsset } from './types'
+
+/** Bump when the peak format changes, so old stored peaks are simply ignored. */
+const STORED_PEAKS_VERSION = 1
+const storedKey = (asset: MediaAsset): string => `peaks:v${STORED_PEAKS_VERSION}:${asset.blobKey}`
+
+async function readStoredPeaks(asset: MediaAsset): Promise<Float32Array | null> {
+  try {
+    const raw = (await (await db()).get('meta', storedKey(asset))) as Float32Array | undefined
+    return raw instanceof Float32Array && raw.length > 0 ? raw : null
+  } catch {
+    return null
+  }
+}
+
+function storePeaks(asset: MediaAsset, peaks: Float32Array): void {
+  // Best effort: a failed write only means the next open computes them again.
+  void db()
+    .then((d) => d.put('meta', peaks, storedKey(asset)))
+    .catch(() => undefined)
+}
+
+/** Buckets for a source this long: resolution scaled to duration, bounded both ways. */
+const bucketsFor = (durationS: number): number => Math.min(MAX_BUCKETS, Math.max(MIN_BUCKETS, Math.round(durationS * PEAKS_PER_S)))
+
+async function computeAssetPeaks(asset: MediaAsset): Promise<Float32Array | null> {
+  if (asset.kind === 'image' || !asset.hasAudio) return null
+  const stored = await readStoredPeaks(asset)
+  if (stored) return stored
+  const blob = await getBlob(asset.blobKey)
+  if (!blob) return null
+  if (asset.durationS > 0) {
+    try {
+      const r = await peaksOffThread(blob, asset.durationS, bucketsFor(asset.durationS))
+      if (r.kind === 'peaks') {
+        storePeaks(asset, r.peaks)
+        return r.peaks
+      }
+      if (r.kind === 'silent') return null
+    } catch {
+      // fall through to the whole buffer path below
+    }
+  }
+  // A container the demuxer cannot read, or an asset with no known duration: the
+  // mixer's own decode, exactly as before.
+  const buf = await getAudioBuffer(asset)
+  if (!buf) return null
+  const peaks = computeBufferPeaks(buf, bucketsFor(buf.duration))
+  storePeaks(asset, peaks)
+  return peaks
+}
 
 const PEAKS_PER_S = 60
 const MIN_BUCKETS = 200
@@ -66,12 +124,7 @@ const peaksCache = new Map<Id, Promise<Float32Array | null>>()
 export function getAssetPeaks(asset: MediaAsset): Promise<Float32Array | null> {
   let pending = peaksCache.get(asset.id)
   if (!pending) {
-    pending = (async () => {
-      const buf = await getAudioBuffer(asset)
-      if (!buf) return null
-      const buckets = Math.min(MAX_BUCKETS, Math.max(MIN_BUCKETS, Math.round(buf.duration * PEAKS_PER_S)))
-      return computeBufferPeaks(buf, buckets)
-    })()
+    pending = computeAssetPeaks(asset)
     peaksCache.set(asset.id, pending)
   }
   return pending

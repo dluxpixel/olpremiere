@@ -10,8 +10,19 @@ import { computeQuad, cropUV, quadScale } from './mat'
 import { deriveMotionBlur, quadCentre, quadRadius } from './motionBlur'
 import type { RenderFrame, RenderLayer, RenderOp, ResolvedEffect, TextureSource, TransitionKind } from './types'
 
+/** One layer shape a sequence will draw: its effects (types and order matter) and whether it is masked. */
+export interface LayerShape {
+  effects: readonly ResolvedEffect[]
+  mask: boolean
+}
+
 export interface Renderer {
   render(frame: RenderFrame, tex: TextureSource): void
+  /**
+   * Start compiling the programs these layers will need, WITHOUT waiting for
+   * them. See warm() in createRenderer for why.
+   */
+  warm(shapes: readonly LayerShape[]): void
   dispose(): void
 }
 
@@ -458,6 +469,25 @@ ${bodies.join('\n')}
 }
 
 // Full-screen pass shared by blur + combine + blit.
+// The staging pass (RendererOptions.fastSourceUpload): one triangle over the
+// target, reading the RGBA8 texel under each pixel and handing back its LIGHT, so
+// the sRGB target encodes it back to the very byte it started as.
+const STAGE_VS = `#version 300 es
+void main() {
+  vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
+  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}`
+
+const STAGE_FS = `#version 300 es
+precision highp float;
+uniform highp sampler2D uStage;
+out vec4 outColor;
+${SRGB_GLSL}
+void main() {
+  vec4 t = texelFetch(uStage, ivec2(gl_FragCoord.xy), 0);
+  outColor = vec4(srgbToLinear(t.rgb), t.a);
+}`
+
 const FULL_VS = `#version 300 es
 precision highp float;
 in vec2 aPos; // clip-space [-1,1]
@@ -943,6 +973,26 @@ export interface RendererOptions {
    * WebGL2 supports NPOT mipmaps as long as wrap stays CLAMP_TO_EDGE.
    */
   mipmapSources?: boolean
+  /**
+   * ⛔ UPLOAD VIDEO FRAMES INTO PLAIN RGBA8, THEN RE-SEAT THEM AS sRGB ON THE GPU.
+   *
+   * Measured 2026-09-28 on a copy of his biggest project, real GPU: playback
+   * drew 15 to 25 frames a second, and the whole cost was Chrome's GPU thread.
+   * Switching source uploads off put it at 54; uploading the very same frames
+   * into RGBA8 instead of SRGB8_ALPHA8 put it at 54 too. Chrome copies a canvas
+   * or a video straight into an RGBA8 texture on the GPU, but an sRGB target
+   * falls off that fast path onto a slow conversion, and every video layer paid
+   * it on every frame since the linear light change of 2026-09-17.
+   *
+   * So the frame goes into an RGBA8 staging texture (the fast copy), and one
+   * full screen pass decodes it into the sRGB texture, where the hardware
+   * encodes it straight back: the SAME bytes, checked for all 256 values of
+   * every channel, so everything downstream (mips, filtering, linear light)
+   * is untouched.
+   *
+   * The preview asks for this. The export does not, so its bytes cannot move.
+   */
+  fastSourceUpload?: boolean
 }
 
 export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOptions): Renderer {
@@ -962,6 +1012,50 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
   // clip compiles a second. Bounded by the number of distinct stacks in use.
   const layerPrograms = new Map<string, LayerProgram>()
 
+  /**
+   * ⛔ COMPILED AHEAD, NOT ON FIRST SIGHT, 2026-09-28. Measured on a copy of his
+   * biggest project: the first scrub froze for 272 ms, and 245 ms of it was the
+   * driver compiling a layer program the moment a clip with a new effect stack
+   * first came under the playhead (`getShaderParameter` is where WebGL waits).
+   * warm() starts every program the sequence will need and does NOT ask for its
+   * status, so the GPU process compiles them in the background (in parallel where
+   * KHR_parallel_shader_compile is there) and the first draw finds them done.
+   */
+  gl.getExtension('KHR_parallel_shader_compile')
+  const pendingPrograms = new Map<string, WebGLProgram>()
+
+  function startLink(fsSrc: string): WebGLProgram | null {
+    const vs = gl.createShader(gl.VERTEX_SHADER)
+    const fs = gl.createShader(gl.FRAGMENT_SHADER)
+    const prog = gl.createProgram()
+    if (!vs || !fs || !prog) return null
+    gl.shaderSource(vs, LAYER_VS)
+    gl.compileShader(vs)
+    gl.shaderSource(fs, fsSrc)
+    gl.compileShader(fs)
+    gl.attachShader(prog, vs)
+    gl.attachShader(prog, fs)
+    gl.linkProgram(prog)
+    gl.deleteShader(vs)
+    gl.deleteShader(fs)
+    return prog
+  }
+
+  const layerKey = (pointwise: readonly ResolvedEffect[], withMask: boolean, bicubic: boolean): string =>
+    stackSignature(pointwise) + (withMask ? '#mask' : '') + (bicubic ? '#bicubic' : '')
+
+  function warm(shapes: readonly LayerShape[]): void {
+    for (const shape of shapes) {
+      const pointwise = shape.effects.filter(isPointwise)
+      for (const bicubic of [false, true]) {
+        const key = layerKey(pointwise, shape.mask, bicubic)
+        if (layerPrograms.has(key) || pendingPrograms.has(key)) continue
+        const prog = startLink(buildLayerFs(pointwise, shape.mask, bicubic))
+        if (prog) pendingPrograms.set(key, prog)
+      }
+    }
+  }
+
   function getLayerProgram(
     pointwise: readonly ResolvedEffect[],
     withMask: boolean,
@@ -970,10 +1064,19 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     // Masked layers compile their own variant of the stack program, because an
     // unmasked identity clip must never pay for mask uniforms it doesn't have.
     // Magnified layers do the same with the bicubic fetch, for the same reason.
-    const key = stackSignature(pointwise) + (withMask ? '#mask' : '') + (bicubic ? '#bicubic' : '')
+    const key = layerKey(pointwise, withMask, bicubic)
     const hit = layerPrograms.get(key)
     if (hit) return hit
-    const prog = link(gl, LAYER_VS, buildLayerFs(pointwise, withMask, bicubic))
+    // A warmed program is used if it linked. A failed one is compiled again the
+    // blocking way, which is the path that throws with the driver's log.
+    const warmed = pendingPrograms.get(key)
+    pendingPrograms.delete(key)
+    let prog: WebGLProgram
+    if (warmed && gl.getProgramParameter(warmed, gl.LINK_STATUS)) prog = warmed
+    else {
+      if (warmed) gl.deleteProgram(warmed)
+      prog = link(gl, LAYER_VS, buildLayerFs(pointwise, withMask, bicubic))
+    }
     const entry: LayerProgram = {
       prog,
       aPos: gl.getAttribLocation(prog, 'aPos'),
@@ -1107,6 +1210,53 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
   const STABLE_TEX_CAP = 48
   const texCache = new Map<TexImageSource, { tex: WebGLTexture; w: number; h: number }>()
 
+  // The staging path, see RendererOptions.fastSourceUpload.
+  const fastUpload = options?.fastSourceUpload === true
+  const stageTex = fastUpload ? gl.createTexture() : null
+  const stageFb = fastUpload ? gl.createFramebuffer() : null
+  const stageProg = fastUpload ? link(gl, STAGE_VS, STAGE_FS) : null
+  const stageLoc = stageProg ? gl.getUniformLocation(stageProg, 'uStage') : null
+  let stageW = -1
+  let stageH = -1
+  if (stageTex) {
+    gl.bindTexture(gl.TEXTURE_2D, stageTex)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+  }
+
+  /**
+   * Put `source` into the sRGB texture `dst` through the RGBA8 staging texture.
+   * `allocate` sizes dst's storage first. Leaves the framebuffer, viewport,
+   * program and blend state changed: callers bind their own target AFTER this.
+   */
+  function uploadThroughStage(dst: WebGLTexture, source: TexImageSource, texW: number, texH: number, allocate: boolean): void {
+    gl.bindTexture(gl.TEXTURE_2D, stageTex)
+    if (stageW === texW && stageH === texH) {
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, source)
+    } else {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, source)
+      stageW = texW
+      stageH = texH
+    }
+    gl.bindTexture(gl.TEXTURE_2D, dst)
+    if (allocate) gl.texImage2D(gl.TEXTURE_2D, 0, gl.SRGB8_ALPHA8, texW, texH, 0, gl.RGBA, gl.UNSIGNED_BYTE, null)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, stageFb)
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, dst, 0)
+    gl.viewport(0, 0, texW, texH)
+    gl.disable(gl.BLEND)
+    gl.useProgram(stageProg)
+    gl.bindVertexArray(fullVao)
+    gl.activeTexture(gl.TEXTURE0)
+    gl.bindTexture(gl.TEXTURE_2D, stageTex)
+    gl.uniform1i(stageLoc, 0)
+    gl.drawArrays(gl.TRIANGLES, 0, 3)
+    // Detach, so dst can be sampled and mipmapped without a feedback loop.
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0)
+    gl.bindTexture(gl.TEXTURE_2D, dst)
+  }
+
   /** Upload if needed, return the texture to bind. Skips upload for unchanged
    *  stills/titles. `cacheable` MUST be false for video frames: mediabunny decodes
    *  each frame into a FRESH OffscreenCanvas, so type-sniffing can't tell a reused
@@ -1125,7 +1275,8 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
       if (!hit) setTexParams(mipmapSources)
       // An sRGB texture: the GPU decodes on every sample, so bilinear, bicubic
       // and the mip chain all filter light, not encoded numbers.
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.SRGB8_ALPHA8, gl.RGBA, gl.UNSIGNED_BYTE, source)
+      if (fastUpload) uploadThroughStage(tex, source, texW, texH, true)
+      else gl.texImage2D(gl.TEXTURE_2D, 0, gl.SRGB8_ALPHA8, gl.RGBA, gl.UNSIGNED_BYTE, source)
       // Stable sources upload once, so the mip chain is built once and then
       // only re-bound. Cache hits above never pay for generateMipmap.
       if (mipmapSources) gl.generateMipmap(gl.TEXTURE_2D)
@@ -1142,7 +1293,12 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     // CHANGING source: reuse srcTex; texSubImage2D avoids reallocating storage
     // when the frame size is unchanged (the common case across a clip).
     gl.bindTexture(gl.TEXTURE_2D, srcTex)
-    if (srcTexW === texW && srcTexH === texH) {
+    if (fastUpload) {
+      const allocate = srcTexW !== texW || srcTexH !== texH
+      uploadThroughStage(srcTex!, source, texW, texH, allocate)
+      srcTexW = texW
+      srcTexH = texH
+    } else if (srcTexW === texW && srcTexH === texH) {
       gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, source)
     } else {
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.SRGB8_ALPHA8, gl.RGBA, gl.UNSIGNED_BYTE, source)
@@ -1290,17 +1446,15 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
 
   // Draw one layer (transform + crop + filters, premultiplied) into the CURRENT
   // framebuffer. Alpha-over blend must already be set by the caller.
-  function drawLayer(
-    layer: RenderLayer,
-    source: TexImageSource,
-    frameW: number,
-    frameH: number,
-    dither: number,
-  ): void {
+  /**
+   * The texture a layer draws from, uploaded if it needs to be. Called BEFORE the
+   * caller binds its target: the staging upload (fastSourceUpload) draws a pass
+   * of its own, and a target bound first would be lost under it.
+   */
+  function layerTexture(layer: RenderLayer, source: TexImageSource): WebGLTexture | null {
     const texW = sourceW(source)
     const texH = sourceH(source)
-    if (texW <= 0 || texH <= 0) return
-
+    if (texW <= 0 || texH <= 0) return null
     // Only genuinely-reused sources are cacheable: a title/caption raster (a
     // stable OffscreenCanvas) or a still <img>. VIDEO frames are a fresh
     // OffscreenCanvas each frame: never cache them, or the LRU floods with
@@ -1308,7 +1462,19 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     // layer, not the source type (both are OffscreenCanvas).
     const cacheable =
       layer.title !== undefined || (typeof HTMLImageElement !== 'undefined' && source instanceof HTMLImageElement)
-    const tex = acquireTexture(source, texW, texH, cacheable)
+    return acquireTexture(source, texW, texH, cacheable)
+  }
+
+  function drawLayer(
+    layer: RenderLayer,
+    source: TexImageSource,
+    tex: WebGLTexture,
+    frameW: number,
+    frameH: number,
+    dither: number,
+  ): void {
+    const texW = sourceW(source)
+    const texH = sourceH(source)
 
     const { corners } = computeQuad({ frameW, frameH, texW, texH, transform: layer.transform })
     const uv = cropUV(layer.transform.cropT, layer.transform.cropR, layer.transform.cropB, layer.transform.cropL)
@@ -1603,6 +1769,8 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     // Anything else here is a transition side or the adjustment accumulator, both
     // of which get dithered later by whichever pass writes the canvas.
     const outDither = targetFb === null ? ditherAmt : 0
+    const tex = layerTexture(layer, source)
+    if (!tex) return
     if (post.length > 0 || needsDestSample) {
       gl.bindFramebuffer(gl.FRAMEBUFFER, layerFbo.fb)
       gl.viewport(0, 0, fboW, fboH)
@@ -1611,7 +1779,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
       // Blend within the layer FBO with premultiplied over onto transparent.
       gl.enable(gl.BLEND)
       gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
-      drawLayer(layer, source, frameW, frameH, 0)
+      drawLayer(layer, source, tex, frameW, frameH, 0)
       for (const fx of post) applyNeighborhood(fx, layerFbo, scratch)
       // The target may be a seq-sized transition FBO (fboW×fboH), NOT the
       // canvas. Sizing the viewport to the canvas would draw into only a
@@ -1655,7 +1823,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
       gl.viewport(0, 0, targetFb ? fboW : gl.canvas.width, targetFb ? fboH : gl.canvas.height)
       gl.enable(gl.BLEND)
       setBlendForMode(mode)
-      drawLayer(layer, source, frameW, frameH, outDither)
+      drawLayer(layer, source, tex, frameW, frameH, outDither)
       gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
     }
   }
@@ -1896,6 +2064,8 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
   function dispose(): void {
     for (const lp of layerPrograms.values()) gl.deleteProgram(lp.prog)
     layerPrograms.clear()
+    for (const prog of pendingPrograms.values()) gl.deleteProgram(prog)
+    pendingPrograms.clear()
     gl.deleteProgram(blurProg)
     gl.deleteProgram(combineProg)
     gl.deleteProgram(blitProg)
@@ -1918,7 +2088,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     pool.length = 0
   }
 
-  return { render, dispose }
+  return { render, warm, dispose }
 }
 
 // --- source-size helpers ---------------------------------------------------

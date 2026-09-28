@@ -66,6 +66,24 @@ export function cutSelection(): void {
 }
 
 export function pasteAtPlayhead(): void {
+  pasteClipboard(useStore.getState().ui.playheadS)
+}
+
+/** True when there is something to paste. */
+export function hasClipboard(): boolean {
+  return clipboard.length > 0
+}
+
+/**
+ * Paste onto the track he right clicked, at the time he clicked. His words,
+ * 2026-09-28: *"it pastes it where I clicked it. It doesn't just paste it
+ * randomly."*
+ */
+export function pasteAt(trackIndex: number, atS: number): void {
+  pasteClipboard(atS, { trackIndex })
+}
+
+function pasteClipboard(atS: number, target?: { trackIndex: number }): void {
   const s = useStore.getState()
   // Assets can be gone if the payload outlived them (future bin deletes).
   // pasteClips itself refuses locked destination tracks and reports how many it
@@ -81,7 +99,7 @@ export function pasteAtPlayhead(): void {
   let pastedIds: string[] = []
   let blocked = 0
   updateActiveSequence('Paste clip(s)', (sq) => {
-    const r = pasteClips(sq, payload, s.ui.playheadS)
+    const r = pasteClips(sq, payload, atS, target)
     pastedIds = r.newIds
     blocked = r.blockedByLock
     return r.seq

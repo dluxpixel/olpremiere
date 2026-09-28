@@ -189,10 +189,14 @@ const work: BootWork = {
     // The audio decode starts HERE, with the video one: the two are independent,
     // and running them back to back would double the longest wait the card can be
     // asked to sit through. Only the REPORTING is one row at a time.
-    audioWarm = started(warmAudio(clips))
+    audioWarm = started(warmAudio(activeSequence(useStore.getState().project), useStore.getState().project.assets))
     return { detail: readyDetail(await warmPreview(clips)) }
   },
-  warmAudio: async () => ({ detail: readyDetail(await (audioWarm ?? started(warmAudio(onTimeline())))) }),
+  warmAudio: async () => ({
+    detail: readyDetail(
+      await (audioWarm ?? started(warmAudio(activeSequence(useStore.getState().project), useStore.getState().project.assets))),
+    ),
+  }),
   updates: () => whenUpdateChecked((detail) => bootStep.note('updates', detail)),
   proxies: async () => {
     // The preview copies for what is on the timeline. The row says it is

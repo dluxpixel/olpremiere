@@ -1737,12 +1737,46 @@ describe('pasteClips', () => {
     expect(findClip(next, newIds[0])!.trackIndex).toBe(0)
     expect(findClip(next, newIds[0])!.clip.startS).toBe(1)
   })
-  it('collision-resolves each insert via resolveStart', () => {
+  it('a taken spot sends the clip to the next free line, never later in time and never on top', () => {
+    // His pick, 2026-09-28: "the next free line". It used to slide to 12.
     const a = makeClip({ startS: 0, outS: 2 })
-    const seq = makeSeq([makeTrack({ clips: [a, makeClip({ startS: 10, outS: 2 })] })])
+    const b = makeClip({ startS: 10, outS: 2 })
+    const seq = makeSeq([makeTrack({ clips: [a, b] })])
     const payload = serializeClips(seq, [a.id])
     const { seq: next, newIds } = pasteClips(seq, payload, 11)
-    expect(findClip(next, newIds[0])!.clip.startS).toBe(12)
+    const pasted = findClip(next, newIds[0])!
+    expect(pasted.clip.startS).toBe(11)
+    expect(pasted.trackIndex).toBe(1)
+    expect(next.tracks).toHaveLength(2)
+    expect(next.tracks[1].kind).toBe('video')
+    // What was there is untouched.
+    expect(findClip(next, b.id)!.clip.startS).toBe(10)
+    expect(findClip(next, b.id)!.clip.outS).toBe(2)
+  })
+  it('lands on the track he right clicked, at the time he clicked', () => {
+    const t = makeClip({ startS: 0, outS: 2 })
+    const seq = makeSeq([
+      makeTrack({ name: 'V1' }),
+      makeTrack({ name: 'V2' }),
+      makeTrack({ name: 'V3', clips: [t] }),
+      makeTrack({ name: 'V4' }),
+    ])
+    const payload = serializeClips(seq, [t.id])
+    const { seq: next, newIds } = pasteClips(seq, payload, 7, { trackIndex: 3 })
+    const pasted = findClip(next, newIds[0])!
+    expect(pasted.trackIndex).toBe(3)
+    expect(pasted.clip.startS).toBe(7)
+  })
+  it('a clicked track that is busy there passes the clip up to the next free one', () => {
+    const t = makeClip({ startS: 0, outS: 2 })
+    const busy = makeClip({ startS: 6, outS: 4 })
+    const seq = makeSeq([makeTrack({ name: 'V1', clips: [t] }), makeTrack({ name: 'V2', clips: [busy] }), makeTrack({ name: 'V3' })])
+    const payload = serializeClips(seq, [t.id])
+    const { seq: next, newIds } = pasteClips(seq, payload, 7, { trackIndex: 1 })
+    const pasted = findClip(next, newIds[0])!
+    expect(pasted.trackIndex).toBe(2)
+    expect(pasted.clip.startS).toBe(7)
+    expect(findClip(next, busy.id)!.clip).toMatchObject({ startS: 6, outS: 4 })
   })
   it('collision-resolves later payload items against earlier pasted ones', () => {
     const a = makeClip({ startS: 0, outS: 2 })
@@ -2986,10 +3020,14 @@ describe('linked A/V groups stay in sync', () => {
     const out = pasteClips(seq, serializeClips(seq, [v.id, a.id]), 5)
     const [pv, pa] = out.newIds.map((id) => find(out.seq, id))
     expect(out.newIds).toHaveLength(2)
-    // Same start: the picture and the sound stay together, wherever they fit.
+    // Same start: the picture and the sound stay together, at the time asked.
+    expect(pv.startS).toBeCloseTo(5, 6)
     expect(pa.startS).toBeCloseTo(pv.startS, 6)
-    // And they cleared the bed rather than sitting on it.
-    expect(pa.startS).toBeGreaterThanOrEqual(9 - 1e-6)
+    // And the sound took the next free line rather than sitting on the bed
+    // (his pick, 2026-09-28), with the bed itself untouched.
+    const soundTrack = out.seq.tracks.find((t) => t.clips.some((c) => c.id === pa.id))!
+    expect(soundTrack.clips.some((c) => c.id === 'bed')).toBe(false)
+    expect(find(out.seq, 'bed')).toMatchObject({ startS: 5, outS: 9 })
   })
 
   it('a pasted pair lands exactly on the playhead when both tracks are free', () => {
@@ -3280,16 +3318,30 @@ describe('addClipFromAsset with overwrite (his complaint, end to end)', () => {
     expect(placed.startS).toBe(8) // dumped after everything, not at 2
   })
 
-  it('WITH overwrite it lands exactly where he dropped it', () => {
+  it('EXACT lands exactly when he dropped it, on the next free line, and cuts nothing', () => {
+    // It used to trim a to 0..2 and lay the new clip over it. His words,
+    // 2026-09-28: "it just deletes what it had under it". His pick: the next
+    // free line.
     const { seq, trackId } = packedTrack()
-    const { seq: out, clipId } = addClipFromAsset(seq, trackId, asset, 2, { overwrite: true })
-    const placed = findClip(out, clipId)!.clip
-    expect(placed.startS).toBe(2)
+    const { seq: out, clipId } = addClipFromAsset(seq, trackId, asset, 2, { exact: true })
+    const placed = findClip(out, clipId)!
+    expect(placed.clip.startS).toBe(2)
+    expect(placed.track.id).not.toBe(trackId)
+    expect(placed.track.kind).toBe('video')
     const spans = out.tracks
       .find((t) => t.id === trackId)!
       .clips.map((c) => [Number(c.startS.toFixed(6)), Number(clipEndS(c).toFixed(6))])
-    // a is trimmed to 0..2, the new clip owns 2..4, b is untouched.
-    expect(spans).toEqual([[0, 2], [2, 4], [4, 8]])
+    // a and b are exactly as they were.
+    expect(spans).toEqual([[0, 4], [4, 8]])
+  })
+
+  it('EXACT stays on the chosen line when it is free there', () => {
+    const t = makeTrack({ clips: [makeClip({ id: 'a', startS: 0, inS: 0, outS: 1 })] })
+    const seq = makeSeq([t])
+    const { seq: out, clipId } = addClipFromAsset(seq, t.id, asset, 3, { exact: true })
+    const placed = findClip(out, clipId)!
+    expect(placed.track.id).toBe(t.id)
+    expect(placed.clip.startS).toBe(3)
   })
 })
 

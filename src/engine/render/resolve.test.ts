@@ -1153,3 +1153,29 @@ describe('the shutter sample', () => {
     expect(op.to.transformAtShutter).toBeDefined()
   })
 })
+
+describe('a seam between touching clips is never a black frame', () => {
+  // His own numbers, from his project "best cat" on 2026-09-28: A ends at
+  // 9.099999999999966 and B starts at 9.100000000000001. The frame at 273/30
+  // sits between the two, and used to resolve to nothing: a black frame in the
+  // monitor and in the export.
+  const a = clip({ startS: 2.8599929999999745, inS: 0, outS: 9.099999999999966 - 2.8599929999999745 })
+  const b = clip({ startS: 9.100000000000001, inS: 478.0266776666666, outS: 478.0266776666666 + 5 })
+  const seq = seqOf([track({ clips: [a, b] })])
+
+  it('the frame on the seam is the next clip, at its very first frame', () => {
+    const t = 273 / 30
+    expect(t).toBeGreaterThan(9.099999999999966)
+    expect(t).toBeLessThan(9.100000000000001)
+    const ops = resolveFrame(seq, t).ops
+    expect(ops).toHaveLength(1)
+    const layer = asLayer(ops[0])
+    expect(layer.clipId).toBe(b.id)
+    expect(layer.sourceTimeS).toBeCloseTo(478.0266776666666, 9)
+  })
+
+  it('a real gap still shows nothing', () => {
+    const gapped = seqOf([track({ clips: [clip({ startS: 0, outS: 1 }), clip({ startS: 2, outS: 1 })] })])
+    expect(resolveFrame(gapped, 1.5).ops).toHaveLength(0)
+  })
+})
