@@ -390,6 +390,11 @@ export function chunkWords(words: CaptionWord[], options: ChunkOptions = {}): Ca
   // rules to fight over.
   const n = input.length
   // A hard break BEFORE word k: a sentence ended, the highlight flips, or he paused.
+  //
+  // ⚠️ "He paused" is only as true as the word timings, and the recogniser pads
+  // a word's end through the silence after it, which reads here as a gap of
+  // 0.00 s. So the auto-caption doors pull every word in to his voice first
+  // (voiceActivity.trimWordsToVoice, 2026-09-28) and this test sees the pause.
   const hardBefore: boolean[] = input.map(
     (w, k) =>
       k > 0 &&

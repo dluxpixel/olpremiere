@@ -12,7 +12,7 @@ import {
   wordsFromAsrChunks,
 } from '../engine/captions/transcribe'
 import { markEmphasis, speechEnvelope } from '../engine/captions/emphasis'
-import { dropWordsWithoutVoice, voiceTrackForClip } from '../engine/captions/voiceActivity'
+import { dropWordsWithoutVoice, trimWordsToVoice, voiceTrackForClip } from '../engine/captions/voiceActivity'
 import { dropWordsInMusic, isPureMusic, type SpeechTrack } from '../engine/captions/musicGate'
 import { musicTrackForClip } from '../engine/captions/musicAnalysis'
 import { getCaptionEmphasis, getCaptionLanguage, modelFor } from '../engine/captions/transcribeConfig'
@@ -89,7 +89,17 @@ function captionFailureMessage(err: unknown): string {
 export async function wordsForClip(
   clip: Clip,
   asset: MediaAsset,
-  opts: { screenFirst?: boolean } = {},
+  opts: {
+    screenFirst?: boolean
+    /**
+     * Pull each word in to where his voice starts and stops (trimWordsToVoice),
+     * so a pause the recogniser swallowed splits the captions. CAPTIONS ONLY:
+     * the silence cutter and the Words panel cut at these timings, and the
+     * silence cutter's air either side of a cut is tuned against the
+     * recogniser's own word ends, so they keep the timings they were built on.
+     */
+    trimToVoice?: boolean
+  } = {},
 ): Promise<CaptionWord[]> {
   useTranscribe.setState({ status: 'reading', pct: null, downloading: false, cancel: null })
 
@@ -169,10 +179,24 @@ export async function wordsForClip(
   // the same fixtures the worst case containing his voice outscores the best
   // case containing none by twenty times. → D123.
   const withoutSongs = dropWordsInMusic(kept, await music)
-  // Then the keyword highlight, LAST, in clip time, where these words and that
+  // Then the keyword highlight, in clip time, where these words and that
   // envelope share one clock. After the voice filter on purpose: a word the
   // audio says nobody said must not be able to win the colour.
-  return timelineWords(envelope ? markEmphasis(withoutSongs, envelope) : withoutSongs, clip)
+  const marked: CaptionWord[] = envelope ? markEmphasis(withoutSongs, envelope) : withoutSongs
+  // ⛔ THEN HIS PAUSES ARE MADE REAL, for captions. His words, 2026-09-28:
+  // *"sometimes I just take a big pause between the words, and it still groups
+  // them together."* The chunker already breaks on any pause, but Whisper pads a
+  // word through the silence after it, so the pause never reached it.
+  //
+  // AFTER the filters above, never before. They were tuned on the recogniser's
+  // own timings, and the voice filter keeps a word when a neighbour sits close
+  // to it, so shortening the neighbours first would widen those gaps and let it
+  // delete more of what he said. After the highlight too, so the picker keeps
+  // the timings it was measured on. That is safe for its one-flag-per-caption
+  // promise, because trimming only ever widens a gap: it can split a caption,
+  // never join two.
+  const timed = track && opts.trimToVoice ? trimWordsToVoice(marked, track) : marked
+  return timelineWords(timed, clip)
 }
 
 /**
@@ -324,7 +348,7 @@ export async function autoCaptionFromClip(clipId: string, preset?: TextStylePres
   }
 
   try {
-    const words = await wordsForClip(clip, asset)
+    const words = await wordsForClip(clip, asset, { trimToVoice: true })
     if (words.length === 0) {
       toasts.show('No speech found in the clip', 'danger')
     } else {
@@ -496,7 +520,7 @@ export async function autoCaptionEveryClip(
       }
       useTranscribe.setState({ queue: { index: i + 1, total: targets.length } })
       try {
-        const heard = await wordsForClip(live, asset, { screenFirst: true })
+        const heard = await wordsForClip(live, asset, { screenFirst: true, trimToVoice: true })
         if (heard.length === 0) silent++
         words.push(...heard)
         coveredSpans.push({ startS: live.startS, endS: clipEndS(live) })
