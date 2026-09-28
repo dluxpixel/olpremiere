@@ -16,6 +16,7 @@ import {
 } from '../engine/captions/transcribeConfig'
 import { resolvedTheme, setPreviewQuality, setTheme, useSettings, type PreviewQuality, type ThemeChoice } from '../state/settings'
 import { useStore } from '../state/store'
+import { askForName } from '../state/namePrompt'
 import {
   defaultTrackPresetId,
   listTrackPresets,
@@ -271,10 +272,15 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
             <Button
               variant="secondary"
               data-testid="settings-save-template"
-              onClick={() => {
-                // Same prompt as the timeline footer menu: there is no small
-                // single-field dialog primitive to reuse yet.
-                const name = window.prompt('Name this track setup', `Setup ${presets.length + 1}`)
+              onClick={async () => {
+                // The same name dialog as the timeline footer menu. Not
+                // window.prompt: Electron does not implement it, so in the
+                // desktop app this button used to do nothing at all.
+                const name = await askForName({
+                  title: 'Name this track setup',
+                  confirmLabel: 'Save',
+                  initial: `Setup ${presets.length + 1}`,
+                })
                 if (name === null) return
                 saveTrackPresetFromCurrent(name)
                 refreshPresets()

@@ -2,6 +2,7 @@ import { Bookmark } from 'lucide-react'
 import { useState } from 'react'
 import { applyTrackPreset, defaultTrackPresetId, listTrackPresets, removeTrackPreset, saveTrackPresetFromCurrent, setDefaultTrackPreset } from '../state/trackTemplate'
 import { openContextMenu, type MenuItem } from '../state/contextMenu'
+import { askForName } from '../state/namePrompt'
 
 /**
  * Footer bookmark: the shelf of NAMED track setups (state/trackTemplate.ts).
@@ -31,13 +32,16 @@ export function TrackPresetMenuButton() {
       label: 'Save current setup as preset...',
       separator: true,
       onClick: () => {
-        // A menu row is a button, so there is nowhere to type inside the menu
-        // and the app has no small single-field dialog primitive. The browser
-        // prompt is the honest option here.
-        const name = window.prompt('Name this track setup', `Setup ${presets.length + 1}`)
-        if (name === null) return
-        saveTrackPresetFromCurrent(name)
-        refresh()
+        // A menu row is a button, so there is nowhere to type inside the menu.
+        // Not window.prompt: Electron does not implement it, so in the desktop
+        // app this row used to do nothing at all.
+        void askForName({ title: 'Name this track setup', confirmLabel: 'Save', initial: `Setup ${presets.length + 1}` }).then(
+          (name) => {
+            if (name === null) return
+            saveTrackPresetFromCurrent(name)
+            refresh()
+          },
+        )
       },
     })
 

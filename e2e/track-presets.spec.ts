@@ -30,10 +30,13 @@ test('save the track setup as a named preset, then pick it to reshape the tracks
   const before = await tracks(page)
   expect(before.length).toBeGreaterThan(0)
 
-  // Name it via the prompt the menu uses.
-  page.once('dialog', (d) => void d.accept('Interview'))
+  // Name it in the app's own name dialog. Not the browser prompt: Electron does
+  // not implement window.prompt, so in the desktop app that used to do nothing.
   await page.getByTestId('save-track-template').click()
   await page.getByTestId('context-menu').getByRole('menuitem', { name: /save current/i }).click()
+  await page.getByTestId('name-prompt-input').fill('Interview')
+  await page.getByTestId('name-prompt-save').click()
+  await expect(page.getByTestId('name-prompt')).toHaveCount(0)
 
   // The saved preset now appears BY NAME in the menu.
   await page.getByTestId('save-track-template').click()
@@ -62,9 +65,11 @@ test('save the track setup as a named preset, then pick it to reshape the tracks
 
 test('the preset survives a reload and is offered again', async ({ page }) => {
   await page.goto('/')
-  page.once('dialog', (d) => void d.accept('Voiceover'))
   await page.getByTestId('save-track-template').click()
   await page.getByTestId('context-menu').getByRole('menuitem', { name: /save current/i }).click()
+  await page.getByTestId('name-prompt-input').fill('Voiceover')
+  await page.getByTestId('name-prompt-save').click()
+  await expect(page.getByTestId('name-prompt')).toHaveCount(0)
 
   await page.reload()
   await page.getByTestId('save-track-template').click()
