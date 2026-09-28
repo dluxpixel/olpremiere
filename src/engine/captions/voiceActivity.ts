@@ -370,3 +370,142 @@ export function dropWordsWithoutVoice(
   if (going * 2 > words.length) return [...words]
   return words.filter((_, i) => !drop[i])
 }
+
+/**
+ * A quiet run at least this long, with his voice on both sides of it, is a
+ * pause. Anything shorter is left to the recogniser.
+ *
+ * Not measured on his takes yet, so it is set from what a pause is NOT. Inside
+ * one word the voice can dip under the bar for a stop or a hissed "s", and two
+ * words can meet on a "ts s" cluster, but none of those lasts a whole syllable,
+ * and a syllable in ordinary speech is a fifth to a quarter of a second. It is
+ * also about what Whisper's word timings are good to (QUIET_MARGIN_S), and six
+ * times the chunker's maxGapS, so every gap this opens is a hard break there.
+ * The pauses he complained about are the long ones, and they clear it easily.
+ */
+export const PAUSE_MIN_S = 0.3
+
+/**
+ * Pull each word's edges in to where his voice actually starts and stops, so a
+ * pause the recogniser swallowed becomes a real gap between two words. Pure.
+ *
+ * His words, 2026-09-28: *"sometimes I just take a big pause between the
+ * words, and it still groups them together. This shit is so annoying."*
+ *
+ * ⛔ THE CHUNKER CANNOT SEE A PAUSE IT IS NOT TOLD ABOUT. `chunkWords` already
+ * breaks on any gap over maxGapS, whatever the soft rules want. But Whisper pads
+ * a word's END through the silence after it (his "like" came back 1.5 s long),
+ * and sometimes starts the NEXT word early inside that same silence, so the two
+ * words touch and the gap it measures is 0.00 s. "i" [0, 0.75] and "found"
+ * [0.75, 1.0] with 0.6 s of nothing after the "i" became one caption, "i found".
+ * This cuts the pause out of the words either side of it and the hard break
+ * then fires on its own. It also means a caption leaves the screen when he
+ * stops talking instead of sitting there through his breath.
+ *
+ * It only ever SHORTENS a word: it never moves one past another, never drops
+ * one, never touches the text, so the worst it can do is split two captions.
+ * And like the filter above it leans one way on purpose. RNNoise is least sure
+ * of the cleanest voice (a dry synthetic take read as 18.7 s of "no voice" out
+ * of 20), so a pause is only believed when the voice is heard on BOTH sides of
+ * it:
+ *  - between two words: a quiet run of at least PAUSE_MIN_S that starts after
+ *    voice inside the first word, ends at voice inside the second, and sits
+ *    within QUIET_MARGIN_S of where the recogniser put the boundary;
+ *  - the first word of the clip: its start sits in at least PAUSE_MIN_S of
+ *    quiet before its own voice begins;
+ *  - the last word of the clip: its end sits in at least PAUSE_MIN_S of quiet
+ *    after its own voice stops.
+ * A word whose voice never stops is left alone, and so is a word the detector
+ * heard nothing in, because no voice is no evidence of where it ends.
+ *
+ * And if the detector hears his voice in fewer than half of the clip's words,
+ * it is not hearing this voice well enough to say where any word stops, so
+ * every word goes back exactly as the recogniser heard it.
+ */
+export function trimWordsToVoice<T extends TranscribedWord>(words: readonly T[], track: VoiceTrack): T[] {
+  const out: T[] = words.map((w) => ({ ...w }))
+  const { probs, frameS } = track
+  const n = probs.length
+  if (out.length === 0 || n === 0 || !(frameS > 0)) return out
+
+  // Word times are CLIP-relative and the frames are relative to the analysed
+  // window, which starts offsetS before the clip does (see dropWordsWithoutVoice).
+  // The nudge stops float error (0.6 / 0.01 = 59.99...) moving an edge a frame.
+  const off = track.offsetS
+  const frameAt = (t: number): number => Math.floor((t + off) / frameS + 1e-6)
+  const frameEnd = (t: number): number => Math.ceil((t + off) / frameS - 1e-6)
+  const timeOf = (f: number): number => f * frameS - off
+  const voiced = (f: number): boolean => probs[f]! > VOICE_THRESHOLD
+  // Silence nobody measured is not silence: a word past the analysed audio is kept as heard.
+  const measured = (w: TranscribedWord): boolean => frameAt(w.startS) >= 0 && frameEnd(w.endS) <= n
+  const heardIn = (w: TranscribedWord): boolean => {
+    for (let f = frameAt(w.startS); f < frameEnd(w.endS); f++) if (voiced(f)) return true
+    return false
+  }
+
+  const heard = out.filter((w) => measured(w) && heardIn(w)).length
+  if (heard * 2 < out.length) return out
+
+  // In time order, because a pause is between NEIGHBOURS. The recogniser's own
+  // order is not always time order at a chunk seam.
+  const order = out.map((_, i) => i).sort((a, b) => out[a]!.startS - out[b]!.startS)
+  // ⛔ A START NEVER MOVES PAST THE NEXT WORD'S START. The recogniser can hand
+  // back words that overlap, and the highlight picker and the chunker both
+  // rely on reading the words in the same time order, so a moved start stops
+  // short of the word after it rather than jumping over it.
+  const startAfter = (k: number): number => {
+    const next = order[k + 1]
+    return next === undefined ? Infinity : out[next]!.startS
+  }
+
+  // The clip's first word, started early inside the quiet before he speaks.
+  const first = out[order[0]!]!
+  if (measured(first)) {
+    let f = frameAt(first.startS)
+    const to = frameEnd(first.endS)
+    while (f < to && !voiced(f)) f++
+    const voiceS = timeOf(f)
+    if (f < to && voiceS - first.startS >= PAUSE_MIN_S - 1e-9 && voiceS < startAfter(0)) first.startS = voiceS
+  }
+
+  for (let k = 0; k + 1 < order.length; k++) {
+    const a = out[order[k]!]!
+    const b = out[order[k + 1]!]!
+    if (!measured(a) || !measured(b)) continue
+    const lo = Math.min(a.endS, b.startS)
+    const hi = Math.max(a.endS, b.startS)
+    // Every quiet run in the stretch the two words cover that has voice on both
+    // sides of it inside that stretch. The longest one near the boundary wins.
+    const to = frameEnd(b.endS)
+    let f = frameAt(a.startS)
+    while (f < to && !voiced(f)) f++
+    let pause: { fromS: number; toS: number } | null = null
+    while (f < to) {
+      while (f < to && voiced(f)) f++
+      const quietFrom = f
+      while (f < to && !voiced(f)) f++
+      if (f >= to) break // no voice after it inside the second word: not a pause we can place
+      const fromS = timeOf(quietFrom)
+      const toS = timeOf(f)
+      if (toS - fromS < PAUSE_MIN_S - 1e-9) continue
+      if (fromS > hi + QUIET_MARGIN_S || toS < lo - QUIET_MARGIN_S) continue
+      if (!pause || toS - fromS > pause.toS - pause.fromS) pause = { fromS, toS }
+    }
+    if (!pause) continue
+    // Voice sits before the run inside `a` and after it inside `b`, so neither
+    // word can be squeezed to nothing. Checked anyway: losing a word is the one
+    // thing this pipeline may never do.
+    if (pause.fromS > a.startS) a.endS = Math.min(a.endS, pause.fromS)
+    if (pause.toS < b.endS && pause.toS < startAfter(k + 1)) b.startS = Math.max(b.startS, pause.toS)
+  }
+
+  // The clip's last word, padded through the quiet after he stops.
+  const last = out[order[order.length - 1]!]!
+  if (measured(last)) {
+    const from = frameAt(last.startS)
+    let f = frameEnd(last.endS)
+    while (f > from && !voiced(f - 1)) f--
+    if (f > from && last.endS - timeOf(f) >= PAUSE_MIN_S - 1e-9) last.endS = timeOf(f)
+  }
+  return out
+}

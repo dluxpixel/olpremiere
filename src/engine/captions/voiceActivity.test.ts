@@ -9,11 +9,14 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   MIN_ANALYSED_CLIP_S,
+  PAUSE_MIN_S,
   VOICE_SAMPLE_RATE,
   dropWordsWithoutVoice,
+  trimWordsToVoice,
   voiceTrackFromPcm,
   type VoiceTrack,
 } from './voiceActivity'
+import { AUTO_CAPTION_OPTIONS, chunkWords } from './captions'
 import { PCM_SCALE, type DenoiseEngine } from '../denoise'
 import type { TranscribedWord } from './transcribe'
 
@@ -192,5 +195,214 @@ describe('a clip judged on the recording around it', () => {
     const plain = track(6, [[0, 6]])
     expect(plain.offsetS).toBe(0)
     expect(texts(dropWordsWithoutVoice([w('hey', 1, 1.4)], plain))).toEqual(['hey'])
+  })
+})
+
+// ⛔ HIS PAUSES SPLIT HIS CAPTIONS, 2026-09-28. His words: "sometimes I just
+// take a big pause between the words, and it still groups them together."
+// The chunker already breaks on any gap, but the recogniser runs a word's end
+// through the silence after it, so the gap it saw was 0.00 s. Every case here
+// is the recogniser's timings plus a voice track that shows the silence.
+describe('trimWordsToVoice: a pause the recogniser swallowed becomes a real gap', () => {
+  const spans = (words: readonly TranscribedWord[]): [number, number][] =>
+    words.map((x) => [Number(x.startS.toFixed(3)), Number(x.endS.toFixed(3))])
+  const captions = (words: readonly TranscribedWord[]): string[] =>
+    chunkWords([...words], AUTO_CAPTION_OPTIONS).map((c) => c.text)
+
+  it('a 0.6 s pause inside a word\'s end splits "i | found", which used to be one caption', () => {
+    // He says "i", stops for 0.6 s, then "found it." The recogniser ran "i" to 0.75.
+    const heard = [w('i', 0, 0.75), w('found', 0.75, 1.0), w('it.', 1.0, 1.3)]
+    const voice = track(3, [
+      [0, 0.15],
+      [0.75, 1.3],
+    ])
+    // The bug, pinned so this test cannot pass by accident: as the recogniser
+    // timed it, the chunker saw no pause and welded the two.
+    expect(captions(heard)[0]).toBe('i found')
+
+    const trimmed = trimWordsToVoice(heard, voice)
+    expect(spans(trimmed)).toEqual([
+      [0, 0.15],
+      [0.75, 1.0],
+      [1.0, 1.3],
+    ])
+    const chunks = chunkWords(trimmed, AUTO_CAPTION_OPTIONS)
+    expect(chunks.map((c) => c.text)).toEqual(['i', 'found', 'it.'])
+    // And "i" gets off the screen when he stops, not when he starts again.
+    expect(chunks[0]!.endS).toBeLessThan(0.75 - 0.4)
+  })
+
+  it('a 1.5 s pause inside a word\'s end: separate captions, and the first one does not sit through it', () => {
+    const heard = [w('so', 0, 1.8), w('good', 1.8, 2.1), w('right?', 2.1, 2.4)]
+    const voice = track(3, [
+      [0, 0.3],
+      [1.8, 2.4],
+    ])
+    const trimmed = trimWordsToVoice(heard, voice)
+    expect(spans(trimmed)[0]).toEqual([0, 0.3])
+    const chunks = chunkWords(trimmed, AUTO_CAPTION_OPTIONS)
+    expect(chunks[0]!.text).toBe('so')
+    expect(chunks[1]!.text.startsWith('good')).toBe(true)
+    // Held only holdS past his voice. As heard, "so" stayed up for 1.3 s of silence.
+    expect(chunks[0]!.endS).toBeCloseTo(0.3 + AUTO_CAPTION_OPTIONS.holdS, 6)
+    expect(chunkWords(heard, AUTO_CAPTION_OPTIONS)[0]!.endS).toBeGreaterThan(1.2)
+  })
+
+  it('a 1.5 s pause the recogniser split between two words: the second waits for his voice', () => {
+    // "and" runs into the silence, and "then" starts early inside it.
+    const heard = [w('and', 0, 0.9), w('then', 0.9, 2.1), w('boom.', 2.1, 2.5)]
+    const voice = track(3, [
+      [0, 0.3],
+      [1.8, 2.5],
+    ])
+    const trimmed = trimWordsToVoice(heard, voice)
+    expect(spans(trimmed).slice(0, 2)).toEqual([
+      [0, 0.3],
+      [1.8, 2.1],
+    ])
+    const chunks = chunkWords(trimmed, AUTO_CAPTION_OPTIONS)
+    expect(chunks[0]!.text).toBe('and')
+    // As heard, "then" was on screen from 0.9 s, most of a second before he said it.
+    const then = chunks.find((c) => c.text.startsWith('then'))!
+    expect(then.startS).toBeCloseTo(1.8, 6)
+  })
+
+  it('words said with no pause between them are untouched and still pair up exactly as before', () => {
+    const heard = [w('go', 0, 0.25), w('now', 0.25, 0.5), w('okay.', 0.5, 1.0)]
+    const trimmed = trimWordsToVoice(heard, track(3, [[0, 1.0]]))
+    expect(trimmed).toEqual(heard)
+    expect(captions(trimmed)).toEqual(['go now', 'okay.'])
+  })
+
+  it("keeps his 'and like' pair and still cuts the pause 'like' swallowed (his take 13)", () => {
+    // Measured: "like" came back 1.5 s long, running through his pause before "for more".
+    const heard = [w('subscribe', 34.34, 34.76), w('and', 34.76, 35.0), w('like', 35.0, 36.5), w('for', 36.5, 36.66), w('more', 36.66, 37.14)]
+    const voice = track(38, [
+      [34.34, 35.3],
+      [36.5, 37.14],
+    ])
+    const trimmed = trimWordsToVoice(heard, voice)
+    expect(spans(trimmed)[2]).toEqual([35.0, 35.3])
+    // Only the word that swallowed the pause changed.
+    expect(spans(trimmed).filter((_, i) => i !== 2)).toEqual(spans(heard).filter((_, i) => i !== 2))
+    expect(captions(trimmed).slice(0, 2)).toEqual(['subscribe', 'and like'])
+  })
+
+  it('a word whose voice never stops is left alone, however long the recogniser made it', () => {
+    const heard = [w('invisibility', 0, 1.3), w('potion', 1.3, 1.7)]
+    expect(trimWordsToVoice(heard, track(3, [[0, 1.7]]))).toEqual(heard)
+  })
+
+  it('a quiet dip shorter than a pause is not a pause', () => {
+    const dip = PAUSE_MIN_S - 0.05
+    const heard = [w('cats', 0, 0.5), w('sit', 0.5, 0.9)]
+    const voice = track(3, [
+      [0, 0.4],
+      [0.4 + dip, 0.9],
+    ])
+    expect(trimWordsToVoice(heard, voice)).toEqual(heard)
+  })
+
+  it('never cuts a word short when the next word shows no voice, because then nobody knows where it starts', () => {
+    const heard = [w('so', 0, 0.8), w('um', 0.8, 1.1), w('yeah', 1.1, 1.4)]
+    const voice = track(3, [
+      [0, 0.2],
+      [1.1, 1.4],
+    ])
+    expect(spans(trimWordsToVoice(heard, voice))[0]).toEqual([0, 0.8])
+  })
+
+  it('the first word waits for his voice, and the last word leaves with it', () => {
+    const heard = [w('hey', 0, 0.8), w('there', 0.8, 1.1), w('bye', 1.1, 2.5)]
+    const voice = track(3, [[0.5, 1.4]])
+    expect(spans(trimWordsToVoice(heard, voice))).toEqual([
+      [0.5, 0.8],
+      [0.8, 1.1],
+      [1.1, 1.4],
+    ])
+  })
+
+  it('changes nothing when the detector cannot hear this voice in most of the words', () => {
+    // A dry voice the model is nearly deaf to (see dropWordsWithoutVoice): two
+    // blips in five words. Without this guard the blips would be read as a pause
+    // between "a" and "b" in the middle of continuous speech.
+    const heard = [w('a', 0, 0.5), w('b', 0.5, 1.0), w('c', 1.0, 1.5), w('d', 1.5, 2.0), w('e', 2.0, 2.5)]
+    const voice = track(3, [
+      [0, 0.05],
+      [0.9, 0.95],
+    ])
+    expect(trimWordsToVoice(heard, voice)).toEqual(heard)
+  })
+
+  it('reads the recording around the cut at the right moment (offsetS)', () => {
+    // The same 0.6 s pause as above, analysed with 5.6 s of recording before the clip.
+    const heard = [w('i', 0, 0.75), w('found', 0.75, 1.0), w('it.', 1.0, 1.3)]
+    const voice: VoiceTrack = {
+      ...track(9, [
+        [5.6, 5.75],
+        [6.35, 6.9],
+      ]),
+      offsetS: 5.6,
+    }
+    expect(spans(trimWordsToVoice(heard, voice))[0]).toEqual([0, 0.15])
+  })
+
+  it('leaves the words alone with no track, and never touches the text or the order', () => {
+    const empty: VoiceTrack = { probs: new Float32Array(0), frameS: FRAME_S, offsetS: 0, clipS: 0 }
+    const heard = [w('found', 0.75, 1.0), w('i', 0, 0.75)]
+    expect(trimWordsToVoice(heard, empty)).toEqual(heard)
+    expect(trimWordsToVoice([], track(3, [[0, 3]]))).toEqual([])
+    // Out of time order, as the recogniser emits at a seam: trimmed in time order, returned in its own.
+    const out = trimWordsToVoice(heard, track(3, [
+      [0, 0.15],
+      [0.75, 1.0],
+    ]))
+    expect(texts(out)).toEqual(['found', 'i'])
+    expect(spans(out)).toEqual([
+      [0.75, 1.0],
+      [0, 0.15],
+    ])
+  })
+
+  it('over 2000 random takes it only ever shortens a word: no word lost, emptied, reordered, or pulled closer', () => {
+    let seed = 7
+    const r = (): number => {
+      seed = (seed * 1103515245 + 12345) % 2147483648
+      return seed / 2147483648
+    }
+    const timeOrder = (ws: readonly TranscribedWord[]): number[] =>
+      ws.map((_, i) => i).sort((a, b) => ws[a]!.startS - ws[b]!.startS)
+    for (let take = 0; take < 2000; take++) {
+      const heard: TranscribedWord[] = []
+      let t = r() * 0.5
+      const count = 1 + Math.floor(r() * 12)
+      for (let k = 0; k < count; k++) {
+        const dur = 0.05 + r() * r() * 1.8
+        heard.push(w(`w${k}`, t, t + dur))
+        // Mostly tiling like his real audio, some pauses, and now and then an
+        // OVERLAP, which the recogniser really does hand back at a chunk seam.
+        const step = r()
+        t += step < 0.6 ? dur : step < 0.9 ? dur + r() * 0.8 : dur * r()
+      }
+      const voiced: [number, number][] = []
+      for (let v = r() * 0.3; v < t + 1; ) {
+        const on = r() * 0.8
+        voiced.push([v, v + on])
+        v += on + r() * r() * 1.5
+      }
+      const out = trimWordsToVoice(heard, track(t + 2, voiced))
+      expect(texts(out)).toEqual(texts(heard))
+      // The highlight picker and the chunker read the words in time order, so it must not change.
+      expect(timeOrder(out)).toEqual(timeOrder(heard))
+      for (let k = 0; k < out.length; k++) {
+        expect(out[k]!.startS).toBeGreaterThanOrEqual(heard[k]!.startS - 1e-9)
+        expect(out[k]!.endS).toBeLessThanOrEqual(heard[k]!.endS + 1e-9)
+        expect(out[k]!.endS).toBeGreaterThan(out[k]!.startS)
+        // A gap can only widen, so a pair the recogniser split stays split.
+        if (k > 0) {
+          expect(out[k]!.startS - out[k - 1]!.endS).toBeGreaterThanOrEqual(heard[k]!.startS - heard[k - 1]!.endS - 1e-9)
+        }
+      }
+    }
   })
 })

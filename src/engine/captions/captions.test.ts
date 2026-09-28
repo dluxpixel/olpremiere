@@ -550,6 +550,22 @@ describe('rules compose instead of fighting', () => {
     }
   })
 
+  it('a pause of any length over maxGapS breaks, even when every soft rule wants the pair', () => {
+    // His words, 2026-09-28: "sometimes I just take a big pause between the
+    // words, and it still groups them together." The chunker's half of the fix:
+    // a stranded "and" too brief to read is the pair the soft costs want most,
+    // and a pause still wins. (The other half is making the pause visible at
+    // all: voiceActivity.trimWordsToVoice.)
+    for (const gap of [0.06, 0.1, 0.25, 0.36, 0.6, 1.5]) {
+      const chunks = chunkWords([w('and', 0, 0.1), w('boom.', 0.1 + gap, 0.5 + gap)], AUTO_CAPTION_OPTIONS)
+      expect(chunks.map((c) => c.text)).toEqual(['and', 'boom.'])
+    }
+    // And with no gap the same two words DO pair, so the test above is not vacuous.
+    expect(chunkWords([w('and', 0, 0.1), w('boom.', 0.1, 0.5)], AUTO_CAPTION_OPTIONS).map((c) => c.text)).toEqual([
+      'and boom.',
+    ])
+  })
+
   it('the soft rules are ordered by how bad each looks, and that order is the decision', () => {
     expect(SOFT_COST.flash).toBeGreaterThan(SOFT_COST.loneFunctionWord)
     expect(SOFT_COST.loneFunctionWord).toBeGreaterThan(SOFT_COST.pairAcrossComma)
