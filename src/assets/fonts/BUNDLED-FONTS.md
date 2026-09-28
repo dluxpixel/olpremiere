@@ -43,6 +43,7 @@ OFL family here.
 | Space Grotesk | SpaceGrotesk-700.ttf | SIL OFL 1.1 |
 | Syne | Syne-800.ttf | SIL OFL 1.1 |
 | Teko | Teko-700.ttf | SIL OFL 1.1 |
+| TikTok Sans | TikTokSans-Variable.ttf | SIL OFL 1.1 (own file beside it), added 2026-09-28 from google/fonts ofl/tiktoksans |
 | Titan One | TitanOne-400.ttf | SIL OFL 1.1 |
 | Ultra | Ultra-400.ttf | SIL OFL 1.1 |
 | Versatile Bold | VersatileBold.ttf | CC BY 4.0 (own file beside it) |

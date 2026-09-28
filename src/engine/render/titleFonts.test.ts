@@ -146,6 +146,33 @@ describe('bundled display font (Luckiest Guy)', () => {
   })
 })
 
+describe('bundled caption font (TikTok Sans)', () => {
+  // His ask, 2026-09-28: the face on a reel caption he sent a screenshot of.
+  const path = fileURLToPath(new URL('../../assets/fonts/TikTokSans-Variable.ttf', import.meta.url))
+  const has = cmapHasFactory(readFileSync(path))
+
+  it('covers ASCII, his punctuation and every Czech diacritic', () => {
+    for (const c of 'ABCabc0123.,!?:-…’') expect(has(c.codePointAt(0)!)).toBe(true)
+    const missing = [...'áčďéěíňóřšťúůýžÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ'].filter((c) => !has(c.codePointAt(0)!))
+    expect(missing).toEqual([])
+  })
+
+  it('is in the dropdown with the weight that matched his screenshot', () => {
+    const row = CUSTOM_TITLE_FONTS.find((f) => f.label === 'TikTok Sans')
+    expect(row).toBeDefined()
+    expect(row!.family).toBe('TikTok Sans')
+    expect(row!.weight).toBe('650 650')
+    expect(TITLE_FONT_OPTIONS.map((o) => o.value)).toContain(row!.stack)
+  })
+
+  it('ships with its licence beside it', () => {
+    const licence = readFileSync(fileURLToPath(new URL('../../assets/fonts/TikTokSans-OFL.txt', import.meta.url)), 'utf8')
+    expect(licence).toContain('SIL Open Font License')
+    const manifest = readFileSync(fileURLToPath(new URL('../../assets/fonts/BUNDLED-FONTS.md', import.meta.url)), 'utf8')
+    expect(manifest).toContain('TikTok Sans')
+  })
+})
+
 // The library went from five faces to thirty-eight on 2026-08-31, at his ask for
 // "a huge variety of fonts influencers use". Three things have to stay true.
 describe('the bundled font library', () => {

@@ -46,6 +46,7 @@ import workSansUrl from '../../assets/fonts/WorkSans-900.ttf?url'
 import monocraftUrl from '../../assets/fonts/Monocraft.ttf?url'
 import montserratUrl from '../../assets/fonts/Montserrat-Variable.ttf?url'
 import versatileUrl from '../../assets/fonts/VersatileBold.ttf?url'
+import tiktokSansUrl from '../../assets/fonts/TikTokSans-Variable.ttf?url'
 import { clearTitleCache } from './titleRaster'
 
 export interface CustomTitleFont {
@@ -113,6 +114,23 @@ export const VERSATILE_STACK = "'Versatile Bold', 'Arial Black', sans-serif"
 export const LUCKIEST_GUY_STACK = "'Luckiest Guy', 'Arial Black', sans-serif"
 
 /**
+ * TikTok Sans (TikTok Inc., SIL OFL, licence in TikTokSans-OFL.txt), his ask
+ * 2026-09-28, with a screenshot of a reel's caption: *"can you analyze what this
+ * font is and add it into the app?"*
+ *
+ * Identified by overlaying candidates on the letters in his screenshot at the
+ * same cap height: TikTok Sans at about 650 matched them letter for letter (the
+ * f, the round o and c, the double story a, the dots), where Figtree, Montserrat,
+ * DM Sans and Segoe UI all ran visibly wider. It is TikTok's own caption face,
+ * which is why reels made there and reposted to Instagram carry it.
+ *
+ * Shipped as the variable file and PINNED to 650, the weight that matched: canvas
+ * can only ask for normal or bold, so the pin is how both reach the same weight,
+ * in the preview and in the export worker alike.
+ */
+export const TIKTOK_SANS_STACK = "'TikTok Sans', 'Segoe UI', system-ui, sans-serif"
+
+/**
  * Figtree (the UI family) doubling as the default title face. Served from the
  * same self-hosted woff2 the UI loads (public/fonts), and registered in the
  * export worker's own FontFaceSet so titled text matches preview == export.
@@ -142,6 +160,7 @@ export const CUSTOM_TITLE_FONTS: CustomTitleFont[] = [
   { label: 'Comic Bold', family: 'Lilita One', stack: COMIC_STACK, url: lilitaUrl },
   { label: 'Versatile Bold', family: 'Versatile Bold', stack: VERSATILE_STACK, url: versatileUrl },
   { label: 'Luckiest Guy', family: 'Luckiest Guy', stack: LUCKIEST_GUY_STACK, url: luckiestGuyUrl },
+  { label: 'TikTok Sans', family: 'TikTok Sans', stack: TIKTOK_SANS_STACK, url: tiktokSansUrl, weight: '650 650' },
   { label: 'Alfa Slab One', family: 'Alfa Slab One', stack: "'Alfa Slab One', 'Comic Sans MS', cursive", url: alfaSlabOneUrl, weight: '400 400', group: 'fun' },
   { label: 'Anton', family: 'Anton', stack: "'Anton', 'Arial Black', sans-serif", url: antonUrl, weight: '400 400', group: 'impact' },
   { label: 'Archivo Black', family: 'Archivo Black', stack: "'Archivo Black', 'Arial Black', sans-serif", url: archivoBlackUrl, weight: '400 400', group: 'impact' },
@@ -204,6 +223,7 @@ export const TITLE_FONT_OPTIONS: { label: string; value: string; group: string }
   { label: 'Comic Bold', value: COMIC_STACK, group: GROUP_LABEL.core },
   { label: 'Versatile Bold', value: VERSATILE_STACK, group: GROUP_LABEL.core },
   { label: 'Luckiest Guy', value: LUCKIEST_GUY_STACK, group: GROUP_LABEL.core },
+  { label: 'TikTok Sans', value: TIKTOK_SANS_STACK, group: GROUP_LABEL.core },
   ...(['impact', 'clean', 'fun', 'editorial'] as const).flatMap((g) =>
     CUSTOM_TITLE_FONTS.filter((f) => f.group === g).map((f) => ({
       label: f.label,
