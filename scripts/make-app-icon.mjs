@@ -8,10 +8,14 @@
 // tile was #1B1B1B with a corner of 56 on 256 and genuinely transparent corners
 // (Desktop/l1fe history, scripts/make-icon.mjs, before 0d518de).
 //
+// Then, the same day, with the new icon on his taskbar: *"the melon is also just a
+// tiny too big"*. At taskbar sizes the whole-pixel rule could only choose between
+// a melon filling the tile edge to edge (2 px a melon pixel at 32) and one half as
+// wide (1 px), so the melon is now drawn big with hard pixels and scaled down
+// smoothly to the same share of the tile at EVERY size: SHARE below.
+//
 // The art is read from src/ui/melon.ts, the one place the melon is drawn, so the
-// icon cannot drift from the splash and the topbar. Every size gets WHOLE pixels:
-// pixel art scaled by 1.875 is a smear, so each size picks the whole number of
-// screen pixels per melon pixel that fills the tile best.
+// icon cannot drift from the splash and the topbar.
 //
 // Renders through the same Chromium the tests drive, so it needs no new dependency.
 import { chromium } from '@playwright/test'
@@ -24,8 +28,11 @@ const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 /** Almanac's tile. */
 export const TILE = '#1B1B1B'
 export const RADIUS = 56 / 256
-/** The melon's width as a share of the tile at 256: 15 px per melon pixel, was 14 on cream. */
-export const FILL = 15 / 256
+/**
+ * The melon's width as a share of the tile, at every size. 0.9375 (15 px a melon
+ * pixel at 256) was "a tiny too big"; the cream icon before it was 0.875.
+ */
+export const SHARE = 0.85
 
 const melonSrc = fs.readFileSync(path.join(ROOT, 'src', 'ui', 'melon.ts'), 'utf8')
 const rowsBlock = /MELON_ROWS[^=]*=\s*\[([\s\S]*?)\]/.exec(melonSrc)[1]
@@ -35,25 +42,55 @@ const PALETTE = Object.fromEntries([...paletteBlock.matchAll(/(\w):\s*'(#[0-9A-F
 const W = ROWS[0].length
 const H = ROWS.length
 
-export function iconSvg(size) {
-  const px = Math.max(1, Math.round(size * FILL))
-  const mw = W * px
-  const mh = H * px
-  const x0 = Math.floor((size - mw) / 2)
-  const y0 = Math.floor((size - mh) / 2)
-  const r = Math.round(size * RADIUS)
+/** The melon drawn with hard 32 px pixels, as a data URL, to be scaled down smoothly. */
+function melonSheet() {
+  const P = 32
   const cells = ROWS.flatMap((row, y) =>
-    [...row].map((c, x) =>
-      c === '.' ? '' : `<rect x="${x0 + x * px}" y="${y0 + y * px}" width="${px}" height="${px}" fill="${PALETTE[c]}"/>`,
-    ),
+    [...row].map((c, x) => (c === '.' ? '' : `<rect x="${x * P}" y="${y * P}" width="${P}" height="${P}" fill="${PALETTE[c]}"/>`)),
   ).join('')
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}"><rect width="${size}" height="${size}" rx="${r}" fill="${TILE}"/><g shape-rendering="crispEdges">${cells}</g></svg>`
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W * P}" height="${H * P}" shape-rendering="crispEdges">${cells}</svg>`
+  return 'data:image/svg+xml;base64,' + Buffer.from(svg).toString('base64')
 }
 
 async function render(page, size) {
   await page.setViewportSize({ width: size, height: size })
-  await page.setContent(`<!doctype html><html><body style="margin:0;background:transparent">${iconSvg(size)}</body></html>`)
-  return page.screenshot({ omitBackground: true })
+  await page.setContent('<!doctype html><html><body style="margin:0;background:transparent"></body></html>')
+  const dataUrl = await page.evaluate(
+    async ({ size, tile, radius, share, sheet, w, h }) => {
+      const img = new Image()
+      img.src = sheet
+      await img.decode()
+      // Scale the hard pixel sheet in halves, so no single step blurs more than it must.
+      let src = document.createElement('canvas')
+      src.width = img.width
+      src.height = img.height
+      src.getContext('2d').drawImage(img, 0, 0)
+      const mw = size * share
+      const mh = (mw * h) / w
+      while (src.width / 2 > mw) {
+        const half = document.createElement('canvas')
+        half.width = Math.round(src.width / 2)
+        half.height = Math.round(src.height / 2)
+        const hx = half.getContext('2d')
+        hx.imageSmoothingQuality = 'high'
+        hx.drawImage(src, 0, 0, half.width, half.height)
+        src = half
+      }
+      const c = document.createElement('canvas')
+      c.width = size
+      c.height = size
+      const g = c.getContext('2d')
+      g.fillStyle = tile
+      g.beginPath()
+      g.roundRect(0, 0, size, size, size * radius)
+      g.fill()
+      g.imageSmoothingQuality = 'high'
+      g.drawImage(src, (size - mw) / 2, (size - mh) / 2, mw, mh)
+      return c.toDataURL('image/png')
+    },
+    { size, tile: TILE, radius: RADIUS, share: SHARE, sheet: melonSheet(), w: W, h: H },
+  )
+  return Buffer.from(dataUrl.split(',')[1], 'base64')
 }
 
 function packIco(pngs) {
