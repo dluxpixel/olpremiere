@@ -25,6 +25,12 @@ export interface Binding {
   description: string
   domain: BindingDomain
   run: (e: KeyboardEvent) => void
+  /**
+   * Let the browser's own action for the key run as well. Only Ctrl+V wants it:
+   * a copied picture arrives on the browser's paste event, and Chromium fires
+   * that event ONLY when the keydown was left alone (state/picturePaste.ts).
+   */
+  allowDefault?: boolean
 }
 
 const isMac = typeof navigator !== 'undefined' && /Mac|iP(hone|ad|od)/.test(navigator.platform)
@@ -40,7 +46,8 @@ export function comboFromEvent(e: KeyboardEvent): string {
   return parts.join('+')
 }
 
-function isEditableTarget(target: EventTarget | null): boolean {
+/** A text field, where typing and pasting belong to the field and never to a shortcut. */
+export function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false
   return (
     target.tagName === 'INPUT' ||
@@ -57,7 +64,7 @@ export function installKeymap(bindings: Binding[]): () => void {
     if (isEditableTarget(e.target)) return
     const binding = byCombo.get(comboFromEvent(e))
     if (!binding) return
-    e.preventDefault()
+    if (!binding.allowDefault) e.preventDefault()
     binding.run(e)
   }
   window.addEventListener('keydown', onKeyDown)

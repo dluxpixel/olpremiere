@@ -103,3 +103,14 @@ describe('an imported file exists somewhere other than the database', () => {
     expect(stored.keys.some((k) => k.startsWith('asset/'))).toBe(true)
   })
 })
+
+// A pasted picture has to be placed on the timeline once it is in the bin, and
+// the only thing that can name the new asset is the import that made it.
+describe('importFiles hands back what it imported', () => {
+  it('resolves to the new asset ids, in the order the files came', async () => {
+    const ids = await importFiles([file('a.mp4'), file('b.mp4')])
+    const assets = useStore.getState().project.assets
+    expect(ids).toHaveLength(2)
+    expect(ids.map((id) => assets[id]?.name)).toEqual(['a.mp4', 'b.mp4'])
+  })
+})

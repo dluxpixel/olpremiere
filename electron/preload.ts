@@ -5,6 +5,7 @@
 
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
+  CutoutResult,
   NativeCaps,
   NativeExportConfig,
   NativeFinishResult,
@@ -115,6 +116,10 @@ const api: OlApi = {
   fileOpenWrite: (target: string) => ipcRenderer.invoke('file:openWrite', target),
   fileWriteChunk: (id: number, chunk: ArrayBuffer) => ipcRenderer.invoke('file:writeChunk', id, chunk),
   fileClose: (id: number, ok: boolean) => ipcRenderer.invoke('file:close', id, ok),
+  // A pasted picture, cut out by CutStudio. Main makes the request because the
+  // page lives on app:// and a POST from here to 127.0.0.1 is cross origin.
+  removeBackground: (bytes: ArrayBuffer, mime: string): Promise<CutoutResult> =>
+    ipcRenderer.invoke('cutstudio:removeBackground', bytes, mime),
 }
 
 contextBridge.exposeInMainWorld('api', api)

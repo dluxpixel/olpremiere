@@ -67,7 +67,12 @@ export interface ImportOptions {
   successMessage?: string
 }
 
-export async function importFiles(files: File[], opts?: ImportOptions): Promise<void> {
+/**
+ * Resolves to the ids of the assets that made it into the bin, in the order the
+ * files came. A pasted picture needs its id to be placed on the timeline; every
+ * other caller can go on ignoring it.
+ */
+export async function importFiles(files: File[], opts?: ImportOptions): Promise<Id[]> {
   const show = useToasts.getState().show
   const imported: MediaAsset[] = []
   const failed: string[] = []
@@ -234,7 +239,7 @@ export async function importFiles(files: File[], opts?: ImportOptions): Promise<
   if (failed.length === 1) show(`${failed[0]}: couldn’t import (unsupported?)`, 'danger')
   else if (failed.length > 1) show(`${failed.length} files skipped (unsupported)`, 'danger')
 
-  if (imported.length === 0) return
+  if (imported.length === 0) return []
   useStore.getState().dispatch(`Import ${imported.length} file(s)`, (p) => ({
     ...p,
     assets: {
@@ -251,6 +256,7 @@ export async function importFiles(files: File[], opts?: ImportOptions): Promise<
   // Start the small preview copies in the background. Nothing waits on this: he
   // can cut immediately, and each clip's preview gets faster as its copy lands.
   ensureProxies(imported)
+  return imported.map((a) => a.id)
 }
 
 /** Remove an asset from the bin and every clip that references it (all sequences). */
