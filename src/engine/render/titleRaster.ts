@@ -4,6 +4,7 @@
 // dims and hit the SAME cache, so the pixels are byte-for-byte identical.
 
 import { scaleTitleDef, type TitleDef } from '../types'
+import { appleEmojiFor, EMOJI_STACK } from './emojiFont'
 
 // ---------------------------------------------------------------------------
 // Pure helpers (no canvas), unit-tested in node.
@@ -313,7 +314,10 @@ function cacheKey(def: TitleDef, width: number, height: number): string {
 function fontString(def: TitleDef): string {
   const style = def.italic ? 'italic ' : ''
   const weight = def.bold ? '700' : '400'
-  return `${style}${weight} ${def.fontSizePx}px ${def.fontFamily}`
+  // The Apple emoji face goes first and answers for emoji only (emojiFont.ts),
+  // so every other character still draws in the title's own font.
+  const face = appleEmojiFor(def.text) ? `${EMOJI_STACK}, ${def.fontFamily}` : def.fontFamily
+  return `${style}${weight} ${def.fontSizePx}px ${face}`
 }
 
 /**

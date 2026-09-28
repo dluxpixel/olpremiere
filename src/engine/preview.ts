@@ -23,6 +23,8 @@ import { setProxyBuildingPaused } from './proxyMedia'
 import { createRenderer, type LayerShape, type Renderer } from './render/glRenderer'
 import { pairTransitionAt, resolveFrame } from './render/resolve'
 import { rasterizeTitle } from './render/titleRaster'
+import { hasEmoji } from './render/emojiFont'
+import { ensureEmojiFont } from './render/titleFonts'
 import { coverScale, croppedSize, fitScale } from './render/mat'
 import type { RenderLayer, ResolvedTransform, TextureSource } from './render/types'
 import { clipDurationS } from './timeline'
@@ -820,6 +822,8 @@ function makeTextureSource(
     // twice a second while the video is playing, which is exactly when there is
     // no budget for it. On screen it is the same picture.
     if (layer.title) {
+      // His Apple emoji: loaded the first time one is on screen, then redrawn.
+      if (hasEmoji(layer.title.text)) ensureEmojiFont(document.fonts, invalidatePreview)
       const scale = titleRasterScale(frameH)
       return scale === 1
         ? rasterizeTitle(layer.title, frameW, frameH)

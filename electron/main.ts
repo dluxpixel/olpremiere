@@ -5,7 +5,7 @@
 // the web. The origin (`app://olpremiere`) is PINNED forever: changing it (or
 // the appId/productName) would orphan the user's IndexedDB.
 
-import { app, BrowserWindow, dialog, Menu, protocol, ipcMain, powerMonitor, session, shell } from 'electron'
+import { app, BrowserWindow, dialog, Menu, net, protocol, ipcMain, powerMonitor, session, shell } from 'electron'
 
 // ⛔ ONE COPY OF THE APP AT A TIME. Two launches, a slow first start plus an
 // impatient second click, or a copy still alive after a crash, used to start a
@@ -22,6 +22,7 @@ import { existsSync, renameSync } from 'node:fs'
 import path from 'node:path'
 import * as backups from './backups'
 import { createCutstudio, realCutstudioDeps } from './cutstudio'
+import { createEmojiFontStore, downloadBytes, EMOJI_ROUTE } from './emojiFont'
 import * as projectFiles from './projectFiles'
 import * as saveFiles from './saveFiles'
 import type { NativeExportConfig, UpdateStatus } from './ipc-types'
@@ -552,8 +553,27 @@ app.whenReady().then(() => {
 
   // Serve the built renderer from out/renderer over app://. Read with the
   // asar-aware fs and set Content-Type ourselves so module workers + wasm load.
+  // His Apple emoji (electron/emojiFont.ts): fetched onto this computer the
+  // first time a title asks for it, never shipped inside the app.
+  const emojiFont = createEmojiFontStore({
+    dir: path.join(app.getPath('userData'), 'fonts'),
+    download: (url) => downloadBytes(url, (u) => net.fetch(u)),
+  })
+  // Fetched once, quietly, a little after launch, so the first emoji he pastes is
+  // already Apple's instead of waiting on a download. A failure is retried the
+  // next time a title asks for it.
+  setTimeout(() => void emojiFont.path().catch(() => undefined), 30_000)
   protocol.handle('app', async (req) => {
     const url = new URL(req.url)
+    if (url.pathname === EMOJI_ROUTE) {
+      try {
+        const data = await emojiFont.read()
+        return new Response(new Uint8Array(data), { headers: { 'content-type': 'font/ttf' } })
+      } catch (err) {
+        console.warn('OL Premiere: the Apple emoji font could not be fetched', err)
+        return new Response('Not available', { status: 503 })
+      }
+    }
     const rel = url.pathname === '/' ? 'index.html' : decodeURIComponent(url.pathname.replace(/^\/+/, ''))
     const filePath = path.join(RENDERER_DIST, rel)
     // Path-traversal guard: never serve outside the renderer dir.

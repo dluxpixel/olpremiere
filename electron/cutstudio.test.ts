@@ -15,6 +15,7 @@ import {
   createCutstudio,
   cutstudioApiKey,
   cutstudioCandidates,
+  serverCommand,
   type CutstudioDeps,
 } from './cutstudio'
 
@@ -239,5 +240,21 @@ describe('cutstudioApiKey', () => {
 
   it('is empty when none is set', async () => {
     expect(await cutstudioApiKey({ env: {}, readText: () => Promise.reject(new Error('ENOENT')) })).toBe('')
+  })
+})
+
+describe('serverCommand', () => {
+  const PYTHONW = path.join(DESKTOP, 'cutstudio', '.venv', 'Scripts', 'pythonw.exe')
+
+  it('runs his working copy under the windowless Python, so no console window can open', () => {
+    expect(serverCommand(DEV_EXE, (f) => f === PYTHONW)).toEqual({
+      command: PYTHONW,
+      args: ['-m', 'cutstudio', 'serve', '--port', '8787'],
+    })
+  })
+
+  it('starts an installed CutStudio as it is', () => {
+    const installed = path.join('C:', 'Program Files', 'CutStudio', 'cutstudio.exe')
+    expect(serverCommand(installed, () => false)).toEqual({ command: installed, args: ['serve', '--port', '8787'] })
   })
 })

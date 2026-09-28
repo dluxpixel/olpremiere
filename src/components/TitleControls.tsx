@@ -16,6 +16,7 @@ import {
   Italic,
 } from 'lucide-react'
 import { ensureTitleFont, TITLE_FONT_OPTIONS } from '../engine/render/titleFonts'
+import { appleEmojiFor, EMOJI_STACK } from '../engine/render/emojiFont'
 import { defaultTitleDef, type Clip, type TitleDef } from '../engine/types'
 import { setTitlesFontSize, updateTitle } from '../state/titleActions'
 import { IconButton } from '../ui/Button'
@@ -121,6 +122,9 @@ export function TitleControls({ clip }: { clip: Clip }) {
           aria-label="Title text"
           value={def.text}
           onChange={(e) => set({ text: e.target.value }, 'text')}
+          // The emoji he pastes look the same here as in the video: the Apple face
+          // first, for emoji only, then the app's own font for everything else.
+          style={appleEmojiFor(def.text) ? { fontFamily: `${EMOJI_STACK}, var(--font-sans)` } : undefined}
           rows={3}
           className="min-h-[60px] w-full resize-y rounded-field bg-bg-input px-2 py-1.5 text-ui-sm leading-snug text-text-primary focus:outline-none focus:ring-1 focus:ring-accent"
         />

@@ -82,6 +82,24 @@ export function cutstudioCandidates(env: CutstudioDeps['env'], desktopDir: strin
   return out
 }
 
+/**
+ * How to start the server from a found cutstudio.exe.
+ *
+ * ⛔ A VIRTUAL ENVIRONMENT'S cutstudio.exe IS A LAUNCHER, NOT CUTSTUDIO. It is a
+ * small console program that starts python.exe as a second process, and that
+ * second process gets a console window of its own: windowsHide only reaches the
+ * launcher. A black window over his editor, on a stream, is the exact thing he
+ * asked to stop (2026-09-19). So when pythonw.exe, the windowless Python, sits
+ * beside it, the server runs under that directly, one process, no console at all.
+ * An installed CutStudio is started as it is.
+ */
+export function serverCommand(exe: string, exists: (file: string) => boolean): { command: string; args: string[] } {
+  const serve = ['serve', '--port', String(CUTSTUDIO_PORT)]
+  const pythonw = path.join(path.dirname(exe), 'pythonw.exe')
+  if (exists(pythonw)) return { command: pythonw, args: ['-m', 'cutstudio', ...serve] }
+  return { command: exe, args: serve }
+}
+
 /** The first cutstudio.exe that is really there, or null. */
 export function findCutstudio(d: Pick<CutstudioDeps, 'env' | 'desktopDir' | 'exists'>): string | null {
   return cutstudioCandidates(d.env, d.desktopDir).find((p) => d.exists(p)) ?? null
@@ -154,7 +172,8 @@ export function createCutstudio(d: CutstudioDeps) {
         // ⛔ windowsHide, like every child this app starts: CutStudio's server is
         // a console program, and without it a black window would open over his
         // editor for as long as the server runs.
-        child = d.spawn(exe, ['serve', '--port', String(CUTSTUDIO_PORT)], { stdio: 'ignore', windowsHide: true })
+        const { command, args } = serverCommand(exe, d.exists)
+        child = d.spawn(command, args, { stdio: 'ignore', windowsHide: true })
       } catch (err) {
         return fail('no-start', messageOf(err))
       }

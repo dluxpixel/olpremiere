@@ -47,6 +47,7 @@ import monocraftUrl from '../../assets/fonts/Monocraft.ttf?url'
 import montserratUrl from '../../assets/fonts/Montserrat-Variable.ttf?url'
 import versatileUrl from '../../assets/fonts/VersatileBold.ttf?url'
 import tiktokSansUrl from '../../assets/fonts/TikTokSans-Variable.ttf?url'
+import { EMOJI_FAMILY, EMOJI_FONT_URL, EMOJI_STACK, EMOJI_UNICODE_RANGE, emojiFontAvailable, hasEmoji } from './emojiFont'
 import { clearTitleCache } from './titleRaster'
 
 export interface CustomTitleFont {
@@ -72,6 +73,22 @@ export interface CustomTitleFont {
    * Undefined for the five that predate the library and are listed first.
    */
   group?: 'impact' | 'clean' | 'fun' | 'editorial'
+  /** Limit the face to these characters (the Apple emoji face answers for emoji only). */
+  unicodeRange?: string
+}
+
+/**
+ * The Apple emoji face (emojiFont.ts). Not in the picker: it sits in front of
+ * whatever face a title uses and only draws its emoji. Loaded on first sight of
+ * an emoji, never at boot: it is a big file, fetched onto his computer the
+ * first time (electron/emojiFont.ts).
+ */
+const EMOJI_FONT: CustomTitleFont = {
+  label: 'Apple emoji',
+  family: EMOJI_FAMILY,
+  stack: EMOJI_STACK,
+  url: EMOJI_FONT_URL,
+  unicodeRange: EMOJI_UNICODE_RANGE,
 }
 
 /** Minecraft-style pixel font (Monocraft, SIL OFL, so safe to ship publicly). */
@@ -274,7 +291,10 @@ function loadOne(fontset: FontFaceSet, f: CustomTitleFont): Promise<void> {
       // A weight range maps a bold (700) request onto this single file, so there
       // is no faux-bold synthesis that could differ between the two rendering
       // contexts. A font may pin its own range (see `weight`).
-      const face = new FontFace(f.family, `url(${f.url})`, { weight: f.weight ?? '1 1000' })
+      const face = new FontFace(f.family, `url(${f.url})`, {
+        weight: f.weight ?? '1 1000',
+        ...(f.unicodeRange ? { unicodeRange: f.unicodeRange } : {}),
+      })
       await face.load()
       fontset.add(face)
     } catch (err) {
@@ -295,16 +315,33 @@ function loadOne(fontset: FontFaceSet, f: CustomTitleFont): Promise<void> {
  * contexts.
  */
 export function titleFontStacksIn(seq: {
-  tracks: readonly { clips: readonly { title?: { fontFamily?: string } }[] }[]
+  tracks: readonly { clips: readonly { title?: { fontFamily?: string; text?: string } }[] }[]
 }): string[] {
   const out = new Set<string>()
   for (const t of seq.tracks) {
     for (const c of t.clips) {
       const f = c.title?.fontFamily
       if (f) out.add(f)
+      // A title with an emoji needs the Apple face too, or the export worker
+      // would draw that emoji in the system's own.
+      if (hasEmoji(c.title?.text)) out.add(EMOJI_STACK)
     }
   }
   return [...out]
+}
+
+/**
+ * Load the Apple emoji face in this context, once, then redraw. The preview
+ * calls it on every title with an emoji it draws; after the first call it is a
+ * map lookup. The export worker gets the face through loadTitleFonts instead,
+ * and waits for it before drawing a single frame.
+ */
+export function ensureEmojiFont(fontset: FontFaceSet, onReady?: () => void): void {
+  if (!emojiFontAvailable() || inFlight.has(EMOJI_FAMILY)) return
+  void loadOne(fontset, EMOJI_FONT).then(() => {
+    clearTitleCache()
+    onReady?.()
+  })
 }
 
 /** The registry row for a stored `fontFamily` stack, or undefined for a system stack. */
@@ -343,5 +380,6 @@ export function loadTitleFonts(fontset: FontFaceSet, stacks?: readonly string[])
     if (f) wanted.add(f.family)
   }
   const rows = CUSTOM_TITLE_FONTS.filter((f) => wanted.has(f.family))
+  if (stacks?.includes(EMOJI_STACK) && emojiFontAvailable()) rows.push(EMOJI_FONT)
   return Promise.all(rows.map((f) => loadOne(fontset, f))).then(() => clearTitleCache())
 }
