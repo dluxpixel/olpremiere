@@ -1,7 +1,8 @@
 import { useState, type DragEvent, type MutableRefObject } from 'react'
 import { addClipFromAsset, addClipWithLinkedAudio } from '../engine/timeline'
 import { audioTracks, type Id, type MediaAsset, type Sequence, type Track } from '../engine/types'
-import { ASSET_MIME, SFX_MIME, TITLE_MIME } from '../state/dnd'
+import { ASSET_MIME, LIBRARY_MIME, SFX_MIME, TITLE_MIME, dragHasType } from '../state/dnd'
+import { addLibraryItemToTimeline, useLibrary } from '../state/library'
 import { insertSfxAtPlayhead } from '../state/sfxActions'
 import { updateActiveSequence, useStore } from '../state/store'
 import { addTitleFromShelf } from '../state/titleActions'
@@ -30,8 +31,8 @@ export interface TimelineDropContext {
 }
 
 /**
- * Drops from the media bin, the sound shelf and the title shelf onto the
- * lanes: the preview line while hovering, and the one edit on release.
+ * Drops from the media bin, the Library, the sound shelf and the title shelf
+ * onto the lanes: the preview line while hovering, and the one edit on release.
  */
 export function useTimelineDrop({
   seq,
@@ -57,7 +58,10 @@ export function useTimelineDrop({
 
   const handleDragOver = (e: DragEvent<HTMLDivElement>) => {
     const { isAsset, isSfx, isTitle } = dropKinds(e.dataTransfer.types)
-    if (!isAsset && !isSfx && !isTitle) return
+    // A Library item hovers exactly like bin media: any lane shows the line,
+    // and the drop picks the right kind of lane for it.
+    const isLibrary = dragHasType(e.dataTransfer.types, LIBRARY_MIME)
+    if (!isAsset && !isSfx && !isTitle && !isLibrary) return
     e.preventDefault()
     e.dataTransfer.dropEffect = 'copy'
     // Bin drags edge-scroll too (the loop only scrolls here - the preview line
@@ -81,6 +85,7 @@ export function useTimelineDrop({
     const sfxId = e.dataTransfer.getData(SFX_MIME)
     const assetId = e.dataTransfer.getData(ASSET_MIME)
     const lookId = e.dataTransfer.getData(TITLE_MIME)
+    const libraryId = e.dataTransfer.getData(LIBRARY_MIME)
     stopEdgeScroll()
     lastDragPointer.current = null
     setDropPreview(null)
@@ -100,6 +105,23 @@ export function useTimelineDrop({
       const target = sfxDropTrack(lane, seq)
       const t = dropTimeAt(x)
       void insertSfxAtPlayhead(sfxId, { atS: t, ...(target ? { trackId: target.id } : {}) })
+      return
+    }
+    // A Library item lands where it was aimed, the same way bin media does. The
+    // time and lane are read NOW, while the drop is still readable; the copy
+    // into the project happens after.
+    if (libraryId) {
+      e.preventDefault()
+      const item = useLibrary.getState().items.find((i) => i.id === libraryId)
+      if (!item) return
+      const wantKind = item.kind === 'audio' ? 'audio' : 'video'
+      const { x, y } = contentPoint(e)
+      const target = assetDropTrack(laneAt(y), seq, wantKind)
+      if (!target) {
+        show(`No unlocked ${wantKind} track for ${item.name}`, 'danger')
+        return
+      }
+      void addLibraryItemToTimeline(item.id, { atS: dropTimeAt(x), trackId: target.id, exact: true })
       return
     }
     if (!assetId) return

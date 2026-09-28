@@ -5,7 +5,7 @@ import { act, cleanup, renderHook } from '@testing-library/react'
 import type { DragEvent } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { activeSequence, newProject, type Sequence, type Track } from '../engine/types'
-import { ASSET_MIME, SFX_MIME, TITLE_MIME } from '../state/dnd'
+import { ASSET_MIME, LIBRARY_MIME, SFX_MIME, TITLE_MIME } from '../state/dnd'
 import { useStore } from '../state/store'
 import { useToasts } from '../state/toasts'
 import { AV, makeAsset } from './timelineTestFixtures'
@@ -14,10 +14,26 @@ import { useTimelineDrop, type TimelineDropContext } from './useTimelineDrop'
 const hoisted = vi.hoisted(() => ({
   sfx: [] as { id: string; opts: unknown }[],
   titles: [] as { id: string; t: number }[],
+  library: [] as { id: string; place: unknown }[],
 }))
 vi.mock('../state/sfxActions', () => ({
   insertSfxAtPlayhead: async (id: string, opts: unknown) => {
     hoisted.sfx.push({ id, opts })
+  },
+}))
+// A Library item's copy into the project is library.test.ts's business. Here
+// only the handoff matters: which item, when, and on which lane.
+vi.mock('../state/library', () => ({
+  useLibrary: {
+    getState: () => ({
+      items: [
+        { id: 'lib-sound', name: 'meow.wav', kind: 'audio' },
+        { id: 'lib-clip', name: 'intro.mp4', kind: 'video' },
+      ],
+    }),
+  },
+  addLibraryItemToTimeline: async (id: string, place: unknown) => {
+    hoisted.library.push({ id, place })
   },
 }))
 vi.mock('../state/titleActions', () => ({
@@ -32,6 +48,7 @@ beforeEach(() => {
   localStorage.clear()
   hoisted.sfx.length = 0
   hoisted.titles.length = 0
+  hoisted.library.length = 0
   const project = newProject()
   project.assets = { av: AV, snd: makeAsset({ id: 'snd', kind: 'audio', hasVideo: false }) }
   useStore.getState().setProject(project)
@@ -148,5 +165,19 @@ describe('useTimelineDrop', () => {
     const { hook } = mount(() => null, { snapping: true })
     act(() => hook.result.current.handleDrop(dragEvent({ [TITLE_MIME]: 'look' }, 30)))
     expect(hoisted.titles).toEqual([{ id: 'look', t: 3.02 }])
+  })
+
+  it('previews a Library item like bin media and hands it over with the drop time and lane', () => {
+    const { hook } = mount(() => firstOf('audio'))
+    act(() => hook.result.current.handleDragOver(dragEvent({ [LIBRARY_MIME]: 'lib-sound' }, 30)))
+    expect(hook.result.current.dropPreview).toEqual({ trackId: firstOf('audio').id, tS: 3 })
+    act(() => hook.result.current.handleDrop(dragEvent({ [LIBRARY_MIME]: 'lib-sound' }, 30)))
+    expect(hoisted.library).toEqual([{ id: 'lib-sound', place: { atS: 3, trackId: firstOf('audio').id, exact: true } }])
+  })
+
+  it('sends a Library video to a video lane even when dropped over an audio one', () => {
+    const { hook } = mount(() => firstOf('audio'))
+    act(() => hook.result.current.handleDrop(dragEvent({ [LIBRARY_MIME]: 'lib-clip' }, 10)))
+    expect(hoisted.library).toEqual([{ id: 'lib-clip', place: { atS: 1, trackId: firstOf('video').id, exact: true } }])
   })
 })

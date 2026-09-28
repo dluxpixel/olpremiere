@@ -1,8 +1,7 @@
-import { Bookmark, Captions, Film, FolderOpen, Image as ImageIcon, Music, Plus, Sparkles, Upload, Volume2, Wand2 } from 'lucide-react'
+import { Captions, Film, FolderOpen, Image as ImageIcon, Music, Plus, Sparkles, Upload, Wand2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { filterEffects, matchesQuery } from '../engine/effects/search'
 import { TRANSITION_KINDS, TRANSITION_LABELS } from '../engine/render/types'
-import { SFX_LIBRARY, type SfxDef } from '../engine/sfx/sfx'
 import { formatTimecode } from '../engine/timecode'
 import { activeSequence, type MediaAsset } from '../engine/types'
 import { useBlobUrl } from '../state/blobUrls'
@@ -17,18 +16,10 @@ import { applyEffectToAllClips } from '../state/bulkEdits'
 import { applyEffectToClips } from '../state/bulkEdits'
 import { setClipTransition } from '../state/clipEdits'
 import { openContextMenu, type MenuItem } from '../state/contextMenu'
-import { ASSET_MIME, EFFECT_MIME, SFX_MIME, TITLE_MIME, TRANSITION_MIME } from '../state/dnd'
-import {
-  addLibraryItemToProject,
-  applyPresetToAllClips,
-  applyPresetToSelection,
-  isInLibrary,
-  removeLibraryItem,
-  removePreset,
-  saveAssetToLibrary,
-  useLibrary,
-  type LibraryItem,
-} from '../state/library'
+import { ASSET_MIME, EFFECT_MIME, TITLE_MIME, TRANSITION_MIME } from '../state/dnd'
+import { isInLibrary, saveAssetToLibrary, useLibrary } from '../state/library'
+import { oneClickSaveHint, saveToCategoryItems } from '../state/libraryMenus'
+import { LibraryTab } from './LibraryTab'
 import { healArrivedBlob, useMediaSync } from '../collab/mediaSync'
 import { useCollab } from '../collab/collabControl'
 import { deleteAsset, importFiles, insertAssetAtPlayhead, useImportProgress } from '../state/mediaActions'
@@ -40,7 +31,6 @@ import { evictAsset } from '../engine/frameCache'
 import { invalidatePreview } from '../engine/preview'
 import { useToasts } from '../state/toasts'
 import { applyJettismLook, applyPunchyGradeToClips } from '../state/lookActions'
-import { insertSfxAtPlayhead, previewSfx } from '../state/sfxActions'
 import { useStore, type LeftTab } from '../state/store'
 import { putBlob } from '../state/persistence'
 import { Button } from '../ui/Button'
@@ -228,6 +218,7 @@ function AssetActions({ asset }: { asset: MediaAsset }) {
   // Name + duration is the Library's own identity for media (isInLibrary), so
   // the button can say "already there" up front instead of only on the click.
   const saved = useLibrary((s) => isInLibrary(s.items, asset.name, asset.durationS))
+  const saveInto = useLibrary((s) => oneClickSaveHint(s))
 
   return (
     <div
@@ -281,7 +272,7 @@ function AssetActions({ asset }: { asset: MediaAsset }) {
         title={
           saved
             ? 'Already in the Library'
-            : 'Save a copy to the Library, so it outlives this project'
+            : `Save a copy to the Library, so it outlives this project${saveInto ? `. It goes in ${saveInto}` : ''}`
         }
         onClick={() => void saveAssetToLibrary(asset.id)}
         className={`${ACTION_BUTTON} text-text-secondary hover:bg-bg-input hover:text-text-primary active:bg-border disabled:hover:bg-transparent disabled:hover:text-text-secondary`}
@@ -355,7 +346,17 @@ function AssetCard({ asset, fps }: { asset: MediaAsset; fps: number }) {
       onContextMenu={(e) =>
         openContextMenu(e, [
           { label: 'Add to timeline', shortcut: 'Enter', onClick: () => insertAssetAtPlayhead(asset.id) },
-          { label: 'Save to Library', onClick: () => void saveAssetToLibrary(asset.id) },
+          {
+            // Still ONE click, into the category he saved to last (named on the
+            // right), or Unsorted. The row below picks or names another.
+            label: 'Save to Library',
+            shortcut: oneClickSaveHint(),
+            onClick: () => void saveAssetToLibrary(asset.id),
+          },
+          // His words, 2026-09-28: *"when I want to save a sound effect for
+          // Battle Cats, I can."* Not called "Save to Library in...": the
+          // one-click row above must stay the only "Save to Library" on screen.
+          { label: 'Save to a category', submenu: saveToCategoryItems(asset.id) },
           {
             // "Remove from …" is the one shape for taking things out of any
             // list (bin / Library / presets); "Delete" stays for timeline clips.
@@ -824,164 +825,6 @@ function EffectsTab() {
           </>
         )}
       </div>
-    </div>
-  )
-}
-
-/** One saved media entry. Double-click brings it into the current project. */
-function LibraryCard({ item, fps }: { item: LibraryItem; fps: number }) {
-  const thumbUrl = useBlobUrl(item.thumbnailKey)
-  const Icon = KIND_ICONS[item.kind]
-  return (
-    <div
-      data-testid="library-card"
-      role="button"
-      tabIndex={0}
-      onDoubleClick={() => void addLibraryItemToProject(item.id)}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter') void addLibraryItemToProject(item.id)
-      }}
-      onContextMenu={(e) =>
-        openContextMenu(e, [
-          { label: 'Add to project', shortcut: 'Enter', onClick: () => void addLibraryItemToProject(item.id) },
-          {
-            label: 'Remove from Library',
-            danger: true,
-            separator: true,
-            onClick: () => void removeLibraryItem(item.id),
-          },
-        ])
-      }
-      className="cursor-default overflow-hidden rounded-overlay border border-border bg-bg-elevated transition-colors duration-[120ms] ease-out hover:border-border-strong"
-    >
-      <div className="relative flex aspect-video items-center justify-center bg-black">
-        {thumbUrl ? (
-          <img src={thumbUrl} alt="" draggable={false} className="h-full w-full object-contain" />
-        ) : (
-          <Icon size={16} strokeWidth={1.5} className="text-text-muted" aria-hidden />
-        )}
-        {item.kind !== 'image' && (
-          <span className="absolute right-1 bottom-1 rounded-[3px] bg-black/70 px-1 text-[10px] text-text-primary tabular-nums">
-            {formatTimecode(item.durationS, fps)}
-          </span>
-        )}
-      </div>
-      <div title={item.name} className="truncate px-1.5 py-1 text-[11px] text-text-secondary">
-        {item.name}
-      </div>
-    </div>
-  )
-}
-
-/** One bundled stinger: click auditions it, double-click drops it at the playhead. */
-function SfxRow({ sfx }: { sfx: SfxDef }) {
-  return (
-    <div
-      data-testid="sfx-item"
-      data-payload={sfx.id}
-      role="button"
-      tabIndex={0}
-      draggable
-      title="Click to preview · double-click or drag to add"
-      onDragStart={(e) => {
-        e.dataTransfer.setData(SFX_MIME, sfx.id)
-        e.dataTransfer.effectAllowed = 'copy'
-      }}
-      onClick={() => previewSfx(sfx.id)}
-      onDoubleClick={() => void insertSfxAtPlayhead(sfx.id)}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter') void insertSfxAtPlayhead(sfx.id)
-      }}
-      className="flex cursor-grab items-center gap-2 rounded-[4px] px-2 py-1.5 text-[12px] text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated hover:text-text-primary active:cursor-grabbing"
-    >
-      <Volume2 size={13} strokeWidth={1.5} aria-hidden className="shrink-0 text-text-muted" />
-      <span className="truncate">{sfx.name}</span>
-      <span className="ml-auto shrink-0 text-[10px] text-text-muted tabular-nums">{sfx.durationS.toFixed(1)}s</span>
-    </div>
-  )
-}
-
-function LibraryTab() {
-  const items = useLibrary((s) => s.items)
-  const presets = useLibrary((s) => s.presets)
-  const fps = useStore((s) => activeSequence(s.project).fps)
-  const hasSelection = useStore((s) => s.ui.selection.length === 1)
-  const empty = items.length === 0 && presets.length === 0
-
-  return (
-    <div className="min-h-0 flex-1 overflow-y-auto p-2">
-      {/* Not an EMPTY state: the bundled sound effects below always fill this
-          tab, so a "Nothing saved yet" card sat on screen directly above a list
-          of eight SFX and read as a bug. What is actually empty is the user's
-          own saved media + presets, so say only that, in one line. */}
-      {empty && (
-        <div data-testid="library-empty" className="mb-3 px-0.5 text-[11px] leading-relaxed text-text-muted">
-          Nothing of your own saved yet. Use Save under any media item, or save a graded clip’s
-          effects as a preset.
-        </div>
-      )}
-      {items.length > 0 && (
-        <section className="mb-3">
-          <h3 className="px-0.5 pb-1.5 text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">
-            Media
-          </h3>
-          <div className="grid grid-cols-2 content-start gap-2">
-            {items.map((item) => (
-              <LibraryCard key={item.id} item={item} fps={fps} />
-            ))}
-          </div>
-        </section>
-      )}
-      {presets.length > 0 && (
-        <section>
-          <h3 className="px-0.5 pb-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">
-            Effect presets
-          </h3>
-          {!hasSelection && (
-            <p className="px-0.5 pb-1 text-[10px] text-text-muted">
-              Select a clip to apply one, or right-click → Apply to every clip.
-            </p>
-          )}
-          {presets.map((p) => (
-            <div
-              key={p.id}
-              data-testid="preset-item"
-              role="button"
-              tabIndex={0}
-              title={`${p.effects.length} effect(s); double-click to apply to the selected clip`}
-              onDoubleClick={() => applyPresetToSelection(p.id)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') applyPresetToSelection(p.id)
-              }}
-              onContextMenu={(e) =>
-                openContextMenu(e, [
-                  { label: 'Apply to selected clip', shortcut: 'Enter', onClick: () => applyPresetToSelection(p.id) },
-                  { label: 'Apply to every clip', onClick: () => applyPresetToAllClips(p.id) },
-                  { label: 'Remove preset', danger: true, separator: true, onClick: () => void removePreset(p.id) },
-                ])
-              }
-              className={`flex cursor-default items-center gap-2 rounded-[4px] px-2 py-1.5 text-[12px] transition-colors duration-[120ms] ${
-                hasSelection ? 'text-text-secondary hover:bg-bg-elevated hover:text-text-primary' : 'text-text-muted'
-              }`}
-            >
-              <Bookmark size={13} strokeWidth={1.5} aria-hidden className="shrink-0 text-text-muted" />
-              <span className="truncate">{p.name}</span>
-              <span className="ml-auto shrink-0 text-[10px] text-text-muted">{p.effects.length} fx</span>
-            </div>
-          ))}
-        </section>
-      )}
-      <section className={items.length > 0 || presets.length > 0 ? 'mt-3' : ''}>
-        <h3 className="px-0.5 pb-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">
-          Sound effects
-        </h3>
-        <p className="px-0.5 pb-1 text-[10px] text-text-muted">
-          Click to preview · double-click to drop at the playhead.
-        </p>
-        {SFX_LIBRARY.map((sfx) => (
-          <SfxRow key={sfx.id} sfx={sfx} />
-        ))}
-      </section>
     </div>
   )
 }

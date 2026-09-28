@@ -11,6 +11,12 @@ export const SFX_MIME = 'application/x-olpremiere-sfx'
 /** A ready made title off the shelf (titleShelf.ts), dropped onto the timeline at a time. */
 export const TITLE_MIME = 'application/x-olpremiere-title'
 /**
+ * A saved Library item, by its Library id. Its own MIME, not ASSET_MIME: it is
+ * not in the project yet, so the timeline has to copy it in before placing it,
+ * and a category row takes the same drag to file it.
+ */
+export const LIBRARY_MIME = 'application/x-olpremiere-library'
+/**
  * An effect CARD being dragged within one clip's stack, to reorder it.
  *
  * Its own MIME, deliberately not EFFECT_MIME: the inspector's effect area
