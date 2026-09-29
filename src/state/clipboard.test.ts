@@ -11,7 +11,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { recomputeDuration } from '../engine/timeline'
 import { defaultTitleDef, newProject, newTitleClip } from '../engine/types'
-import { clipMarkerOnSystemClipboard, copySelection, cutSelection } from './clipboard'
+import { clipMarkerLost, clipMarkerOnSystemClipboard, copySelection, cutSelection } from './clipboard'
 import { clipMarker } from './pasteRules'
 import { updateActiveSequence, useStore } from './store'
 
@@ -59,6 +59,18 @@ describe('a clip copy marks the system clipboard', () => {
     writeText.mockImplementationOnce(() => Promise.reject(new DOMException('Document is not focused')))
     seedSelectedClips(1)
     expect(copySelection()).toBe(true)
+  })
+
+  it('a refused write is remembered, so the next paste takes these clips over an older picture', async () => {
+    writeText.mockImplementationOnce(() => Promise.reject(new DOMException('Document is not focused')))
+    seedSelectedClips(1)
+    copySelection()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(clipMarkerLost()).toBe(true)
+    // And the next copy that does write clears it.
+    copySelection()
+    expect(clipMarkerLost()).toBe(false)
   })
 
   it('writes nothing when there was nothing to copy', () => {

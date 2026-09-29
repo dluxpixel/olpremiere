@@ -45,6 +45,10 @@ describe('which paste wins', () => {
     expect(decidePaste({ text: marker, marker, pictureCount: 1 })).toBe('clips')
   })
 
+  it('a clip copy that could not mark the clipboard still wins over an older picture there', () => {
+    expect(decidePaste({ text: '', marker, pictureCount: 1, markerLost: true })).toBe('clips')
+  })
+
   it('writes a marker that reads as what it is when pasted anywhere else', () => {
     expect(clipMarker(1)).toBe('OL Premiere: 1 clip copied')
     expect(clipMarker(3)).toBe('OL Premiere: 3 clips copied')

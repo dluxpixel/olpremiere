@@ -12,7 +12,7 @@
 import { create } from 'zustand'
 import type { CutoutResult } from '../../electron/ipc-types'
 import { isEditableTarget } from '../keymap'
-import { clipMarkerOnSystemClipboard, pasteAtPlayhead } from './clipboard'
+import { clipMarkerLost, clipMarkerOnSystemClipboard, pasteAtPlayhead } from './clipboard'
 import { importFiles } from './mediaActions'
 import {
   createPasteRouter,
@@ -136,6 +136,7 @@ const router = createPasteRouter({
   pasteClips: pasteAtPlayhead,
   offerPicture,
   clipMarker: clipMarkerOnSystemClipboard,
+  markerLost: clipMarkerLost,
   busy: () => usePastePicture.getState().picture !== null,
   defer: (fn) => {
     window.setTimeout(fn, 0)

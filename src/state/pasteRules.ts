@@ -33,8 +33,17 @@ export type PasteChoice = 'clips' | 'picture'
  *   was copied after the clips (or there are no clips), so the picture.
  * - The system clipboard still holds this app's clip marker: the clips.
  */
-export function decidePaste(s: { text: string; marker: string | null; pictureCount: number }): PasteChoice {
+export function decidePaste(s: {
+  text: string
+  marker: string | null
+  pictureCount: number
+  /** The last clip copy could not write its marker (clipboard.ts). */
+  markerLost?: boolean
+}): PasteChoice {
   if (s.pictureCount === 0) return 'clips'
+  // Then a picture on the clipboard says nothing about which came last, and the
+  // clips he just copied in the app are the one copy known to be recent.
+  if (s.markerLost) return 'clips'
   if (s.marker !== null && s.text === s.marker) return 'clips'
   return 'picture'
 }
@@ -137,6 +146,8 @@ export interface PasteRouterDeps {
   offerPicture: (file: File) => void
   /** The text this app put on the system clipboard with its last clip copy. */
   clipMarker: () => string | null
+  /** The last clip copy could not write that text. */
+  markerLost?: () => boolean
   /** A picture is already waiting on his answer. */
   busy: () => boolean
   /** Run `fn` after the browser has had its turn to fire the paste event. */
@@ -172,7 +183,12 @@ export function createPasteRouter(d: PasteRouterDeps) {
       if (keysWaiting > 0) keysWaiting--
       // A second Ctrl+V while he is still answering about the first picture.
       if (d.busy()) return
-      const choice = decidePaste({ text: clip.text, marker: d.clipMarker(), pictureCount: clip.pictures.length })
+      const choice = decidePaste({
+        text: clip.text,
+        marker: d.clipMarker(),
+        pictureCount: clip.pictures.length,
+        markerLost: d.markerLost?.() ?? false,
+      })
       if (choice === 'picture') d.offerPicture(clip.pictures[0]!)
       else d.pasteClips()
     },

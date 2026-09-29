@@ -13,6 +13,13 @@ test.beforeEach(async ({ context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: 'http://localhost:5178' })
 })
 
+// ⛔ LEAVE THE CLIPBOARD EMPTY. The headless browser's clipboard outlives the
+// page, and later specs copy clips on pages that may not write to it, so a
+// picture left here met phase3's Ctrl+V in the 2026-09-28 gate.
+test.afterEach(async ({ page }) => {
+  await page.evaluate(() => navigator.clipboard.writeText('')).catch(() => undefined)
+})
+
 /** Put a small red PNG on the clipboard, the way a screenshot tool would. */
 async function copyPicture(page: Page): Promise<void> {
   await page.evaluate(async () => {

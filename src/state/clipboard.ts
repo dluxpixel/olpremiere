@@ -27,18 +27,35 @@ let systemMarker: string | null = null
  *
  * Without it, a picture he copied an hour ago would still be sitting on the
  * system clipboard and would hijack the next Ctrl+V meant for these clips. Fire
- * and forget: a write the browser refuses only means an older picture there can
- * win, never that the copy itself fails.
+ * and forget: the copy itself never waits on it.
+ *
+ * ⛔ A WRITE THE BROWSER REFUSES MUST NOT HAND CTRL+V TO AN OLD PICTURE. Then the
+ * picture still on the clipboard says nothing about which came last, and the
+ * clips he just copied here are the one copy known to be recent, so the next
+ * paste takes them (markerLost). The full gate caught this on 2026-09-28: a page
+ * with no clipboard permission, a picture left over from an earlier paste, and
+ * Ctrl+V offered the picture instead of his clips.
  */
 function markSystemClipboard(count: number): void {
   const text = clipMarker(count)
   systemMarker = text
+  markerLost = false
+  const lost = (): void => {
+    if (systemMarker === text) markerLost = true
+  }
+  // Only a REFUSED write counts. A page with no clipboard at all can never write
+  // a marker, and counting that would mean no picture could ever be pasted after
+  // one clip copy.
   try {
-    void navigator.clipboard?.writeText(text).catch(() => undefined)
+    void navigator.clipboard?.writeText(text).catch(lost)
   } catch {
-    // No clipboard on this page at all.
+    lost()
   }
 }
+
+/** The last clip copy could not write its marker, so its clips win the next paste. */
+let markerLost = false
+export const clipMarkerLost = (): boolean => markerLost
 
 /** The text the last clip copy put on the system clipboard, or null before any. */
 export function clipMarkerOnSystemClipboard(): string | null {
