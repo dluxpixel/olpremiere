@@ -31,6 +31,7 @@ import type { Clip, Track } from '../engine/types'
 import { IconButton } from '../ui/Button'
 import { PropRow, ScrubField, SectionLabel, type Spec } from './EffectControls'
 import { MoveShelf } from './MoveShelf'
+import { SharedEffects } from './SharedEffects'
 import { MAX_GAIN_DB } from '../engine/loudness'
 
 const OPACITY_SPEC: Spec = { min: 0, max: 1, step: 0.01, sens: 0.005 }
@@ -410,6 +411,10 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
             ))}
           </select>
         </PropRow>
+        {/* Every effect ALL the selected picture clips carry, with its settings:
+            change one and it changes on every clip. His ask, 2026-09-29, with
+            "Select all with Auto Color" on the clip menu as the way in. */}
+        <SharedEffects clips={selected.filter((s) => s.track.kind === 'video').map((s) => s.clip)} />
       </section>
 
       {audioIds.length > 0 && (

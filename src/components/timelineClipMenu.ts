@@ -1,5 +1,6 @@
 import { TRANSITION_KINDS, TRANSITION_LABELS } from '../engine/render/types'
 import { clipEndS, closeAllGaps, closeGapBefore, gapBefore } from '../engine/timeline'
+import { getEffect } from '../engine/effects/registry'
 import { MOVES } from '../engine/moves'
 import type { Clip, Id, MediaAsset, Sequence } from '../engine/types'
 import { comboLabel } from '../keymap'
@@ -10,6 +11,7 @@ import { applyEffect, crossfadeWithNeighbour, deleteSelected, removeClipTransiti
 import { appearanceMenuItems, titleFontSizeItems } from '../state/clipMenus'
 import type { MenuItem } from '../state/contextMenu'
 import { saveToCategoryItems } from '../state/libraryMenus'
+import { effectTypesOn, selectClipsWithEffect } from '../state/sharedEffects'
 import { cutPunchAtPlayhead, impactAtPlayhead, punchInAtPlayhead, punchOnBeats, punchOutAtPlayhead, rampWorkArea, whipToNext } from '../state/motionActions'
 import { applyMoveToSelection } from '../state/moveActions'
 import { copyClipMove, hasClipMove, pasteClipMove } from '../state/moveClipboard'
@@ -247,8 +249,25 @@ export function clipContextMenuItems({ clip, seq, assets, selNow, keepSelection,
     ? [{ label: 'Save to Library', separator: true, submenu: saveToCategoryItems(media.id) }]
     : []
 
+  // "Select all with Auto Color": every clip carrying one of this clip's effects,
+  // so the multi-selection Inspector can change that effect on all of them at
+  // once (SharedEffects). His ask, 2026-09-29.
+  const effectTypes = effectTypesOn(clip).filter((t) => getEffect(t))
+  const selectWithItems: MenuItem[] =
+    effectTypes.length === 1
+      ? [{ label: `Select all with ${getEffect(effectTypes[0]!)!.label}`, onClick: () => selectClipsWithEffect(effectTypes[0]!) }]
+      : effectTypes.length > 1
+        ? [
+            {
+              label: 'Select all with',
+              submenu: effectTypes.map((t) => ({ label: getEffect(t)!.label, onClick: () => selectClipsWithEffect(t) })),
+            },
+          ]
+        : []
+
   return [
-    { label: 'Copy', shortcut: comboLabel('mod+c'), onClick: () => copySelection() },
+    ...selectWithItems,
+    { label: 'Copy', shortcut: comboLabel('mod+c'), separator: selectWithItems.length > 0, onClick: () => copySelection() },
     { label: 'Cut', shortcut: comboLabel('mod+x'), onClick: cutSelection },
     { label: 'Duplicate', shortcut: comboLabel('mod+d'), onClick: duplicateSelection },
     { label: 'Paste', shortcut: comboLabel('mod+v'), onClick: pasteAtPlayhead },
