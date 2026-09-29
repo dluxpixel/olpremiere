@@ -1,0 +1,1 @@
+{ "name": "olp-hidden-app", "productName": "OLP Hidden App", "version": "0.0.0", "private": true, "main": "main.cjs" }

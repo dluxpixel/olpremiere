@@ -6,7 +6,8 @@
 // repo and its releases are public: a copy of Apple's font inside the installer
 // would be Apple's font published for anyone to download, and a takedown of
 // the repo would also take down his update feed. So the app fetches the copy
-// he approved (github.com/samuelngs/apple-emoji-ttf, 2026-09-28) straight onto
+// he approved (github.com/samuelngs/apple-emoji-ttf; the Windows build since
+// 2026-09-29, the one whose shaping table Chromium reads) straight onto
 // his machine, the same as installing a font for himself, and keeps it in his
 // app data. The renderer asks for it at app://<host>/user-fonts/apple-emoji.ttf,
 // and that request is what starts the fetch.
@@ -18,13 +19,13 @@
 // while a title with an emoji is on screen.
 
 import { createHash } from 'node:crypto'
-import { mkdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
 /** Pinned to one release and one checksum, so the bytes can never change under him. */
 export const EMOJI_SOURCE = {
-  url: 'https://github.com/samuelngs/apple-emoji-ttf/releases/download/macos-26-20260722-484daf4e/AppleColorEmoji-Linux.ttf',
-  sha256: 'e37c7af6265ac4a0af6d57bc65e86109a776d9966e8343334557f63da482516f',
+  url: 'https://github.com/samuelngs/apple-emoji-ttf/releases/download/macos-26-20260722-484daf4e/AppleColorEmoji-Windows.ttf',
+  sha256: '18e48f1785564fbf511241e0963b265057bfe742036d8543406c6ce07e48ec0b',
 }
 
 /** The path the renderer asks for under app://. */
@@ -161,8 +162,23 @@ export interface EmojiFontDeps {
  * with an emoji tries again (he may just have been offline).
  */
 export function createEmojiFontStore(deps: EmojiFontDeps) {
-  const target = path.join(deps.dir, 'apple-emoji.ttf')
+  const from = deps.source ?? EMOJI_SOURCE
+  // ⛔ NAMED AFTER ITS SOURCE. v3.17.0 kept the first copy (the Linux build) as
+  // plain "apple-emoji.ttf", and a store that only asks "is a file there?" would
+  // keep drawing with it forever after the source moved, splitting every skin
+  // tone the new source joins. A new source is a new name, so it is fetched, and
+  // any older copy is removed once the new one is in place.
+  const target = path.join(deps.dir, `apple-emoji-${from.sha256.slice(0, 12)}.ttf`)
   let pending: Promise<string> | null = null
+
+  const dropOlderCopies = async (): Promise<void> => {
+    const names = await readdir(deps.dir).catch(() => [] as string[])
+    for (const name of names) {
+      if (/^apple-emoji.*\.ttf(\.part)?$/.test(name) && path.join(deps.dir, name) !== target) {
+        await unlink(path.join(deps.dir, name)).catch(() => undefined)
+      }
+    }
+  }
 
   const fetchOnce = async (): Promise<string> => {
     try {
@@ -170,7 +186,6 @@ export function createEmojiFontStore(deps: EmojiFontDeps) {
     } catch {
       // Not fetched yet.
     }
-    const from = deps.source ?? EMOJI_SOURCE
     const source = await deps.download(from.url)
     const sha = createHash('sha256').update(source).digest('hex')
     if (sha !== from.sha256) throw new Error('the emoji font download did not match its checksum')
@@ -182,6 +197,7 @@ export function createEmojiFontStore(deps: EmojiFontDeps) {
       await unlink(temp).catch(() => undefined)
       throw err
     })
+    await dropOlderCopies()
     return target
   }
 

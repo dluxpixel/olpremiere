@@ -68,21 +68,26 @@ const EMOJI_RE = /\p{Extended_Pictographic}|\p{Regional_Indicator}/u
 export const hasEmoji = (text: string | undefined): boolean => !!text && EMOJI_RE.test(text)
 
 /**
- * Can the fetched face put a skin tone, a family, a flag or a keycap together?
+ * Can the fetched face put a skin tone, a family or a flag together?
  *
- * ⛔ NOT THE COPY IT FETCHES TODAY. That file joins those sequences with Apple's
+ * Yes since 2026-09-29. The first copy (the Linux build) joined those with Apple's
  * own shaping table (morx), which Chromium does not read, so a thumbs up with a
- * skin tone would come out as a yellow thumb next to a brown square. The Windows
- * build of the same copy carries the table Chromium does read (GSUB); he was
- * asked on 2026-09-28 whether to fetch that one instead. Until then a title with
- * such a sequence keeps the system's own emoji, which do put them together, so
- * nothing he had before comes out worse. Flip this with the source in
- * electron/emojiFont.ts.
+ * skin tone came out as a yellow thumb next to a brown square. He said yes to
+ * the Windows build of the same copy, which carries the table Chromium DOES read
+ * (GSUB): measured, every skin tone, the flame heart, the Czech flag and the
+ * rainbow flag come out as one Apple emoji each. Flip this back only with the
+ * source in electron/emojiFont.ts.
  */
-export const EMOJI_FACE_JOINS_SEQUENCES = false
+export const EMOJI_FACE_JOINS_SEQUENCES = true
 
-const JOINED_RE = /‍|⃣|[\u{1F3FB}-\u{1F3FF}]|\p{Regional_Indicator}|[\u{E0020}-\u{E007F}]/u
+/**
+ * A keycap (1, then the keycap mark) never takes the Apple face: its digit sits
+ * outside EMOJI_UNICODE_RANGE on purpose, so the digit and the mark would come
+ * from two fonts. The system's own keycap stays whole.
+ */
+const KEYCAP_RE = /\u20E3/u
+const JOINED_RE = /\u200D|[\u{1F3FB}-\u{1F3FF}]|\p{Regional_Indicator}|[\u{E0020}-\u{E007F}]/u
 
 /** Should this text draw its emoji with the Apple face? */
 export const appleEmojiFor = (text: string | undefined): boolean =>
-  EMOJI_FACE_JOINS_SEQUENCES || !text || !JOINED_RE.test(text)
+  !text || (!KEYCAP_RE.test(text) && (EMOJI_FACE_JOINS_SEQUENCES || !JOINED_RE.test(text)))

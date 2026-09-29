@@ -44,9 +44,13 @@ describe('appleEmojiFor', () => {
     for (const t of ['so good 😭', '😂🔥💀', '❤️ love it', '✨ new ✨', 'plain text']) expect(appleEmojiFor(t)).toBe(true)
   })
 
-  it('keeps the system emoji for what the fetched copy cannot put together, so nothing comes out split', () => {
-    expect(EMOJI_FACE_JOINS_SEQUENCES).toBe(false)
-    for (const t of ['👍🏽', '💪🏻 day', '👨‍👩‍👧', '❤️‍🔥', '🇨🇿', '1️⃣']) expect(appleEmojiFor(t)).toBe(false)
+  it('draws skin tones, families and flags with the Apple face too, now that it joins them', () => {
+    expect(EMOJI_FACE_JOINS_SEQUENCES).toBe(true)
+    for (const t of ['👍🏽', '💪🏻 day', '👨‍👩‍👧', '❤️‍🔥', '🇨🇿']) expect(appleEmojiFor(t)).toBe(true)
+  })
+
+  it('keeps a keycap on the system emoji, so its digit and its mark never split', () => {
+    expect(appleEmojiFor('1️⃣ top tip')).toBe(false)
   })
 })
 

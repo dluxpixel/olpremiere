@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { mkdtempSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -142,18 +142,29 @@ describe('createEmojiFontStore', () => {
     const download = vi.fn(async () => Buffer.from('a login page'))
     const store = createEmojiFontStore({ dir, download, source: good })
     await expect(store.read()).rejects.toThrow(/checksum/)
-    expect(existsSync(path.join(dir, 'apple-emoji.ttf'))).toBe(false)
+    expect(readdirSync(dir).filter((n) => n.startsWith('apple-emoji'))).toEqual([])
     await expect(store.read()).rejects.toThrow()
     expect(download).toHaveBeenCalledTimes(2)
   })
 
-  it('uses a copy already on disk without touching the network', async () => {
+  it('uses a copy of THIS source already on disk without touching the network', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'olp-emoji-'))
-    writeFileSync(path.join(dir, 'apple-emoji.ttf'), 'kept')
+    writeFileSync(path.join(dir, `apple-emoji-${EMOJI_SOURCE.sha256.slice(0, 12)}.ttf`), 'kept')
     const download = vi.fn(async () => source)
     const store = createEmojiFontStore({ dir, download })
     expect((await store.read()).toString()).toBe('kept')
     expect(download).not.toHaveBeenCalled()
+  })
+
+  it('replaces a copy from an older source, which v3.17.0 kept as plain apple-emoji.ttf', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'olp-emoji-'))
+    writeFileSync(path.join(dir, 'apple-emoji.ttf'), 'the first copy, which splits skin tones')
+    const download = vi.fn(async () => source)
+    const store = createEmojiFontStore({ dir, download, source: good })
+    const font = await store.read()
+    expect(download).toHaveBeenCalledTimes(1)
+    expect(readTables(font).get('CBLC')![8 + 44]).toBe(96)
+    expect(readdirSync(dir)).toEqual([`apple-emoji-${good.sha256.slice(0, 12)}.ttf`])
   })
 
   it('is pinned to one release and one checksum', () => {
