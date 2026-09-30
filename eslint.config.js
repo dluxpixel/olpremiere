@@ -15,6 +15,9 @@ export default tseslint.config(
       'test-results',
       '_verify',
       'eslint.config.js',
+      // Helper worktrees live here, each a whole copy of the repo with its own
+      // build. They are not this tree's code: linting them failed a ship.
+      '.claude',
     ],
   },
   {
