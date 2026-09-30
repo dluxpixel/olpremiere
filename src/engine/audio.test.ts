@@ -837,13 +837,12 @@ describe('the audio decode burst is bounded', () => {
     const body = demuxSrc.slice(demuxSrc.indexOf('export async function demuxAudio'), demuxSrc.indexOf('export type PeaksResult'))
     // Sized from the asset, not from a container walk.
     expect(body).toContain('req.durationS > 0 ? req.durationS')
-    // ⛔ THE HEAD IS SUBTRACTED. Without this every AAC video gains a constant
-    // 21 to 44 ms offset that decodeAudioData used to trim: 0.6 to 1.3 frames of
-    // lip sync at 30 fps, on every video asset, invisible to every other test in
-    // this repo. It was found by an adversarial read, not by a failure.
-    expect(body).toContain('getFirstTimestamp()')
-    expect(body).toContain('firstTs + fromS')
-    expect(body).toContain('sample.timestamp - originTs')
+    // ⛔ EVERY SAMPLE AT ITS OWN TIMESTAMP, NEVER SHIFTED BY THE AAC PRIMING.
+    // Subtracting the first timestamp (2026-08-28 to 2026-09-30) made every AAC
+    // video's sound 21 to 44 ms late: the priming already sits before zero. The
+    // behaviour itself is proven in audioDemux.test.ts.
+    expect(body).not.toContain('getFirstTimestamp()')
+    expect(body).toContain('placeSample(sample, planes, length, sampleRate, fromS)')
     // copyTo THROWS rather than truncating, and that throw would fall back to a
     // read that cannot work on the files this function exists for.
     expect(body).toContain('length - start')

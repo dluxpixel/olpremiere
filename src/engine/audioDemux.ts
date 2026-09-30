@@ -48,11 +48,19 @@ async function openTrack(blob: Blob): Promise<{ track: InputAudioTrack | null; d
  * Decode source seconds [fromS, toS) of the file's primary audio track into
  * float32 planes. Sample 0 of every plane is `startS` of source time.
  *
- * ⛔ SIZED FROM `durationS`, NOT FROM THE CONTAINER, and the AAC head is
- * subtracted: the same two rules the whole file read has always followed (an AAC
- * track's first packet does not start at zero, 21 to 44 ms of lip sync on every
- * video). A range is the same axis cut shorter, so a range and a whole read of
- * the same file agree sample for sample.
+ * ⛔ SIZED FROM `durationS`, NOT FROM THE CONTAINER. A range is the same axis
+ * cut shorter, so a range and a whole read of the same file agree sample for
+ * sample.
+ *
+ * ⛔ EVERY SAMPLE GOES AT ITS OWN TIMESTAMP, THE SAME CLOCK THE PICTURE USES
+ * (the frame readers ask for `sourceT` as it is). Until 2026-09-30 the AAC
+ * track's first timestamp was subtracted. mediabunny already applies the edit
+ * list, so that first timestamp is the encoder's priming, sitting BEFORE zero:
+ * -0.044 s on his iPhone clips, -0.0213 s on his OBS recordings. Subtracting it
+ * pushed every one of those sounds LATE by that much against its own picture
+ * (measured on copies of his two iPhone clips: 46.67 ms late in the app's own
+ * mix, against ffmpeg's read of the same file). The priming is silence the encoder needs, not sound: it
+ * lands before sample 0 and `placeSample` drops it.
  */
 export async function demuxAudio(blob: Blob, req: DemuxRequest): Promise<DemuxResult> {
   const { track, dispose } = await openTrack(blob)
@@ -66,17 +74,14 @@ export async function demuxAudio(blob: Blob, req: DemuxRequest): Promise<DemuxRe
     const fromS = Math.max(0, Math.min(req.fromS ?? 0, durationS))
     const toS = Math.max(fromS, Math.min(req.toS ?? durationS, durationS))
     const length = Math.max(1, Math.round((toS - fromS) * sampleRate))
-    const firstTs = await track.getFirstTimestamp()
     const planes: Float32Array[] = []
     for (let ch = 0; ch < channels; ch++) planes.push(new Float32Array(length))
     const { AudioSampleSink } = await import('mediabunny')
     const ranged = req.fromS !== undefined || req.toS !== undefined
-    const samples = ranged
-      ? new AudioSampleSink(track).samples(firstTs + fromS, firstTs + toS)
-      : new AudioSampleSink(track).samples()
+    const samples = ranged ? new AudioSampleSink(track).samples(fromS, toS) : new AudioSampleSink(track).samples()
     for await (const sample of samples) {
       try {
-        if (!placeSample(sample, planes, length, sampleRate, firstTs + fromS)) break
+        if (!placeSample(sample, planes, length, sampleRate, fromS)) break
       } finally {
         sample.close()
       }
@@ -133,12 +138,13 @@ export async function demuxPeaks(blob: Blob, durationS: number, buckets: number)
     const total = Math.max(1, Math.round(dur * sampleRate))
     const n = Math.max(1, Math.floor(buckets))
     const peaks = new Float32Array(n)
-    const firstTs = await track.getFirstTimestamp()
     let scratch = new Float32Array(0)
     const { AudioSampleSink } = await import('mediabunny')
     for await (const sample of new AudioSampleSink(track).samples()) {
       try {
-        const at = Math.round((sample.timestamp - firstTs) * sampleRate)
+        // Its own timestamp, the same clock as `demuxAudio`: the waveform sits
+        // under the sound he hears.
+        const at = Math.round(sample.timestamp * sampleRate)
         if (at >= total) break
         const frames = sample.numberOfFrames
         if (scratch.length < frames) scratch = new Float32Array(frames)
