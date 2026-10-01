@@ -196,6 +196,22 @@ export function progressWithSides(
 // Deterministic by construction: a pure function of gl_FragCoord and uSeed (the
 // resolver frame index), so preview and export generate identical noise, which
 // is the invariant the shared renderer exists to protect.
+//
+// ⛔ THE DITHER WENT DEAD ON 2026-09-17 AND NOTHING NOTICED FOR TWO WEEKS. The
+// linear light change made every frame composite into an 8 bit sRGB accumulator
+// first, and only the blit out of it reaches the canvas. Every fade and blur
+// was rounded to a code IN that accumulator, undithered, so by the time the one
+// dithered pass ran there was nothing between codes left to dither: it was
+// handed values already on a code and, rightly, left them alone. MEASURED in
+// the real app on his own footage, 2026-09-30: a 0.42 fade came out 94.8% equal
+// to the undithered sum, with flat runs exactly as much wider as the fade
+// squeezes the codes (94.6 to 138.8 px), and his mc night export showed bare
+// one-code contour rings across the blurred backdrop sky (a flat run of 575 px
+// in a 1080 px row). So the EXPORT now composites in 16 bit (see
+// RendererOptions.highPrecision), where a fade really does land between codes,
+// and the final blit has something to dither again (BLIT_DEEP_FS, below). The
+// preview keeps the 8 bit buffers and the blit it was tuned on.
+
 // THE WHOLE COMPOSITE RUNS IN LINEAR LIGHT, since 2026-09-17.
 //
 // Every source texture and every framebuffer is SRGB8_ALPHA8: the GPU decodes
@@ -541,6 +557,100 @@ void main() {
   vec4 c = texture(uTex, vUV);
   if (uEncode > 0.5) c = encodePm(c);
   outColor = vec4(ditherPm(c.rgb, c.a, uDither, gl_FragCoord.xy, uSeed), c.a);
+}`
+
+/**
+ * The export's dither, in codes: how far from a code a value may sit and still
+ * count as ON it (left alone), and the peak of the triangular noise. Exported
+ * so the unit test models BLIT_DEEP_FS with the shader's own numbers.
+ *
+ * A sixteenth of a code, not the 4096th the 8 bit blit uses: an untouched pixel
+ * comes back out of a 16 bit buffer as its code plus up to 0.025 of a code
+ * (half a 16 bit step, near black, once encoded), still exactly the code once
+ * rounded, but a 4096th would call it between codes and noise would flip some
+ * of them. A fade or blur lands anywhere between two codes; only the values
+ * within a sixteenth of one, already closer than the eye can see, skip.
+ *
+ * One code of peak, the textbook triangular dither, not the half code the 8 bit
+ * blit uses. MEASURED in the real app on his 0.42 fade, flat runs in the sky of
+ * the ENCODED file (the app's own x264 call): 177.5 px with the dead dither,
+ * 152.3 with half a code, 138.0 with one code, and the file did not grow (6463,
+ * 6249, 6394 kbit/s): grain the encoder smooths costs it less than contours it
+ * has to draw. Before the encoder the same frames read 143.5, 88.5 and 52.6 px.
+ */
+export const DEEP_DITHER_ON_CODE = 1 / 16
+export const DEEP_DITHER_PEAK_CODES = 1
+
+/**
+ * ⛔ THE FINAL BLIT FOR A 16 BIT COMPOSITE: LIGHT TO CODES BY THE GPU'S OWN TABLE.
+ *
+ * The 8 bit blit encodes with the sRGB formula. That was harmless while the
+ * accumulator was 8 bit sRGB, but the GPU does not decode sRGB textures by the
+ * formula. MEASURED on his RTX 4060 (D3D11), 2026-10-01: its decode of the 256
+ * codes sits up to 0.54% off the formula, which re-encoded is up to 0.43 of a
+ * code (0.09 on average), and 138 of the 256 codes land more than a sixteenth
+ * of a code from where they started. Every pixel of his footage was decoded by
+ * that table on the way in, so the formula cannot tell an untouched pixel from
+ * an invented one, and a dither keyed on it sprinkles grain over the whole 1:1
+ * picture (13% of all values moved by one, measured).
+ *
+ * So this blit reads its codes back against the table that made them:
+ * uCodeLut holds the 256 codes in an sRGB texture, so sampling it IS the GPU's
+ * decode of each code. A value is placed between the two codes whose decoded
+ * light brackets it, and its fraction between them is what the dither works
+ * on. An untouched pixel lands exactly on its code and comes back bit exact; a
+ * fade lands between and is dithered by one code of triangular noise.
+ *
+ * Used only for the canvas write of a 16 bit composite (uEncode). Every other
+ * blit, and the whole 8 bit path, runs the same arithmetic as BLIT_FS.
+ */
+const BLIT_DEEP_FS = `#version 300 es
+precision highp float;
+in vec2 vUV;
+uniform sampler2D uTex;
+uniform highp sampler2D uCodeLut;
+uniform float uSeed;
+uniform float uDither;
+uniform float uEncode;
+${DITHER_GLSL}
+${SRGB_GLSL}
+out vec4 outColor;
+float lutLight(float k) {
+  return texelFetch(uCodeLut, ivec2(int(clamp(k, 0.0, 255.0)), 0), 0).r;
+}
+// Where linear light x sits on the GPU's own code scale: code k plus the
+// fraction of the way to k + 1. The formula's guess is within half a code, so
+// one step either way settles the bracket against the real table.
+float codeOf(float x) {
+  float k = floor(clamp(linearToSrgb(vec3(x)).r * 255.0, 0.0, 255.0));
+  if (k > 0.0 && x < lutLight(k)) k -= 1.0;
+  else if (k < 254.0 && x >= lutLight(k + 1.0)) k += 1.0;
+  if (k >= 255.0) return 255.0;
+  float lo = lutLight(k);
+  float hi = lutLight(k + 1.0);
+  return k + clamp((x - lo) / max(hi - lo, 1e-9), 0.0, 1.0);
+}
+void main() {
+  vec4 c = texture(uTex, vUV);
+  if (uEncode < 0.5) {
+    outColor = vec4(ditherPm(c.rgb, c.a, uDither, gl_FragCoord.xy, uSeed), c.a);
+    return;
+  }
+  if (c.a <= 0.0) {
+    outColor = vec4(0.0);
+    return;
+  }
+  vec3 lin = clamp(c.rgb / c.a, 0.0, 1.0);
+  vec3 code = vec3(codeOf(lin.r), codeOf(lin.g), codeOf(lin.b));
+  if (uDither != 0.0) {
+    vec2 q = gl_FragCoord.xy + fract(uSeed * 0.0173) * 131.0;
+    float r1 = fract(sin(dot(q, vec2(12.9898, 78.233))) * 43758.5453);
+    float r2 = fract(sin(dot(q, vec2(63.7264, 10.873))) * 24634.6345);
+    vec3 offCode = step(vec3(${DEEP_DITHER_ON_CODE}), abs(code - floor(code + 0.5)));
+    code = clamp(code + (r1 - r2) * ${DEEP_DITHER_PEAK_CODES.toFixed(1)} * offCode, 0.0, 255.0);
+  }
+  // Codes back to the 0..1 the canvas rounds, premultiplied as the 8 bit blit is.
+  outColor = vec4(code / 255.0 * c.a, c.a);
 }`
 
 // Unsharp mask: centre minus a 4-tap cross average = high-pass, scaled back in.
@@ -993,14 +1103,70 @@ export interface RendererOptions {
    * The preview asks for this. The export does not, so its bytes cannot move.
    */
   fastSourceUpload?: boolean
+  /**
+   * ⛔ COMPOSITE IN 16 BIT, SO THE EXPORT'S DITHER REACHES ITS PIXELS.
+   *
+   * Every intermediate framebuffer (the frame accumulator, the layer and
+   * transition buffers, the blur scratch) becomes RGBA16 normalized, linear
+   * light, instead of 8 bit sRGB. It clamps to 0..1 on every write exactly as
+   * the 8 bit buffer did, so every blend keeps its meaning (an 'add' still
+   * saturates at white); it only stops rounding. A fade or a blur then reaches
+   * the final blit as the value it really is, between two codes, and the
+   * dither there turns the contour into grain, as it was written to.
+   *
+   * RGBA16 normalized and not RGBA16F, on purpose: a float buffer does NOT
+   * clamp, so an 'add' layer would carry light above white into the next blend
+   * and stop matching the preview. EXT_texture_norm16 is on his RTX 4060 in
+   * both the page and the export worker (probed 2026-10-01). Where a GPU lacks
+   * it, or cannot render to it, this falls back to today's 8 bit buffers,
+   * silently and completely.
+   *
+   * The export asks for this at HD and above. The preview does not: it is drawn
+   * every frame he scrubs and was tuned for speed on 2026-09-28, and the golden
+   * 640x360 export stays below HD so its bytes do not move.
+   */
+  highPrecision?: boolean
+}
+
+/** EXT_texture_norm16's RGBA16_EXT, the 16 bit normalized RGBA format. */
+export const RGBA16_EXT = 0x805b
+
+/**
+ * The 16 bit format the intermediate buffers can use, or null for the 8 bit
+ * sRGB buffers of before. Null unless high precision was asked for AND the GPU
+ * has the extension AND a framebuffer built on it is actually complete; a
+ * driver that advertises a format and then refuses to draw into it would
+ * otherwise turn every export black.
+ */
+function highPrecisionFormat(gl: WebGL2RenderingContext, wanted: boolean): number | null {
+  if (!wanted || !gl.getExtension('EXT_texture_norm16')) return null
+  const tex = gl.createTexture()
+  const fb = gl.createFramebuffer()
+  let ok = false
+  if (tex && fb) {
+    gl.bindTexture(gl.TEXTURE_2D, tex)
+    gl.texImage2D(gl.TEXTURE_2D, 0, RGBA16_EXT, 1, 1, 0, gl.RGBA, gl.UNSIGNED_SHORT, null)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb)
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0)
+    ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE
+  }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+  gl.bindTexture(gl.TEXTURE_2D, null)
+  if (fb) gl.deleteFramebuffer(fb)
+  if (tex) gl.deleteTexture(tex)
+  return ok ? RGBA16_EXT : null
 }
 
 export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOptions): Renderer {
   const mipmapSources = options?.mipmapSources === true
+  // See RendererOptions.highPrecision. Decided once, for this context's life.
+  const deepFormat = highPrecisionFormat(gl, options?.highPrecision === true)
   // Programs (thrown from here on failure so the caller can fall back).
   const blurProg = link(gl, FULL_VS, BLUR_FS)
   const combineProg = link(gl, FULL_VS, COMBINE_FS)
-  const blitProg = link(gl, FULL_VS, BLIT_FS)
+  // A 16 bit composite gets the blit that encodes by the GPU's own table (see
+  // BLIT_DEEP_FS); everything else keeps the blit it always had.
+  const blitProg = link(gl, FULL_VS, deepFormat !== null ? BLIT_DEEP_FS : BLIT_FS)
   const sharpenProg = link(gl, FULL_VS, SHARPEN_FS)
   const smearProg = link(gl, FULL_VS, MOTION_SMEAR_FS)
   const glowProg = link(gl, FULL_VS, GLOW_FS)
@@ -1133,6 +1299,23 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     uSeed: gl.getUniformLocation(blitProg, 'uSeed'),
     uDither: gl.getUniformLocation(blitProg, 'uDither'),
     uEncode: gl.getUniformLocation(blitProg, 'uEncode'),
+    uCodeLut: gl.getUniformLocation(blitProg, 'uCodeLut'),
+  }
+  // The 256 codes in an sRGB texture, so that sampling texel k IS the GPU's own
+  // decode of code k. Only the 16 bit composite's blit reads it.
+  const codeLut = deepFormat !== null ? makeCodeLut() : null
+  function makeCodeLut(): WebGLTexture {
+    const tex = gl.createTexture()
+    if (!tex) throw new Error('createTexture failed')
+    const codes = new Uint8Array(256 * 4)
+    for (let k = 0; k < 256; k++) codes.fill(k, k * 4, k * 4 + 3).fill(255, k * 4 + 3, k * 4 + 4)
+    gl.bindTexture(gl.TEXTURE_2D, tex)
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.SRGB8_ALPHA8, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, codes)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+    return tex
   }
   const sharpenLoc = {
     aPos: gl.getAttribLocation(sharpenProg, 'aPos'),
@@ -1328,6 +1511,9 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
   let destCapTex: WebGLTexture | null = null
   let destCapW = -1
   let destCapH = -1
+  // Whether destCapTex currently holds the 16 bit format (it follows its target).
+  let destCapDeep = false
+  let destCapFb: WebGLFramebuffer | null = null
 
   function captureTarget(targetFb: WebGLFramebuffer | null, w: number, h: number): void {
     if (!destCapTex) {
@@ -1335,6 +1521,34 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
       if (!destCapTex) throw new Error('createTexture failed')
       gl.bindTexture(gl.TEXTURE_2D, destCapTex)
       setTexParams(false) // sampled 1:1, never mipmapped (see setTexParams)
+    }
+    // ⛔ A 16 BIT TARGET CANNOT BE COPIED WITH copyTexImage2D INTO sRGB STORAGE:
+    // the copy refuses to change encoding and leaves the capture stale, which
+    // would blend overlay and soft light against an old frame. So it is copied
+    // into a capture of its OWN format with a framebuffer blit, which is a
+    // plain copy between equal formats. Only FBO targets are ever 16 bit.
+    if (deepFormat !== null && targetFb !== null) {
+      gl.bindTexture(gl.TEXTURE_2D, destCapTex)
+      if (w !== destCapW || h !== destCapH || !destCapDeep) {
+        gl.texImage2D(gl.TEXTURE_2D, 0, deepFormat, w, h, 0, gl.RGBA, gl.UNSIGNED_SHORT, null)
+        destCapW = w
+        destCapH = h
+        destCapDeep = true
+      }
+      destCapFb ??= gl.createFramebuffer()
+      gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, destCapFb)
+      gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, destCapTex, 0)
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, targetFb)
+      gl.blitFramebuffer(0, 0, w, h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST)
+      gl.bindFramebuffer(gl.FRAMEBUFFER, targetFb)
+      gl.activeTexture(gl.TEXTURE0)
+      gl.bindTexture(gl.TEXTURE_2D, destCapTex)
+      return
+    }
+    if (destCapDeep) {
+      // Back to an 8 bit target: force the reallocating copy below.
+      destCapW = -1
+      destCapDeep = false
     }
     gl.bindFramebuffer(gl.FRAMEBUFFER, targetFb)
     gl.activeTexture(gl.TEXTURE0)
@@ -1366,7 +1580,11 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     if (!tex || !fb) throw new Error('FBO alloc failed')
     gl.bindTexture(gl.TEXTURE_2D, tex)
     // sRGB storage: blends land in linear light and the bytes stay perceptual.
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.SRGB8_ALPHA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null)
+    // Or, for the export, 16 bit linear light that does not round at all (see
+    // RendererOptions.highPrecision). Both clamp to 0..1 on write and both
+    // hand back light when sampled, so no shader can tell which it has.
+    if (deepFormat !== null) gl.texImage2D(gl.TEXTURE_2D, 0, deepFormat, w, h, 0, gl.RGBA, gl.UNSIGNED_SHORT, null)
+    else gl.texImage2D(gl.TEXTURE_2D, 0, gl.SRGB8_ALPHA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
@@ -1867,6 +2085,11 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     if (blitLoc.uSeed) gl.uniform1f(blitLoc.uSeed, ditherSeed)
     if (blitLoc.uDither) gl.uniform1f(blitLoc.uDither, dither)
     if (blitLoc.uEncode) gl.uniform1f(blitLoc.uEncode, encode)
+    if (codeLut) {
+      gl.activeTexture(gl.TEXTURE1)
+      gl.bindTexture(gl.TEXTURE_2D, codeLut)
+      gl.uniform1i(blitLoc.uCodeLut, 1)
+    }
     gl.activeTexture(gl.TEXTURE0)
     gl.bindTexture(gl.TEXTURE_2D, fbo.tex)
     gl.drawArrays(gl.TRIANGLES, 0, 3)
@@ -2069,11 +2292,14 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     gl.deleteProgram(blurProg)
     gl.deleteProgram(combineProg)
     gl.deleteProgram(blitProg)
+    if (codeLut) gl.deleteTexture(codeLut)
     gl.deleteProgram(sharpenProg)
     gl.deleteProgram(glowProg)
     gl.deleteProgram(blendModeProg)
     if (destCapTex) gl.deleteTexture(destCapTex)
     destCapTex = null
+    if (destCapFb) gl.deleteFramebuffer(destCapFb)
+    destCapFb = null
     gl.deleteBuffer(layerVbo)
     gl.deleteBuffer(fullVbo)
     gl.deleteVertexArray(layerVao)

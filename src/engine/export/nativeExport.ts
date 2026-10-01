@@ -5,7 +5,7 @@
 // call this (isElectron gate).
 
 import type { NativeEncoder, NativeStartResult } from '../../../electron/ipc-types'
-import { getBlob } from '../../state/persistence'
+import { blobForExport } from '../../state/mediaMirror'
 import { useToasts } from '../../state/toasts'
 import { olApi } from '../../platform'
 import type { Id, Project } from '../types'
@@ -88,7 +88,9 @@ export async function exportNative(
   for (const id of usedIds) {
     const asset = project.assets[id]
     if (!asset) continue
-    const blob = await getBlob(asset.blobKey)
+    // The database copy, or the spare one on disk while a repair is still putting
+    // it back: never "missing" for a file that is sitting on his disk.
+    const blob = await blobForExport({ id: asset.id, blobKey: asset.blobKey, name: asset.name })
     if (!blob) throw new Error(`Media for "${asset.name}" is missing from local storage, re-import it and try again`)
     exportAssets.push({ id, kind: asset.kind, name: asset.name, blob })
   }

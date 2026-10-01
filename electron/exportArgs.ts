@@ -30,11 +30,43 @@ export function containerExt(encoder: NativeEncoder): 'mov' | 'mp4' {
   return encoder === 'prores' ? 'mov' : 'mp4'
 }
 
+/**
+ * H.264 level 4.2 for every raster and rate it covers, nothing for the rest.
+ *
+ * Left to itself x264 veryslow keeps 16 reference frames and then declares
+ * whatever level that needs: every export of his measured 2026-09-30 said level
+ * 5.1 with a 16 frame decoded picture buffer, for a plain 1080p file. 4.2 is
+ * the level 1080p60 is delivered at, and a decoder built for it does not have
+ * to accept a 16 frame buffer at this size. Pinning 4.2 makes x264 cap the
+ * references to fit (4 at 1080x1920) and say so. MEASURED on the app's exact
+ * frames of his footage: 51.81 dB against 51.79 unpinned, 44.69 against 44.65
+ * after a platform-style re-encode, and 1.8% more bytes. Nothing to see, and a
+ * file every 1080p decoder must take.
+ *
+ * The bitrate side of the level: 4.2 allows 62.5 Mbit/s at High profile. His
+ * busiest real Short (mc night, crf 14) peaks at 46.5 Mbit/s over any second
+ * and 51.8 over any half second, so it fits. No VBV cap is set on purpose: a
+ * cap would only ever bite on the rare scene above it, and there it would take
+ * picture away.
+ *
+ * Applies only where 4.2 can hold the frame: at most 8704 macroblocks a frame
+ * and 522240 a second (1920x1080 and 1080x1920 up to 60 fps). Anything larger
+ * or faster keeps x264's own choice, which is the only correct one there.
+ */
+export function x264LevelArgs(width: number, height: number, fps: number): string[] {
+  const mbs = Math.ceil(width / 16) * Math.ceil(height / 16)
+  return mbs <= 8704 && mbs * fps <= 522240 ? ['-level:v', '4.2'] : []
+}
+
 export function videoEncoderArgs(config: NativeExportConfig): string[] {
   const q = Math.max(0, Math.min(51, Math.round(config.quality)))
   switch (config.encoder) {
     case 'x264':
-      return ['-c:v', 'libx264', '-preset', 'veryslow', '-crf', String(q), '-pix_fmt', 'yuv420p']
+      return [
+        '-c:v', 'libx264', '-preset', 'veryslow', '-crf', String(q),
+        ...x264LevelArgs(config.width, config.height, config.fps),
+        '-pix_fmt', 'yuv420p',
+      ]
     case 'x265':
       return ['-c:v', 'libx265', '-preset', 'slow', '-crf', String(q), '-pix_fmt', 'yuv420p']
     case 'nvenc-h264':
@@ -48,6 +80,7 @@ export function videoEncoderArgs(config: NativeExportConfig): string[] {
       return ['-c:v', 'prores_ks', '-profile:v', '3', '-pix_fmt', 'yuv422p10le']
     case 'lossless':
       // Visually lossless H.264 (QP 0). Plays everywhere; huge files.
+      // No level pin (see x264LevelArgs): QP 0 runs far above 4.2's bitrate.
       return ['-c:v', 'libx264', '-preset', 'veryslow', '-qp', '0', '-pix_fmt', 'yuv420p']
   }
 }
@@ -149,11 +182,23 @@ export function keyframeArgs(config: NativeExportConfig): string[] {
  *   caption-like frame, rescaled the way an upload platform rescales it, this
  *   is worth about 0.60 dB.
  *
- * flags=bicubic+accurate_rnd
- *   bicubic RESTATES the current kernel (measured byte-identical to omitting
- *   flags), so the resampler does not move. accurate_rnd only drops the cheap
- *   approximate rounding in the conversion itself, worth a further 0.17 dB on
- *   the same measurement, and the encoder here is veryslow so the time is free.
+ * flags=lanczos+accurate_rnd+full_chroma_inp
+ *   accurate_rnd only drops the cheap approximate rounding in the conversion
+ *   itself, worth 0.17 dB on the measurement above, and the encoder here is
+ *   veryslow so the time is free. The resampler only ever touches CHROMA here
+ *   (the picture is never resized, so luma is not resampled at all), and it
+ *   was bicubic until 2026-10-01. full_chroma_inp makes swscale read every
+ *   pixel's colour instead of averaging pairs first, and lanczos then halves
+ *   it. MEASURED on the app's exact frames of his footage against the source's
+ *   own chroma: U/V 46.45/46.28 dB with bicubic, 46.80/46.68 with this, luma
+ *   unchanged at 60.17. And on his captions, the place a sharper chroma filter
+ *   could ring, decoded back the way a phone decodes (BT.709, bilinear
+ *   chroma): his green Luckiest Guy with black outline went 34.72 to 35.75 dB
+ *   with 13% fewer values haloed beyond their own neighbourhood, the pink
+ *   Monocraft SUBSCRIBE 34.73 to 35.51 dB with half the halo, a white
+ *   Montserrat word 46.02 to 46.89, and his white TikTok Sans over the gym
+ *   footage 48.42 to 48.96 with 23% less halo. Less ringing, not more, on
+ *   every caption style he uses.
  *
  * Deliberately NOT done: 4:2:2. H.264 High 4:2:2 is real but phone hardware
  * decoders commonly refuse it, and upload platforms re-encode to 4:2:0 anyway,
@@ -161,7 +206,7 @@ export function keyframeArgs(config: NativeExportConfig): string[] {
  */
 export const VIDEO_FILTER =
   'vflip,scale=in_range=full:out_range=tv:out_color_matrix=bt709' +
-  ':out_primaries=bt709:out_transfer=bt709:out_chroma_loc=left:flags=bicubic+accurate_rnd'
+  ':out_primaries=bt709:out_transfer=bt709:out_chroma_loc=left:flags=lanczos+accurate_rnd+full_chroma_inp'
 
 export function buildArgs(config: NativeExportConfig, audioPath: string | null, outPath: string): string[] {
   const args = [

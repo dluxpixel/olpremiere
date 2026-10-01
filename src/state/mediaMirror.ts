@@ -148,6 +148,91 @@ export async function readMirrored(assetId: string, size: number): Promise<Blob 
   }
 }
 
+/**
+ * The per-file repairs in flight, by asset id, so a file is read off the disk
+ * and written back ONCE however many callers want it at the same moment (the
+ * boot repair, the media panel's second try, an export).
+ */
+const healing = new Map<string, Promise<boolean>>()
+
+/**
+ * Put one asset's bytes back into the database from its spare copy. Resolves
+ * true when the database has them afterwards. Concurrent calls for the same
+ * file share one read and one write: his footage runs to gigabytes, and two
+ * copies of it in flight at once is memory the export needs.
+ */
+function healAsset(a: Pick<MediaAsset, 'id' | 'blobKey'> & { name?: string }, size: number): Promise<boolean> {
+  const running = healing.get(a.id)
+  if (running) return running
+  const job = (async (): Promise<boolean> => {
+    const blob = await readMirrored(a.id, size)
+    if (!blob || blob.size === 0) return false
+    try {
+      await putBlob(a.blobKey, blob)
+      return true
+    } catch (err) {
+      console.warn(`OL Premiere: could not put ${a.name ?? a.id} back`, err)
+      return false
+    }
+  })().finally(() => healing.delete(a.id))
+  healing.set(a.id, job)
+  return job
+}
+
+/** The size of one asset's spare copy on disk, or 0 when there is none (or no disk to ask). */
+async function mirroredSize(assetId: string): Promise<number> {
+  const api = mirrorApi()
+  if (!api) return 0
+  try {
+    const listing = await api.mediaList()
+    return listing.files.find((m) => m.id === assetId)?.size ?? 0
+  } catch {
+    return 0
+  }
+}
+
+/**
+ * An asset's bytes for an EXPORT: from the database, or, when the database does
+ * not have them (yet), from the spare copy on disk.
+ *
+ * ⛔ "MISSING FROM LOCAL STORAGE" WHILE THE FILE SAT ON HIS DISK. When the
+ * database has lost its media, healProjectMedia puts it back file by file, and
+ * his mc night project is 2.8 GB of it, the better part of a minute. Export
+ * pressed in that minute asked the database, got nothing for a file the repair
+ * had not reached yet, and told him to re-import footage that was right there.
+ * Reproduced in the real app three times out of three, 2026-09-30 and
+ * 2026-10-01. Now the export joins the repair: a file already being put back is
+ * waited for, any other is put back on the spot through the same one-at-a-time
+ * path, and only a file missing from BOTH places is called missing.
+ *
+ * If the database will not take the bytes (full, or rebuilt again mid-way),
+ * the export still gets them, read straight off the disk.
+ *
+ * Never throws. A database that rejects rather than answers counts as one that
+ * does not have it, exactly as the repair treats it.
+ */
+export async function blobForExport(asset: Pick<MediaAsset, 'id' | 'blobKey'> & { name?: string }): Promise<Blob | null> {
+  const fromStore = async (): Promise<Blob | null> => {
+    try {
+      return await getBlob(asset.blobKey)
+    } catch {
+      return null
+    }
+  }
+  const stored = await fromStore()
+  if (stored) return stored
+  if (!mirrorApi()) return null
+  const running = healing.get(asset.id)
+  const size = running ? 0 : await mirroredSize(asset.id)
+  if (!running && size <= 0) return null
+  if (await (running ?? healAsset(asset, size))) {
+    const healed = await fromStore()
+    if (healed) return healed
+  }
+  const onDisk = size > 0 ? size : await mirroredSize(asset.id)
+  return onDisk > 0 ? readMirrored(asset.id, onDisk) : null
+}
+
 export interface HealResult {
   /** Assets the database had lost and the disk had. */
   healed: string[]
@@ -240,18 +325,9 @@ export async function healProjectMedia(
       lost.push(a.name ?? a.id)
       continue
     }
-    const blob = await readMirrored(a.id, size)
-    if (!blob || blob.size === 0) {
-      lost.push(a.name ?? a.id)
-      continue
-    }
-    try {
-      await putBlob(a.blobKey, blob)
-      healed.push(a.name ?? a.id)
-    } catch (err) {
-      console.warn(`OL Premiere: could not put ${a.name} back`, err)
-      lost.push(a.name ?? a.id)
-    }
+    // One read and one write per file, shared with an export that wants it now.
+    if (await healAsset(a, size)) healed.push(a.name ?? a.id)
+    else lost.push(a.name ?? a.id)
   }
   return { healed, lost }
 }
