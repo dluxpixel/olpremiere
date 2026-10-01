@@ -104,6 +104,10 @@ export function refitClipToFill(
   // the wrong height, with forty clips to fix by hand. Rescale them with the
   // frame instead. (Needs a known previous size; without one there is no ratio.)
   if (clip.title) return prevW > 0 && prevH > 0 ? refitTitleToFrame(clip, frameW, frameH, prevW, prevH) : clip
+  // A STRETCHED clip already fills any shape of frame at its own scale: the
+  // renderer lays it on the frame's corners. Growing it by the fill ratio here
+  // would push it past every edge on the first switch to 9:16.
+  if (clip.transform.fit === 'stretch') return clip
   if (clip.keyframes?.posX?.length || clip.keyframes?.posY?.length) return clip
   const asset = assets[clip.assetId]
   const sw = asset?.width ?? 0

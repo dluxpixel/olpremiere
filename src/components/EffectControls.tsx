@@ -46,6 +46,7 @@ import {
   resolveChannel,
 } from '../engine/effects/channels'
 import { isParamAnimated, paramKeyframes, resolveParam } from '../engine/effects/ops'
+import { FRAME_FITS, frameFitDims, frameFitOf, type FrameFit } from '../engine/frameFit'
 import { INNER_ZOOM } from '../engine/innerZoom'
 import { getEffect, paramSens, type EffectParamDef } from '../engine/effects/registry'
 import { clipEndS } from '../engine/timeline'
@@ -56,6 +57,7 @@ import {
   type TransitionKind,
 } from '../engine/render/types'
 import {
+  activeSequence,
   BLEND_LABELS,
   BLEND_MODES,
   type AnimChannel,
@@ -92,6 +94,7 @@ import {
   resetEffectParams,
   setChannel,
   setClipBlendMode,
+  setClipFrameFit,
   setClipMask,
   setClipTransition,
   setEffectParamValue,
@@ -605,11 +608,13 @@ function FlipRow({ clip }: { clip: Clip }) {
   )
 }
 
-function Section({ title, channels, clip, playheadS }: {
+function Section({ title, channels, clip, playheadS, children }: {
   title: string
   channels: AnimChannel[]
   clip: Clip
   playheadS: number
+  /** Rows that come before the channels, under the same heading. */
+  children?: ReactNode
 }) {
   return (
     <section className="flex flex-col gap-2">
@@ -627,11 +632,62 @@ function Section({ title, channels, clip, playheadS }: {
         </span>
       </div>
       <div className="flex flex-col gap-1">
+        {children}
         {channels.map((ch) => (
           <ChannelRow key={ch} clip={clip} channel={ch} playheadS={playheadS} />
         ))}
       </div>
     </section>
+  )
+}
+
+/**
+ * Fit inside, Fill and crop, or Stretch to fill: how a picture of another shape
+ * takes the frame. His ask, 2026-09-29: *"make it so when i for example paste in
+ * a 4:3clip it stretches to 16:9 when i select to"*.
+ *
+ * The first row of Transform, because it is the framing every number under it
+ * is measured from. Fit and fill are read off the scale, where they have always
+ * lived, so a size he set by hand says so instead of pretending to be one of
+ * the three. → engine/frameFit.ts
+ */
+function FrameFitRow({ clip }: { clip: Clip }) {
+  // Primitives only: a selector that built an object would hand React a new one
+  // on every store change.
+  const srcW = useStore((s) => s.project.assets[clip.assetId]?.width ?? 0)
+  const srcH = useStore((s) => s.project.assets[clip.assetId]?.height ?? 0)
+  const width = useStore((s) => activeSequence(s.project).width)
+  const height = useStore((s) => activeSequence(s.project).height)
+  const contentAspect = useStore((s) => activeSequence(s.project).contentAspect)
+  // Only a picture has a shape. The sound half of a linked clip shares its
+  // media, so it is the TRACK that says, not the file.
+  const onVideoTrack = useStore((s) =>
+    activeSequence(s.project).tracks.some((t) => t.kind === 'video' && t.clips.some((c) => c.id === clip.id)),
+  )
+  if (!onVideoTrack) return null
+  const current = frameFitOf(clip, frameFitDims({ width, height, contentAspect }, { width: srcW, height: srcH }))
+  return (
+    <PropRow label="Frame" labelTitle="How the picture takes the frame when their shapes differ">
+      <select
+        data-testid="frame-fit"
+        aria-label="Frame fit"
+        title={FRAME_FITS.find((f) => f.fit === current)?.hint ?? 'A size set by hand. Pick one to frame it again.'}
+        value={current ?? ''}
+        onChange={(e) => setClipFrameFit(clip.id, e.target.value as FrameFit)}
+        className="h-6 w-[132px] cursor-default rounded-field bg-bg-input px-1.5 text-ui-sm text-text-primary"
+      >
+        {current === null && (
+          <option value="" disabled>
+            Custom size
+          </option>
+        )}
+        {FRAME_FITS.map((f) => (
+          <option key={f.fit} value={f.fit} title={f.hint}>
+            {f.label}
+          </option>
+        ))}
+      </select>
+    </PropRow>
   )
 }
 
@@ -1289,7 +1345,10 @@ export function EffectControls({
                 channels={['posX', 'posY', 'scale', 'rotation', 'anchorX', 'anchorY']}
                 clip={clip}
                 playheadS={playheadS}
-              />
+              >
+                {/* A title is drawn at the frame's own size: it has no shape to fit. */}
+                {!clip.title && <FrameFitRow clip={clip} />}
+              </Section>
               {/* Directly under Scale, because that is where he looks for a zoom
                   and because the difference between the two is the point. */}
               <InnerZoomRow clip={clip} playheadS={playheadS} />
