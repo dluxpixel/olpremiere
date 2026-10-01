@@ -445,6 +445,13 @@ export interface Transform {
   anchorX: number
   anchorY: number
   crop: { t: number; r: number; b: number; l: number }
+  /**
+   * The picture mirrored left to right. His ask, 2026-10-01: "flip the video
+   * (I don't know if you know what I mean, like flip from right to left)".
+   * Optional and only ever written as true, so every older project opens
+   * exactly as it was.
+   */
+  flipH?: boolean
 }
 
 export type EffectType = string

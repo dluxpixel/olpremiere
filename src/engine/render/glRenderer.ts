@@ -6,7 +6,7 @@
 // touches GL; all transform math lives in the pure, unit-tested mat.ts.
 
 import { getEffect, stackSignature } from '../effects/registry'
-import { computeQuad, cropUV, quadScale } from './mat'
+import { computeQuad, cropUV, edgeU, quadScale } from './mat'
 import { deriveMotionBlur, quadCentre, quadRadius } from './motionBlur'
 import type { RenderFrame, RenderLayer, RenderOp, ResolvedEffect, TextureSource, TransitionKind } from './types'
 
@@ -1479,14 +1479,16 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     const { corners } = computeQuad({ frameW, frameH, texW, texH, transform: layer.transform })
     const uv = cropUV(layer.transform.cropT, layer.transform.cropR, layer.transform.cropB, layer.transform.cropL)
     // Interleaved pos(x,y) + uv(u,v) for TL,TR,BR then TL,BR,BL (two triangles).
+    // A flipped layer swaps which edge of the picture each side reads.
     const [tl, tr, br, bl] = corners
+    const { left: uL, right: uR } = edgeU(uv, layer.transform.flipH)
     const v = layerVerts
-    v[0] = tl[0]; v[1] = tl[1]; v[2] = uv.u0; v[3] = uv.v0
-    v[4] = tr[0]; v[5] = tr[1]; v[6] = uv.u1; v[7] = uv.v0
-    v[8] = br[0]; v[9] = br[1]; v[10] = uv.u1; v[11] = uv.v1
-    v[12] = tl[0]; v[13] = tl[1]; v[14] = uv.u0; v[15] = uv.v0
-    v[16] = br[0]; v[17] = br[1]; v[18] = uv.u1; v[19] = uv.v1
-    v[20] = bl[0]; v[21] = bl[1]; v[22] = uv.u0; v[23] = uv.v1
+    v[0] = tl[0]; v[1] = tl[1]; v[2] = uL; v[3] = uv.v0
+    v[4] = tr[0]; v[5] = tr[1]; v[6] = uR; v[7] = uv.v0
+    v[8] = br[0]; v[9] = br[1]; v[10] = uR; v[11] = uv.v1
+    v[12] = tl[0]; v[13] = tl[1]; v[14] = uL; v[15] = uv.v0
+    v[16] = br[0]; v[17] = br[1]; v[18] = uR; v[19] = uv.v1
+    v[20] = bl[0]; v[21] = bl[1]; v[22] = uL; v[23] = uv.v1
 
     const pointwise = layer.effects.filter(isPointwise)
     // Magnified layers sample through the clamped Catmull-Rom instead of plain

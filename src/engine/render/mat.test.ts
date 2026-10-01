@@ -3,6 +3,7 @@ import {
   apply,
   computeQuad,
   cropUV,
+  edgeU,
   croppedSize,
   fitScale,
   identity,
@@ -250,5 +251,16 @@ describe('cover fit, for the blurred backdrop', () => {
     const contain = computeQuad({ ...opts, transform: tf() }).corners
     const cover = computeQuad({ ...opts, transform: tf({ fit: 'cover' }) }).corners
     expect(cover).toEqual(contain)
+  })
+})
+
+describe('flip left to right reads the picture the other way', () => {
+  it('swaps which edge of the (cropped) picture each side of the quad shows', () => {
+    // Cropped 10% left, 20% right: the quad's left edge shows the source's
+    // right crop line once flipped, so the crop stays on the source's own sides.
+    const uv = cropUV(0, 0.2, 0, 0.1)
+    expect(edgeU(uv, false)).toEqual({ left: 0.1, right: 0.8 })
+    expect(edgeU(uv, undefined)).toEqual({ left: 0.1, right: 0.8 })
+    expect(edgeU(uv, true)).toEqual({ left: 0.8, right: 0.1 })
   })
 })

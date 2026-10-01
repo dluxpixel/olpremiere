@@ -6,6 +6,7 @@ import type { Clip, Id, MediaAsset, Sequence } from '../engine/types'
 import { comboLabel } from '../keymap'
 import { copyClipAttributes, hasClipAttributes, pasteClipAttributes } from '../state/attributes'
 import { balanceAllClipLoudness, normalizeClipGain } from '../state/audioActions'
+import { toggleClipsFlip } from '../state/bulkEdits'
 import { copySelection, cutSelection, duplicateSelection, pasteAtPlayhead } from '../state/clipboard'
 import { applyEffect, crossfadeWithNeighbour, deleteSelected, removeClipTransition, setClipTransition, splitAtPlayhead, topAndTail } from '../state/clipEdits'
 import { appearanceMenuItems, titleFontSizeItems } from '../state/clipMenus'
@@ -265,6 +266,20 @@ export function clipContextMenuItems({ clip, seq, assets, selNow, keepSelection,
           ]
         : []
 
+  // His ask, 2026-10-01: "flip the video ... like flip from right to left".
+  // Acts on the whole selection when it was kept, like Moves, and sits with the
+  // other picture verbs so the menu still opens on Copy.
+  const flipItems: MenuItem[] =
+    track?.kind === 'video' && !clip.title
+      ? [
+          {
+            label: `${clip.transform.flipH ? 'Unflip' : 'Flip left to right'}${selNow.length > 1 ? ` · all ${selNow.length}` : ''}`,
+            separator: true,
+            onClick: () => toggleClipsFlip(selNow),
+          },
+        ]
+      : []
+
   return [
     ...selectWithItems,
     { label: 'Copy', shortcut: comboLabel('mod+c'), separator: selectWithItems.length > 0, onClick: () => copySelection() },
@@ -292,6 +307,7 @@ export function clipContextMenuItems({ clip, seq, assets, selNow, keepSelection,
     ...transitionItems,
     ...captionItems,
     ...motionItems,
+    ...flipItems,
     ...greenScreenItems,
     ...appearanceItems,
     ...bulkTitleItems,

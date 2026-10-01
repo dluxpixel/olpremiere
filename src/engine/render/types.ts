@@ -22,6 +22,12 @@ export interface ResolvedTransform {
   cropB: number
   cropL: number
   /**
+   * The picture mirrored left to right inside the same quad: only the texture
+   * reads right to left, so position, rotation, handles and the crop's sides
+   * on the source all stay where they were.
+   */
+  flipH?: boolean
+  /**
    * How the source sits in the frame BEFORE `scale` is applied.
    *  - undefined / 'contain' (the default, and what every clip has always
    *    done): the whole picture fits inside the frame, letterboxed when the

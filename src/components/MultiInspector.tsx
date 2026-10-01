@@ -5,13 +5,14 @@
 // all of them, so a mixed selection converges on one click. This is what makes
 // "select many, edit boldness / effects on all" work.
 
-import { Bold, CaseLower, CaseUpper, Italic, Sparkles, Layers } from 'lucide-react'
+import { Bold, CaseLower, CaseUpper, FlipHorizontal2, Italic, Sparkles, Layers } from 'lucide-react'
 import {
   applyEffectToClips,
   clearEffectsForClips,
   setChannelForClips,
   setClipsFade,
   setClipsGainDb,
+  toggleClipsFlip,
 } from '../state/bulkEdits'
 import { ENTRANCE_PRESETS } from '../engine/anim/appearance'
 import { setClipsAppearance } from '../state/appearanceActions'
@@ -72,6 +73,10 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
   const titleIds = titles.map((s) => s.clip.id)
   const audio = selected.filter((s) => s.emitsAudio)
   const audioIds = audio.map((s) => s.clip.id)
+  // The pictures Flip acts on: video track clips that are not titles.
+  const pictures = selected.filter((s) => s.track.kind === 'video' && !s.clip.title)
+  const pictureIds = pictures.map((s) => s.clip.id)
+  const allFlipped = pictures.length > 0 && pictures.every((s) => s.clip.transform.flipH === true)
 
   // Every selected clip a camera move can be written onto: picture on a video
   // track, no entrance animation owning its keyframes.
@@ -411,6 +416,21 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
             ))}
           </select>
         </PropRow>
+        {/* His ask, 2026-10-01: flip the video left to right, here on all of
+            the selected pictures at once (titles are left alone). */}
+        {pictureIds.length > 0 && (
+          <PropRow label="Flip">
+            <IconButton
+              label={allFlipped ? 'Unflip all' : 'Flip all left to right'}
+              active={allFlipped}
+              size="compact"
+              data-testid="multi-flip-toggle"
+              onClick={() => toggleClipsFlip(pictureIds)}
+            >
+              <FlipHorizontal2 size={14} strokeWidth={1.5} />
+            </IconButton>
+          </PropRow>
+        )}
         {/* Every effect ALL the selected picture clips carry, with its settings:
             change one and it changes on every clip. His ask, 2026-09-29, with
             "Select all with Auto Color" on the clip menu as the way in. */}

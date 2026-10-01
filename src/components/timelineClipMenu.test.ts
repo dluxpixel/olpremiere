@@ -51,7 +51,7 @@ describe('the clip right-click menu', () => {
     // A move with no digit shows no shortcut, never the word "undefined".
     expect(moves.submenu?.some((m) => m.shortcut === 'undefined')).toBe(false)
     expect(labels(items)).toEqual(
-      expect.arrayContaining(['Punch in at playhead', 'Motion', 'Transition in', 'Transition out', 'Remove green screen']),
+      expect.arrayContaining(['Punch in at playhead', 'Motion', 'Flip left to right', 'Transition in', 'Transition out', 'Remove green screen']),
     )
     expect(labels(items)).not.toContain('Crossfade with next')
   })

@@ -83,6 +83,37 @@ export function mapClips(
 }
 
 /**
+ * Mirror every given picture left to right, ONE undo. His ask, 2026-10-01:
+ * "flip the video (I don't know if you know what I mean, like flip from right
+ * to left)". They all go the same way: flipped, unless every one already is,
+ * then all back. Clips on audio tracks and titles have no picture to mirror
+ * and are left alone (mirrored words would just be unreadable).
+ */
+export function toggleClipsFlip(ids: Iterable<string>): void {
+  const idSet = new Set(ids)
+  const seq = activeSequence(useStore.getState().project)
+  const pictures = seq.tracks
+    .filter((t) => t.kind === 'video' && !t.locked)
+    .flatMap((t) => t.clips.filter((c) => idSet.has(c.id) && !c.title))
+  if (pictures.length === 0) return
+  const flip = !pictures.every((c) => c.transform.flipH === true)
+  const n = pictures.length
+  const label = `${flip ? 'Flip' : 'Unflip'} ${n === 1 ? 'clip' : `${n} clips`}`
+  mapClips(
+    pictures.map((c) => c.id),
+    label,
+    (c) => {
+      // Unflipped is written by leaving the key out, so a clip flipped and
+      // flipped back is the same clip it was.
+      const transform = { ...c.transform }
+      if (flip) transform.flipH = true
+      else delete transform.flipH
+      return { ...c, transform }
+    },
+  )
+}
+
+/**
  * Set a channel value on every selected clip. Mirrors the single-clip setChannel:
  * a STATIC channel sets the base; an ANIMATED one (a caption's pop, a punch-in)
  * keys the value at the playhead. Otherwise the base write is overridden by the

@@ -26,6 +26,7 @@ import {
   ChevronsUpDown,
   Eye,
   EyeOff,
+  FlipHorizontal2,
   RotateCcw,
   Sparkles,
   X,
@@ -98,6 +99,7 @@ import {
   toggleEffectEnabled,
   toggleEffectParamKeyframes,
 } from '../state/clipEdits'
+import { toggleClipsFlip } from '../state/bulkEdits'
 import { EFFECT_CARD_MIME, dragHasType } from '../state/dnd'
 import { allFolded, setEffectsFolded, toggleEffectFold, useEffectFold } from '../state/effectFold'
 import { saveSelectionAsPreset } from '../state/library'
@@ -575,6 +577,30 @@ function InnerZoomRow({ clip, playheadS }: { clip: Clip; playheadS: number }) {
         ariaLabel="Zoom inside"
         onCommit={(v) => setInnerZoomAtPlayhead(clip.id, v)}
       />
+    </PropRow>
+  )
+}
+
+/**
+ * Mirror the picture left to right. His ask, 2026-10-01: "flip the video (I
+ * don't know if you know what I mean, like flip from right to left)". With
+ * several clips selected it flips every one (toggleClipsFlip), one undo.
+ */
+function FlipRow({ clip }: { clip: Clip }) {
+  const flipped = clip.transform.flipH === true
+  const selection = useStore((s) => s.ui.selection)
+  const targets = selection.includes(clip.id) ? selection : [clip.id]
+  return (
+    <PropRow label="Flip">
+      <IconButton
+        label={flipped ? 'Unflip' : 'Flip left to right'}
+        active={flipped}
+        size="compact"
+        data-testid="flip-toggle"
+        onClick={() => toggleClipsFlip(targets)}
+      >
+        <FlipHorizontal2 size={14} strokeWidth={1.5} />
+      </IconButton>
     </PropRow>
   )
 }
@@ -1267,6 +1293,7 @@ export function EffectControls({
               {/* Directly under Scale, because that is where he looks for a zoom
                   and because the difference between the two is the point. */}
               <InnerZoomRow clip={clip} playheadS={playheadS} />
+              {!clip.title && <FlipRow clip={clip} />}
               <div className="h-px bg-border" />
             </>
           )}

@@ -19,6 +19,7 @@ import {
   videoTracks,
   type Id,
   type MediaAsset,
+  type Project,
 } from '../engine/types'
 import { putBlob } from './persistence'
 import { useStore } from './store'
@@ -257,6 +258,52 @@ export async function importFiles(files: File[], opts?: ImportOptions): Promise<
   // can cut immediately, and each clip's preview gets faster as its copy lands.
   ensureProxies(imported)
   return imported.map((a) => a.id)
+}
+
+/** Every asset in the bin that no clip in any sequence uses. */
+export function unusedAssetIds(project: Project): Id[] {
+  const used = new Set<Id>()
+  for (const seq of Object.values(project.sequences)) {
+    for (const t of seq.tracks) for (const c of t.clips) used.add(c.assetId)
+  }
+  return Object.keys(project.assets).filter((id) => !used.has(id))
+}
+
+/**
+ * Remove every file in the bin that nothing on the timeline uses, ONE undo. His
+ * ask, 2026-10-01: "add an option next to Import and Caption that says delete
+ * clips that are not being used. For example, when I use a template for an old
+ * video and then I make new stuff in the video, of course, I don't need the old
+ * stuff". No clip changes, so nothing on the timeline can move or vanish; the
+ * bytes stay on disk exactly as a single Remove leaves them, so Undo brings the
+ * whole bin back.
+ */
+export function removeUnusedAssets(): number {
+  const { project, dispatch } = useStore.getState()
+  const ids = unusedAssetIds(project)
+  if (ids.length === 0) {
+    useToasts.getState().show('Every file in the bin is used on the timeline', 'info')
+    return 0
+  }
+  dispatch(`Remove ${ids.length} unused file${ids.length === 1 ? '' : 's'}`, (p) => {
+    const assets = { ...p.assets }
+    for (const id of ids) delete assets[id]
+    return { ...p, assets }
+  })
+  // The same release a single Remove does: decoders, preview elements, proxies,
+  // denoised and decoded audio. All rebuild lazily if Undo brings them back.
+  for (const id of ids) {
+    evictAsset(id)
+    disposePreviewAsset(id)
+    forgetProxy(id)
+    invalidateDenoise(id)
+    forgetAssetAudio(id)
+  }
+  useToasts.getState().show(`Removed ${ids.length} unused file${ids.length === 1 ? '' : 's'}`, 'info', {
+    label: 'Undo',
+    onClick: () => void import('../collab/collabControl').then((m) => m.performHistoryStep('undo')),
+  })
+  return ids.length
 }
 
 /** Remove an asset from the bin and every clip that references it (all sequences). */

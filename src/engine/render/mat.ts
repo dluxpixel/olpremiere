@@ -200,6 +200,14 @@ export function cropUV(
 }
 
 /**
+ * The across (u) texture coordinate at the quad's left and right edges. A
+ * flipped layer reads its picture right to left; the quad itself does not move.
+ */
+export function edgeU(uv: { u0: number; u1: number }, flipH: boolean | undefined): { left: number; right: number } {
+  return flipH ? { left: uv.u1, right: uv.u0 } : { left: uv.u0, right: uv.u1 }
+}
+
+/**
  * The sub-rectangle of a quad, addressed in UV (0..1) coordinates of the quad's
  * own space. Corners are TL,TR,BR,BL and the mapping is affine, so bilinear
  * interpolation between the four corners is exact, with no matrix needed.

@@ -1,4 +1,4 @@
-import { Captions, Film, FolderOpen, Image as ImageIcon, Music, Plus, Sparkles, Upload, Wand2 } from 'lucide-react'
+import { Captions, Film, FolderOpen, Image as ImageIcon, Music, Plus, Sparkles, Trash2, Upload, Wand2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { filterEffects, matchesQuery } from '../engine/effects/search'
 import { TRANSITION_KINDS, TRANSITION_LABELS } from '../engine/render/types'
@@ -22,7 +22,7 @@ import { oneClickSaveHint, saveToCategoryItems } from '../state/libraryMenus'
 import { LibraryTab } from './LibraryTab'
 import { healArrivedBlob, useMediaSync } from '../collab/mediaSync'
 import { useCollab } from '../collab/collabControl'
-import { deleteAsset, importFiles, insertAssetAtPlayhead, useImportProgress } from '../state/mediaActions'
+import { deleteAsset, importFiles, insertAssetAtPlayhead, removeUnusedAssets, unusedAssetIds, useImportProgress } from '../state/mediaActions'
 import { showPhoneTab } from './PhoneShell'
 import { importProjectFromFile, routeDroppedFiles } from '../state/projectFile'
 import { matchFilesToMissing, missingMedia, relink, relinkSummary, type MissingAsset } from '../state/relinkMedia'
@@ -547,6 +547,47 @@ function FindMyMedia() {
   )
 }
 
+/**
+ * Remove every file in the bin that nothing on the timeline uses. His ask,
+ * 2026-10-01: "an option next to Import and Caption that says delete clips that
+ * are not being used... make it so I need to confirm and click it twice or
+ * something so I don't accidentally delete stuff". The same two-click safety as
+ * a card's Remove: the first click arms it and says how many, the second
+ * removes them, and it disarms itself after a few seconds or when focus leaves.
+ */
+function RemoveUnusedButton() {
+  const unused = useStore((s) => unusedAssetIds(s.project).length)
+  const [armed, setArmed] = useState(false)
+  const armRef = useRef<ArmedDelete | null>(null)
+  if (!armRef.current) armRef.current = createArmedDelete({ onChange: setArmed })
+  const arm = armRef.current
+  useEffect(() => () => arm.dispose(), [arm])
+  return (
+    <Button
+      variant="secondary"
+      data-testid="remove-unused"
+      data-armed={armed ? 'true' : undefined}
+      disabled={unused === 0}
+      aria-label={armed ? `Confirm removing ${unused} unused files` : 'Remove files nothing on the timeline uses'}
+      title={
+        armed
+          ? 'Click again to remove them. It stops asking after a few seconds.'
+          : unused === 0
+            ? 'Every file in the bin is used on the timeline'
+            : `Remove the ${unused} file${unused === 1 ? '' : 's'} nothing on the timeline uses. Takes two clicks, and the toast can undo it.`
+      }
+      onClick={() => {
+        if (arm.press() === 'confirmed') removeUnusedAssets()
+      }}
+      onBlur={() => arm.disarm()}
+      className={armed ? 'border-danger bg-danger/20 font-medium text-danger hover:bg-danger/30' : ''}
+    >
+      <Trash2 size={16} strokeWidth={1.5} />
+      {armed ? `Remove ${unused}?` : 'Remove unused'}
+    </Button>
+  )
+}
+
 function MediaTab() {
   const assets = useStore((s) => s.project.assets)
   const fps = useStore((s) => activeSequence(s.project).fps)
@@ -558,7 +599,8 @@ function MediaTab() {
   const list = Object.values(assets).reverse()
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex items-center gap-2 px-2 py-2">
+      {/* Wraps rather than squeezing: a third button joined Import and Captions. */}
+      <div className="flex flex-wrap items-center gap-2 px-2 py-2">
         <Button variant="secondary" onClick={() => fileInput.current?.click()}>
           <Plus size={16} strokeWidth={1.5} />
           Import
@@ -567,6 +609,7 @@ function MediaTab() {
           <Captions size={16} strokeWidth={1.5} />
           Captions
         </Button>
+        <RemoveUnusedButton />
         {captionsOpen && <CaptionsDialog onClose={() => setCaptionsOpen(false)} />}
         <input
           ref={fileInput}
