@@ -209,6 +209,32 @@ export async function readFrameRate(file: Blob): Promise<number | undefined> {
   }
 }
 
+/**
+ * The picture's HDR transfer, 'hlg' (an iPhone's HDR video, HLG with Dolby
+ * Vision, which is what his clips are) or 'pq' (HDR10), or null for SDR.
+ *
+ * Read from the container's colour description, which costs one open of the
+ * file's index and no decode. Never throws: a file this cannot read is treated
+ * as SDR, which is exactly what every import did before this existed.
+ */
+export async function readHdrTransfer(file: Blob): Promise<'hlg' | 'pq' | null> {
+  try {
+    const { ALL_FORMATS, BlobSource, Input } = await import('mediabunny')
+    const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS })
+    try {
+      const track = await input.getPrimaryVideoTrack()
+      // A string, because TypeScript's DOM list of transfers stops at the SDR
+      // ones; mediabunny names the HDR two the way WebCodecs does.
+      const transfer: string | null | undefined = track ? (await track.getColorSpace()).transfer : undefined
+      return transfer === 'hlg' || transfer === 'pq' ? transfer : null
+    } finally {
+      input.dispose?.()
+    }
+  } catch {
+    return null
+  }
+}
+
 async function probeAudio(file: File): Promise<ProbeResult> {
   const url = URL.createObjectURL(file)
   const audio = document.createElement('audio')

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { needsRemux, parseSourceStreams, remuxArgs, remuxPlan } from './remuxArgs'
+import { MASTER_LADDER, framesLost, needsRemux, parseSourceStreams, remuxArgs, remuxPlan, sdrMasterArgs } from './remuxArgs'
 
 // ⛔ REAL ffmpeg OUTPUT, captured 2026-08-13 from the BUNDLED binary
 // (vendor/ffmpeg/win-x64/ffmpeg.exe) against files it had just written. Not
@@ -122,5 +122,114 @@ describe('which files go through this at all', () => {
   it('is not fooled by the extension appearing earlier in the name', () => {
     expect(needsRemux('my.mkv.backup.mp4')).toBe(false)
     expect(needsRemux('season.ts.recording.mkv')).toBe(true)
+  })
+})
+
+// ⛔ REAL ffmpeg OUTPUT, 2026-10-01, the bundled binary against HIS OWN iPhone
+// clip (IMG_5001, the GYM2 take), trimmed to the lines that matter. Note the
+// Stream group block: the video line appears more than once, and the first one
+// is the one that counts.
+const IPHONE_MOV = `
+Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'IMG_5001.MOV':
+  Duration: 00:00:13.50, start: 0.000000, bitrate: 14004 kb/s
+  Stream group #0:0[0x3]: Track Reference:
+    Stream #0:0[0x1](und): Video: hevc (Main 10) (hvc1 / 0x31637668), yuv420p10le(tv, bt2020nc/bt2020/arib-std-b67), 1920x1080, 13720 kb/s, 29.99 fps, 30 tbr, 600 tbn (default)
+      Side data:
+        DOVI configuration record: version: 1.0, profile: 8, level: 4, rpu flag: 1, el flag: 0, bl flag: 1, compatibility id: 4, compression: 0
+        Display Matrix: rotation of -90.00 degrees
+    Stream #0:2[0x3](und): Data: none (mebx / 0x7862656D), 0 kb/s (default)
+  Stream #0:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 186 kb/s (default)
+`
+
+const HDR10_MOV = `
+  Duration: 00:00:01.00, start: 0.000000, bitrate: 297 kb/s
+  Stream #0:0[0x1]: Video: hevc (Main 10) (hev1 / 0x31766568), yuv420p10le(tv, bt2020nc/bt2020/smpte2084, progressive), 320x240 [SAR 1:1 DAR 4:3], 220 kb/s, 30 fps, 30 tbr, 15360 tbn (default)
+  Stream #0:1[0x2]: Audio: aac (LC) (mp4a / 0x6134706D), 44100 Hz, mono, fltp, 34 kb/s (default)
+`
+
+describe('telling an HDR clip from an ordinary one', () => {
+  it('reads HLG off his own iPhone clip', () => {
+    expect(parseSourceStreams(IPHONE_MOV)).toEqual({ durationS: 13.5, video: 'hevc', audio: 'aac', hdr: 'hlg' })
+  })
+
+  it('reads PQ, the other HDR transfer (HDR10)', () => {
+    expect(parseSourceStreams(HDR10_MOV).hdr).toBe('pq')
+  })
+
+  it('leaves an ordinary capture alone', () => {
+    // His OBS captures are SDR, and converting one would be minutes for nothing.
+    expect(parseSourceStreams(AAC_MKV).hdr).toBeUndefined()
+    expect(parseSourceStreams('  Stream #0:0: Video: h264 (High), yuv420p(tv, bt709, progressive), 1920x1080').hdr).toBeUndefined()
+  })
+})
+
+describe('the SDR master of an HDR clip', () => {
+  const plan = { canCopyVideo: false, reencodeAudio: false }
+  const args = (tonemap: 'libplacebo' | 'zscale' = 'libplacebo', encoder: 'qsv' | 'software' = 'qsv') =>
+    sdrMasterArgs('IMG_5001.MOV', 'out.mp4', plan, tonemap, encoder)
+  const after = (a: string[], flag: string) => a[a.indexOf(flag) + 1]
+
+  it("applies the clip's own Dolby Vision grade, on the graphics card", () => {
+    const a = args()
+    expect(after(a, '-vf')).toContain('libplacebo=')
+    expect(after(a, '-vf')).toContain('apply_dolbyvision=1')
+    expect(after(a, '-vf')).toContain('format=yuv420p')
+    expect(a.join(' ')).toContain('-init_hw_device vulkan=vk -filter_hw_device vk')
+  })
+
+  it('falls back to the zscale chain with no Vulkan device at all', () => {
+    const a = args('zscale')
+    expect(after(a, '-vf')).toContain('npl=150')
+    expect(after(a, '-vf')).toContain('tonemap=hable')
+    expect(a.join(' ')).not.toContain('vulkan')
+  })
+
+  it('⛔ keeps the phone frame times exactly, not rounded to the grid', () => {
+    const a = args().join(' ')
+    expect(a).toContain('-fps_mode passthrough')
+    // Without this the encoder's time base is 1/30 and every jittered frame
+    // moves, measured up to 3.3 ms on his clip.
+    expect(a).toContain('-enc_time_base demux')
+  })
+
+  it('copies the sound with its edit list, and says SDR in the file', () => {
+    const a = args()
+    expect(after(a, '-c:a')).toBe('copy')
+    expect(a.join(' ')).toContain('-color_primaries bt709 -color_trc bt709 -colorspace bt709 -color_range tv')
+  })
+
+  it('uses the encoder settings that measured 45 dB or better on both of his clips', () => {
+    expect(args('libplacebo', 'qsv').join(' ')).toContain('-c:v h264_qsv -preset veryslow -global_quality 18 -g 30')
+    expect(args('libplacebo', 'software').join(' ')).toContain('-c:v libx264 -preset veryfast -crf 18 -g 30')
+  })
+
+  it('stops on a frame it cannot decode, and reports how far it got', () => {
+    const a = args()
+    expect(a).toContain('-xerror')
+    expect(a.join(' ')).toContain('-progress pipe:1')
+  })
+
+  it('tries the best way first and keeps a way that needs nothing special last', () => {
+    expect(MASTER_LADDER[0]).toEqual({ tonemap: 'libplacebo', encoder: 'qsv' })
+    expect(MASTER_LADDER[MASTER_LADDER.length - 1]).toEqual({ tonemap: 'zscale', encoder: 'software' })
+  })
+})
+
+describe('a re-encode is held to the frames it was given', () => {
+  it('stops on a frame that will not decode, but only when it decodes at all', () => {
+    // A copy never decodes, and his OBS captures with a damaged tail must keep
+    // converting the way they always have.
+    expect(remuxArgs('a.mov', 'b.mp4', { canCopyVideo: false, reencodeAudio: false })).toContain('-xerror')
+    expect(remuxArgs('a.mkv', 'b.mp4', { canCopyVideo: true, reencodeAudio: false })).not.toContain('-xerror')
+  })
+
+  it('counts more than one missing frame as a failure', () => {
+    // The real one: 389 of 405 frames came back and were imported as fine.
+    expect(framesLost(405, 389)).toBe(16)
+    expect(framesLost(405, 405)).toBe(0)
+    expect(framesLost(405, 404)).toBe(0)
+    expect(framesLost(405, 403)).toBe(2)
+    // A source whose frames could not be counted is never held against itself.
+    expect(framesLost(0, 12)).toBe(0)
   })
 })

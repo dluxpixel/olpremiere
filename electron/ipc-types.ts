@@ -254,11 +254,17 @@ export interface OlApi {
    * 'convert' is the up-front path for containers Chromium cannot demux at all
    * (his OBS .mkv), and it COPIES the video. 'rescue' runs after a real decode
    * failure, so it re-encodes to H.264: copying would hand the same codec back
-   * to the decoder that just refused it.
+   * to the decoder that just refused it. 'sdr' makes the SDR master of an HDR
+   * phone clip (remuxArgs.ts), and a rescue of an HDR clip does the same.
    */
-  remuxFinish(id: string, mode?: 'convert' | 'rescue'): Promise<{ size: number; copied: boolean; durationS: number }>
+  remuxFinish(
+    id: string,
+    mode?: 'convert' | 'rescue' | 'sdr',
+  ): Promise<{ size: number; copied: boolean; durationS: number }>
   remuxRead(id: string, offset: number, length: number): Promise<ArrayBuffer>
   remuxRelease(id: string): Promise<void>
+  /** How far a re-encoding `remuxFinish` has got, 0 to 1, by job id. Returns an unsubscribe fn. */
+  onRemuxProgress(cb: (id: string, frac: number) => void): () => void
   /** Encode progress (frame/totalFrames) parsed from ffmpeg. Returns an unsubscribe fn. */
   onNativeProgress(cb: (p: NativeProgress) => void): () => void
   /** Fires when a newer version has downloaded and is staged to install on restart. Returns an unsubscribe fn. */

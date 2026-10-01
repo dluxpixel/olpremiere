@@ -161,10 +161,46 @@ export async function start(config: NativeExportConfig, win: BrowserWindow): Pro
   return { started: true, outPath }
 }
 
+/**
+ * ffmpeg's exit code as ffmpeg means it. Windows hands a negative one back
+ * unsigned, so its "-2, no such file" arrives as 4294967294.
+ */
+export function exitCodeOf(code: number | null): number | null {
+  return code !== null && code > 0x7fffffff ? code - 0x100000000 : code
+}
+
+/** The last lines ffmpeg wrote on stderr, which is where it says why. */
+export function stderrTail(stderr: string): string {
+  return stderr.split(/\r?\n/).filter(Boolean).slice(-4).join(' · ')
+}
+
+/**
+ * What to tell him when ffmpeg dies while frames are still going in.
+ *
+ * ⛔ IT USED TO BE THE BARE WORDS "ffmpeg exited during export". Seen
+ * 2026-09-29 on a machine out of memory: the export stopped after 7 s with
+ * exactly that, so neither he nor a log could tell running out of memory from
+ * a codec error. The reason was in `job.stderr` the whole time; only `finish`
+ * ever read it, and a death mid stream never gets there. So this waits for the
+ * process to really end (its stderr is complete then and its exit code known),
+ * a couple of seconds at most, and says both.
+ */
+async function diedMessage(j: Job): Promise<string> {
+  const code = await Promise.race([j.closed, new Promise<undefined>((r) => setTimeout(() => r(undefined), 2000))])
+  const tail = stderrTail(j.stderr)
+  const exit = code === undefined ? '' : ` (exit code ${exitCodeOf(code) ?? 'none, it was stopped'})`
+  return `ffmpeg exited during export${exit}${tail ? ': ' + tail : ''}`
+}
+
 // -- writeFrame: one RGBA frame → stdin, resolves on drain (backpressure) ----
 export function writeFrame(frame: ArrayBuffer): Promise<void> {
   return new Promise((resolve, reject) => {
-    if (!job || !job.ffmpeg.stdin.writable) return reject(new Error('ffmpeg is not running'))
+    if (!job) return reject(new Error('ffmpeg is not running'))
+    // A job whose stdin has closed is a process that died between two frames.
+    if (!job.ffmpeg.stdin.writable) {
+      void diedMessage(job).then((msg) => reject(new Error(msg)))
+      return
+    }
     const j = job
     const ok = j.ffmpeg.stdin.write(Buffer.from(frame))
     if (ok) return resolve()
@@ -185,7 +221,7 @@ export function writeFrame(frame: ArrayBuffer): Promise<void> {
     }
     const onGone = (): void => {
       cleanup()
-      reject(new Error('ffmpeg exited during export'))
+      void diedMessage(j).then((msg) => reject(new Error(msg)))
     }
     j.ffmpeg.stdin.once('drain', onDrain)
     j.ffmpeg.stdin.once('close', onGone)
@@ -203,8 +239,8 @@ export async function finish(): Promise<NativeFinishResult> {
   if (j.audioPath) void unlink(j.audioPath).catch(() => {})
   if (code !== 0) {
     void unlink(j.outPath).catch(() => {})
-    const tail = j.stderr.split(/\r?\n/).filter(Boolean).slice(-4).join(' · ')
-    return { ok: false, error: `ffmpeg exited with code ${code}${tail ? ': ' + tail : ''}` }
+    const tail = stderrTail(j.stderr)
+    return { ok: false, error: `ffmpeg exited with code ${exitCodeOf(code)}${tail ? ': ' + tail : ''}` }
   }
   let sizeBytes = 0
   try {

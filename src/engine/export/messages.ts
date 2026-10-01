@@ -101,6 +101,11 @@ export interface ExportAsset {
   /** Kept so worker errors can name the offending file. */
   name: string
   blob: Blob
+  /**
+   * The source's own frame rate, the one the preview's frame cache slots its
+   * frames by, so the export picks the same frame (frameIndex.ts).
+   */
+  fps?: number
 }
 
 export type ExportRequest =
