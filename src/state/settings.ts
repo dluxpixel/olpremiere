@@ -28,6 +28,14 @@ interface SettingsState {
    * a tool setting has no business being.
    */
   easeSeconds: number
+  /**
+   * Export at the platforms' loudness (-14 LUFS, a clean true-peak limiter).
+   * His answer, 2026-09-30, to whether every export should land at the level
+   * YouTube, TikTok and Instagram play videos at: "Yes, on by default". The
+   * export window's switch turns it off for a video and it stays the way he
+   * left it, like every other choice here.
+   */
+  platformLoudness: boolean
 }
 
 /** The ease field's own envelope. Shared by the store clamp and the scrub field. */
@@ -44,6 +52,7 @@ const EASE_DEFAULT = 0.5
 const THEME_KEY = 'olpremiere:settings:theme'
 const QUALITY_KEY = 'olpremiere:settings:preview-quality'
 const EASE_KEY = 'olpremiere:settings:ease-seconds'
+const LOUDNESS_KEY = 'olpremiere:settings:platform-loudness'
 
 function read(key: string): string | null {
   try {
@@ -85,11 +94,20 @@ function loadEaseSeconds(): number {
   return clampEase(Number(raw))
 }
 
+/** On unless he turned it off: only an explicit 'off' is stored. */
+const loadPlatformLoudness = (): boolean => read(LOUDNESS_KEY) !== 'off'
+
 export const useSettings = create<SettingsState>(() => ({
   theme: loadTheme(),
   previewQuality: loadQuality(),
   easeSeconds: loadEaseSeconds(),
+  platformLoudness: loadPlatformLoudness(),
 }))
+
+export function setPlatformLoudness(on: boolean): void {
+  useSettings.setState({ platformLoudness: on })
+  write(LOUDNESS_KEY, on ? null : 'off')
+}
 
 /** The theme actually in force: 'system' resolves against the OS preference. */
 export function resolvedTheme(choice: ThemeChoice): ResolvedTheme {

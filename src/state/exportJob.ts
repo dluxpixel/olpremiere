@@ -29,11 +29,13 @@
 import { create } from 'zustand'
 import { canStreamToDisk, exportSequence, pickExportDestination, type ExportProgress } from '../engine/export'
 import { planExport, type ExportPlan } from '../engine/export/exportPlan'
+import { PLATFORM_TARGET_LUFS } from '../engine/loudness'
 import { exportNative } from '../engine/export/nativeExport'
 import { activeSequence, type Project } from '../engine/types'
 import { isElectron } from '../platform'
 import { isPhoneLayout } from '../ui/phoneLayout'
 import { holdBlobKeys } from './exportHolds'
+import { setPlatformLoudness, useSettings } from './settings'
 import { useStore } from './store'
 import { useToasts } from './toasts'
 import { beginCriticalWork } from './unloadGuard'
@@ -70,6 +72,8 @@ export const useExportJob = create<ExportJobState>(() => ({ job: null, dialogOpe
 let frozen: { project: Project; blobKeys: string[] } | null = null
 let abort: AbortController | null = null
 let nextJobId = 1
+/** A plan to start the moment the running export has finished cancelling. */
+let restartWith: ExportPlan | null = null
 
 export const isExportActive = (stage: ExportStage): boolean => stage.kind === 'starting' || stage.kind === 'running'
 
@@ -159,7 +163,26 @@ export function requestExport(project: Project = useStore.getState().project): v
   const copy = structuredClone(project)
   frozen = { project: copy, blobKeys: exportBlobKeys(copy) }
   useExportJob.setState({ dialogOpen: true, alreadyRunning: false })
-  void drive(planExport(activeSequence(copy)))
+  void drive(planExport(activeSequence(copy), { platformLoudness: useSettings.getState().platformLoudness }))
+}
+
+/** Does this export bring the mix to the platforms' loudness? */
+export const planHasPlatformLoudness = (plan: ExportPlan): boolean =>
+  plan.settings.loudnessTargetLufs !== null && plan.settings.loudnessTargetLufs !== undefined
+
+/**
+ * The export window's "Platform loudness" switch. It remembers the choice for
+ * the next export, and when an export is running with the other setting it
+ * starts that one again from the same frozen copy, so the switch changes THIS
+ * video, which is what it says it does.
+ */
+export function setExportLoudness(on: boolean): void {
+  setPlatformLoudness(on)
+  const { job } = useExportJob.getState()
+  if (!job || !isExportActive(job.stage) || !frozen) return
+  if (planHasPlatformLoudness(job.plan) === on) return
+  restartWith = { ...job.plan, settings: { ...job.plan.settings, loudnessTargetLufs: on ? PLATFORM_TARGET_LUFS : null } }
+  abort?.abort()
 }
 
 /** Run the failed export again, from the same frozen copy. */
@@ -170,6 +193,8 @@ export function retryExport(): void {
 }
 
 export function cancelExport(): void {
+  // Cancel means stop, even right after the loudness switch asked for a restart.
+  restartWith = null
   abort?.abort()
 }
 
@@ -222,10 +247,21 @@ async function drive(plan: ExportPlan): Promise<void> {
     release()
     if (abort === ctrl) abort = null
   }
+  // Cancelled to start again with the other loudness setting: same frozen
+  // copy, the new plan, and the dialog stays where it is. However the run
+  // ended (a throw, or a browser picker that came back to a cancelled job),
+  // a pending restart is taken here and only here.
+  const again = restartWith
+  if (again && ctrl.signal.aborted) {
+    restartWith = null
+    await drive(again)
+  }
 }
 
 /** Cancelled, or the save dialog was dismissed: nothing to show. */
 function settleCancelled(id: number): void {
+  // A cancel that is really a restart keeps the job and its frozen copy.
+  if (restartWith) return
   if (useExportJob.getState().job?.id === id) forgetJob()
 }
 

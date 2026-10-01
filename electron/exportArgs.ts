@@ -59,14 +59,21 @@ export function videoEncoderArgs(config: NativeExportConfig): string[] {
  * another tool, grade, and export again. Writing lossy AAC into it threw away
  * audio that every later step then had to work from, and no amount of bitrate
  * makes a re-encode of a re-encode honest. QuickTime carries PCM natively, so a
- * ProRes master now keeps the samples the mix actually produced.
+ * ProRes master keeps the samples the mix actually produced, at 24 bits: the
+ * mix arrives as 32-bit float and 16 bits would throw away its quiet end.
  *
- * Everything else is a delivery file going to YouTube or a phone, where AAC is
- * exactly right and 320k is transparent for a stereo voice mix.
+ * Everything else is a delivery file going to YouTube or a phone: AAC-LC, the
+ * codec all three platforms ingest, at 384 kb/s stereo 48 kHz, which is
+ * YouTube's own published recommendation. The rate and the layout are pinned
+ * rather than inherited from the WAV, so the file is this whatever the mix is.
+ * Measured on his mixes, 320k was already transparent (null test 37 to 40 dB,
+ * 16 to 20 kHz within 0.2 dB); 384k matches the spec and costs nothing audible.
+ * Native `aac` and never `aac_mf`: Media Foundation writes no edit list, so its
+ * encoder delay would land in the file as an unsignalled audio offset.
  */
 export function audioEncoderArgs(config: NativeExportConfig): string[] {
-  if (config.encoder === 'prores') return ['-c:a', 'pcm_s16le']
-  return ['-c:a', 'aac', '-b:a', '320k']
+  if (config.encoder === 'prores') return ['-c:a', 'pcm_s24le']
+  return ['-c:a', 'aac', '-b:a', '384k', '-ar', '48000', '-ac', '2']
 }
 
 /**

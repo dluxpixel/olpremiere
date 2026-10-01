@@ -7,8 +7,10 @@ import {
   fmtBytes,
   isExportActive,
   retryExport,
+  setExportLoudness,
   useExportJob,
 } from '../state/exportJob'
+import { useSettings } from '../state/settings'
 import { useToasts } from '../state/toasts'
 import { Button, IconButton } from '../ui/Button'
 
@@ -34,6 +36,9 @@ export function ExportDialog() {
   const job = useExportJob((s) => s.job)
   const alreadyRunning = useExportJob((s) => s.alreadyRunning)
   const show = useToasts((s) => s.show)
+  // The switch shows the remembered choice, which is also what a restarted
+  // export runs with, so it flips the moment he clicks it.
+  const platformLoudness = useSettings((s) => s.platformLoudness)
 
   const stage = job?.stage
   // The desktop export carries on without this dialog, so it closes at any
@@ -103,6 +108,26 @@ export function ExportDialog() {
               {plan.settings.width} × {plan.settings.height} · {plan.settings.fps} fps · H.264
               {plan.usingWorkArea ? ' · work area' : ''}
             </p>
+            {/* The one export choice: his answer, "Yes, on by default". It
+                changes THIS video (the export starts again with it) and is
+                remembered for the next one. */}
+            <div className="flex flex-col gap-1">
+              <label className="flex items-center gap-2 text-[11px] text-text-muted">
+                <span>Platform loudness</span>
+                <input
+                  type="checkbox"
+                  aria-label="Platform loudness"
+                  data-testid="export-loudness"
+                  checked={platformLoudness}
+                  onChange={(e) => setExportLoudness(e.target.checked)}
+                  className="ml-auto h-3.5 w-3.5 cursor-default accent-accent"
+                />
+              </label>
+              <span className="text-[10px] text-text-muted">
+                Lands at the level YouTube, TikTok and Instagram play videos at, with a clean limiter and no
+                distortion. Off keeps your mix as it is. Changing it starts this export again.
+              </span>
+            </div>
 
             {stage.kind === 'starting' && <p className="text-[12px] text-text-secondary">Choose where to save it…</p>}
             {stage.kind === 'running' && (

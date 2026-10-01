@@ -7,6 +7,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   VIDEO_FILTER,
+  audioEncoderArgs,
   buildArgs,
   videoEncoderArgs,
   keyframeArgs,
@@ -104,7 +105,7 @@ describe('native export arguments', () => {
   it('adds the WAV as a second input and maps it only when there is audio', () => {
     const withAudio = buildArgs(cfg(), 'C:/tmp/a.wav', 'o.mp4')
     expect(withAudio).toContain('C:/tmp/a.wav')
-    expect(withAudio.join(' ')).toContain('-map 1:a:0 -c:a aac -b:a 320k')
+    expect(withAudio.join(' ')).toContain('-map 1:a:0 -c:a aac -b:a 384k -ar 48000 -ac 2')
 
     const silent = buildArgs(cfg({ hasAudio: false }), null, 'o.mp4')
     expect(silent.join(' ')).not.toContain('-map 1:a:0')
@@ -164,6 +165,21 @@ describe('native export arguments', () => {
     expect(a.indexOf('-movflags')).toBeLessThan(a.length - 1)
   })
 
+  it('writes the delivery sound as AAC-LC, 384 kb/s, 48 kHz stereo, pinned rather than inherited', () => {
+    // YouTube's published recommendation. The rate and layout are stated so the
+    // file is this whatever the WAV is, and never aac_mf, which writes no edit
+    // list and would land its encoder delay in the file as an audio offset.
+    for (const encoder of NATIVE_ENCODERS.filter((e) => e !== 'prores')) {
+      expect(audioEncoderArgs(cfg({ encoder }))).toEqual(['-c:a', 'aac', '-b:a', '384k', '-ar', '48000', '-ac', '2'])
+    }
+    expect(buildArgs(cfg(), 'a.wav', 'o.mp4').join(' ')).not.toContain('aac_mf')
+  })
+
+  it('keeps a ProRes master in 24-bit PCM, not 16', () => {
+    // The mix arrives as 32-bit float; a master should not throw away its quiet end.
+    expect(audioEncoderArgs(cfg({ encoder: 'prores' }))).toEqual(['-c:a', 'pcm_s24le'])
+  })
+
   it('pins the whole shipping argument list: x264 with sound, which is his path', () => {
     expect(buildArgs(cfg({ keyframeIntervalS: EXPORT_KEYFRAME_S }), 'C:/tmp/a.wav', 'C:/out/movie.mp4')).toEqual([
       '-y', '-hide_banner',
@@ -175,7 +191,7 @@ describe('native export arguments', () => {
       '-c:v', 'libx264', '-preset', 'veryslow', '-crf', '14', '-pix_fmt', 'yuv420p',
       '-g', '60',
       '-map', '0:v:0',
-      '-map', '1:a:0', '-c:a', 'aac', '-b:a', '320k',
+      '-map', '1:a:0', '-c:a', 'aac', '-b:a', '384k', '-ar', '48000', '-ac', '2',
       '-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709', '-color_range', 'tv',
       '-movflags', '+faststart',
       '-progress', 'pipe:1', '-nostats',
