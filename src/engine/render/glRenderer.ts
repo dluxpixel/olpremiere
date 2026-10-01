@@ -472,6 +472,17 @@ ${bodies.join('\n')}
 // The staging pass (RendererOptions.fastSourceUpload): one triangle over the
 // target, reading the RGBA8 texel under each pixel and handing back its LIGHT, so
 // the sRGB target encodes it back to the very byte it started as.
+//
+// ⛔ THE STAGE IS NOT ALWAYS THE TARGET'S SIZE, 2026-10-01. A video with
+// non-square pixels (1440x1080 stored, shown 16:9) reports videoWidth 1920, but
+// Chrome uploads its frame at the 1440 it was stored at. Reading that texel for
+// texel into a 1920 wide target drew the picture unscaled into the left three
+// quarters of the monitor and black (or the last clip's columns) in the rest,
+// while the export, which never stages, was right. So when the stage is a
+// different size from the target it is SAMPLED across the whole target instead,
+// which is what the direct upload before the stage always did. A stage of the
+// target's own size still takes the texel fetch, so every ordinary frame is the
+// same byte as before.
 const STAGE_VS = `#version 300 es
 void main() {
   vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
@@ -481,10 +492,13 @@ void main() {
 const STAGE_FS = `#version 300 es
 precision highp float;
 uniform highp sampler2D uStage;
+uniform vec2 uDst; // the target's size in pixels
 out vec4 outColor;
 ${SRGB_GLSL}
 void main() {
-  vec4 t = texelFetch(uStage, ivec2(gl_FragCoord.xy), 0);
+  vec4 t = textureSize(uStage, 0) == ivec2(uDst)
+    ? texelFetch(uStage, ivec2(gl_FragCoord.xy), 0)
+    : texture(uStage, gl_FragCoord.xy / uDst);
   outColor = vec4(srgbToLinear(t.rgb), t.a);
 }`
 
@@ -1200,6 +1214,10 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
   setTexParams(mipmapSources)
   let srcTexW = -1
   let srcTexH = -1
+  // The direct (unstaged) upload's own record, by the same rule as the stage:
+  // a video element writes in place only into what it allocated itself. The
+  // export only ever hands this canvases, so for it nothing changes.
+  let direct: StageState = NO_STAGE
 
   // Per-source texture cache for STABLE sources: stills (<img>) and the cached
   // title/caption rasters (OffscreenCanvas). Their pixels never change between
@@ -1216,12 +1234,14 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
   const stageFb = fastUpload ? gl.createFramebuffer() : null
   const stageProg = fastUpload ? link(gl, STAGE_VS, STAGE_FS) : null
   const stageLoc = stageProg ? gl.getUniformLocation(stageProg, 'uStage') : null
-  let stageW = -1
-  let stageH = -1
+  const stageDstLoc = stageProg ? gl.getUniformLocation(stageProg, 'uDst') : null
+  let stage: StageState = NO_STAGE
   if (stageTex) {
     gl.bindTexture(gl.TEXTURE_2D, stageTex)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+    // LINEAR for the one case that samples (a stage of another size, see
+    // STAGE_FS). The texel fetch every ordinary frame takes ignores filtering.
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
   }
@@ -1233,13 +1253,10 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
    */
   function uploadThroughStage(dst: WebGLTexture, source: TexImageSource, texW: number, texH: number, allocate: boolean): void {
     gl.bindTexture(gl.TEXTURE_2D, stageTex)
-    if (stageW === texW && stageH === texH) {
-      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, source)
-    } else {
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, source)
-      stageW = texW
-      stageH = texH
-    }
+    const plan = stageUpload(stage, source, texW, texH)
+    if (plan.reuse) gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, source)
+    else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, source)
+    stage = plan.next
     gl.bindTexture(gl.TEXTURE_2D, dst)
     if (allocate) gl.texImage2D(gl.TEXTURE_2D, 0, gl.SRGB8_ALPHA8, texW, texH, 0, gl.RGBA, gl.UNSIGNED_BYTE, null)
     gl.bindFramebuffer(gl.FRAMEBUFFER, stageFb)
@@ -1251,6 +1268,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     gl.activeTexture(gl.TEXTURE0)
     gl.bindTexture(gl.TEXTURE_2D, stageTex)
     gl.uniform1i(stageLoc, 0)
+    gl.uniform2f(stageDstLoc, texW, texH)
     gl.drawArrays(gl.TRIANGLES, 0, 3)
     // Detach, so dst can be sampled and mipmapped without a feedback loop.
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0)
@@ -1298,12 +1316,11 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
       uploadThroughStage(srcTex!, source, texW, texH, allocate)
       srcTexW = texW
       srcTexH = texH
-    } else if (srcTexW === texW && srcTexH === texH) {
-      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, source)
     } else {
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.SRGB8_ALPHA8, gl.RGBA, gl.UNSIGNED_BYTE, source)
-      srcTexW = texW
-      srcTexH = texH
+      const plan = stageUpload(direct, source, texW, texH)
+      if (plan.reuse) gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, source)
+      else gl.texImage2D(gl.TEXTURE_2D, 0, gl.SRGB8_ALPHA8, gl.RGBA, gl.UNSIGNED_BYTE, source)
+      direct = plan.next
     }
     // Every upload replaces level 0, so the chain must be re-derived each time
     // or the mip MIN_FILTER would sample stale (or missing) levels.
@@ -2089,6 +2106,51 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
   }
 
   return { render, warm, dispose }
+}
+
+// --- the staging upload's plan ----------------------------------------------
+
+/** What the RGBA8 staging texture holds now, as far as the CPU can know it. */
+export interface StageState {
+  /** Its size when it came from a source whose size is exact (a canvas, a bitmap, an image); -1 when unknown. */
+  w: number
+  h: number
+  /** The source that last allocated it when that source's upload size is NOT known (a video element), else null. */
+  from: TexImageSource | null
+  /** The size that source reported when it allocated the stage. */
+  fromW: number
+  fromH: number
+}
+
+export const NO_STAGE: StageState = { w: -1, h: -1, from: null, fromW: -1, fromH: -1 }
+
+/**
+ * Write the next source into the stage in place (texSubImage2D, the cheap road)
+ * or allocate it afresh from the source (texImage2D)?
+ *
+ * In place is only safe when the source is EXACTLY the stage's size, because a
+ * smaller source only overwrites the top left of a bigger stage. A canvas, a
+ * bitmap and an image upload at the size they report. A VIDEO ELEMENT does not
+ * always: one with non-square pixels reports its display size (videoWidth 1920)
+ * and uploads its stored one (1440). Nothing on the CPU can read the stored
+ * size, so a video element reuses the stage only when it is the very element,
+ * at the very size, that allocated it; anything else allocates, and the stage
+ * shader then knows the stage's true size from the texture itself.
+ */
+export function stageUpload(
+  prev: StageState,
+  source: TexImageSource,
+  texW: number,
+  texH: number,
+): { reuse: boolean; next: StageState } {
+  const o = source as { videoWidth?: number; displayWidth?: number }
+  const sizeUnknown = o.videoWidth !== undefined || o.displayWidth !== undefined
+  if (sizeUnknown) {
+    const reuse = prev.from === source && prev.fromW === texW && prev.fromH === texH
+    return { reuse, next: reuse ? prev : { w: -1, h: -1, from: source, fromW: texW, fromH: texH } }
+  }
+  const reuse = prev.from === null && prev.w === texW && prev.h === texH
+  return { reuse, next: reuse ? prev : { w: texW, h: texH, from: null, fromW: -1, fromH: -1 } }
 }
 
 // --- source-size helpers ---------------------------------------------------
