@@ -11,6 +11,8 @@ import { budgets } from './memoryBudget'
 import type { AutoLevel, Clip, Id, MediaAsset, Sequence, Track } from './types'
 import { createSoftLimiter } from './audioLimiter'
 import { decodeAudioOffThread } from './audioDecodeClient'
+import { DECODE_SAMPLE_RATE } from './audioDemux'
+import { resamplePlanes } from './resample'
 import { timeStretchChannels } from './timeStretch'
 
 /** Sources start this far in the future so scheduling jitter can't clip the head. */
@@ -249,6 +251,7 @@ function evictAudioOverflow(keepId: Id): void {
  */
 export function forgetAssetAudio(assetId: Id): void {
   forgetAssetRanges(assetId)
+  undecodableRate.delete(assetId)
   bufferTotalBytes -= bufferBytes.get(assetId) ?? 0
   bufferBytes.delete(assetId)
   bufferCache.delete(assetId)
@@ -424,6 +427,13 @@ const oversizeWarned = new Set<Id>()
  */
 const provedSilent = new Set<string>()
 
+/**
+ * The track's own rate, for a file whose codec the demuxer could name but not
+ * decode, so the whole file fallback can decode at THAT rate and resample once
+ * with the sinc (see decodeWholeFileAt48k).
+ */
+const undecodableRate = new Map<Id, number>()
+
 /** Has the demuxer positively established that this asset carries no audio track? */
 export function isProvedSilent(assetId: string): boolean {
   return provedSilent.has(assetId)
@@ -454,6 +464,7 @@ async function demuxAssetAudio(asset: MediaAsset, blob: Blob, fromS?: number, to
     provedSilent.add(asset.id)
     return null
   }
+  if (r.kind === 'undecodable' && r.sampleRate) undecodableRate.set(asset.id, r.sampleRate)
   if (r.kind !== 'pcm') return null
   const length = r.planes[0]?.length ?? 0
   if (length === 0) return null
@@ -498,11 +509,39 @@ async function decodeAssetAudio(asset: MediaAsset): Promise<AudioBuffer | null> 
   }
   try {
     const bytes = await blob.arrayBuffer()
-    return await ensureAudioContext().decodeAudioData(bytes)
+    return await decodeWholeFileAt48k(bytes, undecodableRate.get(asset.id))
   } catch (err) {
     console.warn(`OL Premiere audio: decode failed for "${asset.name}"`, err)
     return null
   }
+}
+
+/**
+ * ⛔ THE WHOLE FILE FALLBACK COMES BACK AT 48 kHz TOO, 2026-10-01.
+ *
+ * It used to decode on the shared AudioContext, which runs at the OUTPUT
+ * DEVICE's rate: the same file came back at 44.1 kHz on one machine and 48 kHz
+ * on another, and either way the mixers then converted it by linear
+ * interpolation. Every other buffer in the app is 48 kHz (audioDemux.ts), so
+ * this one is too.
+ *
+ * When the demuxer could read the track's rate, the file is decoded at exactly
+ * that rate (decodeAudioData converts nothing then) and resampled once by the
+ * sinc in resample.ts. When even the rate is unknown, it is decoded straight at
+ * 48 kHz, so at worst Chromium's own resampler runs once, never twice and never
+ * the linear one.
+ */
+async function decodeWholeFileAt48k(bytes: ArrayBuffer, nativeRate?: number): Promise<AudioBuffer> {
+  const out = DECODE_SAMPLE_RATE
+  if (nativeRate && nativeRate !== out && nativeRate >= 3000 && nativeRate <= 768_000) {
+    const native = await new OfflineAudioContext(1, 1, nativeRate).decodeAudioData(bytes)
+    const planes = Array.from({ length: native.numberOfChannels }, (_, ch) => native.getChannelData(ch))
+    const resampled = resamplePlanes(planes, native.sampleRate, out)
+    const buf = ensureAudioContext().createBuffer(resampled.length, Math.max(1, resampled[0]?.length ?? 0), out)
+    resampled.forEach((p, ch) => buf.copyToChannel(p, ch))
+    return buf
+  }
+  return new OfflineAudioContext(1, 1, out).decodeAudioData(bytes)
 }
 
 /**
@@ -891,7 +930,107 @@ export interface GainPoint {
 /** Segments a fade is drawn with. Eight keeps a sine within 0.05 dB between knots. */
 export const FADE_KNOTS = 8
 
-export function clipGainEnvelope(clip: Clip, fromS: number): GainPoint[] | null {
+/**
+ * ⛔ A HARD AUDIO CUT GETS A 2 ms FADE, 2026-10-01.
+ *
+ * A clip edge with no fade of its own starts or stops the waveform wherever it
+ * happens to be. Measured in this app's export: a 1 kHz tone cut from its crest
+ * stepped 0.431 of full scale in one sample, against 0.065 for the tone itself,
+ * and a step like that is broadband: a click. His cuts mostly land in pauses,
+ * which hides it, but music and gameplay cut mid waveform click.
+ *
+ * 2 ms on the same equal power curve as every fade, too short to hear as a fade
+ * and long enough to take the step away. It goes only where the sound REALLY
+ * breaks (see clipEdges): a split of one clip into two plays on seamlessly and
+ * gets none.
+ */
+export const DECLICK_S = 0.002
+
+/** Which edges of a clip are hard cuts, the ones that get the 2 ms de-click. */
+export interface ClipEdges {
+  hardIn: boolean
+  hardOut: boolean
+}
+
+/** Half a sample at 48 kHz: closer than this, two edges are the same instant. */
+const SEAM_EPS_S = 1e-5
+
+/**
+ * The edges of `clip` where its sound starts or stops abruptly. An edge is NOT
+ * hard when another clip on the same track plays the same file at the same
+ * speed right up to it and carries on from exactly where the sound is: a
+ * blade cut that was never moved. Everything else, a cut to other sound, to
+ * silence, or to another part of the same file, is hard.
+ */
+export function clipEdges(track: Track, clip: Clip): ClipEdges {
+  const near = (a: number, b: number): boolean => Math.abs(a - b) <= SEAM_EPS_S
+  const endOf = (c: Clip): number => c.startS + (c.outS - c.inS) / (Math.abs(c.speed) || 1)
+  const end = endOf(clip)
+  let hardIn = true
+  let hardOut = true
+  for (const o of track.clips) {
+    if (o === clip || o.id === clip.id || !o.enabled || o.assetId !== clip.assetId || o.speed !== clip.speed) continue
+    if (!clipEmitsAudio(track, o)) continue
+    // Forward, the sound continues from o's out point into this clip's in
+    // point; reversed it runs downward, from o's in point into this one's out.
+    if (near(endOf(o), clip.startS) && near(clip.speed > 0 ? o.outS : o.inS, clip.speed > 0 ? clip.inS : clip.outS)) {
+      hardIn = false
+    }
+    if (near(end, o.startS) && near(clip.speed > 0 ? clip.outS : clip.inS, clip.speed > 0 ? o.inS : o.outS)) {
+      hardOut = false
+    }
+  }
+  return { hardIn, hardOut }
+}
+
+/**
+ * ⛔ A CLIP STARTS ON A WHOLE SAMPLE, 2026-10-01.
+ *
+ * A source started between two samples is played by Chromium at a fractional
+ * read position for its whole length, by linear interpolation, which is a low
+ * pass. Measured on white noise: half a sample off is -3.0 dB overall, and his
+ * iPhone clip that started 0.6 of a sample off lost 2 dB at 16 to 20 kHz in the
+ * export. 36 of the 84 audio clips in his projects started off the grid, voice
+ * takes included. Moving a start by at most half a sample (10.4 microseconds at
+ * 48 kHz) plays every sample exactly as it is in the file.
+ */
+export function onSampleGrid(t: number, sampleRate: number): number {
+  return Math.round(t * sampleRate) / sampleRate
+}
+
+/**
+ * The gain node every clip plays through, in both mixers.
+ *
+ * ⛔ STEREO, ALWAYS, SO A MONO FILE PLAYS L = R AT FULL LEVEL, 2026-10-01.
+ * Left to Web Audio's default ('max'), a track holding only mono sources stayed
+ * mono and the track's StereoPannerNode spread it with its mono law, 0.707 a
+ * side: -3.01 dB. Put ANY stereo clip on the same track in the same stretch and
+ * the bus went stereo and the same file played at 0.00 dB. Measured in the
+ * export: one mono file, two levels, decided by its neighbours, and changing at
+ * a 30 s render segment. Up-mixed here, a mono file is always exactly its
+ * stereo twin with the same sound in both channels, whatever shares its track.
+ *
+ * ⛔ AND IT HOLDS THE ENVELOPE'S FIRST VALUE FROM THE START. A start rounded
+ * onto the sample grid (onSampleGrid) can land a fraction of a sample BEFORE
+ * the envelope's first event, and until that event a GainNode plays at its
+ * default of 1. Measured in Electron 43: a start 0.3 of a sample off played its
+ * first sample at full level and then dropped to the de-click's zero, a one
+ * sample spike, the very click the de-click is there to remove.
+ */
+export function createClipGain(ctx: BaseAudioContext, startValue: number): GainNode {
+  const gain = ctx.createGain()
+  gain.channelCount = 2
+  gain.channelCountMode = 'explicit'
+  gain.channelInterpretation = 'speakers'
+  gain.gain.value = startValue
+  return gain
+}
+
+/**
+ * `edges` says which ends of the clip are hard cuts (see clipEdges): an edge
+ * with no fade of its own gets the DECLICK_S fade there. Both mixers pass it.
+ */
+export function clipGainEnvelope(clip: Clip, fromS: number, edges?: ClipEdges): GainPoint[] | null {
   if (!computeClipSchedule(clip, fromS)) return null
   const speed = Math.abs(clip.speed) || 1
   const winStart = clip.startS
@@ -913,6 +1052,8 @@ export function clipGainEnvelope(clip: Clip, fromS: number): GainPoint[] | null 
 
   let fin = Math.max(0, clip.fadeInS)
   let fout = Math.max(0, clip.fadeOutS)
+  if (fin === 0 && edges?.hardIn) fin = DECLICK_S
+  if (fout === 0 && edges?.hardOut) fout = DECLICK_S
   if (fin + fout > winLen && fin + fout > 0) {
     const k = winLen / (fin + fout)
     fin *= k
@@ -1077,7 +1218,14 @@ export async function scheduleAudio(
   // Audio comes from audio-track clips PLUS standalone (unlinked) video clips.
   // A linked video clip is video-only: its audio plays from the linked
   // audio-track clip, so counting it here would double the sound.
-  const candidates: { clip: Clip; track: Track; sched: ClipSchedule; asset: MediaAsset; reversed: boolean }[] = []
+  const candidates: {
+    clip: Clip
+    track: Track
+    sched: ClipSchedule
+    asset: MediaAsset
+    reversed: boolean
+    edges: ClipEdges
+  }[] = []
   for (const track of audibleTracks) {
     for (const clip of track.clips) {
       if (!clipEmitsAudio(track, clip)) continue
@@ -1088,7 +1236,8 @@ export async function scheduleAudio(
       const eff = reversed ? effectiveAudioClip(clip, asset.durationS) : clip
       const sched = computeClipSchedule(eff, fromS)
       if (!sched) continue
-      candidates.push({ clip: eff, track, sched, asset, reversed })
+      // Its neighbours are read off the clip as it sits on the track.
+      candidates.push({ clip: eff, track, sched, asset, reversed, edges: clipEdges(track, clip) })
     }
   }
 
@@ -1189,15 +1338,16 @@ export async function scheduleAudio(
   // One base time shared by every clip so relative offsets stay exact. Read AFTER
   // the last slow call above, so nothing can walk the clock past it.
   const baseT = ctx.currentTime + SCHEDULE_LATENCY_S
-  candidates.forEach(({ clip, track, sched }, i) => {
+  candidates.forEach(({ clip, track, sched, edges }, i) => {
     const play = plays[i]
     if (!play) return
     const source = ctx.createBufferSource()
     source.buffer = play.buffer
     source.playbackRate.value = play.playbackRate
-    const gain = ctx.createGain()
-    // Fade in/out + static gain, shared with the export mix by construction.
-    const env = clipGainEnvelope(clip, fromS) ?? [{ offsetS: 0, value: dbToGain(clip.audioGainDb) }]
+    // Fade in/out + static gain + de-click, shared with the export mix by construction.
+    const env = clipGainEnvelope(clip, fromS, edges) ?? [{ offsetS: 0, value: dbToGain(clip.audioGainDb) }]
+    // Stereo always, the same node the export builds: see createClipGain.
+    const gain = createClipGain(ctx, env[0]!.value)
     env.forEach((pt, idx) => {
       const when = baseT + pt.offsetS
       if (idx === 0) gain.gain.setValueAtTime(pt.value, when)
@@ -1205,7 +1355,8 @@ export async function scheduleAudio(
     })
     source.connect(gain)
     gain.connect(trackInputFor(track))
-    source.start(baseT + sched.whenOffsetS, play.offsetS, play.durationS)
+    // On the context's sample grid, as the export does: see onSampleGrid.
+    source.start(onSampleGrid(baseT + sched.whenOffsetS, ctx.sampleRate), play.offsetS, play.durationS)
     clipNodes.push({ source, gain })
   })
 

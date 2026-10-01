@@ -4,17 +4,21 @@
 
 import { createSoftLimiter } from '../audioLimiter'
 import {
+  clipEdges,
   clipEmitsAudio,
   clipGainEnvelope,
   clipAudioBuffer,
   computeClipSchedule,
   connectAutoLevel,
+  createClipGain,
   DECODE_CONCURRENCY,
   dbToGain,
   effectiveAudioClip,
   mapLimit,
+  onSampleGrid,
   pitchPreservedSource,
   isProvedSilent,
+  type ClipEdges,
   type ClipSchedule,
 } from '../audio'
 import { duckEnvelope } from '../ducking'
@@ -97,7 +101,7 @@ export async function planAudioMix(
   const anySolo = seq.tracks.some((t) => t.solo)
   const audibleTracks = seq.tracks.filter((t) => (anySolo ? t.solo : !t.muted))
 
-  const candidates: { clip: Clip; track: Track; asset: MediaAsset; reversed: boolean }[] = []
+  const candidates: { clip: Clip; track: Track; asset: MediaAsset; reversed: boolean; edges: ClipEdges }[] = []
   for (const track of audibleTracks) {
     for (const clip of track.clips) {
       if (!clipEmitsAudio(track, clip)) continue
@@ -107,7 +111,8 @@ export async function planAudioMix(
       const eff = reversed ? effectiveAudioClip(clip, asset.durationS) : clip
       // Audible in the exported range at all? (Per-segment scheduling below.)
       if (!computeClipSchedule(eff, startS)) continue
-      candidates.push({ clip: eff, track, asset, reversed })
+      // The same de-click edges the live mix reads, off the clip as it sits on its track.
+      candidates.push({ clip: eff, track, asset, reversed, edges: clipEdges(track, clip) })
     }
   }
   if (candidates.length === 0) return null
@@ -229,7 +234,7 @@ export async function planAudioMix(
     }
 
     const ctxEndOffsetS = ctxFrames / EXPORT_SAMPLE_RATE
-    candidates.forEach(({ clip, track }, i) => {
+    candidates.forEach(({ clip, track, edges }, i) => {
       const buffer = buffers[i]
       if (!buffer) return
       const sched: ClipSchedule | null = computeClipSchedule(clip, fromS)
@@ -247,15 +252,17 @@ export async function planAudioMix(
       const play = pitchPreservedSource(ctx, buffer, clip.speed, sched, clip.inS)
       source.buffer = play.buffer
       source.playbackRate.value = play.playbackRate
-      const gain = ctx.createGain()
-      const env = clipGainEnvelope(clip, fromS) ?? [{ offsetS: 0, value: dbToGain(clip.audioGainDb) }]
+      const env = clipGainEnvelope(clip, fromS, edges) ?? [{ offsetS: 0, value: dbToGain(clip.audioGainDb) }]
+      // Stereo always, so a mono file plays L = R at full level: see createClipGain.
+      const gain = createClipGain(ctx, env[0]!.value)
       env.forEach((pt, idx) => {
         if (idx === 0) gain.gain.setValueAtTime(pt.value, pt.offsetS)
         else gain.gain.linearRampToValueAtTime(pt.value, pt.offsetS)
       })
       source.connect(gain)
       gain.connect(trackInputFor(track))
-      source.start(sched.whenOffsetS, play.offsetS, play.durationS)
+      // On the sample grid, so no clip is low passed by interpolation: see onSampleGrid.
+      source.start(onSampleGrid(sched.whenOffsetS, EXPORT_SAMPLE_RATE), play.offsetS, play.durationS)
     })
 
     const rendered = await ctx.startRendering()
