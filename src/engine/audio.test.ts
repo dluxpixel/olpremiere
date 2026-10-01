@@ -2,8 +2,12 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
+  clipEdges,
   clipGainEnvelope,
+  createClipGain,
+  DECLICK_S,
   FADE_KNOTS,
+  onSampleGrid,
   compressorParamsFor,
   computeClipSchedule,
   dbToGain,
@@ -12,7 +16,9 @@ import {
   type GainPoint,
 } from './audio'
 import { evalChannel } from './keyframes'
-import { defaultTransform, type Clip, type Keyframe } from './types'
+import { splitClip } from './timeline'
+import { defaultTransform, type Clip, type Keyframe, type Track } from './types'
+import { makeClip, makeSeq, makeTrack } from '../components/timelineTestFixtures'
 
 const clip = (patch: Partial<Clip> = {}): Clip => ({
   id: 'c1',
@@ -689,7 +695,8 @@ describe('the audio schedule reads its clock last', () => {
   })
 
   it('starts every source against that one base time', () => {
-    expect(body).toContain('source.start(baseT + sched.whenOffsetS')
+    // On the sample grid since 2026-10-01 (onSampleGrid), still off one baseT.
+    expect(body).toContain('source.start(onSampleGrid(baseT + sched.whenOffsetS, ctx.sampleRate)')
   })
 })
 
@@ -828,7 +835,11 @@ describe('the audio decode burst is bounded', () => {
     const body = src.slice(src.indexOf('async function demuxAssetAudio'), src.indexOf('async function decodeAssetAudio'))
     expect(body).not.toMatch(/arrayBuffer\(\)/)
     expect(body).toContain('decodeAudioOffThread(')
-    expect(demuxSrc).not.toMatch(/arrayBuffer\(\)/)
+    // Never the whole blob. The one read of raw bytes is an MP3's tag header,
+    // 10 bytes and one bounded scan through `blob.slice` (mp3HeadSkip).
+    expect(demuxSrc).not.toMatch(/blob\.arrayBuffer\(\)/)
+    expect(demuxSrc).toContain('blob.slice(offset, offset + length).arrayBuffer()')
+    expect(demuxSrc).toContain('const MP3_SCAN_BYTES = 16_384')
     expect(demuxSrc).toContain('maxCacheSize: DEMUX_CACHE_BYTES')
     expect(demuxSrc).toContain('input.dispose()')
   })
@@ -842,10 +853,27 @@ describe('the audio decode burst is bounded', () => {
     // video's sound 21 to 44 ms late: the priming already sits before zero. The
     // behaviour itself is proven in audioDemux.test.ts.
     expect(body).not.toContain('getFirstTimestamp()')
-    expect(body).toContain('placeSample(sample, planes, length, sampleRate, fromS)')
+    // The one shift is an MP3's own encoder and decoder delay (zero for any
+    // other file), proven in audioDemux.test.ts with a click at 1.000 s.
+    expect(body).toContain('placeSample(sample, planes, length, sampleRate, fromS + skipS)')
+    expect(body).toContain('const at = Math.round(sample.timestamp * sampleRate) - skip')
     // copyTo THROWS rather than truncating, and that throw would fall back to a
     // read that cannot work on the files this function exists for.
     expect(body).toContain('length - start')
+  })
+
+  it('decodes the whole file fallback at 48 kHz, never at the output device rate', () => {
+    // The shared context runs at whatever his output device runs at, so a file
+    // read on it came back at 44.1 kHz on one machine and 48 kHz on another, and
+    // was then converted again, linearly, by the mixers. Since 2026-10-01 every
+    // buffer is 48 kHz: at the track's own rate and then the sinc when the rate
+    // is known, straight at 48 kHz when it is not.
+    const decode = src.slice(src.indexOf('async function decodeAssetAudio'), src.indexOf('export const DECODE_CONCURRENCY'))
+    expect(decode).not.toContain('ensureAudioContext().decodeAudioData')
+    expect(decode).toContain('decodeWholeFileAt48k(bytes, undecodableRate.get(asset.id))')
+    expect(decode).toContain('new OfflineAudioContext(1, 1, nativeRate).decodeAudioData(bytes)')
+    expect(decode).toContain('resamplePlanes(planes, native.sampleRate, out)')
+    expect(decode).toContain('return new OfflineAudioContext(1, 1, out).decodeAudioData(bytes)')
   })
 
   it('refuses a file too big for a single ArrayBuffer instead of throwing into a catch', () => {
@@ -881,5 +909,182 @@ describe('the export decodes on the same leash as the preview', () => {
     expect(src).toContain('mapLimit(')
     expect(src).toContain('DECODE_CONCURRENCY')
     expect(src).not.toMatch(/const buffers = await Promise\.all/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The two mixers build the same node for every clip, start it at the same
+// place and fade its edges the same way. His words, 2026-09-29: *"I want the
+// quality to be absolutely the highest, audio and video."*
+
+const liveSrc = readFileSync(fileURLToPath(new URL('./audio.ts', import.meta.url)), 'utf8')
+const exportSrc = readFileSync(fileURLToPath(new URL('./export/audioRender.ts', import.meta.url)), 'utf8')
+const liveBody = liveSrc.slice(liveSrc.indexOf('export async function scheduleAudio'))
+const exportBody = exportSrc.slice(exportSrc.indexOf('const renderSegment = async'))
+
+describe('every clip starts on a whole sample (IP-3)', () => {
+  it('moves a start by at most half a sample, onto the grid', () => {
+    // Starts from his own projects: GYM's iPhone clip, Voice recording 5 and 14.
+    for (const t of [20.3057, 2.859993, 2.87999, 13.5017, 0, 101.00025]) {
+      const g = onSampleGrid(t, 48_000)
+      expect(Math.abs(g * 48_000 - Math.round(g * 48_000))).toBeLessThan(1e-6)
+      expect(Math.abs(g - t)).toBeLessThanOrEqual(0.5 / 48_000 + 1e-12)
+    }
+    // On a 44.1 kHz device the live context's own grid is used.
+    const g = onSampleGrid(2.859993, 44_100)
+    expect(Math.abs(g * 44_100 - Math.round(g * 44_100))).toBeLessThan(1e-6)
+  })
+
+  it('both mixers start every source on their own context grid', () => {
+    expect(liveBody).toContain('source.start(onSampleGrid(baseT + sched.whenOffsetS, ctx.sampleRate)')
+    expect(exportBody).toContain('source.start(onSampleGrid(sched.whenOffsetS, EXPORT_SAMPLE_RATE)')
+    expect(liveBody.match(/source\.start\(/g)).toHaveLength(1)
+    expect(exportBody.match(/source\.start\(/g)).toHaveLength(1)
+  })
+})
+
+describe('a mono file plays L = R at full level, whatever shares its track (EA-6)', () => {
+  /** A context that records the clip gain node it builds. */
+  const recordingCtx = () => {
+    const made: Record<string, unknown>[] = []
+    const ctx = {
+      createGain: () => {
+        const node = { channelCount: 2, channelCountMode: 'max', channelInterpretation: 'speakers', gain: { value: 1 } }
+        made.push(node)
+        return node
+      },
+    } as unknown as BaseAudioContext
+    return { ctx, made }
+  }
+
+  /**
+   * The Web Audio spec's own rules, for the one path that decides a clip's level:
+   * clip gain node, track gain node ('max'), StereoPannerNode at the centre.
+   * Returns [L, R] for a unit mono sample.
+   */
+  function monoThroughTrack(clipGain: { channelCount: number; channelCountMode: string }, stereoNeighbour: boolean): [number, number] {
+    // A node's channels: 'max' takes its widest input, 'explicit' its own count.
+    const clipOut = clipGain.channelCountMode === 'explicit' ? clipGain.channelCount : 1
+    // Speakers up-mix of mono to stereo copies the sample to both sides at unity.
+    const trackChannels = Math.max(clipOut, stereoNeighbour ? 2 : 1)
+    if (trackChannels === 2) return [1, 1] // the stereo law at pan 0 passes L and R through
+    const x = Math.PI / 4 // the mono law at pan 0: cos and sin of a quarter pi
+    return [Math.cos(x), Math.sin(x)]
+  }
+
+  it('the clip node is stereo, explicitly, with the speakers up-mix', () => {
+    const { ctx, made } = recordingCtx()
+    createClipGain(ctx, 0.5)
+    expect(made[0]).toMatchObject({ channelCount: 2, channelCountMode: 'explicit', channelInterpretation: 'speakers' })
+  })
+
+  it('holds the envelope first value before the first event, not the default of 1', () => {
+    // A start snapped a fraction of a sample early plays one sample before the
+    // envelope begins. Measured in Electron 43 with the de-click: at the default
+    // that sample was a full scale spike, held at the first value it is silent.
+    const { ctx, made } = recordingCtx()
+    createClipGain(ctx, 0)
+    expect((made[0] as { gain: { value: number } }).gain.value).toBe(0)
+  })
+
+  it('alone or next to a stereo clip, the same mono file comes out at the same level', () => {
+    const { ctx, made } = recordingCtx()
+    createClipGain(ctx, 1)
+    const node = made[0] as { channelCount: number; channelCountMode: string }
+    const alone = monoThroughTrack(node, false)
+    const shared = monoThroughTrack(node, true)
+    expect(alone).toEqual(shared)
+    expect(alone).toEqual([1, 1])
+    // The old node ('max') is what made it -3.01 dB alone and 0.00 dB shared.
+    const old = { channelCount: 2, channelCountMode: 'max' }
+    expect(20 * Math.log10(monoThroughTrack(old, false)[0])).toBeCloseTo(-3.01, 2)
+    expect(monoThroughTrack(old, true)[0]).toBe(1)
+  })
+
+  it('both mixers play every clip through that one node', () => {
+    for (const body of [liveBody, exportBody]) {
+      expect(body).toContain('const gain = createClipGain(ctx, env[0]!.value)')
+      expect(body).toContain('source.connect(gain)')
+    }
+  })
+})
+
+describe('a hard audio cut gets a 2 ms de-click, a blade cut none (EA-7)', () => {
+  const audioTrack = (clips: Clip[]): Track => makeTrack({ kind: 'audio', clips })
+
+  it('a clip split in two plays on seamlessly: no de-click at the split', () => {
+    const c = makeClip({ assetId: 'song', startS: 1, inS: 3, outS: 9 })
+    const seq = makeSeq([audioTrack([c])])
+    const split = splitClip(seq, c.id, 4.2)
+    const track = split.tracks[0]!
+    const [left, right] = track.clips as [Clip, Clip]
+    expect(clipEdges(track, left)).toEqual({ hardIn: true, hardOut: false })
+    expect(clipEdges(track, right)).toEqual({ hardIn: false, hardOut: true })
+  })
+
+  it('a split at 2x and a reversed run that continues downward are seamless too', () => {
+    const a = makeClip({ assetId: 's', startS: 0, inS: 0, outS: 4, speed: 2 })
+    const b = makeClip({ assetId: 's', startS: 2, inS: 4, outS: 6, speed: 2 })
+    expect(clipEdges(audioTrack([a, b]), b).hardIn).toBe(false)
+    // Reversed, the sound runs from outS down to inS: b carries on below a.
+    const ra = makeClip({ assetId: 's', startS: 0, inS: 5, outS: 8, speed: -1 })
+    const rb = makeClip({ assetId: 's', startS: 3, inS: 2, outS: 5, speed: -1 })
+    expect(clipEdges(audioTrack([ra, rb]), rb).hardIn).toBe(false)
+    expect(clipEdges(audioTrack([ra, rb]), ra).hardOut).toBe(false)
+  })
+
+  it('everything else is a hard cut: a gap, a jump in the file, another file, another speed, a muted clip', () => {
+    const a = makeClip({ assetId: 's', startS: 0, inS: 0, outS: 2 })
+    const cases: Clip[] = [
+      makeClip({ assetId: 's', startS: 2.5, inS: 2, outS: 3 }), // moved after the split
+      makeClip({ assetId: 's', startS: 2, inS: 3, outS: 4 }), // the hard cut the backtest measured
+      makeClip({ assetId: 'other', startS: 2, inS: 2, outS: 3 }),
+      makeClip({ assetId: 's', startS: 2, inS: 2, outS: 3, speed: 1.5 }),
+    ]
+    for (const b of cases) expect(clipEdges(audioTrack([a, b]), b).hardIn).toBe(true)
+    const off = makeClip({ assetId: 's', startS: 0, inS: 0, outS: 2, enabled: false })
+    const b = makeClip({ assetId: 's', startS: 2, inS: 2, outS: 3 })
+    expect(clipEdges(audioTrack([off, b]), b).hardIn).toBe(true)
+    // A linked video clip makes no sound of its own, so it cannot carry one on.
+    const linked = makeClip({ assetId: 's', startS: 0, inS: 0, outS: 2, linkId: 'L' })
+    expect(clipEdges(makeTrack({ kind: 'video', clips: [linked, b] }), b).hardIn).toBe(true)
+  })
+
+  it('a hard edge with no fade of its own ramps over 2 ms on the equal power curve', () => {
+    const env = clipGainEnvelope(clip(), 0, { hardIn: true, hardOut: true })!
+    expect(env[0]).toEqual({ offsetS: 0, value: 0 })
+    expect(env[env.length - 1]).toEqual({ offsetS: 4, value: 0 })
+    // Within the de-click it follows sin(u pi/2); after it, full level.
+    for (const u of [0.25, 0.5, 0.75]) expect(rampAt(env, u * DECLICK_S)).toBeCloseTo(Math.sin((u * Math.PI) / 2), 2)
+    expect(rampAt(env, DECLICK_S)).toBeCloseTo(1, 9)
+    expect(rampAt(env, 2)).toBe(1)
+    expect(rampAt(env, 4 - DECLICK_S)).toBeCloseTo(1, 9)
+    // The step the backtest measured was 0.431 of full scale in ONE sample; the
+    // steepest the de-click allows is under a tenth of that.
+    const perSample = Math.max(...env.slice(1).map((p, i) => Math.abs(p.value - env[i]!.value) / Math.max(1e-9, (p.offsetS - env[i]!.offsetS) * 48_000)))
+    expect(perSample).toBeLessThan(0.04)
+  })
+
+  it('a seamless edge, or one with its own fade, is exactly what it was before', () => {
+    expect(clipGainEnvelope(clip(), 0, { hardIn: false, hardOut: false })).toEqual(clipGainEnvelope(clip(), 0))
+    const faded = clip({ fadeInS: 0.5, fadeOutS: 0.25 })
+    expect(clipGainEnvelope(faded, 0, { hardIn: true, hardOut: true })).toEqual(clipGainEnvelope(faded, 0))
+  })
+
+  it('a clip shorter than two de-clicks shares its length between them', () => {
+    const env = clipGainEnvelope(clip({ outS: 0.003 }), 0, { hardIn: true, hardOut: true })!
+    expect(Math.max(...env.map((p) => p.value))).toBeCloseTo(1, 9)
+    expect(env[0]!.value).toBe(0)
+    expect(env[env.length - 1]!.value).toBe(0)
+  })
+
+  it('both mixers read the edges off the clip as it sits on its track, and hand them to the one envelope', () => {
+    for (const [src, body] of [
+      [liveSrc, liveBody],
+      [exportSrc, exportBody],
+    ]) {
+      expect(src).toContain('edges: clipEdges(track, clip)')
+      expect(body).toContain('clipGainEnvelope(clip, fromS, edges)')
+    }
   })
 })
