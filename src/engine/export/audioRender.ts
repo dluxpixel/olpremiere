@@ -2,7 +2,7 @@
 // thread: OfflineAudioContext is not reliably available in workers, and the
 // decoded-AudioBuffer cache in audio.ts already lives here.
 
-import { createSoftLimiter } from '../audioLimiter'
+import { TruePeakLimiter } from '../audioLimiter'
 import {
   clipEdges,
   clipEmitsAudio,
@@ -19,9 +19,12 @@ import {
   pitchPreservedSource,
   isProvedSilent,
   type ClipEdges,
+  trackAlignS,
+  trackLateS,
   type ClipSchedule,
 } from '../audio'
 import { duckEnvelope } from '../ducking'
+import { LoudnessMeter, platformGainDb } from '../loudness'
 import type { Clip, Id, MediaAsset, Sequence, Track } from '../types'
 import type { AudioStreamMeta } from './messages'
 
@@ -86,6 +89,15 @@ export function audioFramesFor(rangeS: number, fps: number, sampleRate: number):
   return Math.max(1, Math.round((videoFrames / rate) * sampleRate))
 }
 
+export interface AudioMixOptions {
+  /**
+   * Bring the whole mix to this integrated loudness (LUFS) before the limiter,
+   * or leave its level alone when null. The export sets PLATFORM_TARGET_LUFS
+   * unless he switched "Platform loudness" off for this video.
+   */
+  loudnessTargetLufs?: number | null
+}
+
 export async function planAudioMix(
   seq: Sequence,
   assets: Record<Id, MediaAsset>,
@@ -93,6 +105,7 @@ export async function planAudioMix(
   endS = seq.durationS,
   /** Told which files gave no sound when SOME did, so the caller can warn him before he uploads. */
   onPartialAudio?: (fileNames: string[]) => void,
+  opts: AudioMixOptions = {},
 ): Promise<AudioMixPlan | null> {
   if (!('AudioEncoder' in globalThis)) return null
   const rangeS = endS - startS
@@ -179,6 +192,13 @@ export async function planAudioMix(
 
   const totalFrames = audioFramesFor(rangeS, seq.fps, EXPORT_SAMPLE_RATE)
 
+  // Auto-level's compressor delays its track by AUTO_LEVEL_LATENCY_S; every
+  // other track is scheduled that much later to match (trackLateS), and the
+  // render drops that much off its front, so the whole mix is exactly on time.
+  // Zero when no track uses it.
+  const alignS = trackAlignS(candidates.map((c) => c.track))
+  const alignFrames = Math.round(alignS * EXPORT_SAMPLE_RATE)
+
   /** Render one segment: [f0, f0 + segFrames) of the mix, with pre-roll. */
   const renderSegment = async (f0: number, segFrames: number): Promise<Float32Array<ArrayBuffer>[]> => {
     const prerollS = f0 === 0 ? 0 : AUDIO_PREROLL_S
@@ -188,17 +208,11 @@ export async function planAudioMix(
     // duckEnvelope. Those are all pure functions of absolute time, so a mid-mix
     // base is exact, not approximated.
     const fromS = startS + f0 / EXPORT_SAMPLE_RATE - prerollS
-    const ctxFrames = prerollFrames + segFrames
+    const ctxFrames = prerollFrames + alignFrames + segFrames
     const ctx = new OfflineAudioContext(EXPORT_CHANNELS, ctxFrames, EXPORT_SAMPLE_RATE)
 
     // Same duck automation as the live preview (see engine/ducking.ts).
     const duckEnv = duckEnvelope(seq.tracks, anySolo, fromS)
-
-    // One limiter per render context, built before any track so every track bus
-    // can be pointed at it. It is stateless (a waveshaper, not a compressor),
-    // so a segmented render cannot produce a seam at a segment boundary.
-    const masterLimiter = createSoftLimiter(ctx)
-    masterLimiter.output.connect(ctx.destination)
 
     // Same gain→pan-per-track → destination topology as the live preview, so
     // the exported mix matches what was heard.
@@ -214,21 +228,20 @@ export async function planAudioMix(
       // match. The claim used to live in a comment here and nothing enforced it.
       let tail: AudioNode = connectAutoLevel(ctx, gain, track.autoLevel)
       // Music ducks under the voiceover, with identical automation to the preview.
+      // The sound reaches it alignS late on every track, so the duck moves with it.
       if (track.audioRole === 'music' && duckEnv) {
         const duck = ctx.createGain()
         duckEnv.forEach((pt, idx) => {
-          if (idx === 0) duck.gain.setValueAtTime(pt.value, pt.offsetS)
-          else duck.gain.linearRampToValueAtTime(pt.value, pt.offsetS)
+          if (idx === 0) duck.gain.setValueAtTime(pt.value, pt.offsetS + alignS)
+          else duck.gain.linearRampToValueAtTime(pt.value, pt.offsetS + alignS)
         })
         tail.connect(duck)
         tail = duck
       }
       tail.connect(pan)
-      // Through the SAME master limiter the preview and the worker mixer use.
-      // This path used to run straight into the destination and rely on the
-      // encoder to clamp, so the render disagreed with what he heard on exactly
-      // the loud material where it shows. See engine/audioLimiter.ts.
-      pan.connect(masterLimiter.input)
+      // Straight to the sum. The master limiter runs on the rendered PCM below
+      // (render), the same TruePeakLimiter the preview runs in its worklet.
+      pan.connect(ctx.destination)
       trackNodes.set(track.id, gain)
       return gain
     }
@@ -252,35 +265,125 @@ export async function planAudioMix(
       const play = pitchPreservedSource(ctx, buffer, clip.speed, sched, clip.inS)
       source.buffer = play.buffer
       source.playbackRate.value = play.playbackRate
+      // A plain track starts later by the alignment, so it meets the Auto-level ones.
+      const late = trackLateS(track, alignS)
       const env = clipGainEnvelope(clip, fromS, edges) ?? [{ offsetS: 0, value: dbToGain(clip.audioGainDb) }]
       // Stereo always, so a mono file plays L = R at full level: see createClipGain.
       const gain = createClipGain(ctx, env[0]!.value)
       env.forEach((pt, idx) => {
-        if (idx === 0) gain.gain.setValueAtTime(pt.value, pt.offsetS)
-        else gain.gain.linearRampToValueAtTime(pt.value, pt.offsetS)
+        if (idx === 0) gain.gain.setValueAtTime(pt.value, pt.offsetS + late)
+        else gain.gain.linearRampToValueAtTime(pt.value, pt.offsetS + late)
       })
       source.connect(gain)
       gain.connect(trackInputFor(track))
       // On the sample grid, so no clip is low passed by interpolation: see onSampleGrid.
-      source.start(onSampleGrid(sched.whenOffsetS, EXPORT_SAMPLE_RATE), play.offsetS, play.durationS)
+      source.start(onSampleGrid(sched.whenOffsetS + late, EXPORT_SAMPLE_RATE), play.offsetS, play.durationS)
     })
 
     const rendered = await ctx.startRendering()
-    // Copy each channel (dropping the pre-roll) so transferring the buffers to
-    // the worker can't detach the AudioBuffer's internal storage.
+    // Copy each channel (dropping the pre-roll and the tracks' shared delay) so
+    // transferring the buffers to the worker can't detach the AudioBuffer's
+    // internal storage.
     return Array.from(
       { length: EXPORT_CHANNELS },
-      (_, ch) => new Float32Array(rendered.getChannelData(ch).subarray(prerollFrames)),
+      (_, ch) => new Float32Array(rendered.getChannelData(ch).subarray(prerollFrames + alignFrames)),
     )
   }
+
+  const eachSegment = async (fn: (channelData: Float32Array<ArrayBuffer>[]) => void | Promise<void>): Promise<void> => {
+    for (let f0 = 0; f0 < totalFrames; f0 += AUDIO_SEGMENT_FRAMES) {
+      await fn(await renderSegment(f0, Math.min(AUDIO_SEGMENT_FRAMES, totalFrames - f0)))
+    }
+  }
+  const target = opts.loudnessTargetLufs ?? null
 
   return {
     info: { sampleRate: EXPORT_SAMPLE_RATE, numberOfChannels: EXPORT_CHANNELS, totalFrames },
     render: async (onSegment) => {
-      for (let f0 = 0; f0 < totalFrames; f0 += AUDIO_SEGMENT_FRAMES) {
-        const segFrames = Math.min(AUDIO_SEGMENT_FRAMES, totalFrames - f0)
-        await onSegment(await renderSegment(f0, segFrames))
+      // PLATFORM LOUDNESS, his answer 2026-09-30: "Yes, on by default". The
+      // whole mix is measured first (the same BS.1770 as loudness.ts, fed one
+      // segment at a time so a long export is never held whole), then rendered
+      // again at the gain that lands it on the target. The render is
+      // deterministic, so the second pass is the mix the first one measured.
+      let gain = 1
+      if (target !== null) {
+        const meter = new LoudnessMeter(EXPORT_SAMPLE_RATE, EXPORT_CHANNELS)
+        await eachSegment((cd) => meter.push(cd))
+        gain = dbToGain(platformGainDb(meter.integrated(), target))
       }
+      // Then the master limiter, on the PCM, carried across the segments so a
+      // peak that straddles a boundary is handled as one peak. Its look-ahead
+      // delay is dropped from the front and flushed out at the end, and the
+      // segments go out at exactly the sizes they were rendered at, which the
+      // worker's AAC framing relies on.
+      const limiter = new TruePeakLimiter(EXPORT_CHANNELS, EXPORT_SAMPLE_RATE)
+      const fifo = new PcmFifo(EXPORT_CHANNELS, limiter.latency)
+      const sizes: number[] = []
+      const limit = (cd: Float32Array[], frames: number): void => {
+        if (gain !== 1) for (const ch of cd) for (let i = 0; i < ch.length; i++) ch[i] *= gain
+        const out = Array.from({ length: EXPORT_CHANNELS }, () => new Float32Array(frames))
+        limiter.process(cd, out, frames)
+        fifo.push(out)
+      }
+      await eachSegment(async (cd) => {
+        sizes.push(cd[0]?.length ?? 0)
+        limit(cd, cd[0]?.length ?? 0)
+        while (sizes.length > 0 && fifo.available >= sizes[0]) await onSegment(fifo.take(sizes.shift()!))
+      })
+      limit([], limiter.latency) // silence through, to push the last frames out
+      while (sizes.length > 0) await onSegment(fifo.take(sizes.shift()!))
     },
+  }
+}
+
+/**
+ * Frames in, frames out in any sizes, with the first `skip` frames thrown away:
+ * how the limiter's look-ahead delay comes off the front of the export.
+ */
+class PcmFifo {
+  private readonly chunks: Float32Array[][] = []
+  private headOffset = 0
+  private skip: number
+  available = 0
+
+  constructor(
+    private readonly channels: number,
+    skip: number,
+  ) {
+    this.skip = skip
+  }
+
+  push(chs: Float32Array[]): void {
+    let data = chs
+    let frames = data[0]?.length ?? 0
+    if (this.skip > 0) {
+      const drop = Math.min(this.skip, frames)
+      this.skip -= drop
+      frames -= drop
+      data = data.map((c) => c.subarray(drop))
+    }
+    if (frames <= 0) return
+    this.chunks.push(data)
+    this.available += frames
+  }
+
+  /** Exactly `frames` frames (silence past the end), as fresh arrays the caller may transfer. */
+  take(frames: number): Float32Array<ArrayBuffer>[] {
+    const out = Array.from({ length: this.channels }, () => new Float32Array(frames))
+    let filled = 0
+    while (filled < frames && this.chunks.length > 0) {
+      const head = this.chunks[0]
+      const len = (head[0]?.length ?? 0) - this.headOffset
+      const n = Math.min(len, frames - filled)
+      for (let c = 0; c < this.channels; c++) out[c].set(head[c].subarray(this.headOffset, this.headOffset + n), filled)
+      filled += n
+      this.headOffset += n
+      if (this.headOffset >= (head[0]?.length ?? 0)) {
+        this.chunks.shift()
+        this.headOffset = 0
+      }
+    }
+    this.available = Math.max(0, this.available - frames)
+    return out
   }
 }

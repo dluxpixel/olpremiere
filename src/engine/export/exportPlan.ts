@@ -30,9 +30,15 @@
 //             below HD, same byte-stability reason as QUALITY).
 //   RANGE     the work area when in/out points are set, the whole sequence
 //             otherwise. Marking I/O already said which part you meant.
+//   LOUDNESS  the whole mix lands at -14 LUFS, the level YouTube, TikTok and
+//             Instagram play at, through a clean true-peak limiter. His answer,
+//             2026-09-30: "Yes, on by default". The one export choice there is:
+//             a switch in the export window turns it off for a video, and the
+//             app remembers which way he left it (state/settings.ts).
 
 import { losslessBitrate } from './bitrate'
 import { isHdRaster } from './messages'
+import { PLATFORM_TARGET_LUFS } from '../loudness'
 import type { ExportSettings } from './index'
 import type { NativeEncoder } from '../../../electron/ipc-types'
 import type { Sequence } from '../types'
@@ -117,8 +123,13 @@ export interface ExportPlan {
   usingWorkArea: boolean
 }
 
+export interface PlanOptions {
+  /** Bring the mix to the platforms' loudness. Absent means on, which is the default he chose. */
+  platformLoudness?: boolean
+}
+
 /** Everything the export needs, decided. */
-export function planExport(seq: Sequence): ExportPlan {
+export function planExport(seq: Sequence, opts: PlanOptions = {}): ExportPlan {
   const raster = exportRaster(seq.width, seq.height)
   const area = workArea(seq)
   const fps = seq.fps
@@ -146,6 +157,7 @@ export function planExport(seq: Sequence): ExportPlan {
       keyframeIntervalS: EXPORT_KEYFRAME_S,
       audioBitrate: hd ? EXPORT_AUDIO_BITRATE : SD_AUDIO_BITRATE,
       audioCodecPref: 'aac',
+      loudnessTargetLufs: opts.platformLoudness === false ? null : PLATFORM_TARGET_LUFS,
       // Hardware first, with the software retry the caller keeps for the GPU
       // B-frame crash. Constant quality pins software inside the worker anyway;
       // asking for software HERE inverted that retry, so a crash would have

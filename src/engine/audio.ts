@@ -9,7 +9,7 @@ import { duckEnvelope } from './ducking'
 import { evalChannel } from './keyframes'
 import { budgets } from './memoryBudget'
 import type { AutoLevel, Clip, Id, MediaAsset, Sequence, Track } from './types'
-import { createSoftLimiter } from './audioLimiter'
+import { limiterLatencyFrames } from './audioLimiter'
 import { decodeAudioOffThread } from './audioDecodeClient'
 import { DECODE_SAMPLE_RATE } from './audioDemux'
 import { resamplePlanes } from './resample'
@@ -51,6 +51,43 @@ export function compressorParamsFor(level: AutoLevel | undefined): CompressorPar
     default:
       return null
   }
+}
+
+/**
+ * How late Auto-level makes a track: the DynamicsCompressorNode always looks
+ * 6 ms ahead, so everything through it comes out 288 samples late at 48 kHz
+ * (measured in this Electron, 2026-09-30). Every voiceover on an Auto-level
+ * track landed 6 ms behind the picture and behind the other tracks.
+ *
+ * It cannot be turned off, so the other tracks are made to MATCH it: their
+ * sources and gain automation are scheduled that much later (trackLateS), and
+ * whoever plays the mix takes the shared delay off the front: the export drops
+ * it from its render, the preview starts every source that much early.
+ *
+ * ⛔ SCHEDULED LATER, NOT DELAYED. A DelayNode was the obvious way to make a
+ * plain track wait, and Chromium drops a DelayNode's last 288 samples when a
+ * StereoPanner follows it and the sources have finished (measured in this
+ * Electron: the tail of the last clip on a track came out silent). Starting the
+ * sources later has no tail to lose.
+ */
+export const AUTO_LEVEL_LATENCY_S = 288 / 48000
+
+/**
+ * The delay every track must carry so they all line up: the compressor's, when
+ * any audible track uses Auto-level, and none otherwise, so a mix without it is
+ * exactly the graph it always was.
+ */
+export function trackAlignS(tracks: readonly Pick<Track, 'autoLevel'>[]): number {
+  return tracks.some((t) => compressorParamsFor(t.autoLevel) !== null) ? AUTO_LEVEL_LATENCY_S : 0
+}
+
+/**
+ * How much later a track's sources and clip automation are scheduled so it
+ * lines up with the mix's slowest track: the whole `alignS` for a track with no
+ * compressor, nothing for an Auto-level track (its compressor already waits).
+ */
+export function trackLateS(track: Pick<Track, 'autoLevel'>, alignS: number): number {
+  return alignS > 0 && compressorParamsFor(track.autoLevel) === null ? alignS : 0
 }
 
 /**
@@ -1141,16 +1178,19 @@ export function ensureMasterChain(): MasterChain {
     a.fftSize = 1024
     a.smoothingTimeConstant = 0.5
   }
-  // The master limiter sits between the sum and the speakers, the same one the
-  // export uses (engine/audioLimiter.ts). Transparent below its knee, so a
-  // normal mix is untouched; past it, a levelled-up take is shaped instead of
-  // hard-clipped by the device.
-  const limiter = createSoftLimiter(ctx)
-  master.connect(limiter.input)
-  limiter.output.connect(ctx.destination) // the audible path
+  // The master limiter sits between the sum and the speakers: the same
+  // TruePeakLimiter the export runs (engine/audioLimiter.ts), here in an
+  // AudioWorklet. Exactly transparent below its ceiling; past it the gain comes
+  // down ahead of the peak instead of the peak being bent. The worklet loads
+  // asynchronously, so the sum goes straight to `out` until it is in, and
+  // masterLatencyS() reports its delay only from the moment it is.
+  const out = ctx.createGain()
+  master.connect(out)
+  out.connect(ctx.destination) // the audible path
   // The meter taps the LIMITED signal, not the raw sum, so what the meter shows
   // is what he is actually hearing.
-  limiter.output.connect(splitter) // the meter tap
+  out.connect(splitter) // the meter tap
+  insertMasterLimiter(ctx, master, out)
   splitter.connect(analyserL, 0)
   splitter.connect(analyserR, 1)
   // The clip light's tap, off the sum before the limiter (see MasterChain).
@@ -1166,6 +1206,34 @@ export function ensureMasterChain(): MasterChain {
   clipSplitter.connect(clipR, 1)
   masterChain = { master, analyserL, analyserR, clipL, clipR }
   return masterChain
+}
+
+let masterLimiterLatencyS = 0
+
+/**
+ * Seconds the master chain delays the preview: the limiter's look-ahead once its
+ * worklet is in, nothing before. scheduleAudio starts every source this much
+ * early, so the sound still meets the picture.
+ */
+export function masterLatencyS(): number {
+  return masterLimiterLatencyS
+}
+
+function insertMasterLimiter(ctx: AudioContext, master: AudioNode, out: AudioNode): void {
+  // A dynamic import, so the worklet URL is only resolved where a real
+  // AudioContext exists (never in the unit tests, which have none).
+  void import('./limiterNode')
+    .then(({ createLimiterNode }) => createLimiterNode(ctx))
+    .then((node) => {
+      master.disconnect(out)
+      master.connect(node)
+      node.connect(out)
+      masterLimiterLatencyS = limiterLatencyFrames(ctx.sampleRate) / ctx.sampleRate
+    })
+    .catch((err: unknown) => {
+      // Never silent: the sum keeps playing unlimited, and the console says why.
+      console.warn('OL Premiere audio: the preview limiter failed to load, playing without it', err)
+    })
 }
 
 /** Null until the first play has built the chain, so the meter shows idle. */
@@ -1260,6 +1328,9 @@ export async function scheduleAudio(
   )
 
   const { master } = ensureMasterChain()
+  // Every track waits as long as the slowest (Auto-level's compressor), so the
+  // tracks stay together; startT below takes that wait back off.
+  const alignS = trackAlignS(candidates.map((c) => c.track))
 
   // One gain→[compressor]→pan chain per audible track, feeding the shared
   // master. Built lazily so a track with no audible clip costs nothing.
@@ -1279,8 +1350,10 @@ export async function scheduleAudio(
     // dedicated gain so the fader/auto-level stay untouched.
     if (track.audioRole === 'music' && duckEnv) {
       const duck = ctx.createGain()
+      // The duck rides AFTER the track's shared delay, so its automation moves
+      // with the sound it ducks.
       duckEnv.forEach((pt, idx) => {
-        const when = baseT + pt.offsetS
+        const when = startT + alignS + pt.offsetS
         if (idx === 0) duck.gain.setValueAtTime(pt.value, when)
         else duck.gain.linearRampToValueAtTime(pt.value, when)
       })
@@ -1338,9 +1411,17 @@ export async function scheduleAudio(
   // One base time shared by every clip so relative offsets stay exact. Read AFTER
   // the last slow call above, so nothing can walk the clock past it.
   const baseT = ctx.currentTime + SCHEDULE_LATENCY_S
+  // ⛔ THE SOUND IS DUE AT THE SPEAKERS AT baseT, NOT AT THE SOURCES. The track
+  // alignment (Auto-level's 6 ms, see AUTO_LEVEL_LATENCY_S) and the master
+  // limiter's look-ahead both delay what comes out, so every source starts that
+  // much earlier and the transport's anchor at baseT stays exactly right. The
+  // export removes the same delays from its render, so the two still agree.
+  const startT = baseT - alignS - masterLatencyS()
   candidates.forEach(({ clip, track, sched, edges }, i) => {
     const play = plays[i]
     if (!play) return
+    // A plain track starts later by the alignment, so it meets the Auto-level ones.
+    const trackT = startT + trackLateS(track, alignS)
     const source = ctx.createBufferSource()
     source.buffer = play.buffer
     source.playbackRate.value = play.playbackRate
@@ -1349,14 +1430,14 @@ export async function scheduleAudio(
     // Stereo always, the same node the export builds: see createClipGain.
     const gain = createClipGain(ctx, env[0]!.value)
     env.forEach((pt, idx) => {
-      const when = baseT + pt.offsetS
+      const when = trackT + pt.offsetS
       if (idx === 0) gain.gain.setValueAtTime(pt.value, when)
       else gain.gain.linearRampToValueAtTime(pt.value, when)
     })
     source.connect(gain)
     gain.connect(trackInputFor(track))
     // On the context's sample grid, as the export does: see onSampleGrid.
-    source.start(onSampleGrid(baseT + sched.whenOffsetS, ctx.sampleRate), play.offsetS, play.durationS)
+    source.start(onSampleGrid(trackT + sched.whenOffsetS, ctx.sampleRate), play.offsetS, play.durationS)
     clipNodes.push({ source, gain })
   })
 

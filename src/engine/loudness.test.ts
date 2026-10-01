@@ -3,7 +3,17 @@
 // with the old peak-based normalize.
 
 import { describe, expect, it } from 'vitest'
-import { balanceGains, gainForTarget, measureLoudness, PEAK_CEILING_DB, TARGET_LUFS } from './loudness'
+import {
+  balanceGains,
+  gainForTarget,
+  LoudnessMeter,
+  measureLoudness,
+  PEAK_CEILING_DB,
+  PLATFORM_MAX_GAIN_DB,
+  PLATFORM_TARGET_LUFS,
+  platformGainDb,
+  TARGET_LUFS,
+} from './loudness'
 
 const SR = 48000
 
@@ -203,5 +213,65 @@ describe('balanceGains', () => {
       TARGET_LUFS,
     )
     expect(gains.map((g) => g.id)).toEqual(['a'])
+  })
+})
+
+// The export measures its whole mix to bring it to the platforms' level, but it
+// renders in 30 second segments and never holds a long mix whole. So the meter
+// is fed in pieces, and it must say exactly what measureLoudness says about the
+// whole buffer, or the same video would land at a different level depending on
+// where the segments happened to fall.
+describe('LoudnessMeter', () => {
+  /** Speech-like: a tone that comes and goes, with pauses the gate must ignore. */
+  function mix(seconds: number, sr: number): Float32Array[] {
+    const n = Math.floor(seconds * sr)
+    const l = new Float32Array(n)
+    const r = new Float32Array(n)
+    for (let i = 0; i < n; i++) {
+      const env = Math.sin((Math.PI * i) / (0.7 * sr)) ** 2 * (Math.floor(i / sr) % 3 === 2 ? 0.01 : 1)
+      l[i] = 0.3 * env * Math.sin((2 * Math.PI * 220 * i) / sr) + 0.05 * Math.sin(i * 1.7)
+      r[i] = 0.2 * env * Math.sin((2 * Math.PI * 330 * i) / sr)
+    }
+    return [l, r]
+  }
+
+  for (const sr of [48000, 44100]) {
+    it(`agrees with measureLoudness to the last bit, in any pieces, at ${sr} Hz`, () => {
+      const chs = mix(7.3, sr)
+      const whole = measureLoudness(chs, sr).lufs
+      for (const piece of [128, 4800, 30 * sr, 777]) {
+        const m = new LoudnessMeter(sr, 2)
+        for (let a = 0; a < chs[0].length; a += piece) m.push(chs.map((c) => c.subarray(a, a + piece)))
+        expect(m.integrated(), `pieces of ${piece}`).toBe(whole)
+      }
+    })
+  }
+
+  it('measures a clip shorter than one block as one block, like measureLoudness', () => {
+    const chs = mix(0.25, SR)
+    const m = new LoudnessMeter(SR, 2)
+    m.push(chs)
+    expect(m.integrated()).toBe(measureLoudness(chs, SR).lufs)
+  })
+
+  it('calls silence silence, and the export then leaves its level alone', () => {
+    const m = new LoudnessMeter(SR, 2)
+    m.push([new Float32Array(SR * 2), new Float32Array(SR * 2)])
+    expect(m.integrated()).toBeNull()
+    expect(platformGainDb(m.integrated())).toBe(0)
+  })
+})
+
+describe('platformGainDb', () => {
+  it('takes a mix to -14 LUFS, the level the platforms play at', () => {
+    expect(PLATFORM_TARGET_LUFS).toBe(-14)
+    // Green, measured 2026-09-29: -17.1 LUFS, three decibels under the feed.
+    expect(platformGainDb(-17.1)).toBeCloseTo(3.1, 10)
+    expect(platformGainDb(-13.5)).toBeCloseTo(-0.5, 10)
+  })
+
+  it('never moves a whole mix more than 12 dB either way', () => {
+    expect(platformGainDb(-40)).toBe(PLATFORM_MAX_GAIN_DB)
+    expect(platformGainDb(5)).toBe(-PLATFORM_MAX_GAIN_DB)
   })
 })

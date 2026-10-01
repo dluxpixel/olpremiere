@@ -346,3 +346,112 @@ export function balanceGains(clips: readonly ClipLoudness[], targetLufs: number)
  * unchanged rather than turned down on the way in.
  */
 export const TARGET_LUFS = -16
+
+/**
+ * Where every export lands when "Platform loudness" is on: the level YouTube,
+ * TikTok and Instagram play videos at. They turn a louder upload down to it and
+ * never turn a quieter one up, so a mix that leaves here at -17 (Green did)
+ * plays three decibels under everything around it in the feed.
+ */
+export const PLATFORM_TARGET_LUFS = -14
+/** As far as the platform level may move a whole mix, either way. */
+export const PLATFORM_MAX_GAIN_DB = 12
+
+/**
+ * The gain, dB, that takes a whole mix measured at `lufs` to `targetLufs`,
+ * clamped to PLATFORM_MAX_GAIN_DB. Silence (null) gets none: no gain makes
+ * nothing sound like something.
+ */
+export function platformGainDb(lufs: number | null, targetLufs = PLATFORM_TARGET_LUFS): number {
+  if (lufs === null || !Number.isFinite(lufs)) return 0
+  return Math.max(-PLATFORM_MAX_GAIN_DB, Math.min(PLATFORM_MAX_GAIN_DB, targetLufs - lufs))
+}
+
+/**
+ * measureLoudness's integrated loudness, fed a piece at a time.
+ *
+ * The export renders its mix in 30 second segments and never holds the whole
+ * of a long one in memory, so the level it lands at has to be measured the same
+ * way. This is the same filters, the same 400 ms blocks every 100 ms and the
+ * same two gates, in the same order of arithmetic, so it gives the SAME number
+ * measureLoudness gives for the whole buffer at once, to the last bit (tested).
+ */
+export class LoudnessMeter {
+  private readonly shelf: Biquad
+  private readonly hp: Biquad
+  /** Per channel: shelf x1, x2, y1, y2, then high-pass x1, x2, y1, y2. */
+  private readonly state: Float64Array[]
+  /** Per channel: the filtered, squared samples of the current block window. */
+  private readonly sq: Float64Array[]
+  private readonly blockLen: number
+  private readonly hopLen: number
+  private readonly powers: number[] = []
+  private count = 0
+
+  constructor(
+    readonly sampleRate: number,
+    readonly channels: number,
+  ) {
+    this.shelf = shelfFilter(sampleRate)
+    this.hp = highpassFilter(sampleRate)
+    this.blockLen = Math.floor(BLOCK_S * sampleRate)
+    this.hopLen = Math.max(1, Math.floor(HOP_S * sampleRate))
+    this.state = Array.from({ length: channels }, () => new Float64Array(8))
+    this.sq = Array.from({ length: channels }, () => new Float64Array(Math.max(1, this.blockLen)))
+  }
+
+  push(input: readonly Float32Array[]): void {
+    const frames = input[0]?.length ?? 0
+    const { shelf: f, hp: h, blockLen } = this
+    for (let i = 0; i < frames; i++) {
+      const at = this.count % blockLen
+      for (let c = 0; c < this.channels; c++) {
+        const s = this.state[c]
+        // Shelf, then high-pass, each written through a float32 the way
+        // measureLoudness stores its stages, so the two agree exactly.
+        const x0 = input[c]?.[i] ?? 0
+        const y0 = f.b0 * x0 + f.b1 * s[0] + f.b2 * s[1] - f.a1 * s[2] - f.a2 * s[3]
+        s[1] = s[0]
+        s[0] = x0
+        s[3] = s[2]
+        s[2] = y0
+        const u0 = Math.fround(y0)
+        const v0 = h.b0 * u0 + h.b1 * s[4] + h.b2 * s[5] - h.a1 * s[6] - h.a2 * s[7]
+        s[5] = s[4]
+        s[4] = u0
+        s[7] = s[6]
+        s[6] = v0
+        const out = Math.fround(v0)
+        this.sq[c][at] = out * out
+      }
+      this.count++
+      const start = this.count - blockLen
+      if (start >= 0 && start % this.hopLen === 0) this.powers.push(this.blockPower(blockLen))
+    }
+  }
+
+  /** Mean square of the last `len` frames, channel by channel, oldest first. */
+  private blockPower(len: number): number {
+    let sum = 0
+    for (let c = 0; c < this.channels; c++) {
+      const data = this.sq[c]
+      let acc = 0
+      for (let k = this.count - len; k < this.count; k++) acc += data[k % this.blockLen]
+      sum += channelWeight(c) * (acc / len)
+    }
+    return sum
+  }
+
+  /** Integrated loudness so far, LUFS, or null when nothing rose above the silence gate. */
+  integrated(): number | null {
+    const powers = this.powers.length > 0 ? this.powers : this.count > 0 ? [this.blockPower(this.count)] : []
+    if (powers.length === 0) return null
+    const loudnessOf = (power: number): number => (power > 0 ? -0.691 + 10 * Math.log10(power) : -Infinity)
+    const abs = powers.filter((p) => loudnessOf(p) > ABSOLUTE_GATE_LUFS)
+    if (abs.length === 0) return null
+    const mean = (xs: number[]): number => xs.reduce((a, b) => a + b, 0) / xs.length
+    const relThreshold = loudnessOf(mean(abs)) - RELATIVE_GATE_LU
+    const gated = abs.filter((p) => loudnessOf(p) > relThreshold)
+    return loudnessOf(mean(gated.length > 0 ? gated : abs))
+  }
+}

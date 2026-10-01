@@ -21,14 +21,18 @@ import {
   isExportRunning,
   requestExport,
   retryExport,
+  setExportLoudness,
   useExportJob,
 } from './exportJob'
+import { PLATFORM_TARGET_LUFS } from '../engine/loudness'
+import { setPlatformLoudness, useSettings } from './settings'
 import { useStore } from './store'
 import { useToasts } from './toasts'
 import { isCriticalWorkInFlight } from './unloadGuard'
 
 interface NativeCall {
   project: Project
+  settings: ExportSettings
   onProgress: (p: ExportProgress) => void
   signal: AbortSignal
   resolve: (r: { outPath: string; sizeBytes: number } | null) => void
@@ -53,13 +57,13 @@ vi.mock('../platform', () => ({
 vi.mock('../engine/export/nativeExport', () => ({
   exportNative: (
     project: Project,
-    _settings: unknown,
+    settings: ExportSettings,
     _opts: unknown,
     onProgress: (p: ExportProgress) => void,
     signal: AbortSignal,
   ) =>
     new Promise((resolve, reject) => {
-      h.native.push({ project, onProgress, signal, resolve, reject })
+      h.native.push({ project, settings, onProgress, signal, resolve, reject })
       // The real one rejects with AbortError once ffmpeg is told to stop.
       signal.addEventListener('abort', () => reject(new DOMException('Export cancelled', 'AbortError')))
     }),
@@ -112,6 +116,7 @@ beforeEach(() => {
 })
 
 afterEach(async () => {
+  setPlatformLoudness(true)
   cancelExport()
   await flush()
   useExportJob.setState({ job: null, dialogOpen: false, alreadyRunning: false })
@@ -289,5 +294,57 @@ describe('the browser path stays up front', () => {
     pick({ name: 'Holiday.mp4', getFile: () => Promise.resolve({ size: 1 }) })
     await flush()
     expect(h.browser).toHaveLength(0)
+  })
+})
+
+// PLATFORM LOUDNESS. His answer, 2026-09-30, to whether every export should land
+// at the loudness YouTube, TikTok and Instagram play videos at: "Yes, on by
+// default", with "a switch in the export window turns it off for a video."
+describe('platform loudness', () => {
+  it('is on by default, and the export carries the platforms\' level', () => {
+    requestExport()
+    expect(h.native[0].settings.loudnessTargetLufs).toBe(PLATFORM_TARGET_LUFS)
+  })
+
+  it('the switch turns it off for THIS video: the export starts again from the same frozen copy', async () => {
+    requestExport()
+    const first = h.native[0]
+    // He edits on while it runs; the restart must still make the file he asked for.
+    useStore.getState().dispatch('Rename project', (p) => ({ ...p, name: 'Renamed' }))
+
+    setExportLoudness(false)
+    expect(first.signal.aborted).toBe(true)
+    await flush()
+
+    expect(h.native).toHaveLength(2)
+    const second = h.native[1]
+    expect(second.settings.loudnessTargetLufs).toBeNull()
+    expect(second.project.name).toBe('Holiday')
+    // Same everything else: only the loudness moved.
+    expect({ ...second.settings, loudnessTargetLufs: 0 }).toEqual({ ...first.settings, loudnessTargetLufs: 0 })
+    // It is still the export on screen, not a cancelled one.
+    expect(useExportJob.getState().job?.stage.kind).toBe('running')
+    expect(useExportJob.getState().dialogOpen).toBe(true)
+  })
+
+  it('remembers which way he left it for the next export', async () => {
+    requestExport()
+    setExportLoudness(false)
+    await flush()
+    h.native[1].resolve({ outPath: 'C:\\Videos\\Holiday.mp4', sizeBytes: 1 })
+    await flush()
+    closeExportDialog()
+    expect(useSettings.getState().platformLoudness).toBe(false)
+
+    requestExport()
+    expect(h.native[2].settings.loudnessTargetLufs).toBeNull()
+  })
+
+  it('flipping it to the value already running restarts nothing', async () => {
+    requestExport()
+    setExportLoudness(true)
+    await flush()
+    expect(h.native).toHaveLength(1)
+    expect(h.native[0].signal.aborted).toBe(false)
   })
 })

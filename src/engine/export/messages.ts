@@ -68,6 +68,12 @@ export interface ExportSettings {
   audioBitrate?: number
   /** Preferred audio codec; the encoder still falls back aac→opus by support. */
   audioCodecPref?: 'aac' | 'opus'
+  /**
+   * The integrated loudness (LUFS) the whole mix is brought to before the
+   * master limiter, or null/absent to leave the mix's own level alone. The plan
+   * sets the platforms' level unless he switched "Platform loudness" off.
+   */
+  loudnessTargetLufs?: number | null
 }
 
 export interface ExportProgress {

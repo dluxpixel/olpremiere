@@ -3,12 +3,15 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
   clipEdges,
+  AUTO_LEVEL_LATENCY_S,
   clipGainEnvelope,
   createClipGain,
   DECLICK_S,
   FADE_KNOTS,
   onSampleGrid,
   compressorParamsFor,
+  trackAlignS,
+  trackLateS,
   computeClipSchedule,
   dbToGain,
   effectiveAudioClip,
@@ -694,9 +697,42 @@ describe('the audio schedule reads its clock last', () => {
     expect(calls).toHaveLength(1)
   })
 
-  it('starts every source against that one base time', () => {
-    // On the sample grid since 2026-10-01 (onSampleGrid), still off one baseT.
-    expect(body).toContain('source.start(onSampleGrid(baseT + sched.whenOffsetS, ctx.sampleRate)')
+  it('starts every source against that one base time, moved earlier by exactly what the graph delays', () => {
+    // The transport anchors the picture at baseT. The track alignment and the
+    // master limiter delay the sound on its way out, so the sources start that
+    // much early and the sound still arrives at baseT.
+    expect(body).toContain('const startT = baseT - alignS - masterLatencyS()')
+    // a plain track then waits for the Auto-level ones, exactly as in the export
+    expect(body).toContain('const trackT = startT + trackLateS(track, alignS)')
+    // on the sample grid (onSampleGrid), as the export does
+    expect(body).toContain('source.start(onSampleGrid(trackT + sched.whenOffsetS, ctx.sampleRate)')
+    // and the duck, which rides after the alignment, moves with the sound
+    expect(body).toContain('const when = startT + alignS + pt.offsetS')
+  })
+})
+
+// AUTO-LEVEL MADE ITS TRACK LATE, 2026-09-29. The DynamicsCompressorNode always
+// looks 6 ms ahead (288 samples at 48 kHz, measured in this Electron), so every
+// voiceover on an Auto-level track reached the file 6 ms behind the picture and
+// behind every other track. It cannot be switched off, so the other tracks wait
+// the same 6 ms and whoever plays the mix takes the shared wait back off.
+describe('every track waits as long as Auto-level does', () => {
+  it('is the compressor\'s own delay, 288 samples at 48 kHz', () => {
+    expect(AUTO_LEVEL_LATENCY_S * 48000).toBe(288)
+  })
+
+  it('adds no wait at all when no track uses Auto-level, so that mix is the graph it always was', () => {
+    expect(trackAlignS([{ autoLevel: undefined }, { autoLevel: 'off' }])).toBe(0)
+    expect(trackLateS({ autoLevel: undefined }, 0)).toBe(0)
+  })
+
+  it('starts a plain track 6 ms later once any track uses Auto-level, and the Auto-level track on time', () => {
+    const alignS = trackAlignS([{ autoLevel: undefined }, { autoLevel: 'medium' }])
+    expect(alignS).toBe(AUTO_LEVEL_LATENCY_S)
+    expect(trackLateS({ autoLevel: undefined }, alignS)).toBe(AUTO_LEVEL_LATENCY_S)
+    expect(trackLateS({ autoLevel: 'off' }, alignS)).toBe(AUTO_LEVEL_LATENCY_S)
+    // its compressor already waits the 6 ms
+    expect(trackLateS({ autoLevel: 'medium' }, alignS)).toBe(0)
   })
 })
 
@@ -936,8 +972,8 @@ describe('every clip starts on a whole sample (IP-3)', () => {
   })
 
   it('both mixers start every source on their own context grid', () => {
-    expect(liveBody).toContain('source.start(onSampleGrid(baseT + sched.whenOffsetS, ctx.sampleRate)')
-    expect(exportBody).toContain('source.start(onSampleGrid(sched.whenOffsetS, EXPORT_SAMPLE_RATE)')
+    expect(liveBody).toContain('source.start(onSampleGrid(trackT + sched.whenOffsetS, ctx.sampleRate)')
+    expect(exportBody).toContain('source.start(onSampleGrid(sched.whenOffsetS + late, EXPORT_SAMPLE_RATE)')
     expect(liveBody.match(/source\.start\(/g)).toHaveLength(1)
     expect(exportBody.match(/source\.start\(/g)).toHaveLength(1)
   })
