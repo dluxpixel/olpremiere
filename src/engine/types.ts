@@ -445,6 +445,17 @@ export interface Transform {
   anchorX: number
   anchorY: number
   crop: { t: number; r: number; b: number; l: number }
+  /**
+   * 'stretch' lays the (cropped) picture onto the frame's own four corners,
+   * whatever its shape: a 4:3 clip fills a 16:9 frame with nothing cut off and
+   * no bars. His ask, 2026-09-29. Everything above still applies on top of it.
+   *
+   * ⛔ ABSENT IS WHAT EVERY CLIP HAS ALWAYS DONE, so a project saved before this
+   * existed opens unchanged. Fit and fill were never stored: they are `scale`
+   * (1 fits the whole picture inside, the fill ratio covers the frame), which
+   * is why only stretch needs a field. → engine/frameFit.ts
+   */
+  fit?: 'stretch'
 }
 
 export type EffectType = string

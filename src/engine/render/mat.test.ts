@@ -252,3 +252,103 @@ describe('cover fit, for the blurred backdrop', () => {
     expect(cover).toEqual(contain)
   })
 })
+
+// His ask, 2026-09-29: "make it so when i for example paste in a 4:3clip it
+// stretches to 16:9 when i select to". Stretch is the one framing no uniform
+// scale can reach, so it lives in the quad itself: the picture's four corners
+// go onto the frame's four corners, each axis scaled on its own.
+describe('stretch fit, only when he picks it', () => {
+  const tf = (over: Partial<ResolvedTransform> = {}): ResolvedTransform => ({
+    x: 0, y: 0, scale: 1, rotationDeg: 0, anchorX: 0.5, anchorY: 0.5,
+    cropT: 0, cropR: 0, cropB: 0, cropL: 0, ...over,
+  })
+  const FRAME_CORNERS = (w: number, h: number): [number, number][] => [[0, 0], [w, 0], [w, h], [0, h]]
+  const expectCorners = (got: [number, number][], want: [number, number][]) => {
+    expect(got).toHaveLength(4)
+    got.forEach(([x, y], i) => {
+      expect(x).toBeCloseTo(want[i][0], 9)
+      expect(y).toBeCloseTo(want[i][1], 9)
+    })
+  }
+
+  it('a 4:3 clip in a 16:9 frame lands with its corners on the frame corners', () => {
+    const { corners } = computeQuad({ frameW: 1920, frameH: 1080, texW: 640, texH: 480, transform: tf({ fit: 'stretch' }) })
+    expectCorners(corners, FRAME_CORNERS(1920, 1080))
+  })
+
+  it('and the same 4:3 clip fills a 9:16 frame exactly too, any shape into any shape', () => {
+    const { corners } = computeQuad({ frameW: 1080, frameH: 1920, texW: 640, texH: 480, transform: tf({ fit: 'stretch' }) })
+    expectCorners(corners, FRAME_CORNERS(1080, 1920))
+  })
+
+  it('a 16:9 clip in a 9:16 short fills it with nothing cropped', () => {
+    const { corners } = computeQuad({ frameW: 1080, frameH: 1920, texW: 1920, texH: 1080, transform: tf({ fit: 'stretch' }) })
+    expectCorners(corners, FRAME_CORNERS(1080, 1920))
+  })
+
+  it('leaves the default alone: without stretch the 4:3 clip still fits inside with bars', () => {
+    const { corners } = computeQuad({ frameW: 1920, frameH: 1080, texW: 640, texH: 480, transform: tf() })
+    // 640x480 x 2.25 = 1440x1080, centred: 240 px of bar each side.
+    expectCorners(corners, [[240, 0], [1680, 0], [1680, 1080], [240, 1080]])
+  })
+
+  it('a matching shape is drawn the same whichever fit it has', () => {
+    const opts = { frameW: 1920, frameH: 1080, texW: 1920, texH: 1080 }
+    const contain = computeQuad({ ...opts, transform: tf() }).corners
+    const stretch = computeQuad({ ...opts, transform: tf({ fit: 'stretch' }) }).corners
+    expectCorners(stretch, contain)
+  })
+
+  it('scale, position and rotation still work on top of the stretched picture', () => {
+    const { corners } = computeQuad({
+      frameW: 1920, frameH: 1080, texW: 640, texH: 480,
+      transform: tf({ fit: 'stretch', scale: 0.5, x: 100, y: -50 }),
+    })
+    // Half the frame, centred, then moved.
+    expectCorners(corners, [[480 + 100, 270 - 50], [1440 + 100, 270 - 50], [1440 + 100, 810 - 50], [480 + 100, 810 - 50]])
+    const turned = computeQuad({
+      frameW: 1920, frameH: 1080, texW: 640, texH: 480, transform: tf({ fit: 'stretch', rotationDeg: 90 }),
+    }).corners
+    // A quarter turn about the centre: the 1920 wide picture now stands 1920 tall.
+    expect(Math.hypot(turned[1][0] - turned[0][0], turned[1][1] - turned[0][1])).toBeCloseTo(1920, 6)
+    expect(turned[0][0]).toBeCloseTo(960 + 540, 6)
+    expect(turned[0][1]).toBeCloseTo(540 - 960, 6)
+  })
+
+  it('the anchor is a point on the STRETCHED picture, so a zoom grows from the corner he picked', () => {
+    const { corners } = computeQuad({
+      frameW: 1920, frameH: 1080, texW: 640, texH: 480,
+      transform: tf({ fit: 'stretch', scale: 2, anchorX: 0, anchorY: 0 }),
+    })
+    // Grows from the frame's top left corner, which stays put.
+    expectCorners(corners, [[0, 0], [3840, 0], [3840, 2160], [0, 2160]])
+  })
+
+  it('a crop picks the part of the picture, and that part is what gets stretched to the frame', () => {
+    // A symmetric crop is the Zoom inside field: the picture keeps its place and
+    // the shot gets closer, exactly as it does on a fitted clip.
+    const zoomed = computeQuad({
+      frameW: 1920, frameH: 1080, texW: 640, texH: 480,
+      transform: tf({ fit: 'stretch', cropT: 0.25, cropR: 0.25, cropB: 0.25, cropL: 0.25 }),
+    }).corners
+    expectCorners(zoomed, FRAME_CORNERS(1920, 1080))
+    // A crop off one side keeps the frame filled too: nothing goes black.
+    const oneSide = computeQuad({
+      frameW: 1920, frameH: 1080, texW: 640, texH: 480, transform: tf({ fit: 'stretch', cropL: 0.5 }),
+    }).corners
+    expectCorners(oneSide, FRAME_CORNERS(1920, 1080))
+  })
+
+  it('stretches into the inner content box, not the whole frame, when the sequence has one', () => {
+    const box = { x: 0, y: 420, w: 1080, h: 1080 }
+    const { corners } = computeQuad({
+      frameW: 1080, frameH: 1920, texW: 640, texH: 480, transform: tf({ fit: 'stretch', frame: box }),
+    })
+    expectCorners(corners, [[0, 420], [1080, 420], [1080, 1500], [0, 1500]])
+  })
+
+  it('draws nothing for a picture with no size, rather than a frame filling smear', () => {
+    const { corners } = computeQuad({ frameW: 1920, frameH: 1080, texW: 0, texH: 0, transform: tf({ fit: 'stretch' }) })
+    expectCorners(corners, [[960, 540], [960, 540], [960, 540], [960, 540]])
+  })
+})

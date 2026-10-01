@@ -385,6 +385,9 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
       cropR: clip.transform.crop.r,
       cropB: clip.transform.crop.b,
       cropL: clip.transform.crop.l,
+      // A stretched clip's box is the frame's shape, so the handles sit on the
+      // picture he sees and not on the narrower one it would fit as.
+      ...(clip.transform.fit === 'stretch' ? { fit: 'stretch' as const } : {}),
     }
     const { corners } = computeQuad({ frameW: seq.width, frameH: seq.height, texW, texH, transform: rt })
     const xs = corners.map(([x]) => x * k)

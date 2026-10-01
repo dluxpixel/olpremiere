@@ -365,4 +365,12 @@ describe('what the live upload cap is told about zoom', () => {
     expect(liveZoom({ ...tf, scale: 1.5 }, 0, 0, 1080, 1920)).toBe(1.5)
     expect(liveZoom(tf, 1920, 1080, 0, 0)).toBe(1)
   })
+  it('a stretched 4:3 clip is sized for the axis it magnifies most, across', () => {
+    // 640x480 over 1920x1080: 3x across, 2.25x down. Across wins, so the upload
+    // keeps 480 * 3 = 1440 rows' worth per 1080 frame rows, 1.33, not the 1 down
+    // alone would ask for, which would soften it sideways while it plays.
+    const stretched = { ...tf, fit: 'stretch' as const }
+    expect(liveZoom(stretched, 640, 480, 1920, 1080)).toBeCloseTo(4 / 3, 6)
+    expect(liveZoom(tf, 640, 480, 1920, 1080)).toBeCloseTo(1, 6)
+  })
 })

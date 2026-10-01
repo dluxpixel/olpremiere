@@ -12,7 +12,10 @@ import {
   setChannelForClips,
   setClipsFade,
   setClipsGainDb,
+  setFrameFitForClips,
 } from '../state/bulkEdits'
+import { FRAME_FITS, frameFitDims, frameFitOf, takesFrameFit, type FrameFit } from '../engine/frameFit'
+import { useStore } from '../state/store'
 import { ENTRANCE_PRESETS } from '../engine/anim/appearance'
 import { setClipsAppearance } from '../state/appearanceActions'
 import { applyPunchyGradeToClips } from '../state/lookActions'
@@ -27,7 +30,7 @@ import { BROWSABLE_EFFECTS } from '../engine/effects/registry'
 import { ensureTitleFont, TITLE_FONT_OPTIONS } from '../engine/render/titleFonts'
 import { clipDurationS } from '../engine/timeline'
 import { useEffectDrop } from './effectDrop'
-import type { Clip, Track } from '../engine/types'
+import { activeSequence, type Clip, type Track } from '../engine/types'
 import { IconButton } from '../ui/Button'
 import { PropRow, ScrubField, SectionLabel, type Spec } from './EffectControls'
 import { MoveShelf } from './MoveShelf'
@@ -83,6 +86,18 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
   const movable = selected.filter((s) => s.track.kind === 'video' && !s.clip.adjustment && !s.clip.appearance)
   const footage = movable.filter((s) => !s.clip.title)
   const moveClips = (footage.length > 0 ? footage : movable).map((s) => s.clip)
+
+  // Every selected PICTURE, for Fit inside / Fill and crop / Stretch to fill on
+  // all of them at once. The linked sound and the captions ride along in a drag
+  // select and have no shape to fit.
+  const project = useStore((s) => s.project)
+  const frameSeq = activeSequence(project)
+  const pictures = selected.filter((s) => s.track.kind === 'video' && takesFrameFit(s.clip))
+  const fits = pictures.map((s) => frameFitOf(s.clip, frameFitDims(frameSeq, project.assets[s.clip.assetId])))
+  // Shown only when they all agree. Showing the first clip's, the way the fields
+  // here do, would leave "Stretch to fill" unpickable on the other nineteen: a
+  // select fires nothing when he picks the value it already shows.
+  const sharedFit = fits.length > 0 && fits.every((f) => f === fits[0]) ? fits[0] : null
 
   const nTitle = titles.length
   const nVideo = selected.filter((s) => s.track.kind === 'video' && !s.clip.title).length
@@ -362,6 +377,33 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
               onCommit={(v) => setChannelForClips(allIds, 'scale', v)}
             />
           </PropRow>
+          {pictures.length > 0 && (
+            <PropRow label="Frame" labelTitle="How each picture takes the frame when their shapes differ (all)">
+              <select
+                data-testid="multi-frame-fit"
+                aria-label="Frame fit (all)"
+                value={sharedFit ?? ''}
+                onChange={(e) =>
+                  setFrameFitForClips(
+                    pictures.map((s) => s.clip.id),
+                    e.target.value as FrameFit,
+                  )
+                }
+                className="h-6 w-[140px] cursor-default rounded-field bg-bg-input px-1.5 text-ui-sm text-text-primary"
+              >
+                {sharedFit === null && (
+                  <option value="" disabled>
+                    {fits.every((f) => f === null) ? 'Custom size' : 'Mixed'}
+                  </option>
+                )}
+                {FRAME_FITS.map((f) => (
+                  <option key={f.fit} value={f.fit} title={f.hint}>
+                    {f.label}
+                  </option>
+                ))}
+              </select>
+            </PropRow>
+          )}
         </div>
       </section>
 
