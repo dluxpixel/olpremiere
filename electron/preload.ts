@@ -42,9 +42,14 @@ const api: OlApi = {
   proxyRelease: (id: string) => ipcRenderer.invoke('proxy:release', id),
   remuxBegin: () => ipcRenderer.invoke('remux:begin'),
   remuxChunk: (id: string, bytes: ArrayBuffer) => ipcRenderer.invoke('remux:chunk', id, bytes),
-  remuxFinish: (id: string, mode?: 'convert' | 'rescue') => ipcRenderer.invoke('remux:finish', id, mode),
+  remuxFinish: (id: string, mode?: 'convert' | 'rescue' | 'sdr') => ipcRenderer.invoke('remux:finish', id, mode),
   remuxRead: (id: string, offset: number, length: number) => ipcRenderer.invoke('remux:read', id, offset, length),
   remuxRelease: (id: string) => ipcRenderer.invoke('remux:release', id),
+  onRemuxProgress: (cb: (id: string, frac: number) => void) => {
+    const l = (_e: unknown, id: string, frac: number) => cb(id, frac)
+    ipcRenderer.on('remux:progress', l)
+    return () => ipcRenderer.off('remux:progress', l)
+  },
   onNativeProgress: (cb: (p: NativeProgress) => void) => {
     const l = (_e: unknown, p: NativeProgress) => cb(p)
     ipcRenderer.on('native:progress', l)

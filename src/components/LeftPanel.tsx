@@ -424,6 +424,10 @@ function ImportProgress() {
   const total = useImportProgress((s) => s.total)
   const done = useImportProgress((s) => s.done)
   const name = useImportProgress((s) => s.name)
+  // A conversion that takes real time (an HDR phone clip's colour) says so and
+  // how far it has got, or a 75 second clip is twenty quiet seconds.
+  const step = useImportProgress((s) => s.step)
+  const frac = useImportProgress((s) => s.frac)
   if (total === 0) return null
   return (
     <div
@@ -436,6 +440,11 @@ function ImportProgress() {
       <span className="truncate text-text-muted" title={name}>
         {name}
       </span>
+      {step && (
+        <span data-testid="import-step" className="ml-auto shrink-0 tabular-nums text-text-secondary">
+          {`${step} ${Math.round(frac * 100)}%`}
+        </span>
+      )}
     </div>
   )
 }

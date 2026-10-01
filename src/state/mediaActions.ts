@@ -10,7 +10,7 @@ import { disposePreviewAsset } from '../engine/preview'
 import { ensureProxies, forgetProxy } from '../engine/proxyMedia'
 import { probeFile } from '../engine/probe'
 import { backfillMirror, mirrorAsset } from './mediaMirror'
-import { canImport, remuxIfNeeded, canRescue, rescueByRemux } from '../engine/remuxSource'
+import { canImport, remuxIfNeeded, canRescue, rescueByRemux, sdrMasterIfHdr } from '../engine/remuxSource'
 import { addClipFromAsset, addClipWithLinkedAudio, recomputeDuration } from '../engine/timeline'
 import {
   activeSequence,
@@ -51,12 +51,20 @@ function isOutOfRoom(err: unknown): boolean {
   return err instanceof Error && /quota|disk|space|full|storage/i.test(err.message)
 }
 
-/** Live import progress. `total: 0` means nothing is importing. */
-export const useImportProgress = create<{ total: number; done: number; name: string }>(() => ({
-  total: 0,
-  done: 0,
-  name: '',
-}))
+/**
+ * Live import progress. `total: 0` means nothing is importing. `step` names a
+ * conversion that takes real time (an HDR clip's colour), with `frac` its share
+ * done, 0 to 1; empty when the file is only being copied in.
+ */
+export const useImportProgress = create<{ total: number; done: number; name: string; step: string; frac: number }>(
+  () => ({
+    total: 0,
+    done: 0,
+    name: '',
+    step: '',
+    frac: 0,
+  }),
+)
 
 /** Optional tuning for one import batch. */
 export interface ImportOptions {
@@ -83,14 +91,19 @@ export async function importFiles(files: File[], opts?: ImportOptions): Promise<
   // same mistake the out-of-room branch below already exists to avoid.
   const convertFailed: string[] = []
   const needsDesktop: string[] = []
+  // HDR clips that made it into the bin without their SDR master. They import
+  // exactly as they always did, so this is said once, plainly, and nothing is
+  // lost. Counted only once the clip is really in: a clip that then fails to
+  // import at all is reported by its own bucket, never as "imported".
+  const hdrKept: string[] = []
   // Probing + copying every file's bytes into IndexedDB takes real time on
   // multi-GB captures, and until now the app showed NOTHING while it happened:
   // the drop overlay vanished on release and the panel sat on "Import media to
   // begin". Indistinguishable from a crash, so people drop the file again.
-  useImportProgress.setState({ total: files.length, done: 0, name: files[0]?.name ?? '' })
+  useImportProgress.setState({ total: files.length, done: 0, name: files[0]?.name ?? '', step: '', frac: 0 })
   try {
     for (const [i, file] of files.entries()) {
-      useImportProgress.setState({ total: files.length, done: i, name: file.name })
+      useImportProgress.setState({ total: files.length, done: i, name: file.name, step: '', frac: 0 })
       try {
         // ⛔ HIS OWN OBS CAPTURES LAND HERE. A .mkv cannot be opened by Chromium
         // at all, so `probeFile` fails on it and the import used to end as
@@ -112,6 +125,38 @@ export async function importFiles(files: File[], opts?: ImportOptions): Promise<
           console.warn('OL Premiere: could not convert', file.name, err)
           convertFailed.push(file.name)
           continue
+        }
+        // ⛔ HIS IPHONE CLIPS ARE HDR, AND CHROMIUM'S OWN TONE MAP CRUSHED THEM.
+        // Measured on his two GYM clips: the darkest tenth at half the level the
+        // clip's own SDR grade gives it, in the preview and the export alike. A
+        // new HDR clip is tone mapped ONCE here, by ffmpeg with the clip's own
+        // Dolby Vision data, and everything after this line, probe, preview,
+        // proxy, export, only ever sees the SDR master (remuxArgs.ts, "HDR phone
+        // clips"). Clips already in his projects are never touched.
+        //
+        // A conversion that fails is not a lost import: the clip comes in
+        // exactly as it always did, and he is told once.
+        //
+        // ⛔ THE HLG ORIGINAL IS NOT KEPT BESIDE THE MASTER. A second blob is not
+        // cheap here: every byte goes into IndexedDB, whose quota is what says
+        // "No room left", and into the disk mirror, on a drive at 97 percent, so
+        // each iPhone clip would cost the original AND the master (104 MB plus
+        // 72 MB for his 75 s clip). Nor is it safe: orphanedBlobKeys keeps any
+        // key it does not recognise for good, so an extra key would outlive the
+        // asset, and backups, restore and relink would all need teaching about
+        // it. And nothing could read it: there is no HDR export. The original
+        // stays wherever he imported it from.
+        let masterFailed = false
+        try {
+          const master = await sdrMasterIfHdr(source, (frac) =>
+            useImportProgress.setState({ step: 'Converting HDR colour', frac }),
+          )
+          if (master) source = master.file
+        } catch (err) {
+          console.warn('OL Premiere: could not make an SDR copy of', source.name, '- importing it as it is', err)
+          masterFailed = true
+        } finally {
+          useImportProgress.setState({ step: '', frac: 0 })
         }
         // ⛔ A DECODE FAILURE IS NOT THE SAME AS AN UNSUPPORTED FILE, and until
         // 2026-09-11 this app could not tell them apart. `needsRemux` converts the
@@ -140,7 +185,9 @@ export async function importFiles(files: File[], opts?: ImportOptions): Promise<
           // "unsupported": the format IS supported, this file did not survive it.
           let rescued
           try {
-            rescued = (await rescueByRemux(source)).file
+            rescued = (
+              await rescueByRemux(source, (frac) => useImportProgress.setState({ step: 'Converting', frac }))
+            ).file
           } catch (rescueErr) {
             console.warn('OL Premiere: could not convert', source.name, rescueErr)
             convertFailed.push(file.name)
@@ -193,6 +240,7 @@ export async function importFiles(files: File[], opts?: ImportOptions): Promise<
           thumbnailKey,
           codec: undefined,
         })
+        if (masterFailed) hdrKept.push(file.name)
       } catch (err) {
         // Running out of room is NOT a bad file, and saying "unsupported" sends
         // the user off re-encoding footage that was fine. Every import writes a
@@ -203,7 +251,7 @@ export async function importFiles(files: File[], opts?: ImportOptions): Promise<
       }
     }
   } finally {
-    useImportProgress.setState({ total: 0, done: 0, name: '' })
+    useImportProgress.setState({ total: 0, done: 0, name: '', step: '', frac: 0 })
   }
   // ONE summary toast per failure KIND, never one per file (folder-drop flood).
   if (outOfRoom.length > 0) {
@@ -234,6 +282,14 @@ export async function importFiles(files: File[], opts?: ImportOptions): Promise<
         ? `${needsDesktop[0]}: recordings like this need the desktop app, the browser cannot open them`
         : `${needsDesktop.length} recordings need the desktop app`,
       'danger',
+    )
+  }
+  if (hdrKept.length > 0) {
+    show(
+      hdrKept.length === 1
+        ? `${hdrKept[0]}: imported, but its HDR colour could not be converted, so it may look darker than on your phone`
+        : `${hdrKept.length} HDR clips imported without their colour conversion, so they may look darker than on your phone`,
+      'info',
     )
   }
   if (failed.length === 1) show(`${failed[0]}: couldn’t import (unsupported?)`, 'danger')

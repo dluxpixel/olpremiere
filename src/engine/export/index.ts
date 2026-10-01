@@ -80,7 +80,7 @@ export async function exportSequence(
     if (!asset) continue
     const blob = await getBlob(asset.blobKey)
     if (!blob) throw new Error(`Media for "${asset.name}" is missing from local storage, re-import it and try again`)
-    exportAssets.push({ id, kind: asset.kind, name: asset.name, blob })
+    exportAssets.push({ id, kind: asset.kind, name: asset.name, blob, fps: asset.fps })
   }
   if (signal.aborted) throw abortError()
 

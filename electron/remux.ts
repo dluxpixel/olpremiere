@@ -85,14 +85,18 @@ export async function chunkRemux(id: string, bytes: ArrayBuffer): Promise<void> 
  * Convert what was uploaded. The SOURCE temp goes immediately; the OUTPUT stays
  * until `releaseRemux`, because the renderer still has to read it back.
  */
-export async function finishRemux(id: string, mode: ConvertMode = 'convert'): Promise<ConvertResult> {
+export async function finishRemux(
+  id: string,
+  mode: ConvertMode = 'convert',
+  onProgress?: (frac: number) => void,
+): Promise<ConvertResult> {
   const job = jobs.get(id)
   if (!job?.handle) throw new Error('remux: unknown upload')
   working++
   try {
     await job.handle.close()
     job.handle = null
-    return await convertToMp4(ffmpegPath(), job.inPath, job.outPath, mode)
+    return await convertToMp4(ffmpegPath(), job.inPath, job.outPath, mode, onProgress)
   } finally {
     working--
     // The source copy goes now either way. It is full size and keeping it around
