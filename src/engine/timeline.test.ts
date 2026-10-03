@@ -2733,6 +2733,28 @@ describe('a ripple carries the other tracks with it', () => {
       expect(startOf(r, 'word1')).toBeCloseTo(1, 6)
       expect(report.heldTrackIds).toEqual([])
     })
+
+    it('a caption running ACROSS the cut still holds its track, silently, as it always has', () => {
+      // 2.5 to 3.5 crosses the far edge of the removed 0 to 3. Held, but not
+      // named: most of his ripples look like this, and a toast on every one
+      // is a line he would learn to ignore.
+      const seq = makeSeq([
+        makeTrack({
+          name: 'V1',
+          clips: [makeClip({ id: 'v1a', startS: 0, inS: 0, outS: 3 }), makeClip({ id: 'v1b', startS: 3, inS: 0, outS: 2 })],
+        }),
+        makeTrack({
+          id: 'CAP',
+          name: 'Captions',
+          clips: [makeClip({ id: 'word1', startS: 2.5, inS: 0, outS: 1 }), makeClip({ id: 'word2', startS: 4, inS: 0, outS: 1 })],
+        }),
+      ])
+      const report = { heldTrackIds: [] as Id[] }
+      const r = rippleDeleteMany(seq, ['v1a'], report)
+      expect(startOf(r, 'word1')).toBeCloseTo(2.5, 6)
+      expect(startOf(r, 'word2')).toBeCloseTo(4, 6)
+      expect(report.heldTrackIds).toEqual([])
+    })
   })
 
   it('⛔ a selection spanning two tracks removes that second ONCE, not once per clip', () => {

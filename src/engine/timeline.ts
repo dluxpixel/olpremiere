@@ -1163,8 +1163,9 @@ interface RippleEdit {
 
 /**
  * What a ripple could NOT carry along: the tracks that kept their own timing
- * because something on them sits in the time the edit took out, or runs across
- * its far edge. A verb fills it when the caller hands one in, so the message
+ * because something on them sits in the time the edit took out. A track held
+ * by a clip running across the cut is not listed: that hold is as old as sync
+ * lock and stays silent. A verb fills it when the caller hands one in, so the message
  * that names those tracks reads the decision the engine actually took instead
  * of guessing at it. Only a track that WOULD have moved is listed: a track with
  * nothing after the cut is not held back from anything.
@@ -1228,7 +1229,13 @@ function syncFollowEdits(
     // A clip in the span that nothing reaches (a word cut on both tracks at the
     // same points) still lets the track follow, as it always has: holding it
     // there would put everything after the cut out of sync for no reason.
-    if (straddles || followWouldCollide(t.clips, own)) {
+    //
+    // Only the second kind is REPORTED. A clip across the cut held its track
+    // silently long before this, and it is most of his ripples (a caption
+    // running over the cut point): naming it every time put a toast on 391 of
+    // 471 of his edits, a line he would learn to ignore. Measured 2026-10-03.
+    if (straddles) continue
+    if (followWouldCollide(t.clips, own)) {
       report?.heldTrackIds.push(t.id)
       continue
     }
