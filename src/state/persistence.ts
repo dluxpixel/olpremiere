@@ -392,7 +392,26 @@ export async function deleteBlob(key: string): Promise<void> {
 }
 
 const AUTOSAVE_DEBOUNCE_MS = 1000
+/**
+ * The longest an edit waits for its save while he keeps on editing.
+ *
+ * ⛔ A DEBOUNCE ALONE NEVER FIRES WHILE HE IS BUSY. Every change restarted the
+ * one second wait, so typing a caption or nudging a clip at less than a second
+ * a beat saved nothing at all until he stopped. Measured 2026-10-01 in his GYM:
+ * 27 characters typed over 20 seconds, the app ended 300 ms after the last one,
+ * and 6 came back. Now the oldest unsaved edit is written within this, however
+ * steady the run. flushSave already queues a save that lands mid write.
+ */
+const AUTOSAVE_MAX_WAIT_MS = 5000
 let saveTimer: number | undefined
+/** When the oldest edit not yet handed to a save landed, 0 when there is none. */
+let dirtySince = 0
+
+/** How long the autosave waits after an edit at `now`, given the oldest unsaved one. */
+export function autosaveDelayMs(dirtySinceMs: number, now: number): number {
+  return Math.max(0, Math.min(AUTOSAVE_DEBOUNCE_MS, dirtySinceMs + AUTOSAVE_MAX_WAIT_MS - now))
+}
+
 /** True once a background autosave has failed, until one succeeds again. */
 let autosaveFailing = false
 
@@ -444,6 +463,7 @@ function flushSave(): Promise<void> {
 /** Save immediately (Ctrl+S). Rejects when the write failed (see flushSave). */
 export function saveNow(): Promise<void> {
   window.clearTimeout(saveTimer)
+  dirtySince = 0
   return flushSave()
 }
 
@@ -494,8 +514,11 @@ export function initPersistence(): Promise<void> {
   useStore.subscribe(
     (s) => s.project,
     () => {
+      const now = Date.now()
+      if (dirtySince === 0) dirtySince = now
       window.clearTimeout(saveTimer)
       saveTimer = window.setTimeout(() => {
+        dirtySince = 0
         flushSave().then(
           () => {
             autosaveFailing = false
@@ -513,7 +536,7 @@ export function initPersistence(): Promise<void> {
             })
           },
         )
-      }, AUTOSAVE_DEBOUNCE_MS)
+      }, autosaveDelayMs(dirtySince, now))
     },
   )
   return hydrated

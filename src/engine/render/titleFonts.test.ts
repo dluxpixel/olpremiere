@@ -1,7 +1,14 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { describe, expect, it } from 'vitest'
-import { CUSTOM_TITLE_FONTS, LUCKIEST_GUY_STACK, TITLE_FONT_OPTIONS, titleFontStacksIn } from './titleFonts'
+import { describe, expect, it, vi } from 'vitest'
+import {
+  CUSTOM_TITLE_FONTS,
+  ensureTitleFace,
+  LUCKIEST_GUY_STACK,
+  TIKTOK_SANS_STACK,
+  TITLE_FONT_OPTIONS,
+  titleFontStacksIn,
+} from './titleFonts'
 
 // Guard the BUNDLED Minecraft font's glyph coverage. The app is used in Czech,
 // so the font must carry every Czech diacritic natively. Otherwise Czech titles
@@ -221,5 +228,50 @@ describe('the bundled font library', () => {
     for (const f of CUSTOM_TITLE_FONTS) {
       expect(TITLE_FONT_OPTIONS.map((o) => o.value), `${f.label} is not in the picker`).toContain(f.stack)
     }
+  })
+})
+
+describe('the preview loads a title face the first time it draws it', () => {
+  // MEASURED 2026-10-01 in his GYM: after every launch his TikTok Sans titles
+  // were drawn on the monitor in Segoe UI and exported in TikTok Sans, because
+  // only the core five faces load at boot and the worker loads what the
+  // sequence uses. 4,601 pixels of one title changed once the face was there.
+
+  /** A FontFaceSet and FontFace that record what was registered. */
+  function fakeFonts() {
+    const added: string[] = []
+    vi.stubGlobal(
+      'FontFace',
+      class {
+        constructor(public family: string) {}
+        load() {
+          return Promise.resolve(this)
+        }
+      },
+    )
+    return { added, set: { add: (f: { family: string }) => added.push(f.family) } as unknown as FontFaceSet }
+  }
+
+  it('registers TikTok Sans and redraws ONCE, however many frames ask for it', async () => {
+    const { added, set } = fakeFonts()
+    const redraw = vi.fn()
+    // The preview asks on every frame the title is on screen.
+    for (let i = 0; i < 5; i++) ensureTitleFace(set, TIKTOK_SANS_STACK, redraw)
+    await vi.waitFor(() => expect(redraw).toHaveBeenCalledTimes(1))
+    expect(added).toEqual(['TikTok Sans'])
+    // A face already here is a map lookup: no second redraw, so no loop.
+    ensureTitleFace(set, TIKTOK_SANS_STACK, redraw)
+    await Promise.resolve()
+    expect(redraw).toHaveBeenCalledTimes(1)
+    vi.unstubAllGlobals()
+  })
+
+  it('leaves a system stack alone, there is nothing bundled to load', () => {
+    const { added, set } = fakeFonts()
+    const redraw = vi.fn()
+    ensureTitleFace(set, 'Arial, sans-serif', redraw)
+    expect(added).toEqual([])
+    expect(redraw).not.toHaveBeenCalled()
+    vi.unstubAllGlobals()
   })
 })

@@ -144,6 +144,35 @@ describe('cutQuietParts', () => {
     expect(call?.[2]).toMatchObject({ label: 'Undo' })
   })
 
+  it('⛔ never slides a caption onto another one, and the same toast names the track that kept its timing', async () => {
+    // MEASURED 2026-10-01 in his mc night: a cut like this one slid the words
+    // after it on top of a word that sat inside the removed time, and only one
+    // of the two was drawn. The caption track keeps its own timing instead, and
+    // he is told so on the line he already reads, not on a second toast.
+    const { cutQuietParts } = await import('./silenceActions')
+    seedClip()
+    const caption = (id: string, startS: number): Clip => ({ ...clips()[0], id, startS, inS: 0, outS: 1 })
+    updateActiveSequence('captions', (sq) =>
+      recomputeDuration({
+        ...sq,
+        tracks: sq.tracks.map((t, i) => (i === 1 ? { ...t, name: 'Captions', clips: [caption('w1', 4), caption('w2', 9)] } : t)),
+      }),
+    )
+    words.mockResolvedValue([
+      { text: 'a', startS: 0, endS: 2 },
+      { text: 'b', startS: 8, endS: 12 },
+    ])
+    show.mockClear()
+
+    await cutQuietParts('c1', { minGapS: 0.5, padS: 0 })
+
+    const captions = seq().tracks[1].clips
+    expect(captions.map((c) => c.startS)).toEqual([4, 9])
+    const said = show.mock.calls.filter((c) => /quiet/i.test(String(c[0])))
+    expect(said).toHaveLength(1)
+    expect(String(said[0][0])).toMatch(/Captions kept its timing/)
+  })
+
   it('cuts nothing and says so when he never stops talking', async () => {
     const { cutQuietParts } = await import('./silenceActions')
     seedClip()

@@ -44,14 +44,21 @@ export type Drag =
        */
       toggleOffCandidate?: boolean
     }
-  /** `solo`: this half was singled out before the grab → trim it alone. */
-  | { kind: 'trim'; clipId: Id; edge: 'in' | 'out'; ripple: boolean; solo: boolean }
+  /**
+   * `solo`: this half was singled out before the grab → trim it alone.
+   * `grabOffsetS` (trim, stretch and roll alike): how far the pointer sat past
+   * the edge it grabbed, read at pointer-down, so the edge moves BY the drag
+   * instead of jumping under the pointer. The handle is 6 px wide, and a grab
+   * 4 px inside it made a half second drag trim 0.433 s in his GYM
+   * (2026-10-01). Absent, a gesture built without a pointer, it is 0.
+   */
+  | { kind: 'trim'; clipId: Id; edge: 'in' | 'out'; ripple: boolean; solo: boolean; grabOffsetS?: number }
   /** Alt+edge-drag: retime the clip (speed changes, source in/out stay put). */
-  | { kind: 'stretch'; clipId: Id; edge: 'in' | 'out' }
+  | { kind: 'stretch'; clipId: Id; edge: 'in' | 'out'; grabOffsetS?: number }
   /** `solo`: this half was singled out before the grab → slip it alone. */
   | { kind: 'slip'; clipId: Id; startXPx: number; solo: boolean }
   /** Ctrl+Alt+edge-drag: roll the shared cut - both outer ends stay fixed. */
-  | { kind: 'roll'; leftId: Id; rightId: Id }
+  | { kind: 'roll'; leftId: Id; rightId: Id; grabOffsetS?: number }
   /** Ctrl+Alt+body-drag: slide the clip - neighbours absorb, totals preserved. */
   | { kind: 'slide'; clipId: Id; grabOffsetS: number; neighborIds: Id[] }
   | { kind: 'scrub' }

@@ -26,7 +26,7 @@ import { deleteAsset, importFiles, insertAssetAtPlayhead, removeUnusedAssets, un
 import { showPhoneTab } from './PhoneShell'
 import { importProjectFromFile, routeDroppedFiles } from '../state/projectFile'
 import { matchFilesToMissing, missingMedia, relink, relinkSummary, type MissingAsset } from '../state/relinkMedia'
-import { healProjectMedia } from '../state/mediaMirror'
+import { healProjectMedia, useMediaHeal } from '../state/mediaMirror'
 import { evictAsset } from '../engine/frameCache'
 import { invalidatePreview } from '../engine/preview'
 import { useToasts } from '../state/toasts'
@@ -463,6 +463,9 @@ function ImportProgress() {
  */
 function FindMyMedia() {
   const assets = useStore((s) => s.project.assets)
+  // The put-back, while it runs (mediaMirror.ts useMediaHeal). It used to run in
+  // silence for as long as twenty seconds on a big edit, over a black monitor.
+  const healing = useMediaHeal((s) => s.progress)
   const [missing, setMissing] = useState<MissingAsset[]>([])
   const [busy, setBusy] = useState(false)
   const pick = useRef<HTMLInputElement>(null)
@@ -507,6 +510,17 @@ function FindMyMedia() {
     }
   }, [assets])
 
+  if (healing) {
+    return (
+      <div
+        data-testid="media-healing"
+        className="mx-2 mb-2 rounded-field border border-border bg-bg-elevated px-2 py-2 text-[11px] text-text-primary"
+      >
+        Putting your media back from the spare copies, {Math.min(healing.done + 1, healing.total)} of {healing.total}:{' '}
+        {healing.name}
+      </div>
+    )
+  }
   if (missing.length === 0) return null
   return (
     <div

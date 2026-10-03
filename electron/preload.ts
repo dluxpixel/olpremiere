@@ -116,6 +116,8 @@ const api: OlApi = {
   projectRead: (filePath: string) => ipcRenderer.invoke('project:read', filePath),
   projectTrash: (id: string) => ipcRenderer.invoke('project:trash', id),
   projectDir: () => ipcRenderer.invoke('project:dir'),
+  libraryWrite: (json: string) => ipcRenderer.invoke('library:write', json),
+  libraryRead: () => ipcRenderer.invoke('library:read'),
   pickSavePath: (kind: 'export' | 'project', base: string, ext: string, filterName: string) =>
     ipcRenderer.invoke('file:pickSave', kind, base, ext, filterName),
   fileOpenWrite: (target: string) => ipcRenderer.invoke('file:openWrite', target),

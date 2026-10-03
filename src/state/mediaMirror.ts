@@ -18,6 +18,7 @@
 // Nothing else in the app learns this folder exists, and a machine with no
 // desktop shell (the web build) simply has no mirror and behaves as before.
 
+import { create } from 'zustand'
 import { getBlob, putBlob } from './persistence'
 import type { MediaAsset, Project } from '../engine/types'
 
@@ -153,7 +154,7 @@ export async function readMirrored(assetId: string, size: number): Promise<Blob 
  * and written back ONCE however many callers want it at the same moment (the
  * boot repair, the media panel's second try, an export).
  */
-const healing = new Map<string, Promise<boolean>>()
+const healingAssets = new Map<string, Promise<boolean>>()
 
 /**
  * Put one asset's bytes back into the database from its spare copy. Resolves
@@ -162,7 +163,7 @@ const healing = new Map<string, Promise<boolean>>()
  * copies of it in flight at once is memory the export needs.
  */
 function healAsset(a: Pick<MediaAsset, 'id' | 'blobKey'> & { name?: string }, size: number): Promise<boolean> {
-  const running = healing.get(a.id)
+  const running = healingAssets.get(a.id)
   if (running) return running
   const job = (async (): Promise<boolean> => {
     const blob = await readMirrored(a.id, size)
@@ -174,8 +175,8 @@ function healAsset(a: Pick<MediaAsset, 'id' | 'blobKey'> & { name?: string }, si
       console.warn(`OL Premiere: could not put ${a.name ?? a.id} back`, err)
       return false
     }
-  })().finally(() => healing.delete(a.id))
-  healing.set(a.id, job)
+  })().finally(() => healingAssets.delete(a.id))
+  healingAssets.set(a.id, job)
   return job
 }
 
@@ -222,7 +223,7 @@ export async function blobForExport(asset: Pick<MediaAsset, 'id' | 'blobKey'> & 
   const stored = await fromStore()
   if (stored) return stored
   if (!mirrorApi()) return null
-  const running = healing.get(asset.id)
+  const running = healingAssets.get(asset.id)
   const size = running ? 0 : await mirroredSize(asset.id)
   if (!running && size <= 0) return null
   if (await (running ?? healAsset(asset, size))) {
@@ -248,6 +249,32 @@ export interface HealResult {
   failure?: string
 }
 
+type HealProgressFn = (done: number, total: number, name: string) => void
+
+/** The file being put back right now, or null when nothing is. */
+export interface HealProgress {
+  done: number
+  total: number
+  name: string
+}
+
+/**
+ * What the put-back is doing, for the Media panel to say and the export to see.
+ *
+ * ⛔ IT USED TO BE SILENT, AND EXPORT RAN STRAIGHT INTO IT. Measured 2026-10-01
+ * on a fresh profile, the state after a wipe: mc night took 21.5 s to come back
+ * from the spare copies, the monitor stayed black and the bin cards blank with
+ * nothing saying why, and Export pressed 10 s in failed with "re-import it",
+ * which was the wrong advice: the bytes were on their way back.
+ */
+export const useMediaHeal = create<{ progress: HealProgress | null }>(() => ({ progress: null }))
+
+/** One put-back per project at a time; a second caller joins the first. */
+const healing = new Map<string, { run: Promise<HealResult>; listeners: Set<HealProgressFn> }>()
+
+/** True while this project's media is being put back. */
+export const isHealing = (projectId: string): boolean => healing.has(projectId)
+
 /**
  * Put back every asset in this project whose bytes the database has lost.
  *
@@ -257,11 +284,30 @@ export interface HealResult {
  *
  * A project with nothing missing costs one storage read per asset and writes
  * nothing, so this is safe to run on every launch.
+ *
+ * ⛔ ONE AT A TIME PER PROJECT. Boot, the Media panel and the export all ask for
+ * it, and a second caller waits on the run already going rather than reading
+ * the same gigabytes again beside it. Each caller's progress hears the one run.
  */
-export async function healProjectMedia(
-  project: Project,
-  onProgress?: (done: number, total: number, name: string) => void,
-): Promise<HealResult> {
+export function healProjectMedia(project: Project, onProgress?: HealProgressFn): Promise<HealResult> {
+  const running = healing.get(project.id)
+  if (running) {
+    if (onProgress) running.listeners.add(onProgress)
+    return running.run
+  }
+  const listeners = new Set<HealProgressFn>(onProgress ? [onProgress] : [])
+  const run = healOnce(project, (done, total, name) => {
+    useMediaHeal.setState({ progress: { done, total, name } })
+    for (const l of listeners) l(done, total, name)
+  }).finally(() => {
+    healing.delete(project.id)
+    if (healing.size === 0) useMediaHeal.setState({ progress: null })
+  })
+  healing.set(project.id, { run, listeners })
+  return run
+}
+
+async function healOnce(project: Project, onProgress: HealProgressFn): Promise<HealResult> {
   const api = mirrorApi()
   const healed: string[] = []
   const lost: string[] = []
@@ -318,7 +364,7 @@ export async function healProjectMedia(
   let done = 0
 
   for (const a of toHeal) {
-    onProgress?.(done, toHeal.length, a.name ?? a.id)
+    onProgress(done, toHeal.length, a.name ?? a.id)
     done += 1
     const size = onDisk.get(a.id)
     if (!size) {

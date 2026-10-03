@@ -344,6 +344,30 @@ export function ensureEmojiFont(fontset: FontFaceSet, onReady?: () => void): voi
   })
 }
 
+/**
+ * Load the face a title asks for the first time the preview draws it, then
+ * redraw. The same shape as the emoji face above, for every bundled family.
+ *
+ * ⛔ WITHOUT THIS THE PREVIEW AND THE EXPORT DREW DIFFERENT TYPE. Only the five
+ * core faces load at boot, and the rest only when he picks one in a font list,
+ * while the export worker loads every family the sequence uses. So after every
+ * launch his GYM titles in TikTok Sans were drawn on the monitor in Segoe UI,
+ * wider and in other shapes, and exported in TikTok Sans: 4,601 pixels of one
+ * title changed once the face was loaded (measured 2026-10-01). He sizes and
+ * places captions on that monitor.
+ *
+ * `onReady` runs once, when THIS call started the load; a face already loading
+ * or loaded is a map lookup and calls nothing, so a redraw can never loop.
+ */
+export function ensureTitleFace(fontset: FontFaceSet, stack: string, onReady?: () => void): void {
+  const f = bundledFontForStack(stack)
+  if (!f || inFlight.has(f.family)) return
+  void loadOne(fontset, f).then(() => {
+    clearTitleCache()
+    onReady?.()
+  })
+}
+
 /** The registry row for a stored `fontFamily` stack, or undefined for a system stack. */
 export const bundledFontForStack = (stack: string): CustomTitleFont | undefined =>
   CUSTOM_TITLE_FONTS.find((f) => f.stack === stack)

@@ -15,6 +15,7 @@ import { silentRanges, SILENCE_DEFAULTS, type SilenceOptions } from '../engine/s
 import { clipEndS, rippleDeleteMany, splitClipOnly } from '../engine/timeline'
 import { activeSequence, type Clip, type Sequence } from '../engine/types'
 import { wordsForClip } from './transcribeActions'
+import { keptTimingMessage, newRippleReport } from './rippleNotice'
 import { updateActiveSequence, useStore } from './store'
 import { useToasts } from './toasts'
 
@@ -124,6 +125,7 @@ export async function cutQuietParts(clipId: string, opts: SilenceOptions = SILEN
 
   let cutS = 0
   let taken = 0
+  const report = newRippleReport()
   updateActiveSequence('Cut the quiet parts', (seq) => {
     let next = seq
     const doomed: string[] = []
@@ -150,14 +152,17 @@ export async function cutQuietParts(clipId: string, opts: SilenceOptions = SILEN
       taken++
     }
     if (doomed.length === 0) return seq
-    return rippleDeleteMany(next, doomed)
+    return rippleDeleteMany(next, doomed, report)
   })
 
   if (taken === 0) {
     show('The quiet parts were all too short to cut cleanly', 'info')
     return
   }
-  show(`Cut ${cutS.toFixed(1)}s of quiet, in ${taken} place${taken === 1 ? '' : 's'}`, 'success', {
+  // One toast, not two: a track that kept its timing is said on the same line.
+  const kept = keptTimingMessage(seqNow, report)
+  const said = `Cut ${cutS.toFixed(1)}s of quiet, in ${taken} place${taken === 1 ? '' : 's'}`
+  show(kept ? `${said}. ${kept}` : said, 'success', {
     label: 'Undo',
     onClick: () => void import('../collab/collabControl').then((m) => m.performHistoryStep('undo')),
   })

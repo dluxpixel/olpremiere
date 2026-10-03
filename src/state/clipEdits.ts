@@ -55,6 +55,7 @@ import {
 } from '../engine/types'
 import { transitionDurationSpec, type TransitionKind } from '../engine/render/types'
 import { noteRecentEffect } from './recentEffects'
+import { keptTimingMessage, newRippleReport } from './rippleNotice'
 import { updateActiveSequence, useStore } from './store'
 import { useToasts } from './toasts'
 
@@ -654,19 +655,31 @@ export function resetChannel(clipId: string, channel: AnimChannel): void {
 
 
 /**
- * Toggle a clip's enabled flag (Shift+E). A disabled clip renders nothing, its
- * audio is muted, and export skips it, but it keeps its place, effects, and
- * keyframes, so it's the way to A/B an overlay without deleting it. Group-aware
- * so a linked A/V pair toggles together.
+ * Toggle the enabled flag of every selected clip (Shift+E), in one undo step. A
+ * disabled clip renders nothing, its audio is muted, and export skips it, but it
+ * keeps its place, effects, and keyframes, so it's the way to A/B an overlay
+ * without deleting it. Group-aware so a linked A/V pair toggles together, and a
+ * locked track is left alone.
+ *
+ * It used to switch only the FIRST clip he had picked: three titles selected,
+ * one went off (measured 2026-10-01), while Delete, the nudges, copy and the
+ * shared effects card all act on everything selected. A mixed selection goes
+ * the one predictable way: all OFF, unless every clip he picked is already off,
+ * then all back ON. One clip alone is exactly the old toggle.
  */
-export function toggleClipEnabled(clipId: string): void {
-  const clip = findClip(clipId)
-  if (!clip) return
-  const next = !clip.enabled
-  const group = new Set(clipGroupIds(activeSequence(useStore.getState().project), clipId))
-  updateActiveSequence(next ? 'Enable clip' : 'Disable clip', (seq) => ({
-    ...seq,
-    tracks: seq.tracks.map((t) =>
+export function toggleClipsEnabled(clipIds: readonly string[]): void {
+  const seq = activeSequence(useStore.getState().project)
+  const ids = unlockedClipIds(seq, clipIds)
+  if (ids.length === 0) return
+  const picked = new Set(ids)
+  const chosen = seq.tracks.flatMap((t) => t.clips.filter((c) => picked.has(c.id)))
+  const next = chosen.every((c) => !c.enabled)
+  const group = new Set(ids.flatMap((id) => clipGroupIds(seq, id)))
+  const n = chosen.length
+  const label = `${next ? 'Enable' : 'Disable'} ${n === 1 ? 'clip' : `${n} clips`}`
+  updateActiveSequence(label, (sq) => ({
+    ...sq,
+    tracks: sq.tracks.map((t) =>
       t.locked
         ? t
         : { ...t, clips: t.clips.map((c) => (group.has(c.id) ? { ...c, enabled: next } : c)) },
@@ -1112,12 +1125,17 @@ export function toggleClipFreeze(clipId: string): void {
     }
     // The SAME arithmetic splitClip uses for its cut point, so a freeze and a
     // cut at the same instant agree on which frame that instant is.
+    // A reversed clip shows `outS - localT * |speed|` (render/resolve.ts), so
+    // its first frame is the END of its span: forward arithmetic held a frame
+    // 7 frames from the one on screen in his GYM (2026-10-01).
     const localT = playheadLocalT(c)
-    const held = c.inS + localT * Math.abs(c.speed || 1)
+    const reversed = c.speed < 0
+    const rate = Math.abs(c.speed || 1)
+    const held = reversed ? c.outS - localT * rate : c.inS + localT * rate
     // Playhead off the clip: hold its first frame rather than a time outside the
     // source, which would decode nothing and show black.
     const inside = localT > 0 && localT < clipDurationS(c)
-    return { ...c, freezeAtS: inside ? held : c.inS }
+    return { ...c, freezeAtS: inside ? held : reversed ? c.outS : c.inS }
   })
 }
 
@@ -1341,16 +1359,19 @@ export function deleteSelected(ripple: boolean): void {
           ?.clips.find((c) => c.id === ids[0])
       : undefined
 
+  const report = newRippleReport()
   updateActiveSequence(ripple ? 'Ripple delete' : 'Delete clip', (sq) => {
     // ⛔ The ripple side takes the WHOLE selection in one call. Looping it made
     // every other track move once per clip he picked, so two clips covering the
     // same second dragged his untouched tracks twice as far as the time he
     // actually removed. See `rippleDeleteMany`.
-    if (ripple) return rippleDeleteMany(sq, ids)
+    if (ripple) return rippleDeleteMany(sq, ids, report)
     let next = sq
     for (const id of ids) next = deleteScoped(next, id)
     return next
   })
+  const kept = keptTimingMessage(before, report)
+  if (kept) useToasts.getState().show(kept, 'info')
   s.setUI({
     selection: [],
     ...(soloAudio ? { playheadS: Math.max(0, soloAudio.startS) } : {}),
@@ -1442,9 +1463,12 @@ export function topAndTail(edge: 'in' | 'out'): void {
     return
   }
   const target = under.find((c) => sel.has(c.id)) ?? under[under.length - 1]
+  const report = newRippleReport()
   updateActiveSequence(edge === 'in' ? 'Trim head to playhead' : 'Trim tail to playhead', (sq) =>
-    rippleTrimGroup(sq, assets, target.id, edge, t),
+    rippleTrimGroup(sq, assets, target.id, edge, t, report),
   )
+  const kept = keptTimingMessage(seq, report)
+  if (kept) useToasts.getState().show(kept, 'info')
 }
 
 /**

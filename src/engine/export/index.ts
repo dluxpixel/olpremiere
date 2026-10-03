@@ -81,7 +81,7 @@ export async function exportSequence(
     // The database copy, or the spare one on disk while a repair is still putting
     // it back: never "missing" for a file that is sitting on his disk.
     const blob = await blobForExport({ id: asset.id, blobKey: asset.blobKey, name: asset.name })
-    if (!blob) throw new Error(`Media for "${asset.name}" is missing from local storage, re-import it and try again`)
+    if (!blob) throw new Error(`"${asset.name}" is not on this computer. Find my media in the Media panel puts it back`)
     exportAssets.push({ id, kind: asset.kind, name: asset.name, blob, fps: asset.fps })
   }
   if (signal.aborted) throw abortError()
