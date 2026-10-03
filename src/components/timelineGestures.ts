@@ -12,7 +12,7 @@ import {
   trimClipTo,
   trimGroup,
 } from '../engine/timeline'
-import { blockEdges, moveBlock, snapBlockDelta } from '../engine/blockMove'
+import { applyBlockPlan, blockEdges, moveBlock, planBlockMove, snapBlockDelta } from '../engine/blockMove'
 import { formatTimecode } from '../engine/timecode'
 import type { Clip, Id, MediaAsset, Sequence, Track } from '../engine/types'
 import { fmtDelta } from './timelineGeometry'
@@ -109,12 +109,20 @@ export interface MoveStep extends DragStep {
  * preview he watches and the edit that lands cannot differ. The readout shows
  * where the grabbed clip actually LANDS, not where the pointer is, because a
  * block that cannot fit where he aims goes to the nearest spot it does fit.
+ *
+ * `laneCostS` is what one lane short of the aimed lane is worth in seconds of
+ * sideways miss, on his screen (BlockMoveOptions in engine/blockMove.ts): with
+ * it, a lane that has no room anywhere near his hand no longer flings the block
+ * fifty seconds away. The lane the block settles on goes into `final`, so the
+ * release, which runs the plain moveBlock on `final`, lands on that same lane at
+ * that same time and cannot weigh anything differently.
  */
 export function moveStep(
   seq: Sequence,
   drag: DragOf<'move'>,
   aim: { startS: number; trackId: Id },
   snap: { points: readonly number[]; thresholdS: number } | null,
+  laneCostS?: number,
 ): MoveStep {
   const grabbed = findClipIn(seq, drag.clipId)
   if (!grabbed) return { next: seq, tip: null, final: { trackId: aim.trackId, tS: aim.startS }, indicatorT: null }
@@ -125,8 +133,13 @@ export function moveStep(
     deltaS = s.deltaS
     snappedT = s.indicatorT
   }
-  const final = { trackId: aim.trackId, tS: grabbed.startS + deltaS }
-  const next = moveBlock(seq, drag.blockIds, drag.clipId, final.trackId, final.tS)
+  const tS = grabbed.startS + deltaS
+  const plan = planBlockMove(seq, drag.blockIds, drag.clipId, aim.trackId, tS, laneCostS === undefined ? {} : { laneCostS })
+  const g = plan.members.find((m) => m.clip.id === drag.clipId)
+  const final = { trackId: g ? seq.tracks[g.to]!.id : aim.trackId, tS }
+  // The same plan dragCommit's moveBlock works out from `final` (the landing lane, so it weighs
+  // nothing again), set down once here instead of planned twice per pointermove.
+  const next = applyBlockPlan(seq, plan)
   const landed = findClipIn(next, drag.clipId) ?? grabbed
   // The line is only true when the block landed on the delta it snapped to.
   const indicatorT = snappedT !== null && Math.abs(landed.startS - final.tS) < 1e-9 ? snappedT : null

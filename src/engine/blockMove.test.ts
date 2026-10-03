@@ -503,3 +503,67 @@ describe('the block always moves when there is anywhere legal to go (2026-08-12)
     expect(at(dragSel(tie2, [], 'g', 'V1', 2), 'g')).toEqual({ lane: 'V1', start: 4, end: 6 })
   })
 })
+
+// ⛔ A LANE WITH NO ROOM NEAR THE POINTER IS NOT WORTH A FLIGHT, 2026-10-03.
+//
+// Measured through the real mouse that day: an overlay pulled from V2 down onto a packed V1 at
+// 10 s landed at 60 s, fifty seconds from his hand and off the screen (the preview was not even
+// drawn, it was so far away), and with a hole at 40 s it landed at 40 s. Nearest legal spot on the
+// lane he aimed at, yes, but nowhere near where he was looking. The nearest spot is now measured
+// the way he sees it, on screen: a lane short of where he aimed counts as `laneCostS` seconds of
+// sideways miss, so a spot on his aimed lane wins while it is close, and a block whose aimed lane
+// has no room anywhere near stays on the nearest lane that does, following his hand in time.
+// Without `laneCostS` (no pointer, no screen) the aimed lane always wins, as before.
+describe('a lane with no room near the pointer is not worth a flight (2026-10-03)', () => {
+  /** V1 packed with 2 s cuts from 0 to 60, the ones starting at `holes` left out. */
+  const packed = (holes: number[] = []) =>
+    Array.from({ length: 30 }, (_, i) => i * 2)
+      .filter((s) => !holes.includes(s))
+      .map((s) => clip(`k${s}`, s, 2))
+  // 400 px of reach at 60 px a second.
+  const REACH = 400 / 60
+  const dragAt = (seq: Sequence, sel: Id[], grab: Id, lane: Id, tS: number, laneCostS?: number) =>
+    moveBlock(seq, dragBlockIds(seq, sel.includes(grab) ? sel : [...sel, grab], grab), grab, lane, tS, laneCostS === undefined ? {} : { laneCostS })
+
+  it('an overlay aimed at a packed lane stays on its own lane under the hand, never 50 s away', () => {
+    const seq = seqOf([track('V1', 'video', packed()), track('V2', 'video', [clip('ov', 10, 2)])])
+    const out = dragAt(seq, [], 'ov', 'V1', 10.5, REACH)
+    expect(at(out, 'ov')).toEqual({ lane: 'V2', start: 10.5, end: 12.5 })
+    expect(damaged(seq, out, ['ov'])).toEqual([])
+  })
+
+  it('a hole 30 s away on the aimed lane is no reason to fly there either', () => {
+    const seq = seqOf([track('V1', 'video', packed([40])), track('V2', 'video', [clip('ov', 10, 2)])])
+    expect(at(dragAt(seq, [], 'ov', 'V1', 10, REACH), 'ov')).toEqual({ lane: 'V2', start: 10, end: 12 })
+  })
+
+  it('a hole close to the hand on the aimed lane still takes it', () => {
+    const seq = seqOf([track('V1', 'video', packed([12])), track('V2', 'video', [clip('ov', 10, 2)])])
+    expect(at(dragAt(seq, [], 'ov', 'V1', 10.5, REACH), 'ov')).toEqual({ lane: 'V1', start: 12, end: 14 })
+  })
+
+  it('aimed two lanes down at a packed lane, it stops on the free lane in between', () => {
+    const seq = seqOf([track('V1', 'video', packed()), track('V2', 'video', []), track('V3', 'video', [clip('ov', 10, 2)])])
+    expect(at(dragAt(seq, [], 'ov', 'V1', 11, REACH), 'ov')).toEqual({ lane: 'V2', start: 11, end: 13 })
+  })
+
+  it('a two lane block keeps its shape whichever lanes it settles on', () => {
+    // a on V2, b on V3, aimed one lane down: a would land on packed V1, so the block stays put in
+    // lanes and follows the hand in time, a and b still one lane and 1 s apart.
+    const seq = seqOf([track('V1', 'video', packed()), track('V2', 'video', [clip('a', 10, 1)]), track('V3', 'video', [clip('b', 11, 1)])])
+    const out = dragAt(seq, ['a', 'b'], 'a', 'V1', 12, REACH)
+    expect(at(out, 'a')).toEqual({ lane: 'V2', start: 12, end: 13 })
+    expect(at(out, 'b')).toEqual({ lane: 'V3', start: 13, end: 14 })
+  })
+
+  it('with no reach given (no pointer, no screen) the aimed lane wins, however far', () => {
+    const seq = seqOf([track('V1', 'video', packed()), track('V2', 'video', [clip('ov', 10, 2)])])
+    expect(at(dragAt(seq, [], 'ov', 'V1', 10.5), 'ov')).toEqual({ lane: 'V1', start: 60, end: 62 })
+  })
+
+  it('a miss exactly worth a lane goes to the lane he aimed at', () => {
+    // On V1 the nearest fit is 1 s from the hand; the lane is worth exactly 1 s.
+    const seq = seqOf([track('V1', 'video', [clip('w', 4, 2)]), track('V2', 'video', [clip('g', 2, 2)])])
+    expect(at(dragAt(seq, [], 'g', 'V1', 3, 1), 'g')).toEqual({ lane: 'V1', start: 2, end: 4 })
+  })
+})

@@ -5,7 +5,7 @@
  * (headers, ruler bar, lanes, overlays, hooks, clip menu) still meet in the
  * same places. The gesture maths has its own tests beside each module.
  */
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { recomputeDuration } from '../engine/timeline'
 import { activeSequence, audioTracks, defaultTitleDef, newProject, newTitleClip, videoTracks, type Sequence } from '../engine/types'
@@ -130,6 +130,74 @@ describe('Timeline', () => {
     fireEvent.pointerUp(lanes, { clientX: 206, clientY: 40, pointerId: 1 })
     const trimmed = seq().tracks.flatMap((t) => t.clips).find((c) => c.id === clip.id)!
     expect(trimmed.startS + (trimmed.outS - trimmed.inS)).toBeCloseTo(3.5, 9)
+  })
+
+  // ⛔ A CLICK IS A CLICK, HOWEVER THE HAND WOBBLES, 2026-10-03. Measured through the real mouse
+  // that day: a press on a clip with the hand drifting ONE pixel before letting go committed a
+  // move on 28 of 36 clicks across six zooms. Zoomed out it was a whole second (the snap reaches
+  // 8 px, and 8 px is 2 s at 4 px/s), and a video clicked with nothing selected moved off its own
+  // sound. Roll, slide and slip did the same on 27 of 63 clicks. A gesture now starts only once
+  // the hand has travelled past the click slop.
+  it('a click whose hand wobbles a pixel or two moves nothing, even zoomed far out', () => {
+    seedTitle(1)
+    useStore.getState().setUI({ pxPerS: 4 })
+    render(<Timeline height={300} />)
+    const { lanes } = layOut()
+    const before = useStore.getState().project
+    const el = screen.getByTestId('clip')
+    // The clip spans 4 to 12 px. Press its middle, wobble 2 px right and 1 down, let go.
+    fireEvent.pointerDown(el, { button: 0, clientX: 8, clientY: 40, pointerId: 1 })
+    fireEvent.pointerMove(lanes, { clientX: 10, clientY: 41, pointerId: 1 })
+    fireEvent.pointerUp(lanes, { clientX: 10, clientY: 41, pointerId: 1 })
+    expect(useStore.getState().project).toBe(before)
+  })
+
+  it('a wobbly click on a roll, a slide or a trim changes nothing either', () => {
+    // a [1,3] b [3,5] c [5,7] on one lane at 10 px/s, snapping off so nothing catches it back.
+    const a = seedTitle(1)
+    const b = seedTitle(3)
+    const c = seedTitle(5)
+    void a
+    useStore.getState().setUI({ pxPerS: 10, snapping: false })
+    render(<Timeline height={300} />)
+    const { lanes } = layOut()
+    const clipEl = (id: string) => screen.getAllByTestId('clip').find((x) => x.dataset.clipId === id)!
+    const before = useStore.getState().project
+    const press = (target: HTMLElement, x: number, mods: { ctrlKey?: boolean; altKey?: boolean }) => {
+      fireEvent.pointerDown(target, { button: 0, clientX: x, clientY: 40, pointerId: 1, ...mods })
+      fireEvent.pointerMove(lanes, { clientX: x + 3, clientY: 40, pointerId: 1, ...mods })
+      fireEvent.pointerUp(lanes, { clientX: x + 3, clientY: 40, pointerId: 1, ...mods })
+    }
+    // Roll the cut between a and b (Ctrl+Alt on b's head).
+    press(within(clipEl(b.id)).getByTestId('trim-in'), 31, { ctrlKey: true, altKey: true })
+    expect(useStore.getState().project, 'roll').toBe(before)
+    // Slide b between its neighbours (Ctrl+Alt on its body).
+    press(clipEl(b.id), 40, { ctrlKey: true, altKey: true })
+    expect(useStore.getState().project, 'slide').toBe(before)
+    // Trim c's tail, which has open timeline after it.
+    press(within(clipEl(c.id)).getByTestId('trim-out'), 69, {})
+    expect(useStore.getState().project, 'trim').toBe(before)
+  })
+
+  // ⛔ THE WHEEL SCROLLS THE LANES, THE CLIP STAYS IN HIS HAND, 2026-10-03. Measured: with a clip
+  // held, a sideways wheel of 600 px scrolled the lanes and left the clip 600 px behind the
+  // pointer, and letting go there dropped it 10 s from where his hand was. The drag now re-reads
+  // the pointer whenever the lanes scroll under it.
+  it('scrolling the lanes mid-drag keeps the clip under the pointer', () => {
+    const clip = seedTitle(1)
+    useStore.getState().setUI({ pxPerS: 10, snapping: false })
+    render(<Timeline height={300} />)
+    const { lanes, content } = layOut()
+    fireEvent.pointerDown(screen.getByTestId('clip'), { button: 0, clientX: 20, clientY: 40, pointerId: 1 })
+    fireEvent.pointerMove(lanes, { clientX: 70, clientY: 40, pointerId: 1 })
+    // The wheel scrolls the lanes 300 px: the content moves 300 px left under a hand that stays put.
+    content.getBoundingClientRect = () =>
+      ({ left: -300, top: 0, right: 900, bottom: 400, width: 1200, height: 400, x: -300, y: 0, toJSON: () => ({}) }) as DOMRect
+    fireEvent.scroll(lanes)
+    fireEvent.pointerUp(lanes, { clientX: 70, clientY: 40, pointerId: 1 })
+    const moved = seq().tracks.flatMap((t) => t.clips).find((c) => c.id === clip.id)!
+    // Grabbed 1 s into the clip; the hand now points at 37 s of timeline.
+    expect(moved.startS).toBeCloseTo(36, 6)
   })
 
   it('cuts a clip with the razor', () => {

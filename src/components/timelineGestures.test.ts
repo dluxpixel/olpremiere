@@ -297,6 +297,21 @@ describe('moveStep (one pointermove of a clip drag)', () => {
     expect(clipEndS(findClip(caught.next, q.id)!.clip)).toBe(8)
   })
 
+  it('aimed at a lane with no room near the hand, it stays on its own lane, and the release lands exactly that (2026-10-03)', () => {
+    // V1 packed 0 to 40 with 2 s cuts, an overlay on V2 at 10. The hand points at V1, 10.5 s.
+    const cuts = Array.from({ length: 20 }, (_, i) => makeClip({ startS: i * 2, outS: 2 }))
+    const v1 = makeTrack({ clips: cuts })
+    const ov = makeClip({ startS: 10, outS: 2 })
+    const v2 = makeTrack({ name: 'V2', clips: [ov] })
+    const seq = makeSeq([v1, v2])
+    const drag = moveDrag(ov.id, [ov.id])
+    const step = moveStep(seq, drag, { startS: 10.5, trackId: v1.id }, null, 400 / 60)
+    expect(findClip(step.next, ov.id)).toMatchObject({ track: { id: v2.id }, clip: { startS: 10.5 } })
+    // `final` names the lane it lands on, so the release cannot pick a different one.
+    expect(step.final).toEqual({ trackId: v2.id, tS: 10.5 })
+    expect(dragCommit(drag, step.final, ASSETS)!.apply(seq)).toEqual(step.next)
+  })
+
   it('a move that lands nowhere new changes nothing and commits nothing', () => {
     const { q, v1, seq } = fixture()
     // q is butted against p, so half a second left has nowhere to go but home.

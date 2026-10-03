@@ -250,13 +250,40 @@ function bestLaneShift(seq: Sequence, blockIds: readonly Id[], grabbedId: Id, ta
   return best
 }
 
+/**
+ * By brute force, for a drag that weighs a lane short of the aim as `laneCostS` seconds of miss
+ * (2026-10-03): the cheapest of every legal lane delta from the aimed one back to zero, each at
+ * its own nearest legal time.
+ */
+function cheapestLaneChoice(seq: Sequence, blockIds: readonly Id[], grabbedId: Id, targetTrackId: Id, wantS: number, laneCostS: number): number {
+  const before = where(seq)
+  const g = before.get(grabbedId)!
+  const kind = seq.tracks[g.track]!.kind
+  const lanes = seq.tracks.map((t, i) => ({ t, i })).filter((x) => x.t.kind === kind).map((x) => x.i)
+  const ti = seq.tracks.findIndex((t) => t.id === targetTrackId)
+  const requested = ti >= 0 && seq.tracks[ti]!.kind === kind ? lanes.indexOf(ti) - lanes.indexOf(g.track) : 0
+  let best = Infinity
+  const step = requested === 0 ? 1 : -Math.sign(requested)
+  for (let s = requested; ; s += step) {
+    const ok = blockIds.every((id) => {
+      const p = lanes.indexOf(before.get(id)!.track)
+      if (p < 0) return true
+      const q = p + s
+      return q >= 0 && q < lanes.length && (s === 0 || !seq.tracks[lanes[q]!]!.locked)
+    })
+    if (ok) best = Math.min(best, bestLegalDistance(seq, blockIds, grabbedId, s, wantS) + Math.abs(requested - s) * laneCostS)
+    if (s === 0) break
+  }
+  return best
+}
+
 const CASES = 4000
 
 describe('a clip drag, on thousands of random timelines', () => {
   it(`keeps the block rigid, destroys nothing, lands at the nearest legal spot, and previews what it commits (${CASES} seeded cases)`, () => {
     const rand = rng(20261003)
     const world: World = { seq: randomSequence(rand) }
-    const stats = { moved: 0, collided: 0, laneClamped: 0, laneChanged: 0, multi: 0, linkedInBlock: 0, empty: 0, snapped: 0 }
+    const stats = { moved: 0, collided: 0, laneClamped: 0, laneChanged: 0, multi: 0, linkedInBlock: 0, empty: 0, snapped: 0, reachHeld: 0 }
 
     for (let k = 0; k < CASES; k++) {
       const label = `case ${k}`
@@ -284,8 +311,13 @@ describe('a clip drag, on thousands of random timelines', () => {
       const tS =
         r < 0.6 ? grab.startS + int(-120, 120) * F : r < 0.85 ? int(0, 600) * F : r < 0.95 ? grab.startS : -int(1, 60) * F
 
+      // Half the drags come from the pointer, which weighs a lane short of the aim against the
+      // time missed on screen (laneCostS); the rest are the plain engine call with no screen.
+      const laneCostS = rand() < 0.5 ? undefined : [0.2, 1, 400 / 60, 40][int(0, 3)]!
+      const opts = laneCostS === undefined ? {} : { laneCostS }
+
       const frozen = JSON.stringify(seq)
-      const out = moveBlock(seq, blockIds, grab.id, target, tS)
+      const out = moveBlock(seq, blockIds, grab.id, target, tS, opts)
       expect(JSON.stringify(seq), `${label}: the input is never mutated`).toBe(frozen)
       const got = checkShape(label, seq, out, blockIds, grab.id)
 
@@ -293,20 +325,33 @@ describe('a clip drag, on thousands of random timelines', () => {
         stats.empty++
         continue
       }
-      const plan = planBlockMove(seq, blockIds, grab.id, target, tS)
+      const plan = planBlockMove(seq, blockIds, grab.id, target, tS, opts)
       if (out !== seq) {
         expect(got.deltaS, `${label}: the plan's delta is the one that landed`).toBeCloseTo(plan.deltaS, 9)
         expect(got.laneShift, `${label}: the plan's lane delta is the one that landed`).toBe(plan.laneShift)
       } else {
         expect(plan.deltaS === 0 && plan.laneShift === 0, `${label}: nothing landed only when the plan is a no-op`).toBe(true)
       }
-      expect(plan.laneShift, `${label}: farthest legal lane delta`).toBe(bestLaneShift(seq, blockIds, grab.id, target))
       const wantS = tS - grab.startS
       const best = bestLegalDistance(seq, blockIds, grab.id, plan.laneShift, wantS)
       const at0 = where(seq)
       const floor = -Math.min(...blockIds.map((id) => at0.get(id)!.clip.startS))
       const w = Math.max(floor, wantS)
       expect(Math.abs(plan.deltaS - w), `${label}: nearest legal spot`).toBeLessThanOrEqual(best + 1e-7)
+      if (laneCostS === undefined) {
+        expect(plan.laneShift, `${label}: farthest legal lane delta`).toBe(bestLaneShift(seq, blockIds, grab.id, target))
+      } else {
+        // On screen: no legal lane and time is cheaper than the one it chose.
+        const g0 = at0.get(grab.id)!
+        const kindLanes = seq.tracks.map((t, i) => ({ t, i })).filter((x) => x.t.kind === seq.tracks[g0.track]!.kind).map((x) => x.i)
+        const ti = seq.tracks.findIndex((t) => t.id === target)
+        const requested = seq.tracks[ti]!.kind === seq.tracks[g0.track]!.kind ? kindLanes.indexOf(ti) - kindLanes.indexOf(g0.track) : 0
+        expect(Math.sign(plan.laneShift) * Math.sign(requested), `${label}: never a lane the other way`).toBeGreaterThanOrEqual(0)
+        expect(Math.abs(plan.laneShift), `${label}: never past the aimed lane`).toBeLessThanOrEqual(Math.abs(requested))
+        const chosen = Math.abs(plan.deltaS - w) + Math.abs(requested - plan.laneShift) * laneCostS
+        expect(chosen, `${label}: the cheapest spot on screen`).toBeLessThanOrEqual(cheapestLaneChoice(seq, blockIds, grab.id, target, wantS, laneCostS) + 1e-7)
+        if (plan.laneShift !== bestLaneShift(seq, blockIds, grab.id, target)) stats.reachHeld++
+      }
 
       // The live preview, snapping on or off, is exactly what the release commits.
       const drag = {
@@ -321,7 +366,7 @@ describe('a clip drag, on thousands of random timelines', () => {
       }
       const snap =
         rand() < 0.5 ? { points: collectSnapPoints(seq, { excludeClipIds: blockIds, playheadS: int(0, 300) * F }), thresholdS: 8 * F } : null
-      const step = moveStep(seq, drag, { startS: tS, trackId: target }, snap)
+      const step = moveStep(seq, drag, { startS: tS, trackId: target }, snap, laneCostS)
       const committed = dragCommit(drag, step.final, ASSETS)!.apply(seq)
       expect(committed, `${label}: preview equals commit`).toEqual(step.next)
       checkShape(`${label} (snapped)`, seq, step.next, blockIds, grab.id)
@@ -349,6 +394,7 @@ describe('a clip drag, on thousands of random timelines', () => {
     expect(stats.multi).toBeGreaterThan(CASES * 0.3)
     expect(stats.linkedInBlock).toBeGreaterThan(CASES * 0.1)
     expect(stats.snapped).toBeGreaterThan(CASES * 0.05)
+    expect(stats.reachHeld).toBeGreaterThan(CASES * 0.01)
     // A few seconds alone; the budget is for the full suite running every file at once.
   }, 120_000)
 })

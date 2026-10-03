@@ -192,3 +192,100 @@ test('dragging past the top lane takes the selection as high as it can go, not b
   expect(after.g).toEqual({ lane: 'V2', startS: 0, endS: 2 })
   expect(after.y).toEqual({ lane: 'V3', startS: 0, endS: 2 })
 })
+
+/** Set UI state (zoom, snapping) the way the toolbar does. */
+async function ui(page: Page, patch: Record<string, unknown>) {
+  await page.evaluate(async (patch) => {
+    const storeMod = '/src/state/store.ts'
+    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as { useStore: { getState: () => { setUI: (p: unknown) => void } } }
+    useStore.getState().setUI(patch)
+  }, patch)
+}
+
+async function undoDepth(page: Page): Promise<number> {
+  return page.evaluate(async () => {
+    const storeMod = '/src/state/store.ts'
+    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as { useStore: { getState: () => { history: { undo: unknown[] } } } }
+    return useStore.getState().history.undo.length
+  })
+}
+
+// ⛔ A CLICK IS A CLICK, 2026-10-03. Measured that day with the real mouse: a press whose hand
+// drifted ONE pixel before letting go committed a move on 28 of 36 clicks across six zooms, up to
+// a whole second zoomed out (the snap reaches 8 px), and a linked video clicked with nothing
+// selected slid off its own sound. A clip gesture now starts only once the hand leaves the slop.
+test('a click whose hand wobbles a pixel or two never moves anything, at any zoom', async ({ page }) => {
+  await page.goto('/')
+  for (const zoom of [4, 10, 60]) {
+    for (const wobble of [1, 2, 3]) {
+      await seed(page, { V1: [['v', 3, 2]], V2: [['x', 4, 2]] }, [])
+      await ui(page, { pxPerS: zoom, snapping: true })
+      await expect(page.locator('[data-clip-id="v"]')).toBeVisible()
+      const before = await spots(page)
+      const depth = await undoDepth(page)
+      const v = await box(page, 'v')
+      const x = v.x + v.width * 0.4
+      const y = v.y + v.height / 2
+      await page.mouse.move(x, y)
+      await page.mouse.down()
+      await page.mouse.move(x + wobble, y)
+      await page.mouse.up()
+      expect(await spots(page), `zoom ${zoom}, wobble ${wobble}px`).toEqual(before)
+      expect(await undoDepth(page), `zoom ${zoom}, wobble ${wobble}px: nothing to undo`).toBe(depth)
+    }
+  }
+})
+
+// ⛔ NO FLIGHT TO A LANE WITH NO ROOM NEAR HIS HAND, 2026-10-03. Measured that day: an overlay
+// pulled down onto a packed V1 landed 50 s away, off the screen. It now stays on its own lane under
+// his hand, nothing on V1 touched, and the preview showed exactly that.
+test('an overlay pulled onto a packed lane with no room near the hand stays on its own lane, under the hand', async ({ page }) => {
+  await page.goto('/')
+  const cuts: [string, number, number][] = Array.from({ length: 30 }, (_, i) => [`k${i}`, i * 2, 2])
+  await seed(page, { V1: cuts, V2: [['ov', 10, 2]] }, [])
+  await ui(page, { snapping: false })
+  const before = await spots(page)
+  const pps = await pxPerS(page)
+  const ov = await box(page, 'ov')
+  const k5 = await box(page, 'k5')
+  await page.mouse.move(ov.x + ov.width / 2, ov.y + ov.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(ov.x + ov.width / 2 + 0.5 * pps, k5.y + k5.height / 2, { steps: 12 })
+  // The preview is on screen, on V2, half a second on: where it will land.
+  const drawn = await box(page, 'ov')
+  expect(Math.abs(drawn.x - (ov.x + 0.5 * pps))).toBeLessThan(2)
+  expect(Math.abs(drawn.y - ov.y)).toBeLessThan(2)
+  await page.mouse.up()
+  const after = await spots(page)
+  for (const [id] of cuts) expect(after[id], `${id} untouched`).toEqual(before[id])
+  expect(after.ov).toEqual({ lane: 'V2', startS: 10.5, endS: 12.5 })
+})
+
+// ⛔ HIS WHEEL SCROLLS THE LANES, THE CLIP STAYS IN HIS HAND, 2026-10-03. Measured that day: a clip
+// held while the wheel scrolled the lanes 600 px sideways was left 600 px behind the pointer, and
+// letting go dropped it 10 s from his hand.
+test('scrolling the lanes with the wheel mid-drag keeps the clip under the pointer', async ({ page }) => {
+  await page.goto('/')
+  const far: [string, number, number][] = Array.from({ length: 40 }, (_, i) => [`t${i}`, i * 3, 2])
+  await seed(page, { V1: far, V2: [['g', 2, 2]] }, [])
+  await ui(page, { snapping: false })
+  const pps = await pxPerS(page)
+  const g = await box(page, 'g')
+  const x0 = g.x + g.width / 2
+  const y0 = g.y + g.height / 2
+  await page.mouse.move(x0, y0)
+  await page.mouse.down()
+  await page.mouse.move(x0 + 100, y0, { steps: 8 })
+  const scrollLeft = () => page.evaluate(() => (document.querySelector('[data-testid="timeline-lanes"]') as HTMLElement).scrollLeft)
+  const left0 = await scrollLeft()
+  await page.mouse.wheel(600, 0)
+  await expect.poll(scrollLeft).toBeGreaterThan(left0 + 500)
+  const by = (await scrollLeft()) - left0
+  // The clip is still under the pointer: its left edge sits where it did relative to the hand.
+  const held = await box(page, 'g')
+  expect(Math.abs(held.x - (g.x + 100))).toBeLessThan(2 + pps / 30)
+  await page.mouse.up()
+  const after = await spots(page)
+  expect(after.g!.lane).toBe('V2')
+  expect(after.g!.startS).toBeCloseTo(2 + (100 + by) / pps, 1)
+})

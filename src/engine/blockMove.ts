@@ -137,15 +137,26 @@ function fitLaneShift(
   const step = Math.sign(requested)
   let best = 0
   for (let s = step; Math.abs(s) <= Math.abs(requested); s += step) {
-    const ok = members.every((m) => {
-      const p = laneOf.get(m.from)
-      if (p === undefined) return true // the other kind: keeps its lane
-      const q = p + s
-      return q >= 0 && q < lanes.length && !seq.tracks[lanes[q]!]!.locked
-    })
-    if (ok) best = s
+    if (laneShiftFits(seq, members, lanes, laneOf, s)) best = s
   }
   return best
+}
+
+/** Does every clip of the grabbed kind land on a lane that exists and is open, shifted by `s`? */
+function laneShiftFits(
+  seq: Sequence,
+  members: readonly { from: number }[],
+  lanes: readonly number[],
+  laneOf: ReadonlyMap<number, number>,
+  s: number,
+): boolean {
+  if (s === 0) return true
+  return members.every((m) => {
+    const p = laneOf.get(m.from)
+    if (p === undefined) return true // the other kind: keeps its lane
+    const q = p + s
+    return q >= 0 && q < lanes.length && !seq.tracks[lanes[q]!]!.locked
+  })
 }
 
 /** Is the block free at `deltaS`: no clip of it on top of any clip outside it, on any lane? */
@@ -236,6 +247,25 @@ function nearestFreeDelta(
 }
 
 /**
+ * How a drag weighs the lanes against time when the lane he aims at has no room near his hand.
+ *
+ * ⛔ A LANE WITH NO ROOM NEAR THE POINTER IS NOT WORTH A FLIGHT, 2026-10-03. Measured through the
+ * real mouse that day: an overlay pulled from V2 down onto a packed V1 at 10 s landed at 60 s,
+ * fifty seconds from his hand and so far off the screen the preview was not even drawn; with a
+ * hole at 40 s it landed at 40 s. That WAS the nearest legal spot on the lane he aimed at, and it
+ * was nowhere near where he was looking. "Nearest" is now measured the way he sees it: every lane
+ * short of the one he aims at costs `laneCostS` seconds of sideways miss. A spot on his aimed lane
+ * wins while it is close to his hand; when it is not, the block settles on the nearest lane toward
+ * its own that has room there, and keeps following his hand in time. Its own lanes always have
+ * room near the hand (it came from there), so the answer is never far from where he points.
+ *
+ * Absent (no pointer, no screen to measure on), the aimed lane always wins, however far the time.
+ */
+export interface BlockMoveOptions {
+  laneCostS?: number
+}
+
+/**
  * Where a drag of `blockIds`, holding `grabbedId`, aimed at `targetTrackId` with the grabbed clip
  * starting at `tS`, actually lands. Pure; reads only the sequence it is given.
  *
@@ -248,6 +278,7 @@ export function planBlockMove(
   grabbedId: Id,
   targetTrackId: Id,
   tS: number,
+  opts: BlockMoveOptions = {},
 ): BlockMovePlan {
   const inBlock = new Set(blockIds)
   const none: BlockMovePlan = { deltaS: 0, laneShift: 0, members: [] }
@@ -282,16 +313,48 @@ export function planBlockMove(
   const targetIdx = seq.tracks.findIndex((t) => t.id === targetTrackId)
   const requested =
     targetIdx >= 0 && seq.tracks[targetIdx]!.kind === kind ? laneOf.get(targetIdx)! - laneOf.get(grabbedTrack)! : 0
-  const laneShift = fitLaneShift(seq, found, lanes, laneOf, requested)
-  const members: Member[] = found.map((m) => {
-    const p = laneOf.get(m.from)
-    return { ...m, to: p === undefined ? m.from : lanes[p + laneShift]! }
-  })
-
+  const membersAt = (s: number): Member[] =>
+    found.map((m) => {
+      const p = laneOf.get(m.from)
+      return { ...m, to: p === undefined ? m.from : lanes[p + s]! }
+    })
   const wantS = tS - grabbed.startS
-  let deltaS = nearestFreeDelta(seq, members, inBlock, wantS, Math.sign(wantS))
-  if (Math.abs(deltaS) <= EPS) deltaS = 0
-  return { deltaS, laneShift, members }
+  const deltaAt = (members: readonly Member[]): number => {
+    const d = nearestFreeDelta(seq, members, inBlock, wantS, Math.sign(wantS))
+    return Math.abs(d) <= EPS ? 0 : d
+  }
+
+  const laneCostS = opts.laneCostS ?? Infinity
+  if (!(laneCostS < Infinity) || requested === 0) {
+    const laneShift = fitLaneShift(seq, found, lanes, laneOf, requested)
+    const members = membersAt(laneShift)
+    return { deltaS: deltaAt(members), laneShift, members }
+  }
+
+  // Every legal lane delta from the aimed one back to zero, each at its own nearest legal time,
+  // costed as he sees it: the time missed plus `laneCostS` for every lane short of the aim. The
+  // walk starts at the aimed lane, so an exact tie keeps the lane he points at, and it stops as
+  // soon as the lanes alone cost more than the best spot found. Zero always fits.
+  let minStart = Infinity
+  for (const m of found) minStart = Math.min(minStart, m.clip.startS)
+  const w = Math.max(-minStart, wantS)
+  let best: BlockMovePlan | null = null
+  let bestCost = Infinity
+  for (let s = requested; ; s -= Math.sign(requested)) {
+    const short = Math.abs(requested - s) * laneCostS
+    if (short > bestCost + EPS) break
+    if (laneShiftFits(seq, found, lanes, laneOf, s)) {
+      const members = membersAt(s)
+      const deltaS = deltaAt(members)
+      const cost = Math.abs(deltaS - w) + short
+      if (cost < bestCost - EPS) {
+        best = { deltaS, laneShift: s, members }
+        bestCost = cost
+      }
+    }
+    if (s === 0) break
+  }
+  return best!
 }
 
 /**
@@ -305,8 +368,17 @@ export function moveBlock(
   grabbedId: Id,
   targetTrackId: Id,
   tS: number,
+  opts: BlockMoveOptions = {},
 ): Sequence {
-  const plan = planBlockMove(seq, blockIds, grabbedId, targetTrackId, tS)
+  return applyBlockPlan(seq, planBlockMove(seq, blockIds, grabbedId, targetTrackId, tS, opts))
+}
+
+/**
+ * Set a planned block down: lifted out, moved by its one delta onto its lanes. Split from moveBlock
+ * so a pointermove that already holds the plan (timelineGestures.moveStep) does not work it out a
+ * second time; on a 150 clip block the plan is most of a move's cost.
+ */
+export function applyBlockPlan(seq: Sequence, plan: BlockMovePlan): Sequence {
   if (plan.members.length === 0 || (plan.deltaS === 0 && plan.laneShift === 0)) return seq
 
   const lifted = new Map<number, Set<Id>>()

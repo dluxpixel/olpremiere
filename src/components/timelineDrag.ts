@@ -19,7 +19,11 @@ export type Drag =
       clipId: Id
       grabOffsetS: number
       trackKind: 'video' | 'audio'
-      /** Pointer-down spot: release within CLICK_SLOP_PX = a click, not a drag. */
+      /**
+       * Pointer-down spot, where a click scrubs the playhead to. Whether it
+       * WAS a click is the Timeline's `gestureLive` latch: the hand never left
+       * CLICK_SLOP_PX of the press (2026-10-03).
+       */
       downClientX: number
       downClientY: number
       /**
