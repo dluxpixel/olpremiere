@@ -7,7 +7,7 @@
 // playhead all map time to pixels through these functions and nothing else, so
 // they can never disagree about where a moment is.
 
-import { quantizeToFrame } from '../engine/timecode'
+import { formatClock, quantizeToFrame } from '../engine/timecode'
 import type { AnimChannel } from '../engine/types'
 
 /** Zoom floor: below this a 20-second clip is a smear and nothing is grabbable. */
@@ -21,7 +21,7 @@ export const RAIL_ZOOM_STEP = 1.2
 
 /** Tick spacing floor: closer than this and the ticks read as a filled bar. */
 const MIN_TICK_PX = 6
-/** Timecode labels need this much room or they collide ("00:00:01:12" is wide). */
+/** Time labels need this much room or they collide ("0:01.50" and its neighbour). */
 const MIN_LABEL_PX = 64
 /** Hard cap so a wide view can never ask the DOM for thousands of ticks. */
 const MAX_RAIL_TICKS = 400
@@ -33,11 +33,12 @@ export interface RailView {
   startS: number
 }
 
-/** One drawn tick. `major` ones are taller and carry the timecode. */
+/** One drawn tick. `major` ones are taller and carry the time, in `label`. */
 export interface RailTick {
   t: number
   px: number
   major: boolean
+  label?: string
 }
 
 export const clampPxPerS = (v: number): number =>
@@ -86,9 +87,28 @@ export function panBy(view: RailView, dxPx: number, durS: number, viewW: number)
   return startS === view.startS ? view : { pxPerS: view.pxPerS, startS }
 }
 
-/** Ascending, no repeats: frame multiples first, then the human second steps. */
-function stepLadder(frameS: number): number[] {
-  const raw = [frameS, frameS * 2, frameS * 5, frameS * 10, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600]
+/** The times a person would pick to count by, the same ones the timeline ruler uses. */
+const ROUND_STEPS_S = [0.01, 0.02, 0.05, 0.1, 0.2, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600]
+
+/** `stepS` is a whole number of `unitS`, to within float noise. */
+const wholeMultiple = (stepS: number, unitS: number): boolean => {
+  const n = stepS / unitS
+  return n >= 1 - 1e-9 && Math.abs(n - Math.round(n)) < 1e-6
+}
+
+/**
+ * Ascending, no repeats: one and two frames, then every round time that is a
+ * whole number of frames.
+ *
+ * ⛔ THE IN-BETWEEN STEPS ARE ROUND SECONDS NOW, NOT 5 AND 10 FRAMES, 2026-10-03.
+ * The labels read like a stopwatch since he asked for it ("0:00.50"), and a
+ * tick every five frames at 30 fps sits at 0.17 s, 0.33 s, 0.50 s: a label on
+ * one of those reads as a typo. Keeping only the round steps that ARE whole
+ * frames means a tick still always sits on the grid every keyframe snaps to.
+ */
+function stepLadder(fpsInt: number): number[] {
+  const frameS = 1 / fpsInt
+  const raw = [frameS, frameS * 2, ...ROUND_STEPS_S.filter((s) => wholeMultiple(s, frameS))].sort((a, b) => a - b)
   const out: number[] = []
   for (const s of raw) if (out.length === 0 || s > out[out.length - 1] + 1e-9) out.push(s)
   return out
@@ -100,10 +120,20 @@ function stepLadder(frameS: number): number[] {
  * every keyframe snaps to; zoomed out it climbs to whole seconds and beyond.
  */
 export function tickStepS(pxPerS: number, fps: number): number {
-  const frameS = 1 / Math.max(1, Math.round(fps) || 30)
-  const ladder = stepLadder(frameS)
+  const ladder = stepLadder(Math.max(1, Math.round(fps) || 30))
   for (const s of ladder) if (s * pxPerS >= MIN_TICK_PX) return s
   return ladder[ladder.length - 1]
+}
+
+/**
+ * Seconds between labels: the finest round time that is a whole number of ticks
+ * and leaves the labels room. A label always rides a tick, so it names a line,
+ * and always reads as a round time. Past the last round step it falls back to
+ * every Nth tick.
+ */
+function labelStepS(step: number, pxPerS: number): number {
+  const round = ROUND_STEPS_S.find((s) => s * pxPerS >= MIN_LABEL_PX && wholeMultiple(s, step))
+  return round ?? step * Math.max(1, Math.ceil(MIN_LABEL_PX / (step * pxPerS)))
 }
 
 /**
@@ -115,15 +145,19 @@ export function railTicks(view: RailView, viewW: number, durS: number, fps: numb
   const out: RailTick[] = []
   if (!(view.pxPerS > 0) || !(viewW > 0) || !(durS > 0)) return out
   const step = tickStepS(view.pxPerS, fps)
-  // Label every Nth tick, N chosen so labels can never overlap: the label rides
-  // a tick rather than sitting on its own grid, so the number always names a line.
-  const labelEvery = Math.max(1, Math.ceil(MIN_LABEL_PX / (step * view.pxPerS)))
+  // Label every Nth tick, N chosen so labels can never overlap and always land
+  // on a round time: the label rides a tick rather than sitting on its own grid,
+  // so the number always names a line.
+  const labelS = labelStepS(step, view.pxPerS)
+  const labelEvery = Math.max(1, Math.round(labelS / step))
+  const decimals = labelS < 1 ? 2 : 0
   const endS = Math.min(durS, view.startS + viewW / view.pxPerS)
   const first = Math.max(0, Math.ceil(view.startS / step - 1e-9))
   for (let i = first; out.length < MAX_RAIL_TICKS; i++) {
     const t = i * step
     if (t > endS + 1e-9) break
-    out.push({ t, px: (t - view.startS) * view.pxPerS, major: i % labelEvery === 0 })
+    const major = i % labelEvery === 0
+    out.push({ t, px: (t - view.startS) * view.pxPerS, major, ...(major ? { label: formatClock(t, decimals) } : {}) })
   }
   return out
 }

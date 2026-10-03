@@ -24,7 +24,6 @@
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { ensureBeats, knownBeats } from '../engine/beatCache'
 import { MOMENT_EPS } from '../engine/keyframes'
-import { formatTimecode } from '../engine/timecode'
 import { clipDurationS, collectSnapPoints } from '../engine/timeline'
 import { activeSequence, type AnimChannel, type Clip } from '../engine/types'
 import type { KeyframePick } from '../state/clipEdits'
@@ -558,7 +557,7 @@ export function MotionRail({
             >
               {tick.major && (
                 <span className="absolute bottom-[9px] left-1 whitespace-nowrap font-numeric text-[9px] leading-none text-text-muted">
-                  {formatTimecode(tick.t, fps)}
+                  {tick.label}
                 </span>
               )}
             </div>

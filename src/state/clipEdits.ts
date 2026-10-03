@@ -29,10 +29,13 @@ import {
 } from '../engine/keyframes'
 import { CURVE_EASE, MOTION_CURVES } from '../engine/motion'
 import {
+  canSplitClipAt,
   clipDurationS,
   clipEndS,
   clipGroupIds,
   deleteScoped,
+  findClip as findClipIn,
+  framesShown,
   rippleDeleteMany,
   rippleTrimGroup,
   setClipSpeed as setClipSpeedT,
@@ -52,6 +55,7 @@ import {
   type Curve,
   type Id,
   type Keyframe,
+  type Sequence,
 } from '../engine/types'
 import { transitionDurationSpec, type TransitionKind } from '../engine/render/types'
 import { noteRecentEffect } from './recentEffects'
@@ -1408,14 +1412,18 @@ export function splitAtPlayhead(allTracks = false, kind?: 'video' | 'audio'): vo
   // otherwise land off-grid cuts that leave sliver fragments.
   const t = quantizeToFrame(s.ui.playheadS, seq.fps)
   const sel = allTracks ? [] : s.ui.selection
-  const targets = seq.tracks.flatMap((tr) =>
+  // Every clip that SHOWS the frame under the playhead, and of those the ones it
+  // could divide. A clip whose first frame this is shows it but cannot be cut
+  // there, and it is the one he is looking at when he presses C.
+  const showing = seq.tracks.flatMap((tr) =>
     tr.locked || (kind && tr.kind !== kind)
       ? []
-      : tr.clips
-          .filter((c) => (sel.length === 0 || sel.includes(c.id)) && t > c.startS && t < clipEndS(c))
-          .map((c) => c.id),
+      : tr.clips.filter(
+          (c) => (sel.length === 0 || sel.includes(c.id)) && t >= c.startS - 1e-9 && t < clipEndS(c),
+        ),
   )
-  if (targets.length === 0) {
+  const targets = showing.filter((c) => t > c.startS).map((c) => c.id)
+  if (showing.length === 0) {
     // The usual cause is a stale selection narrowing the cut to a clip the
     // playhead is nowhere near, which is invisible unless we say it.
     useToasts
@@ -1429,30 +1437,68 @@ export function splitAtPlayhead(allTracks = false, kind?: 'video' | 'audio'): vo
     return
   }
   const label = kind === 'audio' ? 'Split audio' : kind === 'video' ? 'Split video' : 'Split at playhead'
-  updateActiveSequence(label, (sq) => {
-    let next = sq
-    // De-dupe linked partners so a group isn't split twice.
-    const done = new Set<string>()
-    for (const id of targets) {
-      if (done.has(id)) continue
-      // Singled out: he selected this clip and left its linked partner alone.
-      const solo = sel.length > 0 && !clipGroupIds(next, id).every((g) => sel.includes(g))
-      if (kind || solo) {
-        done.add(id)
-        next = splitClipOnly(next, id, t)
-        continue
+  const before = useStore.getState().project
+  if (targets.length > 0) {
+    updateActiveSequence(label, (sq) => {
+      let next = sq
+      // De-dupe linked partners so a group isn't split twice.
+      const done = new Set<string>()
+      for (const id of targets) {
+        if (done.has(id)) continue
+        // Singled out: he selected this clip and left its linked partner alone.
+        const solo = sel.length > 0 && !clipGroupIds(next, id).every((g) => sel.includes(g))
+        if (kind || solo) {
+          done.add(id)
+          next = splitClipOnly(next, id, t)
+          continue
+        }
+        for (const gid of clipGroupIds(next, id)) done.add(gid)
+        next = splitGroup(next, id, t)
       }
-      for (const gid of clipGroupIds(next, id)) done.add(gid)
-      next = splitGroup(next, id, t)
-    }
-    return next
-  })
+      return next
+    })
+  }
+  // ⛔ A REFUSED CUT SAYS WHY, 2026-10-03. Every guard in splitGroup and
+  // splitClip hands the sequence back unchanged, and dispatch drops an unchanged
+  // edit, so C on the wrong frame did NOTHING: no cut, no undo entry, no word.
+  // His report, *"When I click C, it won't cut in this frame"*, was a playhead
+  // on the first frame of a clip that began between two frames, drawn half a
+  // frame inside it. The razor already said "Too close to the edge"; C now says
+  // why too.
+  if (useStore.getState().project === before) useToasts.getState().show(splitRefusal(seq, showing, t), 'info')
 }
+
+/**
+ * Why nothing split, in his words. Called only once the split has changed
+ * nothing, with every clip that shows the playhead's frame.
+ */
+function splitRefusal(seq: Sequence, showing: readonly Clip[], t: number): string {
+  // The playhead is on the frame the clip opens with: the cut is already there.
+  if (showing.every((c) => framesShown(c.startS, t, seq.fps || 30) === 0)) {
+    return 'That is the first frame of the clip, so there is nothing to cut there'
+  }
+  // The clip could be cut, but splitGroup is all or nothing and a linked half
+  // trimmed on its own cannot.
+  const partnerSaidNo = showing.some(
+    (c) =>
+      canSplitClipAt(c, seq.fps, t) &&
+      clipGroupIds(seq, c.id).some((g) => {
+        const m = findClipIn(seq, g)
+        return !!m && !canSplitClipAt(m.clip, seq.fps, t)
+      }),
+  )
+  if (partnerSaidNo) return 'Its linked audio or video ends right at the playhead, so the pair cannot be cut there'
+  return 'Too close to the edge of the clip to cut there'
+}
+
 export function topAndTail(edge: 'in' | 'out'): void {
   const s = useStore.getState()
-  const t = s.ui.playheadS
   const assets = s.project.assets
   const seq = activeSequence(s.project)
+  // On the frame grid, like C: after playback the playhead rests between two
+  // frames, and a head or tail trimmed to THAT left the clip edge, and every
+  // ripple after it, off the grid (2026-10-03, his "strong until" project).
+  const t = quantizeToFrame(s.ui.playheadS, seq.fps)
   const sel = new Set(s.ui.selection)
   const under = seq.tracks
     .filter((tr) => !tr.locked)

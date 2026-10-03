@@ -36,8 +36,8 @@ describe('curve editor helpers', () => {
   })
 
   it('reads the real numbers in the header', () => {
-    expect(segmentHeader('scale', 1, 1.2, 5)).toBe('Zoom 100 to 120 over 5f')
-    expect(segmentHeader('posX', 0, -12.5, 12)).toBe('Position X 0 to -12.5 over 12f')
+    expect(segmentHeader('scale', 1, 1.2, 5, 30)).toBe('Zoom 100 to 120 over 0.17s')
+    expect(segmentHeader('posX', 0, -12.5, 12, 30)).toBe('Position X 0 to -12.5 over 0.40s')
   })
 
   it('samples 64 velocity points, normalized, front-loaded for a snap', () => {

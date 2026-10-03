@@ -8,7 +8,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { useCollab } from '../collab/collabControl'
-import { formatTimecode, parseTimecode } from '../engine/timecode'
+import { formatTimecode, parseTimecode, quantizeToFrame } from '../engine/timecode'
 import { activeSequence } from '../engine/types'
 import { pausePlayback } from '../state/playbackControl'
 import { useStore } from '../state/store'
@@ -87,7 +87,7 @@ export function PlayheadTimecode({
   fps: number
   className?: string
   testId?: string
-  /** Click to type a timecode and jump the playhead there (Enter commits, Esc reverts). */
+  /** Click to type a time and jump the playhead there (Enter commits, Esc reverts). */
   editable?: boolean
 }) {
   const ref = useRef<HTMLSpanElement>(null)
@@ -117,8 +117,11 @@ export function PlayheadTimecode({
 
   if (editable && editing !== null) {
     const commit = () => {
-      const t = parseTimecode(editing, fps)
-      if (t !== null) {
+      const typed = parseTimecode(editing, fps)
+      if (typed !== null) {
+        // Onto a frame: "0:03.97" is 119.1 frames at 30 fps, and a playhead
+        // between frames is one C cannot cut at (see canSplitClipAt).
+        const t = quantizeToFrame(typed, fps)
         const seq = activeSequence(useStore.getState().project)
         useStore.getState().setUI({ playheadS: Math.max(0, Math.min(t, seq.durationS)) })
       }

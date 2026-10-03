@@ -20,6 +20,7 @@
 // a pause costs nothing, and the paused audio simply is not placed.
 
 import { canPlace, addTrack, freeTrackFor, recomputeDuration } from '../engine/timeline'
+import { quantizeToFrame } from '../engine/timecode'
 import { defaultTransform, newId, type Clip, type Id, type MediaAsset, type Sequence } from '../engine/types'
 
 /** One stretch of preview heard during the take. `endedAtMs` null: still going when the take stopped. */
@@ -146,6 +147,32 @@ export function voiceHomeTrackIndex(seq: Sequence): number {
 }
 
 /**
+ * ⛔ THE CLIP'S EDGES GO ON THE FRAME GRID, HIS VOICE DOES NOT MOVE, 2026-10-03.
+ *
+ * A take's stretches start wherever he was heard, which is almost never on a
+ * frame, so every voice clip used to have both edges between two frames: drawn
+ * half a frame from where it really starts, and C refused the frames either side
+ * of each one (his report that day, *"I can't cut"*, see canSplitClipAt). Each
+ * edge now moves to the nearest frame and the file moves WITH it (inS and outS
+ * shift by the same amount), so every sample still plays at the very moment it
+ * was placed for; only up to half a frame of file is gained or given up at each
+ * edge. Both sides of a pause join sit at one time, so they round to one frame
+ * and stay a clean join on one line. An edge that would ask the file for audio
+ * it does not have rounds inward instead.
+ */
+function spanOnFrames(span: TakeClipSpan, fps: number, fileDurationS: number): TakeClipSpan {
+  const rate = fps || 30
+  const endS = span.startS + (span.outS - span.inS)
+  let startS = quantizeToFrame(span.startS, rate)
+  if (span.inS + (startS - span.startS) < 0) startS = Math.ceil(span.startS * rate - 1e-6) / rate
+  let end = quantizeToFrame(endS, rate)
+  if (span.outS + (end - endS) > fileDurationS) end = Math.floor(endS * rate + 1e-6) / rate
+  // Shorter than a frame once on the grid: place it as measured.
+  if (end - startS < 1 / rate - 1e-9) return span
+  return { startS, inS: span.inS + (startS - span.startS), outS: span.outS + (end - endS) }
+}
+
+/**
  * Lay the take's clips down in ONE sequence change, so one undo takes them all
  * back off and leaves the take in the library. Each lands at exactly its time
  * on the home line, or the next free line when something is already there:
@@ -157,7 +184,9 @@ export function placeTakeClips(seq0: Sequence, asset: MediaAsset, spans: readonl
   if (voiceHomeTrackIndex(seq) === -1) seq = addTrack(seq, 'audio')
   const homeId = seq.tracks[voiceHomeTrackIndex(seq)]!.id
   const clipIds: Id[] = []
-  for (const span of spans) {
+  const fileS = asset.durationS > 0 ? asset.durationS : Infinity
+  for (const measured of spans) {
+    const span = spanOnFrames(measured, seq.fps, fileS)
     const durS = span.outS - span.inS
     const home = seq.tracks.findIndex((t) => t.id === homeId)
     const found = freeTrackFor(seq, 'audio', home, span.startS, durS)

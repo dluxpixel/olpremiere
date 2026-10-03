@@ -49,7 +49,7 @@ describe('TimelineRulerBar', () => {
     const area = screen.getByTestId('work-area')
     expect(area.style.left).toBe('20px')
     expect(area.style.width).toBe('40px')
-    expect(screen.getByTestId('work-area-in').title).toBe('In 00:00:02:00')
+    expect(screen.getByTestId('work-area-in').title).toBe('In 0:02.00')
     expect(screen.getByTestId('work-area-out').style.left).toBe('52px')
   })
 

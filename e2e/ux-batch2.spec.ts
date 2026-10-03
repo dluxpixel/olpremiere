@@ -88,9 +88,11 @@ test('typing an exact Start time in the Inspector moves the clip', async ({ page
   await page.locator('summary', { hasText: 'Details' }).click()
   await page.getByTestId('clip-start-timecode').click()
   const input = page.getByTestId('clip-start-timecode-input')
+  // The old HH:MM:SS:FF still types: his hands may know it. It reads back as
+  // the stopwatch every time field shows since 2026-10-03.
   await input.fill('00:00:02:00')
   await input.press('Enter')
-  await expect(page.getByTestId('clip-start-timecode')).toContainText('00:00:02:00')
+  await expect(page.getByTestId('clip-start-timecode')).toContainText('0:02.00')
   const startS = await page.evaluate(async () => {
     const storeMod = '/src/state/store.ts'
     const typesMod = '/src/engine/types.ts'
