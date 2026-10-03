@@ -11,9 +11,22 @@
 //    cached per asset; live preview and export read the SAME samples, so
 //    preview==export holds by construction and there is no worklet-load race.
 //  - Strength is a dry/wet crossfade done sample-wise here (not dual graph
-//    sources), so every mixer inherits it from the buffer itself. RNNoise's
-//    output frame aligns 1:1 with its input frame (past-context model), which
-//    keeps the crossfade phase-aligned rather than comb-filtering.
+//    sources), so every mixer inherits it from the buffer itself.
+//  - ⛔ THE MODEL IS 960 SAMPLES LATE, AND THAT IS COMPENSATED HERE. This comment
+//    used to say RNNoise's output frame "aligns 1:1 with its input frame". It
+//    does not: its analysis window spans two frames, so what comes out is 20 ms
+//    behind what went in. Measured on his own takes, 2026-09-29: best match at
+//    lag 959, r = 0.991, and r = 0.01 at lag 0. Uncompensated, every strength
+//    under 100% laid his voice over a copy of itself 20 ms late (notches every
+//    50 Hz, as deep as 14.5 dB) and 100% played the voice 20 ms behind the
+//    picture. denoiseChannel now feeds the model that many samples past the end
+//    and drops them from the front, so wet lines up with dry sample for sample.
+//  - RNNoise is a 48 kHz model. A take at any other rate (a lossless take keeps
+//    the mic's own rate, 44.1 kHz on plenty of devices) goes up to 48 kHz for the
+//    model and back down after, through engine/resample.ts, which adds no delay.
+//  - 100% is not digital silence. It gated his room tone to -118 dBFS between
+//    words, the room vanishing in every pause and returning under every word.
+//    The strongest setting now takes the room down 18 dB and no further.
 //
 // The wasm (@shiguredo/rnnoise-wasm, the binding under OBS-adjacent web
 // stacks) embeds its binary in the JS module: no asset plumbing, loads in any
@@ -21,6 +34,7 @@
 // anything once someone actually enables denoise.
 
 import { budgets } from './memoryBudget'
+import { resamplePlane } from './resample'
 import type { MediaAsset } from './types'
 
 /**
@@ -53,23 +67,48 @@ export function ensureRnnoise(): Promise<DenoiseEngine> {
   return enginePromise
 }
 
+/** The one rate the model was trained at. */
+export const RNNOISE_SAMPLE_RATE = 48_000
+
+/**
+ * How late RNNoise's output is against its input: two frames, 960 samples at
+ * 48 kHz. Measured on the real wasm (denoise.test.ts pins it): the best match of
+ * wet against dry sits at 959.7 samples on a voice, the fraction being the
+ * model's own low cut, which leads the low end by a hair.
+ */
+export const rnnoiseLatency = (engine: DenoiseEngine): number => 2 * engine.frameSize
+
 /**
  * Run RNNoise over one channel. Pure w.r.t. the input (returns a new array);
- * deterministic: same samples in → same samples out. The tail frame is
- * zero-padded through the net and truncated back, matching the worklet
- * behaviour for partial frames.
+ * deterministic: same samples in → same samples out.
+ *
+ * The output LINES UP with the input: the model is fed `latency` samples of
+ * silence past the end and the first `latency` samples it returns are dropped,
+ * so sample i out is sample i in, cleaned. A partial tail frame is zero padded
+ * through the net like any other. `latency` is the real model's by default; the
+ * unit tests' stand-in engines have none and pass 0.
  */
-export function denoiseChannel(engine: DenoiseEngine, data: Float32Array): Float32Array {
+export function denoiseChannel(
+  engine: DenoiseEngine,
+  data: Float32Array,
+  latency: number = rnnoiseLatency(engine),
+): Float32Array {
   const state = engine.createDenoiseState()
   try {
     const out = new Float32Array(data.length)
-    const frame = new Float32Array(engine.frameSize)
-    for (let i = 0; i < data.length; i += engine.frameSize) {
-      const n = Math.min(engine.frameSize, data.length - i)
-      if (n < engine.frameSize) frame.fill(0)
-      for (let k = 0; k < n; k++) frame[k] = data[i + k] * PCM_SCALE
+    const size = engine.frameSize
+    const frame = new Float32Array(size)
+    const total = data.length + latency
+    for (let i = 0; i < total; i += size) {
+      for (let k = 0; k < size; k++) {
+        const j = i + k
+        frame[k] = j < data.length ? data[j]! * PCM_SCALE : 0
+      }
       state.processFrame(frame)
-      for (let k = 0; k < n; k++) out[i + k] = frame[k] / PCM_SCALE
+      for (let k = 0; k < size; k++) {
+        const o = i + k - latency
+        if (o >= 0 && o < data.length) out[o] = frame[k]! / PCM_SCALE
+      }
     }
     return out
   } finally {
@@ -78,7 +117,19 @@ export function denoiseChannel(engine: DenoiseEngine, data: Float32Array): Float
 }
 
 /**
- * Dry/wet mix into a new array: out = raw·(1−strength) + wet·strength.
+ * One channel through the model at ANY rate. A 48 kHz channel goes straight in.
+ * Anything else goes up to 48 kHz, through the model, and back to its own rate
+ * and exact length, so the wet copy still lines up with the dry one.
+ */
+export function denoiseAtRate(engine: DenoiseEngine, data: Float32Array, sampleRate: number): Float32Array {
+  if (Math.round(sampleRate) === RNNOISE_SAMPLE_RATE) return denoiseChannel(engine, data)
+  const up = resamplePlane(data, sampleRate, RNNOISE_SAMPLE_RATE)
+  return resamplePlane(denoiseChannel(engine, up), RNNOISE_SAMPLE_RATE, sampleRate, data.length)
+}
+
+/**
+ * Dry/wet mix into a new array: out is raw times (one minus strength), plus
+ * wet times strength.
  * strength 0 returns samples numerically identical to raw; 1 returns wet.
  */
 export function mixDryWet(raw: Float32Array, wet: Float32Array, strength: number): Float32Array {
@@ -87,6 +138,24 @@ export function mixDryWet(raw: Float32Array, wet: Float32Array, strength: number
   const dry = 1 - s
   for (let i = 0; i < raw.length; i++) out[i] = raw[i]! * dry + (wet[i] ?? 0) * s
   return out
+}
+
+/** The most the strongest setting takes off his room: 18 dB, never to silence. */
+export const MAX_REDUCTION_DB = 18
+
+/**
+ * A clip's strength (0..1, the Inspector's %) as the share of wet in the mix.
+ *
+ * The strength is HOW MUCH OF THE ROOM COMES OFF, even in decibels: 50% takes
+ * 9 dB off, 100% takes 18 dB off. Where the model has removed the room, the mix
+ * is left holding one minus the share of the dry room, so a share of one minus
+ * ten to the power of (minus dB over 20) lands the floor exactly that far down. Where the model passes the voice, wet
+ * and dry are the same samples (lined up, see denoiseChannel), so the voice
+ * stays at unity whatever the strength.
+ */
+export function wetShareFor(strength: number): number {
+  const s = Math.min(1, Math.max(0, strength))
+  return 1 - Math.pow(10, (-MAX_REDUCTION_DB * s) / 20)
 }
 
 // ---------------------------------------------------------------------------
@@ -186,7 +255,7 @@ function ensureWetChannels(asset: MediaAsset, src: AudioBuffer): Promise<Float32
       .then((engine) => {
         const channels: Float32Array[] = []
         for (let ch = 0; ch < src.numberOfChannels; ch++) {
-          channels.push(denoiseChannel(engine, src.getChannelData(ch)))
+          channels.push(denoiseAtRate(engine, src.getChannelData(ch), src.sampleRate))
         }
         chargeDenoise(asset.id, channelsBytes(channels))
         evictDenoiseOverflow(asset.id)
@@ -227,7 +296,7 @@ export async function denoisedBufferFor(
     const had = mixCache.has(asset.id)
     mixed = {
       strength: s,
-      channels: wet.map((w, ch) => mixDryWet(src.getChannelData(ch), w, s)),
+      channels: wet.map((w, ch) => mixDryWet(src.getChannelData(ch), w, wetShareFor(s))),
     }
     mixCache.set(asset.id, mixed)
     if (!had) {

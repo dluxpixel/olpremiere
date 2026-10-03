@@ -5,6 +5,7 @@ import { applyAppearanceToClip, retimeAppearance } from './anim/appearance'
 import { clipEmitsAudio } from './audio'
 import { channelKeyframes, resolveChannel } from './effects/channels'
 import { evalChannel } from './keyframes'
+import { resolveFrame } from './render/resolve'
 import {
   defaultTitleDef,
   defaultTransform,
@@ -2608,6 +2609,154 @@ describe('a ripple carries the other tracks with it', () => {
     expect(startOf(r, 'v2b')).toBeCloseTo(5, 6)
   })
 
+  describe('⛔ a clip INSIDE the time a ripple removes holds its track too', () => {
+    // MEASURED 2026-10-01 on his own five projects: 239 of 471 ripple deletes,
+    // Qs and Ws slid a clip on top of another. Only a clip over the far edge of
+    // the cut used to hold a track back, so a caption or a voice take lying
+    // wholly inside the removed time stayed where it was while the clips behind
+    // it slid back over it. In mc night that was two voiceovers playing at once
+    // and one caption drawn over another. His captions and his voice are
+    // finished work: that track keeps its timing, and he is told which one.
+
+    /** Every pair of clips on one track that share time, as "track: a/b". */
+    const overlaps = (seq: Sequence): string[] =>
+      seq.tracks.flatMap((t) => {
+        const sorted = [...t.clips].sort((a, b) => a.startS - b.startS)
+        return sorted.slice(1).flatMap((c, i) => (c.startS < clipEndS(sorted[i]) - 1e-6 ? [`${t.name}: ${sorted[i].id}/${c.id}`] : []))
+      })
+
+    /**
+     * V1 is the cut he makes: 0 to 3, then 3 to 5. Captions holds a word wholly
+     * inside 0 to 3 and one after it; A2 holds a voice take inside and one after.
+     */
+    const project = (): Sequence =>
+      makeSeq([
+        makeTrack({
+          id: 'V1',
+          name: 'V1',
+          clips: [makeClip({ id: 'v1a', startS: 0, inS: 0, outS: 3 }), makeClip({ id: 'v1b', startS: 3, inS: 0, outS: 2 })],
+        }),
+        makeTrack({
+          id: 'CAP',
+          name: 'Captions',
+          clips: [makeClip({ id: 'word1', startS: 1, inS: 0, outS: 1 }), makeClip({ id: 'word2', startS: 3, inS: 0, outS: 1 })],
+        }),
+        makeTrack({
+          id: 'A2',
+          kind: 'audio',
+          name: 'A2',
+          clips: [makeClip({ id: 'voice1', startS: 0.5, inS: 0, outS: 2 }), makeClip({ id: 'voice2', startS: 3, inS: 0, outS: 1.5 })],
+        }),
+      ])
+
+    it('a ripple delete leaves no two clips in one place, and names the tracks that kept their timing', () => {
+      const report = { heldTrackIds: [] as Id[] }
+      const r = rippleDeleteMany(project(), ['v1a'], report)
+      expect(overlaps(r)).toEqual([])
+      // His cut happened on its own track.
+      expect(startOf(r, 'v1b')).toBeCloseTo(0, 6)
+      // The caption and the voice after the cut stay with the words and the
+      // take they belong to, instead of landing on them.
+      expect(startOf(r, 'word1')).toBeCloseTo(1, 6)
+      expect(startOf(r, 'word2')).toBeCloseTo(3, 6)
+      expect(startOf(r, 'voice1')).toBeCloseTo(0.5, 6)
+      expect(startOf(r, 'voice2')).toBeCloseTo(3, 6)
+      expect(report.heldTrackIds).toEqual(['CAP', 'A2'])
+    })
+
+    it('Q (trim the head to the playhead) keeps them apart too', () => {
+      const report = { heldTrackIds: [] as Id[] }
+      const r = rippleTrimGroup(project(), ASSETS, 'v1a', 'in', 2.5, report)
+      expect(overlaps(r)).toEqual([])
+      expect(startOf(r, 'v1b')).toBeCloseTo(0.5, 6)
+      expect(startOf(r, 'word2')).toBeCloseTo(3, 6)
+      expect(report.heldTrackIds).toEqual(['CAP', 'A2'])
+    })
+
+    it('W (trim the tail to the playhead) keeps them apart too', () => {
+      const report = { heldTrackIds: [] as Id[] }
+      const r = rippleTrimGroup(project(), ASSETS, 'v1a', 'out', 0.5, report)
+      expect(overlaps(r)).toEqual([])
+      expect(startOf(r, 'v1b')).toBeCloseTo(0.5, 6)
+      expect(startOf(r, 'voice2')).toBeCloseTo(3, 6)
+      expect(report.heldTrackIds).toEqual(['CAP', 'A2'])
+    })
+
+    it('a clip over the NEAR edge of the cut holds its track as well', () => {
+      // 2.5 to 3.5 on V2, the cut removes 1 to 3 on V1: the clip after it
+      // would slide back to 1 and land under its tail.
+      const seq = makeSeq([
+        makeTrack({
+          name: 'V1',
+          clips: [makeClip({ id: 'v1a', startS: 0, inS: 0, outS: 1 }), makeClip({ id: 'v1b', startS: 1, inS: 0, outS: 2 }), makeClip({ id: 'v1c', startS: 3, inS: 0, outS: 1 })],
+        }),
+        makeTrack({
+          name: 'V2',
+          clips: [makeClip({ id: 'v2a', startS: 0.5, inS: 0, outS: 1 }), makeClip({ id: 'v2b', startS: 3, inS: 0, outS: 1 })],
+        }),
+      ])
+      const r = rippleDeleteGroup(seq, 'v1b')
+      expect(overlaps(r)).toEqual([])
+      expect(startOf(r, 'v2b')).toBeCloseTo(3, 6)
+    })
+
+    it('a clip that only TOUCHES the cut is the ordinary case, and its track still follows', () => {
+      // Ends exactly where the removed time begins: nothing lands on it, so
+      // holding the track would put it out of sync for no reason.
+      const seq = makeSeq([
+        makeTrack({
+          name: 'V1',
+          clips: [makeClip({ id: 'v1a', startS: 0, inS: 0, outS: 1 }), makeClip({ id: 'v1b', startS: 1, inS: 0, outS: 2 }), makeClip({ id: 'v1c', startS: 3, inS: 0, outS: 1 })],
+        }),
+        makeTrack({
+          id: 'V2',
+          name: 'V2',
+          clips: [makeClip({ id: 'v2a', startS: 0, inS: 0, outS: 1 }), makeClip({ id: 'v2b', startS: 3, inS: 0, outS: 1 })],
+        }),
+      ])
+      const report = { heldTrackIds: [] as Id[] }
+      const r = rippleDeleteMany(seq, ['v1b'], report)
+      expect(startOf(r, 'v2b')).toBeCloseTo(1, 6)
+      expect(report.heldTrackIds).toEqual([])
+    })
+
+    it('a track with nothing after the cut is not named, because nothing was held back', () => {
+      const seq = makeSeq([
+        makeTrack({
+          name: 'V1',
+          clips: [makeClip({ id: 'v1a', startS: 0, inS: 0, outS: 3 }), makeClip({ id: 'v1b', startS: 3, inS: 0, outS: 2 })],
+        }),
+        makeTrack({ id: 'CAP', name: 'Captions', clips: [makeClip({ id: 'word1', startS: 1, inS: 0, outS: 1 })] }),
+      ])
+      const report = { heldTrackIds: [] as Id[] }
+      const r = rippleDeleteMany(seq, ['v1a'], report)
+      expect(startOf(r, 'word1')).toBeCloseTo(1, 6)
+      expect(report.heldTrackIds).toEqual([])
+    })
+
+    it('a caption running ACROSS the cut still holds its track, silently, as it always has', () => {
+      // 2.5 to 3.5 crosses the far edge of the removed 0 to 3. Held, but not
+      // named: most of his ripples look like this, and a toast on every one
+      // is a line he would learn to ignore.
+      const seq = makeSeq([
+        makeTrack({
+          name: 'V1',
+          clips: [makeClip({ id: 'v1a', startS: 0, inS: 0, outS: 3 }), makeClip({ id: 'v1b', startS: 3, inS: 0, outS: 2 })],
+        }),
+        makeTrack({
+          id: 'CAP',
+          name: 'Captions',
+          clips: [makeClip({ id: 'word1', startS: 2.5, inS: 0, outS: 1 }), makeClip({ id: 'word2', startS: 4, inS: 0, outS: 1 })],
+        }),
+      ])
+      const report = { heldTrackIds: [] as Id[] }
+      const r = rippleDeleteMany(seq, ['v1a'], report)
+      expect(startOf(r, 'word1')).toBeCloseTo(2.5, 6)
+      expect(startOf(r, 'word2')).toBeCloseTo(4, 6)
+      expect(report.heldTrackIds).toEqual([])
+    })
+  })
+
   it('⛔ a selection spanning two tracks removes that second ONCE, not once per clip', () => {
     // MEASURED 2026-08-13: a third track landed at 0 when the answer was 1.
     // Ripple deleting a selection runs one delete per clip, and the follow used
@@ -3687,4 +3836,135 @@ describe('trimGroup agrees the edge before cutting', () => {
     expect(clipEndS(findClip(next, v.id)!.clip)).toBe(5)
     expect(clipEndS(findClip(next, a.id)!.clip)).toBe(5)
   })
+})
+
+describe('a REVERSED clip cuts and trims on the frames he sees, exactly like a forward one', () => {
+  // MEASURED 2026-10-01 in his GYM, on a clip reversed with the Inspector
+  // button: C moved the picture on the left half by 3 seconds (90 frames), Q
+  // left 23 wrong frames and took away the end he kept, W changed the picture
+  // BEFORE the playhead by 30 frames. The same verbs on the forward clip: 0.
+  // A reversed clip shows `outS - local * |speed|`, and every verb did forward
+  // arithmetic on it. Each case below runs both ways and counts, frame by
+  // frame through the renderer's own resolve, the pictures that changed.
+
+  /** The source second the renderer shows at `t`, or null for nothing. */
+  const pictureAt = (seq: Sequence, t: number): number | null => {
+    const op = resolveFrame(seq, t).ops[0]
+    return op?.type === 'layer' ? op.layer.sourceTimeS : null
+  }
+
+  /**
+   * Frames in [from, to) whose picture in `after` is not what `before` showed
+   * `shiftS` later: 0 for a ripple that closed up by `shiftS`, or for an edit
+   * that left that stretch alone. Empty in both counts as the same picture.
+   * Sampled mid-frame at 30 fps.
+   */
+  const framesOff = (before: Sequence, after: Sequence, from: number, to: number, shiftS = 0): number => {
+    let off = 0
+    for (let k = Math.round(from * 30); k < Math.round(to * 30); k++) {
+      const t = (k + 0.5) / 30
+      const want = pictureAt(before, t + shiftS)
+      const got = pictureAt(after, t)
+      if (want === null && got === null) continue
+      if (want === null || got === null || Math.abs(want - got) > 1e-6) off++
+    }
+    return off
+  }
+
+  for (const [direction, speed] of [
+    ['forward', 1],
+    ['reversed', -1],
+  ] as const) {
+    describe(direction, () => {
+      /** The clip at 1 to 7 reading source 2 to 8, and a neighbour at 7 to 9. */
+      const seqOf = (): Sequence =>
+        makeSeq([
+          makeTrack({
+            clips: [
+              makeClip({ id: 'c', startS: 1, inS: 2, outS: 8, speed }),
+              makeClip({ id: 'after', startS: 7, inS: 3, outS: 5, speed }),
+            ],
+          }),
+        ])
+
+      it('C: both halves show exactly what the whole clip showed', () => {
+        const seq = seqOf()
+        const r = splitClip(seq, 'c', 4)
+        expect(r.tracks[0].clips).toHaveLength(3)
+        expect(framesOff(seq, r, 0, 9)).toBe(0)
+      })
+
+      it('Q: the part after the playhead plays on, frame for frame, three seconds earlier', () => {
+        const seq = seqOf()
+        const r = rippleTrimGroup(seq, ASSETS, 'c', 'in', 4)
+        expect(clipEndS(findClip(r, 'c')!.clip)).toBeCloseTo(4, 9)
+        expect(framesOff(seq, r, 1, 6, 3)).toBe(0)
+      })
+
+      it('W: everything before the playhead is untouched', () => {
+        const seq = seqOf()
+        const r = rippleTrimGroup(seq, ASSETS, 'c', 'out', 4)
+        expect(framesOff(seq, r, 0, 4)).toBe(0)
+        // And the neighbour came back by the three seconds W took.
+        expect(framesOff(seq, r, 4, 6, 3)).toBe(0)
+      })
+
+      it('trimming the head keeps every frame after it', () => {
+        const seq = seqOf()
+        const r = trimClipTo(seq, ASSETS, 'c', 'in', 3)
+        expect(findClip(r, 'c')!.clip.startS).toBe(3)
+        expect(framesOff(seq, r, 3, 9)).toBe(0)
+      })
+
+      it('trimming the tail keeps every frame before it', () => {
+        const seq = seqOf()
+        const r = trimClipTo(seq, ASSETS, 'c', 'out', 5)
+        expect(clipEndS(findClip(r, 'c')!.clip)).toBeCloseTo(5, 9)
+        expect(framesOff(seq, r, 0, 5)).toBe(0)
+        expect(framesOff(seq, r, 7, 9)).toBe(0)
+      })
+
+      it('growing the head shows the footage that comes just before it in play order', () => {
+        const seq = seqOf()
+        const r = trimClipTo(seq, ASSETS, 'c', 'in', 0.5)
+        expect(framesOff(seq, r, 1, 9)).toBe(0)
+        // Half a second earlier in play order: back for forward, on for reversed.
+        expect(pictureAt(r, 0.5 + 1 / 60)).toBeCloseTo(pictureAt(seq, 1 + 1 / 60)! - speed * 0.5, 6)
+      })
+
+      it('a ripple trim of the head keeps every frame after the new head', () => {
+        const seq = seqOf()
+        const r = rippleTrimTo(seq, ASSETS, 'c', 'in', 2)
+        expect(framesOff(seq, r, 1, 8, 1)).toBe(0)
+      })
+
+      it('rolling the cut keeps both sides of it', () => {
+        const seq = seqOf()
+        const r = rollEditTo(seq, ASSETS, 'c', 'after', 6)
+        expect(framesOff(seq, r, 0, 6)).toBe(0)
+        expect(framesOff(seq, r, 7, 9)).toBe(0)
+        // The frames the right clip took over continue its own footage.
+        expect(pictureAt(r, 6 + 1 / 60)).toBeCloseTo(pictureAt(seq, 7 + 1 / 60)! - speed * 1, 6)
+      })
+
+      it('a tail drag stops where the source runs out, in its own direction', () => {
+        // Source 2 to 8 of a 10 s file: forward has 2 s left after its tail
+        // (8 to 10), reversed has 2 s left after its tail too, but at the START
+        // of the file (2 down to 0).
+        const r = trimClipTo(makeSeq([makeTrack({ clips: [makeClip({ id: 'c', startS: 1, inS: 2, outS: 8, speed })] })]), ASSETS, 'c', 'out', 20)
+        const c = findClip(r, 'c')!.clip
+        expect(clipEndS(c)).toBeCloseTo(9, 9)
+        expect(speed < 0 ? c.inS : c.outS).toBeCloseTo(speed < 0 ? 0 : 10, 9)
+      })
+
+      it('a head drag stops where the source runs out, in its own direction', () => {
+        // Source 1 to 7: forward has 1 s before its head (0 to 1), reversed has
+        // 3 s (7 to 10), because its head is the END of the file.
+        const r = trimClipTo(makeSeq([makeTrack({ clips: [makeClip({ id: 'c', startS: 5, inS: 1, outS: 7, speed })] })]), ASSETS, 'c', 'in', 0)
+        const c = findClip(r, 'c')!.clip
+        expect(c.startS).toBeCloseTo(speed < 0 ? 2 : 4, 9)
+        expect(speed < 0 ? c.outS : c.inS).toBeCloseTo(speed < 0 ? 10 : 0, 9)
+      })
+    })
+  }
 })

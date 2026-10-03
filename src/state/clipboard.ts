@@ -2,6 +2,8 @@
 // on the current selection through the pure engine ops.
 
 import {
+  canPlace,
+  clipDurationS,
   clipEndS,
   clipGroupIds,
   deleteGroup,
@@ -12,13 +14,35 @@ import {
   unlockedClipIds,
   type ClipPayload,
 } from '../engine/timeline'
-import { activeSequence } from '../engine/types'
+import { activeSequence, type Id, type MediaAsset, type Project } from '../engine/types'
 import { useContextMenu } from './contextMenu'
 import { clipMarker } from './pasteRules'
 import { updateActiveSequence, useStore } from './store'
 import { useToasts } from './toasts'
 
 let clipboard: ClipPayload[] = []
+/**
+ * The media records the copied clips point at, taken WITH them.
+ *
+ * ⛔ A PASTE INTO ANOTHER PROJECT USED TO DROP EVERY VIDEO AND AUDIO CLIP
+ * WITHOUT A WORD. Measured 2026-10-01: a GYM clip and a title copied, mc night
+ * opened, Ctrl+V, and only the title arrived. The clip was refused because its
+ * media was not in that project, yet the bytes were right there: media keys are
+ * shared across projects and a key another project still uses is never deleted
+ * (persistence.ts deleteProject, blobSweep.ts). The record is all that was
+ * missing, so the copy carries it and the paste brings it along.
+ */
+let clipboardAssets: Record<Id, MediaAsset> = {}
+
+/** The records `payload` needs, read off the project it was copied from. */
+function assetsFor(project: Project, payload: readonly ClipPayload[]): Record<Id, MediaAsset> {
+  const out: Record<Id, MediaAsset> = {}
+  for (const p of payload) {
+    const a = project.assets[p.assetId]
+    if (a) out[p.assetId] = a
+  }
+  return out
+}
 /** What the last clip copy wrote to the SYSTEM clipboard. See pasteRules.clipMarker. */
 let systemMarker: string | null = null
 
@@ -74,6 +98,7 @@ export function copySelection(): boolean {
   const payload = serializeClips(seq, s.ui.selection)
   if (payload.length === 0) return false
   clipboard = payload
+  clipboardAssets = assetsFor(s.project, payload)
   markSystemClipboard(payload.length)
   useToasts.getState().show(`Copied ${payload.length} clip(s)`, 'info')
   return true
@@ -101,6 +126,7 @@ export function cutSelection(): void {
   const payload = serializeClips(seq, ids)
   if (payload.length === 0) return
   clipboard = payload
+  clipboardAssets = assetsFor(s.project, payload)
   markSystemClipboard(payload.length)
   updateActiveSequence('Cut clip(s)', (sq) => {
     let next = sq
@@ -130,26 +156,52 @@ export function pasteAt(trackIndex: number, atS: number): void {
 
 function pasteClipboard(atS: number, target?: { trackIndex: number }): void {
   const s = useStore.getState()
-  // Assets can be gone if the payload outlived them (future bin deletes).
+  if (clipboard.length === 0) {
+    useToasts.getState().show('Nothing to paste. Copy a clip first', 'danger')
+    return
+  }
+  // A clip whose media this project does not have brings the record it was
+  // copied with (see `clipboardAssets`). Only a clip whose record is nowhere,
+  // its media deleted before the copy, stays behind, and he is told how many.
   // pasteClips itself refuses locked destination tracks and reports how many it
   // turned away, so no lock guard here.
   // Title and adjustment clips carry no asset (assetId===''), keep them regardless.
-  const payload = clipboard.filter(
-    (p) => p.clip.title !== undefined || p.clip.adjustment === true || s.project.assets[p.assetId],
-  )
+  const brought: Record<Id, MediaAsset> = {}
+  const payload = clipboard.filter((p) => {
+    if (p.clip.title !== undefined || p.clip.adjustment === true || s.project.assets[p.assetId]) return true
+    const record = clipboardAssets[p.assetId]
+    if (record) brought[p.assetId] = record
+    return !!record
+  })
+  const stranded = clipboard.length - payload.length
+  const sayStranded = (): void =>
+    useToasts
+      .getState()
+      .show(
+        stranded === 1
+          ? '1 clip needs media that is not on this computer, so it was left out'
+          : `${stranded} clips need media that is not on this computer, so they were left out`,
+        'danger',
+      )
   if (payload.length === 0) {
-    useToasts.getState().show('Nothing to paste. Copy a clip first', 'danger')
+    sayStranded()
     return
   }
   let pastedIds: string[] = []
   let blocked = 0
-  updateActiveSequence('Paste clip(s)', (sq) => {
-    const r = pasteClips(sq, payload, atS, target)
+  // ONE undo step for the clips and the records they brought, so undoing the
+  // paste takes both back out together.
+  useStore.getState().dispatch('Paste clip(s)', (p) => {
+    const seq = activeSequence(p)
+    const r = pasteClips(seq, payload, atS, target)
     pastedIds = r.newIds
     blocked = r.blockedByLock
-    return r.seq
+    if (r.seq === seq) return p
+    const assets = Object.keys(brought).length > 0 ? { ...brought, ...p.assets } : p.assets
+    return { ...p, assets, sequences: { ...p.sequences, [seq.id]: r.seq } }
   })
   if (pastedIds.length > 0) s.setUI({ selection: pastedIds })
+  if (stranded > 0) sayStranded()
   // A locked track refusing the paste is a decision he made, but a paste that
   // quietly does nothing reads as a broken keyboard shortcut.
   if (blocked > 0) {
@@ -262,6 +314,15 @@ export function moveSelectionToAdjacentTrack(dir: -1 | 1): void {
     const t = visual[i]
     if (t.kind !== kind) break
     if (t.locked) continue
+    // ⛔ AT ITS OWN TIME OR NOT AT ALL. moveGroup hunts for the nearest gap that
+    // fits, which is right for a drag and wrong here: on his GYM, Alt+Down sent a
+    // title 13.5 s along to the end of the edit and another 16.2 s, with nothing
+    // on screen to say so (measured 2026-10-01). This key promises a different
+    // line, never a different moment, so a busy line keeps the clip where it is.
+    if (!canPlace(t, clip.startS, clipDurationS(clip), id)) {
+      useToasts.getState().show(`${t.name} is busy at this time, so the clip stayed where it is`, 'info')
+      return
+    }
     updateActiveSequence(dir < 0 ? 'Move clip up' : 'Move clip down', (sq) =>
       moveGroup(sq, id, t.id, clip.startS),
     )

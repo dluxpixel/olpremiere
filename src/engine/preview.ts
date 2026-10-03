@@ -24,7 +24,7 @@ import { createRenderer, type LayerShape, type Renderer } from './render/glRende
 import { pairTransitionAt, resolveFrame } from './render/resolve'
 import { rasterizeTitle } from './render/titleRaster'
 import { hasEmoji } from './render/emojiFont'
-import { ensureEmojiFont } from './render/titleFonts'
+import { ensureEmojiFont, ensureTitleFace } from './render/titleFonts'
 import { coverScale, croppedSize, fitScale } from './render/mat'
 import type { RenderLayer, ResolvedTransform, TextureSource } from './render/types'
 import { clipDurationS } from './timeline'
@@ -824,6 +824,9 @@ function makeTextureSource(
     if (layer.title) {
       // His Apple emoji: loaded the first time one is on screen, then redrawn.
       if (hasEmoji(layer.title.text)) ensureEmojiFont(document.fonts, invalidatePreview)
+      // And its own face, the first time it is on screen, so the monitor draws
+      // the type the export will (titleFonts.ts ensureTitleFace).
+      ensureTitleFace(document.fonts, layer.title.fontFamily, invalidatePreview)
       const scale = titleRasterScale(frameH)
       return scale === 1
         ? rasterizeTitle(layer.title, frameW, frameH)

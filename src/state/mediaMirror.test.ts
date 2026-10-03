@@ -16,7 +16,9 @@ vi.mock('./persistence', () => ({
   },
 }))
 
-const { backfillMirror, healProjectMedia, mirrorAsset, mirrorApi, readMirrored } = await import('./mediaMirror')
+const { backfillMirror, healProjectMedia, isHealing, mirrorAsset, mirrorApi, readMirrored, useMediaHeal } = await import(
+  './mediaMirror'
+)
 
 /** The disk, as the desktop shell would present it. */
 let disk = new Map<string, Uint8Array>()
@@ -238,5 +240,38 @@ describe('the footage he already had', () => {
     const done = await backfillMirror(project({ a: asset('a', 'clip.mp4') }))
     expect(done).toBe(0)
     expect(calls.begins).toEqual([])
+  })
+})
+
+describe('the put-back says what it is doing, and runs once however many ask', () => {
+  // MEASURED 2026-10-01 on a fresh profile, the state after a wipe: mc night
+  // took 21.5 s to come back, in silence, and Export pressed 10 s in failed
+  // with "re-import it" while the bytes were on their way back.
+  const withId = (id: string, assets: Record<string, unknown>): Project => ({ id, assets }) as unknown as Project
+
+  it('shows which file it is on while it moves them, and nothing once it is done', async () => {
+    fakeShell()
+    disk.set('a', new Uint8Array(30))
+    disk.set('b', new Uint8Array(10))
+    const seen: (string | null)[] = []
+    const off = useMediaHeal.subscribe((s) => seen.push(s.progress ? `${s.progress.done + 1}/${s.progress.total} ${s.progress.name}` : null))
+    await healProjectMedia(withId('mc', { a: asset('a', 'clip.mp4'), b: asset('b', 'voice.webm') }))
+    off()
+    expect(seen).toEqual(['1/2 clip.mp4', '2/2 voice.webm', null])
+  })
+
+  it('a second caller (the export) joins the run already going instead of reading it all again', async () => {
+    fakeShell()
+    disk.set('a', new Uint8Array(30))
+    const p = withId('mc', { a: asset('a', 'clip.mp4') })
+    const first = healProjectMedia(p)
+    expect(isHealing('mc')).toBe(true)
+    const second = healProjectMedia(p)
+    expect(second).toBe(first)
+    expect((await second).healed).toEqual(['clip.mp4'])
+    expect(calls.lists).toBe(1)
+    expect(isHealing('mc')).toBe(false)
+    // And when it is done the bytes are in the store for the export to read.
+    expect(blobs.get('asset/a')?.size).toBe(30)
   })
 })

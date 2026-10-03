@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
-import { snapTime, splitGroup } from '../engine/timeline'
+import { clipEndS, snapTime, splitGroup } from '../engine/timeline'
 import { dragBlockIds } from '../engine/blockMove'
 import { createSnapPointCache } from '../engine/snapPointCache'
 import { quantizeToFrame } from '../engine/timecode'
@@ -336,18 +336,21 @@ export function Timeline({ height }: { height: number }) {
     setUI({ selection: [clip.id] })
     dragFinal.current = null
     dragMoved.current = false
+    // Where the pointer sits relative to the edge it grabbed, kept for the whole
+    // drag, the way a move keeps its own (see the Drag type).
+    const grabOffsetS = contentPoint(e).x / pxPerS - (edge === 'in' ? clip.startS : clipEndS(clip))
     // Edge modifiers: Ctrl = ripple trim, Alt = rate stretch, Ctrl+Alt = roll.
     // Roll is checked FIRST - a Ctrl+Alt press satisfies both single checks.
     if ((e.ctrlKey || e.metaKey) && e.altKey) {
       const pair = rollPair(track, clip.id, edge)
       if (pair) {
-        beginDrag(e, { kind: 'roll', ...pair })
+        beginDrag(e, { kind: 'roll', ...pair, grabOffsetS })
         return
       }
       // No neighbour to roll against - fall through to a plain trim.
     }
     if (e.altKey && !(e.ctrlKey || e.metaKey)) {
-      beginDrag(e, { kind: 'stretch', clipId: clip.id, edge })
+      beginDrag(e, { kind: 'stretch', clipId: clip.id, edge, grabOffsetS })
       return
     }
     // `!e.altKey` keeps the no-neighbour Ctrl+Alt fallthrough a PLAIN trim, as
@@ -358,6 +361,7 @@ export function Timeline({ height }: { height: number }) {
       edge,
       ripple: (e.ctrlKey || e.metaKey) && !e.altKey,
       solo,
+      grabOffsetS,
     })
   }
 
@@ -547,7 +551,10 @@ export function Timeline({ height }: { height: number }) {
         dragFinal.current = { trackId: '', tS: t }
         step = slideStep(seq, assets, drag, t)
       } else {
-        const tRaw = frameAtOffset(x, pxPerS, seq.fps)
+        // The edge moves BY the drag, rounded to the nearest frame: a half
+        // second of pointer is a half second of trim, wherever on the handle
+        // he took hold of it.
+        const tRaw = frameAtOffset(x - (drag.grabOffsetS ?? 0) * pxPerS, pxPerS, seq.fps)
         const t = snapWithIndicator(tRaw, drag.kind === 'roll' ? [drag.leftId, drag.rightId] : drag.clipId)
         dragFinal.current = { trackId: '', tS: t }
         step =

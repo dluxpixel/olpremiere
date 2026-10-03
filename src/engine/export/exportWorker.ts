@@ -421,7 +421,9 @@ async function runNative(init: Extract<ExportRequest, { type: 'init' }>): Promis
     if (!gl) throw new Error('WebGL2 is unavailable in this worker, cannot export')
     // Mipmapped minification at HD and above, matching the preview. Below HD it
     // stays off so the golden 640x360 export keeps its exact legacy bytes.
-    const renderer = createRenderer(gl, { mipmapSources: isHdRaster(W, H) })
+    // highPrecision: composite in 16 bit so the anti-banding dither reaches the
+    // file (glRenderer.ts, RendererOptions.highPrecision), on the same HD gate.
+    const renderer = createRenderer(gl, { mipmapSources: isHdRaster(W, H), highPrecision: isHdRaster(W, H) })
     cleanups.push(() => renderer.dispose())
 
     const gatherTextures = async (layers: RenderLayer[]): Promise<Map<RenderLayer, TexImageSource>> => {
@@ -927,8 +929,9 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
     const gl = canvas.getContext('webgl2', { premultipliedAlpha: false, preserveDrawingBuffer: true })
     if (!gl) throw new Error('WebGL2 is unavailable in this browser’s worker, cannot export')
     // See the note on the other renderer above: HD and up gets the mipmapped
-    // minification the preview already had, sub-HD holds the golden bytes.
-    const renderer = createRenderer(gl, { mipmapSources: isHdRaster(settings.width, settings.height) })
+    // minification the preview already had and the 16 bit composite, sub-HD
+    // holds the golden bytes.
+    const renderer = createRenderer(gl, { mipmapSources: isHd, highPrecision: isHd })
     cleanups.push(() => renderer.dispose())
 
     /** Decode every layer's texture for one frame (async), keyed by layer ref. */

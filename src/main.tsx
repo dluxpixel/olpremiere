@@ -10,7 +10,7 @@ import { warmAudio } from './engine/audio'
 import { watchSystemMemory } from './engine/memoryBudget'
 import { warmTranscriber } from './engine/captions/transcribe'
 import { warmMusicModel } from './engine/captions/musicAnalysis'
-import { loadTitleFonts } from './engine/render/titleFonts'
+import { loadTitleFonts, titleFontStacksIn } from './engine/render/titleFonts'
 
 // ⛔ FIRST, AND BEFORE ANYTHING DECODES. Every cache in the app sizes itself
 // against what the machine has spare, and until this answers they run on
@@ -103,6 +103,16 @@ const work: BootWork = {
   },
   project: async () => {
     await initPersistence()
+    // Every title face the open project uses, not only the core five, before
+    // its first title is on screen, and again whenever another project opens.
+    // The preview also loads a face the moment it draws it (ensureTitleFace);
+    // this is what makes the very first frame of a title right too.
+    const loadProjectFonts = (): void => {
+      const stacks = titleFontStacksIn(activeSequence(useStore.getState().project))
+      void loadTitleFonts(document.fonts, stacks).then(invalidatePreview)
+    }
+    loadProjectFonts()
+    useStore.subscribe((s) => s.project.id, loadProjectFonts)
     // A shared room link (#room=...) auto-joins only AFTER the local project
     // hydrates, because joining against the boot placeholder captures the wrong
     // preJoinProjectId and can seed/leak the wrong document into the room. It

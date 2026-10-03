@@ -3,11 +3,11 @@
 
 import { scheduleAudio } from '../engine/audio'
 import { diagnoseSilence, type SilenceFix } from '../engine/audioSilence'
-import { Transport } from '../engine/playback'
+import { Transport, type HeardSpan } from '../engine/playback'
 import { pauseAllPreviewVideos, setPreviewTransportRate } from '../engine/preview'
 import { activeSequence } from '../engine/types'
 import { workArea } from '../engine/workArea'
-import { isTakeInProgress, pauseRecording, resumeRecording } from './voiceRecorder'
+import { isTakeInProgress, pauseRecording, resumeRecording, takeHeard } from './voiceRecorder'
 import { useToasts } from './toasts'
 import { updateActiveSequence, useStore } from './store'
 
@@ -65,9 +65,10 @@ const transport = new Transport({
     useStore.getState().setUI({ playing })
     if (!playing) pauseAllPreviewVideos()
     // Dubbing: a take in progress follows the transport. Pausing the preview
-    // (Space, K, the transport button, or hitting the end) pauses the recorder;
-    // resuming resumes it, so a to-picture voiceover stays in sync and the
-    // paused span is dropped from the take. No-op when nothing is recording.
+    // (Space, K, the transport button, or hitting the end) holds the take;
+    // resuming resumes it. The mic itself never stops (voiceRecorder,
+    // pauseRecording): what keeps the voiceover in sync is onHeard below, and
+    // the paused span is simply not placed. No-op when nothing is recording.
     if (isTakeInProgress()) {
       if (playing) resumeRecording()
       else pauseRecording()
@@ -82,6 +83,9 @@ const transport = new Transport({
       for (const cb of rateSubs) cb(next)
     }
   },
+  // Every stretch of the timeline he hears, so a take recorded against it lands
+  // where he performed it (MIC-4, MIC-5). The recorder ignores it between takes.
+  onHeard: (span, endedAtMs, why) => takeHeard(span, endedAtMs, why),
   schedule: (fromS) => {
     // A scrub grain still ringing would sound over the top of the transport, so
     // the two are never alive at once. Cheap and idempotent.
@@ -156,6 +160,9 @@ export function shuttle(dir: -1 | 1): void {
 }
 
 export const isPlaying = (): boolean => transport.playing
+
+/** The stretch of the timeline he is hearing right now, for a take started mid-play. */
+export const currentHeardSpan = (): HeardSpan | null => transport.heardSpan
 
 /**
  * Keep the SOUND honest while the mix is edited mid-playback.

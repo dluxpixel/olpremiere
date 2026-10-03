@@ -365,8 +365,10 @@ export interface Clip {
    * Noise-reduction strength 0..1 (RNNoise dry/wet). Absent = off. NON-
    * destructive: the recording stays raw; this only changes which samples the
    * mixers read (engine/audio.ts clipAudioBuffer), so it can be A/B'd and
-   * undone freely. 1 = the full RNNoise output (OBS's suppressor config);
-   * fractions crossfade toward the raw take. Deliberately NOT keyframeable.
+   * undone freely. How much of the room comes off, even in dB: 1 takes it down
+   * 18 dB (the cap, so the room never drops to dead silence between words),
+   * 0.5 takes 9 dB. The voice stays at unity at every strength.
+   * Deliberately NOT keyframeable.
    */
   denoise?: number
 }

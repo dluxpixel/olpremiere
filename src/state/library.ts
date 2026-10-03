@@ -49,6 +49,18 @@ import {
   type LibraryCategory,
   type LibraryView,
 } from './libraryCategories'
+import {
+  cameBackMessage,
+  isEmptyLibrary,
+  libMirrorId,
+  libraryHomeApi,
+  libThumbMirrorId,
+  parseLibrarySnapshot,
+  restoreLibrary,
+  snapshotOf,
+  type LibraryRestored,
+} from './libraryHome'
+import { mirrorApi, mirrorAsset, mirroredIds, readMirrored } from './mediaMirror'
 import { askForName } from './namePrompt'
 import { db, getBlob, putBlob } from './persistence'
 import { useStore } from './store'
@@ -100,13 +112,26 @@ const byNewest = <T extends { addedAt?: number; createdAt?: number }>(a: T, b: T
 /** Load once at boot. Safe to call again (idempotent refresh). */
 export async function loadLibrary(): Promise<void> {
   const d = await db()
-  const [items, presets, meta] = await Promise.all([
+  let [items, presets, meta] = await Promise.all([
     d.getAll('library'),
     d.getAll('presets'),
     // A category record that cannot be read must never cost him the Library
     // itself: the items still load, and they read as Unsorted.
     Promise.resolve(d.get('meta', CATEGORY_META_KEY)).catch(() => undefined),
   ])
+  // ⛔ A STORE THAT CAME UP WITH NO LIBRARY AT ALL ASKS ITS FILE FIRST. That is
+  // what a wipe looks like from here, and the file beside his projects is the
+  // copy a wipe cannot touch (libraryHome.ts).
+  let cameBack: string | null = null
+  if (items.length === 0 && presets.length === 0 && meta === undefined) {
+    const back = await putLibraryBackFromHome()
+    if (back) {
+      items = back.items
+      presets = back.presets
+      meta = back.meta
+      cameBack = cameBackMessage(back)
+    }
+  }
   const { categories, lastUsedId } = parseCategoryMeta(meta)
   useLibrary.setState((s) => ({
     items: (items as LibraryItem[]).map(migrateLibraryItem).sort(byNewest),
@@ -116,6 +141,102 @@ export async function loadLibrary(): Promise<void> {
     view: liveView(s.view, categories),
     loaded: true,
   }))
+  if (cameBack) useToasts.getState().show(cameBack, 'success', undefined, { durationMs: 10_000 })
+  keepLibraryHome()
+}
+
+// ---------------------------------------------------------------------------
+// The second home (libraryHome.ts): the file beside his projects and the spare
+// copies of the bytes, kept current, and read back after a wipe.
+
+/** Set when a put-back failed half way: the file is then the only good copy. */
+let homeBlocked = false
+let homeKept = false
+let homeTimer: ReturnType<typeof setTimeout> | undefined
+
+/** Put the Library back from its file, or null when there is nothing to put back. */
+async function putLibraryBackFromHome(): Promise<LibraryRestored | null> {
+  const api = libraryHomeApi()
+  if (!api) return null
+  const snap = parseLibrarySnapshot(await api.libraryRead().catch(() => null))
+  if (!snap || isEmptyLibrary(snap)) return null
+  try {
+    return await restoreLibrary(snap, {
+      listMirror: async () => {
+        const listing = await mirrorApi()?.mediaList().catch(() => null)
+        return new Map((listing?.files ?? []).map((f) => [f.id, f.size]))
+      },
+      readMirror: readMirrored,
+      putBlob,
+      putRecords: async (items, presets, meta) => {
+        const d = await db()
+        const tx = d.transaction(['library', 'presets', 'meta'], 'readwrite')
+        for (const item of items) void tx.objectStore('library').put(item, item.id)
+        for (const preset of presets) void tx.objectStore('presets').put(preset, preset.id)
+        void tx.objectStore('meta').put(meta, CATEGORY_META_KEY)
+        await tx.done
+      },
+    })
+  } catch (err) {
+    // Never write over the file this session: it is the copy that still has it all.
+    homeBlocked = true
+    console.error('OL Premiere: the Library could not be put back from its file', err)
+    return null
+  }
+}
+
+/** Copy out the bytes of anything saved before the second home existed. */
+async function backfillLibraryBytes(items: readonly LibraryItem[]): Promise<void> {
+  const onDisk = await mirroredIds()
+  for (const item of items) {
+    const pairs: [string, string | undefined][] = [
+      [libMirrorId(item.id), item.blobKey],
+      [libThumbMirrorId(item.id), item.thumbnailKey],
+    ]
+    for (const [name, key] of pairs) {
+      if (!key || onDisk.has(name)) continue
+      const blob = await getBlob(key).catch(() => null)
+      if (blob && blob.size > 0) await mirrorAsset(name, blob)
+    }
+  }
+}
+
+/**
+ * Keep the file current: written on every change to the items, the presets or
+ * the categories, a moment after the last one. Installed once.
+ *
+ * ⛔ AN EMPTY LIBRARY NEVER WRITES AT BOOT. A store that came up empty and could
+ * not be put back must not overwrite the one file that still holds it all; it
+ * writes only once he changes something himself.
+ */
+function keepLibraryHome(): void {
+  const api = libraryHomeApi()
+  if (!api || homeKept) return
+  homeKept = true
+  const write = (): void => {
+    if (homeBlocked) return
+    const s = useLibrary.getState()
+    const snap = snapshotOf(s.items, s.presets, { categories: s.categories, lastUsedId: s.lastCategoryId }, Date.now())
+    void api.libraryWrite(JSON.stringify(snap)).catch((err: unknown) => {
+      console.warn('OL Premiere: the Library file could not be written', err)
+    })
+  }
+  const now = useLibrary.getState()
+  if (!isEmptyLibrary(now)) {
+    write()
+    void backfillLibraryBytes(now.items).catch(() => undefined)
+  }
+  useLibrary.subscribe((next, prev) => {
+    if (!next.loaded) return
+    const same =
+      next.items === prev.items &&
+      next.presets === prev.presets &&
+      next.categories === prev.categories &&
+      next.lastCategoryId === prev.lastCategoryId
+    if (same) return
+    clearTimeout(homeTimer)
+    homeTimer = setTimeout(write, 300)
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -409,11 +530,15 @@ export async function saveAssetToLibrary(assetId: Id, categoryId?: Id): Promise<
     target,
   )
   await putBlob(item.blobKey, blob)
+  // And a spare copy outside the store, the Library's second home. Never waited
+  // on and never fatal, the same terms as an import's own mirror.
+  void mirrorAsset(libMirrorId(id), blob)
   if (asset.thumbnailKey) {
     const thumb = await getBlob(asset.thumbnailKey)
     if (thumb) {
       item.thumbnailKey = `lib-thumb/${id}`
       await putBlob(item.thumbnailKey, thumb)
+      void mirrorAsset(libThumbMirrorId(id), thumb)
     }
   }
   const d = await db()

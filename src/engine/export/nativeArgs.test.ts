@@ -10,6 +10,7 @@ import {
   audioEncoderArgs,
   buildArgs,
   videoEncoderArgs,
+  x264LevelArgs,
   keyframeArgs,
   keyframeStride as nativeStride,
   containerExt,
@@ -77,11 +78,12 @@ describe('native export arguments', () => {
     expect(VIDEO_FILTER).not.toContain('out_chroma_loc=topleft')
   })
 
-  it('keeps the existing resampler and only asks it to round honestly', () => {
-    // bicubic restates the current default (measured byte-identical to omitting
-    // flags), so naming it here cannot move the resampler. accurate_rnd is the
-    // only behaviour change, and the encoder is veryslow so it costs nothing.
-    expect(VIDEO_FILTER).toContain('flags=bicubic+accurate_rnd')
+  it('reads every pixel colour and halves it with lanczos, rounding honestly', () => {
+    // The resampler only ever touches chroma here. Measured 2026-10-01 on the
+    // app's exact frames of his footage and on four of his caption styles: more
+    // chroma kept (U/V +0.35/+0.39 dB) and LESS halo around his captions than
+    // the bicubic it replaces, never more. accurate_rnd stays, as before.
+    expect(VIDEO_FILTER).toContain('flags=lanczos+accurate_rnd+full_chroma_inp')
   })
 
   it('stays 4:2:0, because 4:2:2 trades phone playback for a gain uploads discard', () => {
@@ -187,8 +189,8 @@ describe('native export arguments', () => {
       '-i', 'C:/tmp/a.wav',
       '-vf',
       'vflip,scale=in_range=full:out_range=tv:out_color_matrix=bt709' +
-        ':out_primaries=bt709:out_transfer=bt709:out_chroma_loc=left:flags=bicubic+accurate_rnd',
-      '-c:v', 'libx264', '-preset', 'veryslow', '-crf', '14', '-pix_fmt', 'yuv420p',
+        ':out_primaries=bt709:out_transfer=bt709:out_chroma_loc=left:flags=lanczos+accurate_rnd+full_chroma_inp',
+      '-c:v', 'libx264', '-preset', 'veryslow', '-crf', '14', '-level:v', '4.2', '-pix_fmt', 'yuv420p',
       '-g', '60',
       '-map', '0:v:0',
       '-map', '1:a:0', '-c:a', 'aac', '-b:a', '384k', '-ar', '48000', '-ac', '2',
@@ -197,6 +199,34 @@ describe('native export arguments', () => {
       '-progress', 'pipe:1', '-nostats',
       'C:/out/movie.mp4',
     ])
+  })
+
+  it('pins H.264 level 4.2 for the 1080p rasters he exports, up to 60 fps', () => {
+    // Left alone, veryslow's 16 reference frames made every export of his a
+    // level 5.1 file (measured 2026-09-30). 4.2 makes x264 fit the references
+    // to the level instead, at no measurable cost to the picture.
+    for (const [w, h, fps] of [[1920, 1080, 60], [1080, 1920, 60], [1080, 1920, 30], [1280, 720, 60], [640, 360, 30]]) {
+      expect(videoEncoderArgs(cfg({ width: w, height: h, fps })), `${w}x${h}@${fps}`).toEqual([
+        '-c:v', 'libx264', '-preset', 'veryslow', '-crf', '14', '-level:v', '4.2', '-pix_fmt', 'yuv420p',
+      ])
+    }
+  })
+
+  it('leaves the level to x264 wherever 4.2 cannot hold the frame or the rate', () => {
+    // 4.2 tops out at 8704 macroblocks a frame and 522240 a second. A 1440p or
+    // 4K timeline, or 1080p at 120 fps, needs a higher level, and only x264
+    // knows which one its own settings need.
+    expect(x264LevelArgs(2560, 1440, 30)).toEqual([])
+    expect(x264LevelArgs(1440, 2560, 60)).toEqual([])
+    expect(x264LevelArgs(3840, 2160, 30)).toEqual([])
+    expect(x264LevelArgs(1920, 1080, 120)).toEqual([])
+    expect(x264LevelArgs(1080, 1920, 72)).toEqual([])
+    // The edge itself: 8160 macroblocks at 64 fps is exactly 522240, still 4.2.
+    expect(x264LevelArgs(1080, 1920, 64)).toEqual(['-level:v', '4.2'])
+  })
+
+  it('never pins a level on lossless, whose bitrate no 4.x level allows', () => {
+    expect(videoEncoderArgs(cfg({ encoder: 'lossless' }))).not.toContain('-level:v')
   })
 
   it('clamps quality into the 0 to 51 QP scale and rounds it', () => {

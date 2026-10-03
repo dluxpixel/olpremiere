@@ -548,9 +548,11 @@ export function clearSpan(
     // non-overlapping invariant the resolver depends on.
     const speed = Math.abs(c.speed) || 1
     if (cs < startS) {
-      kept.push({ ...c, outS: c.inS + (startS - cs) * speed, transitionOut: undefined, fadeOutS: 0 })
+      const head = c.speed < 0 ? reversedTailTo(c, startS - cs) : { ...c, outS: c.inS + (startS - cs) * speed }
+      kept.push({ ...head, transitionOut: undefined, fadeOutS: 0 })
     } else {
-      kept.push({ ...c, startS: endS, inS: c.inS + (endS - cs) * speed, transitionIn: undefined, fadeInS: 0 })
+      const tail = c.speed < 0 ? reversedHeadTo(c, endS - cs) : { ...c, inS: c.inS + (endS - cs) * speed }
+      kept.push({ ...tail, startS: endS, transitionIn: undefined, fadeInS: 0 })
     }
   }
 
@@ -642,6 +644,51 @@ export function moveClip(seq: Sequence, clipId: Id, targetTrackId: Id, desiredSt
   return recomputeDuration({ ...seq, tracks })
 }
 
+/**
+ * A REVERSED CLIP PLAYS ITS SOURCE BACKWARD, SO ITS EDGES ARE SWAPPED.
+ *
+ * At clip-local second `x` a reversed clip shows `outS - x * |speed|` (the
+ * renderer's own mapping, render/resolve.ts), so its HEAD is the END of its
+ * source span and its TAIL is the start. Every trim and cut used to do forward
+ * arithmetic on it. Measured 2026-10-01 in his GYM, on a reversed clip: a cut
+ * moved the picture on the left half by 3 seconds, Q left 23 wrong frames and
+ * took away the end he kept, W changed the picture BEFORE the playhead by 30
+ * frames, and a freeze held a frame 7 frames from the one on screen. The same
+ * verbs on the same clip played forward: 0 frames. These four helpers are the
+ * reversed half of that arithmetic; the forward code stays exactly as it was.
+ */
+
+/** Timeline seconds of source a clip has left before its head. */
+function headRoomS(clip: Clip, asset: MediaAsset): number {
+  const sp = absSpeed(clip)
+  return clip.speed < 0 ? (asset.durationS - clip.outS) / sp : clip.inS / sp
+}
+
+/** How far past its start a clip's end can reach before the source runs out. */
+function tailLimitS(clip: Clip, asset: MediaAsset): number {
+  const sp = absSpeed(clip)
+  return clip.speed < 0 ? clip.outS / sp : (asset.durationS - clip.inS) / sp
+}
+
+/**
+ * A reversed clip whose head moved `headDeltaS` later (earlier when negative)
+ * while its tail stays put: the head is the END of the source span, so `outS`
+ * moves.
+ */
+function reversedHeadTo(clip: Clip, headDeltaS: number): Clip {
+  return { ...clip, outS: clip.outS - headDeltaS * absSpeed(clip) }
+}
+
+/**
+ * A reversed clip whose tail now ends `durS` after its start: the tail is the
+ * START of the source span, so `inS` moves. A still grown past source zero
+ * floors `inS` and widens `outS` instead, the same rule the forward head uses.
+ */
+function reversedTailTo(clip: Clip, durS: number): Clip {
+  const inS = clip.outS - durS * absSpeed(clip)
+  return inS >= 0 ? { ...clip, inS } : { ...clip, inS: 0, outS: clip.outS - inS }
+}
+
 export function trimClipTo(
   seq: Sequence,
   assets: Record<Id, MediaAsset>,
@@ -663,24 +710,31 @@ export function trimClipTo(
   if (edge === 'in') {
     const prev = track.clips[clipIndex - 1] as Clip | undefined
     let lo = Math.max(0, prev ? clipEndS(prev) : 0)
-    if (!boundless) lo = Math.max(lo, clip.startS - clip.inS / sp)
+    if (!boundless) lo = Math.max(lo, clip.startS - headRoomS(clip, asset))
     const startS = Math.min(endS - minDurS, Math.max(lo, tS))
     if (startS === clip.startS) return seq
-    const inS = clip.inS + (startS - clip.startS) * sp
-    next =
-      inS >= 0
-        ? { ...clip, startS, inS }
-        : // Image extended left past source zero: floor inS, grow outS so the
-          // out edge stays fixed at endS.
-          { ...clip, startS, inS: 0, outS: (endS - startS) * sp }
+    if (clip.speed < 0) {
+      next = { ...reversedHeadTo(clip, startS - clip.startS), startS }
+    } else {
+      const inS = clip.inS + (startS - clip.startS) * sp
+      next =
+        inS >= 0
+          ? { ...clip, startS, inS }
+          : // Image extended left past source zero: floor inS, grow outS so the
+            // out edge stays fixed at endS.
+            { ...clip, startS, inS: 0, outS: (endS - startS) * sp }
+    }
     next = retimeKeyframesForHead(next, startS - clip.startS)
   } else {
     const nextClip = track.clips[clipIndex + 1] as Clip | undefined
     let hi = nextClip ? nextClip.startS : Infinity
-    if (!boundless) hi = Math.min(hi, clip.startS + (asset.durationS - clip.inS) / sp)
+    if (!boundless) hi = Math.min(hi, clip.startS + tailLimitS(clip, asset))
     const newEndS = Math.min(hi, Math.max(clip.startS + minDurS, tS))
     if (newEndS === endS) return seq
-    next = { ...clip, outS: clip.inS + (newEndS - clip.startS) * sp }
+    next =
+      clip.speed < 0
+        ? reversedTailTo(clip, newEndS - clip.startS)
+        : { ...clip, outS: clip.inS + (newEndS - clip.startS) * sp }
   }
   next = retimeAppearance(clip, next, seq.width, seq.height)
 
@@ -765,18 +819,28 @@ export function splitClip(seq: Sequence, clipId: Id, tS: number): Sequence {
   const { track, clip, trackIndex, clipIndex } = found
   if (!canSplitClipAt(clip, seq.fps, tS)) return seq
 
-  const cutSource = clip.inS + (tS - clip.startS) * absSpeed(clip)
+  // A reversed clip shows `outS - local * |speed|` (see `headRoomS`), so its
+  // left half keeps the END of the source span and its right half the start.
+  const reversed = clip.speed < 0
+  const cutSource = reversed
+    ? clip.outS - (tS - clip.startS) * absSpeed(clip)
+    : clip.inS + (tS - clip.startS) * absSpeed(clip)
   const cutLocal = tS - clip.startS
   // Edge-owned decorations split with their edge: the LEFT half keeps only the
   // fade-in/transition-in (its out edge is now a hard cut), the RIGHT half only
   // the fade-out/transition-out. Copying both to both halves put a fade-out+
   // fade-in bump at every cut point.
-  let left: Clip = { ...clip, outS: cutSource, transitionOut: undefined, fadeOutS: 0 }
+  let left: Clip = {
+    ...clip,
+    ...(reversed ? { inS: cutSource } : { outS: cutSource }),
+    transitionOut: undefined,
+    fadeOutS: 0,
+  }
   let right: Clip = {
     ...clip,
     id: newId(),
     startS: tS,
-    inS: cutSource,
+    ...(reversed ? { outS: cutSource } : { inS: cutSource }),
     transform: { ...clip.transform, crop: { ...clip.transform.crop } },
     effects: clip.effects.map((e) => ({ ...e, id: newId(), params: { ...e.params } })),
     transitionIn: undefined,
@@ -987,14 +1051,33 @@ function shiftClipsBy(seq: Sequence, deltaById: Map<Id, number>): Sequence {
  * double, and only on linked clips, which is the kind of bug that looks random.
  * A previous session hit exactly this and named it the trap in the sync lock.
  */
-function syncFollow(seq: Sequence, alreadyMoved: ReadonlySet<Id>, atS: number, deltaS: number): Sequence {
-  return syncFollowEdits(seq, alreadyMoved, [{ atS, deltaS }])
+function syncFollow(
+  seq: Sequence,
+  alreadyMoved: ReadonlySet<Id>,
+  atS: number,
+  deltaS: number,
+  report?: RippleReport,
+): Sequence {
+  return syncFollowEdits(seq, alreadyMoved, [{ atS, deltaS }], report)
 }
 
 /** One ripple: everything at or after `atS` moves by `deltaS`, negative for left. */
 interface RippleEdit {
   atS: number
   deltaS: number
+}
+
+/**
+ * What a ripple could NOT carry along: the tracks that kept their own timing
+ * because something on them sits in the time the edit took out. A track held
+ * by a clip running across the cut is not listed: that hold is as old as sync
+ * lock and stays silent. A verb fills it when the caller hands one in, so the message
+ * that names those tracks reads the decision the engine actually took instead
+ * of guessing at it. Only a track that WOULD have moved is listed: a track with
+ * nothing after the cut is not held back from anything.
+ */
+export interface RippleReport {
+  heldTrackIds: Id[]
 }
 
 /**
@@ -1007,7 +1090,12 @@ interface RippleEdit {
  * Overlapping edits are merged to the time actually removed before anything
  * moves, which is also, on its own, what stops a linked A/V pair counting twice.
  */
-function syncFollowEdits(seq: Sequence, alreadyMoved: ReadonlySet<Id>, edits: readonly RippleEdit[]): Sequence {
+function syncFollowEdits(
+  seq: Sequence,
+  alreadyMoved: ReadonlySet<Id>,
+  edits: readonly RippleEdit[],
+  report?: RippleReport,
+): Sequence {
   const real = edits.filter((e) => Math.abs(e.deltaS) > EPS)
   if (real.length === 0) return seq
   const deltaById = new Map<Id, number>()
@@ -1019,11 +1107,7 @@ function syncFollowEdits(seq: Sequence, alreadyMoved: ReadonlySet<Id>, edits: re
     // expected. Whichever way this is wired, the question to ask is "which
     // tracks has the ripple already moved", never "which track did he click".
     if (alreadyMoved.has(t.id) || t.locked || !syncLockOf(t)) continue
-    // Straddling the cut, per the block comment: this track keeps its own
-    // timing rather than tearing itself in half. Touching `>` and `<` and not
-    // their epsilon-slack forms is deliberate, a clip that ends exactly ON the
-    // point does not straddle it and is the ordinary butted-up case.
-    if (t.clips.some((c) => real.some((e) => c.startS < e.atS - EPS && clipEndS(c) > e.atS + EPS))) continue
+    const own = new Map<Id, number>()
     for (const c of t.clips) {
       // Every edit at or before this clip applies to it, and they add up.
       let deltaS = 0
@@ -1031,10 +1115,59 @@ function syncFollowEdits(seq: Sequence, alreadyMoved: ReadonlySet<Id>, edits: re
       // `shiftClipsBy` SUBTRACTS, so a ripple that pulls the timeline left is a
       // positive entry here. Getting this sign backwards is the easiest mistake
       // in this whole feature.
-      if (Math.abs(deltaS) > EPS) deltaById.set(c.id, -deltaS)
+      if (Math.abs(deltaS) > EPS) own.set(c.id, -deltaS)
     }
+    if (own.size === 0) continue
+    // Straddling the cut, per the block comment: this track keeps its own
+    // timing rather than tearing itself in half. Touching `>` and `<` and not
+    // their epsilon-slack forms is deliberate, a clip that ends exactly ON the
+    // point does not straddle it and is the ordinary butted-up case.
+    //
+    const straddles = t.clips.some((c) => real.some((e) => c.startS < e.atS - EPS && clipEndS(c) > e.atS + EPS))
+    // ⛔⛔ AND SO DOES A CLIP IN THE TIME THE EDIT TOOK OUT THAT THE FOLLOWERS
+    // WOULD LAND ON. A left ripple removes `[atS + deltaS, atS]` and every clip
+    // after it slides back across that span, so a caption or a voice take lying
+    // INSIDE the span stayed put while the clips behind it slid on top of it, or
+    // past it. Measured 2026-10-01 on his five projects: 239 of 471 ripple
+    // deletes, Qs and Ws left two clips in one place, two of his voiceovers
+    // playing at once and one caption drawn over another. His captions and his
+    // voice are finished work, so that track keeps its timing and he is told.
+    // A clip in the span that nothing reaches (a word cut on both tracks at the
+    // same points) still lets the track follow, as it always has: holding it
+    // there would put everything after the cut out of sync for no reason.
+    //
+    // Only the second kind is REPORTED. A clip across the cut held its track
+    // silently long before this, and it is most of his ripples (a caption
+    // running over the cut point): naming it every time put a toast on 391 of
+    // 471 of his edits, a line he would learn to ignore. Measured 2026-10-03.
+    if (straddles) continue
+    if (followWouldCollide(t.clips, own)) {
+      report?.heldTrackIds.push(t.id)
+      continue
+    }
+    for (const [id, d] of own) deltaById.set(id, d)
   }
   return shiftClipsBy(seq, deltaById)
+}
+
+/**
+ * Would shifting these clips (left by `deltaById`, the `shiftClipsBy` sign) put
+ * one on top of another, or carry one PAST a clip that stays? Walked in the
+ * track's own order, so a clip that would land anywhere before the end of an
+ * earlier one is caught either way. One pass, no allocation per clip. Two clips
+ * that ALREADY shared time before the edit are old damage, not this edit's, and
+ * do not hold the track on their own.
+ */
+function followWouldCollide(clips: readonly Clip[], deltaById: ReadonlyMap<Id, number>): boolean {
+  let reach = -Infinity
+  let reachBefore = -Infinity
+  for (const c of clips) {
+    const d = deltaById.get(c.id) ?? 0
+    if (c.startS - d < reach - EPS && c.startS >= reachBefore - EPS) return true
+    reach = Math.max(reach, clipEndS(c) - d)
+    reachBefore = Math.max(reachBefore, clipEndS(c))
+  }
+  return false
 }
 
 /**
@@ -1402,6 +1535,7 @@ export function rippleTrimSolo(
   clipId: Id,
   edge: 'in' | 'out',
   tS: number,
+  report?: RippleReport,
 ): Sequence {
   const before = findClip(seq, clipId)
   if (!before) return seq
@@ -1413,6 +1547,7 @@ export function rippleTrimSolo(
     new Set([before.track.id]),
     clipEndS(before.clip),
     clipEndS(after.clip) - clipEndS(before.clip),
+    report,
   )
 }
 
@@ -1422,6 +1557,7 @@ export function rippleTrimGroup(
   clipId: Id,
   edge: 'in' | 'out',
   tS: number,
+  report?: RippleReport,
 ): Sequence {
   const before = findClip(seq, clipId)
   const ids = clipGroupIds(seq, clipId)
@@ -1477,7 +1613,7 @@ export function rippleTrimGroup(
   // or after that old end, so this is simply the same point the primitive used.
   // Taking the later of the two ends instead would leave a clip sitting between
   // the old and new end standing still while its neighbours moved around it.
-  return syncFollow(next, moved, clipEndS(before.clip), agreedS)
+  return syncFollow(next, moved, clipEndS(before.clip), agreedS, report)
 }
 
 export function deleteGroup(seq: Sequence, clipId: Id): Sequence {
@@ -1529,7 +1665,7 @@ export function rippleDeleteGroup(seq: Sequence, clipId: Id): Sequence {
  * is what makes them comparable at all, and linked partners come along by the
  * same route rather than by a separate rule.
  */
-export function rippleDeleteMany(seq: Sequence, clipIds: readonly Id[]): Sequence {
+export function rippleDeleteMany(seq: Sequence, clipIds: readonly Id[], report?: RippleReport): Sequence {
   const targets = new Set<Id>()
   const moved = new Set<Id>()
   const spans: Array<{ startS: number; endS: number }> = []
@@ -1547,7 +1683,7 @@ export function rippleDeleteMany(seq: Sequence, clipIds: readonly Id[]): Sequenc
 
   let next = seq
   for (const id of targets) next = rippleDelete(next, id)
-  return syncFollowEdits(next, moved, mergeRemovals(spans))
+  return syncFollowEdits(next, moved, mergeRemovals(spans), report)
 }
 
 /**
@@ -1645,25 +1781,32 @@ export function rippleTrimTo(
     // No next-neighbor clamp: every later clip shifts by the same delta, so
     // relative gaps are preserved and overlap is impossible.
     let hi = Infinity
-    if (!boundless) hi = clip.startS + (asset.durationS - clip.inS) / sp
+    if (!boundless) hi = clip.startS + tailLimitS(clip, asset)
     const newEndS = Math.min(hi, Math.max(clip.startS + minDurS, tS))
     if (newEndS === endS) return seq
     deltaS = newEndS - endS
-    next = { ...clip, outS: clip.inS + (newEndS - clip.startS) * sp }
+    next =
+      clip.speed < 0
+        ? reversedTailTo(clip, newEndS - clip.startS)
+        : { ...clip, outS: clip.inS + (newEndS - clip.startS) * sp }
   } else {
     // Ripple-in keeps startS fixed (content slides under the head), so the
     // previous clip never constrains it: only the source head + min duration.
-    const lo = boundless ? -Infinity : clip.startS - clip.inS / sp
+    const lo = boundless ? -Infinity : clip.startS - headRoomS(clip, asset)
     const t = Math.min(endS - minDurS, Math.max(lo, tS))
     if (t === clip.startS) return seq
     deltaS = clip.startS - t
-    const inS = clip.inS + (t - clip.startS) * sp
-    next =
-      inS >= 0
-        ? { ...clip, inS }
-        : // Image grown past source zero: floor inS, widen outS to keep the
-          // implied duration delta.
-          { ...clip, inS: 0, outS: (clipDurationS(clip) + deltaS) * sp }
+    if (clip.speed < 0) {
+      next = reversedHeadTo(clip, t - clip.startS)
+    } else {
+      const inS = clip.inS + (t - clip.startS) * sp
+      next =
+        inS >= 0
+          ? { ...clip, inS }
+          : // Image grown past source zero: floor inS, widen outS to keep the
+            // implied duration delta.
+            { ...clip, inS: 0, outS: (clipDurationS(clip) + deltaS) * sp }
+    }
     next = retimeKeyframesForHead(next, t - clip.startS)
   }
   next = retimeAppearance(clip, next, seq.width, seq.height)
@@ -1696,29 +1839,34 @@ export function rollEditTo(
   const boundlessR = !assetR || assetR.kind === 'image'
 
   let lo = left.clip.startS + minDurS
-  if (!boundlessR) lo = Math.max(lo, right.clip.startS - right.clip.inS / spR)
+  if (!boundlessR) lo = Math.max(lo, right.clip.startS - headRoomS(right.clip, assetR))
   let hi = rightEndS - minDurS
-  if (!boundlessL) hi = Math.min(hi, left.clip.startS + (assetL.durationS - left.clip.inS) / spL)
+  if (!boundlessL) hi = Math.min(hi, left.clip.startS + tailLimitS(left.clip, assetL))
   const t = Math.min(hi, Math.max(lo, tS))
 
-  const newLeftOutS = left.clip.inS + (t - left.clip.startS) * spL
-  if (newLeftOutS === left.clip.outS && t === right.clip.startS) return seq
-
-  const newLeft: Clip = retimeAppearance(
-    left.clip,
-    { ...left.clip, outS: newLeftOutS },
-    seq.width,
-    seq.height,
+  const trimmedLeft: Clip =
+    left.clip.speed < 0
+      ? reversedTailTo(left.clip, t - left.clip.startS)
+      : { ...left.clip, outS: left.clip.inS + (t - left.clip.startS) * spL }
+  if (
+    trimmedLeft.outS === left.clip.outS &&
+    trimmedLeft.inS === left.clip.inS &&
+    t === right.clip.startS
   )
+    return seq
+
+  const newLeft: Clip = retimeAppearance(left.clip, trimmedLeft, seq.width, seq.height)
   const rInS = right.clip.inS + (t - right.clip.startS) * spR
   const newRight: Clip = retimeAppearance(
     right.clip,
     retimeKeyframesForHead(
-      rInS >= 0
-        ? { ...right.clip, startS: t, inS: rInS }
-        : // Right image pulled left past source zero: floor inS, keep its end
-          // fixed by widening outS.
-          { ...right.clip, startS: t, inS: 0, outS: (rightEndS - t) * spR },
+      right.clip.speed < 0
+        ? { ...reversedHeadTo(right.clip, t - right.clip.startS), startS: t }
+        : rInS >= 0
+          ? { ...right.clip, startS: t, inS: rInS }
+          : // Right image pulled left past source zero: floor inS, keep its end
+            // fixed by widening outS.
+            { ...right.clip, startS: t, inS: 0, outS: (rightEndS - t) * spR },
       t - right.clip.startS,
     ),
     seq.width,
@@ -1826,15 +1974,15 @@ export function slideClip(
   const boundlessN = !assetN || assetN.kind === 'image'
 
   let lo = prev.startS + minDurS
-  if (!boundlessN) lo = Math.max(lo, nextClip.startS - nextClip.inS / spN - durS)
+  if (!boundlessN) lo = Math.max(lo, nextClip.startS - headRoomS(nextClip, assetN) - durS)
   let hi = nextEndS - minDurS - durS
-  if (!boundlessP) hi = Math.min(hi, prev.startS + (assetP.durationS - prev.inS) / spP)
+  if (!boundlessP) hi = Math.min(hi, prev.startS + tailLimitS(prev, assetP))
   const t = Math.min(hi, Math.max(lo, tS))
   if (t === clip.startS) return seq
 
   const newPrev: Clip = retimeAppearance(
     prev,
-    { ...prev, outS: prev.inS + (t - prev.startS) * spP },
+    prev.speed < 0 ? reversedTailTo(prev, t - prev.startS) : { ...prev, outS: prev.inS + (t - prev.startS) * spP },
     seq.width,
     seq.height,
   )
@@ -1842,11 +1990,13 @@ export function slideClip(
   const nInS = nextClip.inS + (newStartN - nextClip.startS) * spN
   const newNext: Clip = retimeAppearance(
     nextClip,
-    nInS >= 0
-      ? { ...nextClip, startS: newStartN, inS: nInS }
-      : // Image next pulled left past source zero: floor inS, keep its end
-        // fixed by widening outS.
-        { ...nextClip, startS: newStartN, inS: 0, outS: (nextEndS - newStartN) * spN },
+    nextClip.speed < 0
+      ? { ...reversedHeadTo(nextClip, newStartN - nextClip.startS), startS: newStartN }
+      : nInS >= 0
+        ? { ...nextClip, startS: newStartN, inS: nInS }
+        : // Image next pulled left past source zero: floor inS, keep its end
+          // fixed by widening outS.
+          { ...nextClip, startS: newStartN, inS: 0, outS: (nextEndS - newStartN) * spN },
     seq.width,
     seq.height,
   )

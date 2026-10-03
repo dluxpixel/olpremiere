@@ -158,9 +158,11 @@ function AudioControls({ clip, linked, playheadS }: { clip: Clip; linked?: boole
             onCommit={(v) => setClipFade(clip.id, 'out', v)}
           />
         </PropRow>
-        {/* Non-destructive RNNoise (OBS's suppressor). The take stays raw -
+        {/* Non-destructive RNNoise (OBS's suppressor). The take stays raw:
             toggle to A/B by ear, drag the % toward natural if 100 sounds
-            processed. 100% = the straight RNNoise output. */}
+            processed. The % is how much of the room comes off, even in dB:
+            100% takes it down 18 dB, never to dead silence (engine/denoise.ts
+            wetShareFor), and the voice stays at its own level throughout. */}
         <PropRow
           label="Reduce noise"
           lead={
