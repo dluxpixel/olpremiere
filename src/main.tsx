@@ -25,6 +25,7 @@ import { initAutoBackup } from './state/autoBackup'
 import { checkIntegrity, integrityMessage } from './state/dataIntegrity'
 import { migrateRenamedKeys } from './state/keyMigration'
 import { loadLibrary } from './state/library'
+import { initCaptionStyles } from './state/captionStyles'
 import { initPersistence, listProjects, loadProjectById } from './state/persistence'
 import { recoverFromWipe, sweepEmptyRecoveries } from './state/backupRestore'
 import { backfillEveryProject, healProjectMedia } from './state/mediaMirror'
@@ -85,6 +86,11 @@ const work: BootWork = {
     // None of these three needs the project, so queueing them behind it would
     // cost real seconds to buy nothing. Their rows report them in order below.
     libraryReady = started(loadLibrary())
+    // His caption styles: the quick copy is already loaded, this reads their file
+    // back after a wipe and keeps it current. Nothing waits on it.
+    void initCaptionStyles().catch((err: unknown) => {
+      console.warn('OL Premiere boot: the caption styles file could not be read', err)
+    })
     // Register the bundled title fonts (Minecraft/Monocraft) for the preview
     // rasterizer. Once the font lands, force a redraw so a reopened Minecraft
     // title re-rasterizes off the real font.

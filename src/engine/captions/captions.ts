@@ -77,6 +77,14 @@ export interface ChunkOptions {
   maxOnScreenS?: number
   /** Merge a sub-minDur or lone-function-word chunk into a soft-adjacent neighbor. */
   mergeShort?: boolean
+  /**
+   * Seconds of blank screen between one caption and the next. 0 (the default,
+   * and the measured look) hands straight over. A saved caption style can ask
+   * for a gap, the way Premiere's Create captions does; it only ever shortens
+   * the caption BEFORE the gap and never moves a caption's start, so the words
+   * still land on the voice.
+   */
+  gapS?: number
 }
 
 const CHUNK_DEFAULTS: Required<ChunkOptions> = {
@@ -94,6 +102,7 @@ const CHUNK_DEFAULTS: Required<ChunkOptions> = {
   minDurS: 0.18,
   mergeShort: false,
   maxOnScreenS: Infinity, // legacy callers keep the transcriber's word length
+  gapS: 0,
 }
 
 /**
@@ -138,6 +147,7 @@ export const PHRASE_CAPTION_OPTIONS: Required<ChunkOptions> = {
   minDurS: 0.35,
   mergeShort: true,
   maxOnScreenS: Infinity,
+  gapS: 0,
 }
 
 /**
@@ -237,6 +247,7 @@ export const AUTO_CAPTION_OPTIONS: Required<ChunkOptions> = {
   // ceiling, and anything longer is the transcriber's padding rather than
   // something he actually said.
   maxOnScreenS: 1.3,
+  gapS: 0,
 }
 
 /** Ends a sentence → the next word starts a fresh chunk. */
@@ -557,6 +568,19 @@ export function chunkWords(words: CaptionWord[], options: ChunkOptions = {}): Ca
       next.endS = Math.max(next.endS, next.startS)
     }
   }
+  // The gap a style asked for goes on last, because the bridge above is what
+  // closes gaps. It takes from the END of the earlier caption only, and never
+  // more than half of the room that caption has, so a fast run of words keeps
+  // every one of them readable instead of shrinking one to nothing.
+  if (o.gapS > 0) {
+    for (let i = 0; i + 1 < chunks.length; i++) {
+      const c = chunks[i]!
+      const next = chunks[i + 1]!
+      if (next.startS - c.endS >= o.gapS - 1e-9) continue
+      const room = next.startS - c.startS
+      c.endS = Math.min(c.endS, Math.max(next.startS - o.gapS, c.startS + room / 2))
+    }
+  }
   return chunks.filter((c) => c.endS - c.startS > 1e-6)
 }
 
@@ -811,6 +835,8 @@ export function captionClips(chunks: CaptionChunk[], options: CaptionClipOptions
     // and can read off the preset anyway. What is wanted is his delta from the
     // MACHINE, so the machine's own words are what get kept.
     if (options.model) clip = { ...clip, captionOrigin: { text: chunk.text, model: options.model } }
+    // Which word wears the highlight, kept so a style applied later can find it.
+    if (chunk.emphasis) clip = { ...clip, captionEmphasis: true }
     if (!options.popIn) return clip
     return applyAppearanceToClip(clip, { in: 'pop', durS: CAPTION_POP_DUR_S }, options.seqWidth, options.seqHeight)
   })

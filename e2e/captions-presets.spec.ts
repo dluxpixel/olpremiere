@@ -1,5 +1,5 @@
-// Caption/text presets: bulk outline, apply a style preset to a selection, the
-// Captions-dialog style picker, and the timeline label mirroring lowercase (B3).
+// Caption/text presets: bulk outline, apply a caption style to a selection, the
+// Captions tab style picker, and the timeline label mirroring lowercase (B3).
 
 import { expect, test, type Page } from '@playwright/test'
 
@@ -67,9 +67,9 @@ test('applying a style preset styles the whole selection', async ({ page }) => {
   const b = await addTitle(page)
   await setUI(page, { selection: [a, b] })
 
-  // Built-in "Jettism caption" (id builtin-jettism) = lowercase + fat outline.
-  await page.getByTestId('multi-preset-apply').selectOption('builtin-jettism')
-  await expect.poll(async () => (await titles(page)).every((x) => x.textCase === 'lower')).toBe(true)
+  // Built-in caption style "Yellow punch" (id builtin-yellow-pop) = UPPERCASE + fat outline.
+  await page.getByTestId('multi-preset-apply').selectOption('builtin-yellow-pop')
+  await expect.poll(async () => (await titles(page)).every((x) => x.textCase === 'upper')).toBe(true)
   expect((await titles(page)).every((x) => (x.outline?.widthPx ?? 0) > 0)).toBe(true)
 })
 
@@ -82,14 +82,14 @@ test('a fresh caption run lands the MEASURED house style, with no preset over it
   await page.goto('/')
   const def = await page.evaluate(async () => {
     const capMod = '/src/state/captionActions.ts'
-    const preMod = '/src/state/textPresets.ts'
+    const preMod = '/src/state/captionStyles.ts'
     const storeMod = '/src/state/store.ts'
     const typesMod = '/src/engine/types.ts'
     const { addCaptionsFromWords } = (await import(/* @vite-ignore */ capMod)) as {
       addCaptionsFromWords: (w: unknown[], o: Record<string, unknown>) => void
     }
-    const { rememberedCaptionPreset } = (await import(/* @vite-ignore */ preMod)) as {
-      rememberedCaptionPreset: () => unknown
+    const { defaultCaptionStyle } = (await import(/* @vite-ignore */ preMod)) as {
+      defaultCaptionStyle: () => unknown
     }
     const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
       useStore: { getState: () => { project: unknown } }
@@ -97,7 +97,7 @@ test('a fresh caption run lands the MEASURED house style, with no preset over it
     const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
       activeSequence: (p: unknown) => { height: number; tracks: { clips: { title?: unknown }[] }[] }
     }
-    addCaptionsFromWords([{ text: 'TNT', startS: 0, endS: 0.4 }], { preset: rememberedCaptionPreset() })
+    addCaptionsFromWords([{ text: 'TNT', startS: 0, endS: 0.4 }], { style: defaultCaptionStyle() })
     const seq = activeSequence(useStore.getState().project)
     const title = seq.tracks.flatMap((t) => t.clips).find((c) => c.title)?.title
     return { height: seq.height, title } as { height: number; title: Record<string, unknown> }
@@ -113,14 +113,16 @@ test('a fresh caption run lands the MEASURED house style, with no preset over it
   expect((def.title.outline as { widthPx: number }).widthPx).toBe(Math.round((15 / 1920) * def.height))
 })
 
-test('the Captions dialog offers a style-preset picker', async ({ page }) => {
+test('the Captions tab offers the caption style picker', async ({ page }) => {
   await page.goto('/')
+  // The Media tab's Captions button still takes him to his captions.
   await page.getByTestId('open-captions').click()
-  await expect(page.getByTestId('captions-dialog')).toBeVisible()
-  await expect(page.getByTestId('captions-preset')).toBeVisible()
-  // The Jettism house style is an option.
-  const opts = await page.getByTestId('captions-preset').locator('option').allTextContents()
-  expect(opts).toContain('Jettism caption')
+  await expect(page.getByTestId('captions-tab')).toBeVisible()
+  await expect(page.getByTestId('captions-default-style')).toBeVisible()
+  // The measured house style is the default, and the others are there.
+  await expect(page.getByTestId('captions-default-style')).toHaveValue('house')
+  const opts = await page.getByTestId('captions-default-style').locator('option').allTextContents()
+  expect(opts).toEqual(expect.arrayContaining(['House style', 'Yellow punch', 'Subtitles']))
 })
 
 test('lowercase toggle is mirrored in the timeline clip label (B3)', async ({ page }) => {

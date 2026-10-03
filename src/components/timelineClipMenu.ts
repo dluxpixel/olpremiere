@@ -20,9 +20,10 @@ import { applyMoveToSelection } from '../state/moveActions'
 import { copyClipMove, hasClipMove, pasteClipMove } from '../state/moveClipboard'
 import { cutQuietParts } from '../state/silenceActions'
 import { updateActiveSequence } from '../state/store'
-import { allTextPresets, applyTextPresetToClips, saveAsCaptionStyle, useTextPresets } from '../state/textPresets'
+import { applyCaptionStyle } from '../state/captionActions'
+import { captionLabel, captionTargets, captionTheseClips } from '../state/captionRun'
+import { allCaptionStyles, saveCaptionStyleFromClip } from '../state/captionStyles'
 import type { useToasts } from '../state/toasts'
-import { autoCaptionEveryClip, autoCaptionFromClip } from '../state/transcribeActions'
 
 export interface ClipMenuContext {
   /** The clip that was right-clicked. */
@@ -66,30 +67,32 @@ export function clipContextMenuItems({ clip, seq, assets, selNow, keepSelection,
         ]
       : []
 
-  // Local Whisper captions + beat-driven punches, for audio clips with sound.
+  // CAPTION WHAT IS SELECTED. His words, 2026-08-06: "add an option to caption
+  // selected clips when I right-click and drag over some clips. Make it so when
+  // I click 'Caption this clip', it just captions all of them." And again on
+  // 2026-10-03, because it still did not: *"right-clicking and selecting
+  // multiple clips just says 'Caption this clip,' and it captions only one."*
+  //
+  // One item. It is offered on ANY clip whose selection has sound, a picture
+  // included, because a picture's sound partner comes with it (captionRun.ts),
+  // and its count is what the run will really hear: a linked pair is one take,
+  // not two. Several go through ONE pass, one caption track and one undo step.
+  const captionIds = keepSelection ? selNow : [clip.id]
+  const captionCount = captionTargets(captionIds).length
+  const ownSound = track?.kind === 'audio' && !!assets[clip.assetId]?.hasAudio
+  const captionEntry: MenuItem[] =
+    captionCount > 0 || ownSound
+      ? [{ label: captionLabel(captionCount), separator: true, onClick: () => void captionTheseClips(captionIds) }]
+      : []
+
+  // Beat-driven punches and the loudness verbs, for audio clips with sound.
   const captionItems =
-    track?.kind === 'audio' && assets[clip.assetId]?.hasAudio
+    ownSound
       ? [
           { label: 'Level this clip', onClick: () => void normalizeClipGain(clip.id) },
           {
             label: 'Balance volume across all clips',
             onClick: () => void balanceAllClipLoudness(),
-          },
-          {
-            // CAPTION WHAT IS SELECTED. His words, 2026-08-06: "add an option
-            // to caption selected clips when I right-click and drag over some
-            // clips. Make it so when I click 'Caption this clip', it just
-            // captions all of them." One item, not two: the selection already
-            // says how many he means, so the label just reports it back.
-            // The many-clip path pools every word and lays them down in ONE
-            // pass, so eight clips still make one caption track and one undo.
-            label: keepSelection
-              ? `Auto-Caption ${selNow.length} clips from voiceover`
-              : 'Auto-Caption from voiceover',
-            onClick: () =>
-              keepSelection
-                ? void autoCaptionEveryClip(undefined, new Set(selNow))
-                : void autoCaptionFromClip(clip.id),
           },
           { label: 'Punch video on beats', onClick: () => void punchOnBeats(clip.id) },
           // Same door as the caption item on purpose: both need a transcript,
@@ -245,10 +248,12 @@ export function clipContextMenuItems({ clip, seq, assets, selNow, keepSelection,
           {
             label: presetTargets.length > 1 ? `Style preset (all ${presetTargets.length})` : 'Style preset',
             separator: true,
+            // The same caption styles the Captions panel keeps, so a look saved
+            // here is a style there, and the other way round.
             submenu: [
-              ...allTextPresets().map((p) => ({
+              ...allCaptionStyles().map((p) => ({
                 label: p.name,
-                onClick: () => applyTextPresetToClips(presetTargets, p),
+                onClick: () => void applyCaptionStyle(p, presetTargets),
               })),
               {
                 label: 'Save as the caption style',
@@ -256,7 +261,7 @@ export function clipContextMenuItems({ clip, seq, assets, selNow, keepSelection,
                 onClick: () => {
                   // Capture the clip you right-clicked (fallback: first selected title).
                   const src = clip.title ? clip.id : presetTargets[0]
-                  const p = saveAsCaptionStyle(src, `Style ${useTextPresets.getState().saved.length + 1}`)
+                  const p = saveCaptionStyleFromClip(src)
                   if (p) show(`Saved. Every new caption uses "${p.name}"`, 'success')
                 },
               },
@@ -330,6 +335,7 @@ export function clipContextMenuItems({ clip, seq, assets, selNow, keepSelection,
     },
     ...crossfadeItems,
     ...transitionItems,
+    ...captionEntry,
     ...captionItems,
     ...motionItems,
     ...flipItems,

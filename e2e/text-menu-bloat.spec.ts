@@ -60,16 +60,15 @@ test('right-clicking ONE caption can save its look as the caption style', async 
   // It is saved AND it is now the style every new caption gets, which is the
   // whole point: "a preset that I can then use on the auto captions".
   const saved = await page.evaluate(async () => {
-    const mod = '/src/state/textPresets.ts'
-    const { useTextPresets, getCaptionPresetId } = (await import(/* @vite-ignore */ mod)) as {
-      useTextPresets: { getState: () => { saved: { id: string; style: Record<string, unknown> }[] } }
-      getCaptionPresetId: () => string
+    const mod = '/src/state/captionStyles.ts'
+    const { useCaptionStyles } = (await import(/* @vite-ignore */ mod)) as {
+      useCaptionStyles: { getState: () => { saved: { id: string; look: Record<string, unknown> }[]; defaultId: string } }
     }
-    const list = useTextPresets.getState().saved
+    const { saved: list, defaultId } = useCaptionStyles.getState()
     return {
       count: list.length,
-      currentIsSaved: list.some((p) => p.id === getCaptionPresetId()),
-      style: list.at(-1)?.style,
+      currentIsSaved: list.some((p) => p.id === defaultId),
+      style: list.at(-1)?.look,
     }
   })
   expect(saved.count).toBe(1)

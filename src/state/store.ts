@@ -37,7 +37,7 @@ export interface MotionSelection {
 
 export type Tool = 'select' | 'razor' | 'hand'
 export type SaveState = 'saved' | 'saving' | 'unsaved'
-export type LeftTab = 'media' | 'effects' | 'library' | 'words'
+export type LeftTab = 'media' | 'effects' | 'library' | 'words' | 'captions'
 
 export interface UIState {
   tool: Tool
