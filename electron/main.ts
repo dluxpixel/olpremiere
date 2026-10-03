@@ -24,6 +24,7 @@ import * as backups from './backups'
 import { createCutstudio, realCutstudioDeps } from './cutstudio'
 import { createEmojiFontStore, downloadBytes, EMOJI_ROUTE } from './emojiFont'
 import * as projectFiles from './projectFiles'
+import * as libraryFile from './libraryFile'
 import * as saveFiles from './saveFiles'
 import type { NativeExportConfig, UpdateStatus } from './ipc-types'
 import {
@@ -710,6 +711,9 @@ app.whenReady().then(() => {
   })
   ipcMain.handle('project:trash', (_e, id: string) => projectFiles.trashProjectFile(id))
   ipcMain.handle('project:dir', () => projectFiles.projectDir())
+  // The Library's records beside them, one fixed file. See electron/libraryFile.ts.
+  ipcMain.handle('library:write', (_e, json: string) => libraryFile.writeLibraryFile(json))
+  ipcMain.handle('library:read', () => libraryFile.readLibraryFile())
 
   // --- Files he saves himself (saveFiles.ts) ---------------------------------
   // A numbered name in his last folder, then the bytes streamed in chunks, and

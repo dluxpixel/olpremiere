@@ -29,7 +29,7 @@ import {
   deleteSelected,
   setAllEffectsEnabled,
   splitAtPlayhead,
-  toggleClipEnabled,
+  toggleClipsEnabled,
   toggleClipFreeze,
   toggleMotionAtPlayhead,
   topAndTail,
@@ -429,9 +429,10 @@ export function buildAppBindings(): Binding[] {
           escapeSelection()
         },
       },
+      // Every selected clip, one undo step (toggleClipsEnabled says how a mixed
+      // selection goes). It used to switch only the first one he had picked.
       { combo: 'shift+e', description: 'Enable / disable clip', domain: 'trim', run: () => {
-        const id = store().ui.selection[0]
-        if (id) toggleClipEnabled(id)
+        toggleClipsEnabled(store().ui.selection)
       } },
       // Park on the moment, press F, it holds. Press again and it runs.
       { combo: 'f', description: 'Freeze this frame, or let it run', domain: 'trim', run: () => {

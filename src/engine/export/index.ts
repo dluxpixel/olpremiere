@@ -79,7 +79,7 @@ export async function exportSequence(
     const asset: MediaAsset | undefined = project.assets[id]
     if (!asset) continue
     const blob = await getBlob(asset.blobKey)
-    if (!blob) throw new Error(`Media for "${asset.name}" is missing from local storage, re-import it and try again`)
+    if (!blob) throw new Error(`"${asset.name}" is not on this computer. Find my media in the Media panel puts it back`)
     exportAssets.push({ id, kind: asset.kind, name: asset.name, blob, fps: asset.fps })
   }
   if (signal.aborted) throw abortError()

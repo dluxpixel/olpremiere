@@ -359,6 +359,15 @@ export interface OlApi {
   projectDir(): Promise<string>
 
   /**
+   * The Library's records as one plain file beside the projects, kept current
+   * on every Library change (electron/libraryFile.ts). Its media bytes are in
+   * the spare-copy folder under `lib-<item id>`.
+   */
+  libraryWrite(json: string): Promise<void>
+  /** The file's text, or null when there is none yet. */
+  libraryRead(): Promise<string | null>
+
+  /**
    * A save dialog in his last folder for this kind of file, suggesting a name
    * nothing there has (`_1`, `_2`, never a replace prompt). Null when cancelled.
    */

@@ -153,6 +153,28 @@ export interface AppState {
   setActiveSequenceId: (id: Id) => void
 }
 
+/**
+ * Where the project sits on his shelf (parked for Later, archived) is not an
+ * edit, so an undo or a redo never moves it.
+ *
+ * ⛔ IT DID. Parking the OPEN project stamps the flag on the live document
+ * outside history (persistence.ts stampOpenProject), and every snapshot an undo
+ * can land on was taken before that, without it. So one Ctrl+Z of an earlier
+ * edit put the project back without its flag, the next autosave wrote that to
+ * disk, and the project he had just parked was back under Working on. Measured
+ * 2026-10-01 in his GYM: laterAt set, Ctrl+Z, laterAt gone from the store and
+ * from GYM_9eb042e8.olpbak.
+ */
+function withShelfOf(live: Project, restored: Project): Project {
+  if (live.laterAt === restored.laterAt && live.archivedAt === restored.archivedAt) return restored
+  const next: Project = { ...restored }
+  for (const field of ['laterAt', 'archivedAt'] as const) {
+    if (live[field] === undefined) delete next[field]
+    else next[field] = live[field]
+  }
+  return next
+}
+
 export const MIN_PX_PER_S = 4
 export const MAX_PX_PER_S = 800
 
@@ -246,18 +268,18 @@ export const useStore = create<AppState>()(
     // Return the command label (or null when there's nothing to undo/redo) so
     // the caller can surface it, which keeps the store free of any toast dependency.
     undo() {
-      const { history, ui } = get()
+      const { history, ui, project } = get()
       const r = undoCommand(history)
       if (!r) return null
-      set({ project: r.project, history: r.history, ui: { ...ui, saveState: 'unsaved' } })
+      set({ project: withShelfOf(project, r.project), history: r.history, ui: { ...ui, saveState: 'unsaved' } })
       return r.label
     },
 
     redo() {
-      const { history, ui } = get()
+      const { history, ui, project } = get()
       const r = redoCommand(history)
       if (!r) return null
-      set({ project: r.project, history: r.history, ui: { ...ui, saveState: 'unsaved' } })
+      set({ project: withShelfOf(project, r.project), history: r.history, ui: { ...ui, saveState: 'unsaved' } })
       return r.label
     },
 

@@ -116,6 +116,22 @@ describe('Timeline', () => {
     expect(moved.startS).toBeCloseTo(6)
   })
 
+  it('a dragged edge moves BY the drag, wherever on the handle he took hold of it', () => {
+    // MEASURED 2026-10-01 in his GYM: the trim-out handle dragged +30 px at
+    // 60 px/s, half a second, moved the end 0.433 s. The edge jumped to the
+    // pointer, and the pointer had grabbed it 4 px inside the 6 px handle.
+    const clip = seedTitle(1)
+    useStore.getState().setUI({ pxPerS: 60, snapping: false })
+    render(<Timeline height={300} />)
+    const { lanes } = layOut()
+    // The end is at 3 s = 180 px. Grab 4 px inside it, drag exactly +30 px.
+    fireEvent.pointerDown(screen.getByTestId('trim-out'), { button: 0, clientX: 176, clientY: 40, pointerId: 1 })
+    fireEvent.pointerMove(lanes, { clientX: 206, clientY: 40, pointerId: 1 })
+    fireEvent.pointerUp(lanes, { clientX: 206, clientY: 40, pointerId: 1 })
+    const trimmed = seq().tracks.flatMap((t) => t.clips).find((c) => c.id === clip.id)!
+    expect(trimmed.startS + (trimmed.outS - trimmed.inS)).toBeCloseTo(3.5, 9)
+  })
+
   it('cuts a clip with the razor', () => {
     const clip = seedTitle(0)
     useStore.getState().setUI({ tool: 'razor' })

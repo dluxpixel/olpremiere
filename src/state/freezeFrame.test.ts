@@ -126,6 +126,35 @@ describe('toggleClipFreeze', () => {
     useStore.getState().undo()
     expect(isClipFrozen(byId('c1'))).toBe(false)
   })
+
+  describe('on a REVERSED clip', () => {
+    // MEASURED 2026-10-01 in his GYM: F on a reversed clip held source 25.065 s
+    // while 25.298 s was on screen, 7 frames away. A reversed clip shows its
+    // source backward from outS, and the freeze did forward arithmetic.
+    const reverse = () =>
+      updateActiveSequence('reverse', (sq) => ({
+        ...sq,
+        tracks: sq.tracks.map((t) => ({ ...t, clips: t.clips.map((c) => ({ ...c, speed: -1 })) })),
+      }))
+
+    it('holds the frame he is LOOKING at', () => {
+      reverse()
+      useStore.getState().setUI({ playheadS: 3 })
+      const onScreen = sourceAt(3)
+      toggleClipFreeze('c1')
+      expect(onScreen).toBeCloseTo(5, 6)
+      expect(sourceAt(3)).toBeCloseTo(onScreen, 6)
+      expect(sourceAt(7.9)).toBeCloseTo(onScreen, 6)
+    })
+
+    it('holds its FIRST frame, the end of its source, when the playhead is off it', () => {
+      reverse()
+      const first = sourceAt(0)
+      useStore.getState().setUI({ playheadS: 50 })
+      toggleClipFreeze('c1')
+      expect(byId('c1').freezeAtS).toBeCloseTo(first, 6)
+    })
+  })
 })
 
 // ⛔ THE REASON THE HELD TIME IS STORED RATHER THAN A FLAG. splitClip moves the

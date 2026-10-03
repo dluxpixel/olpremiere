@@ -35,6 +35,7 @@ import { activeSequence, type Project } from '../engine/types'
 import { isElectron } from '../platform'
 import { isPhoneLayout } from '../ui/phoneLayout'
 import { holdBlobKeys } from './exportHolds'
+import { healProjectMedia, isHealing, mirrorApi } from './mediaMirror'
 import { setPlatformLoudness, useSettings } from './settings'
 import { useStore } from './store'
 import { useToasts } from './toasts'
@@ -238,6 +239,8 @@ async function drive(plan: ExportPlan): Promise<void> {
   })
   const release = holdBlobKeys(f.blobKeys)
   try {
+    // Only where there ARE spare copies: the web build has none, and starts as it always did.
+    if (mirrorApi()) await mediaPutBack(f.project)
     if (background) await runNative(id, f.project, plan, ctrl.signal)
     else await runBrowser(id, f.project, plan, ctrl.signal)
   } catch (err) {
@@ -256,6 +259,25 @@ async function drive(plan: ExportPlan): Promise<void> {
     restartWith = null
     await drive(again)
   }
+}
+
+/**
+ * Wait for the media to be on this computer before reading a byte of it.
+ *
+ * ⛔ AN EXPORT STARTED WHILE THE SPARE COPIES WERE STILL BEING PUT BACK FAILED.
+ * Measured 2026-10-01 on a fresh profile, the state after a wipe: Export pressed
+ * 10 s after opening mc night said "Media for 2026-09-20 14-12-28.mp4 is missing
+ * from local storage, re-import it", while the put-back had 11 s left to run.
+ * Now the export joins that run, or makes the same quick check itself (a
+ * project with nothing missing costs one storage read per file), and only then
+ * starts. Never throws: a put-back that cannot help leaves the export to say
+ * plainly which file it could not find.
+ */
+async function mediaPutBack(project: Project): Promise<void> {
+  if (isHealing(project.id)) {
+    useToasts.getState().show('Your media is still being put back. The export starts as soon as it is', 'info')
+  }
+  await healProjectMedia(project).catch(() => undefined)
 }
 
 /** Cancelled, or the save dialog was dismissed: nothing to show. */
