@@ -5,8 +5,21 @@ export const HEADERS_W = 178
 /** The header column on a phone: the track's name and nothing else. */
 export const PHONE_HEADERS_W = 44
 export const SNAP_PX = 8
-/** Pointer travel below this is a click (move playhead), not a clip drag. */
+/**
+ * Pointer travel below this is a click (move playhead), not a clip drag. Since
+ * 2026-10-03 no clip gesture (move, trim, roll, slide, slip, stretch) starts at
+ * all until the hand has gone this far from where it pressed: a click whose hand
+ * wobbled a pixel was committing moves of up to two seconds.
+ */
 export const CLICK_SLOP_PX = 4
+/**
+ * How far sideways, on screen, a dragged block may land from his hand rather
+ * than stay one lane short of the lane he aims at (BlockMoveOptions.laneCostS in
+ * engine/blockMove.ts), 2026-10-03. About a quarter of the lanes he sees: a hole
+ * that close is clearly the one he is going for; one farther away is a flight
+ * he did not ask for (a packed V1 sent an overlay 50 s off screen).
+ */
+export const LANE_REACH_PX = 400
 
 /**
  * Signed gesture delta for the live drag readout: compact timecode plus total

@@ -1,11 +1,12 @@
-// Drag a clip's edge into its neighbour and the overlap is a crossfade.
+// A clip's edge dragged into its neighbour STOPS AT THE CUT, like any trim.
 //
-// The Vegas gesture, borrowed on 2026-09-15 after reading what editors say
-// they love about that timeline. The arithmetic is pinned in
-// src/engine/overlapCrossfade.test.ts; what only a browser can show is the
-// wiring: the edge strip starts the drag, the readout says Crossfade once the
-// pointer is past the cut, both clips draw the mark when it lands, and the two
-// clips still meet at a cut with no overlap in the data.
+// From 2026-09-15 to 2026-10-03 it did not: the overlap became a crossfade, a
+// gesture borrowed from Vegas. His words on 2026-10-03: "please remove the sony
+// vegas feature that when you slide the clip through antother clip it adds a
+// transition". On top of the dissolve he never asked for, pulling a head into
+// the previous clip shortened that clip on the picture only, so a linked pair
+// fell out of sync. The engine side is pinned in timelineGestures.test.ts; this
+// file is the real pointer on the real edge strip.
 
 import { expect, test, type Page } from '@playwright/test'
 
@@ -33,7 +34,7 @@ async function clips(page: Page): Promise<Row[]> {
   })
 }
 
-test("the second clip's head dragged into the first makes a crossfade the length of the overlap", async ({ page }) => {
+test("the second clip's head dragged into the first stops at the cut: no dissolve, the first clip keeps every frame", async ({ page }) => {
   await page.goto('/')
   await page.getByTestId('media-file-input').setInputFiles(FIXTURE)
   await expect(page.getByTestId('asset-card')).toBeVisible({ timeout: 15_000 })
@@ -41,7 +42,7 @@ test("the second clip's head dragged into the first makes a crossfade the length
   await expect(vclip(page)).toHaveCount(1)
 
   // One cut: two clips from one piece of media, so each still has the frames
-  // the other gave up, which is what a crossfade is made of.
+  // the other gave up, which is exactly what the old gesture crossfaded.
   await page.getByTestId('ruler').click({ position: { x: 80, y: 10 } })
   await page.keyboard.press('c')
   await expect(vclip(page)).toHaveCount(2)
@@ -55,22 +56,16 @@ test("the second clip's head dragged into the first makes a crossfade the length
   await page.mouse.move(box.x + 2, y) // the head trim strip
   await page.mouse.down()
   await page.mouse.move(box.x - 30, y, { steps: 10 }) // half a second into the first clip at 60 px/s
-  await expect(page.getByText(/^Crossfade/)).toBeVisible()
+  await expect(page.getByText(/^Crossfade/)).toHaveCount(0)
   await page.mouse.up()
 
   const [a, b] = await clips(page)
-  // A gave up its tail and B took the same half second at its head.
-  expect(b.startS).toBeLessThan(before[1].startS)
-  expect(b.inS).toBeLessThan(before[1].inS)
-  // They still meet at a cut: no overlap in the data, the dissolve is a transition on B.
-  expect(a.startS + (a.outS - a.inS)).toBeCloseTo(b.startS, 3)
-  expect(b.transitionIn?.type).toBe('crossDissolve')
-  expect(b.transitionIn?.durationS).toBeCloseTo(before[1].startS - b.startS, 3)
-  expect(b.transitionIn!.durationS).toBeGreaterThanOrEqual(0.4)
-
-  // Both halves of the dissolve are drawn, on the clip that owns it and the one it crosses.
-  await expect(second.getByTestId('transition-in-mark')).toBeVisible()
-  await expect(vclip(page).first().getByTestId('transition-out-mark')).toBeVisible()
+  // Nothing crossed the cut: the first clip is untouched and the second still starts on it.
+  expect(a).toEqual(before[0])
+  expect(b.startS).toBeCloseTo(before[1].startS, 6)
+  expect(b.transitionIn).toBeUndefined()
+  expect(a.startS + (a.outS - a.inS)).toBeCloseTo(b.startS, 6)
+  await expect(second.getByTestId('transition-in-mark')).toHaveCount(0)
 })
 
 test('a drag that stops short of the neighbour is the plain trim it always was', async ({ page }) => {

@@ -2,7 +2,6 @@ import {
   clipDurationS,
   clipEndS,
   clipGroupIds,
-  moveSelectionWith,
   rateStretchGroup,
   rippleTrimGroup,
   rippleTrimSolo,
@@ -10,10 +9,11 @@ import {
   slideClip,
   slipClip,
   slipGroup,
-  snapTime,
+  trimClipTo,
+  trimGroup,
 } from '../engine/timeline'
+import { applyBlockPlan, blockEdges, moveBlock, planBlockMove, snapBlockDelta } from '../engine/blockMove'
 import { formatTimecode } from '../engine/timecode'
-import { overlapCrossfadeS, trimIntoNeighbour } from '../engine/overlapCrossfade'
 import type { Clip, Id, MediaAsset, Sequence, Track } from '../engine/types'
 import { fmtDelta } from './timelineGeometry'
 import type { Drag } from './timelineDrag'
@@ -40,61 +40,25 @@ export const soloTrimIntent = (seq: Sequence, selection: readonly Id[], clipId: 
   !clipGroupIds(seq, clipId).every((g) => selection.includes(g))
 
 /**
- * MOVE is solo by default. His words, 2026-08-05, after a first attempt that
- * only went solo once he had selected the clip: "when I drag the video clip,
- * it automatically drags the audio clip. Can you make it so the audio and
- * video clips can be dragged separately?"
- *
- * Requiring a click before the drag was a fix that asked him to change how
- * he works, which is not a fix. Grabbing a clip and moving it in one motion
- * is the gesture, so that gesture has to mean "move this clip". Selecting
- * BOTH halves still moves them together, which is the deliberate way to say
- * "keep these in sync" and the only way it happens now.
- *
- * Read before the select() in the pointer-down, like soloSlip: after it, the
- * grabbed clip is always selected and the question answers itself.
- */
-export const soloMoveIntent = (seq: Sequence, selection: readonly Id[], clipId: Id): boolean =>
-  !clipGroupIds(seq, clipId).every((g) => selection.includes(g))
-
-/**
  * Trimming never touches linkId, so a solo-trimmed pair stays linked and keeps
  * moving together - only their lengths differ.
+ *
+ * ⛔ A PLAIN EDGE DRAG STOPS AT THE NEIGHBOUR. NO CROSSFADE, 2026-10-03.
+ *
+ * From 2026-09-15 a plain edge dragged INTO the next clip turned the overlap
+ * into a crossfade, borrowed from Vegas. His words on 2026-10-03: *"please
+ * remove the sony vegas feature that when you slide the clip through antother
+ * clip it adds a transition"*. It also did damage nobody asked for: pulling a
+ * head into the previous clip SHORTENED that clip, on the picture only, so a
+ * linked pair fell out of sync, and pushing a tail wrote a dissolve onto the
+ * neighbour he never grabbed and overwrote its audio fades. It is gone, the
+ * whole file with it. An edge now stops at the cut like any trim, and a
+ * crossfade is something he asks for on purpose, from the clip menu, the
+ * Inspector or by dropping a transition on a clip.
  */
 export const trimFnFor = (solo: boolean, ripple: boolean) => {
   if (ripple) return solo ? rippleTrimSolo : rippleTrimGroup
-  // A plain edge drag may go INTO the neighbour: the overlap becomes a
-  // crossfade, the Vegas gesture (engine/overlapCrossfade.ts). Short of the
-  // neighbour it is trimClipTo / trimGroup exactly as before.
-  return (sq: Sequence, a: Assets, id: Id, edge: 'in' | 'out', t: number) =>
-    trimIntoNeighbour(sq, a, id, edge, t, solo)
-}
-
-// Multi-selection: carry every OTHER selected unlocked clip (deduped by
-// link group - moveGroup moves partners) so the whole selection travels.
-export function carriedOthers(
-  seq: Sequence,
-  selNow: readonly Id[],
-  clipId: Id,
-): { id: Id; startS0: number; solo: boolean }[] {
-  const others: { id: Id; startS0: number; solo: boolean }[] = []
-  if (selNow.includes(clipId) && selNow.length > 1) {
-    const seen = new Set<Id>(clipGroupIds(seq, clipId))
-    for (const tr of seq.tracks) {
-      if (tr.locked) continue
-      for (const c of tr.clips) {
-        if (!selNow.includes(c.id) || seen.has(c.id)) continue
-        const group = clipGroupIds(seq, c.id)
-        for (const gid of group) seen.add(gid)
-        // The SAME question soloMove asks of the grabbed clip, asked of every
-        // clip travelling with it. Without it a multi-clip drag moved partners
-        // he never selected, which is his linked-drag report of 2026-08-05 and
-        // 2026-08-12. See the note in moveSelectionWith.
-        others.push({ id: c.id, startS0: c.startS, solo: !group.every((g) => selNow.includes(g)) })
-      }
-    }
-  }
-  return others
+  return solo ? trimClipTo : trimGroup
 }
 
 /** The clips either side of `clipId` on its track: a slide's own origin edges. */
@@ -123,28 +87,64 @@ export interface DragStep {
   tip: string | null
 }
 
-/**
- * Snap the leading edge, then the trailing edge; keep the closer catch.
- * `indicatorT` is where the snap line goes, null when nothing caught.
- */
-export function snapMoveStart(
-  desiredRaw: number,
-  durS: number,
-  points: number[],
-  thresholdS: number,
-): { desired: number; indicatorT: number | null } {
-  const s1 = snapTime(desiredRaw, points, thresholdS)
-  const s2 = snapTime(desiredRaw + durS, points, thresholdS)
-  if (s1.snapped && (!s2.snapped || Math.abs(s1.t - desiredRaw) <= Math.abs(s2.t - durS - desiredRaw))) {
-    return { desired: s1.t, indicatorT: s1.t }
-  }
-  if (s2.snapped) return { desired: s2.t - durS, indicatorT: s2.t }
-  return { desired: desiredRaw, indicatorT: null }
-}
-
 // Moves get the live readout too: new start timecode + signed delta.
 export const moveTipText = (finalT: number, startS: number, fps: number): string =>
   `Move  ${formatTimecode(finalT, fps)}  ${fmtDelta(finalT - startS, fps)}`
+
+/** A move frame: the preview, its readout, what the release will commit, and the snap line. */
+export interface MoveStep extends DragStep {
+  /** Exactly what dragCommit is handed on release, so the release lands the preview. */
+  final: { trackId: Id; tS: number }
+  /** Where the snap line goes, null when nothing caught or the catch is not where it landed. */
+  indicatorT: number | null
+}
+
+/**
+ * One pointermove of a clip drag, as one pure step.
+ *
+ * `aim` is where the pointer puts the grabbed clip (its start, frame quantized)
+ * and the lane it points at. The whole block snaps as one (snapBlockDelta), the
+ * snapped start goes into `final`, and the preview is `moveBlock` run on exactly
+ * that `final`. dragCommit runs the same `moveBlock` on the same `final`, so the
+ * preview he watches and the edit that lands cannot differ. The readout shows
+ * where the grabbed clip actually LANDS, not where the pointer is, because a
+ * block that cannot fit where he aims goes to the nearest spot it does fit.
+ *
+ * `laneCostS` is what one lane short of the aimed lane is worth in seconds of
+ * sideways miss, on his screen (BlockMoveOptions in engine/blockMove.ts): with
+ * it, a lane that has no room anywhere near his hand no longer flings the block
+ * fifty seconds away. The lane the block settles on goes into `final`, so the
+ * release, which runs the plain moveBlock on `final`, lands on that same lane at
+ * that same time and cannot weigh anything differently.
+ */
+export function moveStep(
+  seq: Sequence,
+  drag: DragOf<'move'>,
+  aim: { startS: number; trackId: Id },
+  snap: { points: readonly number[]; thresholdS: number } | null,
+  laneCostS?: number,
+): MoveStep {
+  const grabbed = findClipIn(seq, drag.clipId)
+  if (!grabbed) return { next: seq, tip: null, final: { trackId: aim.trackId, tS: aim.startS }, indicatorT: null }
+  let deltaS = aim.startS - grabbed.startS
+  let snappedT: number | null = null
+  if (snap) {
+    const s = snapBlockDelta(blockEdges(seq, drag.blockIds, drag.clipId), deltaS, snap.points, snap.thresholdS)
+    deltaS = s.deltaS
+    snappedT = s.indicatorT
+  }
+  const tS = grabbed.startS + deltaS
+  const plan = planBlockMove(seq, drag.blockIds, drag.clipId, aim.trackId, tS, laneCostS === undefined ? {} : { laneCostS })
+  const g = plan.members.find((m) => m.clip.id === drag.clipId)
+  const final = { trackId: g ? seq.tracks[g.to]!.id : aim.trackId, tS }
+  // The same plan dragCommit's moveBlock works out from `final` (the landing lane, so it weighs
+  // nothing again), set down once here instead of planned twice per pointermove.
+  const next = applyBlockPlan(seq, plan)
+  const landed = findClipIn(next, drag.clipId) ?? grabbed
+  // The line is only true when the block landed on the delta it snapped to.
+  const indicatorT = snappedT !== null && Math.abs(landed.startS - final.tS) < 1e-9 ? snappedT : null
+  return { next, tip: moveTipText(landed.startS, grabbed.startS, seq.fps), final, indicatorT }
+}
 
 export function slipStep(seq: Sequence, assets: Assets, drag: DragOf<'slip'>, deltaS: number): DragStep {
   const next = (drag.solo ? slipClip : slipGroup)(seq, assets, drag.clipId, deltaS)
@@ -194,12 +194,6 @@ export function trimStep(seq: Sequence, assets: Assets, drag: DragOf<'trim'>, t:
   const next = trimFnFor(drag.solo, drag.ripple)(seq, assets, drag.clipId, drag.edge, t)
   const trimmed = findClipIn(next, drag.clipId)
   const orig = findClipIn(seq, drag.clipId)
-  const crossfadeS = drag.ripple ? 0 : overlapCrossfadeS(seq, assets, drag.clipId, drag.edge, t, drag.solo)
-  if (crossfadeS > 0) {
-    // Past the neighbour the edge is no longer trimming, it is sizing the
-    // crossfade, so the readout says that and nothing else.
-    return { next, tip: `Crossfade  ${formatTimecode(crossfadeS, seq.fps)}` }
-  }
   if (trimmed && orig) {
     const edgeT = drag.edge === 'in' ? trimmed.startS : clipEndS(trimmed)
     const origT = drag.edge === 'in' ? orig.startS : clipEndS(orig)
@@ -218,23 +212,21 @@ export function trimStep(seq: Sequence, assets: Assets, drag: DragOf<'trim'>, t:
 export function dragCommit(
   drag: Drag,
   final: { trackId: Id; tS: number },
-  seq: Sequence,
   assets: Assets,
 ): { label: string; apply: (sq: Sequence) => Sequence } | null {
   const { trackId, tS } = final
   switch (drag.kind) {
     case 'move':
+      // The same moveBlock, on the same `final`, that moveStep previewed.
       return {
-        label: drag.others.length > 0 ? 'Move clips' : 'Move clip',
-        apply: (sq) => moveSelectionWith(sq, drag.clipId, trackId, tS, drag.others, drag.solo),
+        label: drag.blockIds.length > 1 ? 'Move clips' : 'Move clip',
+        apply: (sq) => moveBlock(sq, drag.blockIds, drag.clipId, trackId, tS),
       }
-    case 'trim': {
-      const crossfaded = !drag.ripple && overlapCrossfadeS(seq, assets, drag.clipId, drag.edge, tS, drag.solo) > 0
+    case 'trim':
       return {
-        label: drag.ripple ? 'Ripple trim' : crossfaded ? 'Crossfade' : 'Trim clip',
+        label: drag.ripple ? 'Ripple trim' : 'Trim clip',
         apply: (sq) => trimFnFor(drag.solo, drag.ripple)(sq, assets, drag.clipId, drag.edge, tS),
       }
-    }
     case 'stretch':
       return { label: 'Rate stretch', apply: (sq) => rateStretchGroup(sq, drag.clipId, drag.edge, tS) }
     case 'slip':
