@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
-import { clipDurationS, moveSelectionWith, snapTime, splitGroup } from '../engine/timeline'
+import { snapTime, splitGroup } from '../engine/timeline'
+import { dragBlockIds } from '../engine/blockMove'
 import { createSnapPointCache } from '../engine/snapPointCache'
 import { quantizeToFrame } from '../engine/timecode'
 import { activeSequence, audioTracks, videoTracks, type Clip, type Id, type Sequence, type Track } from '../engine/types'
@@ -21,22 +22,28 @@ import { clipContextMenuItems } from './timelineClipMenu'
 import { useStableCallback, type Drag } from './timelineDrag'
 import { ADD_TRACK_ROW_H, CLICK_SLOP_PX, SNAP_PX } from './timelineGeometry'
 import {
-  carriedOthers,
   dragCommit,
-  moveTipText,
+  moveStep,
   rollPair,
   rollStep,
   slideNeighborIds,
   slideStep,
   slipStep,
-  snapMoveStart,
-  soloMoveIntent,
   soloTrimIntent,
   stretchStep,
   trimStep,
   type DragStep,
 } from './timelineGestures'
-import { buildLaneInfos, clipWindowS, laneAtY, lanesCursorClass, marqueeHitIds, silencedTest, timelineLengthS } from './timelineLanes'
+import {
+  buildLaneInfos,
+  clipWindowS,
+  laneAtY,
+  laneOfKindNearY,
+  lanesCursorClass,
+  marqueeHitIds,
+  silencedTest,
+  timelineLengthS,
+} from './timelineLanes'
 import { frameAtOffset } from './timelineZoom'
 import { useCoalescedScrub } from './useCoalescedScrub'
 import { useEdgeScroll } from './useEdgeScroll'
@@ -213,23 +220,20 @@ export function Timeline({ height }: { height: number }) {
     // path: grabbing always selects the clip, so asking afterwards would report
     // "solo" every time and quietly kill linked slipping.
     const soloSlip = soloTrimIntent(seq, selection, clip.id)
-    // MOVE is solo by default; read before the select() below (see soloMoveIntent).
-    const soloMove = soloMoveIntent(seq, selection, clip.id)
     // ⛔ CTRL ADDS TO THE SELECTION, LIKE SHIFT, 2026-09-28. His words: *"when I
     // hold and drag control while selecting multiple things ... I can click
     // anywhere and it still drags"*. Ctrl-click used to REPLACE the selection
     // with the one clip, so by the time he grabbed one of them to drag, it was
     // the only one selected. Ctrl on a clip that is already selected keeps it
     // for now: a drag carries everything, and only a plain release drops it.
-    const additive = (e.ctrlKey || e.metaKey) && !e.altKey
+    //
+    // ⛔ AND SHIFT KEEPS IT TOO, 2026-10-03. Shift toggled the clip on the PRESS,
+    // so Shift held while grabbing one clip of a selection took that clip OUT of
+    // it before the drag read the selection: the clip he held moved alone and
+    // fell out of the selection. Shift now decides on release exactly like Ctrl.
+    const additive = ((e.ctrlKey || e.metaKey) && !e.altKey) || e.shiftKey
     const wasSelected = selection.includes(clip.id)
-    if (e.shiftKey) {
-      setUI({
-        selection: selection.includes(clip.id)
-          ? selection.filter((id) => id !== clip.id)
-          : [...selection, clip.id],
-      })
-    } else if (additive) {
+    if (additive) {
       if (!wasSelected) setUI({ selection: [...selection, clip.id] })
     } else if (!selection.includes(clip.id)) {
       setUI({ selection: [clip.id] })
@@ -249,9 +253,10 @@ export function Timeline({ height }: { height: number }) {
       beginDrag(e, { kind: 'slip', clipId: clip.id, startXPx: x, solo: soloSlip })
       return
     }
-    // Multi-selection: the whole selection travels (see carriedOthers).
+    // The selection as it stands after the press is the block that travels:
+    // one rigid shape, partners only where both halves are selected. See
+    // dragBlockIds and moveBlock in engine/blockMove.ts.
     const selNow = useStore.getState().ui.selection
-    const others = carriedOthers(seq, selNow, clip.id)
     beginDrag(e, {
       kind: 'move',
       clipId: clip.id,
@@ -259,10 +264,9 @@ export function Timeline({ height }: { height: number }) {
       trackKind: track.kind,
       downClientX: e.clientX,
       downClientY: e.clientY,
-      others,
-      collapseCandidate: !e.shiftKey && !additive && selNow.includes(clip.id) && selNow.length > 1,
+      blockIds: dragBlockIds(seq, selNow, clip.id),
+      collapseCandidate: !additive && selNow.includes(clip.id) && selNow.length > 1,
       toggleOffCandidate: additive && wasSelected,
-      solo: soloMove,
     })
   }
 
@@ -490,49 +494,41 @@ export function Timeline({ height }: { height: number }) {
       const current = seq.tracks.find((t) => t.clips.some((c) => c.id === drag.clipId))
       const clip = current?.clips.find((c) => c.id === drag.clipId)
       if (!current || !clip) return
-      const durS = clipDurationS(clip)
-      // Snap the leading edge, then the trailing edge; keep the closer catch.
-      // The dragged clip's whole link group is excluded: its audio partner's
-      // stale edges would otherwise snap the drag back to where it started.
-      // ⛔ EVERY CLIP THAT IS MOVING IS EXCLUDED, not just the grabbed one.
-      //
-      // The grabbed clip's link group was already excluded, for exactly the
-      // right reason: an audio partner travelling with the drag would otherwise
-      // offer its OLD edges as snap targets and yank the drag back to where it
-      // started. **The clips carried in `drag.others` travel too, and they were
-      // still in the points.** So dragging a multi-selection fought the user:
-      // every carried clip's original edges pulled the whole selection back
-      // toward the spot it was trying to leave, and the harder the selection,
-      // the stickier it felt.
-      const points = snapping
-        ? snapPoints.points(
-            seq,
-            [drag.clipId, ...drag.others.map((o) => o.id)],
-            useStore.getState().ui.playheadS,
-          )
-        : []
-      let desired = desiredRaw
-      if (snapping) {
-        const snapped = snapMoveStart(desiredRaw, durS, points, SNAP_PX / pxPerS)
-        desired = snapped.desired
-        setSnapIndicatorT(snapped.indicatorT)
-      }
+      // ⛔ EVERY CLIP THAT IS MOVING IS EXCLUDED FROM THE SNAP POINTS, not just
+      // the grabbed one. A clip travelling with the drag would otherwise offer
+      // its OLD edges as targets and yank the whole selection back toward the
+      // spot it was trying to leave. The block snaps as one (moveStep).
+      const points = snapping ? snapPoints.points(seq, drag.blockIds, useStore.getState().ui.playheadS) : []
       const hovered = laneAt(y)
       const valid = !!hovered && hovered.kind === drag.trackKind && !hovered.locked
-      const target = valid ? hovered! : current
+      // ⛔ THE LANE HE AIMS AT IS THE NEAREST ONE OF THE CLIP'S KIND, 2026-10-03.
+      // Anything that was not a valid lane (10px above the top track, the
+      // divider, a lane of the other kind) used to mean "the lane it started
+      // on", so overshooting the top snapped the whole selection back down to
+      // where it came from. A locked lane is handed on as aimed: the block move
+      // stops short of it, like the edge of the stack.
+      const aimed = laneOfKindNearY(laneInfos, y, drag.trackKind) ?? current
       // Tint the lane you're over - green ok, red no (wrong kind / locked).
       setHoverLane(hovered && hovered.id !== current.id ? { trackId: hovered.id, valid } : null)
-      const finalT = Math.max(0, desired)
-      dragFinal.current = { trackId: target.id, tS: finalT }
+      const step = moveStep(
+        seq,
+        drag,
+        { startS: desiredRaw, trackId: aimed.id },
+        snapping ? { points, thresholdS: SNAP_PX / pxPerS } : null,
+      )
+      setSnapIndicatorT(step.indicatorT)
+      dragFinal.current = step.final
       // ⛔ THE LATCH. Once a move has genuinely moved, it is a DRAG for the rest
       // of the gesture, and it stays one however the pointer ends up on release.
       // See the comment on `dragMoved` for what this was costing him.
-      if (!dragMoved.current && Math.abs(finalT - clip.startS) > 1e-6) dragMoved.current = true
-      if (!dragMoved.current && target.id !== current.id) dragMoved.current = true
-      // Moves get the live readout too: new start timecode + signed delta.
+      if (!dragMoved.current && Math.abs(step.final.tS - clip.startS) > 1e-6) dragMoved.current = true
+      if (!dragMoved.current && aimed.id !== current.id) dragMoved.current = true
+      // Moves get the live readout too: where it LANDS + signed delta.
       // Suppressed inside the click slop so a plain click never flashes it.
-      if (dragMoved.current) setTrimTip({ x: e.clientX, y: e.clientY - 34, text: moveTipText(finalT, clip.startS, seq.fps) })
-      setPreviewSeq(moveSelectionWith(seq, drag.clipId, target.id, finalT, drag.others, drag.solo))
+      if (dragMoved.current && step.tip !== null) setTrimTip({ x: e.clientX, y: e.clientY - 34, text: step.tip })
+      // The preview IS the commit: moveStep and dragCommit run the same moveBlock
+      // on the same `final`.
+      setPreviewSeq(step.next)
     } else {
       // Slip, roll, slide, stretch and trim: the preview and its readout come
       // from timelineGestures.ts. Roll excludes BOTH sides of the cut and slide
@@ -600,7 +596,13 @@ export function Timeline({ height }: { height: number }) {
       } else if (drag.kind === 'move' && drag.collapseCandidate) setUI({ selection: [drag.clipId] })
       scrubTo(drag.downClientX)
     } else if (dragFinal.current) {
-      const commit = dragCommit(drag, dragFinal.current, seq, assets)
+      if (drag.kind === 'move' && drag.blockIds.length === 0) {
+        // dragBlockIds hands back nothing only when the clip's linked partner is
+        // selected too and sits on a locked track. Moving one half would split
+        // the pair, so it holds, and says why instead of doing nothing silently.
+        show('Its linked partner is on a locked track, so the pair stays where it is')
+      }
+      const commit = dragCommit(drag, dragFinal.current, assets)
       if (commit) updateActiveSequence(commit.label, commit.apply)
     }
     setDrag(null)

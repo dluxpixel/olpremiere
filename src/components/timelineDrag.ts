@@ -23,14 +23,12 @@ export type Drag =
       downClientX: number
       downClientY: number
       /**
-       * The REST of a multi-selection (one entry per link group, original
-       * startS at grab time): grabbing one selected clip moves them all,
-       * matching Alt+Arrow nudge - anything else silently destroys the
-       * selection's relative timing.
+       * Every clip this drag carries, the grabbed one included: ONE rigid
+       * block (engine/blockMove.ts). Read off the selection at the press by
+       * dragBlockIds, so a linked partner is in it only when he selected it
+       * too, and fixed for the whole gesture.
        */
-      others: { id: Id; startS0: number }[]
-      /** He singled out ONE half of a linked pair: move only that half. */
-      solo?: boolean
+      blockIds: Id[]
       /**
        * Click-without-drag on an already-multi-selected clip collapses the
        * selection to just it (narrowing without deselect-all); a real drag

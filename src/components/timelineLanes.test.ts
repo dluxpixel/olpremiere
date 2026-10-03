@@ -5,6 +5,7 @@ import {
   clipWindowS,
   laneAtY,
   laneHoverClass,
+  laneOfKindNearY,
   lanesCursorClass,
   marqueeHitIds,
   modifierMods,
@@ -33,6 +34,18 @@ describe('lane geometry', () => {
     expect(laneAtY(infos, RULER_H + 50 + 64)).toBeNull()
     expect(laneAtY(infos, RULER_H + 50 + 64 + 2)).toBe(a1)
     expect(laneAtY(infos, 10_000)).toBeNull()
+  })
+
+  // ⛔ 2026-10-03: overshooting the top lane, or crossing the divider, used to
+  // send a dragged selection back to the lane it started on.
+  it('aims a drag at the nearest lane of its kind, wherever the pointer is', () => {
+    expect(laneOfKindNearY(infos, RULER_H - 30, 'video')).toBe(v2) // above the top lane
+    expect(laneOfKindNearY(infos, RULER_H + 60, 'video')).toBe(v1) // on it
+    expect(laneOfKindNearY(infos, RULER_H + 50 + 64, 'video')).toBe(v1) // the divider
+    expect(laneOfKindNearY(infos, 10_000, 'video')).toBe(v1) // down in the audio
+    expect(laneOfKindNearY(infos, RULER_H, 'audio')).toBe(a1) // up in the video
+    expect(laneOfKindNearY(infos, 10_000, 'audio')).toBe(a1)
+    expect(laneOfKindNearY(buildLaneInfos([v1], []), 0, 'audio')).toBeNull()
   })
 })
 

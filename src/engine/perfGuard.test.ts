@@ -7,9 +7,11 @@
 //   collectSnapPoints  runs on every pointer-move of a snapped drag or trim
 //                      (Timeline.tsx snapping helpers), so it shares the same
 //                      16.7ms with React work and paint.
-//   moveSelectionWith  runs on every pointer-move of a clip drag to build the
+//   moveBlock          runs on every pointer-move of a clip drag to build the
 //                      preview, and again once on the commit. Added 2026-08-12
-//                      when finding 6 was finally measured. Same 16.7ms.
+//                      when finding 6 was finally measured (as moveSelectionWith,
+//                      replaced by the rigid block move on 2026-10-03). Same
+//                      16.7ms.
 //
 // Methodology: build a 200-clip sequence (160 video clips across 4 tracks with
 // keyframes, effects, transitions and fades sprinkled in, plus 40 audio clips
@@ -30,7 +32,8 @@
 // on genuinely new required work (and document the new measurement here).
 
 import { describe, expect, it } from 'vitest'
-import { collectSnapPoints, moveSelectionWith } from './timeline'
+import { collectSnapPoints } from './timeline'
+import { blockEdges, moveBlock, snapBlockDelta } from './blockMove'
 import { resolveFrame } from './render/resolve'
 import { MOTION_CURVES } from './motion'
 import {
@@ -96,9 +99,24 @@ const SNAP_POINTS_BUDGET_X = 1.2
  * assertion below is the one that actually protects him: a ratio drifts with
  * whatever else the box is doing, a share of a frame does not.
  */
-const MOVE_SELECTION_BUDGET_X = 16
+/**
+ * RE-BASELINED AGAIN 2026-10-03, from 16 down to 6. The overwrite that cost the
+ * 10x above is GONE: he banned carving on 2026-08-15, and the drag was rebuilt
+ * as one rigid block that searches for the nearest spot the whole selection
+ * fits (blockMove.ts). Measured three runs: ratio 2.64x, 2.73x, 3.06x, and
+ * 0.033 to 0.037 ms per call for the same 9 clip drag on packed lanes. The
+ * budget sits about 2x the worst, so a real regression still trips it.
+ */
+const MOVE_SELECTION_BUDGET_X = 6
 /** Hard ceiling on what a drag may cost in real time, whatever the ratio says. */
 const MOVE_SELECTION_FRAME_SHARE_MAX = 0.05
+/**
+ * The worst drag he can make on a 300 clip timeline, 2026-10-03: half of every
+ * lane selected, interleaved with the other half, so every pointer-move collides
+ * and the block has to search for where it fits. A quarter of a frame is the
+ * ceiling; see the measurement on the test itself.
+ */
+const BLOCK_WORST_FRAME_SHARE_MAX = 0.25
 
 // --- Fixture: a 200-clip sequence ------------------------------------------
 
@@ -379,18 +397,18 @@ describe('perf guard: 200-clip sequence', () => {
   // finding 7 and finding 13 got, and the same reason: the finding read the code
   // and never timed it. It stays here as a GUARD rather than a note, so the
   // decision gets revisited with a number if the cost ever moves.
-  it(`moveSelectionWith stays under ${MOVE_SELECTION_BUDGET_X}x the calibration while dragging a multi-clip selection`, () => {
+  it(`moveBlock stays under ${MOVE_SELECTION_BUDGET_X}x the calibration while dragging a multi-clip selection`, () => {
     // Shaped like the drag itself: the grabbed clip plus eight more selected
     // clips on another track, re-run at a new time on every pointer-move, which
     // is exactly what Timeline.tsx does to build the drag preview.
     const dragged = seq.tracks[1].clips[20]
     const targetTrack = seq.tracks[1].id
-    const others = seq.tracks[0].clips.slice(0, 8).map((c) => ({ id: c.id, startS0: c.startS }))
+    const blockIds = [dragged.id, ...seq.tracks[0].clips.slice(0, 8).map((c) => c.id)]
     let t = 0
     const { ratio, perCallMs } = benchRatio(
       () => {
         t += 0.01
-        sink += moveSelectionWith(seq, dragged.id, targetTrack, dragged.startS + (t % 3), others, false).tracks.length
+        sink += moveBlock(seq, blockIds, dragged.id, targetTrack, dragged.startS + (t % 3)).tracks.length
       },
       500,
       7,
@@ -399,6 +417,41 @@ describe('perf guard: 200-clip sequence', () => {
     expect(ratio).toBeLessThan(MOVE_SELECTION_BUDGET_X)
     // The one that matters to him: a drag must never eat a real slice of a frame.
     expect(perCallMs / 16.7).toBeLessThan(MOVE_SELECTION_FRAME_SHARE_MAX)
+  })
+
+  // ⛔ THE REBUILT DRAG ON A 300 CLIP TIMELINE, AT ITS WORST, 2026-10-03.
+  //
+  // The rigid block move searches for the nearest spot the WHOLE block fits, so
+  // its cost grows with (clips in the block) x (clips on the lanes it lands on).
+  // This is the shape that maximises that: 300 clips, every other one selected
+  // on every lane, so 150 travel through 150 they can never sit on, plus the
+  // block snap, on every pointer-move.
+  //
+  //   Measured 2026-10-03 on his machine, alone: 0.37 ms mean per pointer-move,
+  //   2.6 ms worst single call (a GC pause), about 2 percent of a 16.7 ms frame.
+  //   A 9 clip drag is 0.06 ms and a single clip 0.04 ms.
+  it(`a 150 clip block dragged through 150 others stays inside ${BLOCK_WORST_FRAME_SHARE_MAX * 100} percent of a frame`, () => {
+    const big: Sequence = {
+      ...seq,
+      tracks: [videoLane('V1', 60), videoLane('V2', 60), videoLane('V3', 60), videoLane('V4', 60), audioLane('A1', 30), audioLane('A2', 30)],
+    }
+    expect(big.tracks.reduce((n, t) => n + t.clips.length, 0)).toBe(300)
+    const blockIds = big.tracks.flatMap((t) => t.clips.filter((_, i) => i % 2 === 0).map((c) => c.id))
+    const grabbed = big.tracks[1].clips[20]
+    const edges = blockEdges(big, blockIds, grabbed.id)
+    const points = collectSnapPoints(big, { excludeClipIds: blockIds, playheadS: 3 })
+    let t = 0
+    const { perCallMs } = benchRatio(
+      () => {
+        t += 1 / 30
+        const snapped = snapBlockDelta(edges, (t % 6) - 3, points, 8 / 60)
+        sink += moveBlock(big, blockIds, grabbed.id, big.tracks[2].id, grabbed.startS + snapped.deltaS).tracks.length
+      },
+      200,
+      5,
+    )
+    expect(sink).toBeGreaterThan(0)
+    expect(perCallMs / 16.7).toBeLessThan(BLOCK_WORST_FRAME_SHARE_MAX)
   })
 
   it(`collectSnapPoints stays under ${SNAP_POINTS_BUDGET_X}x the calibration while dragging`, () => {

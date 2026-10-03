@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { benchRatio } from './perfRatio'
+import { dragBlockIds, moveBlock } from './blockMove'
 import { applyAppearanceToClip, retimeAppearance } from './anim/appearance'
 import { clipEmitsAudio } from './audio'
 import { channelKeyframes, resolveChannel } from './effects/channels'
@@ -20,7 +21,6 @@ import {
   addClipWithLinkedAudio,
   addTrack,
   adoptFrameRate,
-  moveSelectionWith,
   addMarker,
   canPlace,
   clipDurationS,
@@ -2742,6 +2742,13 @@ describe('a ripple carries the other tracks with it', () => {
   })
 })
 
+/**
+ * A clip drag exactly as the timeline commits it: the block is read off what he
+ * has selected (the grabbed clip always in it), then the one rigid move runs.
+ */
+const dragSelection = (seq: Sequence, selection: string[], grab: string, trackId: string, tS: number): Sequence =>
+  moveBlock(seq, dragBlockIds(seq, selection, grab), grab, trackId, tS)
+
 describe('a linked partner is never shoved on top of anything', () => {
   // The rule the whole file is written against: two clips may not occupy the
   // same second of the same track. Every one of these used to break it through a
@@ -2768,7 +2775,8 @@ describe('a linked partner is never shoved on top of anything', () => {
     // holds a music bed at 10-20s, and the audio half was carving a hole in it.
     const music = makeClip({ id: 'music', startS: 10, outS: 10 })
     const seq = linkedPair(0, 0, [music])
-    const out = moveSelectionWith(seq, 'v', 'V1', 10, [])
+    // Both halves selected: the pair travels together.
+    const out = dragSelection(seq, ['v', 'a'], 'v', 'V1', 10)
 
     expect(overlaps(out)).toBe(false)
     const kept = findClip(out, 'music')
@@ -2785,7 +2793,7 @@ describe('a linked partner is never shoved on top of anything', () => {
 
   it('a drag with a clear partner track is untouched by the clamp', () => {
     const seq = linkedPair(0, 0, [])
-    const out = moveSelectionWith(seq, 'v', 'V1', 10, [])
+    const out = dragSelection(seq, ['v', 'a'], 'v', 'V1', 10)
     expect(findClip(out, 'v')?.clip.startS).toBe(10)
     expect(findClip(out, 'a')?.clip.startS).toBe(10)
   })
@@ -3402,7 +3410,7 @@ describe('adoptFrameRate', () => {
 // the grabbed clip ever changed lane. And a purely vertical drag has deltaS 0,
 // which the old early-return treated as nothing to do, so dragging a selection
 // straight down moved exactly one clip and left the rest behind.
-describe('moveSelectionWith (a multi-clip drag)', () => {
+describe('a multi-clip drag (moveBlock)', () => {
   /** V1, V2, A1, V3: video lanes deliberately NOT contiguous. */
   const stack = () =>
     makeSeq([
@@ -3419,8 +3427,6 @@ describe('moveSelectionWith (a multi-clip drag)', () => {
   const startOf = (seq: Sequence, id: string) =>
     seq.tracks.flatMap((t) => t.clips).find((c) => c.id === id)?.startS
 
-  const others = (seq: Sequence, ids: string[]) =>
-    ids.map((id) => ({ id, startS0: startOf(seq, id)! }))
 
   /**
    * ⛔ HIS LINKED DRAG REPORT, 2026-08-05 AND AGAIN 2026-08-12, reproduced at last.
@@ -3448,7 +3454,7 @@ describe('moveSelectionWith (a multi-clip drag)', () => {
     ])
     // He selected the two VIDEO halves and neither audio half, so both answers
     // are solo: the one under his cursor and the one travelling with it.
-    const out = moveSelectionWith(seq, 'v-one', 'v1', 8, [{ id: 'v-two', startS0: 4, solo: true }], true)
+    const out = dragSelection(seq, ['v-one', 'v-two'], 'v-one', 'v1', 8)
 
     expect(startOf(out, 'v-one')).toBe(8)
     expect(startOf(out, 'v-two')).toBe(12)
@@ -3462,7 +3468,7 @@ describe('moveSelectionWith (a multi-clip drag)', () => {
       makeTrack({ id: 'v1', clips: [makeClip({ id: 'v-one', startS: 0, outS: 1 }), makeClip({ id: 'v-two', startS: 4, outS: 1, linkId: 'L2' })] }),
       makeTrack({ id: 'a1', kind: 'audio', clips: [makeClip({ id: 'a-two', startS: 4, outS: 1, linkId: 'L2' })] }),
     ])
-    const out = moveSelectionWith(seq, 'v-one', 'v1', 8, [{ id: 'v-two', startS0: 4, solo: false }], true)
+    const out = dragSelection(seq, ['v-one', 'v-two', 'a-two'], 'v-one', 'v1', 8)
     expect(startOf(out, 'v-two')).toBe(12)
     expect(startOf(out, 'a-two'), 'selected together, so it travels together').toBe(12)
   })
@@ -3470,7 +3476,7 @@ describe('moveSelectionWith (a multi-clip drag)', () => {
   it('carries the others DOWN A LANE on a purely vertical drag', () => {
     const seq = stack()
     // Grab 'a' on v3, drop on v2, same time. This is his v6-to-v5.
-    const out = moveSelectionWith(seq, 'a', 'v2', 0, others(seq, ['c']))
+    const out = dragSelection(seq, ['a', 'c'], 'a', 'v2', 0)
     expect(trackOf(out, 'a')).toBe('v2')
     expect(trackOf(out, 'c')).toBe('v2')
     expect(startOf(out, 'c')).toBe(4) // time untouched
@@ -3479,14 +3485,14 @@ describe('moveSelectionWith (a multi-clip drag)', () => {
   it('counts the shift in VIDEO lanes, stepping over the audio track between them', () => {
     const seq = stack()
     // v3 -> v1 is two VIDEO lanes down, even though it is three tracks in the array.
-    const out = moveSelectionWith(seq, 'a', 'v1', 0, others(seq, ['c']))
+    const out = dragSelection(seq, ['a', 'c'], 'a', 'v1', 0)
     expect(trackOf(out, 'a')).toBe('v1')
     expect(trackOf(out, 'c')).toBe('v1')
   })
 
   it('moves lane AND time together when the drag does both', () => {
     const seq = stack()
-    const out = moveSelectionWith(seq, 'a', 'v2', 1, others(seq, ['c']))
+    const out = dragSelection(seq, ['a', 'c'], 'a', 'v2', 1)
     expect(trackOf(out, 'a')).toBe('v2')
     expect(trackOf(out, 'c')).toBe('v2')
     expect(startOf(out, 'c')).toBe(5) // carried the +1s delta too
@@ -3494,22 +3500,29 @@ describe('moveSelectionWith (a multi-clip drag)', () => {
 
   it('still shifts time only, when the lane does not change', () => {
     const seq = stack()
-    const out = moveSelectionWith(seq, 'a', 'v3', 1, others(seq, ['c']))
+    const out = dragSelection(seq, ['a', 'c'], 'a', 'v3', 1)
     expect(trackOf(out, 'c')).toBe('v3')
     expect(startOf(out, 'c')).toBe(5)
   })
 
-  it('clamps at the top of the stack instead of dropping a clip off the end', () => {
+  // ⛔ CHANGED 2026-10-03, AT HIS WORD. This used to clamp each clip on its own
+  // and assert that 'a' and 'b' both ended up on v1: two lanes collapsed into
+  // one at the edge of the stack. His words: *"make it so when i select multiple
+  // stuff and drag it anywhere it actually works and stays in the SAME SHAPE"*.
+  // So the lane shift is clamped ONCE, for the whole block.
+  it('stops the WHOLE block at the edge of the stack, keeping its lanes apart', () => {
     const seq = stack()
-    // 'b' is already on v2; dragging 'a' from v3 to v1 would push b past the top.
-    const out = moveSelectionWith(seq, 'a', 'v1', 0, others(seq, ['b']))
-    expect(trackOf(out, 'a')).toBe('v1')
-    expect(trackOf(out, 'b')).toBe('v1') // clamped, not lost
+    // 'b' is on v2, one video lane below 'a' on v3. Dragging 'a' two lanes down
+    // to v1 would push 'b' off the stack, so the block goes one lane, together.
+    const out = dragSelection(seq, ['a', 'b'], 'a', 'v1', 0)
+    expect(trackOf(out, 'a')).toBe('v2')
+    expect(trackOf(out, 'b')).toBe('v1')
+    expect(startOf(out, 'b')).toBe(2)
   })
 
   it('does nothing at all when neither lane nor time moved', () => {
     const seq = stack()
-    expect(moveSelectionWith(seq, 'a', 'v3', 0, others(seq, ['c']))).toBe(seq)
+    expect(dragSelection(seq, ['a', 'c'], 'a', 'v3', 0)).toBe(seq)
   })
 })
 
@@ -3544,7 +3557,7 @@ describe('a multi-clip drag keeps the grabbed clip and its selection together', 
   it('holds the carried clip to the distance the grabbed clip actually travelled', () => {
     const seq = packed()
     // Ask to drop 'a' at 20s. It cannot get there: the wall is in the way.
-    const out = moveSelectionWith(seq, 'a', 'V1', 20, [{ id: 'b', startS0: 2, solo: true }], true)
+    const out = dragSelection(seq, ['a', 'b'], 'a', 'V1', 20)
     const a = findClip(out, 'a')!.clip
     const b = findClip(out, 'b')!.clip
     const travelled = a.startS - 0
@@ -3566,7 +3579,7 @@ describe('a multi-clip drag keeps the grabbed clip and its selection together', 
       }),
     ])
     // 'a' is already at 0 and asked to go to 0: nothing applied, so 'b' holds.
-    const out = moveSelectionWith(seq, 'a', 'V1', 0, [{ id: 'b', startS0: 2, solo: true }], true)
+    const out = dragSelection(seq, ['a', 'b'], 'a', 'V1', 0)
     expect(findClip(out, 'a')!.clip.startS).toBe(0)
     expect(findClip(out, 'b')!.clip.startS).toBe(2)
   })
@@ -3579,7 +3592,7 @@ describe('a multi-clip drag keeps the grabbed clip and its selection together', 
         clips: [makeClip({ id: 'a', startS: 0, outS: 2 }), makeClip({ id: 'b', startS: 2, outS: 2 })],
       }),
     ])
-    const out = moveSelectionWith(seq, 'a', 'V1', 10, [{ id: 'b', startS0: 2, solo: true }], true)
+    const out = dragSelection(seq, ['a', 'b'], 'a', 'V1', 10)
     const a = findClip(out, 'a')!.clip
     const b = findClip(out, 'b')!.clip
     expect(b.startS - a.startS).toBeCloseTo(2, 6)
