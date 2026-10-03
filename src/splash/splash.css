@@ -1,12 +1,13 @@
 
 /* The card borrows tokens from index.css, which this page deliberately does not
    load. Redeclared here so the wordmark is Figtree rather than a fallback serif,
-   and the corners match his 2026-07-27 radius call. */
+   and the corners match his radius calls (2026-07-27, then a notch rounder on 2026-10-03).
+   Same values as src/index.css; src/ui/radiusScale.test.ts holds the two together. */
 :root {
   --font-sans: 'Figtree Variable', 'Segoe UI', system-ui, -apple-system, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Mono', Consolas, monospace;
-  --radius-dialog: 4px;
-  --radius-clip: 2px;
+  --radius-dialog: 12px;
+  --radius-clip: 4px;
 }
 
 /* SHARED WITH LoadingCard.module.css
@@ -621,10 +622,10 @@
  * has twenty because it counts ONE file in twentieths, so a real percent moves it
  * about every 12 MB of a 240 MB installer instead of once a minute. Twenty segments
  * at the boot's 4px gap read as a dotted line rather than a bar; closing the gap to
- * the clip radius puts the air back to roughly what the boot bar has, so the finer
- * ruler still reads as the same instrument. The gap is the radius token rather than
- * a number because they are the same decision: this is how much the segments are
- * allowed to not touch. */
+ * 2px puts the air back to roughly what the boot bar has, so the finer ruler still
+ * reads as the same instrument. This WAS the clip radius token, back when that was
+ * 2px and the two were one decision. The radius moved up a notch on 2026-10-03 and
+ * the gap must not follow it (4px is the dotted line again), so it is a number now. */
 .card[data-card='update'] .bar {
-  gap: var(--radius-clip);
+  gap: 2px;
 }

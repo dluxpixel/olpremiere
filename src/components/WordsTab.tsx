@@ -161,7 +161,7 @@ export function WordsTab() {
                       data-index={i}
                       data-at={word.atS}
                       data-selected={selected || undefined}
-                      className={`cursor-text rounded-[3px] px-0.5 ${
+                      className={`cursor-text rounded-inner px-0.5 ${
                         selected
                           ? 'bg-accent-quiet text-accent'
                           : current

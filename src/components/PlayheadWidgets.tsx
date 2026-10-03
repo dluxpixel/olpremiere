@@ -66,7 +66,7 @@ export function RemotePlayheads({ pxPerS }: { pxPerS: number }) {
           style={{ left: p.playheadS * pxPerS, background: p.color }}
         >
           <span
-            className="absolute left-1 top-0 max-w-24 truncate rounded-[3px] px-1 text-[9px] leading-4 text-black/80"
+            className="absolute left-1 top-0 max-w-24 truncate rounded-inner px-1 text-[9px] leading-4 text-black/80"
             style={{ background: p.color }}
           >
             {p.name}
@@ -139,7 +139,7 @@ export function PlayheadTimecode({
           if (e.key === 'Enter') commit()
           else if (e.key === 'Escape') setEditing(null) // revert: live readout resumes
         }}
-        className={`w-[86px] rounded-[3px] bg-bg-input px-1 font-numeric text-text-primary outline-none ${className ?? ''}`}
+        className={`w-[86px] rounded-inner bg-bg-input px-1 font-numeric text-text-primary outline-none ${className ?? ''}`}
       />
     )
   }

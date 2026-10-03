@@ -79,7 +79,7 @@ export function AddEffectMenu({ clipId }: { clipId: string }) {
               purpose, see the note at the top of this file. */}
           <div className="fixed inset-0 z-40" data-testid="add-effect-backdrop" onMouseDown={close} />
           <div
-            className="absolute right-0 top-[calc(100%+4px)] z-50 flex w-64 flex-col rounded-field border border-border-strong bg-bg-elevated shadow-pop"
+            className="absolute right-0 top-[calc(100%+4px)] z-50 flex w-64 flex-col rounded-overlay border border-border-strong bg-bg-elevated shadow-pop"
             data-testid="add-effect-menu"
           >
             <div className="flex items-center gap-1.5 border-b border-border px-2 py-1.5">

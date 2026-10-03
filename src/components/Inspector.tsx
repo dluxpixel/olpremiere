@@ -407,7 +407,7 @@ function InspectorEmpty() {
     <div
       data-testid="inspector-empty"
       data-drop-hot={hot ? 'true' : undefined}
-      className={`flex flex-1 flex-col items-center justify-center gap-2 rounded-field p-4 text-center ${
+      className={`flex flex-1 flex-col items-center justify-center gap-2 rounded-overlay p-4 text-center ${
         hot ? 'ring-2 ring-inset ring-accent-hover' : ''
       }`}
       {...dropProps}

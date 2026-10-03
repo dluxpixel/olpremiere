@@ -69,7 +69,7 @@ function MediaSyncBanner() {
           </span>
           <button
             data-testid={`locate-${m.assetId}`}
-            className="shrink-0 rounded-[4px] border border-border px-1.5 py-0.5 text-accent hover:border-accent"
+            className="shrink-0 rounded-field border border-border px-1.5 py-0.5 text-accent hover:border-accent"
             onClick={() => {
               setLocating({ blobKey: m.blobKey, assetId: m.assetId })
               locateRef.current?.click()
@@ -106,7 +106,7 @@ function Tab({ tab, label }: { tab: LeftTab; label: string }) {
       aria-selected={active}
       onClick={() => setUI({ leftTab: tab })}
       data-testid={`tab-${tab}`}
-      className={`h-6 shrink-0 rounded-overlay px-2 text-[12px] font-medium transition-colors duration-[120ms] ${
+      className={`h-6 shrink-0 rounded-field px-2 text-[12px] font-medium transition-colors duration-[120ms] ${
         active ? 'bg-accent-quiet text-accent' : 'text-text-secondary hover:text-text-primary'
       }`}
     >
@@ -403,7 +403,7 @@ function AssetCard({ asset, fps }: { asset: MediaAsset; fps: number }) {
           />
         )}
         {asset.kind !== 'image' && (
-          <span className="absolute right-1 bottom-1 rounded-[3px] bg-black/70 px-1 text-[10px] text-text-primary tabular-nums">
+          <span className="absolute right-1 bottom-1 rounded-inner bg-black/70 px-1 text-[10px] text-text-primary tabular-nums">
             {formatTimecode(scrub.active ? scrub.tS : asset.durationS, fps)}
           </span>
         )}
@@ -515,7 +515,7 @@ function FindMyMedia() {
     return (
       <div
         data-testid="media-healing"
-        className="mx-2 mb-2 rounded-field border border-border bg-bg-elevated px-2 py-2 text-[11px] text-text-primary"
+        className="mx-2 mb-2 rounded-overlay border border-border bg-bg-elevated px-2 py-2 text-[11px] text-text-primary"
       >
         Putting your media back from the spare copies, {Math.min(healing.done + 1, healing.total)} of {healing.total}:{' '}
         {healing.name}
@@ -526,7 +526,7 @@ function FindMyMedia() {
   return (
     <div
       data-testid="find-my-media"
-      className="mx-2 mb-2 rounded-field border border-warning/40 bg-warning/10 px-2 py-2 text-[11px] text-text-primary"
+      className="mx-2 mb-2 rounded-overlay border border-warning/40 bg-warning/10 px-2 py-2 text-[11px] text-text-primary"
     >
       <div className="mb-1.5">
         {missing.length} {missing.length === 1 ? 'file' : 'files'} on this edit have no media. Your cuts are all still
@@ -716,7 +716,7 @@ function BrowserItem({
       onKeyDown={(e) => {
         if (e.key === 'Enter') onApply?.()
       }}
-      className="flex cursor-default items-center gap-2 rounded-[4px] px-2 py-1.5 text-[12px] text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated hover:text-text-primary"
+      className="flex cursor-default items-center gap-2 rounded-field px-2 py-1.5 text-[12px] text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated hover:text-text-primary"
     >
       <Sparkles size={13} strokeWidth={1.5} aria-hidden className="shrink-0 text-text-muted" />
       <span className="truncate">{name}</span>
@@ -808,7 +808,7 @@ function EffectsTab() {
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') applyJettismLook()
                   }}
-                  className="flex cursor-default items-center gap-2 rounded-[4px] px-2 py-1.5 text-[12px] text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated hover:text-text-primary"
+                  className="flex cursor-default items-center gap-2 rounded-field px-2 py-1.5 text-[12px] text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated hover:text-text-primary"
                 >
                   <Wand2 size={13} strokeWidth={1.5} aria-hidden className="shrink-0 text-text-muted" />
                   <span className="truncate">Jettism (Shorts template)</span>
@@ -822,7 +822,7 @@ function EffectsTab() {
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') applyPunchyGradeToClips(targets)
                   }}
-                  className="flex cursor-default items-center gap-2 rounded-[4px] px-2 py-1.5 text-[12px] text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated hover:text-text-primary"
+                  className="flex cursor-default items-center gap-2 rounded-field px-2 py-1.5 text-[12px] text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated hover:text-text-primary"
                 >
                   <Wand2 size={13} strokeWidth={1.5} aria-hidden className="shrink-0 text-text-muted" />
                   <span className="truncate">Punchy Grade (selected clip)</span>

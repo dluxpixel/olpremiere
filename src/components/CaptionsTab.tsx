@@ -588,7 +588,7 @@ function StylePreview({ draft, seqHeight }: { draft: Draft; seqHeight: number })
           textShadow: shadow,
           background: look.box ? look.box.color : undefined,
           padding: look.box ? `${Math.max(2, look.box.paddingPx * scale)}px ${Math.max(4, look.box.paddingPx * scale * 1.4)}px` : undefined,
-          borderRadius: look.box ? Math.max(0, look.box.radiusPx * scale) : undefined,
+          borderRadius: look.box ? Math.max(0, look.box.radiusPx * scale) : undefined, // corner-is-content: the caption's own box, at its real radius
           textAlign: 'center',
         }}
       >

@@ -306,11 +306,11 @@ function SafeMargins({ canvas }: { canvas: HTMLCanvasElement | null }) {
       style={{ width: box.w, height: box.h }}
     >
       <div
-        className="absolute rounded-[1px] border border-dashed"
+        className="absolute rounded-mark border border-dashed"
         style={{ ...inset(0.9), borderColor: 'var(--color-border-strong)' }}
       />
       <div
-        className="absolute rounded-[1px] border border-dashed"
+        className="absolute rounded-mark border border-dashed"
         style={{ ...inset(0.8), borderColor: 'var(--color-accent-quiet)' }}
       />
     </div>
@@ -438,7 +438,7 @@ export function Monitor() {
             bar itself on 2026-08-19. */}
         <div aria-hidden data-testid="meter-mirror" className="shrink-0" style={{ width: MASTER_METER_W }} />
         <div className="relative flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden">
-          <canvas ref={canvasRef} data-testid="program-canvas" className="rounded-[2px] bg-black" />
+          <canvas ref={canvasRef} data-testid="program-canvas" className="rounded-inner bg-black" />
           {safeMargins && <SafeMargins canvas={canvasRef.current} />}
           {/* The one honest thing to show over a picture that cannot be drawn.
               It sits ON the monitor because the monitor is what looks broken;
@@ -449,7 +449,7 @@ export function Monitor() {
               role="status"
               className="absolute inset-0 flex items-center justify-center p-6 text-center"
             >
-              <div className="max-w-[28rem] rounded-field border border-border bg-bg-elevated/95 px-4 py-3 text-ui-sm text-text-primary shadow-lg">
+              <div className="max-w-[28rem] rounded-overlay border border-border bg-bg-elevated/95 px-4 py-3 text-ui-sm text-text-primary shadow-lg">
                 <div className="font-medium">No picture: {noPicture}.</div>
                 <div className="mt-1 text-text-secondary">
                   Your edit is safe and everything else still works. Updating the graphics driver usually fixes this.

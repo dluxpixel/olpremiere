@@ -411,7 +411,7 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
 
       <div className="h-px bg-border" />
       <section
-        className={`flex flex-col gap-2 rounded-field ${effectDrop.hot ? 'ring-2 ring-inset ring-accent-hover' : ''}`}
+        className={`flex flex-col gap-2 rounded-overlay ${effectDrop.hot ? 'ring-2 ring-inset ring-accent-hover' : ''}`}
         data-testid="multi-effects"
         data-drop-hot={effectDrop.hot ? 'true' : undefined}
         {...effectDrop.dropProps}
