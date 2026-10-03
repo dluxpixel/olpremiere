@@ -68,6 +68,12 @@ export interface ExportSettings {
   audioBitrate?: number
   /** Preferred audio codec; the encoder still falls back aac→opus by support. */
   audioCodecPref?: 'aac' | 'opus'
+  /**
+   * The integrated loudness (LUFS) the whole mix is brought to before the
+   * master limiter, or null/absent to leave the mix's own level alone. The plan
+   * sets the platforms' level unless he switched "Platform loudness" off.
+   */
+  loudnessTargetLufs?: number | null
 }
 
 export interface ExportProgress {
@@ -95,6 +101,11 @@ export interface ExportAsset {
   /** Kept so worker errors can name the offending file. */
   name: string
   blob: Blob
+  /**
+   * The source's own frame rate, the one the preview's frame cache slots its
+   * frames by, so the export picks the same frame (frameIndex.ts).
+   */
+  fps?: number
 }
 
 export type ExportRequest =

@@ -22,6 +22,8 @@ export interface SourceStreams {
   /** ffmpeg's short codec name, e.g. `h264`, or undefined when there is no such stream. */
   video?: string
   audio?: string
+  /** The picture's HDR transfer, HLG (his iPhone's HDR video) or PQ (HDR10), or undefined for SDR. */
+  hdr?: 'hlg' | 'pq'
 }
 
 /**
@@ -117,12 +119,43 @@ export function parseSourceStreams(stderr: string): SourceStreams {
   // ordinary (desktop plus microphone) and the first is the one MP4 will carry.
   const video = /Stream #\d+:\d+.*?:\s*Video:\s*([a-z0-9]+)/i.exec(stderr)?.[1]
   const audio = /Stream #\d+:\d+.*?:\s*Audio:\s*([a-z0-9]+)/i.exec(stderr)?.[1]
-  return { durationS, video: video?.toLowerCase(), audio: audio?.toLowerCase() }
+  // The transfer is the last of the three names in the pixel format's brackets,
+  // `yuv420p10le(tv, bt2020nc/bt2020/arib-std-b67)` on his iPhone clips. Read on
+  // the first video line only, so a second stream cannot lend its colour.
+  const videoLine = /Stream #\d+:\d+.*?:\s*Video:[^\n]*/i.exec(stderr)?.[0] ?? ''
+  const hdr = /arib-std-b67/.test(videoLine) ? 'hlg' : /smpte2084/.test(videoLine) ? 'pq' : undefined
+  return { durationS, video: video?.toLowerCase(), audio: audio?.toLowerCase(), hdr }
 }
 
 /** Ask ffmpeg to report on a file and produce nothing. */
 export function probeArgs(input: string): string[] {
   return ['-hide_banner', '-i', input]
+}
+
+/**
+ * Count the source's video frames by reading its packets, decoding nothing.
+ * Under a second on his 75 second clip, and the only honest number to hold a
+ * re-encode against: ffmpeg's report has a duration, never a frame count.
+ */
+export function frameCountArgs(input: string): string[] {
+  return ['-hide_banner', '-loglevel', 'error', '-nostats', '-progress', 'pipe:1', '-i', input, '-map', '0:v:0', '-c', 'copy', '-f', 'null', '-']
+}
+
+/**
+ * What every re-encode carries: stop on a frame that will not decode, and say
+ * how far it got on stdout (`frame=`, `out_time_us=`), which is both the
+ * progress he sees and the count `framesLost` holds against the source.
+ */
+const reencodeChecks = ['-xerror', '-nostats', '-progress', 'pipe:1']
+
+/**
+ * Frames a re-encode dropped, or 0. One frame of slack, because a source whose
+ * last packet is a fragment ends a frame early without anything being wrong.
+ */
+export function framesLost(sourceFrames: number, outputFrames: number): number {
+  if (!(sourceFrames > 0)) return 0
+  const lost = sourceFrames - outputFrames
+  return lost > 1 ? lost : 0
 }
 
 /**
@@ -137,6 +170,12 @@ export function remuxArgs(input: string, output: string, plan: RemuxPlan): strin
     '-hide_banner',
     '-loglevel',
     'error',
+    // ⛔ A RE-ENCODE STOPS ON THE FIRST FRAME IT CANNOT DECODE. Seen 2026-09-29
+    // on a starved machine: the rescued iPhone clip came back 389 of 405 frames,
+    // with a half second hole in it, and the import said "Imported". A copy
+    // never decodes, so only a re-encode gets this, and `reencodeChecks` counts
+    // the frames afterwards as well.
+    ...(plan.canCopyVideo ? [] : reencodeChecks),
     '-y',
     '-i',
     input,
@@ -158,6 +197,143 @@ export function remuxArgs(input: string, output: string, plan: RemuxPlan): strin
     // MP4 wants them from zero and monotonic.
     '-avoid_negative_ts',
     'make_zero',
+    '-movflags',
+    '+faststart',
+    output,
+  ]
+}
+
+// ---------------------------------------------------------------------------
+// HDR phone clips: one SDR master on import
+//
+// ⛔ HIS WORDS, 2026-09-29: "make sure, because I input a lot of videos from my
+// iPhone, that the iPhone videos are fucking perfect, especially with the
+// export." His iPhone clips are HEVC 10 bit HLG with Dolby Vision, and nothing
+// in this app ever tone mapped them: Chromium's own HLG curve did, inside every
+// drawImage, for the preview and the export alike. Measured on his two clips
+// against the clip's own SDR grade (its Dolby Vision data): the darkest tenth
+// came out at HALF the level it should (3.0 against 9.5), and 5.68% of the
+// picture sat at black against 1.65%. He had been adding +0.1 brightness to his
+// GYM cuts by hand to make up for it.
+//
+// So a new HDR clip is tone mapped ONCE, on import, by the bundled ffmpeg, and
+// everything after it (preview, proxy, export) only ever sees an ordinary SDR
+// H.264 file, exactly the way the rescue path already swaps the source.
+
+/** How the HDR picture becomes SDR. */
+export type ToneMapper = 'libplacebo' | 'zscale'
+/** Which encoder writes the master. */
+export type MasterEncoder = 'qsv' | 'software'
+
+/**
+ * The tone maps, best first.
+ *
+ * libplacebo on the graphics card, with `apply_dolbyvision=1`: an iPhone records
+ * its own SDR grade frame by frame (the Dolby Vision RPU), and this applies it,
+ * so the master is the look the phone itself intended. Measured in the real app
+ * on his two clips, 2026-10-01, exported frames against that grade: 42.6 to
+ * 45.1 dB where Chromium's curve gave 26.8 to 32.2, and the darkest tenth at
+ * 9.8 against the grade's 9.6 where it was 3.0. An HLG or PQ clip with no RPU
+ * (Android, HDR10) gets libplacebo's own tone mapping instead.
+ *
+ * zscale is the fallback for a machine with no Vulkan: the closest of the
+ * software chains to the Dolby Vision grade (npl 150 with hable: dY -0.8 and
+ * -6.0 on his two clips; npl 100 or 203 and mobius or reinhard were all worse).
+ */
+const TONE_MAP: Record<ToneMapper, string> = {
+  libplacebo:
+    'libplacebo=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv:apply_dolbyvision=1:format=yuv420p',
+  zscale:
+    'zscale=t=linear:npl=150,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p',
+}
+
+/**
+ * The master's encoder, CHOSEN BY MEASUREMENT on his own two clips, 2026-10-01.
+ * Luma PSNR against the same tone map with no lossy step at all, size and
+ * wall clock for his 75.6 s clip (the 13.5 s one in brackets):
+ *
+ * | encoder                       | luma dB       | size            | time   |
+ * | ----------------------------- | ------------- | --------------- | ------ |
+ * | h264_qsv global_quality 16    | 46.56 (46.87) | 96.7 MB (20.6)  | 18.4 s |
+ * | h264_qsv global_quality 18    | 45.52 (45.78) | 72.1 MB (14.9)  | 16.1 s |
+ * | h264_qsv global_quality 20    | 45.11 (45.73) | 62.1 MB (13.4)  | 15.6 s |
+ * | libx264 veryfast crf 12       | 48.51 (48.86) | 190.5 MB (44.8) | 16.7 s |
+ * | libx264 veryfast crf 16       | 46.45 (46.85) | 97.3 MB (22.4)  | 17.0 s |
+ * | libx264 veryfast crf 18       | 45.39 (45.83) | 71.6 MB (16.2)  | 13.2 s |
+ *
+ * The bar was 45 dB, real time or faster, and the least disk that clears it.
+ * 18 clears it on both clips with half a dB to spare and comes out SMALLER than
+ * the 103.7 MB original; 20 clears it by 0.1 dB, too thin for a clip shot in
+ * worse light. QuickSync first because it does the work on the processor's own
+ * graphics instead of ten cores (the same reason as the preview copies in
+ * proxy.ts); libx264 at the same quality for a machine without it.
+ *
+ * A keyframe every 30 frames (the phone's own file has one every 28) keeps a
+ * cut into the middle of a long clip as cheap to reach as it was.
+ */
+const MASTER_VIDEO: Record<MasterEncoder, string[]> = {
+  qsv: ['-c:v', 'h264_qsv', '-preset', 'veryslow', '-global_quality', '18', '-g', '30'],
+  software: ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', '-g', '30', '-pix_fmt', 'yuv420p'],
+}
+
+/** Every way to make the master, best first. Tried in this order until one works. */
+export const MASTER_LADDER: ReadonlyArray<{ tonemap: ToneMapper; encoder: MasterEncoder }> = [
+  { tonemap: 'libplacebo', encoder: 'qsv' },
+  { tonemap: 'libplacebo', encoder: 'software' },
+  { tonemap: 'zscale', encoder: 'qsv' },
+  { tonemap: 'zscale', encoder: 'software' },
+]
+
+/** Turn an HDR clip into its SDR master. */
+export function sdrMasterArgs(
+  input: string,
+  output: string,
+  plan: RemuxPlan,
+  tonemap: ToneMapper,
+  encoder: MasterEncoder,
+): string[] {
+  return [
+    '-hide_banner',
+    '-loglevel',
+    'error',
+    ...reencodeChecks,
+    '-y',
+    // libplacebo runs on the graphics card through Vulkan. ffmpeg uploads and
+    // downloads the frames itself.
+    ...(tonemap === 'libplacebo' ? ['-init_hw_device', 'vulkan=vk', '-filter_hw_device', 'vk'] : []),
+    '-i',
+    input,
+    '-map',
+    '0:v:0',
+    '-map',
+    '0:a:0?',
+    // ⛔ THE PHONE'S OWN FRAME TIMES, TO THE TICK. passthrough alone still
+    // rounded every time onto a 1/30 grid, measured up to 3.3 ms off on 292 of
+    // 405 frames; the demuxer's time base keeps every one exact (0.0 ms on all
+    // 405 and all 2267), so the picture keeps its place against the sound.
+    '-fps_mode',
+    'passthrough',
+    '-enc_time_base',
+    'demux',
+    // The rotation needs nothing: ffmpeg turns the picture upright before the
+    // filter, so the master is 1080x1920 with no matrix left to honour.
+    '-vf',
+    TONE_MAP[tonemap],
+    ...MASTER_VIDEO[encoder],
+    // Said in the file too, so nothing downstream has to assume.
+    '-color_primaries',
+    'bt709',
+    '-color_trc',
+    'bt709',
+    '-colorspace',
+    'bt709',
+    '-color_range',
+    'tv',
+    // The sound is copied with its edit list, so the 2112 samples of encoder
+    // priming stay hidden exactly as they were in the phone's file.
+    '-c:a',
+    plan.reencodeAudio ? 'aac' : 'copy',
+    ...(plan.reencodeAudio ? ['-b:a', '192k'] : []),
     '-movflags',
     '+faststart',
     output,

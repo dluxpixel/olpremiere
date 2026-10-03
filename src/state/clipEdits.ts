@@ -14,6 +14,7 @@ import {
 } from '../engine/effects/channels'
 import * as ops from '../engine/effects/ops'
 import { getEffect } from '../engine/effects/registry'
+import { FRAME_FITS, frameFitDims, withFrameFit, type FrameFit } from '../engine/frameFit'
 import { cropForZoom, isSymmetricCrop, zoomFromCrop } from '../engine/innerZoom'
 import {
   clipKeyframeTimes,
@@ -933,6 +934,20 @@ export function removeClipTransition(clipId: string, edge: 'in' | 'out'): void {
 
 export function setClipBlendMode(clipId: string, mode: BlendMode): void {
   mapClip(clipId, 'Set blend mode', (c) => ({ ...c, blendMode: mode }))
+}
+
+/**
+ * Fit inside, Fill and crop, or Stretch to fill, for one clip, in one undo step.
+ * His ask, 2026-09-29: a 4:3 clip that stretches to 16:9 "when i select to".
+ * The arithmetic, and why only stretch is stored, is engine/frameFit.ts; the
+ * whole selection at once is setFrameFitForClips in bulkEdits.ts.
+ */
+export function setClipFrameFit(clipId: string, fit: FrameFit): void {
+  const project = useStore.getState().project
+  const seq = activeSequence(project)
+  const label = FRAME_FITS.find((f) => f.fit === fit)?.label ?? 'Frame'
+  // bailOnNoop: picking what the clip already shows records nothing.
+  mapClip(clipId, label, (c) => withFrameFit(c, fit, frameFitDims(seq, project.assets[c.assetId])), true)
 }
 
 /** Set or clear (undefined) the clip's shape mask. */

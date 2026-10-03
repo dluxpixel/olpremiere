@@ -1216,7 +1216,16 @@ export function liveZoom(
   if (!(cw > 0) || !(ch > 0)) return scale
   const boxW = tf.frame ? tf.frame.w : frameW
   const boxH = tf.frame ? tf.frame.h : frameH
-  const fit = tf.fit === 'cover' ? coverScale(boxW, boxH, cw, ch) : fitScale(boxW, boxH, cw, ch)
+  // A STRETCHED clip is magnified differently across and down (a 4:3 clip over
+  // 16:9 is 1.33x more across), and the upload shrinks both axes together, so
+  // it is sized for the axis that magnifies most. Taking the other axis would
+  // soften the picture across exactly while it plays.
+  const fit =
+    tf.fit === 'stretch'
+      ? Math.max(boxW / cw, boxH / ch)
+      : tf.fit === 'cover'
+        ? coverScale(boxW, boxH, cw, ch)
+        : fitScale(boxW, boxH, cw, ch)
   return (scale * fit * texH) / frameH
 }
 

@@ -9,9 +9,13 @@
 import type { CanvasSink, Input, WrappedCanvas } from 'mediabunny'
 import { bumpProxyPriority, hasProxy, proxyKeyFor } from './proxyMedia'
 import { budgets } from './memoryBudget'
+import { FALLBACK_FPS, frameIndexAt } from './frameIndex'
 import type { Id, MediaAsset } from './types'
 
-export const FALLBACK_FPS = 30
+// The frame-at-a-time rule lives in frameIndex.ts, shared with the export so the
+// two cannot drift. Re-exported here, where the rest of the app has always
+// found it.
+export { FALLBACK_FPS, frameIndexAt }
 /**
  * Memory the decoded-frame cache may hold, in bytes.
  *
@@ -95,16 +99,11 @@ export const previewCapHeight = (nativeH: number | undefined): number | undefine
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for tests, so no DOM and no mediabunny)
 
-/** Frame index containing tS at the asset fps (fallback 30). Floor semantics with a float-error epsilon. */
-export function frameIndexAt(tS: number, fps: number | undefined): number {
-  const f = fps && fps > 0 ? fps : FALLBACK_FPS
-  // epsilon ≈ 3e-8s at 30fps: absorbs float error so exact boundaries land on the boundary frame
-  return Math.max(0, Math.floor(tS * f + 1e-6))
-}
-
 /**
- * Decode target for a frame index: the frame's midpoint. getCanvas returns the
- * last frame starting <= t, so the midpoint is robust to timestamp jitter.
+ * Decode target for a frame index: the END of the frame's slot, half a frame
+ * after its nominal time. The reader starts at the last frame starting <= t,
+ * which is this slot's frame even when it is a tick late, so a seek never
+ * opens one frame early. (frameIndexAt's slots are centred on the frames.)
  */
 export function frameMidTimeS(index: number, fps: number | undefined): number {
   const f = fps && fps > 0 ? fps : FALLBACK_FPS

@@ -66,6 +66,13 @@ function layerFor(clip: Clip, t: number, fps: number, shutterS = 0): RenderLayer
     cropR: resolveChannel(clip, 'cropR', at),
     cropB: resolveChannel(clip, 'cropB', at),
     cropL: resolveChannel(clip, 'cropL', at),
+    // Spread only when set, so an unflipped layer is the same object shape it
+    // always was.
+    ...(clip.transform.flipH ? { flipH: true } : {}),
+    // Stamped only when he picked it, so every other layer is the exact object
+    // it has always been. Here, in the pure resolver, so the monitor and the
+    // export worker are handed the same stretch. → engine/frameFit.ts
+    ...(clip.transform.fit === 'stretch' ? { fit: 'stretch' as const } : {}),
   })
   // Where this same picture sits one shutter later. The renderer turns the
   // difference into the motion blur, because only it knows how many pixels a

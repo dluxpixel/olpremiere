@@ -87,11 +87,12 @@ describe('rangeIndices (transition pre-roll window math)', () => {
 })
 
 describe('frameIndexAt', () => {
-  it('quantizes with floor semantics at the asset fps', () => {
+  it('picks the NEAREST frame at the asset fps (frameIndex.test.ts says why)', () => {
     expect(frameIndexAt(0, 30)).toBe(0)
     expect(frameIndexAt(0.5, 30)).toBe(15)
     expect(frameIndexAt(0.51, 30)).toBe(15)
-    expect(frameIndexAt(1.999, 24)).toBe(47)
+    // 47.98 frames in: frame 48 is the near one. The floor this replaced said 47.
+    expect(frameIndexAt(1.999, 24)).toBe(48)
   })
 
   it('lands exact frame boundaries on the boundary frame despite float error', () => {
@@ -115,7 +116,7 @@ describe('frameIndexAt', () => {
 })
 
 describe('frameMidTimeS', () => {
-  it('targets the frame midpoint', () => {
+  it('targets the end of the frame slot, half a frame on', () => {
     expect(frameMidTimeS(0, 30)).toBeCloseTo(0.5 / 30)
     expect(frameMidTimeS(15, 30)).toBeCloseTo(15.5 / 30)
   })

@@ -47,7 +47,7 @@ vi.mock('./mediaMirror', () => ({
   mirrorApi: () => ({ mediaDelete: (id: string) => { mirror.deleted.push(id); return Promise.resolve() } }),
 }))
 
-import { deleteAsset } from './mediaActions'
+import { deleteAsset, removeUnusedAssets } from './mediaActions'
 import { useStore } from './store'
 
 const ASSET = 'asset-under-test'
@@ -110,5 +110,36 @@ describe('deleting an asset leaves the disk copy alone', () => {
     useStore.setState({ project })
     deleteAsset(id)
     expect(mirror.deleted).toEqual([])
+  })
+})
+
+// His ask, 2026-10-01: "delete clips that are not being used... when I use a
+// template for an old video and then I make new stuff in the video, of course,
+// I don't need the old stuff". Only bin files no clip uses go, the timeline is
+// untouched, everything is released, and ONE undo brings the whole bin back.
+describe('removing the files nothing on the timeline uses', () => {
+  it('removes only unused files, releases them, keeps every clip, one undo', () => {
+    // The bin from beforeEach holds ASSET, which nothing uses.
+    const project = structuredClone(useStore.getState().project)
+    const seqId = project.activeSequenceId
+    const used = 'used-asset'
+    project.assets[used] = { id: used, name: 'new.mp4', kind: 'video', durationS: 5 } as never
+    const clip = { id: 'c1', assetId: used, startS: 0, inS: 0, outS: 5, speed: 1, enabled: true, transform: { x: 0, y: 0, scale: 1, rotationDeg: 0, anchorX: 0.5, anchorY: 0.5, crop: { t: 0, r: 0, b: 0, l: 0 } }, opacity: 1, blendMode: 'normal', audioGainDb: 0, fadeInS: 0, fadeOutS: 0, effects: [] }
+    const seq = project.sequences[seqId]!
+    project.sequences[seqId] = { ...seq, tracks: seq.tracks.map((t, i) => (i === 0 ? { ...t, clips: [clip as never] } : t)) }
+    useStore.setState({ project })
+    expect(removeUnusedAssets()).toBe(1)
+    const after = useStore.getState().project
+    expect(Object.keys(after.assets)).toEqual([used])
+    expect(after.sequences[seqId]!.tracks[0]!.clips.map((c) => c.id)).toEqual(['c1'])
+    expect(released.frameCache).toEqual([ASSET])
+    expect(released.denoise).toEqual([ASSET])
+    expect(useStore.getState().undo()).toMatch(/Remove 1 unused file/)
+    expect(Object.keys(useStore.getState().project.assets).sort()).toEqual([ASSET, used].sort())
+  })
+
+  it('does nothing when every file is used', () => {
+    useStore.setState({ project: newProject() })
+    expect(removeUnusedAssets()).toBe(0)
   })
 })

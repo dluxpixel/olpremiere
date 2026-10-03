@@ -95,7 +95,8 @@ export function coverScale(frameW: number, frameH: number, croppedW: number, cro
  * pixels, in the order [TL, TR, BR, BL] (matching UV order [0,0],[1,0],[1,1],[0,1]).
  *
  * Pipeline (right-to-left): start from the contain-fitted cropped rectangle
- * centered on the frame. Move the pivot to the anchor point, apply transform
+ * centered on the frame (or the cover-fitted one, or the box itself when the
+ * clip is stretched). Move the pivot to the anchor point, apply transform
  * scale then rotation about that pivot, then translate by (x, y). Identity
  * transform therefore yields the centered contain-fit unchanged.
  */
@@ -118,9 +119,13 @@ export function computeQuad(opts: {
   // 'cover' only ever grows the base rectangle; `scale` still multiplies it
   // afterwards exactly as before, so a keyframed zoom behaves the same either way.
   const fit = tf.fit === 'cover' ? coverScale(boxW, boxH, cw, ch) : fitScale(boxW, boxH, cw, ch)
-  // Fitted rectangle size in seq px (before the user scale).
-  const rw = cw * fit
-  const rh = ch * fit
+  // Fitted rectangle size in seq px (before the user scale). 'stretch' IS the
+  // box: the cropped picture goes onto its four corners whatever its shape, and
+  // everything below (pivot, scale, rotation, offset) runs on it unchanged. A
+  // picture with no size still draws nothing, the same 0 fitScale gives it.
+  const stretch = tf.fit === 'stretch' && cw > 0 && ch > 0
+  const rw = stretch ? boxW : cw * fit
+  const rh = stretch ? boxH : ch * fit
   const cx = tf.frame ? tf.frame.x + boxW / 2 : frameW / 2
   const cy = tf.frame ? tf.frame.y + boxH / 2 : frameH / 2
 
@@ -161,10 +166,11 @@ export function computeQuad(opts: {
  * common operation lives here, a 1920x1080 clip filling a 1080x1920 frame at
  * about 1.78x (see the note in export/exportPlan.ts).
  *
- * The larger of the two axes wins. The renderer's fit is uniform (contain-fit
- * then one user scale), so the two agree today; taking the max means a future
- * non-uniform scale would still count as magnifying when either axis does, which
- * is the safe direction to be wrong in.
+ * The larger of the two axes wins. Contain and cover are uniform (one fit, then
+ * one user scale), so the two axes agree there. A STRETCHED clip is the case
+ * where they do not: a 640x480 picture stretched over 1920x1080 is 3x across and
+ * 2.25x down, and it counts as magnifying because either axis does, which is
+ * the safe direction to be wrong in.
  *
  * Returns 0 for a degenerate (zero-area) source rather than dividing by zero.
  */
@@ -197,6 +203,14 @@ export function cropUV(
   cropL: number,
 ): { u0: number; v0: number; u1: number; v1: number } {
   return { u0: cropL, v0: cropT, u1: 1 - cropR, v1: 1 - cropB }
+}
+
+/**
+ * The across (u) texture coordinate at the quad's left and right edges. A
+ * flipped layer reads its picture right to left; the quad itself does not move.
+ */
+export function edgeU(uv: { u0: number; u1: number }, flipH: boolean | undefined): { left: number; right: number } {
+  return flipH ? { left: uv.u1, right: uv.u0 } : { left: uv.u0, right: uv.u1 }
 }
 
 /**

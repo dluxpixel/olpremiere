@@ -1179,3 +1179,41 @@ describe('a seam between touching clips is never a black frame', () => {
     expect(resolveFrame(gapped, 1.5).ops).toHaveLength(0)
   })
 })
+
+// Stretch is decided once, here, so the monitor and the export worker are handed
+// the same picture. His ask, 2026-09-29: a 4:3 clip that fills 16:9 "when i
+// select to", and only then.
+describe('a stretched clip', () => {
+  const stretched = (over: Partial<Clip> = {}): Clip =>
+    clip({ transform: { ...defaultTransform(), fit: 'stretch' }, ...over })
+
+  it('reaches the renderer as a stretch', () => {
+    const op = resolveFrame(seqOf([track({ clips: [stretched()] })]), 0.5).ops[0]
+    expect(asLayer(op).transform.fit).toBe('stretch')
+  })
+
+  it('and a clip he never touched carries no fit at all, the exact layer it always was', () => {
+    const layer = asLayer(resolveFrame(seqOf([track({ clips: [clip()] })]), 0.5).ops[0])
+    expect('fit' in layer.transform).toBe(false)
+  })
+
+  it('keeps the stretch on the motion blur sample, or the smear would pull off the frame', () => {
+    const c = stretched({ keyframes: { scale: [kf(0, 1), kf(2, 2)] } })
+    const layer = asLayer(resolveFrame(seqOf([track({ clips: [c] })], { shutterAngle: 180 }), 0.5).ops[0])
+    expect(layer.transformAtShutter?.fit).toBe('stretch')
+  })
+
+  it('keeps the stretch through a transition on both sides', () => {
+    const a = stretched({ startS: 0, outS: 2 })
+    const b = stretched({ startS: 2, inS: 0, outS: 2, transitionIn: { type: 'crossDissolve', durationS: 0.5 } })
+    const op = asTransition(resolveFrame(seqOf([track({ clips: [a, b] })]), 2.1).ops[0])
+    expect(op.from.transform.fit).toBe('stretch')
+    expect(op.to.transform.fit).toBe('stretch')
+  })
+
+  it('leaves the blurred backdrop on cover: it is built from the whole picture, never stretched', () => {
+    const ops = resolveFrame(seqOf([track({ clips: [stretched()] })], { blurBackground: true }), 0.5).ops
+    expect(asLayer(ops[0]).transform.fit).toBe('cover')
+    expect(asLayer(ops[1]).transform.fit).toBe('stretch')
+  })
+})

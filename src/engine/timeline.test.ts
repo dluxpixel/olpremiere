@@ -2079,6 +2079,15 @@ describe('setSequenceFormat / refitClipToFill (Shorts aspect switch)', () => {
     expect(out.transform.scale).toBeCloseTo(1, 6)
   })
 
+  it('leaves a STRETCHED clip alone: it fills the new shape at its own scale already', () => {
+    // Growing it by the fill ratio would push a picture that sits exactly on the
+    // frame's corners 3.16x past every edge.
+    const stretched = { ...clip16x9(), transform: { ...clip16x9().transform, fit: 'stretch' as const } }
+    expect(refitClipToFill(stretched, landscape, 1080, 1920, 1920, 1080)).toBe(stretched)
+    const shorts = setSequenceFormat(makeSeq([makeTrack({ clips: [stretched] })]), landscape, 1080, 1920)
+    expect(shorts.tracks[0].clips[0]).toBe(stretched)
+  })
+
   it('does not fight a clip that animates position (posX keyframes)', () => {
     const panned = makeClip({
       id: 'a',

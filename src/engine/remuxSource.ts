@@ -9,6 +9,7 @@
 // `electron/remuxArgs.ts` and is unit tested there.
 
 import { canRescueByRemux, needsRemux } from '../../electron/remuxArgs'
+import { readHdrTransfer } from './probe'
 
 /** 8 MB. Big enough that a multi-gigabyte capture is not millions of round trips, small enough to stay off the heap. */
 const CHUNK = 8 * 1024 * 1024
@@ -81,10 +82,32 @@ export async function rescueByRemux(file: File, onProgress?: (frac: number) => v
   return runRemux(file, 'rescue', onProgress)
 }
 
-/** The streaming upload, convert and read back. Shared so the two reasons cannot drift. */
+/**
+ * An HDR phone clip's SDR master, made once by ffmpeg, or null when the file is
+ * not HDR or there is no ffmpeg (the web build), in which case nothing changes.
+ *
+ * ⛔ ONLY A NEW IMPORT COMES THROUGH HERE. Clips already in his projects keep
+ * the bytes they have, his answer: "Leave them as they are". The brightness he
+ * added by hand to his GYM cuts stays exactly as he set it. Why the master
+ * exists at all: remuxArgs.ts, "HDR phone clips".
+ */
+export async function sdrMasterIfHdr(file: File, onProgress?: (frac: number) => void): Promise<RemuxOutcome | null> {
+  if (!desktop() || !file.type.startsWith('video/')) return null
+  if (!(await readHdrTransfer(file))) return null
+  return runRemux(file, 'sdr', onProgress)
+}
+
+/**
+ * Where each step lands on the progress he sees. The re-encode is the long
+ * part; streaming the file across and back is seconds at disk speed.
+ */
+const UPLOAD_SHARE = 0.1
+const CONVERT_SHARE = 0.85
+
+/** The streaming upload, convert and read back. Shared so the reasons cannot drift. */
 async function runRemux(
   file: File,
-  mode: 'convert' | 'rescue',
+  mode: 'convert' | 'rescue' | 'sdr',
   onProgress?: (frac: number) => void,
 ): Promise<RemuxOutcome> {
   const api = desktop()
@@ -97,10 +120,20 @@ async function runRemux(
     for (let offset = 0; offset < file.size; offset += CHUNK) {
       const slice = file.slice(offset, Math.min(offset + CHUNK, file.size))
       await api.remuxChunk(id, await slice.arrayBuffer())
-      onProgress?.((offset / file.size) * 0.5)
+      onProgress?.((offset / file.size) * UPLOAD_SHARE)
     }
 
-    const { size, copied } = await api.remuxFinish(id, mode)
+    // Main says how far a re-encode has got. Only this job's word counts.
+    const off = api.onRemuxProgress((jobId, frac) => {
+      if (jobId === id) onProgress?.(UPLOAD_SHARE + frac * CONVERT_SHARE)
+    })
+    let size: number
+    let copied: boolean
+    try {
+      ;({ size, copied } = await api.remuxFinish(id, mode))
+    } finally {
+      off()
+    }
 
     // ⛔ EACH CHUNK BECOMES A Blob IMMEDIATELY, AND THAT IS THE WHOLE POINT.
     // Keeping the ArrayBuffers in an array and handing the array to `new File`
@@ -112,7 +145,7 @@ async function runRemux(
     const parts: Blob[] = []
     for (let offset = 0; offset < size; offset += CHUNK) {
       parts.push(new Blob([await api.remuxRead(id, offset, Math.min(CHUNK, size - offset))]))
-      onProgress?.(0.5 + (offset / size) * 0.5)
+      onProgress?.(UPLOAD_SHARE + CONVERT_SHARE + (offset / size) * (1 - UPLOAD_SHARE - CONVERT_SHARE))
     }
     const name = file.name.replace(/\.[^.]+$/, '') + '.mp4'
     return { file: new File(parts, name, { type: 'video/mp4' }), copied }

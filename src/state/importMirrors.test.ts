@@ -42,6 +42,8 @@ vi.mock('./persistence', () => ({
 vi.mock('../engine/remuxSource', () => ({
   canImport: () => true,
   remuxIfNeeded: (file: File) => Promise.resolve({ file }),
+  // His OBS captures are SDR: no master is made (hdrImport.test.ts covers HDR).
+  sdrMasterIfHdr: () => Promise.resolve(null),
 }))
 
 vi.mock('../engine/probe', () => ({

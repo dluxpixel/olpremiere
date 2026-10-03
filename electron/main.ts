@@ -655,7 +655,13 @@ app.whenReady().then(() => {
   // way `proxy:finish` is.
   ipcMain.handle('remux:begin', () => remux.beginRemux())
   ipcMain.handle('remux:chunk', (_e, id: string, bytes: ArrayBuffer) => remux.chunkRemux(id, bytes))
-  ipcMain.handle('remux:finish', (_e, id: string, mode?: 'convert' | 'rescue') => remux.finishRemux(id, mode))
+  // A conversion that re-encodes (an HDR phone clip, a rescue) takes real time,
+  // so it says how far it has got. Sent to the page that asked, by job id.
+  ipcMain.handle('remux:finish', (e, id: string, mode?: 'convert' | 'rescue' | 'sdr') =>
+    remux.finishRemux(id, mode, (frac) => {
+      if (!e.sender.isDestroyed()) e.sender.send('remux:progress', id, frac)
+    }),
+  )
   ipcMain.handle('remux:read', (_e, id: string, offset: number, length: number) =>
     remux.readRemux(id, offset, length),
   )

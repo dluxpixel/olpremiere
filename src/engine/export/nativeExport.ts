@@ -92,23 +92,29 @@ export async function exportNative(
     // it back: never "missing" for a file that is sitting on his disk.
     const blob = await blobForExport({ id: asset.id, blobKey: asset.blobKey, name: asset.name })
     if (!blob) throw new Error(`Media for "${asset.name}" is missing from local storage, re-import it and try again`)
-    exportAssets.push({ id, kind: asset.kind, name: asset.name, blob })
+    exportAssets.push({ id, kind: asset.kind, name: asset.name, blob, fps: asset.fps })
   }
   if (signal.aborted) throw abortError()
 
   // Render the audio mix to a WAV and hand it to main BEFORE ffmpeg spawns (it's
   // an -i input). Reuses the exact planAudioMix rules → same mix as WebCodecs.
   onProgress({ phase: 'audio', framesDone: 0, framesTotal })
-  const plan = await planAudioMix(sequence, project.assets, settings.startS, settings.endS, (names) =>
-    // Some clips gave no sound. The rest of the mix is honest audio, so the
-    // export continues, but he has to hear about the gap NOW rather than after
-    // he has uploaded it.
-    useToasts
-      .getState()
-      .show(
-        `No sound from ${names.length === 1 ? names[0] : `${names.length} clips`}. The rest of the audio exported.`,
-        'danger',
-      ),
+  const plan = await planAudioMix(
+    sequence,
+    project.assets,
+    settings.startS,
+    settings.endS,
+    (names) =>
+      // Some clips gave no sound. The rest of the mix is honest audio, so the
+      // export continues, but he has to hear about the gap NOW rather than after
+      // he has uploaded it.
+      useToasts
+        .getState()
+        .show(
+          `No sound from ${names.length === 1 ? names[0] : `${names.length} clips`}. The rest of the audio exported.`,
+          'danger',
+        ),
+    { loudnessTargetLufs: settings.loudnessTargetLufs ?? null },
   )
   let hasAudio = false
   if (plan && plan.info.totalFrames > 0) {

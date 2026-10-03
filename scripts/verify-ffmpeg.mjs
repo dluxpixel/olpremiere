@@ -88,7 +88,9 @@ const REQUIRED = {
   decoders: ['rawvideo', 'pcm_f32le', 'h264', 'aac'],
   demuxers: ['rawvideo', 'wav', 'matroska'],
   muxers: ['mp4'],
-  filters: ['vflip', 'scale'],
+  // aresample: the export pins -ar 48000 -ac 2 (exportArgs.ts audioEncoderArgs), and
+  // turning the float WAV into the encoder's planar float goes through it too.
+  filters: ['vflip', 'scale', 'aresample'],
 }
 
 // Carried by the current full build and exercised by the sweep below, but NOT

@@ -12,6 +12,7 @@ import {
   withChannelsAtTime,
 } from '../engine/effects/channels'
 import { addEffect } from '../engine/effects/ops'
+import { FRAME_FITS, frameFitDims, withFrameFit, type FrameFit } from '../engine/frameFit'
 import { getEffect } from '../engine/effects/registry'
 import { upsertKeyframe, upsertKeyframeValue } from '../engine/keyframes'
 import { MOTION_CURVES } from '../engine/motion'
@@ -80,6 +81,37 @@ export function mapClips(
     })
     return changed ? { ...seq, tracks } : seq
   }, mergeKey)
+}
+
+/**
+ * Mirror every given picture left to right, ONE undo. His ask, 2026-10-01:
+ * "flip the video (I don't know if you know what I mean, like flip from right
+ * to left)". They all go the same way: flipped, unless every one already is,
+ * then all back. Clips on audio tracks and titles have no picture to mirror
+ * and are left alone (mirrored words would just be unreadable).
+ */
+export function toggleClipsFlip(ids: Iterable<string>): void {
+  const idSet = new Set(ids)
+  const seq = activeSequence(useStore.getState().project)
+  const pictures = seq.tracks
+    .filter((t) => t.kind === 'video' && !t.locked)
+    .flatMap((t) => t.clips.filter((c) => idSet.has(c.id) && !c.title))
+  if (pictures.length === 0) return
+  const flip = !pictures.every((c) => c.transform.flipH === true)
+  const n = pictures.length
+  const label = `${flip ? 'Flip' : 'Unflip'} ${n === 1 ? 'clip' : `${n} clips`}`
+  mapClips(
+    pictures.map((c) => c.id),
+    label,
+    (c) => {
+      // Unflipped is written by leaving the key out, so a clip flipped and
+      // flipped back is the same clip it was.
+      const transform = { ...c.transform }
+      if (flip) transform.flipH = true
+      else delete transform.flipH
+      return { ...c, transform }
+    },
+  )
 }
 
 /**
@@ -243,5 +275,27 @@ export function setClipsFade(ids: Iterable<string>, edge: 'in' | 'out', seconds:
     },
     // Per edge, so a fade-in run and a fade-out run stay two undo steps.
     `fade:${edge}`,
+  )
+}
+
+/**
+ * Fit inside, Fill and crop, or Stretch to fill, on every selected picture at
+ * once, in ONE undo step. His ask, 2026-09-29, is one 4:3 clip, but a Short is
+ * twenty of them, and a choice that has to be made twenty times is not made.
+ *
+ * Only clips on a VIDEO track take it: the linked sound of a selected clip
+ * comes along in the selection and has no picture to fit. Titles and adjustment
+ * layers are left alone by withFrameFit itself. Each clip is fitted against its
+ * own media's size, so a mixed selection of 4:3 and 16:9 all fill correctly.
+ */
+export function setFrameFitForClips(ids: Iterable<string>, fit: FrameFit): void {
+  const project = useStore.getState().project
+  const seq = activeSequence(project)
+  const pictures = new Set(seq.tracks.filter((t) => t.kind === 'video').flatMap((t) => t.clips.map((c) => c.id)))
+  const label = FRAME_FITS.find((f) => f.fit === fit)?.label ?? 'Frame'
+  mapClips(
+    [...ids].filter((id) => pictures.has(id)),
+    label,
+    (c) => withFrameFit(c, fit, frameFitDims(seq, project.assets[c.assetId])),
   )
 }

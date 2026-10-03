@@ -9,6 +9,7 @@ import {
   exportRaster,
   planExport,
 } from './exportPlan'
+import { PLATFORM_TARGET_LUFS } from '../loudness'
 
 const seq = (over: Partial<Sequence> = {}): Sequence => ({
   id: 'seq',
@@ -66,6 +67,13 @@ describe('exportRaster', () => {
 })
 
 describe('planExport', () => {
+  it('lands the mix at the platforms\' loudness unless he switched it off', () => {
+    // His answer, 2026-09-30: "Yes, on by default".
+    expect(planExport(seq()).settings.loudnessTargetLufs).toBe(PLATFORM_TARGET_LUFS)
+    expect(planExport(seq(), { platformLoudness: true }).settings.loudnessTargetLufs).toBe(-14)
+    expect(planExport(seq(), { platformLoudness: false }).settings.loudnessTargetLufs).toBeNull()
+  })
+
   it('picks constant quality, H.264 and transparent audio on any HD-or-better timeline', () => {
     const p = planExport(seq())
     expect(p.settings.rateControl).toBe('quantizer')

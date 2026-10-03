@@ -23,6 +23,7 @@ import {
 } from 'mediabunny'
 import type { StreamTargetChunk, WrappedCanvas } from 'mediabunny'
 import { ProviderPool } from './providerPool'
+import { frameReached } from '../frameIndex'
 import { browserConfigCheck, pickDecoderOptions } from './decoderChoice'
 import { createRenderer } from '../render/glRenderer'
 import { resolveFrame } from '../render/resolve'
@@ -255,8 +256,9 @@ const nextDequeue = (enc: VideoEncoder | AudioEncoder): Promise<void> =>
 
 // A per-clip monotonic frame reader. Random-access getCanvas() returns null on
 // VFR / cue-less MediaRecorder webm inside a worker, so export pulls frames
-// SEQUENTIALLY (canvases()) and holds the newest frame with timestamp ≤ the
-// requested source time. Classic pull-down. One Input per CLIP, so two clips
+// SEQUENTIALLY (canvases()) and holds the newest frame the requested source
+// time has reached (frameReached: the NEAREST frame, the very one the paused
+// preview shows). Classic pull-down. One Input per CLIP, so two clips
 // of the same asset (e.g. across a cross-dissolve) read independently.
 // A ProviderPool owns the lifetime of these (see providerPool.ts): it closes the
 // least recently used one once the live count passes a ceiling, so the decoder
@@ -269,6 +271,8 @@ interface ClipProvider {
   started: boolean
   current: WrappedCanvas | null
   ahead: WrappedCanvas | null
+  /** The source's frame rate, which sets the slots frames are picked by. */
+  fps: number | undefined
 }
 
 /** Closes one provider's iterator and its demuxer. The pool calls this exactly once. */
@@ -279,21 +283,25 @@ const closeProvider = (p: ClipProvider): void => {
   p.dispose()
 }
 
-const SRC_EPS_S = 1e-4
-
 async function nextFrame(p: ClipProvider): Promise<WrappedCanvas | null> {
   const r = await p.iterator.next()
   return r.done ? null : r.value
 }
 
-/** Advance the clip's sequential reader to the newest frame with ts ≤ sourceT. */
+/**
+ * Advance the clip's sequential reader to the frame shown at sourceT.
+ *
+ * ⛔ THE NEAREST FRAME, NOT THE LAST ONE THAT STARTED. That floor put his
+ * iPhone cuts 24.1 ms behind their sound on average, always late
+ * (frameIndex.ts). The rule is the paused preview's own, so preview == export.
+ */
 async function frameForClip(p: ClipProvider, sourceT: number): Promise<OffscreenCanvas | HTMLCanvasElement | null> {
   // A REVERSE clip (speed < 0) requests DECREASING sourceT. The reader is
   // forward-only, so a backward jump means re-opening the sink iterator from the
   // new time (a random-access re-seek). Without this the whole reversed clip
   // would freeze on its furthest-decoded frame. The preview reverses correctly
   // (random-access frame cache) but the export would not.
-  if (p.current && sourceT + SRC_EPS_S < p.current.timestamp) {
+  if (p.current && !frameReached(p.current.timestamp, sourceT, p.fps)) {
     void p.iterator.return?.(undefined)
     p.iterator = p.sink.canvases(Math.max(0, sourceT))
     p.started = false
@@ -304,7 +312,7 @@ async function frameForClip(p: ClipProvider, sourceT: number): Promise<Offscreen
     p.started = true
     p.ahead = await nextFrame(p)
   }
-  while (p.ahead && p.ahead.timestamp <= sourceT + SRC_EPS_S) {
+  while (p.ahead && frameReached(p.ahead.timestamp, sourceT, p.fps)) {
     p.current = p.ahead
     p.ahead = await nextFrame(p)
   }
@@ -343,12 +351,14 @@ async function runNative(init: Extract<ExportRequest, { type: 'init' }>): Promis
     const kindById = new Map<Id, 'video' | 'audio' | 'image'>()
     const blobById = new Map<Id, Blob>()
     const nameById = new Map<Id, string>()
+    const fpsById = new Map<Id, number | undefined>()
     const bitmaps = new Map<Id, ImageBitmap>()
     for (const asset of assets) {
       checkCancel()
       kindById.set(asset.id, asset.kind)
       blobById.set(asset.id, asset.blob)
       nameById.set(asset.id, asset.name)
+      fpsById.set(asset.id, asset.fps)
       if (asset.kind === 'image') {
         try {
           const bitmap = await createImageBitmap(asset.blob)
@@ -391,7 +401,15 @@ async function runNative(init: Extract<ExportRequest, { type: 'init' }>): Promis
       const decoderOptions = await pickDecoderOptions(await track.getDecoderConfig(), browserConfigCheck)
       const sink = new CanvasSink(track, { decoderOptions })
       const iterator = sink.canvases(Math.max(0, clip.inS))
-      const provider: ClipProvider = { sink, iterator, dispose: () => input.dispose(), started: false, current: null, ahead: null }
+      const provider: ClipProvider = {
+        sink,
+        iterator,
+        dispose: () => input.dispose(),
+        started: false,
+        current: null,
+        ahead: null,
+        fps: fpsById.get(clip.assetId),
+      }
       providers.set(clip.id, clip, provider)
       return provider
     }
@@ -838,12 +856,14 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
     const kindById = new Map<Id, 'video' | 'audio' | 'image'>()
     const blobById = new Map<Id, Blob>()
     const nameById = new Map<Id, string>()
+    const fpsById = new Map<Id, number | undefined>()
     const bitmaps = new Map<Id, ImageBitmap>()
     for (const asset of assets) {
       checkCancel()
       kindById.set(asset.id, asset.kind)
       blobById.set(asset.id, asset.blob)
       nameById.set(asset.id, asset.name)
+      fpsById.set(asset.id, asset.fps)
       if (asset.kind === 'image') {
         try {
           const bitmap = await createImageBitmap(asset.blob)
@@ -890,6 +910,7 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
         started: false,
         current: null,
         ahead: null,
+        fps: fpsById.get(clip.assetId),
       }
       providers.set(clip.id, clip, provider)
       return provider

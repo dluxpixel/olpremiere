@@ -1,11 +1,13 @@
 import { TRANSITION_KINDS, TRANSITION_LABELS } from '../engine/render/types'
 import { clipEndS, closeAllGaps, closeGapBefore, gapBefore } from '../engine/timeline'
 import { getEffect } from '../engine/effects/registry'
+import { FRAME_FITS, frameFitDims, frameFitOf, takesFrameFit } from '../engine/frameFit'
 import { MOVES } from '../engine/moves'
 import type { Clip, Id, MediaAsset, Sequence } from '../engine/types'
 import { comboLabel } from '../keymap'
 import { copyClipAttributes, hasClipAttributes, pasteClipAttributes } from '../state/attributes'
 import { balanceAllClipLoudness, normalizeClipGain } from '../state/audioActions'
+import { toggleClipsFlip } from '../state/bulkEdits'
 import { copySelection, cutSelection, duplicateSelection, pasteAtPlayhead } from '../state/clipboard'
 import { applyEffect, crossfadeWithNeighbour, deleteSelected, removeClipTransition, setClipTransition, splitAtPlayhead, topAndTail } from '../state/clipEdits'
 import { appearanceMenuItems, titleFontSizeItems } from '../state/clipMenus'
@@ -13,6 +15,7 @@ import type { MenuItem } from '../state/contextMenu'
 import { saveToCategoryItems } from '../state/libraryMenus'
 import { effectTypesOn, selectClipsWithEffect } from '../state/sharedEffects'
 import { cutPunchAtPlayhead, impactAtPlayhead, punchInAtPlayhead, punchOnBeats, punchOutAtPlayhead, rampWorkArea, whipToNext } from '../state/motionActions'
+import { setFrameFitForClips } from '../state/bulkEdits'
 import { applyMoveToSelection } from '../state/moveActions'
 import { copyClipMove, hasClipMove, pasteClipMove } from '../state/moveClipboard'
 import { cutQuietParts } from '../state/silenceActions'
@@ -183,6 +186,29 @@ export function clipContextMenuItems({ clip, seq, assets, selNow, keepSelection,
         })
       : []
 
+  // Fit inside, Fill and crop, Stretch to fill, on the path he already
+  // right-clicks. His ask, 2026-09-29: a 4:3 clip that stretches to 16:9 "when i
+  // select to". On every selected picture when the selection was kept, in one
+  // undo step. A choice is ticked when every one of them shows it.
+  const framePictures = seq.tracks
+    .filter((t) => t.kind === 'video')
+    .flatMap((t) => t.clips)
+    .filter((c) => (keepSelection ? selNow.includes(c.id) : c.id === clip.id) && takesFrameFit(c))
+  const frameNow = framePictures.map((c) => frameFitOf(c, frameFitDims(seq, assets[c.assetId])))
+  const frameItems: MenuItem[] =
+    track?.kind === 'video' && takesFrameFit(clip) && framePictures.length > 0
+      ? [
+          {
+            label: framePictures.length > 1 ? `Frame · all ${framePictures.length}` : 'Frame',
+            submenu: FRAME_FITS.map((f) => ({
+              label: f.label,
+              checked: frameNow.every((now) => now === f.fit),
+              onClick: () => setFrameFitForClips(framePictures.map((c) => c.id), f.fit),
+            })),
+          },
+        ]
+      : []
+
   // One-click green-screen removal on a media clip (video/image that HAS a screen).
   // Applies the chroma-key effect, which defaults to keying green at a clean
   // strength: drop-and-done, then fine-tune in the Inspector if edges remain.
@@ -265,6 +291,20 @@ export function clipContextMenuItems({ clip, seq, assets, selNow, keepSelection,
           ]
         : []
 
+  // His ask, 2026-10-01: "flip the video ... like flip from right to left".
+  // Acts on the whole selection when it was kept, like Moves, and sits with the
+  // other picture verbs so the menu still opens on Copy.
+  const flipItems: MenuItem[] =
+    track?.kind === 'video' && !clip.title
+      ? [
+          {
+            label: `${clip.transform.flipH ? 'Unflip' : 'Flip left to right'}${selNow.length > 1 ? ` · all ${selNow.length}` : ''}`,
+            separator: true,
+            onClick: () => toggleClipsFlip(selNow),
+          },
+        ]
+      : []
+
   return [
     ...selectWithItems,
     { label: 'Copy', shortcut: comboLabel('mod+c'), separator: selectWithItems.length > 0, onClick: () => copySelection() },
@@ -292,6 +332,8 @@ export function clipContextMenuItems({ clip, seq, assets, selNow, keepSelection,
     ...transitionItems,
     ...captionItems,
     ...motionItems,
+    ...flipItems,
+    ...frameItems,
     ...greenScreenItems,
     ...appearanceItems,
     ...bulkTitleItems,

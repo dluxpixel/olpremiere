@@ -22,6 +22,12 @@ export interface ResolvedTransform {
   cropB: number
   cropL: number
   /**
+   * The picture mirrored left to right inside the same quad: only the texture
+   * reads right to left, so position, rotation, handles and the crop's sides
+   * on the source all stay where they were.
+   */
+  flipH?: boolean
+  /**
    * How the source sits in the frame BEFORE `scale` is applied.
    *  - undefined / 'contain' (the default, and what every clip has always
    *    done): the whole picture fits inside the frame, letterboxed when the
@@ -30,8 +36,11 @@ export interface ResolvedTransform {
    *    over, cropping the overflow. Only the blurred backdrop uses this, which
    *    is the one thing that must never letterbox: a backdrop with bars on it
    *    is just bars.
+   *  - 'stretch': the picture is laid onto the box's own four corners, each
+   *    axis scaled on its own, so a 4:3 clip fills a 16:9 frame exactly. Only
+   *    when he picks it for that clip (`Transform.fit`, engine/types.ts).
    */
-  fit?: 'contain' | 'cover'
+  fit?: 'contain' | 'cover' | 'stretch'
   /**
    * The box this layer is laid out inside, in sequence px, when the sequence
    * has an inner content ratio. Undefined is the whole frame, which is what
