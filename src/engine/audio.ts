@@ -1265,13 +1265,15 @@ async function tryResume(ctx: AudioContext): Promise<void> {
 
 /**
  * Schedule every audible clip of `seq` from timeline time `fromS`.
- * Resolves to a stop() that tears the scheduled graph down exactly once.
+ * Resolves to a stop() that tears the scheduled graph down exactly once. It
+ * carries `startsAtCtxS`, the context time `fromS` was scheduled to sound at,
+ * so a take recorded against it can be placed where it was heard (MIC-4).
  */
 export async function scheduleAudio(
   seq: Sequence,
   assets: Record<Id, MediaAsset>,
   fromS: number,
-): Promise<() => void> {
+): Promise<(() => void) & { startsAtCtxS: number }> {
   const ctx = ensureAudioContext()
   await tryResume(ctx)
 
@@ -1442,7 +1444,7 @@ export async function scheduleAudio(
   })
 
   let stopped = false
-  return () => {
+  const stop = (): void => {
     if (stopped) return
     stopped = true
     for (const { source, gain } of clipNodes) {
@@ -1459,4 +1461,5 @@ export async function scheduleAudio(
       for (const n of nodes) n.disconnect()
     }
   }
+  return Object.assign(stop, { startsAtCtxS: baseT })
 }

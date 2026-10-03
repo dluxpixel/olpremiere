@@ -15,7 +15,7 @@ async function binCount(page: Page): Promise<number> {
   return page.getByTestId('asset-card').count()
 }
 
-test('record, review, and KEEP puts one asset in the bin', async ({ page }) => {
+test('record, review, and KEEP puts one asset in the bin and the take on the timeline', async ({ page }) => {
   await openStudio(page)
   expect(await binCount(page)).toBe(0)
 
@@ -27,10 +27,14 @@ test('record, review, and KEEP puts one asset in the bin', async ({ page }) => {
   // The take waits for a decision; nothing in the bin yet.
   await expect(page.getByTestId('studio-take')).toBeVisible()
   expect(await binCount(page)).toBe(0)
+  await expect(page.getByTestId('studio-keep')).toHaveText('Add to timeline')
 
   await page.getByTestId('studio-keep').click()
   await expect(page.getByTestId('asset-card')).toHaveCount(1)
   await expect(page.getByTestId('studio-take')).toHaveCount(0)
+  // His answer, 2026-09-30: "Yes, place it for me." A kept take also lands on
+  // the timeline, where he started (an empty edit: at the start, one clip).
+  await expect(page.locator('[data-clip-kind="audio"]')).toHaveCount(1)
 })
 
 test('a bad take can be DISCARDED and never reaches the bin', async ({ page }) => {

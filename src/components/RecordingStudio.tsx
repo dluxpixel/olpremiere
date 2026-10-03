@@ -1,12 +1,13 @@
 // The recording studio: a movable panel that owns the live mic. Record into
-// it, then KEEP the take (it becomes a bin asset) or DISCARD it (bad take) -
-// nothing reaches the media bin without a decision. Pick input and output
-// devices, watch the level, and hear yourself while you work. Movable so it
-// can sit beside the preview during a to-picture voiceover.
+// it, then KEEP the take (it lands on the timeline where he performed it and in
+// the library) or DISCARD it (bad take): nothing is added without a decision.
+// Pick input and output devices, watch the level, and hear yourself while you
+// work. Movable so it can sit beside the preview during a to-picture voiceover.
 
 import { Check, GripHorizontal, Headphones, Mic, Play, Square, Trash2, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import {
+  clearClip,
   closeStudio,
   discardTake,
   keepTake,
@@ -22,28 +23,81 @@ import {
 } from '../state/voiceRecorder'
 import { canPickOutput, listAudioOutputs } from '../state/recordingMonitor'
 import { IconButton } from '../ui/Button'
+import { dbToFrac, METER_IDLE, METER_TICKS_DB, meterGradient, stepMeter, type MeterState } from './levelMeter'
 
 const SELECT_CLS =
   'h-7 w-full cursor-default rounded-field border border-border bg-bg-input px-1.5 text-ui-sm text-text-primary'
 
-/** dB-ish level bar driven imperatively off the store's `level` each frame. */
+/**
+ * The input meter in dBFS (levelMeter.ts has the scale and the ballistics),
+ * driven imperatively off the store's `level` each frame, no React re-render.
+ * The zones are painted once and the unlit part is covered, like the master
+ * meter. Beside it the clip light, which latches and waits for his click.
+ */
 function LevelMeter() {
-  const fill = useRef<HTMLDivElement>(null)
+  const unlit = useRef<HTMLDivElement>(null)
+  const hold = useRef<HTMLDivElement>(null)
+  const clipped = useRecorder((s) => s.clipped)
   useEffect(() => {
     let raf = 0
+    let st: MeterState = METER_IDLE
     const tick = () => {
       raf = requestAnimationFrame(tick)
-      const lvl = useRecorder.getState().level
-      // Perceptual-ish curve: quiet speech should still move the bar.
-      const pct = Math.min(100, Math.pow(lvl, 0.6) * 118)
-      if (fill.current) fill.current.style.width = `${pct}%`
+      st = stepMeter(st, useRecorder.getState().level, performance.now())
+      const bar = dbToFrac(st.barDb)
+      if (unlit.current) unlit.current.style.width = `${(1 - bar) * 100}%`
+      if (hold.current) {
+        const h = dbToFrac(st.holdDb)
+        hold.current.style.left = `calc(${h * 100}% - 1px)`
+        hold.current.style.opacity = h > 0 ? '1' : '0'
+      }
     }
     raf = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf)
   }, [])
   return (
-    <div className="h-2 w-full overflow-hidden rounded-full bg-bg-input" data-testid="studio-level">
-      <div ref={fill} className="h-full w-0 rounded-full bg-success transition-[background-color]" />
+    <div className="flex items-start gap-1.5">
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <div className="relative h-2 w-full overflow-hidden rounded-[2px] bg-bg-input" data-testid="studio-level">
+          {/* The zones, painted once, and the unlit part covered from the right. */}
+          <div className="absolute inset-0" style={{ background: meterGradient() }} />
+          <div ref={unlit} className="absolute inset-y-0 right-0 bg-bg-input" style={{ width: '100%' }} data-testid="studio-level-unlit" />
+          <div ref={hold} className="absolute inset-y-0 w-[2px] bg-text-primary opacity-0" data-testid="studio-level-hold" />
+          {METER_TICKS_DB.slice(0, -1).map((db) => (
+            <div
+              key={db}
+              className="absolute inset-y-0 w-px bg-bg-elevated/70"
+              style={{ left: `${dbToFrac(db) * 100}%` }}
+              aria-hidden
+            />
+          ))}
+        </div>
+        {/* The scale, drawn once. */}
+        <div className="relative h-2.5 text-[8px] leading-none text-text-muted" aria-hidden>
+          {METER_TICKS_DB.map((db) => (
+            <span
+              key={db}
+              className="absolute top-0 -translate-x-1/2 font-numeric last:-translate-x-full"
+              style={{ left: `${dbToFrac(db) * 100}%` }}
+            >
+              {db}
+            </span>
+          ))}
+        </div>
+      </div>
+      <button
+        type="button"
+        data-testid="studio-clip"
+        aria-pressed={clipped}
+        aria-label={clipped ? 'Clipped. Turn the mic gain down. Click to clear' : 'Clip light'}
+        title={clipped ? 'The input reached -1 dBFS. Turn your mic gain down. Click to clear.' : 'Lights and stays lit if the input reaches -1 dBFS'}
+        onClick={clearClip}
+        className={`h-3.5 shrink-0 rounded-field px-1 text-[8px] font-semibold leading-none tracking-[0.08em] transition-colors duration-[120ms] ${
+          clipped ? 'bg-danger text-white' : 'bg-bg-input text-text-muted'
+        }`}
+      >
+        CLIP
+      </button>
     </div>
   )
 }
@@ -53,9 +107,13 @@ export function RecordingStudio() {
   const paused = useRecorder((s) => s.paused)
   const startedAt = useRecorder((s) => s.startedAt)
   const pending = useRecorder((s) => s.pendingTake)
+  const keeping = useRecorder((s) => s.keeping)
   const monitoring = useRecorder((s) => s.monitoring)
   const autoPlay = useRecorder((s) => s.autoPlay)
   const selectedInputId = useRecorder((s) => s.selectedInputId)
+  const selectedInputLabel = useRecorder((s) => s.selectedInputLabel)
+  const inputLabel = useRecorder((s) => s.inputLabel)
+  const inputMissing = useRecorder((s) => s.inputMissing)
   const selectedOutputId = useRecorder((s) => s.selectedOutputId)
   const [inputs, setInputs] = useState<MediaDeviceInfo[]>([])
   const [outputs, setOutputs] = useState<MediaDeviceInfo[]>([])
@@ -178,28 +236,31 @@ export function RecordingStudio() {
           </p>
         )}
 
-        {/* The captured take: keep it or throw it away. */}
-        {pending && (
+        {/* The captured take: keep it or throw it away. While a kept take is
+            being added the panel stays, saying so, so it never looks lost. */}
+        {(pending || keeping) && (
           <div
             data-testid="studio-take"
             className="flex flex-col gap-2 rounded-field border border-border bg-bg-panel p-2"
           >
-            <audio src={pending.url} controls className="h-8 w-full" data-testid="studio-take-audio" />
+            {pending && <audio src={pending.url} controls className="h-8 w-full" data-testid="studio-take-audio" />}
             <div className="flex items-center gap-2">
               <button
                 type="button"
                 data-testid="studio-keep"
+                disabled={keeping}
                 onClick={() => void keepTake()}
-                className="flex h-8 flex-1 items-center justify-center gap-1.5 rounded-field bg-accent text-ui-sm text-accent-fg hover:bg-accent-hover"
+                className="flex h-8 flex-1 items-center justify-center gap-1.5 rounded-field bg-accent text-ui-sm text-accent-fg hover:bg-accent-hover disabled:opacity-70"
               >
                 <Check size={14} strokeWidth={2} />
-                Add to media
+                {keeping ? 'Adding...' : 'Add to timeline'}
               </button>
               <button
                 type="button"
                 data-testid="studio-discard"
+                disabled={keeping}
                 onClick={discardTake}
-                className="flex h-8 items-center justify-center gap-1.5 rounded-field border border-border px-3 text-ui-sm text-text-secondary hover:border-danger hover:text-danger"
+                className="flex h-8 items-center justify-center gap-1.5 rounded-field border border-border px-3 text-ui-sm text-text-secondary hover:border-danger hover:text-danger disabled:opacity-50"
               >
                 <Trash2 size={14} strokeWidth={1.75} />
                 Discard
@@ -217,7 +278,10 @@ export function RecordingStudio() {
               aria-label="Microphone"
               className={SELECT_CLS}
               value={selectedInputId ?? ''}
-              onChange={(e) => setInputDevice(e.target.value || null)}
+              onChange={(e) => {
+                const id = e.target.value || null
+                setInputDevice(id, inputs.find((d) => d.deviceId === id)?.label || null)
+              }}
             >
               <option value="">System default</option>
               {inputs.map((d, i) => (
@@ -225,8 +289,22 @@ export function RecordingStudio() {
                   {d.label || `Microphone ${i + 1}`}
                 </option>
               ))}
+              {/* His pick stays visible while it is unplugged, instead of the
+                  box quietly showing "System default" (MIC-8). */}
+              {selectedInputId && inputs.length > 0 && !inputs.some((d) => d.deviceId === selectedInputId) && (
+                <option value={selectedInputId}>{`${selectedInputLabel ?? 'Chosen microphone'} (not connected)`}</option>
+              )}
             </select>
           </label>
+          {inputLabel && (
+            <p
+              data-testid="studio-input-live"
+              className={`-mt-1 truncate text-ui-sm ${inputMissing ? 'text-warning' : 'text-text-muted'}`}
+              title={inputLabel}
+            >
+              {inputMissing ? `Not connected. Recording from ${inputLabel}` : `Recording from ${inputLabel}`}
+            </p>
+          )}
 
           <label className="flex flex-col gap-1">
             <span className="text-[10px] font-semibold uppercase tracking-[0.1em] text-text-muted">Output</span>
