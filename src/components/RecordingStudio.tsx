@@ -58,7 +58,7 @@ function LevelMeter() {
   return (
     <div className="flex items-start gap-1.5">
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <div className="relative h-2 w-full overflow-hidden rounded-[2px] bg-bg-input" data-testid="studio-level">
+        <div className="relative h-2 w-full overflow-hidden rounded-mark bg-bg-input" data-testid="studio-level">
           {/* The zones, painted once, and the unlit part covered from the right. */}
           <div className="absolute inset-0" style={{ background: meterGradient() }} />
           <div ref={unlit} className="absolute inset-y-0 right-0 bg-bg-input" style={{ width: '100%' }} data-testid="studio-level-unlit" />
@@ -241,7 +241,7 @@ export function RecordingStudio() {
         {(pending || keeping) && (
           <div
             data-testid="studio-take"
-            className="flex flex-col gap-2 rounded-field border border-border bg-bg-panel p-2"
+            className="flex flex-col gap-2 rounded-overlay border border-border bg-bg-panel p-2"
           >
             {pending && <audio src={pending.url} controls className="h-8 w-full" data-testid="studio-take-audio" />}
             <div className="flex items-center gap-2">

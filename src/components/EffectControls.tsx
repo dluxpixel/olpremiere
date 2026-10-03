@@ -835,7 +835,7 @@ function EffectCard({ clip, effect, index, count, localT }: {
   // removed, but never pretend to render controls for it.
   if (!def) {
     return (
-      <div className="rounded-field border border-border bg-bg-elevated p-2" data-testid="effect-card">
+      <div className="rounded-overlay border border-border bg-bg-elevated p-2" data-testid="effect-card">
         <div className="flex items-center gap-1.5">
           <span className="flex-1 truncate text-ui text-text-secondary">Unknown effect: {effect.type}</span>
           <IconButton label="Remove effect" size="compact" onClick={() => deleteEffect(clip.id, effect.id)}>
@@ -873,7 +873,7 @@ function EffectCard({ clip, effect, index, count, localT }: {
 
   return (
     <div
-      className={`flex flex-col gap-2 rounded-field border bg-bg-elevated p-2 ${
+      className={`flex flex-col gap-2 rounded-overlay border bg-bg-elevated p-2 ${
         dragOver ? 'border-accent' : 'border-border'
       }`}
       data-testid="effect-card"
@@ -1036,7 +1036,7 @@ function EffectStack({ clip, playheadS }: { clip: Clip; playheadS: number }) {
 
   return (
     <section
-      className={`flex flex-col gap-2 rounded-field ${hot ? 'ring-2 ring-inset ring-accent-hover' : ''}`}
+      className={`flex flex-col gap-2 rounded-overlay ${hot ? 'ring-2 ring-inset ring-accent-hover' : ''}`}
       data-testid="effect-stack"
       data-drop-hot={hot ? 'true' : undefined}
       {...dropProps}
@@ -1108,7 +1108,7 @@ function EffectStack({ clip, playheadS }: { clip: Clip; playheadS: number }) {
           // The card is what he aims at, so the card is what answers: the same
           // dashed-accent-on-quiet-fill the media import overlay uses to say
           // "let go here".
-          className={`flex flex-col items-center gap-1.5 rounded-field border border-dashed px-2 py-4 text-center transition-colors duration-[120ms] ${
+          className={`flex flex-col items-center gap-1.5 rounded-overlay border border-dashed px-2 py-4 text-center transition-colors duration-[120ms] ${
             hot ? 'border-accent bg-accent-quiet' : 'border-border-strong'
           }`}
         >

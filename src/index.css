@@ -28,28 +28,43 @@
   --text-dense: 11px;
   --text-dense--line-height: 1.25;
 
-  /* Radii: A LITTLE, never soft. His call, 2026-07-27: "don't make it complete
-     fucking rectangles, you can round the edges a little bit, but make it a
-     minimalistic design, because the last design was just rounded everywhere."
-     This SUPERSEDES the all-square pass of 2026-07-26, which he had asked for
-     after an earlier build that was rounded everywhere. Both complaints are the
-     same complaint: the corner should not be a style statement in either
-     direction.
-     So these are deliberately 2 to 4px, not 8 to 12px. At this size a clip edge
-     still ends where it ends. A clip is a statement about TIME, and a soft corner
-     makes the last few pixels ambiguous to both the eye and the trim cursor, so
-     the timeline gets the smallest value of all. Anything larger here is the
-     "rounded everywhere" look he has now rejected twice; do not grow them.
+  /* Radii: A LITTLE MORE, still never soft. Two calls, both his.
+     2026-07-27: "don't make it complete fucking rectangles, you can round the edges
+     a little bit, but make it a minimalistic design, because the last design was
+     just rounded everywhere." That pass set 2 to 4px, and it SUPERSEDED the
+     all-square pass of 2026-07-26. Both complaints are the same complaint: the
+     corner should not be a style statement in either direction.
+     2026-10-03: "make every GUI more rounded, make the corners a little bit more
+     rounded everywhere", so the whole scale moved up one notch together (3 to 6,
+     4 to 8 and 12, 2 to 4) rather than one surface at a time, because a lone softer
+     corner is what made the old look inconsistent rather than minimal. It stops at
+     12px on purpose: past that is the "rounded everywhere" look he rejected twice.
+     One system, six steps, each smaller than the box it sits in:
+       dialog   12  dialogs and floating cards, the biggest boxes there are
+       overlay   8  menus, popovers, toasts, list rows, cards inside a panel
+       field     6  buttons, inputs, tabs, chips, anything he clicks
+       inner     4  a control nested INSIDE a field or overlay with a thin gap, so
+                    the two corners run in step instead of the inner one looking
+                    fatter (inner radius = outer radius minus the gap)
+       clip      4  timeline clips, the smallest of the surfaces: a clip is a
+                    statement about TIME, and a soft corner makes the last few
+                    pixels ambiguous to the eye and the trim cursor. ClipView takes
+                    the radius down again on a clip too narrow to carry it.
+       mark      2  anything with a side under about 12px: keyframe diamonds, level
+                    bars, drag handles, badges sitting on a clip. At that size more
+                    than 2px turns a square into a blob.
      Circles (rounded-full: knobs, pan dots, meter LEDs) are NOT edges and stay
      round, since they read as things you grab, which is information, not decoration.
-     One system, three steps, no outliers: controls 3, surfaces and dialogs 4,
-     timeline clips 2. Hardcoded `rounded-[6px]` cards were folded onto the
-     surface token in the same pass, because a lone softer corner is what made the
-     old look inconsistent rather than minimal. */
-  --radius-field: 3px;
-  --radius-overlay: 4px;
-  --radius-dialog: 4px;
-  --radius-clip: 2px;
+     Panels that butt against each other (the three columns, the timeline) stay
+     square: a rounded corner there would open a wedge of background between them.
+     Any new radius is one of these tokens, never a number: src/ui/radiusScale.test.ts
+     fails on a hard-coded one. */
+  --radius-dialog: 12px;
+  --radius-overlay: 8px;
+  --radius-field: 6px;
+  --radius-inner: 4px;
+  --radius-clip: 4px;
+  --radius-mark: 2px;
 
   /* Surfaces: cool studio blue grey, darkest to elevated. His call, 2026-09-20:
      "i dont like the dark theme", then "make it cool studio blue grey".
@@ -238,10 +253,9 @@ body {
 }
 ::-webkit-scrollbar-thumb {
   background: var(--color-border-strong);
-  /* A hair of rounding, like everything else now. A scrollbar thumb is a position
-     readout (its ends tell you where you are in the track), so it gets the small
-     value, never a pill. */
-  border-radius: 2px;
+  /* The smallest step of the scale, like the rest of the app. A scrollbar thumb is a
+     position readout (its ends tell you where you are in the track). */
+  border-radius: var(--radius-clip);
   border: 2px solid transparent;
   background-clip: content-box;
 }

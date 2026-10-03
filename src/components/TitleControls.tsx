@@ -88,7 +88,7 @@ function Segmented<T extends string>({
   onChange: (v: T) => void
 }) {
   return (
-    <div className="flex items-center gap-0.5 rounded-field bg-bg-input p-0.5">
+    <div className="flex items-center gap-0.5 rounded-overlay bg-bg-input p-0.5">
       {options.map(({ value: v, label, icon: Icon }) => (
         <IconButton
           key={v}

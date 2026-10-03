@@ -148,7 +148,7 @@ function LibraryCard({ item, fps, categories }: { item: LibraryItem; fps: number
           </button>
         )}
         {item.kind !== 'image' && (
-          <span className="absolute right-1 bottom-1 rounded-[3px] bg-black/70 px-1 text-[10px] text-text-primary tabular-nums">
+          <span className="absolute right-1 bottom-1 rounded-inner bg-black/70 px-1 text-[10px] text-text-primary tabular-nums">
             {formatTimecode(item.durationS, fps)}
           </span>
         )}
@@ -233,7 +233,7 @@ function CategoryRow({
             }
           : undefined
       }
-      className={`flex cursor-default items-center gap-2 rounded-[4px] px-2 py-1 text-[12px] transition-colors duration-[120ms] ${
+      className={`flex cursor-default items-center gap-2 rounded-field px-2 py-1 text-[12px] transition-colors duration-[120ms] ${
         active ? 'bg-accent-quiet text-accent' : 'text-text-secondary hover:bg-bg-elevated hover:text-text-primary'
       } ${over ? 'ring-1 ring-accent' : ''}`}
     >
@@ -267,7 +267,7 @@ function CategoryList({
           aria-label="New category"
           title="Make a category, like Battle Cats"
           onClick={() => void promptNewLibraryCategory()}
-          className="flex cursor-default items-center gap-1 rounded-[4px] px-1.5 py-0.5 text-[11px] text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated hover:text-text-primary"
+          className="flex cursor-default items-center gap-1 rounded-field px-1.5 py-0.5 text-[11px] text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated hover:text-text-primary"
         >
           <FolderPlus size={12} strokeWidth={1.5} aria-hidden />
           New
@@ -320,7 +320,7 @@ function SfxRow({ sfx }: { sfx: SfxDef }) {
       onKeyDown={(e) => {
         if (e.key === 'Enter') void insertSfxAtPlayhead(sfx.id)
       }}
-      className="flex cursor-grab items-center gap-2 rounded-[4px] px-2 py-1.5 text-[12px] text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated hover:text-text-primary active:cursor-grabbing"
+      className="flex cursor-grab items-center gap-2 rounded-field px-2 py-1.5 text-[12px] text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated hover:text-text-primary active:cursor-grabbing"
     >
       <Volume2 size={13} strokeWidth={1.5} aria-hidden className="shrink-0 text-text-muted" />
       <span className="truncate">{sfx.name}</span>
@@ -423,7 +423,7 @@ export function LibraryTab() {
                     { label: 'Remove preset', danger: true, separator: true, onClick: () => void removePreset(p.id) },
                   ])
                 }
-                className={`flex cursor-default items-center gap-2 rounded-[4px] px-2 py-1.5 text-[12px] transition-colors duration-[120ms] ${
+                className={`flex cursor-default items-center gap-2 rounded-field px-2 py-1.5 text-[12px] transition-colors duration-[120ms] ${
                   hasSelection ? 'text-text-secondary hover:bg-bg-elevated hover:text-text-primary' : 'text-text-muted'
                 }`}
               >

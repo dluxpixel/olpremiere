@@ -414,7 +414,7 @@ export function CurveEditor({ clip, channel }: { clip: Clip; channel: AnimChanne
         aria-label="Segment easing curve"
       >
         <g transform={`translate(${PAD},${PAD})`}>
-          <rect x={0} y={0} width={W} height={GRAPH_H} rx={3} fill="var(--color-bg-input)" />
+          <rect x={0} y={0} width={W} height={GRAPH_H} className="[rx:var(--radius-inner)]" fill="var(--color-bg-input)" />
           {/* Quarter grid inside the unit square. */}
           {[0.25, 0.5, 0.75].map((q) => (
             <line key={`h${q}`} x1={0} x2={W} y1={gy(q)} y2={gy(q)} stroke="var(--color-border)" strokeWidth={1} />
@@ -493,7 +493,7 @@ export function CurveEditor({ clip, channel }: { clip: Clip; channel: AnimChanne
         data-testid="curve-velocity"
       >
         <g transform={`translate(${PAD},0)`}>
-          <rect x={0} y={0} width={W} height={26} rx={3} fill="var(--color-bg-input)" />
+          <rect x={0} y={0} width={W} height={26} className="[rx:var(--radius-inner)]" fill="var(--color-bg-input)" />
           {vel.map((v, i) => (
             <rect
               key={i}

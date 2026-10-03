@@ -218,7 +218,7 @@ export function CaptionsDialog({ onClose }: { onClose: () => void }) {
                   setMode(m)
                   setError(null)
                 }}
-                className={`rounded-[4px] px-2 py-0.5 text-[11px] transition-colors ${
+                className={`rounded-field px-2 py-0.5 text-[11px] transition-colors ${
                   mode === m ? 'bg-accent-quiet text-accent' : 'text-text-secondary hover:text-text-primary'
                 }`}
               >

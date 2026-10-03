@@ -547,7 +547,7 @@ export function MotionRail({
           title="Time from the head of the clip · wheel to zoom · drag to pan · double-click to fit"
           onPointerDown={onRulerDown}
           onDoubleClick={fitNow}
-          className="relative h-5 shrink-0 cursor-ew-resize select-none overflow-hidden rounded-[3px] bg-bg-input"
+          className="relative h-5 shrink-0 cursor-ew-resize select-none overflow-hidden rounded-field bg-bg-input"
           style={{ touchAction: 'none' }}
         >
           {ticks.map((tick) => (
@@ -581,7 +581,7 @@ export function MotionRail({
         <div
           ref={marqueeRef}
           data-testid="motion-rail-marquee"
-          className="pointer-events-none absolute z-30 rounded-[2px] border border-accent bg-accent/10"
+          className="pointer-events-none absolute z-30 rounded-mark border border-accent bg-accent/10"
           style={{ display: 'none' }}
         />
       </div>

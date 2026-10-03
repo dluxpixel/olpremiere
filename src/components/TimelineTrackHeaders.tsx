@@ -63,7 +63,7 @@ export function TimelineTrackHeaders({
         <button
           type="button"
           data-testid="add-video-track"
-          className="flex flex-1 items-center justify-center gap-1 rounded-[4px] border border-border py-1 text-[11px] font-medium text-text-secondary transition-colors duration-[120ms] hover:border-border-strong hover:bg-bg-elevated hover:text-text-primary"
+          className="flex flex-1 items-center justify-center gap-1 rounded-field border border-border py-1 text-[11px] font-medium text-text-secondary transition-colors duration-[120ms] hover:border-border-strong hover:bg-bg-elevated hover:text-text-primary"
           onClick={() => updateActiveSequence('Add video track', (sq) => addTrack(sq, 'video'))}
           title="Add a video track"
         >
@@ -73,7 +73,7 @@ export function TimelineTrackHeaders({
         <button
           type="button"
           data-testid="add-audio-track"
-          className="flex flex-1 items-center justify-center gap-1 rounded-[4px] border border-border py-1 text-[11px] font-medium text-text-secondary transition-colors duration-[120ms] hover:border-border-strong hover:bg-bg-elevated hover:text-text-primary"
+          className="flex flex-1 items-center justify-center gap-1 rounded-field border border-border py-1 text-[11px] font-medium text-text-secondary transition-colors duration-[120ms] hover:border-border-strong hover:bg-bg-elevated hover:text-text-primary"
           onClick={() => updateActiveSequence('Add audio track', (sq) => addTrack(sq, 'audio'))}
           title="Add an audio track"
         >

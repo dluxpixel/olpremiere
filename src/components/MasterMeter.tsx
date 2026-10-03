@@ -30,9 +30,9 @@ function Channel({
       <div
         ref={clipRef}
         data-testid="meter-clip-led"
-        className="h-1.5 w-full shrink-0 rounded-[1px] bg-white/10"
+        className="h-1.5 w-full shrink-0 rounded-mark bg-white/10"
       />
-      <div className="relative min-h-0 w-[11px] flex-1 overflow-hidden rounded-[2px] border border-white/10 bg-black/50">
+      <div className="relative min-h-0 w-[11px] flex-1 overflow-hidden rounded-mark border border-white/10 bg-black/50">
         <div
           className="absolute inset-0"
           style={{

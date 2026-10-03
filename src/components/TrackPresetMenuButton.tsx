@@ -85,7 +85,7 @@ export function TrackPresetMenuButton() {
           ? `Track setups: pick one to apply it to these tracks, or save the current setup (${count} saved)`
           : 'Track setups: save the current tracks as a preset you can pick later'
       }
-      className="flex shrink-0 items-center justify-center rounded-[4px] border border-border px-1.5 py-1 text-[11px] font-medium text-text-secondary transition-colors duration-[120ms] hover:border-border-strong hover:bg-bg-elevated hover:text-text-primary"
+      className="flex shrink-0 items-center justify-center rounded-field border border-border px-1.5 py-1 text-[11px] font-medium text-text-secondary transition-colors duration-[120ms] hover:border-border-strong hover:bg-bg-elevated hover:text-text-primary"
       onClick={(e) => {
         // Anchored to the button, not the pointer, so a keyboard activation
         // (clientX/Y = 0) still opens the menu on the button instead of the

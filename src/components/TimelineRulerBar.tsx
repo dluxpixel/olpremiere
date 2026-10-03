@@ -76,7 +76,7 @@ export function TimelineRulerBar({
           key={m.id}
           data-testid="marker"
           title={m.label || formatTimecode(m.t, seq.fps)}
-          className="pointer-events-none absolute h-2 w-2 rotate-45 rounded-[1px]"
+          className="pointer-events-none absolute h-2 w-2 rotate-45 rounded-mark"
           style={{ left: m.t * pxPerS - 4, top: RULER_H - 11, background: m.color }}
         />
       ))}

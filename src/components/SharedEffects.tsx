@@ -39,7 +39,7 @@ function SharedEffectCard({ type, clips, ids }: { type: string; clips: Clip[]; i
   if (!def) return null
   const enabled = sharedEnabled(clips, type)
   return (
-    <div className="rounded-field border border-border bg-bg-elevated p-2" data-testid="shared-effect" data-effect-type={type}>
+    <div className="rounded-overlay border border-border bg-bg-elevated p-2" data-testid="shared-effect" data-effect-type={type}>
       <div className="mb-1 flex items-center gap-1.5">
         <IconButton
           label={enabled === 'on' ? `Turn ${def.label} off on all` : `Turn ${def.label} on on all`}
