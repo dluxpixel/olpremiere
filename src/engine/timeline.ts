@@ -5,6 +5,7 @@
 import { refitAppearanceToFrame, retimeAppearance, splitAppearanceAcrossCut } from './anim/appearance'
 import { withChannelKeyframes, withChannelValue } from './effects/channels'
 import { evalChannel, splitEaseAt } from './keyframes'
+import { quantizeToFrame } from './timecode'
 import {
   clipDurationS,
   clipEndS,
@@ -34,6 +35,8 @@ export { clipDurationS, clipEndS }
 // Float tolerance so clip edges that touch (end == next start) never read as
 // overlapping after speed/trim arithmetic.
 const EPS = 1e-9
+/** Within float noise of a frame instant, measured in frames. */
+const FRAME_EPS = 1e-6
 
 const absSpeed = (clip: Clip): number => Math.abs(clip.speed || 1)
 
@@ -379,6 +382,40 @@ export function rescaleKeyframesForSpeed(clip: Clip, oldRate: number, newRate: n
   return next
 }
 
+/**
+ * ⛔ A NEW SPEED KEEPS THE CLIP A WHOLE NUMBER OF FRAMES LONG, 2026-10-03.
+ *
+ * Its length is (out - in) / speed, which a speed like 2.5x almost never leaves
+ * on a frame: in his "strong until" project IMG_3080 at 2.5x ended at frame
+ * 97.98, and the next clip, flush against it, and every edit after that sat off
+ * the grid too (see canSplitClipAt for what that did to C). The tail gives up
+ * at most one frame, the one its fractional end reached into, and never asks
+ * the source for more than the clip already had.
+ */
+function lengthInWholeFrames(clip: Clip, fps: number): Clip {
+  const rate = fps || 30
+  const sp = absSpeed(clip)
+  const frames = ((clip.outS - clip.inS) / sp) * rate
+  const whole = Math.floor(frames + FRAME_EPS)
+  if (whole < 1 || frames - whole < FRAME_EPS) return clip
+  const spanS = (whole / rate) * sp
+  // A reversed clip's tail is the START of its source span (reversedTailTo).
+  return clip.speed < 0 ? { ...clip, inS: clip.outS - spanS } : { ...clip, outS: clip.inS + spanS }
+}
+
+/**
+ * A source limit as an edit point: the nearest frame on the clip's side of it.
+ * Dragging an edge out as far as the media goes, or Q / W / a roll stopped by
+ * it, used to land the edge where the FILE ends, between two frames, and a
+ * ripple then carried that fraction to every clip after it. Never past `edgeS`,
+ * where the edge already is, so a clip that is off the grid itself can still be
+ * pulled out as far as it already reaches.
+ */
+const headLimitOnFrame = (limitS: number, edgeS: number, fps: number): number =>
+  Math.min(edgeS, Math.ceil(limitS * (fps || 30) - FRAME_EPS) / (fps || 30))
+const tailLimitOnFrame = (limitS: number, edgeS: number, fps: number): number =>
+  Math.max(edgeS, Math.floor(limitS * (fps || 30) + FRAME_EPS) / (fps || 30))
+
 export function setClipSpeed(seq: Sequence, clipId: Id, speed: number): Sequence {
   const found = findClip(seq, clipId)
   if (!found) return seq
@@ -398,7 +435,7 @@ export function setClipSpeed(seq: Sequence, clipId: Id, speed: number): Sequence
   // is the one he would be least likely to catch happening.
   const moved = new Set<Id>()
   const grabbedOldEnd = clipEndS(found.clip)
-  const grabbedNewDur = (found.clip.outS - found.clip.inS) / Math.abs(s)
+  const grabbedNewDur = clipDurationS(lengthInWholeFrames({ ...found.clip, speed: s }, seq.fps))
   const grabbedDelta = found.clip.startS + grabbedNewDur - grabbedOldEnd
 
   const tracks = seq.tracks.map((track) => {
@@ -406,7 +443,7 @@ export function setClipSpeed(seq: Sequence, clipId: Id, speed: number): Sequence
     if (!member) return track
     moved.add(track.id)
     const oldEnd = clipEndS(member)
-    const newDur = (member.outS - member.inS) / Math.abs(s)
+    const newDur = clipDurationS(lengthInWholeFrames({ ...member, speed: s }, seq.fps))
     const delta = member.startS + newDur - oldEnd
     const clips = track.clips.map((c) => {
       if (groupIds.has(c.id)) {
@@ -414,7 +451,7 @@ export function setClipSpeed(seq: Sequence, clipId: Id, speed: number): Sequence
         // appearance retimer reads the clip's duration off the new speed, and it
         // must not see a half-updated clip.
         const rescaled = rescaleKeyframesForSpeed(c, c.speed, s)
-        return retimeAppearance(c, { ...rescaled, speed: s }, seq.width, seq.height)
+        return retimeAppearance(c, lengthInWholeFrames({ ...rescaled, speed: s }, seq.fps), seq.width, seq.height)
       }
       // Ripple the tail only when the member grew, to clear the overlap.
       if (delta > EPS && c.startS >= oldEnd - EPS) return { ...c, startS: c.startS + delta }
@@ -573,6 +610,41 @@ const withTrackClips = (seq: Sequence, trackIndex: number, clips: Clip[]): Seque
     tracks: seq.tracks.map((t, i) => (i === trackIndex ? { ...t, clips } : t)),
   })
 
+/**
+ * ⛔ A CLIP PLACED FROM HIS MEDIA LANDS ON THE FRAME GRID, 2026-10-03.
+ *
+ * Its start on a frame, its length a whole number of frames. Two ways in used to
+ * leave an edge between two frames, and every edit after it inherits that:
+ *   - a picture pasted, or a file added, after playback lands at the playhead,
+ *     and a paused playhead rests wherever the transport stopped;
+ *   - a file's own length is rarely whole frames of the sequence. His OBS take
+ *     "2026-10-03 18-06-57.mp4" runs 33.083 s, which is frame 992.5 at 30 fps.
+ * An edge between frames is drawn half a frame from the frame the clip really
+ * starts on, the playhead can never stand on it, and C refuses the frames either
+ * side of it (see canSplitClipAt). Rounding the length DOWN gives up at most
+ * one frame at the tail, the one a fractional end reached into, and never asks
+ * the file for more than it has.
+ */
+export const startOnFrame = (tS: number, fps: number): number => quantizeToFrame(Math.max(0, tS), fps || 30)
+
+/** `durS` cut down to whole frames. Anything shorter than one frame is left alone. */
+export function wholeFramesS(durS: number, fps: number): number {
+  const rate = fps || 30
+  const frames = Math.floor(durS * rate + FRAME_EPS)
+  return frames >= 1 ? frames / rate : durS
+}
+
+/**
+ * The gap resolveStart found, moved onto the next frame when it begins between
+ * two (flush against a clip that ends off the grid) and the clip still fits.
+ */
+function gapStartOnFrame(track: Track, startS: number, durS: number, fps: number): number {
+  const rate = fps || 30
+  if (onFrameGrid(startS, rate)) return startS
+  const next = Math.ceil(startS * rate - FRAME_EPS) / rate
+  return resolveStart(track, next, durS) === next ? next : startS
+}
+
 export function addClipFromAsset(
   seq0: Sequence,
   trackId: Id,
@@ -588,12 +660,14 @@ export function addClipFromAsset(
   const wantKind = asset.kind === 'audio' ? 'audio' : 'video'
   if (track0.kind !== wantKind || track0.locked) return { seq, clipId: '' }
 
-  const outS = asset.durationS || 5 // images have durationS 0 → default 5s
+  // On the frame grid, start and length: see startOnFrame.
+  const outS = wholeFramesS(asset.durationS || 5, seq.fps) // images have durationS 0 → default 5s
+  const desired = startOnFrame(desiredStartS, seq.fps)
   // `exact` lays the clip exactly WHEN he dropped it. Where something is already
   // there, it goes on the next free line (freeTrackFor) instead of clearing what
   // was under it, his pick 2026-09-28. Without `exact`, resolveStart hunts the
   // nearest gap that FITS on this one track.
-  const startS = opts.exact ? Math.max(0, desiredStartS) : resolveStart(track0, desiredStartS, outS)
+  const startS = opts.exact ? desired : gapStartOnFrame(track0, resolveStart(track0, desired, outS), outS, seq.fps)
   let base = seq
   let homeId = trackId
   if (opts.exact) {
@@ -804,7 +878,7 @@ export function trimClipTo(
   if (edge === 'in') {
     const prev = track.clips[clipIndex - 1] as Clip | undefined
     let lo = Math.max(0, prev ? clipEndS(prev) : 0)
-    if (!boundless) lo = Math.max(lo, clip.startS - headRoomS(clip, asset))
+    if (!boundless) lo = Math.max(lo, headLimitOnFrame(clip.startS - headRoomS(clip, asset), clip.startS, seq.fps))
     const startS = Math.min(endS - minDurS, Math.max(lo, tS))
     if (startS === clip.startS) return seq
     if (clip.speed < 0) {
@@ -822,7 +896,7 @@ export function trimClipTo(
   } else {
     const nextClip = track.clips[clipIndex + 1] as Clip | undefined
     let hi = nextClip ? nextClip.startS : Infinity
-    if (!boundless) hi = Math.min(hi, clip.startS + tailLimitS(clip, asset))
+    if (!boundless) hi = Math.min(hi, tailLimitOnFrame(clip.startS + tailLimitS(clip, asset), endS, seq.fps))
     const newEndS = Math.min(hi, Math.max(clip.startS + minDurS, tS))
     if (newEndS === endS) return seq
     next =
@@ -901,10 +975,43 @@ export function splitKeyframeList(
  *
  * One source of truth, because splitGroup has to ask the SAME question of every
  * member before it commits to splitting any of them.
+ *
+ * ⛔ A CUT ON THE FRAME GRID COUNTS FRAMES, NOT SECONDS, 2026-10-03.
+ *
+ * His report, with a screenshot: *"I can't cut. When I click C, it won't cut in
+ * this frame, even though I'm on another frame."* His project had every edit
+ * after a 2.5x clip sitting between two frames (6.318 s is frame 189.54 at 30
+ * fps). The playhead only ever stands ON a frame, so at each of those edits the
+ * frame before it was 0.54 of a frame from the clip's end and the frame after it
+ * 0.46 of a frame from the next clip's start, and the old rule (each piece at
+ * least 1/fps long) refused both. Two dead frames at every edit, and C said
+ * nothing about either.
+ *
+ * What a piece needs is a FRAME to show: the renderer samples each clip at the
+ * frame instants inside [start, end). Cutting ON a frame, the right piece always
+ * starts on the frame it shows, however short it is, so the frame before an
+ * off-grid end is a fine place to cut. The frame after an off-grid start is not:
+ * that frame is the clip's first, and the left piece would show nothing.
+ * splitAtPlayhead says so out loud. A clip on the grid gets exactly the answer it
+ * always got. A cut OFF the grid (a word boundary, a silence edge, a window being
+ * carved) keeps the length rule, where a few milliseconds of piece is a sliver.
  */
 export function canSplitClipAt(clip: Clip, fps: number, tS: number): boolean {
-  const minPieceS = 1 / (fps || 30)
-  return tS >= clip.startS + minPieceS && tS <= clipEndS(clip) - minPieceS
+  const rate = fps || 30
+  const endS = clipEndS(clip)
+  if (onFrameGrid(tS, rate)) return framesShown(clip.startS, tS, rate) >= 1 && framesShown(tS, endS, rate) >= 1
+  const minPieceS = 1 / rate
+  return tS >= clip.startS + minPieceS && tS <= endS - minPieceS
+}
+
+/** On a frame instant, to within float noise. */
+export const onFrameGrid = (tS: number, fps: number): boolean => Math.abs(tS * fps - Math.round(tS * fps)) < FRAME_EPS
+
+/** How many frame instants fall inside [fromS, toS): the frames that span shows. */
+export function framesShown(fromS: number, toS: number, fps: number): number {
+  const first = Math.ceil(fromS * fps - FRAME_EPS)
+  const end = Math.ceil(toS * fps - FRAME_EPS)
+  return Math.max(0, end - first)
 }
 
 export function splitClip(seq: Sequence, clipId: Id, tS: number): Sequence {
@@ -1481,7 +1588,11 @@ export function addClipWithLinkedAudio(
   const aTrack0 = aIndex0 === -1 ? null : seq.tracks[aIndex0]
   const canLink = !!aTrack0 && aTrack0.kind === 'audio' && !aTrack0.locked
 
-  const dur = clipDurationS(newClipFromAsset(asset, 0))
+  // On the frame grid, start and length: see startOnFrame. Both halves are cut
+  // from the same `dur`, so the pair stays exactly as long as each other.
+  const dur = wholeFramesS(clipDurationS(newClipFromAsset(asset, 0)), seq.fps)
+  const placed = (startS: number): Clip => ({ ...newClipFromAsset(asset, startS), outS: dur })
+  const desired = startOnFrame(desiredStartS, seq.fps)
   // `exact` drops the pair exactly WHEN he aimed, each half on the next free
   // line of its kind when its own lane is taken there, and nothing under it is
   // cleared (his pick 2026-09-28). Otherwise resolveStart looks for a start free
@@ -1491,7 +1602,7 @@ export function addClipWithLinkedAudio(
   let vId = videoTrackId
   let aId = audioTrackId
   if (opts.exact) {
-    startS = Math.max(0, desiredStartS)
+    startS = desired
     const vHome = freeTrackFor(base, 'video', vIndex0, startS, dur)
     base = vHome.seq
     vId = base.tracks[vHome.trackIndex]!.id
@@ -1506,7 +1617,7 @@ export function addClipWithLinkedAudio(
       ...seq.tracks[vIndex0],
       clips: [...seq.tracks[vIndex0].clips, ...(canLink ? aTrack0!.clips : [])],
     }
-    startS = resolveStart(obstacles, desiredStartS, dur)
+    startS = gapStartOnFrame(obstacles, resolveStart(obstacles, desired, dur), dur, seq.fps)
   }
 
   const seqB = base
@@ -1516,7 +1627,7 @@ export function addClipWithLinkedAudio(
 
   if (!canLink) {
     // No audio track: standalone video clip keeps its own audio (no linkId).
-    const clip = fitNewClipToFrame(newClipFromAsset(asset, startS), asset, seq)
+    const clip = fitNewClipToFrame(placed(startS), asset, seq)
     return {
       seq: withTrackClips(seqB, vIndex, insertSorted(vTrack.clips, clip)),
       videoClipId: clip.id,
@@ -1525,8 +1636,8 @@ export function addClipWithLinkedAudio(
   }
 
   const linkId = newId()
-  const videoClip: Clip = { ...fitNewClipToFrame(newClipFromAsset(asset, startS), asset, seq), linkId }
-  const audioClip: Clip = { ...newClipFromAsset(asset, startS), linkId }
+  const videoClip: Clip = { ...fitNewClipToFrame(placed(startS), asset, seq), linkId }
+  const audioClip: Clip = { ...placed(startS), linkId }
   const tracks = seqB.tracks.map((t, i) => {
     if (i === vIndex) return { ...t, clips: insertSorted(t.clips, videoClip) }
     if (i === aIndex) return { ...t, clips: insertSorted(t.clips, audioClip) }
@@ -1902,7 +2013,7 @@ export function rippleTrimTo(
     // No next-neighbor clamp: every later clip shifts by the same delta, so
     // relative gaps are preserved and overlap is impossible.
     let hi = Infinity
-    if (!boundless) hi = clip.startS + tailLimitS(clip, asset)
+    if (!boundless) hi = tailLimitOnFrame(clip.startS + tailLimitS(clip, asset), endS, seq.fps)
     const newEndS = Math.min(hi, Math.max(clip.startS + minDurS, tS))
     if (newEndS === endS) return seq
     deltaS = newEndS - endS
@@ -1913,7 +2024,7 @@ export function rippleTrimTo(
   } else {
     // Ripple-in keeps startS fixed (content slides under the head), so the
     // previous clip never constrains it: only the source head + min duration.
-    const lo = boundless ? -Infinity : clip.startS - headRoomS(clip, asset)
+    const lo = boundless ? -Infinity : headLimitOnFrame(clip.startS - headRoomS(clip, asset), clip.startS, seq.fps)
     const t = Math.min(endS - minDurS, Math.max(lo, tS))
     if (t === clip.startS) return seq
     deltaS = clip.startS - t
@@ -1960,9 +2071,9 @@ export function rollEditTo(
   const boundlessR = !assetR || assetR.kind === 'image'
 
   let lo = left.clip.startS + minDurS
-  if (!boundlessR) lo = Math.max(lo, right.clip.startS - headRoomS(right.clip, assetR))
+  if (!boundlessR) lo = Math.max(lo, headLimitOnFrame(right.clip.startS - headRoomS(right.clip, assetR), right.clip.startS, seq.fps))
   let hi = rightEndS - minDurS
-  if (!boundlessL) hi = Math.min(hi, left.clip.startS + tailLimitS(left.clip, assetL))
+  if (!boundlessL) hi = Math.min(hi, tailLimitOnFrame(left.clip.startS + tailLimitS(left.clip, assetL), right.clip.startS, seq.fps))
   const t = Math.min(hi, Math.max(lo, tS))
 
   const trimmedLeft: Clip =

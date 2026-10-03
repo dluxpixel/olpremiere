@@ -139,7 +139,7 @@ describe('snapMoveStart', () => {
 
 describe('drag steps', () => {
   it('reads out a move as its start and signed delta', () => {
-    expect(moveTipText(2, 1, 30)).toBe('Move  00:00:02:00  +00:01:00 / +30f')
+    expect(moveTipText(2, 1, 30)).toBe('Move  0:02.00  +1.00s')
   })
 
   it('slips by the applied offset', () => {
@@ -147,7 +147,7 @@ describe('drag steps', () => {
     const drag = { kind: 'slip' as const, clipId: w.id, startXPx: 0, solo: true }
     const step = slipStep(seq, ASSETS, drag, -1)
     expect(step.next).toEqual(slipClip(seq, ASSETS, w.id, -1))
-    expect(step.tip).toBe('Slip  in 00:00:01:00 · out 00:00:03:00  -00:01:00 / -30f')
+    expect(step.tip).toBe('Slip  in 0:01.00 · out 0:03.00  -1.00s')
     expect(slipStep(seq, ASSETS, { ...drag, solo: false }, -1).next).toEqual(slipGroup(seq, ASSETS, w.id, -1))
   })
 
@@ -155,28 +155,28 @@ describe('drag steps', () => {
     const { w, x, seq } = linkedFixture()
     const step = rollStep(seq, ASSETS, { kind: 'roll', leftId: w.id, rightId: x.id }, 4.5)
     expect(step.next).toEqual(rollEditTo(seq, ASSETS, w.id, x.id, 4.5))
-    expect(step.tip).toBe('Roll  00:00:04:15  +00:00:15 / +15f')
+    expect(step.tip).toBe('Roll  0:04.50  +0.50s')
   })
 
   it('slides and reads out the slid clip', () => {
     const { v, w, x, seq } = linkedFixture()
     const step = slideStep(seq, ASSETS, { kind: 'slide', clipId: w.id, grabOffsetS: 0, neighborIds: [v.id, x.id] }, 2.5)
     expect(step.next).toEqual(slideClip(seq, ASSETS, w.id, 2.5))
-    expect(step.tip).toBe('Slide  00:00:02:15  +00:00:15 / +15f')
+    expect(step.tip).toBe('Slide  0:02.50  +0.50s')
   })
 
   it('stretches and reads out the speed and length', () => {
     const { x, seq } = linkedFixture()
     const step = stretchStep(seq, { kind: 'stretch', clipId: x.id, edge: 'out' }, 8)
     expect(step.next).toEqual(rateStretchGroup(seq, x.id, 'out', 8))
-    expect(step.tip).toBe(`Speed ${Math.round(Math.abs(clipIn(step.next, x.id).speed) * 100)}%  ·  00:00:04:00`)
+    expect(step.tip).toBe(`Speed ${Math.round(Math.abs(clipIn(step.next, x.id).speed) * 100)}%  ·  0:04.00`)
   })
 
   it('trims and reads out the edge', () => {
     const { x, seq } = linkedFixture()
     const step = trimStep(seq, ASSETS, { kind: 'trim', clipId: x.id, edge: 'out', ripple: false, solo: false }, 5)
     expect(clipIn(step.next, x.id).outS).toBe(5)
-    expect(step.tip).toBe('00:00:05:00  -00:01:00 / -30f')
+    expect(step.tip).toBe('0:05.00  -1.00s')
   })
 
   it('reads out a ripple in-trim as the source edge', () => {
@@ -188,7 +188,7 @@ describe('drag steps', () => {
   it('reads out a trim into the neighbour as a crossfade', () => {
     const { w, seq } = linkedFixture()
     const step = trimStep(seq, ASSETS, { kind: 'trim', clipId: w.id, edge: 'out', ripple: false, solo: false }, 5)
-    expect(step.tip).toBe('Crossfade  00:00:01:00')
+    expect(step.tip).toBe('Crossfade  0:01.00')
   })
 })
 

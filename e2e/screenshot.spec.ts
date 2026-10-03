@@ -101,7 +101,7 @@ test('the screenshot lands in the media at the sequence size', async ({ page }) 
   expect(still.width).toBe(after.seqW)
   expect(still.height).toBe(after.seqH)
   // Named by the frame it was taken on, with no colon in it.
-  expect(still.name).toMatch(/^Frame \d\d-\d\d-\d\d-\d\d\.png$/)
+  expect(still.name).toMatch(/^Frame \d\d-\d\d-\d\d\.\d\d\.png$/)
   // And there is a PICTURE in it, not a correctly-sized blank.
   expect(await distinctColours(page, still.blobKey)).toBeGreaterThan(1)
 })

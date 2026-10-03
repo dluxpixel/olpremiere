@@ -122,8 +122,10 @@ describe('tickStepS', () => {
     expect(tickStepS(240, 30)).toBeCloseTo(1 / 30, 9)
   })
 
-  it('climbs to seconds and beyond as the rail zooms out', () => {
-    expect(tickStepS(12, 30)).toBe(1)
+  it('climbs through round times to seconds and beyond as the rail zooms out', () => {
+    // Half a second is fifteen frames at 30 fps: round AND on the grid. The old
+    // ladder went 5 and 10 frames here, ticks at 0.17 s and 0.33 s.
+    expect(tickStepS(12, 30)).toBe(0.5)
     expect(tickStepS(MIN_RAIL_PX_PER_S, 30)).toBe(1)
     expect(tickStepS(1, 30)).toBe(10)
   })
@@ -162,6 +164,26 @@ describe('railTicks', () => {
         expect(labelled[i].px - labelled[i - 1].px).toBeGreaterThanOrEqual(64 - 1e-9)
       }
     }
+  })
+
+  it('labels only round times, every one of them on a tick, at every zoom and rate', () => {
+    for (const fps of [24, 25, 30, 60]) {
+      for (const pxPerS of [8, 30, 120, 600, 2000]) {
+        const labelled = railTicks({ pxPerS, startS: 0 }, VIEW_W, DUR, fps).filter((t) => t.major)
+        expect(labelled.length).toBeGreaterThan(0)
+        for (const tick of labelled) {
+          // A whole number of hundredths, printed as the stopwatch reads it.
+          expect(Math.abs(tick.t * 100 - Math.round(tick.t * 100))).toBeLessThan(1e-6)
+          expect(tick.label).toMatch(/^\d+:\d\d(\.\d\d)?$/)
+        }
+        expect(new Set(labelled.map((t) => t.label)).size).toBe(labelled.length)
+      }
+    }
+    expect(railTicks({ pxPerS: 2000, startS: 0 }, 1000, DUR, 30).filter((t) => t.major).map((t) => t.label).slice(0, 3)).toEqual([
+      '0:00.00',
+      '0:00.10',
+      '0:00.20',
+    ])
   })
 
   it('draws nothing for a rail with no width and no clip', () => {

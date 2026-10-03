@@ -260,7 +260,7 @@ test('zooming the rail earns the click between two diamonds, and that segment op
   // editor headed with its real numbers.
   await expect(lane.getByTestId('keyframe-segment')).toBeVisible()
   await expect(page.getByTestId('curve-editor')).toBeVisible()
-  await expect(page.getByTestId('curve-editor-header')).toHaveText('Zoom 100 to 120 over 5f')
+  await expect(page.getByTestId('curve-editor-header')).toHaveText('Zoom 100 to 120 over 0.17s')
 
   // The punch wrote the Snap curve, and the chip claiming to be Snap agrees with
   // it: one MOTION_CURVES table, read by the preset builder and the editor alike.
@@ -281,7 +281,7 @@ test('zooming the rail earns the click between two diamonds, and that segment op
   expect(keys[0].value).toBeCloseTo(1, 6)
   expect(keys[1].value).toBeCloseTo(DEPTH, 6)
   expect(keys[1].t - keys[0].t).toBeCloseTo(RISE_S, 6)
-  await expect(page.getByTestId('curve-editor-header')).toHaveText('Zoom 100 to 120 over 5f')
+  await expect(page.getByTestId('curve-editor-header')).toHaveText('Zoom 100 to 120 over 0.17s')
 
   // ⛔ AND THE EDITOR IS STILL THERE AFTER DRAGGING A HANDLE. It used not to be.
   // A handle is a bare <circle>, which matched nothing in the rail's "not a
@@ -299,7 +299,7 @@ test('zooming the rail earns the click between two diamonds, and that segment op
   await page.mouse.up()
 
   await expect(page.getByTestId('curve-editor')).toBeVisible()
-  await expect(page.getByTestId('curve-editor-header')).toHaveText('Zoom 100 to 120 over 5f')
+  await expect(page.getByTestId('curve-editor-header')).toHaveText('Zoom 100 to 120 over 0.17s')
   await expect.poll(async () => (await scaleKeys(page))[0].curve).not.toEqual(before)
 })
 

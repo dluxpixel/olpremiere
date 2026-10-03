@@ -30,7 +30,7 @@ test('import: probing yields a card with name and a sane duration badge', async 
   const card = page.getByTestId('asset-card')
   await expect(card).toContainText('clip.webm')
   // MediaRecorder timing jitters; accept 1..4s but not 0 and not garbage.
-  await expect(card).toContainText(/00:00:0[1-4]:/)
+  await expect(card).toContainText(/0:0[1-4]\.\d\d/)
   await page.screenshot({ path: `${VERIFY}/imported.png` })
 })
 
@@ -38,7 +38,7 @@ test('double-click inserts video on V1 and splits its audio to A1', async ({ pag
   await addClipToTimeline(page)
   await expect(vclip(page)).toHaveCount(1)
   await expect(aclip(page)).toHaveCount(1) // linked audio auto-created
-  await expect(page.getByTestId('timecode')).toContainText(/\/ 00:00:0[1-4]:/)
+  await expect(page.getByTestId('timecode')).toContainText(/\/ 0:0[1-4]\.\d\d/)
   await page.screenshot({ path: `${VERIFY}/clip-on-timeline.png` })
 })
 
@@ -125,8 +125,8 @@ test('playback: Space plays (timecode advances), Space pauses', async ({ page })
   await page.keyboard.press(' ')
   await page.waitForTimeout(800)
   const during = await page.getByTestId('timecode').textContent()
-  expect(during).not.toContain('00:00:00:00 ')
-  expect(during).toMatch(/^00:00:0[0-4]:/)
+  expect(during).not.toContain('0:00.00 ')
+  expect(during).toMatch(/^0:0[0-4]\.\d\d/)
   await page.keyboard.press(' ')
   const paused = await page.getByTestId('timecode').textContent()
   await page.waitForTimeout(400)
@@ -142,7 +142,7 @@ test('clicking an empty track moves the playhead there (Vegas-style)', async ({ 
   const lanes = page.getByTestId('timeline-lanes')
   const box = (await lanes.boundingBox())!
   await page.mouse.click(box.x + 300, box.y + 60)
-  await expect(page.getByTestId('timecode')).toContainText('00:00:05:00')
+  await expect(page.getByTestId('timecode')).toContainText('0:05.00')
 })
 
 test('clicking ON a clip moves the playhead there; dragging it does not', async ({ page }) => {
@@ -154,18 +154,18 @@ test('clicking ON a clip moves the playhead there; dragging it does not', async 
   // and the preview shows that spot. Selection still happens.
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
   const clicked = await page.getByTestId('timecode').textContent()
-  expect(clicked).not.toContain('00:00:00:00 ')
+  expect(clicked).not.toContain('0:00.00 ')
   const playhead = (await page.getByTestId('playhead').boundingBox())!
   expect(Math.abs(playhead.x - (box.x + box.width / 2))).toBeLessThan(3)
 
   // DRAG the clip (real movement) → the playhead must NOT follow the pointer.
   await page.keyboard.press('Home')
-  await expect(page.getByTestId('timecode')).toContainText('00:00:00:00')
+  await expect(page.getByTestId('timecode')).toContainText('0:00.00')
   await clip.hover()
   const start = (await clip.boundingBox())!
   await page.mouse.move(start.x + 30, start.y + start.height / 2)
   await page.mouse.down()
   await page.mouse.move(start.x + 150, start.y + start.height / 2, { steps: 5 })
   await page.mouse.up()
-  await expect(page.getByTestId('timecode')).toContainText('00:00:00:00')
+  await expect(page.getByTestId('timecode')).toContainText('0:00.00')
 })
