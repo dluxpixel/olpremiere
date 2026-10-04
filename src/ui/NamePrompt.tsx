@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { answerNamePrompt, useNamePrompt, type NameRequest } from '../state/namePrompt'
 import { Button } from './Button'
+import { useEscapeToClose } from './useEscapeToClose'
 
 /**
  * The one small "type a name" dialog (state/namePrompt.ts). Enter saves,
@@ -20,6 +21,8 @@ function NamePromptDialog({ request }: { request: NameRequest }) {
   const [value, setValue] = useState(request.initial ?? '')
   const [tried, setTried] = useState(false)
   const input = useRef<HTMLInputElement>(null)
+  // The field answers its own Escape; this is for the press that lands anywhere else in the dialog.
+  useEscapeToClose(() => answerNamePrompt(null))
   const problem = request.validate?.(value) ?? (value.trim() === '' ? 'Type a name first' : null)
 
   useEffect(() => {

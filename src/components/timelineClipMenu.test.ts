@@ -126,6 +126,14 @@ describe('the clip right-click menu', () => {
     )
   })
 
+  // His ask, 2026-10-03: "Delete 1 clips" is wrong. A count agrees with one.
+  it('says clip, not clips, when the kept selection is a single clip', () => {
+    const { v, seq } = fixture()
+    const all = labels(menu(v, seq, { selNow: [v.id], keepSelection: true }))
+    expect(all).toEqual(expect.arrayContaining(['Split 1 clip at playhead', 'Delete 1 clip', 'Ripple delete 1 clip']))
+    expect(all.filter((l) => /\b1 clips\b/.test(l))).toEqual([])
+  })
+
   it('disables Close gap before when there is no gap', () => {
     const { v, w, seq } = fixture()
     expect(item(menu(w, seq), 'Close gap before').disabled).toBe(true)

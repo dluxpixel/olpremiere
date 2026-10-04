@@ -67,8 +67,11 @@ for (const size of [
       const box = (await menu.boundingBox())!
       expect(box.y).toBeGreaterThanOrEqual(0)
       expect(box.y + box.height).toBeLessThanOrEqual(size.height)
-      // Every row is on screen, so the last one can be clicked.
+      // Every row can be reached: on a short window the menu scrolls inside the window (it gained rows
+      // with the stopwatch-time cut work, so 720px no longer holds all of it), and the last row, Delete
+      // included, comes into view and can be clicked.
       const rows = menu.getByRole('menuitem')
+      await rows.last().scrollIntoViewIfNeeded()
       const last = (await rows.last().boundingBox())!
       expect(last.y + last.height).toBeLessThanOrEqual(size.height)
     })

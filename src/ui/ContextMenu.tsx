@@ -192,6 +192,7 @@ export function ContextMenu() {
         ref={ref}
         role="menu"
         data-testid="context-menu"
+        data-esc-owner=""
         className="absolute max-h-[calc(100vh-16px)] min-w-[184px] overflow-y-auto rounded-overlay border border-border bg-bg-elevated py-1 shadow-pop"
         style={{ left: pos.x, top: pos.y }}
         onPointerDown={(e) => e.stopPropagation()}

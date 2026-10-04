@@ -22,6 +22,7 @@ import { mapClips } from './bulkEdits'
 import { playheadLocalT } from './clipEdits'
 import { useStore } from './store'
 import { useToasts } from './toasts'
+import { plural } from '../engine/plural'
 
 /** The first copy of an effect on a clip, the one a shared change goes through. */
 export const firstOfType = (clip: Clip, type: string): EffectInstance | undefined =>
@@ -95,7 +96,7 @@ export function setSharedEffectParam(ids: readonly string[], type: string, key: 
   const param = def?.params.find((p) => p.key === key)
   mapClips(
     ids,
-    `Set ${def?.label ?? type} ${param?.label ?? key} on ${ids.length} clips`,
+    `Set ${def?.label ?? type} ${param?.label ?? key} on ${plural(ids.length, 'clip')}`,
     (c) => {
       const inst = firstOfType(c, type)
       return inst ? setEffectParam(c, inst.id, key, value, playheadLocalT(c)) : c
@@ -112,7 +113,7 @@ export function resetSharedEffectParam(ids: readonly string[], type: string, key
 
 /** Switch the effect on or off on every clip at once (mixed switches them all on). */
 export function setSharedEffectEnabled(ids: readonly string[], type: string, on: boolean): void {
-  mapClips(ids, `${on ? 'Enable' : 'Disable'} ${getEffect(type)?.label ?? type} on ${ids.length} clips`, (c) => {
+  mapClips(ids, `${on ? 'Enable' : 'Disable'} ${getEffect(type)?.label ?? type} on ${plural(ids.length, 'clip')}`, (c) => {
     const inst = firstOfType(c, type)
     return inst && inst.enabled !== on ? toggleEffect(c, inst.id) : c
   })
@@ -120,7 +121,7 @@ export function setSharedEffectEnabled(ids: readonly string[], type: string, on:
 
 /** Take the effect off every clip, every copy of it. */
 export function removeSharedEffect(ids: readonly string[], type: string): void {
-  mapClips(ids, `Remove ${getEffect(type)?.label ?? type} from ${ids.length} clips`, (c) =>
+  mapClips(ids, `Remove ${getEffect(type)?.label ?? type} from ${plural(ids.length, 'clip')}`, (c) =>
     c.effects.filter((e) => e.type === type).reduce((acc, e) => removeEffect(acc, e.id), c),
   )
 }

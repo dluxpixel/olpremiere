@@ -19,6 +19,7 @@ import {
 } from '../state/sharedEffects'
 import { IconButton } from '../ui/Button'
 import { PropRow, ScrubField, SectionLabel } from './EffectControls'
+import { plural } from '../engine/plural'
 
 export function SharedEffects({ clips }: { clips: Clip[] }) {
   const types = sharedEffectTypes(clips)
@@ -26,7 +27,7 @@ export function SharedEffects({ clips }: { clips: Clip[] }) {
   const ids = clips.map((c) => c.id)
   return (
     <section className="flex flex-col gap-2" data-testid="shared-effects">
-      <SectionLabel>{`On all ${clips.length} clips`}</SectionLabel>
+      <SectionLabel>{clips.length === 1 ? 'On this clip' : `On all ${plural(clips.length, 'clip')}`}</SectionLabel>
       {types.map((type) => (
         <SharedEffectCard key={type} type={type} clips={clips} ids={ids} />
       ))}

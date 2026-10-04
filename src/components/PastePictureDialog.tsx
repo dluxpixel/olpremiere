@@ -13,6 +13,7 @@ import {
   usePastePicture,
 } from '../state/picturePaste'
 import { Button, IconButton } from '../ui/Button'
+import { useEscapeToClose } from '../ui/useEscapeToClose'
 
 /** After this long the wait says why it is long: the first cutout starts CutStudio and loads its model. */
 const SLOW_HINT_MS = 4000
@@ -29,13 +30,7 @@ function PastePictureCard({ url }: { url: string }) {
   const working = phase === 'working'
   const canRemove = canRemoveBackground()
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') cancelPicturePaste()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [])
+  useEscapeToClose(cancelPicturePaste)
 
   return (
     <div

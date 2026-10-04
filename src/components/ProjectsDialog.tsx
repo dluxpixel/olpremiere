@@ -23,6 +23,7 @@ import {
 } from '../state/projectFile'
 import { Button, IconButton } from '../ui/Button'
 import { usePhoneLayout } from '../ui/phoneLayout'
+import { useEscapeToClose } from '../ui/useEscapeToClose'
 
 function ago(ts: number): string {
   const s = Math.max(0, (Date.now() - ts) / 1000)
@@ -130,6 +131,8 @@ function CopyToAnotherDevice({ onClose }: { onClose: () => void }) {
 
 export function ProjectsDialog({ onClose, view = 'active' }: { onClose: () => void; view?: ProjectsView }) {
   const currentId = useStore((s) => s.project.id)
+  // Escape closes it, like every other dialog (it was the one that never did).
+  useEscapeToClose(onClose)
   const [all, setAll] = useState<ProjectSummary[] | null>(null)
   const [tab, setTab] = useState<ProjectsView>(view)
   // Two-step delete: first click arms, second click within the same render

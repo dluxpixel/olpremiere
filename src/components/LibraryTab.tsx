@@ -38,6 +38,7 @@ import { moveToCategoryItems } from '../state/libraryMenus'
 import { stopLibraryPreview, toggleLibraryPreview, useLibraryPreview } from '../state/libraryPreview'
 import { insertSfxAtPlayhead, previewSfx } from '../state/sfxActions'
 import { useStore } from '../state/store'
+import { plural } from '../engine/plural'
 
 const KIND_ICONS = { video: Film, audio: Music, image: ImageIcon } as const
 
@@ -411,7 +412,7 @@ export function LibraryTab() {
                 data-testid="preset-item"
                 role="button"
                 tabIndex={0}
-                title={`${p.effects.length} effect(s); double-click to apply to the selected clip`}
+                title={`${plural(p.effects.length, 'effect')}; double-click to apply to the selected clip`}
                 onDoubleClick={() => applyPresetToSelection(p.id)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') applyPresetToSelection(p.id)

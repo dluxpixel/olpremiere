@@ -19,6 +19,7 @@ import { deleteBlob, getBlob, loadProjectById, putBlob, saveProject } from './pe
 import { flushOutgoing, guardRoom } from './projectActions'
 import { useStore } from './store'
 import { useToasts } from './toasts'
+import { plural } from '../engine/plural'
 
 export const PROJECT_FILE_FORMAT = 'olstudio-project'
 export const PROJECT_FILE_VERSION = 2
@@ -246,7 +247,7 @@ export function planBlobRanges(blobs: BlobMeta[], bodyOffset: number, fileSize: 
 }
 
 export function incompleteFileMessage(missing: number, total: number): string {
-  return `That project file is incomplete: ${missing} of ${total} media items are missing. Copy it again.`
+  return `That project file is incomplete: ${missing} of ${total} media ${total === 1 ? 'item is' : 'items are'} missing. Copy it again.`
 }
 
 /** "Gameplay cut" becomes "Gameplay cut (copy)", and stays that way if reimported. */
@@ -325,9 +326,9 @@ function reportBuilt(built: BuiltProjectFile, verb: string): void {
   const show = useToasts.getState().show
   const total = built.bundled + built.absent
   if (built.absent > 0) {
-    show(`${verb}, but ${built.absent} of ${total} media items were missing and are NOT in the file`, 'danger')
+    show(`${verb}, but ${built.absent} of ${total} media ${total === 1 ? 'item' : 'items'} ${built.absent === 1 ? 'was' : 'were'} missing and ${built.absent === 1 ? 'is' : 'are'} NOT in the file`, 'danger')
   } else {
-    show(`${verb} with ${built.bundled} media item(s) bundled`, 'success')
+    show(`${verb} with ${plural(built.bundled, 'media item')} bundled`, 'success')
   }
 }
 

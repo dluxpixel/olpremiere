@@ -3,14 +3,16 @@ import {
   ChevronLeft,
   ChevronRight,
   Maximize,
+  Minimize,
   MonitorPlay,
   Pause,
   Play,
   Repeat,
+  Scan,
   SkipBack,
   SkipForward,
 } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { prewarmAudio } from '../engine/audio'
 import { setPreviewScale } from '../engine/frameCache'
 import { noPictureReason, prewarmPreview, previewEpoch, renderPreview } from '../engine/preview'
@@ -25,9 +27,13 @@ import { isExportWatched } from '../state/exportJob'
 import { setPreviewQuality, useSettings } from '../state/settings'
 import { setActiveSequenceFormat, useStore } from '../state/store'
 import { IconButton } from '../ui/Button'
+import { CompactSelect, type CompactOption } from '../ui/CompactSelect'
+import { Tooltip } from '../ui/Tooltip'
+import { usePhoneLayout } from '../ui/phoneLayout'
 import { MASTER_METER_W, MasterMeter } from './MasterMeter'
 import { FrameSettingsMenu } from './FrameSettingsMenu'
 import { fitCanvasBox } from './monitorSizing'
+import { barClasses, groupClasses, pinnedClasses, settingsClasses, showsTotalLength, timeClasses, transportTier } from './transportLayout'
 import { drawIsDue, previewFrameMs } from './previewCap'
 import { MonitorTransformOverlay } from './MonitorTransformOverlay'
 import { PlayheadTimecode } from './PlayheadWidgets'
@@ -43,6 +49,16 @@ const FORMATS = [
 
 /** Shown when the sequence is a shape no preset covers. Never selectable. */
 const CUSTOM_FORMAT_KEY = '__custom'
+
+/** The closed select says "9:16"; the list says "9:16 Shorts" (CompactSelect). */
+const FORMAT_OPTIONS: readonly CompactOption[] = FORMATS.map((f) => ({ value: f.key, short: f.key, long: f.label }))
+
+/** Same: "Full" on the bar, "Full quality" in the list. The values are the render scale. */
+const QUALITY_OPTIONS: readonly CompactOption[] = [
+  { value: '1', short: 'Full', long: 'Full quality' },
+  { value: '0.5', short: 'Half', long: 'Half (faster)' },
+  { value: '0.25', short: 'Quarter', long: 'Quarter (fastest)' },
+]
 
 /**
  * Which preset this sequence IS, by its actual shape.
@@ -348,8 +364,28 @@ function ShuttleBadge() {
  */
 let lastUsedKeyFor: { project: unknown; key: string } | null = null
 
+/** The width of an element, measured before the first paint and kept current as it is resized. */
+function useElementWidth<T extends HTMLElement>() {
+  const ref = useRef<T>(null)
+  const [width, setWidth] = useState(0)
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    setWidth(el.clientWidth)
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => setWidth(el.clientWidth))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+  return [ref, width] as const
+}
+
 export function Monitor() {
   const assets = useStore((s) => s.project.assets)
+  // The bar below takes the shape its width allows (transportLayout.ts).
+  const phone = usePhoneLayout()
+  const [barRef, barWidth] = useElementWidth<HTMLDivElement>()
+  const tier = transportTier(barWidth, phone)
   // Decode audio + spin up pooled elements so the first Space press starts
   // instantly, but ONLY for assets the active sequence actually uses.
   // Warming the whole bin meant importing a 100-clip library spun up 100
@@ -395,11 +431,26 @@ export function Monitor() {
     setPreviewScale(quality)
   }, [quality])
   const [safeMargins, setSafeMargins] = useState(false)
+  // Whether THIS monitor is the thing on the full screen. The picture's editing chrome stands down
+  // in it, and the button that leaves it is the one that went in (below).
+  const [fullscreen, setFullscreen] = useState(false)
   // A grab can wait several seconds on a decode, so the button says it is busy
   // rather than sitting there looking like nothing happened.
   const [shooting, setShooting] = useState(false)
   const regionRef = useRef<HTMLDivElement>(null)
   const { canvasRef, noPicture } = useProgramCanvas(quality)
+  useEffect(() => {
+    const sync = () => setFullscreen(document.fullscreenElement !== null && document.fullscreenElement === regionRef.current)
+    document.addEventListener('fullscreenchange', sync)
+    return () => document.removeEventListener('fullscreenchange', sync)
+  }, [])
+  const aspectKey = aspectKeyFor(seq.width, seq.height)
+  // A shape no preset covers shows as its size, and cannot be picked.
+  const customShape = aspectKey === CUSTOM_FORMAT_KEY ? seq.width + '×' + seq.height : null
+  const formatOptions = useMemo<readonly CompactOption[]>(
+    () => (customShape ? [...FORMAT_OPTIONS, { value: CUSTOM_FORMAT_KEY, short: customShape, long: customShape, disabled: true }] : FORMAT_OPTIONS),
+    [customShape],
+  )
 
   const stepFrames = (frames: number) => {
     pausePlayback()
@@ -466,7 +517,7 @@ export function Monitor() {
               onPointerDown={() => pausePlayback()}
             />
           )}
-          <MonitorTransformOverlay canvas={canvasRef.current} />
+          <MonitorTransformOverlay canvas={canvasRef.current} chromeHidden={fullscreen} />
           {!hasContent && (
             <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 text-center">
               <MonitorPlay size={28} strokeWidth={1.5} className="text-text-muted" aria-hidden />
@@ -527,11 +578,19 @@ export function Monitor() {
           left, which is the 2026-08-24 photograph described below.
           Writing the floor into the track definition makes it structural, and it
           moves zero pixels today. */}
-      <div className="grid h-11 shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 overflow-hidden border-t border-border bg-bg-panel px-3">
-        <div className="flex min-w-0 shrink items-center gap-2 overflow-hidden whitespace-nowrap">
+      {/* ⛔ THE BAR TAKES THE SHAPE ITS WIDTH ALLOWS (2026-10-03). Everything above stands at
+          a wide window. At 1280x720 the monitor is 549px and the row above did not fit, so it
+          clipped the settings group (the aspect picker and camera squeezed out of sight, Preview
+          down to a bare arrow). Below 864px the settings now take a row of their own, the time
+          and the transport keep the first row with Play still on the centre, and below 356px
+          the settings wrap. transportLayout.ts has the numbers and the reason for each. */}
+      <div ref={barRef} data-testid="transport-bar" data-tier={tier} className={barClasses(tier)}>
+        <div className={timeClasses(tier)}>
           <span data-testid="timecode" className="font-numeric text-ui-sm text-text-primary">
             <PlayheadTimecode fps={seq.fps} editable testId="monitor-timecode" />
-            <span className="text-text-muted phone:hidden"> / {formatTimecode(seq.durationS, seq.fps)}</span>
+            {showsTotalLength(tier, barWidth) && (
+              <span className="text-text-muted phone:hidden"> / {formatTimecode(seq.durationS, seq.fps)}</span>
+            )}
           </span>
           <ShuttleBadge />
         </div>
@@ -582,114 +641,129 @@ export function Monitor() {
           </IconButton>
         </div>
 
-        {/* Its own grid column, so it is pushed right by the column and not by a
-            margin. `min-w-0` so it NARROWS as the inspector grows rather than
-            shoving the centre column off the middle, which is the whole ask.
-
-            ⛔ `w-full`, AND THAT IS THE WHOLE FIX. It was `justify-self-end`,
-            which sizes the box to its CONTENT and then hangs it off the right
-            edge of the column. This group is wider than its column at every
-            window size, so the box started well to the LEFT of its own column and
-            `overflow-hidden` clipped nothing, because nothing was overflowing the
-            box, only the column. Measured 2026-08-24 at a 1600px window: the play
-            button sat at 701-729 and the aspect picker at 691-805, a 28px overlap,
-            which is the Play icon drawn straight through the words "9:16 Shorts".
-            He photographed exactly that, and the same failure was photographed on
-            2026-08-19 and 2026-08-18 before it.
-
-            The comment above already names this: *"a flex overflow under
-            justify-end spills out of the START edge."* It was fixed for the
-            absolutely-centred layout and reintroduced here by the grid rewrite.
-            `w-full` pins the box to the column, so the content is clipped at the
-            column edge instead of painted over the transport, and the row stays
-            readable at any width. */}
-        <div className="flex w-full min-w-0 items-center justify-end gap-1.5 overflow-hidden">
-          {/* Left of the aspect picker, alongside the blur: the frame he can
-              see is the frame it takes, at the sequence's own size. */}
+        {/* Its own grid column in the wide bar, a row of its own below that. Three groups, each a
+            thing he does: take the picture, shape the picture, and how it plays. The spacing
+            between groups is wider than inside one, which is all the grouping there is.
+            `min-w-0` so it narrows rather than shoving the centre column off the middle, and in
+            the wide bar `overflow-hidden` so that, if it ever did not fit, it would be clipped at
+            its column and never painted over the transport (photographed 2026-08-19, 2026-08-24). */}
+        <div data-testid="transport-settings" className={settingsClasses(tier)}>
+          <div className={groupClasses}>
+            {/* Left of the aspect picker, alongside the blur: the frame he can
+                see is the frame it takes, at the sequence's own size. */}
+            <IconButton
+              label="Screenshot: saves this exact frame into your media, full size"
+              shortcut="Shift+S"
+              data-testid="screenshot-button"
+              disabled={!hasContent || shooting}
+              active={shooting}
+              className={`phone:hidden ${shooting ? 'bg-accent-quiet! text-accent!' : ''}`}
+              onClick={() => {
+                setShooting(true)
+                void screenshotToMedia().finally(() => setShooting(false))
+              }}
+            >
+              <Camera size={16} strokeWidth={1.5} />
+            </IconButton>
+          </div>
+          <div className={groupClasses}>
+            {/* ⛔ THE SELECT IS AS WIDE AS "9:16", NOT AS "9:16 Shorts" (his words, 2026-10-04: "there's
+                a lot of blank space"). The closed select says the short name and the list that opens
+                says the full one. It used to be sized to its longest option plus room for the arrow,
+                which is where the blank space was; that arrow is part of the face now, so it can no
+                longer be painted through the label (photographed 2026-08-18). */}
+            <CompactSelect
+              testId="format-select"
+              label="Aspect ratio"
+              title="Aspect ratio: the shape of the video. 16:9 is widescreen, 9:16 is a vertical Short, 1:1 is square."
+              value={aspectKey}
+              options={formatOptions}
+              onChange={(key) => {
+                const f = FORMATS.find((x) => x.key === key)
+                if (f) setActiveSequenceFormat(f.w, f.h)
+              }}
+            />
+            {/* The four sequence-level frame settings, folded into one labelled
+                button. They were four of the eleven controls this cell held, and
+                the cell is `overflow-hidden`, so past a certain inspector width
+                they simply clipped off the end with nothing to say they had.
+                ⛔ NOTHING MOVED. His call, 2026-09-13: the base is good, improve it
+                in place. → FrameSettingsMenu.tsx carries the whole account. */}
+            <span className="contents phone:hidden">
+              <FrameSettingsMenu seq={seq} safeMargins={safeMargins} onSafeMargins={setSafeMargins} />
+            </span>
+            {/* ⛔ SAFE MARGINS IS BACK ON THE BAR (his words, 2026-10-04: "safe margins, which, for some
+                reason, I can't find now. I was actually using that a lot."). It was a button here from
+                Phase 5 until 2026-09-14, when the Frame button folded four settings into one popover and
+                took it with them. It is still in that popover, and the two are one switch. */}
+            <IconButton
+              label="Safe margins: draws the action-safe and title-safe guides over the picture. They are never exported."
+              active={safeMargins}
+              onClick={() => setSafeMargins((v) => !v)}
+              data-testid="safe-margins-bar-toggle"
+              className="phone:hidden"
+            >
+              <Scan size={16} strokeWidth={1.5} />
+            </IconButton>
+          </div>
+          <div className={groupClasses}>
+            {/* ⛔ A WORD ON THE BUTTON, NOT ONLY AN ICON (his words, 2026-10-04, of the loop button: "I
+                have no idea what the hell this feature is for"). It does one thing: with it on, Play
+                repeats the In to Out range, or the whole edit when no range is set, instead of stopping
+                at the end. The word says what it is, the tooltip says what it does, and it lights up
+                while it is on. */}
+            <Tooltip
+              label={loop ? 'Loop is on: Play repeats the In to Out range, or the whole edit' : 'Loop: repeat the In to Out range, or the whole edit'}
+              shortcut="/"
+              side="top"
+            >
+              <button
+                type="button"
+                aria-pressed={loop}
+                aria-label="Loop playback"
+                data-testid="loop-toggle"
+                onClick={toggleLoop}
+                className={`phone:hidden flex h-7 shrink-0 cursor-default items-center gap-1.5 rounded-field border px-2 text-ui-sm transition-colors duration-[120ms] ${
+                  loop
+                    ? 'border-ember/50 bg-ember-quiet text-ember'
+                    : 'border-border bg-bg-input text-text-secondary hover:border-border-strong hover:text-text-primary'
+                }`}
+              >
+                <Repeat size={14} strokeWidth={1.75} aria-hidden />
+                Loop
+              </button>
+            </Tooltip>
+            {/* Whether a drag animates is no longer a mode up here: the diamond
+                badge on the selection box in the picture owns it, per clip. One
+                mechanism, and it sits on the thing it acts on. */}
+            <CompactSelect
+              testId="preview-quality"
+              label="Preview quality"
+              title="Preview quality: Full, Half or Quarter. Lower is smoother when scrubbing big footage. It never changes the export."
+              className="phone:hidden"
+              value={String(quality)}
+              options={QUALITY_OPTIONS}
+              onChange={(v) => setQuality(Number(v) as Quality)}
+            />
+          </div>
+        </div>
+        {/* ⛔ THE WAY OUT OF FULL SCREEN IS PINNED TO THE BAR'S BOTTOM RIGHT CORNER, NOT FLOWED WITH
+            THE CONTROLS (his words, 2026-10-04: "when I'm in full screen, the bottom-right button to
+            unfullscreen gets moved"). It was the last control in a row that changes shape with the
+            width, so it sat somewhere different in a window, in the bar at 1280 and on the full
+            screen. Now it is the same corner in all of them, shows which way it goes (Minimize while
+            it is full), and nothing is laid out under it: the controls keep clear of its 40px. */}
+        <div className={`phone:hidden ${pinnedClasses}`}>
           <IconButton
-            label="Screenshot: saves this exact frame into your media, full size"
-            shortcut="Shift+S"
-            data-testid="screenshot-button"
-            disabled={!hasContent || shooting}
-            active={shooting}
-            className={`phone:hidden ${shooting ? 'bg-accent-quiet! text-accent!' : ''}`}
+            label={fullscreen ? 'Exit full screen' : 'Full screen'}
+            shortcut={fullscreen ? 'Esc' : undefined}
+            data-testid="fullscreen-toggle"
             onClick={() => {
-              setShooting(true)
-              void screenshotToMedia().finally(() => setShooting(false))
+              if (document.fullscreenElement) void document.exitFullscreen?.()
+              else void regionRef.current?.requestFullscreen?.()
             }}
           >
-            <Camera size={16} strokeWidth={1.5} />
-          </IconButton>
-          {/* ⛔ pr-6, NOT px-2, and the reason is not decoration. A <select>
-              sizes itself to its LONGEST option, so when the option he has
-              chosen happens to be that longest one there is no slack left, and
-              the browser paints its own dropdown arrow straight through the end
-              of the label. '9:16 Shorts' is the longest entry in FORMATS, which
-              is why the one control he changes most was the one that read as
-              garbage while 'Preview: Full' next to it looked fine: that list has
-              'Preview: Quarter' behind it holding the width open.
-              He caught this in a screenshot on 2026-08-18. */}
-          <select
-            data-testid="format-select"
-            aria-label="Aspect ratio"
-            title="Aspect ratio: 9:16 makes a vertical Shorts video"
-            className="h-7 min-w-0 shrink cursor-default rounded-field border border-border bg-bg-input pl-2 pr-6 text-ui-sm text-text-secondary transition-colors duration-[120ms] hover:border-border-strong hover:text-text-primary focus:border-accent focus:outline-none"
-            value={aspectKeyFor(seq.width, seq.height)}
-            onChange={(e) => {
-              const f = FORMATS.find((x) => x.key === e.target.value)
-              if (f) setActiveSequenceFormat(f.w, f.h)
-            }}
-          >
-            {FORMATS.map((f) => (
-              <option key={f.key} value={f.key}>
-                {f.label}
-              </option>
-            ))}
-            {aspectKeyFor(seq.width, seq.height) === CUSTOM_FORMAT_KEY && (
-              <option value={CUSTOM_FORMAT_KEY} disabled>
-                {`${seq.width} x ${seq.height}`}
-              </option>
-            )}
-          </select>
-          {/* The four sequence-level frame settings, folded into one labelled
-              button. They were four of the eleven controls this cell held, and
-              the cell is `overflow-hidden`, so past a certain inspector width
-              they simply clipped off the end with nothing to say they had.
-              ⛔ NOTHING MOVED. His call, 2026-09-13: the base is good, improve it
-              in place. → FrameSettingsMenu.tsx carries the whole account. */}
-          <span className="contents phone:hidden">
-            <FrameSettingsMenu seq={seq} safeMargins={safeMargins} onSafeMargins={setSafeMargins} />
-          </span>
-          <IconButton
-            label="Loop playback: repeats the In/Out range"
-            shortcut="/"
-            active={loop}
-            onClick={toggleLoop}
-            data-testid="loop-toggle"
-            className={`phone:hidden ${loop ? 'bg-ember-quiet! text-ember!' : ''}`}
-          >
-            <Repeat size={16} strokeWidth={1.5} />
-          </IconButton>
-          {/* Whether a drag animates is no longer a mode up here: the diamond
-              badge on the selection box in the picture owns it, per clip. One
-              mechanism, and it sits on the thing it acts on. */}
-          <select
-            aria-label="Preview quality"
-            title="Preview quality: lower = smoother scrubbing on big footage. Never affects the export."
-            className="phone:hidden h-7 min-w-0 shrink cursor-default rounded-field border border-border bg-bg-input pl-2 pr-6 text-ui-sm text-text-secondary transition-colors duration-[120ms] hover:border-border-strong hover:text-text-primary focus:border-accent focus:outline-none"
-            value={String(quality)}
-            onChange={(e) => setQuality(Number(e.target.value) as Quality)}
-          >
-            <option value="1">Preview: Full</option>
-            <option value="0.5">Preview: Half</option>
-            <option value="0.25">Preview: Quarter</option>
-          </select>
-          <IconButton
-            label="Fullscreen"
-            onClick={() => void regionRef.current?.requestFullscreen?.()}
-            className="phone:hidden"
-          >
-            <Maximize size={16} strokeWidth={1.5} />
+            {fullscreen ? <Minimize size={16} strokeWidth={1.5} /> : <Maximize size={16} strokeWidth={1.5} />}
           </IconButton>
         </div>
       </div>

@@ -28,6 +28,7 @@ import { openContextMenu } from '../state/contextMenu'
 import { pausePlayback } from '../state/playbackControl'
 import { quantizeToFrame } from '../engine/timecode'
 import { useStore, type ZoomAnchor } from '../state/store'
+import { plural } from '../engine/plural'
 
 interface Tf {
   x: number
@@ -164,17 +165,29 @@ export function normalizedAnchor(sx: number, sy: number, seqW: number, seqH: num
  * The paused-only inner component holds the playheadS subscription, so during
  * PLAYBACK the transport's per-frame ticks re-render nothing here at all.
  */
-export function MonitorTransformOverlay({ canvas }: { canvas: HTMLCanvasElement | null }) {
+export function MonitorTransformOverlay({
+  canvas,
+  chromeHidden = false,
+}: {
+  canvas: HTMLCanvasElement | null
+  /**
+   * The monitor is on the full screen. It is for LOOKING at the picture, so the box, the handles
+   * and the click-to-select layer stand down (OverlayInner). 2026-10-04, from his screenshot of it:
+   * the logo wore its handles, and a handle of the footage behind it, which is wider than the
+   * picture and so was clipped in the window, stood at the far left edge of the screen.
+   */
+  chromeHidden?: boolean
+}) {
   const playing = useStore((s) => s.ui.playing)
   // A move replaying itself after a tile click drives the playhead exactly the
   // way the transport does, so the gizmo stands down for it too. Without this
   // the overlay re-renders on every frame of the sweep.
   const previewing = useStore((s) => s.ui.previewingMove)
   if (playing || previewing) return null
-  return <OverlayInner canvas={canvas} />
+  return <OverlayInner canvas={canvas} chromeHidden={chromeHidden} />
 }
 
-function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
+function OverlayInner({ canvas, chromeHidden }: { canvas: HTMLCanvasElement | null; chromeHidden: boolean }) {
   const selection = useStore((s) => s.ui.selection)
   const project = useStore((s) => s.project)
   const playheadS = useStore((s) => s.ui.playheadS)
@@ -219,6 +232,9 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
   // Playing is handled by the outer gate; here we are always paused.
   const active = !!box && box.w > 0 && seq.durationS > 0
   if (!active || !box) return null
+  // On the full screen nothing of the editing shows, unless a transform is already under his hand
+  // (a drag in progress), which is never cut off mid-gesture.
+  if (chromeHidden && dragTf === null) return null
 
   const k = box.w / seq.width // seq px → overlay px (uniform; aspect matches)
   const localPt = (clientX: number, clientY: number): { x: number; y: number } => {
@@ -791,7 +807,7 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
             background: ACCENT_WASH,
           }}
           onPointerDown={beginMulti}
-          title={`Drag to align all ${selection.length} selected clips to the same spot`}
+          title={`Drag to align all ${plural(selection.length, 'selected clip')} to the same spot`}
         />
       )
     }

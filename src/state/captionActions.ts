@@ -19,6 +19,7 @@ import { addTrack, clipDurationS, clipEndS, recomputeDuration, resolveStart } fr
 import { activeSequence, videoTracks, type Clip, type Sequence, type Track } from '../engine/types'
 import { updateActiveSequence, useStore } from './store'
 import { useToasts } from './toasts'
+import { plural } from '../engine/plural'
 
 // Captions are AUTO, full stop. There is no words-per-caption dial any more.
 //
@@ -130,7 +131,7 @@ export function splitTitleIntoWordCaptions(clipId: string): void {
     })
   })
   s.setUI({ selection: pieces.map((c) => c.id) })
-  useToasts.getState().show(`Split into ${pieces.length} word captions`)
+  useToasts.getState().show(`Split into ${plural(pieces.length, 'word caption')}`)
 }
 
 /**
@@ -306,8 +307,8 @@ export function addCaptionsFromWords(
         // keeps the first clip's captions, so the old wording would have claimed
         // it threw away work it did not touch.
         replaced > 0
-          ? `${clips.length} captions, replacing ${replaced} over this part`
-          : `${clips.length} captions added`,
+          ? `${plural(clips.length, 'caption')}, replacing ${replaced} over this part`
+          : `${plural(clips.length, 'caption')} added`,
         relearned > 0 ? `${relearned} spelled your way` : '',
       ]
         .filter(Boolean)

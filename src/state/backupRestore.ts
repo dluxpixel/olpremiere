@@ -28,6 +28,7 @@ import { deleteProject, getBlob, listProjects, loadProjectById, saveProject } fr
 import { openProject } from './projectActions'
 import { doNotAutoRecover, markDoNotAutoRecover } from './recoveryMemory'
 import { useToasts } from './toasts'
+import { plural } from '../engine/plural'
 
 export interface BackupRow {
   /** Full path, and the only thing main will read back. */
@@ -176,14 +177,14 @@ export async function restoreBackup(filePath: string): Promise<boolean> {
 
   const { missing } = await countLiveMedia(restored)
   if (missing.length === 0) {
-    useToasts.getState().show(`Recovered ${contents.clipCount} clips`, 'success')
+    useToasts.getState().show(`Recovered ${plural(contents.clipCount, 'clip')}`, 'success')
   } else {
     // Naming the files is the difference between a fixable problem and a mystery.
     const head = missing.slice(0, 3).join(', ')
     const rest = missing.length > 3 ? ` and ${missing.length - 3} more` : ''
     useToasts
       .getState()
-      .show(`Recovered the edit. ${missing.length} media files need importing again: ${head}${rest}`, 'info', undefined, {
+      .show(`Recovered the edit. ${plural(missing.length, 'media file')} ${missing.length === 1 ? 'needs' : 'need'} importing again: ${head}${rest}`, 'info', undefined, {
         durationMs: 15_000,
       })
   }
@@ -385,7 +386,7 @@ export async function recoverFromWipe(
     const rest = missing.length > 3 ? ` and ${missing.length - 3} more` : ''
     useToasts
       .getState()
-      .show(`${missing.length} media files need importing again: ${head}${rest}`, 'info', undefined, {
+      .show(`${plural(missing.length, 'media file')} ${missing.length === 1 ? 'needs' : 'need'} importing again: ${head}${rest}`, 'info', undefined, {
         durationMs: 15_000,
       })
   }
