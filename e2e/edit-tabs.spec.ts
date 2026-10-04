@@ -13,6 +13,8 @@ const tabs = (page: Page) => page.getByTestId('edit-tab')
 const tab = (page: Page, name: string) => page.locator(`[data-testid="edit-tab"][data-name="${name}"]`)
 const openTab = (page: Page) => page.locator('[data-testid="edit-tab"][data-open="true"]')
 const clips = (page: Page) => page.locator('[data-clip-kind]')
+/** The editor is up. The first page of a run waits on the dev server compiling the app cold. */
+const editorUp = (page: Page) => expect(page.getByTestId('panel-left')).toBeVisible({ timeout: 30_000 })
 
 async function names(page: Page): Promise<string[]> {
   return tabs(page).evaluateAll((els) => els.map((e) => e.getAttribute('data-name') ?? ''))
@@ -42,7 +44,7 @@ async function switchTo(page: Page, name: string): Promise<void> {
 
 test('three edits as tabs: copy across, undo per tab, close, reopen, restart', async ({ page }) => {
   await page.goto('/')
-  await expect(page.getByTestId('panel-left')).toBeVisible()
+  await editorUp(page)
   await expect(tabs(page)).toHaveCount(1)
 
   // Green: his footage as a linked pair, and a title over it.
@@ -116,7 +118,7 @@ test('three edits as tabs: copy across, undo per tab, close, reopen, restart', a
 
   // A restart comes back to the same tabs, on the one he was on.
   await page.reload()
-  await expect(page.getByTestId('panel-left')).toBeVisible()
+  await editorUp(page)
   await expect.poll(() => names(page)).toEqual(['Green', 'BC', 'mc night'])
   await expect(openTab(page)).toHaveAttribute('data-name', 'Green')
   await expect(clips(page)).toHaveCount(3)
@@ -129,7 +131,7 @@ test('three edits as tabs: copy across, undo per tab, close, reopen, restart', a
 
 test('the open tab shows a dot while its edit is not saved yet, and the last tab cannot close', async ({ page }) => {
   await page.goto('/')
-  await expect(page.getByTestId('panel-left')).toBeVisible()
+  await editorUp(page)
   // One tab: nothing to close it into.
   await expect(page.getByTestId('edit-tab-close')).toHaveCount(0)
   await page.keyboard.press('m')

@@ -115,7 +115,7 @@ function Tab({ tab, name, open, waking, closable }: { tab: EditTab; name: string
         <button
           type="button"
           data-testid="edit-tab-close"
-          aria-label={`Close ${name}`}
+          aria-label={`Shut the ${name} tab`}
           title="Close this tab. It is saved first."
           onClick={close}
           className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-field transition-[color,opacity] duration-[120ms] hover:bg-bg-input hover:text-text-primary ${
