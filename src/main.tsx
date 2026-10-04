@@ -95,8 +95,9 @@ const work: BootWork = {
     // rasterizer. Once the font lands, force a redraw so a reopened Minecraft
     // title re-rasterizes off the real font.
     fontsReady = started(loadTitleFonts(document.fonts).then(invalidatePreview))
-    // The speech model is 75 to 100MB on a first ever run and lands in the
-    // browser cache after that. Its row NEVER gates the card: an editor that will
+    // The speech model is about 1.6 GB on a first ever run (whisper-large-v3-turbo
+    // since 2026-10-03, see transcribeConfig.ts) and lands in the browser cache
+    // after that. Its row NEVER gates the card: an editor that will
     // not open until a model downloads is a far worse app than one that opens and
     // finishes behind him. On every boot after the first this is a fast cache
     // read, and his first caption run stops stalling.

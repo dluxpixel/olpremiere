@@ -15,6 +15,7 @@ import { markEmphasis, speechEnvelope } from '../engine/captions/emphasis'
 import { dropWordsWithoutVoice, trimWordsToVoice, voiceTrackForClip } from '../engine/captions/voiceActivity'
 import { dropWordsInMusic, isPureMusic, type SpeechTrack } from '../engine/captions/musicGate'
 import { musicTrackForClip } from '../engine/captions/musicAnalysis'
+import { applyRewrites, type Vocabulary } from '../engine/captions/vocabulary'
 import { getCaptionEmphasis, getCaptionLanguage, modelFor } from '../engine/captions/transcribeConfig'
 import { clipEmitsAudio } from '../engine/audio'
 import { clipEndS } from '../engine/timeline'
@@ -23,6 +24,7 @@ import type { CaptionWord } from '../engine/captions/captions'
 import type { CaptionStyle } from '../engine/captions/captionStyle'
 import { addCaptionsFromWords } from './captionActions'
 import { defaultCaptionStyle } from './captionStyles'
+import { currentVocabulary } from './captionVocabulary'
 import { useStore } from './store'
 import { useToasts } from './toasts'
 
@@ -99,6 +101,12 @@ export async function wordsForClip(
      * recogniser's own word ends, so they keep the timings they were built on.
      */
     trimToVoice?: boolean
+    /**
+     * What his corrections taught (vocabulary.ts): a misspelling he fixed the
+     * same way twice is replaced. Read once per run by the caller, never once
+     * per clip.
+     */
+    vocabulary?: Vocabulary
   } = {},
 ): Promise<CaptionWord[]> {
   useTranscribe.setState({ status: 'reading', pct: null, downloading: false, cancel: null })
@@ -166,7 +174,11 @@ export async function wordsForClip(
   }
   // tidy BEFORE the timeline mapping: loops, bare punctuation and Whisper's
   // end-of-silence inventions are recogniser artifacts, not edits.
-  const heard = tidyTranscribedWords(wordsFromAsrChunks(chunks))
+  const tidied = tidyTranscribedWords(wordsFromAsrChunks(chunks))
+  // His spellings, put back where he has fixed the same misspelling twice.
+  // Before the filters below, which only ever remove words, so a rewritten
+  // word is judged on its timing exactly as the word it replaced would have been.
+  const heard = opts.vocabulary ? applyRewrites(tidied, opts.vocabulary) : tidied
   // Then drop what the audio says nobody said. A null track means the detector
   // had no opinion (wasm blocked, undecodable audio), and no opinion keeps every
   // word: this filter may only ever take words away, never rescue a caption run.
@@ -355,7 +367,7 @@ export async function autoCaptionFromClip(clipId: string, style?: CaptionStyle):
   }
 
   try {
-    const words = await captionEars.wordsForClip(clip, asset, { trimToVoice: true })
+    const words = await captionEars.wordsForClip(clip, asset, { trimToVoice: true, vocabulary: await currentVocabulary() })
     if (words.length === 0) {
       toasts.show('No speech found in the clip', 'danger')
     } else {
@@ -423,7 +435,7 @@ export async function listenToClip(clipId: string): Promise<CaptionWord[] | null
     return null
   }
   try {
-    const words = await wordsForClip(clip, asset)
+    const words = await wordsForClip(clip, asset, { vocabulary: await currentVocabulary() })
     if (words.length === 0) {
       toasts.show('No speech found in the clip', 'danger')
       return null
@@ -497,6 +509,8 @@ export async function autoCaptionEveryClip(
   // clip is actually heard (not on a vanished or failed one), so a transient
   // failure never wipes what was already there with nothing to replace it.
   const coveredSpans: { startS: number; endS: number }[] = []
+  // Once for the whole sweep: it is the same vocabulary for every clip.
+  const vocabulary = await currentVocabulary()
   let cancelled = false
   let failed = 0
   let vanished = 0
@@ -527,7 +541,7 @@ export async function autoCaptionEveryClip(
       }
       useTranscribe.setState({ queue: { index: i + 1, total: targets.length } })
       try {
-        const heard = await captionEars.wordsForClip(live, asset, { screenFirst: true, trimToVoice: true })
+        const heard = await captionEars.wordsForClip(live, asset, { screenFirst: true, trimToVoice: true, vocabulary })
         if (heard.length === 0) silent++
         words.push(...heard)
         coveredSpans.push({ startS: live.startS, endS: clipEndS(live) })

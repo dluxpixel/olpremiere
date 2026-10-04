@@ -6,12 +6,11 @@
 // from the Hugging Face CDN and lands in the browser cache; after that the
 // whole pipeline is offline. No audio ever leaves the machine.
 
-// Model + generation options route per language (transcribeConfig.ts):
-// English keeps the `.en` model, Czech/auto use the multilingual export. Both
-// are `_timestamped` onnx-community exports: word timestamps need the
-// cross-attention outputs only those carry, and older Xenova exports trip
-// onnxruntime's session validation outright.
-import { generationOptsFor, modelFor, type CaptionLanguage } from './transcribeConfig'
+// Model, weights and generation options come from transcribeConfig.ts: one
+// multilingual `_timestamped` onnx-community export for every language (word
+// timestamps need the cross-attention outputs only those carry, and older Xenova
+// exports trip onnxruntime's session validation outright).
+import { generationOptsFor, modelFor, modelsInUse, staleModelKeys, whisperModel, type CaptionLanguage } from './transcribeConfig'
 
 export interface TranscribeRequest {
   /** Mono PCM at 16kHz (the Whisper feature-extractor rate). Absent on a warm. */
@@ -56,13 +55,34 @@ self.onmessage = (e: MessageEvent<TranscribeRequest>) => {
   // nothing and cannot load a second copy.
   if (e.data.warm) {
     void getAsr(modelFor(e.data.language ?? 'en'))
-      .then(() => post({ type: 'warmed' }))
+      .then(() => {
+        post({ type: 'warmed' })
+        void forgetRetiredModels()
+      })
       .catch((err: unknown) =>
         post({ type: 'error', message: err instanceof Error ? err.message : String(err), warm: true }),
       )
     return
   }
   void run(e.data.pcm, e.data.language ?? 'en')
+}
+
+/**
+ * Delete the cached files of Whisper models no caption language uses any more
+ * (transcribeConfig.staleModelKeys says which). Called only once the current
+ * model has loaded. Best effort: a cache that will not open costs nothing.
+ */
+async function forgetRetiredModels(): Promise<void> {
+  try {
+    if (typeof caches === 'undefined') return
+    const cache = await caches.open('transformers-cache')
+    const keys = (await cache.keys()).map((r) => r.url)
+    const stale = staleModelKeys(keys, modelsInUse())
+    for (const k of stale) await cache.delete(k)
+    if (stale.length) console.log(`OL Premiere transcribe: removed ${stale.length} files of speech models no longer used`)
+  } catch {
+    // Nothing to do: the files stay, exactly as before this existed.
+  }
 }
 
 type Asr = (
@@ -128,17 +148,23 @@ async function getAsr(model: string): Promise<Asr> {
         }
       }
     }
-    const makeAsr = async (device: 'webgpu' | 'wasm'): Promise<Asr> =>
-      (await pipeline('automatic-speech-recognition', model, {
+    const spec = whisperModel(model)
+    const makeAsr = async (device: 'webgpu' | 'wasm'): Promise<Asr> => {
+      const dtype = device === 'wasm' ? spec.wasmDtype : spec.gpuDtype
+      return (await pipeline('automatic-speech-recognition', model, {
         device,
-        // The int8 ("q8") decoder trips onnxruntime's MatMulNBits pass; the q4
-        // decoder is built for it and loads cleanly.
-        ...(device === 'wasm' ? { dtype: { encoder_model: 'q8', decoder_model_merged: 'q4' } } : {}),
+        ...(dtype ? { dtype } : {}),
         progress_callback,
       })) as unknown as Asr
+    }
 
-    const gpu = (navigator as { gpu?: { requestAdapter(): Promise<unknown> } }).gpu
-    const hasWebgpu = !!gpu && !!(await gpu.requestAdapter().catch(() => null))
+    const gpu = (navigator as { gpu?: { requestAdapter(): Promise<{ features?: ReadonlySet<string> } | null> } }).gpu
+    const adapter = gpu ? await gpu.requestAdapter().catch(() => null) : null
+    // Half precision weights need the GPU to do half precision maths. A GPU that
+    // cannot is a GPU this model does not run on, so it goes straight to wasm
+    // rather than failing the load and the run with it.
+    const halfOk = !!adapter?.features?.has('shader-f16') || !Object.values(spec.gpuDtype ?? {}).some((d) => /16/.test(d))
+    const hasWebgpu = !!adapter && halfOk
     const givenUp = (gpuFailures.get(model) ?? 0) >= GPU_GIVE_UP_AFTER
     const device: 'webgpu' | 'wasm' = hasWebgpu && !givenUp ? 'webgpu' : 'wasm'
     const asr = await makeAsr(device)
@@ -147,13 +173,16 @@ async function getAsr(model: string): Promise<Asr> {
     // Said out loud, always. Which weights produced a transcript is the single
     // most useful fact about it when he says the words came out wrong, and it
     // used to be unknowable from outside.
+    const weights = JSON.stringify((device === 'wasm' ? spec.wasmDtype : spec.gpuDtype) ?? 'fp32')
     console.log(
-      `OL Premiere transcribe: ${model} on ${device}` +
+      `OL Premiere transcribe: ${model} on ${device} ${weights}` +
         (device === 'wasm'
           ? hasWebgpu
-            ? ' (q8 encoder, q4 decoder) because the GPU pipeline failed twice this session'
-            : ' (q8 encoder, q4 decoder) because this machine has no WebGPU'
-          : ' (fp32/fp16 weights)'),
+            ? ' because the GPU pipeline failed twice this session'
+            : adapter
+              ? ' because this GPU has no half precision'
+              : ' because this machine has no WebGPU'
+          : ''),
     )
     return asr
   })()
@@ -214,11 +243,15 @@ const OPTS = {
   max_new_tokens: MAX_NEW_TOKENS_PER_CHUNK,
 }
 
+/**
+ * Deliberately NOT sent: a prompt of his vocabulary. Built and measured on
+ * 2026-10-03 and it made his captions worse; vocabulary.ts has the numbers.
+ */
 async function run(pcm: Float32Array, language: CaptionLanguage): Promise<void> {
   try {
     const model = modelFor(language)
-    // language/task are GENERATION options (multilingual only, since a `.en`
-    // pipeline rejects them); the model choice above is what routes Czech.
+    // language/task are GENERATION options: a multilingual model must be told
+    // the language (English included) and to transcribe, never translate.
     const opts = { ...OPTS, ...generationOptsFor(language) }
     const asr = await getAsr(model)
     post({ type: 'progress', phase: 'listening', pct: null })
@@ -241,7 +274,7 @@ async function run(pcm: Float32Array, language: CaptionLanguage): Promise<void> 
       const { pipeline } = await import('@huggingface/transformers')
       const wasmAsr = (await pipeline('automatic-speech-recognition', model, {
         device: 'wasm',
-        dtype: { encoder_model: 'q8', decoder_model_merged: 'q4' },
+        dtype: whisperModel(model).wasmDtype,
       })) as unknown as Asr
       if (failures >= GPU_GIVE_UP_AFTER) {
         asrCache.set(model, wasmAsr)
