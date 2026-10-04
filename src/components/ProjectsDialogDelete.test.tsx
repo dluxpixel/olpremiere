@@ -40,6 +40,10 @@ vi.mock('../state/persistence', async () => {
     saveNow: vi.fn(async () => {
       saved.set(useStore.getState().project.id, useStore.getState().project)
     }),
+    // The save a switch makes on its way out (edit tabs, state/editTabs.ts).
+    saveSettled: vi.fn(async () => {
+      saved.set(useStore.getState().project.id, useStore.getState().project)
+    }),
     saveProject: vi.fn(async (p: Project) => {
       await tick()
       saved.set(p.id, p)

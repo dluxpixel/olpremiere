@@ -15,12 +15,17 @@ vi.mock('./playbackControl', () => ({ pausePlayback: () => {} }))
 vi.mock('../collab/collabControl', () => ({
   useCollab: { getState: () => ({ session: roomSession }) },
 }))
+/** The switch-away save: the open project, or a throw as a full disk would. */
+const flush = async (): Promise<void> => {
+  if (saveFails) throw new Error('quota exceeded')
+  const p = useStore.getState().project
+  saved.set(p.id, p)
+}
 vi.mock('./persistence', () => ({
-  saveNow: vi.fn(async () => {
-    if (saveFails) throw new Error('quota exceeded')
-    const p = useStore.getState().project
-    saved.set(p.id, p)
-  }),
+  saveNow: vi.fn(() => flush()),
+  saveSettled: vi.fn(() => flush()),
+  rememberOpenProject: vi.fn(async () => {}),
+  settleAfterLoad: vi.fn(),
   saveProject: vi.fn(async (p: Project) => {
     saved.set(p.id, p)
   }),

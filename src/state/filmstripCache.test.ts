@@ -114,4 +114,20 @@ describe('filmstrip cache', () => {
     expect(revoked).not.toContain('url-onscreen')
     expect(cache.size).toBeLessThanOrEqual(60)
   })
+
+  it('drops the strips of one asset for an edit asleep two switches back, but never one on screen', () => {
+    // Keys start with the asset id (filmstripPlan), so one prefix is one asset.
+    const { cache, revoked } = harness(400)
+    cache.set('g1|8|0.0|4.0|f', 'url-a')
+    cache.set('g1|16|0.0|4.0|f', 'url-b')
+    cache.set('g12|8|0.0|4.0|f', 'url-other-asset')
+    cache.retain('g1|16|0.0|4.0|f')
+
+    cache.dropPrefix('g1|')
+
+    expect(revoked).toEqual(['url-a'])
+    expect(cache.get('g1|16|0.0|4.0|f')).toBe('url-b')
+    // g12 is a different asset that merely starts with the same characters.
+    expect(cache.get('g12|8|0.0|4.0|f')).toBe('url-other-asset')
+  })
 })

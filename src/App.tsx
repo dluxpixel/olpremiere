@@ -6,6 +6,7 @@ import { RecordingStudio } from './components/RecordingStudio'
 import { useRecorder } from './state/voiceRecorder'
 import { Timeline } from './components/Timeline'
 import { TopBar } from './components/TopBar'
+import { EditTabs } from './components/EditTabs'
 import { TranscribeStatus } from './components/TranscribeStatus'
 import { MOMENT_EPS, clipKeyframeTimes } from './engine/keyframes'
 import { addMarker, removeMarkerNear } from './engine/timeline'
@@ -593,6 +594,9 @@ export default function App() {
       onContextMenu={(e) => e.preventDefault()}
     >
       <TopBar />
+      {/* The open edits. Not on a phone: the bus-ride layout keeps its room, and the
+          Projects button still opens and switches edits there. */}
+      {!phone && <EditTabs />}
       {phone ? (
         <PhoneShell />
       ) : (

@@ -130,6 +130,11 @@ export function getAssetPeaks(asset: MediaAsset): Promise<Float32Array | null> {
   return pending
 }
 
+/** Forget one asset's peaks. They come back from the next getAssetPeaks. */
+export function forgetAssetPeaks(assetId: Id): void {
+  peaksCache.delete(assetId)
+}
+
 /**
  * Resample the slice of `peaks` covering source seconds [inS, outS) into `cols`
  * columns for drawing a clip that wide. Pure so the draw path stays trivial.

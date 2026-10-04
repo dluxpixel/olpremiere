@@ -27,6 +27,7 @@ import { migrateRenamedKeys } from './state/keyMigration'
 import { loadLibrary } from './state/library'
 import { initCaptionStyles } from './state/captionStyles'
 import { initPersistence, listProjects, loadProjectById } from './state/persistence'
+import { installEditTabs, reconcileEditTabs } from './state/editTabs'
 import { recoverFromWipe, sweepEmptyRecoveries } from './state/backupRestore'
 import { backfillEveryProject, healProjectMedia } from './state/mediaMirror'
 import { initSettings } from './state/settings'
@@ -108,7 +109,11 @@ const work: BootWork = {
     warmMusicModel()
   },
   project: async () => {
+    // Before the project hydrates, so the edit it opens on gets its tab.
+    installEditTabs()
     await initPersistence()
+    // Tabs whose project has gone since the last run leave the strip.
+    void reconcileEditTabs()
     // Every title face the open project uses, not only the core five, before
     // its first title is on screen, and again whenever another project opens.
     // The preview also loads a face the moment it draws it (ensureTitleFace);

@@ -291,6 +291,10 @@ test('zooming the rail earns the click between two diamonds, and that segment op
   // adjustment cost a re-click of the segment. Asserting the SHAPE MOVED as
   // well, because an editor that survived by not dragging would prove nothing.
   const before = (await scaleKeys(page))[0].curve
+  // In view first: the inspector scrolls, and with the edit tabs across the top
+  // (2026-10-03) the curve's top handle can sit just under the panel header,
+  // where a drag starting on it lands on the header instead.
+  await page.getByTestId('curve-handle-1').scrollIntoViewIfNeeded()
   const h = await page.getByTestId('curve-handle-1').boundingBox()
   if (!h) throw new Error('no handle')
   await page.mouse.move(h.x + h.width / 2, h.y + h.height / 2)

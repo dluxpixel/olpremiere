@@ -109,6 +109,37 @@ function stripVideo(asset: MediaAsset, src: string): Promise<HTMLVideoElement> {
   return made
 }
 
+/**
+ * Close the loaded <video> this asset's strips were cut from. It holds a decoder
+ * and buffered footage, which an edit that has gone to sleep has no use for. The
+ * strips themselves stay: they are small, and keeping them is what makes the
+ * clips come back with their pictures when he clicks the tab again.
+ */
+export function releaseStripVideo(assetId: string): void {
+  // Never under a strip being cut: a <video> unloaded mid seek never fires
+  // onseeked, and the queue is serial, so every strip after it would wait for ever.
+  if (cutting === assetId) {
+    releaseAfterCut = true
+    return
+  }
+  const held = stripVideos.get(assetId)
+  if (!held) return
+  stripVideos.delete(assetId)
+  void held.then((v) => {
+    v.removeAttribute('src')
+    v.load()
+  }, () => undefined)
+}
+
+/** The asset whose strip is being cut right now, and whether to let its <video> go after. */
+let cutting: string | null = null
+let releaseAfterCut = false
+
+/** Drop this asset's strips that nothing shows, for an edit asleep long enough to stop keeping them. */
+export function forgetAssetStrips(assetId: string): void {
+  cache.dropPrefix(`${assetId}|`)
+}
+
 async function generate(asset: MediaAsset, key: string, timesS: number[]): Promise<void> {
   // The queue is serial, so a job can wait behind many others while the clip it
   // was queued for scrolls out of view. Building it then costs a video element
@@ -117,7 +148,19 @@ async function generate(asset: MediaAsset, key: string, timesS: number[]): Promi
   if (!cache.isLive(key)) return
   const src = await getBlobUrl(asset.blobKey)
   if (!src) return
-  const video = await stripVideo(asset, src)
+  cutting = asset.id
+  try {
+    await cutStrip(asset, key, timesS, await stripVideo(asset, src))
+  } finally {
+    cutting = null
+    if (releaseAfterCut) {
+      releaseAfterCut = false
+      releaseStripVideo(asset.id)
+    }
+  }
+}
+
+async function cutStrip(asset: MediaAsset, key: string, timesS: number[], video: HTMLVideoElement): Promise<void> {
   const canvas = document.createElement('canvas')
   canvas.width = TILE_W * timesS.length
   canvas.height = TILE_H
