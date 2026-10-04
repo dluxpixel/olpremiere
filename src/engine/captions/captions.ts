@@ -649,9 +649,9 @@ export interface CaptionStyleOptions {
  * or commas but never caught him dropping a question mark.
  */
 export function captionHouseCase(text: string): string {
-  return text
+  return numbersHisWay(text)
     .split(/\s+/)
-    .map((w) => w.replace(/[.,;:"]/g, ''))
+    .map((w) => w.replace(/[.,;:"]/g, '').replace(//g, '.'))
     .filter(Boolean)
     .map((w) => {
       // Letters in ANY script. With `A-Za-z` a Czech acronym whose letters are
@@ -664,6 +664,23 @@ export function captionHouseCase(text: string): string {
       return isAcronym ? w : alwaysCapital(w.toLowerCase())
     })
     .join(' ')
+}
+
+/**
+ * A number keeps its meaning through the punctuation strip above.
+ *
+ * ⛔ STRIPPING EVERY "." AND "," CHANGED THE NUMBER ON SCREEN. "2.5 seconds"
+ * came out "25 seconds", which is a different claim in a video about stats, and
+ * "30,000" came out "30000", which he then had to retype.
+ *
+ * MEASURED off his corrected captions, 2026-10-03: of the nine thousands he left
+ * on screen, seven read with a SPACE ("30 000", "100 000", "4 800"), one with a
+ * dot and one with none. So a thousands comma becomes a space, which is how he
+ * writes them, and a decimal point is kept, which is what it means. The private
+ * use character is only a placeholder that survives the strip and is put back.
+ */
+function numbersHisWay(text: string): string {
+  return text.replace(/(\d),(?=\d{3}(?!\d))/g, '$1 ').replace(/(\d)\.(?=\d)/g, '$1')
 }
 
 /**

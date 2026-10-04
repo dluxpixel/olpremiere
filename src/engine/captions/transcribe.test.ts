@@ -42,6 +42,33 @@ describe('wordsFromAsrChunks', () => {
     const words = wordsFromAsrChunks([chunk(' x', -0.2, 0.1)])
     expect(words[0].startS).toBe(0)
   })
+
+  // His timelines, 2026-10-03: "30 ,000", "100 ,000" and "4 ,800" all reached
+  // the screen as two words, and "for 60" lost its thousands outright.
+  it('puts a number back together that the word timestamps cut at its comma', () => {
+    const words = wordsFromAsrChunks([chunk(' has', 0, 0.2), chunk(' 30', 0.2, 0.5), chunk(',000', 0.5, 0.8), chunk(' health', 0.8, 1)])
+    expect(words.map((w) => w.text)).toEqual(['has', '30,000', 'health'])
+    expect(words[1]).toEqual({ text: '30,000', startS: 0.2, endS: 0.8 })
+  })
+
+  it('joins a decimal and a bare thousands group, and nothing else', () => {
+    const words = wordsFromAsrChunks([
+      chunk(' 2', 0, 0.2),
+      chunk('.5', 0.2, 0.4),
+      chunk(' 700', 0.5, 0.7),
+      chunk(' 000', 0.7, 0.9),
+      chunk(' 10,', 1, 1.2),
+      chunk(' 100', 1.2, 1.4),
+      chunk(' level', 1.5, 1.7),
+      chunk(' 50.', 1.7, 1.9),
+    ])
+    expect(words.map((w) => w.text)).toEqual(['2.5', '700,000', '10,', '100', 'level', '50.'])
+  })
+
+  it('writes a spelled out thousand after a number as digits, keeping its punctuation', () => {
+    const words = wordsFromAsrChunks([chunk(' 540', 0, 0.3), chunk(' thousand.', 0.3, 0.7), chunk(' a', 0.8, 0.9), chunk(' thousand', 0.9, 1.2)])
+    expect(words.map((w) => w.text)).toEqual(['540,000.', 'a', 'thousand'])
+  })
 })
 
 describe('timelineWords', () => {
@@ -293,6 +320,18 @@ describe('transcribePcm run lifecycle', () => {
     expect(FakeWorker.last).not.toBe(worker)
     next.promise.catch(() => {})
     next.cancel()
+  })
+
+  // A first run fetches the model, minutes of it for a big one. The pill can only
+  // say "Downloading Whisper (first time only)" if this flag reaches it.
+  it('passes on whether the model is really being downloaded', () => {
+    const seen: unknown[] = []
+    const run = transcribePcm(minute(), 'en', (p) => seen.push(p))
+    const worker = FakeWorker.last!
+    worker.emit({ type: 'progress', phase: 'model', pct: 12, downloading: true })
+    expect(seen).toEqual([{ phase: 'model', pct: 12, downloading: true }])
+    run.promise.catch(() => {})
+    run.cancel()
   })
 
   it('a failing model WARM does not kill the caption run alongside it', async () => {

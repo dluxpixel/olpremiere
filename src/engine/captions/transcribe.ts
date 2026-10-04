@@ -40,7 +40,46 @@ export function wordsFromAsrChunks(chunks: readonly AsrChunk[]): TranscribedWord
     if (!Number.isFinite(endS) || endS <= startS) endS = startS + Math.max(0.2, 0.05 * text.length)
     words.push({ text, startS, endS })
   }
-  return words
+  return joinSplitNumbers(words)
+}
+
+/**
+ * Put a number back together that the word timestamps cut in two.
+ *
+ * ⛔ "30,000" CAME OUT AS TWO WORDS, "30" AND ",000". The word grouping behind
+ * `return_timestamps: 'word'` starts a new word at every punctuation token, so
+ * the comma opens a word of its own and the digits after it join that, not the
+ * number. Read off his own projects on 2026-10-03: "30 ,000", "100 ,000",
+ * "50 ,000" and "4 ,800" all reached his timeline that way, and four more
+ * ("for 60", "with 37", "540", "30") reached it with the thousands gone
+ * altogether, which he retyped by hand every time.
+ *
+ * A word that opens with a separator and a digit (",000", ".5") belongs to the
+ * number before it. So does a bare "000" right after a number, which is the same
+ * cut without the comma, and a spelled out "thousand" ("540 thousand", which he
+ * retyped as "540.000"). Only ever joins, never changes a digit.
+ */
+function joinSplitNumbers(words: TranscribedWord[]): TranscribedWord[] {
+  const out: TranscribedWord[] = []
+  for (const w of words) {
+    const prev = out[out.length - 1]
+    if (prev && /\d$/.test(prev.text)) {
+      const thousand = /^thousand(?![\p{L}\d])/iu.exec(w.text)
+      const text = thousand
+        ? prev.text + ',000' + w.text.slice(thousand[0].length)
+        : /^[,.]\d/.test(w.text)
+          ? prev.text + w.text
+          : /^0{3}(?!\d)/.test(w.text)
+            ? prev.text + ',' + w.text
+            : null
+      if (text !== null) {
+        out[out.length - 1] = { ...prev, text, endS: Math.max(prev.endS, w.endS) }
+        continue
+      }
+    }
+    out.push(w)
+  }
+  return out
 }
 
 /**
@@ -494,7 +533,7 @@ let busy = false
 /**
  * How long the LISTENING phase may run before the worker is given up on and
  * terminated. Model loading is deliberately outside it, because the first load
- * is a 300 MB download and has no business sharing a budget with inference.
+ * is a 1.6 GB download and has no business sharing a budget with inference.
  *
  * This is a backstop, not the fix. What kept a music-only clip from eating the
  * renderer is the per-chunk token ceiling in transcribeWorker.ts, which bounds
@@ -505,9 +544,11 @@ let busy = false
  * be claiming a safety net that is not there.
  *
  * The budget is generous on purpose, so it can only ever fire on a genuine
- * fault. Whisper base runs comfortably faster than realtime on this machine's
- * GPU and stays inside a few times realtime on the WASM fallback, so ten
- * seconds of allowance per second of audio is far past any healthy run.
+ * fault. On his GPU large-v3-turbo takes a few seconds per clip (measured
+ * 2026-10-03), far inside the floor plus ten seconds per second of audio.
+ * ⚠️ Its wasm fallback (a machine with no usable GPU) was NOT measured: a big
+ * model on the CPU is many times slower, and a long clip there is where this
+ * budget would be tested first.
  */
 const LISTEN_FLOOR_MS = 60_000
 const LISTEN_MS_PER_AUDIO_SECOND = 10_000
@@ -582,7 +623,11 @@ export function transcribePcm(
           stopWatchdog()
           watchdog = setTimeout(giveUp, LISTEN_FLOOR_MS + audioS * LISTEN_MS_PER_AUDIO_SECOND)
         }
-        onProgress({ phase: msg.phase, pct: msg.pct })
+        // ⛔ `downloading` RIDES THROUGH. It was dropped right here, so the pill
+        // could never say "Downloading Whisper (first time only)": a first run
+        // that spent twenty minutes fetching the model, measured 2026-10-03, read
+        // "Loading Whisper…" the whole time, which looks like a hang.
+        onProgress({ phase: msg.phase, pct: msg.pct, downloading: msg.downloading })
       } else if (msg.type === 'done') {
         settled = true
         cleanup() // keep the worker ALIVE so the model stays loaded for next time

@@ -265,6 +265,21 @@ describe('captionHouseCase', () => {
     expect(captionHouseCase("he's going in!")).toBe("he's going in!")
     expect(captionHouseCase('Ready?')).toBe('ready?')
   })
+
+  // His corrected captions, 2026-10-03: seven of nine thousands read "30 000".
+  it('writes a thousands comma as the space he uses', () => {
+    expect(captionHouseCase('30,000')).toBe('30 000')
+    expect(captionHouseCase('He has 1,250,000 health.')).toBe('he has 1 250 000 health')
+  })
+
+  it('keeps a decimal point, so the number on screen is the number he said', () => {
+    expect(captionHouseCase('2.5 seconds.')).toBe('2.5 seconds')
+    expect(captionHouseCase('level 50.')).toBe('level 50')
+  })
+
+  it('still drops a comma that is not inside a number', () => {
+    expect(captionHouseCase('10, 20')).toBe('10 20')
+  })
 })
 
 describe('captionClips', () => {

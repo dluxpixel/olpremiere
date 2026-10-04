@@ -1,23 +1,40 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { generationOptsFor, getCaptionLanguage, modelFor, setCaptionLanguage } from './transcribeConfig'
+import {
+  generationOptsFor,
+  getCaptionLanguage,
+  modelFor,
+  modelsInUse,
+  setCaptionLanguage,
+  staleModelKeys,
+  whisperModel,
+} from './transcribeConfig'
 
 describe('caption language routing', () => {
-  it('English keeps the .en model; Czech and auto use the multilingual export', () => {
-    expect(modelFor('en')).toBe('onnx-community/whisper-small.en_timestamped')
-    expect(modelFor('cs')).toBe('onnx-community/whisper-small_timestamped')
-    expect(modelFor('auto')).toBe('onnx-community/whisper-small_timestamped')
-    // Both MUST stay _timestamped exports, because word timestamps need the
+  // Measured on his own six projects, 2026-10-03: large-v3-turbo took the word
+  // error rate against his corrected captions from 13.2% to 8.6%.
+  it('every language runs on large-v3-turbo, one download for all three', () => {
+    expect(modelFor('en')).toBe('onnx-community/whisper-large-v3-turbo_timestamped')
+    expect(modelFor('cs')).toBe(modelFor('en'))
+    expect(modelFor('auto')).toBe(modelFor('en'))
+    expect(modelsInUse()).toEqual([modelFor('en')])
+    // MUST stay a _timestamped export, because word timestamps need the
     // cross-attention outputs only those carry (the s14 constraint).
     expect(modelFor('en')).toMatch(/_timestamped$/)
-    expect(modelFor('cs')).toMatch(/_timestamped$/)
   })
 
-  it('a .en pipeline gets NO language option; multilingual pins transcribe + language', () => {
-    expect(generationOptsFor('en')).toEqual({})
+  it('a multilingual model is told the language, English included, and never to translate', () => {
+    expect(generationOptsFor('en')).toEqual({ task: 'transcribe', language: 'en' })
     expect(generationOptsFor('cs')).toEqual({ task: 'transcribe', language: 'cs' })
     // auto omits language so Whisper detects, but never 'translate'.
     expect(generationOptsFor('auto')).toEqual({ task: 'transcribe' })
+  })
+
+  it('loads half precision weights on the GPU, within the size he approved', () => {
+    const m = whisperModel(modelFor('en'))
+    expect(m.multilingual).toBe(true)
+    expect(m.gpuDtype).toEqual({ encoder_model: 'fp16', decoder_model_merged: 'fp16' })
+    expect(m.wasmDtype).toEqual({ encoder_model: 'q8', decoder_model_merged: 'q4' })
   })
 
   it('persistence survives a roundtrip and tolerates a missing localStorage', () => {
@@ -80,5 +97,25 @@ describe('the caption highlight defaults to off', () => {
     expect(localStorage.getItem('olpremiere:captions:emphasis')).toBeNull()
     const again = await fresh()
     expect(again.getCaptionEmphasis()).toBe(false)
+  })
+})
+
+// His disk had 6.8 GB free on 2026-10-03 with 1.3 GB of retired Whisper files in it.
+describe('staleModelKeys', () => {
+  const url = (id: string, file: string) => `https://huggingface.co/${id}/resolve/main/${file}`
+  const keys = [
+    url('onnx-community/whisper-small.en_timestamped', 'onnx/encoder_model.onnx'),
+    url('onnx-community/whisper-small_timestamped', 'config.json'),
+    url('onnx-community/whisper-large-v3-turbo_timestamped', 'onnx/encoder_model_fp16.onnx'),
+    url('Xenova/ast-finetuned-audioset', 'onnx/model_quantized.onnx'),
+  ]
+
+  it('names only the Whisper files no language uses', () => {
+    expect(staleModelKeys(keys, ['onnx-community/whisper-large-v3-turbo_timestamped'])).toEqual(keys.slice(0, 2))
+  })
+
+  it('keeps every model a language still runs on', () => {
+    expect(staleModelKeys(keys, modelsInUse())).not.toContain(keys[2])
+    for (const id of modelsInUse()) expect(staleModelKeys([url(id, 'config.json')], modelsInUse())).toEqual([])
   })
 })
