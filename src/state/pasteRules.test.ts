@@ -15,6 +15,8 @@ import {
   cutoutProblem,
   decidePaste,
   pastedPictureName,
+  pasteNote,
+  pictureAimNote,
   pictureHomeTrack,
   picturesFrom,
   placePastedPicture,
@@ -225,5 +227,108 @@ describe('where a pasted picture lands', () => {
     const { seq: out, clipId } = placePastedPicture(seq, image, 3)
     expect(clipId).toBe('')
     expect(out).toBe(seq)
+  })
+})
+
+// His words, 2026-10-04: *"make sure it also pastes it on the same line because I
+// clicked the V4."* A picture used to go to V2 whatever he had clicked.
+describe('a pasted picture onto the line he clicked', () => {
+  const image = makeAsset({ id: 'img', name: 'Pasted picture.png', kind: 'image', durationS: 0, hasAudio: false })
+  const lines = (over: Record<string, Partial<ReturnType<typeof makeTrack>>> = {}): Sequence =>
+    makeSeq([
+      makeTrack({ name: 'V1', clips: [makeClip({ id: 'main', startS: 0, inS: 0, outS: 10 })] }),
+      ...['V2', 'V3', 'V4'].map((name) => makeTrack({ name, ...over[name] })),
+      makeTrack({ kind: 'audio', name: 'A1', ...over.A1 }),
+    ])
+  const idOf = (seq: Sequence, name: string): string => seq.tracks.find((t) => t.name === name)!.id
+  const spans = (seq: Sequence, name: string): number[][] =>
+    seq.tracks.find((t) => t.name === name)!.clips.map((c) => [c.startS, clipEndS(c)])
+
+  it('goes on V4, exactly at the playhead, and not on V2', () => {
+    const seq = lines()
+    const { seq: out, clipId, aimed } = placePastedPicture(seq, image, 3, idOf(seq, 'V4'))
+    const placed = findClip(out, clipId)!
+    expect(placed.track.name).toBe('V4')
+    expect(placed.clip.startS).toBe(3)
+    expect(aimed).toBeUndefined()
+  })
+
+  it('goes up to the next free line when the clicked one is busy there, and says which', () => {
+    const seq = lines({ V4: { clips: [makeClip({ id: 'busy', startS: 2, inS: 0, outS: 4 })] } })
+    const { seq: out, clipId, aimed } = placePastedPicture(seq, image, 3, idOf(seq, 'V4'))
+    const placed = findClip(out, clipId)!
+    expect(placed.track.name).not.toBe('V4')
+    expect(placed.clip.startS).toBe(3)
+    expect(spans(out, 'V4')).toEqual([[2, 6]])
+    expect(aimed).toEqual({ trackId: idOf(seq, 'V4'), problem: 'busy' })
+    expect(pictureAimNote(out, clipId, aimed!)).toBe(`V4 is busy at that time, so the picture went on ${placed.track.name}`)
+  })
+
+  it('places nothing on a locked clicked line, and says the picture is only in his media', () => {
+    const seq = lines({ V4: { locked: true } })
+    const { seq: out, clipId, aimed } = placePastedPicture(seq, image, 3, idOf(seq, 'V4'))
+    expect(clipId).toBe('')
+    expect(out).toBe(seq)
+    expect(pictureAimNote(out, clipId, aimed!)).toBe('V4 is locked, so the picture is only in your media')
+  })
+
+  it('an audio clicked line sends it to its home line and says so', () => {
+    const seq = lines()
+    const { seq: out, clipId, aimed } = placePastedPicture(seq, image, 3, idOf(seq, 'A1'))
+    expect(findClip(out, clipId)!.track.name).toBe('V2')
+    expect(pictureAimNote(out, clipId, aimed!)).toBe('A1 is an audio track, so the picture went on V2')
+  })
+
+  it('a line this edit does not have is no aim: home as ever, and nothing to say', () => {
+    const seq = lines()
+    const { seq: out, clipId, aimed } = placePastedPicture(seq, image, 3, 'gone')
+    expect(findClip(out, clipId)!.track.name).toBe('V2')
+    expect(aimed).toBeUndefined()
+  })
+})
+
+describe('what a clip paste says about where it went', () => {
+  const seq = makeSeq([
+    makeTrack({ name: 'V1' }),
+    makeTrack({ name: 'V2' }),
+    makeTrack({ name: 'V3' }),
+    makeTrack({ kind: 'audio', name: 'A1' }),
+  ])
+  const [v1, v2, v3, a1] = seq.tracks
+  const quiet = { redirected: [], targetUnused: false, lifted: 0, grown: 0 }
+
+  it('says nothing when every clip landed on the line it asked for', () => {
+    expect(pasteNote(seq, v3, quiet)).toBeNull()
+    expect(pasteNote(seq, undefined, quiet)).toBeNull()
+  })
+
+  it('names the busy line and the one the clip went on', () => {
+    expect(pasteNote(seq, v2, { ...quiet, redirected: [{ askedId: v2!.id, landedId: v3!.id }] })).toBe(
+      'V2 is busy at that time, so the clip went on V3',
+    )
+  })
+
+  it('counts them when several clips went elsewhere', () => {
+    const two = [
+      { askedId: v1!.id, landedId: v2!.id },
+      { askedId: v2!.id, landedId: v3!.id },
+    ]
+    expect(pasteNote(seq, undefined, { ...quiet, redirected: two })).toBe(
+      '2 clips went on a free track, because their own was busy at that time',
+    )
+  })
+
+  it('says an unused target, a lifted shape and added lines, each in its own words', () => {
+    expect(pasteNote(seq, a1, { ...quiet, targetUnused: true })).toBe(
+      'A1 is an audio track, so what you copied went back on the tracks it came from',
+    )
+    expect(pasteNote(seq, v1, { ...quiet, lifted: 1 })).toBe(
+      'The copied clips would not fit under V1, so they sit one track higher to keep their shape',
+    )
+    expect(pasteNote(seq, v1, { ...quiet, lifted: 2 })).toBe(
+      'The copied clips would not fit under V1, so they sit 2 tracks higher to keep their shape',
+    )
+    expect(pasteNote(seq, a1, { ...quiet, grown: 1 })).toBe('One new track was added to keep the copied clips together')
+    expect(pasteNote(seq, a1, { ...quiet, grown: 3 })).toBe('3 new tracks were added to keep the copied clips together')
   })
 })

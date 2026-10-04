@@ -188,34 +188,88 @@ export function setClipsPosition(ids: Iterable<string>, x: number, y: number): v
   )
 }
 
-/** Add one fresh instance of an effect to every selected clip (own id each). */
-export function applyEffectToClips(ids: Iterable<string>, type: string): void {
-  const label = getEffect(type)?.label ?? type
-  // Skip audio clips the way the single-clip applyEffect does (clipEdits.ts): a
-  // visual effect on an audio clip stores a card, costs an undo and renders
-  // nothing. A mixed selection applies to its visual clips only.
-  const seq = activeSequence(useStore.getState().project)
-  const audioIds = new Set(
-    seq.tracks.filter((t) => t.kind === 'audio').flatMap((t) => t.clips.map((c) => c.id)),
-  )
-  const requested = [...ids]
-  const visual = requested.filter((id) => !audioIds.has(id))
-  if (visual.length === 0) {
-    // Double-clicking an effect with nothing (or only audio) selected used to do
-    // absolutely nothing, silently. The browser row is always usable, so the
-    // reason it did not land has to be said out loud.
-    useToasts
-      .getState()
-      .show(
-        requested.length === 0 ? 'Select a clip first' : 'Effects don’t apply to audio clips',
-        'danger',
-      )
-    return
+/** What one effect run did to the clips it was handed. */
+interface EffectRun {
+  /** Clips asked for. */
+  requested: number
+  /** Of those, the ones a picture effect means anything on: not sound. */
+  visual: number
+  /** Of those, the ones on a locked track, which stay as they are. */
+  locked: number
+  /** Clips that really got the effect. */
+  changed: number
+}
+
+/** "1 clip is on a locked track and was left out": what to say about the ones a lock held back. */
+export function lockedLeftOut(n: number): string {
+  return n === 1
+    ? '1 clip is on a locked track and was left out'
+    : `${n} clips are on a locked track and were left out`
+}
+
+/**
+ * Put one fresh instance of an effect on every clip it can go on, in ONE undo
+ * step, and count what happened. No words: the callers say them, because the
+ * browser row, the drop and "every clip" each have their own.
+ *
+ * Skips audio clips the way the single-clip applyEffect does (clipEdits.ts): a
+ * visual effect on an audio clip stores a card, costs an undo and renders
+ * nothing. A mixed selection applies to its visual clips only. Locked tracks are
+ * skipped by mapClips; they are counted here so they can be named.
+ */
+function runEffect(ids: Iterable<string>, type: string): EffectRun {
+  const where = new Map<string, { kind: string; locked: boolean }>()
+  for (const t of activeSequence(useStore.getState().project).tracks) {
+    for (const c of t.clips) where.set(c.id, { kind: t.kind, locked: t.locked })
   }
-  mapClips(visual, `Add ${label}`, (c) => addEffect(c, type, newId()))
-  // The browser's double-click, its right-click menu and the drop all arrive
-  // here, so this is where most of his real usage gets remembered.
-  noteRecentEffect(type)
+  const requested = [...ids]
+  const visual = requested.filter((id) => where.get(id)?.kind !== 'audio')
+  const open = visual.filter((id) => !where.get(id)?.locked)
+  const run: EffectRun = { requested: requested.length, visual: visual.length, locked: visual.length - open.length, changed: 0 }
+  if (open.length === 0) return run
+  const label = getEffect(type)?.label ?? type
+  mapClips(open, `Add ${label}`, (c) => {
+    const next = addEffect(c, type, newId())
+    if (next !== c) run.changed++
+    return next
+  })
+  // The browser's double-click, its right-click menu, the drop, the clip menu and
+  // the Inspector's search all arrive here, so this is where most of his real
+  // usage gets remembered.
+  if (run.changed > 0) noteRecentEffect(type)
+  return run
+}
+
+/**
+ * Add one fresh instance of an effect to every selected clip (own id each), and
+ * say how many it changed. Returns that number.
+ *
+ * His words, 2026-10-04: *"selecting multiple images and putting effects on them
+ * that actually apply to all of them."* Every door to an effect ends here, so a
+ * selection of pictures takes it whole, in ONE undo step, whichever door he used.
+ * A lone clip says nothing, because the effect shows up in the Inspector; more
+ * than one clip, or any clip a lock held back, is told in a sentence.
+ */
+export function applyEffectToClips(ids: Iterable<string>, type: string): number {
+  const label = getEffect(type)?.label ?? type
+  const show = useToasts.getState().show
+  const run = runEffect(ids, type)
+  // Double-clicking an effect with nothing (or only audio) selected used to do
+  // absolutely nothing, silently. The browser row is always usable, so the
+  // reason it did not land has to be said out loud.
+  if (run.visual === 0) {
+    show(run.requested === 0 ? 'Select a clip first' : 'Effects don’t apply to audio clips', 'danger')
+    return 0
+  }
+  if (run.changed === 0) {
+    if (run.locked > 0) show(run.locked === 1 ? 'That clip is on a locked track' : 'Those clips are on a locked track', 'danger')
+    return 0
+  }
+  if (run.changed > 1 || run.locked > 0) {
+    const left = run.locked > 0 ? `. ${lockedLeftOut(run.locked)}` : ''
+    show(`Added ${label} to ${run.changed} clip${run.changed === 1 ? '' : 's'}${left}`, 'success')
+  }
+  return run.changed
 }
 
 /**
@@ -234,8 +288,8 @@ export function applyEffectToAllClips(type: string): void {
     show(`No video clips to apply ${label} to`)
     return
   }
-  applyEffectToClips(ids, type)
-  show(`Applied "${label}" to ${ids.length} clip${ids.length === 1 ? '' : 's'}`, 'success')
+  const { changed } = runEffect(ids, type)
+  show(`Applied "${label}" to ${changed} clip${changed === 1 ? '' : 's'}`, 'success')
 }
 
 /** Drop every applied effect from every selected clip. */

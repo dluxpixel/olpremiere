@@ -63,6 +63,7 @@ import {
 import { mirrorApi, mirrorAsset, mirroredIds, readMirrored } from './mediaMirror'
 import { askForName } from './namePrompt'
 import { db, getBlob, putBlob } from './persistence'
+import { lockedLeftOut } from './bulkEdits'
 import { useStore } from './store'
 import { useToasts } from './toasts'
 
@@ -707,44 +708,64 @@ export async function saveSelectionAsPreset(): Promise<void> {
   show(`Saved preset "${preset.name}"`, 'success')
 }
 
-/** Apply a preset to the selected clip as ONE undo step on the project stack. */
+/**
+ * Apply a preset to every selected clip that can take it, as ONE undo step on the
+ * project stack, and say how many it went on.
+ *
+ * ⛔ IT USED TO TAKE THE FIRST SELECTED CLIP AND NOTHING ELSE. His words,
+ * 2026-10-04: *"selecting multiple images and putting effects on them that
+ * actually apply to all of them."* A preset double-clicked with three pictures
+ * selected landed on one of them, the Apply row said "selected clip", and the
+ * toast said "Applied" as if that were the whole job.
+ */
 export function applyPresetToSelection(presetId: Id): void {
   const show = useToasts.getState().show
   const preset = useLibrary.getState().presets.find((p) => p.id === presetId)
-  const { ui, dispatch } = useStore.getState()
-  const clipId = ui.selection[0]
-  if (!preset || !clipId) {
-    if (!clipId) show('Select a clip first')
+  const { project, ui, dispatch } = useStore.getState()
+  if (!preset) return
+  if (ui.selection.length === 0) {
+    show('Select a clip first')
     return
   }
-  // ⛔ A LOCKED TRACK IS REFUSED, like everywhere else in the app. Clicking a
-  // clip on a locked track still selects it, on purpose, so the selection this
-  // runs on can easily be one: the preset landed on the very clips he locked the
-  // track to protect, and said "Applied" as if nothing were unusual.
-  const lockedOut = activeSequence(useStore.getState().project).tracks.some(
-    (t) => t.locked && t.clips.some((c) => c.id === clipId),
-  )
-  if (lockedOut) {
-    show('That clip is on a locked track', 'danger')
+  // Sound takes no picture effect, so the audio that rides along in a selection is
+  // neither changed nor counted. ⛔ A LOCKED TRACK IS REFUSED, like everywhere else
+  // in the app. Clicking a clip on a locked track still selects it, on purpose, so
+  // the selection this runs on can easily hold one: the preset landed on the very
+  // clips he locked the track to protect, and said "Applied" as if nothing were
+  // unusual. Those are named instead.
+  const where = new Map<Id, { kind: string; locked: boolean }>()
+  for (const t of activeSequence(project).tracks) for (const c of t.clips) where.set(c.id, { kind: t.kind, locked: t.locked })
+  const visual = ui.selection.filter((id) => where.has(id) && where.get(id)!.kind === 'video')
+  const targets = new Set(visual.filter((id) => !where.get(id)!.locked))
+  const lockedOut = visual.length - targets.size
+  if (visual.length === 0) {
+    show('Effects don’t apply to audio clips', 'danger')
+    return
+  }
+  if (targets.size === 0) {
+    show(lockedOut === 1 ? 'That clip is on a locked track' : 'Those clips are on a locked track', 'danger')
     return
   }
   dispatch(`Apply preset ${preset.name}`, (p) => {
     const seq = activeSequence(p)
     const tracks = seq.tracks.map((t) =>
-      t.clips.some((c) => c.id === clipId)
+      t.clips.some((c) => targets.has(c.id))
         ? {
             ...t,
             clips: t.clips.map((c) =>
               // Append with fresh ids (copyEffects), never replace: a preset is
               // "add my look", and clobbering an existing grade would surprise.
-              c.id === clipId ? { ...c, effects: [...c.effects, ...copyEffects(preset.effects, newId)] } : c,
+              // Each clip gets its OWN copy, never one shared stack.
+              targets.has(c.id) ? { ...c, effects: [...c.effects, ...copyEffects(preset.effects, newId)] } : c,
             ),
           }
         : t,
     )
     return { ...p, sequences: { ...p.sequences, [seq.id]: { ...seq, tracks } } }
   })
-  show(`Applied "${preset.name}"`, 'success')
+  const n = targets.size
+  const left = lockedOut > 0 ? `. ${lockedLeftOut(lockedOut)}` : ''
+  show(`Applied "${preset.name}"${n > 1 ? ` to ${n} clips` : ''}${left}`, 'success')
 }
 
 /**

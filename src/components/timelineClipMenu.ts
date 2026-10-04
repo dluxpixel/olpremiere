@@ -7,9 +7,9 @@ import type { Clip, Id, MediaAsset, Sequence } from '../engine/types'
 import { comboLabel } from '../keymap'
 import { copyClipAttributes, hasClipAttributes, pasteClipAttributes } from '../state/attributes'
 import { balanceAllClipLoudness, normalizeClipGain } from '../state/audioActions'
-import { toggleClipsFlip } from '../state/bulkEdits'
+import { applyEffectToClips, toggleClipsFlip } from '../state/bulkEdits'
 import { copySelection, cutSelection, duplicateSelection, pasteAtPlayhead } from '../state/clipboard'
-import { applyEffect, crossfadeWithNeighbour, deleteSelected, removeClipTransition, setClipTransition, splitAtPlayhead, topAndTail } from '../state/clipEdits'
+import { crossfadeWithNeighbour, deleteSelected, removeClipTransition, setClipTransition, splitAtPlayhead, topAndTail } from '../state/clipEdits'
 import { appearanceMenuItems, titleFontSizeItems } from '../state/clipMenus'
 import type { MenuItem } from '../state/contextMenu'
 import { saveToCategoryItems } from '../state/libraryMenus'
@@ -36,6 +36,12 @@ export interface ClipMenuContext {
   keepSelection: boolean
   playheadS: number
   show: ReturnType<typeof useToasts.getState>['show']
+}
+
+/** How many of `ids` sit on a video track: the clips a look can be pasted onto. */
+function pictureCount(seq: Sequence, ids: readonly Id[]): number {
+  const n = seq.tracks.filter((t) => t.kind === 'video').reduce((sum, t) => sum + t.clips.filter((c) => ids.includes(c.id)).length, 0)
+  return n > 0 ? n : ids.length
 }
 
 /**
@@ -215,9 +221,24 @@ export function clipContextMenuItems({ clip, seq, assets, selNow, keepSelection,
   // One-click green-screen removal on a media clip (video/image that HAS a screen).
   // Applies the chroma-key effect, which defaults to keying green at a clean
   // strength: drop-and-done, then fine-tune in the Inspector if edges remain.
+  //
+  // On every selected picture when the selection was kept, in ONE undo step. It
+  // used to key only the clip he right-clicked, while Delete one row below said
+  // "Delete 5 clips". His words, 2026-10-04: *"selecting multiple images and
+  // putting effects on them that actually apply to all of them."*
+  const greenScreenIds = seq.tracks
+    .filter((t) => t.kind === 'video')
+    .flatMap((t) => t.clips)
+    .filter((c) => (keepSelection ? selNow.includes(c.id) : c.id === clip.id) && !c.title && !c.adjustment)
+    .map((c) => c.id)
   const greenScreenItems: MenuItem[] =
     track?.kind === 'video' && !clip.title && !clip.adjustment
-      ? [{ label: 'Remove green screen', onClick: () => applyEffect(clip.id, 'chromaKey') }]
+      ? [
+          {
+            label: greenScreenIds.length > 1 ? `Remove green screen · all ${greenScreenIds.length}` : 'Remove green screen',
+            onClick: () => applyEffectToClips(greenScreenIds.length > 0 ? greenScreenIds : [clip.id], 'chromaKey'),
+          },
+        ]
       : []
 
   // "How it appears" - font/size quick-picks + entrance/exit/speed animation,
@@ -318,7 +339,9 @@ export function clipContextMenuItems({ clip, seq, assets, selNow, keepSelection,
     { label: 'Paste', shortcut: comboLabel('mod+v'), onClick: pasteAtPlayhead },
     { label: 'Copy attributes', shortcut: comboLabel('mod+alt+c'), separator: true, onClick: () => copyClipAttributes(clip.id) },
     {
-      label: keepSelection ? `Paste attributes to ${selNow.length}` : 'Paste attributes',
+      // The count is the pictures it can go on: the sound that rides along in a
+      // selection takes no look (pasteClipAttributes), so it is not counted.
+      label: keepSelection ? `Paste attributes to ${pictureCount(seq, selNow)}` : 'Paste attributes',
       shortcut: comboLabel('mod+alt+v'),
       disabled: !hasClipAttributes(),
       onClick: () => pasteClipAttributes(keepSelection ? selNow : [clip.id]),
