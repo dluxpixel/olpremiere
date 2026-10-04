@@ -6,7 +6,7 @@
 // which of the two did he copy last, and where does a pasted picture go.
 
 import type { CutoutFailure } from '../../electron/ipc-types'
-import { addClipFromAsset } from '../engine/timeline'
+import { addClipFromAsset, findClip, type PasteResult } from '../engine/timeline'
 import { videoTracks, type Id, type MediaAsset, type Sequence, type Track } from '../engine/types'
 
 /**
@@ -108,17 +108,100 @@ export function pictureHomeTrack(seq: Sequence): Track | null {
 }
 
 /**
+ * Why the line he aimed a paste at did not take the picture.
+ *
+ * - `busy`: something is already there at that time. The picture went up to the
+ *   next free line, at its own time, and nothing was covered.
+ * - `locked`: nothing was placed.
+ * - `not-video`: he clicked an audio line, which cannot hold a picture, so it went
+ *   to its home line instead.
+ */
+export interface PictureAim {
+  trackId: Id
+  problem: 'busy' | 'locked' | 'not-video'
+}
+
+export interface PlacedPicture {
+  seq: Sequence
+  clipId: Id
+  /** Set only when the line he aimed at could not take the picture as asked. */
+  aimed?: PictureAim
+}
+
+/**
  * Put a pasted picture on the timeline at exactly `atS`.
  *
  * `exact` lands it at that time, and where the line is taken there it goes on
  * the next free line up instead, so it never covers or cuts anything. His pick
  * for anything pasted, 2026-09-28: "the next free line". An empty clip id means
- * every video line is locked.
+ * nothing was placed: every video line is locked, or the line he aimed at is.
+ *
+ * `aimedId` is the line he clicked last (pasteTarget.ts). His words, 2026-10-04,
+ * after a picture went to V2 with V4 clicked: *"make sure it also pastes it on the
+ * same line because I clicked the V4."* A line this sequence does not have is not
+ * an aim, so the picture goes home as it always did.
  */
-export function placePastedPicture(seq: Sequence, asset: MediaAsset, atS: number): { seq: Sequence; clipId: Id } {
+export function placePastedPicture(seq: Sequence, asset: MediaAsset, atS: number, aimedId?: Id): PlacedPicture {
+  const aimed = aimedId === undefined ? undefined : seq.tracks.find((t) => t.id === aimedId)
+  if (aimed?.kind === 'video') {
+    if (aimed.locked) return { seq, clipId: '', aimed: { trackId: aimed.id, problem: 'locked' } }
+    const placed = addClipFromAsset(seq, aimed.id, asset, atS, { exact: true })
+    const landed = placed.clipId ? findClip(placed.seq, placed.clipId)?.track : undefined
+    return landed && landed.id !== aimed.id
+      ? { ...placed, aimed: { trackId: aimed.id, problem: 'busy' } }
+      : placed
+  }
   const home = pictureHomeTrack(seq)
   if (!home) return { seq, clipId: '' }
-  return addClipFromAsset(seq, home.id, asset, atS, { exact: true })
+  const placed = addClipFromAsset(seq, home.id, asset, atS, { exact: true })
+  return aimed ? { ...placed, aimed: { trackId: aimed.id, problem: 'not-video' } } : placed
+}
+
+/** What to tell him when a picture did not land on the line he clicked, or null. */
+export function pictureAimNote(seq: Sequence, clipId: Id, aim: PictureAim): string | null {
+  const asked = seq.tracks.find((t) => t.id === aim.trackId)
+  if (!asked) return null
+  if (aim.problem === 'locked') return `${asked.name} is locked, so the picture is only in your media`
+  const landed = clipId ? findClip(seq, clipId)?.track : undefined
+  if (!landed) return null
+  return aim.problem === 'busy'
+    ? `${asked.name} is busy at that time, so the picture went on ${landed.name}`
+    : `${asked.name} is an audio track, so the picture went on ${landed.name}`
+}
+
+/**
+ * What to tell him when a clip paste did not land exactly as asked, or null when
+ * it did. `seq` is the sequence AFTER the paste (a line it added has a name there)
+ * and `aimed` the line he clicked, if any. One sentence per thing that happened:
+ * his rule is that nothing lands on another line without a word.
+ */
+export function pasteNote(
+  seq: Sequence,
+  aimed: Track | undefined,
+  r: Pick<PasteResult, 'redirected' | 'targetUnused' | 'lifted' | 'grown'>,
+): string | null {
+  const nameOf = (id: Id): string => seq.tracks.find((t) => t.id === id)?.name ?? 'another line'
+  const notes: string[] = []
+  if (aimed && r.targetUnused) {
+    const kind = aimed.kind === 'audio' ? 'an audio' : 'a video'
+    notes.push(`${aimed.name} is ${kind} track, so what you copied went back on the tracks it came from`)
+  }
+  if (aimed && r.lifted > 0) {
+    const by = r.lifted === 1 ? 'one track' : `${r.lifted} tracks`
+    notes.push(`The copied clips would not fit under ${aimed.name}, so they sit ${by} higher to keep their shape`)
+  }
+  if (r.grown > 0) {
+    notes.push(
+      `${r.grown === 1 ? 'One new track was' : `${r.grown} new tracks were`} added to keep the copied clips together`,
+    )
+  }
+  if (r.redirected.length === 1) {
+    const { askedId, landedId } = r.redirected[0]!
+    notes.push(`${nameOf(askedId)} is busy at that time, so the clip went on ${nameOf(landedId)}`)
+  } else if (r.redirected.length > 1) {
+    notes.push(`${r.redirected.length} clips went on a free track, because their own was busy at that time`)
+  }
+  return notes.length > 0 ? notes.join('. ') : null
 }
 
 /** What went wrong with CutStudio, said the way he would say it. */

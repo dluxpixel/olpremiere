@@ -10,9 +10,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { recomputeDuration } from '../engine/timeline'
 import { activeSequence, audioTracks, defaultTitleDef, newProject, newTitleClip, videoTracks, type Sequence } from '../engine/types'
 import { useContextMenu } from '../state/contextMenu'
+import { EFFECT_MIME } from '../state/dnd'
+import { clickedPasteTrack, setPasteTarget } from '../state/pasteTarget'
 import { updateActiveSequence, useStore } from '../state/store'
 import { Timeline } from './Timeline'
 import { installManualRaf, installResizeObserver } from './timelineDomFixtures'
+import { buildLaneInfos } from './timelineLanes'
 
 const seq = (): Sequence => activeSequence(useStore.getState().project)
 
@@ -28,6 +31,7 @@ beforeEach(() => {
   useStore.getState().setProject(newProject())
   useStore.getState().setUI({ selection: [], playheadS: 0, pxPerS: 10, tool: 'select', snapping: true, playing: false })
   useContextMenu.getState().close()
+  setPasteTarget(null)
 })
 afterEach(() => {
   cleanup()
@@ -220,5 +224,112 @@ describe('Timeline', () => {
       window.dispatchEvent(new Event('olpremiere:zoom-fit'))
     })
     expect(useStore.getState().ui.pxPerS).toBe(100)
+  })
+  // His words, 2026-10-04: *"I clicked the V4 ... It pasted it in V2."* The click he
+  // makes on a line, or on its header, is the line Ctrl+V pastes onto.
+  describe('the line Ctrl+V pastes onto', () => {
+    /** The pointer y that lands inside the lane of the track called `name`. */
+    const yIn = (name: string): number => {
+      const vTracks = [...videoTracks(seq())].reverse()
+      return buildLaneInfos(vTracks, audioTracks(seq())).find((i) => i.track.name === name)!.top + 10
+    }
+    const laneEl = (content: HTMLElement, name: string): HTMLElement => {
+      const order = [...[...videoTracks(seq())].reverse(), ...audioTracks(seq())].map((t) => t.name)
+      // Child 0 is the ruler, the video lanes follow, then the 2px divider, then audio.
+      const videoCount = videoTracks(seq()).length
+      const at = order.indexOf(name)
+      return content.children[1 + at + (at >= videoCount ? 1 : 0)] as HTMLElement
+    }
+
+    it('a click on an empty spot of a lane aims the paste at that lane', () => {
+      render(<Timeline height={300} />)
+      const { content } = layOut()
+      fireEvent.pointerDown(laneEl(content, 'V2'), { button: 0, clientX: 30, clientY: yIn('V2'), pointerId: 1 })
+      expect(clickedPasteTrack(seq())?.name).toBe('V2')
+      fireEvent.pointerUp(screen.getByTestId('timeline-lanes'), { clientX: 30, clientY: yIn('V2'), pointerId: 1 })
+      fireEvent.pointerDown(laneEl(content, 'V1'), { button: 0, clientX: 30, clientY: yIn('V1'), pointerId: 1 })
+      expect(clickedPasteTrack(seq())?.name).toBe('V1')
+      // The same click still moves the playhead and clears the selection, as it always did.
+      expect(useStore.getState().ui.playheadS).toBeCloseTo(3)
+      expect(useStore.getState().ui.selection).toEqual([])
+    })
+
+    it('a click on a track header aims the paste at that track, and the header says so', () => {
+      render(<Timeline height={300} />)
+      const header = screen.getByTestId('track-header-V2')
+      expect(header.dataset.pasteTarget).toBeUndefined()
+      fireEvent.pointerDown(header, { button: 0 })
+      expect(clickedPasteTrack(seq())?.name).toBe('V2')
+      expect(screen.getByTestId('track-header-V2').dataset.pasteTarget).toBe('true')
+      expect(screen.getByTestId('track-header-V1').dataset.pasteTarget).toBeUndefined()
+    })
+
+    it('a press on a header button is for the button and aims nothing', () => {
+      render(<Timeline height={300} />)
+      const mute = within(screen.getByTestId('track-header-V2')).getAllByRole('button')[0]!
+      fireEvent.pointerDown(mute, { button: 0 })
+      expect(clickedPasteTrack(seq())).toBeNull()
+    })
+
+    it('a press on a clip lets go of the line, because it picks the clip', () => {
+      seedTitle(1)
+      render(<Timeline height={300} />)
+      layOut()
+      setPasteTarget(videoTracks(seq())[1]!.id)
+      fireEvent.pointerDown(screen.getByTestId('clip'), { button: 0, clientX: 20, clientY: 40, pointerId: 1 })
+      expect(clickedPasteTrack(seq())).toBeNull()
+    })
+
+    it('a click on the blank area under the tracks leaves the line as it was', () => {
+      render(<Timeline height={300} />)
+      layOut()
+      setPasteTarget(videoTracks(seq())[1]!.id)
+      fireEvent.pointerDown(screen.getByTestId('timeline-lanes'), { button: 0, clientX: 30, clientY: 390, pointerId: 1 })
+      expect(clickedPasteTrack(seq())?.name).toBe('V2')
+    })
+  })
+  // His words, 2026-10-04: *"selecting multiple images and putting effects on them that
+  // actually apply to all of them."* An effect dragged from the Effects tab onto one of
+  // several selected clips used to land on that clip alone and shrink the selection to it.
+  describe('an effect dropped on a selected clip', () => {
+    const dropEffect = (clip: HTMLElement, type: string) =>
+      fireEvent.drop(clip, {
+        dataTransfer: { types: [EFFECT_MIME], getData: (mime: string) => (mime === EFFECT_MIME ? type : '') },
+      })
+    /** Three pictures-in-waiting on V1, side by side, all selected. */
+    const three = () => {
+      const clips = [seedTitle(0), seedTitle(2.5), seedTitle(5)]
+      useStore.getState().setUI({ selection: clips.map((c) => c.id) })
+      return clips
+    }
+    const effectsOn = (id: string): string[] =>
+      seq().tracks.flatMap((t) => t.clips).find((c) => c.id === id)!.effects.map((e) => e.type)
+
+    it('lands on every selected clip, keeps the selection, and is one undo step', () => {
+      const clips = three()
+      render(<Timeline height={300} />)
+      layOut()
+      const middle = screen.getAllByTestId('clip').find((c) => c.dataset.clipId === clips[1]!.id)!
+      const steps = useStore.getState().history.undo.length
+      dropEffect(middle, 'saturation')
+      expect(clips.map((c) => effectsOn(c.id))).toEqual([['saturation'], ['saturation'], ['saturation']])
+      expect(useStore.getState().ui.selection).toEqual(clips.map((c) => c.id))
+      expect(useStore.getState().history.undo.length).toBe(steps + 1)
+      useStore.getState().undo()
+      expect(clips.map((c) => effectsOn(c.id))).toEqual([[], [], []])
+    })
+
+    it('lands on just the clip it is dropped on when that clip is not in the selection', () => {
+      const clips = three()
+      const outside = seedTitle(8)
+      render(<Timeline height={300} />)
+      layOut()
+      const el = screen.getAllByTestId('clip').find((c) => c.dataset.clipId === outside.id)!
+      dropEffect(el, 'saturation')
+      expect(effectsOn(outside.id)).toEqual(['saturation'])
+      expect(clips.map((c) => effectsOn(c.id))).toEqual([[], [], []])
+      // A drop on a lone clip still reveals it in the Inspector, as it always did.
+      expect(useStore.getState().ui.selection).toEqual([outside.id])
+    })
   })
 })

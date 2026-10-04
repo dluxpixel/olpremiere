@@ -472,7 +472,34 @@ function rendererFor(canvas: HTMLCanvasElement): Renderer | null {
     }
   }
   renderers.set(canvas, renderer)
+  if (renderer) drawnCanvases.add(new WeakRef(canvas))
   return renderer
+}
+
+/** Every canvas that got a renderer, held weakly so a canvas that goes away can still be collected. */
+const drawnCanvases = new Set<WeakRef<HTMLCanvasElement>>()
+
+/**
+ * Let go of everything the preview keeps for the edit that was on screen: the
+ * held transition frames and scaled scratch canvases (keyed by ITS clips), the
+ * miss counts and pre-rolled cut, and every renderer's textures for its stills and
+ * titles. Called when an edit tab goes to sleep (state/projectResources.ts); the
+ * next frame of the edit he switched to rebuilds whatever it needs.
+ */
+export function releasePreviewScratch(): void {
+  heldFrames.clear()
+  liveScale.clear()
+  liveMisses.clear()
+  prefetchedCutId = null
+  for (const ref of drawnCanvases) {
+    const canvas = ref.deref()
+    if (!canvas) {
+      drawnCanvases.delete(ref)
+      continue
+    }
+    renderers.get(canvas)?.releaseSources?.()
+  }
+  epoch++
 }
 
 // ---------------------------------------------------------------------------

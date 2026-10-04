@@ -23,6 +23,14 @@ export interface Renderer {
    * them. See warm() in createRenderer for why.
    */
   warm(shapes: readonly LayerShape[]): void
+  /**
+   * Free the textures kept for stills and titles. Their keys are the pictures
+   * themselves, so an edit tab that has gone to sleep would otherwise keep up to
+   * STABLE_TEX_CAP of its title canvases and stills alive, here and on the GPU,
+   * until the next edit happened to push them out. Everything rebuilds on the
+   * next frame that draws it.
+   */
+  releaseSources?(): void
   dispose(): void
 }
 
@@ -2333,7 +2341,16 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     pool.length = 0
   }
 
-  return { render, warm, dispose }
+  function releaseSources(): void {
+    for (const e of texCache.values()) gl.deleteTexture(e.tex)
+    texCache.clear()
+    // The stage remembers the last video element it was filled from; forgetting
+    // it only means the next upload allocates instead of writing in place.
+    stage = NO_STAGE
+    direct = NO_STAGE
+  }
+
+  return { render, warm, releaseSources, dispose }
 }
 
 // --- the staging upload's plan ----------------------------------------------

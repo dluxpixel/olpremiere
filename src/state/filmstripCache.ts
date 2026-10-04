@@ -24,6 +24,8 @@ export interface StripCache {
   retain(key: string): void
   release(key: string): void
   isLive(key: string): boolean
+  /** Drop every strip whose key starts with `prefix` that nothing is showing. */
+  dropPrefix(prefix: string): void
   readonly size: number
   /** Test seam: the keys in eviction order, least recent first. */
   keys(): string[]
@@ -82,6 +84,14 @@ export function createStripCache(max: number, revoke: (url: string) => void): St
     },
     isLive(key) {
       return live.has(key)
+    },
+    dropPrefix(prefix) {
+      for (const [key, url] of [...cache]) {
+        // The same rule as eviction: a strip on screen is never revoked.
+        if (!key.startsWith(prefix) || live.has(key)) continue
+        cache.delete(key)
+        revoke(url)
+      }
     },
     get size() {
       return cache.size

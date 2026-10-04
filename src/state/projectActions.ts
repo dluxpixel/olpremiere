@@ -1,70 +1,30 @@
 // Project switching: open / create / delete without ever deleting your work
 // to start something new. The current project autosaves before any switch, so
 // flipping between edits is lossless in both directions.
+//
+// Since 2026-10-03 every open lands in an edit tab (editTabs.ts): the Projects
+// dialog's Open adds a tab, or focuses the one already open, and the edit he
+// leaves stays in the strip, saved and asleep.
 
 import { activeSequence, newProject } from '../engine/types'
 import { nextFreeName } from '../engine/uniqueName'
 import { sampleFromClips } from '../engine/captions/styleLearning'
 import { rememberProjectStyle } from '../engine/captions/styleStore'
-import { useCollab } from '../collab/collabControl'
-import { pausePlayback } from './playbackControl'
-import { deleteProject, listProjects, loadProjectById, saveNow, saveProject, setProjectArchived, setProjectLater } from './persistence'
+import { flushOutgoing, forgetTab, guardRoom, neighbourTabs, switchTo } from './editTabs'
+import { deleteProject, listProjects, loadProjectById, saveProject, setProjectArchived, setProjectLater } from './persistence'
 import { useStore } from './store'
 import { useToasts } from './toasts'
 import { applyTemplateTracks } from './trackTemplate'
 
-/** Switching projects inside a collab room would tear the room's doc out from
- * under the peers, so leave first (Leave already restores your solo project).
- * Exported because opening a project FILE replaces the document exactly the same
- * way, and it used to do it with none of these guards. */
-export function guardRoom(): boolean {
-  if (useCollab.getState().session !== null) {
-    useToasts.getState().show('Leave the room before switching projects', 'danger')
-    return false
-  }
-  return true
-}
+// Where they lived before the tabs; opening a project file still reaches them here.
+export { flushOutgoing, guardRoom }
 
-function adopt(projectName: string, apply: () => void): void {
-  pausePlayback()
-  apply()
-  useStore.getState().setUI({ selection: [], playheadS: 0, playing: false })
-  useToasts.getState().show(`Opened “${projectName}”`, 'success')
-}
-
-/**
- * Flush the open project before it is replaced. Returns false when the write
- * failed: switching projects would then drop every unsaved edit, so the caller
- * must abort rather than "autosave first" in name only.
- */
-export async function flushOutgoing(): Promise<boolean> {
-  try {
-    await saveNow()
-    return true
-  } catch {
-    useToasts
-      .getState()
-      .show('Could not save this project. Staying here so nothing is lost', 'danger')
-    return false
-  }
-}
-
-/** Open another saved project (current one autosaves first). */
+/** Open another saved project in a tab (the current one autosaves first). */
 export async function openProject(id: string): Promise<void> {
-  if (!guardRoom()) return
-  if (id === useStore.getState().project.id) return
-  if (!(await flushOutgoing())) return
-  const p = await loadProjectById(id)
-  if (!p) {
-    useToasts.getState().show('That project could not be loaded', 'danger')
-    return
-  }
-  adopt(p.name, () => useStore.getState().setProject(p))
-  // Make this the boot project even if the user edits nothing.
-  await saveProject(p)
+  await switchTo(id, { announce: true })
 }
 
-/** Start a fresh project (current one autosaves first). */
+/** Start a fresh project in a new tab (the current one autosaves first). */
 export async function createProject(): Promise<void> {
   if (!guardRoom()) return
   if (!(await flushOutgoing())) return
@@ -78,11 +38,11 @@ export async function createProject(): Promise<void> {
   }
   const p = newProject(nextFreeName('Untitled Project', taken))
   // A saved track template replaces the stock V1/V2/A1/A2 layout. `p` is
-  // still private here, so patching it before adopt() touches no shared state.
+  // still private here, so patching it before it is adopted touches no shared state.
   const seq = activeSequence(p)
   const tracks = applyTemplateTracks(seq.tracks)
   if (tracks !== seq.tracks) p.sequences[seq.id] = { ...seq, tracks }
-  adopt(p.name, () => useStore.getState().setProject(p))
+  if ((await switchTo(p, { announce: true })) !== 'ok') return
   await saveProject(p)
 }
 
@@ -102,16 +62,21 @@ export async function createProject(): Promise<void> {
 export async function removeProject(id: string): Promise<void> {
   if (id !== useStore.getState().project.id) {
     await deleteProject(id)
+    // A deleted project asleep in a tab leaves the strip with it.
+    forgetTab(id)
     useToasts.getState().show('Project deleted')
     return
   }
   if (!guardRoom()) return
 
-  // Land somewhere before the ground goes: the most recently touched project
-  // that is not this one, or a fresh one when this was the last.
+  // Land somewhere before the ground goes: the tab beside it, the way closing a
+  // tab lands, else the most recently touched project that is not this one, or a
+  // fresh one when this was the last.
   const others = (await listProjects()).filter((p) => p.id !== id)
-  const successor = others.sort((a, b) => b.updatedAt - a.updatedAt)[0]
-  if (successor) await openProject(successor.id)
+  const exists = new Set(others.map((p) => p.id))
+  const successor =
+    neighbourTabs(id).find((t) => t !== id && exists.has(t)) ?? others.sort((a, b) => b.updatedAt - a.updatedAt)[0]?.id
+  if (successor) await openProject(successor)
   else await createProject()
 
   if (useStore.getState().project.id === id) {
@@ -120,6 +85,7 @@ export async function removeProject(id: string): Promise<void> {
     return
   }
   await deleteProject(id)
+  forgetTab(id)
   useToasts.getState().show('Project deleted')
 }
 

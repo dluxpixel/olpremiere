@@ -13,10 +13,12 @@ import {
   serializeClips,
   unlockedClipIds,
   type ClipPayload,
+  type PasteResult,
 } from '../engine/timeline'
 import { activeSequence, type Id, type MediaAsset, type Project } from '../engine/types'
 import { useContextMenu } from './contextMenu'
-import { clipMarker } from './pasteRules'
+import { clickedPasteTrack, selectPasted } from './pasteTarget'
+import { clipMarker, pasteNote } from './pasteRules'
 import { updateActiveSequence, useStore } from './store'
 import { useToasts } from './toasts'
 
@@ -136,8 +138,15 @@ export function cutSelection(): void {
   s.setUI({ selection: [] })
 }
 
+/**
+ * Ctrl+V: the clipboard at the playhead, on the line he clicked last when he
+ * clicked one (pasteTarget.ts), else each clip back on the line it came from.
+ */
 export function pasteAtPlayhead(): void {
-  pasteClipboard(useStore.getState().ui.playheadS)
+  const { project, ui } = useStore.getState()
+  const seq = activeSequence(project)
+  const clicked = clickedPasteTrack(seq)
+  pasteClipboard(ui.playheadS, clicked ? { trackIndex: seq.tracks.indexOf(clicked) } : undefined)
 }
 
 /** True when there is something to paste. */
@@ -189,6 +198,10 @@ function pasteClipboard(atS: number, target?: { trackIndex: number }): void {
   }
   let pastedIds: string[] = []
   let blocked = 0
+  // Written by the edit below. Typed by assertion so the read after it is not
+  // narrowed to the null it started as.
+  let result = null as PasteResult | null
+  const aimed = target ? activeSequence(s.project).tracks[target.trackIndex] : undefined
   // ONE undo step for the clips and the records they brought, so undoing the
   // paste takes both back out together.
   useStore.getState().dispatch('Paste clip(s)', (p) => {
@@ -196,12 +209,19 @@ function pasteClipboard(atS: number, target?: { trackIndex: number }): void {
     const r = pasteClips(seq, payload, atS, target)
     pastedIds = r.newIds
     blocked = r.blockedByLock
+    result = r
     if (r.seq === seq) return p
     const assets = Object.keys(brought).length > 0 ? { ...brought, ...p.assets } : p.assets
     return { ...p, assets, sequences: { ...p.sequences, [seq.id]: r.seq } }
   })
-  if (pastedIds.length > 0) s.setUI({ selection: pastedIds })
+  if (pastedIds.length > 0) selectPasted(pastedIds)
   if (stranded > 0) sayStranded()
+  // ⛔ NOTHING LANDS ON ANOTHER LINE WITHOUT A WORD. A clip whose spot was taken
+  // goes to the next free line, which is right, and which he used to find out by
+  // looking for it.
+  const note =
+    result && pastedIds.length > 0 ? pasteNote(activeSequence(useStore.getState().project), aimed, result) : null
+  if (note) useToasts.getState().show(note, 'info')
   // A locked track refusing the paste is a decision he made, but a paste that
   // quietly does nothing reads as a broken keyboard shortcut.
   if (blocked > 0) {

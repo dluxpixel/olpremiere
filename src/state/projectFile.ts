@@ -16,7 +16,7 @@ import { migrateProjectAppearance } from '../engine/anim/appearance'
 import { migrateProject, newId, type Project } from '../engine/types'
 import { backfillMirror } from './mediaMirror'
 import { deleteBlob, getBlob, loadProjectById, putBlob, saveProject } from './persistence'
-import { flushOutgoing, guardRoom } from './projectActions'
+import { flushOutgoing, guardRoom, switchTo } from './editTabs'
 import { useStore } from './store'
 import { useToasts } from './toasts'
 import { plural } from '../engine/plural'
@@ -567,8 +567,14 @@ async function adoptImported(raw: Project, writes: { key: string; blob: Blob }[]
   // Fire and forget: a mirror must never fail an import.
   void backfillMirror(project).catch(() => undefined)
 
-  useStore.getState().setProject(project)
-  useStore.getState().setUI({ selection: [] })
+  if (project.id === useStore.getState().project.id) {
+    // The open edit, restored over itself from its own file.
+    useStore.getState().setProject(project)
+    useStore.getState().setUI({ selection: [] })
+  } else if ((await switchTo(project)) !== 'ok') {
+    // It is saved and in Projects; the switch has already said why it stayed put.
+    return
+  }
   // Say WHY the name changed, or a copy appearing out of nowhere reads as a bug.
   show(
     kept ? `Opened "${project.name}". Your newer "${kept}" was kept.` : `Opened "${project.name}"`,

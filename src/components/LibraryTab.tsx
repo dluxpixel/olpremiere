@@ -337,7 +337,9 @@ export function LibraryTab() {
   const pickedView = useLibrary((s) => s.view)
   const view = liveView(pickedView, categories)
   const fps = useStore((s) => activeSequence(s.project).fps)
-  const hasSelection = useStore((s) => s.ui.selection.length === 1)
+  // Any selection takes a preset: it goes on every selected clip (applyPresetToSelection).
+  const selectedCount = useStore((s) => s.ui.selection.length)
+  const hasSelection = selectedCount > 0
   const [query, setQuery] = useState('')
 
   // Leaving the tab stops a sound he was listening to.
@@ -412,14 +414,18 @@ export function LibraryTab() {
                 data-testid="preset-item"
                 role="button"
                 tabIndex={0}
-                title={`${plural(p.effects.length, 'effect')}; double-click to apply to the selected clip`}
+                title={`${plural(p.effects.length, 'effect')}; double-click to apply to the selected clip${selectedCount > 1 ? 's' : ''}`}
                 onDoubleClick={() => applyPresetToSelection(p.id)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') applyPresetToSelection(p.id)
                 }}
                 onContextMenu={(e) =>
                   openContextMenu(e, [
-                    { label: 'Apply to selected clip', shortcut: 'Enter', onClick: () => applyPresetToSelection(p.id) },
+                    {
+                      label: selectedCount > 1 ? `Apply to ${selectedCount} clips` : 'Apply to selected clip',
+                      shortcut: 'Enter',
+                      onClick: () => applyPresetToSelection(p.id),
+                    },
                     { label: 'Apply to every clip', onClick: () => applyPresetToAllClips(p.id) },
                     { label: 'Remove preset', danger: true, separator: true, onClick: () => void removePreset(p.id) },
                   ])

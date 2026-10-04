@@ -4,12 +4,14 @@ import { clipDurationS } from '../engine/timeline'
 import { clipKeyframeTimes } from '../engine/keyframes'
 import { type TransitionKind } from '../engine/render/types'
 import { transitionMarkPx } from '../engine/transitionMarks'
-import { applyEffect, moveClipKeyframe, setClipTransition } from '../state/clipEdits'
+import { applyEffectToClips } from '../state/bulkEdits'
+import { moveClipKeyframe, setClipTransition } from '../state/clipEdits'
 import { EFFECT_MIME, TRANSITION_MIME, dragHasType, edgeForOffset } from '../state/dnd'
 import { type Clip, type Id, type MediaAsset } from '../engine/types'
 import { useBlobUrl } from '../state/blobUrls'
 import { useFilmstrip } from '../state/filmstrips'
 import { ClipWaveform } from './ClipWaveform'
+import { effectDropTargets } from './effectDrop'
 import { useStore } from '../state/store'
 
 // ---------------------------------------------------------------------------
@@ -399,10 +401,13 @@ export const ClipView = memo(function ClipView({
     e.preventDefault()
     e.stopPropagation()
     clearFxDrop()
-    if (effectType) applyEffect(clip.id, effectType)
+    // On one of several selected clips the drop is for all of them, and the
+    // selection stays as it is (effectDropTargets).
+    const targets = effectType ? effectDropTargets(clip.id, useStore.getState().ui.selection) : [clip.id]
+    if (effectType) applyEffectToClips(targets, effectType)
     else setClipTransition(clip.id, edgeForOffset(offsetInClip(e), width), transitionKind as TransitionKind)
     // Reveal what just happened in the Inspector.
-    useStore.getState().setUI({ selection: [clip.id] })
+    if (targets.length === 1) useStore.getState().setUI({ selection: [clip.id] })
   }
 
   return (

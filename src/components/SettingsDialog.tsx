@@ -14,7 +14,9 @@ import {
   setCaptionLanguage,
   type CaptionLanguage,
 } from '../engine/captions/transcribeConfig'
-import { resolvedTheme, setPreviewQuality, setTheme, useSettings, type PreviewQuality, type ThemeChoice } from '../state/settings'
+import { resolvedTheme, setPreviewQuality, setTheme, setUsageLog, useSettings, type PreviewQuality, type ThemeChoice } from '../state/settings'
+import { olApi } from '../platform'
+import { saveWebUsageCopy } from '../state/usageStoreWeb'
 import { useStore } from '../state/store'
 import { askForName } from '../state/namePrompt'
 import {
@@ -30,7 +32,7 @@ import { Button, IconButton } from '../ui/Button'
 import { useEscapeToClose } from '../ui/useEscapeToClose'
 
 /** One labelled preference row on the settings grid. */
-function Row({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+function Row({ label, hint, children }: { label: string; hint?: React.ReactNode; children: React.ReactNode }) {
   return (
     <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-0.5 py-2">
       <div className="min-w-0">
@@ -65,6 +67,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const theme = useSettings((s) => s.theme)
   const previewQuality = useSettings((s) => s.previewQuality)
   const snapping = useStore((s) => s.ui.snapping)
+  const usageLog = useSettings((s) => s.usageLog)
   const setUI = useStore((s) => s.setUI)
   const selectedInputId = useRecorder((s) => s.selectedInputId)
   const selectedOutputId = useRecorder((s) => s.selectedOutputId)
@@ -75,6 +78,8 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   // copy and re-reads after every action it takes.
   const [presets, setPresets] = useState(listTrackPresets)
   const [defaultId, setDefaultId] = useState(defaultTrackPresetId)
+  // Where the usage log lives, when it is a folder on this computer.
+  const [usageFolder, setUsageFolder] = useState<string | null>(null)
 
   const refreshPresets = () => {
     setPresets(listTrackPresets())
@@ -89,6 +94,10 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
       setInputs(ins)
       void listAudioOutputs().then(setOutputs)
     })
+  }, [])
+
+  useEffect(() => {
+    void olApi?.usageDir?.().then(setUsageFolder, () => undefined)
   }, [])
 
   useEscapeToClose(onClose)
@@ -284,6 +293,48 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
               <Bookmark size={14} strokeWidth={1.5} />
               Save current
             </Button>
+          </Row>
+        </Group>
+
+        <Group title="Privacy">
+          <Row
+            label="Usage log"
+            hint={
+              <>
+                A private list of the buttons and keys you use, so the app can be made better. Never what you
+                type or which files you open, and it is never sent anywhere.{' '}
+                <span data-testid="settings-usage-where">
+                  {olApi?.usageDir ? (
+                    <>
+                      It lives in <span className="select-text break-all">{usageFolder ?? 'the app data folder'}</span>
+                    </>
+                  ) : (
+                    'It is kept in this browser.'
+                  )}
+                </span>
+              </>
+            }
+          >
+            <button
+              type="button"
+              data-testid="settings-usage-log"
+              aria-pressed={usageLog}
+              onClick={() => setUsageLog(!usageLog)}
+              className={`h-7 rounded-field px-3 text-ui-sm transition-colors duration-[120ms] ${
+                usageLog ? 'bg-accent text-accent-fg' : 'bg-bg-input text-text-secondary hover:text-text-primary'
+              }`}
+            >
+              {usageLog ? 'On' : 'Off'}
+            </button>
+            {olApi?.usageReveal ? (
+              <Button variant="secondary" data-testid="settings-usage-folder" onClick={() => void olApi?.usageReveal?.()}>
+                Open folder
+              </Button>
+            ) : (
+              <Button variant="secondary" data-testid="settings-usage-copy" onClick={() => void saveWebUsageCopy()}>
+                Save a copy
+              </Button>
+            )}
           </Row>
         </Group>
       </div>

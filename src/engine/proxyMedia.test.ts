@@ -4,7 +4,16 @@
 
 import { readFileSync } from 'node:fs'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ensureProxies, forgetProxy, hasProxy, proxyKeyFor, wantsProxy, whenProxiesSettled } from './proxyMedia'
+import {
+  ensureProxies,
+  forgetProxy,
+  hasProxy,
+  proxyKeyFor,
+  proxyProgress,
+  setProxyBuildingPaused,
+  wantsProxy,
+  whenProxiesSettled,
+} from './proxyMedia'
 import type { MediaAsset } from './types'
 
 const stored = new Map<string, Blob>()
@@ -162,6 +171,32 @@ describe('the preview copy crosses in chunks, both ways', () => {
     expect(calls.finished).toBe(0)
     expect(calls.chunks).toEqual([])
     expect(hasProxy(a.id)).toBe(true)
+  })
+
+  // An edit tab going to sleep forgets its media here (state/projectResources.ts).
+  // A copy still WAITING for ffmpeg would otherwise be built anyway, on every core,
+  // for a timeline he is no longer looking at, while the tab he clicked waits.
+  it('forgetting an asset takes its waiting copy out of the queue, so it is never built', async () => {
+    const kept = asset({ id: 'on-screen', blobKey: 'asset/on-screen' })
+    const asleep = asset({ id: 'asleep', blobKey: 'asset/asleep' })
+    for (const a of [kept, asleep]) {
+      forgetProxy(a.id)
+      stored.set(a.blobKey, new Blob([new Uint8Array(1024)]))
+    }
+    const calls = shell(CHUNK)
+    // Playing, so the queue holds still while the tab switches.
+    setProxyBuildingPaused(true)
+    ensureProxies([kept, asleep])
+    expect(proxyProgress().queued).toBe(2)
+
+    forgetProxy(asleep.id)
+    expect(proxyProgress().queued).toBe(1)
+
+    setProxyBuildingPaused(false)
+    await whenProxiesSettled()
+    expect(calls.finished).toBe(1)
+    expect(hasProxy(kept.id)).toBe(true)
+    expect(stored.has(proxyKeyFor(asleep.id))).toBe(false)
   })
 })
 

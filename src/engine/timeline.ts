@@ -2250,23 +2250,49 @@ export function freeTrackFor(
   return { seq: grown, trackIndex: grown.tracks.indexOf(made) }
 }
 
+/** What a paste did, beyond the clips it made. See pasteClips. */
+export interface PasteResult {
+  seq: Sequence
+  newIds: Id[]
+  blockedByLock: number
+  /**
+   * Every clip that landed on another line than the one asked for, because its
+   * spot was taken there. Track ids, so the caller can name both lines.
+   */
+  redirected: { askedId: Id; landedId: Id }[]
+  /** A target was given, but nothing copied is of its kind, so it asked for nothing. */
+  targetUnused: boolean
+  /** Lines the whole shape was lifted, so its lowest clip still had a line to sit on. */
+  lifted: number
+  /** Lines added, so the whole shape fits in the lines of its kind. */
+  grown: number
+}
+
 /**
  * Paste the clipboard at `atS`.
  *
- * With a `target` (his right click on a lane) the payload lands on the track he
- * clicked: the lowest copied track of that kind goes there and the rest keep
- * their distance from it. Without one (Ctrl+V) each clip goes back to the track
- * it was copied from. Either way it lands at exactly the time asked, and a clip
- * whose spot is taken moves to the next free line (freeTrackFor), never in time
- * and never on top of anything. His words: *"it pastes it where I clicked it. It
- * doesn't just paste it randomly."*
+ * With a `target` (the line he clicked, or right clicked) the payload lands on
+ * it: the TOP copied clip of that kind goes there and the rest keep their lanes
+ * relative to it, so a stack of three stays a stack of three. The top is the
+ * one he sees first: the highest video line, or A1 before A2. The shape is never
+ * squashed: when the lower clips would fall off the bottom of the lines there
+ * are, the whole shape is lifted instead (`lifted`), and when it needs more
+ * lines than exist they are added (`grown`). Without a target (Ctrl+V with
+ * nothing clicked) each clip goes back to the line it was copied from.
+ *
+ * Either way it lands at exactly the time asked, and a clip whose spot is taken
+ * moves to the next free line (freeTrackFor), never in time and never on top of
+ * anything: `redirected` names every one that did, so the caller can say so. His
+ * words, 2026-09-28: *"it pastes it where I clicked it. It doesn't just paste it
+ * randomly."* And 2026-10-04, after a picture went to V2 with V4 clicked: *"make
+ * sure it also pastes it on the same line because I clicked the V4."*
  */
 export function pasteClips(
   seq: Sequence,
   payload: ClipPayload[],
   atS: number,
   target?: { trackIndex: number },
-): { seq: Sequence; newIds: Id[]; blockedByLock: number } {
+): PasteResult {
   const kindIdx = (sq: Sequence): Record<'video' | 'audio', number[]> => {
     const out: Record<'video' | 'audio', number[]> = { video: [], audio: [] }
     sq.tracks.forEach((t, i) => out[t.kind].push(i))
@@ -2279,11 +2305,16 @@ export function pasteClips(
   const targetKind = target ? seq.tracks[target.trackIndex]?.kind : undefined
   const targetPos = target && targetKind ? start[targetKind].indexOf(target.trackIndex) : -1
   const ofTargetKind = payload.filter((p) => p.trackKind === targetKind).map((p) => p.trackOffset)
-  const anchorOffset = ofTargetKind.length > 0 ? Math.min(...ofTargetKind) : -1
+  const aimed = !!targetKind && targetPos >= 0 && ofTargetKind.length > 0
+  const targetUnused = !!target && !aimed
+  // Video stacks upward, so its top clip is the highest offset; audio stacks
+  // downward, so its top clip is the lowest.
+  const anchorOffset = !aimed ? -1 : targetKind === 'video' ? Math.max(...ofTargetKind) : Math.min(...ofTargetKind)
+  const slots = ofTargetKind.map((o) => targetPos + (o - anchorOffset))
+  const lifted = aimed ? Math.max(0, -Math.min(...slots)) : 0
+  const grown = aimed ? Math.max(0, Math.max(...slots) + lifted - (start[targetKind!].length - 1)) : 0
   const wantedOffset = (item: ClipPayload): number =>
-    targetKind && item.trackKind === targetKind && anchorOffset >= 0 && targetPos >= 0
-      ? targetPos + (item.trackOffset - anchorOffset)
-      : item.trackOffset
+    aimed && item.trackKind === targetKind ? targetPos + (item.trackOffset - anchorOffset) + lifted : item.trackOffset
 
   const newIds: Id[] = []
   // Remap link groups to FRESH ids: clips linked in the payload stay linked to
@@ -2324,8 +2355,13 @@ export function pasteClips(
     }
   }
 
+  // The lines the shape needs and the edit does not have yet are added up front,
+  // so every clip's slot exists before the first one is placed. A paste that
+  // places nothing hands the original sequence back, so a refused one adds nothing.
   let cur = seq
+  for (let g = 0; g < grown; g++) cur = addTrack(cur, targetKind!)
   let blockedByLock = 0
+  const redirected: { askedId: Id; landedId: Id }[] = []
   for (const unit of units) {
     // Indices come from the CURRENT sequence: an earlier clip may have added a
     // track, which shifts everything after it.
@@ -2351,6 +2387,7 @@ export function pasteClips(
       const body = structuredClone(item.clip)
       const desiredS = Math.max(0, atS + item.offsetS)
       const durS = (body.outS - body.inS) / Math.abs(body.speed || 1)
+      const askedId = askedTracks[m]!.id
       const home = freeTrackFor(cur, item.trackKind, cur.tracks.indexOf(askedTracks[m]!), desiredS, durS)
       cur = home.seq
       let linkId = body.linkId
@@ -2369,6 +2406,7 @@ export function pasteClips(
         linkId,
       }
       const placedTrack = cur.tracks[home.trackIndex]!
+      if (placedTrack.id !== askedId) redirected.push({ askedId, landedId: placedTrack.id })
       const withClip = { ...placedTrack, clips: insertSorted(placedTrack.clips, clip) }
       cur = { ...cur, tracks: cur.tracks.map((t, i) => (i === home.trackIndex ? withClip : t)) }
       // Keep the identity pins pointing at the live track objects.
@@ -2376,8 +2414,8 @@ export function pasteClips(
       newIds.push(clip.id)
     }
   }
-  if (newIds.length === 0) return { seq, newIds, blockedByLock }
-  return { seq: recomputeDuration(cur), newIds, blockedByLock }
+  if (newIds.length === 0) return { seq, newIds, blockedByLock, redirected, targetUnused, lifted, grown }
+  return { seq: recomputeDuration(cur), newIds, blockedByLock, redirected, targetUnused, lifted, grown }
 }
 
 export function duplicateClips(seq: Sequence, clipIds: Id[]): { seq: Sequence; newIds: Id[] } {

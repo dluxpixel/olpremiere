@@ -119,8 +119,35 @@ test('delete lifts only the video; the audio stays, and undo restores it', async
   await expect(aclip(page)).toHaveCount(1)
 })
 
+/** Seconds in the monitor readout "m:ss.cc / m:ss.cc": the playhead (part 0) or the edit length (part 1). */
+const readoutS = (tc: string | null, part: 0 | 1 = 0): number =>
+  (tc ?? '').split(' / ')[part]!.split(':').reduce((s, p) => s * 60 + Number(p), 0)
+
+// ⛔ THE PAUSE HAS TO LAND WHILE IT IS STILL PLAYING, 2026-10-04. This played
+// ONE 1.93 second clip, and a Space that lands after the edit has run out is not
+// a pause: at the end, Space plays again from the top (togglePlay, Premiere's
+// behaviour, pinned in playbackControl.test.ts). For the first two seconds of
+// play the headless browser's main thread sits in 200 to 250 ms native tasks (the
+// picture drawn in software), and every call from here waits behind one: the 800
+// ms wait took 970, the read 500, the second press 325, so that press landed 2.1
+// to 2.4 s after the first, past the end, and restarted the clip. The test read
+// the restart as a pause that did not hold. The old test, 20 runs on a busy
+// machine: 9 failed; in all 8 failures that logged, the edit had already ended
+// when the press landed, and all 11 passes landed while it played. The commit
+// before the microphone work, same machine minutes later: 17 of 20 the same way,
+// so that work is not the cause. Space started the picture 2.5 to 4.5 ms after the
+// key in every run, so the app was right. Four copies make an edit of nearly 8
+// seconds, so the pause lands mid-play, and the paused frame must be at or past
+// the one read while playing, so a press that restarted the edit says so instead
+// of passing as a pause that drifted.
 test('playback: Space plays (timecode advances), Space pauses', async ({ page }) => {
   await addClipToTimeline(page)
+  // A taken playhead lays each new copy in the next gap, so these build the edit in order.
+  for (let n = 2; n <= 4; n++) {
+    await page.getByTestId('asset-card').dblclick()
+    await expect(vclip(page)).toHaveCount(n)
+  }
+  await expect.poll(async () => readoutS(await page.getByTestId('timecode').textContent(), 1)).toBeGreaterThan(5)
   await page.keyboard.press('Home')
   await page.keyboard.press(' ')
   await page.waitForTimeout(800)
@@ -129,6 +156,7 @@ test('playback: Space plays (timecode advances), Space pauses', async ({ page })
   expect(during).toMatch(/^0:0[0-4]\.\d\d/)
   await page.keyboard.press(' ')
   const paused = await page.getByTestId('timecode').textContent()
+  expect(readoutS(paused), 'the pause press restarted the edit instead of pausing it').toBeGreaterThanOrEqual(readoutS(during))
   await page.waitForTimeout(400)
   const still = await page.getByTestId('timecode').textContent()
   expect(still).toBe(paused)

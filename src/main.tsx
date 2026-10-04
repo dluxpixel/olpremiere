@@ -27,6 +27,7 @@ import { migrateRenamedKeys } from './state/keyMigration'
 import { loadLibrary } from './state/library'
 import { initCaptionStyles } from './state/captionStyles'
 import { initPersistence, listProjects, loadProjectById } from './state/persistence'
+import { installEditTabs, reconcileEditTabs } from './state/editTabs'
 import { recoverFromWipe, sweepEmptyRecoveries } from './state/backupRestore'
 import { backfillEveryProject, healProjectMedia } from './state/mediaMirror'
 import { initSettings } from './state/settings'
@@ -34,6 +35,7 @@ import { useStore } from './state/store'
 import { activeSequence, type MediaAsset } from './engine/types'
 import { useToasts } from './state/toasts'
 import { initUpdateCheck } from './state/updateCheck'
+import { initUsageLog } from './state/usageWiring'
 import { initUpdateFeed, whenUpdateChecked } from './state/updateStatus'
 import { plural } from './engine/plural'
 
@@ -84,6 +86,8 @@ const work: BootWork = {
     // keeps that true now that the settings live in the sequence with everything
     // else.
     initSettings()
+    // His private usage log, from the first event on, and only if its switch is on.
+    initUsageLog()
     // None of these three needs the project, so queueing them behind it would
     // cost real seconds to buy nothing. Their rows report them in order below.
     libraryReady = started(loadLibrary())
@@ -109,7 +113,11 @@ const work: BootWork = {
     warmMusicModel()
   },
   project: async () => {
+    // Before the project hydrates, so the edit it opens on gets its tab.
+    installEditTabs()
     await initPersistence()
+    // Tabs whose project has gone since the last run leave the strip.
+    void reconcileEditTabs()
     // Every title face the open project uses, not only the core five, before
     // its first title is on screen, and again whenever another project opens.
     // The preview also loads a face the moment it draws it (ensureTitleFace);
