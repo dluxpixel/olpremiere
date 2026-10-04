@@ -468,6 +468,52 @@ export function saveNow(): Promise<void> {
 }
 
 /**
+ * Write the open project and resolve only once NOTHING about it is left unwritten,
+ * for the moment it is about to be put away (switching edit tabs, opening another
+ * project). Rejects when a write failed, like saveNow.
+ *
+ * ⛔ saveNow ALONE IS NOT ENOUGH HERE. An edit made while a write is on its way
+ * is queued behind it (`saveAgain`), and saveNow resolves when the write in
+ * flight lands, BEFORE the queued one has even started. That queued write reads
+ * the project when it runs, and by then the store holds the edit he switched TO,
+ * so his last change to the one he left was never written anywhere.
+ *
+ * An edit with nothing waiting (saved, no timer, no write in flight) is not
+ * written again: a switch between two saved edits costs no disk at all. `always`
+ * writes it anyway, for a project that may never have been written (the blank one
+ * a first ever start opens on).
+ */
+export async function saveSettled(always = false): Promise<void> {
+  const clean = dirtySince === 0 && saving === null && useStore.getState().ui.saveState === 'saved'
+  if (clean && !always) return
+  window.clearTimeout(saveTimer)
+  dirtySince = 0
+  await flushSave()
+  // The follow up a mid write edit queued, if any, is running by now.
+  while (saving) await saving
+}
+
+/**
+ * Make `id` the project the app opens with, without writing the project itself.
+ * Waking an edit tab reads a document that was saved when it went to sleep, so
+ * writing it straight back, file and all, would be a second save of the same
+ * bytes on every click.
+ */
+export async function rememberOpenProject(id: string): Promise<void> {
+  const d = await db()
+  await d.put('meta', id, 'lastProjectId')
+}
+
+/**
+ * The project in the store has just been read from storage, so the autosave its
+ * arrival scheduled has nothing to write. Called right after an edit tab wakes.
+ */
+export function settleAfterLoad(): void {
+  window.clearTimeout(saveTimer)
+  dirtySince = 0
+}
+
+/**
  * Hydrate the last project and start debounced autosave. Call once at boot.
  * Returns the hydration promise: anything that must see the REAL project
  * (e.g. joining a collab room from the URL) awaits it.

@@ -638,7 +638,24 @@ function warmList(seq: Sequence, assets: Record<Id, MediaAsset>): { asset: Media
  * it, and did it on the main thread for the first 16 s after every open.
  */
 export function prewarmAudio(seq: Sequence, assets: Record<Id, MediaAsset>): void {
-  void mapLimit(warmList(seq, assets), DECODE_CONCURRENCY, (w) => getAudioRange(w.asset, w.fromS, w.toS))
+  const run = warmRun
+  void mapLimit(warmList(seq, assets), DECODE_CONCURRENCY, async (w) => {
+    if (run !== warmRun) return
+    await getAudioRange(w.asset, w.fromS, w.toS)
+  })
+}
+
+/** Bumped to stop the warm-ups already queued. */
+let warmRun = 0
+
+/**
+ * Stop decoding ahead for an edit he has left. An edit tab going to sleep with
+ * forty clips still queued would otherwise keep two decodes busy on sound for a
+ * timeline nobody is looking at, while the tab he clicked waits behind them. The
+ * one or two decodes already running finish; nothing new starts.
+ */
+export function cancelAudioWarm(): void {
+  warmRun += 1
 }
 
 /**

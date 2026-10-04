@@ -265,9 +265,17 @@ function markReady(assetId: Id): void {
   ready.add(assetId)
 }
 
-/** Drop a removed asset's proxy state (pair with evictAsset). */
+/**
+ * Drop a removed asset's proxy state (pair with evictAsset), and its place in the
+ * queue. A copy still waiting to be built for media that has gone, or for an edit
+ * tab that has gone to sleep, is ffmpeg on every core for nothing he is looking
+ * at. A copy already on disk is found again in one storage read the next time
+ * ensureProxies sees the asset.
+ */
 export function forgetProxy(assetId: Id): void {
   ready.delete(assetId)
   seen.delete(assetId)
+  const at = queue.findIndex((a) => a.id === assetId)
+  if (at >= 0) queue.splice(at, 1)
 }
 

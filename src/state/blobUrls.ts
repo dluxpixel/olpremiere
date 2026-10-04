@@ -33,6 +33,18 @@ export function getCachedBlobUrl(key: string): string | null {
   return urls.get(key) ?? null
 }
 
+/**
+ * Let go of one key's URL. Only for media nothing on screen shows any more: an
+ * edit tab that has been asleep for a while (state/projectResources.ts). The next
+ * getBlobUrl simply makes a fresh one.
+ */
+export function revokeBlobUrl(key: string): void {
+  const url = urls.get(key)
+  if (!url) return
+  urls.delete(key)
+  URL.revokeObjectURL(url)
+}
+
 // A blob that was MISSING can arrive later (collab media sync, "Locate file").
 // Mounted components that already resolved null re-fetch on this signal.
 const arrivalListeners = new Set<(key: string) => void>()

@@ -25,6 +25,9 @@ vi.mock('../collab/collabControl', () => ({
 }))
 vi.mock('./persistence', () => ({
   saveNow: vi.fn(async () => {}),
+  saveSettled: vi.fn(async () => {}),
+  settleAfterLoad: vi.fn(),
+  listProjects: vi.fn(async () => []),
   saveProject: vi.fn(async () => {}),
   loadProjectById: vi.fn(async () => null),
   deleteProject: vi.fn(async () => {}),
