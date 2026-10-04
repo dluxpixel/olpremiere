@@ -13,6 +13,7 @@ import {
   type EffectInstance,
   type TitleDef,
 } from '../engine/types'
+import { lockedLeftOut } from './bulkEdits'
 import { updateActiveSequence, useStore } from './store'
 import { useToasts } from './toasts'
 
@@ -91,10 +92,17 @@ export function pasteClipAttributes(ids?: Iterable<string>): void {
     return
   }
   let pasted = 0
+  let heldBack = 0
   updateActiveSequence('Paste attributes', (seq) => {
     let changed = false
     const tracks = seq.tracks.map((t) => {
-      if (t.locked || !t.clips.some((c) => idSet.has(c.id))) return t
+      // A look is a picture's: the sound partner that rides along in a selection
+      // takes none of it, and is not counted as a clip it was pasted onto.
+      if (t.kind === 'audio' || !t.clips.some((c) => idSet.has(c.id))) return t
+      if (t.locked) {
+        heldBack += t.clips.filter((c) => idSet.has(c.id)).length
+        return t
+      }
       const clips = t.clips.map((c) => {
         if (!idSet.has(c.id)) return c
         changed = true
@@ -130,6 +138,10 @@ export function pasteClipAttributes(ids?: Iterable<string>): void {
     })
     return changed ? { ...seq, tracks } : seq
   })
-  if (pasted > 0) useToasts.getState().show(`Attributes pasted to ${pasted} clip(s)`)
-  else useToasts.getState().show('Those clips are on a locked track', 'danger')
+  const show = useToasts.getState().show
+  if (pasted > 0) {
+    const left = heldBack > 0 ? `. ${lockedLeftOut(heldBack)}` : ''
+    show(`Attributes pasted to ${pasted} clip${pasted === 1 ? '' : 's'}${left}`)
+  } else if (heldBack > 0) show('Those clips are on a locked track', 'danger')
+  else show('Attributes don’t apply to audio clips', 'danger')
 }

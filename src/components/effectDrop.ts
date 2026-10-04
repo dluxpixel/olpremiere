@@ -38,6 +38,20 @@ function allTargetsLocked(ids: readonly string[]): boolean {
   return ids.every((id) => seq.tracks.some((t) => t.locked && t.clips.some((c) => c.id === id)))
 }
 
+/**
+ * The clips an effect dropped ON a clip of the timeline lands on.
+ *
+ * ⛔ DROPPED ON ONE OF SEVERAL SELECTED CLIPS, IT IS FOR ALL OF THEM. His words,
+ * 2026-10-04: *"selecting multiple images and putting effects on them that
+ * actually apply to all of them."* The drop used to take only the clip under the
+ * cursor and then select just that clip, so a selection of three pictures turned
+ * into one picture with an effect and a selection that had quietly shrunk. A clip
+ * outside the selection is its own drop, as it always was: he aimed at it.
+ */
+export function effectDropTargets(clipId: string, selection: readonly string[]): string[] {
+  return selection.length > 1 && selection.includes(clipId) ? [...selection] : [clipId]
+}
+
 export interface EffectDrop {
   /** A dragged effect is over the area: the "this will accept" hint. */
   hot: boolean

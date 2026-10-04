@@ -12,6 +12,7 @@
 import { create } from 'zustand'
 import type { CutoutResult } from '../../electron/ipc-types'
 import { isEditableTarget } from '../keymap'
+import { activeSequence, type Id } from '../engine/types'
 import { clipMarkerLost, clipMarkerOnSystemClipboard, pasteAtPlayhead } from './clipboard'
 import { importFiles } from './mediaActions'
 import {
@@ -19,9 +20,12 @@ import {
   cutoutName,
   cutoutProblem,
   pastedPictureName,
+  pictureAimNote,
   picturesFrom,
+  type PictureAim,
   placePastedPicture,
 } from './pasteRules'
+import { clickedPasteTrack, selectPasted } from './pasteTarget'
 import { updateActiveSequence, useStore } from './store'
 import { useToasts } from './toasts'
 
@@ -31,6 +35,11 @@ export interface PendingPicture {
   url: string
   /** The playhead when he pasted. The picture lands there even if the cutout takes a while. */
   atS: number
+  /**
+   * The line he had clicked when he pasted, if any. Like the time, taken at the
+   * paste: the picture lands there even if he clicks elsewhere while it waits.
+   */
+  trackId?: Id
 }
 
 interface PastePictureState {
@@ -60,7 +69,12 @@ export function offerPicture(file: File): void {
   if (usePastePicture.getState().picture) return
   const named = new File([file], pastedPictureName(file.name, file.type, new Date()), { type: file.type })
   usePastePicture.setState({
-    picture: { file: named, url: URL.createObjectURL(named), atS: useStore.getState().ui.playheadS },
+    picture: {
+      file: named,
+      url: URL.createObjectURL(named),
+      atS: useStore.getState().ui.playheadS,
+      trackId: clickedPasteTrack(activeSequence(useStore.getState().project))?.id,
+    },
     phase: 'ask',
     problem: null,
   })
@@ -82,7 +96,7 @@ export function cancelPicturePaste(): void {
 /** Paste it as it is. */
 export async function keepBackground(): Promise<void> {
   const picture = close()
-  if (picture) await placePicture(picture.file, picture.atS, 'Picture pasted')
+  if (picture) await placePicture(picture.file, picture.atS, picture.trackId, 'Picture pasted')
 }
 
 /**
@@ -110,27 +124,37 @@ export async function removeBackground(): Promise<void> {
   }
   close()
   const cut = new File([result.png], cutoutName(picture.file.name), { type: 'image/png' })
-  await placePicture(cut, picture.atS, 'Picture pasted without its background')
+  await placePicture(cut, picture.atS, picture.trackId, 'Picture pasted without its background')
 }
 
-/** Into the bin, then onto the timeline at the playhead he pasted at, selected. */
-async function placePicture(file: File, atS: number, message: string): Promise<void> {
+/**
+ * Into the bin, then onto the timeline at the playhead he pasted at, on the line
+ * he had clicked (or its home line), selected.
+ */
+async function placePicture(file: File, atS: number, trackId: Id | undefined, message: string): Promise<void> {
   const [id] = await importFiles([file], { successMessage: message })
   // Nothing imported: importFiles has already said why.
   if (!id) return
   const asset = useStore.getState().project.assets[id]
   if (!asset) return
   let clipId = ''
+  let aimed = undefined as PictureAim | undefined
   updateActiveSequence('Paste picture', (sq) => {
-    const placed = placePastedPicture(sq, asset, atS)
+    const placed = placePastedPicture(sq, asset, atS, trackId)
     clipId = placed.clipId
+    aimed = placed.aimed
     return placed.seq
   })
   // Selected, unlike a clip added from the bin: a pasted picture is nearly always
   // moved or sized next, and it has no linked sound a selection could split off.
-  if (clipId) useStore.getState().setUI({ selection: [clipId] })
-  else useToasts.getState().show('Every video line is locked, so the picture is only in your media', 'info')
+  if (clipId) selectPasted([clipId])
+  // ⛔ A PICTURE NEVER LANDS ON ANOTHER LINE WITHOUT A WORD, and never on a locked
+  // one: the line he clicked said busy, locked or audio, and so does this.
+  const note = aimed ? pictureAimNote(activeSequence(useStore.getState().project), clipId, aimed) : null
+  if (note) useToasts.getState().show(note, 'info')
+  else if (!clipId) useToasts.getState().show('Every video line is locked, so the picture is only in your media', 'info')
 }
+
 
 const router = createPasteRouter({
   pasteClips: pasteAtPlayhead,

@@ -70,8 +70,10 @@ export function applyPunchyGradeToClips(ids: Iterable<string>): void {
   useStore.getState().dispatch('Punchy grade', (p) => {
     const seq = p.sequences[p.activeSequenceId]
     let changed = false
+    // Sound is not graded: the audio that rides along in a selection is not a clip
+    // this changed, and it is not one this counts.
     const tracks = seq.tracks.map((t) =>
-      t.locked || !t.clips.some((c) => idSet.has(c.id))
+      t.kind === 'audio' || t.locked || !t.clips.some((c) => idSet.has(c.id))
         ? t
         : {
             ...t,
@@ -88,7 +90,7 @@ export function applyPunchyGradeToClips(ids: Iterable<string>): void {
   useToasts
     .getState()
     .show(
-      graded > 0 ? `Punch grade on ${graded} clip(s)` : 'Those clips are already graded',
+      graded > 0 ? `Punch grade on ${graded} clip${graded === 1 ? '' : 's'}` : 'Those clips are already graded',
       graded > 0 ? 'success' : 'info',
     )
 }

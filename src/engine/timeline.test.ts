@@ -1779,6 +1779,114 @@ describe('pasteClips', () => {
     expect(pasted.clip.startS).toBe(7)
     expect(findClip(next, busy.id)!.clip).toMatchObject({ startS: 6, outS: 4 })
   })
+  // His words, 2026-10-04: *"I clicked the V4 ... it pasted it in V2."* A paste onto
+  // a line he aimed at puts the TOP copied clip there, and the rest keep their
+  // lanes under it, the way a drag keeps the shape of what it carries.
+  describe('onto the line he aimed at', () => {
+    const lines = (n: number, over: Record<number, Partial<Track>> = {}): Track[] =>
+      Array.from({ length: n }, (_, i) => makeTrack({ name: `V${i + 1}`, ...over[i] }))
+    const trackOf = (seq: Sequence, id: string): string =>
+      seq.tracks.find((t) => t.clips.some((c) => c.id === id))!.name
+
+    it('puts the top copied clip on the aimed line and the rest under it', () => {
+      const low = makeClip({ startS: 0, outS: 2 })
+      const high = makeClip({ startS: 0, outS: 2 })
+      const seq = makeSeq(lines(5, { 1: { clips: [low] }, 2: { clips: [high] } }))
+      const payload = serializeClips(seq, [low.id, high.id])
+      const r = pasteClips(seq, payload, 6, { trackIndex: 4 })
+      expect(r.newIds).toHaveLength(2)
+      expect(trackOf(r.seq, r.newIds[1]!)).toBe('V5')
+      expect(trackOf(r.seq, r.newIds[0]!)).toBe('V4')
+      expect(r.redirected).toEqual([])
+      expect(r.lifted).toBe(0)
+      expect(r.grown).toBe(0)
+      expect(r.seq.tracks).toHaveLength(5)
+    })
+
+    it('one copied clip goes exactly on the aimed line, at the time asked', () => {
+      const t = makeClip({ startS: 3, outS: 2 })
+      const seq = makeSeq(lines(4, { 1: { clips: [t] } }))
+      const r = pasteClips(seq, serializeClips(seq, [t.id]), 9, { trackIndex: 3 })
+      expect(trackOf(r.seq, r.newIds[0]!)).toBe('V4')
+      expect(findClip(r.seq, r.newIds[0]!)!.clip.startS).toBe(9)
+      expect(r.redirected).toEqual([])
+    })
+
+    it('lifts the whole shape instead of squashing it when the line is too low for it', () => {
+      const low = makeClip({ startS: 0, outS: 2 })
+      const high = makeClip({ startS: 0, outS: 2 })
+      const seq = makeSeq(lines(4, { 1: { clips: [low] }, 2: { clips: [high] } }))
+      const payload = serializeClips(seq, [low.id, high.id])
+      // The top clip aimed at V1 would leave the other one under the bottom.
+      const r = pasteClips(seq, payload, 6, { trackIndex: 0 })
+      expect(trackOf(r.seq, r.newIds[0]!)).toBe('V1')
+      expect(trackOf(r.seq, r.newIds[1]!)).toBe('V2')
+      expect(r.lifted).toBe(1)
+      expect(r.grown).toBe(0)
+    })
+
+    it('adds the lines a stack needs when there are fewer than it takes', () => {
+      const a1 = makeClip({ startS: 0, outS: 2 })
+      const a2 = makeClip({ startS: 0, outS: 2 })
+      const seq = makeSeq([
+        makeTrack({ kind: 'video', name: 'V1' }),
+        makeTrack({ kind: 'audio', name: 'A1', clips: [a1] }),
+        makeTrack({ kind: 'audio', name: 'A2', clips: [a2] }),
+      ])
+      const payload = serializeClips(seq, [a1.id, a2.id])
+      // A1 stacks above A2, so aimed at A2 the other one needs an A3.
+      const r = pasteClips(seq, payload, 5, { trackIndex: 2 })
+      expect(trackOf(r.seq, r.newIds[0]!)).toBe('A2')
+      expect(trackOf(r.seq, r.newIds[1]!)).toBe('A3')
+      expect(r.grown).toBe(1)
+    })
+
+    it('a busy aimed line is reported, passes the clip up, and deletes nothing', () => {
+      const t = makeClip({ startS: 0, outS: 2 })
+      const busy = makeClip({ startS: 4, outS: 6 })
+      const seq = makeSeq(lines(5, { 0: { clips: [t] }, 3: { clips: [busy] } }))
+      const r = pasteClips(seq, serializeClips(seq, [t.id]), 7, { trackIndex: 3 })
+      expect(trackOf(r.seq, r.newIds[0]!)).toBe('V5')
+      expect(r.redirected).toEqual([
+        { askedId: seq.tracks[3]!.id, landedId: seq.tracks[4]!.id },
+      ])
+      expect(findClip(r.seq, busy.id)!.clip).toMatchObject({ startS: 4, outS: 6 })
+      expect(r.seq.tracks[3]!.clips).toHaveLength(1)
+    })
+
+    it('an aimed line of the other kind asks for nothing, and says so', () => {
+      const v = makeClip({ startS: 0, outS: 2 })
+      const seq = makeSeq([
+        makeTrack({ name: 'V1', clips: [v] }),
+        makeTrack({ name: 'V2' }),
+        makeTrack({ kind: 'audio', name: 'A1' }),
+      ])
+      const r = pasteClips(seq, serializeClips(seq, [v.id]), 5, { trackIndex: 2 })
+      // Back on the line it came from, never silently on the audio one.
+      expect(trackOf(r.seq, r.newIds[0]!)).toBe('V1')
+      expect(r.targetUnused).toBe(true)
+    })
+
+    it('a locked aimed line takes nothing and nothing moves to another line', () => {
+      const t = makeClip({ startS: 0, outS: 2 })
+      const seq = makeSeq(lines(4, { 0: { clips: [t] }, 3: { locked: true } }))
+      const r = pasteClips(seq, serializeClips(seq, [t.id]), 5, { trackIndex: 3 })
+      expect(r.newIds).toEqual([])
+      expect(r.blockedByLock).toBe(1)
+      expect(r.seq).toBe(seq)
+    })
+
+    it('a paste with no aimed line reports no redirect and no unused target', () => {
+      const t = makeClip({ startS: 0, outS: 2 })
+      const seq = makeSeq(lines(2, { 1: { clips: [t] } }))
+      const r = pasteClips(seq, serializeClips(seq, [t.id]), 5)
+      expect(trackOf(r.seq, r.newIds[0]!)).toBe('V2')
+      expect(r.redirected).toEqual([])
+      expect(r.targetUnused).toBe(false)
+      expect(r.lifted).toBe(0)
+      expect(r.grown).toBe(0)
+    })
+  })
   it('collision-resolves later payload items against earlier pasted ones', () => {
     const a = makeClip({ startS: 0, outS: 2 })
     const b = makeClip({ startS: 2, outS: 2 })

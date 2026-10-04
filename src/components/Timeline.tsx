@@ -6,6 +6,7 @@ import { quantizeToFrame } from '../engine/timecode'
 import { activeSequence, audioTracks, videoTracks, type Clip, type Id, type Sequence, type Track } from '../engine/types'
 import { openContextMenu, type MenuItem } from '../state/contextMenu'
 import { hasClipboard, pasteAt } from '../state/clipboard'
+import { setPasteTarget } from '../state/pasteTarget'
 import { comboLabel } from '../keymap'
 import { pausePlayback } from '../state/playbackControl'
 import { updateActiveSequence, useStore } from '../state/store'
@@ -422,6 +423,10 @@ export function Timeline({ height }: { height: number }) {
       }
       pausePlayback()
       setUI({ selection: [] })
+      // The line he clicked is where Ctrl+V pastes next (pasteTarget.ts). A click
+      // on the blank area under the tracks is on no line and leaves it alone.
+      const lane = laneAt(contentPoint(e).y)
+      if (lane) setPasteTarget(lane.id)
       scrubPlayheadTo(e.clientX)
       beginDrag(e, { kind: 'scrub' })
     }

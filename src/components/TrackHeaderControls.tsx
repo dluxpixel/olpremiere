@@ -1,8 +1,9 @@
 import { Gauge, Headphones, Link2, Lock, LockOpen, Mic, Music as MusicIcon, Unlink, Volume2, VolumeX } from 'lucide-react'
-import { useState, type MouseEvent as ReactMouseEvent } from 'react'
+import { useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { syncLockOf, type AutoLevel, type Track } from '../engine/types'
 import { deleteTrack, setTrackAudioRole, setTrackAutoLevel, setTrackPan, setTrackVolumeDb } from '../state/trackEdits'
 import { openContextMenu } from '../state/contextMenu'
+import { setPasteTarget, usePasteTarget } from '../state/pasteTarget'
 import { updateActiveSequence } from '../state/store'
 import { usePhoneLayout } from '../ui/phoneLayout'
 import { IconButton } from '../ui/Button'
@@ -78,6 +79,14 @@ const AUDIO_ROLES: { key: Track['audioRole']; label: string }[] = [
 
 export function TrackHeader({ track }: { track: Track }) {
   const phone = usePhoneLayout()
+  // The line Ctrl+V pastes onto (pasteTarget.ts): clicking the header names it,
+  // the same as clicking an empty spot in its lane. A press on one of the
+  // header's own controls is for that control.
+  const aimed = usePasteTarget((s) => s.trackId === track.id)
+  const aimPaste = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0 || (e.target as HTMLElement).closest('button, input, select')) return
+    setPasteTarget(track.id)
+  }
   const toggle = (field: 'muted' | 'solo' | 'locked', label: string) =>
     updateActiveSequence(label, (seq) => ({
       ...seq,
@@ -145,9 +154,15 @@ export function TrackHeader({ track }: { track: Track }) {
       <div
         className="flex shrink-0 flex-col items-center justify-center gap-0.5 border-b border-border/60 bg-bg-elevated"
         style={{ height: track.height }}
+        onPointerDown={aimPaste}
         data-testid={`track-header-${track.name}`}
+        data-paste-target={aimed ? 'true' : undefined}
       >
-        <span className="text-[11px] font-medium uppercase tracking-[0.06em] text-text-secondary">{track.name}</span>
+        <span
+          className={`text-[11px] font-medium uppercase tracking-[0.06em] ${aimed ? 'text-accent' : 'text-text-secondary'}`}
+        >
+          {track.name}
+        </span>
         <IconButton
           size="compact"
           label={track.muted ? 'Unmute track' : 'Mute track'}
@@ -166,10 +181,15 @@ export function TrackHeader({ track }: { track: Track }) {
       className="flex shrink-0 flex-col justify-center gap-1 border-b border-border/60 bg-bg-elevated px-2"
       style={{ height: track.height }}
       onContextMenu={openTrackMenu}
+      onPointerDown={aimPaste}
       data-testid={`track-header-${track.name}`}
+      data-paste-target={aimed ? 'true' : undefined}
     >
       <div className="flex items-center gap-0.5">
-        <span className="flex-1 text-[11px] font-medium uppercase tracking-[0.06em] text-text-secondary">
+        <span
+          className={`flex-1 text-[11px] font-medium uppercase tracking-[0.06em] ${aimed ? 'text-accent' : 'text-text-secondary'}`}
+          title={aimed ? 'Ctrl+V pastes onto this track' : undefined}
+        >
           {track.name}
         </span>
         {/* Mute and solo carry their own signal colors (danger red, ember)
