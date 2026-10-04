@@ -2,7 +2,7 @@
 // start fresh, or delete an old one, without ever nuking current work.
 
 import { Archive, ArchiveRestore, Clapperboard, Clock, Download, FolderOpen, LifeBuoy, Plus, Share, Trash2, Upload, X } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   activeProjects,
   archivedProjects,
@@ -146,11 +146,30 @@ export function ProjectsDialog({ onClose, view = 'active' }: { onClose: () => vo
   const [inside, setInside] = useState<Record<string, BackupContents | null>>({})
   const [recovering, setRecovering] = useState<string | null>(null)
 
-  const refresh = () =>
+  // Only the newest answer is kept. Deleting two projects back to back starts two
+  // reads, and the slower, older one must not put the first project back on screen.
+  const latestRead = useRef(0)
+  const refresh = () => {
+    const mine = ++latestRead.current
     void listProjects()
-      .then(setAll)
+      .then((rows) => {
+        if (mine === latestRead.current) setAll(rows)
+      })
       .catch((err) => console.error('OL Premiere: projects list failed', err))
+  }
   useEffect(refresh, [])
+
+  // The row goes the moment he confirms, not when storage has answered, so a slow
+  // delete never leaves a row that looks untouched for him to click a third time.
+  // The list is read again afterwards either way, which also puts back a row whose
+  // delete was refused.
+  const remove = (id: string) => {
+    setArmedDelete(null)
+    setAll((rows) => rows && rows.filter((r) => r.id !== id))
+    void removeProject(id)
+      .catch((err) => console.error('OL Premiere: project delete failed', err))
+      .then(refresh)
+  }
 
   // Only when he asks for them: reading forty files is not free, and nobody
   // opening the picker to switch projects should pay for it.
@@ -180,6 +199,18 @@ export function ProjectsDialog({ onClose, view = 'active' }: { onClose: () => vo
     await openProject(id)
     onClose()
   }
+
+  /**
+   * ⛔ A ROW OPENS ITS PROJECT ON A DOUBLE CLICK OR ENTER, BUT ITS OWN BUTTONS LIVE INSIDE IT.
+   * His words, 2026-10-03: *"when you double-click and delete something, it doesn't
+   * erase the screen. I don't want to click that again if I want to delete more
+   * projects."* Arming the trash and confirming it are two quick clicks, which the
+   * browser also reports as a double click bubbling up to the row, and Enter on a
+   * focused button bubbles the same way. So deleting a project OPENED it (closing
+   * the dialog) and the open wrote it back to storage. Only the row itself, not a
+   * button on it, opens a project.
+   */
+  const fromButton = (e: { target: EventTarget }) => (e.target as HTMLElement).closest('button') !== null
 
   return (
     <div
@@ -281,9 +312,11 @@ export function ProjectsDialog({ onClose, view = 'active' }: { onClose: () => vo
                   data-testid="project-row"
                   role="button"
                   tabIndex={0}
-                  onDoubleClick={() => !isOpen && void open(p.id)}
+                  onDoubleClick={(e) => {
+                    if (!isOpen && !fromButton(e)) void open(p.id)
+                  }}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !isOpen) void open(p.id)
+                    if (e.key === 'Enter' && !isOpen && !fromButton(e)) void open(p.id)
                   }}
                   className={`group/proj flex items-center gap-3 rounded-overlay border px-3 py-2 transition-colors duration-[120ms] ${
                     isOpen
@@ -358,8 +391,7 @@ export function ProjectsDialog({ onClose, view = 'active' }: { onClose: () => vo
                     }
                     onClick={() => {
                       if (armedDelete === p.id) {
-                        setArmedDelete(null)
-                        void removeProject(p.id).then(refresh)
+                        remove(p.id)
                       } else {
                         setArmedDelete(p.id)
                       }

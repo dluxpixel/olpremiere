@@ -3,6 +3,8 @@ import { MOVES } from '../engine/moves'
 import { defaultTitleDef, newTitleClip, type Clip, type Sequence } from '../engine/types'
 import type { MenuItem } from '../state/contextMenu'
 import { useLibrary } from '../state/library'
+import { useStore } from '../state/store'
+import { newProject } from '../engine/types'
 import { clipContextMenuItems, type ClipMenuContext } from './timelineClipMenu'
 import { ASSETS, makeClip, makeSeq, makeTrack } from './timelineTestFixtures'
 
@@ -95,7 +97,7 @@ describe('the clip right-click menu', () => {
     const items = menu(a, seq)
     expect(labels(items)).toContain('Crossfade with next')
     expect(labels(items)).not.toContain('Crossfade with previous')
-    expect(labels(items)).toEqual(expect.arrayContaining(['Level this clip', 'Auto-Caption from voiceover', 'Cut the quiet parts']))
+    expect(labels(items)).toEqual(expect.arrayContaining(['Level this clip', 'Caption this clip', 'Cut the quiet parts']))
     expect(labels(items)).not.toContain('Transition in')
     expect(labels(menu(b, seq))).toContain('Crossfade with previous')
   })
@@ -165,5 +167,39 @@ describe('the clip right-click menu', () => {
     expect(labels(menu(title, makeSeq([makeTrack({ clips: [title] })])))).not.toContain('Save to Library')
     const orphan = makeClip({ assetId: 'gone' })
     expect(labels(menu(orphan, makeSeq([makeTrack({ clips: [orphan] })])))).not.toContain('Save to Library')
+  })
+
+  // His words, 2026-10-03: *"right-clicking and selecting multiple clips just
+  // says 'Caption this clip,' and it captions only one."* The count comes from
+  // the same door the run uses, so the store has to hold the timeline the menu
+  // is drawn from.
+  describe('captioning from the right click', () => {
+    const onTimeline = (seq: Sequence): void => {
+      const p = newProject()
+      useStore.getState().setProject({ ...p, assets: ASSETS, sequences: { [p.activeSequenceId]: { ...seq, id: p.activeSequenceId } } })
+    }
+
+    it('counts every selected clip it will caption, and says one clip when there is one', () => {
+      const { a, b, seq } = fixture()
+      onTimeline(seq)
+      expect(labels(menu(a, seq))).toContain('Caption this clip')
+      expect(labels(menu(a, seq, { selNow: [a.id, b.id], keepSelection: true }))).toContain('Caption 2 clips')
+    })
+
+    it('offers it on a picture too, counting a linked pair as the one take it is', () => {
+      const { v, w, a, seq } = fixture()
+      onTimeline(seq)
+      // v and a are one take: selecting the picture brings its sound.
+      expect(labels(menu(v, seq))).toContain('Caption this clip')
+      // v, w and a: the pair is one, w carries its own sound, so two.
+      expect(labels(menu(v, seq, { selNow: [v.id, w.id, a.id], keepSelection: true }))).toContain('Caption 2 clips')
+    })
+
+    it('never offers it on a title', () => {
+      const title = newTitleClip(defaultTitleDef('Hi'), 0, 2)
+      const seq = makeSeq([makeTrack({ clips: [title] })])
+      onTimeline(seq)
+      expect(labels(menu(title, seq)).some((l) => l.startsWith('Caption'))).toBe(false)
+    })
   })
 })

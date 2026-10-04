@@ -183,14 +183,14 @@ const MoveTile = memo(function MoveTile({
       onPointerLeave={() => onHover(null)}
       onFocus={() => onHover(def.id)}
       onBlur={() => onHover(null)}
-      className={`group flex flex-col items-center gap-1 rounded-field border p-1.5 transition-colors duration-[120ms] ${
+      className={`group flex flex-col items-center gap-1 rounded-overlay border p-1.5 transition-colors duration-[120ms] ${
         lit
           ? 'border-accent bg-accent-quiet'
           : 'border-transparent bg-bg-input hover:border-border-strong hover:bg-bg-elevated'
       }`}
     >
       <span
-        className={`block shrink-0 overflow-hidden rounded-[3px] bg-bg-app ring-1 transition-colors duration-[120ms] ${
+        className={`block shrink-0 overflow-hidden rounded-inner bg-bg-app ring-1 transition-colors duration-[120ms] ${
           lit ? 'ring-accent/60' : 'ring-border'
         }`}
         style={{ width: stage.w, height: stage.h }}
@@ -394,7 +394,7 @@ function MoveRibbon({
     .filter((k) => !other || k.t < other.startS || k.t > other.endS)
     .map((k) => (k.t / durS) * 100)
   const handle =
-    'absolute top-0 h-full w-[7px] cursor-ew-resize rounded-[2px] bg-accent shadow-[0_0_0_1px_rgba(0,0,0,0.35)]'
+    'absolute top-0 h-full w-[7px] cursor-ew-resize rounded-mark bg-accent shadow-[0_0_0_1px_rgba(0,0,0,0.35)]'
   return (
     <div className="flex flex-col gap-1" data-testid="move-ribbon">
       <div ref={barRef} className="relative h-5 w-full overflow-hidden rounded-field bg-bg-input">
@@ -405,7 +405,7 @@ function MoveRibbon({
             it is what `drag('start')` already means for a moment move: it keeps
             its length and lands somewhere else. Keyframe audit item 8. */}
         <div
-          className={`absolute top-0 h-full rounded-[3px] bg-accent/25 ring-1 ring-inset ring-accent/40${
+          className={`absolute top-0 h-full rounded-mark bg-accent/25 ring-1 ring-inset ring-accent/40${
             moment ? ' cursor-ew-resize' : ''
           }`}
           data-testid={moment ? 'move-ribbon-block' : undefined}
@@ -618,7 +618,7 @@ export function MoveShelf({ clips }: { clips: Clip[] }) {
         : (litDef?.name ?? '')
 
   return (
-    <section className="flex flex-col gap-3 rounded-field bg-bg-elevated/50 p-2.5" data-testid="move-shelf">
+    <section className="flex flex-col gap-3 rounded-overlay bg-bg-elevated/50 p-2.5" data-testid="move-shelf">
       {/* Label on the left, value on the right, the same shape as the How big
           row underneath. The shipped header put the state immediately after the
           word Moves, so the panel usually read "MOVES No move" and the state
@@ -676,7 +676,7 @@ export function MoveShelf({ clips }: { clips: Clip[] }) {
                   removeMyMove(def.id)
                   setMine(listMyMoves())
                 }}
-                className="absolute -right-0.5 -top-0.5 rounded-[3px] bg-bg-elevated px-1 text-[9px] leading-[14px] text-text-muted opacity-0 transition-opacity hover:text-danger focus-visible:opacity-100 group-hover/mine:opacity-100"
+                className="absolute -right-0.5 -top-0.5 rounded-inner bg-bg-elevated px-1 text-[9px] leading-[14px] text-text-muted opacity-0 transition-opacity hover:text-danger focus-visible:opacity-100 group-hover/mine:opacity-100"
               >
                 ✕
               </button>

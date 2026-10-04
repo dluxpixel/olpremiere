@@ -61,6 +61,15 @@ interface ClipViewProps {
 // so with stable handler props, every clip NOT being dragged skips its render
 // (filmstrip, waveform, fades and all). This is the big drag-feel win on
 // caption-heavy timelines.
+/**
+ * A clip narrower than this takes the small mark radius instead of the clip one
+ * (2026-10-03, when the clip corner went from 2px to 4px). A 4px corner needs about
+ * 12px of width to leave any flat top, and a 6px sliver cut by a one-frame trim would
+ * otherwise round into a pill: its ends are the only thing that says where it starts
+ * and stops, so they stay crisp.
+ */
+const NARROW_CLIP_PX = 16
+
 export const ClipView = memo(function ClipView({
   clip,
   asset,
@@ -410,7 +419,7 @@ export const ClipView = memo(function ClipView({
       // Family look: flat fill, a dark hairline seam (so butted cuts stay
       // visible), and a brighter 1px TOP edge in the family color. Selection
       // is a 2px lavender ring plus a slight lift in fill luminance.
-      className={`group/clip absolute bottom-[3px] top-[3px] ${pop ? 'animate-[clip-pop_500ms_ease-out]' : ''} overflow-hidden rounded-clip border border-black/40 ${
+      className={`group/clip absolute bottom-[3px] top-[3px] ${pop ? 'animate-[clip-pop_500ms_ease-out]' : ''} overflow-hidden ${width < NARROW_CLIP_PX ? 'rounded-mark' : 'rounded-clip'} border border-black/40 ${
         // Selection lifts the clip (offset ring + brightness); an imminent FX
         // drop is an INSET ring - the two states must never look alike.
         selected ? 'ring-2 ring-accent ring-offset-1 ring-offset-bg-app brightness-110' : ''
@@ -433,7 +442,7 @@ export const ClipView = memo(function ClipView({
       {clip.freezeAtS !== undefined && (
         <span
           data-testid="clip-frozen-badge"
-          className="pointer-events-none absolute left-1 top-1 rounded-[3px] bg-black/45 px-1 text-[10px] leading-[14px] text-white/85"
+          className="pointer-events-none absolute left-1 top-1 rounded-mark bg-black/45 px-1 text-[10px] leading-[14px] text-white/85"
           title="This clip is holding one frame. Press F to let it run again."
         >
           ❄
@@ -442,7 +451,7 @@ export const ClipView = memo(function ClipView({
       {isAudio && asset && <ClipWaveform clip={clip} asset={asset} width={innerW} height={innerH} />}
       {clip.linkId && (
         <span
-          className="pointer-events-none absolute bottom-1 right-1 rounded-[3px] bg-black/45 p-0.5 text-white/80"
+          className="pointer-events-none absolute bottom-1 right-1 rounded-mark bg-black/45 p-0.5 text-white/80"
           title="Linked A/V"
         >
           <Link2 size={9} strokeWidth={2} />

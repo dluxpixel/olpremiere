@@ -276,7 +276,7 @@ export function KeyframeTrack({ clip, channel }: { clip: Clip; channel: AnimChan
         // shape a move, and it was the thinnest deliberate target in the app.
         // Height is free here: the lane is as wide as the panel either way, and
         // three lanes at 28 still cost less vertical than one row of tiles.
-        className="relative h-7 w-full rounded-[3px] bg-bg-input"
+        className="relative h-7 w-full rounded-field bg-bg-input"
       >
         {/* mid-line rail */}
         <div className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-border" />
@@ -319,7 +319,7 @@ export function KeyframeTrack({ clip, channel }: { clip: Clip; channel: AnimChan
             // the new move without ever saying it had changed.
             key={`band-${selSeg}`}
             data-testid="keyframe-segment"
-            className="olp-band pointer-events-none absolute inset-y-0 rounded-[2px] bg-accent-quiet"
+            className="olp-band pointer-events-none absolute inset-y-0 rounded-mark bg-accent-quiet"
             style={{ left: segBand.left, width: Math.max(2, segBand.right - segBand.left) }}
           />
         )}
@@ -356,7 +356,7 @@ export function KeyframeTrack({ clip, channel }: { clip: Clip; channel: AnimChan
               // 14px, up from 12: half again the area to aim at, and still
               // small enough that two moments a frame apart do not merge into
               // one blob the way a 16px diamond would.
-              className={`absolute top-1/2 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rotate-45 cursor-ew-resize rounded-[2px] border border-black/30 transition-[background,box-shadow,transform] duration-[120ms] hover:scale-110${
+              className={`absolute top-1/2 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rotate-45 cursor-ew-resize rounded-mark border border-black/30 transition-[background,box-shadow,transform] duration-[120ms] hover:scale-110${
                 landed.some((lt) => Math.abs(lt - k.t) <= MOMENT_EPS) ? ' olp-kf-land' : ''
               }`}
               style={{
@@ -372,14 +372,14 @@ export function KeyframeTrack({ clip, channel }: { clip: Clip; channel: AnimChan
         {dragView?.copy && onScreen(rail.tToPx(dragView.t)) && (
           <div
             data-testid="keyframe-ghost"
-            className="pointer-events-none absolute top-1/2 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rotate-45 rounded-[2px] border border-accent"
+            className="pointer-events-none absolute top-1/2 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rotate-45 rounded-mark border border-accent"
             style={{ left: rail.tToPx(dragView.t), background: 'var(--color-accent-quiet)' }}
           />
         )}
         {/* Live time readout while dragging a diamond on this lane. */}
         {dragView && (
           <div
-            className="pointer-events-none absolute -top-4 z-10 -translate-x-1/2 whitespace-nowrap rounded-[3px] border border-border bg-bg-elevated px-1 py-px font-numeric text-[9px] text-text-primary shadow-pop"
+            className="pointer-events-none absolute -top-4 z-10 -translate-x-1/2 whitespace-nowrap rounded-inner border border-border bg-bg-elevated px-1 py-px font-numeric text-[9px] text-text-primary shadow-pop"
             style={{ left: clampPx(rail.tToPx(dragView.t)) }}
           >
             {dragView.copy ? '+ ' : ''}
@@ -392,10 +392,10 @@ export function KeyframeTrack({ clip, channel }: { clip: Clip; channel: AnimChan
       {channel === 'scale' && (
         <div className="flex flex-wrap items-center gap-3 text-[9px] text-text-muted">
           <span className="flex items-center gap-1">
-            <span className="h-2 w-2 rotate-45 rounded-[1px]" style={{ background: ZOOM_IN }} /> zoom in
+            <span className="h-2 w-2 rotate-45 rounded-mark" style={{ background: ZOOM_IN }} /> zoom in
           </span>
           <span className="flex items-center gap-1">
-            <span className="h-2 w-2 rotate-45 rounded-[1px]" style={{ background: ZOOM_OUT }} /> zoom out
+            <span className="h-2 w-2 rotate-45 rounded-mark" style={{ background: ZOOM_OUT }} /> zoom out
           </span>
           <span className="text-text-muted/70">· click between two diamonds to shape that move</span>
         </div>

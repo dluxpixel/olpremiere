@@ -22,7 +22,7 @@ export interface EditOwner {
   /** Clamp + step-round, exactly as the field itself would. */
   normalize: (v: number) => number
   /** Text to number, for a field whose text is not a plain number (a timecode
-   *  row types "00:00:04:12"). null rejects the edit and writes nothing.
+   *  row types "0:04.40"). null rejects the edit and writes nothing.
    *  Omitted: Number(), which is what a numeric field wants. */
   parse?: (text: string) => number | null
 }

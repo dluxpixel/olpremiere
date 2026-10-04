@@ -11,7 +11,7 @@ import { entriesOf, filesOf } from './dropWalk'
 import { useHoverScrub } from './useHoverScrub'
 import { WordsTab } from './WordsTab'
 import { createArmedDelete, type ArmedDelete } from './armedDelete'
-import { CaptionsDialog } from './CaptionsDialog'
+import { CaptionsTab } from './CaptionsTab'
 import { applyEffectToAllClips } from '../state/bulkEdits'
 import { applyEffectToClips } from '../state/bulkEdits'
 import { setClipTransition } from '../state/clipEdits'
@@ -69,7 +69,7 @@ function MediaSyncBanner() {
           </span>
           <button
             data-testid={`locate-${m.assetId}`}
-            className="shrink-0 rounded-[4px] border border-border px-1.5 py-0.5 text-accent hover:border-accent"
+            className="shrink-0 rounded-field border border-border px-1.5 py-0.5 text-accent hover:border-accent"
             onClick={() => {
               setLocating({ blobKey: m.blobKey, assetId: m.assetId })
               locateRef.current?.click()
@@ -105,7 +105,8 @@ function Tab({ tab, label }: { tab: LeftTab; label: string }) {
       role="tab"
       aria-selected={active}
       onClick={() => setUI({ leftTab: tab })}
-      className={`h-6 rounded-[4px] px-2.5 text-[12px] font-medium transition-colors duration-[120ms] ${
+      data-testid={`tab-${tab}`}
+      className={`h-6 shrink-0 rounded-field px-2 text-[12px] font-medium transition-colors duration-[120ms] ${
         active ? 'bg-accent-quiet text-accent' : 'text-text-secondary hover:text-text-primary'
       }`}
     >
@@ -402,7 +403,7 @@ function AssetCard({ asset, fps }: { asset: MediaAsset; fps: number }) {
           />
         )}
         {asset.kind !== 'image' && (
-          <span className="absolute right-1 bottom-1 rounded-[3px] bg-black/70 px-1 text-[10px] text-text-primary tabular-nums">
+          <span className="absolute right-1 bottom-1 rounded-inner bg-black/70 px-1 text-[10px] text-text-primary tabular-nums">
             {formatTimecode(scrub.active ? scrub.tS : asset.durationS, fps)}
           </span>
         )}
@@ -514,7 +515,7 @@ function FindMyMedia() {
     return (
       <div
         data-testid="media-healing"
-        className="mx-2 mb-2 rounded-field border border-border bg-bg-elevated px-2 py-2 text-[11px] text-text-primary"
+        className="mx-2 mb-2 rounded-overlay border border-border bg-bg-elevated px-2 py-2 text-[11px] text-text-primary"
       >
         Putting your media back from the spare copies, {Math.min(healing.done + 1, healing.total)} of {healing.total}:{' '}
         {healing.name}
@@ -525,7 +526,7 @@ function FindMyMedia() {
   return (
     <div
       data-testid="find-my-media"
-      className="mx-2 mb-2 rounded-field border border-warning/40 bg-warning/10 px-2 py-2 text-[11px] text-text-primary"
+      className="mx-2 mb-2 rounded-overlay border border-warning/40 bg-warning/10 px-2 py-2 text-[11px] text-text-primary"
     >
       <div className="mb-1.5">
         {missing.length} {missing.length === 1 ? 'file' : 'files'} on this edit have no media. Your cuts are all still
@@ -615,7 +616,7 @@ function MediaTab() {
   const assets = useStore((s) => s.project.assets)
   const fps = useStore((s) => activeSequence(s.project).fps)
   const fileInput = useRef<HTMLInputElement>(null)
-  const [captionsOpen, setCaptionsOpen] = useState(false)
+  const setUI = useStore((s) => s.setUI)
   const importing = useImportProgress((s) => s.total)
   // Newest import first, so the file you just added is at the top (matches the
   // Library and every other panel) instead of buried at the bottom of the grid.
@@ -628,12 +629,13 @@ function MediaTab() {
           <Plus size={16} strokeWidth={1.5} />
           Import
         </Button>
-        <Button variant="secondary" data-testid="open-captions" onClick={() => setCaptionsOpen(true)}>
+        {/* Where he has always gone for captions, so it still goes there: to
+            the Captions tab, which is the whole of what this window was and more. */}
+        <Button variant="secondary" data-testid="open-captions" onClick={() => setUI({ leftTab: 'captions' })}>
           <Captions size={16} strokeWidth={1.5} />
           Captions
         </Button>
         <RemoveUnusedButton />
-        {captionsOpen && <CaptionsDialog onClose={() => setCaptionsOpen(false)} />}
         <input
           ref={fileInput}
           type="file"
@@ -714,7 +716,7 @@ function BrowserItem({
       onKeyDown={(e) => {
         if (e.key === 'Enter') onApply?.()
       }}
-      className="flex cursor-default items-center gap-2 rounded-[4px] px-2 py-1.5 text-[12px] text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated hover:text-text-primary"
+      className="flex cursor-default items-center gap-2 rounded-field px-2 py-1.5 text-[12px] text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated hover:text-text-primary"
     >
       <Sparkles size={13} strokeWidth={1.5} aria-hidden className="shrink-0 text-text-muted" />
       <span className="truncate">{name}</span>
@@ -806,7 +808,7 @@ function EffectsTab() {
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') applyJettismLook()
                   }}
-                  className="flex cursor-default items-center gap-2 rounded-[4px] px-2 py-1.5 text-[12px] text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated hover:text-text-primary"
+                  className="flex cursor-default items-center gap-2 rounded-field px-2 py-1.5 text-[12px] text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated hover:text-text-primary"
                 >
                   <Wand2 size={13} strokeWidth={1.5} aria-hidden className="shrink-0 text-text-muted" />
                   <span className="truncate">Jettism (Shorts template)</span>
@@ -820,7 +822,7 @@ function EffectsTab() {
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') applyPunchyGradeToClips(targets)
                   }}
-                  className="flex cursor-default items-center gap-2 rounded-[4px] px-2 py-1.5 text-[12px] text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated hover:text-text-primary"
+                  className="flex cursor-default items-center gap-2 rounded-field px-2 py-1.5 text-[12px] text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated hover:text-text-primary"
                 >
                   <Wand2 size={13} strokeWidth={1.5} aria-hidden className="shrink-0 text-text-muted" />
                   <span className="truncate">Punchy Grade (selected clip)</span>
@@ -904,15 +906,28 @@ export function LeftPanel({ width }: { width: number }) {
       className="flex min-h-0 shrink-0 flex-col bg-bg-panel"
       style={{ width }}
     >
-      <div role="tablist" className="flex items-center gap-1 border-b border-border px-2 py-1.5">
+      {/* Five tabs since Captions joined on 2026-10-03, so the row is a hair
+          tighter and scrolls sideways rather than clipping on a narrow panel. */}
+      <div role="tablist" className="flex items-center gap-0.5 overflow-x-auto border-b border-border px-1.5 py-1.5 [scrollbar-width:none]">
         <Tab tab="media" label="Media" />
         <Tab tab="effects" label="Effects" />
         <Tab tab="library" label="Library" />
         <Tab tab="words" label="Words" />
+        <Tab tab="captions" label="Captions" />
       </div>
       {/* key on the tab so the content fades in on each switch (hard cut → soft). */}
       <div key={leftTab} className="flex min-h-0 flex-1 animate-[fade-in_100ms_ease-out] flex-col">
-        {leftTab === 'media' ? <MediaTab /> : leftTab === 'effects' ? <EffectsTab /> : leftTab === 'words' ? <WordsTab /> : <LibraryTab />}
+        {leftTab === 'media' ? (
+          <MediaTab />
+        ) : leftTab === 'effects' ? (
+          <EffectsTab />
+        ) : leftTab === 'words' ? (
+          <WordsTab />
+        ) : leftTab === 'captions' ? (
+          <CaptionsTab />
+        ) : (
+          <LibraryTab />
+        )}
       </div>
       {dragging && (
         <div className="pointer-events-none fixed inset-0 z-50 flex bg-black/60 p-4">

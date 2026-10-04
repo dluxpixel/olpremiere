@@ -2,6 +2,7 @@
 // cancel that terminates the Whisper worker. Hidden while idle.
 
 import { Loader2, X } from 'lucide-react'
+import { captionJobLabel } from '../state/captionRun'
 import { useTranscribe } from '../state/transcribeActions'
 
 export function TranscribeStatus() {
@@ -12,24 +13,9 @@ export function TranscribeStatus() {
   const queue = useTranscribe((s) => s.queue)
   if (status === 'idle') return null
 
-  // "Downloading (once)" was a lie every time after the first: the model lives in
-  // the local cache, and loading it from there still reports progress, so he saw
-  // the download banner on every new version and reasonably stopped trusting it.
-  // "Listening for words" was said while the app was still deciding whether
-  // anybody was talking at all, which is how it came to claim it was listening
-  // for words in a clip of gameplay. His words, 2026-08-19: *"I think when it
-  // says 'listening for words,' it also listens to video clips. It's kinda
-  // weird."* Each step says what it is really doing now.
-  const label =
-    status === 'reading'
-      ? 'Reading the clip’s audio…'
-      : status === 'screening'
-        ? 'Checking if anyone is talking…'
-        : status === 'model'
-          ? downloading
-            ? 'Downloading Whisper (first time only)'
-            : 'Loading Whisper…'
-          : 'Listening for words…'
+  // The words live in captionJobLabel, shared with the Captions tab, so the
+  // pill and the tab can never describe the same moment two different ways.
+  const label = captionJobLabel(status, downloading)
 
   return (
     <div

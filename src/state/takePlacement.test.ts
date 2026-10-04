@@ -238,6 +238,41 @@ describe('placeTakeClips: on his voice line, or the next free one, never on top 
     expect(seq.durationS).toBeCloseTo(5.5, 9)
   })
 
+  it('edges land on frames and the voice does not move (2026-10-03)', () => {
+    // Stretches start where he was heard, between frames. The pause join at
+    // 2.5113 is one time on both sides, so it rounds to one frame.
+    const spans = [
+      { startS: 1.0123, inS: 0.1371, outS: 1.6361 },
+      { startS: 2.5113, inS: 3.0377, outS: 4.9031 },
+    ]
+    const { seq } = placeTakeClips(seqWith(), asset, spans)
+    const line = seq.tracks[voiceHomeTrackIndex(seq)]!
+    expect(line.clips).toHaveLength(2)
+    const fps = seq.fps
+    line.clips.forEach((c, k) => {
+      for (const edge of [c.startS, c.startS + (c.outS - c.inS)]) {
+        expect(Math.abs(edge * fps - Math.round(edge * fps))).toBeLessThan(1e-6)
+      }
+      // The file position that plays at any timeline moment is unchanged.
+      expect(c.startS - c.inS).toBeCloseTo(spans[k]!.startS - spans[k]!.inS, 9)
+    })
+    expect(line.clips[1]!.startS).toBeCloseTo(line.clips[0]!.startS + line.clips[0]!.outS - line.clips[0]!.inS, 9)
+  })
+
+  it('an edge that would ask the file for audio it does not have rounds inward', () => {
+    // Frame 30.3, 0.005 s into the file: back to frame 30 would need 0.01 s
+    // of file before its first sample, so it goes on to frame 31.
+    const head = placeTakeClips(seqWith(), asset, [{ startS: 1.01, inS: 0.005, outS: 6 }]).seq
+    const h = head.tracks[voiceHomeTrackIndex(head)]!.clips[0]!
+    expect(h.startS * 30).toBeCloseTo(31, 6)
+    expect(h.startS - h.inS).toBeCloseTo(1.01 - 0.005, 9)
+    // Ends at frame 375.5 with the file used to its end: back to frame 375.
+    const tail = placeTakeClips(seqWith(), asset, [{ startS: 1, inS: 0.4833333333, outS: 12 }]).seq
+    const t = tail.tracks[voiceHomeTrackIndex(tail)]!.clips[0]!
+    expect((t.startS + t.outS - t.inS) * 30).toBeCloseTo(375, 6)
+    expect(t.outS).toBeLessThanOrEqual(12)
+  })
+
   it('a spot already taken sends the take to the next free line, leaving what was there alone', () => {
     const first = placeTakeClips(seqWith(), asset, [{ startS: 0, inS: 0, outS: 5 }]).seq
     const home = voiceHomeTrackIndex(first)

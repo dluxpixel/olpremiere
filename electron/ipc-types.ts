@@ -368,6 +368,15 @@ export interface OlApi {
   libraryRead(): Promise<string | null>
 
   /**
+   * His saved caption styles and which one new captions use, as one plain file
+   * beside the projects, kept current on every change
+   * (electron/captionStylesFile.ts).
+   */
+  captionStylesWrite(json: string): Promise<void>
+  /** The file's text, or null when there is none yet. */
+  captionStylesRead(): Promise<string | null>
+
+  /**
    * A save dialog in his last folder for this kind of file, suggesting a name
    * nothing there has (`_1`, `_2`, never a replace prompt). Null when cancelled.
    */

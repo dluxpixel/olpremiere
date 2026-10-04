@@ -8,7 +8,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { useCollab } from '../collab/collabControl'
-import { formatTimecode, parseTimecode } from '../engine/timecode'
+import { formatTimecode, parseTimecode, quantizeToFrame } from '../engine/timecode'
 import { activeSequence } from '../engine/types'
 import { pausePlayback } from '../state/playbackControl'
 import { useStore } from '../state/store'
@@ -66,7 +66,7 @@ export function RemotePlayheads({ pxPerS }: { pxPerS: number }) {
           style={{ left: p.playheadS * pxPerS, background: p.color }}
         >
           <span
-            className="absolute left-1 top-0 max-w-24 truncate rounded-[3px] px-1 text-[9px] leading-4 text-black/80"
+            className="absolute left-1 top-0 max-w-24 truncate rounded-inner px-1 text-[9px] leading-4 text-black/80"
             style={{ background: p.color }}
           >
             {p.name}
@@ -87,7 +87,7 @@ export function PlayheadTimecode({
   fps: number
   className?: string
   testId?: string
-  /** Click to type a timecode and jump the playhead there (Enter commits, Esc reverts). */
+  /** Click to type a time and jump the playhead there (Enter commits, Esc reverts). */
   editable?: boolean
 }) {
   const ref = useRef<HTMLSpanElement>(null)
@@ -117,8 +117,11 @@ export function PlayheadTimecode({
 
   if (editable && editing !== null) {
     const commit = () => {
-      const t = parseTimecode(editing, fps)
-      if (t !== null) {
+      const typed = parseTimecode(editing, fps)
+      if (typed !== null) {
+        // Onto a frame: "0:03.97" is 119.1 frames at 30 fps, and a playhead
+        // between frames is one C cannot cut at (see canSplitClipAt).
+        const t = quantizeToFrame(typed, fps)
         const seq = activeSequence(useStore.getState().project)
         useStore.getState().setUI({ playheadS: Math.max(0, Math.min(t, seq.durationS)) })
       }
@@ -139,7 +142,7 @@ export function PlayheadTimecode({
           if (e.key === 'Enter') commit()
           else if (e.key === 'Escape') setEditing(null) // revert: live readout resumes
         }}
-        className={`w-[86px] rounded-[3px] bg-bg-input px-1 font-numeric text-text-primary outline-none ${className ?? ''}`}
+        className={`w-[86px] rounded-inner bg-bg-input px-1 font-numeric text-text-primary outline-none ${className ?? ''}`}
       />
     )
   }

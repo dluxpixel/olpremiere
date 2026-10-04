@@ -1118,7 +1118,7 @@ export function clipGainEnvelope(clip: Clip, fromS: number, edges?: ClipEdges): 
   const envAt = (x: number): number => {
     // EQUAL POWER, not a straight line: sin(u * pi/2) of the fade's progress.
     // Two fades that overlap the same span (an audio crossfade, made by
-    // crossfadeWithNeighbour or by dragging one clip's edge into the next) then
+    // crossfadeWithNeighbour from the clip menu) then
     // sum to one in POWER all the way across, sin^2 + cos^2 = 1. Two straight
     // lines summed to half power at the middle, a 3 dB hole in every crossfade
     // in the app. A lone fade to or from silence is the same curve, which is

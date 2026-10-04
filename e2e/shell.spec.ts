@@ -125,7 +125,7 @@ test('ruler scrub moves the playhead and updates the timecode', async ({ page })
   await page.goto('/')
   // Default zoom is 60 px/s → x=300 is t=5s.
   await page.getByTestId('ruler').click({ position: { x: 300, y: 10 } })
-  await expect(page.getByTestId('timecode')).toContainText('00:00:05:00')
+  await expect(page.getByTestId('timecode')).toContainText('0:05.00')
 
   const playhead = (await page.getByTestId('playhead').boundingBox())!
   const lanes = (await page.getByTestId('timeline-lanes').boundingBox())!

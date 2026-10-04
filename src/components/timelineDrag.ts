@@ -19,18 +19,20 @@ export type Drag =
       clipId: Id
       grabOffsetS: number
       trackKind: 'video' | 'audio'
-      /** Pointer-down spot: release within CLICK_SLOP_PX = a click, not a drag. */
+      /**
+       * Pointer-down spot, where a click scrubs the playhead to. Whether it
+       * WAS a click is the Timeline's `gestureLive` latch: the hand never left
+       * CLICK_SLOP_PX of the press (2026-10-03).
+       */
       downClientX: number
       downClientY: number
       /**
-       * The REST of a multi-selection (one entry per link group, original
-       * startS at grab time): grabbing one selected clip moves them all,
-       * matching Alt+Arrow nudge - anything else silently destroys the
-       * selection's relative timing.
+       * Every clip this drag carries, the grabbed one included: ONE rigid
+       * block (engine/blockMove.ts). Read off the selection at the press by
+       * dragBlockIds, so a linked partner is in it only when he selected it
+       * too, and fixed for the whole gesture.
        */
-      others: { id: Id; startS0: number }[]
-      /** He singled out ONE half of a linked pair: move only that half. */
-      solo?: boolean
+      blockIds: Id[]
       /**
        * Click-without-drag on an already-multi-selected clip collapses the
        * selection to just it (narrowing without deselect-all); a real drag

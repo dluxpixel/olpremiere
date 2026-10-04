@@ -1,98 +1,28 @@
-// The Captions dialog - the two non-Whisper roads to word captions:
+// Captions from a script, the two roads that do not listen:
 //   Paste  - a word-timed JSON list or an SRT (exact timings win).
 //   Tap    - type the script, press Start, tap Enter on each word as the
 //            voiceover plays; taps become the word timings.
-// Both funnel into addCaptionsFromWords, same as Auto-Caption.
+// Both funnel into addCaptionsFromWords, same as Auto-Caption, in the caption
+// style new captions use. Opened from the Captions tab, which holds everything
+// else this window used to (the auto buttons, the style, the language).
 
-import { Layers, Sparkles, X } from 'lucide-react'
+import { X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import {
-  CAPTION_LANGUAGES,
-  getCaptionEmphasis,
-  getCaptionLanguage,
-  setCaptionEmphasis,
-  setCaptionLanguage,
-  type CaptionLanguage,
-} from '../engine/captions/transcribeConfig'
 import { parseTranscript, tapsToWords } from '../engine/captions/transcript'
-import { clipEndS } from '../engine/timeline'
-import { activeSequence } from '../engine/types'
 import { addCaptionsFromWords } from '../state/captionActions'
+import { defaultCaptionStyle } from '../state/captionStyles'
 import { pausePlayback, togglePlay } from '../state/playbackControl'
 import { useStore } from '../state/store'
-import {
-  builtinTextPresets,
-  getCaptionPresetId,
-  setCaptionPresetId,
-  useTextPresets,
-  type TextStylePreset,
-} from '../state/textPresets'
-import { audibleClips, autoCaptionEveryClip, autoCaptionFromClip } from '../state/transcribeActions'
 import { Button, IconButton } from '../ui/Button'
-
-/** The voiceover clip Auto-Caption should target. Priority: the clip you have
- * SELECTED (so picking a clip then captioning does what you expect), then the
- * clip under the playhead on a voice-role track, then the first voice clip,
- * then the first audio clip with sound that is NOT on a marked music track.
- * A music clip stays reachable as the very last resort rather than being cut
- * out, so a timeline whose only sound is that track still captions something. */
-function findVoClipId(): string | null {
-  const s = useStore.getState()
-  const seq = activeSequence(s.project)
-  const t = s.ui.playheadS
-  const sel = new Set(s.ui.selection)
-  const audible = seq.tracks
-    .filter((tr) => tr.kind === 'audio' && !tr.locked)
-    .flatMap((tr) =>
-      tr.clips
-        .filter((c) => s.project.assets[c.assetId]?.hasAudio)
-        .map((c) => ({ c, voice: tr.audioRole === 'voice', music: tr.audioRole === 'music' })),
-    )
-  if (audible.length === 0) return null
-  const selected = audible.find(({ c }) => sel.has(c.id))
-  const under = audible.find(({ c, voice }) => voice && t >= c.startS && t < clipEndS(c))
-  return (
-    selected ??
-    under ??
-    audible.find(({ voice }) => voice) ??
-    audible.find(({ music }) => !music) ??
-    audible[0]
-  ).c.id
-}
-
-/** How many clips "Caption every clip" would actually work on.
- *
- * It ASKS THE DOOR now. It used to keep its own copy of the rule, and the copy
- * had the bug the door was fixed for: it filtered on the asset, so a linked
- * video and its audio partner, which share one assetId and both report
- * hasAudio, counted as two. Dropping a video with sound is how footage normally
- * arrives, so the button was promising roughly double the work it would do on
- * every real project. The comment here used to claim it skipped the same tracks
- * the door skips. It did not, and a promise in a comment is not a promise. */
-function audibleClipCount(): number {
-  return audibleClips().targets.length
-}
 
 const PASTE_HINT = `[{"text":"so","startS":0.1,"endS":0.4}, …]   or an .srt`
 
-type Mode = 'paste' | 'tap'
+export type ScriptMode = 'paste' | 'tap'
 
-export function CaptionsDialog({ onClose }: { onClose: () => void }) {
-  const [mode, setMode] = useState<Mode>('paste')
+export function CaptionsDialog({ onClose, initialMode = 'paste' }: { onClose: () => void; initialMode?: ScriptMode }) {
+  const [mode, setMode] = useState<ScriptMode>(initialMode)
   const [text, setText] = useState('')
   const [error, setError] = useState<string | null>(null)
-  // Caption style: pick a look (lowercase + outline + position + in/out anim) to
-  // apply to the whole run. Defaults to the Jettism house style.
-  const savedPresets = useTextPresets((s) => s.saved)
-  const presets = [...builtinTextPresets(), ...savedPresets]
-  // Remembered, not reset-on-open: right-click → Auto-Caption reads the same
-  // pick, so the two doors cannot drift apart again.
-  const [presetId, setPresetId] = useState(getCaptionPresetId)
-  const [language, setLanguage] = useState<CaptionLanguage>(getCaptionLanguage)
-  // Keyword highlight, remembered the same way the language is, so the
-  // right-click Auto-Caption door reads the same pick.
-  const [emphasis, setEmphasis] = useState(getCaptionEmphasis)
-  const preset: TextStylePreset | undefined = presets.find((p) => p.id === presetId)
   // Tap mode: the words being timed and the taps collected so far.
   const [tapWords, setTapWords] = useState<string[] | null>(null)
   const [taps, setTaps] = useState<number[]>([])
@@ -107,7 +37,7 @@ export function CaptionsDialog({ onClose }: { onClose: () => void }) {
     if (commit && run) {
       const words = tapsToWords(run.words, run.taps)
       if (words.length > 0) {
-        addCaptionsFromWords(words, { label: 'Captions (tap to time)', preset })
+        addCaptionsFromWords(words, { label: 'Captions (tap to time)', style: defaultCaptionStyle() })
         onClose()
       }
     }
@@ -171,7 +101,7 @@ export function CaptionsDialog({ onClose }: { onClose: () => void }) {
       setError('Could not read that. Paste a JSON word list or an SRT.')
       return
     }
-    addCaptionsFromWords(words, { label: 'Captions from transcript', preset })
+    addCaptionsFromWords(words, { label: 'Captions from transcript', style: defaultCaptionStyle() })
     onClose()
   }
 
@@ -206,9 +136,9 @@ export function CaptionsDialog({ onClose }: { onClose: () => void }) {
         className="w-[460px] max-w-[calc(100vw-24px)] rounded-dialog border border-border bg-bg-elevated shadow-pop"
       >
         <div className="flex h-11 items-center gap-2 border-b border-border px-4">
-          <span className="text-ui font-semibold text-text-primary">Captions</span>
+          <span className="text-ui font-semibold text-text-primary">From a script</span>
           <div role="tablist" className="ml-2 flex items-center gap-1">
-            {(['paste', 'tap'] as Mode[]).map((m) => (
+            {(['paste', 'tap'] as ScriptMode[]).map((m) => (
               <button
                 key={m}
                 role="tab"
@@ -218,7 +148,7 @@ export function CaptionsDialog({ onClose }: { onClose: () => void }) {
                   setMode(m)
                   setError(null)
                 }}
-                className={`rounded-[4px] px-2 py-0.5 text-[11px] transition-colors ${
+                className={`rounded-field px-2 py-0.5 text-[11px] transition-colors ${
                   mode === m ? 'bg-accent-quiet text-accent' : 'text-text-secondary hover:text-text-primary'
                 }`}
               >
@@ -233,115 +163,6 @@ export function CaptionsDialog({ onClose }: { onClose: () => void }) {
           </span>
         </div>
 
-        {/* The #1 Jettism step, front and center - right-click was its only
-            home before, which made the flagship feature invisible. */}
-        {/* Captions are AUTO now, with no words-per-caption dial: one word per
-            caption, on screen for exactly as long as it is spoken. His call: the
-            dial welded words together across the pauses between them, so a
-            caption sat there while he was saying something else. */}
-        {!tapping && (
-          <div className="flex flex-col gap-2 border-b border-border px-4 py-3">
-            <div className="flex items-center gap-2">
-              <Button
-                data-testid="captions-auto"
-                disabled={findVoClipId() === null}
-                onClick={() => {
-                  const id = findVoClipId()
-                  if (id) {
-                    void autoCaptionFromClip(id, preset)
-                    onClose()
-                  }
-                }}
-              >
-                <Sparkles size={14} strokeWidth={1.5} />
-                Caption this clip
-              </Button>
-              <Button
-                variant="secondary"
-                data-testid="captions-auto-all"
-                disabled={audibleClipCount() === 0}
-                onClick={() => {
-                  void autoCaptionEveryClip(preset)
-                  onClose()
-                }}
-              >
-                <Layers size={14} strokeWidth={1.5} />
-                Caption every clip
-              </Button>
-            </div>
-            <span className="text-[10px] text-text-muted">
-              {audibleClipCount() === 0
-                ? 'Add a clip with sound first.'
-                : `One word per caption, timed to the voice. Every clip means all ${audibleClipCount()} with sound, onto one track.`}
-            </span>
-          </div>
-        )}
-        {!tapping && (
-          <div className="flex items-center gap-2 border-b border-border px-4 py-2">
-            <span className="text-[11px] text-text-muted">Caption style</span>
-            <select
-              aria-label="Caption style preset"
-              data-testid="captions-preset"
-              value={presetId}
-              onChange={(e) => {
-                setPresetId(e.target.value)
-                setCaptionPresetId(e.target.value)
-              }}
-              className="ml-auto h-6 w-[190px] cursor-default rounded-field border border-border bg-bg-input px-1.5 text-[11px] text-text-primary focus:border-accent focus:outline-none"
-            >
-              <option value="">Jettism (the measured look)</option>
-              {presets.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
-        {!tapping && (
-          <div className="flex items-center gap-2 border-b border-border px-4 py-2">
-            <span className="text-[11px] text-text-muted">Spoken language</span>
-            <select
-              aria-label="Caption language"
-              data-testid="captions-language"
-              value={language}
-              onChange={(e) => {
-                const v = e.target.value as CaptionLanguage
-                setLanguage(v)
-                setCaptionLanguage(v) // persists; the clip right-click path reads it too
-              }}
-              className="ml-auto h-6 w-[190px] cursor-default rounded-field border border-border bg-bg-input px-1.5 text-[11px] text-text-primary focus:border-accent focus:outline-none"
-            >
-              {CAPTION_LANGUAGES.map((l) => (
-                <option key={l.value} value={l.value}>
-                  {l.label}
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
-        {!tapping && (
-          <div className="flex flex-col gap-1 border-b border-border px-4 py-2">
-            <label className="flex items-center gap-2 text-[11px] text-text-muted">
-              <span>Highlight the key word</span>
-              <input
-                type="checkbox"
-                aria-label="Highlight the key word"
-                data-testid="captions-emphasis"
-                checked={emphasis}
-                onChange={(e) => {
-                  setEmphasis(e.target.checked)
-                  setCaptionEmphasis(e.target.checked) // persists; the clip right-click path reads it too
-                }}
-                className="ml-auto h-3.5 w-3.5 cursor-default accent-accent"
-              />
-            </label>
-            <span className="text-[10px] text-text-muted">
-              Colours the one word you leaned on in a phrase, and leaves the phrase plain when you did not lean on
-              one. Auto-Caption only.
-            </span>
-          </div>
-        )}
         <div className="flex flex-col gap-2 p-4">
           {tapping ? (
             <div data-testid="tap-progress" className="rounded-overlay border border-border bg-bg-panel px-3 py-4 text-center">

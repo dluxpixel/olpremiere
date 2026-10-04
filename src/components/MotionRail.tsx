@@ -24,7 +24,6 @@
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { ensureBeats, knownBeats } from '../engine/beatCache'
 import { MOMENT_EPS } from '../engine/keyframes'
-import { formatTimecode } from '../engine/timecode'
 import { clipDurationS, collectSnapPoints } from '../engine/timeline'
 import { activeSequence, type AnimChannel, type Clip } from '../engine/types'
 import type { KeyframePick } from '../state/clipEdits'
@@ -547,7 +546,7 @@ export function MotionRail({
           title="Time from the head of the clip · wheel to zoom · drag to pan · double-click to fit"
           onPointerDown={onRulerDown}
           onDoubleClick={fitNow}
-          className="relative h-5 shrink-0 cursor-ew-resize select-none overflow-hidden rounded-[3px] bg-bg-input"
+          className="relative h-5 shrink-0 cursor-ew-resize select-none overflow-hidden rounded-field bg-bg-input"
           style={{ touchAction: 'none' }}
         >
           {ticks.map((tick) => (
@@ -558,7 +557,7 @@ export function MotionRail({
             >
               {tick.major && (
                 <span className="absolute bottom-[9px] left-1 whitespace-nowrap font-numeric text-[9px] leading-none text-text-muted">
-                  {formatTimecode(tick.t, fps)}
+                  {tick.label}
                 </span>
               )}
             </div>
@@ -581,7 +580,7 @@ export function MotionRail({
         <div
           ref={marqueeRef}
           data-testid="motion-rail-marquee"
-          className="pointer-events-none absolute z-30 rounded-[2px] border border-accent bg-accent/10"
+          className="pointer-events-none absolute z-30 rounded-mark border border-accent bg-accent/10"
           style={{ display: 'none' }}
         />
       </div>

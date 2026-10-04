@@ -20,12 +20,8 @@ import { useStore } from '../state/store'
 import { ENTRANCE_PRESETS } from '../engine/anim/appearance'
 import { setClipsAppearance } from '../state/appearanceActions'
 import { applyPunchyGradeToClips } from '../state/lookActions'
-import {
-  applyTextPresetToClips,
-  builtinTextPresets,
-  saveAsCaptionStyle,
-  useTextPresets,
-} from '../state/textPresets'
+import { applyCaptionStyle } from '../state/captionActions'
+import { allCaptionStyles, saveCaptionStyleFromClip, useCaptionStyles } from '../state/captionStyles'
 import { setTitlesFontSize, updateTitles } from '../state/titleActions'
 import { BROWSABLE_EFFECTS } from '../engine/effects/registry'
 import { ensureTitleFont, TITLE_FONT_OPTIONS } from '../engine/render/titleFonts'
@@ -118,8 +114,9 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
   const firstOutline = firstTitle?.outline
   const allOutline = nTitle > 0 && titles.every((s) => !!s.clip.title!.outline)
   const firstAppearanceIn = titles[0]?.clip.appearance?.in
-  const savedPresets = useTextPresets((s) => s.saved)
-  const presets = [...builtinTextPresets(), ...savedPresets]
+  // Subscribed so a style saved anywhere shows up here at once.
+  useCaptionStyles((s) => s.saved)
+  const presets = allCaptionStyles()
 
   const parts = [
     nTitle ? `${nTitle} text` : '',
@@ -325,7 +322,7 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
                 value=""
                 onChange={(e) => {
                   const p = presets.find((x) => x.id === e.target.value)
-                  if (p) applyTextPresetToClips(titleIds, p)
+                  if (p) applyCaptionStyle(p, titleIds)
                 }}
                 className="h-6 flex-1 cursor-default rounded-field bg-bg-input px-1.5 text-ui-sm text-text-primary"
               >
@@ -341,7 +338,7 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
                 data-testid="multi-preset-save"
                 title="Save this look, its animation and its effects as the style every new caption gets"
                 onClick={() => {
-                  saveAsCaptionStyle(titleIds[0], `Style ${useTextPresets.getState().saved.length + 1}`)
+                  saveCaptionStyleFromClip(titleIds[0])
                 }}
                 className="h-6 rounded-field bg-bg-input px-2 text-ui-sm text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated hover:text-text-primary"
               >
@@ -414,7 +411,7 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
 
       <div className="h-px bg-border" />
       <section
-        className={`flex flex-col gap-2 rounded-field ${effectDrop.hot ? 'ring-2 ring-inset ring-accent-hover' : ''}`}
+        className={`flex flex-col gap-2 rounded-overlay ${effectDrop.hot ? 'ring-2 ring-inset ring-accent-hover' : ''}`}
         data-testid="multi-effects"
         data-drop-hot={effectDrop.hot ? 'true' : undefined}
         {...effectDrop.dropProps}

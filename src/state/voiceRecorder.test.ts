@@ -415,9 +415,12 @@ describe('studio capture: review-then-keep, and coexistence with playback', () =
         .map((c) => ({ startS: c.startS, inS: +c.inS.toFixed(6), outS: +c.outS.toFixed(6) }))
     // The voice for timeline 2.0 went into the mic 135 ms after the recorder
     // started and reached the recorder 10 ms later (the mic's own delay).
+    // The second stretch ran to the end of the file at timeline 30.969, between
+    // two frames: its clip ends on frame 929 (30.9667), the voice still exactly
+    // where it was placed (spanOnFrames, 2026-10-03).
     expect(placed()).toEqual([
       { startS: 2, inS: 0.145, outS: 2.645 },
-      { startS: 4.5, inS: 3.531, outS: 30 },
+      { startS: 4.5, inS: 3.531, outS: 29.997667 },
     ])
     const assetId = Object.keys(useStore.getState().project.assets)[0]!
     useStore.getState().undo()
@@ -488,7 +491,9 @@ describe('studio capture: review-then-keep, and coexistence with playback', () =
     await keepTake()
     now.mockRestore()
     const clips = activeSequence(useStore.getState().project).tracks.flatMap((t) => t.clips)
-    // One clip from 0, running on to the end of the 30 s take.
-    expect(clips.map((c) => [c.startS, +c.inS.toFixed(6), c.outS])).toEqual([[0, 0.11, 30]])
+    // One clip from 0, running on to the end of the 30 s take, less the part of
+    // a frame past the last whole one (timeline 29.89 is frame 896.7, and the
+    // file has nothing for frame 897 to show).
+    expect(clips.map((c) => [c.startS, +c.inS.toFixed(6), +c.outS.toFixed(6)])).toEqual([[0, 0.11, 29.976667]])
   })
 })

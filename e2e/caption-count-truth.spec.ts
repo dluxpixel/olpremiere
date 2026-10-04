@@ -27,10 +27,10 @@ test('the count on "Caption every clip" matches what it will caption, on a linke
   await expect(page.locator('[data-clip-kind="audio"]')).toHaveCount(1)
 
   await page.getByTestId('open-captions').click()
-  const dialog = page.getByTestId('captions-dialog')
-  await expect(dialog).toBeVisible()
+  const tab = page.getByTestId('captions-tab')
+  await expect(tab).toBeVisible()
 
   // ONE take on the timeline, so the sentence has to say one. It used to say 2.
-  await expect(dialog).toContainText('all 1 with sound')
-  await expect(dialog.getByTestId('captions-auto-all')).toBeEnabled()
+  await expect(tab.getByTestId('captions-hint')).toContainText('all 1 with sound')
+  await expect(tab.getByTestId('captions-auto-all')).toBeEnabled()
 })

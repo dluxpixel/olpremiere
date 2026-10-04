@@ -659,7 +659,7 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
             onPointerDown={beginScale}
           >
             <div
-              className="h-3 w-3 rounded-[2px] border-2"
+              className="h-3 w-3 rounded-mark border-2"
               style={{ background: ACCENT, borderColor: HANDLE_INK }}
             />
           </div>
@@ -710,7 +710,7 @@ function OverlayInner({ canvas }: { canvas: HTMLCanvasElement | null }) {
         {dragTf && (
           <div
             data-testid="gizmo-readout"
-            className="pointer-events-none absolute rounded-[4px] border border-border bg-bg-elevated px-2 py-0.5 font-numeric text-dense text-text-primary shadow-pop"
+            className="pointer-events-none absolute rounded-field border border-border bg-bg-elevated px-2 py-0.5 font-numeric text-dense text-text-primary shadow-pop"
             style={{ left: Math.max(2, minX), top: Math.max(2, minY - 26) }}
           >
             X {Math.round(tf.x)} · Y {Math.round(tf.y)} · {Math.round(tf.scale * 100)}% · {Math.round(tf.rotationDeg)}°

@@ -194,6 +194,15 @@ export interface Track {
    * silently undo a choice he made.
    */
   syncLock?: boolean
+  /**
+   * How the captions on this track were cut: their length, lines, shortest time
+   * on screen and the gap between them. Written by every caption run and by a
+   * caption style applied to the whole track, so applying a style that only
+   * changes the LOOK leaves his hand made grouping alone, and one that changes
+   * the length knows it has to cut again. Absent on every other track, and on a
+   * Captions track made before 2026-10-03, which was always cut the auto way.
+   */
+  captionShape?: CaptionShape
   /** Sorted by startS; clips never overlap on one track. */
   clips: Clip[]
 }
@@ -340,6 +349,13 @@ export interface Clip {
    * than his style.
    */
   captionOrigin?: { text: string; model: string }
+  /**
+   * The caption run picked this word as the one he leaned on, so it wears the
+   * highlight colour. Kept on the clip so a caption style applied LATER still
+   * knows which word to paint: the colour alone cannot say, because a style is
+   * free to make every word yellow. Absent on every other clip.
+   */
+  captionEmphasis?: true
   /**
    * Entrance / exit animation ("how it appears"). A tiny spec that COMPILES to
    * keyframes on transform + opacity channels (see engine/anim/appearance.ts).
@@ -596,6 +612,35 @@ export interface TitleDef {
    * had before and the cached canvas is reused rather than duplicated.
    */
   invertBackdrop?: boolean
+}
+
+/**
+ * How spoken words are cut into captions. Part of a saved caption style
+ * (engine/captions/captionStyle.ts), and stamped on a Captions track so the
+ * track remembers what its captions were cut to.
+ *
+ * His ask, 2026-10-03: *"save caption styles, including caption length, how
+ * big it is, and stuff like that."* The same handful of settings Premiere's
+ * Create captions asks for: how long a caption may be, one line or two, the
+ * shortest time one stays up, and the gap between two.
+ */
+export interface CaptionShape {
+  /**
+   * 'auto' is the measured even blocks: every caption aims at the same time on
+   * screen and the word count falls out of how fast he talks (AUTO_CAPTION_OPTIONS).
+   * 'fixed' fills each caption up to `maxWords` and `charsPerLine` x `lines`.
+   */
+  length: 'auto' | 'fixed'
+  /** Most words in one caption. Fixed length only. */
+  maxWords: number
+  /** Most characters on one line. Fixed length only. */
+  charsPerLine: number
+  /** One line, or two balanced lines. Fixed length only. */
+  lines: 1 | 2
+  /** The shortest a caption stays on screen, seconds. */
+  minDurS: number
+  /** Blank frames between one caption and the next. 0 hands straight over. */
+  gapFrames: number
 }
 
 export function defaultTitleDef(text = 'Title'): TitleDef {

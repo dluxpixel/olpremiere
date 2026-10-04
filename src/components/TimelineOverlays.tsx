@@ -34,7 +34,7 @@ export function RazorLine({ t, pxPerS }: { t: number; pxPerS: number }) {
 export function MarqueeBox({ box }: { box: { x0: number; y0: number; x1: number; y1: number } }) {
   return (
     <div
-      className="pointer-events-none absolute z-30 rounded-[2px] border border-accent bg-accent/10"
+      className="pointer-events-none absolute z-30 rounded-mark border border-accent bg-accent/10"
       style={{
         left: Math.min(box.x0, box.x1),
         top: Math.min(box.y0, box.y1),
@@ -61,7 +61,7 @@ export function EmptyTimelineHint() {
 export function TrimTip({ tip }: { tip: { x: number; y: number; text: string } }) {
   return (
     <div
-      className="pointer-events-none fixed z-[90] rounded-[4px] border border-border bg-bg-elevated px-2 py-1 font-numeric text-[11px] text-text-primary shadow-pop"
+      className="pointer-events-none fixed z-[90] rounded-field border border-border bg-bg-elevated px-2 py-1 font-numeric text-[11px] text-text-primary shadow-pop"
       style={{ left: tip.x, top: tip.y }}
     >
       {tip.text}

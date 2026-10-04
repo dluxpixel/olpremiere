@@ -22,6 +22,7 @@ import { RotateCcw } from 'lucide-react'
 import { useRef, useState } from 'react'
 import { channelKeyframes } from '../engine/effects/channels'
 import { bezierEase, ease, MOMENT_EPS } from '../engine/keyframes'
+import { formatDuration } from '../engine/timecode'
 import { MOTION_CURVES, type MotionCurveName } from '../engine/motion'
 import type { AnimChannel, Clip, Curve, Keyframe } from '../engine/types'
 import { setAllSegmentCurves, setSegmentCurve, setSegmentEase } from '../state/clipEdits'
@@ -81,9 +82,14 @@ export function formatChannelValue(channel: AnimChannel, v: number): string {
   return String(PERCENT[channel] ? Math.round(v * 100) : Math.round(v * 100) / 100)
 }
 
-/** "Zoom 100 to 120 over 5f": the real numbers of the segment he clicked. */
-export function segmentHeader(channel: AnimChannel, from: number, to: number, frames: number): string {
-  return `${friendly(channel)} ${formatChannelValue(channel, from)} to ${formatChannelValue(channel, to)} over ${frames}f`
+/**
+ * "Zoom 100 to 120 over 0.17s": the real numbers of the segment he clicked. The
+ * length was a frame count ("over 5f") until 2026-10-03, when every time on
+ * screen became seconds with hundredths.
+ */
+export function segmentHeader(channel: AnimChannel, from: number, to: number, frames: number, fps: number): string {
+  const rate = fps || 30
+  return `${friendly(channel)} ${formatChannelValue(channel, from)} to ${formatChannelValue(channel, to)} over ${formatDuration(frames / rate, rate)}`
 }
 
 /** The chip captions. Exported so the Motion header's curve row says the same
@@ -391,7 +397,7 @@ export function CurveEditor({ clip, channel }: { clip: Clip; channel: AnimChanne
           className="flex-1 truncate text-ui-sm font-medium text-text-primary"
           data-testid="curve-editor-header"
         >
-          {segmentHeader(channel, a.value, b.value, frames)}
+          {segmentHeader(channel, a.value, b.value, frames, fps)}
         </h4>
         <IconButton
           label="Clear curve (back to the named ease)"
@@ -414,7 +420,7 @@ export function CurveEditor({ clip, channel }: { clip: Clip; channel: AnimChanne
         aria-label="Segment easing curve"
       >
         <g transform={`translate(${PAD},${PAD})`}>
-          <rect x={0} y={0} width={W} height={GRAPH_H} rx={3} fill="var(--color-bg-input)" />
+          <rect x={0} y={0} width={W} height={GRAPH_H} className="[rx:var(--radius-inner)]" fill="var(--color-bg-input)" />
           {/* Quarter grid inside the unit square. */}
           {[0.25, 0.5, 0.75].map((q) => (
             <line key={`h${q}`} x1={0} x2={W} y1={gy(q)} y2={gy(q)} stroke="var(--color-border)" strokeWidth={1} />
@@ -493,7 +499,7 @@ export function CurveEditor({ clip, channel }: { clip: Clip; channel: AnimChanne
         data-testid="curve-velocity"
       >
         <g transform={`translate(${PAD},0)`}>
-          <rect x={0} y={0} width={W} height={26} rx={3} fill="var(--color-bg-input)" />
+          <rect x={0} y={0} width={W} height={26} className="[rx:var(--radius-inner)]" fill="var(--color-bg-input)" />
           {vel.map((v, i) => (
             <rect
               key={i}

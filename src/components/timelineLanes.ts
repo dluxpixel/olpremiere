@@ -46,6 +46,27 @@ export function laneAtY(laneInfos: readonly LaneInfo[], y: number): Track | null
   return null
 }
 
+/**
+ * The lane of `kind` a clip drag is aimed at: the one under the pointer when it
+ * is of that kind, otherwise the nearest one of that kind. Above the top video
+ * lane that is the top video lane; over the divider or the audio lanes it is
+ * the lowest video lane; and the same for audio the other way. Null only when
+ * the timeline has no lane of that kind at all.
+ */
+export function laneOfKindNearY(laneInfos: readonly LaneInfo[], y: number, kind: Track['kind']): Track | null {
+  let best: Track | null = null
+  let bestDist = Infinity
+  for (const { track, top } of laneInfos) {
+    if (track.kind !== kind) continue
+    const dist = y < top ? top - y : y >= top + track.height ? y - (top + track.height) + 1 : 0
+    if (dist < bestDist) {
+      bestDist = dist
+      best = track
+    }
+  }
+  return best
+}
+
 /** Every clip whose box overlaps the rectangle, in lane order. */
 export function marqueeHitIds(laneInfos: readonly LaneInfo[], pxPerS: number, box: ContentBox): Id[] {
   const loX = Math.min(box.x0, box.x1)

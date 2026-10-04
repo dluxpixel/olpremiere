@@ -6,7 +6,7 @@
 // at the top of engine/grabFrame.ts.
 
 import { grabFrame } from '../engine/grabFrame'
-import { formatTimecode } from '../engine/timecode'
+import { clockDecimals } from '../engine/timecode'
 import { activeSequence } from '../engine/types'
 import { importFiles } from './mediaActions'
 import { pausePlayback } from './playbackControl'
@@ -14,14 +14,24 @@ import { useStore } from './store'
 import { useToasts } from './toasts'
 
 /**
- * The still's name: "Frame 00-00-12-05.png".
+ * The still's name: "Frame 00-00-12.17.png", the frame it was taken on read the
+ * way every other time in the app reads since 2026-10-03, seconds with
+ * hundredths (it was "Frame 00-00-12-05.png", the last group frames).
  *
- * Timecode colons are illegal in a Windows filename and would come back as an
+ * Clock colons are illegal in a Windows filename and would come back as an
  * unsaveable asset the moment he exported or dragged one out, so they are
- * dashes. The order still reads as hours, minutes, seconds, frames.
+ * dashes. Hours and minutes stay padded, unlike the clock on screen, so stills
+ * still sort by time in his media and in Explorer.
  */
 export function screenshotName(tS: number, fps: number): string {
-  return `Frame ${formatTimecode(tS, fps).replaceAll(':', '-')}.png`
+  const rate = fps > 0 ? fps : 30
+  const decimals = clockDecimals(rate)
+  const scale = 10 ** decimals
+  const units = Math.round((Math.max(0, Math.round(tS * rate)) / rate) * scale)
+  const whole = Math.floor(units / scale)
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  const clock = `${pad(Math.floor(whole / 3600))}-${pad(Math.floor(whole / 60) % 60)}-${pad(whole % 60)}`
+  return `Frame ${clock}.${String(units % scale).padStart(decimals, '0')}.png`
 }
 
 // A second click while the first grab is waiting on a decode would render into

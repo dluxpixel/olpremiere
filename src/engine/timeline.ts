@@ -5,6 +5,7 @@
 import { refitAppearanceToFrame, retimeAppearance, splitAppearanceAcrossCut } from './anim/appearance'
 import { withChannelKeyframes, withChannelValue } from './effects/channels'
 import { evalChannel, splitEaseAt } from './keyframes'
+import { quantizeToFrame } from './timecode'
 import {
   clipDurationS,
   clipEndS,
@@ -34,6 +35,8 @@ export { clipDurationS, clipEndS }
 // Float tolerance so clip edges that touch (end == next start) never read as
 // overlapping after speed/trim arithmetic.
 const EPS = 1e-9
+/** Within float noise of a frame instant, measured in frames. */
+const FRAME_EPS = 1e-6
 
 const absSpeed = (clip: Clip): number => Math.abs(clip.speed || 1)
 
@@ -379,6 +382,40 @@ export function rescaleKeyframesForSpeed(clip: Clip, oldRate: number, newRate: n
   return next
 }
 
+/**
+ * ⛔ A NEW SPEED KEEPS THE CLIP A WHOLE NUMBER OF FRAMES LONG, 2026-10-03.
+ *
+ * Its length is (out - in) / speed, which a speed like 2.5x almost never leaves
+ * on a frame: in his "strong until" project IMG_3080 at 2.5x ended at frame
+ * 97.98, and the next clip, flush against it, and every edit after that sat off
+ * the grid too (see canSplitClipAt for what that did to C). The tail gives up
+ * at most one frame, the one its fractional end reached into, and never asks
+ * the source for more than the clip already had.
+ */
+function lengthInWholeFrames(clip: Clip, fps: number): Clip {
+  const rate = fps || 30
+  const sp = absSpeed(clip)
+  const frames = ((clip.outS - clip.inS) / sp) * rate
+  const whole = Math.floor(frames + FRAME_EPS)
+  if (whole < 1 || frames - whole < FRAME_EPS) return clip
+  const spanS = (whole / rate) * sp
+  // A reversed clip's tail is the START of its source span (reversedTailTo).
+  return clip.speed < 0 ? { ...clip, inS: clip.outS - spanS } : { ...clip, outS: clip.inS + spanS }
+}
+
+/**
+ * A source limit as an edit point: the nearest frame on the clip's side of it.
+ * Dragging an edge out as far as the media goes, or Q / W / a roll stopped by
+ * it, used to land the edge where the FILE ends, between two frames, and a
+ * ripple then carried that fraction to every clip after it. Never past `edgeS`,
+ * where the edge already is, so a clip that is off the grid itself can still be
+ * pulled out as far as it already reaches.
+ */
+const headLimitOnFrame = (limitS: number, edgeS: number, fps: number): number =>
+  Math.min(edgeS, Math.ceil(limitS * (fps || 30) - FRAME_EPS) / (fps || 30))
+const tailLimitOnFrame = (limitS: number, edgeS: number, fps: number): number =>
+  Math.max(edgeS, Math.floor(limitS * (fps || 30) + FRAME_EPS) / (fps || 30))
+
 export function setClipSpeed(seq: Sequence, clipId: Id, speed: number): Sequence {
   const found = findClip(seq, clipId)
   if (!found) return seq
@@ -398,7 +435,7 @@ export function setClipSpeed(seq: Sequence, clipId: Id, speed: number): Sequence
   // is the one he would be least likely to catch happening.
   const moved = new Set<Id>()
   const grabbedOldEnd = clipEndS(found.clip)
-  const grabbedNewDur = (found.clip.outS - found.clip.inS) / Math.abs(s)
+  const grabbedNewDur = clipDurationS(lengthInWholeFrames({ ...found.clip, speed: s }, seq.fps))
   const grabbedDelta = found.clip.startS + grabbedNewDur - grabbedOldEnd
 
   const tracks = seq.tracks.map((track) => {
@@ -406,7 +443,7 @@ export function setClipSpeed(seq: Sequence, clipId: Id, speed: number): Sequence
     if (!member) return track
     moved.add(track.id)
     const oldEnd = clipEndS(member)
-    const newDur = (member.outS - member.inS) / Math.abs(s)
+    const newDur = clipDurationS(lengthInWholeFrames({ ...member, speed: s }, seq.fps))
     const delta = member.startS + newDur - oldEnd
     const clips = track.clips.map((c) => {
       if (groupIds.has(c.id)) {
@@ -414,7 +451,7 @@ export function setClipSpeed(seq: Sequence, clipId: Id, speed: number): Sequence
         // appearance retimer reads the clip's duration off the new speed, and it
         // must not see a half-updated clip.
         const rescaled = rescaleKeyframesForSpeed(c, c.speed, s)
-        return retimeAppearance(c, { ...rescaled, speed: s }, seq.width, seq.height)
+        return retimeAppearance(c, lengthInWholeFrames({ ...rescaled, speed: s }, seq.fps), seq.width, seq.height)
       }
       // Ripple the tail only when the member grew, to clear the overlap.
       if (delta > EPS && c.startS >= oldEnd - EPS) return { ...c, startS: c.startS + delta }
@@ -573,6 +610,41 @@ const withTrackClips = (seq: Sequence, trackIndex: number, clips: Clip[]): Seque
     tracks: seq.tracks.map((t, i) => (i === trackIndex ? { ...t, clips } : t)),
   })
 
+/**
+ * ⛔ A CLIP PLACED FROM HIS MEDIA LANDS ON THE FRAME GRID, 2026-10-03.
+ *
+ * Its start on a frame, its length a whole number of frames. Two ways in used to
+ * leave an edge between two frames, and every edit after it inherits that:
+ *   - a picture pasted, or a file added, after playback lands at the playhead,
+ *     and a paused playhead rests wherever the transport stopped;
+ *   - a file's own length is rarely whole frames of the sequence. His OBS take
+ *     "2026-10-03 18-06-57.mp4" runs 33.083 s, which is frame 992.5 at 30 fps.
+ * An edge between frames is drawn half a frame from the frame the clip really
+ * starts on, the playhead can never stand on it, and C refuses the frames either
+ * side of it (see canSplitClipAt). Rounding the length DOWN gives up at most
+ * one frame at the tail, the one a fractional end reached into, and never asks
+ * the file for more than it has.
+ */
+export const startOnFrame = (tS: number, fps: number): number => quantizeToFrame(Math.max(0, tS), fps || 30)
+
+/** `durS` cut down to whole frames. Anything shorter than one frame is left alone. */
+export function wholeFramesS(durS: number, fps: number): number {
+  const rate = fps || 30
+  const frames = Math.floor(durS * rate + FRAME_EPS)
+  return frames >= 1 ? frames / rate : durS
+}
+
+/**
+ * The gap resolveStart found, moved onto the next frame when it begins between
+ * two (flush against a clip that ends off the grid) and the clip still fits.
+ */
+function gapStartOnFrame(track: Track, startS: number, durS: number, fps: number): number {
+  const rate = fps || 30
+  if (onFrameGrid(startS, rate)) return startS
+  const next = Math.ceil(startS * rate - FRAME_EPS) / rate
+  return resolveStart(track, next, durS) === next ? next : startS
+}
+
 export function addClipFromAsset(
   seq0: Sequence,
   trackId: Id,
@@ -588,12 +660,14 @@ export function addClipFromAsset(
   const wantKind = asset.kind === 'audio' ? 'audio' : 'video'
   if (track0.kind !== wantKind || track0.locked) return { seq, clipId: '' }
 
-  const outS = asset.durationS || 5 // images have durationS 0 → default 5s
+  // On the frame grid, start and length: see startOnFrame.
+  const outS = wholeFramesS(asset.durationS || 5, seq.fps) // images have durationS 0 → default 5s
+  const desired = startOnFrame(desiredStartS, seq.fps)
   // `exact` lays the clip exactly WHEN he dropped it. Where something is already
   // there, it goes on the next free line (freeTrackFor) instead of clearing what
   // was under it, his pick 2026-09-28. Without `exact`, resolveStart hunts the
   // nearest gap that FITS on this one track.
-  const startS = opts.exact ? Math.max(0, desiredStartS) : resolveStart(track0, desiredStartS, outS)
+  const startS = opts.exact ? desired : gapStartOnFrame(track0, resolveStart(track0, desired, outS), outS, seq.fps)
   let base = seq
   let homeId = trackId
   if (opts.exact) {
@@ -642,100 +716,6 @@ export function moveClip(seq: Sequence, clipId: Id, targetTrackId: Id, desiredSt
     return clips === t.clips ? t : { ...t, clips }
   })
   return recomputeDuration({ ...seq, tracks })
-}
-
-/**
- * CLEAR A WINDOW ON ONE TRACK so something can be dropped into it.
- *
- * His words, 2026-08-12: "Click-dragging is so fucking bad. Oh my god, it's just
- * so buggy. It has one function, and it can't even do that." Proven on his own
- * project: **on a packed track a dragged clip has nowhere it fits**, so
- * `resolveStart` hands back the slot it came from, `moveClip` sees an unchanged
- * start and returns the sequence untouched. He drags, lets go, and the clip sits
- * back down with nothing on screen saying why. **A finished edit is packed by
- * definition, so dragging never worked on real work.** He picked overwrite.
- *
- * ⛔ SPLITTING IS DELEGATED TO `splitClip`, NOT REIMPLEMENTED. A clip cut in the
- * middle has to divide its keyframes, fades and transitions by time, and there is
- * one tested implementation of that. Carving a window by hand here would have
- * been a second copy of the hardest maths in this file.
- *
- * A split the min-piece guard refuses leaves a sliver under a frame long; the
- * sweep below removes it with the rest rather than leaving a crumb behind.
- */
-export function carveWindow(seq: Sequence, trackId: Id, fromS: number, toS: number, ignoreClipId?: Id): Sequence {
-  if (toS - fromS <= EPS) return seq
-  const idxOf = (s: Sequence) => s.tracks.findIndex((t) => t.id === trackId)
-  if (idxOf(seq) === -1) return seq
-  const frame = 1 / (seq.fps || 30)
-
-  let next = seq
-  // Cut any clip straddling an edge of the window, so what remains is either
-  // wholly inside it or wholly outside. Re-read the track each pass: a split
-  // rewrites the clip list.
-  for (const edge of [fromS, toS]) {
-    for (;;) {
-      const track = next.tracks[idxOf(next)]
-      const straddler = track.clips.find(
-        (c) => c.id !== ignoreClipId && c.startS < edge - EPS && clipEndS(c) > edge + EPS,
-      )
-      if (!straddler || !canSplitClipAt(straddler, next.fps, edge)) break
-      const after = splitClip(next, straddler.id, edge)
-      if (after === next) break // refused: leave it to the sweep below
-      next = after
-    }
-  }
-
-  const track = next.tracks[idxOf(next)]
-  const kept = track.clips.filter(
-    (c) => c.id === ignoreClipId || !(c.startS >= fromS - frame && clipEndS(c) <= toS + frame),
-  )
-  return kept.length === track.clips.length ? next : withTrackClips(next, idxOf(next), kept)
-}
-
-/**
- * Move a clip and OVERWRITE whatever it lands on, the way an NLE does.
- *
- * The difference from `moveClip` is the whole point: that one hunts for a gap the
- * clip fits in and gives up when there is none. This one puts the clip exactly
- * where it was dropped and clears the space for it.
- */
-export function moveClipOverwrite(seq: Sequence, clipId: Id, targetTrackId: Id, desiredStartS: number): Sequence {
-  const found = findClip(seq, clipId)
-  if (!found) return seq
-  const targetIndex = seq.tracks.findIndex((t) => t.id === targetTrackId)
-  if (targetIndex === -1) return seq
-  const target = seq.tracks[targetIndex]
-  if (found.track.kind !== target.kind || found.track.locked || target.locked) return seq
-
-  const startS = Math.max(0, desiredStartS)
-  if (found.trackIndex === targetIndex && Math.abs(startS - found.clip.startS) < EPS) return seq
-  const moved: Clip = { ...found.clip, startS }
-  const endS = startS + clipDurationS(moved)
-
-  // ⛔ THE CHEAP PATH IS NOT AN OPTIMISATION, IT IS REQUIRED. This runs on EVERY
-  // pointer-move of a drag to build the live preview, and the perf guard caught
-  // the first version at FOURTEEN times its budget on a 200-clip sequence.
-  // Landing on empty space is the common case and needs no carving at all, so it
-  // costs exactly what the old move cost.
-  const target2 = seq.tracks[targetIndex]
-  const hits = target2.clips.some(
-    (c) => c.id !== clipId && c.startS < endS - EPS && clipEndS(c) > startS + EPS,
-  )
-  if (!hits) {
-    const tracks = seq.tracks.map((t, i) => {
-      const without = i === found.trackIndex ? t.clips.filter((c) => c.id !== clipId) : t.clips
-      const clips = i === targetIndex ? insertSorted(without, moved) : without
-      return clips === t.clips ? t : { ...t, clips }
-    })
-    return recomputeDuration({ ...seq, tracks })
-  }
-
-  // Lift it out FIRST, so a move within one track cannot carve itself away.
-  const lifted = deleteClip(seq, clipId)
-  const carved = carveWindow(lifted, targetTrackId, startS, endS, clipId)
-  const ti = carved.tracks.findIndex((t) => t.id === targetTrackId)
-  return recomputeDuration(withTrackClips(carved, ti, insertSorted(carved.tracks[ti].clips, moved)))
 }
 
 /**
@@ -804,7 +784,7 @@ export function trimClipTo(
   if (edge === 'in') {
     const prev = track.clips[clipIndex - 1] as Clip | undefined
     let lo = Math.max(0, prev ? clipEndS(prev) : 0)
-    if (!boundless) lo = Math.max(lo, clip.startS - headRoomS(clip, asset))
+    if (!boundless) lo = Math.max(lo, headLimitOnFrame(clip.startS - headRoomS(clip, asset), clip.startS, seq.fps))
     const startS = Math.min(endS - minDurS, Math.max(lo, tS))
     if (startS === clip.startS) return seq
     if (clip.speed < 0) {
@@ -822,7 +802,7 @@ export function trimClipTo(
   } else {
     const nextClip = track.clips[clipIndex + 1] as Clip | undefined
     let hi = nextClip ? nextClip.startS : Infinity
-    if (!boundless) hi = Math.min(hi, clip.startS + tailLimitS(clip, asset))
+    if (!boundless) hi = Math.min(hi, tailLimitOnFrame(clip.startS + tailLimitS(clip, asset), endS, seq.fps))
     const newEndS = Math.min(hi, Math.max(clip.startS + minDurS, tS))
     if (newEndS === endS) return seq
     next =
@@ -901,10 +881,43 @@ export function splitKeyframeList(
  *
  * One source of truth, because splitGroup has to ask the SAME question of every
  * member before it commits to splitting any of them.
+ *
+ * ⛔ A CUT ON THE FRAME GRID COUNTS FRAMES, NOT SECONDS, 2026-10-03.
+ *
+ * His report, with a screenshot: *"I can't cut. When I click C, it won't cut in
+ * this frame, even though I'm on another frame."* His project had every edit
+ * after a 2.5x clip sitting between two frames (6.318 s is frame 189.54 at 30
+ * fps). The playhead only ever stands ON a frame, so at each of those edits the
+ * frame before it was 0.54 of a frame from the clip's end and the frame after it
+ * 0.46 of a frame from the next clip's start, and the old rule (each piece at
+ * least 1/fps long) refused both. Two dead frames at every edit, and C said
+ * nothing about either.
+ *
+ * What a piece needs is a FRAME to show: the renderer samples each clip at the
+ * frame instants inside [start, end). Cutting ON a frame, the right piece always
+ * starts on the frame it shows, however short it is, so the frame before an
+ * off-grid end is a fine place to cut. The frame after an off-grid start is not:
+ * that frame is the clip's first, and the left piece would show nothing.
+ * splitAtPlayhead says so out loud. A clip on the grid gets exactly the answer it
+ * always got. A cut OFF the grid (a word boundary, a silence edge, a window being
+ * carved) keeps the length rule, where a few milliseconds of piece is a sliver.
  */
 export function canSplitClipAt(clip: Clip, fps: number, tS: number): boolean {
-  const minPieceS = 1 / (fps || 30)
-  return tS >= clip.startS + minPieceS && tS <= clipEndS(clip) - minPieceS
+  const rate = fps || 30
+  const endS = clipEndS(clip)
+  if (onFrameGrid(tS, rate)) return framesShown(clip.startS, tS, rate) >= 1 && framesShown(tS, endS, rate) >= 1
+  const minPieceS = 1 / rate
+  return tS >= clip.startS + minPieceS && tS <= endS - minPieceS
+}
+
+/** On a frame instant, to within float noise. */
+export const onFrameGrid = (tS: number, fps: number): boolean => Math.abs(tS * fps - Math.round(tS * fps)) < FRAME_EPS
+
+/** How many frame instants fall inside [fromS, toS): the frames that span shows. */
+export function framesShown(fromS: number, toS: number, fps: number): number {
+  const first = Math.ceil(fromS * fps - FRAME_EPS)
+  const end = Math.ceil(toS * fps - FRAME_EPS)
+  return Math.max(0, end - first)
 }
 
 export function splitClip(seq: Sequence, clipId: Id, tS: number): Sequence {
@@ -1481,7 +1494,11 @@ export function addClipWithLinkedAudio(
   const aTrack0 = aIndex0 === -1 ? null : seq.tracks[aIndex0]
   const canLink = !!aTrack0 && aTrack0.kind === 'audio' && !aTrack0.locked
 
-  const dur = clipDurationS(newClipFromAsset(asset, 0))
+  // On the frame grid, start and length: see startOnFrame. Both halves are cut
+  // from the same `dur`, so the pair stays exactly as long as each other.
+  const dur = wholeFramesS(clipDurationS(newClipFromAsset(asset, 0)), seq.fps)
+  const placed = (startS: number): Clip => ({ ...newClipFromAsset(asset, startS), outS: dur })
+  const desired = startOnFrame(desiredStartS, seq.fps)
   // `exact` drops the pair exactly WHEN he aimed, each half on the next free
   // line of its kind when its own lane is taken there, and nothing under it is
   // cleared (his pick 2026-09-28). Otherwise resolveStart looks for a start free
@@ -1491,7 +1508,7 @@ export function addClipWithLinkedAudio(
   let vId = videoTrackId
   let aId = audioTrackId
   if (opts.exact) {
-    startS = Math.max(0, desiredStartS)
+    startS = desired
     const vHome = freeTrackFor(base, 'video', vIndex0, startS, dur)
     base = vHome.seq
     vId = base.tracks[vHome.trackIndex]!.id
@@ -1506,7 +1523,7 @@ export function addClipWithLinkedAudio(
       ...seq.tracks[vIndex0],
       clips: [...seq.tracks[vIndex0].clips, ...(canLink ? aTrack0!.clips : [])],
     }
-    startS = resolveStart(obstacles, desiredStartS, dur)
+    startS = gapStartOnFrame(obstacles, resolveStart(obstacles, desired, dur), dur, seq.fps)
   }
 
   const seqB = base
@@ -1516,7 +1533,7 @@ export function addClipWithLinkedAudio(
 
   if (!canLink) {
     // No audio track: standalone video clip keeps its own audio (no linkId).
-    const clip = fitNewClipToFrame(newClipFromAsset(asset, startS), asset, seq)
+    const clip = fitNewClipToFrame(placed(startS), asset, seq)
     return {
       seq: withTrackClips(seqB, vIndex, insertSorted(vTrack.clips, clip)),
       videoClipId: clip.id,
@@ -1525,8 +1542,8 @@ export function addClipWithLinkedAudio(
   }
 
   const linkId = newId()
-  const videoClip: Clip = { ...fitNewClipToFrame(newClipFromAsset(asset, startS), asset, seq), linkId }
-  const audioClip: Clip = { ...newClipFromAsset(asset, startS), linkId }
+  const videoClip: Clip = { ...fitNewClipToFrame(placed(startS), asset, seq), linkId }
+  const audioClip: Clip = { ...placed(startS), linkId }
   const tracks = seqB.tracks.map((t, i) => {
     if (i === vIndex) return { ...t, clips: insertSorted(t.clips, videoClip) }
     if (i === aIndex) return { ...t, clips: insertSorted(t.clips, audioClip) }
@@ -1549,33 +1566,6 @@ export function addClipWithLinkedAudio(
  * voice seconds away from its picture, permanently out of sync, after one
  * ordinary drag.
  */
-/**
- * `moveGroup` that overwrites instead of refusing.
- *
- * ⛔ The plain group move is ALL OR NOTHING: if any linked partner cannot be
- * placed, `canPlace` fails and NOBODY moves. On a packed timeline that is a
- * SECOND reason a linked drag did nothing at all, on top of the gap search in
- * `moveClip`. Overwrite always fits, so the gate goes with it.
- */
-export function moveGroupOverwrite(seq: Sequence, clipId: Id, targetTrackId: Id, desiredStartS: number): Sequence {
-  const group = clipGroupIds(seq, clipId)
-  if (group.length <= 1) return moveClipOverwrite(seq, clipId, targetTrackId, desiredStartS)
-  const before = findClip(seq, clipId)
-  if (!before) return seq
-  let next = moveClipOverwrite(seq, clipId, targetTrackId, desiredStartS)
-  const after = findClip(next, clipId)
-  if (!after) return next
-  const delta = after.clip.startS - before.clip.startS
-  if (delta === 0) return next
-  for (const id of group) {
-    if (id === clipId) continue
-    const m = findClip(next, id)
-    if (!m) continue
-    next = moveClipOverwrite(next, m.clip.id, m.track.id, Math.max(0, m.clip.startS + delta))
-  }
-  return next
-}
-
 export function moveGroup(seq: Sequence, clipId: Id, targetTrackId: Id, desiredStartS: number): Sequence {
   const group = clipGroupIds(seq, clipId)
   if (group.length <= 1) return moveClip(seq, clipId, targetTrackId, desiredStartS)
@@ -1902,7 +1892,7 @@ export function rippleTrimTo(
     // No next-neighbor clamp: every later clip shifts by the same delta, so
     // relative gaps are preserved and overlap is impossible.
     let hi = Infinity
-    if (!boundless) hi = clip.startS + tailLimitS(clip, asset)
+    if (!boundless) hi = tailLimitOnFrame(clip.startS + tailLimitS(clip, asset), endS, seq.fps)
     const newEndS = Math.min(hi, Math.max(clip.startS + minDurS, tS))
     if (newEndS === endS) return seq
     deltaS = newEndS - endS
@@ -1913,7 +1903,7 @@ export function rippleTrimTo(
   } else {
     // Ripple-in keeps startS fixed (content slides under the head), so the
     // previous clip never constrains it: only the source head + min duration.
-    const lo = boundless ? -Infinity : clip.startS - headRoomS(clip, asset)
+    const lo = boundless ? -Infinity : headLimitOnFrame(clip.startS - headRoomS(clip, asset), clip.startS, seq.fps)
     const t = Math.min(endS - minDurS, Math.max(lo, tS))
     if (t === clip.startS) return seq
     deltaS = clip.startS - t
@@ -1960,9 +1950,9 @@ export function rollEditTo(
   const boundlessR = !assetR || assetR.kind === 'image'
 
   let lo = left.clip.startS + minDurS
-  if (!boundlessR) lo = Math.max(lo, right.clip.startS - headRoomS(right.clip, assetR))
+  if (!boundlessR) lo = Math.max(lo, headLimitOnFrame(right.clip.startS - headRoomS(right.clip, assetR), right.clip.startS, seq.fps))
   let hi = rightEndS - minDurS
-  if (!boundlessL) hi = Math.min(hi, left.clip.startS + tailLimitS(left.clip, assetL))
+  if (!boundlessL) hi = Math.min(hi, tailLimitOnFrame(left.clip.startS + tailLimitS(left.clip, assetL), right.clip.startS, seq.fps))
   const t = Math.min(hi, Math.max(lo, tS))
 
   const trimmedLeft: Clip =
@@ -2399,236 +2389,4 @@ export function duplicateClips(seq: Sequence, clipIds: Id[]): { seq: Sequence; n
     if (f) atS = Math.max(atS, clipEndS(f.clip))
   }
   return pasteClips(seq, payload, atS)
-}
-
-/**
- * A whole multi-clip drag, as one pure sequence-in, sequence-out step.
- *
- * EXTRACTED FROM Timeline.tsx on 2026-08-06 so it can actually be tested. It
- * was a closure inside the component, which meant the only way to cover it was
- * to drive real pointer physics in a browser, and the first attempt at that
- * ended up re-implementing the logic inside the test: green, and proving
- * nothing about the app. The live preview and the single-dispatch commit both
- * call this, so what he sees while dragging is what lands.
- */
-// Move the grabbed clip's group to tS, then shift every other selected
-// group by the same delta on its own track - direction-ordered so earlier
-// moves never collide with clips that are themselves about to move (the
-// same trick as nudgeSelection). ONE sequence in, one out: preview and the
-// single-dispatch commit share it byte-for-byte.
-/**
- * The nearest start this clip may take on `track` WITHOUT lying on top of
- * anything, given where it is coming from.
- *
- * Going right it parks its tail against the blocker's head; going left it parks
- * its head against the blocker's tail. If there is nowhere at all in the
- * direction he is dragging, it keeps the position it already had, which is the
- * only honest answer for a track with no room.
- *
- * ⛔ WALKED FROM WHERE HE AIMED, IN THE DIRECTION HE DRAGGED. Picking the
- * globally nearest gap instead is what made a packed drag teleport back into its
- * own slot and look like nothing happened.
- */
-/**
- * How far this clip may slide along its OWN track before it touches something
- * that is not travelling with it. Infinity when the track is otherwise clear.
- *
- * `travelling` is every clip moving by the same delta in the same gesture, so a
- * linked pair or a repacked run never blocks itself.
- *
- * Going left it also stops at zero, because there is no timeline before it.
- */
-export function slideRoom(track: Track, clip: Clip, forward: boolean, travelling: ReadonlySet<Id>): number {
-  const end = clipEndS(clip)
-  let room = forward ? Infinity : clip.startS
-  for (const other of track.clips) {
-    if (other.id === clip.id || travelling.has(other.id)) continue
-    if (forward) {
-      if (other.startS >= end - EPS) room = Math.min(room, other.startS - end)
-    } else if (clipEndS(other) <= clip.startS + EPS) {
-      room = Math.min(room, clip.startS - clipEndS(other))
-    }
-  }
-  return Math.max(0, room)
-}
-
-export function nearestFreeStart(
-  track: Track,
-  desiredStartS: number,
-  durationS: number,
-  ignoreClipId: Id,
-  fromStartS: number,
-): number {
-  const want = Math.max(0, desiredStartS)
-  const others = track.clips.filter((c) => c.id !== ignoreClipId)
-  const clashes = (start: number): boolean =>
-    others.some((c) => c.startS < start + durationS - EPS && clipEndS(c) > start + EPS)
-  if (!clashes(want)) return want
-
-  const goingRight = want > fromStartS
-  const edges = goingRight
-    ? others.map((c) => c.startS - durationS).sort((a, b) => b - a)
-    : others.map((c) => clipEndS(c)).sort((a, b) => a - b)
-  for (const e of edges) {
-    const at = Math.max(0, e)
-    if (goingRight ? at > want + EPS : at < want - EPS) continue
-    if (!clashes(at)) return at
-  }
-  return fromStartS
-}
-
-export function moveSelectionWith(
-  base: Sequence,
-  grabbedId: Id,
-  targetTrackId: Id,
-  tS: number,
-  others: { id: Id; startS0: number; solo?: boolean }[],
-  solo = false,
-): Sequence {
-  const grabbed = base.tracks.flatMap((t) => t.clips).find((c) => c.id === grabbedId)
-  if (!grabbed) return base
-  const deltaS = tS - grabbed.startS
-  // Solo: he clicked one half of a pair and left the partner unselected, so
-  // the partner stays where it is. moveClip is the same verb the group move
-  // uses underneath; the only difference is that it stops at this clip.
-  // ⛔ NEVER OVERWRITE, AND NEVER SIT STILL EITHER. Both are his, three days
-  // apart, and either one alone has a wrong fix.
-  //
-  // 2026-08-12: a drag on a packed track moved NOTHING, because placement hunted
-  // for a gap the clip fits in and the only one was the slot it came from. He
-  // chose overwrite to fix that.
-  //
-  // 2026-08-15: overwrite CARVES the clip underneath. His words: "you can slide
-  // clips over different clips ... remove that feature and I never wanna see it
-  // again." That is not sliding, it is destroying footage he never touched.
-  //
-  // So the target is clamped to somewhere legal FIRST, and the placement that
-  // runs afterwards is then handed a spot with nothing under it. The clip slides
-  // freely and stops against its neighbour: it always moves, and it can never
-  // land on anything.
-  // ⛔ AND THE CLAMP COVERS THE WHOLE LINKED PAIR, NOT ONLY THE HALF HE GRABBED.
-  //
-  // The clamp below was applied to the grabbed clip alone. Its partner was then
-  // shifted by the same delta through moveGroupOverwrite, which has no clamp at
-  // all: it carves whatever is already sitting there. So dragging a linked pair
-  // into an empty stretch of video, with a music bed under it on the audio
-  // track, silently deleted the slice of music the audio half landed on. That is
-  // the same destruction he banned on 2026-08-15, surviving on the half of the
-  // gesture nobody looked at.
-  //
-  // So the group slides as far as its MOST CONSTRAINED member allows. Every
-  // member is free where it stands, and sliding a shorter distance in the same
-  // direction from a free position is always free, so shortening the delta can
-  // never create a new overlap. The pair keeps its sync, it always moves, and it
-  // stops against a neighbour rather than eating one.
-  const travelling = new Set(solo ? [grabbedId] : clipGroupIds(base, grabbedId))
-  let want = tS
-  if (!solo && travelling.size > 1 && Math.abs(deltaS) > EPS) {
-    const forward = deltaS > 0
-    let room = Math.abs(deltaS)
-    for (const id of travelling) {
-      if (id === grabbedId) continue
-      const m = findClip(base, id)
-      if (m) room = Math.min(room, slideRoom(m.track, m.clip, forward, travelling))
-    }
-    want = grabbed.startS + (forward ? room : -room)
-  }
-  const targetTrack = base.tracks.find((t) => t.id === targetTrackId)
-  const safeS = targetTrack
-    ? nearestFreeStart(targetTrack, want, clipDurationS(grabbed), grabbedId, grabbed.startS)
-    : want
-  let next = solo
-    ? moveClipOverwrite(base, grabbedId, targetTrackId, safeS)
-    : moveGroupOverwrite(base, grabbedId, targetTrackId, safeS)
-  if (others.length === 0) return next
-
-  // THE SELECTION CHANGES TRACK TOGETHER, NOT JUST TIME.
-  //
-  // His words, 2026-08-06: "when I drag one clip, for example, from v6 to v5,
-  // it should drag all, but it doesn't."
-  //
-  // He is right and the old code could not have done it: every carried clip
-  // was re-placed on `tr.id`, the track it was ALREADY on, so only the grabbed
-  // clip ever changed lane. Worse, a purely vertical drag has deltaS === 0, and
-  // the early return above used to bail on that, so dragging a multi-selection
-  // straight down moved exactly one clip and left the rest behind.
-  //
-  // The shift is counted in LANES OF THE SAME KIND, not raw track indices, so
-  // "down one video track" stays "down one video track" even with audio tracks
-  // interleaved, and a selected audio clip is never flung onto a video track.
-  // Clips of the other kind keep their lane and just travel in time.
-  const grabbedIdx = base.tracks.findIndex((t) => t.clips.some((c) => c.id === grabbedId))
-  const targetIdx = base.tracks.findIndex((t) => t.id === targetTrackId)
-  const kind = base.tracks[grabbedIdx]?.kind
-  const lanes = base.tracks.map((t, i) => ({ kind: t.kind, i })).filter((x) => x.kind === kind)
-  const posOf = (trackIdx: number): number => lanes.findIndex((x) => x.i === trackIdx)
-  const laneShift =
-    grabbedIdx >= 0 && targetIdx >= 0 ? posOf(targetIdx) - posOf(grabbedIdx) : 0
-
-  // ⛔ THE CARRIED CLIPS MOVE BY WHAT THE GRABBED CLIP ACTUALLY DID, NOT BY WHAT
-  // HE ASKED FOR. This is the drag he has reported over and over.
-  //
-  // `deltaS` is the RAW request. The grabbed clip then gets clamped twice before
-  // it lands: once so the whole linked group stays legal, and again by
-  // `nearestFreeStart` so it stops against its neighbour instead of eating it.
-  // So the clip under his cursor routinely travels LESS than he asked. Every
-  // other selected clip was still being shifted by the full `deltaS`.
-  //
-  // What that looks like on his timeline: he grabs one caption, it stops dead
-  // against the next clip, and the rest of the selection sails on past it. The
-  // one thing that does not follow the mouse is the one he is holding, which is
-  // his words exactly: *"it just doesn't drag the thing I click on in the first
-  // place."* On a packed caption track, where every clip has a neighbour a few
-  // frames away, this fires on almost every multi-clip drag.
-  //
-  // The applied delta also makes the fully-blocked case correct for free: if the
-  // grabbed clip could not move at all, nothing else moves either, instead of
-  // the selection tearing itself apart around a clip that stayed put.
-  const appliedS = safeS - grabbed.startS
-  if (laneShift === 0 && appliedS === 0) return next
-  // ⛔ AND FROM startS0, THE POSITION AT MOUSE-DOWN, not from wherever the clip
-  // sits in `next`. The grabbed clip's own move has already rewritten this
-  // sequence, and reading a live start would compound the shift on any clip that
-  // placement had nudged.
-  const ordered = [...others].sort((a, b) => (appliedS > 0 ? b.startS0 - a.startS0 : a.startS0 - b.startS0))
-  for (const o of ordered) {
-    const trIdx = next.tracks.findIndex((t) => t.clips.some((c) => c.id === o.id))
-    const tr = next.tracks[trIdx]
-    const oc = tr?.clips.find((c) => c.id === o.id)
-    if (!tr || !oc) continue
-    // Same kind: shift by the same number of lanes, clamped to the ones that
-    // exist. Clamping per clip rather than refusing the whole move means the
-    // gesture always does SOMETHING; two clips can land on one lane at the
-    // very edge of the stack, which beats the selection silently splitting up.
-    let destTrackId = tr.id
-    if (tr.kind === kind && laneShift !== 0) {
-      const p = posOf(trIdx)
-      if (p >= 0) {
-        const want = Math.max(0, Math.min(lanes.length - 1, p + laneShift))
-        destTrackId = next.tracks[lanes[want].i]?.id ?? tr.id
-      }
-    }
-    // ⛔ EVERY CARRIED CLIP ANSWERS THE SAME QUESTION THE GRABBED ONE DOES, and
-    // this line is the bug he reported twice.
-    //
-    // 2026-08-05 and again 2026-08-12: *"When I fucking drag, it drags the audio
-    // with the video clip to and other the way around."* It was hunted twice from
-    // a SINGLE clip and could never be reproduced, because a single clip is the
-    // one case that was already right: `solo` above stops the grabbed clip taking
-    // its partner. This loop then moved every OTHER selected clip with
-    // `moveGroup`, unconditionally, which drags each of their partners along
-    // whether or not he ever selected them.
-    //
-    // So one gesture obeyed two different rules: the clip under his cursor left
-    // its audio alone and the rest of the selection did not. Select three video
-    // clips, drag one, and three audio clips move that he never touched.
-    //
-    // The rule is the one `soloMove` states in Timeline.tsx: a partner travels
-    // only when it is selected too. The caller answers it per clip, because only
-    // the caller knows the selection and this file stays pure.
-    next = o.solo
-      ? moveClip(next, o.id, destTrackId, Math.max(0, o.startS0 + appliedS))
-      : moveGroup(next, o.id, destTrackId, Math.max(0, o.startS0 + appliedS))
-  }
-  return next
 }

@@ -20,10 +20,10 @@ import { clipEmitsAudio } from '../engine/audio'
 import { clipEndS } from '../engine/timeline'
 import { activeSequence, type Clip, type MediaAsset } from '../engine/types'
 import type { CaptionWord } from '../engine/captions/captions'
+import type { CaptionStyle } from '../engine/captions/captionStyle'
 import { addCaptionsFromWords } from './captionActions'
-import { rememberedCaptionPreset } from './textPresets'
+import { defaultCaptionStyle } from './captionStyles'
 import { useStore } from './store'
-import type { TextStylePreset } from './textPresets'
 import { useToasts } from './toasts'
 
 export type TranscribeStatus = 'idle' | 'reading' | 'screening' | 'model' | 'listening'
@@ -200,6 +200,13 @@ export async function wordsForClip(
 }
 
 /**
+ * What the caption doors listen with. Test seam: the end to end suite puts a
+ * stand in here so a caption run can be driven through the real menus without
+ * downloading a speech model. Nothing else ever writes to it.
+ */
+export const captionEars = { wordsForClip }
+
+/**
  * Every clip that actually makes sound and should be captioned, or just the
  * ones whose ids are given.
  *
@@ -301,7 +308,7 @@ export function audibleClips(onlyIds?: ReadonlySet<string>): {
 }
 
 /** Transcribe the audio clip locally and lay its words down as captions. */
-export async function autoCaptionFromClip(clipId: string, preset?: TextStylePreset): Promise<void> {
+export async function autoCaptionFromClip(clipId: string, style?: CaptionStyle): Promise<void> {
   const toasts = useToasts.getState()
   if (useTranscribe.getState().status !== 'idle') {
     toasts.show('A transcription is already running', 'danger')
@@ -348,15 +355,15 @@ export async function autoCaptionFromClip(clipId: string, preset?: TextStylePres
   }
 
   try {
-    const words = await wordsForClip(clip, asset, { trimToVoice: true })
+    const words = await captionEars.wordsForClip(clip, asset, { trimToVoice: true })
     if (words.length === 0) {
       toasts.show('No speech found in the clip', 'danger')
     } else {
-      // No preset passed (the right-click door) falls back to the REMEMBERED
-      // style, so both doors produce the same captions.
+      // No style passed (the right-click door) falls back to his DEFAULT style,
+      // so every door produces the same captions.
       addCaptionsFromWords(words, {
         label: 'Auto-caption from voiceover',
-        preset: preset ?? rememberedCaptionPreset(),
+        style: style ?? defaultCaptionStyle(),
         model: modelFor(getCaptionLanguage()),
       })
     }
@@ -448,7 +455,7 @@ export async function listenToClip(clipId: string): Promise<CaptionWord[] | null
  * than thrown away.
  */
 export async function autoCaptionEveryClip(
-  preset?: TextStylePreset,
+  style?: CaptionStyle,
   /** When given, caption only these clips. Used by the right-click on a selection. */
   onlyIds?: ReadonlySet<string>,
 ): Promise<void> {
@@ -520,7 +527,7 @@ export async function autoCaptionEveryClip(
       }
       useTranscribe.setState({ queue: { index: i + 1, total: targets.length } })
       try {
-        const heard = await wordsForClip(live, asset, { screenFirst: true, trimToVoice: true })
+        const heard = await captionEars.wordsForClip(live, asset, { screenFirst: true, trimToVoice: true })
         if (heard.length === 0) silent++
         words.push(...heard)
         coveredSpans.push({ startS: live.startS, endS: clipEndS(live) })
@@ -545,7 +552,7 @@ export async function autoCaptionEveryClip(
   }
   addCaptionsFromWords(words, {
     label: onlyIds ? 'Auto-caption selected clips' : 'Auto-caption every clip',
-    preset: preset ?? rememberedCaptionPreset(),
+    style: style ?? defaultCaptionStyle(),
     model: modelFor(getCaptionLanguage()),
     coveredSpans,
   })
