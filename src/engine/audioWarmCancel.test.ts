@@ -4,7 +4,7 @@
 // looking at, while the tab he clicked waited behind them.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { activeSequence, newClipFromAsset, newProject, type MediaAsset } from './types'
+import { activeSequence, newClipFromAsset, newProject, type Clip, type MediaAsset } from './types'
 
 const read: string[] = []
 vi.mock('../state/persistence', () => ({
@@ -22,7 +22,7 @@ function edit(n: number, take = 'take') {
   const p = newProject('mc night')
   const seq = activeSequence(p)
   const assets: Record<string, MediaAsset> = {}
-  const clips = []
+  const clips: Clip[] = []
   for (let i = 0; i < n; i++) {
     const a: MediaAsset = { id: `${take}${i}`, name: `${take} ${i}.wav`, kind: 'audio', blobKey: `asset/${take}${i}`, durationS: 4, hasAudio: true, hasVideo: false }
     assets[a.id] = a
