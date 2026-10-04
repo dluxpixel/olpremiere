@@ -193,10 +193,10 @@ test('Loop says what it is, lights while it is on, and the tooltip says what it 
   await loop.click()
   await expect(loop).toHaveAttribute('aria-pressed', 'true')
   await expect(tip).toContainText('Loop is on')
-  // Lit, not just labelled: the ember fill the app uses for a live state.
-  expect(await loop.evaluate((el) => getComputedStyle(el).backgroundColor)).not.toBe(
-    await page.getByTestId('frame-settings-button').evaluate((el) => getComputedStyle(el).backgroundColor),
-  )
+  // Lit, not just labelled: the ember fill the app uses for a live state. (Polled: the fill fades in.)
+  const fill = (el: ReturnType<Page['locator']>) => el.evaluate((node) => getComputedStyle(node).backgroundColor)
+  const resting = await fill(page.getByTestId('frame-settings-button'))
+  await expect.poll(() => fill(loop)).not.toBe(resting)
   await loop.click()
   await expect(loop).toHaveAttribute('aria-pressed', 'false')
 })
