@@ -36,6 +36,12 @@ interface SettingsState {
    * left it, like every other choice here.
    */
   platformLoudness: boolean
+  /**
+   * The private usage log (state/usageLog.ts): a record of which buttons and keys
+   * he uses, kept on this computer and never sent. ON unless he turns it off,
+   * because he asked for it, 2026-10-04: *"start tracking my actions in the app".*
+   */
+  usageLog: boolean
 }
 
 /** The ease field's own envelope. Shared by the store clamp and the scrub field. */
@@ -53,6 +59,7 @@ const THEME_KEY = 'olpremiere:settings:theme'
 const QUALITY_KEY = 'olpremiere:settings:preview-quality'
 const EASE_KEY = 'olpremiere:settings:ease-seconds'
 const LOUDNESS_KEY = 'olpremiere:settings:platform-loudness'
+const USAGE_LOG_KEY = 'olpremiere:settings:usage-log'
 
 function read(key: string): string | null {
   try {
@@ -96,17 +103,25 @@ function loadEaseSeconds(): number {
 
 /** On unless he turned it off: only an explicit 'off' is stored. */
 const loadPlatformLoudness = (): boolean => read(LOUDNESS_KEY) !== 'off'
+const loadUsageLog = (): boolean => read(USAGE_LOG_KEY) !== 'off'
 
 export const useSettings = create<SettingsState>(() => ({
   theme: loadTheme(),
   previewQuality: loadQuality(),
   easeSeconds: loadEaseSeconds(),
   platformLoudness: loadPlatformLoudness(),
+  usageLog: loadUsageLog(),
 }))
 
 export function setPlatformLoudness(on: boolean): void {
   useSettings.setState({ platformLoudness: on })
   write(LOUDNESS_KEY, on ? null : 'off')
+}
+
+/** Switch the usage log on or off. Only 'off' is stored, so a fresh profile is on. */
+export function setUsageLog(on: boolean): void {
+  useSettings.setState({ usageLog: on })
+  write(USAGE_LOG_KEY, on ? null : 'off')
 }
 
 /** The theme actually in force: 'system' resolves against the OS preference. */

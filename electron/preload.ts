@@ -120,6 +120,9 @@ const api: OlApi = {
   libraryRead: () => ipcRenderer.invoke('library:read'),
   captionStylesWrite: (json: string) => ipcRenderer.invoke('captionStyles:write', json),
   captionStylesRead: () => ipcRenderer.invoke('captionStyles:read'),
+  usageAppend: (day: string, lines: string) => ipcRenderer.invoke('usage:append', day, lines),
+  usageDir: () => ipcRenderer.invoke('usage:dir'),
+  usageReveal: () => ipcRenderer.invoke('usage:reveal'),
   pickSavePath: (kind: 'export' | 'project', base: string, ext: string, filterName: string) =>
     ipcRenderer.invoke('file:pickSave', kind, base, ext, filterName),
   fileOpenWrite: (target: string) => ipcRenderer.invoke('file:openWrite', target),

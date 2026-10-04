@@ -377,6 +377,17 @@ export interface OlApi {
   captionStylesRead(): Promise<string | null>
 
   /**
+   * The private usage log (electron/usageFiles.ts): append one day's batch of JSON
+   * lines to that day's file in the app's own data folder. Never leaves the machine.
+   * `day` is `YYYY-MM-DD`; anything else is refused.
+   */
+  usageAppend(day: string, lines: string): Promise<void>
+  /** The folder the usage log lives in, for telling him where it is. */
+  usageDir(): Promise<string>
+  /** Open that folder in Explorer. */
+  usageReveal(): Promise<void>
+
+  /**
    * A save dialog in his last folder for this kind of file, suggesting a name
    * nothing there has (`_1`, `_2`, never a replace prompt). Null when cancelled.
    */

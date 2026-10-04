@@ -12,6 +12,8 @@
 // the two domain tables that only they read. What is left is the shape, the
 // dispatch and the label.
 
+import { noteShortcut } from './state/usageNotes'
+
 /**
  * What a shortcut is FOR. ⛔ Unread since 2026-08-17, because the two surfaces that
  * rendered it were cut that day. Kept at one word per binding: it is the only thing
@@ -62,9 +64,12 @@ export function installKeymap(bindings: Binding[]): () => void {
   const byCombo = new Map(bindings.map((b) => [b.combo, b]))
   const onKeyDown = (e: KeyboardEvent) => {
     if (isEditableTarget(e.target)) return
-    const binding = byCombo.get(comboFromEvent(e))
+    const combo = comboFromEvent(e)
+    const binding = byCombo.get(combo)
     if (!binding) return
     if (!binding.allowDefault) e.preventDefault()
+    // The usage log: which key, and what it is for. Before the run, so the log reads in order.
+    noteShortcut(combo, binding.description, e.repeat)
     binding.run(e)
   }
   window.addEventListener('keydown', onKeyDown)
