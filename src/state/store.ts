@@ -19,6 +19,7 @@ import {
   type Command,
   type History,
 } from './history'
+import { noteEdit, noteHistory } from './usageNotes'
 
 /** What the motion rail is pointed at: a keyframe, or the segment leaving one. */
 export type MotionSelectKind = 'key' | 'segment'
@@ -263,6 +264,7 @@ export const useStore = create<AppState>()(
         history: pushCommand(history, { label, before: project, after, mergeKey, at }),
         ui: { ...ui, saveState: 'unsaved' },
       })
+      noteEdit(label, mergeKey, project, after, ui.tool, ui.selection.length)
     },
 
     // Return the command label (or null when there's nothing to undo/redo) so
@@ -272,6 +274,8 @@ export const useStore = create<AppState>()(
       const r = undoCommand(history)
       if (!r) return null
       set({ project: withShelfOf(project, r.project), history: r.history, ui: { ...ui, saveState: 'unsaved' } })
+      const at = history.undo[history.undo.length - 1]?.at
+      noteHistory('undo', r.label, at ? Date.now() - at : undefined)
       return r.label
     },
 
@@ -280,6 +284,7 @@ export const useStore = create<AppState>()(
       const r = redoCommand(history)
       if (!r) return null
       set({ project: withShelfOf(project, r.project), history: r.history, ui: { ...ui, saveState: 'unsaved' } })
+      noteHistory('redo', r.label)
       return r.label
     },
 
@@ -328,6 +333,7 @@ export const useStore = create<AppState>()(
       const r = popCommand(history, dir)
       if (!r) return null
       set({ history: r.history })
+      noteHistory(dir, r.command.label, dir === 'undo' && r.command.at ? Date.now() - r.command.at : undefined)
       return r.command
     },
 

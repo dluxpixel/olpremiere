@@ -26,6 +26,7 @@ import { createEmojiFontStore, downloadBytes, EMOJI_ROUTE } from './emojiFont'
 import * as projectFiles from './projectFiles'
 import * as libraryFile from './libraryFile'
 import * as captionStylesFile from './captionStylesFile'
+import * as usageFiles from './usageFiles'
 import * as saveFiles from './saveFiles'
 import type { NativeExportConfig, UpdateStatus } from './ipc-types'
 import {
@@ -718,6 +719,18 @@ app.whenReady().then(() => {
   // His caption styles beside them, one fixed file. See electron/captionStylesFile.ts.
   ipcMain.handle('captionStyles:write', (_e, json: string) => captionStylesFile.writeCaptionStylesFile(json))
   ipcMain.handle('captionStyles:read', () => captionStylesFile.readCaptionStylesFile())
+
+  // --- The private usage log (electron/usageFiles.ts) ----------------------------
+  // His own record of what he uses, one file a day in the app's own data folder.
+  // It lives in userData, so a throwaway profile gets its own and never his.
+  const usageDir = (): string => path.join(app.getPath('userData'), 'Usage log')
+  ipcMain.handle('usage:append', (_e, day: string, lines: string) => usageFiles.appendUsage(usageDir(), day, lines))
+  ipcMain.handle('usage:dir', () => usageDir())
+  ipcMain.handle('usage:reveal', async () => {
+    await mkdir(usageDir(), { recursive: true }) // opening a folder that does not exist just fails silently
+    await shell.openPath(usageDir())
+  })
+  void usageFiles.pruneUsage(usageDir(), usageFiles.localDay(new Date())).catch(() => undefined)
 
   // --- Files he saves himself (saveFiles.ts) ---------------------------------
   // A numbered name in his last folder, then the bytes streamed in chunks, and

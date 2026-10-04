@@ -40,6 +40,7 @@ import { setPlatformLoudness, useSettings } from './settings'
 import { useStore } from './store'
 import { useToasts } from './toasts'
 import { beginCriticalWork } from './unloadGuard'
+import { noteExportEnd, noteExportStart } from './usageNotes'
 
 export type ExportStage =
   /** The browser's save picker is up; nothing is encoding yet. */
@@ -237,6 +238,17 @@ async function drive(plan: ExportPlan): Promise<void> {
       stage: background ? runningStage(plan) : { kind: 'starting' },
     },
   })
+  noteExportStart({
+    width: plan.settings.width,
+    height: plan.settings.height,
+    fps: plan.settings.fps,
+    seconds: plan.settings.endS - plan.settings.startS,
+    encoder: plan.nativeEncoder,
+    qp: plan.qp,
+    loudness: planHasPlatformLoudness(plan),
+    workArea: plan.usingWorkArea,
+    background,
+  })
   const release = holdBlobKeys(f.blobKeys)
   try {
     // Only where there ARE spare copies: the web build has none, and starts as it always did.
@@ -284,6 +296,7 @@ async function mediaPutBack(project: Project): Promise<void> {
 function settleCancelled(id: number): void {
   // A cancel that is really a restart keeps the job and its frozen copy.
   if (restartWith) return
+  noteExportEnd('cancelled')
   if (useExportJob.getState().job?.id === id) forgetJob()
 }
 
@@ -296,6 +309,7 @@ function onProgress(id: number, progress: ExportProgress): void {
 function succeed(id: number, stage: Extract<ExportStage, { kind: 'done' }>): void {
   const { job, dialogOpen } = useExportJob.getState()
   if (!job || job.id !== id) return
+  noteExportEnd('done', { sizeBytes: stage.sizeBytes, fileName: stage.fileName })
   // Watching it: the done screen is where he is. Working elsewhere: the toast
   // is the whole news, so the job is finished with.
   if (dialogOpen) useExportJob.setState({ job: { ...job, stage } })
@@ -318,6 +332,7 @@ function fail(id: number, err: unknown): void {
   const message = err instanceof Error ? err.message : String(err)
   const name = useExportJob.getState().job?.projectName ?? ''
   if (!patchJob(id, () => ({ stage: { kind: 'error', message } }))) return
+  noteExportEnd('failed', { error: message })
   // With the dialog open the error sits on it, with its own Try again. Closed,
   // he is in the middle of something else and has to be told here.
   if (!useExportJob.getState().dialogOpen) {

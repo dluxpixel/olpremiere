@@ -34,6 +34,7 @@ import { useStore } from './state/store'
 import { activeSequence, type MediaAsset } from './engine/types'
 import { useToasts } from './state/toasts'
 import { initUpdateCheck } from './state/updateCheck'
+import { initUsageLog } from './state/usageWiring'
 import { initUpdateFeed, whenUpdateChecked } from './state/updateStatus'
 
 // Every row the loading card shows is reported HERE, around the real calls, never
@@ -83,6 +84,8 @@ const work: BootWork = {
     // keeps that true now that the settings live in the sequence with everything
     // else.
     initSettings()
+    // His private usage log, from the first event on, and only if its switch is on.
+    initUsageLog()
     // None of these three needs the project, so queueing them behind it would
     // cost real seconds to buy nothing. Their rows report them in order below.
     libraryReady = started(loadLibrary())

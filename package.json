@@ -20,6 +20,7 @@
     "verify:ffmpeg": "node scripts/verify-ffmpeg.mjs",
     "patch": "node scripts/patch.mjs",
     "verify": "node scripts/patch.mjs --verify",
+    "usage-report": "node scripts/usage-report.mjs",
     "release": "node scripts/release.mjs"
   },
   "dependencies": {
