@@ -175,7 +175,7 @@ describe('recovering never destroys', () => {
 
   it('just says how much came back when the media is all still there', async () => {
     await restoreBackup('C:/backups/one.olpbak')
-    expect(toasts.at(-1)?.text).toBe('Recovered 1 clips')
+    expect(toasts.at(-1)?.text).toBe('Recovered 1 clip')
     expect(toasts.at(-1)?.kind).toBe('success')
   })
 

@@ -24,6 +24,7 @@ import {
 import { canPickOutput, listAudioOutputs } from '../state/recordingMonitor'
 import { IconButton } from '../ui/Button'
 import { dbToFrac, METER_IDLE, METER_TICKS_DB, meterGradient, stepMeter, type MeterState } from './levelMeter'
+import { useEscapeToClose } from '../ui/useEscapeToClose'
 
 const SELECT_CLS =
   'h-7 w-full cursor-default rounded-field border border-border bg-bg-input px-1.5 text-ui-sm text-text-primary'
@@ -115,6 +116,12 @@ export function RecordingStudio() {
   const inputLabel = useRecorder((s) => s.inputLabel)
   const inputMissing = useRecorder((s) => s.inputMissing)
   const selectedOutputId = useRecorder((s) => s.selectedOutputId)
+  // ⛔ ESCAPE ONLY CLOSES AN IDLE STUDIO. Closing discards the take (closeStudio), and Escape is the
+  // key hit by accident, so while it is recording or a take is waiting to be kept the key does
+  // nothing and the panel's own buttons decide.
+  useEscapeToClose(() => {
+    if (!recording && !pending) closeStudio()
+  })
   const [inputs, setInputs] = useState<MediaDeviceInfo[]>([])
   const [outputs, setOutputs] = useState<MediaDeviceInfo[]>([])
   const [elapsed, setElapsed] = useState(0)

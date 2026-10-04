@@ -11,6 +11,7 @@
 // here is where your backups are" and a blank timeline that explains nothing.
 
 import { db } from './persistence'
+import { plural } from '../engine/plural'
 
 export interface IntegrityReport {
   projectCount: number
@@ -55,5 +56,5 @@ export async function checkIntegrity(): Promise<IntegrityReport | null> {
 /** The sentence the user sees. Null when everything is fine. */
 export function integrityMessage(r: IntegrityReport | null): string | null {
   if (!r || r.empty || !r.orphanedMedia) return null
-  return `Your media is here (${r.blobCount} files) but no project references it. An edit may have failed to save. Check your backups before making changes.`
+  return `Your media is here (${plural(r.blobCount, 'file')}) but no project references it. An edit may have failed to save. Check your backups before making changes.`
 }

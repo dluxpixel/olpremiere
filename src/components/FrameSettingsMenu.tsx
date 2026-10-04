@@ -163,6 +163,7 @@ export function FrameSettingsMenu({ seq, safeMargins, onSafeMargins }: Props) {
               role="dialog"
               aria-label="Frame settings"
               data-testid="frame-settings-menu"
+              data-esc-owner=""
               style={{ right: at.right, bottom: at.bottom }}
               className="fixed z-[91] flex w-72 flex-col rounded-overlay border border-border-strong bg-bg-elevated py-1 shadow-pop"
             >

@@ -1,5 +1,4 @@
 import { X } from 'lucide-react'
-import { useEffect } from 'react'
 import {
   cancelExport,
   closeExportDialog,
@@ -13,6 +12,7 @@ import {
 import { useSettings } from '../state/settings'
 import { useToasts } from '../state/toasts'
 import { Button, IconButton } from '../ui/Button'
+import { useEscapeToClose } from '../ui/useEscapeToClose'
 
 function fmtEta(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return '--'
@@ -46,14 +46,11 @@ export function ExportDialog() {
   // finished file needs a tap on this screen to reach Photos on a phone.
   const canClose = !job || !stage || !isExportActive(stage) || job.background || stage.kind === 'starting'
 
-  useEffect(() => {
-    if (!open || !canClose) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') closeExportDialog()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open, canClose])
+  // Listening while it is open even when it cannot close, so a dialog under it never takes the
+  // key meant for this one.
+  useEscapeToClose(() => {
+    if (canClose) closeExportDialog()
+  }, open)
 
   if (!open || !job || !stage) return null
   const { plan } = job

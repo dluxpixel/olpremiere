@@ -37,6 +37,7 @@ import { useToasts } from './state/toasts'
 import { initUpdateCheck } from './state/updateCheck'
 import { initUsageLog } from './state/usageWiring'
 import { initUpdateFeed, whenUpdateChecked } from './state/updateStatus'
+import { plural } from './engine/plural'
 
 // Every row the loading card shows is reported HERE, around the real calls, never
 // from a timer in the UI. They run as ONE ordered sequence (see bootSequence.ts):
@@ -192,7 +193,7 @@ const work: BootWork = {
       console.warn('OL Premiere boot: could not check the backups', err)
       return null
     })
-    if (recovered) return { detail: `brought ${recovered.name} back, ${recovered.clipCount} clips` }
+    if (recovered) return { detail: `brought ${recovered.name} back, ${plural(recovered.clipCount, 'clip')}` }
     // ⛔ CLEANING UP AFTER AN EARLIER VERSION OF MYSELF. A restore before 2.23
     // handed back projects whose media had never existed in this store, and his
     // shelf ended up with five he could not open and did not ask for. The rule

@@ -34,6 +34,7 @@ import { applyJettismLook, applyPunchyGradeToClips } from '../state/lookActions'
 import { useStore, type LeftTab } from '../state/store'
 import { putBlob } from '../state/persistence'
 import { Button } from '../ui/Button'
+import { plural } from '../engine/plural'
 
 /**
  * Room media status: live transfers plus assets nobody in the room has bytes
@@ -106,7 +107,7 @@ function Tab({ tab, label }: { tab: LeftTab; label: string }) {
       aria-selected={active}
       onClick={() => setUI({ leftTab: tab })}
       data-testid={`tab-${tab}`}
-      className={`h-6 shrink-0 rounded-field px-2 text-[12px] font-medium transition-colors duration-[120ms] ${
+      className={`h-6 shrink-0 rounded-field px-1.5 text-[12px] font-medium transition-colors duration-[120ms] ${
         active ? 'bg-accent-quiet text-accent' : 'text-text-secondary hover:text-text-primary'
       }`}
     >
@@ -157,7 +158,7 @@ function useOsFileDrop(): boolean {
           if (ignored > 0) {
             useToasts
               .getState()
-              .show(`Opening the project file. The other ${ignored} file(s) were not imported`, 'info')
+              .show(`Opening the project file. The other ${plural(ignored, 'file')} ${ignored === 1 ? 'was' : 'were'} not imported`, 'info')
           }
           void importProjectFromFile(project)
           return
@@ -592,7 +593,7 @@ function RemoveUnusedButton() {
       data-testid="remove-unused"
       data-armed={armed ? 'true' : undefined}
       disabled={unused === 0}
-      aria-label={armed ? `Confirm removing ${unused} unused files` : 'Remove files nothing on the timeline uses'}
+      aria-label={armed ? `Confirm removing ${plural(unused, 'unused file')}` : 'Remove files nothing on the timeline uses'}
       title={
         armed
           ? 'Click again to remove them. It stops asking after a few seconds.'
@@ -906,9 +907,14 @@ export function LeftPanel({ width }: { width: number }) {
       className="flex min-h-0 shrink-0 flex-col bg-bg-panel"
       style={{ width }}
     >
-      {/* Five tabs since Captions joined on 2026-10-03, so the row is a hair
-          tighter and scrolls sideways rather than clipping on a narrow panel. */}
-      <div role="tablist" className="flex items-center gap-0.5 overflow-x-auto border-b border-border px-1.5 py-1.5 [scrollbar-width:none]">
+      {/* ⛔ FIVE TABS, AND THEY FIT WHOLE (2026-10-03). Captions joined as the fifth and the row
+          was made to scroll sideways, which hid the end of it: at the default 280px column the
+          last tab ran 7px past the edge, and at the narrowest column (200px) two of them were
+          off the panel with nothing to say so. Measured at 12px: the five words need 261px with
+          6px tabs, so the default column holds them on one row with room to spare, and anything
+          narrower wraps the last one onto a second row. Wrapping, never scrolling and never
+          cutting a word, since a tab you cannot see is a tab you cannot press. */}
+      <div role="tablist" className="flex flex-wrap items-center gap-x-0.5 gap-y-0.5 border-b border-border px-1.5 py-1.5">
         <Tab tab="media" label="Media" />
         <Tab tab="effects" label="Effects" />
         <Tab tab="library" label="Library" />

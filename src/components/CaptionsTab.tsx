@@ -222,7 +222,7 @@ function Choice<T extends string | number>({
   testId: string
 }) {
   return (
-    <div className="flex items-center gap-0.5 rounded-field bg-bg-input p-0.5">
+    <div className="flex items-center gap-0.5 rounded-overlay bg-bg-input p-0.5">
       {options.map((o) => (
         <button
           key={String(o.value)}
@@ -953,7 +953,7 @@ function StyleEditor({ style, seqHeight, onPick }: { style: CaptionStyle; seqHei
           )}
         </Row>
         <Row label="Position">
-          <div className="flex items-center gap-0.5 rounded-field bg-bg-input p-0.5">
+          <div className="flex items-center gap-0.5 rounded-overlay bg-bg-input p-0.5">
             {(
               [
                 { v: 'top', label: 'Top', icon: AlignStartVertical },
@@ -1279,7 +1279,7 @@ function CaptionList() {
   }, [])
 
   return (
-    <section data-testid="captions-list" className="flex min-h-[140px] flex-1 flex-col">
+    <section data-testid="captions-list" className="flex min-h-[96px] flex-1 flex-col">
       <div className="flex h-8 shrink-0 items-center gap-2 pl-3 pr-3">
         <SectionLabel>Captions</SectionLabel>
         <span data-testid="captions-count" className="font-numeric text-[11px] text-text-muted">
@@ -1338,10 +1338,15 @@ function CaptionList() {
 export function CaptionsTab() {
   const [script, setScript] = useState<ScriptMode | null>(null)
   return (
-    <div data-testid="captions-tab" className="flex min-h-0 flex-1 flex-col">
+    <div data-testid="captions-tab" className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {/* Create and Style share the top and scroll together; the list keeps the
-          rest of the column so it is never pushed off the bottom. */}
-      <div className="max-h-[64%] shrink-0 overflow-y-auto border-b border-border [&>section:last-child]:border-b-0">
+          rest of the column so it is never pushed off the bottom.
+          ⛔ BOTH GIVE WAY, AND THE TAB CLIPS (2026-10-04). The top was `shrink-0` and the list held
+          140px, so in the 350px column a 1280x720 window leaves, 64% plus 140 was more than the
+          column and the last rows of the list were painted over the timeline's toolbar. The top
+          now shrinks (it scrolls, so nothing is lost) down to 72px, the list to 96px, and nothing
+          this tab holds can spill out of its panel. */}
+      <div className="max-h-[64%] min-h-[72px] overflow-y-auto border-b border-border [&>section:last-child]:border-b-0">
         <CreatePart onScript={setScript} />
         <StylePart />
       </div>

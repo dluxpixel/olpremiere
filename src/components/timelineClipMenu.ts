@@ -24,6 +24,7 @@ import { applyCaptionStyle } from '../state/captionActions'
 import { captionLabel, captionTargets, captionTheseClips } from '../state/captionRun'
 import { allCaptionStyles, saveCaptionStyleFromClip } from '../state/captionStyles'
 import type { useToasts } from '../state/toasts'
+import { plural } from '../engine/plural'
 
 export interface ClipMenuContext {
   /** The clip that was right-clicked. */
@@ -383,7 +384,7 @@ export function clipContextMenuItems({ clip, seq, assets, selNow, keepSelection,
     {
       // C is the branded single-key cut; the old label advertised only the
       // secondary Ctrl+K chord and hid the key everyone should learn.
-      label: keepSelection ? `Split ${selNow.length} clips at playhead` : 'Split at playhead',
+      label: keepSelection ? `Split ${plural(selNow.length, 'clip')} at playhead` : 'Split at playhead',
       shortcut: 'C',
       disabled: !playheadInside,
       // The SAME verb the C key runs. This used to split only the clip you
@@ -397,7 +398,7 @@ export function clipContextMenuItems({ clip, seq, assets, selNow, keepSelection,
       // exactly the surprise he hit on 2026-08-06. If a clip has a partner,
       // the item says which half this will remove.
       label: keepSelection
-        ? `Delete ${selNow.length} clips`
+        ? `Delete ${plural(selNow.length, 'clip')}`
         : clip.linkId !== undefined
           ? track?.kind === 'audio'
             ? 'Delete audio'
@@ -410,7 +411,7 @@ export function clipContextMenuItems({ clip, seq, assets, selNow, keepSelection,
       onClick: () => deleteSelected(false),
     },
     {
-      label: keepSelection ? `Ripple delete ${selNow.length} clips` : 'Ripple delete',
+      label: keepSelection ? `Ripple delete ${plural(selNow.length, 'clip')}` : 'Ripple delete',
       shortcut: 'Shift+Del',
       danger: true,
       onClick: () => deleteSelected(true),

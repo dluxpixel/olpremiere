@@ -81,6 +81,7 @@ export function AddEffectMenu({ clipId }: { clipId: string }) {
           <div
             className="absolute right-0 top-[calc(100%+4px)] z-50 flex w-64 flex-col rounded-overlay border border-border-strong bg-bg-elevated shadow-pop"
             data-testid="add-effect-menu"
+            data-esc-owner=""
           >
             <div className="flex items-center gap-1.5 border-b border-border px-2 py-1.5">
               <Search size={12} strokeWidth={1.75} className="shrink-0 text-text-muted" aria-hidden />

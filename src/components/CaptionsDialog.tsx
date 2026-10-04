@@ -14,6 +14,7 @@ import { defaultCaptionStyle } from '../state/captionStyles'
 import { pausePlayback, togglePlay } from '../state/playbackControl'
 import { useStore } from '../state/store'
 import { Button, IconButton } from '../ui/Button'
+import { useEscapeToClose } from '../ui/useEscapeToClose'
 
 const PASTE_HINT = `[{"text":"so","startS":0.1,"endS":0.4}, …]   or an .srt`
 
@@ -86,14 +87,7 @@ export function CaptionsDialog({ onClose, initialMode = 'paste' }: { onClose: ()
   // Escape closes the dialog whenever a tap run is not consuming the keys
   // (the tap handler above intercepts Escape on capture to cancel the run).
   const tappingNow = tapWords !== null
-  useEffect(() => {
-    if (tappingNow) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [tappingNow, onClose])
+  useEscapeToClose(onClose, !tappingNow)
 
   const applyPaste = () => {
     const words = parseTranscript(text)

@@ -29,6 +29,7 @@ import { listAudioInputs, setInputDevice, setOutputDevice, useRecorder } from '.
 import { listAudioOutputs } from '../state/recordingMonitor'
 import { canPickAudioOutput } from '../engine/audio'
 import { Button, IconButton } from '../ui/Button'
+import { useEscapeToClose } from '../ui/useEscapeToClose'
 
 /** One labelled preference row on the settings grid. */
 function Row({ label, hint, children }: { label: string; hint?: React.ReactNode; children: React.ReactNode }) {
@@ -99,13 +100,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
     void olApi?.usageDir?.().then(setUsageFolder, () => undefined)
   }, [])
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  useEscapeToClose(onClose)
 
   return (
     <div

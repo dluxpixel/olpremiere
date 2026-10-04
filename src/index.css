@@ -264,6 +264,96 @@ body {
   background-clip: content-box;
 }
 
+/*
+ * The compact select (src/ui/CompactSelect.tsx): as wide as its short label, with the full names in
+ * the list that opens. The first rule is every browser's; the @supports block is the customizable
+ * select (Chromium 135+), where the closed select shows a copy of the chosen option and the picker is
+ * ours to dress. Without it the select falls back to the native one, long names and all.
+ */
+.compact-select {
+  height: 28px;
+  min-width: 0;
+  cursor: default;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-field);
+  background-color: var(--color-bg-input);
+  padding: 0 8px;
+  color: var(--color-text-secondary);
+  font-size: var(--text-ui-sm);
+}
+.compact-select:hover {
+  border-color: var(--color-border-strong);
+  color: var(--color-text-primary);
+}
+@supports (appearance: base-select) {
+  .compact-select,
+  .compact-select::picker(select) {
+    appearance: base-select;
+  }
+  .compact-select {
+    display: inline-flex;
+    align-items: center;
+  }
+  .compact-select > button {
+    display: inline-flex;
+    flex: 1;
+    align-items: center;
+    gap: 6px;
+    border: 0;
+    padding: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+  }
+  .compact-select::picker-icon {
+    color: var(--color-text-muted);
+    font-size: 8px;
+    transition: rotate 120ms ease;
+  }
+  .compact-select:open::picker-icon {
+    rotate: 180deg;
+  }
+  /* The picker shows the long name, the closed face the short one. */
+  .compact-select option .opt-short {
+    display: none;
+  }
+  .compact-select selectedcontent .opt-long {
+    display: none;
+  }
+  .compact-select::picker(select) {
+    min-width: anchor-size(width);
+    margin-block: 4px;
+    border: 1px solid var(--color-border-strong);
+    border-radius: var(--radius-overlay);
+    background: var(--color-bg-elevated);
+    padding: 4px;
+    box-shadow: var(--shadow-pop);
+    color: var(--color-text-primary);
+    font-size: var(--text-ui-sm);
+  }
+  .compact-select option {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    border-radius: var(--radius-inner);
+    padding: 5px 10px 5px 6px;
+    cursor: default;
+    color: var(--color-text-primary);
+  }
+  .compact-select option:hover,
+  .compact-select option:focus-visible {
+    background: var(--color-accent-quiet);
+    color: var(--color-accent);
+    outline: none;
+  }
+  .compact-select option::checkmark {
+    color: var(--color-accent);
+  }
+  .compact-select option:disabled {
+    color: var(--color-text-muted);
+  }
+}
+
 /* Micro-motion: tasteful, CSS-only, auto-disabled by the reduced-motion
    guard below. Never touches the render path (chrome only). */
 @keyframes toast-in {
