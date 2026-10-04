@@ -57,8 +57,9 @@ const edit = (name: string, ...media: MediaAsset[]): Project => ({
 /** What was released for one asset, in the order it happened. */
 const forAsset = (id: string): string[] => log.filter((l) => l.endsWith(`:${id}`)).map((l) => l.split(':')[0])
 /** Everything an asset of the edit he left lets go of: its waiting preview copy at once, the rest queued. */
-const HEAVY = ['proxy', 'frames', 'elements', 'sound', 'denoise', 'strip-video']
-const CHEAP = ['peaks', 'strips']
+const HEAVY = ['proxy', 'frames', 'elements', 'denoise', 'strip-video']
+/** Kept one switch longer: the decoded sound, waveform and thumbnails. */
+const CHEAP = ['sound', 'peaks', 'strips']
 
 beforeEach(() => {
   log.length = 0
@@ -66,7 +67,7 @@ beforeEach(() => {
 })
 
 describe('the edit he leaves', () => {
-  it('lets go of every decoder, frame, element and sound it held, at once', () => {
+  it('lets go of every decoder, frame and element it held, as soon as it is left', () => {
     const green = edit('Green', asset('g1'), asset('g2'))
     const mc = edit('mc night', asset('m1'))
     const r = releaseSleepingEdit(green, mc)
@@ -81,7 +82,7 @@ describe('the edit he leaves', () => {
     expect(log).toContain('preview-scratch')
   })
 
-  it('keeps its thumbnails and waveforms for one switch, so clicking straight back is quick', () => {
+  it('keeps its sound, thumbnails and waveforms for one switch, so clicking straight back is quick', () => {
     const green = edit('Green', asset('g1'))
     const mc = edit('mc night', asset('m1'))
     releaseSleepingEdit(green, mc)

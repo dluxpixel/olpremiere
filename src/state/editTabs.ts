@@ -9,8 +9,9 @@
 // ⛔ ASLEEP MEANS SAVED AND LET GO. A sleeping tab is a project id, its name, and
 // what he left on screen as plain data: playhead, zoom, scroll, selection and the
 // undo history. Its document is in the store and in its file, written the moment
-// he left it. Its decoders, frames, decoded sound and preview elements are let go
-// (projectResources.ts). Waking it is opening a project, the path the Projects
+// he left it. Its decoders, frames and preview elements are let go, and its sound
+// and thumbnails one switch later (projectResources.ts). Waking it is opening a
+// project, the path the Projects
 // dialog always took, which is why that dialog's Open now lands here too.
 //
 // ⛔ THE UNDO HISTORY IS KEPT ONLY WHILE IT STILL DESCRIBES THE DOCUMENT. It is a

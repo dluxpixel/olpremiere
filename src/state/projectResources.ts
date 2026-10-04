@@ -14,15 +14,15 @@
 // So there are two kinds of thing here, and they are let go at different times.
 //
 // HEAVY, released as soon as an edit is left: decoders, decoded frames, the
-// preview's <video> and <img> elements, decoded and denoised sound, the strip
-// <video>, the queued preview copies, the title rasters and the renderer's
-// textures. These are the gigabytes and the CPU.
+// preview's <video> and <img> elements, denoised sound, the strip <video>, the
+// queued preview copies, the title rasters and the renderer's textures. These
+// are the gigabytes and the CPU.
 //
-// CHEAP, kept for the edit he just left and released one switch later: the
-// waveform peaks, the filmstrip thumbnails and the media URLs. A few megabytes
-// at most, and they are what makes a clip come back with its picture and its
-// waveform already drawn when he clicks straight back, which is the switch he
-// makes most (copying between two edits).
+// KEPT ONE SWITCH LONGER for the edit he just left: its decoded sound (inside
+// the audio budget), the waveform peaks, the filmstrip thumbnails and the media
+// URLs. They are what makes a clip come back with its picture, its waveform and
+// its sound ready when he clicks straight back, which is the switch he makes
+// most (copying between two edits).
 //
 // ⛔ AND THE HEAVY HALF RUNS AFTER THE SWITCH, NOT IN IT. Measured 2026-10-03 in
 // the real app on copies of Green and mc night: unloading the left edit's video
@@ -72,17 +72,22 @@ function keysOf(media: Media): Set<string> {
 /** What the edit on screen uses right now, asked when a queued release finally runs. */
 const onScreen = (): Media => mediaOf(useStore.getState().project)
 
-/** Decoders, frames, elements and sound for one asset. Its proxy state went at the switch. */
+/** Decoders, frames, elements and denoised sound for one asset. Its proxy state went at the switch. */
 function releaseHeavy(a: MediaAsset): void {
   evictAsset(a.id)
   disposePreviewAsset(a.id)
-  forgetAssetAudio(a.id)
   invalidateDenoise(a.id)
   releaseStripVideo(a.id)
 }
 
-/** Thumbnails, waveform and URLs for one asset. */
+/** Decoded sound, thumbnails, waveform and URLs for one asset. */
 function releaseCheap(a: MediaAsset, keepKeys: ReadonlySet<string>): void {
+  // The decoded sound is kept with the thumbnails, for the same quick way back:
+  // re-decoding it was the biggest single cost of waking an edit (50 to 75 ms of
+  // main thread on Green, measured 2026-10-04). It cannot grow past its own
+  // budget (engine/audio.ts), which evicts the least recently used first, so the
+  // edit on screen always wins the room.
+  forgetAssetAudio(a.id)
   forgetAssetPeaks(a.id)
   forgetAssetStrips(a.id)
   if (!keepKeys.has(a.blobKey)) revokeBlobUrl(a.blobKey)
