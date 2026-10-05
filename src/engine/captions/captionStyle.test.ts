@@ -51,9 +51,19 @@ const style = (over: Partial<CaptionStyle> = {}): CaptionStyle => ({
 const wordsIn = (chunks: { text: string }[]): string[] => chunks.flatMap((c) => c.text.split(/\s+/))
 
 describe('a style that leaves the length on auto', () => {
-  it('cuts exactly what every caption run has cut since the length was measured', () => {
+  it('cuts exactly what every caption run has cut since the length was measured, on the frames', () => {
     const words = [...said('so i went to the store and bought some apples'), ...said('then i came home', 3)]
-    expect(chunkWords(words, chunkOptionsFor(AUTO_SHAPE, 30))).toEqual(chunkWords(words, AUTO_CAPTION_OPTIONS))
+    expect(chunkWords(words, chunkOptionsFor(AUTO_SHAPE, 30))).toEqual(chunkWords(words, { ...AUTO_CAPTION_OPTIONS, fps: 30 }))
+  })
+
+  it('puts every caption edge on a frame of the sequence', () => {
+    const words = [...said('so i went to the store and bought some apples'), ...said('then i came home', 3)]
+    for (const fps of [24, 25, 30, 60]) {
+      for (const c of chunkWords(words, chunkOptionsFor(AUTO_SHAPE, fps))) {
+        expect(c.startS * fps).toBeCloseTo(Math.round(c.startS * fps), 6)
+        expect(c.endS * fps).toBeCloseTo(Math.round(c.endS * fps), 6)
+      }
+    }
   })
 })
 

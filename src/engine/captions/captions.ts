@@ -14,6 +14,7 @@ import type { Clip, TitleDef } from '../types'
 import { newTitleClip } from '../types'
 import { applyAppearanceToClip } from '../anim/appearance'
 import { CAPTION_FONT_STACK } from '../render/titleFonts'
+import { quantizeToFrame } from '../timecode'
 import { wordFixFor, type StyleProfile } from './styleProfile'
 
 /** One spoken word with its absolute timeline window, seconds. */
@@ -85,6 +86,17 @@ export interface ChunkOptions {
    * still land on the voice.
    */
   gapS?: number
+  /**
+   * The sequence's frame rate. Given, every caption starts and ends ON a frame,
+   * the way every clip placed from his media has since 2026-10-03 (timeline.ts
+   * startOnFrame). 0 (the default) leaves the times as the words gave them.
+   *
+   * Measured on his GYM take: 38 of 40 captions had an edge between two frames.
+   * A frame shows a clip from the first frame at or after its start, so an edge
+   * between frames is a caption that comes on up to a frame LATE, and one the
+   * playhead can never stand on to trim it.
+   */
+  fps?: number
 }
 
 const CHUNK_DEFAULTS: Required<ChunkOptions> = {
@@ -103,6 +115,7 @@ const CHUNK_DEFAULTS: Required<ChunkOptions> = {
   mergeShort: false,
   maxOnScreenS: Infinity, // legacy callers keep the transcriber's word length
   gapS: 0,
+  fps: 0,
 }
 
 /**
@@ -148,6 +161,7 @@ export const PHRASE_CAPTION_OPTIONS: Required<ChunkOptions> = {
   mergeShort: true,
   maxOnScreenS: Infinity,
   gapS: 0,
+  fps: 0,
 }
 
 /**
@@ -248,6 +262,8 @@ export const AUTO_CAPTION_OPTIONS: Required<ChunkOptions> = {
   // something he actually said.
   maxOnScreenS: 1.3,
   gapS: 0,
+  // Set from the sequence by chunkOptionsFor (captionStyle.ts).
+  fps: 0,
 }
 
 /** Ends a sentence → the next word starts a fresh chunk. */
@@ -581,7 +597,40 @@ export function chunkWords(words: CaptionWord[], options: ChunkOptions = {}): Ca
       c.endS = Math.min(c.endS, Math.max(next.startS - o.gapS, c.startS + room / 2))
     }
   }
+  if (o.fps > 0) putOnFrames(chunks, o.fps, o.minDurS, o.gapS)
   return chunks.filter((c) => c.endS - c.startS > 1e-6)
+}
+
+/**
+ * Every edge to the NEAREST frame, in place. Nearest, not later: a frame
+ * already shows a caption from the first frame at or after its start, so an
+ * edge between frames was always rounded up, a caption that comes on late by
+ * half a frame on average. Two captions that met still meet, because the edge
+ * they share rounds to the same frame, and a gap the style asked for in whole
+ * frames stays whole.
+ *
+ * Rounding never costs a caption its style's shortest time: one that had it
+ * keeps it, out of the room before the next caption and its gap, and the next
+ * caption's start is never pushed for it, because that start is the word
+ * landing. And a
+ * caption is never left shorter than one frame: the one after it moves over
+ * instead, because a caption nobody can see is a word lost.
+ */
+function putOnFrames(chunks: CaptionChunk[], fps: number, minDurS: number, gapS: number): void {
+  const frame = 1 / fps
+  const minFrames = Math.ceil(minDurS * fps - 1e-6)
+  for (let i = 0; i < chunks.length; i++) {
+    const c = chunks[i]!
+    const hadMin = c.endS - c.startS >= minDurS - 1e-9
+    c.startS = quantizeToFrame(c.startS, fps)
+    if (i > 0) c.startS = Math.max(c.startS, chunks[i - 1]!.endS)
+    c.endS = Math.max(quantizeToFrame(c.endS, fps), quantizeToFrame(c.startS + frame, fps))
+    const next = chunks[i + 1]
+    if (hadMin && c.endS - c.startS < minDurS - 1e-9) {
+      const room = next ? quantizeToFrame(next.startS - gapS, fps) : Infinity
+      c.endS = Math.max(c.endS, Math.min(room, quantizeToFrame(c.startS + minFrames * frame, fps)))
+    }
+  }
 }
 
 /**

@@ -50,6 +50,12 @@ export interface WhisperModel {
   gpuDtype?: Record<string, Weights>
   /** Weights on the wasm fallback. */
   wasmDtype: Record<string, Weights>
+  /**
+   * How late this model's word timestamps run, in seconds, MEASURED against his
+   * own voice (wordTiming.ts). Captions pull every word earlier by it. A model
+   * added without measuring it gets 0, which leaves its times as it gives them.
+   */
+  wordLagS: number
 }
 
 const TURBO: WhisperModel = {
@@ -61,6 +67,8 @@ const TURBO: WhisperModel = {
   // The int8 ("q8") decoder trips onnxruntime's MatMulNBits pass; the q4
   // decoder is built for it and loads cleanly. Same rule as the small models had.
   wasmDtype: { encoder_model: 'q8', decoder_model_merged: 'q4' },
+  // Measured 2026-10-05 on his own takes: see wordTiming.ts.
+  wordLagS: 0.18,
 }
 
 /** The model each language runs on: the same one for all three. */

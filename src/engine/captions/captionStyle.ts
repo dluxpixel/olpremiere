@@ -209,7 +209,10 @@ export function sameShape(a: CaptionShape, b: CaptionShape): boolean {
  */
 export function chunkOptionsFor(shape: CaptionShape, fps: number): ChunkOptions {
   const gapS = shape.gapFrames > 0 ? shape.gapFrames / Math.max(1, fps) : 0
-  if (shape.length === 'auto') return { ...AUTO_CAPTION_OPTIONS, minDurS: shape.minDurS, gapS }
+  // Every caption on the sequence's frames (captions.ts putOnFrames). A rate
+  // that is not a real one leaves the times alone rather than inventing a grid.
+  const onFrames = Number.isFinite(fps) && fps > 0 ? fps : 0
+  if (shape.length === 'auto') return { ...AUTO_CAPTION_OPTIONS, minDurS: shape.minDurS, gapS, fps: onFrames }
   return {
     ...AUTO_CAPTION_OPTIONS,
     targetS: 0,
@@ -218,6 +221,7 @@ export function chunkOptionsFor(shape: CaptionShape, fps: number): ChunkOptions 
     maxOnScreenS: Math.min(8, AUTO_CAPTION_OPTIONS.maxOnScreenS + 0.6 * (shape.maxWords - 1)),
     minDurS: shape.minDurS,
     gapS,
+    fps: onFrames,
   }
 }
 

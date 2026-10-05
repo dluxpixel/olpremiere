@@ -45,10 +45,13 @@ vi.mock('../engine/captions/transcribe', async (importOriginal) => {
     transcribePcm: () => ({ promise: Promise.resolve(said[listening.id] ?? []), cancel: () => {} }),
   }
 })
+/** The recogniser's lag the caption doors take off (wordTiming.ts). 0 unless a test sets it. */
+const lag = { s: 0 }
 vi.mock('../engine/captions/transcribeConfig', () => ({
   getCaptionLanguage: () => 'en',
   getCaptionEmphasis: () => false,
   modelFor: () => 'onnx-community/whisper-small.en_timestamped',
+  whisperModel: () => ({ wordLagS: lag.s }),
 }))
 vi.mock('../engine/captions/voiceActivity', async (importOriginal) => {
   const real = await importOriginal<typeof import('../engine/captions/voiceActivity')>()
@@ -117,6 +120,7 @@ const PAUSED_VOICE = voice(3, [
 ])
 
 beforeEach(() => {
+  lag.s = 0
   toasted.length = 0
   for (const k of Object.keys(said)) delete said[k]
   for (const k of Object.keys(voices)) delete voices[k]
@@ -183,5 +187,54 @@ describe('the listening step itself', () => {
     ])
     const trimmed = await wordsForClip(clip, asset('a'), { trimToVoice: true })
     expect(trimmed[0]!.endS).toBeCloseTo(0.15, 6)
+  })
+})
+
+describe('captions land when he says the word', () => {
+  // The recogniser stamps every word late (wordTiming.ts, measured on his own
+  // takes). Here it heard "so nice." 0.18 s after he said it.
+  const LATE = [chunk('so', 0.68, 1.0), chunk('nice.', 1.0, 1.5)]
+  const SAID = voice(3, [[0.5, 1.32]])
+
+  it('a caption door takes the lag off, so the caption comes on as he starts the word', async () => {
+    lag.s = 0.18
+    seed([{ id: 'a', startS: 0, outS: 3 }])
+    said['clip-a'] = LATE
+    voices['clip-a'] = SAID
+    await autoCaptionFromClip('clip-a')
+    const vids = videoTracks(activeSequence(useStore.getState().project))
+    const caps = vids[vids.length - 1]!.clips
+    expect(caps.map((c) => c.title?.text)).toEqual(['so nice'])
+    expect(caps[0]!.startS).toBeCloseTo(0.5, 6)
+  })
+
+  it('the Words panel and the silence cutter keep the recogniser timings, lag and all', async () => {
+    lag.s = 0.18
+    seed([{ id: 'a', startS: 0, outS: 3 }])
+    said['clip-a'] = LATE
+    voices['clip-a'] = SAID
+    const clip = activeSequence(useStore.getState().project)
+      .tracks.flatMap((t) => t.clips)
+      .find((c) => c.id === 'clip-a')!
+    const plain = await wordsForClip(clip, asset('a'))
+    expect(plain.map((x) => [x.text, x.startS, x.endS])).toEqual([
+      ['so', 0.68, 1.0],
+      ['nice.', 1.0, 1.5],
+    ])
+  })
+
+  it('every caption starts and ends on a frame of the sequence', async () => {
+    seed([{ id: 'a', startS: 0, outS: 3 }])
+    said['clip-a'] = [chunk('go', 0.013, 0.271), chunk('now.', 0.271, 0.533)]
+    voices['clip-a'] = voice(3, [[0, 0.533]])
+    await autoCaptionFromClip('clip-a')
+    const seq = activeSequence(useStore.getState().project)
+    const vids = videoTracks(seq)
+    const caps = vids[vids.length - 1]!.clips
+    expect(caps.length).toBeGreaterThan(0)
+    for (const c of caps) {
+      expect(c.startS * seq.fps).toBeCloseTo(Math.round(c.startS * seq.fps), 6)
+      expect((c.startS + (c.outS - c.inS)) * seq.fps).toBeCloseTo(Math.round((c.startS + (c.outS - c.inS)) * seq.fps), 6)
+    }
   })
 })
