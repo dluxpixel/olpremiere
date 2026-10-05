@@ -16,7 +16,8 @@ import { dropWordsWithoutVoice, trimWordsToVoice, voiceTrackForClip } from '../e
 import { dropWordsInMusic, isPureMusic, type SpeechTrack } from '../engine/captions/musicGate'
 import { musicTrackForClip } from '../engine/captions/musicAnalysis'
 import { applyRewrites, type Vocabulary } from '../engine/captions/vocabulary'
-import { getCaptionEmphasis, getCaptionLanguage, modelFor } from '../engine/captions/transcribeConfig'
+import { getCaptionEmphasis, getCaptionLanguage, modelFor, whisperModel } from '../engine/captions/transcribeConfig'
+import { DIP_ENVELOPE_HOP_S, correctWordLag, meetAtDips, snapOnsetsToVoice } from '../engine/captions/wordTiming'
 import { clipEmitsAudio } from '../engine/audio'
 import { clipEndS } from '../engine/timeline'
 import { activeSequence, type Clip, type MediaAsset } from '../engine/types'
@@ -150,6 +151,10 @@ export async function wordsForClip(
   // Whisper run of tens of seconds for the same audio. It is also spent while
   // the model is still loading, so it does not extend the wait at all.
   const envelope = getCaptionEmphasis() ? speechEnvelope(pcm, TRANSCRIBE_SAMPLE_RATE) : null
+  // Finer loudness for where one word meets the next (wordTiming.meetAtDips),
+  // taken here for the same reason and at the same cost: one pass, 100 floats
+  // per second. Captions only.
+  const loudness = opts.trimToVoice ? speechEnvelope(pcm, TRANSCRIBE_SAMPLE_RATE, DIP_ENVELOPE_HOP_S) : null
   // The persisted language pick (CaptionsDialog) drives every caption door.
   const run = transcribePcm(pcm, getCaptionLanguage(), (p) =>
     useTranscribe.setState({ status: p.phase, pct: p.pct, downloading: p.downloading ?? false }),
@@ -207,7 +212,21 @@ export async function wordsForClip(
   // the timings it was measured on. That is safe for its one-flag-per-caption
   // promise, because trimming only ever widens a gap: it can split a caption,
   // never join two.
-  const timed = track && opts.trimToVoice ? trimWordsToVoice(marked, track) : marked
+  //
+  // ⛔ AND FIRST EVERY WORD IS PUT WHERE HE SAID IT, for captions. His words,
+  // 2026-10-04: *"Timing between captions"*. Measured against his own voice,
+  // the recogniser stamps every word about a fifth of a second late, so every
+  // caption came on after he had started the word (wordTiming.ts). The lag is
+  // taken off before the pauses are looked for, so the pause search sees the
+  // words where they are, and a word that opens a phrase then lands on the
+  // frame his voice comes on.
+  //
+  // CAPTIONS ONLY, like the trim: the Words panel and the silence cutter keep
+  // the timings their own margins were tuned on.
+  if (!opts.trimToVoice) return timelineWords(marked, clip)
+  const unlagged = correctWordLag(marked, whisperModel(modelFor(getCaptionLanguage())).wordLagS)
+  const onTime = loudness ? meetAtDips(unlagged, loudness, DIP_ENVELOPE_HOP_S) : unlagged
+  const timed = track ? snapOnsetsToVoice(trimWordsToVoice(onTime, track), track) : onTime
   return timelineWords(timed, clip)
 }
 

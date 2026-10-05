@@ -53,6 +53,9 @@ vi.mock('../engine/captions/transcribeConfig', () => ({
   // against the machine's. A mock missing it fails the run at the call site
   // rather than at the assertion, which reads like the feature is broken.
   modelFor: () => 'onnx-community/whisper-small.en_timestamped',
+  // The lag the caption doors take off every word (wordTiming.ts). None here:
+  // this file is about which clips are heard, not where their words land.
+  whisperModel: () => ({ wordLagS: 0 }),
 }))
 // The voice detector has NO opinion here (no wasm in node), which is the path
 // that has to keep every word Whisper heard. Its own rule is tested against a

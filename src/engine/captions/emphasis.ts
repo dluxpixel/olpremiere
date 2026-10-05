@@ -166,9 +166,11 @@ const SILENCE_FLOOR_DB = -60
  * 20 ms RMS windows over mono PCM. One pass, and it must be taken BEFORE the
  * audio is handed to the transcriber: `transcribePcm` transfers the buffer to
  * its worker and leaves the caller's Float32Array detached with length zero.
+ * The caption timing (wordTiming.ts) asks for 10 ms windows, a word edge being
+ * finer than a word's loudness.
  */
-export function speechEnvelope(pcm: ArrayLike<number>, sampleRate: number): Float32Array {
-  const hop = Math.max(1, Math.round(ENVELOPE_HOP_S * sampleRate))
+export function speechEnvelope(pcm: ArrayLike<number>, sampleRate: number, hopS: number = ENVELOPE_HOP_S): Float32Array {
+  const hop = Math.max(1, Math.round(hopS * sampleRate))
   const n = Math.floor(pcm.length / hop)
   const env = new Float32Array(Math.max(0, n))
   for (let i = 0; i < n; i++) {
