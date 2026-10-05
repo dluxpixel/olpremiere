@@ -9,6 +9,7 @@
 
 import { create } from 'zustand'
 import type { UpdateStatus } from '../../electron/ipc-types'
+import { isKnownUpdateMessage, updateFailureMessage } from '../../electron/updateErrors'
 import { displayVersion } from '../appVersion'
 
 interface UpdateFeed {
@@ -52,6 +53,10 @@ export function updateLine(status: UpdateStatus | null): string | null {
       return `Update ${displayVersion(status.version)} downloaded. Restart to install`
     case 'none':
       return 'Up to date'
+    case 'pending':
+      // The newest release is on GitHub but still being published. That is neither
+      // "up to date" (it might not be) nor a failure, so it is said once, quietly.
+      return 'An update is on its way, it will show up shortly'
     case 'error':
       // Silence that looks like progress is what misled him for weeks, so the two
       // failures read differently: no answer at all vs. an answer that failed.
@@ -81,11 +86,24 @@ export function bootDetailFor(status: UpdateStatus): string {
       return `update ${displayVersion(status.version)} downloaded`
     case 'none':
       return 'up to date'
+    case 'pending':
+      return 'on its way'
     case 'error':
       return status.message === TIMED_OUT ? 'no answer' : 'check failed'
     case 'unsupported':
       return 'dev build'
   }
+}
+
+/**
+ * What the failed-check toast says. ⛔ ONLY EVER ONE OF THE FIXED SENTENCES MAIN SENDS
+ * (electron/updateErrors.ts). On 2026-10-04 this toast printed the updater's raw text,
+ * a URL, the response headers and a stack trace, so the last step does not trust what
+ * it is handed: anything that is not one of those sentences, from an older shell or a
+ * path nobody has written yet, becomes the generic one.
+ */
+export function updateErrorToast(message: string): string {
+  return isKnownUpdateMessage(message) ? message : updateFailureMessage('other')
 }
 
 /** True once the check has an answer that will not change again. */

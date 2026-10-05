@@ -93,7 +93,9 @@ try {
     console.log('▶ patch release, so the packaged app check is skipped (no window on his screen)')
   }
 
-  // Generate latest.yml + create the tag + published release + upload all assets.
+  // Generate latest.yml + create the tag + a DRAFT release + upload all assets, and
+  // publish it only once every file is on it at its real size (githubRelease.mjs).
+  // A failure here leaves a draft nobody can see, and running this again clears it.
   await runLoggedRetry('node scripts/publish.mjs', 'upload to GitHub', shipLog)
 } catch (e) {
   console.error(`\n❌ v${version} did not publish. ${e.message}`)

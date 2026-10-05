@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { UpdateStatus } from '../../electron/ipc-types'
-import { TIMED_OUT, bootDetailFor, updateLine, updateInHand } from './updateStatus'
+import { updateFailureMessage } from '../../electron/updateErrors'
+import { TIMED_OUT, bootDetailFor, updateErrorToast, updateLine, updateInHand } from './updateStatus'
 
 // This is the honesty contract for the update line: every state the updater can be
 // in must read as itself. The failure that started all of this was a check that
@@ -53,6 +54,7 @@ describe('updateLine', () => {
       { kind: 'downloading', version: '1', percent: 0 },
       { kind: 'downloaded', version: '1' },
       { kind: 'none' },
+      { kind: 'pending' },
       { kind: 'error', message: 'x' },
       { kind: 'unsupported' },
     ]
@@ -76,7 +78,44 @@ describe('updateInHand', () => {
   it('is false when there is nothing to say', () => {
     expect(updateInHand(null)).toBe(false)
     expect(updateInHand({ kind: 'none' })).toBe(false)
+    expect(updateInHand({ kind: 'pending' })).toBe(false)
     expect(updateInHand({ kind: 'unsupported' })).toBe(false)
     expect(updateInHand({ kind: 'error', message: 'nope' })).toBe(false)
+  })
+})
+
+// A release that is still being published is not an error and not "up to date". It
+// reads as itself, quietly, and it must not look like a failure on the boot card.
+describe('a release still being published', () => {
+  it('says so plainly, in a line that is not an apology or a warning', () => {
+    const line = updateLine({ kind: 'pending' })
+    expect(line).toBe('An update is on its way, it will show up shortly')
+    expect(line).not.toMatch(/fail|error|could not|[\u2013\u2014]/i)
+  })
+
+  it('has a short row detail that fits the boot card and does not read as a failure', () => {
+    const detail = bootDetailFor({ kind: 'pending' })
+    expect(detail).toBe('on its way')
+    expect(detail.length).toBeLessThanOrEqual(24)
+    expect(detail).not.toBe(bootDetailFor({ kind: 'error', message: 'x' }))
+  })
+})
+
+// ⛔ The toast is the last place a raw updater message could reach his screen, as it did
+// on 2026-10-04 (a URL, the response headers and a stack trace). It shows the fixed
+// sentences main sends and nothing else.
+describe('updateErrorToast', () => {
+  it('passes through each sentence main sends, unchanged', () => {
+    for (const k of ['offline', 'denied', 'publishing', 'other'] as const) {
+      expect(updateErrorToast(updateFailureMessage(k))).toBe(updateFailureMessage(k))
+    }
+  })
+
+  it('replaces anything else, however it got here, with the plain generic sentence', () => {
+    const raw =
+      'Cannot find latest.yml in the latest release artifacts (https://github.com/dluxpixel/olpremiere/releases/download/v3.22.0/latest.yml): HttpError: 404\nheaders: {}\n    at x (y.js:1:1)'
+    expect(updateErrorToast(raw)).toBe(updateFailureMessage('other'))
+    expect(updateErrorToast('')).toBe(updateFailureMessage('other'))
+    expect(updateErrorToast(raw)).not.toMatch(/http|404|latest\.yml|headers|\n/i)
   })
 })

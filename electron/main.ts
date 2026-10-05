@@ -44,6 +44,8 @@ import * as proxy from './proxy'
 import * as mediaStore from './mediaStore'
 import * as remux from './remux'
 import { IDLE_POLL_MS, updateApplyDecision } from './updateApply'
+import { planUpdateError, updateLogEntry } from './updateErrors'
+import { appendUpdateLog, UPDATE_LOG_NAME } from './updateLog'
 import electronUpdater from 'electron-updater'
 
 const { autoUpdater } = electronUpdater
@@ -269,7 +271,7 @@ function setUpdateStatus(status: UpdateStatus): void {
   // A terminal answer ends his click's authority. Without this the flag leaks into
   // the fifteen minute poll and a card opens over his timeline unbidden, which is
   // the exact thing the flag exists to prevent.
-  if (status.kind === 'none' || status.kind === 'downloaded' || status.kind === 'error') userAsked = false
+  if (status.kind === 'none' || status.kind === 'downloaded' || status.kind === 'error' || status.kind === 'pending') userAsked = false
 }
 
 /**
@@ -900,16 +902,48 @@ app.whenReady().then(() => {
     let idleApplyTimer: ReturnType<typeof setInterval> | null = null
     autoUpdater.autoDownload = true
     autoUpdater.autoInstallOnAppQuit = true // a pending update also installs on any quit
+    // How many checks in a row found a release that is still being published, and
+    // the pending look-again that follows one. See ./updateErrors.
+    let publishingStreak = 0
+    let recheckTimer: ReturnType<typeof setTimeout> | null = null
+    const recheckSoon = (ms: number): void => {
+      if (recheckTimer) clearTimeout(recheckTimer)
+      recheckTimer = setTimeout(() => {
+        recheckTimer = null
+        // Only if nothing has moved on since: his click or the fifteen minute poll
+        // may already have asked, and a second check over a live one helps no one.
+        if (updateStatus.kind !== 'pending') return
+        setUpdateStatus({ kind: 'checking' })
+        void autoUpdater.checkForUpdatesAndNotify()
+      }, ms)
+    }
     autoUpdater.on('error', (e) => {
-      // NEVER swallow this. A silent failure here is indistinguishable from "no
-      // update available", which is exactly how a dead update feed (an
-      // unreachable repo, a 404 on latest.yml) hid for weeks.
-      const msg = e instanceof Error ? e.message : String(e)
+      // ⛔ NEVER SWALLOW THIS, but "say it to him" and "keep it" are different jobs.
+      // A silent failure here is indistinguishable from "no update available",
+      // which is exactly how a dead update feed (an unreachable repo, a 404 on
+      // latest.yml) hid for weeks. So EVERY failure is kept, in full, in the log.
+      //
+      // What reaches HIS screen is decided by planUpdateError, and since 2026-10-04
+      // it is one plain sentence. That day a release was visible on GitHub while its
+      // installer was still uploading, and the toast was the updater's raw text: a
+      // URL, the response headers and a stack trace, for a check that would have
+      // passed a minute later. A release still being published says nothing and
+      // looks again soon; one that stays "still publishing" for about an hour is
+      // said out loud, because that is a dead feed.
+      const plan = planUpdateError(e, publishingStreak)
+      publishingStreak = plan.streak
       console.error('OL Premiere auto-update error:', e)
-      mainWindow?.webContents.send('update:error', msg)
-      setUpdateStatus({ kind: 'error', message: msg })
+      appendUpdateLog(path.join(app.getPath('logs'), UPDATE_LOG_NAME), updateLogEntry(new Date(), plan, e))
+      if (plan.message === null) {
+        setUpdateStatus({ kind: 'pending' })
+        if (plan.retryInMs !== null) recheckSoon(plan.retryInMs)
+        return
+      }
+      mainWindow?.webContents.send('update:error', plan.message)
+      setUpdateStatus({ kind: 'error', message: plan.message })
     })
     autoUpdater.on('update-not-available', () => {
+      publishingStreak = 0
       mainWindow?.webContents.send('update:none')
       setUpdateStatus({ kind: 'none' })
     })
@@ -917,6 +951,7 @@ app.whenReady().then(() => {
     // say how far it has got. A 240 MB installer arriving in silence is the thing
     // that made the app look stuck on "checking".
     autoUpdater.on('update-available', (info) => {
+      publishingStreak = 0
       pendingVersion = info.version
       setUpdateStatus({ kind: 'available', version: info.version })
     })

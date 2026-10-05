@@ -61,6 +61,7 @@ import { isRestartUnsafe } from './state/unloadGuard'
 import { updateActiveSequence, useStore, zoomIn, zoomOut } from './state/store'
 import { reloadAndCheckForUpdates } from './state/reloadApp'
 import { useToasts } from './state/toasts'
+import { updateErrorToast } from './state/updateStatus'
 import { APP_VERSION, LAST_SEEN_VERSION_KEY, checkForUpdate, displayVersion } from './appVersion'
 import { olApi } from './platform'
 import { ContextMenu } from './ui/ContextMenu'
@@ -541,6 +542,12 @@ export default function App() {
   // indistinguishable from "you're up to date", which is exactly how an
   // unreachable release feed (404) hid for weeks while the app silently never
   // updated. If the check can't run, the user gets told.
+  //
+  // ⛔ IN ONE PLAIN SENTENCE, 2026-10-04. A release that was still uploading made
+  // this toast print the updater's raw text: a URL, the response headers and a
+  // stack trace. Main now sends only a fixed sentence (and says nothing at all for
+  // a release that is still being published, which sorts itself out in minutes),
+  // and updateErrorToast refuses to show anything else. The details are in the log.
   useEffect(
     () =>
       olApi?.onUpdateError?.((message) => {
@@ -549,11 +556,9 @@ export default function App() {
         // app was open, saying the same thing each time.
         if (updateErrorShown.current) return
         updateErrorShown.current = true
-        useToasts
-          .getState()
-          .show(`Update check failed. You may not be on the newest version. ${message}`, 'danger', undefined, {
-            durationMs: 12_000,
-          })
+        useToasts.getState().show(updateErrorToast(message), 'danger', undefined, {
+          durationMs: 12_000,
+        })
       }),
     [],
   )

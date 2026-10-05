@@ -68,6 +68,13 @@ export type UpdateStatus =
   | { kind: 'downloading'; version: string; percent: number; transferred?: number; total?: number }
   | { kind: 'downloaded'; version: string }
   | { kind: 'none' }
+  /**
+   * The newest release is on GitHub but its files are not all there yet, because it
+   * is still being published. Not an error: it settles in minutes, main checks again
+   * on its own, and nothing is shown beyond a quiet line. See ./updateErrors.
+   */
+  | { kind: 'pending' }
+  /** `message` is one fixed sentence (see ./updateErrors), never the updater's raw text. */
   | { kind: 'error'; message: string }
   /** Unpackaged/dev build: no updater runs, so there is nothing to report. */
   | { kind: 'unsupported' }
