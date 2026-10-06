@@ -75,74 +75,84 @@ const BAR_CONTROLS: Array<{ name: string; locate: (p: Page) => ReturnType<Page['
   { name: 'Full screen', locate: (p) => p.getByTestId('fullscreen-toggle') },
 ]
 
+/**
+ * Every control on the bar, whole and clear of the next one. `word` is what the aspect picker shows:
+ * the Phone shape's word is one letter longer than 16:9's, and the bar has to hold that at every size too.
+ */
+async function barFits(page: Page, s: (typeof SIZES)[number], word: '16:9' | 'Phone'): Promise<void> {
+  await open(page, s.w, s.h, s.left, s.right)
+  if (word === 'Phone') await page.getByTestId('format-select').selectOption('phone')
+  const bar = (await page.getByTestId('transport-bar').boundingBox())!
+  const boxes: Array<{ name: string; x: number; y: number; width: number; height: number }> = []
+  for (const c of BAR_CONTROLS) {
+    const el = c.locate(page)
+    await expect(el, `${c.name} is on the bar`).toBeVisible()
+    boxes.push({ name: c.name, ...(await el.boundingBox())! })
+  }
+
+  for (const b of boxes) {
+    // On the bar, all of it: nothing pushed past an edge or clipped by one.
+    expect(b.x, `${b.name} inside the bar, left`).toBeGreaterThanOrEqual(bar.x)
+    expect(b.x + b.width, `${b.name} inside the bar, right`).toBeLessThanOrEqual(bar.x + bar.width)
+    expect(b.y, `${b.name} inside the bar, top`).toBeGreaterThanOrEqual(bar.y)
+    expect(b.y + b.height, `${b.name} inside the bar, bottom`).toBeLessThanOrEqual(bar.y + bar.height + 0.5)
+  }
+  // Clear of each other.
+  for (let i = 0; i < boxes.length; i++) {
+    for (let j = i + 1; j < boxes.length; j++) {
+      const a = boxes[i]
+      const b = boxes[j]
+      const w = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x)
+      const h = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y)
+      expect(w > 1 && h > 1, `${a.name} and ${b.name} overlap`).toBe(false)
+    }
+  }
+
+  // The two selects say the short name and are no wider than it needs: "16:9" and "Full", a
+  // box of about 50px each. Before, they were 69 and 82 wide with blank space inside.
+  const face = (id: string) =>
+    page.getByTestId(id).evaluate((el) => ({
+      text: (el.querySelector('selectedcontent') as HTMLElement | null)?.innerText.trim() ?? '',
+      width: el.getBoundingClientRect().width,
+    }))
+  const aspect = await face('format-select')
+  expect(aspect.text).toBe(word)
+  expect(aspect.width).toBeGreaterThanOrEqual(36)
+  expect(aspect.width).toBeLessThanOrEqual(word === 'Phone' ? 70 : 62)
+  const preview = await face('preview-quality')
+  expect(preview.text).toBe('Full')
+  expect(preview.width).toBeGreaterThanOrEqual(36)
+  expect(preview.width).toBeLessThanOrEqual(62)
+
+  // The time is never cut. (Where the total length has no room it is dropped whole.)
+  const time = page.getByTestId('timecode')
+  expect(await time.evaluate((el) => el.parentElement!.scrollWidth <= el.parentElement!.clientWidth)).toBe(true)
+
+  // Play is on the centre of the bar wherever the bar has the room to put it there.
+  const tier = await page.getByTestId('transport-bar').getAttribute('data-tier')
+  if (tier !== 'compact') {
+    const play = boxes.find((b) => b.name === 'Play')!
+    expect(Math.abs(play.x + play.width / 2 - (bar.x + bar.width / 2))).toBeLessThanOrEqual(2)
+  }
+
+  // The way out of full screen is pinned to the bar's bottom right corner: the same 8px in from
+  // the right at every size, and level with the last row of controls.
+  const full = boxes.find((b) => b.name === 'Full screen')!
+  expect(Math.round(bar.x + bar.width - (full.x + full.width))).toBe(8)
+  expect(Math.round(bar.y + bar.height - (full.y + full.height))).toBe(8)
+}
+
 for (const s of SIZES) {
-  test(`the transport bar fits every control at ${s.name}`, async ({ page }) => {
-    await open(page, s.w, s.h, s.left, s.right)
-    const bar = (await page.getByTestId('transport-bar').boundingBox())!
-    const boxes: Array<{ name: string; x: number; y: number; width: number; height: number }> = []
-    for (const c of BAR_CONTROLS) {
-      const el = c.locate(page)
-      await expect(el, `${c.name} is on the bar`).toBeVisible()
-      boxes.push({ name: c.name, ...(await el.boundingBox())! })
-    }
-
-    for (const b of boxes) {
-      // On the bar, all of it: nothing pushed past an edge or clipped by one.
-      expect(b.x, `${b.name} inside the bar, left`).toBeGreaterThanOrEqual(bar.x)
-      expect(b.x + b.width, `${b.name} inside the bar, right`).toBeLessThanOrEqual(bar.x + bar.width)
-      expect(b.y, `${b.name} inside the bar, top`).toBeGreaterThanOrEqual(bar.y)
-      expect(b.y + b.height, `${b.name} inside the bar, bottom`).toBeLessThanOrEqual(bar.y + bar.height + 0.5)
-    }
-    // Clear of each other.
-    for (let i = 0; i < boxes.length; i++) {
-      for (let j = i + 1; j < boxes.length; j++) {
-        const a = boxes[i]
-        const b = boxes[j]
-        const w = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x)
-        const h = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y)
-        expect(w > 1 && h > 1, `${a.name} and ${b.name} overlap`).toBe(false)
-      }
-    }
-
-    // The two selects say the short name and are no wider than it needs: "16:9" and "Full", a
-    // box of about 50px each. Before, they were 69 and 82 wide with blank space inside.
-    const face = (id: string) =>
-      page.getByTestId(id).evaluate((el) => ({
-        text: (el.querySelector('selectedcontent') as HTMLElement | null)?.innerText.trim() ?? '',
-        width: el.getBoundingClientRect().width,
-      }))
-    const aspect = await face('format-select')
-    expect(aspect.text).toBe('16:9')
-    expect(aspect.width).toBeGreaterThanOrEqual(36)
-    expect(aspect.width).toBeLessThanOrEqual(62)
-    const preview = await face('preview-quality')
-    expect(preview.text).toBe('Full')
-    expect(preview.width).toBeGreaterThanOrEqual(36)
-    expect(preview.width).toBeLessThanOrEqual(62)
-
-    // The time is never cut. (Where the total length has no room it is dropped whole.)
-    const time = page.getByTestId('timecode')
-    expect(await time.evaluate((el) => el.parentElement!.scrollWidth <= el.parentElement!.clientWidth)).toBe(true)
-
-    // Play is on the centre of the bar wherever the bar has the room to put it there.
-    const tier = await page.getByTestId('transport-bar').getAttribute('data-tier')
-    if (tier !== 'compact') {
-      const play = boxes.find((b) => b.name === 'Play')!
-      expect(Math.abs(play.x + play.width / 2 - (bar.x + bar.width / 2))).toBeLessThanOrEqual(2)
-    }
-
-    // The way out of full screen is pinned to the bar's bottom right corner: the same 8px in from
-    // the right at every size, and level with the last row of controls.
-    const full = boxes.find((b) => b.name === 'Full screen')!
-    expect(Math.round(bar.x + bar.width - (full.x + full.width))).toBe(8)
-    expect(Math.round(bar.y + bar.height - (full.y + full.height))).toBe(8)
-  })
+  test(`the transport bar fits every control at ${s.name}`, async ({ page }) => barFits(page, s, '16:9'))
+  // His ask, 2026-10-05: the Phone shape in the picker. "Phone" is longer than "16:9", so it is the case
+  // that could push a control off the bar at the smallest window.
+  test(`the transport bar fits every control with the Phone shape picked, at ${s.name}`, async ({ page }) => barFits(page, s, 'Phone'))
 }
 
 test('the aspect list and the Preview list open with the full names', async ({ page }) => {
   await open(page, 1280, 720, 280, 450)
   for (const [id, closed, listed] of [
-    ['format-select', '16:9', ['16:9 Wide', '9:16 Shorts', '1:1 Square']],
+    ['format-select', '16:9', ['16:9 Wide', '9:16 Shorts', 'Phone screen: TikTok and Reels', '1:1 Square']],
     ['preview-quality', 'Full', ['Full quality', 'Half (faster)', 'Quarter (fastest)']],
   ] as const) {
     const select = page.getByTestId(id)

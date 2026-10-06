@@ -133,6 +133,37 @@ describe('firstSupported', () => {
     expect(H264_CODECS).toContain('avc1.640033') // High L5.1 for 4K uploads
     expect(H264_CODECS.length).toBeGreaterThanOrEqual(4)
   })
+
+  // His ask, 2026-10-05: the phone screen shape, 1080 x 2112. That is 68 x 132 = 8976 macroblocks, which
+  // is MORE than Level 4.0 holds (8192), so the first rung cannot honestly describe it. The browser's
+  // own probe (firstSupported) decides which rung it accepts; what has to be true is that the ladder
+  // has a rung that really holds the frame, at 60 fps too. Measured in headless Chromium: the exported
+  // file declares level 5.0 (e2e/phone-format.spec.ts reads it back).
+  it('has a rung that really holds a 1080 x 2112 frame, and the first one that does is High L5.0', () => {
+    // H.264 Table A-1, by level_idc (the last two hex digits of an avc1 string).
+    const limits: Record<number, { maxFs: number; maxMbps: number }> = {
+      0x1f: { maxFs: 3600, maxMbps: 108000 },
+      0x28: { maxFs: 8192, maxMbps: 245760 },
+      0x32: { maxFs: 22080, maxMbps: 589824 },
+      0x33: { maxFs: 36864, maxMbps: 983040 },
+      0x34: { maxFs: 36864, maxMbps: 2073600 },
+    }
+    const mbs = Math.ceil(1080 / 16) * Math.ceil(2112 / 16)
+    expect(mbs).toBe(8976)
+    const holds = (codec: string, fps: number): boolean => {
+      const l = limits[parseInt(codec.slice(-2), 16)]
+      return l !== undefined && mbs <= l.maxFs && mbs * fps <= l.maxMbps
+    }
+    // 1080 x 1920 (8160) still fits the first rung, and the phone shape does not.
+    expect(Math.ceil(1080 / 16) * Math.ceil(1920 / 16)).toBeLessThanOrEqual(limits[0x28].maxFs)
+    expect(holds(H264_CODECS[0], 30)).toBe(false)
+    for (const fps of [24, 30, 60]) {
+      const first = H264_CODECS.find((c) => holds(c, fps))
+      expect(first, `${fps} fps`).toBe('avc1.640032')
+    }
+    // And the rungs above it hold it too, so a browser that refuses 5.0 can still land on 5.1 or 5.2.
+    expect(H264_CODECS.filter((c) => holds(c, 60))).toEqual(['avc1.640032', 'avc1.640033', 'avc1.640034'])
+  })
 })
 
 // The SD golden-byte fence: the whole quality overhaul must be a NO-OP below HD,

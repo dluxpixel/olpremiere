@@ -52,6 +52,12 @@ export function containerExt(encoder: NativeEncoder): 'mov' | 'mp4' {
  * Applies only where 4.2 can hold the frame: at most 8704 macroblocks a frame
  * and 522240 a second (1920x1080 and 1080x1920 up to 60 fps). Anything larger
  * or faster keeps x264's own choice, which is the only correct one there.
+ *
+ * The phone screen shape, 1080x2112 (his ask, 2026-10-05), is 8976 macroblocks, just past that
+ * edge, so it is x264's choice too. MEASURED on the bundled binary with these exact arguments:
+ * level 5.1, 16 reference frames, a level every phone decodes and one that really holds the frame
+ * (5.1 allows 36864 macroblocks a frame). src/engine/export/phoneExport.test.ts runs the real
+ * encoder and fails if it ever writes anything but 5.0 or 5.1 there.
  */
 export function x264LevelArgs(width: number, height: number, fps: number): string[] {
   const mbs = Math.ceil(width / 16) * Math.ceil(height / 16)

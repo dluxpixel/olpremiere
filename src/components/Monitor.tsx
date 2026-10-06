@@ -32,6 +32,7 @@ import { Tooltip } from '../ui/Tooltip'
 import { usePhoneLayout } from '../ui/phoneLayout'
 import { MASTER_METER_W, MasterMeter } from './MasterMeter'
 import { FrameSettingsMenu } from './FrameSettingsMenu'
+import { CUSTOM_FORMAT_KEY, FORMAT_OPTIONS, FORMATS, aspectKeyFor } from './frameFormats'
 import { fitCanvasBox } from './monitorSizing'
 import { barClasses, groupClasses, pinnedClasses, settingsClasses, showsTotalLength, timeClasses, transportTier } from './transportLayout'
 import { drawIsDue, previewFrameMs } from './previewCap'
@@ -40,40 +41,12 @@ import { PlayheadTimecode } from './PlayheadWidgets'
 
 type Quality = 1 | 0.5 | 0.25
 
-// Aspect presets. Switching one reformats the sequence AND scales clips to fill.
-const FORMATS = [
-  { key: '16:9', label: '16:9 Wide', w: 1920, h: 1080 },
-  { key: '9:16', label: '9:16 Shorts', w: 1080, h: 1920 },
-  { key: '1:1', label: '1:1 Square', w: 1080, h: 1080 },
-] as const
-
-/** Shown when the sequence is a shape no preset covers. Never selectable. */
-const CUSTOM_FORMAT_KEY = '__custom'
-
-/** The closed select says "9:16"; the list says "9:16 Shorts" (CompactSelect). */
-const FORMAT_OPTIONS: readonly CompactOption[] = FORMATS.map((f) => ({ value: f.key, short: f.key, long: f.label }))
-
-/** Same: "Full" on the bar, "Full quality" in the list. The values are the render scale. */
+/** "Full" on the bar, "Full quality" in the list (CompactSelect). The values are the render scale. */
 const QUALITY_OPTIONS: readonly CompactOption[] = [
   { value: '1', short: 'Full', long: 'Full quality' },
   { value: '0.5', short: 'Half', long: 'Half (faster)' },
   { value: '0.25', short: 'Quarter', long: 'Quarter (fastest)' },
 ]
-
-/**
- * Which preset this sequence IS, by its actual shape.
- *
- * ⛔ IT USED TO ASK WHETHER h > w, WHICH IS NOT A RATIO. Any tall sequence that
- * was not exactly 9:16 read back as "9:16 Shorts": a 4:5 project showed the
- * wrong label in the one control that tells him what he is exporting, and
- * touching anything else in the row would have snapped it to a real 9:16.
- */
-function aspectKeyFor(w: number, h: number): string {
-  if (!(w > 0) || !(h > 0)) return CUSTOM_FORMAT_KEY
-  const a = w / h
-  const hit = FORMATS.find((f) => Math.abs(f.w / f.h - a) < 1e-4)
-  return hit ? hit.key : CUSTOM_FORMAT_KEY
-}
 
 // The preview never needs to redraw faster than this. The <video> upload +
 // composite is the frame's real cost, so on a 144/240 Hz display an uncapped
@@ -671,11 +644,14 @@ export function Monitor() {
                 a lot of blank space"). The closed select says the short name and the list that opens
                 says the full one. It used to be sized to its longest option plus room for the arrow,
                 which is where the blank space was; that arrow is part of the face now, so it can no
-                longer be painted through the label (photographed 2026-08-18). */}
+                longer be painted through the label (photographed 2026-08-18).
+                The Phone shape (2026-10-05) is a longer word than "16:9", so its face is a little wider,
+                and only by what the word needs: measured 50.8px for "16:9" and 63.1px for "Phone", the
+                same padding around the label in both (e2e/phone-format.spec.ts holds that). */}
             <CompactSelect
               testId="format-select"
               label="Aspect ratio"
-              title="Aspect ratio: the shape of the video. 16:9 is widescreen, 9:16 is a vertical Short, 1:1 is square."
+              title="Aspect ratio: the shape of the video. 16:9 is widescreen, 9:16 is a tall Short, Phone is a little taller so it fills a phone screen in TikTok and Reels, 1:1 is square."
               value={aspectKey}
               options={formatOptions}
               onChange={(key) => {

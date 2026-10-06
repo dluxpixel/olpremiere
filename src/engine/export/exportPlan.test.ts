@@ -42,6 +42,33 @@ describe('exportRaster', () => {
     expect(exportRaster(1080, 1080)).toEqual({ width: 1080, height: 1080 })
   })
 
+  // His ask, 2026-10-05: the phone screen shape for TikTok and Reels, 1080 x 2112. The file must be
+  // exactly that, so a phone clip filling the frame in the preview is a file with no bands in it.
+  it('exports the phone screen shape at exactly 1080 x 2112', () => {
+    expect(exportRaster(1080, 2112)).toEqual({ width: 1080, height: 2112 })
+  })
+
+  it('has no bigger size to raise the phone shape into: the 1440p box was removed, 2026-07-26', () => {
+    // A bigger export would have to be an even size of the SAME shape. There is no such option any
+    // more (see exportRaster), so what is pinned is that nothing makes the phone frame bigger or
+    // changes its shape, whichever way it is asked for.
+    const r = exportRaster(1080, 2112)
+    expect(r.width).toBeLessThanOrEqual(1080)
+    expect(r.height).toBeLessThanOrEqual(2112)
+    expect(r.width / r.height).toBeCloseTo(1080 / 2112, 12)
+    // Its own smaller and bigger copies stay as they are, and stay even.
+    for (const [w, h] of [
+      [540, 1056],
+      [720, 1408],
+      [1440, 2816],
+    ]) {
+      const s = exportRaster(w, h)
+      expect(s).toEqual({ width: w, height: h })
+      expect(s.width % 2).toBe(0)
+      expect(s.height % 2).toBe(0)
+    }
+  })
+
   it('leaves a big timeline exactly as it is', () => {
     expect(exportRaster(2560, 1440)).toEqual({ width: 2560, height: 1440 })
     expect(exportRaster(3840, 2160)).toEqual({ width: 3840, height: 2160 })
@@ -140,5 +167,18 @@ describe('planExport', () => {
     const p = planExport(seq({ width: 1080, height: 1920 }))
     expect(p.settings.width).toBe(1080)
     expect(p.settings.height).toBe(1920)
+  })
+
+  it('renders a phone screen timeline at 1080 x 2112, as an HD constant quality H.264 file', () => {
+    const p = planExport(seq({ width: 1080, height: 2112 }))
+    expect(p.settings.width).toBe(1080)
+    expect(p.settings.height).toBe(2112)
+    // HD, so the quality path and the 320 kbps audio apply, the same as the Shorts shape.
+    expect(p.settings.rateControl).toBe('quantizer')
+    expect(p.settings.quantizer).toBe(EXPORT_QP)
+    expect(p.settings.videoCodec).toBe('avc')
+    expect(p.settings.audioBitrate).toBe(EXPORT_AUDIO_BITRATE)
+    expect(p.settings.videoBitrate).toBeGreaterThan(0)
+    expect(p.nativeEncoder).toBe('x264')
   })
 })

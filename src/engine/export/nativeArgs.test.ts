@@ -225,6 +225,19 @@ describe('native export arguments', () => {
     expect(x264LevelArgs(1080, 1920, 64)).toEqual(['-level:v', '4.2'])
   })
 
+  it('leaves the level to x264 for the phone screen shape, 1080 x 2112, which is just past 4.2', () => {
+    // 68 x 132 = 8976 macroblocks, over 4.2's 8704, so a 4.2 pin would be a lie about the frame.
+    // x264 writes 5.1 here (measured, electron/phoneExport.test.ts runs the real encoder), a level
+    // every phone decodes. Pinned so a change to the rule shows up on this shape on purpose.
+    expect(Math.ceil(1080 / 16) * Math.ceil(2112 / 16)).toBe(8976)
+    for (const fps of [24, 30, 60]) expect(x264LevelArgs(1080, 2112, fps), `${fps} fps`).toEqual([])
+    const args = videoEncoderArgs(cfg({ width: 1080, height: 2112 }))
+    expect(args).toEqual(['-c:v', 'libx264', '-preset', 'veryslow', '-crf', '14', '-pix_fmt', 'yuv420p'])
+    // And the raw frames are fed at exactly the phone raster.
+    const all = buildArgs(cfg({ width: 1080, height: 2112 }), null, 'o.mp4')
+    expect(all[all.indexOf('-video_size') + 1]).toBe('1080x2112')
+  })
+
   it('never pins a level on lossless, whose bitrate no 4.x level allows', () => {
     expect(videoEncoderArgs(cfg({ encoder: 'lossless' }))).not.toContain('-level:v')
   })

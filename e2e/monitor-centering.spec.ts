@@ -36,12 +36,14 @@ async function boot(page: Page): Promise<void> {
   await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
 }
 
-test('the picture and the play button sit on the same centre, in 16:9 and in 9:16', async ({
+test('the picture and the play button sit on the same centre, in 16:9, in 9:16 and in the phone shape', async ({
   page,
 }) => {
   await boot(page)
 
-  for (const format of ['16:9', '9:16'] as const) {
+  // The phone shape (1080 x 2112, his ask 2026-10-05) is a narrower strip than 9:16, so the same 33px would
+  // show even more there.
+  for (const format of ['16:9', '9:16', 'phone'] as const) {
     await page.getByTestId('format-select').selectOption(format)
     // The canvas is sized imperatively in the draw loop, so give the rAF that
     // follows the format switch a frame to land before measuring.
