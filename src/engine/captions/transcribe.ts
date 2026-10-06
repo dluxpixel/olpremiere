@@ -223,12 +223,59 @@ function collapsePhraseLoops(words: readonly TranscribedWord[]): TranscribedWord
 }
 
 /**
+ * Below this a word is too short to have been said: the loops measured on his
+ * backing bed ran 0.03 s a word, and a spoken word is several times that.
+ */
+const LOOP_WORD_S = 0.08
+
+/**
+ * Collapse ONE word the recogniser got stuck on, keeping one copy stretched
+ * over the whole stuck stretch.
+ *
+ * ⛔ A WORD SAID TWICE WITH NO GAP IS SPEECH, NOT A LOOP. This used to absorb
+ * any repeat that started less than 0.12 s after the one before, on the
+ * belief that "actually saying a word twice leaves a real gap". Measured on
+ * his own voice it does not: 97 of 131 word boundaries inside a phrase are
+ * exactly 0.00 s (captions.ts, maxGapS). So "go go go", "no no no", "bye bye"
+ * and "very very good" lost every repeat, from the captions and the Words tab.
+ *
+ * What a loop really looks like is in the measurement: words far too short to
+ * have been said, three or more in a row. A copy that starts before the one
+ * before it has ended is the model writing the same word twice over the same
+ * moment (a chunk seam), so it goes too. Anything else is kept, and a loop
+ * over silence that slips through is still removed by the voice filter after
+ * this (voiceActivity.dropWordsWithoutVoice).
+ */
+function collapseWordLoops(words: readonly TranscribedWord[]): TranscribedWord[] {
+  const out: TranscribedWord[] = []
+  let i = 0
+  while (i < words.length) {
+    const first = { ...words[i] }
+    let j = i + 1
+    while (j < words.length && norm(words[j].text) === norm(first.text) && words[j].startS - words[j - 1].endS < LOOP_GAP_S) j++
+    const repeats = words.slice(i + 1, j)
+    out.push(first)
+    if (repeats.length + 1 >= MIN_LOOP_REPEATS && repeats.every((r) => r.endS - r.startS < LOOP_WORD_S)) {
+      first.endS = Math.max(first.endS, ...repeats.map((r) => r.endS))
+    } else {
+      for (const r of repeats) {
+        const prev = out[out.length - 1]
+        if (r.startS < prev.endS - 1e-9) prev.endS = Math.max(prev.endS, r.endS)
+        else out.push({ ...r })
+      }
+    }
+    i = j
+  }
+  return out
+}
+
+/**
  * Repair what the recogniser actually got wrong, before any of it becomes
  * captions. Four real artifacts, each deterministic:
  *
- *  - LOOPS. On a stutter or a stretch of near-silence Whisper repeats a token,
- *    sometimes many times. An immediate repeat of the same word with no real gap
- *    is the recogniser skipping, never speech. The same failure also happens to
+ *  - LOOPS. On a stretch of near-silence Whisper repeats a token, sometimes
+ *    many times, each copy far too short to have been said (collapseWordLoops,
+ *    which says why a gapless repeat alone is NOT a loop). The same failure also happens to
  *    whole PHRASES over long instrumental audio, which this word by word test
  *    cannot see because no two ADJACENT words match, so collapsePhraseLoops
  *    above handles that shape.
@@ -271,21 +318,12 @@ export function tidyTranscribedWords(words: readonly TranscribedWord[]): Transcr
       // Never closed. Fall through and keep it: see tagRunEnd.
     }
     if (isPunctuationOnly(text)) continue
-    const prev = out[out.length - 1]
-    // A repeat with no audible gap is the model skipping, not the speaker
-    // saying it twice. Absorb the skipped span into the word we kept, so a run
-    // of loops collapses to one caption covering the whole stretch (and so the
-    // NEXT repeat is still measured against a gap that has not gone stale).
-    if (prev && norm(prev.text) === norm(text) && w.startS - prev.endS < 0.12) {
-      prev.endS = Math.max(prev.endS, w.endS)
-      continue
-    }
     out.push({ ...w, text })
   }
 
-  // Then the phrase-sized version of the same loop, which needs the whole list
-  // rather than one word at a time.
-  const kept = collapsePhraseLoops(out)
+  // Then the recogniser's loops: one word stuck, then a whole phrase stuck,
+  // which needs the whole list rather than one word at a time.
+  const kept = collapsePhraseLoops(collapseWordLoops(out))
 
   // Trailing invention: only when it sits after a real pause, so a video that
   // really does end on those words keeps them.

@@ -91,15 +91,36 @@ describe('tidyTranscribedWords', () => {
   const w = (text: string, startS: number, endS: number) => ({ text, startS, endS })
 
   it('collapses a recogniser loop but keeps a genuine repeat', () => {
-    // Whisper skipping: the same token again with no audible gap.
+    // Whisper skipping: the same token over and over, far too short to be said.
     const looped = tidyTranscribedWords([
-      w('the', 0.0, 0.2), w('the', 0.2, 0.4), w('the', 0.4, 0.6), w('wall', 0.6, 1.0),
+      w('the', 0.0, 0.02), w('the', 0.02, 0.04), w('the', 0.04, 0.06), w('wall', 0.6, 1.0),
     ])
     expect(looped.map((x) => x.text)).toEqual(['the', 'wall'])
+    expect(looped[0].endS).toBeCloseTo(0.06, 9)
 
-    // Actually saying a word twice leaves a real gap between them.
+    // A repeat after a real gap was always kept.
     const real = tidyTranscribedWords([w('go', 0.0, 0.3), w('go', 0.9, 1.2)])
     expect(real).toHaveLength(2)
+  })
+
+  // ⛔ CA-2. His words tile with NO gap inside a phrase (97 of 131 boundaries
+  // measured at exactly 0.00 s), so a gap could never tell a loop from him
+  // saying a word twice, and every one of these lost its repeats.
+  it('keeps a word he really says twice or three times, back to back', () => {
+    const tile = (said: string[], dur: number) => said.map((t, i) => w(t, i * dur, (i + 1) * dur))
+    expect(tidyTranscribedWords(tile(['very', 'very', 'good'], 0.3)).map((x) => x.text)).toEqual(['very', 'very', 'good'])
+    expect(tidyTranscribedWords(tile(['no', 'no', 'no'], 0.25)).map((x) => x.text)).toEqual(['no', 'no', 'no'])
+    expect(tidyTranscribedWords(tile(['go', 'go', 'go', 'one', 'more'], 0.2)).map((x) => x.text)).toEqual([
+      'go', 'go', 'go', 'one', 'more',
+    ])
+    expect(tidyTranscribedWords(tile(['bye', 'bye'], 0.3)).map((x) => x.text)).toEqual(['bye', 'bye'])
+    expect(tidyTranscribedWords(tile(['I', 'I', 'think'], 0.15)).map((x) => x.text)).toEqual(['I', 'I', 'think'])
+  })
+
+  it('still drops a copy written over the same moment, which no one can say', () => {
+    // A chunk seam: "my" then "my" again 0.02 s later, on top of the first.
+    const out = tidyTranscribedWords([w('my', 20.72, 21), w('my', 20.74, 21), w('god', 21, 21.3)])
+    expect(out.map((x) => x.text)).toEqual(['my', 'god'])
   })
 
   describe('a bare stage direction, which no bracket filter can see', () => {
@@ -164,8 +185,8 @@ describe('tidyTranscribedWords', () => {
     const different = tidyTranscribedWords([w('ó', 0, 0.2), w('á', 0.25, 0.5)])
     expect(different.map((x) => x.text)).toEqual(['ó', 'á'])
 
-    // A real repeat of the same accented word with no audible gap still collapses.
-    const looped = tidyTranscribedWords([w('ó', 0, 0.2), w('ó', 0.25, 0.5)])
+    // A loop of the same accented word still collapses.
+    const looped = tidyTranscribedWords([w('ó', 0, 0.03), w('ó', 0.03, 0.06), w('ó', 0.06, 0.09)])
     expect(looped.map((x) => x.text)).toEqual(['ó'])
   })
 
