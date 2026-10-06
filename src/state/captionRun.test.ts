@@ -170,6 +170,40 @@ describe('captioning a selection', () => {
     expect(captionsOn(seq()).some(({ clip }) => clip.id === 'old-edge')).toBe(false)
   })
 
+  /** Run one caption pass with `during` done to the timeline while the clip is heard. */
+  async function whileHeard(id: string, during: (c: Clip) => Clip): Promise<void> {
+    const ears = captionEars.wordsForClip
+    captionEars.wordsForClip = async (...args) => {
+      const words = await ears(...args)
+      updateActiveSequence('he edits while it listens', (sq) => ({
+        ...sq,
+        tracks: sq.tracks.map((t) => ({ ...t, clips: t.clips.map((c) => (c.id === id ? during(c) : c)) })),
+      }))
+      return words
+    }
+    try {
+      await captionTheseClips([id])
+    } finally {
+      captionEars.wordsForClip = ears
+    }
+  }
+
+  it('one clip moved while it is heard is captioned where it is now (CA-16)', async () => {
+    const { b } = seed()
+    await whileHeard(b, (c) => ({ ...c, startS: c.startS + 2 }))
+    const caps = captionsOn(seq())
+    expect(caps.length).toBeGreaterThan(0)
+    expect(caps[0]!.clip.startS).toBeCloseTo(5, 6)
+    expect(caps.every(({ clip }) => clip.startS >= 5 - 1e-9)).toBe(true)
+  })
+
+  it('one clip trimmed while it is heard lays nothing, and says why', async () => {
+    const { b } = seed()
+    await whileHeard(b, (c) => ({ ...c, outS: 0.5 }))
+    expect(captionsOn(seq())).toHaveLength(0)
+    expect(toasted).toContain('That clip changed while it was being heard, so nothing was captioned')
+  })
+
   it('uses the default caption style, length and all', async () => {
     const { a, b, c } = seed()
     const three = saveNewCaptionStyle({

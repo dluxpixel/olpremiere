@@ -386,8 +386,23 @@ export async function autoCaptionFromClip(clipId: string, style?: CaptionStyle):
   }
 
   try {
-    const words = await captionEars.wordsForClip(clip, asset, { trimToVoice: true, vocabulary: await currentVocabulary() })
-    if (words.length === 0) {
+    const heard = await captionEars.wordsForClip(clip, asset, { trimToVoice: true, vocabulary: await currentVocabulary() })
+    // ⛔ READ THE CLIP AGAIN AFTER LISTENING, as the sweep does. Listening takes
+    // seconds and the timeline is not blocked, so a clip he dragged meanwhile
+    // was captioned at the spot it USED to sit. A move only shifts the words.
+    // A trim or a speed change means the words no longer match the clip, and
+    // guessing would put captions on the wrong words, so nothing is laid.
+    const live = activeSequence(useStore.getState().project)
+      .tracks.flatMap((t) => t.clips)
+      .find((c) => c.id === clipId)
+    const shift = live ? live.startS - clip.startS : 0
+    const words = shift === 0 ? heard : heard.map((w) => ({ ...w, startS: w.startS + shift, endS: w.endS + shift }))
+    if (!live || live.inS !== clip.inS || live.outS !== clip.outS || live.speed !== clip.speed || live.assetId !== clip.assetId) {
+      toasts.show(
+        live ? 'That clip changed while it was being heard, so nothing was captioned' : 'That clip left the timeline while it was being heard, so nothing was captioned',
+        'danger',
+      )
+    } else if (words.length === 0) {
       toasts.show('No speech found in the clip', 'danger')
     } else {
       // No style passed (the right-click door) falls back to his DEFAULT style,
@@ -398,7 +413,7 @@ export async function autoCaptionFromClip(clipId: string, style?: CaptionStyle):
         model: modelFor(getCaptionLanguage()),
         // The clip it heard, not the box around the words it found: a re-run
         // replaces every old caption in this clip, and none in the next one.
-        coveredSpans: [{ startS: clip.startS, endS: clipEndS(clip) }],
+        coveredSpans: [{ startS: live.startS, endS: clipEndS(live) }],
       })
     }
   } catch (err) {
