@@ -76,6 +76,18 @@ const api: OlApi = {
     return () => ipcRenderer.off('update:none', l)
   },
   restartToUpdate: () => ipcRenderer.send('update:install'),
+  onBeforeClose: (cb: () => void) => {
+    const l = () => cb()
+    ipcRenderer.on('app:beforeClose', l)
+    // Main holds a close only for a page that said it will answer, so a page
+    // that never got this far (a crash at boot) still closes at once.
+    ipcRenderer.send('app:closeGate', true)
+    return () => {
+      ipcRenderer.off('app:beforeClose', l)
+      ipcRenderer.send('app:closeGate', false)
+    }
+  },
+  closeReady: (saved: boolean) => ipcRenderer.send('app:closeReady', saved),
   setUpdateBusy: (on: boolean) => ipcRenderer.send('update:busy', on),
   getUpdateStatus: (): Promise<UpdateStatus> => ipcRenderer.invoke('update:status:get'),
   checkForUpdates: (): Promise<void> => ipcRenderer.invoke('update:check'),

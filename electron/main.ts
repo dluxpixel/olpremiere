@@ -5,7 +5,7 @@
 // the web. The origin (`app://olpremiere`) is PINNED forever: changing it (or
 // the appId/productName) would orphan the user's IndexedDB.
 
-import { app, BrowserWindow, dialog, Menu, net, protocol, ipcMain, powerMonitor, session, shell } from 'electron'
+import { app, BrowserWindow, dialog, Menu, net, protocol, ipcMain, powerMonitor, session, shell, type WebContents } from 'electron'
 
 // ⛔ ONE COPY OF THE APP AT A TIME. Two launches, a slow first start plus an
 // impatient second click, or a copy still alive after a crash, used to start a
@@ -44,6 +44,7 @@ import * as proxy from './proxy'
 import * as mediaStore from './mediaStore'
 import * as remux from './remux'
 import { IDLE_POLL_MS, updateApplyDecision } from './updateApply'
+import { CLOSE_SAVE_TIMEOUT_MS, createCloseGate, type CloseGate } from './closeGate'
 import { planUpdateError, updateLogEntry } from './updateErrors'
 import { appendUpdateLog, UPDATE_LOG_NAME } from './updateLog'
 import electronUpdater from 'electron-updater'
@@ -117,8 +118,15 @@ let mainWindow: BrowserWindow | null = null
 let installing = false
 /** After the window is gone, how long the engine gets to finish writing before the installer runs. */
 const INSTALL_FLUSH_MS = 1500
-/** How long to wait for the window to close before installing the old way regardless. */
-const INSTALL_CLOSE_TIMEOUT_MS = 5000
+/**
+ * How long to wait for the window to close before installing the old way regardless.
+ * Longer than the close gate's own wait, so the install never cuts the save short.
+ */
+const INSTALL_CLOSE_TIMEOUT_MS = CLOSE_SAVE_TIMEOUT_MS + 2000
+/** Stops a waiting install when he chose to stay in a close whose save failed. */
+let cancelInstall: (() => void) | null = null
+/** Each editor page's close gate, found by the page that answers it. See ./closeGate. */
+const closeGates = new WeakMap<WebContents, CloseGate>()
 
 /**
  * The splash: its own frameless, transparent, always-on-top window, floating over
@@ -491,10 +499,45 @@ function createWindow(): void {
     // A reload he chose over a running export (below) is exactly this.
     void native.cancel()
   }
-  win.webContents.on('did-start-navigation', (e) => {
-    if (e.isMainFrame && !e.isSameDocument) dropOrphans()
+  // ⛔ A CLOSE WAITS FOR HIS LAST EDIT TO BE WRITTEN. See ./closeGate for why.
+  // His X and an update restart (win.close() in 'update:install') both land
+  // here; the page writes everything and answers, and only then does the window
+  // go. The export question below still comes, on that second close.
+  const gate = createCloseGate({
+    askToSave: () => win.webContents.send('app:beforeClose'),
+    closeNow: () => {
+      if (!win.isDestroyed()) win.close()
+    },
+    confirmCloseUnsaved: () =>
+      dialog.showMessageBoxSync(win, {
+        type: 'warning',
+        buttons: ['Stay', 'Close anyway'],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+        title: 'Not saved',
+        message: 'Your last changes could not be saved.',
+        detail: 'If you close now, they are lost. Stay, then use Back up to a file to keep them.',
+      }) === 1,
+    onStay: () => cancelInstall?.(),
+    setTimer: (fn, ms) => setTimeout(fn, ms),
+    clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
   })
-  win.webContents.on('render-process-gone', dropOrphans)
+  closeGates.set(win.webContents, gate)
+  win.on('close', (e) => {
+    if (gate.onClose()) e.preventDefault()
+  })
+
+  win.webContents.on('did-start-navigation', (e) => {
+    if (!e.isMainFrame || e.isSameDocument) return
+    dropOrphans()
+    // The next page arms its own gate once it can answer.
+    gate.pageGone()
+  })
+  win.webContents.on('render-process-gone', () => {
+    dropOrphans()
+    gate.pageGone()
+  })
 
   // ⛔ LEAVING DURING AN EXPORT ASKS FIRST. The page refuses to unload while one
   // runs (src/state/unloadGuard.ts), and on its own that refusal is silent: the
@@ -518,6 +561,8 @@ function createWindow(): void {
     })
     // Here preventDefault means "overrule the page": the close goes ahead.
     if (choice === 1) e.preventDefault()
+    // He kept the export, so the window stays, and his next close saves again.
+    else gate.onCloseRefused()
   })
 
   if (isDev) {
@@ -794,6 +839,11 @@ app.whenReady().then(() => {
   })
   ipcMain.on('boot:enter', () => enterEditor())
 
+  // The close gate's two messages, each found by the page that sent it, so no
+  // other window can arm or answer the editor's close. See ./closeGate.
+  ipcMain.on('app:closeGate', (e, on: unknown) => closeGates.get(e.sender)?.arm(on === true))
+  ipcMain.on('app:closeReady', (e, saved: unknown) => closeGates.get(e.sender)?.onReply(saved === true))
+
   // The update card. Every one guarded on the SENDER, the way boot:shrink is: any
   // other renderer asking to shrink or quit this window is not this window.
   ipcMain.on('update:show', (e) => {
@@ -1034,7 +1084,7 @@ app.whenReady().then(() => {
     // So: close the window, wait for it to be gone, give the engine a moment to
     // finish writing, and only then install. If the window will not close (an
     // export he chose to restart through anyway), fall back to the old path
-    // after five seconds rather than leave the update stuck.
+    // after INSTALL_CLOSE_TIMEOUT_MS rather than leave the update stuck.
     ipcMain.on('update:install', () => {
       const win = mainWindow
       if (!win || win.isDestroyed()) {
@@ -1046,7 +1096,16 @@ app.whenReady().then(() => {
       const go = (): void => {
         if (done) return
         done = true
+        cancelInstall = null
         autoUpdater.quitAndInstall(true, true)
+      }
+      // The close saves first (./closeGate). If that save failed and he chose
+      // to stay, the update waits: installing over him would close the window
+      // he just said to keep, with his last changes unwritten.
+      cancelInstall = () => {
+        done = true
+        installing = false
+        cancelInstall = null
       }
       win.once('closed', () => setTimeout(go, INSTALL_FLUSH_MS))
       setTimeout(go, INSTALL_CLOSE_TIMEOUT_MS)

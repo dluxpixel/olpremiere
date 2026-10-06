@@ -33,6 +33,12 @@ export interface Binding {
    * that event ONLY when the keydown was left alone (state/picturePaste.ts).
    */
   allowDefault?: boolean
+  /**
+   * Also runs while he is typing in a text field, after that field is left so
+   * what he typed is in the project first. Only Ctrl+S wants it: a save that
+   * does nothing from inside a caption is the moment he trusts it most.
+   */
+  inFields?: boolean
 }
 
 const isMac = typeof navigator !== 'undefined' && /Mac|iP(hone|ad|od)/.test(navigator.platform)
@@ -63,11 +69,14 @@ export function isEditableTarget(target: EventTarget | null): boolean {
 export function installKeymap(bindings: Binding[]): () => void {
   const byCombo = new Map(bindings.map((b) => [b.combo, b]))
   const onKeyDown = (e: KeyboardEvent) => {
-    if (isEditableTarget(e.target)) return
+    const inField = isEditableTarget(e.target)
     const combo = comboFromEvent(e)
     const binding = byCombo.get(combo)
-    if (!binding) return
+    if (!binding || (inField && !binding.inFields)) return
     if (!binding.allowDefault) e.preventDefault()
+    // Caption, title and name fields write to the project when they lose focus,
+    // so leaving the field first is what puts his last words in the save.
+    if (inField) (e.target as HTMLElement).blur()
     // The usage log: which key, and what it is for. Before the run, so the log reads in order.
     noteShortcut(combo, binding.description, e.repeat)
     binding.run(e)

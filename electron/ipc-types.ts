@@ -290,6 +290,14 @@ export interface OlApi {
   /** Quit and install the downloaded update now. Relaunches into the new version. */
   restartToUpdate(): void
   /**
+   * The editor window is closing (his X, or an update restart). Main holds the
+   * close until `closeReady` answers. Registering arms that hold for this page.
+   * Returns an unsubscribe fn.
+   */
+  onBeforeClose(cb: () => void): () => void
+  /** The answer to `onBeforeClose`: true when every edit is written. */
+  closeReady(saved: boolean): void
+  /**
    * Tell main that a restart right now would destroy something: an in-browser
    * export, a live microphone, a take waiting to be kept. Main cannot see any of
    * those, so without this it would keep offering to relaunch mid take.
