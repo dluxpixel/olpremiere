@@ -1,5 +1,5 @@
 import { Eye, EyeOff, Gauge, Headphones, Link2, Lock, LockOpen, Mic, Music as MusicIcon, Unlink, Volume2, VolumeX } from 'lucide-react'
-import { useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { memo, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { syncLockOf, type AutoLevel, type Track } from '../engine/types'
 import { deleteTrack, setTrackAudioRole, setTrackAutoLevel, setTrackPan, setTrackVolumeDb } from '../state/trackEdits'
 import { openContextMenu } from '../state/contextMenu'
@@ -77,7 +77,12 @@ const AUDIO_ROLES: { key: Track['audioRole']; label: string }[] = [
   { key: 'music', label: 'Music (ducks under voice)' },
 ]
 
-export function TrackHeader({ track }: { track: Track }) {
+/**
+ * Memoized on its one prop: the track object is replaced only when that track
+ * changes, so a scroll, a zoom or an edit on another line no longer re-renders
+ * every header.
+ */
+export const TrackHeader = memo(function TrackHeader({ track }: { track: Track }) {
   const phone = usePhoneLayout()
   // The line Ctrl+V pastes onto (pasteTarget.ts): clicking the header names it,
   // the same as clicking an empty spot in its lane. A press on one of the
@@ -319,4 +324,4 @@ export function TrackHeader({ track }: { track: Track }) {
       )}
     </div>
   )
-}
+})

@@ -7,6 +7,13 @@ import type { LanesViewport } from './timelineLanes'
  * Only clips intersecting the visible time range (+ one full viewport of
  * margin each side, so ordinary scrolling never pops clips in at the edge)
  * are mounted. Until the first measure, everything renders (null viewport).
+ *
+ * ⛔ A SCROLL MOVES THE WINDOW ONLY ONCE IT HAS GONE HALF A SCREEN. Setting it on
+ * every scroll frame re-rendered every lane (each walking all its clips), every
+ * track header and the ruler, 60 times a second, for a window that already
+ * carries a whole screen of margin each side. Within half a screen of the last
+ * measure the visible slice is still well inside that margin, so nothing new
+ * can need mounting. A resize, and a zoom (measureViewportNow), always measure.
  */
 export function useLanesViewport(lanesRef: RefObject<HTMLDivElement | null>): {
   viewport: LanesViewport | null
@@ -22,7 +29,12 @@ export function useLanesViewport(lanesRef: RefObject<HTMLDivElement | null>): {
     scrollRafRef.current = requestAnimationFrame(() => {
       scrollRafRef.current = 0
       const el = lanesRef.current
-      if (el) setViewport({ left: el.scrollLeft, width: el.clientWidth })
+      if (!el) return
+      const left = el.scrollLeft
+      const width = el.clientWidth
+      setViewport((prev) =>
+        prev && prev.width === width && Math.abs(left - prev.left) <= width / 2 ? prev : { left, width },
+      )
     })
   }, [lanesRef])
   useEffect(() => {
