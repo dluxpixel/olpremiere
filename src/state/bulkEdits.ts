@@ -22,7 +22,7 @@ import { activeSequence, newId, type AnimChannel, type Clip, type Curve, type Ke
 // isClipArmed comes from the SINGLE-clip module on purpose: the multi-select
 // align has to ask the exact question the gizmo asks, off the exact same code,
 // or the two paths drift the way they did when one read a global preference.
-import { isClipArmed, playheadLocalT, transitionFor } from './clipEdits'
+import { isAppearanceOwned, isClipArmed, playheadLocalT, transitionFor, withOwnedBase } from './clipEdits'
 import { noteRecentEffect } from './recentEffects'
 import { updateActiveSequence, useStore } from './store'
 import { useToasts } from './toasts'
@@ -125,10 +125,14 @@ export function setChannelForClips(ids: Iterable<string>, channel: AnimChannel, 
   // One read for the whole fan-out, so twelve clips cannot end up carrying two
   // different curves because the chip changed mid-dispatch.
   const commit = moveCommit()
+  const seq = activeSequence(useStore.getState().project)
   mapClips(
     ids,
     `Set ${channel}`,
     (c) => {
+      // A caption's pop or fade owns this channel: the number is its new base
+      // and the animation follows (withOwnedBase says what this used to break).
+      if (isAppearanceOwned(c, channel)) return withOwnedBase(c, channel, value, seq.width, seq.height)
       const kfs = channelKeyframes(c, channel)
       if (kfs.length === 0) return withChannelValue(c, channel, value)
       const localT = playheadLocalT(c)

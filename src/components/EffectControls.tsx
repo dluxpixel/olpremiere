@@ -41,6 +41,7 @@ import {
 } from 'react'
 import {
   CHANNEL_EFFECT,
+  channelBase,
   channelKeyframes,
   isChannelAnimated,
   resolveChannel,
@@ -76,6 +77,7 @@ import {
   innerZoomAt,
   innerZoomKeyframes,
   innerZoomOwnsCrop,
+  isAppearanceOwned,
   isInnerZoomAnimated,
   removeInnerZoomKeyframeAtPlayhead,
   setInnerZoomAtPlayhead,
@@ -447,7 +449,11 @@ function ChannelRow({
   playheadS: number
 }) {
   const spec = SPECS[channel]
-  const animated = isChannelAnimated(clip, channel)
+  // An In or Out animation owns this channel: the field edits the value it
+  // RESTS at and the animation follows, so there is no stopwatch or diamond
+  // row to fight it (withOwnedBase in clipEdits).
+  const owned = isAppearanceOwned(clip, channel)
+  const animated = !owned && isChannelAnimated(clip, channel)
   // The lane and its curve editor are hand controls: they draw only while the
   // shelf's 'Tune it by hand' is open. The keyframes are always there.
   const { lanesVisible } = useMotionRail()
@@ -455,7 +461,7 @@ function ChannelRow({
   // derived from the reactive playheadS prop so the field tracks the playhead.
   const durS = Math.max(0, clipEndS(clip) - clip.startS)
   const localT = Math.max(0, Math.min(playheadS - clip.startS, durS))
-  const value = resolveChannel(clip, channel, localT)
+  const value = owned ? channelBase(clip, channel) : resolveChannel(clip, channel, localT)
 
   const kfs = channelKeyframes(clip, channel)
   const onKf = animated && kfs.some((k) => Math.abs(k.t - localT) <= 0.05)
@@ -472,20 +478,26 @@ function ChannelRow({
       <PropRow
         data-testid={`channel-${channel}`}
         label={LABELS[channel]}
-        labelTitle={`${LABELS[channel]} (double-click to reset)`}
+        labelTitle={
+          owned
+            ? `${LABELS[channel]}: this clip has an animation. This sets where it rests, the animation follows.`
+            : `${LABELS[channel]} (double-click to reset)`
+        }
         onLabelDoubleClick={() => resetChannel(clip.id, channel)}
         onReset={() => resetChannel(clip.id, channel)}
         resetLabel={`Reset ${LABELS[channel]}`}
         lead={
-          <IconButton
-            label={animated ? `Disable ${LABELS[channel]} keyframes` : `Animate ${LABELS[channel]}`}
-            active={animated}
-            size="compact"
-            data-testid={`stopwatch-${channel}`}
-            onClick={() => toggleChannelAnimation(clip.id, channel)}
-          >
-            <Clock size={13} strokeWidth={1.75} aria-hidden />
-          </IconButton>
+          owned ? undefined : (
+            <IconButton
+              label={animated ? `Disable ${LABELS[channel]} keyframes` : `Animate ${LABELS[channel]}`}
+              active={animated}
+              size="compact"
+              data-testid={`stopwatch-${channel}`}
+              onClick={() => toggleChannelAnimation(clip.id, channel)}
+            >
+              <Clock size={13} strokeWidth={1.75} aria-hidden />
+            </IconButton>
+          )
         }
       >
         {animated && (

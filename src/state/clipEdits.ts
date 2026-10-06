@@ -2,7 +2,7 @@
 // transitions. Channel names + math come from engine/keyframes; every edit is
 // one undo step. localT is always relative to the clip start.
 
-import { applyAppearanceToClip, releaseAppearanceOnRetime } from '../engine/anim/appearance'
+import { APPEARANCE_CHANNELS, applyAppearanceToClip, releaseAppearanceOnRetime } from '../engine/anim/appearance'
 import {
   channelBase,
   channelDefault,
@@ -108,6 +108,33 @@ export function isClipArmed(clip: Clip): boolean {
   return ARMED_CHANNELS.some((ch) => channelKeyframes(clip, ch).length > 0)
 }
 
+/** What the monitor badge says on such a clip, said wherever a door refuses it. */
+export const OWNED_BY_ANIMATION = 'This clip uses an entrance animation, which owns its keyframes.'
+
+/**
+ * An In or Out animation (a caption's pop, a fade) OWNS this channel: its
+ * keyframes are COMPILED from the spec and the base (appearance.ts).
+ */
+export function isAppearanceOwned(clip: Clip, channel: AnimChannel): boolean {
+  return !!clip.appearance && APPEARANCE_CHANNELS.includes(channel)
+}
+
+/**
+ * Write a number into a channel an animation owns: it becomes the BASE and the
+ * animation is rebuilt on it, exactly as the monitor drag and setClipsPosition
+ * already do.
+ *
+ * ⛔ The number fields used to write a keyframe at the playhead into the pop
+ * instead (clamped to the head or tail of a caption the playhead was not on):
+ * Scale 1.2 on a whole run of captions made the ones after the playhead SHRINK
+ * in from 1.2 and the ones before it slowly grow after the pop, while the base
+ * stayed 1.0 so none of them got any bigger (measured 2026-10-06). And the clip
+ * no longer matched its spec, so the next trim stopped moving its Out.
+ */
+export function withOwnedBase(c: Clip, channel: AnimChannel, value: number, seqW: number, seqH: number): Clip {
+  return applyAppearanceToClip(withChannelValue(c, channel, value), c.appearance!, seqW, seqH)
+}
+
 /**
  * The ONE choke point for every Inspector, effect, keyframe and transition edit,
  * and therefore the one that has to say "no" out loud.
@@ -177,10 +204,12 @@ export function setChannel(clipId: string, channel: AnimChannel, value: number):
   // Read once, not per callback run: a field commit is one gesture and must
   // write one shape even if the curve chips change under a merged run.
   const commit = moveCommit()
+  const seq = activeSequence(useStore.getState().project)
   mapClip(
     clipId,
     `Set ${channel}`,
     (c) => {
+      if (isAppearanceOwned(c, channel)) return withOwnedBase(c, channel, value, seq.width, seq.height)
       if (!animated) return withChannelValue(c, channel, value)
       const localT = playheadLocalT(c)
       // ⛔ THE SHAPE AT THAT MOMENT IS HIS, NOT THE DROPDOWN'S. Typing a number
@@ -202,6 +231,12 @@ export function setChannel(clipId: string, channel: AnimChannel, value: number):
 export function toggleChannelAnimation(clipId: string, channel: AnimChannel): void {
   const clip = findClip(clipId)
   if (!clip) return
+  // The stopwatch on an owned channel would wipe the pop off it (or seed a
+  // keyframe the next recompile throws away) while the animation stays on.
+  if (isAppearanceOwned(clip, channel)) {
+    useToasts.getState().show(OWNED_BY_ANIMATION, 'info')
+    return
+  }
   const animated = channelKeyframes(clip, channel).length > 0
   mapClip(clipId, animated ? `Disable ${channel} keyframes` : `Enable ${channel} keyframes`, (c) => {
     if (animated) return withChannelKeyframes(c, channel, [])
@@ -653,9 +688,7 @@ export function scaleKeyframeSpan(
 
 /** Clear a channel: drop its keyframes and reset the base to neutral/default. */
 export function resetChannel(clipId: string, channel: AnimChannel): void {
-  mapClip(clipId, `Reset ${channel}`, (c) =>
-    withChannelValue(withChannelKeyframes(c, channel, []), channel, channelDefault(channel)),
-  )
+  resetChannels(clipId, [channel], `Reset ${channel}`)
 }
 
 
@@ -692,11 +725,19 @@ export function toggleClipsEnabled(clipIds: readonly string[]): void {
   }))
 }
 
-/** Reset a specific set of channels (one Inspector section) in one undo step. */
-export function resetChannels(clipId: string, channels: AnimChannel[]): void {
-  mapClip(clipId, 'Reset', (c) =>
+/**
+ * Reset a specific set of channels (one Inspector section) in one undo step. A
+ * channel an animation owns has its BASE reset and the animation rebuilt on it,
+ * rather than its pop keyframes dropped while the animation stays on.
+ */
+export function resetChannels(clipId: string, channels: AnimChannel[], label = 'Reset'): void {
+  const seq = activeSequence(useStore.getState().project)
+  mapClip(clipId, label, (c) =>
     channels.reduce<Clip>(
-      (acc, ch) => withChannelValue(withChannelKeyframes(acc, ch, []), ch, channelDefault(ch)),
+      (acc, ch) =>
+        isAppearanceOwned(acc, ch)
+          ? withOwnedBase(acc, ch, channelDefault(ch), seq.width, seq.height)
+          : withChannelValue(withChannelKeyframes(acc, ch, []), ch, channelDefault(ch)),
       c,
     ),
   )
@@ -1174,6 +1215,13 @@ const MOTION_SNAPSHOT_CHANNELS: readonly AnimChannel[] = ['scale', 'posX', 'posY
 export function toggleMotionAtPlayhead(clipId: string): void {
   const clip = findClip(clipId)
   if (!clip) return
+  // The badge this key stands for is dead on such a clip, and says why. D used
+  // to write keyframes into the owned channels anyway, and the next monitor
+  // drag (which recompiles) threw them away.
+  if (clip.appearance) {
+    useToasts.getState().show(OWNED_BY_ANIMATION, 'info')
+    return
+  }
   const localT = playheadLocalT(clip)
   // One frame either side. Keyframes snap to the grid and the closest two
   // moments may ever be is one frame, so the nearest inside that window is

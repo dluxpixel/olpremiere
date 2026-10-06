@@ -68,6 +68,9 @@ function Header({ label, icon: Icon }: { label: string; icon?: typeof Bold }) {
 
 export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
   const allIds = selected.map((s) => s.clip.id)
+  // Opacity and Scale are for what is on screen: the sound in the selection has
+  // neither, and writing them there only cost undo steps on clips he never sees.
+  const visualIds = selected.filter((s) => s.track.kind !== 'audio').map((s) => s.clip.id)
   // The effects section takes a dragged effect here too, on the whole selection:
   // the panel is the same panel, and an effect that lands on one clip but is
   // refused the moment a second is selected is the same broken promise.
@@ -363,7 +366,7 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
         <div className="flex flex-col gap-1">
           <PropRow
             label="Opacity"
-            onReset={() => setChannelForClips(allIds, 'opacity', 1)}
+            onReset={() => setChannelForClips(visualIds, 'opacity', 1)}
             resetLabel="Reset opacity (all)"
           >
             <ScrubField
@@ -371,12 +374,12 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
               spec={OPACITY_SPEC}
               testId="multi-opacity"
               ariaLabel="Opacity (all)"
-              onCommit={(v) => setChannelForClips(allIds, 'opacity', v)}
+              onCommit={(v) => setChannelForClips(visualIds, 'opacity', v)}
             />
           </PropRow>
           <PropRow
             label="Scale"
-            onReset={() => setChannelForClips(allIds, 'scale', 1)}
+            onReset={() => setChannelForClips(visualIds, 'scale', 1)}
             resetLabel="Reset scale (all)"
           >
             <ScrubField
@@ -384,7 +387,7 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
               spec={SCALE_SPEC}
               testId="multi-scale"
               ariaLabel="Scale (all)"
-              onCommit={(v) => setChannelForClips(allIds, 'scale', v)}
+              onCommit={(v) => setChannelForClips(visualIds, 'scale', v)}
             />
           </PropRow>
           {pictures.length > 0 && (
