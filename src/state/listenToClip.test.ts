@@ -39,6 +39,7 @@ vi.mock('../engine/captions/transcribeConfig', () => ({
   getCaptionLanguage: () => 'en',
   getCaptionEmphasis: () => false,
   modelFor: () => 'onnx-community/whisper-small.en_timestamped',
+  whisperModel: () => ({ wordLagS: 0 }),
 }))
 vi.mock('../engine/captions/voiceActivity', () => ({
   voiceTrackForClip: () => Promise.resolve(null),

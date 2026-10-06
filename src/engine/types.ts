@@ -55,6 +55,12 @@ export interface MediaAsset {
    * so every clip cut from the same file shares one listening.
    */
   words?: SpokenWord[]
+  /**
+   * True once `words` are where he SAID them: the recogniser's lag taken off
+   * (captions/wordTiming.ts). Words kept before 2026-10-06 have no mark and
+   * are about a fifth of a second late, so they are shifted once when read.
+   */
+  wordsOnVoice?: true
 }
 
 /** One spoken word, in source seconds. The same shape the recogniser hands back. */

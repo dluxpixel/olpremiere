@@ -16,7 +16,7 @@ import { formatTimecode } from '../engine/timecode'
 import { wordSpan, wordsOnTimeline, type TimelineWord } from '../engine/transcriptCut'
 import { activeSequence } from '../engine/types'
 import { useStore } from '../state/store'
-import { useTranscribe } from '../state/transcribeActions'
+import { useTranscribe, wordLagNow } from '../state/transcribeActions'
 import { cutWords, listenForEveryClip, listenForWords } from '../state/transcriptActions'
 import { Button } from '../ui/Button'
 
@@ -26,7 +26,8 @@ export function WordsTab() {
   const setUI = useStore((s) => s.setUI)
   const status = useTranscribe((s) => s.status)
   const seq = activeSequence(project)
-  const rows = useMemo(() => wordsOnTimeline(seq, project.assets), [seq, project.assets])
+  // Words kept before they were stored on time are shifted by the lag on read.
+  const rows = useMemo(() => wordsOnTimeline(seq, project.assets, wordLagNow()), [seq, project.assets])
   // One flat list so a selection can run across clips; each row knows its offset.
   const { flat, offsets } = useMemo(() => {
     const flat: TimelineWord[] = []

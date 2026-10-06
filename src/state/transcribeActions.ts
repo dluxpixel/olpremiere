@@ -187,8 +187,8 @@ export async function wordsForClip(
   const envelope = getCaptionEmphasis() ? speechEnvelope(pcm, TRANSCRIBE_SAMPLE_RATE) : null
   // Finer loudness for where one word meets the next (wordTiming.meetAtDips),
   // taken here for the same reason and at the same cost: one pass, 100 floats
-  // per second. Captions only.
-  const loudness = opts.trimToVoice ? speechEnvelope(pcm, TRANSCRIBE_SAMPLE_RATE, DIP_ENVELOPE_HOP_S) : null
+  // per second. Captions and the Words tab only.
+  const loudness = opts.trimToVoice || opts.onSpoken ? speechEnvelope(pcm, TRANSCRIBE_SAMPLE_RATE, DIP_ENVELOPE_HOP_S) : null
   // The persisted language pick (CaptionsDialog) drives every caption door.
   const language = getCaptionLanguage()
   const key = heardKey(asset, clip, language)
@@ -263,19 +263,32 @@ export async function wordsForClip(
   // words where they are, and a word that opens a phrase then lands on the
   // frame his voice comes on.
   //
-  // CAPTIONS ONLY, like the trim: the Words panel and the silence cutter keep
-  // the timings their own margins were tuned on.
-  // What the Words tab keeps: the media's own seconds, from the clip as it was
-  // heard (its in point), so a clip moved or trimmed since cannot shift them.
-  opts.onSpoken?.(
-    marked.filter((w) => clip.inS + w.startS < clip.outS).map((w) => ({ text: w.text, startS: clip.inS + w.startS, endS: clip.inS + w.endS })),
-  )
+  // The silence cutter keeps the recogniser's timings: its air either side of
+  // a cut is tuned against them.
+  //
+  // ⛔ THE WORDS TAB GETS THE LAG TAKEN OFF TOO, NOT THE TRIM (CA-9). It cuts
+  // from a word's start to the next word's start, so with every word a fifth of
+  // a second late the first fifth of the cut word stayed in the edit and the
+  // first fifth of the next one went ("ey" for "hey"). It has no air to protect.
+  // It does not get the trim, because a cut must take the whole word, tail and all.
+  const needOnTime = opts.trimToVoice || opts.onSpoken
+  const unlagged = needOnTime ? correctWordLag(marked, whisperModel(modelFor(getCaptionLanguage())).wordLagS) : marked
+  const onTime = needOnTime && loudness ? meetAtDips(unlagged, loudness, DIP_ENVELOPE_HOP_S) : unlagged
+  if (opts.onSpoken) {
+    // In the media's own seconds, from the clip as it was heard (its in point),
+    // so a clip moved or trimmed since cannot shift them.
+    const said = track ? snapOnsetsToVoice(onTime, track) : onTime
+    opts.onSpoken(
+      said.filter((w) => clip.inS + w.startS < clip.outS).map((w) => ({ text: w.text, startS: clip.inS + w.startS, endS: clip.inS + w.endS })),
+    )
+  }
   if (!opts.trimToVoice) return timelineWords(marked, clip)
-  const unlagged = correctWordLag(marked, whisperModel(modelFor(getCaptionLanguage())).wordLagS)
-  const onTime = loudness ? meetAtDips(unlagged, loudness, DIP_ENVELOPE_HOP_S) : unlagged
   const timed = track ? snapOnsetsToVoice(trimWordsToVoice(onTime, track), track) : onTime
   return timelineWords(timed, clip)
 }
+
+/** The recogniser's measured lag for the language he picked (wordTiming.ts). */
+export const wordLagNow = (): number => whisperModel(modelFor(getCaptionLanguage())).wordLagS
 
 /**
  * What the caption doors listen with. Test seam: the end to end suite puts a
@@ -470,6 +483,7 @@ export async function autoCaptionFromClip(clipId: string, style?: CaptionStyle):
         coveredSpans: [{ startS: live.startS, endS: clipEndS(live) }],
         // And what it heard goes on the media for the Words tab, same undo step.
         heard: spoken ? [{ assetId: asset.id, fromS: clip.inS, toS: clip.outS, words: spoken }] : [],
+        wordLagS: wordLagNow(),
       })
     }
   } catch (err) {
@@ -729,6 +743,7 @@ export async function autoCaptionEveryClip(
     model: modelFor(getCaptionLanguage()),
     coveredSpans,
     heard: spokenOn,
+    wordLagS: wordLagNow(),
   })
   if (cancelled) toasts.show('Stopped early, captioned what was heard so far')
   else if (failed > 0) toasts.show(`${failed} clip${failed === 1 ? '' : 's'} could not be read`, 'danger')

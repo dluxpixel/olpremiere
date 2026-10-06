@@ -13,7 +13,8 @@ import {
   type Clip,
   type Sequence,
 } from '../engine/types'
-import { CAPTION_TRACK_NAME, addCaptionsFromWords, applyCandidateSpellings, splitTitleIntoWordCaptions } from './captionActions'
+import { CAPTION_TRACK_NAME, addCaptionsFromWords, applyCandidateSpellings, captionsOn, splitTitleIntoWordCaptions } from './captionActions'
+import { cutWords } from './transcriptActions'
 import { AUTO_CAPTION_TARGET_S, type CaptionWord } from '../engine/captions/captions'
 import { clipDurationS } from '../engine/timeline'
 import { updateActiveSequence, useStore } from './store'
@@ -231,6 +232,24 @@ describe('addCaptionsFromWords', () => {
     addCaptionsFromWords([{ text: 'take two', startS: 0, endS: 1 }])
     const texts = videoTracks(seq()).find((t) => t.name === CAPTION_TRACK_NAME)?.clips.map((c) => c.title?.text)
     expect(texts).toEqual(['take two'])
+  })
+})
+
+// CA-9. A cut in the Words tab splits a caption in two, and both halves kept
+// the whole text, so cutting "like" out of "and like" still read "and like".
+describe('a Words tab cut through a caption', () => {
+  it('leaves each piece saying only the words still in it', () => {
+    addCaptionsFromWords([
+      { text: 'and', startS: 0, endS: 0.3 },
+      { text: 'like', startS: 0.3, endS: 0.6 },
+      { text: 'wow', startS: 1.5, endS: 1.9 },
+    ])
+    const texts = () => captionsOn(seq()).map(({ clip }) => clip.title!.text)
+    expect(texts()).toEqual(['and like', 'wow'])
+    cutWords(0.3, 0.6, 1)
+    expect(texts()).toEqual(['and', 'wow'])
+    useStore.getState().undo()
+    expect(texts()).toEqual(['and like', 'wow'])
   })
 })
 

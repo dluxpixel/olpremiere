@@ -18,7 +18,7 @@ import { candidateFixFor, wordFixFor, type StyleProfile } from '../engine/captio
 import { learnedProfile } from '../engine/captions/styleStore'
 import { retimeAppearance } from '../engine/anim/appearance'
 import { addTrack, clipDurationS, clipEndS, recomputeDuration, resolveStart } from '../engine/timeline'
-import { mergeWords } from '../engine/transcriptCut'
+import { keepHeardWords } from '../engine/transcriptCut'
 import { activeSequence, videoTracks, type Clip, type Sequence, type SpokenWord, type Track } from '../engine/types'
 import { updateActiveSequence, useStore } from './store'
 import { useToasts } from './toasts'
@@ -185,6 +185,8 @@ export function addCaptionsFromWords(
      * the Words tab reads it without listening to that clip again.
      */
     heard?: { assetId: string; fromS: number; toS: number; words: SpokenWord[] }[]
+    /** The recogniser's lag, to put the media's older words on time as these land. */
+    wordLagS?: number
   } = {},
 ): void {
   const s = useStore.getState()
@@ -325,7 +327,7 @@ export function addCaptionsFromWords(
     let assets = p.assets
     for (const h of options.heard ?? []) {
       const a = assets[h.assetId]
-      if (a) assets = { ...assets, [a.id]: { ...a, words: mergeWords(a.words, h.words, h.fromS, h.toS) } }
+      if (a) assets = { ...assets, [a.id]: keepHeardWords(a, h.words, h.fromS, h.toS, options.wordLagS ?? 0) }
     }
     return { ...p, assets, sequences: { ...p.sequences, [sq.id]: next } }
   })

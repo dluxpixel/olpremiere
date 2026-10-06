@@ -391,6 +391,29 @@ function wordsAsSaid(clip: Clip, tokens: readonly string[]): CaptionWord[] | nul
 }
 
 /**
+ * A caption after a cut in the Words tab took some of its time away: it says
+ * only the words still said inside it, or it is null when none are (a sliver
+ * of hold left after a word that was cut). Before this both halves of a split
+ * caption kept the whole text, so cutting "like" out of "and like" still read
+ * "and like". A caption with no word times, or one he retyped, is left as it is.
+ */
+export function captionAfterCut(clip: Clip): Clip | null {
+  const kept = clip.captionWords
+  const tokens = (clip.title?.text ?? '').split(/\s+/).filter(Boolean)
+  if (!clip.title || !kept || kept.length !== tokens.length || kept.some((w, i) => w.text !== tokens[i])) return clip
+  const rate = Math.abs(clip.speed) || 1
+  const endS = clip.startS + clipDurationS(clip)
+  // A word belongs to the piece its middle plays in: its edges sit on the cut.
+  const inside = kept.filter((w) => {
+    const mid = clip.startS + ((w.startS + w.endS) / 2 - clip.inS) / rate
+    return mid >= clip.startS - 1e-6 && mid < endS
+  })
+  if (inside.length === kept.length) return clip
+  if (inside.length === 0) return null
+  return { ...clip, title: { ...clip.title, text: inside.map((w) => w.text).join(' ') }, captionWords: inside }
+}
+
+/**
  * The words on screen, read back off finished captions so they can be cut
  * again at a different length.
  *

@@ -6,11 +6,13 @@
 // The reading itself is engine/transcriptCut.ts, pure. This file is only the
 // store side: where the words go, and the one undo step a cut makes.
 
+import { captionAfterCut } from '../engine/captions/captionStyle'
 import { plural } from '../engine/plural'
-import { cutRange, mergeWords, wordsOnTimeline } from '../engine/transcriptCut'
+import { cutRange, keepHeardWords, wordsOnTimeline } from '../engine/transcriptCut'
 import { activeSequence, type Id } from '../engine/types'
+import { isCaptionTrack } from './captionActions'
 import { updateActiveSequence, useStore } from './store'
-import { listenToClip, listenToClips } from './transcribeActions'
+import { listenToClip, listenToClips, wordLagNow } from './transcribeActions'
 
 /**
  * Listen to one clip and keep its words on its media. The clip's own source
@@ -23,9 +25,10 @@ export async function listenForWords(clipId: Id): Promise<void> {
   // The words are already in the media's seconds, from the clip as it was heard,
   // so where the clip sits now does not matter.
   const { clip, asset, words } = heard
+  const lagS = wordLagNow()
   useStore.getState().dispatch(`Listen to ${asset.name}`, (p) => {
     const a = p.assets[asset.id]
-    return a ? { ...p, assets: { ...p.assets, [a.id]: { ...a, words: mergeWords(a.words, words, clip.inS, clip.outS) } } } : p
+    return a ? { ...p, assets: { ...p.assets, [a.id]: keepHeardWords(a, words, clip.inS, clip.outS, lagS) } } : p
   })
 }
 
@@ -47,11 +50,12 @@ export async function listenForEveryClip(): Promise<void> {
   if (ids.length === 0) return
   const heard = await listenToClips(ids)
   if (heard.length === 0) return
+  const lagS = wordLagNow()
   useStore.getState().dispatch(`Listen to ${plural(heard.length, 'clip')}`, (p) => {
     let assets = p.assets
     for (const { clip, asset, words } of heard) {
       const a = assets[asset.id]
-      if (a) assets = { ...assets, [a.id]: { ...a, words: mergeWords(a.words, words, clip.inS, clip.outS) } }
+      if (a) assets = { ...assets, [a.id]: keepHeardWords(a, words, clip.inS, clip.outS, lagS) }
     }
     return assets === p.assets ? p : { ...p, assets }
   })
@@ -59,6 +63,17 @@ export async function listenForEveryClip(): Promise<void> {
 
 /** Take the words' stretch of timeline out and close the gap, in one undo step. The playhead lands on the cut. */
 export function cutWords(startS: number, endS: number, count: number): void {
-  updateActiveSequence(count === 1 ? 'Cut a word' : `Cut ${count} words`, (seq) => cutRange(seq, startS, endS))
+  updateActiveSequence(count === 1 ? 'Cut a word' : `Cut ${count} words`, (seq) => {
+    const cut = cutRange(seq, startS, endS)
+    // A caption the cut split says only the words left in each piece.
+    return {
+      ...cut,
+      tracks: cut.tracks.map((t) =>
+        !isCaptionTrack(t) || t.locked
+          ? t
+          : { ...t, clips: t.clips.map(captionAfterCut).filter((c): c is NonNullable<typeof c> => c !== null) },
+      ),
+    }
+  })
   useStore.getState().setUI({ playheadS: startS })
 }
