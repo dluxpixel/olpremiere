@@ -19,6 +19,7 @@
 // desktop shell (the web build) simply has no mirror and behaves as before.
 
 import { create } from 'zustand'
+import { notifyBlobArrived } from './blobUrls'
 import { getBlob, putBlob } from './persistence'
 import type { MediaAsset, Project } from '../engine/types'
 
@@ -372,6 +373,7 @@ async function healOnce(project: Project, onProgress: HealProgressFn): Promise<H
     if (!has) toHeal.push(a)
   }
   let done = 0
+  const back: MediaAsset[] = []
 
   for (const a of toHeal) {
     onProgress(done, toHeal.length, a.name ?? a.id)
@@ -382,10 +384,51 @@ async function healOnce(project: Project, onProgress: HealProgressFn): Promise<H
       continue
     }
     // One read and one write per file, shared with an export that wants it now.
-    if (await healAsset(a, size)) healed.push(a.name ?? a.id)
-    else lost.push(a.name ?? a.id)
+    if (await healAsset(a, size)) {
+      healed.push(a.name ?? a.id)
+      back.push(a)
+    } else lost.push(a.name ?? a.id)
   }
+  // Behind the repair, never in front of it: the edit is what he is waiting for.
+  if (back.length > 0) void rebuildMissingThumbnails(back)
   return { healed, lost }
+}
+
+/** A type the browser can open a typeless copy by: the spare copies keep bytes, not types. */
+function typeFor(a: Pick<MediaAsset, 'kind' | 'name'>): string {
+  const ext = (a.name ?? '').toLowerCase().split('.').pop() ?? ''
+  if (a.kind === 'image') return ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : 'image/png'
+  return ext === 'webm' ? 'video/webm' : ext === 'mov' ? 'video/quicktime' : 'video/mp4'
+}
+
+/**
+ * Make the bin picture again for media put back without one.
+ *
+ * ⛔ THE PICTURES WERE NEVER COPIED TO DISK AND NOTHING REMADE THEM, so after a
+ * wipe every card in his bin was a plain icon for good, though the footage came
+ * back. Made from the bytes just put back, the way the import made it, one at a
+ * time. Never throws: a missing picture is a plain icon, never a failed repair.
+ */
+export async function rebuildMissingThumbnails(assets: readonly MediaAsset[]): Promise<number> {
+  let made = 0
+  for (const a of assets) {
+    if (!a?.thumbnailKey || a.kind === 'audio') continue
+    try {
+      if (await getBlob(a.thumbnailKey)) continue
+      const bytes = await getBlob(a.blobKey)
+      if (!bytes) continue
+      const file = new File([bytes], a.name ?? a.id, { type: bytes.type || typeFor(a) })
+      const { probeFile } = await import('../engine/probe')
+      const thumb = (await probeFile(file)).thumbnailBlob
+      if (!thumb) continue
+      await putBlob(a.thumbnailKey, thumb)
+      notifyBlobArrived(a.thumbnailKey)
+      made += 1
+    } catch (err) {
+      console.warn(`OL Premiere: could not make the picture for ${a.name ?? a.id}`, err)
+    }
+  }
+  return made
 }
 
 /**

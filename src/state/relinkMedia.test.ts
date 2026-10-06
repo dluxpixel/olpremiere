@@ -225,3 +225,20 @@ describe('a file put back is what the import would have stored', () => {
     expect(store.has('asset/x')).toBe(false)
   })
 })
+
+describe('the bin picture comes back with a file put back by hand', () => {
+  it('is made from the file when it went with the bytes, and left alone when it did not', async () => {
+    const picture = new Blob(['poster'])
+    const prepare = async (f: File) => ({ ok: true as const, source: f, probe: { thumbnailBlob: picture } as never, masterFailed: false })
+    store.set('thumb/b', new Blob(['his own poster']))
+    await relink(
+      [
+        { asset: { ...asset('a', 'one.mp4'), thumbnailKey: 'thumb/a' }, file: file('one.mp4') },
+        { asset: { ...asset('b', 'two.mp4'), thumbnailKey: 'thumb/b' }, file: file('two.mp4') },
+      ],
+      { prepare },
+    )
+    expect(store.get('thumb/a')).toBe(picture)
+    expect(store.get('thumb/b')).not.toBe(picture)
+  })
+})

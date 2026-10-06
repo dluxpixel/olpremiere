@@ -14,6 +14,7 @@
 
 import type { MediaAsset, Project } from '../engine/types'
 import type { PreparedSource } from './mediaActions'
+import { notifyBlobArrived } from './blobUrls'
 import { mirrorAsset } from './mediaMirror'
 import { getBlob, putBlob } from './persistence'
 
@@ -22,6 +23,8 @@ export interface MissingAsset {
   id: string
   name: string
   blobKey: string
+  /** Its bin picture's key, remade from the file put back when that is gone too. */
+  thumbnailKey?: string
 }
 
 /**
@@ -35,7 +38,12 @@ export async function missingMedia(project: Project): Promise<MissingAsset[]> {
   for (const a of Object.values(project.assets ?? {}) as MediaAsset[]) {
     if (!a?.blobKey) continue
     if (await getBlob(a.blobKey)) continue
-    out.push({ id: a.id, name: a.name ?? a.blobKey, blobKey: a.blobKey })
+    out.push({
+      id: a.id,
+      name: a.name ?? a.blobKey,
+      blobKey: a.blobKey,
+      ...(a.thumbnailKey ? { thumbnailKey: a.thumbnailKey } : {}),
+    })
   }
   return out
 }
@@ -123,6 +131,7 @@ export async function relink(
   const unusable: string[] = []
   for (const m of matches) {
     let bytes: File
+    let thumb: Blob | undefined
     try {
       opts.onFile?.(m.file.name, '')
       const prepared = await prepare(m.file, (step) => opts.onFile?.(m.file.name, step))
@@ -131,6 +140,7 @@ export async function relink(
         continue
       }
       bytes = prepared.source
+      thumb = prepared.probe.thumbnailBlob
     } catch (err) {
       console.warn('OL Premiere: could not open', m.file.name, err)
       unusable.push(m.asset.name)
@@ -157,6 +167,14 @@ export async function relink(
       // the repair itself, which is the thing he just did the work for.
       void mirrorAsset(m.asset.id, bytes).catch(() => undefined)
       done += 1
+      // Its bin picture, when that went with the bytes. Never fails the repair.
+      const key = m.asset.thumbnailKey
+      if (key && thumb && !(await getBlob(key).catch(() => null))) {
+        await putBlob(key, thumb).then(
+          () => notifyBlobArrived(key),
+          () => undefined,
+        )
+      }
     } catch {
       failed.push(m.asset.name)
     }
