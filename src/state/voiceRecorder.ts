@@ -404,7 +404,7 @@ export async function openStudio(): Promise<void> {
 /** Close the studio: stop any take, release the mic, drop an unreviewed take. */
 export function closeStudio(): void {
   if (useRecorder.getState().recording) stopRecording()
-  discardTake()
+  discard(true)
   cancelRaf(levelRaf)
   monitor?.dispose()
   monitor = null
@@ -490,8 +490,8 @@ export async function startRecording(): Promise<void> {
     if (!monitor) return // openStudio already surfaced the error
   }
   // A held take is replaced by the new one; reviewing is per-take, not a queue.
-  // dropTake, NOT discardTake: see the comment on discardTake.
-  dropTake()
+  // throwAwayTake, NOT discardTake: see the comment on discardTake.
+  throwAwayTake()
 
   const mime = pickRecorderMime()
   // Opus only: a high, explicit bitrate. The browser default is low and a big
@@ -594,9 +594,20 @@ function finalize(mime: string, rec: MediaRecorder, takeChunks: Blob[], startedA
     durationS: recordedS,
     timing,
   }
-  useRecorder.setState({ pendingTake: take })
+  // One take is reviewed at a time: one brought back during this take steps aside.
+  throwAwayTake()
   const reading = readFinalTake(take, takeLivePeak)
   takeReadings.set(take, reading)
+  // ⛔ CLOSED WHILE RECORDING: the take finishes after the studio is gone, and
+  // used to sit in the review slot where nothing could show it, holding off
+  // every update. Closing throws a take away, so this one is thrown away too,
+  // with the same way back.
+  if (!useRecorder.getState().studioOpen) {
+    URL.revokeObjectURL(take.url)
+    keepForBringBack(take)
+    return
+  }
+  useRecorder.setState({ pendingTake: take })
   // While it is still the one under review, the player plays what will be kept.
   void reading.then((final) => {
     if (final === take || useRecorder.getState().pendingTake !== take) return
@@ -722,6 +733,51 @@ function dropTake(): void {
 }
 
 /**
+ * ⛔ A TAKE THROWN AWAY BY ANYTHING BUT DISCARD CAN BE BROUGHT BACK, FOR A FEW
+ * SECONDS. The X, the lit mic in the top bar and the red Record button all
+ * throw the waiting take away, and only Escape was guarded, as "the key hit by
+ * accident". The design stays (review is one take, closing means throw away),
+ * but the last one thrown away is held long enough to say so and undo it.
+ */
+const BRING_BACK_MS = 10_000
+let thrownAway: { take: PendingTake; timer: ReturnType<typeof setTimeout> } | null = null
+
+function keepForBringBack(take: PendingTake): void {
+  if (thrownAway) clearTimeout(thrownAway.timer)
+  // Held only for the toast's life: a long lossless take is tens of megabytes.
+  const timer = setTimeout(() => {
+    if (thrownAway?.take === take) thrownAway = null
+  }, BRING_BACK_MS)
+  thrownAway = { take, timer }
+  useToasts
+    .getState()
+    .show('Take thrown away', 'info', { label: 'Bring it back', onClick: () => void bringBack(take) }, { durationMs: BRING_BACK_MS })
+}
+
+/** Drop the held take, keeping it for one step so it can be brought back. */
+function throwAwayTake(): void {
+  const take = useRecorder.getState().pendingTake
+  if (!take) return
+  dropTake()
+  keepForBringBack(take)
+}
+
+/** Put a take thrown away back up for review, in the studio, while it is still held. */
+async function bringBack(thrown: PendingTake): Promise<void> {
+  const held = thrownAway
+  // An older toast's button: only the last take thrown away is still held.
+  if (!held || held.take !== thrown) return
+  clearTimeout(held.timer)
+  thrownAway = null
+  if (!useRecorder.getState().studioOpen) await openStudio()
+  // The take waiting now, if any, swaps places with it and can come back in turn.
+  throwAwayTake()
+  const take: PendingTake = { ...held.take, url: URL.createObjectURL(held.take.blob) }
+  takeReadings.set(take, takeReadings.get(held.take) ?? Promise.resolve(take))
+  useRecorder.setState({ pendingTake: take })
+}
+
+/**
  * Throw the take away AND put him back where he started recording.
  *
  * His words, 2026-08-12: "when you stop the recording and you discard it, you
@@ -735,10 +791,16 @@ function dropTake(): void {
  * for.
  */
 export function discardTake(): void {
+  discard(false)
+}
+
+/** Discard, and when it was not the Discard button, keep the take to bring back. */
+function discard(bringBack: boolean): void {
   // Only a REAL discard moves him. With nothing held this is a no-op, or a
   // stray click would fling the playhead back to some take he already kept.
   if (!useRecorder.getState().pendingTake) return
-  dropTake()
+  if (bringBack) throwAwayTake()
+  else dropTake()
   const back = takeStartPlayheadS
   takeStartPlayheadS = null
   if (back === null) return

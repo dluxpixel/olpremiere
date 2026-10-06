@@ -244,6 +244,76 @@ describe('studio capture: review-then-keep, and coexistence with playback', () =
     expect(monitorStop).toHaveBeenCalled() // mic released
   })
 
+  // ⛔ AU-13. The X, the top bar mic and Record threw the waiting take away with
+  // no word and no way back. The design stays; the last one can come back.
+  const bringBackToast = () => {
+    const call = [...showSpy.mock.calls].reverse().find(([m]) => m === 'Take thrown away')
+    return call?.[2] as { label: string; onClick: () => void } | undefined
+  }
+
+  it('Record over a waiting take says so, and Bring it back puts the same take back', async () => {
+    await startRecording()
+    let rec = FakeMediaRecorder.instances[0]!
+    rec.ondataavailable?.({ data: new Blob(['first']) })
+    stopRecording()
+    rec.onstop?.()
+    const first = useRecorder.getState().pendingTake!
+
+    await startRecording()
+    expect(useRecorder.getState().pendingTake).toBeNull()
+    const action = bringBackToast()
+    expect(action?.label).toBe('Bring it back')
+    action!.onClick()
+    await vi.waitFor(() => expect(useRecorder.getState().pendingTake?.blob).toBe(first.blob))
+
+    // The new take, once it ends, swaps places with it, and can come back in turn.
+    rec = FakeMediaRecorder.instances[1]!
+    rec.ondataavailable?.({ data: new Blob(['second']) })
+    stopRecording()
+    rec.onstop?.()
+    expect(useRecorder.getState().pendingTake?.blob).not.toBe(first.blob)
+    bringBackToast()!.onClick()
+    await vi.waitFor(() => expect(useRecorder.getState().pendingTake?.blob).toBe(first.blob))
+  })
+
+  it('closing the studio over a waiting take can be undone, and the studio opens again', async () => {
+    await startRecording()
+    const rec = FakeMediaRecorder.instances[0]!
+    rec.ondataavailable?.({ data: new Blob(['x']) })
+    stopRecording()
+    rec.onstop?.()
+    const take = useRecorder.getState().pendingTake!
+
+    closeStudio()
+    expect(useRecorder.getState().studioOpen).toBe(false)
+    bringBackToast()!.onClick()
+    await vi.waitFor(() => expect(useRecorder.getState().pendingTake?.blob).toBe(take.blob))
+    expect(useRecorder.getState().studioOpen).toBe(true)
+  })
+
+  it('closing while recording does not park the take where nothing shows it', async () => {
+    const { isRestartUnsafe } = await import('./unloadGuard')
+    await startRecording()
+    const rec = FakeMediaRecorder.instances[0]!
+    rec.ondataavailable?.({ data: new Blob(['x']) })
+    closeStudio()
+    rec.onstop?.() // the browser finishes the file after the studio is gone
+
+    expect(useRecorder.getState().pendingTake).toBeNull()
+    expect(isRestartUnsafe()).toBe(false)
+    expect(bringBackToast()).toBeDefined()
+  })
+
+  it('the Discard button throws away for good, with no toast', async () => {
+    await startRecording()
+    const rec = FakeMediaRecorder.instances[0]!
+    rec.ondataavailable?.({ data: new Blob(['x']) })
+    stopRecording()
+    rec.onstop?.()
+    discardTake()
+    expect(bringBackToast()).toBeUndefined()
+  })
+
   it('concurrent and repeat record clicks are one take (guards hold)', async () => {
     await Promise.all([startRecording(), startRecording()])
     await startRecording()
