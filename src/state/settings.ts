@@ -4,6 +4,7 @@
 // corners of dialogs and dropdown chevrons.
 
 import { create } from 'zustand'
+import { notePrefsChanged } from './prefsSignal'
 
 export type ThemeChoice = 'dark' | 'light' | 'system' | 'claude'
 
@@ -74,6 +75,7 @@ function write(key: string, value: string | null): void {
     if (typeof localStorage === 'undefined') return
     if (value === null) localStorage.removeItem(key)
     else localStorage.setItem(key, value)
+    notePrefsChanged()
   } catch {
     // Private mode / quota: the in-memory choice still applies for this run.
   }
@@ -159,6 +161,18 @@ export function setEaseSeconds(seconds: number): void {
   const next = clampEase(seconds)
   useSettings.setState({ easeSeconds: next })
   write(EASE_KEY, next === EASE_DEFAULT ? null : String(next))
+}
+
+/** Read every setting again, after their file put them back (prefsHome.ts). */
+export function reloadSettings(): void {
+  useSettings.setState({
+    theme: loadTheme(),
+    previewQuality: loadQuality(),
+    easeSeconds: loadEaseSeconds(),
+    platformLoudness: loadPlatformLoudness(),
+    usageLog: loadUsageLog(),
+  })
+  applyTheme(useSettings.getState().theme)
 }
 
 /**

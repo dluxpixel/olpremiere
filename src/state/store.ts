@@ -19,6 +19,7 @@ import {
   type Command,
   type History,
 } from './history'
+import { notePrefsChanged } from './prefsSignal'
 import { noteEdit, noteHistory } from './usageNotes'
 
 /** What the motion rail is pointed at: a keyframe, or the segment leaving one. */
@@ -225,6 +226,7 @@ function readPref(key: string): string | null {
 function writePref(key: string, value: string): void {
   try {
     if (typeof localStorage !== 'undefined') localStorage.setItem(key, value)
+    notePrefsChanged()
   } catch {
     // Private mode / quota: the choice still applies for the rest of this run.
   }
@@ -399,6 +401,14 @@ export const useStore = create<AppState>()(
     },
   })),
 )
+
+/** Read the remembered UI choices again, after their file put them back (prefsHome.ts). */
+export function reloadStoredPrefs(): void {
+  // Straight into the state, not through setUI, which would write them back.
+  useStore.setState((s) => ({
+    ui: { ...s.ui, snapping: loadSnapping(), zoomAnchor: loadZoomAnchor(), moveCurve: loadMoveCurve() },
+  }))
+}
 
 /** Apply an undoable edit scoped to the active sequence. No-op if unchanged. */
 export function updateActiveSequence(

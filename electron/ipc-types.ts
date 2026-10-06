@@ -392,6 +392,14 @@ export interface OlApi {
   captionStylesRead(): Promise<string | null>
 
   /**
+   * His saved moves, track setups and settings as one plain file beside the
+   * projects, kept current on every change (electron/preferencesFile.ts).
+   */
+  prefsWrite(json: string): Promise<void>
+  /** The file's text, or null when there is none yet. */
+  prefsRead(): Promise<string | null>
+
+  /**
    * The private usage log (electron/usageFiles.ts): append one day's batch of JSON
    * lines to that day's file in the app's own data folder. Never leaves the machine.
    * `day` is `YYYY-MM-DD`; anything else is refused.

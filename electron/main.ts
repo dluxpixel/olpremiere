@@ -26,6 +26,7 @@ import { createEmojiFontStore, downloadBytes, EMOJI_ROUTE } from './emojiFont'
 import * as projectFiles from './projectFiles'
 import * as libraryFile from './libraryFile'
 import * as captionStylesFile from './captionStylesFile'
+import * as preferencesFile from './preferencesFile'
 import * as usageFiles from './usageFiles'
 import * as saveFiles from './saveFiles'
 import type { NativeExportConfig, UpdateStatus } from './ipc-types'
@@ -766,6 +767,9 @@ app.whenReady().then(() => {
   // His caption styles beside them, one fixed file. See electron/captionStylesFile.ts.
   ipcMain.handle('captionStyles:write', (_e, json: string) => captionStylesFile.writeCaptionStylesFile(json))
   ipcMain.handle('captionStyles:read', () => captionStylesFile.readCaptionStylesFile())
+  // His moves, track setups and settings beside them. See electron/preferencesFile.ts.
+  ipcMain.handle('prefs:write', (_e, json: string) => preferencesFile.writePreferencesFile(json))
+  ipcMain.handle('prefs:read', () => preferencesFile.readPreferencesFile())
 
   // --- The private usage log (electron/usageFiles.ts) ----------------------------
   // His own record of what he uses, one file a day in the app's own data folder.
