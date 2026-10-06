@@ -3,7 +3,7 @@
 // keys commits on every press, so the continuous controls pass a merge key and
 // a run of nudges costs one Ctrl+Z (see setChannel in clipEdits.ts).
 
-import { recomputeDuration } from '../engine/timeline'
+import { removeTrack } from '../engine/timeline'
 import { activeSequence, audioTracks, videoTracks, type AutoLevel, type Id, type Track } from '../engine/types'
 import { updateActiveSequence, useStore } from './store'
 import { useToasts } from './toasts'
@@ -59,10 +59,7 @@ export function deleteTrack(trackId: Id): void {
     return
   }
   const n = track.clips.length
-  updateActiveSequence(`Delete ${track.name}`, (sq) => {
-    if (!sq.tracks.some((t) => t.id === trackId)) return sq
-    return recomputeDuration({ ...sq, tracks: sq.tracks.filter((t) => t.id !== trackId) })
-  })
+  updateActiveSequence(`Delete ${track.name}`, (sq) => removeTrack(sq, trackId))
   // Drop anything that was selected ON the dead track, or the Inspector keeps
   // showing a clip that no longer exists anywhere.
   const gone = new Set(track.clips.map((c) => c.id))

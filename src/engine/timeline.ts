@@ -1001,20 +1001,47 @@ export function deleteClip(seq: Sequence, clipId: Id): Sequence {
     found.trackIndex,
     found.track.clips.filter((c) => c.id !== clipId),
   )
-  // Deleting the SOUND of a linked pair is a decision, and it has to survive
-  // the next load: the video half keeps its linkId (so its own audio stays off
-  // now) AND is marked, so repairLostAudioLinks does not read the missing
-  // partner as a lost link and hand the clip its voice back tomorrow.
   const link = found.clip.linkId
   if (found.track.kind !== 'audio' || link === undefined) return next
+  return keepPicturesSilent(next, new Set([link]))
+}
+
+/**
+ * Deleting the SOUND of a linked pair is a decision, and it has to survive
+ * the next load: the video half keeps its linkId (so its own audio stays off
+ * now) AND is marked, so repairLostAudioLinks does not read the missing
+ * partner as a lost link and hand the clip its voice back tomorrow.
+ */
+function keepPicturesSilent(seq: Sequence, links: ReadonlySet<string>): Sequence {
+  if (links.size === 0) return seq
+  const hit = (c: Clip): boolean => c.linkId !== undefined && links.has(c.linkId)
   return {
-    ...next,
-    tracks: next.tracks.map((t) =>
-      t.kind !== 'video' || !t.clips.some((c) => c.linkId === link)
+    ...seq,
+    tracks: seq.tracks.map((t) =>
+      t.kind !== 'video' || !t.clips.some(hit)
         ? t
-        : { ...t, clips: t.clips.map((c) => (c.linkId === link ? { ...c, ownAudioOff: true as const } : c)) },
+        : { ...t, clips: t.clips.map((c) => (hit(c) ? { ...c, ownAudioOff: true as const } : c)) },
     ),
   }
+}
+
+/**
+ * Remove a whole track and every clip on it.
+ *
+ * ⛔ AN AUDIO TRACK TAKES ITS PICTURES' SOUND WITH IT FOR GOOD. It used to be
+ * filtered out directly, which skipped the mark `deleteClip` leaves: every
+ * picture went silent, and on the next open `repairLostAudioLinks` read each
+ * one as a lost link and turned its own sound back on. Thirty clips of sound
+ * he deleted played again, with nothing on any audio line to show where from.
+ */
+export function removeTrack(seq: Sequence, trackId: Id): Sequence {
+  const track = seq.tracks.find((t) => t.id === trackId)
+  if (!track) return seq
+  const next = recomputeDuration({ ...seq, tracks: seq.tracks.filter((t) => t.id !== trackId) })
+  if (track.kind !== 'audio') return next
+  const links = new Set<string>()
+  for (const c of track.clips) if (c.linkId !== undefined) links.add(c.linkId)
+  return keepPicturesSilent(next, links)
 }
 
 export function rippleDelete(seq: Sequence, clipId: Id): Sequence {
