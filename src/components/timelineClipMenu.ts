@@ -1,5 +1,5 @@
 import { TRANSITION_KINDS, TRANSITION_LABELS } from '../engine/render/types'
-import { clipEndS, closeAllGaps, closeGapBefore, gapBefore } from '../engine/timeline'
+import { clipEndS, gapBefore } from '../engine/timeline'
 import { getEffect } from '../engine/effects/registry'
 import { FRAME_FITS, frameFitDims, frameFitOf, takesFrameFit } from '../engine/frameFit'
 import { MOVES } from '../engine/moves'
@@ -9,7 +9,16 @@ import { copyClipAttributes, hasClipAttributes, pasteClipAttributes } from '../s
 import { balanceAllClipLoudness, normalizeClipGain } from '../state/audioActions'
 import { applyEffectToClips, toggleClipsFlip } from '../state/bulkEdits'
 import { copySelection, cutSelection, duplicateSelection, pasteAtPlayhead } from '../state/clipboard'
-import { crossfadeWithNeighbour, deleteSelected, removeClipTransition, setClipTransition, splitAtPlayhead, topAndTail } from '../state/clipEdits'
+import {
+  closeAllGapsOnTrack,
+  closeGapBeforeClip,
+  crossfadeWithNeighbour,
+  deleteSelected,
+  removeClipTransition,
+  setClipTransition,
+  splitAtPlayhead,
+  topAndTail,
+} from '../state/clipEdits'
 import { appearanceMenuItems, titleFontSizeItems } from '../state/clipMenus'
 import type { MenuItem } from '../state/contextMenu'
 import { saveToCategoryItems } from '../state/libraryMenus'
@@ -19,7 +28,6 @@ import { setFrameFitForClips } from '../state/bulkEdits'
 import { applyMoveToSelection } from '../state/moveActions'
 import { copyClipMove, hasClipMove, pasteClipMove } from '../state/moveClipboard'
 import { cutQuietParts } from '../state/silenceActions'
-import { updateActiveSequence } from '../state/store'
 import { applyCaptionStyle } from '../state/captionActions'
 import { captionLabel, captionTargets, captionTheseClips } from '../state/captionRun'
 import { allCaptionStyles, saveCaptionStyleFromClip } from '../state/captionStyles'
@@ -419,14 +427,16 @@ export function clipContextMenuItems({ clip, seq, assets, selNow, keepSelection,
     {
       label: 'Close gap before',
       separator: true,
-      disabled: gapBefore(seq, clip.id) <= 1e-4,
-      onClick: () => updateActiveSequence('Close gap', (sq) => closeGapBefore(sq, clip.id)),
+      // A locked track is him saying leave this alone; the engine refuses too.
+      disabled: !!track?.locked || gapBefore(seq, clip.id) <= 1e-4,
+      onClick: () => closeGapBeforeClip(clip.id),
     },
     ...(track
       ? [
           {
             label: 'Close all gaps on track',
-            onClick: () => updateActiveSequence('Close gaps', (sq) => closeAllGaps(sq, track.id)),
+            disabled: track.locked,
+            onClick: () => closeAllGapsOnTrack(track.id),
           },
         ]
       : []),

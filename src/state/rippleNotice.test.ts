@@ -7,7 +7,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { recomputeDuration } from '../engine/timeline'
 import { activeSequence, newClipFromAsset, newProject, type Clip, type MediaAsset } from '../engine/types'
-import { deleteSelected, topAndTail } from './clipEdits'
+import { closeGapBeforeClip, deleteSelected, topAndTail } from './clipEdits'
 import { keptTimingMessage } from './rippleNotice'
 import { updateActiveSequence, useStore } from './store'
 
@@ -64,6 +64,15 @@ describe('a ripple says which tracks kept their timing', () => {
   it('W says it too', () => {
     useStore.getState().setUI({ selection: ['cut'], playheadS: 0.5 })
     topAndTail('out')
+    expect(said()).toEqual(['V2 and A2 kept their timing: something on them sits in the part you cut'])
+  })
+
+  it('Close gap before says it too', () => {
+    // A plain Delete leaves the 3 s hole the menu item then closes.
+    useStore.getState().setUI({ selection: ['cut'] })
+    deleteSelected(false)
+    closeGapBeforeClip('next')
+    expect(seq().tracks[0].clips.map((c) => c.startS)).toEqual([0])
     expect(said()).toEqual(['V2 and A2 kept their timing: something on them sits in the part you cut'])
   })
 

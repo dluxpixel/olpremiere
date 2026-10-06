@@ -33,6 +33,8 @@ import {
   clipDurationS,
   clipEndS,
   clipGroupIds,
+  closeAllGaps,
+  closeGapBefore,
   deleteScoped,
   findClip as findClipIn,
   framesShown,
@@ -1376,6 +1378,28 @@ export function deleteSelected(ripple: boolean): void {
     selection: [],
     ...(soloAudio ? { playheadS: Math.max(0, soloAudio.startS) } : {}),
   })
+}
+
+/**
+ * Close the gap before a clip, or every gap on a track. Shared by the clip menu
+ * and the gap menu. Closing a gap is a ripple, so the other tracks follow it
+ * (engine `closeGapBefore`) and he is told which ones kept their timing, the
+ * same line Shift+Delete gives.
+ */
+export function closeGapBeforeClip(clipId: Id): void {
+  const before = activeSequence(useStore.getState().project)
+  const report = newRippleReport()
+  updateActiveSequence('Close gap', (sq) => closeGapBefore(sq, clipId, report))
+  const kept = keptTimingMessage(before, report)
+  if (kept) useToasts.getState().show(kept, 'info')
+}
+
+export function closeAllGapsOnTrack(trackId: Id): void {
+  const before = activeSequence(useStore.getState().project)
+  const report = newRippleReport()
+  updateActiveSequence('Close gaps', (sq) => closeAllGaps(sq, trackId, report))
+  const kept = keptTimingMessage(before, report)
+  if (kept) useToasts.getState().show(kept, 'info')
 }
 
 /**

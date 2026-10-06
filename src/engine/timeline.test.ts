@@ -2543,6 +2543,69 @@ describe('close gap', () => {
   })
 })
 
+// Closing a gap is a ripple, and his captions follow a ripple. They did not
+// follow this one: close a 3 s gap on V1 and every caption after it on V2 stayed
+// put, 3 s late to the end of the edit.
+describe('close gap carries the other tracks along', () => {
+  const A = () => makeClip({ id: 'A', startS: 0, outS: 2 }) // ends 2
+  const B = () => makeClip({ id: 'B', startS: 5, outS: 2 }) // gap 3 before it, ends 7
+  const C = () => makeClip({ id: 'C', startS: 10, outS: 2 }) // gap 3 before it
+  const cap = (id: string, startS: number, outS = 1) => makeClip({ id, assetId: '', startS, outS })
+  const at = (s: Sequence, id: string) => findClip(s, id)!.clip.startS
+
+  it('a caption after the gap follows it', () => {
+    const seq = makeSeq([makeTrack({ clips: [A(), B()] }), makeTrack({ name: 'V2', clips: [cap('cap', 5)] })])
+    const report = { heldTrackIds: [] as string[] }
+    const out = closeGapBefore(seq, 'B', report)
+    expect(at(out, 'B')).toBeCloseTo(2, 9)
+    expect(at(out, 'cap')).toBeCloseTo(2, 9)
+    expect(report.heldTrackIds).toEqual([])
+  })
+
+  it('a caption sitting in the gap holds its track, and says so', () => {
+    const v2 = makeTrack({ name: 'V2', clips: [cap('inGap', 3), cap('later', 6)] })
+    const seq = makeSeq([makeTrack({ clips: [A(), B()] }), v2])
+    const report = { heldTrackIds: [] as string[] }
+    const out = closeGapBefore(seq, 'B', report)
+    expect(at(out, 'B')).toBeCloseTo(2, 9)
+    expect(at(out, 'inGap')).toBe(3)
+    expect(at(out, 'later')).toBe(6)
+    expect(report.heldTrackIds).toEqual([v2.id])
+  })
+
+  it('a music track (sync off) keeps its timing', () => {
+    const music = makeTrack({ kind: 'audio', name: 'A2', audioRole: 'music', clips: [makeClip({ id: 'song', startS: 6, outS: 10 })] })
+    const out = closeGapBefore(makeSeq([makeTrack({ clips: [A(), B()] }), music]), 'B')
+    expect(at(out, 'song')).toBe(6)
+  })
+
+  it('a locked track is not touched, as the origin or as a follower', () => {
+    const lockedV2 = makeTrack({ name: 'V2', locked: true, clips: [cap('cap', 5)] })
+    const out = closeGapBefore(makeSeq([makeTrack({ clips: [A(), B()] }), lockedV2]), 'B')
+    expect(at(out, 'cap')).toBe(5)
+    const lockedV1 = makeSeq([makeTrack({ locked: true, clips: [A(), B()] })])
+    expect(closeGapBefore(lockedV1, 'B')).toBe(lockedV1)
+    expect(closeAllGaps(lockedV1, lockedV1.tracks[0].id)).toBe(lockedV1)
+  })
+
+  it('a linked partner on a locked track holds the pair', () => {
+    const v = makeClip({ id: 'v', startS: 5, outS: 2, linkId: 'L' })
+    const a = makeClip({ id: 'a', startS: 5, outS: 2, linkId: 'L' })
+    const seq = makeSeq([makeTrack({ clips: [A(), v] }), makeTrack({ kind: 'audio', name: 'A1', locked: true, clips: [a] })])
+    expect(closeGapBefore(seq, 'v')).toBe(seq)
+  })
+
+  it('closeAllGaps with two gaps moves a later caption by both', () => {
+    const v2 = makeTrack({ name: 'V2', clips: [cap('mid', 7.5, 0.5), cap('end', 12)] })
+    const seq = makeSeq([makeTrack({ clips: [A(), B(), C()] }), v2])
+    const out = closeAllGaps(seq, seq.tracks[0].id)
+    expect(at(out, 'C')).toBeCloseTo(4, 9)
+    // After the first gap only: 3 s. After both: 6 s.
+    expect(at(out, 'mid')).toBeCloseTo(4.5, 9)
+    expect(at(out, 'end')).toBeCloseTo(6, 9)
+  })
+})
+
 describe('close gap is link-group aware', () => {
   it('closeGapBefore moves a video clip AND its linked audio partner together', () => {
     const v0 = makeClip({ id: 'V0', startS: 0, inS: 0, outS: 2 }) // ends 2

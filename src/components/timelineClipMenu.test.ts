@@ -142,6 +142,14 @@ describe('the clip right-click menu', () => {
     expect(item(menu(later, gappy), 'Close gap before').disabled).toBe(false)
   })
 
+  it('disables both gap verbs on a locked track', () => {
+    const { v } = fixture()
+    const later = makeClip({ startS: 5 })
+    const locked = makeSeq([makeTrack({ locked: true, clips: [v, later] })])
+    expect(item(menu(later, locked), 'Close gap before').disabled).toBe(true)
+    expect(item(menu(later, locked), 'Close all gaps on track').disabled).toBe(true)
+  })
+
   it('offers the style presets on a single title and leaves the video verbs off it', () => {
     const title = newTitleClip(defaultTitleDef('Hi'), 0, 2)
     const seq = makeSeq([makeTrack({ clips: [title] })])

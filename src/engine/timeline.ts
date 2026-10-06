@@ -1302,11 +1302,15 @@ function mergeRemovals(spans: ReadonlyArray<{ startS: number; endS: number }>): 
  * the same track) left to butt against the previous clip, or to 0 if it's the
  * first. LINK-GROUP AWARE: each moved clip's linked audio partner moves the same
  * distance, so a video and its split-off audio never drift apart. Preserves
- * spacing among the rippled clips. No-op when there's no gap.
+ * spacing among the rippled clips. No-op when there's no gap, or on a locked
+ * track.
+ *
+ * Closing a gap is a ripple, so the other tracks follow it exactly as they
+ * follow Shift+Delete (see `followGapClose`).
  */
-export function closeGapBefore(seq: Sequence, clipId: Id): Sequence {
+export function closeGapBefore(seq: Sequence, clipId: Id, report?: RippleReport): Sequence {
   const found = findClip(seq, clipId)
-  if (!found) return seq
+  if (!found || found.track.locked) return seq
   const delta = gapBefore(seq, clipId)
   if (delta <= EPS) return seq
   const deltaById = new Map<Id, number>()
@@ -1314,18 +1318,19 @@ export function closeGapBefore(seq: Sequence, clipId: Id): Sequence {
   for (let i = found.clipIndex; i < found.track.clips.length; i++) {
     for (const gid of groupIdsOf(found.track.clips[i], byLink)) deltaById.set(gid, delta)
   }
-  return shiftClipsBy(seq, clampShiftForCollisions(seq, deltaById, byLink))
+  const applied = clampShiftForCollisions(seq, holdLockedGroups(seq, deltaById, byLink), byLink)
+  return followGapClose(seq, shiftClipsBy(seq, applied), found.track, applied, report)
 }
 
 /**
  * Remove every gap on a track: butt each clip against the previous, keeping the
  * FIRST clip where it is (its lead-in is intentional). LINK-GROUP AWARE: each
  * clip's linked partner shifts by that clip's own delta, so linked audio repacks
- * in lockstep. One tidy pass.
+ * in lockstep. One tidy pass. The other tracks follow, as for closeGapBefore.
  */
-export function closeAllGaps(seq: Sequence, trackId: Id): Sequence {
+export function closeAllGaps(seq: Sequence, trackId: Id, report?: RippleReport): Sequence {
   const ti = seq.tracks.findIndex((t) => t.id === trackId)
-  if (ti < 0) return seq
+  if (ti < 0 || seq.tracks[ti].locked) return seq
   const sorted = [...seq.tracks[ti].clips].sort((a, b) => a.startS - b.startS)
   if (sorted.length === 0) return seq
   const deltaById = new Map<Id, number>()
@@ -1338,7 +1343,64 @@ export function closeAllGaps(seq: Sequence, trackId: Id): Sequence {
   }
   // Same guard as closeGapBefore: a partner on another track may not be shoved
   // through whatever is already sitting there just because this track repacks.
-  return shiftClipsBy(seq, clampShiftForCollisions(seq, deltaById, byLink))
+  const applied = clampShiftForCollisions(seq, holdLockedGroups(seq, deltaById, byLink), byLink)
+  return followGapClose(seq, shiftClipsBy(seq, applied), seq.tracks[ti], applied, report)
+}
+
+/**
+ * A group with a member on a locked track does not move at all. A lock is him
+ * saying leave this alone, and a partner on another track is no way around it.
+ * The collision clamp then holds every clip behind it on the same track, so
+ * nothing lands on the held clip.
+ */
+function holdLockedGroups(seq: Sequence, deltaById: Map<Id, number>, byLink: Map<Id, Id[]>): Map<Id, number> {
+  const locked = new Set<Id>()
+  for (const t of seq.tracks) if (t.locked) for (const c of t.clips) locked.add(c.id)
+  if (locked.size === 0) return deltaById
+  const out = new Map(deltaById)
+  for (const t of seq.tracks) {
+    for (const c of t.clips) {
+      if (!out.has(c.id)) continue
+      if (groupIdsOf(c, byLink).some((g) => locked.has(g))) for (const g of groupIdsOf(c, byLink)) out.delete(g)
+    }
+  }
+  return out
+}
+
+/**
+ * Carry the other tracks along with a closed gap, by the time each one REALLY
+ * removed (the collision clamp may have closed less than was asked).
+ *
+ * ⛔ CLOSING A GAP USED TO LEAVE HIS CAPTIONS BEHIND. Every other ripple
+ * (Shift+Delete, Q, W, a Ctrl edge trim) follows through `syncFollowEdits`, and
+ * this one shifted only its own track and the linked partners: close a 2 s gap
+ * on V1 and every caption on V2 after it played 2 s late to the end of the edit.
+ *
+ * The removed spans are read off the origin track in time order: where the
+ * applied shift changes, one ripple happened, with its far edge at the OLD start
+ * of the clip that moved (the `syncFollow` rule) and its size the change.
+ * `alreadyMoved` is every track the shift touched, so a linked partner's track
+ * is never shifted twice.
+ */
+function followGapClose(
+  before: Sequence,
+  shifted: Sequence,
+  origin: Track,
+  applied: ReadonlyMap<Id, number>,
+  report?: RippleReport,
+): Sequence {
+  const edits: RippleEdit[] = []
+  let prev = 0
+  for (const c of [...origin.clips].sort((a, b) => a.startS - b.startS)) {
+    const a = applied.get(c.id) ?? 0
+    if (Math.abs(a - prev) > EPS) edits.push({ atS: c.startS, deltaS: prev - a })
+    prev = a
+  }
+  // Nothing on the origin track moved (all of it held), so nothing moved at all.
+  if (edits.length === 0) return before
+  const moved = new Set<Id>([origin.id])
+  for (const t of before.tracks) if (t.clips.some((c) => (applied.get(c.id) ?? 0) > EPS)) moved.add(t.id)
+  return syncFollowEdits(shifted, moved, edits, report)
 }
 
 export function snapTime(
