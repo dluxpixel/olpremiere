@@ -58,9 +58,36 @@ export function subscribeShuttleRate(cb: (rate: number) => void): () => void {
   return () => rateSubs.delete(cb)
 }
 
+/**
+ * Where the last pause REALLY stopped, and the frame the playhead was put on.
+ *
+ * ⛔ A PAUSE LEFT THE PLAYHEAD BETWEEN TWO FRAMES (2026-10-06). Playing draws
+ * the frame the playhead is in (Monitor.tsx floors it, like the export), and a
+ * paused playhead draws the NEAREST frame, so about half of all pauses stepped
+ * the picture on by one, and the readout disagreed with the picture. So a pause
+ * puts the playhead on the frame that was on screen. The exact time is kept,
+ * and play resumes from it while the playhead has not been moved, because a
+ * dub resumed from the frame would replay a stretch he already heard (MIC-5).
+ */
+let stoppedAt: { exactS: number; frameS: number } | null = null
+
+/** Where play should start from the playhead: the exact stop, if he has not moved it since. */
+function resumeFrom(playheadS: number): number {
+  return stoppedAt && Math.abs(playheadS - stoppedAt.frameS) < 1e-9 ? stoppedAt.exactS : playheadS
+}
+
 const transport = new Transport({
   getEndS: () => activeSequence(useStore.getState().project).durationS,
   onTick: (t) => useStore.getState().setUI({ playheadS: Math.max(0, t) }),
+  onPaused: (exactS) => {
+    const s = useStore.getState()
+    const fps = activeSequence(s.project).fps || 30
+    // The frame on screen is the one the LAST TICK drew, not the one the live
+    // clock has reached since, which can be a frame later.
+    const frameS = Math.floor(Math.max(0, s.ui.playheadS) * fps + 1e-6) / fps
+    stoppedAt = { exactS: Math.max(0, exactS), frameS }
+    s.setUI({ playheadS: frameS })
+  },
   onStateChange: (playing, rate) => {
     useStore.getState().setUI({ playing })
     if (!playing) pauseAllPreviewVideos()
@@ -121,7 +148,7 @@ export function togglePlay(): void {
   const endS = activeSequence(s.project).durationS
   if (endS <= 0) return
   // At the end, Space restarts from the top (Premiere behavior).
-  const fromS = s.ui.playheadS >= endS - 1e-6 ? 0 : s.ui.playheadS
+  const fromS = s.ui.playheadS >= endS - 1e-6 ? 0 : resumeFrom(s.ui.playheadS)
   void transport.play(fromS, 1)
 }
 
@@ -139,7 +166,7 @@ export function ensurePlaying(): void {
   const s = useStore.getState()
   const endS = activeSequence(s.project).durationS
   if (endS <= 0) return
-  const fromS = s.ui.playheadS >= endS - 1e-6 ? 0 : s.ui.playheadS
+  const fromS = s.ui.playheadS >= endS - 1e-6 ? 0 : resumeFrom(s.ui.playheadS)
   void transport.play(fromS, 1)
 }
 
@@ -155,7 +182,7 @@ export function shuttle(dir: -1 | 1): void {
     const idx = SHUTTLE_RATES.indexOf(Math.abs(transport.rate))
     magnitude = SHUTTLE_RATES[Math.min(idx + 1, SHUTTLE_RATES.length - 1)] ?? 1
   }
-  const fromS = transport.playing ? transport.currentTime() : s.ui.playheadS
+  const fromS = transport.playing ? transport.currentTime() : resumeFrom(s.ui.playheadS)
   void transport.play(fromS, dir * magnitude)
 }
 

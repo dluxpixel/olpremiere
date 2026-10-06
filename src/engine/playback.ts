@@ -49,6 +49,12 @@ export interface TransportOpts {
   /** Sequence end in seconds. Re-read every frame so edits mid-play count. */
   getEndS: () => number
   onTick: (tS: number) => void
+  /**
+   * Where a pause really stopped (the live clock, MIC-5). Defaults to onTick.
+   * The app puts the playhead on the frame that was on screen and keeps this
+   * exact time to resume from.
+   */
+  onPaused?: (tS: number) => void
   onStateChange?: (playing: boolean, rate: number) => void
   /** Schedules audio from a timeline time; resolves to a stop fn. */
   schedule: ScheduleFn
@@ -517,7 +523,7 @@ export class Transport {
     this.currentRate = 0
     if (wasActive) this.opts.onStateChange?.(false, 0)
     // And the playhead is told, so the next play starts exactly there.
-    if (wasPlaying) this.opts.onTick(this.lastT)
+    if (wasPlaying) (this.opts.onPaused ?? this.opts.onTick)(this.lastT)
     return this.lastT
   }
 

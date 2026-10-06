@@ -91,3 +91,47 @@ describe('Space', () => {
     expect(playhead()).toBeCloseTo(0.3, 6)
   })
 })
+
+// The timeline audit, 2026-10-06: a pause left the playhead between two frames,
+// so the paused picture (nearest frame) could step one on from the last frame
+// he saw playing (the frame the playhead is in).
+describe('a pause lands on the frame that was on screen', () => {
+  beforeEach(() => {
+    updateActiveSequence('A 10 second edit at 30', (seq) => ({ ...seq, durationS: 10, fps: 30 }))
+  })
+
+  it('puts the playhead on a whole frame, the one the last tick drew', async () => {
+    togglePlay()
+    await settle()
+    frameAfter(3456.7)
+    nowMs += 20 // the pause comes a moment after the last drawn frame
+    togglePlay()
+    const frames = playhead() * 30
+    expect(Math.abs(frames - Math.round(frames))).toBeLessThan(1e-6)
+    expect(Math.round(frames)).toBe(103) // floor(3.4567 * 30)
+  })
+
+  it('and resumes from where it REALLY stopped while the playhead is not moved', async () => {
+    togglePlay()
+    await settle()
+    frameAfter(3456.7)
+    nowMs += 20
+    togglePlay()
+    togglePlay()
+    await settle()
+    frameAfter(100)
+    expect(playhead()).toBeCloseTo(3.4767 + 0.1, 6)
+  })
+
+  it('a playhead moved after the pause plays from where it was put', async () => {
+    togglePlay()
+    await settle()
+    frameAfter(3456.7)
+    togglePlay()
+    useStore.getState().setUI({ playheadS: 5 })
+    togglePlay()
+    await settle()
+    frameAfter(100)
+    expect(playhead()).toBeCloseTo(5.1, 6)
+  })
+})
