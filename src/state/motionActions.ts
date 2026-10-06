@@ -3,7 +3,7 @@
 // dispatch (one undo step) over the pure builders in engine/motion.ts.
 
 import { getAudioRange } from '../engine/audio'
-import { detectOnsets } from '../engine/beats'
+import { detectAllOnsets, spreadStrongest } from '../engine/beats'
 import { monoSlice } from '../engine/beatCache'
 import { withChannelValue } from '../engine/effects/channels'
 import { impactClip, punchInClip, punchOutClip, rampSpeedRange, whipClips } from '../engine/motion'
@@ -227,6 +227,8 @@ export function whipToNext(clipId: string): void {
 
 /** Two punches closer than this would overlap their envelopes and compound. */
 const BEAT_PUNCH_GAP_S = 0.8
+/** The keyframe soup guard: at most this many punches, spread across the clip. */
+const BEAT_PUNCH_MAX = 16
 
 /**
  * Detect beats/hits in an audio clip and punch the topmost footage clip under
@@ -263,7 +265,8 @@ export async function punchOnBeats(audioClipId: string): Promise<void> {
   const channels: Float32Array[] = []
   for (let ch = 0; ch < buffer.numberOfChannels; ch++) channels.push(buffer.getChannelData(ch))
   const mono = monoSlice(channels, sr, g.clip.inS - rangeS, g.clip.outS - rangeS)
-  const onsets = detectOnsets(mono, sr, { minGapS: BEAT_PUNCH_GAP_S, maxOnsets: 16 })
+  const found = detectAllOnsets(mono, sr, { minGapS: BEAT_PUNCH_GAP_S })
+  const onsets = spreadStrongest(found, BEAT_PUNCH_MAX, mono.length / sr).map((o) => o.t)
   if (onsets.length === 0) {
     useToasts.getState().show('No beats found in the clip', 'danger')
     return
@@ -295,9 +298,14 @@ export async function punchOnBeats(audioClipId: string): Promise<void> {
     }
     return punched > 0 ? next : sq
   })
+  // Says when the cap left beats out, instead of reading as if it covered them all.
+  const leftOut = found.length > onsets.length ? `, the hardest ${onsets.length} of ${found.length} across the clip` : ''
   useToasts
     .getState()
-    .show(punched > 0 ? `Punched ${punched} beat(s)` : 'No footage under the beats', punched > 0 ? 'success' : 'danger')
+    .show(
+      punched > 0 ? `Punched ${punched} beat${punched === 1 ? '' : 's'}${leftOut}` : 'No footage under the beats',
+      punched > 0 ? 'success' : 'danger',
+    )
 }
 
 /** Speed-ramp the work-area range of this clip (I/O keys set the range). */
