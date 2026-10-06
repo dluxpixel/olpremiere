@@ -27,7 +27,7 @@ function shell(opts: { failOn?: number } = {}) {
   const api = {
     isElectron: true,
     pickSavePath: async () => 'D:/his/GYM.olstudio',
-    fileOpenWrite: vi.fn(async () => 7),
+    fileOpenWrite: vi.fn<(target: string, sizeBytes?: number) => Promise<number>>(async () => 7),
     fileWriteChunk: async (_id: number, chunk: ArrayBuffer) => {
       if (opts.failOn === chunks.length) {
         throw new Error("Error invoking remote method 'file:writeChunk': Error: ENOSPC: no space left on device, write")

@@ -197,7 +197,7 @@ async function placePictures(files: File[], atS: number, trackId: Id | undefined
   // Nothing imported: importFiles has already said why.
   const assets = ids.map((id) => useStore.getState().project.assets[id]).filter((a) => a !== undefined)
   if (assets.length === 0) return
-  let placed = { clipIds: [] as Id[], aimed: undefined as PictureAim | undefined, aimedClipId: '' }
+  let placed: { clipIds: Id[]; aimed?: PictureAim; aimedClipId: Id } = { clipIds: [], aimedClipId: '' }
   updateActiveSequence(assets.length === 1 ? 'Paste picture' : `Paste ${assets.length} pictures`, (sq) => {
     const r = placePastedInARow(sq, assets, atS, trackId)
     placed = r
@@ -228,7 +228,7 @@ export async function pasteMediaFiles(files: File[]): Promise<void> {
   const ids = await importFiles(files)
   const assets = ids.map((id) => useStore.getState().project.assets[id]).filter((a) => a !== undefined)
   if (assets.length === 0) return
-  let placed = { clipIds: [] as Id[], aimed: undefined as PictureAim | undefined, aimedClipId: '' }
+  let placed: { clipIds: Id[]; aimed?: PictureAim; aimedClipId: Id } = { clipIds: [], aimedClipId: '' }
   updateActiveSequence(assets.length === 1 ? `Paste ${assets[0]!.name}` : `Paste ${assets.length} files`, (sq) => {
     const r = placePastedInARow(sq, assets, atS, trackId)
     placed = r
