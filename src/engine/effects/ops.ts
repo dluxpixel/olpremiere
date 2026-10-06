@@ -13,7 +13,7 @@
 //
 // Pure: every function returns a new Clip; none mutate. No React, no DOM.
 
-import { evalChannel, removeKeyframeNear, upsertKeyframe } from '../keyframes'
+import { evalChannel, removeKeyframeNear, upsertKeyframe, upsertKeyframeValue } from '../keyframes'
 import type { Clip, EffectInstance, Id, Keyframe, Keyframeable } from '../types'
 import { CANONICAL_ORDER, defaultParams, getEffect } from './registry'
 
@@ -130,12 +130,17 @@ function withParamKeyframes(clip: Clip, effectId: Id, key: string, kfs: Keyframe
 /**
  * Set a param. Animated → upsert a keyframe at the playhead. Static → move the
  * base. Mirrors setChannel, one level down.
+ *
+ * ⛔ The VALUE only (upsertKeyframeValue): a keyframe's ease and curve are his.
+ * This one path missed the 2026-08-14 fix: parked on the first diamond of an
+ * Ease in, typing a new Intensity made the Glow arrive in a straight line, and a
+ * curve shaped on the Blur lane went the same way when he corrected the Radius.
  */
 export function setEffectParam(clip: Clip, effectId: Id, key: string, value: number, localT: number): Clip {
   const inst = findEffectById(clip, effectId)
   if (!inst) return clip
   if (!isParamAnimated(inst, key)) return withParam(clip, effectId, key, value)
-  return withParamKeyframes(clip, effectId, key, upsertKeyframe(paramKeyframes(inst, key), { t: localT, value, ease: 'linear' }))
+  return withParamKeyframes(clip, effectId, key, upsertKeyframeValue(paramKeyframes(inst, key), localT, value, { ease: 'linear' }))
 }
 
 /** Stopwatch: on → seed a keyframe at the playhead holding the current value; off → drop all. */
