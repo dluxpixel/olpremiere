@@ -3,6 +3,21 @@ import { getAssetPeaks, slicePeaks } from '../engine/waveform'
 import type { Clip, MediaAsset } from '../engine/types'
 
 /**
+ * ⛔ THE CANVAS IS NEVER AS WIDE AS A ZOOMED IN CLIP. Its backing store used to
+ * be the clip's whole width times the screen scale, and Chromium will not make
+ * a canvas side past 32,767 px, so at full zoom a song longer than about half
+ * a minute drew NOTHING: the waveform vanished exactly when he zoomed in to cut
+ * on a beat. Below that limit every zoom step still drew one bar per pixel
+ * (24,000 for a minute of song) from peaks that hold 60 points a second.
+ *
+ * So the bars are capped at twice the peaks in the clip's window and at
+ * MAX_COLS, the backing store at MAX_CANVAS_PX, and CSS stretches the canvas
+ * to the clip (it is already full width). At normal zoom nothing changes.
+ */
+const MAX_COLS = 4096
+const MAX_CANVAS_PX = 8192
+
+/**
  * Center-mirrored waveform for an audio clip, drawn from the asset's cached
  * peaks over the clip's trimmed window. Pointer-transparent so the clip's own
  * drag/trim/context handlers still fire. Redraws on resize/trim; the peaks load
@@ -36,8 +51,9 @@ export function ClipWaveform({
     const canvas = canvasRef.current
     if (!canvas || !peaks || asset.durationS <= 0 || width < 2 || height < 2) return
     const dpr = window.devicePixelRatio || 1
-    const cols = Math.max(1, Math.round(width))
-    const pw = Math.max(1, Math.round(width * dpr))
+    const peaksInWindow = Math.ceil((peaks.length * Math.abs(clip.outS - clip.inS)) / asset.durationS)
+    const cols = Math.max(1, Math.min(Math.round(width), Math.max(1, peaksInWindow) * 2, MAX_COLS))
+    const pw = Math.max(1, Math.min(Math.round(width * dpr), cols * Math.ceil(dpr), MAX_CANVAS_PX))
     const ph = Math.max(1, Math.round(height * dpr))
     if (canvas.width !== pw) canvas.width = pw
     if (canvas.height !== ph) canvas.height = ph
