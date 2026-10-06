@@ -194,6 +194,38 @@ describe('addCaptionsFromWords', () => {
     expect(texts).toEqual(['first', 'second'])
   })
 
+  // ⛔ CA-1. A clip's last caption is held a few frames past its last word, so
+  // it runs into the next clip. Captioning that next clip used to delete it,
+  // because "touches this run" was the rule. Now a caption belongs to the stretch
+  // it STARTS in, and the earlier of two touching captions gives way at its end.
+  const captionTrack = () => videoTracks(seq()).find((t) => t.name === CAPTION_TRACK_NAME)!
+  const clipA: CaptionWord[] = [
+    { text: 'hello', startS: 0, endS: 0.5 },
+    { text: 'world', startS: 0.6, endS: 1.0 },
+  ]
+  const clipB: CaptionWord[] = [{ text: 'next', startS: 1.0, endS: 1.4 }]
+
+  it('captioning the next clip keeps the last caption of the clip before it', () => {
+    addCaptionsFromWords(clipA, { coveredSpans: [{ startS: 0, endS: 1 }] })
+    // The hold really does carry it past the cut, which is the whole problem.
+    expect(clipDurationS(captionTrack().clips[1]) + captionTrack().clips[1].startS).toBeGreaterThan(1)
+    addCaptionsFromWords(clipB, { coveredSpans: [{ startS: 1, endS: 2 }] })
+    const clips = captionTrack().clips
+    expect(clips.map((c) => c.title?.text)).toEqual(['hello', 'world', 'next'])
+    expect(clips[1].startS).toBeCloseTo(0.6, 6)
+    expect(clips[1].startS + clipDurationS(clips[1])).toBeLessThanOrEqual(1 + 1e-9)
+    expect(clips[2].startS).toBeCloseTo(1, 6)
+  })
+
+  it('captioning the clip before keeps the first caption of the clip after it', () => {
+    addCaptionsFromWords(clipB, { coveredSpans: [{ startS: 1, endS: 2 }] })
+    addCaptionsFromWords(clipA, { coveredSpans: [{ startS: 0, endS: 1 }] })
+    const clips = captionTrack().clips
+    expect(clips.map((c) => c.title?.text)).toEqual(['hello', 'world', 'next'])
+    expect(clips[1].startS + clipDurationS(clips[1])).toBeLessThanOrEqual(1 + 1e-9)
+    expect(clips[2].startS).toBeCloseTo(1, 6)
+  })
+
   it('still replaces cleanly when he re-runs the same stretch', () => {
     addCaptionsFromWords([{ text: 'take one', startS: 0, endS: 1 }])
     addCaptionsFromWords([{ text: 'take two', startS: 0, endS: 1 }])

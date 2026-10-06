@@ -396,6 +396,9 @@ export async function autoCaptionFromClip(clipId: string, style?: CaptionStyle):
         label: 'Auto-caption from voiceover',
         style: style ?? defaultCaptionStyle(),
         model: modelFor(getCaptionLanguage()),
+        // The clip it heard, not the box around the words it found: a re-run
+        // replaces every old caption in this clip, and none in the next one.
+        coveredSpans: [{ startS: clip.startS, endS: clipEndS(clip) }],
       })
     }
   } catch (err) {

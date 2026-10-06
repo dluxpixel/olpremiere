@@ -15,6 +15,7 @@ import {
 } from '../engine/captions/captionStyle'
 import { candidateFixFor, wordFixFor, type StyleProfile } from '../engine/captions/styleProfile'
 import { learnedProfile } from '../engine/captions/styleStore'
+import { retimeAppearance } from '../engine/anim/appearance'
 import { addTrack, clipDurationS, clipEndS, recomputeDuration, resolveStart } from '../engine/timeline'
 import { activeSequence, videoTracks, type Clip, type Sequence, type Track } from '../engine/types'
 import { updateActiveSequence, useStore } from './store'
@@ -231,6 +232,8 @@ export function addCaptionsFromWords(
   // by reading digits off the name and skips anything that does not parse, so a
   // named track cannot disturb the numbering of the others.
   let replaced = 0
+  /** What actually went down: a new caption with no room left beside a kept one is dropped. */
+  let laid = clips
   /** Set when his Captions track is locked, so the run says so instead of going quiet. */
   let lockedOut = false
   updateActiveSequence(options.label ?? 'Auto-caption', (sq) => {
@@ -269,11 +272,26 @@ export function addCaptionsFromWords(
         options.coveredSpans && options.coveredSpans.length > 0
           ? options.coveredSpans
           : [{ startS: Math.min(...clips.map((c) => c.startS)), endS: Math.max(...clips.map((c) => clipEndS(c))) }]
-      const overlapsRun = (c: Clip): boolean =>
-        spans.some((span) => clipEndS(c) > span.startS + EPS && c.startS < span.endS - EPS)
-      const kept = reuse.clips.filter((c) => !overlapsRun(c))
-      replaced = reuse.clips.length - kept.length
-      const filled = { ...withClips({ ...reuse, clips: kept }, clips), captionShape: style.shape }
+      // ⛔ A CAPTION BELONGS TO THE STRETCH IT STARTS IN, not every stretch it
+      // touches. The last caption of a clip is held a little past its last word,
+      // so it ends a few frames into the NEXT clip. Asking "does it touch this
+      // run" deleted it the moment he captioned that next clip: his last word of
+      // clip A went blank, the same "deletes the last caption" he reported on
+      // 2026-08-24, one clip later. Now only a caption that STARTS in a covered
+      // stretch is replaced. One that starts before and runs in keeps its start
+      // and ends where the new caption starts; a new one that runs into a kept
+      // one is trimmed by fitAround. Whichever starts first gives way, and no
+      // start ever moves, because a start is a word landing.
+      const startsInRun = (c: Clip): boolean =>
+        spans.some((span) => c.startS >= span.startS - EPS && c.startS < span.endS - EPS)
+      const stays = reuse.clips.filter((c) => !startsInRun(c))
+      replaced = reuse.clips.length - stays.length
+      const kept = stays.map((k) => {
+        const into = clips.find((c) => c.startS > k.startS + EPS && c.startS < clipEndS(k) - EPS)
+        return into ? endCaptionAt(k, into.startS, sq.width, sq.height) : k
+      })
+      laid = fitAround(clips, kept)
+      const filled = { ...withClips({ ...reuse, clips: kept }, laid), captionShape: style.shape }
       return recomputeDuration({ ...sq, tracks: sq.tracks.map((t) => (t.id === reuse.id ? filled : t)) })
     }
     const grown = addTrack(sq, 'video')
@@ -288,7 +306,7 @@ export function addCaptionsFromWords(
     useToasts.getState().show('Your Captions track is locked, so nothing was changed', 'danger')
     return
   }
-  s.setUI({ selection: clips.map((c) => c.id) })
+  s.setUI({ selection: laid.map((c) => c.id) })
 
   // ⛔ THE SUGGESTION IS OFFERED, NEVER APPLIED. His words, 2026-08-19:
   // *"Sometimes, even suggest improvements... Maybe I'll apply them."* A
@@ -307,8 +325,8 @@ export function addCaptionsFromWords(
         // keeps the first clip's captions, so the old wording would have claimed
         // it threw away work it did not touch.
         replaced > 0
-          ? `${plural(clips.length, 'caption')}, replacing ${replaced} over this part`
-          : `${plural(clips.length, 'caption')} added`,
+          ? `${plural(laid.length, 'caption')}, replacing ${replaced} over this part`
+          : `${plural(laid.length, 'caption')} added`,
         relearned > 0 ? `${relearned} spelled your way` : '',
       ]
         .filter(Boolean)
@@ -364,6 +382,15 @@ export function captionsOn(seq: Sequence): { clip: Clip; track: Track }[] {
     .filter(isCaptionTrack)
     .flatMap((track) => track.clips.filter((c) => c.title).map((clip) => ({ clip, track })))
     .sort((a, b) => a.clip.startS - b.clip.startS)
+}
+
+/**
+ * End a caption that stays at `endS`, keeping its start: a new caption begins
+ * there. Its exit animation moves with the end so a fade still plays.
+ */
+function endCaptionAt(clip: Clip, endS: number, seqW: number, seqH: number): Clip {
+  const next = { ...clip, outS: clip.inS + (endS - clip.startS) * Math.abs(clip.speed || 1) }
+  return retimeAppearance(clip, next, seqW, seqH)
 }
 
 /**

@@ -155,6 +155,21 @@ describe('captioning a selection', () => {
     expect(captionsOn(seq()).length).toBeGreaterThan(0)
   })
 
+  it('a re-run of one clip replaces every old caption inside that clip, not just near its new words', async () => {
+    // CA-1. The door used to pass no stretch, so the box around the NEW words
+    // was the stretch, and an old caption late in the clip (a word this run did
+    // not hear) survived beside the new ones.
+    const { b } = seed()
+    await captionTheseClips([b])
+    const extra = { ...captionsOn(seq())[0]!.clip, id: 'old-edge', startS: 3.9, outS: 0.08 }
+    updateActiveSequence('seed an old edge caption', (sq) => ({
+      ...sq,
+      tracks: sq.tracks.map((t) => (t.name === CAPTION_TRACK_NAME ? { ...t, clips: [...t.clips, extra] } : t)),
+    }))
+    await captionTheseClips([b])
+    expect(captionsOn(seq()).some(({ clip }) => clip.id === 'old-edge')).toBe(false)
+  })
+
   it('uses the default caption style, length and all', async () => {
     const { a, b, c } = seed()
     const three = saveNewCaptionStyle({
