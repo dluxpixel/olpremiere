@@ -21,7 +21,23 @@ vi.mock('electron', () => ({
   },
 }))
 
+/** Holds every temp file write while set, so a test can line two saves up. */
+const gate = vi.hoisted(() => ({ hold: null as Promise<void> | null }))
+// The real fs underneath. Only writeFile is watched: what it was asked for, and when.
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const real = await importOriginal<typeof import('node:fs/promises')>()
+  return {
+    ...real,
+    writeFile: vi.fn(async (...args: Parameters<typeof real.writeFile>) => {
+      if (gate.hold) await gate.hold
+      return real.writeFile(...args)
+    }),
+  }
+})
+
 const files = await import('./projectFiles')
+const fsp = await import('node:fs/promises')
+const tempWrites = () => vi.mocked(fsp.writeFile).mock.calls.filter((c) => String(c[0]).endsWith('.tmp'))
 
 /** Every test runs as a throwaway profile, so the folder is the temp one, never his Documents. */
 const realArgv = process.argv
@@ -31,6 +47,8 @@ beforeEach(async () => {
   appName = 'OL Premiere'
 })
 afterEach(async () => {
+  gate.hold = null
+  vi.mocked(fsp.writeFile).mockClear()
   process.argv = realArgv
   await rm(userData, { recursive: true, force: true })
 })
@@ -83,6 +101,58 @@ describe('writing', () => {
     await writeFile(path.join(dir, 'Green_ab9fe413.olpbak.tmp'), '{"project":{"id":"ab9fe413-4312"', 'utf8')
     const rows = await files.listProjectFiles()
     expect(rows.map((r) => r.name)).toEqual(['Green'])
+  })
+})
+
+describe('⛔ a crash or two saves at once never leave a bad file', () => {
+  it('flushes the bytes to the disk before the rename, for a project, the Library and caption styles', async () => {
+    // NTFS makes the rename and the length durable before the bytes, so without
+    // the flush a power cut can leave a file of zeros under the real name.
+    await files.writeProjectFile('a1', 'Green', doc('a1', 'Green'))
+    const { writeLibraryFile } = await import('./libraryFile')
+    const { writeCaptionStylesFile } = await import('./captionStylesFile')
+    await writeLibraryFile('{"items":[]}')
+    await writeCaptionStylesFile('{"styles":[]}')
+    const writes = tempWrites()
+    expect(writes).toHaveLength(3)
+    for (const [, , opts] of writes) expect(opts).toMatchObject({ flush: true })
+  })
+
+  it('writes one project once at a time, and the last save is the one on disk', async () => {
+    let release!: () => void
+    gate.hold = new Promise<void>((r) => (release = r))
+    const first = files.writeProjectFile('a1', 'Green', doc('a1', 'Green', 1))
+    const second = files.writeProjectFile('a1', 'Green', doc('a1', 'Green', 2))
+    await new Promise((r) => setTimeout(r, 30))
+    // Two writers on one temp file can leave mixed bytes renamed over the good file.
+    expect(tempWrites()).toHaveLength(1)
+    gate.hold = null
+    release()
+    await Promise.all([first, second])
+    expect(tempWrites()).toHaveLength(2)
+    const dir = files.projectDir()
+    expect(await readdir(dir)).toEqual(['Green_a1.olpbak'])
+    expect(JSON.parse(await readFile(path.join(dir, 'Green_a1.olpbak'), 'utf8')).project.updatedAt).toBe(2)
+  })
+
+  it('a failed write does not stop the next one', async () => {
+    vi.mocked(fsp.writeFile).mockRejectedValueOnce(new Error('disk full'))
+    await expect(files.writeProjectFile('a1', 'Green', doc('a1', 'Green', 1))).rejects.toThrow('disk full')
+    await files.writeProjectFile('a1', 'Green', doc('a1', 'Green', 2))
+    expect((await files.listProjectFiles())[0].updatedAt).toBe(2)
+  })
+
+  it('a delete waits for a save on its way, so the save cannot put the file back', async () => {
+    let release!: () => void
+    gate.hold = new Promise<void>((r) => (release = r))
+    const save = files.writeProjectFile('a1', 'Green', doc('a1', 'Green'))
+    const trash = files.trashProjectFile('a1')
+    await new Promise((r) => setTimeout(r, 30))
+    gate.hold = null
+    release()
+    await save
+    expect(await trash).toBe(1)
+    expect(await files.listProjectFiles()).toEqual([])
   })
 })
 
