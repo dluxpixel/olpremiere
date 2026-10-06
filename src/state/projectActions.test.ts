@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { newProject, type Project } from '../engine/types'
-import { createProject, openProject, removeProject } from './projectActions'
+import { blobKeysOnlyUsedBy } from '../engine/blobGc'
+import { newClipFromAsset, newProject, type MediaAsset, type Project } from '../engine/types'
+import { createProject, duplicateProject, openProject, removeProject } from './projectActions'
 import { useStore } from './store'
 
 const saved = new Map<string, Project>()
@@ -161,5 +162,84 @@ describe('a failed flush never costs the user their edits', () => {
     saveFails = true
     await createProject()
     expect(useStore.getState().project.id).toBe(currentId)
+  })
+})
+
+describe('duplicateProject (Make a copy)', () => {
+  /** A project with one clip of one piece of media, like his BC templates. */
+  const template = (name: string): Project => {
+    const p = newProject(name)
+    const asset: MediaAsset = {
+      id: 'asset-1',
+      name: 'unit.png',
+      kind: 'image',
+      blobKey: 'asset/asset-1',
+      thumbnailKey: 'thumb/asset-1',
+      durationS: 0,
+      hasAudio: false,
+      hasVideo: true,
+    }
+    const seq = p.sequences[p.activeSequenceId]
+    const tracks = seq.tracks.map((t, i) => (i === 0 ? { ...t, clips: [newClipFromAsset(asset, 0)] } : t))
+    return { ...p, assets: { [asset.id]: asset }, sequences: { [seq.id]: { ...seq, tracks } }, laterAt: 5 }
+  }
+
+  it('makes a new project with the same clips and media, named the _1 way, and opens it', async () => {
+    const source = template('BC template 4')
+    saved.set(source.id, source)
+
+    expect(await duplicateProject(source.id)).toBe(true)
+
+    const copy = useStore.getState().project
+    expect(copy.id).not.toBe(source.id)
+    expect(copy.name).toBe('BC template 4_1')
+    expect(saved.get(copy.id)).toBe(copy)
+    // Fresh sequence ids, the same clips and the same byte keys: no footage copied.
+    expect(Object.keys(copy.sequences)).toHaveLength(1)
+    expect(Object.keys(copy.sequences)[0]).not.toBe(source.activeSequenceId)
+    expect(copy.activeSequenceId).toBe(Object.keys(copy.sequences)[0])
+    const clips = (p: Project) => Object.values(p.sequences).flatMap((s) => s.tracks.flatMap((t) => t.clips))
+    expect(clips(copy)).toEqual(clips(source))
+    expect(copy.assets).toEqual(source.assets)
+    // A new video is current work, not parked.
+    expect(copy.laterAt).toBeUndefined()
+    // The original is untouched.
+    expect(saved.get(source.id)).toBe(source)
+  })
+
+  it('⛔ deleting the original keeps every byte the copy uses', async () => {
+    const source = template('Green')
+    saved.set(source.id, source)
+    await duplicateProject(source.id)
+    const copy = useStore.getState().project
+    // What deleteProject would drop from the store with the copy still there.
+    expect(blobKeysOnlyUsedBy(source, [copy])).toEqual([])
+  })
+
+  it('copies the open project as it is on screen, not the store copy a second behind', async () => {
+    const source = template('GYM')
+    saved.set(source.id, { ...source, name: 'GYM' })
+    useStore.getState().setProject(source)
+    useStore.getState().dispatch('Rename', (p) => ({ ...p, name: 'GYM final' }), 'name')
+
+    await duplicateProject(source.id)
+
+    // His rename landed in the copy, and the copy is told apart from the original.
+    expect(useStore.getState().project.name).toBe('GYM final_1')
+    expect(useStore.getState().project.id).not.toBe(source.id)
+    expect(saved.get(source.id)?.name).toBe('GYM final')
+  })
+
+  it('makes nothing when the copy cannot be saved', async () => {
+    const source = template('BC')
+    saved.set(source.id, source)
+    const before = useStore.getState().project.id
+    const { saveProject } = await import('./persistence')
+    vi.mocked(saveProject).mockRejectedValueOnce(new Error('disk full'))
+
+    expect(await duplicateProject(source.id)).toBe(false)
+
+    expect(useStore.getState().project.id).toBe(before)
+    expect(saved.size).toBe(1)
   })
 })

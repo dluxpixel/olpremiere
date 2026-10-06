@@ -6,7 +6,7 @@
 // dialog's Open adds a tab, or focuses the one already open, and the edit he
 // leaves stays in the strip, saved and asleep.
 
-import { activeSequence, newProject } from '../engine/types'
+import { activeSequence, newId, newProject, type Project } from '../engine/types'
 import { nextFreeName } from '../engine/uniqueName'
 import { sampleFromClips } from '../engine/captions/styleLearning'
 import { rememberProjectStyle } from '../engine/captions/styleStore'
@@ -44,6 +44,83 @@ export async function createProject(): Promise<void> {
   if (tracks !== seq.tracks) p.sequences[seq.id] = { ...seq, tracks }
   if ((await switchTo(p, { announce: true })) !== 'ok') return
   await saveProject(p)
+}
+
+/**
+ * `source` as a brand new project called `name`: its own id, fresh sequence ids,
+ * and the SAME media (asset ids and byte keys), so no footage is copied.
+ *
+ * Sharing the bytes is safe and already happens: a recovered project shares its
+ * media the same way, a delete keeps every key another project still uses
+ * (`blobKeysOnlyUsedBy`), the sweep keeps the union of every project, and the
+ * spare copies on disk are by asset id. Fresh sequence ids for the reason
+ * `landRestored` gives: two projects must never share one.
+ */
+export function copyOfProject(source: Project, name: string, now = Date.now()): Project {
+  const sequenceIdMap = new Map<string, string>()
+  const sequences: Project['sequences'] = {}
+  for (const [oldId, sq] of Object.entries(source.sequences)) {
+    const freshId = newId()
+    sequenceIdMap.set(oldId, freshId)
+    sequences[freshId] = { ...sq, id: freshId }
+  }
+  const copy: Project = {
+    ...source,
+    id: newId(),
+    name,
+    sequences,
+    activeSequenceId:
+      sequenceIdMap.get(source.activeSequenceId) ?? Object.keys(sequences)[0] ?? source.activeSequenceId,
+    createdAt: now,
+    updatedAt: now,
+  }
+  // A new video is work he is on now, whatever shelf the old one sat on.
+  delete copy.archivedAt
+  delete copy.laterAt
+  return copy
+}
+
+/**
+ * MAKE A COPY to start a new video from an old one, and open it in a tab.
+ *
+ * His Projects folder holds "BC template 1" to "BC template 5", full edits he
+ * reuses (his words, 2026-10-01: *"when I use a template for an old video and
+ * then I make new stuff in the video"*). With no copy he edited the old video in
+ * place, so the old edit was gone. The copy is named the _1 _2 way he asked for
+ * (engine/uniqueName.ts). Resolves true when the copy is the open edit.
+ */
+export async function duplicateProject(id: string): Promise<boolean> {
+  const show = useToasts.getState().show
+  const live = useStore.getState().project
+  // The open one is copied as it is on screen: the store copy can be a second behind.
+  const source = id === live.id ? live : await loadProjectById(id)
+  if (!source) {
+    show('That project could not be read, so no copy was made', 'danger')
+    return false
+  }
+  let taken = new Set<string>()
+  try {
+    taken = new Set((await listProjects()).map((s) => s.name))
+  } catch {
+    // Unknown names only cost the plain name, never the copy.
+  }
+  // The open edit's name as it is now: a rename can be a second ahead of the list.
+  taken.add(live.name)
+  const copy = copyOfProject(source, nextFreeName(source.name, taken))
+  try {
+    // Saved BEFORE the switch, so the copy exists even when the switch says no.
+    await saveProject(copy)
+  } catch (err) {
+    console.error('OL Premiere: the copy could not be saved', err)
+    show('Could not make the copy. Nothing was changed', 'danger')
+    return false
+  }
+  if ((await switchTo(copy)) !== 'ok') {
+    show(`Made a copy: ${copy.name}. It is in your projects`, 'info')
+    return false
+  }
+  show(`Made a copy: ${copy.name}`, 'success')
+  return true
 }
 
 /**
