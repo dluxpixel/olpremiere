@@ -1,5 +1,6 @@
 import { TRANSITION_KINDS, TRANSITION_LABELS } from '../engine/render/types'
 import { clipEndS, gapBefore } from '../engine/timeline'
+import { quantizeToFrame } from '../engine/timecode'
 import { getEffect } from '../engine/effects/registry'
 import { FRAME_FITS, frameFitDims, frameFitOf, takesFrameFit } from '../engine/frameFit'
 import { MOVES } from '../engine/moves'
@@ -8,7 +9,7 @@ import { comboLabel } from '../keymap'
 import { copyClipAttributes, hasClipAttributes, pasteClipAttributes } from '../state/attributes'
 import { balanceAllClipLoudness, normalizeClipGain } from '../state/audioActions'
 import { applyEffectToClips, toggleClipsFlip } from '../state/bulkEdits'
-import { copySelection, cutSelection, duplicateSelection, pasteAtPlayhead } from '../state/clipboard'
+import { copySelection, cutSelection, duplicateSelection, pasteAt } from '../state/clipboard'
 import {
   closeAllGapsOnTrack,
   closeGapBeforeClip,
@@ -346,7 +347,16 @@ export function clipContextMenuItems({ clip, seq, assets, selNow, keepSelection,
     { label: 'Copy', shortcut: comboLabel('mod+c'), separator: selectWithItems.length > 0, onClick: () => copySelection() },
     { label: 'Cut', shortcut: comboLabel('mod+x'), onClick: cutSelection },
     { label: 'Duplicate', shortcut: comboLabel('mod+d'), onClick: duplicateSelection },
-    { label: 'Paste', shortcut: comboLabel('mod+v'), onClick: pasteAtPlayhead },
+    // ⛔ ON THE LINE HE RIGHT CLICKED, 2026-10-04: *"I clicked the V4 ... It
+    // pasted it in V2."* The right click selects the clip, which clears the line
+    // Ctrl+V remembers, so this used to send the paste back to the line the clip
+    // was copied from. It goes on this clip's line, at the playhead's frame; a
+    // busy spot passes it to the next free line, with the note that says so.
+    {
+      label: 'Paste at playhead',
+      shortcut: comboLabel('mod+v'),
+      onClick: () => pasteAt(seq.tracks.findIndex((t) => t.clips.some((c) => c.id === clip.id)), quantizeToFrame(playheadS, seq.fps)),
+    },
     { label: 'Copy attributes', shortcut: comboLabel('mod+alt+c'), separator: true, onClick: () => copyClipAttributes(clip.id) },
     {
       // The count is the pictures it can go on: the sound that rides along in a

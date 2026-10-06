@@ -11,6 +11,7 @@ import { recomputeDuration } from '../engine/timeline'
 import { activeSequence, audioTracks, defaultTitleDef, newProject, newTitleClip, videoTracks, type Sequence } from '../engine/types'
 import { useContextMenu } from '../state/contextMenu'
 import { ASSET_MIME, EFFECT_MIME } from '../state/dnd'
+import { copySelection } from '../state/clipboard'
 import { clickedPasteTrack, setPasteTarget } from '../state/pasteTarget'
 import { updateActiveSequence, useStore } from '../state/store'
 import { Timeline } from './Timeline'
@@ -106,7 +107,7 @@ describe('Timeline', () => {
     fireEvent.contextMenu(el, { clientX: 20, clientY: 40 })
     const menu = useContextMenu.getState()
     expect(menu.open).toBe(true)
-    expect(menu.items.map((i) => i.label).slice(0, 4)).toEqual(['Copy', 'Cut', 'Duplicate', 'Paste'])
+    expect(menu.items.map((i) => i.label).slice(0, 4)).toEqual(['Copy', 'Cut', 'Duplicate', 'Paste at playhead'])
   })
 
   it('moves a dragged clip as one undoable edit', () => {
@@ -365,6 +366,34 @@ describe('Timeline', () => {
       setPasteTarget(videoTracks(seq())[1]!.id)
       fireEvent.pointerDown(screen.getByTestId('timeline-lanes'), { button: 0, clientX: 30, clientY: 390, pointerId: 1 })
       expect(clickedPasteTrack(seq())?.name).toBe('V2')
+    })
+
+    // The same ask, through the clip's own right click menu: the right click
+    // selected the clip, which let go of the line, so Paste went back to V1.
+    it('right click a clip, Paste at playhead: it lands on the line of that clip', () => {
+      updateActiveSequence('seed', (sq) => {
+        const [v1, v2] = videoTracks(sq)
+        const a = { ...newTitleClip(defaultTitleDef('a'), 0, 2), id: 'A' }
+        const b = { ...newTitleClip(defaultTitleDef('b'), 0, 2), id: 'B' }
+        return recomputeDuration({
+          ...sq,
+          tracks: sq.tracks.map((t) => (t.id === v1!.id ? { ...t, clips: [a] } : t.id === v2!.id ? { ...t, clips: [b] } : t)),
+        })
+      })
+      useStore.getState().setUI({ selection: ['A'] })
+      copySelection()
+      // 5.0123 s: where a Space pause leaves the playhead, between two frames.
+      useStore.getState().setUI({ selection: [], playheadS: 5.0123 })
+      render(<Timeline height={300} />)
+      layOut()
+      const bEl = screen.getAllByTestId('clip').find((c) => c.dataset.clipId === 'B')!
+      fireEvent.contextMenu(bEl, { clientX: 10, clientY: 40 })
+      const paste = useContextMenu.getState().items.find((i) => i.label === 'Paste at playhead')!
+      act(() => paste.onClick!())
+      const [v1, v2] = videoTracks(seq())
+      expect(v1!.clips.map((c) => c.id)).toEqual(['A'])
+      expect(v2!.clips).toHaveLength(2)
+      expect(v2!.clips[1]!.startS * 30).toBeCloseTo(150, 9)
     })
   })
   // His words, 2026-10-04: *"selecting multiple images and putting effects on them that

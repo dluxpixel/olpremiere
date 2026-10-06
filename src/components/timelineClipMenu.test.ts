@@ -41,7 +41,7 @@ describe('the clip right-click menu', () => {
   it('opens with the clipboard verbs and ends with the gap verbs', () => {
     const { v, seq } = fixture()
     const items = menu(v, seq)
-    expect(labels(items).slice(0, 4)).toEqual(['Copy', 'Cut', 'Duplicate', 'Paste'])
+    expect(labels(items).slice(0, 4)).toEqual(['Copy', 'Cut', 'Duplicate', 'Paste at playhead'])
     expect(labels(items).slice(-2)).toEqual(['Close gap before', 'Close all gaps on track'])
   })
 
