@@ -50,6 +50,10 @@ interface Job {
   inPath: string
   outPath: string
   handle: FileHandle | null
+  /** Stops its ffmpeg when the job is dropped (releaseRemux). */
+  abort: AbortController
+  /** The conversion while it runs, so a release can wait for ffmpeg to be gone. */
+  running: Promise<unknown> | null
 }
 const jobs = new Map<string, Job>()
 
@@ -70,7 +74,13 @@ export async function beginRemux(): Promise<string> {
   await mkdir(dir, { recursive: true })
   const id = randomUUID()
   const inPath = path.join(dir, `in-${id}`)
-  jobs.set(id, { inPath, outPath: path.join(dir, `out-${id}.mp4`), handle: await open(inPath, 'w') })
+  jobs.set(id, {
+    inPath,
+    outPath: path.join(dir, `out-${id}.mp4`),
+    handle: await open(inPath, 'w'),
+    abort: new AbortController(),
+    running: null,
+  })
   return id
 }
 
@@ -96,7 +106,9 @@ export async function finishRemux(
   try {
     await job.handle.close()
     job.handle = null
-    return await convertToMp4(ffmpegPath(), job.inPath, job.outPath, mode, onProgress)
+    const run = convertToMp4(ffmpegPath(), job.inPath, job.outPath, mode, onProgress, job.abort.signal)
+    job.running = run
+    return await run
   } finally {
     working--
     // The source copy goes now either way. It is full size and keeping it around
@@ -132,12 +144,23 @@ export async function releaseAllRemuxes(): Promise<void> {
   await Promise.all([...jobs.keys()].map((id) => releaseRemux(id)))
 }
 
-/** Done reading, or gave up. Never throws, and always removes both temps. */
+/**
+ * Done reading, or gave up. Never throws, and always removes both temps. A
+ * conversion still running is stopped first, and waited for: ffmpeg holds both
+ * files open, so deleting them under it quietly failed and left them behind.
+ */
 export async function releaseRemux(id: string): Promise<void> {
   const job = jobs.get(id)
   if (!job) return
   jobs.delete(id)
+  job.abort.abort()
+  await job.running?.catch(() => undefined)
   await job.handle?.close().catch(() => undefined)
   await rm(job.inPath, { force: true }).catch(() => undefined)
   await rm(job.outPath, { force: true }).catch(() => undefined)
+}
+
+/** Stop every conversion still running. For before-quit: synchronous, best effort. */
+export function killAllRemuxChildren(): void {
+  for (const job of jobs.values()) job.abort.abort()
 }

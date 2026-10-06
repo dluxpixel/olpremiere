@@ -963,6 +963,8 @@ app.whenReady().then(() => {
     // ffmpeg running to the end, holding a temp file open that the sweep could
     // not delete.
     proxy.killAllProxyChildren()
+    // And a conversion, for the same reason: it is a full size copy of his source.
+    remux.killAllRemuxChildren()
     // And CutStudio's server, when this app is the one that started it. One he
     // started himself stays running.
     cutstudio.stop()

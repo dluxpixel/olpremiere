@@ -122,6 +122,10 @@ interface Upload {
   inPath: string
   outPath: string
   handle: FileHandle | null
+  /** Stops its encoder when the job is dropped (releaseProxy). */
+  abort: AbortController
+  /** The transcode while it runs, so a release can wait for the encoder to be gone. */
+  running: Promise<unknown> | null
 }
 const uploads = new Map<string, Upload>()
 
@@ -150,7 +154,13 @@ export async function beginProxy(): Promise<string> {
   await mkdir(dir, { recursive: true })
   const id = randomUUID()
   const inPath = path.join(dir, `in-${id}`)
-  uploads.set(id, { inPath, outPath: path.join(dir, `out-${id}.mp4`), handle: await open(inPath, 'w') })
+  uploads.set(id, {
+    inPath,
+    outPath: path.join(dir, `out-${id}.mp4`),
+    handle: await open(inPath, 'w'),
+    abort: new AbortController(),
+    running: null,
+  })
   building++
   return id
 }
@@ -187,7 +197,9 @@ export async function finishProxy(id: string): Promise<{ size: number }> {
   try {
     await handle.close()
     up.handle = null
-    await runFfmpeg(up.inPath, up.outPath)
+    const run = runFfmpeg(up.inPath, up.outPath, up.abort.signal)
+    up.running = run
+    await run
     return { size: (await stat(up.outPath)).size }
   } finally {
     // The busy count is NOT dropped here. The renderer still has to read the
@@ -226,6 +238,11 @@ export async function releaseProxy(id: string): Promise<void> {
   // Deleted first, so a second release cannot take the count below zero and
   // leave the updater believing a job is running that ended long ago.
   building--
+  // A copy still being made is stopped, and waited for: the encoder holds both
+  // files open, so deleting them under it quietly failed and left them behind,
+  // with the encoder running on for minutes for a page that is gone.
+  up.abort.abort()
+  await up.running?.catch(() => undefined)
   await up.handle?.close().catch(() => undefined)
   await rm(up.inPath, { force: true }).catch(() => undefined)
   await rm(up.outPath, { force: true }).catch(() => undefined)
@@ -379,11 +396,28 @@ export function killAllProxyChildren(): void {
   children.clear()
 }
 
-function spawnFfmpeg(args: string[]): Promise<void> {
+/** What a copy that was stopped on purpose fails with. */
+const CANCELLED = 'proxy: stopped'
+
+function spawnFfmpeg(args: string[], signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error(CANCELLED))
+      return
+    }
     const child = spawn(ffmpegPath(), args, { windowsHide: true })
     children.add(child)
     child.once('close', () => children.delete(child))
+    // Stopped when its job is dropped (releaseProxy), and settled only on 'close', so
+    // the files it holds open can be deleted the moment this rejects.
+    const stop = (): void => {
+      try {
+        child.kill()
+      } catch {
+        // already gone
+      }
+    }
+    signal?.addEventListener('abort', stop, { once: true })
     // ⛔ IT RUNS BELOW EVERYTHING ELSE, ON PURPOSE. The pause in
     // src/engine/proxyMedia.ts can only stop the NEXT copy starting; it has no
     // handle on this one, and on a long recording this one is minutes of work. So
@@ -405,9 +439,14 @@ function spawnFfmpeg(args: string[]): Promise<void> {
       stderr += d.toString()
       if (stderr.length > 8000) stderr = stderr.slice(-8000)
     })
-    child.on('error', reject)
+    child.on('error', (err) => {
+      signal?.removeEventListener('abort', stop)
+      reject(err)
+    })
     child.on('close', (code) => {
-      if (code === 0) resolve()
+      signal?.removeEventListener('abort', stop)
+      if (signal?.aborted) reject(new Error(CANCELLED))
+      else if (code === 0) resolve()
       else reject(new Error(`proxy transcode failed (${code}): ${stderr.slice(-500)}`))
     })
   })
@@ -420,19 +459,20 @@ const ENCODER_NAME = {
   software: 'the processor',
 } as const
 
-async function runFfmpeg(inPath: string, outPath: string): Promise<void> {
+async function runFfmpeg(inPath: string, outPath: string, signal?: AbortSignal): Promise<void> {
   if (encoderChoice) {
-    await spawnFfmpeg(proxyArgs(inPath, outPath, encoderChoice))
+    await spawnFfmpeg(proxyArgs(inPath, outPath, encoderChoice), signal)
     return
   }
   for (const candidate of ['qsv', 'nvenc', 'software'] as const) {
     try {
-      await spawnFfmpeg(proxyArgs(inPath, outPath, candidate))
+      await spawnFfmpeg(proxyArgs(inPath, outPath, candidate), signal)
       encoderChoice = candidate
       console.log(`OL Premiere: preview copies are being built on ${ENCODER_NAME[candidate]}`)
       return
     } catch (err) {
-      if (candidate === 'software') throw err
+      // Stopped on purpose says nothing about the encoder: no next rung.
+      if (candidate === 'software' || signal?.aborted) throw err
       // Try the next rung. Nothing is reported to him: a machine without Intel
       // graphics or without a card is not a fault, and the software copy is
       // exactly what he had before.

@@ -33,17 +33,40 @@ export interface FfmpegRun {
 export interface RunOptions {
   /** Seconds of output written so far, from ffmpeg's -progress on stdout. */
   onTime?: (outS: number) => void
+  /** Stops ffmpeg. The run then fails with CANCELLED, once the process has really ended. */
+  signal?: AbortSignal
 }
+
+/** What a run that was stopped on purpose fails with. */
+export const CANCELLED = 'the conversion was stopped'
 
 /** ffmpeg says everything on stderr, including when it is succeeding. */
 export function runFfmpeg(ffmpegPath: string, args: string[], opts: RunOptions = {}): Promise<FfmpegRun> {
   return new Promise((resolve, reject) => {
+    const { signal } = opts
+    if (signal?.aborted) {
+      reject(new Error(CANCELLED))
+      return
+    }
     // ⛔ NORMAL PRIORITY, NOT THE PROXY'S IDLE ONE. A preview copy is built
     // while he edits; this is what he is WAITING for, the clip is not in his bin
     // until it ends. Measured 2026-10-01 on his machine under load: his 75 s
     // clip took 106.6 s at below normal and 55.9 s at normal, which is the
     // difference between slower and faster than the clip itself.
     const child = spawn(ffmpegPath, args, { windowsHide: true })
+    // STOPPED, NOT ORPHANED. A conversion whose page is gone (a reload, a crash)
+    // used to run to the end at normal priority, writing a full size file nobody
+    // would read, holding it open so it could not be deleted, and keeping the
+    // updater waiting on remuxBusy. The promise settles on 'close', so whoever
+    // stopped it can delete the files the moment it does.
+    const stop = (): void => {
+      try {
+        child.kill()
+      } catch {
+        // already gone
+      }
+    }
+    signal?.addEventListener('abort', stop, { once: true })
     let stderr = ''
     let frames = 0
     child.stderr.on('data', (d: Buffer) => {
@@ -66,8 +89,15 @@ export function runFfmpeg(ffmpegPath: string, args: string[], opts: RunOptions =
         if (t && opts.onTime) opts.onTime(Number(t[1]) / 1e6)
       }
     })
-    child.on('error', reject)
-    child.on('close', (code) => resolve({ code: code ?? 1, stderr, frames }))
+    child.on('error', (err) => {
+      signal?.removeEventListener('abort', stop)
+      reject(err)
+    })
+    child.on('close', (code) => {
+      signal?.removeEventListener('abort', stop)
+      if (signal?.aborted) reject(new Error(CANCELLED))
+      else resolve({ code: code ?? 1, stderr, frames })
+    })
   })
 }
 
@@ -92,8 +122,8 @@ export type ConvertMode = 'convert' | 'rescue' | 'sdr'
 const lastLine = (stderr: string): string => stderr.trim().split('\n').pop()?.trim() ?? ''
 
 /** How many video frames the source really has, or 0 when that could not be read. */
-async function sourceFrames(ffmpegPath: string, inPath: string): Promise<number> {
-  const r = await runFfmpeg(ffmpegPath, frameCountArgs(inPath))
+async function sourceFrames(ffmpegPath: string, inPath: string, signal?: AbortSignal): Promise<number> {
+  const r = await runFfmpeg(ffmpegPath, frameCountArgs(inPath), { signal })
   return r.code === 0 ? r.frames : 0
 }
 
@@ -129,17 +159,20 @@ async function makeSdrMaster(
   outPath: string,
   streams: SourceStreams,
   onProgress?: (frac: number) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
   const plan = remuxPlan(streams)
   const known = masterChoice
   const ladder = known
     ? [known, ...MASTER_LADDER.filter((r) => r.tonemap !== known.tonemap || r.encoder !== known.encoder)]
     : MASTER_LADDER
-  const expected = await sourceFrames(ffmpegPath, inPath)
+  const expected = await sourceFrames(ffmpegPath, inPath, signal)
   let why = 'the conversion failed'
   for (const rung of ladder) {
+    // A stopped run rejects, so it never falls through to the next rung.
     const out = await runFfmpeg(ffmpegPath, sdrMasterArgs(inPath, outPath, plan, rung.tonemap, rung.encoder), {
       onTime: shareOf(streams.durationS, onProgress),
+      signal,
     })
     if (out.code === 0) {
       const lost = framesLost(expected, out.frames)
@@ -165,11 +198,12 @@ export async function convertToMp4(
   outPath: string,
   mode: ConvertMode = 'convert',
   onProgress?: (frac: number) => void,
+  signal?: AbortSignal,
 ): Promise<ConvertResult> {
   // ⛔ The probe exits NON-ZERO by design: ffmpeg was asked to open the file and
   // write nothing, so it reports and then complains that it had no output.
   // Reading its exit code here would fail every healthy capture.
-  const probe = await runFfmpeg(ffmpegPath, probeArgs(inPath))
+  const probe = await runFfmpeg(ffmpegPath, probeArgs(inPath), { signal })
   const streams = parseSourceStreams(probe.stderr)
   if (!streams.video && !streams.audio) {
     throw new Error(`no video or audio could be read from this recording: ${lastLine(probe.stderr)}`)
@@ -180,7 +214,7 @@ export async function convertToMp4(
   // rescue below squeezed the 10 bit HLG picture into 8 bits still tagged HLG,
   // dropped its Dolby Vision, and left Chromium to tone map what was left.
   if (streams.video && (mode === 'sdr' || (mode === 'rescue' && streams.hdr))) {
-    await makeSdrMaster(ffmpegPath, inPath, outPath, streams, onProgress)
+    await makeSdrMaster(ffmpegPath, inPath, outPath, streams, onProgress, signal)
   } else if (mode === 'sdr') {
     throw new Error('there is no picture in this recording to convert')
   } else {
@@ -189,9 +223,10 @@ export async function convertToMp4(
     // rescuePlan in remuxArgs.ts: it forces H.264 for exactly that reason.
     const plan = mode === 'rescue' ? rescuePlan(streams) : remuxPlan(streams)
     // A re-encode is held to the source's own frame count; a copy cannot lose one.
-    const expected = plan.canCopyVideo ? 0 : await sourceFrames(ffmpegPath, inPath)
+    const expected = plan.canCopyVideo ? 0 : await sourceFrames(ffmpegPath, inPath, signal)
     const out = await runFfmpeg(ffmpegPath, remuxArgs(inPath, outPath, plan), {
       onTime: shareOf(streams.durationS, onProgress),
+      signal,
     })
     if (out.code !== 0) throw new Error(lastLine(out.stderr) || 'the conversion failed')
     // ⛔ AND A HOLE IS A FAILURE, NOT A SMALLER FILE. The rescued clip that came
