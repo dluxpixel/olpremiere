@@ -3,7 +3,7 @@
 // so preview and export are pixel-identical. Textures come from pooled <video>
 // elements (playing), the WebCodecs frame cache (scrubbing), or <img> (stills).
 
-import { getBlobUrl } from '../state/blobUrls'
+import { getBlobUrl, subscribeBlobArrived } from '../state/blobUrls'
 import {
   getFrameAt,
   peekFrameAt,
@@ -40,10 +40,19 @@ interface PooledVideo {
   probe: FrameProbe
   /** performance.now() of the last hard seek asked of this element. See the seek branch. */
   lastSeekAt?: number
+  /** Where its media lives, so a put back can find it. */
+  blobKey: string
+  /** The store had no media for it when last asked. See loadSource. */
+  noSrc?: boolean
+  /** performance.now() of that last ask. */
+  askedAt: number
 }
 interface PooledImage {
   el: HTMLImageElement
   ready: boolean
+  blobKey: string
+  noSrc?: boolean
+  askedAt: number
 }
 
 // Both pools are LRU-bounded: every acquire re-inserts (touch), so anything on
@@ -176,17 +185,65 @@ export const incomingNeedsOwnElement = (
   to: { clipId: Id; assetId: Id },
 ): boolean => from.clipId !== to.clipId && from.assetId === to.assetId
 
+/** How often an element whose media was missing asks the store again. */
+const NO_SRC_RETRY_MS = 1000
+
+/**
+ * Give a pooled element its media, or remember that there was none.
+ *
+ * ⛔ A MISSING FILE USED TO MAKE A DEAD ELEMENT FOR THE SESSION (PB-3,
+ * 2026-10-06). The editor mounts behind the boot card, so the monitor warms
+ * every clip BEFORE the boot puts his missing media back. Those elements got no
+ * source, and every later acquire returned the same dead one: after the put
+ * back a paused frame came back, but playing that clip drew black until a
+ * restart. Exactly his 2026-08-23 "no picture" days. Now a sourceless element
+ * asks again (on a put back at once, otherwise at most once a second).
+ */
+function loadSource(pooled: PooledVideo | PooledImage, readyEvent: 'loadeddata' | 'load'): void {
+  pooled.askedAt = performance.now()
+  void getBlobUrl(pooled.blobKey).then((url) => {
+    if (!url) {
+      pooled.noSrc = true
+      return
+    }
+    pooled.noSrc = false
+    pooled.el.addEventListener(readyEvent, () => (pooled.ready = true), { once: true })
+    pooled.el.src = url
+  })
+}
+
+/** Ask again for a sourceless element, no more than once a second. */
+function retryIfSourceless(pooled: PooledVideo | PooledImage, readyEvent: 'loadeddata' | 'load', now = false): void {
+  if (pooled.noSrc !== true) return
+  if (!now && performance.now() - pooled.askedAt < NO_SRC_RETRY_MS) return
+  pooled.noSrc = undefined // asking
+  loadSource(pooled, readyEvent)
+}
+
+let arrivalsHooked = false
+/** Every put back announces its key; a sourceless element for that key asks at once. */
+function hookArrivals(): void {
+  if (arrivalsHooked) return
+  arrivalsHooked = true
+  subscribeBlobArrived((key) => {
+    for (const v of videoPool.values()) if (v.blobKey === key) retryIfSourceless(v, 'loadeddata', true)
+    for (const i of imagePool.values()) if (i.blobKey === key) retryIfSourceless(i, 'load', true)
+  })
+}
+
 function warmVideo(asset: MediaAsset, key: Id = asset.id): PooledVideo {
   const existing = videoPool.get(key)
   if (existing) {
     lruTouch(videoPool, key, existing)
+    retryIfSourceless(existing, 'loadeddata')
     return existing
   }
+  hookArrivals()
   const el = document.createElement('video')
   el.muted = true // audio comes from the Web Audio graph, never the elements
   el.playsInline = true
   el.preload = 'auto'
-  const pooled: PooledVideo = { el, ready: false, probe: attachFrameProbe(el) }
+  const pooled: PooledVideo = { el, ready: false, probe: attachFrameProbe(el), blobKey: asset.blobKey, askedAt: 0 }
   videoPool.set(key, pooled)
   // Evict the least-recently-used PAUSED element. Never dispose one that is
   // actively playing (a multi-insert sweep like prewarm would otherwise evict
@@ -199,11 +256,7 @@ function warmVideo(asset: MediaAsset, key: Id = asset.id): PooledVideo {
       disposeVideo(id)
     }
   }
-  void getBlobUrl(asset.blobKey).then((url) => {
-    if (!url) return
-    el.addEventListener('loadeddata', () => (pooled.ready = true), { once: true })
-    el.src = url
-  })
+  loadSource(pooled, 'loadeddata')
   return pooled
 }
 
@@ -211,19 +264,17 @@ function warmImage(asset: MediaAsset): PooledImage {
   const existing = imagePool.get(asset.id)
   if (existing) {
     lruTouch(imagePool, asset.id, existing)
+    retryIfSourceless(existing, 'load')
     return existing
   }
+  hookArrivals()
   const el = new Image()
-  const pooled: PooledImage = { el, ready: false }
+  const pooled: PooledImage = { el, ready: false, blobKey: asset.blobKey, askedAt: 0 }
   imagePool.set(asset.id, pooled)
   while (imagePool.size > IMAGE_POOL_CAP) {
     disposeImage(imagePool.keys().next().value as Id)
   }
-  void getBlobUrl(asset.blobKey).then((url) => {
-    if (!url) return
-    el.addEventListener('load', () => (pooled.ready = true), { once: true })
-    el.src = url
-  })
+  loadSource(pooled, 'load')
   return pooled
 }
 
@@ -256,7 +307,7 @@ export function prewarmPreview(assets: MediaAsset[]): void {
  */
 export async function warmPreview(assets: MediaAsset[], timeoutMs = 6000): Promise<number> {
   prewarmPreview(assets)
-  const pooled: { ready: boolean }[] = assets
+  const pooled: { ready: boolean; noSrc?: boolean }[] = assets
     .map((a) => (a.kind === 'video' ? videoPool.get(a.id) : a.kind === 'image' ? imagePool.get(a.id) : undefined))
     .filter((p): p is PooledVideo | PooledImage => p !== undefined)
   if (pooled.length === 0) return 0
@@ -265,7 +316,9 @@ export async function warmPreview(assets: MediaAsset[], timeoutMs = 6000): Promi
   // Poll rather than race a listener per element: the `ready` flag is set by the
   // existing one-shot listeners, so this reads the same truth the renderer does
   // and cannot double-register on an element that is already pooled and warm.
-  while (Date.now() < deadline && pooled.some((p) => !p.ready)) {
+  // A clip whose media is missing is settled, not slow: waiting the full six
+  // seconds on it only held the boot card up (PB-3).
+  while (Date.now() < deadline && pooled.some((p) => !p.ready && p.noSrc !== true)) {
     await new Promise((r) => setTimeout(r, 50))
   }
   return pooled.filter((p) => p.ready).length

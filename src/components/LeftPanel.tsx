@@ -27,8 +27,7 @@ import { showPhoneTab } from './PhoneShell'
 import { importProjectFromFile, routeDroppedFiles } from '../state/projectFile'
 import { matchFilesToMissing, missingMedia, relink, relinkSummary, type MissingAsset } from '../state/relinkMedia'
 import { healProjectMedia, useMediaHeal } from '../state/mediaMirror'
-import { evictAsset } from '../engine/frameCache'
-import { invalidatePreview } from '../engine/preview'
+import { mediaPutBack, putBackHealed } from '../state/mediaPutBack'
 import { useToasts } from '../state/toasts'
 import { applyJettismLook, applyPunchyGradeToClips } from '../state/lookActions'
 import { useStore, type LeftTab } from '../state/store'
@@ -499,8 +498,7 @@ function FindMyMedia() {
             undefined,
             { durationMs: 10_000 },
           )
-        for (const a of Object.values(useStore.getState().project.assets)) evictAsset(a.id)
-        invalidatePreview()
+        putBackHealed(useStore.getState().project, healed.healed)
       }
       // ⛔ AND IF IT COULD NOT, SAY WHY ON THE BANNER. A banner that only says
       // "no media" with no reason is what he read as "you did nothing".
@@ -561,8 +559,7 @@ function FindMyMedia() {
             if (failed.length > 0) useToasts.getState().show(`Could not write: ${failed.join(', ')}`, 'danger')
             // Ask storage again rather than assuming, and make the preview drop
             // whatever it decided when the bytes were not there.
-            for (const m of result.matched) evictAsset(m.asset.id)
-            invalidatePreview()
+            mediaPutBack(result.matched.map((m) => m.asset))
             setMissing(await missingMedia(useStore.getState().project))
             setBusy(false)
           })()

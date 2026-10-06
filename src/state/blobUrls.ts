@@ -54,6 +54,12 @@ export function notifyBlobArrived(key: string): void {
   for (const cb of arrivalListeners) cb(key)
 }
 
+/** Hear every arrival, outside React (the preview's element pools). Returns the unsubscribe. */
+export function subscribeBlobArrived(cb: (key: string) => void): () => void {
+  arrivalListeners.add(cb)
+  return () => arrivalListeners.delete(cb)
+}
+
 /** React hook: resolve a blob key to a stable object URL (null while loading or missing). */
 export function useBlobUrl(key: string | undefined): string | null {
   const [url, setUrl] = useState<string | null>(key ? getCachedBlobUrl(key) : null)

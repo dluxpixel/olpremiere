@@ -23,6 +23,7 @@ const h = vi.hoisted(() => ({
   gets: [] as Array<{ assetId: string; t: number }>,
   drawn: [] as unknown[][],
   urls: new Map<string, string | null>(),
+  arrivals: new Set<(key: string) => void>(),
 }))
 
 const frameKey = (assetId: string, idx: number): string => `${assetId}:${idx}`
@@ -58,7 +59,10 @@ vi.mock('./render/glRenderer', () => ({
 }))
 vi.mock('../state/blobUrls', () => ({
   getBlobUrl: async (key: string) => (h.urls.has(key) ? h.urls.get(key) : `blob:${key}`),
-  subscribeBlobArrived: () => () => undefined,
+  subscribeBlobArrived: (cb: (key: string) => void) => {
+    h.arrivals.add(cb)
+    return () => h.arrivals.delete(cb)
+  },
 }))
 vi.mock('./proxyMedia', () => ({ setProxyBuildingPaused: () => undefined }))
 
@@ -284,5 +288,44 @@ describe('the cut warm-up decodes the head the cut will actually show', () => {
     preview.renderPreview(canvas(), sequence([first, frz]), { A, B }, 1, true)
     const warm = h.ranges.find((r) => r.assetId === 'B')
     expect(warm).toEqual({ assetId: 'B', a: 12.5, b: 12.5 })
+  })
+})
+
+// ---- PB-3 -------------------------------------------------------------------
+
+describe('a clip whose media was missing gets its picture back when the media does', () => {
+  const A = asset('A')
+  const src = (el: HTMLVideoElement): string | null => el.getAttribute('src')
+
+  it('a put back gives the warmed element its source at once', async () => {
+    h.urls.set('asset/A', null) // missing when the monitor first warmed it
+    preview.prewarmPreview([A])
+    await loadVideos()
+    expect(videos).toHaveLength(1)
+    expect(src(videos[0])).toBeNull()
+
+    h.urls.delete('asset/A') // the boot repair put it back
+    for (const cb of h.arrivals) cb('asset/A')
+    await new Promise((r) => setTimeout(r, 0))
+    expect(src(videos[0])).toBe('blob:asset/A')
+  })
+
+  it('without an announcement it still asks again, at most once a second', async () => {
+    let now = 10_000
+    vi.spyOn(performance, 'now').mockImplementation(() => now)
+    h.urls.set('asset/A', null)
+    const seq = sequence([clip({ id: 'c', assetId: 'A', startS: 0, inS: 0, outS: 2 })])
+    const c = canvas()
+    preview.renderPreview(c, seq, { A }, 0.5, true)
+    await loadVideos()
+    h.urls.delete('asset/A')
+    now += 200
+    preview.renderPreview(c, seq, { A }, 0.5, true)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(src(videos[0])).toBeNull() // too soon to ask again
+    now += 1000
+    preview.renderPreview(c, seq, { A }, 0.6, true)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(src(videos[0])).toBe('blob:asset/A')
   })
 })
