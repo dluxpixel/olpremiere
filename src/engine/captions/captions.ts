@@ -32,6 +32,8 @@ export interface CaptionChunk {
   startS: number
   endS: number
   emphasis: boolean
+  /** The words in it, with the times they were said (not the caption's). */
+  words?: CaptionWord[]
 }
 
 export interface ChunkOptions {
@@ -564,6 +566,7 @@ export function chunkWords(words: CaptionWord[], options: ChunkOptions = {}): Ca
     // recogniser spans the last word can end before an earlier one does.
     endS: Math.max(ws[0]!.startS, ...ws.map((w) => w.endS)),
     emphasis: ws.some((w) => w.emphasis),
+    words: ws.map((w) => ({ text: w.text.trim(), startS: w.startS, endS: w.endS })),
   }))
 
   // Seamless hold: run each caption up to its successor (or linger holdS at a
@@ -888,6 +891,17 @@ export interface CaptionClipOptions extends CaptionStyleOptions {
  * Case follows the style: the house look gets the measured lowercase, an
  * inherited base style is left exactly as he typed it, and `upper` shouts.
  */
+/**
+ * The chunk's words as the caption shows them (`shown` is its text), timed
+ * from the caption's start. Null when the two do not line up word for word,
+ * because a time pinned to the wrong word is worse than none.
+ */
+export function saidWords(chunk: CaptionChunk, shown: string): { text: string; startS: number; endS: number }[] | null {
+  const tokens = shown.split(/\s+/).filter(Boolean)
+  if (!chunk.words || chunk.words.length !== tokens.length) return null
+  return chunk.words.map((w, i) => ({ text: tokens[i]!, startS: w.startS - chunk.startS, endS: w.endS - chunk.startS }))
+}
+
 export function captionClips(chunks: CaptionChunk[], options: CaptionClipOptions): Clip[] {
   const emphasisColor = options.emphasisColor ?? CAPTION_EMPHASIS_COLORS[0]
   return chunks.map((chunk) => {
@@ -914,6 +928,9 @@ export function captionClips(chunks: CaptionChunk[], options: CaptionClipOptions
     // and can read off the preset anyway. What is wanted is his delta from the
     // MACHINE, so the machine's own words are what get kept.
     if (options.model) clip = { ...clip, captionOrigin: { text: chunk.text, model: options.model } }
+    // When each word was said, so the caption can be cut again without losing it.
+    const said = learned ? null : saidWords(chunk, text)
+    if (said) clip = { ...clip, captionWords: said }
     // Which word wears the highlight, kept so a style applied later can find it.
     if (chunk.emphasis) clip = { ...clip, captionEmphasis: true }
     if (!options.popIn) return clip

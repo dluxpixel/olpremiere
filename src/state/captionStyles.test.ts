@@ -306,6 +306,35 @@ describe('putting a style on captions he already has', () => {
     expect(useStore.getState().ui.selection).toEqual([clips[0]!.id])
   })
 
+  // ⛔ CA-7. A recut read the words back off the captions and spread a caption's
+  // words by letter count, so a length round trip moved every word off his voice.
+  it('another length and back puts every caption on the word again, not where its letters say', () => {
+    const subtitles = BUILTIN_CAPTION_STYLES.find((s) => s.id === 'builtin-subtitles')!
+    const spoken = [
+      ['i', 0.0, 0.1], ['hit', 0.1, 0.25], ['a', 0.25, 0.32], ['new', 0.32, 0.5], ['personal', 0.5, 1.15],
+      ['record', 1.15, 1.6], ['on', 1.6, 1.7], ['bench', 1.7, 2.2],
+    ].map(([text, startS, endS]) => ({ text: text as string, startS: startS as number, endS: endS as number }))
+    addCaptionsFromWords(spoken, { style: house })
+    const first = captionsOn(seq()).map(({ clip }) => [clip.title!.text, +clip.startS.toFixed(4)])
+    applyCaptionStyle(subtitles)
+    applyCaptionStyle(house)
+    expect(captionsOn(seq()).map(({ clip }) => [clip.title!.text, +clip.startS.toFixed(4)])).toEqual(first)
+    // And again: no drift on a second trip either.
+    applyCaptionStyle(subtitles)
+    applyCaptionStyle(house)
+    expect(captionsOn(seq()).map(({ clip }) => [clip.title!.text, +clip.startS.toFixed(4)])).toEqual(first)
+  })
+
+  it('a caption he retyped is spread as before, since its old word times are for other words', () => {
+    const subtitles = BUILTIN_CAPTION_STYLES.find((s) => s.id === 'builtin-subtitles')!
+    addCaptionsFromWords(said('so i went to the store'), { style: house })
+    applyCaptionStyle(subtitles)
+    const one = captionsOn(seq())[0]!.clip
+    setCaptionText(one.id, 'we all went to a big shop')
+    applyCaptionStyle(house)
+    expect(captionTexts().join(' ')).toBe('we all went to a big shop')
+  })
+
   it('leaves a locked Captions track alone and says how many', () => {
     addCaptionsFromWords(said('so i went'), { style: house })
     updateActiveSequence('lock', (sq) => ({ ...sq, tracks: sq.tracks.map((t) => (t.name === CAPTION_TRACK_NAME ? { ...t, locked: true } : t)) }))

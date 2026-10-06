@@ -357,6 +357,15 @@ export interface Clip {
    */
   captionEmphasis?: true
   /**
+   * When each word this caption shows was said, in seconds of the clip's own
+   * time (where its in point is 0 at birth, so a trim or a split keeps them
+   * true). Kept so a caption cut again at another length, and back, lands every
+   * word where he said it rather than spread by its letter count. Only trusted
+   * while the caption still says exactly these words: once he retypes it, the
+   * words are spread across it as before. Absent on every other clip.
+   */
+  captionWords?: { text: string; startS: number; endS: number }[]
+  /**
    * Entrance / exit animation ("how it appears"). A tiny spec that COMPILES to
    * keyframes on transform + opacity channels (see engine/anim/appearance.ts).
    * It is kept alongside the compiled keyframes so a single side can be changed and

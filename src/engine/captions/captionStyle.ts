@@ -37,6 +37,7 @@ import {
   CAPTION_EMPHASIS_COLORS,
   chunkWords,
   jettismCaptionDef,
+  saidWords,
   spreadWords,
   type CaptionWord,
   type ChunkOptions,
@@ -335,14 +336,44 @@ interface SourcedWord extends CaptionWord {
 }
 
 /**
+ * The words this caption still says, at the times they were said, or null once
+ * he has retyped it (or trimmed a word off), because then those times belong
+ * to words that are not there.
+ */
+function wordsAsSaid(clip: Clip, tokens: readonly string[]): CaptionWord[] | null {
+  const kept = clip.captionWords
+  if (!kept || kept.length !== tokens.length || kept.some((w, i) => w.text !== tokens[i])) return null
+  const rate = Math.abs(clip.speed) || 1
+  const startS = clip.startS
+  const endS = startS + clipDurationS(clip)
+  // Clip time to timeline: a trim or a split moved the in point, not the words.
+  const at = (t: number): number => startS + (t - clip.inS) / rate
+  const words = kept.map((w) => ({ text: w.text, startS: at(w.startS), endS: at(w.endS) }))
+  // The first word may sit a hair before the caption: its start went onto a frame.
+  if (words.some((w) => w.startS < startS - 0.05 || w.startS >= endS)) return null
+  let floor = startS
+  return words.map((w) => {
+    const s = Math.max(floor, w.startS)
+    floor = s
+    return { text: w.text, startS: s, endS: Math.min(endS, Math.max(s + 1e-3, w.endS)) }
+  })
+}
+
+/**
  * The words on screen, read back off finished captions so they can be cut
  * again at a different length.
  *
- * A one word caption gives its word back exactly. A caption holding several
- * spreads them across its time the way the manual split does, which is exact at
- * every caption's edges and close inside one. At a pause, the hold the run added
- * after the last word is taken back off, so cutting the same captions twice does
- * not push them later each time.
+ * ⛔ A CAPTION THAT STILL SAYS WHAT IT WAS MADE WITH GIVES EVERY WORD BACK AT
+ * THE TIME HE SAID IT (captionWords). Spreading by letter count is exact only
+ * at a caption's edges, so auto, then Subtitles, then auto again put every word
+ * start where its letters said and not where he said it, undoing the timing fix
+ * of c022d56 on every round trip.
+ *
+ * Otherwise (he retyped it, or it came from before word times were kept): a one
+ * word caption gives its word back exactly, and a caption holding several
+ * spreads them across its time the way the manual split does. At a pause, the
+ * hold the run added after the last word is taken back off, so cutting the same
+ * captions twice does not push them later each time.
  */
 function wordsOnScreen(clips: readonly Clip[], holdS: number, maxGapS: number): SourcedWord[] {
   const out: SourcedWord[] = []
@@ -356,9 +387,10 @@ function wordsOnScreen(clips: readonly Clip[], holdS: number, maxGapS: number): 
     if (tokens.length === 0) return
     const emphasis = clip.captionEmphasis === true
     const words: CaptionWord[] =
-      tokens.length === 1
+      wordsAsSaid(clip, tokens) ??
+      (tokens.length === 1
         ? [{ text: tokens[0]!, startS, endS }]
-        : spreadWords(tokens.map((t) => t.replace(/^\*(.+)\*$/, '$1')).join(' '), startS, endS - startS)
+        : spreadWords(tokens.map((t) => t.replace(/^\*(.+)\*$/, '$1')).join(' '), startS, endS - startS))
     for (const w of words) out.push({ text: w.text, startS: w.startS, endS: w.endS, ...(emphasis ? { emphasis: true } : {}), source: i })
   })
   return out
@@ -402,6 +434,8 @@ export function recutCaptions(
     )
     if (chunk.emphasis) clip = { ...clip, captionEmphasis: true }
     if (keepsOrigin) clip = { ...clip, captionOrigin: { text: origins.map((o) => o!.text).join(' '), model: model! } }
+    const said = saidWords(chunk, chunk.text)
+    if (said) clip = { ...clip, captionWords: said }
     // A style with no effects keeps the ones the first of its words wore.
     if (!style.effects?.length && first.effects.length) clip = { ...clip, effects: first.effects.map((e) => ({ ...e })) }
     return dressCaption(clip, style, seq.width, seq.height)
