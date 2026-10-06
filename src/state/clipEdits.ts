@@ -389,23 +389,70 @@ export function setSegmentEase(
   channel: AnimChannel,
   segmentStartT: number,
   ease: Keyframe['ease'],
+  opts: { coupled?: boolean } = {},
 ): void {
+  const clip = findClip(clipId)
+  if (!clip) return
+  const channels = opts.coupled ? coupledSegmentChannels(clip, channel, segmentStartT) : [channel]
   mapClip(
     clipId,
     `Set ${channel} easing`,
-    (c) => {
-      const kfs = channelKeyframes(c, channel)
-      let hit = false
-      // Rebuilt field by field rather than spread: that is what drops `curve`.
-      const next = kfs.map((k) => {
-        if (Math.abs(k.t - segmentStartT) > KEYFRAME_TOLERANCE_S) return k
-        hit = true
-        return { t: k.t, value: k.value, ease }
-      })
-      return hit ? withChannelKeyframes(c, channel, next) : c
-    },
+    (c) =>
+      channels.reduce<Clip>((acc, ch) => {
+        const kfs = channelKeyframes(acc, ch)
+        let hit = false
+        // Rebuilt field by field rather than spread: that is what drops `curve`.
+        const next = kfs.map((k) => {
+          if (Math.abs(k.t - segmentStartT) > KEYFRAME_TOLERANCE_S) return k
+          hit = true
+          return { t: k.t, value: k.value, ease }
+        })
+        return hit ? withChannelKeyframes(acc, ch, next) : acc
+      }, c),
     true,
   )
+}
+
+/** The transform channels a single move can drive together. */
+const COUPLED_CHANNELS: readonly AnimChannel[] = ['scale', 'posX', 'posY', 'rotation']
+
+/** The segment leaving the keyframe at `t`: its two ends, or null. */
+function segmentFrom(kfs: readonly Keyframe[], t: number): { a: Keyframe; b: Keyframe } | null {
+  const i = kfs.findIndex((k) => Math.abs(k.t - t) <= KEYFRAME_TOLERANCE_S)
+  return i >= 0 && i + 1 < kfs.length ? { a: kfs[i]!, b: kfs[i + 1]! } : null
+}
+
+const sameCurve = (x: Curve | undefined, y: Curve | undefined): boolean =>
+  x === y || (!!x && !!y && x.every((v, i) => Math.abs(v - y[i]!) <= 1e-9))
+
+/**
+ * Every transform channel that moves IN STEP with this segment: a segment that
+ * starts and ends at the same moments with the same shape. The channel itself
+ * comes first.
+ *
+ * Why: a zoom to a point ("Punch in here", the moves) writes Zoom AND Position
+ * with the same knots and the same curve, so the point holds still. Shaping only
+ * the Zoom (or picking Overshoot) let the position run ahead of or behind the
+ * zoom and the face slid across the frame before it settled (2026-10-06).
+ */
+export function coupledSegmentChannels(clip: Clip, channel: AnimChannel, segT: number): AnimChannel[] {
+  if (!COUPLED_CHANNELS.includes(channel)) return [channel]
+  const seg = segmentFrom(channelKeyframes(clip, channel), segT)
+  if (!seg) return [channel]
+  const out: AnimChannel[] = [channel]
+  for (const ch of COUPLED_CHANNELS) {
+    if (ch === channel) continue
+    const other = segmentFrom(channelKeyframes(clip, ch), segT)
+    if (
+      other &&
+      Math.abs(other.b.t - seg.b.t) <= KEYFRAME_TOLERANCE_S &&
+      other.a.ease === seg.a.ease &&
+      sameCurve(other.a.curve, seg.a.curve)
+    ) {
+      out.push(ch)
+    }
+  }
+  return out
 }
 
 /**
@@ -423,17 +470,23 @@ export function setSegmentCurve(
   channel: AnimChannel,
   segmentStartT: number,
   curve: Curve | undefined,
+  /** `coupled`: shape every channel moving in step with it too (coupledSegmentChannels). */
+  opts: { coupled?: boolean } = {},
 ): void {
+  const clip = findClip(clipId)
+  if (!clip) return
+  const channels = opts.coupled ? coupledSegmentChannels(clip, channel, segmentStartT) : [channel]
   mapClip(
     clipId,
     curve ? `Set ${channel} curve` : `Clear ${channel} curve`,
-    (c) => {
-      const kfs = channelKeyframes(c, channel)
-      const next = setSegmentCurveK(kfs, segmentStartT, curve)
-      // Same ref back means no keyframe sits at that moment; hand the SAME clip
-      // back so bailOnNoop can stop a dead undo step landing.
-      return next === kfs ? c : withChannelKeyframes(c, channel, next)
-    },
+    (c) =>
+      channels.reduce<Clip>((acc, ch) => {
+        const kfs = channelKeyframes(acc, ch)
+        const next = setSegmentCurveK(kfs, segmentStartT, curve)
+        // Same ref back means no keyframe sits at that moment; hand the SAME clip
+        // back so bailOnNoop can stop a dead undo step landing.
+        return next === kfs ? acc : withChannelKeyframes(acc, ch, next)
+      }, c),
     true,
   )
 }

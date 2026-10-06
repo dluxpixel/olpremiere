@@ -25,7 +25,7 @@ import { bezierEase, ease, MOMENT_EPS } from '../engine/keyframes'
 import { formatDuration } from '../engine/timecode'
 import { MOTION_CURVES, type MotionCurveName } from '../engine/motion'
 import type { AnimChannel, Clip, Curve, Keyframe } from '../engine/types'
-import { setAllSegmentCurves, setSegmentCurve, setSegmentEase } from '../state/clipEdits'
+import { coupledSegmentChannels, setAllSegmentCurves, setSegmentCurve, setSegmentEase } from '../state/clipEdits'
 import { IconButton } from '../ui/Button'
 import { friendly as friendlyChannelName } from './keyframeMarks'
 import { useMotionRail } from './MotionRail'
@@ -65,6 +65,9 @@ const snap = (v: number): number => Math.round(v / SNAP) * SNAP
 // header, on the same clip, and only one of the two copies had a test. It reads
 // the lanes' own list now.
 const friendly = friendlyChannelName
+
+/** X and Y move as one Position in a move, so the header names it once. */
+const moveWord = (ch: AnimChannel): string => (ch === 'posX' || ch === 'posY' ? 'Position' : friendly(ch))
 
 /** Channels a person reads as a percentage: 1.2 is "120", not "1.2". */
 const PERCENT: Partial<Record<AnimChannel, true>> = {
@@ -290,9 +293,13 @@ export function CurveEditor({ clip, channel }: { clip: Clip; channel: AnimChanne
   const evalAt = (p: number): number => (live ? bezierEase(live, p) : namedAt(p))
   const frames = Math.max(0, Math.round((b.t - a.t) * (fps || 30)))
 
-  const commit = (curve: Curve | undefined): void => setSegmentCurve(clip.id, channel, segT, curve)
+  // A zoom to a point moves Zoom and Position together; a shape given to one is
+  // given to all of them, or the point slides while the zoom runs.
+  const coupled = coupledSegmentChannels(clip, channel, segT)
+  const followers = [...new Set(coupled.slice(1).map(moveWord))].filter((w) => w !== moveWord(channel))
+  const commit = (curve: Curve | undefined): void => setSegmentCurve(clip.id, channel, segT, curve, { coupled: true })
   /** Back to a NAMED shape: the ease and the curve it overrides, in one step. */
-  const pickEase = (next: Keyframe['ease']): void => setSegmentEase(clip.id, channel, segT, next)
+  const pickEase = (next: Keyframe['ease']): void => setSegmentEase(clip.id, channel, segT, next, { coupled: true })
 
   /** Client px to curve coords. x stays in 0..1 (time must stay monotonic). */
   const toCurve = (clientX: number, clientY: number): { x: number; y: number } => {
@@ -398,6 +405,11 @@ export function CurveEditor({ clip, channel }: { clip: Clip; channel: AnimChanne
           data-testid="curve-editor-header"
         >
           {segmentHeader(channel, a.value, b.value, frames, fps)}
+          {followers.length > 0 && (
+            <span className="font-normal text-text-muted" data-testid="curve-editor-coupled">
+              {` · ${followers.join(' and ')} ${followers.length === 1 ? 'follows' : 'follow'}`}
+            </span>
+          )}
         </h4>
         <IconButton
           label="Clear curve (back to the named ease)"
