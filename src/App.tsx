@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef } from 'react'
+import { showHistoryToast } from './components/historyLabel'
 import { Inspector } from './components/Inspector'
 import { LeftPanel } from './components/LeftPanel'
 import { Monitor } from './components/Monitor'
@@ -157,15 +158,15 @@ export function buildAppBindings(): Binding[] {
       // reverts, other people's edits survive).
       { combo: 'mod+z', description: 'Undo', domain: 'project', run: () => {
         const label = performHistoryStep('undo')
-        if (label) useToasts.getState().show(`Undo: ${label}`)
+        if (label) showHistoryToast('undo', label)
       } },
       { combo: 'mod+shift+z', description: 'Redo', domain: 'project', run: () => {
         const label = performHistoryStep('redo')
-        if (label) useToasts.getState().show(`Redo: ${label}`)
+        if (label) showHistoryToast('redo', label)
       } },
       { combo: 'mod+y', description: 'Redo', domain: 'project', run: () => {
         const label = performHistoryStep('redo')
-        if (label) useToasts.getState().show(`Redo: ${label}`)
+        if (label) showHistoryToast('redo', label)
       } },
       {
         combo: 'mod+s',

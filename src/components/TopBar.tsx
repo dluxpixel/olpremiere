@@ -32,6 +32,7 @@ import { MelonMark } from '../ui/MelonMark'
 import { displayVersion } from '../appVersion'
 import { requestExport } from '../state/exportJob'
 import { ExportChip } from './ExportChip'
+import { historyLabel, showHistoryToast } from './historyLabel'
 import { ExportDialog } from './ExportDialog'
 import { ProjectsDialog, type ProjectsView } from './ProjectsDialog'
 import { usePhoneLayout } from '../ui/phoneLayout'
@@ -306,11 +307,11 @@ export function TopBar() {
   // toasts the label (App.tsx); the buttons must not be the silent path.
   const undo = () => {
     const label = performHistoryStep('undo')
-    if (label) useToasts.getState().show(`Undo: ${label}`)
+    if (label) showHistoryToast('undo', label)
   }
   const redo = () => {
     const label = performHistoryStep('redo')
-    if (label) useToasts.getState().show(`Redo: ${label}`)
+    if (label) showHistoryToast('redo', label)
   }
   const phone = usePhoneLayout()
   // null = closed. Otherwise which half of his work the dialog opened on.
@@ -410,7 +411,7 @@ export function TopBar() {
 
       <div className="ml-auto flex shrink-0 items-center gap-1">
         <IconButton
-          label={nextUndo ? `Undo: ${nextUndo}` : 'Undo'}
+          label={nextUndo ? `Undo: ${historyLabel(nextUndo)}` : 'Undo'}
           shortcut={comboLabel('mod+z')}
           onClick={undo}
           disabled={!canUndo}
@@ -419,7 +420,7 @@ export function TopBar() {
           <Undo2 size={16} strokeWidth={1.5} />
         </IconButton>
         <IconButton
-          label={nextRedo ? `Redo: ${nextRedo}` : 'Redo'}
+          label={nextRedo ? `Redo: ${historyLabel(nextRedo)}` : 'Redo'}
           shortcut={comboLabel('mod+shift+z')}
           onClick={redo}
           disabled={!canRedo}
