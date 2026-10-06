@@ -10,7 +10,7 @@
 import { execSync, execFileSync } from 'node:child_process'
 import { readFileSync, writeFileSync, statSync } from 'node:fs'
 import { createHash as hash } from 'node:crypto'
-import { loadToken } from './lib.mjs'
+import { FAST_MARK, loadToken } from './lib.mjs'
 import { githubApi, publishRelease } from './githubRelease.mjs'
 
 // Must match electron-builder.yml's publish.owner/repo. The updater reads the
@@ -62,6 +62,20 @@ const postAsset = ({ releaseId, name, file, type }) => {
   )
 }
 
+// A release patch.mjs shipped with --fast carries FAST_MARK in its commit, and
+// says so on GitHub too, so nobody reads a release page as browser tested when it
+// was not. Read off the commit rather than passed in, so `npm run release` (the
+// repair after a dropped push) says it as well.
+function fastNotes() {
+  try {
+    const said = execFileSync('git', ['log', '-1', '--format=%B'], { encoding: 'utf8' })
+    const line = said.split(/\r?\n/).find((l) => l.startsWith(FAST_MARK))
+    return line ? line.trim() : undefined
+  } catch {
+    return undefined
+  }
+}
+
 // ⛔ latest.yml goes LAST, and the installer first. See publishRelease.
 const assets = [
   { name: exeName, file: exePath, type: 'application/octet-stream', bytes: size },
@@ -76,5 +90,6 @@ await publishRelease({
   assets,
   postAsset,
   tagLocal: (t) => execFileSync('git', ['tag', '-f', t], { stdio: 'ignore' }),
+  notes: fastNotes(),
 })
 console.log(`   https://github.com/${OWNER}/${REPO}/releases/tag/${tag}`)

@@ -3,11 +3,26 @@
 // for the same reason `_verify` is: a step that only runs during a 25 minute
 // release cannot be "checked by eye" in any useful sense.
 
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { isBigUpdate, isTransientFailure, MINOR_ROLLOVER, nextVersion, planShip, releaseWork, runLoggedRetry } from './lib.mjs'
+import {
+  changedBetween,
+  codeFiles,
+  commitExactTree,
+  isBigUpdate,
+  isDocsPath,
+  isTransientFailure,
+  MINOR_ROLLOVER,
+  nextVersion,
+  planShip,
+  releaseWork,
+  runLoggedRetry,
+  treeHash,
+  treeWith,
+} from './lib.mjs'
 
 /**
  * A command that fails `failures` times and then succeeds, printing `message`
@@ -249,5 +264,100 @@ describe('nextVersion', () => {
   it('refuses what it cannot read rather than inventing a number', () => {
     expect(() => nextVersion('banana', 'minor')).toThrow()
     expect(() => nextVersion('2.17.0', 'major')).toThrow()
+  })
+})
+
+/**
+ * A real git repo in a temp folder, with one commit: a.txt, b.txt, package.json.
+ * Real git, because what is being proven is what git ends up committing.
+ */
+function scratchRepo() {
+  const dir = mkdtempSync(join(tmpdir(), 'olp-gate-'))
+  const git = (...a) => execFileSync('git', a, { cwd: dir, encoding: 'utf8', windowsHide: true }).trim()
+  git('init', '-q', '-b', 'main')
+  git('config', 'user.email', 'gate@test.invalid')
+  git('config', 'user.name', 'gate test')
+  git('config', 'core.autocrlf', 'false')
+  writeFileSync(join(dir, 'a.txt'), 'a1')
+  writeFileSync(join(dir, 'b.txt'), 'b1')
+  writeFileSync(join(dir, 'package.json'), '{"version":"1.0.0"}')
+  git('add', '-A')
+  git('commit', '-q', '-m', 'start')
+  const write = (name, text) => writeFileSync(join(dir, name), text)
+  return { dir, git, write }
+}
+
+// ⛔ 2026-10-06: the gate hashed the tree BEFORE a 25 minute run and committed
+// with `git add -A` AFTER it, so a file saved mid-gate shipped as gated.
+describe('the release commit is exactly the gated tree', { timeout: 30_000 }, () => {
+  it('a save after the gate stays out of the commit and is left uncommitted', () => {
+    const { dir, git, write } = scratchRepo()
+    const head = git('rev-parse', 'HEAD')
+    write('a.txt', 'a2 gated')
+    const gated = treeHash(dir)
+
+    // Somebody saves while the gate runs, then the version is bumped.
+    write('b.txt', 'b2 saved during the gate')
+    write('new.txt', 'a new file nobody checked')
+    write('package.json', '{"version":"1.1.0"}')
+
+    const tree = treeWith(gated, ['package.json', 'package-lock.json'], dir)
+    commitExactTree(tree, 'release\n\nbody\n', { parent: head, cwd: dir })
+
+    expect(git('show', 'HEAD:a.txt')).toBe('a2 gated')
+    expect(git('show', 'HEAD:b.txt')).toBe('b1')
+    expect(git('show', 'HEAD:package.json')).toBe('{"version":"1.1.0"}')
+    expect(() => git('show', 'HEAD:new.txt')).toThrow()
+    expect(git('log', '-1', '--format=%B')).toBe('release\n\nbody')
+    // The index matches the new commit; the ungated work is still on disk.
+    expect(git('status', '--porcelain').split('\n').map((l) => l.trim()).sort()).toEqual(['?? new.txt', 'M b.txt'])
+    expect(readFileSync(join(dir, 'b.txt'), 'utf8')).toBe('b2 saved during the gate')
+  })
+
+  it('the tree hash moves when a file is saved, and names it', () => {
+    const { dir, write } = scratchRepo()
+    const before = treeHash(dir)
+    expect(treeHash(dir)).toBe(before)
+    write('b.txt', 'b2')
+    mkdirSync(join(dir, 'src'))
+    write('src/x.ts', 'x')
+    const after = treeHash(dir)
+    expect(after).not.toBe(before)
+    expect(changedBetween(before, after, dir)).toEqual(['b.txt', 'src/x.ts'])
+  })
+
+  it('the hash leaves the real index alone', () => {
+    const { dir, git, write } = scratchRepo()
+    write('b.txt', 'b2')
+    treeHash(dir)
+    expect(git('diff', '--cached', '--name-only')).toBe('')
+  })
+
+  it('refuses, and moves nothing, if the branch moved while the gate ran', () => {
+    const { dir, git, write } = scratchRepo()
+    const head = git('rev-parse', 'HEAD')
+    write('a.txt', 'a2')
+    const gated = treeHash(dir)
+    git('commit', '-q', '-am', 'somebody else committed meanwhile')
+    const theirs = git('rev-parse', 'HEAD')
+    expect(() => commitExactTree(gated, 'release', { parent: head, cwd: dir })).toThrow()
+    expect(git('rev-parse', 'HEAD')).toBe(theirs)
+  })
+})
+
+// ⛔ `--fast` ("docs only") shipped four feature releases with no browser test.
+describe('the --fast contract', () => {
+  it('lets Markdown and docs/ through', () => {
+    for (const p of ['README.md', 'docs/notes.txt', 'docs/img/a.png', 'e2e/NOTES.MD']) expect(isDocsPath(p), p).toBe(true)
+    expect(codeFiles(['README.md', 'docs/a.txt'])).toEqual([])
+  })
+
+  it('names every code file in a release, which is a refusal', () => {
+    expect(codeFiles(['README.md', 'src/App.tsx', 'package.json', 'scripts/patch.mjs', 'mydocs/a.ts'])).toEqual([
+      'src/App.tsx',
+      'package.json',
+      'scripts/patch.mjs',
+      'mydocs/a.ts',
+    ])
   })
 })

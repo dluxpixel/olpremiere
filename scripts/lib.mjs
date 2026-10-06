@@ -1,7 +1,8 @@
 // Shared release helpers.
-import { spawn } from 'node:child_process'
-import { createWriteStream, existsSync, mkdirSync, readFileSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { execFileSync, spawn } from 'node:child_process'
+import { copyFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
 
 /**
  * Where a ship writes everything it saw. ONE rolling file, overwritten each run,
@@ -289,4 +290,111 @@ export async function fetchRetry(url, opts = {}, tries = 4) {
     }
   }
   throw lastErr
+}
+
+// --- what the gate checked is what gets committed (2026-10-06) ---------------
+//
+// ⛔ THE GATE USED TO CERTIFY A TREE IT NEVER SAW. The tree hash was taken BEFORE
+// a 25 minute gate, tsc, eslint and vitest were all done in its first two
+// minutes, and the commit at the end was a plain `git add -A`. A file saved at
+// minute five skipped typecheck, lint and unit tests, was half seen by the e2e
+// (the dev server serves whatever is on disk), and was then committed as gated.
+// Eleven auditors and several builders were live in this repo the day that was
+// found.
+//
+// So the gate hashes the tree again when it ends and refuses a tree that moved,
+// and the release commit is BUILT from the gated tree (plus the version bump),
+// never from whatever is on disk at commit time.
+
+/** git in `cwd`, stdout trimmed. `env` adds to the environment. */
+function gitIn(cwd, args, { env, input } = {}) {
+  return execFileSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    input,
+    env: env ? { ...process.env, ...env } : process.env,
+    stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+    windowsHide: true,
+  }).trim()
+}
+
+/** Run `fn(env)` against a throwaway index, so the real one is never touched. */
+function withScratchIndex(cwd, seedFromReal, fn) {
+  const index = join(tmpdir(), `olp-index-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+  try {
+    if (seedFromReal) {
+      // A copy of the real index only saves git re-hashing unchanged files.
+      const real = join(gitIn(cwd, ['rev-parse', '--absolute-git-dir']), 'index')
+      if (existsSync(real)) copyFileSync(real, index)
+    }
+    return fn({ GIT_INDEX_FILE: index })
+  } finally {
+    rmSync(index, { force: true })
+  }
+}
+
+/**
+ * The tree hash of everything a commit would take (tracked and new files, the
+ * ignore list honoured). Same hash means same bytes.
+ */
+export function treeHash(cwd = process.cwd()) {
+  return withScratchIndex(cwd, true, (env) => {
+    gitIn(cwd, ['add', '-A'], { env })
+    return gitIn(cwd, ['write-tree'], { env })
+  })
+}
+
+/** Paths that differ between two trees (or commits, or tags), sorted. */
+export function changedBetween(a, b, cwd = process.cwd()) {
+  const out = gitIn(cwd, ['diff-tree', '-r', '--name-only', '--no-commit-id', a, b])
+  return out ? out.split('\n').sort() : []
+}
+
+/**
+ * `baseTree` with only `paths` taken from the working tree on top: the gated
+ * tree plus the version bump, and nothing anybody saved after the gate.
+ */
+export function treeWith(baseTree, paths, cwd = process.cwd()) {
+  return withScratchIndex(cwd, false, (env) => {
+    gitIn(cwd, ['read-tree', baseTree], { env })
+    const present = paths.filter((p) => existsSync(join(cwd, p)))
+    if (present.length) gitIn(cwd, ['add', '--', ...present], { env })
+    return gitIn(cwd, ['write-tree'], { env })
+  })
+}
+
+/**
+ * Commit exactly `tree` on top of `parent` and move the branch there, then line
+ * the real index up with it. Throws, and moves nothing, if the branch is no
+ * longer at `parent` (something else committed while the gate ran).
+ *
+ * Whatever changed on disk after the tree was taken is NOT in the commit and
+ * shows up as an ordinary uncommitted change afterwards, for the next ship.
+ */
+export function commitExactTree(tree, message, { parent, cwd = process.cwd() }) {
+  const commit = gitIn(cwd, ['commit-tree', tree, '-p', parent, '-F', '-'], { input: message })
+  gitIn(cwd, ['update-ref', '-m', 'patch: release commit of the gated tree', 'HEAD', commit, parent])
+  gitIn(cwd, ['reset', '-q'])
+  return commit
+}
+
+// --- --fast keeps its own contract (2026-10-06) -------------------------------
+//
+// ⛔ `--fast` says "docs only or comment only", and it shipped four FEATURE
+// releases with no browser test at all: v3.15.0 (fonts), v3.16.0 (the HEVC
+// export path), v3.18.0, v3.20.0. Nothing in git or on GitHub said so. Now it
+// refuses a release that carries code, and the ones it allows say so in the
+// commit and in the GitHub release.
+
+/** The line a --fast release carries in its commit body and its GitHub release. */
+export const FAST_MARK = 'E2E SKIPPED (--fast)'
+
+/** What a --fast release may carry: Markdown anywhere, and anything under docs/. */
+export function isDocsPath(path) {
+  return /\.md$/i.test(path) || path.startsWith('docs/')
+}
+
+/** The paths that make a release NOT docs only. Empty means --fast is allowed. */
+export function codeFiles(paths) {
+  return paths.filter((p) => !isDocsPath(p))
 }
