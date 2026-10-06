@@ -63,22 +63,68 @@ export function comboFromEvent(e: KeyboardEvent): string {
   return parts.join('+')
 }
 
+/** Fields that take typing. Checkboxes, ranges, selects, buttons and the like do not count. */
+export const TYPING_FIELD = [
+  'textarea',
+  '[contenteditable=""]',
+  '[contenteditable="true"]',
+  ...['text', 'search', 'number', 'email', 'url', 'tel', 'password'].map((t) => `input[type="${t}"]`),
+  'input:not([type])',
+].join(',')
+
 /** A text field, where typing and pasting belong to the field and never to a shortcut. */
 export function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false
-  return (
-    target.tagName === 'INPUT' ||
-    target.tagName === 'TEXTAREA' ||
-    target.tagName === 'SELECT' ||
-    target.isContentEditable
-  )
+  return target.isContentEditable || target.matches(TYPING_FIELD)
+}
+
+/** The slider, tick box or select a key landed on, if it landed on one. */
+function controlOf(el: HTMLElement): HTMLElement | null {
+  return el.closest('select') ?? (el.tagName === 'INPUT' ? el : null)
+}
+
+/** A select whose list is open. Its arrows, Enter and Escape move and close the list. */
+function isOpenList(control: HTMLElement): boolean {
+  if (control.tagName !== 'SELECT') return false
+  try {
+    return control.matches(':open')
+  } catch {
+    return false // a browser that cannot tell: the list is not ours to steal from either way
+  }
 }
 
 /** Install the keymap on window. Returns an uninstall function. */
 export function installKeymap(bindings: Binding[]): () => void {
   const byCombo = new Map(bindings.map((b) => [b.combo, b]))
+  // ⛔ A CLICKED SLIDER, TICK BOX OR SELECT GIVES THE KEYS BACK TO THE EDIT (2026-10-06). It keeps
+  // the focus after the click, and every key used to stay in it: after he set a clip's volume, the
+  // two taps of Right he meant as "two frames on" turned the volume up 1 dB as an undo step, and
+  // Space did not play. The edit tabs made the same choice (EditTabs.tsx). One he reached with Tab
+  // keeps its keys, and an open list always does. Not :focus-visible for "reached with Tab":
+  // Chromium turns it on for a clicked control at the first key he presses.
+  let pointing = false
+  let clicked: HTMLElement | null = null
+  const onPointerDown = () => {
+    pointing = true
+  }
+  const onAnyKey = () => {
+    pointing = false
+  }
+  const onFocusIn = (e: FocusEvent) => {
+    const control = e.target instanceof HTMLElement ? controlOf(e.target) : null
+    // Focus moving between a select and its own open list is still the same click.
+    if (control && control === clicked) return
+    clicked = pointing ? control : null
+  }
+  const keysStayIn = (target: EventTarget | null): boolean => {
+    if (!(target instanceof HTMLElement)) return false
+    if (isEditableTarget(target)) return true
+    const control = controlOf(target)
+    if (!control) return false
+    return isOpenList(control) || control !== clicked
+  }
   const onKeyDown = (e: KeyboardEvent) => {
-    if (isEditableTarget(e.target)) return
+    if (keysStayIn(e.target)) return
     const combo = comboFromEvent(e)
     const binding = byCombo.get(combo)
     if (!binding) return
@@ -88,8 +134,16 @@ export function installKeymap(bindings: Binding[]): () => void {
     noteShortcut(combo, binding.description, e.repeat)
     binding.run(e)
   }
+  window.addEventListener('pointerdown', onPointerDown, true)
+  window.addEventListener('keydown', onAnyKey, true)
+  window.addEventListener('focusin', onFocusIn, true)
   window.addEventListener('keydown', onKeyDown)
-  return () => window.removeEventListener('keydown', onKeyDown)
+  return () => {
+    window.removeEventListener('pointerdown', onPointerDown, true)
+    window.removeEventListener('keydown', onAnyKey, true)
+    window.removeEventListener('focusin', onFocusIn, true)
+    window.removeEventListener('keydown', onKeyDown)
+  }
 }
 
 /**

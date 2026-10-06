@@ -9,7 +9,7 @@
 // new combos went in on 2026-08-18 and nothing else in the app would have
 // noticed one of them landing on a key that was already taken.
 
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { buildAppBindings } from './App'
 import { installKeymap } from './keymap'
 import { recomputeDuration } from '../src/engine/timeline'
@@ -17,9 +17,15 @@ import { channelKeyframes } from './engine/effects/channels'
 import { activeSequence, defaultTitleDef, newProject, newTitleClip, type Clip } from './engine/types'
 import { addKeyframeAtPlayhead, toggleChannelAnimation } from './state/clipEdits'
 import { cancelPicturePaste, installPasteListener, usePastePicture } from './state/picturePaste'
+import { togglePlay } from './state/playbackControl'
 import { updateActiveSequence, useStore } from './state/store'
 
 vi.mock('./state/toasts', () => ({ useToasts: { getState: () => ({ show: () => {} }) } }))
+// Space's verb, watched rather than run: real playback needs a browser's audio.
+vi.mock('./state/playbackControl', async (actual) => ({
+  ...(await actual<typeof import('./state/playbackControl')>()),
+  togglePlay: vi.fn(),
+}))
 
 const bindings = () => buildAppBindings()
 const combos = () => bindings().map((b) => b.combo)
@@ -245,6 +251,103 @@ describe('keys wait while a window or a menu is open over the edit', () => {
 
   it('only Save and Reload still work over a window, because they do not touch the edit', () => {
     expect(bindings().filter((b) => b.overWindows).map((b) => b.combo).sort()).toEqual(['f5', 'mod+s'])
+  })
+})
+
+// 2026-10-06: after he clicked the clip volume slider, Right turned the volume up instead of
+// stepping a frame, and Space did not play. A control he CLICKED gives the keys back to the edit;
+// one he reached with Tab keeps them, and so does a text field.
+describe('a clicked slider, tick box or select gives the keys back to the edit', () => {
+  function seedClip(): void {
+    const clip = newTitleClip(defaultTitleDef('x'), 0, 5)
+    updateActiveSequence('seed', (sq) =>
+      recomputeDuration({
+        ...sq,
+        tracks: sq.tracks.map((t, i) => (i === 0 ? { ...t, clips: [...t.clips, clip] } : t)),
+      }),
+    )
+    useStore.getState().setUI({ selection: [], playheadS: 1 })
+  }
+
+  function put<T extends HTMLElement>(html: string): T {
+    const wrap = document.createElement('div')
+    wrap.innerHTML = html
+    document.body.append(wrap)
+    return wrap.firstElementChild as T
+  }
+
+  function click(el: HTMLElement): void {
+    el.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+    el.focus()
+  }
+
+  function pressOn(el: Element, key: string): KeyboardEvent {
+    const e = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })
+    el.dispatchEvent(e)
+    return e
+  }
+
+  const fps = () => activeSequence(useStore.getState().project).fps
+  const playhead = () => useStore.getState().ui.playheadS
+
+  afterEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  for (const html of [
+    '<input type="range" min="0" max="10" value="5">',
+    '<input type="checkbox">',
+    '<select><option>a</option><option>b</option></select>',
+  ]) {
+    it(`Right steps the playhead after a click on ${html.slice(0, 22)}`, () => {
+      seedClip()
+      const uninstall = installKeymap(bindings())
+      try {
+        const el = put<HTMLElement>(html)
+        click(el)
+        const e = pressOn(el, 'ArrowRight')
+        // Taken by the edit, so the control itself does not move.
+        expect(e.defaultPrevented).toBe(true)
+        expect(playhead()).toBeCloseTo(1 + 1 / fps(), 6)
+        // Space plays, and the browser does not tick the box or open the list.
+        vi.mocked(togglePlay).mockClear()
+        expect(pressOn(el, ' ').defaultPrevented).toBe(true)
+        expect(togglePlay).toHaveBeenCalledTimes(1)
+      } finally {
+        uninstall()
+      }
+    })
+  }
+
+  it('a slider reached with Tab keeps its arrows', () => {
+    seedClip()
+    const uninstall = installKeymap(bindings())
+    try {
+      const el = put<HTMLInputElement>('<input type="range" min="0" max="10" value="5">')
+      pressOn(document.body, 'Tab')
+      el.focus()
+      const e = pressOn(el, 'ArrowRight')
+      expect(e.defaultPrevented).toBe(false)
+      expect(playhead()).toBe(1)
+    } finally {
+      uninstall()
+    }
+  })
+
+  it('a text field keeps every key, clicked or not', () => {
+    seedClip()
+    const uninstall = installKeymap(bindings())
+    try {
+      const el = put<HTMLInputElement>('<input type="text">')
+      click(el)
+      vi.mocked(togglePlay).mockClear()
+      expect(pressOn(el, 'ArrowRight').defaultPrevented).toBe(false)
+      expect(pressOn(el, ' ').defaultPrevented).toBe(false)
+      expect(playhead()).toBe(1)
+      expect(togglePlay).not.toHaveBeenCalled()
+    } finally {
+      uninstall()
+    }
   })
 })
 
