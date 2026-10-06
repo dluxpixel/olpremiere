@@ -24,7 +24,12 @@ interface Slot {
 let pool: Slot[] | null = null
 let broken = false
 let nextId = 1
-const waiting: { req: AudioWorkerRequest; resolve: (r: DemuxResult | PeaksResult) => void; reject: (e: Error) => void }[] = []
+const waiting: {
+  req: AudioWorkerRequest
+  priority: boolean
+  resolve: (r: DemuxResult | PeaksResult) => void
+  reject: (e: Error) => void
+}[] = []
 const inFlight = new Map<number, { slot: Slot; resolve: (r: DemuxResult | PeaksResult) => void; reject: (e: Error) => void }>()
 
 function startPool(): Slot[] | null {
@@ -87,10 +92,17 @@ function runHere(req: AudioWorkerRequest): Promise<DemuxResult | PeaksResult> {
     : demuxAudio(req.blob, { durationS: req.durationS, fromS: req.fromS, toS: req.toS })
 }
 
-function run(req: AudioWorkerRequest): Promise<DemuxResult | PeaksResult> {
+function run(req: AudioWorkerRequest, priority = false): Promise<DemuxResult | PeaksResult> {
   if (!startPool()) return runHere(req)
   return new Promise((resolve, reject) => {
-    waiting.push({ req, resolve, reject })
+    // ⛔ PLAYBACK GOES TO THE FRONT. Two workers, first come first served, meant a
+    // press of Space waited behind every waveform, beat scan and loudness read
+    // queued before it. A read the transport is waiting on now jumps every
+    // background read that has not started (never one already running).
+    const job = { req, priority, resolve, reject }
+    const at = priority ? waiting.findIndex((w) => !w.priority) : -1
+    if (at >= 0) waiting.splice(at, 0, job)
+    else waiting.push(job)
     pump()
   }).then(
     (r) => r as DemuxResult | PeaksResult,
@@ -100,9 +112,18 @@ function run(req: AudioWorkerRequest): Promise<DemuxResult | PeaksResult> {
   )
 }
 
-/** Decode source seconds [fromS, toS) (or the whole file) off the main thread. */
-export function decodeAudioOffThread(blob: Blob, durationS: number, fromS?: number, toS?: number): Promise<DemuxResult> {
-  return run({ id: nextId++, op: 'pcm', blob, durationS, fromS, toS }) as Promise<DemuxResult>
+/**
+ * Decode source seconds [fromS, toS) (or the whole file) off the main thread.
+ * `priority` is for a read the transport is waiting on.
+ */
+export function decodeAudioOffThread(
+  blob: Blob,
+  durationS: number,
+  fromS?: number,
+  toS?: number,
+  priority = false,
+): Promise<DemuxResult> {
+  return run({ id: nextId++, op: 'pcm', blob, durationS, fromS, toS }, priority) as Promise<DemuxResult>
 }
 
 /** Whole file peaks, computed off the main thread without holding the sound. */

@@ -7,8 +7,13 @@
 // punches are not, and that would look like the snap being broken rather than like
 // two functions disagreeing.
 
-import { describe, expect, it } from 'vitest'
-import { monoSlice } from './beatCache'
+import { describe, expect, it, vi } from 'vitest'
+import { detectOnsets } from './beats'
+import { ensureBeats, knownBeats, monoSlice } from './beatCache'
+import type { MediaAsset } from './types'
+
+const { getAudioRange, getAudioBuffer } = vi.hoisted(() => ({ getAudioRange: vi.fn(), getAudioBuffer: vi.fn() }))
+vi.mock('./audio', () => ({ getAudioRange, getAudioBuffer }))
 
 const SR = 100 // 100 samples a second, so a second of audio is 100 numbers
 
@@ -52,5 +57,31 @@ describe('monoSlice', () => {
     const out = monoSlice([ramp(300)], SR, -2, 1)
     expect(out.length).toBe(100)
     expect(out[0]).toBeCloseTo(0, 6)
+  })
+})
+
+// ⛔ AU-5. Selecting a clip decoded its WHOLE soundtrack for these magnets: about
+// 690 MB for a 30 minute recording, more than the whole audio budget.
+describe('ensureBeats', () => {
+  const RATE = 8000
+  /** 20 s of near silence with a hard kick every 1.5 s from 1 s on. */
+  const whole = new Float32Array(20 * RATE)
+  for (let i = 0; i < whole.length; i++) whole[i] = Math.sin(i) * 0.001
+  for (let t = 1; t < 20; t += 1.5) for (let i = 0; i < 400; i++) whole[Math.round(t * RATE) + i] = 0.8 * Math.sin(i / 3)
+  const buffer = (data: Float32Array) =>
+    ({ numberOfChannels: 1, sampleRate: RATE, length: data.length, getChannelData: () => data }) as unknown as AudioBuffer
+  const asset = { id: 'gameplay', hasAudio: true, durationS: 20 } as MediaAsset
+
+  it('reads only the clip seconds, and finds the same beats the whole file gives', async () => {
+    // What the ranged read hands back: 10 s to 20 s of the file.
+    getAudioRange.mockResolvedValue({ buffer: buffer(whole.subarray(10 * RATE)), startS: 10 })
+
+    await ensureBeats(asset, 12, 18)
+
+    expect(getAudioRange).toHaveBeenCalledWith(asset, 12, 18)
+    expect(getAudioBuffer).not.toHaveBeenCalled()
+    const want = detectOnsets(monoSlice([whole], RATE, 12, 18), RATE, { minGapS: 0.35, maxOnsets: 64 })
+    expect(want.length).toBeGreaterThan(2)
+    expect(knownBeats('gameplay', 12, 18)).toEqual(want)
   })
 })

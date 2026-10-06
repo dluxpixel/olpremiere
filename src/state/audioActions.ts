@@ -7,7 +7,7 @@
 // because one consonant spike sets it for both, and matching those spikes
 // leaves the shout far louder to a listener. See engine/loudness.ts.
 
-import { getAudioBuffer } from '../engine/audio'
+import { getAudioRange } from '../engine/audio'
 import { balanceGains, gainForTarget, measureLoudness, type ClipLoudness, TARGET_LUFS } from '../engine/loudness'
 import { activeSequence } from '../engine/types'
 import { setClipGainDb } from './clipEdits'
@@ -40,12 +40,15 @@ export async function normalizeClipGain(clipId: string): Promise<void> {
     useToasts.getState().show('Volume is keyframed, remove the keyframes to normalize', 'danger')
     return
   }
-  const buffer = await getAudioBuffer(asset)
-  if (!buffer) {
+  // The clip's own seconds, never the whole file: a 30 minute recording decoded
+  // whole is bigger than the entire audio budget.
+  const range = await getAudioRange(asset, clip.inS, clip.outS)
+  if (!range) {
     useToasts.getState().show('Could not decode the audio', 'danger')
     return
   }
-  const measured = measureLoudness(channelsOf(buffer), buffer.sampleRate, clip.inS, clip.outS)
+  const { buffer, startS } = range
+  const measured = measureLoudness(channelsOf(buffer), buffer.sampleRate, clip.inS - startS, clip.outS - startS)
   const db = gainForTarget(measured, TARGET_LUFS)
   if (db === null) {
     useToasts.getState().show('That clip is silent', 'danger')
@@ -90,12 +93,13 @@ export async function balanceAllClipLoudness(): Promise<void> {
       keyframed++
       continue
     }
-    const buffer = await getAudioBuffer(asset)
-    if (!buffer) {
+    const range = await getAudioRange(asset, clip.inS, clip.outS)
+    if (!range) {
       silent++
       continue
     }
-    const m = measureLoudness(channelsOf(buffer), buffer.sampleRate, clip.inS, clip.outS)
+    const { buffer, startS } = range
+    const m = measureLoudness(channelsOf(buffer), buffer.sampleRate, clip.inS - startS, clip.outS - startS)
     if (m.lufs === null) silent++
     else measured.push({ id: clip.id, measured: m })
   }

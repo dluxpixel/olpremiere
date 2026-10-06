@@ -19,7 +19,7 @@
 // Pure except for the decode: no store, no DOM, no React.
 
 import { detectOnsets } from './beats'
-import { getAudioBuffer } from './audio'
+import { getAudioRange } from './audio'
 import type { MediaAsset } from './types'
 
 /**
@@ -90,16 +90,23 @@ export async function ensureBeats(asset: MediaAsset, inS: number, outS: number):
   if (cache.has(k) || inFlight.has(k)) return
   inFlight.add(k)
   try {
-    const buffer = await getAudioBuffer(asset)
-    if (!buffer) {
+    // ⛔ THE CLIP'S OWN SECONDS, NOT THE WHOLE FILE. This runs the moment a clip
+    // is selected, and it used to decode the entire soundtrack: about 690 MB of
+    // float32 for one of his 30 minute OBS recordings, bigger than the whole audio
+    // budget, so it was dropped at once and decoded again on the next trim, all
+    // while holding one of the two decode workers Space was waiting for. The
+    // ranged read is the one playback uses, so it also warms his next Play.
+    const range = await getAudioRange(asset, inS, outS)
+    if (!range) {
       // An asset that cannot be decoded is remembered as beatless rather than retried
       // on every drag: the answer will not change by asking again.
       cache.set(k, [])
       return
     }
+    const { buffer, startS } = range
     const channels: Float32Array[] = []
     for (let ch = 0; ch < buffer.numberOfChannels; ch++) channels.push(buffer.getChannelData(ch))
-    const mono = monoSlice(channels, buffer.sampleRate, inS, outS)
+    const mono = monoSlice(channels, buffer.sampleRate, inS - startS, outS - startS)
     cache.set(
       k,
       detectOnsets(mono, buffer.sampleRate, { minGapS: SNAP_MIN_GAP_S, maxOnsets: SNAP_MAX_ONSETS }),

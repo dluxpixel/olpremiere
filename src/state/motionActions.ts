@@ -2,7 +2,7 @@
 // impact, whip across a cut, speed-ramp the work area. Each action is ONE
 // dispatch (one undo step) over the pure builders in engine/motion.ts.
 
-import { getAudioBuffer } from '../engine/audio'
+import { getAudioRange } from '../engine/audio'
 import { detectOnsets } from '../engine/beats'
 import { monoSlice } from '../engine/beatCache'
 import { withChannelValue } from '../engine/effects/channels'
@@ -246,11 +246,13 @@ export async function punchOnBeats(audioClipId: string): Promise<void> {
     useToasts.getState().show('Pick an audio clip with sound', 'danger')
     return
   }
-  const buffer = await getAudioBuffer(asset)
-  if (!buffer) {
+  // The clip's own seconds, never the whole file (see beatCache.ensureBeats).
+  const range = await getAudioRange(asset, g.clip.inS, g.clip.outS)
+  if (!range) {
     useToasts.getState().show('Could not decode the audio', 'danger')
     return
   }
+  const { buffer, startS: rangeS } = range
   // Mono mixdown of the clip's trimmed slice.
   //
   // ⛔ THE SAME FUNCTION THE SNAP USES, and that is why it moved out of here. A
@@ -260,7 +262,7 @@ export async function punchOnBeats(audioClipId: string): Promise<void> {
   const sr = buffer.sampleRate
   const channels: Float32Array[] = []
   for (let ch = 0; ch < buffer.numberOfChannels; ch++) channels.push(buffer.getChannelData(ch))
-  const mono = monoSlice(channels, sr, g.clip.inS, g.clip.outS)
+  const mono = monoSlice(channels, sr, g.clip.inS - rangeS, g.clip.outS - rangeS)
   const onsets = detectOnsets(mono, sr, { minGapS: BEAT_PUNCH_GAP_S, maxOnsets: 16 })
   if (onsets.length === 0) {
     useToasts.getState().show('No beats found in the clip', 'danger')

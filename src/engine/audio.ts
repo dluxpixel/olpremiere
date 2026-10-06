@@ -371,12 +371,17 @@ function forgetAssetRanges(assetId: Id): void {
 }
 
 /** `owned` is false when the range IS the whole asset buffer, which the whole cache already counts. */
-async function decodeRange(asset: MediaAsset, fromS: number, toS: number): Promise<{ range: AudioRange; owned: boolean } | null> {
+async function decodeRange(
+  asset: MediaAsset,
+  fromS: number,
+  toS: number,
+  priority: boolean,
+): Promise<{ range: AudioRange; owned: boolean } | null> {
   if (asset.kind === 'image' || !asset.hasAudio) return null
   const blob = await getBlob(asset.blobKey)
   if (!blob) return null
   try {
-    const r = await demuxAssetAudio(asset, blob, fromS, toS)
+    const r = await demuxAssetAudio(asset, blob, fromS, toS, priority)
     if (r) return { range: r, owned: true }
   } catch (err) {
     console.warn(`OL Premiere audio: ranged read failed for "${asset.name}", reading the whole file`, err)
@@ -391,9 +396,15 @@ async function decodeRange(asset: MediaAsset, fromS: number, toS: number): Promi
 /**
  * The decoded sound for source seconds [fromS, toS) of `asset`, or a buffer that
  * contains them. A whole asset that is already decoded (a transcription, a beat
- * scan) serves every range for free.
+ * scan) serves every range for free. `priority` is for a read Play is waiting on:
+ * it goes ahead of any background read still queued.
  */
-export function getAudioRange(asset: MediaAsset, fromS: number, toS: number): Promise<AudioRange | null> {
+export function getAudioRange(
+  asset: MediaAsset,
+  fromS: number,
+  toS: number,
+  opts: { priority?: boolean } = {},
+): Promise<AudioRange | null> {
   if (bufferBytes.has(asset.id)) {
     const whole = bufferCache.get(asset.id)
     if (whole) return whole.then((buffer) => (buffer ? { buffer, startS: 0 } : null))
@@ -411,7 +422,7 @@ export function getAudioRange(asset: MediaAsset, fromS: number, toS: number): Pr
   const b = Math.min(end, Math.ceil((hi + RANGE_PAD_S) / RANGE_ALIGN_S) * RANGE_ALIGN_S)
   const key = `${asset.id}|${a}|${b}`
   const entry: RangeEntry = { assetId: asset.id, fromS: a, toS: b, bytes: 0, pending: Promise.resolve(null) }
-  entry.pending = decodeRange(asset, a, b).then((r) => {
+  entry.pending = decodeRange(asset, a, b, opts.priority ?? false).then((r) => {
     if (!r) return null
     if (r.owned && rangeCache.get(key) === entry) {
       entry.bytes = r.range.buffer.length * r.range.buffer.numberOfChannels * 4
@@ -494,8 +505,14 @@ export function isProvedSilent(assetId: string): boolean {
  * Returns null rather than throwing when this file is not something mediabunny
  * can index or decode, so the caller can fall back.
  */
-async function demuxAssetAudio(asset: MediaAsset, blob: Blob, fromS?: number, toS?: number): Promise<{ buffer: AudioBuffer; startS: number } | null> {
-  const r = await decodeAudioOffThread(blob, asset.durationS, fromS, toS)
+async function demuxAssetAudio(
+  asset: MediaAsset,
+  blob: Blob,
+  fromS?: number,
+  toS?: number,
+  priority = false,
+): Promise<{ buffer: AudioBuffer; startS: number } | null> {
+  const r = await decodeAudioOffThread(blob, asset.durationS, fromS, toS, priority)
   // No track at all is PROOF of silence. A track this build cannot decode is
   // not: that one still has to fail loudly, so only the first case is recorded.
   if (r.kind === 'silent') {
@@ -767,7 +784,7 @@ function playbackAudioFor(clip: Clip, asset: MediaAsset, reversed: boolean): Pro
   if (reversed || (clip.denoise ?? 0) > 0) {
     return clipAudioBuffer(clip, asset, reversed).then((buffer) => (buffer ? { buffer, startS: 0 } : null))
   }
-  return getAudioRange(asset, clip.inS, clip.outS)
+  return getAudioRange(asset, clip.inS, clip.outS, { priority: true })
 }
 
 export async function clipAudioBuffer(
