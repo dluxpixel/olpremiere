@@ -2,11 +2,12 @@
 // (auto-caption / transcription) into a run of word-caption title clips.
 // Each action is ONE dispatch, so a 40-clip caption pass undoes atomically.
 
-import { captionClips, chunkWords, spreadWords, type CaptionWord } from '../engine/captions/captions'
+import { captionClips, captionHouseCase, chunkWords, spreadWords, type CaptionWord } from '../engine/captions/captions'
 import {
   AUTO_SHAPE,
   BUILTIN_CAPTION_STYLES,
   breakLines,
+  captionFitterFor,
   chunkOptionsFor,
   dressCaption,
   recutCaptions,
@@ -185,7 +186,9 @@ export function addCaptionsFromWords(
   // Every door lands here, so every door cuts the same way: the style's length.
   // Its auto length is AUTO_CAPTION_OPTIONS untouched, the measured cut every
   // run made before styles had a length at all.
-  const chunks = chunkWords(words, chunkOptionsFor(style.shape, seq.fps))
+  // And no caption holds more than fits across the frame at the style's size
+  // and case: an UPPERCASE or bigger style, or a taller frame, fits fewer letters.
+  const chunks = chunkWords(words, chunkOptionsFor(style.shape, seq.fps, captionFitterFor(style, seq, captionHouseCase)))
   if (chunks.length === 0) {
     useToasts.getState().show('No words to caption', 'danger')
     return

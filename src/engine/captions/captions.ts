@@ -97,6 +97,13 @@ export interface ChunkOptions {
    * playhead can never stand on to trim it.
    */
   fps?: number
+  /**
+   * Do these words fit across the frame in the lines the style allows, at its
+   * size and case (captionFit.ts)? Null leaves only `maxChars`. A group that
+   * does not fit is never one caption; a single word always is, and is drawn
+   * smaller instead (captionFit.fitWordsToFrame).
+   */
+  fits?: ((text: string) => boolean) | null
 }
 
 const CHUNK_DEFAULTS: Required<ChunkOptions> = {
@@ -116,6 +123,7 @@ const CHUNK_DEFAULTS: Required<ChunkOptions> = {
   maxOnScreenS: Infinity, // legacy callers keep the transcriber's word length
   gapS: 0,
   fps: 0,
+  fits: null,
 }
 
 /**
@@ -162,6 +170,7 @@ export const PHRASE_CAPTION_OPTIONS: Required<ChunkOptions> = {
   maxOnScreenS: Infinity,
   gapS: 0,
   fps: 0,
+  fits: null,
 }
 
 /**
@@ -264,6 +273,8 @@ export const AUTO_CAPTION_OPTIONS: Required<ChunkOptions> = {
   gapS: 0,
   // Set from the sequence by chunkOptionsFor (captionStyle.ts).
   fps: 0,
+  // Set from the style and the frame by the caption doors (captionFit.ts).
+  fits: null,
 }
 
 /** Ends a sentence → the next word starts a fresh chunk. */
@@ -466,8 +477,10 @@ export function chunkWords(words: CaptionWord[], options: ChunkOptions = {}): Ca
     if (j - i === 1) return true
     const ws = input.slice(i, j)
     if (ws.length > maxWords) return false
-    const chars = groupText(ws).length
+    const text = groupText(ws)
+    const chars = text.length
     if (chars > o.maxChars) return false
+    if (o.fits && !o.fits(text)) return false
     const span = groupSpan(ws)
     if (span > o.maxSpanS) return false
     // ⛔ THE CEILING ASKS WHEN THE LAST WORD STARTS, NOT WHEN IT ENDS. A word's

@@ -41,6 +41,7 @@ import {
   type CaptionWord,
   type ChunkOptions,
 } from './captions'
+import { captionFitter, fitWordsToFrame } from './captionFit'
 
 export type { CaptionShape } from '../types'
 
@@ -207,12 +208,17 @@ export function sameShape(a: CaptionShape, b: CaptionShape): boolean {
  * pulling it shorter. The on screen ceiling grows with the word count so a full
  * caption has time to be read, and still counts from its last word.
  */
-export function chunkOptionsFor(shape: CaptionShape, fps: number): ChunkOptions {
+export function chunkOptionsFor(
+  shape: CaptionShape,
+  fps: number,
+  /** Does a group fit across the frame (captionFitterFor)? Absent counts letters only. */
+  fits: ((text: string) => boolean) | null = null,
+): ChunkOptions {
   const gapS = shape.gapFrames > 0 ? shape.gapFrames / Math.max(1, fps) : 0
   // Every caption on the sequence's frames (captions.ts putOnFrames). A rate
   // that is not a real one leaves the times alone rather than inventing a grid.
   const onFrames = Number.isFinite(fps) && fps > 0 ? fps : 0
-  if (shape.length === 'auto') return { ...AUTO_CAPTION_OPTIONS, minDurS: shape.minDurS, gapS, fps: onFrames }
+  if (shape.length === 'auto') return { ...AUTO_CAPTION_OPTIONS, minDurS: shape.minDurS, gapS, fps: onFrames, fits }
   return {
     ...AUTO_CAPTION_OPTIONS,
     targetS: 0,
@@ -222,7 +228,22 @@ export function chunkOptionsFor(shape: CaptionShape, fps: number): ChunkOptions 
     minDurS: shape.minDurS,
     gapS,
     fps: onFrames,
+    fits,
   }
+}
+
+/**
+ * Does a group of words fit one caption of this style in this frame: its lines
+ * (one for auto), its size scaled to the frame, its case. `prepare` is what
+ * the run does to the words before they are shown (the house case).
+ */
+export function captionFitterFor(
+  style: Pick<CaptionStyle, 'look' | 'refHeight' | 'emphasisColor' | 'shape'>,
+  seq: { width: number; height: number },
+  prepare?: (text: string) => string,
+): (text: string) => boolean {
+  const lines = style.shape.length === 'fixed' ? style.shape.lines : 1
+  return captionFitter(captionDefFor(style, '', seq.height), seq.width, lines, prepare)
 }
 
 /**
@@ -298,7 +319,9 @@ export function captionDefFor(
  */
 export function dressCaption(clip: Clip, style: CaptionStyle, seqWidth: number, seqHeight: number): Clip {
   if (!clip.title) return clip
-  let next: Clip = { ...clip, title: captionDefFor(style, clip.title.text, seqHeight, clip.captionEmphasis === true) }
+  // A word wider than the line is drawn smaller rather than off the frame.
+  const title = fitWordsToFrame(captionDefFor(style, clip.title.text, seqHeight, clip.captionEmphasis === true), seqWidth)
+  let next: Clip = { ...clip, title }
   // Copied per clip, never shared: editing one caption's effect must not change another.
   if (style.effects?.length) next = { ...next, effects: style.effects.map((e) => ({ ...e })) }
   if (style.appearance) next = applyAppearanceToClip(next, style.appearance, seqWidth, seqHeight)
@@ -357,7 +380,7 @@ export function recutCaptions(
 ): Clip[] {
   const sorted = clips.filter((c) => c.title).slice().sort((a, b) => a.startS - b.startS)
   if (sorted.length === 0) return []
-  const options = chunkOptionsFor(style.shape, seq.fps)
+  const options = chunkOptionsFor(style.shape, seq.fps, captionFitterFor(style, seq))
   const words = wordsOnScreen(sorted, AUTO_CAPTION_OPTIONS.holdS, options.maxGapS ?? AUTO_CAPTION_OPTIONS.maxGapS)
   const chunks = chunkWords(words, options)
   // How many words each old caption gave, to tell a whole caption from a piece.
