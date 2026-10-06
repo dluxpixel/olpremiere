@@ -18,12 +18,15 @@ import { isBlobHeld } from './exportHolds'
 import {
   cancelExport,
   closeExportDialog,
+  dismissExportResult,
   isExportRunning,
+  openExportResult,
   requestExport,
   retryExport,
   setExportLoudness,
   useExportJob,
 } from './exportJob'
+import type { ExportTaskbarState } from '../../electron/ipc-types'
 import { PLATFORM_TARGET_LUFS } from '../engine/loudness'
 import { setPlatformLoudness, useSettings } from './settings'
 import { useStore } from './store'
@@ -96,6 +99,7 @@ function projectWithClip(name: string, blobKey: string): Project {
 }
 
 let revealed: string[] = []
+let taskbar: ExportTaskbarState[] = []
 
 beforeEach(() => {
   h.electron = true
@@ -104,10 +108,15 @@ beforeEach(() => {
   h.browserResults.length = 0
   h.picker = null
   revealed = []
+  taskbar = []
   ;(window as unknown as { api: unknown }).api = {
     isElectron: true,
     exportReveal: (p: string) => {
       revealed.push(p)
+      return Promise.resolve()
+    },
+    exportTaskbar: (state: ExportTaskbarState) => {
+      taskbar.push(state)
       return Promise.resolve()
     },
   }
@@ -221,8 +230,50 @@ describe('how it ended, told with the dialog closed', () => {
     expect(toast.action?.label).toBe('Show in folder')
     toast.action!.onClick()
     expect(revealed).toEqual(['C:\\Videos\\Holiday 2.mp4'])
-    // Nothing left to show: the toast was the news.
+  })
+
+  it('⛔ a finished export stays as done, for the chip, until he clicks it', async () => {
+    requestExport()
+    closeExportDialog()
+    h.native[0].resolve({ outPath: 'C:\\Videos\\Holiday 2.mp4', sizeBytes: 5_000_000 })
+    await flush()
+    // The toast is gone in 7 seconds; this is not.
+    useToasts.setState({ toasts: [] })
+    expect(useExportJob.getState().job?.stage).toMatchObject({ kind: 'done', path: 'C:\\Videos\\Holiday 2.mp4' })
+    expect(useExportJob.getState().dialogOpen).toBe(false)
+
+    // The chip's click: the folder, and the chip goes.
+    openExportResult()
+    expect(revealed).toEqual(['C:\\Videos\\Holiday 2.mp4'])
     expect(useExportJob.getState().job).toBeNull()
+  })
+
+  it('⛔ a failed export stays as failed, and its click opens the dialog on the reason', async () => {
+    requestExport()
+    closeExportDialog()
+    h.native[0].reject(new Error('ffmpeg exited with code 1'))
+    await flush()
+    useToasts.setState({ toasts: [] })
+    expect(useExportJob.getState().job?.stage.kind).toBe('error')
+
+    openExportResult()
+    expect(useExportJob.getState().dialogOpen).toBe(true)
+    expect(useExportJob.getState().job?.stage.kind).toBe('error')
+    // From there Try again makes it again.
+    retryExport()
+    expect(h.native).toHaveLength(2)
+  })
+
+  it('the chip can be put away without opening anything, but never a running export', async () => {
+    requestExport()
+    closeExportDialog()
+    dismissExportResult()
+    expect(isExportRunning()).toBe(true)
+    h.native[0].reject(new Error('ffmpeg exited with code 1'))
+    await flush()
+    dismissExportResult()
+    expect(useExportJob.getState().job).toBeNull()
+    expect(revealed).toEqual([])
   })
 
   it('a failure says so, and Try again makes the same frozen project again', async () => {
@@ -252,6 +303,36 @@ describe('how it ended, told with the dialog closed', () => {
 
     retryExport()
     expect(h.native).toHaveLength(2)
+  })
+})
+
+describe('the export on the taskbar button', () => {
+  it('moves while it gets ready, fills with the percent, and clears when it is done', async () => {
+    requestExport()
+    closeExportDialog()
+    h.native[0].onProgress({ phase: 'audio', framesDone: 0, framesTotal: 150 })
+    h.native[0].onProgress({ phase: 'video', framesDone: 75, framesTotal: 150 })
+    h.native[0].onProgress({ phase: 'video', framesDone: 75, framesTotal: 150 })
+    h.native[0].resolve({ outPath: 'C:\\Videos\\Holiday.mp4', sizeBytes: 1 })
+    await flush()
+    openExportResult()
+    // Told only when it changes: the repeated 50% is not sent twice.
+    expect(taskbar).toEqual([
+      { kind: 'busy' },
+      { kind: 'progress', fraction: 0.5 },
+      { kind: 'done' },
+      { kind: 'clear' },
+    ])
+  })
+
+  it('goes red when it fails, until the failure is put away', async () => {
+    requestExport()
+    closeExportDialog()
+    h.native[0].reject(new Error('ffmpeg exited with code 1'))
+    await flush()
+    expect(taskbar.at(-1)).toEqual({ kind: 'failed' })
+    dismissExportResult()
+    expect(taskbar.at(-1)).toEqual({ kind: 'clear' })
   })
 })
 

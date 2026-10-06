@@ -6,6 +6,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
   CutoutResult,
+  ExportTaskbarState,
   NativeCaps,
   NativeExportConfig,
   NativeFinishResult,
@@ -110,6 +111,7 @@ const api: OlApi = {
   backupRead: (filePath: string) => ipcRenderer.invoke('backup:read', filePath),
   backupReveal: () => ipcRenderer.invoke('backup:reveal'),
   exportReveal: (filePath: string) => ipcRenderer.invoke('export:reveal', filePath),
+  exportTaskbar: (state: ExportTaskbarState) => ipcRenderer.invoke('export:taskbar', state),
   projectWrite: (id: string, projectName: string, json: string) =>
     ipcRenderer.invoke('project:write', id, projectName, json),
   projectList: () => ipcRenderer.invoke('project:list'),

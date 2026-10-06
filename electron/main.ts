@@ -28,7 +28,7 @@ import * as libraryFile from './libraryFile'
 import * as captionStylesFile from './captionStylesFile'
 import * as usageFiles from './usageFiles'
 import * as saveFiles from './saveFiles'
-import type { NativeExportConfig, UpdateStatus } from './ipc-types'
+import type { ExportTaskbarState, NativeExportConfig, UpdateStatus } from './ipc-types'
 import {
   SPLASH_MELON_POP_MS,
   SPLASH_MELON_PX,
@@ -40,6 +40,7 @@ import {
   UPDATE_SCREEN_UNBIDDEN,
 } from './ipc-types'
 import * as native from './nativeExport'
+import { showExportOnTaskbar } from './exportTaskbar'
 import * as proxy from './proxy'
 import * as mediaStore from './mediaStore'
 import * as remux from './remux'
@@ -678,6 +679,10 @@ app.whenReady().then(() => {
   ipcMain.handle('export:reveal', (_e, filePath: string) => {
     if (typeof filePath !== 'string' || !/\.(mp4|mov)$/i.test(filePath) || !existsSync(filePath)) return
     shell.showItemInFolder(filePath)
+  })
+  // The export on the taskbar button, so he sees it from whatever app he is in.
+  ipcMain.handle('export:taskbar', (_e, state: ExportTaskbarState) => {
+    if (mainWindow) showExportOnTaskbar(mainWindow, state)
   })
 
   // --- Backups -------------------------------------------------------------

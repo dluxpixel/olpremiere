@@ -27,6 +27,7 @@
 // here, so there is one copy of the retry and of the result handling.
 
 import { create } from 'zustand'
+import type { ExportTaskbarState } from '../../electron/ipc-types'
 import { canStreamToDisk, exportSequence, pickExportDestination, type ExportProgress } from '../engine/export'
 import { planExport, type ExportPlan } from '../engine/export/exportPlan'
 import { PLATFORM_TARGET_LUFS } from '../engine/loudness'
@@ -205,6 +206,63 @@ export function openExportDialog(): void {
 }
 
 /**
+ * The chip's click once the export has ended: a finished file opens in its folder
+ * and the chip goes, a failed one opens the dialog on the reason and Try again.
+ */
+export function openExportResult(): void {
+  const { job } = useExportJob.getState()
+  if (!job || isExportActive(job.stage)) return
+  if (job.stage.kind === 'done') {
+    const path = job.stage.path
+    const api = typeof window !== 'undefined' ? window.api : undefined
+    if (path && api?.exportReveal) void api.exportReveal(path)
+    forgetJob()
+  } else if (job.stage.kind === 'error') {
+    openExportDialog()
+  }
+}
+
+/** The chip's X once the export has ended: he has seen it. */
+export function dismissExportResult(): void {
+  const { job } = useExportJob.getState()
+  if (job && !isExportActive(job.stage)) forgetJob()
+}
+
+/**
+ * What the Windows taskbar button shows for this job: a moving bar while it gets
+ * ready and mixes the sound, the percent while it makes the video, red when it
+ * failed. Only the desktop export, the one that runs behind his back.
+ */
+export function taskbarStateFor(job: ExportJob | null): ExportTaskbarState {
+  if (!job || !job.background) return { kind: 'clear' }
+  const stage = job.stage
+  switch (stage.kind) {
+    case 'starting':
+      return { kind: 'busy' }
+    case 'running':
+      if (stage.progress.phase === 'preparing' || stage.progress.phase === 'audio') return { kind: 'busy' }
+      return { kind: 'progress', fraction: exportPercent(stage) / 100 }
+    case 'done':
+      return { kind: 'done' }
+    case 'error':
+      return { kind: 'failed' }
+  }
+}
+
+// Told to main only when it changes: the percent moves in whole steps, so this is
+// at most about a hundred messages an export.
+let shownOnTaskbar = JSON.stringify(taskbarStateFor(null))
+useExportJob.subscribe((s) => {
+  const api = typeof window !== 'undefined' ? window.api : undefined
+  if (!api?.exportTaskbar) return
+  const state = taskbarStateFor(s.job)
+  const key = JSON.stringify(state)
+  if (key === shownOnTaskbar) return
+  shownOnTaskbar = key
+  void api.exportTaskbar(state).catch(() => undefined)
+})
+
+/**
  * Close the dialog. On the desktop a running export carries on without it. In
  * the browser the save picker is the one point it may close early, and closing
  * there means no export; once encoding it stays up, as before.
@@ -310,10 +368,15 @@ function succeed(id: number, stage: Extract<ExportStage, { kind: 'done' }>): voi
   const { job, dialogOpen } = useExportJob.getState()
   if (!job || job.id !== id) return
   noteExportEnd('done', { sizeBytes: stage.sizeBytes, fileName: stage.fileName })
-  // Watching it: the done screen is where he is. Working elsewhere: the toast
-  // is the whole news, so the job is finished with.
-  if (dialogOpen) useExportJob.setState({ job: { ...job, stage } })
-  else forgetJob()
+  // Watching it: the done screen is where he is. Working elsewhere: the chip in
+  // the top bar says "Done, show it" until he clicks it. ⛔ It used to be only a
+  // toast, gone after 7 seconds, so an export that ended while he was in his
+  // browser left no trace in the app (export audit, 2026-10-06).
+  if (dialogOpen || job.background) {
+    useExportJob.setState({ job: { ...job, stage } })
+    // A finished file is never made again, so the frozen copy can go now.
+    frozen = null
+  } else forgetJob()
   // He may be three edits into another project by now, so the toast carries the
   // way to the file rather than leaving him to go looking for it.
   const path = stage.path

@@ -23,6 +23,8 @@ import { ExportDialog } from './ExportDialog'
 interface NativeCall {
   onProgress: (p: ExportProgress) => void
   signal: AbortSignal
+  resolve: (r: { outPath: string; sizeBytes: number }) => void
+  reject: (err: unknown) => void
 }
 
 const h = vi.hoisted(() => ({ electron: true, native: [] as NativeCall[] }))
@@ -42,8 +44,8 @@ vi.mock('../engine/export/nativeExport', () => ({
     onProgress: (p: ExportProgress) => void,
     signal: AbortSignal,
   ) =>
-    new Promise((_resolve, reject) => {
-      h.native.push({ onProgress, signal })
+    new Promise((resolve, reject) => {
+      h.native.push({ onProgress, signal, resolve, reject })
       signal.addEventListener('abort', () => reject(new DOMException('Export cancelled', 'AbortError')))
     }),
 }))
@@ -75,9 +77,19 @@ function renderBar() {
   )
 }
 
+let revealed: string[] = []
+
 beforeEach(() => {
   h.electron = true
   h.native.length = 0
+  revealed = []
+  ;(window as unknown as { api: unknown }).api = {
+    isElectron: true,
+    exportReveal: (p: string) => {
+      revealed.push(p)
+      return Promise.resolve()
+    },
+  }
   useStore.getState().setProject(projectWithClip('Holiday'))
 })
 
@@ -86,6 +98,7 @@ afterEach(async () => {
   cancelExport()
   await flush()
   useExportJob.setState({ job: null, dialogOpen: false, alreadyRunning: false })
+  delete (window as unknown as { api?: unknown }).api
 })
 
 describe('on the desktop', () => {
@@ -162,6 +175,61 @@ describe('on the desktop', () => {
     expect(h.native[0].signal.aborted).toBe(true)
     await act(flush)
     expect(screen.queryByTestId('export-chip')).toBeNull()
+  })
+})
+
+describe('⛔ the chip stays when the export ends behind his back', () => {
+  it('done: "Done, show it" opens the folder, and only then goes', async () => {
+    const user = userEvent.setup()
+    act(() => requestExport())
+    renderBar()
+    await user.click(screen.getByTestId('export-keep-working'))
+
+    await act(async () => {
+      h.native[0].resolve({ outPath: 'C:\\Videos\\Holiday.mp4', sizeBytes: 1_000_000 })
+      await flush()
+    })
+    const chip = screen.getByTestId('export-chip')
+    expect(chip.textContent).toContain('Done, show it')
+    expect(chip.textContent).toContain('Holiday')
+    expect(screen.queryByTestId('export-dialog')).toBeNull()
+
+    await user.click(screen.getByTestId('export-chip-open'))
+    expect(revealed).toEqual(['C:\\Videos\\Holiday.mp4'])
+    expect(screen.queryByTestId('export-chip')).toBeNull()
+  })
+
+  it('failed: "Export failed, see why" opens the dialog on the reason, with Try again', async () => {
+    const user = userEvent.setup()
+    act(() => requestExport())
+    renderBar()
+    await user.click(screen.getByTestId('export-keep-working'))
+
+    await act(async () => {
+      h.native[0].reject(new Error('There is no room left on the disk.'))
+      await flush()
+    })
+    expect(screen.getByTestId('export-chip').textContent).toContain('Export failed, see why')
+
+    await user.click(screen.getByTestId('export-chip-open'))
+    expect(screen.getByTestId('export-dialog').textContent).toContain('There is no room left on the disk.')
+    expect(screen.getByTestId('export-retry')).toBeTruthy()
+    // The dialog says it now, so the chip steps aside.
+    expect(screen.queryByTestId('export-chip')).toBeNull()
+  })
+
+  it('its X puts it away without opening anything', async () => {
+    const user = userEvent.setup()
+    act(() => requestExport())
+    renderBar()
+    await user.click(screen.getByTestId('export-keep-working'))
+    await act(async () => {
+      h.native[0].resolve({ outPath: 'C:\\Videos\\Holiday.mp4', sizeBytes: 1 })
+      await flush()
+    })
+    await user.click(screen.getByTestId('export-chip-dismiss'))
+    expect(screen.queryByTestId('export-chip')).toBeNull()
+    expect(revealed).toEqual([])
   })
 })
 

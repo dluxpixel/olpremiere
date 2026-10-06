@@ -195,6 +195,14 @@ export interface BootProgress {
   version: string
 }
 
+/** What the taskbar button shows for the export (electron/exportTaskbar.ts). */
+export type ExportTaskbarState =
+  | { kind: 'busy' }
+  | { kind: 'progress'; fraction: number }
+  | { kind: 'done' }
+  | { kind: 'failed' }
+  | { kind: 'clear' }
+
 export interface OlApi {
   /** Always true when running inside the desktop shell (the renderer's isElectron gate). */
   readonly isElectron: true
@@ -350,6 +358,8 @@ export interface OlApi {
   backupReveal(): Promise<void>
   /** Open Explorer with the exported file selected, so he can find what he just made. */
   exportReveal(filePath: string): Promise<void>
+  /** Show the export on the taskbar button: filling, red on failure, flashing when it ends unseen. */
+  exportTaskbar(state: ExportTaskbarState): Promise<void>
 
   /**
    * The project as a plain file, kept current on every save (electron/projectFiles.ts).
