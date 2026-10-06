@@ -211,7 +211,16 @@ export function ExportDialog() {
 
         {stage.kind === 'error' && (
           <div className="flex flex-col gap-3 p-4">
-            <p className="text-[12px] leading-5 text-danger">{stage.message}</p>
+            <p className="text-[12px] leading-5 text-danger" data-testid="export-error">
+              {stage.message}
+            </p>
+            {/* The machine's own words, for whoever helps him: out of the way, never gone. */}
+            {stage.details && (
+              <details className="text-[11px] text-text-muted" data-testid="export-error-details">
+                <summary className="cursor-default">Details</summary>
+                <p className="mt-1 select-text break-words">{stage.details}</p>
+              </details>
+            )}
             <div className="flex justify-end gap-2">
               <Button variant="secondary" onClick={closeExportDialog}>
                 Close

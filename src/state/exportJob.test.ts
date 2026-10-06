@@ -285,7 +285,8 @@ describe('how it ended, told with the dialog closed', () => {
 
     const [toast] = useToasts.getState().toasts
     expect(toast.kind).toBe('danger')
-    expect(toast.message).toBe('The export of “Holiday” failed: ffmpeg exited with code 1')
+    // Plain words, not ffmpeg's: the cause is unknown here, so it only says it stopped.
+    expect(toast.message).toBe('The export of “Holiday” stopped.')
     expect(toast.action?.label).toBe('Try again')
 
     toast.action!.onClick()
@@ -298,11 +299,33 @@ describe('how it ended, told with the dialog closed', () => {
     requestExport()
     h.native[0].reject(new Error('ffmpeg exited with code 1'))
     await flush()
-    expect(useExportJob.getState().job?.stage).toEqual({ kind: 'error', message: 'ffmpeg exited with code 1' })
+    expect(useExportJob.getState().job?.stage).toEqual({
+      kind: 'error',
+      message: 'The export stopped. Try again.',
+      details: 'ffmpeg exited with code 1',
+    })
     expect(useToasts.getState().toasts).toHaveLength(0)
 
     retryExport()
     expect(h.native).toHaveLength(2)
+  })
+})
+
+describe('⛔ a failure is told in plain words', () => {
+  it('a full disk says so, and keeps what ffmpeg said behind it', async () => {
+    requestExport()
+    closeExportDialog()
+    const raw = 'ffmpeg exited during export (exit code -28): [out#0/mp4 @ 0000020c] Error writing trailer: No space left on device'
+    h.native[0].reject(new Error(raw))
+    await flush()
+    expect(useToasts.getState().toasts[0].message).toBe(
+      'The export of “Holiday” failed. There is no room left on the disk. Free some space and try again.',
+    )
+    expect(useExportJob.getState().job?.stage).toEqual({
+      kind: 'error',
+      message: 'There is no room left on the disk. Free some space and try again.',
+      details: raw,
+    })
   })
 })
 

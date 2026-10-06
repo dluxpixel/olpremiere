@@ -33,6 +33,7 @@ import { planExport, type ExportPlan } from '../engine/export/exportPlan'
 import { PLATFORM_TARGET_LUFS } from '../engine/loudness'
 import { exportNative } from '../engine/export/nativeExport'
 import { addSample, timeLeftS, type ProgressSample } from '../engine/export/timeLeft'
+import { plainExportError } from '../engine/export/plainError'
 import { activeSequence, type Project } from '../engine/types'
 import { isElectron } from '../platform'
 import { isPhoneLayout } from '../ui/phoneLayout'
@@ -51,7 +52,8 @@ export type ExportStage =
   | { kind: 'running'; progress: ExportProgress; leftS: number }
   /** `streamed` tells "written where you chose" apart from "in your downloads". */
   | { kind: 'done'; sizeBytes: number; fileName: string; streamed: boolean; path?: string; share?: File }
-  | { kind: 'error'; message: string }
+  /** `message` is the plain line; `details` the machine's own words, behind Details (plainError.ts). */
+  | { kind: 'error'; message: string; details?: string }
 
 export interface ExportJob {
   /** New for every run, so a late callback from an older run changes nothing. */
@@ -404,14 +406,18 @@ function succeed(id: number, stage: Extract<ExportStage, { kind: 'done' }>): voi
 }
 
 function fail(id: number, err: unknown): void {
-  const message = err instanceof Error ? err.message : String(err)
+  const raw = err instanceof Error ? err.message : String(err)
+  const plain = plainExportError(raw)
   const name = useExportJob.getState().job?.projectName ?? ''
-  if (!patchJob(id, () => ({ stage: { kind: 'error', message } }))) return
-  noteExportEnd('failed', { error: message })
+  const stage: ExportStage = { kind: 'error', message: plain.line, ...(plain.details ? { details: plain.details } : {}) }
+  if (!patchJob(id, () => ({ stage }))) return
+  // The usage log keeps the machine's words: that is where they help.
+  noteExportEnd('failed', { error: raw })
   // With the dialog open the error sits on it, with its own Try again. Closed,
   // he is in the middle of something else and has to be told here.
   if (!useExportJob.getState().dialogOpen) {
-    useToasts.getState().show(`The export of “${name}” failed: ${message}`, 'danger', {
+    const said = plain.generic ? `The export of “${name}” stopped.` : `The export of “${name}” failed. ${plain.line}`
+    useToasts.getState().show(said, 'danger', {
       label: 'Try again',
       onClick: retryExport,
     })

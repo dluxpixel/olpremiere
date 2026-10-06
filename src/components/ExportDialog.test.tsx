@@ -214,13 +214,18 @@ describe('⛔ the chip stays when the export ends behind his back', () => {
     await user.click(screen.getByTestId('export-keep-working'))
 
     await act(async () => {
-      h.native[0].reject(new Error('There is no room left on the disk.'))
+      h.native[0].reject(new Error('ffmpeg exited during export (exit code -28): No space left on device'))
       await flush()
     })
     expect(screen.getByTestId('export-chip').textContent).toContain('Export failed, see why')
 
     await user.click(screen.getByTestId('export-chip-open'))
-    expect(screen.getByTestId('export-dialog').textContent).toContain('There is no room left on the disk.')
+    // The first line is plain; ffmpeg's own words are only inside Details.
+    expect(screen.getByTestId('export-error').textContent).toBe('There is no room left on the disk. Free some space and try again.')
+    expect(screen.getByTestId('export-error').textContent).not.toContain('ffmpeg')
+    const details = screen.getByTestId('export-error-details')
+    expect(details.tagName).toBe('DETAILS')
+    expect(details.textContent).toContain('exit code -28')
     expect(screen.getByTestId('export-retry')).toBeTruthy()
     // The dialog says it now, so the chip steps aside.
     expect(screen.queryByTestId('export-chip')).toBeNull()
