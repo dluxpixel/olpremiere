@@ -14,8 +14,15 @@ import { app, BrowserWindow, crashReporter, dialog, Menu, net, protocol, ipcMain
 // nothing of each other. That is the shape of every "the store rebuilt itself"
 // that was never explained. The second copy now hands over and quits; the first
 // one comes to the front.
+//
+// ⛔ exit, NOT quit, 2026-10-06. Before the app is ready, quit() is only a request:
+// the ready event still fired and this copy ran the whole startup first, and the
+// startup's first job is sweeping temp files "nobody can be using". On one profile
+// those were the FIRST copy's live files: an .mkv mid conversion lost its source.
+// exit() before ready ends the process on the spot. The lock has already handed his
+// click to the first copy by the time it returns.
 const singleInstance = app.requestSingleInstanceLock()
-if (!singleInstance) app.quit()
+if (!singleInstance) app.exit(0)
 import { fileURLToPath } from 'node:url'
 import { mkdir, readFile } from 'node:fs/promises'
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
@@ -712,6 +719,9 @@ app.on('second-instance', () => {
 })
 
 app.whenReady().then(() => {
+  // A second copy never gets here (exit above), but if it ever did, it must not sweep
+  // the first copy's temps or open windows on its profile.
+  if (!singleInstance) return
   // No application menu at all. The bar was hidden, but Electron's default menu
   // stayed live behind it, so Ctrl+W (Close Window) quit the whole app from a
   // browser habit, and Ctrl+R reloaded the editor under an edit. The app's own
