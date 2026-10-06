@@ -65,6 +65,7 @@ import {
   captionJobProgress,
   captionTargets,
   captionTheseClips,
+  uncaptionedTargets,
   voiceoverClipId,
 } from '../state/captionRun'
 import {
@@ -353,6 +354,12 @@ function CreatePart({ onScript }: { onScript: (mode: ScriptMode) => void }) {
     void project
     return audibleClips()
   }, [project])
+  // Clips with no caption yet, offered on their own once some are captioned,
+  // so adding two clips does not mean hearing (and replacing) all twenty again.
+  const fresh = useMemo(() => {
+    void project
+    return uncaptionedTargets()
+  }, [project])
   const hasVoice = useMemo(() => {
     void project
     return voiceoverClipId() !== null
@@ -421,6 +428,18 @@ function CreatePart({ onScript }: { onScript: (mode: ScriptMode) => void }) {
             <Layers size={14} strokeWidth={1.5} />
             Caption every clip
           </Button>
+          {fresh.length > 0 && fresh.length < every.targets.length && (
+            <Button
+              variant="secondary"
+              data-testid="captions-auto-new"
+              title="Caption only the clips that have no captions yet, and leave the rest as they are"
+              onClick={() => void autoCaptionEveryClip(undefined, new Set(fresh))}
+              className="justify-center"
+            >
+              <Layers size={14} strokeWidth={1.5} />
+              {fresh.length === 1 ? 'Caption the 1 clip with no captions' : `Caption the ${fresh.length} clips with no captions`}
+            </Button>
+          )}
         </div>
       )}
       <p data-testid="captions-hint" className="text-[11px] leading-snug text-text-muted">

@@ -18,7 +18,8 @@ import { candidateFixFor, wordFixFor, type StyleProfile } from '../engine/captio
 import { learnedProfile } from '../engine/captions/styleStore'
 import { retimeAppearance } from '../engine/anim/appearance'
 import { addTrack, clipDurationS, clipEndS, recomputeDuration, resolveStart } from '../engine/timeline'
-import { activeSequence, videoTracks, type Clip, type Sequence, type Track } from '../engine/types'
+import { mergeWords } from '../engine/transcriptCut'
+import { activeSequence, videoTracks, type Clip, type Sequence, type SpokenWord, type Track } from '../engine/types'
 import { updateActiveSequence, useStore } from './store'
 import { useToasts } from './toasts'
 import { plural } from '../engine/plural'
@@ -178,6 +179,12 @@ export function addCaptionsFromWords(
      * bounding box around clips this run happened to skip.
      */
     coveredSpans?: { startS: number; endS: number }[]
+    /**
+     * What each clip said, in its media's own seconds, over the stretch of
+     * media heard. Kept on the media in the SAME undo step as the captions, so
+     * the Words tab reads it without listening to that clip again.
+     */
+    heard?: { assetId: string; fromS: number; toS: number; words: SpokenWord[] }[]
   } = {},
 ): void {
   const s = useStore.getState()
@@ -239,7 +246,7 @@ export function addCaptionsFromWords(
   let laid = clips
   /** Set when his Captions track is locked, so the run says so instead of going quiet. */
   let lockedOut = false
-  updateActiveSequence(options.label ?? 'Auto-caption', (sq) => {
+  const lay = (sq: Sequence): Sequence => {
     const existing = videoTracks(sq).filter((t) => t.name === CAPTION_TRACK_NAME)
     const reuse = existing[existing.length - 1]
     // ⛔ A LOCKED CAPTIONS TRACK IS NOT EMPTIED. Reuse below clears the track and
@@ -304,6 +311,17 @@ export function addCaptionsFromWords(
       ...grown,
       tracks: grown.tracks.map((t) => (t.id === target.id ? filled : t)),
     })
+  }
+  s.dispatch(options.label ?? 'Auto-caption', (p) => {
+    const sq = p.sequences[p.activeSequenceId]
+    const next = lay(sq)
+    if (next === sq) return p
+    let assets = p.assets
+    for (const h of options.heard ?? []) {
+      const a = assets[h.assetId]
+      if (a) assets = { ...assets, [a.id]: { ...a, words: mergeWords(a.words, h.words, h.fromS, h.toS) } }
+    }
+    return { ...p, assets, sequences: { ...p.sequences, [sq.id]: next } }
   })
   if (lockedOut) {
     useToasts.getState().show('Your Captions track is locked, so nothing was changed', 'danger')

@@ -17,6 +17,7 @@
 import type { CaptionStyle } from '../engine/captions/captionStyle'
 import { clipEndS } from '../engine/timeline'
 import { activeSequence, type Sequence } from '../engine/types'
+import { captionsOn } from './captionActions'
 import { useStore } from './store'
 import { audibleClips, autoCaptionEveryClip, autoCaptionFromClip, type TranscribeStatus } from './transcribeActions'
 
@@ -35,6 +36,20 @@ export function withSoundPartners(seq: Sequence, ids: Iterable<string>): Set<str
 export function captionTargets(ids: Iterable<string>): string[] {
   const seq = activeSequence(useStore.getState().project)
   return audibleClips(withSoundPartners(seq, ids)).targets.map((t) => t.clip.id)
+}
+
+/**
+ * The clips "Caption every clip" would hear that have no caption yet: none
+ * starts inside the stretch the clip plays. "Caption every clip" hears every
+ * clip again and replaces what is there, hand fixes included, so after adding
+ * two clips to a captioned edit this is the button that captions just those.
+ */
+export function uncaptionedTargets(): string[] {
+  const seq = activeSequence(useStore.getState().project)
+  const starts = captionsOn(seq).map(({ clip }) => clip.startS)
+  return audibleClips()
+    .targets.filter(({ clip }) => !starts.some((t) => t >= clip.startS - 1e-9 && t < clipEndS(clip) - 1e-9))
+    .map(({ clip }) => clip.id)
 }
 
 /** The words on the button: one clip, or how many. */

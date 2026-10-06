@@ -38,10 +38,12 @@ import {
   type Sequence,
 } from '../engine/types'
 import { CAPTION_TRACK_NAME, captionsOn } from './captionActions'
-import { captionJobProgress, captionLabel, captionTargets, captionTheseClips } from './captionRun'
+import { captionJobProgress, captionLabel, captionTargets, captionTheseClips, uncaptionedTargets } from './captionRun'
 import { reloadCaptionStyles, saveNewCaptionStyle, setDefaultCaptionStyle } from './captionStyles'
 import { updateActiveSequence, useStore } from './store'
 import { captionEars, useTranscribe } from './transcribeActions'
+import { wordsOnTimeline } from '../engine/transcriptCut'
+import { clipsWithoutWords, listenForEveryClip } from './transcriptActions'
 
 const seq = (): Sequence => activeSequence(useStore.getState().project)
 const asset = (id: string, kind: MediaAsset['kind'] = 'audio'): MediaAsset => ({
@@ -56,14 +58,17 @@ const asset = (id: string, kind: MediaAsset['kind'] = 'audio'): MediaAsset => ({
 
 /** What each clip "says": three words, back to back, from where it sits. */
 const heard: string[] = []
-captionEars.wordsForClip = async (clip: Clip): Promise<CaptionWord[]> => {
+captionEars.wordsForClip = async (clip: Clip, _asset, opts = {}): Promise<CaptionWord[]> => {
   heard.push(clip.id)
   await Promise.resolve()
-  return ['one', 'two', 'three'].map((t, i) => ({
+  const words = ['one', 'two', 'three'].map((t, i) => ({
     text: `${t}${clip.id.slice(-1)}`,
     startS: clip.startS + i * 0.25,
     endS: clip.startS + (i + 1) * 0.25,
   }))
+  // The real door also hands over the words in the media's own seconds.
+  opts.onSpoken?.(words.map((w) => ({ text: w.text, startS: clip.inS + w.startS - clip.startS, endS: clip.inS + w.endS - clip.startS })))
+  return words
 }
 
 /** Three voice clips on A1, and a picture on V1 linked to the first. */
@@ -217,6 +222,50 @@ describe('captioning a selection', () => {
     await captionTheseClips([a, b, c])
     expect(captionsOn(seq()).map(({ clip }) => clip.title!.text)).toEqual(['onea twoa threea', 'oneb twob threeb', 'onec twoc threec'])
     expect(captionsOn(seq()).every(({ clip }) => clip.title!.fontSizePx === 150)).toBe(true)
+  })
+})
+
+// CA-5. A caption run never kept what it heard, so after "Caption every clip"
+// the Words tab offered "Listen for words" on every clip and paid the model again.
+describe('what a caption run heard', () => {
+  const wordsOf = (clipId: string): string[] =>
+    wordsOnTimeline(seq(), useStore.getState().project.assets)
+      .find((r) => r.clip.id === clipId)!
+      .words.map((w) => w.text)
+
+  it('is kept on the media, so the Words tab needs no second listen, in the same undo step', async () => {
+    const { a, b, c } = seed()
+    await captionTheseClips([a, b, c])
+    expect(wordsOf(a)).toEqual(['onea', 'twoa', 'threea'])
+    expect(wordsOf(c)).toEqual(['onec', 'twoc', 'threec'])
+    expect(clipsWithoutWords()).toEqual([])
+    useStore.getState().undo()
+    expect(captionsOn(seq())).toHaveLength(0)
+    expect(wordsOf(a)).toEqual([])
+  })
+
+  it('one clip captioned keeps its words too, at the seconds it was heard', async () => {
+    const { b } = seed()
+    await captionTheseClips([b])
+    const row = wordsOnTimeline(seq(), useStore.getState().project.assets).find((r) => r.clip.id === b)!
+    expect(row.words.map((w) => w.atS)).toEqual([3, 3.25, 3.5])
+  })
+
+  it('"no captions yet" leaves out a clip that already has captions', async () => {
+    const { a, b, c } = seed()
+    await captionTheseClips([a])
+    expect(uncaptionedTargets()).toEqual([b, c])
+  })
+
+  it('the Words tab listens to every clip with no words in one go, one undo step', async () => {
+    const { a, b, c } = seed()
+    expect(clipsWithoutWords()).toEqual([a, b, c])
+    await listenForEveryClip()
+    expect(heard).toEqual([a, b, c])
+    expect(wordsOf(b)).toEqual(['oneb', 'twob', 'threeb'])
+    expect(useTranscribe.getState().status).toBe('idle')
+    useStore.getState().undo()
+    expect(clipsWithoutWords()).toEqual([a, b, c])
   })
 })
 

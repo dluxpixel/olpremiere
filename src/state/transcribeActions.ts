@@ -5,6 +5,7 @@
 import { create } from 'zustand'
 import {
   TRANSCRIBE_SAMPLE_RATE,
+  type AsrChunk,
   extractClipPcm,
   tidyTranscribedWords,
   timelineWords,
@@ -16,11 +17,17 @@ import { dropWordsWithoutVoice, trimWordsToVoice, voiceTrackForClip } from '../e
 import { dropWordsInMusic, isPureMusic, type SpeechTrack } from '../engine/captions/musicGate'
 import { musicTrackForClip } from '../engine/captions/musicAnalysis'
 import { applyRewrites, type Vocabulary } from '../engine/captions/vocabulary'
-import { getCaptionEmphasis, getCaptionLanguage, modelFor, whisperModel } from '../engine/captions/transcribeConfig'
+import {
+  getCaptionEmphasis,
+  getCaptionLanguage,
+  modelFor,
+  whisperModel,
+  type CaptionLanguage,
+} from '../engine/captions/transcribeConfig'
 import { DIP_ENVELOPE_HOP_S, correctWordLag, meetAtDips, snapOnsetsToVoice } from '../engine/captions/wordTiming'
 import { clipEmitsAudio } from '../engine/audio'
 import { clipEndS } from '../engine/timeline'
-import { activeSequence, type Clip, type MediaAsset } from '../engine/types'
+import { activeSequence, type Clip, type MediaAsset, type SpokenWord } from '../engine/types'
 import type { CaptionWord } from '../engine/captions/captions'
 import type { CaptionStyle } from '../engine/captions/captionStyle'
 import { addCaptionsFromWords } from './captionActions'
@@ -78,6 +85,27 @@ function captionFailureMessage(err: unknown): string {
 }
 
 /**
+ * What the recogniser said for each stretch of media this session, so the same
+ * unchanged clip is never sent to Whisper twice.
+ *
+ * Nothing kept what it heard, so captioning a clip, then listening to it in the
+ * Words tab, then captioning it again in another style paid the full model three
+ * times for the same answer. The key is the media, the stretch of it heard, and
+ * the language and model, which is everything the answer depends on. What
+ * comes AFTER the recogniser (his vocabulary, the voice filter, the timing) is
+ * run fresh every time, so a lesson learned since still lands.
+ */
+const heardBefore = new Map<string, AsrChunk[]>()
+/** Plenty for a project's worth of clips, and each entry is only words. */
+const HEARD_KEEP = 200
+const heardKey = (asset: MediaAsset, clip: Clip, language: CaptionLanguage): string =>
+  [asset.id, asset.blobKey, clip.inS, clip.outS, language, modelFor(language)].join('|')
+/** Forget everything heard: for tests that change what a clip says between runs. */
+export function forgetHeard(): void {
+  heardBefore.clear()
+}
+
+/**
  * Transcribe ONE clip and return its words already mapped onto the timeline.
  * Shared by the single-clip door and the whole-timeline run so the two can never
  * disagree about tidying, language, or how clip time maps to timeline time.
@@ -108,6 +136,12 @@ export async function wordsForClip(
      * per clip.
      */
     vocabulary?: Vocabulary
+    /**
+     * Handed the words as the Words tab keeps them, in SOURCE seconds of the
+     * clip that was heard, so a caption run can store them on the media too
+     * and the Words tab never has to listen to that clip again.
+     */
+    onSpoken?: (words: SpokenWord[]) => void
   } = {},
 ): Promise<CaptionWord[]> {
   useTranscribe.setState({ status: 'reading', pct: null, downloading: false, cancel: null })
@@ -156,9 +190,14 @@ export async function wordsForClip(
   // per second. Captions only.
   const loudness = opts.trimToVoice ? speechEnvelope(pcm, TRANSCRIBE_SAMPLE_RATE, DIP_ENVELOPE_HOP_S) : null
   // The persisted language pick (CaptionsDialog) drives every caption door.
-  const run = transcribePcm(pcm, getCaptionLanguage(), (p) =>
-    useTranscribe.setState({ status: p.phase, pct: p.pct, downloading: p.downloading ?? false }),
-  )
+  const language = getCaptionLanguage()
+  const key = heardKey(asset, clip, language)
+  const known = heardBefore.get(key)
+  const run = known
+    ? null
+    : transcribePcm(pcm, language, (p) =>
+        useTranscribe.setState({ status: p.phase, pct: p.pct, downloading: p.downloading ?? false }),
+      )
   // Aborted the moment the run fails or is cancelled, so a dead run cannot leave
   // an analysis churning into the next clip of a whole-timeline sweep.
   const stop = new AbortController()
@@ -169,14 +208,17 @@ export async function wordsForClip(
   // exception is a sweep, which has already paid for this answer above and must
   // not pay twice.
   const music = screened ? Promise.resolve(screened) : musicTrackForClip(asset, clip, stop.signal)
-  useTranscribe.setState({ cancel: run.cancel })
-  let chunks
+  useTranscribe.setState(run ? { cancel: run.cancel } : { status: 'listening', pct: null })
+  let chunks: AsrChunk[]
   try {
-    chunks = await run.promise
+    chunks = known ?? (await run!.promise)
   } catch (err) {
     stop.abort()
     throw err
   }
+  heardBefore.delete(key)
+  heardBefore.set(key, chunks)
+  if (heardBefore.size > HEARD_KEEP) heardBefore.delete(heardBefore.keys().next().value!)
   // tidy BEFORE the timeline mapping: loops, bare punctuation and Whisper's
   // end-of-silence inventions are recogniser artifacts, not edits.
   const tidied = tidyTranscribedWords(wordsFromAsrChunks(chunks))
@@ -223,6 +265,11 @@ export async function wordsForClip(
   //
   // CAPTIONS ONLY, like the trim: the Words panel and the silence cutter keep
   // the timings their own margins were tuned on.
+  // What the Words tab keeps: the media's own seconds, from the clip as it was
+  // heard (its in point), so a clip moved or trimmed since cannot shift them.
+  opts.onSpoken?.(
+    marked.filter((w) => clip.inS + w.startS < clip.outS).map((w) => ({ text: w.text, startS: clip.inS + w.startS, endS: clip.inS + w.endS })),
+  )
   if (!opts.trimToVoice) return timelineWords(marked, clip)
   const unlagged = correctWordLag(marked, whisperModel(modelFor(getCaptionLanguage())).wordLagS)
   const onTime = loudness ? meetAtDips(unlagged, loudness, DIP_ENVELOPE_HOP_S) : unlagged
@@ -386,7 +433,14 @@ export async function autoCaptionFromClip(clipId: string, style?: CaptionStyle):
   }
 
   try {
-    const heard = await captionEars.wordsForClip(clip, asset, { trimToVoice: true, vocabulary: await currentVocabulary() })
+    let spoken: SpokenWord[] | null = null
+    const heard = await captionEars.wordsForClip(clip, asset, {
+      trimToVoice: true,
+      vocabulary: await currentVocabulary(),
+      onSpoken: (w) => {
+        spoken = w
+      },
+    })
     // ⛔ READ THE CLIP AGAIN AFTER LISTENING, as the sweep does. Listening takes
     // seconds and the timeline is not blocked, so a clip he dragged meanwhile
     // was captioned at the spot it USED to sit. A move only shifts the words.
@@ -414,6 +468,8 @@ export async function autoCaptionFromClip(clipId: string, style?: CaptionStyle):
         // The clip it heard, not the box around the words it found: a re-run
         // replaces every old caption in this clip, and none in the next one.
         coveredSpans: [{ startS: live.startS, endS: clipEndS(live) }],
+        // And what it heard goes on the media for the Words tab, same undo step.
+        heard: spoken ? [{ assetId: asset.id, fromS: clip.inS, toS: clip.outS, words: spoken }] : [],
       })
     }
   } catch (err) {
@@ -433,13 +489,18 @@ export async function autoCaptionFromClip(clipId: string, style?: CaptionStyle):
 }
 
 /**
- * Listen to ONE clip and hand back its words on the timeline, through the same
- * doors, toasts and tidy up as Auto-caption, but WITHOUT laying captions down.
- * The Words panel keeps what it hears on the media (transcriptActions.ts), so
- * this is the one listening that both captions and cutting by words share.
+ * Listen to ONE clip and hand back its words in the media's own seconds,
+ * through the same doors, toasts and tidy up as Auto-caption, but WITHOUT laying
+ * captions down. The Words panel keeps what it hears on the media
+ * (transcriptActions.ts), so this is the one listening that both captions and
+ * cutting by words share. `clip` is the clip as it was HEARD: a clip moved while
+ * the model worked used to have its words mapped back through where it had
+ * moved to, and every clip cut from that media then read the wrong seconds.
  * Null when the run was refused, cancelled, or heard nothing.
  */
-export async function listenToClip(clipId: string): Promise<CaptionWord[] | null> {
+export async function listenToClip(
+  clipId: string,
+): Promise<{ clip: Clip; asset: MediaAsset; words: SpokenWord[] } | null> {
   const toasts = useToasts.getState()
   if (useTranscribe.getState().status !== 'idle') {
     toasts.show('A transcription is already running', 'danger')
@@ -472,12 +533,18 @@ export async function listenToClip(clipId: string): Promise<CaptionWord[] | null
     return null
   }
   try {
-    const words = await wordsForClip(clip, asset, { vocabulary: await currentVocabulary() })
+    let spoken: SpokenWord[] = []
+    const words = await wordsForClip(clip, asset, {
+      vocabulary: await currentVocabulary(),
+      onSpoken: (w) => {
+        spoken = w
+      },
+    })
     if (words.length === 0) {
       toasts.show('No speech found in the clip', 'danger')
       return null
     }
-    return words
+    return { clip, asset, words: spoken }
   } catch (err) {
     if (!isCancel(err)) {
       toasts.show(captionFailureMessage(err), 'danger')
@@ -487,6 +554,54 @@ export async function listenToClip(clipId: string): Promise<CaptionWord[] | null
   } finally {
     reset()
   }
+}
+
+/**
+ * Listen to several clips one after another for the Words tab, and hand back
+ * what each said in its media's own seconds. One job with "clip 2 of 5", one
+ * Stop for all of them, and a clip that fails is counted rather than ending the
+ * rest. The caller keeps the words (transcriptActions.listenForEveryClip).
+ */
+export async function listenToClips(ids: readonly string[]): Promise<{ clip: Clip; asset: MediaAsset; words: SpokenWord[] }[]> {
+  const toasts = useToasts.getState()
+  if (useTranscribe.getState().status !== 'idle') {
+    toasts.show('A transcription is already running', 'danger')
+    return []
+  }
+  const out: { clip: Clip; asset: MediaAsset; words: SpokenWord[] }[] = []
+  let failed = 0
+  try {
+    useTranscribe.setState({ status: 'reading', pct: null, downloading: false, cancel: null, queue: { index: 1, total: ids.length } })
+    const vocabulary = await currentVocabulary()
+    for (let i = 0; i < ids.length; i++) {
+      const s = useStore.getState()
+      const clip = activeSequence(s.project)
+        .tracks.flatMap((t) => t.clips)
+        .find((c) => c.id === ids[i])
+      const asset = clip ? s.project.assets[clip.assetId] : undefined
+      // Gone, silent, or backwards (see listenToClip): nothing to hear.
+      if (!clip || !asset?.hasAudio || clip.speed <= 0) continue
+      useTranscribe.setState({ queue: { index: i + 1, total: ids.length } })
+      try {
+        let spoken: SpokenWord[] = []
+        await captionEars.wordsForClip(clip, asset, {
+          vocabulary,
+          onSpoken: (w) => {
+            spoken = w
+          },
+        })
+        out.push({ clip, asset, words: spoken })
+      } catch (err) {
+        if (isCancel(err)) break
+        failed++
+        console.error('listen to every clip:', err)
+      }
+    }
+  } finally {
+    reset()
+  }
+  if (failed > 0) toasts.show(`${failed} clip${failed === 1 ? '' : 's'} could not be read`, 'danger')
+  return out
 }
 
 /**
@@ -546,6 +661,8 @@ export async function autoCaptionEveryClip(
   // clip is actually heard (not on a vanished or failed one), so a transient
   // failure never wipes what was already there with nothing to replace it.
   const coveredSpans: { startS: number; endS: number }[] = []
+  /** What each heard clip said, for the media (the Words tab), in the same undo step. */
+  const spokenOn: { assetId: string; fromS: number; toS: number; words: SpokenWord[] }[] = []
   // Once for the whole sweep: it is the same vocabulary for every clip.
   const vocabulary = await currentVocabulary()
   let cancelled = false
@@ -578,7 +695,12 @@ export async function autoCaptionEveryClip(
       }
       useTranscribe.setState({ queue: { index: i + 1, total: targets.length } })
       try {
-        const heard = await captionEars.wordsForClip(live, asset, { screenFirst: true, trimToVoice: true, vocabulary })
+        const heard = await captionEars.wordsForClip(live, asset, {
+          screenFirst: true,
+          trimToVoice: true,
+          vocabulary,
+          onSpoken: (w) => void spokenOn.push({ assetId: asset.id, fromS: live.inS, toS: live.outS, words: w }),
+        })
         if (heard.length === 0) silent++
         words.push(...heard)
         coveredSpans.push({ startS: live.startS, endS: clipEndS(live) })
@@ -606,6 +728,7 @@ export async function autoCaptionEveryClip(
     style: style ?? defaultCaptionStyle(),
     model: modelFor(getCaptionLanguage()),
     coveredSpans,
+    heard: spokenOn,
   })
   if (cancelled) toasts.show('Stopped early, captioned what was heard so far')
   else if (failed > 0) toasts.show(`${failed} clip${failed === 1 ? '' : 's'} could not be read`, 'danger')

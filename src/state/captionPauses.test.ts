@@ -30,6 +30,8 @@ const said: Record<string, AsrChunk[]> = {}
 const voices: Record<string, VoiceTrack> = {}
 /** The clip whose audio was read last, so the fake recogniser answers for it. */
 const listening = { id: '' }
+/** How many times the (fake) speech model actually ran. */
+const recogniserRuns = { n: 0 }
 
 vi.mock('../engine/captions/transcribe', async (importOriginal) => {
   const real = await importOriginal<typeof import('../engine/captions/transcribe')>()
@@ -42,7 +44,10 @@ vi.mock('../engine/captions/transcribe', async (importOriginal) => {
     // The music classifier reads the audio through this. No audio in node means
     // it has no opinion, and no opinion keeps every word.
     extractClipPcmAt: () => Promise.reject(new Error('no audio in node')),
-    transcribePcm: () => ({ promise: Promise.resolve(said[listening.id] ?? []), cancel: () => {} }),
+    transcribePcm: () => {
+      recogniserRuns.n++
+      return { promise: Promise.resolve(said[listening.id] ?? []), cancel: () => {} }
+    },
   }
 })
 /** The recogniser's lag the caption doors take off (wordTiming.ts). 0 unless a test sets it. */
@@ -63,7 +68,7 @@ vi.mock('../engine/captions/voiceActivity', async (importOriginal) => {
 
 import { activeSequence, newClipFromAsset, newProject, videoTracks, type MediaAsset } from '../engine/types'
 import { updateActiveSequence, useStore } from './store'
-import { autoCaptionEveryClip, autoCaptionFromClip, useTranscribe, wordsForClip } from './transcribeActions'
+import { autoCaptionEveryClip, autoCaptionFromClip, forgetHeard, useTranscribe, wordsForClip } from './transcribeActions'
 
 /** RNNoise's real frame, 10 ms. Quiet everywhere except the voiced spans. */
 const FRAME_S = 0.01
@@ -120,6 +125,9 @@ const PAUSED_VOICE = voice(3, [
 ])
 
 beforeEach(() => {
+  // Every test says its own words; a clip heard in the last one must not answer.
+  forgetHeard()
+  recogniserRuns.n = 0
   lag.s = 0
   toasted.length = 0
   for (const k of Object.keys(said)) delete said[k]
@@ -187,6 +195,32 @@ describe('the listening step itself', () => {
     ])
     const trimmed = await wordsForClip(clip, asset('a'), { trimToVoice: true })
     expect(trimmed[0]!.endS).toBeCloseTo(0.15, 6)
+  })
+})
+
+// CA-5. Captioning a clip, listening to it for words, captioning it again in
+// another style: three full runs of the speech model for the same answer.
+describe('an unchanged clip is heard once', () => {
+  it('two caption runs on the same clip run the speech model once', async () => {
+    seed([{ id: 'a', startS: 0, outS: 3 }])
+    said['clip-a'] = PAUSED
+    voices['clip-a'] = PAUSED_VOICE
+    await autoCaptionFromClip('clip-a')
+    await autoCaptionFromClip('clip-a')
+    expect(recogniserRuns.n).toBe(1)
+    expect(captionTexts()).toEqual(['I', 'found', 'it'])
+  })
+
+  it('a clip trimmed since is heard again', async () => {
+    seed([{ id: 'a', startS: 0, outS: 3 }])
+    said['clip-a'] = PAUSED
+    await autoCaptionFromClip('clip-a')
+    updateActiveSequence('trim', (sq) => ({
+      ...sq,
+      tracks: sq.tracks.map((t) => ({ ...t, clips: t.clips.map((c) => (c.id === 'clip-a' ? { ...c, outS: 2 } : c)) })),
+    }))
+    await autoCaptionFromClip('clip-a')
+    expect(recogniserRuns.n).toBe(2)
   })
 })
 

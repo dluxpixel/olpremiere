@@ -17,7 +17,7 @@ import { wordSpan, wordsOnTimeline, type TimelineWord } from '../engine/transcri
 import { activeSequence } from '../engine/types'
 import { useStore } from '../state/store'
 import { useTranscribe } from '../state/transcribeActions'
-import { cutWords, listenForWords } from '../state/transcriptActions'
+import { cutWords, listenForEveryClip, listenForWords } from '../state/transcriptActions'
 import { Button } from '../ui/Button'
 
 export function WordsTab() {
@@ -37,6 +37,9 @@ export function WordsTab() {
     }
     return { flat, offsets }
   }, [rows])
+
+  // Clips with no words yet that can be heard: one button listens to them all.
+  const unheard = useMemo(() => rows.filter((row) => row.words.length === 0 && row.clip.speed > 0).length, [rows])
 
   const [anchor, setAnchor] = useState<number | null>(null)
   const [focus, setFocus] = useState<number | null>(null)
@@ -126,6 +129,20 @@ export function WordsTab() {
           {span ? `${formatTimecode(span.endS - span.startS, seq.fps)} of the edit` : 'Drag across words, then Delete'}
         </span>
       </div>
+      {unheard > 1 && (
+        <div className="px-2 pb-2">
+          <Button
+            variant="secondary"
+            data-testid="listen-every-clip"
+            disabled={status !== 'idle'}
+            onClick={() => void listenForEveryClip()}
+            className="w-full justify-center"
+          >
+            <Ear size={14} strokeWidth={1.5} />
+            {`Listen to all ${unheard} clips`}
+          </Button>
+        </div>
+      )}
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3 text-[12px] leading-6">
         {rows.length === 0 && (
           <p className="px-1 text-text-muted">Put a clip with sound on the timeline and its words show up here.</p>
