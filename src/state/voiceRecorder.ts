@@ -141,7 +141,9 @@ export const useRecorder = create<RecorderState>(() => ({
  */
 let releaseRestartHold: (() => void) | null = null
 useRecorder.subscribe((s) => {
-  const precious = s.recording || s.pendingTake !== null
+  // `keeping` too: a take being added sits in memory only until the bin has it,
+  // and a restart in that wait loses it the same way.
+  const precious = s.recording || s.pendingTake !== null || s.keeping
   if (precious && !releaseRestartHold) releaseRestartHold = beginRestartHold()
   else if (!precious && releaseRestartHold) {
     releaseRestartHold()
@@ -660,19 +662,55 @@ export async function keepTake(): Promise<void> {
   // Kept, so there is nothing to go back FROM: a later discard must not fling
   // him to where this take began.
   takeStartPlayheadS = null
+  // ⛔ THE TAKE IS ONLY LET GO ONCE IT IS IN THE BIN. importFiles never throws:
+  // out of room on his nearly full drive it says so and hands back nothing, and
+  // this used to return there with the take's only copy in a local that was then
+  // thrown away. Freeing up space could not bring it back. Now a take that did
+  // not land goes back into the studio, and Add can be pressed again.
+  let final = take
+  let landed = false
   try {
-    const final = await (takeReadings.get(take) ?? Promise.resolve(take))
-    URL.revokeObjectURL(take.url)
+    final = await (takeReadings.get(take) ?? Promise.resolve(take))
     const file = new File([final.blob], final.name, { type: final.blob.type })
     const [id] = await importFiles([file])
     const asset = id ? useStore.getState().project.assets[id] : undefined
     if (!asset) return
+    landed = true
+    URL.revokeObjectURL(take.url)
     const spans = takeClipSpans(final.timing, asset.durationS)
     if (spans.length === 0) return
     updateActiveSequence(`Place ${asset.name}`, (seq) => placeTakeClips(seq, asset, spans).seq)
+  } catch (err) {
+    console.warn('OL Premiere: could not add the take', err)
   } finally {
+    if (!landed) holdTakeAgain(take, final)
     useRecorder.setState({ keeping: false })
   }
+}
+
+/** A kept take that did not reach the bin goes back up for review, so it is never lost. */
+function holdTakeAgain(take: PendingTake, final: PendingTake): void {
+  const show = useToasts.getState().show
+  // Review holds one take. A newer one recorded while this was being added has
+  // the slot, and putting this back would throw THAT one away instead.
+  if (useRecorder.getState().pendingTake) {
+    URL.revokeObjectURL(take.url)
+    show('Could not add your earlier take. Free up space on your drive.', 'danger')
+    return
+  }
+  let held = final
+  if (final !== take) {
+    URL.revokeObjectURL(take.url)
+    held = { ...final, url: URL.createObjectURL(final.blob) }
+  }
+  takeReadings.set(held, Promise.resolve(held))
+  useRecorder.setState({ pendingTake: held })
+  const open = useRecorder.getState().studioOpen
+  show(
+    'Could not add your take. It is still in the recording studio, so press Add to timeline again.',
+    'danger',
+    open ? undefined : { label: 'Show it', onClick: () => void openStudio() },
+  )
 }
 
 /** Drop the held take and nothing else. The playhead is NOT touched. */

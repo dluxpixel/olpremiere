@@ -473,6 +473,58 @@ describe('studio capture: review-then-keep, and coexistence with playback', () =
     expect(importFilesSpy).toHaveBeenCalledTimes(1)
   })
 
+  // ⛔ AU-3. importFiles never throws: out of room it says so and hands back
+  // nothing, and Keep used to stop there with the take's only copy thrown away.
+  it('a take that could not be added goes back into the studio, the same take', async () => {
+    readTakeSpy.mockResolvedValue({ peak: 0.5, mono: null })
+    await startRecording()
+    const rec = FakeMediaRecorder.instances[0]!
+    rec.ondataavailable?.({ data: new Blob(['his words']) })
+    stopRecording()
+    rec.onstop?.()
+    const before = useRecorder.getState().pendingTake!
+    importFilesSpy.mockResolvedValueOnce([])
+
+    await keepTake()
+
+    const after = useRecorder.getState().pendingTake
+    expect(after?.blob).toBe(before.blob)
+    expect(useRecorder.getState().keeping).toBe(false)
+    expect(showSpy.mock.calls.some(([m]) => /still in the recording studio/i.test(String(m)))).toBe(true)
+    // And Add works the second time.
+    await keepTake()
+    expect(importFilesSpy).toHaveBeenCalledTimes(2)
+    expect(useRecorder.getState().pendingTake).toBeNull()
+  })
+
+  it('a take that could not be added after the studio closed is held, with a way to show it', async () => {
+    await startRecording()
+    const rec = FakeMediaRecorder.instances[0]!
+    rec.ondataavailable?.({ data: new Blob(['his words']) })
+    stopRecording()
+    rec.onstop?.()
+    const before = useRecorder.getState().pendingTake!
+    importFilesSpy.mockRejectedValueOnce(new Error('disk gone'))
+    const kept = keepTake()
+    closeStudio()
+    await kept
+
+    expect(useRecorder.getState().pendingTake?.blob).toBe(before.blob)
+    const call = showSpy.mock.calls.find(([m]) => /still in the recording studio/i.test(String(m)))
+    expect(call?.[2]).toMatchObject({ label: 'Show it' })
+  })
+
+  it('a take being added still holds off an automatic restart', async () => {
+    const { isRestartUnsafe } = await import('./unloadGuard')
+    const finishRead = await takeBeingRead()
+    const kept = keepTake()
+    expect(useRecorder.getState().pendingTake).toBeNull()
+    expect(isRestartUnsafe()).toBe(true)
+    finishRead()
+    await kept
+    expect(isRestartUnsafe()).toBe(false)
+  })
+
   it('the transport says a stretch continues, or ran off the end of the edit, and the take keeps both', async () => {
     const { useStore } = await import('./store')
     const { activeSequence, newProject } = await import('../engine/types')
