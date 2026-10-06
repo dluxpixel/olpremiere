@@ -14,7 +14,6 @@ import {
 import { addEffect } from '../engine/effects/ops'
 import { FRAME_FITS, frameFitDims, withFrameFit, type FrameFit } from '../engine/frameFit'
 import { getEffect } from '../engine/effects/registry'
-import { upsertKeyframe, upsertKeyframeValue } from '../engine/keyframes'
 import { MOTION_CURVES } from '../engine/motion'
 import { clipDurationS, clipEndS } from '../engine/timeline'
 import { TRANSITION_LABELS, type TransitionKind } from '../engine/render/types'
@@ -22,7 +21,7 @@ import { activeSequence, newId, type AnimChannel, type Clip, type Curve, type Ke
 // isClipArmed comes from the SINGLE-clip module on purpose: the multi-select
 // align has to ask the exact question the gizmo asks, off the exact same code,
 // or the two paths drift the way they did when one read a global preference.
-import { isAppearanceOwned, isClipArmed, playheadLocalT, transitionFor, withOwnedBase } from './clipEdits'
+import { isAppearanceOwned, isClipArmed, transitionFor, withOwnedBase } from './clipEdits'
 import { noteRecentEffect } from './recentEffects'
 import { updateActiveSequence, useStore } from './store'
 import { useToasts } from './toasts'
@@ -116,15 +115,42 @@ export function toggleClipsFlip(ids: Iterable<string>): void {
 }
 
 /**
- * Set a channel value on every selected clip. Mirrors the single-clip setChannel:
- * a STATIC channel sets the base; an ANIMATED one (a caption's pop, a punch-in)
- * keys the value at the playhead. Otherwise the base write is overridden by the
- * keyframes and the bulk edit silently does nothing.
+ * Move an animation so it RESTS on `value` and keeps its shape, or null when it
+ * has no rest to measure from (a zoom through 0, a fade that never shows).
+ *
+ * Scale rests on its LOWEST keyframe (a Push in from 100 to 120 rests at 100,
+ * the baseline withFrameFit and refitClipToFill read) and opacity on its
+ * HIGHEST (a fade rests fully shown); both are multiplied, so a zoom stays the
+ * same zoom. Anything else (volume in dB) is shifted from its highest.
+ */
+function restAnimationOn(kfs: readonly Keyframe[], channel: AnimChannel, value: number): Keyframe[] | null {
+  const values = kfs.map((k) => k.value)
+  if (channel === 'scale' || channel === 'opacity') {
+    const rest = channel === 'scale' ? Math.min(...values) : Math.max(...values)
+    if (rest <= 1e-6) return null
+    const f = value / rest
+    return kfs.map((k) => ({ ...k, value: k.value * f }))
+  }
+  const d = value - Math.max(...values)
+  return kfs.map((k) => ({ ...k, value: k.value + d }))
+}
+
+/**
+ * Set a channel value on every selected clip. A STATIC channel sets the base; an
+ * ANIMATED one keeps the SHAPE of its animation and is moved so it rests on the
+ * number, every keyframe by the same factor (restAnimationOn). A caption's pop
+ * or fade rebuilds on the new base (withOwnedBase).
+ *
+ * ⛔ IN THE MULTI PANEL A NUMBER IS WHERE EVERY CLIP RESTS, NOT A KEYFRAME AT
+ * THE PLAYHEAD. Most of his clips carry a move. Keying at the playhead clamped
+ * to the clips it was not on: Scale 1.3 on a selected Short turned every Push in
+ * after the playhead into a pull back (its first keyframe replaced), gave every
+ * clip before it a stray keyframe on its last frame, and the shelf then called
+ * them all "Hand edited" (measured 2026-10-06). setClipsPosition already refused
+ * to key clips elsewhere for the same reason. The single clip Inspector still
+ * keys at the playhead, where he can see the moment he is editing.
  */
 export function setChannelForClips(ids: Iterable<string>, channel: AnimChannel, value: number): void {
-  // One read for the whole fan-out, so twelve clips cannot end up carrying two
-  // different curves because the chip changed mid-dispatch.
-  const commit = moveCommit()
   const seq = activeSequence(useStore.getState().project)
   mapClips(
     ids,
@@ -134,11 +160,11 @@ export function setChannelForClips(ids: Iterable<string>, channel: AnimChannel, 
       // and the animation follows (withOwnedBase says what this used to break).
       if (isAppearanceOwned(c, channel)) return withOwnedBase(c, channel, value, seq.width, seq.height)
       const kfs = channelKeyframes(c, channel)
-      if (kfs.length === 0) return withChannelValue(c, channel, value)
-      const localT = playheadLocalT(c)
-      // upsertKeyframeValue, not upsertKeyframe: a keyframe he shaped by hand keeps
-      // its curve, and only a NEW one takes the shelf's current preference.
-      return withChannelKeyframes(c, channel, upsertKeyframeValue(kfs, localT, value, commit))
+      const based = withChannelValue(c, channel, value)
+      if (kfs.length === 0) return based
+      const moved = restAnimationOn(kfs, channel, value)
+      // The base follows too, so the field reads back what he typed.
+      return moved ? withChannelKeyframes(based, channel, moved) : c
     },
     // Per channel, so nudging Opacity and then Scale still leaves two steps.
     `channel:${channel}`,
@@ -519,19 +545,19 @@ export function clearEffectsForClips(ids: Iterable<string>): void {
   mapClips(ids, 'Clear effects', (c) => (c.effects.length === 0 ? c : { ...c, effects: [] }))
 }
 
-/** Set the same gain (dB) on every selected clip. Keyframe-aware per clip:
- *  an animated volume channel overrides the base, so those clips get a
- *  keyframe at the playhead instead of a dead base write. */
+/** Set the same gain (dB) on every selected clip. An animated volume (a duck,
+ *  a swell) keeps its shape and is shifted so its loudest point sits on the new
+ *  level, the multi panel's rule (setChannelForClips): it used to key the
+ *  playhead clamped to the head or tail of every clip the playhead was not on. */
 export function setClipsGainDb(ids: Iterable<string>, db: number): void {
   mapClips(
     ids,
     'Set volume',
     (c) => {
       const kfs = channelKeyframes(c, 'volume')
-      if (kfs.length > 0) {
-        return withChannelKeyframes(c, 'volume', upsertKeyframe(kfs, { t: playheadLocalT(c), value: db, ease: 'linear' }))
-      }
-      return c.audioGainDb === db ? c : { ...c, audioGainDb: db }
+      const based = c.audioGainDb === db ? c : { ...c, audioGainDb: db }
+      if (kfs.length > 0) return withChannelKeyframes(based, 'volume', restAnimationOn(kfs, 'volume', db)!)
+      return based
     },
     'gain',
   )

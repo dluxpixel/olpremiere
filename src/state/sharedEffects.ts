@@ -15,7 +15,8 @@
 // keyframed at the playhead on that clip, exactly like editing it on its own,
 // so a shared change can never flatten an animation he built by hand.
 
-import { resolveParam, removeEffect, setEffectParam, toggleEffect } from '../engine/effects/ops'
+import { isParamAnimated, resolveParam, removeEffect, setEffectParam, toggleEffect } from '../engine/effects/ops'
+import { clipEndS } from '../engine/timeline'
 import { getEffect } from '../engine/effects/registry'
 import { activeSequence, type Clip, type EffectInstance, type Sequence } from '../engine/types'
 import { mapClips } from './bulkEdits'
@@ -94,12 +95,20 @@ export function sharedEnabled(clips: readonly Clip[], type: string): 'on' | 'off
 export function setSharedEffectParam(ids: readonly string[], type: string, key: string, value: number): void {
   const def = getEffect(type)
   const param = def?.params.find((p) => p.key === key)
+  const playheadS = useStore.getState().ui.playheadS
   mapClips(
     ids,
     `Set ${def?.label ?? type} ${param?.label ?? key} on ${plural(ids.length, 'clip')}`,
     (c) => {
       const inst = firstOfType(c, type)
-      return inst ? setEffectParam(c, inst.id, key, value, playheadLocalT(c)) : c
+      if (!inst) return c
+      // ⛔ A RAMP ON A CLIP THE PLAYHEAD IS NOT ON IS LEFT ALONE. Its moment would
+      // clamp to the clip's first or last frame, so a Glow easing in got its
+      // first keyframe replaced and arrived backwards (measured 2026-10-06). The
+      // card then reads "Mixed" for it, which is the truth.
+      const outside = playheadS < c.startS || playheadS >= clipEndS(c)
+      if (outside && isParamAnimated(inst, key)) return c
+      return setEffectParam(c, inst.id, key, value, playheadLocalT(c))
     },
     `shared-param:${type}:${key}`,
   )

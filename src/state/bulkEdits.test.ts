@@ -113,6 +113,72 @@ describe('setChannelForClips', () => {
   })
 })
 
+// A number in the MULTI panel is where every clip rests, and a move keeps its
+// shape. Measured 2026-10-06: Scale 1.3 turned a Push in after the playhead into
+// a pull back and gave the clip under it a stray third keyframe.
+describe('setChannelForClips on clips that carry a move', () => {
+  const pushIn = (id: string) =>
+    updateActiveSequence('push', (sq) => ({
+      ...sq,
+      tracks: sq.tracks.map((t) => ({
+        ...t,
+        clips: t.clips.map((c) =>
+          c.id === id
+            ? { ...c, keyframes: { ...c.keyframes, scale: [{ t: 0, value: 1, ease: 'linear' as const }, { t: 4, value: 1.2, ease: 'easeOut' as const }] } }
+            : c,
+        ),
+      })),
+    }))
+  const scales = (id: string) => channelKeyframes(clipById(id), 'scale').map((k) => [k.t, +k.value.toFixed(6)])
+
+  it('keeps every Push in a Push in, resting on the new size, wherever the playhead is', () => {
+    const a = seedTitle(0)
+    const b = seedTitle(6)
+    pushIn(a.id)
+    pushIn(b.id)
+    useStore.getState().setUI({ playheadS: 1.5 })
+    setChannelForClips([a.id, b.id], 'scale', 1.3)
+    for (const id of [a.id, b.id]) {
+      expect(scales(id)).toEqual([[0, 1.3], [4, 1.56]])
+      expect(channelKeyframes(clipById(id), 'scale')[1]!.ease).toBe('easeOut')
+      expect(clipById(id).transform.scale).toBe(1.3)
+    }
+    useStore.getState().undo()
+    expect(scales(b.id)).toEqual([[0, 1], [4, 1.2]])
+  })
+
+  it('a fade keeps its shape and rests at the new opacity', () => {
+    const a = seedTitle(6)
+    useStore.getState().setUI({ playheadS: 0 })
+    updateActiveSequence('fade', (sq) => ({
+      ...sq,
+      tracks: sq.tracks.map((t) => ({
+        ...t,
+        clips: t.clips.map((c) =>
+          c.id === a.id ? { ...c, keyframes: { opacity: [{ t: 0, value: 0, ease: 'linear' as const }, { t: 1, value: 1, ease: 'linear' as const }] } } : c,
+        ),
+      })),
+    }))
+    setChannelForClips([a.id], 'opacity', 0.5)
+    expect(channelKeyframes(clipById(a.id), 'opacity').map((k) => k.value)).toEqual([0, 0.5])
+  })
+
+  it('a duck on the volume keeps its shape and its loudest point sits on the new level', () => {
+    const a = seedTitle(6)
+    updateActiveSequence('duck', (sq) => ({
+      ...sq,
+      tracks: sq.tracks.map((t) => ({
+        ...t,
+        clips: t.clips.map((c) =>
+          c.id === a.id ? { ...c, keyframes: { volume: [{ t: 0, value: 0, ease: 'linear' as const }, { t: 1, value: -12, ease: 'linear' as const }] } } : c,
+        ),
+      })),
+    }))
+    setClipsGainDb([a.id], -6)
+    expect(channelKeyframes(clipById(a.id), 'volume').map((k) => [k.t, k.value])).toEqual([[0, -6], [1, -18]])
+  })
+})
+
 describe('applyEffectToClips', () => {
   it('adds one fresh effect instance to each selected clip', () => {
     const a = seedTitle(0)

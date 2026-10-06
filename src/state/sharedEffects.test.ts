@@ -99,6 +99,22 @@ describe('changing it on every clip at once', () => {
     expect(amountOf(b)).toBeCloseTo(0.3, 6)
   })
 
+  // Measured 2026-10-06: a ramp on a clip the playhead is not on had its first
+  // (or last) keyframe replaced, because the moment clamped to that clip's edge.
+  it('leaves a ramp alone on a clip the playhead is not on', () => {
+    const [a, b] = [seedClip(0), seedClip(2)]
+    applyEffect(a, 'autoColor')
+    applyEffect(b, 'autoColor')
+    useStore.getState().setUI({ playheadS: 2.5 })
+    toggleEffectParamKeyframes(b, firstOfType(clipById(b), 'autoColor')!.id, 'amount')
+    useStore.getState().setUI({ playheadS: 0.5 })
+    toggleEffectParamKeyframes(a, firstOfType(clipById(a), 'autoColor')!.id, 'amount')
+    const rampOnB = paramKeyframes(firstOfType(clipById(b), 'autoColor')!, 'amount')
+    setSharedEffectParam([a, b], 'autoColor', 'amount', 0.3)
+    expect(paramKeyframes(firstOfType(clipById(b), 'autoColor')!, 'amount')).toEqual(rampOnB)
+    expect(resolveParam(firstOfType(clipById(a), 'autoColor')!, 'amount', 0.5)).toBeCloseTo(0.3, 6)
+  })
+
   it('resets, switches off and removes on all of them', () => {
     const ids = [seedClip(0), seedClip(2)]
     for (const id of ids) applyEffect(id, 'autoColor')
