@@ -1,11 +1,12 @@
 import { useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
-import { clipEndS, snapTime, splitGroup } from '../engine/timeline'
+import { clipEndS, groupLocked, snapTime, splitGroup } from '../engine/timeline'
 import { dragBlockIds } from '../engine/blockMove'
 import { createSnapPointCache } from '../engine/snapPointCache'
 import { quantizeToFrame } from '../engine/timecode'
 import { activeSequence, audioTracks, videoTracks, type Clip, type Id, type Sequence, type Track } from '../engine/types'
 import { openContextMenu, type MenuItem } from '../state/contextMenu'
 import { hasClipboard, pasteAt } from '../state/clipboard'
+import { PAIR_LOCKED_MESSAGE } from '../state/clipEdits'
 import { setPasteTarget } from '../state/pasteTarget'
 import { comboLabel } from '../keymap'
 import { pausePlayback } from '../state/playbackControl'
@@ -268,6 +269,11 @@ export function Timeline({ height }: { height: number }) {
       return
     }
     if (e.altKey) {
+      // A linked slip moves the partner's footage too; a locked partner holds it.
+      if (!soloSlip && groupLocked(seq, clip.id)) {
+        show(PAIR_LOCKED_MESSAGE)
+        return
+      }
       beginDrag(e, { kind: 'slip', clipId: clip.id, startXPx: x, solo: soloSlip })
       return
     }
@@ -366,8 +372,20 @@ export function Timeline({ height }: { height: number }) {
       }
       // No neighbour to roll against - fall through to a plain trim.
     }
+    // A stretch, and a trim of the pair, take the linked partner along, so a
+    // partner on a locked track holds them (the engine refuses too). Said at the
+    // press, not after a drag that showed nothing moving.
+    const pairHeld = groupLocked(seq, clip.id)
     if (e.altKey && !(e.ctrlKey || e.metaKey)) {
+      if (pairHeld) {
+        show(PAIR_LOCKED_MESSAGE)
+        return
+      }
       beginDrag(e, { kind: 'stretch', clipId: clip.id, edge, grabOffsetS })
+      return
+    }
+    if (!solo && pairHeld) {
+      show(PAIR_LOCKED_MESSAGE)
       return
     }
     // `!e.altKey` keeps the no-neighbour Ctrl+Alt fallthrough a PLAIN trim, as

@@ -261,7 +261,7 @@ export function clampSpeed(s: number): number {
  */
 export function rateStretchGroup(seq: Sequence, clipId: Id, edge: 'in' | 'out', tS: number): Sequence {
   const found = findClip(seq, clipId)
-  if (!found) return seq
+  if (!found || groupLocked(seq, clipId)) return seq
   const grabbed = found.clip
 
   const groupIds = new Set<Id>([clipId])
@@ -1555,6 +1555,24 @@ export function clipGroupIds(seq: Sequence, clipId: Id): Id[] {
 }
 
 /**
+ * True when any clip of `clipId`'s link group, itself included, sits on a
+ * locked track.
+ *
+ * ⛔ A LOCK MUST NOT BE BYPASSED VIA THE PARTNER (the rule `cutSelection` and
+ * the drag already kept). He locks A1 to protect his voice take and edits the
+ * picture on V1, and the pair verbs trimmed, slipped, stretched, cut and ripple
+ * deleted the locked voice along with it. Every pair verb asks this first.
+ */
+export function groupLocked(seq: Sequence, clipId: Id): boolean {
+  const found = findClip(seq, clipId)
+  if (!found) return false
+  if (found.track.locked) return true
+  const link = found.clip.linkId
+  if (link === undefined) return false
+  return seq.tracks.some((t) => t.locked && t.clips.some((c) => c.linkId === link))
+}
+
+/**
  * The FIRST video onto an empty timeline sets the timeline's frame rate.
  *
  * A sequence was born at 30 and there was no way, anywhere in the app, to
@@ -1708,6 +1726,7 @@ export function trimGroup(
   edge: 'in' | 'out',
   tS: number,
 ): Sequence {
+  if (groupLocked(seq, clipId)) return seq
   const ids = clipGroupIds(seq, clipId)
   if (ids.length <= 1) return trimClipTo(seq, assets, clipId, edge, tS)
   // ⛔ THE EDGE IS AGREED BEFORE ANYTHING IS CUT, the same rule rippleTrimGroup
@@ -1776,6 +1795,7 @@ export function rippleTrimGroup(
   tS: number,
   report?: RippleReport,
 ): Sequence {
+  if (groupLocked(seq, clipId)) return seq
   const before = findClip(seq, clipId)
   const ids = clipGroupIds(seq, clipId)
   const moved = new Set<Id>()
@@ -1887,6 +1907,8 @@ export function rippleDeleteMany(seq: Sequence, clipIds: readonly Id[], report?:
   const moved = new Set<Id>()
   const spans: Array<{ startS: number; endS: number }> = []
   for (const clipId of clipIds) {
+    // A pair with a half on a locked track stays whole (groupLocked).
+    if (groupLocked(seq, clipId)) continue
     for (const id of clipGroupIds(seq, clipId)) {
       if (targets.has(id)) continue
       const f = findClip(seq, id)
@@ -1933,9 +1955,19 @@ export function splitClipOnly(seq: Sequence, clipId: Id, tS: number): Sequence {
 /** Split every linked member at tS; the right halves form a fresh link group. */
 export function splitGroup(seq: Sequence, clipId: Id, tS: number): Sequence {
   const found = findClip(seq, clipId)
-  if (!found) return seq
+  if (!found || found.track.locked) return seq
   const link = found.clip.linkId
   if (!link) return splitClip(seq, clipId, tS)
+  // A half on a locked track stays whole and only the free halves are cut, each
+  // on its own (splitClipOnly). Cutting in place moves nothing, so the pair
+  // stays in sync; the lock is never bypassed through the partner.
+  if (groupLocked(seq, clipId)) {
+    const free = clipGroupIds(seq, clipId).filter((id) => !findClip(seq, id)?.track.locked)
+    if (free.some((id) => !canSplitClipAt(findClip(seq, id)!.clip, seq.fps, tS))) return seq
+    let cut = seq
+    for (const id of free) cut = splitClipOnly(cut, id, tS)
+    return cut
+  }
   const groupBefore = new Set(clipGroupIds(seq, clipId))
   // ALL OR NOTHING. Members can sit at different distances from the cut once one
   // of them has been trimmed on its own, so asking each in turn could split some
@@ -2138,6 +2170,7 @@ export function slipGroup(
   clipId: Id,
   deltaS: number,
 ): Sequence {
+  if (groupLocked(seq, clipId)) return seq
   const ids = clipGroupIds(seq, clipId)
   if (ids.length <= 1) return slipClip(seq, assets, clipId, deltaS)
 

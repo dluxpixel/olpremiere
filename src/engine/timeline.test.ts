@@ -42,6 +42,7 @@ import {
   moveMarker,
   pasteClips,
   pxToTime,
+  groupLocked,
   rateStretchGroup,
   recomputeDuration,
   removeMarker,
@@ -4151,4 +4152,52 @@ describe('a REVERSED clip cuts and trims on the frames he sees, exactly like a f
       })
     })
   }
+})
+
+// He locks A1 to protect his voice take and edits the picture on V1. Every pair
+// verb used to reach through the link and change the locked voice anyway.
+describe('a lock is not bypassed through the linked partner', () => {
+  const pair = () => {
+    const v = makeClip({ id: 'v', startS: 0, inS: 1, outS: 5, linkId: 'L' })
+    const a = makeClip({ id: 'a', startS: 0, inS: 1, outS: 5, linkId: 'L' })
+    return makeSeq([makeTrack({ clips: [v] }), makeTrack({ kind: 'audio', name: 'A1', locked: true, clips: [a] })])
+  }
+
+  it('knows the pair is held, from either half', () => {
+    const seq = pair()
+    expect(groupLocked(seq, 'v')).toBe(true)
+    expect(groupLocked(seq, 'a')).toBe(true)
+    const free = makeSeq([makeTrack({ clips: [makeClip({ id: 'x', linkId: 'Q' })] })])
+    expect(groupLocked(free, 'x')).toBe(false)
+  })
+
+  it('a trim, a ripple trim, a slip and a stretch leave the pair as it is', () => {
+    const seq = pair()
+    expect(trimGroup(seq, ASSETS, 'v', 'out', 3)).toBe(seq)
+    expect(rippleTrimGroup(seq, ASSETS, 'v', 'in', 1)).toBe(seq)
+    expect(slipGroup(seq, ASSETS, 'v', 0.5)).toBe(seq)
+    expect(rateStretchGroup(seq, 'v', 'out', 6)).toBe(seq)
+  })
+
+  it('a ripple delete leaves the pair, and still takes a free clip beside it', () => {
+    const seq = pair()
+    expect(rippleDeleteMany(seq, ['v'])).toBe(seq)
+    const withFree = makeSeq([
+      makeTrack({ clips: [makeClip({ id: 'v', startS: 0, outS: 4, linkId: 'L' }), makeClip({ id: 'w', startS: 4, outS: 2 })] }),
+      makeTrack({ kind: 'audio', name: 'A1', locked: true, clips: [makeClip({ id: 'a', startS: 0, outS: 4, linkId: 'L' })] }),
+    ])
+    const out = rippleDeleteMany(withFree, ['v', 'w'])
+    expect(findClip(out, 'v')).not.toBeNull()
+    expect(findClip(out, 'a')).not.toBeNull()
+    expect(findClip(out, 'w')).toBeNull()
+  })
+
+  it('a cut goes through the free half only, and the locked half stays whole', () => {
+    const out = splitGroup(pair(), 'v', 2)
+    expect(out.tracks[0].clips).toHaveLength(2)
+    expect(out.tracks[1].clips).toHaveLength(1)
+    expect(out.tracks[1].clips[0].linkId).toBe('L')
+    // Each picture half is its own group, so it stays silent and the voice plays.
+    expect(out.tracks[0].clips.every((c) => c.linkId !== undefined && c.linkId !== 'L')).toBe(true)
+  })
 })

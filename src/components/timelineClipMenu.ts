@@ -70,8 +70,9 @@ export function clipContextMenuItems({ clip, seq, assets, selNow, keepSelection,
   const next = track ? track.clips[idx + 1] : undefined
   const canXfadePrev = !!prev && Math.abs(clipEndS(prev) - clip.startS) < 1e-3
   const canXfadeNext = !!next && Math.abs(clipEndS(clip) - next.startS) < 1e-3
+  // Not on a locked track: a crossfade writes fades onto both clips.
   const crossfadeItems =
-    track?.kind === 'audio' && (canXfadePrev || canXfadeNext)
+    track?.kind === 'audio' && !track.locked && (canXfadePrev || canXfadeNext)
       ? [
           ...(canXfadePrev
             ? [{ label: 'Crossfade with previous', onClick: () => crossfadeWithNeighbour(clip.id, 'prev') }]
