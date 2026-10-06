@@ -249,6 +249,32 @@ describe('putting his edit back on launch', () => {
     expect(r.lost.sort()).toEqual(['clip.mp4', 'voice.webm'])
   })
 
+  // ⛔ An empty spare copy folder used to put EVERY asset in `lost`, the ones the
+  // store still had included, so the banner named files that were fine.
+  it('with no spare copies, names as lost only what the store lost too', async () => {
+    fakeShell()
+    blobs.set('asset/a', new Blob(['x']))
+    const r = await healProjectMedia(p)
+    expect(r.lost).toEqual(['voice.webm'])
+  })
+
+  it('with no spare copies and a healthy store, nothing is lost and nothing is said', async () => {
+    fakeShell()
+    blobs.set('asset/a', new Blob(['x']))
+    blobs.set('asset/b', new Blob(['x']))
+    expect(await healProjectMedia(p)).toEqual({ healed: [], lost: [] })
+  })
+
+  it('a folder that cannot be read names only what the store lost', async () => {
+    fakeShell()
+    ;(globalThis as { api?: { mediaList: () => Promise<never> } }).api!.mediaList = () =>
+      Promise.reject(new Error('EPERM'))
+    blobs.set('asset/b', new Blob(['x']))
+    const r = await healProjectMedia(p)
+    expect(r.lost).toEqual(['clip.mp4'])
+    expect(r.failure).toContain('EPERM')
+  })
+
   it('says so plainly when there are no spare copies yet, rather than nothing', async () => {
     fakeShell()
     const r = await healProjectMedia(p)

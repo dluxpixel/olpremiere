@@ -335,29 +335,22 @@ async function healOnce(project: Project, onProgress: HealProgressFn): Promise<H
   // every asset in `lost` with no reason attached anywhere. He opened v2.27 to a
   // banner and no explanation, which is the worst possible way to find out.
   const onDisk = new Map<string, number>()
-  let listing: { dir: string; error?: string; files: { id: string; size: number }[] }
+  let listing: { dir: string; error?: string; files: { id: string; size: number }[] } | null = null
+  let listFailed = ''
   try {
     listing = await api.mediaList()
   } catch (err) {
-    const why = err instanceof Error ? err.message : String(err)
+    listFailed = err instanceof Error ? err.message : String(err)
     console.warn('OL Premiere: could not read the spare media folder', err)
-    return { healed, lost: missing.map((a) => a.name ?? a.id), failure: `could not read the spare copies: ${why}` }
-  }
-  for (const m of listing.files) onDisk.set(m.id, m.size)
-  if (onDisk.size === 0) {
-    // ⛔ NAME THE FOLDER IT LOOKED IN. On 2026-08-23 this said "there are no spare
-    // copies" while 23 files and 7.1 GB sat in the folder I had filled by hand,
-    // and there was no way to tell a wrong path from an unreadable one from an
-    // empty one. A repair that cannot say WHERE it looked cannot be diagnosed
-    // from his side of the screen, and he has lost days to exactly that.
-    const why = listing.error ? `${listing.error} in ${listing.dir}` : `nothing in ${listing.dir}`
-    return { healed, lost: missing.map((a) => a.name ?? a.id), failure: why }
   }
 
   // ⛔ COUNT WHAT IS ACTUALLY GOING TO BE MOVED BEFORE MOVING ANY OF IT. His own
   // repair is 1.38 GB across twenty files, which is the better part of a minute,
   // and the boot card showing a silent row for that long after five days without
   // his editor would read as "still broken".
+  //
+  // ⛔ AND BEFORE SAYING ANYTHING IS LOST. An empty spare copy folder used to put
+  // EVERY asset in `lost`, the ones the store still had included.
   const toHeal: MediaAsset[] = []
   for (const a of missing) {
     // ⛔ ASKED PER ASSET, INSIDE A TRY. A store that has been rebuilt underneath
@@ -371,6 +364,19 @@ async function healOnce(project: Project, onProgress: HealProgressFn): Promise<H
       has = false
     }
     if (!has) toHeal.push(a)
+  }
+  if (toHeal.length === 0) return { healed, lost }
+  const names = toHeal.map((a) => a.name ?? a.id)
+  if (!listing) return { healed, lost: names, failure: `could not read the spare copies: ${listFailed}` }
+  for (const m of listing.files) onDisk.set(m.id, m.size)
+  if (onDisk.size === 0) {
+    // ⛔ NAME THE FOLDER IT LOOKED IN. On 2026-08-23 this said "there are no spare
+    // copies" while 23 files and 7.1 GB sat in the folder I had filled by hand,
+    // and there was no way to tell a wrong path from an unreadable one from an
+    // empty one. A repair that cannot say WHERE it looked cannot be diagnosed
+    // from his side of the screen, and he has lost days to exactly that.
+    const why = listing.error ? `${listing.error} in ${listing.dir}` : `nothing in ${listing.dir}`
+    return { healed, lost: names, failure: why }
   }
   let done = 0
   const back: MediaAsset[] = []
