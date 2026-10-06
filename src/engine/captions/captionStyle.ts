@@ -35,6 +35,7 @@ import {
 import {
   AUTO_CAPTION_OPTIONS,
   CAPTION_EMPHASIS_COLORS,
+  captionCase,
   chunkWords,
   jettismCaptionDef,
   saidWords,
@@ -74,6 +75,11 @@ export interface CaptionStyle {
   appearance?: AppearanceSpec
   /** The effect stack every caption gets, copied per clip. */
   effects?: EffectInstance[]
+  /**
+   * 'spoken' keeps his capitals and full stops. Absent is the house lowercase,
+   * which is what every style made before this existed, his saved ones too.
+   */
+  caseRule?: 'spoken'
   builtin?: boolean
   updatedAt: number
 }
@@ -320,14 +326,39 @@ export function captionDefFor(
  */
 export function dressCaption(clip: Clip, style: CaptionStyle, seqWidth: number, seqHeight: number): Clip {
   if (!clip.title) return clip
+  const cased = inStyleCase(clip, style)
   // A word wider than the line is drawn smaller rather than off the frame.
-  const title = fitWordsToFrame(captionDefFor(style, clip.title.text, seqHeight, clip.captionEmphasis === true), seqWidth)
-  let next: Clip = { ...clip, title }
+  const title = fitWordsToFrame(captionDefFor(style, cased.text, seqHeight, clip.captionEmphasis === true), seqWidth)
+  let next: Clip = { ...clip, title, ...(cased.words ? { captionWords: cased.words } : {}) }
   // Copied per clip, never shared: editing one caption's effect must not change another.
   if (style.effects?.length) next = { ...next, effects: style.effects.map((e) => ({ ...e })) }
   if (style.appearance) next = applyAppearanceToClip(next, style.appearance, seqWidth, seqHeight)
   else if (next.appearance) next = applyAppearanceToClip(next, {}, seqWidth, seqHeight)
   return next
+}
+
+/**
+ * The caption's words in the style's case rule, when he has not touched them.
+ *
+ * A caption's text is cased once, when the run makes it, so putting a style
+ * that says "As spoken" on house captions changed nothing anyone could see.
+ * What the machine said is kept on the clip (captionOrigin), so a caption that
+ * still reads exactly as either rule wrote it can be written again in the
+ * other. A caption he retyped is his, and stays as he typed it.
+ */
+function inStyleCase(clip: Clip, style: Pick<CaptionStyle, 'caseRule' | 'shape'>): { text: string; words?: Clip['captionWords'] } {
+  const text = clip.title?.text ?? ''
+  const origin = clip.captionOrigin?.text
+  if (origin === undefined) return { text }
+  const flat = text.replace(/\s+/g, ' ').trim()
+  const rule = style.caseRule ?? 'house'
+  const want = captionCase(origin, rule)
+  if (flat === want || (flat !== captionCase(origin, 'house') && flat !== captionCase(origin, 'spoken'))) return { text }
+  const next = text.includes('\n') ? breakLines(want, style.shape) : want
+  const tokens = want.split(' ')
+  const kept = clip.captionWords
+  const words = kept && kept.length === tokens.length ? kept.map((w, i) => ({ ...w, text: tokens[i]! })) : undefined
+  return { text: next, words }
 }
 
 /** One word read back off a caption clip, and which clip it came from. */
@@ -488,6 +519,7 @@ export function cleanStyle(raw: unknown): CaptionStyle | null {
     emphasisColor: typeof r.emphasisColor === 'string' && r.emphasisColor ? r.emphasisColor : DEFAULT_EMPHASIS_COLOR,
     ...(r.appearance && typeof r.appearance === 'object' ? { appearance: r.appearance } : {}),
     ...(Array.isArray(r.effects) && r.effects.length ? { effects: r.effects } : {}),
+    ...(r.caseRule === 'spoken' ? { caseRule: 'spoken' as const } : {}),
     updatedAt: num(r.updatedAt, 0),
   }
 }

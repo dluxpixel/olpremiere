@@ -34,6 +34,7 @@ import {
   BUILTIN_CAPTION_STYLES,
   HOUSE_STYLE_ID,
   cleanShape,
+  cleanStyle,
   type CaptionShape,
 } from '../engine/captions/captionStyle'
 import { jettismCaptionDef } from '../engine/captions/captions'
@@ -262,6 +263,57 @@ describe('new captions in a style', () => {
     expect(huge.title!.color).toBe('#ff00ff')
     expect(huge.captionEmphasis).toBe(true)
     expect(captionsOn(seq()).find(({ clip }) => clip.title!.text === 'this')!.clip.title!.color).toBe('#ffffff')
+  })
+})
+
+// ⛔ CA-8. "As spoken" only switched off the draw time case, and every run had
+// already written its words lowercase with the full stops gone, so "As
+// spoken" looked exactly like lowercase and Subtitles lost its full stops.
+describe('a style that writes captions as spoken', () => {
+  const house = BUILTIN_CAPTION_STYLES[0]!
+  const spokenStyle = { ...house, id: 'sp', name: 'Spoken', builtin: false, caseRule: 'spoken' as const }
+  const steve = [
+    { text: 'Steve', startS: 0, endS: 0.4 },
+    { text: 'hit', startS: 0.4, endS: 0.7 },
+    { text: 'Minecraft.', startS: 0.7, endS: 1.2 },
+  ]
+
+  it('keeps his capitals and full stops', () => {
+    addCaptionsFromWords(steve, { style: spokenStyle, model: 'm' })
+    expect(captionTexts().join(' ')).toBe('Steve hit Minecraft.')
+  })
+
+  it('still writes a lone i as I, and a thousands comma his way', () => {
+    addCaptionsFromWords(
+      [
+        { text: 'i', startS: 0, endS: 0.3 },
+        { text: 'made', startS: 1, endS: 1.3 },
+        { text: '30,000.', startS: 2, endS: 2.5 },
+      ],
+      { style: spokenStyle },
+    )
+    expect(captionTexts()).toEqual(['I', 'made', '30 000.'])
+  })
+
+  it('the house style is untouched: lowercase, full stops gone', () => {
+    addCaptionsFromWords(steve, { style: house })
+    expect(captionTexts().join(' ')).toBe('steve hit minecraft')
+  })
+
+  it('put on house captions, writes the ones he has not touched as spoken, and keeps his edits', () => {
+    addCaptionsFromWords(steve, { style: house, model: 'm' })
+    const hit = captionsOn(seq()).find(({ clip }) => clip.title!.text.includes('hit'))!.clip
+    setCaptionText(hit.id, 'smacked')
+    applyCaptionStyle(spokenStyle)
+    const texts = captionTexts()
+    expect(texts).toContain('smacked')
+    expect(texts.join(' ')).toContain('Minecraft.')
+    expect(texts.join(' ')).toContain('Steve')
+  })
+
+  it('is kept when saved, and a style without it reads as house', () => {
+    expect(cleanStyle({ ...spokenStyle })?.caseRule).toBe('spoken')
+    expect(cleanStyle({ ...house, caseRule: 'shout' })?.caseRule).toBeUndefined()
   })
 })
 

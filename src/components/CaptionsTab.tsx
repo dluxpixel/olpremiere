@@ -536,6 +536,7 @@ interface Draft {
   emphasisColor: string
   appearance?: AppearanceSpec
   effects?: EffectInstance[]
+  caseRule?: 'spoken'
 }
 
 function draftOf(style: CaptionStyle, seqHeight: number): Draft {
@@ -545,6 +546,7 @@ function draftOf(style: CaptionStyle, seqHeight: number): Draft {
     emphasisColor: style.emphasisColor,
     ...(style.appearance ? { appearance: style.appearance } : {}),
     ...(style.effects?.length ? { effects: style.effects } : {}),
+    ...(style.caseRule ? { caseRule: style.caseRule } : {}),
   }
 }
 
@@ -557,6 +559,7 @@ const fieldsOf = (s: CaptionStyle): CaptionStyleDraft => ({
   emphasisColor: s.emphasisColor,
   appearance: s.appearance,
   effects: s.effects,
+  caseRule: s.caseRule,
 })
 
 /** The edited style, as the thing to save or put on captions. Sizes are this sequence's. */
@@ -569,6 +572,7 @@ function styleOf(base: CaptionStyle, d: Draft, seqHeight: number): CaptionStyle 
     emphasisColor: d.emphasisColor,
     appearance: d.appearance,
     effects: d.effects,
+    caseRule: d.caseRule,
   }
 }
 
@@ -611,9 +615,9 @@ function StylePreview({ draft, seqHeight }: { draft: Draft; seqHeight: number })
           textAlign: 'center',
         }}
       >
-        {word('this is ')}
+        {word(draft.caseRule === 'spoken' ? 'This is ' : 'this is ')}
         {word('the', draft.emphasisColor)}
-        {word(' caption')}
+        {word(draft.caseRule === 'spoken' ? ' caption.' : ' caption')}
       </span>
     </div>
   )
@@ -666,6 +670,13 @@ function StyleEditor({ style, seqHeight, onPick }: { style: CaptionStyle; seqHei
   const look = draft.look
   const setLook = (patch: CaptionLook): void => setDraft((d) => ({ ...d, look: { ...d.look, ...patch } }))
   const setShape = (patch: Partial<CaptionShape>): void => setDraft((d) => ({ ...d, shape: cleanShape({ ...d.shape, ...patch }) }))
+  const setCase = (rule: 'spoken' | undefined, textCase: 'upper' | null): void =>
+    setDraft((d) => {
+      const out: Draft = { ...d, look: { ...d.look, textCase } }
+      if (rule) out.caseRule = rule
+      else delete out.caseRule
+      return out
+    })
   const setAppearance = (patch: AppearanceSpec): void =>
     setDraft((d) => {
       const next = { ...d.appearance, ...patch }
@@ -824,30 +835,34 @@ function StyleEditor({ style, seqHeight, onPick }: { style: CaptionStyle; seqHei
               <Italic size={14} strokeWidth={1.5} />
             </IconButton>
             <div className="mx-0.5 h-4 w-px bg-border" />
+            {/* ⛔ "As spoken" used to only switch off the draw time case, and every
+                run had already written its words in the house lowercase with the
+                full stops gone, so it looked exactly like lowercase. The case is
+                now a rule the run writes the words in: house, or as spoken. */}
             <IconButton
               size="compact"
-              label="As spoken"
-              active={!look.textCase}
-              data-testid="caption-style-case-asis"
-              onClick={() => setLook({ textCase: null })}
+              label="house lowercase"
+              active={look.textCase !== 'upper' && draft.caseRule !== 'spoken'}
+              data-testid="caption-style-case-lower"
+              onClick={() => setCase(undefined, null)}
             >
-              <CaseSensitive size={15} strokeWidth={1.5} />
+              <CaseLower size={15} strokeWidth={1.5} />
             </IconButton>
             <IconButton
               size="compact"
-              label="lowercase"
-              active={look.textCase === 'lower'}
-              data-testid="caption-style-case-lower"
-              onClick={() => setLook({ textCase: 'lower' })}
+              label="As spoken, with capitals and full stops"
+              active={look.textCase !== 'upper' && draft.caseRule === 'spoken'}
+              data-testid="caption-style-case-asis"
+              onClick={() => setCase('spoken', null)}
             >
-              <CaseLower size={15} strokeWidth={1.5} />
+              <CaseSensitive size={15} strokeWidth={1.5} />
             </IconButton>
             <IconButton
               size="compact"
               label="UPPERCASE"
               active={look.textCase === 'upper'}
               data-testid="caption-style-case-upper"
-              onClick={() => setLook({ textCase: 'upper' })}
+              onClick={() => setCase(draft.caseRule, 'upper')}
             >
               <CaseUpper size={15} strokeWidth={1.5} />
             </IconButton>

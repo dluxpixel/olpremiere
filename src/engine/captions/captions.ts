@@ -697,6 +697,8 @@ export interface CaptionStyleOptions {
    */
   upper?: boolean
   emphasisColor?: string
+  /** The style's case rule. Absent is the house case, as every run before it. */
+  caseRule?: CaptionCaseRule
 }
 
 /**
@@ -730,6 +732,32 @@ export function captionHouseCase(text: string): string {
     })
     .join(' ')
 }
+
+/**
+ * Which case a caption run writes its words in. 'house' is the measured
+ * lowercase look with the sentence marks dropped, and what every style has
+ * always made. 'spoken' keeps the recogniser's own capitals and punctuation,
+ * for a style that wants "Steve hit Minecraft." as he would write it.
+ */
+export type CaptionCaseRule = 'house' | 'spoken'
+
+/**
+ * Captions as spoken: the recogniser's capitals and punctuation kept, with the
+ * two fixes the house case also makes, a thousands comma written his way ("30
+ * 000", see numbersHisWay) and a lone "i" put back to "I".
+ */
+export function captionSpokenCase(text: string): string {
+  return text
+    .replace(/(\d),(?=\d{3}(?!\d))/g, '$1 ')
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(alwaysCapital)
+    .join(' ')
+}
+
+/** The words of a run in this case rule. */
+export const captionCase = (text: string, rule: CaptionCaseRule = 'house'): string =>
+  rule === 'spoken' ? captionSpokenCase(text) : captionHouseCase(text)
 
 /**
  * A number keeps its meaning through the punctuation strip above.
@@ -772,7 +800,8 @@ function alwaysCapital(word: string): string {
   // often, and the set below only holds the straight form, so "i’m" fell through
   // and rendered lowercase: the exact typo the 2026-08-06 request was about,
   // still on screen whenever the recogniser chose the nicer quote.
-  const core = word.replace(/[!?]+$/, '').replace(/[’ʼ]/g, "'")
+  // The spoken case keeps sentence marks too, so "i," must still read "I,".
+  const core = word.replace(/[!?.,;:"]+$/, '').replace(/[’ʼ]/g, "'")
   if (!ALWAYS_CAPITAL.has(core)) return word
   return word.charAt(0).toUpperCase() + word.slice(1)
 }
@@ -916,7 +945,7 @@ export function captionClips(chunks: CaptionChunk[], options: CaptionClipOptions
         ? chunk.text.toUpperCase()
         : options.baseDef
           ? chunk.text
-          : captionHouseCase(chunk.text)
+          : captionCase(chunk.text, options.caseRule)
     const def: TitleDef = options.baseDef
       ? { ...options.baseDef, text }
       : jettismCaptionDef(text, options.seqHeight)

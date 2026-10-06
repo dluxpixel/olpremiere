@@ -2,7 +2,7 @@
 // (auto-caption / transcription) into a run of word-caption title clips.
 // Each action is ONE dispatch, so a 40-clip caption pass undoes atomically.
 
-import { captionClips, captionHouseCase, chunkWords, spreadWords, type CaptionWord } from '../engine/captions/captions'
+import { captionCase, captionClips, chunkWords, spreadWords, type CaptionWord } from '../engine/captions/captions'
 import {
   AUTO_SHAPE,
   BUILTIN_CAPTION_STYLES,
@@ -195,7 +195,11 @@ export function addCaptionsFromWords(
   // run made before styles had a length at all.
   // And no caption holds more than fits across the frame at the style's size
   // and case: an UPPERCASE or bigger style, or a taller frame, fits fewer letters.
-  const chunks = chunkWords(words, chunkOptionsFor(style.shape, seq.fps, captionFitterFor(style, seq, captionHouseCase)))
+  const caseRule = style.caseRule ?? 'house'
+  const chunks = chunkWords(
+    words,
+    chunkOptionsFor(style.shape, seq.fps, captionFitterFor(style, seq, (t) => captionCase(t, caseRule))),
+  )
   if (chunks.length === 0) {
     useToasts.getState().show('No words to caption', 'danger')
     return
@@ -212,6 +216,8 @@ export function addCaptionsFromWords(
     // no route can produce captions the learning cannot later read.
     model: options.model,
     profile,
+    // His capitals and full stops when the style says "As spoken".
+    caseRule,
   })
   // Dress every word in the style (look, entrance, effects), so the whole run
   // lands looking exactly like the one he built and saved, and set two line
