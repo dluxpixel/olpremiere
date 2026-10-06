@@ -5,7 +5,7 @@
 // the web. The origin (`app://olpremiere`) is PINNED forever: changing it (or
 // the appId/productName) would orphan the user's IndexedDB.
 
-import { app, BrowserWindow, dialog, Menu, net, protocol, ipcMain, powerMonitor, session, shell } from 'electron'
+import { app, BrowserWindow, crashReporter, dialog, Menu, net, protocol, ipcMain, powerMonitor, session, shell } from 'electron'
 
 // ⛔ ONE COPY OF THE APP AT A TIME. Two launches, a slow first start plus an
 // impatient second click, or a copy still alive after a crash, used to start a
@@ -44,6 +44,7 @@ import * as proxy from './proxy'
 import * as mediaStore from './mediaStore'
 import * as remux from './remux'
 import { IDLE_POLL_MS, updateApplyDecision } from './updateApply'
+import { CRASH_LOG_NAME, crashLogLine, crashPlan } from './crashPlan'
 import { planUpdateError, updateLogEntry } from './updateErrors'
 import { appendUpdateLog, UPDATE_LOG_NAME } from './updateLog'
 import electronUpdater from 'electron-updater'
@@ -73,6 +74,14 @@ try {
   // A locked or in-use profile: fall through and let Electron create a fresh
   // userData rather than refusing to start. The legacy directory is untouched,
   // so the next launch tries again.
+}
+
+// A crash dump stays on his disk (userData/Crashpad) and goes nowhere else. After the
+// userData rename above, so the dumps land in the profile he really uses.
+try {
+  crashReporter.start({ uploadToServer: false })
+} catch {
+  // A crash reporter that will not start must never be the reason the app does not.
 }
 
 // ESM main has no __dirname.
@@ -119,6 +128,63 @@ let installing = false
 const INSTALL_FLUSH_MS = 1500
 /** How long to wait for the window to close before installing the old way regardless. */
 const INSTALL_CLOSE_TIMEOUT_MS = 5000
+/** Set on before-quit, so a page ending because the app is ending is not mistaken for a crash. */
+let quitting = false
+
+// --- A page that dies under him (./crashPlan) ---------------------------------
+/** When the editor's page died before, so a page that keeps dying stops reloading. */
+const editorDeaths: number[] = []
+/** Set by a reload after a crash. The new page asks for it once and says what happened. */
+let recoveredFromCrash = false
+
+/** One line in logs/crash.log. Never throws, like the update log it shares a writer with. */
+function crashLog(line: string): void {
+  appendUpdateLog(path.join(app.getPath('logs'), CRASH_LOG_NAME), line)
+}
+
+/**
+ * The editor's page is gone. Load it again, and write down why. See ./crashPlan for
+ * why this exists and why it gives up on the third death in five minutes.
+ */
+function onEditorGone(win: BrowserWindow, details: Electron.RenderProcessGoneDetails): void {
+  if (quitting || installing || win.isDestroyed()) return
+  const now = Date.now()
+  const plan = crashPlan(details.reason, editorDeaths, now)
+  if (plan === 'nothing') return
+  editorDeaths.push(now)
+  crashLog(crashLogLine(new Date(now), 'editor page gone', details, app.getVersion(), plan))
+  if (plan === 'reload') {
+    recoveredFromCrash = true
+    win.webContents.reload()
+    return
+  }
+  const box = {
+    type: 'error' as const,
+    buttons: ['Close'],
+    defaultId: 0,
+    noLink: true,
+    title: 'OL Premiere stopped',
+    message: 'OL Premiere stopped working.',
+    detail: 'Your work up to the last save is safe. Close it and open it again.',
+  }
+  // A box on a hidden parent is a box nobody can see, and the editor is hidden while
+  // the opening card is up.
+  void (win.isVisible() ? dialog.showMessageBox(win, box) : dialog.showMessageBox(box)).finally(() => app.quit())
+}
+
+/**
+ * A small window (the opening card, the update card) whose page died. It is frameless,
+ * transparent and on top of everything with no close button, so a dead one would sit
+ * over his screen as a frozen picture. It closes instead: the opening card's own
+ * `closed` handler then opens the editor.
+ */
+function closeWhenGone(win: BrowserWindow, what: string): void {
+  win.webContents.on('render-process-gone', (_e, details) => {
+    if (details.reason === 'clean-exit' || quitting || win.isDestroyed()) return
+    crashLog(crashLogLine(new Date(), `${what} page gone`, details, app.getVersion(), 'close'))
+    win.close()
+  })
+}
 
 /**
  * The splash: its own frameless, transparent, always-on-top window, floating over
@@ -186,8 +252,9 @@ function createSplash(): void {
     if (splashWindow === win) splashWindow = null
     // The splash is frameless with no close button, but Alt+F4 still reaches it.
     // Losing it must never leave him with a running app and no window at all.
-    if (!entered) enterEditor()
+    if (!entered && !quitting) enterEditor()
   })
+  closeWhenGone(win, 'opening card')
   void win.loadURL(isDev ? `${DEV_URL}/splash.html` : `app://${APP_ORIGIN_HOST}/splash.html`)
 }
 
@@ -340,6 +407,7 @@ function createUpdateWindow(): void {
   win.on('closed', () => {
     if (updateWindow === win) updateWindow = null
   })
+  closeWhenGone(win, 'update card')
   void win.loadURL(isDev ? `${DEV_URL}/update.html` : `app://${APP_ORIGIN_HOST}/update.html`)
 }
 
@@ -494,7 +562,10 @@ function createWindow(): void {
   win.webContents.on('did-start-navigation', (e) => {
     if (e.isMainFrame && !e.isSameDocument) dropOrphans()
   })
-  win.webContents.on('render-process-gone', dropOrphans)
+  win.webContents.on('render-process-gone', (_e, details) => {
+    dropOrphans()
+    onEditorGone(win, details)
+  })
 
   // ⛔ LEAVING DURING AN EXPORT ASKS FIRST. The page refuses to unload while one
   // runs (src/state/unloadGuard.ts), and on its own that refusal is silent: the
@@ -604,6 +675,18 @@ app.whenReady().then(() => {
   )
 
   ipcMain.handle('app:version', () => app.getVersion())
+  // Asked once by each new editor page: was it loaded because the last one crashed?
+  ipcMain.handle('app:takeCrashRecovered', () => {
+    const was = recoveredFromCrash
+    recoveredFromCrash = false
+    return was
+  })
+  // The GPU process and the rest. Chromium brings a GPU process back by itself, but
+  // why it died is exactly what a "the preview went black" hunt needs.
+  app.on('child-process-gone', (_e, details) => {
+    if (details.reason === 'clean-exit' || quitting) return
+    crashLog(crashLogLine(new Date(), 'child process gone', details, app.getVersion()))
+  })
 
   // Native ffmpeg export.
   ipcMain.handle('native:probe', () => native.probe())
@@ -764,6 +847,7 @@ app.whenReady().then(() => {
   // so use the synchronous teardown (SIGKILL + unlinkSync) rather than the async
   // cancel() whose unlink would race the process exit.
   app.on('before-quit', () => {
+    quitting = true
     native.cancelSync()
     // And the preview copies: a proxy build that outlived the app kept its
     // ffmpeg running to the end, holding a temp file open that the sweep could

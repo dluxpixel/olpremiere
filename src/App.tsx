@@ -64,6 +64,7 @@ import { useToasts } from './state/toasts'
 import { updateErrorToast } from './state/updateStatus'
 import { APP_VERSION, LAST_SEEN_VERSION_KEY, checkForUpdate, displayVersion } from './appVersion'
 import { olApi } from './platform'
+import { announceCrashRecovery } from './state/crashRecovery'
 import { ContextMenu } from './ui/ContextMenu'
 import { NamePrompt } from './ui/NamePrompt'
 import { Splitter } from './ui/Splitter'
@@ -562,6 +563,9 @@ export default function App() {
       }),
     [],
   )
+
+  // A page loaded because the last one crashed says so (electron/crashPlan.ts).
+  useEffect(() => void announceCrashRecovery(olApi), [])
 
   // On the FIRST launch after an auto-update, tell the user plainly that they're
   // now on the new build: the piece that was missing, so an update no longer
