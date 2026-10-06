@@ -295,27 +295,35 @@ export function removeKeyframeAtPlayhead(clipId: string, channel: AnimChannel): 
 }
 
 /**
- * Retime a keyframe: move the one nearest `fromT` on this channel to `toT`
- * (clamped to the clip span), keeping its value + easing. This is what the
- * Keyframes lane's drag-and-type calls ("set the time this happens"). Landing
- * exactly on another keyframe's time merges onto it (upsert replaces).
+ * Retime a keyframe: move the one nearest `fromT` on this channel to `toT`,
+ * keeping its value + easing. This is what the Keyframes lane's drag-and-type
+ * calls ("set the time this happens"). Returns the time it landed at.
+ *
+ * ⛔ IT STOPS ONE FRAME SHORT OF ITS NEIGHBOURS, the rule every other retime in
+ * the app already keeps (clampKeyframesDelta, the lasso, the timeline moment).
+ * It used to land on the neighbour's exact time and the upsert REPLACED the
+ * neighbour: drop the 0.5 s diamond of a punch on the 1.0 s one and the 130
+ * percent peak was simply gone (measured 2026-10-06). It could also pass its
+ * neighbour and reorder the move.
  */
-export function moveKeyframeTime(clipId: string, channel: AnimChannel, fromT: number, toT: number): void {
+export function moveKeyframeTime(clipId: string, channel: AnimChannel, fromT: number, toT: number): number | undefined {
   const clip = findClip(clipId)
-  if (!clip) return
-  const dur = Math.max(0, clipEndS(clip) - clip.startS)
-  const t = Math.max(0, Math.min(toT, dur))
+  if (!clip) return undefined
   // Early no-op BEFORE dispatch: mapClip always rebuilds the sequence, so
   // guarding only inside its callback would still push an empty undo command
   // (dragging a keyframe back to where it started, or retyping the same time).
   const kf = channelKeyframes(clip, channel).find((k) => Math.abs(k.t - fromT) <= 1e-4)
-  if (!kf || Math.abs(kf.t - t) <= 1e-6) return
+  if (!kf) return undefined
+  const fps = activeSequence(useStore.getState().project).fps
+  const t = kf.t + clampKeyframesDelta(clip, [{ channel, t: kf.t }], toT - kf.t, fps)
+  if (Math.abs(kf.t - t) <= 1e-6) return kf.t
   mapClip(clipId, `Move ${channel} keyframe`, (c) => {
     const kfs = channelKeyframes(c, channel)
     const cur = kfs.find((k) => Math.abs(k.t - fromT) <= 1e-4)
     if (!cur) return c
     return withChannelKeyframes(c, channel, upsertKeyframe(kfs.filter((k) => k !== cur), { ...cur, t }))
   })
+  return t
 }
 
 /**

@@ -75,12 +75,36 @@ describe('moveKeyframeTime', () => {
     toggleChannelAnimation(c.id, 'scale')
     useStore.getState().setUI({ playheadS: 3 })
     addKeyframeAtPlayhead(c.id, 'scale')
-    // Push the first keyframe way past the end → clamps to durS (5).
-    moveKeyframeTime(c.id, 'scale', 1, 99)
-    expect(times()).toEqual([3, 5])
-    // And below zero → clamps to 0.
-    moveKeyframeTime(c.id, 'scale', 3, -4)
+    // Push the last keyframe way past the end → clamps to durS (5).
+    moveKeyframeTime(c.id, 'scale', 3, 99)
+    expect(times()).toEqual([1, 5])
+    // And the first below zero → clamps to 0.
+    moveKeyframeTime(c.id, 'scale', 1, -4)
     expect(times()).toEqual([0, 5])
+  })
+
+  // Measured 2026-10-06: keyframes at 0.5, 1 and 2 (a punch to 130 percent at
+  // 1 s); drop the 0.5 diamond on the 1.0 one and the upsert REPLACED the peak.
+  it('stops one frame short of its neighbour instead of replacing it, dragged or typed', () => {
+    const c = seedTitle()
+    updateActiveSequence('punch', (sq) => ({
+      ...sq,
+      tracks: sq.tracks.map((t) => ({
+        ...t,
+        clips: t.clips.map((x) =>
+          x.id === c.id
+            ? { ...x, keyframes: { scale: [0.5, 1, 2].map((t, i) => ({ t, value: i === 1 ? 1.3 : 1, ease: 'linear' as const })) } }
+            : x,
+        ),
+      })),
+    }))
+    const wall = 1 - 1 / seq().fps
+    expect(moveKeyframeTime(c.id, 'scale', 0.5, 1)).toBeCloseTo(wall, 9)
+    const values = () => channelKeyframes(firstClip(), 'scale').map((k) => [+k.t.toFixed(6), k.value])
+    expect(values()).toEqual([[+wall.toFixed(6), 1], [1, 1.3], [2, 1]])
+    // Typed past it: the same wall, never passing it and reordering the move.
+    moveKeyframeTime(c.id, 'scale', wall, 2)
+    expect(values()).toEqual([[+wall.toFixed(6), 1], [1, 1.3], [2, 1]])
   })
 
   it('is a no-op (no command) when the time does not change', () => {
