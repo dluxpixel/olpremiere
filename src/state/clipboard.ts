@@ -16,7 +16,8 @@ import {
   type PasteResult,
 } from '../engine/timeline'
 import { quantizeToFrame } from '../engine/timecode'
-import { activeSequence, type Id, type MediaAsset, type Project } from '../engine/types'
+import { plural } from '../engine/plural'
+import { activeSequence, type Id, type MediaAsset, type Project, type Sequence, type Track } from '../engine/types'
 import { useContextMenu } from './contextMenu'
 import { clickedPasteTrack, selectPasted } from './pasteTarget'
 import { clipMarker, pasteNote } from './pasteRules'
@@ -89,6 +90,39 @@ export function clipMarkerOnSystemClipboard(): string | null {
   return systemMarker
 }
 
+/**
+ * The ids to copy or duplicate: the selection, plus the SOUND of every picture
+ * half in it.
+ *
+ * ⛔ A PICTURE COPIED WITHOUT ITS SOUND STILL PLAYED SOUND, HIDDEN INSIDE IT. One
+ * click selects one half, so Ctrl+C, Ctrl+V on his gameplay copied the picture
+ * alone; a lone picture is unlinked, and an unlinked picture plays its file's own
+ * sound at 0 dB: not the -18 dB, the fades or the muted line he set on the A1
+ * half, and with no audio clip anywhere to see or change it. Cut already takes
+ * the whole pair. A sound copied on its own has nothing hidden in it and stays
+ * alone, so a voice take never brings its picture along. Delete is untouched:
+ * it is selection scoped on purpose (deleteScoped).
+ */
+function withPictureSound(seq: Sequence, ids: readonly Id[]): { ids: Id[]; sounds: number } {
+  const out = [...ids]
+  const have = new Set(ids)
+  let sounds = 0
+  const kindOf = new Map<Id, Track['kind']>()
+  for (const t of seq.tracks) for (const c of t.clips) kindOf.set(c.id, t.kind)
+  for (const id of ids) {
+    if (kindOf.get(id) !== 'video') continue
+    let added = false
+    for (const g of clipGroupIds(seq, id)) {
+      if (have.has(g) || kindOf.get(g) !== 'audio') continue
+      have.add(g)
+      out.push(g)
+      added = true
+    }
+    if (added) sounds += 1
+  }
+  return { ids: out, sounds }
+}
+
 export function copySelection(): boolean {
   const s = useStore.getState()
   const seq = activeSequence(s.project)
@@ -98,12 +132,15 @@ export function copySelection(): boolean {
     useToasts.getState().show('Select a clip to copy', 'danger')
     return false
   }
-  const payload = serializeClips(seq, s.ui.selection)
+  const { ids, sounds } = withPictureSound(seq, s.ui.selection)
+  const payload = serializeClips(seq, ids)
   if (payload.length === 0) return false
   clipboard = payload
   clipboardAssets = assetsFor(s.project, payload)
   markSystemClipboard(payload.length)
-  useToasts.getState().show(`Copied ${payload.length} clip(s)`, 'info')
+  const n = payload.length - (ids.length - s.ui.selection.length)
+  const tail = sounds === 0 ? '' : n === 1 ? ' and its sound' : ' and their sound'
+  useToasts.getState().show(`Copied ${plural(n, 'clip')}${tail}`, 'info')
   return true
 }
 
@@ -238,8 +275,11 @@ function pasteClipboard(atS: number, target?: { trackIndex: number }): void {
 export function duplicateSelection(): void {
   const s = useStore.getState()
   // A duplicate lands on the clip's own track: a mutation, so locked filters out.
-  const ids = unlockedClipIds(activeSequence(s.project), s.ui.selection)
-  if (ids.length === 0) return
+  const seq = activeSequence(s.project)
+  const picked = unlockedClipIds(seq, s.ui.selection)
+  if (picked.length === 0) return
+  // The picture brings its sound, exactly as Copy does (withPictureSound).
+  const { ids } = withPictureSound(seq, picked)
   let newIds: string[] = []
   updateActiveSequence('Duplicate clip(s)', (sq) => {
     const r = duplicateClips(sq, ids)
