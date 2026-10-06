@@ -28,9 +28,9 @@ export async function reloadAndCheckForUpdates(): Promise<void> {
   // ⛔ EVERY EDIT IS WRITTEN BEFORE THE PAGE GOES. A reload throws the page away
   // like a close does, and the last second or two of editing used to go with it,
   // left to a write started while the page was being torn down. If the write
-  // fails, the reload waits for him to say so.
-  if (!(await saveBeforeClose())) {
-    useToasts.getState().show('Could not save, so the app did not reload', 'danger', {
+  // fails, or never answers, the reload waits for him to say so.
+  if (!(await Promise.race([saveBeforeClose(), wait(RELOAD_SAVE_TIMEOUT_MS)]))) {
+    useToasts.getState().show('Could not save, so the app did not reload. Your work is still here', 'danger', {
       label: 'Reload anyway',
       onClick: () => window.location.reload(),
     })
@@ -38,3 +38,8 @@ export async function reloadAndCheckForUpdates(): Promise<void> {
   }
   window.location.reload()
 }
+
+/** How long a reload waits for the save. One write takes well under a second. */
+export const RELOAD_SAVE_TIMEOUT_MS = 5000
+
+const wait = (ms: number): Promise<false> => new Promise((resolve) => setTimeout(() => resolve(false), ms))

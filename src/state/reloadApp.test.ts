@@ -26,7 +26,7 @@ vi.mock('./toasts', () => ({
   },
 }))
 
-const { reloadAndCheckForUpdates } = await import('./reloadApp')
+const { RELOAD_SAVE_TIMEOUT_MS, reloadAndCheckForUpdates } = await import('./reloadApp')
 const { useUpdateFeed } = await import('./updateStatus')
 
 const settle = () => new Promise((r) => setTimeout(r, 0))
@@ -57,7 +57,22 @@ describe('reloading the app', () => {
     saveLands(false)
     await done
     expect(order).not.toContain('reload')
-    expect(toasts).toEqual([{ message: 'Could not save, so the app did not reload', action: 'Reload anyway' }])
+    expect(toasts).toEqual([
+      { message: 'Could not save, so the app did not reload. Your work is still here', action: 'Reload anyway' },
+    ])
+  })
+
+  it('a save that never answers does not hold F5 forever, and does not reload over it', async () => {
+    vi.useFakeTimers()
+    try {
+      const done = reloadAndCheckForUpdates()
+      await vi.advanceTimersByTimeAsync(RELOAD_SAVE_TIMEOUT_MS)
+      await done
+      expect(order).toEqual(['save started'])
+      expect(toasts.map((t) => t.action)).toEqual(['Reload anyway'])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('does not even save when an update was found, because it does not reload', async () => {
