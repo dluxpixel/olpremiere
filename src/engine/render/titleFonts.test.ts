@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   CUSTOM_TITLE_FONTS,
   ensureTitleFace,
+  ensureTitleFont,
   LUCKIEST_GUY_STACK,
   TIKTOK_SANS_STACK,
   TITLE_FONT_OPTIONS,
@@ -263,6 +264,20 @@ describe('the preview loads a title face the first time it draws it', () => {
     ensureTitleFace(set, TIKTOK_SANS_STACK, redraw)
     await Promise.resolve()
     expect(redraw).toHaveBeenCalledTimes(1)
+    vi.unstubAllGlobals()
+  })
+
+  // MEASURED 2026-10-06: the font list starts the load and THEN sets the font,
+  // so the monitor found the face in flight, returned, and nobody redrew the
+  // paused frame when it arrived: it kept the fallback face.
+  it('still redraws once when the font list started the load first', async () => {
+    const { set } = fakeFonts()
+    const redraw = vi.fn()
+    const picked = ensureTitleFont(set, LUCKIEST_GUY_STACK)
+    ensureTitleFace(set, LUCKIEST_GUY_STACK, redraw)
+    ensureTitleFace(set, LUCKIEST_GUY_STACK, redraw)
+    await picked
+    await vi.waitFor(() => expect(redraw).toHaveBeenCalledTimes(1))
     vi.unstubAllGlobals()
   })
 

@@ -356,17 +356,28 @@ export function ensureEmojiFont(fontset: FontFaceSet, onReady?: () => void): voi
  * title changed once the face was loaded (measured 2026-10-01). He sizes and
  * places captions on that monitor.
  *
- * `onReady` runs once, when THIS call started the load; a face already loading
- * or loaded is a map lookup and calls nothing, so a redraw can never loop.
+ * `onReady` runs ONCE per family, when the face is in, whoever started the
+ * load; every later call is a set lookup, so a redraw can never loop.
+ *
+ * ⛔ A LOAD SOMEONE ELSE STARTED STILL GETS THE REDRAW. The font list starts the
+ * load (ensureTitleFont) and THEN sets the title's font, so the monitor drew the
+ * fallback, cached it, found the family already in flight and returned without
+ * asking for a redraw: the paused monitor kept the wrong face until the playhead
+ * moved (2026-10-06). Every first pick while comparing faces hit it.
  */
 export function ensureTitleFace(fontset: FontFaceSet, stack: string, onReady?: () => void): void {
   const f = bundledFontForStack(stack)
-  if (!f || inFlight.has(f.family)) return
+  if (!f || redrawAsked.has(f.family)) return
+  redrawAsked.add(f.family)
+  // loadOne hands back the load already in flight, or the settled one.
   void loadOne(fontset, f).then(() => {
     clearTitleCache()
     onReady?.()
   })
 }
+
+/** Families the preview has already been promised a redraw for (see ensureTitleFace). */
+const redrawAsked = new Set<string>()
 
 /** The registry row for a stored `fontFamily` stack, or undefined for a system stack. */
 export const bundledFontForStack = (stack: string): CustomTitleFont | undefined =>
