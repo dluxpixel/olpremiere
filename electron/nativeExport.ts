@@ -8,7 +8,7 @@ import { app, dialog, type BrowserWindow } from 'electron'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { writeFile, unlink, stat } from 'node:fs/promises'
 import { unlinkSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { constants as osConstants, setPriority, tmpdir } from 'node:os'
 import path from 'node:path'
 import type { NativeCaps, NativeExportConfig, NativeFinishResult, NativeStartResult } from './ipc-types'
 import { buildArgs, containerExt } from './exportArgs'
@@ -135,6 +135,20 @@ export async function start(config: NativeExportConfig, win: BrowserWindow): Pro
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true,
   })
+  // ⛔ BELOW NORMAL PRIORITY. The whole point of Keep working (his ask, 2026-09-28)
+  // is editing while this runs, and at normal priority x264 took every core for
+  // minutes against the preview's decode threads. Windows schedules strictly by
+  // priority, so the preview now wins a core whenever it wants one, and when he
+  // is not touching the app nothing else is ready and the export still gets them
+  // all. Below normal, not the preview copies' idle (proxy.ts): he does want this
+  // file. Best effort; a failure only means the old behaviour.
+  if (ffmpeg.pid !== undefined) {
+    try {
+      setPriority(ffmpeg.pid, osConstants.priority.PRIORITY_BELOW_NORMAL)
+    } catch {
+      // Still correct, just louder.
+    }
+  }
 
   let stderr = ''
   ffmpeg.stderr.on('data', (d) => {

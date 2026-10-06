@@ -10,6 +10,7 @@
 // pouring in and the output cannot be written.
 
 import { mkdtemp, rm } from 'node:fs/promises'
+import * as os from 'node:os'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -24,6 +25,20 @@ vi.mock('electron', () => ({
   },
   dialog: {},
 }))
+
+// The real call, watched: which process it lowered, and a way to make it fail.
+const priority = vi.hoisted(() => ({ calls: [] as [number, number][], fail: false }))
+vi.mock('node:os', async (importOriginal) => {
+  const real = await importOriginal<typeof import('node:os')>()
+  return {
+    ...real,
+    setPriority: (pid: number, value: number) => {
+      priority.calls.push([pid, value])
+      if (priority.fail) throw new Error('access denied')
+      real.setPriority(pid, value)
+    },
+  }
+})
 
 const native = await import('./nativeExport')
 
@@ -84,4 +99,38 @@ describe('ffmpeg progress, read across chunks', () => {
     read('ame=130\r\nprogress=continue\n')
     expect(frames).toEqual([123, 130])
   })
+})
+
+describe('the export runs below normal priority, so the editor stays smooth', () => {
+  const W = 64
+  const H = 64
+  const win = { webContents: { send: () => undefined } } as unknown as Parameters<typeof native.start>[1]
+  const config = (outPath: string) =>
+    ({ width: W, height: H, fps: 30, totalFrames: 3, encoder: 'x264', quality: 18, hasAudio: false, outPath, suggestedName: 'x' }) as const
+
+  beforeEach(() => {
+    priority.calls.length = 0
+    priority.fail = false
+  })
+
+  it('⛔ lowers the real ffmpeg to below normal, and the file is still made', async () => {
+    const started = await native.start(config(join(userData, 'low.mp4')), win)
+    expect(started.started).toBe(true)
+    expect(priority.calls).toHaveLength(1)
+    const [pid, value] = priority.calls[0]
+    expect(value).toBe(os.constants.priority.PRIORITY_BELOW_NORMAL)
+    // Windows really says so for that process. (A test runner that is itself below normal passes
+    // that on to its children, so the call above is the proof; this is the effect.)
+    expect(os.getPriority(pid)).toBe(os.constants.priority.PRIORITY_BELOW_NORMAL)
+    for (let i = 0; i < 3; i++) await native.writeFrame(new Uint8Array(W * H * 4).fill(90).buffer)
+    expect(await native.finish()).toMatchObject({ ok: true })
+  }, 60_000)
+
+  it('a machine that refuses the change still exports', async () => {
+    priority.fail = true
+    const started = await native.start(config(join(userData, 'refused.mp4')), win)
+    expect(started.started).toBe(true)
+    for (let i = 0; i < 3; i++) await native.writeFrame(new Uint8Array(W * H * 4).fill(90).buffer)
+    expect(await native.finish()).toMatchObject({ ok: true })
+  }, 60_000)
 })
