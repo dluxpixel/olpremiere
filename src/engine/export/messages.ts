@@ -26,7 +26,7 @@ export type VideoCodecFamily = 'avc' | 'hevc' | 'av1'
  * high-motion areas (a clean static ground, a shredded moving sky) while flat
  * or all-keyframe content decodes fine, which is why the golden export never
  * caught it. Export must be pixel-CORRECT, not fast; it is already dominated by
- * libx264 -preset veryslow, so software decode costs little. Preview keeps
+ * libx264 at constant quality, so software decode costs little. Preview keeps
  * hardware decode (downscaled) for scrub speed. The two paths may differ
  * because export must be correct. Passed as the CanvasSink `decoderOptions`.
  */

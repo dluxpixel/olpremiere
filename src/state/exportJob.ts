@@ -344,7 +344,7 @@ function fail(id: number, err: unknown): void {
 }
 
 // Desktop: render with the shared pipeline, encode with the bundled ffmpeg
-// (x264 veryslow at constant quality, the best file this app can produce).
+// (x264 slow at constant quality, the best file this app can produce).
 async function runNative(id: number, project: Project, plan: ExportPlan, signal: AbortSignal): Promise<void> {
   const baseName = exportBaseName(project.name)
   const endCritical = beginCriticalWork()

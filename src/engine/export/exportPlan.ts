@@ -60,7 +60,7 @@ export const SD_AUDIO_BITRATE = 192_000
 /** Two seconds is the GOP length every upload platform expects. */
 export const EXPORT_KEYFRAME_S = 2
 
-/** x264 veryslow: the best quality-per-bit of any encoder we bundle. */
+/** x264 at the slow preset (electron/exportArgs.ts says why not veryslow): the best picture we bundle. */
 export const EXPORT_NATIVE_ENCODER: NativeEncoder = 'x264'
 
 /**

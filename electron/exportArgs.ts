@@ -55,21 +55,38 @@ export function containerExt(encoder: NativeEncoder): 'mov' | 'mp4' {
  *
  * The phone screen shape, 1080x2112 (his ask, 2026-10-05), is 8976 macroblocks, just past that
  * edge, so it is x264's choice too. MEASURED on the bundled binary with these exact arguments:
- * level 5.1, 16 reference frames, a level every phone decodes and one that really holds the frame
- * (5.1 allows 36864 macroblocks a frame). src/engine/export/phoneExport.test.ts runs the real
- * encoder and fails if it ever writes anything but 5.0 or 5.1 there.
+ * level 5.1 with 16 reference frames under veryslow, level 5.0 with 5 under slow (2026-10-06),
+ * both levels every phone decodes and both really hold the frame (5.0 and 5.1 allow 22080 and
+ * 36864 macroblocks a frame). src/engine/export/phoneExport.test.ts runs the real encoder and
+ * fails if it ever writes anything but 5.0 or 5.1 there.
  */
 export function x264LevelArgs(width: number, height: number, fps: number): string[] {
   const mbs = Math.ceil(width / 16) * Math.ceil(height / 16)
   return mbs <= 8704 && mbs * fps <= 522240 ? ['-level:v', '4.2'] : []
 }
 
+/**
+ * The x264 preset for his exports: slow, not veryslow.
+ *
+ * His words, 2026-09-28: "the export time is sometimes very long". MEASURED 2026-10-06 with these
+ * exact arguments at crf 14, one change (the preset): on his gym frames slow scored VMAF 99.69
+ * against veryslow's 99.64, and 94.27 against 93.83 after a 3 Mbit/s platform re-encode; on his
+ * Minecraft night frames 95.89 against 95.83, and 81.26 against 80.71 after it. Equal or better on
+ * every score, for 43 to 56 percent less encoder work and about half the encoder wall time, at 1 to
+ * 9 percent bigger files. Re-measured on three generated clips (heavy grain, a 60 fps fractal zoom,
+ * a dark fade): slow's VMAF higher on all three, 21 to 55 percent less CPU, and after a platform
+ * re-encode within plus or minus 0.7 either way. veryslow's extra reference frames and its
+ * exhaustive search buy nothing a viewer of the platform's copy can see. ⛔ Do not go back to veryslow, and do not add aq-mode=3:
+ * measured the same day, +12 to 40 percent bits and LOWER VMAF after the platform re-encode.
+ */
+export const X264_PRESET = 'slow'
+
 export function videoEncoderArgs(config: NativeExportConfig): string[] {
   const q = Math.max(0, Math.min(51, Math.round(config.quality)))
   switch (config.encoder) {
     case 'x264':
       return [
-        '-c:v', 'libx264', '-preset', 'veryslow', '-crf', String(q),
+        '-c:v', 'libx264', '-preset', X264_PRESET, '-crf', String(q),
         ...x264LevelArgs(config.width, config.height, config.fps),
         '-pix_fmt', 'yuv420p',
       ]
@@ -197,8 +214,8 @@ export function keyframeArgs(config: NativeExportConfig): string[] {
  *
  * flags=lanczos+accurate_rnd+full_chroma_inp
  *   accurate_rnd only drops the cheap approximate rounding in the conversion
- *   itself, worth 0.17 dB on the measurement above, and the encoder here is
- *   veryslow so the time is free. The resampler only ever touches CHROMA here
+ *   itself, worth 0.17 dB on the measurement above, and next to the encoder
+ *   the time is free. The resampler only ever touches CHROMA here
  *   (the picture is never resized, so luma is not resampled at all), and it
  *   was bicubic until 2026-10-01. full_chroma_inp makes swscale read every
  *   pixel's colour instead of averaging pairs first, and lanczos then halves
