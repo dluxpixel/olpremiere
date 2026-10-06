@@ -416,6 +416,49 @@ describe('a sound rebuilt while play goes on continues the stretch, on the pictu
     t.pause()
   })
 
+  // PB-9, 2026-10-06: every pass after the first ran the picture ahead of the
+  // sound by its scheduling latency and build time.
+  it('after a loop wrap the picture is exactly on the new sound', async () => {
+    world.t = 5
+    const t = new Transport({
+      getEndS: () => 60,
+      onTick: () => undefined,
+      getLoopRange: () => ({ startS: 0, endS: 1 }),
+      schedule: () => Promise.resolve(Object.assign(() => undefined, { startsAtCtxS: world.t + 0.07 })),
+    })
+    await t.play(0)
+    world.t = 6.1 // past the loop's end: this frame wraps
+    runFrame()
+    await Promise.resolve()
+    await Promise.resolve()
+    const startsAt = 6.1 + 0.07
+    world.t = startsAt
+    expect(t.currentTime()).toBeCloseTo(0, 6)
+    world.t = startsAt + 0.5
+    expect(t.currentTime()).toBeCloseTo(0.5, 6)
+    t.pause()
+  })
+
+  it('a looped shuttle stays silent after the wrap', async () => {
+    world.t = 5
+    let builds = 0
+    const t = new Transport({
+      getEndS: () => 60,
+      onTick: () => undefined,
+      getLoopRange: () => ({ startS: 0, endS: 1 }),
+      schedule: () => {
+        builds += 1
+        return Promise.resolve(Object.assign(() => undefined, { startsAtCtxS: world.t + 0.02 }))
+      },
+    })
+    await t.play(0, 2)
+    world.t = 5.6 // two times speed: past the end of the loop
+    runFrame()
+    await Promise.resolve()
+    expect(builds).toBe(0)
+    t.pause()
+  })
+
   it('running off the end of the edit says so, and a Space pause does not', async () => {
     world.t = 5
     const events: Ev[] = []

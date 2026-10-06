@@ -321,19 +321,32 @@ export class Transport {
       if (rate > 0 && t >= stopAt) {
         if (loopRange) {
           // Re-anchor and swap the audio in place (no pause/play state churn,
-          // the rAF loop never dies). Audio rejoins a scheduling-latency later;
-          // video restarts on this very frame.
+          // the rAF loop never dies).
+          //
+          // ⛔ ON THE SOUND, NOT ON THIS FRAME (PB-9, 2026-10-06). The new
+          // sound starts a scheduling latency plus its build time from now, and
+          // the picture used to restart on this very frame, so every pass after
+          // the first ran 50 ms and more AHEAD of the sound: the error MIC-4
+          // removed from every other rebuild, left in the one place the loop
+          // exists for, timing captions to the beat. So the picture holds the
+          // first loop frame until the predicted start, and adoptAudio puts it
+          // exactly on the sound when it lands.
           const fromS = Math.max(0, Math.min(loopRange.startS, stopAt))
+          const calledAt = this.readClock()
           this.lastT = fromS
           this.startS = fromS
-          this.anchor = this.readClock()
+          this.anchor = rate === 1 ? calledAt + SCHEDULE_LATENCY_S + this.rebuildS : calledAt
           // The pass he was hearing ends at the wrap, sound or picture alone.
           this.endHeard()
           const claim = this.claimAudio()
-          void this.opts
-            .schedule(fromS)
-            .then((stop) => this.adoptAudio(claim, stop, fromS))
-            .catch(() => undefined)
+          // A shuttle is silent, looped or not: a sound at normal speed under a
+          // 2x picture is not his edit.
+          if (rate === 1) {
+            void this.opts
+              .schedule(fromS)
+              .then((stop) => this.adoptAudio(claim, stop, fromS, calledAt, false))
+              .catch(() => undefined)
+          }
           this.opts.onTick(fromS)
           if (token !== this.playToken) return
           this.rafId = requestAnimationFrame(loop)
@@ -392,7 +405,13 @@ export class Transport {
    * lands mid-play (a late join, a loop wrap, a mix change) is a new stretch he
    * hears, from `fromS` at the time its sound was scheduled for.
    */
-  private adoptAudio(claim: number, stop: StopAudio, fromS: number, rebuiltAt?: number): void {
+  private adoptAudio(
+    claim: number,
+    stop: StopAudio,
+    fromS: number,
+    rebuiltAt?: number,
+    continues = rebuiltAt !== undefined,
+  ): void {
     if (claim !== this.audioToken) {
       stop()
       return
@@ -402,9 +421,10 @@ export class Transport {
     const ctx = this.contextOrNull()
     if (!ctx || !(ctx.currentTime > 0)) return
     const startsAt = stop.startsAtCtxS ?? ctx.currentTime + SCHEDULE_LATENCY_S
-    const rebuilt = rebuiltAt !== undefined
-    if (rebuilt) this.followSound(ctx, startsAt, fromS, rebuiltAt)
-    this.openHeard({ timelineS: fromS, heardAtMs: heardAtMsOf(ctx, startsAt), sound: true, ctxS: startsAt, continues: rebuilt })
+    // Asked for mid-play: put the picture on the sound. A loop wrap does this
+    // too, but is a NEW pass for a take, not a continuation (`continues`).
+    if (rebuiltAt !== undefined) this.followSound(ctx, startsAt, fromS, rebuiltAt)
+    this.openHeard({ timelineS: fromS, heardAtMs: heardAtMsOf(ctx, startsAt), sound: true, ctxS: startsAt, continues })
   }
 
   /**
