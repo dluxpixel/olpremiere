@@ -1,0 +1,160 @@
+// The frame cache's RUNTIME, with mediabunny faked: a decoder whose reads take a
+// tick and are cancelled the way the real one cancels them when its Input is
+// disposed (InputDisposedError). The pure helpers are pinned in
+// frameCache.test.ts; this file is for the pump, the reopen when a preview copy
+// lands, and withFullQuality, which is where PB-2 and PB-4 lived.
+
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type { MediaAsset } from './types'
+
+interface FakeBlob {
+  size: number
+  name: 'orig' | 'copy'
+}
+
+const h = vi.hoisted(() => ({
+  copyReady: false,
+  inputs: [] as Array<{ disposed: boolean; name: string }>,
+}))
+
+vi.mock('mediabunny', () => {
+  class InputDisposedError extends Error {}
+  class BlobSource {
+    constructor(readonly blob: FakeBlob) {}
+  }
+  class Input {
+    disposed = false
+    readonly name: string
+    constructor(opts: { source: BlobSource }) {
+      this.name = opts.source.blob.name
+      h.inputs.push(this)
+    }
+    dispose(): void {
+      this.disposed = true
+    }
+    async getPrimaryVideoTrack(): Promise<{ input: Input }> {
+      await new Promise((r) => setTimeout(r, 1))
+      return { input: this }
+    }
+  }
+  class CanvasSink {
+    constructor(readonly track: { input: Input }) {}
+    async *canvases(startS: number): AsyncGenerator<{ canvas: object; timestamp: number }, void, unknown> {
+      const input = this.track.input
+      let i = Math.floor(startS * 30)
+      for (;;) {
+        // A read takes a moment, and a dispose while it is in the air cancels it.
+        await new Promise((r) => setTimeout(r, 2))
+        if (input.disposed) throw new InputDisposedError('disposed')
+        if (i >= 300) return
+        yield { canvas: { width: 64, height: 36, tag: `${input.name}:${i}` }, timestamp: i / 30 }
+        i++
+      }
+    }
+  }
+  return { ALL_FORMATS: [], BlobSource, CanvasSink, Input, InputDisposedError }
+})
+vi.mock('../state/persistence', () => ({
+  getBlob: async (key: string): Promise<FakeBlob | null> =>
+    key.startsWith('proxy:') ? (h.copyReady ? { size: 50, name: 'copy' } : null) : { size: 100, name: 'orig' },
+}))
+vi.mock('./proxyMedia', () => ({
+  hasProxy: () => h.copyReady,
+  proxyKeyFor: (id: string) => `proxy:${id}`,
+  bumpProxyPriority: () => undefined,
+}))
+vi.mock('./memoryBudget', () => ({ budgets: () => ({ frames: 1e9 }) }))
+
+const fc = await import('./frameCache')
+
+let n = 0
+const asset = (): MediaAsset => ({
+  id: `v${++n}`,
+  name: 'clip',
+  kind: 'video',
+  blobKey: `asset/v${n}`,
+  durationS: 10,
+  width: 64,
+  height: 36,
+  fps: 30,
+  hasAudio: false,
+  hasVideo: true,
+})
+
+const tick = (ms = 1): Promise<void> => new Promise((r) => setTimeout(r, ms))
+
+async function until(ok: () => boolean, ms = 2000): Promise<void> {
+  const end = Date.now() + ms
+  while (!ok()) {
+    if (Date.now() > end) throw new Error('timed out')
+    await tick()
+  }
+}
+
+/** Ask for a frame the way the monitor does: every frame until it is there. */
+async function frameOf(a: MediaAsset, tS: number): Promise<{ tag: string }> {
+  let got: unknown = null
+  await until(() => (got = fc.getFrameAt(a, tS)) !== null)
+  return got as { tag: string }
+}
+
+beforeEach(() => {
+  h.copyReady = false
+  h.inputs.length = 0
+})
+
+describe('PB-2: a reopen never breaks the decode that is running', () => {
+  it('a preview copy landing mid-decode does not switch exact frames off', async () => {
+    const a = asset()
+    expect(fc.getFrameAt(a, 10 / 30)).toBeNull()
+    await until(() => fc.frameCacheStats().decodingNow === 1)
+    h.copyReady = true
+    fc.getFrameAt(a, 12 / 30)
+    expect((await frameOf(a, 10 / 30)).tag).toMatch(/:10$/)
+    expect(fc.frameCacheStats().failed).toBe(0)
+    // And it did move onto the copy for what came after.
+    expect((await frameOf(a, 40 / 30)).tag).toBe('copy:40')
+    fc.evictAsset(a.id)
+  })
+
+  it('a screenshot pressed mid-decode does not switch exact frames off', async () => {
+    const a = asset()
+    h.copyReady = true
+    expect(fc.getFrameAt(a, 10 / 30)).toBeNull()
+    await until(() => fc.frameCacheStats().decodingNow === 1)
+    await fc.withFullQuality(async () => undefined)
+    expect((await frameOf(a, 10 / 30)).tag).toMatch(/:10$/)
+    expect(fc.frameCacheStats().failed).toBe(0)
+    fc.evictAsset(a.id)
+  })
+
+  it('leaves no decoder open that nothing counts', async () => {
+    const a = asset()
+    fc.getFrameAt(a, 5 / 30)
+    // The copy lands while the first open is still in flight.
+    h.copyReady = true
+    fc.getFrameAt(a, 6 / 30)
+    await frameOf(a, 5 / 30)
+    // Let that pump finish, so the next frame starts a fresh one.
+    await until(() => fc.frameCacheStats().pumping === 0)
+    await frameOf(a, 80 / 30)
+    await until(() => fc.frameCacheStats().pumping === 0)
+    const live = h.inputs.filter((i) => !i.disposed).length
+    expect(live).toBeLessThanOrEqual(fc.frameCacheStats().openDecoders)
+    fc.evictAsset(a.id)
+    await tick(5)
+    expect(h.inputs.filter((i) => !i.disposed)).toHaveLength(0)
+  })
+})
+
+describe('PB-4: a still is made from his footage, not the preview copy', () => {
+  it('a frame already cached from the copy is decoded again from the original', async () => {
+    const a = asset()
+    h.copyReady = true
+    expect((await frameOf(a, 10 / 30)).tag).toBe('copy:10')
+    const still = await fc.withFullQuality(() => frameOf(a, 10 / 30))
+    expect(still.tag).toBe('orig:10')
+    expect(fc.frameCacheStats().failed).toBe(0)
+    fc.evictAsset(a.id)
+  })
+})
