@@ -14,10 +14,13 @@ import {
   applyEffect,
   deleteEffect,
   rampEffect,
+  removeKeyframes,
   reorderEffect,
   resetAllEffectParams,
   setAllEffectsEnabled,
+  setChannel,
   setEffectParamValue,
+  toggleChannelAnimation,
   toggleEffectEnabled,
 } from './clipEdits'
 import { updateActiveSequence, useStore } from './store'
@@ -216,5 +219,26 @@ describe('resetAllEffectParams', () => {
     expect(clipById(id).effects[0].params['blur']).toEqual(blurDefault)
     // Still three effects: reset is not remove.
     expect(clipById(id).effects).toHaveLength(3)
+  })
+})
+
+// MEASURED 2026-10-06: Gaussian Blur at Radius 0, stopwatch on, Radius 20 later
+// on, then both diamonds picked on the Blur lane and Delete: the whole Blur card
+// went, because the radius fell back to 0 and a neutral effect was tidied away.
+describe('deleting every keyframe on an effect lane', () => {
+  it('takes the keyframes off and leaves the effect on the clip', () => {
+    const clip = seedClip()
+    applyEffect(clip.id, 'gaussianBlur')
+    useStore.getState().setUI({ playheadS: 0 })
+    toggleChannelAnimation(clip.id, 'blur')
+    useStore.getState().setUI({ playheadS: 2 })
+    setChannel(clip.id, 'blur', 20)
+    removeKeyframes(clip.id, [
+      { channel: 'blur', t: 0 },
+      { channel: 'blur', t: 2 },
+    ])
+    const fx = clipById(clip.id).effects
+    expect(fx.map((e) => e.type)).toEqual(['gaussianBlur'])
+    expect(fx[0]!.params.blur).toBe(0)
   })
 })
