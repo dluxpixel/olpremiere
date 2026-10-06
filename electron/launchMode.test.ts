@@ -2,7 +2,7 @@
 // other start keeps the card and the melon. See ./launchMode.
 
 import { describe, expect, it } from 'vitest'
-import { appliedWhileAway, launchMode, parseQuietMarker, QUIET_MARKER_MAX_AGE_MS } from './launchMode'
+import { appliedWhileAway, launchMode, parseQuietMarker, QUIET_MARKER_MAX_AGE_MS, secondInstanceAction } from './launchMode'
 import { IDLE_APPLY_S } from './updateApply'
 
 const NOW = 1_800_000_000_000
@@ -46,5 +46,20 @@ describe('parseQuietMarker', () => {
 
   it('treats anything odd as no marker', () => {
     for (const odd of [null, '', 'garbage', '{}', '{"at":"soon"}', '[1]', 'null']) expect(parseQuietMarker(odd)).toBeNull()
+  })
+})
+
+describe('secondInstanceAction', () => {
+  it('a click while the app is open brings it to the front', () => {
+    expect(secondInstanceAction({ hasWindow: true, quittingToInstall: false })).toBe('focus')
+    expect(secondInstanceAction({ hasWindow: true, quittingToInstall: true })).toBe('focus')
+  })
+
+  it('⛔ a click in the moment after he closed it with an update waiting opens the new version', () => {
+    expect(secondInstanceAction({ hasWindow: false, quittingToInstall: true })).toBe('install-and-open')
+  })
+
+  it('a click with no window for any other reason is left alone', () => {
+    expect(secondInstanceAction({ hasWindow: false, quittingToInstall: false })).toBe('ignore')
   })
 })

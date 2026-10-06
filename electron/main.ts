@@ -51,7 +51,7 @@ import * as proxy from './proxy'
 import * as mediaStore from './mediaStore'
 import * as remux from './remux'
 import { CRASH_LOG_NAME, crashLogLine, crashPlan } from './crashPlan'
-import { appliedWhileAway, launchMode, parseQuietMarker, QUIET_START_FILE } from './launchMode'
+import { appliedWhileAway, launchMode, parseQuietMarker, QUIET_START_FILE, secondInstanceAction } from './launchMode'
 import { centreIn, readWindowState, restoreBounds, WINDOW_STATE_FILE, writeWindowState, type Placement } from './windowState'
 import { fileQuietStore, startUpdateFlow, type UpdateFlow } from './updateFlow'
 import { appendUpdateLog, UPDATE_LOG_NAME } from './updateLog'
@@ -138,6 +138,10 @@ const INSTALL_FLUSH_MS = 1500
 const INSTALL_CLOSE_TIMEOUT_MS = 5000
 /** Set on before-quit, so a page ending because the app is ending is not mistaken for a crash. */
 let quitting = false
+/** Closed with an update waiting: the settle before the installer is running (window-all-closed). */
+let quittingToInstall = false
+/** His click on the icon during that settle: the installer should open the new version after. */
+let openAfterInstall = false
 
 // --- A page that dies under him (./crashPlan) ---------------------------------
 /** When the editor's page died before, so a page that keeps dying stops reloading. */
@@ -713,7 +717,10 @@ function createWindow(): void {
 
 app.on('second-instance', () => {
   const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed())
-  if (!win) return
+  const action = secondInstanceAction({ hasWindow: !!win, quittingToInstall })
+  // See ./launchMode: the settle still runs in full, it only ends in a relaunch.
+  if (action === 'install-and-open') openAfterInstall = true
+  if (action !== 'focus' || !win) return
   if (win.isMinimized()) win.restore()
   win.focus()
 })
@@ -1163,7 +1170,10 @@ app.on('window-all-closed', () => {
   // is already gone here, so waiting the same beat before quitting means the
   // installer starts on an engine that has finished writing.
   if (updateStatus.kind === 'downloaded' && app.isPackaged && !IS_LAB) {
-    setTimeout(() => app.quit(), INSTALL_FLUSH_MS)
+    quittingToInstall = true
+    // His click on the icon in the meantime means "open it again": install the same
+    // way, silently, and start the new version after.
+    setTimeout(() => (openAfterInstall ? autoUpdater.quitAndInstall(true, true) : app.quit()), INSTALL_FLUSH_MS)
     return
   }
   app.quit()

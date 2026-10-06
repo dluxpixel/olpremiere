@@ -52,3 +52,26 @@ export function parseQuietMarker(text: string | null): number | null {
     return null
   }
 }
+
+/**
+ * What a click on the app's icon does while this copy is running, and the click has
+ * been handed to it (the single instance lock).
+ *
+ * ⛔ CLOSING WITH AN UPDATE WAITING, THEN OPENING AGAIN, DID NOTHING, 2026-10-06. With
+ * an update downloaded, closing keeps this copy alive a moment with no window (the
+ * settle before the installer, see window-all-closed in main), still holding the lock.
+ * A click in that moment was handed here, found no window, and was dropped; then the
+ * app installed itself silently and did not come back. About two releases a day makes
+ * closing with an update waiting the usual case. Now that click asks for the new
+ * version to open once it is installed.
+ */
+export function secondInstanceAction({
+  hasWindow,
+  quittingToInstall,
+}: {
+  hasWindow: boolean
+  quittingToInstall: boolean
+}): 'focus' | 'install-and-open' | 'ignore' {
+  if (hasWindow) return 'focus'
+  return quittingToInstall ? 'install-and-open' : 'ignore'
+}
