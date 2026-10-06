@@ -20,6 +20,7 @@ import type { AudioMixPlan } from './audioRender'
 const h = vi.hoisted(() => ({
   api: undefined as unknown,
   audioPlan: null as unknown,
+  audioOpts: [] as unknown[],
 }))
 
 vi.mock('../../platform', () => ({
@@ -32,7 +33,10 @@ vi.mock('../../state/mediaMirror', () => ({
   blobForExport: () => Promise.resolve(new Blob([new Uint8Array(8)])),
 }))
 vi.mock('./audioRender', () => ({
-  planAudioMix: () => Promise.resolve(h.audioPlan),
+  planAudioMix: (...args: unknown[]) => {
+    h.audioOpts.push(args[5])
+    return Promise.resolve(h.audioPlan)
+  },
 }))
 
 const { exportNative, buildWavF32 } = await import('./nativeExport')
@@ -143,6 +147,7 @@ beforeEach(() => {
   main = fakeMain()
   h.api = main.api
   h.audioPlan = null
+  h.audioOpts.length = 0
   progress = []
   vi.stubGlobal('Worker', FakeWorker)
 })
@@ -292,5 +297,19 @@ describe('the sound', () => {
     expect(main.starts[0].hasAudio).toBe(true)
     const dv = new DataView(main.wavs[0])
     expect([0, 1, 2, 3].map((i) => dv.getFloat32(44 + i * 4, true))).toEqual([0.25, -0.25, 0.5, -0.5])
+  })
+})
+
+describe('a timeline above 60 fps', () => {
+  it('⛔ plans the sound at the rate the picture is made at, not the timeline rate', async () => {
+    const p = project()
+    activeSequence(p).fps = 240
+    const settings = planExport(activeSequence(p)).settings
+    expect(settings.fps).toBe(60)
+    exportNative(p, settings, { encoder: 'x264', quality: 14, suggestedName: 'x.mp4' }, () => undefined, new AbortController().signal).catch(
+      () => undefined,
+    )
+    await flush()
+    expect(h.audioOpts[0]).toMatchObject({ fps: 60 })
   })
 })

@@ -6,6 +6,7 @@ import {
   EXPORT_KEYFRAME_S,
   EXPORT_QP,
   SD_AUDIO_BITRATE,
+  exportFps,
   exportRaster,
   planExport,
 } from './exportPlan'
@@ -180,5 +181,22 @@ describe('planExport', () => {
     expect(p.settings.audioBitrate).toBe(EXPORT_AUDIO_BITRATE)
     expect(p.settings.videoBitrate).toBeGreaterThan(0)
     expect(p.nativeEncoder).toBe('x264')
+  })
+})
+
+describe('a timeline above 60 fps exports at 60 or just under', () => {
+  // TikTok, Reels and YouTube play 60 at most. A timeline that took its rate from an iPhone slow
+  // motion clip rendered, piped and encoded four times the frames anyone would see.
+  it('takes every k-th frame: 240 and 120 to 60, 119.88 to 59.94, 100 to 50, 90 to 45', () => {
+    expect(exportFps(240)).toBe(60)
+    expect(exportFps(120)).toBe(60)
+    expect(exportFps(119.88)).toBeCloseTo(59.94, 10)
+    expect(exportFps(100)).toBe(50)
+    expect(exportFps(90)).toBe(45)
+    expect(planExport(seq({ fps: 240 })).settings.fps).toBe(60)
+  })
+
+  it('leaves 60 and below exactly as they are', () => {
+    for (const fps of [23.976, 24, 25, 29.97, 30, 50, 59.94, 60]) expect(exportFps(fps)).toBe(fps)
   })
 })

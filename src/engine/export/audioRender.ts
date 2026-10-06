@@ -96,6 +96,12 @@ export interface AudioMixOptions {
    * unless he switched "Platform loudness" off for this video.
    */
   loudnessTargetLufs?: number | null
+  /**
+   * The rate the picture is exported at, when it is not the timeline's own
+   * (exportPlan.ts exportFps caps it at 60). The sound's length is counted in
+   * those frames, so the two end together.
+   */
+  fps?: number
 }
 
 export async function planAudioMix(
@@ -190,7 +196,7 @@ export async function planAudioMix(
     onPartialAudio?.([...new Set(failed.map((c) => c.asset.name))])
   }
 
-  const totalFrames = audioFramesFor(rangeS, seq.fps, EXPORT_SAMPLE_RATE)
+  const totalFrames = audioFramesFor(rangeS, opts.fps ?? seq.fps, EXPORT_SAMPLE_RATE)
 
   // Auto-level's compressor delays its track by AUTO_LEVEL_LATENCY_S; every
   // other track is scheduled that much later to match (trackLateS), and the

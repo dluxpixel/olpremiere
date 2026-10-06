@@ -163,7 +163,7 @@ vi.mock('../audio', async () => {
     clipEdges: () => undefined,
   }
 })
-const { planAudioMix, AUDIO_SEGMENT_FRAMES } = await import('./audioRender')
+const { planAudioMix, AUDIO_SEGMENT_FRAMES, audioFramesFor } = await import('./audioRender')
 
 // --- the timeline --------------------------------------------------------------
 
@@ -324,5 +324,16 @@ describe('Platform loudness', () => {
     for (const v of joined[0]) peak = Math.max(peak, Math.abs(v))
     expect(peak).toBeLessThanOrEqual(LIMIT_CEILING)
     expect(measureLoudness(joined, SR).lufs!).toBeCloseTo(-14, 0)
+  })
+})
+
+describe('the sound is as long as the picture at the rate the file is made at', () => {
+  it('⛔ a 240 fps timeline exported at 60 has sound the length of the 60 fps video, to the sample', async () => {
+    const a = source('slowmo', click())
+    const seq = { ...sequence([track('t', [clip('slowmo', 0, 0.1)])], 2), fps: 240 } as Sequence
+    // 1.01 s: 61 frames at 60 (1.01667 s), but 243 at 240 (1.0125 s). The video is made at 60.
+    const plan = await planAudioMix(seq, { slowmo: a }, 0, 1.01, undefined, { fps: 60 })
+    expect(plan!.info.totalFrames).toBe(audioFramesFor(1.01, 60, SR))
+    expect(Math.abs(plan!.info.totalFrames - (61 / 60) * SR)).toBeLessThanOrEqual(1)
   })
 })

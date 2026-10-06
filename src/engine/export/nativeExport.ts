@@ -114,7 +114,8 @@ export async function exportNative(
           `No sound from ${names.length === 1 ? names[0] : `${names.length} clips`}. The rest of the audio exported.`,
           'danger',
         ),
-    { loudnessTargetLufs: settings.loudnessTargetLufs ?? null },
+    // The export's own rate, which may be below the timeline's (exportFps).
+    { loudnessTargetLufs: settings.loudnessTargetLufs ?? null, fps: settings.fps },
   )
   let hasAudio = false
   if (plan && plan.info.totalFrames > 0) {
