@@ -1,11 +1,11 @@
 /**
  * @vitest-environment jsdom
  */
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { activeSequence, audioTracks, newProject, videoTracks, type Sequence } from '../engine/types'
-import { useStore } from '../state/store'
+import { updateActiveSequence, useStore } from '../state/store'
 import { HEADERS_W, PHONE_HEADERS_W } from './timelineGeometry'
 import { TimelineTrackHeaders } from './TimelineTrackHeaders'
 
@@ -57,5 +57,36 @@ describe('TimelineTrackHeaders', () => {
     renderHeaders(false, lanes)
     fireEvent.wheel(screen.getByTestId('track-headers'), { deltaY: 30 })
     expect(lanes.scrollTop).toBe(30)
+  })
+})
+
+// On V1 the speaker said Mute and the picture vanished from the monitor and the
+// export; Solo on V1 silenced the whole edit, since a linked picture makes no
+// sound of its own.
+describe('a video line hides, an audio line mutes', () => {
+  const header = (name: string) => within(screen.getByTestId(`track-header-${name}`))
+
+  it('a video header says Hide track and has no Solo; an audio header has both', () => {
+    renderHeaders()
+    expect(header('V1').getByRole('button', { name: 'Hide track' })).toBeTruthy()
+    expect(header('V1').queryByRole('button', { name: 'Mute track' })).toBeNull()
+    expect(header('V1').queryByRole('button', { name: 'Solo track' })).toBeNull()
+    expect(header('A1').getByRole('button', { name: 'Mute track' })).toBeTruthy()
+    expect(header('A1').getByRole('button', { name: 'Solo track' })).toBeTruthy()
+  })
+
+  it('Hide hides, then the same button says Show', async () => {
+    renderHeaders()
+    await userEvent.setup().click(header('V1').getByRole('button', { name: 'Hide track' }))
+    expect(videoTracks(seq())[0].muted).toBe(true)
+    cleanup()
+    renderHeaders()
+    expect(header('V1').getByRole('button', { name: 'Show track' })).toBeTruthy()
+  })
+
+  it('a video line already soloed keeps its Solo button, so he can turn it off', () => {
+    updateActiveSequence('seed', (sq) => ({ ...sq, tracks: sq.tracks.map((t, i) => (i === 0 ? { ...t, solo: true } : t)) }))
+    renderHeaders()
+    expect(header('V1').getByRole('button', { name: 'Unsolo track' })).toBeTruthy()
   })
 })
