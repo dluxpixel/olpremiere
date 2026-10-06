@@ -27,6 +27,11 @@ vi.mock('./mediaMirror', () => ({
   },
 }))
 
+// The import's preparation, as it treats an ordinary file: unchanged.
+vi.mock('./mediaActions', () => ({
+  prepareSource: async (f: File) => ({ ok: true, source: f, probe: {}, masterFailed: false }),
+}))
+
 const { matchFilesToMissing, missingMedia, relink, relinkSummary } = await import('./relinkMedia')
 
 const file = (name: string, bytes = 8): File => new File([new Uint8Array(bytes)], name)
@@ -173,5 +178,50 @@ describe('what he reads', () => {
     expect(s).toContain('Put 1 file back')
     expect(s).toContain('Still missing 1')
     expect(s).toContain('1 did not match')
+  })
+})
+
+// ⛔ His OBS capture was imported as `<stem>.mp4`. Picking the original .mkv
+// matches by name without the extension, and used to go under the key as it
+// was: a clip Chromium cannot play, announced as put back.
+describe('a file put back is what the import would have stored', () => {
+  const converted = new File([new Uint8Array(4)], '2026-09-20 21-14-03.mp4', { type: 'video/mp4' })
+
+  it('stores and mirrors the converted file, not the original .mkv', async () => {
+    const mkv = file('2026-09-20 21-14-03.mkv')
+    const steps: string[] = []
+    const { done, unusable } = await relink([{ asset: asset('obs', '2026-09-20 21-14-03.mp4'), file: mkv }], {
+      prepare: async (f, onStep) => {
+        onStep('Converting', 0.5)
+        return f === mkv ? { ok: true, source: converted, probe: {} as never, masterFailed: false } : { ok: false, why: 'convert-failed' }
+      },
+      onFile: (name, step) => steps.push(`${name}:${step}`),
+    })
+    expect(done).toBe(1)
+    expect(unusable).toEqual([])
+    expect(store.get('asset/obs')).toBe(converted)
+    expect(mirrored.get('obs')).toBe(converted)
+    expect(steps).toContain('2026-09-20 21-14-03.mkv:Converting')
+  })
+
+  it('puts back nothing for a file that cannot be converted, and names it', async () => {
+    const { done, unusable } = await relink([{ asset: asset('obs', 'capture.mp4'), file: file('capture.mkv') }], {
+      prepare: async () => ({ ok: false, why: 'convert-failed' }),
+    })
+    expect(done).toBe(0)
+    expect(unusable).toEqual(['capture.mp4'])
+    expect(store.has('asset/obs')).toBe(false)
+    expect(mirrored.has('obs')).toBe(false)
+  })
+
+  it('puts back nothing for a file the browser cannot open at all', async () => {
+    const { done, unusable } = await relink([{ asset: asset('x', 'clip.mp4'), file: file('clip.mov') }], {
+      prepare: async () => {
+        throw new Error('decode failed')
+      },
+    })
+    expect(done).toBe(0)
+    expect(unusable).toEqual(['clip.mp4'])
+    expect(store.has('asset/x')).toBe(false)
   })
 })

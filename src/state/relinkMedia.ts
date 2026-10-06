@@ -13,6 +13,7 @@
 // thing that moves is what `getBlob` answers with.
 
 import type { MediaAsset, Project } from '../engine/types'
+import type { PreparedSource } from './mediaActions'
 import { mirrorAsset } from './mediaMirror'
 import { getBlob, putBlob } from './persistence'
 
@@ -90,6 +91,12 @@ export function matchFilesToMissing(missing: readonly MissingAsset[], files: rea
   return { matched, stillMissing, unused: pool }
 }
 
+/** The import's own preparation of a file (mediaActions.ts), passed in so a test can stand in for it. */
+export type PrepareFile = (file: File, onStep: (step: string, frac: number) => void) => Promise<PreparedSource>
+
+const importsPreparation: PrepareFile = (file, onStep) =>
+  import('./mediaActions').then((m) => m.prepareSource(file, onStep))
+
 /**
  * Write the matched files back under the keys the document already points at.
  *
@@ -97,13 +104,40 @@ export function matchFilesToMissing(missing: readonly MissingAsset[], files: rea
  * re-measured: a mismatch between the file's real duration and the one the clip
  * was cut against is HIS to see and judge, and silently retiming forty four cuts
  * to fit a file he picked would be the worst thing this could do.
+ *
+ * ⛔ BUT THE BYTES ARE WHAT THE IMPORT WOULD HAVE STORED. His OBS capture
+ * `2026-09-20 21-14-03.mkv` was imported as `2026-09-20 21-14-03.mp4`, and an
+ * HDR iPhone clip as its SDR master. Picking the original matches by name
+ * without the extension, and the raw .mkv went under the key as it was: a clip
+ * Chromium cannot play, announced as put back. So each file goes through the
+ * import's own conversion first, and one that cannot be converted or opened is
+ * NOT put back, and is named in `unusable`.
  */
-export async function relink(matches: readonly Match[]): Promise<{ done: number; failed: string[] }> {
+export async function relink(
+  matches: readonly Match[],
+  opts: { prepare?: PrepareFile; onFile?: (name: string, step: string) => void } = {},
+): Promise<{ done: number; failed: string[]; unusable: string[] }> {
+  const prepare = opts.prepare ?? importsPreparation
   let done = 0
   const failed: string[] = []
+  const unusable: string[] = []
   for (const m of matches) {
+    let bytes: File
     try {
-      await putBlob(m.asset.blobKey, m.file)
+      opts.onFile?.(m.file.name, '')
+      const prepared = await prepare(m.file, (step) => opts.onFile?.(m.file.name, step))
+      if (!prepared.ok) {
+        unusable.push(m.asset.name)
+        continue
+      }
+      bytes = prepared.source
+    } catch (err) {
+      console.warn('OL Premiere: could not open', m.file.name, err)
+      unusable.push(m.asset.name)
+      continue
+    }
+    try {
+      await putBlob(m.asset.blobKey, bytes)
       // ⛔ AND ON TO THE DISK, IN THE SAME BREATH.
       //
       // HIS WORDS, 2026-08-23, after the fourth blank app of the day: *"it still
@@ -121,13 +155,13 @@ export async function relink(matches: readonly Match[]): Promise<{ done: number;
       // Never awaited for correctness and never throws: a mirror that fails costs
       // him the safety net, and a mirror that failed the RELINK would cost him
       // the repair itself, which is the thing he just did the work for.
-      void mirrorAsset(m.asset.id, m.file).catch(() => undefined)
+      void mirrorAsset(m.asset.id, bytes).catch(() => undefined)
       done += 1
     } catch {
       failed.push(m.asset.name)
     }
   }
-  return { done, failed }
+  return { done, failed, unusable }
 }
 
 /** The sentence he reads. Kept here so the wording is tested with the matching. */
