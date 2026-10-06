@@ -5,6 +5,7 @@
 // timeline, and refusing to delete a piece that did not cut cleanly at both ends.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { timelineWords } from '../engine/captions/transcribe'
 import { recomputeDuration } from '../engine/timeline'
 import { activeSequence, newProject, type Clip, type MediaAsset, type Sequence } from '../engine/types'
 import { updateActiveSequence, useStore } from './store'
@@ -17,6 +18,15 @@ const words = vi.fn()
 vi.mock('./transcribeActions', () => ({
   wordsForClip: (...a: unknown[]) => words(...a),
 }))
+
+// ⛔ THE FAKE ANSWERS IN THE REAL DOOR'S CLOCK. wordsForClip hands back TIMELINE
+// seconds (it ends in timelineWords), and the old fake handed back source
+// seconds for a clip at 0:00, the one case where the two agree. That hid a cutter
+// that ate his words on every clip placed later for seven weeks. `said` is what
+// he said, in seconds into the clip's source span, the way Whisper heard it.
+function heard(said: { text: string; startS: number; endS: number }[]) {
+  words.mockImplementation(async (clip: Clip) => timelineWords(said, clip))
+}
 
 const seq = (): Sequence => activeSequence(useStore.getState().project)
 const clips = (): Clip[] => seq().tracks.flatMap((t) => t.clips)
@@ -69,6 +79,28 @@ function seedClip(over: Partial<Clip> = {}): Clip {
   return clip
 }
 
+/** Each clip's source span, in order, to within float noise. */
+function expectSpans(cs: Clip[], want: [number, number][]): void {
+  expect(cs).toHaveLength(want.length)
+  cs.forEach((c, i) => {
+    expect(c.inS).toBeCloseTo(want[i][0], 4)
+    expect(c.outS).toBeCloseTo(want[i][1], 4)
+  })
+}
+
+/** A phone clip of him talking: picture on V1, its sound on A1, linked. */
+function seedPair(o: { videoOutS?: number } = {}): void {
+  const base = seedClip()
+  const v: Clip = { ...base, id: 'V', linkId: 'L', outS: o.videoOutS ?? 12 }
+  const a: Clip = { ...base, id: 'A', linkId: 'L' }
+  updateActiveSequence('pair', (sq) =>
+    recomputeDuration({
+      ...sq,
+      tracks: sq.tracks.map((t, i) => (i === 0 ? { ...t, clips: [v] } : i === 2 ? { ...t, clips: [a] } : t)),
+    }),
+  )
+}
+
 beforeEach(() => {
   show.mockClear()
   words.mockReset()
@@ -80,7 +112,7 @@ describe('cutQuietParts', () => {
     const { cutQuietParts } = await import('./silenceActions')
     seedClip()
     // Speech 0-2 and 8-12, so 2-8 is quiet, and the head/tail have speech in them.
-    words.mockResolvedValue([
+    heard([
       { text: 'a', startS: 0, endS: 2 },
       { text: 'b', startS: 8, endS: 12 },
     ])
@@ -100,7 +132,7 @@ describe('cutQuietParts', () => {
   it('maps source seconds onto the timeline through the clip speed', async () => {
     const { cutQuietParts } = await import('./silenceActions')
     seedClip({ speed: 2 })
-    words.mockResolvedValue([
+    heard([
       { text: 'a', startS: 0, endS: 2 },
       { text: 'b', startS: 8, endS: 12 },
     ])
@@ -112,10 +144,135 @@ describe('cutQuietParts', () => {
     expect(clips()[1].startS).toBeCloseTo(1, 4)
   })
 
+  // ⛔ HIS NORMAL CASE, and the one the old fake could not see: a kept take lands
+  // where he performed it, never at 0:00. The cuts used to land a clip start late,
+  // so the head cut ate his first sentence.
+  it('keeps every word on a clip that does not start at 0:00', async () => {
+    const { cutQuietParts } = await import('./silenceActions')
+    seedClip({ startS: 3.2 })
+    heard([
+      { text: 'a', startS: 0.5, endS: 2 },
+      { text: 'b', startS: 8, endS: 11.5 },
+    ])
+
+    await cutQuietParts('c1', { minGapS: 0.3, padS: 0 })
+
+    // What is left is exactly what he said, in source seconds, closed up.
+    expectSpans(clips(), [
+      [0.5, 2],
+      [8, 11.5],
+    ])
+    expect(clips()[0].startS).toBeCloseTo(3.2, 4)
+    expect(clips()[1].startS).toBeCloseTo(4.7, 4)
+  })
+
+  it('keeps every word on a sped up clip that does not start at 0:00', async () => {
+    const { cutQuietParts } = await import('./silenceActions')
+    seedClip({ startS: 5, speed: 2 })
+    heard([
+      { text: 'a', startS: 0, endS: 2 },
+      { text: 'b', startS: 8, endS: 12 },
+    ])
+
+    await cutQuietParts('c1', { minGapS: 0.5, padS: 0 })
+
+    expectSpans(clips(), [
+      [0, 2],
+      [8, 12],
+    ])
+    // Source 0..2 at 2x is one second of timeline, so the second piece follows at 6.
+    expect(clips()[1].startS).toBeCloseTo(6, 4)
+  })
+
+  it('never deletes a whole take that sits later than its own length', async () => {
+    const { cutQuietParts } = await import('./silenceActions')
+    seedClip({ startS: 15 })
+    heard([
+      { text: 'a', startS: 0.5, endS: 2 },
+      { text: 'b', startS: 8, endS: 11.5 },
+    ])
+
+    await cutQuietParts('c1', { minGapS: 0.3, padS: 0 })
+
+    const total = clips().reduce((s, c) => s + (c.outS - c.inS), 0)
+    expect(total).toBeCloseTo(5, 4)
+    expect(clips()[0].startS).toBeCloseTo(15, 4)
+  })
+
+  it('refuses a clip that plays backwards, before the long read', async () => {
+    const { cutQuietParts } = await import('./silenceActions')
+    seedClip({ speed: -1 })
+    heard([{ text: 'a', startS: 0, endS: 2 }])
+
+    await cutQuietParts('c1', { minGapS: 0.5, padS: 0 })
+
+    expect(clips()).toHaveLength(1)
+    expect(words).not.toHaveBeenCalled()
+    expect(show.mock.calls.some((c) => /backwards/i.test(String(c[0])))).toBe(true)
+  })
+
+  // ⛔ A LINKED CLIP: the picture and its sound are cut TOGETHER. Cutting the
+  // sound alone slid his voice ahead of his lips by everything it took out.
+  it('cuts the picture with its sound, so they stay in sync', async () => {
+    const { cutQuietParts } = await import('./silenceActions')
+    seedPair()
+    heard([
+      { text: 'a', startS: 0, endS: 2 },
+      { text: 'b', startS: 8, endS: 12 },
+    ])
+
+    await cutQuietParts('A', { minGapS: 0.5, padS: 0 })
+
+    const v = seq().tracks[0].clips
+    const a = seq().tracks[2].clips
+    expectSpans(a, [
+      [0, 2],
+      [8, 12],
+    ])
+    expect(a[1].startS).toBeCloseTo(2, 4)
+    // The picture holds the very same pieces at the very same times.
+    expect(v.map((c) => [c.startS, c.inS, c.outS])).toEqual(a.map((c) => [c.startS, c.inS, c.outS]))
+    // And each piece of sound still belongs to its piece of picture.
+    expect(a.map((c) => c.linkId)).toEqual(v.map((c) => c.linkId))
+    expect(new Set(a.map((c) => c.linkId)).size).toBe(2)
+  })
+
+  it('leaves a quiet part alone when the linked picture runs past it', async () => {
+    const { cutQuietParts } = await import('./silenceActions')
+    seedPair({ videoOutS: 14 })
+    // Quiet from 10 to the end of the sound at 12, but the picture goes on to 14:
+    // taking the group would delete two seconds of picture with no sound cut.
+    heard([{ text: 'a', startS: 0, endS: 10 }])
+
+    await cutQuietParts('A', { minGapS: 0.5, padS: 0 })
+
+    expect(seq().tracks[0].clips.map((c) => [c.startS, c.outS])).toEqual([[0, 14]])
+    expect(seq().tracks[2].clips).toHaveLength(1)
+  })
+
+  it('refuses when the linked picture is on a locked track', async () => {
+    const { cutQuietParts } = await import('./silenceActions')
+    seedPair()
+    updateActiveSequence('lock', (sq) => ({
+      ...sq,
+      tracks: sq.tracks.map((t, i) => (i === 0 ? { ...t, locked: true } : t)),
+    }))
+    heard([
+      { text: 'a', startS: 0, endS: 2 },
+      { text: 'b', startS: 8, endS: 12 },
+    ])
+
+    await cutQuietParts('A', { minGapS: 0.5, padS: 0 })
+
+    expect(clips()).toHaveLength(2)
+    expect(words).not.toHaveBeenCalled()
+    expect(show.mock.calls.some((c) => /locked/i.test(String(c[0])))).toBe(true)
+  })
+
   it('is ONE undo press however many places it cut', async () => {
     const { cutQuietParts } = await import('./silenceActions')
     seedClip()
-    words.mockResolvedValue([
+    heard([
       { text: 'a', startS: 0, endS: 1 },
       { text: 'b', startS: 4, endS: 5 },
       { text: 'c', startS: 9, endS: 12 },
@@ -132,7 +289,7 @@ describe('cutQuietParts', () => {
   it('offers the undo on the toast, because that is the only way back', async () => {
     const { cutQuietParts } = await import('./silenceActions')
     seedClip()
-    words.mockResolvedValue([
+    heard([
       { text: 'a', startS: 0, endS: 2 },
       { text: 'b', startS: 8, endS: 12 },
     ])
@@ -158,7 +315,7 @@ describe('cutQuietParts', () => {
         tracks: sq.tracks.map((t, i) => (i === 1 ? { ...t, name: 'Captions', clips: [caption('w1', 4), caption('w2', 9)] } : t)),
       }),
     )
-    words.mockResolvedValue([
+    heard([
       { text: 'a', startS: 0, endS: 2 },
       { text: 'b', startS: 8, endS: 12 },
     ])
@@ -176,7 +333,7 @@ describe('cutQuietParts', () => {
   it('cuts nothing and says so when he never stops talking', async () => {
     const { cutQuietParts } = await import('./silenceActions')
     seedClip()
-    words.mockResolvedValue([{ text: 'a', startS: 0, endS: 12 }])
+    heard([{ text: 'a', startS: 0, endS: 12 }])
 
     await cutQuietParts('c1', { minGapS: 0.5, padS: 0 })
 

@@ -12,7 +12,7 @@
 // the toast, the same shape as removing an effect.
 
 import { silentRanges, SILENCE_DEFAULTS, type SilenceOptions } from '../engine/silence'
-import { clipEndS, rippleDeleteMany, splitClipOnly } from '../engine/timeline'
+import { clipEndS, clipGroupIds, rippleDeleteMany, splitGroup } from '../engine/timeline'
 import { activeSequence, type Clip, type Sequence } from '../engine/types'
 import { wordsForClip } from './transcribeActions'
 import { keptTimingMessage, newRippleReport } from './rippleNotice'
@@ -39,6 +39,14 @@ function idCovering(seq: Sequence, trackId: string, t: number): string | null {
 
 const EPS = 1e-4
 
+const locateIn = (seq: Sequence, id: string): Clip | undefined => locate(seq, id)?.clip
+
+/** A linked partner of `clipId` sits on a locked track. */
+function partnerLocked(seq: Sequence, clipId: string): boolean {
+  const ids = new Set(clipGroupIds(seq, clipId))
+  return seq.tracks.some((t) => t.locked && t.clips.some((c) => ids.has(c.id)))
+}
+
 /**
  * Transcribe the clip, find the runs with no speech in them, and take them out,
  * closing the gaps behind them.
@@ -62,18 +70,48 @@ export async function cutQuietParts(clipId: string, opts: SilenceOptions = SILEN
     show('That clip has no sound to read', 'danger')
     return
   }
+  // The same refusal the Words panel and captions got on 2026-09-23: a reversed
+  // clip's sound is read FORWARD, so its words would be placed backwards and
+  // the cuts would land on his speech. Speed 0 makes no sound at all.
+  if (clip.speed <= 0) {
+    show(
+      clip.speed < 0
+        ? 'This clip plays backwards, so its quiet parts cannot be cut'
+        : 'This clip is stopped, so there is no sound to read',
+      'danger',
+    )
+    return
+  }
+  // A linked clip is cut WITH its partner (below), so a partner on a locked
+  // track would be changed behind the lock. Refuse before the long read.
+  if (partnerLocked(seq0, clipId)) {
+    show('Its linked clip is on a locked track, so nothing was cut', 'danger')
+    return
+  }
 
-  let words
+  let heard
   try {
-    words = await wordsForClip(clip, asset)
+    heard = await wordsForClip(clip, asset)
   } catch {
     show('Could not read the speech in that clip', 'danger')
     return
   }
-  if (words.length === 0) {
+  if (heard.length === 0) {
     show('No speech found, so there is nothing to cut around', 'info')
     return
   }
+  // ⛔ wordsForClip HANDS BACK TIMELINE SECONDS (timelineWords: clip start plus
+  // source time over speed), and silentRanges wants seconds into the clip's own
+  // source span. Using them as they came added the clip start twice and divided
+  // by the speed twice: on any clip not sitting at 0:00 every cut landed late
+  // and ate his first words, and a take placed later than its own length was
+  // deleted whole. Undone against `clip`, the clip that was READ, because that
+  // is the one the words were placed on.
+  const readSpeed = Math.abs(clip.speed || 1)
+  const words = heard.map((w) => ({
+    startS: (w.startS - clip.startS) * readSpeed,
+    endS: (w.endS - clip.startS) * readSpeed,
+  }))
 
   // ⛔ THE CLIP IS READ AGAIN HERE, because reading it took tens of seconds and
   // NOTHING blocked the timeline while it ran. Every cut below is placed with
@@ -87,7 +125,7 @@ export async function cutQuietParts(clipId: string, opts: SilenceOptions = SILEN
     show('That clip is gone now, so nothing was cut', 'info')
     return
   }
-  if (liveFound.locked) {
+  if (liveFound.locked || partnerLocked(activeSequence(useStore.getState().project), clipId)) {
     show('Track is locked', 'danger')
     return
   }
@@ -134,19 +172,32 @@ export async function cutQuietParts(clipId: string, opts: SilenceOptions = SILEN
       const endT = live.startS + r.endS / speed
       if (endT - startT < minPieceS) continue
 
+      // ⛔ THE PICTURE IS CUT WITH ITS SOUND. splitGroup cuts every linked
+      // member at the same instant and the ripple below takes the whole group,
+      // so the picture and the voice close up together. This used to cut the
+      // sound alone (splitClipOnly): the picture kept playing the quiet part
+      // and his lips ran ahead of his voice by everything cut. An unlinked clip
+      // has no group, so splitGroup is a plain split for it.
+      const before = next
       const a = idCovering(next, trackId, startT)
-      if (a) next = splitClipOnly(next, a, startT)
+      if (a) next = splitGroup(next, a, startT)
       const b = idCovering(next, trackId, endT)
-      if (b) next = splitClipOnly(next, b, endT)
+      if (b) next = splitGroup(next, b, endT)
 
       // ⛔ ONLY TAKE A PIECE THAT IS EXACTLY THE RANGE. The splitter has a
       // min-piece guard that can decline one side, and a range that only got cut
-      // at one end would otherwise delete footage he wanted.
+      // at one end would otherwise delete footage he wanted. The same holds for
+      // every linked partner: one trimmed on its own may run past the range,
+      // and the ripple deletes the whole group.
       const track = next.tracks.find((tr) => tr.id === trackId)
-      const piece = track?.clips.find(
-        (c) => Math.abs(c.startS - startT) < EPS && Math.abs(clipEndS(c) - endT) < EPS,
-      )
-      if (!piece) continue
+      const exact = (c: Clip) => Math.abs(c.startS - startT) < EPS && Math.abs(clipEndS(c) - endT) < EPS
+      const piece = track?.clips.find(exact)
+      const group = piece ? clipGroupIds(next, piece.id).map((id) => locateIn(next, id)) : []
+      if (!piece || !group.every((c) => c && exact(c))) {
+        // Nothing taken here, so no stray cut marks left behind either.
+        next = before
+        continue
+      }
       doomed.push(piece.id)
       cutS += endT - startT
       taken++
