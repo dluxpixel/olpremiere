@@ -13,9 +13,12 @@ import {
   setClipsFade,
   setClipsGainDb,
   toggleClipsFlip,
+  removeClipsTransition,
+  setClipsTransition,
   setFrameFitForClips,
   toggleEffectsForClips,
 } from '../state/bulkEdits'
+import { TRANSITION_KINDS, TRANSITION_LABELS, transitionDurationSpec, type TransitionKind } from '../engine/render/types'
 import { FRAME_FITS, frameFitDims, frameFitOf, takesFrameFit, type FrameFit } from '../engine/frameFit'
 import { useStore } from '../state/store'
 import { ENTRANCE_PRESETS } from '../engine/anim/appearance'
@@ -490,6 +493,21 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
         <SharedEffects clips={effectTargets(selected.filter((s) => s.track.kind === 'video').map((s) => s.clip))} />
       </section>
 
+      {/* The single clip panel's In and Out rows, for every selected picture.
+          Select a whole montage, pick White Flash, every cut has it. */}
+      {flippable.length > 0 && (
+        <>
+          <div className="h-px bg-border" />
+          <section className="flex flex-col gap-2" data-testid="multi-transitions">
+            <Header label="Transitions" />
+            <div className="flex flex-col gap-1">
+              <MultiTransitionRow clips={flippable.map((s) => s.clip)} edge="in" />
+              <MultiTransitionRow clips={flippable.map((s) => s.clip)} edge="out" />
+            </div>
+          </section>
+        </>
+      )}
+
       {audioIds.length > 0 && (
         <>
           <div className="h-px bg-border" />
@@ -540,6 +558,59 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
         </>
       )}
     </div>
+  )
+}
+
+/**
+ * One edge's transition across the selected pictures. Shows the kind when they
+ * all agree and "Mixed" when not, so any pick reaches all of them (a select
+ * fires nothing when he picks the value it already shows).
+ */
+function MultiTransitionRow({ clips, edge }: { clips: Clip[]; edge: 'in' | 'out' }) {
+  const ids = clips.map((c) => c.id)
+  const of = (c: Clip) => (edge === 'in' ? c.transitionIn : c.transitionOut)
+  const kinds = clips.map((c) => of(c)?.type ?? 'none')
+  const kind = kinds.every((k) => k === kinds[0]) ? kinds[0]! : ''
+  const name = edge === 'in' ? 'In' : 'Out'
+  const live = kind !== '' && kind !== 'none' ? (kind as TransitionKind) : null
+  const spec = live ? transitionDurationSpec(live) : null
+  return (
+    <PropRow label={name}>
+      <select
+        data-testid={`multi-transition-${edge}`}
+        aria-label={`${name} transition (all)`}
+        value={kind}
+        onChange={(e) => {
+          const v = e.target.value
+          if (v === 'none') removeClipsTransition(ids, edge)
+          else if (v) setClipsTransition(ids, edge, v as TransitionKind)
+        }}
+        className="h-6 w-[104px] cursor-default rounded-field bg-bg-input px-1.5 text-ui-sm text-text-primary"
+      >
+        {kind === '' && (
+          <option value="" disabled>
+            Mixed
+          </option>
+        )}
+        <option value="none">None</option>
+        {TRANSITION_KINDS.map((k) => (
+          <option key={k} value={k}>
+            {TRANSITION_LABELS[k]}
+          </option>
+        ))}
+      </select>
+      {live && spec ? (
+        <ScrubField
+          value={of(clips[0]!)?.durationS ?? spec.def}
+          spec={{ min: spec.min, max: spec.max, step: live === 'whiteFlash' ? 0.05 : 0.1, sens: 0.03 }}
+          testId={`multi-transition-${edge}-duration`}
+          ariaLabel={`${name} transition duration in seconds (all)`}
+          onCommit={(d) => setClipsTransition(ids, edge, live, d, false)}
+        />
+      ) : (
+        <span aria-hidden className="w-[68px] shrink-0" />
+      )}
+    </PropRow>
   )
 }
 

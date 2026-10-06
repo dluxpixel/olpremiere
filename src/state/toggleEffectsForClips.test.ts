@@ -100,7 +100,7 @@ describe('toggleEffectsForClips (Shift+B on a selection)', () => {
 
   it('the Shift+B key reaches every selected clip, sound picked first or not', () => {
     useStore.getState().setUI({ selection: ['a1', 'p1', 'p2', 'p3'] })
-    buildAppBindings().find((b) => b.combo === 'shift+b')!.run()
+    buildAppBindings().find((b) => b.combo === 'shift+b')!.run(new KeyboardEvent('keydown', { key: 'B', shiftKey: true }))
     expect(on()).toMatchObject({ p1: [false], p2: [false], p3: [false] })
   })
 })

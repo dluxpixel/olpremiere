@@ -122,6 +122,15 @@ describe('the multi selection Inspector, with three pictures selected', () => {
     expect(screen.getByTestId('shared-effects').querySelector('[data-effect-type="saturation"]')).not.toBeNull()
   })
 
+  it('a transition picked in the panel lands on all three pictures', async () => {
+    const ids = threePictures()
+    render(<MultiInspector selected={selectedOf(ids)} />)
+    await userEvent.setup().selectOptions(screen.getByTestId('multi-transition-out'), 'whiteFlash')
+    expect(ids.map((id) => clipById(id).transitionOut)).toEqual(
+      [0, 1, 2].map(() => ({ type: 'whiteFlash', durationS: 0.2 })),
+    )
+  })
+
   it('Punch grade grades all three and counts three', async () => {
     const ids = threePictures()
     render(<MultiInspector selected={selectedOf(ids)} />)

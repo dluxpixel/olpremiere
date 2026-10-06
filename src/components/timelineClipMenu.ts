@@ -7,7 +7,7 @@ import type { Clip, Id, MediaAsset, Sequence } from '../engine/types'
 import { comboLabel } from '../keymap'
 import { copyClipAttributes, hasClipAttributes, pasteClipAttributes } from '../state/attributes'
 import { balanceAllClipLoudness, normalizeClipGain } from '../state/audioActions'
-import { applyEffectToClips, toggleClipsFlip } from '../state/bulkEdits'
+import { applyEffectToClips, removeClipsTransition, setClipsTransition, toggleClipsFlip } from '../state/bulkEdits'
 import { copySelection, cutSelection, duplicateSelection, pasteAtPlayhead } from '../state/clipboard'
 import { crossfadeWithNeighbour, deleteSelected, removeClipTransition, setClipTransition, splitAtPlayhead, topAndTail } from '../state/clipEdits'
 import { appearanceMenuItems, titleFontSizeItems } from '../state/clipMenus'
@@ -169,27 +169,41 @@ export function clipContextMenuItems({ clip, seq, assets, selNow, keepSelection,
   // previous", video got nothing but a drag from the Effects browser. Both
   // edges are offered on every video clip, because a lone edge now runs the
   // real transition rather than degrading to a fade to black.
+  //
+  // On every selected picture when the selection was kept, in ONE undo step,
+  // like Frame and Flip below: a gym montage is twenty cuts, and picking White
+  // Flash with all twenty selected used to put it on one of them.
+  const transitionPictures = seq.tracks
+    .filter((t) => t.kind === 'video')
+    .flatMap((t) => t.clips)
+    .filter((c) => (keepSelection ? selNow.includes(c.id) : c.id === clip.id) && !c.title)
+  const manyTransitions = transitionPictures.length > 1
+  const transitionIds = manyTransitions ? transitionPictures.map((c) => c.id) : [clip.id]
   const transitionItems: MenuItem[] =
     track?.kind === 'video' && !clip.title
       ? (['in', 'out'] as const).map((edge) => {
-          const current = edge === 'in' ? clip.transitionIn : clip.transitionOut
+          const currentOf = (c: Clip) => (edge === 'in' ? c.transitionIn : c.transitionOut)
+          const shown = manyTransitions ? transitionPictures : [clip]
           const neighbour = edge === 'in' ? canXfadePrev : canXfadeNext
+          const base = edge === 'in' ? 'Transition in' : 'Transition out'
           return {
-            label: edge === 'in' ? 'Transition in' : 'Transition out',
+            label: manyTransitions ? `${base} · all ${transitionPictures.length}` : base,
             separator: edge === 'in',
             submenu: [
               {
                 label: 'None',
-                checked: !current,
-                onClick: () => removeClipTransition(clip.id, edge),
+                checked: shown.every((c) => !currentOf(c)),
+                onClick: () =>
+                  manyTransitions ? removeClipsTransition(transitionIds, edge) : removeClipTransition(clip.id, edge),
               },
               ...TRANSITION_KINDS.map((kind, i) => ({
                 // A lone edge plays the transition against nothing, which is a
                 // real look, so we say so rather than hiding half the list.
-                label: neighbour ? TRANSITION_LABELS[kind] : `${TRANSITION_LABELS[kind]} (from nothing)`,
+                label: neighbour || manyTransitions ? TRANSITION_LABELS[kind] : `${TRANSITION_LABELS[kind]} (from nothing)`,
                 separator: i === 0,
-                checked: current?.type === kind,
-                onClick: () => setClipTransition(clip.id, edge, kind),
+                checked: shown.every((c) => currentOf(c)?.type === kind),
+                onClick: () =>
+                  manyTransitions ? setClipsTransition(transitionIds, edge, kind) : setClipTransition(clip.id, edge, kind),
               })),
             ],
           }

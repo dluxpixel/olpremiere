@@ -56,6 +56,7 @@ import {
   type Id,
   type Keyframe,
   type Sequence,
+  type Transition,
 } from '../engine/types'
 import { transitionDurationSpec, type TransitionKind } from '../engine/render/types'
 import { noteRecentEffect } from './recentEffects'
@@ -903,12 +904,12 @@ export function setEffectKeyframeEase(
   mapClip(clipId, `Set ${key} easing`, (c) => ops.setEffectParamEase(c, effectId, key, kfT, ease))
 }
 
-export function setClipTransition(
-  clipId: string,
-  edge: 'in' | 'out',
-  kind: TransitionKind,
-  durationS?: number,
-): void {
+/**
+ * The transition an edge is left with when `kind` is written over `prev`, with
+ * the per kind duration envelope. Shared by the one clip write below and the
+ * whole selection write in bulkEdits, so the two can never pick two lengths.
+ */
+export function transitionFor(prev: Transition | undefined, kind: TransitionKind, durationS?: number): Transition {
   // Per-kind envelope: whiteFlash defaults to its 200 ms hit and lives in
   // 100 to 500 ms; everything else keeps the classic 1 s default. Enforced HERE, in
   // the one write path for drops, the Inspector select, and duration commits.
@@ -917,28 +918,33 @@ export function setClipTransition(
   // carried value was tuned for a different verb, so the envelope edge would
   // be an arbitrary landing spot. In-envelope values are kept as-is.
   const spec = transitionDurationSpec(kind)
+  // A duration the user never chose must not follow the verb it was tuned for.
+  // Dip to Black defaults to 0.5 s and White Flash's ceiling is exactly 0.5 s,
+  // so switching one to the other used to carry 0.5 s across on a technicality
+  // and hand back a flash at 2.5x its own default. Half a second of white is a
+  // passage of time, not the accent a hit is meant to be. So a value that is
+  // merely the OLD kind's default counts as unchosen and takes the new kind's
+  // default; a value he actually set is still kept when it fits.
+  // Transition.type is a loose string on purpose, so an unknown kind never fails
+  // to load. transitionDurationSpec already falls back for one, so the cast is
+  // safe and an unrecognised previous kind simply never matches its default.
+  const unchosen =
+    prev !== undefined &&
+    prev.type !== kind &&
+    durationS === transitionDurationSpec(prev.type as TransitionKind).def
+  const fits = durationS !== undefined && durationS >= spec.min && durationS <= spec.max
+  return { type: kind, durationS: fits && !unchosen ? (durationS as number) : spec.def }
+}
+
+export function setClipTransition(
+  clipId: string,
+  edge: 'in' | 'out',
+  kind: TransitionKind,
+  durationS?: number,
+): void {
   mapClip(clipId, `Add ${edge} transition`, (c) => {
     const prev = edge === 'in' ? c.transitionIn : c.transitionOut
-    // A duration the user never chose must not follow the verb it was tuned for.
-    // Dip to Black defaults to 0.5 s and White Flash's ceiling is exactly 0.5 s,
-    // so switching one to the other used to carry 0.5 s across on a technicality
-    // and hand back a flash at 2.5x its own default. Half a second of white is a
-    // passage of time, not the accent a hit is meant to be. So a value that is
-    // merely the OLD kind's default counts as unchosen and takes the new kind's
-    // default; a value he actually set is still kept when it fits.
-    // Transition.type is a loose string on purpose, so an unknown kind never fails
-    // to load. transitionDurationSpec already falls back for one, so the cast is
-    // safe and an unrecognised previous kind simply never matches its default.
-    const unchosen =
-      prev !== undefined &&
-      prev.type !== kind &&
-      durationS === transitionDurationSpec(prev.type as TransitionKind).def
-    const fits = durationS !== undefined && durationS >= spec.min && durationS <= spec.max
-    const d = fits && !unchosen ? (durationS as number) : spec.def
-    return {
-      ...c,
-      [edge === 'in' ? 'transitionIn' : 'transitionOut']: { type: kind, durationS: d },
-    }
+    return { ...c, [edge === 'in' ? 'transitionIn' : 'transitionOut']: transitionFor(prev, kind, durationS) }
   })
 }
 

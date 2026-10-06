@@ -26,7 +26,7 @@ import {
   type Sequence,
 } from '../engine/types'
 import { copyClipAttributes, pasteClipAttributes } from './attributes'
-import { applyEffectToAllClips, applyEffectToClips } from './bulkEdits'
+import { applyEffectToAllClips, applyEffectToClips, setClipsTransition } from './bulkEdits'
 import { useLibrary, applyPresetToAllClips, applyPresetToSelection } from './library'
 import { applyPunchyGradeToClips } from './lookActions'
 import { updateActiveSequence, useStore } from './store'
@@ -351,5 +351,40 @@ describe('footage wins a mixed selection, and nothing is stacked twice', () => {
     applyPresetToAllClips('p1')
     expect(effectsOf(ids)).toEqual([2, 2, 2])
     expect(clipById(cap).effects).toHaveLength(0)
+  })
+})
+
+// A gym montage is twenty cuts. Selecting all twenty and picking White Flash put
+// it on ONE of them, from every door (measured 2026-10-06).
+describe('a transition on several selected pictures', () => {
+  const ins = (ids: string[]) => ids.map((id) => clipById(id).transitionIn ?? null)
+
+  it('lands on every selected picture at its own default length, in ONE undo step', () => {
+    const ids = threePictures()
+    const voice = withSoundPartner()
+    const cap = withCaption()
+    expect(setClipsTransition([...ids, voice, cap], 'in', 'whiteFlash')).toBe(3)
+    expect(ins(ids)).toEqual([0, 1, 2].map(() => ({ type: 'whiteFlash', durationS: 0.2 })))
+    expect(clipById(voice).transitionIn).toBeUndefined()
+    expect(clipById(cap).transitionIn).toBeUndefined()
+    expect(said()).toEqual(['White Flash at the start of 3 clips'])
+    useStore.getState().undo()
+    expect(ins(ids)).toEqual([null, null, null])
+  })
+
+  it('the clip menu offers it on all of them when the selection is kept', () => {
+    const ids = threePictures()
+    const item = clipContextMenuItems({
+      clip: clipById(ids[0]!),
+      seq: seq(),
+      assets: useStore.getState().project.assets,
+      selNow: ids,
+      keepSelection: true,
+      playheadS: 1,
+      show: () => {},
+    }).find((i) => i.label === 'Transition in · all 3')
+    expect(item).toBeDefined()
+    item!.submenu!.find((i) => i.label === 'Cross Dissolve')!.onClick?.()
+    expect(ins(ids).map((t) => t?.type)).toEqual(['crossDissolve', 'crossDissolve', 'crossDissolve'])
   })
 })

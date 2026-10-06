@@ -17,11 +17,12 @@ import { getEffect } from '../engine/effects/registry'
 import { upsertKeyframe, upsertKeyframeValue } from '../engine/keyframes'
 import { MOTION_CURVES } from '../engine/motion'
 import { clipDurationS, clipEndS } from '../engine/timeline'
+import { TRANSITION_LABELS, type TransitionKind } from '../engine/render/types'
 import { activeSequence, newId, type AnimChannel, type Clip, type Curve, type Keyframe } from '../engine/types'
 // isClipArmed comes from the SINGLE-clip module on purpose: the multi-select
 // align has to ask the exact question the gizmo asks, off the exact same code,
 // or the two paths drift the way they did when one read a global preference.
-import { isClipArmed, playheadLocalT } from './clipEdits'
+import { isClipArmed, playheadLocalT, transitionFor } from './clipEdits'
 import { noteRecentEffect } from './recentEffects'
 import { updateActiveSequence, useStore } from './store'
 import { useToasts } from './toasts'
@@ -415,6 +416,75 @@ export function keyTargetClipId(
   const order = (id: string) => selection.indexOf(id)
   under.sort((a, b) => order(a.clip.id) - order(b.clip.id))
   return (under.find((u) => u.picture) ?? under[0])?.clip.id ?? selection[0]
+}
+
+/**
+ * The selected clips a transition can go on: pictures on an unlocked video
+ * track. Titles are left out, as the clip menu always has; the linked sound has
+ * no picture to blend. Locked ones are counted so they can be named.
+ */
+function transitionTargets(ids: Iterable<string>): { open: string[]; locked: number } {
+  const idSet = new Set(ids)
+  const open: string[] = []
+  let locked = 0
+  for (const t of activeSequence(useStore.getState().project).tracks) {
+    if (t.kind !== 'video') continue
+    for (const c of t.clips) {
+      if (!idSet.has(c.id) || c.title) continue
+      if (t.locked) locked++
+      else open.push(c.id)
+    }
+  }
+  return { open, locked }
+}
+
+/**
+ * The same transition on the same edge of EVERY selected picture, in ONE undo
+ * step, each with the per kind length setClipTransition would give it.
+ *
+ * His standing ask (2026-10-04) on every path: a gym montage is twenty cuts,
+ * and selecting all twenty and picking White Flash put it on ONE of them from
+ * every door (the clip menu, the Effects tab, a drop). Returns how many changed.
+ */
+export function setClipsTransition(
+  ids: Iterable<string>,
+  edge: 'in' | 'out',
+  kind: TransitionKind,
+  durationS?: number,
+  /** False for a duration scrub, which commits on every arrow press. */
+  say = true,
+): number {
+  const { open, locked } = transitionTargets(ids)
+  const show = useToasts.getState().show
+  if (open.length === 0) {
+    if (locked > 0) show(locked === 1 ? 'That clip is on a locked track' : 'Those clips are on a locked track', 'danger')
+    return 0
+  }
+  const key = edge === 'in' ? 'transitionIn' : 'transitionOut'
+  let changed = 0
+  mapClips(open, `Add ${edge} transition`, (c) => {
+    const next = transitionFor(c[key], kind, durationS)
+    if (c[key]?.type === next.type && c[key]?.durationS === next.durationS) return c
+    changed++
+    return { ...c, [key]: next }
+  })
+  if (say && (open.length > 1 || locked > 0)) {
+    const where = edge === 'in' ? 'start' : 'end'
+    const left = locked > 0 ? `. ${lockedLeftOut(locked)}` : ''
+    show(`${TRANSITION_LABELS[kind]} at the ${where} of ${open.length} clip${open.length === 1 ? '' : 's'}${left}`, 'success')
+  }
+  return changed
+}
+
+/** Take the transition off that edge of every selected picture, ONE undo step. */
+export function removeClipsTransition(ids: Iterable<string>, edge: 'in' | 'out'): void {
+  const key = edge === 'in' ? 'transitionIn' : 'transitionOut'
+  mapClips(transitionTargets(ids).open, `Remove ${edge} transition`, (c) => {
+    if (!c[key]) return c
+    const next = { ...c }
+    delete next[key]
+    return next
+  })
 }
 
 /** Drop every applied effect from every selected clip. */

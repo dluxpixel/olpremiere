@@ -13,8 +13,7 @@ import { WordsTab } from './WordsTab'
 import { createArmedDelete, type ArmedDelete } from './armedDelete'
 import { CaptionsTab } from './CaptionsTab'
 import { applyEffectToAllClips } from '../state/bulkEdits'
-import { applyEffectToClips } from '../state/bulkEdits'
-import { setClipTransition } from '../state/clipEdits'
+import { applyEffectToClips, setClipsTransition } from '../state/bulkEdits'
 import { openContextMenu, type MenuItem } from '../state/contextMenu'
 import { ASSET_MIME, EFFECT_MIME, TITLE_MIME, TRANSITION_MIME } from '../state/dnd'
 import { isInLibrary, saveAssetToLibrary, useLibrary } from '../state/library'
@@ -875,16 +874,18 @@ function EffectsTab() {
                     title="Drag onto a clip (left half = start, right half = end), or right-click to apply to the selected clip's start or end"
                     mime={TRANSITION_MIME}
                     payload={k}
+                    // Every selected clip, not just the first: the edge is the
+                    // same on all of them, in one undo step (setClipsTransition).
                     menu={[
                       {
-                        label: 'Apply to clip start',
+                        label: targets.length > 1 ? `Apply to the start of ${targets.length} clips` : 'Apply to clip start',
                         disabled: !hasTarget,
-                        onClick: () => hasTarget && setClipTransition(targets[0], 'in', k),
+                        onClick: () => hasTarget && setClipsTransition(targets, 'in', k),
                       },
                       {
-                        label: 'Apply to clip end',
+                        label: targets.length > 1 ? `Apply to the end of ${targets.length} clips` : 'Apply to clip end',
                         disabled: !hasTarget,
-                        onClick: () => hasTarget && setClipTransition(targets[0], 'out', k),
+                        onClick: () => hasTarget && setClipsTransition(targets, 'out', k),
                       },
                     ]}
                   />
