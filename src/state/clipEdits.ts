@@ -712,6 +712,11 @@ export function resetChannels(clipId: string, channels: AnimChannel[]): void {
  * audio), so a grade/key/blur dropped on an audio clip would sit dead and render
  * nothing. That is the "why did nothing happen?" confusion. Titles and adjustment
  * layers DO render, so they stay eligible.
+ *
+ * Except for a LOOK, which goes on the way it does through every other door
+ * (runEffect in bulkEdits.ts): one per clip, swapping out the one the clip
+ * wore, nothing at all when the clip already wears it, and never on a title or
+ * a caption, whose style owns its colour.
  */
 export function applyEffect(clipId: string, type: string): void {
   const seq = activeSequence(useStore.getState().project)
@@ -719,6 +724,25 @@ export function applyEffect(clipId: string, type: string): void {
   if (!track || track.kind === 'audio') return
   const label = getEffect(type)?.label ?? type
   const id = newId()
+  if (ops.isLookType(type)) {
+    const clip = track.clips.find((c) => c.id === clipId)!
+    const show = useToasts.getState().show
+    if (clip.title) {
+      show('Looks leave titles and captions clean', 'info')
+      return
+    }
+    if (clip.effects.some((e) => e.type === type)) {
+      show(`That clip already has ${label}`, 'info')
+      return
+    }
+    const old = ops.wornLook(clip)
+    mapClip(clipId, `Apply ${label}`, (c) => ops.putLook(c, type, id))
+    // Same landed check as below: a locked track refuses the edit.
+    if (!findClip(clipId)?.effects.some((e) => e.id === id)) return
+    noteRecentEffect(type)
+    if (old) show(`Swapped ${getEffect(old.type)?.label ?? old.type} for ${label}`, 'success')
+    return
+  }
   mapClip(clipId, `Add ${label}`, (c) => ops.addEffect(c, type, id))
   // Noted only once it actually landed, and noted in BOTH doors: this one and
   // applyEffectToClips. A recents list that misses the door he uses most is

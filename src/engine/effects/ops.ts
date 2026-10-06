@@ -15,7 +15,7 @@
 
 import { evalChannel, removeKeyframeNear, upsertKeyframe } from '../keyframes'
 import type { Clip, EffectInstance, Id, Keyframe, Keyframeable } from '../types'
-import { CANONICAL_ORDER, defaultParams, getEffect } from './registry'
+import { CANONICAL_ORDER, defaultParams, getEffect, type EffectDef } from './registry'
 
 /**
  * Where a newly applied effect lands. Canonical effects keep their frozen math
@@ -52,14 +52,59 @@ export const findEffectById = (clip: Clip, effectId: Id): EffectInstance | undef
 export function addEffect(clip: Clip, type: string, id: Id): Clip {
   const def = getEffect(type)
   if (!def) return clip
-  // Seed neutral defaults, then apply any `initialParams` so an effect that
-  // should do something on drop (Auto Color) isn't invisible at identity.
-  const params = { ...defaultParams(def), ...(def.initialParams ?? {}) }
-  const inst: EffectInstance = { id, type, params, enabled: true }
   const effects = [...clip.effects]
-  effects.splice(insertIndex(effects, type), 0, inst)
+  effects.splice(insertIndex(effects, type), 0, freshInstance(def, id))
   return { ...clip, effects }
 }
+
+/**
+ * A new instance of an effect as it lands on a clip: neutral defaults, then any
+ * `initialParams`, so an effect that should do something on drop (Auto Color,
+ * a look at its full Amount) isn't invisible at identity.
+ */
+function freshInstance(def: EffectDef, id: Id): EffectInstance {
+  return { id, type: def.type, params: { ...defaultParams(def), ...(def.initialParams ?? {}) }, enabled: true }
+}
+
+/**
+ * A finished grade off the Looks shelf (effects/looks.ts). The neighbour passes
+ * a look makes (lookClarity, lookGlow, lookGrain) share its category but are
+ * hidden and never stored, so they never count as a look a clip wears.
+ */
+export function isLookType(type: string): boolean {
+  const def = getEffect(type)
+  return def?.category === 'look' && !def.hidden
+}
+
+/**
+ * Put a look on a clip the way a look has to go on: ONE look per clip.
+ *
+ * Every look is designed against the raw footage, so two on one clip compound:
+ * exposure down twice, two crushing curves, two vignettes, two grains, and the
+ * picture goes to black. hasJettismGrade (state/lookActions.ts) guards the other
+ * grade on the same shelf against exactly this. So:
+ *   - a clip already wearing this look is handed back untouched;
+ *   - a clip wearing another look has it SWAPPED, in the slot the old one held,
+ *     so whatever he stacked around it stays where he put it;
+ *   - a clip with no look takes it where addEffect puts any new effect.
+ * A clip carrying two looks from before this rule ends up wearing one: the new
+ * look, in the first one's slot. Anything that is not a look is refused.
+ */
+export function putLook(clip: Clip, type: string, id: Id): Clip {
+  const def = getEffect(type)
+  if (!def || !isLookType(type)) return clip
+  const worn = clip.effects.filter((e) => isLookType(e.type))
+  if (worn.some((e) => e.type === type)) return clip
+  if (worn.length === 0) return addEffect(clip, type, id)
+  const slot = clip.effects.indexOf(worn[0])
+  const effects = clip.effects.flatMap((e, i) =>
+    i === slot ? [freshInstance(def, id)] : isLookType(e.type) ? [] : [e],
+  )
+  return { ...clip, effects }
+}
+
+/** The look a clip wears now, if any: the one putLook would swap out. */
+export const wornLook = (clip: Clip): EffectInstance | undefined => clip.effects.find((e) => isLookType(e.type))
 
 export function removeEffect(clip: Clip, effectId: Id): Clip {
   const effects = clip.effects.filter((e) => e.id !== effectId)

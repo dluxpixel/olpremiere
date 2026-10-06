@@ -11,7 +11,7 @@ import {
   withChannelValue,
   withChannelsAtTime,
 } from '../engine/effects/channels'
-import { addEffect } from '../engine/effects/ops'
+import { addEffect, isLookType, putLook, wornLook } from '../engine/effects/ops'
 import { FRAME_FITS, frameFitDims, withFrameFit, type FrameFit } from '../engine/frameFit'
 import { getEffect } from '../engine/effects/registry'
 import { upsertKeyframe, upsertKeyframeValue } from '../engine/keyframes'
@@ -198,6 +198,14 @@ interface EffectRun {
   locked: number
   /** Clips that really got the effect. */
   changed: number
+  /** A look only: titles and captions it left clean. */
+  titles: number
+  /** A look only: clips already wearing this very look, left as they were. */
+  already: number
+  /** A look only: of the changed clips, the ones whose old look it swapped out. */
+  swapped: number
+  /** A look only: the label of the look a swap took off, when every swap took off the same one. */
+  swappedFrom?: string
 }
 
 /** "1 clip is on a locked track and was left out": what to say about the ones a lock held back. */
@@ -216,23 +224,57 @@ export function lockedLeftOut(n: number): string {
  * visual effect on an audio clip stores a card, costs an undo and renders
  * nothing. A mixed selection applies to its visual clips only. Locked tracks are
  * skipped by mapClips; they are counted here so they can be named.
+ *
+ * A LOOK goes on by putLook, one look per clip: it swaps out a look the clip
+ * already wears, and a clip already wearing it is left alone. It also skips
+ * titles and captions, the way the punch grade and the Jettism look on the same
+ * shelf do (lookActions.ts), because the caption style owns them: a look greys
+ * white words and grains them, and a film look haloes them in red. Every door to
+ * a look (the shelf's double click and Enter, its menu, "Apply to every clip",
+ * the drop, the multi Inspector) arrives here, so this is the one place to say it.
  */
 function runEffect(ids: Iterable<string>, type: string): EffectRun {
-  const where = new Map<string, { kind: string; locked: boolean }>()
+  const where = new Map<string, { kind: string; locked: boolean; title: boolean }>()
   for (const t of activeSequence(useStore.getState().project).tracks) {
-    for (const c of t.clips) where.set(c.id, { kind: t.kind, locked: t.locked })
+    for (const c of t.clips) where.set(c.id, { kind: t.kind, locked: t.locked, title: !!c.title })
   }
+  const look = isLookType(type)
   const requested = [...ids]
   const visual = requested.filter((id) => where.get(id)?.kind !== 'audio')
-  const open = visual.filter((id) => !where.get(id)?.locked)
-  const run: EffectRun = { requested: requested.length, visual: visual.length, locked: visual.length - open.length, changed: 0 }
+  const unlocked = visual.filter((id) => !where.get(id)?.locked)
+  const open = look ? unlocked.filter((id) => !where.get(id)?.title) : unlocked
+  const run: EffectRun = {
+    requested: requested.length,
+    visual: visual.length,
+    locked: visual.length - unlocked.length,
+    changed: 0,
+    titles: unlocked.length - open.length,
+    already: 0,
+    swapped: 0,
+  }
   if (open.length === 0) return run
   const label = getEffect(type)?.label ?? type
-  mapClips(open, `Add ${label}`, (c) => {
-    const next = addEffect(c, type, newId())
-    if (next !== c) run.changed++
+  const swappedFrom = new Set<string>()
+  mapClips(open, `${look ? 'Apply' : 'Add'} ${label}`, (c) => {
+    if (!look) {
+      const next = addEffect(c, type, newId())
+      if (next !== c) run.changed++
+      return next
+    }
+    const old = wornLook(c)
+    const next = putLook(c, type, newId())
+    if (next === c) {
+      if (old) run.already++
+    } else {
+      run.changed++
+      if (old) {
+        run.swapped++
+        swappedFrom.add(getEffect(old.type)?.label ?? old.type)
+      }
+    }
     return next
   })
+  if (swappedFrom.size === 1) run.swappedFrom = [...swappedFrom][0]
   // The browser's double-click, its right-click menu, the drop, the clip menu and
   // the Inspector's search all arrive here, so this is where most of his real
   // usage gets remembered.
@@ -248,7 +290,8 @@ function runEffect(ids: Iterable<string>, type: string): EffectRun {
  * that actually apply to all of them."* Every door to an effect ends here, so a
  * selection of pictures takes it whole, in ONE undo step, whichever door he used.
  * A lone clip says nothing, because the effect shows up in the Inspector; more
- * than one clip, or any clip a lock held back, is told in a sentence.
+ * than one clip, or any clip a lock held back, is told in a sentence. So is a
+ * look that swapped out an old one, or left a clip alone (runEffect says why).
  */
 export function applyEffectToClips(ids: Iterable<string>, type: string): number {
   const label = getEffect(type)?.label ?? type
@@ -262,21 +305,49 @@ export function applyEffectToClips(ids: Iterable<string>, type: string): number 
     return 0
   }
   if (run.changed === 0) {
-    if (run.locked > 0) show(run.locked === 1 ? 'That clip is on a locked track' : 'Those clips are on a locked track', 'danger')
+    // A look that found nothing to do says why: the clips already wear it, or
+    // they are titles it leaves clean. A lock alone keeps the old sentence.
+    if (run.already > 0) {
+      show(`${run.already === 1 ? 'That clip already has' : 'Those clips already have'} ${label}${lookAfterword({ ...run, already: 0 })}`, 'info')
+    } else if (run.titles > 0) {
+      show(`Looks leave titles and captions clean${lookAfterword({ ...run, titles: 0 })}`, 'info')
+    } else if (run.locked > 0) {
+      show(run.locked === 1 ? 'That clip is on a locked track' : 'Those clips are on a locked track', 'danger')
+    }
     return 0
   }
-  if (run.changed > 1 || run.locked > 0) {
-    const left = run.locked > 0 ? `. ${lockedLeftOut(run.locked)}` : ''
-    show(`Added ${label} to ${run.changed} clip${run.changed === 1 ? '' : 's'}${left}`, 'success')
+  // A look that swapped one out says so even on a lone clip: the old look's card
+  // is gone from the Inspector, and nothing else would tell him where it went.
+  if (run.changed === 1 && run.swapped === 1 && run.swappedFrom && run.locked + run.titles + run.already === 0) {
+    show(`Swapped ${run.swappedFrom} for ${label}`, 'success')
+  } else if (run.changed > 1 || run.locked > 0 || run.swapped + run.titles + run.already > 0) {
+    show(`Added ${label} to ${run.changed} clip${run.changed === 1 ? '' : 's'}${lookAfterword(run)}`, 'success')
   }
   return run.changed
+}
+
+/**
+ * The rest of a sentence about an effect run: the old look it took the place of,
+ * then what it left alone and why. Only a look has the first three; any run can
+ * have the lock.
+ */
+function lookAfterword(run: EffectRun): string {
+  let s = ''
+  if (run.swapped > 0) {
+    s += `, in place of ${run.swappedFrom ?? 'the old look'}${run.swapped < run.changed ? ` on ${run.swapped}` : ''}`
+  }
+  if (run.already > 0) s += `. ${run.already} already had it`
+  if (run.titles > 0) s += '. Titles and captions left clean'
+  if (run.locked > 0) s += `. ${lockedLeftOut(run.locked)}`
+  return s
 }
 
 /**
  * Add one fresh instance of an effect to EVERY video clip in the active
  * sequence, all in ONE undo step, no selection needed. Audio clips are skipped
  * (a visual effect means nothing on them) and locked tracks are skipped by
- * mapClips. Mirrors applyPresetToAllClips in library.ts.
+ * mapClips. Mirrors applyPresetToAllClips in library.ts. A look swaps out the
+ * look each clip wore and leaves titles and captions clean (runEffect).
  */
 export function applyEffectToAllClips(type: string): void {
   const show = useToasts.getState().show
@@ -288,8 +359,12 @@ export function applyEffectToAllClips(type: string): void {
     show(`No video clips to apply ${label} to`)
     return
   }
-  const { changed } = runEffect(ids, type)
-  show(`Applied "${label}" to ${changed} clip${changed === 1 ? '' : 's'}`, 'success')
+  const run = runEffect(ids, type)
+  const { changed } = run
+  show(
+    `Applied "${label}" to ${changed} clip${changed === 1 ? '' : 's'}${lookAfterword(run)}`,
+    changed === 0 && isLookType(type) ? 'info' : 'success',
+  )
 }
 
 /** Drop every applied effect from every selected clip. */

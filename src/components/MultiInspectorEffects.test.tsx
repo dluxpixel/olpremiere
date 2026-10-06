@@ -19,7 +19,15 @@ vi.mock('../state/toasts', () => ({
 }))
 
 import { recomputeDuration } from '../engine/timeline'
-import { activeSequence, newClipFromAsset, newProject, type Clip, type MediaAsset } from '../engine/types'
+import {
+  activeSequence,
+  defaultTitleDef,
+  newClipFromAsset,
+  newProject,
+  newTitleClip,
+  type Clip,
+  type MediaAsset,
+} from '../engine/types'
 import { EFFECT_MIME } from '../state/dnd'
 import { updateActiveSequence, useStore } from '../state/store'
 import { makeAsset } from './timelineTestFixtures'
@@ -81,6 +89,27 @@ describe('the multi selection Inspector, with three pictures selected', () => {
     })
     expect(effectsOf(ids)).toEqual([['saturation'], ['saturation'], ['saturation']])
     expect(toasts.shown).toEqual(['Added Saturation to 3 clips'])
+  })
+
+  it('a look from the Add effect list skips a selected caption, and a second look swaps the first', async () => {
+    const ids = threePictures()
+    const caption = newTitleClip(defaultTitleDef('LIGHT WEIGHT'), 6, 3)
+    updateActiveSequence('caption', (sq) => ({
+      ...sq,
+      tracks: sq.tracks.map((t) => (t.name === 'V2' ? { ...t, clips: [...t.clips, caption] } : t)),
+    }))
+    const all = [...ids, caption.id]
+    const user = userEvent.setup()
+    const { rerender } = render(<MultiInspector selected={selectedOf(all)} />)
+    await user.selectOptions(screen.getByTestId('multi-add-effect'), 'lookMoodyGym')
+    expect(effectsOf(all)).toEqual([['lookMoodyGym'], ['lookMoodyGym'], ['lookMoodyGym'], []])
+    expect(toasts.shown).toEqual(['Added Moody Gym to 3 clips. Titles and captions left clean'])
+    rerender(<MultiInspector selected={selectedOf(all)} />)
+    await user.selectOptions(screen.getByTestId('multi-add-effect'), 'lookTealOrange')
+    expect(effectsOf(all)).toEqual([['lookTealOrange'], ['lookTealOrange'], ['lookTealOrange'], []])
+    expect(toasts.shown[1]).toBe('Added Teal and Orange to 3 clips, in place of Moody Gym. Titles and captions left clean')
+    useStore.getState().undo()
+    expect(effectsOf(all)).toEqual([['lookMoodyGym'], ['lookMoodyGym'], ['lookMoodyGym'], []])
   })
 
   it('Punch grade grades all three and counts three', async () => {

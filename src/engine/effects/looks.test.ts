@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 import { newClipFromAsset, type Clip, type EffectInstance } from '../types'
 import { makeAsset } from '../../components/timelineTestFixtures'
 import { LOOKS, LOOK_START_AMOUNT, LOOK_TYPES, lookSpecOf, lookType } from './looks'
-import { addEffect } from './ops'
+import { addEffect, isLookType, putLook, wornLook } from './ops'
 import {
   BROWSABLE_EFFECTS,
   CANONICAL_ORDER,
@@ -147,6 +147,28 @@ describe('putting a look on a clip', () => {
     c = addEffect(c, 'gaussianBlur', 'b')
     c = addEffect(c, 'lookFilm800T', 'l')
     expect(c.effects.map((e) => e.id)).toEqual(['s', 'l', 'v', 'b'])
+  })
+
+  it('one look per clip: a second one takes the first one\'s slot, the same one again changes nothing', () => {
+    let c = clip()
+    c = addEffect(c, 'saturation', 's')
+    c = putLook(c, 'lookMoodyGym', 'm')
+    c = addEffect(c, 'vignette', 'v')
+    expect(c.effects.map((e) => e.id)).toEqual(['s', 'm', 'v'])
+    const swapped = putLook(c, 'lookBronze', 'b')
+    expect(swapped.effects.map((e) => `${e.id}:${e.type}`)).toEqual(['s:saturation', 'b:lookBronze', 'v:vignette'])
+    expect(swapped.effects[1]).toEqual({ id: 'b', type: 'lookBronze', enabled: true, params: { amount: LOOK_START_AMOUNT } })
+    expect(putLook(swapped, 'lookBronze', 'again')).toBe(swapped)
+    expect(wornLook(swapped)?.type).toBe('lookBronze')
+  })
+
+  it('refuses anything that is not a look, the passes a look makes included', () => {
+    const c = clip()
+    for (const type of ['saturation', 'lookClarity', 'lookGlow', 'lookGrain', 'nope']) {
+      expect(isLookType(type), type).toBe(false)
+      expect(putLook(c, type, 'x'), type).toBe(c)
+    }
+    for (const type of LOOK_TYPES) expect(isLookType(type), type).toBe(true)
   })
 })
 
