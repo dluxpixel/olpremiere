@@ -114,6 +114,55 @@ describe('keeping the second copy', () => {
   })
 })
 
+describe('⛔ one spare copy written at a time, never one per file at once', () => {
+  it('six imports at once never overlap on the disk, and all six land', async () => {
+    fakeShell()
+    const api = (globalThis as { api?: Record<string, (...a: never[]) => Promise<unknown>> }).api!
+    const { mediaBegin, mediaChunk, mediaFinish } = api as unknown as {
+      mediaBegin: (id: string) => Promise<boolean>
+      mediaChunk: (id: string, b: ArrayBuffer) => Promise<void>
+      mediaFinish: (id: string) => Promise<number>
+    }
+    let open = 0
+    let most = 0
+    Object.assign(api, {
+      mediaBegin: (id: string) => {
+        open++
+        most = Math.max(most, open)
+        return mediaBegin(id)
+      },
+      // A real disk takes a while per slice, which is when the others pile up.
+      mediaChunk: async (id: string, b: ArrayBuffer) => {
+        await new Promise((r) => setTimeout(r, 2))
+        return mediaChunk(id, b)
+      },
+      mediaFinish: (id: string) => {
+        open--
+        return mediaFinish(id)
+      },
+    })
+    const ids = ['a', 'b', 'c', 'd', 'e', 'f']
+    const landed = await Promise.all(ids.map((id) => mirrorAsset(id, new Blob([new Uint8Array(10).fill(1)]))))
+    expect(landed).toEqual(ids.map(() => true))
+    expect(most).toBe(1)
+    expect([...disk.keys()].sort()).toEqual(ids)
+    expect(ids.map((id) => disk.get(id)?.length)).toEqual(ids.map(() => 10))
+  })
+
+  it('a copy that fails does not stop the ones queued behind it', async () => {
+    fakeShell()
+    const api = (globalThis as { api?: Record<string, unknown> }).api!
+    const begin = api.mediaBegin as (id: string) => Promise<boolean>
+    api.mediaBegin = (id: string) => (id === 'bad' ? Promise.reject(new Error('no disk')) : begin(id))
+    const [bad, good] = await Promise.all([
+      mirrorAsset('bad', new Blob(['x'])),
+      mirrorAsset('good', new Blob(['y'])),
+    ])
+    expect(bad).toBe(false)
+    expect(good).toBe(true)
+  })
+})
+
 describe('putting his edit back on launch', () => {
   const p = project({ a: asset('a', 'clip.mp4'), b: asset('b', 'voice.webm') })
 

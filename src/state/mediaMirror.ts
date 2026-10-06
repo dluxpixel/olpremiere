@@ -103,10 +103,20 @@ export async function mirroredIds(): Promise<Set<string>> {
  */
 const inFlight = new Map<string, Promise<boolean>>()
 
+/**
+ * ⛔ AND ONE SPARE COPY BEING WRITTEN AT A TIME, ACROSS ALL IDS. An import does
+ * not wait for its spare copy, so dropping a folder of clips started one per file
+ * at once, every one moving 8 MB per round trip through the main process, the
+ * thread that also carries his mouse and keys. His rule: never lag his PC. They
+ * now queue and land one after another; the import still waits for none of them.
+ */
+let lane: Promise<unknown> = Promise.resolve()
+
 export function mirrorAsset(assetId: string, bytes: Blob): Promise<boolean> {
   const running = inFlight.get(assetId)
   if (running) return running
-  const p = writeMirror(assetId, bytes).finally(() => inFlight.delete(assetId))
+  const p = lane.then(() => writeMirror(assetId, bytes)).finally(() => inFlight.delete(assetId))
+  lane = p.catch(() => false)
   inFlight.set(assetId, p)
   return p
 }
