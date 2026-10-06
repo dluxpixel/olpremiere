@@ -166,14 +166,36 @@ export interface AppState {
  * 2026-10-01 in his GYM: laterAt set, Ctrl+Z, laterAt gone from the store and
  * from GYM_9eb042e8.olpbak.
  */
-function withShelfOf(live: Project, restored: Project): Project {
-  if (live.laterAt === restored.laterAt && live.archivedAt === restored.archivedAt) return restored
-  const next: Project = { ...restored }
+function withLiveMeta(live: Project, restored: Project): Project {
+  // ⛔ AND THE "LAST CHANGED" TIME IS NOW. The snapshot carries the time of the
+  // edit it was taken at, so three undos stamped the project as last changed
+  // before one he only looked at yesterday, and Projects listed it below that.
+  // An undo is a change he made now.
+  const next: Project = { ...restored, updatedAt: Date.now() }
   for (const field of ['laterAt', 'archivedAt'] as const) {
     if (live[field] === undefined) delete next[field]
     else next[field] = live[field]
   }
   return next
+}
+
+/**
+ * The selection after an undo or a redo: only clips that are still there.
+ *
+ * ⛔ UNDO USED TO LEAVE INVISIBLE CLIPS SELECTED. Adding a title, pasting and
+ * splitting into word captions all select what they make, and Ctrl+Z took the
+ * clip away but kept its id selected. C then said "Playhead isn't over a
+ * selected clip" with nothing on screen selected (his "C would not cut",
+ * 2026-10-03), and a ghost plus one real clip blanked the Inspector. The
+ * motion rail's picks are moments on the selected clip, so they go with it.
+ */
+function pruneSelection(ui: UIState, project: Project): UIState {
+  if (ui.selection.length === 0) return ui
+  const seq = project.sequences[project.activeSequenceId]
+  const alive = new Set(seq ? seq.tracks.flatMap((t) => t.clips.map((c) => c.id)) : [])
+  const selection = ui.selection.filter((id) => alive.has(id))
+  if (selection.length === ui.selection.length) return ui
+  return { ...ui, selection, motionSelection: null, motionPicks: [], motionGroupDeltaS: null }
 }
 
 export const MIN_PX_PER_S = 4
@@ -186,6 +208,11 @@ export const MAX_PX_PER_S = 800
 // move is written with.
 const ZOOM_ANCHOR_KEY = 'olpremiere:zoomAnchor'
 const MOVE_CURVE_KEY = 'olpremiere:moveCurve'
+/**
+ * ⛔ SNAPPING STICKS TOO. Settings lists it beside Preview quality, which does
+ * persist, and it came back ON after every restart and every update.
+ */
+export const SNAPPING_KEY = 'olpremiere:snapping'
 
 function readPref(key: string): string | null {
   try {
@@ -221,6 +248,9 @@ function loadZoomAnchor(): ZoomAnchor {
   return DEFAULT_ZOOM_ANCHOR
 }
 
+/** On unless he turned it off: anything but '0' (nothing stored, junk) boots on. */
+const loadSnapping = (): boolean => readPref(SNAPPING_KEY) !== '0'
+
 function loadMoveCurve(): MotionCurveName {
   const raw = readPref(MOVE_CURVE_KEY)
   // Validated against the one curve table: a name from an older or newer build
@@ -234,7 +264,7 @@ export const useStore = create<AppState>()(
     history: emptyHistory(),
     ui: {
       tool: 'select',
-      snapping: true,
+      snapping: loadSnapping(),
       playheadS: 0,
       pxPerS: 60,
       selection: [],
@@ -273,7 +303,8 @@ export const useStore = create<AppState>()(
       const { history, ui, project } = get()
       const r = undoCommand(history)
       if (!r) return null
-      set({ project: withShelfOf(project, r.project), history: r.history, ui: { ...ui, saveState: 'unsaved' } })
+      const next = withLiveMeta(project, r.project)
+      set({ project: next, history: r.history, ui: { ...pruneSelection(ui, next), saveState: 'unsaved' } })
       const at = history.undo[history.undo.length - 1]?.at
       noteHistory('undo', r.label, at ? Date.now() - at : undefined)
       return r.label
@@ -283,7 +314,8 @@ export const useStore = create<AppState>()(
       const { history, ui, project } = get()
       const r = redoCommand(history)
       if (!r) return null
-      set({ project: withShelfOf(project, r.project), history: r.history, ui: { ...ui, saveState: 'unsaved' } })
+      const next = withLiveMeta(project, r.project)
+      set({ project: next, history: r.history, ui: { ...pruneSelection(ui, next), saveState: 'unsaved' } })
       noteHistory('redo', r.label)
       return r.label
     },
@@ -338,11 +370,12 @@ export const useStore = create<AppState>()(
     },
 
     setUI(patch) {
-      // The persisted pair saves through the ONE mutation path, so the monitor's
+      // The persisted ones save through the ONE mutation path, so the monitor's
       // 'Set zoom point here', the panel's curve chips and anything added later
       // all survive a reload without each call site remembering to write.
       if (patch.zoomAnchor) writePref(ZOOM_ANCHOR_KEY, JSON.stringify(patch.zoomAnchor))
       if (patch.moveCurve) writePref(MOVE_CURVE_KEY, patch.moveCurve)
+      if (patch.snapping !== undefined) writePref(SNAPPING_KEY, patch.snapping ? '1' : '0')
       set((s) => ({ ui: { ...s.ui, ...patch } }))
     },
 

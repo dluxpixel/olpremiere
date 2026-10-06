@@ -86,6 +86,29 @@ describe('persisted motion preferences', () => {
   })
 })
 
+describe('snapping', () => {
+  // It sat in Settings beside Preview quality, which sticks, and it came back
+  // on after every restart and every update.
+  it('stays off after a restart once he turns it off', async () => {
+    useStore.getState().setUI({ snapping: false })
+    expect(bag.get('olpremiere:snapping')).toBe('0')
+    expect((await reboot()).snapping).toBe(false)
+  })
+
+  it('stays on when he turns it back on', async () => {
+    bag.set('olpremiere:snapping', '0')
+    const { useStore: fresh } = await import('./store')
+    fresh.getState().setUI({ snapping: true })
+    expect((await reboot()).snapping).toBe(true)
+  })
+
+  it('boots on with nothing stored, or junk', async () => {
+    expect((await reboot()).snapping).toBe(true)
+    bag.set('olpremiere:snapping', 'maybe')
+    expect((await reboot()).snapping).toBe(true)
+  })
+})
+
 describe('opening a different project', () => {
   it('drops the old selection, the picked moves and the playhead, which meant nothing in the new one', async () => {
     const { useStore } = await import('./store')

@@ -91,11 +91,17 @@ describe('undo after a clip drag', () => {
     expect(moved.tracks.find((t) => t.id === 'V3')!.clips.map((c) => c.id).sort()).toEqual(['c', 'd', 'wall'])
 
     expect(useStore.getState().undo()).toBe('Move clips')
-    expect(useStore.getState().project, 'the very same project object').toBe(before)
-    expect(JSON.stringify(useStore.getState().project)).toBe(JSON.stringify(before))
+    // The very same timeline object. The project around it is new only because
+    // an undo stamps the time he made it (store.ts withLiveMeta).
+    const live = useStore.getState().project
+    expect(live.sequences[live.activeSequenceId], 'the very same timeline object').toBe(
+      before.sequences[before.activeSequenceId],
+    )
+    expect(JSON.stringify({ ...live, updatedAt: 0 })).toBe(JSON.stringify({ ...before, updatedAt: 0 }))
 
     expect(useStore.getState().redo()).toBe('Move clips')
-    expect(useStore.getState().project).toBe(after)
+    const redone = useStore.getState().project
+    expect(redone.sequences[redone.activeSequenceId]).toBe(after.sequences[after.activeSequenceId])
   })
 
   it('a drag that lands where it started writes nothing into his history', () => {
