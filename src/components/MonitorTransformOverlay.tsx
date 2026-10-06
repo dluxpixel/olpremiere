@@ -12,6 +12,7 @@ import { resolveFrame } from '../engine/render/resolve'
 import { titleInkBoxUV } from '../engine/render/titleRaster'
 import type { RenderLayer, ResolvedTransform } from '../engine/render/types'
 import { activeSequence, type Clip } from '../engine/types'
+import { contentBox } from '../engine/contentFrame'
 import { MOMENT_EPS, clipKeyframeTimes } from '../engine/keyframes'
 import { setLivePreviewTransform } from '../engine/preview'
 import { previewClipMenu } from '../state/clipMenus'
@@ -56,6 +57,46 @@ const ACCENT_WASH = 'color-mix(in srgb, var(--color-accent) 6%, transparent)'
 const HANDLE_INK = 'var(--color-accent-fg)'
 /** Pointer travel before a monitor click becomes a scrub jog. */
 const SCRUB_SLOP_PX = 4
+
+/**
+ * The selected clip's box on the monitor, in sequence pixels, laid out exactly
+ * the way the renderer lays it out.
+ *
+ * ⛔ THE INNER FRAME IS PART OF THAT. With a square or 4:5 frame inside a Short,
+ * resolveFrame fits every PICTURE into that box (inFrame), and the gizmo used to
+ * fit the same clip into the whole 1080x1920: his 9:16 gym clip in a 4:5 box was
+ * drawn 759x1350 while the handles sat on the full frame, so dragging an edge
+ * scaled from the wrong distance. Titles stay on the full frame, as they render.
+ */
+export function gizmoQuad(
+  clip: Clip,
+  seq: { width: number; height: number; contentAspect?: number },
+  asset: { width?: number; height?: number } | undefined,
+  tf: Tf,
+): { rt: ResolvedTransform; texW: number; texH: number; corners: [number, number][] } {
+  const isTitle = clip.title !== undefined
+  const texW = isTitle ? seq.width : (asset?.width ?? seq.width)
+  const texH = isTitle ? seq.height : (asset?.height ?? seq.height)
+  const frame = isTitle ? null : contentBox(seq.width, seq.height, seq.contentAspect)
+  const rt: ResolvedTransform = {
+    x: tf.x,
+    y: tf.y,
+    scale: tf.scale,
+    rotationDeg: tf.rotationDeg,
+    anchorX: clip.transform.anchorX,
+    anchorY: clip.transform.anchorY,
+    cropT: clip.transform.crop.t,
+    cropR: clip.transform.crop.r,
+    cropB: clip.transform.crop.b,
+    cropL: clip.transform.crop.l,
+    // A stretched clip's box is the frame's shape, so the handles sit on the
+    // picture he sees and not on the narrower one it would fit as.
+    ...(clip.transform.fit === 'stretch' ? { fit: 'stretch' as const } : {}),
+    ...(frame ? { frame } : {}),
+  }
+  const { corners } = computeQuad({ frameW: seq.width, frameH: seq.height, texW, texH, transform: rt })
+  return { rt, texW, texH, corners }
+}
 
 /**
  * What the diamond badge in the gizmo's corner is showing, and therefore what
@@ -387,26 +428,8 @@ function OverlayInner({ canvas, chromeHidden }: { canvas: HTMLCanvasElement | nu
             scale: clip.transform.scale,
             rotationDeg: clip.transform.rotationDeg,
           })
-    const isTitle = clip.title !== undefined
-    const asset = project.assets[clip.assetId]
-    const texW = isTitle ? seq.width : (asset?.width ?? seq.width)
-    const texH = isTitle ? seq.height : (asset?.height ?? seq.height)
-    const rt: ResolvedTransform = {
-      x: tf.x,
-      y: tf.y,
-      scale: tf.scale,
-      rotationDeg: tf.rotationDeg,
-      anchorX: clip.transform.anchorX,
-      anchorY: clip.transform.anchorY,
-      cropT: clip.transform.crop.t,
-      cropR: clip.transform.crop.r,
-      cropB: clip.transform.crop.b,
-      cropL: clip.transform.crop.l,
-      // A stretched clip's box is the frame's shape, so the handles sit on the
-      // picture he sees and not on the narrower one it would fit as.
-      ...(clip.transform.fit === 'stretch' ? { fit: 'stretch' as const } : {}),
-    }
-    const { corners } = computeQuad({ frameW: seq.width, frameH: seq.height, texW, texH, transform: rt })
+    const { rt, texW, texH, corners } = gizmoQuad(clip, seq, project.assets[clip.assetId], tf)
+    const inner = contentBox(seq.width, seq.height, seq.contentAspect)
     const xs = corners.map(([x]) => x * k)
     const ys = corners.map(([, y]) => y * k)
     const minX = Math.min(...xs)
@@ -463,7 +486,7 @@ function OverlayInner({ canvas, chromeHidden }: { canvas: HTMLCanvasElement | nu
           // Snap to the frame: its centre, and now its EDGES, so a clip lands
           // flush in a corner instead of near one. 8 screen px of tolerance,
           // converted to sequence px so it feels the same at any zoom.
-          const snapped = snapTransformMove(x, y, drag.startTf.x, drag.startTf.y, drag.startBox, seq.width, seq.height, 8 / k)
+          const snapped = snapTransformMove(x, y, drag.startTf.x, drag.startTf.y, drag.startBox, seq.width, seq.height, 8 / k, inner)
           setSnapGuides({ x: snapped.guideX, y: snapped.guideY })
           apply({ ...drag.startTf, x: snapped.x, y: snapped.y })
         } else if (drag.mode === 'scale') {
@@ -778,7 +801,10 @@ function OverlayInner({ canvas, chromeHidden }: { canvas: HTMLCanvasElement | nu
           // moving several texts at once must catch the frame's edges and
           // corners too. The box is the PRIMARY clip's, which is the one this
           // whole gesture already aligns everything else onto.
-          const snapped = snapTransformMove(x, y, startTf.x, startTf.y, startBox, seq.width, seq.height, 8 / k)
+          const snapped = snapTransformMove(
+            x, y, startTf.x, startTf.y, startBox, seq.width, seq.height, 8 / k,
+            contentBox(seq.width, seq.height, seq.contentAspect),
+          )
           setSnapGuides({ x: snapped.guideX, y: snapped.guideY })
           last = { ...startTf, x: snapped.x, y: snapped.y }
           setDragTf(last)
