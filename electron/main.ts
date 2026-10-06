@@ -42,6 +42,7 @@ import {
 import * as native from './nativeExport'
 import * as proxy from './proxy'
 import * as mediaStore from './mediaStore'
+import * as mediaSweep from './mediaSweep'
 import * as remux from './remux'
 import { IDLE_POLL_MS, updateApplyDecision } from './updateApply'
 import { planUpdateError, updateLogEntry } from './updateErrors'
@@ -637,6 +638,21 @@ app.whenReady().then(() => {
   ipcMain.handle('media:cancel', (_e, id: string) => mediaStore.cancelMedia(id))
   ipcMain.handle('media:read', (_e, id: string, offset: number, length: number) => mediaStore.readMedia(id, offset, length))
   ipcMain.handle('media:delete', (_e, id: string) => mediaStore.deleteMedia(id))
+  // Spare copies nothing has used for 7 days, his call 2026-10-06 (mediaSweep.ts).
+  // Never while a copy is being written: that is an import on its way.
+  ipcMain.handle('media:sweepUnused', async (_e, projects: number, assetIds: string[]) => {
+    if (mediaStore.isWriting()) return { removed: [], freedBytes: 0, waiting: 0, refused: 'a copy is being written' }
+    const projectsDir = projectFiles.projectDir()
+    return mediaSweep.sweepUnusedSpareCopies(
+      {
+        mediaDirs: mediaStore.mediaDirs(),
+        projectDirs: [projectsDir, path.join(projectsDir, 'Trash')],
+        backupDirs: [backups.backupDir()],
+        ledgerFile: path.join(app.getPath('userData'), 'spare-copies-unused.json'),
+      },
+      { projects: typeof projects === 'number' ? projects : 0, assetIds: Array.isArray(assetIds) ? assetIds.map(String) : [] },
+    )
+  })
 
   ipcMain.handle('proxy:begin', () => proxy.beginProxy())
   ipcMain.handle('proxy:chunk', (_e, id: string, bytes: ArrayBuffer) => proxy.chunkProxy(id, bytes))

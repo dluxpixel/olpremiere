@@ -238,6 +238,14 @@ export interface OlApi {
   mediaCancel(id: string): Promise<void>
   mediaRead(id: string, offset: number, length: number): Promise<ArrayBuffer | null>
   mediaDelete(id: string): Promise<void>
+  /**
+   * Let go of spare copies nothing has used for 7 days (electron/mediaSweep.ts).
+   * `projects` and `assetIds` are what the store holds; zero projects refuses.
+   */
+  mediaSweepUnused(
+    projects: number,
+    assetIds: string[],
+  ): Promise<{ removed: string[]; freedBytes: number; waiting: number; refused?: string }>
   proxyBegin(): Promise<string>
   proxyChunk(id: string, bytes: ArrayBuffer): Promise<void>
   proxyFinish(id: string): Promise<{ size: number } | null>

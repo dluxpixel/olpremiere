@@ -273,6 +273,9 @@ void booted.then(() => {
   // never delay the app opening, and it must never be able to fail the boot. Once
   // per session is plenty; the space only leaks when he deletes media.
   void import('./state/blobSweep').then((m) => m.sweepOrphanedBlobs())
+  // And the spare copies on disk nothing has used for 7 days, his call 2026-10-06.
+  // A few minutes in, and never while an import or export runs (spareCopySweep.ts).
+  void import('./state/spareCopySweep').then((m) => m.scheduleSpareCopySweep())
 })
 
 // Hydrate the saved default text animation.

@@ -35,6 +35,7 @@ const api: OlApi = {
   mediaCancel: (id: string) => ipcRenderer.invoke('media:cancel', id),
   mediaRead: (id: string, offset: number, length: number) => ipcRenderer.invoke('media:read', id, offset, length),
   mediaDelete: (id: string) => ipcRenderer.invoke('media:delete', id),
+  mediaSweepUnused: (projects: number, assetIds: string[]) => ipcRenderer.invoke('media:sweepUnused', projects, assetIds),
   proxyBegin: () => ipcRenderer.invoke('proxy:begin'),
   proxyChunk: (id: string, bytes: ArrayBuffer) => ipcRenderer.invoke('proxy:chunk', id, bytes),
   proxyFinish: (id: string) => ipcRenderer.invoke('proxy:finish', id),

@@ -40,7 +40,7 @@ export function mediaDir(): string {
  * own name, and the legacy profile this app is already known to have used. A
  * folder that is not there costs one failed `readdir`.
  */
-function mediaDirs(): string[] {
+export function mediaDirs(): string[] {
   const dirs = [mediaDir()]
   try {
     const roaming = app.getPath('appData')
@@ -117,6 +117,11 @@ export function mediaWriteDir(): string {
 // captures are gigabytes and a whole-file buffer would die on the ones that
 // matter most.
 const writers = new Map<string, { handle: FileHandle; tmp: string; final: string }>()
+
+/** True while any copy is being written: an import's spare copy is on its way. */
+export function isWriting(): boolean {
+  return writers.size > 0
+}
 
 /**
  * Start writing one asset's copy.
