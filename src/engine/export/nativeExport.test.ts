@@ -70,6 +70,7 @@ function fakeMain() {
   let progress: ((p: { frame: number; totalFrames: number }) => void) | null = null
   const wavs: ArrayBuffer[] = []
   const starts: Record<string, unknown>[] = []
+  const finish = { hold: false, release: () => {} }
   const api = {
     isElectron: true,
     nativePrepareAudio: (wav: ArrayBuffer) => {
@@ -90,7 +91,10 @@ function fakeMain() {
       }),
     nativeFinish: () => {
       log.push('finish')
-      return Promise.resolve({ ok: true, outPath: 'C:\\Videos\\Holiday.mp4', sizeBytes: 1234 })
+      const result = { ok: true, outPath: 'C:\\Videos\\Holiday.mp4', sizeBytes: 1234 }
+      // Held open when asked: the real finish waits for ffmpeg to drain its lookahead.
+      if (!finish.hold) return Promise.resolve(result)
+      return new Promise((r) => (finish.release = () => r(result)))
     },
     nativeCancel: () => {
       log.push('cancel')
@@ -104,7 +108,7 @@ function fakeMain() {
       }
     },
   }
-  return { api, log, writes, wavs, starts, ffmpegSays: (frame: number) => progress?.({ frame, totalFrames: 0 }) }
+  return { api, log, writes, wavs, starts, finish, ffmpegSays: (frame: number) => progress?.({ frame, totalFrames: 0 }) }
 }
 
 function project(): Project {
@@ -186,6 +190,36 @@ describe('frames reach ffmpeg one at a time, in order', () => {
     await expect(run).resolves.toEqual({ outPath: 'C:\\Videos\\Holiday.mp4', sizeBytes: 1234 })
     expect(main.log.slice(-3)).toEqual(['write 1', 'write 2', 'finish'])
     expect(w.terminated).toBe(true)
+  })
+})
+
+describe('⛔ the progress never goes backward at the end', () => {
+  it('after the last frame, ffmpeg catching up is the finishing step, and the percent only rises', async () => {
+    main.finish.hold = true
+    const run = start()
+    await flush()
+    const w = FakeWorker.last
+    main.ffmpegSays(0)
+    main.ffmpegSays(60)
+    // Every frame is in: x264 still holds a lookahead's worth (105 of 240 on his gym frames).
+    w.emit({ type: 'done' } as ExportResponse)
+    await flush()
+    main.ffmpegSays(70)
+    main.ffmpegSays(65)
+    main.ffmpegSays(140)
+    const ffmpegPart = progress.filter((p) => p.phase === 'video' || p.phase === 'finalizing')
+    expect(ffmpegPart.map((p) => [p.phase, p.framesDone])).toEqual([
+      ['video', 0],
+      ['video', 60],
+      ['finalizing', 60],
+      ['finalizing', 70],
+      ['finalizing', 70],
+      ['finalizing', 140],
+    ])
+    // Never 100 and then back to less.
+    for (let i = 1; i < ffmpegPart.length; i++) expect(ffmpegPart[i].framesDone).toBeGreaterThanOrEqual(ffmpegPart[i - 1].framesDone)
+    main.finish.release()
+    await expect(run).resolves.toMatchObject({ sizeBytes: 1234 })
   })
 })
 

@@ -74,3 +74,14 @@ describe('an ffmpeg that dies mid export says why', () => {
     expect(native.stderrTail('')).toBe('')
   })
 })
+
+describe('ffmpeg progress, read across chunks', () => {
+  it('⛔ a line split between two chunks is read whole, not as a smaller number', () => {
+    const frames: number[] = []
+    const read = native.progressReader((f) => frames.push(f))
+    read('fps=30.0\nframe=12')
+    read('3\nfps=30.0\nfr')
+    read('ame=130\r\nprogress=continue\n')
+    expect(frames).toEqual([123, 130])
+  })
+})

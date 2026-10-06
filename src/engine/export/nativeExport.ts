@@ -177,7 +177,19 @@ export async function exportNative(
   }
 
   // ffmpeg's own frame counter drives the video %; the worker covers prep/audio.
-  const unsub = api.onNativeProgress((p) => onProgress({ phase: 'video', framesDone: p.frame, framesTotal }))
+  //
+  // ⛔ THE PERCENT NEVER GOES BACK. When the last frame goes in, x264 still holds
+  // a lookahead's worth: measured on his gym frames, ffmpeg had encoded 105 of
+  // 240 at that moment and reported twelve more counts over 6.4 s. Each used to
+  // set the phase back to the video at 49 to 97 percent, right after the dialog
+  // had said "100%". So once the worker is done, ffmpeg's count is the finishing
+  // step, and only the highest count yet is ever shown.
+  let encoded = 0
+  let workerDone = false
+  const unsub = api.onNativeProgress((p) => {
+    encoded = Math.max(encoded, Math.min(p.frame, framesTotal))
+    onProgress({ phase: workerDone ? 'finalizing' : 'video', framesDone: encoded, framesTotal })
+  })
 
   return await new Promise<NativeExportResult | null>((resolve, reject) => {
     const worker = new Worker(new URL('./exportWorker.ts', import.meta.url), { type: 'module' })
@@ -234,7 +246,8 @@ export async function exportNative(
         // ffmpeg's native:progress owns the video phase; forward prep/audio only.
         if (msg.progress.phase !== 'video') onProgress(msg.progress)
       } else if (msg.type === 'done') {
-        onProgress({ phase: 'finalizing', framesDone: framesTotal, framesTotal })
+        workerDone = true
+        onProgress({ phase: 'finalizing', framesDone: encoded, framesTotal })
         // Drain the write queue before closing ffmpeg's stdin.
         void writeChain.then(() => api.nativeFinish()).then((fin) => {
           if (fin.ok) done(() => resolve({ outPath: fin.outPath ?? '', sizeBytes: fin.sizeBytes ?? 0 }))

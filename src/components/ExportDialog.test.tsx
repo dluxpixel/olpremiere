@@ -118,6 +118,14 @@ describe('on the desktop', () => {
     expect(chip.textContent).toContain('50%')
     expect(chip.textContent).toContain('Holiday')
 
+    // Each step in plain words, and the time left from how fast it is going.
+    await user.click(screen.getByTestId('export-chip-open'))
+    expect(screen.getByTestId('export-phase').textContent).toContain('Making the video')
+    act(() => h.native[0].onProgress({ phase: 'finalizing', framesDone: 140, framesTotal: 150 }))
+    expect(screen.getByTestId('export-phase').textContent).toContain('Finishing the file')
+    expect(screen.getByTestId('export-dialog').textContent).not.toMatch(/ETA|finalizing/)
+    await user.click(screen.getByTestId('export-keep-working'))
+
     // He opens another project; the chip still names the one being made.
     act(() => useStore.getState().setProject(newProject('Other')))
     expect(screen.getByTestId('export-chip').textContent).toContain('Holiday')

@@ -142,15 +142,10 @@ export async function start(config: NativeExportConfig, win: BrowserWindow): Pro
     if (stderr.length > 64_000) stderr = stderr.slice(-32_000)
   })
   // Parse -progress key=value blocks from stdout → a percentage.
-  ffmpeg.stdout.on('data', (d: Buffer) => {
-    for (const line of d.toString().split(/\r?\n/)) {
-      const m = /^frame=(\d+)/.exec(line.trim())
-      if (m && job) {
-        const frame = Number(m[1])
-        win.webContents.send('native:progress', { frame, totalFrames: job.totalFrames })
-      }
-    }
+  const readProgress = progressReader((frame) => {
+    if (job) win.webContents.send('native:progress', { frame, totalFrames: job.totalFrames })
   })
+  ffmpeg.stdout.on('data', (d: Buffer) => readProgress(d.toString()))
   // stdin EPIPE if ffmpeg dies early. Swallow it; the close code surfaces the error.
   ffmpeg.stdin.on('error', () => {})
 
@@ -159,6 +154,26 @@ export async function start(config: NativeExportConfig, win: BrowserWindow): Pro
   // Keep stderr live-updated on the job.
   ffmpeg.stderr.on('data', () => job && (job.stderr = stderr))
   return { started: true, outPath }
+}
+
+/**
+ * Reads ffmpeg's -progress output into frame counts.
+ *
+ * ⛔ A CHUNK CAN END MID LINE. Split per chunk, "frame=12" + "3" was read as 12
+ * and the 3 thrown away, a count that could run backwards. The unfinished line
+ * waits for the rest, the way remuxRun.ts already reads the same output.
+ */
+export function progressReader(onFrame: (frame: number) => void): (chunk: string) => void {
+  let pending = ''
+  return (chunk) => {
+    pending += chunk
+    const lines = pending.split(/\r?\n/)
+    pending = lines.pop() ?? ''
+    for (const line of lines) {
+      const m = /^frame=(\d+)/.exec(line.trim())
+      if (m) onFrame(Number(m[1]))
+    }
+  }
 }
 
 /**

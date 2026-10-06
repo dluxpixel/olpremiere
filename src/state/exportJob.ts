@@ -32,6 +32,7 @@ import { canStreamToDisk, exportSequence, pickExportDestination, type ExportProg
 import { planExport, type ExportPlan } from '../engine/export/exportPlan'
 import { PLATFORM_TARGET_LUFS } from '../engine/loudness'
 import { exportNative } from '../engine/export/nativeExport'
+import { addSample, timeLeftS, type ProgressSample } from '../engine/export/timeLeft'
 import { activeSequence, type Project } from '../engine/types'
 import { isElectron } from '../platform'
 import { isPhoneLayout } from '../ui/phoneLayout'
@@ -46,7 +47,8 @@ import { noteExportEnd, noteExportStart } from './usageNotes'
 export type ExportStage =
   /** The browser's save picker is up; nothing is encoding yet. */
   | { kind: 'starting' }
-  | { kind: 'running'; progress: ExportProgress; startedAt: number }
+  /** `leftS`: seconds left at the recent rate (engine/export/timeLeft.ts), NaN until known. */
+  | { kind: 'running'; progress: ExportProgress; leftS: number }
   /** `streamed` tells "written where you chose" apart from "in your downloads". */
   | { kind: 'done'; sizeBytes: number; fileName: string; streamed: boolean; path?: string; share?: File }
   | { kind: 'error'; message: string }
@@ -134,7 +136,7 @@ const runningStage = (plan: ExportPlan): ExportStage => ({
     framesDone: 0,
     framesTotal: Math.ceil((plan.settings.endS - plan.settings.startS) * plan.settings.fps),
   },
-  startedAt: performance.now(),
+  leftS: Number.NaN,
 })
 
 /** Change the job only if it is still run `id`. */
@@ -358,10 +360,20 @@ function settleCancelled(id: number): void {
   if (useExportJob.getState().job?.id === id) forgetJob()
 }
 
+/** The running export's recent progress, for the time left. */
+let rate: { id: number; samples: ProgressSample[] } = { id: 0, samples: [] }
+
 function onProgress(id: number, progress: ExportProgress): void {
   const { job } = useExportJob.getState()
   if (!job || job.id !== id || job.stage.kind !== 'running') return
-  useExportJob.setState({ job: { ...job, stage: { ...job.stage, progress } } })
+  // Only while frames are being made: getting ready and the sound mix have no frame rate.
+  let leftS = Number.NaN
+  if (progress.phase === 'video' || progress.phase === 'finalizing') {
+    if (rate.id !== id) rate = { id, samples: [] }
+    rate.samples = addSample(rate.samples, { t: performance.now(), frames: progress.framesDone })
+    leftS = timeLeftS(rate.samples, progress.framesTotal)
+  }
+  useExportJob.setState({ job: { ...job, stage: { ...job.stage, progress, leftS } } })
 }
 
 function succeed(id: number, stage: Extract<ExportStage, { kind: 'done' }>): void {

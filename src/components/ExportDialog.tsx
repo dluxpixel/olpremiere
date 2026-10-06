@@ -13,11 +13,15 @@ import { useSettings } from '../state/settings'
 import { useToasts } from '../state/toasts'
 import { Button, IconButton } from '../ui/Button'
 import { useEscapeToClose } from '../ui/useEscapeToClose'
+import { timeLeftWords } from '../engine/export/timeLeft'
+import type { ExportProgress } from '../engine/export/messages'
 
-function fmtEta(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds < 0) return '--'
-  const s = Math.round(seconds)
-  return s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`
+/** What each step is called where he reads it. */
+const PHASE_WORDS: Record<ExportProgress['phase'], string> = {
+  preparing: 'Getting ready',
+  audio: 'Mixing the sound',
+  video: 'Making the video',
+  finalizing: 'Finishing the file',
 }
 
 /**
@@ -56,11 +60,6 @@ export function ExportDialog() {
   const { plan } = job
 
   const pct = exportPercent(stage)
-  const eta =
-    stage.kind === 'running' && stage.progress.framesDone > 3
-      ? ((performance.now() - stage.startedAt) / 1000 / stage.progress.framesDone) *
-        (stage.progress.framesTotal - stage.progress.framesDone)
-      : NaN
 
   return (
     <div
@@ -130,9 +129,9 @@ export function ExportDialog() {
             {stage.kind === 'running' && (
               <>
                 <div className="flex items-center justify-between text-[12px]">
-                  <span className="flex items-center gap-1.5 capitalize text-ember">
+                  <span className="flex items-center gap-1.5 text-ember" data-testid="export-phase">
                     <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-ember" aria-hidden />
-                    {stage.progress.phase}…
+                    {PHASE_WORDS[stage.progress.phase]}…
                   </span>
                   <span className="font-numeric text-text-primary">{pct}%</span>
                 </div>
@@ -146,7 +145,7 @@ export function ExportDialog() {
                   <span>
                     {stage.progress.framesDone} / {stage.progress.framesTotal} frames
                   </span>
-                  <span>ETA {fmtEta(eta)}</span>
+                  <span data-testid="export-time-left">{timeLeftWords(stage.leftS)}</span>
                 </div>
                 <div className="mt-1 flex justify-end gap-2">
                   <Button variant="secondary" data-testid="export-cancel" onClick={cancelExport}>
