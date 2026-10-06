@@ -63,14 +63,31 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('the multi selection Inspector, with three pictures selected', () => {
-  it('Add effect puts it on all three, in ONE undo step, and says how many', async () => {
+  // The same search the single clip panel has: found by what it does, not by
+  // its name, and it lands on all three. It used to be a bare list of names.
+  it('Add effect searches by what it does and puts it on all three, in ONE undo step', async () => {
     const ids = threePictures()
     render(<MultiInspector selected={selectedOf(ids)} />)
-    await userEvent.setup().selectOptions(screen.getByTestId('multi-add-effect'), 'gaussianBlur')
-    expect(effectsOf(ids)).toEqual([['gaussianBlur'], ['gaussianBlur'], ['gaussianBlur']])
-    expect(toasts.shown).toEqual(['Added Gaussian Blur to 3 clips'])
+    const user = userEvent.setup()
+    await user.click(screen.getByTestId('inspector-add-effect'))
+    await user.type(screen.getByTestId('add-effect-search'), 'bloom')
+    await user.keyboard('{Enter}')
+    expect(effectsOf(ids)).toEqual([['glow'], ['glow'], ['glow']])
+    expect(toasts.shown).toEqual(['Added Glow to 3 clips'])
     useStore.getState().undo()
     expect(effectsOf(ids)).toEqual([[], [], []])
+  })
+
+  it('the eye turns every effect off on all three, the Shift+B of the panel', async () => {
+    const ids = threePictures()
+    render(<MultiInspector selected={selectedOf(ids)} />)
+    fireEvent.drop(screen.getByTestId('multi-effects'), {
+      dataTransfer: { types: [EFFECT_MIME], getData: (m: string) => (m === EFFECT_MIME ? 'saturation' : '') },
+    })
+    cleanup()
+    render(<MultiInspector selected={selectedOf(ids)} />)
+    await userEvent.setup().click(screen.getByTestId('multi-bypass-effects'))
+    expect(ids.map((id) => clipById(id).effects.map((e) => e.enabled))).toEqual([[false], [false], [false]])
   })
 
   it('an effect dragged into the panel lands on all three and says how many', () => {

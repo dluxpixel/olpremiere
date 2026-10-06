@@ -43,7 +43,9 @@ test('select every clip with Auto Color, change Amount once, all of them follow,
   // Auto Color on every clip, the way he puts it on everything: select all, add it to all.
   await page.locator('[data-clip-kind="video"]').first().click()
   await page.keyboard.press('ControlOrMeta+a')
-  await page.getByTestId('multi-add-effect').selectOption('autoColor')
+  await page.getByTestId('inspector-add-effect').click()
+  await page.getByTestId('add-effect-search').fill('auto color')
+  await page.locator('[data-testid="add-effect-row"][data-type="autoColor"]').first().click()
   await expect.poll(() => amounts(page)).toEqual([0.6, 0.6, 0.6])
 
   // Start from ONE clip selected, then right-click it.

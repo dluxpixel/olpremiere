@@ -1088,7 +1088,7 @@ function EffectStack({ clip, playheadS }: { clip: Clip; playheadS: number }) {
           )}
           {/* Add an effect without leaving for the Effects tab, and find it by
               what it does rather than by remembering its name. */}
-          <AddEffectMenu clipId={clip.id} />
+          <AddEffectMenu clipIds={[clip.id]} />
           {clip.effects.length > 0 && (
             <IconButton
               label="Save effects as preset"

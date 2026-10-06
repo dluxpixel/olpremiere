@@ -7,7 +7,6 @@
 
 import { Bold, CaseLower, CaseUpper, Eye, EyeOff, FlipHorizontal2, Italic, Sparkles, Layers } from 'lucide-react'
 import {
-  applyEffectToClips,
   clearEffectsForClips,
   setChannelForClips,
   setClipsFade,
@@ -24,9 +23,9 @@ import { applyPunchyGradeToClips } from '../state/lookActions'
 import { applyCaptionStyle } from '../state/captionActions'
 import { allCaptionStyles, saveCaptionStyleFromClip, useCaptionStyles } from '../state/captionStyles'
 import { setTitlesFontSize, updateTitles } from '../state/titleActions'
-import { BROWSABLE_EFFECTS } from '../engine/effects/registry'
 import { ensureTitleFont, TITLE_FONT_OPTIONS } from '../engine/render/titleFonts'
 import { clipDurationS } from '../engine/timeline'
+import { AddEffectMenu } from './AddEffectMenu'
 import { useEffectDrop } from './effectDrop'
 import { activeSequence, type Clip, type Track } from '../engine/types'
 import { IconButton } from '../ui/Button'
@@ -423,8 +422,8 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
       >
         <div className="flex items-center gap-1.5">
           <Header label="Effects" icon={Sparkles} />
-          {withEffects.length > 0 && (
-            <span className="ml-auto flex items-center">
+          <span className="ml-auto flex items-center gap-1">
+            {withEffects.length > 0 && (
               <IconButton
                 label={anyEffectOn ? 'Turn every effect off' : 'Turn every effect on'}
                 shortcut="Shift+B"
@@ -440,8 +439,12 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
                   <EyeOff size={13} strokeWidth={1.75} aria-hidden />
                 )}
               </IconButton>
-            </span>
-          )}
+            )}
+            {/* The SAME search the single clip panel has (find it by what it
+                does, recents first), so it does not turn into a bare list of
+                names exactly when he is working on a whole Short. */}
+            <AddEffectMenu clipIds={allIds} />
+          </span>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           <button
@@ -463,24 +466,6 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
             Clear
           </button>
         </div>
-        <PropRow label="Add effect">
-          <select
-            aria-label="Add effect to all"
-            data-testid="multi-add-effect"
-            value=""
-            onChange={(e) => {
-              if (e.target.value) applyEffectToClips(allIds, e.target.value)
-            }}
-            className="h-6 w-[140px] cursor-default rounded-field bg-bg-input px-1.5 text-ui-sm text-text-primary"
-          >
-            <option value="">Choose…</option>
-            {BROWSABLE_EFFECTS.map((ef) => (
-              <option key={ef.type} value={ef.type}>
-                {ef.label}
-              </option>
-            ))}
-          </select>
-        </PropRow>
         {/* His ask, 2026-10-01: flip the video left to right, here on all of
             the selected pictures at once (titles are left alone). */}
         {pictureIds.length > 0 && (
