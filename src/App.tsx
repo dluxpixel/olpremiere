@@ -171,6 +171,7 @@ export function buildAppBindings(): Binding[] {
         combo: 'mod+s',
         description: 'Save project',
         domain: 'project',
+        overWindows: true,
         run: () => {
           void saveNow().then(
             () => useToasts.getState().show('Project saved', 'success'),
@@ -190,6 +191,7 @@ export function buildAppBindings(): Binding[] {
         combo: 'f5',
         description: 'Reload the app',
         domain: 'project',
+        overWindows: true,
         run: () => void reloadAndCheckForUpdates(),
       },
       {

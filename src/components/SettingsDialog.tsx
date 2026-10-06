@@ -7,7 +7,7 @@
 // new preference lands so they stop breeding in dropdown corners.
 
 import { Bookmark, Monitor as MonitorIcon, Moon, Sparkles, Sun, X } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   CAPTION_LANGUAGES,
   getCaptionLanguage,
@@ -29,6 +29,7 @@ import { listAudioInputs, setInputDevice, setOutputDevice, useRecorder } from '.
 import { listAudioOutputs } from '../state/recordingMonitor'
 import { canPickAudioOutput } from '../engine/audio'
 import { Button, IconButton } from '../ui/Button'
+import { useDialogFocus } from '../ui/useDialogFocus'
 import { useEscapeToClose } from '../ui/useEscapeToClose'
 
 /** One labelled preference row on the settings grid. */
@@ -101,6 +102,8 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   }, [])
 
   useEscapeToClose(onClose)
+  const box = useRef<HTMLDivElement>(null)
+  useDialogFocus(box)
 
   return (
     <div
@@ -110,6 +113,8 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
       }}
     >
       <div
+        ref={box}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-label="Settings"

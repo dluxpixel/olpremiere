@@ -23,6 +23,7 @@ import {
 } from '../state/projectFile'
 import { Button, IconButton } from '../ui/Button'
 import { usePhoneLayout } from '../ui/phoneLayout'
+import { useDialogFocus } from '../ui/useDialogFocus'
 import { useEscapeToClose } from '../ui/useEscapeToClose'
 
 function ago(ts: number): string {
@@ -133,6 +134,8 @@ export function ProjectsDialog({ onClose, view = 'active' }: { onClose: () => vo
   const currentId = useStore((s) => s.project.id)
   // Escape closes it, like every other dialog (it was the one that never did).
   useEscapeToClose(onClose)
+  const box = useRef<HTMLDivElement>(null)
+  useDialogFocus(box)
   const [all, setAll] = useState<ProjectSummary[] | null>(null)
   const [tab, setTab] = useState<ProjectsView>(view)
   // Two-step delete: first click arms, second click within the same render
@@ -223,6 +226,8 @@ export function ProjectsDialog({ onClose, view = 'active' }: { onClose: () => vo
       }}
     >
       <div
+        ref={box}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-label="Projects"

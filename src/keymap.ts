@@ -33,7 +33,22 @@ export interface Binding {
    * that event ONLY when the keydown was left alone (state/picturePaste.ts).
    */
   allowDefault?: boolean
+  /**
+   * Keep working while a window or a menu is open over the edit. Only for keys that do not
+   * touch the edit itself: saving it and reloading the app.
+   */
+  overWindows?: boolean
 }
+
+/**
+ * A window or a menu that sits over the edit. While one is open the edit's keys wait for it.
+ *
+ * ⛔ THEY USED TO GO STRAIGHT THROUGH (found 2026-10-06). With Projects open, the list where he
+ * deletes projects, Delete took the selected clip off the timeline behind it; Space played and
+ * Ctrl+Z undid edits he could not see. Escape is not lost: every window and menu listens for it
+ * itself (ui/useEscapeToClose.ts and the menus' own listeners).
+ */
+const OVER_THE_EDIT = '[aria-modal="true"], [data-esc-owner]'
 
 const isMac = typeof navigator !== 'undefined' && /Mac|iP(hone|ad|od)/.test(navigator.platform)
 
@@ -67,6 +82,7 @@ export function installKeymap(bindings: Binding[]): () => void {
     const combo = comboFromEvent(e)
     const binding = byCombo.get(combo)
     if (!binding) return
+    if (!binding.overWindows && document.querySelector(OVER_THE_EDIT)) return
     if (!binding.allowDefault) e.preventDefault()
     // The usage log: which key, and what it is for. Before the run, so the log reads in order.
     noteShortcut(combo, binding.description, e.repeat)

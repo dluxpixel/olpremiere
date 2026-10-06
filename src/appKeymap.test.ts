@@ -182,6 +182,72 @@ describe('the keys reach the keyframe verbs', () => {
   })
 })
 
+// 2026-10-06: with Projects open, Delete took the selected clip off the timeline behind it.
+// A window or a menu over the edit holds the edit's keys until it closes.
+describe('keys wait while a window or a menu is open over the edit', () => {
+  const allClips = () => activeSequence(useStore.getState().project).tracks.flatMap((t) => t.clips)
+
+  function seedSelectedClip(): void {
+    const clip = newTitleClip(defaultTitleDef('x'), 0, 5)
+    updateActiveSequence('seed', (sq) =>
+      recomputeDuration({
+        ...sq,
+        tracks: sq.tracks.map((t, i) => (i === 0 ? { ...t, clips: [...t.clips, clip] } : t)),
+      }),
+    )
+    useStore.getState().setUI({ selection: [clip.id], playheadS: 2 })
+  }
+
+  function over(attrs: Record<string, string>): HTMLElement {
+    const el = document.createElement('div')
+    for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v)
+    document.body.append(el)
+    return el
+  }
+
+  for (const [what, attrs] of [
+    ['a window', { role: 'dialog', 'aria-modal': 'true' }],
+    ['a menu', { role: 'menu', 'data-esc-owner': '' }],
+  ] as const) {
+    it(`Delete, Backspace, C, M and Ctrl+Z do nothing behind ${what}`, () => {
+      seedSelectedClip()
+      const before = useStore.getState().project
+      const el = over(attrs)
+      const uninstall = installKeymap(bindings())
+      try {
+        press('Delete')
+        press('Backspace')
+        press('c')
+        press('m')
+        press('z', { ctrl: true })
+        expect(useStore.getState().project).toBe(before)
+        expect(allClips()).toHaveLength(1)
+        // Closed, the same key works again.
+        el.remove()
+        press('Delete')
+        expect(allClips()).toHaveLength(0)
+      } finally {
+        uninstall()
+        el.remove()
+      }
+    })
+  }
+
+  it('a window that is not modal (the floating Record panel) holds nothing', () => {
+    seedSelectedClip()
+    const el = over({ role: 'dialog' })
+    const uninstall = installKeymap(bindings())
+    press('Delete')
+    uninstall()
+    el.remove()
+    expect(allClips()).toHaveLength(0)
+  })
+
+  it('only Save and Reload still work over a window, because they do not touch the edit', () => {
+    expect(bindings().filter((b) => b.overWindows).map((b) => b.combo).sort()).toEqual(['f5', 'mod+s'])
+  })
+})
+
 // Ctrl+V after 2026-09-28. His words: *"Make it so I can just paste pictures"*.
 // A copied picture only ever arrives on the browser's paste event, and the
 // browser fires that event only when the keydown is left alone. So the key and

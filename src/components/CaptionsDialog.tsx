@@ -14,6 +14,7 @@ import { defaultCaptionStyle } from '../state/captionStyles'
 import { pausePlayback, togglePlay } from '../state/playbackControl'
 import { useStore } from '../state/store'
 import { Button, IconButton } from '../ui/Button'
+import { useDialogFocus } from '../ui/useDialogFocus'
 import { useEscapeToClose } from '../ui/useEscapeToClose'
 
 const PASTE_HINT = `[{"text":"so","startS":0.1,"endS":0.4}, …]   or an .srt`
@@ -88,6 +89,8 @@ export function CaptionsDialog({ onClose, initialMode = 'paste' }: { onClose: ()
   // (the tap handler above intercepts Escape on capture to cancel the run).
   const tappingNow = tapWords !== null
   useEscapeToClose(onClose, !tappingNow)
+  const box = useRef<HTMLDivElement>(null)
+  useDialogFocus(box)
 
   const applyPaste = () => {
     const words = parseTranscript(text)
@@ -123,6 +126,8 @@ export function CaptionsDialog({ onClose, initialMode = 'paste' }: { onClose: ()
       }}
     >
       <div
+        ref={box}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-label="Captions"

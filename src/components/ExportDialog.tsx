@@ -1,4 +1,5 @@
 import { X } from 'lucide-react'
+import { useRef } from 'react'
 import {
   cancelExport,
   closeExportDialog,
@@ -12,6 +13,7 @@ import {
 import { useSettings } from '../state/settings'
 import { useToasts } from '../state/toasts'
 import { Button, IconButton } from '../ui/Button'
+import { useDialogFocus } from '../ui/useDialogFocus'
 import { useEscapeToClose } from '../ui/useEscapeToClose'
 
 function fmtEta(seconds: number): string {
@@ -51,6 +53,8 @@ export function ExportDialog() {
   useEscapeToClose(() => {
     if (canClose) closeExportDialog()
   }, open)
+  const box = useRef<HTMLDivElement>(null)
+  useDialogFocus(box, open && !!job && !!stage)
 
   if (!open || !job || !stage) return null
   const { plan } = job
@@ -70,6 +74,8 @@ export function ExportDialog() {
       }}
     >
       <div
+        ref={box}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-label="Export"
