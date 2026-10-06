@@ -7,7 +7,7 @@ import { transitionMarkPx } from '../engine/transitionMarks'
 import { applyEffectToClips } from '../state/bulkEdits'
 import { moveClipKeyframe, setClipTransition } from '../state/clipEdits'
 import { EFFECT_MIME, TRANSITION_MIME, dragHasType, edgeForOffset } from '../state/dnd'
-import { type Clip, type Id, type MediaAsset } from '../engine/types'
+import { activeSequence, type Clip, type Id, type MediaAsset } from '../engine/types'
 import { useBlobUrl } from '../state/blobUrls'
 import { useFilmstrip } from '../state/filmstrips'
 import { ClipWaveform } from './ClipWaveform'
@@ -403,7 +403,8 @@ export const ClipView = memo(function ClipView({
     clearFxDrop()
     // On one of several selected clips the drop is for all of them, and the
     // selection stays as it is (effectDropTargets).
-    const targets = effectType ? effectDropTargets(clip.id, useStore.getState().ui.selection) : [clip.id]
+    const { project, ui } = useStore.getState()
+    const targets = effectType ? effectDropTargets(clip.id, ui.selection, activeSequence(project)) : [clip.id]
     if (effectType) applyEffectToClips(targets, effectType)
     else setClipTransition(clip.id, edgeForOffset(offsetInClip(e), width), transitionKind as TransitionKind)
     // Reveal what just happened in the Inspector.

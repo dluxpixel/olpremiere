@@ -19,7 +19,16 @@ vi.mock('../state/toasts', () => ({
 }))
 
 import { recomputeDuration } from '../engine/timeline'
-import { activeSequence, newClipFromAsset, newProject, type Clip, type MediaAsset } from '../engine/types'
+import {
+  activeSequence,
+  defaultTitleDef,
+  newClipFromAsset,
+  newProject,
+  newTitleClip,
+  type Clip,
+  type MediaAsset,
+} from '../engine/types'
+import { applyEffectToClips } from '../state/bulkEdits'
 import { EFFECT_MIME } from '../state/dnd'
 import { updateActiveSequence, useStore } from '../state/store'
 import { makeAsset } from './timelineTestFixtures'
@@ -98,6 +107,19 @@ describe('the multi selection Inspector, with three pictures selected', () => {
     })
     expect(effectsOf(ids)).toEqual([['saturation'], ['saturation'], ['saturation']])
     expect(toasts.shown).toEqual(['Added Saturation to 3 clips'])
+  })
+
+  // One caption in the selection used to make every footage card vanish, because
+  // the cards wanted EVERY selected clip to carry the effect.
+  it('a caption in the selection keeps the footage cards on show', () => {
+    const ids = threePictures()
+    applyEffectToClips(ids, 'saturation')
+    const cap = newTitleClip(defaultTitleDef('hi'), 10, 2)
+    updateActiveSequence('seed caption', (sq) =>
+      recomputeDuration({ ...sq, tracks: sq.tracks.map((t) => (t.name === 'V2' ? { ...t, clips: [...t.clips, cap] } : t)) }),
+    )
+    render(<MultiInspector selected={selectedOf([...ids, cap.id])} />)
+    expect(screen.getByTestId('shared-effects').querySelector('[data-effect-type="saturation"]')).not.toBeNull()
   })
 
   it('Punch grade grades all three and counts three', async () => {

@@ -17,15 +17,17 @@ import { makeAsset } from '../components/timelineTestFixtures'
 import { addTrack, recomputeDuration } from '../engine/timeline'
 import {
   activeSequence,
+  defaultTitleDef,
   newClipFromAsset,
   newProject,
+  newTitleClip,
   type Clip,
   type MediaAsset,
   type Sequence,
 } from '../engine/types'
 import { copyClipAttributes, pasteClipAttributes } from './attributes'
-import { applyEffectToClips } from './bulkEdits'
-import { useLibrary, applyPresetToSelection } from './library'
+import { applyEffectToAllClips, applyEffectToClips } from './bulkEdits'
+import { useLibrary, applyPresetToAllClips, applyPresetToSelection } from './library'
 import { applyPunchyGradeToClips } from './lookActions'
 import { updateActiveSequence, useStore } from './store'
 
@@ -264,5 +266,90 @@ describe('Punch grade on several selected pictures', () => {
     expect(said()).toEqual(['Punch grade on 3 clips'])
     useStore.getState().undo()
     expect(effectsOf(ids)).toEqual([0, 0, 0])
+  })
+})
+
+/** A caption on V3 over the three pictures, the way a whole Short is selected. Returns its id. */
+function withCaption(): string {
+  const cap = newTitleClip(defaultTitleDef('hi'), 0, 2)
+  updateActiveSequence('seed caption', (sq) =>
+    recomputeDuration({ ...sq, tracks: sq.tracks.map((t) => (t.name === 'V3' ? { ...t, clips: [...t.clips, { ...cap, startS: 3 }] } : t)) }),
+  )
+  return cap.id
+}
+
+// FOOTAGE WINS A MIXED SELECTION, and a selection never gets a second copy.
+// Measured 2026-10-06: Apply to every clip graded every caption (yellow words
+// went grey under Saturation), and adding Auto Color again to the whole Short
+// gave the clips that had it a doubled look.
+describe('footage wins a mixed selection, and nothing is stacked twice', () => {
+  it('Add effect on pictures plus a caption grades the pictures and leaves the caption clean', () => {
+    const ids = threePictures()
+    const cap = withCaption()
+    expect(applyEffectToClips([...ids, cap], 'saturation')).toBe(3)
+    expect(effectsOf(ids)).toEqual([1, 1, 1])
+    expect(clipById(cap).effects).toHaveLength(0)
+  })
+
+  it('a selection of captions alone still takes the effect (a Glow on the words)', () => {
+    threePictures()
+    const cap = withCaption()
+    expect(applyEffectToClips([cap], 'glow')).toBe(1)
+    expect(clipById(cap).effects.map((e) => e.type)).toEqual(['glow'])
+  })
+
+  it('Apply to every clip leaves the captions clean', () => {
+    const ids = threePictures()
+    const cap = withCaption()
+    applyEffectToAllClips('saturation')
+    expect(effectsOf(ids)).toEqual([1, 1, 1])
+    expect(clipById(cap).effects).toHaveLength(0)
+    expect(said()).toEqual(['Applied "Saturation" to 3 clips'])
+  })
+
+  it('adding it again to the selection skips the clips that already have it, and counts them', () => {
+    const ids = threePictures()
+    applyEffectToClips([ids[0]!], 'autoColor')
+    shown.length = 0
+    expect(applyEffectToClips(ids, 'autoColor')).toBe(2)
+    expect(effectsOf(ids)).toEqual([1, 1, 1])
+    expect(said()).toEqual(['Added Auto Color to 2 clips. 1 already had it'])
+    shown.length = 0
+    expect(applyEffectToClips(ids, 'autoColor')).toBe(0)
+    expect(effectsOf(ids)).toEqual([1, 1, 1])
+    expect(said()).toEqual(['Every one of those clips already has Auto Color'])
+    shown.length = 0
+    applyEffectToAllClips('autoColor')
+    expect(effectsOf(ids)).toEqual([1, 1, 1])
+    expect(said()).toEqual(['Every clip already has Auto Color'])
+  })
+
+  it('one clip on its own may still stack a second copy on purpose', () => {
+    const [a] = threePictures()
+    applyEffectToClips([a!], 'glow')
+    applyEffectToClips([a!], 'glow')
+    expect(clipById(a!).effects).toHaveLength(2)
+  })
+
+  it('an effect dropped on the caption of a mixed selection is for the selected captions', () => {
+    const ids = threePictures()
+    const cap = withCaption()
+    expect(effectDropTargets(cap, [...ids, cap], seq())).toEqual([cap])
+    expect(effectDropTargets(ids[0]!, [...ids, cap], seq())).toEqual([...ids, cap])
+  })
+
+  it('a Library look goes on the pictures, not the caption, by both doors', () => {
+    const ids = threePictures()
+    const cap = withCaption()
+    useLibrary.setState({
+      presets: [{ id: 'p1', name: 'Warm', createdAt: 1, effects: [{ id: 'fx', type: 'saturation', enabled: true, params: { saturation: 0.3 } }] }],
+    })
+    useStore.getState().setUI({ selection: [...ids, cap] })
+    applyPresetToSelection('p1')
+    expect(effectsOf(ids)).toEqual([1, 1, 1])
+    expect(clipById(cap).effects).toHaveLength(0)
+    applyPresetToAllClips('p1')
+    expect(effectsOf(ids)).toEqual([2, 2, 2])
+    expect(clipById(cap).effects).toHaveLength(0)
   })
 })

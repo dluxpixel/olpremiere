@@ -8,6 +8,7 @@
 import { Bold, CaseLower, CaseUpper, Eye, EyeOff, FlipHorizontal2, Italic, Sparkles, Layers } from 'lucide-react'
 import {
   clearEffectsForClips,
+  effectTargets,
   setChannelForClips,
   setClipsFade,
   setClipsGainDb,
@@ -483,8 +484,10 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
         )}
         {/* Every effect ALL the selected picture clips carry, with its settings:
             change one and it changes on every clip. His ask, 2026-09-29, with
-            "Select all with Auto Color" on the clip menu as the way in. */}
-        <SharedEffects clips={selected.filter((s) => s.track.kind === 'video').map((s) => s.clip)} />
+            "Select all with Auto Color" on the clip menu as the way in. Over the
+            FOOTAGE of a mixed selection, the clips an added effect goes on: one
+            caption in the selection used to make every footage card vanish. */}
+        <SharedEffects clips={effectTargets(selected.filter((s) => s.track.kind === 'video').map((s) => s.clip))} />
       </section>
 
       {audioIds.length > 0 && (

@@ -196,6 +196,8 @@ interface EffectRun {
   visual: number
   /** Of those, the ones on a locked track, which stay as they are. */
   locked: number
+  /** Of those, the ones that already carried this effect and were skipped. */
+  already: number
   /** Clips that really got the effect. */
   changed: number
 }
@@ -207,6 +209,23 @@ export function lockedLeftOut(n: number): string {
     : `${n} clips are on a locked track and were left out`
 }
 
+/** Footage: a picture of its own, not a title and not an adjustment layer. */
+export const isFootage = (c: Clip): boolean => !c.title && !c.adjustment
+
+/**
+ * FOOTAGE WINS A MIXED SELECTION, for effects and looks too. Select a whole
+ * Short and the captions come with it: Saturation -1 turned the yellow highlight
+ * words grey, a Blur blurred the words, a second grade went on the adjustment
+ * layer on top of the footage it already grades. The punch grade has always
+ * left titles clean ("the caption style owns them", lookActions.ts) and the
+ * Move shelf does the same (MultiInspector). A selection with NO footage in it
+ * (only captions) still takes the effect, so a Glow on the captions works.
+ */
+export function effectTargets<T extends Clip>(clips: readonly T[]): T[] {
+  const footage = clips.filter(isFootage)
+  return footage.length > 0 ? footage : [...clips]
+}
+
 /**
  * Put one fresh instance of an effect on every clip it can go on, in ONE undo
  * step, and count what happened. No words: the callers say them, because the
@@ -214,21 +233,39 @@ export function lockedLeftOut(n: number): string {
  *
  * Skips audio clips the way the single-clip applyEffect does (clipEdits.ts): a
  * visual effect on an audio clip stores a card, costs an undo and renders
- * nothing. A mixed selection applies to its visual clips only. Locked tracks are
- * skipped by mapClips; they are counted here so they can be named.
+ * nothing. A mixed selection applies to its footage only (effectTargets).
+ * Locked tracks are skipped by mapClips; they are counted here so they can be
+ * named.
+ *
+ * ⛔ NEVER A SECOND COPY ON A SELECTION. Selecting the whole Short again and
+ * adding Auto Color "to make sure every clip has it" gave the clips that had it a
+ * doubled look, and the "On all N clips" card then edited only the first copy.
+ * So when more than one clip was asked for, a clip already carrying the effect
+ * is skipped and counted. One clip on its own may still stack a copy on purpose.
  */
 function runEffect(ids: Iterable<string>, type: string): EffectRun {
-  const where = new Map<string, { kind: string; locked: boolean }>()
+  const where = new Map<string, { clip: Clip; kind: string; locked: boolean }>()
   for (const t of activeSequence(useStore.getState().project).tracks) {
-    for (const c of t.clips) where.set(c.id, { kind: t.kind, locked: t.locked })
+    for (const c of t.clips) where.set(c.id, { clip: c, kind: t.kind, locked: t.locked })
   }
   const requested = [...ids]
-  const visual = requested.filter((id) => where.get(id)?.kind !== 'audio')
-  const open = visual.filter((id) => !where.get(id)?.locked)
-  const run: EffectRun = { requested: requested.length, visual: visual.length, locked: visual.length - open.length, changed: 0 }
+  const visual = requested.flatMap((id) => {
+    const w = where.get(id)
+    return w && w.kind !== 'audio' ? [w.clip] : []
+  })
+  const targets = effectTargets(visual)
+  const unlocked = targets.filter((c) => !where.get(c.id)?.locked)
+  const open = visual.length > 1 ? unlocked.filter((c) => !c.effects.some((e) => e.type === type)) : unlocked
+  const run: EffectRun = {
+    requested: requested.length,
+    visual: visual.length,
+    locked: targets.length - unlocked.length,
+    already: unlocked.length - open.length,
+    changed: 0,
+  }
   if (open.length === 0) return run
   const label = getEffect(type)?.label ?? type
-  mapClips(open, `Add ${label}`, (c) => {
+  mapClips(open.map((c) => c.id), `Add ${label}`, (c) => {
     const next = addEffect(c, type, newId())
     if (next !== c) run.changed++
     return next
@@ -239,6 +276,9 @@ function runEffect(ids: Iterable<string>, type: string): EffectRun {
   if (run.changed > 0) noteRecentEffect(type)
   return run
 }
+
+/** ". 5 already had it": the clips a run skipped because they carry it already. */
+const alreadyHad = (n: number): string => (n === 0 ? '' : `. ${n} already had it`)
 
 /**
  * Add one fresh instance of an effect to every selected clip (own id each), and
@@ -263,11 +303,12 @@ export function applyEffectToClips(ids: Iterable<string>, type: string): number 
   }
   if (run.changed === 0) {
     if (run.locked > 0) show(run.locked === 1 ? 'That clip is on a locked track' : 'Those clips are on a locked track', 'danger')
+    else if (run.already > 0) show(`Every one of those clips already has ${label}`, 'info')
     return 0
   }
-  if (run.changed > 1 || run.locked > 0) {
+  if (run.changed > 1 || run.locked > 0 || run.already > 0) {
     const left = run.locked > 0 ? `. ${lockedLeftOut(run.locked)}` : ''
-    show(`Added ${label} to ${run.changed} clip${run.changed === 1 ? '' : 's'}${left}`, 'success')
+    show(`Added ${label} to ${run.changed} clip${run.changed === 1 ? '' : 's'}${alreadyHad(run.already)}${left}`, 'success')
   }
   return run.changed
 }
@@ -276,7 +317,9 @@ export function applyEffectToClips(ids: Iterable<string>, type: string): number 
  * Add one fresh instance of an effect to EVERY video clip in the active
  * sequence, all in ONE undo step, no selection needed. Audio clips are skipped
  * (a visual effect means nothing on them) and locked tracks are skipped by
- * mapClips. Mirrors applyPresetToAllClips in library.ts.
+ * mapClips. The footage takes it and the captions stay clean, and a clip that
+ * already has it is not given a second copy (runEffect). Mirrors
+ * applyPresetToAllClips in library.ts.
  */
 export function applyEffectToAllClips(type: string): void {
   const show = useToasts.getState().show
@@ -288,8 +331,12 @@ export function applyEffectToAllClips(type: string): void {
     show(`No video clips to apply ${label} to`)
     return
   }
-  const { changed } = runEffect(ids, type)
-  show(`Applied "${label}" to ${changed} clip${changed === 1 ? '' : 's'}`, 'success')
+  const { changed, already } = runEffect(ids, type)
+  if (changed === 0 && already > 0) {
+    show(`Every clip already has ${label}`, 'info')
+    return
+  }
+  show(`Applied "${label}" to ${changed} clip${changed === 1 ? '' : 's'}${alreadyHad(already)}`, 'success')
 }
 
 /**

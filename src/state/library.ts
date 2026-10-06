@@ -25,6 +25,7 @@ import {
   audioTracks,
   newId,
   videoTracks,
+  type Clip,
   type Id,
   type MediaAsset,
   type Sequence,
@@ -63,7 +64,7 @@ import {
 import { mirrorApi, mirrorAsset, mirroredIds, readMirrored } from './mediaMirror'
 import { askForName } from './namePrompt'
 import { db, getBlob, putBlob } from './persistence'
-import { lockedLeftOut } from './bulkEdits'
+import { effectTargets, lockedLeftOut } from './bulkEdits'
 import { useStore } from './store'
 import { useToasts } from './toasts'
 
@@ -733,11 +734,14 @@ export function applyPresetToSelection(presetId: Id): void {
   // the selection this runs on can easily hold one: the preset landed on the very
   // clips he locked the track to protect, and said "Applied" as if nothing were
   // unusual. Those are named instead.
-  const where = new Map<Id, { kind: string; locked: boolean }>()
-  for (const t of activeSequence(project).tracks) for (const c of t.clips) where.set(c.id, { kind: t.kind, locked: t.locked })
+  const where = new Map<Id, { clip: Clip; kind: string; locked: boolean }>()
+  for (const t of activeSequence(project).tracks) for (const c of t.clips) where.set(c.id, { clip: c, kind: t.kind, locked: t.locked })
   const visual = ui.selection.filter((id) => where.has(id) && where.get(id)!.kind === 'video')
-  const targets = new Set(visual.filter((id) => !where.get(id)!.locked))
-  const lockedOut = visual.length - targets.size
+  // A look goes on the footage of a mixed selection, not on its captions or an
+  // adjustment layer above it (effectTargets, the rule every effect door obeys).
+  const looked = effectTargets(visual.map((id) => where.get(id)!.clip)).map((c) => c.id)
+  const targets = new Set(looked.filter((id) => !where.get(id)!.locked))
+  const lockedOut = looked.length - targets.size
   if (visual.length === 0) {
     show('Effects don’t apply to audio clips', 'danger')
     return
@@ -780,10 +784,14 @@ export function applyPresetToAllClips(presetId: Id): void {
   const { project, dispatch } = useStore.getState()
   if (!preset) return
   // Locked tracks are neither changed nor COUNTED. Counting them made the toast
-  // over-report by however many clips he had protected.
-  const targetCount = activeSequence(project)
-    .tracks.filter((t) => t.kind === 'video' && !t.locked)
-    .reduce((n, t) => n + t.clips.length, 0)
+  // over-report by however many clips he had protected. The captions are left
+  // clean: a look is for the footage (effectTargets).
+  const targets = new Set(
+    effectTargets(
+      activeSequence(project).tracks.filter((t) => t.kind === 'video' && !t.locked).flatMap((t) => t.clips),
+    ).map((c) => c.id),
+  )
+  const targetCount = targets.size
   if (targetCount === 0) {
     show('No video clips to apply the preset to')
     return
@@ -795,10 +803,9 @@ export function applyPresetToAllClips(presetId: Id): void {
         ? t
         : {
             ...t,
-            clips: t.clips.map((c) => ({
-              ...c,
-              effects: [...c.effects, ...copyEffects(preset.effects, newId)],
-            })),
+            clips: t.clips.map((c) =>
+              targets.has(c.id) ? { ...c, effects: [...c.effects, ...copyEffects(preset.effects, newId)] } : c,
+            ),
           },
     )
     return { ...p, sequences: { ...p.sequences, [seq.id]: { ...seq, tracks } } }
