@@ -71,5 +71,26 @@ export function reachableBlobKeys(project: Project): Set<string> {
  */
 export function orphanedBlobKeys(storedKeys: readonly string[], project: Project): string[] {
   const reachable = reachableBlobKeys(project)
-  return storedKeys.filter((key) => isProjectMediaKey(key) && !reachable.has(key))
+  const assetIds = new Set<string>(Object.values(project.assets ?? {}).map((a) => a.id))
+  return storedKeys.filter((key) => {
+    if (key.startsWith(PROXY_PREFIX)) {
+      const id = key.slice(PROXY_PREFIX.length)
+      return id !== '' && !assetIds.has(id)
+    }
+    return isProjectMediaKey(key) && !reachable.has(key)
+  })
 }
+
+/**
+ * A preview copy's key: `proxy:<asset id>` (proxyMedia.ts `proxyKeyFor`, pinned
+ * equal by a test; not imported, because proxyMedia reaches persistence and
+ * persistence imports this file).
+ *
+ * ⛔ PREVIEW COPIES WERE NEVER DELETED (PB-12, 2026-10-06). One of his captures
+ * made a 423 MB copy, his drive sits at 97 to 98 percent, and removing the clip,
+ * removing unused media or deleting the project freed the original and never
+ * the copy. A copy belongs to an asset ID, not to a blob key, so it is reachable
+ * exactly while some document still has that asset. A copy for an asset that
+ * comes back is simply built again.
+ */
+const PROXY_PREFIX = 'proxy:'

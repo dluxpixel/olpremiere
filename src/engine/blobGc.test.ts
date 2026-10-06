@@ -154,3 +154,23 @@ describe('orphanedBlobKeys', () => {
     expect(stored).toEqual(copy)
   })
 })
+
+describe('preview copies (PB-12)', () => {
+  it('keeps the copy of an asset the project still has', () => {
+    expect(orphanedBlobKeys(['proxy:a'], project([asset('a')]))).toEqual([])
+  })
+
+  it('collects the copy of an asset no longer in the project', () => {
+    expect(orphanedBlobKeys(['proxy:z', 'proxy:a'], project([asset('a')]))).toEqual(['proxy:z'])
+  })
+
+  it('still never collects an unknown prefix, or a bare copy key', () => {
+    expect(orphanedBlobKeys(['proxy/z', 'proxyz', 'proxy:'], project([]))).toEqual([])
+  })
+
+  it('uses the key the preview copies are actually stored under', async () => {
+    const { proxyKeyFor } = await import('./proxyMedia')
+    expect(orphanedBlobKeys([proxyKeyFor('gone')], project([asset('a')]))).toEqual([proxyKeyFor('gone')])
+    expect(orphanedBlobKeys([proxyKeyFor('a')], project([asset('a')]))).toEqual([])
+  })
+})
