@@ -18,7 +18,7 @@ const singleInstance = app.requestSingleInstanceLock()
 if (!singleInstance) app.quit()
 import { fileURLToPath } from 'node:url'
 import { mkdir, readFile } from 'node:fs/promises'
-import { existsSync, renameSync } from 'node:fs'
+import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import * as backups from './backups'
 import { createCutstudio, realCutstudioDeps } from './cutstudio'
@@ -45,6 +45,7 @@ import * as mediaStore from './mediaStore'
 import * as remux from './remux'
 import { IDLE_POLL_MS, updateApplyDecision } from './updateApply'
 import { CRASH_LOG_NAME, crashLogLine, crashPlan } from './crashPlan'
+import { appliedWhileAway, launchMode, parseQuietMarker, QUIET_START_FILE } from './launchMode'
 import { planUpdateError, updateLogEntry } from './updateErrors'
 import { appendUpdateLog, UPDATE_LOG_NAME } from './updateLog'
 import electronUpdater from 'electron-updater'
@@ -202,6 +203,54 @@ let bootFinished = false
 let entered = false
 /** Rescue timer: fires only if the boot never reports at all. Cleared the moment it does. */
 let bootBackstop: ReturnType<typeof setTimeout> | null = null
+/**
+ * True when an update applied itself while he was away and the installer started us
+ * (./launchMode). No card and no melon: the editor opens minimized on the taskbar.
+ */
+let quietStart = false
+
+/** Read and remove the marker an unattended update left, and decide how to open. */
+function readLaunchMode(): void {
+  const file = path.join(app.getPath('userData'), QUIET_START_FILE)
+  let text: string | null = null
+  try {
+    text = readFileSync(file, 'utf8')
+    unlinkSync(file) // one start only, whatever it decides
+  } catch {
+    // no marker: an ordinary start
+  }
+  quietStart = launchMode({ argv: process.argv, markerAt: parseQuietMarker(text), now: Date.now() }) === 'quiet'
+}
+
+/**
+ * Called as an update is applied. If he is away from the machine, leave the marker
+ * that makes the new version start quietly (./launchMode).
+ */
+function markQuietStartIfAway(): void {
+  if (!appliedWhileAway(powerMonitor.getSystemIdleTime())) return
+  try {
+    writeFileSync(path.join(app.getPath('userData'), QUIET_START_FILE), JSON.stringify({ at: Date.now() }))
+  } catch {
+    // worst case the new version opens the ordinary way
+  }
+}
+
+/**
+ * Put the editor on screen. Normally maximized and in front, the way he opens it. After
+ * an update that applied while he was away it goes on the taskbar minimized instead,
+ * without taking focus, and maximizes when he brings it up.
+ */
+function revealEditor(win: BrowserWindow): void {
+  if (quietStart) {
+    if (win.isVisible()) return
+    win.once('restore', () => win.maximize())
+    // On a hidden window this shows it minimized WITHOUT activating it.
+    win.minimize()
+    return
+  }
+  win.maximize()
+  win.show()
+}
 
 function createSplash(): void {
   const win = new BrowserWindow({
@@ -308,10 +357,7 @@ function enterEditor(): void {
   if (bootBackstop) clearTimeout(bootBackstop)
   bootBackstop = null
   const win = mainWindow
-  if (win && !win.isDestroyed() && !win.isVisible()) {
-    win.maximize()
-    win.show()
-  }
+  if (win && !win.isDestroyed() && !win.isVisible()) revealEditor(win)
   // The splash outlives the swap by the length of the melon's pop, so the fruit
   // bursts OVER the opening editor instead of blinking out a beat before it.
   const splash = splashWindow
@@ -510,10 +556,7 @@ function createWindow(): void {
   win.once('ready-to-show', () => {
     // While a splash is up, the editor stays hidden even after the boot finishes:
     // the melon is a deliberate gate, and he is the one who opens it.
-    if (entered || !splashWindow) {
-      win.maximize()
-      win.show()
-    }
+    if (entered || !splashWindow) revealEditor(win)
   })
   // Backstop: if the renderer never reports a finished boot (an old bundle, a
   // startup crash), show the editor anyway rather than stranding him on a splash.
@@ -858,8 +901,10 @@ app.whenReady().then(() => {
     cutstudio.stop()
   })
 
-  // Splash FIRST, so it is on screen while the editor window loads behind it.
-  createSplash()
+  // Splash FIRST, so it is on screen while the editor window loads behind it. Not
+  // after an update that applied itself while he was away: see ./launchMode.
+  readLaunchMode()
+  if (!quietStart) createSplash()
   createWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -1120,6 +1165,7 @@ app.whenReady().then(() => {
     // export he chose to restart through anyway), fall back to the old path
     // after five seconds rather than leave the update stuck.
     ipcMain.on('update:install', () => {
+      markQuietStartIfAway()
       const win = mainWindow
       if (!win || win.isDestroyed()) {
         autoUpdater.quitAndInstall(true, true)

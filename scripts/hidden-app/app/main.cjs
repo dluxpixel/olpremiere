@@ -25,9 +25,14 @@ for (const k of ['userData', 'appData', 'documents', 'desktop', 'videos', 'downl
 // ffmpeg and the rest are found from the app path, which must be the repo.
 app.getAppPath = () => REPO
 
-// No window ever reaches his screen: every way a window shows is a no-op.
-for (const m of ['show', 'showInactive', 'focus', 'maximize', 'restore', 'setFullScreen', 'moveTop', 'flashFrame']) {
-  BrowserWindow.prototype[m] = function () {}
+// No window ever reaches his screen: every way a window shows is a no-op. minimize is
+// one of them: on a hidden window it puts it on his taskbar. Each call is noted, so a
+// check can ask how the app tried to show a window.
+global.__olpWindowCalls = []
+for (const m of ['show', 'showInactive', 'focus', 'maximize', 'minimize', 'restore', 'setFullScreen', 'moveTop', 'flashFrame']) {
+  BrowserWindow.prototype[m] = function () {
+    global.__olpWindowCalls.push({ m, id: this.id })
+  }
 }
 app.on('browser-window-created', (_e, w) => {
   w.setSkipTaskbar(true)

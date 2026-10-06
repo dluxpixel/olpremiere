@@ -8,6 +8,8 @@
 //                        so a check does not wait on the one-time download
 //   --timeout <ms>       give up after this long (default 300000)
 //   --keep               keep the throwaway folder and print where it is
+//   --quiet-update-start  start the way the installer does after an update that
+//                        applied while he was away (--updated and the marker)
 //   --bed <dir>          open with COPIES of his projects and media: <dir>/Projects/*.olpbak
 //                        are copied in, and <dir>/media (a copy of his media folder, never
 //                        the real one) is linked in as the app's media folder. Several runs
@@ -19,7 +21,7 @@
 // synthetic paste event, never navigator.clipboard: Electron's clipboard IS his).
 
 import { spawnSync } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, unlinkSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -32,6 +34,9 @@ const flag = (name) => {
   return i < 0 ? undefined : args.splice(i, 2)[1]
 }
 const keep = args.includes('--keep') ? (args.splice(args.indexOf('--keep'), 1), true) : false
+const quietUpdate = args.includes('--quiet-update-start')
+  ? (args.splice(args.indexOf('--quiet-update-start'), 1), true)
+  : false
 const seedFont = flag('--seed-font')
 const bed = flag('--bed')
 const timeout = Number(flag('--timeout') ?? 300000)
@@ -53,6 +58,11 @@ if (seedFont) {
   if (!pin) throw new Error('no emoji source pin in electron/emojiFont.ts')
   copyFileSync(seedFont, path.join(root, 'userData', 'fonts', `apple-emoji-${pin[1].slice(0, 12)}.ttf`))
 }
+if (quietUpdate) {
+  // What main writes when an update is applied while he is away (electron/launchMode.ts).
+  mkdirSync(path.join(root, 'userData'), { recursive: true })
+  writeFileSync(path.join(root, 'userData', 'quiet-start.json'), JSON.stringify({ at: Date.now() }))
+}
 let bedMedia = null
 if (bed) {
   const real = path.join(process.env.APPDATA || '', 'OL Premiere')
@@ -68,7 +78,9 @@ if (bed) {
   symlinkSync(path.resolve(bed, 'media'), bedMedia, 'junction')
 }
 const electron = path.join(repo, 'node_modules', 'electron', 'dist', process.platform === 'win32' ? 'electron.exe' : 'electron')
-const run = spawnSync(electron, [path.join(here, 'app'), `--user-data-dir=${path.join(root, 'userData')}`], {
+const appArgs = [path.join(here, 'app'), `--user-data-dir=${path.join(root, 'userData')}`]
+if (quietUpdate) appArgs.push('--updated') // what the installer passes when it starts the new version
+const run = spawnSync(electron, appArgs, {
   env: { ...process.env, OLP_HIDDEN_DIR: root, OLP_HIDDEN_CHECK: check, OLP_HIDDEN_TIMEOUT_MS: String(timeout) },
   stdio: 'ignore',
   windowsHide: true,
