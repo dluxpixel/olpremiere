@@ -102,8 +102,11 @@ describe('snapping', () => {
     expect((await reboot()).snapping).toBe(true)
   })
 
-  it('boots on with nothing stored, or junk', async () => {
+  it('boots on with nothing stored', async () => {
     expect((await reboot()).snapping).toBe(true)
+  })
+
+  it('boots on with junk stored', async () => {
     bag.set('olpremiere:snapping', 'maybe')
     expect((await reboot()).snapping).toBe(true)
   })
