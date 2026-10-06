@@ -138,6 +138,12 @@ export function forgetAssetPeaks(assetId: Id): void {
 /**
  * Resample the slice of `peaks` covering source seconds [inS, outS) into `cols`
  * columns for drawing a clip that wide. Pure so the draw path stays trivial.
+ *
+ * ⛔ EACH COLUMN IS THE LOUDEST BUCKET IT COVERS. It used to read ONE bucket per
+ * column, so zoomed out a 60 s clip drawn 600 px wide showed one bucket in six:
+ * a 10 ms gunshot, kick or vine boom was usually skipped, a spoken word could be
+ * drawn as near silence, and the shape he razors against changed as he zoomed.
+ * Zoomed in past one bucket a column, it reads the one bucket under it, as before.
  */
 export function slicePeaks(
   peaks: Float32Array,
@@ -152,10 +158,14 @@ export function slicePeaks(
   const startFrac = Math.max(0, inS / sourceDurationS)
   const endFrac = Math.min(1, outS / sourceDurationS)
   const span = Math.max(1e-9, endFrac - startFrac)
+  const len = peaks.length
+  const at = (frac: number) => Math.min(len - 1, Math.max(0, Math.floor(frac * len)))
   for (let x = 0; x < n; x++) {
-    const frac = startFrac + (x / n) * span
-    const idx = Math.min(peaks.length - 1, Math.max(0, Math.floor(frac * peaks.length)))
-    out[x] = peaks[idx]
+    const from = at(startFrac + (x / n) * span)
+    const to = Math.max(from + 1, Math.min(len, Math.floor((startFrac + ((x + 1) / n) * span) * len)))
+    let peak = 0
+    for (let i = from; i < to; i++) if (peaks[i]! > peak) peak = peaks[i]!
+    out[x] = peak
   }
   return out
 }
