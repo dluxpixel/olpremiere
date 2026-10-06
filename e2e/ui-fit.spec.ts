@@ -211,6 +211,60 @@ test('Loop says what it is, lights while it is on, and the tooltip says what it 
   await expect(loop).toHaveAttribute('aria-pressed', 'false')
 })
 
+// ⛔ THE TOOLTIPS ON THE BAR, AT HIS OWN WINDOW (2026-10-06). The Loop test above ran only at 1280x720,
+// where the bar is two rows and nothing is clipped, and `:visible` is true for a tooltip that is cut
+// off. At 1920x1080, the size he works at, the bar is one row and was `overflow-hidden`: the Loop and
+// Screenshot tooltips did not show at all and Play's showed a sliver. So this measures how much of
+// each tooltip is really on screen, cut by every box around it, and that it is on top.
+/** The share of an element's box that every clipping box around it, and the window, leaves showing. */
+function visibleShare(el: Element): number {
+  const r = el.getBoundingClientRect()
+  if (r.width === 0 || r.height === 0) return 0
+  let [L, T, R, B] = [r.left, r.top, r.right, r.bottom]
+  for (let p = el.parentElement; p; p = p.parentElement) {
+    const cs = getComputedStyle(p)
+    const cx = /hidden|clip|auto|scroll/.test(cs.overflowX)
+    const cy = /hidden|clip|auto|scroll/.test(cs.overflowY)
+    if (!cx && !cy) continue
+    const pr = p.getBoundingClientRect()
+    if (cx) [L, R] = [Math.max(L, pr.left), Math.min(R, pr.right)]
+    if (cy) [T, B] = [Math.max(T, pr.top), Math.min(B, pr.bottom)]
+  }
+  ;[L, T, R, B] = [Math.max(L, 0), Math.max(T, 0), Math.min(R, innerWidth), Math.min(B, innerHeight)]
+  return (Math.max(0, R - L) * Math.max(0, B - T)) / (r.width * r.height)
+}
+
+for (const s of [
+  { w: 1920, h: 1080, tier: 'one-row' },
+  { w: 1920, h: 1200, tier: 'one-row' },
+  { w: 1280, h: 720, tier: 'two-rows' },
+]) {
+  test(`every tooltip on the bar shows whole and on top at ${s.w}x${s.h}`, async ({ page }) => {
+    await open(page, s.w, s.h, 280, 450)
+    await expect(page.getByTestId('transport-bar')).toHaveAttribute('data-tier', s.tier)
+    for (const id of ['loop-toggle', 'play-toggle', 'screenshot-button', 'safe-margins-bar-toggle', 'fullscreen-toggle']) {
+      const button = page.getByTestId(id)
+      await button.hover()
+      const tip = page.locator('.group\\/tip', { has: button }).locator('[role="tooltip"]')
+      await expect(tip, id).toBeVisible()
+      // Measured after the tooltip has slid itself inside its edges (it does that a frame after the hover).
+      await expect.poll(() => tip.evaluate(visibleShare), { message: id }).toBeGreaterThan(0.99)
+      // Nothing painted over it. A tooltip lets the pointer through, which hit testing skips, so
+      // it takes the pointer for this one synchronous look.
+      const onTop = await tip.evaluate((t) => {
+        const el = t as HTMLElement
+        const r = el.getBoundingClientRect()
+        el.style.pointerEvents = 'auto'
+        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
+        el.style.pointerEvents = ''
+        return el.contains(hit)
+      })
+      expect(onTop, id).toBe(true)
+      await page.mouse.move(5, 5)
+    }
+  })
+}
+
 test.describe('Full screen', () => {
   const inFullscreen = (page: Page) => page.evaluate(() => document.fullscreenElement?.getAttribute('data-testid') ?? null)
 

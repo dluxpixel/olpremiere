@@ -34,6 +34,8 @@ export interface IconButtonProps extends ButtonHTMLAttributes<HTMLButtonElement>
   active?: boolean
   children: ReactNode
   size?: 'default' | 'compact'
+  /** Which way the tooltip opens. Up on a bar at the bottom of something, so it is not cut off under it. */
+  tipSide?: 'top' | 'bottom'
 }
 
 /** Icon-only toolbar button; active state = accent-quiet fill + accent icon. */
@@ -42,13 +44,14 @@ export function IconButton({
   shortcut,
   active = false,
   size = 'default',
+  tipSide,
   className = '',
   children,
   ...rest
 }: IconButtonProps) {
   const px = size === 'compact' ? 'h-6 w-6' : 'h-7 w-7'
   return (
-    <Tooltip label={label} shortcut={shortcut}>
+    <Tooltip label={label} shortcut={shortcut} side={tipSide}>
       <button
         aria-label={label}
         aria-pressed={active || undefined}
