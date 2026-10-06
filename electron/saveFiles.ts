@@ -12,7 +12,7 @@
 
 import { app, dialog, type BrowserWindow } from 'electron'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
-import { open, rename, unlink, type FileHandle } from 'node:fs/promises'
+import { open, rename, statfs, unlink, type FileHandle } from 'node:fs/promises'
 import path from 'node:path'
 
 /** `base.ext` when it is free, else `base_1.ext`, `base_2.ext` and on. Pure. */
@@ -93,12 +93,41 @@ const picked = new Set<string>()
 const writes = new Map<number, { fh: FileHandle; tmp: string; target: string }>()
 let nextWrite = 1
 
-export async function openForWrite(target: string): Promise<number> {
+/**
+ * True when the drive holding `dir` has room for `bytes` more, or when it cannot
+ * be asked (then the write itself is the test). Pure enough to test: the
+ * drive's answer is passed in.
+ */
+export async function hasRoomFor(
+  dir: string,
+  bytes: number,
+  ask: (dir: string) => Promise<{ bavail: number | bigint; bsize: number | bigint }> = statfs,
+): Promise<boolean> {
+  try {
+    const s = await ask(dir)
+    return Number(s.bavail) * Number(s.bsize) >= bytes
+  } catch {
+    return true
+  }
+}
+
+/**
+ * `sizeBytes`, when known, is checked against the free space FIRST.
+ *
+ * ⛔ HIS DRIVE IS 97% FULL, and a project copy carries its footage (mc night is
+ * about 2.8 GB). Running out half way used to leave nothing but "Could not save
+ * the project file". The error says ENOSPC, which the page turns into the
+ * sentence with the size in it.
+ */
+export async function openForWrite(target: string, sizeBytes = 0): Promise<number> {
   const resolved = path.resolve(target)
   // Only a path he chose in the dialog above. The renderer must not be able to
   // turn this into a write-anywhere primitive.
   if (!picked.has(resolved)) throw new Error('That file was not chosen in a save dialog')
   picked.delete(resolved)
+  if (sizeBytes > 0 && !(await hasRoomFor(path.dirname(resolved), sizeBytes))) {
+    throw new Error(`ENOSPC: not enough space for ${sizeBytes} bytes`)
+  }
   const tmp = `${resolved}.olpart`
   const fh = await open(tmp, 'w')
   const id = nextWrite++

@@ -76,10 +76,21 @@ function CopyToAnotherDevice({ onClose }: { onClose: () => void }) {
   const phone = usePhoneLayout()
   const [packing, setPacking] = useState(false)
   const [ready, setReady] = useState<BuiltProjectFile | null>(null)
+  // How much of the copy is written, 0 to 100, while the PC saves it. Null when idle.
+  const [saved, setSaved] = useState<number | null>(null)
 
   const send = async () => {
     if (!phone) {
-      await exportProjectToFile()
+      // ⛔ BUSY WHILE IT WRITES. The copy carries all his footage, and with
+      // nothing on screen the button could be pressed again half way.
+      setPacking(true)
+      setSaved(0)
+      try {
+        await exportProjectToFile((frac) => setSaved(Math.round(frac * 100)))
+      } finally {
+        setPacking(false)
+        setSaved(null)
+      }
       return
     }
     setPacking(true)
@@ -97,8 +108,10 @@ function CopyToAnotherDevice({ onClose }: { onClose: () => void }) {
       data-testid="project-copy"
       className="flex shrink-0 flex-wrap items-center gap-2 border-t border-border px-4 py-2.5"
     >
-      <span className="mr-auto min-w-0 text-[11px] text-text-muted">
-        Copy the open project to your {phone ? 'PC' : 'phone'}, footage and all
+      <span className="mr-auto min-w-0 text-[11px] text-text-muted" data-testid="project-copy-status">
+        {saved !== null && saved > 0
+          ? `Saving the copy, ${saved}%`
+          : `Copy the open project to your ${phone ? 'PC' : 'phone'}, footage and all`}
       </span>
       {ready ? (
         <Button

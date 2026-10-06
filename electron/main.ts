@@ -742,7 +742,9 @@ app.whenReady().then(() => {
     if (!win) return null
     return saveFiles.pickSavePath(win, kind, base, ext, filterName)
   })
-  ipcMain.handle('file:openWrite', (_e, target: string) => saveFiles.openForWrite(target))
+  ipcMain.handle('file:openWrite', (_e, target: string, sizeBytes?: number) =>
+    saveFiles.openForWrite(target, typeof sizeBytes === 'number' ? sizeBytes : 0),
+  )
   ipcMain.handle('file:writeChunk', (_e, id: number, chunk: ArrayBuffer) => saveFiles.writeChunk(id, chunk))
   ipcMain.handle('file:close', (_e, id: number, ok: boolean) => saveFiles.closeWrite(id, ok))
 

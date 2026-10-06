@@ -125,7 +125,7 @@ const api: OlApi = {
   usageReveal: () => ipcRenderer.invoke('usage:reveal'),
   pickSavePath: (kind: 'export' | 'project', base: string, ext: string, filterName: string) =>
     ipcRenderer.invoke('file:pickSave', kind, base, ext, filterName),
-  fileOpenWrite: (target: string) => ipcRenderer.invoke('file:openWrite', target),
+  fileOpenWrite: (target: string, sizeBytes?: number) => ipcRenderer.invoke('file:openWrite', target, sizeBytes),
   fileWriteChunk: (id: number, chunk: ArrayBuffer) => ipcRenderer.invoke('file:writeChunk', id, chunk),
   fileClose: (id: number, ok: boolean) => ipcRenderer.invoke('file:close', id, ok),
   // A pasted picture, cut out by CutStudio. Main makes the request because the

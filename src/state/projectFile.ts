@@ -389,12 +389,30 @@ export async function shareProjectFile(built: BuiltProjectFile): Promise<boolean
   }
 }
 
+/** One slice of a project file per trip to main: the same 8 MB the spare copies use. */
+const WRITE_SLICE = 8 * 1024 * 1024
+
+/** "2.8 GB", "640 MB": a size in the words the drive's own dialogs use. */
+function sizeWords(bytes: number): string {
+  return bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(bytes / 1e6))} MB`
+}
+
+/** True for a failure that is the drive being full, however it was spelled on the way. */
+export function isDiskFull(err: unknown): boolean {
+  const text = err instanceof Error ? `${err.name} ${err.message}` : String(err)
+  return /ENOSPC|no space|not enough space|disk is full/i.test(text)
+}
+
 /**
  * Serialize the current project + its media into one file. With the File
  * System picker it streams to disk, otherwise it downloads.
+ *
+ * `onProgress` hears the share written, 0 to 1, on the desktop, where the copy
+ * carries all his footage and takes a while (mc night is about 2.8 GB).
  */
-export async function exportProjectToFile(): Promise<void> {
+export async function exportProjectToFile(onProgress?: (frac: number) => void): Promise<void> {
   const show = useToasts.getState().show
+  let need = 0
   try {
     const built = await buildProjectFile()
     const file = built.file
@@ -407,15 +425,17 @@ export async function exportProjectToFile(): Promise<void> {
     if (api?.isElectron && api.pickSavePath && api.fileOpenWrite && api.fileWriteChunk && api.fileClose) {
       const target = await api.pickSavePath('project', name.replace(/\.[^.]+$/, ''), PROJECT_FILE_EXT, 'OL Premiere project')
       if (!target) return // he cancelled
-      const id = await api.fileOpenWrite(target)
+      need = file.size
+      // Main checks the drive has room for all of it before a byte is written.
+      const id = await api.fileOpenWrite(target, file.size)
       let ok = false
       try {
-        const reader = file.stream().getReader()
-        for (;;) {
-          const { done, value } = await reader.read()
-          if (done) break
-          // A copy, so the buffer that crosses is exactly this chunk and nothing around it.
-          await api.fileWriteChunk(id, value.slice().buffer)
+        // ⛔ 8 MB SLICES, NOT THE STREAM'S OWN CHUNKS. A stream hands over small
+        // pieces, one awaited trip to main each, thousands of them for one
+        // project with footage in it.
+        for (let off = 0; off < file.size; off += WRITE_SLICE) {
+          await api.fileWriteChunk(id, await file.slice(off, off + WRITE_SLICE).arrayBuffer())
+          onProgress?.(Math.min(1, (off + WRITE_SLICE) / file.size))
         }
         ok = true
       } finally {
@@ -451,7 +471,10 @@ export async function exportProjectToFile(): Promise<void> {
     reportBuilt(built, 'Saved project file')
   } catch (err) {
     console.warn('OL Premiere: project export failed', err)
-    show('Could not save the project file', 'danger')
+    // Say WHY when it is the drive: on his 97% full drive that is the likely one.
+    if (isDiskFull(err)) {
+      show(`Not enough space on the drive for this copy${need > 0 ? ` (needs ${sizeWords(need)})` : ''}`, 'danger')
+    } else show('Could not save the project file', 'danger')
   }
 }
 
