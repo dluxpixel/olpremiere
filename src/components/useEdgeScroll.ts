@@ -53,11 +53,17 @@ export function useEdgeScroll(
       }
       const before = el2.scrollLeft
       const beforeY = el2.scrollTop
+      const flagBefore = programmaticScroll.current
       programmaticScroll.current = true
       if (sp !== 0) el2.scrollLeft = Math.max(0, before + sp)
       if (spY !== 0) el2.scrollTop = Math.max(0, beforeY + spY)
       // At the rail ends nothing moved - don't spin the loop for free.
       if (el2.scrollLeft === before && el2.scrollTop === beforeY) {
+        // ⛔ AND NO SCROLL EVENT IS COMING to clear the mark, so it is put back
+        // here. Left set, his next wheel notch mid drag was read as our own (the
+        // held clip did not follow it) and his first scroll during playback did
+        // not pause the follow.
+        programmaticScroll.current = flagBefore
         edgeScrollRaf.current = null
         return
       }

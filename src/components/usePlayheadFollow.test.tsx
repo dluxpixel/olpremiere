@@ -40,6 +40,14 @@ describe('usePlayheadFollow', () => {
     expect(programmatic.current).toBe(true)
   })
 
+  it('leaves no "our own scroll" mark when the lanes cannot scroll any further', () => {
+    const { el, programmatic } = mount(true)
+    // The end of the content: the browser clamps every write to where it is.
+    Object.defineProperty(el, 'scrollLeft', { configurable: true, get: () => 0, set: () => {} })
+    playheadTo(9.75)
+    expect(programmatic.current).toBe(false)
+  })
+
   it('brings an off-screen jump into view while paused, centred', () => {
     const { el } = mount(false)
     playheadTo(5)

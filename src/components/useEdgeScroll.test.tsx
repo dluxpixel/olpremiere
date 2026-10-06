@@ -79,6 +79,17 @@ describe('useEdgeScroll', () => {
     expect(raf.pending()).toBe(0)
   })
 
+  // A write that moved nothing fires no scroll event, so nothing else would ever
+  // clear the mark, and his next wheel notch would be read as the app's own.
+  it('leaves no "our own scroll" mark behind when the rail end moved nothing', () => {
+    const { programmatic, hook } = mount()
+    // Dragging along the top lane at scrollTop 0.
+    hook.result.current.lastDragPointer.current = { clientX: 500, clientY: 0 }
+    act(() => hook.result.current.maybeEdgeScroll(vi.fn()))
+    act(() => raf.flush())
+    expect(programmatic.current).toBe(false)
+  })
+
   it('stops when the pointer leaves the edge, is cleared, or on demand', () => {
     const { hook } = mount()
     const r = hook.result.current

@@ -31,8 +31,13 @@ export function usePlayheadFollow(
         // paused (see followScrollLeft).
         const next = followScrollLeft(t * pxPerSRef.current, el.scrollLeft, el.clientWidth, playing)
         if (next !== null) {
+          const before = el.scrollLeft
+          const flagBefore = programmaticScroll.current
           programmaticScroll.current = true
           el.scrollLeft = next
+          // Clamped at the end of the content, the write moved nothing and no
+          // scroll event will clear the mark, so it is put back (useEdgeScroll).
+          if (el.scrollLeft === before) programmaticScroll.current = flagBefore
         }
       },
     )
