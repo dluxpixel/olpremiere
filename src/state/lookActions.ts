@@ -1,11 +1,12 @@
-// Looks: one click applies a whole channel style. The Jettism look = the
-// genre-standard punchy grade on every video clip + 9:16 Shorts format + pop
+// Looks: one double click applies a whole channel style. The Jettism look = the
+// genre-standard punchy grade on every video clip + a tall frame (9:16, or Phone kept) + pop
 // entrances for new text. The project edit is ONE dispatch (one undo step); the
 // default-appearance side effect lives outside the undo stack by design.
 
+import { aspectKeyFor, FORMATS } from '../components/frameFormats'
 import { CAPTION_POP_DUR_S } from '../engine/captions/captions'
 import { setSequenceFormat } from '../engine/timeline'
-import { newId, type Clip, type EffectInstance } from '../engine/types'
+import { newId, type Clip, type EffectInstance, type Sequence } from '../engine/types'
 import { setDefaultTextAppearance } from './appearanceActions'
 import { useStore } from './store'
 import { useToasts } from './toasts'
@@ -13,6 +14,23 @@ import { useToasts } from './toasts'
 /** Shorts frame. */
 const LOOK_W = 1080
 const LOOK_H = 1920
+
+/**
+ * The frame the look leaves the video in.
+ *
+ * ⛔ A PHONE VIDEO STAYS PHONE. His ask, 2026-10-05, made Phone (1080x2112) the
+ * frame for TikTok and Reels. The look always set 1080x1920, so it switched a
+ * Phone video back to 9:16, said "9:16" while doing it, and rewrote the project
+ * default so his next video started at 9:16 too. Anything else still becomes
+ * 9:16, as before.
+ */
+function lookFrame(seq: Sequence): { w: number; h: number; words: string } {
+  const phone = FORMATS.find((f) => f.key === 'phone')
+  if (phone && aspectKeyFor(seq.width, seq.height) === 'phone') {
+    return { w: phone.w, h: phone.h, words: 'kept the Phone frame' }
+  }
+  return { w: LOOK_W, h: LOOK_H, words: '9:16' }
+}
 
 /**
  * The grade, straight from the channel spec: +13% saturation, +10% contrast,
@@ -65,7 +83,11 @@ export function applyPunchyGrade(clipId: string): void {
  */
 export function applyPunchyGradeToClips(ids: Iterable<string>): void {
   const idSet = new Set(ids)
-  if (idSet.size === 0) return
+  if (idSet.size === 0) {
+    // A double click that did nothing and said nothing looked broken.
+    useToasts.getState().show('Select a clip first', 'info')
+    return
+  }
   let graded = 0
   useStore.getState().dispatch('Punchy grade', (p) => {
     const seq = p.sequences[p.activeSequenceId]
@@ -96,32 +118,46 @@ export function applyPunchyGradeToClips(ids: Iterable<string>): void {
 }
 
 /**
- * Apply the Jettism look: 9:16 + punch grade on every ungraded video clip
- * (title clips stay clean, since the caption style owns them) in one undo step,
- * and pop as the default text entrance.
+ * Apply the Jettism look: a tall frame (9:16, or Phone kept as Phone) + punch
+ * grade on every ungraded video clip (title clips stay clean, since the caption
+ * style owns them) in one undo step, and pop as the default text entrance.
+ *
+ * Locked tracks are left alone, the way the Punchy Grade leaves them. A second
+ * double click with nothing left to do adds no undo step: it used to rebuild
+ * every video track, so Ctrl+Z then took back a step that changed nothing.
  */
 export function applyJettismLook(): void {
   let graded = 0
+  let words = '9:16'
   useStore.getState().dispatch('Apply Jettism look', (p) => {
     const seq = p.sequences[p.activeSequenceId]
-    let sq = setSequenceFormat(seq, p.assets, LOOK_W, LOOK_H, true)
-    const tracks = sq.tracks.map((t) =>
-      t.kind !== 'video'
-        ? t
-        : {
-            ...t,
-            clips: t.clips.map((c) => {
-              if (c.title || hasJettismGrade(c)) return c
-              graded++
-              return { ...c, effects: [...c.effects, ...jettismGradeEffects()] }
-            }),
-          },
-    )
-    sq = { ...sq, tracks }
+    const frame = lookFrame(seq)
+    words = frame.words
+    const formatted = setSequenceFormat(seq, p.assets, frame.w, frame.h, true)
+    // setSequenceFormat hands back a new sequence even when nothing in it moved.
+    const refitted =
+      formatted.width !== seq.width ||
+      formatted.height !== seq.height ||
+      formatted.tracks.some((t, i) => t !== seq.tracks[i])
+    const tracks = formatted.tracks.map((t) => {
+      if (t.kind !== 'video' || t.locked) return t
+      let touched = false
+      const clips = t.clips.map((c) => {
+        if (c.title || hasJettismGrade(c)) return c
+        touched = true
+        graded++
+        return { ...c, effects: [...c.effects, ...jettismGradeEffects()] }
+      })
+      return touched ? { ...t, clips } : t
+    })
+    const regraded = tracks.some((t, i) => t !== formatted.tracks[i])
+    const sameDefault = p.settings.width === frame.w && p.settings.height === frame.h
+    if (!refitted && !regraded && sameDefault) return p
+    const sq = regraded ? { ...formatted, tracks } : formatted
     return {
       ...p,
       sequences: { ...p.sequences, [seq.id]: sq },
-      settings: { ...p.settings, width: LOOK_W, height: LOOK_H },
+      settings: sameDefault ? p.settings : { ...p.settings, width: frame.w, height: frame.h },
     }
   })
   setDefaultTextAppearance({ in: 'pop', durS: CAPTION_POP_DUR_S })
@@ -129,8 +165,8 @@ export function applyJettismLook(): void {
     .getState()
     .show(
       graded > 0
-        ? `Jettism look: 9:16, punch grade on ${graded} clip(s), pop titles`
-        : 'Jettism look: 9:16 set, clips already graded, pop titles',
+        ? `Jettism look: ${words}, punch grade on ${graded} clip${graded === 1 ? '' : 's'}, pop titles`
+        : `Jettism look: ${words}, clips already graded, pop titles`,
       'success',
     )
 }
