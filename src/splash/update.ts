@@ -148,7 +148,9 @@ function render(s: UpdateStatus): void {
   // be busy. The status line carries the last beat.
 
   armStall()
-  if (!settling && (s.kind === 'downloaded' || s.kind === 'error')) {
+  // `pending` (a file not up yet, looked for again in minutes) is as final as this card
+  // gets: it would otherwise sit on "Installs when you close" until the stall timer.
+  if (!settling && (s.kind === 'downloaded' || s.kind === 'error' || s.kind === 'pending')) {
     settling = true
     if (stall) clearTimeout(stall)
     stall = null

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { UpdateStatus } from '../../electron/ipc-types'
-import { updateFailureMessage } from '../../electron/updateErrors'
+import { UPDATE_FAILURES, updateFailureMessage } from '../../electron/updateErrors'
 import { TIMED_OUT, bootDetailFor, updateErrorToast, updateLine, updateInHand } from './updateStatus'
 
 // This is the honesty contract for the update line: every state the updater can be
@@ -106,7 +106,7 @@ describe('a release still being published', () => {
 // sentences main sends and nothing else.
 describe('updateErrorToast', () => {
   it('passes through each sentence main sends, unchanged', () => {
-    for (const k of ['offline', 'denied', 'publishing', 'other'] as const) {
+    for (const k of UPDATE_FAILURES) {
       expect(updateErrorToast(updateFailureMessage(k))).toBe(updateFailureMessage(k))
     }
   })

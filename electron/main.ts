@@ -43,10 +43,9 @@ import * as native from './nativeExport'
 import * as proxy from './proxy'
 import * as mediaStore from './mediaStore'
 import * as remux from './remux'
-import { IDLE_POLL_MS, updateApplyDecision } from './updateApply'
 import { CRASH_LOG_NAME, crashLogLine, crashPlan } from './crashPlan'
 import { appliedWhileAway, launchMode, parseQuietMarker, QUIET_START_FILE } from './launchMode'
-import { planUpdateError, updateLogEntry } from './updateErrors'
+import { fileQuietStore, startUpdateFlow, type UpdateFlow } from './updateFlow'
 import { appendUpdateLog, UPDATE_LOG_NAME } from './updateLog'
 import electronUpdater from 'electron-updater'
 
@@ -396,6 +395,8 @@ function setUpdateStatus(status: UpdateStatus): void {
  * exactly wrong here.
  */
 let updateWindow: BrowserWindow | null = null
+/** The updater's rules (./updateFlow). Only in a packaged build that is not the lab. */
+let updateFlow: UpdateFlow | null = null
 /** His melon click, and only his. Cleared by any terminal status. */
 let userAsked = false
 let updateOpenTimer: ReturnType<typeof setTimeout> | null = null
@@ -1007,8 +1008,7 @@ app.whenReady().then(() => {
       }
       return
     }
-    setUpdateStatus({ kind: 'checking' })
-    void autoUpdater.checkForUpdatesAndNotify()
+    updateFlow?.check()
   })
 
   // What the RENDERER says it is doing, because main cannot see it: an export
@@ -1023,122 +1023,19 @@ app.whenReady().then(() => {
   // usually OLDER than what it is running, and letting it update would quietly
   // replace the thing under test with the thing it was being tested against.
   if (app.isPackaged && !IS_LAB) {
-    let pendingVersion = ''
-    /** The version he has already been told is ready. Empty until one is. */
-    let announcedVersion = ''
-    // Set once an update is downloaded and waiting for him to step away. See
-    // ./updateApply for why idleness is the one door besides closing the app.
-    let idleApplyTimer: ReturnType<typeof setInterval> | null = null
-    autoUpdater.autoDownload = true
-    autoUpdater.autoInstallOnAppQuit = true // a pending update also installs on any quit
-    // How many checks in a row found a release that is still being published, and
-    // the pending look-again that follows one. See ./updateErrors.
-    let publishingStreak = 0
-    let recheckTimer: ReturnType<typeof setTimeout> | null = null
-    const recheckSoon = (ms: number): void => {
-      if (recheckTimer) clearTimeout(recheckTimer)
-      recheckTimer = setTimeout(() => {
-        recheckTimer = null
-        // Only if nothing has moved on since: his click or the fifteen minute poll
-        // may already have asked, and a second check over a live one helps no one.
-        if (updateStatus.kind !== 'pending') return
-        setUpdateStatus({ kind: 'checking' })
-        void autoUpdater.checkForUpdatesAndNotify()
-      }, ms)
-    }
-    autoUpdater.on('error', (e) => {
-      // ⛔ NEVER SWALLOW THIS, but "say it to him" and "keep it" are different jobs.
-      // A silent failure here is indistinguishable from "no update available",
-      // which is exactly how a dead update feed (an unreachable repo, a 404 on
-      // latest.yml) hid for weeks. So EVERY failure is kept, in full, in the log.
-      //
-      // What reaches HIS screen is decided by planUpdateError, and since 2026-10-04
-      // it is one plain sentence. That day a release was visible on GitHub while its
-      // installer was still uploading, and the toast was the updater's raw text: a
-      // URL, the response headers and a stack trace, for a check that would have
-      // passed a minute later. A release still being published says nothing and
-      // looks again soon; one that stays "still publishing" for about an hour is
-      // said out loud, because that is a dead feed.
-      const plan = planUpdateError(e, publishingStreak)
-      publishingStreak = plan.streak
-      console.error('OL Premiere auto-update error:', e)
-      appendUpdateLog(path.join(app.getPath('logs'), UPDATE_LOG_NAME), updateLogEntry(new Date(), plan, e))
-      if (plan.message === null) {
-        setUpdateStatus({ kind: 'pending' })
-        if (plan.retryInMs !== null) recheckSoon(plan.retryInMs)
-        return
-      }
-      mainWindow?.webContents.send('update:error', plan.message)
-      setUpdateStatus({ kind: 'error', message: plan.message })
-    })
-    autoUpdater.on('update-not-available', () => {
-      publishingStreak = 0
-      mainWindow?.webContents.send('update:none')
-      setUpdateStatus({ kind: 'none' })
-    })
-    // Found one, and the download starts itself (autoDownload), so say so, and then
-    // say how far it has got. A 240 MB installer arriving in silence is the thing
-    // that made the app look stuck on "checking".
-    autoUpdater.on('update-available', (info) => {
-      publishingStreak = 0
-      pendingVersion = info.version
-      setUpdateStatus({ kind: 'available', version: info.version })
-    })
-    autoUpdater.on('download-progress', (p) => {
-      // transferred/total ride along so the card can print a named denominator,
-      // "112 of 240 MB", instead of a bare percent that says which of nothing.
-      setUpdateStatus({
-        kind: 'downloading',
-        version: pendingVersion,
-        percent: Math.round(p.percent),
-        transferred: p.transferred,
-        total: p.total,
-      })
-    })
-    autoUpdater.on('update-downloaded', (info) => {
-      // ⛔ ONCE PER VERSION, AND HE WAS GETTING IT FOUR TIMES AN HOUR.
-      // A staged update stays on disk, so every later check finds it there and
-      // says "downloaded" again straight away. Nothing here cared, so the
-      // "Restart to install" toast came back every fifteen minutes, all day,
-      // over whatever he was doing. Announcing a version he has already been
-      // told about is never news.
-      if (announcedVersion === info.version) return
-      announcedVersion = info.version
-      setUpdateStatus({ kind: 'downloaded', version: info.version })
-      // Auto-apply only once he has been away from the machine AND only when no
-      // native export is mid-render (a force-quit would truncate the file + orphan
-      // ffmpeg). Even then we don't quit blindly: we ASK the renderer, which
-      // flushes a save and restarts only if no critical work is in flight.
-      // Otherwise it falls back to the "Restart to update" toast. proxyBusy for
-      // the same reason as isExporting: a restart mid-transcode orphans an ffmpeg
-      // child and leaves half a proxy behind.
-      const busy = (): boolean => rendererBusy || native.isExporting() || proxy.proxyBusy() || remux.remuxBusy()
-      const decide = (): 'now' | 'when-idle' | 'never' =>
-        updateApplyDecision({
-          idleSeconds: powerMonitor.getSystemIdleTime(),
-          busy: busy(),
-        })
-
-      if (decide() === 'now') {
-        console.log(`OL Premiere update ${info.version} downloaded while he is away, asking renderer to auto-apply`)
-        mainWindow?.webContents.send('update:autoApply', info.version)
-        return
-      }
-
-      // He asked for the click to go, 2026-08-17: "Make it automatic." So the toast
-      // is the FALLBACK now rather than the plan. The update also applies itself the
-      // moment he is not using the machine, and `getSystemIdleTime` is the whole
-      // machine rather than this app, so it cannot fire while he is typing anywhere.
-      console.log(`OL Premiere update ${info.version} downloaded, offering restart and watching for idle`)
-      mainWindow?.webContents.send('update:ready', info.version)
-      if (idleApplyTimer) clearInterval(idleApplyTimer)
-      idleApplyTimer = setInterval(() => {
-        if (decide() !== 'now') return
-        if (idleApplyTimer) clearInterval(idleApplyTimer)
-        idleApplyTimer = null
-        console.log(`OL Premiere update ${info.version}: he has been idle, applying it`)
-        mainWindow?.webContents.send('update:autoApply', info.version)
-      }, IDLE_POLL_MS)
+    // The rules live in ./updateFlow, where they are run in tests rather than read.
+    // The busy list is main's to know: an export, a preview copy or a conversion
+    // mid flight would be truncated by a restart, and the renderer reports its own
+    // (an in-browser export, a live microphone, a take not yet kept).
+    updateFlow = startUpdateFlow({
+      updater: autoUpdater,
+      getStatus: () => updateStatus,
+      setStatus: setUpdateStatus,
+      send: (channel, arg) => mainWindow?.webContents.send(channel, arg),
+      idleSeconds: () => powerMonitor.getSystemIdleTime(),
+      busy: () => rendererBusy || native.isExporting() || proxy.proxyBusy() || remux.remuxBusy(),
+      log: (entry) => appendUpdateLog(path.join(app.getPath('logs'), UPDATE_LOG_NAME), entry),
+      quiet: fileQuietStore(path.join(app.getPath('userData'), 'update-quiet-since.json')),
     })
     // Apply from the toast (and the renderer's save-then-restart path): quit and
     // relaunch into the downloaded version.
@@ -1182,24 +1079,6 @@ app.whenReady().then(() => {
       setTimeout(go, INSTALL_CLOSE_TIMEOUT_MS)
       win.close()
     })
-    setUpdateStatus({ kind: 'checking' })
-    void autoUpdater.checkForUpdatesAndNotify()
-    const FIFTEEN_MIN = 15 * 60 * 1000
-    const poll = setInterval(() => {
-      // Once a version is staged, the answer cannot improve: it installs on the
-      // next restart either way, and asking again only re-finds the same file.
-      // The reload button still forces a check whenever he wants one.
-      if (updateStatus.kind === 'downloaded') {
-        clearInterval(poll)
-        return
-      }
-      // ⛔ AND NEVER OVER A LIVE DOWNLOAD. At minute fifteen of a long one this
-      // used to write {checking} across the percent, blanking the card while the
-      // file was still arriving perfectly well.
-      if (updateStatus.kind === 'downloading') return
-      setUpdateStatus({ kind: 'checking' })
-      void autoUpdater.checkForUpdatesAndNotify()
-    }, FIFTEEN_MIN)
   }
 })
 
