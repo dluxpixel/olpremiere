@@ -1,7 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { blobKeysOnlyUsedBy } from '../engine/blobGc'
 import { newClipFromAsset, newProject, type MediaAsset, type Project } from '../engine/types'
-import { createProject, duplicateProject, openProject, removeProject } from './projectActions'
+import { createProject, duplicateProject, openProject, removeProject, UNDO_DELETE_MS } from './projectActions'
+import { deleteProject, dropUnusedBlobs } from './persistence'
 import { useStore } from './store'
 
 const saved = new Map<string, Project>()
@@ -9,8 +10,16 @@ let roomSession: object | null = null
 /** Flip on to make the autosave flush REJECT, as a full disk / dead IDB would. */
 let saveFails = false
 
+/** Every toast shown, with its button, so a test can press Undo. */
+const toasts: { message: string; action?: { label: string; onClick: () => void } }[] = []
 vi.mock('./toasts', () => ({
-  useToasts: { getState: () => ({ show: () => {} }) },
+  useToasts: {
+    getState: () => ({
+      show: (message: string, _kind?: string, action?: { label: string; onClick: () => void }) => {
+        toasts.push({ message, action })
+      },
+    }),
+  },
 }))
 vi.mock('./playbackControl', () => ({ pausePlayback: () => {} }))
 vi.mock('../collab/collabControl', () => ({
@@ -32,14 +41,19 @@ vi.mock('./persistence', () => ({
   }),
   loadProjectById: vi.fn(async (id: string) => saved.get(id) ?? null),
   deleteProject: vi.fn(async (id: string) => {
+    const p = saved.get(id) ?? null
     saved.delete(id)
+    return p
   }),
+  dropUnusedBlobs: vi.fn(async () => 0),
   listProjects: vi.fn(async () =>
     [...saved.values()].map((p, i) => ({ id: p.id, name: p.name, updatedAt: i })),
   ),
 }))
 
 beforeEach(() => {
+  toasts.length = 0
+  vi.mocked(dropUnusedBlobs).mockClear()
   saved.clear()
   roomSession = null
   saveFails = false
@@ -241,5 +255,70 @@ describe('duplicateProject (Make a copy)', () => {
 
     expect(useStore.getState().project.id).toBe(before)
     expect(saved.size).toBe(1)
+  })
+})
+
+describe('⛔ deleting a project can be undone', () => {
+  /** A project with media, so there are bytes for the delete to keep or let go. */
+  const withMedia = (name: string): Project => ({
+    ...newProject(name),
+    assets: {
+      a1: { id: 'a1', name: 'gym.mp4', kind: 'video', blobKey: 'asset/a1', thumbnailKey: 'thumb/a1', durationS: 4, hasAudio: true, hasVideo: true },
+    },
+  })
+  const undoOf = (message: string) => toasts.find((t) => t.message === message)?.action
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('Undo puts the same project back, and its media are never let go', async () => {
+    const gym = withMedia('GYM')
+    saved.set(gym.id, gym)
+
+    await removeProject(gym.id)
+    expect(saved.has(gym.id)).toBe(false)
+    // The media stay while Undo is on offer.
+    expect(vi.mocked(deleteProject)).toHaveBeenCalledWith(gym.id, { keepBytes: true })
+    expect(undoOf('Project deleted')?.label).toBe('Undo')
+
+    undoOf('Project deleted')!.onClick()
+    await vi.advanceTimersByTimeAsync(UNDO_DELETE_MS + 2000)
+
+    expect(saved.get(gym.id)).toEqual(gym)
+    expect(vi.mocked(dropUnusedBlobs)).not.toHaveBeenCalled()
+    expect(toasts.map((t) => t.message)).toContain('GYM is back')
+  })
+
+  it('without Undo, the media are let go once the toast is gone', async () => {
+    const gym = withMedia('GYM')
+    saved.set(gym.id, gym)
+
+    await removeProject(gym.id)
+    await vi.advanceTimersByTimeAsync(UNDO_DELETE_MS - 1)
+    expect(vi.mocked(dropUnusedBlobs)).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(2000)
+
+    expect(vi.mocked(dropUnusedBlobs)).toHaveBeenCalledWith(['asset/a1', 'thumb/a1'])
+  })
+
+  it('Undo of the OPEN project puts it back and opens it again', async () => {
+    const current = withMedia('Current edit')
+    useStore.getState().setProject(current)
+    saved.set(current.id, current)
+    const other = newProject('Other')
+    saved.set(other.id, other)
+
+    await removeProject(current.id)
+    expect(useStore.getState().project.id).toBe(other.id)
+
+    undoOf('Project deleted')!.onClick()
+    await vi.advanceTimersByTimeAsync(100)
+
+    expect(saved.has(current.id)).toBe(true)
+    expect(useStore.getState().project.id).toBe(current.id)
   })
 })

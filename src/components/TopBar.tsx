@@ -380,7 +380,7 @@ export function TopBar() {
         // unpickable in the Files app. On a phone any file may be picked; the
         // import reads the first bytes and turns away anything that is not a
         // project, the same check a dropped file gets.
-        accept={phone ? undefined : '.olstudio,.json,.olstudio.json,application/json,application/octet-stream'}
+        accept={phone ? undefined : '.olstudio,.olpbak,.json,.olstudio.json,application/json,application/octet-stream'}
         className="hidden"
         data-testid="open-project-input"
         onChange={(e) => {

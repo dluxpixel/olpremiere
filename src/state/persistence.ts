@@ -3,7 +3,7 @@
 
 import { openDB, type IDBPDatabase } from 'idb'
 import { diskApi, healStoreFromDisk, trashProjectOnDisk, writeProjectToDisk } from './diskProjects'
-import { blobKeysOnlyUsedBy } from '../engine/blobGc'
+import { blobKeysOnlyUsedBy, reachableBlobKeys } from '../engine/blobGc'
 import { isBlobHeld } from './exportHolds'
 import { migrateProjectEffects } from '../engine/effects/migrate'
 import { migrateProjectAppearance } from '../engine/anim/appearance'
@@ -321,14 +321,18 @@ export async function setProjectArchived(id: string, archived: boolean): Promise
  * Reading every other project first costs one pass over a store that holds a
  * handful of rows, against silently destroying the footage the app exists to
  * protect.
+ *
+ * `keepBytes` leaves the media where they are, for a delete that can still be
+ * undone (projectActions.ts); `dropUnusedBlobs` lets them go once it cannot.
+ * Resolves to the document that was deleted, or null when there was none.
  */
-export async function deleteProject(id: string): Promise<void> {
+export async function deleteProject(id: string, opts: { keepBytes?: boolean } = {}): Promise<Project | null> {
   const d = await db()
   const p = (await d.get('projects', id)) as Project | undefined
   const others = ((await d.getAll('projects')) as Project[]).filter((o) => o?.id !== id)
   const tx = d.transaction(['projects', 'blobs', 'meta'], 'readwrite')
   void tx.objectStore('projects').delete(id)
-  if (p) {
+  if (p && !opts.keepBytes) {
     const blobs = tx.objectStore('blobs')
     // A key the running export still reads stays: he may delete the very
     // project he is exporting (exportHolds.ts). The next sweep reclaims it.
@@ -347,6 +351,29 @@ export async function deleteProject(id: string): Promise<void> {
   // project comes back on the next listing and he deletes it again, which is
   // the right way round for a mistake.
   await trashProjectOnDisk(id)
+  return p ?? null
+}
+
+/**
+ * Drop the bytes under `keys` that nothing uses any more: no stored project, not
+ * the open edit, not a step of its undo history, not a running export. For a
+ * deleted project whose Undo has run out. Anything still used is kept, so a
+ * project put back, or sharing its media, never loses a byte to this.
+ */
+export async function dropUnusedBlobs(keys: readonly string[]): Promise<number> {
+  if (keys.length === 0) return 0
+  const d = await db()
+  const { project, history } = useStore.getState()
+  const docs: Project[] = [project, ...((await d.getAll('projects')) as Project[])]
+  for (const c of [...history.undo, ...history.redo]) docs.push(c.before, c.after)
+  const used = new Set<string>()
+  for (const doc of docs) if (doc) for (const k of reachableBlobKeys(doc)) used.add(k)
+  const gone = keys.filter((k) => !used.has(k) && !isBlobHeld(k))
+  if (gone.length === 0) return 0
+  const tx = d.transaction('blobs', 'readwrite')
+  for (const k of gone) void tx.store.delete(k)
+  await tx.done
+  return gone.length
 }
 
 /**

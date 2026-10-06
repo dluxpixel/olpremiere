@@ -14,9 +14,13 @@
 import { migrateProjectEffects } from '../engine/effects/migrate'
 import { migrateProjectAppearance } from '../engine/anim/appearance'
 import { migrateProject, newId, type Project } from '../engine/types'
+import { nextFreeName } from '../engine/uniqueName'
+import { parseStoredProject } from '../persistence/schema'
 import { backfillMirror } from './mediaMirror'
-import { deleteBlob, getBlob, loadProjectById, putBlob, saveProject } from './persistence'
+import { deleteBlob, getBlob, listProjects, loadProjectById, putBlob, saveProject } from './persistence'
 import { flushOutgoing, guardRoom, switchTo } from './editTabs'
+import { copyOfProject } from './projectActions'
+import { forgetDoNotAutoRecover } from './recoveryMemory'
 import { useStore } from './store'
 import { useToasts } from './toasts'
 import { plural } from '../engine/plural'
@@ -115,7 +119,7 @@ export function openProjectFilePicker(): void {
   // Fallback for anywhere the top bar is not mounted: a throwaway input.
   const input = document.createElement('input')
   input.type = 'file'
-  input.accept = `.${PROJECT_FILE_EXT},.json,application/octet-stream`
+  input.accept = `.${PROJECT_FILE_EXT},.olpbak,.json,application/octet-stream`
   input.onchange = () => {
     const file = input.files?.[0]
     if (file) void importProjectFromFile(file)
@@ -130,9 +134,13 @@ export function openProjectFilePicker(): void {
  * which reported "couldn't import (unsupported?)" and left him believing his own
  * backup was broken. The file is the only bridge between the browser app and the
  * desktop app, so the most obvious gesture has to be the one that works.
+ *
+ * `.olpbak` too: the file each project keeps in his Projects folder, in its
+ * Trash and in the backups. Dropped on the window it used to read
+ * "Green_ab9fe413.olpbak: couldn't import (unsupported?)".
  */
 export function isProjectFileName(name: string): boolean {
-  return /\.olstudio(\.json)?$/i.test(name.trim())
+  return /\.(olstudio(\.json)?|olpbak)$/i.test(name.trim())
 }
 
 /**
@@ -483,7 +491,11 @@ export async function importProjectFromFile(file: File): Promise<void> {
       show('That is not an OL Premiere project file', 'danger')
       return
     }
-    const bundle = JSON.parse(await file.text()) as Partial<LegacyProjectFile>
+    const bundle = JSON.parse(await file.text()) as Partial<LegacyProjectFile> & { kind?: unknown }
+    if (bundle.kind === 'ol-premiere-backup' && bundle.project) {
+      await adoptProjectRecord(bundle.project, show)
+      return
+    }
     if (bundle.format !== PROJECT_FILE_FORMAT || !bundle.project) {
       show('That is not an OL Premiere project file', 'danger')
       return
@@ -503,6 +515,46 @@ export async function importProjectFromFile(file: File): Promise<void> {
 }
 
 type Show = ReturnType<typeof useToasts.getState>['show']
+
+/**
+ * Open one of his own `.olpbak` files: the document only, no footage inside. Its
+ * media are found when it opens, in the store or in the spare copies on disk.
+ *
+ * - Its id is not here (a project he deleted, a file from Trash): it is put back
+ *   as it is, same id and name, the way the Projects folder refills a lost store.
+ * - The same save is already here: that project simply opens.
+ * - A different save of a project he has: it lands beside it as a copy, so
+ *   neither one is written over.
+ */
+async function adoptProjectRecord(raw: unknown, show: Show): Promise<void> {
+  const parsed = parseStoredProject(raw)
+  if (!parsed) {
+    show('That project file is damaged', 'danger')
+    return
+  }
+  if (!(await flushOutgoing())) return
+  const project = migrateProjectAppearance(migrateProjectEffects(migrateProject(parsed)))
+  const existing = await loadProjectById(project.id)
+  if (existing && existing.updatedAt === project.updatedAt) {
+    await switchTo(project.id, { announce: true })
+    return
+  }
+  let landed = project
+  if (existing) {
+    let taken = new Set<string>()
+    try {
+      taken = new Set((await listProjects()).map((s) => s.name))
+    } catch {
+      // Unknown names only cost the plain name.
+    }
+    landed = copyOfProject(project, nextFreeName(project.name, taken))
+  }
+  await saveProject(landed)
+  // Brought back on purpose, so a later wipe may bring it back too.
+  if (!existing) forgetDoNotAutoRecover([landed.id])
+  if ((await switchTo(landed)) !== 'ok') return
+  show(existing ? `Opened "${landed.name}". Your "${existing.name}" was kept.` : `Opened "${landed.name}"`, 'success')
+}
 
 /**
  * Write an imported project's media, then its document, then adopt it.

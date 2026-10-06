@@ -11,7 +11,15 @@ import {
   type ProjectSummary,
 } from '../state/persistence'
 import { listBackups, readBackup, restoreBackup, type BackupContents, type BackupRow } from '../state/backupRestore'
-import { createProject, duplicateProject, openProject, removeProject, setArchived, setLater } from '../state/projectActions'
+import {
+  createProject,
+  duplicateProject,
+  openProject,
+  removeProject,
+  setArchived,
+  setLater,
+  useProjectListStamp,
+} from '../state/projectActions'
 import { useStore } from '../state/store'
 import {
   buildProjectFile,
@@ -160,7 +168,9 @@ export function ProjectsDialog({ onClose, view = 'active' }: { onClose: () => vo
       })
       .catch((err) => console.error('OL Premiere: projects list failed', err))
   }
-  useEffect(refresh, [])
+  // Read again when a deleted project comes back by Undo, so its row returns.
+  const stamp = useProjectListStamp((s) => s.stamp)
+  useEffect(refresh, [stamp])
 
   // The row goes the moment he confirms, not when storage has answered, so a slow
   // delete never leaves a row that looks untouched for him to click a third time.
