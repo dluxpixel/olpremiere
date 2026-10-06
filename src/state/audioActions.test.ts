@@ -3,11 +3,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { gainForTarget, measureLoudness, TARGET_LUFS } from '../engine/loudness'
 import { recomputeDuration } from '../engine/timeline'
-import { activeSequence, newProject, type Clip, type MediaAsset } from '../engine/types'
+import { activeSequence, newProject, type Clip, type MediaAsset, type Track } from '../engine/types'
 import { updateActiveSequence, useStore } from './store'
 
 const { getAudioRange, show } = vi.hoisted(() => ({ getAudioRange: vi.fn(), show: vi.fn() }))
-vi.mock('../engine/audio', () => ({ getAudioRange }))
+vi.mock('../engine/audio', async (orig) => ({ ...(await orig<typeof import('../engine/audio')>()), getAudioRange }))
 vi.mock('./toasts', () => ({ useToasts: { getState: () => ({ show }) } }))
 
 const RATE = 8000
@@ -46,6 +46,20 @@ function seed(clips: Partial<Clip>[]): void {
   )
 }
 
+/** Put clips on a named line, made if missing, with the line's own settings. */
+function onLine(name: string, kind: 'audio' | 'video', over: Partial<Track>, clips: Partial<Clip>[]): void {
+  const base = activeSequence(useStore.getState().project).tracks.find((t) => t.name === 'A1')!.clips[0]!
+  updateActiveSequence('line', (sq) => {
+    const made = sq.tracks.some((t) => t.name === name)
+      ? sq.tracks
+      : [...sq.tracks, { ...sq.tracks.find((t) => t.kind === kind)!, id: `t-${name}`, name, clips: [] }]
+    return recomputeDuration({
+      ...sq,
+      tracks: made.map((t) => (t.name === name ? { ...t, ...over, clips: clips.map((c) => ({ ...base, ...c })) } : t)),
+    })
+  })
+}
+
 const gainOf = (id: string) =>
   activeSequence(useStore.getState().project)
     .tracks.flatMap((t) => t.clips)
@@ -68,5 +82,26 @@ describe('normalizeClipGain', () => {
     expect(getAudioRange).toHaveBeenCalledWith(ASSET, 12, 18)
     const want = gainForTarget(measureLoudness([whole], RATE, 12, 18), TARGET_LUFS)!
     expect(gainOf('c1')).toBeCloseTo(want, 6)
+  })
+})
+
+describe('balanceAllClipLoudness', () => {
+  // ⛔ AU-12. His music, a muted line, a disabled clip and a linked picture clip
+  // that makes no sound were all levelled up to the voice target.
+  it('levels only his voice: music, muted lines, disabled and silent picture clips keep their gain', async () => {
+    const { balanceAllClipLoudness } = await import('./audioActions')
+    seed([{ id: 'voice1' }, { id: 'voice2', startS: 6 }, { id: 'off', startS: 12, enabled: false, audioGainDb: -3 }])
+    onLine('Music', 'audio', { audioRole: 'music' }, [{ id: 'song', audioGainDb: -12 }])
+    onLine('Muted', 'audio', { muted: true }, [{ id: 'muted', audioGainDb: 2 }])
+    onLine('V1', 'video', {}, [{ id: 'picture', linkId: 'L1', audioGainDb: 1 }])
+
+    await balanceAllClipLoudness()
+
+    expect(gainOf('song')).toBe(-12)
+    expect(gainOf('muted')).toBe(2)
+    expect(gainOf('off')).toBe(-3)
+    expect(gainOf('picture')).toBe(1)
+    expect(gainOf('voice1')).not.toBe(0)
+    expect(show.mock.calls.some((c) => /^Balanced 2 clips/.test(String(c[0])))).toBe(true)
   })
 })
