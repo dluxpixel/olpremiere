@@ -27,9 +27,10 @@
 // has already greyed (the shadow side of an arm), which is the skin that most
 // needs holding.
 //
-// The Amount slider is the last step: result = original + (graded - original) * amount.
-// Because the vignette and the grain are INSIDE the graded picture, one slider turns
-// the whole look up and down, not just its colour.
+// The Amount slider is the last step: result = original + (graded - original) * amount,
+// where the original is the colour as it ARRIVED, never clamped, so Amount 0 hands
+// back exactly what came in. Because the vignette and the grain are INSIDE the graded
+// picture, one slider turns the whole look up and down, not just its colour.
 //
 // Three parts of a look cannot be done one pixel at a time, because they read the
 // pixels around it: CLARITY (local contrast, the thing that makes muscle lines
@@ -491,13 +492,11 @@ export function applyLook(spec: LookSpec, rgb: Vec3, amount: number, ctx: LookCo
     v = [v[0] + k, v[1] + k, v[2] + k]
   }
 
+  // Mixed with the colour as it ARRIVED (rgb, not c0) and not clamped after, the
+  // same as the shader: Amount 0 hands back exactly what came in, over-range too.
   const graded: Vec3 = [clamp01(v[0]), clamp01(v[1]), clamp01(v[2])]
   const a = amount
-  return [
-    clamp01(c0[0] + (graded[0] - c0[0]) * a),
-    clamp01(c0[1] + (graded[1] - c0[1]) * a),
-    clamp01(c0[2] + (graded[2] - c0[2]) * a),
-  ]
+  return [mix(rgb[0], graded[0], a), mix(rgb[1], graded[1], a), mix(rgb[2], graded[2], a)]
 }
 
 // ---------------------------------------------------------------------------
@@ -724,6 +723,9 @@ export function lookGlsl(spec: LookSpec, amount: string): string {
   }`)
   }
 
-  out.push(`c = clamp(olkC0 + (clamp(olkV, 0.0, 1.0) - olkC0) * ${amount}, 0.0, 1.0);`)
+  // Mixed with `c` as it ARRIVED, not the clamped copy the look worked on, and not
+  // clamped after: at Amount 0 a value an earlier effect pushed past 1 goes on to
+  // the next effect untouched, so a look keyframed in from 0 changes nothing at 0.
+  out.push(`c = mix(c, clamp(olkV, 0.0, 1.0), ${amount});`)
   return out.join('\n')
 }

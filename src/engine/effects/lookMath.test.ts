@@ -260,6 +260,25 @@ describe('a look on one pixel', () => {
     }
   })
 
+  it('hands back an over-range colour untouched at Amount 0, and only ever grades into range', () => {
+    // Brightness, exposure, contrast and saturation all run before a look and can
+    // push a highlight past 1. A look keyframed in from 0 must change nothing at
+    // 0, or a vignette after it sees that highlight cut to 1 the instant it lands.
+    const over: Vec3[] = [
+      [1.15, 1.2, 1.05],
+      [-0.04, 0.5, 1.3],
+    ]
+    for (const look of LOOKS) {
+      for (const c of over) {
+        expect(applyLook(look, c, 0, CTX), look.id).toEqual([...c])
+        for (const v of applyLook(look, c, 1, CTX)) {
+          expect(v, look.id).toBeGreaterThanOrEqual(0)
+          expect(v, look.id).toBeLessThanOrEqual(1)
+        }
+      }
+    }
+  })
+
   it('changes nothing when every stage sits at neutral, even at full Amount', () => {
     const r = rng(2)
     for (let i = 0; i < 500; i++) {
@@ -399,8 +418,15 @@ describe('the shader text', () => {
 
   it('reads the Amount uniform it is given and nothing else', () => {
     const text = lookGlsl(LOOKS[0], 'u_fx3_amount')
-    expect(text).toContain('* u_fx3_amount')
+    expect(text).toContain(', u_fx3_amount)')
     expect(text).not.toMatch(/u_fx\d+_(?!amount)/)
+  })
+
+  it('mixes with the colour as it arrived and clamps only the graded side, so Amount 0 is exact', () => {
+    for (const look of LOOKS) {
+      const lines = lookGlsl(look, 'u_fx3_amount').trim().split('\n')
+      expect(lines[lines.length - 1], look.id).toBe('c = mix(c, clamp(olkV, 0.0, 1.0), u_fx3_amount);')
+    }
   })
 
   it('writes each curve segment the evaluator uses', () => {
