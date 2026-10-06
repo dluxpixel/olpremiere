@@ -979,8 +979,39 @@ function makeTextureSource(
   transitionSides?: ReadonlySet<RenderLayer>,
   holdClips?: ReadonlySet<Id>,
   ownElementSides?: ReadonlySet<RenderLayer>,
+  zoomByKey?: ReadonlyMap<Id, number>,
 ): TextureSource {
-  return (layer: RenderLayer): TexImageSource | null => {
+  /**
+   * ⛔ ONE PICTURE PER ELEMENT PER FRAME (PB-5, 2026-10-06). The blurred
+   * background is a second layer of the SAME clip, so the ladder ran twice per
+   * frame on one element: two servo writes, two health samples, and two scaled
+   * copies at two sizes, which re-made the scratch canvas and the GPU texture
+   * twice a frame. A layer on an element already resolved this frame gets the
+   * same picture, sized for the largest layer on it (zoomByKey).
+   */
+  const sameElement = new Map<string, TexImageSource | null>()
+  const elementKey = (layer: RenderLayer): string | null => {
+    if (!playing || layer.title || transitionFrom?.has(layer) || !elementDriven(layer)) return null
+    if (assets[layer.assetId]?.kind !== 'video') return null
+    const key = videoPoolKeyFor(layer.assetId, ownElementSides?.has(layer) === true)
+    return `${key}|${layer.sourceTimeS}|${transitionSides?.has(layer) === true ? 1 : 0}`
+  }
+  const resolveOnce = (layer: RenderLayer): TexImageSource | null => {
+    const key = elementKey(layer)
+    if (key === null) return resolveLayer(layer)
+    if (sameElement.has(key)) {
+      const pic = sameElement.get(key) ?? null
+      if (pic && holdClips?.has(layer.clipId)) holdGoodFrame(layer.clipId, pic)
+      return pic
+    }
+    const pic = resolveLayer(layer)
+    sameElement.set(key, pic)
+    return pic
+  }
+  /** The upload size for this element this frame: the largest any layer on it needs. */
+  const zoomOn = (poolKey: Id, layer: RenderLayer, el: HTMLVideoElement): number =>
+    zoomByKey?.get(poolKey) ?? liveZoom(layer.transform, el.videoWidth, el.videoHeight, frameW, frameH)
+  const resolveLayer = (layer: RenderLayer): TexImageSource | null => {
     // Titles are generated, not imported. Rasterize them at PREVIEW size, not at
     // sequence size: a 1080x1920 caption canvas is an 8.3 MB allocation plus a
     // full-frame text raster on the main thread plus a texture upload and a
@@ -1216,7 +1247,7 @@ function makeTextureSource(
     if (Math.abs(trueErr) <= tol) {
       liveMisses.delete(poolKey)
       recordServedFrame(trueErr, true)
-      return confident(livePreviewSource(el, poolKey, liveZoom(layer.transform, el.videoWidth, el.videoHeight, frameW, frameH)))
+      return confident(livePreviewSource(el, poolKey, zoomOn(poolKey, layer, el)))
     }
     // NEVER ASK THE DECODER FOR WHAT IT CANNOT DELIVER IN TIME.
     //
@@ -1248,8 +1279,9 @@ function makeTextureSource(
       markPending() // the decode is queued; keep polling so it lands
     }
     recordServedFrame(trueErr, false)
-    return livePreviewSource(el, poolKey, liveZoom(layer.transform, el.videoWidth, el.videoHeight, frameW, frameH))
+    return livePreviewSource(el, poolKey, zoomOn(poolKey, layer, el))
   }
+  return resolveOnce
 }
 
 // --- Live-playback texture sizing -------------------------------------------
@@ -1629,6 +1661,22 @@ export function renderPreview(
     prerollTransitions(windows, assets, tS)
     prerollCuts(seq, assets, tS)
   }
+  // The largest upload each playing element needs this frame, so every layer
+  // on it shares one picture at one size (see sameElement in makeTextureSource).
+  const zoomByKey = new Map<Id, number>()
+  if (playing) {
+    for (const op of frame.ops) {
+      const ls = op.type === 'layer' ? [op.layer] : op.type === 'transition' ? [op.from, op.to] : []
+      for (const l of ls) {
+        if (l.title || !elementDriven(l)) continue
+        const key = videoPoolKeyFor(l.assetId, ownElementSides?.has(l) === true)
+        const el = videoPool.get(key)?.el
+        if (!el) continue
+        const z = liveZoom(l.transform, el.videoWidth, el.videoHeight, frame.width, frame.height)
+        zoomByKey.set(key, Math.max(zoomByKey.get(key) ?? 0, z))
+      }
+    }
+  }
   // A frame is "complete" only when every layer resolved to its FINAL texture
   // (the exact decoded frame / loaded image), not a still-seeking <video>
   // fallback. While anything is pending, the caller keeps polling so the async
@@ -1647,6 +1695,7 @@ export function renderPreview(
     transitionSides,
     holdClips,
     ownElementSides,
+    zoomByKey,
   )
   // ⛔ A CUT NEVER FLASHES BLACK, 2026-09-28. His words: *"it seems like it has
   // dark cuts even though clips are completely together."* At a plain cut the

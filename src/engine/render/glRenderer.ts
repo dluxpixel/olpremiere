@@ -1405,6 +1405,13 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
   setTexParams(mipmapSources)
   let srcTexW = -1
   let srcTexH = -1
+  /**
+   * The changing source srcTex holds, within ONE render() call only (cleared at
+   * its start: a video's pixels move on between frames). Two layers drawing the
+   * same picture in one frame (a clip over its own blurred background) upload it
+   * once, not twice with two mip chains (PB-5).
+   */
+  let srcTexHolds: TexImageSource | null = null
   // The direct (unstaged) upload's own record, by the same rule as the stage:
   // a video element writes in place only into what it allocated itself. The
   // export only ever hands this canvases, so for it nothing changes.
@@ -1502,17 +1509,19 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     // CHANGING source: reuse srcTex; texSubImage2D avoids reallocating storage
     // when the frame size is unchanged (the common case across a clip).
     gl.bindTexture(gl.TEXTURE_2D, srcTex)
+    if (source === srcTexHolds && srcTexW === texW && srcTexH === texH) return srcTex
     if (fastUpload) {
       const allocate = srcTexW !== texW || srcTexH !== texH
       uploadThroughStage(srcTex!, source, texW, texH, allocate)
-      srcTexW = texW
-      srcTexH = texH
     } else {
       const plan = stageUpload(direct, source, texW, texH)
       if (plan.reuse) gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, source)
       else gl.texImage2D(gl.TEXTURE_2D, 0, gl.SRGB8_ALPHA8, gl.RGBA, gl.UNSIGNED_BYTE, source)
       direct = plan.next
     }
+    srcTexW = texW
+    srcTexH = texH
+    srcTexHolds = source
     // Every upload replaces level 0, so the chain must be re-derived each time
     // or the mip MIN_FILTER would sample stale (or missing) levels.
     if (mipmapSources) gl.generateMipmap(gl.TEXTURE_2D)
@@ -2269,6 +2278,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
   }
 
   function render(frame: RenderFrame, tex: TextureSource): void {
+    srcTexHolds = null
     const frameW = frame.width
     const frameH = frame.height
     // EVERY frame composites into the sRGB accumulator (pool[5]) and is blitted

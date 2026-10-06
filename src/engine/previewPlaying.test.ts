@@ -329,3 +329,53 @@ describe('a clip whose media was missing gets its picture back when the media do
     expect(src(videos[0])).toBe('blob:asset/A')
   })
 })
+
+// ---- PB-5 -------------------------------------------------------------------
+
+describe('two layers on one element share one picture per frame', () => {
+  const A = asset('A')
+  let made = 0
+  let draws = 0
+
+  beforeEach(() => {
+    made = 0
+    draws = 0
+    class FakeOffscreen {
+      constructor(
+        public width: number,
+        public height: number,
+      ) {
+        made++
+      }
+      getContext() {
+        return { drawImage: () => draws++ }
+      }
+    }
+    vi.stubGlobal('OffscreenCanvas', FakeOffscreen)
+    Object.defineProperty(HTMLVideoElement.prototype, 'videoWidth', { configurable: true, get: () => 1920 })
+    Object.defineProperty(HTMLVideoElement.prototype, 'videoHeight', { configurable: true, get: () => 1080 })
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('a clip over a bigger copy of itself (the blurred background shape) scales the frame once, at one size', async () => {
+    // Same take, same moment, one drawn four times the size of the other, so
+    // the two want different upload sizes.
+    const big = clip({ id: 'bg', assetId: 'A', startS: 0, inS: 0, outS: 4 })
+    big.transform = { ...big.transform, scale: 4 }
+    const front = clip({ id: 'fg', assetId: 'A', startS: 0, inS: 0, outS: 4 })
+    const seq: Sequence = { ...sequence([big]), tracks: [track([big]), { ...track([front]), id: 'T2' }] }
+    const c = canvas()
+    preview.renderPreview(c, seq, { A }, 0, false)
+    await loadVideos()
+    for (let f = 1; f <= 10; f++) preview.renderPreview(c, seq, { A }, f / 30, true)
+    // One scratch canvas for the element, made once, and one scaled copy per frame.
+    expect(made).toBe(1)
+    expect(draws).toBe(10)
+    // Both layers drew that same picture.
+    const last = h.drawn[h.drawn.length - 1]
+    expect(last).toHaveLength(2)
+    expect(last[0]).toBe(last[1])
+  })
+})
