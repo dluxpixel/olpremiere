@@ -695,7 +695,7 @@ export function Timeline({ height }: { height: number }) {
   }
 
   // --- drop from the media bin (useTimelineDrop) ---------------------------
-  const { dropPreview, setDropPreview, handleDragOver, handleDrop } = useTimelineDrop({
+  const { dropPreview, handleDragOver, handleDragLeave, handleDrop } = useTimelineDrop({
     seq,
     assets,
     pxPerS,
@@ -818,12 +818,7 @@ export function Timeline({ height }: { height: number }) {
           }}
           onDragOver={handleDragOver}
           onDrop={handleDrop}
-          onDragLeave={(e) => {
-            if (!(e.relatedTarget instanceof Node) || !e.currentTarget.contains(e.relatedTarget)) {
-              setDropPreview(null)
-              setSnapIndicatorT(null)
-            }
-          }}
+          onDragLeave={handleDragLeave}
         >
           <div ref={contentRef} className="relative" style={{ width: contentWidth }}>
             <TimelineRulerBar

@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { recomputeDuration } from '../engine/timeline'
 import { activeSequence, audioTracks, defaultTitleDef, newProject, newTitleClip, videoTracks, type Sequence } from '../engine/types'
 import { useContextMenu } from '../state/contextMenu'
-import { EFFECT_MIME } from '../state/dnd'
+import { ASSET_MIME, EFFECT_MIME } from '../state/dnd'
 import { clickedPasteTrack, setPasteTarget } from '../state/pasteTarget'
 import { updateActiveSequence, useStore } from '../state/store'
 import { Timeline } from './Timeline'
@@ -23,9 +23,10 @@ const seq = (): Sequence => activeSequence(useStore.getState().project)
 // virtualization window would be empty. Give elements a real width (shadowing
 // jsdom's own getter on Element.prototype for the length of each test).
 
+let raf: ReturnType<typeof installManualRaf>
 beforeEach(() => {
   Object.defineProperty(HTMLElement.prototype, 'clientWidth', { configurable: true, get: () => 1000 })
-  installManualRaf()
+  raf = installManualRaf()
   installResizeObserver()
   localStorage.clear()
   useStore.getState().setProject(newProject())
@@ -247,6 +248,39 @@ describe('Timeline', () => {
     const moved = seq().tracks.flatMap((t) => t.clips).find((c) => c.id === clip.id)!
     // Grabbed 1 s into the clip; the hand now points at 37 s of timeline.
     expect(moved.startS).toBeCloseTo(36, 6)
+  })
+
+  // A drag from the bin that passes the right edge of the lanes starts the edge
+  // scroll. He changes his mind and goes back to the bin: the timeline used to
+  // keep running by itself to the end of the edit.
+  it('a bin drag that leaves the lanes stops the edge scroll', () => {
+    render(<Timeline height={300} />)
+    const { lanes } = layOut()
+    lanes.getBoundingClientRect = () => ({ left: 0, top: 0, right: 1000, bottom: 300, width: 1000, height: 300, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect
+    const dragEv = (type: string, clientX: number) => {
+      const e = new MouseEvent(type, { bubbles: true, cancelable: true, clientX, clientY: 60, relatedTarget: null })
+      Object.defineProperty(e, 'dataTransfer', { value: { types: [ASSET_MIME], dropEffect: '', getData: () => '' } })
+      return e
+    }
+    act(() => {
+      lanes.dispatchEvent(dragEv('dragover', 995))
+    })
+    act(() => {
+      lanes.dispatchEvent(dragEv('dragleave', 1005))
+    })
+    const before = lanes.scrollLeft
+    for (let i = 0; i < 5; i++) act(() => raf.flush())
+    expect(lanes.scrollLeft).toBe(before)
+    // Esc mid drag: the browser ends it with a dragend on the bin item.
+    act(() => {
+      lanes.dispatchEvent(dragEv('dragover', 995))
+    })
+    act(() => {
+      window.dispatchEvent(new Event('dragend'))
+    })
+    const after = lanes.scrollLeft
+    for (let i = 0; i < 5; i++) act(() => raf.flush())
+    expect(lanes.scrollLeft).toBe(after)
   })
 
   it('cuts a clip with the razor', () => {
