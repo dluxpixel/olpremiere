@@ -184,6 +184,11 @@ describe('the SDR master of an HDR clip', () => {
     expect(a.join(' ')).not.toContain('vulkan')
   })
 
+  it('⛔ dithers the zscale fallback down to 8 bits, so dark gradients do not band', () => {
+    // Rounded straight from float, a dark ramp came out as flat bands one code apart.
+    expect(after(args('zscale'), '-vf')).toContain('zscale=t=bt709:m=bt709:r=tv:d=error_diffusion,format=yuv420p')
+  })
+
   it('⛔ keeps the phone frame times exactly, not rounded to the grid', () => {
     const a = args().join(' ')
     expect(a).toContain('-fps_mode passthrough')
@@ -209,9 +214,15 @@ describe('the SDR master of an HDR clip', () => {
     expect(a.join(' ')).toContain('-progress pipe:1')
   })
 
-  it('tries the best way first and keeps a way that needs nothing special last', () => {
-    expect(MASTER_LADDER[0]).toEqual({ tonemap: 'libplacebo', encoder: 'qsv' })
-    expect(MASTER_LADDER[MASTER_LADDER.length - 1]).toEqual({ tonemap: 'zscale', encoder: 'software' })
+  it('⛔ tries the software encoder before QuickSync, which bands dark shadows', () => {
+    // QuickSync threw the tone map's dither away: one luma step per code, a staircase
+    // (measured 2026-10-06). sdrMaster.test.ts holds the real file to it.
+    expect(MASTER_LADDER).toEqual([
+      { tonemap: 'libplacebo', encoder: 'software' },
+      { tonemap: 'libplacebo', encoder: 'qsv' },
+      { tonemap: 'zscale', encoder: 'software' },
+      { tonemap: 'zscale', encoder: 'qsv' },
+    ])
   })
 })
 

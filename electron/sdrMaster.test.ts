@@ -16,7 +16,8 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { convertToMp4, resetMasterChoice } from './remuxRun'
+import { sdrMasterArgs } from './remuxArgs'
+import { convertToMp4, resetMasterChoice, runFfmpeg } from './remuxRun'
 
 const FFMPEG = join(import.meta.dirname, '..', 'vendor', 'ffmpeg', 'win-x64', 'ffmpeg.exe')
 
@@ -120,6 +121,77 @@ describe('an HDR phone clip becomes one SDR master', () => {
   it('a master that cannot read every frame is refused, never imported with a hole in it', async () => {
     const src = await damaged(await hlgClip('whole.MOV'), 'IMG_5003.MOV')
     await expect(convertToMp4(FFMPEG, src, join(dir, 'master.mp4'), 'sdr')).rejects.toThrow()
+  }, 60_000)
+})
+
+const RAMP_W = 360
+const RAMP_H = 1280
+
+/**
+ * A dark 10 bit HLG ramp, black at the top to a dim grey at the bottom, tagged the way his phone tags
+ * its clips: a dim gym wall or a night sky, the picture where banding shows.
+ */
+async function darkHlgRamp(name: string): Promise<string> {
+  const out = join(dir, name)
+  ff([
+    '-loglevel', 'error', '-y',
+    '-f', 'lavfi', '-i', `nullsrc=s=${RAMP_W}x${RAMP_H}:d=0.34:r=30,format=yuv420p10le,geq=lum='64+220*Y/H':cb=512:cr=512`,
+    '-c:v', 'libx265', '-x265-params', 'log-level=error:crf=2:colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc',
+    '-pix_fmt', 'yuv420p10le', '-color_primaries', 'bt2020', '-color_trc', 'arib-std-b67', '-colorspace', 'bt2020nc',
+    out,
+  ])
+  return out
+}
+
+/**
+ * Luma steps down each column per code the column spans. A tone map rounded straight to 8 bits
+ * gives 1.0, a staircase of flat bands one code apart; a dithered one changes code many times
+ * inside each band, so the eye sees a smooth ramp.
+ */
+function stepsPerCode(path: string): number {
+  const r = spawnSync(FFMPEG, ['-hide_banner', '-loglevel', 'error', '-i', path, '-vf', 'extractplanes=y', '-f', 'rawvideo', '-pix_fmt', 'gray', '-'], {
+    windowsHide: true,
+    maxBuffer: 1 << 28,
+  })
+  const buf = r.stdout
+  const n = RAMP_W * RAMP_H
+  const frames = Math.floor(buf.length / n)
+  expect(frames).toBeGreaterThan(0)
+  let steps = 0
+  let cols = 0
+  let lo = 255
+  let hi = 0
+  for (let f = 0; f < frames; f++) {
+    for (const x of [72, 144, 180, 234, 306]) {
+      for (let y = 1; y < RAMP_H; y++) {
+        const a = buf[f * n + y * RAMP_W + x]
+        lo = Math.min(lo, a)
+        hi = Math.max(hi, a)
+        if (a !== buf[f * n + (y - 1) * RAMP_W + x]) steps++
+      }
+      cols++
+    }
+  }
+  return steps / cols / Math.max(1, hi - lo)
+}
+
+describe('⛔ the dark shadows of an HDR clip come through smooth, not banded', () => {
+  // MEASURED 2026-10-06 at this size: QuickSync 1.0 steps per code (it threw the tone map's dither
+  // away), libx264 4.6, zscale with no dither 1.3, zscale dithered 5.6. At 1080x1920: 1.0, 7.2,
+  // 1.4 and 8.7. Three is far from both sides.
+  it('the master he imports keeps the tone map dither', async () => {
+    const src = await darkHlgRamp('IMG_5005.MOV')
+    const out = join(dir, 'master.mp4')
+    await convertToMp4(FFMPEG, src, out, 'sdr')
+    expect(stepsPerCode(out)).toBeGreaterThan(3)
+  }, 60_000)
+
+  it('so does the zscale fallback for a machine with no Vulkan', async () => {
+    const src = await darkHlgRamp('IMG_5006.MOV')
+    const out = join(dir, 'zscale.mp4')
+    const run = await runFfmpeg(FFMPEG, sdrMasterArgs(src, out, { canCopyVideo: false, reencodeAudio: false }, 'zscale', 'software'))
+    expect(run.code, run.stderr).toBe(0)
+    expect(stepsPerCode(out)).toBeGreaterThan(3)
   }, 60_000)
 })
 
