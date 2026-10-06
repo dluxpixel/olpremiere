@@ -4,7 +4,8 @@
 // MASTER clock so A/V stays in sync.
 
 import { getBlob } from '../state/persistence'
-import { denoisedBufferFor } from './denoise'
+import { denoisedBufferFor, wetRunner } from './denoise'
+import { denoiseOffThread } from './denoiseClient'
 import { duckEnvelope } from './ducking'
 import { evalChannel } from './keyframes'
 import { budgets } from './memoryBudget'
@@ -750,6 +751,18 @@ export function getReversedAudioBuffer(asset: MediaAsset): Promise<AudioBuffer |
  * and a denoised one is cached per asset). The export keeps reading
  * clipAudioBuffer, unchanged, so its bytes cannot move.
  */
+// The noise pass runs in a worker wherever this engine runs (denoiseClient.ts).
+wetRunner.current = denoiseOffThread
+
+/**
+ * Start a clip's noise pass now, when he turns noise reduction on, so the first
+ * Play does not wait for it. Never throws.
+ */
+export function warmDenoise(clip: Clip, asset: MediaAsset): void {
+  if (!((clip.denoise ?? 0) > 0)) return
+  void clipAudioBuffer(clip, asset, false).catch(() => undefined)
+}
+
 function playbackAudioFor(clip: Clip, asset: MediaAsset, reversed: boolean): Promise<AudioRange | null> {
   if (reversed || (clip.denoise ?? 0) > 0) {
     return clipAudioBuffer(clip, asset, reversed).then((buffer) => (buffer ? { buffer, startS: 0 } : null))
