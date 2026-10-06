@@ -76,8 +76,10 @@ export function x264LevelArgs(width: number, height: number, fps: number): strin
  * 9 percent bigger files. Re-measured on three generated clips (heavy grain, a 60 fps fractal zoom,
  * a dark fade): slow's VMAF higher on all three, 21 to 55 percent less CPU, and after a platform
  * re-encode within plus or minus 0.7 either way. veryslow's extra reference frames and its
- * exhaustive search buy nothing a viewer of the platform's copy can see. ⛔ Do not go back to veryslow, and do not add aq-mode=3:
- * measured the same day, +12 to 40 percent bits and LOWER VMAF after the platform re-encode.
+ * exhaustive search buy nothing a viewer of the platform's copy can see.
+ *
+ * ⛔ Do not go back to veryslow, and do not add aq-mode=3: measured the same day, it cost 12 to
+ * 40 percent more bits and scored LOWER VMAF after the platform re-encode.
  */
 export const X264_PRESET = 'slow'
 
