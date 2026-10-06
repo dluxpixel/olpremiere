@@ -15,6 +15,7 @@ import { useToasts } from './toasts'
 import { currentHeardSpan, ensurePlaying, pausePlayback } from './playbackControl'
 import { updateActiveSequence, useStore } from './store'
 import { CLIP_AMP, readTake } from './takeAudio'
+import { clearDraft, leftoverDrafts, startDraft, type TakeDraft } from './takeDraft'
 import { placeTakeClips, takeClipSpans, type HeardDuringTake, type TakeTiming } from './takePlacement'
 import { beginRestartHold } from './unloadGuard'
 
@@ -29,6 +30,8 @@ export interface PendingTake {
   durationS: number
   /** What was measured while it was recorded, so a kept take lands where he performed it. */
   timing: TakeTiming
+  /** Its copy on disk (takeDraft.ts), kept until it is in the bin or thrown away for good. */
+  draftId?: string
 }
 
 interface RecorderState {
@@ -461,9 +464,52 @@ export function pickRecorderMime(): string {
 export const isLosslessMime = (mime: string): boolean => /codecs=pcm|audio\/wav/i.test(mime)
 
 /** File extension matching the recorded mime, so probe/import route it correctly. */
+const takeExtension = (mime: string): string =>
+  mime.includes('ogg') ? 'ogg' : mime.includes('mp4') ? 'm4a' : mime.includes('wav') ? 'wav' : 'webm'
+
 export function recordingFileName(n: number, mime: string): string {
-  const ext = mime.includes('ogg') ? 'ogg' : mime.includes('mp4') ? 'm4a' : mime.includes('wav') ? 'wav' : 'webm'
-  return `Voice recording ${n}.${ext}`
+  return `Voice recording ${n}.${takeExtension(mime)}`
+}
+
+/** How often the recorder hands over a chunk, and so the most a crash can cost. */
+export const DRAFT_SLICE_MS = 1000
+
+/** How long the offer of a take saved before a crash stays up. */
+const OFFER_MS = 20_000
+
+/**
+ * At launch: a take still on disk from before the app closed (a crash, or the
+ * app shut with a take waiting) is offered back. Added, it goes into the
+ * library like any import. Not answered, it stays and is offered again next
+ * time: these are his words, and nothing deletes them without him.
+ */
+export async function offerLeftoverTakes(): Promise<void> {
+  let drafts: Awaited<ReturnType<typeof leftoverDrafts>>
+  try {
+    drafts = await leftoverDrafts()
+  } catch {
+    return
+  }
+  for (const d of drafts) {
+    const file = new File([d.blob], `Saved voice recording.${takeExtension(d.blob.type)}`, { type: d.blob.type })
+    let adding = false
+    useToasts.getState().show(
+      'A take from before the app closed was saved. Add it?',
+      'info',
+      {
+        label: 'Add it',
+        onClick: () => {
+          if (adding) return
+          adding = true
+          void importFiles([file], { successMessage: 'Your saved take is in the library' }).then(([id]) => {
+            adding = false
+            if (id) void clearDraft(d.id)
+          })
+        },
+      },
+      { durationMs: OFFER_MS },
+    )
+  }
 }
 
 /**
@@ -507,14 +553,19 @@ export async function startRecording(): Promise<void> {
     heard,
     startPlayheadS: useStore.getState().ui.playheadS,
   }
+  const draft = startDraft()
   try {
     const rec = new MediaRecorder(monitor.stream, options)
     recorder = rec
     rec.ondataavailable = (e) => {
-      if (e.data.size > 0) takeChunks.push(e.data)
+      if (e.data.size === 0) return
+      takeChunks.push(e.data)
+      draft.add(e.data)
     }
-    rec.onstop = () => finalize(mime, rec, takeChunks, startedAt, timing)
-    rec.start()
+    rec.onstop = () => finalize(mime, rec, takeChunks, startedAt, timing, draft)
+    // A chunk every second, so a crash costs at most that second (takeDraft.ts).
+    // The chunks join into the same file one start() with no slice would give.
+    rec.start(DRAFT_SLICE_MS)
     // File position 0 is the audio delivered from here on (see takePlacement).
     timing.recorderStartMs = performance.now()
   } catch (err) {
@@ -566,7 +617,14 @@ export function stopRecording(): void {
  * stream and stays live for the next take + the meter). Clears the recorder
  * pointer only if this take is still the active one.
  */
-function finalize(mime: string, rec: MediaRecorder, takeChunks: Blob[], startedAt: number, timing: TakeTiming): void {
+function finalize(
+  mime: string,
+  rec: MediaRecorder,
+  takeChunks: Blob[],
+  startedAt: number,
+  timing: TakeTiming,
+  draft: TakeDraft,
+): void {
   if (recorder === rec) {
     recorder = null
     takeHeardSpans = null
@@ -582,6 +640,7 @@ function finalize(mime: string, rec: MediaRecorder, takeChunks: Blob[], startedA
   pausedAtMs = null
   const blob = new Blob(takeChunks, { type: mime || 'audio/webm' })
   if (blob.size === 0) {
+    void clearDraft(draft.id)
     useToasts.getState().show('Recording was empty', 'danger')
     return
   }
@@ -593,6 +652,7 @@ function finalize(mime: string, rec: MediaRecorder, takeChunks: Blob[], startedA
     name: recordingFileName(takeCount, mime),
     durationS: recordedS,
     timing,
+    draftId: draft.id,
   }
   // One take is reviewed at a time: one brought back during this take steps aside.
   throwAwayTake()
@@ -688,6 +748,7 @@ export async function keepTake(): Promise<void> {
     if (!asset) return
     landed = true
     URL.revokeObjectURL(take.url)
+    void clearDraft(take.draftId)
     const spans = takeClipSpans(final.timing, asset.durationS)
     if (spans.length === 0) return
     updateActiveSequence(`Place ${asset.name}`, (seq) => placeTakeClips(seq, asset, spans).seq)
@@ -704,9 +765,10 @@ function holdTakeAgain(take: PendingTake, final: PendingTake): void {
   const show = useToasts.getState().show
   // Review holds one take. A newer one recorded while this was being added has
   // the slot, and putting this back would throw THAT one away instead.
+  // Its copy on disk is kept, so it is offered again the next time the app opens.
   if (useRecorder.getState().pendingTake) {
     URL.revokeObjectURL(take.url)
-    show('Could not add your earlier take. Free up space on your drive.', 'danger')
+    show('Could not add your earlier take. It will be offered again when the app next opens.', 'danger')
     return
   }
   let held = final
@@ -743,10 +805,16 @@ const BRING_BACK_MS = 10_000
 let thrownAway: { take: PendingTake; timer: ReturnType<typeof setTimeout> } | null = null
 
 function keepForBringBack(take: PendingTake): void {
-  if (thrownAway) clearTimeout(thrownAway.timer)
+  if (thrownAway) {
+    clearTimeout(thrownAway.timer)
+    void clearDraft(thrownAway.take.draftId)
+  }
   // Held only for the toast's life: a long lossless take is tens of megabytes.
+  // Then it is gone for good, its copy on disk too.
   const timer = setTimeout(() => {
-    if (thrownAway?.take === take) thrownAway = null
+    if (thrownAway?.take !== take) return
+    thrownAway = null
+    void clearDraft(take.draftId)
   }, BRING_BACK_MS)
   thrownAway = { take, timer }
   useToasts
@@ -798,9 +866,13 @@ export function discardTake(): void {
 function discard(bringBack: boolean): void {
   // Only a REAL discard moves him. With nothing held this is a no-op, or a
   // stray click would fling the playhead back to some take he already kept.
-  if (!useRecorder.getState().pendingTake) return
+  const take = useRecorder.getState().pendingTake
+  if (!take) return
   if (bringBack) throwAwayTake()
-  else dropTake()
+  else {
+    dropTake()
+    void clearDraft(take.draftId)
+  }
   const back = takeStartPlayheadS
   takeStartPlayheadS = null
   if (back === null) return

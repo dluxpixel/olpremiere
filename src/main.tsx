@@ -273,6 +273,9 @@ void booted.then(() => {
   // never delay the app opening, and it must never be able to fail the boot. Once
   // per session is plenty; the space only leaks when he deletes media.
   void import('./state/blobSweep').then((m) => m.sweepOrphanedBlobs())
+  // A voice take the last run never finished with (a crash mid take) is offered
+  // back, once the project it would go into is open (takeDraft.ts).
+  void import('./state/voiceRecorder').then((m) => m.offerLeftoverTakes())
 })
 
 // Hydrate the saved default text animation.

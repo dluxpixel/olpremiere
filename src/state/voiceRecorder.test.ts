@@ -65,12 +65,14 @@ vi.mock('./takeAudio', async (importOriginal) => ({
   readTake: readTakeSpy,
 }))
 
+import { draftStore } from './takeDraft'
 import {
   audioConstraintFor,
   clearClip,
   closeStudio,
   discardTake,
   keepTake,
+  offerLeftoverTakes,
   openStudio,
   pauseRecording,
   pickRecorderMime,
@@ -126,14 +128,24 @@ class FakeMediaRecorder {
   ) {
     FakeMediaRecorder.instances.push(this)
   }
-  start(): void {}
+  start = vi.fn()
   stop(): void {}
   pause = vi.fn()
   resume = vi.fn()
 }
 
+/** Takes on disk, held in a Map for the test (takeDraft.ts). */
+const drafts = new Map<string, Blob>()
+draftStore.current = {
+  put: async (k, b) => void drafts.set(k, b),
+  keys: async () => [...drafts.keys()],
+  get: async (k) => drafts.get(k),
+  delete: async (k) => void drafts.delete(k),
+}
+
 describe('studio capture: review-then-keep, and coexistence with playback', () => {
   beforeEach(() => {
+    drafts.clear()
     vi.stubGlobal('MediaRecorder', FakeMediaRecorder as unknown as typeof MediaRecorder)
     vi.stubGlobal('navigator', { mediaDevices: { getUserMedia: vi.fn() } })
     vi.stubGlobal('URL', { createObjectURL: () => 'blob:take', revokeObjectURL: vi.fn() })
@@ -593,6 +605,65 @@ describe('studio capture: review-then-keep, and coexistence with playback', () =
     finishRead()
     await kept
     expect(isRestartUnsafe()).toBe(false)
+  })
+
+  // ⛔ AU-14. Every byte of a take lived in memory until Add: a crash lost it all.
+  const recordTwoSeconds = async () => {
+    await startRecording()
+    const rec = FakeMediaRecorder.instances[FakeMediaRecorder.instances.length - 1]!
+    rec.ondataavailable?.({ data: new Blob(['one'], { type: 'audio/webm' }) })
+    rec.ondataavailable?.({ data: new Blob(['two'], { type: 'audio/webm' }) })
+    return rec
+  }
+
+  it('a take is written to disk a second at a time while he records', async () => {
+    const rec = await recordTwoSeconds()
+    expect(rec.start).toHaveBeenCalledWith(1000)
+    await vi.waitFor(() => expect(drafts.size).toBe(2))
+    stopRecording()
+    rec.onstop?.()
+  })
+
+  it('the copy on disk goes once the take is in the bin', async () => {
+    const rec = await recordTwoSeconds()
+    stopRecording()
+    rec.onstop?.()
+    await keepTake()
+    await vi.waitFor(() => expect(drafts.size).toBe(0))
+  })
+
+  it('the copy on disk goes with Discard, and stays while a failed Add holds the take', async () => {
+    let rec = await recordTwoSeconds()
+    stopRecording()
+    rec.onstop?.()
+    importFilesSpy.mockResolvedValueOnce([])
+    await keepTake()
+    expect(useRecorder.getState().pendingTake).not.toBeNull()
+    await vi.waitFor(() => expect(drafts.size).toBe(2))
+    discardTake()
+    await vi.waitFor(() => expect(drafts.size).toBe(0))
+
+    rec = await recordTwoSeconds()
+    stopRecording()
+    rec.onstop?.()
+    expect(drafts.size).toBeGreaterThan(0)
+  })
+
+  it('a take left on disk by an earlier run is offered, and Add puts it in the library', async () => {
+    drafts.set('take-1-old/0000000', new Blob(['his '], { type: 'audio/webm;codecs=pcm' }))
+    drafts.set('take-1-old/0000001', new Blob(['words'], { type: 'audio/webm;codecs=pcm' }))
+
+    await offerLeftoverTakes()
+
+    const call = showSpy.mock.calls.find(([m]) => /before the app closed was saved/i.test(String(m)))
+    const action = call?.[2] as { label: string; onClick: () => void }
+    expect(action.label).toBe('Add it')
+    action.onClick()
+    await vi.waitFor(() => expect(importFilesSpy).toHaveBeenCalledTimes(1))
+    const file = (importFilesSpy.mock.calls[0] as unknown as [File[]])[0][0]!
+    expect(await file.text()).toBe('his words')
+    expect(file.name).toBe('Saved voice recording.webm')
+    await vi.waitFor(() => expect(drafts.size).toBe(0))
   })
 
   it('the transport says a stretch continues, or ran off the end of the edit, and the take keeps both', async () => {
