@@ -264,6 +264,23 @@ export function copyName(name: string): string {
   return trimmed.endsWith('(copy)') ? trimmed : `${trimmed} (copy)`
 }
 
+/**
+ * True when the copy HERE has changed since the incoming edit last shared a save
+ * with it, so the incoming one must not replace it, however new it is.
+ *
+ * ⛔ NEWER IS NOT ENOUGH. He sends GYM to his phone at 18:00, keeps editing it on
+ * the PC until 19:00, edits on the phone until 20:00 and sends it back. The phone
+ * copy is newer, and opening it used to write over the PC's 19:00 work without a
+ * word. It may replace the copy here only when that copy is still exactly the save
+ * the phone started from (`fileBaseUpdatedAt`, kept on the edit when it was
+ * opened). A file that does not say where it started from cannot prove that, so
+ * it lands beside, never over.
+ */
+export function editedHereSince(here: Project, incoming: Project): boolean {
+  if (here.updatedAt === incoming.updatedAt) return false
+  return incoming.fileBaseUpdatedAt !== here.updatedAt
+}
+
 export interface CopyPlan {
   project: Project
   /** Old blob key to new blob key, for the bytes this import is about to write. */
@@ -578,7 +595,8 @@ async function adoptImported(raw: Project, writes: { key: string; blob: Blob }[]
   // the incoming project fresh keys is the only way to keep both projects' media
   // intact without duplicating gigabytes.
   const existing = await loadProjectById(project.id)
-  if (existing && existing.updatedAt > project.updatedAt) {
+  const newerHere = existing !== null && existing.updatedAt > project.updatedAt
+  if (existing && (newerHere || editedHereSince(existing, project))) {
     // A random suffix, not a clock one. Two imports whose timestamps agreed would
     // mint the SAME "private" keys, and deleting one copy would then empty the
     // other, because blobs are deleted by the keys in the document being removed
@@ -588,6 +606,8 @@ async function adoptImported(raw: Project, writes: { key: string; blob: Blob }[]
     finalWrites = writes.map((w) => ({ key: plan.keyMap[w.key] ?? w.key, blob: w.blob }))
     kept = existing.name
   }
+  // Where this edit now starts from, so sending it back later can be judged.
+  project = { ...project, fileBaseUpdatedAt: project.updatedAt }
 
   // Only bytes this import CREATED may be rolled back. When the file restores in
   // place, it writes under the same keys the stored document already uses, and a
@@ -629,7 +649,11 @@ async function adoptImported(raw: Project, writes: { key: string; blob: Blob }[]
   }
   // Say WHY the name changed, or a copy appearing out of nowhere reads as a bug.
   show(
-    kept ? `Opened "${project.name}". Your newer "${kept}" was kept.` : `Opened "${project.name}"`,
+    kept
+      ? newerHere
+        ? `Opened "${project.name}". Your newer "${kept}" was kept.`
+        : `Opened "${project.name}". Your "${kept}" changed on this device too, so both were kept.`
+      : `Opened "${project.name}"`,
     'success',
   )
 }

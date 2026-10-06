@@ -32,7 +32,15 @@ vi.mock('./persistence', () => ({
   deleteBlob: vi.fn(async () => {}),
 }))
 
-const { importProjectFromFile, isProjectFileName, routeDroppedFiles } = await import('./projectFile')
+const {
+  PROJECT_FILE_FORMAT,
+  PROJECT_FILE_VERSION,
+  editedHereSince,
+  encodeHeader,
+  importProjectFromFile,
+  isProjectFileName,
+  routeDroppedFiles,
+} = await import('./projectFile')
 const { useStore } = await import('./store')
 
 /** His project file, as the Projects folder writes it. */
@@ -82,5 +90,57 @@ describe('⛔ his own .olpbak files open as projects', () => {
     await importProjectFromFile(new File(['{"kind":"ol-premiere-backup","project":{"id":5}}'], 'x.olpbak'))
     expect(shown).toContain('That project file is damaged')
     expect(useStore.getState().project.id).toBe(before)
+  })
+})
+
+// ⛔ He sends GYM to his phone at 18:00, keeps editing it on the PC until 19:00,
+// edits on the phone until 20:00 and sends it back. Opening it used to write over
+// the PC's 19:00 work, because the phone copy was newer.
+describe('⛔ a newer file never writes over a copy that changed here since it was sent', () => {
+  /** The project file a device sends, footage and all (none here). */
+  const sent = (p: Project): File =>
+    new File(
+      [encodeHeader({ format: PROJECT_FILE_FORMAT, version: PROJECT_FILE_VERSION, project: p, blobs: [] })],
+      `${p.name}.olstudio`,
+    )
+  const gym = (updatedAt: number, over: Partial<Project> = {}): Project => ({ ...base, updatedAt, ...over })
+  let base: Project
+
+  beforeEach(() => {
+    base = { ...newProject('GYM'), id: 'gym-1' }
+  })
+
+  it('the PC copy changed after sending, so the phone copy lands beside it, both kept', async () => {
+    saved.set('gym-1', gym(19, { name: 'GYM' }))
+    await importProjectFromFile(sent(gym(20, { fileBaseUpdatedAt: 18, name: 'GYM' })))
+    // The 19:00 work is untouched.
+    expect(saved.get('gym-1')?.updatedAt).toBe(19)
+    const opened = useStore.getState().project
+    expect(opened.id).not.toBe('gym-1')
+    expect(opened.updatedAt).toBe(20)
+    expect(shown.some((m) => m.includes('changed on this device too, so both were kept'))).toBe(true)
+  })
+
+  it('the PC copy unchanged since sending is replaced in place by the phone edit', async () => {
+    saved.set('gym-1', gym(18))
+    await importProjectFromFile(sent(gym(20, { fileBaseUpdatedAt: 18 })))
+    expect(saved.get('gym-1')?.updatedAt).toBe(20)
+    expect(useStore.getState().project.id).toBe('gym-1')
+    // And it remembers where it now starts from, for the next trip back.
+    expect(saved.get('gym-1')?.fileBaseUpdatedAt).toBe(20)
+  })
+
+  it('a newer file that cannot say where it started from lands beside, never over', async () => {
+    saved.set('gym-1', gym(19))
+    await importProjectFromFile(sent(gym(20)))
+    expect(saved.get('gym-1')?.updatedAt).toBe(19)
+    expect(useStore.getState().project.id).not.toBe('gym-1')
+  })
+
+  it('editedHereSince: the same save is never a change, a different one needs the matching start', () => {
+    expect(editedHereSince(gym(18), gym(18))).toBe(false)
+    expect(editedHereSince(gym(18), gym(20, { fileBaseUpdatedAt: 18 }))).toBe(false)
+    expect(editedHereSince(gym(19), gym(20, { fileBaseUpdatedAt: 18 }))).toBe(true)
+    expect(editedHereSince(gym(19), gym(20))).toBe(true)
   })
 })

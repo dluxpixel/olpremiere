@@ -29,6 +29,14 @@ export interface Project {
    * on right now". Absent means it is current work.
    */
   laterAt?: number
+  /**
+   * The save this edit was last opened from a project FILE at (its `updatedAt`
+   * then), for a file sent between his PC and his phone. When the edit comes
+   * back newer, it may replace the copy here only if that copy is still exactly
+   * this save, unchanged since (state/projectFile.ts, editedHereSince). Absent on
+   * an edit never opened from a file.
+   */
+  fileBaseUpdatedAt?: number
 }
 
 /** An imported source file. */
