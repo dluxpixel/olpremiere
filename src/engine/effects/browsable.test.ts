@@ -11,13 +11,25 @@
 // everywhere else, and this file is what holds those two facts apart.
 
 import { describe, expect, it } from 'vitest'
-import { BROWSABLE_EFFECTS, CANONICAL_ORDER, EFFECTS, getEffect } from './registry'
+import { BROWSABLE_EFFECTS, CANONICAL_ORDER, EFFECTS, LOOK_EFFECTS, TOOL_EFFECTS, getEffect } from './registry'
 
 const types = (list: { type: string }[]): string[] => list.map((e) => e.type)
 
 describe('the Effects browser is short', () => {
   it('offers less than half of what it used to', () => {
-    expect(BROWSABLE_EFFECTS.length).toBeLessThan(EFFECTS.length / 2 + 1)
+    // The cinematic looks (2026-10-06, his ask) are finished grades, not tools.
+    // They sit on their own Looks shelf (LOOK_EFFECTS), so they are counted
+    // apart and the tools list is held to the rule it always had.
+    const tools = BROWSABLE_EFFECTS.filter((e) => e.category !== 'look')
+    const allTools = EFFECTS.filter((e) => e.category !== 'look')
+    expect(tools.length).toBeLessThan(allTools.length / 2 + 1)
+  })
+
+  it('keeps the looks off the tools list and on their own shelf', () => {
+    expect(types(TOOL_EFFECTS).some((t) => t.startsWith('look'))).toBe(false)
+    expect(LOOK_EFFECTS.length).toBeGreaterThanOrEqual(8)
+    expect(LOOK_EFFECTS.every((e) => e.category === 'look' && !e.hidden)).toBe(true)
+    expect([...types(TOOL_EFFECTS), ...types(LOOK_EFFECTS)].sort()).toEqual(types(BROWSABLE_EFFECTS).sort())
   })
 
   it('keeps the ones he actually reaches for', () => {

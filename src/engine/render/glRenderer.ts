@@ -409,9 +409,14 @@ const uniformName = (i: number, key: string): string => `u_fx${i}_${key}`
 function buildLayerFs(pointwise: readonly ResolvedEffect[], withMask: boolean, bicubic: boolean): string {
   const decls: string[] = []
   const bodies: string[] = []
+  // Global scope functions some bodies call (the looks' shared helpers and their
+  // curves). Each distinct text once, in first-use order. A stack with none adds
+  // nothing at all, so every existing program's text is exactly what it was.
+  const helpers: string[] = []
   pointwise.forEach((fx, i) => {
     const def = getEffect(fx.type)
     if (!def?.glsl) return
+    for (const h of def.glslHelpers ?? []) if (!helpers.includes(h)) helpers.push(h)
     for (const param of def.params) decls.push(`uniform float ${uniformName(i, param.key)};`)
     bodies.push(`  { // ${def.type}\n${def.glsl((key) => uniformName(i, key))}\n  }`)
   })
@@ -459,7 +464,7 @@ ${maskDecls}
 ${decls.join('\n')}
 ${DITHER_GLSL}
 ${SRGB_GLSL}
-${bicubic ? BICUBIC_GLSL : ''}
+${bicubic ? BICUBIC_GLSL : ''}${helpers.length > 0 ? `\n${helpers.join('\n')}` : ''}
 out vec4 outColor;
 void main() {
   if (vUV.x < uUVRect.x || vUV.x > uUVRect.z || vUV.y < uUVRect.y || vUV.y > uUVRect.w) {
@@ -807,6 +812,79 @@ void main() {
   float glowLuma = dot(glow, vec3(0.2126, 0.7152, 0.0722));
   float a = clamp(base.a + glowLuma, 0.0, 1.0);
   outColor = vec4(min(base.rgb + glow, vec3(a)), a);
+}`
+
+// A LOOK'S NEIGHBOUR PASSES (effects/looks.ts). The colour of a look is a
+// pointwise body; these three read the pixels around each pixel, so they run over
+// the layer's isolated FBO like every neighborhood effect, with the SAME blur the
+// Glow uses. Everything here is premultiplied in and out, and the FBOs hold
+// LIGHT, so the blur spreads light the way a lens or a film base does.
+//
+// Bright pass: keep only what is above the threshold (measured on ENCODED luma,
+// the scale the look's numbers are written in), as premultiplied light.
+const LOOK_BRIGHT_FS = `#version 300 es
+precision highp float;
+in vec2 vUV;
+uniform sampler2D uTex;
+uniform float uThreshold;
+uniform float uSoftness;
+${SRGB_GLSL}
+out vec4 outColor;
+void main() {
+  vec4 s = texture(uTex, vUV);
+  vec3 lin = s.a > 0.0 ? clamp(s.rgb / s.a, 0.0, 1.0) : vec3(0.0);
+  float l = dot(linearToSrgb(lin), vec3(0.2126, 0.7152, 0.0722));
+  float w = smoothstep(uThreshold, uThreshold + max(uSoftness, 0.001), l);
+  outColor = s * w;
+}`
+
+// Glow combine: the blurred bright part, tinted, SCREENED onto the base in light.
+// Screen rather than add, because film and a lens both saturate: a glow over
+// something already white leaves it white instead of pushing it past the clip,
+// so the red of a halation shows round a light and not on top of it.
+const LOOK_GLOW_FS = `#version 300 es
+precision highp float;
+in vec2 vUV;
+uniform sampler2D uBase;
+uniform sampler2D uBlur;
+uniform vec3 uTint;
+uniform float uStrength;
+uniform float uLumaTint;
+out vec4 outColor;
+void main() {
+  vec4 base = texture(uBase, vUV);
+  vec4 b = texture(uBlur, vUV);
+  vec3 src = mix(b.rgb, vec3(dot(b.rgb, vec3(0.2126, 0.7152, 0.0722))), uLumaTint);
+  vec3 g = clamp(src * uTint * uStrength, 0.0, 1.0);
+  vec3 rgb = base.rgb + g * (vec3(1.0) - base.rgb);
+  float a = clamp(max(base.a, max(rgb.r, max(rgb.g, rgb.b))), 0.0, 1.0);
+  outColor = vec4(min(rgb, vec3(a)), a);
+}`
+
+// Clarity combine: local contrast. The difference between the picture and its
+// wide blur is the detail a muscle line is made of; it is added back on LUMA only
+// (so edges never fringe in colour), weighted to the middle tones (so black stays
+// black and white stays white), and capped (so a hard edge cannot grow a halo).
+// Worked in ENCODED values, the scale contrast is judged on.
+const LOOK_CLARITY_FS = `#version 300 es
+precision highp float;
+in vec2 vUV;
+uniform sampler2D uBase;
+uniform sampler2D uBlur;
+uniform float uAmount;
+${SRGB_GLSL}
+out vec4 outColor;
+void main() {
+  vec4 base = texture(uBase, vUV);
+  if (base.a <= 0.0) { outColor = base; return; }
+  vec4 bl = texture(uBlur, vUV);
+  vec3 e = linearToSrgb(clamp(base.rgb / base.a, 0.0, 1.0));
+  vec3 eb = linearToSrgb(clamp(bl.a > 0.0 ? bl.rgb / bl.a : vec3(0.0), 0.0, 1.0));
+  vec3 w = vec3(0.2126, 0.7152, 0.0722);
+  float l = dot(e, w);
+  float d = clamp(l - dot(eb, w), -0.12, 0.12);
+  vec3 o = clamp(e + vec3(d * uAmount * 4.0 * l * (1.0 - l)), 0.0, 1.0);
+  outColor = vec4(srgbToLinear(o) * base.a, base.a);
 }`
 
 // Transition combine: both inputs are premultiplied composited layers on black.
@@ -1193,6 +1271,9 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
   const smearProg = link(gl, FULL_VS, MOTION_SMEAR_FS)
   const glowProg = link(gl, FULL_VS, GLOW_FS)
   const blendModeProg = link(gl, FULL_VS, BLENDMODE_FS)
+  const lookBrightProg = link(gl, FULL_VS, LOOK_BRIGHT_FS)
+  const lookGlowProg = link(gl, FULL_VS, LOOK_GLOW_FS)
+  const lookClarityProg = link(gl, FULL_VS, LOOK_CLARITY_FS)
 
   // One layer program per distinct pointwise stack SHAPE (types + order, not
   // values), compiled on first sight and reused thereafter. A project with no
@@ -1360,6 +1441,26 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     uBlur: gl.getUniformLocation(glowProg, 'uBlur'),
     uIntensity: gl.getUniformLocation(glowProg, 'uIntensity'),
     uThreshold: gl.getUniformLocation(glowProg, 'uThreshold'),
+  }
+  const lookBrightLoc = {
+    aPos: gl.getAttribLocation(lookBrightProg, 'aPos'),
+    uTex: gl.getUniformLocation(lookBrightProg, 'uTex'),
+    uThreshold: gl.getUniformLocation(lookBrightProg, 'uThreshold'),
+    uSoftness: gl.getUniformLocation(lookBrightProg, 'uSoftness'),
+  }
+  const lookGlowLoc = {
+    aPos: gl.getAttribLocation(lookGlowProg, 'aPos'),
+    uBase: gl.getUniformLocation(lookGlowProg, 'uBase'),
+    uBlur: gl.getUniformLocation(lookGlowProg, 'uBlur'),
+    uTint: gl.getUniformLocation(lookGlowProg, 'uTint'),
+    uStrength: gl.getUniformLocation(lookGlowProg, 'uStrength'),
+    uLumaTint: gl.getUniformLocation(lookGlowProg, 'uLumaTint'),
+  }
+  const lookClarityLoc = {
+    aPos: gl.getAttribLocation(lookClarityProg, 'aPos'),
+    uBase: gl.getUniformLocation(lookClarityProg, 'uBase'),
+    uBlur: gl.getUniformLocation(lookClarityProg, 'uBlur'),
+    uAmount: gl.getUniformLocation(lookClarityProg, 'uAmount'),
   }
   const blendModeLoc = {
     aPos: gl.getAttribLocation(blendModeProg, 'aPos'),
@@ -1945,6 +2046,74 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
   }
 
   /**
+   * A look's halation or bloom: bright pass into `extra`, blur it there, screen it
+   * back over the layer through `scratch`. Radius arrives as a fraction of the
+   * frame's short side, so the glow is the same size on a 1080 and a 4K frame.
+   */
+  function lookGlowFbo(srcFbo: Fbo, scratch: Fbo, extra: Fbo, p: Record<string, number>): void {
+    gl.activeTexture(gl.TEXTURE0)
+    gl.useProgram(lookBrightProg)
+    bindFull(lookBrightLoc.aPos)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, extra.fb)
+    gl.viewport(0, 0, fboW, fboH)
+    gl.disable(gl.BLEND)
+    gl.uniform1i(lookBrightLoc.uTex, 0)
+    gl.bindTexture(gl.TEXTURE_2D, srcFbo.tex)
+    gl.uniform1f(lookBrightLoc.uThreshold, p.threshold ?? 0.9)
+    gl.uniform1f(lookBrightLoc.uSoftness, p.softness ?? 0.1)
+    gl.drawArrays(gl.TRIANGLES, 0, 3)
+    blurFbo(extra, scratch, (p.radius ?? 0) * Math.min(fboW, fboH))
+
+    gl.useProgram(lookGlowProg)
+    bindFull(lookGlowLoc.aPos)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, scratch.fb)
+    gl.viewport(0, 0, fboW, fboH)
+    gl.disable(gl.BLEND)
+    gl.uniform1i(lookGlowLoc.uBase, 0)
+    gl.uniform1i(lookGlowLoc.uBlur, 1)
+    gl.activeTexture(gl.TEXTURE0)
+    gl.bindTexture(gl.TEXTURE_2D, srcFbo.tex)
+    gl.activeTexture(gl.TEXTURE1)
+    gl.bindTexture(gl.TEXTURE_2D, extra.tex)
+    gl.uniform3f(lookGlowLoc.uTint, p.tintR ?? 1, p.tintG ?? 1, p.tintB ?? 1)
+    gl.uniform1f(lookGlowLoc.uStrength, p.strength ?? 0)
+    gl.uniform1f(lookGlowLoc.uLumaTint, p.lumaTint ?? 0)
+    gl.drawArrays(gl.TRIANGLES, 0, 3)
+    gl.activeTexture(gl.TEXTURE0)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, srcFbo.fb)
+    gl.viewport(0, 0, fboW, fboH)
+    blitFbo(scratch)
+  }
+
+  /** A look's clarity: copy into `extra`, blur it wide, add the detail back through `scratch`. */
+  function lookClarityFbo(srcFbo: Fbo, scratch: Fbo, extra: Fbo, amount: number, radius: number): void {
+    gl.activeTexture(gl.TEXTURE0)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, extra.fb)
+    gl.viewport(0, 0, fboW, fboH)
+    gl.disable(gl.BLEND)
+    blitFbo(srcFbo)
+    blurFbo(extra, scratch, radius * Math.min(fboW, fboH))
+
+    gl.useProgram(lookClarityProg)
+    bindFull(lookClarityLoc.aPos)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, scratch.fb)
+    gl.viewport(0, 0, fboW, fboH)
+    gl.disable(gl.BLEND)
+    gl.uniform1i(lookClarityLoc.uBase, 0)
+    gl.uniform1i(lookClarityLoc.uBlur, 1)
+    gl.activeTexture(gl.TEXTURE0)
+    gl.bindTexture(gl.TEXTURE_2D, srcFbo.tex)
+    gl.activeTexture(gl.TEXTURE1)
+    gl.bindTexture(gl.TEXTURE_2D, extra.tex)
+    gl.uniform1f(lookClarityLoc.uAmount, amount)
+    gl.drawArrays(gl.TRIANGLES, 0, 3)
+    gl.activeTexture(gl.TEXTURE0)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, srcFbo.fb)
+    gl.viewport(0, 0, fboW, fboH)
+    blitFbo(scratch)
+  }
+
+  /**
    * Run one neighborhood effect over the layer's isolated FBO. Result is left
    * in `fbo`. These run AFTER the pointwise chain (which already premultiplied
    * alpha), in stack order.
@@ -1981,6 +2150,18 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
         // both the layer path (uses 2,3) and the transition path (uses 0-3).
         ensurePool(fboW, fboH, 5)
         glowFbo(fbo, scratch, pool[4], fx.params.radius ?? 24, intensity, fx.params.threshold ?? 0.6)
+      }
+    } else if (fx.type === 'lookGlow') {
+      // Same third FBO as Glow, for the same reason, and free on the same paths.
+      if ((fx.params.strength ?? 0) > 0.001) {
+        ensurePool(fboW, fboH, 5)
+        lookGlowFbo(fbo, scratch, pool[4], fx.params)
+      }
+    } else if (fx.type === 'lookClarity') {
+      const amount = fx.params.amount ?? 0
+      if (amount > 0.001) {
+        ensurePool(fboW, fboH, 5)
+        lookClarityFbo(fbo, scratch, pool[4], amount, fx.params.radius ?? 0.015)
       }
     }
   }
@@ -2323,6 +2504,9 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     gl.deleteProgram(sharpenProg)
     gl.deleteProgram(glowProg)
     gl.deleteProgram(blendModeProg)
+    gl.deleteProgram(lookBrightProg)
+    gl.deleteProgram(lookGlowProg)
+    gl.deleteProgram(lookClarityProg)
     if (destCapTex) gl.deleteTexture(destCapTex)
     destCapTex = null
     if (destCapFb) gl.deleteFramebuffer(destCapFb)

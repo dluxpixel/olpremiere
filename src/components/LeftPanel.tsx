@@ -1,5 +1,6 @@
 import { Captions, Film, FolderOpen, Image as ImageIcon, Music, Plus, Sparkles, Trash2, Upload, Wand2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
+import { LOOK_EFFECTS, TOOL_EFFECTS } from '../engine/effects/registry'
 import { filterEffects, matchesQuery } from '../engine/effects/search'
 import { TRANSITION_KINDS, TRANSITION_LABELS } from '../engine/render/types'
 import { formatTimecode } from '../engine/timecode'
@@ -739,7 +740,11 @@ function EffectsTab() {
   // so the two surfaces cannot answer the same search differently. It reads the
   // DESCRIPTION as well now, which is how "grain" reaches Noise and "vignette"
   // reaches the effect that darkens toward the edges.
-  const effects = filterEffects(query)
+  const effects = filterEffects(query, TOOL_EFFECTS)
+  // The cinematic looks (effects/looks.ts) sit on their own shelf, under Looks,
+  // through the SAME search, so "gym", "film" or "teal" finds them, and the tools
+  // list below stays as short as he asked for it to be.
+  const looks = filterEffects(query, LOOK_EFFECTS)
   const transitions = TRANSITION_KINDS.filter((k) => matchesQuery(query, TRANSITION_LABELS[k], k))
   const showLook = matchesQuery(query, 'Jettism', 'look')
   // The Motion tiles were removed in the 2026-07-18 de-bloat: punch-in/impact/
@@ -747,7 +752,7 @@ function EffectsTab() {
   // depth control) the Inspector's PunchControl - this was a fourth, least
   // capable surface for the same verbs.
   const titles = TITLE_SHELF.filter((l) => matchesQuery(query, l.name, 'title'))
-  const empty = effects.length === 0 && transitions.length === 0 && !showLook && titles.length === 0
+  const empty = effects.length === 0 && looks.length === 0 && transitions.length === 0 && !showLook && titles.length === 0
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -795,39 +800,65 @@ function EffectsTab() {
                 ))}
               </section>
             )}
-            {showLook && (
+            {(showLook || looks.length > 0) && (
               <section className="mb-2">
                 <h3 className="px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-text-secondary">
                   Looks
                 </h3>
-                <div
-                  data-testid="look-jettism"
-                  role="button"
-                  tabIndex={0}
-                  title="One click: 9:16, punchy grade on every clip, pop-in titles. Grade lands in the Library as 'Jettism Punch'."
-                  onDoubleClick={applyJettismLook}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') applyJettismLook()
-                  }}
-                  className="flex cursor-default items-center gap-2 rounded-field px-2 py-1.5 text-[12px] text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated hover:text-text-primary"
-                >
-                  <Wand2 size={13} strokeWidth={1.5} aria-hidden className="shrink-0 text-text-muted" />
-                  <span className="truncate">Jettism (Shorts template)</span>
-                </div>
-                <div
-                  data-testid="look-grade"
-                  role="button"
-                  tabIndex={0}
-                  title="Just the punch grade (+exposure/+contrast/+saturation) on the selected clip"
-                  onDoubleClick={() => applyPunchyGradeToClips(targets)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') applyPunchyGradeToClips(targets)
-                  }}
-                  className="flex cursor-default items-center gap-2 rounded-field px-2 py-1.5 text-[12px] text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated hover:text-text-primary"
-                >
-                  <Wand2 size={13} strokeWidth={1.5} aria-hidden className="shrink-0 text-text-muted" />
-                  <span className="truncate">Punchy Grade (selected clip)</span>
-                </div>
+                {showLook && (
+                  <>
+                    <div
+                      data-testid="look-jettism"
+                      role="button"
+                      tabIndex={0}
+                      title="One click: 9:16, punchy grade on every clip, pop-in titles. Grade lands in the Library as 'Jettism Punch'."
+                      onDoubleClick={applyJettismLook}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') applyJettismLook()
+                      }}
+                      className="flex cursor-default items-center gap-2 rounded-field px-2 py-1.5 text-[12px] text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated hover:text-text-primary"
+                    >
+                      <Wand2 size={13} strokeWidth={1.5} aria-hidden className="shrink-0 text-text-muted" />
+                      <span className="truncate">Jettism (Shorts template)</span>
+                    </div>
+                    <div
+                      data-testid="look-grade"
+                      role="button"
+                      tabIndex={0}
+                      title="Just the punch grade (+exposure/+contrast/+saturation) on the selected clip"
+                      onDoubleClick={() => applyPunchyGradeToClips(targets)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') applyPunchyGradeToClips(targets)
+                      }}
+                      className="flex cursor-default items-center gap-2 rounded-field px-2 py-1.5 text-[12px] text-text-secondary transition-colors duration-[120ms] hover:bg-bg-elevated hover:text-text-primary"
+                    >
+                      <Wand2 size={13} strokeWidth={1.5} aria-hidden className="shrink-0 text-text-muted" />
+                      <span className="truncate">Punchy Grade (selected clip)</span>
+                    </div>
+                  </>
+                )}
+                {/* Each look is ONE effect with an Amount slider. Double click, Enter,
+                    the menu and a drag onto a clip all land through applyEffectToClips,
+                    so a selection of clips takes the look whole, in one undo step. */}
+                {looks.map((e) => (
+                  <BrowserItem
+                    key={e.type}
+                    testId="look-item"
+                    name={e.label}
+                    title={e.description}
+                    mime={EFFECT_MIME}
+                    payload={e.type}
+                    onApply={() => applyEffectToClips(targets, e.type)}
+                    menu={[
+                      {
+                        label: applyLabel,
+                        shortcut: 'Enter',
+                        onClick: () => applyEffectToClips(targets, e.type),
+                      },
+                      { label: 'Apply to every clip', onClick: () => applyEffectToAllClips(e.type) },
+                    ]}
+                  />
+                ))}
               </section>
             )}
             {effects.length > 0 && (
