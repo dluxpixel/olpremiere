@@ -565,6 +565,20 @@ export function getFrameAt(asset: MediaAsset, tS: number): CanvasImageSource | n
   return null
 }
 
+/**
+ * getFrameAt WITHOUT the decode request on a miss. For a caller that keeps the
+ * decode queue fed itself, in one order: a reversed clip playing asks for frames
+ * that run BACKWARD, and a request per frame re-anchors the forward-only reader
+ * behind itself every frame, which reopens the file once per frame.
+ */
+export function peekFrameAt(asset: MediaAsset, tS: number): CanvasImageSource | null {
+  if (asset.kind !== 'video') return null
+  const hit = cache.get(cacheKey(asset.id, frameIndexAt(tS, asset.fps)))
+  if (hit) tally.hits++
+  else tally.misses++
+  return hit ?? null
+}
+
 /** Queue decodes ±spanS around tS at the asset frame step, nearest-first. Cheap to call every scrub tick. */
 export function prefetchAround(asset: MediaAsset, tS: number, spanS = 0.5): void {
   if (asset.kind !== 'video') return

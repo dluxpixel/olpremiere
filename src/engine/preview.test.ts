@@ -15,6 +15,9 @@ import {
   incomingNeedsOwnElement,
   videoPoolKeyFor,
   TO_SIDE_SUFFIX,
+  headSourceS,
+  playOrderRange,
+  nextBackwardLow,
 } from './preview'
 import type { Clip, Sequence, Track } from './types'
 
@@ -372,5 +375,40 @@ describe('what the live upload cap is told about zoom', () => {
     const stretched = { ...tf, fit: 'stretch' as const }
     expect(liveZoom(stretched, 640, 480, 1920, 1080)).toBeCloseTo(4 / 3, 6)
     expect(liveZoom(tf, 640, 480, 1920, 1080)).toBeCloseTo(1, 6)
+  })
+})
+
+describe('headSourceS and playOrderRange (the cut warm-up, in play order)', () => {
+  const base = { inS: 4, outS: 8 }
+  it('forward starts at inS and runs up', () => {
+    expect(headSourceS({ ...base, speed: 1 })).toBe(4)
+    expect(playOrderRange({ ...base, speed: 1 }, 0.75)).toEqual([4, 4.75])
+  })
+  it('reversed starts at outS and runs DOWN, as resolve shows it', () => {
+    expect(headSourceS({ ...base, speed: -1 })).toBe(8)
+    expect(playOrderRange({ ...base, speed: -2 }, 0.75)).toEqual([8, 7.25])
+  })
+  it('frozen, either way round, is its held frame and nothing else', () => {
+    expect(headSourceS({ ...base, speed: 1, freezeAtS: 5.5 })).toBe(5.5)
+    expect(playOrderRange({ ...base, speed: -1, freezeAtS: 5.5 }, 0.75)).toEqual([5.5, 5.5])
+  })
+  it('never reaches past the clip span', () => {
+    expect(playOrderRange({ inS: 4, outS: 4.25, speed: 1 }, 0.75)).toEqual([4, 4.25])
+  })
+})
+
+describe('nextBackwardLow (reversed play feeds the decoder in chunks)', () => {
+  it('starts two chunks below the playhead', () => {
+    expect(nextBackwardLow(undefined, 8, 0.5)).toBe(7)
+  })
+  it('holds the edge while more than a chunk is left above it', () => {
+    expect(nextBackwardLow(7, 7.6, 0.5)).toBe(7)
+  })
+  it('reaches one chunk further down once within a chunk of the edge', () => {
+    expect(nextBackwardLow(7, 7.4, 0.5)).toBe(6.5)
+  })
+  it('starts over after a jump either way', () => {
+    expect(nextBackwardLow(7, 6.9, 0.5)).toBeCloseTo(5.9, 9)
+    expect(nextBackwardLow(7, 20, 0.5)).toBe(19)
   })
 })

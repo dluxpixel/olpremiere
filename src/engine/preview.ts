@@ -6,6 +6,7 @@
 import { getBlobUrl } from '../state/blobUrls'
 import {
   getFrameAt,
+  peekFrameAt,
   prefetchAround,
   prefetchRange,
   previewCapHeight,
@@ -27,7 +28,6 @@ import { hasEmoji } from './render/emojiFont'
 import { ensureEmojiFont, ensureTitleFace } from './render/titleFonts'
 import { coverScale, croppedSize, fitScale } from './render/mat'
 import type { RenderLayer, ResolvedTransform, TextureSource } from './render/types'
-import { clipDurationS } from './timeline'
 import { clipEndS, type Clip, type Id, type MediaAsset, type Sequence } from './types'
 
 interface PooledVideo {
@@ -490,6 +490,8 @@ export function releasePreviewScratch(): void {
   heldFrames.clear()
   liveScale.clear()
   liveMisses.clear()
+  backwardLow.clear()
+  lastExact.clear()
   prefetchedCutId = null
   for (const ref of drawnCanvases) {
     const canvas = ref.deref()
@@ -684,6 +686,82 @@ export function upcomingCutHeads(seq: Sequence, tS: number, preRollS = TRANSITIO
 }
 
 /**
+ * The source second a clip shows on its FIRST frame. The same arithmetic as
+ * resolve.ts's layerFor at local time 0: a frozen clip shows its held frame, a
+ * reversed one starts at the END of its span, everything else at `inS`. Pure.
+ */
+export function headSourceS(clip: Pick<Clip, 'freezeAtS' | 'speed' | 'inS' | 'outS'>): number {
+  return clip.freezeAtS ?? (clip.speed < 0 ? clip.outS : clip.inS)
+}
+
+/**
+ * The first `spanS` of source a clip plays, as [head, end] IN PLAY ORDER (end
+ * below head when reversed, both the held frame when frozen), never past the
+ * clip's own span. Pure: what the cut pre-roll decodes ahead.
+ */
+export function playOrderRange(
+  clip: Pick<Clip, 'freezeAtS' | 'speed' | 'inS' | 'outS'>,
+  spanS: number,
+): [number, number] {
+  const head = headSourceS(clip)
+  if (clip.freezeAtS !== undefined) return [head, head]
+  const span = Math.max(0, Math.min(spanS, clip.outS - clip.inS))
+  return clip.speed < 0 ? [head, head - span] : [head, head + span]
+}
+
+/** Does this layer's picture come from a <video> PLAYING it? Only forward, unfrozen play. */
+const elementDriven = (layer: RenderLayer): boolean =>
+  layer.frozen !== true && Math.sign(layer.speed || 1) * Math.sign(transportRate) > 0
+
+/**
+ * Where the backward decode-ahead of a reversed layer should reach down to.
+ * Pure, so the chunking can be tested without a decoder.
+ *
+ * ⛔ A <video> CANNOT PLAY BACKWARD, and a reversed clip used to be handed one
+ * playing FORWARD with a hard seek back every fifth of a second: short forward
+ * bursts with jumps, not his reversed clip and not what the export writes. So a
+ * reversed layer is drawn from the frame cache instead. The cache's reader only
+ * runs forward, so it is fed in CHUNKS: one request reaches `chunkS` further
+ * down whenever the playhead gets within a chunk of what is already asked for,
+ * and the reader decodes that chunk in ONE forward pass. Asking for one frame
+ * at a time reopens the file for every frame, which is the trap the miss limit
+ * in the forward ladder exists for.
+ *
+ * Returns the new low edge. A playhead below the old edge (the decode fell
+ * behind, or a jump) or far above it (a jump back up) starts over two chunks
+ * deep.
+ */
+export function nextBackwardLow(lowS: number | undefined, srcT: number, chunkS: number): number {
+  if (lowS === undefined || srcT < lowS || srcT - lowS > 3 * chunkS) return srcT - 2 * chunkS
+  if (srcT - lowS < chunkS) return lowS - chunkS
+  return lowS
+}
+
+/** How much source one backward chunk covers: half a second of play, at most ~100 frames. */
+const backwardChunkS = (rate: number, fps: number): number => Math.min(0.5 * Math.max(1, rate), 100 / fps)
+
+/** Low edge of each reversed layer's decode-ahead, per clip. Cleared on play/pause. */
+const backwardLow = new Map<Id, number>()
+
+/**
+ * The last exact cached frame each cache-served clip was drawn with, and the
+ * source second it shows. A reference, not a copy: the cache hands out a fresh
+ * canvas per frame and never reuses one, so holding it is safe after eviction.
+ */
+const lastExact = new Map<Id, { src: TexImageSource; atS: number }>()
+const LAST_EXACT_CAP = 8
+
+function keepLastExact(clipId: Id, src: TexImageSource, atS: number): void {
+  lastExact.delete(clipId)
+  lastExact.set(clipId, { src, atS })
+  while (lastExact.size > LAST_EXACT_CAP) {
+    const oldest = lastExact.keys().next().value
+    if (oldest === undefined) break
+    lastExact.delete(oldest)
+  }
+}
+
+/**
  * Warm (and pre-seek) the element an upcoming PLAIN cut is about to need, the
  * way prerollTransitions already does for the incoming side of a transition.
  * Idempotent: warmVideo returns the pooled element when it already exists, and
@@ -710,17 +788,25 @@ function prerollCuts(seq: Sequence, assets: Record<Id, MediaAsset>, tS: number):
     prefetchedCutId = next.id
     const asset = assets[next.assetId]
     if (asset?.kind === 'video') {
-      prefetchRange(asset, next.inS, next.inS + Math.min(CUT_HEAD_PREFETCH_S, clipDurationS(next)))
+      // The head IN PLAY ORDER: a reversed clip starts at its out point and a
+      // frozen one at its held frame. Warming `inS` for those decoded footage
+      // the cut never shows, and left the real first frame cold.
+      const [a, b] = playOrderRange(next, CUT_HEAD_PREFETCH_S)
+      prefetchRange(asset, a, b)
     }
   }
   for (const clip of heads) {
     const asset = assets[clip.assetId]
     if (asset?.kind !== 'video') continue
+    // A reversed or frozen clip is drawn from the frame cache, never from a
+    // playing element, so there is no element to park for it.
+    if (clip.freezeAtS !== undefined || clip.speed < 0) continue
     const pooled = warmVideo(asset)
     // Same guard as the transition path: only pre-seek a PAUSED element, never
     // one that is on screen, and only when it is meaningfully off target.
-    if (pooled.ready && pooled.el.paused && Math.abs(pooled.el.currentTime - clip.inS) > 0.15) {
-      pooled.el.currentTime = clip.inS
+    const head = headSourceS(clip)
+    if (pooled.ready && pooled.el.paused && Math.abs(pooled.el.currentTime - head) > 0.15) {
+      pooled.el.currentTime = head
     }
   }
 }
@@ -930,6 +1016,44 @@ function makeTextureSource(
       return pooled.el
     }
 
+    if (!elementDriven(layer)) {
+      // REVERSED, FROZEN, OR UNDER J: the wanted frame does not move forward in
+      // real time, and a <video> only plays forward. Driving one here played it
+      // the wrong way with a jump back every fifth of a second. So the picture
+      // comes from the frame cache, the same frames the export decodes, and on
+      // a miss the clip's last good frame is held. See nextBackwardLow.
+      const frozen = layer.frozen === true
+      if (!frozen) {
+        const rate = Math.abs((layer.speed || 1) * transportRate)
+        const low = nextBackwardLow(backwardLow.get(layer.clipId), srcT, backwardChunkS(rate, asset.fps || fps))
+        backwardLow.set(layer.clipId, low)
+        // Every frame, anchored at the low edge: the request is cheap, the
+        // queue keeps one ascending order, and frames past the queue cap are
+        // picked up as the earlier ones land.
+        prefetchRange(asset, Math.max(0, low), srcT)
+      }
+      // Frozen asks for its one frame; reversed only peeks, because the range
+      // above already feeds the reader in the one order it can serve.
+      const exact = frozen ? getFrameAt(asset, srcT) : peekFrameAt(asset, srcT)
+      if (exact) {
+        keepLastExact(layer.clipId, exact as TexImageSource, srcT)
+        recordServedFrame(0, true)
+        return confident(exact as TexImageSource)
+      }
+      markPending()
+      const last = lastExact.get(layer.clipId)
+      if (last) {
+        recordServedFrame(last.atS - srcT, false)
+        return last.src
+      }
+      const hold = held()
+      if (hold) return hold
+      // Nothing of its own yet: a parked element only if it is showing this part.
+      const parked = videoPool.get(poolKey)
+      if (!guarded && parked?.ready && parked.el.paused && elementShowsNear(parked, srcT)) return parked.el
+      return null
+    }
+
     const pooled = warmVideo(asset, poolKey)
     if (!pooled.ready) {
       markPending() // element still warming up, keep polling
@@ -946,10 +1070,10 @@ function makeTextureSource(
     // the clip's own speed TIMES the transport rate. Leaving the transport out
     // is what made J/L a slideshow: at 2x the playhead ran twice as fast as the
     // picture, drift crossed the tolerance every ~150ms, and every crossing was a
-    // hard seek. Native <video> can't play backward, so a reversed clip (or a
-    // reversed shuttle) keeps rate 1 and rides the seek path.
-    const speed = layer.speed * Math.abs(transportRate)
-    const wantRate = layer.speed > 0 && transportRate > 0 ? Math.min(16, Math.max(0.0625, speed)) : 1
+    // hard seek. Native <video> can't play backward, so a layer that runs
+    // backward never gets here (see elementDriven above); a reversed clip under
+    // a reversed shuttle runs FORWARD and plays at its real rate.
+    const wantRate = Math.min(16, Math.max(0.0625, Math.abs((layer.speed || 1) * transportRate)))
 
     // NO SPECIAL CASE FOR A CLIP CHANGE, and the reason is worth keeping.
     //
@@ -1361,6 +1485,9 @@ export function renderPreview(
     resetPreviewHealth()
     resetPreviewPacing()
     liveMisses.clear()
+    backwardLow.clear()
+    // A frame held from before a scrub is not this run's picture.
+    lastExact.clear()
     // Never transcode a preview copy while he is watching the preview.
     setProxyBuildingPaused(playing)
   }
@@ -1379,14 +1506,19 @@ export function renderPreview(
       }
     }
   }
-  // Pause any pooled video no longer referenced this frame.
+  // Pause any pooled video no longer referenced this frame, and any whose only
+  // layers are drawn from the cache (reversed, frozen, under J): left running it
+  // plays on forward for nothing and costs a decoder.
   if (playing) {
     const active = new Set<Id>()
+    const mark = (l: RenderLayer): void => {
+      if (elementDriven(l)) active.add(l.assetId)
+    }
     for (const op of frame.ops) {
-      if (op.type === 'layer') active.add(op.layer.assetId)
+      if (op.type === 'layer') mark(op.layer)
       else if (op.type === 'transition') {
-        active.add(op.from.assetId)
-        active.add(op.to.assetId)
+        mark(op.from)
+        mark(op.to)
       }
       // adjustment ops reference no asset
     }

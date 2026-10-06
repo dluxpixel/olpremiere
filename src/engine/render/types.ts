@@ -91,6 +91,13 @@ export interface RenderLayer {
    */
   speed: number
   /**
+   * The clip holds one frame (freeze). Present only when true. The export
+   * ignores it (it already decodes `sourceTimeS`); the live preview reads it so
+   * a held frame is served from the frame cache instead of a <video> that would
+   * play on past it.
+   */
+  frozen?: true
+  /**
    * The sequence-time frame index (round(t * fps)), identical in preview and
    * export at the same frame. Bound as `uSeed` so stochastic effects (grain)
    * animate per frame without breaking preview==export parity.
