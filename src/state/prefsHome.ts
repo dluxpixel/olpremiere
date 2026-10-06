@@ -29,6 +29,7 @@ export const PREFS_KEYS = [
   'olpremiere:settings:ease-seconds',
   'olpremiere:settings:platform-loudness',
   'olpremiere:settings:usage-log',
+  'olpremiere:settings:safe-margins',
   'olpremiere:zoomAnchor',
   'olpremiere:moveCurve',
   'olpremiere:snapping',

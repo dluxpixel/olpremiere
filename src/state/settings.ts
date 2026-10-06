@@ -43,6 +43,13 @@ interface SettingsState {
    * because he asked for it, 2026-10-04: *"start tracking my actions in the app".*
    */
   usageLog: boolean
+  /**
+   * The action-safe and title-safe guides over the preview. Guides only, never
+   * exported. ⛔ IT STICKS: it lived in the Monitor's own state and came back off
+   * on every start and every F5, and his words, 2026-10-04, were "I was actually
+   * using that a lot."
+   */
+  safeMargins: boolean
 }
 
 /** The ease field's own envelope. Shared by the store clamp and the scrub field. */
@@ -61,6 +68,7 @@ const QUALITY_KEY = 'olpremiere:settings:preview-quality'
 const EASE_KEY = 'olpremiere:settings:ease-seconds'
 const LOUDNESS_KEY = 'olpremiere:settings:platform-loudness'
 const USAGE_LOG_KEY = 'olpremiere:settings:usage-log'
+const SAFE_MARGINS_KEY = 'olpremiere:settings:safe-margins'
 
 function read(key: string): string | null {
   try {
@@ -106,6 +114,8 @@ function loadEaseSeconds(): number {
 /** On unless he turned it off: only an explicit 'off' is stored. */
 const loadPlatformLoudness = (): boolean => read(LOUDNESS_KEY) !== 'off'
 const loadUsageLog = (): boolean => read(USAGE_LOG_KEY) !== 'off'
+/** Off unless he turned it on: only 'on' is stored. */
+const loadSafeMargins = (): boolean => read(SAFE_MARGINS_KEY) === 'on'
 
 export const useSettings = create<SettingsState>(() => ({
   theme: loadTheme(),
@@ -113,7 +123,13 @@ export const useSettings = create<SettingsState>(() => ({
   easeSeconds: loadEaseSeconds(),
   platformLoudness: loadPlatformLoudness(),
   usageLog: loadUsageLog(),
+  safeMargins: loadSafeMargins(),
 }))
+
+export function setSafeMargins(on: boolean): void {
+  useSettings.setState({ safeMargins: on })
+  write(SAFE_MARGINS_KEY, on ? 'on' : null)
+}
 
 export function setPlatformLoudness(on: boolean): void {
   useSettings.setState({ platformLoudness: on })
@@ -171,6 +187,7 @@ export function reloadSettings(): void {
     easeSeconds: loadEaseSeconds(),
     platformLoudness: loadPlatformLoudness(),
     usageLog: loadUsageLog(),
+    safeMargins: loadSafeMargins(),
   })
   applyTheme(useSettings.getState().theme)
 }
