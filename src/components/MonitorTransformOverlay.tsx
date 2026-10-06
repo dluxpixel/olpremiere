@@ -23,12 +23,13 @@ import {
   setClipTransformAtPlayhead,
   toggleMotionAtPlayhead,
 } from '../state/clipEdits'
-import { setClipsPosition } from '../state/bulkEdits'
+import { alignTargets, setClipsPosition } from '../state/bulkEdits'
 import { openContextMenu } from '../state/contextMenu'
 import { pausePlayback } from '../state/playbackControl'
 import { quantizeToFrame } from '../engine/timecode'
 import { useStore, type ZoomAnchor } from '../state/store'
 import { plural } from '../engine/plural'
+import { useToasts } from '../state/toasts'
 
 interface Tf {
   x: number
@@ -755,6 +756,7 @@ function OverlayInner({ canvas, chromeHidden }: { canvas: HTMLCanvasElement | nu
       const maxY = Math.max(...ys)
       const startTf = { x: pClip.transform.x, y: pClip.transform.y, scale: pClip.transform.scale, rotationDeg: pClip.transform.rotationDeg }
       const startBox = boxFromQuad(quadFor(primary))
+      const alignIds = alignTargets(seq, selection, pClip.id)
 
       const beginMulti = (e: ReactPointerEvent) => {
         if (e.button !== 0) return
@@ -788,7 +790,17 @@ function OverlayInner({ canvas, chromeHidden }: { canvas: HTMLCanvasElement | nu
           setLivePreviewTransform(null)
           setDragTf(null)
           setSnapGuides({ x: null, y: null })
-          if (last) setClipsPosition(selection, last.x, last.y)
+          if (!last) return
+          setClipsPosition(alignIds, last.x, last.y)
+          // Say it when part of the selection stayed put, so the footage not
+          // moving with the captions reads as the rule, not as a miss.
+          const visualCount = selection.filter((id) =>
+            seq.tracks.some((t) => t.kind === 'video' && t.clips.some((c) => c.id === id)),
+          ).length
+          if (alignIds.length < visualCount) {
+            const what = pClip.title ? 'caption' : 'clip'
+            useToasts.getState().show(`Moved ${plural(alignIds.length, what)}`, 'info')
+          }
         }
         window.addEventListener('pointermove', onMove)
         window.addEventListener('pointerup', onUp)
@@ -807,7 +819,7 @@ function OverlayInner({ canvas, chromeHidden }: { canvas: HTMLCanvasElement | nu
             background: ACCENT_WASH,
           }}
           onPointerDown={beginMulti}
-          title={`Drag to align all ${plural(selection.length, 'selected clip')} to the same spot`}
+          title={`Drag to align all ${plural(alignIds.length, pClip.title ? 'selected caption' : 'selected clip')} to the same spot`}
         />
       )
     }

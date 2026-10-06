@@ -266,7 +266,9 @@ export function clipContextMenuItems({ clip, seq, assets, selNow, keepSelection,
   const titleMenuIds = titleIdsSel.length > 1 ? titleIdsSel : [clip.id]
   const appearanceItems = [
     ...titleFontSizeItems(clip, titleMenuIds),
-    ...appearanceMenuItems(clip, titleMenuIds),
+    // A still image takes the selected still images (appearanceMenuItems keeps
+    // the clicked clip's kind), never the captions selected beside it.
+    ...appearanceMenuItems(clip, clip.title ? titleMenuIds : keepSelection ? selNow : [clip.id]),
   ]
 
   // Whole STYLE presets: font, size, weight, colour, outline, POSITION, the

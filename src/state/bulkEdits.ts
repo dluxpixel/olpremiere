@@ -193,6 +193,29 @@ export function setClipsPosition(ids: Iterable<string>, x: number, y: number): v
   )
 }
 
+/**
+ * The clips a monitor drag to align moves: the selected clips of the PRIMARY's
+ * kind (the one the box is drawn on). Captions with captions, pictures with
+ * pictures; the sound never.
+ *
+ * ⛔ It used to move the whole selection: drag the captions of a selected Short
+ * 600 px down and the footage jumped 600 px down with them. His rule for exactly
+ * this case is in MultiInspector: footage wins a mixed selection, and "a caption
+ * that zooms along with the shot underneath it is not what he asked for".
+ */
+export function alignTargets(
+  seq: { tracks: readonly { kind: string; clips: readonly Clip[] }[] },
+  selection: readonly string[],
+  primaryId: string,
+): string[] {
+  const picked = new Set(selection)
+  const kindOf = (c: Clip) => (c.title ? 'text' : 'picture')
+  const visual = seq.tracks.filter((t) => t.kind === 'video').flatMap((t) => t.clips)
+  const primary = visual.find((c) => c.id === primaryId)
+  if (!primary) return [...selection]
+  return visual.filter((c) => picked.has(c.id) && kindOf(c) === kindOf(primary)).map((c) => c.id)
+}
+
 /** What one effect run did to the clips it was handed. */
 interface EffectRun {
   /** Clips asked for. */
