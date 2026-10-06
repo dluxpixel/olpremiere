@@ -363,8 +363,12 @@ export function buildAppBindings(): Binding[] {
         combo: 'm',
         description: 'Add marker at playhead',
         domain: 'project',
+        // On a whole frame: tapped along with a playing song, the playhead is
+        // between two frames, and an edge snapped to that marker inherited it.
         run: () =>
-          updateActiveSequence('Add marker', (sq) => addMarker(sq, store().ui.playheadS).seq),
+          updateActiveSequence('Add marker', (sq) =>
+            addMarker(sq, quantizeToFrame(store().ui.playheadS, sq.fps || 30)).seq,
+          ),
       },
       {
         combo: 'shift+m',

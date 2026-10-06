@@ -15,6 +15,7 @@ import {
   type ClipPayload,
   type PasteResult,
 } from '../engine/timeline'
+import { quantizeToFrame } from '../engine/timecode'
 import { activeSequence, type Id, type MediaAsset, type Project } from '../engine/types'
 import { useContextMenu } from './contextMenu'
 import { clickedPasteTrack, selectPasted } from './pasteTarget'
@@ -146,7 +147,10 @@ export function pasteAtPlayhead(): void {
   const { project, ui } = useStore.getState()
   const seq = activeSequence(project)
   const clicked = clickedPasteTrack(seq)
-  pasteClipboard(ui.playheadS, clicked ? { trackIndex: seq.tracks.indexOf(clicked) } : undefined)
+  // On the frame grid, like C and Q: a playhead paused by Space rests between
+  // two frames, and a clip pasted THERE carried the fraction into every edit
+  // after it (and C then refused the frames beside it).
+  pasteClipboard(quantizeToFrame(ui.playheadS, seq.fps), clicked ? { trackIndex: seq.tracks.indexOf(clicked) } : undefined)
 }
 
 /** True when there is something to paste. */

@@ -1052,7 +1052,14 @@ describe('collectSnapPoints', () => {
       ],
       { markers: [{ id: 'm1', t: 7.5, label: 'M', color: '#fff' }] },
     )
-    expect(collectSnapPoints(seq, { playheadS: 2.25 })).toEqual([0, 1, 2.25, 3, 5, 7.5])
+    expect(collectSnapPoints(seq, { playheadS: 2.5 })).toEqual([0, 1, 2.5, 3, 5, 7.5])
+  })
+  it('puts a playhead and a marker that sit between two frames on the nearest frame', () => {
+    const seq = makeSeq([makeTrack({ clips: [makeClip({ startS: 1, outS: 2 })] })], {
+      markers: [{ id: 'm1', t: 4.0123, label: 'M', color: '#fff' }],
+    })
+    // 2.25 s is frame 67.5 and 4.0123 s is frame 120.37 at 30 fps.
+    expect(collectSnapPoints(seq, { playheadS: 2.25 })).toEqual([0, 1, 68 / 30, 3, 120 / 30])
   })
   it('dedupes shared edges and 0', () => {
     const seq = makeSeq([

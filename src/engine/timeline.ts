@@ -1382,8 +1382,13 @@ export function collectSnapPoints(
       points.add(clipEndS(clip))
     }
   }
-  for (const m of seq.markers) points.add(m.t)
-  if (opts?.playheadS !== undefined) points.add(opts.playheadS)
+  // The playhead and the markers go in on the frame grid. A playhead paused by
+  // Space rests between two frames (and so does a marker M dropped there before
+  // M rounded), and an edge snapped onto THAT carried the fraction into every
+  // ripple after it. Clip edges stay exact: butting against them is the point.
+  const fps = seq.fps || 30
+  for (const m of seq.markers) points.add(quantizeToFrame(m.t, fps))
+  if (opts?.playheadS !== undefined) points.add(quantizeToFrame(opts.playheadS, fps))
   return [...points].sort((a, b) => a - b)
 }
 
