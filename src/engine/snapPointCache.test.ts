@@ -68,6 +68,15 @@ describe('the snap point cache', () => {
     )
   })
 
+  it('leaves a linked partner in for a move, out for a trim', () => {
+    const pic = makeClip({ startS: 4, outS: 2, linkId: 'L' })
+    const snd = makeClip({ startS: 3, outS: 2, linkId: 'L' })
+    const seq = makeSeq([makeTrack({ clips: [pic] }), makeTrack({ kind: 'audio', clips: [snd] })])
+    const cache = createSnapPointCache()
+    expect(cache.points(seq, [pic.id], 0)).not.toContain(3)
+    expect(cache.points(seq, [pic.id], 0, false)).toContain(3)
+  })
+
   it('asks for the same answer with no seed and gets the unexcluded list', () => {
     const { seq } = busySeq()
     const cache = createSnapPointCache()

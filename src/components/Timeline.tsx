@@ -24,6 +24,7 @@ import { useStableCallback, type Drag } from './timelineDrag'
 import { ADD_TRACK_ROW_H, CLICK_SLOP_PX, LANE_REACH_PX, SNAP_PX } from './timelineGeometry'
 import {
   dragCommit,
+  gestureOriginS,
   moveStep,
   rollPair,
   rollStep,
@@ -172,7 +173,7 @@ export function Timeline({ height }: { height: number }) {
   // move mid-gesture, so the walk is memoized. See snapPointCache.ts.
   const snapPoints = useRef(createSnapPointCache()).current
 
-  const snapWithIndicator = (tS: number, excludeClipId?: Id | Id[]): number => {
+  const snapWithIndicator = (tS: number, excludeClipId?: Id | Id[], originS?: number): number => {
     if (!snapping) {
       setSnapIndicatorT(null)
       return tS
@@ -184,7 +185,7 @@ export function Timeline({ height }: { height: number }) {
     // - otherwise the origin stays a snap magnet and fine adjustments no-op.
     const seeds = excludeClipId === undefined ? [] : Array.isArray(excludeClipId) ? excludeClipId : [excludeClipId]
     const points = snapPoints.points(seq, seeds, useStore.getState().ui.playheadS)
-    const r = snapTime(tS, points, SNAP_PX / pxPerS)
+    const r = snapTime(tS, points, SNAP_PX / pxPerS, originS)
     setSnapIndicatorT(r.snapped ? r.t : null)
     return r.t
   }
@@ -530,7 +531,9 @@ export function Timeline({ height }: { height: number }) {
       // the grabbed one. A clip travelling with the drag would otherwise offer
       // its OLD edges as targets and yank the whole selection back toward the
       // spot it was trying to leave. The block snaps as one (moveStep).
-      const points = snapping ? snapPoints.points(seq, drag.blockIds, useStore.getState().ui.playheadS) : []
+      // Only the moving clips themselves: a linked partner he did not select
+      // stays put, and snapping back onto it is how he puts a pair back in sync.
+      const points = snapping ? snapPoints.points(seq, drag.blockIds, useStore.getState().ui.playheadS, false) : []
       const hovered = laneAt(y)
       const valid = !!hovered && hovered.kind === drag.trackKind && !hovered.locked
       // ⛔ THE LANE HE AIMS AT IS THE NEAREST ONE OF THE CLIP'S KIND, 2026-10-03.
@@ -578,7 +581,7 @@ export function Timeline({ height }: { height: number }) {
         step = slipStep(seq, assets, drag, deltaS)
       } else if (drag.kind === 'slide') {
         const tRaw = quantizeToFrame(Math.max(0, x / pxPerS - drag.grabOffsetS), seq.fps)
-        const t = snapWithIndicator(tRaw, [drag.clipId, ...drag.neighborIds])
+        const t = snapWithIndicator(tRaw, [drag.clipId, ...drag.neighborIds], gestureOriginS(seq, drag))
         dragFinal.current = { trackId: '', tS: t }
         step = slideStep(seq, assets, drag, t)
       } else {
@@ -586,7 +589,9 @@ export function Timeline({ height }: { height: number }) {
         // second of pointer is a half second of trim, wherever on the handle
         // he took hold of it.
         const tRaw = frameAtOffset(x - (drag.grabOffsetS ?? 0) * pxPerS, pxPerS, seq.fps)
-        const t = snapWithIndicator(tRaw, drag.kind === 'roll' ? [drag.leftId, drag.rightId] : drag.clipId)
+        // Never back onto the edge's own starting time: that catch is "no change"
+        // and it ate every trim of a few frames off a butted cut.
+        const t = snapWithIndicator(tRaw, drag.kind === 'roll' ? [drag.leftId, drag.rightId] : drag.clipId, gestureOriginS(seq, drag))
         dragFinal.current = { trackId: '', tS: t }
         step =
           drag.kind === 'roll'

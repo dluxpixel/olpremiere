@@ -136,6 +136,51 @@ describe('Timeline', () => {
     expect(trimmed.startS + (trimmed.outS - trimmed.inS)).toBeCloseTo(3.5, 9)
   })
 
+  // His edits are cut dense, so nearly every edge he grabs touches a neighbour,
+  // and that neighbour's edge sat exactly where the grabbed edge began: with
+  // snapping on, every trim of 1 to 4 frames snapped straight back to "no change".
+  it('a trim of a few frames off a butted cut is not snapped back to where it began', () => {
+    const a = seedTitle(1) // 1 to 3
+    seedTitle(3) // 3 to 5, butted
+    useStore.getState().setUI({ pxPerS: 60, snapping: true })
+    render(<Timeline height={300} />)
+    const { lanes } = layOut()
+    const clipEl = (id: string) => screen.getAllByTestId('clip').find((x) => x.dataset.clipId === id)!
+    // a's end is 3 s = 180 px. Take hold of it there and drag 6 px left: 2.9 s.
+    fireEvent.pointerDown(within(clipEl(a.id)).getByTestId('trim-out'), { button: 0, clientX: 180, clientY: 40, pointerId: 1 })
+    fireEvent.pointerMove(lanes, { clientX: 174, clientY: 40, pointerId: 1 })
+    fireEvent.pointerUp(lanes, { clientX: 174, clientY: 40, pointerId: 1 })
+    const trimmed = seq().tracks.flatMap((t) => t.clips).find((c) => c.id === a.id)!
+    expect(trimmed.startS + (trimmed.outS - trimmed.inS)).toBeCloseTo(2.9, 9)
+  })
+
+  // A partner moves only when he selects it too (2026-08-05), so the one he left
+  // behind stays put, and its edges are the ones he wants to snap back onto.
+  it('a picture slid off its partner snaps back onto it', () => {
+    const v1 = videoTracks(seq())[0]!
+    const v2 = videoTracks(seq())[1]!
+    const pic = { ...newTitleClip(defaultTitleDef('pic'), 2, 2), id: 'pic', linkId: 'L' }
+    const snd = { ...newTitleClip(defaultTitleDef('snd'), 1, 2), id: 'snd', linkId: 'L' }
+    updateActiveSequence('seed', (sq) =>
+      recomputeDuration({
+        ...sq,
+        tracks: sq.tracks.map((t) => (t.id === v1.id ? { ...t, clips: [pic] } : t.id === v2.id ? { ...t, clips: [snd] } : t)),
+      }),
+    )
+    useStore.getState().setUI({ pxPerS: 60, snapping: true, playheadS: 10 })
+    render(<Timeline height={300} />)
+    const { lanes } = layOut()
+    const y = buildLaneInfos([...videoTracks(seq())].reverse(), audioTracks(seq())).find((i) => i.track.id === v1.id)!.top + 10
+    const el = screen.getAllByTestId('clip').find((x) => x.dataset.clipId === 'pic')!
+    // pic starts at 2 s = 120 px. Grab it 30 px in and drag 54 px left: 1.1 s, 6 px from snd's start.
+    fireEvent.pointerDown(el, { button: 0, clientX: 150, clientY: y, pointerId: 1 })
+    fireEvent.pointerMove(lanes, { clientX: 96, clientY: y, pointerId: 1 })
+    fireEvent.pointerUp(lanes, { clientX: 96, clientY: y, pointerId: 1 })
+    const all = seq().tracks.flatMap((t) => t.clips)
+    expect(all.find((c) => c.id === 'pic')!.startS).toBeCloseTo(1, 9)
+    expect(all.find((c) => c.id === 'snd')!.startS).toBe(1)
+  })
+
   // ⛔ A CLICK IS A CLICK, HOWEVER THE HAND WOBBLES, 2026-10-03. Measured through the real mouse
   // that day: a press on a clip with the hand drifting ONE pixel before letting go committed a
   // move on 28 of 36 clicks across six zooms. Zoomed out it was a whole second (the snap reaches

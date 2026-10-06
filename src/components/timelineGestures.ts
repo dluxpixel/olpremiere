@@ -78,6 +78,22 @@ export function rollPair(track: Track, clipId: Id, edge: 'in' | 'out'): { leftId
   }
 }
 
+/**
+ * Where the snapped time of an edge gesture started: the grabbed edge for a
+ * trim or a stretch, the cut for a roll, the clip's start for a slide. A snap
+ * point there can only give "no change", so the snap passes over it
+ * (`snapTime`'s `originS`).
+ */
+export function gestureOriginS(seq: Sequence, drag: DragOf<'trim' | 'stretch' | 'roll' | 'slide'>): number | undefined {
+  if (drag.kind === 'roll') {
+    const left = findClipIn(seq, drag.leftId)
+    return left ? clipEndS(left) : undefined
+  }
+  const clip = findClipIn(seq, drag.clipId)
+  if (!clip) return undefined
+  return drag.kind === 'slide' || drag.edge === 'in' ? clip.startS : clipEndS(clip)
+}
+
 // ---------------------------------------------------------------------------
 // One pointermove of a drag: the preview sequence and the live readout
 

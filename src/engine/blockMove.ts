@@ -420,8 +420,11 @@ export function blockEdges(seq: Sequence, blockIds: readonly Id[], grabbedId: Id
   return [...head, ...rest]
 }
 
-/** The point in a sorted list nearest to `t`, the earlier one on an exact tie. */
-function nearestPoint(points: readonly number[], t: number): number | undefined {
+/**
+ * The point in a sorted list nearest to `t`, the earlier one on an exact tie,
+ * passing over a point that sits at `skip`.
+ */
+function nearestPoint(points: readonly number[], t: number, skip: number): number | undefined {
   if (points.length === 0) return undefined
   let lo = 0
   let hi = points.length
@@ -430,8 +433,11 @@ function nearestPoint(points: readonly number[], t: number): number | undefined 
     if (points[mid]! < t) lo = mid + 1
     else hi = mid
   }
-  const after = points[lo]
-  const before = points[lo - 1]
+  const at = (i: number): number | undefined => points[i]
+  // A microsecond is still "no change": float sums put a butted edge a hair off.
+  const isSkip = (p: number | undefined): boolean => p !== undefined && Math.abs(p - skip) < 1e-6
+  const after = isSkip(at(lo)) ? at(lo + 1) : at(lo)
+  const before = isSkip(at(lo - 1)) ? at(lo - 2) : at(lo - 1)
   if (before === undefined) return after
   if (after === undefined) return before
   return t - before <= after - t ? before : after
@@ -443,6 +449,10 @@ function nearestPoint(points: readonly number[], t: number): number | undefined 
  * that one correction applies to all of them. Snapping only the grabbed clip meant a selection could
  * never line its OTHER clips up with anything, and a carried clip landing a frame off a cut was
  * exactly the kind of shape change he asked to be rid of.
+ *
+ * A catch that would move the block by NOTHING is passed over. An edge that sits exactly where one
+ * of the block's own edges already is (a butted neighbour, or the linked partner he left behind)
+ * otherwise held every small drag at the spot it started from, then let go of it all at once.
  *
  * `points` must be sorted ascending (snapPointCache and collectSnapPoints both are).
  */
@@ -457,7 +467,7 @@ export function snapBlockDelta(
   let bestT: number | null = null
   for (const e of edges) {
     const t = e + deltaS
-    const p = nearestPoint(points, t)
+    const p = nearestPoint(points, t, e)
     if (p === undefined) continue
     const d = Math.abs(p - t)
     // Strict: the earlier edge in the list keeps an exact tie (the grabbed head first).

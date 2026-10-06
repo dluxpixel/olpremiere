@@ -27,8 +27,16 @@ import type { Id, Sequence } from './types'
  * is only true while the array arrives in time order.
  */
 export interface SnapPointCache {
-  /** Snap points for this gesture, computed at most once per distinct key. */
-  points(seq: Sequence, seedIds: readonly Id[], playheadS: number): number[]
+  /**
+   * Snap points for this gesture, computed at most once per distinct key.
+   *
+   * `wholeGroups` (the default) leaves out every clip linked to a seed, for a
+   * trim, which carries the partner along. A MOVE passes false: a partner moves
+   * only when it is selected, and then it is a seed itself, so a partner left
+   * behind stays where it is and its edges are real targets. Leaving them out
+   * meant a picture slid off its sound could never snap back onto it.
+   */
+  points(seq: Sequence, seedIds: readonly Id[], playheadS: number, wholeGroups?: boolean): number[]
   /** How many times the underlying walk actually ran. Tests assert on this. */
   computations(): number
   /** Drop the memo. Not required for correctness, only for freeing the array. */
@@ -42,14 +50,16 @@ export function createSnapPointCache(): SnapPointCache {
   let computations = 0
 
   return {
-    points(seq, seedIds, playheadS) {
+    points(seq, seedIds, playheadS, wholeGroups = true) {
       // Seed order is caller-stable (it comes from the drag state, not a set),
       // so joining is enough and sorting the key would only cost more.
-      const nextKey = `${seedIds.join(',')}|${playheadS}`
+      const nextKey = `${seedIds.join(',')}|${playheadS}|${wholeGroups}`
       if (keySeq === seq && key === nextKey) return points
 
       const excludeClipIds = seedIds.length > 0
-        ? seedIds.flatMap((id) => clipGroupIds(seq, id))
+        ? wholeGroups
+          ? seedIds.flatMap((id) => clipGroupIds(seq, id))
+          : seedIds
         : undefined
       points = collectSnapPoints(seq, {
         ...(excludeClipIds ? { excludeClipIds } : {}),

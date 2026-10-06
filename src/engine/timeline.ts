@@ -1403,14 +1403,25 @@ function followGapClose(
   return syncFollowEdits(shifted, moved, edits, report)
 }
 
+/**
+ * The snap point nearest `tS`, when it is within `thresholdS`.
+ *
+ * `originS` is where the edge being dragged started. A point there can only
+ * ever give "no change", so it is never a catch: a butted neighbour sits
+ * exactly on the edge he grabbed, and leaving it in snapped every trim of a
+ * few frames straight back to where it began, then jumped past them.
+ */
 export function snapTime(
   tS: number,
   points: number[],
   thresholdS: number,
+  originS?: number,
 ): { t: number; snapped: boolean } {
   let best = tS
   let bestDist = Infinity
   for (const p of points) {
+    // A microsecond is still "no change": float sums put a butted edge a hair off.
+    if (originS !== undefined && Math.abs(p - originS) < 1e-6) continue
     const dist = Math.abs(p - tS)
     // Strict < keeps the earliest point on an exact tie.
     if (dist < bestDist) {
@@ -1426,10 +1437,11 @@ export function snapTime(
  * audio alike; cross-track alignment is the point), markers, t=0, and the
  * playhead.
  *
- * `excludeClipIds` must be the dragged clip's whole LINK GROUP, not just the
- * grabbed clip. A linked A/V pair otherwise leaves its partner's stale edges in
- * the set, and the drag magnetizes back to its own origin instead of to its
- * neighbours, which reads as "snapping doesn't work across lanes".
+ * `excludeClipIds` is every clip the gesture moves. For a trim that is the
+ * grabbed clip's whole LINK GROUP: the partner trims along, and its stale edges
+ * would magnetize the drag back to its own origin. For a move it is only the
+ * clips in the block, because a partner travels only when it is selected too,
+ * and one left behind is a real target (snapPointCache, `wholeGroups`).
  */
 export function collectSnapPoints(
   seq: Sequence,

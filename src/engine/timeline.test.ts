@@ -859,6 +859,12 @@ describe('snapTime', () => {
   it('handles no points', () => {
     expect(snapTime(3, [], 1)).toEqual({ t: 3, snapped: false })
   })
+  it('never catches the time the edge started at, which would undo the drag', () => {
+    // A butted neighbour at 3, the grabbed edge started at 3, the hand asks for 2.9.
+    expect(snapTime(2.9, [0, 3, 5], 8 / 60, 3)).toEqual({ t: 2.9, snapped: false })
+    // Another point near the hand still catches.
+    expect(snapTime(2.9, [0, 2.95, 3, 5], 8 / 60, 3)).toEqual({ t: 2.95, snapped: true })
+  })
 })
 
 describe('unlockedClipIds', () => {
