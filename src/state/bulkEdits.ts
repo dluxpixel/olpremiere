@@ -292,6 +292,84 @@ export function applyEffectToAllClips(type: string): void {
   show(`Applied "${label}" to ${changed} clip${changed === 1 ? '' : 's'}`, 'success')
 }
 
+/**
+ * Shift+B on the WHOLE selection: every effect off on every selected clip, or
+ * all back on, in ONE undo step.
+ *
+ * It used to switch only the first clip he had picked: three pictures with Auto
+ * Color selected, Shift+B, one went off (measured 2026-10-06). With the linked
+ * sound picked first it did nothing at all and never said why. Shift+E was fixed
+ * for exactly this on 2026-10-01 and this key was missed.
+ *
+ * The rule is toggleClipsEnabled's: if any picked clip still has an effect on,
+ * they ALL go off; only when every one is already off do they all come back.
+ * Sound clips carry no picture effects and are left out; a lock is named.
+ */
+export function toggleEffectsForClips(ids: Iterable<string>): void {
+  const idSet = new Set(ids)
+  if (idSet.size === 0) return
+  const show = useToasts.getState().show
+  let locked = 0
+  const open: Clip[] = []
+  for (const t of activeSequence(useStore.getState().project).tracks) {
+    if (t.kind === 'audio') continue
+    for (const c of t.clips) {
+      if (!idSet.has(c.id) || c.effects.length === 0) continue
+      if (t.locked) locked++
+      else open.push(c)
+    }
+  }
+  if (open.length === 0) {
+    show(locked > 0 ? lockedLeftOut(locked) : 'No effects on the selected clips', 'info')
+    return
+  }
+  const enabled = !open.some((c) => c.effects.some((e) => e.enabled))
+  const n = open.length
+  const label = n === 1
+    ? enabled ? 'Turn every effect on' : 'Turn every effect off'
+    : enabled ? `Effects back on for ${n} clips` : `Effects off on ${n} clips`
+  mapClips(
+    open.map((c) => c.id),
+    label,
+    (c) =>
+      c.effects.every((e) => e.enabled === enabled)
+        ? c
+        : { ...c, effects: c.effects.map((e) => (e.enabled === enabled ? e : { ...e, enabled })) },
+  )
+  // One clip says nothing, like the effect search: its eye and the monitor show it.
+  if (n > 1 || locked > 0) {
+    show(locked > 0 ? `${label}. ${lockedLeftOut(locked)}` : label, 'success')
+  }
+}
+
+/**
+ * The ONE clip a single clip key (P, Shift+P, Alt+P, D, F) should act on when
+ * several are selected: the selected PICTURE the playhead is inside.
+ *
+ * Those keys read `selection[0]`, which in a Short is as often a caption or the
+ * linked sound as the footage, so P said "Put the playhead inside the clip
+ * first" while the footage under the playhead sat selected. Order: a selected
+ * picture under the playhead, then any selected clip under it, then the first.
+ */
+export function keyTargetClipId(
+  seq: { tracks: readonly { kind: string; clips: readonly Clip[] }[] },
+  selection: readonly string[],
+  playheadS: number,
+): string | undefined {
+  if (selection.length <= 1) return selection[0]
+  const picked = new Set(selection)
+  const under: { clip: Clip; picture: boolean }[] = []
+  for (const t of seq.tracks) {
+    for (const c of t.clips) {
+      if (!picked.has(c.id) || playheadS < c.startS || playheadS >= clipEndS(c)) continue
+      under.push({ clip: c, picture: t.kind === 'video' && !c.title && !c.adjustment })
+    }
+  }
+  const order = (id: string) => selection.indexOf(id)
+  under.sort((a, b) => order(a.clip.id) - order(b.clip.id))
+  return (under.find((u) => u.picture) ?? under[0])?.clip.id ?? selection[0]
+}
+
 /** Drop every applied effect from every selected clip. */
 export function clearEffectsForClips(ids: Iterable<string>): void {
   mapClips(ids, 'Clear effects', (c) => (c.effects.length === 0 ? c : { ...c, effects: [] }))

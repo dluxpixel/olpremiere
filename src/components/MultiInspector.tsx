@@ -5,7 +5,7 @@
 // all of them, so a mixed selection converges on one click. This is what makes
 // "select many, edit boldness / effects on all" work.
 
-import { Bold, CaseLower, CaseUpper, FlipHorizontal2, Italic, Sparkles, Layers } from 'lucide-react'
+import { Bold, CaseLower, CaseUpper, Eye, EyeOff, FlipHorizontal2, Italic, Sparkles, Layers } from 'lucide-react'
 import {
   applyEffectToClips,
   clearEffectsForClips,
@@ -14,6 +14,7 @@ import {
   setClipsGainDb,
   toggleClipsFlip,
   setFrameFitForClips,
+  toggleEffectsForClips,
 } from '../state/bulkEdits'
 import { FRAME_FITS, frameFitDims, frameFitOf, takesFrameFit, type FrameFit } from '../engine/frameFit'
 import { useStore } from '../state/store'
@@ -76,6 +77,10 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
   const flippable = selected.filter((s) => s.track.kind === 'video' && !s.clip.title)
   const pictureIds = flippable.map((s) => s.clip.id)
   const allFlipped = flippable.length > 0 && flippable.every((s) => s.clip.transform.flipH === true)
+  // The Shift+B eye, for the whole selection: shown once any selected picture
+  // carries an effect, and it reads "on" while any of them still has one on.
+  const withEffects = selected.filter((s) => s.track.kind !== 'audio' && s.clip.effects.length > 0)
+  const anyEffectOn = withEffects.some((s) => s.clip.effects.some((e) => e.enabled))
 
   // Every selected clip a camera move can be written onto: picture on a video
   // track, no entrance animation owning its keyframes.
@@ -416,7 +421,28 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
         data-drop-hot={effectDrop.hot ? 'true' : undefined}
         {...effectDrop.dropProps}
       >
-        <Header label="Effects" icon={Sparkles} />
+        <div className="flex items-center gap-1.5">
+          <Header label="Effects" icon={Sparkles} />
+          {withEffects.length > 0 && (
+            <span className="ml-auto flex items-center">
+              <IconButton
+                label={anyEffectOn ? 'Turn every effect off' : 'Turn every effect on'}
+                shortcut="Shift+B"
+                active={!anyEffectOn}
+                size="compact"
+                data-testid="multi-bypass-effects"
+                className={anyEffectOn ? '' : 'bg-accent-quiet! text-accent!'}
+                onClick={() => toggleEffectsForClips(allIds)}
+              >
+                {anyEffectOn ? (
+                  <Eye size={13} strokeWidth={1.75} aria-hidden />
+                ) : (
+                  <EyeOff size={13} strokeWidth={1.75} aria-hidden />
+                )}
+              </IconButton>
+            </span>
+          )}
+        </div>
         <div className="flex flex-wrap items-center gap-1.5">
           <button
             type="button"
