@@ -5,7 +5,7 @@
 // the web. The origin (`app://olpremiere`) is PINNED forever: changing it (or
 // the appId/productName) would orphan the user's IndexedDB.
 
-import { app, BrowserWindow, crashReporter, dialog, Menu, net, protocol, ipcMain, powerMonitor, session, shell } from 'electron'
+import { app, BrowserWindow, crashReporter, dialog, Menu, net, protocol, ipcMain, powerMonitor, screen, session, shell } from 'electron'
 
 // ⛔ ONE COPY OF THE APP AT A TIME. Two launches, a slow first start plus an
 // impatient second click, or a copy still alive after a crash, used to start a
@@ -45,6 +45,7 @@ import * as mediaStore from './mediaStore'
 import * as remux from './remux'
 import { CRASH_LOG_NAME, crashLogLine, crashPlan } from './crashPlan'
 import { appliedWhileAway, launchMode, parseQuietMarker, QUIET_START_FILE } from './launchMode'
+import { centreIn, readWindowState, restoreBounds, WINDOW_STATE_FILE, writeWindowState, type Placement } from './windowState'
 import { fileQuietStore, startUpdateFlow, type UpdateFlow } from './updateFlow'
 import { appendUpdateLog, UPDATE_LOG_NAME } from './updateLog'
 import electronUpdater from 'electron-updater'
@@ -207,6 +208,51 @@ let bootBackstop: ReturnType<typeof setTimeout> | null = null
  * (./launchMode). No card and no melon: the editor opens minimized on the taskbar.
  */
 let quietStart = false
+/** Where the editor opens (./windowState): his last screen, size and maximized state. */
+let editorPlace: Placement | null = null
+
+/** Work out where the editor opens. Once, before the first window, so the card can follow. */
+function placeEditor(): Placement {
+  editorPlace ??= restoreBounds(
+    readWindowState(path.join(app.getPath('userData'), WINDOW_STATE_FILE)),
+    screen.getAllDisplays(),
+    screen.getPrimaryDisplay(),
+  )
+  return editorPlace
+}
+
+/** The middle of the given screen for a card, or Electron's own centring if it is gone. */
+function cardPosition(displayId: number | undefined): { x: number; y: number } | { center: true } {
+  const d = screen.getAllDisplays().find((x) => x.id === displayId)
+  return d ? centreIn(d.workArea, SPLASH_WINDOW_W, SPLASH_WINDOW_H) : { center: true }
+}
+
+/**
+ * Keep the editor's place as he moves and sizes it, a beat after he stops, and once
+ * more as it closes. Not while hidden, minimized or full screen: none of those is a
+ * place he would want it to open in.
+ */
+function keepWindowState(win: BrowserWindow): void {
+  const file = path.join(app.getPath('userData'), WINDOW_STATE_FILE)
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const save = (): void => {
+    if (win.isDestroyed() || !win.isVisible() || win.isMinimized() || win.isFullScreen()) return
+    const bounds = win.getNormalBounds()
+    writeWindowState(file, { bounds, maximized: win.isMaximized(), displayId: screen.getDisplayMatching(bounds).id })
+  }
+  const later = (): void => {
+    if (timer) clearTimeout(timer)
+    timer = setTimeout(save, 500)
+  }
+  win.on('resize', later)
+  win.on('move', later)
+  win.on('maximize', later)
+  win.on('unmaximize', later)
+  win.on('close', () => {
+    if (timer) clearTimeout(timer)
+    save()
+  })
+}
 
 /** Read and remove the marker an unattended update left, and decide how to open. */
 function readLaunchMode(): void {
@@ -240,14 +286,17 @@ function markQuietStartIfAway(): void {
  * without taking focus, and maximizes when he brings it up.
  */
 function revealEditor(win: BrowserWindow): void {
+  const maximized = editorPlace?.maximized ?? true
   if (quietStart) {
     if (win.isVisible()) return
-    win.once('restore', () => win.maximize())
+    win.once('restore', () => {
+      if (maximized) win.maximize()
+    })
     // On a hidden window this shows it minimized WITHOUT activating it.
     win.minimize()
     return
   }
-  win.maximize()
+  if (maximized) win.maximize()
   win.show()
 }
 
@@ -267,7 +316,8 @@ function createSplash(): void {
     fullscreenable: false,
     skipTaskbar: true,
     alwaysOnTop: true,
-    center: true,
+    // On the screen the editor will open on, which is not always the main one.
+    ...cardPosition(placeEditor().displayId),
     show: false,
     backgroundColor: '#00000000',
     webPreferences: {
@@ -427,7 +477,8 @@ function createUpdateWindow(): void {
     fullscreenable: false,
     skipTaskbar: true,
     alwaysOnTop: true,
-    center: true,
+    // Over the editor, on whichever screen he has it.
+    ...cardPosition(mainWindow && !mainWindow.isDestroyed() ? screen.getDisplayMatching(mainWindow.getBounds()).id : undefined),
     show: false,
     backgroundColor: '#00000000',
     webPreferences: {
@@ -524,9 +575,10 @@ protocol.registerSchemesAsPrivileged([
 ])
 
 function createWindow(): void {
+  // Where he left it (./windowState), or the main screen the first time.
+  const place = placeEditor()
   const win = new BrowserWindow({
-    width: 1600,
-    height: 1000,
+    ...place.bounds,
     minWidth: 1024,
     minHeight: 680,
     backgroundColor: '#060709',
@@ -545,6 +597,10 @@ function createWindow(): void {
     },
   })
   mainWindow = win
+  // Again after creation: a window made on a screen with a different scale than the
+  // main one can come out the wrong size, and setting it once more puts that right.
+  win.setBounds(place.bounds)
+  keepWindowState(win)
   // ⛔ AND THE PAGE DOES NOT GET TO ARGUE. The renderer sets `document.title`, and
   // Electron follows it, so the lab came up on the taskbar reading "OL Premiere"
   // like his real editor: two identical windows, one of them a bench copy, and no

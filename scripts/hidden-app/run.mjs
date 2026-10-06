@@ -8,6 +8,9 @@
 //                        so a check does not wait on the one-time download
 //   --timeout <ms>       give up after this long (default 300000)
 //   --keep               keep the throwaway folder and print where it is
+//   --seed <name>=<file>  copy <file> to <name> in the throwaway profile first, for a
+//                        check that needs a saved file there (a window-state.json).
+//                        A file, not text: a shell eats the quotes in JSON on the way.
 //   --quiet-update-start  start the way the installer does after an update that
 //                        applied while he was away (--updated and the marker)
 //   --bed <dir>          open with COPIES of his projects and media: <dir>/Projects/*.olpbak
@@ -38,6 +41,7 @@ const quietUpdate = args.includes('--quiet-update-start')
   ? (args.splice(args.indexOf('--quiet-update-start'), 1), true)
   : false
 const seedFont = flag('--seed-font')
+const seed = flag('--seed')
 const bed = flag('--bed')
 const timeout = Number(flag('--timeout') ?? 300000)
 const check = args[0] ? path.resolve(args[0]) : undefined
@@ -57,6 +61,13 @@ if (seedFont) {
   const pin = /sha256: '([0-9a-f]{64})'/.exec(readFileSync(path.join(repo, 'electron', 'emojiFont.ts'), 'utf8'))
   if (!pin) throw new Error('no emoji source pin in electron/emojiFont.ts')
   copyFileSync(seedFont, path.join(root, 'userData', 'fonts', `apple-emoji-${pin[1].slice(0, 12)}.ttf`))
+}
+if (seed) {
+  const eq = seed.indexOf('=')
+  const name = seed.slice(0, eq)
+  if (eq < 1 || name.includes('..') || path.isAbsolute(name)) throw new Error('--seed wants <name>=<file>, a name inside the profile')
+  mkdirSync(path.join(root, 'userData'), { recursive: true })
+  copyFileSync(seed.slice(eq + 1), path.join(root, 'userData', name))
 }
 if (quietUpdate) {
   // What main writes when an update is applied while he is away (electron/launchMode.ts).
