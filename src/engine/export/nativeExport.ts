@@ -32,7 +32,7 @@ function concatFloat32(parts: Float32Array[]): Float32Array {
 }
 
 /** Interleaved 32-bit float WAV (bit-exact, no quantisation). ffmpeg reads it as a 2nd input. */
-function buildWavF32(channels: Float32Array[], sampleRate: number): ArrayBuffer {
+export function buildWavF32(channels: Float32Array[], sampleRate: number): ArrayBuffer {
   const numCh = channels.length
   const numFrames = channels[0]?.length ?? 0
   const dataBytes = numFrames * numCh * 4
