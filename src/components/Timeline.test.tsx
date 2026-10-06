@@ -284,6 +284,32 @@ describe('Timeline', () => {
     expect(lanes.scrollLeft).toBe(after)
   })
 
+  // Five moves over the same clip used to write five new selections, and every
+  // panel that reads the selection re-rendered each time.
+  it('a box select writes the selection only when it changes', () => {
+    seedTitle(1)
+    seedTitle(4)
+    render(<Timeline height={300} />)
+    const { lanes } = layOut()
+    // The lanes need a box of their own, or the press reads as one on the scrollbar.
+    lanes.getBoundingClientRect = () => ({ left: 0, top: 0, right: 1000, bottom: 300, width: 1000, height: 300, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect
+    Object.defineProperty(lanes, 'clientHeight', { configurable: true, value: 300 })
+    let writes = 0
+    const unsub = useStore.subscribe(
+      (s) => s.ui.selection,
+      () => {
+        writes += 1
+      },
+    )
+    fireEvent.pointerDown(lanes, { button: 0, shiftKey: true, clientX: 5, clientY: 30, pointerId: 1 })
+    // Five moves that all cover the first clip only.
+    for (let x = 20; x < 30; x += 2) fireEvent.pointerMove(lanes, { clientX: x, clientY: 100, pointerId: 1, shiftKey: true })
+    fireEvent.pointerUp(lanes, { clientX: 28, clientY: 100, pointerId: 1 })
+    unsub()
+    expect(useStore.getState().ui.selection).toHaveLength(1)
+    expect(writes).toBe(1)
+  })
+
   it('cuts a clip with the razor', () => {
     const clip = seedTitle(0)
     useStore.getState().setUI({ tool: 'razor' })

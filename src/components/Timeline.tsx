@@ -536,7 +536,12 @@ export function Timeline({ height }: { height: number }) {
       // Live-select every clip whose box overlaps the rectangle.
       const hits = marqueeHitIds(laneInfos, pxPerS, { x0: drag.x0, y0: drag.y0, x1: p.x, y1: p.y })
       // Additive (Ctrl/Cmd): fold the box onto the pre-drag selection, deduped.
-      setUI({ selection: drag.additive ? [...new Set([...drag.base, ...hits])] : hits })
+      const next = drag.additive ? [...new Set([...drag.base, ...hits])] : hits
+      // Only when it changed: a fresh array every move re-rendered the
+      // Inspector, the panels, the monitor overlay and the timeline at pointer
+      // rate for the whole box drag, over the same clips.
+      const cur = useStore.getState().ui.selection
+      if (next.length !== cur.length || next.some((id, i) => id !== cur[i])) setUI({ selection: next })
       return
     }
     const { x, y } = contentPoint(e)
