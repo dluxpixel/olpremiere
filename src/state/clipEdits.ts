@@ -56,6 +56,7 @@ import {
   type Id,
   type Keyframe,
   type Sequence,
+  type Track,
 } from '../engine/types'
 import { transitionDurationSpec, type TransitionKind } from '../engine/render/types'
 import { noteRecentEffect } from './recentEffects'
@@ -1325,11 +1326,6 @@ export function crossfadeWithNeighbour(clipId: Id, side: 'next' | 'prev', second
 }
 
 /**
- * Q / W: top-and-tail. Ripple-trim the head ('in') or tail ('out') of the
- * clip under the playhead. A selected clip under the playhead wins, else the
- * topmost unlocked one. Shared by the keymap and the clip context menu.
- */
-/**
  * Delete the selection (ripple or not). Shared by the Del / Shift+Del keys AND
  * the clip context menu, which used to reimplement this inline and skipped
  * the lock filter, so right-click Delete removed clips the Del key refused.
@@ -1491,6 +1487,19 @@ function splitRefusal(seq: Sequence, showing: readonly Clip[], t: number): strin
   return 'Too close to the edge of the clip to cut there'
 }
 
+/**
+ * Q / W: top-and-tail. Ripple-trim the head ('in') or tail ('out') of the
+ * clip under the playhead. Shared by the keymap and the clip context menu.
+ *
+ * Which clip: a selected clip under the playhead wins. Otherwise the PICTURE:
+ * the lowest video line first (V1, then V2), skipping titles and adjustment
+ * layers; then a title; then sound from A1 down; an adjustment layer last.
+ *
+ * ⛔ NOT "the last clip in track order". Tracks are stored [V1, V2, A1, A2], so
+ * that pick was the song on the bottom line: with nothing selected Q cut the
+ * first seconds off his music and slid it against the picture, and the picture
+ * he was looking at stayed as it was.
+ */
 export function topAndTail(edge: 'in' | 'out'): void {
   const s = useStore.getState()
   const assets = s.project.assets
@@ -1500,15 +1509,20 @@ export function topAndTail(edge: 'in' | 'out'): void {
   // ripple after it, off the grid (2026-10-03, his "strong until" project).
   const t = quantizeToFrame(s.ui.playheadS, seq.fps)
   const sel = new Set(s.ui.selection)
+  // Rank 0 picture, 1 title, 2 sound, 3 adjustment layer. Within a rank the
+  // track order already runs V1 before V2 and A1 before A2.
+  const rank = (kind: Track['kind'], c: Clip): number =>
+    kind === 'audio' ? 2 : c.adjustment ? 3 : c.title ? 1 : 0
   const under = seq.tracks
     .filter((tr) => !tr.locked)
-    .flatMap((tr) => tr.clips)
-    .filter((c) => t > c.startS && t < clipEndS(c))
+    .flatMap((tr) => tr.clips.map((c) => ({ c, r: rank(tr.kind, c) })))
+    .filter(({ c }) => t > c.startS && t < clipEndS(c))
   if (under.length === 0) {
     useToasts.getState().show('Put the playhead inside a clip first', 'danger')
     return
   }
-  const target = under.find((c) => sel.has(c.id)) ?? under[under.length - 1]
+  const picked = under.find(({ c }) => sel.has(c.id)) ?? [...under].sort((a, b) => a.r - b.r)[0]!
+  const target = picked.c
   const report = newRippleReport()
   updateActiveSequence(edge === 'in' ? 'Trim head to playhead' : 'Trim tail to playhead', (sq) =>
     rippleTrimGroup(sq, assets, target.id, edge, t, report),
