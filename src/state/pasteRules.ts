@@ -6,8 +6,8 @@
 // which of the two did he copy last, and where does a pasted picture go.
 
 import type { CutoutFailure } from '../../electron/ipc-types'
-import { addClipFromAsset, findClip, type PasteResult } from '../engine/timeline'
-import { videoTracks, type Id, type MediaAsset, type Sequence, type Track } from '../engine/types'
+import { addClipFromAsset, addClipWithLinkedAudio, clipEndS, findClip, type PasteResult } from '../engine/timeline'
+import { audioTracks, videoTracks, type Id, type MediaAsset, type Sequence, type Track } from '../engine/types'
 
 /**
  * The text a clip copy puts on the SYSTEM clipboard.
@@ -36,6 +36,7 @@ export type PasteChoice = 'clips' | 'picture'
 export function decidePaste(s: {
   text: string
   marker: string | null
+  /** Pictures, and video or sound files, on the system clipboard. */
   pictureCount: number
   /** The last clip copy could not write its marker (clipboard.ts). */
   markerLost?: boolean
@@ -65,6 +66,28 @@ export function picturesFrom(items: ArrayLike<ClipboardItemLike> | undefined | n
     if (item.kind !== 'file' || !item.type.startsWith('image/')) continue
     const file = item.getAsFile()
     if (file) out.push(file)
+  }
+  return out
+}
+
+/** Video and sound by name, for a copied file whose type the clipboard left blank. */
+const MEDIA_NAME = /\.(mp4|m4v|mov|mkv|webm|avi|mp3|wav|m4a|aac|ogg|opus|flac)$/i
+
+/**
+ * The video and sound files in a paste: a clip or a song copied in Explorer.
+ *
+ * ⛔ THESE USED TO BE DROPPED WITHOUT A WORD. Only pictures were read, so a song
+ * he copied in Explorer pasted the clips he had copied in the app an hour before,
+ * or said "Nothing to paste. Copy a clip first".
+ */
+export function mediaFrom(items: ArrayLike<ClipboardItemLike> | undefined | null): File[] {
+  const out: File[] = []
+  for (const item of Array.from(items ?? [])) {
+    if (item.kind !== 'file' || item.type.startsWith('image/')) continue
+    const file = item.getAsFile()
+    if (!file) continue
+    const media = item.type.startsWith('video/') || item.type.startsWith('audio/')
+    if (media || (!item.type && MEDIA_NAME.test(file.name))) out.push(file)
   }
   return out
 }
@@ -118,7 +141,8 @@ export function pictureHomeTrack(seq: Sequence): Track | null {
  */
 export interface PictureAim {
   trackId: Id
-  problem: 'busy' | 'locked' | 'not-video'
+  /** `not-audio`: a sound file aimed at a video line went to its home line. */
+  problem: 'busy' | 'locked' | 'not-video' | 'not-audio'
 }
 
 export interface PlacedPicture {
@@ -157,16 +181,83 @@ export function placePastedPicture(seq: Sequence, asset: MediaAsset, atS: number
   return aimed ? { ...placed, aimed: { trackId: aimed.id, problem: 'not-video' } } : placed
 }
 
-/** What to tell him when a picture did not land on the line he clicked, or null. */
-export function pictureAimNote(seq: Sequence, clipId: Id, aim: PictureAim): string | null {
+/**
+ * A pasted video or sound file onto the timeline at exactly `atS`, the way a
+ * picture goes: on the line he clicked when it is the right kind, else its home
+ * line (V1 for footage, A1 for sound), and on the next free line up where that
+ * one is taken, so nothing is covered. A video with sound keeps its sound linked
+ * below it, on the audio line he clicked if that is what he clicked.
+ */
+export function placePastedMedia(seq: Sequence, asset: MediaAsset, atS: number, aimedId?: Id): PlacedPicture {
+  const aimed = aimedId === undefined ? undefined : seq.tracks.find((t) => t.id === aimedId)
+  const kind = asset.kind === 'audio' ? 'audio' : 'video'
+  if (aimed?.kind === kind && aimed.locked) return { seq, clipId: '', aimed: { trackId: aimed.id, problem: 'locked' } }
+  const home = (k: 'audio' | 'video'): Track | undefined =>
+    aimed?.kind === k && !aimed.locked
+      ? aimed
+      : (k === 'audio' ? audioTracks(seq) : videoTracks(seq)).find((t) => !t.locked)
+  const line = home(kind)
+  if (!line) return { seq, clipId: '' }
+  let placed: { seq: Sequence; clipId: Id }
+  if (kind === 'video' && asset.hasAudio) {
+    const r = addClipWithLinkedAudio(seq, line.id, home('audio')?.id ?? null, asset, atS, { exact: true })
+    placed = { seq: r.seq, clipId: r.videoClipId }
+  } else {
+    placed = addClipFromAsset(seq, line.id, asset, atS, { exact: true })
+  }
+  if (!aimed) return placed
+  const landed = placed.clipId ? findClip(placed.seq, placed.clipId)?.track : undefined
+  if (aimed.kind === kind) {
+    return landed && landed.id !== aimed.id ? { ...placed, aimed: { trackId: aimed.id, problem: 'busy' } } : placed
+  }
+  // A video aimed at an audio line has its sound there, which is what he asked for.
+  if (kind === 'video' && asset.hasAudio) return placed
+  return { ...placed, aimed: { trackId: aimed.id, problem: kind === 'video' ? 'not-video' : 'not-audio' } }
+}
+
+/**
+ * Several pasted files in a row from `atS`, each where the one before it ends, in
+ * the order he copied them. Pictures go the picture way, video and sound the
+ * media way. `aimed` is the first thing that went wrong with the line he clicked,
+ * said once, and `aimedClipId` the clip it is about.
+ */
+export function placePastedInARow(
+  seq: Sequence,
+  assets: readonly MediaAsset[],
+  atS: number,
+  aimedId?: Id,
+): { seq: Sequence; clipIds: Id[]; aimed?: PictureAim; aimedClipId: Id } {
+  let next = seq
+  let at = atS
+  const clipIds: Id[] = []
+  let aimed: PictureAim | undefined
+  let aimedClipId = ''
+  for (const asset of assets) {
+    const placed =
+      asset.kind === 'image' ? placePastedPicture(next, asset, at, aimedId) : placePastedMedia(next, asset, at, aimedId)
+    next = placed.seq
+    if (placed.aimed && !aimed) {
+      aimed = placed.aimed
+      aimedClipId = placed.clipId
+    }
+    if (!placed.clipId) continue
+    clipIds.push(placed.clipId)
+    const clip = findClip(next, placed.clipId)?.clip
+    if (clip) at = clipEndS(clip)
+  }
+  return { seq: next, clipIds, aimed, aimedClipId }
+}
+
+/** What to tell him when a picture (or a pasted file) did not land on the line he clicked, or null. */
+export function pictureAimNote(seq: Sequence, clipId: Id, aim: PictureAim, what = 'picture'): string | null {
   const asked = seq.tracks.find((t) => t.id === aim.trackId)
   if (!asked) return null
-  if (aim.problem === 'locked') return `${asked.name} is locked, so the picture is only in your media`
+  if (aim.problem === 'locked') return `${asked.name} is locked, so the ${what} is only in your media`
   const landed = clipId ? findClip(seq, clipId)?.track : undefined
   if (!landed) return null
-  return aim.problem === 'busy'
-    ? `${asked.name} is busy at that time, so the picture went on ${landed.name}`
-    : `${asked.name} is an audio track, so the picture went on ${landed.name}`
+  if (aim.problem === 'busy') return `${asked.name} is busy at that time, so the ${what} went on ${landed.name}`
+  if (aim.problem === 'not-audio') return `${asked.name} is a video track, so the ${what} went on ${landed.name}`
+  return `${asked.name} is an audio track, so the ${what} went on ${landed.name}`
 }
 
 /**
@@ -225,8 +316,10 @@ export function cutoutProblem(reason: CutoutFailure): string {
 export interface PasteRouterDeps {
   /** Ctrl+V the way it always was: his copied clips at the playhead. */
   pasteClips: () => void
-  /** Ask him about a picture: keep its background, or take it off. */
-  offerPicture: (file: File) => void
+  /** Ask him about the pictures, all of them at once: keep their background, or take it off. */
+  offerPictures: (files: File[]) => void
+  /** Video and sound files: into the bin and onto the timeline at the playhead, no question. */
+  pasteFiles: (files: File[]) => void
   /** The text this app put on the system clipboard with its last clip copy. */
   clipMarker: () => string | null
   /** The last clip copy could not write that text. */
@@ -262,18 +355,25 @@ export function createPasteRouter(d: PasteRouterDeps) {
     onPasteTakenElsewhere(): void {
       if (keysWaiting > 0) keysWaiting--
     },
-    onPaste(clip: { text: string; pictures: File[] }): void {
+    onPaste(clip: { text: string; pictures: File[]; media?: File[] }): void {
       if (keysWaiting > 0) keysWaiting--
       // A second Ctrl+V while he is still answering about the first picture.
       if (d.busy()) return
+      const media = clip.media ?? []
       const choice = decidePaste({
         text: clip.text,
         marker: d.clipMarker(),
-        pictureCount: clip.pictures.length,
+        pictureCount: clip.pictures.length + media.length,
         markerLost: d.markerLost?.() ?? false,
       })
-      if (choice === 'picture') d.offerPicture(clip.pictures[0]!)
-      else d.pasteClips()
+      if (choice === 'clips') {
+        d.pasteClips()
+        return
+      }
+      // ⛔ EVERY FILE, NOT THE FIRST. Five pictures copied in Explorer used to ask
+      // about the first and drop the other four without a word.
+      if (media.length > 0) d.pasteFiles(media)
+      if (clip.pictures.length > 0) d.offerPictures(clip.pictures)
     },
   }
 }

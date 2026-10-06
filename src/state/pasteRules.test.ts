@@ -14,11 +14,14 @@ import {
   cutoutName,
   cutoutProblem,
   decidePaste,
+  mediaFrom,
   pastedPictureName,
   pasteNote,
   pictureAimNote,
   pictureHomeTrack,
   picturesFrom,
+  placePastedInARow,
+  placePastedMedia,
   placePastedPicture,
 } from './pasteRules'
 
@@ -63,7 +66,8 @@ describe('one Ctrl+V is one paste', () => {
     const later: (() => void)[] = []
     const router = createPasteRouter({
       pasteClips: () => calls.push('clips'),
-      offerPicture: (f) => calls.push(`picture ${f.name}`),
+      offerPictures: (fs) => calls.push(...fs.map((f) => `picture ${f.name}`)),
+      pasteFiles: (fs) => calls.push(...fs.map((f) => `file ${f.name}`)),
       clipMarker: () => opts.marker ?? null,
       busy: () => opts.busy ?? false,
       defer: (fn) => later.push(fn),
@@ -121,6 +125,34 @@ describe('one Ctrl+V is one paste', () => {
     expect(calls).toEqual([])
   })
 
+  it('⛔ every picture in the paste reaches the question, not only the first', () => {
+    // Five unit pictures copied in Explorer used to ask about one and drop four.
+    const { router, calls, settle } = rig()
+    router.onKey()
+    router.onPaste({ text: '', pictures: [pic('cat.png'), pic('dog.png'), pic('cow.png')] })
+    settle()
+    expect(calls).toEqual(['picture cat.png', 'picture dog.png', 'picture cow.png'])
+  })
+
+  it('⛔ a copied video or song is pasted as itself, never as the clips copied an hour ago', () => {
+    const clip = new File([new Uint8Array([1])], 'clip.mp4', { type: 'video/mp4' })
+    const song = new File([new Uint8Array([1])], 'song.mp3', { type: 'audio/mpeg' })
+    const { router, calls, settle } = rig({ marker: clipMarker(2) })
+    router.onKey()
+    router.onPaste({ text: '', pictures: [], media: [clip, song] })
+    settle()
+    expect(calls).toEqual(['file clip.mp4', 'file song.mp3'])
+  })
+
+  it('the clips still win when they were copied after the files', () => {
+    const marker = clipMarker(1)
+    const { router, calls, settle } = rig({ marker })
+    router.onKey()
+    router.onPaste({ text: marker, pictures: [], media: [new File([], 'clip.mp4', { type: 'video/mp4' })] })
+    settle()
+    expect(calls).toEqual(['clips'])
+  })
+
   it('a paste a text field took is not pasted again onto the timeline', () => {
     const { router, calls, settle } = rig()
     router.onKey()
@@ -140,6 +172,76 @@ describe('picturesFrom', () => {
     ]
     expect(picturesFrom(items)).toEqual([shot])
     expect(picturesFrom(null)).toEqual([])
+  })
+})
+
+describe('mediaFrom', () => {
+  it('takes video and sound files, by type or by name when the type is blank, and nothing else', () => {
+    const clip = new File([], 'clip.mp4', { type: 'video/mp4' })
+    const song = new File([], 'song.mp3', { type: 'audio/mpeg' })
+    const obs = new File([], '2026-09-20 21-14-03.mkv')
+    const notes = new File([], 'notes.txt')
+    const shot = pic('shot.png')
+    const items = [clip, song, obs, notes, shot].map((f) => ({ kind: 'file', type: f.type, getAsFile: () => f }))
+    items.push({ kind: 'string', type: 'text/plain', getAsFile: () => null as unknown as File })
+    expect(mediaFrom(items)).toEqual([clip, song, obs])
+    expect(mediaFrom(undefined)).toEqual([])
+  })
+})
+
+describe('several pasted files in a row', () => {
+  const lines = (): Sequence =>
+    makeSeq([
+      makeTrack({ name: 'V1', clips: [makeClip({ id: 'main', startS: 0, inS: 0, outS: 30 })] }),
+      makeTrack({ name: 'V2' }),
+      makeTrack({ name: 'V3' }),
+      makeTrack({ kind: 'audio', name: 'A1' }),
+      makeTrack({ kind: 'audio', name: 'A2' }),
+    ])
+  const idOf = (seq: Sequence, name: string): string => seq.tracks.find((t) => t.name === name)!.id
+  const spans = (seq: Sequence, name: string): number[][] =>
+    seq.tracks.find((t) => t.name === name)!.clips.map((c) => [c.startS, clipEndS(c)])
+  const image = (id: string) => makeAsset({ id, name: `${id}.png`, kind: 'image', durationS: 0, hasAudio: false })
+
+  it('lays three pictures one after another from the playhead, on the line he clicked, in order', () => {
+    const seq = lines()
+    const r = placePastedInARow(seq, [image('a'), image('b'), image('c')], 2, idOf(seq, 'V3'))
+    expect(r.clipIds).toHaveLength(3)
+    expect(r.clipIds.map((id) => findClip(r.seq, id)!.clip.assetId)).toEqual(['a', 'b', 'c'])
+    // A picture is five seconds long, so each starts where the last one ends.
+    expect(spans(r.seq, 'V3')).toEqual([
+      [2, 7],
+      [7, 12],
+      [12, 17],
+    ])
+    expect(spans(r.seq, 'V1')).toEqual([[0, 30]])
+    expect(r.aimed).toBeUndefined()
+  })
+
+  it('puts a pasted song on A1 at the playhead, and a pasted video with its sound linked under it', () => {
+    const seq = lines()
+    const song = makeAsset({ id: 'song', name: 'song.mp3', kind: 'audio', durationS: 4, hasVideo: false })
+    const video = makeAsset({ id: 'vid', name: 'clip.mp4', durationS: 3 })
+    const r = placePastedInARow(seq, [song, video], 5)
+    expect(findClip(r.seq, r.clipIds[0]!)!.track.name).toBe('A1')
+    expect(findClip(r.seq, r.clipIds[0]!)!.clip.startS).toBe(5)
+    // V1 is his footage there, so the video goes up to the next free line, never over it.
+    const v = findClip(r.seq, r.clipIds[1]!)!
+    expect(v.track.kind).toBe('video')
+    expect(v.track.name).not.toBe('V1')
+    expect(v.clip.startS).toBe(9)
+    expect(v.clip.linkId).toBeTruthy()
+    expect(spans(r.seq, 'V1')).toEqual([[0, 30]])
+  })
+
+  it('a song aimed at a video line goes on A1 and says so', () => {
+    const seq = lines()
+    const song = makeAsset({ id: 'song', name: 'song.mp3', kind: 'audio', durationS: 4, hasVideo: false })
+    const placed = placePastedMedia(seq, song, 1, idOf(seq, 'V2'))
+    expect(findClip(placed.seq, placed.clipId)!.track.name).toBe('A1')
+    expect(pictureAimNote(placed.seq, placed.clipId, placed.aimed!, 'clip')).toBe(
+      'V2 is a video track, so the clip went on A1',
+    )
   })
 })
 
