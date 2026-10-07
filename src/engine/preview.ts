@@ -20,7 +20,7 @@ import {
   resetPreviewPacing,
   type FrameProbe,
 } from './previewTruth'
-import { setProxyBuildingPaused } from './proxyMedia'
+import { hasProxy, setProxyBuildingPaused } from './proxyMedia'
 import { createRenderer, type LayerShape, type Renderer } from './render/glRenderer'
 import { pairTransitionAt, resolveFrame } from './render/resolve'
 import { rasterizeTitle } from './render/titleRaster'
@@ -40,6 +40,11 @@ interface PooledVideo {
   probe: FrameProbe
   /** performance.now() of the last hard seek asked of this element. See the seek branch. */
   lastSeekAt?: number
+  /**
+   * performance.now() of the seek pressing Play asked for, until the element
+   * presents a frame after it. Until then its picture is the OLD one. PB-6.
+   */
+  playSeekAt?: number
   /** Where its media lives, so a put back can find it. */
   blobKey: string
   /** The store had no media for it when last asked. See loadSource. */
@@ -545,6 +550,9 @@ export function releasePreviewScratch(): void {
   liveMisses.clear()
   backwardLow.clear()
   lastExact.clear()
+  aheadHigh.clear()
+  for (const p of parkTimers.values()) clearTimeout(p.timer)
+  parkTimers.clear()
   prefetchedCutId = null
   for (const ref of drawnCanvases) {
     const canvas = ref.deref()
@@ -812,6 +820,82 @@ function keepLastExact(clipId: Id, src: TexImageSource, atS: number): void {
     if (oldest === undefined) break
     lastExact.delete(oldest)
   }
+}
+
+/** How long the playhead must rest before a paused element is parked on it. */
+const PARK_SETTLE_MS = 200
+const parkTimers = new Map<Id, { srcT: number; timer: ReturnType<typeof setTimeout> }>()
+
+/**
+ * Seek a paused element onto `srcT` once the playhead has rested there, so the
+ * next Space starts on the right picture with no seek at all (PB-6). Not on
+ * every scrub step: a seek per step fights the scrub's own decoder.
+ */
+function parkWhenStill(pooled: PooledVideo, key: Id, srcT: number, fps: number): void {
+  const prev = parkTimers.get(key)
+  if (prev && prev.srcT === srcT) return
+  if (prev) clearTimeout(prev.timer)
+  const timer = setTimeout(() => {
+    parkTimers.delete(key)
+    if (videoPool.get(key) !== pooled || !pooled.ready || !pooled.el.paused) return
+    if (Math.abs(pooled.el.currentTime - srcT) > 1 / (2 * fps)) pooled.el.currentTime = srcT
+  }, PARK_SETTLE_MS)
+  parkTimers.set(key, { srcT, timer })
+}
+
+/**
+ * Where the forward decode-ahead of an element that is off its frame should
+ * reach next, or null when what is already asked for still covers the playhead.
+ * The forward twin of nextBackwardLow, pure so it is tested without a decoder.
+ *
+ * Asking for one frame per draw kept the exact fallback a frame late every
+ * time: each draw asked for its own frame, got it one draw later, and after
+ * eight misses the fallback was switched off by design. So the reader is given
+ * a CHUNK ahead of the playhead, and the next chunk once the playhead is half
+ * way through it, which keeps it running ahead in one forward pass. Not a
+ * request per frame, the trap the miss limit exists for.
+ *
+ * `highS` is the top of what was last asked for. Returns the new top to ask up
+ * to. A playhead at or past the top (the decode fell behind, or a jump forward)
+ * or far below it (a jump back) starts again one chunk above the playhead.
+ */
+export function nextAheadHigh(highS: number | undefined, srcT: number, chunkS: number): number | null {
+  if (highS === undefined || srcT >= highS || highS - srcT > 2 * chunkS) return srcT + chunkS
+  if (highS - srcT < chunkS / 2) return highS + chunkS
+  return null
+}
+
+/**
+ * Frames per forward chunk. One under the frame cache's PENDING_CAP (16), which
+ * drops anything past that from a single request: a half second asked for at
+ * 60 fps was cut to its first quarter, and the rest of each half second was a
+ * hole the fallback fell through.
+ */
+const AHEAD_MAX_FRAMES = 15
+
+/** How much source one forward chunk covers: half a second of play, at most AHEAD_MAX_FRAMES. */
+const aheadChunkS = (rate: number, fps: number): number =>
+  Math.max(1 / fps, Math.min(0.5 * Math.max(0.0625, rate), AHEAD_MAX_FRAMES / fps))
+
+/** The top of each element's forward decode-ahead. Cleared on play/pause. */
+const aheadHigh = new Map<Id, number>()
+
+/**
+ * While an element is off its frame, keep the frame cache decoding ahead of the
+ * playhead (PB-6), so the exact fallback actually has the frame when it is
+ * asked. Only on a preview copy, where a run ahead is cheap; on a long GOP
+ * original it is the feedback loop the miss limit is for.
+ */
+function decodeAhead(asset: MediaAsset, key: Id, srcT: number, rate: number, fps: number): void {
+  if (!hasProxy(asset.id)) return
+  const top = nextAheadHigh(aheadHigh.get(key), srcT, aheadChunkS(rate, fps))
+  if (top === null) return
+  aheadHigh.set(key, top)
+  // Asked for FROM THE PLAYHEAD, not from the old top: the cache orders its
+  // queue from the first frame of a request, so anything of the last chunk
+  // still undecoded would otherwise be queued behind the new one and cost a
+  // reopen backward. Frames already cached are not asked for again.
+  prefetchRange(asset, srcT, top)
 }
 
 /**
@@ -1085,7 +1169,12 @@ function makeTextureSource(
       prefetchAround(asset, srcT)
       // The cache only ever yields OffscreenCanvas/ImageBitmap (valid texture
       // sources), but its return type is the wider CanvasImageSource.
-      if (exact) return confident(exact as TexImageSource)
+      if (exact) {
+        // Served from the cache, so the element is wherever it last stopped.
+        // Park it here once he stops moving, so Space starts on this frame.
+        parkWhenStill(pooled, poolKey, srcT, asset.fps || fps)
+        return confident(exact as TexImageSource)
+      }
       // No exact frame yet. Fall back to a nearest <video> seek, but the seek
       // is ASYNC, so this frame is NOT final: mark it pending so the draw loop
       // keeps polling until the exact decode lands (else it freezes mid-seek).
@@ -1186,7 +1275,14 @@ function makeTextureSource(
     const tol = ELEMENT_TOL_FRAMES / (asset.fps && asset.fps > 0 ? asset.fps : fps)
 
     if (el.paused) {
-      el.currentTime = srcT
+      // Parked on this frame already (a settled scrub, parkWhenStill): no seek,
+      // so what it shows is the frame. Otherwise seek, and do not trust its
+      // picture until it has presented one after the seek (below).
+      if (el.seeking || Math.abs(el.currentTime - srcT) > 1 / (2 * (asset.fps || fps))) {
+        el.currentTime = srcT
+        pooled.lastSeekAt = performance.now()
+        pooled.playSeekAt = pooled.lastSeekAt
+      }
       el.playbackRate = wantRate
       void el.play().catch(() => {})
     } else if (Math.abs(trueErr) > HARD_SEEK_S) {
@@ -1244,6 +1340,42 @@ function makeTextureSource(
       return held()
     }
 
+    // ⛔ PRESSING PLAY SHOWED THE ELEMENT'S OLD PICTURE (PB-6, 2026-10-06). A
+    // paused frame served from the cache leaves the element wherever it last
+    // stopped. Play seeks it, and until that seek presents a frame its probe is
+    // stale, the error reads from `el.currentTime` (just set to srcT, so zero),
+    // and the ladder drew the old picture as on time: on his long GOP capture
+    // for up to a few seconds. So until the element presents a frame after the
+    // seek, the cache serves (the paused draw just decoded this frame and the
+    // half second around it), else this clip's last exact frame.
+    if (pooled.playSeekAt !== undefined) {
+      if (!hasFrameIdentity() || (pooled.probe.live && pooled.probe.at > pooled.playSeekAt)) {
+        pooled.playSeekAt = undefined
+      } else {
+        const misses = liveMisses.get(poolKey) ?? 0
+        if (misses < LIVE_MISS_LIMIT) decodeAhead(asset, poolKey, srcT, wantRate, asset.fps || fps)
+        const exact = misses < LIVE_MISS_LIMIT ? getFrameAt(asset, srcT) : peekFrameAt(asset, srcT)
+        if (exact) {
+          liveMisses.delete(poolKey)
+          keepLastExact(layer.clipId, exact as TexImageSource, srcT)
+          recordServedFrame(0, true)
+          return confident(exact as TexImageSource)
+        }
+        if (misses < LIVE_MISS_LIMIT) liveMisses.set(poolKey, misses + 1)
+        markPending()
+        const last = lastExact.get(layer.clipId)
+        if (last) {
+          recordServedFrame(last.atS - srcT, false)
+          return last.src
+        }
+        // Nothing of its own yet: the element, as before. Straight from here:
+        // the rungs below would ask the cache for this same frame again and
+        // count the one miss twice, tripping the miss limit at half its length.
+        recordServedFrame(trueErr, false)
+        return livePreviewSource(el, poolKey, zoomOn(poolKey, layer, el))
+      }
+    }
+
     if (Math.abs(trueErr) <= tol) {
       liveMisses.delete(poolKey)
       recordServedFrame(trueErr, true)
@@ -1269,6 +1401,7 @@ function makeTextureSource(
     // moment the picture is inside tolerance again (above), and on play/pause.
     const misses = liveMisses.get(poolKey) ?? 0
     if (misses < LIVE_MISS_LIMIT) {
+      decodeAhead(asset, poolKey, srcT, wantRate, asset.fps || fps)
       const exact = getFrameAt(asset, srcT)
       if (exact) {
         liveMisses.delete(poolKey)
@@ -1571,6 +1704,7 @@ export function renderPreview(
     resetPreviewPacing()
     liveMisses.clear()
     backwardLow.clear()
+    aheadHigh.clear()
     // A frame held from before a scrub is not this run's picture.
     lastExact.clear()
     // Never transcode a preview copy while he is watching the preview.

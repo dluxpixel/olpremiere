@@ -24,6 +24,7 @@ const h = vi.hoisted(() => ({
   drawn: [] as unknown[][],
   urls: new Map<string, string | null>(),
   arrivals: new Set<(key: string) => void>(),
+  copy: false,
 }))
 
 const frameKey = (assetId: string, idx: number): string => `${assetId}:${idx}`
@@ -64,7 +65,7 @@ vi.mock('../state/blobUrls', () => ({
     return () => h.arrivals.delete(cb)
   },
 }))
-vi.mock('./proxyMedia', () => ({ setProxyBuildingPaused: () => undefined }))
+vi.mock('./proxyMedia', () => ({ setProxyBuildingPaused: () => undefined, hasProxy: () => h.copy }))
 
 const preview = await import('./preview')
 
@@ -125,6 +126,7 @@ afterEach(() => {
   h.gets.length = 0
   h.drawn.length = 0
   h.urls.clear()
+  h.copy = false
   videos.length = 0
   preview.releasePreviewScratch()
   for (const id of ['A', 'B']) preview.disposePreviewAsset(id)
@@ -377,5 +379,134 @@ describe('two layers on one element share one picture per frame', () => {
     const last = h.drawn[h.drawn.length - 1]
     expect(last).toHaveLength(2)
     expect(last[0]).toBe(last[1])
+  })
+})
+
+// ---- PB-6 -------------------------------------------------------------------
+
+describe("pressing Play never shows the element's old picture", () => {
+  const A = asset('A')
+  const forward = clip({ id: 'f', assetId: 'A', startS: 0, inS: 0, outS: 4 })
+  type Rvfc = (now: number, meta: { mediaTime: number; presentedFrames: number }) => void
+  const rvfc = new Map<HTMLVideoElement, Rvfc>()
+  let now = 1000
+  /** The element puts a frame on screen. */
+  const present = (el: HTMLVideoElement, mediaTime: number): void => {
+    const cb = rvfc.get(el)
+    rvfc.delete(el)
+    cb?.(now, { mediaTime, presentedFrames: 1 })
+  }
+
+  beforeEach(() => {
+    now = 1000
+    vi.spyOn(performance, 'now').mockImplementation(() => now)
+    const proto = HTMLVideoElement.prototype as unknown as Record<string, unknown>
+    proto.requestVideoFrameCallback = function (this: HTMLVideoElement, cb: Rvfc) {
+      rvfc.set(this, cb)
+      return 1
+    }
+    proto.cancelVideoFrameCallback = () => undefined
+  })
+  afterEach(() => {
+    const proto = HTMLVideoElement.prototype as unknown as Record<string, unknown>
+    delete proto.requestVideoFrameCallback
+    delete proto.cancelVideoFrameCallback
+    rvfc.clear()
+  })
+
+  it('serves the cached frame until the element has shown one after its seek', async () => {
+    const seq = sequence([forward])
+    cacheFrames(A, 0, 1)
+    const c = canvas()
+    preview.prewarmPreview([A])
+    await loadVideos()
+    // Parked on 0.5, a cached frame: the element itself is still back at 0.
+    preview.renderPreview(c, seq, { A }, 0.5, false)
+    const el = videos[0]
+    for (let f = 0; f < 4; f++) {
+      now += 16
+      preview.renderPreview(c, seq, { A }, 0.5 + f / 30, true)
+    }
+    const playing = h.drawn.slice(-4).map((d) => d[0])
+    expect(playing.every((p) => p !== el && (p as FakeFrame).tag.startsWith('A:'))).toBe(true)
+    // The seek lands and the element shows a frame: from here it is the element.
+    now += 16
+    present(el, 0.5 + 4 / 30)
+    preview.renderPreview(c, seq, { A }, 0.5 + 4 / 30, true)
+    expect(lastPicture()).toBe(el)
+  })
+
+  it('parks the paused element on the playhead once it has rested, and only then', async () => {
+    const seq = sequence([forward])
+    cacheFrames(A, 0, 2)
+    const c = canvas()
+    preview.prewarmPreview([A])
+    await loadVideos()
+    for (const t of [0.2, 0.4, 0.6, 0.8]) preview.renderPreview(c, seq, { A }, t, false)
+    const el = videos[0]
+    expect(st(el).seeks).toEqual([])
+    await new Promise((r) => setTimeout(r, 260))
+    expect(st(el).seeks).toEqual([0.8])
+  })
+
+  /**
+   * The decoder keeping up between draws: every range asked for lands, but at
+   * most 16 new frames of it, which is all the real queue keeps of one request
+   * (frameCache PENDING_CAP). Returns how many requests it has handled.
+   */
+  const deliver = (a: MediaAsset, from: number): number => {
+    const fps = a.fps ?? 30
+    for (; from < h.ranges.length; from++) {
+      const r = h.ranges[from]
+      if (r.assetId !== a.id) continue
+      let n = 0
+      for (let i = frameIndexAt(Math.min(r.a, r.b), fps); i <= frameIndexAt(Math.max(r.a, r.b), fps) && n < 16; i++) {
+        if (h.frames.has(frameKey(a.id, i))) continue
+        h.frames.set(frameKey(a.id, i), { width: 1920, height: 1080, tag: frameKey(a.id, i) } satisfies FakeFrame)
+        n++
+      }
+    }
+    return from
+  }
+
+  it('keeps the frame cache decoding ahead while the element is off its frame, so the exact frame is there', async () => {
+    h.copy = true
+    const A60 = asset('A', { fps: 60 })
+    const seq = sequence([forward], 60)
+    const c = canvas()
+    preview.prewarmPreview([A60])
+    await loadVideos()
+    const el = videos[0]
+    preview.renderPreview(c, seq, { A: A60 }, 1, true) // starts it
+    let seen = deliver(A60, 0)
+    // One second with the element stuck half a second or more behind the
+    // playhead, where a slow seek on his long GOP capture leaves it.
+    for (let f = 1; f <= 60; f++) {
+      now += 1000 / 60
+      present(el, 0.5)
+      preview.renderPreview(c, seq, { A: A60 }, 1 + f / 60, true)
+      seen = deliver(A60, seen)
+    }
+    // Every one of those frames was the exact frame, never the element behind it.
+    const tags = h.drawn.slice(-60).map((d) => (d[0] as FakeFrame | null)?.tag)
+    expect(tags).toEqual(Array.from({ length: 60 }, (_, i) => `A:${61 + i}`))
+    // In a handful of requests, not one per frame.
+    expect(h.ranges.length).toBeGreaterThan(2)
+    expect(h.ranges.length).toBeLessThanOrEqual(8)
+  })
+
+  it('asks the cache for each frame once while the seek is in flight, so the miss limit keeps its length', async () => {
+    const seq = sequence([forward])
+    const c = canvas()
+    preview.prewarmPreview([A])
+    await loadVideos()
+    // The seek never presents a frame and nothing is cached.
+    for (let f = 0; f < 6; f++) {
+      now += 33
+      preview.renderPreview(c, seq, { A }, 1 + f / 30, true)
+    }
+    const asked = h.gets.filter((g) => g.assetId === 'A').map((g) => g.t)
+    expect(asked).toEqual([...new Set(asked)])
+    expect(asked).toHaveLength(6)
   })
 })

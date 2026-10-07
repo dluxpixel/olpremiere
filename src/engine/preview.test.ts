@@ -18,6 +18,7 @@ import {
   headSourceS,
   playOrderRange,
   nextBackwardLow,
+  nextAheadHigh,
 } from './preview'
 import type { Clip, Sequence, Track } from './types'
 
@@ -410,5 +411,22 @@ describe('nextBackwardLow (reversed play feeds the decoder in chunks)', () => {
   it('starts over after a jump either way', () => {
     expect(nextBackwardLow(7, 6.9, 0.5)).toBeCloseTo(5.9, 9)
     expect(nextBackwardLow(7, 20, 0.5)).toBe(19)
+  })
+})
+
+describe('nextAheadHigh (an element off its frame keeps the decoder ahead of it)', () => {
+  it('starts one chunk above the playhead', () => {
+    expect(nextAheadHigh(undefined, 2, 0.25)).toBe(2.25)
+  })
+  it('asks for nothing while more than half a chunk is left above the playhead', () => {
+    expect(nextAheadHigh(2.25, 2.1, 0.25)).toBeNull()
+  })
+  it('reaches one chunk further up once the playhead is half way through', () => {
+    expect(nextAheadHigh(2.25, 2.2, 0.25)).toBe(2.5)
+  })
+  it('starts over when the playhead outruns it or jumps back', () => {
+    expect(nextAheadHigh(2.25, 2.25, 0.25)).toBe(2.5)
+    expect(nextAheadHigh(2.25, 9, 0.25)).toBe(9.25)
+    expect(nextAheadHigh(9.25, 2, 0.25)).toBe(2.25)
   })
 })
