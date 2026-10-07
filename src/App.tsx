@@ -465,7 +465,7 @@ function RecordingStudioMount() {
 export default function App() {
   // The offline update toast, once per session (see onUpdateError below).
   const updateErrorShown = useRef(false)
-  const { sizes, adjust } = useLayoutSizes()
+  const { sizes, startDrag, adjust, endDrag } = useLayoutSizes()
   const phone = usePhoneLayout()
   // One binding list, and since 2026-08-17 the keymap is its only reader: the
   // palette and the help sheet were both cut. Still built in one place, because
@@ -614,20 +614,26 @@ export default function App() {
             <Splitter
               orientation="vertical"
               testId="splitter-left"
+              onDragStart={startDrag}
               onDrag={(d) => adjust('left', d)}
+              onDragEnd={endDrag}
             />
             <Monitor />
             <Splitter
               orientation="vertical"
               testId="splitter-right"
+              onDragStart={startDrag}
               onDrag={(d) => adjust('right', -d)}
+              onDragEnd={endDrag}
             />
             <Inspector width={sizes.right} />
           </div>
           <Splitter
             orientation="horizontal"
             testId="splitter-bottom"
+            onDragStart={startDrag}
             onDrag={(d) => adjust('bottom', -d)}
+            onDragEnd={endDrag}
           />
           <Timeline height={sizes.bottom} />
         </div>

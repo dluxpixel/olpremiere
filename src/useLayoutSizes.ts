@@ -48,7 +48,7 @@
 // project can be dragged to two clean rows of five. Anything he does with the
 // handle is his and is remembered.
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 export interface LayoutSizes {
   left: number
@@ -175,11 +175,25 @@ function load(): LayoutSizes {
   }
 }
 
+/**
+ * A panel's size during a drag: the size it had at the press plus how far the pointer has
+ * gone since, held inside the panel's limits. From the press, never from the last move, so
+ * a pointer that went past a limit has to come all the way back before the edge moves
+ * again, and the edge stays under it (ui/Splitter.tsx).
+ */
+export function sizeAfterDrag(key: keyof LayoutSizes, atPress: number, totalPx: number): number {
+  return clampLimits(key, atPress + totalPx)
+}
+
 /** Panel sizes for the three splitters; persisted to localStorage. */
 export function useLayoutSizes() {
   // `pref` is what he chose. `sizes` is that, made to fit today's window.
   const [pref, setPref] = useState<LayoutSizes>(load)
   const [vp, setVp] = useState<Viewport>(viewport)
+  const prefRef = useRef(pref)
+  prefRef.current = pref
+  /** What he could see when he pressed the handle. Null between drags. */
+  const atPress = useRef<LayoutSizes | null>(null)
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -190,14 +204,19 @@ export function useLayoutSizes() {
 
   const sizes = useMemo(() => fitToWindow(pref, vp), [pref, vp])
 
+  const startDrag = useCallback(() => {
+    // The drag starts from what he can SEE, not from the stored preference: while a
+    // small window is squeezing the panel, a drag that started from the stored
+    // value would jump before it moved.
+    atPress.current = fitToWindow(prefRef.current, vp)
+  }, [vp])
+
+  /** `totalPx` is how far the pointer has gone since the press (Splitter's onDrag). */
   const adjust = useCallback(
-    (key: keyof LayoutSizes, deltaPx: number) => {
-      // The delta lands on what he can SEE, not on the stored preference: while a
-      // small window is squeezing the panel, a drag that started from the stored
-      // value would jump before it moved.
+    (key: keyof LayoutSizes, totalPx: number) => {
+      const from = atPress.current ?? fitToWindow(prefRef.current, vp)
       setPref((prev) => {
-        const shown = fitToWindow(prev, vp)
-        const next = { ...prev, [key]: clampLimits(key, shown[key] + deltaPx) }
+        const next = { ...prev, [key]: sizeAfterDrag(key, from[key], totalPx) }
         if (next[key] === prev[key]) return prev
         try {
           localStorage.setItem(KEY, JSON.stringify(next))
@@ -210,5 +229,9 @@ export function useLayoutSizes() {
     [vp],
   )
 
-  return { sizes, adjust }
+  const endDrag = useCallback(() => {
+    atPress.current = null
+  }, [])
+
+  return { sizes, startDrag, adjust, endDrag }
 }
