@@ -107,6 +107,32 @@ export function voiceoverClipId(): string | null {
 }
 
 /**
+ * Every take of the voiceover: each clip a caption run would hear on the track
+ * that holds the clip `voiceoverClipId` picks, in time order.
+ *
+ * ⛔ THE VOICEOVER, NOT ONE TAKE OF IT (CA-11). His voiceover is recorded as
+ * several takes, each placed where he performed it, and "Caption the
+ * voiceover" captioned the ONE take under the playhead and stopped. A music bed
+ * picked as the very last resort stays the one clip, as before: the sweep
+ * passes over a music track, the single clip door captions it on purpose.
+ */
+export function voiceoverClipIds(): string[] {
+  const id = voiceoverClipId()
+  if (!id) return []
+  const seq = activeSequence(useStore.getState().project)
+  const track = seq.tracks.find((t) => t.clips.some((c) => c.id === id))
+  if (!track || track.audioRole === 'music') return [id]
+  const takes = audibleClips(new Set(track.clips.map((c) => c.id))).targets.map((x) => x.clip.id)
+  return takes.length > 0 ? takes : [id]
+}
+
+/** "Caption the voiceover": every take of it, in one pass and one undo step. */
+export function captionTheVoiceover(style?: CaptionStyle): Promise<void> {
+  const ids = voiceoverClipIds()
+  return ids.length > 0 ? captionTheseClips(ids, style) : Promise.resolve()
+}
+
+/**
  * What a running caption job is doing right now, in his words. One copy, read
  * by the progress pill and by the Captions tab, so the two never say different
  * things about the same moment.

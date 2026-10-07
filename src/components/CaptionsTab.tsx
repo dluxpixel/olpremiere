@@ -65,8 +65,9 @@ import {
   captionJobProgress,
   captionTargets,
   captionTheseClips,
+  captionTheVoiceover,
   uncaptionedTargets,
-  voiceoverClipId,
+  voiceoverClipIds,
 } from '../state/captionRun'
 import {
   allCaptionStyles,
@@ -83,7 +84,7 @@ import {
 import { askForName } from '../state/namePrompt'
 import { useStore } from '../state/store'
 import { useToasts } from '../state/toasts'
-import { audibleClips, autoCaptionEveryClip, autoCaptionFromClip, useTranscribe } from '../state/transcribeActions'
+import { audibleClips, autoCaptionEveryClip, useTranscribe } from '../state/transcribeActions'
 import { Button, IconButton } from '../ui/Button'
 import { createArmedDelete, type ArmedDelete } from './armedDelete'
 import { CaptionsDialog, type ScriptMode } from './CaptionsDialog'
@@ -360,10 +361,13 @@ function CreatePart({ onScript }: { onScript: (mode: ScriptMode) => void }) {
     void project
     return uncaptionedTargets()
   }, [project])
-  const hasVoice = useMemo(() => {
+  // How many takes "Caption the voiceover" would hear. Worked out when the
+  // project changes, never per frame: the click itself asks again.
+  const voiceTakes = useMemo(() => {
     void project
-    return voiceoverClipId() !== null
+    return voiceoverClipIds().length
   }, [project])
+  const hasVoice = voiceTakes > 0
   const selectedSound = useMemo(() => {
     const seq = activeSequence(project)
     return seq.tracks.some((t) => t.clips.some((c) => selection.includes(c.id) && !c.title && project.assets[c.assetId]?.hasAudio))
@@ -373,18 +377,24 @@ function CreatePart({ onScript }: { onScript: (mode: ScriptMode) => void }) {
 
   const n = targets.length
   const fromSelection = n > 0 || selectedSound
-  const primaryLabel = n > 1 ? `Caption ${n} selected clips` : fromSelection ? 'Caption this clip' : 'Caption the voiceover'
+  const primaryLabel =
+    n > 1
+      ? `Caption ${n} selected clips`
+      : fromSelection
+        ? 'Caption this clip'
+        : voiceTakes > 1
+          ? `Caption the voiceover (${voiceTakes} clips)`
+          : 'Caption the voiceover'
   const primaryTitle = fromSelection
     ? 'Listen to what you selected and caption it, in one undo step'
-    : 'Nothing selected, so this captions the voiceover under the playhead, or the first one on the timeline'
+    : 'Nothing selected, so this captions every take on the voiceover track under the playhead, or the first one on the timeline, in one undo step'
 
   const runPrimary = (): void => {
     if (fromSelection) {
       void captionTheseClips(selection)
       return
     }
-    const id = voiceoverClipId()
-    if (id) void autoCaptionFromClip(id)
+    void captionTheVoiceover()
   }
 
   const skipped = every.skippedLocked + every.skippedMusic + every.skippedSilent + every.skippedReversed

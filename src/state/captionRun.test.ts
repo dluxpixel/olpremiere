@@ -54,7 +54,15 @@ import {
   type Sequence,
 } from '../engine/types'
 import { CAPTION_TRACK_NAME, captionsOn } from './captionActions'
-import { captionJobProgress, captionLabel, captionTargets, captionTheseClips, uncaptionedTargets } from './captionRun'
+import {
+  captionJobProgress,
+  captionLabel,
+  captionTargets,
+  captionTheseClips,
+  captionTheVoiceover,
+  uncaptionedTargets,
+  voiceoverClipIds,
+} from './captionRun'
 import { reloadCaptionStyles, saveNewCaptionStyle, setDefaultCaptionStyle } from './captionStyles'
 import { updateActiveSequence, useStore } from './store'
 import { captionEars, useTranscribe } from './transcribeActions'
@@ -334,6 +342,59 @@ describe('a second click while the first run gets going', () => {
     const second = listenForEveryClip()
     await Promise.all([first, second])
     expect(heard).toEqual([a, b, c])
+  })
+})
+
+// CA-11. His voiceover is several takes, each where he performed it, and the
+// button captioned the one take under the playhead and stopped.
+describe('"Caption the voiceover", with nothing selected', () => {
+  /** Mark A1 as his voice line and put one more clip, not his voice, on A2. */
+  function voiceLine(role: 'voice' | 'music' = 'voice'): void {
+    const s = useStore.getState()
+    s.setProject({ ...s.project, assets: { ...s.project.assets, d: asset('d') } })
+    updateActiveSequence('mark the voice line', (sq) => {
+      const [a1, a2] = sq.tracks.filter((t) => t.kind === 'audio')
+      return {
+        ...sq,
+        tracks: sq.tracks.map((t) =>
+          t.id === a1!.id
+            ? { ...t, audioRole: role }
+            : t.id === a2!.id
+              ? { ...t, clips: [{ ...newClipFromAsset(asset('d'), 9), id: 'other-d', outS: 1 }] }
+              : t,
+        ),
+      }
+    })
+  }
+
+  it('captions every take on the voiceover line, in one pass and one undo step', async () => {
+    const { a, b, c } = seed()
+    voiceLine()
+    const before = videoTracks(seq()).length
+    expect(voiceoverClipIds()).toEqual([a, b, c])
+    await captionTheVoiceover()
+    expect(heard).toEqual([a, b, c])
+    expect(videoTracks(seq()).filter((t) => t.name === CAPTION_TRACK_NAME)).toHaveLength(1)
+    useStore.getState().undo()
+    expect(videoTracks(seq())).toHaveLength(before)
+  })
+
+  it('an unmarked timeline: the takes on the line of the first clip with sound', async () => {
+    const { a, b, c } = seed()
+    await captionTheVoiceover()
+    expect(heard).toEqual([a, b, c])
+  })
+
+  it('a music bed picked as the last resort is still the one clip it was', () => {
+    const { a } = seed()
+    voiceLine('music')
+    // The only other line holds a clip that is not music, so that is the voiceover.
+    expect(voiceoverClipIds()).toEqual(['other-d'])
+    updateActiveSequence('only music', (sq) => ({
+      ...sq,
+      tracks: sq.tracks.map((t) => (t.kind === 'audio' && t.audioRole !== 'music' ? { ...t, clips: [] } : t)),
+    }))
+    expect(voiceoverClipIds()).toEqual([a])
   })
 })
 
