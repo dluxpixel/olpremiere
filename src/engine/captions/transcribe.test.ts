@@ -9,6 +9,7 @@ import {
   wordsFromAsrChunks,
   type AsrChunk,
 } from './transcribe'
+import { modelFor } from './transcribeConfig'
 
 const chunk = (text: string, start: number, end: number | null): AsrChunk => ({
   text,
@@ -423,6 +424,58 @@ describe('transcribePcm run lifecycle', () => {
     expect(worker.count()).toBe(0)
     const next = transcribePcm(minute(), 'en', () => {})
     expect(FakeWorker.last).not.toBe(worker)
+    next.promise.catch(() => {})
+    next.cancel()
+  })
+
+  // CA-15. When the GPU fails at inference the worker downloads the wasm
+  // weights in the middle of the run, and the listening budget used to keep
+  // running from the GPU's start: the download was killed half way.
+  it('a fallback that downloads its weights mid run is waited for while the download moves', async () => {
+    const run = transcribePcm(minute(), 'en', () => {})
+    const worker = FakeWorker.last!
+    const outcome = run.promise.then(
+      (chunks) => chunks.length,
+      (err: unknown) => String(err instanceof Error ? err.message : err),
+    )
+    worker.emit({ type: 'progress', phase: 'listening', pct: null })
+    await vi.advanceTimersByTimeAsync(20_000)
+    // Twenty minutes of download, far past the eleven minute budget for a minute
+    // of audio, reporting every thirty seconds.
+    for (let i = 0; i < 40; i++) {
+      worker.emit({ type: 'progress', phase: 'model', pct: i * 2.5, downloading: true })
+      await vi.advanceTimersByTimeAsync(30_000)
+    }
+    expect(worker.terminated).toBe(false)
+    worker.emit({ type: 'progress', phase: 'listening', pct: null })
+    await vi.advanceTimersByTimeAsync(5_000)
+    worker.emit({ type: 'done', chunks: [{ text: ' hey', timestamp: [0, 0.2] }] })
+    expect(await outcome).toBe(1)
+  })
+
+  it('a fallback load that stops reporting is still given up on', async () => {
+    const run = transcribePcm(minute(), 'en', () => {})
+    const worker = FakeWorker.last!
+    const gaveUp = expect(run.promise).rejects.toThrow('stopped responding')
+    worker.emit({ type: 'progress', phase: 'listening', pct: null })
+    worker.emit({ type: 'progress', phase: 'model', pct: 10, downloading: true })
+    await vi.advanceTimersByTimeAsync(60_000 + 60 * 10_000 + 1)
+    await gaveUp
+    expect(worker.terminated).toBe(true)
+  })
+
+  it('the GPU failure count outlives a killed worker, and goes with the next run', async () => {
+    const run = transcribePcm(minute(), 'en', () => {})
+    const worker = FakeWorker.last!
+    worker.emit({ type: 'progress', phase: 'listening', pct: null })
+    worker.emit({ type: 'gpuFailed', model: modelFor('en'), failures: 1 })
+    // Not an error: the run goes on, on the fallback.
+    expect(worker.terminated).toBe(false)
+    run.cancel()
+    await expect(run.promise).rejects.toEqual({ cancelled: true })
+    const next = transcribePcm(minute(), 'en', () => {})
+    expect(FakeWorker.last).not.toBe(worker)
+    expect(FakeWorker.last!.posted[0]).toMatchObject({ language: 'en', gpuFailures: 1 })
     next.promise.catch(() => {})
     next.cancel()
   })

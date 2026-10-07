@@ -7,8 +7,8 @@ import { getAudioBuffer } from '../audio'
 import { clipDurationS } from '../types'
 import type { Clip, MediaAsset } from '../types'
 import type { CaptionWord } from './captions'
-import { getCaptionLanguage, type CaptionLanguage } from './transcribeConfig'
-import type { TranscribeResponse } from './transcribeWorker'
+import { getCaptionLanguage, modelFor, type CaptionLanguage } from './transcribeConfig'
+import type { TranscribeRequest, TranscribeResponse } from './transcribeWorker'
 
 /** Whisper's feature-extractor input rate. */
 export const TRANSCRIBE_SAMPLE_RATE = 16000
@@ -569,6 +569,18 @@ function killWorker(): void {
 let busy = false
 
 /**
+ * How many times the GPU has failed at inference this session, per model, as
+ * the worker reported it, and sent with every run.
+ *
+ * ⛔ THE COUNT LIVES ON THIS SIDE (CA-15). It used to live only in the worker,
+ * and a worker that is killed (the watchdog, a crash, a Stop) takes its memory
+ * with it, so the next clip trusted the GPU again, failed again and paid for the
+ * slow fallback again, every clip. The worker settles on wasm after two
+ * failures; with the count kept here, that holds for the rest of the session.
+ */
+const gpuFailures = new Map<string, number>()
+
+/**
  * How long the LISTENING phase may run before the worker is given up on and
  * terminated. Model loading is deliberately outside it, because the first load
  * is a 1.6 GB download and has no business sharing a budget with inference.
@@ -655,9 +667,18 @@ export function transcribePcm(
     const onMessage = (e: MessageEvent<TranscribeResponse>): void => {
       const msg = e.data
       if (msg.type === 'progress') {
-        // The worker announces 'listening' once, when the model is loaded and
+        // The worker announces 'listening' when the model is loaded and
         // inference begins. That is the point the budget starts.
-        if (msg.phase === 'listening') {
+        if (msg.phase === 'listening' || watchdog !== null) {
+          // ⛔ AND A MODEL LOADING IN THE MIDDLE OF A RUN WINDS THE CLOCK BACK
+          // EVERY TIME IT MOVES (CA-15). When the GPU fails at inference the
+          // worker builds the wasm pipeline, other weights, about 770 MB the
+          // first time, and this budget was still running from the GPU's
+          // 'listening': a short clip gave the download about 74 s, the worker
+          // was killed half way and the run failed as "stopped responding". A
+          // load that keeps reporting is making progress, so each report starts
+          // the budget again; one that stops reporting still runs out, and the
+          // worker says 'listening' again when it starts on the wasm pipeline.
           stopWatchdog()
           watchdog = setTimeout(giveUp, LISTEN_FLOOR_MS + audioS * LISTEN_MS_PER_AUDIO_SECOND)
         }
@@ -670,6 +691,9 @@ export function transcribePcm(
         settled = true
         cleanup() // keep the worker ALIVE so the model stays loaded for next time
         res(msg.chunks)
+      } else if (msg.type === 'gpuFailed') {
+        // Kept HERE, where a killed worker cannot take it with it.
+        gpuFailures.set(msg.model, msg.failures)
       } else if (msg.type === 'warmed' || (msg.type === 'error' && msg.warm)) {
         // NOT OURS, and the error half of this was the hole. A boot warm can
         // land in the middle of a real run. `'warmed'` was already ignored here
@@ -698,7 +722,8 @@ export function transcribePcm(
   // true and every later caption run in the session would report that a
   // transcription was already going, with no way back short of a restart.
   try {
-    worker.postMessage({ pcm, language }, [pcm.buffer])
+    const request: TranscribeRequest = { pcm, language, gpuFailures: gpuFailures.get(modelFor(language)) ?? 0 }
+    worker.postMessage(request, [pcm.buffer])
   } catch (err) {
     settled = true
     cleanup()
