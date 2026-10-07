@@ -149,3 +149,14 @@ export async function closeWrite(id: number, ok: boolean): Promise<void> {
   if (ok) await rename(w.tmp, w.target)
   else await unlink(w.tmp).catch(() => undefined)
 }
+
+/**
+ * Throw away every write still open, when the page that was feeding them has gone
+ * (a reload, a crash). Nothing can ever finish them, and each one is a full size
+ * `<name>.olpart` beside his file: a project copy carries all its footage (mc
+ * night is about 2.8 GB) on a drive that is 97% full. Never renamed into place,
+ * so his own file is never touched.
+ */
+export async function dropWrites(): Promise<void> {
+  for (const id of [...writes.keys()]) await closeWrite(id, false).catch(() => undefined)
+}

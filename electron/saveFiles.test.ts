@@ -9,7 +9,8 @@ vi.mock('electron', () => ({
   app: { getPath: () => where.dir },
   dialog: { showSaveDialog: async () => ({ canceled: false, filePath: where.chosen }) },
 }))
-const { closeWrite, hasRoomFor, numberedFileName, openForWrite, pickSavePath, writeChunk } = await import('./saveFiles')
+const { closeWrite, dropWrites, hasRoomFor, numberedFileName, openForWrite, pickSavePath, writeChunk } =
+  await import('./saveFiles')
 
 describe('the name an export or a project file is offered', () => {
   it('is the project name when the folder does not have it yet', () => {
@@ -66,6 +67,17 @@ describe('writing a file he picked', () => {
     await writeChunk(id, new Uint8Array(16).buffer)
     await closeWrite(id, false)
     expect((await readdir(where.dir)).filter((f) => f !== 'save-folders.json')).toEqual([])
+  })
+
+  it('⛔ a page that goes away mid save (a reload, a crash) leaves no full size part file behind', async () => {
+    await pick()
+    const id = await openForWrite(where.chosen)
+    await writeChunk(id, new Uint8Array(1024 * 1024).buffer)
+    expect((await readdir(where.dir)).filter((f) => f.endsWith('.olpart'))).toHaveLength(1)
+    await dropWrites()
+    expect((await readdir(where.dir)).filter((f) => f !== 'save-folders.json')).toEqual([])
+    // And nothing is left that a late chunk could still write into.
+    await expect(writeChunk(id, new Uint8Array(16).buffer)).rejects.toThrow(/No such file open/)
   })
 
   it('⛔ refuses before writing a byte when the drive has no room for it', async () => {

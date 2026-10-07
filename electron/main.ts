@@ -486,6 +486,8 @@ function createWindow(): void {
     // A half written mirror copy is in the same boat, and its writer slot would
     // otherwise be pinned for the life of main, refusing that asset forever.
     void mediaStore.dropWriters()
+    // And a project copy or export being saved: its part file is full size.
+    void saveFiles.dropWrites()
     // And an export. The page feeds ffmpeg its frames, so with the page gone
     // ffmpeg would wait on its pipe forever, the half made file would stay,
     // and the updater would believe an export is running until the app quits.
