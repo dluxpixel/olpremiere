@@ -665,6 +665,9 @@ function createWindow(): void {
     // A half written mirror copy is in the same boat, and its writer slot would
     // otherwise be pinned for the life of main, refusing that asset forever.
     void mediaStore.dropWriters()
+    // And a project file he was saving to his own folder: its `.olpart` sits beside
+    // his file, as big as the project, and no sweep ever looks there.
+    void saveFiles.dropWrites()
     // And an export. The page feeds ffmpeg its frames, so with the page gone
     // ffmpeg would wait on its pipe forever, the half made file would stay,
     // and the updater would believe an export is running until the app quits.
@@ -975,6 +978,8 @@ app.whenReady().then(() => {
     proxy.killAllProxyChildren()
     // And a conversion, for the same reason: it is a full size copy of his source.
     remux.killAllRemuxChildren()
+    // And a project file still being written to his folder.
+    saveFiles.dropWritesSync()
     // And CutStudio's server, when this app is the one that started it. One he
     // started himself stays running.
     cutstudio.stop()

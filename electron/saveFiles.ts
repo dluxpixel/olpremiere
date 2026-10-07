@@ -11,7 +11,7 @@
 // He can still type any name he likes; only the suggestion is numbered.
 
 import { app, dialog, type BrowserWindow } from 'electron'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { open, rename, unlink, type FileHandle } from 'node:fs/promises'
 import path from 'node:path'
 
@@ -119,4 +119,27 @@ export async function closeWrite(id: number, ok: boolean): Promise<void> {
   await w.fh.close()
   if (ok) await rename(w.tmp, w.target)
   else await unlink(w.tmp).catch(() => undefined)
+}
+
+/**
+ * Every write a page left open, closed and its `.olpart` removed. For when the page
+ * that was writing is gone (a reload, a crashed page): nothing can finish them now,
+ * and each one is a hidden part file in HIS folder, as big as the project it was
+ * saving, that no sweep ever looks for.
+ */
+export async function dropWrites(): Promise<void> {
+  for (const id of [...writes.keys()]) await closeWrite(id, false).catch(() => undefined)
+}
+
+/** The same for before-quit, which cannot wait: the name goes now, the handle with the process. */
+export function dropWritesSync(): void {
+  for (const w of writes.values()) {
+    void w.fh.close().catch(() => undefined)
+    try {
+      unlinkSync(w.tmp)
+    } catch {
+      // Already gone.
+    }
+  }
+  writes.clear()
 }
