@@ -3,6 +3,7 @@
 
 import { openDB, type IDBPDatabase } from 'idb'
 import { diskApi, healStoreFromDisk, trashProjectOnDisk, writeProjectToDisk } from './diskProjects'
+import { commitFocusedField } from '../fieldCommit'
 import { blobKeysOnlyUsedBy } from '../engine/blobGc'
 import { isBlobHeld } from './exportHolds'
 import { migrateProjectEffects } from '../engine/effects/migrate'
@@ -681,9 +682,10 @@ export function initPersistence(): Promise<void> {
 export async function saveBeforeClose(): Promise<boolean> {
   // A caption, a title or the project name is written to the project when its
   // field loses focus. Closing never takes the focus away on its own, so the
-  // words he typed last would not even be in the project yet.
-  const focused = typeof document !== 'undefined' ? document.activeElement : null
-  if (focused instanceof HTMLElement && focused !== document.body) focused.blur()
+  // words he typed last would not even be in the project yet. The field is told
+  // it was left and he stays in it: when the save fails and he chooses Stay, or a
+  // reload waits on him, his next keys are still letters (../fieldCommit.ts).
+  commitFocusedField()
   try {
     await saveSettled()
     return true

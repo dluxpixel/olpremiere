@@ -36,7 +36,7 @@ import {
   Star,
   Trash2,
 } from 'lucide-react'
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ENTRANCE_PRESETS, EXIT_PRESETS } from '../engine/anim/appearance'
 import {
   BUILTIN_CAPTION_STYLES,
@@ -86,6 +86,7 @@ import { audibleClips, autoCaptionEveryClip, autoCaptionFromClip, useTranscribe 
 import { Button, IconButton } from '../ui/Button'
 import { createArmedDelete, type ArmedDelete } from './armedDelete'
 import { CaptionsDialog, type ScriptMode } from './CaptionsDialog'
+import { isCommitInPlace } from '../fieldCommit'
 import { ScrubField, SectionLabel } from './EffectControls'
 
 // ---------------------------------------------------------------------------
@@ -1182,14 +1183,32 @@ const CaptionRow = memo(function CaptionRow({
   selected,
   locked,
   onJump,
+  onTyping,
 }: {
   clip: Clip
   active: boolean
   selected: boolean
   locked: boolean
   onJump: (clip: Clip) => void
+  /** He went into this row's text (true) or left it (false). */
+  onTyping: (id: string, on: boolean) => void
 }) {
   const text = (clip.title?.text ?? '').replace(/\s*\n\s*/g, ' ')
+  const inputRef = useRef<HTMLInputElement>(null)
+  // What the field showed before he typed in it, so a row he did not change
+  // writes nothing, even when the caption changed under it meanwhile.
+  const shownRef = useRef(text)
+  // An undo or a restyle shows here at once, except under his caret.
+  // ⛔ NOT BY KEYING THE INPUT ON ITS TEXT, which it was until 2026-10-07. Ctrl+S
+  // writes his words while he is still in the row, the text changes, and a keyed
+  // input was rebuilt under him: the field he was typing in was gone, and his
+  // next Backspace deleted the caption instead of a letter.
+  useLayoutEffect(() => {
+    const el = inputRef.current
+    if (!el || el === document.activeElement) return
+    el.value = text
+    shownRef.current = text
+  }, [text])
   return (
     <div
       data-testid="caption-row"
@@ -1206,15 +1225,17 @@ const CaptionRow = memo(function CaptionRow({
       {active && <span aria-hidden className="absolute inset-y-0 left-0 w-0.5 bg-accent" />}
       <span className={`font-mono text-[11px] tabular-nums ${active ? 'text-accent' : 'text-text-muted'}`}>{shortTime(clip.startS)}</span>
       <input
-        // Keyed on the text so an undo or a restyle shows here at once.
-        key={text}
+        ref={inputRef}
         type="text"
         data-testid="caption-row-text"
         aria-label={`Caption at ${shortTime(clip.startS)}`}
         defaultValue={text}
         readOnly={locked}
         title={locked ? 'This caption is on a locked track' : undefined}
-        onFocus={() => onJump(clip)}
+        onFocus={() => {
+          onJump(clip)
+          onTyping(clip.id, true)
+        }}
         onKeyDown={(e) => {
           if (e.key === 'Enter') e.currentTarget.blur()
           else if (e.key === 'Escape') {
@@ -1223,9 +1244,20 @@ const CaptionRow = memo(function CaptionRow({
           }
         }}
         onBlur={(e) => {
-          const typed = e.currentTarget.value
-          if (typed.trim() === text.trim()) return
-          if (!setCaptionText(clip.id, typed)) e.currentTarget.value = text
+          // Ctrl+S writes his words and leaves him typing: nothing under his
+          // caret is put back, and the row stays his.
+          const staying = isCommitInPlace(e)
+          if (!staying) onTyping(clip.id, false)
+          const el = e.currentTarget
+          const typed = el.value
+          if (typed.trim() === shownRef.current.trim()) {
+            // Nothing new since he came in (or since Ctrl+S wrote it). Once he
+            // has left, the row shows the caption as it is stored.
+            if (!staying) el.value = text
+            return
+          }
+          if (setCaptionText(clip.id, typed)) shownRef.current = typed
+          else if (!staying) el.value = text
         }}
         className="h-6 min-w-0 rounded-field bg-transparent px-1.5 text-ui-sm text-text-primary transition-colors duration-[120ms] hover:bg-bg-input focus:bg-bg-input focus:outline-none focus:ring-1 focus:ring-accent"
       />
@@ -1242,9 +1274,22 @@ function CaptionList() {
   const items = useMemo(() => captionsOn(seq), [seq])
   const [query, setQuery] = useState('')
   const q = query.trim().toLowerCase()
+  // The row he is typing in stays on screen while he is in it, even once his
+  // words no longer match the search. Ctrl+S writes them with his caret still
+  // in the row, and a row filtered away under him would leave his next keys on
+  // the editor. It goes the way any other row does once he leaves it.
+  const [typingIn, setTypingIn] = useState<string | null>(null)
+  const onTyping = useCallback((id: string, on: boolean) => {
+    setTypingIn((cur) => (on ? id : cur === id ? null : cur))
+  }, [])
   const shown = useMemo(
-    () => (q ? items.filter(({ clip }) => (clip.title?.text ?? '').toLowerCase().replace(/\s+/g, ' ').includes(q)) : items),
-    [items, q],
+    () =>
+      q
+        ? items.filter(
+            ({ clip }) => clip.id === typingIn || (clip.title?.text ?? '').toLowerCase().replace(/\s+/g, ' ').includes(q),
+          )
+        : items,
+    [items, q, typingIn],
   )
   const selected = useMemo(() => new Set(selection), [selection])
   const listRef = useRef<HTMLDivElement>(null)
@@ -1325,6 +1370,7 @@ function CaptionList() {
               selected={selected.has(clip.id)}
               locked={track.locked}
               onJump={onJump}
+              onTyping={onTyping}
             />
           ))
         )}

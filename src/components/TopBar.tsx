@@ -21,6 +21,7 @@ import {
 } from '../collab/collabControl'
 import { activeSequence } from '../engine/types'
 import { comboLabel } from '../keymap'
+import { isCommitInPlace } from '../fieldCommit'
 import { exportProjectToFile, importProjectFromFile, registerProjectFilePicker } from '../state/projectFile'
 import { useStore } from '../state/store'
 import { useToasts } from '../state/toasts'
@@ -75,7 +76,8 @@ function CollabButton() {
         }}
         onBlur={(e) => {
           setDisplayName(e.currentTarget.value)
-          setEditingName(false)
+          // Ctrl+S leaves him in the field (../fieldCommit.ts).
+          if (!isCommitInPlace(e)) setEditingName(false)
         }}
       />
     )

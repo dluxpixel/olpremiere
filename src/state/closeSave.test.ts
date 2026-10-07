@@ -176,6 +176,21 @@ describe('the save a close waits for', () => {
     field.remove()
   })
 
+  it('leaves him in that field, so a close he stays in keeps his next keys his', async () => {
+    // A failed save asks him, and Stay keeps the window. A field left by the
+    // commit would hand his next Backspace to Delete clip.
+    const field = document.createElement('input')
+    document.body.append(field)
+    field.addEventListener('blur', () => type(field.value))
+    field.focus()
+    field.value = 'hi'
+    askToSave?.()
+    await land()
+    expect(written.at(-1)?.name).toBe('hi')
+    expect(document.activeElement).toBe(field)
+    field.remove()
+  })
+
   it('tries a failed save again on its own, with no new edit, and says when it is back', async () => {
     fileFailures = 1
     type('x')
