@@ -15,6 +15,7 @@ import {
   type CaptionStyle,
 } from '../engine/captions/captionStyle'
 import { candidateFixFor, wordFixFor, type StyleProfile } from '../engine/captions/styleProfile'
+import { respellWords, type Rewrite, type Vocabulary } from '../engine/captions/vocabulary'
 import { learnedProfile } from '../engine/captions/styleStore'
 import { retimeAppearance } from '../engine/anim/appearance'
 import { addTrack, clipDurationS, clipEndS, recomputeDuration, resolveStart } from '../engine/timeline'
@@ -187,6 +188,11 @@ export function addCaptionsFromWords(
     heard?: { assetId: string; fromS: number; toS: number; words: SpokenWord[] }[]
     /** The recogniser's lag, to put the media's older words on time as these land. */
     wordLagS?: number
+    /**
+     * What his corrections taught, as the run read it. Its spellings fixed ONCE
+     * are offered on the toast ("Spell N more your way"), never applied unasked.
+     */
+    vocabulary?: Vocabulary
   } = {},
 ): void {
   const s = useStore.getState()
@@ -342,7 +348,19 @@ export function addCaptionsFromWords(
   // candidate is a word he retyped ONCE, which is real evidence and not yet a
   // habit, so putting it in his video unasked would be the app inventing a
   // spelling off a single sample. The button is the whole difference.
-  const suggested = profile ? chunks.filter((c) => candidateFixFor(c.text, profile)).length : 0
+  //
+  // From his vocabulary first (every project he saved, CA-18), and from the
+  // archive-only style learning when that has nothing to offer.
+  const once = options.vocabulary?.candidates ?? []
+  const caseOf = (t: string): string => captionCase(t, caseRule)
+  const respellable = once.length > 0 ? laid.filter((c) => respellCaption(c, once, caseOf, style) !== null).map((c) => c.id) : []
+  const fromProfile = profile ? chunks.filter((c) => candidateFixFor(c.text, profile)).length : 0
+  const suggestion =
+    respellable.length > 0
+      ? { count: respellable.length, apply: () => respellCaptions(respellable, once, caseOf, style) }
+      : fromProfile > 0 && profile
+        ? { count: fromProfile, apply: () => applyCandidateSpellings(profile) }
+        : null
 
   useToasts
     .getState()
@@ -361,13 +379,61 @@ export function addCaptionsFromWords(
         .filter(Boolean)
         .join(', '),
       'info',
-      suggested > 0 && profile
+      suggestion
         ? {
-            label: `Spell ${suggested} more your way`,
-            onClick: () => applyCandidateSpellings(profile),
+            label: `Spell ${suggestion.count} more your way`,
+            onClick: suggestion.apply,
           }
         : undefined,
     )
+}
+
+/**
+ * One caption with the spellings he fixed once put in, or null when it holds
+ * none, or he has retyped it since (its words no longer match what it was made
+ * with, so there is nothing safe to swap).
+ */
+function respellCaption(clip: Clip, once: readonly Rewrite[], caseOf: (t: string) => string, style: CaptionStyle): Clip | null {
+  const said = clip.captionWords
+  const tokens = (clip.title?.text ?? '').split(/\s+/).filter(Boolean)
+  if (!clip.title || !said || said.length !== tokens.length || said.some((w, i) => w.text !== tokens[i])) return null
+  const next = respellWords(said, once, caseOf)
+  if (!next) return null
+  const text = breakLines(next.map((w) => w.text).join(' '), style.shape)
+  return { ...clip, title: { ...clip.title, text }, captionWords: next }
+}
+
+/**
+ * Put the spellings he fixed once into the captions of the run that offered
+ * them, on his say so. One undo step. A caption he has changed since is left
+ * alone, and a locked track refuses.
+ */
+function respellCaptions(ids: readonly string[], once: readonly Rewrite[], caseOf: (t: string) => string, style: CaptionStyle): void {
+  const wanted = new Set(ids)
+  let changed = 0
+  let locked = false
+  updateActiveSequence('Spell captions his way', (sq) => ({
+    ...sq,
+    tracks: sq.tracks.map((t) => {
+      if (!isCaptionTrack(t) || !t.clips.some((c) => wanted.has(c.id))) return t
+      if (t.locked) {
+        locked = true
+        return t
+      }
+      return {
+        ...t,
+        clips: t.clips.map((c) => {
+          const next = wanted.has(c.id) ? respellCaption(c, once, caseOf, style) : null
+          if (!next) return c
+          changed++
+          return next
+        }),
+      }
+    }),
+  }))
+  useToasts
+    .getState()
+    .show(locked ? 'Your Captions track is locked, so nothing was changed' : changed > 0 ? `${changed} spelled your way` : 'Nothing left to change')
 }
 
 /**

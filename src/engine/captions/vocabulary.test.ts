@@ -5,6 +5,7 @@ import {
   correctionsFromClips,
   EMPTY_VOCABULARY,
   learnVocabulary,
+  respellWords,
   spokenWords,
   type ProjectCorrections,
 } from './vocabulary'
@@ -103,12 +104,59 @@ describe('learnVocabulary', () => {
     expect(v.rewrites).toEqual([])
   })
 
+  // CA-18. Once is real evidence, not yet a habit: offered, never applied.
+  it('keeps a misspelling he fixed once as a candidate to offer, never as a rewrite', () => {
+    const once = learnVocabulary([project([['He is', 'he is'], ['Bamban,', 'bun bun']])])
+    expect(once.rewrites).toEqual([])
+    expect(once.candidates).toEqual([{ heard: ['bamban'], his: 'bun bun', seen: 1 }])
+    // Twice is a rewrite, and stops being a candidate.
+    const twice = learnVocabulary([
+      project([['He is', 'he is'], ['Bamban,', 'bun bun']]),
+      project([['And', 'and'], ['Bamban.', 'bun bun']]),
+    ])
+    expect(twice.candidates).toBeUndefined()
+  })
+
+  it('offers nothing he kept, nothing with a number, and nothing he spelled two ways', () => {
+    const v = learnVocabulary([
+      project([['cool', 'cooldown'], ['so', 'so']]),
+      project([['that is', 'that is'], ['cool', 'cool']]),
+      project([['for 60', 'for 60000'], ['which', 'which']]),
+      project([['He is', 'he is'], ['Banban', 'bun bun']]),
+      project([['He is', 'he is'], ['Banban', 'bunbun']]),
+    ])
+    expect(v.candidates).toBeUndefined()
+  })
+
   it('learns a phrase the model wrote for one of his names, and tries it before its parts', () => {
     const v = learnVocabulary([
       project([['At number 2', 'at number 2'], ['VFP Pteral', 'we have pterowl hazuku'], ['with', 'with'], ['Pteral', 'pterowl']]),
       project([['At number 2', 'at number 2'], ['VFP Pteral', 'we have pterowl hazuku'], ['with', 'with'], ['Pteral', 'pterowl']]),
     ])
     expect(v.rewrites.map((r) => r.heard.join(' '))).toEqual(['vfp pteral', 'pteral'])
+  })
+})
+
+describe('respellWords', () => {
+  const once = [{ heard: ['bamban'], his: 'bun bun', seen: 1 }]
+  const w = (text: string, startS: number, endS: number) => ({ text, startS, endS })
+
+  it('puts his spelling in, one word a piece, over the time the heard word took', () => {
+    const out = respellWords([w('so', 0, 0.2), w('bamban', 0.2, 0.8), w('is', 0.8, 1)], once, (t) => t)!
+    expect(out.map((x) => x.text)).toEqual(['so', 'bun', 'bun', 'is'])
+    expect(out[1]!.startS).toBeCloseTo(0.2, 9)
+    expect(out[2]!.endS).toBeCloseTo(0.8, 9)
+    expect(out[1]!.endS).toBeCloseTo(out[2]!.startS, 9)
+  })
+
+  it('cases his spelling the way the caption is, and keeps a closing full stop', () => {
+    const out = respellWords([w('Bamban.', 0, 0.5)], once, (t) => t.toUpperCase())!
+    expect(out.map((x) => x.text)).toEqual(['BUN', 'BUN.'])
+  })
+
+  it('is null when there is nothing to change', () => {
+    expect(respellWords([w('hello', 0, 0.3)], once, (t) => t)).toBeNull()
+    expect(respellWords([w('bamban', 0, 0.3)], [], (t) => t)).toBeNull()
   })
 })
 

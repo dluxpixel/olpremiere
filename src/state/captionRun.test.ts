@@ -23,12 +23,15 @@ const mem = vi.hoisted(() => {
 const toasted: string[] = []
 /** The kind of each toast, beside its words: 'danger' is red, anything else is not. */
 const toastKinds: (string | undefined)[] = []
+/** The button on each toast, if it has one. */
+const toastActions: ({ label: string; onClick: () => void } | undefined)[] = []
 vi.mock('./toasts', () => ({
   useToasts: {
     getState: () => ({
-      show: (m: string, kind?: string) => {
+      show: (m: string, kind?: string, action?: { label: string; onClick: () => void }) => {
         toasted.push(m)
         toastKinds.push(kind)
+        toastActions.push(action)
       },
     }),
   },
@@ -36,9 +39,10 @@ vi.mock('./toasts', () => ({
 
 // His vocabulary is read from every saved project, which takes a while on his
 // disk. A few milliseconds here, so a run that waits for it shows that it does.
+const vocab = vi.hoisted(() => ({ next: null as import('../engine/captions/vocabulary').Vocabulary | null }))
 vi.mock('./captionVocabulary', async () => {
   const { EMPTY_VOCABULARY } = await vi.importActual<typeof import('../engine/captions/vocabulary')>('../engine/captions/vocabulary')
-  return { currentVocabulary: () => new Promise((r) => setTimeout(() => r(EMPTY_VOCABULARY), 5)) }
+  return { currentVocabulary: () => new Promise((r) => setTimeout(() => r(vocab.next ?? EMPTY_VOCABULARY), 5)) }
 })
 
 import { AUTO_SHAPE, cleanShape } from '../engine/captions/captionStyle'
@@ -53,7 +57,7 @@ import {
   type MediaAsset,
   type Sequence,
 } from '../engine/types'
-import { CAPTION_TRACK_NAME, captionsOn } from './captionActions'
+import { CAPTION_TRACK_NAME, captionsOn, setCaptionText } from './captionActions'
 import {
   captionJobProgress,
   captionLabel,
@@ -128,6 +132,8 @@ beforeEach(() => {
   heard.length = 0
   toasted.length = 0
   toastKinds.length = 0
+  toastActions.length = 0
+  vocab.next = null
   useStore.getState().setProject(newProject())
   useStore.getState().setUI({ selection: [], playheadS: 0 })
   useTranscribe.setState({ status: 'idle', pct: null, downloading: false, cancel: null, queue: null })
@@ -395,6 +401,53 @@ describe('"Caption the voiceover", with nothing selected', () => {
       tracks: sq.tracks.map((t) => (t.kind === 'audio' && t.audioRole !== 'music' ? { ...t, clips: [] } : t)),
     }))
     expect(voiceoverClipIds()).toEqual([a])
+  })
+})
+
+// CA-18. The "Spell N more your way" button was fed only by the style learning,
+// which reads a project only when he archives it, so it never showed.
+describe('a spelling he has fixed once', () => {
+  const said = (): string => captionsOn(seq()).map(({ clip }) => clip.title!.text).join(' ')
+  const offer = () => toastActions.find((a) => a?.label === 'Spell 1 more your way')
+
+  it('is offered after the run, never put in unasked, and goes in on his say so in one undo step', async () => {
+    const { b } = seed()
+    vocab.next = { rewrites: [], candidates: [{ heard: ['twob'], his: 'two bee', seen: 1 }] }
+    await captionTheseClips([b])
+    expect(said()).toContain('twob')
+    expect(offer()).toBeDefined()
+    offer()!.onClick()
+    expect(said()).toContain('two bee')
+    expect(said()).not.toContain('twob')
+    expect(toasted).toContain('1 spelled your way')
+    useStore.getState().undo()
+    expect(said()).toContain('twob')
+  })
+
+  it('is offered by the sweep too', async () => {
+    const { a, b, c } = seed()
+    vocab.next = { rewrites: [], candidates: [{ heard: ['threec'], his: 'three see', seen: 1 }] }
+    await captionTheseClips([a, b, c])
+    expect(offer()).toBeDefined()
+  })
+
+  it('leaves a caption he has retyped since alone', async () => {
+    const { b } = seed()
+    vocab.next = { rewrites: [], candidates: [{ heard: ['twob'], his: 'two bee', seen: 1 }] }
+    await captionTheseClips([b])
+    const mine = captionsOn(seq()).find(({ clip }) => clip.title!.text.includes('twob'))!.clip
+    setCaptionText(mine.id, 'my own words')
+    offer()!.onClick()
+    expect(said()).toContain('my own words')
+    expect(said()).not.toContain('two bee')
+    expect(toasted).toContain('Nothing left to change')
+  })
+
+  it('offers nothing when no caption holds one', async () => {
+    const { b } = seed()
+    vocab.next = { rewrites: [], candidates: [{ heard: ['nowhere'], his: 'somewhere', seen: 1 }] }
+    await captionTheseClips([b])
+    expect(toastActions.filter(Boolean)).toEqual([])
   })
 })
 

@@ -180,6 +180,12 @@ export interface Rewrite {
 export interface Vocabulary {
   /** Machine misspellings to replace, longest first so a phrase beats its parts. */
   rewrites: Rewrite[]
+  /**
+   * Machine misspellings he has fixed ONCE, one way, under the same rules as a
+   * rewrite. Never applied unasked: a run that made one offers "Spell N more
+   * your way" and he decides (CA-18). Absent when there are none.
+   */
+  candidates?: Rewrite[]
 }
 
 export const EMPTY_VOCABULARY: Vocabulary = { rewrites: [] }
@@ -214,6 +220,7 @@ export function learnVocabulary(projects: readonly ProjectCorrections[]): Vocabu
     }
   }
   const rewrites: Rewrite[] = []
+  const candidates: Rewrite[] = []
   for (const [from, byTo] of seenFor) {
     let to = ''
     let seen = 0
@@ -228,9 +235,57 @@ export function learnVocabulary(projects: readonly ProjectCorrections[]): Vocabu
     // Twice, and never against a second spelling of his. Same bar as the style
     // profile, for the same reason: this one changes text without asking.
     if (seen >= FIX_CONFIDENCE && seen === total) rewrites.push({ heard: from.split(' '), his: to, seen })
+    // ⛔ ONCE IS OFFERED, NEVER APPLIED (CA-18). His words, 2026-08-19:
+    // *"Sometimes, even suggest improvements... Maybe I'll apply them."* The
+    // suggestion was fed only by the style learning, which only reads a project
+    // when he archives it, and on 2026-10-03 not one was archived, so the button
+    // never showed. Every project he has saved is read here already.
+    else if (seen === total && seen > 0) candidates.push({ heard: from.split(' '), his: to, seen })
   }
-  rewrites.sort((a, b) => b.heard.length - a.heard.length || b.seen - a.seen)
-  return { rewrites }
+  const longestFirst = (a: Rewrite, b: Rewrite): number => b.heard.length - a.heard.length || b.seen - a.seen
+  rewrites.sort(longestFirst)
+  candidates.sort(longestFirst)
+  return candidates.length > 0 ? { rewrites, candidates } : { rewrites }
+}
+
+/**
+ * A caption's words with the spellings he has fixed once put in, or null when
+ * none of them is there. Whole words in a row, as `applyRewrites` matches them;
+ * his spelling is cased the way the caption is (`caseOf`), and a word his
+ * spelling turns into several shares the time the heard words covered, by
+ * letter count, so the caption still has one time per word it shows.
+ */
+export function respellWords(
+  said: readonly { text: string; startS: number; endS: number }[],
+  candidates: readonly Rewrite[],
+  caseOf: (text: string) => string,
+): { text: string; startS: number; endS: number }[] | null {
+  if (candidates.length === 0) return null
+  const spoken = said.map((w) => spokenWords(w.text).join(' '))
+  const out: { text: string; startS: number; endS: number }[] = []
+  let changed = false
+  for (let i = 0; i < said.length; ) {
+    const hit = candidates.find((r) => i + r.heard.length <= said.length && r.heard.every((h, k) => spoken[i + k] === h))
+    if (!hit) {
+      out.push(said[i])
+      i++
+      continue
+    }
+    const first = said[i]
+    const last = said[i + hit.heard.length - 1]
+    const tail = /[.,!?;:…]+$/.exec(last.text)?.[0] ?? ''
+    const tokens = caseOf(hit.his + tail).split(/\s+/).filter(Boolean)
+    const letters = tokens.reduce((n, t) => n + t.length, 0) || 1
+    let at = first.startS
+    for (const t of tokens) {
+      const len = ((last.endS - first.startS) * t.length) / letters
+      out.push({ text: t, startS: at, endS: at + len })
+      at += len
+    }
+    changed = true
+    i += hit.heard.length
+  }
+  return changed ? out : null
 }
 
 /**

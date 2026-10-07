@@ -564,16 +564,20 @@ export async function autoCaptionFromClip(clipId: string, style?: CaptionStyle):
     toasts.show('A transcription is already running', 'danger')
     return
   }
+  const vocabulary = currentVocabulary()
   try {
     let spoken: SpokenWord[] | null = null
     const heard = await captionEars.wordsForClip(clip, asset, {
       trimToVoice: true,
-      vocabulary: currentVocabulary(),
+      vocabulary,
       job,
       onSpoken: (w) => {
         spoken = w
       },
     })
+    stopIfAsked(job)
+    // Read by now: the words above waited for it. Its spellings fixed once go to the toast.
+    const learned = await vocabulary
     stopIfAsked(job)
     // ⛔ READ THE CLIP AGAIN AFTER LISTENING, as the sweep does. Listening takes
     // seconds and the timeline is not blocked, so a clip he dragged meanwhile
@@ -605,6 +609,7 @@ export async function autoCaptionFromClip(clipId: string, style?: CaptionStyle):
         // And what it heard goes on the media for the Words tab, same undo step.
         heard: spoken ? [{ assetId: asset.id, fromS: clip.inS, toS: clip.outS, words: spoken }] : [],
         wordLagS: wordLagNow(),
+        vocabulary: learned,
       })
     }
   } catch (err) {
@@ -814,6 +819,7 @@ export async function autoCaptionEveryClip(
   // Once for the whole sweep: it is the same vocabulary for every clip, read
   // while the first clip is heard rather than before it.
   const vocabulary = currentVocabulary()
+  let learned: Vocabulary | undefined
   let cancelled = false
   let failed = 0
   let vanished = 0
@@ -870,6 +876,8 @@ export async function autoCaptionEveryClip(
         console.error('caption every clip:', err)
       }
     }
+    // Read by now: every clip heard waited for it. Its spellings fixed once go to the toast.
+    learned = await vocabulary
   } finally {
     releaseJob(job)
   }
@@ -885,6 +893,7 @@ export async function autoCaptionEveryClip(
     coveredSpans,
     heard: spokenOn,
     wordLagS: wordLagNow(),
+    vocabulary: learned,
   })
   if (cancelled) toasts.show('Stopped early, captioned what was heard so far')
   else if (failed > 0) toasts.show(`${failed} clip${failed === 1 ? '' : 's'} could not be read`, 'danger')
