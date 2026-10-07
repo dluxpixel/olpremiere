@@ -56,6 +56,16 @@ electronLanguages:
 # compression: the default is `normal`. `maximum` is a slower LZMA pass over the
 # same bytes and cannot change what the app does.
 compression: maximum
+# Two switches baked into the packaged exe (Electron's fuses), both off. Nothing in
+# the app uses them, and each lets anything that can start a program on his PC run
+# its own code as this app: ELECTRON_RUN_AS_NODE turns the exe into plain Node, and
+# NODE_OPTIONS can make it load any script at start.
+# ⛔ The inspect fuse stays as it is: scripts/smoke-packaged.mjs and cold-start.mjs
+# drive the packaged app through it (Playwright's --inspect=0), and the ship gate
+# runs both.
+electronFuses:
+  runAsNode: false
+  enableNodeOptionsEnvironmentVariable: false
 win:
   target: nsis
   icon: build/icon.ico

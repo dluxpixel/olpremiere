@@ -819,7 +819,10 @@ app.whenReady().then(() => {
   })
   ipcMain.handle('native:start', (_e, config: NativeExportConfig) => {
     if (!mainWindow) return { started: false, error: 'no window' }
-    return native.start(config, mainWindow)
+    // ⛔ The movie goes only where he picks in the save dialog. ffmpeg writes with -y,
+    // so a destination named by the page would let page code overwrite any file on
+    // his PC. Nothing in the app sets it; main does not take it from a page at all.
+    return native.start({ ...config, outPath: undefined }, mainWindow)
   })
   ipcMain.handle('native:writeFrame', async (_e, frame: ArrayBuffer) => {
     try {
