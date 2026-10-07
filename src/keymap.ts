@@ -63,6 +63,59 @@ export function comboFromEvent(e: KeyboardEvent): string {
   return parts.join('+')
 }
 
+/** The keys whose place on the keyboard is what a binding means, by `KeyboardEvent.code`. */
+const PLACES: Record<string, string> = {
+  Slash: '/',
+  BracketLeft: '[',
+  BracketRight: ']',
+  Backslash: '\\',
+  Equal: '=',
+  Minus: '-',
+  Comma: ',',
+  Period: '.',
+}
+
+/** What the key at this place types on a US keyboard, or null for a key no binding uses. */
+function keyAtPlace(code: string | undefined): string | null {
+  if (!code) return null
+  if (/^Digit[0-9]$/.test(code)) return code.slice(5)
+  if (/^Key[A-Z]$/.test(code)) return code.slice(3).toLowerCase()
+  return PLACES[code] ?? null
+}
+
+/**
+ * Every combo a key press can mean, best first: what he typed; then that character without
+ * the Shift or AltGr his layout needed to make it; then the key at that place on the keyboard.
+ *
+ * ⛔ ON A CZECH KEYBOARD THE NUMBER KEYS, LOOP, THE KEYFRAME JUMPS AND ZOOM TO FIT COULD NOT BE
+ * PRESSED (found 2026-10-06). The bindings are written as characters, and Czech QWERTZ types
+ * `+ ě š č ř ž ý á í é` on the number row (the digits need Shift), `/` is Shift+ú, `[ ] \` need
+ * AltGr (which arrives as Ctrl+Alt), and AltGr+C and AltGr+V type `& @`. So "1", "/", "[" and
+ * Ctrl+Alt+C arrived as something no binding has. The cut help sheet once knew this for `?`.
+ * A US keyboard is unchanged: what it types matches first, and nothing falls through to a
+ * second binding.
+ */
+export function combosFromEvent(e: KeyboardEvent): string[] {
+  const out = [comboFromEvent(e)]
+  const key = e.key
+  // Windows and Linux report AltGr as Ctrl and Alt held together.
+  const altGr = !isMac && e.ctrlKey && e.altKey
+  if (key.length === 1 && key !== ' ' && !/\p{L}/u.test(key) && (altGr || e.shiftKey)) {
+    const parts: string[] = []
+    if (!altGr && (isMac ? e.metaKey : e.ctrlKey)) parts.push('mod')
+    if (!altGr && e.altKey) parts.push('alt')
+    parts.push(key)
+    out.push(parts.join('+'))
+  }
+  const place = keyAtPlace(e.code)
+  if (place) {
+    out.push(
+      comboFromEvent({ key: place, ctrlKey: e.ctrlKey, metaKey: e.metaKey, shiftKey: e.shiftKey, altKey: e.altKey } as KeyboardEvent),
+    )
+  }
+  return [...new Set(out)]
+}
+
 /** Fields that take typing. Checkboxes, ranges, selects, buttons and the like do not count. */
 export const TYPING_FIELD = [
   'textarea',
@@ -125,9 +178,9 @@ export function installKeymap(bindings: Binding[]): () => void {
   }
   const onKeyDown = (e: KeyboardEvent) => {
     if (keysStayIn(e.target)) return
-    const combo = comboFromEvent(e)
-    const binding = byCombo.get(combo)
-    if (!binding) return
+    const combo = combosFromEvent(e).find((c) => byCombo.has(c))
+    const binding = combo === undefined ? undefined : byCombo.get(combo)
+    if (!combo || !binding) return
     if (!binding.overWindows && document.querySelector(OVER_THE_EDIT)) return
     if (!binding.allowDefault) e.preventDefault()
     // The usage log: which key, and what it is for. Before the run, so the log reads in order.
