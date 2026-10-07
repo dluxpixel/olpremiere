@@ -33,6 +33,7 @@ import {
   setActiveSequenceShutterAngle,
 } from '../state/store'
 import { ScrubField } from './EffectControls'
+import { isCommitInPlace } from '../fieldCommit'
 
 /** The entry that reveals the free-text ratio field. His "completely custom ratios". */
 const CUSTOM_CONTENT_KEY = '__customContent'
@@ -219,12 +220,14 @@ export function FrameSettingsMenu({ seq, safeMargins, onSafeMargins }: Props) {
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') e.currentTarget.blur()
                   }}
-                  onBlur={() => {
+                  onBlur={(e) => {
                     const a = parseAspect(customRatio)
                     // Nonsense leaves the picture alone and puts the real number
-                    // back, rather than silently clearing his frame.
-                    if (a === null) setCustomRatio(seq.contentAspect ? seq.contentAspect.toFixed(4) : '')
-                    else setActiveSequenceContentAspect(a)
+                    // back, rather than silently clearing his frame. Not under
+                    // his caret on Ctrl+S, where "16:" is on its way to "16:9".
+                    if (a === null) {
+                      if (!isCommitInPlace(e)) setCustomRatio(seq.contentAspect ? seq.contentAspect.toFixed(4) : '')
+                    } else setActiveSequenceContentAspect(a)
                   }}
                   className="h-7 w-16 shrink-0 rounded-field border border-border bg-bg-input px-2 text-ui-sm text-text-secondary transition-colors duration-[120ms] hover:border-border-strong focus:border-accent focus:text-text-primary focus:outline-none"
                 />

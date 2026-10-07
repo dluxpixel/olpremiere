@@ -29,6 +29,7 @@ import { setAllSegmentCurves, setSegmentCurve, setSegmentEase } from '../state/c
 import { IconButton } from '../ui/Button'
 import { friendly as friendlyChannelName } from './keyframeMarks'
 import { useMotionRail } from './MotionRail'
+import { isCommitInPlace } from '../fieldCommit'
 
 // --- geometry ---------------------------------------------------------------
 
@@ -345,8 +346,12 @@ export function CurveEditor({ clip, channel }: { clip: Clip; channel: AnimChanne
   const fieldText = text ?? formatCurve(handles)
   const parsed = parseCurveText(fieldText)
   const badText = text !== null && parsed === null
-  const commitText = () => {
+  /** Ctrl+S: the shape he typed is applied, and his text stays as he is typing it. */
+  const applyText = () => {
     if (parsed && !curveEq(parsed, stored)) commit(parsed)
+  }
+  const commitText = () => {
+    applyText()
     setText(null)
   }
 
@@ -587,7 +592,7 @@ export function CurveEditor({ clip, channel }: { clip: Clip; channel: AnimChanne
               e.currentTarget.blur()
             }
           }}
-          onBlur={commitText}
+          onBlur={(e) => (isCommitInPlace(e) ? applyText() : commitText())}
           className={`h-6 min-w-0 flex-1 rounded-field bg-bg-input px-2 font-numeric text-ui-sm text-text-primary transition-colors duration-[120ms] hover:bg-bg-elevated ${
             badText ? 'text-danger' : ''
           }`}

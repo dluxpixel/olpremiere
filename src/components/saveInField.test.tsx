@@ -32,9 +32,11 @@ import { addCaptionsFromWords, captionsOn } from '../state/captionActions'
 import { useStore } from '../state/store'
 import { CaptionsTab } from './CaptionsTab'
 import { ScrubField, SPECS } from './EffectControls'
+import { FrameSettingsMenu } from './FrameSettingsMenu'
 import { Inspector } from './Inspector'
 import { installResizeObserver } from './timelineDomFixtures'
 import { PlayheadTimecode } from './PlayheadWidgets'
+import { TopBar } from './TopBar'
 
 /** Words said back to back, a quarter second each. */
 const said = (text: string) =>
@@ -188,5 +190,44 @@ describe('Ctrl+S in a field that closes when it is left', () => {
     expect(useStore.getState().ui.playheadS).toBeCloseTo(1, 5)
     expect(input.isConnected).toBe(true)
     expect(document.activeElement).toBe(input)
+  })
+})
+
+describe('Ctrl+S keeps what he is still typing', () => {
+  it('the project name keeps the space he just typed, and the rest lands after it', async () => {
+    const user = userEvent.setup()
+    render(<TopBar />)
+    const name = screen.getByTestId('project-name') as HTMLInputElement
+    await user.click(name)
+    await user.clear(name)
+    await user.keyboard('Gym day ')
+    await user.keyboard('{Control>}s{/Control}')
+    expect(useStore.getState().project.name).toBe('Gym day')
+    expect(document.activeElement).toBe(name)
+    expect(name.value).toBe('Gym day ')
+    await user.keyboard('two')
+    await user.tab()
+    expect(useStore.getState().project.name).toBe('Gym day two')
+  })
+
+  it('a ratio typed half way is not put back under his caret', async () => {
+    function Menu() {
+      const seq = useStore((s) => activeSequence(s.project))
+      return <FrameSettingsMenu seq={seq} safeMargins={false} onSafeMargins={() => undefined} />
+    }
+    const user = userEvent.setup()
+    render(<Menu />)
+    await user.click(screen.getByRole('button', { name: /Frame/ }))
+    await user.selectOptions(screen.getByTestId('content-aspect-select'), 'Custom...')
+    const ratio = screen.getByTestId('content-aspect-custom') as HTMLInputElement
+    await user.click(ratio)
+    await user.clear(ratio)
+    await user.keyboard('16:')
+    await user.keyboard('{Control>}s{/Control}')
+    expect(ratio.value).toBe('16:')
+    expect(document.activeElement).toBe(ratio)
+    await user.keyboard('9')
+    await user.tab()
+    expect(activeSequence(useStore.getState().project).contentAspect).toBeCloseTo(16 / 9, 5)
   })
 })

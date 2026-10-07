@@ -251,15 +251,20 @@ function ProjectName() {
   const dispatch = useStore((s) => s.dispatch)
   const [draft, setDraft] = useState(name)
 
-  useEffect(() => setDraft(name), [name])
+  // A name that only differs from what he is typing by a space at the end is
+  // his own Ctrl+S: the space stays under his caret, and the rest of the word
+  // lands after it.
+  useEffect(() => setDraft((d) => (d.trim() === name ? d : name)), [name])
 
-  const commit = () => {
+  /** `staying`: Ctrl+S from inside the field (../fieldCommit.ts). Nothing is tidied under his caret. */
+  const commit = (staying = false) => {
     const next = draft.trim()
     if (next === '' || next === name) {
-      setDraft(name)
+      if (!staying) setDraft(name)
       return
     }
     dispatch('Rename project', (p) => ({ ...p, name: next }))
+    if (!staying) setDraft(next)
   }
 
   return (
@@ -269,7 +274,7 @@ function ProjectName() {
       className="h-7 w-52 min-w-0 phone:w-auto phone:flex-1 rounded-field border border-transparent bg-transparent px-2 text-ui font-medium text-text-primary transition-colors duration-[120ms] hover:bg-bg-elevated focus:border-accent focus:bg-bg-input focus:outline-none"
       value={draft}
       onChange={(e) => setDraft(e.target.value)}
-      onBlur={commit}
+      onBlur={(e) => commit(isCommitInPlace(e))}
       onKeyDown={(e) => {
         if (e.key === 'Enter') e.currentTarget.blur()
         if (e.key === 'Escape') {
