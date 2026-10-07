@@ -17,7 +17,7 @@ import { migrateProject, newId, type Project } from '../engine/types'
 import { nextFreeName } from '../engine/uniqueName'
 import { parseStoredProject } from '../persistence/schema'
 import { backfillMirror } from './mediaMirror'
-import { deleteBlob, getBlob, listProjects, loadProjectById, putBlob, saveProject } from './persistence'
+import { deleteBlob, getBlob, listProjects, loadProjectById, putBlob, saveProject, saveSettled } from './persistence'
 import { flushOutgoing, guardRoom, switchTo } from './editTabs'
 import { copyOfProject } from './projectActions'
 import { forgetDoNotAutoRecover } from './recoveryMemory'
@@ -273,8 +273,9 @@ export function copyName(name: string): string {
  * copy is newer, and opening it used to write over the PC's 19:00 work without a
  * word. It may replace the copy here only when that copy is still exactly the save
  * the phone started from (`fileBaseUpdatedAt`, kept on the edit when it was
- * opened). A file that does not say where it started from cannot prove that, so
- * it lands beside, never over.
+ * opened, and on the sender's own copy when it was sent: rememberSent). A file
+ * that does not say where it started from cannot prove that, so it lands beside,
+ * never over.
  */
 export function editedHereSince(here: Project, incoming: Project): boolean {
   if (here.updatedAt === incoming.updatedAt) return false
@@ -318,6 +319,8 @@ export interface BuiltProjectFile {
   bundled: number
   /** Media items the project uses that could not be read, so are NOT in it. */
   absent: number
+  /** The save it carries, so the copy here can remember it was sent (rememberSent). */
+  sent: { id: string; updatedAt: number }
 }
 
 /**
@@ -343,7 +346,48 @@ export async function buildProjectFile(): Promise<BuiltProjectFile> {
     blobs: metas,
   })
   const file = new File([header, ...parts], projectFileName(project.name), { type: 'application/octet-stream' })
-  return { file, bundled: metas.length, absent: wanted.length - metas.length }
+  return {
+    file,
+    bundled: metas.length,
+    absent: wanted.length - metas.length,
+    sent: { id: project.id, updatedAt: project.updatedAt },
+  }
+}
+
+/**
+ * The copy here remembers which save just went out, so the NEXT copy sent from
+ * here says where it starts from.
+ *
+ * ⛔ WITHOUT THIS EVERY RESEND LANDED AS A COPY. He sends GYM from the PC and the
+ * phone opens it, so the phone knows it holds that save. He edits more on the PC
+ * and sends again, but the PC copy had never been opened from a file, so the new
+ * one could not say it started from the save the phone has, and the phone kept
+ * landing "GYM (copy)" beside an untouched GYM. Now the PC copy carries the save
+ * it sent (`fileBaseUpdatedAt`), its next send carries that, and an untouched
+ * phone copy is replaced in place.
+ *
+ * Not an edit: `updatedAt` is untouched and no undo step is made, the same way a
+ * project is filed under Later (persistence.ts stampOpenProject). A stamp that
+ * does not land costs one copy beside it later, never a loss.
+ */
+export async function rememberSent(sent: BuiltProjectFile['sent']): Promise<void> {
+  try {
+    const live = useStore.getState().project
+    if (live.id === sent.id) {
+      if (live.fileBaseUpdatedAt === sent.updatedAt) return
+      useStore.setState({ project: { ...live, fileBaseUpdatedAt: sent.updatedAt } })
+      // Through the one save path, so it can never land under a newer autosave.
+      await saveSettled(true)
+      return
+    }
+    // He moved to another edit while it was being written: stamp the stored copy.
+    const stored = await loadProjectById(sent.id)
+    if (stored && stored.fileBaseUpdatedAt !== sent.updatedAt) {
+      await saveProject({ ...stored, fileBaseUpdatedAt: sent.updatedAt })
+    }
+  } catch (err) {
+    console.warn('OL Premiere: could not note which save of the project was sent', err)
+  }
 }
 
 /** Say when the bundle is short. A copy that quietly left media behind is a lie. */
@@ -379,6 +423,7 @@ export async function shareProjectFile(built: BuiltProjectFile): Promise<boolean
   try {
     await navigator.share({ files: [built.file], title: built.file.name })
     reportBuilt(built, 'Sent the project')
+    await rememberSent(built.sent)
     return true
   } catch (err) {
     // Closing the sheet is not a failure: the copy is still ready to send.
@@ -442,6 +487,7 @@ export async function exportProjectToFile(onProgress?: (frac: number) => void): 
         await api.fileClose(id, ok)
       }
       reportBuilt(built, 'Saved project file')
+      await rememberSent(built.sent)
       return
     }
 
@@ -469,6 +515,7 @@ export async function exportProjectToFile(onProgress?: (frac: number) => void): 
       setTimeout(() => URL.revokeObjectURL(url), 30_000)
     }
     reportBuilt(built, 'Saved project file')
+    await rememberSent(built.sent)
   } catch (err) {
     console.warn('OL Premiere: project export failed', err)
     // Say WHY when it is the drive: on his 97% full drive that is the likely one.
@@ -557,6 +604,40 @@ export async function importProjectFromFile(file: File): Promise<void> {
 type Show = ReturnType<typeof useToasts.getState>['show']
 
 /**
+ * The copy an earlier open of this same save already landed, untouched since:
+ * the same project stamps (`createdAt`, `updatedAt`) under another id, starting
+ * from this save. Null when there is none.
+ *
+ * ⛔ ONE COPY PER SAVE, NOT ONE PER OPEN. A file that cannot say where it started
+ * from (every file from before this update) lands beside the project rather than
+ * over it, and opening it again landed another copy each time, with another set
+ * of its footage in the store, on a drive that is 97% full.
+ */
+async function copyAlreadyLanded(incoming: Project): Promise<Project | null> {
+  let rows: Awaited<ReturnType<typeof listProjects>>
+  try {
+    rows = await listProjects()
+  } catch {
+    return null
+  }
+  for (const row of rows) {
+    if (row.id === incoming.id || row.updatedAt !== incoming.updatedAt || row.createdAt !== incoming.createdAt) continue
+    const p = await loadProjectById(row.id)
+    if (p && p.fileBaseUpdatedAt === incoming.updatedAt) return p
+  }
+  return null
+}
+
+/** Every project name in the store, so a copy gets one of its own. Empty when it cannot be read. */
+async function takenNames(): Promise<Set<string>> {
+  try {
+    return new Set((await listProjects()).map((s) => s.name))
+  } catch {
+    return new Set()
+  }
+}
+
+/**
  * Open one of his own `.olpbak` files: the document only, no footage inside. Its
  * media are found when it opens, in the store or in the spare copies on disk.
  *
@@ -580,15 +661,8 @@ async function adoptProjectRecord(raw: unknown, show: Show): Promise<void> {
     return
   }
   let landed = project
-  if (existing) {
-    let taken = new Set<string>()
-    try {
-      taken = new Set((await listProjects()).map((s) => s.name))
-    } catch {
-      // Unknown names only cost the plain name.
-    }
-    landed = copyOfProject(project, nextFreeName(project.name, taken))
-  }
+  // Unknown names only cost the plain name.
+  if (existing) landed = copyOfProject(project, nextFreeName(project.name, await takenNames()))
   await saveProject(landed)
   // Brought back on purpose, so a later wipe may bring it back too.
   if (!existing) forgetDoNotAutoRecover([landed.id])
@@ -620,12 +694,20 @@ async function adoptImported(raw: Project, writes: { key: string; blob: Blob }[]
   const existing = await loadProjectById(project.id)
   const newerHere = existing !== null && existing.updatedAt > project.updatedAt
   if (existing && (newerHere || editedHereSince(existing, project))) {
+    const before = await copyAlreadyLanded(project)
+    if (before) {
+      // Its footage is already in the store under the copy's own keys.
+      if ((await switchTo(before.id)) !== 'ok') return
+      show(`Opened "${before.name}", the copy this file made before. Your "${existing.name}" was kept.`, 'success')
+      return
+    }
     // A random suffix, not a clock one. Two imports whose timestamps agreed would
     // mint the SAME "private" keys, and deleting one copy would then empty the
     // other, because blobs are deleted by the keys in the document being removed
     // with no reference counting.
     const plan = planProjectCopy(project, newId(), newId())
-    project = plan.project
+    // A name of its own: a second copy is "GYM (copy)_1", never a second "GYM (copy)".
+    project = { ...plan.project, name: nextFreeName(plan.project.name, await takenNames()) }
     finalWrites = writes.map((w) => ({ key: plan.keyMap[w.key] ?? w.key, blob: w.blob }))
     kept = existing.name
   }

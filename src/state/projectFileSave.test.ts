@@ -8,9 +8,13 @@ import { newProject, type MediaAsset } from '../engine/types'
 const MB = 1024 * 1024
 const footage = new Blob([new Uint8Array(20 * MB)], { type: 'video/mp4' })
 const shown: string[] = []
+const settled = vi.hoisted(() => ({ saves: 0 }))
 
 vi.mock('./persistence', () => ({
   getBlob: async (key: string) => (key === 'asset/a' ? footage : null),
+  saveSettled: async () => {
+    settled.saves += 1
+  },
 }))
 vi.mock('./toasts', () => ({ useToasts: { getState: () => ({ show: (m: string) => shown.push(m) }) } }))
 vi.mock('./mediaMirror', () => ({ backfillMirror: async () => 0 }))
@@ -84,6 +88,25 @@ describe('saving a copy of the project on the PC', () => {
     await exportProjectToFile()
     expect(closed).toEqual([false])
     expect(shown.at(-1)).toBe('Not enough space on the drive for this copy (needs 21 MB)')
+  })
+
+  it('remembers which save it sent, without that being an edit (no new stamp, no undo step)', async () => {
+    shell()
+    const before = useStore.getState().project
+    const saves = settled.saves
+    await exportProjectToFile()
+    const after = useStore.getState().project
+    expect(after.fileBaseUpdatedAt).toBe(before.updatedAt)
+    expect(after.updatedAt).toBe(before.updatedAt)
+    expect(useStore.getState().history.undo).toHaveLength(0)
+    // And it is written, through the one save path.
+    expect(settled.saves).toBe(saves + 1)
+  })
+
+  it('a copy that did not get written remembers nothing', async () => {
+    shell({ failOn: 1 })
+    await exportProjectToFile()
+    expect(useStore.getState().project.fileBaseUpdatedAt).toBeUndefined()
   })
 
   it('knows a full drive however the message came', () => {

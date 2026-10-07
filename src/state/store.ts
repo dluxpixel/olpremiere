@@ -165,11 +165,17 @@ export interface AppState {
  * disk, and the project he had just parked was back under Working on. Measured
  * 2026-10-01 in his GYM: laterAt set, Ctrl+Z, laterAt gone from the store and
  * from GYM_9eb042e8.olpbak.
+ *
+ * The save last sent to or opened from a file (`fileBaseUpdatedAt`) is the same
+ * kind of fact, stamped the same way (projectFile.ts rememberSent): an undo after
+ * sending GYM must not forget which save the phone has.
  */
+const NOT_EDITS = ['laterAt', 'archivedAt', 'fileBaseUpdatedAt'] as const
+
 function withShelfOf(live: Project, restored: Project): Project {
-  if (live.laterAt === restored.laterAt && live.archivedAt === restored.archivedAt) return restored
+  if (NOT_EDITS.every((field) => live[field] === restored[field])) return restored
   const next: Project = { ...restored }
-  for (const field of ['laterAt', 'archivedAt'] as const) {
+  for (const field of NOT_EDITS) {
     if (live[field] === undefined) delete next[field]
     else next[field] = live[field]
   }
