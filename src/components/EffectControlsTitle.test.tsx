@@ -14,6 +14,8 @@ vi.mock('../state/toasts', () => ({
   useToasts: Object.assign(() => ({}), { getState: () => ({ show: () => {} }) }),
 }))
 
+import { applyAppearanceToClip } from '../engine/anim/appearance'
+import { withChannelKeyframes } from '../engine/effects/channels'
 import { defaultTitleDef, defaultTransform, newProject, newTitleClip, type Clip } from '../engine/types'
 import { useStore } from '../state/store'
 import { EffectControls, showsCropRows } from './EffectControls'
@@ -71,5 +73,37 @@ describe('Zoom inside and Crop on a title', () => {
     render(<EffectControls clip={cropped} playheadS={0} fps={30} />)
     expect(screen.getByTestId('channel-innerZoom')).toBeTruthy()
     expect(screen.getByTestId('channel-cropT')).toBeTruthy()
+  })
+})
+
+// Review, 2026-10-07: every caption that pops (every auto caption) had lost its
+// Scale, Position, Rotation and Opacity stopwatches, and a Fade in caption with a
+// slide keyed by hand showed the slide's base with no stopwatch and no lane.
+describe('the stopwatches on a caption with an In or Out', () => {
+  const seqSize = () => {
+    const s = useStore.getState().project.sequences
+    const sq = Object.values(s)[0]!
+    return { w: sq.width, h: sq.height }
+  }
+
+  it('a popping caption keeps every stopwatch', () => {
+    const { w, h } = seqSize()
+    const title = applyAppearanceToClip(newTitleClip(defaultTitleDef('hi'), 0, 1), { in: 'pop', durS: 0.1 }, w, h)
+    render(<EffectControls clip={title} playheadS={0} fps={30} />)
+    for (const ch of ['scale', 'posX', 'posY', 'rotation', 'opacity']) {
+      expect(screen.getByTestId(`stopwatch-${ch}`)).toBeTruthy()
+    }
+  })
+
+  it('a slide he keyed by hand on a Fade in caption shows where it is, as a running stopwatch', () => {
+    const { w, h } = seqSize()
+    const faded = applyAppearanceToClip(newTitleClip(defaultTitleDef('hi'), 0, 1), { in: 'fadeIn', durS: 0.1 }, w, h)
+    const slid = withChannelKeyframes(faded, 'posX', [
+      { t: 0, value: -200, ease: 'linear' },
+      { t: 0.5, value: 0, ease: 'linear' },
+    ])
+    render(<EffectControls clip={slid} playheadS={0} fps={30} />)
+    expect((screen.getByTestId('field-posX') as HTMLInputElement).value).toBe('-200')
+    expect(screen.getByTestId('stopwatch-posX').getAttribute('aria-pressed')).toBe('true')
   })
 })

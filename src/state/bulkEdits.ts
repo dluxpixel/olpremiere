@@ -158,7 +158,7 @@ export function setChannelForClips(ids: Iterable<string>, channel: AnimChannel, 
     (c) => {
       // A caption's pop or fade owns this channel: the number is its new base
       // and the animation follows (withOwnedBase says what this used to break).
-      if (isAppearanceOwned(c, channel)) return withOwnedBase(c, channel, value, seq.width, seq.height)
+      if (isAppearanceOwned(c, channel, seq)) return withOwnedBase(c, channel, value, seq.width, seq.height)
       const kfs = channelKeyframes(c, channel)
       const based = withChannelValue(c, channel, value)
       if (kfs.length === 0) return based

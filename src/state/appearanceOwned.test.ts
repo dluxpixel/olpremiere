@@ -14,13 +14,14 @@ vi.mock('./toasts', () => ({
 }))
 
 import { buildAppearanceKeyframes, retimeAppearance } from '../engine/anim/appearance'
-import { channelKeyframes } from '../engine/effects/channels'
+import { channelKeyframes, withChannelKeyframes } from '../engine/effects/channels'
 import { recomputeDuration } from '../engine/timeline'
 import { activeSequence, defaultTitleDef, newProject, newTitleClip, type Clip } from '../engine/types'
 import { setClipsAppearance } from './appearanceActions'
 import { setChannelForClips } from './bulkEdits'
 import {
-  OWNED_BY_ANIMATION,
+  isAppearanceOwned,
+  KEYFRAMES_ARE_YOURS,
   resetChannel,
   setChannel,
   toggleChannelAnimation,
@@ -102,13 +103,93 @@ describe('a number typed on a caption whose animation owns the channel', () => {
     expect(channelKeyframes(c, 'scale')).toEqual(compiled(c, 'scale'))
   })
 
-  it('the stopwatch and the D key refuse out loud instead of breaking the pop', () => {
-    const [a] = twoCaptions({ in: 'pop', durS: 0.1 })
-    const before = clipById(a)
-    toggleChannelAnimation(a, 'scale')
+})
+
+// Review, 2026-10-07: owning all five channels whenever a clip had an animation
+// wiped a slide he had keyed by hand the moment he typed an Opacity, and took
+// the stopwatch and D off every caption that pops.
+describe('a caption he has keyed by hand is his, channel by channel', () => {
+  /** A Fade in caption with a Position X slide keyed by hand on top. */
+  function fadeWithSlide(): string {
+    const [a] = twoCaptions({ in: 'fadeIn', durS: 0.1 })
+    updateActiveSequence('hand slide', (sq) => ({
+      ...sq,
+      tracks: sq.tracks.map((t) => ({
+        ...t,
+        clips: t.clips.map((c) =>
+          c.id === a ? withChannelKeyframes(c, 'posX', [{ t: 0, value: -200, ease: 'linear' }, { t: 0.3, value: 0, ease: 'linear' }]) : c,
+        ),
+      })),
+    }))
+    return a
+  }
+  const slide = (id: string) => channelKeyframes(clipById(id), 'posX').map((k) => [k.t, k.value])
+
+  it('typing Opacity leaves his slide alone and keys the opacity at the playhead', () => {
+    const a = fadeWithSlide()
+    const before = slide(a)
     useStore.getState().setUI({ playheadS: 0.2 })
+    setChannel(a, 'opacity', 0.8)
+    expect(slide(a)).toEqual(before)
+    expect(channelKeyframes(clipById(a), 'opacity').some((k) => Math.abs(k.t - 0.2) < 1e-6 && k.value === 0.8)).toBe(true)
+  })
+
+  it('the multi Opacity field and Reset leave his slide alone too', () => {
+    const a = fadeWithSlide()
+    const before = slide(a)
+    setChannelForClips([a], 'opacity', 0.8)
+    expect(slide(a)).toEqual(before)
+    resetChannel(a, 'opacity')
+    expect(slide(a)).toEqual(before)
+  })
+})
+
+describe('the stopwatch and D on a clip whose animation owns its keyframes', () => {
+  it('the Scale stopwatch on a popping caption hands him the pop as it is', () => {
+    const [a] = twoCaptions({ in: 'pop', durS: 0.1 })
+    const pop = channelKeyframes(clipById(a), 'scale')
+    toggleChannelAnimation(a, 'scale')
+    const c = clipById(a)
+    expect(c.appearance).toBeUndefined()
+    expect(channelKeyframes(c, 'scale')).toEqual(pop)
+    expect(toasts.shown).toEqual([KEYFRAMES_ARE_YOURS])
+  })
+
+  it('the Position stopwatch starts a move and keeps the pop', () => {
+    const [a] = twoCaptions({ in: 'pop', durS: 0.1 })
+    const pop = channelKeyframes(clipById(a), 'scale')
+    useStore.getState().setUI({ playheadS: 0.2 })
+    toggleChannelAnimation(a, 'posX')
+    const c = clipById(a)
+    expect(channelKeyframes(c, 'posX').map((k) => k.t)).toEqual([0.2])
+    expect(channelKeyframes(c, 'scale')).toEqual(pop)
+    expect(c.appearance).toBeUndefined()
+  })
+
+  it('D keys the framing at the playhead and keeps the pop', () => {
+    const [a] = twoCaptions({ in: 'pop', durS: 0.1 })
+    useStore.getState().setUI({ playheadS: 0.25 })
     toggleMotionAtPlayhead(a)
-    expect(clipById(a)).toBe(before)
-    expect(toasts.shown).toEqual([OWNED_BY_ANIMATION, OWNED_BY_ANIMATION])
+    const c = clipById(a)
+    expect(channelKeyframes(c, 'posX').some((k) => Math.abs(k.t - 0.25) < 1e-6)).toBe(true)
+    // The pop still plays: it starts small and settles on its size.
+    expect(channelKeyframes(c, 'scale')[0]!.value).toBeLessThan(1)
+    expect(c.appearance).toBeUndefined()
+    expect(toasts.shown).toEqual([KEYFRAMES_ARE_YOURS])
+  })
+
+  it('owns the channels while the keyframes are the preset own, and not once he keys one', () => {
+    const [a] = twoCaptions({ in: 'fadeIn', durS: 0.1 })
+    expect(isAppearanceOwned(clipById(a), 'opacity', seq())).toBe(true)
+    expect(isAppearanceOwned(clipById(a), 'posX', seq())).toBe(true)
+    updateActiveSequence('hand key', (sq) => ({
+      ...sq,
+      tracks: sq.tracks.map((t) => ({
+        ...t,
+        clips: t.clips.map((c) => (c.id === a ? withChannelKeyframes(c, 'posX', [{ t: 0.2, value: 50, ease: 'linear' }]) : c)),
+      })),
+    }))
+    expect(isAppearanceOwned(clipById(a), 'opacity', seq())).toBe(false)
+    expect(isAppearanceOwned(clipById(a), 'posX', seq())).toBe(false)
   })
 })

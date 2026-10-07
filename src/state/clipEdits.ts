@@ -2,7 +2,13 @@
 // transitions. Channel names + math come from engine/keyframes; every edit is
 // one undo step. localT is always relative to the clip start.
 
-import { APPEARANCE_CHANNELS, applyAppearanceToClip, releaseAppearanceOnRetime } from '../engine/anim/appearance'
+import {
+  APPEARANCE_CHANNELS,
+  appearanceOwnsKeyframes,
+  applyAppearanceToClip,
+  releaseAppearanceOnRetime,
+  withoutAppearance,
+} from '../engine/anim/appearance'
 import {
   channelBase,
   channelDefault,
@@ -109,15 +115,27 @@ export function isClipArmed(clip: Clip): boolean {
   return ARMED_CHANNELS.some((ch) => channelKeyframes(clip, ch).length > 0)
 }
 
-/** What the monitor badge says on such a clip, said wherever a door refuses it. */
-export const OWNED_BY_ANIMATION = 'This clip uses an entrance animation, which owns its keyframes.'
+/** What a door says when it hands a preset's keyframes to him. */
+export const KEYFRAMES_ARE_YOURS = 'Keyframes are yours now. The preset no longer drives this clip'
 
 /**
  * An In or Out animation (a caption's pop, a fade) OWNS this channel: its
  * keyframes are COMPILED from the spec and the base (appearance.ts).
+ *
+ * ⛔ ONLY WHILE THE KEYFRAMES ARE STILL THE PRESET'S OWN. It used to say owned
+ * for all five channels whenever the clip had an animation, so a Fade in caption
+ * with a Position slide he keyed by hand showed the slide's BASE with no
+ * stopwatch, and typing Opacity 80 rebuilt the fade and deleted the slide, with
+ * nothing said (review, 2026-10-07). appearance.ts only ever recompiles work
+ * that is still its own (retime, rebake, split), and this now asks the same
+ * question: a hand keyed clip is edited one channel at a time, like any other.
  */
-export function isAppearanceOwned(clip: Clip, channel: AnimChannel): boolean {
-  return !!clip.appearance && APPEARANCE_CHANNELS.includes(channel)
+export function isAppearanceOwned(
+  clip: Clip,
+  channel: AnimChannel,
+  frame: { width: number; height: number },
+): boolean {
+  return APPEARANCE_CHANNELS.includes(channel) && appearanceOwnsKeyframes(clip, frame.width, frame.height)
 }
 
 /**
@@ -214,7 +232,7 @@ export function setChannel(clipId: string, channel: AnimChannel, value: number):
     clipId,
     `Set ${channel}`,
     (c) => {
-      if (isAppearanceOwned(c, channel)) return withOwnedBase(c, channel, value, seq.width, seq.height)
+      if (isAppearanceOwned(c, channel, seq)) return withOwnedBase(c, channel, value, seq.width, seq.height)
       if (!animated) return withChannelValue(c, channel, value)
       const localT = playheadLocalT(c)
       // ⛔ THE SHAPE AT THAT MOMENT IS HIS, NOT THE DROPDOWN'S. Typing a number
@@ -232,23 +250,37 @@ export function setChannel(clipId: string, channel: AnimChannel, value: number):
   )
 }
 
-/** Stopwatch: enable → seed a keyframe at the playhead with the current value; disable → drop all. */
+/**
+ * Stopwatch: enable → seed a keyframe at the playhead with the current value;
+ * disable → drop all.
+ *
+ * ⛔ ON A CLIP WITH AN IN OR OUT IT HANDS HIM THE KEYFRAMES, it does not refuse.
+ * Refusing took the stopwatch off every caption that pops, which is every auto
+ * caption, and off footage that picked up a pop from Paste attributes, with no
+ * way back to hand animation (review, 2026-10-07). Keying such a clip by hand is
+ * the same act of authorship as dragging one of its diamonds, so it takes the
+ * same rule (releaseAppearanceOnRetime): the keyframes stay exactly as they are
+ * and become his, and nothing recompiles them again. Without that the next
+ * monitor drag or Speed pick rebuilt the animation and threw his keyframe away.
+ * A channel the preset already keys is simply his from here; one it does not
+ * gets its first keyframe, as on any clip.
+ */
 export function toggleChannelAnimation(clipId: string, channel: AnimChannel): void {
   const clip = findClip(clipId)
   if (!clip) return
-  // The stopwatch on an owned channel would wipe the pop off it (or seed a
-  // keyframe the next recompile throws away) while the animation stays on.
-  if (isAppearanceOwned(clip, channel)) {
-    useToasts.getState().show(OWNED_BY_ANIMATION, 'info')
-    return
-  }
-  const animated = channelKeyframes(clip, channel).length > 0
+  const owned = isAppearanceOwned(clip, channel, activeSequence(useStore.getState().project))
+  const animated = !owned && channelKeyframes(clip, channel).length > 0
+  // Turning keyframes OFF writes nothing a recompile could throw away.
+  const releases = !animated && !!clip.appearance && APPEARANCE_CHANNELS.includes(channel)
   mapClip(clipId, animated ? `Disable ${channel} keyframes` : `Enable ${channel} keyframes`, (c) => {
     if (animated) return withChannelKeyframes(c, channel, [])
-    const localT = playheadLocalT(c)
-    const value = channelBase(c, channel)
-    return withChannelKeyframes(c, channel, [{ t: localT, value, ease: 'linear' }])
+    const mine = releases ? withoutAppearance(c) : c
+    if (channelKeyframes(mine, channel).length > 0) return mine
+    const localT = playheadLocalT(mine)
+    const value = channelBase(mine, channel)
+    return withChannelKeyframes(mine, channel, [{ t: localT, value, ease: 'linear' }])
   })
+  if (releases && !findClip(clipId)?.appearance) useToasts.getState().show(KEYFRAMES_ARE_YOURS)
 }
 
 /** Add a keyframe at the playhead capturing the channel's current resolved value. */
@@ -801,7 +833,7 @@ export function resetChannels(clipId: string, channels: AnimChannel[], label = '
   mapClip(clipId, label, (c) =>
     channels.reduce<Clip>(
       (acc, ch) =>
-        isAppearanceOwned(acc, ch)
+        isAppearanceOwned(acc, ch, seq)
           ? withOwnedBase(acc, ch, channelDefault(ch), seq.width, seq.height)
           : withChannelValue(withChannelKeyframes(acc, ch, []), ch, channelDefault(ch)),
       c,
@@ -1319,12 +1351,15 @@ const MOTION_SNAPSHOT_CHANNELS: readonly AnimChannel[] = ['scale', 'posX', 'posY
 export function toggleMotionAtPlayhead(clipId: string): void {
   const clip = findClip(clipId)
   if (!clip) return
-  // The badge this key stands for is dead on such a clip, and says why. D used
-  // to write keyframes into the owned channels anyway, and the next monitor
-  // drag (which recompiles) threw them away.
-  if (clip.appearance) {
-    useToasts.getState().show(OWNED_BY_ANIMATION, 'info')
-    return
+  // ⛔ A CLIP WITH AN IN OR OUT KEEPS D. D used to write keyframes into the
+  // preset's channels and the next monitor drag (which recompiles) threw them
+  // away, so it was made to refuse, which took D off every popping caption and
+  // off footage carrying a pasted pop (review, 2026-10-07). It now hands the
+  // keyframes to him first, the stopwatch's rule (toggleChannelAnimation), so
+  // nothing recompiles them again.
+  const hadAppearance = !!clip.appearance
+  const said = () => {
+    if (hadAppearance && !findClip(clipId)?.appearance) useToasts.getState().show(KEYFRAMES_ARE_YOURS)
   }
   const localT = playheadLocalT(clip)
   // One frame either side. Keyframes snap to the grid and the closest two
@@ -1347,19 +1382,24 @@ export function toggleMotionAtPlayhead(clipId: string): void {
           const cut = removeKeyframeNear(kfs, at, KEYFRAME_TOLERANCE_S)
           if (cut !== kfs) next = withChannelKeyframes(next, channel, cut)
         }
-        return next
+        // Taking a moment out of the preset's channels leaves a shape it no
+        // longer compiles to, so what is left is his.
+        return next === c ? c : releaseAppearanceOnRetime(c, next, at)
       },
       true,
     )
+    said()
     return
   }
 
   const commit = moveCommit()
   mapClip(clipId, 'Add keyframe', (c) => {
-    const t = playheadLocalT(c)
-    const vals = MOTION_SNAPSHOT_CHANNELS.map((ch) => [ch, resolveChannel(c, ch, t)] as const)
-    return withChannelsAtTime(c, t, vals, true, commit)
+    const mine = withoutAppearance(c)
+    const t = playheadLocalT(mine)
+    const vals = MOTION_SNAPSHOT_CHANNELS.map((ch) => [ch, resolveChannel(mine, ch, t)] as const)
+    return withChannelsAtTime(mine, t, vals, true, commit)
   })
+  said()
 }
 
 // ---------------------------------------------------------------------------
@@ -1708,6 +1748,6 @@ export function moveClipKeyframe(clipId: string, fromT: number, toT: number): vo
   // state change the user did not ask for is exactly the kind of silent surprise
   // this app has been paying for.
   if (promotes && !findClip(clipId)?.appearance) {
-    useToasts.getState().show('Keyframes are yours now. The preset no longer drives this clip')
+    useToasts.getState().show(KEYFRAMES_ARE_YOURS)
   }
 }

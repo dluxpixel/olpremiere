@@ -450,10 +450,13 @@ function ChannelRow({
   playheadS: number
 }) {
   const spec = SPECS[channel]
-  // An In or Out animation owns this channel: the field edits the value it
-  // RESTS at and the animation follows, so there is no stopwatch or diamond
-  // row to fight it (withOwnedBase in clipEdits).
-  const owned = isAppearanceOwned(clip, channel)
+  // An In or Out animation owns this channel while its keyframes are still the
+  // preset's own: the field edits the value it RESTS at and the animation
+  // follows (withOwnedBase in clipEdits), so there is no diamond row to fight it.
+  // The stopwatch stays: it hands him the keyframes (toggleChannelAnimation).
+  const seqW = useStore((s) => activeSequence(s.project).width)
+  const seqH = useStore((s) => activeSequence(s.project).height)
+  const owned = isAppearanceOwned(clip, channel, { width: seqW, height: seqH })
   const animated = !owned && isChannelAnimated(clip, channel)
   // The lane and its curve editor are hand controls: they draw only while the
   // shelf's 'Tune it by hand' is open. The keyframes are always there.
@@ -488,17 +491,21 @@ function ChannelRow({
         onReset={() => resetChannel(clip.id, channel)}
         resetLabel={`Reset ${LABELS[channel]}`}
         lead={
-          owned ? undefined : (
-            <IconButton
-              label={animated ? `Disable ${LABELS[channel]} keyframes` : `Animate ${LABELS[channel]}`}
-              active={animated}
-              size="compact"
-              data-testid={`stopwatch-${channel}`}
-              onClick={() => toggleChannelAnimation(clip.id, channel)}
-            >
-              <Clock size={13} strokeWidth={1.75} aria-hidden />
-            </IconButton>
-          )
+          <IconButton
+            label={
+              owned
+                ? `Animate ${LABELS[channel]} by hand: the animation's keyframes become yours`
+                : animated
+                  ? `Disable ${LABELS[channel]} keyframes`
+                  : `Animate ${LABELS[channel]}`
+            }
+            active={animated}
+            size="compact"
+            data-testid={`stopwatch-${channel}`}
+            onClick={() => toggleChannelAnimation(clip.id, channel)}
+          >
+            <Clock size={13} strokeWidth={1.75} aria-hidden />
+          </IconButton>
         }
       >
         {animated && (
