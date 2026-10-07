@@ -22,6 +22,7 @@ import { activeSequence, newId, type AnimChannel, type Clip, type Curve, type Ke
 // align has to ask the exact question the gizmo asks, off the exact same code,
 // or the two paths drift the way they did when one read a global preference.
 import { isAppearanceOwned, isClipArmed, outsAnInOverrides, setClipTransition, transitionFor, withoutOut, withOwnedBase } from './clipEdits'
+import { plural } from '../engine/plural'
 import { noteRecentEffect } from './recentEffects'
 import { updateActiveSequence, useStore } from './store'
 import { useToasts } from './toasts'
@@ -255,6 +256,25 @@ export function alignTargets(
   const primary = visual.find((c) => c.id === primaryId)
   if (!primary) return [...selection]
   return visual.filter((c) => picked.has(c.id) && kindOf(c) === kindOf(primary)).map((c) => c.id)
+}
+
+/**
+ * What a drag to align says when it left part of the selection where it was
+ * ("Moved 3 captions"), so the footage not moving with the captions reads as
+ * the rule and not as a miss. Null when every picture in the selection moved.
+ */
+export function alignNote(
+  seq: { tracks: readonly { kind: string; clips: readonly Clip[] }[] },
+  selection: readonly string[],
+  moved: readonly string[],
+  primaryIsTitle: boolean,
+): string | null {
+  const picked = new Set(selection)
+  const visual = seq.tracks
+    .filter((t) => t.kind === 'video')
+    .reduce((n, t) => n + t.clips.filter((c) => picked.has(c.id)).length, 0)
+  if (moved.length >= visual) return null
+  return `Moved ${plural(moved.length, primaryIsTitle ? 'caption' : 'clip')}`
 }
 
 /** What one effect run did to the clips it was handed. */

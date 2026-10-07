@@ -24,7 +24,7 @@ import {
   setClipTransformAtPlayhead,
   toggleMotionAtPlayhead,
 } from '../state/clipEdits'
-import { alignTargets, setClipsPosition } from '../state/bulkEdits'
+import { alignNote, alignTargets, setClipsPosition } from '../state/bulkEdits'
 import { openContextMenu } from '../state/contextMenu'
 import { pausePlayback } from '../state/playbackControl'
 import { quantizeToFrame } from '../engine/timecode'
@@ -820,13 +820,8 @@ function OverlayInner({ canvas, chromeHidden }: { canvas: HTMLCanvasElement | nu
           setClipsPosition(alignIds, last.x, last.y)
           // Say it when part of the selection stayed put, so the footage not
           // moving with the captions reads as the rule, not as a miss.
-          const visualCount = selection.filter((id) =>
-            seq.tracks.some((t) => t.kind === 'video' && t.clips.some((c) => c.id === id)),
-          ).length
-          if (alignIds.length < visualCount) {
-            const what = pClip.title ? 'caption' : 'clip'
-            useToasts.getState().show(`Moved ${plural(alignIds.length, what)}`, 'info')
-          }
+          const note = alignNote(seq, selection, alignIds, !!pClip.title)
+          if (note) useToasts.getState().show(note, 'info')
         }
         window.addEventListener('pointermove', onMove)
         window.addEventListener('pointerup', onUp)

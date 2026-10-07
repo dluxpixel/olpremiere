@@ -18,7 +18,7 @@ import {
   type MediaAsset,
 } from '../engine/types'
 import { setClipsAppearance } from './appearanceActions'
-import { alignTargets } from './bulkEdits'
+import { alignNote, alignTargets } from './bulkEdits'
 import { previewClipMenu } from './clipMenus'
 import { updateActiveSequence, useStore } from './store'
 
@@ -90,5 +90,15 @@ describe('alignTargets (the monitor drag to align)', () => {
   it('footage on top moves the selected pictures only', () => {
     const { footage, caps, sound } = short()
     expect(alignTargets(seq(), [footage, sound, ...caps], footage)).toEqual([footage])
+  })
+
+  // Review, 2026-10-07: the toast after the drag had no test.
+  it('says how many moved when part of the selection stayed, and nothing when all of it moved', () => {
+    const { footage, caps, sound } = short()
+    const all = [footage, sound, ...caps]
+    expect(alignNote(seq(), all, alignTargets(seq(), all, caps[0]!), true)).toBe(`Moved ${caps.length} captions`)
+    expect(alignNote(seq(), all, alignTargets(seq(), all, footage), false)).toBe('Moved 1 clip')
+    // Only the captions selected: they all moved, so there is nothing to say.
+    expect(alignNote(seq(), caps, alignTargets(seq(), caps, caps[0]!), true)).toBeNull()
   })
 })
