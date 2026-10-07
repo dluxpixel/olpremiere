@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
-import { clipEndS, groupLocked, snapTime, splitGroup } from '../engine/timeline'
+import { clipEndS, groupLocked, moveMarker, removeMarker, renameMarker, snapTime, splitGroup } from '../engine/timeline'
 import { dragBlockIds } from '../engine/blockMove'
 import { createSnapPointCache } from '../engine/snapPointCache'
 import { quantizeToFrame } from '../engine/timecode'
 import { activeSequence, audioTracks, videoTracks, type Clip, type Id, type Sequence, type Track } from '../engine/types'
 import { openContextMenu, type MenuItem } from '../state/contextMenu'
 import { hasClipboard, pasteAt } from '../state/clipboard'
+import { askForName } from '../state/namePrompt'
 import { PAIR_LOCKED_MESSAGE } from '../state/clipEdits'
 import { setPasteTarget } from '../state/pasteTarget'
 import { comboLabel } from '../keymap'
@@ -17,7 +18,7 @@ import { PlayheadLine, RemotePlayheads } from './PlayheadWidgets'
 import { pointOnScrollbar } from './scrollbarGuard'
 import { TimelineLane } from './TimelineLane'
 import { EmptyTimelineHint, MarqueeBox, RazorLine, SnapLine, TrimTip } from './TimelineOverlays'
-import { TimelineRulerBar } from './TimelineRulerBar'
+import { TimelineRulerBar, type MarkerActions } from './TimelineRulerBar'
 import { TimelineToolbar } from './TimelineToolbar'
 import { TimelineTrackHeaders } from './TimelineTrackHeaders'
 import { clipContextMenuItems, gapMenuItems } from './timelineClipMenu'
@@ -771,6 +772,39 @@ export function Timeline({ height }: { height: number }) {
   // Dragging the playhead: one scrub per animation frame (useCoalescedScrub).
   const scrubDrag = useCoalescedScrub(scrubTo)
 
+  // A marker taken hold of on the ruler (TimelineRulerBar's MarkerPin): the
+  // drag lands on a whole frame and snaps like a clip edge, never back onto the
+  // marker's own spot, and commits once on release.
+  const markerActions: MarkerActions = {
+    timeAt: (clientX, originS) => {
+      const rect = contentRef.current?.getBoundingClientRect()
+      const raw = frameAtOffset(clientX - (rect?.left ?? 0), pxPerS, seq.fps)
+      return quantizeToFrame(snapWithIndicator(raw, undefined, originS), seq.fps)
+    },
+    end: () => setSnapIndicatorT(null),
+    move: (markerId, tS) => updateActiveSequence('Move marker', (sq) => moveMarker(sq, markerId, tS)),
+    jump: (markerId) => {
+      const m = seq.markers.find((x) => x.id === markerId)
+      if (!m) return
+      pausePlayback()
+      setUI({ playheadS: m.t })
+    },
+    menu: (e, markerId) => {
+      const m = seq.markers.find((x) => x.id === markerId)
+      if (!m) return
+      openContextMenu(e, [
+        {
+          label: 'Name marker',
+          onClick: () =>
+            void askForName({ title: 'Name this marker', confirmLabel: 'Save', initial: m.label, maxLength: 60 }).then((name) => {
+              if (name !== null) updateActiveSequence('Name marker', (sq) => renameMarker(sq, markerId, name))
+            }),
+        },
+        { label: 'Remove marker', danger: true, onClick: () => updateActiveSequence('Remove marker', (sq) => removeMarker(sq, markerId)) },
+      ])
+    },
+  }
+
   const cursorClass = lanesCursorClass(tool, drag?.kind)
 
   // Stable identities for the ClipView handler props - without these, every
@@ -877,6 +911,7 @@ export function Timeline({ height }: { height: number }) {
               winEndS={winEndS}
               onScrubStart={scrubTo}
               onScrubDrag={scrubDrag}
+              markerActions={markerActions}
             />
 
             {/* Alternating lane tints: with 3+ tracks a flat wash makes lane

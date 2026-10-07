@@ -12,6 +12,7 @@ import { activeSequence, audioTracks, defaultTitleDef, newProject, newTitleClip,
 import { useContextMenu } from '../state/contextMenu'
 import { ASSET_MIME, EFFECT_MIME } from '../state/dnd'
 import { copySelection } from '../state/clipboard'
+import { answerNamePrompt, useNamePrompt } from '../state/namePrompt'
 import { clickedPasteTrack, setPasteTarget } from '../state/pasteTarget'
 import { updateActiveSequence, useStore } from '../state/store'
 import { Timeline } from './Timeline'
@@ -514,6 +515,80 @@ describe('Timeline', () => {
   // His words, 2026-10-04: *"selecting multiple images and putting effects on them that
   // actually apply to all of them."* An effect dragged from the Effects tab onto one of
   // several selected clips used to land on that clip alone and shrink the selection to it.
+  // Markers are how he marks beats while the song plays, and they could only be
+  // added and removed by key: a misplaced one had to be deleted and tapped
+  // again, and its name never showed (the marker took no pointer at all).
+  describe('a marker on the ruler', () => {
+    const seedMarker = (t: number) =>
+      updateActiveSequence('seed', (sq) => ({ ...sq, markers: [{ id: 'mk', t, label: '', color: '#f00' }] }))
+    const markerEl = () => {
+      const el = screen.getByTestId('marker')
+      el.setPointerCapture = () => {}
+      return el
+    }
+    const markers = () => seq().markers
+
+    it('a click puts the playhead on it', () => {
+      seedMarker(4)
+      render(<Timeline height={300} />)
+      layOut()
+      fireEvent.pointerDown(markerEl(), { button: 0, clientX: 40, clientY: 10, pointerId: 1 })
+      fireEvent.pointerUp(markerEl(), { button: 0, clientX: 41, clientY: 10, pointerId: 1 })
+      expect(useStore.getState().ui.playheadS).toBe(4)
+      expect(markers()[0]!.t).toBe(4)
+    })
+
+    it('a drag moves it, on a whole frame, in one undo step', () => {
+      seedMarker(4)
+      useStore.getState().setUI({ snapping: false })
+      render(<Timeline height={300} />)
+      layOut()
+      const undos = useStore.getState().history.undo.length
+      fireEvent.pointerDown(markerEl(), { button: 0, clientX: 40, clientY: 10, pointerId: 1 })
+      fireEvent.pointerMove(markerEl(), { clientX: 50, clientY: 10, pointerId: 1 })
+      // 6.0123 s: between two frames at 30 fps.
+      fireEvent.pointerMove(markerEl(), { clientX: 60.123, clientY: 10, pointerId: 1 })
+      fireEvent.pointerUp(markerEl(), { button: 0, clientX: 60.123, clientY: 10, pointerId: 1 })
+      expect(markers()[0]!.t * 30).toBeCloseTo(180, 9)
+      expect(useStore.getState().history.undo.length).toBe(undos + 1)
+      expect(useStore.getState().history.undo.at(-1)!.label).toBe('Move marker')
+      // A drag is not a click: the playhead stayed where it was.
+      expect(useStore.getState().ui.playheadS).toBe(0)
+    })
+
+    it('a drag snaps onto a clip edge', () => {
+      seedMarker(4)
+      seedTitle(1) // ends at 3
+      render(<Timeline height={300} />)
+      layOut()
+      fireEvent.pointerDown(markerEl(), { button: 0, clientX: 40, clientY: 10, pointerId: 1 })
+      // 3.3 s at 10 px/s: 3 px from the clip's end, inside the 8 px snap.
+      fireEvent.pointerMove(markerEl(), { clientX: 33, clientY: 10, pointerId: 1 })
+      fireEvent.pointerUp(markerEl(), { button: 0, clientX: 33, clientY: 10, pointerId: 1 })
+      expect(markers()[0]!.t).toBe(3)
+    })
+
+    it('a right click names it or removes it', async () => {
+      seedMarker(4)
+      render(<Timeline height={300} />)
+      layOut()
+      fireEvent.contextMenu(markerEl(), { clientX: 40, clientY: 10 })
+      const items = useContextMenu.getState().items
+      expect(items.map((i) => i.label)).toEqual(['Name marker', 'Remove marker'])
+      act(() => items[0]!.onClick!())
+      expect(useNamePrompt.getState().request?.title).toBe('Name this marker')
+      await act(async () => {
+        answerNamePrompt('Drop')
+        await Promise.resolve()
+      })
+      expect(markers()[0]!.label).toBe('Drop')
+      expect(screen.getByTestId('marker').title).toBe('Drop')
+      fireEvent.contextMenu(markerEl(), { clientX: 40, clientY: 10 })
+      act(() => useContextMenu.getState().items[1]!.onClick!())
+      expect(markers()).toEqual([])
+    })
+  })
+
   describe('an effect dropped on a selected clip', () => {
     const dropEffect = (clip: HTMLElement, type: string) =>
       fireEvent.drop(clip, {

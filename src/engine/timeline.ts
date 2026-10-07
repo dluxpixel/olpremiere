@@ -2327,6 +2327,13 @@ export function removeMarkerNear(seq: Sequence, tS: number, toleranceS: number):
   return best && bestDist <= toleranceS ? removeMarker(seq, best.id) : seq
 }
 
+/** Give a marker a name (empty for none). The ruler shows it on hover. */
+export function renameMarker(seq: Sequence, markerId: Id, label: string): Sequence {
+  const m = seq.markers.find((x) => x.id === markerId)
+  if (!m || m.label === label) return seq
+  return { ...seq, markers: seq.markers.map((x) => (x.id === markerId ? { ...x, label } : x)) }
+}
+
 export function moveMarker(seq: Sequence, markerId: Id, tS: number): Sequence {
   const idx = seq.markers.findIndex((m) => m.id === markerId)
   if (idx === -1) return seq
