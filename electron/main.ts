@@ -45,7 +45,7 @@ import * as proxy from './proxy'
 import * as mediaStore from './mediaStore'
 import * as remux from './remux'
 import { IDLE_POLL_MS, updateApplyDecision } from './updateApply'
-import { CLOSE_SAVE_TIMEOUT_MS, createCloseGate, type CloseGate } from './closeGate'
+import { CLOSE_SAVE_TIMEOUT_MS, createCloseGate, notSavedDialog, type CloseGate } from './closeGate'
 import { planUpdateError, updateLogEntry } from './updateErrors'
 import { appendUpdateLog, UPDATE_LOG_NAME } from './updateLog'
 import electronUpdater from 'electron-updater'
@@ -509,16 +509,14 @@ function createWindow(): void {
     closeNow: () => {
       if (!win.isDestroyed()) win.close()
     },
-    confirmCloseUnsaved: () =>
+    confirmCloseUnsaved: (onlyTheFile) =>
       dialog.showMessageBoxSync(win, {
         type: 'warning',
         buttons: ['Stay', 'Close anyway'],
         defaultId: 0,
         cancelId: 0,
         noLink: true,
-        title: 'Not saved',
-        message: 'Your last changes could not be saved.',
-        detail: 'If you close now, they are lost. Stay, then use Back up to a file to keep them.',
+        ...notSavedDialog(onlyTheFile),
       }) === 1,
     onStay: () => cancelInstall?.(),
     setTimer: (fn, ms) => setTimeout(fn, ms),
@@ -846,7 +844,9 @@ app.whenReady().then(() => {
   // The close gate's two messages, each found by the page that sent it, so no
   // other window can arm or answer the editor's close. See ./closeGate.
   ipcMain.on('app:closeGate', (e, on: unknown) => closeGates.get(e.sender)?.arm(on === true))
-  ipcMain.on('app:closeReady', (e, saved: unknown) => closeGates.get(e.sender)?.onReply(saved === true))
+  ipcMain.on('app:closeReady', (e, saved: unknown, onlyTheFile: unknown) =>
+    closeGates.get(e.sender)?.onReply(saved === true, onlyTheFile === true),
+  )
 
   // The update card. Every one guarded on the SENDER, the way boot:shrink is: any
   // other renderer asking to shrink or quit this window is not this window.

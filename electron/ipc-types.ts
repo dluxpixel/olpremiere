@@ -295,8 +295,12 @@ export interface OlApi {
    * Returns an unsubscribe fn.
    */
   onBeforeClose(cb: () => void): () => void
-  /** The answer to `onBeforeClose`: true when every edit is written. */
-  closeReady(saved: boolean): void
+  /**
+   * The answer to `onBeforeClose`: true when every edit is written. False with
+   * `onlyTheFile`: the app's store has every edit, only the file in Documents
+   * was not written, so main does not tell him they are lost.
+   */
+  closeReady(saved: boolean, onlyTheFile?: boolean): void
   /**
    * Tell main that a restart right now would destroy something: an in-browser
    * export, a live microphone, a take waiting to be kept. Main cannot see any of

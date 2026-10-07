@@ -87,7 +87,7 @@ const api: OlApi = {
       ipcRenderer.send('app:closeGate', false)
     }
   },
-  closeReady: (saved: boolean) => ipcRenderer.send('app:closeReady', saved),
+  closeReady: (saved: boolean, onlyTheFile?: boolean) => ipcRenderer.send('app:closeReady', saved, onlyTheFile === true),
   setUpdateBusy: (on: boolean) => ipcRenderer.send('update:busy', on),
   getUpdateStatus: (): Promise<UpdateStatus> => ipcRenderer.invoke('update:status:get'),
   checkForUpdates: (): Promise<void> => ipcRenderer.invoke('update:check'),

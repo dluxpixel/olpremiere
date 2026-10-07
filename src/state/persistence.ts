@@ -504,6 +504,8 @@ function autosave(): void {
  */
 let saving: Promise<void> | null = null
 let saveAgain = false
+/** The last document the app's own store took, whether or not its file was written. */
+let storedDoc: Project | null = null
 
 /**
  * One save at a time. A second edit landing while the file write is still on
@@ -523,6 +525,7 @@ function flushSave(): Promise<void> {
     const doc = useStore.getState().project
     try {
       await saveProject(doc)
+      storedDoc = doc
       stopRetry()
       // ⛔ "SAVED" ONLY WHEN WHAT WAS WRITTEN IS WHAT HE HAS. A letter typed
       // while this write was on its way is not in it, and it used to be marked
@@ -530,6 +533,8 @@ function flushSave(): Promise<void> {
       // second skipped the letter because the close save trusted that word.
       setUI({ saveState: useStore.getState().project === doc ? 'saved' : 'unsaved' })
     } catch (err) {
+      // Only the file failed: the store took it before the file was tried.
+      if (err instanceof FileNotWrittenError) storedDoc = doc
       console.error('OL Premiere autosave failed', err)
       setUI({ saveState: 'unsaved' })
       armRetry()
@@ -645,7 +650,9 @@ export function initPersistence(): Promise<void> {
   const api = window.api
   if (typeof api?.onBeforeClose === 'function' && typeof api.closeReady === 'function') {
     api.onBeforeClose(() => {
-      void saveBeforeClose().then((saved) => api.closeReady(saved))
+      void saveForClose().then((result) =>
+        result === 'file-only' ? api.closeReady(false, true) : api.closeReady(result === 'saved'),
+      )
     })
   }
 
@@ -680,6 +687,15 @@ export function initPersistence(): Promise<void> {
  * then asks him before it closes.
  */
 export async function saveBeforeClose(): Promise<boolean> {
+  return (await saveForClose()) === 'saved'
+}
+
+/**
+ * What the save before a close came to: all written; 'file-only', the app's
+ * store has what he has now and only its file in Documents was not written; or
+ * 'failed'. Never rejects.
+ */
+async function saveForClose(): Promise<'saved' | 'file-only' | 'failed'> {
   // A caption, a title or the project name is written to the project when its
   // field loses focus. Closing never takes the focus away on its own, so the
   // words he typed last would not even be in the project yet. The field is told
@@ -688,8 +704,8 @@ export async function saveBeforeClose(): Promise<boolean> {
   commitFocusedField()
   try {
     await saveSettled()
-    return true
-  } catch {
-    return false
+    return 'saved'
+  } catch (err) {
+    return err instanceof FileNotWrittenError && storedDoc === useStore.getState().project ? 'file-only' : 'failed'
   }
 }

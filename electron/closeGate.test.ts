@@ -4,23 +4,26 @@
 
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { CLOSE_SAVE_TIMEOUT_MS, createCloseGate } from './closeGate'
+import { CLOSE_SAVE_TIMEOUT_MS, createCloseGate, notSavedDialog } from './closeGate'
 
 function rig(opts: { closeAnyway?: boolean } = {}) {
   const log: string[] = []
+  /** What each question was told: true when only the file failed. */
+  const asked: unknown[] = []
   let timer: { fn: () => void; ms: number } | null = null
   const gate = createCloseGate({
     askToSave: () => log.push('ask'),
     closeNow: () => log.push('close'),
-    confirmCloseUnsaved: () => {
+    confirmCloseUnsaved: (onlyTheFile?: boolean) => {
       log.push('confirm')
+      asked.push(onlyTheFile)
       return opts.closeAnyway ?? false
     },
     onStay: () => log.push('stay'),
     setTimer: (fn, ms) => (timer = { fn, ms }),
     clearTimer: () => (timer = null),
   })
-  return { gate, log, fireTimer: () => timer?.fn(), timerMs: () => timer?.ms ?? null }
+  return { gate, log, asked, fireTimer: () => timer?.fn(), timerMs: () => timer?.ms ?? null }
 }
 
 describe('closing the editor', () => {
@@ -102,11 +105,39 @@ describe('closing the editor', () => {
   })
 })
 
+// 2026-10-07. With Documents unwritable (OneDrive offline), every close said his
+// changes were lost while the app's own store had every one of them.
+describe('the question a failed save asks', () => {
+  it('is told when only the file failed and the app has every change', () => {
+    const { gate, asked } = rig()
+    gate.arm(true)
+    gate.onClose()
+    gate.onReply(false, true)
+    gate.onClose()
+    gate.onReply(false)
+    expect(asked).toEqual([true, false])
+  })
+
+  it('says his changes are lost only when they are', () => {
+    const lost = notSavedDialog(false)
+    expect(`${lost.message} ${lost.detail}`).toMatch(/lost/)
+    const kept = notSavedDialog(true)
+    expect(`${kept.message} ${kept.detail}`).not.toMatch(/lost/)
+    expect(kept.message).toMatch(/in the app/)
+    expect(kept.detail).toMatch(/Back up to a file/)
+  })
+})
+
 describe('main wires the gate to the editor window', () => {
   const main = readFileSync(new URL('./main.ts', import.meta.url), 'utf8')
 
   it('holds the window close on the gate', () => {
     expect(main).toMatch(/win\.on\('close', \(e\) => \{\s*if \(gate\.onClose\(\)\) e\.preventDefault\(\)/)
+  })
+
+  it('asks the question in the words the failure needs', () => {
+    expect(main).toMatch(/confirmCloseUnsaved: \(onlyTheFile\) =>[\s\S]{0,300}notSavedDialog\(onlyTheFile\)/)
+    expect(main).toMatch(/onReply\(saved === true, onlyTheFile === true\)/)
   })
 
   it('never installs an update before the close has had time to save', () => {

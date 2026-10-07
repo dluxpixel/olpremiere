@@ -56,7 +56,7 @@ vi.mock('./toasts', () => ({ useToasts: { getState: () => ({ show: (m: string) =
 
 // The desktop bridge: main asks through onBeforeClose, the page answers through closeReady.
 let askToSave: (() => void) | null = null
-const closeReady = vi.fn<(saved: boolean) => void>()
+const closeReady = vi.fn<(saved: boolean, onlyTheFile?: boolean) => void>()
 Object.assign(window, {
   api: {
     onBeforeClose: (cb: () => void) => {
@@ -206,6 +206,19 @@ describe('the save a close waits for', () => {
     expect(written.map((p) => p.name)).toEqual(['x'])
     expect(saveState()).toBe('saved')
     expect(toasts.at(-1)).toBe('Saved again')
+  })
+
+  it('says when only the file failed, so the question does not tell him his work is lost', async () => {
+    // Documents unwritable: the app's store has the change, the file does not.
+    fileFailures = 1
+    type('x')
+    askToSave?.()
+    await land()
+    expect(closeReady).toHaveBeenCalledExactlyOnceWith(false, true)
+    // Let the retry land so the next test starts clean.
+    await vi.advanceTimersByTimeAsync(5000)
+    await land()
+    expect(saveState()).toBe('saved')
   })
 
   it('answers false when the write fails, so main asks him before it closes', async () => {

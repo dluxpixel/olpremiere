@@ -25,13 +25,41 @@
  */
 export const CLOSE_SAVE_TIMEOUT_MS = 10_000
 
+/**
+ * The question a failed save asks before the window goes, in the words the
+ * failure needs.
+ *
+ * ⛔ "LOST" ONLY WHEN THEY ARE. Before 2026-10-07 every failure said his changes
+ * were lost if he closed, including the one where only the file in Documents
+ * could not be written (OneDrive offline, a folder he cannot write to) and the
+ * app's own store had every change. The toasts already said it right
+ * (saveFailedMessage in src/state/persistence.ts); this is the same truth.
+ */
+export function notSavedDialog(onlyTheFile: boolean): { title: string; message: string; detail: string } {
+  return onlyTheFile
+    ? {
+        title: 'Not saved to its file',
+        message: 'Your last changes are saved in the app, but their file in Documents could not be written.',
+        detail:
+          'If you close now, the app still has them, only the file is behind. Stay, then use Back up to a file to keep a copy as a file too.',
+      }
+    : {
+        title: 'Not saved',
+        message: 'Your last changes could not be saved.',
+        detail: 'If you close now, they are lost. Stay, then use Back up to a file to keep them.',
+      }
+}
+
 export interface CloseGateDeps {
   /** Ask the page to write everything. It answers through `onReply`. */
   askToSave(): void
   /** Close the window for real. The gate lets this close through. */
   closeNow(): void
-  /** A write failed. Ask him: true means close anyway. */
-  confirmCloseUnsaved(): boolean
+  /**
+   * A write failed. Ask him: true means close anyway. `onlyTheFile`: the app's
+   * store has every change and only the file in Documents was not written.
+   */
+  confirmCloseUnsaved(onlyTheFile: boolean): boolean
   /** He chose to stay, so anything waiting on this close stands down. */
   onStay(): void
   setTimer(fn: () => void, ms: number): unknown
@@ -43,8 +71,11 @@ export interface CloseGate {
   arm(on: boolean): void
   /** The window's 'close' event. True means hold it (preventDefault). */
   onClose(): boolean
-  /** The page's answer: true when every edit is written. */
-  onReply(saved: boolean): void
+  /**
+   * The page's answer: true when every edit is written. `onlyTheFile` with a
+   * false: the app's store has them all, only the file was not written.
+   */
+  onReply(saved: boolean, onlyTheFile?: boolean): void
   /**
    * The page went away (a reload, a crash). Nothing is left to wait for, so a
    * close already waiting goes now, and the next page has to arm again.
@@ -86,10 +117,10 @@ export function createCloseGate(deps: CloseGateDeps): CloseGate {
       // A second click on the X while the save runs is the same close.
       return true
     },
-    onReply(saved) {
+    onReply(saved, onlyTheFile = false) {
       if (phase !== 'saving') return
       stopTimer()
-      if (saved || deps.confirmCloseUnsaved()) {
+      if (saved || deps.confirmCloseUnsaved(onlyTheFile)) {
         close()
         return
       }
