@@ -36,14 +36,21 @@ export function lockedGapMessage(seq: Sequence, report: RippleReport, all: boole
 }
 
 /**
+ * What the edit took out, in his words. A closed gap cut nothing, so it is
+ * never "the part you cut".
+ */
+const TAKEN = { cut: 'the part you cut', gap: 'the gap you closed', gaps: 'the gaps you closed' } as const
+
+/**
  * "Captions kept its timing: something on it sits in the part you cut", or
  * null when every track followed. Track names come from `seq`, the sequence the
- * edit started from, in its own track order, each named once.
+ * edit started from, in its own track order, each named once. `taken` is what
+ * the edit removed: a cut (the default), or one gap or several closed.
  */
-export function keptTimingMessage(seq: Sequence, report: RippleReport): string | null {
+export function keptTimingMessage(seq: Sequence, report: RippleReport, taken: keyof typeof TAKEN = 'cut'): string | null {
   const names = trackList(seq, report.heldTrackIds)
   if (names.length === 0) return null
   return names.length === 1
-    ? `${joined(names)} kept its timing: something on it sits in the part you cut`
-    : `${joined(names)} kept their timing: something on them sits in the part you cut`
+    ? `${joined(names)} kept its timing: something on it sits in ${TAKEN[taken]}`
+    : `${joined(names)} kept their timing: something on them sits in ${TAKEN[taken]}`
 }

@@ -1410,7 +1410,7 @@ export function closeGapBeforeClip(clipId: Id): void {
   // A pair held by a locked partner refuses the whole close, and says which lock.
   const locked = lockedGapMessage(before, report, false)
   if (locked) useToasts.getState().show(locked, 'info')
-  const kept = keptTimingMessage(before, report)
+  const kept = keptTimingMessage(before, report, 'gap')
   if (kept) useToasts.getState().show(kept, 'info')
 }
 
@@ -1420,7 +1420,7 @@ export function closeAllGapsOnTrack(trackId: Id): void {
   updateActiveSequence('Close gaps', (sq) => closeAllGaps(sq, trackId, report))
   const locked = lockedGapMessage(before, report, true)
   if (locked) useToasts.getState().show(locked, 'info')
-  const kept = keptTimingMessage(before, report)
+  const kept = keptTimingMessage(before, report, 'gaps')
   if (kept) useToasts.getState().show(kept, 'info')
 }
 

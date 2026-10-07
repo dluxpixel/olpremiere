@@ -73,7 +73,8 @@ describe('a ripple says which tracks kept their timing', () => {
     deleteSelected(false)
     closeGapBeforeClip('next')
     expect(seq().tracks[0].clips.map((c) => c.startS)).toEqual([0])
-    expect(said()).toEqual(['V2 and A2 kept their timing: something on them sits in the part you cut'])
+    // Nothing was cut: the words say what he closed.
+    expect(said()).toEqual(['V2 and A2 kept their timing: something on them sits in the gap you closed'])
   })
 
   it('says nothing when every track followed', () => {
@@ -99,6 +100,16 @@ describe('keptTimingMessage', () => {
     // Named in the timeline's own order, whatever order they were held in.
     expect(keptTimingMessage(s, { heldTrackIds: [id(3), id(1), id(2)] })).toBe(
       'V2, A1 and A2 kept their timing: something on them sits in the part you cut',
+    )
+  })
+
+  it('says gap, not cut, after a gap close', () => {
+    const s = seq()
+    expect(keptTimingMessage(s, { heldTrackIds: [s.tracks[1].id] }, 'gap')).toBe(
+      'V2 kept its timing: something on it sits in the gap you closed',
+    )
+    expect(keptTimingMessage(s, { heldTrackIds: [s.tracks[1].id] }, 'gaps')).toBe(
+      'V2 kept its timing: something on it sits in the gaps you closed',
     )
   })
 })
