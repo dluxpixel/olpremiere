@@ -266,9 +266,16 @@ test('export cancel closes the dialog without a file', async ({ page }) => {
  * `FRAME_CREDIT = 3` bound the encoder by construction; this asserts the rest of
  * the app does not quietly grow beside them.
  *
- * ⚠️ IT IS A TRIPWIRE, NOT A BENCHMARK. `performance.memory` is Chromium-only,
- * coarse, and reports the JS heap rather than the process, so it will never see a
- * GPU texture or a decoded frame held in a native buffer. The budget is
+ * ⚠️ IT IS A TRIPWIRE, NOT A BENCHMARK. It reads the page's JS heap rather than
+ * the process, so it will never see a GPU texture or a decoded frame held in a
+ * native buffer.
+ *
+ * ⛔ AND FOR ITS FIRST SIX WEEKS IT COULD NOT FAIL (found 2026-10-06). It read
+ * `performance.memory`, which without --enable-precise-memory-info Chromium
+ * buckets and refreshes about every 20 minutes, so "before" and "after" a five
+ * second export were the same cached number: 25/25, 30/30, 32/32, 32/32, 28/28,
+ * grew 0 on every logged run. It reads the heap over the DevTools protocol now,
+ * after a garbage collection, and first proves it can see a deliberate 50 MB. The budget is
  * deliberately loose: it is here to catch an order-of-magnitude regression, the
  * kind that reaches him, not to police a few MB. If it trips, something started
  * holding on to whole frames or whole buffers. Find that; do not raise the number
@@ -278,14 +285,30 @@ test('an export does not grow the heap without bound', async ({ page }) => {
   test.setTimeout(180_000)
   await page.goto('/')
 
-  const heapMb = async (): Promise<number | null> =>
-    page.evaluate(() => {
-      const m = (performance as Performance & { memory?: { usedJSHeapSize: number } }).memory
-      return m ? Math.round(m.usedJSHeapSize / 1048576) : null
-    })
+  // What the page still holds after a full collection: retained memory, which is
+  // what "grows without bound" means, and never garbage that is merely uncollected.
+  const cdp = await page.context().newCDPSession(page)
+  const heapMb = async (): Promise<number> => {
+    await cdp.send('HeapProfiler.collectGarbage')
+    const { usedSize } = await cdp.send('Runtime.getHeapUsage')
+    return Math.round(usedSize / 1048576)
+  }
 
-  const supported = (await heapMb()) !== null
-  test.skip(!supported, 'performance.memory is Chromium-only; nothing to measure here')
+  // THE INSTRUMENT PROVES IT CAN SEE FIRST: 50 MB of doubles held on the page has
+  // to show, and has to go again once it is let go. A reading that cannot move
+  // is how this test stayed green for six weeks.
+  const base = await heapMb()
+  await page.evaluate(() => {
+    ;(window as unknown as { __ballast?: number[] }).__ballast = Array.from({ length: 6_553_600 }, (_, i) => i + 0.5)
+  })
+  const held = await heapMb()
+  await page.evaluate(() => {
+    delete (window as unknown as { __ballast?: number[] }).__ballast
+  })
+  const released = await heapMb()
+  console.log(`[export heap] instrument check: ${base} MB, holding 50 MB ${held} MB, let go ${released} MB`)
+  expect(held - base, 'the heap reading must see 50 MB being held').toBeGreaterThanOrEqual(40)
+  expect(held - released, 'and see it let go').toBeGreaterThanOrEqual(40)
 
   await page.getByTestId('media-file-input').setInputFiles(FIXTURE)
   await expect(page.getByTestId('asset-card')).toBeVisible({ timeout: 15_000 })
@@ -294,14 +317,14 @@ test('an export does not grow the heap without bound', async ({ page }) => {
   await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(4)
   await shrinkSequence(page)
 
-  const before = (await heapMb())!
+  const before = await heapMb()
 
   const downloadPromise = page.waitForEvent('download', { timeout: 150_000 })
   await page.getByTestId('export-open').click()
   const download = await downloadPromise
   await download.saveAs(`${VERIFY}/heap.mp4`)
 
-  const after = (await heapMb())!
+  const after = await heapMb()
   const grew = after - before
 
   // Reported on every run, pass or fail. A number in the log is what lets a
@@ -309,9 +332,9 @@ test('an export does not grow the heap without bound', async ({ page }) => {
   // reason the cache growth went unnoticed for a week.
   console.log(`[export heap] before ${before} MB, after ${after} MB, grew ${grew} MB, budget 150 MB`)
 
-  // MEASURED 2026-08-27 ON THIS FIXTURE: before 25 MB, after 25 MB, grew 0.
-  // The export really is flat, which is what MAX_ENCODE_QUEUE and FRAME_CREDIT
-  // promise. 150 MB is therefore not a budget it is anywhere near, it is a
+  // MEASURED 2026-08-27 ON THIS FIXTURE: before 25 MB, after 25 MB, grew 0. That
+  // reading was the cached number (see above), so it proved nothing; the 150 MB
+  // stays until a precise measurement is written here. 150 MB is meant as a
   // tripwire three times looser than the export's own bounded peak (about 44 MB
   // of frames in flight plus four queued encodes) so a busy machine cannot make
   // it flake. If this ever trips, something began holding whole frames or whole
