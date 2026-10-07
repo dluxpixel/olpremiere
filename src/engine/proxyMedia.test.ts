@@ -11,6 +11,7 @@ import {
   proxyKeyFor,
   proxyProgress,
   setProxyBuildingPaused,
+  thumbnailSourceKey,
   wantsProxy,
   whenProxiesSettled,
 } from './proxyMedia'
@@ -171,6 +172,21 @@ describe('the preview copy crosses in chunks, both ways', () => {
     expect(calls.finished).toBe(0)
     expect(calls.chunks).toEqual([])
     expect(hasProxy(a.id)).toBe(true)
+  })
+
+  // PB-14: filmstrips and the hover scrub seek the copy, about 19 times cheaper.
+  it('small pictures are cut from the copy once it exists, from the original before', async () => {
+    const a = asset({ id: 'thumbs', blobKey: 'asset/thumbs' })
+    forgetProxy(a.id)
+    expect(thumbnailSourceKey(a)).toBe('asset/thumbs')
+    stored.set(a.blobKey, new Blob([new Uint8Array(1024)]))
+    stored.set(proxyKeyFor(a.id), new Blob([new Uint8Array(64)]))
+    shell(CHUNK)
+
+    ensureProxies([a])
+    await whenProxiesSettled()
+
+    expect(thumbnailSourceKey(a)).toBe(proxyKeyFor(a.id))
   })
 
   // An edit tab going to sleep forgets its media here (state/projectResources.ts).

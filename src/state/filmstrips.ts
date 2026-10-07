@@ -6,6 +6,7 @@
 
 import { useEffect, useState } from 'react'
 import { filmstripPlan, TILE_W } from '../engine/filmstrip'
+import { thumbnailSourceKey } from '../engine/proxyMedia'
 import type { MediaAsset } from '../engine/types'
 import { getBlobUrl } from './blobUrls'
 import { createStripCache } from './filmstripCache'
@@ -76,18 +77,32 @@ function encodeOffThread(canvas: HTMLCanvasElement): Promise<Blob | null> {
 /**
  * One loaded <video> per asset, kept for the next strip of the same asset: a
  * fresh element per strip meant loading his hour long recordings again for
- * every zoom step. Three is enough for a serial queue.
+ * every zoom step. Three is enough for a serial queue. Kept with the URL it was
+ * loaded from, so the original's element is let go once a preview copy lands.
  */
 const stripVideos = new Map<string, Promise<HTMLVideoElement>>()
+const stripVideoSrc = new Map<string, string>()
 const STRIP_VIDEOS = 3
+
+function unloadStripVideo(held: Promise<HTMLVideoElement>): void {
+  void held.then((v) => {
+    v.removeAttribute('src')
+    v.load()
+  }, () => undefined)
+}
 
 function stripVideo(asset: MediaAsset, src: string): Promise<HTMLVideoElement> {
   const hit = stripVideos.get(asset.id)
-  if (hit) {
+  if (hit && stripVideoSrc.get(asset.id) === src) {
     stripVideos.delete(asset.id)
     stripVideos.set(asset.id, hit)
     return hit
   }
+  if (hit) {
+    stripVideos.delete(asset.id)
+    unloadStripVideo(hit)
+  }
+  stripVideoSrc.set(asset.id, src)
   const made = new Promise<HTMLVideoElement>((res, rej) => {
     const video = document.createElement('video')
     video.muted = true
@@ -96,15 +111,15 @@ function stripVideo(asset: MediaAsset, src: string): Promise<HTMLVideoElement> {
     video.onerror = () => rej(new Error('video load failed'))
     video.src = src
   })
-  made.catch(() => stripVideos.delete(asset.id))
+  made.catch(() => {
+    if (stripVideos.get(asset.id) === made) stripVideos.delete(asset.id)
+  })
   stripVideos.set(asset.id, made)
   while (stripVideos.size > STRIP_VIDEOS) {
     const [oldId, old] = stripVideos.entries().next().value as [string, Promise<HTMLVideoElement>]
     stripVideos.delete(oldId)
-    void old.then((v) => {
-      v.removeAttribute('src')
-      v.load()
-    }, () => undefined)
+    stripVideoSrc.delete(oldId)
+    unloadStripVideo(old)
   }
   return made
 }
@@ -125,10 +140,8 @@ export function releaseStripVideo(assetId: string): void {
   const held = stripVideos.get(assetId)
   if (!held) return
   stripVideos.delete(assetId)
-  void held.then((v) => {
-    v.removeAttribute('src')
-    v.load()
-  }, () => undefined)
+  stripVideoSrc.delete(assetId)
+  unloadStripVideo(held)
 }
 
 /** The asset whose strip is being cut right now, and whether to let its <video> go after. */
@@ -146,11 +159,14 @@ async function generate(asset: MediaAsset, key: string, timesS: number[]): Promi
   // and up to 32 seeks for a strip nobody is waiting on, which is exactly the
   // work that piles up while scrolling a cut-heavy timeline.
   if (!cache.isLive(key)) return
-  const src = await getBlobUrl(asset.blobKey)
+  const src = await getBlobUrl(thumbnailSourceKey(asset))
   if (!src) return
   cutting = asset.id
   try {
-    await cutStrip(asset, key, timesS, await stripVideo(asset, src))
+    const cut = await cutStrip(asset, key, timesS, await stripVideo(asset, src))
+    // A seek that never landed: that element is stuck, so the next strip of
+    // this asset gets a fresh one. This strip keeps its poster.
+    if (cut === 'stuck') releaseAfterCut = true
   } finally {
     cutting = null
     if (releaseAfterCut) {
@@ -160,17 +176,43 @@ async function generate(asset: MediaAsset, key: string, timesS: number[]): Promi
   }
 }
 
-async function cutStrip(asset: MediaAsset, key: string, timesS: number[], video: HTMLVideoElement): Promise<void> {
+/**
+ * ⛔ ONE STUCK SEEK STOPPED EVERY FILMSTRIP FOR THE SESSION (PB-14). The queue
+ * is serial and each tile waited for `seeked` with no limit, so a seek that
+ * never fires it (a decode error after load) left every later clip on its
+ * poster until a restart. A tile seek now gives up after this long, or on the
+ * element's error, and the strip is abandoned so the queue moves on.
+ */
+const TILE_SEEK_TIMEOUT_MS = 3000
+
+function seekTile(video: HTMLVideoElement, tS: number): Promise<boolean> {
+  return new Promise<boolean>((res) => {
+    const done = (landed: boolean): void => {
+      clearTimeout(timer)
+      video.onseeked = null
+      video.onerror = null
+      res(landed)
+    }
+    const timer = setTimeout(() => done(false), TILE_SEEK_TIMEOUT_MS)
+    video.onseeked = () => done(true)
+    video.onerror = () => done(false)
+    video.currentTime = tS
+  })
+}
+
+async function cutStrip(
+  asset: MediaAsset,
+  key: string,
+  timesS: number[],
+  video: HTMLVideoElement,
+): Promise<'stuck' | void> {
   const canvas = document.createElement('canvas')
   canvas.width = TILE_W * timesS.length
   canvas.height = TILE_H
   const ctx = canvas.getContext('2d')
   if (!ctx) return
   for (let i = 0; i < timesS.length; i++) {
-    await new Promise<void>((res) => {
-      video.onseeked = () => res()
-      video.currentTime = Math.min(timesS[i], Math.max(0, (asset.durationS || 1) - 0.05))
-    })
+    if (!(await seekTile(video, Math.min(timesS[i], Math.max(0, (asset.durationS || 1) - 0.05))))) return 'stuck'
     // Cover-fit each tile (center crop) so tiles read as frames, not smears.
     const vw = video.videoWidth || 16
     const vh = video.videoHeight || 9
