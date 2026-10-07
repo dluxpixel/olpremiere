@@ -10,6 +10,7 @@ import {
   pauseAllPreviewVideos,
   setPreviewTransportRate,
 } from '../engine/preview'
+import { lastFrameS } from '../engine/timecode'
 import { activeSequence } from '../engine/types'
 import { workArea } from '../engine/workArea'
 import { isTakeInProgress, pauseRecording, resumeRecording, takeHeard } from './voiceRecorder'
@@ -81,17 +82,37 @@ function resumeFrom(playheadS: number): number {
   return stoppedAt && Math.abs(playheadS - stoppedAt.frameS) < 1e-9 ? stoppedAt.exactS : playheadS
 }
 
+/**
+ * Where Space plays from. At the end it starts over from the top (Premiere
+ * behavior), and the end is the LAST FRAME as well as the end itself: play that
+ * runs out parks there (onPaused), and so does End.
+ */
+function playFrom(playheadS: number, endS: number, fps: number): number {
+  const from = resumeFrom(playheadS)
+  return from >= endS - 1e-6 || playheadS >= lastFrameS(endS, fps) - 1e-6 ? 0 : from
+}
+
 const transport = new Transport({
   getEndS: () => activeSequence(useStore.getState().project).durationS,
   onTick: (t) => useStore.getState().setUI({ playheadS: Math.max(0, t) }),
   onPaused: (exactS) => {
     const s = useStore.getState()
-    const fps = activeSequence(s.project).fps || 30
-    // The frame on screen is the one the monitor LAST DREW (lastPlayedFrameS),
-    // which is a tick behind the transport, not the one the live clock has
-    // reached since. Before the monitor has drawn anything this run (no canvas,
-    // or a pause on the very first frame), the frame the last tick is in.
-    const frameS = lastPlayedFrameS() ?? Math.floor(Math.max(0, s.ui.playheadS) * fps + 1e-6) / fps
+    const seq = activeSequence(s.project)
+    const fps = seq.fps || 30
+    // Play ran off the end: the last real frame, never the end itself, where
+    // nothing resolves and the monitor goes black (PB-17). Space starts over
+    // from there (playFrom). J that ran back to the start: the start.
+    // Otherwise the frame on screen is the one the monitor LAST DREW
+    // (lastPlayedFrameS), which is a tick behind the transport, not the one the
+    // live clock has reached since. Before the monitor has drawn anything this
+    // run (no canvas, or a pause on the very first frame), the frame the last
+    // tick is in.
+    const frameS =
+      seq.durationS > 0 && exactS >= seq.durationS - 1e-9
+        ? lastFrameS(seq.durationS, fps)
+        : exactS <= 0
+          ? 0
+          : (lastPlayedFrameS() ?? Math.floor(Math.max(0, s.ui.playheadS) * fps + 1e-6) / fps)
     stoppedAt = { exactS: Math.max(0, exactS), frameS }
     s.setUI({ playheadS: frameS })
   },
@@ -153,11 +174,9 @@ export function togglePlay(): void {
     return
   }
   const s = useStore.getState()
-  const endS = activeSequence(s.project).durationS
-  if (endS <= 0) return
-  // At the end, Space restarts from the top (Premiere behavior).
-  const fromS = s.ui.playheadS >= endS - 1e-6 ? 0 : resumeFrom(s.ui.playheadS)
-  void transport.play(fromS, 1)
+  const seq = activeSequence(s.project)
+  if (seq.durationS <= 0) return
+  void transport.play(playFrom(s.ui.playheadS, seq.durationS, seq.fps), 1)
 }
 
 export function pausePlayback(): void {
@@ -172,10 +191,9 @@ export function pausePlayback(): void {
 export function ensurePlaying(): void {
   if (transport.playing) return
   const s = useStore.getState()
-  const endS = activeSequence(s.project).durationS
-  if (endS <= 0) return
-  const fromS = s.ui.playheadS >= endS - 1e-6 ? 0 : resumeFrom(s.ui.playheadS)
-  void transport.play(fromS, 1)
+  const seq = activeSequence(s.project)
+  if (seq.durationS <= 0) return
+  void transport.play(playFrom(s.ui.playheadS, seq.durationS, seq.fps), 1)
 }
 
 const SHUTTLE_RATES = [1, 2, 4]

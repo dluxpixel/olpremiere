@@ -30,8 +30,9 @@ vi.mock('./voiceRecorder', () => ({
 }))
 vi.mock('./toasts', () => ({ useToasts: { getState: () => ({ show: () => {} }) } }))
 
-const { isPlaying, togglePlay } = await import('./playbackControl')
+const { isPlaying, shuttle, togglePlay } = await import('./playbackControl')
 const { updateActiveSequence, useStore } = await import('./store')
+const { activeSequence } = await import('../engine/types')
 
 let nowMs = 1000
 const frames = new Map<number, FrameRequestCallback>()
@@ -90,9 +91,10 @@ describe('Space', () => {
     togglePlay()
     await settle()
     frameAfter(2100)
-    // The transport stopped itself at the end.
+    // The transport stopped itself at the end, and parked on the last frame,
+    // not on the end itself where the monitor is black (PB-17).
     expect(isPlaying()).toBe(false)
-    expect(playhead()).toBe(2)
+    expect(playhead()).toBeCloseTo(2 - 1 / activeSequence(useStore.getState().project).fps, 9)
 
     // So the next Space is a play from 0, not a pause.
     togglePlay()
@@ -187,5 +189,65 @@ describe('a pause lands on the frame the monitor drew, not on the last tick', ()
     frameAfter(500)
     togglePlay()
     expect(playhead()).toBe(0.5)
+  })
+})
+
+// PB-17: play to the end and the monitor went black, parked on the end itself.
+describe('play that runs out parks on the last frame', () => {
+  beforeEach(() => {
+    updateActiveSequence('A 10 second edit at 30', (seq) => ({ ...seq, durationS: 10, fps: 30 }))
+  })
+
+  it('lands on the last real frame, whatever the monitor last drew', async () => {
+    useStore.getState().setUI({ playheadS: 9 })
+    togglePlay()
+    await settle()
+    frameAfter(900)
+    monitor.drewS = 9.9
+    frameAfter(200)
+    expect(isPlaying()).toBe(false)
+    expect(playhead()).toBeCloseTo(299 / 30, 9)
+  })
+
+  it('and Space from there starts over from the top', async () => {
+    useStore.getState().setUI({ playheadS: 9.5 })
+    togglePlay()
+    await settle()
+    frameAfter(700)
+    togglePlay()
+    await settle()
+    frameAfter(300)
+    expect(playhead()).toBeCloseTo(0.3, 6)
+  })
+
+  it('so does Space on the last frame End puts him on', async () => {
+    useStore.getState().setUI({ playheadS: 299 / 30 })
+    togglePlay()
+    await settle()
+    frameAfter(300)
+    expect(isPlaying()).toBe(true)
+    expect(playhead()).toBeCloseTo(0.3, 6)
+  })
+})
+
+describe('J that runs back to the start parks on the start', () => {
+  beforeEach(() => {
+    updateActiveSequence('A 10 second edit at 30', (seq) => ({ ...seq, durationS: 10, fps: 30 }))
+  })
+
+  it('and a playhead stepped on from there plays from where it was put', async () => {
+    useStore.getState().setUI({ playheadS: 0.5 })
+    shuttle(-1)
+    await settle()
+    monitor.drewS = 1 / 30
+    frameAfter(600)
+    expect(isPlaying()).toBe(false)
+    expect(playhead()).toBe(0)
+    // One frame on (the arrow key), then Space.
+    useStore.getState().setUI({ playheadS: 1 / 30 })
+    togglePlay()
+    await settle()
+    frameAfter(300)
+    expect(playhead()).toBeCloseTo(1 / 30 + 0.3, 6)
   })
 })

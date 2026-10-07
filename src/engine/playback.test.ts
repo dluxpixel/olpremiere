@@ -478,3 +478,35 @@ describe('a sound rebuilt while play goes on continues the stretch, on the pictu
     expect(events[3]).toEqual([null, expect.any(Number), 'end'])
   })
 })
+
+// PB-17, 2026-10-06: play that ran out put the playhead ON the end, where
+// nothing resolves, so the monitor went black after every play to the end.
+describe('running off the end of the edit', () => {
+  it('tells the playhead once, through onPaused, and never puts it on the end itself', async () => {
+    let now = 1000
+    const spy = vi.spyOn(performance, 'now').mockImplementation(() => now)
+    const raf = { cb: null as FrameRequestCallback | null }
+    globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => {
+      raf.cb = cb
+      return 1
+    }) as typeof requestAnimationFrame
+    const ticks: number[] = []
+    const paused: number[] = []
+    const t = new Transport({
+      getEndS: () => 2,
+      onTick: (s) => ticks.push(s),
+      onPaused: (s) => paused.push(s),
+      schedule: async () => () => undefined,
+    })
+    await t.play(1.5)
+    now += 300
+    raf.cb?.(now)
+    now += 300 // past the end
+    raf.cb?.(now)
+    expect(t.playing).toBe(false)
+    expect(paused).toEqual([2])
+    expect(ticks.length).toBeGreaterThan(0)
+    expect(ticks.every((s) => s < 2)).toBe(true)
+    spy.mockRestore()
+  })
+})

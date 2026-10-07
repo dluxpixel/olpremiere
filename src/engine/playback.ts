@@ -354,14 +354,16 @@ export class Transport {
         }
         this.lastT = endS
         this.stoppingAtEnd = true
+        // pause() tells the playhead where play stopped (onPaused, else onTick).
+        // A second onTick(endS) here put it back ON the end, where nothing
+        // resolves, so every play that ran out left the monitor black (PB-17).
         this.pause()
-        this.opts.onTick(endS)
         return
       }
       if (rate < 0 && t <= 0) {
         this.lastT = 0
+        // Told once, by pause(), like the end above.
         this.pause()
-        this.opts.onTick(0)
         return
       }
       this.lastT = t
