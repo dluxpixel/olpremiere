@@ -4,7 +4,7 @@
 //  - greenscreen.webm: 1s 320x180 pure-green screen with a white centre block +
 //    a thin white vertical line, for the chroma-key white-edge test.
 
-import { chromium, type Page } from '@playwright/test'
+import { chromium, type Browser, type FullConfig, type Page } from '@playwright/test'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -95,17 +95,46 @@ async function synthesize(page: Page, outPath: string, durationS: number, kind: 
   fs.writeFileSync(outPath, Buffer.from(b64, 'base64'))
 }
 
-export default async function globalSetup(): Promise<void> {
-  if (fs.existsSync(FIXTURE_PATH) && fs.existsSync(GREENSCREEN_FIXTURE_PATH)) return
-  fs.mkdirSync(FIXTURES_DIR, { recursive: true })
+/**
+ * Open the app once and wait for the editor, so the dev server's cold compile is
+ * paid HERE and not by whichever test happens to run first.
+ *
+ * ⛔ THE FIRST TEST OF EVERY RUN USED TO PAY IT: 4.1 s on 2026-08-20, then 10.8,
+ * 24.4 s on the v3.22.0 gate, and a 60 s timeout (red) on 2026-10-04's first ship.
+ * Test two of the same file takes 2 to 3 s. Playwright starts the webServer before
+ * globalSetup, so the server is up when this runs. 120 s, because this is not a
+ * test: it is the one wait that is allowed to be slow.
+ */
+async function warmDevServer(browser: Browser, baseURL: string): Promise<void> {
+  const t0 = Date.now()
+  const page = await browser.newPage({ baseURL, viewport: { width: 1600, height: 900 } })
+  try {
+    await page.goto('/', { timeout: 120_000 })
+    await page.getByTestId('panel-left').waitFor({ timeout: 120_000 })
+  } catch (e) {
+    throw new Error(`the dev server at ${baseURL} never served a working editor within 120 s, so no spec could pass: ${String(e)}`)
+  } finally {
+    await page.close()
+  }
+  console.log(`[global setup] dev server warmed: the editor mounted in ${((Date.now() - t0) / 1000).toFixed(1)} s`)
+}
+
+export default async function globalSetup(config: FullConfig): Promise<void> {
+  const baseURL = config.projects[0]?.use?.baseURL
+  const needFixtures = !(fs.existsSync(FIXTURE_PATH) && fs.existsSync(GREENSCREEN_FIXTURE_PATH))
+  if (needFixtures) fs.mkdirSync(FIXTURES_DIR, { recursive: true })
 
   const browser = await chromium.launch({
     args: ['--autoplay-policy=no-user-gesture-required'],
   })
   try {
-    const page = await browser.newPage()
-    await synthesize(page, FIXTURE_PATH, 2, 'clip')
-    await synthesize(page, GREENSCREEN_FIXTURE_PATH, 1, 'greenscreen')
+    if (needFixtures) {
+      const page = await browser.newPage()
+      await synthesize(page, FIXTURE_PATH, 2, 'clip')
+      await synthesize(page, GREENSCREEN_FIXTURE_PATH, 1, 'greenscreen')
+      await page.close()
+    }
+    if (baseURL) await warmDevServer(browser, baseURL)
   } finally {
     await browser.close()
   }

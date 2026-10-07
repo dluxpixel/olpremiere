@@ -30,5 +30,9 @@ export default defineConfig({
       'electron/**/*.test.ts',
     ],
     environment: 'node',
+    // A stray `.only` runs that one test and the rest of the file is skipped, so
+    // the gate goes green on a fraction of itself. Vitest allows it by default
+    // whenever CI is not set, and there is no CI here.
+    allowOnly: false,
   },
 })
