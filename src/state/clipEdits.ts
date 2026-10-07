@@ -562,11 +562,21 @@ export function setAllSegmentCurves(clipId: string, channel: AnimChannel, curve:
 /**
  * Copy the keyframe at `t` to `toT`, carrying its value, its ease AND its curve:
  * Alt-dragging a diamond. The same shaped move, somewhere else.
+ *
+ * ⛔ NEVER ONTO ANOTHER KEYFRAME. The upsert REPLACED whatever sat there, so
+ * Alt dragging the 0.5 s diamond onto the 1.0 s peak deleted the peak, the very
+ * loss moveKeyframeTime's wall stopped for a plain drag (review, 2026-10-07). A
+ * copy closer than a frame to one is refused, and says so.
  */
 export function duplicateKeyframe(clipId: string, channel: AnimChannel, t: number, toT: number): void {
   const clip = findClip(clipId)
   if (!clip) return
   const to = Math.min(Math.max(toT, 0), clipDurationS(clip))
+  const gap = 1 / (activeSequence(useStore.getState().project).fps || 30)
+  if (channelKeyframes(clip, channel).some((k) => Math.abs(k.t - to) < gap - 1e-9)) {
+    useToasts.getState().show('A keyframe is already there. Drop the copy a frame or more away from it', 'info')
+    return
+  }
   mapClip(
     clipId,
     `Duplicate ${channel} keyframe`,

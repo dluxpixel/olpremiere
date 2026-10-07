@@ -12,6 +12,7 @@ import {
 import {
   addKeyframeAtPlayhead,
   clampKeyframesDelta,
+  duplicateKeyframe,
   moveClipKeyframe,
   moveKeyframeTime,
   moveKeyframes,
@@ -105,6 +106,31 @@ describe('moveKeyframeTime', () => {
     // Typed past it: the same wall, never passing it and reordering the move.
     moveKeyframeTime(c.id, 'scale', wall, 2)
     expect(values()).toEqual([[+wall.toFixed(6), 1], [1, 1.3], [2, 1]])
+  })
+
+  // Review, 2026-10-07: the wall covered the plain drag and the Time field, and
+  // an Alt drag (a copy) onto the peak still replaced it.
+  it('an Alt drag copy onto a neighbour is refused instead of replacing it', () => {
+    const c = seedTitle()
+    updateActiveSequence('punch', (sq) => ({
+      ...sq,
+      tracks: sq.tracks.map((t) => ({
+        ...t,
+        clips: t.clips.map((x) =>
+          x.id === c.id
+            ? { ...x, keyframes: { scale: [0.5, 1, 2].map((t, i) => ({ t, value: i === 1 ? 1.3 : 1, ease: 'linear' as const })) } }
+            : x,
+        ),
+      })),
+    }))
+    const values = () => channelKeyframes(firstClip(), 'scale').map((k) => [k.t, k.value])
+    const steps = useStore.getState().history.undo.length
+    duplicateKeyframe(c.id, 'scale', 0.5, 1)
+    expect(values()).toEqual([[0.5, 1], [1, 1.3], [2, 1]])
+    expect(useStore.getState().history.undo.length).toBe(steps)
+    // Somewhere free, the copy lands as it always did.
+    duplicateKeyframe(c.id, 'scale', 0.5, 1.5)
+    expect(values()).toEqual([[0.5, 1], [1, 1.3], [1.5, 1], [2, 1]])
   })
 
   it('is a no-op (no command) when the time does not change', () => {
