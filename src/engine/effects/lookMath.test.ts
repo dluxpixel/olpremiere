@@ -280,6 +280,23 @@ describe('a look on one pixel', () => {
     }
   })
 
+  it('holds an overshooting Amount to 0..1: past 1 is the full look, below 0 changes nothing', () => {
+    // A keyframe ease can overshoot (a snap is built to). Unheld, Amount 1.2
+    // pushes the grade past itself and Amount -0.1 grades the other way, so a
+    // look faded out with a snap would flash at the end instead of vanishing.
+    const colours: Vec3[] = [
+      [0.6, 0.45, 0.3],
+      [1.15, 1.2, 1.05],
+      [0.05, 0.5, 0.9],
+    ]
+    for (const look of LOOKS) {
+      for (const c of colours) {
+        expect(applyLook(look, c, 1.2, CTX), look.id).toEqual(applyLook(look, c, 1, CTX))
+        expect(applyLook(look, c, -0.1, CTX), look.id).toEqual([...c])
+      }
+    }
+  })
+
   it('changes nothing when every stage sits at neutral, even at full Amount', () => {
     const r = rng(2)
     for (let i = 0; i < 500; i++) {
@@ -436,14 +453,16 @@ describe('the shader text', () => {
 
   it('reads the Amount uniform it is given and nothing else', () => {
     const text = lookGlsl(LOOKS[0], 'u_fx3_amount')
-    expect(text).toContain(', u_fx3_amount)')
+    expect(text).toContain('clamp(u_fx3_amount, 0.0, 1.0)')
     expect(text).not.toMatch(/u_fx\d+_(?!amount)/)
   })
 
-  it('mixes with the colour as it arrived and clamps only the graded side, so Amount 0 is exact', () => {
+  it('mixes with the colour as it arrived and clamps only the graded side and the Amount, so Amount 0 is exact', () => {
     for (const look of LOOKS) {
       const lines = lookGlsl(look, 'u_fx3_amount').trim().split('\n')
-      expect(lines[lines.length - 1], look.id).toBe('c = mix(c, clamp(olkV, 0.0, 1.0), u_fx3_amount);')
+      expect(lines[lines.length - 1], look.id).toBe(
+        'c = mix(c, clamp(olkV, 0.0, 1.0), clamp(u_fx3_amount, 0.0, 1.0));',
+      )
     }
   })
 

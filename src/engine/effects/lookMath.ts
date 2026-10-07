@@ -497,8 +497,10 @@ export function applyLook(spec: LookSpec, rgb: Vec3, amount: number, ctx: LookCo
 
   // Mixed with the colour as it ARRIVED (rgb, not c0) and not clamped after, the
   // same as the shader: Amount 0 hands back exactly what came in, over-range too.
+  // The Amount itself is held to 0..1, as lookCompanions holds it: a keyframe
+  // ease that overshoots (a snap) must not push the look past full or below off.
   const graded: Vec3 = [clamp01(v[0]), clamp01(v[1]), clamp01(v[2])]
-  const a = amount
+  const a = clamp01(amount)
   return [mix(rgb[0], graded[0], a), mix(rgb[1], graded[1], a), mix(rgb[2], graded[2], a)]
 }
 
@@ -738,6 +740,7 @@ export function lookGlsl(spec: LookSpec, amount: string): string {
   // Mixed with `c` as it ARRIVED, not the clamped copy the look worked on, and not
   // clamped after: at Amount 0 a value an earlier effect pushed past 1 goes on to
   // the next effect untouched, so a look keyframed in from 0 changes nothing at 0.
-  out.push(`c = mix(c, clamp(olkV, 0.0, 1.0), ${amount});`)
+  // The Amount is held to 0..1, so an ease that overshoots never extrapolates.
+  out.push(`c = mix(c, clamp(olkV, 0.0, 1.0), clamp(${amount}, 0.0, 1.0));`)
   return out.join('\n')
 }
