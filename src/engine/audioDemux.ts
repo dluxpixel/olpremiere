@@ -34,6 +34,25 @@ export interface DemuxRequest {
  */
 export const DECODE_SAMPLE_RATE = 48_000
 
+/**
+ * ⛔ A RANGE IS DECODED FROM A LITTLE BEFORE ITS START, 2026-10-07.
+ *
+ * A decoder started on a packet has not seen the packet before it, and an AAC
+ * frame is half made of its neighbour. Measured in Chromium on a 48 kHz AAC
+ * file: the first packet of every ranged read came out different from the
+ * same packet in a whole read, and a range from 0 skipped the priming packet,
+ * so the first 12 ms of the file came out wrong (up to 0.5 off on a full scale
+ * signal). The preview reads ranges and the export reads whole files, so those
+ * samples sounded different in the two, and the pad in getAudioRange did not
+ * keep a clip off them: a range already in the cache serves any clip inside
+ * it, one starting in that first packet too.
+ *
+ * Starting this much earlier hands the decoder its run in, and what it decodes
+ * before the range is dropped. An AAC frame at 8 kHz is 128 ms; Opus asks for
+ * 80 ms (RFC 7845).
+ */
+export const RANGE_DECODE_PREROLL_S = 0.25
+
 export type DemuxResult =
   /** The file holds no audio track at all. Proof of silence, not a guess. */
   | { kind: 'silent' }
@@ -197,9 +216,9 @@ export async function demuxAudio(blob: Blob, req: DemuxRequest): Promise<DemuxRe
         outEnd: Math.max(outStart + 1, Math.round(toS * out)),
       })
       // A range asks the decoder for exactly the input its outputs read, the
-      // kernel's reach either side included.
+      // kernel's reach either side included, and the run in before it.
       const samples = ranged
-        ? new AudioSampleSink(track).samples(rs.inStart / sampleRate + skipS, rs.inStop / sampleRate + skipS)
+        ? new AudioSampleSink(track).samples(rs.inStart / sampleRate + skipS - RANGE_DECODE_PREROLL_S, rs.inStop / sampleRate + skipS)
         : new AudioSampleSink(track).samples()
       for await (const sample of samples) {
         try {
@@ -221,7 +240,7 @@ export async function demuxAudio(blob: Blob, req: DemuxRequest): Promise<DemuxRe
     const planes: Float32Array[] = []
     for (let ch = 0; ch < channels; ch++) planes.push(new Float32Array(length))
     const samples = ranged
-      ? new AudioSampleSink(track).samples(fromS + skipS, toS + skipS)
+      ? new AudioSampleSink(track).samples(fromS + skipS - RANGE_DECODE_PREROLL_S, toS + skipS)
       : new AudioSampleSink(track).samples()
     for await (const sample of samples) {
       try {

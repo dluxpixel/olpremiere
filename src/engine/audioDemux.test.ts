@@ -33,11 +33,17 @@ interface FakeFile {
   value: (ch: number, n: number) => number
   /** The file's bytes, read only for an MP3's tags. */
   bytes: Uint8Array
+  /**
+   * Decode like a real AAC decoder: the first packet of every read comes out
+   * wrong, because it was decoded without the packet before it (an AAC frame
+   * is half made of its neighbour). Measured in Chromium on 2026-10-07.
+   */
+  warmUp?: boolean
 }
 
 let file: FakeFile
 
-function fakeSample(k: number) {
+function fakeSample(k: number, cold = false) {
   const f = file
   return {
     timestamp: (f.first + k * f.packet) / f.rate,
@@ -48,7 +54,7 @@ function fakeSample(k: number) {
       const off = opts.frameOffset ?? 0
       const count = opts.frameCount ?? f.packet - off
       if (count > dest.length || off + count > f.packet) throw new RangeError('copyTo does not truncate')
-      for (let i = 0; i < count; i++) dest[i] = f.value(opts.planeIndex, k * f.packet + off + i)
+      for (let i = 0; i < count; i++) dest[i] = f.value(opts.planeIndex, k * f.packet + off + i) * (cold ? 0.5 : 1)
     },
     close() {},
   }
@@ -69,10 +75,12 @@ vi.mock('mediabunny', () => {
   class BlobSource {}
   class AudioSampleSink {
     async *samples(start = -Infinity, end = Infinity) {
+      let decoded = 0
       for (let k = 0; k < file.packets; k++) {
-        const s = fakeSample(k)
+        const s = fakeSample(k, file.warmUp === true && decoded === 0)
         if (s.timestamp + s.duration <= start) continue
         if (s.timestamp >= end) return
+        decoded++
         yield s
       }
     }
@@ -230,6 +238,61 @@ describe('a 44.1 kHz source is resampled once, at the read, to 48 kHz', () => {
     const render = readFileSync(fileURLToPath(new URL('./export/audioRender.ts', import.meta.url)), 'utf8')
     expect(DECODE_SAMPLE_RATE).toBe(48_000)
     expect(render).toContain('export const EXPORT_SAMPLE_RATE = 48000')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// A range is decoded with its run in, the way a whole read is.
+//
+// Measured in Chromium on a 48 kHz AAC file, 2026-10-07: the first packet of
+// every ranged read came out different from the same packet in a whole read,
+// and a range from 0 skipped the priming packet, so the first 12 ms of the file
+// came out wrong (up to 0.5 off on a full scale signal). The preview reads
+// ranges and the export reads whole files, so those samples sounded different
+// in the two, and a range already in the cache is reused for any clip inside
+// it, so a clip starting in its first packet played them.
+
+describe('a range is decoded from before its start, so its first samples are right', () => {
+  const cold = (f: FakeFile): FakeFile => ({ ...f, warmUp: true })
+
+  async function expectSameAsWhole(durationS: number, ranges: [number, number][]): Promise<void> {
+    const whole = await read({ durationS })
+    for (const [fromS, toS] of ranges) {
+      const range = await read({ durationS, fromS, toS })
+      const off = Math.round(range.startS * range.sampleRate)
+      for (let ch = 0; ch < range.planes.length; ch++) {
+        const a = range.planes[ch]!
+        const b = whole.planes[ch]!
+        for (let i = 0; i < a.length; i++) {
+          if (a[i] !== b[off + i]) throw new Error(`range ${fromS}..${toS}, ch ${ch}, sample ${off + i}: ${a[i]} vs ${b[off + i]}`)
+        }
+      }
+    }
+  }
+
+  it('⛔ a range from zero matches the whole read from its very first sample', async () => {
+    file = cold(iphone)
+    await expectSameAsWhole(DURATION, [
+      [0, DURATION],
+      [0, 0.1],
+    ])
+  })
+
+  it('a range from inside the file matches the whole read at every sample, its first packet included', async () => {
+    file = cold(iphone)
+    await expectSameAsWhole(DURATION, [
+      [0.05, DURATION],
+      [0.1213, 0.19],
+    ])
+  })
+
+  it('so does a range of a source the read resamples', async () => {
+    file = cold(youtube)
+    await expectSameAsWhole(2, [
+      [0, 1],
+      [0.5, 2],
+      [1.0000104, 1.7],
+    ])
   })
 })
 
