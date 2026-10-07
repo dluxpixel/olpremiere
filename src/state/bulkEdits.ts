@@ -152,6 +152,7 @@ function restAnimationOn(kfs: readonly Keyframe[], channel: AnimChannel, value: 
  */
 export function setChannelForClips(ids: Iterable<string>, channel: AnimChannel, value: number): void {
   const seq = activeSequence(useStore.getState().project)
+  let restless = 0
   mapClips(
     ids,
     `Set ${channel}`,
@@ -163,12 +164,26 @@ export function setChannelForClips(ids: Iterable<string>, channel: AnimChannel, 
       const based = withChannelValue(c, channel, value)
       if (kfs.length === 0) return based
       const moved = restAnimationOn(kfs, channel, value)
+      if (!moved) restless++
       // The base follows too, so the field reads back what he typed.
       return moved ? withChannelKeyframes(based, channel, moved) : c
     },
     // Per channel, so nudging Opacity and then Scale still leaves two steps.
     `channel:${channel}`,
   )
+  // A move that rests at 0 has nothing to scale from, and it used to keep its
+  // old value in silence while the field said otherwise (review, 2026-10-07).
+  if (restless > 0) {
+    const name = channel === 'scale' ? 'Scale' : 'Opacity'
+    useToasts
+      .getState()
+      .show(
+        restless === 1
+          ? `1 clip kept its ${name}: its keyframes rest at 0, so there is nothing to scale from`
+          : `${restless} clips kept their ${name}: their keyframes rest at 0, so there is nothing to scale from`,
+        'info',
+      )
+  }
 }
 
 /**

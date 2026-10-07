@@ -28,8 +28,9 @@ import { updateActiveSequence, useStore } from './store'
 
 // The suite runs on the node environment; the real toast store reaches for
 // window.setTimeout. Same shim the other action suites use.
+const toasts = vi.hoisted(() => ({ shown: [] as string[] }))
 vi.mock('./toasts', () => ({
-  useToasts: { getState: () => ({ show: () => {} }) },
+  useToasts: { getState: () => ({ show: (message: string) => toasts.shown.push(message) }) },
 }))
 
 const seq = (): Sequence => activeSequence(useStore.getState().project)
@@ -134,6 +135,25 @@ describe('setChannelForClips on clips that carry a move', () => {
       })),
     }))
   const scales = (id: string) => channelKeyframes(clipById(id), 'scale').map((k) => [k.t, +k.value.toFixed(6)])
+
+  // Review, 2026-10-07: a move with nothing to rest on kept its old value and
+  // said nothing, while the field read the new one.
+  it('says so when a clip has no rest to move, and leaves it as it was', () => {
+    const a = seedTitle(0)
+    updateActiveSequence('dark', (sq) => ({
+      ...sq,
+      tracks: sq.tracks.map((t) => ({
+        ...t,
+        clips: t.clips.map((c) =>
+          c.id === a.id ? { ...c, keyframes: { opacity: [{ t: 0, value: 0, ease: 'linear' as const }, { t: 2, value: 0, ease: 'linear' as const }] } } : c,
+        ),
+      })),
+    }))
+    toasts.shown.length = 0
+    setChannelForClips([a.id], 'opacity', 0.5)
+    expect(channelKeyframes(clipById(a.id), 'opacity').map((k) => k.value)).toEqual([0, 0])
+    expect(toasts.shown).toEqual(['1 clip kept its Opacity: its keyframes rest at 0, so there is nothing to scale from'])
+  })
 
   it('keeps every Push in a Push in, resting on the new size, wherever the playhead is', () => {
     const a = seedTitle(0)
