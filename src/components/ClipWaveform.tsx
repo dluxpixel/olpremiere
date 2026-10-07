@@ -12,7 +12,10 @@ import type { Clip, MediaAsset } from '../engine/types'
  *
  * So the bars are capped at twice the peaks in the clip's window and at
  * MAX_COLS, the backing store at MAX_CANVAS_PX, and CSS stretches the canvas
- * to the clip (it is already full width). At normal zoom nothing changes.
+ * to the clip (it is already full width). A clip up to MAX_COLS px wide still
+ * draws one bar per pixel. A wider one (past 68 s at the default 60 px/s) draws
+ * fewer bars than it has peaks, so each bar is the LOUDEST peak it covers
+ * (slicePeaks): a beat that lives in a single peak is never skipped.
  */
 const MAX_COLS = 4096
 const MAX_CANVAS_PX = 8192
