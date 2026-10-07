@@ -17,14 +17,19 @@ import { listenToClip } from './transcribeActions'
  * words, from other clips, are kept.
  */
 export async function listenForWords(clipId: Id): Promise<void> {
-  const heard = await listenToClip(clipId)
-  if (!heard) return
-  const s = useStore.getState()
-  const clip = activeSequence(s.project)
+  // ⛔ THE CLIP AS IT IS HEARD, read in the same tick listenToClip reads it. The
+  // words come back placed on the timeline through THIS clip, and listening
+  // takes tens of seconds with the timeline free to edit. Turned back through
+  // the clip as it is when the listening ends, a drag or a trim meanwhile moved
+  // every stored word by as much, onto sound he never said there.
+  const clip = activeSequence(useStore.getState().project)
     .tracks.flatMap((t) => t.clips)
     .find((c) => c.id === clipId)
-  const asset = clip ? s.project.assets[clip.assetId] : undefined
-  if (!clip || !asset) return
+  const heard = await listenToClip(clipId)
+  if (!heard || !clip) return
+  const s = useStore.getState()
+  const asset = s.project.assets[clip.assetId]
+  if (!asset) return
   const inSource = heard.map((w) => ({ text: w.text, startS: toSource(clip, w.startS), endS: toSource(clip, w.endS) }))
   const words = mergeWords(asset.words, inSource, clip.inS, clip.outS)
   s.dispatch(`Listen to ${asset.name}`, (p) => {
