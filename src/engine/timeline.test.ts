@@ -3283,6 +3283,31 @@ describe('closing gaps stays linear in the clip count', () => {
     expect(r.tracks[0].clips[1].startS).toBeCloseTo(0.5, 6)
     expect(r.tracks[1].clips[1].startS).toBeCloseTo(0.5, 6)
   })
+
+  // ⛔ AND THE CAPTIONS THAT FOLLOW STAY LINEAR TOO. Since a closed gap carries
+  // the other tracks along (syncFollowEdits), closeAllGaps hands over one ripple
+  // per gap, and the follow walked every ripple for every clip on every track
+  // that follows. Measured 2026-10-07 at 4000 pairs and 4000 captions: 2825x
+  // the yardstick (127 ms), against 218x with no caption line at all.
+  it('closeAllGaps carries a 4000 caption line inside the same budget', () => {
+    const seq = packedPairs(4000)
+    const captions = Array.from({ length: 4000 }, (_, i) => makeClip({ id: `c${i}`, startS: i * 1.0, inS: 0, outS: 0.4 }))
+    const withCaptions = makeSeq([seq.tracks[0], makeTrack({ kind: 'video', name: 'V2', clips: captions }), seq.tracks[1]])
+    let r = closeAllGaps(withCaptions, withCaptions.tracks[0].id)
+    const { ratio, perCallMs } = benchRatio(
+      () => {
+        r = closeAllGaps(withCaptions, withCaptions.tracks[0].id)
+      },
+      1,
+      RUNS,
+    )
+    expect(ratio, `closeAllGaps with captions ran at ${ratio.toFixed(1)}x the yardstick (${perCallMs.toFixed(1)} ms)`).toBeLessThan(
+      BUDGET_RATIO,
+    )
+    // and every caption followed its picture
+    expect(r.tracks[1].clips[3999].startS).toBeCloseTo(1999.5, 6)
+    expect(r.tracks[0].clips[3999].startS).toBeCloseTo(1999.5, 6)
+  })
 })
 
 describe('linked A/V groups stay in sync', () => {

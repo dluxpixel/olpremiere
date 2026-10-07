@@ -1232,6 +1232,26 @@ function syncFollowEdits(
 ): Sequence {
   const real = edits.filter((e) => Math.abs(e.deltaS) > EPS)
   if (real.length === 0) return seq
+  // ⛔ ONE BINARY SEARCH PER CLIP, NOT A WALK OF EVERY EDIT. A gap close hands
+  // over one edit per gap, and walking all of them for every clip on every
+  // following track made closing all gaps quadratic: 127 ms at 4000 gaps and a
+  // 4000 caption line, measured 2026-10-07. Sorted by `atS`, the edits that
+  // apply to a clip (`startS >= atS - EPS`) are always a prefix, so a running
+  // total gives its delta, summed in the same order the walk added them.
+  const byAt = real.every((e, i) => i === 0 || real[i - 1].atS <= e.atS) ? real : [...real].sort((a, b) => a.atS - b.atS)
+  const sums: number[] = [0]
+  for (const e of byAt) sums.push(sums[sums.length - 1] + e.deltaS)
+  /** The first edit that lies AFTER a clip starting at `startS`: how many apply to it. */
+  const firstAfter = (startS: number): number => {
+    let lo = 0
+    let hi = byAt.length
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (startS >= byAt[mid].atS - EPS) lo = mid + 1
+      else hi = mid
+    }
+    return lo
+  }
   const deltaById = new Map<Id, number>()
   for (const t of seq.tracks) {
     // ⛔ `alreadyMoved` is EVERY track the ripple itself touched, not just the
@@ -1242,10 +1262,11 @@ function syncFollowEdits(
     // tracks has the ripple already moved", never "which track did he click".
     if (alreadyMoved.has(t.id) || t.locked || !syncLockOf(t)) continue
     const own = new Map<Id, number>()
-    for (const c of t.clips) {
+    const after = t.clips.map((c) => firstAfter(c.startS))
+    for (let i = 0; i < t.clips.length; i++) {
+      const c = t.clips[i]
       // Every edit at or before this clip applies to it, and they add up.
-      let deltaS = 0
-      for (const e of real) if (c.startS >= e.atS - EPS) deltaS += e.deltaS
+      const deltaS = sums[after[i]]
       // `shiftClipsBy` SUBTRACTS, so a ripple that pulls the timeline left is a
       // positive entry here. Getting this sign backwards is the easiest mistake
       // in this whole feature.
@@ -1257,7 +1278,9 @@ function syncFollowEdits(
     // their epsilon-slack forms is deliberate, a clip that ends exactly ON the
     // point does not straddle it and is the ordinary butted-up case.
     //
-    const straddles = t.clips.some((c) => real.some((e) => c.startS < e.atS - EPS && clipEndS(c) > e.atS + EPS))
+    // The edits after a clip's start begin at `after`, and the nearest of them
+    // is the one it could run across.
+    const straddles = t.clips.some((c, i) => after[i] < byAt.length && clipEndS(c) > byAt[after[i]].atS + EPS)
     // ⛔⛔ AND SO DOES A CLIP IN THE TIME THE EDIT TOOK OUT THAT THE FOLLOWERS
     // WOULD LAND ON. A left ripple removes `[atS + deltaS, atS]` and every clip
     // after it slides back across that span, so a caption or a voice take lying
