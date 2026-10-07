@@ -194,10 +194,30 @@ async function applyOutputSink(ctx: AudioContext, id: string | null): Promise<vo
   await c.setSinkId(target ?? '').catch(() => {})
 }
 
+/**
+ * ⛔ THE PREVIEW RUNS AT 48 kHz, WHATEVER RATE THE DEVICE RUNS AT (AU-15).
+ *
+ * Every buffer in the app is 48 kHz (audioDemux.ts). A context left at the
+ * device's rate, 44.1 kHz on many headphones, read every one of them by linear
+ * interpolation, the same low pass the export work removed (see onSampleGrid),
+ * so what he heard while editing was duller than what he exported. At 48 kHz
+ * every buffer plays sample for sample and Chromium converts the finished mix
+ * once, at the device. AUTO_LEVEL_LATENCY_S assumes 48 kHz as well.
+ */
+function newPreviewContext(): AudioContext {
+  try {
+    return new AudioContext({ sampleRate: DECODE_SAMPLE_RATE })
+  } catch (err) {
+    // An engine that refuses the rate still has to play.
+    console.warn('OL Premiere audio: could not run the preview at 48 kHz, using the device rate', err)
+    return new AudioContext()
+  }
+}
+
 /** Lazy singleton, one AudioContext for the whole app. */
 export function ensureAudioContext(): AudioContext {
   if (!sharedCtx) {
-    sharedCtx = new AudioContext()
+    sharedCtx = newPreviewContext()
     if (outputDeviceId) void applyOutputSink(sharedCtx, outputDeviceId)
   }
   return sharedCtx

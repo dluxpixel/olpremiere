@@ -1151,3 +1151,53 @@ describe('a plain audio element plays on the output he picked', () => {
     expect(gone).toHaveBeenCalled()
   })
 })
+
+// ⛔ AU-15. The preview ran at the device's rate, so on a 44.1 kHz device every
+// 48 kHz buffer was read by linear interpolation, duller than the export.
+describe('the preview runs at 48 kHz', () => {
+  it('asks for a 48 kHz context, whatever the device runs at', async () => {
+    const made: (AudioContextOptions | undefined)[] = []
+    vi.stubGlobal(
+      'AudioContext',
+      class {
+        constructor(opts?: AudioContextOptions) {
+          made.push(opts)
+        }
+      },
+    )
+    try {
+      vi.resetModules()
+      const fresh = await import('./audio')
+      fresh.ensureAudioContext()
+      expect(made).toEqual([{ sampleRate: 48_000 }])
+    } finally {
+      vi.unstubAllGlobals()
+      vi.resetModules()
+    }
+  })
+
+  it('an engine that refuses the rate still gets a context', async () => {
+    const made: (AudioContextOptions | undefined)[] = []
+    vi.stubGlobal(
+      'AudioContext',
+      class {
+        constructor(opts?: AudioContextOptions) {
+          if (opts?.sampleRate) throw new DOMException('no', 'NotSupportedError')
+          made.push(opts)
+        }
+      },
+    )
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      vi.resetModules()
+      const fresh = await import('./audio')
+      expect(fresh.ensureAudioContext()).toBeTruthy()
+      expect(made).toEqual([undefined])
+    } finally {
+      warn.mockRestore()
+      vi.unstubAllGlobals()
+      vi.resetModules()
+    }
+  })
+})
+
