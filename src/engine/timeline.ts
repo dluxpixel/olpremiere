@@ -1212,6 +1212,12 @@ interface RippleEdit {
  */
 export interface RippleReport {
   heldTrackIds: Id[]
+  /**
+   * The locked tracks that held a gap close: a clip that had to move is linked
+   * to a clip on one of them. Filled by closeGapBefore (which then closes
+   * nothing) and closeAllGaps (which closes the gaps it still can).
+   */
+  lockedTrackIds?: Id[]
 }
 
 /**
@@ -1357,6 +1363,14 @@ function mergeRemovals(spans: ReadonlyArray<{ startS: number; endS: number }>): 
  *
  * Closing a gap is a ripple, so the other tracks follow it exactly as they
  * follow Shift+Delete (see `followGapClose`).
+ *
+ * ⛔ THE RUN MOVES AS ONE, OR NOT AT ALL. Everything from the clip to the end of
+ * its track is one rigid shape. It used to be clamped clip by clip, so a pair
+ * held by a locked partner stayed while the clips after it slid on: the gap he
+ * pointed at stayed open and the one AFTER the held clip closed instead, and the
+ * captions after it followed that. A partner on a locked track now refuses the
+ * whole close (`report.lockedTrackIds` names the lock, so he is told), and a
+ * partner with no room brings the whole run down to what it can manage.
  */
 export function closeGapBefore(seq: Sequence, clipId: Id, report?: RippleReport): Sequence {
   const found = findClip(seq, clipId)
@@ -1368,8 +1382,23 @@ export function closeGapBefore(seq: Sequence, clipId: Id, report?: RippleReport)
   for (let i = found.clipIndex; i < found.track.clips.length; i++) {
     for (const gid of groupIdsOf(found.track.clips[i], byLink)) deltaById.set(gid, delta)
   }
-  const applied = clampShiftForCollisions(seq, holdLockedGroups(seq, deltaById, byLink), byLink)
+  const locks = lockedHolders(seq, deltaById)
+  if (locks.length > 0) {
+    if (report) (report.lockedTrackIds ??= []).push(...locks)
+    return seq
+  }
+  const clamped = clampShiftForCollisions(seq, deltaById, byLink)
+  let least = delta
+  for (const id of deltaById.keys()) least = Math.min(least, clamped.get(id) ?? 0)
+  if (least <= EPS) return seq
+  const applied = new Map<Id, number>()
+  for (const id of deltaById.keys()) applied.set(id, least)
   return followGapClose(seq, shiftClipsBy(seq, applied), found.track, applied, report)
+}
+
+/** The locked tracks holding a clip this shift would move: its linked partners there. */
+function lockedHolders(seq: Sequence, deltaById: ReadonlyMap<Id, number>): Id[] {
+  return seq.tracks.filter((t) => t.locked && t.clips.some((c) => deltaById.has(c.id))).map((t) => t.id)
 }
 
 /**
@@ -1391,6 +1420,10 @@ export function closeAllGaps(seq: Sequence, trackId: Id, report?: RippleReport):
     if (Math.abs(d) > EPS) for (const gid of groupIdsOf(c, byLink)) deltaById.set(gid, d)
     cursor += clipDurationS(c)
   }
+  // A pair held by a locked partner stays, and the gaps after it still close
+  // up to it. He is told which lock kept the ones before it open.
+  const locks = lockedHolders(seq, deltaById)
+  if (locks.length > 0 && report) (report.lockedTrackIds ??= []).push(...locks)
   // Same guard as closeGapBefore: a partner on another track may not be shoved
   // through whatever is already sitting there just because this track repacks.
   const applied = clampShiftForCollisions(seq, holdLockedGroups(seq, deltaById, byLink), byLink)
@@ -1401,7 +1434,8 @@ export function closeAllGaps(seq: Sequence, trackId: Id, report?: RippleReport):
  * A group with a member on a locked track does not move at all. A lock is him
  * saying leave this alone, and a partner on another track is no way around it.
  * The collision clamp then holds every clip behind it on the same track, so
- * nothing lands on the held clip.
+ * nothing lands on the held clip. closeAllGaps only: closeGapBefore refuses
+ * the whole close instead, since its run has to move as one.
  */
 function holdLockedGroups(seq: Sequence, deltaById: Map<Id, number>, byLink: Map<Id, Id[]>): Map<Id, number> {
   const locked = new Set<Id>()

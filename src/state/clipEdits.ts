@@ -63,7 +63,7 @@ import {
 } from '../engine/types'
 import { transitionDurationSpec, type TransitionKind } from '../engine/render/types'
 import { noteRecentEffect } from './recentEffects'
-import { keptTimingMessage, newRippleReport } from './rippleNotice'
+import { keptTimingMessage, lockedGapMessage, newRippleReport } from './rippleNotice'
 import { updateActiveSequence, useStore } from './store'
 import { useToasts } from './toasts'
 
@@ -1407,6 +1407,9 @@ export function closeGapBeforeClip(clipId: Id): void {
   const before = activeSequence(useStore.getState().project)
   const report = newRippleReport()
   updateActiveSequence('Close gap', (sq) => closeGapBefore(sq, clipId, report))
+  // A pair held by a locked partner refuses the whole close, and says which lock.
+  const locked = lockedGapMessage(before, report, false)
+  if (locked) useToasts.getState().show(locked, 'info')
   const kept = keptTimingMessage(before, report)
   if (kept) useToasts.getState().show(kept, 'info')
 }
@@ -1415,6 +1418,8 @@ export function closeAllGapsOnTrack(trackId: Id): void {
   const before = activeSequence(useStore.getState().project)
   const report = newRippleReport()
   updateActiveSequence('Close gaps', (sq) => closeAllGaps(sq, trackId, report))
+  const locked = lockedGapMessage(before, report, true)
+  if (locked) useToasts.getState().show(locked, 'info')
   const kept = keptTimingMessage(before, report)
   if (kept) useToasts.getState().show(kept, 'info')
 }

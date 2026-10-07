@@ -2602,6 +2602,57 @@ describe('close gap carries the other tracks along', () => {
     expect(closeGapBefore(seq, 'v')).toBe(seq)
   })
 
+  // The review's case: the held pair stayed and the free clip AFTER it slid on,
+  // so the gap he pointed at stayed open, the one after the pair closed instead,
+  // and the captions followed that.
+  it('a pair held by a locked partner refuses the close, and nothing after it moves', () => {
+    const b = makeClip({ id: 'b', startS: 4, outS: 2, linkId: 'L' })
+    const sb = makeClip({ id: 'sb', startS: 4, outS: 2, linkId: 'L' })
+    const c = makeClip({ id: 'c', startS: 8, outS: 2 })
+    const a1 = makeTrack({ kind: 'audio', name: 'A1', locked: true, clips: [sb] })
+    const seq = makeSeq([makeTrack({ clips: [A(), b, c] }), makeTrack({ name: 'V2', clips: [cap('cap', 9)] }), a1])
+    const report = { heldTrackIds: [] as string[], lockedTrackIds: [] as string[] }
+    const out = closeGapBefore(seq, 'b', report)
+    expect(at(out, 'c')).toBe(8)
+    expect(at(out, 'cap')).toBe(9)
+    expect(out).toBe(seq)
+    expect(report.lockedTrackIds).toEqual([a1.id])
+    // The held pair in the MIDDLE of the run holds the clip before it too: no
+    // new gap opens between them.
+    const d = makeClip({ id: 'd', startS: 12, outS: 2 })
+    const mid = makeSeq([makeTrack({ clips: [A(), makeClip({ id: 'x', startS: 2.5, outS: 1.5 }), b, d] }), a1])
+    expect(closeGapBefore(mid, 'x')).toBe(mid)
+    // The gap after the held pair is its own, and closes as ever.
+    expect(at(closeGapBefore(seq, 'c'), 'c')).toBe(6)
+  })
+
+  it('Close all gaps still closes what it can, and names the lock that held the rest', () => {
+    const b = makeClip({ id: 'b', startS: 4, outS: 2, linkId: 'L' })
+    const sb = makeClip({ id: 'sb', startS: 4, outS: 2, linkId: 'L' })
+    const c = makeClip({ id: 'c', startS: 8, outS: 2 })
+    const a1 = makeTrack({ kind: 'audio', name: 'A1', locked: true, clips: [sb] })
+    const seq = makeSeq([makeTrack({ clips: [A(), b, c] }), a1])
+    const report = { heldTrackIds: [] as string[], lockedTrackIds: [] as string[] }
+    const out = closeAllGaps(seq, seq.tracks[0].id, report)
+    expect(at(out, 'b')).toBe(4)
+    expect(at(out, 'c')).toBeCloseTo(6, 9)
+    expect(report.lockedTrackIds).toEqual([a1.id])
+  })
+
+  // A partner with no room used to hold its own clip back while the clips before
+  // it on the line still slid the full gap, opening a new gap between them.
+  it('a run held back by a partner with no room moves as one, keeping its spacing', () => {
+    const b = makeClip({ id: 'b', startS: 4, outS: 1 })
+    const c = makeClip({ id: 'c', startS: 8, outS: 1, linkId: 'L' })
+    const sc = makeClip({ id: 'sc', startS: 8, outS: 1, linkId: 'L' })
+    const bed = makeClip({ id: 'bed', startS: 0, outS: 7 })
+    const seq = makeSeq([makeTrack({ clips: [A(), b, c] }), makeTrack({ kind: 'audio', name: 'A1', clips: [bed, sc] })])
+    const out = closeGapBefore(seq, 'b')
+    expect(at(out, 'b')).toBeCloseTo(3, 9)
+    expect(at(out, 'c')).toBeCloseTo(7, 9)
+    expect(at(out, 'sc')).toBeCloseTo(7, 9)
+  })
+
   it('closeAllGaps with two gaps moves a later caption by both', () => {
     const v2 = makeTrack({ name: 'V2', clips: [cap('mid', 7.5, 0.5), cap('end', 12)] })
     const seq = makeSeq([makeTrack({ clips: [A(), B(), C()] }), v2])

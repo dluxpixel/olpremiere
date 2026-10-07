@@ -5,7 +5,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { recomputeDuration } from '../engine/timeline'
 import { activeSequence, newClipFromAsset, newProject, type MediaAsset } from '../engine/types'
-import { crossfadeWithNeighbour, deleteSelected, PAIR_LOCKED_MESSAGE, splitAtPlayhead, topAndTail } from './clipEdits'
+import { closeGapBeforeClip, crossfadeWithNeighbour, deleteSelected, PAIR_LOCKED_MESSAGE, splitAtPlayhead, topAndTail } from './clipEdits'
 import { updateActiveSequence, useStore } from './store'
 
 const show = vi.fn()
@@ -61,6 +61,28 @@ describe('a locked partner holds through the keys', () => {
     deleteSelected(true)
     expect(useStore.getState().project).toBe(before)
     expect(said()).toEqual([PAIR_LOCKED_MESSAGE])
+  })
+
+  // The gap he pointed at stayed open while the clips after the held pair slid
+  // on, or nothing happened with no word at all.
+  it('Close gap before a pair held by its locked partner moves nothing, and names the lock', () => {
+    updateActiveSequence('make a gap', (sq) =>
+      recomputeDuration({
+        ...sq,
+        tracks: sq.tracks.map((t, i) =>
+          i === 0
+            ? { ...t, clips: [{ ...newClipFromAsset(av, 0), id: 'first', outS: 1 }, { ...t.clips[0]!, startS: 2 }] }
+            : i === 2
+              ? { ...t, clips: [{ ...t.clips[0]!, startS: 2 }] }
+              : t,
+        ),
+      }),
+    )
+    show.mockClear()
+    const before = useStore.getState().project
+    closeGapBeforeClip('vid')
+    expect(useStore.getState().project).toBe(before)
+    expect(said()).toEqual(['The gap stayed open: a clip after it is linked to one on A1, which is locked'])
   })
 
   it('a crossfade is not written onto a locked track', () => {
