@@ -19,7 +19,13 @@ import { clipEndS } from '../engine/timeline'
 import { activeSequence, type Sequence } from '../engine/types'
 import { captionsOn } from './captionActions'
 import { useStore } from './store'
-import { audibleClips, autoCaptionEveryClip, autoCaptionFromClip, type TranscribeStatus } from './transcribeActions'
+import {
+  audibleClips,
+  autoCaptionEveryClip,
+  autoCaptionFromClip,
+  type CaptionRunOptions,
+  type TranscribeStatus,
+} from './transcribeActions'
 
 /** The ids, plus every clip linked to one of them: a picture's sound comes with it. */
 export function withSoundPartners(seq: Sequence, ids: Iterable<string>): Set<string> {
@@ -71,16 +77,16 @@ function hasSound(clipId: string): boolean {
  * door captions it on purpose and says why. Nothing to hear at all goes to the
  * sweep, which says which reason it was.
  */
-export function captionTheseClips(ids: readonly string[], style?: CaptionStyle): Promise<void> {
+export function captionTheseClips(ids: readonly string[], style?: CaptionStyle, run: CaptionRunOptions = {}): Promise<void> {
   const targets = captionTargets(ids)
-  if (targets.length >= 2) return autoCaptionEveryClip(style, new Set(targets))
-  if (targets.length === 1) return autoCaptionFromClip(targets[0]!, style)
+  if (targets.length >= 2) return autoCaptionEveryClip(style, new Set(targets), run)
+  if (targets.length === 1) return autoCaptionFromClip(targets[0]!, style, run)
   const seq = activeSequence(useStore.getState().project)
   const sounding = [...withSoundPartners(seq, ids)].filter(hasSound)
   const own = sounding.filter((id) => seq.tracks.some((t) => t.kind === 'audio' && t.clips.some((c) => c.id === id)))
   const pick = own.length === 1 ? own : sounding
-  if (pick.length === 1) return autoCaptionFromClip(pick[0]!, style)
-  return autoCaptionEveryClip(style, withSoundPartners(seq, ids))
+  if (pick.length === 1) return autoCaptionFromClip(pick[0]!, style, run)
+  return autoCaptionEveryClip(style, withSoundPartners(seq, ids), run)
 }
 
 /**
@@ -127,9 +133,26 @@ export function voiceoverClipIds(): string[] {
 }
 
 /** "Caption the voiceover": every take of it, in one pass and one undo step. */
-export function captionTheVoiceover(style?: CaptionStyle): Promise<void> {
+export function captionTheVoiceover(style?: CaptionStyle, run: CaptionRunOptions = {}): Promise<void> {
   const ids = voiceoverClipIds()
-  return ids.length > 0 ? captionTheseClips(ids, style) : Promise.resolve()
+  return ids.length > 0 ? captionTheseClips(ids, style, run) : Promise.resolve()
+}
+
+/**
+ * Captions from his own script, timed by listening (CA-6): the clips he
+ * selected, or the voiceover when he selected none, the same choice the big
+ * Caption button makes. Null when there is nothing to listen to, so the window
+ * he pasted into can say so instead of closing on nothing.
+ *
+ * His Shorts are scripted, and the names the model never heard ("Bamban" for
+ * Bun Bun) were the biggest group of his fixes. The script already spells them.
+ */
+export function captionFromScript(script: string, style?: CaptionStyle): Promise<void> | null {
+  const s = useStore.getState()
+  const selection = s.ui.selection
+  const picked = [...withSoundPartners(activeSequence(s.project), selection)].filter(hasSound)
+  if (picked.length > 0) return captionTheseClips(selection, style, { script })
+  return voiceoverClipIds().length > 0 ? captionTheVoiceover(style, { script }) : null
 }
 
 /**

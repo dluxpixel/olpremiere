@@ -45,7 +45,7 @@ vi.mock('./captionVocabulary', async () => {
   return { currentVocabulary: () => new Promise((r) => setTimeout(() => r(vocab.next ?? EMPTY_VOCABULARY), 5)) }
 })
 
-import { AUTO_SHAPE, cleanShape } from '../engine/captions/captionStyle'
+import { AUTO_SHAPE, BUILTIN_CAPTION_STYLES, cleanShape } from '../engine/captions/captionStyle'
 import type { CaptionWord } from '../engine/captions/captions'
 import { clipEndS } from '../engine/timeline'
 import {
@@ -59,6 +59,7 @@ import {
 } from '../engine/types'
 import { CAPTION_TRACK_NAME, captionsOn, setCaptionText } from './captionActions'
 import {
+  captionFromScript,
   captionJobProgress,
   captionLabel,
   captionTargets,
@@ -69,7 +70,7 @@ import {
 } from './captionRun'
 import { reloadCaptionStyles, saveNewCaptionStyle, setDefaultCaptionStyle } from './captionStyles'
 import { updateActiveSequence, useStore } from './store'
-import { captionEars, useTranscribe } from './transcribeActions'
+import { SCRIPT_NOT_HEARD, captionEars, useTranscribe } from './transcribeActions'
 import { wordsOnTimeline } from '../engine/transcriptCut'
 import { clipsWithoutWords, listenForEveryClip } from './transcriptActions'
 
@@ -448,6 +449,60 @@ describe('a spelling he has fixed once', () => {
     vocab.next = { rewrites: [], candidates: [{ heard: ['nowhere'], his: 'somewhere', seen: 1 }] }
     await captionTheseClips([b])
     expect(toastActions.filter(Boolean)).toEqual([])
+  })
+})
+
+// CA-6. His Shorts are scripted, and the names the model never heard were the
+// biggest group of his fixes. His script is laid down in his words, timed by
+// what the clips were heard to say.
+describe('captions from his own script', () => {
+  const said = (): string[] => captionsOn(seq()).map(({ clip }) => clip.title!.text)
+  const spoken = { ...BUILTIN_CAPTION_STYLES[0]!, caseRule: 'spoken' as const }
+
+  it('lays his words at the heard times, his spelling and capitals, in one undo step', async () => {
+    const { b } = seed()
+    useStore.getState().setUI({ selection: [b] })
+    const before = videoTracks(seq()).length
+    // The model heard "twob" where he wrote "Two B".
+    await captionFromScript('Oneb Two B threeb.', spoken)
+    expect(heard).toEqual([b])
+    expect(said().join(' ')).toBe('Oneb Two B threeb.')
+    // Each word on screen when it was heard: "Two B" over the one word "twob".
+    const at = captionsOn(seq()).flatMap(({ clip }) => (clip.captionWords ?? []).map((w) => [w.text, clip.startS + w.startS] as const))
+    expect(at.map(([t]) => t)).toEqual(['Oneb', 'Two', 'B', 'threeb.'])
+    expect(at[1]![1]).toBeCloseTo(3.25, 6)
+    expect(at[3]![1]).toBeCloseTo(3.5, 6)
+    // His words, not the machine's: nothing for his vocabulary to learn from.
+    expect(captionsOn(seq()).every(({ clip }) => !clip.captionOrigin)).toBe(true)
+    useStore.getState().undo()
+    expect(videoTracks(seq())).toHaveLength(before)
+  })
+
+  it('with nothing selected it times the voiceover, and keeps the captions of every take the script is not about', async () => {
+    const { a, b, c } = seed()
+    await captionTheseClips([a, b, c])
+    heard.length = 0
+    useStore.getState().setUI({ selection: [] })
+    await captionFromScript('oneb two b threeb')
+    expect(heard).toEqual([a, b, c])
+    const text = said().join(' ')
+    expect(text).toContain('onea')
+    expect(text).toContain('threec')
+    expect(text).toContain('two b')
+    expect(text).not.toContain('twob')
+  })
+
+  it('a script nobody said there lays nothing, and says so', async () => {
+    const { b } = seed()
+    useStore.getState().setUI({ selection: [b] })
+    await captionFromScript('completely different words')
+    expect(captionsOn(seq())).toHaveLength(0)
+    expect(toasted).toContain(SCRIPT_NOT_HEARD)
+  })
+
+  it('is null when there is nothing to listen to, so the window can say so', () => {
+    expect(captionFromScript('so it goes')).toBeNull()
+    expect(heard).toEqual([])
   })
 })
 

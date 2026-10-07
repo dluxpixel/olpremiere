@@ -1,22 +1,28 @@
-// Captions from a script, the two roads that do not listen:
-//   Paste  - a word-timed JSON list or an SRT (exact timings win).
+// Captions from a script:
+//   Paste  - his script as plain text, timed by listening to what he selected
+//            or the voiceover (CA-6); or a word-timed JSON list or an SRT,
+//            whose exact timings win and nothing is heard.
 //   Tap    - type the script, press Start, tap Enter on each word as the
 //            voiceover plays; taps become the word timings.
-// Both funnel into addCaptionsFromWords, same as Auto-Caption, in the caption
-// style new captions use. Opened from the Captions tab, which holds everything
-// else this window used to (the auto buttons, the style, the language).
+// All of them funnel into addCaptionsFromWords, same as Auto-Caption, in the
+// caption style new captions use. Opened from the Captions tab, which holds
+// everything else this window used to (the auto buttons, the style, the language).
 
 import { X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { parseTranscript, tapsToWords } from '../engine/captions/transcript'
 import { addCaptionsFromWords } from '../state/captionActions'
+import { captionFromScript } from '../state/captionRun'
 import { defaultCaptionStyle } from '../state/captionStyles'
 import { pausePlayback, togglePlay } from '../state/playbackControl'
 import { useStore } from '../state/store'
 import { Button, IconButton } from '../ui/Button'
 import { useEscapeToClose } from '../ui/useEscapeToClose'
 
-const PASTE_HINT = `[{"text":"so","startS":0.1,"endS":0.4}, …]   or an .srt`
+const PASTE_HINT = `Your script as you wrote it, or a JSON word list, or an .srt`
+
+/** Text that was meant as timings (JSON or SRT) but did not read as them. Never a script. */
+const meantAsTimings = (text: string): boolean => /^\s*[[{]/.test(text) || text.includes('-->')
 
 export type ScriptMode = 'paste' | 'tap'
 
@@ -91,11 +97,20 @@ export function CaptionsDialog({ onClose, initialMode = 'paste' }: { onClose: ()
 
   const applyPaste = () => {
     const words = parseTranscript(text)
-    if (!words || words.length === 0) {
-      setError('Could not read that. Paste a JSON word list or an SRT.')
+    if (words && words.length > 0) {
+      addCaptionsFromWords(words, { label: 'Captions from transcript', style: defaultCaptionStyle() })
+      onClose()
       return
     }
-    addCaptionsFromWords(words, { label: 'Captions from transcript', style: defaultCaptionStyle() })
+    if (!/[\p{L}\p{N}]/u.test(text) || meantAsTimings(text)) {
+      setError('Could not read that. Paste your script, a JSON word list or an SRT.')
+      return
+    }
+    // Plain text is his script: listened to for the timing, laid down in his words.
+    if (!captionFromScript(text)) {
+      setError('There is nothing to listen to for the timing. Select the clips you said it in, or add a voiceover.')
+      return
+    }
     onClose()
   }
 
@@ -146,7 +161,7 @@ export function CaptionsDialog({ onClose, initialMode = 'paste' }: { onClose: ()
                   mode === m ? 'bg-accent-quiet text-accent' : 'text-text-secondary hover:text-text-primary'
                 }`}
               >
-                {m === 'paste' ? 'Paste transcript' : 'Tap to time'}
+                {m === 'paste' ? 'Paste script' : 'Tap to time'}
               </button>
             ))}
           </div>
@@ -185,7 +200,7 @@ export function CaptionsDialog({ onClose, initialMode = 'paste' }: { onClose: ()
               <div className="flex items-center gap-2">
                 <span className="text-[10px] text-text-muted">
                   {mode === 'paste'
-                    ? 'Exact word timings (JSON) or SRT cues, spread word-by-word.'
+                    ? 'A script is timed by listening to what you selected, or the voiceover. JSON or SRT keep their own timings.'
                     : 'Playback starts at the playhead; captions land as you tap.'}
                 </span>
                 <div className="ml-auto">

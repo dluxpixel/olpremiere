@@ -519,7 +519,7 @@ function CreatePart({ onScript }: { onScript: (mode: ScriptMode) => void }) {
           onClick={() => onScript('paste')}
           className="cursor-default rounded-field px-1 text-text-secondary underline-offset-2 hover:text-text-primary hover:underline disabled:opacity-40"
         >
-          Paste a transcript
+          Paste a script
         </button>
         <span aria-hidden>·</span>
         <button

@@ -30,6 +30,7 @@ import { clipEndS } from '../engine/timeline'
 import { activeSequence, type Clip, type MediaAsset, type SpokenWord } from '../engine/types'
 import type { CaptionWord } from '../engine/captions/captions'
 import type { CaptionStyle } from '../engine/captions/captionStyle'
+import { alignScript } from '../engine/captions/scriptAlign'
 import { addCaptionsFromWords } from './captionActions'
 import { defaultCaptionStyle } from './captionStyles'
 import { currentVocabulary } from './captionVocabulary'
@@ -404,6 +405,68 @@ async function hearClip(clip: Clip, asset: MediaAsset, opts: HearOptions, job: C
 /** The recogniser's measured lag for the language he picked (wordTiming.ts). */
 export const wordLagNow = (): number => whisperModel(modelFor(getCaptionLanguage())).wordLagS
 
+/** What a caption door is asked for beyond listening. */
+export interface CaptionRunOptions {
+  /**
+   * His own script (CA-6). The clips are heard for the TIMING only, and the
+   * words laid down are his, in his spelling and punctuation (scriptAlign.ts).
+   */
+  script?: string
+}
+
+/** Said when none of his script was heard in the clips, so nothing was laid. */
+export const SCRIPT_NOT_HEARD = 'None of your script was heard there, so nothing was captioned. Select the clips you said it in'
+
+/**
+ * Lay what a door heard as captions: the recogniser's words, or his script
+ * timed by them. One dispatch, one undo step, the same for every door.
+ *
+ * ⛔ A SCRIPT RUN IS HIS WORDS, NOT THE MACHINE'S. It carries no model, so no
+ * caption is stamped as what the recogniser wrote: his vocabulary never learns a
+ * "correction" from his own script, and no spelling of his is offered back to him.
+ *
+ * ⛔ AND IT REPLACES ONLY THE CLIPS HIS SCRIPT LANDED IN. "Caption the voiceover"
+ * hears every take, and a script for one take used to be laid over all of them:
+ * every other take's captions went, replaced by nothing.
+ */
+function layCaptions(
+  words: CaptionWord[],
+  o: {
+    label: string
+    style: CaptionStyle
+    coveredSpans: { startS: number; endS: number }[]
+    heard: { assetId: string; fromS: number; toS: number; words: SpokenWord[] }[]
+    vocabulary: Vocabulary | undefined
+    script?: string
+  },
+): void {
+  if (o.script === undefined) {
+    addCaptionsFromWords(words, {
+      label: o.label,
+      style: o.style,
+      model: modelFor(getCaptionLanguage()),
+      coveredSpans: o.coveredSpans,
+      heard: o.heard,
+      wordLagS: wordLagNow(),
+      vocabulary: o.vocabulary,
+    })
+    return
+  }
+  const timed = alignScript(o.script, words)
+  if (!timed) {
+    useToasts.getState().show(SCRIPT_NOT_HEARD, 'danger')
+    return
+  }
+  const landed = o.coveredSpans.filter((sp) => timed.some((w) => w.startS >= sp.startS - 1e-9 && w.startS < sp.endS - 1e-9))
+  addCaptionsFromWords(timed, {
+    label: 'Captions from your script',
+    style: o.style,
+    coveredSpans: landed.length > 0 ? landed : o.coveredSpans,
+    heard: o.heard,
+    wordLagS: wordLagNow(),
+  })
+}
+
 /**
  * What the caption doors listen with. Test seam: the end to end suite puts a
  * stand in here so a caption run can be driven through the real menus without
@@ -513,7 +576,7 @@ export function audibleClips(onlyIds?: ReadonlySet<string>): {
 }
 
 /** Transcribe the audio clip locally and lay its words down as captions. */
-export async function autoCaptionFromClip(clipId: string, style?: CaptionStyle): Promise<void> {
+export async function autoCaptionFromClip(clipId: string, style?: CaptionStyle, run: CaptionRunOptions = {}): Promise<void> {
   const toasts = useToasts.getState()
   if (useTranscribe.getState().status !== 'idle') {
     toasts.show('A transcription is already running', 'danger')
@@ -599,17 +662,16 @@ export async function autoCaptionFromClip(clipId: string, style?: CaptionStyle):
     } else {
       // No style passed (the right-click door) falls back to his DEFAULT style,
       // so every door produces the same captions.
-      addCaptionsFromWords(words, {
+      layCaptions(words, {
         label: 'Auto-caption from voiceover',
         style: style ?? defaultCaptionStyle(),
-        model: modelFor(getCaptionLanguage()),
         // The clip it heard, not the box around the words it found: a re-run
         // replaces every old caption in this clip, and none in the next one.
         coveredSpans: [{ startS: live.startS, endS: clipEndS(live) }],
         // And what it heard goes on the media for the Words tab, same undo step.
         heard: spoken ? [{ assetId: asset.id, fromS: clip.inS, toS: clip.outS, words: spoken }] : [],
-        wordLagS: wordLagNow(),
         vocabulary: learned,
+        script: run.script,
       })
     }
   } catch (err) {
@@ -770,6 +832,7 @@ export async function autoCaptionEveryClip(
   style?: CaptionStyle,
   /** When given, caption only these clips. Used by the right-click on a selection. */
   onlyIds?: ReadonlySet<string>,
+  run: CaptionRunOptions = {},
 ): Promise<void> {
   const toasts = useToasts.getState()
   if (useTranscribe.getState().status !== 'idle') {
@@ -886,14 +949,13 @@ export async function autoCaptionEveryClip(
     toasts.show(cancelled ? 'Stopped before anything was heard' : 'No speech found in any clip', 'danger')
     return
   }
-  addCaptionsFromWords(words, {
+  layCaptions(words, {
     label: onlyIds ? 'Auto-caption selected clips' : 'Auto-caption every clip',
     style: style ?? defaultCaptionStyle(),
-    model: modelFor(getCaptionLanguage()),
     coveredSpans,
     heard: spokenOn,
-    wordLagS: wordLagNow(),
     vocabulary: learned,
+    script: run.script,
   })
   if (cancelled) toasts.show('Stopped early, captioned what was heard so far')
   else if (failed > 0) toasts.show(`${failed} clip${failed === 1 ? '' : 's'} could not be read`, 'danger')

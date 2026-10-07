@@ -8,8 +8,9 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { activeSequence, newProject } from '../engine/types'
-import { addCaptionsFromWords, captionsOn } from '../state/captionActions'
-import { useStore } from '../state/store'
+import { CAPTION_TRACK_NAME, addCaptionsFromWords, captionsOn } from '../state/captionActions'
+import { updateActiveSequence, useStore } from '../state/store'
+import { useToasts } from '../state/toasts'
 import { CaptionsTab } from './CaptionsTab'
 
 const texts = (): string[] => captionsOn(activeSequence(useStore.getState().project)).map(({ clip }) => clip.title!.text)
@@ -41,5 +42,18 @@ describe('Replace all', () => {
     expect(texts()).toContain('bambans')
     useStore.getState().undo()
     expect(texts().filter((t) => t === 'bamban')).toHaveLength(2)
+  })
+
+  it('leaves a locked Captions track alone, and tells him', () => {
+    updateActiveSequence('lock', (sq) => ({
+      ...sq,
+      tracks: sq.tracks.map((t) => (t.name === CAPTION_TRACK_NAME ? { ...t, locked: true } : t)),
+    }))
+    render(<CaptionsTab />)
+    fireEvent.change(screen.getByTestId('captions-search'), { target: { value: 'bamban' } })
+    fireEvent.change(screen.getByTestId('captions-replace'), { target: { value: 'Bun Bun' } })
+    fireEvent.click(screen.getByTestId('captions-replace-all'))
+    expect(texts().filter((t) => t === 'bamban')).toHaveLength(2)
+    expect(useToasts.getState().toasts.map((t) => t.message)).toContain('Your Captions track is locked, so nothing was changed')
   })
 })
