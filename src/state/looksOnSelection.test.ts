@@ -270,6 +270,37 @@ describe('a second look', () => {
     expect(shown.map((t) => t.message)).toEqual(['Swapped Teal and Orange for Moody Gym'])
   })
 
+  it('turns the look back on when he switched it off and applies it again, in ONE undo step, and says so', () => {
+    const ids = threeClips()
+    setStack(ids[0]!, [{ id: 'm', type: 'lookMoodyGym', enabled: false, params: { amount: 0.7 } }])
+    shown.length = 0
+    expect(applyEffectToClips([ids[0]!], 'lookMoodyGym')).toBe(1)
+    // The very look it wore, at its own Amount, switched back on.
+    expect(clipById(ids[0]!).effects.map((e) => [e.id, e.type, e.params.amount, e.enabled])).toEqual([['m', 'lookMoodyGym', 0.7, true]])
+    expect(shown.map((t) => t.message)).toEqual(['Turned Moody Gym back on'])
+    expect(useStore.getState().undo()).toBe('Apply Moody Gym')
+    expect(clipById(ids[0]!).effects[0]!.enabled).toBe(false)
+  })
+
+  it('turns it back on from the Inspector Add effect menu on one clip too', () => {
+    const ids = threeClips()
+    setStack(ids[0]!, [{ id: 'm', type: 'lookMoodyGym', enabled: false, params: { amount: 1 } }])
+    shown.length = 0
+    applyEffect(ids[0]!, 'lookMoodyGym')
+    expect(clipById(ids[0]!).effects.map((e) => [e.id, e.enabled])).toEqual([['m', true]])
+    expect(shown.map((t) => t.message)).toEqual(['Turned Moody Gym back on'])
+    expect(useStore.getState().undo()).toBe('Apply Moody Gym')
+  })
+
+  it('says how many it turned back on in a selection', () => {
+    const ids = threeClips()
+    setStack(ids[0]!, [{ id: 'm', type: 'lookMoodyGym', enabled: false, params: { amount: 1 } }])
+    shown.length = 0
+    expect(applyEffectToClips(ids, 'lookMoodyGym')).toBe(3)
+    for (const id of ids) expect(clipById(id).effects.map((e) => [e.type, e.enabled])).toEqual([['lookMoodyGym', true]])
+    expect(shown.map((t) => t.message)).toEqual(['Added Moody Gym to 3 clips. 1 had it switched off, now back on'])
+  })
+
   it("keeps a keyframed Amount, his fade, on the look that takes the old one's place", () => {
     const ids = threeClips()
     const fade = { value: 1, keyframes: [{ t: 0, value: 0, ease: 'linear' as const }, { t: 1.5, value: 1, ease: 'linear' as const }] }
@@ -479,6 +510,17 @@ describe('a look in a saved preset', () => {
     expect(clipById(ids[0]!).effects[0]!.id).toBe('a')
     expect(clipById(ids[0]!).effects[0]!.params.amount).toBe(1)
     expect(shown.map((t) => t.message)).toEqual(['Applied "Teal grade". Teal and Orange took the place of Moody Gym'])
+  })
+
+  it('turns the look back on on a clip that wears it switched off', () => {
+    const ids = threeClips()
+    setStack(ids[0]!, [{ id: 'm', type: 'lookMoodyGym', enabled: false, params: { amount: 0.4 } }])
+    useStore.getState().setUI({ selection: [ids[0]!] })
+    useLibrary.setState({ presets: [moodyOnly] })
+    shown.length = 0
+    applyPresetToSelection('p2')
+    expect(clipById(ids[0]!).effects.map((e) => [e.id, e.params.amount, e.enabled])).toEqual([['m', 0.4, true]])
+    expect(shown.map((t) => t.message)).toEqual(['Applied "Moody". Turned Moody Gym back on'])
   })
 
   it('keeps the keyframed Amount of the look it takes the place of, over the Amount it was saved with', () => {

@@ -801,6 +801,8 @@ interface PresetRun {
   adjustments: number
   /** Clips already wearing the look, which kept the one they had. */
   already: number
+  /** Of those, the ones wearing it switched off, which it switched back on. */
+  reenabled: number
   /** Clips whose old look the preset's look took the place of. */
   swapped: number
   /** The label of the look a swap took off, when every swap took off the same one. */
@@ -831,7 +833,7 @@ interface PresetRun {
 function runPreset(preset: EffectPreset, ids: readonly Id[], label: string): PresetRun {
   const looks = preset.effects.filter((e) => isLookType(e.type))
   const last = looks[looks.length - 1]
-  const run: PresetRun = { changed: 0, titles: 0, adjustments: 0, already: 0, swapped: 0 }
+  const run: PresetRun = { changed: 0, titles: 0, adjustments: 0, already: 0, reenabled: 0, swapped: 0 }
   if (last) run.look = getEffect(last.type)?.label ?? last.type
   const swappedFrom = new Set<string>()
   const byId = new Map(activeSequence(useStore.getState().project).tracks.flatMap((t) => t.clips.map((c) => [c.id, c])))
@@ -850,13 +852,16 @@ function runPreset(preset: EffectPreset, ids: readonly Id[], label: string): Pre
     const worn = wornLook(next)
     // A look the clip wore that is gone now: the one the preset's look swapped,
     // or the other of two stacked before the rule.
-    const gone = worn && c.effects.find((e) => isLookType(e.type) && !next.effects.includes(e))
+    const gone = worn && c.effects.find((e) => isLookType(e.type) && !next.effects.some((n) => n.id === e.id))
     if (c.title) run.titles++
     else if (graded) run.adjustments++
     else if (gone) {
       run.swapped++
       swappedFrom.add(getEffect(gone.type)?.label ?? gone.type)
-    } else if (old && worn?.id === old.id) run.already++
+    } else if (old && worn?.id === old.id) {
+      if (!old.enabled && worn.enabled) run.reenabled++
+      else run.already++
+    }
     return next
   })
   if (swappedFrom.size === 1) run.swappedFrom = [...swappedFrom][0]
@@ -899,6 +904,9 @@ function presetLookNote(run: PresetRun): string {
   let s = ''
   if (run.swapped > 0) {
     s += `. ${run.look} took the place of ${run.swappedFrom ?? 'the old look'}${run.swapped < run.changed ? ` on ${run.swapped}` : ''}`
+  }
+  if (run.reenabled > 0) {
+    s += run.changed === 1 ? `. Turned ${run.look} back on` : `. ${run.reenabled} had ${run.look} switched off, now back on`
   }
   if (run.already > 0) s += `. ${run.already} already had ${run.look}`
   if (run.titles > 0) s += '. Looks leave titles and captions clean'

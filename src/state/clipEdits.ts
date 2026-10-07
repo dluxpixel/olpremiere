@@ -732,10 +732,12 @@ export function applyEffect(clipId: string, type: string): void {
       return
     }
     const worn = clip.effects.filter((e) => ops.isLookType(e.type))
-    if (worn.length === 1 && worn[0].type === type) {
+    if (worn.length === 1 && worn[0].type === type && worn[0].enabled) {
       show(`That clip already has ${label}`, 'info')
       return
     }
+    // Wearing it switched off: applying it again switches it back on (putLook).
+    const off = worn.some((e) => e.type === type && !e.enabled)
     // The look it takes off: the one it swaps, or the other of two stacked
     // before the rule when the clip already wears this one (putLook keeps it).
     const gone = worn.find((e) => e.type !== type)
@@ -743,7 +745,9 @@ export function applyEffect(clipId: string, type: string): void {
     // A locked track refuses the edit and leaves the clip as it was.
     if (findClip(clipId) === clip) return
     noteRecentEffect(type)
-    if (gone) show(`Swapped ${getEffect(gone.type)?.label ?? gone.type} for ${label}`, 'success')
+    const goneLabel = gone && (getEffect(gone.type)?.label ?? gone.type)
+    if (off) show(`Turned ${label} back on${goneLabel ? ` and took ${goneLabel} off` : ''}`, 'success')
+    else if (goneLabel) show(`Swapped ${goneLabel} for ${label}`, 'success')
     return
   }
   mapClip(clipId, `Add ${label}`, (c) => ops.addEffect(c, type, id))

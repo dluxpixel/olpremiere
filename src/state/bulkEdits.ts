@@ -204,6 +204,8 @@ interface EffectRun {
   adjustments: number
   /** A look only: clips already wearing this very look, left as they were. */
   already: number
+  /** A look only: of the changed clips, the ones wearing it switched off, which it switched back on. */
+  reenabled: number
   /** A look only: of the changed clips, the ones whose old look it swapped out. */
   swapped: number
   /** A look only: the label of the look a swap took off, when every swap took off the same one. */
@@ -263,6 +265,7 @@ function runEffect(ids: Iterable<string>, type: string): EffectRun {
     titles: unlocked.length - lookable.length,
     adjustments: lookable.length - open.length,
     already: 0,
+    reenabled: 0,
     swapped: 0,
   }
   if (open.length === 0) return run
@@ -280,6 +283,7 @@ function runEffect(ids: Iterable<string>, type: string): EffectRun {
       return c
     }
     run.changed++
+    if (c.effects.some((e) => e.type === type && !e.enabled)) run.reenabled++
     // The look it took off: the one it swapped, or the other of two stacked
     // before the rule when the clip already wore this one.
     const gone = c.effects.find((e) => isLookType(e.type) && e.type !== type)
@@ -333,10 +337,13 @@ export function applyEffectToClips(ids: Iterable<string>, type: string): number 
   }
   // A look that swapped one out says so even on a lone clip: the old look's card
   // is gone from the Inspector, and nothing else would tell him where it went.
+  // So does one it switched back on, or it would look as if nothing happened.
   const leftAlone = run.locked + run.titles + run.adjustments + run.already
-  if (run.changed === 1 && run.swapped === 1 && run.swappedFrom && leftAlone === 0) {
+  if (run.changed === 1 && run.reenabled === 1 && leftAlone === 0) {
+    show(`Turned ${label} back on${run.swapped === 1 && run.swappedFrom ? ` and took ${run.swappedFrom} off` : ''}`, 'success')
+  } else if (run.changed === 1 && run.swapped === 1 && run.swappedFrom && leftAlone === 0) {
     show(`Swapped ${run.swappedFrom} for ${label}`, 'success')
-  } else if (run.changed > 1 || run.swapped + leftAlone > 0) {
+  } else if (run.changed > 1 || run.swapped + run.reenabled + leftAlone > 0) {
     show(`Added ${label} to ${run.changed} clip${run.changed === 1 ? '' : 's'}${lookAfterword(run)}`, 'success')
   }
   return run.changed
@@ -352,6 +359,7 @@ function lookAfterword(run: EffectRun): string {
   if (run.swapped > 0) {
     s += `, in place of ${run.swappedFrom ?? 'the old look'}${run.swapped < run.changed ? ` on ${run.swapped}` : ''}`
   }
+  if (run.reenabled > 0) s += `. ${run.reenabled} had it switched off, now back on`
   if (run.already > 0) s += `. ${run.already} already had it`
   if (run.titles > 0) s += '. Titles and captions left clean'
   if (run.adjustments > 0) s += '. Adjustment layers left alone, so nothing is graded twice'

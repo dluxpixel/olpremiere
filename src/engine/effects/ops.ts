@@ -83,7 +83,8 @@ export function isLookType(type: string): boolean {
  * exposure down twice, two crushing curves, two vignettes, two grains, and the
  * picture goes to black. hasJettismGrade (state/lookActions.ts) guards the other
  * grade on the same shelf against exactly this. So:
- *   - a clip already wearing this look is handed back untouched;
+ *   - a clip already wearing this look is handed back untouched, unless he
+ *     switched it off: applying it again switches it back on;
  *   - a clip wearing another look has it SWAPPED, in the slot the old one held,
  *     so whatever he stacked around it stays where he put it, and a fade he
  *     keyframed on its Amount stays with the new look (swappedIn);
@@ -97,11 +98,12 @@ export function putLook(clip: Clip, type: string, id: Id): Clip {
   if (!def || !isLookType(type)) return clip
   const worn = clip.effects.filter((e) => isLookType(e.type))
   if (worn.length === 0) return addEffect(clip, type, id)
-  // Already wearing it: alone, nothing to do. Next to another look from before
-  // the rule, it stays (its own instance, slot and Amount) and the other goes.
+  // Already wearing it: alone and on, nothing to do. Next to another look from
+  // before the rule, it stays (its own instance, slot and Amount) and the other
+  // goes. Switched off, applying it again is asking for it back on.
   const same = worn.find((e) => e.type === type)
-  if (same && worn.length === 1) return clip
-  const keep = same ?? swappedIn(def, id, worn)
+  if (same && worn.length === 1 && same.enabled) return clip
+  const keep = same ? (same.enabled ? same : { ...same, enabled: true }) : swappedIn(def, id, worn)
   const slot = clip.effects.indexOf(same ?? worn[0])
   const effects = clip.effects.flatMap((e, i) => (i === slot ? [keep] : isLookType(e.type) ? [] : [e]))
   return { ...clip, effects }
