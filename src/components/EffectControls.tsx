@@ -533,6 +533,23 @@ function ChannelRow({
 }
 
 /**
+ * Zoom inside and Crop, for a TITLE, only when the title already uses them.
+ *
+ * A title is drawn at the frame's own size, so Zoom inside on it crops that
+ * whole frame (a second, odder Scale) and Crop cuts the frame, not the words.
+ * One click on a caption showed both under the rows that really move it
+ * (2026-10-06). Frame and Flip were already hidden for titles for the same
+ * reason. A title that carries a crop (an old project, pasted attributes) keeps
+ * both rows, so nothing he set is ever out of reach.
+ */
+export function showsCropRows(clip: Clip): boolean {
+  if (!clip.title) return true
+  const { t, r, b, l } = clip.transform.crop
+  if (t !== 0 || r !== 0 || b !== 0 || l !== 0) return true
+  return (['cropT', 'cropR', 'cropB', 'cropL'] as const).some((ch) => channelKeyframes(clip, ch).length > 0)
+}
+
+/**
  * Zoom INSIDE the picture: the footage magnifies, its rectangle does not move.
  *
  * His ask, 2026-08-16. On a 9:16 short, Scale grows the picture out over the
@@ -1328,6 +1345,7 @@ export function EffectControls({
   // wired, still tested, one click away under the shelf, and no longer the first
   // thing he sees when he clicks a clip.
   const handTuneOpen = useStore((s) => s.ui.handTuneOpen)
+  const cropRows = showsCropRows(clip)
   return (
     <div className="flex flex-col gap-5">
       {isAdjustment && (
@@ -1383,7 +1401,7 @@ export function EffectControls({
               </Section>
               {/* Directly under Scale, because that is where he looks for a zoom
                   and because the difference between the two is the point. */}
-              <InnerZoomRow clip={clip} playheadS={playheadS} />
+              {cropRows && <InnerZoomRow clip={clip} playheadS={playheadS} />}
               {!clip.title && <FlipRow clip={clip} />}
               <div className="h-px bg-border" />
             </>
@@ -1406,8 +1424,12 @@ export function EffectControls({
                   ))}
                 </select>
               </PropRow>
-              <div className="h-px bg-border" />
-              <Section title="Crop" channels={['cropT', 'cropR', 'cropB', 'cropL']} clip={clip} playheadS={playheadS} />
+              {cropRows && (
+                <>
+                  <div className="h-px bg-border" />
+                  <Section title="Crop" channels={['cropT', 'cropR', 'cropB', 'cropL']} clip={clip} playheadS={playheadS} />
+                </>
+              )}
             </>
           )}
           <div className="h-px bg-border" />
