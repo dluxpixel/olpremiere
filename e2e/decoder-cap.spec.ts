@@ -19,7 +19,7 @@ import { expect, test } from '@playwright/test'
 
 const FIXTURE = 'e2e/.fixtures/clip.webm'
 
-type Stats = { assets: number; openDecoders: number; decoderCap: number }
+type Stats = { assets: number; openDecoders: number; decoderCap: number; pumping: number; queued: number; decodingNow: number }
 
 const stats = async (page: import('@playwright/test').Page): Promise<Stats> =>
   page.evaluate(async () => {
@@ -80,14 +80,28 @@ test('scrubbing across many clips never leaves more decoders open than the cap',
     .poll(async () => (await stats(page)).assets, { timeout: 15_000 })
     .toBeGreaterThan(1)
 
-  const s = await stats(page)
-  console.log(`[decoders] assets=${s.assets} open=${s.openDecoders} cap=${s.decoderCap}`)
+  // ⛔ READ IT IDLE, AND THEN WITH NO HEADROOM (2026-10-06). The cap may be
+  // exceeded BRIEFLY: an entry mid-decode is never taken, because closing it would
+  // strand the pump on a disposed input. So this used to read whenever it read and
+  // allow cap + 4, and the logs show 10, 11 and exactly 12 (cap + 4): a number
+  // that depended on when the sample landed, sitting on its own bound. Once
+  // nothing is pumping, queued or decoding, every extra decoder is one nobody is
+  // using, so the idle count must be within the cap itself. The first idle read
+  // was 12 against 8: the frame cache reaped only when a decoder opened, never
+  // when a pump ended, and it reaps at both now (frameCache.ts, pump).
+  await expect
+    .poll(
+      async () => {
+        const now = await stats(page)
+        return now.pumping + now.queued + now.decodingNow
+      },
+      { timeout: 20_000, message: 'the frame cache never went idle after the walk' },
+    )
+    .toBe(0)
 
-  // The cap may be exceeded BRIEFLY: an entry mid-decode is never taken, because
-  // closing it would strand the pump on a disposed input. So the assertion has
-  // the same shape as the export pool's: bounded, with headroom for the frame
-  // genuinely being decoded, and nowhere near one-per-asset.
-  expect(s.openDecoders).toBeLessThanOrEqual(s.decoderCap + 4)
+  const s = await stats(page)
+  console.log(`[decoders] idle: assets=${s.assets} open=${s.openDecoders} cap=${s.decoderCap}`)
+  expect(s.openDecoders, 'decoders still open once nothing is decoding').toBeLessThanOrEqual(s.decoderCap)
   // And the point of the whole thing: it must not scale with the project.
   expect(s.openDecoders).toBeLessThan(s.assets)
 })
