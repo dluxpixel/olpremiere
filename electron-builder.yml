@@ -100,9 +100,11 @@ nsis:
 # Changing them also strands existing installs: a build already in the wild keeps
 # polling the feed it was compiled with, so it can never auto-update onto a new
 # one and has to be replaced by hand exactly once.
-# releaseType 'draft' uploads all assets reliably (no pre-existing-tag 422); the
-# release script (scripts/release.mjs) then flips it to published, which mints the
-# tag and makes it the 'latest' the updater sees.
+# electron-builder itself never publishes (scripts/release.mjs builds with
+# `--publish never`); this block only writes the feed address into the app. The
+# upload is scripts/publish.mjs: a draft first, every file checked on it at its
+# real size, latest.yml last, and only then published (scripts/githubRelease.mjs),
+# which makes it the 'latest' the updater sees.
 publish:
   provider: github
   owner: dluxpixel
