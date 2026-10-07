@@ -203,12 +203,30 @@ export async function publishRelease({
 
     // --- every file is there: NOW it goes live ---
     log(`• Publishing ${tag}…`)
-    await api(`${repoPath}/releases/${releaseId}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ draft: false, prerelease: false, make_latest: 'true' }),
-    })
+    try {
+      await api(`${repoPath}/releases/${releaseId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ draft: false, prerelease: false, make_latest: 'true' }),
+      })
+    } catch (e) {
+      // ⛔ A LOST ANSWER IS NOT A REFUSAL. GitHub can apply the publish and the
+      // connection die before its answer arrives. "NOT published, run it again" would
+      // then be false, and running it again deletes a release that is live. So ask.
+      const now = await api(`${repoPath}/releases/${releaseId}`).catch(() => null)
+      if (!now) {
+        const err = new Error(
+          `${tag} MAY ALREADY BE PUBLISHED: the publish call failed (${e.message}) and GitHub could not be asked afterwards.\n` +
+            `   Look at the release on GitHub before running anything again: a new run replaces it.`,
+        )
+        err.cause = e
+        err.publishUnknown = true
+        throw err
+      }
+      if (now.draft !== false) throw e
+      warn(`• The publish call failed (${e.message}), but GitHub shows ${tag} published. Checking it.`)
+    }
   } catch (e) {
-    throw stillADraft(e)
+    throw e.publishUnknown ? e : stillADraft(e)
   }
 
   // --- verify it really is out ---

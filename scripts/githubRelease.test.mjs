@@ -32,7 +32,7 @@ const curlFail = (status = 55) => Object.assign(new Error(`curl exited ${status}
  * what. `snapshots` records, at the instant a release goes public, which assets it
  * had, which is the question that matters.
  */
-function fakeGitHub({ ignoreDraft = false, failPatch = false, strayAsset = false } = {}) {
+function fakeGitHub({ ignoreDraft = false, failPatch = false, strayAsset = false, patchLost = false, offlineAfterPatch = false } = {}) {
   const gh = {
     releases: [],
     assets: new Map(), // releaseId -> [{ id, name, state, size }]
@@ -49,10 +49,14 @@ function fakeGitHub({ ignoreDraft = false, failPatch = false, strayAsset = false
   })
   const withAssets = (r) => ({ ...r, assets: [...(gh.assets.get(r.id) ?? [])] })
 
+  /** What fetch itself throws when the connection dies: no status, no answer. */
+  const connectionLost = () => new TypeError('fetch failed')
+  let patched = false
   gh.fetchImpl = async (url, opts = {}) => {
     const method = opts.method ?? 'GET'
     const path = new URL(url).pathname.slice(REPO.length)
     gh.events.push(`${method} ${path}`)
+    if (offlineAfterPatch && patched) throw connectionLost()
     let m
     if (method === 'GET' && path === '/releases') return json(200, gh.releases.map(withAssets))
     if (method === 'DELETE' && (m = /^\/releases\/(\d+)$/.exec(path))) {
@@ -88,6 +92,9 @@ function fakeGitHub({ ignoreDraft = false, failPatch = false, strayAsset = false
       const r = gh.releases.find((x) => x.id === Number(m[1]))
       Object.assign(r, { draft: JSON.parse(opts.body).draft })
       if (!r.draft) gh.snapshots.push((gh.assets.get(r.id) ?? []).map((a) => ({ name: a.name, size: a.size, state: a.state })))
+      patched = true
+      // Applied on GitHub's side, and then the answer never arrives.
+      if (patchLost) throw connectionLost()
       return json(200, withAssets(r))
     }
     if (method === 'GET' && (m = /^\/releases\/(\d+)$/.exec(path))) {
@@ -294,6 +301,23 @@ describe('a ship that fails part way', () => {
     expect(err.message).toContain('GitHub 500')
     expect(gh.public()).toHaveLength(0)
     expect(gh.assets.get(gh.releases[0].id)).toHaveLength(3)
+  })
+
+  it('⛔ a publish GitHub applied but whose answer was lost is published, not "NOT published"', async () => {
+    const gh = fakeGitHub({ patchLost: true })
+    const run = ship(gh)
+    const rel = await run.promise
+    expect(rel.draft).toBe(false)
+    expect(gh.public()).toHaveLength(1)
+    expect(run.out.lines.join('\n')).toContain(`GitHub shows ${TAG} published`)
+  })
+
+  it('when GitHub cannot be asked either, it says the release may be live, never that it is not', async () => {
+    const gh = fakeGitHub({ patchLost: true, offlineAfterPatch: true })
+    const err = await ship(gh).promise.catch((e) => e)
+    expect(err.message).toContain('MAY ALREADY BE PUBLISHED')
+    expect(err.message).not.toContain('NOT published')
+    expect(gh.public()).toHaveLength(1)
   })
 
   it('stops before uploading anything if GitHub hands back a release that is not a draft', async () => {
