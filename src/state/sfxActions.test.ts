@@ -3,11 +3,13 @@ import { join } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { sfxAssetName, sfxById } from '../engine/sfx/sfx'
 import { activeSequence, audioTracks, newProject } from '../engine/types'
+import { putBlob } from './persistence'
 import { insertSfxAtPlayhead } from './sfxActions'
 import { useStore } from './store'
 
+const show = vi.hoisted(() => vi.fn())
 vi.mock('./toasts', () => ({
-  useToasts: { getState: () => ({ show: () => {} }) },
+  useToasts: { getState: () => ({ show }) },
 }))
 vi.mock('./persistence', () => ({
   putBlob: vi.fn(async () => {}),
@@ -79,5 +81,16 @@ describe('insertSfxAtPlayhead', () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, blob: async () => new Blob() })))
     await insertSfxAtPlayhead('boom')
     expect(assets()).toHaveLength(0)
+  })
+
+  // ⛔ AU-21. Out of room, the save rejected into a `void` call and the click
+  // silently did nothing.
+  it('says so when the sound cannot be saved, and leaves the project untouched', async () => {
+    show.mockClear()
+    vi.mocked(putBlob).mockRejectedValueOnce(new DOMException('full', 'QuotaExceededError'))
+    await expect(insertSfxAtPlayhead('boom')).resolves.toBeUndefined()
+    expect(assets()).toHaveLength(0)
+    expect(seq().tracks.flatMap((t) => t.clips)).toHaveLength(0)
+    expect(show).toHaveBeenCalledWith(expect.stringContaining('Could not save the sound'), 'danger')
   })
 })

@@ -102,7 +102,15 @@ export async function insertSfxAtPlayhead(sfxId: string, place: SfxPlacement = {
     hasAudio: true,
     hasVideo: false,
   }
-  await putBlob(asset.blobKey, blob)
+  // ⛔ A SAVE THAT FAILS HAS TO SAY SO. This used to be an uncaught await inside
+  // a `void` call, so on his nearly full drive the click simply did nothing.
+  try {
+    await putBlob(asset.blobKey, blob)
+  } catch (err) {
+    console.warn('OL Premiere: could not save the sound', err)
+    useToasts.getState().show('Could not save the sound. If your drive is full, free up space and try again', 'danger')
+    return
+  }
 
   let clipId = ''
   useStore.getState().dispatch(`Add ${def.name}`, (p) => {
