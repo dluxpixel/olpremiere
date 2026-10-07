@@ -2048,7 +2048,11 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
   /**
    * A look's halation or bloom: bright pass into `extra`, blur it there, screen it
    * back over the layer through `scratch`. Radius arrives as a fraction of the
-   * frame's short side, so the glow is the same size on a 1080 and a 4K frame.
+   * frame's short side, so the glow keeps its size against the frame up to a short
+   * side of about 1830 px. Past that blurFbo's MAX_BLUR_PX cap (64) clips the
+   * widest ones: on a 2160 short side Golden Hour's bloom wants 76 px and gets 64,
+   * about 15% smaller. Preview and export still agree, because both blur the same
+   * sequence sized FBO; his 1080 x 1920 sequences never reach the cap.
    */
   function lookGlowFbo(srcFbo: Fbo, scratch: Fbo, extra: Fbo, p: Record<string, number>): void {
     gl.activeTexture(gl.TEXTURE0)

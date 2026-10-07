@@ -62,7 +62,10 @@ export const HUE_ZEROS: HueTable = [0, 0, 0, 0, 0, 0, 0]
  * pixel colour pass cannot).
  */
 export interface GlowSpec {
-  /** Spread, as a fraction of the frame's SHORT side, so it looks the same at any size and shape. */
+  /**
+   * Spread, as a fraction of the frame's SHORT side, so it looks the same at any
+   * shape and at any size up to the renderer's blur cap (lookGlowFbo says where).
+   */
   radius: number
   /** Encoded luma above which a pixel starts to glow. */
   threshold: number
