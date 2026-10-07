@@ -6,8 +6,8 @@
 
 import { app, dialog, type BrowserWindow } from 'electron'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { writeFile, unlink, stat } from 'node:fs/promises'
-import { unlinkSync } from 'node:fs'
+import { open, unlink, stat, type FileHandle } from 'node:fs/promises'
+import { closeSync, unlinkSync } from 'node:fs'
 import { constants as osConstants, setPriority, tmpdir } from 'node:os'
 import path from 'node:path'
 import type { NativeCaps, NativeEncoder, NativeExportConfig, NativeFinishResult, NativeStartResult } from './ipc-types'
@@ -48,7 +48,15 @@ export function isExporting(): boolean {
  * temp WAV right now, so a quit-during-export leaves nothing orphaned or leaked.
  */
 export function cancelSync(): void {
-  const stale = [pendingAudioPath, job?.outPath, job?.audioPath]
+  const stale = [pendingAudioPath, audioWrite?.path, job?.outPath, job?.audioPath]
+  if (audioWrite) {
+    try {
+      closeSync(audioWrite.handle.fd)
+    } catch {
+      // already closed
+    }
+    audioWrite = null
+  }
   if (job) {
     try {
       job.ffmpeg.stdin.destroy()
@@ -96,15 +104,83 @@ export async function probe(): Promise<NativeCaps> {
   })
 }
 
-// -- audio: write the mix to a temp WAV BEFORE ffmpeg spawns (it's an -i input) --
-export async function prepareAudio(wav: ArrayBuffer): Promise<void> {
-  // Whatever was waiting here is now unreachable: only one path can be pending,
+// -- audio: the mix, streamed to a temp WAV BEFORE ffmpeg spawns (it's an -i input) --
+//
+// ⛔ ONE SEGMENT AT A TIME, NOT THE WHOLE MIX IN ONE MESSAGE. The renderer used
+// to hold every segment, then a joined copy, then a WAV copy, and send that as a
+// single IPC message: 384 KB a second, so a 12 minute video was about 276 MB in
+// one message, past Chromium's default cap, on top of three copies in memory
+// (export audit, 2026-10-06). The same begin, chunk, finish shape as the media
+// mirror (mediaStore.ts). Bit for bit the same file the one-message path wrote.
+
+/** The 44 byte header of an interleaved 32 bit float WAV holding `dataBytes` of samples. */
+export function wavHeaderF32(channels: number, sampleRate: number, dataBytes: number): Buffer {
+  const b = Buffer.alloc(44)
+  b.write('RIFF', 0, 'ascii')
+  b.writeUInt32LE(36 + dataBytes, 4)
+  b.write('WAVE', 8, 'ascii')
+  b.write('fmt ', 12, 'ascii')
+  b.writeUInt32LE(16, 16)
+  b.writeUInt16LE(3, 20) // IEEE float
+  b.writeUInt16LE(channels, 22)
+  b.writeUInt32LE(sampleRate, 24)
+  b.writeUInt32LE(sampleRate * channels * 4, 28)
+  b.writeUInt16LE(channels * 4, 32)
+  b.writeUInt16LE(32, 34)
+  b.write('data', 36, 'ascii')
+  b.writeUInt32LE(dataBytes, 40)
+  return b
+}
+
+interface AudioWrite {
+  path: string
+  handle: FileHandle
+  channels: number
+  sampleRate: number
+  dataBytes: number
+}
+let audioWrite: AudioWrite | null = null
+
+/** Give up on a mix being written or waiting: close it and take it off his disk. */
+async function dropAudio(): Promise<void> {
+  const w = audioWrite
+  audioWrite = null
+  if (w) {
+    await w.handle.close().catch(() => undefined)
+    void unlink(w.path).catch(() => {})
+  }
+  if (pendingAudioPath) void unlink(pendingAudioPath).catch(() => {})
+  pendingAudioPath = null
+}
+
+export async function beginAudio(sampleRate: number, channels: number): Promise<void> {
+  // Whatever was waiting here is now unreachable: only one mix can be pending,
   // and the caller is about to replace it. Dropping it first means a second
   // export attempt cannot strand the first attempt's mix on his disk.
-  if (pendingAudioPath) void unlink(pendingAudioPath).catch(() => {})
+  await dropAudio()
   const p = path.join(tmpdir(), `olp-audio-${process.pid}-${Date.now()}.wav`)
-  await writeFile(p, Buffer.from(wav))
-  pendingAudioPath = p
+  const handle = await open(p, 'w')
+  // The sizes are not known yet; finishAudio writes the header again with them.
+  await handle.write(wavHeaderF32(channels, sampleRate, 0), 0, 44, 0)
+  audioWrite = { path: p, handle, channels, sampleRate, dataBytes: 0 }
+}
+
+/** One segment of interleaved little-endian float samples, in order. */
+export async function audioChunk(interleaved: ArrayBuffer): Promise<void> {
+  const w = audioWrite
+  if (!w) throw new Error('no sound is being written')
+  const buf = Buffer.from(interleaved)
+  await w.handle.write(buf, 0, buf.length, 44 + w.dataBytes)
+  w.dataBytes += buf.length
+}
+
+export async function finishAudio(): Promise<void> {
+  const w = audioWrite
+  if (!w) throw new Error('no sound is being written')
+  audioWrite = null
+  await w.handle.write(wavHeaderF32(w.channels, w.sampleRate, w.dataBytes), 0, 44, 0)
+  await w.handle.close()
+  pendingAudioPath = w.path
 }
 
 // -- pickOutput: the save dialog alone, before anything is made --------------
@@ -330,8 +406,8 @@ export async function finish(): Promise<NativeFinishResult> {
 // -- cancel: kill + clean up ------------------------------------------------
 export async function cancel(): Promise<void> {
   if (!job) {
-    if (pendingAudioPath) void unlink(pendingAudioPath).catch(() => {})
-    pendingAudioPath = null
+    // Nothing running: the mix being written, or waiting for ffmpeg, is all there is.
+    await dropAudio()
     return
   }
   const j = job

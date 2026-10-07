@@ -9,6 +9,7 @@
 // A REAL ffmpeg is made to die here, the way it does in his app: frames are
 // pouring in and the output cannot be written.
 
+import { spawnSync } from 'node:child_process'
 import { mkdtemp, readdir, rm } from 'node:fs/promises'
 import * as os from 'node:os'
 import { tmpdir } from 'node:os'
@@ -66,7 +67,9 @@ describe('an ffmpeg that cannot start', () => {
     try {
       // An app folder with no ffmpeg in it, as after an antivirus took the bundled one.
       appPath = userData
-      await native.prepareAudio(new ArrayBuffer(64))
+      await native.beginAudio(48000, 2)
+      await native.audioChunk(new ArrayBuffer(64))
+      await native.finishAudio()
       const wav = (await readdir(tmpdir())).filter((f) => f.startsWith(`olp-audio-${process.pid}-`))
       expect(wav.length).toBeGreaterThan(0)
       const win = { webContents: { send: () => undefined } } as unknown as Parameters<typeof native.start>[1]
@@ -173,4 +176,55 @@ describe('the export runs below normal priority, so the editor stays smooth', ()
     for (let i = 0; i < 3; i++) await native.writeFrame(new Uint8Array(W * H * 4).fill(90).buffer)
     expect(await native.finish()).toMatchObject({ ok: true })
   }, 60_000)
+})
+
+describe('the sound, written a segment at a time', () => {
+  const FFMPEG = join(REPO, 'vendor', 'ffmpeg', 'win-x64', 'ffmpeg.exe')
+  const ours = async (): Promise<string[]> =>
+    (await readdir(tmpdir())).filter((f) => f.startsWith(`olp-audio-${process.pid}-`))
+
+  it('⛔ is a WAV that ffmpeg reads back sample for sample, across every seam', async () => {
+    // Three segments of different sizes, the way the limiter hands them on; every sample its own value.
+    const sizes = [4800, 4799, 1]
+    const left: number[] = []
+    const right: number[] = []
+    await native.beginAudio(48000, 2)
+    let k = 0
+    for (const n of sizes) {
+      const seg = new Float32Array(n * 2)
+      for (let f = 0; f < n; f++, k++) {
+        const v = Math.fround(Math.sin(k * 0.01) * 0.9)
+        seg[2 * f] = v
+        seg[2 * f + 1] = -v / 2
+        left.push(v)
+        right.push(Math.fround(-v / 2))
+      }
+      await native.audioChunk(seg.buffer)
+    }
+    await native.finishAudio()
+    const [name] = await ours()
+    expect(name).toBeTruthy()
+    const r = spawnSync(FFMPEG, ['-hide_banner', '-loglevel', 'error', '-i', join(tmpdir(), name), '-f', 'f32le', '-'], {
+      windowsHide: true,
+      maxBuffer: 1 << 26,
+    })
+    expect(r.status, r.stderr?.toString()).toBe(0)
+    const back = new Float32Array(r.stdout.buffer, r.stdout.byteOffset, r.stdout.byteLength / 4)
+    expect(back.length).toBe(k * 2)
+    for (let f = 0; f < k; f++) {
+      if (back[2 * f] !== left[f] || back[2 * f + 1] !== right[f]) {
+        expect([f, back[2 * f], back[2 * f + 1]]).toEqual([f, left[f], right[f]])
+      }
+    }
+    // The cancel in afterEach takes it away, as it would an export that never started.
+  })
+
+  it('a cancel while it is being written leaves nothing in his temp folder', async () => {
+    await native.beginAudio(48000, 2)
+    await native.audioChunk(new Float32Array(960).buffer)
+    expect(await ours()).toHaveLength(1)
+    await native.cancel()
+    await new Promise((r) => setTimeout(r, 100))
+    expect(await ours()).toEqual([])
+  })
 })

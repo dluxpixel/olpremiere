@@ -612,10 +612,9 @@ app.whenReady().then(() => {
     if (!mainWindow || typeof encoder !== 'string' || typeof suggestedName !== 'string') return null
     return native.pickOutput(encoder, suggestedName, mainWindow)
   })
-  ipcMain.handle('native:prepareAudio', async (_e, wav: ArrayBuffer) => {
-    await native.prepareAudio(wav)
-    return { ok: true }
-  })
+  ipcMain.handle('native:audioBegin', (_e, sampleRate: number, channels: number) => native.beginAudio(sampleRate, channels))
+  ipcMain.handle('native:audioChunk', (_e, interleaved: ArrayBuffer) => native.audioChunk(interleaved))
+  ipcMain.handle('native:audioFinish', () => native.finishAudio())
   ipcMain.handle('native:start', (_e, config: NativeExportConfig) => {
     if (!mainWindow) return { started: false, error: 'no window' }
     return native.start(config, mainWindow)

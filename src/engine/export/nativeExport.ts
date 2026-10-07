@@ -19,42 +19,17 @@ export interface NativeExportResult {
 
 const abortError = (): DOMException => new DOMException('Export cancelled', 'AbortError')
 
-function concatFloat32(parts: Float32Array[]): Float32Array {
-  let total = 0
-  for (const p of parts) total += p.length
-  const out = new Float32Array(total)
-  let o = 0
-  for (const p of parts) {
-    out.set(p, o)
-    o += p.length
-  }
-  return out
-}
-
-/** Interleaved 32-bit float WAV (bit-exact, no quantisation). ffmpeg reads it as a 2nd input. */
-export function buildWavF32(channels: Float32Array[], sampleRate: number): ArrayBuffer {
+/**
+ * One segment of the mix as a WAV's sample data: interleaved 32-bit float,
+ * little-endian (bit-exact, no quantisation). Main writes the header around it
+ * (electron/nativeExport.ts wavHeaderF32) and ffmpeg reads it as a 2nd input.
+ */
+export function interleaveF32(channels: Float32Array[]): ArrayBuffer {
   const numCh = channels.length
   const numFrames = channels[0]?.length ?? 0
-  const dataBytes = numFrames * numCh * 4
-  const buf = new ArrayBuffer(44 + dataBytes)
+  const buf = new ArrayBuffer(numFrames * numCh * 4)
   const dv = new DataView(buf)
-  const wr = (o: number, s: string) => {
-    for (let i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i))
-  }
-  wr(0, 'RIFF')
-  dv.setUint32(4, 36 + dataBytes, true)
-  wr(8, 'WAVE')
-  wr(12, 'fmt ')
-  dv.setUint32(16, 16, true)
-  dv.setUint16(20, 3, true) // IEEE float
-  dv.setUint16(22, numCh, true)
-  dv.setUint32(24, sampleRate, true)
-  dv.setUint32(28, sampleRate * numCh * 4, true)
-  dv.setUint16(32, numCh * 4, true)
-  dv.setUint16(34, 32, true)
-  wr(36, 'data')
-  dv.setUint32(40, dataBytes, true)
-  let o = 44
+  let o = 0
   for (let f = 0; f < numFrames; f++) {
     for (let c = 0; c < numCh; c++) {
       dv.setFloat32(o, channels[c][f], true)
@@ -137,24 +112,8 @@ export async function exportNative(
     // The export's own rate, which may be below the timeline's (exportFps).
     { loudnessTargetLufs: settings.loudnessTargetLufs ?? null, fps: settings.fps },
   )
-  let hasAudio = false
-  if (plan && plan.info.totalFrames > 0) {
-    const perChannel: Float32Array[][] = []
-    await plan.render((cd) => {
-      // ⛔ A CANCEL STOPS THE MIX AT THE NEXT SEGMENT (30 s of sound), not after
-      // the last one. Nothing here listened before, so Cancel during the sound
-      // of a long video did nothing until all of it had been rendered.
-      if (signal.aborted) throw abortError()
-      cd.forEach((ch, i) => (perChannel[i] ??= []).push(ch))
-    })
-    const channels = perChannel.map(concatFloat32)
-    if (channels.length > 0 && channels[0].length > 0) {
-      await api.nativePrepareAudio(buildWavF32(channels, plan.info.sampleRate))
-      hasAudio = true
-    }
-  }
-  // ⛔ THE MIX IS ALREADY A FILE ON HIS DISK BY HERE, so every way out of the
-  // next few lines has to take it with it.
+  // ⛔ THE MIX IS A FILE ON HIS DISK FROM ITS FIRST SEGMENT ON, so every way out
+  // of here until ffmpeg owns it has to take it with it.
   //
   // Rendering the audio for a long timeline is not quick, and pressing Cancel
   // during it threw straight past this point. Nothing else knows that file
@@ -164,10 +123,33 @@ export async function exportNative(
   // at about ten megabytes a second, and cancelling twice left two. Windows
   // clears that folder when it feels like it, which on his machine is never.
   //
-  // Cancelling with nothing running is exactly what deletes it, so the cleanup
-  // is the same call the running case already makes.
+  // Cancelling with nothing running is exactly what deletes it (a mix half
+  // written too), so the cleanup is the same call the running case makes.
+  let hasAudio = false
   const dropPreparedAudio = async (): Promise<void> => {
     if (hasAudio) await api.nativeCancel().catch(() => undefined)
+  }
+  if (plan && plan.info.totalFrames > 0) {
+    try {
+      // One segment per message, straight on to main: nothing here ever holds
+      // the whole mix (electron/nativeExport.ts beginAudio says why).
+      await plan.render(async (cd) => {
+        // ⛔ A CANCEL STOPS THE MIX AT THE NEXT SEGMENT (30 s of sound), not after
+        // the last one. Nothing here listened before, so Cancel during the sound
+        // of a long video did nothing until all of it had been rendered.
+        if (signal.aborted) throw abortError()
+        if (cd.length === 0 || (cd[0]?.length ?? 0) === 0) return
+        if (!hasAudio) {
+          hasAudio = true
+          await api.nativeAudioBegin(plan.info.sampleRate, cd.length)
+        }
+        await api.nativeAudioChunk(interleaveF32(cd))
+      })
+      if (hasAudio) await api.nativeAudioFinish()
+    } catch (err) {
+      await dropPreparedAudio()
+      throw err
+    }
   }
   if (signal.aborted) {
     await dropPreparedAudio()

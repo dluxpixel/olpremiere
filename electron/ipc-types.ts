@@ -214,8 +214,15 @@ export interface OlApi {
    * Asked before the sound is rendered, so a dismissed dialog throws nothing away.
    */
   nativePickOutput(encoder: NativeEncoder, suggestedName: string): Promise<string | null>
-  /** Write the rendered audio mix (a full WAV) to a temp file BEFORE starting (it's an ffmpeg input). */
-  nativePrepareAudio(wav: ArrayBuffer): Promise<{ ok: boolean }>
+  /**
+   * The rendered audio mix, written to a temp WAV BEFORE starting (it's an ffmpeg
+   * input), one segment per message so no message holds the whole mix: begin,
+   * then each segment's interleaved little-endian float samples in order, then
+   * finish. nativeCancel drops a mix half written.
+   */
+  nativeAudioBegin(sampleRate: number, channels: number): Promise<void>
+  nativeAudioChunk(interleaved: ArrayBuffer): Promise<void>
+  nativeAudioFinish(): Promise<void>
   /** Pick a destination (or use config.outPath) and spawn ffmpeg. */
   nativeStart(config: NativeExportConfig): Promise<NativeStartResult>
   /** Stream one raw RGBA frame to ffmpeg; resolves when it's accepted (backpressure). */

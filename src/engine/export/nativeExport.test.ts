@@ -39,7 +39,7 @@ vi.mock('./audioRender', () => ({
   },
 }))
 
-const { exportNative, buildWavF32 } = await import('./nativeExport')
+const { exportNative, interleaveF32 } = await import('./nativeExport')
 
 /** The export worker, standing still until the test speaks for it. */
 class FakeWorker {
@@ -75,7 +75,8 @@ function fakeMain() {
   const log: string[] = []
   const writes: PendingWrite[] = []
   let progress: ((p: { frame: number; totalFrames: number }) => void) | null = null
-  const wavs: ArrayBuffer[] = []
+  /** What main was handed for the WAV: the begin's arguments, then every segment's bytes in order. */
+  const audio = { begun: [] as [number, number][], chunks: [] as ArrayBuffer[], finished: 0 }
   const starts: Record<string, unknown>[] = []
   const finish = { hold: false, release: () => {}, fail: null as Error | null }
   const startGate = { hold: false, release: () => {} }
@@ -87,10 +88,20 @@ function fakeMain() {
       log.push('pick')
       return Promise.resolve(picker.answer)
     },
-    nativePrepareAudio: (wav: ArrayBuffer) => {
-      log.push('prepareAudio')
-      wavs.push(wav)
-      return Promise.resolve({ ok: true })
+    nativeAudioBegin: (sampleRate: number, channels: number) => {
+      log.push('audioBegin')
+      audio.begun.push([sampleRate, channels])
+      return Promise.resolve()
+    },
+    nativeAudioChunk: (interleaved: ArrayBuffer) => {
+      log.push('audioChunk')
+      audio.chunks.push(interleaved)
+      return Promise.resolve()
+    },
+    nativeAudioFinish: () => {
+      log.push('audioFinish')
+      audio.finished++
+      return Promise.resolve()
     },
     nativeStart: (config: Record<string, unknown>) => {
       log.push('start')
@@ -126,7 +137,7 @@ function fakeMain() {
       }
     },
   }
-  return { api, log, writes, wavs, starts, finish, startGate, picker, ffmpegSays: (frame: number) => progress?.({ frame, totalFrames: 0 }) }
+  return { api, log, writes, audio, starts, finish, startGate, picker, ffmpegSays: (frame: number) => progress?.({ frame, totalFrames: 0 }) }
 }
 
 function project(): Project {
@@ -327,23 +338,16 @@ describe('a cancel is a cancel', () => {
 })
 
 describe('the sound', () => {
-  it('reaches main as a float WAV that reads back sample for sample', () => {
+  it('reaches main as interleaved little-endian float samples that read back sample for sample', () => {
+    // The header around them is main's (electron/nativeExport.test.ts decodes the whole file with ffmpeg).
     const left = new Float32Array([0, 0.5, -0.25, 1, -1, 0.123456789])
     const right = new Float32Array([0.1, -0.5, 0.25, -1, 1, -0.987654321])
-    const wav = buildWavF32([left, right], 48000)
-    const dv = new DataView(wav)
-    const text = (o: number, n: number) => String.fromCharCode(...new Uint8Array(wav, o, n))
-    expect(text(0, 4)).toBe('RIFF')
-    expect(text(8, 4)).toBe('WAVE')
-    expect(dv.getUint16(20, true)).toBe(3) // IEEE float
-    expect(dv.getUint16(22, true)).toBe(2)
-    expect(dv.getUint32(24, true)).toBe(48000)
-    expect(dv.getUint16(34, true)).toBe(32)
-    expect(text(36, 4)).toBe('data')
-    expect(dv.getUint32(40, true)).toBe(6 * 2 * 4)
+    const data = interleaveF32([left, right])
+    expect(data.byteLength).toBe(6 * 2 * 4)
+    const dv = new DataView(data)
     for (let i = 0; i < 6; i++) {
-      expect(dv.getFloat32(44 + i * 8, true)).toBe(left[i])
-      expect(dv.getFloat32(44 + i * 8 + 4, true)).toBe(right[i])
+      expect(dv.getFloat32(i * 8, true)).toBe(left[i])
+      expect(dv.getFloat32(i * 8 + 4, true)).toBe(right[i])
     }
   })
 
@@ -357,11 +361,13 @@ describe('the sound', () => {
     } satisfies AudioMixPlan
     start()
     await flush()
-    // (The save dialog comes before both since 2026-10-07: see "where it goes is asked first".)
-    expect(main.log.slice(0, 3)).toEqual(['pick', 'prepareAudio', 'start'])
+    // (The save dialog comes before both since 2026-10-07: see "where it goes is asked first". The
+    // mix goes a segment at a time since the same day: see "no message holds the whole mix".)
+    expect(main.log.slice(0, 5)).toEqual(['pick', 'audioBegin', 'audioChunk', 'audioFinish', 'start'])
     expect(main.starts[0].hasAudio).toBe(true)
-    const dv = new DataView(main.wavs[0])
-    expect([0, 1, 2, 3].map((i) => dv.getFloat32(44 + i * 4, true))).toEqual([0.25, -0.25, 0.5, -0.5])
+    expect(main.audio.begun).toEqual([[48000, 2]])
+    const dv = new DataView(main.audio.chunks[0])
+    expect([0, 1, 2, 3].map((i) => dv.getFloat32(i * 4, true))).toEqual([0.25, -0.25, 0.5, -0.5])
   })
 })
 
@@ -379,16 +385,21 @@ describe('a timeline above 60 fps', () => {
   })
 })
 
-/** A mix of `n` segments that counts how many were rendered, one tick apart like the real render. */
-function countedMix(n: number) {
+/**
+ * A mix of `n` segments of `frames` each that counts how many were rendered, one tick apart like
+ * the real render. Every sample is its own frame number, so order and loss both show.
+ */
+function countedMix(n: number, frames = 2) {
   const made = { segments: 0 }
   const plan = {
-    info: { sampleRate: 48000, numberOfChannels: 2, totalFrames: n * 2 },
+    info: { sampleRate: 48000, numberOfChannels: 2, totalFrames: n * frames },
     render: async (onSegment) => {
       for (let i = 0; i < n; i++) {
         await new Promise((r) => setTimeout(r, 0))
         made.segments++
-        await onSegment([new Float32Array([0.1, 0.2]), new Float32Array([0.3, 0.4])] as Float32Array<ArrayBuffer>[])
+        const l = Float32Array.from({ length: frames }, (_, f) => i * frames + f)
+        const r = Float32Array.from({ length: frames }, (_, f) => -(i * frames + f))
+        await onSegment([l, r] as Float32Array<ArrayBuffer>[])
       }
     },
   } satisfies AudioMixPlan
@@ -425,7 +436,7 @@ describe('⛔ where it goes is asked before the sound is made', () => {
 
 describe('⛔ a cancel while the sound is being made', () => {
   // Nothing listened: Cancel during the sound of a long video did nothing until all of it was rendered.
-  it('stops at the next segment, and leaves nothing in main', async () => {
+  it('stops at the next segment, and the half made mix is taken away again', async () => {
     const { plan, made } = countedMix(10)
     h.audioPlan = plan
     const ctrl = new AbortController()
@@ -434,6 +445,29 @@ describe('⛔ a cancel while the sound is being made', () => {
     ctrl.abort()
     await expect(run).rejects.toMatchObject({ name: 'AbortError' })
     expect(made.segments).toBeLessThanOrEqual(2)
-    expect(main.log).toEqual(['pick'])
+    // Begun, then dropped by the same cancel that drops a running export; ffmpeg never asked for.
+    expect(main.log[0]).toBe('pick')
+    expect(main.log.slice(-1)).toEqual(['cancel'])
+    expect(main.log).not.toContain('start')
+    expect(main.log).not.toContain('audioFinish')
+  })
+})
+
+describe('⛔ no message holds the whole mix', () => {
+  // It went to main as ONE WAV after three copies in memory: 384 KB a second, so a 12 minute video
+  // was about 276 MB in a single message, past Chromium's default cap (export audit, 2026-10-06).
+  it('a long video goes a segment per message, every sample in order', async () => {
+    const SEG = 4800
+    const { plan } = countedMix(30, SEG)
+    h.audioPlan = plan
+    start()
+    while (!main.log.includes('start')) await new Promise((r) => setTimeout(r, 0))
+    expect(main.audio.chunks).toHaveLength(30)
+    expect(Math.max(...main.audio.chunks.map((c) => c.byteLength))).toBe(SEG * 2 * 4)
+    expect(main.audio.finished).toBe(1)
+    // Read back: frame k is k on the left and -k on the right, across every seam.
+    const all = main.audio.chunks.flatMap((c) => [...new Float32Array(c)])
+    expect(all).toHaveLength(30 * SEG * 2)
+    for (let k = 0; k < 30 * SEG; k += 997) expect([all[2 * k], all[2 * k + 1]]).toEqual([k, -k])
   })
 })
