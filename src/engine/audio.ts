@@ -290,6 +290,8 @@ function evictAudioOverflow(keepId: Id): void {
 export function forgetAssetAudio(assetId: Id): void {
   forgetAssetRanges(assetId)
   undecodableRate.delete(assetId)
+  // What the demuxer proved about the OLD bytes. Media put back may be another file.
+  provedSilent.delete(assetId)
   bufferTotalBytes -= bufferBytes.get(assetId) ?? 0
   bufferBytes.delete(assetId)
   bufferCache.delete(assetId)

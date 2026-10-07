@@ -130,9 +130,24 @@ export function getAssetPeaks(asset: MediaAsset): Promise<Float32Array | null> {
   return pending
 }
 
+/** Bumped per asset each time its peaks are forgotten, so a drawn waveform asks again. */
+const peaksVersions = new Map<Id, number>()
+const peaksListeners = new Set<() => void>()
+
 /** Forget one asset's peaks. They come back from the next getAssetPeaks. */
 export function forgetAssetPeaks(assetId: Id): void {
   peaksCache.delete(assetId)
+  peaksVersions.set(assetId, (peaksVersions.get(assetId) ?? 0) + 1)
+  peaksListeners.forEach((l) => l())
+}
+
+/** How many times this asset's peaks have been forgotten: a waveform drawn from older ones asks again. */
+export const peaksVersion = (assetId: Id): number => peaksVersions.get(assetId) ?? 0
+
+/** Hear when any asset's peaks are forgotten. Returns the way to stop listening. */
+export function onPeaksForgotten(listener: () => void): () => void {
+  peaksListeners.add(listener)
+  return () => peaksListeners.delete(listener)
 }
 
 /**

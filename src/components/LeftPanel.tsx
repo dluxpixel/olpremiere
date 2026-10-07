@@ -27,6 +27,7 @@ import { showPhoneTab } from './PhoneShell'
 import { importProjectFromFile, routeDroppedFiles } from '../state/projectFile'
 import { matchFilesToMissing, missingMedia, relink, relinkSummary, type MissingAsset } from '../state/relinkMedia'
 import { healProjectMedia, useMediaHeal } from '../state/mediaMirror'
+import { forgetAssetSound } from '../engine/assetSound'
 import { evictAsset } from '../engine/frameCache'
 import { invalidatePreview } from '../engine/preview'
 import { useToasts } from '../state/toasts'
@@ -499,7 +500,10 @@ function FindMyMedia() {
             undefined,
             { durationMs: 10_000 },
           )
-        for (const a of Object.values(useStore.getState().project.assets)) evictAsset(a.id)
+        for (const a of Object.values(useStore.getState().project.assets)) {
+          evictAsset(a.id)
+          forgetAssetSound(a.id)
+        }
         invalidatePreview()
       }
       // ⛔ AND IF IT COULD NOT, SAY WHY ON THE BANNER. A banner that only says
@@ -561,7 +565,10 @@ function FindMyMedia() {
             if (failed.length > 0) useToasts.getState().show(`Could not write: ${failed.join(', ')}`, 'danger')
             // Ask storage again rather than assuming, and make the preview drop
             // whatever it decided when the bytes were not there.
-            for (const m of result.matched) evictAsset(m.asset.id)
+            for (const m of result.matched) {
+              evictAsset(m.asset.id)
+              forgetAssetSound(m.asset.id)
+            }
             invalidatePreview()
             setMissing(await missingMedia(useStore.getState().project))
             setBusy(false)
