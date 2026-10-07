@@ -241,6 +241,35 @@ describe('a second look', () => {
     expect(types(ids[0]!)).toEqual(['lookSoftFilm', 'saturation'])
   })
 
+  it('leaves a clip that stacked two looks with one when he applies one of the two, in ONE undo step', () => {
+    const ids = threeClips()
+    setStack(ids[0]!, [
+      { id: 'a', type: 'lookMoodyGym', enabled: true, params: { amount: 1 } },
+      { id: 's', type: 'saturation', enabled: true, params: { saturation: 0.2 } },
+      { id: 'b', type: 'lookTealOrange', enabled: true, params: { amount: 0.7 } },
+    ])
+    expect(applyEffectToClips([ids[0]!], 'lookTealOrange')).toBe(1)
+    // The very Teal and Orange it wore, in its own slot, at its own Amount.
+    expect(clipById(ids[0]!).effects.map((e) => [e.id, e.type, e.params.amount])).toEqual([
+      ['s', 'saturation', undefined],
+      ['b', 'lookTealOrange', 0.7],
+    ])
+    expect(shown.map((t) => t.message)).toEqual(['Swapped Moody Gym for Teal and Orange'])
+    expect(useStore.getState().undo()).toBe('Apply Teal and Orange')
+    expect(types(ids[0]!)).toEqual(['lookMoodyGym', 'saturation', 'lookTealOrange'])
+  })
+
+  it('leaves a clip that stacked two looks with one from the Inspector Add effect menu, keeping the first', () => {
+    const ids = threeClips()
+    setStack(ids[0]!, [
+      { id: 'a', type: 'lookMoodyGym', enabled: true, params: { amount: 1 } },
+      { id: 'b', type: 'lookTealOrange', enabled: true, params: { amount: 1 } },
+    ])
+    applyEffect(ids[0]!, 'lookMoodyGym')
+    expect(clipById(ids[0]!).effects.map((e) => e.id)).toEqual(['a'])
+    expect(shown.map((t) => t.message)).toEqual(['Swapped Teal and Orange for Moody Gym'])
+  })
+
   it("keeps a keyframed Amount, his fade, on the look that takes the old one's place", () => {
     const ids = threeClips()
     const fade = { value: 1, keyframes: [{ t: 0, value: 0, ease: 'linear' as const }, { t: 1.5, value: 1, ease: 'linear' as const }] }
@@ -434,6 +463,22 @@ describe('a look in a saved preset', () => {
       expect(clipById(id).effects[0]!.params.amount).toBe(1)
     })
     expect(shown.map((t) => t.message)).toEqual(['Applied "Old stack" to 3 clips. 3 already had Teal and Orange'])
+  })
+
+  it('leaves a clip that stacked two looks with one when the preset carries one of the two', () => {
+    const ids = threeClips()
+    setStack(ids[0]!, [
+      { id: 'a', type: 'lookTealOrange', enabled: true, params: { amount: 1 } },
+      { id: 'b', type: 'lookMoodyGym', enabled: true, params: { amount: 1 } },
+    ])
+    useStore.getState().setUI({ selection: [ids[0]!] })
+    useLibrary.setState({ presets: [tealGrade] })
+    applyPresetToSelection('p1')
+    expect(types(ids[0]!)).toEqual(['lookTealOrange', 'saturation'])
+    // The very Teal and Orange it wore, at its own Amount, not the preset's 0.6.
+    expect(clipById(ids[0]!).effects[0]!.id).toBe('a')
+    expect(clipById(ids[0]!).effects[0]!.params.amount).toBe(1)
+    expect(shown.map((t) => t.message)).toEqual(['Applied "Teal grade". Teal and Orange took the place of Moody Gym'])
   })
 
   it('keeps the keyframed Amount of the look it takes the place of, over the Amount it was saved with', () => {

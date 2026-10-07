@@ -848,13 +848,15 @@ function runPreset(preset: EffectPreset, ids: readonly Id[], label: string): Pre
     if (!last) return next
     const old = wornLook(c)
     const worn = wornLook(next)
+    // A look the clip wore that is gone now: the one the preset's look swapped,
+    // or the other of two stacked before the rule.
+    const gone = worn && c.effects.find((e) => isLookType(e.type) && !next.effects.includes(e))
     if (c.title) run.titles++
     else if (graded) run.adjustments++
-    else if (old && worn?.id === old.id) run.already++
-    else if (old && worn && worn.type !== old.type) {
+    else if (gone) {
       run.swapped++
-      swappedFrom.add(getEffect(old.type)?.label ?? old.type)
-    }
+      swappedFrom.add(getEffect(gone.type)?.label ?? gone.type)
+    } else if (old && worn?.id === old.id) run.already++
     return next
   })
   if (swappedFrom.size === 1) run.swappedFrom = [...swappedFrom][0]

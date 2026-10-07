@@ -89,18 +89,21 @@ export function isLookType(type: string): boolean {
  *     keyframed on its Amount stays with the new look (swappedIn);
  *   - a clip with no look takes it where addEffect puts any new effect.
  * A clip carrying two looks from before this rule ends up wearing one: the new
- * look, in the first one's slot. Anything that is not a look is refused.
+ * look in the first one's slot, or, when the new look is one of the two, that
+ * one where it already sits. Anything that is not a look is refused.
  */
 export function putLook(clip: Clip, type: string, id: Id): Clip {
   const def = getEffect(type)
   if (!def || !isLookType(type)) return clip
   const worn = clip.effects.filter((e) => isLookType(e.type))
-  if (worn.some((e) => e.type === type)) return clip
   if (worn.length === 0) return addEffect(clip, type, id)
-  const slot = clip.effects.indexOf(worn[0])
-  const effects = clip.effects.flatMap((e, i) =>
-    i === slot ? [swappedIn(def, id, worn)] : isLookType(e.type) ? [] : [e],
-  )
+  // Already wearing it: alone, nothing to do. Next to another look from before
+  // the rule, it stays (its own instance, slot and Amount) and the other goes.
+  const same = worn.find((e) => e.type === type)
+  if (same && worn.length === 1) return clip
+  const keep = same ?? swappedIn(def, id, worn)
+  const slot = clip.effects.indexOf(same ?? worn[0])
+  const effects = clip.effects.flatMap((e, i) => (i === slot ? [keep] : isLookType(e.type) ? [] : [e]))
   return { ...clip, effects }
 }
 

@@ -731,16 +731,19 @@ export function applyEffect(clipId: string, type: string): void {
       show('Looks leave titles and captions clean', 'info')
       return
     }
-    if (clip.effects.some((e) => e.type === type)) {
+    const worn = clip.effects.filter((e) => ops.isLookType(e.type))
+    if (worn.length === 1 && worn[0].type === type) {
       show(`That clip already has ${label}`, 'info')
       return
     }
-    const old = ops.wornLook(clip)
+    // The look it takes off: the one it swaps, or the other of two stacked
+    // before the rule when the clip already wears this one (putLook keeps it).
+    const gone = worn.find((e) => e.type !== type)
     mapClip(clipId, `Apply ${label}`, (c) => ops.putLook(c, type, id))
-    // Same landed check as below: a locked track refuses the edit.
-    if (!findClip(clipId)?.effects.some((e) => e.id === id)) return
+    // A locked track refuses the edit and leaves the clip as it was.
+    if (findClip(clipId) === clip) return
     noteRecentEffect(type)
-    if (old) show(`Swapped ${getEffect(old.type)?.label ?? old.type} for ${label}`, 'success')
+    if (gone) show(`Swapped ${getEffect(gone.type)?.label ?? gone.type} for ${label}`, 'success')
     return
   }
   mapClip(clipId, `Add ${label}`, (c) => ops.addEffect(c, type, id))

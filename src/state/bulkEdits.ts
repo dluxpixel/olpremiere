@@ -274,16 +274,18 @@ function runEffect(ids: Iterable<string>, type: string): EffectRun {
       if (next !== c) run.changed++
       return next
     }
-    const old = wornLook(c)
     const next = putLook(c, type, newId())
     if (next === c) {
-      if (old) run.already++
-    } else {
-      run.changed++
-      if (old) {
-        run.swapped++
-        swappedFrom.add(getEffect(old.type)?.label ?? old.type)
-      }
+      if (wornLook(c)) run.already++
+      return c
+    }
+    run.changed++
+    // The look it took off: the one it swapped, or the other of two stacked
+    // before the rule when the clip already wore this one.
+    const gone = c.effects.find((e) => isLookType(e.type) && e.type !== type)
+    if (gone) {
+      run.swapped++
+      swappedFrom.add(getEffect(gone.type)?.label ?? gone.type)
     }
     return next
   })
