@@ -547,10 +547,11 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
                     onClick={() => {
                       setClipsDenoise(audioIds, allDenoised ? undefined : 1)
                       // Start cleaning now, so his next Play does not wait for it.
+                      // A clip on a locked line was left alone, so it is not cleaned.
                       if (!allDenoised) {
                         for (const s of audio) {
                           const asset = assets[s.clip.assetId]
-                          if (asset) warmDenoise({ ...s.clip, denoise: 1 }, asset)
+                          if (asset && !s.track.locked) warmDenoise({ ...s.clip, denoise: 1 }, asset)
                         }
                       }
                     }}

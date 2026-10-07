@@ -79,6 +79,15 @@ describe('Reduce noise on the multi selection Inspector', () => {
     expect(ids.map((id) => 'denoise' in clipById(id))).toEqual([false, false, false])
   })
 
+  it('leaves a clip on a locked line alone, and does not clean it either', async () => {
+    const ids = seedTakes()
+    updateActiveSequence('lock', (sq) => ({ ...sq, tracks: sq.tracks.map((t) => (t.kind === 'audio' ? { ...t, locked: true } : t)) }))
+    render(<MultiInspector selected={selectedOf(ids)} />)
+    await userEvent.click(screen.getByRole('button', { name: 'Reduce background noise (all)' }))
+    expect(ids.map((id) => 'denoise' in clipById(id))).toEqual([false, false, false])
+    expect(warmed).toEqual([])
+  })
+
   it('a mixed selection is not on: one press puts every clip at full strength', async () => {
     const ids = seedTakes()
     updateActiveSequence('one on', (sq) => ({
