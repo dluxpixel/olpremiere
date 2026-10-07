@@ -42,8 +42,18 @@ describe('comboLabel', () => {
     expect(comboLabel('space')).toBe('Space')
   })
 
-  it('capitalises a named key without shouting it', () => {
-    expect(comboLabel('arrowleft')).toBe('Arrowleft')
-    expect(comboLabel('alt+arrowright')).toBe('Alt+Arrowright')
+  // The keyframe lane's tooltip said "Alt+Arrowleft / Alt+Arrowright nudge a frame", a key no
+  // keyboard has. The arrows and Escape read the way their keys are printed.
+  it('names the arrows and Escape the way their keys are printed', () => {
+    expect(comboLabel('arrowleft')).toBe('Left')
+    expect(comboLabel('alt+arrowright')).toBe('Alt+Right')
+    expect(comboLabel('arrowup')).toBe('Up')
+    expect(comboLabel('shift+arrowdown')).toBe('Shift+Down')
+    expect(comboLabel('escape')).toBe('Esc')
+  })
+
+  it('capitalises any other named key without shouting it', () => {
+    expect(comboLabel('delete')).toBe('Delete')
+    expect(comboLabel('shift+home')).toBe('Shift+Home')
   })
 })

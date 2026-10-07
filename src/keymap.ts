@@ -216,6 +216,17 @@ export function comboLabel(combo: string): string {
           return isMac ? '⌥' : 'Alt'
         case 'space':
           return 'Space'
+        // The keyframe lane's tooltip read "Alt+Arrowleft", a key no keyboard has.
+        case 'arrowleft':
+          return 'Left'
+        case 'arrowright':
+          return 'Right'
+        case 'arrowup':
+          return 'Up'
+        case 'arrowdown':
+          return 'Down'
+        case 'escape':
+          return 'Esc'
         default:
           return part.length === 1 ? part.toUpperCase() : part[0].toUpperCase() + part.slice(1)
       }
