@@ -150,6 +150,31 @@ describe('the clip right-click menu', () => {
     expect(item(menu(later, locked), 'Close all gaps on track').disabled).toBe(true)
   })
 
+  // On empty space `clip` is only the first selected clip. Split was greyed by
+  // it alone and counted the whole selection, and Save as the caption style
+  // saved the look of a title he never pointed at.
+  it('on empty space, Split counts the selected clips under the playhead', () => {
+    const a = makeClip({ startS: 0, outS: 2 })
+    const b = makeClip({ startS: 4, outS: 2 })
+    const seq = makeSeq([makeTrack({ clips: [a, b] })])
+    const space = { selNow: [a.id, b.id], keepSelection: true, forSelection: true }
+    expect(item(menu(a, seq, { ...space, playheadS: 5 }), 'Split 1 clip at playhead').disabled).toBe(false)
+    expect(item(menu(a, seq, { ...space, playheadS: 1 }), 'Split 1 clip at playhead').disabled).toBe(false)
+    expect(item(menu(a, seq, { ...space, playheadS: 3 }), 'Split at playhead').disabled).toBe(true)
+  })
+
+  it('on empty space, the style presets do not offer to save one title as the caption style', () => {
+    const t1 = newTitleClip(defaultTitleDef('Hi'), 0, 2)
+    const t2 = newTitleClip(defaultTitleDef('There'), 2, 2)
+    const seq = makeSeq([makeTrack({ clips: [t1, t2] })])
+    const subLabels = (items: MenuItem[]) => item(items, 'Style preset (all 2)').submenu!.map((m) => m.label)
+    const ids = [t1.id, t2.id]
+    expect(subLabels(menu(t1, seq, { selNow: ids, keepSelection: true }))).toContain('Save as the caption style')
+    expect(subLabels(menu(t1, seq, { selNow: ids, keepSelection: true, forSelection: true }))).not.toContain(
+      'Save as the caption style',
+    )
+  })
+
   it('offers the style presets on a single title and leaves the video verbs off it', () => {
     const title = newTitleClip(defaultTitleDef('Hi'), 0, 2)
     const seq = makeSeq([makeTrack({ clips: [title] })])

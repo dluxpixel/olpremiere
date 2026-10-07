@@ -324,16 +324,23 @@ export function clipContextMenuItems({
                 label: p.name,
                 onClick: () => void applyCaptionStyle(p, presetTargets),
               })),
-              {
-                label: 'Save as the caption style',
-                separator: true,
-                onClick: () => {
-                  // Capture the clip you right-clicked (fallback: first selected title).
-                  const src = clip.title ? clip.id : presetTargets[0]
-                  const p = saveCaptionStyleFromClip(src)
-                  if (p) show(`Saved. Every new caption uses "${p.name}"`, 'success')
-                },
-              },
+              // Saves ONE title's look, the one he right clicked. On empty space
+              // there is none: `clip` is only the first selected clip in line
+              // order, so the item is not offered there.
+              ...(forSelection
+                ? []
+                : [
+                    {
+                      label: 'Save as the caption style',
+                      separator: true,
+                      onClick: () => {
+                        // Capture the clip you right-clicked (fallback: first selected title).
+                        const src = clip.title ? clip.id : presetTargets[0]
+                        const p = saveCaptionStyleFromClip(src)
+                        if (p) show(`Saved. Every new caption uses "${p.name}"`, 'success')
+                      },
+                    },
+                  ]),
             ],
           },
         ]
@@ -397,12 +404,29 @@ export function clipContextMenuItems({
     disabled: !hasClipMove(),
     onClick: () => pasteClipMove(keepSelection ? selNow : [clip.id]),
   }
+  // On empty space `clip` is only the first selected clip, so Split counts what
+  // C would cut there: the selected clips on open lines under the playhead's
+  // frame. It was greyed by the first clip alone, and counted the whole
+  // selection whatever sat under the playhead.
+  const cutAt = quantizeToFrame(playheadS, seq.fps)
+  const picked = new Set(selNow)
+  const underPlayhead = forSelection
+    ? seq.tracks
+        .filter((t) => !t.locked)
+        .reduce((n, t) => n + t.clips.filter((c) => picked.has(c.id) && cutAt > c.startS && cutAt < clipEndS(c)).length, 0)
+    : 0
   const splitItem: MenuItem = {
     // C is the branded single-key cut; the old label advertised only the
     // secondary Ctrl+K chord and hid the key everyone should learn.
-    label: keepSelection ? `Split ${plural(selNow.length, 'clip')} at playhead` : 'Split at playhead',
+    label: forSelection
+      ? underPlayhead > 0
+        ? `Split ${plural(underPlayhead, 'clip')} at playhead`
+        : 'Split at playhead'
+      : keepSelection
+        ? `Split ${plural(selNow.length, 'clip')} at playhead`
+        : 'Split at playhead',
     shortcut: 'C',
-    disabled: !playheadInside,
+    disabled: forSelection ? underPlayhead === 0 : !playheadInside,
     // The SAME verb the C key runs. This used to split only the clip you
     // right-clicked while the Delete item one row below said "Delete 5 clips".
     onClick: () => splitAtPlayhead(),

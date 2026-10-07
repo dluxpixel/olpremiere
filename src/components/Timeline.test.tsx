@@ -125,7 +125,8 @@ describe('Timeline', () => {
     fireEvent.contextMenu(lanes, { clientX: 300, clientY: 40 })
     const labels = useContextMenu.getState().items.map((i) => i.label)
     expect(labels.filter((l) => l.startsWith('Paste') && !/attributes|move/.test(l))).toEqual(['Paste here'])
-    for (const l of ['Copy', 'Cut', 'Duplicate', 'Split 2 clips at playhead', 'Delete 2 clips', 'Ripple delete 2 clips']) {
+    // Split counts what C would cut: only a (1 to 3) is under the playhead at 2.
+    for (const l of ['Copy', 'Cut', 'Duplicate', 'Split 1 clip at playhead', 'Delete 2 clips', 'Ripple delete 2 clips']) {
       expect(labels).toContain(l)
     }
     for (const l of ['Paste at playhead', 'Copy attributes', 'Copy move', 'Close gap before', 'Close all gaps on track', 'Trim head to playhead']) {
