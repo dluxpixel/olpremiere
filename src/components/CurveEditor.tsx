@@ -364,7 +364,7 @@ export function CurveEditor({ clip, channel }: { clip: Clip; channel: AnimChanne
    */
   const applyToAll = () => {
     if (!live) return
-    setAllSegmentCurves(clip.id, channel, live)
+    setAllSegmentCurves(clip.id, channel, live, { coupled: true })
   }
 
   const chip = (active: boolean) =>

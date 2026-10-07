@@ -541,7 +541,18 @@ export function setSegmentCurve(
  * Goes through `mapClip` like its single-segment twin, so a locked track refuses
  * it the same way and there is still only one write path.
  */
-export function setAllSegmentCurves(clipId: string, channel: AnimChannel, curve: Curve | undefined): void {
+export function setAllSegmentCurves(
+  clipId: string,
+  channel: AnimChannel,
+  curve: Curve | undefined,
+  /**
+   * `coupled`: every segment also shapes the channels moving in step with IT
+   * (coupledSegmentChannels), as the single segment commit does. "Apply to all
+   * segments" on a zoom to a point used to shape the Zoom alone, so the face
+   * slid again while the header said Position follows (review, 2026-10-07).
+   */
+  opts: { coupled?: boolean } = {},
+): void {
   mapClip(
     clipId,
     curve ? `Set every ${channel} curve` : `Clear every ${channel} curve`,
@@ -550,10 +561,15 @@ export function setAllSegmentCurves(clipId: string, channel: AnimChannel, curve:
       // One keyframe or none leaves no segment to shape, so hand the SAME clip
       // back and let bailOnNoop stop a dead undo step landing.
       if (kfs.length < 2) return c
-      // The last keyframe owns no segment after it, hence length - 1.
-      let next = setSegmentCurveK(kfs, kfs[0].t, curve)
-      for (let i = 1; i < kfs.length - 1; i++) next = setSegmentCurveK(next, kfs[i].t, curve)
-      return withChannelKeyframes(c, channel, next)
+      let next = c
+      // The last keyframe owns no segment after it, hence length - 1. Which
+      // channels follow is read off the clip BEFORE any is shaped, since
+      // shaping one is exactly what makes the others stop matching it.
+      for (let i = 0; i < kfs.length - 1; i++) {
+        const channels = opts.coupled ? coupledSegmentChannels(c, channel, kfs[i]!.t) : [channel]
+        for (const ch of channels) next = withChannelKeyframes(next, ch, setSegmentCurveK(channelKeyframes(next, ch), kfs[i]!.t, curve))
+      }
+      return next
     },
     true,
   )

@@ -8,7 +8,7 @@ import { channelKeyframes, resolveChannel } from '../engine/effects/channels'
 import { MOTION_CURVES, punchInClip } from '../engine/motion'
 import { recomputeDuration } from '../engine/timeline'
 import { activeSequence, defaultTitleDef, newProject, newTitleClip, type Clip } from '../engine/types'
-import { coupledSegmentChannels, setSegmentCurve, setSegmentEase } from './clipEdits'
+import { coupledSegmentChannels, setAllSegmentCurves, setSegmentCurve, setSegmentEase } from './clipEdits'
 import { updateActiveSequence, useStore } from './store'
 
 vi.mock('./toasts', () => ({ useToasts: { getState: () => ({ show: () => {} }) } }))
@@ -77,6 +77,23 @@ describe('shaping the Zoom of a zoom to a point', () => {
   it('without the option only the one channel changes, as before', () => {
     punched()
     setSegmentCurve(clip().id, 'scale', 1, MOTION_CURVES.overshoot)
+    expect(channelKeyframes(clip(), 'posX')[0]!.curve).toEqual(MOTION_CURVES.snapIn)
+  })
+
+  // Review, 2026-10-07: "Apply to all segments" shaped the Zoom alone, so the
+  // face slid again while the header said Position follows.
+  it('Apply to all segments shapes Position with the Zoom, so the point holds still', () => {
+    punched()
+    setAllSegmentCurves(clip().id, 'scale', MOTION_CURVES.overshoot, { coupled: true })
+    for (const ch of ['scale', 'posX', 'posY'] as const) {
+      expect(channelKeyframes(clip(), ch)[0]!.curve).toEqual(MOTION_CURVES.overshoot)
+    }
+    const at0 = focalAt(clip(), 1)
+    for (const t of [1.1, 1.25, 1.45]) {
+      expect(focalAt(clip(), t).x).toBeCloseTo(at0.x, 6)
+      expect(focalAt(clip(), t).y).toBeCloseTo(at0.y, 6)
+    }
+    useStore.getState().undo()
     expect(channelKeyframes(clip(), 'posX')[0]!.curve).toEqual(MOTION_CURVES.snapIn)
   })
 })
