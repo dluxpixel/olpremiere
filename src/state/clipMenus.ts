@@ -103,7 +103,14 @@ export function sameKindIds(clip: Clip, ids: readonly string[]): string[] {
  */
 export function appearanceMenuItems(clip: Clip, picked: string[] = [clip.id]): MenuItem[] {
   const isTitle = isTitleClip(clip)
-  if (!isTitle && !isStillImageClip(clip)) return []
+  if (!isTitle && !isStillImageClip(clip)) {
+    // Footage never TAKES an In or Out, but one that carries one anyway (pasted
+    // off a caption by an older build, an older project) can always lose it:
+    // otherwise nothing in the app could take it off (review, 2026-10-07).
+    if (!clip.appearance) return []
+    const ids = sameKindIds(clip, picked)
+    return [{ label: 'Clear animation', separator: true, onClick: () => setClipsAppearance(ids, { in: undefined, out: undefined }) }]
+  }
   const ids = sameKindIds(clip, picked)
   const inId = clip.appearance?.in
   const outId = clip.appearance?.out

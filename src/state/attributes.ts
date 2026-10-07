@@ -13,6 +13,7 @@ import {
   type EffectInstance,
   type TitleDef,
 } from '../engine/types'
+import { canAppear } from './appearanceActions'
 import { lockedLeftOut } from './bulkEdits'
 import { updateActiveSequence, useStore } from './store'
 import { useToasts } from './toasts'
@@ -93,6 +94,7 @@ export function pasteClipAttributes(ids?: Iterable<string>): void {
   }
   let pasted = 0
   let heldBack = 0
+  const assets = useStore.getState().project.assets
   updateActiveSequence('Paste attributes', (seq) => {
     let changed = false
     const tracks = seq.tracks.map((t) => {
@@ -131,7 +133,12 @@ export function pasteClipAttributes(ids?: Iterable<string>): void {
         // tension is real and the cure was worse: one outcome destroys work he
         // did by hand with nothing said, the other leaves a move playing around
         // a base that just changed, which he can see and can undo. → D99.
-        if (attrs.appearance) nc = applyAppearanceToClip(nc, attrs.appearance, seq.width, seq.height)
+        //
+        // And only onto a clip that can TAKE one: a title or a still image. A
+        // caption's pop pasted onto footage compiled onto it (wiping its move on
+        // the way) and left it with an animation nothing could take off again
+        // (review, 2026-10-07), the very thing setClipsAppearance refuses.
+        if (attrs.appearance && canAppear(c, assets)) nc = applyAppearanceToClip(nc, attrs.appearance, seq.width, seq.height)
         return nc
       })
       return { ...t, clips }

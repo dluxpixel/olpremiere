@@ -20,7 +20,7 @@ function findClip(clipId: string): Clip | undefined {
 }
 
 /** A title or a still image: the clips an In or Out animation is for. */
-function canAppear(c: Clip, assets: Record<string, { kind: string } | undefined>): boolean {
+export function canAppear(c: Clip, assets: Record<string, { kind: string } | undefined>): boolean {
   if (c.title) return true
   return !c.adjustment && assets[c.assetId]?.kind === 'image'
 }
@@ -36,16 +36,21 @@ export function setClipsAppearance(ids: Iterable<string>, patch: Partial<Appeara
   if (idSet.size === 0) return
   const label = 'in' in patch ? 'Set entrance' : 'out' in patch ? 'Set exit' : 'Set animation'
   const assets = useStore.getState().project.assets
+  const adds = !!patch.in || !!patch.out
   updateActiveSequence(label, (seq) => {
     let changed = false
     const tracks = seq.tracks.map((t) => {
       if (t.locked || !t.clips.some((c) => idSet.has(c.id))) return t
       const clips = t.clips.map((c) => {
         if (!idSet.has(c.id)) return c
-        // Only a title or a still image "appears" (the menu says the same). A
-        // video clip that slipped in through a mixed selection would have every
-        // move and punch in on it wiped by the compile below.
-        if (!canAppear(c, assets)) return c
+        // Only a title or a still image TAKES an In or Out (the menu says the
+        // same). A video clip that slipped in through a mixed selection would
+        // have every move and punch in on it wiped by the compile below.
+        // ⛔ Taking one OFF works on any clip. Footage that picked up a pop
+        // (Paste attributes off a caption, an older project) was refused None
+        // and Clear too, so nothing in the app could take it off again
+        // (review, 2026-10-07).
+        if (adds && !canAppear(c, assets)) return c
         // Never touch a clip with no animation unless we're ADDING an entrance/exit.
         // applyAppearanceToClip clears the shared transform/opacity channels, so a
         // Speed/None/Clear op would silently wipe a clip's own manual keyframes.
