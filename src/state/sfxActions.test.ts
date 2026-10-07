@@ -4,7 +4,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { sfxAssetName, sfxById } from '../engine/sfx/sfx'
 import { activeSequence, audioTracks, newProject } from '../engine/types'
 import { putBlob } from './persistence'
-import { insertSfxAtPlayhead } from './sfxActions'
+import { insertSfxAtPlayhead, previewSfx } from './sfxActions'
+import { setAudioOutputDevice } from '../engine/audio'
 import { useStore } from './store'
 
 const show = vi.hoisted(() => vi.fn())
@@ -92,5 +93,30 @@ describe('insertSfxAtPlayhead', () => {
     expect(assets()).toHaveLength(0)
     expect(seq().tracks.flatMap((t) => t.clips)).toHaveLength(0)
     expect(show).toHaveBeenCalledWith(expect.stringContaining('Could not save the sound'), 'danger')
+  })
+})
+
+// ⛔ AU-19. A sound effect heard from the panel played on the system default
+// whatever output he had picked.
+describe('previewSfx', () => {
+  it('plays on the output he picked', async () => {
+    const setSinkId = vi.fn(async () => {})
+    vi.stubGlobal(
+      'Audio',
+      class {
+        src = ''
+        currentTime = 0
+        setSinkId = setSinkId
+        play = async () => {}
+      },
+    )
+    try {
+      await setAudioOutputDevice('headphones')
+      previewSfx('boom')
+      expect(setSinkId).toHaveBeenCalledWith('headphones')
+    } finally {
+      await setAudioOutputDevice(null)
+      vi.unstubAllGlobals()
+    }
   })
 })

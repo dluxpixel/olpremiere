@@ -3,6 +3,7 @@
 // audio asset, so the project stays self-contained); later uses reuse that
 // asset. Asset + clip land in ONE dispatch, so undo removes both together.
 
+import { routeToChosenOutput } from '../engine/audio'
 import { addClipFromAsset, canPlace } from '../engine/timeline'
 import { formatTimecode } from '../engine/timecode'
 import { sfxAssetName, sfxById, sfxUrl, type SfxDef } from '../engine/sfx/sfx'
@@ -136,6 +137,7 @@ export function previewSfx(sfxId: string): void {
   const def = sfxById(sfxId)
   if (!def || typeof Audio === 'undefined') return
   if (!previewEl) previewEl = new Audio()
+  routeToChosenOutput(previewEl)
   previewEl.src = sfxUrl(def)
   previewEl.currentTime = 0
   void previewEl.play().catch(() => {})

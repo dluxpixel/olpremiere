@@ -207,6 +207,20 @@ export function ensureAudioContext(): AudioContext {
 export const getAudioOutputDevice = (): string | null => outputDeviceId
 
 /**
+ * Send a plain audio element to the output he picked, like playback and the
+ * monitor. The take review, a sound effect and a Library sound used to play on
+ * the system default whatever he chose, so with headphones picked in the studio
+ * his take came out of the speakers. Called before each play, so a change of
+ * output in between is followed.
+ */
+export function routeToChosenOutput(el: HTMLMediaElement): void {
+  const sinkable = el as HTMLMediaElement & { setSinkId?: (id: string) => Promise<void> }
+  if (typeof sinkable.setSinkId !== 'function') return
+  // A device that is gone rejects, and the element stays where it was.
+  void sinkable.setSinkId(outputDeviceId ?? '').catch(() => {})
+}
+
+/**
  * Route ALL app playback to a chosen output device (null = system default) and
  * remember it. Applies live to the running context. The recording monitor shares
  * this choice, so the user picks their output once and both playback and the
