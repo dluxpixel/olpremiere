@@ -451,6 +451,18 @@ function ImportProgress() {
   )
 }
 
+/** The Find my media banner's first line. "1 file on this edit have no media" never agreed. */
+export function missingMediaLine(n: number): string {
+  return `${plural(n, 'file')} on this edit ${n === 1 ? 'has' : 'have'} no media. Your cuts are all still here.`
+}
+
+/**
+ * The Effects tab's line while no clip is selected. It used to start "Select a clip to apply",
+ * but a click on an effect applies nothing: it takes a double click, a drag or a right click.
+ */
+export const EFFECTS_HINT =
+  'Double click to put it on the selected clip, or drag it onto any clip. Right click to put it on every clip. Drag a transition onto either edge of a clip.'
+
 /**
  * The way back when a project's media has lost its bytes.
  *
@@ -530,8 +542,7 @@ function FindMyMedia() {
       className="mx-2 mb-2 rounded-overlay border border-warning/40 bg-warning/10 px-2 py-2 text-[11px] text-text-primary"
     >
       <div className="mb-1.5">
-        {missing.length} {missing.length === 1 ? 'file' : 'files'} on this edit have no media. Your cuts are all still
-        here.
+        {missingMediaLine(missing.length)}
         {why !== '' && <span className="mt-1 block text-text-muted">The spare copies could not be used: {why}</span>}
       </div>
       <Button
@@ -766,7 +777,7 @@ function EffectsTab() {
       <div className="min-h-0 flex-1 overflow-y-auto px-1 pb-2">
         {!hasTarget && (
           <p className="px-2 pb-1.5 text-[10px] text-text-muted">
-            Select a clip to apply, drag straight onto one, or right-click to apply to every clip, or a transition to either edge.
+            {EFFECTS_HINT}
           </p>
         )}
 

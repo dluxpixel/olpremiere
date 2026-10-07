@@ -193,7 +193,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
         </Group>
 
         <Group title="Captions">
-          <Row label="Spoken language" hint="Picks the local Whisper model. Czech uses the multilingual one.">
+          <Row label="Spoken language" hint="The language you speak in your videos. Captions come out best when this matches.">
             <select
               aria-label="Caption language"
               data-testid="settings-language"
@@ -239,7 +239,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
               className={`${SELECT_CLS} max-w-[200px]`}
               value={selectedOutputId ?? ''}
               onChange={(e) => setOutputDevice(e.target.value || null)}
-              title={canPickAudioOutput() ? undefined : 'This engine always uses the system default output'}
+              title={canPickAudioOutput() ? undefined : "Sound always plays on your computer's default speakers here"}
             >
               <option value="">System default</option>
               {outputs.map((d, i) => (

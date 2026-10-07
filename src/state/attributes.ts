@@ -88,7 +88,7 @@ export function pasteClipAttributes(ids?: Iterable<string>): void {
   }
   const idSet = new Set(ids ?? useStore.getState().ui.selection)
   if (idSet.size === 0) {
-    useToasts.getState().show('Select clip(s) to paste onto', 'info')
+    useToasts.getState().show('Select the clips to paste onto first', 'info')
     return
   }
   let pasted = 0

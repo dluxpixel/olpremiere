@@ -38,6 +38,16 @@ import { usePhoneLayout } from '../ui/phoneLayout'
 import { SettingsDialog } from './SettingsDialog'
 
 /**
+ * The live room badge's tooltip, in his words. It used to say "tabs on THIS machine
+ * (deploy with the relay for cross-machine)", which is a note to a developer.
+ */
+export function collabBadgeTitle(mode: 'relay' | 'tabs' | null, roomId: string): string {
+  return mode === 'relay'
+    ? `Live room ${roomId}: anyone with the link edits with you. Click to set your name.`
+    : `Live room ${roomId}: only other windows on this computer can join. Click to set your name.`
+}
+
+/**
  * "Edit together": create/share a live room, or show who's in it. The badge is
  * honest about reach: the relay origin syncs across machines, elsewhere the
  * room spans tabs on this machine only.
@@ -87,11 +97,7 @@ function CollabButton() {
         onClick={() => setEditingName(true)}
         onKeyDown={(e) => e.key === 'Enter' && setEditingName(true)}
         className="flex cursor-pointer items-center gap-1.5 rounded-full border border-accent/40 bg-accent-quiet px-2.5 py-1 text-ui-sm text-accent"
-        title={`${
-          mode === 'relay'
-            ? `Live room ${roomId}: anyone with the link edits with you`
-            : `Live room ${roomId}: tabs on THIS machine (deploy with the relay for cross-machine)`
-        } · click to set your name`}
+        title={collabBadgeTitle(mode, roomId)}
       >
         <span className="relative flex h-2 w-2">
           {connected && (

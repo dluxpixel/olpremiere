@@ -262,12 +262,12 @@ export function FrameSettingsMenu({ seq, safeMargins, onSafeMargins }: Props) {
                 blur is on, so it never sits there meaning nothing. */}
             {seq.blurBackground === true && (
               <div className={ROW}>
-                <span className="text-[11px] text-text-muted">Band tightness</span>
+                <span className="text-[11px] text-text-muted">Background zoom</span>
                 <ScrubField
                   value={seq.blurBackdropZoom ?? BACKDROP_ZOOM}
                   spec={BLUR_BACKDROP_ZOOM}
                   testId="blur-backdrop-zoom"
-                  ariaLabel="Blur band tightness"
+                  ariaLabel="Background zoom"
                   onCommit={setActiveSequenceBlurBackdropZoom}
                 />
               </div>
