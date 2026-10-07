@@ -46,6 +46,13 @@ export interface ClipMenuContext {
   keepSelection: boolean
   playheadS: number
   show: ReturnType<typeof useToasts.getState>['show']
+  /**
+   * The menu is for the selection as a whole: a right click on EMPTY timeline
+   * with clips selected (Timeline's lane menu). Only the verbs that act on every
+   * selected clip are offered, never one that acts on `clip` alone, because he
+   * did not point at it: it is only the first selected clip in line order.
+   */
+  forSelection?: boolean
 }
 
 /** How many of `ids` sit on a video track: the clips a look can be pasted onto. */
@@ -58,7 +65,16 @@ function pictureCount(seq: Sequence, ids: readonly Id[]): number {
  * The right-click menu of a clip on the timeline, built fresh for each click
  * from the clip, its track and what else is selected.
  */
-export function clipContextMenuItems({ clip, seq, assets, selNow, keepSelection, playheadS, show }: ClipMenuContext): MenuItem[] {
+export function clipContextMenuItems({
+  clip,
+  seq,
+  assets,
+  selNow,
+  keepSelection,
+  playheadS,
+  show,
+  forSelection = false,
+}: ClipMenuContext): MenuItem[] {
   const titleIdsSel = seq.tracks
     .flatMap((t) => t.clips)
     .filter((c) => selNow.includes(c.id) && c.title)
@@ -124,7 +140,7 @@ export function clipContextMenuItems({ clip, seq, assets, selNow, keepSelection,
   // Punch stays top-level (its P key is the workhorse); the rest fold into a
   // Motion submenu so the menu doesn't wall up. Speed-ramp flattens INTO it
   // (one-level submenu limit) as three leaves.
-  const motionItems: MenuItem[] =
+  const movesItems: MenuItem[] =
     track?.kind === 'video' && !clip.title
       ? [
           // The shelf, on the path he already right-clicks. Built from the
@@ -143,6 +159,12 @@ export function clipContextMenuItems({ clip, seq, assets, selNow, keepSelection,
               onClick: () => applyMoveToSelection(move.id, selNow),
             })),
           },
+        ]
+      : []
+  const motionItems: MenuItem[] =
+    track?.kind === 'video' && !clip.title
+      ? [
+          ...movesItems,
           {
             label: 'Punch in at playhead',
             shortcut: 'P',
@@ -342,74 +364,35 @@ export function clipContextMenuItems({ clip, seq, assets, selNow, keepSelection,
         ]
       : []
 
-  return [
-    ...selectWithItems,
+  const copyItems: MenuItem[] = [
     { label: 'Copy', shortcut: comboLabel('mod+c'), separator: selectWithItems.length > 0, onClick: () => copySelection() },
     { label: 'Cut', shortcut: comboLabel('mod+x'), onClick: cutSelection },
     { label: 'Duplicate', shortcut: comboLabel('mod+d'), onClick: duplicateSelection },
-    // ⛔ ON THE LINE HE RIGHT CLICKED, 2026-10-04: *"I clicked the V4 ... It
-    // pasted it in V2."* The right click selects the clip, which clears the line
-    // Ctrl+V remembers, so this used to send the paste back to the line the clip
-    // was copied from. It goes on this clip's line, at the playhead's frame; a
-    // busy spot passes it to the next free line, with the note that says so.
-    {
-      label: 'Paste at playhead',
-      shortcut: comboLabel('mod+v'),
-      onClick: () => pasteAt(seq.tracks.findIndex((t) => t.clips.some((c) => c.id === clip.id)), quantizeToFrame(playheadS, seq.fps)),
-    },
-    { label: 'Copy attributes', shortcut: comboLabel('mod+alt+c'), separator: true, onClick: () => copyClipAttributes(clip.id) },
-    {
-      // The count is the pictures it can go on: the sound that rides along in a
-      // selection takes no look (pasteClipAttributes), so it is not counted.
-      label: keepSelection ? `Paste attributes to ${pictureCount(seq, selNow)}` : 'Paste attributes',
-      shortcut: comboLabel('mod+alt+v'),
-      disabled: !hasClipAttributes(),
-      onClick: () => pasteClipAttributes(keepSelection ? selNow : [clip.id]),
-    },
-    // The MOVE has its own pair, because Paste attributes deliberately leaves a
-    // move alone (D99): a paste he thinks is about colour must never delete motion
-    // he shaped by hand. Before this, reusing a hand made move meant performing it
-    // again on every clip.
-    { label: 'Copy move', onClick: () => copyClipMove(clip.id) },
-    {
-      label: keepSelection ? `Paste move to ${selNow.length}` : 'Paste move',
-      disabled: !hasClipMove(),
-      onClick: () => pasteClipMove(keepSelection ? selNow : [clip.id]),
-    },
-    ...crossfadeItems,
-    ...transitionItems,
-    ...captionEntry,
-    ...captionItems,
-    ...motionItems,
-    ...flipItems,
-    ...frameItems,
-    ...greenScreenItems,
-    ...appearanceItems,
-    ...bulkTitleItems,
-    ...libraryItems,
-    {
-      label: 'Trim head to playhead',
-      shortcut: 'Q',
-      separator: true,
-      disabled: !playheadInside,
-      onClick: () => topAndTail('in'),
-    },
-    {
-      label: 'Trim tail to playhead',
-      shortcut: 'W',
-      disabled: !playheadInside,
-      onClick: () => topAndTail('out'),
-    },
-    {
-      // C is the branded single-key cut; the old label advertised only the
-      // secondary Ctrl+K chord and hid the key everyone should learn.
-      label: keepSelection ? `Split ${plural(selNow.length, 'clip')} at playhead` : 'Split at playhead',
-      shortcut: 'C',
-      disabled: !playheadInside,
-      // The SAME verb the C key runs. This used to split only the clip you
-      // right-clicked while the Delete item one row below said "Delete 5 clips".
-      onClick: () => splitAtPlayhead(),
-    },
+  ]
+  const pasteAttributesItem: MenuItem = {
+    // The count is the pictures it can go on: the sound that rides along in a
+    // selection takes no look (pasteClipAttributes), so it is not counted.
+    label: keepSelection ? `Paste attributes to ${pictureCount(seq, selNow)}` : 'Paste attributes',
+    shortcut: comboLabel('mod+alt+v'),
+    disabled: !hasClipAttributes(),
+    onClick: () => pasteClipAttributes(keepSelection ? selNow : [clip.id]),
+  }
+  const pasteMoveItem: MenuItem = {
+    label: keepSelection ? `Paste move to ${selNow.length}` : 'Paste move',
+    disabled: !hasClipMove(),
+    onClick: () => pasteClipMove(keepSelection ? selNow : [clip.id]),
+  }
+  const splitItem: MenuItem = {
+    // C is the branded single-key cut; the old label advertised only the
+    // secondary Ctrl+K chord and hid the key everyone should learn.
+    label: keepSelection ? `Split ${plural(selNow.length, 'clip')} at playhead` : 'Split at playhead',
+    shortcut: 'C',
+    disabled: !playheadInside,
+    // The SAME verb the C key runs. This used to split only the clip you
+    // right-clicked while the Delete item one row below said "Delete 5 clips".
+    onClick: () => splitAtPlayhead(),
+  }
+  const deleteItems: MenuItem[] = [
     {
       // THE LABEL NAMES WHAT GOES. Delete is selection-scoped: either half of
       // a linked pair goes alone (see deleteScoped). It used to say plain
@@ -435,6 +418,77 @@ export function clipContextMenuItems({ clip, seq, assets, selNow, keepSelection,
       danger: true,
       onClick: () => deleteSelected(true),
     },
+  ]
+
+  // ⛔ ON EMPTY SPACE, ONLY WHAT ACTS ON THE WHOLE SELECTION. This menu used to
+  // be the FIRST selected clip's own menu: transitions, crossfades, Close gap
+  // before, Copy move, Punch in and Save to Library for a clip he never pointed
+  // at, and a second paste beside "Paste here". The title looks stay when the
+  // first clip is a title, because they then go on every selected title.
+  if (forSelection) {
+    return [
+      ...copyItems,
+      { ...pasteAttributesItem, separator: true },
+      pasteMoveItem,
+      ...captionEntry,
+      ...movesItems,
+      ...flipItems,
+      ...frameItems,
+      ...greenScreenItems,
+      ...(clip.title ? appearanceItems : []),
+      ...bulkTitleItems,
+      { ...splitItem, separator: true },
+      ...deleteItems,
+    ]
+  }
+
+  return [
+    ...selectWithItems,
+    ...copyItems,
+    // ⛔ ON THE LINE HE RIGHT CLICKED, 2026-10-04: *"I clicked the V4 ... It
+    // pasted it in V2."* The right click selects the clip, which clears the line
+    // Ctrl+V remembers, so this used to send the paste back to the line the clip
+    // was copied from. It goes on this clip's line, at the playhead's frame; a
+    // busy spot passes it to the next free line, with the note that says so.
+    {
+      label: 'Paste at playhead',
+      shortcut: comboLabel('mod+v'),
+      onClick: () => pasteAt(seq.tracks.findIndex((t) => t.clips.some((c) => c.id === clip.id)), quantizeToFrame(playheadS, seq.fps)),
+    },
+    { label: 'Copy attributes', shortcut: comboLabel('mod+alt+c'), separator: true, onClick: () => copyClipAttributes(clip.id) },
+    pasteAttributesItem,
+    // The MOVE has its own pair, because Paste attributes deliberately leaves a
+    // move alone (D99): a paste he thinks is about colour must never delete motion
+    // he shaped by hand. Before this, reusing a hand made move meant performing it
+    // again on every clip.
+    { label: 'Copy move', onClick: () => copyClipMove(clip.id) },
+    pasteMoveItem,
+    ...crossfadeItems,
+    ...transitionItems,
+    ...captionEntry,
+    ...captionItems,
+    ...motionItems,
+    ...flipItems,
+    ...frameItems,
+    ...greenScreenItems,
+    ...appearanceItems,
+    ...bulkTitleItems,
+    ...libraryItems,
+    {
+      label: 'Trim head to playhead',
+      shortcut: 'Q',
+      separator: true,
+      disabled: !playheadInside,
+      onClick: () => topAndTail('in'),
+    },
+    {
+      label: 'Trim tail to playhead',
+      shortcut: 'W',
+      disabled: !playheadInside,
+      onClick: () => topAndTail('out'),
+    },
+    splitItem,
+    ...deleteItems,
     {
       label: 'Close gap before',
       separator: true,

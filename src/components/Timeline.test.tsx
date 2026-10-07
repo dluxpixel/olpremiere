@@ -110,6 +110,26 @@ describe('Timeline', () => {
     expect(menu.items.map((i) => i.label).slice(0, 4)).toEqual(['Copy', 'Cut', 'Duplicate', 'Paste at playhead'])
   })
 
+  // A right click on empty space with clips selected used to borrow the whole
+  // menu of the FIRST selected clip: Close gap before, Copy move and Trim head
+  // for a clip he did not point at, and two pastes ("Paste here" and "Paste").
+  it('right click on empty space with a selection lists only what acts on all of it', () => {
+    const a = seedTitle(1)
+    const b = seedTitle(4)
+    useStore.getState().setUI({ selection: [a.id, b.id], playheadS: 2 })
+    render(<Timeline height={300} />)
+    const { lanes } = layOut()
+    fireEvent.contextMenu(lanes, { clientX: 300, clientY: 40 })
+    const labels = useContextMenu.getState().items.map((i) => i.label)
+    expect(labels.filter((l) => l.startsWith('Paste') && !/attributes|move/.test(l))).toEqual(['Paste here'])
+    for (const l of ['Copy', 'Cut', 'Duplicate', 'Split 2 clips at playhead', 'Delete 2 clips', 'Ripple delete 2 clips']) {
+      expect(labels).toContain(l)
+    }
+    for (const l of ['Paste at playhead', 'Copy attributes', 'Copy move', 'Close gap before', 'Close all gaps on track', 'Trim head to playhead']) {
+      expect(labels).not.toContain(l)
+    }
+  })
+
   it('moves a dragged clip as one undoable edit', () => {
     const clip = seedTitle(1)
     render(<Timeline height={300} />)

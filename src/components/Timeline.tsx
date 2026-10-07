@@ -300,7 +300,8 @@ export function Timeline({ height }: { height: number }) {
 
   /**
    * A right click on EMPTY timeline: paste right here, and when clips are
-   * selected, the same menu a selected clip gives, acting on all of them. His
+   * selected, the verbs of the clip menu that act on all of them (never one
+   * that acts on a single clip he did not point at: `forSelection`). His
    * words, 2026-09-28: *"when I select multiple things and right-click, the
    * context menu should actually appear everywhere, not just one clip"*, and
    * *"I click Paste on V4 ... it pastes it where I clicked it."*
@@ -322,7 +323,7 @@ export function Timeline({ height }: { height: number }) {
     const anchor = selNow.length > 0 ? seq.tracks.flatMap((t) => t.clips).find((c) => selNow.includes(c.id)) : undefined
     if (anchor) {
       const playheadS = useStore.getState().ui.playheadS
-      const more = clipContextMenuItems({ clip: anchor, seq, assets, selNow, keepSelection: true, playheadS, show })
+      const more = clipContextMenuItems({ clip: anchor, seq, assets, selNow, keepSelection: true, playheadS, show, forSelection: true })
       if (more.length > 0) items.push({ ...more[0]!, separator: true }, ...more.slice(1))
     }
     openContextMenu(e, items)
