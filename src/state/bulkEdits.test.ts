@@ -102,14 +102,18 @@ describe('setChannelForClips', () => {
     expect(clips().map((x) => x.opacity)).toEqual([1, 1])
   })
 
-  it('keys the value at the playhead on ANIMATED clips instead of a no-op base write', () => {
+  // The multi panel's rest rule (below), not a keyframe at the playhead. This
+  // test used to claim a key at the playhead and passed anyway, because the
+  // rest rule also leaves a keyframe worth 2 (review, 2026-10-07).
+  it('moves an ANIMATED clip to rest on the value, adding no keyframe at the playhead', () => {
     const a = seedTitle(0)
     useStore.getState().setUI({ playheadS: 2 })
     toggleChannelAnimation(a.id, 'scale') // seeds a scale keyframe → channel is animated
     useStore.getState().setUI({ playheadS: 3 })
     setChannelForClips([a.id], 'scale', 2)
-    // A keyframe carrying value 2 was upserted (not silently dropped onto the base).
-    expect(channelKeyframes(clips()[0], 'scale').some((k) => Math.abs(k.value - 2) < 1e-9)).toBe(true)
+    // The one keyframe stays where it was and now rests on 2, and so does the base.
+    expect(channelKeyframes(clips()[0], 'scale').map((k) => [k.t, k.value])).toEqual([[2, 2]])
+    expect(clips()[0].transform.scale).toBe(2)
   })
 })
 
