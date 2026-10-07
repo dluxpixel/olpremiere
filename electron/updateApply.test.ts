@@ -36,7 +36,11 @@ describe('opening the app never restarts it into an update', () => {
     expect(main).not.toMatch(/launchedAt|AUTO_APPLY_WINDOW|freshLaunch/)
   })
 
+  // Set in ./updateFlow since 2026-10-06, on the updater main hands it. The flow's own
+  // test runs it ("turns on download and install on quit"); this pins the hand over.
   it('a waiting update still goes on when he closes the app', () => {
-    expect(main).toMatch(/autoUpdater\.autoInstallOnAppQuit = true/)
+    const flow = readFileSync(new URL('./updateFlow.ts', import.meta.url), 'utf8')
+    expect(flow).toMatch(/d\.updater\.autoInstallOnAppQuit = true/)
+    expect(main).toMatch(/startUpdateFlow\(\{\s*updater: autoUpdater,/)
   })
 })
