@@ -96,6 +96,7 @@ export function setSharedEffectParam(ids: readonly string[], type: string, key: 
   const def = getEffect(type)
   const param = def?.params.find((p) => p.key === key)
   const playheadS = useStore.getState().ui.playheadS
+  let leftAlone = 0
   mapClips(
     ids,
     `Set ${def?.label ?? type} ${param?.label ?? key} on ${plural(ids.length, 'clip')}`,
@@ -107,11 +108,26 @@ export function setSharedEffectParam(ids: readonly string[], type: string, key: 
       // first keyframe replaced and arrived backwards (measured 2026-10-06). The
       // card then reads "Mixed" for it, which is the truth.
       const outside = playheadS < c.startS || playheadS >= clipEndS(c)
-      if (outside && isParamAnimated(inst, key)) return c
+      if (outside && isParamAnimated(inst, key)) {
+        leftAlone++
+        return c
+      }
       return setEffectParam(c, inst.id, key, value, playheadLocalT(c))
     },
     `shared-param:${type}:${key}`,
   )
+  // ⛔ AND IT SAYS SO. Left alone in silence, a card over three ramped clips
+  // with the playhead in a gap did nothing at all, no undo step and no word,
+  // and just read "Mixed" (review, 2026-10-07).
+  if (leftAlone > 0) {
+    const name = param?.label ?? key
+    useToasts
+      .getState()
+      .show(
+        `${plural(leftAlone, 'clip')} with ${name} keyframes ${leftAlone === 1 ? 'was' : 'were'} left alone. Park the playhead on one to change it there`,
+        'info',
+      )
+  }
 }
 
 /** Put one setting back to its neutral value on every clip. */
