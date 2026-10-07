@@ -4274,12 +4274,17 @@ describe('a lock is not bypassed through the linked partner', () => {
     expect(findClip(out, 'w')).toBeNull()
   })
 
-  it('a cut goes through the free half only, and the locked half stays whole', () => {
-    const out = splitGroup(pair(), 'v', 2)
-    expect(out.tracks[0].clips).toHaveLength(2)
+  // Cutting the free half alone gave each picture half a link group of its own:
+  // the picture was unlinked from its voice for good, and a later ripple of one
+  // half left the other ahead of its own sound. The locked half stays whole, and
+  // so does the picture, still linked to it.
+  it('a cut leaves the pair as it is, the picture still linked to its locked voice', () => {
+    const seq = pair()
+    const out = splitGroup(seq, 'v', 2)
+    expect(out).toBe(seq)
+    expect(out.tracks[0].clips).toHaveLength(1)
     expect(out.tracks[1].clips).toHaveLength(1)
+    expect(out.tracks[0].clips[0].linkId).toBe('L')
     expect(out.tracks[1].clips[0].linkId).toBe('L')
-    // Each picture half is its own group, so it stays silent and the voice plays.
-    expect(out.tracks[0].clips.every((c) => c.linkId !== undefined && c.linkId !== 'L')).toBe(true)
   })
 })

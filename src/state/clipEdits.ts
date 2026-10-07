@@ -1480,9 +1480,14 @@ export function splitAtPlayhead(allTracks = false, kind?: 'video' | 'audio'): vo
   }
   const label = kind === 'audio' ? 'Split audio' : kind === 'video' ? 'Split video' : 'Split at playhead'
   const before = useStore.getState().project
-  // A pair with a half on a locked track is cut on its free half only
-  // (engine splitGroup), and he is told the locked half stayed whole.
-  const heldPair = !kind && targets.some((id) => groupLocked(seq, id) && clipGroupIds(seq, id).length > 1)
+  // Singled out: he selected this clip and left its linked partner alone.
+  const singledOut = (sq: Sequence, id: string): boolean =>
+    sel.length > 0 && !clipGroupIds(sq, id).every((g) => sel.includes(g))
+  // A pair with a half on a locked track is not cut at all (engine splitGroup:
+  // cutting the free half alone unlinked it from its sound for good), and he is
+  // told why. A half he singled out is cut on its own, as ever.
+  const heldPair =
+    !kind && targets.some((id) => !singledOut(seq, id) && groupLocked(seq, id) && clipGroupIds(seq, id).length > 1)
   if (targets.length > 0) {
     updateActiveSequence(label, (sq) => {
       let next = sq
@@ -1490,9 +1495,7 @@ export function splitAtPlayhead(allTracks = false, kind?: 'video' | 'audio'): vo
       const done = new Set<string>()
       for (const id of targets) {
         if (done.has(id)) continue
-        // Singled out: he selected this clip and left its linked partner alone.
-        const solo = sel.length > 0 && !clipGroupIds(next, id).every((g) => sel.includes(g))
-        if (kind || solo) {
+        if (kind || singledOut(next, id)) {
           done.add(id)
           next = splitClipOnly(next, id, t)
           continue
@@ -1510,8 +1513,8 @@ export function splitAtPlayhead(allTracks = false, kind?: 'video' | 'audio'): vo
   // on the first frame of a clip that began between two frames, drawn half a
   // frame inside it. The razor already said "Too close to the edge"; C now says
   // why too.
-  if (useStore.getState().project === before) useToasts.getState().show(splitRefusal(seq, showing, t), 'info')
-  else if (heldPair) useToasts.getState().show('Its linked partner is on a locked track, so only the unlocked half was cut', 'info')
+  if (heldPair) useToasts.getState().show(PAIR_LOCKED_MESSAGE, 'info')
+  else if (useStore.getState().project === before) useToasts.getState().show(splitRefusal(seq, showing, t), 'info')
 }
 
 /**

@@ -12,9 +12,11 @@ import { activeSequence, audioTracks, defaultTitleDef, newProject, newTitleClip,
 import { useContextMenu } from '../state/contextMenu'
 import { ASSET_MIME, EFFECT_MIME } from '../state/dnd'
 import { copySelection } from '../state/clipboard'
+import { PAIR_LOCKED_MESSAGE } from '../state/clipEdits'
 import { answerNamePrompt, useNamePrompt } from '../state/namePrompt'
 import { clickedPasteTrack, setPasteTarget } from '../state/pasteTarget'
 import { updateActiveSequence, useStore } from '../state/store'
+import { useToasts } from '../state/toasts'
 import { Timeline } from './Timeline'
 import { installManualRaf, installResizeObserver } from './timelineDomFixtures'
 import { buildLaneInfos } from './timelineLanes'
@@ -409,6 +411,31 @@ describe('Timeline', () => {
     const clips = videoTracks(seq())[0].clips
     expect(clips.length).toBe(2)
     expect(clips[0].id).toBe(clip.id)
+  })
+
+  // The razor cut the free half alone, and that unlinked the picture from its
+  // sound for good. A pair held by a locked partner now stays whole, and says why.
+  it('the razor leaves a pair with a locked partner whole, and says why', () => {
+    const [v1, v2] = videoTracks(seq())
+    const pic = { ...newTitleClip(defaultTitleDef('pic'), 0, 4), id: 'pic', linkId: 'L' }
+    const snd = { ...newTitleClip(defaultTitleDef('snd'), 0, 4), id: 'snd', linkId: 'L' }
+    updateActiveSequence('seed', (sq) =>
+      recomputeDuration({
+        ...sq,
+        tracks: sq.tracks.map((t) =>
+          t.id === v1!.id ? { ...t, clips: [pic] } : t.id === v2!.id ? { ...t, locked: true, clips: [snd] } : t,
+        ),
+      }),
+    )
+    useStore.getState().setUI({ tool: 'razor' })
+    useToasts.setState({ toasts: [] })
+    render(<Timeline height={300} />)
+    layOut()
+    const before = useStore.getState().project
+    const el = screen.getAllByTestId('clip').find((c) => c.dataset.clipId === 'pic')!
+    fireEvent.pointerDown(el, { button: 0, clientX: 20, clientY: 40, pointerId: 1 })
+    expect(useStore.getState().project).toBe(before)
+    expect(useToasts.getState().toasts.map((t) => t.message)).toEqual([PAIR_LOCKED_MESSAGE])
   })
 
   it('fits the zoom from the toolbar event', () => {

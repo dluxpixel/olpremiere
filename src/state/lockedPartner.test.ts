@@ -38,12 +38,24 @@ function seed(): void {
 beforeEach(seed)
 
 describe('a locked partner holds through the keys', () => {
-  it('C cuts the picture and leaves the locked voice whole, and says so', () => {
+  // C used to cut the picture alone, and each half came out with a link group
+  // of its own: the picture unlinked from its voice for good, without a word.
+  it('C leaves the pair as it is, the picture still linked to its voice, and says why', () => {
     useStore.getState().setUI({ selection: [], playheadS: 2 })
+    const before = useStore.getState().project
+    splitAtPlayhead()
+    expect(useStore.getState().project).toBe(before)
+    expect(seq().tracks[0].clips.map((c) => c.linkId)).toEqual(['L'])
+    expect(seq().tracks[2].clips).toHaveLength(1)
+    expect(said()).toEqual([PAIR_LOCKED_MESSAGE])
+  })
+
+  it('a picture he singled out is still cut on its own, and nothing is said about the pair', () => {
+    useStore.getState().setUI({ selection: ['vid'], playheadS: 2 })
     splitAtPlayhead()
     expect(seq().tracks[0].clips).toHaveLength(2)
     expect(seq().tracks[2].clips).toHaveLength(1)
-    expect(said()).toEqual(['Its linked partner is on a locked track, so only the unlocked half was cut'])
+    expect(said()).toEqual([])
   })
 
   it('Q and W leave the pair as it is, and say why', () => {

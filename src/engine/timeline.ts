@@ -2013,22 +2013,23 @@ export function splitClipOnly(seq: Sequence, clipId: Id, tS: number): Sequence {
   )
 }
 
-/** Split every linked member at tS; the right halves form a fresh link group. */
+/**
+ * Split every linked member at tS; the right halves form a fresh link group.
+ *
+ * ⛔ A PAIR WITH A HALF ON A LOCKED TRACK IS NOT CUT AT ALL. It used to cut the
+ * free halves alone (splitClipOnly), and that gives each half a link group of
+ * its own: the picture was unlinked from its voice for good, without a word.
+ * Unlock the line later and Shift+Delete on the left half rippled the picture
+ * alone, two seconds ahead of its own sound. The lock is never bypassed
+ * through the partner either, so the pair stays exactly as it is, the way Q,
+ * W, the trims and Shift+Delete hold it, and the caller says why.
+ */
 export function splitGroup(seq: Sequence, clipId: Id, tS: number): Sequence {
   const found = findClip(seq, clipId)
   if (!found || found.track.locked) return seq
   const link = found.clip.linkId
   if (!link) return splitClip(seq, clipId, tS)
-  // A half on a locked track stays whole and only the free halves are cut, each
-  // on its own (splitClipOnly). Cutting in place moves nothing, so the pair
-  // stays in sync; the lock is never bypassed through the partner.
-  if (groupLocked(seq, clipId)) {
-    const free = clipGroupIds(seq, clipId).filter((id) => !findClip(seq, id)?.track.locked)
-    if (free.some((id) => !canSplitClipAt(findClip(seq, id)!.clip, seq.fps, tS))) return seq
-    let cut = seq
-    for (const id of free) cut = splitClipOnly(cut, id, tS)
-    return cut
-  }
+  if (groupLocked(seq, clipId)) return seq
   const groupBefore = new Set(clipGroupIds(seq, clipId))
   // ALL OR NOTHING. Members can sit at different distances from the cut once one
   // of them has been trimmed on its own, so asking each in turn could split some

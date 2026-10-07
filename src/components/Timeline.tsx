@@ -233,7 +233,8 @@ export function Timeline({ height }: { height: number }) {
       const before = useStore.getState().project
       updateActiveSequence('Split clip', (sq) => splitGroup(sq, clip.id, t))
       if (useStore.getState().project === before) {
-        show('Too close to the edge of the clip to cut there')
+        // A pair with a half on a locked line is not cut at all (splitGroup).
+        show(groupLocked(seq, clip.id) ? PAIR_LOCKED_MESSAGE : 'Too close to the edge of the clip to cut there')
       }
       return
     }

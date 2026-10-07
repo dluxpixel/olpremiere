@@ -19,10 +19,12 @@ import {
   rampWorkArea,
   whipToNext,
 } from './motionActions'
+import { PAIR_LOCKED_MESSAGE } from './clipEdits'
 import { updateActiveSequence, useStore } from './store'
 
+const show = vi.fn()
 vi.mock('./toasts', () => ({
-  useToasts: { getState: () => ({ show: () => {} }) },
+  useToasts: { getState: () => ({ show }) },
 }))
 
 const seq = (): Sequence => activeSequence(useStore.getState().project)
@@ -194,6 +196,19 @@ describe('cutPunchAtPlayhead', () => {
     expect(v1().clips).toHaveLength(1)
     expect(a1().clips).toHaveLength(1)
     expect(v1().clips[0].transform.scale).toBeCloseTo(1, 6)
+  })
+
+  // splitGroup no longer cuts the free half of a pair held by a locked partner
+  // (that unlinked the picture for good), so the punch says why it did nothing.
+  it('leaves a pair held by a locked partner whole, and says why', () => {
+    const { video } = seedLinkedPair(0, 8)
+    updateActiveSequence('lock A1', (sq) => ({ ...sq, tracks: sq.tracks.map((t, i) => (i === 2 ? { ...t, locked: true } : t)) }))
+    useStore.getState().setUI({ playheadS: 3 })
+    show.mockClear()
+    cutPunchAtPlayhead(video.id)
+    expect(v1().clips).toHaveLength(1)
+    expect(a1().clips).toHaveLength(1)
+    expect(show).toHaveBeenCalledWith(PAIR_LOCKED_MESSAGE, 'info')
   })
 
   it('leaves the timeline alone when the cut lands too close to an edge', () => {
