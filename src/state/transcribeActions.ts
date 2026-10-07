@@ -54,7 +54,7 @@ const reset = (): void =>
   useTranscribe.setState({ status: 'idle', pct: null, downloading: false, cancel: null, queue: null })
 
 /** True when the caller asked to stop, rather than something going wrong. */
-const isCancel = (err: unknown): boolean => typeof err === 'object' && err !== null && 'cancelled' in err
+export const isCancel = (err: unknown): boolean => typeof err === 'object' && err !== null && 'cancelled' in err
 
 /**
  * What to tell him when a caption run throws, in the words of the thing that
@@ -481,11 +481,17 @@ export async function listenToClip(clipId: string): Promise<CaptionWord[] | null
  * and nothing stopped it starting while another run was going.
  *
  * His spellings are applied like the Words panel's, so what the cutter hears is
- * what the Words panel would keep. Null when another run is going. A failure
+ * what the Words panel would keep. `queue` says which clip of how many, when
+ * the cutter runs on a selection. Null when another run is going. A failure
  * throws, for the cutter to say in its own words.
  */
-export async function wordsForCut(clip: Clip, asset: MediaAsset): Promise<CaptionWord[] | null> {
+export async function wordsForCut(
+  clip: Clip,
+  asset: MediaAsset,
+  queue: { index: number; total: number } | null = null,
+): Promise<CaptionWord[] | null> {
   if (useTranscribe.getState().status !== 'idle') return null
+  if (queue) useTranscribe.setState({ queue })
   try {
     return await wordsForClip(clip, asset, { vocabulary: await currentVocabulary() })
   } finally {

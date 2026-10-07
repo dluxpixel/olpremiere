@@ -203,6 +203,15 @@ describe('the clip right-click menu', () => {
       expect(labels(menu(v, seq, { selNow: [v.id, w.id, a.id], keepSelection: true }))).toContain('Caption 2 clips')
     })
 
+    it('cuts the quiet parts of every selected clip in one go, and says how many', () => {
+      const { a, b, v, seq } = fixture()
+      onTimeline(seq)
+      expect(labels(menu(a, seq))).toContain('Cut the quiet parts')
+      expect(labels(menu(a, seq, { selNow: [a.id, b.id], keepSelection: true }))).toContain('Cut the quiet parts of 2 clips')
+      // The picture of a linked pair is the same take as its sound, not a second clip.
+      expect(labels(menu(a, seq, { selNow: [a.id, v.id], keepSelection: true }))).toContain('Cut the quiet parts')
+    })
+
     it('never offers it on a title', () => {
       const title = newTitleClip(defaultTitleDef('Hi'), 0, 2)
       const seq = makeSeq([makeTrack({ clips: [title] })])

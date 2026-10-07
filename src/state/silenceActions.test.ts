@@ -352,6 +352,131 @@ describe('cutQuietParts', () => {
     expect(show.mock.calls.some((c) => /no speech/i.test(String(c[0])))).toBe(true)
   })
 
+  // ---------------------------------------------------------------------------
+  // AU-8: the words are kept on the media, and a selection is one pass.
+
+  const asset = () => useStore.getState().project.assets.a1!
+  const knowsWords = (words: { text: string; startS: number; endS: number }[], heardSpans: { fromS: number; toS: number }[]) =>
+    useStore.getState().dispatch('knows', (p) => ({ ...p, assets: { ...p.assets, a1: { ...p.assets.a1!, words, heardSpans } } }))
+
+  it('uses the words the media already has when all of the clip was heard, and listens to nothing', async () => {
+    const { cutQuietParts } = await import('./silenceActions')
+    seedClip({ startS: 3.2, inS: 2, outS: 14 })
+    // Source seconds: he speaks 2.5 to 4 and 10 to 13.5 of the file, heard from 0 to 20.
+    knowsWords(
+      [
+        { text: 'a', startS: 2.5, endS: 4 },
+        { text: 'b', startS: 10, endS: 13.5 },
+      ],
+      [{ fromS: 0, toS: 20 }],
+    )
+
+    await cutQuietParts('c1', { minGapS: 0.3, padS: 0 })
+
+    expect(words).not.toHaveBeenCalled()
+    expectSpans(clips(), [
+      [2.5, 4],
+      [10, 13.5],
+    ])
+    expect(clips()[0]!.startS).toBeCloseTo(3.2, 4)
+  })
+
+  it('listens again when the media has words but never heard all of this clip', async () => {
+    const { cutQuietParts } = await import('./silenceActions')
+    seedClip()
+    // Words from a shorter listening, and a project older than the spans has none.
+    knowsWords([{ text: 'a', startS: 0, endS: 2 }], [{ fromS: 0, toS: 5 }])
+    heard([
+      { text: 'a', startS: 0, endS: 2 },
+      { text: 'b', startS: 8, endS: 12 },
+    ])
+
+    await cutQuietParts('c1', { minGapS: 0.5, padS: 0 })
+
+    expect(words).toHaveBeenCalledTimes(1)
+    // The listening found speech the old words did not know about, and kept it.
+    expectSpans(clips(), [
+      [0, 2],
+      [8, 12],
+    ])
+  })
+
+  it('keeps what it heard on the media, in source seconds, and one undo takes the cut and the words back', async () => {
+    const { cutQuietParts } = await import('./silenceActions')
+    seedClip({ startS: 3.2, inS: 1, outS: 13 })
+    heard([
+      { text: 'a', startS: 0.5, endS: 2 },
+      { text: 'b', startS: 8, endS: 11.5 },
+    ])
+
+    await cutQuietParts('c1', { minGapS: 0.3, padS: 0 })
+
+    expect(asset().words?.map((w) => [w.text, +w.startS.toFixed(4), +w.endS.toFixed(4)])).toEqual([
+      ['a', 1.5, 3],
+      ['b', 9, 12.5],
+    ])
+    expect(asset().heardSpans).toEqual([{ fromS: 1, toS: 13 }])
+
+    useStore.getState().undo()
+    expect(clips()).toHaveLength(1)
+    expect(asset().words).toBeUndefined()
+    expect(asset().heardSpans).toBeUndefined()
+  })
+
+  it('cuts every clip of a selection in one pass and ONE undo step', async () => {
+    const { cutQuietParts } = await import('./silenceActions')
+    const first = seedClip({ outS: 12 })
+    const second: Clip = { ...first, id: 'c2', startS: 12, inS: 20, outS: 32 }
+    updateActiveSequence('second', (sq) =>
+      recomputeDuration({ ...sq, tracks: sq.tracks.map((t, i) => (i === 0 ? { ...t, clips: [first, second] } : t)) }),
+    )
+    // Each take: speech for the first 2 s and the last 4 s of it.
+    heard([
+      { text: 'a', startS: 0, endS: 2 },
+      { text: 'b', startS: 8, endS: 12 },
+    ])
+    const history = useStore.getState().history.undo.length
+
+    await cutQuietParts(['c1', 'c2'], { minGapS: 0.5, padS: 0 })
+
+    expect(words).toHaveBeenCalledTimes(2)
+    expectSpans(clips(), [
+      [0, 2],
+      [8, 12],
+      [20, 22],
+      [28, 32],
+    ])
+    // Closed up, the second take now follows the first one's six seconds.
+    expect(clips()[2]!.startS).toBeCloseTo(6, 4)
+    expect(useStore.getState().history.undo.length).toBe(history + 1)
+    const said = show.mock.calls.find((c) => /Cut .*quiet/i.test(String(c[0])))
+    expect(String(said?.[0])).toMatch(/in 2 places, across 2 clips/)
+
+    useStore.getState().undo()
+    expectSpans(clips(), [
+      [0, 12],
+      [20, 32],
+    ])
+  })
+
+  it('reads a linked pair once when both halves are selected', async () => {
+    const { cutQuietParts } = await import('./silenceActions')
+    seedPair()
+    heard([
+      { text: 'a', startS: 0, endS: 2 },
+      { text: 'b', startS: 8, endS: 12 },
+    ])
+
+    await cutQuietParts(['V', 'A'], { minGapS: 0.5, padS: 0 })
+
+    expect(words).toHaveBeenCalledTimes(1)
+    expectSpans(seq().tracks[2]!.clips, [
+      [0, 2],
+      [8, 12],
+    ])
+    expect(seq().tracks[0]!.clips.map((c) => [c.startS, c.inS, c.outS])).toEqual(seq().tracks[2]!.clips.map((c) => [c.startS, c.inS, c.outS]))
+  })
+
   it('says the track is locked instead of quietly doing nothing', async () => {
     const { cutQuietParts } = await import('./silenceActions')
     seedClip()

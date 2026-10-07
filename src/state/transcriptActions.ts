@@ -6,7 +6,7 @@
 // The reading itself is engine/transcriptCut.ts, pure. This file is only the
 // store side: where the words go, and the one undo step a cut makes.
 
-import { cutRange, mergeWords, toSource } from '../engine/transcriptCut'
+import { cutRange, mergeHeardSpans, mergeWords, toSource } from '../engine/transcriptCut'
 import { activeSequence, type Id } from '../engine/types'
 import { updateActiveSequence, useStore } from './store'
 import { listenToClip } from './transcribeActions'
@@ -31,10 +31,14 @@ export async function listenForWords(clipId: Id): Promise<void> {
   const asset = s.project.assets[clip.assetId]
   if (!asset) return
   const inSource = heard.map((w) => ({ text: w.text, startS: toSource(clip, w.startS), endS: toSource(clip, w.endS) }))
-  const words = mergeWords(asset.words, inSource, clip.inS, clip.outS)
   s.dispatch(`Listen to ${asset.name}`, (p) => {
     const a = p.assets[asset.id]
-    return a ? { ...p, assets: { ...p.assets, [a.id]: { ...a, words } } } : p
+    if (!a) return p
+    // What it heard, and THAT it heard this stretch: a quiet stretch is then known
+    // to be quiet, and Cut the quiet parts can use it without listening again.
+    const words = mergeWords(a.words, inSource, clip.inS, clip.outS)
+    const heardSpans = mergeHeardSpans(a.heardSpans, clip.inS, clip.outS)
+    return { ...p, assets: { ...p.assets, [a.id]: { ...a, words, heardSpans } } }
   })
 }
 

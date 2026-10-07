@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { recomputeDuration } from './timeline'
-import { cutRange, mergeWords, wordSpan, wordsOnTimeline } from './transcriptCut'
+import { cutRange, heardCovers, mergeHeardSpans, mergeWords, wordSpan, wordsOnTimeline } from './transcriptCut'
 import { clipEndS, defaultTransform, type Clip, type MediaAsset, type Sequence, type SpokenWord, type Track } from './types'
 
 let n = 0
@@ -86,6 +86,33 @@ describe('mergeWords', () => {
 
   it('starts from nothing', () => {
     expect(mergeWords(undefined, [w('hi', 0, 1)], 0, 5)).toEqual([w('hi', 0, 1)])
+  })
+})
+
+describe('what has been heard', () => {
+  it('adds a span, joining the ones it touches or overlaps, sorted', () => {
+    expect(mergeHeardSpans(undefined, 2, 5)).toEqual([{ fromS: 2, toS: 5 }])
+    expect(mergeHeardSpans([{ fromS: 2, toS: 5 }], 8, 9)).toEqual([
+      { fromS: 2, toS: 5 },
+      { fromS: 8, toS: 9 },
+    ])
+    expect(mergeHeardSpans([{ fromS: 2, toS: 5 }, { fromS: 8, toS: 9 }], 5, 8)).toEqual([{ fromS: 2, toS: 9 }])
+    expect(mergeHeardSpans([{ fromS: 2, toS: 5 }], 0, 3)).toEqual([{ fromS: 0, toS: 5 }])
+  })
+
+  it('covers a stretch only when every second of it was heard', () => {
+    const spans = [
+      { fromS: 0, toS: 4 },
+      { fromS: 4, toS: 10 },
+      { fromS: 12, toS: 20 },
+    ]
+    expect(heardCovers(spans, 1, 9)).toBe(true)
+    expect(heardCovers(spans, 3, 10)).toBe(true)
+    expect(heardCovers(spans, 9, 13)).toBe(false)
+    expect(heardCovers(spans, 12, 21)).toBe(false)
+    expect(heardCovers(undefined, 0, 1)).toBe(false)
+    // Words alone, from a project older than the spans, are not proof of anything.
+    expect(heardCovers([], 0, 1)).toBe(false)
   })
 })
 

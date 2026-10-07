@@ -10,7 +10,7 @@
 
 import { clipEmitsAudioOn } from './audio'
 import { findClip, recomputeDuration, splitClipOnly, splitGroup } from './timeline'
-import { clipEndS, type Clip, type Id, type MediaAsset, type Sequence, type SpokenWord } from './types'
+import { clipEndS, type Clip, type HeardSpan, type Id, type MediaAsset, type Sequence, type SpokenWord } from './types'
 
 const EPS = 1e-6
 
@@ -81,6 +81,34 @@ export function wordsOnTimeline(seq: Sequence, assets: Record<Id, MediaAsset>): 
 export function mergeWords(existing: readonly SpokenWord[] | undefined, heard: readonly SpokenWord[], fromS: number, toS: number): SpokenWord[] {
   const kept = (existing ?? []).filter((w) => w.startS < fromS - EPS || w.startS >= toS - EPS)
   return [...kept, ...heard.map((w) => ({ text: w.text, startS: w.startS, endS: w.endS }))].sort((a, b) => a.startS - b.startS)
+}
+
+/** `spans` with [fromS, toS) added: merged where they touch or overlap, sorted. */
+export function mergeHeardSpans(spans: readonly HeardSpan[] | undefined, fromS: number, toS: number): HeardSpan[] {
+  const all = [...(spans ?? []), { fromS: Math.min(fromS, toS), toS: Math.max(fromS, toS) }].sort((a, b) => a.fromS - b.fromS)
+  const out: HeardSpan[] = []
+  for (const s of all) {
+    const last = out[out.length - 1]
+    if (last && s.fromS <= last.toS + EPS) last.toS = Math.max(last.toS, s.toS)
+    else out.push({ fromS: s.fromS, toS: s.toS })
+  }
+  return out
+}
+
+/**
+ * Whether every second of [fromS, toS) has been listened to, so the words the
+ * media keeps are all there is to hear in it.
+ */
+export function heardCovers(spans: readonly HeardSpan[] | undefined, fromS: number, toS: number): boolean {
+  const end = Math.max(fromS, toS)
+  let reached = Math.min(fromS, toS)
+  for (const s of [...(spans ?? [])].sort((a, b) => a.fromS - b.fromS)) {
+    if (s.toS <= reached + EPS) continue
+    if (s.fromS > reached + EPS) return false
+    reached = s.toS
+    if (reached >= end - EPS) return true
+  }
+  return reached >= end - EPS
 }
 
 /**

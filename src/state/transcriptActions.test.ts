@@ -76,6 +76,12 @@ describe('Listen keeps the words where they were said', () => {
     expect(words()[0]!.endS).toBeCloseTo(5.5, 6)
   })
 
+  it('and remembers which stretch of the file was heard, so its quiet is known to be quiet', async () => {
+    seedClip({ startS: 3, inS: 4, outS: 10 })
+    await listenForWords('c')
+    expect(useStore.getState().project.assets.a?.heardSpans).toEqual([{ fromS: 4, toS: 10 }])
+  })
+
   it('⛔ when he drags the clip while it listens, the words stay on what he said', async () => {
     seedClip({ startS: 3, inS: 4, outS: 10 })
     duringListen = () => moveClip(5)
