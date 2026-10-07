@@ -30,8 +30,11 @@
 //             motion clip, 120 or 240) every k-th frame, for 60 or just under:
 //             TikTok, Reels and YouTube play 60 at most, so the rest was work for
 //             frames the apps throw away. See exportFps.
-//   AUDIO     AAC 320 kbps, which is transparent and universally playable (192 kbps
-//             below HD, same byte-stability reason as QUALITY).
+//   AUDIO     AAC, transparent and universally playable. The desktop file is 384
+//             kbps (electron/exportArgs.ts sets it, not this plan). The browser
+//             asks for 320 and gets 192 in practice: Chrome's AAC encoder refuses
+//             256 and up, so the worker ladders down (exportWorker.ts). 192 below
+//             HD, same byte-stability reason as QUALITY.
 //   RANGE     the work area when in/out points are set, the whole sequence
 //             otherwise. Marking I/O already said which part you meant.
 //   LOUDNESS  the whole mix lands at -14 LUFS, the level YouTube, TikTok and
@@ -55,7 +58,11 @@ import { workArea } from '../workArea'
  */
 export const EXPORT_QP = 14
 
-/** AAC at 320 kbps is transparent, and matches what the desktop ffmpeg emits. */
+/**
+ * What the BROWSER export asks for. Only the browser reads it: the desktop
+ * ffmpeg writes 384 kbps whatever this says (electron/exportArgs.ts), and Chrome
+ * refuses AAC at 256 and up, so the worker steps down to 192 in practice.
+ */
 export const EXPORT_AUDIO_BITRATE = 320_000
 
 /** What a sub-HD raster actually gets: the legacy rate the golden export pins. */
