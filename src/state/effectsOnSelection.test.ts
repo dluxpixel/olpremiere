@@ -355,6 +355,66 @@ describe('footage wins a mixed selection, and nothing is stacked twice', () => {
   })
 })
 
+/** One picture on V1 and a caption on V2 over it, the cut locked. Returns [picture, caption]. */
+function lockedCutWithCaption(): [string, string] {
+  const assets = { a: picture('a') }
+  useStore.getState().setProject({ ...newProject('locked cut'), assets })
+  const pic = newClipFromAsset(assets.a, 0)
+  const cap = newTitleClip(defaultTitleDef('hi'), 0, 2)
+  updateActiveSequence('seed', (sq) =>
+    recomputeDuration({
+      ...sq,
+      tracks: sq.tracks.map((t) =>
+        t.name === 'V1' ? { ...t, clips: [pic], locked: true } : t.name === 'V2' ? { ...t, clips: [cap] } : t,
+      ),
+    }),
+  )
+  shown.length = 0
+  return [pic.id, cap.id]
+}
+
+// Review, 2026-10-07: with the cut locked on V1, Apply to every clip dropped the
+// locked footage BEFORE the footage wins rule, so the rule saw only the captions
+// and graded every one of them.
+describe('Apply to every clip with the footage track locked', () => {
+  it('an effect leaves the captions clean and names the locked footage', () => {
+    const [pic, cap] = lockedCutWithCaption()
+    applyEffectToAllClips('saturation')
+    expect(clipById(cap).effects).toHaveLength(0)
+    expect(clipById(pic).effects).toHaveLength(0)
+    expect(said()).toEqual(['That clip is on a locked track'])
+  })
+
+  it('a Library look leaves the captions clean and names the locked footage', () => {
+    const [pic, cap] = lockedCutWithCaption()
+    useLibrary.setState({
+      presets: [{ id: 'p1', name: 'Warm', createdAt: 1, effects: [{ id: 'fx', type: 'saturation', enabled: true, params: { saturation: 0.3 } }] }],
+    })
+    applyPresetToAllClips('p1')
+    expect(clipById(cap).effects).toHaveLength(0)
+    expect(clipById(pic).effects).toHaveLength(0)
+    expect(said()).toEqual(['That clip is on a locked track'])
+  })
+
+  it('the unlocked footage still takes it, and the locked footage is named', () => {
+    const ids = threePictures()
+    const cap = withCaption()
+    lockTrack('V2')
+    applyEffectToAllClips('saturation')
+    expect(effectsOf(ids)).toEqual([1, 0, 1])
+    expect(clipById(cap).effects).toHaveLength(0)
+    expect(said()).toEqual(['Applied "Saturation" to 2 clips. 1 clip is on a locked track and was left out'])
+    shown.length = 0
+    useLibrary.setState({
+      presets: [{ id: 'p1', name: 'Warm', createdAt: 1, effects: [{ id: 'fx', type: 'saturation', enabled: true, params: { saturation: 0.3 } }] }],
+    })
+    applyPresetToAllClips('p1')
+    expect(effectsOf(ids)).toEqual([2, 0, 2])
+    expect(clipById(cap).effects).toHaveLength(0)
+    expect(said()).toEqual(['Applied "Warm" to 2 clips. 1 clip is on a locked track and was left out'])
+  })
+})
+
 // A gym montage is twenty cuts. Selecting all twenty and picking White Flash put
 // it on ONE of them, from every door (measured 2026-10-06).
 describe('a transition on several selected pictures', () => {

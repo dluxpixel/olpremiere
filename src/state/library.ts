@@ -783,17 +783,22 @@ export function applyPresetToAllClips(presetId: Id): void {
   const preset = useLibrary.getState().presets.find((p) => p.id === presetId)
   const { project, dispatch } = useStore.getState()
   if (!preset) return
-  // Locked tracks are neither changed nor COUNTED. Counting them made the toast
-  // over-report by however many clips he had protected. The captions are left
-  // clean: a look is for the footage (effectTargets).
-  const targets = new Set(
-    effectTargets(
-      activeSequence(project).tracks.filter((t) => t.kind === 'video' && !t.locked).flatMap((t) => t.clips),
-    ).map((c) => c.id),
-  )
+  // Locked tracks are neither changed nor counted as changed: counting them made
+  // the toast over-report by however many clips he had protected. The captions
+  // are left clean: a look is for the footage (effectTargets).
+  // ⛔ The rule runs over EVERY video clip, locked ones too, and the locked are
+  // dropped after it. Dropping them first left a locked cut out of the rule, so
+  // it saw only the captions and the look went on every one of them (review,
+  // 2026-10-07). The ones a lock held back are named.
+  const video = activeSequence(project).tracks.filter((t) => t.kind === 'video')
+  const lockedIds = new Set(video.filter((t) => t.locked).flatMap((t) => t.clips.map((c) => c.id)))
+  const looked = effectTargets(video.flatMap((t) => t.clips)).map((c) => c.id)
+  const targets = new Set(looked.filter((id) => !lockedIds.has(id)))
+  const lockedOut = looked.length - targets.size
   const targetCount = targets.size
   if (targetCount === 0) {
-    show('No video clips to apply the preset to')
+    if (lockedOut > 0) show(lockedOut === 1 ? 'That clip is on a locked track' : 'Those clips are on a locked track', 'danger')
+    else show('No video clips to apply the preset to')
     return
   }
   dispatch(`Apply preset ${preset.name} to all clips`, (p) => {
@@ -810,7 +815,8 @@ export function applyPresetToAllClips(presetId: Id): void {
     )
     return { ...p, sequences: { ...p.sequences, [seq.id]: { ...seq, tracks } } }
   })
-  show(`Applied "${preset.name}" to ${targetCount} clip${targetCount === 1 ? '' : 's'}`, 'success')
+  const left = lockedOut > 0 ? `. ${lockedLeftOut(lockedOut)}` : ''
+  show(`Applied "${preset.name}" to ${targetCount} clip${targetCount === 1 ? '' : 's'}${left}`, 'success')
 }
 
 export async function removePreset(presetId: Id): Promise<void> {

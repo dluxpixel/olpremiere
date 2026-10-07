@@ -374,23 +374,33 @@ export function applyEffectToClips(ids: Iterable<string>, type: string): number 
  * mapClips. The footage takes it and the captions stay clean, and a clip that
  * already has it is not given a second copy (runEffect). Mirrors
  * applyPresetToAllClips in library.ts.
+ *
+ * ⛔ A LOCKED TRACK STILL COUNTS AS FOOTAGE. It used to be dropped before the
+ * footage wins rule ran, so with the cut locked on V1 the rule saw only the
+ * captions and graded every one of them (review, 2026-10-07). runEffect drops
+ * the locked clips after the rule, and they are named.
  */
 export function applyEffectToAllClips(type: string): void {
   const show = useToasts.getState().show
   const label = getEffect(type)?.label ?? type
   const ids = activeSequence(useStore.getState().project)
-    .tracks.filter((t) => t.kind === 'video' && !t.locked)
+    .tracks.filter((t) => t.kind === 'video')
     .flatMap((t) => t.clips.map((c) => c.id))
   if (ids.length === 0) {
     show(`No video clips to apply ${label} to`)
     return
   }
-  const { changed, already } = runEffect(ids, type)
-  if (changed === 0 && already > 0) {
-    show(`Every clip already has ${label}`, 'info')
+  const { changed, already, locked } = runEffect(ids, type)
+  const left = locked > 0 ? `. ${lockedLeftOut(locked)}` : ''
+  if (changed === 0 && already === 0 && locked > 0) {
+    show(locked === 1 ? 'That clip is on a locked track' : 'Those clips are on a locked track', 'danger')
     return
   }
-  show(`Applied "${label}" to ${changed} clip${changed === 1 ? '' : 's'}${alreadyHad(already)}`, 'success')
+  if (changed === 0 && already > 0) {
+    show(`Every ${locked > 0 ? 'unlocked ' : ''}clip already has ${label}${left}`, 'info')
+    return
+  }
+  show(`Applied "${label}" to ${changed} clip${changed === 1 ? '' : 's'}${alreadyHad(already)}${left}`, 'success')
 }
 
 /**
