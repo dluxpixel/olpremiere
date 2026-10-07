@@ -513,14 +513,23 @@ export interface ClarityParams {
 /** How far the clarity pass looks, as a fraction of the short side: about 16 px on a 1080 frame. */
 export const CLARITY_RADIUS = 0.015
 
+/**
+ * The weakest pass the renderer draws: applyNeighborhood (glRenderer.ts) skips a
+ * pass at or below it. lookCompanions leaves such a pass out as well, because
+ * a pass in the stack at all sends the layer down the isolated FBO path, which
+ * costs a full extra layer draw and blit per frame to change no pixels.
+ */
+export const PASS_FLOOR = 0.001
+
 /** The neighbour passes a look runs after its colour pass, already scaled by its Amount. Empty at Amount 0. */
 export function lookCompanions(spec: LookSpec, amount: number): { type: string; params: Record<string, number> }[] {
   const out: { type: string; params: Record<string, number> }[] = []
   const a = clamp01(amount)
   if (a <= 0) return out
-  if (spec.clarity > 0) out.push({ type: 'lookClarity', params: { amount: r6(spec.clarity * a), radius: CLARITY_RADIUS } })
+  const clarity = r6(spec.clarity * a)
+  if (clarity > PASS_FLOOR) out.push({ type: 'lookClarity', params: { amount: clarity, radius: CLARITY_RADIUS } })
   for (const g of [spec.halation, spec.bloom]) {
-    if (!g || g.strength <= 0) continue
+    if (!g || r6(g.strength * a) <= PASS_FLOOR) continue
     out.push({
       type: 'lookGlow',
       params: {

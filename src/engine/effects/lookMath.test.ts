@@ -11,6 +11,7 @@ import {
   HUE_ONES,
   HUE_ZEROS,
   LOOK_COMMON_GLSL,
+  PASS_FLOOR,
   SKIN_HUE,
   applyLook,
   bandValue,
@@ -367,6 +368,23 @@ describe('the passes that read neighbours', () => {
         expect(half[i].params[key]).toBeCloseTo(c.params[key] / 2, 6)
       })
     }
+  })
+
+  it('leave out a pass too weak for the renderer to draw, so a tiny Amount costs no extra layer draw', () => {
+    // applyNeighborhood skips a pass at or below PASS_FLOOR, but any pass in the
+    // stack still sends the layer down the isolated FBO path for nothing.
+    for (const look of LOOKS) {
+      for (const a of [0.0005, 0.002, 0.005, 0.01, 0.05]) {
+        for (const c of lookCompanions(look, a)) {
+          const key = c.type === 'lookClarity' ? 'amount' : 'strength'
+          expect(c.params[key], `${look.id} at ${a}`).toBeGreaterThan(PASS_FLOOR)
+        }
+      }
+      expect(lookCompanions(look, 0.0005), look.id).toEqual([])
+    }
+    // Film 800T at 0.005: the halation still shows, the bloom is under the floor.
+    const film = LOOKS.find((l) => l.id === 'film800T')!
+    expect(lookCompanions(film, 0.005).map((c) => c.params.strength)).toEqual([0.006])
   })
 
   it('carry clarity first, then halation, then bloom, as the look asks', () => {
