@@ -64,6 +64,8 @@ type Step = 'pair' | 'script' | 'heard' | 'oneTwo' | 'twoOne'
  *   by letter count.
  * - A word the model missed shares the time between its neighbours.
  * - A heard word the script does not have is dropped: the script wins.
+ * - Anything in [square brackets] is a direction ("[hook]", "[cut to the
+ *   base]"), never said, so it is never captioned.
  *
  * The words are aligned in order, with a band around the diagonal so a long
  * voiceover costs a strip of the table and not all of it.
@@ -71,7 +73,7 @@ type Step = 'pair' | 'script' | 'heard' | 'oneTwo' | 'twoOne'
 export function alignScript(script: string, heard: readonly CaptionWord[]): CaptionWord[] | null {
   // Punctuation standing on its own (", ", "...") rides on the word before it.
   const written: string[] = []
-  for (const token of script.split(/\s+/).filter(Boolean)) {
+  for (const token of script.replace(/\[[^\]]*\]/g, ' ').split(/\s+/).filter(Boolean)) {
     if (bare(token) || written.length === 0) written.push(token)
     else written[written.length - 1] += ` ${token}`
   }

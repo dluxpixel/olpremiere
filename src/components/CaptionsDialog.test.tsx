@@ -75,6 +75,14 @@ describe('Paste a script', () => {
     expect(heard).toEqual([])
   })
 
+  it('a script that opens on a direction in square brackets is still a script', async () => {
+    voiceClip()
+    const onClose = paste('[HOOK] The Bun Bun wins')
+    expect(onClose).toHaveBeenCalled()
+    await vi.waitFor(() => expect(texts().length).toBeGreaterThan(0))
+    expect(texts().join(' ')).toBe('the bun bun wins')
+  })
+
   it('JSON or SRT that does not read is never captioned as a script', () => {
     voiceClip()
     const onClose = paste('[{"text":"so","startS":')

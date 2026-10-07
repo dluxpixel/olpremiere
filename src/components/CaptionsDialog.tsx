@@ -21,8 +21,12 @@ import { useEscapeToClose } from '../ui/useEscapeToClose'
 
 const PASTE_HINT = `Your script as you wrote it, or a JSON word list, or an .srt`
 
-/** Text that was meant as timings (JSON or SRT) but did not read as them. Never a script. */
-const meantAsTimings = (text: string): boolean => /^\s*[[{]/.test(text) || text.includes('-->')
+/**
+ * Text that was meant as timings (JSON or SRT) but did not read as them. Never
+ * a script. A script may open on a direction like "[HOOK]", so only "[{" or "{"
+ * reads as JSON.
+ */
+const meantAsTimings = (text: string): boolean => /^\s*(\[\s*\{|\{)/.test(text) || text.includes('-->')
 
 export type ScriptMode = 'paste' | 'tap'
 

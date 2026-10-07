@@ -68,6 +68,18 @@ describe('alignScript', () => {
     expect(alignScript('wait, what?', [w('wait', 0, 0.3), w('what', 0.6, 0.9)])!.map((x) => x.text)).toEqual(['wait,', 'what?'])
   })
 
+  it('never captions a direction in square brackets', () => {
+    const out = alignScript('[HOOK] Bun Bun is back [cut to the base] for good', [
+      w('bunbun', 0, 0.5),
+      w('is', 0.5, 0.7),
+      w('back', 0.7, 1),
+      w('for', 1.2, 1.4),
+      w('good', 1.4, 1.8),
+    ])!
+    expect(texts(out)).toEqual(['Bun', 'Bun', 'is', 'back', 'for', 'good'])
+    expect(out[4]!.startS).toBe(1.2)
+  })
+
   it('the names the model really got wrong take the time they were said at', () => {
     const bun = alignScript('my Bun Bun wins', [w('my', 0, 0.2), w('bamban', 0.2, 0.8), w('wins', 0.8, 1.1)])!
     expect(texts(bun)).toEqual(['my', 'Bun', 'Bun', 'wins'])
