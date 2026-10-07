@@ -8,6 +8,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { makeClip, makeSeq, makeTrack } from '../components/timelineTestFixtures'
+import { DUCK_ATTACK_S, DUCK_DB } from './ducking'
 import type { MediaAsset, Track } from './types'
 
 const { decode } = vi.hoisted(() => ({ decode: vi.fn() }))
@@ -169,7 +170,19 @@ class FakeContext {
 vi.stubGlobal('AudioContext', FakeContext)
 
 const audio = await import('./audio')
-const { scheduleAudio, ensureAudioContext, ensureMasterChain, GRAPH_FADE_S, MIX_GLIDE_S, AUTO_LEVEL_LATENCY_S, SCHEDULE_LATENCY_S, dbToGain, forgetAssetAudio } = audio
+const {
+  scheduleAudio,
+  ensureAudioContext,
+  ensureMasterChain,
+  getAudioRange,
+  rangeCacheBytesForTests,
+  GRAPH_FADE_S,
+  MIX_GLIDE_S,
+  AUTO_LEVEL_LATENCY_S,
+  SCHEDULE_LATENCY_S,
+  dbToGain,
+  forgetAssetAudio,
+} = audio
 const ctx = ensureAudioContext() as unknown as FakeContext
 
 const VOICE: MediaAsset = { id: 'v', name: 'take.wav', kind: 'audio', blobKey: 'asset/v', durationS: 10, hasAudio: true, hasVideo: false }
@@ -235,6 +248,45 @@ describe('what scheduleAudio starts', () => {
     expect(plain! - auto!).toBeCloseTo(AUTO_LEVEL_LATENCY_S, 4)
     expect(Math.round((plain! - auto!) * 48_000)).toBe(288)
     stop()
+  })
+
+  // The music is down by the time the first word sounds, on a plain music track
+  // and on an Auto-level one, whose compressor delays it by those 288 samples.
+  for (const autoLevel of [undefined, 'medium'] as const) {
+    it(`the duck lands on the voice${autoLevel ? ', behind an Auto-level music track' : ''}`, async () => {
+      const voice = voiceTrack({ audioRole: 'voice', clips: [makeClip({ id: 'c1', assetId: 'v', startS: 2, inS: 0, outS: 2 })] })
+      const music = musicTrack({ audioRole: 'music', autoLevel })
+      const stop = await scheduleAudio(makeSeq([music, voice]), ASSETS, 0)
+      const voiceStart = ctx.sources[1]!.started![0]
+      // The duck is the gain feeding the music's panner.
+      const duck = ctx.gains.find((g) => g.out.includes(ctx.panners[0]!))!.gain
+      const down = 10 ** (DUCK_DB / 20)
+      // Down exactly as the voice starts, and not a sample before it.
+      expect(duck.at(voiceStart)).toBeCloseTo(down, 6)
+      expect(duck.at(voiceStart - 0.001)).toBeGreaterThan(down + 1e-4)
+      expect(duck.at(voiceStart - DUCK_ATTACK_S)).toBeCloseTo(1, 6)
+      stop()
+    })
+  }
+})
+
+describe('the range cache', () => {
+  it('a range inside one already read is not read again; one outside it is', async () => {
+    await getAudioRange(VOICE, 1, 3)
+    expect(decode).toHaveBeenCalledTimes(1)
+    await getAudioRange(VOICE, 1.5, 2.5)
+    expect(decode).toHaveBeenCalledTimes(1)
+    await getAudioRange(VOICE, 0, 9)
+    expect(decode).toHaveBeenCalledTimes(2)
+  })
+
+  it('counts what it holds, and lets go of all of it when the asset is forgotten', async () => {
+    const before = rangeCacheBytesForTests()
+    const r = await getAudioRange(VOICE, 1, 3)
+    expect(rangeCacheBytesForTests() - before).toBe(r!.buffer.length * r!.buffer.numberOfChannels * 4)
+    await getAudioRange(VOICE, 6, 9)
+    forgetAssetAudio('v')
+    expect(rangeCacheBytesForTests()).toBe(before)
   })
 })
 

@@ -398,6 +398,11 @@ function evictRangeOverflow(keepKey: string): void {
   }
 }
 
+/** What the range cache holds, for the test that guards its count. */
+export function rangeCacheBytesForTests(): number {
+  return rangeTotalBytes
+}
+
 function forgetAssetRanges(assetId: Id): void {
   for (const [key, e] of rangeCache) {
     if (e.assetId !== assetId) continue
