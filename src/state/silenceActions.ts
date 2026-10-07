@@ -14,7 +14,7 @@
 import { silentRanges, SILENCE_DEFAULTS, type SilenceOptions } from '../engine/silence'
 import { clipEndS, clipGroupIds, rippleDeleteMany, splitGroup } from '../engine/timeline'
 import { activeSequence, type Clip, type Sequence } from '../engine/types'
-import { wordsForClip } from './transcribeActions'
+import { wordsForCut } from './transcribeActions'
 import { keptTimingMessage, newRippleReport } from './rippleNotice'
 import { updateActiveSequence, useStore } from './store'
 import { useToasts } from './toasts'
@@ -91,16 +91,20 @@ export async function cutQuietParts(clipId: string, opts: SilenceOptions = SILEN
 
   let heard
   try {
-    heard = await wordsForClip(clip, asset)
+    heard = await wordsForCut(clip, asset)
   } catch {
     show('Could not read the speech in that clip', 'danger')
+    return
+  }
+  if (heard === null) {
+    show('A transcription is already running', 'danger')
     return
   }
   if (heard.length === 0) {
     show('No speech found, so there is nothing to cut around', 'info')
     return
   }
-  // ⛔ wordsForClip HANDS BACK TIMELINE SECONDS (timelineWords: clip start plus
+  // ⛔ wordsForCut HANDS BACK TIMELINE SECONDS (timelineWords: clip start plus
   // source time over speed), and silentRanges wants seconds into the clip's own
   // source span. Using them as they came added the clip start twice and divided
   // by the speed twice: on any clip not sitting at 0:00 every cut landed late

@@ -16,10 +16,10 @@ vi.mock('./toasts', () => ({ useToasts: { getState: () => ({ show }) } }))
 // The transcript door, faked: this suite is about the EDIT, not about Whisper.
 const words = vi.fn()
 vi.mock('./transcribeActions', () => ({
-  wordsForClip: (...a: unknown[]) => words(...a),
+  wordsForCut: (...a: unknown[]) => words(...a),
 }))
 
-// ⛔ THE FAKE ANSWERS IN THE REAL DOOR'S CLOCK. wordsForClip hands back TIMELINE
+// ⛔ THE FAKE ANSWERS IN THE REAL DOOR'S CLOCK. wordsForCut hands back TIMELINE
 // seconds (it ends in timelineWords), and the old fake handed back source
 // seconds for a clip at 0:00, the one case where the two agree. That hid a cutter
 // that ate his words on every clip placed later for seven weeks. `said` is what

@@ -472,6 +472,28 @@ export async function listenToClip(clipId: string): Promise<CaptionWord[] | null
 }
 
 /**
+ * One clip's words for "Cut the quiet parts", through the same door as the
+ * others: it waits its turn and always puts the status back.
+ *
+ * ⛔ THE CUTTER USED TO CALL wordsForClip BARE. Nothing put the status back
+ * after it, so the listening pill stayed on screen and every caption door and
+ * the Words panel said "A transcription is already running" until a restart;
+ * and nothing stopped it starting while another run was going.
+ *
+ * His spellings are applied like the Words panel's, so what the cutter hears is
+ * what the Words panel would keep. Null when another run is going. A failure
+ * throws, for the cutter to say in its own words.
+ */
+export async function wordsForCut(clip: Clip, asset: MediaAsset): Promise<CaptionWord[] | null> {
+  if (useTranscribe.getState().status !== 'idle') return null
+  try {
+    return await wordsForClip(clip, asset, { vocabulary: await currentVocabulary() })
+  } finally {
+    reset()
+  }
+}
+
+/**
  * Caption EVERY clip on the timeline in one action.
  *
  * His ask, 2026-07-28: "I want it so that I can select an option that adds
