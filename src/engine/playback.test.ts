@@ -14,6 +14,7 @@ vi.mock('./audio', () => ({
 }))
 
 const { AUDIO_START_BUDGET_MS, Transport } = await import('./playback')
+type StopAudio = import('./playback').StopAudio
 
 interface Build {
   /** Hands the stop function back to the transport. */
@@ -435,3 +436,181 @@ describe('a sound rebuilt while play goes on continues the stretch, on the pictu
     expect(events[3]).toEqual([null, expect.any(Number), 'end'])
   })
 })
+
+// ⛔ AU-9. A mix change mid-play stopped the sound at once and left 50 ms and
+// more of nothing, with a click at each end, before the rebuilt graph came in.
+describe('a seamless rebuild leaves no hole', () => {
+  const world = { t: 5 }
+  const ctx = {
+    state: 'running',
+    get currentTime() {
+      return world.t
+    },
+    resume: () => Promise.resolve(),
+    getOutputTimestamp: () => ({ contextTime: world.t - 0.04, performanceTime: 1000 + 1000 * world.t }),
+  }
+  const heardAt = (c: number) => 1040 + 1000 * c
+
+  interface Graph {
+    stopped: boolean
+    handedOverAt: number | null
+    mixes: number
+    land: () => void
+    fail: () => void
+  }
+  /** Graphs that land when the test says, each saying how it was let go. */
+  const graphs = () => {
+    const made: Graph[] = []
+    const schedule = () =>
+      new Promise<StopAudio>((resolve, reject) => {
+        const g: Graph = { stopped: false, handedOverAt: null, mixes: 0, land: () => undefined, fail: () => undefined }
+        const startsAtCtxS = () => world.t + 0.02
+        g.land = () =>
+          resolve(
+            Object.assign(
+              () => {
+                g.stopped = true
+              },
+              {
+                startsAtCtxS: startsAtCtxS(),
+                stopAt: (at: number) => {
+                  g.handedOverAt = at
+                },
+                setMix: () => {
+                  g.mixes += 1
+                  return true
+                },
+              },
+            ),
+          )
+        g.fail = () => reject(new Error('decode failed'))
+        made.push(g)
+      })
+    return { made, schedule }
+  }
+  const tick = async () => {
+    await Promise.resolve()
+    await Promise.resolve()
+  }
+
+  beforeEach(() => {
+    audioMock.ctx = ctx
+    world.t = 5
+  })
+  afterEach(() => {
+    audioMock.ctx = null
+  })
+
+  it('the old sound plays on while the new one is built, and hands over where the new one starts', async () => {
+    const { made, schedule } = graphs()
+    const spans: (number | boolean | null)[][] = []
+    const t = new Transport({
+      getEndS: () => 60,
+      onTick: () => undefined,
+      schedule,
+      onHeard: (span, end) => spans.push(span ? [span.timelineS, span.heardAtMs, !!span.continues] : [null, end!]),
+    })
+    const playing = t.play(0)
+    made[0]!.land()
+    await playing
+    world.t = 6.02
+    t.rescheduleAudio({ seamless: true })
+    // Still sounding while the new graph is built.
+    expect(made[0]!.stopped).toBe(false)
+    expect(made[0]!.handedOverAt).toBeNull()
+    expect(spans).toHaveLength(1)
+
+    world.t = 6.03 // built in 10 ms, sounding at 6.05
+    made[1]!.land()
+    await tick()
+    expect(made[0]!.handedOverAt).toBeCloseTo(6.05, 9)
+    expect(made[0]!.stopped).toBe(false)
+    // What he heard runs on without a gap: the old stretch ends exactly where
+    // the new one, which continues it, begins.
+    expect(spans[1]![1]).toBeCloseTo(heardAt(6.05), 6)
+    expect(spans[2]![1]).toBeCloseTo(heardAt(6.05), 6)
+    expect(spans[2]![2]).toBe(true)
+    t.pause()
+    expect(made[1]!.stopped).toBe(true)
+  })
+
+  it('many changes in a row still leave one voice, handed over once', async () => {
+    const { made, schedule } = graphs()
+    const t = new Transport({ getEndS: () => 60, onTick: () => undefined, schedule })
+    const playing = t.play(0)
+    made[0]!.land()
+    await playing
+    t.rescheduleAudio({ seamless: true })
+    t.rescheduleAudio({ seamless: true })
+    t.rescheduleAudio({ seamless: true })
+    made[2]!.land()
+    made[1]!.land()
+    await tick()
+    // Older builds land and go without touching the sound still playing.
+    expect(made[1]!.stopped && made[2]!.stopped).toBe(true)
+    expect(made[0]!.handedOverAt).toBeNull()
+    made[3]!.land()
+    await tick()
+    expect(made[0]!.handedOverAt).not.toBeNull()
+    t.pause()
+    expect(made.filter((g) => !g.stopped && g.handedOverAt === null)).toHaveLength(0)
+  })
+
+  it('a pause while the new sound is built stops the old one now, and the new one when it lands', async () => {
+    const { made, schedule } = graphs()
+    const t = new Transport({ getEndS: () => 60, onTick: () => undefined, schedule })
+    const playing = t.play(0)
+    made[0]!.land()
+    await playing
+    t.rescheduleAudio({ seamless: true })
+    t.pause()
+    expect(made[0]!.stopped).toBe(true)
+    made[1]!.land()
+    await tick()
+    expect(made[1]!.stopped).toBe(true)
+  })
+
+  it('a rebuild that fails stops the old sound, and the stretch with it', async () => {
+    const { made, schedule } = graphs()
+    const ends: number[] = []
+    const t = new Transport({
+      getEndS: () => 60,
+      onTick: () => undefined,
+      schedule,
+      onHeard: (span, end) => {
+        if (!span) ends.push(end!)
+      },
+    })
+    const playing = t.play(0)
+    made[0]!.land()
+    await playing
+    t.rescheduleAudio({ seamless: true })
+    world.t = 6
+    made[1]!.fail()
+    await tick()
+    expect(made[0]!.stopped).toBe(true)
+    expect(ends).toHaveLength(1)
+    t.pause()
+  })
+
+  it('a mix change moves the live graph, and only a live graph', async () => {
+    const { made, schedule } = graphs()
+    const t = new Transport({ getEndS: () => 60, onTick: () => undefined, schedule })
+    expect(t.setMix([])).toBe(false) // not playing
+    const playing = t.play(0)
+    made[0]!.land()
+    await playing
+    expect(t.setMix([])).toBe(true)
+    expect(made[0]!.mixes).toBe(1)
+    // A build in the air reads the store when it starts: it has to be built again.
+    t.rescheduleAudio({ seamless: true })
+    expect(t.setMix([])).toBe(false)
+    made[1]!.land()
+    await tick()
+    expect(t.setMix([])).toBe(true)
+    expect(made[1]!.mixes).toBe(1)
+    t.pause()
+    expect(t.setMix([])).toBe(false)
+  })
+})
+

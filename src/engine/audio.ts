@@ -1347,6 +1347,40 @@ async function tryResume(ctx: AudioContext): Promise<void> {
 }
 
 /**
+ * How long a graph takes to come in and to go: at Play, at a pause, and across
+ * the handover to a rebuilt graph mid-play. The same 2 ms a hard cut gets.
+ */
+export const GRAPH_FADE_S = DECLICK_S
+
+/**
+ * How quickly a fader, pan, mute or solo moved mid-play reaches its new value
+ * (a time constant: about 95 percent of the way in three of them).
+ */
+export const MIX_GLIDE_S = 0.01
+
+/**
+ * One scheduled graph. Calling it stops the graph, fading out over GRAPH_FADE_S
+ * from now, exactly once.
+ */
+export type ScheduledAudio = (() => void) & {
+  /** The context time `fromS` was scheduled to sound at (MIC-4). */
+  startsAtCtxS: number
+  /**
+   * Hand over to a newer graph that sounds from context time `ctxS`: this one
+   * fades out across that moment as the newer one fades in, so a rebuild mid-play
+   * leaves no hole and no click.
+   */
+  stopAt: (ctxS: number) => void
+  /**
+   * Move this graph's faders, pans, mutes and solos to `tracks` without
+   * rebuilding it. False, changing nothing, when the change needs a rebuild: a
+   * track that was silent when the graph was built would have to sound, the
+   * voice the music ducks under changed, or a track's chain itself changed.
+   */
+  setMix: (tracks: readonly Track[]) => boolean
+}
+
+/**
  * Schedule every audible clip of `seq` from timeline time `fromS`.
  * Resolves to a stop() that tears the scheduled graph down exactly once. It
  * carries `startsAtCtxS`, the context time `fromS` was scheduled to sound at,
@@ -1356,7 +1390,7 @@ export async function scheduleAudio(
   seq: Sequence,
   assets: Record<Id, MediaAsset>,
   fromS: number,
-): Promise<(() => void) & { startsAtCtxS: number }> {
+): Promise<ScheduledAudio> {
   const ctx = ensureAudioContext()
   await tryResume(ctx)
 
@@ -1419,7 +1453,15 @@ export async function scheduleAudio(
 
   // One gain→[compressor]→pan chain per audible track, feeding the shared
   // master. Built lazily so a track with no audible clip costs nothing.
-  const trackNodes = new Map<Id, { input: GainNode; nodes: AudioNode[] }>()
+  const trackNodes = new Map<Id, { input: GainNode; pan: StereoPannerNode; nodes: AudioNode[] }>()
+  // ⛔ EVERY GRAPH COMES IN AND GOES OUT THROUGH ITS OWN FADER (AU-9). A source
+  // stopped mid-waveform is a step, which is a click, and a mix change mid-play
+  // used to stop every source at once and leave 50 ms of nothing before the
+  // rebuilt graph. This one gain is what fades the whole graph in at its start
+  // and out at a pause or a handover. It sits before the master chain, so both
+  // graphs of a handover meet on the same clock.
+  const graphOut = ctx.createGain()
+  graphOut.connect(master)
   const trackInputFor = (track: Track): GainNode => {
     const existing = trackNodes.get(track.id)
     if (existing) return existing.input
@@ -1447,8 +1489,8 @@ export async function scheduleAudio(
       tail = duck
     }
     tail.connect(pan)
-    pan.connect(master)
-    trackNodes.set(track.id, { input: gain, nodes })
+    pan.connect(graphOut)
+    trackNodes.set(track.id, { input: gain, pan, nodes })
     return gain
   }
 
@@ -1526,23 +1568,77 @@ export async function scheduleAudio(
     clipNodes.push({ source, gain })
   })
 
+  // Every track's sound reaches graphOut at the same moment: baseT, less the
+  // master chain's own delay, which comes after it.
+  const atOut = baseT - masterLatencyS()
+  graphOut.gain.value = 0
+  graphOut.gain.setValueAtTime(0, atOut)
+  graphOut.gain.linearRampToValueAtTime(1, atOut + GRAPH_FADE_S)
+
+  // What the graph was built from, so a mix change can tell whether this graph
+  // can follow it or has to be rebuilt.
+  const shapeOf = (t: Track): string => `${t.autoLevel ?? 0}:${t.audioRole ?? 0}`
+  const builtAudible = new Set(audibleTracks.map((t) => t.id))
+  const builtShape = new Map(seq.tracks.map((t) => [t.id, shapeOf(t)]))
+  const builtDuck = JSON.stringify(duckEnv)
+
   let stopped = false
-  const stop = (): void => {
+  /** Fade out from `at` (graphOut's clock) and let every node go once it is silent. */
+  const fadeOutFrom = (at: number): void => {
     if (stopped) return
     stopped = true
-    for (const { source, gain } of clipNodes) {
+    const g = graphOut.gain
+    // Where the fader is at `at`: still silent, halfway through its fade in, or open.
+    const held = at <= atOut ? 0 : Math.min(1, (at - atOut) / GRAPH_FADE_S)
+    if (typeof g.cancelAndHoldAtTime === 'function') g.cancelAndHoldAtTime(at)
+    else g.cancelScheduledValues(at)
+    // ⛔ ANCHORED BY HAND. A linear ramp runs from the PREVIOUS event, and
+    // cancelAndHoldAtTime adds none when the fade in finished long ago, so the
+    // fade out ramped from the start of play: at once down to a few percent, a
+    // hole of 30 to 50 ms at every handover (measured in Chromium, 2026-10-07).
+    g.setValueAtTime(held, at)
+    g.linearRampToValueAtTime(0, at + GRAPH_FADE_S)
+    // Nothing a source plays after this reaches the speakers.
+    const silentAt = at + GRAPH_FADE_S
+    for (const { source } of clipNodes) {
       try {
-        source.stop()
+        source.stop(silentAt)
       } catch {
         // stop() only throws before start(); every node here was started
       }
-      source.disconnect()
-      gain.disconnect()
     }
-    // Tear down the per-track nodes too; the master chain persists for the meter.
-    for (const { nodes } of trackNodes.values()) {
-      for (const n of nodes) n.disconnect()
+    // Let go of the nodes once they are silent. A suspended clock never gets
+    // there, so this does not wait on it: disconnected is silent either way.
+    const release = (): void => {
+      for (const { source, gain } of clipNodes) {
+        source.disconnect()
+        gain.disconnect()
+      }
+      // Tear down the per-track nodes too; the master chain persists for the meter.
+      for (const { nodes } of trackNodes.values()) {
+        for (const n of nodes) n.disconnect()
+      }
+      graphOut.disconnect()
     }
+    setTimeout(release, Math.max(0, silentAt - ctx.currentTime) * 1000 + 50)
   }
-  return Object.assign(stop, { startsAtCtxS: baseT })
+  const stop = (): void => fadeOutFrom(ctx.currentTime)
+  const stopAt = (ctxS: number): void => fadeOutFrom(Math.max(ctx.currentTime, ctxS - masterLatencyS()))
+  const setMix = (tracks: readonly Track[]): boolean => {
+    if (stopped) return false
+    const solo = tracks.some((t) => t.solo)
+    const audibleNow = new Set(tracks.filter((t) => (solo ? t.solo : !t.muted)).map((t) => t.id))
+    for (const id of audibleNow) if (!builtAudible.has(id)) return false
+    if (tracks.length !== builtShape.size || tracks.some((t) => builtShape.get(t.id) !== shapeOf(t))) return false
+    if (JSON.stringify(duckEnvelope(tracks, solo, fromS)) !== builtDuck) return false
+    const now = ctx.currentTime
+    for (const t of tracks) {
+      const nodes = trackNodes.get(t.id)
+      if (!nodes) continue
+      nodes.input.gain.setTargetAtTime(audibleNow.has(t.id) ? dbToGain(t.volumeDb ?? 0) : 0, now, MIX_GLIDE_S)
+      nodes.pan.pan.setTargetAtTime(clamp(t.pan ?? 0, -1, 1), now, MIX_GLIDE_S)
+    }
+    return true
+  }
+  return Object.assign(stop, { startsAtCtxS: baseT, stopAt, setMix })
 }

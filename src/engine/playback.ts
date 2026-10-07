@@ -5,13 +5,20 @@
 // playback still advances. No React, no store imports, no DOM beyond rAF.
 
 import { ensureAudioContext, SCHEDULE_LATENCY_S } from './audio'
+import type { Track } from './types'
 
 /**
  * Stops one audio graph. `startsAtCtxS` is the context time its first sound was
  * scheduled for, when the scheduler knows it: that is what he actually hears,
- * which the transport's own clock only matches on a clean start.
+ * which the transport's own clock only matches on a clean start. `stopAt` hands
+ * over to a newer graph sounding from a context time, and `setMix` moves the
+ * live graph's faders without a rebuild (see scheduleAudio's ScheduledAudio).
  */
-export type StopAudio = (() => void) & { startsAtCtxS?: number }
+export type StopAudio = (() => void) & {
+  startsAtCtxS?: number
+  stopAt?: (ctxS: number) => void
+  setMix?: (tracks: readonly Track[]) => boolean
+}
 
 export type ScheduleFn = (fromS: number) => Promise<StopAudio>
 
@@ -90,7 +97,12 @@ function heardAtMsOf(ctx: AudioContext, ctxS: number): number {
 export class Transport {
   private readonly opts: TransportOpts
   private rafId: number | null = null
-  private stopAudio: (() => void) | null = null
+  private stopAudio: StopAudio | null = null
+  /**
+   * The graph still sounding while a seamless rebuild is built (AU-9). It plays
+   * on until the new graph starts and hands over to it there.
+   */
+  private outgoing: StopAudio | null = null
   private isPlaying = false
   /**
    * Intent set SYNCHRONOUSLY by play()/pause(). play() schedules audio behind
@@ -372,13 +384,42 @@ export class Transport {
    * Every scheduler now claims first and hands over through adoptAudio, so the
    * newest build is the only one that survives, whatever order they finish in.
    */
-  private claimAudio(): number {
+  private claimAudio(seamless = false): number {
+    // ⛔ A SEAMLESS REBUILD KEEPS THE OLD SOUND PLAYING UNTIL THE NEW ONE STARTS
+    // (AU-9). Stopping it here left 50 ms and more of nothing, with a click at
+    // each end, on every mix change mid-play. It is still taken out of the
+    // running at once (the token moves), so the newest build alone survives, and
+    // the stretch he is hearing simply runs on until the new sound opens its own.
+    if (seamless) {
+      if (this.stopAudio) {
+        this.outgoing?.()
+        this.outgoing = this.stopAudio
+        this.stopAudio = null
+      }
+      return ++this.audioToken
+    }
     // The sound he was hearing stops here. The picture alone keeps going, so a
     // picture-only span runs on until the new sound opens its own.
     if (this.heard?.sound) this.endHeard()
+    this.stopOutgoing()
     this.stopAudio?.()
     this.stopAudio = null
     return ++this.audioToken
+  }
+
+  /** The old graph of a seamless rebuild goes now: the rebuild failed, or play stopped. */
+  private stopOutgoing(): void {
+    this.outgoing?.()
+    this.outgoing = null
+  }
+
+  /** The new graph sounds from `ctxS`: the old one fades out across that moment. */
+  private handOver(ctxS: number): void {
+    const old = this.outgoing
+    this.outgoing = null
+    if (!old) return
+    if (old.stopAt) old.stopAt(ctxS)
+    else old()
   }
 
   /**
@@ -392,10 +433,14 @@ export class Transport {
       return
     }
     this.stopAudio = stop
-    if (!this.isPlaying || this.currentRate !== 1) return
-    const ctx = this.contextOrNull()
-    if (!ctx || !(ctx.currentTime > 0)) return
+    const ctx = this.isPlaying && this.currentRate === 1 ? this.contextOrNull() : null
+    if (!ctx || !(ctx.currentTime > 0)) {
+      if (this.outgoing && this.heard?.sound) this.endHeard()
+      this.stopOutgoing()
+      return
+    }
     const startsAt = stop.startsAtCtxS ?? ctx.currentTime + SCHEDULE_LATENCY_S
+    this.handOver(startsAt)
     const rebuilt = rebuiltAt !== undefined
     if (rebuilt) this.followSound(ctx, startsAt, fromS, rebuiltAt)
     this.openHeard({ timelineS: fromS, heardAtMs: heardAtMsOf(ctx, startsAt), sound: true, ctxS: startsAt, continues: rebuilt })
@@ -476,9 +521,13 @@ export class Transport {
    * completely alone. No-op when not playing, so a mix change while paused costs
    * nothing (the next play() reads the new values anyway).
    */
-  rescheduleAudio(): void {
+  rescheduleAudio(opts: { seamless?: boolean } = {}): void {
     if (!this.isPlaying || !this.intended || this.currentRate !== 1) return
-    const claim = this.claimAudio()
+    // Seamless for a change he made to the mix or the clips, where the sound
+    // playing now is right up to the moment the new one starts. Not for the
+    // late join or the clock that started late: there the old sound is the
+    // fault being replaced.
+    const claim = this.claimAudio(opts.seamless === true)
     // ⛔ FROM WHERE THE PLAYHEAD WILL BE WHEN THE NEW SOUND STARTS, not from
     // where it is now (MIC-4, 2026-10-01). A rebuilt sound starts a scheduling
     // latency plus its build time after this call, so scheduling it from here
@@ -492,7 +541,25 @@ export class Transport {
     void this.opts
       .schedule(fromS)
       .then((stop) => this.adoptAudio(claim, stop, fromS, calledAt))
-      .catch(() => undefined)
+      .catch(() => {
+        // Nothing to hand over to: the old sound of a seamless rebuild stops.
+        if (claim !== this.audioToken || !this.outgoing) return
+        if (this.heard?.sound) this.endHeard()
+        this.stopOutgoing()
+      })
+  }
+
+  /**
+   * A fader, pan, mute or solo moved mid-play: move the live graph's own gains
+   * (AU-9). True when it could; false when the change needs a rebuild, or there
+   * is no live graph to move (not playing, or a build still in the air, which
+   * reads the store when it starts and so has to be built again anyway).
+   */
+  setMix(tracks: readonly Track[]): boolean {
+    if (!this.isPlaying || !this.intended || this.currentRate !== 1) return false
+    const live = this.stopAudio
+    if (!live?.setMix || this.outgoing) return false
+    return live.setMix(tracks)
   }
 
   /** Stop the loop + audio. Returns the time playback stopped at. */
@@ -556,6 +623,7 @@ export class Transport {
     // Bumped even when nothing is playing: a build still decoding has to know
     // its playback is over by the time it lands.
     this.audioToken++
+    this.stopOutgoing()
     if (this.stopAudio) {
       this.stopAudio()
       this.stopAudio = null
