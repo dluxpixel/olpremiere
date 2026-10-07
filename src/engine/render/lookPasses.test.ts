@@ -10,9 +10,11 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { resolveStack } from '../effects/registry'
-import { defaultTransform, type EffectInstance } from '../types'
+import { layerShapesOf } from '../preview'
+import { defaultTransform, newAdjustmentClip, newSequence, type Clip, type EffectInstance, type Sequence } from '../types'
 import { createRenderer } from './glRenderer'
 import type { LayerShape } from './glRenderer'
+import { resolveFrame } from './resolve'
 import type { RenderFrame, RenderLayer } from './types'
 
 const C = {
@@ -148,6 +150,26 @@ const passesDrawn = (rec: Recording): PassName[] =>
   rec.draws.map((d) => passOf(d.fs)).filter((p): p is PassName => p !== null)
 const canvasWrites = (rec: Recording): number => rec.draws.filter((d) => d.fb === null).length
 
+/**
+ * Four seconds of footage on V1 carrying `footage`, and, when given, an
+ * adjustment layer over it on V2 carrying `adjustment`.
+ */
+function sequenceOf(footage: EffectInstance[], adjustment?: EffectInstance[]): Sequence {
+  const sq = newSequence()
+  const [v1, v2] = sq.tracks.filter((t) => t.kind === 'video')
+  const clip: Clip = { ...newAdjustmentClip(0, 4), adjustment: undefined, assetId: 'a1', effects: footage }
+  const over: Clip[] = adjustment ? [{ ...newAdjustmentClip(0, 4), effects: adjustment }] : []
+  return {
+    ...sq,
+    durationS: 4,
+    tracks: sq.tracks.map((t) => (t.id === v1!.id ? { ...t, clips: [clip] } : t.id === v2!.id ? { ...t, clips: over } : t)),
+  }
+}
+
+/** Programs started in the background and never asked whether they linked. */
+const startedOnly = (rec: Recording, fsHas: (fs: string) => boolean): Prog[] =>
+  rec.programs.filter((p) => fsHas(p.fs) && !p.asked)
+
 afterEach(() => {
   vi.restoreAllMocks()
 })
@@ -190,6 +212,48 @@ describe("a look's own passes are built only when a look needs them", () => {
     expect(started[0].asked).toBe(false)
     renderer.render(frameOf(layer([look('lookMoodyGym')])), () => source)
     expect(rec.programs.filter((p) => passOf(p.fs) === 'clarity')).toHaveLength(1)
+    expect(passesDrawn(rec)).toEqual(['clarity'])
+    renderer.dispose()
+  })
+
+  // warm() reads one frame in the middle of every clip. A look keyframed to fade
+  // in after that frame is at Amount 0 there and has no passes, so a pass was
+  // only linked on the first frame that had one: a hitch in the middle of playback.
+  it('starts the passes of a look keyframed to fade in after the middle of its clip', () => {
+    const rec = recordingGl()
+    const renderer = createRenderer(rec.gl)
+    const lateFade: EffectInstance = {
+      id: 'fx_late',
+      type: 'lookFilm800T',
+      enabled: true,
+      params: { amount: { value: 0, keyframes: [{ t: 3, value: 0, ease: 'linear' }, { t: 4, value: 1, ease: 'linear' }] } },
+    }
+    const seq = sequenceOf([lateFade])
+    // In the middle of the clip the look has no passes at all.
+    expect(resolveStack([lateFade], 2).map((e) => e.type)).toEqual(['lookFilm800T'])
+    renderer.warm(layerShapesOf(seq))
+    expect(passesBuilt(rec).sort()).toEqual(['bright', 'glow'])
+    expect(startedOnly(rec, (fs) => passOf(fs) !== null)).toHaveLength(2)
+    // The frame that first has them uses the ones started, and builds no other.
+    renderer.render(resolveFrame(seq, 3.9), () => source)
+    expect(passesBuilt(rec).sort()).toEqual(['bright', 'glow'])
+    expect(passesDrawn(rec)).toContain('glow')
+    renderer.dispose()
+  })
+
+  it('starts the passes, and the colour program, of a look on an adjustment layer', () => {
+    const rec = recordingGl()
+    const renderer = createRenderer(rec.gl)
+    const seq = sequenceOf([], [look('lookMoodyGym')])
+    renderer.warm(layerShapesOf(seq))
+    expect(passesBuilt(rec)).toEqual(['clarity'])
+    expect(startedOnly(rec, (fs) => passOf(fs) === 'clarity')).toHaveLength(1)
+    expect(startedOnly(rec, (fs) => fs.includes('olkCurve_moodyGym')).length).toBeGreaterThan(0)
+    // The frame uses what was started, and builds no second copy of either.
+    const colourBefore = rec.programs.filter((p) => p.fs.includes('olkCurve_moodyGym')).length
+    renderer.render(resolveFrame(seq, 2), () => source)
+    expect(passesBuilt(rec)).toEqual(['clarity'])
+    expect(rec.programs.filter((p) => p.fs.includes('olkCurve_moodyGym'))).toHaveLength(colourBefore)
     expect(passesDrawn(rec)).toEqual(['clarity'])
     renderer.dispose()
   })

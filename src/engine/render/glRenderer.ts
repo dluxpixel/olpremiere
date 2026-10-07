@@ -1349,12 +1349,19 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
         if (prog) pendingPrograms.set(key, prog)
       }
       // A look's passes start here too, but only for a sequence that has a look
-      // needing them: a project with no look never compiles one.
-      if (shape.effects.some((fx) => fx.type === 'lookGlow')) {
+      // needing them: a project with no look never compiles one. Asked of each
+      // look at its FULL Amount, not at the Amount of the one frame the shape
+      // was read at: a look keyframed to fade in after that frame has no passes
+      // there, and the first frame that has them would link them mid playback.
+      const passes = [
+        ...shape.effects,
+        ...shape.effects.flatMap((fx) => getEffect(fx.type)?.companions?.({ ...fx.params, amount: 1 }) ?? []),
+      ]
+      if (passes.some((fx) => fx.type === 'lookGlow')) {
         lookBrightPass.start()
         lookGlowPass.start()
       }
-      if (shape.effects.some((fx) => fx.type === 'lookClarity')) lookClarityPass.start()
+      if (passes.some((fx) => fx.type === 'lookClarity')) lookClarityPass.start()
     }
   }
 
