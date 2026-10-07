@@ -26,14 +26,19 @@ vi.mock('../state/persistence', async (importOriginal) => ({
 }))
 
 import { buildAppBindings } from '../App'
+import { storedDisplayName, useCollab } from '../collab/collabControl'
+import { channelKeyframes } from '../engine/effects/channels'
 import { activeSequence, newProject } from '../engine/types'
 import { installKeymap } from '../keymap'
 import { addCaptionsFromWords, captionsOn } from '../state/captionActions'
+import { addKeyframeAtTime } from '../state/clipEdits'
 import { useStore } from '../state/store'
 import { CaptionsTab } from './CaptionsTab'
+import { CurveEditor } from './CurveEditor'
 import { ScrubField, SPECS } from './EffectControls'
 import { FrameSettingsMenu } from './FrameSettingsMenu'
 import { Inspector } from './Inspector'
+import { MotionRailContext, type MotionRailValue } from './MotionRail'
 import { installResizeObserver } from './timelineDomFixtures'
 import { PlayheadTimecode } from './PlayheadWidgets'
 import { TopBar } from './TopBar'
@@ -229,5 +234,62 @@ describe('Ctrl+S keeps what he is still typing', () => {
     await user.keyboard('9')
     await user.tab()
     expect(activeSequence(useStore.getState().project).contentAspect).toBeCloseTo(16 / 9, 5)
+  })
+
+  it('a bezier typed half way is not put back under his caret', async () => {
+    addCaptionsFromWords(said('so i went'))
+    const clip = captions()[0]!
+    addKeyframeAtTime(clip.id, 'scale', 0)
+    addKeyframeAtTime(clip.id, 'scale', 0.2)
+    // The editor shows for the segment picked on the motion rail.
+    const rail = { selection: { kind: 'segment', channel: 'scale', t: 0 }, fps: 30 } as unknown as MotionRailValue
+    function Curve() {
+      const live = useStore((s) => captionsOn(activeSequence(s.project)).find((c) => c.clip.id === clip.id)?.clip)
+      return live ? (
+        <MotionRailContext.Provider value={rail}>
+          <CurveEditor clip={live} channel="scale" />
+        </MotionRailContext.Provider>
+      ) : null
+    }
+    const user = userEvent.setup()
+    render(<Curve />)
+    const field = screen.getByTestId('curve-text') as HTMLInputElement
+    await user.click(field)
+    await user.clear(field)
+    await user.keyboard('0.42, 0, 0.58')
+    await user.keyboard('{Control>}s{/Control}')
+    expect(saveSettled).toHaveBeenCalledTimes(1)
+    expect(field.value).toBe('0.42, 0, 0.58')
+    expect(document.activeElement).toBe(field)
+    await user.keyboard(', 1')
+    await user.tab()
+    const kfs = channelKeyframes(captions().find((c) => c.id === clip.id)!, 'scale')
+    expect(kfs[0]?.curve).toEqual([0.42, 0, 0.58, 1])
+  })
+})
+
+describe('Ctrl+S in his name for a shared room', () => {
+  afterEach(() => {
+    useCollab.setState({ roomId: null, mode: null })
+  })
+
+  it('writes the name and leaves him in the field, so Backspace is a letter', async () => {
+    useCollab.setState({ roomId: 'room-test', mode: 'tabs', connected: true })
+    const user = userEvent.setup()
+    render(<TopBar />)
+    await user.click(screen.getByTitle(/click to set your name/))
+    const name = screen.getByTestId('collab-name-input') as HTMLInputElement
+    expect(document.activeElement).toBe(name)
+    await user.clear(name)
+    await user.keyboard('Dave')
+    await user.keyboard('{Control>}s{/Control}')
+    expect(saveSettled).toHaveBeenCalledTimes(1)
+    expect(storedDisplayName()).toBe('Dave')
+    expect(name.isConnected).toBe(true)
+    expect(document.activeElement).toBe(name)
+    await user.keyboard('{Backspace}')
+    expect(name.value).toBe('Dav')
+    await user.tab()
+    expect(storedDisplayName()).toBe('Dav')
   })
 })
