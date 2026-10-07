@@ -104,9 +104,10 @@ export function clipMarkerOnSystemClipboard(): string | null {
  * alone, so a voice take never brings its picture along. Delete is untouched:
  * it is selection scoped on purpose (deleteScoped).
  */
-function withPictureSound(seq: Sequence, ids: readonly Id[]): { ids: Id[]; sounds: number } {
+function withPictureSound(seq: Sequence, ids: readonly Id[]): { ids: Id[]; sounds: number; brought: Set<Id> } {
   const out = [...ids]
   const have = new Set(ids)
+  const brought = new Set<Id>()
   let sounds = 0
   const kindOf = new Map<Id, Track['kind']>()
   for (const t of seq.tracks) for (const c of t.clips) kindOf.set(c.id, t.kind)
@@ -117,11 +118,12 @@ function withPictureSound(seq: Sequence, ids: readonly Id[]): { ids: Id[]; sound
       if (have.has(g) || kindOf.get(g) !== 'audio') continue
       have.add(g)
       out.push(g)
+      brought.add(g)
       added = true
     }
     if (added) sounds += 1
   }
-  return { ids: out, sounds }
+  return { ids: out, sounds, brought }
 }
 
 export function copySelection(): boolean {
@@ -133,8 +135,10 @@ export function copySelection(): boolean {
     useToasts.getState().show('Select a clip to copy', 'danger')
     return false
   }
-  const { ids, sounds } = withPictureSound(seq, s.ui.selection)
-  const payload = serializeClips(seq, ids)
+  const { ids, sounds, brought } = withPictureSound(seq, s.ui.selection)
+  // The sounds it brought are marked, so a locked line of theirs never costs him
+  // the picture he picked (pasteClips).
+  const payload = serializeClips(seq, ids, brought)
   if (payload.length === 0) return false
   clipboard = payload
   clipboardAssets = assetsFor(s.project, payload)
@@ -228,7 +232,8 @@ function pasteClipboard(atS: number, target?: { trackIndex: number }): void {
   // copied with (see `clipboardAssets`). Only a clip whose record is nowhere,
   // its media deleted before the copy, stays behind, and he is told how many.
   // pasteClips itself refuses locked destination tracks and reports how many it
-  // turned away, so no lock guard here.
+  // turned away, so no lock guard here. A sound Copy brought along for its
+  // picture goes on the next free line instead, and the note says so.
   // Title and adjustment clips carry no asset (assetId===''), keep them regardless.
   const brought: Record<Id, MediaAsset> = {}
   const payload = clipboard.filter((p) => {

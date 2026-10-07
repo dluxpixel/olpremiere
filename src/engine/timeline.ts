@@ -2395,6 +2395,12 @@ export interface ClipPayload {
   /** Start relative to the earliest selected clip. */
   offsetS: number
   clip: Omit<Clip, 'id' | 'startS'>
+  /**
+   * A sound Copy took along with its picture (clipboard withPictureSound), not
+   * one he picked. Its own line being locked never costs him the picture: it
+   * goes on the next free line instead (pasteClips).
+   */
+  brought?: true
 }
 
 const clipPayloadBody = (clip: Clip): Omit<Clip, 'id' | 'startS'> => {
@@ -2404,7 +2410,8 @@ const clipPayloadBody = (clip: Clip): Omit<Clip, 'id' | 'startS'> => {
   return body as Omit<Clip, 'id' | 'startS'>
 }
 
-export function serializeClips(seq: Sequence, clipIds: Id[]): ClipPayload[] {
+/** `brought` marks the clips Copy took along with what he picked (ClipPayload.brought). */
+export function serializeClips(seq: Sequence, clipIds: Id[], brought?: ReadonlySet<Id>): ClipPayload[] {
   const found: { clip: Clip; track: Track; trackIndex: number }[] = []
   for (const id of clipIds) {
     const f = findClip(seq, id)
@@ -2421,6 +2428,7 @@ export function serializeClips(seq: Sequence, clipIds: Id[]): ClipPayload[] {
       trackOffset,
       offsetS: clip.startS - earliest,
       clip: clipPayloadBody(clip),
+      ...(brought?.has(clip.id) ? { brought: true as const } : {}),
     }
   })
 }
@@ -2465,9 +2473,10 @@ export interface PasteResult {
   blockedByLock: number
   /**
    * Every clip that landed on another line than the one asked for, because its
-   * spot was taken there. Track ids, so the caller can name both lines.
+   * spot was taken there, or (`locked`) because a sound Copy brought along was
+   * bound for a locked line. Track ids, so the caller can name both lines.
    */
-  redirected: { askedId: Id; landedId: Id }[]
+  redirected: { askedId: Id; landedId: Id; locked?: true }[]
   /** A target was given, but nothing copied is of its kind, so it asked for nothing. */
   targetUnused: boolean
   /** Lines the whole shape was lifted, so its lowest clip still had a line to sit on. */
@@ -2584,7 +2593,15 @@ export function pasteClips(
     // and paste the video on its own, still linked, which is the one shape a
     // linked video clip cannot survive: it makes no sound of its own, because
     // its partner is meant to, and the partner never arrived.
-    if (asked.some((ti) => ti === null || cur.tracks[ti].locked)) {
+    //
+    // ⛔ EXCEPT A SOUND COPY BROUGHT ALONG (`brought`). Since Copy takes the
+    // picture's sound with it, a picture whose sound sat on a locked A1 pasted
+    // NOTHING, with a toast about a locked track though he had picked a picture
+    // on an open V1; before that the same keys pasted the picture. The brought
+    // sound goes on the next free line instead (freeTrackFor skips locked ones),
+    // the pair stays linked, and `redirected` says where it went and why.
+    const lockedFor = (ti: number | null, m: number): boolean => ti !== null && cur.tracks[ti]!.locked && !unit[m]!.brought
+    if (asked.some((ti, m) => ti === null || lockedFor(ti, m))) {
       blockedByLock += 1
       continue
     }
@@ -2614,7 +2631,9 @@ export function pasteClips(
         linkId,
       }
       const placedTrack = cur.tracks[home.trackIndex]!
-      if (placedTrack.id !== askedId) redirected.push({ askedId, landedId: placedTrack.id })
+      if (placedTrack.id !== askedId) {
+        redirected.push(askedTracks[m]!.locked ? { askedId, landedId: placedTrack.id, locked: true } : { askedId, landedId: placedTrack.id })
+      }
       const withClip = { ...placedTrack, clips: insertSorted(placedTrack.clips, clip) }
       cur = { ...cur, tracks: cur.tracks.map((t, i) => (i === home.trackIndex ? withClip : t)) }
       // Keep the identity pins pointing at the live track objects.

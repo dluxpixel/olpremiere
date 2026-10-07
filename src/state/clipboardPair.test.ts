@@ -52,6 +52,29 @@ describe('the picture half brings its sound', () => {
     expect(snd.audioGainDb).toBe(-18)
   })
 
+  // Copy takes the picture's sound along, and pasteClips refused a pair whose
+  // sound line was locked: the same keys that pasted the picture before pasted
+  // nothing, with a toast about a locked track for a picture on an open V1.
+  it('copy then paste with the sound line locked: the pair lands, its sound on the next free line, and says so', () => {
+    updateActiveSequence('lock A1', (sq) => ({ ...sq, tracks: sq.tracks.map((t, i) => (i === 2 ? { ...t, locked: true } : t)) }))
+    useStore.getState().setUI({ selection: ['vid'], playheadS: 0 })
+    copySelection()
+    show.mockClear()
+    useStore.getState().setUI({ selection: [], playheadS: 10 })
+    pasteAtPlayhead()
+    const made = fresh()
+    expect(made).toHaveLength(2)
+    const pic = seq().tracks[0]!.clips.find((c) => made.includes(c))!
+    const snd = seq().tracks[3]!.clips.find((c) => made.includes(c))!
+    expect(pic.startS).toBe(10)
+    expect(snd.startS).toBe(10)
+    expect(snd.linkId).toBe(pic.linkId)
+    expect(snd.audioGainDb).toBe(-18)
+    // The locked line itself is untouched.
+    expect(seq().tracks[2]!.clips.map((c) => c.id)).toEqual(['aud'])
+    expect(show.mock.calls).toEqual([['A1 is locked, so its sound went on A2', 'info']])
+  })
+
   it('a sound copied alone stays alone', () => {
     useStore.getState().setUI({ selection: ['aud'], playheadS: 0 })
     copySelection()

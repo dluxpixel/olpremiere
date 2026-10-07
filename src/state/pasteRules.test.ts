@@ -318,6 +318,20 @@ describe('what a clip paste says about where it went', () => {
     )
   })
 
+  // A sound Copy brought along for its picture, whose own line is locked.
+  it('says which line was locked and where the sound went instead', () => {
+    const seq2 = makeSeq([makeTrack({ name: 'V1' }), makeTrack({ kind: 'audio', name: 'A1' }), makeTrack({ kind: 'audio', name: 'A2' })])
+    const [, a1x, a2x] = seq2.tracks
+    expect(pasteNote(seq2, undefined, { ...quiet, redirected: [{ askedId: a1x!.id, landedId: a2x!.id, locked: true }] })).toBe(
+      'A1 is locked, so its sound went on A2',
+    )
+    const two = [
+      { askedId: a1x!.id, landedId: a2x!.id, locked: true as const },
+      { askedId: a1x!.id, landedId: a2x!.id, locked: true as const },
+    ]
+    expect(pasteNote(seq2, undefined, { ...quiet, redirected: two })).toBe('2 sounds went on a free track, because A1 is locked')
+  })
+
   it('says an unused target, a lifted shape and added lines, each in its own words', () => {
     expect(pasteNote(seq, a1, { ...quiet, targetUnused: true })).toBe(
       'A1 is an audio track, so what you copied went back on the tracks it came from',

@@ -3488,6 +3488,28 @@ describe('linked A/V groups stay in sync', () => {
     expect(out.seq).toBe(seq)
   })
 
+  // Copy takes a picture's sound along (clipboard withPictureSound) and marks it
+  // `brought`. Its locked line must not cost him the picture he picked.
+  it('a sound brought along for its picture skips a locked line, and the pair stays linked', () => {
+    const v = makeClip({ id: 'v', startS: 0, outS: 4, linkId: 'g' })
+    const a = makeClip({ id: 'a', startS: 0, outS: 4, linkId: 'g' })
+    const seq = makeSeq([
+      makeTrack({ clips: [v] }),
+      makeTrack({ kind: 'audio', name: 'A1', locked: true, clips: [a] }),
+      makeTrack({ kind: 'audio', name: 'A2' }),
+    ])
+    const out = pasteClips(seq, serializeClips(seq, [v.id, a.id], new Set([a.id])), 10)
+    expect(out.newIds).toHaveLength(2)
+    expect(out.blockedByLock).toBe(0)
+    const [pv, pa] = out.newIds.map((id) => findClip(out.seq, id)!)
+    expect(pv!.track.id).toBe(seq.tracks[0]!.id)
+    expect(pa!.track.id).toBe(seq.tracks[2]!.id)
+    expect(pa!.clip.linkId).toBe(pv!.clip.linkId)
+    expect(pa!.clip.startS).toBeCloseTo(10, 6)
+    expect(out.redirected).toEqual([{ askedId: seq.tracks[1]!.id, landedId: seq.tracks[2]!.id, locked: true }])
+    expect(out.seq.tracks[1]!.clips.map((c) => c.id)).toEqual(['a'])
+  })
+
   it('a lone clip bound for a locked track is counted too, and the rest still pastes', () => {
     const v = makeClip({ id: 'v', startS: 0, outS: 4 })
     const a = makeClip({ id: 'a', startS: 0, outS: 4 })

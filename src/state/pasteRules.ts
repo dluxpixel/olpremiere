@@ -195,11 +195,22 @@ export function pasteNote(
       `${r.grown === 1 ? 'One new track was' : `${r.grown} new tracks were`} added to keep the copied clips together`,
     )
   }
-  if (r.redirected.length === 1) {
-    const { askedId, landedId } = r.redirected[0]!
+  const busy = r.redirected.filter((x) => !x.locked)
+  if (busy.length === 1) {
+    const { askedId, landedId } = busy[0]!
     notes.push(`${nameOf(askedId)} is busy at that time, so the clip went on ${nameOf(landedId)}`)
-  } else if (r.redirected.length > 1) {
-    notes.push(`${r.redirected.length} clips went on a free track, because their own was busy at that time`)
+  } else if (busy.length > 1) {
+    notes.push(`${busy.length} clips went on a free track, because their own was busy at that time`)
+  }
+  // A sound Copy brought along for its picture, whose own line is locked.
+  const locked = r.redirected.filter((x) => x.locked)
+  if (locked.length === 1) {
+    const { askedId, landedId } = locked[0]!
+    notes.push(`${nameOf(askedId)} is locked, so its sound went on ${nameOf(landedId)}`)
+  } else if (locked.length > 1) {
+    const lines = [...new Set(locked.map((x) => nameOf(x.askedId)))]
+    const list = lines.length === 1 ? lines[0]! : `${lines.slice(0, -1).join(', ')} and ${lines[lines.length - 1]}`
+    notes.push(`${locked.length} sounds went on a free track, because ${list} ${lines.length === 1 ? 'is' : 'are'} locked`)
   }
   return notes.length > 0 ? notes.join('. ') : null
 }
