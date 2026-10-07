@@ -32,6 +32,7 @@ import {
   setActiveSequenceContentAspect,
   setActiveSequenceShutterAngle,
 } from '../state/store'
+import { useFullscreenElement } from '../ui/fullscreenLayer'
 import { ScrubField } from './EffectControls'
 
 /** The entry that reveals the free-text ratio field. His "completely custom ratios". */
@@ -88,6 +89,8 @@ export function FrameSettingsMenu({ seq, safeMargins, onSafeMargins }: Props) {
   const btnRef = useRef<HTMLButtonElement | null>(null)
   /** Where to pin the panel, in viewport coordinates. Measured from the button. */
   const [at, setAt] = useState<{ right: number; bottom: number } | null>(null)
+  // The menu shows inside the full screen when the picture is full screen (ui/fullscreenLayer.tsx).
+  const fullscreen = useFullscreenElement()
 
   // Escape closes it. The outside click is a real backdrop element rather than a
   // document listener, the same way AddEffectMenu does it, so a click that
@@ -97,8 +100,14 @@ export function FrameSettingsMenu({ seq, safeMargins, onSafeMargins }: Props) {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setOpen(false)
     }
+    // Going in or out of full screen moves the button, and the menu was pinned to where it was.
+    const onFullscreen = () => setOpen(false)
     window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    document.addEventListener('fullscreenchange', onFullscreen)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      document.removeEventListener('fullscreenchange', onFullscreen)
+    }
   }, [open])
 
   // ⛔ MEASURED AND PORTALLED, NOT POSITIONED ABSOLUTELY. The strip this button
@@ -304,7 +313,7 @@ export function FrameSettingsMenu({ seq, safeMargins, onSafeMargins }: Props) {
             </p>
             </div>
           </>,
-          document.body,
+          fullscreen ?? document.body,
         )}
     </div>
   )

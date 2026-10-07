@@ -308,6 +308,32 @@ test.describe('Full screen', () => {
       await expect(page.getByTestId('transform-gizmo')).toBeVisible()
     })
   }
+
+  // 2026-10-06: full screen paints over everything outside it, and the Frame menu and the toasts
+  // lived outside it. The Frame button lit up and nothing appeared; Shift+S said "saved" to nobody.
+  test('the Frame menu and a toast show in full screen, on top, at 1920x1080', async ({ page }) => {
+    await open(page, 1920, 1080, 280, 450)
+    await page.getByTestId('fullscreen-toggle').click()
+    await expect.poll(() => inFullscreen(page)).toBe('monitor')
+    /** Inside the full screen, and the thing actually under the middle of it. */
+    const shows = (testId: string) =>
+      page.getByTestId(testId).first().evaluate((el) => {
+        const r = el.getBoundingClientRect()
+        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
+        return (document.fullscreenElement?.contains(el) ?? false) && el.contains(hit)
+      })
+
+    await page.getByTestId('frame-settings-button').click()
+    await expect(page.getByTestId('frame-settings-menu')).toBeVisible()
+    expect(await shows('frame-settings-menu')).toBe(true)
+    await page.getByTestId('frame-settings-backdrop').click({ position: { x: 10, y: 10 } })
+    await expect(page.getByTestId('frame-settings-menu')).toHaveCount(0)
+    expect(await inFullscreen(page)).toBe('monitor')
+
+    await page.keyboard.press('Shift+S')
+    await expect(page.getByTestId('toast').first()).toBeVisible({ timeout: 15_000 })
+    expect(await shows('toast')).toBe(true)
+  })
 })
 
 // ---------------------------------------------------------------------------------------------

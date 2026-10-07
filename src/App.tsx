@@ -68,6 +68,7 @@ import { ContextMenu } from './ui/ContextMenu'
 import { NamePrompt } from './ui/NamePrompt'
 import { Splitter } from './ui/Splitter'
 import { Toaster } from './ui/Toaster'
+import { InFullscreen } from './ui/fullscreenLayer'
 import { useLayoutSizes } from './useLayoutSizes'
 import { PhoneShell } from './components/PhoneShell'
 import { usePhoneLayout } from './ui/phoneLayout'
@@ -631,11 +632,16 @@ export default function App() {
           <Timeline height={sizes.bottom} />
         </div>
       )}
-      <Toaster />
+      {/* Inside the full screen while the picture is full screen, or they cannot be seen there. */}
+      <InFullscreen>
+        <Toaster />
+      </InFullscreen>
       <RecordingStudioMount />
       <PastePictureDialog />
       <TranscribeStatus />
-      <ContextMenu />
+      <InFullscreen>
+        <ContextMenu />
+      </InFullscreen>
       <NamePrompt />
     </div>
   )
