@@ -14,9 +14,21 @@ import { expect, test, type Page } from '@playwright/test'
 
 const FIXTURE = 'e2e/.fixtures/clip.webm'
 
-/** Brightest pixel across a row of the program monitor, 0..255. */
+/**
+ * Brightest pixel across a row of the program monitor, 0..255.
+ *
+ * ⛔ IT REPAINTS FIRST (2026-10-06), the way stylize-pack's `px` does: bump the
+ * preview epoch and wait two frames, so the read is of the store as it is NOW and
+ * never of a frame painted before the last change. This file used to wait 400 to
+ * 500 ms after each change and read once, the shape that failed
+ * dissolve-linear-light until it polled.
+ */
 async function rowMaxLuma(page: Page, fy: number): Promise<number> {
-  return page.evaluate((fy) => {
+  return page.evaluate(async (fy) => {
+    const previewMod = '/src/engine/preview.ts'
+    const { invalidatePreview } = (await import(/* @vite-ignore */ previewMod)) as { invalidatePreview: () => void }
+    invalidatePreview()
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
     const c = document.querySelector('[data-testid="program-canvas"]') as HTMLCanvasElement
     const s = document.createElement('canvas')
     s.width = c.width
@@ -79,12 +91,14 @@ test('the blurred background fills the bars a wide clip leaves in a Shorts frame
       return { ...proj, sequences: { ...proj.sequences, [seq.id]: { ...seq, tracks } } }
     })
   })
-  await page.waitForTimeout(400)
 
   // OFF: the top of the frame is a black bar. This half is what makes the ON
-  // half mean anything.
+  // half mean anything. Polled on BOTH rows at once: a canvas just resized for
+  // the new frame is blank, and blank satisfies "the bar is black" on its own.
   await setBlurBackground(page, false)
-  await page.waitForTimeout(500)
+  await expect
+    .poll(async () => (await rowMaxLuma(page, 0.04)) < 12 && (await rowMaxLuma(page, 0.5)) > 20, { timeout: 10_000 })
+    .toBe(true)
   const barOff = await rowMaxLuma(page, 0.04)
   const middleOff = await rowMaxLuma(page, 0.5)
   expect(middleOff).toBeGreaterThan(20) // there is a picture at all
@@ -92,9 +106,7 @@ test('the blurred background fills the bars a wide clip leaves in a Shorts frame
 
   // ON: the same row now carries the blurred picture.
   await setBlurBackground(page, true)
-  await page.waitForTimeout(500)
-  const barOn = await rowMaxLuma(page, 0.04)
-  expect(barOn).toBeGreaterThan(barOff + 15)
+  await expect.poll(async () => rowMaxLuma(page, 0.04), { timeout: 10_000 }).toBeGreaterThan(barOff + 15)
 
   // And it SURVIVES A ZOOM OUT, which is the thing he actually asked for: the
   // clip shrinks away from the edges and the frame stays filled, not black.
@@ -117,10 +129,9 @@ test('the blurred background fills the bars a wide clip leaves in a Shorts frame
       return { ...proj, sequences: { ...proj.sequences, [seq.id]: { ...seq, tracks } } }
     })
   })
-  await page.waitForTimeout(500)
 
   // Halfway between the shrunken clip's edge and the frame edge: black before
-  // this feature, blurred picture now.
-  const zoomedOutEdge = await rowMaxLuma(page, 0.18)
-  expect(zoomedOutEdge).toBeGreaterThan(barOff + 15)
+  // this feature, blurred picture now. The zoom is already in the store, and the
+  // read repaints from the store, so this sees the zoomed out frame.
+  await expect.poll(async () => rowMaxLuma(page, 0.18), { timeout: 10_000 }).toBeGreaterThan(barOff + 15)
 })

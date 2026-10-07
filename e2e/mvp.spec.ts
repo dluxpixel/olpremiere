@@ -150,7 +150,9 @@ test('playback: Space plays (timecode advances), Space pauses', async ({ page })
   await expect.poll(async () => readoutS(await page.getByTestId('timecode').textContent(), 1)).toBeGreaterThan(5)
   await page.keyboard.press('Home')
   await page.keyboard.press(' ')
-  await page.waitForTimeout(800)
+  // Until playback has really moved, not a fixed 800 ms: on a busy box a fixed
+  // wait reads a playhead that has not started yet (2026-10-06).
+  await expect(page.getByTestId('timecode')).not.toContainText('0:00.00 ', { timeout: 10_000 })
   const during = await page.getByTestId('timecode').textContent()
   expect(during).not.toContain('0:00.00 ')
   expect(during).toMatch(/^0:0[0-4]\.\d\d/)
