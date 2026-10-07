@@ -54,6 +54,7 @@ import { CRASH_LOG_NAME, crashLogLine, crashPlan } from './crashPlan'
 import { appliedWhileAway, launchMode, parseQuietMarker, QUIET_START_FILE, secondInstanceAction } from './launchMode'
 import { centreIn, readWindowState, restoreBounds, WINDOW_STATE_FILE, writeWindowState, type Placement } from './windowState'
 import { fileQuietStore, startUpdateFlow, type UpdateFlow } from './updateFlow'
+import { MAIN_LOG_NAME, mainLog, mainLogger, setMainLogFile } from './mainLog'
 import { appendUpdateLog, UPDATE_LOG_NAME } from './updateLog'
 import electronUpdater from 'electron-updater'
 
@@ -729,6 +730,8 @@ app.whenReady().then(() => {
   // A second copy never gets here (exit above), but if it ever did, it must not sweep
   // the first copy's temps or open windows on its profile.
   if (!singleInstance) return
+  // The main process's diary (./mainLog): a packaged build has no console to read.
+  setMainLogFile(path.join(app.getPath('logs'), MAIN_LOG_NAME))
   // No application menu at all. The bar was hidden, but Electron's default menu
   // stayed live behind it, so Ctrl+W (Close Window) quit the whole app from a
   // browser habit, and Ctrl+R reloaded the editor under an edit. The app's own
@@ -763,7 +766,7 @@ app.whenReady().then(() => {
         const data = await emojiFont.read()
         return new Response(new Uint8Array(data), { headers: { 'content-type': 'font/ttf' } })
       } catch (err) {
-        console.warn('OL Premiere: the Apple emoji font could not be fetched', err)
+        mainLog('warn', 'OL Premiere: the Apple emoji font could not be fetched', err)
         return new Response('Not available', { status: 503 })
       }
     }
@@ -845,7 +848,7 @@ app.whenReady().then(() => {
     try {
       return await proxy.finishProxy(id)
     } catch (err) {
-      console.warn('OL Premiere: preview copy failed, preview will use the original', err)
+      mainLog('warn', 'OL Premiere: preview copy failed, preview will use the original', err)
       return null
     }
   })
@@ -1111,6 +1114,7 @@ app.whenReady().then(() => {
       busy: () => rendererBusy || native.isExporting() || proxy.proxyBusy() || remux.remuxBusy(),
       log: (entry) => appendUpdateLog(path.join(app.getPath('logs'), UPDATE_LOG_NAME), entry),
       quiet: fileQuietStore(path.join(app.getPath('userData'), 'update-quiet-since.json')),
+      logger: mainLogger,
     })
     // Apply from the toast (and the renderer's save-then-restart path): quit and
     // relaunch into the downloaded version.

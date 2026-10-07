@@ -18,6 +18,7 @@ const T0 = new Date('2026-10-06T12:00:00.000Z').getTime()
 class FakeUpdater extends EventEmitter implements UpdaterLike {
   autoDownload = false
   autoInstallOnAppQuit = false
+  logger: UpdaterLike['logger'] = null
   checks = 0
   checkForUpdates = vi.fn<UpdaterLike['checkForUpdates']>(async () => {
     this.checks++
@@ -98,6 +99,29 @@ afterEach(() => {
 const start = (quietStart: number | null = null): Rig => (live = rig(quietStart))
 
 describe('checking', () => {
+  it('hands the updater the main log, so its own account is kept', () => {
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    const updater = new FakeUpdater()
+    const flow = startUpdateFlow({
+      updater,
+      getStatus: () => ({ kind: 'none' }),
+      setStatus: () => undefined,
+      send: () => undefined,
+      idleSeconds: () => IDLE_APPLY_S,
+      busy: () => false,
+      log: () => undefined,
+      quiet: memoryQuiet(),
+      logger,
+    })
+    try {
+      expect(updater.logger).toBe(logger)
+      updater.emit('update-downloaded', { version: '9.9.9' })
+      expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('9.9.9 downloaded while he is away'))
+    } finally {
+      flow.stop()
+    }
+  })
+
   it('turns on download and install on quit, and checks once at start', () => {
     const r = start()
     expect(r.updater.autoDownload).toBe(true)

@@ -26,10 +26,18 @@ import { planUpdateError, updateLogEntry } from './updateErrors'
 /** How often an app left open looks for a release, so it gets one the same day. */
 export const POLL_MS = 15 * 60_000
 
+/** Where the updater's own account of what it did goes (electron-updater's Logger shape). */
+export interface UpdaterLogger {
+  info(message?: unknown): void
+  warn(message?: unknown): void
+  error(message?: unknown): void
+}
+
 /** The parts of electron-updater's autoUpdater this uses. */
 export interface UpdaterLike {
   autoDownload: boolean
   autoInstallOnAppQuit: boolean
+  logger: UpdaterLogger | null
   on(event: 'error', listener: (error: Error) => void): unknown
   on(event: 'update-not-available', listener: () => void): unknown
   on(event: 'update-available', listener: (info: { version: string }) => void): unknown
@@ -57,6 +65,8 @@ export interface UpdateFlowDeps {
   /** One entry for logs/update-check.log. */
   log(entry: string): void
   quiet: QuietStore
+  /** logs/main.log: the updater's own lines, and why a downloaded update did or did not apply. */
+  logger?: UpdaterLogger
   now?: () => number
 }
 
@@ -104,6 +114,8 @@ export function startUpdateFlow(d: UpdateFlowDeps): UpdateFlow {
 
   d.updater.autoDownload = true
   d.updater.autoInstallOnAppQuit = true // a pending update also installs on any quit
+  // Its default is the console, which a packaged build throws away.
+  if (d.logger) d.updater.logger = d.logger
 
   d.updater.on('error', (e) => {
     // ⛔ NEVER SWALLOW THIS. Every failure is kept, in full, in the log; what reaches
@@ -157,15 +169,18 @@ export function startUpdateFlow(d: UpdateFlowDeps): UpdateFlow {
     // in flight, else it falls back to the "Restart to update" toast.
     const decide = (): 'now' | 'when-idle' | 'never' => updateApplyDecision({ idleSeconds: d.idleSeconds(), busy: d.busy() })
     if (decide() === 'now') {
+      d.logger?.info(`OL Premiere update ${info.version} downloaded while he is away, asking the editor to apply it`)
       d.send('update:autoApply', info.version)
       return
     }
+    d.logger?.info(`OL Premiere update ${info.version} downloaded, offering a restart and watching for him to step away`)
     d.send('update:ready', info.version)
     if (idleApplyTimer) clearInterval(idleApplyTimer)
     idleApplyTimer = setInterval(() => {
       if (decide() !== 'now') return
       if (idleApplyTimer) clearInterval(idleApplyTimer)
       idleApplyTimer = null
+      d.logger?.info(`OL Premiere update ${info.version}: he has been away, applying it`)
       d.send('update:autoApply', info.version)
     }, IDLE_POLL_MS)
   })

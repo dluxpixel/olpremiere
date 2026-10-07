@@ -31,6 +31,7 @@ import { constants as osConstants, setPriority } from 'node:os'
 import { mkdir, open, rm, stat } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
 import path from 'node:path'
+import { mainLog } from './mainLog'
 import { sweepProxyDir } from './proxyTemp'
 import { app } from 'electron'
 
@@ -468,7 +469,7 @@ async function runFfmpeg(inPath: string, outPath: string, signal?: AbortSignal):
     try {
       await spawnFfmpeg(proxyArgs(inPath, outPath, candidate), signal)
       encoderChoice = candidate
-      console.log(`OL Premiere: preview copies are being built on ${ENCODER_NAME[candidate]}`)
+      mainLog('info', `OL Premiere: preview copies are being built on ${ENCODER_NAME[candidate]}`)
       return
     } catch (err) {
       // Stopped on purpose says nothing about the encoder: no next rung.
@@ -476,7 +477,7 @@ async function runFfmpeg(inPath: string, outPath: string, signal?: AbortSignal):
       // Try the next rung. Nothing is reported to him: a machine without Intel
       // graphics or without a card is not a fault, and the software copy is
       // exactly what he had before.
-      console.warn(`OL Premiere: preview copies cannot use ${ENCODER_NAME[candidate]}`, err)
+      mainLog('warn', `OL Premiere: preview copies cannot use ${ENCODER_NAME[candidate]}`, err)
     }
   }
 }

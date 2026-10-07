@@ -8,6 +8,7 @@
 
 import { spawn } from 'node:child_process'
 import { stat } from 'node:fs/promises'
+import { mainLog } from './mainLog'
 import {
   MASTER_LADDER,
   frameCountArgs,
@@ -177,13 +178,13 @@ async function makeSdrMaster(
     if (out.code === 0) {
       const lost = framesLost(expected, out.frames)
       if (lost > 0) throw new Error(`the conversion lost ${lost} of ${expected} frames`)
-      if (known !== rung) console.log(`OL Premiere: HDR clips are tone mapped by ${rung.tonemap}, written by ${rung.encoder}`)
+      if (known !== rung) mainLog('info', `OL Premiere: HDR clips are tone mapped by ${rung.tonemap}, written by ${rung.encoder}`)
       masterChoice = rung
       return
     }
     why = lastLine(out.stderr) || `ffmpeg exited with code ${out.code}`
     if (out.frames > 0) throw new Error(why)
-    console.warn(`OL Premiere: HDR clips cannot use ${rung.tonemap} with ${rung.encoder}:`, why)
+    mainLog('warn', `OL Premiere: HDR clips cannot use ${rung.tonemap} with ${rung.encoder}:`, why)
   }
   throw new Error(why)
 }
