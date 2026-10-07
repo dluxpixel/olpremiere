@@ -52,11 +52,13 @@ interface Recording {
   /** Every program created, in order. */
   programs: Prog[]
   draws: Draw[]
+  /** What isContextLost() answers: a context the browser has taken away. */
+  lost: boolean
 }
 
 /** A WebGL2 context that draws nothing, remembers what it was asked, and refuses to build the passes named. */
 function recordingGl(broken: readonly PassName[] = []): Recording {
-  const rec: Recording = { gl: null as unknown as WebGL2RenderingContext, programs: [], draws: [] }
+  const rec: Recording = { gl: null as unknown as WebGL2RenderingContext, programs: [], draws: [], lost: false }
   const fails = (src: string): boolean => {
     const pass = passOf(src)
     return pass !== null && broken.includes(pass)
@@ -97,7 +99,7 @@ function recordingGl(broken: readonly PassName[] = []): Recording {
     getAttribLocation: () => 0,
     getUniformLocation: (prog: object, name: string) => ({ prog, name }),
     checkFramebufferStatus: () => C.FRAMEBUFFER_COMPLETE,
-    isContextLost: () => false,
+    isContextLost: () => rec.lost,
     useProgram: (p: Prog | null) => {
       current = p
     },
@@ -334,6 +336,26 @@ describe('a look pass this GPU will not build', () => {
     renderer.render(frameOf(layer([look('lookMoodyGym')])), () => source)
     expect(passesDrawn(rec)).toEqual(['clarity'])
     expect(warn).toHaveBeenCalledTimes(1)
+    renderer.dispose()
+  })
+
+  // On a context that is lost but not reported yet, every build fails. That is
+  // the loss, not this GPU refusing the pass, so it is neither said nor kept.
+  it('is not what a lost context is: no warning, and nothing kept as failed', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const broken: PassName[] = ['bright', 'glow']
+    const rec = recordingGl(broken)
+    const renderer = createRenderer(rec.gl)
+    rec.lost = true
+    renderer.render(frameOf(layer([look('lookFilm800T')])), () => source)
+    expect(warn).not.toHaveBeenCalled()
+    expect(passesDrawn(rec)).toEqual([])
+    // Back, the pass builds and draws: the loss was never taken for a failure.
+    rec.lost = false
+    broken.length = 0
+    renderer.render(frameOf(layer([look('lookFilm800T')])), () => source)
+    expect(passesDrawn(rec)).toEqual(['bright', 'glow', 'bright', 'glow'])
+    expect(warn).not.toHaveBeenCalled()
     renderer.dispose()
   })
 })

@@ -1501,6 +1501,10 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
       },
       get() {
         if (built !== undefined) return built
+        // A context lost but not yet reported fails every build. That is the
+        // loss, not this GPU refusing the pass: say nothing and keep nothing.
+        // The renderer is dropped and built again once the context is back.
+        if (gl.isContextLost()) return null
         const warmed = pending
         pending = null
         try {
