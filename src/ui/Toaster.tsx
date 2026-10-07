@@ -14,6 +14,8 @@ const HOME: ToastPlacement = { corner: 'br', covered: false }
 export function Toaster() {
   const toasts = useToasts((s) => s.toasts)
   const dismiss = useToasts((s) => s.dismiss)
+  const hold = useToasts((s) => s.hold)
+  const release = useToasts((s) => s.release)
   const menuOpen = useContextMenu((s) => s.open)
   const stack = useRef<HTMLDivElement>(null)
   const [placement, setPlacement] = useState<ToastPlacement>(HOME)
@@ -58,13 +60,18 @@ export function Toaster() {
       aria-live="polite"
     >
       {toasts.map((t) => (
+        // Under the pointer a toast waits: an Undo toast used to vanish as he reached for its
+        // button. A long message (an export failure, a list of files) wraps at 420px instead of
+        // running as one line across the window.
         <div
           key={t.id}
           data-testid="toast"
-          className={`pointer-events-auto flex animate-[toast-in_140ms_ease-out] items-center gap-3 rounded-overlay border bg-bg-elevated px-3 py-2 text-ui text-text-primary shadow-pop ${kindClasses[t.kind]}`}
+          onPointerEnter={() => hold(t.id)}
+          onPointerLeave={() => release(t.id)}
+          className={`pointer-events-auto flex max-w-[420px] animate-[toast-in_140ms_ease-out] items-center gap-3 rounded-overlay border bg-bg-elevated px-3 py-2 text-ui text-text-primary shadow-pop ${kindClasses[t.kind]}`}
         >
           {/* The message dismisses; a separate action button (e.g. Undo) does not. */}
-          <button onClick={() => dismiss(t.id)} className="text-left">
+          <button onClick={() => dismiss(t.id)} className="min-w-0 break-words text-left">
             {t.message}
           </button>
           {t.action && (
