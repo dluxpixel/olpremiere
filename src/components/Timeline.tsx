@@ -243,6 +243,17 @@ export function Timeline({ height }: { height: number }) {
     // path: grabbing always selects the clip, so asking afterwards would report
     // "solo" every time and quietly kill linked slipping.
     const soloSlip = soloTrimIntent(seq, selection, clip.id)
+    // Ctrl+Alt = the advanced-trim pair (roll on an edge, slide on the body).
+    // Checked before plain Alt: a Ctrl+Alt press has altKey === true too.
+    const ctrlAlt = (e.ctrlKey || e.metaKey) && e.altKey
+    // A linked slip moves the partner's footage too; a locked partner holds it.
+    // Refused BEFORE the press selects the clip: a selection left behind by a
+    // refused press made the same Alt drag a second time read as singled out
+    // (soloTrimIntent) and slip the picture alone, off its locked sound.
+    if (e.altKey && !ctrlAlt && !track.locked && !soloSlip && groupLocked(seq, clip.id)) {
+      show(PAIR_LOCKED_MESSAGE)
+      return
+    }
     // ⛔ CTRL ADDS TO THE SELECTION, LIKE SHIFT, 2026-09-28. His words: *"when I
     // hold and drag control while selecting multiple things ... I can click
     // anywhere and it still drags"*. Ctrl-click used to REPLACE the selection
@@ -264,22 +275,14 @@ export function Timeline({ height }: { height: number }) {
     if (track.locked) return
     const { x } = contentPoint(e)
     dragFinal.current = null
-    // Ctrl+Alt = the advanced-trim pair (roll on an edge, slide on the body).
-    // Checked before plain Alt: a Ctrl+Alt press has altKey === true too.
     // Without a butted neighbour each side there is nothing to slide between,
-    // so it falls through to a plain move (never to the Alt slip below).
-    const ctrlAlt = (e.ctrlKey || e.metaKey) && e.altKey
+    // so Ctrl+Alt falls through to a plain move (never to the Alt slip below).
     if (ctrlAlt && canSlide(track, clip.id)) {
       const neighborIds = slideNeighborIds(track, clip.id)
       beginDrag(e, { kind: 'slide', clipId: clip.id, grabOffsetS: x / pxPerS - clip.startS, neighborIds })
       return
     }
     if (e.altKey && !ctrlAlt) {
-      // A linked slip moves the partner's footage too; a locked partner holds it.
-      if (!soloSlip && groupLocked(seq, clip.id)) {
-        show(PAIR_LOCKED_MESSAGE)
-        return
-      }
       beginDrag(e, { kind: 'slip', clipId: clip.id, startXPx: x, solo: soloSlip })
       return
     }
@@ -369,36 +372,35 @@ export function Timeline({ height }: { height: number }) {
     // kill linked trimming. Having singled this half out ALREADY (clicked it,
     // partner not selected) is what means "trim just this one".
     const solo = soloTrimIntent(seq, selection, clip.id)
+    // Edge modifiers: Ctrl = ripple trim, Alt = rate stretch, Ctrl+Alt = roll.
+    // Roll is checked FIRST - a Ctrl+Alt press satisfies both single checks.
+    // No cut to roll here (no neighbour, or one across a gap) falls through to
+    // a plain trim.
+    const roll = (e.ctrlKey || e.metaKey) && e.altKey ? rollPair(track, clip.id, edge) : null
+    const stretch = e.altKey && !(e.ctrlKey || e.metaKey)
+    // A stretch, and a trim of the pair, take the linked partner along, so a
+    // partner on a locked track holds them (the engine refuses too). Said at the
+    // press, not after a drag that showed nothing moving.
+    //
+    // ⛔ AND BEFORE THE PRESS SELECTS THE CLIP. A refused press used to select
+    // it anyway, so the very same drag a second time read as "singled out"
+    // (soloTrimIntent) and trimmed the picture alone, out of step with its
+    // locked sound, without a word.
+    if (!roll && groupLocked(seq, clip.id) && (stretch || !solo)) {
+      show(PAIR_LOCKED_MESSAGE)
+      return
+    }
     setUI({ selection: [clip.id] })
     dragFinal.current = null
     // Where the pointer sits relative to the edge it grabbed, kept for the whole
     // drag, the way a move keeps its own (see the Drag type).
     const grabOffsetS = contentPoint(e).x / pxPerS - (edge === 'in' ? clip.startS : clipEndS(clip))
-    // Edge modifiers: Ctrl = ripple trim, Alt = rate stretch, Ctrl+Alt = roll.
-    // Roll is checked FIRST - a Ctrl+Alt press satisfies both single checks.
-    if ((e.ctrlKey || e.metaKey) && e.altKey) {
-      const pair = rollPair(track, clip.id, edge)
-      if (pair) {
-        beginDrag(e, { kind: 'roll', ...pair, grabOffsetS })
-        return
-      }
-      // No cut to roll here (no neighbour, or one across a gap) - fall through
-      // to a plain trim.
-    }
-    // A stretch, and a trim of the pair, take the linked partner along, so a
-    // partner on a locked track holds them (the engine refuses too). Said at the
-    // press, not after a drag that showed nothing moving.
-    const pairHeld = groupLocked(seq, clip.id)
-    if (e.altKey && !(e.ctrlKey || e.metaKey)) {
-      if (pairHeld) {
-        show(PAIR_LOCKED_MESSAGE)
-        return
-      }
-      beginDrag(e, { kind: 'stretch', clipId: clip.id, edge, grabOffsetS })
+    if (roll) {
+      beginDrag(e, { kind: 'roll', ...roll, grabOffsetS })
       return
     }
-    if (!solo && pairHeld) {
-      show(PAIR_LOCKED_MESSAGE)
+    if (stretch) {
+      beginDrag(e, { kind: 'stretch', clipId: clip.id, edge, grabOffsetS })
       return
     }
     // `!e.altKey` keeps the no-neighbour Ctrl+Alt fallthrough a PLAIN trim, as

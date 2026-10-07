@@ -438,6 +438,43 @@ describe('Timeline', () => {
     expect(useToasts.getState().toasts.map((t) => t.message)).toEqual([PAIR_LOCKED_MESSAGE])
   })
 
+  // A refused press still selected the clip, so the very same drag a second
+  // time read as "singled out" and trimmed or slipped the picture alone, out of
+  // step with its locked sound, with no word.
+  it('a trim or slip refused by a locked partner leaves the selection alone, so a second try is refused too', () => {
+    const [v1, v2] = videoTracks(seq())
+    const pic = { ...newTitleClip(defaultTitleDef('pic'), 1, 2), id: 'pic', linkId: 'L' }
+    const snd = { ...newTitleClip(defaultTitleDef('snd'), 1, 2), id: 'snd', linkId: 'L' }
+    updateActiveSequence('seed', (sq) =>
+      recomputeDuration({
+        ...sq,
+        tracks: sq.tracks.map((t) =>
+          t.id === v1!.id ? { ...t, clips: [pic] } : t.id === v2!.id ? { ...t, locked: true, clips: [snd] } : t,
+        ),
+      }),
+    )
+    useStore.getState().setUI({ snapping: false })
+    useToasts.setState({ toasts: [] })
+    render(<Timeline height={300} />)
+    const { lanes } = layOut()
+    const before = useStore.getState().project
+    const picEl = () => screen.getAllByTestId('clip').find((c) => c.dataset.clipId === 'pic')!
+    for (let i = 0; i < 2; i++) {
+      // The tail, 3 s = 30 px: drag it 10 px left.
+      fireEvent.pointerDown(within(picEl()).getByTestId('trim-out'), { button: 0, clientX: 29, clientY: 40, pointerId: 1 })
+      fireEvent.pointerMove(lanes, { clientX: 19, clientY: 40, pointerId: 1 })
+      fireEvent.pointerUp(lanes, { clientX: 19, clientY: 40, pointerId: 1 })
+      expect(useStore.getState().ui.selection).toEqual([])
+      // Alt on the body is a slip.
+      fireEvent.pointerDown(picEl(), { button: 0, altKey: true, clientX: 20, clientY: 40, pointerId: 1 })
+      fireEvent.pointerMove(lanes, { clientX: 30, clientY: 40, pointerId: 1 })
+      fireEvent.pointerUp(lanes, { clientX: 30, clientY: 40, pointerId: 1 })
+      expect(useStore.getState().ui.selection).toEqual([])
+    }
+    expect(useStore.getState().project).toBe(before)
+    expect(useToasts.getState().toasts.map((t) => t.message)).toContain(PAIR_LOCKED_MESSAGE)
+  })
+
   it('fits the zoom from the toolbar event', () => {
     seedTitle(0)
     render(<Timeline height={300} />)
