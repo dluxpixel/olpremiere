@@ -35,6 +35,7 @@ import {
   commitExactTree,
   FAST_MARK,
   isTransientFailure,
+  keepEvidence,
   loadToken,
   nextVersion,
   openShipLog,
@@ -87,26 +88,68 @@ const writeStamp = (tree) => writeFileSync(STAMP, JSON.stringify({ tree, at: new
 //
 // Returns the tree it checked, which is the ONLY tree a ship may commit.
 //
-// ⛔ AND THE TREE IS HASHED AGAIN WHEN IT ENDS. A file saved during the 25 minutes
-// was checked by none of tsc, eslint and vitest (done in the first two) and by
-// only part of the e2e (the dev server serves whatever is on disk), so a gate
-// whose tree moved under it has no verdict on either tree. Nothing is committed
-// or stamped, and the files are named.
+// ⛔ AND THE TREE IS HASHED AGAIN WHEN IT ENDS. A file saved during the run was
+// checked by none of the steps that had already finished, and by only part of the
+// e2e (the dev server serves whatever is on disk), so a gate whose tree moved
+// under it has no verdict on either tree. Nothing is committed or stamped, and the
+// files are named.
 const gate = async () => {
   const tree = treeHash()
-  try {
-    await run('npx tsc --noEmit', 'typecheck (renderer)')
-    await run('npx tsc -p tsconfig.electron.json --noEmit', 'typecheck (electron)')
-    await run('npx eslint .', 'lint')
-    await run('npx vitest run', 'unit tests')
-    await run('npx vite build', 'web build')
-    if (!fast) await run('npx playwright test', 'end to end')
-  } catch {
-    console.error('\n❌ The gate failed, so NOTHING was committed or released.')
-    console.error(`   The whole run is in ${SHIP_LOG}`)
-    console.error('   Fix it and run the same command again.')
+  const t0 = Date.now()
+  const fail = (why) => {
+    const say = `\n❌ The gate failed (${why}), so NOTHING was committed or released.\n   The whole run is in ${SHIP_LOG}\n   Fix it and run the same command again.\n`
+    console.error(say)
+    shipLog?.write(say)
     process.exit(1)
   }
+  // Tells a spec it is inside the gate, where a missing prerequisite (vendor/ffmpeg)
+  // is a failure and not a quiet skip: the release cannot package without it.
+  process.env.OLP_GATE = '1'
+
+  // 1. THE CHECKS THAT NEED NO BROWSER, one after another, as before. Running them
+  // side by side would save about a minute, and it would put seven heavy jobs on
+  // his machine at once, past his limit of four at once (his PC must never lag).
+  //
+  // ⛔ THE DESKTOP BUNDLE IS BUILT HERE NOW, not first after the push. The gate used
+  // to build only the web bundle, so a main process bundling error, or a new
+  // dependency main reaches for (what check-self-contained exists to catch), failed
+  // in release.mjs after the version was already public. The release still rebuilds
+  // after the bump, because the version is baked in.
+  const checks = [
+    ['npx tsc --noEmit', 'typecheck (renderer)'],
+    ['npx tsc -p tsconfig.electron.json --noEmit', 'typecheck (electron)'],
+    ['npx eslint .', 'lint'],
+    ['npx vitest run', 'unit tests'],
+    ['npx vite build', 'web build'],
+    ['npx electron-vite build', 'desktop build'],
+    ['node scripts/check-self-contained.mjs', 'the desktop bundle needs no node_modules'],
+  ]
+  for (const [cmd, label] of checks) {
+    try {
+      await run(cmd, label)
+    } catch {
+      fail(label)
+    }
+  }
+
+  // 2. THE BROWSER SUITE. A red one moves its traces out of test-results/ first,
+  // because the next Playwright run anywhere in this repo empties that folder.
+  if (!fast) {
+    try {
+      await run('npx playwright test', 'end to end')
+    } catch {
+      // Flushed before it is copied, so the kept log ends where the run did.
+      await new Promise((resolve) => (shipLog ? shipLog.write('\n[gate] the browser suite failed, keeping its evidence\n', resolve) : resolve()))
+      const kept = keepEvidence({ from: 'test-results', extra: [SHIP_LOG] })
+      if (kept) {
+        const say = `\n   The failing tests' traces, videos and this log are kept in ${kept}\n   (open a trace with: npx playwright show-trace <that folder>/test-results/<test>/trace.zip)\n`
+        console.error(say)
+        shipLog?.write(say)
+      }
+      fail('end to end')
+    }
+  }
+
   const after = treeHash()
   if (after !== tree) {
     const moved = changedBetween(tree, after)
@@ -118,6 +161,9 @@ const gate = async () => {
     shipLog?.write(say)
     process.exit(1)
   }
+  const done = `\n✓ the gate passed in ${Math.round((Date.now() - t0) / 60_000)} min\n`
+  process.stdout.write(done)
+  shipLog?.write(done)
   if (!fast) writeStamp(tree)
   return tree
 }

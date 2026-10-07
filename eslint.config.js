@@ -32,4 +32,22 @@ export default tseslint.config(
       ...reactHooks.configs.recommended.rules,
     },
   },
+  {
+    // The ship scripts ship everything else, and a typo in a branch that only
+    // runs on a bad night (the push retry) used to surface only on that night.
+    // `no-undef` is the check that catches that class.
+    files: ['scripts/**/*.mjs'],
+    extends: [js.configs.recommended],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
+      globals: { ...globals.node },
+    },
+  },
+  {
+    // These two also hand functions to a browser page (page.evaluate), which
+    // run with the page's globals, not node's.
+    files: ['scripts/cold-start.mjs', 'scripts/make-app-icon.mjs'],
+    languageOptions: { globals: { ...globals.browser, ...globals.node } },
+  },
 )

@@ -1,8 +1,8 @@
 // Shared release helpers.
 import { execFileSync, spawn } from 'node:child_process'
-import { copyFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { copyFileSync, cpSync, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 
 /**
  * Where a ship writes everything it saw. ONE rolling file, overwritten each run,
@@ -41,11 +41,14 @@ export function openShipLog(header) {
  * The fix is NOT "remember not to pipe it". The log is written here, so it
  * exists however the command was invoked, and a failure prints where to read it.
  */
-export function runLogged(cmd, label, log) {
+export function runLogged(cmd, label, log, { out = process.stdout, err = process.stderr } = {}) {
   return new Promise((resolve, reject) => {
-    const banner = `\n▶ ${label}\n`
-    process.stdout.write(banner)
-    log?.write(banner)
+    const t0 = Date.now()
+    const say = (stream, d) => {
+      stream.write(d)
+      log?.write(d)
+    }
+    say(out, `\n▶ ${label}\n`)
     // windowsHide: shell:true means cmd.exe on Windows, and a ship launched
     // detached has no console of its own, so each gate step opened a black box
     // on his screen. The output is piped and logged either way.
@@ -58,22 +61,25 @@ export function runLogged(cmd, label, log) {
       tail = (tail + d).slice(-TAIL_CHARS)
     }
     child.stdout.on('data', (d) => {
-      process.stdout.write(d)
-      log?.write(d)
+      say(out, d)
       keep(d)
     })
     child.stderr.on('data', (d) => {
-      process.stderr.write(d)
-      log?.write(d)
+      say(err, d)
       keep(d)
     })
     child.on('error', reject)
     child.on('close', (code) => {
-      if (code === 0) resolve()
+      // How long each step took, in the log, because on 2026-10-06 "how long is
+      // the gate" had to be rebuilt from file times.
+      const secs = Math.round((Date.now() - t0) / 1000)
+      say(out, code === 0 ? `✓ ${label} (${secs} s)\n` : `✗ ${label} exited ${code} after ${secs} s\n`)
+      if (code === 0) resolve(secs)
       else {
-        const err = new Error(`${label} exited ${code}`)
-        err.output = tail
-        reject(err)
+        const e = new Error(`${label} exited ${code}`)
+        e.output = tail
+        e.label = label
+        reject(e)
       }
     })
   })
@@ -246,15 +252,15 @@ export function planShip({ dirty, unpushed, unreleased, headIsRelease, verified 
  * suite gets shipped. This only wraps steps that are a local build or an upload,
  * where the only thing that failed was the wire.
  */
-export async function runLoggedRetry(cmd, label, log, { tries = 3, baseDelayMs = 15_000 } = {}) {
+export async function runLoggedRetry(cmd, label, log, { tries = 3, baseDelayMs = 15_000, out = process.stdout, err = process.stderr } = {}) {
   for (let attempt = 1; ; attempt++) {
     try {
-      return await runLogged(cmd, attempt === 1 ? label : `${label}, try ${attempt} of ${tries}`, log)
+      return await runLogged(cmd, attempt === 1 ? label : `${label}, try ${attempt} of ${tries}`, log, { out, err })
     } catch (e) {
       if (attempt >= tries || !isTransientFailure(e.output)) throw e
       const waitMs = baseDelayMs * attempt
       const msg = `\n⚠ ${label} failed on what looks like a dropped connection, not a broken build.\n  Waiting ${Math.round(waitMs / 1000)}s, then try ${attempt + 1} of ${tries}.\n`
-      process.stdout.write(msg)
+      out.write(msg)
       log?.write(msg)
       await new Promise((r) => setTimeout(r, waitMs))
     }
@@ -397,4 +403,45 @@ export function isDocsPath(path) {
 /** The paths that make a release NOT docs only. Empty means --fast is allowed. */
 export function codeFiles(paths) {
   return paths.filter((p) => !isDocsPath(p))
+}
+
+// --- a failed gate keeps its evidence (2026-10-06) ----------------------------
+//
+// ⛔ PLAYWRIGHT EMPTIES test-results/ AT THE START OF EVERY RUN. The nine traces of
+// 2026-10-04's first ship were deleted when the next ship started that evening,
+// so the failures could only be re-rolled ("8 passed alone"), never read. On
+// 2026-10-06 a rerun started 54 seconds after a red gate and deleted its
+// scrub-cost trace. So a red e2e step moves its results out of reach first.
+
+/** Where a red gate's traces, videos and ship log are kept. His C drive, newest few only. */
+export const EVIDENCE_DIR = 'C:/Users/skyle/AppData/Local/olp-build/gate-evidence'
+
+/**
+ * Move `from` (test-results/) into `<root>/<stamp>/`, copy each of `extra` beside
+ * it, and keep only the newest `keep` runs. Returns the folder, or null when there
+ * was nothing to keep. Never throws: keeping evidence must not hide the failure.
+ */
+export function keepEvidence({ from, root = EVIDENCE_DIR, extra = [], keep = 3, now = new Date() }) {
+  try {
+    if (!existsSync(from)) return null
+    const stamp = now.toISOString().replace(/[:.]/g, '-')
+    const dest = join(root, stamp)
+    mkdirSync(dest, { recursive: true })
+    const target = join(dest, basename(from))
+    try {
+      renameSync(from, target)
+    } catch {
+      // Another drive, or a file still held open: copy what can be copied.
+      cpSync(from, target, { recursive: true })
+      rmSync(from, { recursive: true, force: true })
+    }
+    for (const f of extra) {
+      if (existsSync(f)) copyFileSync(f, join(dest, basename(f)))
+    }
+    const runs = readdirSync(root).filter((n) => statSync(join(root, n)).isDirectory()).sort()
+    for (const old of runs.slice(0, Math.max(0, runs.length - keep))) rmSync(join(root, old), { recursive: true, force: true })
+    return dest
+  } catch {
+    return null
+  }
 }

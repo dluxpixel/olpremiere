@@ -4,7 +4,7 @@
 // release cannot be "checked by eye" in any useful sense.
 
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -12,6 +12,8 @@ import {
   changedBetween,
   codeFiles,
   commitExactTree,
+  keepEvidence,
+  runLogged,
   isBigUpdate,
   isDocsPath,
   isTransientFailure,
@@ -47,9 +49,18 @@ function flakyCommand(failures, message) {
   return { cmd: `node "${script}"`, attempts: () => Number(readFileSync(counter, 'utf8')) }
 }
 
+/** A stream that keeps what it is given instead of printing it. */
+function sink() {
+  const said = []
+  return { said, write: (d) => said.push(String(d)) }
+}
+
 // Silent and instant: this suite must not print a wall of banners or spend
-// real seconds sleeping between attempts.
-const QUIET = { tries: 3, baseDelayMs: 0 }
+// real seconds sleeping between attempts. ⛔ It used to print "package failed on
+// what looks like a dropped connection" into every ship log, a false lead for
+// anyone reading a red gate.
+const quiet = () => ({ tries: 3, baseDelayMs: 0, out: sink(), err: sink() })
+const QUIET = quiet()
 
 describe('isTransientFailure', () => {
   it('knows the drop that cost two ships', () => {
@@ -97,7 +108,7 @@ describe('isTransientFailure', () => {
 describe('runLoggedRetry', () => {
   it('rides out a dropped connection and succeeds', async () => {
     const { cmd, attempts } = flakyCommand(2, 'socket hang up')
-    await expect(runLoggedRetry(cmd, 'package', null, QUIET)).resolves.toBeUndefined()
+    await expect(runLoggedRetry(cmd, 'package', null, QUIET)).resolves.toBeTypeOf('number')
     expect(attempts()).toBe(3)
   })
 
@@ -273,7 +284,7 @@ describe('nextVersion', () => {
  */
 function scratchRepo() {
   const dir = mkdtempSync(join(tmpdir(), 'olp-gate-'))
-  const git = (...a) => execFileSync('git', a, { cwd: dir, encoding: 'utf8', windowsHide: true }).trim()
+  const git = (...a) => execFileSync('git', a, { cwd: dir, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }).trim()
   git('init', '-q', '-b', 'main')
   git('config', 'user.email', 'gate@test.invalid')
   git('config', 'user.name', 'gate test')
@@ -359,5 +370,61 @@ describe('the --fast contract', () => {
       'scripts/patch.mjs',
       'mydocs/a.ts',
     ])
+  })
+})
+
+// 2026-10-06: "how long is the gate" had to be rebuilt from file times.
+describe('runLogged', () => {
+  it('says how long a step took, in the log as well', async () => {
+    const log = sink()
+    const out = sink()
+    const secs = await runLogged('node -e "console.log(1)"', 'tiny step', log, { out, err: sink() })
+    expect(secs).toBeTypeOf('number')
+    expect(log.said.join('')).toMatch(/✓ tiny step \(\d+ s\)/)
+  })
+
+  it('a failure carries its label and says how long it ran', async () => {
+    const log = sink()
+    await expect(runLogged('node -e "process.exit(3)"', 'red step', log, { out: sink(), err: sink() })).rejects.toMatchObject({
+      label: 'red step',
+      message: 'red step exited 3',
+    })
+    expect(log.said.join('')).toMatch(/✗ red step exited 3 after \d+ s/)
+  })
+})
+
+// ⛔ Playwright empties test-results/ at the start of every run, and a rerun 54
+// seconds after the red gate of 2026-10-06 deleted its trace.
+describe('keepEvidence', () => {
+  const results = () => {
+    const dir = mkdtempSync(join(tmpdir(), 'olp-evidence-'))
+    const from = join(dir, 'test-results')
+    mkdirSync(join(from, 'play-latency-1'), { recursive: true })
+    writeFileSync(join(from, 'play-latency-1', 'trace.zip'), 'trace')
+    writeFileSync(join(dir, 'last-ship.log'), 'the log')
+    return { dir, from, root: join(dir, 'gate-evidence'), log: join(dir, 'last-ship.log') }
+  }
+
+  it('moves the results out of reach and keeps the ship log beside them', () => {
+    const { from, root, log } = results()
+    const kept = keepEvidence({ from, root, extra: [log], now: new Date('2026-10-06T16:09:11Z') })
+    expect(kept).toBe(join(root, '2026-10-06T16-09-11-000Z'))
+    expect(existsSync(from)).toBe(false)
+    expect(readFileSync(join(kept, 'test-results', 'play-latency-1', 'trace.zip'), 'utf8')).toBe('trace')
+    expect(readFileSync(join(kept, 'last-ship.log'), 'utf8')).toBe('the log')
+  })
+
+  it('keeps only the newest few, because his C drive fills up', () => {
+    const { dir, root } = results()
+    for (let day = 1; day <= 5; day++) {
+      mkdirSync(join(dir, 'test-results'), { recursive: true })
+      keepEvidence({ from: join(dir, 'test-results'), root, keep: 3, now: new Date(`2026-10-0${day}T12:00:00Z`) })
+    }
+    expect(readdirSync(root).sort()).toEqual(['2026-10-03T12-00-00-000Z', '2026-10-04T12-00-00-000Z', '2026-10-05T12-00-00-000Z'])
+  })
+
+  it('nothing to keep is not an error', () => {
+    const { dir, root } = results()
+    expect(keepEvidence({ from: join(dir, 'no-such-folder'), root })).toBeNull()
   })
 })
