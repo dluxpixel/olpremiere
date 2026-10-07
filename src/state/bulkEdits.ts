@@ -315,6 +315,30 @@ export function setClipsGainDb(ids: Iterable<string>, db: number): void {
   )
 }
 
+/**
+ * Noise reduction at the same strength (0..1) on every selected clip, in ONE
+ * undo step; undefined or 0 turns it off. AU-18: a dubbed take lands as several
+ * clips and Cut the quiet parts makes many more, and each used to need its own
+ * toggle. The same clamp and the same "off leaves the key out" as the single
+ * clip's setClipDenoise.
+ */
+export function setClipsDenoise(ids: Iterable<string>, strength: number | undefined): void {
+  const s = strength !== undefined && strength > 0 ? Math.min(1, strength) : undefined
+  mapClips(
+    ids,
+    s === undefined ? 'Noise reduction off' : 'Reduce noise',
+    (c) => {
+      if (c.denoise === s) return c
+      const next = { ...c }
+      if (s === undefined) delete next.denoise
+      else next.denoise = s
+      return next
+    },
+    // A run of strength nudges is one undo step, as on a single clip.
+    'denoise',
+  )
+}
+
 const clampFade = (s: number, dur: number): number => (s < 0 ? 0 : s > dur ? dur : s)
 
 /** Set the same fade in/out length (seconds) on every selected clip, clamped per clip. */
