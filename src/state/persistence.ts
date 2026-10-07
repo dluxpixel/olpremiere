@@ -9,6 +9,7 @@ import { migrateProjectEffects } from '../engine/effects/migrate'
 import { migrateProjectAppearance } from '../engine/anim/appearance'
 import { markDoNotAutoRecover } from './recoveryMemory'
 import { planSequenceSplit } from './sequenceSplit'
+import { holdSpareCopyCleanup } from './spareCopyHold'
 import { useToasts } from './toasts'
 import { migrateProject, type Project } from '../engine/types'
 import { parseStoredProject } from '../persistence/schema'
@@ -71,7 +72,12 @@ async function healFromDisk(): Promise<string[]> {
       await d.put('projects', project, project.id)
     },
   )
-  if (names.length > 0) console.log(`OL Premiere: put ${names.length} project(s) back from their files: ${names.join(', ')}`)
+  if (names.length > 0) {
+    console.log(`OL Premiere: put ${names.length} project(s) back from their files: ${names.join(', ')}`)
+    // The store lost them, so it may have lost more than this can see: the spare
+    // copies on disk stand untouched for 30 days (spareCopyHold.ts).
+    holdSpareCopyCleanup('projects came back from their files')
+  }
   return names
 }
 
@@ -574,8 +580,16 @@ export function initPersistence(): Promise<void> {
       const s = useStore.getState()
       // Only hydrate if the user hasn't already started editing.
       if (p && s.history.undo.length === 0) s.setProject(p)
+      // ⛔ NOTHING TO OPEN IS THE WIPE MORNING (or a first ever start, which has no
+      // spare copies to lose). Its first edit saves the blank project, and from
+      // then on the store no longer reads empty, so the cleanup is stood down now,
+      // while it still can be told apart (spareCopyHold.ts).
+      if (!p) holdSpareCopyCleanup('the store had no project to open at start')
     })
-    .catch((err) => console.error('OL Premiere project load failed', err))
+    .catch((err) => {
+      console.error('OL Premiere project load failed', err)
+      holdSpareCopyCleanup('the store could not be read at start')
+    })
 
   // An edit made in the last second before the window closes was inside the
   // debounce and never written. pagehide fires on close where beforeunload is

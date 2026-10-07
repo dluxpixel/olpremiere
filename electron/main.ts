@@ -640,18 +640,33 @@ app.whenReady().then(() => {
   ipcMain.handle('media:delete', (_e, id: string) => mediaStore.deleteMedia(id))
   // Spare copies nothing has used for 7 days, his call 2026-10-06 (mediaSweep.ts).
   // Never while a copy is being written: that is an import on its way.
-  ipcMain.handle('media:sweepUnused', async (_e, projects: number, assetIds: string[]) => {
-    if (mediaStore.isWriting()) return { removed: [], freedBytes: 0, waiting: 0, refused: 'a copy is being written' }
-    const projectsDir = projectFiles.projectDir()
-    return mediaSweep.sweepUnusedSpareCopies(
-      {
-        mediaDirs: mediaStore.mediaDirs(),
-        projectDirs: [projectsDir, path.join(projectsDir, 'Trash')],
-        backupDirs: [backups.backupDir()],
-        ledgerFile: path.join(app.getPath('userData'), 'spare-copies-unused.json'),
-      },
-      { projects: typeof projects === 'number' ? projects : 0, assetIds: Array.isArray(assetIds) ? assetIds.map(String) : [] },
-    )
+  // ⛔ ONLY THIS PROFILE'S OWN FOLDER is deleted from (mediaStore.mediaDir, which
+  // is `<userData>/media`), never the older profile folders mediaStore reads.
+  const sweepPlaces = (): mediaSweep.SweepPlaces => ({
+    profileDir: app.getPath('userData'),
+    projectsDir: projectFiles.projectDir(),
+    backupDir: backups.backupDir(),
+  })
+  // A hold asked for this start stands even when its file could not be written.
+  let sweepHeld: string | null = null
+  ipcMain.handle('media:sweepHold', async (_e, why: unknown) => {
+    sweepHeld = typeof why === 'string' && why ? why.slice(0, 200) : 'held by the page'
+    try {
+      await mediaSweep.holdSweep(sweepPlaces(), sweepHeld)
+      return true
+    } catch (err) {
+      console.warn('OL Premiere: the spare copy cleanup hold could not be written', err)
+      return false
+    }
+  })
+  ipcMain.handle('media:sweepUnused', async (_e, projectIds: unknown, assetIds: unknown) => {
+    const none = { removed: [], freedBytes: 0, waiting: 0 }
+    if (sweepHeld) return { ...none, refused: `held this start: ${sweepHeld}` }
+    if (mediaStore.isWriting()) return { ...none, busy: true, refused: 'a copy is being written' }
+    return mediaSweep.sweepUnusedSpareCopies(sweepPlaces(), {
+      projectIds: Array.isArray(projectIds) ? projectIds.map(String) : [],
+      assetIds: Array.isArray(assetIds) ? assetIds.map(String) : [],
+    })
   })
 
   ipcMain.handle('proxy:begin', () => proxy.beginProxy())

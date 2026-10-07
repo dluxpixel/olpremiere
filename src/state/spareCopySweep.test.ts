@@ -8,6 +8,7 @@ const state = vi.hoisted(() => ({
   projects: [] as Project[],
   importing: 0,
   exportStage: null as null | { kind: string },
+  held: null as string | null,
 }))
 vi.mock('./persistence', () => ({ db: async () => ({ getAll: async () => state.projects }) }))
 vi.mock('./mediaActions', () => ({ useImportProgress: { getState: () => ({ total: state.importing }) } }))
@@ -15,8 +16,10 @@ vi.mock('./exportJob', () => ({
   useExportJob: { getState: () => ({ job: state.exportStage ? { stage: state.exportStage } : null }) },
   isExportActive: (s: { kind: string }) => s.kind === 'starting' || s.kind === 'running',
 }))
+vi.mock('./spareCopyHold', () => ({ spareCopyCleanupHeld: () => state.held }))
 
 const { assetIdsUsedBy, sweepSpareCopies } = await import('./spareCopySweep')
+const { usage } = await import('./usageLog')
 const { useStore } = await import('./store')
 
 const asset = (id: string): MediaAsset => ({
@@ -33,14 +36,19 @@ const withAssets = (...ids: string[]): Project => ({
   assets: Object.fromEntries(ids.map((id) => [id, asset(id)])),
 })
 
-function shell() {
+type Outcome = { removed: string[]; freedBytes: number; waiting: number; refused?: string; busy?: boolean }
+
+function shell(answer: Outcome = { removed: [], freedBytes: 0, waiting: 0 }) {
   const calls: { projects: number; ids: string[] }[] = []
+  const projectIds: string[][] = []
   return {
     calls,
+    projectIds,
     api: {
-      mediaSweepUnused: async (projects: number, ids: string[]) => {
-        calls.push({ projects, ids: [...ids].sort() })
-        return { removed: [], freedBytes: 0, waiting: 0 }
+      mediaSweepUnused: async (projects: string[], ids: string[]) => {
+        calls.push({ projects: projects.length, ids: [...ids].sort() })
+        projectIds.push(projects)
+        return answer
       },
     },
   }
@@ -50,6 +58,7 @@ beforeEach(() => {
   state.projects = []
   state.importing = 0
   state.exportStage = null
+  state.held = null
   useStore.getState().setProject(newProject('Open'))
 })
 
@@ -67,6 +76,15 @@ describe('what the page tells main the store uses', () => {
     const { api, calls } = shell()
     await sweepSpareCopies(api)
     expect(calls).toEqual([{ projects: 2, ids: ['a', 'b', 'open', 'removed'] }])
+  })
+
+  it('tells main WHICH projects the store holds, so it can check the Projects folder holds them', async () => {
+    const a = withAssets('a')
+    const b = withAssets('b')
+    state.projects = [a, b]
+    const { api, projectIds } = shell()
+    await sweepSpareCopies(api)
+    expect(projectIds).toEqual([[a.id, b.id]])
   })
 
   it('counts a clip whose media record is gone as still using its id', () => {
@@ -100,8 +118,45 @@ describe('⛔ when it does not ask at all', () => {
     expect(calls).toEqual([])
   })
 
+  it('⛔ a start that showed a loss (an empty store, projects put back, a recovery)', async () => {
+    state.projects = [withAssets('a')]
+    state.held = 'the store had no project to open at start'
+    const { api, calls } = shell()
+    expect(await sweepSpareCopies(api)).toBeNull()
+    expect(calls).toEqual([])
+  })
+
   it('the web build, which has no spare copies', async () => {
     state.projects = [withAssets('a')]
     expect(await sweepSpareCopies(null)).toBeNull()
+  })
+})
+
+describe('what main answers', () => {
+  it('a copy being written is "not now", so the page tries again later instead of giving up for the start', async () => {
+    state.projects = [withAssets('a')]
+    const { api } = shell({ removed: [], freedBytes: 0, waiting: 0, refused: 'a copy is being written', busy: true })
+    expect(await sweepSpareCopies(api)).toBe('busy')
+  })
+
+  it('a refusal is written to his usage log, by its first words only, never a file name', async () => {
+    state.projects = [withAssets('a')]
+    const { api } = shell({
+      removed: [],
+      freedBytes: 0,
+      waiting: 0,
+      refused: 'could not read every project file: Green_ab9fe413.olpbak does not say what media it uses',
+    })
+    const record = vi.spyOn(usage, 'record').mockImplementation(() => {})
+    try {
+      await sweepSpareCopies(api)
+      const logged = record.mock.calls.filter((c) => c[1] === 'spare-copies')
+      expect(logged).toEqual([
+        ['session', 'spare-copies', { removed: 0, mb: 0, waiting: 0, refused: 'could not read every project file' }],
+      ])
+      expect(JSON.stringify(logged)).not.toContain('Green')
+    } finally {
+      record.mockRestore()
+    }
   })
 })

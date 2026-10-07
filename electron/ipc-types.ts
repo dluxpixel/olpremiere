@@ -240,12 +240,19 @@ export interface OlApi {
   mediaDelete(id: string): Promise<void>
   /**
    * Let go of spare copies nothing has used for 7 days (electron/mediaSweep.ts).
-   * `projects` and `assetIds` are what the store holds; zero projects refuses.
+   * `projectIds` and `assetIds` are what the store holds; no projects refuses.
+   * `busy` means only "not now": the page tries again later.
    */
   mediaSweepUnused(
-    projects: number,
+    projectIds: string[],
     assetIds: string[],
-  ): Promise<{ removed: string[]; freedBytes: number; waiting: number; refused?: string }>
+  ): Promise<{ removed: string[]; freedBytes: number; waiting: number; refused?: string; busy?: boolean }>
+  /**
+   * Stand the spare copy cleanup down for 30 days: the store lost something this
+   * start. Resolves false when the hold could not be written (it still holds for
+   * the rest of this start).
+   */
+  mediaSweepHold(why: string): Promise<boolean>
   proxyBegin(): Promise<string>
   proxyChunk(id: string, bytes: ArrayBuffer): Promise<void>
   proxyFinish(id: string): Promise<{ size: number } | null>

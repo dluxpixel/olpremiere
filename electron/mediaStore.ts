@@ -39,8 +39,12 @@ export function mediaDir(): string {
  * The fallbacks are DERIVED, never guessed: the roaming folder under the app's
  * own name, and the legacy profile this app is already known to have used. A
  * folder that is not there costs one failed `readdir`.
+ *
+ * ⛔ FOR READING ONLY. The 7 day cleanup deletes in `mediaDir()` alone, this
+ * profile's own folder (mediaSweep.ts): from a throwaway or lab profile, which
+ * sees none of his projects, every copy in his real folder looked unused.
  */
-export function mediaDirs(): string[] {
+function mediaDirs(): string[] {
   const dirs = [mediaDir()]
   try {
     const roaming = app.getPath('appData')

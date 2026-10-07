@@ -31,6 +31,7 @@ import { installEditTabs, reconcileEditTabs } from './state/editTabs'
 import { recoverFromWipe, sweepEmptyRecoveries } from './state/backupRestore'
 import { backfillEveryProject, healProjectMedia } from './state/mediaMirror'
 import { initSettings } from './state/settings'
+import { holdSpareCopyCleanup } from './state/spareCopyHold'
 import { useStore } from './state/store'
 import { activeSequence, type MediaAsset } from './engine/types'
 import { useToasts } from './state/toasts'
@@ -193,7 +194,11 @@ const work: BootWork = {
       console.warn('OL Premiere boot: could not check the backups', err)
       return null
     })
-    if (recovered) return { detail: `brought ${recovered.name} back, ${plural(recovered.clipCount, 'clip')}` }
+    if (recovered) {
+      // A store that needed the backups may have lost more than they hold.
+      holdSpareCopyCleanup('a project came back from the backups')
+      return { detail: `brought ${recovered.name} back, ${plural(recovered.clipCount, 'clip')}` }
+    }
     // ⛔ CLEANING UP AFTER AN EARLIER VERSION OF MYSELF. A restore before 2.23
     // handed back projects whose media had never existed in this store, and his
     // shelf ended up with five he could not open and did not ask for. The rule
