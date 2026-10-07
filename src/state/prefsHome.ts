@@ -53,6 +53,7 @@ export interface PrefsSnapshot {
 /** The desktop half: one file, read and written whole. */
 export interface PrefsHomeApi {
   prefsWrite(json: string): Promise<void>
+  /** Null only when there is no file. Rejects when there is one it could not read. */
   prefsRead(): Promise<string | null>
 }
 
@@ -142,25 +143,52 @@ function adopt(file: PrefsSnapshot): void {
 let started = false
 let homeTimer: ReturnType<typeof setTimeout> | undefined
 
+/** A session that could not tell what is in the file leaves it alone. Said once, in the log. */
+function leaveFileAlone(why: string, err?: unknown): void {
+  console.warn(`OL Premiere: ${why}, so it is left as it is until the next launch`, err ?? '')
+}
+
 /**
  * Read the file back, keep whichever copy is newer, and keep the file current
  * from here on. Run once at launch, behind the card: nothing waits on it.
+ *
+ * ⛔ A SESSION THAT COULD NOT READ THE FILE NEVER WRITES IT. Not at launch and
+ * not on a change. Before 2026-10-07 a read that failed counted as no file, so
+ * on a wiped profile his first change of a setting wrote that one setting over
+ * the file that still held his moves and track setups. The same goes for a file
+ * this build cannot read (a newer build wrote it, or it is damaged) and for one
+ * taken back only part way.
  */
 export async function initPrefsHome(): Promise<void> {
   const api = prefsHomeApi()
   if (!api || started) return
   started = true
-  const file = parsePrefs(await api.prefsRead().catch(() => null))
+  let text: string | null
+  try {
+    text = await api.prefsRead()
+  } catch (err) {
+    leaveFileAlone('the preferences file is there but could not be read', err)
+    return
+  }
+  const file = parsePrefs(text)
+  // An empty file holds nothing of his, so it counts as none.
+  if (!file && text !== null && text.trim() !== '') {
+    leaveFileAlone('the preferences file is not one this version can read')
+    return
+  }
   const local = readLocal()
   const decision = prefsDecision(local, file)
   if (decision === 'adopt-file' && file) {
     try {
       adopt(file)
-      const cameBack = MADE.some((k) => local.values[k] === undefined && file.values[k] !== undefined)
-      if (cameBack) useToasts.getState().show('Your saved moves and settings came back from their file', 'success')
     } catch (err) {
-      console.warn('OL Premiere: the preferences file could not be read back', err)
+      // The quick copy now holds part of the file. Written back, the part
+      // would replace the whole.
+      leaveFileAlone('the preferences file could not be read back in full', err)
+      return
     }
+    const cameBack = MADE.some((k) => local.values[k] === undefined && file.values[k] !== undefined)
+    if (cameBack) useToasts.getState().show('Your saved moves and settings came back from their file', 'success')
   } else if (decision === 'write-file') {
     // The first launch with this file has no time for the quick copy: now will do.
     writeHome(api, local.savedAt || Date.now())

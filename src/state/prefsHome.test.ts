@@ -127,6 +127,14 @@ describe('after the profile is wiped', () => {
     expect(snap.values['olpremiere:my-moves']).toBe(MOVES)
   })
 
+  it('with no file yet, his first change starts one', async () => {
+    fileText = null
+    await initPrefsHome()
+    useStore.getState().setUI({ snapping: false })
+    await vi.advanceTimersByTimeAsync(300)
+    expect(writes).toHaveLength(1)
+  })
+
   it('an old file never undoes a change he made since', async () => {
     localStorage.setItem('olpremiere:settings:theme', 'claude')
     localStorage.setItem(PREFS_SAVED_AT_KEY, '9000')
@@ -135,5 +143,79 @@ describe('after the profile is wiped', () => {
     expect(localStorage.getItem('olpremiere:settings:theme')).toBe('claude')
     // And the file is brought up to the quick copy.
     expect(parsePrefs(writes.at(-1)!)?.values['olpremiere:settings:theme']).toBe('claude')
+  })
+})
+
+// 2026-10-07. A launch that could not tell what is in the file must never write
+// it. The wiped profile has one setting after his first toggle, and that one
+// setting used to be written over the file that still held his moves.
+describe('a file that is there but could not be read back', () => {
+  const MADE = { 'olpremiere:my-moves': MOVES, 'olpremiere:track-presets': PRESETS }
+
+  /** His first change after the launch, and the debounce after it. */
+  async function firstChange(): Promise<void> {
+    useStore.getState().setUI({ snapping: !useStore.getState().ui.snapping })
+    setPlatformLoudness(false)
+    await vi.advanceTimersByTimeAsync(1000)
+  }
+
+  it('is never written over when it could not be read (held by another program, offline)', async () => {
+    Object.assign(window, {
+      api: {
+        prefsRead: async () => {
+          throw new Error('EBUSY: resource busy or locked')
+        },
+        prefsWrite: async (json: string) => void writes.push(json),
+      },
+    })
+    await initPrefsHome()
+    await firstChange()
+    expect(writes).toEqual([])
+  })
+
+  it('is never written over, even from a profile with settings, when it could not be read', async () => {
+    localStorage.setItem('olpremiere:settings:theme', 'light')
+    localStorage.setItem(PREFS_SAVED_AT_KEY, '9000')
+    Object.assign(window, {
+      api: {
+        prefsRead: async () => {
+          throw new Error('EPERM: operation not permitted')
+        },
+        prefsWrite: async (json: string) => void writes.push(json),
+      },
+    })
+    await initPrefsHome()
+    await firstChange()
+    expect(writes).toEqual([])
+  })
+
+  it('is never written over when this build cannot read it (a newer one wrote it)', async () => {
+    fileText = JSON.stringify({ kind: 'ol-premiere-preferences', version: 2, savedAt: 5000, values: MADE })
+    await initPrefsHome()
+    await firstChange()
+    expect(writes).toEqual([])
+  })
+
+  it('is never written over when it is damaged', async () => {
+    fileText = fileWith(MADE).slice(0, 80)
+    await initPrefsHome()
+    await firstChange()
+    expect(writes).toEqual([])
+  })
+
+  it('is never written over when taking it back stopped half way', async () => {
+    fileText = fileWith({ ...MADE, 'olpremiere:settings:theme': 'light' })
+    // Storage full: the second key does not fit, so the quick copy holds part of it.
+    const real = Storage.prototype.setItem
+    let calls = 0
+    const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, k: string, v: string) {
+      calls += 1
+      if (calls === 2) throw new DOMException('quota', 'QuotaExceededError')
+      real.call(this, k, v)
+    })
+    await initPrefsHome()
+    spy.mockRestore()
+    await firstChange()
+    expect(writes).toEqual([])
   })
 })

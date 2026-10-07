@@ -396,7 +396,7 @@ export interface OlApi {
    * projects, kept current on every change (electron/preferencesFile.ts).
    */
   prefsWrite(json: string): Promise<void>
-  /** The file's text, or null when there is none yet. */
+  /** The file's text, or null when there is none yet. Rejects when it is there and could not be read. */
   prefsRead(): Promise<string | null>
 
   /**

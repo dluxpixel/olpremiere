@@ -31,11 +31,20 @@ export async function writePreferencesFile(json: string): Promise<void> {
   await rename(tmp, target)
 }
 
-/** The file's text, or null when there is none yet. */
+/**
+ * The file's text, or null when there is none yet.
+ *
+ * ⛔ NULL ONLY FOR NO FILE AT ALL. Anything else (another program holding it, a
+ * cloud placeholder that cannot be fetched offline) rejects: the file is there,
+ * it may hold the only copy of his moves, and the renderer leaves alone a file
+ * it could not read. Read as "no file", it was written over from a wiped
+ * profile by his first change of a setting.
+ */
 export async function readPreferencesFile(): Promise<string | null> {
   try {
     return await readFile(preferencesFilePath(), 'utf8')
-  } catch {
-    return null
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') return null
+    throw err
   }
 }
