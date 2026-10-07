@@ -130,6 +130,26 @@ describe('Timeline', () => {
     }
   })
 
+  // After a plain Delete the gap is what he wants gone, and the gap is where he
+  // right clicks. Close gap before used to live only on the clip AFTER it.
+  it('right click in a gap: Close this gap', () => {
+    seedTitle(1) // 1 to 3
+    const b = seedTitle(5) // 5 to 7
+    render(<Timeline height={300} />)
+    const { lanes } = layOut()
+    const v1 = videoTracks(seq())[0]!
+    const y = buildLaneInfos([...videoTracks(seq())].reverse(), audioTracks(seq())).find((i) => i.track.id === v1.id)!.top + 10
+    // 4 s at 10 px/s: inside the gap.
+    fireEvent.contextMenu(lanes, { clientX: 40, clientY: y })
+    const items = useContextMenu.getState().items
+    expect(items[0]!.label).toBe('Close this gap')
+    act(() => items[0]!.onClick!())
+    expect(seq().tracks.flatMap((t) => t.clips).find((c) => c.id === b.id)!.startS).toBeCloseTo(3, 9)
+    // After the last clip there is no gap to close, only room.
+    fireEvent.contextMenu(lanes, { clientX: 90, clientY: y })
+    expect(useContextMenu.getState().items.map((i) => i.label)).not.toContain('Close this gap')
+  })
+
   it('moves a dragged clip as one undoable edit', () => {
     const clip = seedTitle(1)
     render(<Timeline height={300} />)

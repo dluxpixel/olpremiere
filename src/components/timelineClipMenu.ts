@@ -4,7 +4,7 @@ import { quantizeToFrame } from '../engine/timecode'
 import { getEffect } from '../engine/effects/registry'
 import { FRAME_FITS, frameFitDims, frameFitOf, takesFrameFit } from '../engine/frameFit'
 import { MOVES } from '../engine/moves'
-import type { Clip, Id, MediaAsset, Sequence } from '../engine/types'
+import type { Clip, Id, MediaAsset, Sequence, Track } from '../engine/types'
 import { comboLabel } from '../keymap'
 import { copyClipAttributes, hasClipAttributes, pasteClipAttributes } from '../state/attributes'
 import { balanceAllClipLoudness, normalizeClipGain } from '../state/audioActions'
@@ -59,6 +59,21 @@ export interface ClipMenuContext {
 function pictureCount(seq: Sequence, ids: readonly Id[]): number {
   const n = seq.tracks.filter((t) => t.kind === 'video').reduce((sum, t) => sum + t.clips.filter((c) => ids.includes(c.id)).length, 0)
   return n > 0 ? n : ids.length
+}
+
+/**
+ * "Close this gap", for a right click on the empty stretch of a line before a
+ * clip. After a plain Delete the gap is what he wants gone, and the gap is where
+ * he right clicks; Close gap before used to live only on the clip AFTER it.
+ * The same close as that item (closeGapBeforeClip), so the other tracks follow
+ * it and a locked line is left alone. Nothing after the last clip: that is
+ * room, not a gap.
+ */
+export function gapMenuItems(seq: Sequence, track: Track | null, tS: number): MenuItem[] {
+  if (!track || track.clips.some((c) => c.startS < tS && clipEndS(c) > tS)) return []
+  const after = track.clips.find((c) => c.startS >= tS)
+  if (!after || gapBefore(seq, after.id) <= 1e-4) return []
+  return [{ label: 'Close this gap', disabled: track.locked, onClick: () => closeGapBeforeClip(after.id) }]
 }
 
 /**

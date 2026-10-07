@@ -20,7 +20,7 @@ import { EmptyTimelineHint, MarqueeBox, RazorLine, SnapLine, TrimTip } from './T
 import { TimelineRulerBar } from './TimelineRulerBar'
 import { TimelineToolbar } from './TimelineToolbar'
 import { TimelineTrackHeaders } from './TimelineTrackHeaders'
-import { clipContextMenuItems } from './timelineClipMenu'
+import { clipContextMenuItems, gapMenuItems } from './timelineClipMenu'
 import { useStableCallback, type Drag } from './timelineDrag'
 import { ADD_TRACK_ROW_H, CLICK_SLOP_PX, LANE_REACH_PX, SNAP_PX } from './timelineGeometry'
 import {
@@ -299,9 +299,10 @@ export function Timeline({ height }: { height: number }) {
   }
 
   /**
-   * A right click on EMPTY timeline: paste right here, and when clips are
-   * selected, the verbs of the clip menu that act on all of them (never one
-   * that acts on a single clip he did not point at: `forSelection`). His
+   * A right click on EMPTY timeline: close the gap it is in, paste right here,
+   * and when clips are selected, the verbs of the clip menu that act on all of
+   * them (never one that acts on a single clip he did not point at:
+   * `forSelection`). His
    * words, 2026-09-28: *"when I select multiple things and right-click, the
    * context menu should actually appear everywhere, not just one clip"*, and
    * *"I click Paste on V4 ... it pastes it where I clicked it."*
@@ -311,10 +312,14 @@ export function Timeline({ height }: { height: number }) {
     const lane = laneAt(y)
     const atS = quantizeToFrame(Math.max(0, x / pxPerS), seq.fps)
     const trackIndex = lane ? seq.tracks.findIndex((t) => t.id === lane.id) : -1
+    // In a gap between two clips (or before the first), closing it comes first.
+    const gapItems = gapMenuItems(seq, lane, Math.max(0, x / pxPerS))
     const items: MenuItem[] = [
+      ...gapItems,
       {
         label: 'Paste here',
         shortcut: comboLabel('mod+v'),
+        separator: gapItems.length > 0,
         disabled: !hasClipboard() || trackIndex < 0,
         onClick: () => pasteAt(trackIndex, atS),
       },
