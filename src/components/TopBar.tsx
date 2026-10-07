@@ -96,7 +96,7 @@ function CollabButton() {
         tabIndex={0}
         onClick={() => setEditingName(true)}
         onKeyDown={(e) => e.key === 'Enter' && setEditingName(true)}
-        className="flex cursor-pointer items-center gap-1.5 rounded-full border border-accent/40 bg-accent-quiet px-2.5 py-1 text-ui-sm text-accent"
+        className="flex cursor-pointer items-center gap-1.5 rounded-overlay border border-accent/40 bg-accent-quiet px-2.5 py-1 text-ui-sm text-accent"
         title={collabBadgeTitle(mode, roomId)}
       >
         <span className="relative flex h-2 w-2">

@@ -90,3 +90,52 @@ describe('no corner is a number', () => {
     expect(found, 'use a token (rounded-dialog, -overlay, -field, -inner, -clip, -mark) or rounded-full').toEqual([])
   })
 })
+
+// ⛔ ROUNDED-FULL IS FOR CIRCLES (2026-10-07). index.css says so: knobs, dots, LEDs, and the thin
+// bars and lines whose ends are round. The check above let it through anywhere, so the toast's
+// Undo button, the export chip, the live room badge, the captioning card, the effect's Off chip
+// and the shuttle badge were text pills, the "rounded everywhere" look he turned down twice, next
+// to 6px buttons in the same bar. A text pill gives itself away by its side padding, or by a
+// height of 20px or more with no width to match.
+describe('rounded-full', () => {
+  /** Tailwind spacing steps are 4px each. Null when the class is not a number of steps or px. */
+  const px = (v: string): number | null => {
+    const arb = /^\[([0-9.]+)px\]$/.exec(v)
+    if (arb) return Number(arb[1])
+    return /^[0-9.]+$/.test(v) ? Number(v) * 4 : null
+  }
+
+  /** Why this class string is a text pill, or null when it is a circle, a dot or a bar. */
+  function pillReason(classes: string): string | null {
+    if (/(?:^|\s)p[xlr]-/.test(classes)) return 'side padding'
+    const h = /(?:^|\s)h-(\S+)/.exec(classes)?.[1]
+    const w = /(?:^|\s)w-(\S+)/.exec(classes)?.[1]
+    const tall = h === undefined ? null : px(h)
+    if (tall !== null && tall >= 20 && w !== h) return `${tall}px tall with no width to match`
+    return null
+  }
+
+  it('is a circle, a dot or a bar, never a text pill', () => {
+    const found: string[] = []
+    for (const file of sourceFiles(SRC)) {
+      if (!file.endsWith('.tsx')) continue
+      readFileSync(file, 'utf8')
+        .split('\n')
+        .forEach((line, i) => {
+          if (!/\brounded-full\b/.test(line.replace(/\/\/.*$/, ''))) return
+          const why = pillReason(line)
+          if (why) found.push(`${file.slice(SRC.length)}:${i + 1} ${why}: ${line.trim().slice(0, 90)}`)
+        })
+    }
+    expect(found, 'a button or chip is rounded-field, a card or badge rounded-overlay').toEqual([])
+  })
+
+  it('tells a pill from a circle', () => {
+    expect(pillReason('shrink-0 rounded-full bg-accent px-2.5 py-0.5')).toBe('side padding')
+    expect(pillReason('flex h-7 min-w-0 rounded-full border')).toBe('28px tall with no width to match')
+    expect(pillReason('h-1.5 w-1.5 shrink-0 rounded-full bg-warning')).toBeNull()
+    expect(pillReason('flex h-11 w-11 items-center rounded-full')).toBeNull()
+    expect(pillReason('mt-2 h-1 overflow-hidden rounded-full bg-bg-input')).toBeNull()
+    expect(pillReason('h-full rounded-full bg-ember')).toBeNull()
+  })
+})

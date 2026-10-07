@@ -33,7 +33,7 @@ export function ExportChip() {
   return (
     <div
       data-testid="export-chip"
-      className="flex h-7 min-w-0 items-stretch overflow-hidden rounded-full border border-ember/40 bg-ember-quiet text-ui-sm text-ember"
+      className="flex h-7 min-w-0 items-stretch overflow-hidden rounded-field border border-ember/40 bg-ember-quiet text-ui-sm text-ember"
     >
       <button
         type="button"

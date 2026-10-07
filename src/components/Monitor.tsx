@@ -317,7 +317,7 @@ function ShuttleBadge() {
     // the rate readout steady while J/K/L pumps it.
     <span
       data-testid="shuttle-badge"
-      className="rounded-full bg-ember-quiet px-2 py-0.5 font-numeric text-dense font-medium text-ember"
+      className="rounded-field bg-ember-quiet px-2 py-0.5 font-numeric text-dense font-medium text-ember"
     >
       {arrow} {Math.abs(rate)}×
     </span>

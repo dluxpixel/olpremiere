@@ -933,7 +933,7 @@ function EffectCard({ clip, effect, index, count, localT }: {
             data-testid="effect-off-chip"
             title={`${def.label} is switched off, so it is not in the picture. Click to turn it back on.`}
             onClick={() => toggleEffectEnabled(clip.id, effect.id)}
-            className="shrink-0 rounded-full border border-border-strong px-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted transition-colors duration-[120ms] hover:border-accent hover:text-accent"
+            className="shrink-0 rounded-field border border-border-strong px-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted transition-colors duration-[120ms] hover:border-accent hover:text-accent"
           >
             Off
           </button>

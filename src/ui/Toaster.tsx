@@ -81,7 +81,7 @@ export function Toaster() {
                 t.action?.onClick()
                 dismiss(t.id)
               }}
-              className="shrink-0 rounded-full bg-accent px-2.5 py-0.5 text-ui-sm font-medium text-accent-fg transition-colors duration-[120ms] hover:bg-accent-hover"
+              className="shrink-0 rounded-field bg-accent px-2.5 py-0.5 text-ui-sm font-medium text-accent-fg transition-colors duration-[120ms] hover:bg-accent-hover"
             >
               {t.action.label}
             </button>
