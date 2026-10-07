@@ -8,27 +8,19 @@
 // new videos start from and every setting gone. Same reason, same shape, as
 // captionStylesFile.ts. The renderer half is src/state/prefsHome.ts.
 
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { projectDir } from './projectFiles'
+import { replaceFile } from './replaceFile'
 
 /** `Preferences.json`, beside the `.olpbak` files, so it lives and dies with them. */
 export function preferencesFilePath(): string {
   return path.join(projectDir(), 'Preferences.json')
 }
 
-/**
- * Written beside, then renamed over, for the reason writeProjectFile gives: a
- * write cut off half way must never leave half a file where the only copy was.
- * Flushed before the rename, the way the media writer is (mediaStore.ts): on
- * NTFS the rename can reach the disk before the bytes do.
- */
-export async function writePreferencesFile(json: string): Promise<void> {
-  const target = preferencesFilePath()
-  await mkdir(path.dirname(target), { recursive: true })
-  const tmp = `${target}.tmp`
-  await writeFile(tmp, json, { encoding: 'utf8', flush: true })
-  await rename(tmp, target)
+/** Written whole, flushed, and one write at a time. See ./replaceFile. */
+export function writePreferencesFile(json: string): Promise<void> {
+  return replaceFile(preferencesFilePath(), json)
 }
 
 /**
