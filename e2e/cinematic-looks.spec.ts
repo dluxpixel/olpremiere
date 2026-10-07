@@ -82,7 +82,8 @@ test('a look from the Looks shelf lands on every selected clip, and the export s
   test.setTimeout(240_000)
   // A look pass this GPU will not build is left out with one warning, and the
   // look still draws its colour (glRenderer.ts, lazyPass). So the picture alone
-  // cannot prove the clarity pass ran: no pass may have failed to build.
+  // cannot prove a look's passes ran: no pass may have failed to build. Moody
+  // Gym needs the clarity pass, and Kodak Film, at the end, the other two.
   const passFailures: string[] = []
   page.on('console', (m) => {
     if (m.text().includes('pass did not build')) passFailures.push(m.text())
@@ -182,5 +183,29 @@ test('a look from the Looks shelf lands on every selected clip, and the export s
   ] as [Rgb, number[]][]) {
     for (let k = 0; k < 3; k++) expect(Math.abs(mon[k] - file[k]), `${JSON.stringify(report)}`).toBeLessThan(10)
   }
+
+  // The halation and bloom programs (the bright pass and the glow combine) are
+  // built only when a look first needs them, so only a look that has them puts
+  // them through a real GPU's compiler. Moody Gym has neither. Kodak Film has
+  // clarity, halation and bloom, all three passes, so one monitor frame of it
+  // compiles and draws every look pass there is, and a typo in any of them
+  // fails here instead of shipping as a console warning.
+  await page.getByRole('button', { name: 'Done', exact: true }).click()
+  await setUI(page, { selection: ids, playheadS: 0.5 })
+  await page.getByTestId('effect-search').fill('kodak')
+  const kodak = page.locator('[data-testid="look-item"][data-payload="lookKodakFilm"]')
+  await expect(kodak).toHaveCount(1)
+  await kodak.dblclick()
+  await expect
+    .poll(async () => (await clips(page)).map((c) => c.effects.map((e) => e.type).join(',')))
+    .toEqual(['lookKodakFilm', 'lookKodakFilm'])
+  await setUI(page, { selection: [] })
+  // A frame of it on the monitor: the picture leaves Moody Gym's.
+  await expect
+    .poll(async () => {
+      const now = await monitorPatch(page, 0.5, 0.5)
+      return Math.max(...now.map((v, k) => Math.abs(v - centre[k])))
+    }, { timeout: 10_000 })
+    .toBeGreaterThan(3)
   expect(passFailures).toEqual([])
 })
