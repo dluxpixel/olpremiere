@@ -3289,7 +3289,13 @@ describe('closing gaps stays linear in the clip count', () => {
   // per gap, and the follow walked every ripple for every clip on every track
   // that follows. Measured 2026-10-07 at 4000 pairs and 4000 captions: 2825x
   // the yardstick (127 ms), against 218x with no caption line at all.
-  it('closeAllGaps carries a 4000 caption line inside the same budget', () => {
+  //
+  // Its own budget, from its own measurements, the way BUDGET_RATIO was chosen:
+  // the follow is a second pass over a third track, and four runs of this file
+  // on 2026-10-07 read 331x, 358x, 518x and 538x (9 ms each time; the yardstick
+  // is what moved). 2.5 times the budget is about 1.7x the worst of those, and
+  // the quadratic follow this exists to catch read 6834x, over seven times it.
+  it('closeAllGaps carries a 4000 caption line inside its own budget', () => {
     const seq = packedPairs(4000)
     const captions = Array.from({ length: 4000 }, (_, i) => makeClip({ id: `c${i}`, startS: i * 1.0, inS: 0, outS: 0.4 }))
     const withCaptions = makeSeq([seq.tracks[0], makeTrack({ kind: 'video', name: 'V2', clips: captions }), seq.tracks[1]])
@@ -3302,7 +3308,7 @@ describe('closing gaps stays linear in the clip count', () => {
       RUNS,
     )
     expect(ratio, `closeAllGaps with captions ran at ${ratio.toFixed(1)}x the yardstick (${perCallMs.toFixed(1)} ms)`).toBeLessThan(
-      BUDGET_RATIO,
+      BUDGET_RATIO * 2.5,
     )
     // and every caption followed its picture
     expect(r.tracks[1].clips[3999].startS).toBeCloseTo(1999.5, 6)

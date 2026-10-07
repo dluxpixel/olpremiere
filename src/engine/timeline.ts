@@ -1439,6 +1439,14 @@ function followGapClose(
   applied: ReadonlyMap<Id, number>,
   report?: RippleReport,
 ): Sequence {
+  // Nothing on the origin track moved (all of it held), so nothing moved at all.
+  if (!origin.clips.some((c) => (applied.get(c.id) ?? 0) > EPS)) return before
+  const moved = new Set<Id>([origin.id])
+  for (const t of before.tracks) if (t.clips.some((c) => (applied.get(c.id) ?? 0) > EPS)) moved.add(t.id)
+  // No track is left to carry along (each one moved with the gap, is locked, or
+  // keeps its own timing: syncFollowEdits skips exactly these), so the ripples
+  // need not be worked out at all. The usual V1 and A1 pair with nothing else.
+  if (!before.tracks.some((t) => !moved.has(t.id) && !t.locked && syncLockOf(t) && t.clips.length > 0)) return shifted
   const edits: RippleEdit[] = []
   let prev = 0
   for (const c of [...origin.clips].sort((a, b) => a.startS - b.startS)) {
@@ -1446,10 +1454,6 @@ function followGapClose(
     if (Math.abs(a - prev) > EPS) edits.push({ atS: c.startS, deltaS: prev - a })
     prev = a
   }
-  // Nothing on the origin track moved (all of it held), so nothing moved at all.
-  if (edits.length === 0) return before
-  const moved = new Set<Id>([origin.id])
-  for (const t of before.tracks) if (t.clips.some((c) => (applied.get(c.id) ?? 0) > EPS)) moved.add(t.id)
   return syncFollowEdits(shifted, moved, edits, report)
 }
 
