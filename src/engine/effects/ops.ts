@@ -68,8 +68,8 @@ function freshInstance(def: EffectDef, id: Id): EffectInstance {
 
 /**
  * A finished grade off the Looks shelf (effects/looks.ts). The neighbour passes
- * a look makes (lookClarity, lookGlow, lookGrain) share its category but are
- * hidden and never stored, so they never count as a look a clip wears.
+ * a look makes (lookClarity, lookGlow) share its category but are hidden and
+ * never stored, so they never count as a look a clip wears.
  */
 export function isLookType(type: string): boolean {
   const def = getEffect(type)
