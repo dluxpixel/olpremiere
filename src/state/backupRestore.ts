@@ -27,6 +27,7 @@ import { mirroredIds } from './mediaMirror'
 import { deleteProject, getBlob, listProjects, loadProjectById, saveProject } from './persistence'
 import { openProject } from './projectActions'
 import { doNotAutoRecover, markDoNotAutoRecover } from './recoveryMemory'
+import { holdSpareCopyCleanup } from './spareCopyHold'
 import { useToasts } from './toasts'
 import { plural } from '../engine/plural'
 
@@ -375,6 +376,10 @@ export async function recoverFromWipe(
   }
   if (landed.length === 0) return null
   markDoNotAutoRecover(landed.map((l) => l.contents.project.id))
+  // A store that needed the backups may have lost more than they hold, so the
+  // spare copies on disk stand untouched for 30 days (spareCopyHold.ts). Here, at
+  // the landing itself, so no caller can recover without it.
+  holdSpareCopyCleanup('a project came back from the backups')
 
   const biggest = landed[landed.length - 1]
   await openProject(biggest.project.id)
