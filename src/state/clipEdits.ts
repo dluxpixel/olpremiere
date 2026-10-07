@@ -58,6 +58,7 @@ import {
   type Sequence,
   type Transition,
 } from '../engine/types'
+import { pairTransitionAt } from '../engine/render/resolve'
 import { transitionDurationSpec, type TransitionKind } from '../engine/render/types'
 import { noteRecentEffect } from './recentEffects'
 import { keptTimingMessage, newRippleReport } from './rippleNotice'
@@ -157,6 +158,8 @@ function mapClip(
   bailOnNoop = false,
   /** Folds a run of edits to the SAME field into one undo step. See setChannel. */
   mergeKey?: string,
+  /** A second clip ON THE SAME TRACK changed in the same undo step. */
+  also?: { id: string; fn: (clip: Clip) => Clip },
 ): void {
   const track = activeSequence(useStore.getState().project).tracks.find((t) =>
     t.clips.some((c) => c.id === clipId),
@@ -176,7 +179,9 @@ function mapClip(
       return {
         ...seq,
         tracks: seq.tracks.map((t) =>
-          t.id === track.id ? { ...t, clips: t.clips.map((c) => (c.id === clipId ? fn(c) : c)) } : t,
+          t.id === track.id
+            ? { ...t, clips: t.clips.map((c) => (c.id === clipId ? fn(c) : c.id === also?.id ? also.fn(c) : c)) }
+            : t,
         ),
       }
     },
@@ -1044,10 +1049,48 @@ export function setClipTransition(
   kind: TransitionKind,
   durationS?: number,
 ): void {
-  mapClip(clipId, `Add ${edge} transition`, (c) => {
-    const prev = edge === 'in' ? c.transitionIn : c.transitionOut
-    return { ...c, [edge === 'in' ? 'transitionIn' : 'transitionOut']: transitionFor(prev, kind, durationS) }
-  })
+  const seq = activeSequence(useStore.getState().project)
+  const before = edge === 'in' ? outsAnInOverrides(seq, [clipId])[0] : undefined
+  mapClip(
+    clipId,
+    `Add ${edge} transition`,
+    (c) => {
+      const prev = edge === 'in' ? c.transitionIn : c.transitionOut
+      return { ...c, [edge === 'in' ? 'transitionIn' : 'transitionOut']: transitionFor(prev, kind, durationS) }
+    },
+    false,
+    undefined,
+    before ? { id: before, fn: withoutOut } : undefined,
+  )
+}
+
+/** The clip with its Out transition taken off. */
+export function withoutOut(c: Clip): Clip {
+  if (!c.transitionOut) return c
+  const next = { ...c }
+  delete next.transitionOut
+  return next
+}
+
+/**
+ * The clips whose Out an In on `ids` would silently override: the clip just
+ * before each one on its track, when the two form a pair (pairTransitionAt) and
+ * it carries an Out. Only one transition plays at a cut, B's In wins, and the
+ * Out left behind kept saying "Out: Cross Dissolve" in the Inspector while the
+ * Whip played (2026-10-06). So setting the In takes that Out off in the SAME
+ * undo step.
+ */
+export function outsAnInOverrides(seq: Sequence, ids: readonly string[]): string[] {
+  const picked = new Set(ids)
+  const out: string[] = []
+  for (const t of seq.tracks) {
+    if (t.kind !== 'video') continue
+    t.clips.forEach((c, i) => {
+      const prev = t.clips[i - 1]
+      if (picked.has(c.id) && prev?.transitionOut && pairTransitionAt(prev, c, seq.fps)) out.push(prev.id)
+    })
+  }
+  return out
 }
 
 export function removeClipTransition(clipId: string, edge: 'in' | 'out'): void {

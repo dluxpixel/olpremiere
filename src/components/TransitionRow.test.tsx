@@ -22,7 +22,9 @@ vi.mock('../state/clipEdits', () => ({
   removeClipTransition: () => {},
 }))
 
-import { defaultTransform, type Clip } from '../engine/types'
+import { recomputeDuration } from '../engine/timeline'
+import { defaultTransform, newProject, type Clip } from '../engine/types'
+import { updateActiveSequence, useStore } from '../state/store'
 import { TransitionRow } from './EffectControls'
 
 const clip = (overrides: Partial<Clip> = {}): Clip => ({
@@ -61,5 +63,31 @@ describe('TransitionRow', () => {
     render(<TransitionRow clip={withTransition} edge="in" testId="transition-in" />)
     await user.selectOptions(screen.getByTestId('transition-in'), 'crossDissolve')
     expect(hoisted.calls).toEqual([{ clipId: 'c1', edge: 'in', kind: 'crossDissolve', durationS: 0.7 }])
+  })
+})
+
+// Only one transition plays at a cut, and B's In wins over A's Out. A's row said
+// "Out: Cross Dissolve" while the next clip's Cross Zoom played (2026-10-06).
+describe("TransitionRow says when the next clip's In plays instead", () => {
+  const seed = (...clips: Clip[]): void => {
+    useStore.getState().setProject(newProject())
+    updateActiveSequence('seed', (sq) =>
+      recomputeDuration({ ...sq, tracks: sq.tracks.map((t) => (t.name === 'V1' ? { ...t, clips } : t)) }),
+    )
+  }
+  const a = clip({ id: 'a', transitionOut: { type: 'crossDissolve', durationS: 0.4 } })
+
+  it('names the In that plays under an Out it overrides', () => {
+    seed(a, clip({ id: 'b', startS: 4, transitionIn: { type: 'zoom', durationS: 0.3 } }))
+    render(<TransitionRow clip={a} edge="out" testId="transition-out" />)
+    expect(screen.getByTestId('transition-out-overridden').textContent).toBe(
+      "The next clip's In (Cross Zoom) plays here instead.",
+    )
+  })
+
+  it('says nothing when the Out is the one that plays', () => {
+    seed(a, clip({ id: 'b', startS: 4 }))
+    render(<TransitionRow clip={a} edge="out" testId="transition-out" />)
+    expect(screen.queryByTestId('transition-out-overridden')).toBeNull()
   })
 })

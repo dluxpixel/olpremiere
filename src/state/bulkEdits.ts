@@ -21,7 +21,7 @@ import { activeSequence, newId, type AnimChannel, type Clip, type Curve, type Ke
 // isClipArmed comes from the SINGLE-clip module on purpose: the multi-select
 // align has to ask the exact question the gizmo asks, off the exact same code,
 // or the two paths drift the way they did when one read a global preference.
-import { isAppearanceOwned, isClipArmed, transitionFor, withOwnedBase } from './clipEdits'
+import { isAppearanceOwned, isClipArmed, outsAnInOverrides, transitionFor, withoutOut, withOwnedBase } from './clipEdits'
 import { noteRecentEffect } from './recentEffects'
 import { updateActiveSequence, useStore } from './store'
 import { useToasts } from './toasts'
@@ -514,12 +514,17 @@ export function setClipsTransition(
     return 0
   }
   const key = edge === 'in' ? 'transitionIn' : 'transitionOut'
+  const targets = new Set(open)
+  // An In takes off the Out it would override on the clip before (outsAnInOverrides).
+  const outsToDrop = new Set(edge === 'in' ? outsAnInOverrides(activeSequence(useStore.getState().project), open) : [])
   let changed = 0
-  mapClips(open, `Add ${edge} transition`, (c) => {
-    const next = transitionFor(c[key], kind, durationS)
-    if (c[key]?.type === next.type && c[key]?.durationS === next.durationS) return c
+  mapClips([...targets, ...outsToDrop], `Add ${edge} transition`, (c) => {
+    const base = outsToDrop.has(c.id) ? withoutOut(c) : c
+    if (!targets.has(c.id)) return base
+    const next = transitionFor(base[key], kind, durationS)
+    if (base[key]?.type === next.type && base[key]?.durationS === next.durationS) return base
     changed++
-    return { ...c, [key]: next }
+    return { ...base, [key]: next }
   })
   if (say && (open.length > 1 || locked > 0)) {
     const where = edge === 'in' ? 'start' : 'end'

@@ -28,6 +28,7 @@ import {
 import { copyClipAttributes, pasteClipAttributes } from './attributes'
 import { applyEffectToAllClips, applyEffectToClips, setClipsTransition } from './bulkEdits'
 import { useLibrary, applyPresetToAllClips, applyPresetToSelection } from './library'
+import { setClipTransition } from './clipEdits'
 import { applyPunchyGradeToClips } from './lookActions'
 import { updateActiveSequence, useStore } from './store'
 
@@ -386,5 +387,73 @@ describe('a transition on several selected pictures', () => {
     expect(item).toBeDefined()
     item!.submenu!.find((i) => i.label === 'Cross Dissolve')!.onClick?.()
     expect(ins(ids).map((t) => t?.type)).toEqual(['crossDissolve', 'crossDissolve', 'crossDissolve'])
+  })
+})
+
+/** Three pictures back to back on V1: [0, 5), [5, 10), [10, 15). Returns their clip ids. */
+function montage(): string[] {
+  const assets = { a: picture('a'), b: picture('b'), c: picture('c') }
+  useStore.getState().setProject({ ...newProject('montage'), assets })
+  const clips: Clip[] = (['a', 'b', 'c'] as const).map((k, i) => newClipFromAsset(assets[k], i * 5))
+  updateActiveSequence('seed', (sq) =>
+    recomputeDuration({ ...sq, tracks: sq.tracks.map((t) => (t.name === 'V1' ? { ...t, clips } : t)) }),
+  )
+  shown.length = 0
+  return clips.map((c) => c.id)
+}
+
+const withOut = (id: string, type: string): void =>
+  updateActiveSequence('seed out', (sq) => ({
+    ...sq,
+    tracks: sq.tracks.map((t) => ({
+      ...t,
+      clips: t.clips.map((c) => (c.id === id ? { ...c, transitionOut: { type, durationS: 0.4 } } : c)),
+    })),
+  }))
+
+// Only one transition plays at a cut and B's In wins over A's Out (resolve.ts).
+// Cross Dissolve on the end of A, later Cross Zoom on the start of B: the zoom played
+// while A's Inspector still said "Out: Cross Dissolve" (measured 2026-10-06).
+describe('an In over the Out of the clip before', () => {
+  it('one clip: the In takes the Out it overrides off, in the SAME undo step', () => {
+    const [a, b] = montage()
+    withOut(a!, 'crossDissolve')
+    setClipTransition(b!, 'in', 'zoom')
+    expect(clipById(b!).transitionIn?.type).toBe('zoom')
+    expect(clipById(a!).transitionOut).toBeUndefined()
+    useStore.getState().undo()
+    expect(clipById(b!).transitionIn).toBeUndefined()
+    expect(clipById(a!).transitionOut?.type).toBe('crossDissolve')
+  })
+
+  it('several clips: every Out an In overrides goes, the rest stay, one undo', () => {
+    const [a, b, c] = montage()
+    withOut(a!, 'crossDissolve')
+    withOut(b!, 'wipeLeft')
+    withOut(c!, 'dipToBlack')
+    // B and C take the In, so A's Out and B's Out are overridden. C's Out has
+    // no clip after it and still plays.
+    setClipsTransition([b!, c!], 'in', 'whiteFlash')
+    expect(clipById(a!).transitionOut).toBeUndefined()
+    expect(clipById(b!).transitionOut).toBeUndefined()
+    expect(clipById(c!).transitionOut?.type).toBe('dipToBlack')
+    expect([b!, c!].map((id) => clipById(id).transitionIn?.type)).toEqual(['whiteFlash', 'whiteFlash'])
+    useStore.getState().undo()
+    expect([a!, b!, c!].map((id) => clipById(id).transitionOut?.type)).toEqual(['crossDissolve', 'wipeLeft', 'dipToBlack'])
+    expect([b!, c!].map((id) => clipById(id).transitionIn)).toEqual([undefined, undefined])
+  })
+
+  it('an Out the In does not meet stays: a gap between the clips, or an Out being set', () => {
+    const [a, b] = montage()
+    withOut(a!, 'crossDissolve')
+    // Pull B a second to the right, so A and B no longer touch.
+    updateActiveSequence('gap', (sq) => ({
+      ...sq,
+      tracks: sq.tracks.map((t) => ({ ...t, clips: t.clips.map((c) => (c.id === b ? { ...c, startS: 6 } : c)) })),
+    }))
+    setClipTransition(b!, 'in', 'zoom')
+    expect(clipById(a!).transitionOut?.type).toBe('crossDissolve')
+    setClipTransition(b!, 'out', 'zoom')
+    expect(clipById(a!).transitionOut?.type).toBe('crossDissolve')
   })
 })

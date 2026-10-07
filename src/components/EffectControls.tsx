@@ -51,6 +51,7 @@ import { FRAME_FITS, frameFitDims, frameFitOf, type FrameFit } from '../engine/f
 import { INNER_ZOOM } from '../engine/innerZoom'
 import { getEffect, paramSens, type EffectParamDef } from '../engine/effects/registry'
 import { clipEndS } from '../engine/timeline'
+import { outOverriddenBy } from '../engine/transitionMarks'
 import {
   TRANSITION_KINDS,
   TRANSITION_LABELS,
@@ -1153,6 +1154,16 @@ export function TransitionRow({
   const t = edge === 'in' ? clip.transitionIn : clip.transitionOut
   const kind = (t?.type as TransitionKind | undefined) ?? NONE
   const durationS = t?.durationS ?? 1
+  // A string or null, so the row re-renders only when the answer changes.
+  const overriddenBy = useStore((s) => {
+    if (edge !== 'out' || !clip.transitionOut) return null
+    const sq = activeSequence(s.project)
+    const track = sq.tracks.find((tr) => tr.clips.some((c) => c.id === clip.id))
+    const i = track ? track.clips.findIndex((c) => c.id === clip.id) : -1
+    if (!track || i < 0) return null
+    const tr = outOverriddenBy(track.clips[i]!, track.clips[i + 1], sq.fps)
+    return tr ? (TRANSITION_LABELS[tr.type as TransitionKind] ?? tr.type) : null
+  })
 
   const onKind = (v: string) => {
     if (v === NONE) removeClipTransition(clip.id, edge)
@@ -1167,7 +1178,7 @@ export function TransitionRow({
     else setClipTransition(clip.id, edge, v as TransitionKind, t?.durationS)
   }
 
-  return (
+  const row = (
     <PropRow label={edge === 'in' ? 'In' : 'Out'}>
       <select
         data-testid={testId}
@@ -1202,6 +1213,15 @@ export function TransitionRow({
         />
       )}
     </PropRow>
+  )
+  if (!overriddenBy) return row
+  return (
+    <div className="flex flex-col gap-0.5">
+      {row}
+      <p className="pl-7 text-ui-xs text-text-muted" data-testid={`${testId}-overridden`}>
+        The next clip's In ({overriddenBy}) plays here instead.
+      </p>
+    </div>
   )
 }
 
