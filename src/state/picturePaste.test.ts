@@ -143,4 +143,14 @@ describe('a copied video or song', () => {
     expect(byName('song.mp3')).toBeTruthy()
     expect(useStore.getState().ui.selection).toEqual([])
   })
+
+  it('⛔ a second Ctrl+V while the first is still going in does not paste the same files twice', async () => {
+    const clip = new File([new Uint8Array([1])], 'obs capture.mkv', { type: 'video/x-matroska' })
+    await Promise.all([pasteMediaFiles([clip]), pasteMediaFiles([clip])])
+    const named = Object.values(useStore.getState().project.assets).filter((a) => a.name === 'obs capture.mkv')
+    expect(named).toHaveLength(1)
+    // And once it is in, the next paste works again.
+    await pasteMediaFiles([clip])
+    expect(Object.values(useStore.getState().project.assets).filter((a) => a.name === 'obs capture.mkv')).toHaveLength(2)
+  })
 })

@@ -221,8 +221,26 @@ async function placePictures(files: File[], atS: number, trackId: Id | undefined
  * from the playhead, one after another, on the line he clicked. No question: a
  * clip has no background to ask about. Not selected, the way a clip added from
  * the bin is not, so its linked sound stays with it.
+ *
+ * ⛔ ONE PASTE OF FILES AT A TIME. Converting an OBS .mkv on its way in takes a
+ * while, and a second Ctrl+V meanwhile imported and placed the same files twice.
  */
+let pastingFiles = false
+
 export async function pasteMediaFiles(files: File[]): Promise<void> {
+  if (pastingFiles) {
+    useToasts.getState().show('Still pasting the last files', 'info')
+    return
+  }
+  pastingFiles = true
+  try {
+    await pasteMediaFilesNow(files)
+  } finally {
+    pastingFiles = false
+  }
+}
+
+async function pasteMediaFilesNow(files: File[]): Promise<void> {
   const atS = useStore.getState().ui.playheadS
   const trackId = clickedPasteTrack(activeSequence(useStore.getState().project))?.id
   const ids = await importFiles(files)
