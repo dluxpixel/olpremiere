@@ -26,7 +26,13 @@ import {
   type Sequence,
 } from '../engine/types'
 import { copyClipAttributes, pasteClipAttributes } from './attributes'
-import { applyEffectToAllClips, applyEffectToClips, setClipsTransition } from './bulkEdits'
+import {
+  applyEffectToAllClips,
+  applyEffectToClips,
+  applyTransitionToSelection,
+  setClipsTransition,
+  transitionPictureCount,
+} from './bulkEdits'
 import { useLibrary, applyPresetToAllClips, applyPresetToSelection } from './library'
 import { setClipTransition } from './clipEdits'
 import { applyPunchyGradeToClips } from './lookActions'
@@ -479,6 +485,44 @@ describe('a transition on several selected pictures', () => {
     }))
     setClipTransition(a!, 'in', 'whiteFlash')
     expect(clipById(a!).transitionIn).toEqual({ type: 'whiteFlash', durationS: 0.35 })
+  })
+})
+
+// Review, 2026-10-07: the Effects tab's transition right click counted the
+// linked sound ("Apply to the start of 6 clips", three got it), and with only a
+// caption selected it did nothing and said nothing.
+describe('the Effects tab transition right click', () => {
+  it('counts the pictures, not the sound beside them or a caption', () => {
+    const ids = threePictures()
+    const voice = withSoundPartner()
+    const cap = withCaption()
+    expect(transitionPictureCount(seq(), [...ids, voice, cap])).toBe(3)
+    expect(transitionPictureCount(seq(), [])).toBe(0)
+  })
+
+  it('puts it on every picture of the selection', () => {
+    const ids = threePictures()
+    const voice = withSoundPartner()
+    applyTransitionToSelection([...ids, voice], 'in', 'whiteFlash')
+    expect(ids.map((id) => clipById(id).transitionIn?.type)).toEqual(['whiteFlash', 'whiteFlash', 'whiteFlash'])
+    expect(clipById(voice).transitionIn).toBeUndefined()
+  })
+
+  it('a lone caption takes it, as a drop and its own Inspector give it', () => {
+    threePictures()
+    const cap = withCaption()
+    applyTransitionToSelection([cap], 'out', 'crossDissolve')
+    expect(clipById(cap).transitionOut?.type).toBe('crossDissolve')
+  })
+
+  it('says why when nothing selected can take one', () => {
+    threePictures()
+    const voice = withSoundPartner()
+    const cap = withCaption()
+    const steps = useStore.getState().history.undo.length
+    applyTransitionToSelection([voice, cap], 'in', 'whiteFlash')
+    expect(useStore.getState().history.undo.length).toBe(steps)
+    expect(said()).toEqual(['A transition goes on a picture, and none of the selected clips is one'])
   })
 })
 

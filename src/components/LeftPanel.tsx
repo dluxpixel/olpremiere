@@ -13,7 +13,7 @@ import { WordsTab } from './WordsTab'
 import { createArmedDelete, type ArmedDelete } from './armedDelete'
 import { CaptionsTab } from './CaptionsTab'
 import { applyEffectToAllClips } from '../state/bulkEdits'
-import { applyEffectToClips, setClipsTransition } from '../state/bulkEdits'
+import { applyEffectToClips, applyTransitionToSelection, transitionPictureCount } from '../state/bulkEdits'
 import { openContextMenu, type MenuItem } from '../state/contextMenu'
 import { ASSET_MIME, EFFECT_MIME, TITLE_MIME, TRANSITION_MIME } from '../state/dnd'
 import { isInLibrary, saveAssetToLibrary, useLibrary } from '../state/library'
@@ -733,6 +733,8 @@ function EffectsTab() {
   const targets = selection
   const hasTarget = targets.length > 0
   const applyLabel = targets.length > 1 ? `Apply to ${targets.length} clips` : 'Apply to selected clip'
+  // A transition goes on the pictures only, so its menu counts those.
+  const pictures = useStore((s) => transitionPictureCount(activeSequence(s.project), s.ui.selection))
 
   // ONE filter, shared with the inspector's Add effect box (effects/search.ts),
   // so the two surfaces cannot answer the same search differently. It reads the
@@ -878,14 +880,14 @@ function EffectsTab() {
                     // same on all of them, in one undo step (setClipsTransition).
                     menu={[
                       {
-                        label: targets.length > 1 ? `Apply to the start of ${targets.length} clips` : 'Apply to clip start',
+                        label: pictures > 1 ? `Apply to the start of ${pictures} clips` : 'Apply to clip start',
                         disabled: !hasTarget,
-                        onClick: () => hasTarget && setClipsTransition(targets, 'in', k),
+                        onClick: () => hasTarget && applyTransitionToSelection(targets, 'in', k),
                       },
                       {
-                        label: targets.length > 1 ? `Apply to the end of ${targets.length} clips` : 'Apply to clip end',
+                        label: pictures > 1 ? `Apply to the end of ${pictures} clips` : 'Apply to clip end',
                         disabled: !hasTarget,
-                        onClick: () => hasTarget && setClipsTransition(targets, 'out', k),
+                        onClick: () => hasTarget && applyTransitionToSelection(targets, 'out', k),
                       },
                     ]}
                   />

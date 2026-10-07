@@ -21,7 +21,7 @@ import { activeSequence, newId, type AnimChannel, type Clip, type Curve, type Ke
 // isClipArmed comes from the SINGLE-clip module on purpose: the multi-select
 // align has to ask the exact question the gizmo asks, off the exact same code,
 // or the two paths drift the way they did when one read a global preference.
-import { isAppearanceOwned, isClipArmed, outsAnInOverrides, transitionFor, withoutOut, withOwnedBase } from './clipEdits'
+import { isAppearanceOwned, isClipArmed, outsAnInOverrides, setClipTransition, transitionFor, withoutOut, withOwnedBase } from './clipEdits'
 import { noteRecentEffect } from './recentEffects'
 import { updateActiveSequence, useStore } from './store'
 import { useToasts } from './toasts'
@@ -547,6 +547,50 @@ export function setClipsTransition(
     show(`${TRANSITION_LABELS[kind]} at the ${where} of ${open.length} clip${open.length === 1 ? '' : 's'}${left}`, 'success')
   }
   return changed
+}
+
+/**
+ * How many of `ids` a transition goes on: the pictures on video tracks, a
+ * locked one included (setClipsTransition names it). The count the Effects
+ * tab's menu says, which used to count the linked sound too: three pictures and
+ * their three sounds read "6 clips" and three got it (review, 2026-10-07).
+ */
+export function transitionPictureCount(
+  seq: { tracks: readonly { kind: string; clips: readonly Clip[] }[] },
+  ids: readonly string[],
+): number {
+  // The Effects tab reads this on every store change, so an empty selection
+  // costs nothing.
+  if (ids.length === 0) return 0
+  const picked = new Set(ids)
+  return seq.tracks
+    .filter((t) => t.kind === 'video')
+    .reduce((n, t) => n + t.clips.filter((c) => picked.has(c.id) && !c.title).length, 0)
+}
+
+/**
+ * The Effects tab's "Apply to the start / end of the clip": every selected
+ * picture, or a lone selected title, which a drop and the single clip Inspector
+ * also give a transition. Anything else says why nothing happened: a caption
+ * alone used to get nothing, in silence (review, 2026-10-07).
+ */
+export function applyTransitionToSelection(ids: readonly string[], edge: 'in' | 'out', kind: TransitionKind): void {
+  const seq = activeSequence(useStore.getState().project)
+  if (transitionPictureCount(seq, ids) > 0) {
+    setClipsTransition(ids, edge, kind)
+    return
+  }
+  const show = useToasts.getState().show
+  if (ids.length === 0) {
+    show('Select a clip first', 'danger')
+    return
+  }
+  const loneTitle = ids.length === 1 && seq.tracks.some((t) => t.kind === 'video' && t.clips.some((c) => c.id === ids[0] && c.title))
+  if (loneTitle) {
+    setClipTransition(ids[0]!, edge, kind)
+    return
+  }
+  show('A transition goes on a picture, and none of the selected clips is one', 'info')
 }
 
 /** Take the transition off that edge of every selected picture, ONE undo step. */
