@@ -18,6 +18,7 @@ import {
 import { quantizeToFrame } from '../engine/timecode'
 import { plural } from '../engine/plural'
 import { activeSequence, type Id, type MediaAsset, type Project, type Sequence, type Track } from '../engine/types'
+import { PAIR_LOCKED_MESSAGE } from './clipEdits'
 import { useContextMenu } from './contextMenu'
 import { clickedPasteTrack, selectPasted } from './pasteTarget'
 import { clipMarker, pasteNote } from './pasteRules'
@@ -154,15 +155,28 @@ export function cutSelection(): void {
   // half a linked pair, and a lock must not be bypassed via the partner.
   const isLocked = (id: string): boolean =>
     seq.tracks.find((t) => t.clips.some((c) => c.id === id))?.locked ?? false
+  // A Cut that quietly does nothing reads as a broken key, so it says why, the
+  // way Copy and Delete do.
+  if (s.ui.selection.length === 0) {
+    useToasts.getState().show('Select a clip to cut', 'danger')
+    return
+  }
   const ids: string[] = []
   const seen = new Set<string>()
+  let heldByPartner = false
   for (const sel of s.ui.selection) {
     const group = clipGroupIds(seq, sel)
     if (group.some((id) => seen.has(id))) continue
     group.forEach((id) => seen.add(id))
     if (group.every((id) => !isLocked(id))) ids.push(...group)
+    else if (!isLocked(sel)) heldByPartner = true
   }
-  if (ids.length === 0) return
+  // The same words Shift+Delete and the drag use for a pair held by its partner.
+  if (heldByPartner) useToasts.getState().show(PAIR_LOCKED_MESSAGE, 'info')
+  if (ids.length === 0) {
+    if (!heldByPartner) useToasts.getState().show('Those clips are on a locked track', 'danger')
+    return
+  }
   const payload = serializeClips(seq, ids)
   if (payload.length === 0) return
   clipboard = payload

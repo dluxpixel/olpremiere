@@ -107,6 +107,11 @@ describe('the central keymap', () => {
       expect(combos(), c).toContain(c)
     }
   })
+
+  // The shortcut list is something he reads: "Copy clip(s)" is code talk.
+  it('names every key in plain words, with no "(s)"', () => {
+    expect(bindings().filter((b) => b.description.includes('(s)')).map((b) => b.description)).toEqual([])
+  })
 })
 
 describe('the keys reach the keyframe verbs', () => {

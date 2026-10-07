@@ -345,14 +345,14 @@ export function buildAppBindings(): Binding[] {
       { combo: 'delete', description: 'Delete (lift)', domain: 'trim', run: () => (motionKeyTarget() ? deletePicks() : deleteSelected(false)) },
       { combo: 'backspace', description: 'Delete (lift)', domain: 'trim', run: () => (motionKeyTarget() ? deletePicks() : deleteSelected(false)) },
       { combo: 'shift+delete', description: 'Ripple delete', domain: 'trim', run: () => deleteSelected(true) },
-      { combo: 'mod+c', description: 'Copy clip(s)', domain: 'trim', run: () => void copySelection() },
-      { combo: 'mod+x', description: 'Cut clip(s)', domain: 'trim', run: cutSelection },
+      { combo: 'mod+c', description: 'Copy the selected clips', domain: 'trim', run: () => void copySelection() },
+      { combo: 'mod+x', description: 'Cut the selected clips', domain: 'trim', run: cutSelection },
       // Copied clips, or a picture from the system clipboard, whichever he copied
       // last. The browser's paste event has to fire for a picture to arrive at
       // all, so this key leaves it alone and state/picturePaste.ts makes the one
       // decision. His words, 2026-09-28: *"Make it so I can just paste pictures"*.
       { combo: 'mod+v', description: 'Paste at playhead', domain: 'trim', allowDefault: true, run: pasteKey },
-      { combo: 'mod+d', description: 'Duplicate clip(s)', domain: 'trim', run: duplicateSelection },
+      { combo: 'mod+d', description: 'Duplicate the selected clips', domain: 'trim', run: duplicateSelection },
       // Work area (spec §5.6). Scopes export; I/O are the universal NLE keys.
       { combo: 'i', description: 'Mark in at playhead', domain: 'transport', run: markIn },
       { combo: 'o', description: 'Mark out at playhead', domain: 'transport', run: markOut },

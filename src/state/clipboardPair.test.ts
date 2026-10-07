@@ -8,7 +8,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { recomputeDuration } from '../engine/timeline'
 import { activeSequence, audioTracks, newClipFromAsset, newProject, videoTracks, type MediaAsset } from '../engine/types'
-import { copySelection, duplicateSelection, pasteAtPlayhead } from './clipboard'
+import { copySelection, cutSelection, duplicateSelection, pasteAtPlayhead } from './clipboard'
 import { updateActiveSequence, useStore } from './store'
 
 const show = vi.fn()
@@ -68,6 +68,24 @@ describe('the picture half brings its sound', () => {
     expect(made).toHaveLength(2)
     expect(made[0]!.linkId).toBe(made[1]!.linkId)
     expect(useStore.getState().ui.selection).toHaveLength(2)
+  })
+
+  it('Cut with nothing to cut says why, the way Copy does', () => {
+    useStore.getState().setUI({ selection: [] })
+    cutSelection()
+    expect(show).toHaveBeenCalledWith('Select a clip to cut', 'danger')
+    // The picture's sound on a locked track holds the pair whole.
+    show.mockClear()
+    updateActiveSequence('lock A1', (sq) => ({ ...sq, tracks: sq.tracks.map((t, i) => (i === 2 ? { ...t, locked: true } : t)) }))
+    useStore.getState().setUI({ selection: ['vid'] })
+    cutSelection()
+    expect(seq().tracks[0].clips.map((c) => c.id)).toEqual(['vid'])
+    expect(show).toHaveBeenCalledWith('Its linked partner is on a locked track, so the pair stays as it is', 'info')
+    // And a clip on a locked track itself.
+    show.mockClear()
+    useStore.getState().setUI({ selection: ['aud'] })
+    cutSelection()
+    expect(show).toHaveBeenCalledWith('Those clips are on a locked track', 'danger')
   })
 
   it('Ctrl+D on a picture whose sound is on a locked track says why nothing came', () => {
