@@ -34,6 +34,7 @@ import { PLATFORM_TARGET_LUFS } from '../engine/loudness'
 import { exportNative } from '../engine/export/nativeExport'
 import { addSample, timeLeftS, type ProgressSample } from '../engine/export/timeLeft'
 import { CANNOT_WRITE_THERE, plainExportError } from '../engine/export/plainError'
+import type { ExportSpeed } from '../engine/export/stageClock'
 import { activeSequence, type Project } from '../engine/types'
 import { isElectron } from '../platform'
 import { isPhoneLayout } from '../ui/phoneLayout'
@@ -382,10 +383,10 @@ function onProgress(id: number, progress: ExportProgress): void {
   useExportJob.setState({ job: { ...job, stage: { ...job.stage, progress, leftS } } })
 }
 
-function succeed(id: number, stage: Extract<ExportStage, { kind: 'done' }>): void {
+function succeed(id: number, stage: Extract<ExportStage, { kind: 'done' }>, speed?: ExportSpeed): void {
   const { job, dialogOpen } = useExportJob.getState()
   if (!job || job.id !== id) return
-  noteExportEnd('done', { sizeBytes: stage.sizeBytes, fileName: stage.fileName })
+  noteExportEnd('done', { sizeBytes: stage.sizeBytes, fileName: stage.fileName, speed })
   // Watching it: the done screen is where he is. Working elsewhere: the chip in
   // the top bar says "Done, show it" until he clicks it. ⛔ It used to be only a
   // toast, gone after 7 seconds, so an export that ended while he was in his
@@ -458,7 +459,7 @@ async function runNative(id: number, project: Project, plan: ExportPlan, signal:
       return
     }
     const fileName = res.outPath.split(/[\\/]/).pop() || `${baseName}.${plan.nativeExt}`
-    succeed(id, { kind: 'done', sizeBytes: res.sizeBytes, fileName, streamed: true, path: res.outPath })
+    succeed(id, { kind: 'done', sizeBytes: res.sizeBytes, fileName, streamed: true, path: res.outPath }, res.speed)
   } finally {
     endCritical()
   }

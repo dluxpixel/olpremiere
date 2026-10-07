@@ -11,10 +11,13 @@ import { olApi } from '../../platform'
 import type { Id, Project } from '../types'
 import { planAudioMix } from './audioRender'
 import type { ExportAsset, ExportProgress, ExportRequest, ExportResponse, ExportSettings } from './messages'
+import { exportSpeed, type ExportSpeed, type StageTimes } from './stageClock'
 
 export interface NativeExportResult {
   outPath: string
   sizeBytes: number
+  /** How fast it made frames and where the time went, for the usage log. Absent when unknown. */
+  speed?: ExportSpeed
 }
 
 const abortError = (): DOMException => new DOMException('Export cancelled', 'AbortError')
@@ -218,6 +221,9 @@ export async function exportNative(
     }
     // Serializes every frame write; see the 'frame' branch below.
     let writeChain: Promise<void> = Promise.resolve()
+    // The usage log's speed: from the first frame to the finished file, x264's tail included.
+    let firstFrameAt = 0
+    let times: StageTimes | undefined
     const onAbort = (): void => {
       worker.postMessage({ type: 'cancel' } satisfies ExportRequest)
       void api.nativeCancel().finally(() => done(() => reject(abortError())))
@@ -228,6 +234,7 @@ export async function exportNative(
       const msg = e.data
       if (settled) return
       if (msg.type === 'frame') {
+        if (!firstFrameAt) firstFrameAt = performance.now()
         // ffmpeg's stdin is a raw RGBA pipe with no framing, so two writes in
         // flight at once would interleave into garbage. The worker is allowed
         // to render several frames ahead; the ORDER is enforced here, by
@@ -261,6 +268,7 @@ export async function exportNative(
         if (msg.progress.phase !== 'video') onProgress(msg.progress)
       } else if (msg.type === 'done') {
         workerDone = true
+        times = msg.times
         onProgress({ phase: 'finalizing', framesDone: encoded, framesTotal })
         // Drain the write queue before closing ffmpeg's stdin. ⛔ Only if it
         // drained cleanly: a write that failed in the queue has already stopped
@@ -271,8 +279,10 @@ export async function exportNative(
           .then(() => (settled ? null : api.nativeFinish()))
           .then((fin) => {
             if (!fin) return
-            if (fin.ok) done(() => resolve({ outPath: fin.outPath ?? '', sizeBytes: fin.sizeBytes ?? 0 }))
-            else done(() => reject(new Error(fin.error ?? 'ffmpeg failed')))
+            if (fin.ok) {
+              const speed = times && firstFrameAt ? exportSpeed(times, performance.now() - firstFrameAt) : null
+              done(() => resolve({ outPath: fin.outPath ?? '', sizeBytes: fin.sizeBytes ?? 0, ...(speed ? { speed } : {}) }))
+            } else done(() => reject(new Error(fin.error ?? 'ffmpeg failed')))
           })
           .catch((err: unknown) => {
             if (settled) return

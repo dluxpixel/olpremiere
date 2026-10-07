@@ -24,6 +24,7 @@ import {
 import type { StreamTargetChunk } from 'mediabunny'
 import { ProviderPool } from './providerPool'
 import { closeProvider, frameForClip, reverseWindowFrames, type ClipProvider } from './clipReader'
+import { stageClock } from './stageClock'
 import { browserConfigCheck, pickDecoderOptions } from './decoderChoice'
 import { createRenderer } from '../render/glRenderer'
 import { resolveFrame } from '../render/resolve'
@@ -391,6 +392,8 @@ async function runNative(init: Extract<ExportRequest, { type: 'init' }>): Promis
 
     // --- render → readback → stream ----------------------------------------
     stage = 'rendering video'
+    // Where each frame's time goes, for the usage log (stageClock.ts).
+    const clock = stageClock()
     for (let f = 0; f < framesTotal; f++) {
       checkCancel()
       const t = settings.startS + f / settings.fps
@@ -405,7 +408,9 @@ async function runNative(init: Extract<ExportRequest, { type: 'init' }>): Promis
         else if (op.type === 'transition') layers.push(op.from, op.to)
       }
       const texMap = await gatherTextures(layers)
+      clock.mark('read')
       renderer.render(frame, (layer) => texMap.get(layer) ?? null)
+      clock.mark('draw')
 
       // Read the rendered pixels (bottom-origin RGBA; ffmpeg -vf vflip corrects the
       // row order). A fresh buffer per frame because it's transferred to the page.
@@ -418,9 +423,12 @@ async function runNative(init: Extract<ExportRequest, { type: 'init' }>): Promis
       if (gl.isContextLost()) throw new Error('the graphics context was lost during the export, so the frames would have come out black')
       const pixels = new Uint8Array(W * H * 4)
       gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, pixels)
+      clock.mark('pixels')
       post({ type: 'frame', index: f, data: pixels.buffer }, [pixels.buffer])
       framesInFlight++
       await awaitFrameCredit()
+      clock.mark('wait')
+      clock.frame()
       checkCancel()
 
       if ((f + 1) % 3 === 0 || f + 1 === framesTotal) {
@@ -430,8 +438,9 @@ async function runNative(init: Extract<ExportRequest, { type: 'init' }>): Promis
     // Every frame must be WRITTEN before 'done' lets the page close ffmpeg's
     // stdin, or the credit window would silently truncate the tail of the video.
     await awaitFramesDrained()
+    clock.mark('wait')
     checkCancel()
-    outcome = { msg: { type: 'done', buffer: null }, transfer: [] }
+    outcome = { msg: { type: 'done', buffer: null, times: clock.times() }, transfer: [] }
   } catch (err) {
     if (err instanceof CancelledError || cancelled) {
       outcome = { msg: { type: 'cancelled' }, transfer: [] }

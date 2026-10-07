@@ -165,6 +165,19 @@ describe('an export', () => {
     }
   })
 
+  it('a desktop export also says how fast it made frames and where the time went', async () => {
+    noteExportStart(note)
+    noteExportEnd('done', {
+      sizeBytes: 31_400_000,
+      fileName: 'Gym day 4 final.mp4',
+      speed: { fps: 9, read: 41, draw: 9, pixels: 12, wait: 38 },
+    })
+    const [line] = await drain()
+    expect(line.d).toMatchObject({ outcome: 'done', mb: 31.4, ext: 'mp4', fpsMade: 9, stages: 'read 41 draw 9 pixels 12 wait 38' })
+    // Every key the line can carry still fits under the log's cap of 14.
+    expect(Object.keys(line.d!)).toHaveLength(14)
+  })
+
   it('ends a run that another run replaced, and keeps a failure short and free of file names', async () => {
     noteExportStart(note)
     noteExportStart(note)

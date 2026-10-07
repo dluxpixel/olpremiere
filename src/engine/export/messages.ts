@@ -3,6 +3,7 @@
 // the helpers run under node for unit tests.
 
 import type { Id, MediaAsset, Sequence } from '../types'
+import type { StageTimes } from './stageClock'
 
 /**
  * How the encoder spends bits.
@@ -150,8 +151,11 @@ export type ExportResponse =
   | { type: 'segmentDone' }
   /** NATIVE mode: one rendered RGBA frame (bottom-origin; ffmpeg -vf vflip corrects it). Transferred. */
   | { type: 'frame'; index: number; data: ArrayBuffer }
-  /** `buffer` is null when the file was streamed to disk: there is nothing to hand back. */
-  | { type: 'done'; buffer: ArrayBuffer | null }
+  /**
+   * `buffer` is null when the file was streamed to disk: there is nothing to hand back.
+   * `times`: the desktop render's split of its time per stage, for the usage log (stageClock.ts).
+   */
+  | { type: 'done'; buffer: ArrayBuffer | null; times?: StageTimes }
   | { type: 'cancelled' }
   | { type: 'error'; message: string }
   /** Something he must hear about while the export carries on (the video will have no sound). */

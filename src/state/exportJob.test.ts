@@ -32,6 +32,7 @@ import { setPlatformLoudness, useSettings } from './settings'
 import { useStore } from './store'
 import { useToasts } from './toasts'
 import { isCriticalWorkInFlight } from './unloadGuard'
+import { usage, type UsageEvent } from './usageLog'
 
 interface NativeCall {
   project: Project
@@ -309,6 +310,33 @@ describe('how it ended, told with the dialog closed', () => {
 
     retryExport()
     expect(h.native).toHaveLength(2)
+  })
+})
+
+describe('the usage log', () => {
+  it('a desktop export that finishes writes how fast it made frames and where the time went', async () => {
+    const lines: string[] = []
+    await usage.setEnabled(true)
+    usage.attach(async (_day, text) => {
+      lines.push(text)
+    })
+    try {
+      await usage.flush()
+      lines.length = 0
+      requestExport()
+      h.native[0].resolve({
+        outPath: 'C:\\Videos\\Holiday 2.mp4',
+        sizeBytes: 5_000_000,
+        speed: { fps: 9, read: 41, draw: 9, pixels: 12, wait: 38 },
+      } as { outPath: string; sizeBytes: number })
+      await flush()
+      await usage.flush()
+      const events = lines.flatMap((l) => l.trim().split('\n')).filter(Boolean).map((l) => JSON.parse(l) as UsageEvent)
+      const done = events.find((e) => e.k === 'export')
+      expect(done?.d).toMatchObject({ outcome: 'done', fpsMade: 9, stages: 'read 41 draw 9 pixels 12 wait 38' })
+    } finally {
+      await usage.setEnabled(false)
+    }
   })
 })
 

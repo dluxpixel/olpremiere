@@ -224,6 +224,35 @@ describe('frames reach ffmpeg one at a time, in order', () => {
   })
 })
 
+describe('how fast it went, for the usage log', () => {
+  it("the result carries the frames per second of the whole run and the worker's split of the time", async () => {
+    const run = start()
+    await flush()
+    const w = FakeWorker.last
+    w.emit({ type: 'frame', data: frame(1) } as ExportResponse)
+    w.emit({ type: 'frame', data: frame(2) } as ExportResponse)
+    w.emit({ type: 'done', buffer: null, times: { frames: 2, read: 40, draw: 10, pixels: 20, wait: 30 } })
+    await flush()
+    main.writes[0].settle({ ok: true })
+    await flush()
+    main.writes[1].settle({ ok: true })
+    const res = await run
+    expect(res).toMatchObject({ outPath: 'C:\\Videos\\Holiday.mp4', sizeBytes: 1234, speed: { read: 40, draw: 10, pixels: 20, wait: 30 } })
+    expect(res!.speed!.fps).toBeGreaterThan(0)
+  })
+
+  it('a worker that sent no times leaves the speed out rather than making one up', async () => {
+    const run = start()
+    await flush()
+    const w = FakeWorker.last
+    w.emit({ type: 'frame', data: frame(1) } as ExportResponse)
+    w.emit({ type: 'done' } as ExportResponse)
+    await flush()
+    main.writes[0].settle({ ok: true })
+    expect(await run).not.toHaveProperty('speed')
+  })
+})
+
 describe('⛔ the progress never goes backward at the end', () => {
   it('after the last frame, ffmpeg catching up is the finishing step, and the percent only rises', async () => {
     main.finish.hold = true
