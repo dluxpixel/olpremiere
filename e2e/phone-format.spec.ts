@@ -22,9 +22,9 @@
 
 import { expect, test, type Page } from '@playwright/test'
 import fs from 'node:fs'
-import { avcLevelOf, cropdetect, edgeBands, ffmpegAvailable, framePixels, rowColour, runFfmpeg, videoSizeOf } from './exportHelpers'
+import { avcLevelOf, cropdetect, edgeBands, framePixels, rowColour, runFfmpeg, runsWithFfmpeg, videoSizeOf } from './exportHelpers'
 
-test.skip(!ffmpegAvailable(), 'needs the bundled ffmpeg (vendor/ffmpeg), which a fresh worktree does not have')
+test.skip(!runsWithFfmpeg(), 'needs the bundled ffmpeg (vendor/ffmpeg), which a fresh worktree does not have')
 
 const VERIFY = '_verify/phone'
 const SRC = `${VERIFY}/phone-clip-1080x1920.mp4`

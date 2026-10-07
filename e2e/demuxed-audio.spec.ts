@@ -55,7 +55,10 @@ test('the audio comes back demuxed, at the right rate, and is not silent', async
   })
 
   console.log(`[demuxed audio] ${JSON.stringify(got)}`)
-  if (!got.hasAudio) test.skip(true, 'fixture has no audio track')
+  // ⛔ THIS WAS A SKIP, which fired exactly when the probe broke. The fixture is
+  // always recorded with a 440 Hz tone (global-setup.ts), so "no audio track" can
+  // only mean the probe regressed: the failure this spec exists to catch.
+  expect(got.hasAudio, 'the fixture carries a 440 Hz tone, so the probe must find its audio').toBe(true)
 
   expect(got.ok).toBe(true)
   if (!got.ok) return
