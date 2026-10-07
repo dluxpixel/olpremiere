@@ -176,6 +176,14 @@ export async function exportNative(
     await dropPreparedAudio()
     throw new Error(startRes.error ?? 'could not start ffmpeg')
   }
+  // ⛔ A STOP WHILE FFMPEG WAS STARTING. The abort listener below goes on only
+  // now, and a signal that already fired never calls it, so a cancel in that gap
+  // used to render and encode the whole video anyway. ffmpeg is running and
+  // holds the file, so it is stopped the way a running one is.
+  if (signal.aborted) {
+    await api.nativeCancel().catch(() => undefined)
+    throw abortError()
+  }
 
   // ffmpeg's own frame counter drives the video %; the worker covers prep/audio.
   //
@@ -249,11 +257,23 @@ export async function exportNative(
       } else if (msg.type === 'done') {
         workerDone = true
         onProgress({ phase: 'finalizing', framesDone: encoded, framesTotal })
-        // Drain the write queue before closing ffmpeg's stdin.
-        void writeChain.then(() => api.nativeFinish()).then((fin) => {
-          if (fin.ok) done(() => resolve({ outPath: fin.outPath ?? '', sizeBytes: fin.sizeBytes ?? 0 }))
-          else done(() => reject(new Error(fin.error ?? 'ffmpeg failed')))
-        })
+        // Drain the write queue before closing ffmpeg's stdin. ⛔ Only if it
+        // drained cleanly: a write that failed in the queue has already stopped
+        // ffmpeg and ended the export, and a finish after it raced the stop.
+        // And a finish that rejects ends the export with its reason; nothing
+        // caught it before, and the dialog sat on "Finishing the file" for good.
+        void writeChain
+          .then(() => (settled ? null : api.nativeFinish()))
+          .then((fin) => {
+            if (!fin) return
+            if (fin.ok) done(() => resolve({ outPath: fin.outPath ?? '', sizeBytes: fin.sizeBytes ?? 0 }))
+            else done(() => reject(new Error(fin.error ?? 'ffmpeg failed')))
+          })
+          .catch((err: unknown) => {
+            if (settled) return
+            void api.nativeCancel()
+            done(() => reject(err instanceof Error ? err : new Error(String(err))))
+          })
       } else if (msg.type === 'cancelled') {
         void api.nativeCancel()
         done(() => reject(abortError()))

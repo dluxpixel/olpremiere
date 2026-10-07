@@ -44,12 +44,15 @@ const { exportNative, buildWavF32 } = await import('./nativeExport')
 /** The export worker, standing still until the test speaks for it. */
 class FakeWorker {
   static last: FakeWorker
+  /** How many the code under test made since the test began. */
+  static made = 0
   onmessage: ((e: MessageEvent<ExportResponse>) => void) | null = null
   onerror: ((e: ErrorEvent) => void) | null = null
   posted: ExportRequest[] = []
   terminated = false
   constructor() {
     FakeWorker.last = this
+    FakeWorker.made++
   }
   postMessage(m: ExportRequest): void {
     this.posted.push(m)
@@ -74,7 +77,8 @@ function fakeMain() {
   let progress: ((p: { frame: number; totalFrames: number }) => void) | null = null
   const wavs: ArrayBuffer[] = []
   const starts: Record<string, unknown>[] = []
-  const finish = { hold: false, release: () => {} }
+  const finish = { hold: false, release: () => {}, fail: null as Error | null }
+  const startGate = { hold: false, release: () => {} }
   const api = {
     isElectron: true,
     nativePrepareAudio: (wav: ArrayBuffer) => {
@@ -85,7 +89,10 @@ function fakeMain() {
     nativeStart: (config: Record<string, unknown>) => {
       log.push('start')
       starts.push(config)
-      return Promise.resolve({ started: true, outPath: 'C:\\Videos\\Holiday.mp4' })
+      const result = { started: true, outPath: 'C:\\Videos\\Holiday.mp4' }
+      // Held open when asked: the real start waits on the Windows save dialog.
+      if (!startGate.hold) return Promise.resolve(result)
+      return new Promise((r) => (startGate.release = () => r(result)))
     },
     nativeWriteFrame: (frame: ArrayBuffer) =>
       new Promise<{ ok: boolean; error?: string }>((settle) => {
@@ -95,6 +102,7 @@ function fakeMain() {
       }),
     nativeFinish: () => {
       log.push('finish')
+      if (finish.fail) return Promise.reject(finish.fail)
       const result = { ok: true, outPath: 'C:\\Videos\\Holiday.mp4', sizeBytes: 1234 }
       // Held open when asked: the real finish waits for ffmpeg to drain its lookahead.
       if (!finish.hold) return Promise.resolve(result)
@@ -112,7 +120,7 @@ function fakeMain() {
       }
     },
   }
-  return { api, log, writes, wavs, starts, finish, ffmpegSays: (frame: number) => progress?.({ frame, totalFrames: 0 }) }
+  return { api, log, writes, wavs, starts, finish, startGate, ffmpegSays: (frame: number) => progress?.({ frame, totalFrames: 0 }) }
 }
 
 function project(): Project {
@@ -149,6 +157,7 @@ beforeEach(() => {
   h.audioPlan = null
   h.audioOpts.length = 0
   progress = []
+  FakeWorker.made = 0
   vi.stubGlobal('Worker', FakeWorker)
 })
 afterEach(() => {
@@ -243,6 +252,40 @@ describe('a write that fails stops the export with its reason', () => {
     expect(main.log).toContain('cancel')
     expect(main.log).not.toContain('finish')
   })
+
+  it('⛔ after the worker is done too: the file is stopped, never closed as if it were whole', async () => {
+    // The worker renders ahead, so its "done" lands while the last frames still wait for the pipe.
+    // A write failing then used to be followed by finish, a second order to main racing the stop.
+    const run = start()
+    await flush()
+    const w = FakeWorker.last
+    w.emit({ type: 'frame', data: frame(1) } as ExportResponse)
+    w.emit({ type: 'frame', data: frame(2) } as ExportResponse)
+    w.emit({ type: 'done' } as ExportResponse)
+    await flush()
+    main.writes[0].settle({ ok: false, error: 'ffmpeg exited during export (exit code -28): No space left on device' })
+    await expect(run).rejects.toThrow('No space left on device')
+    await flush()
+    expect(main.writes).toHaveLength(1)
+    expect(main.log).toContain('cancel')
+    expect(main.log).not.toContain('finish')
+  })
+})
+
+describe('the end of the file', () => {
+  it('⛔ a finish that main never answers properly still ends the export, with the reason', async () => {
+    // Nothing caught it: the export sat at "Finishing the file" for good.
+    main.finish.fail = new Error("Error invoking remote method 'native:finish': reply was never sent")
+    const run = start()
+    await flush()
+    const w = FakeWorker.last
+    w.emit({ type: 'frame', data: frame(1) } as ExportResponse)
+    w.emit({ type: 'done' } as ExportResponse)
+    await flush()
+    main.writes[0].settle({ ok: true })
+    await expect(run).rejects.toThrow('reply was never sent')
+    expect(w.terminated).toBe(true)
+  })
 })
 
 describe('a cancel is a cancel', () => {
@@ -259,6 +302,21 @@ describe('a cancel is a cancel', () => {
     await expect(run).rejects.toMatchObject({ name: 'AbortError' })
     expect(w.posted.some((m) => m.type === 'cancel')).toBe(true)
     expect(main.log).toContain('cancel')
+  })
+
+  it('⛔ while ffmpeg is being started: it is stopped again, and no frame is rendered for it', async () => {
+    // The abort listener only went on after start answered, so a stop in that gap was never heard
+    // and the whole video was rendered and encoded anyway.
+    main.startGate.hold = true
+    const ctrl = new AbortController()
+    const run = start(ctrl.signal)
+    await flush()
+    expect(main.log).toContain('start')
+    ctrl.abort()
+    main.startGate.release()
+    await expect(run).rejects.toMatchObject({ name: 'AbortError' })
+    expect(main.log.slice(-1)).toEqual(['cancel'])
+    expect(FakeWorker.made).toBe(0)
   })
 })
 
