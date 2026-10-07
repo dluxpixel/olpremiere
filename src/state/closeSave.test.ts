@@ -208,6 +208,24 @@ describe('the save a close waits for', () => {
     expect(toasts.at(-1)).toBe('Saved again')
   })
 
+  it('says nothing more once his Ctrl+S has ended a run of failed saves', async () => {
+    fileFailures = 1
+    type('x')
+    await vi.advanceTimersByTimeAsync(1000)
+    await land()
+    expect(toasts).toHaveLength(1)
+    // He presses Ctrl+S, it lands, and Ctrl+S says so itself.
+    void saveSettled(true)
+    await land()
+    expect(saveState()).toBe('saved')
+    // Minutes later, an ordinary edit and its autosave: no "Saved again" out of nowhere.
+    type('y')
+    await vi.advanceTimersByTimeAsync(1000)
+    await land()
+    expect(written.at(-1)?.name).toBe('xy')
+    expect(toasts).toEqual(['Saved in the app, but its file in Documents could not be written. Trying again'])
+  })
+
   it('says when only the file failed, so the question does not tell him his work is lost', async () => {
     // Documents unwritable: the app's store has the change, the file does not.
     fileFailures = 1

@@ -439,7 +439,11 @@ export function autosaveDelayMs(dirtySinceMs: number, now: number): number {
   return Math.max(0, Math.min(AUTOSAVE_DEBOUNCE_MS, dirtySinceMs + AUTOSAVE_MAX_WAIT_MS - now))
 }
 
-/** True once a background autosave has failed, until one succeeds again. */
+/**
+ * True once a background autosave has failed and he was told, until any save
+ * lands again. Any: a Ctrl+S that lands says so itself, and the autosave after
+ * it used to say "Saved again" minutes later, out of nowhere.
+ */
 let autosaveFailing = false
 
 /**
@@ -472,11 +476,11 @@ function stopRetry(): void {
 /** The background save: the debounce, the five second cap and every retry land here. */
 function autosave(): void {
   dirtySince = 0
+  // Read before the write: the write that lands is what clears it.
+  const toldItFailed = autosaveFailing
   flushSave().then(
     () => {
-      if (!autosaveFailing) return
-      autosaveFailing = false
-      useToasts.getState().show('Saved again', 'success')
+      if (toldItFailed) useToasts.getState().show('Saved again', 'success')
     },
     (err: unknown) => {
       // Say it ONCE per failure streak. The save indicator's "Unsaved" dot
@@ -527,6 +531,7 @@ function flushSave(): Promise<void> {
       await saveProject(doc)
       storedDoc = doc
       stopRetry()
+      autosaveFailing = false
       // ⛔ "SAVED" ONLY WHEN WHAT WAS WRITTEN IS WHAT HE HAS. A letter typed
       // while this write was on its way is not in it, and it used to be marked
       // saved anyway: the top bar said Saved, and a close inside the next
