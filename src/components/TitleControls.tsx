@@ -20,6 +20,7 @@ import { appleEmojiFor, EMOJI_STACK } from '../engine/render/emojiFont'
 import { defaultTitleDef, type Clip, type TitleDef } from '../engine/types'
 import { setTitlesFontSize, updateTitle } from '../state/titleActions'
 import { IconButton } from '../ui/Button'
+import { AppearanceRows } from './AppearanceRows'
 import { joinColour, splitColour } from './colourAlpha'
 import { PropRow, ScrubField, SectionLabel, type Spec } from './EffectControls'
 
@@ -343,6 +344,16 @@ export function TitleControls({ clip }: { clip: Clip }) {
             onCommit={(v) => set({ offsetYPx: v }, 'offsetYPx')}
           />
         </PropRow>
+      </Section>
+
+      <div className="h-px bg-border" />
+
+      <Section title="Animation">
+        <AppearanceRows
+          ids={[clip.id]}
+          spec={clip.appearance}
+          testIds={{ in: 'title-anim-in', out: 'title-anim-out', speed: 'title-anim-speed' }}
+        />
       </Section>
 
       <div className="h-px bg-border" />

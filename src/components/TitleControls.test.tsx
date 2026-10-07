@@ -9,19 +9,21 @@
  * which also threw the colour away (measured 2026-10-06). Same for the shadow.
  */
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('../state/toasts', () => ({
   useToasts: Object.assign(() => ({}), { getState: () => ({ show: () => {} }) }),
 }))
 
+import { channelKeyframes } from '../engine/effects/channels'
 import { recomputeDuration } from '../engine/timeline'
 import { activeSequence, defaultTitleDef, newProject, newTitleClip, type Clip, type TitleDef } from '../engine/types'
 import { updateActiveSequence, useStore } from '../state/store'
 import { TitleControls } from './TitleControls'
 
-const titleOf = (id: string): TitleDef =>
-  activeSequence(useStore.getState().project).tracks.flatMap((t) => t.clips).find((c) => c.id === id)!.title!
+const clipOf = (id: string): Clip => activeSequence(useStore.getState().project).tracks.flatMap((t) => t.clips).find((c) => c.id === id)!
+const titleOf = (id: string): TitleDef => clipOf(id).title!
 
 /** The panel for the live clip, re rendered on every store change, the way the Inspector shows it. */
 function Live({ id }: { id: string }) {
@@ -70,5 +72,43 @@ describe('the box and shadow colour keep their see through', () => {
     expect(titleOf(c.id).shadow!.color).toBe('rgba(255,0,0,0.6)')
     typeInto('title-shadow-opacity', '0')
     expect(titleOf(c.id).shadow!.color).toBe('rgba(255,0,0,0)')
+  })
+})
+
+// Click one title and the panel that edits everything about it had no way to make
+// it pop, fade or slide: In, Out and Speed lived only on the right click menu
+// (2026-10-06). CapCut puts all three in the text panel.
+describe('the Animation rows of one title', () => {
+  it('In, Out and Speed land on the title, each in one undo step', async () => {
+    const c = seed({})
+    render(<Live id={c.id} />)
+    const user = userEvent.setup()
+    // No animation yet, so there is no speed to set.
+    expect(screen.queryByTestId('title-anim-speed')).toBeNull()
+
+    await user.selectOptions(screen.getByTestId('title-anim-in'), 'pop')
+    expect(clipOf(c.id).appearance?.in).toBe('pop')
+    expect(channelKeyframes(clipOf(c.id), 'scale').length).toBeGreaterThan(0)
+
+    await user.selectOptions(screen.getByTestId('title-anim-out'), 'fadeOut')
+    expect(clipOf(c.id).appearance).toMatchObject({ in: 'pop', out: 'fadeOut' })
+
+    await user.selectOptions(screen.getByTestId('title-anim-speed'), '0.6')
+    expect(clipOf(c.id).appearance?.durS).toBe(0.6)
+    expect((screen.getByTestId('title-anim-speed') as HTMLSelectElement).value).toBe('0.6')
+
+    useStore.getState().undo()
+    expect(clipOf(c.id).appearance?.durS).not.toBe(0.6)
+    expect(clipOf(c.id).appearance).toMatchObject({ in: 'pop', out: 'fadeOut' })
+  })
+
+  it('None takes the animation off again', async () => {
+    const c = seed({})
+    render(<Live id={c.id} />)
+    const user = userEvent.setup()
+    await user.selectOptions(screen.getByTestId('title-anim-in'), 'pop')
+    await user.selectOptions(screen.getByTestId('title-anim-in'), '')
+    expect(clipOf(c.id).appearance?.in).toBeUndefined()
+    expect(channelKeyframes(clipOf(c.id), 'scale')).toEqual([])
   })
 })

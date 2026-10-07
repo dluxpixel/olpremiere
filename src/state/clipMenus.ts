@@ -28,7 +28,7 @@ const TITLE_SIZE_PRESETS = [
 // should the normal animation still be very slow just because the text is
 // long?" See APPEARANCE_SPEEDS for the whole account. Auto is the one that fits
 // each clip, and its name says so.
-const SPEED_MENU: { label: string; spec: 'auto' | number }[] = [
+export const SPEED_MENU: { label: string; spec: 'auto' | number }[] = [
   { label: 'Auto (fit each word)', spec: 'auto' },
   ...APPEARANCE_SPEEDS.map((s) => ({ label: s.label, spec: s.seconds })),
 ]

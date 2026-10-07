@@ -21,8 +21,6 @@ import {
 import { TRANSITION_KINDS, TRANSITION_LABELS, transitionDurationSpec, type TransitionKind } from '../engine/render/types'
 import { FRAME_FITS, frameFitDims, frameFitOf, takesFrameFit, type FrameFit } from '../engine/frameFit'
 import { useStore } from '../state/store'
-import { ENTRANCE_PRESETS } from '../engine/anim/appearance'
-import { setClipsAppearance } from '../state/appearanceActions'
 import { applyPunchyGradeToClips } from '../state/lookActions'
 import { applyCaptionStyle } from '../state/captionActions'
 import { allCaptionStyles, saveCaptionStyleFromClip, useCaptionStyles } from '../state/captionStyles'
@@ -30,6 +28,7 @@ import { setTitlesFontSize, updateTitles } from '../state/titleActions'
 import { ensureTitleFont, TITLE_FONT_OPTIONS } from '../engine/render/titleFonts'
 import { clipDurationS } from '../engine/timeline'
 import { AddEffectMenu } from './AddEffectMenu'
+import { AppearanceRows } from './AppearanceRows'
 import { useEffectDrop } from './effectDrop'
 import { activeSequence, type Clip, type Track } from '../engine/types'
 import { IconButton } from '../ui/Button'
@@ -124,7 +123,6 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
   const allLower = nTitle > 0 && titles.every((s) => s.clip.title!.textCase === 'lower')
   const firstOutline = firstTitle?.outline
   const allOutline = nTitle > 0 && titles.every((s) => !!s.clip.title!.outline)
-  const firstAppearanceIn = titles[0]?.clip.appearance?.in
   // Subscribed so a style saved anywhere shows up here at once.
   useCaptionStyles((s) => s.saved)
   const presets = allCaptionStyles()
@@ -306,23 +304,14 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
               </>
             )}
 
-            {/* Entrance animation across all selected captions. */}
-            <PropRow label="Animation">
-              <select
-                aria-label="Entrance animation (all)"
-                data-testid="multi-animation"
-                value={firstAppearanceIn ?? ''}
-                onChange={(e) => setClipsAppearance(titleIds, { in: e.target.value || undefined })}
-                className="h-6 w-[140px] cursor-default rounded-field bg-bg-input px-1.5 text-ui-sm text-text-primary"
-              >
-                <option value="">None</option>
-                {ENTRANCE_PRESETS.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.label}
-                  </option>
-                ))}
-              </select>
-            </PropRow>
+            {/* In, Out and Speed across all selected captions, the same rows as
+                one title's panel. The rows show the first caption's. */}
+            <AppearanceRows
+              ids={titleIds}
+              spec={titles[0]?.clip.appearance}
+              testIds={{ in: 'multi-animation', out: 'multi-animation-out', speed: 'multi-animation-speed' }}
+              all
+            />
 
             {/* Style presets: apply a saved look (font+case+colour+outline+animation)
                 to the whole selection, or save the current one for reuse. */}
