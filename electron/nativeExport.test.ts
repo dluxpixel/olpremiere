@@ -9,18 +9,21 @@
 // A REAL ffmpeg is made to die here, the way it does in his app: frames are
 // pouring in and the output cannot be written.
 
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readdir, rm } from 'node:fs/promises'
 import * as os from 'node:os'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { plainExportError } from '../src/engine/export/plainError'
 
 let userData = ''
+const REPO = join(import.meta.dirname, '..')
+let appPath = REPO
 vi.mock('electron', () => ({
   app: {
     isPackaged: false,
     // The real repo, so the bundled ffmpeg is found the way the dev shell finds it.
-    getAppPath: () => join(import.meta.dirname, '..'),
+    getAppPath: () => appPath,
     getPath: (k: string) => (k === 'userData' ? userData : join(userData, k)),
   },
   dialog: {},
@@ -46,8 +49,45 @@ beforeEach(async () => {
   userData = await mkdtemp(join(tmpdir(), 'olp-native-'))
 })
 afterEach(async () => {
+  appPath = REPO
   await native.cancel()
   await rm(userData, { recursive: true, force: true }).catch(() => undefined)
+})
+
+describe('an ffmpeg that cannot start', () => {
+  // ⛔ SEEN IN THE CODE, export audit 2026-10-06: the export's spawn had no 'error' listener, and an
+  // EventEmitter 'error' nobody listens for is thrown. A missing or quarantined ffmpeg.exe put
+  // "A JavaScript error occurred in the main process" over his editor, after start() had already
+  // answered that it started.
+  it('⛔ says so in words the dialog turns plain, takes the sound file with it, and throws nothing', async () => {
+    const thrown: unknown[] = []
+    const catchIt = (err: unknown): void => void thrown.push(err)
+    process.on('uncaughtException', catchIt)
+    try {
+      // An app folder with no ffmpeg in it, as after an antivirus took the bundled one.
+      appPath = userData
+      await native.prepareAudio(new ArrayBuffer(64))
+      const wav = (await readdir(tmpdir())).filter((f) => f.startsWith(`olp-audio-${process.pid}-`))
+      expect(wav.length).toBeGreaterThan(0)
+      const win = { webContents: { send: () => undefined } } as unknown as Parameters<typeof native.start>[1]
+      const res = await native.start(
+        { width: 64, height: 64, fps: 30, totalFrames: 3, encoder: 'x264', quality: 18, hasAudio: true, outPath: join(userData, 'x.mp4'), suggestedName: 'x' },
+        win,
+      )
+      // Long enough for any late 'error' or 'close' from the dead child to surface.
+      await new Promise((r) => setTimeout(r, 300))
+      expect(res.started).toBe(false)
+      expect(res.error).toMatch(/^could not start ffmpeg/)
+      expect(plainExportError(res.error ?? '').line).toBe('The video maker is missing or blocked. Reinstall OL Premiere.')
+      expect(native.isExporting()).toBe(false)
+      expect(thrown).toEqual([])
+      // The mix it was handed is not left in his temp folder.
+      const left = (await readdir(tmpdir())).filter((f) => wav.includes(f))
+      expect(left).toEqual([])
+    } finally {
+      process.off('uncaughtException', catchIt)
+    }
+  })
 })
 
 describe('an ffmpeg that dies mid export says why', () => {

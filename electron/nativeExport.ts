@@ -129,12 +129,44 @@ export async function start(config: NativeExportConfig, win: BrowserWindow): Pro
 
   const audioPath = config.hasAudio ? pendingAudioPath : null
   pendingAudioPath = null
+  // Nothing else will ever pick this mix up once start() says no.
+  const couldNotStart = (err: unknown): NativeStartResult => {
+    if (audioPath) void unlink(audioPath).catch(() => {})
+    return { started: false, error: `could not start ffmpeg: ${err instanceof Error ? err.message : String(err)}` }
+  }
   // windowsHide as above: an export is the longest ffmpeg run in the app, so a
   // console here sits over his editor for the whole encode.
-  const ffmpeg = spawn(ffmpegPath(), buildArgs(config, audioPath, outPath), {
-    stdio: ['pipe', 'pipe', 'pipe'],
-    windowsHide: true,
+  let ffmpeg: ChildProcessWithoutNullStreams
+  try {
+    ffmpeg = spawn(ffmpegPath(), buildArgs(config, audioPath, outPath), {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    })
+  } catch (err) {
+    // Some refusals (EPERM from an antivirus) are thrown right here.
+    return couldNotStart(err)
+  }
+  // ⛔ AN 'error' NOBODY LISTENS FOR IS THROWN, and in main that is the "A
+  // JavaScript error occurred in the main process" box over his editor. A
+  // missing or quarantined ffmpeg.exe reports itself exactly that way, a tick
+  // after spawn, and this used to answer "started" first (export audit,
+  // 2026-10-06). The throw also cut Node off before it sent 'close', so a cancel
+  // waiting on `closed` hung for good. So the listener stays for the life of the
+  // process, the error ends `closed` too, and start() waits for ffmpeg to really
+  // be running before it says so.
+  ffmpeg.stdin.on('error', () => {})
+  let ended: (code: number | null) => void = () => {}
+  const closed = new Promise<number | null>((resolve) => (ended = resolve))
+  const launched = new Promise<Error | null>((resolve) => {
+    ffmpeg.once('spawn', () => resolve(null))
+    ffmpeg.on('error', (err) => {
+      resolve(err)
+      ended(null)
+    })
   })
+  ffmpeg.on('close', (code) => ended(code))
+  const failed = await launched
+  if (failed) return couldNotStart(failed)
   // ⛔ BELOW NORMAL PRIORITY. The whole point of Keep working (his ask, 2026-09-28)
   // is editing while this runs, and at normal priority x264 took every core for
   // minutes against the preview's decode threads. Windows schedules strictly by
@@ -160,10 +192,8 @@ export async function start(config: NativeExportConfig, win: BrowserWindow): Pro
     if (job) win.webContents.send('native:progress', { frame, totalFrames: job.totalFrames })
   })
   ffmpeg.stdout.on('data', (d: Buffer) => readProgress(d.toString()))
-  // stdin EPIPE if ffmpeg dies early. Swallow it; the close code surfaces the error.
-  ffmpeg.stdin.on('error', () => {})
+  // stdin EPIPE if ffmpeg dies early is swallowed above; the close code surfaces the error.
 
-  const closed = new Promise<number | null>((resolve) => ffmpeg.on('close', (code) => resolve(code)))
   job = { ffmpeg, outPath, audioPath, totalFrames: config.totalFrames, stderr: '', closed }
   // Keep stderr live-updated on the job.
   ffmpeg.stderr.on('data', () => job && (job.stderr = stderr))
