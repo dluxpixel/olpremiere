@@ -104,12 +104,16 @@ function Tab({ tab, name, open, waking, closable }: { tab: EditTab; name: string
       }`}
     >
       <span className="min-w-0 flex-1 truncate">{name}</span>
-      {saveState !== 'saved' && (
+      {/* The open tab keeps the dot's room while saved, so it keeps one width and the tabs after
+          it and the "+" do not slide sideways after every edit. */}
+      {saveState !== 'saved' ? (
         <span
           data-testid="edit-tab-unsaved"
           aria-label={saveState === 'saving' ? 'Saving' : 'Not saved yet'}
           className={`h-1.5 w-1.5 shrink-0 rounded-full ${saveState === 'saving' ? 'animate-pulse bg-text-muted' : 'bg-warning'}`}
         />
+      ) : (
+        open && <span aria-hidden className="h-1.5 w-1.5 shrink-0" />
       )}
       {closable && (
         <button

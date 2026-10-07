@@ -232,12 +232,15 @@ function SaveIndicator() {
         ? 'bg-text-muted animate-pulse'
         : 'bg-warning'
   const label = saveState === 'saved' ? 'Saved' : saveState === 'saving' ? 'Saving…' : 'Unsaved'
+  // ⛔ ONE WIDTH FOR ALL THREE WORDS (2026-10-07). The label cycles Unsaved, Saving, Saved a
+  // second after every edit, and the Back up and Open buttons sit right after it, so they slid
+  // left and right after every edit. 68px fits the longest word and the dot.
   return (
     <span
       data-testid="save-state"
-      className="flex items-center gap-1.5 text-ui-sm text-text-secondary"
+      className="flex w-[68px] shrink-0 items-center gap-1.5 whitespace-nowrap text-ui-sm text-text-secondary"
     >
-      <span className={`h-1.5 w-1.5 rounded-full ${dot}`} />
+      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dot}`} />
       {label}
     </span>
   )

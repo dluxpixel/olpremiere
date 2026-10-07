@@ -336,6 +336,44 @@ test.describe('Full screen', () => {
   })
 })
 
+// 2026-10-07: the save label cycles Unsaved, Saving, Saved a second after every edit, and the
+// Back up button after it slid left and right by the difference in the words' widths; the open
+// tab grew a dot while unsaved and pushed the "+" the same way. Watched on every frame.
+test('nothing in the top bar or the tab strip slides sideways while an edit saves, at 1920x1080', async ({ page }) => {
+  await open(page, 1920, 1080, 280, 450)
+  await expect(page.getByTestId('save-state')).toHaveText('Saved', { timeout: 15_000 })
+  type Sample = { state: string; backup: number; add: number; fits: boolean }
+  await page.evaluate(() => {
+    const w = window as unknown as { __samples: Sample[] }
+    w.__samples = []
+    const left = (id: string) => document.querySelector(`[data-testid="${id}"]`)!.getBoundingClientRect().left
+    const tick = () => {
+      const label = document.querySelector<HTMLElement>('[data-testid="save-state"]')!
+      w.__samples.push({
+        state: label.textContent ?? '',
+        backup: left('save-project-file'),
+        add: left('edit-tabs-add'),
+        fits: label.scrollWidth <= label.clientWidth,
+      })
+      requestAnimationFrame(tick)
+    }
+    tick()
+  })
+  await page.keyboard.press('m')
+  const samples = () => page.evaluate(() => (window as unknown as { __samples: Sample[] }).__samples)
+  // Round the whole cycle: Unsaved seen, and Saved again at the end.
+  await expect
+    .poll(async () => {
+      const all = await samples()
+      return all.some((s) => s.state === 'Unsaved') && all[all.length - 1].state === 'Saved'
+    }, { timeout: 15_000 })
+    .toBe(true)
+  const all = await samples()
+  expect(new Set(all.map((s) => s.backup)), 'Back up project moved').toEqual(new Set([all[0].backup]))
+  expect(new Set(all.map((s) => s.add)), 'the + moved').toEqual(new Set([all[0].add]))
+  expect(all.every((s) => s.fits), 'a save word is cut off').toBe(true)
+})
+
 // ---------------------------------------------------------------------------------------------
 // Escape closes a dialog. The Projects dialog and the Recording studio never listened for it.
 
