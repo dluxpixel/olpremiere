@@ -16,6 +16,7 @@ import { addTrack, recomputeDuration } from '../engine/timeline'
 import {
   activeSequence,
   defaultTitleDef,
+  newAdjustmentClip,
   newClipFromAsset,
   newProject,
   newTitleClip,
@@ -76,6 +77,19 @@ function withCaption(ids: string[]): string {
   useStore.getState().setUI({ selection: [...ids, caption.id] })
   shown.length = 0
   return caption.id
+}
+
+/** An adjustment layer on its own video track over the three clips, selected along with them. Returns its id. */
+function withAdjustment(ids: string[]): string {
+  const adjustment = newAdjustmentClip(0, 5)
+  updateActiveSequence('adjustment', (sq) => {
+    const grown = addTrack(sq, 'video')
+    const empty = grown.tracks.find((t) => t.kind === 'video' && t.clips.length === 0)!
+    return recomputeDuration({ ...grown, tracks: grown.tracks.map((t) => (t.id === empty.id ? { ...t, clips: [adjustment] } : t)) })
+  })
+  useStore.getState().setUI({ selection: [...ids, adjustment.id] })
+  shown.length = 0
+  return adjustment.id
 }
 
 /** Write a stack straight onto a clip, the way he could have arranged it by hand. */
@@ -501,5 +515,102 @@ describe('a look with the footage locked', () => {
     expect(shown.map((t) => t.message)).toEqual([
       'Applied "Teal grade". Looks leave titles and captions clean. 3 clips are on a locked track and were left out',
     ])
+  })
+})
+
+// An adjustment layer grades the composite of everything under it. A look on it
+// AND on the footage under it is the very compounding one look per clip is for:
+// Moody Gym twice turns mid grey near black and teal. So a look that goes on
+// footage leaves the adjustment layers in the same run alone. One on its own,
+// or a run of nothing but adjustment layers, still takes it: that is how he
+// grades a whole edit at once.
+describe('a look and adjustment layers', () => {
+  const adjustmentEffects = (): string[] =>
+    resolveFrame(seq(), 1).ops.flatMap((op) => (op.type === 'adjustment' ? op.effects.map((e) => e.type) : []))
+
+  it('skips an adjustment layer selected with footage, and says so', () => {
+    const ids = threeClips()
+    const adjustment = withAdjustment(ids)
+    expect(applyEffectToClips([...ids, adjustment], 'lookMoodyGym')).toBe(3)
+    expect(types(adjustment)).toEqual([])
+    for (const id of ids) expect(types(id)).toEqual(['lookMoodyGym'])
+    expect(shown.map((t) => t.message)).toEqual(['Added Moody Gym to 3 clips. Adjustment layers left alone, so nothing is graded twice'])
+  })
+
+  it('skips every adjustment layer from "Apply to every clip", so the footage under it is graded once', () => {
+    const ids = threeClips()
+    const adjustment = withAdjustment(ids)
+    applyEffectToAllClips('lookKodakFilm')
+    expect(types(adjustment)).toEqual([])
+    for (const id of ids) expect(types(id)).toEqual(['lookKodakFilm'])
+    expect(adjustmentEffects()).toEqual([])
+    expect(shown.map((t) => t.message)).toEqual([
+      'Applied "Kodak Film" to 3 clips. Adjustment layers left alone, so nothing is graded twice',
+    ])
+  })
+
+  it('says why when the footage already wears the look', () => {
+    const ids = threeClips()
+    applyEffectToClips(ids, 'lookMoodyGym')
+    const adjustment = withAdjustment(ids)
+    expect(applyEffectToClips([...ids, adjustment], 'lookMoodyGym')).toBe(0)
+    expect(types(adjustment)).toEqual([])
+    expect(shown.map((t) => t.message)).toEqual([
+      'Those clips already have Moody Gym. Adjustment layers left alone, so nothing is graded twice',
+    ])
+  })
+
+  it('still goes on an adjustment layer on its own, or a run of only adjustment layers', () => {
+    const ids = threeClips()
+    const adjustment = withAdjustment(ids)
+    expect(applyEffectToClips([adjustment], 'lookMoodyGym')).toBe(1)
+    expect(types(adjustment)).toEqual(['lookMoodyGym'])
+    expect(adjustmentEffects()[0]).toBe('lookMoodyGym')
+    for (const id of ids) expect(types(id)).toEqual([])
+  })
+
+  it('takes "Apply to every clip" when the footage is locked and only the adjustment layer is open', () => {
+    const ids = threeClips()
+    const adjustment = withAdjustment(ids)
+    updateActiveSequence('lock', (sq) => ({
+      ...sq,
+      tracks: sq.tracks.map((t) => (t.clips.some((c) => ids.includes(c.id)) ? { ...t, locked: true } : t)),
+    }))
+    applyEffectToAllClips('lookMoodyGym')
+    expect(types(adjustment)).toEqual(['lookMoodyGym'])
+  })
+
+  it('leaves the look of a preset off an adjustment layer selected with footage, while the rest of the preset reaches it', () => {
+    const ids = threeClips()
+    const adjustment = withAdjustment(ids)
+    useLibrary.setState({ presets: [tealGrade] })
+    applyPresetToSelection('p1')
+    expect(types(adjustment)).toEqual(['saturation'])
+    for (const id of ids) expect(types(id)).toEqual(['lookTealOrange', 'saturation'])
+    expect(shown.map((t) => t.message)).toEqual([
+      'Applied "Teal grade" to 4 clips. Teal and Orange left off adjustment layers, so nothing is graded twice',
+    ])
+  })
+
+  it('leaves the look of a preset off every adjustment layer from "Apply to every clip"', () => {
+    const ids = threeClips()
+    const adjustment = withAdjustment(ids)
+    useLibrary.setState({ presets: [moodyOnly] })
+    applyPresetToAllClips('p2')
+    expect(types(adjustment)).toEqual([])
+    for (const id of ids) expect(types(id)).toEqual(['lookMoodyGym'])
+    expect(adjustmentEffects()).toEqual([])
+    expect(shown.map((t) => t.message)).toEqual([
+      'Applied "Moody" to 3 clips. Moody Gym left off adjustment layers, so nothing is graded twice',
+    ])
+  })
+
+  it('still puts a preset\'s look on an adjustment layer on its own', () => {
+    const ids = threeClips()
+    const adjustment = withAdjustment(ids)
+    useStore.getState().setUI({ selection: [adjustment] })
+    useLibrary.setState({ presets: [tealGrade] })
+    applyPresetToSelection('p1')
+    expect(types(adjustment)).toEqual(['lookTealOrange', 'saturation'])
   })
 })

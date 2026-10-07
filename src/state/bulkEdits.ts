@@ -200,6 +200,8 @@ interface EffectRun {
   changed: number
   /** A look only: titles and captions it left clean. */
   titles: number
+  /** A look only: adjustment layers it left alone because footage in the same run took it. */
+  adjustments: number
   /** A look only: clips already wearing this very look, left as they were. */
   already: number
   /** A look only: of the changed clips, the ones whose old look it swapped out. */
@@ -232,23 +234,34 @@ export function lockedLeftOut(n: number): string {
  * white words and grains them, and a film look haloes them in red. Every door to
  * a look (the shelf's double click and Enter, its menu, "Apply to every clip",
  * the drop, the multi Inspector) arrives here, so this is the one place to say it.
+ *
+ * A look that goes on footage leaves the ADJUSTMENT LAYERS in the same run
+ * alone. An adjustment layer grades the composite of everything under it, so a
+ * look on it and on the footage under it is the very compounding one look per
+ * clip is for. An adjustment layer on its own, or a run of nothing but
+ * adjustment layers, still takes the look: that is how he grades a whole edit.
  */
 function runEffect(ids: Iterable<string>, type: string): EffectRun {
-  const where = new Map<string, { kind: string; locked: boolean; title: boolean }>()
+  const where = new Map<string, { kind: string; locked: boolean; title: boolean; adjustment: boolean }>()
   for (const t of activeSequence(useStore.getState().project).tracks) {
-    for (const c of t.clips) where.set(c.id, { kind: t.kind, locked: t.locked, title: !!c.title })
+    for (const c of t.clips) {
+      where.set(c.id, { kind: t.kind, locked: t.locked, title: !!c.title, adjustment: !!c.adjustment })
+    }
   }
   const look = isLookType(type)
   const requested = [...ids]
   const visual = requested.filter((id) => where.get(id)?.kind !== 'audio')
   const unlocked = visual.filter((id) => !where.get(id)?.locked)
-  const open = look ? unlocked.filter((id) => !where.get(id)?.title) : unlocked
+  const lookable = look ? unlocked.filter((id) => !where.get(id)?.title) : unlocked
+  const footage = lookable.filter((id) => !where.get(id)?.adjustment)
+  const open = look && footage.length > 0 ? footage : lookable
   const run: EffectRun = {
     requested: requested.length,
     visual: visual.length,
     locked: visual.length - unlocked.length,
     changed: 0,
-    titles: unlocked.length - open.length,
+    titles: unlocked.length - lookable.length,
+    adjustments: lookable.length - open.length,
     already: 0,
     swapped: 0,
   }
@@ -318,9 +331,10 @@ export function applyEffectToClips(ids: Iterable<string>, type: string): number 
   }
   // A look that swapped one out says so even on a lone clip: the old look's card
   // is gone from the Inspector, and nothing else would tell him where it went.
-  if (run.changed === 1 && run.swapped === 1 && run.swappedFrom && run.locked + run.titles + run.already === 0) {
+  const leftAlone = run.locked + run.titles + run.adjustments + run.already
+  if (run.changed === 1 && run.swapped === 1 && run.swappedFrom && leftAlone === 0) {
     show(`Swapped ${run.swappedFrom} for ${label}`, 'success')
-  } else if (run.changed > 1 || run.locked > 0 || run.swapped + run.titles + run.already > 0) {
+  } else if (run.changed > 1 || run.swapped + leftAlone > 0) {
     show(`Added ${label} to ${run.changed} clip${run.changed === 1 ? '' : 's'}${lookAfterword(run)}`, 'success')
   }
   return run.changed
@@ -338,6 +352,7 @@ function lookAfterword(run: EffectRun): string {
   }
   if (run.already > 0) s += `. ${run.already} already had it`
   if (run.titles > 0) s += '. Titles and captions left clean'
+  if (run.adjustments > 0) s += '. Adjustment layers left alone, so nothing is graded twice'
   if (run.locked > 0) s += `. ${lockedLeftOut(run.locked)}`
   return s
 }
@@ -347,7 +362,8 @@ function lookAfterword(run: EffectRun): string {
  * sequence, all in ONE undo step, no selection needed. Audio clips are skipped
  * (a visual effect means nothing on them) and locked tracks are skipped by
  * mapClips. Mirrors applyPresetToAllClips in library.ts. A look swaps out the
- * look each clip wore and leaves titles and captions clean (runEffect).
+ * look each clip wore and leaves titles, captions and, over footage, adjustment
+ * layers clean (runEffect).
  */
 export function applyEffectToAllClips(type: string): void {
   const show = useToasts.getState().show

@@ -797,6 +797,8 @@ interface PresetRun {
   look?: string
   /** Titles and captions the look left clean. The rest of the preset still went on them. */
   titles: number
+  /** Adjustment layers the look left off, because footage in the same run took it. The rest still went on. */
+  adjustments: number
   /** Clips already wearing the look, which kept the one they had. */
   already: number
   /** Clips whose old look the preset's look took the place of. */
@@ -815,7 +817,10 @@ interface PresetRun {
  * other door (runEffect in bulkEdits.ts), or a preset holding Moody Gym stacks it
  * on the Moody Gym the clip already wears and turns mid grey near black: one look
  * per clip (putPresetLook), and never on a title or a caption, whose style owns
- * its colour. The rest of the preset still goes on those.
+ * its colour. Nor on an adjustment layer when footage in the same run takes it:
+ * the layer grades the footage under it, so the look would land twice. An
+ * adjustment layer on its own, or a run of only those, still takes it. The rest
+ * of the preset still goes on all of them.
  *
  * A preset saved from a clip that stacked two looks before the rule is held to
  * one first, its last, in its first one's slot (the way putLook leaves such a
@@ -826,18 +831,25 @@ interface PresetRun {
 function runPreset(preset: EffectPreset, ids: readonly Id[], label: string): PresetRun {
   const looks = preset.effects.filter((e) => isLookType(e.type))
   const last = looks[looks.length - 1]
-  const run: PresetRun = { changed: 0, titles: 0, already: 0, swapped: 0 }
+  const run: PresetRun = { changed: 0, titles: 0, adjustments: 0, already: 0, swapped: 0 }
   if (last) run.look = getEffect(last.type)?.label ?? last.type
   const swappedFrom = new Set<string>()
+  const byId = new Map(activeSequence(useStore.getState().project).tracks.flatMap((t) => t.clips.map((c) => [c.id, c])))
+  const footage = ids.some((id) => {
+    const c = byId.get(id)
+    return !!c && !c.title && !c.adjustment
+  })
   mapClips(ids, label, (c) => {
     // The preset's own stack, one look at most, as its OWN fresh-id copy.
     const stack = withPreset({ ...c, effects: [] }, copyEffects(preset.effects, newId)).effects
-    const next = withPreset(c, c.title ? stack.filter((e) => !isLookType(e.type)) : stack)
+    const graded = !!c.adjustment && footage
+    const next = withPreset(c, c.title || graded ? stack.filter((e) => !isLookType(e.type)) : stack)
     if (next !== c) run.changed++
     if (!last) return next
     const old = wornLook(c)
     const worn = wornLook(next)
     if (c.title) run.titles++
+    else if (graded) run.adjustments++
     else if (old && worn?.id === old.id) run.already++
     else if (old && worn && worn.type !== old.type) {
       run.swapped++
@@ -882,6 +894,7 @@ function presetLookNote(run: PresetRun): string {
   }
   if (run.already > 0) s += `. ${run.already} already had ${run.look}`
   if (run.titles > 0) s += '. Looks leave titles and captions clean'
+  if (run.adjustments > 0) s += `. ${run.look} left off adjustment layers, so nothing is graded twice`
   return s
 }
 
