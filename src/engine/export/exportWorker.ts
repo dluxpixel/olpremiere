@@ -21,9 +21,9 @@ import {
   Output,
   StreamTarget,
 } from 'mediabunny'
-import type { StreamTargetChunk, WrappedCanvas } from 'mediabunny'
+import type { StreamTargetChunk } from 'mediabunny'
 import { ProviderPool } from './providerPool'
-import { frameReached } from '../frameIndex'
+import { closeProvider, frameForClip, reverseWindowFrames, type ClipProvider } from './clipReader'
 import { browserConfigCheck, pickDecoderOptions } from './decoderChoice'
 import { createRenderer } from '../render/glRenderer'
 import { resolveFrame } from '../render/resolve'
@@ -256,72 +256,7 @@ const nextDequeue = (enc: VideoEncoder | AudioEncoder): Promise<void> =>
     enc.addEventListener('dequeue', done, { once: true })
   })
 
-// A per-clip monotonic frame reader. Random-access getCanvas() returns null on
-// VFR / cue-less MediaRecorder webm inside a worker, so export pulls frames
-// SEQUENTIALLY (canvases()) and holds the newest frame the requested source
-// time has reached (frameReached: the NEAREST frame, the very one the paused
-// preview shows). Classic pull-down. One Input per CLIP, so two clips
-// of the same asset (e.g. across a cross-dissolve) read independently.
-// A ProviderPool owns the lifetime of these (see providerPool.ts): it closes the
-// least recently used one once the live count passes a ceiling, so the decoder
-// count stops tracking how finely the timeline is cut.
-interface ClipProvider {
-  /** Kept so the iterator can be re-opened for a backward (reverse-clip) seek. */
-  sink: CanvasSink
-  iterator: AsyncGenerator<WrappedCanvas, void, unknown>
-  dispose: () => void
-  started: boolean
-  current: WrappedCanvas | null
-  ahead: WrappedCanvas | null
-  /** The source's frame rate, which sets the slots frames are picked by. */
-  fps: number | undefined
-}
-
-/** Closes one provider's iterator and its demuxer. The pool calls this exactly once. */
-const closeProvider = (p: ClipProvider): void => {
-  // p.iterator, not the one captured at creation, since a reverse re-seek may
-  // have replaced it.
-  void p.iterator.return?.(undefined)
-  p.dispose()
-}
-
-async function nextFrame(p: ClipProvider): Promise<WrappedCanvas | null> {
-  const r = await p.iterator.next()
-  return r.done ? null : r.value
-}
-
-/**
- * Advance the clip's sequential reader to the frame shown at sourceT.
- *
- * ⛔ THE NEAREST FRAME, NOT THE LAST ONE THAT STARTED. That floor put his
- * iPhone cuts 24.1 ms behind their sound on average, always late
- * (frameIndex.ts). The rule is the paused preview's own, so preview == export.
- */
-async function frameForClip(p: ClipProvider, sourceT: number): Promise<OffscreenCanvas | HTMLCanvasElement | null> {
-  // A REVERSE clip (speed < 0) requests DECREASING sourceT. The reader is
-  // forward-only, so a backward jump means re-opening the sink iterator from the
-  // new time (a random-access re-seek). Without this the whole reversed clip
-  // would freeze on its furthest-decoded frame. The preview reverses correctly
-  // (random-access frame cache) but the export would not.
-  if (p.current && !frameReached(p.current.timestamp, sourceT, p.fps)) {
-    void p.iterator.return?.(undefined)
-    p.iterator = p.sink.canvases(Math.max(0, sourceT))
-    p.started = false
-    p.current = null
-    p.ahead = null
-  }
-  if (!p.started) {
-    p.started = true
-    p.ahead = await nextFrame(p)
-  }
-  while (p.ahead && frameReached(p.ahead.timestamp, sourceT, p.fps)) {
-    p.current = p.ahead
-    p.ahead = await nextFrame(p)
-  }
-  // Before the first packet clamp to it; past the last, freeze on it.
-  const w = p.current ?? p.ahead
-  return w ? w.canvas : null
-}
+// The per-clip frame reader, forward and in reverse: clipReader.ts.
 
 /**
  * NATIVE (Electron ffmpeg) render path. Uses the SAME media-open + shared WebGL
@@ -411,6 +346,8 @@ async function runNative(init: Extract<ExportRequest, { type: 'init' }>): Promis
         current: null,
         ahead: null,
         fps: fpsById.get(clip.assetId),
+        back: null,
+        backFrames: reverseWindowFrames(track.displayWidth, track.displayHeight),
       }
       providers.set(clip.id, clip, provider)
       return provider
@@ -882,7 +819,7 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
       const sink = new CanvasSink(track, { decoderOptions })
       // Decode forward from just before the clip's in-point; a transition reads
       // past the out-point (handles), so leave the end open (to media end). For a
-      // reverse clip frameForClip re-opens sink.canvases() at each backward step.
+      // reverse clip frameForClip reads backward a window at a time (clipReader.ts).
       const iterator = sink.canvases(Math.max(0, clip.inS))
       const provider: ClipProvider = {
         sink,
@@ -892,6 +829,8 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
         current: null,
         ahead: null,
         fps: fpsById.get(clip.assetId),
+        back: null,
+        backFrames: reverseWindowFrames(track.displayWidth, track.displayHeight),
       }
       providers.set(clip.id, clip, provider)
       return provider
