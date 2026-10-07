@@ -346,6 +346,15 @@ function proxyArgs(inPath: string, outPath: string, encoder: 'qsv' | 'nvenc' | '
     '-loglevel',
     'error',
     '-y',
+    // ⛔ THE ORIGINAL'S FRAME TIMES, NOT TIMES FROM ZERO (PB-19, 2026-10-07). The
+    // preview and the export both place a frame by its own timestamp
+    // (frameIndex.ts), so a copy must keep them. ffmpeg rebases a source whose
+    // streams all start after zero (a piece cut out of a longer recording) to
+    // start at zero, and every paused frame of it came out of the copy that many
+    // frames on from the one the export writes: fifteen, on a file starting half
+    // a second in. Measured: plain, 60 fps, 29.97, variable rate and a late video
+    // stream already matched, and still do.
+    '-copyts',
     '-i',
     inPath,
     // Height from the pixel budget at the source's own aspect: w*h <= B with
