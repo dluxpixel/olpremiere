@@ -79,8 +79,14 @@ function fakeMain() {
   const starts: Record<string, unknown>[] = []
   const finish = { hold: false, release: () => {}, fail: null as Error | null }
   const startGate = { hold: false, release: () => {} }
+  // What the save dialog answers: a path, or null when he dismisses it.
+  const picker = { answer: 'C:\\Videos\\Holiday.mp4' as string | null }
   const api = {
     isElectron: true,
+    nativePickOutput: () => {
+      log.push('pick')
+      return Promise.resolve(picker.answer)
+    },
     nativePrepareAudio: (wav: ArrayBuffer) => {
       log.push('prepareAudio')
       wavs.push(wav)
@@ -120,7 +126,7 @@ function fakeMain() {
       }
     },
   }
-  return { api, log, writes, wavs, starts, finish, startGate, ffmpegSays: (frame: number) => progress?.({ frame, totalFrames: 0 }) }
+  return { api, log, writes, wavs, starts, finish, startGate, picker, ffmpegSays: (frame: number) => progress?.({ frame, totalFrames: 0 }) }
 }
 
 function project(): Project {
@@ -142,10 +148,10 @@ const frame = (n: number): ArrayBuffer => new Uint8Array([n, 0, 0, 0]).buffer
 let main: ReturnType<typeof fakeMain>
 let progress: ExportProgress[]
 
-function start(signal = new AbortController().signal) {
+function start(signal = new AbortController().signal, opts: { outPath?: string; onOutPath?: (path: string) => void } = {}) {
   const p = project()
   const settings = planExport(activeSequence(p)).settings
-  const run = exportNative(p, settings, { encoder: 'x264', quality: 14, suggestedName: 'Holiday.mp4' }, (pr) => progress.push(pr), signal)
+  const run = exportNative(p, settings, { encoder: 'x264', quality: 14, suggestedName: 'Holiday.mp4', ...opts }, (pr) => progress.push(pr), signal)
   // Whatever it ends as, nothing may be left unhandled.
   run.catch(() => undefined)
   return run
@@ -351,7 +357,8 @@ describe('the sound', () => {
     } satisfies AudioMixPlan
     start()
     await flush()
-    expect(main.log.slice(0, 2)).toEqual(['prepareAudio', 'start'])
+    // (The save dialog comes before both since 2026-10-07: see "where it goes is asked first".)
+    expect(main.log.slice(0, 3)).toEqual(['pick', 'prepareAudio', 'start'])
     expect(main.starts[0].hasAudio).toBe(true)
     const dv = new DataView(main.wavs[0])
     expect([0, 1, 2, 3].map((i) => dv.getFloat32(44 + i * 4, true))).toEqual([0.25, -0.25, 0.5, -0.5])
@@ -369,5 +376,64 @@ describe('a timeline above 60 fps', () => {
     )
     await flush()
     expect(h.audioOpts[0]).toMatchObject({ fps: 60 })
+  })
+})
+
+/** A mix of `n` segments that counts how many were rendered, one tick apart like the real render. */
+function countedMix(n: number) {
+  const made = { segments: 0 }
+  const plan = {
+    info: { sampleRate: 48000, numberOfChannels: 2, totalFrames: n * 2 },
+    render: async (onSegment) => {
+      for (let i = 0; i < n; i++) {
+        await new Promise((r) => setTimeout(r, 0))
+        made.segments++
+        await onSegment([new Float32Array([0.1, 0.2]), new Float32Array([0.3, 0.4])] as Float32Array<ArrayBuffer>[])
+      }
+    },
+  } satisfies AudioMixPlan
+  return { plan, made }
+}
+
+describe('⛔ where it goes is asked before the sound is made', () => {
+  // The dialog used to come up inside start, after the whole mix had been rendered (twice with
+  // Platform loudness on), so dismissing it threw all of that away (export audit, 2026-10-06).
+  it('the save dialog comes first; dismissing it renders no sound and starts nothing', async () => {
+    const { plan, made } = countedMix(3)
+    h.audioPlan = plan
+    main.picker.answer = null
+    await expect(start()).resolves.toBeNull()
+    expect(main.log).toEqual(['pick'])
+    expect(made.segments).toBe(0)
+  })
+
+  it('ffmpeg writes where he chose, and the job is told so it can use it again', async () => {
+    const told: string[] = []
+    start(undefined, { onOutPath: (path) => told.push(path) })
+    await flush()
+    expect(told).toEqual(['C:\\Videos\\Holiday.mp4'])
+    expect(main.starts[0].outPath).toBe('C:\\Videos\\Holiday.mp4')
+  })
+
+  it('a restart or Try again that already has the path asks nothing', async () => {
+    start(undefined, { outPath: 'D:\\Shorts\\Gym.mp4' })
+    await flush()
+    expect(main.log).not.toContain('pick')
+    expect(main.starts[0].outPath).toBe('D:\\Shorts\\Gym.mp4')
+  })
+})
+
+describe('⛔ a cancel while the sound is being made', () => {
+  // Nothing listened: Cancel during the sound of a long video did nothing until all of it was rendered.
+  it('stops at the next segment, and leaves nothing in main', async () => {
+    const { plan, made } = countedMix(10)
+    h.audioPlan = plan
+    const ctrl = new AbortController()
+    const run = start(ctrl.signal)
+    while (made.segments < 1) await new Promise((r) => setTimeout(r, 0))
+    ctrl.abort()
+    await expect(run).rejects.toMatchObject({ name: 'AbortError' })
+    expect(made.segments).toBeLessThanOrEqual(2)
+    expect(main.log).toEqual(['pick'])
   })
 })

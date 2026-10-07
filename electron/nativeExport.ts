@@ -10,7 +10,7 @@ import { writeFile, unlink, stat } from 'node:fs/promises'
 import { unlinkSync } from 'node:fs'
 import { constants as osConstants, setPriority, tmpdir } from 'node:os'
 import path from 'node:path'
-import type { NativeCaps, NativeExportConfig, NativeFinishResult, NativeStartResult } from './ipc-types'
+import type { NativeCaps, NativeEncoder, NativeExportConfig, NativeFinishResult, NativeStartResult } from './ipc-types'
 import { buildArgs, containerExt } from './exportArgs'
 import { rememberFolder, suggestedPath } from './saveFiles'
 
@@ -107,24 +107,41 @@ export async function prepareAudio(wav: ArrayBuffer): Promise<void> {
   pendingAudioPath = p
 }
 
-// -- start: pick destination + spawn ---------------------------------------
+// -- pickOutput: the save dialog alone, before anything is made --------------
+/**
+ * Where the file goes, or null when he dismissed the dialog.
+ *
+ * ⛔ ASKED FIRST, ON ITS OWN. The dialog used to come up inside start(), after
+ * the whole sound mix had been rendered (twice with Platform loudness on), so
+ * dismissing it threw all of that away, and the loudness switch, which starts
+ * the export again, asked a second time for a file he had already named (export
+ * audit, 2026-10-06). The renderer now asks this before the sound, keeps the
+ * answer, and hands it to start() as config.outPath.
+ */
+export async function pickOutput(encoder: NativeEncoder, suggestedName: string, win: BrowserWindow): Promise<string | null> {
+  const res = await dialog.showSaveDialog(win, {
+    title: 'Export video',
+    // His last export folder and a name nothing there has yet (saveFiles.ts):
+    // never the same 'Untitled Project.mp4' and a replace prompt.
+    defaultPath: suggestedPath('export', suggestedName.replace(/\.[^.]+$/, ''), containerExt(encoder)),
+    filters: [{ name: encoder === 'prores' ? 'QuickTime' : 'MP4 video', extensions: [containerExt(encoder)] }],
+  })
+  if (res.canceled || !res.filePath) return null
+  rememberFolder('export', res.filePath)
+  return res.filePath
+}
+
+// -- start: pick destination if not chosen yet + spawn -----------------------
 export async function start(config: NativeExportConfig, win: BrowserWindow): Promise<NativeStartResult> {
   let outPath = config.outPath
   if (!outPath) {
-    const res = await dialog.showSaveDialog(win, {
-      title: 'Export video',
-      // His last export folder and a name nothing there has yet (saveFiles.ts):
-      // never the same 'Untitled Project.mp4' and a replace prompt.
-      defaultPath: suggestedPath('export', config.suggestedName.replace(/\.[^.]+$/, ''), containerExt(config.encoder)),
-      filters: [{ name: config.encoder === 'prores' ? 'QuickTime' : 'MP4 video', extensions: [containerExt(config.encoder)] }],
-    })
-    if (res.canceled || !res.filePath) {
+    const picked = await pickOutput(config.encoder, config.suggestedName, win)
+    if (!picked) {
       if (pendingAudioPath) void unlink(pendingAudioPath).catch(() => {})
       pendingAudioPath = null
       return { started: false, cancelled: true }
     }
-    outPath = res.filePath
-    rememberFolder('export', outPath)
+    outPath = picked
   }
 
   const audioPath = config.hasAudio ? pendingAudioPath : null

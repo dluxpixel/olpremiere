@@ -8,6 +8,7 @@ import type {
   CutoutResult,
   ExportTaskbarState,
   NativeCaps,
+  NativeEncoder,
   NativeExportConfig,
   NativeFinishResult,
   NativeProgress,
@@ -24,6 +25,7 @@ const api: OlApi = {
   // spec and reports TOTAL rather than free. See engine/memoryBudget.ts.
   systemMemory: (): Promise<{ totalKb: number; freeKb: number }> => ipcRenderer.invoke('system:memory'),
   nativeProbe: (): Promise<NativeCaps> => ipcRenderer.invoke('native:probe'),
+  nativePickOutput: (encoder: NativeEncoder, suggestedName: string) => ipcRenderer.invoke('native:pickOutput', encoder, suggestedName),
   nativePrepareAudio: (wav: ArrayBuffer) => ipcRenderer.invoke('native:prepareAudio', wav),
   nativeStart: (config: NativeExportConfig): Promise<NativeStartResult> => ipcRenderer.invoke('native:start', config),
   nativeWriteFrame: (frame: ArrayBuffer) => ipcRenderer.invoke('native:writeFrame', frame),

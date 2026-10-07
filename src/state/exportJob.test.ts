@@ -36,6 +36,7 @@ import { isCriticalWorkInFlight } from './unloadGuard'
 interface NativeCall {
   project: Project
   settings: ExportSettings
+  opts: { outPath?: string; onOutPath?: (path: string) => void }
   onProgress: (p: ExportProgress) => void
   signal: AbortSignal
   resolve: (r: { outPath: string; sizeBytes: number } | null) => void
@@ -61,12 +62,12 @@ vi.mock('../engine/export/nativeExport', () => ({
   exportNative: (
     project: Project,
     settings: ExportSettings,
-    _opts: unknown,
+    opts: NativeCall['opts'],
     onProgress: (p: ExportProgress) => void,
     signal: AbortSignal,
   ) =>
     new Promise((resolve, reject) => {
-      h.native.push({ project, settings, onProgress, signal, resolve, reject })
+      h.native.push({ project, settings, opts, onProgress, signal, resolve, reject })
       // The real one rejects with AbortError once ffmpeg is told to stop.
       signal.addEventListener('abort', () => reject(new DOMException('Export cancelled', 'AbortError')))
     }),
@@ -450,5 +451,48 @@ describe('platform loudness', () => {
     await flush()
     expect(h.native).toHaveLength(1)
     expect(h.native[0].signal.aborted).toBe(false)
+  })
+})
+
+describe('⛔ the file he named is asked for once', () => {
+  // The loudness switch restarts the export, and the save dialog used to come up again for a file
+  // he had already named; Try again asked again too (export audit, 2026-10-06).
+  const chosen = 'D:\\Shorts\\Gym day.mp4'
+
+  it('the loudness restart writes where he said, without asking again', async () => {
+    requestExport()
+    expect(h.native[0].opts.outPath).toBeUndefined()
+    h.native[0].opts.onOutPath?.(chosen)
+    setExportLoudness(false)
+    await flush()
+    expect(h.native[1].opts.outPath).toBe(chosen)
+  })
+
+  it('so does Try again', async () => {
+    requestExport()
+    h.native[0].opts.onOutPath?.(chosen)
+    h.native[0].reject(new Error('ffmpeg exited during export (exit code -28): No space left on device'))
+    await flush()
+    retryExport()
+    expect(h.native[1].opts.outPath).toBe(chosen)
+  })
+
+  it('unless the place itself was the problem: then Try again asks for another', async () => {
+    requestExport()
+    h.native[0].opts.onOutPath?.(chosen)
+    h.native[0].reject(new Error('ffmpeg exited during export (exit code -13): Permission denied'))
+    await flush()
+    retryExport()
+    expect(h.native[1].opts.outPath).toBeUndefined()
+  })
+
+  it('a new export asks afresh', async () => {
+    requestExport()
+    h.native[0].opts.onOutPath?.(chosen)
+    h.native[0].resolve({ outPath: chosen, sizeBytes: 1 })
+    await flush()
+    closeExportDialog()
+    requestExport()
+    expect(h.native[1].opts.outPath).toBeUndefined()
   })
 })

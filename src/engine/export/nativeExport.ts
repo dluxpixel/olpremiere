@@ -1,8 +1,8 @@
-// Renderer-side orchestration for the NATIVE (Electron ffmpeg) export. Renders
-// the audio mix to a WAV and hands it to main, starts ffmpeg (native save
-// dialog), then spawns the SAME export worker in native mode and relays each
-// rendered RGBA frame to ffmpeg with serialized backpressure. Web builds never
-// call this (isElectron gate).
+// Renderer-side orchestration for the NATIVE (Electron ffmpeg) export. Asks
+// where to save (native save dialog), renders the audio mix to a WAV and hands
+// it to main, starts ffmpeg, then spawns the SAME export worker in native mode
+// and relays each rendered RGBA frame to ffmpeg with serialized backpressure.
+// Web builds never call this (isElectron gate).
 
 import type { NativeEncoder, NativeStartResult } from '../../../electron/ipc-types'
 import { blobForExport } from '../../state/mediaMirror'
@@ -67,7 +67,15 @@ export function buildWavF32(channels: Float32Array[], sampleRate: number): Array
 export async function exportNative(
   project: Project,
   settings: ExportSettings,
-  opts: { encoder: NativeEncoder; quality: number; suggestedName: string },
+  opts: {
+    encoder: NativeEncoder
+    quality: number
+    suggestedName: string
+    /** Where to write, when the job already knows (a restart, Try again): no dialog then. */
+    outPath?: string
+    /** Told where he chose, so a restart or Try again can write there without asking again. */
+    onOutPath?: (path: string) => void
+  },
   onProgress: (p: ExportProgress) => void,
   signal: AbortSignal,
 ): Promise<NativeExportResult | null> {
@@ -96,6 +104,18 @@ export async function exportNative(
   }
   if (signal.aborted) throw abortError()
 
+  // ⛔ WHERE IT GOES IS ASKED BEFORE THE SOUND IS MADE. The save dialog used to
+  // come up inside nativeStart, after the whole mix had been rendered (twice
+  // with Platform loudness on): dismissing it threw all that away, and the
+  // loudness switch, which runs the export again, asked a second time for a
+  // file he had already named (export audit, 2026-10-06). A path the job
+  // already holds (a restart, Try again) is used as it is.
+  const outPath = opts.outPath ?? (await api.nativePickOutput(opts.encoder, opts.suggestedName))
+  // Dismissed: nothing was made, so there is nothing to tidy.
+  if (!outPath) return null
+  opts.onOutPath?.(outPath)
+  if (signal.aborted) throw abortError()
+
   // Render the audio mix to a WAV and hand it to main BEFORE ffmpeg spawns (it's
   // an -i input). Reuses the exact planAudioMix rules → same mix as WebCodecs.
   onProgress({ phase: 'audio', framesDone: 0, framesTotal })
@@ -121,6 +141,10 @@ export async function exportNative(
   if (plan && plan.info.totalFrames > 0) {
     const perChannel: Float32Array[][] = []
     await plan.render((cd) => {
+      // ⛔ A CANCEL STOPS THE MIX AT THE NEXT SEGMENT (30 s of sound), not after
+      // the last one. Nothing here listened before, so Cancel during the sound
+      // of a long video did nothing until all of it had been rendered.
+      if (signal.aborted) throw abortError()
       cd.forEach((ch, i) => (perChannel[i] ??= []).push(ch))
     })
     const channels = perChannel.map(concatFloat32)
@@ -150,10 +174,11 @@ export async function exportNative(
     throw abortError()
   }
 
-  // Start ffmpeg (native save dialog in main).
+  // Start ffmpeg, writing where he said above.
   let startRes: NativeStartResult
   try {
     startRes = await api.nativeStart({
+      outPath,
       width: settings.width,
       height: settings.height,
       fps: settings.fps,
@@ -170,8 +195,6 @@ export async function exportNative(
     await dropPreparedAudio()
     throw err
   }
-  // A cancelled save dialog is cleaned up by main, which owns the file.
-  if (startRes.cancelled) return null
   if (!startRes.started) {
     await dropPreparedAudio()
     throw new Error(startRes.error ?? 'could not start ffmpeg')

@@ -209,6 +209,11 @@ export interface OlApi {
   getVersion(): Promise<string>
   /** Which native encoders this machine's bundled ffmpeg + GPU actually offer. */
   nativeProbe(): Promise<NativeCaps>
+  /**
+   * The save dialog alone: where the export goes, or null when he dismissed it.
+   * Asked before the sound is rendered, so a dismissed dialog throws nothing away.
+   */
+  nativePickOutput(encoder: NativeEncoder, suggestedName: string): Promise<string | null>
   /** Write the rendered audio mix (a full WAV) to a temp file BEFORE starting (it's an ffmpeg input). */
   nativePrepareAudio(wav: ArrayBuffer): Promise<{ ok: boolean }>
   /** Pick a destination (or use config.outPath) and spawn ffmpeg. */

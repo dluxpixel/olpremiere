@@ -16,6 +16,9 @@ export interface PlainExportError {
   generic: boolean
 }
 
+/** The line for a file that could not be written where he chose: Try again asks for another place. */
+export const CANNOT_WRITE_THERE = 'Could not write the file there. Choose another folder and try again.'
+
 const RULES: { test: RegExp; say: (m: RegExpExecArray) => string }[] = [
   {
     test: /no space left on device|ENOSPC|not enough space on the disk|disk (?:is )?full/i,
@@ -44,7 +47,7 @@ const RULES: { test: RegExp; say: (m: RegExpExecArray) => string }[] = [
   },
   {
     test: /Error opening output|No such file or directory|Permission denied|EACCES|EPERM/i,
-    say: () => 'Could not write the file there. Choose another folder and try again.',
+    say: () => CANNOT_WRITE_THERE,
   },
 ]
 

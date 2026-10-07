@@ -33,7 +33,7 @@ import { planExport, type ExportPlan } from '../engine/export/exportPlan'
 import { PLATFORM_TARGET_LUFS } from '../engine/loudness'
 import { exportNative } from '../engine/export/nativeExport'
 import { addSample, timeLeftS, type ProgressSample } from '../engine/export/timeLeft'
-import { plainExportError } from '../engine/export/plainError'
+import { CANNOT_WRITE_THERE, plainExportError } from '../engine/export/plainError'
 import { activeSequence, type Project } from '../engine/types'
 import { isElectron } from '../platform'
 import { isPhoneLayout } from '../ui/phoneLayout'
@@ -75,8 +75,12 @@ interface ExportJobState {
 
 export const useExportJob = create<ExportJobState>(() => ({ job: null, dialogOpen: false, alreadyRunning: false }))
 
-/** The frozen copy the current job reads, and the media keys it needs. */
-let frozen: { project: Project; blobKeys: string[] } | null = null
+/**
+ * The frozen copy the current job reads, the media keys it needs, and on the
+ * desktop the file he chose for it: a restart (the loudness switch) and Try
+ * again write there without asking again.
+ */
+let frozen: { project: Project; blobKeys: string[]; outPath?: string } | null = null
 let abort: AbortController | null = null
 let nextJobId = 1
 /** A plan to start the moment the running export has finished cancelling. */
@@ -408,6 +412,8 @@ function succeed(id: number, stage: Extract<ExportStage, { kind: 'done' }>): voi
 function fail(id: number, err: unknown): void {
   const raw = err instanceof Error ? err.message : String(err)
   const plain = plainExportError(raw)
+  // The place itself was the problem: Try again asks for another.
+  if (plain.line === CANNOT_WRITE_THERE && frozen) frozen.outPath = undefined
   const name = useExportJob.getState().job?.projectName ?? ''
   const stage: ExportStage = { kind: 'error', message: plain.line, ...(plain.details ? { details: plain.details } : {}) }
   if (!patchJob(id, () => ({ stage }))) return
@@ -430,10 +436,19 @@ async function runNative(id: number, project: Project, plan: ExportPlan, signal:
   const baseName = exportBaseName(project.name)
   const endCritical = beginCriticalWork()
   try {
+    const f = frozen
     const res = await exportNative(
       project,
       plan.settings,
-      { encoder: plan.nativeEncoder, quality: plan.qp, suggestedName: `${baseName}.${plan.nativeExt}` },
+      {
+        encoder: plan.nativeEncoder,
+        quality: plan.qp,
+        suggestedName: `${baseName}.${plan.nativeExt}`,
+        outPath: f?.outPath,
+        onOutPath: (path) => {
+          if (f && frozen === f) f.outPath = path
+        },
+      },
       (p) => onProgress(id, p),
       signal,
     )
