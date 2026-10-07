@@ -30,6 +30,8 @@ interface FakeBuffer {
 }
 const buffers = new Map<string, FakeBuffer>()
 let delaysMade = 0
+/** How many offline renders ran: one per segment per pass. */
+let rendersMade = 0
 
 class Param {
   private set = false
@@ -112,6 +114,7 @@ class FakeOfflineContext {
     return s
   }
   async startRendering() {
+    rendersMade++
     const out = Array.from({ length: this.channels }, () => new Float32Array(this.frames))
     // Every path from a source to the destination: the gains multiply, the
     // delays add, a compressor adds Chromium's 288 samples (and no dynamics:
@@ -163,7 +166,7 @@ vi.mock('../audio', async () => {
     clipEdges: () => undefined,
   }
 })
-const { planAudioMix, AUDIO_SEGMENT_FRAMES, audioFramesFor } = await import('./audioRender')
+const { planAudioMix, AUDIO_SEGMENT_FRAMES, KEEP_MEASURED_MIX_FRAMES, audioFramesFor } = await import('./audioRender')
 
 // --- the timeline --------------------------------------------------------------
 
@@ -324,6 +327,32 @@ describe('Platform loudness', () => {
     for (const v of joined[0]) peak = Math.max(peak, Math.abs(v))
     expect(peak).toBeLessThanOrEqual(LIMIT_CEILING)
     expect(measureLoudness(joined, SR).lufs!).toBeCloseTo(-14, 0)
+  })
+})
+
+describe('⛔ Platform loudness renders a mix that fits only once', () => {
+  // The measure pass and the export pass each rendered the whole mix, every clip, stretch and effect,
+  // to arrive at the same samples twice (export audit, 2026-10-06).
+  it('a Short is rendered once and the measured samples are what goes out', async () => {
+    const tone = new Float32Array(SR * 40)
+    // Quiet, but within the boost the platform gain allows, so it really lands on the target.
+    for (let i = 0; i < tone.length; i++) tone[i] = 0.12 * Math.sin((2 * Math.PI * 440 * i) / SR)
+    const t = source('t', tone)
+    const seq = sequence([track('t', [clip('t', 0, 40)])], 40)
+    rendersMade = 0
+    const { joined, segments } = await renderAll(seq, { t }, 40, -14)
+    // 40 s is two segments: two renders, not four.
+    expect(segments).toHaveLength(2)
+    expect(rendersMade).toBe(2)
+    expect(measureLoudness(joined, SR).lufs!).toBeCloseTo(-14, 1)
+  })
+
+  it('keeps at most 3 minutes, so memory stays bounded however long the video', () => {
+    // A longer mix renders twice and holds two segments, as before. (Rendering one here to prove
+    // it took 25 s of this suite, for the same `totalFrames <= KEEP_MEASURED_MIX_FRAMES` branch.)
+    expect(KEEP_MEASURED_MIX_FRAMES).toBeLessThanOrEqual(3 * 60 * SR)
+    // A 60 s Short fits with room to spare.
+    expect(KEEP_MEASURED_MIX_FRAMES).toBeGreaterThanOrEqual(60 * SR)
   })
 })
 

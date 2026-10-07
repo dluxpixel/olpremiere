@@ -54,6 +54,13 @@ export const AUDIO_SEGMENT_FRAMES = 30 * EXPORT_SAMPLE_RATE
  */
 export const AUDIO_PREROLL_S = 1
 
+/**
+ * The longest mix whose loudness pass is kept and reused rather than rendered a
+ * second time: 3 minutes, 69 MB of 48 kHz stereo float. Every Short he makes
+ * fits (60 s is 23 MB); a longer video renders twice and holds two segments.
+ */
+export const KEEP_MEASURED_MIX_FRAMES = 3 * 60 * EXPORT_SAMPLE_RATE
+
 export interface AudioMixPlan {
   info: AudioStreamMeta
   /** Render every segment in order, awaiting the consumer between segments. */
@@ -321,14 +328,31 @@ export async function planAudioMix(
     render: async (onSegment) => {
       // PLATFORM LOUDNESS, his answer 2026-09-30: "Yes, on by default". The
       // whole mix is measured first (the same BS.1770 as loudness.ts, fed one
-      // segment at a time so a long export is never held whole), then rendered
-      // again at the gain that lands it on the target. The render is
-      // deterministic, so the second pass is the mix the first one measured.
+      // segment at a time so a long export is never held whole), then goes out
+      // at the gain that lands it on the target. The render is deterministic,
+      // so a second render is the mix the first one measured.
+      //
+      // ⛔ A MIX THAT FITS IS RENDERED ONCE. The second pass used to render all
+      // of it again, every clip, stretch and effect, only to arrive at the same
+      // samples (export audit, 2026-10-06). Up to KEEP_MEASURED_MIX_FRAMES the
+      // measured segments are kept and the gain goes onto those; a longer mix
+      // still renders twice, so memory stays bounded however long the video.
       let gain = 1
+      let kept: Float32Array<ArrayBuffer>[][] | null = null
       if (target !== null) {
         const meter = new LoudnessMeter(EXPORT_SAMPLE_RATE, EXPORT_CHANNELS)
-        await eachSegment((cd) => meter.push(cd))
+        const keep: Float32Array<ArrayBuffer>[][] | null = totalFrames <= KEEP_MEASURED_MIX_FRAMES ? [] : null
+        await eachSegment((cd) => {
+          meter.push(cd)
+          keep?.push(cd)
+        })
+        kept = keep
         gain = dbToGain(platformGainDb(meter.integrated(), target))
+      }
+      const secondPass = async (fn: (channelData: Float32Array<ArrayBuffer>[]) => void | Promise<void>): Promise<void> => {
+        if (!kept) return eachSegment(fn)
+        // Each one let go as it goes out, the way a fresh render would hold it.
+        for (let cd = kept.shift(); cd; cd = kept.shift()) await fn(cd)
       }
       // Then the master limiter, on the PCM, carried across the segments so a
       // peak that straddles a boundary is handled as one peak. Its look-ahead
@@ -344,7 +368,7 @@ export async function planAudioMix(
         limiter.process(cd, out, frames)
         fifo.push(out)
       }
-      await eachSegment(async (cd) => {
+      await secondPass(async (cd) => {
         sizes.push(cd[0]?.length ?? 0)
         limit(cd, cd[0]?.length ?? 0)
         while (sizes.length > 0 && fifo.available >= sizes[0]) await onSegment(fifo.take(sizes.shift()!))
