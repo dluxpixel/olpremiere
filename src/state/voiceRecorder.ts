@@ -471,6 +471,23 @@ export function recordingFileName(n: number, mime: string): string {
   return `Voice recording ${n}.${takeExtension(mime)}`
 }
 
+/**
+ * The number for the next take: past every take already in the edit and past
+ * every one handed out this session, so two takes in one bin never share a name.
+ *
+ * ⛔ IT USED TO COUNT FROM 1 EVERY LAUNCH, so a project recorded over a few
+ * sessions collected several "Voice recording 1" in its bin, and Find my media
+ * matches a lost take by its name.
+ */
+export function nextTakeNumber(names: Iterable<string>, givenSoFar: number): number {
+  let top = givenSoFar
+  for (const name of names) {
+    const m = /^Voice recording (\d+)\.\w+$/i.exec(name)
+    if (m) top = Math.max(top, Number(m[1]))
+  }
+  return top + 1
+}
+
 /** How often the recorder hands over a chunk, and so the most a crash can cost. */
 export const DRAFT_SLICE_MS = 1000
 
@@ -644,7 +661,10 @@ function finalize(
     useToasts.getState().show('Recording was empty', 'danger')
     return
   }
-  takeCount += 1
+  takeCount = nextTakeNumber(
+    Object.values(useStore.getState().project.assets).map((a) => a.name),
+    takeCount,
+  )
   const take: PendingTake = {
     url: URL.createObjectURL(blob),
     blob,

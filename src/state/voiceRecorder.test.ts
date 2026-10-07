@@ -72,6 +72,7 @@ import {
   closeStudio,
   discardTake,
   keepTake,
+  nextTakeNumber,
   offerLeftoverTakes,
   openStudio,
   pauseRecording,
@@ -97,6 +98,23 @@ describe('recordingFileName', () => {
   it('defaults to webm when the mime is unknown or empty', () => {
     expect(recordingFileName(5, '')).toBe('Voice recording 5.webm')
     expect(recordingFileName(6, 'audio/weird')).toBe('Voice recording 6.webm')
+  })
+})
+
+// ⛔ AU-20. Takes counted from 1 every launch, so a project recorded over a
+// few sessions held several "Voice recording 1" in its bin.
+describe('nextTakeNumber', () => {
+  it('follows the highest take already in the edit', () => {
+    expect(nextTakeNumber(['Voice recording 3.wav', 'Voice recording 1.webm', 'music.mp3'], 0)).toBe(4)
+  })
+
+  it('never hands out a number this session already gave', () => {
+    expect(nextTakeNumber(['Voice recording 3.wav'], 7)).toBe(8)
+    expect(nextTakeNumber([], 0)).toBe(1)
+  })
+
+  it('reads only its own names', () => {
+    expect(nextTakeNumber(['Saved voice recording.webm', 'Voice recording 12 final.wav', 'Voice recording x.wav'], 0)).toBe(1)
   })
 })
 
@@ -688,5 +706,21 @@ describe('studio capture: review-then-keep, and coexistence with playback', () =
     // a frame past the last whole one (timeline 29.89 is frame 896.7, and the
     // file has nothing for frame 897 to show).
     expect(clips.map((c) => [c.startS, +c.inS.toFixed(6), +c.outS.toFixed(6)])).toEqual([[0, 0.11, 29.976667]])
+  })
+
+  it('a new take is numbered after the takes already in the edit', async () => {
+    const { useStore } = await import('./store')
+    const { newProject } = await import('../engine/types')
+    const p = newProject()
+    useStore.getState().setProject({
+      ...p,
+      assets: { t: { id: 't', kind: 'audio', name: 'Voice recording 500.wav', blobKey: 'asset/t', durationS: 3 } as never },
+    })
+    await startRecording()
+    const rec = FakeMediaRecorder.instances[0]!
+    rec.ondataavailable?.({ data: new Blob(['x']) })
+    stopRecording()
+    rec.onstop?.()
+    expect(useRecorder.getState().pendingTake?.name).toMatch(/^Voice recording 501\.\w+$/)
   })
 })
