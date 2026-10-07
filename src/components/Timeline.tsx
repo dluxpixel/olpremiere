@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { clipEndS, groupLocked, snapTime, splitGroup } from '../engine/timeline'
 import { dragBlockIds } from '../engine/blockMove'
 import { createSnapPointCache } from '../engine/snapPointCache'
@@ -709,6 +709,37 @@ export function Timeline({ height }: { height: number }) {
     setTrimTip(null)
     dragFinal.current = null
   }
+
+  /**
+   * ⛔ ESC LETS GO OF A CLIP DRAG AND COMMITS NOTHING. A move, trim, roll, slip,
+   * slide or stretch he regretted half way had no way out: Esc deselected the
+   * clip and the release still committed the drag. Now Esc drops the preview
+   * and the drag, the release that follows does nothing, and the keymap's own
+   * Escape is held back for that press, so the clip stays selected.
+   */
+  const cancelGesture = useStableCallback(() => {
+    stopEdgeScroll()
+    lastDragPointer.current = null
+    setHoverLane(null)
+    setDrag(null)
+    setPreviewSeq(null)
+    setSnapIndicatorT(null)
+    setTrimTip(null)
+    dragFinal.current = null
+  })
+  const gestureHeld = !!drag && CLIP_GESTURES.has(drag.kind)
+  useEffect(() => {
+    if (!gestureHeld) return
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape') return
+      e.preventDefault()
+      e.stopImmediatePropagation()
+      cancelGesture()
+    }
+    // Capture, so it is heard before the keymap's Escape on the same window.
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [gestureHeld, cancelGesture])
 
   // --- drop from the media bin (useTimelineDrop) ---------------------------
   const { dropPreview, handleDragOver, handleDragLeave, handleDrop } = useTimelineDrop({

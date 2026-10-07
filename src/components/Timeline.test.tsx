@@ -162,6 +162,30 @@ describe('Timeline', () => {
     expect(moved.startS).toBeCloseTo(6)
   })
 
+  // A drag he regrets mid way had no way out: Esc deselected the clip and the
+  // release still committed the move.
+  it('Esc mid drag lets go of it: the release commits nothing and the clip stays selected', () => {
+    const clip = seedTitle(1)
+    render(<Timeline height={300} />)
+    const { lanes } = layOut()
+    const before = useStore.getState().project
+    fireEvent.pointerDown(screen.getByTestId('clip'), { button: 0, clientX: 20, clientY: 40, pointerId: 1 })
+    fireEvent.pointerMove(lanes, { clientX: 70, clientY: 40, pointerId: 1 })
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    })
+    fireEvent.pointerMove(lanes, { clientX: 90, clientY: 40, pointerId: 1 })
+    fireEvent.pointerUp(lanes, { clientX: 90, clientY: 40, pointerId: 1 })
+    expect(useStore.getState().project).toBe(before)
+    expect(screen.getByTestId('clip').style.left).toBe('10px')
+    expect(useStore.getState().ui.selection).toEqual([clip.id])
+    // And the next drag works as ever.
+    fireEvent.pointerDown(screen.getByTestId('clip'), { button: 0, clientX: 20, clientY: 40, pointerId: 1 })
+    fireEvent.pointerMove(lanes, { clientX: 70, clientY: 40, pointerId: 1 })
+    fireEvent.pointerUp(lanes, { clientX: 70, clientY: 40, pointerId: 1 })
+    expect(seq().tracks.flatMap((t) => t.clips).find((c) => c.id === clip.id)!.startS).toBeCloseTo(6)
+  })
+
   it('a dragged edge moves BY the drag, wherever on the handle he took hold of it', () => {
     // MEASURED 2026-10-01 in his GYM: the trim-out handle dragged +30 px at
     // 60 px/s, half a second, moved the end 0.433 s. The edge jumped to the
