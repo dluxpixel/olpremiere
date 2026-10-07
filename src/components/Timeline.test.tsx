@@ -8,13 +8,14 @@
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { recomputeDuration } from '../engine/timeline'
-import { activeSequence, audioTracks, defaultTitleDef, newProject, newTitleClip, videoTracks, type Sequence } from '../engine/types'
+import { activeSequence, audioTracks, defaultTitleDef, newClipFromAsset, newProject, newTitleClip, videoTracks, type Sequence } from '../engine/types'
 import { useContextMenu } from '../state/contextMenu'
 import { EFFECT_MIME } from '../state/dnd'
 import { clickedPasteTrack, setPasteTarget } from '../state/pasteTarget'
 import { updateActiveSequence, useStore } from '../state/store'
 import { Timeline } from './Timeline'
 import { installManualRaf, installResizeObserver } from './timelineDomFixtures'
+import { makeAsset } from './timelineTestFixtures'
 import { buildLaneInfos } from './timelineLanes'
 
 const seq = (): Sequence => activeSequence(useStore.getState().project)
@@ -330,6 +331,30 @@ describe('Timeline', () => {
       expect(clips.map((c) => effectsOn(c.id))).toEqual([[], [], []])
       // A drop on a lone clip still reveals it in the Inspector, as it always did.
       expect(useStore.getState().ui.selection).toEqual([outside.id])
+    })
+
+    // Review, 2026-10-07: dropped on the one caption of a mixed selection, the
+    // effect is for that caption alone, and the selection collapsed to it.
+    it('dropped on the one caption of a mixed selection, keeps the selection', () => {
+      const picture = makeAsset({ id: 'p', name: 'p.png', kind: 'image', durationS: 0, hasAudio: false, hasVideo: false, width: 640, height: 480 })
+      useStore.setState((s) => ({ project: { ...s.project, assets: { ...s.project.assets, p: picture } } }))
+      const footage = newClipFromAsset(picture, 0)
+      const caption = newTitleClip(defaultTitleDef('hi'), 0, 2)
+      updateActiveSequence('seed', (sq) =>
+        recomputeDuration({
+          ...sq,
+          tracks: sq.tracks.map((t) =>
+            t.id === videoTracks(sq)[0].id ? { ...t, clips: [footage] } : t.id === videoTracks(sq)[1].id ? { ...t, clips: [caption] } : t,
+          ),
+        }),
+      )
+      useStore.getState().setUI({ selection: [footage.id, caption.id] })
+      render(<Timeline height={300} />)
+      layOut()
+      dropEffect(screen.getAllByTestId('clip').find((c) => c.dataset.clipId === caption.id)!, 'glow')
+      expect(effectsOn(caption.id)).toEqual(['glow'])
+      expect(effectsOn(footage.id)).toEqual([])
+      expect(useStore.getState().ui.selection).toEqual([footage.id, caption.id])
     })
   })
 })

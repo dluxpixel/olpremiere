@@ -11,7 +11,7 @@ import { activeSequence, type Clip, type Id, type MediaAsset } from '../engine/t
 import { useBlobUrl } from '../state/blobUrls'
 import { useFilmstrip } from '../state/filmstrips'
 import { ClipWaveform } from './ClipWaveform'
-import { effectDropTargets } from './effectDrop'
+import { effectDropTargets, selectionAfterDrop } from './effectDrop'
 import { useStore } from '../state/store'
 
 // ---------------------------------------------------------------------------
@@ -411,8 +411,9 @@ export const ClipView = memo(function ClipView({
     if (effectType) applyEffectToClips(targets, effectType)
     else if (targets.length > 1 && !clip.title) setClipsTransition(targets, edge, transitionKind as TransitionKind)
     else setClipTransition(clip.id, edge, transitionKind as TransitionKind)
-    // Reveal what just happened in the Inspector.
-    if (targets.length === 1) useStore.getState().setUI({ selection: [clip.id] })
+    // Reveal what just happened in the Inspector, unless it was for the selection.
+    const next = selectionAfterDrop(clip.id, ui.selection)
+    if (next) useStore.getState().setUI({ selection: next })
   }
 
   return (

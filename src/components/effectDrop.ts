@@ -66,6 +66,19 @@ export function effectDropTargets(
   return all.filter((c) => picked.has(c.id) && kind(c) === kind(aimed)).map((c) => c.id)
 }
 
+/**
+ * The selection after a drop on `clipId`: null (left as it is) when the drop was
+ * for a selection the clip is part of, else just that clip, so the Inspector
+ * shows what landed.
+ *
+ * ⛔ ASKED OF THE SELECTION, NOT OF THE TARGETS. Dropped on the one caption of a
+ * mixed selection the targets are that caption alone, and the selection used to
+ * collapse to it, against the rule above (review, 2026-10-07).
+ */
+export function selectionAfterDrop(clipId: string, selection: readonly string[]): string[] | null {
+  return selection.length > 1 && selection.includes(clipId) ? null : [clipId]
+}
+
 export interface EffectDrop {
   /** A dragged effect is over the area: the "this will accept" hint. */
   hot: boolean
