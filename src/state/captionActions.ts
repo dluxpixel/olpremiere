@@ -308,7 +308,7 @@ export function addCaptionsFromWords(
         const into = clips.find((c) => c.startS > k.startS + EPS && c.startS < clipEndS(k) - EPS)
         return into ? endCaptionAt(k, into.startS, sq.width, sq.height) : k
       })
-      laid = fitAround(clips, kept)
+      laid = fitAround(clips, kept, sq.width, sq.height)
       const filled = { ...withClips({ ...reuse, clips: kept }, laid), captionShape: style.shape }
       return recomputeDuration({ ...sq, tracks: sq.tracks.map((t) => (t.id === reuse.id ? filled : t)) })
     }
@@ -427,8 +427,14 @@ function endCaptionAt(clip: Clip, endS: number, seqW: number, seqH: number): Cli
  * that bridges to the next word would otherwise reach across into one he did
  * not ask to change. One that ends up with no room left is dropped rather than
  * stacked, because a track never holds two clips at once.
+ *
+ * ⛔ A TRIMMED CAPTION TAKES ITS ANIMATION WITH IT (CA-19). Its entrance and
+ * exit were baked for the length it was dressed at, so trimming the end left
+ * the exit past the new end, where it never played: a Clean fade caption
+ * simply vanished. It is baked again for the new length, the same as a trim on
+ * the timeline does.
  */
-function fitAround(fresh: Clip[], kept: readonly Clip[]): Clip[] {
+function fitAround(fresh: Clip[], kept: readonly Clip[], seqW: number, seqH: number): Clip[] {
   const out: Clip[] = []
   for (const clip of fresh) {
     let startS = clip.startS
@@ -441,7 +447,11 @@ function fitAround(fresh: Clip[], kept: readonly Clip[]): Clip[] {
       else startS = Math.max(startS, ke)
     }
     if (endS - startS <= 1e-3) continue
-    out.push(startS === clip.startS && endS === clipEndS(clip) ? clip : { ...clip, startS, inS: 0, outS: endS - startS, speed: 1 })
+    out.push(
+      startS === clip.startS && endS === clipEndS(clip)
+        ? clip
+        : retimeAppearance(clip, { ...clip, startS, inS: 0, outS: endS - startS, speed: 1 }, seqW, seqH),
+    )
   }
   return out
 }
@@ -484,7 +494,7 @@ export function applyCaptionStyle(
       recut = true
       const by = new Set(targets.map((c) => c.id))
       const kept = t.clips.filter((c) => !by.has(c.id))
-      const cut = fitAround(recutCaptions(targets, style, sq), kept)
+      const cut = fitAround(recutCaptions(targets, style, sq), kept, sq.width, sq.height)
       fresh.push(...cut.map((c) => c.id))
       const filled = withClips({ ...t, clips: kept }, cut)
       // The track says what its captions are cut to only when all of them are.

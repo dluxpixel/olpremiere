@@ -38,6 +38,7 @@ import {
   type CaptionShape,
 } from '../engine/captions/captionStyle'
 import { jettismCaptionDef } from '../engine/captions/captions'
+import { channelKeyframes } from '../engine/effects/channels'
 import { clipEndS } from '../engine/timeline'
 import { activeSequence, defaultTitleDef, newProject, newTitleClip, videoTracks, type Clip, type Sequence } from '../engine/types'
 import { addCaptionsFromWords, applyCaptionStyle, CAPTION_TRACK_NAME, captionsOn, setCaptionText } from './captionActions'
@@ -356,6 +357,24 @@ describe('putting a style on captions he already has', () => {
     expect(clips.slice(1).map((c) => c.id)).toEqual(all.slice(3).map((c) => c.id))
     // What was selected is what replaced the selection.
     expect(useStore.getState().ui.selection).toEqual([clips[0]!.id])
+  })
+
+  // CA-19. A recut caption that ran into one that stays was trimmed without its
+  // animation, so its exit sat past its new end and never played.
+  it('a recut caption trimmed against one that stays still plays its exit at its new end', () => {
+    addCaptionsFromWords(said('so i went to the store and bought some apples'), { style: house })
+    const all = captionsOn(seq()).map(({ clip }) => clip)
+    const clean = BUILTIN_CAPTION_STYLES.find((s) => s.id === 'builtin-clean')!
+    const fade = { ...clean, id: 'fade-long', name: 'Fade long', shape: fixed({ maxWords: 12, charsPerLine: 60 }), updatedAt: 1 }
+    applyCaptionStyle(fade, all.slice(0, 3).map((c) => c.id))
+    const [cut, next] = captionsOn(seq()).map(({ clip }) => clip)
+    // It was trimmed: it ends exactly where the caption that stays begins.
+    expect(clipEndS(cut!)).toBeCloseTo(next!.startS, 9)
+    const opacity = channelKeyframes(cut!, 'opacity')
+    expect(opacity.length).toBeGreaterThan(0)
+    const last = opacity[opacity.length - 1]!
+    expect(last.t).toBeCloseTo(clipEndS(cut!) - cut!.startS, 6)
+    expect(last.value).toBe(0)
   })
 
   // ⛔ CA-7. A recut read the words back off the captions and spread a caption's
