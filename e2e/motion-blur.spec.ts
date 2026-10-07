@@ -21,6 +21,23 @@
 import { expect, test, type Page } from '@playwright/test'
 
 /**
+ * Repaint the monitor from the store as it is NOW, then let two frames pass.
+ *
+ * ⛔ EVERY READ BELOW STARTS WITH THIS (2026-10-06). The reads used to follow a
+ * fixed 400 ms wait after each change, the shape that failed dissolve-linear-light
+ * "one run in two" until it polled: on a busy box a change takes longer than that
+ * to reach the picture and the previous frame is measured. Bumping the preview
+ * epoch is what the live gizmo drag uses to say "repaint even though nothing in
+ * the store moved", and stylize-pack's `px` reads the same way.
+ */
+const REPAINT = async (): Promise<void> => {
+  const previewMod = '/src/engine/preview.ts'
+  const { invalidatePreview } = (await import(/* @vite-ignore */ previewMod)) as { invalidatePreview: () => void }
+  invalidatePreview()
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
+}
+
+/**
  * Horizontal edge energy over a band of the program monitor: the sum of the absolute
  * luma difference between neighbouring pixels.
  *
@@ -30,6 +47,7 @@ import { expect, test, type Page } from '@playwright/test'
  * `from`/`to` are fractions of the frame HEIGHT.
  */
 async function edgeEnergy(page: Page, from = 0.1, to = 0.9): Promise<number> {
+  await page.evaluate(REPAINT)
   return page.evaluate(
     ({ from, to }) => {
       const c = document.querySelector('[data-testid="program-canvas"]') as HTMLCanvasElement
@@ -67,6 +85,7 @@ async function edgeEnergy(page: Page, from = 0.1, to = 0.9): Promise<number> {
  * the softening direction is proved by the slide, where the smear is uniform.
  */
 async function lumaGrid(page: Page): Promise<number[]> {
+  await page.evaluate(REPAINT)
   return page.evaluate(() => {
     const c = document.querySelector('[data-testid="program-canvas"]') as HTMLCanvasElement
     const s = document.createElement('canvas')
@@ -83,6 +102,29 @@ async function lumaGrid(page: Page): Promise<number[]> {
       }
     }
     return out
+  })
+}
+
+/**
+ * Wait until the title is really on the monitor.
+ *
+ * ⛔ A "NOTHING CHANGED" CHECK PASSES ON TWO EMPTY FRAMES. The two tests that
+ * prove blur leaves a picture alone compare a read with blur on against one with
+ * it off, and two reads taken before the title was drawn are both black, so they
+ * match and the test passes having seen nothing. They used to lean on a fixed
+ * 400 ms wait for the picture to be there; this asks for it instead.
+ *
+ * And the title's own face loads the first time it is drawn (preview.ts,
+ * ensureTitleFace), then redraws, so the face is waited for as well: one read in
+ * the fallback face and one in the real one would differ for a reason that has
+ * nothing to do with blur.
+ */
+async function untilTitleShows(page: Page): Promise<void> {
+  await expect
+    .poll(async () => Math.max(...(await lumaGrid(page))), { timeout: 10_000, message: 'the title never reached the monitor' })
+    .toBeGreaterThan(100)
+  await page.evaluate(async () => {
+    await document.fonts.ready
   })
 }
 
@@ -139,10 +181,9 @@ async function animate(page: Page, channel: string, from: number, to: number): P
     },
     { channel, from, to },
   )
-  await page.waitForTimeout(400)
 }
 
-/** Flip motion blur off and let the preview repaint. */
+/** Flip motion blur off. The next read repaints from the store, so it sees it. */
 /**
  * The four frame settings live behind the Frame button since 2026-09-13: the bar
  * under the picture held eleven controls in an overflow-hidden cell and clipped
@@ -158,7 +199,7 @@ async function blurOff(page: Page): Promise<void> {
   // 2026-08-19 as clutter in the strip he reads at a glance.
   await expect(toggle).not.toBeChecked()
   await page.keyboard.press('Escape')
-  await page.waitForTimeout(400)
+  await expect(page.getByTestId('frame-settings-menu')).toHaveCount(0)
 }
 
 test('the control is there and starts at the film standard', async ({ page }) => {
@@ -224,6 +265,7 @@ test('a title growing in place stays sharp, the way his reference pop is', async
   // The same fast zoom that smears footage above. A caption is read, not tracked by
   // a camera, so its shutter sample holds its scale and the blur has nothing to do.
   await animate(page, 'scale', 1, 2.4)
+  await untilTitleShows(page)
   const withBlurOn = await lumaGrid(page)
   await blurOff(page)
   const withBlurOff = await lumaGrid(page)
@@ -242,7 +284,7 @@ test('a still clip is untouched, so nothing he has not animated goes soft', asyn
     }
     useStore.getState().setUI({ playheadS: 15 / 30 })
   })
-  await page.waitForTimeout(400)
+  await untilTitleShows(page)
   const withBlurOn = await lumaGrid(page)
   await blurOff(page)
   const withBlurOff = await lumaGrid(page)
