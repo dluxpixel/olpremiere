@@ -15,6 +15,9 @@ interface FakeBlob {
 const h = vi.hoisted(() => ({
   copyReady: false,
   inputs: [] as Array<{ disposed: boolean; name: string }>,
+  /** How tall each file's track says it is, and what every sink was asked for. */
+  heights: { orig: 36, copy: 36 } as Record<string, number>,
+  sinks: [] as Array<{ file: string; height?: number }>,
 }))
 
 vi.mock('mediabunny', () => {
@@ -32,13 +35,18 @@ vi.mock('mediabunny', () => {
     dispose(): void {
       this.disposed = true
     }
-    async getPrimaryVideoTrack(): Promise<{ input: Input }> {
+    async getPrimaryVideoTrack(): Promise<{ input: Input; getDisplayHeight: () => Promise<number> }> {
       await new Promise((r) => setTimeout(r, 1))
-      return { input: this }
+      return { input: this, getDisplayHeight: async () => h.heights[this.name] ?? 0 }
     }
   }
   class CanvasSink {
-    constructor(readonly track: { input: Input }) {}
+    constructor(
+      readonly track: { input: Input },
+      opts: { height?: number } = {},
+    ) {
+      h.sinks.push({ file: track.input.name, height: opts.height })
+    }
     async *canvases(startS: number): AsyncGenerator<{ canvas: object; timestamp: number }, void, unknown> {
       const input = this.track.input
       let i = Math.floor(startS * 30)
@@ -101,6 +109,8 @@ async function frameOf(a: MediaAsset, tS: number): Promise<{ tag: string }> {
 beforeEach(() => {
   h.copyReady = false
   h.inputs.length = 0
+  h.heights = { orig: 36, copy: 36 }
+  h.sinks.length = 0
 })
 
 describe('PB-2: a reopen never breaks the decode that is running', () => {
@@ -156,5 +166,24 @@ describe('PB-4: a still is made from his footage, not the preview copy', () => {
     expect(still.tag).toBe('orig:10')
     expect(fc.frameCacheStats().failed).toBe(0)
     fc.evictAsset(a.id)
+  })
+})
+
+describe('PB-15: a preview copy is decoded at its own size, never blown up', () => {
+  it('a 4K clip in a 1920 tall short decodes its 1080 copy natively, and the original capped to the short', async () => {
+    fc.setPreviewSequenceHeight(1920)
+    h.heights = { orig: 2160, copy: 1080 }
+    const big = { ...asset(), width: 3840, height: 2160 }
+    h.copyReady = true
+    await frameOf(big, 1 / 30)
+    expect(h.sinks.at(-1)).toEqual({ file: 'copy', height: undefined })
+    fc.evictAsset(big.id)
+
+    h.copyReady = false
+    const orig = { ...asset(), width: 3840, height: 2160 }
+    await frameOf(orig, 1 / 30)
+    expect(h.sinks.at(-1)).toEqual({ file: 'orig', height: 1920 })
+    fc.evictAsset(orig.id)
+    fc.setPreviewSequenceHeight(0)
   })
 })

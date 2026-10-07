@@ -470,6 +470,12 @@ async function openInput(e: AssetEntry): Promise<void> {
   e.usingProxy = blob === proxy
   const input = new MbInput({ source: new BlobSource(blob), formats: ALL_FORMATS })
   const track = await input.getPrimaryVideoTrack()
+  // How tall the file being decoded REALLY is. The preview copy of a 4K clip is
+  // 1080 tall, and sizing its sink from the original's 2160 (a 1920 tall short
+  // asks for 1920 rows) blew every cached copy frame up to about 3413x1920:
+  // three times the memory per frame, a third as many frames held, a bigger
+  // upload, and no detail the copy does not have (PB-15).
+  const fileH = track ? await track.getDisplayHeight() : 0
   if (e.gen !== gen || e.failed) {
     input.dispose()
     return
@@ -483,7 +489,7 @@ async function openInput(e: AssetEntry): Promise<void> {
   // pool, so every getCanvas yields a FRESH canvas: cached frames must never
   // be recycled underneath us. Decode at PREVIEW height (downscaled) so large
   // sources scrub cheaply; export uses its own full-res decode.
-  const th = previewTargetHeight(e.asset.height, previewScale, PREVIEW_BASE_MAX_H, sequenceH)
+  const th = previewTargetHeight(fileH || e.asset.height, previewScale, PREVIEW_BASE_MAX_H, sequenceH)
   e.sink = th ? new Sink(track, { height: th }) : new Sink(track)
   // The decoder exists from this line on, so this is where the ceiling is
   // enforced. See MAX_LIVE_DECODERS: unbounded, this is where Chromium quietly
