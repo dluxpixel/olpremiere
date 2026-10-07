@@ -1899,11 +1899,12 @@ export function renderPreview(
  * this run of play has drawn none yet. What he saw, so a pause can land on it.
  *
  * ⛔ NOT THE TRANSPORT'S LAST TICK. The monitor's animation frame loop starts
- * when it mounts, long before any play, so in every frame it runs FIRST and
- * draws the playhead the transport set one frame earlier; the transport ticks
- * after it. A pause between two frames therefore finds the store one tick
- * ahead of the picture, and on a 60 fps edit nearly every tick is a new frame:
- * flooring the last tick put the playhead one frame past what he saw.
+ * when it mounts, long before any play, so in every frame it ran FIRST and
+ * drew the playhead the transport set one frame earlier; a pause between two
+ * frames found the store one tick ahead of the picture, one frame past what he
+ * saw on a 60 fps edit. The draw now ticks the clock first (Transport.tickFrame),
+ * and this stays the truth for the frames a tick does not draw: the redraw cap,
+ * a frame still decoding, the hold over a cut.
  */
 let playedFrameS: number | null = null
 

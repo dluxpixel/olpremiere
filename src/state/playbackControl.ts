@@ -103,8 +103,9 @@ const transport = new Transport({
     // nothing resolves and the monitor goes black (PB-17). Space starts over
     // from there (playFrom). J that ran back to the start: the start.
     // Otherwise the frame on screen is the one the monitor LAST DREW
-    // (lastPlayedFrameS), which is a tick behind the transport, not the one the
-    // live clock has reached since. Before the monitor has drawn anything this
+    // (lastPlayedFrameS), not the one the live clock has reached since; a tick
+    // the monitor did not draw (its redraw cap, a frame still decoding) leaves
+    // the store ahead of the picture. Before the monitor has drawn anything this
     // run (no canvas, or a pause on the very first frame), the frame the last
     // tick is in.
     const frameS =
@@ -213,6 +214,12 @@ export function shuttle(dir: -1 | 1): void {
 }
 
 export const isPlaying = (): boolean => transport.playing
+
+/**
+ * The clock's tick for the animation frame stamped `now`, before anything
+ * draws in it (Transport.tickFrame). The monitor calls it first in its draw.
+ */
+export const tickPlaybackFrame = (now: number): void => transport.tickFrame(now)
 
 /** The stretch of the timeline he is hearing right now, for a take started mid-play. */
 export const currentHeardSpan = (): HeardSpan | null => transport.heardSpan

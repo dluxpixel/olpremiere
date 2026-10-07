@@ -130,6 +130,12 @@ export class Transport {
   private stoppingAtEnd = false
   /** How long a sound rebuild mid-play takes, learned as it goes (see rescheduleAudio). */
   private rebuildS = 0.01
+  /** This play's clock tick, while its loop is live (see tickFrame). */
+  private frameTick: ((now: number) => void) | null = null
+  /** The timestamp of the animation frame the clock last ticked in. */
+  private tickedAt: number | null = null
+  /** The frame a draw ticked the clock in, ahead of the transport's own callback. */
+  private aheadAt: number | null = null
 
   constructor(opts: TransportOpts) {
     this.opts = opts
@@ -146,6 +152,28 @@ export class Transport {
   /** The stretch of the timeline reaching his ears right now, or null. */
   get heardSpan(): HeardSpan | null {
     return this.heard ? { timelineS: this.heard.timelineS, heardAtMs: this.heard.heardAtMs } : null
+  }
+
+  /**
+   * Tick the clock for the animation frame stamped `now`, unless it has
+   * ticked in that frame already. The monitor calls this first thing in its
+   * draw, so what it draws is where the clock is in THIS frame.
+   *
+   * ⛔ THE MONITOR DREW THE FRAME BEFORE (2026-10-07). Its loop is asked for at
+   * mount, long before any play, and the browser runs a frame's callbacks in the
+   * order they were asked for, so in every frame the monitor ran FIRST and drew
+   * the playhead the transport had set one frame earlier. The picture sat a
+   * display frame behind the clock, the sound and the readout, and a pause
+   * between two frames found the playhead one frame past what he saw.
+   * Remembering the drawn frame (preview.ts lastPlayedFrameS) put the pause
+   * right; this puts the picture right. The transport's own callback, later in
+   * the same frame, then only books the next one. Without a monitor it ticks on
+   * its own, as before.
+   */
+  tickFrame(now: number): void {
+    if (!this.frameTick || this.tickedAt === now) return
+    this.aheadAt = now
+    this.frameTick(now)
   }
 
   currentTime(): number {
@@ -307,7 +335,10 @@ export class Transport {
     // has got to, and it is the same swap a mid-play mute already performs.
     let realignAudio = audioScheduled && !ctxClockStarted && ctx !== null
 
-    const loop = (): void => {
+    // One tick of the clock. False when it stopped play (the end, J back at 0)
+    // or a new play took over (onTick may call pause()/play()).
+    const tick = (now: number): boolean => {
+      this.tickedAt = now
       if (realignAudio && ctx !== null && ctx.currentTime > 0) {
         realignAudio = false
         this.rescheduleAudio()
@@ -348,9 +379,7 @@ export class Transport {
               .catch(() => undefined)
           }
           this.opts.onTick(fromS)
-          if (token !== this.playToken) return
-          this.rafId = requestAnimationFrame(loop)
-          return
+          return token === this.playToken
         }
         this.lastT = endS
         this.stoppingAtEnd = true
@@ -358,20 +387,31 @@ export class Transport {
         // A second onTick(endS) here put it back ON the end, where nothing
         // resolves, so every play that ran out left the monitor black (PB-17).
         this.pause()
-        return
+        return false
       }
       if (rate < 0 && t <= 0) {
         this.lastT = 0
         // Told once, by pause(), like the end above.
         this.pause()
-        return
+        return false
       }
       this.lastT = t
       this.opts.onTick(t)
       // onTick may have called pause()/play(), so never double-schedule.
+      return token === this.playToken
+    }
+    const loop = (now: number): void => {
+      // A draw already ticked the clock in this frame (tickFrame): book the next.
+      if (this.aheadAt === now) this.aheadAt = null
+      else if (!tick(now)) return
       if (token !== this.playToken) return
       this.rafId = requestAnimationFrame(loop)
     }
+    this.frameTick = (now) => {
+      tick(now)
+    }
+    this.tickedAt = null
+    this.aheadAt = null
     this.rafId = requestAnimationFrame(loop)
   }
 
@@ -577,6 +617,7 @@ export class Transport {
 
   private teardown(): void {
     this.endHeard()
+    this.frameTick = null
     if (this.rafId !== null) {
       cancelAnimationFrame(this.rafId)
       this.rafId = null

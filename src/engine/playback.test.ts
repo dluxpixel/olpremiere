@@ -510,3 +510,40 @@ describe('running off the end of the edit', () => {
     spy.mockRestore()
   })
 })
+
+// 2026-10-07: the monitor's draw ran before the transport's tick in every
+// animation frame, so it drew the clock of the frame before. tickFrame lets a
+// draw tick the clock first; the clock still ticks once a frame, never twice.
+describe('a draw can tick the clock first in its frame', () => {
+  it('ticks once for that frame, and the transport only books the next one', async () => {
+    let now = 1000
+    const spy = vi.spyOn(performance, 'now').mockImplementation(() => now)
+    const raf = { cb: null as FrameRequestCallback | null }
+    globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => {
+      raf.cb = cb
+      return 1
+    }) as typeof requestAnimationFrame
+    const ticks: number[] = []
+    const t = new Transport({ getEndS: () => 10, onTick: (s) => ticks.push(s), schedule: async () => () => undefined })
+    await t.play(1)
+    now += 100
+    t.tickFrame(now) // the monitor, first in the frame
+    expect(ticks).toHaveLength(1)
+    expect(ticks[0]).toBeCloseTo(1.1, 9)
+    t.tickFrame(now) // asked again in the same frame: nothing new
+    const own = raf.cb
+    own?.(now) // the transport's own callback, later in the same frame
+    expect(ticks).toHaveLength(1)
+    expect(raf.cb).not.toBeNull()
+    // A frame with no draw in it: the transport ticks on its own, as before.
+    now += 100
+    raf.cb?.(now)
+    expect(ticks).toHaveLength(2)
+    expect(ticks[1]).toBeCloseTo(1.2, 9)
+    t.pause() // which tells the playhead once more, where it stopped
+    const told = ticks.length
+    t.tickFrame(now + 100) // paused: a draw ticks nothing
+    expect(ticks).toHaveLength(told)
+    spy.mockRestore()
+  })
+})

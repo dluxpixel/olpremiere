@@ -149,8 +149,10 @@ describe('a pause lands on the frame that was on screen', () => {
   })
 })
 
-// The monitor's animation frame loop runs BEFORE the transport's in every
-// frame, so what it drew is the playhead of the tick before the last one.
+// The monitor's animation frame loop ran BEFORE the transport's in every
+// frame, so what it drew was the playhead of the tick before the last one. It
+// ticks the clock first now (programCanvas.test.tsx), and a tick it does not
+// draw (its redraw cap, a frame still decoding) still leaves the store ahead.
 describe('a pause lands on the frame the monitor drew, not on the last tick', () => {
   beforeEach(() => {
     updateActiveSequence('A 10 second edit at 60', (seq) => ({ ...seq, durationS: 10, fps: 60 }))
