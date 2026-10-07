@@ -15,6 +15,7 @@ import {
 import { dragBlockIds, moveBlock, snapBlockDelta } from '../engine/blockMove'
 import type { Clip, Sequence } from '../engine/types'
 import {
+  canSlide,
   dragCommit,
   moveStep,
   moveTipText,
@@ -112,6 +113,26 @@ describe('slide and roll partners', () => {
     expect(rollPair(vt, w.id, 'in')).toEqual({ leftId: v.id, rightId: w.id })
     expect(rollPair(vt, v.id, 'in')).toBeNull()
     expect(rollPair(vt, x.id, 'out')).toBeNull()
+  })
+
+  // A roll moves a CUT, and a neighbour across a gap shares no cut with the
+  // edge: the engine refused it, so Ctrl+Alt read "Roll +0.00s" and did nothing.
+  it('a neighbour across a gap is no roll', () => {
+    const p = makeClip({ startS: 0, outS: 2 })
+    const q = makeClip({ startS: 3, inS: 3, outS: 5 })
+    const t = makeTrack({ clips: [p, q] })
+    expect(rollPair(t, p.id, 'out')).toBeNull()
+    expect(rollPair(t, q.id, 'in')).toBeNull()
+  })
+
+  it('slides only between two butted neighbours', () => {
+    expect(canSlide(vt, w.id)).toBe(true)
+    expect(canSlide(vt, v.id)).toBe(false)
+    expect(canSlide(vt, x.id)).toBe(false)
+    const p = makeClip({ startS: 0, outS: 2 })
+    const q = makeClip({ startS: 2, inS: 2, outS: 4 })
+    const r = makeClip({ startS: 5, inS: 5, outS: 7 })
+    expect(canSlide(makeTrack({ clips: [p, q, r] }), q.id)).toBe(false)
   })
 })
 

@@ -24,6 +24,7 @@ import { clipContextMenuItems } from './timelineClipMenu'
 import { useStableCallback, type Drag } from './timelineDrag'
 import { ADD_TRACK_ROW_H, CLICK_SLOP_PX, LANE_REACH_PX, SNAP_PX } from './timelineGeometry'
 import {
+  canSlide,
   dragCommit,
   gestureOriginS,
   moveStep,
@@ -263,12 +264,15 @@ export function Timeline({ height }: { height: number }) {
     dragFinal.current = null
     // Ctrl+Alt = the advanced-trim pair (roll on an edge, slide on the body).
     // Checked before plain Alt: a Ctrl+Alt press has altKey === true too.
-    if ((e.ctrlKey || e.metaKey) && e.altKey) {
+    // Without a butted neighbour each side there is nothing to slide between,
+    // so it falls through to a plain move (never to the Alt slip below).
+    const ctrlAlt = (e.ctrlKey || e.metaKey) && e.altKey
+    if (ctrlAlt && canSlide(track, clip.id)) {
       const neighborIds = slideNeighborIds(track, clip.id)
       beginDrag(e, { kind: 'slide', clipId: clip.id, grabOffsetS: x / pxPerS - clip.startS, neighborIds })
       return
     }
-    if (e.altKey) {
+    if (e.altKey && !ctrlAlt) {
       // A linked slip moves the partner's footage too; a locked partner holds it.
       if (!soloSlip && groupLocked(seq, clip.id)) {
         show(PAIR_LOCKED_MESSAGE)
@@ -370,7 +374,8 @@ export function Timeline({ height }: { height: number }) {
         beginDrag(e, { kind: 'roll', ...pair, grabOffsetS })
         return
       }
-      // No neighbour to roll against - fall through to a plain trim.
+      // No cut to roll here (no neighbour, or one across a gap) - fall through
+      // to a plain trim.
     }
     // A stretch, and a trim of the pair, take the linked partner along, so a
     // partner on a locked track holds them (the engine refuses too). Said at the

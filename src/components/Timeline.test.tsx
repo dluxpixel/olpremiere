@@ -230,6 +230,31 @@ describe('Timeline', () => {
     expect(useStore.getState().project, 'trim').toBe(before)
   })
 
+  // A roll or a slide needs a cut to move. Ctrl+Alt on an edge whose neighbour
+  // sits after a gap, or on a clip without a butted neighbour each side, used to
+  // read "Roll +0.00s" or "Slide +0.00s" while nothing moved at all.
+  it('Ctrl+Alt on an edge across a gap trims it, and on a clip with no cuts to slide moves it', () => {
+    const a = seedTitle(1) // 1 to 3
+    const b = seedTitle(4) // 4 to 6, a 1 s gap before it, nothing after
+    useStore.getState().setUI({ pxPerS: 10, snapping: false })
+    render(<Timeline height={300} />)
+    const { lanes } = layOut()
+    const clipEl = (id: string) => screen.getAllByTestId('clip').find((x) => x.dataset.clipId === id)!
+    const drag = (target: HTMLElement, from: number, to: number) => {
+      const mods = { ctrlKey: true, altKey: true }
+      fireEvent.pointerDown(target, { button: 0, clientX: from, clientY: 40, pointerId: 1, ...mods })
+      fireEvent.pointerMove(lanes, { clientX: to, clientY: 40, pointerId: 1, ...mods })
+      fireEvent.pointerUp(lanes, { clientX: to, clientY: 40, pointerId: 1, ...mods })
+    }
+    const find = (id: string) => seq().tracks.flatMap((t) => t.clips).find((c) => c.id === id)!
+    // a's tail at 3 s = 30 px, dragged 10 px left: a plain trim to 2 s.
+    drag(within(clipEl(a.id)).getByTestId('trim-out'), 30, 20)
+    expect(find(a.id).startS + (find(a.id).outS - find(a.id).inS)).toBeCloseTo(2, 9)
+    // b's body at 50 px, dragged 20 px right: a plain move to 6 s.
+    drag(clipEl(b.id), 50, 70)
+    expect(find(b.id).startS).toBeCloseTo(6, 9)
+  })
+
   // ⛔ THE WHEEL SCROLLS THE LANES, THE CLIP STAYS IN HIS HAND, 2026-10-03. Measured: with a clip
   // held, a sideways wheel of 600 px scrolled the lanes and left the clip 600 px behind the
   // pointer, and letting go there dropped it 10 s from where his hand was. The drag now re-reads
