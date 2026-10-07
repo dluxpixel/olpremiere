@@ -80,6 +80,13 @@ async function monitorPatch(page: Page, fx: number, fy: number): Promise<Rgb> {
 
 test('a look from the Looks shelf lands on every selected clip, and the export shows what the monitor shows', async ({ page }) => {
   test.setTimeout(240_000)
+  // A look pass this GPU will not build is left out with one warning, and the
+  // look still draws its colour (glRenderer.ts, lazyPass). So the picture alone
+  // cannot prove the clarity pass ran: no pass may have failed to build.
+  const passFailures: string[] = []
+  page.on('console', (m) => {
+    if (m.text().includes('pass did not build')) passFailures.push(m.text())
+  })
   await page.goto('/')
   await page.getByTestId('media-file-input').setInputFiles(FIXTURE)
   await expect(page.getByTestId('asset-card')).toBeVisible({ timeout: 15_000 })
@@ -175,4 +182,5 @@ test('a look from the Looks shelf lands on every selected clip, and the export s
   ] as [Rgb, number[]][]) {
     for (let k = 0; k < 3; k++) expect(Math.abs(mon[k] - file[k]), `${JSON.stringify(report)}`).toBeLessThan(10)
   }
+  expect(passFailures).toEqual([])
 })
