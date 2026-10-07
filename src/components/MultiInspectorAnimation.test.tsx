@@ -17,6 +17,7 @@ vi.mock('../state/toasts', () => ({
 
 import { recomputeDuration } from '../engine/timeline'
 import { activeSequence, defaultTitleDef, newProject, newTitleClip, type AppearanceSpec, type Clip } from '../engine/types'
+import { setClipsAppearance } from '../state/appearanceActions'
 import { updateActiveSequence, useStore } from '../state/store'
 import { MultiInspector, type SelectedClip } from './MultiInspector'
 import { installResizeObserver } from './timelineDomFixtures'
@@ -71,5 +72,32 @@ describe('the multi Inspector Animation rows, two titles selected', () => {
     // One undo takes the speed back off both.
     useStore.getState().undo()
     expect(appearanceOf(ids).map((a) => a?.durS === 0.1)).toEqual([false, false])
+  })
+})
+
+// Review, 2026-10-07: the rows showed the FIRST title's animation. One popping
+// and one not read Pop, and picking Pop fired nothing, so the second never got
+// it; Speed hid whenever the first title was still.
+describe('the Animation rows when the titles disagree', () => {
+  const popFirst = (ids: string[], durS = 0.25) => setClipsAppearance([ids[0]!], { in: 'pop', durS })
+
+  it('In reads Mixed, and picking Pop reaches the title that did not pop', async () => {
+    const ids = twoTitles()
+    popFirst(ids)
+    render(<Live ids={ids} />)
+    expect((screen.getByTestId('multi-animation') as HTMLSelectElement).value).toBe('mixed')
+    await userEvent.setup().selectOptions(screen.getByTestId('multi-animation'), 'pop')
+    expect(appearanceOf(ids).map((a) => a?.in)).toEqual(['pop', 'pop'])
+  })
+
+  it('Speed shows when only a later title moves, and reads Mixed when their speeds differ', () => {
+    const ids = twoTitles()
+    setClipsAppearance([ids[1]!], { in: 'pop', durS: 0.25 })
+    const { unmount } = render(<Live ids={ids} />)
+    expect(screen.getByTestId('multi-animation-speed')).toBeTruthy()
+    unmount()
+    popFirst(ids, 0.1)
+    render(<Live ids={ids} />)
+    expect((screen.getByTestId('multi-animation-speed') as HTMLSelectElement).value).toBe('mixed')
   })
 })

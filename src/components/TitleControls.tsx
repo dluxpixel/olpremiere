@@ -351,7 +351,7 @@ export function TitleControls({ clip }: { clip: Clip }) {
       <Section title="Animation">
         <AppearanceRows
           ids={[clip.id]}
-          spec={clip.appearance}
+          specs={[clip.appearance]}
           testIds={{ in: 'title-anim-in', out: 'title-anim-out', speed: 'title-anim-speed' }}
         />
       </Section>

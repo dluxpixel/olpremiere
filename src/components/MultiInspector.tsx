@@ -305,10 +305,10 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
             )}
 
             {/* In, Out and Speed across all selected captions, the same rows as
-                one title's panel. The rows show the first caption's. */}
+                one title's panel. A row the captions disagree on reads Mixed. */}
             <AppearanceRows
               ids={titleIds}
-              spec={titles[0]?.clip.appearance}
+              specs={titles.map((t) => t.clip.appearance)}
               testIds={{ in: 'multi-animation', out: 'multi-animation-out', speed: 'multi-animation-speed' }}
               all
             />
