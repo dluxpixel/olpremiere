@@ -293,6 +293,10 @@ const fromCopy = new Set<string>()
 
 /** Cache a decoded frame, counting it and anything the LRU had to drop to fit. */
 function keep(key: string, canvas: CanvasImageSource, copy = false): void {
+  // Never trade a frame of his footage for the copy's: a sequential pass of the
+  // copy reader caches every frame it walks through, including one just decoded
+  // from the original (refineFromOriginal).
+  if (copy && cache.has(key) && !fromCopy.has(key)) return
   tally.stores++
   const dropped = cache.set(key, canvas)
   tally.lruDropped += dropped.length
@@ -774,6 +778,82 @@ function reopenProxyBacked(): void {
     if (!fullQuality && !hasProxy(e.asset.id)) continue
     if (!e.ready) continue // nothing open: the next open reads the flag
     closeOrDefer(e)
+  }
+}
+
+/** One-shot original decodes in flight, so a second rest on the same frame does not start another. */
+const refining = new Set<string>()
+/** The one-shot reader of each asset's refine in flight, so moving on can stop it. */
+const refineInputs = new Map<Id, Input>()
+
+/**
+ * Stop the one-shot original decode of this asset (every asset when omitted):
+ * he moved on, or pressed Play, and that frame is not on screen any more. A
+ * decode through a long GOP original can take most of a second, all of it
+ * competing with the scrub he is doing now.
+ */
+export function cancelRefine(assetId?: Id): void {
+  for (const [id, input] of [...refineInputs]) {
+    if (assetId !== undefined && id !== assetId) continue
+    refineInputs.delete(id)
+    input.dispose()
+  }
+}
+
+/**
+ * Decode ONE frame from his ORIGINAL footage and put it in the cache in place of
+ * the preview copy's frame. Resolves true when the cached frame changed, so the
+ * caller redraws.
+ *
+ * ⛔ AT FULL QUALITY THE FRAME HE STOPS ON WAS THE COMPRESSED COPY (PB-13). The
+ * copy exists for fast seeking, and while he scrubs that is right. Once he stops
+ * to place a caption or judge a look, "Full quality" still showed the copy,
+ * re-encoded at crf 23 and softer than his footage and than the export. The
+ * preview asks for this when the playhead has rested on a paused frame at Full.
+ *
+ * Through a reader opened for this frame alone and closed straight after, never
+ * an entry's reader: that one stays on the copy for the next scrub, and this one
+ * never holds one of the MAX_LIVE_DECODERS slots. A no-op for a frame that did
+ * not come from the copy.
+ */
+export async function refineFromOriginal(asset: MediaAsset, tS: number): Promise<boolean> {
+  if (asset.kind !== 'video') return false
+  const key = cacheKey(asset.id, frameIndexAt(tS, asset.fps))
+  if (!fromCopy.has(key) || refining.has(key)) return false
+  const e = entries.get(asset.id)
+  const scale = previewScale
+  const seqH = sequenceH
+  refining.add(key)
+  let input: Input | null = null
+  try {
+    const [{ ALL_FORMATS, BlobSource, CanvasSink: Sink, Input: MbInput }, { getBlob }] = await Promise.all([
+      import('mediabunny'),
+      import('../state/persistence'),
+    ])
+    const blob = await getBlob(asset.blobKey)
+    if (!blob) return false
+    cancelRefine(asset.id)
+    input = new MbInput({ source: new BlobSource(blob), formats: ALL_FORMATS })
+    refineInputs.set(asset.id, input)
+    const track = await input.getPrimaryVideoTrack()
+    if (!track) return false
+    const th = previewTargetHeight((await track.getDisplayHeight()) || asset.height, scale, PREVIEW_BASE_MAX_H, seqH)
+    const sink = th ? new Sink(track, { height: th }) : new Sink(track)
+    const frame = await sink.getCanvas(frameMidTimeS(frameIndexAt(tS, asset.fps), asset.fps))
+    // Anything that changed what the cache holds since (the asset removed, the
+    // quality tier or the sequence height moved, or the frame already redone)
+    // makes this frame the wrong one to keep.
+    if (!frame || entries.get(asset.id) !== e || previewScale !== scale || sequenceH !== seqH) return false
+    if (!fromCopy.has(key)) return false
+    keep(key, frame.canvas, false)
+    return true
+  } catch {
+    // A failed refine leaves the copy's frame on screen, which is what was there.
+    return false
+  } finally {
+    if (input && refineInputs.get(asset.id) === input) refineInputs.delete(asset.id)
+    input?.dispose()
+    refining.delete(key)
   }
 }
 

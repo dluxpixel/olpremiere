@@ -5,11 +5,14 @@
 
 import { getBlobUrl, subscribeBlobArrived } from '../state/blobUrls'
 import {
+  cancelRefine,
+  currentPreviewScale,
   getFrameAt,
   peekFrameAt,
   prefetchAround,
   prefetchRange,
   previewCapHeight,
+  refineFromOriginal,
   setPreviewSequenceHeight,
 } from './frameCache'
 import {
@@ -553,6 +556,8 @@ export function releasePreviewScratch(): void {
   aheadHigh.clear()
   for (const p of parkTimers.values()) clearTimeout(p.timer)
   parkTimers.clear()
+  for (const p of refineTimers.values()) clearTimeout(p.timer)
+  refineTimers.clear()
   prefetchedCutId = null
   for (const ref of drawnCanvases) {
     const canvas = ref.deref()
@@ -841,6 +846,36 @@ function parkWhenStill(pooled: PooledVideo, key: Id, srcT: number, fps: number):
     if (Math.abs(pooled.el.currentTime - srcT) > 1 / (2 * fps)) pooled.el.currentTime = srcT
   }, PARK_SETTLE_MS)
   parkTimers.set(key, { srcT, timer })
+}
+
+/** How long a paused frame must stay put before it is redone from his footage. */
+const REFINE_SETTLE_MS = 250
+/** The paused frame each asset was last asked to settle on, and its timer (spent once it fires). */
+const refineTimers = new Map<Id, { srcT: number; timer: ReturnType<typeof setTimeout> }>()
+
+/**
+ * At Full quality, once the playhead has rested on a paused frame, have it
+ * decoded again from his ORIGINAL footage and redraw (PB-13): the frame cache
+ * serves the preview copy, which is right while he scrubs and too soft to judge
+ * a look or place a caption by. Not while moving, so a scrub never pays the
+ * original's seek; never at Half or Quarter, whose point is being cheap.
+ */
+function refineWhenStill(asset: MediaAsset, srcT: number): void {
+  const prev = refineTimers.get(asset.id)
+  if (prev && prev.srcT === srcT) return
+  if (prev) {
+    clearTimeout(prev.timer)
+    // Moved on: a redo of the last frame still decoding is for a frame that is
+    // not on screen any more, and it competes with the scrub.
+    cancelRefine(asset.id)
+  }
+  const timer = setTimeout(() => {
+    if (wasPlaying || currentPreviewScale() < 1) return
+    void refineFromOriginal(asset, srcT).then((changed) => {
+      if (changed) invalidatePreview()
+    })
+  }, REFINE_SETTLE_MS)
+  refineTimers.set(asset.id, { srcT, timer })
 }
 
 /**
@@ -1173,6 +1208,7 @@ function makeTextureSource(
         // Served from the cache, so the element is wherever it last stopped.
         // Park it here once he stops moving, so Space starts on this frame.
         parkWhenStill(pooled, poolKey, srcT, asset.fps || fps)
+        refineWhenStill(asset, srcT)
         return confident(exact as TexImageSource)
       }
       // No exact frame yet. Fall back to a nearest <video> seek, but the seek
@@ -1709,6 +1745,8 @@ export function renderPreview(
     lastExact.clear()
     // Never transcode a preview copy while he is watching the preview.
     setProxyBuildingPaused(playing)
+    // Nor redo a paused frame from his footage under the playback (PB-13).
+    if (playing) cancelRefine()
   }
   // Keep the scrub cache's Full-quality decode cap matched to this raster.
   setPreviewSequenceHeight(seq.height)

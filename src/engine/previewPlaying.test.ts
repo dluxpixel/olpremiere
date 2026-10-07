@@ -25,6 +25,9 @@ const h = vi.hoisted(() => ({
   urls: new Map<string, string | null>(),
   arrivals: new Set<(key: string) => void>(),
   copy: false,
+  scale: 1,
+  refines: [] as Array<{ assetId: string; t: number }>,
+  cancels: [] as Array<string | undefined>,
 }))
 
 const frameKey = (assetId: string, idx: number): string => `${assetId}:${idx}`
@@ -42,6 +45,12 @@ vi.mock('./frameCache', () => {
     prefetchRange: (asset: MediaAsset, a: number, b: number) => h.ranges.push({ assetId: asset.id, a, b }),
     previewCapHeight: () => undefined,
     setPreviewSequenceHeight: () => undefined,
+    currentPreviewScale: () => h.scale,
+    cancelRefine: (assetId?: string) => h.cancels.push(assetId),
+    refineFromOriginal: async (asset: MediaAsset, t: number) => {
+      h.refines.push({ assetId: asset.id, t })
+      return false
+    },
   }
 })
 vi.mock('./render/glRenderer', () => ({
@@ -127,6 +136,9 @@ afterEach(() => {
   h.drawn.length = 0
   h.urls.clear()
   h.copy = false
+  h.scale = 1
+  h.refines.length = 0
+  h.cancels.length = 0
   videos.length = 0
   preview.releasePreviewScratch()
   for (const id of ['A', 'B']) preview.disposePreviewAsset(id)
@@ -531,5 +543,44 @@ describe('what a pause lands on: the frame the monitor last drew while playing',
     expect(preview.lastPlayedFrameS()).toBe(1.5)
     preview.forgetPlayedFrame()
     expect(preview.lastPlayedFrameS()).toBeNull()
+  })
+})
+
+// ---- PB-13 ------------------------------------------------------------------
+
+describe('at Full, the frame he rests on is redone from his footage', () => {
+  const A = asset('A')
+  const forward = clip({ id: 'f', assetId: 'A', startS: 0, inS: 0, outS: 4 })
+
+  it('asks once the playhead has rested, never while it moves', async () => {
+    const seq = sequence([forward])
+    cacheFrames(A, 0, 2)
+    const c = canvas()
+    for (const t of [0.2, 0.4, 0.6, 0.8]) preview.renderPreview(c, seq, { A }, t, false)
+    expect(h.refines).toEqual([])
+    await new Promise((r) => setTimeout(r, 300))
+    expect(h.refines).toEqual([{ assetId: 'A', t: 0.8 }])
+  })
+
+  it('moving on stops the redo of the frame he left, and so does Play', async () => {
+    const seq = sequence([forward])
+    cacheFrames(A, 0, 2)
+    const c = canvas()
+    preview.renderPreview(c, seq, { A }, 0.8, false)
+    await new Promise((r) => setTimeout(r, 300))
+    expect(h.refines).toHaveLength(1)
+    preview.renderPreview(c, seq, { A }, 1, false)
+    expect(h.cancels).toEqual(['A'])
+    preview.renderPreview(c, seq, { A }, 1, true)
+    expect(h.cancels).toEqual(['A', undefined])
+  })
+
+  it('never at Half or Quarter', async () => {
+    h.scale = 0.5
+    const seq = sequence([forward])
+    cacheFrames(A, 0, 2)
+    preview.renderPreview(canvas(), seq, { A }, 0.8, false)
+    await new Promise((r) => setTimeout(r, 300))
+    expect(h.refines).toEqual([])
   })
 })

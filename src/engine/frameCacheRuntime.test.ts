@@ -47,6 +47,13 @@ vi.mock('mediabunny', () => {
     ) {
       h.sinks.push({ file: track.input.name, height: opts.height })
     }
+    /** One frame by random access, the way a one-shot reader asks. */
+    async getCanvas(tS: number): Promise<{ canvas: object; timestamp: number } | null> {
+      await new Promise((r) => setTimeout(r, 2))
+      if (this.track.input.disposed) throw new InputDisposedError('disposed')
+      const i = Math.floor(tS * 30)
+      return { canvas: { width: 64, height: 36, tag: `${this.track.input.name}:${i}` }, timestamp: i / 30 }
+    }
     async *canvases(startS: number): AsyncGenerator<{ canvas: object; timestamp: number }, void, unknown> {
       const input = this.track.input
       let i = Math.floor(startS * 30)
@@ -185,5 +192,50 @@ describe('PB-15: a preview copy is decoded at its own size, never blown up', () 
     expect(h.sinks.at(-1)).toEqual({ file: 'orig', height: 1920 })
     fc.evictAsset(orig.id)
     fc.setPreviewSequenceHeight(0)
+  })
+})
+
+/** Which file and frame the cache holds for this moment, without asking for a decode. */
+const tagAt = (a: MediaAsset, tS: number): string | undefined =>
+  (fc.peekFrameAt(a, tS) as unknown as { tag: string } | null)?.tag
+
+describe('PB-13: the frame he rests on at Full is redone from his footage', () => {
+  it('replaces the copy frame with the original one, through a reader it closes again', async () => {
+    const a = asset()
+    h.copyReady = true
+    expect((await frameOf(a, 10 / 30)).tag).toBe('copy:10')
+    const before = h.inputs.length
+    expect(await fc.refineFromOriginal(a, 10 / 30)).toBe(true)
+    expect(tagAt(a, 10 / 30)).toBe('orig:10')
+    expect(h.inputs.slice(before).map((i) => [i.name, i.disposed])).toEqual([['orig', true]])
+    // A later pass of the copy reader over the same frame never puts the copy back.
+    fc.prefetchRange(a, 5 / 30, 15 / 30)
+    await until(() => fc.peekFrameAt(a, 15 / 30) !== null)
+    expect(tagAt(a, 10 / 30)).toBe('orig:10')
+    expect(tagAt(a, 12 / 30)).toBe('copy:12')
+    fc.evictAsset(a.id)
+  })
+
+  it('a refine he moved away from is stopped, and the copy frame stays', async () => {
+    const a = asset()
+    h.copyReady = true
+    expect((await frameOf(a, 10 / 30)).tag).toBe('copy:10')
+    const before = h.inputs.length
+    const redo = fc.refineFromOriginal(a, 10 / 30)
+    await until(() => h.inputs.length > before)
+    fc.cancelRefine(a.id)
+    expect(await redo).toBe(false)
+    expect(h.inputs.slice(before).every((i) => i.disposed)).toBe(true)
+    expect(tagAt(a, 10 / 30)).toBe('copy:10')
+    fc.evictAsset(a.id)
+  })
+
+  it('does nothing for a frame that is his footage already', async () => {
+    const a = asset()
+    expect((await frameOf(a, 10 / 30)).tag).toBe('orig:10')
+    const before = h.inputs.length
+    expect(await fc.refineFromOriginal(a, 10 / 30)).toBe(false)
+    expect(h.inputs.length).toBe(before)
+    fc.evictAsset(a.id)
   })
 })
