@@ -82,13 +82,22 @@ export const SIZE_LIMITS: Record<keyof LayoutSizes, [number, number]> = {
  */
 const MONITOR_MIN_W = 280
 /**
- * 200, deliberately not more: at 900px of window the timeline's own 640 ceiling
- * is still reachable, so this guard only ever bites on a window near the 680
- * minimum, where the timeline would otherwise take the entire screen.
+ * 200, deliberately not more: from 921px of window (80 of chrome, 1 of splitter,
+ * 200 of picture, 640 of timeline) the timeline's own 640 ceiling is still
+ * reachable, so this guard only bites on a small window, where the timeline
+ * would otherwise take the entire screen.
  */
 const MONITOR_MIN_H = 200
-/** Chrome above the monitor row, and the 1px splitters between the regions. */
+/**
+ * Chrome above the monitor row, and the 1px splitters between the regions.
+ *
+ * ⛔ THE TOP BAR (h-12, TopBar.tsx) AND THE EDIT TABS (h-8, EditTabs.tsx), BOTH. The tabs came
+ * on 2026-10-03 and this still counted the top bar alone, so on a 720px window with the
+ * timeline dragged up the monitor row was 168px and the picture under the bar about 70.
+ */
 const TOPBAR_H = 48
+const EDIT_TABS_H = 32
+export const CHROME_H = TOPBAR_H + EDIT_TABS_H
 const SPLITTER_PX = 1
 
 const clampLimits = (key: keyof LayoutSizes, v: number): number =>
@@ -113,7 +122,7 @@ function viewport(): Viewport {
 function ceilingFor(key: keyof LayoutSizes, otherPanel: number, vp: Viewport): number {
   const room =
     key === 'bottom'
-      ? vp.h - TOPBAR_H - SPLITTER_PX - MONITOR_MIN_H
+      ? vp.h - CHROME_H - SPLITTER_PX - MONITOR_MIN_H
       : vp.w - 2 * SPLITTER_PX - MONITOR_MIN_W - otherPanel
   return Math.max(SIZE_LIMITS[key][0], Math.min(SIZE_LIMITS[key][1], room))
 }

@@ -3,7 +3,7 @@
 // has to squint at.
 
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_SIZES, SIZE_LIMITS, fitToWindow, readLayout } from './useLayoutSizes'
+import { CHROME_H, DEFAULT_SIZES, SIZE_LIMITS, fitToWindow, readLayout } from './useLayoutSizes'
 
 // --- the grid the right panel exists to hold ---------------------------------
 // MoveShelf draws ten tiles as `repeat(auto-fill, minmax(COL, 1fr))` with a 4px
@@ -48,7 +48,8 @@ const MIN_WIN = { w: 1024, h: 680 }
 const HIS_WIN = { w: 1600, h: 900 }
 const monitorWidth = (s: { left: number; right: number }, w: number): number =>
   w - 2 - s.left - s.right
-const monitorHeight = (s: { bottom: number }, h: number): number => h - 48 - 1 - s.bottom
+// Above the monitor row: the top bar (48) and the edit tabs (32), then the 1px splitter.
+const monitorHeight = (s: { bottom: number }, h: number): number => h - 80 - 1 - s.bottom
 
 describe('the panels cannot squeeze the picture out of the window', () => {
   it('leaves the default layout completely alone on a real window', () => {
@@ -75,8 +76,18 @@ describe('the panels cannot squeeze the picture out of the window', () => {
     expect(monitorHeight(fitted, MIN_WIN.h)).toBeGreaterThanOrEqual(200)
     expect(fitted.bottom).toBeGreaterThanOrEqual(SIZE_LIMITS.bottom[0])
     // And the guard does not quietly steal the timeline's own ceiling: from a
-    // 900px window upward the full 640 is still his to drag to.
-    expect(fitToWindow(tall, HIS_WIN).bottom).toBe(SIZE_LIMITS.bottom[1])
+    // 921px window upward (80 + 1 + 200 + 640) the full 640 is still his to drag to.
+    expect(fitToWindow(tall, { w: 1600, h: 921 }).bottom).toBe(SIZE_LIMITS.bottom[1])
+    expect(monitorHeight(fitToWindow(tall, HIS_WIN), HIS_WIN.h)).toBeGreaterThanOrEqual(200)
+  })
+
+  it('counts the edit tabs as well as the top bar above the picture', () => {
+    // A 720px window with the timeline dragged all the way up: the picture row kept
+    // 168px, because the 32px of edit tabs were not counted.
+    expect(CHROME_H).toBe(80)
+    const win = { w: 1280, h: 720 }
+    const fitted = fitToWindow({ ...DEFAULT_SIZES, bottom: SIZE_LIMITS.bottom[1] }, win)
+    expect(monitorHeight(fitted, win.h)).toBeGreaterThanOrEqual(200)
   })
 
   it('squeezes for a small window without forgetting the width he chose', () => {
