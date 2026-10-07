@@ -86,6 +86,7 @@ import { audibleClips, autoCaptionEveryClip, autoCaptionFromClip, useTranscribe 
 import { Button, IconButton } from '../ui/Button'
 import { createArmedDelete, type ArmedDelete } from './armedDelete'
 import { CaptionsDialog, type ScriptMode } from './CaptionsDialog'
+import { joinColour, splitColour } from './colourAlpha'
 import { ScrubField, SectionLabel } from './EffectControls'
 
 // ---------------------------------------------------------------------------
@@ -256,27 +257,6 @@ function ColourWell({ value, onChange, label, testId }: { value: string; onChang
       className="h-6 w-8 shrink-0 cursor-default rounded-field bg-bg-input p-0.5"
     />
   )
-}
-
-/** '#rrggbb' or 'rgba(r,g,b,a)' as a hex and an opacity, for the colour wells. */
-function splitColour(c: string): { hex: string; alpha: number } {
-  const h = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(c.trim())
-  if (h) {
-    const x = h[1]!.length === 3 ? [...h[1]!].map((d) => d + d).join('') : h[1]!
-    return { hex: `#${x.toLowerCase()}`, alpha: 1 }
-  }
-  const m = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([\d.]+))?\s*\)$/i.exec(c.trim())
-  if (m) {
-    const hex = [m[1], m[2], m[3]].map((n) => Math.min(255, Number(n)).toString(16).padStart(2, '0')).join('')
-    return { hex: `#${hex}`, alpha: m[4] === undefined ? 1 : Math.max(0, Math.min(1, Number(m[4]))) }
-  }
-  return { hex: '#000000', alpha: 1 }
-}
-
-function joinColour(hex: string, alpha: number): string {
-  if (alpha >= 1) return hex
-  const n = parseInt(hex.slice(1), 16)
-  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${Math.round(alpha * 100) / 100})`
 }
 
 /** m:ss.t, short enough to sit beside a caption in a narrow column. */

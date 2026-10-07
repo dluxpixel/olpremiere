@@ -20,6 +20,7 @@ import { appleEmojiFor, EMOJI_STACK } from '../engine/render/emojiFont'
 import { defaultTitleDef, type Clip, type TitleDef } from '../engine/types'
 import { setTitlesFontSize, updateTitle } from '../state/titleActions'
 import { IconButton } from '../ui/Button'
+import { joinColour, splitColour } from './colourAlpha'
 import { PropRow, ScrubField, SectionLabel, type Spec } from './EffectControls'
 
 const FONT_FAMILIES = TITLE_FONT_OPTIONS
@@ -29,6 +30,10 @@ const inputCls =
 
 // Per-field reset targets: the same defaults the toggles create with.
 const TITLE_DEFAULTS = defaultTitleDef()
+const BOX_DEFAULT = { color: 'rgba(0,0,0,0.6)', paddingPx: 24, radiusPx: 8 }
+
+/** Opacity in percent, the way the caption style editor shows it. */
+const percentOf = (color: string): number => Math.round(splitColour(color).alpha * 100)
 
 /** Typed number field; commits clamped value on blur/Enter, reverts on Escape. */
 /**
@@ -399,13 +404,35 @@ export function TitleControls({ clip }: { clip: Clip }) {
                 onCommit={(v) => set({ shadow: { ...def.shadow!, dy: v } }, 'shadow')}
               />
             </PropRow>
+            {/* The picker only holds #rrggbb, so it keeps the opacity he set and
+                the row under it sets the opacity: the default shadow is see through. */}
             <PropRow label="Color" labelTitle="Shadow color">
               <input
                 type="color"
+                data-testid="title-shadow-color"
                 aria-label="Shadow color"
                 value={hexOf(def.shadow.color)}
-                onChange={(e) => set({ shadow: { ...def.shadow!, color: e.target.value } }, 'shadow')}
+                onChange={(e) =>
+                  set({ shadow: { ...def.shadow!, color: joinColour(e.target.value, splitColour(def.shadow!.color).alpha) } }, 'shadow')
+                }
                 className="h-6 w-9 shrink-0 cursor-default rounded-field bg-bg-input p-0.5"
+              />
+            </PropRow>
+            <PropRow
+              label="Opacity"
+              labelTitle="Shadow opacity, percent"
+              onReset={() =>
+                set({ shadow: { ...def.shadow!, color: joinColour(hexOf(def.shadow!.color), splitColour(TITLE_DEFAULTS.shadow!.color).alpha) } })
+              }
+              resetLabel="Reset shadow opacity"
+            >
+              <NumberField
+                value={percentOf(def.shadow.color)}
+                min={0}
+                max={100}
+                testId="title-shadow-opacity"
+                ariaLabel="Shadow opacity"
+                onCommit={(v) => set({ shadow: { ...def.shadow!, color: joinColour(hexOf(def.shadow!.color), v / 100) } }, 'shadow')}
               />
             </PropRow>
           </div>
@@ -474,9 +501,7 @@ export function TitleControls({ clip }: { clip: Clip }) {
               checked={!!def.box}
               onChange={(e) =>
                 set({
-                  box: e.target.checked
-                    ? { color: 'rgba(0,0,0,0.6)', paddingPx: 24, radiusPx: 8 }
-                    : undefined,
+                  box: e.target.checked ? { ...BOX_DEFAULT } : undefined,
                 })
               }
               className="ml-1 accent-accent"
@@ -488,15 +513,35 @@ export function TitleControls({ clip }: { clip: Clip }) {
             <PropRow label="Color" labelTitle="Background color">
               <input
                 type="color"
+                data-testid="title-box-color"
                 aria-label="Background color"
                 value={hexOf(def.box.color)}
-                onChange={(e) => set({ box: { ...def.box!, color: e.target.value } }, 'box')}
+                onChange={(e) =>
+                  set({ box: { ...def.box!, color: joinColour(e.target.value, splitColour(def.box!.color).alpha) } }, 'box')
+                }
                 className="h-6 w-9 shrink-0 cursor-default rounded-field bg-bg-input p-0.5"
               />
             </PropRow>
             <PropRow
+              label="Opacity"
+              labelTitle="Background opacity, percent"
+              onReset={() =>
+                set({ box: { ...def.box!, color: joinColour(hexOf(def.box!.color), splitColour(BOX_DEFAULT.color).alpha) } })
+              }
+              resetLabel="Reset background opacity"
+            >
+              <NumberField
+                value={percentOf(def.box.color)}
+                min={0}
+                max={100}
+                testId="title-box-opacity"
+                ariaLabel="Background opacity"
+                onCommit={(v) => set({ box: { ...def.box!, color: joinColour(hexOf(def.box!.color), v / 100) } }, 'box')}
+              />
+            </PropRow>
+            <PropRow
               label="Padding"
-              onReset={() => set({ box: { ...def.box!, paddingPx: 24 } })}
+              onReset={() => set({ box: { ...def.box!, paddingPx: BOX_DEFAULT.paddingPx } })}
               resetLabel="Reset background padding"
             >
               <NumberField
@@ -509,7 +554,7 @@ export function TitleControls({ clip }: { clip: Clip }) {
             </PropRow>
             <PropRow
               label="Radius"
-              onReset={() => set({ box: { ...def.box!, radiusPx: 8 } })}
+              onReset={() => set({ box: { ...def.box!, radiusPx: BOX_DEFAULT.radiusPx } })}
               resetLabel="Reset background radius"
             >
               <NumberField
@@ -530,12 +575,5 @@ export function TitleControls({ clip }: { clip: Clip }) {
 // A <input type=color> only accepts #rrggbb; strip rgba()/#rrggbbaa down to a
 // hex swatch so the picker renders (the text field keeps the exact value).
 function hexOf(color: string): string {
-  if (/^#[0-9a-fA-F]{6}$/.test(color)) return color
-  if (/^#[0-9a-fA-F]{8}$/.test(color)) return color.slice(0, 7)
-  const m = color.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i)
-  if (m) {
-    const h = (n: string) => Number(n).toString(16).padStart(2, '0')
-    return `#${h(m[1])}${h(m[2])}${h(m[3])}`
-  }
-  return '#000000'
+  return splitColour(color).hex
 }
