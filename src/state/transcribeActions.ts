@@ -47,6 +47,8 @@ interface TranscribeState {
   cancel: (() => void) | null
   /** Which clip of how many, when captioning the whole timeline. Null for a single clip. */
   queue: { index: number; total: number } | null
+  /** The clip being heard right now, so only its row in the Words tab says "Listening". */
+  clipId: string | null
 }
 
 export const useTranscribe = create<TranscribeState>(() => ({
@@ -55,10 +57,11 @@ export const useTranscribe = create<TranscribeState>(() => ({
   downloading: false,
   cancel: null,
   queue: null,
+  clipId: null,
 }))
 
 const reset = (): void =>
-  useTranscribe.setState({ status: 'idle', pct: null, downloading: false, cancel: null, queue: null })
+  useTranscribe.setState({ status: 'idle', pct: null, downloading: false, cancel: null, queue: null, clipId: null })
 
 /** True when the caller asked to stop, rather than something going wrong. */
 const isCancel = (err: unknown): boolean => typeof err === 'object' && err !== null && 'cancelled' in err
@@ -84,18 +87,20 @@ export interface CaptionJob {
   stopped: boolean
   /** How to end the step in flight: the screening, the recogniser, the analyses. */
   readonly ends: Set<() => void>
+  /** The model came off the network during this job, so a failure may be the connection. */
+  downloaded: boolean
 }
 
 /** Claim the one job, or null when one is running. No wait between the check and the claim. */
 function claimJob(queue: TranscribeState['queue'] = null): CaptionJob | null {
   if (useTranscribe.getState().status !== 'idle') return null
-  const job: CaptionJob = { stopped: false, ends: new Set() }
+  const job: CaptionJob = { stopped: false, ends: new Set(), downloaded: false }
   const stop = (): void => {
     if (job.stopped) return
     job.stopped = true
     for (const end of [...job.ends]) end()
   }
-  useTranscribe.setState({ status: 'reading', pct: null, downloading: false, cancel: stop, queue })
+  useTranscribe.setState({ status: 'reading', pct: null, downloading: false, cancel: stop, queue, clipId: null })
   return job
 }
 
@@ -118,8 +123,12 @@ function stopIfAsked(job: CaptionJob): void {
  * connection", which is true of exactly one of these and sends him to his router
  * for the other three. Fifth-grade words, no error codes: the raw message is for
  * the console, this is for him.
+ *
+ * ⛔ AND THE CONNECTION IS NAMED ONLY WHEN A DOWNLOAD WAS SEEN (CA-20). It was
+ * the answer to every failure nobody recognised, so with the model long since
+ * on his disk he was still sent to check his internet.
  */
-function captionFailureMessage(err: unknown): string {
+export function captionFailureMessage(err: unknown, downloadSeen = false): string {
   const raw = err instanceof Error ? err.message : String(err ?? '')
   if (/decodable audio|no audio|leaves no audio/i.test(raw)) {
     return 'That clip has no sound the app can read, so there is nothing to caption'
@@ -128,8 +137,12 @@ function captionFailureMessage(err: unknown): string {
     return 'The speech model stopped responding, so nothing was captioned. Try that clip again'
   }
   if (/already running/i.test(raw)) return 'A transcription is already running'
-  return 'Captions failed. The speech model downloads once and needs a connection the first time'
+  if (downloadSeen) return 'Captions failed. The speech model downloads once and needs a connection the first time'
+  return 'Captions failed. Try again, and if it keeps failing, restart the app'
 }
+
+/** Said, as information, when a clip was heard and nobody in it talks. Not a failure. */
+export const NOBODY_TALKS = 'Nobody talks in this clip'
 
 /**
  * What the recogniser said for each stretch of media this session, so the same
@@ -213,7 +226,7 @@ interface HearOptions {
 }
 
 async function hearClip(clip: Clip, asset: MediaAsset, opts: HearOptions, job: CaptionJob): Promise<CaptionWord[]> {
-  useTranscribe.setState({ status: 'reading', pct: null, downloading: false })
+  useTranscribe.setState({ status: 'reading', pct: null, downloading: false, clipId: clip.id })
 
   // ⛔ ON A WHOLE-TIMELINE SWEEP, ASK WHO IS TALKING BEFORE LISTENING TO WORDS.
   //
@@ -273,9 +286,10 @@ async function hearClip(clip: Clip, asset: MediaAsset, opts: HearOptions, job: C
   const known = heardBefore.get(key)
   const run = known
     ? null
-    : transcribePcm(pcm, language, (p) =>
-        useTranscribe.setState({ status: p.phase, pct: p.pct, downloading: p.downloading ?? false }),
-      )
+    : transcribePcm(pcm, language, (p) => {
+        if (p.downloading) job.downloaded = true
+        useTranscribe.setState({ status: p.phase, pct: p.pct, downloading: p.downloading ?? false })
+      })
   // Aborted the moment the run fails or is cancelled, so a dead run cannot leave
   // an analysis churning into the next clip of a whole-timeline sweep.
   const stop = new AbortController()
@@ -577,7 +591,7 @@ export async function autoCaptionFromClip(clipId: string, style?: CaptionStyle):
         'danger',
       )
     } else if (words.length === 0) {
-      toasts.show('No speech found in the clip', 'danger')
+      toasts.show(NOBODY_TALKS, 'info')
     } else {
       // No style passed (the right-click door) falls back to his DEFAULT style,
       // so every door produces the same captions.
@@ -601,7 +615,7 @@ export async function autoCaptionFromClip(clipId: string, style?: CaptionStyle):
       // that reach here include "clip has no decodable audio", "clip trim leaves
       // no audio" and the model watchdog, and only one of them is about a
       // connection.
-      toasts.show(captionFailureMessage(err), 'danger')
+      toasts.show(captionFailureMessage(err, job.downloaded), 'danger')
       console.error('auto-caption:', err)
     }
   } finally {
@@ -668,13 +682,13 @@ export async function listenToClip(
       },
     })
     if (words.length === 0) {
-      toasts.show('No speech found in the clip', 'danger')
+      toasts.show(NOBODY_TALKS, 'info')
       return null
     }
     return { clip, asset, words: spoken }
   } catch (err) {
     if (!isCancel(err)) {
-      toasts.show(captionFailureMessage(err), 'danger')
+      toasts.show(captionFailureMessage(err, job.downloaded), 'danger')
       console.error('listen for words:', err)
     }
     return null

@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { newClipFromAsset, newProject, type MediaAsset, type SpokenWord } from '../engine/types'
 import { addCaptionsFromWords } from '../state/captionActions'
 import { updateActiveSequence, useStore } from '../state/store'
+import { useTranscribe } from '../state/transcribeActions'
 import { CaptionsTab } from './CaptionsTab'
 import { WordsTab } from './WordsTab'
 
@@ -81,7 +82,10 @@ beforeEach(() => {
   seed()
   useStore.getState().setUI({ selection: [], playheadS: 0, playing: false })
 })
-afterEach(() => cleanup())
+afterEach(() => {
+  cleanup()
+  useTranscribe.setState({ status: 'idle', pct: null, downloading: false, cancel: null, queue: null, clipId: null })
+})
 
 describe('the Words tab while he plays', () => {
   it('draws nothing on a frame that stays inside the same word', () => {
@@ -154,5 +158,19 @@ describe('Remove unused in the Media tab', () => {
     // An edit is a new project document, and is counted again.
     const edited = { ...project, assets: { ...project.assets, spare: { ...TALK, id: 'spare' } } }
     expect(unusedAssetCount(edited)).toBe(1)
+  })
+})
+
+// CA-20. During a caption run every clip in the Words tab read "Listening",
+// for clips nobody was hearing.
+describe('the Words tab while a clip is being heard', () => {
+  it('says "Listening" on that clip only', () => {
+    const quiet = { ...TALK, words: undefined, wordsOnVoice: undefined }
+    useStore.getState().setProject({ ...useStore.getState().project, assets: { talk: quiet } })
+    useTranscribe.setState({ status: 'listening', cancel: () => {}, clipId: 'second' })
+    render(<WordsTab />)
+    const buttons = screen.getAllByTestId('listen-for-words')
+    expect(buttons.map((b) => b.textContent)).toEqual(['Listen for words', 'Listening'])
+    expect(buttons.every((b) => (b as HTMLButtonElement).disabled)).toBe(true)
   })
 })

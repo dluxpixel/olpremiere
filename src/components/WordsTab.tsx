@@ -77,6 +77,7 @@ const WordsParagraph = memo(function WordsParagraph({
 export function WordsTab() {
   const project = useStore((s) => s.project)
   const status = useTranscribe((s) => s.status)
+  const hearing = useTranscribe((s) => s.clipId)
   const seq = activeSequence(project)
   // Words kept before they were stored on time are shifted by the lag on read.
   const rows = useMemo(() => wordsOnTimeline(seq, project.assets, wordLagNow()), [seq, project.assets])
@@ -217,14 +218,17 @@ export function WordsTab() {
                 <span className="shrink-0 tabular-nums">{formatTimecode(row.clip.startS, seq.fps)}</span>
               </div>
               {row.words.length === 0 ? (
+                // Only the clip being heard says "Listening" (CA-20): during a
+                // caption run every row used to, for clips nobody was hearing.
                 <Button
                   variant="secondary"
                   data-testid="listen-for-words"
                   disabled={status !== 'idle'}
+                  title={status !== 'idle' && hearing !== row.clip.id ? 'One clip is heard at a time. This one can be heard when that is done' : undefined}
                   onClick={() => void listenForWords(row.clip.id)}
                 >
                   <Ear size={14} strokeWidth={1.5} />
-                  {status === 'idle' ? 'Listen for words' : 'Listening'}
+                  {status !== 'idle' && hearing === row.clip.id ? 'Listening' : 'Listen for words'}
                 </Button>
               ) : (
                 <WordsParagraph

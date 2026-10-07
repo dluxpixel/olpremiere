@@ -27,7 +27,8 @@ const heard: string[] = []
 /** Where each clip's words actually landed, so a stale position is visible. */
 const heardAt: Record<string, number> = {}
 /** A hook the tests use to edit the timeline WHILE the run is working through it. */
-const midRun: { fn: (() => void) | null; answered: (() => void) | null } = { fn: null, answered: null }
+type Progress = (p: { phase: 'model' | 'listening'; pct: number | null; downloading?: boolean }) => void
+const midRun: { fn: (() => void) | null; answered: ((onProgress: Progress) => void) | null } = { fn: null, answered: null }
 vi.mock('../engine/captions/transcribe', () => ({
   TRANSCRIBE_SAMPLE_RATE: 16000,
   extractClipPcm: (_asset: unknown, clip: { id: string; startS: number }) => {
@@ -37,9 +38,9 @@ vi.mock('../engine/captions/transcribe', () => ({
     return Promise.resolve(new Float32Array(8))
   },
   // `answered` runs the moment the recogniser hands its words back.
-  transcribePcm: () => ({
+  transcribePcm: (_pcm: unknown, _language: unknown, onProgress: Progress) => ({
     promise: Promise.resolve().then(() => {
-      midRun.answered?.()
+      midRun.answered?.(onProgress)
       return []
     }),
     cancel: () => {},
@@ -82,7 +83,15 @@ import {
 } from '../engine/types'
 import { addCaptionsFromWords, CAPTION_TRACK_NAME } from './captionActions'
 import { updateActiveSequence, useStore } from './store'
-import { audibleClips, autoCaptionEveryClip, autoCaptionFromClip, forgetHeard, useTranscribe, wordsForClip } from './transcribeActions'
+import {
+  audibleClips,
+  autoCaptionEveryClip,
+  autoCaptionFromClip,
+  captionFailureMessage,
+  forgetHeard,
+  useTranscribe,
+  wordsForClip,
+} from './transcribeActions'
 
 const seq = (): Sequence => activeSequence(useStore.getState().project)
 const asset = (id: string): MediaAsset => ({
@@ -657,5 +666,45 @@ describe('a clip heard with no door around it (the silence cutter)', () => {
     await expect(wordsForClip(clip, useStore.getState().project.assets.a!)).rejects.toThrow('already running')
     expect(useTranscribe.getState().status).toBe('listening')
     expect(useTranscribe.getState().queue).toEqual({ index: 2, total: 5 })
+  })
+})
+
+// CA-20. Every failure nobody recognised was blamed on the connection, with the
+// model long since on his disk.
+describe('what a failed caption run says', () => {
+  beforeEach(() => forgetHeard())
+
+  it('names the connection only when the model was really downloading', () => {
+    const odd = new Error('Session already ended')
+    expect(captionFailureMessage(odd)).toBe('Captions failed. Try again, and if it keeps failing, restart the app')
+    expect(captionFailureMessage(odd, true)).toBe(
+      'Captions failed. The speech model downloads once and needs a connection the first time',
+    )
+    // The failures it knows by name still say what they are.
+    expect(captionFailureMessage(new Error('clip has no decodable audio'))).toBe(
+      'That clip has no sound the app can read, so there is nothing to caption',
+    )
+    expect(captionFailureMessage(new Error('The speech model stopped responding'), true)).toBe(
+      'The speech model stopped responding, so nothing was captioned. Try that clip again',
+    )
+  })
+
+  it('a clip whose model is on disk: try again, not check the internet', async () => {
+    seedAudio([{ id: 'a', startS: 0 }])
+    midRun.answered = () => {
+      throw new Error('Session already ended')
+    }
+    await autoCaptionFromClip('clip-a')
+    expect(toasted).toContain('Captions failed. Try again, and if it keeps failing, restart the app')
+  })
+
+  it('a clip whose model was coming off the network: the connection', async () => {
+    seedAudio([{ id: 'a', startS: 0 }])
+    midRun.answered = (onProgress) => {
+      onProgress({ phase: 'model', pct: 40, downloading: true })
+      throw new Error('Failed to fetch')
+    }
+    await autoCaptionFromClip('clip-a')
+    expect(toasted).toContain('Captions failed. The speech model downloads once and needs a connection the first time')
   })
 })

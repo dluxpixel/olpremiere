@@ -21,8 +21,17 @@ const mem = vi.hoisted(() => {
 })
 
 const toasted: string[] = []
+/** The kind of each toast, beside its words: 'danger' is red, anything else is not. */
+const toastKinds: (string | undefined)[] = []
 vi.mock('./toasts', () => ({
-  useToasts: { getState: () => ({ show: (m: string) => void toasted.push(m) }) },
+  useToasts: {
+    getState: () => ({
+      show: (m: string, kind?: string) => {
+        toasted.push(m)
+        toastKinds.push(kind)
+      },
+    }),
+  },
 }))
 
 // His vocabulary is read from every saved project, which takes a while on his
@@ -110,6 +119,7 @@ beforeEach(() => {
   reloadCaptionStyles()
   heard.length = 0
   toasted.length = 0
+  toastKinds.length = 0
   useStore.getState().setProject(newProject())
   useStore.getState().setUI({ selection: [], playheadS: 0 })
   useTranscribe.setState({ status: 'idle', pct: null, downloading: false, cancel: null, queue: null })
@@ -207,6 +217,21 @@ describe('captioning a selection', () => {
     expect(caps.length).toBeGreaterThan(0)
     expect(caps[0]!.clip.startS).toBeCloseTo(5, 6)
     expect(caps.every(({ clip }) => clip.startS >= 5 - 1e-9)).toBe(true)
+  })
+
+  // CA-20. "No speech found in the clip" came up red, as if something broke.
+  it('a clip nobody talks in says so, as information, not as a failure', async () => {
+    const { b } = seed()
+    const ears = captionEars.wordsForClip
+    captionEars.wordsForClip = async () => []
+    try {
+      await captionTheseClips([b])
+    } finally {
+      captionEars.wordsForClip = ears
+    }
+    const i = toasted.indexOf('Nobody talks in this clip')
+    expect(i).toBeGreaterThanOrEqual(0)
+    expect(toastKinds[i]).not.toBe('danger')
   })
 
   it('one clip trimmed while it is heard lays nothing, and says why', async () => {
