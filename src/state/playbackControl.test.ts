@@ -11,7 +11,17 @@ vi.mock('../engine/audio', () => ({
   scheduleAudio: () => Promise.resolve(() => undefined),
   clipEmitsAudioOn: () => false,
 }))
-vi.mock('../engine/preview', () => ({ pauseAllPreviewVideos: () => {}, setPreviewTransportRate: () => {} }))
+// The frame the monitor last drew while playing (preview.ts lastPlayedFrameS).
+// No monitor runs here, so a test that needs one says what it drew.
+const monitor = vi.hoisted(() => ({ drewS: null as number | null }))
+vi.mock('../engine/preview', () => ({
+  pauseAllPreviewVideos: () => {},
+  setPreviewTransportRate: () => {},
+  lastPlayedFrameS: () => monitor.drewS,
+  forgetPlayedFrame: () => {
+    monitor.drewS = null
+  },
+}))
 vi.mock('./voiceRecorder', () => ({
   isTakeInProgress: () => false,
   pauseRecording: () => {},
@@ -55,6 +65,7 @@ beforeEach(() => {
 
 afterEach(() => {
   if (isPlaying()) togglePlay()
+  monitor.drewS = null
   vi.restoreAllMocks()
 })
 
@@ -133,5 +144,48 @@ describe('a pause lands on the frame that was on screen', () => {
     await settle()
     frameAfter(100)
     expect(playhead()).toBeCloseTo(5.1, 6)
+  })
+})
+
+// The monitor's animation frame loop runs BEFORE the transport's in every
+// frame, so what it drew is the playhead of the tick before the last one.
+describe('a pause lands on the frame the monitor drew, not on the last tick', () => {
+  beforeEach(() => {
+    updateActiveSequence('A 10 second edit at 60', (seq) => ({ ...seq, durationS: 10, fps: 60 }))
+  })
+
+  it('stops on what he saw when the last tick had already moved to the next frame', async () => {
+    togglePlay()
+    await settle()
+    frameAfter(1000)
+    // The next frame: the monitor draws the playhead it finds (frame 60), then
+    // the transport ticks on to frame 61, which nobody has seen yet.
+    monitor.drewS = Math.floor(playhead() * 60 + 1e-6) / 60
+    frameAfter(1000 / 60)
+    expect(Math.floor(playhead() * 60 + 1e-6)).toBe(61)
+    togglePlay()
+    expect(playhead()).toBe(1)
+  })
+
+  it('and resumes from where the sound really stopped', async () => {
+    togglePlay()
+    await settle()
+    frameAfter(1000)
+    monitor.drewS = 1
+    frameAfter(1000 / 60)
+    togglePlay()
+    togglePlay()
+    await settle()
+    frameAfter(100)
+    expect(playhead()).toBeCloseTo(1 + 1 / 60 + 0.1, 6)
+  })
+
+  it('never uses a frame drawn by an earlier run of play', async () => {
+    monitor.drewS = 5
+    togglePlay()
+    await settle()
+    frameAfter(500)
+    togglePlay()
+    expect(playhead()).toBe(0.5)
   })
 })

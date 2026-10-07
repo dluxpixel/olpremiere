@@ -1851,8 +1851,29 @@ export function renderPreview(
   }
   if (missingAtCut && lastComplete.get(canvas) === true) return false
   renderer.render(frame, (l) => (pictures.has(l) ? pictures.get(l)! : source(l)))
+  if (playing) playedFrameS = tS
   lastComplete.set(canvas, complete)
   return complete
+}
+
+/**
+ * The playhead of the last frame the monitor DREW while playing, or null when
+ * this run of play has drawn none yet. What he saw, so a pause can land on it.
+ *
+ * ⛔ NOT THE TRANSPORT'S LAST TICK. The monitor's animation frame loop starts
+ * when it mounts, long before any play, so in every frame it runs FIRST and
+ * draws the playhead the transport set one frame earlier; the transport ticks
+ * after it. A pause between two frames therefore finds the store one tick
+ * ahead of the picture, and on a 60 fps edit nearly every tick is a new frame:
+ * flooring the last tick put the playhead one frame past what he saw.
+ */
+let playedFrameS: number | null = null
+
+export const lastPlayedFrameS = (): number | null => playedFrameS
+
+/** A new run of play starts: the last run's frame is not what is on screen any more. */
+export function forgetPlayedFrame(): void {
+  playedFrameS = null
 }
 
 /** Whether the canvas's last drawn frame had every picture it needed. */

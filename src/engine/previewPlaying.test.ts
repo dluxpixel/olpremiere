@@ -510,3 +510,26 @@ describe("pressing Play never shows the element's old picture", () => {
     expect(asked).toHaveLength(6)
   })
 })
+
+// ---- PB-16 ------------------------------------------------------------------
+
+describe('what a pause lands on: the frame the monitor last drew while playing', () => {
+  const A = asset('A')
+  const forward = clip({ id: 'f', assetId: 'A', startS: 0, inS: 0, outS: 4 })
+
+  it('remembers a playing draw, never a paused one, until the next run of play', async () => {
+    const seq = sequence([forward])
+    cacheFrames(A, 0, 4)
+    const c = canvas()
+    preview.prewarmPreview([A])
+    await loadVideos()
+    preview.forgetPlayedFrame()
+    expect(preview.lastPlayedFrameS()).toBeNull()
+    preview.renderPreview(c, seq, { A }, 1.5, true)
+    expect(preview.lastPlayedFrameS()).toBe(1.5)
+    preview.renderPreview(c, seq, { A }, 2, false)
+    expect(preview.lastPlayedFrameS()).toBe(1.5)
+    preview.forgetPlayedFrame()
+    expect(preview.lastPlayedFrameS()).toBeNull()
+  })
+})

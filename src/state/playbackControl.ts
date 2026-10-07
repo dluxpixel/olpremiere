@@ -4,7 +4,12 @@
 import { scheduleAudio } from '../engine/audio'
 import { diagnoseSilence, type SilenceFix } from '../engine/audioSilence'
 import { Transport, type HeardSpan } from '../engine/playback'
-import { pauseAllPreviewVideos, setPreviewTransportRate } from '../engine/preview'
+import {
+  forgetPlayedFrame,
+  lastPlayedFrameS,
+  pauseAllPreviewVideos,
+  setPreviewTransportRate,
+} from '../engine/preview'
 import { activeSequence } from '../engine/types'
 import { workArea } from '../engine/workArea'
 import { isTakeInProgress, pauseRecording, resumeRecording, takeHeard } from './voiceRecorder'
@@ -82,15 +87,18 @@ const transport = new Transport({
   onPaused: (exactS) => {
     const s = useStore.getState()
     const fps = activeSequence(s.project).fps || 30
-    // The frame on screen is the one the LAST TICK drew, not the one the live
-    // clock has reached since, which can be a frame later.
-    const frameS = Math.floor(Math.max(0, s.ui.playheadS) * fps + 1e-6) / fps
+    // The frame on screen is the one the monitor LAST DREW (lastPlayedFrameS),
+    // which is a tick behind the transport, not the one the live clock has
+    // reached since. Before the monitor has drawn anything this run (no canvas,
+    // or a pause on the very first frame), the frame the last tick is in.
+    const frameS = lastPlayedFrameS() ?? Math.floor(Math.max(0, s.ui.playheadS) * fps + 1e-6) / fps
     stoppedAt = { exactS: Math.max(0, exactS), frameS }
     s.setUI({ playheadS: frameS })
   },
   onStateChange: (playing, rate) => {
     useStore.getState().setUI({ playing })
-    if (!playing) pauseAllPreviewVideos()
+    if (playing) forgetPlayedFrame()
+    else pauseAllPreviewVideos()
     // Dubbing: a take in progress follows the transport. Pausing the preview
     // (Space, K, the transport button, or hitting the end) holds the take;
     // resuming resumes it. The mic itself never stops (voiceRecorder,
