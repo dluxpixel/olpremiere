@@ -544,14 +544,20 @@ export const EFFECTS: EffectDef[] = [
     // ⛔ HE NEVER ADDS THIS ONE, like motionSmear: a look derives it (`companions`)
     // from its Amount on every frame. Local contrast, the muscle definition pass:
     // a wide blur, and the picture's difference from it added back in the middle
-    // tones. Radius is a fraction of the frame's short side.
+    // tones. Radius is a fraction of the frame's short side. Then the look's own
+    // grain, LAST, so the clarity never sharpens it (lookMath.ts grainAfterClarity).
     type: 'lookClarity',
     hidden: true,
     label: 'Look Clarity',
-    description: 'Local contrast for a look. Made by the look, never added by hand.',
+    description: 'Local contrast for a look, then its grain. Made by the look, never added by hand.',
     category: 'look',
     pass: 'neighborhood',
-    params: [p('amount', 'Amount', 0, 2, 0.01, 0), p('radius', 'Radius', 0, 0.1, 0.001, 0.015)],
+    params: [
+      p('amount', 'Amount', 0, 2, 0.01, 0),
+      p('radius', 'Radius', 0, 0.1, 0.001, 0.015),
+      p('grain', 'Grain', 0, 1, 0.01, 0),
+      p('grainSize', 'Grain size', 0.5, 8, 0.1, 1.6, 'px'),
+    ],
   },
   {
     // ⛔ HE NEVER ADDS THIS ONE EITHER. A look's halation (the red film glow round

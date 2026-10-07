@@ -195,6 +195,53 @@ describe("a look's own passes are built only when a look needs them", () => {
   })
 })
 
+// Clarity sharpened a grain laid down before it (lookMath.ts, grainAfterClarity),
+// so a look with clarity lays its grain down in its clarity pass, after the detail.
+describe('the grain of a look with clarity', () => {
+  it('is drawn by the clarity pass after the detail, at the frame the colour pass would have used, and not by the colour pass', () => {
+    const rec = recordingGl()
+    const renderer = createRenderer(rec.gl)
+    renderer.render(frameOf(layer([look('lookMoodyGym', 0.5)])), () => source)
+    const colour = rec.draws.find((d) => d.fs.includes('olkCurve_moodyGym'))!
+    expect(colour.fs).not.toContain('olkGrain(vSeqPos')
+    const clarity = rec.draws.find((d) => passOf(d.fs) === 'clarity')!
+    expect(clarity.uniforms.uAmount).toBeCloseTo(0.175, 6)
+    expect(clarity.uniforms.uGrain).toBeCloseTo(0.035, 6)
+    expect(clarity.uniforms.uGrainSize).toBe(1.6)
+    expect(clarity.uniforms.uSeed).toBe(7)
+    expect(clarity.uniforms.uFrame).toEqual([1080, 1920])
+    // In the shader the grain comes after the detail (the first olkGrain is the helper's own definition).
+    expect(clarity.fs.lastIndexOf('olkGrain(')).toBeGreaterThan(clarity.fs.indexOf('d * uAmount'))
+    renderer.dispose()
+  })
+
+  it('takes an adjustment layer\'s own frame, as its colour pass does', () => {
+    const rec = recordingGl()
+    const renderer = createRenderer(rec.gl)
+    const frame: RenderFrame = {
+      width: 1080,
+      height: 1920,
+      ops: [
+        { type: 'layer', layer: layer([]) },
+        { type: 'adjustment', effects: resolveStack([look('lookGritty')], 0), opacity: 1, frameSeed: 11 },
+      ],
+    }
+    renderer.render(frame, () => source)
+    const clarity = rec.draws.find((d) => passOf(d.fs) === 'clarity')!
+    expect(clarity.uniforms.uSeed).toBe(11)
+    expect(clarity.uniforms.uGrain).toBeCloseTo(0.16, 6)
+    renderer.dispose()
+  })
+
+  it('stays in the colour pass of a look without clarity, where nothing after it reads neighbours', () => {
+    const rec = recordingGl()
+    const renderer = createRenderer(rec.gl)
+    renderer.render(frameOf(layer([look('lookFilm800T')])), () => source)
+    expect(rec.draws.find((d) => d.fs.includes('olkCurve_film800T'))!.fs).toContain('olkGrain(vSeqPos')
+    renderer.dispose()
+  })
+})
+
 describe('a look pass this GPU will not build', () => {
   it('never stops the renderer starting, or a project with no look from drawing', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})

@@ -19,7 +19,8 @@
 //   white balance + exposure  ->  tone curve  ->  (find the skin)  ->
 //   saturation (global, per hue, shadows and highlights)  ->  brightness per
 //   hue  ->  hue shift  ->  black and white  ->  split toning  ->  vignette  ->
-//   grain  ->  mix with the original by the Amount slider
+//   grain (here only in a look without clarity, see below)  ->  mix with the
+//   original by the Amount slider
 //
 // SKIN IS FOUND ONCE, right after the curve, on colours the look has not drained
 // yet, and that one weight holds back both the shadow and highlight draining and
@@ -37,6 +38,14 @@
 // read), HALATION (the red glow film gets round bright lights) and BLOOM (a soft
 // overall glow). Those run as their own passes after the colour pass, in the same
 // shared renderer, and `lookCompanions` says which and how strong.
+//
+// ⛔ A LOOK WITH CLARITY ADDS ITS GRAIN IN THE CLARITY PASS, AFTER THE DETAIL, not
+// in the colour pass (`grainAfterClarity`). Clarity's detail band (about 16 px)
+// holds the whole of a 1.6 to 1.8 px grain, so grain laid down before it came out
+// sharpened: up to about 1.5x the grain asked for in Gritty's midtones and 1.35x
+// in Moody Gym's, and `applyLook` could not see it. Film grain sits on the finished
+// picture, so it goes on last. A look without clarity keeps it in the colour pass,
+// where nothing after it reads neighbours to sharpen it.
 
 /** RGB triple, 0..1 encoded. */
 export type Vec3 = readonly [number, number, number]
@@ -342,6 +351,19 @@ export function grainValue(xPx: number, yPx: number, sizePx: number, seed: numbe
 /** Grain shows most in the middle of the tone range and least in pure black and pure white, as on film. */
 export const grainWeight = (l: number): number => mix(0.4, 1, 4 * l * (1 - l))
 
+/**
+ * A look's grain on one encoded pixel, NOT clamped: `amount` is the peak size of
+ * the noise and `size` the grain in frame pixels on a 1080 short side. The same
+ * noise, size and tone weighting wherever it is added: by the colour pass, or
+ * last of all by the clarity pass (which clamps after), see `grainAfterClarity`.
+ */
+export function addGrain(v: Vec3, amount: number, size: number, ctx: LookContext): Vec3 {
+  const s = Math.max(r6(size), 0.5) * frameScale(ctx.w, ctx.h)
+  const g = grainValue(ctx.x, ctx.y, s, Math.max(Math.floor(ctx.seed), 0))
+  const k = g * r6(amount) * 0.3 * grainWeight(clamp01(luma(v)))
+  return [v[0] + k, v[1] + k, v[2] + k]
+}
+
 // ---------------------------------------------------------------------------
 // The look itself, in TypeScript.
 
@@ -382,6 +404,14 @@ export function lookStages(spec: LookSpec): {
   const zoneSat = spec.satShadows !== 1 || spec.satHighlights !== 1
   return { hueSat, hueLum, hueShift, needsHue: hueSat || hueLum || hueShift, tints, skin: spec.skinProtect > 0 && (tints || zoneSat) }
 }
+
+/**
+ * True when the look's grain goes on in its clarity pass, after the detail, and
+ * not in its colour pass: clarity would sharpen grain laid down before it (see the
+ * header). Fixed per look, never per Amount, because the colour pass's shader is
+ * compiled per stack shape and its text cannot change with a slider.
+ */
+export const grainAfterClarity = (spec: LookSpec): boolean => spec.clarity > 0 && spec.grain.amount > 0
 
 const curveCache = new WeakMap<LookSpec, CurveSegment[]>()
 function curveOf(spec: LookSpec): CurveSegment[] {
@@ -487,12 +517,11 @@ export function applyLook(spec: LookSpec, rgb: Vec3, amount: number, ctx: LookCo
     v = [v[0] * k, v[1] * k, v[2] * k]
   }
 
-  // Grain, on the frame too, so it is the film's grain and not the picture's.
-  if (spec.grain.amount > 0) {
-    const size = Math.max(r6(spec.grain.size), 0.5) * frameScale(ctx.w, ctx.h)
-    const g = grainValue(ctx.x, ctx.y, size, Math.max(Math.floor(ctx.seed), 0))
-    const k = g * r6(spec.grain.amount) * 0.3 * grainWeight(clamp01(luma(v)))
-    v = [v[0] + k, v[1] + k, v[2] + k]
+  // Grain, on the frame too, so it is the film's grain and not the picture's. A
+  // look with clarity adds it in the clarity pass instead (grainAfterClarity).
+  if (spec.grain.amount > 0 && !grainAfterClarity(spec)) {
+    const g = addGrain(v, spec.grain.amount, spec.grain.size, ctx)
+    v = [g[0], g[1], g[2]]
   }
 
   // Mixed with the colour as it ARRIVED (rgb, not c0) and not clamped after, the
@@ -513,6 +542,10 @@ export interface ClarityParams {
   amount: number
   /** Blur radius, as a fraction of the frame's short side. */
   radius: number
+  /** The look's grain, already scaled by its Amount, added AFTER the detail (grainAfterClarity). 0 or absent = none. */
+  grain?: number
+  /** That grain's size in frame pixels on a 1080 short side. */
+  grainSize?: number
 }
 
 /** How far the clarity pass looks, as a fraction of the short side: about 16 px on a 1080 frame. */
@@ -532,7 +565,18 @@ export function lookCompanions(spec: LookSpec, amount: number): { type: string; 
   const a = clamp01(amount)
   if (a <= 0) return out
   const clarity = r6(spec.clarity * a)
-  if (clarity > PASS_FLOOR) out.push({ type: 'lookClarity', params: { amount: clarity, radius: CLARITY_RADIUS } })
+  if (grainAfterClarity(spec)) {
+    // The pass also lays the look's grain down, last, so it runs for either.
+    const grain = r6(spec.grain.amount * a)
+    if (clarity > PASS_FLOOR || grain > PASS_FLOOR) {
+      out.push({
+        type: 'lookClarity',
+        params: { amount: clarity, radius: CLARITY_RADIUS, grain, grainSize: r6(spec.grain.size) },
+      })
+    }
+  } else if (clarity > PASS_FLOOR) {
+    out.push({ type: 'lookClarity', params: { amount: clarity, radius: CLARITY_RADIUS } })
+  }
   for (const g of [spec.halation, spec.bloom]) {
     if (!g || r6(g.strength * a) <= PASS_FLOOR) continue
     out.push({
@@ -634,6 +678,22 @@ float olkGrain(vec2 p, float size, uint s) {
 }
 `
 
+/**
+ * The grain step of the clarity pass (glRenderer.ts LOOK_CLARITY_FS), the GLSL
+ * twin of `addGrain` followed by a clamp. Runs LAST, on `vec3 o`: the encoded
+ * colour after the detail went on. Reads the uniforms uGrain (already scaled by
+ * the Amount), uGrainSize, uSeed and uFrame, and needs LOOK_COMMON_GLSL. The pass
+ * draws into a sequence sized buffer, so the sequence pixel is gl_FragCoord with
+ * y turned down: the very position, and so the very noise, the colour pass's
+ * vSeqPos would have given the same pixel.
+ */
+export const CLARITY_GRAIN_GLSL = `
+    vec2 olkP = vec2(gl_FragCoord.x, uFrame.y - gl_FragCoord.y);
+    float olkSize = max(uGrainSize, 0.5) * (max(min(uFrame.x, uFrame.y), 1.0) / 1080.0);
+    float olkG = olkGrain(olkP, olkSize, uint(max(floor(uSeed), 0.0)));
+    float olkLg = clamp(olkLuma(o), 0.0, 1.0);
+    o = clamp(o + vec3(olkG * uGrain * 0.3 * mix(0.4, 1.0, 4.0 * olkLg * (1.0 - olkLg))), 0.0, 1.0);`
+
 /** The look's own tone curve as a GLSL function, named for the look so two looks can share a shader. */
 export function curveFunctionGlsl(name: string, segs: readonly CurveSegment[]): string {
   const branches = segs
@@ -728,7 +788,9 @@ export function lookGlsl(spec: LookSpec, amount: string): string {
   }`)
   }
 
-  if (spec.grain.amount > 0) {
+  // A look with clarity lays its grain down in the clarity pass instead, after the
+  // detail, so the clarity cannot sharpen it (grainAfterClarity, and the header).
+  if (spec.grain.amount > 0 && !grainAfterClarity(spec)) {
     out.push(`{
     float olkSize = ${glf(Math.max(r6(spec.grain.size), 0.5))} * (max(min(uFrame.x, uFrame.y), 1.0) / 1080.0);
     float olkG = olkGrain(vSeqPos, olkSize, uint(max(floor(uSeed), 0.0)));

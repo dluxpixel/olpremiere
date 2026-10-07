@@ -5,7 +5,7 @@
 // identical output in both places. This file is the sole engine exception that
 // touches GL; all transform math lives in the pure, unit-tested mat.ts.
 
-import { PASS_FLOOR } from '../effects/lookMath'
+import { CLARITY_GRAIN_GLSL, LOOK_COMMON_GLSL, PASS_FLOOR } from '../effects/lookMath'
 import { getEffect, stackSignature } from '../effects/registry'
 import { computeQuad, cropUV, edgeU, quadScale } from './mat'
 import { deriveMotionBlur, quadCentre, quadRadius } from './motionBlur'
@@ -867,13 +867,23 @@ void main() {
 // (so edges never fringe in colour), weighted to the middle tones (so black stays
 // black and white stays white), and capped (so a hard edge cannot grow a halo).
 // Worked in ENCODED values, the scale contrast is judged on.
+//
+// Then the look's GRAIN, last (uGrain 0 = none). A look with clarity lays its
+// grain down here and not in its colour pass, because clarity's detail band holds
+// the whole of a grain that size and sharpened it to as much as 1.35 to 1.5x what
+// the look asks for (lookMath.ts, grainAfterClarity).
 const LOOK_CLARITY_FS = `#version 300 es
 precision highp float;
 in vec2 vUV;
 uniform sampler2D uBase;
 uniform sampler2D uBlur;
 uniform float uAmount;
+uniform float uGrain;
+uniform float uGrainSize;
+uniform float uSeed;
+uniform vec2 uFrame;
 ${SRGB_GLSL}
+${LOOK_COMMON_GLSL}
 out vec4 outColor;
 void main() {
   vec4 base = texture(uBase, vUV);
@@ -885,6 +895,8 @@ void main() {
   float l = dot(e, w);
   float d = clamp(l - dot(eb, w), -0.12, 0.12);
   vec3 o = clamp(e + vec3(d * uAmount * 4.0 * l * (1.0 - l)), 0.0, 1.0);
+  if (uGrain > 0.0) {${CLARITY_GRAIN_GLSL}
+  }
   outColor = vec4(srgbToLinear(o) * base.a, base.a);
 }`
 
@@ -1526,6 +1538,10 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     uBase: gl.getUniformLocation(prog, 'uBase'),
     uBlur: gl.getUniformLocation(prog, 'uBlur'),
     uAmount: gl.getUniformLocation(prog, 'uAmount'),
+    uGrain: gl.getUniformLocation(prog, 'uGrain'),
+    uGrainSize: gl.getUniformLocation(prog, 'uGrainSize'),
+    uSeed: gl.getUniformLocation(prog, 'uSeed'),
+    uFrame: gl.getUniformLocation(prog, 'uFrame'),
   }))
   const blendModeLoc = {
     aPos: gl.getAttribLocation(blendModeProg, 'aPos'),
@@ -2160,8 +2176,12 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     blitFbo(scratch)
   }
 
-  /** A look's clarity: copy into `extra`, blur it wide, add the detail back through `scratch`. */
-  function lookClarityFbo(srcFbo: Fbo, scratch: Fbo, amount: number, radius: number): void {
+  /**
+   * A look's clarity: copy into `extra`, blur it wide, add the detail back through
+   * `scratch`, then the look's grain on top (see LOOK_CLARITY_FS). `seed` is the
+   * frame the colour pass would have grained with, so the noise is the same.
+   */
+  function lookClarityFbo(srcFbo: Fbo, scratch: Fbo, p: Record<string, number>, seed: number): void {
     const clarity = lookClarityPass.get()
     if (!clarity) return
     ensurePool(fboW, fboH, 5)
@@ -2171,7 +2191,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     gl.viewport(0, 0, fboW, fboH)
     gl.disable(gl.BLEND)
     blitFbo(srcFbo)
-    blurFbo(extra, scratch, radius * Math.min(fboW, fboH))
+    blurFbo(extra, scratch, (p.radius ?? 0.015) * Math.min(fboW, fboH))
 
     gl.useProgram(clarity.prog)
     bindFull(clarity.loc.aPos)
@@ -2184,7 +2204,13 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     gl.bindTexture(gl.TEXTURE_2D, srcFbo.tex)
     gl.activeTexture(gl.TEXTURE1)
     gl.bindTexture(gl.TEXTURE_2D, extra.tex)
-    gl.uniform1f(clarity.loc.uAmount, amount)
+    gl.uniform1f(clarity.loc.uAmount, p.amount ?? 0)
+    // Set on every draw, never conditionally: uniforms are per program, and a look
+    // with no grain after a grained one must not inherit its grain.
+    gl.uniform1f(clarity.loc.uGrain, p.grain ?? 0)
+    gl.uniform1f(clarity.loc.uGrainSize, p.grainSize ?? 1.6)
+    gl.uniform1f(clarity.loc.uSeed, seed)
+    gl.uniform2f(clarity.loc.uFrame, fboW, fboH)
     gl.drawArrays(gl.TRIANGLES, 0, 3)
     gl.activeTexture(gl.TEXTURE0)
     gl.bindFramebuffer(gl.FRAMEBUFFER, srcFbo.fb)
@@ -2195,9 +2221,10 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
   /**
    * Run one neighborhood effect over the layer's isolated FBO. Result is left
    * in `fbo`. These run AFTER the pointwise chain (which already premultiplied
-   * alpha), in stack order.
+   * alpha), in stack order. `seed` is the frame index the layer's pointwise
+   * pass bound as uSeed, for a pass that lays down noise of its own.
    */
-  function applyNeighborhood(fx: ResolvedEffect, fbo: Fbo, scratch: Fbo): void {
+  function applyNeighborhood(fx: ResolvedEffect, fbo: Fbo, scratch: Fbo, seed: number): void {
     if (fx.type === 'gaussianBlur') {
       const r = fx.params.blur ?? 0
       if (r > 0) blurFbo(fbo, scratch, r)
@@ -2236,8 +2263,10 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
       // lookCompanions holds, so a pass it hands over is a pass that draws.
       if ((fx.params.strength ?? 0) > PASS_FLOOR) lookGlowFbo(fbo, scratch, fx.params)
     } else if (fx.type === 'lookClarity') {
-      const amount = fx.params.amount ?? 0
-      if (amount > PASS_FLOOR) lookClarityFbo(fbo, scratch, amount, fx.params.radius ?? 0.015)
+      // It also lays the look's grain down, so it runs for either.
+      if ((fx.params.amount ?? 0) > PASS_FLOOR || (fx.params.grain ?? 0) > PASS_FLOOR) {
+        lookClarityFbo(fbo, scratch, fx.params, seed)
+      }
     }
   }
 
@@ -2281,7 +2310,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
       gl.enable(gl.BLEND)
       gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
       drawLayer(layer, source, tex, frameW, frameH, 0)
-      for (const fx of post) applyNeighborhood(fx, layerFbo, scratch)
+      for (const fx of post) applyNeighborhood(fx, layerFbo, scratch, layer.frameSeed)
       // The target may be a seq-sized transition FBO (fboW×fboH), NOT the
       // canvas. Sizing the viewport to the canvas would draw into only a
       // sub-rect of that FBO (the transition-preview bug).
@@ -2516,7 +2545,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     gl.viewport(0, 0, fboW, fboH)
     gl.disable(gl.BLEND)
     drawFboThroughStack(accum, pointwise, undefined, 1, op.frameSeed, frameW, frameH)
-    for (const fx of post) applyNeighborhood(fx, work, scratch)
+    for (const fx of post) applyNeighborhood(fx, work, scratch, op.frameSeed)
     gl.bindFramebuffer(gl.FRAMEBUFFER, accum.fb)
     gl.viewport(0, 0, fboW, fboH)
     gl.enable(gl.BLEND)

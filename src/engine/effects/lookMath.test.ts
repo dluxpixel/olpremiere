@@ -393,8 +393,9 @@ describe('the passes that read neighbours', () => {
     for (const look of LOOKS) {
       for (const a of [0.0005, 0.002, 0.005, 0.01, 0.05]) {
         for (const c of lookCompanions(look, a)) {
-          const key = c.type === 'lookClarity' ? 'amount' : 'strength'
-          expect(c.params[key], `${look.id} at ${a}`).toBeGreaterThan(PASS_FLOOR)
+          // A clarity pass also lays the look's grain down, so either one keeps it.
+          const strongest = c.type === 'lookClarity' ? Math.max(c.params.amount, c.params.grain ?? 0) : c.params.strength
+          expect(strongest, `${look.id} at ${a}`).toBeGreaterThan(PASS_FLOOR)
         }
       }
       expect(lookCompanions(look, 0.0005), look.id).toEqual([])
@@ -409,7 +410,129 @@ describe('the passes that read neighbours', () => {
     expect(lookCompanions(film, 1).map((c) => c.type)).toEqual(['lookGlow', 'lookGlow'])
     expect(lookCompanions(film, 1)[0].params.tintR).toBeGreaterThan(lookCompanions(film, 1)[0].params.tintB)
     const moody = LOOKS.find((l) => l.id === 'moodyGym')!
-    expect(lookCompanions(moody, 1)).toEqual([{ type: 'lookClarity', params: { amount: moody.clarity, radius: CLARITY_RADIUS } }])
+    expect(lookCompanions(moody, 1)).toEqual([
+      {
+        type: 'lookClarity',
+        params: { amount: moody.clarity, radius: CLARITY_RADIUS, grain: moody.grain.amount, grainSize: moody.grain.size },
+      },
+    ])
+  })
+})
+
+// Clarity's detail band (about 16 px) holds the whole of a 1.6 to 1.8 px grain, so
+// grain laid down in the colour pass came out of the clarity pass sharpened: up to
+// about 1.5x the grain asked for in Gritty's midtones and 1.35x in Moody Gym's
+// (1.29x on flat grey, measured below before the fix), and applyLook could not see
+// it. A look with clarity now lays its grain down LAST.
+describe('the grain of a look with clarity', () => {
+  const W = 1080
+  const H = 1920
+  /** A patch at the middle of the frame, inside every look's vignette. */
+  const N = 48
+  const X0 = 516
+  const Y0 = 936
+  const clamp01 = (x: number): number => Math.min(1, Math.max(0, x))
+  const withClarity = LOOKS.filter((l) => l.clarity > 0 && l.grain.amount > 0)
+
+  /** A separable gaussian on a luma field, the kernel BLUR_FS uses (sigma = radius / 2). */
+  function gaussian(field: number[][], radius: number): number[][] {
+    const r = Math.min(radius, 64)
+    const sigma = r * 0.5
+    const taps = Math.floor(r)
+    const w = (i: number): number => Math.exp((-i * i) / (2 * sigma * sigma))
+    const pass = (f: number[][], dx: number, dy: number): number[][] =>
+      f.map((row, j) =>
+        row.map((_, i) => {
+          let sum = 0
+          let ws = 0
+          for (let k = -taps; k <= taps; k++) {
+            const jj = Math.min(N - 1, Math.max(0, j + k * dy))
+            const ii = Math.min(N - 1, Math.max(0, i + k * dx))
+            sum += f[jj][ii] * w(k)
+            ws += w(k)
+          }
+          return sum / ws
+        }),
+      )
+    return pass(pass(field, 1, 0), 0, 1)
+  }
+
+  /**
+   * Flat grey through a look the way the renderer runs it: the colour pass
+   * (applyLook), then whatever clarity pass lookCompanions hands over, as
+   * LOOK_CLARITY_FS does it (the detail on luma, then the pass's own grain).
+   * Luma of the 16 x 16 pixels at the centre of the patch, where the blur sees
+   * nothing but the patch. The blur runs on encoded luma here, not on light; on a
+   * flat field the two agree, and on grain they differ far less than the effect.
+   */
+  function grainOut(look: LookSpec, seed: number): number[] {
+    const ctxAt = (i: number, j: number): LookContext => ({ x: X0 + i + 0.5, y: Y0 + j + 0.5, w: W, h: H, seed })
+    const e: Vec3[][] = []
+    for (let j = 0; j < N; j++) {
+      const row: Vec3[] = []
+      for (let i = 0; i < N; i++) row.push(applyLook(look, [0.5, 0.5, 0.5], 1, ctxAt(i, j)))
+      e.push(row)
+    }
+    const l = e.map((row) => row.map(luma))
+    const pass = lookCompanions(look, 1).find((c) => c.type === 'lookClarity')
+    const blurred = pass ? gaussian(l, pass.params.radius * Math.min(W, H)) : l
+    const out: number[] = []
+    for (let j = 16; j < 32; j++) {
+      for (let i = 16; i < 32; i++) {
+        if (!pass) {
+          out.push(l[j][i])
+          continue
+        }
+        const L = l[j][i]
+        const d = Math.min(0.12, Math.max(-0.12, L - blurred[j][i]))
+        const c = e[j][i]
+        const lift = d * pass.params.amount * 4 * L * (1 - L)
+        let o: Vec3 = [clamp01(c[0] + lift), clamp01(c[1] + lift), clamp01(c[2] + lift)]
+        const grain = pass.params.grain ?? 0
+        if (grain > 0) {
+          const ctx = ctxAt(i, j)
+          const size = Math.max(pass.params.grainSize, 0.5) * frameScale(W, H)
+          const k = grainValue(ctx.x, ctx.y, size, seed) * grain * 0.3 * grainWeight(clamp01(luma(o)))
+          o = [clamp01(o[0] + k), clamp01(o[1] + k), clamp01(o[2] + k)]
+        }
+        out.push(luma(o))
+      }
+    }
+    return out
+  }
+
+  const spread = (xs: number[]): number => {
+    const m = xs.reduce((s, x) => s + x, 0) / xs.length
+    return Math.sqrt(xs.reduce((s, x) => s + (x - m) * (x - m), 0) / xs.length)
+  }
+
+  it('comes out of the clarity pass the size the look asks for, not sharpened', () => {
+    for (const look of withClarity) {
+      for (const seed of [3, 12]) {
+        // The same look with no clarity: its grain in the colour pass, and nothing after it to sharpen it.
+        const asked = spread(grainOut({ ...look, clarity: 0 }, seed))
+        const got = spread(grainOut(look, seed))
+        expect(asked, look.id).toBeGreaterThan(0.002)
+        expect(got / asked, `${look.id} grain came out ${(got / asked).toFixed(3)}x`).toBeGreaterThan(0.97)
+        expect(got / asked, `${look.id} grain came out ${(got / asked).toFixed(3)}x`).toBeLessThan(1.03)
+      }
+    }
+  })
+
+  it('is left out of the colour pass and handed to the clarity pass at the Amount, and stays put in a look without clarity', () => {
+    for (const look of LOOKS) {
+      const text = lookGlsl(look, 'a')
+      const pass = lookCompanions(look, 0.5).find((c) => c.type === 'lookClarity')
+      if (look.clarity > 0 && look.grain.amount > 0) {
+        expect(text, look.id).not.toContain('olkGrain(')
+        expect(pass?.params.grain, look.id).toBeCloseTo(look.grain.amount * 0.5, 6)
+        expect(pass?.params.grainSize, look.id).toBe(look.grain.size)
+      } else {
+        // Nothing after its colour pass reads neighbours, so nothing can sharpen it there.
+        if (look.grain.amount > 0) expect(text, look.id).toContain('olkGrain(')
+        expect(pass?.params.grain ?? 0, look.id).toBe(0)
+      }
+    }
   })
 })
 
