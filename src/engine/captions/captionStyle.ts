@@ -38,6 +38,7 @@ import {
   captionCase,
   chunkWords,
   jettismCaptionDef,
+  litWordColors,
   saidWords,
   spreadWords,
   type CaptionWord,
@@ -213,7 +214,8 @@ export function sameShape(a: CaptionShape, b: CaptionShape): boolean {
  * not saying it. What changes is only how full a caption may get: up to his
  * word count and his characters per line times his lines, with no target length
  * pulling it shorter. The on screen ceiling grows with the word count so a full
- * caption has time to be read, and still counts from its last word.
+ * caption has time to be read, and still counts from its last word. And the key
+ * word highlight is coloured inside the phrase instead of cut out of it (CA-13).
  */
 export function chunkOptionsFor(
   shape: CaptionShape,
@@ -236,6 +238,7 @@ export function chunkOptionsFor(
     gapS,
     fps: onFrames,
     fits,
+    emphasisBreaks: false,
   }
 }
 
@@ -328,7 +331,10 @@ export function dressCaption(clip: Clip, style: CaptionStyle, seqWidth: number, 
   if (!clip.title) return clip
   const cased = inStyleCase(clip, style)
   // A word wider than the line is drawn smaller rather than off the frame.
-  const title = fitWordsToFrame(captionDefFor(style, cased.text, seqHeight, clip.captionEmphasis === true), seqWidth)
+  const def = captionDefFor(style, cased.text, seqHeight, clip.captionEmphasis === true)
+  // The word he leaned on, lit inside a longer caption in this style's colour (CA-13).
+  const lit = clip.captionEmphasis ? undefined : litWordColors(cased.words ?? clip.captionWords, style.emphasisColor)
+  const title = fitWordsToFrame(lit ? { ...def, wordColors: lit } : def, seqWidth)
   let next: Clip = { ...clip, title, ...(cased.words ? { captionWords: cased.words } : {}) }
   // Copied per clip, never shared: editing one caption's effect must not change another.
   if (style.effects?.length) next = { ...next, effects: style.effects.map((e) => ({ ...e })) }
@@ -379,14 +385,14 @@ function wordsAsSaid(clip: Clip, tokens: readonly string[]): CaptionWord[] | nul
   const endS = startS + clipDurationS(clip)
   // Clip time to timeline: a trim or a split moved the in point, not the words.
   const at = (t: number): number => startS + (t - clip.inS) / rate
-  const words = kept.map((w) => ({ text: w.text, startS: at(w.startS), endS: at(w.endS) }))
+  const words = kept.map((w) => ({ text: w.text, startS: at(w.startS), endS: at(w.endS), lit: w.emphasis === true }))
   // The first word may sit a hair before the caption: its start went onto a frame.
   if (words.some((w) => w.startS < startS - 0.05 || w.startS >= endS)) return null
   let floor = startS
   return words.map((w) => {
     const s = Math.max(floor, w.startS)
     floor = s
-    return { text: w.text, startS: s, endS: Math.min(endS, Math.max(s + 1e-3, w.endS)) }
+    return { text: w.text, startS: s, endS: Math.min(endS, Math.max(s + 1e-3, w.endS)), ...(w.lit ? { emphasis: true } : {}) }
   })
 }
 
@@ -445,7 +451,9 @@ function wordsOnScreen(clips: readonly Clip[], holdS: number, maxGapS: number): 
       (tokens.length === 1
         ? [{ text: tokens[0]!, startS, endS }]
         : spreadWords(tokens.map((t) => t.replace(/^\*(.+)\*$/, '$1')).join(' '), startS, endS - startS))
-    for (const w of words) out.push({ text: w.text, startS: w.startS, endS: w.endS, ...(emphasis ? { emphasis: true } : {}), source: i })
+    for (const w of words) {
+      out.push({ text: w.text, startS: w.startS, endS: w.endS, ...(emphasis || w.emphasis ? { emphasis: true } : {}), source: i })
+    }
   })
   return out
 }

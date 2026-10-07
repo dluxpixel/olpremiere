@@ -427,3 +427,39 @@ describe('putting a style on captions he already has', () => {
     expect(toasted).toContain('That caption is on a locked track')
   })
 })
+
+// CA-13. The Subtitles look with the highlight on came out in three around the
+// lit word. The word is now coloured inside its phrase, and back and forth
+// between lengths keeps it lit.
+describe('the key word inside a whole phrase', () => {
+  const house = BUILTIN_CAPTION_STYLES[0]!
+  const subtitles = BUILTIN_CAPTION_STYLES.find((s) => s.id === 'builtin-subtitles')!
+  const leaned = () => said('i hit a new personal record on bench').map((x) => (x.text === 'record' ? { ...x, emphasis: true } : x))
+  const litOf = (c: Clip) => (c.title!.wordColors ?? []).map((l) => [l.word, l.color])
+
+  it('a Subtitles run keeps the phrase in one caption and colours the word in it', () => {
+    addCaptionsFromWords(leaned(), { style: subtitles })
+    expect(captionTexts().map((t) => t.replace('\n', ' '))).toEqual(['I hit a new personal record on bench'])
+    const one = captionsOn(seq())[0]!.clip
+    expect(litOf(one)).toEqual([['record', subtitles.emphasisColor]])
+    expect(one.title!.color).toBe('#ffffff')
+  })
+
+  it('house, then Subtitles, then house: the word is lit the whole way', () => {
+    addCaptionsFromWords(leaned(), { style: house })
+    expect(captionsOn(seq()).find(({ clip }) => clip.title!.text === 'record')!.clip.captionEmphasis).toBe(true)
+    applyCaptionStyle(subtitles)
+    expect(captionsOn(seq())).toHaveLength(1)
+    expect(litOf(captionsOn(seq())[0]!.clip)).toEqual([['record', subtitles.emphasisColor]])
+    applyCaptionStyle(house)
+    const record = captionsOn(seq()).find(({ clip }) => clip.title!.text === 'record')!.clip
+    expect(record.captionEmphasis).toBe(true)
+    expect(record.title!.color).toBe(house.emphasisColor)
+  })
+
+  it('a new look on the same length colours the word in the new highlight', () => {
+    addCaptionsFromWords(leaned(), { style: subtitles })
+    applyCaptionStyle({ ...subtitles, id: 'mine', name: 'Mine', builtin: false, emphasisColor: '#00ff00' })
+    expect(litOf(captionsOn(seq())[0]!.clip)).toEqual([['record', '#00ff00']])
+  })
+})

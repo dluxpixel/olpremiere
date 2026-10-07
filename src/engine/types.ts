@@ -370,7 +370,13 @@ export interface Clip {
    * while the caption still says exactly these words: once he retypes it, the
    * words are spread across it as before. Absent on every other clip.
    */
-  captionWords?: { text: string; startS: number; endS: number }[]
+  captionWords?: {
+    text: string
+    startS: number
+    endS: number
+    /** The key word highlight sits on this word inside a longer caption (CA-13). */
+    emphasis?: true
+  }[]
   /**
    * Entrance / exit animation ("how it appears"). A tiny spec that COMPILES to
    * keyframes on transform + opacity channels (see engine/anim/appearance.ts).
@@ -627,6 +633,20 @@ export interface TitleDef {
    * had before and the cached canvas is reused rather than duplicated.
    */
   invertBackdrop?: boolean
+  /**
+   * Words drawn in their own colour inside the title: the key word highlight of
+   * a caption that holds a whole phrase (CA-13). A title could only be one
+   * colour, so the highlight worked by cutting the word out into a caption of
+   * its own, and a Subtitles phrase came out in three: "i hit a new personal" |
+   * "record" | "on bench".
+   *
+   * Each entry names the word as well as where it sits (`at` counts the words of
+   * `text`, from 0), so a caption he retypes cannot paint the wrong word: the
+   * colour goes on the same word nearest `at`, and is simply not drawn once the
+   * word is gone. Absent on every title made before this, which draw exactly as
+   * they always did.
+   */
+  wordColors?: { at: number; word: string; color: string }[]
 }
 
 /**
