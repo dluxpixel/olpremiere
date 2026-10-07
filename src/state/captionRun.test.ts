@@ -25,6 +25,13 @@ vi.mock('./toasts', () => ({
   useToasts: { getState: () => ({ show: (m: string) => void toasted.push(m) }) },
 }))
 
+// His vocabulary is read from every saved project, which takes a while on his
+// disk. A few milliseconds here, so a run that waits for it shows that it does.
+vi.mock('./captionVocabulary', async () => {
+  const { EMPTY_VOCABULARY } = await vi.importActual<typeof import('../engine/captions/vocabulary')>('../engine/captions/vocabulary')
+  return { currentVocabulary: () => new Promise((r) => setTimeout(() => r(EMPTY_VOCABULARY), 5)) }
+})
+
 import { AUTO_SHAPE, cleanShape } from '../engine/captions/captionStyle'
 import type { CaptionWord } from '../engine/captions/captions'
 import { clipEndS } from '../engine/timeline'
@@ -266,6 +273,42 @@ describe('what a caption run heard', () => {
     expect(useTranscribe.getState().status).toBe('idle')
     useStore.getState().undo()
     expect(clipsWithoutWords()).toEqual([a, b, c])
+  })
+})
+
+// CA-10. Every door read his vocabulary after its "already running" check and
+// before it said it was busy, so for that whole read the pill was hidden, the
+// buttons were live, and a second click started a second run.
+describe('a second click while the first run gets going', () => {
+  it('one clip: the job shows at once, and the second click starts nothing', async () => {
+    const { b } = seed()
+    const first = captionTheseClips([b])
+    expect(useTranscribe.getState().status).not.toBe('idle')
+    expect(useTranscribe.getState().cancel).not.toBeNull()
+    const second = captionTheseClips([b])
+    await Promise.all([first, second])
+    expect(heard).toEqual([b])
+    expect(toasted).toContain('A transcription is already running')
+    expect(useTranscribe.getState().status).toBe('idle')
+  })
+
+  it('every clip: the same, so the clips are not all heard twice', async () => {
+    const { a, b, c } = seed()
+    const first = captionTheseClips([a, b, c])
+    expect(useTranscribe.getState().status).not.toBe('idle')
+    const second = captionTheseClips([a, b, c])
+    await Promise.all([first, second])
+    expect(heard).toEqual([a, b, c])
+    expect(toasted).toContain('A transcription is already running')
+  })
+
+  it('the Words tab door too', async () => {
+    const { a, b, c } = seed()
+    const first = listenForEveryClip()
+    expect(useTranscribe.getState().status).not.toBe('idle')
+    const second = listenForEveryClip()
+    await Promise.all([first, second])
+    expect(heard).toEqual([a, b, c])
   })
 })
 

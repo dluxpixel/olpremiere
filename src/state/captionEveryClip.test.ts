@@ -27,7 +27,7 @@ const heard: string[] = []
 /** Where each clip's words actually landed, so a stale position is visible. */
 const heardAt: Record<string, number> = {}
 /** A hook the tests use to edit the timeline WHILE the run is working through it. */
-const midRun: { fn: (() => void) | null } = { fn: null }
+const midRun: { fn: (() => void) | null; answered: (() => void) | null } = { fn: null, answered: null }
 vi.mock('../engine/captions/transcribe', () => ({
   TRANSCRIBE_SAMPLE_RATE: 16000,
   extractClipPcm: (_asset: unknown, clip: { id: string; startS: number }) => {
@@ -36,7 +36,14 @@ vi.mock('../engine/captions/transcribe', () => ({
     midRun.fn?.()
     return Promise.resolve(new Float32Array(8))
   },
-  transcribePcm: () => ({ promise: Promise.resolve([]), cancel: () => {} }),
+  // `answered` runs the moment the recogniser hands its words back.
+  transcribePcm: () => ({
+    promise: Promise.resolve().then(() => {
+      midRun.answered?.()
+      return []
+    }),
+    cancel: () => {},
+  }),
   wordsFromAsrChunks: () => [],
   tidyTranscribedWords: () => [],
   timelineWords: (_w: unknown, clip: { id: string; startS: number }) => [
@@ -75,7 +82,7 @@ import {
 } from '../engine/types'
 import { addCaptionsFromWords, CAPTION_TRACK_NAME } from './captionActions'
 import { updateActiveSequence, useStore } from './store'
-import { audibleClips, autoCaptionEveryClip, autoCaptionFromClip, useTranscribe } from './transcribeActions'
+import { audibleClips, autoCaptionEveryClip, autoCaptionFromClip, forgetHeard, useTranscribe, wordsForClip } from './transcribeActions'
 
 const seq = (): Sequence => activeSequence(useStore.getState().project)
 const asset = (id: string): MediaAsset => ({
@@ -157,6 +164,7 @@ beforeEach(() => {
   heard.length = 0
   for (const k of Object.keys(heardAt)) delete heardAt[k]
   midRun.fn = null
+  midRun.answered = null
   toasted.length = 0
   useStore.getState().setProject(newProject())
   useStore.getState().setUI({ selection: [], playheadS: 0 })
@@ -548,5 +556,106 @@ describe('a pooled sweep does not wipe a caption sitting between the clips it co
       ?.clips.map((c) => c.title?.text)
     expect(texts).not.toContain('stale')
     expect(texts).toContain('clip-a')
+  })
+})
+
+/** What the Captions track says, in order. */
+const captionTexts = (): (string | undefined)[] =>
+  videoTracks(seq())
+    .find((t) => t.name === CAPTION_TRACK_NAME)
+    ?.clips.map((c) => c.title?.text) ?? []
+
+// CA-14. The Stop was whatever the step in flight had handed over: nothing while
+// a clip's sound was read, and the recogniser's own cancel after it had already
+// answered, which does nothing. So a Stop at either moment was swallowed and
+// the sweep went on through the rest of the timeline.
+describe('Stop', () => {
+  const three = (): void =>
+    seedAudio([
+      { id: 'a', startS: 0 },
+      { id: 'b', startS: 4 },
+      { id: 'c', startS: 8 },
+    ])
+  const stop = (): void => useTranscribe.getState().cancel?.()
+
+  beforeEach(() => forgetHeard())
+
+  it('is offered the whole time a job works, from its first moment to its last', async () => {
+    three()
+    const without: string[] = []
+    const off = useTranscribe.subscribe((s) => {
+      if (s.status !== 'idle' && !s.cancel) without.push(s.status)
+    })
+    await autoCaptionEveryClip()
+    await autoCaptionFromClip('clip-b')
+    off()
+    expect(without).toEqual([])
+  })
+
+  it('pressed while clip 2 is being read: clip 3 is never heard, and clip 1 is captioned', async () => {
+    three()
+    midRun.fn = () => {
+      if (heard.length === 2) stop()
+    }
+    await autoCaptionEveryClip()
+    expect(heard).toEqual(['clip-a', 'clip-b'])
+    expect(captionTexts()).toEqual(['clip-a'])
+    expect(toasted).toContain('Stopped early, captioned what was heard so far')
+    expect(useTranscribe.getState().status).toBe('idle')
+  })
+
+  it('pressed just as the recogniser answers: the sweep ends there', async () => {
+    three()
+    midRun.answered = () => {
+      if (heard.length === 2) stop()
+    }
+    await autoCaptionEveryClip()
+    expect(heard).toEqual(['clip-a', 'clip-b'])
+    expect(captionTexts()).toEqual(['clip-a'])
+  })
+
+  it('pressed on one clip: nothing is captioned and nothing is said wrong', async () => {
+    three()
+    midRun.fn = stop
+    await autoCaptionFromClip('clip-b')
+    expect(captionTexts()).toEqual([])
+    expect(toasted.filter((t) => /failed|could not/i.test(t))).toEqual([])
+    expect(useTranscribe.getState().status).toBe('idle')
+  })
+})
+
+// Found while fixing CA-14: the silence cutter calls wordsForClip on its own,
+// with no door around it, and nothing ever cleared the pill it set going. After
+// one "Cut the quiet parts" the pill read "Listening for words" for good and every
+// caption door said a transcription was already running, until a restart.
+describe('a clip heard with no door around it (the silence cutter)', () => {
+  beforeEach(() => forgetHeard())
+
+  it('leaves the pill idle when it is done, so captions work again', async () => {
+    seedAudio([{ id: 'a', startS: 0 }])
+    const clip = seq().tracks.flatMap((t) => t.clips).find((c) => c.id === 'clip-a')!
+    await wordsForClip(clip, useStore.getState().project.assets.a!)
+    expect(useTranscribe.getState().status).toBe('idle')
+    await autoCaptionEveryClip()
+    expect(captionTexts()).toEqual(['clip-a'])
+  })
+
+  it('leaves the pill idle when it fails too', async () => {
+    seedAudio([{ id: 'a', startS: 0 }])
+    const clip = seq().tracks.flatMap((t) => t.clips).find((c) => c.id === 'clip-a')!
+    midRun.fn = () => {
+      throw new Error('clip has no decodable audio')
+    }
+    await expect(wordsForClip(clip, useStore.getState().project.assets.a!)).rejects.toThrow('decodable')
+    expect(useTranscribe.getState().status).toBe('idle')
+  })
+
+  it("is refused while a caption job runs, and leaves that job's pill alone", async () => {
+    seedAudio([{ id: 'a', startS: 0 }])
+    const clip = seq().tracks.flatMap((t) => t.clips).find((c) => c.id === 'clip-a')!
+    useTranscribe.setState({ status: 'listening', queue: { index: 2, total: 5 } })
+    await expect(wordsForClip(clip, useStore.getState().project.assets.a!)).rejects.toThrow('already running')
+    expect(useTranscribe.getState().status).toBe('listening')
+    expect(useTranscribe.getState().queue).toEqual({ index: 2, total: 5 })
   })
 })

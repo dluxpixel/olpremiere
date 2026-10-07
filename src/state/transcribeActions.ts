@@ -64,6 +64,53 @@ const reset = (): void =>
 const isCancel = (err: unknown): boolean => typeof err === 'object' && err !== null && 'cancelled' in err
 
 /**
+ * The caption job running now, and its one Stop.
+ *
+ * ⛔ ONE STOP FOR THE WHOLE JOB, SHOWN THE WHOLE TIME IT WORKS (CA-14). The
+ * Stop used to be whatever the step in flight had handed over: nothing while a
+ * clip's sound was read, so the button vanished; the finished screening's
+ * abort after that, so a press did nothing; and the recogniser's own cancel
+ * once it had answered, which by then does nothing either, so a sweep carried
+ * on to the next clip while the voice and music checks finished. Now the job
+ * owns the Stop. A press marks the job and ends whatever step is in flight, and
+ * every wait in wordsForClip and every clip of a sweep checks the mark.
+ *
+ * ⛔ AND IT IS CLAIMED BEFORE THE FIRST WAIT (CA-10). Every door read his
+ * vocabulary (every saved project) after its "already running" check and
+ * before any status was set, so for that whole read the pill was hidden and
+ * every caption button was live, and a second click started a second run.
+ */
+export interface CaptionJob {
+  stopped: boolean
+  /** How to end the step in flight: the screening, the recogniser, the analyses. */
+  readonly ends: Set<() => void>
+}
+
+/** Claim the one job, or null when one is running. No wait between the check and the claim. */
+function claimJob(queue: TranscribeState['queue'] = null): CaptionJob | null {
+  if (useTranscribe.getState().status !== 'idle') return null
+  const job: CaptionJob = { stopped: false, ends: new Set() }
+  const stop = (): void => {
+    if (job.stopped) return
+    job.stopped = true
+    for (const end of [...job.ends]) end()
+  }
+  useTranscribe.setState({ status: 'reading', pct: null, downloading: false, cancel: stop, queue })
+  return job
+}
+
+/** Hand the job back: the pill goes and every caption button works again. */
+function releaseJob(job: CaptionJob): void {
+  job.ends.clear()
+  reset()
+}
+
+/** Stop pressed: leave the way a cancelled recogniser does, so every door already knows it. */
+function stopIfAsked(job: CaptionJob): void {
+  if (job.stopped) throw { cancelled: true }
+}
+
+/**
  * What to tell him when a caption run throws, in the words of the thing that
  * actually broke.
  *
@@ -117,34 +164,56 @@ export function forgetHeard(): void {
  * ahead of the model. Run alongside, it finishes inside an inference that takes
  * longer, so his wait does not move.
  */
-export async function wordsForClip(
-  clip: Clip,
-  asset: MediaAsset,
-  opts: {
-    screenFirst?: boolean
-    /**
-     * Pull each word in to where his voice starts and stops (trimWordsToVoice),
-     * so a pause the recogniser swallowed splits the captions. CAPTIONS ONLY:
-     * the silence cutter and the Words panel cut at these timings, and the
-     * silence cutter's air either side of a cut is tuned against the
-     * recogniser's own word ends, so they keep the timings they were built on.
-     */
-    trimToVoice?: boolean
-    /**
-     * What his corrections taught (vocabulary.ts): a misspelling he fixed the
-     * same way twice is replaced. Read once per run by the caller, never once
-     * per clip.
-     */
-    vocabulary?: Vocabulary
-    /**
-     * Handed the words as the Words tab keeps them, in SOURCE seconds of the
-     * clip that was heard, so a caption run can store them on the media too
-     * and the Words tab never has to listen to that clip again.
-     */
-    onSpoken?: (words: SpokenWord[]) => void
-  } = {},
-): Promise<CaptionWord[]> {
-  useTranscribe.setState({ status: 'reading', pct: null, downloading: false, cancel: null })
+export async function wordsForClip(clip: Clip, asset: MediaAsset, opts: HearOptions = {}): Promise<CaptionWord[]> {
+  // ⛔ A CALLER WITH NO JOB OF ITS OWN GETS ONE FOR THIS CLIP, AND IT IS HANDED
+  // BACK HOWEVER THE CLIP ENDS. The silence cutter calls straight in here, and
+  // this used to set the pill going and never clear it: after "Cut the quiet
+  // parts" the pill read "Listening for words…" for good, its Stop did nothing,
+  // and every caption door answered "A transcription is already running" until
+  // the app was restarted.
+  const own = opts.job ? null : claimJob()
+  const job = opts.job ?? own
+  if (!job) throw new Error('A transcription is already running')
+  try {
+    return await hearClip(clip, asset, opts, job)
+  } finally {
+    if (own) releaseJob(own)
+  }
+}
+
+interface HearOptions {
+  screenFirst?: boolean
+  /**
+   * Pull each word in to where his voice starts and stops (trimWordsToVoice),
+   * so a pause the recogniser swallowed splits the captions. CAPTIONS ONLY:
+   * the silence cutter and the Words panel cut at these timings, and the
+   * silence cutter's air either side of a cut is tuned against the
+   * recogniser's own word ends, so they keep the timings they were built on.
+   */
+  trimToVoice?: boolean
+  /**
+   * What his corrections taught (vocabulary.ts): a misspelling he fixed the
+   * same way twice is replaced. Read once per run by the caller, never once
+   * per clip.
+   *
+   * ⛔ A PROMISE IS WELCOME, AND IS WHAT THE DOORS PASS. Reading it means
+   * reading every saved project, and it is only needed once the recogniser has
+   * answered, so it is read alongside the audio and the model, like the voice
+   * analysis, instead of in front of them where he waited for it (CA-10).
+   */
+  vocabulary?: Vocabulary | Promise<Vocabulary>
+  /**
+   * Handed the words as the Words tab keeps them, in SOURCE seconds of the
+   * clip that was heard, so a caption run can store them on the media too
+   * and the Words tab never has to listen to that clip again.
+   */
+  onSpoken?: (words: SpokenWord[]) => void
+  /** The door's job, whose Stop this clip answers to. Absent: this clip is a job of its own. */
+  job?: CaptionJob
+}
+
+async function hearClip(clip: Clip, asset: MediaAsset, opts: HearOptions, job: CaptionJob): Promise<CaptionWord[]> {
+  useTranscribe.setState({ status: 'reading', pct: null, downloading: false })
 
   // ⛔ ON A WHOLE-TIMELINE SWEEP, ASK WHO IS TALKING BEFORE LISTENING TO WORDS.
   //
@@ -162,18 +231,27 @@ export async function wordsForClip(
   //
   // It stays ALONGSIDE Whisper for a single clip. There is no queue to save
   // there, so putting it in front would only add to a wait he is watching.
-  const screenStop = new AbortController()
   let screened: SpeechTrack | null = null
   if (opts.screenFirst) {
-    useTranscribe.setState({ status: 'screening', pct: null, downloading: false, cancel: () => screenStop.abort() })
-    screened = await musicTrackForClip(asset, clip, screenStop.signal)
-    if (screenStop.signal.aborted) throw { cancelled: true }
+    const screenStop = new AbortController()
+    const endScreen = (): void => screenStop.abort()
+    job.ends.add(endScreen)
+    useTranscribe.setState({ status: 'screening', pct: null, downloading: false })
+    try {
+      screened = await musicTrackForClip(asset, clip, screenStop.signal)
+    } finally {
+      job.ends.delete(endScreen)
+    }
+    stopIfAsked(job)
     // A null track means the detector had no opinion, and no opinion is never an
     // opinion against him: fall through and listen properly.
     if (screened && isPureMusic(screened)) return []
   }
 
   const pcm = await extractClipPcm(asset, clip)
+  // Reading the sound cannot be interrupted, but a Stop pressed during it is
+  // answered the moment it is done, before the model is asked anything.
+  stopIfAsked(job)
   // The loudness envelope for the keyword highlight, taken HERE and nowhere
   // else, because transcribePcm below TRANSFERS this buffer to its worker and
   // leaves the array detached with a length of zero. One pass over the samples
@@ -208,28 +286,50 @@ export async function wordsForClip(
   // exception is a sweep, which has already paid for this answer above and must
   // not pay twice.
   const music = screened ? Promise.resolve(screened) : musicTrackForClip(asset, clip, stop.signal)
-  useTranscribe.setState(run ? { cancel: run.cancel } : { status: 'listening', pct: null })
-  let chunks: AsrChunk[]
-  try {
-    chunks = known ?? (await run!.promise)
-  } catch (err) {
+  if (!run) useTranscribe.setState({ status: 'listening', pct: null })
+  // A Stop from here on ends the recogniser and the two analyses together.
+  const endListening = (): void => {
+    run?.cancel()
     stop.abort()
-    throw err
   }
-  heardBefore.delete(key)
-  heardBefore.set(key, chunks)
-  if (heardBefore.size > HEARD_KEEP) heardBefore.delete(heardBefore.keys().next().value!)
+  job.ends.add(endListening)
+  let chunks: AsrChunk[]
+  let vocabulary: Vocabulary | undefined
+  let track: Awaited<typeof voice>
+  let musicTrack: Awaited<typeof music>
+  try {
+    try {
+      chunks = known ?? (await run!.promise)
+    } catch (err) {
+      stop.abort()
+      throw err
+    }
+    heardBefore.delete(key)
+    heardBefore.set(key, chunks)
+    if (heardBefore.size > HEARD_KEEP) heardBefore.delete(heardBefore.keys().next().value!)
+    // ⛔ THE STOP IS CHECKED AFTER EVERY WAIT FROM HERE ON. The recogniser has
+    // answered, so its own cancel does nothing now, and a Stop pressed while the
+    // checks below finish used to be swallowed: a sweep went on to the next clip.
+    stopIfAsked(job)
+    vocabulary = await opts.vocabulary
+    stopIfAsked(job)
+    track = await voice
+    stopIfAsked(job)
+    musicTrack = await music
+    stopIfAsked(job)
+  } finally {
+    job.ends.delete(endListening)
+  }
   // tidy BEFORE the timeline mapping: loops, bare punctuation and Whisper's
   // end-of-silence inventions are recogniser artifacts, not edits.
   const tidied = tidyTranscribedWords(wordsFromAsrChunks(chunks))
   // His spellings, put back where he has fixed the same misspelling twice.
   // Before the filters below, which only ever remove words, so a rewritten
   // word is judged on its timing exactly as the word it replaced would have been.
-  const heard = opts.vocabulary ? applyRewrites(tidied, opts.vocabulary) : tidied
+  const heard = vocabulary ? applyRewrites(tidied, vocabulary) : tidied
   // Then drop what the audio says nobody said. A null track means the detector
   // had no opinion (wasm blocked, undecodable audio), and no opinion keeps every
   // word: this filter may only ever take words away, never rescue a caption run.
-  const track = await voice
   const kept = track ? dropWordsWithoutVoice(heard, track) : heard
   // Then the song filter, which answers a different question from the one above.
   // The voice detector asks "is anything voiced here" and cannot tell a band
@@ -237,7 +337,7 @@ export async function wordsForClip(
   // clean speech. This one asks a classifier "is somebody TALKING here", and on
   // the same fixtures the worst case containing his voice outscores the best
   // case containing none by twenty times. → D123.
-  const withoutSongs = dropWordsInMusic(kept, await music)
+  const withoutSongs = dropWordsInMusic(kept, musicTrack)
   // Then the keyword highlight, in clip time, where these words and that
   // envelope share one clock. After the voice filter on purpose: a word the
   // audio says nobody said must not be able to win the colour.
@@ -445,15 +545,22 @@ export async function autoCaptionFromClip(clipId: string, style?: CaptionStyle):
     return
   }
 
+  const job = claimJob()
+  if (!job) {
+    toasts.show('A transcription is already running', 'danger')
+    return
+  }
   try {
     let spoken: SpokenWord[] | null = null
     const heard = await captionEars.wordsForClip(clip, asset, {
       trimToVoice: true,
-      vocabulary: await currentVocabulary(),
+      vocabulary: currentVocabulary(),
+      job,
       onSpoken: (w) => {
         spoken = w
       },
     })
+    stopIfAsked(job)
     // ⛔ READ THE CLIP AGAIN AFTER LISTENING, as the sweep does. Listening takes
     // seconds and the timeline is not blocked, so a clip he dragged meanwhile
     // was captioned at the spot it USED to sit. A move only shifts the words.
@@ -498,7 +605,7 @@ export async function autoCaptionFromClip(clipId: string, style?: CaptionStyle):
       console.error('auto-caption:', err)
     }
   } finally {
-    reset()
+    releaseJob(job)
   }
 }
 
@@ -546,10 +653,16 @@ export async function listenToClip(
     )
     return null
   }
+  const job = claimJob()
+  if (!job) {
+    toasts.show('A transcription is already running', 'danger')
+    return null
+  }
   try {
     let spoken: SpokenWord[] = []
     const words = await wordsForClip(clip, asset, {
-      vocabulary: await currentVocabulary(),
+      vocabulary: currentVocabulary(),
+      job,
       onSpoken: (w) => {
         spoken = w
       },
@@ -566,7 +679,7 @@ export async function listenToClip(
     }
     return null
   } finally {
-    reset()
+    releaseJob(job)
   }
 }
 
@@ -578,16 +691,17 @@ export async function listenToClip(
  */
 export async function listenToClips(ids: readonly string[]): Promise<{ clip: Clip; asset: MediaAsset; words: SpokenWord[] }[]> {
   const toasts = useToasts.getState()
-  if (useTranscribe.getState().status !== 'idle') {
+  const job = claimJob({ index: 1, total: ids.length })
+  if (!job) {
     toasts.show('A transcription is already running', 'danger')
     return []
   }
   const out: { clip: Clip; asset: MediaAsset; words: SpokenWord[] }[] = []
   let failed = 0
   try {
-    useTranscribe.setState({ status: 'reading', pct: null, downloading: false, cancel: null, queue: { index: 1, total: ids.length } })
-    const vocabulary = await currentVocabulary()
+    const vocabulary = currentVocabulary()
     for (let i = 0; i < ids.length; i++) {
+      if (job.stopped) break
       const s = useStore.getState()
       const clip = activeSequence(s.project)
         .tracks.flatMap((t) => t.clips)
@@ -600,6 +714,7 @@ export async function listenToClips(ids: readonly string[]): Promise<{ clip: Cli
         let spoken: SpokenWord[] = []
         await captionEars.wordsForClip(clip, asset, {
           vocabulary,
+          job,
           onSpoken: (w) => {
             spoken = w
           },
@@ -612,7 +727,7 @@ export async function listenToClips(ids: readonly string[]): Promise<{ clip: Cli
       }
     }
   } finally {
-    reset()
+    releaseJob(job)
   }
   if (failed > 0) toasts.show(`${failed} clip${failed === 1 ? '' : 's'} could not be read`, 'danger')
   return out
@@ -677,8 +792,14 @@ export async function autoCaptionEveryClip(
   const coveredSpans: { startS: number; endS: number }[] = []
   /** What each heard clip said, for the media (the Words tab), in the same undo step. */
   const spokenOn: { assetId: string; fromS: number; toS: number; words: SpokenWord[] }[] = []
-  // Once for the whole sweep: it is the same vocabulary for every clip.
-  const vocabulary = await currentVocabulary()
+  const job = claimJob({ index: 1, total: targets.length })
+  if (!job) {
+    toasts.show('A transcription is already running', 'danger')
+    return
+  }
+  // Once for the whole sweep: it is the same vocabulary for every clip, read
+  // while the first clip is heard rather than before it.
+  const vocabulary = currentVocabulary()
   let cancelled = false
   let failed = 0
   let vanished = 0
@@ -686,6 +807,11 @@ export async function autoCaptionEveryClip(
   let silent = 0
   try {
     for (let i = 0; i < targets.length; i++) {
+      // Stop pressed while the last clip finished: what it heard stays, no more.
+      if (job.stopped) {
+        cancelled = true
+        break
+      }
       const { clip: listed, asset } = targets[i]
       // ⛔ THE CLIP IS READ AGAIN HERE, NOT TAKEN FROM THE LIST, and this is a real
       // defect rather than tidiness.
@@ -713,6 +839,7 @@ export async function autoCaptionEveryClip(
           screenFirst: true,
           trimToVoice: true,
           vocabulary,
+          job,
           onSpoken: (w) => void spokenOn.push({ assetId: asset.id, fromS: live.inS, toS: live.outS, words: w }),
         })
         if (heard.length === 0) silent++
@@ -730,7 +857,7 @@ export async function autoCaptionEveryClip(
       }
     }
   } finally {
-    reset()
+    releaseJob(job)
   }
 
   if (words.length === 0) {
