@@ -276,14 +276,19 @@ export function ScrubField({
   testId,
   ariaLabel,
   onCommit,
+  mixed = false,
 }: {
   value: number
   spec: Spec
   testId: string
   ariaLabel: string
   onCommit: (v: number) => void
+  /** Several clips that do not agree: reads "Mixed", and ANY number commits,
+   *  even the one `value` holds, since it is only the first clip's. */
+  mixed?: boolean
 }) {
-  const [text, setText] = useState(fmt(value))
+  const shown = mixed ? 'Mixed' : fmt(value)
+  const [text, setText] = useState(shown)
   const [editing, setEditing] = useState(false)
   const draggingRef = useRef<{ startX: number; startVal: number; moved: boolean } | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -295,8 +300,8 @@ export function ScrubField({
 
   // Reflect external value changes (playhead move, undo) unless mid-edit.
   useEffect(() => {
-    if (!editing) setText(fmt(value))
-  }, [value, editing])
+    if (!editing) setText(shown)
+  }, [shown, editing])
 
   // A field can go away without ever blurring (the clip deselected, a section
   // folded), and browsers fire no blur for a focused element that is removed.
@@ -307,7 +312,7 @@ export function ScrubField({
 
   const commit = (v: number) => {
     const next = normalize(v)
-    if (Math.abs(next - value) > 1e-9) onCommit(next)
+    if (mixed || Math.abs(next - value) > 1e-9) onCommit(next)
   }
 
   const onPointerDown = (e: React.PointerEvent<HTMLInputElement>) => {
@@ -352,7 +357,8 @@ export function ScrubField({
     setEditing(true)
     // Freeze who this edit is for, before any selection change can swap the
     // props. Already open (focus, then a double-click) keeps the first owner.
-    pending.begin({ onCommit, base: value, normalize })
+    // A mixed field has no base every clip shares, so whatever is typed lands.
+    pending.begin({ onCommit, base: mixed ? Number.NaN : value, normalize })
     // Select-all so a fresh typed value replaces the old one.
     requestAnimationFrame(() => inputRef.current?.select())
   }
@@ -406,7 +412,7 @@ export function ScrubField({
             // Abandon: the blur below, and any later unmount, write nothing.
             pending.cancel()
             setEditing(false)
-            setText(fmt(value))
+            setText(shown)
             inputRef.current?.blur()
           } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
             // Arrow = nudge by one step (×10 with Shift), like every pro NLE field.
@@ -416,7 +422,7 @@ export function ScrubField({
             const dir = e.key === 'ArrowUp' ? 1 : -1
             const next = clamp(roundStep(from + dir * spec.step * (e.shiftKey ? 10 : 1), spec.step), spec.min, spec.max)
             setText(fmt(next))
-            if (Math.abs(next - value) > 1e-9) onCommit(next)
+            if (mixed || Math.abs(next - value) > 1e-9) onCommit(next)
             // The nudge committed on its own; re-baseline so the blur after it
             // does not commit the same number again as a second undo step.
             pending.settle(next)

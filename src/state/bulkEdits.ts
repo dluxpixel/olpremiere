@@ -505,6 +505,11 @@ function transitionTargets(ids: Iterable<string>): { open: string[]; locked: num
  * The same transition on the same edge of EVERY selected picture, in ONE undo
  * step, each with the per kind length setClipTransition would give it.
  *
+ * With no `durationS`, each clip keeps the length IT had on that edge when it
+ * still fits the new kind (transitionFor), the way the single clip row passes
+ * its own. Picking a kind for the whole selection used to reset every length he
+ * had set to the kind's default (review, 2026-10-07).
+ *
  * His standing ask (2026-10-04) on every path: a gym montage is twenty cuts,
  * and selecting all twenty and picking White Flash put it on ONE of them from
  * every door (the clip menu, the Effects tab, a drop). Returns how many changed.
@@ -531,7 +536,7 @@ export function setClipsTransition(
   mapClips([...targets, ...outsToDrop], `Add ${edge} transition`, (c) => {
     const base = outsToDrop.has(c.id) ? withoutOut(c) : c
     if (!targets.has(c.id)) return base
-    const next = transitionFor(base[key], kind, durationS)
+    const next = transitionFor(base[key], kind, durationS ?? base[key]?.durationS)
     if (base[key]?.type === next.type && base[key]?.durationS === next.durationS) return base
     changed++
     return { ...base, [key]: next }

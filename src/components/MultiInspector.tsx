@@ -594,6 +594,9 @@ function MultiTransitionRow({ clips, edge }: { clips: Clip[]; edge: 'in' | 'out'
       {live && spec ? (
         <ScrubField
           value={of(clips[0]!)?.durationS ?? spec.def}
+          // Lengths that differ read "Mixed", and typing the first clip's own
+          // number still evens them all out (it used to commit nothing).
+          mixed={clips.some((c) => Math.abs((of(c)?.durationS ?? spec.def) - (of(clips[0]!)?.durationS ?? spec.def)) > 1e-9)}
           spec={{ min: spec.min, max: spec.max, step: live === 'whiteFlash' ? 0.05 : 0.1, sens: 0.03 }}
           testId={`multi-transition-${edge}-duration`}
           ariaLabel={`${name} transition duration in seconds (all)`}

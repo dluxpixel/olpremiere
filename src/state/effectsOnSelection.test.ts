@@ -448,6 +448,38 @@ describe('a transition on several selected pictures', () => {
     item!.submenu!.find((i) => i.label === 'Cross Dissolve')!.onClick?.()
     expect(ins(ids).map((t) => t?.type)).toEqual(['crossDissolve', 'crossDissolve', 'crossDissolve'])
   })
+
+  // Review, 2026-10-07: a kind picked for the whole selection gave every clip the
+  // kind's default length, throwing away the lengths he had set one by one.
+  it('a kind picked for all of them keeps the length each one had', () => {
+    const ids = threePictures()
+    updateActiveSequence('lengths', (sq) => ({
+      ...sq,
+      tracks: sq.tracks.map((t) => ({
+        ...t,
+        clips: t.clips.map((c) => {
+          const at = ids.indexOf(c.id)
+          return at < 0 ? c : { ...c, transitionIn: { type: 'whiteFlash', durationS: [0.3, 0.4, 0.2][at]! } }
+        }),
+      })),
+    }))
+    setClipsTransition(ids, 'in', 'whiteFlash')
+    expect(ins(ids).map((t) => t?.durationS)).toEqual([0.3, 0.4, 0.2])
+    // A kind his length does not fit takes that kind's default.
+    setClipsTransition(ids, 'in', 'crossDissolve')
+    expect(ins(ids).map((t) => t?.type)).toEqual(['crossDissolve', 'crossDissolve', 'crossDissolve'])
+    // The one clip door keeps it the same way.
+    const [a] = ids
+    updateActiveSequence('one', (sq) => ({
+      ...sq,
+      tracks: sq.tracks.map((t) => ({
+        ...t,
+        clips: t.clips.map((c) => (c.id === a ? { ...c, transitionIn: { type: 'whiteFlash', durationS: 0.35 } } : c)),
+      })),
+    }))
+    setClipTransition(a!, 'in', 'whiteFlash')
+    expect(clipById(a!).transitionIn).toEqual({ type: 'whiteFlash', durationS: 0.35 })
+  })
 })
 
 /** Three pictures back to back on V1: [0, 5), [5, 10), [10, 15). Returns their clip ids. */

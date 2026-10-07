@@ -1088,7 +1088,9 @@ export function setClipTransition(
     `Add ${edge} transition`,
     (c) => {
       const prev = edge === 'in' ? c.transitionIn : c.transitionOut
-      return { ...c, [edge === 'in' ? 'transitionIn' : 'transitionOut']: transitionFor(prev, kind, durationS) }
+      // No length given (the clip menu, a drop): keep the one he set, when it
+      // fits the new kind, as the Inspector's row does by passing it.
+      return { ...c, [edge === 'in' ? 'transitionIn' : 'transitionOut']: transitionFor(prev, kind, durationS ?? prev?.durationS) }
     },
     false,
     undefined,
