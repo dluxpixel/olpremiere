@@ -1,5 +1,5 @@
 import { Captions, Film, FolderOpen, Image as ImageIcon, Music, Plus, Sparkles, Trash2, Upload, Wand2 } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { filterEffects, matchesQuery } from '../engine/effects/search'
 import { TRANSITION_KINDS, TRANSITION_LABELS } from '../engine/render/types'
 import { formatTimecode } from '../engine/timecode'
@@ -624,12 +624,25 @@ function RemoveUnusedButton() {
   )
 }
 
+/**
+ * ⛔ A HOP TO ANOTHER TAB KEEPS HIS SEARCH AND HIS PLACE IN THE BIN (2026-10-07). The tab content
+ * is keyed on the tab so it fades in (LeftPanel below), which also unmounts the tab he left: "blur"
+ * typed in Effects was gone after a hop to Media to grab a clip, and a bin scrolled halfway down
+ * was back at the top. The fade stays; these two outlive it, for as long as the app is open.
+ */
+const kept = { effectsQuery: '', mediaScrollTop: 0 }
+
 function MediaTab() {
   const assets = useStore((s) => s.project.assets)
   const fps = useStore((s) => activeSequence(s.project).fps)
   const fileInput = useRef<HTMLInputElement>(null)
+  const grid = useRef<HTMLDivElement>(null)
   const setUI = useStore((s) => s.setUI)
   const importing = useImportProgress((s) => s.total)
+  // Before the first paint, so the bin never shows its top first.
+  useLayoutEffect(() => {
+    if (grid.current) grid.current.scrollTop = kept.mediaScrollTop
+  }, [])
   // Newest import first, so the file you just added is at the top (matches the
   // Library and every other panel) instead of buried at the bottom of the grid.
   const list = Object.values(assets).reverse()
@@ -677,7 +690,14 @@ function MediaTab() {
           <div className="text-[11px] text-text-muted">Drop files here or click + Import</div>
         </div>
       ) : (
-        <div className="grid min-h-0 flex-1 grid-cols-2 content-start gap-2 overflow-y-auto p-2 pt-0">
+        <div
+          ref={grid}
+          data-testid="media-grid"
+          onScroll={(e) => {
+            kept.mediaScrollTop = e.currentTarget.scrollTop
+          }}
+          className="grid min-h-0 flex-1 grid-cols-2 content-start gap-2 overflow-y-auto p-2 pt-0"
+        >
           {list.map((a) => (
             <AssetCard key={a.id} asset={a} fps={fps} />
           ))}
@@ -738,7 +758,7 @@ function BrowserItem({
 
 
 function EffectsTab() {
-  const [query, setQuery] = useState('')
+  const [query, setQuery] = useState(kept.effectsQuery)
   const selection = useStore((s) => s.ui.selection)
   // Effects + grades apply to the WHOLE selection through the bulk helpers
   // (one undo step). Selecting five clips used to grey the browser out entirely.
@@ -766,7 +786,10 @@ function EffectsTab() {
         <input
           type="search"
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => {
+            kept.effectsQuery = e.target.value
+            setQuery(e.target.value)
+          }}
           placeholder="Search effects"
           aria-label="Search effects and transitions"
           data-testid="effect-search"
