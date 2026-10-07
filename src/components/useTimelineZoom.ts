@@ -6,7 +6,9 @@ import { zoomAroundPlan, zoomFitPxPerS, zoomToPlan } from './timelineZoom'
  * Every way the timeline zooms: Ctrl+wheel around the pointer, "=" / "-" and
  * the toolbar anchored on the playhead, and "\" to fit. Each re-anchors
  * scrollLeft in the same event and re-measures the viewport right away.
- * Returns zoom-to-fit for the toolbar button.
+ * Returns zoom-to-fit for the toolbar button. It owns the lanes' wheel, so a
+ * plain wheel over lines that all fit (nothing to scroll down) moves along the
+ * edit here too.
  */
 export function useTimelineZoom(
   lanesRef: RefObject<HTMLDivElement | null>,
@@ -53,9 +55,23 @@ export function useTimelineZoom(
     const el = lanesRef.current
     if (!el) return
     const onWheel = (e: WheelEvent) => {
-      if (!e.ctrlKey) return
+      if (e.ctrlKey) {
+        e.preventDefault()
+        zoomAround(e.clientX, e.deltaY < 0 ? 1.2 : 1 / 1.2)
+        return
+      }
+      // ⛔ A PLAIN WHEEL OVER LINES THAT ALL FIT MOVES ALONG THE EDIT. With his
+      // usual four or five lines there is nothing to scroll down, so the wheel
+      // over the timeline did nothing and moving along took Shift+wheel or the
+      // scrollbar. Only then: lines that overflow keep the wheel for their own
+      // scroll, Shift+wheel is the browser's sideways scroll already, and a
+      // sideways wheel or touchpad swipe is left alone.
+      if (e.shiftKey || Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return
+      if (el.scrollHeight > el.clientHeight + 1) return
       e.preventDefault()
-      zoomAround(e.clientX, e.deltaY < 0 ? 1.2 : 1 / 1.2)
+      // A mouse may count in lines or pages instead of pixels.
+      const unit = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? el.clientWidth : 1
+      el.scrollLeft = Math.max(0, el.scrollLeft + e.deltaY * unit)
     }
     el.addEventListener('wheel', onWheel, { passive: false })
     return () => el.removeEventListener('wheel', onWheel)

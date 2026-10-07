@@ -60,6 +60,9 @@ describe('useTimelineZoom', () => {
 
   it('zooms around the pointer on ctrl+wheel and leaves a plain wheel alone', () => {
     const { el } = mount()
+    // More lines than fit, so a plain wheel is the lines' own scroll (a plain
+    // wheel over lines that all fit scrolls sideways, below).
+    Object.defineProperty(el, 'scrollHeight', { configurable: true, value: 800 })
     el.scrollLeft = 200
     act(() => {
       el.dispatchEvent(new WheelEvent('wheel', { deltaY: 100, clientX: 350, cancelable: true }))
@@ -73,6 +76,45 @@ describe('useTimelineZoom', () => {
     expect(useStore.getState().ui.pxPerS).toBeCloseTo(120)
     // 5s was under the pointer (300px into the lanes) and still is.
     expect(5 * useStore.getState().ui.pxPerS - el.scrollLeft).toBeCloseTo(300)
+  })
+
+  // With his usual four or five lines there is nothing to scroll down, so the
+  // wheel over the timeline did nothing at all.
+  it('a plain wheel scrolls sideways when every line already fits', () => {
+    const { el } = mount()
+    Object.defineProperty(el, 'scrollHeight', { configurable: true, value: 400 })
+    el.scrollLeft = 200
+    const wheel = new WheelEvent('wheel', { deltaY: 100, cancelable: true })
+    act(() => {
+      el.dispatchEvent(wheel)
+    })
+    expect(wheel.defaultPrevented).toBe(true)
+    expect(el.scrollLeft).toBe(300)
+    // A mouse that reports lines, not pixels, moves a line's worth.
+    act(() => {
+      el.dispatchEvent(new WheelEvent('wheel', { deltaY: -3, deltaMode: 1, cancelable: true }))
+    })
+    expect(el.scrollLeft).toBe(180)
+    expect(useStore.getState().ui.pxPerS).toBe(100)
+  })
+
+  it('a plain wheel is the lines own scroll when they overflow, and Shift is left to the browser', () => {
+    const { el } = mount()
+    Object.defineProperty(el, 'scrollHeight', { configurable: true, value: 800 })
+    el.scrollLeft = 200
+    const wheel = new WheelEvent('wheel', { deltaY: 100, cancelable: true })
+    act(() => {
+      el.dispatchEvent(wheel)
+    })
+    expect(wheel.defaultPrevented).toBe(false)
+    expect(el.scrollLeft).toBe(200)
+    Object.defineProperty(el, 'scrollHeight', { configurable: true, value: 400 })
+    const shift = new WheelEvent('wheel', { deltaY: 100, shiftKey: true, cancelable: true })
+    act(() => {
+      el.dispatchEvent(shift)
+    })
+    expect(shift.defaultPrevented).toBe(false)
+    expect(el.scrollLeft).toBe(200)
   })
 
   it('fits the sequence from the button and the keymap event', () => {
