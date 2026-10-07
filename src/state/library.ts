@@ -18,13 +18,17 @@
 // no database version bump: an old install opens exactly as before and every
 // item it already had reads as Unsorted.
 
+import { isLookType, putLook, wornLook } from '../engine/effects/ops'
 import { autoPresetName, copyEffects, presetFromClip, type EffectPreset } from '../engine/effects/presets'
+import { getEffect } from '../engine/effects/registry'
 import { addClipFromAsset, addClipWithLinkedAudio } from '../engine/timeline'
 import {
   activeSequence,
   audioTracks,
   newId,
   videoTracks,
+  type Clip,
+  type EffectInstance,
   type Id,
   type MediaAsset,
   type Sequence,
@@ -63,7 +67,7 @@ import {
 import { mirrorApi, mirrorAsset, mirroredIds, readMirrored } from './mediaMirror'
 import { askForName } from './namePrompt'
 import { db, getBlob, putBlob } from './persistence'
-import { lockedLeftOut } from './bulkEdits'
+import { lockedLeftOut, mapClips } from './bulkEdits'
 import { useStore } from './store'
 import { useToasts } from './toasts'
 
@@ -717,11 +721,13 @@ export async function saveSelectionAsPreset(): Promise<void> {
  * actually apply to all of them."* A preset double-clicked with three pictures
  * selected landed on one of them, the Apply row said "selected clip", and the
  * toast said "Applied" as if that were the whole job.
+ *
+ * A look saved in the preset keeps the look rules (runPreset).
  */
 export function applyPresetToSelection(presetId: Id): void {
   const show = useToasts.getState().show
   const preset = useLibrary.getState().presets.find((p) => p.id === presetId)
-  const { project, ui, dispatch } = useStore.getState()
+  const { project, ui } = useStore.getState()
   if (!preset) return
   if (ui.selection.length === 0) {
     show('Select a clip first')
@@ -736,74 +742,147 @@ export function applyPresetToSelection(presetId: Id): void {
   const where = new Map<Id, { kind: string; locked: boolean }>()
   for (const t of activeSequence(project).tracks) for (const c of t.clips) where.set(c.id, { kind: t.kind, locked: t.locked })
   const visual = ui.selection.filter((id) => where.has(id) && where.get(id)!.kind === 'video')
-  const targets = new Set(visual.filter((id) => !where.get(id)!.locked))
-  const lockedOut = visual.length - targets.size
+  const targets = visual.filter((id) => !where.get(id)!.locked)
+  const lockedOut = visual.length - targets.length
   if (visual.length === 0) {
     show('Effects don’t apply to audio clips', 'danger')
     return
   }
-  if (targets.size === 0) {
+  if (targets.length === 0) {
     show(lockedOut === 1 ? 'That clip is on a locked track' : 'Those clips are on a locked track', 'danger')
     return
   }
-  dispatch(`Apply preset ${preset.name}`, (p) => {
-    const seq = activeSequence(p)
-    const tracks = seq.tracks.map((t) =>
-      t.clips.some((c) => targets.has(c.id))
-        ? {
-            ...t,
-            clips: t.clips.map((c) =>
-              // Append with fresh ids (copyEffects), never replace: a preset is
-              // "add my look", and clobbering an existing grade would surprise.
-              // Each clip gets its OWN copy, never one shared stack.
-              targets.has(c.id) ? { ...c, effects: [...c.effects, ...copyEffects(preset.effects, newId)] } : c,
-            ),
-          }
-        : t,
-    )
-    return { ...p, sequences: { ...p.sequences, [seq.id]: { ...seq, tracks } } }
-  })
-  const n = targets.size
+  const run = runPreset(preset, targets, `Apply preset ${preset.name}`)
+  const n = run.changed
   const left = lockedOut > 0 ? `. ${lockedLeftOut(lockedOut)}` : ''
-  show(`Applied "${preset.name}"${n > 1 ? ` to ${n} clips` : ''}${left}`, 'success')
+  if (n === 0) {
+    show(`"${preset.name}" changed nothing${presetLookNote(run)}${left}`, 'info')
+    return
+  }
+  show(`Applied "${preset.name}"${n > 1 ? ` to ${n} clips` : ''}${presetLookNote(run)}${left}`, 'success')
 }
 
 /**
  * Apply a preset to EVERY video clip in the active sequence, in ONE undo step.
  * Audio clips are skipped (visual effects don't apply to them). Each clip gets
- * its OWN fresh-id copy of the effects, appended (never replacing an existing
- * grade), exactly like applyPresetToSelection.
+ * its OWN fresh-id copy of the effects, exactly like applyPresetToSelection
+ * (runPreset), look rules included.
  */
 export function applyPresetToAllClips(presetId: Id): void {
   const show = useToasts.getState().show
   const preset = useLibrary.getState().presets.find((p) => p.id === presetId)
-  const { project, dispatch } = useStore.getState()
+  const { project } = useStore.getState()
   if (!preset) return
   // Locked tracks are neither changed nor COUNTED. Counting them made the toast
-  // over-report by however many clips he had protected.
-  const targetCount = activeSequence(project)
+  // over-report by however many clips he had protected. The captions on the
+  // tracks left open are still titles to runPreset: with the footage locked they
+  // are all that is left, and a look in the preset must not land on them for it.
+  const targets = activeSequence(project)
     .tracks.filter((t) => t.kind === 'video' && !t.locked)
-    .reduce((n, t) => n + t.clips.length, 0)
-  if (targetCount === 0) {
+    .flatMap((t) => t.clips.map((c) => c.id))
+  if (targets.length === 0) {
     show('No video clips to apply the preset to')
     return
   }
-  dispatch(`Apply preset ${preset.name} to all clips`, (p) => {
-    const seq = activeSequence(p)
-    const tracks = seq.tracks.map((t) =>
-      t.kind !== 'video' || t.locked
-        ? t
-        : {
-            ...t,
-            clips: t.clips.map((c) => ({
-              ...c,
-              effects: [...c.effects, ...copyEffects(preset.effects, newId)],
-            })),
-          },
-    )
-    return { ...p, sequences: { ...p.sequences, [seq.id]: { ...seq, tracks } } }
+  const run = runPreset(preset, targets, `Apply preset ${preset.name} to all clips`)
+  const n = run.changed
+  show(`Applied "${preset.name}" to ${n} clip${n === 1 ? '' : 's'}${presetLookNote(run)}`, n === 0 ? 'info' : 'success')
+}
+
+/** What one preset apply did, for its toast. All but `changed` are about a look in it. */
+interface PresetRun {
+  /** Clips whose stack really changed. */
+  changed: number
+  /** The look a clip ends up wearing from this preset (its last one), by label. */
+  look?: string
+  /** Titles and captions the look left clean. The rest of the preset still went on them. */
+  titles: number
+  /** Clips already wearing the look, which kept the one they had. */
+  already: number
+  /** Clips whose old look the preset's look took the place of. */
+  swapped: number
+  /** The label of the look a swap took off, when every swap took off the same one. */
+  swappedFrom?: string
+}
+
+/**
+ * A preset onto these clips, in ONE undo step (mapClips, which also leaves a
+ * locked track alone, and costs no step when nothing changed). Each clip gets its
+ * OWN fresh-id copy of the stack (copyEffects), appended after what it has: a
+ * preset is "add my look", and clobbering his grade would surprise.
+ *
+ * Except a LOOK saved in it. A look goes on the way it goes on through every
+ * other door (runEffect in bulkEdits.ts), or a preset holding Moody Gym stacks it
+ * on the Moody Gym the clip already wears and turns mid grey near black: one look
+ * per clip (putPresetLook), and never on a title or a caption, whose style owns
+ * its colour. The rest of the preset still goes on those.
+ *
+ * A preset saved from a clip that stacked two looks before the rule is held to
+ * one first, its last, in its first one's slot (the way putLook leaves such a
+ * clip). Only then does it meet the clip, so a clip already wearing that last
+ * look keeps it untouched, instead of a first look swapping it out and the last
+ * swapping straight back in at the preset's Amount.
+ */
+function runPreset(preset: EffectPreset, ids: readonly Id[], label: string): PresetRun {
+  const looks = preset.effects.filter((e) => isLookType(e.type))
+  const last = looks[looks.length - 1]
+  const run: PresetRun = { changed: 0, titles: 0, already: 0, swapped: 0 }
+  if (last) run.look = getEffect(last.type)?.label ?? last.type
+  const swappedFrom = new Set<string>()
+  mapClips(ids, label, (c) => {
+    // The preset's own stack, one look at most, as its OWN fresh-id copy.
+    const stack = withPreset({ ...c, effects: [] }, copyEffects(preset.effects, newId)).effects
+    const next = withPreset(c, c.title ? stack.filter((e) => !isLookType(e.type)) : stack)
+    if (next !== c) run.changed++
+    if (!last) return next
+    const old = wornLook(c)
+    const worn = wornLook(next)
+    if (c.title) run.titles++
+    else if (old && worn?.id === old.id) run.already++
+    else if (old && worn && worn.type !== old.type) {
+      run.swapped++
+      swappedFrom.add(getEffect(old.type)?.label ?? old.type)
+    }
+    return next
   })
-  show(`Applied "${preset.name}" to ${targetCount} clip${targetCount === 1 ? '' : 's'}`, 'success')
+  if (swappedFrom.size === 1) run.swappedFrom = [...swappedFrom][0]
+  return run
+}
+
+/** A preset's effects onto a clip in order: each look by putPresetLook, everything else appended. */
+function withPreset(clip: Clip, effects: readonly EffectInstance[]): Clip {
+  return effects.reduce<Clip>(
+    (acc, e) => (isLookType(e.type) ? putPresetLook(acc, e) : { ...acc, effects: [...acc.effects, e] }),
+    clip,
+  )
+}
+
+/**
+ * One look out of a preset onto a clip, by putLook, the rule every other door to
+ * a look keeps: it swaps out the look the clip wears, in that look's slot, and a
+ * clip already wearing it keeps the one it has. Two things differ for a preset.
+ * The look keeps the Amount he saved it with, where putLook lays down a fresh
+ * one. And on a clip with no look it is appended like the rest of the preset, so
+ * the stack lands in the order he saved it.
+ */
+function putPresetLook(clip: Clip, look: EffectInstance): Clip {
+  if (!wornLook(clip)) return { ...clip, effects: [...clip.effects, look] }
+  const next = putLook(clip, look.type, look.id)
+  return next === clip ? clip : { ...next, effects: next.effects.map((e) => (e.id === look.id ? look : e)) }
+}
+
+/**
+ * The rest of a preset's toast: what its look took the place of, then what it
+ * left alone and why. Empty for a preset with no look in it.
+ */
+function presetLookNote(run: PresetRun): string {
+  let s = ''
+  if (run.swapped > 0) {
+    s += `. ${run.look} took the place of ${run.swappedFrom ?? 'the old look'}${run.swapped < run.changed ? ` on ${run.swapped}` : ''}`
+  }
+  if (run.already > 0) s += `. ${run.already} already had ${run.look}`
+  if (run.titles > 0) s += '. Looks leave titles and captions clean'
+  return s
 }
 
 export async function removePreset(presetId: Id): Promise<void> {

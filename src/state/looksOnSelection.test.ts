@@ -10,6 +10,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { effectDropTargets } from '../components/effectDrop'
 import { makeAsset } from '../components/timelineTestFixtures'
 import { LOOK_TYPES } from '../engine/effects/looks'
+import type { EffectPreset } from '../engine/effects/presets'
 import { resolveFrame } from '../engine/render/resolve'
 import { addTrack, recomputeDuration } from '../engine/timeline'
 import {
@@ -25,6 +26,7 @@ import {
 } from '../engine/types'
 import { applyEffectToAllClips, applyEffectToClips } from './bulkEdits'
 import { applyEffect } from './clipEdits'
+import { applyPresetToAllClips, applyPresetToSelection, useLibrary } from './library'
 import { updateActiveSequence, useStore } from './store'
 
 const shown: { message: string; kind?: string }[] = []
@@ -285,5 +287,219 @@ describe('a look and the captions', () => {
     const caption = withCaption(ids)
     expect(applyEffectToClips([caption], 'gaussianBlur')).toBe(1)
     expect(types(caption)).toEqual(['gaussianBlur'])
+  })
+})
+
+const preset = (id: string, name: string, effects: EffectInstance[]): EffectPreset => ({ id, name, createdAt: 1, effects })
+/** A look plus an ordinary effect, the look at a saved Amount of 0.6. */
+const tealGrade = preset('p1', 'Teal grade', [
+  { id: 'l', type: 'lookTealOrange', enabled: true, params: { amount: 0.6 } },
+  { id: 's', type: 'saturation', enabled: true, params: { saturation: 0.3 } },
+])
+const moodyOnly = preset('p2', 'Moody', [{ id: 'm', type: 'lookMoodyGym', enabled: true, params: { amount: 1 } }])
+
+// A look saved in a Library preset is held to the same rules. The preset used to
+// append its whole stack, so a preset holding a look stacked a second look on a
+// clip that already wore one, and graded the captions.
+describe('a look in a saved preset', () => {
+  it('replaces the look each clip wears, in its slot, at the Amount it was saved with, in ONE undo step', () => {
+    const ids = threeClips()
+    applyEffectToClips(ids, 'lookMoodyGym')
+    const moody = clipById(ids[0]!).effects[0]!
+    setStack(ids[0]!, [{ id: 'v', type: 'vignette', enabled: true, params: { amount: 0.3 } }, moody])
+    useLibrary.setState({ presets: [tealGrade] })
+    shown.length = 0
+    applyPresetToSelection('p1')
+    expect(types(ids[0]!)).toEqual(['vignette', 'lookTealOrange', 'saturation'])
+    expect(types(ids[1]!)).toEqual(['lookTealOrange', 'saturation'])
+    expect(types(ids[2]!)).toEqual(['lookTealOrange', 'saturation'])
+    for (const id of ids) expect(clipById(id).effects.find((e) => e.type === 'lookTealOrange')!.params.amount).toBe(0.6)
+    // Each clip got its OWN copy, never the preset's ids.
+    const lookIds = ids.map((id) => clipById(id).effects.find((e) => e.type === 'lookTealOrange')!.id)
+    expect(new Set(lookIds).size).toBe(3)
+    expect(lookIds).not.toContain('l')
+    expect(shown.map((t) => t.message)).toEqual(['Applied "Teal grade" to 3 clips. Teal and Orange took the place of Moody Gym'])
+    expect(useStore.getState().undo()).toBe('Apply preset Teal grade')
+    expect(types(ids[0]!)).toEqual(['vignette', 'lookMoodyGym'])
+    expect(types(ids[1]!)).toEqual(['lookMoodyGym'])
+    expect(types(ids[2]!)).toEqual(['lookMoodyGym'])
+  })
+
+  it('leaves the look a clip already wears alone, and a preset of only that look costs no undo step', () => {
+    const ids = threeClips()
+    applyEffectToClips(ids, 'lookMoodyGym')
+    useLibrary.setState({ presets: [preset('p2', 'Moody', [{ id: 'm', type: 'lookMoodyGym', enabled: true, params: { amount: 0.5 } }])] })
+    shown.length = 0
+    applyPresetToSelection('p2')
+    for (const id of ids) expect(clipById(id).effects.map((e) => [e.type, e.params.amount])).toEqual([['lookMoodyGym', 1]])
+    expect(shown.map((t) => t.message)).toEqual(['"Moody" changed nothing. 3 already had Moody Gym'])
+    // The one step on the stack is still the shelf's.
+    expect(useStore.getState().undo()).toBe('Apply Moody Gym')
+  })
+
+  it('still puts the rest of its stack on a clip that already wears its look', () => {
+    const ids = threeClips()
+    applyEffectToClips(ids, 'lookTealOrange')
+    useLibrary.setState({ presets: [tealGrade] })
+    shown.length = 0
+    applyPresetToSelection('p1')
+    for (const id of ids) {
+      expect(types(id)).toEqual(['lookTealOrange', 'saturation'])
+      // The look it already wore, at its own Amount, not the preset's 0.6.
+      expect(clipById(id).effects[0]!.params.amount).toBe(1)
+    }
+    expect(shown.map((t) => t.message)).toEqual(['Applied "Teal grade" to 3 clips. 3 already had Teal and Orange'])
+  })
+
+  it('leaves a clip one look when the preset itself carries two from before the rule', () => {
+    const ids = threeClips()
+    useLibrary.setState({
+      presets: [
+        preset('p3', 'Old stack', [
+          { id: 'a', type: 'lookMoodyGym', enabled: true, params: { amount: 1 } },
+          { id: 's', type: 'saturation', enabled: true, params: { saturation: 0.2 } },
+          { id: 'b', type: 'lookTealOrange', enabled: true, params: { amount: 1 } },
+        ]),
+      ],
+    })
+    applyPresetToSelection('p3')
+    for (const id of ids) expect(types(id)).toEqual(['lookTealOrange', 'saturation'])
+  })
+
+  it('leaves the look alone on a clip already wearing the last of two the preset carries', () => {
+    const ids = threeClips()
+    applyEffectToClips(ids, 'lookTealOrange')
+    const worn = ids.map((id) => clipById(id).effects[0]!.id)
+    useLibrary.setState({
+      presets: [
+        preset('p3', 'Old stack', [
+          { id: 'a', type: 'lookMoodyGym', enabled: true, params: { amount: 1 } },
+          { id: 's', type: 'saturation', enabled: true, params: { saturation: 0.2 } },
+          { id: 'b', type: 'lookTealOrange', enabled: true, params: { amount: 0.4 } },
+        ]),
+      ],
+    })
+    shown.length = 0
+    applyPresetToSelection('p3')
+    ids.forEach((id, i) => {
+      expect(types(id)).toEqual(['lookTealOrange', 'saturation'])
+      // The very instance it wore, at its own Amount: never swapped out and back in.
+      expect(clipById(id).effects[0]!.id).toBe(worn[i])
+      expect(clipById(id).effects[0]!.params.amount).toBe(1)
+    })
+    expect(shown.map((t) => t.message)).toEqual(['Applied "Old stack" to 3 clips. 3 already had Teal and Orange'])
+  })
+
+  it('lands a look on a clip without one where the preset saved it, among the rest of its stack', () => {
+    const ids = threeClips()
+    useLibrary.setState({
+      presets: [
+        preset('p4', 'Edge', [
+          { id: 'v', type: 'vignette', enabled: true, params: { amount: 0.3 } },
+          { id: 'l', type: 'lookBronze', enabled: true, params: { amount: 1 } },
+        ]),
+      ],
+    })
+    applyPresetToSelection('p4')
+    for (const id of ids) expect(types(id)).toEqual(['vignette', 'lookBronze'])
+  })
+
+  it('leaves a selected caption clean of its look, while the rest of the preset still reaches it', () => {
+    const ids = threeClips()
+    const caption = withCaption(ids)
+    useLibrary.setState({ presets: [tealGrade] })
+    applyPresetToSelection('p1')
+    expect(types(caption)).toEqual(['saturation'])
+    for (const id of ids) expect(types(id)).toEqual(['lookTealOrange', 'saturation'])
+    expect(shown.map((t) => t.message)).toEqual(['Applied "Teal grade" to 4 clips. Looks leave titles and captions clean'])
+  })
+
+  it('changes nothing on a lone caption when the preset is only a look, and says why', () => {
+    const ids = threeClips()
+    const caption = withCaption(ids)
+    useStore.getState().setUI({ selection: [caption] })
+    useLibrary.setState({ presets: [moodyOnly] })
+    applyPresetToSelection('p2')
+    expect(types(caption)).toEqual([])
+    expect(shown.map((t) => t.message)).toEqual(['"Moody" changed nothing. Looks leave titles and captions clean'])
+    expect(useStore.getState().undo()).toBe('caption')
+  })
+
+  it('replaces and leaves captions clean from "Apply to every clip" too, in ONE undo step', () => {
+    const ids = threeClips()
+    const caption = withCaption(ids)
+    applyEffectToAllClips('lookMoodyGym')
+    useLibrary.setState({ presets: [tealGrade] })
+    shown.length = 0
+    applyPresetToAllClips('p1')
+    for (const id of ids) expect(types(id)).toEqual(['lookTealOrange', 'saturation'])
+    expect(types(caption)).toEqual(['saturation'])
+    expect(shown.map((t) => t.message)).toEqual([
+      'Applied "Teal grade" to 4 clips. Teal and Orange took the place of Moody Gym on 3. Looks leave titles and captions clean',
+    ])
+    expect(useStore.getState().undo()).toBe('Apply preset Teal grade to all clips')
+    for (const id of ids) expect(types(id)).toEqual(['lookMoodyGym'])
+    expect(types(caption)).toEqual([])
+  })
+})
+
+// "Apply to every clip" and a preset both leave a locked track out before they
+// start. With the footage locked, the captions over it are the only clips left,
+// and the lock must not make them fair game for a look.
+describe('a look with the footage locked', () => {
+  /** Lock every track holding one of these clips, the way he protects his footage. */
+  function lockTracksOf(ids: string[]): void {
+    updateActiveSequence('lock', (sq) => ({
+      ...sq,
+      tracks: sq.tracks.map((t) => (t.clips.some((c) => ids.includes(c.id)) ? { ...t, locked: true } : t)),
+    }))
+    shown.length = 0
+  }
+
+  it('"Apply to every clip" leaves the captions clean and costs no undo step', () => {
+    const ids = threeClips()
+    const caption = withCaption(ids)
+    lockTracksOf(ids)
+    applyEffectToAllClips('lookMoodyGym')
+    expect(types(caption)).toEqual([])
+    for (const id of ids) expect(types(id)).toEqual([])
+    expect(shown).toEqual([{ message: 'Applied "Moody Gym" to 0 clips. Titles and captions left clean', kind: 'info' }])
+    expect(useStore.getState().undo()).toBe('lock')
+  })
+
+  it('a preset of only a look leaves the captions clean from "Apply to every clip" and costs no undo step', () => {
+    const ids = threeClips()
+    const caption = withCaption(ids)
+    lockTracksOf(ids)
+    useLibrary.setState({ presets: [moodyOnly] })
+    applyPresetToAllClips('p2')
+    expect(types(caption)).toEqual([])
+    for (const id of ids) expect(types(id)).toEqual([])
+    expect(shown).toEqual([{ message: 'Applied "Moody" to 0 clips. Looks leave titles and captions clean', kind: 'info' }])
+    expect(useStore.getState().undo()).toBe('lock')
+  })
+
+  it('a preset from "Apply to every clip" puts only the rest of its stack on the captions', () => {
+    const ids = threeClips()
+    const caption = withCaption(ids)
+    lockTracksOf(ids)
+    useLibrary.setState({ presets: [tealGrade] })
+    applyPresetToAllClips('p1')
+    expect(types(caption)).toEqual(['saturation'])
+    for (const id of ids) expect(types(id)).toEqual([])
+    expect(shown.map((t) => t.message)).toEqual(['Applied "Teal grade" to 1 clip. Looks leave titles and captions clean'])
+  })
+
+  it('a preset on a selection of locked footage and a caption puts no look on the caption', () => {
+    const ids = threeClips()
+    const caption = withCaption(ids)
+    lockTracksOf(ids)
+    useLibrary.setState({ presets: [tealGrade] })
+    applyPresetToSelection('p1')
+    expect(types(caption)).toEqual(['saturation'])
+    for (const id of ids) expect(types(id)).toEqual([])
+    expect(shown.map((t) => t.message)).toEqual([
+      'Applied "Teal grade". Looks leave titles and captions clean. 3 clips are on a locked track and were left out',
+    ])
   })
 })
