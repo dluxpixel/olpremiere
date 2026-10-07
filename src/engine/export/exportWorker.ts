@@ -348,6 +348,7 @@ async function runNative(init: Extract<ExportRequest, { type: 'init' }>): Promis
         fps: fpsById.get(clip.assetId),
         back: null,
         backFrames: reverseWindowFrames(track.displayWidth, track.displayHeight),
+        reverse: clip.speed < 0,
       }
       providers.set(clip.id, clip, provider)
       return provider
@@ -831,6 +832,7 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
         fps: fpsById.get(clip.assetId),
         back: null,
         backFrames: reverseWindowFrames(track.displayWidth, track.displayHeight),
+        reverse: clip.speed < 0,
       }
       providers.set(clip.id, clip, provider)
       return provider

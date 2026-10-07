@@ -28,6 +28,8 @@ export interface ClipProvider {
   back: BackWindow | null
   /** How many decoded frames that window may hold (reverseWindowFrames). */
   backFrames: number
+  /** The clip plays backward (speed below 0), so its first frame is read as a window too. */
+  reverse: boolean
 }
 
 interface BackWindow {
@@ -146,6 +148,14 @@ export async function frameForClip(p: ClipProvider, sourceT: number): Promise<Of
   // a window of frames ending at the time asked for, and the frames before it
   // are served from that window as reverse play walks back through them. The
   // frame chosen is the same one the forward reader would land on.
+  //
+  // A reversed clip's FIRST frame is a window as well. The reader is opened at
+  // the in point, and a reversed clip starts at its out point, so read forward
+  // that one frame decoded and drew the whole slice before reverse play began.
+  if (!p.started && p.reverse) {
+    await fillWindow(p, sourceT)
+    return p.back ? (fromWindow(p.back, sourceT, p.fps)?.canvas ?? null) : null
+  }
   if (p.back) {
     const held = fromWindow(p.back, sourceT, p.fps)
     if (held) return held.canvas

@@ -14,12 +14,14 @@ import { frameForClip, reverseWindowFrames, type ClipProvider } from './clipRead
 interface Fake {
   sink: CanvasSink
   decoded: number
+  /** Frames handed out as canvases. The ones before the start are decoded but never drawn. */
+  drawn: number
   opened: number
 }
 
 /** A file of `count` frames at `fps`, a keyframe every `gop`. Each canvas is its frame number. */
 function fakeFile(count: number, fps: number, gop: number): Fake {
-  const fake = { decoded: 0, opened: 0 } as Fake
+  const fake = { decoded: 0, drawn: 0, opened: 0 } as Fake
   const shownAt = (t: number): number => Math.min(count - 1, Math.max(0, Math.floor(t * fps + 1e-9)))
   fake.sink = {
     canvases: (start = 0) =>
@@ -29,14 +31,17 @@ function fakeFile(count: number, fps: number, gop: number): Fake {
         const key = first - (first % gop)
         for (let i = key; i < count; i++) {
           fake.decoded++
-          if (i >= first) yield { canvas: { frame: i }, timestamp: i / fps, duration: 1 / fps } as unknown as WrappedCanvas
+          if (i < first) continue
+          fake.drawn++
+          yield { canvas: { frame: i }, timestamp: i / fps, duration: 1 / fps } as unknown as WrappedCanvas
         }
       })(),
   } as unknown as CanvasSink
   return fake
 }
 
-function provider(fake: Fake, fps: number, start: number, backFrames: number): ClipProvider {
+/** Opened at `start` the way the worker opens it: at the clip's in point, whichever way it plays. */
+function provider(fake: Fake, fps: number, start: number, backFrames: number, reverse = false): ClipProvider {
   return {
     sink: fake.sink,
     iterator: fake.sink.canvases(start),
@@ -47,6 +52,7 @@ function provider(fake: Fake, fps: number, start: number, backFrames: number): C
     fps,
     back: null,
     backFrames,
+    reverse,
   }
 }
 
@@ -65,9 +71,9 @@ describe('⛔ a reversed clip decodes a window at a time, not from the keyframe 
   const GOP = 120 // OBS at 60 fps, a keyframe every 2 s
 
   /** Reverse play of `frames` frames ending at source time `endS`, at `speed` (negative). */
-  async function reverse(backFrames: number, endS: number, frames: number, speed = -1) {
+  async function reverse(backFrames: number, endS: number, frames: number, speed = -1, asReversed = true) {
     const fake = fakeFile(600, FPS, GOP)
-    const p = provider(fake, FPS, Math.max(0, endS + (frames / FPS) * speed), backFrames)
+    const p = provider(fake, FPS, Math.max(0, endS + (frames / FPS) * speed), backFrames, asReversed)
     const shown: number[] = []
     const want: number[] = []
     let held = 0
@@ -92,16 +98,33 @@ describe('⛔ a reversed clip decodes a window at a time, not from the keyframe 
   })
 
   it('a 60 frame reversed clip in the middle of a 2 s keyframe group: 10 times fewer decodes at 1080p', async () => {
-    // backFrames 1 is a window of one frame: a fresh re-open for every frame, as it used to be.
-    const old = await reverse(1, 3.3, 60)
+    // A window of one frame on a reader that does not know the clip is reversed: a fresh re-open
+    // for every frame, as it used to be.
+    const old = await reverse(1, 3.3, 60, -1, false)
     const now = await reverse(reverseWindowFrames(1920, 1080), 3.3, 60)
     expect(now.shown).toEqual(old.shown)
-    // Measured with this stand-in, the first forward read of the slice (80 decodes) included:
-    // 3,030 decodes before, about 50 for each of the 60 frames; 300 now at 1080p (16 frame
-    // window), 208 at 720p (30), 845 at 4K (4).
+    // Measured with this stand-in, the first read of the slice included: 3,030 decodes before,
+    // about 50 for each of the 60 frames; 224 now at 1080p (16 frame window), 130 at 720p (30),
+    // 780 at 4K (4).
     expect(old.decoded).toBe(3030)
-    expect(now.decoded).toBe(300)
+    expect(now.decoded).toBe(224)
     expect((await reverse(reverseWindowFrames(3840, 2160), 3.3, 60)).decoded).toBeLessThan(old.decoded / 3)
+  })
+
+  it('its first frame is one window, not the whole slice decoded forward from the in point', async () => {
+    // A 3 s slice, 1.5 s to 4.5 s, reversed. Its first frame is the one at 4.5 s, and the reader
+    // is opened at the in point, 1.5 s. Read forward from there, that first frame cost 272
+    // decodes from the keyframe at 0 s and 182 frames drawn, before reverse play even began.
+    const fake = fakeFile(600, FPS, GOP)
+    const p = provider(fake, FPS, 1.5, 16, true)
+    expect(frameOf(await frameForClip(p, 4.5))).toBe(truth(600, FPS, 4.5))
+    // From the keyframe at 4.0 s to the frame after 4.5 s, and only the window drawn.
+    expect(fake.decoded).toBe(32)
+    expect(fake.drawn).toBe(17)
+    for (let f = 1; f < 180; f++) {
+      const t = 4.5 - f / FPS
+      expect(frameOf(await frameForClip(p, t)), `${t}`).toBe(truth(600, FPS, t))
+    }
   })
 
   it('never holds more frames than its window, however long the clip', async () => {
