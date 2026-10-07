@@ -351,7 +351,7 @@ export async function autoCaptionFromClip(clipId: string, style?: CaptionStyle):
   const clip = track?.clips.find((c) => c.id === clipId)
   const asset = clip ? s.project.assets[clip.assetId] : undefined
   if (!clip || !asset?.hasAudio) {
-    toasts.show('Select an audio clip with sound to caption', 'danger')
+    toasts.show('Select an audio clip with sound to caption', 'info')
     return
   }
   // The sweep doors skip a music track outright. This door does NOT, because one

@@ -285,7 +285,7 @@ export function applyMoveToSelection(moveId: MoveId, ids?: readonly string[], op
   if (!def) return
   const wanted = selectionIds(ids)
   if (wanted.length === 0) {
-    useToasts.getState().show('Pick a clip first', 'danger')
+    useToasts.getState().show('Pick a clip first', 'info')
     return
   }
   const { clips, refusedAppearance } = targets(wanted)
@@ -339,7 +339,7 @@ export function appendMoveToSelection(moveId: MoveId, ids?: readonly string[]): 
   }
   const wanted = selectionIds(ids)
   if (wanted.length === 0) {
-    useToasts.getState().show('Pick a clip first', 'danger')
+    useToasts.getState().show('Pick a clip first', 'info')
     return
   }
   const { clips, refusedAppearance } = targets(wanted)

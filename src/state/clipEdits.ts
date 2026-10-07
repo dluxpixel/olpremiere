@@ -1432,7 +1432,7 @@ export function splitAtPlayhead(allTracks = false, kind?: 'video' | 'audio'): vo
         sel.length > 0
           ? "Playhead isn't over a selected clip"
           : 'Put the playhead over a clip to split it',
-        'danger',
+        'info',
       )
     return
   }
@@ -1505,7 +1505,7 @@ export function topAndTail(edge: 'in' | 'out'): void {
     .flatMap((tr) => tr.clips)
     .filter((c) => t > c.startS && t < clipEndS(c))
   if (under.length === 0) {
-    useToasts.getState().show('Put the playhead inside a clip first', 'danger')
+    useToasts.getState().show('Put the playhead inside a clip first', 'info')
     return
   }
   const target = under.find((c) => sel.has(c.id)) ?? under[under.length - 1]

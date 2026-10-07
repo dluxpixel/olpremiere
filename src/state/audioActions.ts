@@ -26,7 +26,7 @@ export async function normalizeClipGain(clipId: string): Promise<void> {
   const clip = track?.clips.find((c) => c.id === clipId)
   const asset = clip ? s.project.assets[clip.assetId] : undefined
   if (!clip || !asset?.hasAudio) {
-    useToasts.getState().show('Pick an audio clip with sound', 'danger')
+    useToasts.getState().show('Pick an audio clip with sound', 'info')
     return
   }
   if (track?.locked) {

@@ -66,7 +66,7 @@ export function punchInAtPlayhead(clipId: string, targetScale?: number): void {
   if (!g) return
   const { playheadS: atS, punchDepth, punchRiseFrames } = useStore.getState().ui
   if (!insideClip(g.clip, atS)) {
-    useToasts.getState().show('Put the playhead inside the clip first', 'danger')
+    useToasts.getState().show('Put the playhead inside the clip first', 'info')
     return
   }
   const depth = targetScale ?? punchDepth
@@ -120,7 +120,7 @@ export function punchOutAtPlayhead(clipId: string): void {
   if (!g) return
   const { playheadS: atS, punchRiseFrames } = useStore.getState().ui
   if (!insideClip(g.clip, atS)) {
-    useToasts.getState().show('Put the playhead inside the clip first', 'danger')
+    useToasts.getState().show('Put the playhead inside the clip first', 'info')
     return
   }
   mapOne('Punch out', clipId, (c, sq) =>
@@ -149,7 +149,7 @@ export function cutPunchAtPlayhead(clipId: string): void {
   if (!g) return
   const { playheadS: atS, punchDepth } = useStore.getState().ui
   if (!insideClip(g.clip, atS)) {
-    useToasts.getState().show('Put the playhead inside the clip first', 'danger')
+    useToasts.getState().show('Put the playhead inside the clip first', 'info')
     return
   }
   let landed = false
@@ -188,7 +188,7 @@ export function impactAtPlayhead(clipId: string): void {
   if (!g) return
   const atS = useStore.getState().ui.playheadS
   if (!insideClip(g.clip, atS)) {
-    useToasts.getState().show('Put the playhead inside the clip first', 'danger')
+    useToasts.getState().show('Put the playhead inside the clip first', 'info')
     return
   }
   mapOne('Impact hit', clipId, (c, sq) => impactClip(c, sq.fps, { atS }))
@@ -243,7 +243,7 @@ export async function punchOnBeats(audioClipId: string): Promise<void> {
   if (!g) return
   const asset = useStore.getState().project.assets[g.clip.assetId]
   if (!asset?.hasAudio) {
-    useToasts.getState().show('Pick an audio clip with sound', 'danger')
+    useToasts.getState().show('Pick an audio clip with sound', 'info')
     return
   }
   const buffer = await getAudioBuffer(asset)
@@ -303,7 +303,7 @@ export function rampWorkArea(clipId: string, factor: number): void {
   const g = guarded(clipId)
   if (!g) return
   if (!hasWorkArea(g.seq)) {
-    useToasts.getState().show('Set an In/Out range first (I / O)', 'danger')
+    useToasts.getState().show('Set an In/Out range first (I / O)', 'info')
     return
   }
   const wa = workArea(g.seq)

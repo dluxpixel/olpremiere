@@ -42,7 +42,7 @@ export function copyClipAttributes(clipId?: string): void {
   const id = clipId ?? s.ui.selection[0]
   const clip = id ? seq.tracks.flatMap((t) => t.clips).find((c) => c.id === id) : undefined
   if (!clip) {
-    useToasts.getState().show('Select a clip to copy attributes from', 'danger')
+    useToasts.getState().show('Select a clip to copy attributes from', 'info')
     return
   }
   const t = clip.title
@@ -83,12 +83,12 @@ function cloneEffects(effects: readonly EffectInstance[]): EffectInstance[] {
 export function pasteClipAttributes(ids?: Iterable<string>): void {
   const attrs = clipboard
   if (!attrs) {
-    useToasts.getState().show('Nothing to paste, copy attributes first', 'danger')
+    useToasts.getState().show('Nothing to paste, copy attributes first', 'info')
     return
   }
   const idSet = new Set(ids ?? useStore.getState().ui.selection)
   if (idSet.size === 0) {
-    useToasts.getState().show('Select clip(s) to paste onto', 'danger')
+    useToasts.getState().show('Select clip(s) to paste onto', 'info')
     return
   }
   let pasted = 0

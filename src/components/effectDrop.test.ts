@@ -188,7 +188,8 @@ describe('an effect dropped on the Inspector', () => {
     // The empty target list is exactly what the Inspector's own empty state
     // hands the action. This sentence IS the fix for the reported bug.
     applyEffectToClips([], 'vignette')
-    expect(toasts.shown).toEqual([{ message: 'Select a clip first', kind: 'danger' }])
+    // A hint, not an error: nothing failed, he has not picked a clip yet (red read as broken).
+    expect(toasts.shown).toEqual([{ message: 'Select a clip first', kind: 'info' }])
   })
 
   it('says why an audio clip cannot take one', () => {
