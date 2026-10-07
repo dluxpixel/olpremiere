@@ -18,7 +18,9 @@
 // same run on the same machine, seconds apart, which is the only way the
 // comparison means anything.
 
-import { expect, test, type Page } from '@playwright/test'
+import type { Page } from '@playwright/test'
+// Timing spec: runs in the `timing` project, on a quiet box (see quietBox.ts).
+import { expect, test } from './quietBox'
 
 const FIXTURE = 'e2e/.fixtures/clip.webm'
 const MOVES = 60
@@ -161,22 +163,42 @@ test('a drag does not get dramatically dearer as the timeline fills up', async (
   await page.getByTestId('asset-card').dblclick()
   await expect(page.locator('[data-clip-kind="video"]').first()).toBeVisible()
 
-  const rows: Row[] = []
-  for (const wanted of [10, 50, 100, 200, 400]) {
-    const clips = await fill(page, wanted)
-    // One unmeasured drag first, so the first row is not paying for whatever the
-    // resize of the timeline just asked for.
-    await dragCost(page)
-    const ms = await dragCost(page)
-    // ⛔ HOW MANY ARE REALLY ON SCREEN. A flat cost means nothing if the timeline
-    // only ever draws what fits: that would be a measurement of the viewport
-    // rather than of the clip count, and it would read exactly the same.
-    const drawn = await page.locator('[data-clip-kind="video"]').count()
-    rows.push({ clips, ms: Math.round(ms * 10) / 10, drawn })
+  // ⛔ FIVE INTERLEAVED ROUNDS, AND THE CHEAPEST DRAG PER SIZE DECIDES (2026-10-06).
+  // One drag per size used to decide, and on 2026-09-25 one 321 ms spike at 800
+  // clips (while 20 clips cost 333 ms in the same table) failed a ship at "35.7x".
+  // Load can only ADD time, and a real bend in the curve shows in every round, so
+  // the minimum is the honest reading; the unit suite learned the same lesson twice
+  // (perfGuard, captionActions). Rounds alternate direction so a slow drift on the
+  // machine lands on every size alike. The bound below is unchanged.
+  const SIZES = [10, 50, 100, 200, 400]
+  const ROUNDS = 5
+  const samples = new Map<number, { clips: number; drawn: number; ms: number[] }>()
+  for (let round = 0; round < ROUNDS; round++) {
+    for (const wanted of round % 2 === 0 ? SIZES : [...SIZES].reverse()) {
+      const clips = await fill(page, wanted)
+      // One unmeasured drag first, so the row is not paying for whatever the
+      // resize of the timeline just asked for.
+      await dragCost(page)
+      const ms = await dragCost(page)
+      // ⛔ HOW MANY ARE REALLY ON SCREEN. A flat cost means nothing if the timeline
+      // only ever draws what fits: that would be a measurement of the viewport
+      // rather than of the clip count, and it would read exactly the same.
+      const drawn = await page.locator('[data-clip-kind="video"]').count()
+      const row = samples.get(wanted) ?? { clips, drawn, ms: [] }
+      row.ms.push(Math.round(ms * 10) / 10)
+      samples.set(wanted, row)
+    }
   }
+  const rows: Row[] = SIZES.map((wanted) => {
+    const r = samples.get(wanted)!
+    return { clips: r.clips, drawn: r.drawn, ms: Math.min(...r.ms) }
+  })
 
-  const table = rows.map((r) => `${String(r.clips).padStart(4)} clips, ${String(r.drawn).padStart(4)} drawn: ${r.ms} ms`).join('\n')
-  console.log(`\ncost of one ${MOVES} move drag as the timeline fills:\n${table}\n`)
+  const table = SIZES.map((wanted, i) => {
+    const r = rows[i]
+    return `${String(r.clips).padStart(4)} clips, ${String(r.drawn).padStart(4)} drawn: ${r.ms} ms  (every round: ${samples.get(wanted)!.ms.join(', ')})`
+  }).join('\n')
+  console.log(`\ncost of one ${MOVES} move drag as the timeline fills, cheapest of ${ROUNDS} rounds:\n${table}\n`)
 
   const small = rows.find((r) => r.clips >= 50)!
   const large = rows[rows.length - 1]

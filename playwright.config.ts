@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { defineConfig } from '@playwright/test'
 
 // THE GATE MUST OWN WHAT IT TESTS, AND IT MUST LEAVE EVIDENCE (2026-08-04)
@@ -33,12 +34,61 @@ import { defineConfig } from '@playwright/test'
 // is the exact failure shape that has already cost him four separate mechanisms. Retries become
 // defensible only once a trace names the mechanism and the mechanism is fixed.
 
+// THE SUITE IS SPLIT INTO PROJECTS, AND WHAT EACH ONE IS FOR (2026-10-06)
+//
+// smoke   boot.spec.ts, first and on its own. Every other project depends on it, so a
+//         change that stops the editor mounting is red in under a minute instead of
+//         409 tests each waiting 60 s (about 6.8 hours) on an input that never appears.
+// ui      everything that drives the interface and does not time itself against the
+//         wall clock.
+// timing  the specs whose verdict is a wall clock number or real time playback. Each
+//         imports `test` from quietBox.ts, which waits for the machine to settle
+//         before measuring and names a busy box in any failure. No budget moved.
+// measure NOT part of the gate, and only defined when OLP_MEASURE is set. scrub-cost
+//         times scrubbing on his own 1.38 GB project; it depends on a file outside the
+//         repo and took 3 to 10 minutes. The gate's half is scrub-repaint, on the
+//         repo's own fixture. Run this one by hand on a quiet box:
+//           PowerShell:  $env:OLP_MEASURE='1'; npx playwright test --project=measure
+//
+// ⛔ ONE WORKER FOR EVERYTHING, STILL. The ui half is the candidate for 3 workers (his
+// "4 at once max" rule), but pointer specs do real geometry and that has to be MEASURED
+// (three green full runs on a quiet box) before it is trusted, and it has not been.
+// When it is: give `ui` its own `workers`, and give `timing` `dependencies: ['ui']` so
+// a timing spec never shares the machine with ui workers.
+
+/** Wall clock or real time playback specs. Each must use quietBox.ts (checked below). */
+const TIMING = [
+  'play-latency.spec.ts',
+  'play-cost.spec.ts',
+  'edit-cost-at-scale.spec.ts',
+  'usage-log.spec.ts',
+  'transition-stale-frame.spec.ts',
+  'workarea.spec.ts',
+  'scrub-repaint.spec.ts',
+]
+const SMOKE = ['boot.spec.ts']
+const MEASURE = ['scrub-cost.spec.ts']
+const glob = (names: string[]): string[] => names.map((n) => `**/e2e/${n}`)
+
+// A timing spec that forgot quietBox would measure on a busy box and blame the app.
+// Refuse to start rather than run it unprotected.
+for (const name of TIMING) {
+  const src = readFileSync(new URL(`./e2e/${name}`, import.meta.url), 'utf8')
+  if (!/from '\.\/quietBox'/.test(src)) {
+    throw new Error(`e2e/${name} is a timing spec and must import { test } from './quietBox'`)
+  }
+}
+
 export default defineConfig({
   testDir: 'e2e',
   timeout: 60_000,
   // Media decode/encode tests are CPU-bound; parallel workers starve each
-  // other's probe/encode deadlines and flake.
+  // other's probe/encode deadlines and flake. See the note on projects above.
   workers: 1,
+  // A stray `test.only` would run that one test and exit 0: a green gate on one test.
+  forbidOnly: true,
+  // Enough failures to see a pattern, without running a broken build for hours.
+  maxFailures: 15,
   globalSetup: './e2e/global-setup.ts',
   expect: {
     // Playwright's own default, stated on purpose. See note 3 above.
@@ -48,6 +98,12 @@ export default defineConfig({
     baseURL: 'http://localhost:5178',
     headless: true,
     viewport: { width: 1600, height: 900 },
+    // EVERY SPEC OWNS ITS CLIPBOARD (2026-10-06). The headless clipboard outlives the
+    // page, and a spec without write permission copied clips that never reached it,
+    // then pasted whatever an earlier spec had left there (phase3 met paste-picture's
+    // picture in the 2026-09-28 gate). Granted here, every spec's own copy writes,
+    // on every port. The refused write path is unit tested (state/clipboard.test.ts).
+    permissions: ['clipboard-read', 'clipboard-write'],
     // Keep the evidence for whatever fails, and nothing for whatever passes.
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
@@ -62,6 +118,12 @@ export default defineConfig({
       ],
     },
   },
+  projects: [
+    { name: 'smoke', testMatch: glob(SMOKE) },
+    { name: 'ui', testIgnore: glob([...SMOKE, ...TIMING, ...MEASURE]), dependencies: ['smoke'] },
+    { name: 'timing', testMatch: glob(TIMING), dependencies: ['smoke'] },
+    ...(process.env.OLP_MEASURE ? [{ name: 'measure', testMatch: glob(MEASURE), timeout: 300_000 }] : []),
+  ],
   webServer: {
     // 5178, NOT 5177. 5177 is his working dev server, and the ad-hoc probes in _verify/ point at
     // it on purpose. The gate gets its own port so it can never adopt his session, reload it, or
@@ -72,5 +134,12 @@ export default defineConfig({
     // fail loudly instead of quietly testing something else.
     reuseExistingServer: false,
     timeout: 30_000,
+    // Vite's own words go into the run's output, so "optimized dependencies changed,
+    // reloading" (a full page reload in the middle of a test) is in the ship log
+    // instead of nowhere.
+    stdout: 'pipe',
+    // Its own dependency cache, so the gate never shares node_modules/.vite with his
+    // 5177 dev server (vite.config.ts reads this).
+    env: { OLP_VITE_CACHE: 'node_modules/.vite-gate' },
   },
 })

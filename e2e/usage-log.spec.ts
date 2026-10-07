@@ -5,7 +5,9 @@
 // The web build keeps its log in a small IndexedDB of its own (usageStoreWeb.ts);
 // the desktop app writes the same lines to a file. These read the web one back.
 
-import { expect, test, type Page } from '@playwright/test'
+import type { Page } from '@playwright/test'
+// Timing spec: runs in the `timing` project, on a quiet box (see quietBox.ts).
+import { expect, test } from './quietBox'
 
 const FIXTURE = 'e2e/.fixtures/clip.webm'
 
