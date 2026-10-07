@@ -51,7 +51,14 @@ export const LIMIT_CEILING = 10 ** (LIMIT_CEILING_DBTP / 20)
 
 /** How far ahead the limiter looks, so the gain is already down when a peak lands. */
 export const LOOKAHEAD_S = 0.0015
-/** How fast the gain comes back up after a peak. Slow enough not to pump on speech. */
+/**
+ * How fast the gain comes back up after a peak. Slow enough not to pump on speech.
+ *
+ * The trade, measured 2026-10-06: a bass note pushed into the ceiling makes the
+ * gain ride each wave, 1.2% intermodulation at 6 dB over with this release; 0.2 s
+ * halves that and 0.4 s quarters it, but speech after a loud hit then stays down
+ * longer. Which way is his ears' call; audioLimiter.test.ts pins both sides.
+ */
 export const RELEASE_S = 0.08
 
 /**

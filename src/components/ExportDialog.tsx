@@ -120,8 +120,8 @@ export function ExportDialog() {
                 />
               </label>
               <span className="text-[10px] text-text-muted">
-                Lands at the level YouTube, TikTok and Instagram play videos at, with a clean limiter and no
-                distortion. Off keeps your mix as it is. Changing it starts this export again.
+                Lands at the level YouTube, TikTok and Instagram play videos at, with a clean limiter. Off keeps
+                your mix as it is. Changing it starts this export again.
               </span>
             </div>
 

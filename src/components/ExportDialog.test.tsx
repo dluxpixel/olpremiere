@@ -262,3 +262,16 @@ describe('in the browser', () => {
     expect(screen.queryByTestId('export-chip')).toBeNull()
   })
 })
+
+describe('the Platform loudness switch', () => {
+  it('⛔ promises a clean limiter, not "no distortion", which bass pushed into it measurably breaks', async () => {
+    // Measured 2026-10-06 with the app's own limiter: 60 Hz + 1 kHz pushed 6 dB over the ceiling
+    // comes out with 1.2% intermodulation (audioLimiter.test.ts pins it). The words said none.
+    act(() => requestExport())
+    renderBar()
+    await act(flush)
+    const hint = screen.getByTestId('export-loudness').closest('div')?.textContent ?? ''
+    expect(hint).toContain('with a clean limiter')
+    expect(hint).not.toMatch(/no distortion/i)
+  })
+})
