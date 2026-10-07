@@ -69,4 +69,14 @@ describe('the picture half brings its sound', () => {
     expect(made[0]!.linkId).toBe(made[1]!.linkId)
     expect(useStore.getState().ui.selection).toHaveLength(2)
   })
+
+  it('Ctrl+D on a picture whose sound is on a locked track says why nothing came', () => {
+    // The pair cannot land (its sound would go on the locked line), and a
+    // shortcut that quietly does nothing reads as a broken key.
+    updateActiveSequence('lock A1', (sq) => ({ ...sq, tracks: sq.tracks.map((t, i) => (i === 2 ? { ...t, locked: true } : t)) }))
+    useStore.getState().setUI({ selection: ['vid'] })
+    duplicateSelection()
+    expect(fresh()).toHaveLength(0)
+    expect(show).toHaveBeenCalledWith('Its sound is on a locked track, so it was not duplicated', 'danger')
+  })
 })

@@ -2557,9 +2557,14 @@ export function pasteClips(
   return { seq: recomputeDuration(cur), newIds, blockedByLock, redirected, targetUnused, lifted, grown }
 }
 
-export function duplicateClips(seq: Sequence, clipIds: Id[]): { seq: Sequence; newIds: Id[] } {
+/**
+ * Duplicate clips right after the last of them, on their own lines. A linked
+ * pair whose half would land on a locked line is held whole (pasteClips), and
+ * `blockedByLock` counts it so the caller can say why nothing came.
+ */
+export function duplicateClips(seq: Sequence, clipIds: Id[]): { seq: Sequence; newIds: Id[]; blockedByLock: number } {
   const payload = serializeClips(seq, clipIds)
-  if (payload.length === 0) return { seq, newIds: [] }
+  if (payload.length === 0) return { seq, newIds: [], blockedByLock: 0 }
   let atS = 0
   for (const id of clipIds) {
     const f = findClip(seq, id)

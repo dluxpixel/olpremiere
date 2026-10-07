@@ -281,12 +281,27 @@ export function duplicateSelection(): void {
   // The picture brings its sound, exactly as Copy does (withPictureSound).
   const { ids } = withPictureSound(seq, picked)
   let newIds: string[] = []
+  let blocked = 0
   updateActiveSequence('Duplicate clip(s)', (sq) => {
     const r = duplicateClips(sq, ids)
     newIds = r.newIds
+    blocked = r.blockedByLock
     return r.seq
   })
   if (newIds.length > 0) s.setUI({ selection: newIds })
+  // The picked clips are all on unlocked lines, so a held pair is one whose
+  // sound would land on a locked line. A Ctrl+D that quietly does nothing reads
+  // as a broken key, the same as a refused paste.
+  if (blocked > 0) {
+    useToasts
+      .getState()
+      .show(
+        blocked === 1
+          ? 'Its sound is on a locked track, so it was not duplicated'
+          : `${blocked} clips have their sound on a locked track, so they were not duplicated`,
+        'danger',
+      )
+  }
 }
 
 /** Ctrl/Cmd+A: select every clip on unlocked tracks of the active sequence. */
