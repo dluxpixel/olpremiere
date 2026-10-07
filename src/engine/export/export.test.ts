@@ -20,6 +20,7 @@ import {
   keyframeStride,
   packPlanarChunk,
   pcmChunks,
+  pickAudioConfig,
   quantizerFor,
   videoCodecLadder,
   videoEncoderConfig,
@@ -326,5 +327,28 @@ describe('export decode contract', () => {
     // Regression guard for the torn-export bug: real long-GOP OBS footage
     // decoded via the hardware decoder mis-reconstructs high-motion P/B blocks.
     expect(EXPORT_DECODER_OPTIONS.hardwareAcceleration).toBe('prefer-software')
+  })
+})
+
+describe('pickAudioConfig', () => {
+  const base = { sampleRate: 48_000, numberOfChannels: 2, bitrate: 320_000 }
+
+  it('steps the AAC rate down before it ever reaches for Opus (Chrome refuses AAC at 256k and up)', async () => {
+    const asked: string[] = []
+    const chosen = await pickAudioConfig(base, false, async (c) => {
+      asked.push(`${c.codec}@${c.bitrate}`)
+      return c.codec === 'mp4a.40.2' && (c.bitrate ?? 0) < 256_000
+    })
+    expect(chosen).toEqual({ codec: 'aac', config: { codec: 'mp4a.40.2', ...base, bitrate: 192_000 } })
+    expect(asked).toEqual(['mp4a.40.2@320000', 'mp4a.40.2@256000', 'mp4a.40.2@192000'])
+  })
+
+  it('tries Opus first only when asked', async () => {
+    const chosen = await pickAudioConfig(base, true, async () => true)
+    expect(chosen?.codec).toBe('opus')
+  })
+
+  it('null when this browser has neither, so the worker can say the video will have no sound', async () => {
+    expect(await pickAudioConfig(base, false, async () => false)).toBeNull()
   })
 })

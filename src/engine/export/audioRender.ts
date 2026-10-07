@@ -66,8 +66,8 @@ export interface AudioMixPlan {
  * on video AND audio tracks carry audio, disabled clips and speed <= 0 are
  * skipped, and a clip at |speed| plays a pitch-preserving stretch of its slice
  * at playbackRate 1 (see pitchPreservedSource). Returns null when there is nothing
- * audible or the platform has no AudioEncoder (older Safari). The export is
- * then video-only.
+ * audible or the platform has no AudioEncoder (older Safari, and then
+ * `onCannotEncode` is told). The export is then video-only.
  *
  * `startS` is the schedule base, which is exactly what computeClipSchedule and
  * clipGainEnvelope already take as `fromS`: a clip whose window ends before it
@@ -102,6 +102,12 @@ export interface AudioMixOptions {
    * those frames, so the two end together.
    */
   fps?: number
+  /**
+   * Told when the range HAS sound but this browser has no AudioEncoder (older
+   * Safari), so the caller can say the video will be silent before it is made.
+   * The plan is still null: there is no way to encode it here.
+   */
+  onCannotEncode?: () => void
 }
 
 export async function planAudioMix(
@@ -113,7 +119,6 @@ export async function planAudioMix(
   onPartialAudio?: (fileNames: string[]) => void,
   opts: AudioMixOptions = {},
 ): Promise<AudioMixPlan | null> {
-  if (!('AudioEncoder' in globalThis)) return null
   const rangeS = endS - startS
   if (rangeS <= 0) return null
 
@@ -135,6 +140,14 @@ export async function planAudioMix(
     }
   }
   if (candidates.length === 0) return null
+  // ⛔ NO ENCODER IS NOT "NO SOUND". This used to return null before looking at
+  // the timeline, which both paths read as "nothing audible", so the video went
+  // out silent without a word (export audit, 2026-10-06). The app's own rule,
+  // below: a silent success is the worst outcome there is.
+  if (!('AudioEncoder' in globalThis)) {
+    opts.onCannotEncode?.()
+    return null
+  }
 
   // clipAudioBuffer resolves null for silent/image assets and decode failures,
   // and routes denoised clips through the SAME resolver as live preview.

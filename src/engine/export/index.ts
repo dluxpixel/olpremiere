@@ -6,7 +6,7 @@ import { blobForExport } from '../../state/mediaMirror'
 import { useToasts } from '../../state/toasts'
 import type { Id, MediaAsset, Project } from '../types'
 import { planAudioMix } from './audioRender'
-import type { ExportAsset, ExportProgress, ExportRequest, ExportResponse, ExportSettings } from './messages'
+import { NO_SOUND_IN_THIS_BROWSER, type ExportAsset, type ExportProgress, type ExportRequest, type ExportResponse, type ExportSettings } from './messages'
 
 export type { ExportProgress, ExportSettings } from './messages'
 
@@ -107,7 +107,13 @@ export async function exportSequence(
           'danger',
         ),
     // The export's own rate, which may be below the timeline's (exportFps).
-    { loudnessTargetLufs: settings.loudnessTargetLufs ?? null, fps: settings.fps },
+    // No sound encoder in this browser at all: the video goes out silent, and he
+    // hears that now rather than after uploading it.
+    {
+      loudnessTargetLufs: settings.loudnessTargetLufs ?? null,
+      fps: settings.fps,
+      onCannotEncode: () => useToasts.getState().show(NO_SOUND_IN_THIS_BROWSER, 'danger'),
+    },
   )
   if (signal.aborted) throw abortError()
 
@@ -158,6 +164,9 @@ export async function exportSequence(
         finish(() => reject(abortError()))
       } else if (msg.type === 'error') {
         finish(() => reject(new Error(msg.message)))
+      } else if (msg.type === 'warning') {
+        // The worker found no sound encoder it can use: the file carries on silent.
+        if (!settled) useToasts.getState().show(msg.message, 'danger')
       }
       // 'frame' is native-mode only and never reaches this WebCodecs orchestrator.
     }

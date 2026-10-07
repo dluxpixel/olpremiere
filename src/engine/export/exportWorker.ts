@@ -42,8 +42,10 @@ import {
   firstSupported,
   isHdRaster,
   keyframeStride,
+  NO_SOUND_IN_THIS_BROWSER,
   packPlanarChunk,
   pcmChunks,
+  pickAudioConfig,
   quantizerFor,
   videoCodecLadder,
   videoEncoderConfig,
@@ -622,43 +624,22 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
         // SD is forced to the legacy 192k; HD honours the dialog's choice.
         bitrate: effectiveAudioBitrate(settings, isHd),
       }
-      // AAC-LC is the universal default; Opus is smaller/cleaner for voice but
-      // isn't accepted in MP4 by every player, so it's opt-in. Try the preferred
-      // codec first, then fall back to the other. (SD keeps AAC-first so the
-      // golden bytes hold.)
-      const candidates: { codec: 'aac' | 'opus'; str: string }[] =
-        settings.audioCodecPref === 'opus' && isHd
-          ? [
-              { codec: 'opus', str: 'opus' },
-              { codec: 'aac', str: 'mp4a.40.2' },
-            ]
-          : [
-              { codec: 'aac', str: 'mp4a.40.2' },
-              { codec: 'opus', str: 'opus' },
-            ]
-      // A codec is worth more than a bitrate, so drop the RATE before dropping the
-      // CODEC. Chrome's AAC encoder refuses anything at or above 256 kbps
-      // (measured: 128k and 192k supported, 256k/320k/384k not), and the plan asks
-      // for 320k on every HD export. The old loop read that as "no AAC" and wrote
-      // OPUS INSIDE AN MP4, which most players and phones will not play, so every
-      // HD export he made came out silent while an SD one was fine. Ladder down
-      // the bitrate first, and only then consider another codec.
-      const ladder = [base.bitrate, 256_000, 192_000, 128_000].filter(
-        (b, i, all) => b > 0 && all.indexOf(b) === i,
+      // The codec and rate ladder, and why the rate drops first: messages.ts.
+      // (SD keeps AAC first so the golden bytes hold.)
+      const chosen = await pickAudioConfig(
+        base,
+        settings.audioCodecPref === 'opus' && isHd,
+        async (config) => (await AudioEncoder.isConfigSupported(config)).supported === true,
       )
-      outer: for (const cand of candidates) {
-        for (const bitrate of ladder) {
-          const config = { codec: cand.str, ...base, bitrate }
-          const support = await AudioEncoder.isConfigSupported(config)
-          if (support.supported) {
-            audioCodec = cand.codec
-            audioConfig = config
-            break outer
-          }
-        }
+      if (chosen) {
+        audioCodec = chosen.codec
+        audioConfig = chosen.config
       }
       // Neither AAC nor Opus: ship a video-only file instead of failing.
       if (!audioConfig) {
+        // ⛔ AND SAY SO. This used to happen without a word, so he found out the
+        // file had no sound after uploading it (export audit, 2026-10-06).
+        post({ type: 'warning', message: NO_SOUND_IN_THIS_BROWSER })
         // Video-only fallback: the main thread will still stream the mix (it
         // has no way to know the probe failed), so discard segments on arrival
         // and ACK them, or the queue retains the entire mix for the whole
