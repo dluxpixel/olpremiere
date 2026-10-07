@@ -603,3 +603,63 @@ export function setCaptionText(clipId: string, text: string): boolean {
   }))
   return true
 }
+
+/**
+ * `text` with every whole-word `find` (any case, any spacing between its words)
+ * replaced by `replace`, or null when there is none. A word is letters, digits
+ * and an apostrophe, so "don" never matches inside "don't" or "random".
+ */
+export function replaceWholeWords(text: string, find: string, replace: string): string | null {
+  const words = find.trim().split(/\s+/).filter(Boolean)
+  if (words.length === 0) return null
+  const escaped = words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+')
+  const pattern = new RegExp(`(?<![\\p{L}\\p{N}'])${escaped}(?![\\p{L}\\p{N}'])`, 'giu')
+  if (!pattern.test(text)) return null
+  pattern.lastIndex = 0
+  const next = text.replace(pattern, () => replace)
+  return next === text ? null : next
+}
+
+/** How many captions `replaceInCaptions` would change: what its button says. */
+export function captionsToReplace(seq: Sequence, find: string): number {
+  return captionsOn(seq).filter(({ clip }) => replaceWholeWords(clip.title!.text, find, 'x') !== null).length
+}
+
+/**
+ * Fix a misheard word in every caption at once (CA-17). A Battle Cats name the
+ * model got wrong six times was six rows to retype, and the search already
+ * found all six. Whole words, any case, his replacement exactly as he typed it,
+ * ONE undo step. A locked Captions track is left alone and said so. What he
+ * replaces is a correction like any other, so the vocabulary learns it the
+ * normal way, from what is on screen against what the machine wrote.
+ */
+export function replaceInCaptions(find: string, replace: string): { replaced: number; locked: number } {
+  const typed = replace.trim()
+  let replaced = 0
+  let locked = 0
+  if (!find.trim() || !typed) return { replaced, locked }
+  updateActiveSequence(`Replace "${find.trim()}" with "${typed}"`, (sq) => ({
+    ...sq,
+    tracks: sq.tracks.map((t) => {
+      if (!isCaptionTrack(t)) return t
+      const hits = t.clips.filter((c) => c.title && replaceWholeWords(c.title.text, find, typed) !== null)
+      if (hits.length === 0) return t
+      if (t.locked) {
+        locked += hits.length
+        return t
+      }
+      return {
+        ...t,
+        clips: t.clips.map((c) => {
+          const next = c.title ? replaceWholeWords(c.title.text, find, typed) : null
+          if (!c.title || next === null) return c
+          replaced++
+          // A caption set on two lines goes back on two, balanced around the new words.
+          const text = c.title.text.includes('\n') && t.captionShape ? breakLines(next, t.captionShape) : next
+          return { ...c, title: { ...c.title, text } }
+        }),
+      }
+    }),
+  }))
+  return { replaced, locked }
+}

@@ -59,7 +59,7 @@ import {
 import { CAPTION_FONT_STACK, TITLE_FONT_OPTIONS, ensureTitleFont } from '../engine/render/titleFonts'
 import { clipEndS } from '../engine/timeline'
 import { activeSequence, type AppearanceSpec, type Clip, type EffectInstance } from '../engine/types'
-import { applyCaptionStyle, captionsOn, setCaptionText } from '../state/captionActions'
+import { applyCaptionStyle, captionsOn, captionsToReplace, replaceInCaptions, setCaptionText } from '../state/captionActions'
 import {
   captionJobLabel,
   captionJobProgress,
@@ -1303,11 +1303,20 @@ function CaptionList() {
   const seq = activeSequence(project)
   const items = useMemo(() => captionsOn(seq), [seq])
   const [query, setQuery] = useState('')
+  const [replaceWith, setReplaceWith] = useState('')
   const q = query.trim().toLowerCase()
   const shown = useMemo(
     () => (q ? items.filter(({ clip }) => (clip.title?.text ?? '').toLowerCase().replace(/\s+/g, ' ').includes(q)) : items),
     [items, q],
   )
+  // Whole words only, so this can be fewer than the search shows: "cat" finds
+  // "cats", and replacing it there would make a word nobody said.
+  const replaceable = useMemo(() => (q ? captionsToReplace(seq, query) : 0), [seq, q, query])
+  const replaceAll = (): void => {
+    const { replaced, locked } = replaceInCaptions(query, replaceWith)
+    if (locked > 0 && replaced === 0) toast('Your Captions track is locked, so nothing was changed', 'danger')
+    else if (replaced > 0) toast(`Replaced in ${replaced} ${replaced === 1 ? 'caption' : 'captions'}`, 'success')
+  }
   const selected = useMemo(() => new Set(selection), [selection])
   const listRef = useRef<HTMLDivElement>(null)
 
@@ -1356,6 +1365,33 @@ function CaptionList() {
               className="h-full min-w-0 flex-1 bg-transparent text-ui-sm text-text-primary placeholder:text-text-muted focus:outline-none"
             />
           </label>
+          {/* A misheard name is usually misheard every time (CA-17): fix it everywhere at once. */}
+          {q && (
+            <div className="mt-1.5 flex items-center gap-1.5">
+              <input
+                type="text"
+                data-testid="captions-replace"
+                aria-label="Replace with"
+                placeholder="Replace with"
+                value={replaceWith}
+                onChange={(e) => setReplaceWith(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && replaceable > 0 && replaceWith.trim()) replaceAll()
+                  else if (e.key === 'Escape') setReplaceWith('')
+                }}
+                className="h-6 min-w-0 flex-1 rounded-field bg-bg-input px-2 text-ui-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-accent"
+              />
+              <Button
+                variant="secondary"
+                data-testid="captions-replace-all"
+                disabled={replaceable === 0 || !replaceWith.trim()}
+                title="Replace the whole word in every caption, in one undo step"
+                onClick={replaceAll}
+              >
+                {`Replace all (${replaceable})`}
+              </Button>
+            </div>
+          )}
         </div>
       )}
       <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto pb-2">

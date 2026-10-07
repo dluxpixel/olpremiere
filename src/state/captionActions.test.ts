@@ -13,7 +13,16 @@ import {
   type Clip,
   type Sequence,
 } from '../engine/types'
-import { CAPTION_TRACK_NAME, addCaptionsFromWords, applyCandidateSpellings, captionsOn, splitTitleIntoWordCaptions } from './captionActions'
+import {
+  CAPTION_TRACK_NAME,
+  addCaptionsFromWords,
+  applyCandidateSpellings,
+  captionsOn,
+  captionsToReplace,
+  replaceInCaptions,
+  replaceWholeWords,
+  splitTitleIntoWordCaptions,
+} from './captionActions'
 import { cutWords } from './transcriptActions'
 import { AUTO_CAPTION_TARGET_S, type CaptionWord } from '../engine/captions/captions'
 import { clipDurationS } from '../engine/timeline'
@@ -516,5 +525,50 @@ describe('applyCandidateSpellings', () => {
     }))
     applyCandidateSpellings(profile)
     expect(allClips()[0].title?.text).toBe('cs go')
+  })
+})
+
+// CA-17. A name the model got wrong six times was six rows to retype.
+describe('replacing a misheard word in every caption', () => {
+  const texts = (): string[] => captionsOn(seq()).map(({ clip }) => clip.title!.text)
+  const lay = (said: string[]) =>
+    addCaptionsFromWords(
+      said.map((text, i) => ({ text, startS: i * 2, endS: i * 2 + 0.5 })),
+      {},
+    )
+
+  it('matches whole words in any case, and nothing inside a longer word', () => {
+    expect(replaceWholeWords('the bamban boss', 'Bamban', 'Bun Bun')).toBe('the Bun Bun boss')
+    expect(replaceWholeWords('BAMBAN', 'bamban', 'Bun Bun')).toBe('Bun Bun')
+    expect(replaceWholeWords('bambans', 'bamban', 'Bun Bun')).toBeNull()
+    expect(replaceWholeWords("don't", 'don', 'Don')).toBeNull()
+    // A phrase matches across a line break.
+    expect(replaceWholeWords('mecha\nbamban', 'mecha bamban', 'Mecha Bun Bun')).toBe('Mecha Bun Bun')
+    // His replacement goes in exactly as typed, dollar signs and all.
+    expect(replaceWholeWords('price', 'price', '$5')).toBe('$5')
+  })
+
+  it('replaces it in every caption in one undo step', () => {
+    lay(['bamban', 'is', 'bamban', 'the', 'bamban', 'boss', 'bamban', 'and', 'bamban'])
+    expect(captionsToReplace(seq(), 'bamban')).toBe(5)
+    const before = texts()
+    expect(replaceInCaptions('bamban', 'Bun Bun')).toEqual({ replaced: 5, locked: 0 })
+    expect(texts().filter((t) => t.includes('Bun Bun'))).toHaveLength(5)
+    expect(texts().some((t) => t.includes('bamban'))).toBe(false)
+    useStore.getState().undo()
+    expect(texts()).toEqual(before)
+  })
+
+  it('a locked Captions track is left alone', () => {
+    lay(['bamban', 'is', 'here'])
+    updateActiveSequence('lock', (sq) => ({ ...sq, tracks: sq.tracks.map((t) => (t.name === CAPTION_TRACK_NAME ? { ...t, locked: true } : t)) }))
+    expect(replaceInCaptions('bamban', 'Bun Bun')).toEqual({ replaced: 0, locked: 1 })
+    expect(texts().some((t) => t.includes('Bun Bun'))).toBe(false)
+  })
+
+  it('does nothing with nothing to find or nothing to put in', () => {
+    lay(['bamban'])
+    expect(replaceInCaptions('  ', 'x')).toEqual({ replaced: 0, locked: 0 })
+    expect(replaceInCaptions('bamban', '  ')).toEqual({ replaced: 0, locked: 0 })
   })
 })
