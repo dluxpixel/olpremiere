@@ -61,3 +61,12 @@ describe("main's app:// files", () => {
     expect(handler).not.toContain('emojiFont.read()')
   })
 })
+
+describe("main's app:// scheme", () => {
+  const main = readFileSync(new URL('./main.ts', import.meta.url), 'utf8')
+
+  it('keeps the compiled pages, so a launch does not compile the editor from scratch', () => {
+    const scheme = main.slice(main.indexOf('protocol.registerSchemesAsPrivileged('), main.indexOf('function createWindow('))
+    expect(scheme).toMatch(/scheme: 'app', privileges: \{[^}]*\bstandard: true\b[^}]*\bcodeCache: true\b/)
+  })
+})
