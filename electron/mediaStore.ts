@@ -22,6 +22,7 @@ import { mkdir, open, readdir, rm, stat } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
 import path from 'node:path'
 import { app } from 'electron'
+import { readChunk } from './readChunk'
 
 export function mediaDir(): string {
   return path.join(app.getPath('userData'), 'media')
@@ -199,11 +200,7 @@ export async function readMedia(assetId: string, offset: number, length: number)
   }
   if (!handle) return null
   try {
-    const buf = Buffer.alloc(length)
-    const { bytesRead } = await handle.read(buf, 0, length, offset)
-    // Copy out of the pooled backing store: handing the pool across IPC would
-    // send whatever else shares that allocation.
-    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + bytesRead) as ArrayBuffer
+    return await readChunk(handle, offset, length)
   } finally {
     await handle.close().catch(() => undefined)
   }

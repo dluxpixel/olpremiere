@@ -16,6 +16,7 @@ import type { FileHandle } from 'node:fs/promises'
 import path from 'node:path'
 import { app } from 'electron'
 import { sweepProxyDir } from './proxyTemp'
+import { readChunk } from './readChunk'
 import { convertToMp4, type ConvertResult, type ConvertMode } from './remuxRun'
 
 /** The bundled ffmpeg.exe: extraResources in prod, vendor/ in dev. Same rule as the proxy. */
@@ -123,11 +124,7 @@ export async function readRemux(id: string, offset: number, length: number): Pro
   if (!job) throw new Error('remux: unknown job')
   const handle = await open(job.outPath, 'r')
   try {
-    const buf = Buffer.alloc(length)
-    const { bytesRead } = await handle.read(buf, 0, length, offset)
-    // Copy out of the Buffer's pooled backing store: handing the pool itself
-    // across the IPC boundary would send whatever else shares that allocation.
-    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + bytesRead) as ArrayBuffer
+    return await readChunk(handle, offset, length)
   } finally {
     await handle.close().catch(() => undefined)
   }

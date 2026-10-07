@@ -32,6 +32,7 @@ import { mkdir, open, rm, stat } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
 import path from 'node:path'
 import { mainLog } from './mainLog'
+import { readChunk } from './readChunk'
 import { sweepProxyDir } from './proxyTemp'
 import { app } from 'electron'
 
@@ -216,11 +217,7 @@ export async function readProxy(id: string, offset: number, length: number): Pro
   if (!up) throw new Error('proxy: unknown upload')
   const handle = await open(up.outPath, 'r')
   try {
-    const buf = Buffer.alloc(length)
-    const { bytesRead } = await handle.read(buf, 0, length, offset)
-    // Copy out of the Buffer's pooled backing store: handing the pool itself
-    // across the IPC boundary would send whatever else shares that allocation.
-    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + bytesRead) as ArrayBuffer
+    return await readChunk(handle, offset, length)
   } finally {
     await handle.close().catch(() => undefined)
   }
