@@ -46,6 +46,7 @@ import * as mediaStore from './mediaStore'
 import * as remux from './remux'
 import { IDLE_POLL_MS, updateApplyDecision } from './updateApply'
 import { CLOSE_SAVE_TIMEOUT_MS, createCloseGate, notSavedDialog, type CloseGate } from './closeGate'
+import { createInstallWait } from './installWait'
 import { planUpdateError, updateLogEntry } from './updateErrors'
 import { appendUpdateLog, UPDATE_LOG_NAME } from './updateLog'
 import electronUpdater from 'electron-updater'
@@ -115,17 +116,28 @@ const APP_ORIGIN_HOST = IS_LAB ? 'olpremierelab' : 'olpremiere'
 
 /** The main window, so native-export handlers can target it (save dialog, progress). */
 let mainWindow: BrowserWindow | null = null
-/** Set once an update install has begun closing the window. See 'update:install'. */
-let installing = false
 /** After the window is gone, how long the engine gets to finish writing before the installer runs. */
 const INSTALL_FLUSH_MS = 1500
 /**
  * How long to wait for the window to close before installing the old way regardless.
- * Longer than the close gate's own wait, so the install never cuts the save short.
+ * Longer than the close gate's own wait, so the install never cuts the save short,
+ * and since 2026-10-07 it only starts counting once the gate has let the close
+ * through (./installWait).
  */
 const INSTALL_CLOSE_TIMEOUT_MS = CLOSE_SAVE_TIMEOUT_MS + 2000
-/** Stops a waiting install when he chose to stay in a close whose save failed. */
-let cancelInstall: (() => void) | null = null
+/**
+ * The update install waiting for the editor window to close: one at a time, and
+ * stopped whole when he chooses to stay in a close whose save failed. See
+ * ./installWait, and 'update:install' for why the window goes first.
+ */
+const installWait = createInstallWait(
+  {
+    install: () => autoUpdater.quitAndInstall(true, true),
+    setTimer: (fn, ms) => setTimeout(fn, ms),
+    clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  },
+  { flushMs: INSTALL_FLUSH_MS, fallbackMs: INSTALL_CLOSE_TIMEOUT_MS },
+)
 /** Each editor page's close gate, found by the page that answers it. See ./closeGate. */
 const closeGates = new WeakMap<WebContents, CloseGate>()
 
@@ -518,14 +530,18 @@ function createWindow(): void {
         noLink: true,
         ...notSavedDialog(onlyTheFile),
       }) === 1,
-    onStay: () => cancelInstall?.(),
+    onStay: () => installWait.cancel(),
     setTimer: (fn, ms) => setTimeout(fn, ms),
     clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
   })
   closeGates.set(win.webContents, gate)
   win.on('close', (e) => {
     if (gate.onClose()) e.preventDefault()
+    // His save is behind this close now, so an install waiting on the window
+    // starts its fallback only here, never while the save or its question runs.
+    else installWait.closeLetThrough()
   })
+  win.on('closed', () => installWait.windowClosed())
 
   win.webContents.on('did-start-navigation', (e) => {
     if (!e.isMainFrame || e.isSameDocument) return
@@ -1095,24 +1111,12 @@ app.whenReady().then(() => {
         autoUpdater.quitAndInstall(true, true)
         return
       }
-      installing = true
-      let done = false
-      const go = (): void => {
-        if (done) return
-        done = true
-        cancelInstall = null
-        autoUpdater.quitAndInstall(true, true)
-      }
       // The close saves first (./closeGate). If that save failed and he chose
       // to stay, the update waits: installing over him would close the window
-      // he just said to keep, with his last changes unwritten.
-      cancelInstall = () => {
-        done = true
-        installing = false
-        cancelInstall = null
-      }
-      win.once('closed', () => setTimeout(go, INSTALL_FLUSH_MS))
-      setTimeout(go, INSTALL_CLOSE_TIMEOUT_MS)
+      // he just said to keep, with his last changes unwritten. A second request
+      // while this one is on its way (the Restart toast and the update card)
+      // is this one, so his Stay stops the whole install. See ./installWait.
+      if (!installWait.begin()) return
       win.close()
     })
     setUpdateStatus({ kind: 'checking' })
@@ -1140,7 +1144,7 @@ app.on('window-all-closed', () => {
   // An update install closes the window itself and quits through quitAndInstall,
   // which relaunches the app afterwards. A plain quit here would install too
   // (autoInstallOnAppQuit) but would NOT bring the app back.
-  if (installing) return
+  if (installWait.pending()) return
   if (process.platform === 'darwin') return
   // ⛔ CLOSING IS THE MAIN WAY AN UPDATE GOES ON NOW (his pick 2026-09-27), so it
   // gets the restart path's settle. The installer is started on quit and gives a
