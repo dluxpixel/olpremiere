@@ -7,8 +7,18 @@
 // imports the real main process only after the patches are in place.
 const path = require('path')
 const fs = require('fs')
+const os = require('os')
 const { pathToFileURL } = require('url')
 const { app, BrowserWindow, dialog } = require('electron')
+
+// ⛔ BELOW NORMAL, FIRST. A whole hidden Electron plus an export must never lag his PC.
+// Windows starts the children of a below normal process below normal too, so
+// Chromium's own processes and ffmpeg follow.
+try {
+  os.setPriority(process.pid, os.constants.priority.PRIORITY_BELOW_NORMAL)
+} catch {
+  // Best effort: a run at normal priority is slower for him, not wrong.
+}
 
 const REPO = path.resolve(__dirname, '..', '..', '..')
 const root = process.env.OLP_HIDDEN_DIR
@@ -71,17 +81,30 @@ app.on('web-contents-created', (_e, wc) => {
     }
     out.ms = Date.now() - t0
     fs.writeFileSync(path.join(root, 'result.json'), JSON.stringify(out, null, 1))
-    // ⚠️ exit() skips before-quit, so anything the app started (CutStudio's
-    // server) is not stopped by it. run.mjs lists what is left over.
-    app.exit(0)
+    end(0)
   })
 })
 setTimeout(() => {
   log('timed out')
-  app.exit(3)
+  end(3)
 }, Number(process.env.OLP_HIDDEN_TIMEOUT_MS || 300000))
+
+/**
+ * The app's own teardown, then out. exit() alone skips before-quit, so a CutStudio
+ * server a check started (and any ffmpeg still running) outlived the run. The app's
+ * before-quit stops only what the app started: a CutStudio he started stays running.
+ * Not quit(): a close the page refuses (an export) would keep the run alive.
+ */
+function end(code) {
+  try {
+    app.emit('before-quit', { preventDefault() {} })
+  } catch (err) {
+    log('before-quit failed', (err && err.stack) || err)
+  }
+  app.exit(code)
+}
 
 import(pathToFileURL(path.join(REPO, 'out', 'main', 'main.js')).href).catch((err) => {
   log('the app failed to load', (err && err.stack) || err)
-  app.exit(4)
+  end(4)
 })

@@ -28,6 +28,7 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFile
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { bedProblem } from './bed.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const repo = path.resolve(here, '..', '..')
@@ -54,6 +55,15 @@ if (!existsSync(path.join(repo, 'out', 'main', 'main.js'))) {
   process.exit(2)
 }
 
+// A bed is checked before anything is made, by where it really leads (./bed.mjs).
+if (bed) {
+  const refused = process.env.APPDATA ? bedProblem(bed, process.env.APPDATA) : 'no APPDATA, so his real profile cannot be ruled out'
+  if (refused) {
+    console.error(refused)
+    process.exit(2)
+  }
+}
+
 const root = mkdtempSync(path.join(tmpdir(), 'olp-hidden-'))
 if (seedFont) {
   mkdirSync(path.join(root, 'userData', 'fonts'), { recursive: true })
@@ -76,11 +86,6 @@ if (quietUpdate) {
 }
 let bedMedia = null
 if (bed) {
-  const real = path.join(process.env.APPDATA || '', 'OL Premiere')
-  if (path.resolve(bed).toLowerCase().startsWith(path.resolve(real).toLowerCase())) {
-    console.error('the bed must be a COPY, never his real OL Premiere folder')
-    process.exit(2)
-  }
   mkdirSync(path.join(root, 'userData', 'Projects'), { recursive: true })
   for (const f of readdirSync(path.join(bed, 'Projects'))) {
     if (f.endsWith('.olpbak')) copyFileSync(path.join(bed, 'Projects', f), path.join(root, 'userData', 'Projects', f))
