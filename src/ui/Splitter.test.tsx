@@ -76,6 +76,37 @@ describe('a panel edge and the pointer', () => {
   })
 })
 
+describe('the end of a drag', () => {
+  // The layout is written once, when the drag ends. A handle that lost the pointer without a
+  // release (another window took it) never ended the drag, so the new width stayed on screen
+  // and was forgotten.
+  it('comes when the handle loses the pointer without a release, and writes the new width', () => {
+    render(<LeftEdge />)
+    const handle = screen.getByTestId('splitter-left')
+    fireEvent.pointerDown(handle, { clientX: 500, pointerId: 1 })
+    fireEvent.pointerMove(handle, { clientX: 450, pointerId: 1 })
+    expect(width()).toBe(450)
+    handle.releasePointerCapture(1)
+    fireEvent.lostPointerCapture(handle, { pointerId: 1 })
+    expect(JSON.parse(localStorage.getItem('olpremiere.layout.v2') ?? '{}').left).toBe(450)
+  })
+
+  it('comes once for a release, also when the lost pointer event follows it', () => {
+    let ends = 0
+    render(<Splitter orientation="vertical" onDrag={() => {}} onDragEnd={() => ends++} />)
+    const handle = screen.getByRole('separator')
+    fireEvent.pointerDown(handle, { clientX: 300, pointerId: 1 })
+    fireEvent.pointerMove(handle, { clientX: 320, pointerId: 1 })
+    fireEvent.pointerUp(handle, { clientX: 320, pointerId: 1 })
+    fireEvent.lostPointerCapture(handle, { pointerId: 1 })
+    expect(ends).toBe(1)
+    // A release with no press before it is not a drag.
+    fireEvent.pointerUp(handle, { clientX: 320, pointerId: 1 })
+    fireEvent.lostPointerCapture(handle, { pointerId: 1 })
+    expect(ends).toBe(1)
+  })
+})
+
 describe('sizeAfterDrag', () => {
   it('is the size at the press plus the total, inside the limits', () => {
     expect(sizeAfterDrag('left', 500, 100)).toBe(520)

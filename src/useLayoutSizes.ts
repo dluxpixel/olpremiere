@@ -199,10 +199,12 @@ export function useLayoutSizes() {
   // `pref` is what he chose. `sizes` is that, made to fit today's window.
   const [pref, setPref] = useState<LayoutSizes>(load)
   const [vp, setVp] = useState<Viewport>(viewport)
-  const prefRef = useRef(pref)
-  prefRef.current = pref
+  /** `pref` as of the last move, even before React has rendered it: what a drag's end writes. */
+  const latest = useRef(pref)
   /** What he could see when he pressed the handle. Null between drags. */
   const atPress = useRef<LayoutSizes | null>(null)
+  /** The drag changed a size, so its end has something to write. */
+  const moved = useRef(false)
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -217,29 +219,34 @@ export function useLayoutSizes() {
     // The drag starts from what he can SEE, not from the stored preference: while a
     // small window is squeezing the panel, a drag that started from the stored
     // value would jump before it moved.
-    atPress.current = fitToWindow(prefRef.current, vp)
+    atPress.current = fitToWindow(latest.current, vp)
   }, [vp])
 
   /** `totalPx` is how far the pointer has gone since the press (Splitter's onDrag). */
   const adjust = useCallback(
     (key: keyof LayoutSizes, totalPx: number) => {
-      const from = atPress.current ?? fitToWindow(prefRef.current, vp)
-      setPref((prev) => {
-        const next = { ...prev, [key]: sizeAfterDrag(key, from[key], totalPx) }
-        if (next[key] === prev[key]) return prev
-        try {
-          localStorage.setItem(KEY, JSON.stringify(next))
-        } catch {
-          // localStorage full/unavailable, so layout just won't persist
-        }
-        return next
-      })
+      const from = atPress.current ?? fitToWindow(latest.current, vp)
+      const size = sizeAfterDrag(key, from[key], totalPx)
+      if (size === latest.current[key]) return
+      latest.current = { ...latest.current, [key]: size }
+      moved.current = true
+      setPref(latest.current)
     },
     [vp],
   )
 
+  // ⛔ ONE WRITE PER DRAG, NOT ONE PER POINTER MOVE (2026-10-07). Storage is written
+  // synchronously, and every move of a drag used to write it. The size on screen follows the
+  // pointer from memory; what he chose is written once, when he lets go.
   const endDrag = useCallback(() => {
     atPress.current = null
+    if (!moved.current) return
+    moved.current = false
+    try {
+      localStorage.setItem(KEY, JSON.stringify(latest.current))
+    } catch {
+      // localStorage full/unavailable, so layout just won't persist
+    }
   }, [])
 
   return { sizes, startDrag, adjust, endDrag }

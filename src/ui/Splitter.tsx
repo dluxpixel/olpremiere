@@ -22,12 +22,15 @@ export interface SplitterProps {
 export function Splitter({ orientation, onDrag, onDragStart, onDragEnd, testId }: SplitterProps) {
   const start = useRef(0)
   const sent = useRef(0)
+  /** Between the press and the drag's one end. */
+  const dragging = useRef(false)
   const vertical = orientation === 'vertical'
 
   const handleDown = (e: PointerEvent<HTMLDivElement>) => {
     e.currentTarget.setPointerCapture(e.pointerId)
     start.current = vertical ? e.clientX : e.clientY
     sent.current = 0
+    dragging.current = true
     onDragStart?.()
   }
   const handleMove = (e: PointerEvent<HTMLDivElement>) => {
@@ -38,10 +41,18 @@ export function Splitter({ orientation, onDrag, onDragStart, onDragEnd, testId }
       onDrag(total)
     }
   }
+  // ⛔ A DRAG ENDS ONCE, ALSO WHEN THE HANDLE LOSES THE POINTER WITHOUT A RELEASE (2026-10-07).
+  // The layout is written when a drag ends, not on every move (useLayoutSizes), so a drag whose
+  // end never came would keep the new size on screen and forget it at the next start.
+  const finish = () => {
+    if (!dragging.current) return
+    dragging.current = false
+    onDragEnd?.()
+  }
   const handleUp = (e: PointerEvent<HTMLDivElement>) => {
     if (e.currentTarget.hasPointerCapture(e.pointerId)) {
       e.currentTarget.releasePointerCapture(e.pointerId)
-      onDragEnd?.()
+      finish()
     }
   }
 
@@ -55,6 +66,7 @@ export function Splitter({ orientation, onDrag, onDragStart, onDragEnd, testId }
       onPointerMove={handleMove}
       onPointerUp={handleUp}
       onPointerCancel={handleUp}
+      onLostPointerCapture={finish}
     >
       {/* Invisible 4px hit area + hover/active highlight */}
       <div

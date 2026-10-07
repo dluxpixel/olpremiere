@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { memo, useEffect, useMemo, useRef } from 'react'
 import { Inspector } from './components/Inspector'
 import { LeftPanel } from './components/LeftPanel'
 import { Monitor } from './components/Monitor'
@@ -462,6 +462,17 @@ function RecordingStudioMount() {
   return open ? <RecordingStudio /> : null
 }
 
+// ⛔ A SPLITTER DRAG RE-RENDERED THE WHOLE EDITOR ON EVERY POINTER MOVE (2026-10-07). The panel
+// sizes are App's state, and none of the big regions was memo, so each move of a drag rendered
+// the top bar, the tabs, all three columns and the timeline again. Their props are a number or
+// nothing, so memo leaves each to render only when its own size or its own store data changes.
+const TopBarRegion = memo(TopBar)
+const EditTabsRegion = memo(EditTabs)
+const LeftPanelRegion = memo(LeftPanel)
+const MonitorRegion = memo(Monitor)
+const InspectorRegion = memo(Inspector)
+const TimelineRegion = memo(Timeline)
+
 export default function App() {
   // The offline update toast, once per session (see onUpdateError below).
   const updateErrorShown = useRef(false)
@@ -601,16 +612,16 @@ export default function App() {
       // our own menu instead (media cards, clips).
       onContextMenu={(e) => e.preventDefault()}
     >
-      <TopBar />
+      <TopBarRegion />
       {/* The open edits. Not on a phone: the bus-ride layout keeps its room, and the
           Projects button still opens and switches edits there. */}
-      {!phone && <EditTabs />}
+      {!phone && <EditTabsRegion />}
       {phone ? (
         <PhoneShell />
       ) : (
         <div className="flex min-h-0 flex-1 flex-col">
           <div className="flex min-h-0 flex-1">
-            <LeftPanel width={sizes.left} />
+            <LeftPanelRegion width={sizes.left} />
             <Splitter
               orientation="vertical"
               testId="splitter-left"
@@ -618,7 +629,7 @@ export default function App() {
               onDrag={(d) => adjust('left', d)}
               onDragEnd={endDrag}
             />
-            <Monitor />
+            <MonitorRegion />
             <Splitter
               orientation="vertical"
               testId="splitter-right"
@@ -626,7 +637,7 @@ export default function App() {
               onDrag={(d) => adjust('right', -d)}
               onDragEnd={endDrag}
             />
-            <Inspector width={sizes.right} />
+            <InspectorRegion width={sizes.right} />
           </div>
           <Splitter
             orientation="horizontal"
@@ -635,7 +646,7 @@ export default function App() {
             onDrag={(d) => adjust('bottom', -d)}
             onDragEnd={endDrag}
           />
-          <Timeline height={sizes.bottom} />
+          <TimelineRegion height={sizes.bottom} />
         </div>
       )}
       {/* Inside the full screen while the picture is full screen, or they cannot be seen there. */}
