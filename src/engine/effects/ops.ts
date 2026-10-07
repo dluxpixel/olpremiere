@@ -85,7 +85,8 @@ export function isLookType(type: string): boolean {
  * grade on the same shelf against exactly this. So:
  *   - a clip already wearing this look is handed back untouched;
  *   - a clip wearing another look has it SWAPPED, in the slot the old one held,
- *     so whatever he stacked around it stays where he put it;
+ *     so whatever he stacked around it stays where he put it, and a fade he
+ *     keyframed on its Amount stays with the new look (swappedIn);
  *   - a clip with no look takes it where addEffect puts any new effect.
  * A clip carrying two looks from before this rule ends up wearing one: the new
  * look, in the first one's slot. Anything that is not a look is refused.
@@ -98,9 +99,28 @@ export function putLook(clip: Clip, type: string, id: Id): Clip {
   if (worn.length === 0) return addEffect(clip, type, id)
   const slot = clip.effects.indexOf(worn[0])
   const effects = clip.effects.flatMap((e, i) =>
-    i === slot ? [freshInstance(def, id)] : isLookType(e.type) ? [] : [e],
+    i === slot ? [swappedIn(def, id, worn)] : isLookType(e.type) ? [] : [e],
   )
   return { ...clip, effects }
+}
+
+/**
+ * The look that takes the place of the looks a clip wore: a fresh instance at
+ * its full Amount, as designed, except for a KEYFRAMED Amount. A fade he drew on
+ * the old look (0 to 1 over the first second) is his work on this clip, and a
+ * swap to compare looks must not quietly flatten it, so it goes onto the new
+ * look as its own copy. A static Amount does not carry: the look drops in whole.
+ */
+function swappedIn(def: EffectDef, id: Id, worn: readonly EffectInstance[]): EffectInstance {
+  const inst = freshInstance(def, id)
+  const fade = worn.map(lookFade).find((f) => f !== undefined)
+  return fade ? { ...inst, params: { ...inst.params, amount: structuredClone(fade) } } : inst
+}
+
+/** A look's Amount when it is keyframed (a fade he drew), else undefined. */
+export function lookFade(look: EffectInstance): Exclude<Keyframeable, number> | undefined {
+  const amount = look.params.amount
+  return typeof amount === 'object' && amount !== null && amount.keyframes.length > 0 ? amount : undefined
 }
 
 /** The look a clip wears now, if any: the one putLook would swap out. */

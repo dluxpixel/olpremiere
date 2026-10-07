@@ -18,7 +18,7 @@
 // no database version bump: an old install opens exactly as before and every
 // item it already had reads as Unsorted.
 
-import { isLookType, putLook, wornLook } from '../engine/effects/ops'
+import { isLookType, lookFade, putLook, wornLook } from '../engine/effects/ops'
 import { autoPresetName, copyEffects, presetFromClip, type EffectPreset } from '../engine/effects/presets'
 import { getEffect } from '../engine/effects/registry'
 import { addClipFromAsset, addClipWithLinkedAudio } from '../engine/timeline'
@@ -874,13 +874,19 @@ function withPreset(clip: Clip, effects: readonly EffectInstance[]): Clip {
  * a look keeps: it swaps out the look the clip wears, in that look's slot, and a
  * clip already wearing it keeps the one it has. Two things differ for a preset.
  * The look keeps the Amount he saved it with, where putLook lays down a fresh
- * one. And on a clip with no look it is appended like the rest of the preset, so
- * the stack lands in the order he saved it.
+ * one, unless the look it takes the place of had a KEYFRAMED Amount: that fade is
+ * his work on THIS clip, timed to it, so it stays, as it does through every other
+ * door (putLook carries it). And on a clip with no look it is appended like the
+ * rest of the preset, so the stack lands in the order he saved it.
  */
 function putPresetLook(clip: Clip, look: EffectInstance): Clip {
   if (!wornLook(clip)) return { ...clip, effects: [...clip.effects, look] }
   const next = putLook(clip, look.type, look.id)
-  return next === clip ? clip : { ...next, effects: next.effects.map((e) => (e.id === look.id ? look : e)) }
+  if (next === clip) return clip
+  const swapped = next.effects.find((e) => e.id === look.id)
+  const fade = swapped && lookFade(swapped)
+  const put = fade ? { ...look, params: { ...look.params, amount: fade } } : look
+  return { ...next, effects: next.effects.map((e) => (e.id === look.id ? put : e)) }
 }
 
 /**

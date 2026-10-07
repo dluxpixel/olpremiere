@@ -241,6 +241,38 @@ describe('a second look', () => {
     expect(types(ids[0]!)).toEqual(['lookSoftFilm', 'saturation'])
   })
 
+  it("keeps a keyframed Amount, his fade, on the look that takes the old one's place", () => {
+    const ids = threeClips()
+    const fade = { value: 1, keyframes: [{ t: 0, value: 0, ease: 'linear' as const }, { t: 1.5, value: 1, ease: 'linear' as const }] }
+    setStack(ids[0]!, [{ id: 'm', type: 'lookMoodyGym', enabled: true, params: { amount: fade } }])
+    expect(applyEffectToClips([ids[0]!], 'lookTealOrange')).toBe(1)
+    const teal = clipById(ids[0]!).effects[0]!
+    expect(teal.type).toBe('lookTealOrange')
+    expect(teal.params.amount).toEqual(fade)
+    // Its own copy, never the old look's keyframes shared with the undo history.
+    expect(teal.params.amount).not.toBe(fade)
+    expect((teal.params.amount as typeof fade).keyframes).not.toBe(fade.keyframes)
+    expect(shown.map((t) => t.message)).toEqual(['Swapped Moody Gym for Teal and Orange'])
+    useStore.getState().undo()
+    expect(clipById(ids[0]!).effects[0]!.params.amount).toEqual(fade)
+  })
+
+  it('keeps a keyframed Amount from the Inspector Add effect menu on one clip too', () => {
+    const ids = threeClips()
+    const fade = { value: 1, keyframes: [{ t: 0, value: 0, ease: 'linear' as const }, { t: 1, value: 1, ease: 'linear' as const }] }
+    setStack(ids[0]!, [{ id: 'm', type: 'lookMoodyGym', enabled: true, params: { amount: fade } }])
+    applyEffect(ids[0]!, 'lookGoldenHour')
+    expect(types(ids[0]!)).toEqual(['lookGoldenHour'])
+    expect(clipById(ids[0]!).effects[0]!.params.amount).toEqual(fade)
+  })
+
+  it('drops the new look in at full strength over a static Amount, as designed', () => {
+    const ids = threeClips()
+    setStack(ids[0]!, [{ id: 'm', type: 'lookMoodyGym', enabled: true, params: { amount: 0.6 } }])
+    applyEffectToClips([ids[0]!], 'lookTealOrange')
+    expect(clipById(ids[0]!).effects.map((e) => [e.type, e.params.amount])).toEqual([['lookTealOrange', 1]])
+  })
+
   it('still lets an ordinary effect go on twice, as it always could', () => {
     const ids = threeClips()
     applyEffectToClips([ids[0]!], 'gaussianBlur')
@@ -402,6 +434,20 @@ describe('a look in a saved preset', () => {
       expect(clipById(id).effects[0]!.params.amount).toBe(1)
     })
     expect(shown.map((t) => t.message)).toEqual(['Applied "Old stack" to 3 clips. 3 already had Teal and Orange'])
+  })
+
+  it('keeps the keyframed Amount of the look it takes the place of, over the Amount it was saved with', () => {
+    const ids = threeClips()
+    const fade = { value: 1, keyframes: [{ t: 0, value: 0, ease: 'linear' as const }, { t: 2, value: 1, ease: 'linear' as const }] }
+    setStack(ids[0]!, [{ id: 'm', type: 'lookMoodyGym', enabled: true, params: { amount: fade } }])
+    setStack(ids[1]!, [{ id: 'n', type: 'lookMoodyGym', enabled: true, params: { amount: 0.8 } }])
+    useStore.getState().setUI({ selection: [ids[0]!, ids[1]!] })
+    useLibrary.setState({ presets: [tealGrade] })
+    applyPresetToSelection('p1')
+    expect(types(ids[0]!)).toEqual(['lookTealOrange', 'saturation'])
+    expect(clipById(ids[0]!).effects[0]!.params.amount).toEqual(fade)
+    // A static Amount is not a fade: the preset's own saved Amount goes on.
+    expect(clipById(ids[1]!).effects[0]!.params.amount).toBe(0.6)
   })
 
   it('lands a look on a clip without one where the preset saved it, among the rest of its stack', () => {
