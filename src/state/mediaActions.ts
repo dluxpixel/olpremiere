@@ -325,6 +325,25 @@ export function unusedAssetIds(project: Project): Id[] {
   return Object.keys(project.assets).filter((id) => !used.has(id))
 }
 
+/** The last count `unusedAssetCount` worked out, and the project it was worked out from. */
+let lastUnused: { project: Project; count: number } | null = null
+
+/**
+ * How many files in the bin nothing uses, for the Media tab's Remove unused.
+ *
+ * ⛔ IT IS A STORE SELECTOR, AND A SELECTOR RUNS ON EVERY STORE WRITE (UI-8),
+ * playback frames included: the Media tab walked every clip of every sequence
+ * and built a set up to 240 times a second while he played. The project
+ * document is replaced whole on every edit, so the same object is the same
+ * answer and nothing is walked (Monitor's usedAssetKey does the same).
+ */
+export function unusedAssetCount(project: Project): number {
+  if (lastUnused?.project === project) return lastUnused.count
+  const count = unusedAssetIds(project).length
+  lastUnused = { project, count }
+  return count
+}
+
 /**
  * Remove every file in the bin that nothing on the timeline uses, ONE undo. His
  * ask, 2026-10-01: "add an option next to Import and Caption that says delete

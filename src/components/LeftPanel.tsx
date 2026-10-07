@@ -22,7 +22,7 @@ import { oneClickSaveHint, saveToCategoryItems } from '../state/libraryMenus'
 import { LibraryTab } from './LibraryTab'
 import { healArrivedBlob, useMediaSync } from '../collab/mediaSync'
 import { useCollab } from '../collab/collabControl'
-import { deleteAsset, importFiles, insertAssetAtPlayhead, removeUnusedAssets, unusedAssetIds, useImportProgress } from '../state/mediaActions'
+import { deleteAsset, importFiles, insertAssetAtPlayhead, removeUnusedAssets, unusedAssetCount, useImportProgress } from '../state/mediaActions'
 import { showPhoneTab } from './PhoneShell'
 import { importProjectFromFile, routeDroppedFiles } from '../state/projectFile'
 import { matchFilesToMissing, missingMedia, relink, relinkSummary, type MissingAsset } from '../state/relinkMedia'
@@ -581,7 +581,7 @@ function FindMyMedia() {
  * removes them, and it disarms itself after a few seconds or when focus leaves.
  */
 function RemoveUnusedButton() {
-  const unused = useStore((s) => unusedAssetIds(s.project).length)
+  const unused = useStore((s) => unusedAssetCount(s.project))
   const [armed, setArmed] = useState(false)
   const armRef = useRef<ArmedDelete | null>(null)
   if (!armRef.current) armRef.current = createArmedDelete({ onChange: setArmed })

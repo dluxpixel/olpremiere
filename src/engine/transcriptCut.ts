@@ -111,6 +111,24 @@ export function mergeWords(existing: readonly SpokenWord[] | undefined, heard: r
 }
 
 /**
+ * The word under the playhead, so the Words tab follows playback, or -1 when he
+ * is between words. A word stays current a moment past its end, so the mark
+ * does not blink off in the gap between two words.
+ *
+ * Read by a store selector, so it runs on every store write, playback frames
+ * included; its answer changes a few times a second, and only then does the
+ * tab draw again.
+ */
+export function wordIndexAt(words: readonly TimelineWord[], t: number): number {
+  let found = -1
+  for (let i = 0; i < words.length; i++) {
+    if (words[i].atS <= t + 1e-6) found = i
+    else break
+  }
+  return found >= 0 && t < words[found].endAtS + 0.35 ? found : -1
+}
+
+/**
  * The stretch of timeline a run of selected words occupies, on frame edges.
  * It runs from the first word's start to the start of the word that follows
  * the last one in the same clip, so the pause before the next word goes with

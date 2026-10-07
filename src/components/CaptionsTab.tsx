@@ -1267,9 +1267,27 @@ const CaptionRow = memo(function CaptionRow({
   )
 })
 
+/**
+ * The caption on screen at `t`. Captions never overlap on a track, so the last
+ * one that has started is the only candidate.
+ */
+function captionIdAt(items: readonly { clip: Clip }[], t: number): string | null {
+  let lo = 0
+  let hi = items.length - 1
+  let found = -1
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1
+    if (items[mid]!.clip.startS <= t + 1e-6) {
+      found = mid
+      lo = mid + 1
+    } else hi = mid - 1
+  }
+  const hit = found >= 0 ? items[found]!.clip : undefined
+  return hit && t < clipEndS(hit) ? hit.id : null
+}
+
 function CaptionList() {
   const project = useStore((s) => s.project)
-  const playheadS = useStore((s) => s.ui.playheadS)
   const playing = useStore((s) => s.ui.playing)
   const selection = useStore((s) => s.ui.selection)
   const seq = activeSequence(project)
@@ -1283,22 +1301,13 @@ function CaptionList() {
   const selected = useMemo(() => new Set(selection), [selection])
   const listRef = useRef<HTMLDivElement>(null)
 
-  // The caption on screen right now. Captions never overlap on a track, so the
-  // last one that has started is the only candidate.
-  const activeId = useMemo(() => {
-    let lo = 0
-    let hi = items.length - 1
-    let found = -1
-    while (lo <= hi) {
-      const mid = (lo + hi) >> 1
-      if (items[mid]!.clip.startS <= playheadS + 1e-6) {
-        found = mid
-        lo = mid + 1
-      } else hi = mid - 1
-    }
-    const hit = found >= 0 ? items[found]!.clip : undefined
-    return hit && playheadS < clipEndS(hit) ? hit.id : null
-  }, [items, playheadS])
+  // The caption on screen right now.
+  //
+  // ⛔ THE CAPTION, NOT THE TIME (CA-12, UI-8). Playback writes the playhead to
+  // the store on every frame, and the list subscribed to it, so it was drawn
+  // again on every frame while he played. Which caption is on screen changes a
+  // few times a second, and only then does the list draw again.
+  const activeId = useStore((s) => captionIdAt(items, s.ui.playheadS))
 
   // While it plays, the list follows, unless he is reading or typing in it.
   useEffect(() => {
