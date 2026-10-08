@@ -513,10 +513,13 @@ function fitAround(fresh: Clip[], kept: readonly Clip[], seqW: number, seqH: num
       else startS = Math.max(startS, ke)
     }
     if (endS - startS <= 1e-3) continue
+    // N-1. The in point moves with a start moved later: the words it holds are
+    // in the clip's own seconds, so in point 0 read every one late by the move.
+    const inS = clip.inS + (startS - clip.startS)
     out.push(
       startS === clip.startS && endS === clipEndS(clip)
         ? clip
-        : retimeAppearance(clip, { ...clip, startS, inS: 0, outS: endS - startS, speed: 1 }, seqW, seqH),
+        : retimeAppearance(clip, { ...clip, startS, inS, outS: inS + (endS - startS), speed: 1 }, seqW, seqH),
     )
   }
   return out

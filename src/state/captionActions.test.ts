@@ -16,6 +16,7 @@ import {
 import {
   CAPTION_TRACK_NAME,
   addCaptionsFromWords,
+  applyCaptionStyle,
   applyCandidateSpellings,
   captionsOn,
   captionsToReplace,
@@ -350,6 +351,39 @@ describe('a Words tab cut through a caption', () => {
     expect(said).not.toContain('pizza')
     expect(said).toContain('whole')
     expect(said).toContain('couch')
+  })
+})
+
+// N-1. A recut caption that would start inside a kept neighbour is moved to
+// start after it, and was given in point 0, so every word it holds (kept in the
+// clip's own seconds) read late by the move: the next recut or Words tab cut
+// put them in the wrong place.
+describe('a recut caption moved off a kept neighbour', () => {
+  it('still has each word at the time it was said', () => {
+    addCaptionsFromWords([{ text: 'first', startS: 0, endS: 0.9 }])
+    // He trimmed the first caption to end at 1.01 s, between two frames.
+    const kept = newTitleClip(defaultTitleDef('first'), 0, 1.01)
+    const said: Clip = {
+      ...newTitleClip(defaultTitleDef('hello world'), 1.01, 0.6),
+      captionWords: [
+        { text: 'hello', startS: 0, endS: 0.3 },
+        { text: 'world', startS: 0.3, endS: 0.6 },
+      ],
+    }
+    updateActiveSequence('hand built', (sq) => ({
+      ...sq,
+      tracks: sq.tracks.map((t) => (t.name === CAPTION_TRACK_NAME ? { ...t, clips: [kept, said] } : t)),
+    }))
+    // A new length, on the second caption only: it is cut again, onto frames.
+    applyCaptionStyle(BUILTIN_CAPTION_STYLES.find((st) => st.id === 'builtin-subtitles')!, [said.id])
+    const recut = captionsOn(seq())
+      .map(({ clip }) => clip)
+      .find((c) => c.title!.text.includes('hello'))!
+    // The frame put its start inside the kept one, so it was moved to 1.01 s.
+    expect(recut.startS).toBeCloseTo(1.01, 9)
+    const at = (i: number): number => recut.startS + (recut.captionWords![i]!.startS - recut.inS)
+    expect(at(0)).toBeCloseTo(1.01, 6)
+    expect(at(1)).toBeCloseTo(1.31, 6)
   })
 })
 
