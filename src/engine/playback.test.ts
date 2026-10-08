@@ -774,6 +774,86 @@ describe('the picture shows what is reaching his ears', () => {
     t.pause()
   })
 
+  // N1 of the sweep review. The lag is re-measured every second from the output
+  // timestamps, which scatter by about 10 ms between readings (they move in steps
+  // of the device's buffer). A 4 ms gate on the raw reading moved the picture by
+  // up to 10 ms about once a second, and a move across a frame boundary doubled a
+  // frame (the never-backward hold) or dropped one. The measurement is smoothed;
+  // the sync itself is unchanged.
+  describe('a jittery latency reading', () => {
+    /** A device whose lag is 0.2 s on average and scatters by +-10 ms from one reading to the next. */
+    function jitteryDevice(): void {
+      let seed = 12345
+      const scatter = (): number => {
+        seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0
+        return (seed / 2 ** 32 - 0.5) * 0.02
+      }
+      audioMock.ctx = {
+        state: 'running',
+        get currentTime() {
+          return world.t
+        },
+        resume: () => Promise.resolve(),
+        getOutputTimestamp: () => ({ contextTime: world.t - 0.2 + scatter(), performanceTime: 1000 * world.t }),
+      }
+    }
+
+    /** Play 40 s at 60 Hz; the whole frames the picture shows, one per display frame. */
+    async function shownFrames(ticks: number[]): Promise<number[]> {
+      world.t = 5.004
+      const t = transport(ticks)
+      await t.play(2)
+      const shown: number[] = []
+      for (let i = 0; i < 60 * 40; i++) {
+        world.t += 1 / 60
+        runFrame()
+        shown.push(Math.floor(ticks.at(-1)! * 60 + 1e-6))
+      }
+      t.pause()
+      return shown
+    }
+
+    it('never doubles or drops a frame of the picture once it has settled', async () => {
+      jitteryDevice()
+      const shown = await shownFrames([])
+      // Past the hold at the start, and the first seconds the estimate takes to settle.
+      const settled = shown.slice(60 * 5)
+      const bad = settled.map((f, i) => (i === 0 ? 1 : f - settled[i - 1])).filter((step) => step !== 1)
+      // Raw, it was 19 in these 35 s (about one a second). A drift of the smoothed
+      // lag across the gate can still move one now and then, but not each second.
+      expect(bad.length).toBeLessThanOrEqual(1)
+    })
+
+    it('still follows a different output device within a second or two', async () => {
+      const lag = { s: 0.04 }
+      audioMock.ctx = {
+        state: 'running',
+        get currentTime() {
+          return world.t
+        },
+        resume: () => Promise.resolve(),
+        getOutputTimestamp: () => ({ contextTime: world.t - lag.s, performanceTime: 1000 * world.t }),
+      }
+      world.t = 5.004
+      const ticks: number[] = []
+      const t = transport(ticks)
+      await t.play(2)
+      for (let i = 0; i < 60 * 3; i++) {
+        world.t += 1 / 60
+        runFrame()
+      }
+      // The sound renders at world.t; the picture is what reached him 0.04 s ago.
+      expect(ticks.at(-1)).toBeCloseTo(2 + (world.t - 5.024 - 0.04), 6)
+      lag.s = 0.25 // he plugs in Bluetooth
+      for (let i = 0; i < 60 * 2; i++) {
+        world.t += 1 / 60
+        runFrame()
+      }
+      expect(Math.max(...ticks.slice(-1))).toBeCloseTo(2 + (world.t - 5.024 - 0.25), 2)
+      t.pause()
+    })
+  })
+
   it('a shuttle has no sound, so its picture is not held back', async () => {
     const ticks: number[] = []
     const t = transport(ticks)

@@ -99,10 +99,21 @@ function heardAtMsOf(ctx: AudioContext, ctxS: number): number {
 
 /** Longer than this is not an output latency (Bluetooth runs 0.15 to 0.3 s). */
 const MAX_EAR_LAG_S = 0.5
-/** A re-measured lag that moved less than this is jitter, and keeps the old one. */
+/** A smoothed lag that moved less than this is jitter, and keeps the old one. */
 const EAR_LAG_JITTER_S = 0.004
-/** How often a playing picture re-measures the lag (a different output device). */
-const EAR_LAG_EVERY_S = 1
+/**
+ * How much of a new reading the lag estimate takes. The output timestamps move in
+ * steps of the device's buffer, so one reading is off by up to about 10 ms either
+ * way (sweep review N1): the raw reading against the 4 ms gate moved the picture
+ * by that about once a second, doubling a frame or dropping one. Ten readings a
+ * second, a twentieth of each: the scatter settles to about a millisecond in two
+ * or three seconds, and a real drift of the lag is followed at that pace.
+ */
+const EAR_LAG_SMOOTHING = 0.05
+/** A reading this far from the estimate is another output device, not scatter, and is taken whole. */
+const EAR_LAG_STEP_S = 0.03
+/** How often a playing picture re-measures the lag (a different output device, and the readings the estimate smooths). */
+const EAR_LAG_EVERY_S = 0.1
 
 /**
  * How far his ears are behind the audio clock: the context time rendering now,
@@ -172,6 +183,8 @@ export class Transport {
    * alone because its first sound was late. See pictureAt.
    */
   private earLag = 0
+  /** The smoothed measurement behind earLag (see measureEarLag), or null before the first reading. */
+  private earLagEstimate: number | null = null
   /**
    * A sound has reached the picture this play. Until one has, there is nothing
    * to wait for, so a cold Space is not held back by the lag; the first sound
@@ -359,6 +372,7 @@ export class Transport {
     this.tail = null
     this.lastPicture = -Infinity
     this.earLag = 0
+    this.earLagEstimate = null
     this.earLagAt = -Infinity
     this.soundHeard = audioScheduled && useAudioClock
     this.measureEarLag(this.readClock())
@@ -559,6 +573,7 @@ export class Transport {
     if (!this.soundHeard) {
       this.soundHeard = true
       this.earLagAt = -Infinity
+      this.earLagEstimate = null
       this.measureEarLag(ctx.currentTime)
     }
     this.anchor = startsAt - (fromS - this.startS) / this.currentRate
@@ -731,6 +746,7 @@ export class Transport {
   private measureEarLag(clock: number): void {
     if (this.currentRate !== 1 || this.readClock === perfClock || !this.soundHeard) {
       this.earLag = 0
+      this.earLagEstimate = null
       return
     }
     if (clock - this.earLagAt < EAR_LAG_EVERY_S) return
@@ -738,7 +754,15 @@ export class Transport {
     const ctx = this.contextOrNull()
     if (!ctx) return
     const lag = earLagOf(ctx)
-    if (Math.abs(lag - this.earLag) > EAR_LAG_JITTER_S) this.earLag = lag
+    // The estimate is smoothed, and the gate is on the estimate: a reading is
+    // off by ~10 ms either way, which moved the picture across a frame boundary
+    // about once a second (N1). It is the measurement that is smoothed and not the
+    // sync: the picture is still the clock less the lag, and a different device
+    // is a step far past the scatter, followed at once.
+    const prev = this.earLagEstimate
+    const estimate = prev === null || Math.abs(lag - prev) > EAR_LAG_STEP_S ? lag : prev + (lag - prev) * EAR_LAG_SMOOTHING
+    this.earLagEstimate = estimate
+    if (Math.abs(estimate - this.earLag) > EAR_LAG_JITTER_S) this.earLag = estimate
   }
 
   /** Current transport time from the chosen clock, clamped to [0, end]. */
