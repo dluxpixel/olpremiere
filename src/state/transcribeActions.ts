@@ -964,7 +964,12 @@ export async function autoCaptionEveryClip(
   }
 
   if (words.length === 0) {
-    toasts.show(cancelled ? 'Stopped before anything was heard' : 'No speech found in any clip', 'danger')
+    // N-7 (CA-20). Stopping is his choice and a silent timeline is a fact, so
+    // neither comes up red. Clips that could not be read are the failure, and
+    // are named as one rather than passed off as "no speech".
+    if (cancelled) toasts.show('Stopped before anything was heard', 'info')
+    else if (failed > 0) toasts.show(`${failed} clip${failed === 1 ? '' : 's'} could not be read`, 'danger')
+    else toasts.show('No speech found in any clip', 'info')
     return
   }
   layCaptions(words, {

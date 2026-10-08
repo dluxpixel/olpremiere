@@ -11,15 +11,24 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 // Every toast the run raised, so the tests can prove the app SAYS what it did
 // rather than silently doing nothing.
 const toasted: string[] = []
+/** The kind of each toast, beside its words: 'danger' is red, anything else is not. */
+const toastKinds: (string | undefined)[] = []
 vi.mock('./toasts', () => ({
   useToasts: {
     getState: () => ({
-      show: (message: string) => {
+      show: (message: string, kind?: string) => {
         toasted.push(message)
+        toastKinds.push(kind)
       },
     }),
   },
 }))
+/** The kind the toast with these words came up as. */
+const kindOf = (message: string): string | undefined => {
+  const i = toasted.indexOf(message)
+  expect(i).toBeGreaterThanOrEqual(0)
+  return toastKinds[i]
+}
 
 // One fake word per clip, named after the clip, so the assertions can tell which
 // clip's audio a caption came from.
@@ -28,7 +37,10 @@ const heard: string[] = []
 const heardAt: Record<string, number> = {}
 /** A hook the tests use to edit the timeline WHILE the run is working through it. */
 type Progress = (p: { phase: 'model' | 'listening'; pct: number | null; downloading?: boolean }) => void
-const midRun: { fn: (() => void) | null; answered: ((onProgress: Progress) => void) | null } = { fn: null, answered: null }
+const midRun: { fn: (() => void) | null; answered: ((onProgress: Progress) => void) | null; silent?: boolean } = {
+  fn: null,
+  answered: null,
+}
 vi.mock('../engine/captions/transcribe', () => ({
   TRANSCRIBE_SAMPLE_RATE: 16000,
   extractClipPcm: (_asset: unknown, clip: { id: string; startS: number }) => {
@@ -47,9 +59,8 @@ vi.mock('../engine/captions/transcribe', () => ({
   }),
   wordsFromAsrChunks: () => [],
   tidyTranscribedWords: () => [],
-  timelineWords: (_w: unknown, clip: { id: string; startS: number }) => [
-    { text: clip.id, startS: clip.startS, endS: clip.startS + 0.4 },
-  ],
+  timelineWords: (_w: unknown, clip: { id: string; startS: number }) =>
+    midRun.silent ? [] : [{ text: clip.id, startS: clip.startS, endS: clip.startS + 0.4 }],
 }))
 // The keyword highlight is ON by default, so this orchestration test walks the
 // same path he does. The picker itself is real (it is pure and cheap); what is
@@ -174,7 +185,9 @@ beforeEach(() => {
   for (const k of Object.keys(heardAt)) delete heardAt[k]
   midRun.fn = null
   midRun.answered = null
+  midRun.silent = false
   toasted.length = 0
+  toastKinds.length = 0
   useStore.getState().setProject(newProject())
   useStore.getState().setUI({ selection: [], playheadS: 0 })
   useTranscribe.setState({ status: 'idle', pct: null, downloading: false, cancel: null, queue: null })
@@ -623,6 +636,16 @@ describe('Stop', () => {
     expect(captionTexts()).toEqual(['clip-a'])
   })
 
+  // N-7 (CA-20). Stopping is his choice and a silent timeline is a fact:
+  // neither is a failure, so neither comes up red.
+  it('pressed before any clip was heard: said as information, not as a failure', async () => {
+    three()
+    midRun.fn = stop
+    await autoCaptionEveryClip()
+    expect(captionTexts()).toEqual([])
+    expect(kindOf('Stopped before anything was heard')).not.toBe('danger')
+  })
+
   it('pressed on one clip: nothing is captioned and nothing is said wrong', async () => {
     three()
     midRun.fn = stop
@@ -687,6 +710,30 @@ describe('what a failed caption run says', () => {
     expect(captionFailureMessage(new Error('The speech model stopped responding'), true)).toBe(
       'The speech model stopped responding, so nothing was captioned. Try that clip again',
     )
+  })
+
+  it('no speech in any clip is information; clips that could not be read are the failure', async () => {
+    seedAudio([
+      { id: 'a', startS: 0 },
+      { id: 'b', startS: 4 },
+      { id: 'c', startS: 8 },
+    ])
+    midRun.silent = true
+    try {
+      await autoCaptionEveryClip()
+      expect(kindOf('No speech found in any clip')).not.toBe('danger')
+    } finally {
+      midRun.silent = false
+    }
+    toasted.length = 0
+    toastKinds.length = 0
+    forgetHeard()
+    midRun.fn = () => {
+      throw new Error('clip has no decodable audio')
+    }
+    await autoCaptionEveryClip()
+    expect(toasted).not.toContain('No speech found in any clip')
+    expect(kindOf('3 clips could not be read')).toBe('danger')
   })
 
   it('a clip whose model is on disk: try again, not check the internet', async () => {
