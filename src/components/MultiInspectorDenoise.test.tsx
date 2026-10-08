@@ -88,6 +88,55 @@ describe('Reduce noise on the multi selection Inspector', () => {
     expect(warmed).toEqual([])
   })
 
+  it('a clip on a locked line does not count: the rest on reads as on, and the button turns them off', async () => {
+    // Nit 10: t1 and t2 are on at 60 percent; t3 sits on a locked A2 with none.
+    // The press cannot change t3, so it must not hold the toggle at "off" and
+    // make every press put the other two back at full strength.
+    const ids = seedTakes()
+    updateActiveSequence('t3 to a locked A2', (sq) => {
+      const [a1, a2] = sq.tracks.filter((t) => t.kind === 'audio').map((t) => t.id)
+      const t3 = sq.tracks.find((t) => t.id === a1)!.clips.find((c) => c.id === 't3')!
+      return {
+        ...sq,
+        tracks: sq.tracks.map((t) =>
+          t.id === a1
+            ? { ...t, clips: t.clips.filter((c) => c.id !== 't3').map((c) => ({ ...c, denoise: 0.6 })) }
+            : t.id === a2
+              ? { ...t, locked: true, clips: [t3] }
+              : t,
+        ),
+      }
+    })
+    render(<MultiInspector selected={selectedOf(ids)} />)
+    expect((screen.getByTestId('multi-denoise') as HTMLInputElement).value).toBe('60')
+    await userEvent.click(screen.getByRole('button', { name: 'Turn noise reduction off (all)' }))
+    expect(ids.map((id) => 'denoise' in clipById(id))).toEqual([false, false, false])
+  })
+
+  it('the strength shown is a clip the field can change, not one on a locked line', async () => {
+    const ids = seedTakes()
+    updateActiveSequence('t1 to a locked A2', (sq) => {
+      const [a1, a2] = sq.tracks.filter((t) => t.kind === 'audio').map((t) => t.id)
+      const t1 = sq.tracks.find((t) => t.id === a1)!.clips.find((c) => c.id === 't1')!
+      return {
+        ...sq,
+        tracks: sq.tracks.map((t) =>
+          t.id === a1
+            ? { ...t, clips: t.clips.filter((c) => c.id !== 't1').map((c) => ({ ...c, denoise: 0.6 })) }
+            : t.id === a2
+              ? { ...t, locked: true, clips: [{ ...t1, denoise: 0.3 }] }
+              : t,
+        ),
+      }
+    })
+    // A2 sits after A1 in the track list, so put its clip first the way a
+    // selection in timeline order could.
+    const sel = selectedOf(ids)
+    sel.sort((a, b) => Number(b.track.locked === true) - Number(a.track.locked === true))
+    render(<MultiInspector selected={sel} />)
+    expect((screen.getByTestId('multi-denoise') as HTMLInputElement).value).toBe('60')
+  })
+
   it('a mixed selection is not on: one press puts every clip at full strength', async () => {
     const ids = seedTakes()
     updateActiveSequence('one on', (sq) => ({

@@ -80,7 +80,11 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
   const audioIds = audio.map((s) => s.clip.id)
   // Noise reduction reads as on only when every clip has it, so one press on a
   // mixed selection turns it on for all of them, the panel's absolute rule.
-  const allDenoised = audio.length > 0 && audio.every((s) => s.clip.denoise !== undefined)
+  // Only the clips a press can change count: setClipsDenoise leaves a locked
+  // line alone, so a clip there without it would hold the toggle at off forever
+  // and every press would put the rest back at full strength.
+  const denoisable = audio.filter((s) => !s.track.locked)
+  const allDenoised = denoisable.length > 0 && denoisable.every((s) => s.clip.denoise !== undefined)
   const assets = useStore((st) => st.project.assets)
   const cleaning = useSyncExternalStore(onCleaningNoise, () =>
     audio.some((s) => s.clip.denoise !== undefined && isCleaningNoise(s.clip.assetId)),
@@ -549,9 +553,9 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
                       // Start cleaning now, so his next Play does not wait for it.
                       // A clip on a locked line was left alone, so it is not cleaned.
                       if (!allDenoised) {
-                        for (const s of audio) {
+                        for (const s of denoisable) {
                           const asset = assets[s.clip.assetId]
-                          if (asset && !s.track.locked) warmDenoise({ ...s.clip, denoise: 1 }, asset)
+                          if (asset) warmDenoise({ ...s.clip, denoise: 1 }, asset)
                         }
                       }
                     }}
@@ -563,7 +567,7 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
               >
                 {allDenoised && (
                   <ScrubField
-                    value={Math.round((audio[0].clip.denoise ?? 1) * 100)}
+                    value={Math.round((denoisable[0].clip.denoise ?? 1) * 100)}
                     spec={DENOISE_SPEC}
                     testId="multi-denoise"
                     ariaLabel="Noise reduction strength (%) (all)"
