@@ -83,28 +83,50 @@ export function mergeWords(existing: readonly SpokenWord[] | undefined, heard: r
   return [...kept, ...heard.map((w) => ({ text: w.text, startS: w.startS, endS: w.endS }))].sort((a, b) => a.startS - b.startS)
 }
 
-/** `spans` with [fromS, toS) added: merged where they touch or overlap, sorted. */
+/**
+ * ⛔ HOW FAR TWO LISTENINGS MUST OVERLAP TO COUNT AS ONE (review 2026-10-08).
+ * A listening stops at its span's edge, so a word running across that edge is
+ * cut short or dropped, and so is it by the listening on the other side. Two
+ * spans that only meet therefore leave a hole about a word long at the seam:
+ * he razors mid-word, listens to both pieces, joins them again, and the cutter
+ * took the second half of that word as quiet. Half a second is a long word.
+ */
+const SEAM_S = 0.5
+
+/**
+ * `spans` with [fromS, toS) added, sorted. Spans are joined only where they
+ * overlap by SEAM_S or more; ones that only touch stay apart (see SEAM_S).
+ */
 export function mergeHeardSpans(spans: readonly HeardSpan[] | undefined, fromS: number, toS: number): HeardSpan[] {
   const all = [...(spans ?? []), { fromS: Math.min(fromS, toS), toS: Math.max(fromS, toS) }].sort((a, b) => a.fromS - b.fromS)
   const out: HeardSpan[] = []
   for (const s of all) {
-    const last = out[out.length - 1]
-    if (last && s.fromS <= last.toS + EPS) last.toS = Math.max(last.toS, s.toS)
+    // Joined to the furthest-reaching span so far, so a short one kept apart
+    // inside a long one never hides the long one's end.
+    const last = out.reduce<HeardSpan | undefined>((far, o) => (!far || o.toS > far.toS ? o : far), undefined)
+    if (last && s.toS <= last.toS + EPS) continue // nothing new
+    if (last && s.fromS <= last.toS - SEAM_S + EPS) last.toS = s.toS
     else out.push({ fromS: s.fromS, toS: s.toS })
   }
-  return out
+  return out.sort((a, b) => a.fromS - b.fromS)
 }
 
 /**
  * Whether every second of [fromS, toS) has been listened to, so the words the
- * media keeps are all there is to hear in it.
+ * media keeps are all there is to hear in it. A seam inside the stretch, where
+ * one listening stops and the next starts less than SEAM_S before it, does not
+ * count as heard.
  */
 export function heardCovers(spans: readonly HeardSpan[] | undefined, fromS: number, toS: number): boolean {
   const end = Math.max(fromS, toS)
-  let reached = Math.min(fromS, toS)
+  const start = Math.min(fromS, toS)
+  let reached = start
   for (const s of [...(spans ?? [])].sort((a, b) => a.fromS - b.fromS)) {
     if (s.toS <= reached + EPS) continue
-    if (s.fromS > reached + EPS) return false
+    // The first span only has to reach the start; every later one has to
+    // overlap what came before by a word's worth.
+    const needFrom = reached > start + EPS ? reached - SEAM_S : reached
+    if (s.fromS > needFrom + EPS) return false
     reached = s.toS
     if (reached >= end - EPS) return true
   }

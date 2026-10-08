@@ -90,20 +90,40 @@ describe('mergeWords', () => {
 })
 
 describe('what has been heard', () => {
-  it('adds a span, joining the ones it touches or overlaps, sorted', () => {
+  // ⛔ TWO LISTENINGS THAT ONLY MEET ARE NOT ONE (review 2026-10-08). A word
+  // running across the point where one listening stopped and the next began was
+  // cut short or dropped by both, so spans that only touch, or overlap by less
+  // than a word's worth, stay apart, and a stretch across such a seam is not
+  // counted as heard: the cutter listens to it again rather than take half a word.
+  it('adds a span, joining the ones it really overlaps, sorted', () => {
     expect(mergeHeardSpans(undefined, 2, 5)).toEqual([{ fromS: 2, toS: 5 }])
     expect(mergeHeardSpans([{ fromS: 2, toS: 5 }], 8, 9)).toEqual([
       { fromS: 2, toS: 5 },
       { fromS: 8, toS: 9 },
     ])
-    expect(mergeHeardSpans([{ fromS: 2, toS: 5 }, { fromS: 8, toS: 9 }], 5, 8)).toEqual([{ fromS: 2, toS: 9 }])
     expect(mergeHeardSpans([{ fromS: 2, toS: 5 }], 0, 3)).toEqual([{ fromS: 0, toS: 5 }])
+    // A listening right across both seams joins all three.
+    expect(mergeHeardSpans([{ fromS: 2, toS: 5 }, { fromS: 8, toS: 9 }], 4, 8.6)).toEqual([{ fromS: 2, toS: 9 }])
+    // Heard again inside what was heard: nothing new.
+    expect(mergeHeardSpans([{ fromS: 0, toS: 10 }], 9.8, 10)).toEqual([{ fromS: 0, toS: 10 }])
   })
 
-  it('covers a stretch only when every second of it was heard', () => {
+  it('keeps two listenings that only meet apart', () => {
+    expect(mergeHeardSpans([{ fromS: 2, toS: 5 }, { fromS: 8, toS: 9 }], 5, 8)).toEqual([
+      { fromS: 2, toS: 5 },
+      { fromS: 5, toS: 8 },
+      { fromS: 8, toS: 9 },
+    ])
+    expect(mergeHeardSpans([{ fromS: 0, toS: 10 }], 9.9, 20)).toEqual([
+      { fromS: 0, toS: 10 },
+      { fromS: 9.9, toS: 20 },
+    ])
+  })
+
+  it('covers a stretch only when every second of it was heard, and no seam runs through it', () => {
     const spans = [
       { fromS: 0, toS: 4 },
-      { fromS: 4, toS: 10 },
+      { fromS: 3, toS: 10 },
       { fromS: 12, toS: 20 },
     ]
     expect(heardCovers(spans, 1, 9)).toBe(true)
@@ -113,6 +133,29 @@ describe('what has been heard', () => {
     expect(heardCovers(undefined, 0, 1)).toBe(false)
     // Words alone, from a project older than the spans, are not proof of anything.
     expect(heardCovers([], 0, 1)).toBe(false)
+    // Two listenings that only meet at 4: a word across 4 may be in neither.
+    const met = [
+      { fromS: 0, toS: 4 },
+      { fromS: 4, toS: 10 },
+    ]
+    expect(heardCovers(met, 1, 9)).toBe(false)
+    // Either side of the seam alone is still heard.
+    expect(heardCovers(met, 1, 4)).toBe(true)
+    expect(heardCovers(met, 4, 9)).toBe(true)
+  })
+
+  it('a take razored mid-word, both pieces listened to, then joined again, is listened to again', () => {
+    // He razors at 10.0 in the middle of a word and the Words panel listens to
+    // each piece. The word across 10.0 is cut short or dropped on each side.
+    let spans = mergeHeardSpans(undefined, 0, 10)
+    spans = mergeHeardSpans(spans, 10, 20)
+    // He deletes the right piece and drags the left one out to 14 s: the media
+    // must not claim it has heard 0 to 14, or the cutter takes half that word.
+    expect(heardCovers(spans, 0, 14)).toBe(false)
+    // Once it is heard right across the seam, it is one span again.
+    spans = mergeHeardSpans(spans, 0, 14)
+    expect(spans).toEqual([{ fromS: 0, toS: 20 }])
+    expect(heardCovers(spans, 0, 14)).toBe(true)
   })
 })
 
