@@ -10,11 +10,18 @@ const builder = readFileSync(new URL('../electron-builder.yml', import.meta.url)
 
 describe('an export goes only where he picked', () => {
   // ffmpeg writes with -y. A destination the page could name was a way for any page
-  // code to overwrite any file on his PC with a movie. Nothing in the app set it.
-  it('main never passes a page\'s own destination to the export', () => {
+  // code to overwrite any file on his PC with a movie. The page may hand back only the
+  // answer main's own save dialog gave (./exportChoice, run in exportChoice.test.ts).
+  it('main passes a page\'s destination to the export only through his dialog\'s answer', () => {
     const handler = main.slice(main.indexOf("ipcMain.handle('native:start'"), main.indexOf("ipcMain.handle('native:writeFrame'"))
-    expect(handler).toContain('native.start({ ...config, outPath: undefined }, mainWindow)')
+    expect(handler).toContain('native.start({ ...config, outPath: exportPathFromPage(config.outPath) }, mainWindow)')
     expect(handler).not.toMatch(/native\.start\(config\b/)
+    expect(handler).not.toMatch(/outPath: config\.outPath/)
+  })
+
+  it('a finished movie spends that answer, so the next export asks again', () => {
+    const finish = main.slice(main.indexOf("ipcMain.handle('native:finish'"), main.indexOf("ipcMain.handle('native:cancel'"))
+    expect(finish).toMatch(/if \(done\.ok\) exportPathUsed\(done\.outPath\)/)
   })
 })
 

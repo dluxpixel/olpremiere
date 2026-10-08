@@ -52,6 +52,7 @@ import * as proxy from './proxy'
 import * as mediaStore from './mediaStore'
 import * as remux from './remux'
 import { CRASH_LOG_NAME, crashLogLine, crashPlan } from './crashPlan'
+import { exportPathFromPage, exportPathUsed } from './exportChoice'
 import { appliedWhileAway, launchMode, parseQuietMarker, QUIET_START_FILE, secondInstanceAction } from './launchMode'
 import { centreIn, readWindowState, restoreBounds, WINDOW_STATE_FILE, writeWindowState, type Placement } from './windowState'
 import { fileQuietStore, startUpdateFlow, type UpdateFlow } from './updateFlow'
@@ -829,10 +830,12 @@ app.whenReady().then(() => {
   })
   ipcMain.handle('native:start', (_e, config: NativeExportConfig) => {
     if (!mainWindow) return { started: false, error: 'no window' }
-    // ⛔ The movie goes only where he picks in the save dialog. ffmpeg writes with -y,
-    // so a destination named by the page would let page code overwrite any file on
-    // his PC. Nothing in the app sets it; main does not take it from a page at all.
-    return native.start({ ...config, outPath: undefined }, mainWindow)
+    // ⛔ The movie goes only where he picked in MAIN's save dialog. ffmpeg writes with
+    // -y, so a destination the page could simply name would let page code overwrite any
+    // file on his PC. The page may hand back the answer that dialog gave (it asks before
+    // making the sound), and nothing else: see ./exportChoice. Anything else is dropped
+    // and the export asks him itself.
+    return native.start({ ...config, outPath: exportPathFromPage(config.outPath) }, mainWindow)
   })
   ipcMain.handle('native:writeFrame', async (_e, frame: ArrayBuffer) => {
     try {
@@ -842,7 +845,12 @@ app.whenReady().then(() => {
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
     }
   })
-  ipcMain.handle('native:finish', () => native.finish())
+  ipcMain.handle('native:finish', async () => {
+    const done = await native.finish()
+    // A finished movie spends his answer: the next export asks again.
+    if (done.ok) exportPathUsed(done.outPath)
+    return done
+  })
   ipcMain.handle('native:cancel', () => native.cancel())
 
   // A preview copy is an optimisation, never a requirement: a failure here is

@@ -14,6 +14,7 @@ import { app, dialog, type BrowserWindow } from 'electron'
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { open, rename, unlink, type FileHandle } from 'node:fs/promises'
 import path from 'node:path'
+import { choseExportPath } from './exportChoice'
 
 /** `base.ext` when it is free, else `base_1.ext`, `base_2.ext` and on. Pure. */
 export function numberedFileName(base: string, ext: string, taken: (name: string) => boolean): string {
@@ -46,7 +47,14 @@ export function lastFolder(kind: SaveKind): string {
   return app.getPath(kind === 'export' ? 'videos' : 'documents')
 }
 
+/**
+ * ⛔ CALLED ONLY WITH HIS ANSWER TO A SAVE DIALOG IN MAIN, and for an export that answer
+ * is also the one place a page may later ask main to write the movie (./exportChoice,
+ * main.ts native:start). Every export dialog in main ends here, which is why the choice
+ * is recorded here rather than beside each dialog.
+ */
 export function rememberFolder(kind: SaveKind, filePath: string): void {
+  if (kind === 'export') choseExportPath(filePath)
   try {
     writeFileSync(foldersFile(), JSON.stringify({ ...readFolders(), [kind]: path.dirname(filePath) }), 'utf8')
   } catch {
