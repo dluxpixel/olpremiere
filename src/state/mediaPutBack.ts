@@ -42,5 +42,13 @@ export function assetsPutBack(project: Project, healed: readonly string[]): Medi
 export function putBackHealed(project: Project, healed: readonly string[]): void {
   if (healed.length === 0) return
   const found = assetsPutBack(project, healed)
-  mediaPutBack(found.length >= healed.length ? found : (Object.values(project.assets ?? {}) as MediaAsset[]))
+  // Every NAME reported has to have matched an asset: counting assets would let
+  // two of one name make up for a name that matched none, or a name reported
+  // twice count as a miss.
+  const matched = new Set<string>()
+  for (const a of found) {
+    matched.add(a.name ?? a.id)
+    matched.add(a.id)
+  }
+  mediaPutBack(healed.every((name) => matched.has(name)) ? found : (Object.values(project.assets ?? {}) as MediaAsset[]))
 }

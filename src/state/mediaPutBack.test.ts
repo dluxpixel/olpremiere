@@ -62,6 +62,20 @@ describe('putBackHealed', () => {
     expect(log.filter((l) => l.startsWith('elements'))).toEqual(['elements a', 'elements b', 'elements c'])
   })
 
+  // n-F (sweep review 2): "everything named was found" was a comparison of COUNTS,
+  // so two assets of one name (a re-import) made up for a name that matched
+  // nothing, and a name reported twice sent a refresh of everything.
+  it('a name that matches nothing still refreshes every asset when another name matched two', () => {
+    const twins = project([asset('a', 'gym.mp4'), asset('a2', 'gym.mp4'), asset('b', 'intro.mp4')])
+    putBackHealed(twins, ['gym.mp4', 'renamed.mp4'])
+    expect(log.filter((l) => l.startsWith('elements'))).toEqual(['elements a', 'elements a2', 'elements b'])
+  })
+
+  it('a name reported twice that matched is not a miss', () => {
+    putBackHealed(p, ['gym.mp4', 'gym.mp4'])
+    expect(log.filter((l) => l.startsWith('elements'))).toEqual(['elements a'])
+  })
+
   it('a repair that put nothing back does nothing', () => {
     putBackHealed(p, [])
     expect(log).toEqual([])
