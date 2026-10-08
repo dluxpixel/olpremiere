@@ -1985,6 +1985,20 @@ describe('duplicateClips', () => {
     expect(newIds[0]).not.toBe(a.id)
     expect(findClip(next, newIds[0])!.clip.startS).toBe(2)
   })
+  it('butts the copy of what he picked against it, the clips it brought keeping their places', () => {
+    // A picture 1 to 4 and its J cut sound 0 to 5, the sound brought along.
+    const v = makeClip({ startS: 1, outS: 3, linkId: 'g' })
+    const a = makeClip({ startS: 0, outS: 5, linkId: 'g' })
+    const seq = makeSeq([makeTrack({ clips: [v] }), makeTrack({ kind: 'audio', clips: [a] }), makeTrack({ kind: 'audio' })])
+    const r = duplicateClips(seq, [v.id, a.id], [v.id])
+    const [nv, na] = r.newIds.map((id) => findClip(r.seq, id)!)
+    expect(nv!.trackIndex).toBe(0)
+    expect(nv!.clip.startS).toBe(4)
+    expect(na!.clip.startS).toBe(3)
+    // Its own line is taken there, so it went on the next one, and says so.
+    expect(na!.trackIndex).toBe(2)
+    expect(r.redirected).toHaveLength(1)
+  })
   it('returns the same reference for an empty or unknown selection', () => {
     const seq = makeSeq([makeTrack({ clips: [makeClip()] })])
     const r1 = duplicateClips(seq, [])

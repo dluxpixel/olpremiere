@@ -297,17 +297,24 @@ export function duplicateSelection(): void {
   const seq = activeSequence(s.project)
   const picked = unlockedClipIds(seq, s.ui.selection)
   if (picked.length === 0) return
-  // The picture brings its sound, exactly as Copy does (withPictureSound).
+  // The picture brings its sound, exactly as Copy does (withPictureSound). The
+  // copy of what he picked butts against it; a J or L cut sound keeps its place
+  // beside its picture, on the next free line when its own is taken.
   const { ids } = withPictureSound(seq, picked)
   let newIds: string[] = []
   let blocked = 0
+  let result = null as PasteResult | null
   updateActiveSequence('Duplicate clip(s)', (sq) => {
-    const r = duplicateClips(sq, ids)
+    const r = duplicateClips(sq, ids, picked)
     newIds = r.newIds
     blocked = r.blockedByLock
+    result = r
     return r.seq
   })
   if (newIds.length > 0) s.setUI({ selection: newIds })
+  // Nothing lands on another line without a word, as for a paste.
+  const note = result && newIds.length > 0 ? pasteNote(activeSequence(useStore.getState().project), undefined, result) : null
+  if (note) useToasts.getState().show(note, 'info')
   // The picked clips are all on unlocked lines, so a held pair is one whose
   // sound would land on a locked line. A Ctrl+D that quietly does nothing reads
   // as a broken key, the same as a refused paste.

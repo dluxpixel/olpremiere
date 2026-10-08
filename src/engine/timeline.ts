@@ -2649,14 +2649,39 @@ export function pasteClips(
  * Duplicate clips right after the last of them, on their own lines. A linked
  * pair whose half would land on a locked line is held whole (pasteClips), and
  * `blockedByLock` counts it so the caller can say why nothing came.
+ *
+ * `picked` is what he selected, when `clipIds` also carries clips brought along
+ * with it (a picture's sound, clipboard withPictureSound). The copy of what he
+ * picked butts against its end, and the rest keep their places beside it.
+ * ⛔ Measured from ALL of them, a picture 1 to 4 with a J cut sound 0 to 5 put
+ * its copy at 6, a 2 s hole on V1 where Ctrl+D used to butt it at 4. A sound
+ * that would then overlap its original goes on the next free line
+ * (`redirected`), as a paste's does.
  */
-export function duplicateClips(seq: Sequence, clipIds: Id[]): { seq: Sequence; newIds: Id[]; blockedByLock: number } {
+export function duplicateClips(seq: Sequence, clipIds: Id[], picked: readonly Id[] = clipIds): PasteResult {
   const payload = serializeClips(seq, clipIds)
-  if (payload.length === 0) return { seq, newIds: [], blockedByLock: 0 }
-  let atS = 0
+  if (payload.length === 0) {
+    return { seq, newIds: [], blockedByLock: 0, redirected: [], targetUnused: false, lifted: 0, grown: 0 }
+  }
+  // The payload starts at the earliest of ALL the clips; the copy of what he
+  // picked starts at the end of what he picked.
+  let first = Infinity
+  let endAll = 0
   for (const id of clipIds) {
     const f = findClip(seq, id)
-    if (f) atS = Math.max(atS, clipEndS(f.clip))
+    if (!f) continue
+    first = Math.min(first, f.clip.startS)
+    endAll = Math.max(endAll, clipEndS(f.clip))
   }
+  let firstPicked = Infinity
+  let endPicked = 0
+  for (const id of picked) {
+    const f = findClip(seq, id)
+    if (!f) continue
+    firstPicked = Math.min(firstPicked, f.clip.startS)
+    endPicked = Math.max(endPicked, clipEndS(f.clip))
+  }
+  // None of `picked` found: right after all of them, as before.
+  const atS = Number.isFinite(firstPicked) ? endPicked - (firstPicked - first) : endAll
   return pasteClips(seq, payload, atS)
 }

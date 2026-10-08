@@ -93,6 +93,35 @@ describe('the picture half brings its sound', () => {
     expect(useStore.getState().ui.selection).toHaveLength(2)
   })
 
+  // Measured from the sound as well, a J cut put the copy's picture 2 s after
+  // the original's end: a hole on V1 where Ctrl+D always butted it.
+  it('Ctrl+D on a picture with a J cut sound butts the copy against it, and says where the sound went', () => {
+    updateActiveSequence('J cut', (sq) =>
+      recomputeDuration({
+        ...sq,
+        tracks: sq.tracks.map((t, i) =>
+          i === 0
+            ? { ...t, clips: [{ ...t.clips[0]!, startS: 1, inS: 1, outS: 4 }] }
+            : i === 2
+              ? { ...t, clips: [{ ...t.clips[0]!, startS: 0, inS: 0, outS: 5 }] }
+              : t,
+        ),
+      }),
+    )
+    show.mockClear()
+    useStore.getState().setUI({ selection: ['vid'] })
+    duplicateSelection()
+    const made = fresh()
+    expect(made).toHaveLength(2)
+    const pic = seq().tracks[0]!.clips.find((c) => made.includes(c))!
+    const snd = seq().tracks[3]!.clips.find((c) => made.includes(c))!
+    expect(pic.startS).toBe(4)
+    // Still a J cut: its sound leads its picture by the same second.
+    expect(snd.startS).toBe(3)
+    expect(snd.linkId).toBe(pic.linkId)
+    expect(show).toHaveBeenCalledWith('A1 is busy at that time, so the clip went on A2', 'info')
+  })
+
   it('Cut with nothing to cut says why, the way Copy does', () => {
     useStore.getState().setUI({ selection: [] })
     cutSelection()
