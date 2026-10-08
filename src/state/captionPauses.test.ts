@@ -4,8 +4,9 @@
 // The rule that makes a swallowed pause real is tested on its own in
 // engine/captions/voiceActivity.test.ts. This proves the DOORS: both
 // auto-caption doors hand the chunker words pulled in to his voice, and the
-// shared listening step keeps the recogniser's own timings for the two features
-// that cut at them (the Words panel and the silence cutter). Only Whisper and
+// shared listening step keeps the recogniser's own timings for the silence
+// cutter, whose air is tuned on them. The Words tab gets the lag taken off but
+// no trim (CA-9), because it cuts from word start to word start. Only Whisper and
 // the audio are faked. The tidy, the voice filter, the timeline mapping and the
 // chunker are all the real ones.
 
@@ -30,6 +31,10 @@ const said: Record<string, AsrChunk[]> = {}
 const voices: Record<string, VoiceTrack> = {}
 /** The clip whose audio was read last, so the fake recogniser answers for it. */
 const listening = { id: '' }
+/** How many times the (fake) speech model actually ran. */
+const recogniserRuns = { n: 0 }
+/** Something he does while the model is busy. */
+const duringListen: { fn: (() => void) | null } = { fn: null }
 
 vi.mock('../engine/captions/transcribe', async (importOriginal) => {
   const real = await importOriginal<typeof import('../engine/captions/transcribe')>()
@@ -42,7 +47,11 @@ vi.mock('../engine/captions/transcribe', async (importOriginal) => {
     // The music classifier reads the audio through this. No audio in node means
     // it has no opinion, and no opinion keeps every word.
     extractClipPcmAt: () => Promise.reject(new Error('no audio in node')),
-    transcribePcm: () => ({ promise: Promise.resolve(said[listening.id] ?? []), cancel: () => {} }),
+    transcribePcm: () => {
+      recogniserRuns.n++
+      duringListen.fn?.()
+      return { promise: Promise.resolve(said[listening.id] ?? []), cancel: () => {} }
+    },
   }
 })
 /** The recogniser's lag the caption doors take off (wordTiming.ts). 0 unless a test sets it. */
@@ -63,7 +72,8 @@ vi.mock('../engine/captions/voiceActivity', async (importOriginal) => {
 
 import { activeSequence, newClipFromAsset, newProject, videoTracks, type MediaAsset } from '../engine/types'
 import { updateActiveSequence, useStore } from './store'
-import { autoCaptionEveryClip, autoCaptionFromClip, useTranscribe, wordsForClip } from './transcribeActions'
+import { autoCaptionEveryClip, autoCaptionFromClip, forgetHeard, useTranscribe, wordsForClip } from './transcribeActions'
+import { listenForWords } from './transcriptActions'
 
 /** RNNoise's real frame, 10 ms. Quiet everywhere except the voiced spans. */
 const FRAME_S = 0.01
@@ -120,6 +130,10 @@ const PAUSED_VOICE = voice(3, [
 ])
 
 beforeEach(() => {
+  // Every test says its own words; a clip heard in the last one must not answer.
+  forgetHeard()
+  recogniserRuns.n = 0
+  duringListen.fn = null
   lag.s = 0
   toasted.length = 0
   for (const k of Object.keys(said)) delete said[k]
@@ -172,7 +186,7 @@ describe('auto captions split where he paused', () => {
 })
 
 describe('the listening step itself', () => {
-  it('keeps the recogniser timings unless a caption door asks, so the Words panel and the silence cutter are unchanged', async () => {
+  it('hands back the recogniser timings unless a caption door asks, so the silence cutter is unchanged', async () => {
     seed([{ id: 'a', startS: 0, outS: 3 }])
     said['clip-a'] = PAUSED
     voices['clip-a'] = PAUSED_VOICE
@@ -187,6 +201,62 @@ describe('the listening step itself', () => {
     ])
     const trimmed = await wordsForClip(clip, asset('a'), { trimToVoice: true })
     expect(trimmed[0]!.endS).toBeCloseTo(0.15, 6)
+  })
+})
+
+// CA-5. Captioning a clip, listening to it for words, captioning it again in
+// another style: three full runs of the speech model for the same answer.
+describe('an unchanged clip is heard once', () => {
+  it('two caption runs on the same clip run the speech model once', async () => {
+    seed([{ id: 'a', startS: 0, outS: 3 }])
+    said['clip-a'] = PAUSED
+    voices['clip-a'] = PAUSED_VOICE
+    await autoCaptionFromClip('clip-a')
+    await autoCaptionFromClip('clip-a')
+    expect(recogniserRuns.n).toBe(1)
+    expect(captionTexts()).toEqual(['I', 'found', 'it'])
+  })
+
+  it('a clip trimmed since is heard again', async () => {
+    seed([{ id: 'a', startS: 0, outS: 3 }])
+    said['clip-a'] = PAUSED
+    await autoCaptionFromClip('clip-a')
+    updateActiveSequence('trim', (sq) => ({
+      ...sq,
+      tracks: sq.tracks.map((t) => ({ ...t, clips: t.clips.map((c) => (c.id === 'clip-a' ? { ...c, outS: 2 } : c)) })),
+    }))
+    await autoCaptionFromClip('clip-a')
+    expect(recogniserRuns.n).toBe(2)
+  })
+})
+
+// CA-9. The Words tab cut at the recogniser's raw times, a fifth of a second
+// late, so a cut left the start of the cut word and took the start of the next.
+describe('the Words tab keeps words where he said them', () => {
+  const storedWords = (id: string) => useStore.getState().project.assets[id]!.words!.map((w) => [w.text, +w.startS.toFixed(3)])
+
+  it('takes the recogniser lag off what it keeps, and marks the media', async () => {
+    seed([{ id: 'a', startS: 0, outS: 3 }])
+    said['clip-a'] = [chunk('so', 0.68, 1.0), chunk('nice.', 1.0, 1.5)]
+    lag.s = 0.18
+    await listenForWords('clip-a')
+    expect(storedWords('a')).toEqual([
+      ['so', 0.5],
+      ['nice.', 0.82],
+    ])
+    expect(useStore.getState().project.assets['a']!.wordsOnVoice).toBe(true)
+  })
+
+  it('a clip moved while it is heard still keeps each word at its own second of the media', async () => {
+    seed([{ id: 'a', startS: 5, outS: 3 }])
+    said['clip-a'] = [chunk('hey', 1.0, 1.3)]
+    duringListen.fn = () =>
+      updateActiveSequence('he drags it', (sq) => ({
+        ...sq,
+        tracks: sq.tracks.map((t) => ({ ...t, clips: t.clips.map((c) => (c.id === 'clip-a' ? { ...c, startS: 9 } : c)) })),
+      }))
+    await listenForWords('clip-a')
+    expect(storedWords('a')).toEqual([['hey', 1]])
   })
 })
 
@@ -208,7 +278,7 @@ describe('captions land when he says the word', () => {
     expect(caps[0]!.startS).toBeCloseTo(0.5, 6)
   })
 
-  it('the Words panel and the silence cutter keep the recogniser timings, lag and all', async () => {
+  it('the silence cutter keeps the recogniser timings, lag and all (the Words tab gets the lag off, CA-9)', async () => {
     lag.s = 0.18
     seed([{ id: 'a', startS: 0, outS: 3 }])
     said['clip-a'] = LATE

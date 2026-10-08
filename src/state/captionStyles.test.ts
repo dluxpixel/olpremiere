@@ -34,9 +34,11 @@ import {
   BUILTIN_CAPTION_STYLES,
   HOUSE_STYLE_ID,
   cleanShape,
+  cleanStyle,
   type CaptionShape,
 } from '../engine/captions/captionStyle'
 import { jettismCaptionDef } from '../engine/captions/captions'
+import { channelKeyframes } from '../engine/effects/channels'
 import { clipEndS } from '../engine/timeline'
 import { activeSequence, defaultTitleDef, newProject, newTitleClip, videoTracks, type Clip, type Sequence } from '../engine/types'
 import { addCaptionsFromWords, applyCaptionStyle, CAPTION_TRACK_NAME, captionsOn, setCaptionText } from './captionActions'
@@ -265,6 +267,57 @@ describe('new captions in a style', () => {
   })
 })
 
+// ⛔ CA-8. "As spoken" only switched off the draw time case, and every run had
+// already written its words lowercase with the full stops gone, so "As
+// spoken" looked exactly like lowercase and Subtitles lost its full stops.
+describe('a style that writes captions as spoken', () => {
+  const house = BUILTIN_CAPTION_STYLES[0]!
+  const spokenStyle = { ...house, id: 'sp', name: 'Spoken', builtin: false, caseRule: 'spoken' as const }
+  const steve = [
+    { text: 'Steve', startS: 0, endS: 0.4 },
+    { text: 'hit', startS: 0.4, endS: 0.7 },
+    { text: 'Minecraft.', startS: 0.7, endS: 1.2 },
+  ]
+
+  it('keeps his capitals and full stops', () => {
+    addCaptionsFromWords(steve, { style: spokenStyle, model: 'm' })
+    expect(captionTexts().join(' ')).toBe('Steve hit Minecraft.')
+  })
+
+  it('still writes a lone i as I, and a thousands comma his way', () => {
+    addCaptionsFromWords(
+      [
+        { text: 'i', startS: 0, endS: 0.3 },
+        { text: 'made', startS: 1, endS: 1.3 },
+        { text: '30,000.', startS: 2, endS: 2.5 },
+      ],
+      { style: spokenStyle },
+    )
+    expect(captionTexts()).toEqual(['I', 'made', '30 000.'])
+  })
+
+  it('the house style is untouched: lowercase, full stops gone', () => {
+    addCaptionsFromWords(steve, { style: house })
+    expect(captionTexts().join(' ')).toBe('steve hit minecraft')
+  })
+
+  it('put on house captions, writes the ones he has not touched as spoken, and keeps his edits', () => {
+    addCaptionsFromWords(steve, { style: house, model: 'm' })
+    const hit = captionsOn(seq()).find(({ clip }) => clip.title!.text.includes('hit'))!.clip
+    setCaptionText(hit.id, 'smacked')
+    applyCaptionStyle(spokenStyle)
+    const texts = captionTexts()
+    expect(texts).toContain('smacked')
+    expect(texts.join(' ')).toContain('Minecraft.')
+    expect(texts.join(' ')).toContain('Steve')
+  })
+
+  it('is kept when saved, and a style without it reads as house', () => {
+    expect(cleanStyle({ ...spokenStyle })?.caseRule).toBe('spoken')
+    expect(cleanStyle({ ...house, caseRule: 'shout' })?.caseRule).toBeUndefined()
+  })
+})
+
 describe('putting a style on captions he already has', () => {
   const house = BUILTIN_CAPTION_STYLES[0]!
 
@@ -306,6 +359,53 @@ describe('putting a style on captions he already has', () => {
     expect(useStore.getState().ui.selection).toEqual([clips[0]!.id])
   })
 
+  // CA-19. A recut caption that ran into one that stays was trimmed without its
+  // animation, so its exit sat past its new end and never played.
+  it('a recut caption trimmed against one that stays still plays its exit at its new end', () => {
+    addCaptionsFromWords(said('so i went to the store and bought some apples'), { style: house })
+    const all = captionsOn(seq()).map(({ clip }) => clip)
+    const clean = BUILTIN_CAPTION_STYLES.find((s) => s.id === 'builtin-clean')!
+    const fade = { ...clean, id: 'fade-long', name: 'Fade long', shape: fixed({ maxWords: 12, charsPerLine: 60 }), updatedAt: 1 }
+    applyCaptionStyle(fade, all.slice(0, 3).map((c) => c.id))
+    const [cut, next] = captionsOn(seq()).map(({ clip }) => clip)
+    // It was trimmed: it ends exactly where the caption that stays begins.
+    expect(clipEndS(cut!)).toBeCloseTo(next!.startS, 9)
+    const opacity = channelKeyframes(cut!, 'opacity')
+    expect(opacity.length).toBeGreaterThan(0)
+    const last = opacity[opacity.length - 1]!
+    expect(last.t).toBeCloseTo(clipEndS(cut!) - cut!.startS, 6)
+    expect(last.value).toBe(0)
+  })
+
+  // ⛔ CA-7. A recut read the words back off the captions and spread a caption's
+  // words by letter count, so a length round trip moved every word off his voice.
+  it('another length and back puts every caption on the word again, not where its letters say', () => {
+    const subtitles = BUILTIN_CAPTION_STYLES.find((s) => s.id === 'builtin-subtitles')!
+    const spoken = [
+      ['i', 0.0, 0.1], ['hit', 0.1, 0.25], ['a', 0.25, 0.32], ['new', 0.32, 0.5], ['personal', 0.5, 1.15],
+      ['record', 1.15, 1.6], ['on', 1.6, 1.7], ['bench', 1.7, 2.2],
+    ].map(([text, startS, endS]) => ({ text: text as string, startS: startS as number, endS: endS as number }))
+    addCaptionsFromWords(spoken, { style: house })
+    const first = captionsOn(seq()).map(({ clip }) => [clip.title!.text, +clip.startS.toFixed(4)])
+    applyCaptionStyle(subtitles)
+    applyCaptionStyle(house)
+    expect(captionsOn(seq()).map(({ clip }) => [clip.title!.text, +clip.startS.toFixed(4)])).toEqual(first)
+    // And again: no drift on a second trip either.
+    applyCaptionStyle(subtitles)
+    applyCaptionStyle(house)
+    expect(captionsOn(seq()).map(({ clip }) => [clip.title!.text, +clip.startS.toFixed(4)])).toEqual(first)
+  })
+
+  it('a caption he retyped is spread as before, since its old word times are for other words', () => {
+    const subtitles = BUILTIN_CAPTION_STYLES.find((s) => s.id === 'builtin-subtitles')!
+    addCaptionsFromWords(said('so i went to the store'), { style: house })
+    applyCaptionStyle(subtitles)
+    const one = captionsOn(seq())[0]!.clip
+    setCaptionText(one.id, 'we all went to a big shop')
+    applyCaptionStyle(house)
+    expect(captionTexts().join(' ')).toBe('we all went to a big shop')
+  })
+
   it('leaves a locked Captions track alone and says how many', () => {
     addCaptionsFromWords(said('so i went'), { style: house })
     updateActiveSequence('lock', (sq) => ({ ...sq, tracks: sq.tracks.map((t) => (t.name === CAPTION_TRACK_NAME ? { ...t, locked: true } : t)) }))
@@ -325,5 +425,41 @@ describe('putting a style on captions he already has', () => {
     expect(setCaptionText(c.id, 'Nope')).toBe(false)
     expect(captionTexts()[0]).toBe(c.title!.text)
     expect(toasted).toContain('That caption is on a locked track')
+  })
+})
+
+// CA-13. The Subtitles look with the highlight on came out in three around the
+// lit word. The word is now coloured inside its phrase, and back and forth
+// between lengths keeps it lit.
+describe('the key word inside a whole phrase', () => {
+  const house = BUILTIN_CAPTION_STYLES[0]!
+  const subtitles = BUILTIN_CAPTION_STYLES.find((s) => s.id === 'builtin-subtitles')!
+  const leaned = () => said('i hit a new personal record on bench').map((x) => (x.text === 'record' ? { ...x, emphasis: true } : x))
+  const litOf = (c: Clip) => (c.title!.wordColors ?? []).map((l) => [l.word, l.color])
+
+  it('a Subtitles run keeps the phrase in one caption and colours the word in it', () => {
+    addCaptionsFromWords(leaned(), { style: subtitles })
+    expect(captionTexts().map((t) => t.replace('\n', ' '))).toEqual(['I hit a new personal record on bench'])
+    const one = captionsOn(seq())[0]!.clip
+    expect(litOf(one)).toEqual([['record', subtitles.emphasisColor]])
+    expect(one.title!.color).toBe('#ffffff')
+  })
+
+  it('house, then Subtitles, then house: the word is lit the whole way', () => {
+    addCaptionsFromWords(leaned(), { style: house })
+    expect(captionsOn(seq()).find(({ clip }) => clip.title!.text === 'record')!.clip.captionEmphasis).toBe(true)
+    applyCaptionStyle(subtitles)
+    expect(captionsOn(seq())).toHaveLength(1)
+    expect(litOf(captionsOn(seq())[0]!.clip)).toEqual([['record', subtitles.emphasisColor]])
+    applyCaptionStyle(house)
+    const record = captionsOn(seq()).find(({ clip }) => clip.title!.text === 'record')!.clip
+    expect(record.captionEmphasis).toBe(true)
+    expect(record.title!.color).toBe(house.emphasisColor)
+  })
+
+  it('a new look on the same length colours the word in the new highlight', () => {
+    addCaptionsFromWords(leaned(), { style: subtitles })
+    applyCaptionStyle({ ...subtitles, id: 'mine', name: 'Mine', builtin: false, emphasisColor: '#00ff00' })
+    expect(litOf(captionsOn(seq())[0]!.clip)).toEqual([['record', '#00ff00']])
   })
 })

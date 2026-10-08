@@ -23,12 +23,20 @@ export interface TranscribeRequest {
    * edit. Never transcribes and never touches `pcm`.
    */
   warm?: boolean
+  /**
+   * How often the GPU has failed this session for this model, as the main
+   * thread has kept it. A worker that was killed starts from nothing, so the
+   * count it was told is the one it trusts (see gpuFailures below).
+   */
+  gpuFailures?: number
 }
 
 export type TranscribeResponse =
   | { type: 'progress'; phase: 'model' | 'listening'; pct: number | null; downloading?: boolean }
   | { type: 'done'; chunks: { text: string; timestamp: [number, number | null] }[] }
   | { type: 'warmed' }
+  /** The GPU failed at inference: how many times now, for the main thread to keep. */
+  | { type: 'gpuFailed'; model: string; failures: number }
   /**
    * ⛔ `warm` SAYS WHOSE FAILURE THIS IS, and without it a warm could kill a run.
    *
@@ -64,7 +72,7 @@ self.onmessage = (e: MessageEvent<TranscribeRequest>) => {
       )
     return
   }
-  void run(e.data.pcm, e.data.language ?? 'en')
+  void run(e.data.pcm, e.data.language ?? 'en', e.data.gpuFailures ?? 0)
 }
 
 /**
@@ -120,6 +128,32 @@ const asrDevice = new Map<string, 'webgpu' | 'wasm'>()
 const gpuFailures = new Map<string, number>()
 const GPU_GIVE_UP_AFTER = 2
 
+type LoadProgress = { status?: string; progress?: number; total?: number; file?: string }
+
+/**
+ * A fresh progress reporter for one pipeline load: the 'model' phase with the
+ * percentage of the biggest file, and whether anything is really downloading.
+ */
+function modelProgress(): (p: LoadProgress) => void {
+  let biggestTotal = 0
+  // Whether anything is coming off the NETWORK this time. transformers.js emits
+  // `download` only when it actually fetches a file; a load served out of the
+  // cache goes straight to progress and done. Without this the pill claimed
+  // "Downloading Whisper (once)" every single time the model was loaded from
+  // disk, which is why he saw it on every new version and stopped believing it.
+  let downloading = false
+  return (p) => {
+    if (p.status === 'initiate' && p.file) console.log('OL Premiere transcribe: fetching', p.file)
+    if (p.status === 'download') downloading = true
+    if (p.status === 'progress' && typeof p.progress === 'number') {
+      if ((p.total ?? 0) >= biggestTotal) {
+        biggestTotal = p.total ?? 0
+        post({ type: 'progress', phase: 'model', pct: p.progress, downloading })
+      }
+    }
+  }
+}
+
 async function getAsr(model: string): Promise<Asr> {
   const cached = asrCache.get(model)
   if (cached) return cached
@@ -131,30 +165,13 @@ async function getAsr(model: string): Promise<Asr> {
     ;(env as { useBrowserCache?: boolean; allowLocalModels?: boolean }).useBrowserCache = true
     ;(env as { useBrowserCache?: boolean; allowLocalModels?: boolean }).allowLocalModels = false
 
-    let biggestTotal = 0
-    // Whether anything is coming off the NETWORK this time. transformers.js emits
-    // `download` only when it actually fetches a file; a load served out of the
-    // cache goes straight to progress and done. Without this the pill claimed
-    // "Downloading Whisper (once)" every single time the model was loaded from
-    // disk, which is why he saw it on every new version and stopped believing it.
-    let downloading = false
-    const progress_callback = (p: { status?: string; progress?: number; total?: number; file?: string }) => {
-      if (p.status === 'initiate' && p.file) console.log('OL Premiere transcribe: fetching', p.file)
-      if (p.status === 'download') downloading = true
-      if (p.status === 'progress' && typeof p.progress === 'number') {
-        if ((p.total ?? 0) >= biggestTotal) {
-          biggestTotal = p.total ?? 0
-          post({ type: 'progress', phase: 'model', pct: p.progress, downloading })
-        }
-      }
-    }
     const spec = whisperModel(model)
     const makeAsr = async (device: 'webgpu' | 'wasm'): Promise<Asr> => {
       const dtype = device === 'wasm' ? spec.wasmDtype : spec.gpuDtype
       return (await pipeline('automatic-speech-recognition', model, {
         device,
         ...(dtype ? { dtype } : {}),
-        progress_callback,
+        progress_callback: modelProgress(),
       })) as unknown as Asr
     }
 
@@ -247,9 +264,12 @@ const OPTS = {
  * Deliberately NOT sent: a prompt of his vocabulary. Built and measured on
  * 2026-10-03 and it made his captions worse; vocabulary.ts has the numbers.
  */
-async function run(pcm: Float32Array, language: CaptionLanguage): Promise<void> {
+async function run(pcm: Float32Array, language: CaptionLanguage, gpuFailuresTold: number): Promise<void> {
   try {
     const model = modelFor(language)
+    // A worker built after the last one was killed starts with no count of its
+    // own, so the main thread's is the one that holds.
+    if (gpuFailuresTold > (gpuFailures.get(model) ?? 0)) gpuFailures.set(model, gpuFailuresTold)
     // language/task are GENERATION options: a multilingual model must be told
     // the language (English included) and to transcribe, never translate.
     const opts = { ...OPTS, ...generationOptsFor(language) }
@@ -267,15 +287,28 @@ async function run(pcm: Float32Array, language: CaptionLanguage): Promise<void> 
       // of a whole-timeline sweep on the worst weights in the app.
       const failures = (gpuFailures.get(model) ?? 0) + 1
       gpuFailures.set(model, failures)
+      post({ type: 'gpuFailed', model, failures })
       console.warn(
         `OL Premiere transcribe: the GPU pipeline for ${model} failed at inference (${failures} of ${GPU_GIVE_UP_AFTER} before this session settles on the slower weights).`,
         err,
       )
+      // ⛔ THE FALLBACK SAYS IT IS LOADING (CA-15). Its weights are other files,
+      // about 770 MB the first time, and it used to load them in silence under
+      // "Listening for words...", with the main thread's listening clock still
+      // running: the download was killed half way and the run failed. Each
+      // 'model' report shows the download and starts the main thread's budget
+      // again (transcribe.ts), and 'listening' starts it once more when the
+      // wasm pipeline is ready. It does not stop the clock: only the biggest
+      // file reports, so a smaller file's tail and the session build run on
+      // the listening budget, a minute at the least. The files load side by
+      // side, so the biggest is in practice the last to finish (N-5).
       const { pipeline } = await import('@huggingface/transformers')
       const wasmAsr = (await pipeline('automatic-speech-recognition', model, {
         device: 'wasm',
         dtype: whisperModel(model).wasmDtype,
+        progress_callback: modelProgress(),
       })) as unknown as Asr
+      post({ type: 'progress', phase: 'listening', pct: null })
       if (failures >= GPU_GIVE_UP_AFTER) {
         asrCache.set(model, wasmAsr)
         asrDevice.set(model, 'wasm')

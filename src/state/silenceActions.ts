@@ -18,6 +18,8 @@
 // a stretch of a file already listened to is never listened to again, by the
 // Words panel or by this.
 
+import { correctWordLag } from '../engine/captions/wordTiming'
+import { getCaptionLanguage, modelFor, whisperModel } from '../engine/captions/transcribeConfig'
 import { silentRanges, SILENCE_DEFAULTS, type CutRange, type SilenceOptions } from '../engine/silence'
 import { clipEndS, clipGroupIds, rippleDeleteMany, splitGroup } from '../engine/timeline'
 import { heardCovers, mergeHeardSpans, mergeWords, toSource } from '../engine/transcriptCut'
@@ -102,6 +104,16 @@ function lineOf(seq: Sequence, clipId: string): string {
     .join('|')
 }
 
+/**
+ * The recogniser's lag, which the media's words may or may not have taken off.
+ * Words kept by the Words tab and the caption doors are where he SAID them
+ * (MediaAsset.wordsOnVoice); the cutter keeps the recogniser's own timings,
+ * its air either side of a cut being tuned against them, and says so by leaving
+ * the mark off. So it puts the lag back on words that have it taken off, and
+ * takes it off the words it adds to media that has.
+ */
+const wordLagS = (): number => whisperModel(modelFor(getCaptionLanguage())).wordLagS
+
 /** What one clip's reading came back with. */
 interface Heard {
   /** The clip as it was READ: the words are placed against it. */
@@ -124,7 +136,9 @@ async function hear(
 ): Promise<Heard | 'busy' | 'failed' | 'cancelled'> {
   if (heardCovers(asset.heardSpans, clip.inS, clip.outS)) {
     // Every word that sounds inside the span, one running in across an edge too.
+    const lateS = asset.wordsOnVoice ? wordLagS() : 0
     const words = (asset.words ?? [])
+      .map((w) => ({ startS: w.startS + lateS, endS: w.endS + lateS }))
       .filter((w) => w.endS > clip.inS && w.startS < clip.outS)
       .map((w) => ({ startS: w.startS - clip.inS, endS: w.endS - clip.inS }))
     return { clip, asset, words, fresh: null }
@@ -378,7 +392,9 @@ export async function cutQuietParts(clipIds: string | readonly string[], opts: S
         const a = assets[plan.heard.asset.id]
         if (!fresh || !a) continue
         const { inS, outS } = plan.heard.clip
-        assets[a.id] = { ...a, words: mergeWords(a.words, fresh, inS, outS), heardSpans: mergeHeardSpans(a.heardSpans, inS, outS) }
+        // Into words that are where he said them, the recogniser's timings would sit a lag late.
+        const added = a.wordsOnVoice ? correctWordLag(fresh, wordLagS()) : fresh
+        assets[a.id] = { ...a, words: mergeWords(a.words, added, inS, outS), heardSpans: mergeHeardSpans(a.heardSpans, inS, outS) }
       }
       return { ...p, assets, sequences: { ...p.sequences, [seq.id]: cutSeq } }
     })

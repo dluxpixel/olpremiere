@@ -7,8 +7,8 @@ import { getAudioBuffer } from '../audio'
 import { clipDurationS } from '../types'
 import type { Clip, MediaAsset } from '../types'
 import type { CaptionWord } from './captions'
-import { getCaptionLanguage, type CaptionLanguage } from './transcribeConfig'
-import type { TranscribeResponse } from './transcribeWorker'
+import { getCaptionLanguage, modelFor, type CaptionLanguage } from './transcribeConfig'
+import type { TranscribeRequest, TranscribeResponse } from './transcribeWorker'
 
 /** Whisper's feature-extractor input rate. */
 export const TRANSCRIBE_SAMPLE_RATE = 16000
@@ -223,12 +223,59 @@ function collapsePhraseLoops(words: readonly TranscribedWord[]): TranscribedWord
 }
 
 /**
+ * Below this a word is too short to have been said: the loops measured on his
+ * backing bed ran 0.03 s a word, and a spoken word is several times that.
+ */
+const LOOP_WORD_S = 0.08
+
+/**
+ * Collapse ONE word the recogniser got stuck on, keeping one copy stretched
+ * over the whole stuck stretch.
+ *
+ * ⛔ A WORD SAID TWICE WITH NO GAP IS SPEECH, NOT A LOOP. This used to absorb
+ * any repeat that started less than 0.12 s after the one before, on the
+ * belief that "actually saying a word twice leaves a real gap". Measured on
+ * his own voice it does not: 97 of 131 word boundaries inside a phrase are
+ * exactly 0.00 s (captions.ts, maxGapS). So "go go go", "no no no", "bye bye"
+ * and "very very good" lost every repeat, from the captions and the Words tab.
+ *
+ * What a loop really looks like is in the measurement: words far too short to
+ * have been said, three or more in a row. A copy that starts before the one
+ * before it has ended is the model writing the same word twice over the same
+ * moment (a chunk seam), so it goes too. Anything else is kept, and a loop
+ * over silence that slips through is still removed by the voice filter after
+ * this (voiceActivity.dropWordsWithoutVoice).
+ */
+function collapseWordLoops(words: readonly TranscribedWord[]): TranscribedWord[] {
+  const out: TranscribedWord[] = []
+  let i = 0
+  while (i < words.length) {
+    const first = { ...words[i] }
+    let j = i + 1
+    while (j < words.length && norm(words[j].text) === norm(first.text) && words[j].startS - words[j - 1].endS < LOOP_GAP_S) j++
+    const repeats = words.slice(i + 1, j)
+    out.push(first)
+    if (repeats.length + 1 >= MIN_LOOP_REPEATS && repeats.every((r) => r.endS - r.startS < LOOP_WORD_S)) {
+      first.endS = Math.max(first.endS, ...repeats.map((r) => r.endS))
+    } else {
+      for (const r of repeats) {
+        const prev = out[out.length - 1]
+        if (r.startS < prev.endS - 1e-9) prev.endS = Math.max(prev.endS, r.endS)
+        else out.push({ ...r })
+      }
+    }
+    i = j
+  }
+  return out
+}
+
+/**
  * Repair what the recogniser actually got wrong, before any of it becomes
  * captions. Four real artifacts, each deterministic:
  *
- *  - LOOPS. On a stutter or a stretch of near-silence Whisper repeats a token,
- *    sometimes many times. An immediate repeat of the same word with no real gap
- *    is the recogniser skipping, never speech. The same failure also happens to
+ *  - LOOPS. On a stretch of near-silence Whisper repeats a token, sometimes
+ *    many times, each copy far too short to have been said (collapseWordLoops,
+ *    which says why a gapless repeat alone is NOT a loop). The same failure also happens to
  *    whole PHRASES over long instrumental audio, which this word by word test
  *    cannot see because no two ADJACENT words match, so collapsePhraseLoops
  *    above handles that shape.
@@ -271,21 +318,12 @@ export function tidyTranscribedWords(words: readonly TranscribedWord[]): Transcr
       // Never closed. Fall through and keep it: see tagRunEnd.
     }
     if (isPunctuationOnly(text)) continue
-    const prev = out[out.length - 1]
-    // A repeat with no audible gap is the model skipping, not the speaker
-    // saying it twice. Absorb the skipped span into the word we kept, so a run
-    // of loops collapses to one caption covering the whole stretch (and so the
-    // NEXT repeat is still measured against a gap that has not gone stale).
-    if (prev && norm(prev.text) === norm(text) && w.startS - prev.endS < 0.12) {
-      prev.endS = Math.max(prev.endS, w.endS)
-      continue
-    }
     out.push({ ...w, text })
   }
 
-  // Then the phrase-sized version of the same loop, which needs the whole list
-  // rather than one word at a time.
-  const kept = collapsePhraseLoops(out)
+  // Then the recogniser's loops: one word stuck, then a whole phrase stuck,
+  // which needs the whole list rather than one word at a time.
+  const kept = collapsePhraseLoops(collapseWordLoops(out))
 
   // Trailing invention: only when it sits after a real pause, so a video that
   // really does end on those words keeps them.
@@ -531,6 +569,18 @@ function killWorker(): void {
 let busy = false
 
 /**
+ * How many times the GPU has failed at inference this session, per model, as
+ * the worker reported it, and sent with every run.
+ *
+ * ⛔ THE COUNT LIVES ON THIS SIDE (CA-15). It used to live only in the worker,
+ * and a worker that is killed (the watchdog, a crash, a Stop) takes its memory
+ * with it, so the next clip trusted the GPU again, failed again and paid for the
+ * slow fallback again, every clip. The worker settles on wasm after two
+ * failures; with the count kept here, that holds for the rest of the session.
+ */
+const gpuFailures = new Map<string, number>()
+
+/**
  * How long the LISTENING phase may run before the worker is given up on and
  * terminated. Model loading is deliberately outside it, because the first load
  * is a 1.6 GB download and has no business sharing a budget with inference.
@@ -617,9 +667,18 @@ export function transcribePcm(
     const onMessage = (e: MessageEvent<TranscribeResponse>): void => {
       const msg = e.data
       if (msg.type === 'progress') {
-        // The worker announces 'listening' once, when the model is loaded and
+        // The worker announces 'listening' when the model is loaded and
         // inference begins. That is the point the budget starts.
-        if (msg.phase === 'listening') {
+        if (msg.phase === 'listening' || watchdog !== null) {
+          // ⛔ AND A MODEL LOADING IN THE MIDDLE OF A RUN WINDS THE CLOCK BACK
+          // EVERY TIME IT MOVES (CA-15). When the GPU fails at inference the
+          // worker builds the wasm pipeline, other weights, about 770 MB the
+          // first time, and this budget was still running from the GPU's
+          // 'listening': a short clip gave the download about 74 s, the worker
+          // was killed half way and the run failed as "stopped responding". A
+          // load that keeps reporting is making progress, so each report starts
+          // the budget again; one that stops reporting still runs out, and the
+          // worker says 'listening' again when it starts on the wasm pipeline.
           stopWatchdog()
           watchdog = setTimeout(giveUp, LISTEN_FLOOR_MS + audioS * LISTEN_MS_PER_AUDIO_SECOND)
         }
@@ -632,6 +691,9 @@ export function transcribePcm(
         settled = true
         cleanup() // keep the worker ALIVE so the model stays loaded for next time
         res(msg.chunks)
+      } else if (msg.type === 'gpuFailed') {
+        // Kept HERE, where a killed worker cannot take it with it.
+        gpuFailures.set(msg.model, msg.failures)
       } else if (msg.type === 'warmed' || (msg.type === 'error' && msg.warm)) {
         // NOT OURS, and the error half of this was the hole. A boot warm can
         // land in the middle of a real run. `'warmed'` was already ignored here
@@ -660,7 +722,8 @@ export function transcribePcm(
   // true and every later caption run in the session would report that a
   // transcription was already going, with no way back short of a restart.
   try {
-    worker.postMessage({ pcm, language }, [pcm.buffer])
+    const request: TranscribeRequest = { pcm, language, gpuFailures: gpuFailures.get(modelFor(language)) ?? 0 }
+    worker.postMessage(request, [pcm.buffer])
   } catch (err) {
     settled = true
     cleanup()

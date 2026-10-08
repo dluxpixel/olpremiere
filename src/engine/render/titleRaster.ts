@@ -162,6 +162,72 @@ function textLeftOf(anchorX: number, textW: number, align: TitleDef['align']): n
   return anchorX - textW / 2
 }
 
+/** Letters and digits only, any case: how a coloured word is matched to the word on screen. */
+const bareWord = (w: string): string => w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '')
+
+/**
+ * The colour each shown word wears, or null for the title's own. Each entry
+ * goes on the same word nearest the place it was given, so a caption retyped
+ * around the word keeps it lit, and nowhere once the word itself is gone:
+ * painting whatever word now sits there would light a word he never leaned on.
+ */
+export function wordColorsOn(words: readonly string[], wordColors: TitleDef['wordColors']): (string | null)[] {
+  const out: (string | null)[] = words.map(() => null)
+  for (const c of wordColors ?? []) {
+    const want = bareWord(c.word)
+    if (!want) continue
+    let best = -1
+    for (let i = 0; i < words.length; i++) {
+      if (bareWord(words[i]!) === want && (best < 0 || Math.abs(i - c.at) < Math.abs(best - c.at))) best = i
+    }
+    if (best >= 0) out[best] = c.color
+  }
+  return out
+}
+
+/** One stretch of a line in one colour, drawn left aligned from `x`. */
+export interface ColorRun {
+  text: string
+  x: number
+  color: string
+}
+
+/**
+ * Each line's fill as runs of one colour, each starting at the x it has inside
+ * the line drawn whole, so a lit word lands exactly where it always sat (CA-13).
+ * Null when no word wears a colour of its own, and then the line is drawn whole,
+ * so every title made before this draws exactly as it did.
+ */
+export function colorRuns(
+  lines: readonly string[],
+  wordColors: TitleDef['wordColors'],
+  base: string,
+  measure: (s: string) => number,
+  anchorX: number,
+  align: TitleDef['align'],
+): ColorRun[][] | null {
+  if (!wordColors?.length) return null
+  const perLine = lines.map((l) => l.split(' ').filter((w) => w !== ''))
+  const colors = wordColorsOn(perLine.flat(), wordColors)
+  if (colors.every((c) => c === null)) return null
+  let k = 0
+  return perLine.map((words) => {
+    const left = textLeftOf(anchorX, measure(words.join(' ')), align)
+    const runs: ColorRun[] = []
+    let from = 0
+    while (from < words.length) {
+      const color = colors[k + from] ?? base
+      let to = from + 1
+      while (to < words.length && (colors[k + to] ?? base) === color) to++
+      const before = from > 0 ? `${words.slice(0, from).join(' ')} ` : ''
+      runs.push({ text: words.slice(from, to).join(' '), x: left + (before ? measure(before) : 0), color })
+      from = to
+    }
+    k += words.length
+    return runs
+  })
+}
+
 // One shared 1×1 canvas for measurement-only calls; its size never matters
 // because nothing is drawn into it.
 let measureCtx: OffscreenCanvasRenderingContext2D | null = null
@@ -475,11 +541,26 @@ export function rasterizeTitle(
       if (def.shadow) clearShadow() // the fill on top must not double the shadow
     }
 
-    ctx.fillStyle = def.color
+    // A lit word inside the caption is filled in its own colour, in runs laid
+    // where the whole line would have put them; the outline above is one piece.
+    const runs = colorRuns(lines, def.wordColors, def.color, (str) => ctx.measureText(str).width, anchorX, def.align)
     let y = firstBaselineY
-    for (const line of lines) {
-      if (line !== '') ctx.fillText(line, anchorX, y)
-      y += lineHeightPx
+    if (runs) {
+      ctx.textAlign = 'left'
+      for (const line of runs) {
+        for (const run of line) {
+          ctx.fillStyle = run.color
+          ctx.fillText(run.text, run.x, y)
+        }
+        y += lineHeightPx
+      }
+      ctx.textAlign = def.align
+    } else {
+      ctx.fillStyle = def.color
+      for (const line of lines) {
+        if (line !== '') ctx.fillText(line, anchorX, y)
+        y += lineHeightPx
+      }
     }
     // Reset so a later cached draw on this ctx can't inherit the shadow.
     if (def.shadow && !hasOutline) clearShadow()

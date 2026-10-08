@@ -35,12 +35,16 @@ import {
 import {
   AUTO_CAPTION_OPTIONS,
   CAPTION_EMPHASIS_COLORS,
+  captionCase,
   chunkWords,
   jettismCaptionDef,
+  litWordColors,
+  saidWords,
   spreadWords,
   type CaptionWord,
   type ChunkOptions,
 } from './captions'
+import { captionFitter, fitWordsToFrame } from './captionFit'
 
 export type { CaptionShape } from '../types'
 
@@ -72,6 +76,11 @@ export interface CaptionStyle {
   appearance?: AppearanceSpec
   /** The effect stack every caption gets, copied per clip. */
   effects?: EffectInstance[]
+  /**
+   * 'spoken' keeps his capitals and full stops. Absent is the house lowercase,
+   * which is what every style made before this existed, his saved ones too.
+   */
+  caseRule?: 'spoken'
   builtin?: boolean
   updatedAt: number
 }
@@ -205,14 +214,20 @@ export function sameShape(a: CaptionShape, b: CaptionShape): boolean {
  * not saying it. What changes is only how full a caption may get: up to his
  * word count and his characters per line times his lines, with no target length
  * pulling it shorter. The on screen ceiling grows with the word count so a full
- * caption has time to be read, and still counts from its last word.
+ * caption has time to be read, and still counts from its last word. And the key
+ * word highlight is coloured inside the phrase instead of cut out of it (CA-13).
  */
-export function chunkOptionsFor(shape: CaptionShape, fps: number): ChunkOptions {
+export function chunkOptionsFor(
+  shape: CaptionShape,
+  fps: number,
+  /** Does a group fit across the frame (captionFitterFor)? Absent counts letters only. */
+  fits: ((text: string) => boolean) | null = null,
+): ChunkOptions {
   const gapS = shape.gapFrames > 0 ? shape.gapFrames / Math.max(1, fps) : 0
   // Every caption on the sequence's frames (captions.ts putOnFrames). A rate
   // that is not a real one leaves the times alone rather than inventing a grid.
   const onFrames = Number.isFinite(fps) && fps > 0 ? fps : 0
-  if (shape.length === 'auto') return { ...AUTO_CAPTION_OPTIONS, minDurS: shape.minDurS, gapS, fps: onFrames }
+  if (shape.length === 'auto') return { ...AUTO_CAPTION_OPTIONS, minDurS: shape.minDurS, gapS, fps: onFrames, fits }
   return {
     ...AUTO_CAPTION_OPTIONS,
     targetS: 0,
@@ -222,7 +237,23 @@ export function chunkOptionsFor(shape: CaptionShape, fps: number): ChunkOptions 
     minDurS: shape.minDurS,
     gapS,
     fps: onFrames,
+    fits,
+    emphasisBreaks: false,
   }
+}
+
+/**
+ * Does a group of words fit one caption of this style in this frame: its lines
+ * (one for auto), its size scaled to the frame, its case. `prepare` is what
+ * the run does to the words before they are shown (the house case).
+ */
+export function captionFitterFor(
+  style: Pick<CaptionStyle, 'look' | 'refHeight' | 'emphasisColor' | 'shape'>,
+  seq: { width: number; height: number },
+  prepare?: (text: string) => string,
+): (text: string) => boolean {
+  const lines = style.shape.length === 'fixed' ? style.shape.lines : 1
+  return captionFitter(captionDefFor(style, '', seq.height), seq.width, lines, prepare)
 }
 
 /**
@@ -298,12 +329,42 @@ export function captionDefFor(
  */
 export function dressCaption(clip: Clip, style: CaptionStyle, seqWidth: number, seqHeight: number): Clip {
   if (!clip.title) return clip
-  let next: Clip = { ...clip, title: captionDefFor(style, clip.title.text, seqHeight, clip.captionEmphasis === true) }
+  const cased = inStyleCase(clip, style)
+  // A word wider than the line is drawn smaller rather than off the frame.
+  const def = captionDefFor(style, cased.text, seqHeight, clip.captionEmphasis === true)
+  // The word he leaned on, lit inside a longer caption in this style's colour (CA-13).
+  const lit = clip.captionEmphasis ? undefined : litWordColors(cased.words ?? clip.captionWords, style.emphasisColor)
+  const title = fitWordsToFrame(lit ? { ...def, wordColors: lit } : def, seqWidth)
+  let next: Clip = { ...clip, title, ...(cased.words ? { captionWords: cased.words } : {}) }
   // Copied per clip, never shared: editing one caption's effect must not change another.
   if (style.effects?.length) next = { ...next, effects: style.effects.map((e) => ({ ...e })) }
   if (style.appearance) next = applyAppearanceToClip(next, style.appearance, seqWidth, seqHeight)
   else if (next.appearance) next = applyAppearanceToClip(next, {}, seqWidth, seqHeight)
   return next
+}
+
+/**
+ * The caption's words in the style's case rule, when he has not touched them.
+ *
+ * A caption's text is cased once, when the run makes it, so putting a style
+ * that says "As spoken" on house captions changed nothing anyone could see.
+ * What the machine said is kept on the clip (captionOrigin), so a caption that
+ * still reads exactly as either rule wrote it can be written again in the
+ * other. A caption he retyped is his, and stays as he typed it.
+ */
+function inStyleCase(clip: Clip, style: Pick<CaptionStyle, 'caseRule' | 'shape'>): { text: string; words?: Clip['captionWords'] } {
+  const text = clip.title?.text ?? ''
+  const origin = clip.captionOrigin?.text
+  if (origin === undefined) return { text }
+  const flat = text.replace(/\s+/g, ' ').trim()
+  const rule = style.caseRule ?? 'house'
+  const want = captionCase(origin, rule)
+  if (flat === want || (flat !== captionCase(origin, 'house') && flat !== captionCase(origin, 'spoken'))) return { text }
+  const next = text.includes('\n') ? breakLines(want, style.shape) : want
+  const tokens = want.split(' ')
+  const kept = clip.captionWords
+  const words = kept && kept.length === tokens.length ? kept.map((w, i) => ({ ...w, text: tokens[i]! })) : undefined
+  return { text: next, words }
 }
 
 /** One word read back off a caption clip, and which clip it came from. */
@@ -312,14 +373,99 @@ interface SourcedWord extends CaptionWord {
 }
 
 /**
+ * The words this caption still says, at the times they were said, or null once
+ * he has retyped it (or trimmed a word off), because then those times belong
+ * to words that are not there.
+ */
+function wordsAsSaid(clip: Clip, tokens: readonly string[]): CaptionWord[] | null {
+  const kept = clip.captionWords
+  if (!kept || kept.length !== tokens.length || kept.some((w, i) => w.text !== tokens[i])) return null
+  const rate = Math.abs(clip.speed) || 1
+  const startS = clip.startS
+  const endS = startS + clipDurationS(clip)
+  // Clip time to timeline: a trim or a split moved the in point, not the words.
+  const at = (t: number): number => startS + (t - clip.inS) / rate
+  const words = kept.map((w) => ({ text: w.text, startS: at(w.startS), endS: at(w.endS), lit: w.emphasis === true }))
+  // The first word may sit a hair before the caption: its start went onto a frame.
+  if (words.some((w) => w.startS < startS - 0.05 || w.startS >= endS)) return null
+  let floor = startS
+  return words.map((w) => {
+    const s = Math.max(floor, w.startS)
+    floor = s
+    return { text: w.text, startS: s, endS: Math.min(endS, Math.max(s + 1e-3, w.endS)), ...(w.lit ? { emphasis: true } : {}) }
+  })
+}
+
+/**
+ * A caption after a cut in the Words tab took some of its time away: it says
+ * only the words still said inside it, or it is null when none are (a sliver
+ * of hold left after a word that was cut). Before this both halves of a split
+ * caption kept the whole text, so cutting "like" out of "and like" still read
+ * "and like". A caption with no word times, or one he retyped, is left as it is.
+ *
+ * ⛔ ONLY THE EDGE THE CUT MADE DROPS WORDS (R-1). `cut` says which edges of
+ * this piece are a cut: `start` for the piece after the cut, `end` for the
+ * piece before it. An edge the cut never touched keeps every word, even one
+ * whose middle plays past it, because a caption can already end before its
+ * last word's middle with no cut at all: a style's gap ends it two frames
+ * early, he trimmed it, or frame rounding moved it. Reading every edge used to
+ * drop that last word off captions far from the cut, or delete a one word
+ * caption outright, all over the video, on one cut of one "um".
+ */
+export function captionAfterCut(clip: Clip, cut: { start: boolean; end: boolean }): Clip | null {
+  const kept = clip.captionWords
+  const tokens = (clip.title?.text ?? '').split(/\s+/).filter(Boolean)
+  if (!clip.title || !kept || kept.length !== tokens.length || kept.some((w, i) => w.text !== tokens[i])) return clip
+  if (!cut.start && !cut.end) return clip
+  const rate = Math.abs(clip.speed) || 1
+  const endS = clip.startS + clipDurationS(clip)
+  // A word belongs to the piece its middle plays in: its edges sit on the cut.
+  const inside = kept.filter((w) => {
+    const mid = clip.startS + ((w.startS + w.endS) / 2 - clip.inS) / rate
+    return (!cut.start || mid >= clip.startS - 1e-6) && (!cut.end || mid < endS)
+  })
+  if (inside.length === kept.length) return clip
+  if (inside.length === 0) return null
+  return { ...clip, title: { ...clip.title, text: inside.map((w) => w.text).join(' ') }, captionWords: inside }
+}
+
+/**
+ * A caption the cut did not touch, that still says a word the cut took (S-2):
+ * a style's gap ends a caption a couple of frames early, so its last word plays
+ * past its end, and a cut that starts where the caption ends takes that word
+ * while the caption keeps its id and its out point. `was` is the caption as it
+ * was before the cut, `now` the same caption after it. Its words whose middle
+ * played inside the cut are dropped; null when none are left.
+ */
+export function captionWithoutCutWords(was: Clip, now: Clip, cut: { startS: number; endS: number }): Clip | null {
+  const kept = now.captionWords
+  const tokens = (now.title?.text ?? '').split(/\s+/).filter(Boolean)
+  if (!now.title || !kept || kept.length !== tokens.length || kept.some((w, i) => w.text !== tokens[i])) return now
+  const rate = Math.abs(was.speed) || 1
+  const left = kept.filter((w) => {
+    const mid = was.startS + ((w.startS + w.endS) / 2 - was.inS) / rate
+    return !(mid >= cut.startS - 1e-6 && mid < cut.endS - 1e-6)
+  })
+  if (left.length === kept.length) return now
+  if (left.length === 0) return null
+  return { ...now, title: { ...now.title, text: left.map((w) => w.text).join(' ') }, captionWords: left }
+}
+
+/**
  * The words on screen, read back off finished captions so they can be cut
  * again at a different length.
  *
- * A one word caption gives its word back exactly. A caption holding several
- * spreads them across its time the way the manual split does, which is exact at
- * every caption's edges and close inside one. At a pause, the hold the run added
- * after the last word is taken back off, so cutting the same captions twice does
- * not push them later each time.
+ * ⛔ A CAPTION THAT STILL SAYS WHAT IT WAS MADE WITH GIVES EVERY WORD BACK AT
+ * THE TIME HE SAID IT (captionWords). Spreading by letter count is exact only
+ * at a caption's edges, so auto, then Subtitles, then auto again put every word
+ * start where its letters said and not where he said it, undoing the timing fix
+ * of c022d56 on every round trip.
+ *
+ * Otherwise (he retyped it, or it came from before word times were kept): a one
+ * word caption gives its word back exactly, and a caption holding several
+ * spreads them across its time the way the manual split does. At a pause, the
+ * hold the run added after the last word is taken back off, so cutting the same
+ * captions twice does not push them later each time.
  */
 function wordsOnScreen(clips: readonly Clip[], holdS: number, maxGapS: number): SourcedWord[] {
   const out: SourcedWord[] = []
@@ -333,10 +479,13 @@ function wordsOnScreen(clips: readonly Clip[], holdS: number, maxGapS: number): 
     if (tokens.length === 0) return
     const emphasis = clip.captionEmphasis === true
     const words: CaptionWord[] =
-      tokens.length === 1
+      wordsAsSaid(clip, tokens) ??
+      (tokens.length === 1
         ? [{ text: tokens[0]!, startS, endS }]
-        : spreadWords(tokens.map((t) => t.replace(/^\*(.+)\*$/, '$1')).join(' '), startS, endS - startS)
-    for (const w of words) out.push({ text: w.text, startS: w.startS, endS: w.endS, ...(emphasis ? { emphasis: true } : {}), source: i })
+        : spreadWords(tokens.map((t) => t.replace(/^\*(.+)\*$/, '$1')).join(' '), startS, endS - startS))
+    for (const w of words) {
+      out.push({ text: w.text, startS: w.startS, endS: w.endS, ...(emphasis || w.emphasis ? { emphasis: true } : {}), source: i })
+    }
   })
   return out
 }
@@ -357,7 +506,7 @@ export function recutCaptions(
 ): Clip[] {
   const sorted = clips.filter((c) => c.title).slice().sort((a, b) => a.startS - b.startS)
   if (sorted.length === 0) return []
-  const options = chunkOptionsFor(style.shape, seq.fps)
+  const options = chunkOptionsFor(style.shape, seq.fps, captionFitterFor(style, seq))
   const words = wordsOnScreen(sorted, AUTO_CAPTION_OPTIONS.holdS, options.maxGapS ?? AUTO_CAPTION_OPTIONS.maxGapS)
   const chunks = chunkWords(words, options)
   // How many words each old caption gave, to tell a whole caption from a piece.
@@ -379,6 +528,8 @@ export function recutCaptions(
     )
     if (chunk.emphasis) clip = { ...clip, captionEmphasis: true }
     if (keepsOrigin) clip = { ...clip, captionOrigin: { text: origins.map((o) => o!.text).join(' '), model: model! } }
+    const said = saidWords(chunk, chunk.text)
+    if (said) clip = { ...clip, captionWords: said }
     // A style with no effects keeps the ones the first of its words wore.
     if (!style.effects?.length && first.effects.length) clip = { ...clip, effects: first.effects.map((e) => ({ ...e })) }
     return dressCaption(clip, style, seq.width, seq.height)
@@ -431,6 +582,7 @@ export function cleanStyle(raw: unknown): CaptionStyle | null {
     emphasisColor: typeof r.emphasisColor === 'string' && r.emphasisColor ? r.emphasisColor : DEFAULT_EMPHASIS_COLOR,
     ...(r.appearance && typeof r.appearance === 'object' ? { appearance: r.appearance } : {}),
     ...(Array.isArray(r.effects) && r.effects.length ? { effects: r.effects } : {}),
+    ...(r.caseRule === 'spoken' ? { caseRule: 'spoken' as const } : {}),
     updatedAt: num(r.updatedAt, 0),
   }
 }

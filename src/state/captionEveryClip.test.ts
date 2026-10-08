@@ -11,15 +11,24 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 // Every toast the run raised, so the tests can prove the app SAYS what it did
 // rather than silently doing nothing.
 const toasted: string[] = []
+/** The kind of each toast, beside its words: 'danger' is red, anything else is not. */
+const toastKinds: (string | undefined)[] = []
 vi.mock('./toasts', () => ({
   useToasts: {
     getState: () => ({
-      show: (message: string) => {
+      show: (message: string, kind?: string) => {
         toasted.push(message)
+        toastKinds.push(kind)
       },
     }),
   },
 }))
+/** The kind the toast with these words came up as. */
+const kindOf = (message: string): string | undefined => {
+  const i = toasted.indexOf(message)
+  expect(i).toBeGreaterThanOrEqual(0)
+  return toastKinds[i]
+}
 
 // One fake word per clip, named after the clip, so the assertions can tell which
 // clip's audio a caption came from.
@@ -27,7 +36,11 @@ const heard: string[] = []
 /** Where each clip's words actually landed, so a stale position is visible. */
 const heardAt: Record<string, number> = {}
 /** A hook the tests use to edit the timeline WHILE the run is working through it. */
-const midRun: { fn: (() => void) | null } = { fn: null }
+type Progress = (p: { phase: 'model' | 'listening'; pct: number | null; downloading?: boolean }) => void
+const midRun: { fn: (() => void) | null; answered: ((onProgress: Progress) => void) | null; silent?: boolean } = {
+  fn: null,
+  answered: null,
+}
 vi.mock('../engine/captions/transcribe', () => ({
   TRANSCRIBE_SAMPLE_RATE: 16000,
   extractClipPcm: (_asset: unknown, clip: { id: string; startS: number }) => {
@@ -36,12 +49,18 @@ vi.mock('../engine/captions/transcribe', () => ({
     midRun.fn?.()
     return Promise.resolve(new Float32Array(8))
   },
-  transcribePcm: () => ({ promise: Promise.resolve([]), cancel: () => {} }),
+  // `answered` runs the moment the recogniser hands its words back.
+  transcribePcm: (_pcm: unknown, _language: unknown, onProgress: Progress) => ({
+    promise: Promise.resolve().then(() => {
+      midRun.answered?.(onProgress)
+      return []
+    }),
+    cancel: () => {},
+  }),
   wordsFromAsrChunks: () => [],
   tidyTranscribedWords: () => [],
-  timelineWords: (_w: unknown, clip: { id: string; startS: number }) => [
-    { text: clip.id, startS: clip.startS, endS: clip.startS + 0.4 },
-  ],
+  timelineWords: (_w: unknown, clip: { id: string; startS: number }) =>
+    midRun.silent ? [] : [{ text: clip.id, startS: clip.startS, endS: clip.startS + 0.4 }],
 }))
 // The keyword highlight is ON by default, so this orchestration test walks the
 // same path he does. The picker itself is real (it is pure and cheap); what is
@@ -75,7 +94,15 @@ import {
 } from '../engine/types'
 import { addCaptionsFromWords, CAPTION_TRACK_NAME } from './captionActions'
 import { updateActiveSequence, useStore } from './store'
-import { audibleClips, autoCaptionEveryClip, autoCaptionFromClip, useTranscribe } from './transcribeActions'
+import {
+  audibleClips,
+  autoCaptionEveryClip,
+  autoCaptionFromClip,
+  captionFailureMessage,
+  forgetHeard,
+  useTranscribe,
+  wordsForClip,
+} from './transcribeActions'
 
 const seq = (): Sequence => activeSequence(useStore.getState().project)
 const asset = (id: string): MediaAsset => ({
@@ -157,7 +184,10 @@ beforeEach(() => {
   heard.length = 0
   for (const k of Object.keys(heardAt)) delete heardAt[k]
   midRun.fn = null
+  midRun.answered = null
+  midRun.silent = false
   toasted.length = 0
+  toastKinds.length = 0
   useStore.getState().setProject(newProject())
   useStore.getState().setUI({ selection: [], playheadS: 0 })
   useTranscribe.setState({ status: 'idle', pct: null, downloading: false, cancel: null, queue: null })
@@ -461,6 +491,30 @@ describe('editing the timeline while a sweep is running', () => {
     expect(heard).toEqual(['clip-a'])
     expect(toasted.join(' ')).toContain('left the timeline while this ran')
   })
+
+  // The clips that left are said before "No speech found": when the clip that is
+  // left says nothing, "no speech in any clip" hides that one was never heard.
+  it('says a clip left the timeline even when the clips that are left say nothing', async () => {
+    seedAudio([
+      { id: 'a', startS: 0 },
+      { id: 'b', startS: 5 },
+    ])
+    midRun.silent = true
+    midRun.fn = () => {
+      if (heard.length !== 1) return
+      updateActiveSequence('he deleted it', (sq) => ({
+        ...sq,
+        tracks: sq.tracks.map((t) => ({ ...t, clips: t.clips.filter((c) => c.id !== 'clip-b') })),
+      }))
+    }
+    try {
+      await autoCaptionEveryClip()
+    } finally {
+      midRun.silent = false
+    }
+    expect(toasted.join(' ')).toContain('1 clip left the timeline while this ran')
+    expect(toasted).not.toContain('No speech found in any clip')
+  })
 })
 
 // ⛔ 2026-09-23, an open caption finding closed. A reversed clip's sound is his
@@ -548,5 +602,180 @@ describe('a pooled sweep does not wipe a caption sitting between the clips it co
       ?.clips.map((c) => c.title?.text)
     expect(texts).not.toContain('stale')
     expect(texts).toContain('clip-a')
+  })
+})
+
+/** What the Captions track says, in order. */
+const captionTexts = (): (string | undefined)[] =>
+  videoTracks(seq())
+    .find((t) => t.name === CAPTION_TRACK_NAME)
+    ?.clips.map((c) => c.title?.text) ?? []
+
+// CA-14. The Stop was whatever the step in flight had handed over: nothing while
+// a clip's sound was read, and the recogniser's own cancel after it had already
+// answered, which does nothing. So a Stop at either moment was swallowed and
+// the sweep went on through the rest of the timeline.
+describe('Stop', () => {
+  const three = (): void =>
+    seedAudio([
+      { id: 'a', startS: 0 },
+      { id: 'b', startS: 4 },
+      { id: 'c', startS: 8 },
+    ])
+  const stop = (): void => useTranscribe.getState().cancel?.()
+
+  beforeEach(() => forgetHeard())
+
+  it('is offered the whole time a job works, from its first moment to its last', async () => {
+    three()
+    const without: string[] = []
+    const off = useTranscribe.subscribe((s) => {
+      if (s.status !== 'idle' && !s.cancel) without.push(s.status)
+    })
+    await autoCaptionEveryClip()
+    await autoCaptionFromClip('clip-b')
+    off()
+    expect(without).toEqual([])
+  })
+
+  it('pressed while clip 2 is being read: clip 3 is never heard, and clip 1 is captioned', async () => {
+    three()
+    midRun.fn = () => {
+      if (heard.length === 2) stop()
+    }
+    await autoCaptionEveryClip()
+    expect(heard).toEqual(['clip-a', 'clip-b'])
+    expect(captionTexts()).toEqual(['clip-a'])
+    expect(toasted).toContain('Stopped early, captioned what was heard so far')
+    expect(useTranscribe.getState().status).toBe('idle')
+  })
+
+  it('pressed just as the recogniser answers: the sweep ends there', async () => {
+    three()
+    midRun.answered = () => {
+      if (heard.length === 2) stop()
+    }
+    await autoCaptionEveryClip()
+    expect(heard).toEqual(['clip-a', 'clip-b'])
+    expect(captionTexts()).toEqual(['clip-a'])
+  })
+
+  // N-7 (CA-20). Stopping is his choice and a silent timeline is a fact:
+  // neither is a failure, so neither comes up red.
+  it('pressed before any clip was heard: said as information, not as a failure', async () => {
+    three()
+    midRun.fn = stop
+    await autoCaptionEveryClip()
+    expect(captionTexts()).toEqual([])
+    expect(kindOf('Stopped before anything was heard')).not.toBe('danger')
+  })
+
+  it('pressed on one clip: nothing is captioned and nothing is said wrong', async () => {
+    three()
+    midRun.fn = stop
+    await autoCaptionFromClip('clip-b')
+    expect(captionTexts()).toEqual([])
+    expect(toasted.filter((t) => /failed|could not/i.test(t))).toEqual([])
+    expect(useTranscribe.getState().status).toBe('idle')
+  })
+})
+
+// Found while fixing CA-14: the silence cutter calls wordsForClip on its own,
+// with no door around it, and nothing ever cleared the pill it set going. After
+// one "Cut the quiet parts" the pill read "Listening for words" for good and every
+// caption door said a transcription was already running, until a restart.
+describe('a clip heard with no door around it (the silence cutter)', () => {
+  beforeEach(() => forgetHeard())
+
+  it('leaves the pill idle when it is done, so captions work again', async () => {
+    seedAudio([{ id: 'a', startS: 0 }])
+    const clip = seq().tracks.flatMap((t) => t.clips).find((c) => c.id === 'clip-a')!
+    await wordsForClip(clip, useStore.getState().project.assets.a!)
+    expect(useTranscribe.getState().status).toBe('idle')
+    await autoCaptionEveryClip()
+    expect(captionTexts()).toEqual(['clip-a'])
+  })
+
+  it('leaves the pill idle when it fails too', async () => {
+    seedAudio([{ id: 'a', startS: 0 }])
+    const clip = seq().tracks.flatMap((t) => t.clips).find((c) => c.id === 'clip-a')!
+    midRun.fn = () => {
+      throw new Error('clip has no decodable audio')
+    }
+    await expect(wordsForClip(clip, useStore.getState().project.assets.a!)).rejects.toThrow('decodable')
+    expect(useTranscribe.getState().status).toBe('idle')
+  })
+
+  it("is refused while a caption job runs, and leaves that job's pill alone", async () => {
+    seedAudio([{ id: 'a', startS: 0 }])
+    const clip = seq().tracks.flatMap((t) => t.clips).find((c) => c.id === 'clip-a')!
+    useTranscribe.setState({ status: 'listening', queue: { index: 2, total: 5 } })
+    await expect(wordsForClip(clip, useStore.getState().project.assets.a!)).rejects.toThrow('already running')
+    expect(useTranscribe.getState().status).toBe('listening')
+    expect(useTranscribe.getState().queue).toEqual({ index: 2, total: 5 })
+  })
+})
+
+// CA-20. Every failure nobody recognised was blamed on the connection, with the
+// model long since on his disk.
+describe('what a failed caption run says', () => {
+  beforeEach(() => forgetHeard())
+
+  it('names the connection only when the model was really downloading', () => {
+    const odd = new Error('Session already ended')
+    expect(captionFailureMessage(odd)).toBe('Captions failed. Try again, and if it keeps failing, restart the app')
+    expect(captionFailureMessage(odd, true)).toBe(
+      'Captions failed. The speech model downloads once and needs a connection the first time',
+    )
+    // The failures it knows by name still say what they are.
+    expect(captionFailureMessage(new Error('clip has no decodable audio'))).toBe(
+      'That clip has no sound the app can read, so there is nothing to caption',
+    )
+    expect(captionFailureMessage(new Error('The speech model stopped responding'), true)).toBe(
+      'The speech model stopped responding, so nothing was captioned. Try that clip again',
+    )
+  })
+
+  it('no speech in any clip is information; clips that could not be read are the failure', async () => {
+    seedAudio([
+      { id: 'a', startS: 0 },
+      { id: 'b', startS: 4 },
+      { id: 'c', startS: 8 },
+    ])
+    midRun.silent = true
+    try {
+      await autoCaptionEveryClip()
+      expect(kindOf('No speech found in any clip')).not.toBe('danger')
+    } finally {
+      midRun.silent = false
+    }
+    toasted.length = 0
+    toastKinds.length = 0
+    forgetHeard()
+    midRun.fn = () => {
+      throw new Error('clip has no decodable audio')
+    }
+    await autoCaptionEveryClip()
+    expect(toasted).not.toContain('No speech found in any clip')
+    expect(kindOf('3 clips could not be read')).toBe('danger')
+  })
+
+  it('a clip whose model is on disk: try again, not check the internet', async () => {
+    seedAudio([{ id: 'a', startS: 0 }])
+    midRun.answered = () => {
+      throw new Error('Session already ended')
+    }
+    await autoCaptionFromClip('clip-a')
+    expect(toasted).toContain('Captions failed. Try again, and if it keeps failing, restart the app')
+  })
+
+  it('a clip whose model was coming off the network: the connection', async () => {
+    seedAudio([{ id: 'a', startS: 0 }])
+    midRun.answered = (onProgress) => {
+      onProgress({ phase: 'model', pct: 40, downloading: true })
+      throw new Error('Failed to fetch')
+    }
+    await autoCaptionFromClip('clip-a')
+    expect(toasted).toContain('Captions failed. The speech model downloads once and needs a connection the first time')
   })
 })

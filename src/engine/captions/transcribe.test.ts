@@ -9,6 +9,7 @@ import {
   wordsFromAsrChunks,
   type AsrChunk,
 } from './transcribe'
+import { modelFor } from './transcribeConfig'
 
 const chunk = (text: string, start: number, end: number | null): AsrChunk => ({
   text,
@@ -91,15 +92,36 @@ describe('tidyTranscribedWords', () => {
   const w = (text: string, startS: number, endS: number) => ({ text, startS, endS })
 
   it('collapses a recogniser loop but keeps a genuine repeat', () => {
-    // Whisper skipping: the same token again with no audible gap.
+    // Whisper skipping: the same token over and over, far too short to be said.
     const looped = tidyTranscribedWords([
-      w('the', 0.0, 0.2), w('the', 0.2, 0.4), w('the', 0.4, 0.6), w('wall', 0.6, 1.0),
+      w('the', 0.0, 0.02), w('the', 0.02, 0.04), w('the', 0.04, 0.06), w('wall', 0.6, 1.0),
     ])
     expect(looped.map((x) => x.text)).toEqual(['the', 'wall'])
+    expect(looped[0].endS).toBeCloseTo(0.06, 9)
 
-    // Actually saying a word twice leaves a real gap between them.
+    // A repeat after a real gap was always kept.
     const real = tidyTranscribedWords([w('go', 0.0, 0.3), w('go', 0.9, 1.2)])
     expect(real).toHaveLength(2)
+  })
+
+  // ⛔ CA-2. His words tile with NO gap inside a phrase (97 of 131 boundaries
+  // measured at exactly 0.00 s), so a gap could never tell a loop from him
+  // saying a word twice, and every one of these lost its repeats.
+  it('keeps a word he really says twice or three times, back to back', () => {
+    const tile = (said: string[], dur: number) => said.map((t, i) => w(t, i * dur, (i + 1) * dur))
+    expect(tidyTranscribedWords(tile(['very', 'very', 'good'], 0.3)).map((x) => x.text)).toEqual(['very', 'very', 'good'])
+    expect(tidyTranscribedWords(tile(['no', 'no', 'no'], 0.25)).map((x) => x.text)).toEqual(['no', 'no', 'no'])
+    expect(tidyTranscribedWords(tile(['go', 'go', 'go', 'one', 'more'], 0.2)).map((x) => x.text)).toEqual([
+      'go', 'go', 'go', 'one', 'more',
+    ])
+    expect(tidyTranscribedWords(tile(['bye', 'bye'], 0.3)).map((x) => x.text)).toEqual(['bye', 'bye'])
+    expect(tidyTranscribedWords(tile(['I', 'I', 'think'], 0.15)).map((x) => x.text)).toEqual(['I', 'I', 'think'])
+  })
+
+  it('still drops a copy written over the same moment, which no one can say', () => {
+    // A chunk seam: "my" then "my" again 0.02 s later, on top of the first.
+    const out = tidyTranscribedWords([w('my', 20.72, 21), w('my', 20.74, 21), w('god', 21, 21.3)])
+    expect(out.map((x) => x.text)).toEqual(['my', 'god'])
   })
 
   describe('a bare stage direction, which no bracket filter can see', () => {
@@ -164,8 +186,8 @@ describe('tidyTranscribedWords', () => {
     const different = tidyTranscribedWords([w('ó', 0, 0.2), w('á', 0.25, 0.5)])
     expect(different.map((x) => x.text)).toEqual(['ó', 'á'])
 
-    // A real repeat of the same accented word with no audible gap still collapses.
-    const looped = tidyTranscribedWords([w('ó', 0, 0.2), w('ó', 0.25, 0.5)])
+    // A loop of the same accented word still collapses.
+    const looped = tidyTranscribedWords([w('ó', 0, 0.03), w('ó', 0.03, 0.06), w('ó', 0.06, 0.09)])
     expect(looped.map((x) => x.text)).toEqual(['ó'])
   })
 
@@ -402,6 +424,58 @@ describe('transcribePcm run lifecycle', () => {
     expect(worker.count()).toBe(0)
     const next = transcribePcm(minute(), 'en', () => {})
     expect(FakeWorker.last).not.toBe(worker)
+    next.promise.catch(() => {})
+    next.cancel()
+  })
+
+  // CA-15. When the GPU fails at inference the worker downloads the wasm
+  // weights in the middle of the run, and the listening budget used to keep
+  // running from the GPU's start: the download was killed half way.
+  it('a fallback that downloads its weights mid run is waited for while the download moves', async () => {
+    const run = transcribePcm(minute(), 'en', () => {})
+    const worker = FakeWorker.last!
+    const outcome = run.promise.then(
+      (chunks) => chunks.length,
+      (err: unknown) => String(err instanceof Error ? err.message : err),
+    )
+    worker.emit({ type: 'progress', phase: 'listening', pct: null })
+    await vi.advanceTimersByTimeAsync(20_000)
+    // Twenty minutes of download, far past the eleven minute budget for a minute
+    // of audio, reporting every thirty seconds.
+    for (let i = 0; i < 40; i++) {
+      worker.emit({ type: 'progress', phase: 'model', pct: i * 2.5, downloading: true })
+      await vi.advanceTimersByTimeAsync(30_000)
+    }
+    expect(worker.terminated).toBe(false)
+    worker.emit({ type: 'progress', phase: 'listening', pct: null })
+    await vi.advanceTimersByTimeAsync(5_000)
+    worker.emit({ type: 'done', chunks: [{ text: ' hey', timestamp: [0, 0.2] }] })
+    expect(await outcome).toBe(1)
+  })
+
+  it('a fallback load that stops reporting is still given up on', async () => {
+    const run = transcribePcm(minute(), 'en', () => {})
+    const worker = FakeWorker.last!
+    const gaveUp = expect(run.promise).rejects.toThrow('stopped responding')
+    worker.emit({ type: 'progress', phase: 'listening', pct: null })
+    worker.emit({ type: 'progress', phase: 'model', pct: 10, downloading: true })
+    await vi.advanceTimersByTimeAsync(60_000 + 60 * 10_000 + 1)
+    await gaveUp
+    expect(worker.terminated).toBe(true)
+  })
+
+  it('the GPU failure count outlives a killed worker, and goes with the next run', async () => {
+    const run = transcribePcm(minute(), 'en', () => {})
+    const worker = FakeWorker.last!
+    worker.emit({ type: 'progress', phase: 'listening', pct: null })
+    worker.emit({ type: 'gpuFailed', model: modelFor('en'), failures: 1 })
+    // Not an error: the run goes on, on the fallback.
+    expect(worker.terminated).toBe(false)
+    run.cancel()
+    await expect(run.promise).rejects.toEqual({ cancelled: true })
+    const next = transcribePcm(minute(), 'en', () => {})
+    expect(FakeWorker.last).not.toBe(worker)
+    expect(FakeWorker.last!.posted[0]).toMatchObject({ language: 'en', gpuFailures: 1 })
     next.promise.catch(() => {})
     next.cancel()
   })

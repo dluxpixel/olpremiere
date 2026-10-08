@@ -7,6 +7,7 @@ import { newTitleClip, type Clip, type TitleDef } from '../types'
 import {
   AUTO_CAPTION_OPTIONS,
   captionClips,
+  captionHouseCase,
   chunkWords,
   jettismCaptionDef,
   type CaptionWord,
@@ -16,6 +17,7 @@ import {
   BUILTIN_CAPTION_STYLES,
   breakLines,
   captionDefFor,
+  captionFitterFor,
   chunkOptionsFor,
   cleanShape,
   cleanStyle,
@@ -28,6 +30,7 @@ import {
   type CaptionShape,
   type CaptionStyle,
 } from './captionStyle'
+import { captionLineWidthPx, captionTextWidthPx } from './captionFit'
 
 const HOUSE = BUILTIN_CAPTION_STYLES[0]!
 
@@ -191,7 +194,13 @@ describe('cutting finished captions again', () => {
     // He retyped "store" as "shop" on whichever caption holds it.
     const at = before.findIndex((c) => c.title!.text.split(' ').includes('store'))
     before[at] = { ...before[at]!, title: { ...before[at]!.title!, text: before[at]!.title!.text.replace('store', 'shop') } }
-    const after = recutCaptions(before, style({ shape: fixed({ maxWords: 12, charsPerLine: 60 }) }), seq)
+    // Small letters: a 60 letter line only fits across the frame at about 28 px,
+    // and a caption never holds more than fits (CA-4).
+    const after = recutCaptions(
+      before,
+      style({ shape: fixed({ maxWords: 12, charsPerLine: 60 }), look: { fontSizePx: 28 }, refHeight: 1920 }),
+      seq,
+    )
     expect(after.map((c) => c.title!.text).join(' ')).toContain('the shop and')
     const origins = after.map((c) => c.captionOrigin)
     expect(origins.every((o) => o?.model === 'whisper-small')).toBe(true)
@@ -245,5 +254,47 @@ describe('a look saved before caption styles existed', () => {
     const fresh = newTitleClip(jettismCaptionDef('hello', 1920), 0, 0.5)
     const old: TitleDef = { ...fresh.title!, ...legacy.style }
     expect(dressCaption(fresh, s, 1080, 1920).title).toEqual(old)
+  })
+})
+
+// ⛔ CA-4. The 14 letter cap was measured for lowercase house captions on a
+// 1080x1920 frame. Measured on the shipped Montserrat at the weight bold draws:
+// "something else" is 846 px lowercase and 977 px UPPERCASE, against a 950 px
+// line. A caption that does not fit wraps onto two lines, or past the frame.
+describe('a caption holds only what fits across the frame', () => {
+  const SHORT = { width: 1080, height: 1920, fps: 30 }
+  const PHONE = { width: 1080, height: 2112, fps: 30 }
+  const YELLOW = BUILTIN_CAPTION_STYLES.find((s) => s.id === 'builtin-yellow-pop')!
+  const cut = (style: CaptionStyle, words: CaptionWord[], seq = SHORT): string[] =>
+    chunkWords(words, chunkOptionsFor(style.shape, seq.fps, captionFitterFor(style, seq, captionHouseCase))).map((c) => c.text)
+  const pair = said('something else', 0, 0.2)
+
+  it('the house style keeps a pair that fits', () => {
+    expect(cut(HOUSE, pair)).toEqual(['something else'])
+  })
+
+  it('an UPPERCASE style splits a pair that would wrap', () => {
+    expect(cut(YELLOW, pair)).toEqual(['something', 'else'])
+  })
+
+  it('a bigger style puts one word in each caption', () => {
+    const big: CaptionStyle = { ...HOUSE, id: 'big', builtin: false, look: { fontSizePx: 160 }, refHeight: 1920 }
+    expect(cut(big, said('diamonds now', 0, 0.2))).toEqual(['diamonds', 'now'])
+  })
+
+  it('a lowercase pair wider than the line is split too', () => {
+    // "awesome moment" is 14 letters, inside the old cap, and 1034 px wide.
+    expect(cut(HOUSE, said('awesome moment', 0, 0.2))).toEqual(['awesome', 'moment'])
+  })
+
+  it('one word too wide for the line is drawn smaller, inside the frame', () => {
+    const clip = newTitleClip(jettismCaptionDef('extraordinary', PHONE.height), 0, 1)
+    const dressed = dressCaption(clip, YELLOW, PHONE.width, PHONE.height)
+    const def = dressed.title!
+    expect(captionTextWidthPx('EXTRAORDINARY', def.fontSizePx)).toBeLessThanOrEqual(captionLineWidthPx(PHONE.width))
+    expect(def.fontSizePx).toBeLessThan(captionDefFor(YELLOW, 'extraordinary', PHONE.height).fontSizePx)
+    // A word that fits keeps the style's size.
+    const short = dressCaption(newTitleClip(jettismCaptionDef('diamonds', PHONE.height), 0, 1), YELLOW, PHONE.width, PHONE.height)
+    expect(short.title!.fontSizePx).toBe(captionDefFor(YELLOW, 'diamonds', PHONE.height).fontSizePx)
   })
 })

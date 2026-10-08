@@ -631,3 +631,30 @@ describe('rules compose instead of fighting', () => {
     expect(chunks.map((c) => c.text)).toEqual(['we found', 'these gems!'])
   })
 })
+
+// CA-13. With a fixed length the highlight is coloured inside the phrase, not
+// cut out of it: "i hit a new personal" | "record" | "on bench" was one phrase.
+describe('a highlight inside a fixed length caption', () => {
+  const phrase = (): CaptionWord[] =>
+    ['i', 'hit', 'a', 'new', 'personal', 'record', 'on', 'bench'].map((t, i) => w(t, i * 0.25, (i + 1) * 0.25, t === 'record'))
+  const fixedOptions = { ...AUTO_CAPTION_OPTIONS, targetS: 0, maxWords: 8, maxChars: 48, maxOnScreenS: 5.5, emphasisBreaks: false }
+
+  it('stays one caption, with the lit word marked inside it', () => {
+    const chunks = chunkWords(phrase(), fixedOptions)
+    expect(chunks.map((c) => c.text)).toEqual(['i hit a new personal record on bench'])
+    expect(chunks[0]!.emphasis).toBe(false)
+    expect(chunks[0]!.words!.map((x) => !!x.emphasis)).toEqual([false, false, false, false, false, true, false, false])
+  })
+
+  it('and the caption made of it colours that word, in the highlight colour', () => {
+    const [clip] = captionClips(chunkWords(phrase(), fixedOptions), { seqWidth: 1080, seqHeight: 1920, emphasisColor: '#ff00ff' })
+    expect(clip!.title!.wordColors).toEqual([{ at: 5, word: 'record', color: '#ff00ff' }])
+    expect(clip!.title!.color).not.toBe('#ff00ff')
+    expect(clip!.captionEmphasis).toBeUndefined()
+  })
+
+  it('the auto length still gives the lit word a caption of its own', () => {
+    const chunks = chunkWords(phrase(), AUTO_CAPTION_OPTIONS)
+    expect(chunks.find((c) => c.emphasis)!.text).toBe('record')
+  })
+})

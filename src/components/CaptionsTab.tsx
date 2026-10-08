@@ -59,13 +59,18 @@ import {
 import { CAPTION_FONT_STACK, TITLE_FONT_OPTIONS, ensureTitleFont } from '../engine/render/titleFonts'
 import { clipEndS } from '../engine/timeline'
 import { activeSequence, type AppearanceSpec, type Clip, type EffectInstance } from '../engine/types'
-import { applyCaptionStyle, captionsOn, setCaptionText } from '../state/captionActions'
+import { applyCaptionStyle, captionsOn, captionsToReplace, replaceInCaptions, setCaptionText } from '../state/captionActions'
 import {
   captionJobLabel,
   captionJobProgress,
   captionTargets,
   captionTheseClips,
-  voiceoverClipId,
+  captionTheVoiceover,
+  uncaptionedTargets,
+  uncaptionedVoiceoverClipIds,
+  voiceoverClipIds,
+  voiceoverLabel,
+  voiceoverTrackId,
 } from '../state/captionRun'
 import {
   allCaptionStyles,
@@ -82,7 +87,7 @@ import {
 import { askForName } from '../state/namePrompt'
 import { useStore } from '../state/store'
 import { useToasts } from '../state/toasts'
-import { audibleClips, autoCaptionEveryClip, autoCaptionFromClip, useTranscribe } from '../state/transcribeActions'
+import { audibleClips, autoCaptionEveryClip, useTranscribe } from '../state/transcribeActions'
 import { Button, IconButton } from '../ui/Button'
 import { createArmedDelete, type ArmedDelete } from './armedDelete'
 import { CaptionsDialog, type ScriptMode } from './CaptionsDialog'
@@ -334,10 +339,22 @@ function CreatePart({ onScript }: { onScript: (mode: ScriptMode) => void }) {
     void project
     return audibleClips()
   }, [project])
-  const hasVoice = useMemo(() => {
+  // Clips with no caption yet, offered on their own once some are captioned,
+  // so adding two clips does not mean hearing (and replacing) all twenty again.
+  const fresh = useMemo(() => {
     void project
-    return voiceoverClipId() !== null
+    return uncaptionedTargets()
   }, [project])
+  // How many takes "Caption the voiceover" would hear, and how many of them
+  // have no captions yet. Worked out when the project changes or the playhead
+  // moves onto another voice track, never per frame: the click asks again.
+  const voiceTrack = useStore(voiceoverTrackId)
+  const { voiceTakes, freshTakes } = useMemo(() => {
+    void project
+    void voiceTrack
+    return { voiceTakes: voiceoverClipIds().length, freshTakes: uncaptionedVoiceoverClipIds().length }
+  }, [project, voiceTrack])
+  const hasVoice = voiceTakes > 0
   const selectedSound = useMemo(() => {
     const seq = activeSequence(project)
     return seq.tracks.some((t) => t.clips.some((c) => selection.includes(c.id) && !c.title && project.assets[c.assetId]?.hasAudio))
@@ -347,18 +364,24 @@ function CreatePart({ onScript }: { onScript: (mode: ScriptMode) => void }) {
 
   const n = targets.length
   const fromSelection = n > 0 || selectedSound
-  const primaryLabel = n > 1 ? `Caption ${n} selected clips` : fromSelection ? 'Caption this clip' : 'Caption the voiceover'
+  const primaryLabel =
+    n > 1
+      ? `Caption ${n} selected clips`
+      : fromSelection
+        ? 'Caption this clip'
+        : voiceoverLabel(voiceTakes, freshTakes)
   const primaryTitle = fromSelection
     ? 'Listen to what you selected and caption it, in one undo step'
-    : 'Nothing selected, so this captions the voiceover under the playhead, or the first one on the timeline'
+    : freshTakes > 0
+      ? 'Nothing selected, so this captions the takes on the voiceover track that have no captions yet, in one undo step. Takes you captioned stay as they are'
+      : 'Every voiceover take has captions already. Press to be asked whether to hear them all again and replace them, your fixes included'
 
   const runPrimary = (): void => {
     if (fromSelection) {
       void captionTheseClips(selection)
       return
     }
-    const id = voiceoverClipId()
-    if (id) void autoCaptionFromClip(id)
+    void captionTheVoiceover()
   }
 
   const skipped = every.skippedLocked + every.skippedMusic + every.skippedSilent + every.skippedReversed
@@ -402,6 +425,18 @@ function CreatePart({ onScript }: { onScript: (mode: ScriptMode) => void }) {
             <Layers size={14} strokeWidth={1.5} />
             Caption every clip
           </Button>
+          {fresh.length > 0 && fresh.length < every.targets.length && (
+            <Button
+              variant="secondary"
+              data-testid="captions-auto-new"
+              title="Caption only the clips that have no captions yet, and leave the rest as they are"
+              onClick={() => void autoCaptionEveryClip(undefined, new Set(fresh))}
+              className="justify-center"
+            >
+              <Layers size={14} strokeWidth={1.5} />
+              {fresh.length === 1 ? 'Caption the 1 clip with no captions' : `Caption the ${fresh.length} clips with no captions`}
+            </Button>
+          )}
         </div>
       )}
       <p data-testid="captions-hint" className="text-[11px] leading-snug text-text-muted">
@@ -471,7 +506,7 @@ function CreatePart({ onScript }: { onScript: (mode: ScriptMode) => void }) {
           onClick={() => onScript('paste')}
           className="cursor-default rounded-field px-1 text-text-secondary underline-offset-2 hover:text-text-primary hover:underline disabled:opacity-40"
         >
-          Paste a transcript
+          Paste a script
         </button>
         <span aria-hidden>·</span>
         <button
@@ -498,6 +533,7 @@ interface Draft {
   emphasisColor: string
   appearance?: AppearanceSpec
   effects?: EffectInstance[]
+  caseRule?: 'spoken'
 }
 
 function draftOf(style: CaptionStyle, seqHeight: number): Draft {
@@ -507,6 +543,7 @@ function draftOf(style: CaptionStyle, seqHeight: number): Draft {
     emphasisColor: style.emphasisColor,
     ...(style.appearance ? { appearance: style.appearance } : {}),
     ...(style.effects?.length ? { effects: style.effects } : {}),
+    ...(style.caseRule ? { caseRule: style.caseRule } : {}),
   }
 }
 
@@ -519,6 +556,7 @@ const fieldsOf = (s: CaptionStyle): CaptionStyleDraft => ({
   emphasisColor: s.emphasisColor,
   appearance: s.appearance,
   effects: s.effects,
+  caseRule: s.caseRule,
 })
 
 /** The edited style, as the thing to save or put on captions. Sizes are this sequence's. */
@@ -531,6 +569,7 @@ function styleOf(base: CaptionStyle, d: Draft, seqHeight: number): CaptionStyle 
     emphasisColor: d.emphasisColor,
     appearance: d.appearance,
     effects: d.effects,
+    caseRule: d.caseRule,
   }
 }
 
@@ -573,9 +612,9 @@ function StylePreview({ draft, seqHeight }: { draft: Draft; seqHeight: number })
           textAlign: 'center',
         }}
       >
-        {word('this is ')}
+        {word(draft.caseRule === 'spoken' ? 'This is ' : 'this is ')}
         {word('the', draft.emphasisColor)}
-        {word(' caption')}
+        {word(draft.caseRule === 'spoken' ? ' caption.' : ' caption')}
       </span>
     </div>
   )
@@ -628,6 +667,13 @@ function StyleEditor({ style, seqHeight, onPick }: { style: CaptionStyle; seqHei
   const look = draft.look
   const setLook = (patch: CaptionLook): void => setDraft((d) => ({ ...d, look: { ...d.look, ...patch } }))
   const setShape = (patch: Partial<CaptionShape>): void => setDraft((d) => ({ ...d, shape: cleanShape({ ...d.shape, ...patch }) }))
+  const setCase = (rule: 'spoken' | undefined, textCase: 'upper' | null): void =>
+    setDraft((d) => {
+      const out: Draft = { ...d, look: { ...d.look, textCase } }
+      if (rule) out.caseRule = rule
+      else delete out.caseRule
+      return out
+    })
   const setAppearance = (patch: AppearanceSpec): void =>
     setDraft((d) => {
       const next = { ...d.appearance, ...patch }
@@ -786,30 +832,34 @@ function StyleEditor({ style, seqHeight, onPick }: { style: CaptionStyle; seqHei
               <Italic size={14} strokeWidth={1.5} />
             </IconButton>
             <div className="mx-0.5 h-4 w-px bg-border" />
+            {/* ⛔ "As spoken" used to only switch off the draw time case, and every
+                run had already written its words in the house lowercase with the
+                full stops gone, so it looked exactly like lowercase. The case is
+                now a rule the run writes the words in: house, or as spoken. */}
             <IconButton
               size="compact"
-              label="As spoken"
-              active={!look.textCase}
-              data-testid="caption-style-case-asis"
-              onClick={() => setLook({ textCase: null })}
+              label="house lowercase"
+              active={look.textCase !== 'upper' && draft.caseRule !== 'spoken'}
+              data-testid="caption-style-case-lower"
+              onClick={() => setCase(undefined, null)}
             >
-              <CaseSensitive size={15} strokeWidth={1.5} />
+              <CaseLower size={15} strokeWidth={1.5} />
             </IconButton>
             <IconButton
               size="compact"
-              label="lowercase"
-              active={look.textCase === 'lower'}
-              data-testid="caption-style-case-lower"
-              onClick={() => setLook({ textCase: 'lower' })}
+              label="As spoken, with capitals and full stops"
+              active={look.textCase !== 'upper' && draft.caseRule === 'spoken'}
+              data-testid="caption-style-case-asis"
+              onClick={() => setCase('spoken', null)}
             >
-              <CaseLower size={15} strokeWidth={1.5} />
+              <CaseSensitive size={15} strokeWidth={1.5} />
             </IconButton>
             <IconButton
               size="compact"
               label="UPPERCASE"
               active={look.textCase === 'upper'}
               data-testid="caption-style-case-upper"
-              onClick={() => setLook({ textCase: 'upper' })}
+              onClick={() => setCase(draft.caseRule, 'upper')}
             >
               <CaseUpper size={15} strokeWidth={1.5} />
             </IconButton>
@@ -1245,14 +1295,33 @@ const CaptionRow = memo(function CaptionRow({
   )
 })
 
+/**
+ * The caption on screen at `t`. Captions never overlap on a track, so the last
+ * one that has started is the only candidate.
+ */
+function captionIdAt(items: readonly { clip: Clip }[], t: number): string | null {
+  let lo = 0
+  let hi = items.length - 1
+  let found = -1
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1
+    if (items[mid]!.clip.startS <= t + 1e-6) {
+      found = mid
+      lo = mid + 1
+    } else hi = mid - 1
+  }
+  const hit = found >= 0 ? items[found]!.clip : undefined
+  return hit && t < clipEndS(hit) ? hit.id : null
+}
+
 function CaptionList() {
   const project = useStore((s) => s.project)
-  const playheadS = useStore((s) => s.ui.playheadS)
   const playing = useStore((s) => s.ui.playing)
   const selection = useStore((s) => s.ui.selection)
   const seq = activeSequence(project)
   const items = useMemo(() => captionsOn(seq), [seq])
   const [query, setQuery] = useState('')
+  const [replaceWith, setReplaceWith] = useState('')
   const q = query.trim().toLowerCase()
   // The row he is typing in stays on screen while he is in it, even once his
   // words no longer match the search. Ctrl+S writes them with his caret still
@@ -1271,25 +1340,24 @@ function CaptionList() {
         : items,
     [items, q, typingIn],
   )
+  // Whole words only, so this can be fewer than the search shows: "cat" finds
+  // "cats", and replacing it there would make a word nobody said.
+  const replaceable = useMemo(() => (q ? captionsToReplace(seq, query) : 0), [seq, q, query])
+  const replaceAll = (): void => {
+    const { replaced, locked } = replaceInCaptions(query, replaceWith)
+    if (locked > 0 && replaced === 0) toast('Your Captions track is locked, so nothing was changed', 'danger')
+    else if (replaced > 0) toast(`Replaced in ${replaced} ${replaced === 1 ? 'caption' : 'captions'}`, 'success')
+  }
   const selected = useMemo(() => new Set(selection), [selection])
   const listRef = useRef<HTMLDivElement>(null)
 
-  // The caption on screen right now. Captions never overlap on a track, so the
-  // last one that has started is the only candidate.
-  const activeId = useMemo(() => {
-    let lo = 0
-    let hi = items.length - 1
-    let found = -1
-    while (lo <= hi) {
-      const mid = (lo + hi) >> 1
-      if (items[mid]!.clip.startS <= playheadS + 1e-6) {
-        found = mid
-        lo = mid + 1
-      } else hi = mid - 1
-    }
-    const hit = found >= 0 ? items[found]!.clip : undefined
-    return hit && playheadS < clipEndS(hit) ? hit.id : null
-  }, [items, playheadS])
+  // The caption on screen right now.
+  //
+  // ⛔ THE CAPTION, NOT THE TIME (CA-12, UI-8). Playback writes the playhead to
+  // the store on every frame, and the list subscribed to it, so it was drawn
+  // again on every frame while he played. Which caption is on screen changes a
+  // few times a second, and only then does the list draw again.
+  const activeId = useStore((s) => captionIdAt(items, s.ui.playheadS))
 
   // While it plays, the list follows, unless he is reading or typing in it.
   useEffect(() => {
@@ -1328,6 +1396,33 @@ function CaptionList() {
               className="h-full min-w-0 flex-1 bg-transparent text-ui-sm text-text-primary placeholder:text-text-muted focus:outline-none"
             />
           </label>
+          {/* A misheard name is usually misheard every time (CA-17): fix it everywhere at once. */}
+          {q && (
+            <div className="mt-1.5 flex items-center gap-1.5">
+              <input
+                type="text"
+                data-testid="captions-replace"
+                aria-label="Replace with"
+                placeholder="Replace with"
+                value={replaceWith}
+                onChange={(e) => setReplaceWith(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && replaceable > 0 && replaceWith.trim()) replaceAll()
+                  else if (e.key === 'Escape') setReplaceWith('')
+                }}
+                className="h-6 min-w-0 flex-1 rounded-field bg-bg-input px-2 text-ui-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-accent"
+              />
+              <Button
+                variant="secondary"
+                data-testid="captions-replace-all"
+                disabled={replaceable === 0 || !replaceWith.trim()}
+                title="Replace the whole word in every caption, in one undo step"
+                onClick={replaceAll}
+              >
+                {`Replace all (${replaceable})`}
+              </Button>
+            </div>
+          )}
         </div>
       )}
       <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto pb-2">

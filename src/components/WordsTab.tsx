@@ -11,22 +11,76 @@
 // state/transcriptActions.ts. This file is only the surface.
 
 import { Ear, Scissors } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react'
 import { formatTimecode } from '../engine/timecode'
-import { wordSpan, wordsOnTimeline, type TimelineWord } from '../engine/transcriptCut'
+import { wordIndexAt, wordSpan, wordsOnTimeline, type TimelineWord } from '../engine/transcriptCut'
 import { activeSequence } from '../engine/types'
 import { useStore } from '../state/store'
-import { useTranscribe } from '../state/transcribeActions'
-import { cutWords, listenForWords } from '../state/transcriptActions'
+import { useTranscribe, wordLagNow } from '../state/transcribeActions'
+import { cutWords, listenForEveryClip, listenForWords } from '../state/transcriptActions'
 import { Button } from '../ui/Button'
+
+/**
+ * One clip's words. Drawn again only when something about THESE words changes:
+ * the word under the playhead moving into or out of it, or the selection.
+ */
+const WordsParagraph = memo(function WordsParagraph({
+  words,
+  offset,
+  selLo,
+  selHi,
+  current,
+  onPick,
+  onEnter,
+}: {
+  words: readonly TimelineWord[]
+  /** Where this clip's first word sits in the whole tab's list. */
+  offset: number
+  /** The selected run, as whole-tab indexes; -1 for both when none of it is here. */
+  selLo: number
+  selHi: number
+  /** The word under the playhead, as a whole-tab index; -1 when it is not here. */
+  current: number
+  onPick: (e: MouseEvent, i: number, word: TimelineWord) => void
+  onEnter: (i: number) => void
+}) {
+  return (
+    <p className="select-none px-1">
+      {words.map((word, k) => {
+        const i = offset + k
+        const selected = i >= selLo && i <= selHi && selLo >= 0
+        return (
+          <span
+            key={`${word.clipId}-${k}`}
+            data-testid="word"
+            data-index={i}
+            data-at={word.atS}
+            data-selected={selected || undefined}
+            className={`cursor-text rounded-inner px-0.5 ${
+              selected
+                ? 'bg-accent-quiet text-accent'
+                : i === current
+                  ? 'text-text-primary underline decoration-accent underline-offset-2'
+                  : 'text-text-primary hover:bg-bg-elevated'
+            }`}
+            onMouseDown={(e) => onPick(e, i, word)}
+            onMouseEnter={() => onEnter(i)}
+          >
+            {word.text}{' '}
+          </span>
+        )
+      })}
+    </p>
+  )
+})
 
 export function WordsTab() {
   const project = useStore((s) => s.project)
-  const playheadS = useStore((s) => s.ui.playheadS)
-  const setUI = useStore((s) => s.setUI)
   const status = useTranscribe((s) => s.status)
+  const hearing = useTranscribe((s) => s.clipId)
   const seq = activeSequence(project)
-  const rows = useMemo(() => wordsOnTimeline(seq, project.assets), [seq, project.assets])
+  // Words kept before they were stored on time are shifted by the lag on read.
+  const rows = useMemo(() => wordsOnTimeline(seq, project.assets, wordLagNow()), [seq, project.assets])
   // One flat list so a selection can run across clips; each row knows its offset.
   const { flat, offsets } = useMemo(() => {
     const flat: TimelineWord[] = []
@@ -37,6 +91,9 @@ export function WordsTab() {
     }
     return { flat, offsets }
   }, [rows])
+
+  // Clips with no words yet that can be heard: one button listens to them all.
+  const unheard = useMemo(() => rows.filter((row) => row.words.length === 0 && row.clip.speed > 0).length, [rows])
 
   const [anchor, setAnchor] = useState<number | null>(null)
   const [focus, setFocus] = useState<number | null>(null)
@@ -68,17 +125,20 @@ export function WordsTab() {
     clear()
   }
 
-  const pick = (e: MouseEvent, i: number, word: TimelineWord): void => {
+  // Stable, so a paragraph whose words did not change is never drawn again.
+  const pick = useCallback((e: MouseEvent, i: number, word: TimelineWord): void => {
     e.preventDefault()
     panel.current?.focus()
-    if (e.shiftKey && anchor !== null) setFocus(i)
-    else {
-      setAnchor(i)
-      setFocus(i)
-    }
+    // Shift extends the run from where it started; anything else starts one here.
+    const extend = e.shiftKey
+    setAnchor((a) => (extend && a !== null ? a : i))
+    setFocus(i)
     dragging.current = true
-    setUI({ playheadS: word.atS })
-  }
+    useStore.getState().setUI({ playheadS: word.atS })
+  }, [])
+  const enter = useCallback((i: number): void => {
+    if (dragging.current) setFocus(i)
+  }, [])
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>): void => {
     if (e.key === 'Delete' || e.key === 'Backspace') {
@@ -94,14 +154,13 @@ export function WordsTab() {
   }
 
   // The word under the playhead, so the paragraph follows playback.
-  const currentIndex = useMemo(() => {
-    let found = -1
-    for (let i = 0; i < flat.length; i++) {
-      if (flat[i].atS <= playheadS + 1e-6) found = i
-      else break
-    }
-    return found >= 0 && playheadS < flat[found].endAtS + 0.35 ? found : -1
-  }, [flat, playheadS])
+  //
+  // ⛔ THE WORD, NOT THE TIME (CA-12, UI-8). Playback writes the playhead to the
+  // store on every frame, and this tab subscribed to it, so the whole tab and
+  // every word in it was drawn again up to 240 times a second while he played a
+  // clip to find what to cut. The word under the playhead changes a few times a
+  // second, and only then does anything here draw again.
+  const currentIndex = useStore((s) => wordIndexAt(flat, s.ui.playheadS))
 
   return (
     <div
@@ -126,61 +185,65 @@ export function WordsTab() {
           {span ? `${formatTimecode(span.endS - span.startS, seq.fps)} of the edit` : 'Drag across words, then Delete'}
         </span>
       </div>
+      {unheard > 1 && (
+        <div className="px-2 pb-2">
+          <Button
+            variant="secondary"
+            data-testid="listen-every-clip"
+            disabled={status !== 'idle'}
+            onClick={() => void listenForEveryClip()}
+            className="w-full justify-center"
+          >
+            <Ear size={14} strokeWidth={1.5} />
+            {`Listen to all ${unheard} clips`}
+          </Button>
+        </div>
+      )}
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3 text-[12px] leading-6">
         {rows.length === 0 && (
           <p className="px-1 text-text-muted">Put a clip with sound on the timeline and its words show up here.</p>
         )}
-        {rows.map((row, r) => (
-          <section key={row.clip.id} data-testid="words-clip" className="mb-3">
-            <div className="mb-1 flex items-center justify-between gap-2 text-[11px] text-text-secondary">
-              <span className="truncate" title={row.asset.name}>
-                {row.asset.name}
-              </span>
-              <span className="shrink-0 tabular-nums">{formatTimecode(row.clip.startS, seq.fps)}</span>
-            </div>
-            {row.words.length === 0 ? (
-              <Button
-                variant="secondary"
-                data-testid="listen-for-words"
-                disabled={status !== 'idle'}
-                onClick={() => void listenForWords(row.clip.id)}
-              >
-                <Ear size={14} strokeWidth={1.5} />
-                {status === 'idle' ? 'Listen for words' : 'Listening'}
-              </Button>
-            ) : (
-              <p className="select-none px-1">
-                {row.words.map((word, k) => {
-                  const i = offsets[r] + k
-                  const selected = sel !== null && i >= sel.lo && i <= sel.hi
-                  const current = i === currentIndex
-                  return (
-                    <span
-                      key={`${word.clipId}-${k}`}
-                      data-testid="word"
-                      data-index={i}
-                      data-at={word.atS}
-                      data-selected={selected || undefined}
-                      className={`cursor-text rounded-inner px-0.5 ${
-                        selected
-                          ? 'bg-accent-quiet text-accent'
-                          : current
-                            ? 'text-text-primary underline decoration-accent underline-offset-2'
-                            : 'text-text-primary hover:bg-bg-elevated'
-                      }`}
-                      onMouseDown={(e) => pick(e, i, word)}
-                      onMouseEnter={() => {
-                        if (dragging.current) setFocus(i)
-                      }}
-                    >
-                      {word.text}{' '}
-                    </span>
-                  )
-                })}
-              </p>
-            )}
-          </section>
-        ))}
+        {rows.map((row, r) => {
+          const from = offsets[r]
+          const to = from + row.words.length - 1
+          // Only what falls in this clip is handed down, so every other clip
+          // sees the same props as last time and is not drawn again.
+          const mine = sel !== null && sel.lo <= to && sel.hi >= from
+          return (
+            <section key={row.clip.id} data-testid="words-clip" className="mb-3">
+              <div className="mb-1 flex items-center justify-between gap-2 text-[11px] text-text-secondary">
+                <span className="truncate" title={row.asset.name}>
+                  {row.asset.name}
+                </span>
+                <span className="shrink-0 tabular-nums">{formatTimecode(row.clip.startS, seq.fps)}</span>
+              </div>
+              {row.words.length === 0 ? (
+                // Only the clip being heard says "Listening" (CA-20): during a
+                // caption run every row used to, for clips nobody was hearing.
+                <Button
+                  variant="secondary"
+                  data-testid="listen-for-words"
+                  disabled={status !== 'idle'}
+                  title={status !== 'idle' && hearing !== row.clip.id ? 'One clip is heard at a time. This one can be heard when that is done' : undefined}
+                  onClick={() => void listenForWords(row.clip.id)}
+                >
+                  <Ear size={14} strokeWidth={1.5} />
+                  {status !== 'idle' && hearing === row.clip.id ? 'Listening' : 'Listen for words'}
+                </Button>
+              ) : (
+                <WordsParagraph
+                  words={row.words}
+                  offset={from}
+                  selLo={mine ? Math.max(sel.lo, from) : -1}
+                  selHi={mine ? Math.min(sel.hi, to) : -1}
+                  current={currentIndex >= from && currentIndex <= to ? currentIndex : -1}
+                  onPick={pick}
+                  onEnter={enter}
+                />
+              )}
+            </section>
+          )
+        })}
       </div>
     </div>
   )

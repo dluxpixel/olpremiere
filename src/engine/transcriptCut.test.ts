@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { recomputeDuration } from './timeline'
-import { cutRange, heardCovers, mergeHeardSpans, mergeWords, wordSpan, wordsOnTimeline } from './transcriptCut'
+import { cutRange, heardCovers, keepHeardWords, mergeHeardSpans, mergeWords, wordSpan, wordsOnTimeline } from './transcriptCut'
 import { clipEndS, defaultTransform, type Clip, type MediaAsset, type Sequence, type SpokenWord, type Track } from './types'
 
 let n = 0
@@ -74,6 +74,34 @@ describe('wordsOnTimeline', () => {
     const rows = wordsOnTimeline(makeSeq([makeTrack({ kind: 'audio', clips: [makeClip({ assetId: 'q' })] })]), { q: quiet })
     expect(rows).toHaveLength(1)
     expect(rows[0].words).toEqual([])
+  })
+})
+
+// CA-9. Words kept before 2026-10-06 are the recogniser's raw times, about a
+// fifth of a second late; words kept since have the lag taken off and say so.
+describe('words kept before they were stored on time', () => {
+  const clip = makeClip({ startS: 0, inS: 0, outS: 5 })
+  const seq = makeSeq([makeTrack({ kind: 'audio', clips: [clip] })])
+
+  it('are read the lag earlier, once', () => {
+    const [row] = wordsOnTimeline(seq, ASSETS, 0.18)
+    expect(row.words[0].atS).toBeCloseTo(0.32, 6)
+  })
+
+  it('words already on time are read as they are', () => {
+    const [row] = wordsOnTimeline(seq, { av: { ...AV, wordsOnVoice: true } }, 0.18)
+    expect(row.words[0].atS).toBeCloseTo(0.5, 6)
+  })
+
+  it('a fresh listening puts the old words on time and marks the media', () => {
+    const next = keepHeardWords(AV, [w('new', 3.3, 3.6)], 3, 4, 0.18)
+    expect(next.wordsOnVoice).toBe(true)
+    expect(next.words!.map((x) => [x.text, +x.startS.toFixed(3)])).toEqual([
+      ['one', 0.32],
+      ['two', 1.32],
+      ['three', 2.32],
+      ['new', 3.3],
+    ])
   })
 })
 

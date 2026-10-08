@@ -64,6 +64,12 @@ export interface MediaAsset {
    */
   words?: SpokenWord[]
   /**
+   * True once `words` are where he SAID them: the recogniser's lag taken off
+   * (captions/wordTiming.ts). Words kept before 2026-10-06 have no mark and
+   * are about a fifth of a second late, so they are shifted once when read.
+   */
+  wordsOnVoice?: true
+  /**
    * The stretches of the source that have been listened to, merged and sorted,
    * so a stretch with no words in it is known to be quiet rather than not heard
    * yet. A project from before this has words and no spans, and reads as not
@@ -378,6 +384,21 @@ export interface Clip {
    */
   captionEmphasis?: true
   /**
+   * When each word this caption shows was said, in seconds of the clip's own
+   * time (where its in point is 0 at birth, so a trim or a split keeps them
+   * true). Kept so a caption cut again at another length, and back, lands every
+   * word where he said it rather than spread by its letter count. Only trusted
+   * while the caption still says exactly these words: once he retypes it, the
+   * words are spread across it as before. Absent on every other clip.
+   */
+  captionWords?: {
+    text: string
+    startS: number
+    endS: number
+    /** The key word highlight sits on this word inside a longer caption (CA-13). */
+    emphasis?: true
+  }[]
+  /**
    * Entrance / exit animation ("how it appears"). A tiny spec that COMPILES to
    * keyframes on transform + opacity channels (see engine/anim/appearance.ts).
    * It is kept alongside the compiled keyframes so a single side can be changed and
@@ -633,6 +654,20 @@ export interface TitleDef {
    * had before and the cached canvas is reused rather than duplicated.
    */
   invertBackdrop?: boolean
+  /**
+   * Words drawn in their own colour inside the title: the key word highlight of
+   * a caption that holds a whole phrase (CA-13). A title could only be one
+   * colour, so the highlight worked by cutting the word out into a caption of
+   * its own, and a Subtitles phrase came out in three: "i hit a new personal" |
+   * "record" | "on bench".
+   *
+   * Each entry names the word as well as where it sits (`at` counts the words of
+   * `text`, from 0), so a caption he retypes cannot paint the wrong word: the
+   * colour goes on the same word nearest `at`, and is simply not drawn once the
+   * word is gone. Absent on every title made before this, which draw exactly as
+   * they always did.
+   */
+  wordColors?: { at: number; word: string; color: string }[]
 }
 
 /**

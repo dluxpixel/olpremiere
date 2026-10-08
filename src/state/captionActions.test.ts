@@ -13,8 +13,20 @@ import {
   type Clip,
   type Sequence,
 } from '../engine/types'
-import { CAPTION_TRACK_NAME, addCaptionsFromWords, applyCandidateSpellings, splitTitleIntoWordCaptions } from './captionActions'
+import {
+  CAPTION_TRACK_NAME,
+  addCaptionsFromWords,
+  applyCaptionStyle,
+  applyCandidateSpellings,
+  captionsOn,
+  captionsToReplace,
+  replaceInCaptions,
+  replaceWholeWords,
+  splitTitleIntoWordCaptions,
+} from './captionActions'
+import { cutWords } from './transcriptActions'
 import { AUTO_CAPTION_TARGET_S, type CaptionWord } from '../engine/captions/captions'
+import { AUTO_SHAPE, BUILTIN_CAPTION_STYLES } from '../engine/captions/captionStyle'
 import { clipDurationS } from '../engine/timeline'
 import { updateActiveSequence, useStore } from './store'
 
@@ -194,11 +206,227 @@ describe('addCaptionsFromWords', () => {
     expect(texts).toEqual(['first', 'second'])
   })
 
+  // ⛔ CA-1. A clip's last caption is held a few frames past its last word, so
+  // it runs into the next clip. Captioning that next clip used to delete it,
+  // because "touches this run" was the rule. Now a caption belongs to the stretch
+  // it STARTS in, and the earlier of two touching captions gives way at its end.
+  const captionTrack = () => videoTracks(seq()).find((t) => t.name === CAPTION_TRACK_NAME)!
+  const clipA: CaptionWord[] = [
+    { text: 'hello', startS: 0, endS: 0.5 },
+    { text: 'world', startS: 0.6, endS: 1.0 },
+  ]
+  const clipB: CaptionWord[] = [{ text: 'next', startS: 1.0, endS: 1.4 }]
+
+  it('captioning the next clip keeps the last caption of the clip before it', () => {
+    addCaptionsFromWords(clipA, { coveredSpans: [{ startS: 0, endS: 1 }] })
+    // The hold really does carry it past the cut, which is the whole problem.
+    expect(clipDurationS(captionTrack().clips[1]) + captionTrack().clips[1].startS).toBeGreaterThan(1)
+    addCaptionsFromWords(clipB, { coveredSpans: [{ startS: 1, endS: 2 }] })
+    const clips = captionTrack().clips
+    expect(clips.map((c) => c.title?.text)).toEqual(['hello', 'world', 'next'])
+    expect(clips[1].startS).toBeCloseTo(0.6, 6)
+    expect(clips[1].startS + clipDurationS(clips[1])).toBeLessThanOrEqual(1 + 1e-9)
+    expect(clips[2].startS).toBeCloseTo(1, 6)
+  })
+
+  it('captioning the clip before keeps the first caption of the clip after it', () => {
+    addCaptionsFromWords(clipB, { coveredSpans: [{ startS: 1, endS: 2 }] })
+    addCaptionsFromWords(clipA, { coveredSpans: [{ startS: 0, endS: 1 }] })
+    const clips = captionTrack().clips
+    expect(clips.map((c) => c.title?.text)).toEqual(['hello', 'world', 'next'])
+    expect(clips[1].startS + clipDurationS(clips[1])).toBeLessThanOrEqual(1 + 1e-9)
+    expect(clips[2].startS).toBeCloseTo(1, 6)
+  })
+
   it('still replaces cleanly when he re-runs the same stretch', () => {
     addCaptionsFromWords([{ text: 'take one', startS: 0, endS: 1 }])
     addCaptionsFromWords([{ text: 'take two', startS: 0, endS: 1 }])
     const texts = videoTracks(seq()).find((t) => t.name === CAPTION_TRACK_NAME)?.clips.map((c) => c.title?.text)
     expect(texts).toEqual(['take two'])
+  })
+})
+
+// CA-9. A cut in the Words tab splits a caption in two, and both halves kept
+// the whole text, so cutting "like" out of "and like" still read "and like".
+describe('a Words tab cut through a caption', () => {
+  it('leaves each piece saying only the words still in it', () => {
+    addCaptionsFromWords([
+      { text: 'and', startS: 0, endS: 0.3 },
+      { text: 'like', startS: 0.3, endS: 0.6 },
+      { text: 'wow', startS: 1.5, endS: 1.9 },
+    ])
+    const texts = () => captionsOn(seq()).map(({ clip }) => clip.title!.text)
+    expect(texts()).toEqual(['and like', 'wow'])
+    cutWords(0.3, 0.6, 1)
+    expect(texts()).toEqual(['and', 'wow'])
+    useStore.getState().undo()
+    expect(texts()).toEqual(['and like', 'wow'])
+  })
+
+  // ⛔ R-1. The cut used to re-text EVERY caption on the track. A style with a
+  // gap (Subtitles: 2 frames) ends a caption that runs into the next one two
+  // frames early, so a short last word already has its middle past the end, and
+  // one cut 20 s away dropped that word off every such caption in the video.
+  const SUBTITLES = BUILTIN_CAPTION_STYLES.find((st) => st.id === 'builtin-subtitles')!
+  /** Short words said back to back from `fromS`, so every caption runs into the next. */
+  const rapid = (texts: string[], fromS: number): CaptionWord[] =>
+    texts.map((text, i) => ({ text, startS: fromS + i * 0.1, endS: fromS + (i + 1) * 0.1 }))
+  const speech = (): CaptionWord[] => [
+    ...rapid('so today i hit a new personal record on the bench press and it felt so good'.split(' '), 0),
+    { text: 'um', startS: 20, endS: 20.3 },
+    ...rapid('then i went home and ate a whole pizza on the couch with my dog'.split(' '), 30),
+  ]
+  const shown = () => captionsOn(seq()).map(({ clip }) => clip)
+  const shifted = (c: Clip, byS: number): Clip => ({ ...c, startS: c.startS - byS })
+
+  it('cutting one "um" leaves every other Subtitles caption exactly as it was', () => {
+    addCaptionsFromWords(speech(), { style: SUBTITLES })
+    const before = shown()
+    const um = before.find((c) => c.title!.text === 'um')!
+    expect(um).toBeDefined()
+    // The trap is really set: some caption's last word plays past its own end.
+    const pastEnd = before.filter((c) => {
+      const last = c.captionWords?.[c.captionWords.length - 1]
+      return last !== undefined && c.startS + ((last.startS + last.endS) / 2 - c.inS) > c.startS + clipDurationS(c)
+    })
+    expect(pastEnd.length).toBeGreaterThan(0)
+
+    cutWords(20, 20.3, 1)
+    const after = shown()
+    const want = before.filter((c) => c.id !== um.id).map((c) => (c.startS > 20 ? shifted(c, 0.3) : c))
+    expect(after.map((c) => c.title!.text)).toEqual(want.map((c) => c.title!.text))
+    expect(after).toEqual(want)
+  })
+
+  it('a caption he trimmed by hand, away from the cut, keeps every word he left on it', () => {
+    addCaptionsFromWords(speech(), { style: SUBTITLES })
+    const first = shown()[0]!
+    // He pulls its end in by a fifth of a second, past the middle of its last word.
+    updateActiveSequence('trim', (sq) => ({
+      ...sq,
+      tracks: sq.tracks.map((t) => ({
+        ...t,
+        clips: t.clips.map((c) => (c.id === first.id ? { ...c, outS: c.outS - 0.2 } : c)),
+      })),
+    }))
+    const trimmed = shown()[0]!
+    cutWords(20, 20.3, 1)
+    expect(shown()[0]).toEqual(trimmed)
+  })
+
+  it('a one word caption in a style with a gap survives a cut somewhere else', () => {
+    // Auto length with a gap: a one word caption that runs into the next one
+    // ends at its own word's middle (rounded to a frame, here the one before),
+    // which the old rule read as "said outside", and deleted the caption.
+    const gapped = { ...BUILTIN_CAPTION_STYLES[0]!, shape: { ...AUTO_SHAPE, gapFrames: 2 } }
+    addCaptionsFromWords(
+      [
+        { text: 'massive', startS: 1, endS: 1.08 },
+        { text: 'strength', startS: 1.08, endS: 1.7 },
+        { text: 'um', startS: 5, endS: 5.3 },
+        { text: 'yes', startS: 8, endS: 8.4 },
+      ],
+      { style: gapped },
+    )
+    const before = shown().map((c) => c.title!.text)
+    expect(before).toContain('massive')
+    cutWords(5, 5.3, 1)
+    expect(shown().map((c) => c.title!.text)).toEqual(before.filter((t) => t !== 'um'))
+  })
+
+  it('a cut through a caption still drops only the words it took', () => {
+    addCaptionsFromWords(speech(), { style: SUBTITLES })
+    const before = shown()
+    const host = before.find((c) => c.title!.text.split(' ').includes('pizza'))!
+    const pizza = speech().find((w) => w.text === 'pizza')!
+    cutWords(pizza.startS, pizza.endS, 1)
+    const after = shown()
+    // Every caption the cut did not reach is as it was.
+    for (const c of before) {
+      if (c.id === host.id) continue
+      const moved = c.startS > pizza.startS ? shifted(c, pizza.endS - pizza.startS) : c
+      expect(after).toContainEqual(moved)
+    }
+    const said = after.map((c) => c.title!.text).join(' ')
+    expect(said).not.toContain('pizza')
+    expect(said).toContain('whole')
+    expect(said).toContain('couch')
+  })
+
+  // ⛔ S-2. Subtitles ends a caption two frames early, so its last word plays
+  // past its end. A cut that starts exactly where the caption ends takes that
+  // word, but the caption keeps its id and its out point, so nothing re-texted
+  // it and it went on saying a word that was cut.
+  const playsPastEnd = (c: Clip): boolean => {
+    const last = c.captionWords?.[c.captionWords.length - 1]
+    return last !== undefined && c.startS + ((last.startS + last.endS) / 2 - c.inS) > c.startS + clipDurationS(c)
+  }
+  const lastWordEndS = (c: Clip): number => c.startS + (c.captionWords![c.captionWords!.length - 1]!.endS - c.inS)
+
+  it('a word cut from just past the end of its caption is gone from that caption', () => {
+    addCaptionsFromWords(speech(), { style: SUBTITLES })
+    const host = shown().find((c) => playsPastEnd(c) && c.captionWords!.length > 1)!
+    expect(host).toBeDefined()
+    const endS = host.startS + clipDurationS(host)
+    const words = host.title!.text.split(/\s+/)
+    cutWords(endS, lastWordEndS(host), 1)
+    const after = shown().find((c) => c.id === host.id)!
+    expect(after.title!.text.split(/\s+/)).toEqual(words.slice(0, -1))
+    expect(after.captionWords!.map((w) => w.text)).toEqual(words.slice(0, -1))
+    expect(after.outS).toBe(host.outS)
+    useStore.getState().undo()
+    expect(shown().find((c) => c.id === host.id)).toEqual(host)
+  })
+
+  it('a one word caption whose only word is cut from just past its end is removed', () => {
+    const gapped = { ...BUILTIN_CAPTION_STYLES[0]!, shape: { ...AUTO_SHAPE, gapFrames: 2 } }
+    addCaptionsFromWords(
+      [
+        { text: 'massive', startS: 1, endS: 1.08 },
+        { text: 'strength', startS: 1.08, endS: 1.7 },
+        { text: 'yes', startS: 8, endS: 8.4 },
+      ],
+      { style: gapped },
+    )
+    const host = shown().find((c) => c.title!.text === 'massive')!
+    expect(host).toBeDefined()
+    expect(playsPastEnd(host)).toBe(true)
+    cutWords(host.startS + clipDurationS(host), lastWordEndS(host), 1)
+    expect(shown().find((c) => c.id === host.id)).toBeUndefined()
+    expect(shown().map((c) => c.title!.text)).toEqual(['strength', 'yes'])
+  })
+})
+
+// N-1. A recut caption that would start inside a kept neighbour is moved to
+// start after it, and was given in point 0, so every word it holds (kept in the
+// clip's own seconds) read late by the move: the next recut or Words tab cut
+// put them in the wrong place.
+describe('a recut caption moved off a kept neighbour', () => {
+  it('still has each word at the time it was said', () => {
+    addCaptionsFromWords([{ text: 'first', startS: 0, endS: 0.9 }])
+    // He trimmed the first caption to end at 1.01 s, between two frames.
+    const kept = newTitleClip(defaultTitleDef('first'), 0, 1.01)
+    const said: Clip = {
+      ...newTitleClip(defaultTitleDef('hello world'), 1.01, 0.6),
+      captionWords: [
+        { text: 'hello', startS: 0, endS: 0.3 },
+        { text: 'world', startS: 0.3, endS: 0.6 },
+      ],
+    }
+    updateActiveSequence('hand built', (sq) => ({
+      ...sq,
+      tracks: sq.tracks.map((t) => (t.name === CAPTION_TRACK_NAME ? { ...t, clips: [kept, said] } : t)),
+    }))
+    // A new length, on the second caption only: it is cut again, onto frames.
+    applyCaptionStyle(BUILTIN_CAPTION_STYLES.find((st) => st.id === 'builtin-subtitles')!, [said.id])
+    const recut = captionsOn(seq())
+      .map(({ clip }) => clip)
+      .find((c) => c.title!.text.includes('hello'))!
+    // The frame put its start inside the kept one, so it was moved to 1.01 s.
+    expect(recut.startS).toBeCloseTo(1.01, 9)
+    const at = (i: number): number => recut.startS + (recut.captionWords![i]!.startS - recut.inS)
+    expect(at(0)).toBeCloseTo(1.01, 6)
+    expect(at(1)).toBeCloseTo(1.31, 6)
   })
 })
 
@@ -465,5 +693,50 @@ describe('applyCandidateSpellings', () => {
     }))
     applyCandidateSpellings(profile)
     expect(allClips()[0].title?.text).toBe('cs go')
+  })
+})
+
+// CA-17. A name the model got wrong six times was six rows to retype.
+describe('replacing a misheard word in every caption', () => {
+  const texts = (): string[] => captionsOn(seq()).map(({ clip }) => clip.title!.text)
+  const lay = (said: string[]) =>
+    addCaptionsFromWords(
+      said.map((text, i) => ({ text, startS: i * 2, endS: i * 2 + 0.5 })),
+      {},
+    )
+
+  it('matches whole words in any case, and nothing inside a longer word', () => {
+    expect(replaceWholeWords('the bamban boss', 'Bamban', 'Bun Bun')).toBe('the Bun Bun boss')
+    expect(replaceWholeWords('BAMBAN', 'bamban', 'Bun Bun')).toBe('Bun Bun')
+    expect(replaceWholeWords('bambans', 'bamban', 'Bun Bun')).toBeNull()
+    expect(replaceWholeWords("don't", 'don', 'Don')).toBeNull()
+    // A phrase matches across a line break.
+    expect(replaceWholeWords('mecha\nbamban', 'mecha bamban', 'Mecha Bun Bun')).toBe('Mecha Bun Bun')
+    // His replacement goes in exactly as typed, dollar signs and all.
+    expect(replaceWholeWords('price', 'price', '$5')).toBe('$5')
+  })
+
+  it('replaces it in every caption in one undo step', () => {
+    lay(['bamban', 'is', 'bamban', 'the', 'bamban', 'boss', 'bamban', 'and', 'bamban'])
+    expect(captionsToReplace(seq(), 'bamban')).toBe(5)
+    const before = texts()
+    expect(replaceInCaptions('bamban', 'Bun Bun')).toEqual({ replaced: 5, locked: 0 })
+    expect(texts().filter((t) => t.includes('Bun Bun'))).toHaveLength(5)
+    expect(texts().some((t) => t.includes('bamban'))).toBe(false)
+    useStore.getState().undo()
+    expect(texts()).toEqual(before)
+  })
+
+  it('a locked Captions track is left alone', () => {
+    lay(['bamban', 'is', 'here'])
+    updateActiveSequence('lock', (sq) => ({ ...sq, tracks: sq.tracks.map((t) => (t.name === CAPTION_TRACK_NAME ? { ...t, locked: true } : t)) }))
+    expect(replaceInCaptions('bamban', 'Bun Bun')).toEqual({ replaced: 0, locked: 1 })
+    expect(texts().some((t) => t.includes('Bun Bun'))).toBe(false)
+  })
+
+  it('does nothing with nothing to find or nothing to put in', () => {
+    lay(['bamban'])
+    expect(replaceInCaptions('  ', 'x')).toEqual({ replaced: 0, locked: 0 })
+    expect(replaceInCaptions('bamban', '  ')).toEqual({ replaced: 0, locked: 0 })
   })
 })

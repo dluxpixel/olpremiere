@@ -9,6 +9,7 @@
 // onto the timeline through its in point and speed. Pure: no store, no DOM.
 
 import { clipEmitsAudioOn } from './audio'
+import { correctWordLag } from './captions/wordTiming'
 import { findClip, recomputeDuration, splitClipOnly, splitGroup } from './timeline'
 import { clipEndS, type Clip, type HeardSpan, type Id, type MediaAsset, type Sequence, type SpokenWord } from './types'
 
@@ -49,15 +50,22 @@ export const toSource = (clip: Clip, timelineS: number): number => {
  * clip on a muted or locked track, or one that is disabled, still lists: the
  * panel is for reading the edit, not only the part that is audible right now.
  */
-export function wordsOnTimeline(seq: Sequence, assets: Record<Id, MediaAsset>): ClipWords[] {
+export function wordsOnTimeline(
+  seq: Sequence,
+  assets: Record<Id, MediaAsset>,
+  /** The recogniser's lag, taken off words kept before they were stored on time. */
+  legacyLagS = 0,
+): ClipWords[] {
   const out: ClipWords[] = []
+  const said = new Map<Id, readonly SpokenWord[]>()
   for (const track of seq.tracks) {
     for (const clip of track.clips) {
       if (!clipEmitsAudioOn(track.kind, clip)) continue
       const asset = assets[clip.assetId]
       if (!asset?.hasAudio) continue
+      if (!said.has(asset.id)) said.set(asset.id, wordsAsSaid(asset, legacyLagS))
       const words: TimelineWord[] = []
-      for (const w of asset.words ?? []) {
+      for (const w of said.get(asset.id)!) {
         // A word that starts inside the clip's source span is a word this clip says.
         if (w.startS < clip.inS - EPS || w.startS >= clip.outS - EPS) continue
         const a = toTimeline(clip, w.startS)
@@ -70,6 +78,25 @@ export function wordsOnTimeline(seq: Sequence, assets: Record<Id, MediaAsset>): 
     }
   }
   return out.sort((a, b) => a.clip.startS - b.clip.startS)
+}
+
+/**
+ * The media's words where he said them. Words kept before the lag was taken
+ * off (no `wordsOnVoice` mark) are shifted earlier by it here, once, so a cut
+ * starts on the word and not a fifth of a second into it.
+ */
+export function wordsAsSaid(asset: MediaAsset, legacyLagS: number): SpokenWord[] {
+  const words = asset.words ?? []
+  return asset.wordsOnVoice || !(legacyLagS > 0) ? [...words] : correctWordLag(words, legacyLagS)
+}
+
+/**
+ * The media with a fresh listening kept on it: what was heard over [fromS, toS)
+ * replaces what was there, the rest stays, and old unmarked words are put on
+ * time first so the whole list is on one clock.
+ */
+export function keepHeardWords(asset: MediaAsset, heard: readonly SpokenWord[], fromS: number, toS: number, legacyLagS: number): MediaAsset {
+  return { ...asset, words: mergeWords(wordsAsSaid(asset, legacyLagS), heard, fromS, toS), wordsOnVoice: true }
 }
 
 /**
@@ -131,6 +158,24 @@ export function heardCovers(spans: readonly HeardSpan[] | undefined, fromS: numb
     if (reached >= end - EPS) return true
   }
   return reached >= end - EPS
+}
+
+/**
+ * The word under the playhead, so the Words tab follows playback, or -1 when he
+ * is between words. A word stays current a moment past its end, so the mark
+ * does not blink off in the gap between two words.
+ *
+ * Read by a store selector, so it runs on every store write, playback frames
+ * included; its answer changes a few times a second, and only then does the
+ * tab draw again.
+ */
+export function wordIndexAt(words: readonly TimelineWord[], t: number): number {
+  let found = -1
+  for (let i = 0; i < words.length; i++) {
+    if (words[i].atS <= t + 1e-6) found = i
+    else break
+  }
+  return found >= 0 && t < words[found].endAtS + 0.35 ? found : -1
 }
 
 /**

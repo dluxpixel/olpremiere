@@ -32,6 +32,8 @@ export interface CaptionChunk {
   startS: number
   endS: number
   emphasis: boolean
+  /** The words in it, with the times they were said (not the caption's). */
+  words?: CaptionWord[]
 }
 
 export interface ChunkOptions {
@@ -97,6 +99,21 @@ export interface ChunkOptions {
    * playhead can never stand on to trim it.
    */
   fps?: number
+  /**
+   * Do these words fit across the frame in the lines the style allows, at its
+   * size and case (captionFit.ts)? Null leaves only `maxChars`. A group that
+   * does not fit is never one caption; a single word always is, and is drawn
+   * smaller instead (captionFit.fitWordsToFrame).
+   */
+  fits?: ((text: string) => boolean) | null
+  /**
+   * Does the key word highlight start and end a caption of its own? True (the
+   * default, and the auto length's measured look): the word he leaned on is cut
+   * out and coloured whole. False (a fixed length, CA-13): the phrase stays one
+   * caption and that word is coloured inside it, because cutting it out left a
+   * Subtitles phrase in three: "i hit a new personal" | "record" | "on bench".
+   */
+  emphasisBreaks?: boolean
 }
 
 const CHUNK_DEFAULTS: Required<ChunkOptions> = {
@@ -116,6 +133,8 @@ const CHUNK_DEFAULTS: Required<ChunkOptions> = {
   maxOnScreenS: Infinity, // legacy callers keep the transcriber's word length
   gapS: 0,
   fps: 0,
+  fits: null,
+  emphasisBreaks: true,
 }
 
 /**
@@ -162,6 +181,8 @@ export const PHRASE_CAPTION_OPTIONS: Required<ChunkOptions> = {
   maxOnScreenS: Infinity,
   gapS: 0,
   fps: 0,
+  fits: null,
+  emphasisBreaks: true,
 }
 
 /**
@@ -264,6 +285,11 @@ export const AUTO_CAPTION_OPTIONS: Required<ChunkOptions> = {
   gapS: 0,
   // Set from the sequence by chunkOptionsFor (captionStyle.ts).
   fps: 0,
+  // Set from the style and the frame by the caption doors (captionFit.ts).
+  fits: null,
+  // The highlight is its own caption at the auto length (chunkOptionsFor turns
+  // this off for a fixed length).
+  emphasisBreaks: true,
 }
 
 /** Ends a sentence → the next word starts a fresh chunk. */
@@ -426,7 +452,7 @@ export function chunkWords(words: CaptionWord[], options: ChunkOptions = {}): Ca
     (w, k) =>
       k > 0 &&
       (endsSentence(input[k - 1]!.text) ||
-        !!w.emphasis !== !!input[k - 1]!.emphasis ||
+        (o.emphasisBreaks && !!w.emphasis !== !!input[k - 1]!.emphasis) ||
         w.startS - input[k - 1]!.endS > o.maxGapS),
   )
   const maxSeg = Math.max(1, maxWords)
@@ -466,8 +492,10 @@ export function chunkWords(words: CaptionWord[], options: ChunkOptions = {}): Ca
     if (j - i === 1) return true
     const ws = input.slice(i, j)
     if (ws.length > maxWords) return false
-    const chars = groupText(ws).length
+    const text = groupText(ws)
+    const chars = text.length
     if (chars > o.maxChars) return false
+    if (o.fits && !o.fits(text)) return false
     const span = groupSpan(ws)
     if (span > o.maxSpanS) return false
     // ⛔ THE CEILING ASKS WHEN THE LAST WORD STARTS, NOT WHEN IT ENDS. A word's
@@ -550,7 +578,11 @@ export function chunkWords(words: CaptionWord[], options: ChunkOptions = {}): Ca
     // The LATEST end among its words, not the last word's: with overlapping
     // recogniser spans the last word can end before an earlier one does.
     endS: Math.max(ws[0]!.startS, ...ws.map((w) => w.endS)),
-    emphasis: ws.some((w) => w.emphasis),
+    // The whole caption wears the highlight only when every word in it does.
+    // With the highlight a hard break that is the same as any word doing; with
+    // it inside a phrase, the lit word says so on its own (words below).
+    emphasis: o.emphasisBreaks ? ws.some((w) => w.emphasis) : ws.every((w) => w.emphasis),
+    words: ws.map((w) => ({ text: w.text.trim(), startS: w.startS, endS: w.endS, ...(w.emphasis ? { emphasis: true } : {}) })),
   }))
 
   // Seamless hold: run each caption up to its successor (or linger holdS at a
@@ -681,6 +713,8 @@ export interface CaptionStyleOptions {
    */
   upper?: boolean
   emphasisColor?: string
+  /** The style's case rule. Absent is the house case, as every run before it. */
+  caseRule?: CaptionCaseRule
 }
 
 /**
@@ -714,6 +748,32 @@ export function captionHouseCase(text: string): string {
     })
     .join(' ')
 }
+
+/**
+ * Which case a caption run writes its words in. 'house' is the measured
+ * lowercase look with the sentence marks dropped, and what every style has
+ * always made. 'spoken' keeps the recogniser's own capitals and punctuation,
+ * for a style that wants "Steve hit Minecraft." as he would write it.
+ */
+export type CaptionCaseRule = 'house' | 'spoken'
+
+/**
+ * Captions as spoken: the recogniser's capitals and punctuation kept, with the
+ * two fixes the house case also makes, a thousands comma written his way ("30
+ * 000", see numbersHisWay) and a lone "i" put back to "I".
+ */
+export function captionSpokenCase(text: string): string {
+  return text
+    .replace(/(\d),(?=\d{3}(?!\d))/g, '$1 ')
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(alwaysCapital)
+    .join(' ')
+}
+
+/** The words of a run in this case rule. */
+export const captionCase = (text: string, rule: CaptionCaseRule = 'house'): string =>
+  rule === 'spoken' ? captionSpokenCase(text) : captionHouseCase(text)
 
 /**
  * A number keeps its meaning through the punctuation strip above.
@@ -756,7 +816,8 @@ function alwaysCapital(word: string): string {
   // often, and the set below only holds the straight form, so "i’m" fell through
   // and rendered lowercase: the exact typo the 2026-08-06 request was about,
   // still on screen whenever the recogniser chose the nicer quote.
-  const core = word.replace(/[!?]+$/, '').replace(/[’ʼ]/g, "'")
+  // The spoken case keeps sentence marks too, so "i," must still read "I,".
+  const core = word.replace(/[!?.,;:"]+$/, '').replace(/[’ʼ]/g, "'")
   if (!ALWAYS_CAPITAL.has(core)) return word
   return word.charAt(0).toUpperCase() + word.slice(1)
 }
@@ -875,6 +936,32 @@ export interface CaptionClipOptions extends CaptionStyleOptions {
  * Case follows the style: the house look gets the measured lowercase, an
  * inherited base style is left exactly as he typed it, and `upper` shouts.
  */
+/**
+ * The chunk's words as the caption shows them (`shown` is its text), timed
+ * from the caption's start. Null when the two do not line up word for word,
+ * because a time pinned to the wrong word is worse than none.
+ */
+export function saidWords(chunk: CaptionChunk, shown: string): NonNullable<Clip['captionWords']> | null {
+  const tokens = shown.split(/\s+/).filter(Boolean)
+  if (!chunk.words || chunk.words.length !== tokens.length) return null
+  return chunk.words.map((w, i) => ({
+    text: tokens[i]!,
+    startS: w.startS - chunk.startS,
+    endS: w.endS - chunk.startS,
+    ...(w.emphasis ? { emphasis: true as const } : {}),
+  }))
+}
+
+/**
+ * The key word highlight inside a caption that holds more than that word
+ * (CA-13): the colour for each lit word, named so a retyped caption cannot
+ * paint the wrong one. Undefined when no word is lit on its own.
+ */
+export function litWordColors(words: Clip['captionWords'], color: string): TitleDef['wordColors'] {
+  const lit = (words ?? []).flatMap((w, at) => (w.emphasis ? [{ at, word: w.text, color }] : []))
+  return lit.length > 0 && lit.length < (words?.length ?? 0) ? lit : undefined
+}
+
 export function captionClips(chunks: CaptionChunk[], options: CaptionClipOptions): Clip[] {
   const emphasisColor = options.emphasisColor ?? CAPTION_EMPHASIS_COLORS[0]
   return chunks.map((chunk) => {
@@ -889,11 +976,16 @@ export function captionClips(chunks: CaptionChunk[], options: CaptionClipOptions
         ? chunk.text.toUpperCase()
         : options.baseDef
           ? chunk.text
-          : captionHouseCase(chunk.text)
+          : captionCase(chunk.text, options.caseRule)
     const def: TitleDef = options.baseDef
       ? { ...options.baseDef, text }
       : jettismCaptionDef(text, options.seqHeight)
     if (chunk.emphasis) def.color = emphasisColor
+    // When each word was said, so the caption can be cut again without losing it.
+    const said = learned ? null : saidWords(chunk, text)
+    // A word lit inside a longer caption wears the highlight on its own (CA-13).
+    const lit = chunk.emphasis ? undefined : litWordColors(said ?? undefined, emphasisColor)
+    if (lit) def.wordColors = lit
     let clip = newTitleClip(def, chunk.startS, chunk.endS - chunk.startS)
     // ⛔ THE RAW CHUNK TEXT, NOT `text` ABOVE. `text` has already been through
     // the app's own casing, and stamping that would teach the profile the
@@ -901,6 +993,7 @@ export function captionClips(chunks: CaptionChunk[], options: CaptionClipOptions
     // and can read off the preset anyway. What is wanted is his delta from the
     // MACHINE, so the machine's own words are what get kept.
     if (options.model) clip = { ...clip, captionOrigin: { text: chunk.text, model: options.model } }
+    if (said) clip = { ...clip, captionWords: said }
     // Which word wears the highlight, kept so a style applied later can find it.
     if (chunk.emphasis) clip = { ...clip, captionEmphasis: true }
     if (!options.popIn) return clip

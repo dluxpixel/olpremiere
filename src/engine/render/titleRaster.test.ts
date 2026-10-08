@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { blockLayout, wrapLinesWith } from './titleRaster'
+import { blockLayout, colorRuns, wordColorsOn, wrapLinesWith } from './titleRaster'
 
 // A deterministic measurer: each char is 10px wide. No canvas needed in node.
 const measure10 = (s: string): number => s.length * 10
@@ -112,5 +112,47 @@ describe('blockLayout', () => {
   it('treats zero lines as one line for height', () => {
     const r = blockLayout({ ...base, lines: [], vAlign: 'top' })
     expect(r.blockH).toBe(100)
+  })
+})
+
+// CA-13. A title could only be one colour, so the key word highlight cut its
+// word out into a caption of its own. A lit word is now filled in its own
+// colour, in a run laid exactly where the whole line would have put it.
+describe('words in their own colour', () => {
+  /** One pixel per character, so every x below can be counted by hand. */
+  const measure = (s: string): number => s.length
+  const lit = [{ at: 3, word: 'record', color: '#ff0' }]
+
+  it('fills a lit word in its own colour, where the whole line put it', () => {
+    // "i hit a record" is 14 wide, centred on 100: it starts at 93, "record" at 93 + 8.
+    expect(colorRuns(['i hit a record'], lit, '#fff', measure, 100, 'center')).toEqual([
+      [
+        { text: 'i hit a', x: 93, color: '#fff' },
+        { text: 'record', x: 101, color: '#ff0' },
+      ],
+    ])
+  })
+
+  it('counts the words across lines, and lays each line by its own width', () => {
+    const runs = colorRuns(['i hit a new', 'record on bench'], [{ at: 4, word: 'record', color: '#ff0' }], '#fff', measure, 0, 'left')!
+    expect(runs[0]).toEqual([{ text: 'i hit a new', x: 0, color: '#fff' }])
+    expect(runs[1]).toEqual([
+      { text: 'record', x: 0, color: '#ff0' },
+      { text: 'on bench', x: 7, color: '#fff' },
+    ])
+  })
+
+  it('draws the line whole when no word wears a colour, as every title did before', () => {
+    expect(colorRuns(['i hit a record'], undefined, '#fff', measure, 100, 'center')).toBeNull()
+    expect(colorRuns(['i hit a record'], [], '#fff', measure, 100, 'center')).toBeNull()
+  })
+
+  it('a retyped caption never lights a word he did not lean on', () => {
+    // The word moved: it is found where it went, any case, any full stop.
+    expect(wordColorsOn(['so', 'i', 'hit', 'a', 'RECORD.'], lit)).toEqual([null, null, null, null, '#ff0'])
+    // The word is gone: nothing is lit, not whatever sits at its place now.
+    expect(wordColorsOn(['i', 'hit', 'a', 'pr'], lit)).toEqual([null, null, null, null])
+    // Twice in the caption: the one nearest where it was.
+    expect(wordColorsOn(['record', 'a', 'b', 'record'], lit)).toEqual([null, null, null, '#ff0'])
   })
 })

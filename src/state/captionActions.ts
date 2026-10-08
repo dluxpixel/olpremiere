@@ -2,11 +2,12 @@
 // (auto-caption / transcription) into a run of word-caption title clips.
 // Each action is ONE dispatch, so a 40-clip caption pass undoes atomically.
 
-import { captionClips, chunkWords, spreadWords, type CaptionWord } from '../engine/captions/captions'
+import { captionCase, captionClips, chunkWords, spreadWords, type CaptionWord } from '../engine/captions/captions'
 import {
   AUTO_SHAPE,
   BUILTIN_CAPTION_STYLES,
   breakLines,
+  captionFitterFor,
   chunkOptionsFor,
   dressCaption,
   recutCaptions,
@@ -14,9 +15,12 @@ import {
   type CaptionStyle,
 } from '../engine/captions/captionStyle'
 import { candidateFixFor, wordFixFor, type StyleProfile } from '../engine/captions/styleProfile'
+import { respellWords, type Rewrite, type Vocabulary } from '../engine/captions/vocabulary'
 import { learnedProfile } from '../engine/captions/styleStore'
+import { retimeAppearance } from '../engine/anim/appearance'
 import { addTrack, clipDurationS, clipEndS, recomputeDuration, resolveStart } from '../engine/timeline'
-import { activeSequence, videoTracks, type Clip, type Sequence, type Track } from '../engine/types'
+import { keepHeardWords } from '../engine/transcriptCut'
+import { activeSequence, videoTracks, type Clip, type Sequence, type SpokenWord, type Track } from '../engine/types'
 import { updateActiveSequence, useStore } from './store'
 import { useToasts } from './toasts'
 import { plural } from '../engine/plural'
@@ -176,6 +180,19 @@ export function addCaptionsFromWords(
      * bounding box around clips this run happened to skip.
      */
     coveredSpans?: { startS: number; endS: number }[]
+    /**
+     * What each clip said, in its media's own seconds, over the stretch of
+     * media heard. Kept on the media in the SAME undo step as the captions, so
+     * the Words tab reads it without listening to that clip again.
+     */
+    heard?: { assetId: string; fromS: number; toS: number; words: SpokenWord[] }[]
+    /** The recogniser's lag, to put the media's older words on time as these land. */
+    wordLagS?: number
+    /**
+     * What his corrections taught, as the run read it. Its spellings fixed ONCE
+     * are offered on the toast ("Spell N more your way"), never applied unasked.
+     */
+    vocabulary?: Vocabulary
   } = {},
 ): void {
   const s = useStore.getState()
@@ -184,7 +201,13 @@ export function addCaptionsFromWords(
   // Every door lands here, so every door cuts the same way: the style's length.
   // Its auto length is AUTO_CAPTION_OPTIONS untouched, the measured cut every
   // run made before styles had a length at all.
-  const chunks = chunkWords(words, chunkOptionsFor(style.shape, seq.fps))
+  // And no caption holds more than fits across the frame at the style's size
+  // and case: an UPPERCASE or bigger style, or a taller frame, fits fewer letters.
+  const caseRule = style.caseRule ?? 'house'
+  const chunks = chunkWords(
+    words,
+    chunkOptionsFor(style.shape, seq.fps, captionFitterFor(style, seq, (t) => captionCase(t, caseRule))),
+  )
   if (chunks.length === 0) {
     useToasts.getState().show('No words to caption', 'danger')
     return
@@ -201,6 +224,8 @@ export function addCaptionsFromWords(
     // no route can produce captions the learning cannot later read.
     model: options.model,
     profile,
+    // His capitals and full stops when the style says "As spoken".
+    caseRule,
   })
   // Dress every word in the style (look, entrance, effects), so the whole run
   // lands looking exactly like the one he built and saved, and set two line
@@ -231,9 +256,11 @@ export function addCaptionsFromWords(
   // by reading digits off the name and skips anything that does not parse, so a
   // named track cannot disturb the numbering of the others.
   let replaced = 0
+  /** What actually went down: a new caption with no room left beside a kept one is dropped. */
+  let laid = clips
   /** Set when his Captions track is locked, so the run says so instead of going quiet. */
   let lockedOut = false
-  updateActiveSequence(options.label ?? 'Auto-caption', (sq) => {
+  const lay = (sq: Sequence): Sequence => {
     const existing = videoTracks(sq).filter((t) => t.name === CAPTION_TRACK_NAME)
     const reuse = existing[existing.length - 1]
     // ⛔ A LOCKED CAPTIONS TRACK IS NOT EMPTIED. Reuse below clears the track and
@@ -269,11 +296,26 @@ export function addCaptionsFromWords(
         options.coveredSpans && options.coveredSpans.length > 0
           ? options.coveredSpans
           : [{ startS: Math.min(...clips.map((c) => c.startS)), endS: Math.max(...clips.map((c) => clipEndS(c))) }]
-      const overlapsRun = (c: Clip): boolean =>
-        spans.some((span) => clipEndS(c) > span.startS + EPS && c.startS < span.endS - EPS)
-      const kept = reuse.clips.filter((c) => !overlapsRun(c))
-      replaced = reuse.clips.length - kept.length
-      const filled = { ...withClips({ ...reuse, clips: kept }, clips), captionShape: style.shape }
+      // ⛔ A CAPTION BELONGS TO THE STRETCH IT STARTS IN, not every stretch it
+      // touches. The last caption of a clip is held a little past its last word,
+      // so it ends a few frames into the NEXT clip. Asking "does it touch this
+      // run" deleted it the moment he captioned that next clip: his last word of
+      // clip A went blank, the same "deletes the last caption" he reported on
+      // 2026-08-24, one clip later. Now only a caption that STARTS in a covered
+      // stretch is replaced. One that starts before and runs in keeps its start
+      // and ends where the new caption starts; a new one that runs into a kept
+      // one is trimmed by fitAround. Whichever starts first gives way, and no
+      // start ever moves, because a start is a word landing.
+      const startsInRun = (c: Clip): boolean =>
+        spans.some((span) => c.startS >= span.startS - EPS && c.startS < span.endS - EPS)
+      const stays = reuse.clips.filter((c) => !startsInRun(c))
+      replaced = reuse.clips.length - stays.length
+      const kept = stays.map((k) => {
+        const into = clips.find((c) => c.startS > k.startS + EPS && c.startS < clipEndS(k) - EPS)
+        return into ? endCaptionAt(k, into.startS, sq.width, sq.height) : k
+      })
+      laid = fitAround(clips, kept, sq.width, sq.height)
+      const filled = { ...withClips({ ...reuse, clips: kept }, laid), captionShape: style.shape }
       return recomputeDuration({ ...sq, tracks: sq.tracks.map((t) => (t.id === reuse.id ? filled : t)) })
     }
     const grown = addTrack(sq, 'video')
@@ -283,19 +325,42 @@ export function addCaptionsFromWords(
       ...grown,
       tracks: grown.tracks.map((t) => (t.id === target.id ? filled : t)),
     })
+  }
+  s.dispatch(options.label ?? 'Auto-caption', (p) => {
+    const sq = p.sequences[p.activeSequenceId]
+    const next = lay(sq)
+    if (next === sq) return p
+    let assets = p.assets
+    for (const h of options.heard ?? []) {
+      const a = assets[h.assetId]
+      if (a) assets = { ...assets, [a.id]: keepHeardWords(a, h.words, h.fromS, h.toS, options.wordLagS ?? 0) }
+    }
+    return { ...p, assets, sequences: { ...p.sequences, [sq.id]: next } }
   })
   if (lockedOut) {
     useToasts.getState().show('Your Captions track is locked, so nothing was changed', 'danger')
     return
   }
-  s.setUI({ selection: clips.map((c) => c.id) })
+  s.setUI({ selection: laid.map((c) => c.id) })
 
   // ⛔ THE SUGGESTION IS OFFERED, NEVER APPLIED. His words, 2026-08-19:
   // *"Sometimes, even suggest improvements... Maybe I'll apply them."* A
   // candidate is a word he retyped ONCE, which is real evidence and not yet a
   // habit, so putting it in his video unasked would be the app inventing a
   // spelling off a single sample. The button is the whole difference.
-  const suggested = profile ? chunks.filter((c) => candidateFixFor(c.text, profile)).length : 0
+  //
+  // From his vocabulary first (every project he saved, CA-18), and from the
+  // archive-only style learning when that has nothing to offer.
+  const once = options.vocabulary?.candidates ?? []
+  const caseOf = (t: string): string => captionCase(t, caseRule)
+  const respellable = once.length > 0 ? laid.filter((c) => respellCaption(c, once, caseOf, style) !== null).map((c) => c.id) : []
+  const fromProfile = profile ? chunks.filter((c) => candidateFixFor(c.text, profile)).length : 0
+  const suggestion =
+    respellable.length > 0
+      ? { count: respellable.length, apply: () => respellCaptions(respellable, once, caseOf, style) }
+      : fromProfile > 0 && profile
+        ? { count: fromProfile, apply: () => applyCandidateSpellings(profile) }
+        : null
 
   useToasts
     .getState()
@@ -307,20 +372,68 @@ export function addCaptionsFromWords(
         // keeps the first clip's captions, so the old wording would have claimed
         // it threw away work it did not touch.
         replaced > 0
-          ? `${plural(clips.length, 'caption')}, replacing ${replaced} over this part`
-          : `${plural(clips.length, 'caption')} added`,
+          ? `${plural(laid.length, 'caption')}, replacing ${replaced} over this part`
+          : `${plural(laid.length, 'caption')} added`,
         relearned > 0 ? `${relearned} spelled your way` : '',
       ]
         .filter(Boolean)
         .join(', '),
       'info',
-      suggested > 0 && profile
+      suggestion
         ? {
-            label: `Spell ${suggested} more your way`,
-            onClick: () => applyCandidateSpellings(profile),
+            label: `Spell ${suggestion.count} more your way`,
+            onClick: suggestion.apply,
           }
         : undefined,
     )
+}
+
+/**
+ * One caption with the spellings he fixed once put in, or null when it holds
+ * none, or he has retyped it since (its words no longer match what it was made
+ * with, so there is nothing safe to swap).
+ */
+function respellCaption(clip: Clip, once: readonly Rewrite[], caseOf: (t: string) => string, style: CaptionStyle): Clip | null {
+  const said = clip.captionWords
+  const tokens = (clip.title?.text ?? '').split(/\s+/).filter(Boolean)
+  if (!clip.title || !said || said.length !== tokens.length || said.some((w, i) => w.text !== tokens[i])) return null
+  const next = respellWords(said, once, caseOf)
+  if (!next) return null
+  const text = breakLines(next.map((w) => w.text).join(' '), style.shape)
+  return { ...clip, title: { ...clip.title, text }, captionWords: next }
+}
+
+/**
+ * Put the spellings he fixed once into the captions of the run that offered
+ * them, on his say so. One undo step. A caption he has changed since is left
+ * alone, and a locked track refuses.
+ */
+function respellCaptions(ids: readonly string[], once: readonly Rewrite[], caseOf: (t: string) => string, style: CaptionStyle): void {
+  const wanted = new Set(ids)
+  let changed = 0
+  let locked = false
+  updateActiveSequence('Spell captions his way', (sq) => ({
+    ...sq,
+    tracks: sq.tracks.map((t) => {
+      if (!isCaptionTrack(t) || !t.clips.some((c) => wanted.has(c.id))) return t
+      if (t.locked) {
+        locked = true
+        return t
+      }
+      return {
+        ...t,
+        clips: t.clips.map((c) => {
+          const next = wanted.has(c.id) ? respellCaption(c, once, caseOf, style) : null
+          if (!next) return c
+          changed++
+          return next
+        }),
+      }
+    }),
+  }))
+  useToasts
+    .getState()
+    .show(locked ? 'Your Captions track is locked, so nothing was changed' : changed > 0 ? `${changed} spelled your way` : 'Nothing left to change')
 }
 
 /**
@@ -367,12 +480,27 @@ export function captionsOn(seq: Sequence): { clip: Clip; track: Track }[] {
 }
 
 /**
+ * End a caption that stays at `endS`, keeping its start: a new caption begins
+ * there. Its exit animation moves with the end so a fade still plays.
+ */
+function endCaptionAt(clip: Clip, endS: number, seqW: number, seqH: number): Clip {
+  const next = { ...clip, outS: clip.inS + (endS - clip.startS) * Math.abs(clip.speed || 1) }
+  return retimeAppearance(clip, next, seqW, seqH)
+}
+
+/**
  * Trim each new caption so it cannot run into a caption that stays: a caption
  * that bridges to the next word would otherwise reach across into one he did
  * not ask to change. One that ends up with no room left is dropped rather than
  * stacked, because a track never holds two clips at once.
+ *
+ * ⛔ A TRIMMED CAPTION TAKES ITS ANIMATION WITH IT (CA-19). Its entrance and
+ * exit were baked for the length it was dressed at, so trimming the end left
+ * the exit past the new end, where it never played: a Clean fade caption
+ * simply vanished. It is baked again for the new length, the same as a trim on
+ * the timeline does.
  */
-function fitAround(fresh: Clip[], kept: readonly Clip[]): Clip[] {
+function fitAround(fresh: Clip[], kept: readonly Clip[], seqW: number, seqH: number): Clip[] {
   const out: Clip[] = []
   for (const clip of fresh) {
     let startS = clip.startS
@@ -385,7 +513,14 @@ function fitAround(fresh: Clip[], kept: readonly Clip[]): Clip[] {
       else startS = Math.max(startS, ke)
     }
     if (endS - startS <= 1e-3) continue
-    out.push(startS === clip.startS && endS === clipEndS(clip) ? clip : { ...clip, startS, inS: 0, outS: endS - startS, speed: 1 })
+    // N-1. The in point moves with a start moved later: the words it holds are
+    // in the clip's own seconds, so in point 0 read every one late by the move.
+    const inS = clip.inS + (startS - clip.startS)
+    out.push(
+      startS === clip.startS && endS === clipEndS(clip)
+        ? clip
+        : retimeAppearance(clip, { ...clip, startS, inS, outS: inS + (endS - startS), speed: 1 }, seqW, seqH),
+    )
   }
   return out
 }
@@ -428,7 +563,7 @@ export function applyCaptionStyle(
       recut = true
       const by = new Set(targets.map((c) => c.id))
       const kept = t.clips.filter((c) => !by.has(c.id))
-      const cut = fitAround(recutCaptions(targets, style, sq), kept)
+      const cut = fitAround(recutCaptions(targets, style, sq), kept, sq.width, sq.height)
       fresh.push(...cut.map((c) => c.id))
       const filled = withClips({ ...t, clips: kept }, cut)
       // The track says what its captions are cut to only when all of them are.
@@ -470,4 +605,64 @@ export function setCaptionText(clipId: string, text: string): boolean {
     ),
   }))
   return true
+}
+
+/**
+ * `text` with every whole-word `find` (any case, any spacing between its words)
+ * replaced by `replace`, or null when there is none. A word is letters, digits
+ * and an apostrophe, so "don" never matches inside "don't" or "random".
+ */
+export function replaceWholeWords(text: string, find: string, replace: string): string | null {
+  const words = find.trim().split(/\s+/).filter(Boolean)
+  if (words.length === 0) return null
+  const escaped = words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+')
+  const pattern = new RegExp(`(?<![\\p{L}\\p{N}'])${escaped}(?![\\p{L}\\p{N}'])`, 'giu')
+  if (!pattern.test(text)) return null
+  pattern.lastIndex = 0
+  const next = text.replace(pattern, () => replace)
+  return next === text ? null : next
+}
+
+/** How many captions `replaceInCaptions` would change: what its button says. */
+export function captionsToReplace(seq: Sequence, find: string): number {
+  return captionsOn(seq).filter(({ clip }) => replaceWholeWords(clip.title!.text, find, 'x') !== null).length
+}
+
+/**
+ * Fix a misheard word in every caption at once (CA-17). A Battle Cats name the
+ * model got wrong six times was six rows to retype, and the search already
+ * found all six. Whole words, any case, his replacement exactly as he typed it,
+ * ONE undo step. A locked Captions track is left alone and said so. What he
+ * replaces is a correction like any other, so the vocabulary learns it the
+ * normal way, from what is on screen against what the machine wrote.
+ */
+export function replaceInCaptions(find: string, replace: string): { replaced: number; locked: number } {
+  const typed = replace.trim()
+  let replaced = 0
+  let locked = 0
+  if (!find.trim() || !typed) return { replaced, locked }
+  updateActiveSequence(`Replace "${find.trim()}" with "${typed}"`, (sq) => ({
+    ...sq,
+    tracks: sq.tracks.map((t) => {
+      if (!isCaptionTrack(t)) return t
+      const hits = t.clips.filter((c) => c.title && replaceWholeWords(c.title.text, find, typed) !== null)
+      if (hits.length === 0) return t
+      if (t.locked) {
+        locked += hits.length
+        return t
+      }
+      return {
+        ...t,
+        clips: t.clips.map((c) => {
+          const next = c.title ? replaceWholeWords(c.title.text, find, typed) : null
+          if (!c.title || next === null) return c
+          replaced++
+          // A caption set on two lines goes back on two, balanced around the new words.
+          const text = c.title.text.includes('\n') && t.captionShape ? breakLines(next, t.captionShape) : next
+          return { ...c, title: { ...c.title, text } }
+        }),
+      }
+    }),
+  }))
+  return { replaced, locked }
 }
