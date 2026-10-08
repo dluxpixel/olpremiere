@@ -790,7 +790,9 @@ export function Timeline({ height }: { height: number }) {
       const m = seq.markers.find((x) => x.id === markerId)
       if (!m) return
       pausePlayback()
-      setUI({ playheadS: m.t })
+      // On a whole frame: a marker saved before markers landed on frames sits
+      // between two, and the playhead would have too.
+      setUI({ playheadS: quantizeToFrame(m.t, seq.fps) })
     },
     menu: (e, markerId) => {
       const m = seq.markers.find((x) => x.id === markerId)
@@ -799,7 +801,8 @@ export function Timeline({ height }: { height: number }) {
         {
           label: 'Name marker',
           onClick: () =>
-            void askForName({ title: 'Name this marker', confirmLabel: 'Save', initial: m.label, maxLength: 60 }).then((name) => {
+            // An empty name takes the name off (renameMarker), so it is allowed.
+            void askForName({ title: 'Name this marker', confirmLabel: 'Save', initial: m.label, maxLength: 60, allowEmpty: true }).then((name) => {
               if (name !== null) updateActiveSequence('Name marker', (sq) => renameMarker(sq, markerId, name))
             }),
         },

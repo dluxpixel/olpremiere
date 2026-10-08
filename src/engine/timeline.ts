@@ -2373,11 +2373,17 @@ export function renameMarker(seq: Sequence, markerId: Id, label: string): Sequen
   return { ...seq, markers: seq.markers.map((x) => (x.id === markerId ? { ...x, label } : x)) }
 }
 
+/**
+ * Move a marker to tS. It never lands on the frame of another marker, the rule
+ * addMarker keeps: a drag snaps onto markers, and two stacked on one frame show
+ * as one, so Shift+M removed one and left the other. The marker stays put.
+ */
 export function moveMarker(seq: Sequence, markerId: Id, tS: number): Sequence {
   const idx = seq.markers.findIndex((m) => m.id === markerId)
   if (idx === -1) return seq
   const t = Math.max(0, tS)
   if (t === seq.markers[idx].t) return seq
+  if (seq.markers.some((m, i) => i !== idx && Math.abs(m.t - t) < ADJ_EPS)) return seq
   const markers = seq.markers
     .map((m, i) => (i === idx ? { ...m, t } : m))
     .sort((a, b) => a.t - b.t)

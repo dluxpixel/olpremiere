@@ -125,8 +125,11 @@ function MarkerPin({ marker: m, pxPerS, fps, actions }: { marker: Marker; pxPerS
       }`}
       style={{ left: t * pxPerS - 4, top: RULER_H - 11, background: m.color }}
       onPointerDown={(e) => {
-        if (!actions || e.button !== 0) return
+        if (!actions) return
+        // Every press is the marker's, a right press too: on to the ruler it
+        // scrubbed, so the playhead jumped to the pointer before the menu opened.
         e.stopPropagation()
+        if (e.button !== 0) return
         e.currentTarget.setPointerCapture(e.pointerId)
         press.current = { x: e.clientX, live: false }
       }}

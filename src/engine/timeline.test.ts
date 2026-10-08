@@ -1668,6 +1668,16 @@ describe('markers', () => {
     expect(moveMarker(seq, 'nope', 4)).toBe(seq)
     expect(moveMarker(seq, markerId, 2)).toBe(seq)
   })
+  // A dragged marker snaps onto another one (markers are snap points), and two
+  // markers stacked on one frame show as one: Shift+M then removed one of them
+  // and left the other, both invisible as two. addMarker never stacks them.
+  it('moveMarker never lands on the frame of another marker', () => {
+    const r1 = addMarker(emptySeq(), 1, 'Drop')
+    const seq = addMarker(r1.seq, 3, 'Verse').seq
+    expect(moveMarker(seq, r1.markerId, 3)).toBe(seq)
+    expect(moveMarker(seq, r1.markerId, 3.0000001)).toBe(seq)
+    expect(moveMarker(seq, r1.markerId, 3.1).markers.map((m) => m.t)).toEqual([3, 3.1])
+  })
 })
 
 describe('serializeClips', () => {

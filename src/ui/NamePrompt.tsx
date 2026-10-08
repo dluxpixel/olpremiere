@@ -23,7 +23,7 @@ function NamePromptDialog({ request }: { request: NameRequest }) {
   const input = useRef<HTMLInputElement>(null)
   // The field answers its own Escape; this is for the press that lands anywhere else in the dialog.
   useEscapeToClose(() => answerNamePrompt(null))
-  const problem = request.validate?.(value) ?? (value.trim() === '' ? 'Type a name first' : null)
+  const problem = request.validate?.(value) ?? (value.trim() === '' && !request.allowEmpty ? 'Type a name first' : null)
 
   useEffect(() => {
     input.current?.focus()

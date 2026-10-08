@@ -17,6 +17,7 @@ import { answerNamePrompt, useNamePrompt } from '../state/namePrompt'
 import { clickedPasteTrack, setPasteTarget } from '../state/pasteTarget'
 import { updateActiveSequence, useStore } from '../state/store'
 import { useToasts } from '../state/toasts'
+import { NamePrompt } from '../ui/NamePrompt'
 import { Timeline } from './Timeline'
 import { installManualRaf, installResizeObserver } from './timelineDomFixtures'
 import { buildLaneInfos } from './timelineLanes'
@@ -651,6 +652,51 @@ describe('Timeline', () => {
       fireEvent.contextMenu(markerEl(), { clientX: 40, clientY: 10 })
       act(() => useContextMenu.getState().items[1]!.onClick!())
       expect(markers()).toEqual([])
+    })
+
+    // A marker saved before markers landed on frames sits between two of them,
+    // and a click put the playhead there too.
+    it('a click on a marker saved between frames puts the playhead on a whole frame', () => {
+      seedMarker(4.01)
+      render(<Timeline height={300} />)
+      layOut()
+      fireEvent.pointerDown(markerEl(), { button: 0, clientX: 40, clientY: 10, pointerId: 1 })
+      fireEvent.pointerUp(markerEl(), { button: 0, clientX: 40, clientY: 10, pointerId: 1 })
+      expect(useStore.getState().ui.playheadS).toBe(4)
+    })
+
+    // The right press went on to the ruler under the marker, which scrubbed:
+    // the playhead jumped to the pointer before the menu opened.
+    it('a right press on it leaves the playhead where it was', () => {
+      seedMarker(4)
+      useStore.getState().setUI({ playheadS: 1 })
+      render(<Timeline height={300} />)
+      layOut()
+      screen.getByTestId('ruler').setPointerCapture = () => {}
+      fireEvent.pointerDown(markerEl(), { button: 2, clientX: 40, clientY: 10, pointerId: 1 })
+      expect(useStore.getState().ui.playheadS).toBe(1)
+    })
+
+    // renameMarker takes an empty name for none, but the dialog refused an
+    // empty name, so a named marker could never lose its name again.
+    it('a named marker can lose its name: an empty name saves as none', async () => {
+      updateActiveSequence('seed', (sq) => ({ ...sq, markers: [{ id: 'mk', t: 4, label: 'Drop', color: '#f00' }] }))
+      render(
+        <>
+          <Timeline height={300} />
+          <NamePrompt />
+        </>,
+      )
+      layOut()
+      fireEvent.contextMenu(markerEl(), { clientX: 40, clientY: 10 })
+      act(() => useContextMenu.getState().items[0]!.onClick!())
+      fireEvent.change(screen.getByTestId('name-prompt-input'), { target: { value: '' } })
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('name-prompt-save'))
+        await Promise.resolve()
+      })
+      expect(screen.queryByTestId('name-prompt')).toBeNull()
+      expect(markers()[0]!.label).toBe('')
     })
   })
 
