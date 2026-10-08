@@ -194,6 +194,21 @@ describe('alignScript', () => {
       expect(out.words[4]!.endS).toBeCloseTo(1.4, 9)
       expect([out.unheardLines, out.unheardWords]).toEqual([0, 0])
     })
+
+    // A filler is heard, never the model's version of a word of his script, so
+    // three of them in a gap do not make five missing words "about as many".
+    it('fillers heard where five words of his script are missing do not make them misheard', () => {
+      const heard = [w('alpha', 0, 0.3), w('um', 0.3, 0.5), w('uh', 0.5, 0.7), w('um', 0.7, 0.9), w('eta', 0.9, 1.2)]
+      const out = scriptHeard('alpha beta gamma delta epsilon zeta eta', heard)!
+      expect(texts(out.words)).toEqual(['alpha', 'eta'])
+      expect(out.unheardWords).toBe(5)
+    })
+
+    it('a stretch heard as other words still counts when a filler sits in it', () => {
+      const heard = [w('now', 0, 0.3), w('cerraral', 0.3, 0.9), w('um', 0.9, 1), w('degrade', 1, 1.5), w('is', 1.5, 1.7), w('back', 1.7, 2.1)]
+      const out = scriptHeard('now Sir Rel the Great is back', heard)!
+      expect(texts(out.words)).toEqual(['now', 'Sir', 'Rel', 'the', 'Great', 'is', 'back'])
+    })
   })
 
   // ⛔ S-1. On a tie the aligner paired a script word as late as possible, so a

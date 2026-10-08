@@ -74,6 +74,13 @@ const MISSED_WORD_S = 0.12
  */
 const MISSED_RUN = 2
 
+/**
+ * Sounds said between words. They are heard, but they are never the model's
+ * version of a word of his script, so they do not count towards a stretch it
+ * "heard as about as many words of its own".
+ */
+const FILLER = new Set(['um', 'umm', 'uh', 'uhh', 'uhm', 'er', 'erm', 'ah', 'eh', 'hm', 'hmm', 'mm', 'mmm', 'mhm', 'like'])
+
 /** A direction in his script, never said: "[HOOK]", "[cut to the base]", "(laughs)". */
 const DIRECTION = /\[[^\]]*\]|\([^)]*\)/g
 
@@ -310,7 +317,8 @@ export function scriptHeard(script: string, heard: readonly CaptionWord[]): Scri
     while (k < n && !span[k]) k++
     const run: number[] = []
     for (let q = i; q < k; q++) if (heardIn[lineOf[q]!]! > 0) run.push(q)
-    const misheard = i > 0 && k < n ? heardFrom[k]! - heardTo[i - 1]! : 0
+    let misheard = 0
+    if (i > 0 && k < n) for (let q = heardTo[i - 1]!; q < heardFrom[k]!; q++) if (!FILLER.has(h[q]!)) misheard++
     const len = k - i
     const sameSize = misheard > 0 && Math.max(len, misheard) <= 2 * Math.min(len, misheard) + 1
     if ((len > MISSED_RUN && !sameSize) || run.length === 0) {
