@@ -95,7 +95,11 @@ export function clipContextMenuItems({ clip, seq, assets, selNow, keepSelection,
   // Cut the quiet parts takes the same clips the caption item does: a dubbed
   // take lands as several clips, and all of them go in one pass and one undo
   // step. One clip goes through the single door, which says why it refuses.
-  const quietIds = captionCount > 1 ? captionTargets(captionIds) : [clip.id]
+  // The cut works one line at a time (silenceActions.ts), the line of the first
+  // clip it is handed, so the clip he right-clicked goes first.
+  const lead = captionTargets([clip.id])[0]
+  const quietTargets = captionCount > 1 ? captionTargets(captionIds) : [clip.id]
+  const quietIds = lead && quietTargets.includes(lead) ? [lead, ...quietTargets.filter((id) => id !== lead)] : quietTargets
 
   // Beat-driven punches and the loudness verbs, for audio clips with sound.
   const captionItems =

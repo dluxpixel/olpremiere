@@ -14,9 +14,12 @@ const show = vi.fn()
 vi.mock('./toasts', () => ({ useToasts: { getState: () => ({ show }) } }))
 
 // The transcript door, faked: this suite is about the EDIT, not about Whisper.
+// `isCancel` is the real rule (a thrown object that says it was cancelled), so
+// the throw, cancel and busy paths below run as they do in the app.
 const words = vi.fn()
 vi.mock('./transcribeActions', () => ({
   wordsForCut: (...a: unknown[]) => words(...a),
+  isCancel: (err: unknown) => typeof err === 'object' && err !== null && 'cancelled' in err,
 }))
 
 // ⛔ THE FAKE ANSWERS IN THE REAL DOOR'S CLOCK. wordsForCut hands back TIMELINE
@@ -475,6 +478,122 @@ describe('cutQuietParts', () => {
       [8, 12],
     ])
     expect(seq().tracks[0]!.clips.map((c) => [c.startS, c.inS, c.outS])).toEqual(seq().tracks[2]!.clips.map((c) => [c.startS, c.inS, c.outS]))
+  })
+
+  // ---------------------------------------------------------------------------
+  // Review 2026-10-08, nits 1, 5 and 6.
+
+  /** What each clip says, by clip id, in seconds into its source span. */
+  function heardBy(said: Record<string, { text: string; startS: number; endS: number }[]>) {
+    words.mockImplementation(async (clip: Clip) => timelineWords(said[clip.id] ?? [], clip))
+  }
+  const toast = (re: RegExp): string | undefined => show.mock.calls.map((c) => String(c[0])).find((m) => re.test(m))
+
+  it('⛔ a selection across tracks cuts one line only, and says what it left, so the tracks stay in sync', async () => {
+    // A marquee over gameplay (V1 and A1, linked) and his voice on A2. Each line
+    // ripples by its own cuts only, so cutting both slid the voice and the
+    // gameplay apart by different amounts, and nothing said so.
+    const { cutQuietParts } = await import('./silenceActions')
+    seedPair()
+    const voice: Clip = { ...clips()[0]!, id: 'VO', linkId: undefined, startS: 0, inS: 20, outS: 32 }
+    updateActiveSequence('voice', (sq) =>
+      recomputeDuration({ ...sq, tracks: sq.tracks.map((t, i) => (i === 3 ? { ...t, clips: [voice] } : t)) }),
+    )
+    heardBy({
+      A: [
+        { text: 'gg', startS: 0, endS: 2 },
+        { text: 'gg', startS: 8, endS: 12 },
+      ],
+      VO: [
+        { text: 'so', startS: 0, endS: 5 },
+        { text: 'so', startS: 9, endS: 12 },
+      ],
+    })
+    show.mockClear()
+
+    await cutQuietParts(['A', 'VO'], { minGapS: 0.5, padS: 0 })
+
+    // The line he pointed at is cut, picture and sound together.
+    expectSpans(seq().tracks[2]!.clips, [
+      [0, 2],
+      [8, 12],
+    ])
+    expect(seq().tracks[0]!.clips.map((c) => [c.startS, c.inS, c.outS])).toEqual(seq().tracks[2]!.clips.map((c) => [c.startS, c.inS, c.outS]))
+    // The voice on another track is not cut against its own quiet parts, and
+    // not even listened to.
+    expectSpans(seq().tracks[3]!.clips, [[20, 32]])
+    expect(words).toHaveBeenCalledTimes(1)
+    expect(toast(/Cut .*quiet/i)).toMatch(/1 on another track left alone/)
+  })
+
+  it('a clip refused inside a selection is named, not passed over in silence', async () => {
+    const { cutQuietParts } = await import('./silenceActions')
+    const first = seedClip({ outS: 12 })
+    const back: Clip = { ...first, id: 'rev', startS: 12, inS: 20, outS: 32, speed: -1 }
+    updateActiveSequence('two', (sq) =>
+      recomputeDuration({ ...sq, tracks: sq.tracks.map((t, i) => (i === 0 ? { ...t, clips: [first, back] } : t)) }),
+    )
+    heardBy({
+      c1: [
+        { text: 'a', startS: 0, endS: 2 },
+        { text: 'b', startS: 8, endS: 12 },
+      ],
+    })
+    show.mockClear()
+
+    await cutQuietParts(['c1', 'rev'], { minGapS: 0.5, padS: 0 })
+
+    expect(seq().tracks[0]!.clips).toHaveLength(3)
+    expect(toast(/Cut .*quiet/i)).toMatch(/1 playing backwards/)
+  })
+
+  it('a quiet part its linked clip does not cover says so, not that it was too short', async () => {
+    // A J-cut: his sound starts before the picture does, so the linked picture
+    // is not under the quiet part, and the pair is never cut on one side only.
+    const { cutQuietParts } = await import('./silenceActions')
+    seedPair({ videoOutS: 6 })
+    // Quiet from 6.5 to 10, where only the sound runs.
+    heard([
+      { text: 'a', startS: 0, endS: 6.5 },
+      { text: 'b', startS: 10, endS: 12 },
+    ])
+    show.mockClear()
+
+    await cutQuietParts('A', { minGapS: 0.5, padS: 0 })
+
+    expect(seq().tracks[2]!.clips).toHaveLength(1)
+    const said = toast(/cut/i)
+    expect(said).toBeDefined()
+    expect(said).not.toMatch(/too short/i)
+    expect(said).toMatch(/linked/i)
+  })
+
+  it('a cancelled reading cuts nothing and says nothing', async () => {
+    const { cutQuietParts } = await import('./silenceActions')
+    seedClip()
+    words.mockRejectedValue({ cancelled: true })
+    show.mockClear()
+    await cutQuietParts('c1')
+    expect(clips()).toHaveLength(1)
+    expect(show).not.toHaveBeenCalled()
+  })
+
+  it('a reading that is already running elsewhere says so', async () => {
+    const { cutQuietParts } = await import('./silenceActions')
+    seedClip()
+    words.mockResolvedValue(null)
+    await cutQuietParts('c1')
+    expect(clips()).toHaveLength(1)
+    expect(toast(/already running/)).toBeDefined()
+  })
+
+  it('a reading that fails says it could not read the speech', async () => {
+    const { cutQuietParts } = await import('./silenceActions')
+    seedClip()
+    words.mockRejectedValue(new Error('model failed'))
+    await cutQuietParts('c1')
+    expect(clips()).toHaveLength(1)
+    expect(toast(/Could not read the speech/)).toBeDefined()
   })
 
   it('says the track is locked instead of quietly doing nothing', async () => {
