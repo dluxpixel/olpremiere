@@ -138,6 +138,10 @@ export async function writeBackup(projectName: string, json: string): Promise<st
     // So a file is only ever pruned when a NEWER file for the same project
     // exists. Read from the file itself, not from its name: every one of his is
     // called "Untitled Project".
+    //
+    // The spare copy cleanup counts on this too: a project it saw in the backups
+    // that is in no folder any more stops it for good (mediaSweep.ts,
+    // sweepAppDeletes.test.ts).
     const newestOf = new Map<string, string>()
     const idOf = new Map<string, string>()
     for (const { f } of [...withTime].reverse()) {

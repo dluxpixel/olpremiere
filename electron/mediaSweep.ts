@@ -406,7 +406,9 @@ export async function sweepUnusedSpareCopies(
   // only they used went 7 days later without a word. So the ledger keeps which
   // folders the last run read, and every project it ever saw in Trash or the
   // backups: Trash is never emptied by the app, and the backups never lose a
-  // project's last copy, so in his use that list only grows.
+  // project's last copy, so in his use that list only grows. The app's own deletes
+  // (his delete, a rename's old file, the backup rotation) run against this in
+  // sweepAppDeletes.test.ts.
   const placesNow: Places = {
     projects: read.projects.place,
     trash: read.trash.place,

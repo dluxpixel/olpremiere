@@ -199,6 +199,11 @@ export async function listProjectFiles(): Promise<ProjectFileEntry[]> {
  * His delete. The file moves into `Trash` under a timestamp rather than being
  * unlinked, because "I deleted the wrong one" is the one mistake this whole
  * folder exists to make survivable.
+ *
+ * ⛔ NOTHING IN THE APP DELETES A FILE FROM TRASH. The spare copy cleanup stops
+ * for good when a project it saw in Trash is in no folder any more (mediaSweep.ts),
+ * so a way to empty Trash would have to take those ids off its ledger in the same
+ * step (sweepAppDeletes.test.ts).
  */
 export function trashProjectFile(id: string): Promise<number> {
   // In turn with the writes, so a save still on its way cannot land after the
