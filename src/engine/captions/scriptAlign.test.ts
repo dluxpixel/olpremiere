@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { AUTO_CAPTION_OPTIONS, chunkWords, type CaptionWord } from './captions'
-import { alignScript } from './scriptAlign'
+import { alignScript, scriptHeard } from './scriptAlign'
 
 const w = (text: string, startS: number, endS: number, emphasis?: boolean): CaptionWord => ({
   text,
@@ -128,6 +128,78 @@ describe('alignScript', () => {
     expect(alignScript('completely different words here', [w('minecraft', 0, 0.5), w('diamonds', 0.5, 1)])).toBeNull()
     expect(alignScript('   ', [w('hi', 0, 0.2)])).toBeNull()
     expect(alignScript('hi', [])).toBeNull()
+  })
+
+  // ⛔ R-2. Every script word used to be given a time, heard or not.
+  describe('script that was not heard there gets no caption', () => {
+    /** Words said back to back from `fromS`, a quarter second each. */
+    const said = (text: string, fromS: number): CaptionWord[] =>
+      text.split(' ').map((t, i) => w(t, fromS + i * 0.25, fromS + (i + 1) * 0.25))
+
+    it('a whole script against one clip lays only what that clip said, inside it', () => {
+      const clip = said('then i hit two plates', 10)
+      const script = 'So today I trained legs.\nThen I hit two plates!\nAnd I went home to eat.'
+      const out = scriptHeard(script, clip)!
+      expect(texts(out.words)).toEqual(['Then', 'I', 'hit', 'two', 'plates!'])
+      expect(out.words.map((x) => [x.startS, x.endS])).toEqual(clip.map((x) => [x.startS, x.endS]))
+      expect(out.unheardLines).toBe(2)
+      expect(out.unheardWords).toBe(0)
+    })
+
+    it('a line cut from the middle of the edit squeezes nothing in and shortens no word', () => {
+      const heard = [...said('i won the set', 0), ...said('then i left', 1)]
+      const out = scriptHeard('I won the set.\nWe cut this whole line out.\nThen I left.', heard)!
+      expect(texts(out.words)).toEqual(['I', 'won', 'the', 'set.', 'Then', 'I', 'left.'])
+      expect(out.words.map((x) => [x.startS, x.endS])).toEqual(heard.map((x) => [x.startS, x.endS]))
+      expect(out.unheardLines).toBe(1)
+    })
+
+    it('a line cut from the end is never laid past the last word heard', () => {
+      const heard = said('i won the set', 0)
+      const out = scriptHeard('I won the set. And then I went home.', heard)!
+      expect(texts(out.words)).toEqual(['I', 'won', 'the', 'set.'])
+      expect(Math.max(...out.words.map((x) => x.endS))).toBe(1)
+      // Part of a line he said: counted as words, not as a line.
+      expect([out.unheardLines, out.unheardWords]).toEqual([0, 5])
+    })
+
+    it('a script line before the first word heard never lands before it', () => {
+      const heard = said('then i left', 5)
+      const out = scriptHeard('This is the hook line.\nThen I left.', heard)!
+      expect(texts(out.words)).toEqual(['Then', 'I', 'left.'])
+      expect(Math.min(...out.words.map((x) => x.startS))).toBe(5)
+    })
+
+    it('a one word line he cut is not squeezed between the lines around it', () => {
+      const heard = [...said('i won', 0), ...said('then i left', 0.5)]
+      const out = scriptHeard('I won.\nWow.\nThen I left.', heard)!
+      expect(texts(out.words)).toEqual(['I', 'won.', 'Then', 'I', 'left.'])
+      expect(out.words[1]!.endS).toBe(0.5)
+    })
+
+    it('a word missed at the very end takes the back of the word before, never past it', () => {
+      const out = scriptHeard('we did it again', said('we did it', 0))!
+      expect(texts(out.words)).toEqual(['we', 'did', 'it', 'again'])
+      expect(out.words[3]!.endS).toBe(0.75)
+      expect(out.words[3]!.startS).toBeGreaterThan(out.words[2]!.startS)
+      expect(out.words[2]!.endS).toBeCloseTo(out.words[3]!.startS, 9)
+    })
+
+    it('a stretch the model heard as other words, between heard words, is still his', () => {
+      // Four words heard as two that are nothing like them: said, just misheard.
+      const heard = [w('now', 0, 0.3), w('cerraral', 0.3, 0.9), w('degrade', 0.9, 1.4), w('is', 1.4, 1.6), w('back', 1.6, 2)]
+      const out = scriptHeard('now Sir Rel the Great is back', heard)!
+      expect(texts(out.words)).toEqual(['now', 'Sir', 'Rel', 'the', 'Great', 'is', 'back'])
+      expect(out.words[1]!.startS).toBeCloseTo(0.3, 9)
+      expect(out.words[4]!.endS).toBeCloseTo(1.4, 9)
+      expect([out.unheardLines, out.unheardWords]).toEqual([0, 0])
+    })
+  })
+
+  it('a direction in (parentheses) is never captioned, like one in [brackets]', () => {
+    const heard = [w('that', 0, 0.2), w('was', 0.2, 0.4), w('insane', 0.4, 0.9), w('right', 1.5, 1.8)]
+    expect(texts(alignScript('That was insane (laughs) right', heard))).toEqual(['That', 'was', 'insane', 'right'])
+    expect(texts(alignScript('That was insane (cut to the base shot) right', heard))).toEqual(['That', 'was', 'insane', 'right'])
   })
 
   it('a three minute script is aligned in a moment', () => {

@@ -51,7 +51,32 @@ function joinCost(joined: number, halfA: number, halfB: number): number {
 /** The shortest a script word the model missed is given, when there is room. */
 const MISSED_WORD_S = 0.12
 
+/**
+ * The most script words in a row the model can have missed inside a line it
+ * heard. More than this in a row were not said here (a line cut from the edit,
+ * a hook moved elsewhere, script for another clip), unless the model heard
+ * about as many words of its own right where they would be.
+ */
+const MISSED_RUN = 2
+
+/** A direction in his script, never said: "[HOOK]", "[cut to the base]", "(laughs)". */
+const DIRECTION = /\[[^\]]*\]|\([^)]*\)/g
+
 type Step = 'pair' | 'script' | 'heard' | 'oneTwo' | 'twoOne'
+
+/** His script against what was heard: the words that were said here, timed, and what was not. */
+export interface ScriptHeard {
+  words: CaptionWord[]
+  /** Lines of his script with no word heard in these clips, so with no caption. */
+  unheardLines: number
+  /** Words left out of lines that were otherwise heard. */
+  unheardWords: number
+}
+
+/** {@link scriptHeard}, the timed words only. */
+export function alignScript(script: string, heard: readonly CaptionWord[]): CaptionWord[] | null {
+  return scriptHeard(script, heard)?.words ?? null
+}
 
 /**
  * His script, each word timed by what the recogniser heard. Null when nothing
@@ -62,21 +87,41 @@ type Step = 'pair' | 'script' | 'heard' | 'oneTwo' | 'twoOne'
  * - A word the model split ("mine draft" for "Minecraft") takes both.
  * - Two words the model ran together ("bamban" for "Bun Bun") share its time
  *   by letter count.
- * - A word the model missed shares the time between its neighbours.
+ * - One or two words the model missed in a line it heard, or a stretch it
+ *   heard as other words, share the time between their neighbours, never
+ *   outside the heard words around them.
  * - A heard word the script does not have is dropped: the script wins.
- * - Anything in [square brackets] is a direction ("[hook]", "[cut to the
- *   base]"), never said, so it is never captioned.
+ * - Anything in [square brackets] or (parentheses) is a direction ("[hook]",
+ *   "(laughs)"), never said, so it is never captioned.
+ *
+ * ⛔ SCRIPT THAT WAS NOT HEARD IS NOT CAPTIONED (R-2). Every unpaired word used
+ * to be given a time anyway: a whole script pasted with one clip selected laid
+ * the rest of it 0.12 s a word over the clips either side, replacing their
+ * captions; a line cut from the edit flashed for a frame, squeezed between
+ * two words; a line cut at the end ran past the last word and made the
+ * sequence longer. Now only the words heard here, and a word or two the model
+ * missed inside a line it heard, are laid. What was left out is counted, by
+ * line, so the caller can say so.
  *
  * The words are aligned in order, with a band around the diagonal so a long
  * voiceover costs a strip of the table and not all of it.
  */
-export function alignScript(script: string, heard: readonly CaptionWord[]): CaptionWord[] | null {
+export function scriptHeard(script: string, heard: readonly CaptionWord[]): ScriptHeard | null {
   // Punctuation standing on its own (", ", "...") rides on the word before it.
+  // A direction keeps its line breaks, so the lines around it stay lines.
   const written: string[] = []
-  for (const token of script.replace(/\[[^\]]*\]/g, ' ').split(/\s+/).filter(Boolean)) {
-    if (bare(token) || written.length === 0) written.push(token)
-    else written[written.length - 1] += ` ${token}`
-  }
+  const lineOf: number[] = []
+  script
+    .replace(DIRECTION, (d) => d.replace(/[^\n]+/g, ' '))
+    .split('\n')
+    .forEach((line, li) => {
+      for (const token of line.split(/\s+/).filter(Boolean)) {
+        if (bare(token) || written.length === 0) {
+          written.push(token)
+          lineOf.push(li)
+        } else written[written.length - 1] += ` ${token}`
+      }
+    })
   const s = written.map(bare)
   const h = heard.map((w) => bare(w.text))
   const n = s.length
@@ -134,6 +179,13 @@ export function alignScript(script: string, heard: readonly CaptionWord[]): Capt
   // word the highlight picked passes its colour on to the word he wrote.
   type Span = { startS: number; endS: number; emphasis?: true }
   const span: (Span | null)[] = new Array(n).fill(null)
+  // Which heard words each word he wrote was paired with: [from, to).
+  const heardFrom = new Array<number>(n).fill(-1)
+  const heardTo = new Array<number>(n).fill(-1)
+  const took = (i: number, from: number, to: number): void => {
+    heardFrom[i] = from
+    heardTo[i] = to
+  }
   const lit = (...ws: CaptionWord[]): { emphasis?: true } => (ws.some((w) => w.emphasis) ? { emphasis: true } : {})
   let paired = 0
   for (let i = n, j = m; i > 0 || j > 0; ) {
@@ -143,6 +195,7 @@ export function alignScript(script: string, heard: readonly CaptionWord[]): Capt
       // across two different words is a missed word, timed by its neighbours.
       if (unlike(s[i - 1]!, h[j - 1]!) <= SAME_WORD) {
         span[i - 1] = { startS: heard[j - 1]!.startS, endS: heard[j - 1]!.endS, ...lit(heard[j - 1]!) }
+        took(i - 1, j - 1, j)
         paired++
       }
       i--
@@ -152,6 +205,7 @@ export function alignScript(script: string, heard: readonly CaptionWord[]): Capt
     else if (how === 'oneTwo') {
       if (unlike(s[i - 1]!, h[j - 2]! + h[j - 1]!) <= SAME_WORD) {
         span[i - 1] = { startS: heard[j - 2]!.startS, endS: heard[j - 1]!.endS, ...lit(heard[j - 2]!, heard[j - 1]!) }
+        took(i - 1, j - 2, j)
         paired++
       }
       i--
@@ -162,6 +216,8 @@ export function alignScript(script: string, heard: readonly CaptionWord[]): Capt
         const cut = startS + ((endS - startS) * s[i - 2]!.length) / Math.max(1, s[i - 2]!.length + s[i - 1]!.length)
         span[i - 2] = { startS, endS: cut, ...lit(heard[j - 1]!) }
         span[i - 1] = { startS: cut, endS, ...lit(heard[j - 1]!) }
+        took(i - 2, j - 1, j)
+        took(i - 1, j - 1, j)
         paired += 2
       }
       i -= 2
@@ -170,44 +226,88 @@ export function alignScript(script: string, heard: readonly CaptionWord[]): Capt
   }
   if (paired === 0) return null
 
-  // A run of words the model missed shares the time between its neighbours,
-  // by letter count. With no room there, it takes the back half of the word
-  // before it (or, at the very start, the front half of the word after), so
-  // every word he wrote is on screen for a moment and none sits on another.
+  // Which lines were heard at all: a missed word is only ever one of those.
+  const lines = (lineOf[n - 1] ?? 0) + 1
+  const heardIn = new Array<number>(lines).fill(0)
+  for (let i = 0; i < n; i++) if (span[i]) heardIn[lineOf[i]!]!++
+
+  // Words the model missed share the time between their neighbours, by letter
+  // count. With no room there they take the back half of the word before (or,
+  // with no word before, the front half of the word after), so every word he
+  // wrote is on screen for a moment, none sits on another, and none is ever
+  // timed outside the heard words around it.
+  //
+  // Missed means one or two words in a row, or, between two words that were
+  // heard, a stretch the model heard as about as many words of its own
+  // ("nthatswhen" for "and that's when"). More words than that, or words with
+  // nothing heard where they would be, were not said here.
   const out: CaptionWord[] = []
+  const laidIn = new Array<number>(lines).fill(0)
   for (let i = 0; i < n; ) {
     const got = span[i]
     if (got) {
       out.push({ text: written[i]!, ...got })
+      laidIn[lineOf[i]!]!++
       i++
       continue
     }
     let k = i
     while (k < n && !span[k]) k++
+    const run: number[] = []
+    for (let q = i; q < k; q++) if (heardIn[lineOf[q]!]! > 0) run.push(q)
+    const misheard = i > 0 && k < n ? heardFrom[k]! - heardTo[i - 1]! : 0
+    const len = k - i
+    const sameSize = misheard > 0 && Math.max(len, misheard) <= 2 * Math.min(len, misheard) + 1
+    if ((len > MISSED_RUN && !sameSize) || run.length === 0) {
+      // Not said here: no caption, and nothing squeezed or spilled.
+      i = k
+      continue
+    }
     const before = out[out.length - 1]
     const after = span[k] ?? null
-    const letters = written.slice(i, k).map((w) => Math.max(1, bare(w).length))
+    const letters = run.map((q) => Math.max(1, bare(written[q]!).length))
     const total = letters.reduce((a, b) => a + b, 0)
-    const want = MISSED_WORD_S * (k - i)
-    let from = before ? before.endS : after ? Math.max(0, after.startS - want) : 0
-    let to = after ? after.startS : from + want
-    if (to - from < want && before) {
-      // Borrow from the word before, never past the middle of it.
+    const want = MISSED_WORD_S * run.length
+    let from: number
+    let to: number
+    if (before && after) {
+      from = before.endS
+      to = after.startS
+      if (to - from < want) {
+        // Borrow from the word before, never past the middle of it.
+        from = Math.max(before.startS + (before.endS - before.startS) / 2, to - want)
+        before.endS = from
+      }
+    } else if (before) {
+      // The last words: the back of the word before, never past where it ends.
+      to = before.endS
       from = Math.max(before.startS + (before.endS - before.startS) / 2, to - want)
       before.endS = from
-    } else if (to - from < want && after) {
-      // Nothing before: borrow from the word after, never past the middle of it.
-      to = Math.min(after.startS + (after.endS - after.startS) / 2, from + want)
-      after.startS = to
+    } else {
+      // The first words: the front of the word after, never before it starts.
+      from = after!.startS
+      to = Math.min(after!.startS + (after!.endS - after!.startS) / 2, from + want)
+      after!.startS = to
     }
     if (to <= from) to = from + want
     let t = from
-    for (let q = i; q < k; q++) {
-      const len = ((to - from) * letters[q - i]!) / total
+    run.forEach((q, r) => {
+      const len = ((to - from) * letters[r]!) / total
       out.push({ text: written[q]!, startS: t, endS: t + len })
+      laidIn[lineOf[q]!]!++
       t += len
-    }
+    })
     i = k
   }
-  return out
+  // A line with no word laid was not heard. Words left out of a heard line are counted on their own.
+  const wordsIn = new Array<number>(lines).fill(0)
+  for (const li of lineOf) wordsIn[li]!++
+  let unheardLines = 0
+  let inUnheard = 0
+  for (let li = 0; li < lines; li++) {
+    if (wordsIn[li] === 0 || laidIn[li]! > 0) continue
+    unheardLines++
+    inUnheard += wordsIn[li]!
+  }
+  return { words: out, unheardLines, unheardWords: n - out.length - inUnheard }
 }

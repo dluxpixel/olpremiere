@@ -30,7 +30,8 @@ import { clipEndS } from '../engine/timeline'
 import { activeSequence, type Clip, type MediaAsset, type SpokenWord } from '../engine/types'
 import type { CaptionWord } from '../engine/captions/captions'
 import type { CaptionStyle } from '../engine/captions/captionStyle'
-import { alignScript } from '../engine/captions/scriptAlign'
+import { scriptHeard } from '../engine/captions/scriptAlign'
+import { plural } from '../engine/plural'
 import { addCaptionsFromWords } from './captionActions'
 import { defaultCaptionStyle } from './captionStyles'
 import { currentVocabulary } from './captionVocabulary'
@@ -452,11 +453,12 @@ function layCaptions(
     })
     return
   }
-  const timed = alignScript(o.script, words)
-  if (!timed) {
+  const read = scriptHeard(o.script, words)
+  if (!read) {
     useToasts.getState().show(SCRIPT_NOT_HEARD, 'danger')
     return
   }
+  const timed = read.words
   const landed = o.coveredSpans.filter((sp) => timed.some((w) => w.startS >= sp.startS - 1e-9 && w.startS < sp.endS - 1e-9))
   addCaptionsFromWords(timed, {
     label: 'Captions from your script',
@@ -465,6 +467,22 @@ function layCaptions(
     heard: o.heard,
     wordLagS: wordLagNow(),
   })
+  const unheard = scriptUnheardMessage(read.unheardLines, read.unheardWords)
+  if (unheard) useToasts.getState().show(unheard)
+}
+
+/**
+ * What of his script was not heard in the clips, so has no caption (R-2):
+ * lines cut from the edit, a hook moved, or script for other clips. Null when
+ * every word was heard.
+ */
+export function scriptUnheardMessage(lines: number, words: number): string | null {
+  const parts = [
+    ...(lines > 0 ? [`${plural(lines, 'line')}${words > 0 ? '' : ' of your script'}`] : []),
+    ...(words > 0 ? [`${plural(words, lines > 0 ? 'more word' : 'word', lines > 0 ? 'more words' : 'words')} of your script`] : []),
+  ]
+  if (parts.length === 0) return null
+  return `${parts.join(' and ')} ${lines + words === 1 ? 'was' : 'were'} not heard there, so ${lines + words === 1 ? 'it has' : 'they have'} no captions`
 }
 
 /**

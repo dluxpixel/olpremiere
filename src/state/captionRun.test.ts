@@ -70,7 +70,7 @@ import {
 } from './captionRun'
 import { reloadCaptionStyles, saveNewCaptionStyle, setDefaultCaptionStyle } from './captionStyles'
 import { updateActiveSequence, useStore } from './store'
-import { SCRIPT_NOT_HEARD, captionEars, useTranscribe } from './transcribeActions'
+import { SCRIPT_NOT_HEARD, captionEars, scriptUnheardMessage, useTranscribe } from './transcribeActions'
 import { wordsOnTimeline } from '../engine/transcriptCut'
 import { clipsWithoutWords, listenForEveryClip } from './transcriptActions'
 
@@ -503,6 +503,60 @@ describe('captions from his own script', () => {
   it('is null when there is nothing to listen to, so the window can say so', () => {
     expect(captionFromScript('so it goes')).toBeNull()
     expect(heard).toEqual([])
+  })
+
+  // ⛔ R-2. Select one clip and paste the whole Short's script, the natural
+  // thing to do: the lines for the other clips were laid 0.12 s a word either
+  // side of it, over clips this run never heard.
+  it('a whole script with one clip selected leaves every other caption exactly as it was', async () => {
+    const { a, b, c } = seed()
+    await captionTheseClips([a, b, c])
+    const others = () => captionsOn(seq()).map(({ clip }) => clip).filter((cl) => cl.startS < 3 || cl.startS >= 4)
+    const before = others()
+    heard.length = 0
+    useStore.getState().setUI({ selection: [b] })
+    await captionFromScript('Onea twoa threea, the first one.\nOneb Two B threeb.\nOnec twoc threec, the last one.', spoken)
+    expect(heard).toEqual([b])
+    expect(said().join(' ')).toContain('Two B')
+    expect(others()).toEqual(before)
+    // Nothing of his script was laid outside the clip it was heard in.
+    const fromScript = captionsOn(seq()).filter(({ clip }) => clip.startS >= 3 && clip.startS < 4)
+    expect(fromScript.every(({ clip }) => clipEndS(clip) <= 4 + 1e-9)).toBe(true)
+    expect(toasted).toContain('2 lines of your script were not heard there, so they have no captions')
+  })
+
+  it('a line cut from the end of the edit is not laid past it, and the sequence does not grow', async () => {
+    const laid = () => ({
+      durationS: seq().durationS,
+      captions: captionsOn(seq()).map(({ clip }) => [clip.title!.text, clip.startS, clipEndS(clip)]),
+    })
+    // The same clip with only the lines he kept: what the edit really says.
+    useStore.getState().setUI({ selection: [seed().c] })
+    await captionFromScript('Onec twoc threec.', spoken)
+    const kept = laid()
+    useStore.getState().setProject(newProject())
+    useStore.getState().setUI({ selection: [seed().c] })
+    await captionFromScript('Onec twoc threec.\nAnd that was the whole video.', spoken)
+    expect(said().join(' ')).toBe('Onec twoc threec.')
+    expect(laid()).toEqual(kept)
+    expect(toasted).toContain('1 line of your script was not heard there, so it has no captions')
+  })
+
+  it('says nothing more when every word of the script was heard', async () => {
+    const { b } = seed()
+    useStore.getState().setUI({ selection: [b] })
+    await captionFromScript('Oneb Two B threeb.', spoken)
+    expect(toasted.filter((t) => t.includes('not heard'))).toEqual([])
+  })
+})
+
+describe('what a script run says it left out', () => {
+  it('counts lines, then words left out of lines it heard', () => {
+    expect(scriptUnheardMessage(0, 0)).toBeNull()
+    expect(scriptUnheardMessage(1, 0)).toBe('1 line of your script was not heard there, so it has no captions')
+    expect(scriptUnheardMessage(3, 0)).toBe('3 lines of your script were not heard there, so they have no captions')
+    expect(scriptUnheardMessage(0, 4)).toBe('4 words of your script were not heard there, so they have no captions')
+    expect(scriptUnheardMessage(2, 1)).toBe('2 lines and 1 more word of your script were not heard there, so they have no captions')
   })
 })
 
