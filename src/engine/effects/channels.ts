@@ -160,8 +160,17 @@ function insertAt(effects: readonly EffectInstance[], type: string): number {
   return effects.length
 }
 
-/** Replace or insert an effect, keeping canonical order; drop it when it goes neutral. */
-function withEffect(clip: Clip, type: string, patch: (inst: EffectInstance) => EffectInstance): Clip {
+/**
+ * Replace or insert an effect, keeping canonical order; drop it when it goes
+ * neutral. `keepApplied`: a write that only took the animation away keeps an
+ * effect HE applied (see withEffectParamKeyframes).
+ */
+function withEffect(
+  clip: Clip,
+  type: string,
+  patch: (inst: EffectInstance) => EffectInstance,
+  keepApplied = false,
+): Clip {
   const def = EFFECT_BY_TYPE[type]
   if (!def) return clip
   const idx = clip.effects.findIndex((e) => e.type === type)
@@ -170,12 +179,15 @@ function withEffect(clip: Clip, type: string, patch: (inst: EffectInstance) => E
   const next = patch(current)
 
   // A neutral, enabled effect renders as the identity. Keep the document clean
-  // by removing it rather than carrying a no-op the user never asked for.
+  // by removing it rather than carrying a no-op the user never asked for. One
+  // this adapter materialised carries the `fx_` id above; one he applied from
+  // the Effects panel carries its own, and that is how the two are told apart.
+  const keep = keepApplied && current.id !== `fx_${type}`
   const drop = next.enabled && isNeutral(next)
 
   const effects = [...clip.effects]
   if (idx >= 0) {
-    if (drop) effects.splice(idx, 1)
+    if (drop && !keep) effects.splice(idx, 1)
     else effects[idx] = next
   } else if (!drop) {
     effects.splice(insertAt(effects, type), 0, next)
@@ -199,10 +211,21 @@ export function withEffectParamValue(clip: Clip, addr: EffectAddr, value: number
  * neutral; an empty list collapses the param back to that static number.
  */
 export function withEffectParamKeyframes(clip: Clip, addr: EffectAddr, base: number, kfs: Keyframe[]): Clip {
-  return withEffect(clip, addr.type, (i) => ({
-    ...i,
-    params: { ...i.params, [addr.param]: kfs.length === 0 ? base : { value: base, keyframes: kfs } },
-  }))
+  // ⛔ TAKING THE KEYFRAMES OFF NEVER TAKES AN EFFECT HE APPLIED OFF. A Gaussian
+  // Blur he added sits at Radius 0; stopwatch, Radius 20 later on, then Delete on
+  // both diamonds: the radius fell back to 0, the effect went neutral, and the
+  // whole Blur card vanished (2026-10-06). ops.ts says it plainly: an effect the
+  // user applied never evaporates because its params sit at their defaults. One a
+  // channel write materialised may still go again.
+  return withEffect(
+    clip,
+    addr.type,
+    (i) => ({
+      ...i,
+      params: { ...i.params, [addr.param]: kfs.length === 0 ? base : { value: base, keyframes: kfs } },
+    }),
+    kfs.length === 0,
+  )
 }
 
 /** Set a channel's static value, materialising or removing its effect as needed. */

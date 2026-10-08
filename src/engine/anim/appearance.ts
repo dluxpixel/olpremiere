@@ -379,6 +379,18 @@ function appearanceIsUntouched(clip: Clip, D: number, seqW: number, seqH: number
   return compiledBy(clip, D, seqW, seqH)
 }
 
+/**
+ * True while a clip's In or Out still OWNS its transform and opacity: it has
+ * one, and the keyframes are exactly what it compiles to at the clip's length.
+ * The Inspector asks this before a typed number rebuilds the animation, the
+ * same "only touch our own work" rule every recompile in this file keeps. A
+ * clip he has keyed by hand is his, channel by channel.
+ */
+export function appearanceOwnsKeyframes(clip: Clip, seqW: number, seqH: number): boolean {
+  if (!clip.appearance || isEmptyAppearance(clip.appearance)) return false
+  return appearanceIsUntouched(clip, clipDurationS(clip), seqW, seqH)
+}
+
 /** The clip's settled values, the base every compile is relative to. */
 function baseOf(clip: Clip): AppearanceBase {
   return {
@@ -550,7 +562,7 @@ export function releaseAppearanceOnRetime(prev: Clip, next: Clip, fromT: number)
 const CUT_EPS = 1e-6
 
 /** The clip with its keyframes intact but no longer owned by a preset. */
-function withoutAppearance(clip: Clip): Clip {
+export function withoutAppearance(clip: Clip): Clip {
   if (!clip.appearance) return clip
   const next: Clip = { ...clip }
   delete next.appearance

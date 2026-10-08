@@ -19,7 +19,16 @@ vi.mock('../state/toasts', () => ({
 }))
 
 import { recomputeDuration } from '../engine/timeline'
-import { activeSequence, newClipFromAsset, newProject, type Clip, type MediaAsset } from '../engine/types'
+import {
+  activeSequence,
+  defaultTitleDef,
+  newClipFromAsset,
+  newProject,
+  newTitleClip,
+  type Clip,
+  type MediaAsset,
+} from '../engine/types'
+import { applyEffectToClips } from '../state/bulkEdits'
 import { EFFECT_MIME } from '../state/dnd'
 import { updateActiveSequence, useStore } from '../state/store'
 import { makeAsset } from './timelineTestFixtures'
@@ -63,14 +72,31 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('the multi selection Inspector, with three pictures selected', () => {
-  it('Add effect puts it on all three, in ONE undo step, and says how many', async () => {
+  // The same search the single clip panel has: found by what it does, not by
+  // its name, and it lands on all three. It used to be a bare list of names.
+  it('Add effect searches by what it does and puts it on all three, in ONE undo step', async () => {
     const ids = threePictures()
     render(<MultiInspector selected={selectedOf(ids)} />)
-    await userEvent.setup().selectOptions(screen.getByTestId('multi-add-effect'), 'gaussianBlur')
-    expect(effectsOf(ids)).toEqual([['gaussianBlur'], ['gaussianBlur'], ['gaussianBlur']])
-    expect(toasts.shown).toEqual(['Added Gaussian Blur to 3 clips'])
+    const user = userEvent.setup()
+    await user.click(screen.getByTestId('inspector-add-effect'))
+    await user.type(screen.getByTestId('add-effect-search'), 'bloom')
+    await user.keyboard('{Enter}')
+    expect(effectsOf(ids)).toEqual([['glow'], ['glow'], ['glow']])
+    expect(toasts.shown).toEqual(['Added Glow to 3 clips'])
     useStore.getState().undo()
     expect(effectsOf(ids)).toEqual([[], [], []])
+  })
+
+  it('the eye turns every effect off on all three, the Shift+B of the panel', async () => {
+    const ids = threePictures()
+    render(<MultiInspector selected={selectedOf(ids)} />)
+    fireEvent.drop(screen.getByTestId('multi-effects'), {
+      dataTransfer: { types: [EFFECT_MIME], getData: (m: string) => (m === EFFECT_MIME ? 'saturation' : '') },
+    })
+    cleanup()
+    render(<MultiInspector selected={selectedOf(ids)} />)
+    await userEvent.setup().click(screen.getByTestId('multi-bypass-effects'))
+    expect(ids.map((id) => clipById(id).effects.map((e) => e.enabled))).toEqual([[false], [false], [false]])
   })
 
   it('an effect dragged into the panel lands on all three and says how many', () => {
@@ -81,6 +107,28 @@ describe('the multi selection Inspector, with three pictures selected', () => {
     })
     expect(effectsOf(ids)).toEqual([['saturation'], ['saturation'], ['saturation']])
     expect(toasts.shown).toEqual(['Added Saturation to 3 clips'])
+  })
+
+  // One caption in the selection used to make every footage card vanish, because
+  // the cards wanted EVERY selected clip to carry the effect.
+  it('a caption in the selection keeps the footage cards on show', () => {
+    const ids = threePictures()
+    applyEffectToClips(ids, 'saturation')
+    const cap = newTitleClip(defaultTitleDef('hi'), 10, 2)
+    updateActiveSequence('seed caption', (sq) =>
+      recomputeDuration({ ...sq, tracks: sq.tracks.map((t) => (t.name === 'V2' ? { ...t, clips: [...t.clips, cap] } : t)) }),
+    )
+    render(<MultiInspector selected={selectedOf([...ids, cap.id])} />)
+    expect(screen.getByTestId('shared-effects').querySelector('[data-effect-type="saturation"]')).not.toBeNull()
+  })
+
+  it('a transition picked in the panel lands on all three pictures', async () => {
+    const ids = threePictures()
+    render(<MultiInspector selected={selectedOf(ids)} />)
+    await userEvent.setup().selectOptions(screen.getByTestId('multi-transition-out'), 'whiteFlash')
+    expect(ids.map((id) => clipById(id).transitionOut)).toEqual(
+      [0, 1, 2].map(() => ({ type: 'whiteFlash', durationS: 0.2 })),
+    )
   })
 
   it('Punch grade grades all three and counts three', async () => {

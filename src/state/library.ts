@@ -25,6 +25,7 @@ import {
   audioTracks,
   newId,
   videoTracks,
+  type Clip,
   type Id,
   type MediaAsset,
   type Sequence,
@@ -63,7 +64,7 @@ import {
 import { blobForExport, mirrorApi, mirrorAsset, mirroredIds, readMirrored } from './mediaMirror'
 import { askForName } from './namePrompt'
 import { db, getBlob, putBlob } from './persistence'
-import { lockedLeftOut } from './bulkEdits'
+import { effectTargets, lockedLeftOut } from './bulkEdits'
 import { useStore } from './store'
 import { useToasts } from './toasts'
 
@@ -781,11 +782,14 @@ export function applyPresetToSelection(presetId: Id): void {
   // the selection this runs on can easily hold one: the preset landed on the very
   // clips he locked the track to protect, and said "Applied" as if nothing were
   // unusual. Those are named instead.
-  const where = new Map<Id, { kind: string; locked: boolean }>()
-  for (const t of activeSequence(project).tracks) for (const c of t.clips) where.set(c.id, { kind: t.kind, locked: t.locked })
+  const where = new Map<Id, { clip: Clip; kind: string; locked: boolean }>()
+  for (const t of activeSequence(project).tracks) for (const c of t.clips) where.set(c.id, { clip: c, kind: t.kind, locked: t.locked })
   const visual = ui.selection.filter((id) => where.has(id) && where.get(id)!.kind === 'video')
-  const targets = new Set(visual.filter((id) => !where.get(id)!.locked))
-  const lockedOut = visual.length - targets.size
+  // A look goes on the footage of a mixed selection, not on its captions or an
+  // adjustment layer above it (effectTargets, the rule every effect door obeys).
+  const looked = effectTargets(visual.map((id) => where.get(id)!.clip)).map((c) => c.id)
+  const targets = new Set(looked.filter((id) => !where.get(id)!.locked))
+  const lockedOut = looked.length - targets.size
   if (visual.length === 0) {
     show('Effects don’t apply to audio clips', 'danger')
     return
@@ -827,13 +831,22 @@ export function applyPresetToAllClips(presetId: Id): void {
   const preset = useLibrary.getState().presets.find((p) => p.id === presetId)
   const { project, dispatch } = useStore.getState()
   if (!preset) return
-  // Locked tracks are neither changed nor COUNTED. Counting them made the toast
-  // over-report by however many clips he had protected.
-  const targetCount = activeSequence(project)
-    .tracks.filter((t) => t.kind === 'video' && !t.locked)
-    .reduce((n, t) => n + t.clips.length, 0)
+  // Locked tracks are neither changed nor counted as changed: counting them made
+  // the toast over-report by however many clips he had protected. The captions
+  // are left clean: a look is for the footage (effectTargets).
+  // ⛔ The rule runs over EVERY video clip, locked ones too, and the locked are
+  // dropped after it. Dropping them first left a locked cut out of the rule, so
+  // it saw only the captions and the look went on every one of them (review,
+  // 2026-10-07). The ones a lock held back are named.
+  const video = activeSequence(project).tracks.filter((t) => t.kind === 'video')
+  const lockedIds = new Set(video.filter((t) => t.locked).flatMap((t) => t.clips.map((c) => c.id)))
+  const looked = effectTargets(video.flatMap((t) => t.clips)).map((c) => c.id)
+  const targets = new Set(looked.filter((id) => !lockedIds.has(id)))
+  const lockedOut = looked.length - targets.size
+  const targetCount = targets.size
   if (targetCount === 0) {
-    show('No video clips to apply the preset to')
+    if (lockedOut > 0) show(lockedOut === 1 ? 'That clip is on a locked track' : 'Those clips are on a locked track', 'danger')
+    else show('No video clips to apply the preset to')
     return
   }
   dispatch(`Apply preset ${preset.name} to all clips`, (p) => {
@@ -843,15 +856,15 @@ export function applyPresetToAllClips(presetId: Id): void {
         ? t
         : {
             ...t,
-            clips: t.clips.map((c) => ({
-              ...c,
-              effects: [...c.effects, ...copyEffects(preset.effects, newId)],
-            })),
+            clips: t.clips.map((c) =>
+              targets.has(c.id) ? { ...c, effects: [...c.effects, ...copyEffects(preset.effects, newId)] } : c,
+            ),
           },
     )
     return { ...p, sequences: { ...p.sequences, [seq.id]: { ...seq, tracks } } }
   })
-  show(`Applied "${preset.name}" to ${targetCount} clip${targetCount === 1 ? '' : 's'}`, 'success')
+  const left = lockedOut > 0 ? `. ${lockedLeftOut(lockedOut)}` : ''
+  show(`Applied "${preset.name}" to ${targetCount} clip${targetCount === 1 ? '' : 's'}${left}`, 'success')
 }
 
 /** Remove a preset, with Undo on the toast: it is one click away in the right click menu. */

@@ -15,7 +15,7 @@
 // effect stack is decided in this file.
 
 import { useState, type DragEvent } from 'react'
-import { activeSequence } from '../engine/types'
+import { activeSequence, type Clip } from '../engine/types'
 import { applyEffectToClips } from '../state/bulkEdits'
 import { EFFECT_MIME, dragHasType } from '../state/dnd'
 import { useStore } from '../state/store'
@@ -48,8 +48,35 @@ function allTargetsLocked(ids: readonly string[]): boolean {
  * into one picture with an effect and a selection that had quietly shrunk. A clip
  * outside the selection is its own drop, as it always was: he aimed at it.
  */
-export function effectDropTargets(clipId: string, selection: readonly string[]): string[] {
-  return selection.length > 1 && selection.includes(clipId) ? [...selection] : [clipId]
+export function effectDropTargets(
+  clipId: string,
+  selection: readonly string[],
+  seq?: { tracks: readonly { clips: readonly Clip[] }[] },
+): string[] {
+  if (!(selection.length > 1 && selection.includes(clipId))) return [clipId]
+  // Dropped on a CAPTION (or an adjustment layer) of a mixed selection, it is for
+  // the selected clips of that kind. Footage wins a mixed selection everywhere
+  // else (effectTargets), and without this a Glow he aimed at a caption would
+  // have gone on the footage instead.
+  const all = seq?.tracks.flatMap((t) => t.clips) ?? []
+  const kind = (c: Clip | undefined) => (c?.title ? 'text' : c?.adjustment ? 'adjustment' : 'picture')
+  const aimed = all.find((c) => c.id === clipId)
+  if (!aimed || kind(aimed) === 'picture') return [...selection]
+  const picked = new Set(selection)
+  return all.filter((c) => picked.has(c.id) && kind(c) === kind(aimed)).map((c) => c.id)
+}
+
+/**
+ * The selection after a drop on `clipId`: null (left as it is) when the drop was
+ * for a selection the clip is part of, else just that clip, so the Inspector
+ * shows what landed.
+ *
+ * ⛔ ASKED OF THE SELECTION, NOT OF THE TARGETS. Dropped on the one caption of a
+ * mixed selection the targets are that caption alone, and the selection used to
+ * collapse to it, against the rule above (review, 2026-10-07).
+ */
+export function selectionAfterDrop(clipId: string, selection: readonly string[]): string[] | null {
+  return selection.length > 1 && selection.includes(clipId) ? null : [clipId]
 }
 
 export interface EffectDrop {

@@ -99,6 +99,46 @@ describe('changing it on every clip at once', () => {
     expect(amountOf(b)).toBeCloseTo(0.3, 6)
   })
 
+  // Measured 2026-10-06: a ramp on a clip the playhead is not on had its first
+  // (or last) keyframe replaced, because the moment clamped to that clip's edge.
+  it('leaves a ramp alone on a clip the playhead is not on', () => {
+    const [a, b] = [seedClip(0), seedClip(2)]
+    applyEffect(a, 'autoColor')
+    applyEffect(b, 'autoColor')
+    useStore.getState().setUI({ playheadS: 2.5 })
+    toggleEffectParamKeyframes(b, firstOfType(clipById(b), 'autoColor')!.id, 'amount')
+    useStore.getState().setUI({ playheadS: 0.5 })
+    toggleEffectParamKeyframes(a, firstOfType(clipById(a), 'autoColor')!.id, 'amount')
+    const rampOnB = paramKeyframes(firstOfType(clipById(b), 'autoColor')!, 'amount')
+    setSharedEffectParam([a, b], 'autoColor', 'amount', 0.3)
+    expect(paramKeyframes(firstOfType(clipById(b), 'autoColor')!, 'amount')).toEqual(rampOnB)
+    expect(resolveParam(firstOfType(clipById(a), 'autoColor')!, 'amount', 0.5)).toBeCloseTo(0.3, 6)
+  })
+
+  // Review, 2026-10-07: the clips it leaves alone were left in silence, and with
+  // the playhead on none of them the edit did nothing at all and said nothing.
+  it('says which clips it left alone, and never does nothing in silence', () => {
+    const [a, b, c] = [seedClip(0), seedClip(2), seedClip(4)]
+    for (const id of [a, b, c]) applyEffect(id, 'autoColor')
+    useStore.getState().setUI({ playheadS: 2.5 })
+    toggleEffectParamKeyframes(b, firstOfType(clipById(b), 'autoColor')!.id, 'amount')
+    useStore.getState().setUI({ playheadS: 4.5 })
+    toggleEffectParamKeyframes(c, firstOfType(clipById(c), 'autoColor')!.id, 'amount')
+    useStore.getState().setUI({ playheadS: 0.5 })
+    show.mockClear()
+    setSharedEffectParam([a, b, c], 'autoColor', 'amount', 0.3)
+    expect(amountOf(a)).toBeCloseTo(0.3, 6)
+    expect(show).toHaveBeenCalledWith('2 clips with Amount keyframes were left alone. Park the playhead on one to change it there', 'info')
+
+    // The playhead in a gap past them all: every ramp is left, and it is said.
+    useStore.getState().setUI({ playheadS: 20 })
+    show.mockClear()
+    const steps = useStore.getState().history.undo.length
+    setSharedEffectParam([b, c], 'autoColor', 'amount', 0.9)
+    expect(useStore.getState().history.undo.length).toBe(steps)
+    expect(show).toHaveBeenCalledWith('2 clips with Amount keyframes were left alone. Park the playhead on one to change it there', 'info')
+  })
+
   it('resets, switches off and removes on all of them', () => {
     const ids = [seedClip(0), seedClip(2)]
     for (const id of ids) applyEffect(id, 'autoColor')

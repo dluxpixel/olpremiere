@@ -2,7 +2,13 @@
 // transitions. Channel names + math come from engine/keyframes; every edit is
 // one undo step. localT is always relative to the clip start.
 
-import { applyAppearanceToClip, releaseAppearanceOnRetime } from '../engine/anim/appearance'
+import {
+  APPEARANCE_CHANNELS,
+  appearanceOwnsKeyframes,
+  applyAppearanceToClip,
+  releaseAppearanceOnRetime,
+  withoutAppearance,
+} from '../engine/anim/appearance'
 import {
   channelBase,
   channelDefault,
@@ -60,7 +66,9 @@ import {
   type Keyframe,
   type Sequence,
   type Track,
+  type Transition,
 } from '../engine/types'
+import { pairTransitionAt } from '../engine/render/resolve'
 import { transitionDurationSpec, type TransitionKind } from '../engine/render/types'
 import { noteRecentEffect } from './recentEffects'
 import { keptTimingMessage, lockedGapMessage, newRippleReport } from './rippleNotice'
@@ -111,6 +119,45 @@ export function isClipArmed(clip: Clip): boolean {
   return ARMED_CHANNELS.some((ch) => channelKeyframes(clip, ch).length > 0)
 }
 
+/** What a door says when it hands a preset's keyframes to him. */
+export const KEYFRAMES_ARE_YOURS = 'Keyframes are yours now. The preset no longer drives this clip'
+
+/**
+ * An In or Out animation (a caption's pop, a fade) OWNS this channel: its
+ * keyframes are COMPILED from the spec and the base (appearance.ts).
+ *
+ * ⛔ ONLY WHILE THE KEYFRAMES ARE STILL THE PRESET'S OWN. It used to say owned
+ * for all five channels whenever the clip had an animation, so a Fade in caption
+ * with a Position slide he keyed by hand showed the slide's BASE with no
+ * stopwatch, and typing Opacity 80 rebuilt the fade and deleted the slide, with
+ * nothing said (review, 2026-10-07). appearance.ts only ever recompiles work
+ * that is still its own (retime, rebake, split), and this now asks the same
+ * question: a hand keyed clip is edited one channel at a time, like any other.
+ */
+export function isAppearanceOwned(
+  clip: Clip,
+  channel: AnimChannel,
+  frame: { width: number; height: number },
+): boolean {
+  return APPEARANCE_CHANNELS.includes(channel) && appearanceOwnsKeyframes(clip, frame.width, frame.height)
+}
+
+/**
+ * Write a number into a channel an animation owns: it becomes the BASE and the
+ * animation is rebuilt on it, exactly as the monitor drag and setClipsPosition
+ * already do.
+ *
+ * ⛔ The number fields used to write a keyframe at the playhead into the pop
+ * instead (clamped to the head or tail of a caption the playhead was not on):
+ * Scale 1.2 on a whole run of captions made the ones after the playhead SHRINK
+ * in from 1.2 and the ones before it slowly grow after the pop, while the base
+ * stayed 1.0 so none of them got any bigger (measured 2026-10-06). And the clip
+ * no longer matched its spec, so the next trim stopped moving its Out.
+ */
+export function withOwnedBase(c: Clip, channel: AnimChannel, value: number, seqW: number, seqH: number): Clip {
+  return applyAppearanceToClip(withChannelValue(c, channel, value), c.appearance!, seqW, seqH)
+}
+
 /**
  * The ONE choke point for every Inspector, effect, keyframe and transition edit,
  * and therefore the one that has to say "no" out loud.
@@ -133,6 +180,8 @@ function mapClip(
   bailOnNoop = false,
   /** Folds a run of edits to the SAME field into one undo step. See setChannel. */
   mergeKey?: string,
+  /** A second clip ON THE SAME TRACK changed in the same undo step. */
+  also?: { id: string; fn: (clip: Clip) => Clip },
 ): void {
   const track = activeSequence(useStore.getState().project).tracks.find((t) =>
     t.clips.some((c) => c.id === clipId),
@@ -152,7 +201,9 @@ function mapClip(
       return {
         ...seq,
         tracks: seq.tracks.map((t) =>
-          t.id === track.id ? { ...t, clips: t.clips.map((c) => (c.id === clipId ? fn(c) : c)) } : t,
+          t.id === track.id
+            ? { ...t, clips: t.clips.map((c) => (c.id === clipId ? fn(c) : c.id === also?.id ? also.fn(c) : c)) }
+            : t,
         ),
       }
     },
@@ -180,10 +231,12 @@ export function setChannel(clipId: string, channel: AnimChannel, value: number):
   // Read once, not per callback run: a field commit is one gesture and must
   // write one shape even if the curve chips change under a merged run.
   const commit = moveCommit()
+  const seq = activeSequence(useStore.getState().project)
   mapClip(
     clipId,
     `Set ${channel}`,
     (c) => {
+      if (isAppearanceOwned(c, channel, seq)) return withOwnedBase(c, channel, value, seq.width, seq.height)
       if (!animated) return withChannelValue(c, channel, value)
       const localT = playheadLocalT(c)
       // ⛔ THE SHAPE AT THAT MOMENT IS HIS, NOT THE DROPDOWN'S. Typing a number
@@ -201,17 +254,37 @@ export function setChannel(clipId: string, channel: AnimChannel, value: number):
   )
 }
 
-/** Stopwatch: enable → seed a keyframe at the playhead with the current value; disable → drop all. */
+/**
+ * Stopwatch: enable → seed a keyframe at the playhead with the current value;
+ * disable → drop all.
+ *
+ * ⛔ ON A CLIP WITH AN IN OR OUT IT HANDS HIM THE KEYFRAMES, it does not refuse.
+ * Refusing took the stopwatch off every caption that pops, which is every auto
+ * caption, and off footage that picked up a pop from Paste attributes, with no
+ * way back to hand animation (review, 2026-10-07). Keying such a clip by hand is
+ * the same act of authorship as dragging one of its diamonds, so it takes the
+ * same rule (releaseAppearanceOnRetime): the keyframes stay exactly as they are
+ * and become his, and nothing recompiles them again. Without that the next
+ * monitor drag or Speed pick rebuilt the animation and threw his keyframe away.
+ * A channel the preset already keys is simply his from here; one it does not
+ * gets its first keyframe, as on any clip.
+ */
 export function toggleChannelAnimation(clipId: string, channel: AnimChannel): void {
   const clip = findClip(clipId)
   if (!clip) return
-  const animated = channelKeyframes(clip, channel).length > 0
+  const owned = isAppearanceOwned(clip, channel, activeSequence(useStore.getState().project))
+  const animated = !owned && channelKeyframes(clip, channel).length > 0
+  // Turning keyframes OFF writes nothing a recompile could throw away.
+  const releases = !animated && !!clip.appearance && APPEARANCE_CHANNELS.includes(channel)
   mapClip(clipId, animated ? `Disable ${channel} keyframes` : `Enable ${channel} keyframes`, (c) => {
     if (animated) return withChannelKeyframes(c, channel, [])
-    const localT = playheadLocalT(c)
-    const value = channelBase(c, channel)
-    return withChannelKeyframes(c, channel, [{ t: localT, value, ease: 'linear' }])
+    const mine = releases ? withoutAppearance(c) : c
+    if (channelKeyframes(mine, channel).length > 0) return mine
+    const localT = playheadLocalT(mine)
+    const value = channelBase(mine, channel)
+    return withChannelKeyframes(mine, channel, [{ t: localT, value, ease: 'linear' }])
   })
+  if (releases && !findClip(clipId)?.appearance) useToasts.getState().show(KEYFRAMES_ARE_YOURS)
 }
 
 /** Add a keyframe at the playhead capturing the channel's current resolved value. */
@@ -263,27 +336,35 @@ export function removeKeyframeAtPlayhead(clipId: string, channel: AnimChannel): 
 }
 
 /**
- * Retime a keyframe: move the one nearest `fromT` on this channel to `toT`
- * (clamped to the clip span), keeping its value + easing. This is what the
- * Keyframes lane's drag-and-type calls ("set the time this happens"). Landing
- * exactly on another keyframe's time merges onto it (upsert replaces).
+ * Retime a keyframe: move the one nearest `fromT` on this channel to `toT`,
+ * keeping its value + easing. This is what the Keyframes lane's drag-and-type
+ * calls ("set the time this happens"). Returns the time it landed at.
+ *
+ * ⛔ IT STOPS ONE FRAME SHORT OF ITS NEIGHBOURS, the rule every other retime in
+ * the app already keeps (clampKeyframesDelta, the lasso, the timeline moment).
+ * It used to land on the neighbour's exact time and the upsert REPLACED the
+ * neighbour: drop the 0.5 s diamond of a punch on the 1.0 s one and the 130
+ * percent peak was simply gone (measured 2026-10-06). It could also pass its
+ * neighbour and reorder the move.
  */
-export function moveKeyframeTime(clipId: string, channel: AnimChannel, fromT: number, toT: number): void {
+export function moveKeyframeTime(clipId: string, channel: AnimChannel, fromT: number, toT: number): number | undefined {
   const clip = findClip(clipId)
-  if (!clip) return
-  const dur = Math.max(0, clipEndS(clip) - clip.startS)
-  const t = Math.max(0, Math.min(toT, dur))
+  if (!clip) return undefined
   // Early no-op BEFORE dispatch: mapClip always rebuilds the sequence, so
   // guarding only inside its callback would still push an empty undo command
   // (dragging a keyframe back to where it started, or retyping the same time).
   const kf = channelKeyframes(clip, channel).find((k) => Math.abs(k.t - fromT) <= 1e-4)
-  if (!kf || Math.abs(kf.t - t) <= 1e-6) return
+  if (!kf) return undefined
+  const fps = activeSequence(useStore.getState().project).fps
+  const t = kf.t + clampKeyframesDelta(clip, [{ channel, t: kf.t }], toT - kf.t, fps)
+  if (Math.abs(kf.t - t) <= 1e-6) return kf.t
   mapClip(clipId, `Move ${channel} keyframe`, (c) => {
     const kfs = channelKeyframes(c, channel)
     const cur = kfs.find((k) => Math.abs(k.t - fromT) <= 1e-4)
     if (!cur) return c
     return withChannelKeyframes(c, channel, upsertKeyframe(kfs.filter((k) => k !== cur), { ...cur, t }))
   })
+  return t
 }
 
 /**
@@ -349,23 +430,70 @@ export function setSegmentEase(
   channel: AnimChannel,
   segmentStartT: number,
   ease: Keyframe['ease'],
+  opts: { coupled?: boolean } = {},
 ): void {
+  const clip = findClip(clipId)
+  if (!clip) return
+  const channels = opts.coupled ? coupledSegmentChannels(clip, channel, segmentStartT) : [channel]
   mapClip(
     clipId,
     `Set ${channel} easing`,
-    (c) => {
-      const kfs = channelKeyframes(c, channel)
-      let hit = false
-      // Rebuilt field by field rather than spread: that is what drops `curve`.
-      const next = kfs.map((k) => {
-        if (Math.abs(k.t - segmentStartT) > KEYFRAME_TOLERANCE_S) return k
-        hit = true
-        return { t: k.t, value: k.value, ease }
-      })
-      return hit ? withChannelKeyframes(c, channel, next) : c
-    },
+    (c) =>
+      channels.reduce<Clip>((acc, ch) => {
+        const kfs = channelKeyframes(acc, ch)
+        let hit = false
+        // Rebuilt field by field rather than spread: that is what drops `curve`.
+        const next = kfs.map((k) => {
+          if (Math.abs(k.t - segmentStartT) > KEYFRAME_TOLERANCE_S) return k
+          hit = true
+          return { t: k.t, value: k.value, ease }
+        })
+        return hit ? withChannelKeyframes(acc, ch, next) : acc
+      }, c),
     true,
   )
+}
+
+/** The transform channels a single move can drive together. */
+const COUPLED_CHANNELS: readonly AnimChannel[] = ['scale', 'posX', 'posY', 'rotation']
+
+/** The segment leaving the keyframe at `t`: its two ends, or null. */
+function segmentFrom(kfs: readonly Keyframe[], t: number): { a: Keyframe; b: Keyframe } | null {
+  const i = kfs.findIndex((k) => Math.abs(k.t - t) <= KEYFRAME_TOLERANCE_S)
+  return i >= 0 && i + 1 < kfs.length ? { a: kfs[i]!, b: kfs[i + 1]! } : null
+}
+
+const sameCurve = (x: Curve | undefined, y: Curve | undefined): boolean =>
+  x === y || (!!x && !!y && x.every((v, i) => Math.abs(v - y[i]!) <= 1e-9))
+
+/**
+ * Every transform channel that moves IN STEP with this segment: a segment that
+ * starts and ends at the same moments with the same shape. The channel itself
+ * comes first.
+ *
+ * Why: a zoom to a point ("Punch in here", the moves) writes Zoom AND Position
+ * with the same knots and the same curve, so the point holds still. Shaping only
+ * the Zoom (or picking Overshoot) let the position run ahead of or behind the
+ * zoom and the face slid across the frame before it settled (2026-10-06).
+ */
+export function coupledSegmentChannels(clip: Clip, channel: AnimChannel, segT: number): AnimChannel[] {
+  if (!COUPLED_CHANNELS.includes(channel)) return [channel]
+  const seg = segmentFrom(channelKeyframes(clip, channel), segT)
+  if (!seg) return [channel]
+  const out: AnimChannel[] = [channel]
+  for (const ch of COUPLED_CHANNELS) {
+    if (ch === channel) continue
+    const other = segmentFrom(channelKeyframes(clip, ch), segT)
+    if (
+      other &&
+      Math.abs(other.b.t - seg.b.t) <= KEYFRAME_TOLERANCE_S &&
+      other.a.ease === seg.a.ease &&
+      sameCurve(other.a.curve, seg.a.curve)
+    ) {
+      out.push(ch)
+    }
+  }
+  return out
 }
 
 /**
@@ -383,17 +511,23 @@ export function setSegmentCurve(
   channel: AnimChannel,
   segmentStartT: number,
   curve: Curve | undefined,
+  /** `coupled`: shape every channel moving in step with it too (coupledSegmentChannels). */
+  opts: { coupled?: boolean } = {},
 ): void {
+  const clip = findClip(clipId)
+  if (!clip) return
+  const channels = opts.coupled ? coupledSegmentChannels(clip, channel, segmentStartT) : [channel]
   mapClip(
     clipId,
     curve ? `Set ${channel} curve` : `Clear ${channel} curve`,
-    (c) => {
-      const kfs = channelKeyframes(c, channel)
-      const next = setSegmentCurveK(kfs, segmentStartT, curve)
-      // Same ref back means no keyframe sits at that moment; hand the SAME clip
-      // back so bailOnNoop can stop a dead undo step landing.
-      return next === kfs ? c : withChannelKeyframes(c, channel, next)
-    },
+    (c) =>
+      channels.reduce<Clip>((acc, ch) => {
+        const kfs = channelKeyframes(acc, ch)
+        const next = setSegmentCurveK(kfs, segmentStartT, curve)
+        // Same ref back means no keyframe sits at that moment; hand the SAME clip
+        // back so bailOnNoop can stop a dead undo step landing.
+        return next === kfs ? acc : withChannelKeyframes(acc, ch, next)
+      }, c),
     true,
   )
 }
@@ -411,7 +545,18 @@ export function setSegmentCurve(
  * Goes through `mapClip` like its single-segment twin, so a locked track refuses
  * it the same way and there is still only one write path.
  */
-export function setAllSegmentCurves(clipId: string, channel: AnimChannel, curve: Curve | undefined): void {
+export function setAllSegmentCurves(
+  clipId: string,
+  channel: AnimChannel,
+  curve: Curve | undefined,
+  /**
+   * `coupled`: every segment also shapes the channels moving in step with IT
+   * (coupledSegmentChannels), as the single segment commit does. "Apply to all
+   * segments" on a zoom to a point used to shape the Zoom alone, so the face
+   * slid again while the header said Position follows (review, 2026-10-07).
+   */
+  opts: { coupled?: boolean } = {},
+): void {
   mapClip(
     clipId,
     curve ? `Set every ${channel} curve` : `Clear every ${channel} curve`,
@@ -420,10 +565,15 @@ export function setAllSegmentCurves(clipId: string, channel: AnimChannel, curve:
       // One keyframe or none leaves no segment to shape, so hand the SAME clip
       // back and let bailOnNoop stop a dead undo step landing.
       if (kfs.length < 2) return c
-      // The last keyframe owns no segment after it, hence length - 1.
-      let next = setSegmentCurveK(kfs, kfs[0].t, curve)
-      for (let i = 1; i < kfs.length - 1; i++) next = setSegmentCurveK(next, kfs[i].t, curve)
-      return withChannelKeyframes(c, channel, next)
+      let next = c
+      // The last keyframe owns no segment after it, hence length - 1. Which
+      // channels follow is read off the clip BEFORE any is shaped, since
+      // shaping one is exactly what makes the others stop matching it.
+      for (let i = 0; i < kfs.length - 1; i++) {
+        const channels = opts.coupled ? coupledSegmentChannels(c, channel, kfs[i]!.t) : [channel]
+        for (const ch of channels) next = withChannelKeyframes(next, ch, setSegmentCurveK(channelKeyframes(next, ch), kfs[i]!.t, curve))
+      }
+      return next
     },
     true,
   )
@@ -432,11 +582,21 @@ export function setAllSegmentCurves(clipId: string, channel: AnimChannel, curve:
 /**
  * Copy the keyframe at `t` to `toT`, carrying its value, its ease AND its curve:
  * Alt-dragging a diamond. The same shaped move, somewhere else.
+ *
+ * ⛔ NEVER ONTO ANOTHER KEYFRAME. The upsert REPLACED whatever sat there, so
+ * Alt dragging the 0.5 s diamond onto the 1.0 s peak deleted the peak, the very
+ * loss moveKeyframeTime's wall stopped for a plain drag (review, 2026-10-07). A
+ * copy closer than a frame to one is refused, and says so.
  */
 export function duplicateKeyframe(clipId: string, channel: AnimChannel, t: number, toT: number): void {
   const clip = findClip(clipId)
   if (!clip) return
   const to = Math.min(Math.max(toT, 0), clipDurationS(clip))
+  const gap = 1 / (activeSequence(useStore.getState().project).fps || 30)
+  if (channelKeyframes(clip, channel).some((k) => Math.abs(k.t - to) < gap - 1e-9)) {
+    useToasts.getState().show('A keyframe is already there. Drop the copy a frame or more away from it', 'info')
+    return
+  }
   mapClip(
     clipId,
     `Duplicate ${channel} keyframe`,
@@ -656,9 +816,7 @@ export function scaleKeyframeSpan(
 
 /** Clear a channel: drop its keyframes and reset the base to neutral/default. */
 export function resetChannel(clipId: string, channel: AnimChannel): void {
-  mapClip(clipId, `Reset ${channel}`, (c) =>
-    withChannelValue(withChannelKeyframes(c, channel, []), channel, channelDefault(channel)),
-  )
+  resetChannels(clipId, [channel], `Reset ${channel}`)
 }
 
 
@@ -695,11 +853,19 @@ export function toggleClipsEnabled(clipIds: readonly string[]): void {
   }))
 }
 
-/** Reset a specific set of channels (one Inspector section) in one undo step. */
-export function resetChannels(clipId: string, channels: AnimChannel[]): void {
-  mapClip(clipId, 'Reset', (c) =>
+/**
+ * Reset a specific set of channels (one Inspector section) in one undo step. A
+ * channel an animation owns has its BASE reset and the animation rebuilt on it,
+ * rather than its pop keyframes dropped while the animation stays on.
+ */
+export function resetChannels(clipId: string, channels: AnimChannel[], label = 'Reset'): void {
+  const seq = activeSequence(useStore.getState().project)
+  mapClip(clipId, label, (c) =>
     channels.reduce<Clip>(
-      (acc, ch) => withChannelValue(withChannelKeyframes(acc, ch, []), ch, channelDefault(ch)),
+      (acc, ch) =>
+        isAppearanceOwned(acc, ch, seq)
+          ? withOwnedBase(acc, ch, channelDefault(ch), seq.width, seq.height)
+          : withChannelValue(withChannelKeyframes(acc, ch, []), ch, channelDefault(ch)),
       c,
     ),
   )
@@ -907,12 +1073,12 @@ export function setEffectKeyframeEase(
   mapClip(clipId, `Set ${key} easing`, (c) => ops.setEffectParamEase(c, effectId, key, kfT, ease))
 }
 
-export function setClipTransition(
-  clipId: string,
-  edge: 'in' | 'out',
-  kind: TransitionKind,
-  durationS?: number,
-): void {
+/**
+ * The transition an edge is left with when `kind` is written over `prev`, with
+ * the per kind duration envelope. Shared by the one clip write below and the
+ * whole selection write in bulkEdits, so the two can never pick two lengths.
+ */
+export function transitionFor(prev: Transition | undefined, kind: TransitionKind, durationS?: number): Transition {
   // Per-kind envelope: whiteFlash defaults to its 200 ms hit and lives in
   // 100 to 500 ms; everything else keeps the classic 1 s default. Enforced HERE, in
   // the one write path for drops, the Inspector select, and duration commits.
@@ -921,29 +1087,74 @@ export function setClipTransition(
   // carried value was tuned for a different verb, so the envelope edge would
   // be an arbitrary landing spot. In-envelope values are kept as-is.
   const spec = transitionDurationSpec(kind)
-  mapClip(clipId, `Add ${edge} transition`, (c) => {
-    const prev = edge === 'in' ? c.transitionIn : c.transitionOut
-    // A duration the user never chose must not follow the verb it was tuned for.
-    // Dip to Black defaults to 0.5 s and White Flash's ceiling is exactly 0.5 s,
-    // so switching one to the other used to carry 0.5 s across on a technicality
-    // and hand back a flash at 2.5x its own default. Half a second of white is a
-    // passage of time, not the accent a hit is meant to be. So a value that is
-    // merely the OLD kind's default counts as unchosen and takes the new kind's
-    // default; a value he actually set is still kept when it fits.
-    // Transition.type is a loose string on purpose, so an unknown kind never fails
-    // to load. transitionDurationSpec already falls back for one, so the cast is
-    // safe and an unrecognised previous kind simply never matches its default.
-    const unchosen =
-      prev !== undefined &&
-      prev.type !== kind &&
-      durationS === transitionDurationSpec(prev.type as TransitionKind).def
-    const fits = durationS !== undefined && durationS >= spec.min && durationS <= spec.max
-    const d = fits && !unchosen ? (durationS as number) : spec.def
-    return {
-      ...c,
-      [edge === 'in' ? 'transitionIn' : 'transitionOut']: { type: kind, durationS: d },
-    }
-  })
+  // A duration the user never chose must not follow the verb it was tuned for.
+  // Dip to Black defaults to 0.5 s and White Flash's ceiling is exactly 0.5 s,
+  // so switching one to the other used to carry 0.5 s across on a technicality
+  // and hand back a flash at 2.5x its own default. Half a second of white is a
+  // passage of time, not the accent a hit is meant to be. So a value that is
+  // merely the OLD kind's default counts as unchosen and takes the new kind's
+  // default; a value he actually set is still kept when it fits.
+  // Transition.type is a loose string on purpose, so an unknown kind never fails
+  // to load. transitionDurationSpec already falls back for one, so the cast is
+  // safe and an unrecognised previous kind simply never matches its default.
+  const unchosen =
+    prev !== undefined &&
+    prev.type !== kind &&
+    durationS === transitionDurationSpec(prev.type as TransitionKind).def
+  const fits = durationS !== undefined && durationS >= spec.min && durationS <= spec.max
+  return { type: kind, durationS: fits && !unchosen ? (durationS as number) : spec.def }
+}
+
+export function setClipTransition(
+  clipId: string,
+  edge: 'in' | 'out',
+  kind: TransitionKind,
+  durationS?: number,
+): void {
+  const seq = activeSequence(useStore.getState().project)
+  const before = edge === 'in' ? outsAnInOverrides(seq, [clipId])[0] : undefined
+  mapClip(
+    clipId,
+    `Add ${edge} transition`,
+    (c) => {
+      const prev = edge === 'in' ? c.transitionIn : c.transitionOut
+      // No length given (the clip menu, a drop): keep the one he set, when it
+      // fits the new kind, as the Inspector's row does by passing it.
+      return { ...c, [edge === 'in' ? 'transitionIn' : 'transitionOut']: transitionFor(prev, kind, durationS ?? prev?.durationS) }
+    },
+    false,
+    undefined,
+    before ? { id: before, fn: withoutOut } : undefined,
+  )
+}
+
+/** The clip with its Out transition taken off. */
+export function withoutOut(c: Clip): Clip {
+  if (!c.transitionOut) return c
+  const next = { ...c }
+  delete next.transitionOut
+  return next
+}
+
+/**
+ * The clips whose Out an In on `ids` would silently override: the clip just
+ * before each one on its track, when the two form a pair (pairTransitionAt) and
+ * it carries an Out. Only one transition plays at a cut, B's In wins, and the
+ * Out left behind kept saying "Out: Cross Dissolve" in the Inspector while the
+ * Whip played (2026-10-06). So setting the In takes that Out off in the SAME
+ * undo step.
+ */
+export function outsAnInOverrides(seq: Sequence, ids: readonly string[]): string[] {
+  const picked = new Set(ids)
+  const out: string[] = []
+  for (const t of seq.tracks) {
+    if (t.kind !== 'video') continue
+    t.clips.forEach((c, i) => {
+      const prev = t.clips[i - 1]
+      if (picked.has(c.id) && prev?.transitionOut && pairTransitionAt(prev, c, seq.fps)) out.push(prev.id)
+    })
+  }
+  return out
 }
 
 export function removeClipTransition(clipId: string, edge: 'in' | 'out'): void {
@@ -1172,6 +1383,16 @@ const MOTION_SNAPSHOT_CHANNELS: readonly AnimChannel[] = ['scale', 'posX', 'posY
 export function toggleMotionAtPlayhead(clipId: string): void {
   const clip = findClip(clipId)
   if (!clip) return
+  // ⛔ A CLIP WITH AN IN OR OUT KEEPS D. D used to write keyframes into the
+  // preset's channels and the next monitor drag (which recompiles) threw them
+  // away, so it was made to refuse, which took D off every popping caption and
+  // off footage carrying a pasted pop (review, 2026-10-07). It now hands the
+  // keyframes to him first, the stopwatch's rule (toggleChannelAnimation), so
+  // nothing recompiles them again.
+  const hadAppearance = !!clip.appearance
+  const said = () => {
+    if (hadAppearance && !findClip(clipId)?.appearance) useToasts.getState().show(KEYFRAMES_ARE_YOURS)
+  }
   const localT = playheadLocalT(clip)
   // One frame either side. Keyframes snap to the grid and the closest two
   // moments may ever be is one frame, so the nearest inside that window is
@@ -1193,19 +1414,24 @@ export function toggleMotionAtPlayhead(clipId: string): void {
           const cut = removeKeyframeNear(kfs, at, KEYFRAME_TOLERANCE_S)
           if (cut !== kfs) next = withChannelKeyframes(next, channel, cut)
         }
-        return next
+        // Taking a moment out of the preset's channels leaves a shape it no
+        // longer compiles to, so what is left is his.
+        return next === c ? c : releaseAppearanceOnRetime(c, next, at)
       },
       true,
     )
+    said()
     return
   }
 
   const commit = moveCommit()
   mapClip(clipId, 'Add keyframe', (c) => {
-    const t = playheadLocalT(c)
-    const vals = MOTION_SNAPSHOT_CHANNELS.map((ch) => [ch, resolveChannel(c, ch, t)] as const)
-    return withChannelsAtTime(c, t, vals, true, commit)
+    const mine = withoutAppearance(c)
+    const t = playheadLocalT(mine)
+    const vals = MOTION_SNAPSHOT_CHANNELS.map((ch) => [ch, resolveChannel(mine, ch, t)] as const)
+    return withChannelsAtTime(mine, t, vals, true, commit)
   })
+  said()
 }
 
 // ---------------------------------------------------------------------------
@@ -1621,6 +1847,6 @@ export function moveClipKeyframe(clipId: string, fromT: number, toT: number): vo
   // state change the user did not ask for is exactly the kind of silent surprise
   // this app has been paying for.
   if (promotes && !findClip(clipId)?.appearance) {
-    useToasts.getState().show('Keyframes are yours now. The preset no longer drives this clip')
+    useToasts.getState().show(KEYFRAMES_ARE_YOURS)
   }
 }

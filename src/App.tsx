@@ -29,7 +29,6 @@ import { copyClipAttributes, pasteClipAttributes } from './state/attributes'
 import { performHistoryStep } from './collab/collabControl'
 import {
   deleteSelected,
-  setAllEffectsEnabled,
   splitAtPlayhead,
   toggleClipsEnabled,
   toggleClipFreeze,
@@ -55,6 +54,7 @@ import { clearInOut, gotoIn, gotoOut, markIn, markOut } from './state/workAreaAc
 import { cutPunchAtPlayhead, punchInAtPlayhead, punchOutAtPlayhead } from './state/motionActions'
 import { MOVES } from './engine/moves'
 import { applyMoveToSelection } from './state/moveActions'
+import { keyTargetClipId, toggleEffectsForClips } from './state/bulkEdits'
 import { addTitleClip } from './state/titleActions'
 import { saveFailedMessage, saveSettled } from './state/persistence'
 import { exportProjectToFile, openProjectFilePicker } from './state/projectFile'
@@ -153,6 +153,10 @@ function stepKeyframe(dir: -1 | 1) {
  */
 export function buildAppBindings(): Binding[] {
   const store = () => useStore.getState()
+  // The clip a ONE clip key acts on: the selected picture under the playhead,
+  // not whichever clip happened to be picked first (a caption, the linked sound).
+  const keyTarget = () =>
+    keyTargetClipId(activeSequence(store().project), store().ui.selection, store().ui.playheadS)
   return [
       // Routed: solo = snapshot undo; in a room = rebased (only YOUR command
       // reverts, other people's edits survive).
@@ -243,7 +247,7 @@ export function buildAppBindings(): Binding[] {
         description: 'Punch in at playhead (selected clip)',
         domain: 'trim',
         run: () => {
-          const id = store().ui.selection[0]
+          const id = keyTarget()
           if (id) punchInAtPlayhead(id)
         },
       },
@@ -255,7 +259,7 @@ export function buildAppBindings(): Binding[] {
         description: 'Punch out at playhead (selected clip)',
         domain: 'trim',
         run: () => {
-          const id = store().ui.selection[0]
+          const id = keyTarget()
           if (id) punchOutAtPlayhead(id)
         },
       },
@@ -267,7 +271,7 @@ export function buildAppBindings(): Binding[] {
         description: 'Cut punch at playhead (selected clip)',
         domain: 'trim',
         run: () => {
-          const id = store().ui.selection[0]
+          const id = keyTarget()
           if (id) cutPunchAtPlayhead(id)
         },
       },
@@ -296,25 +300,19 @@ export function buildAppBindings(): Binding[] {
         description: 'Keyframe the framing here, or remove it',
         domain: 'trim',
         run: () => {
-          const id = store().ui.selection[0]
+          const id = keyTarget()
           if (id) toggleMotionAtPlayhead(id)
         },
       },
       // The A/B, on a key. Comparing a look against the untouched footage is
       // something he does constantly, and it used to mean clicking every eye in
       // the stack and then clicking them all back.
+      // Every selected clip, one undo step, the way Shift+E already works.
       {
         combo: 'shift+b',
-        description: 'Turn this clip’s effects off, or back on',
+        description: 'Turn the selected clips’ effects off, or back on',
         domain: 'tools',
-        run: () => {
-          const id = store().ui.selection[0]
-          if (!id) return
-          const seq = activeSequence(store().project)
-          const clip = seq.tracks.flatMap((t) => t.clips).find((c) => c.id === id)
-          if (!clip || clip.effects.length === 0) return
-          setAllEffectsEnabled(id, !clip.effects.some((e) => e.enabled))
-        },
+        run: () => toggleEffectsForClips(store().ui.selection),
       },
       {
         combo: 'shift+s',
@@ -443,7 +441,7 @@ export function buildAppBindings(): Binding[] {
       } },
       // Park on the moment, press F, it holds. Press again and it runs.
       { combo: 'f', description: 'Freeze this frame, or let it run', domain: 'trim', run: () => {
-        const id = store().ui.selection[0]
+        const id = keyTarget()
         if (id) toggleClipFreeze(id)
       } },
       { combo: '=', description: 'Zoom in timeline', domain: 'view', run: zoomIn },

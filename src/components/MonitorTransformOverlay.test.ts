@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { defaultTransform, type Clip, type Keyframe } from '../engine/types'
 import {
   BADGE_TITLE,
+  gizmoQuad,
   MAX_PATH_SAMPLES,
   motionBadgeState,
   motionPathDots,
@@ -114,5 +115,29 @@ describe('normalizedAnchor', () => {
 
   it('clamps a click on the black bars back into the frame', () => {
     expect(normalizedAnchor(-40, 2000, 1920, 1080)).toEqual({ x: 0, y: 1 })
+  })
+})
+
+// The handles sit where the picture IS. With a 4:5 frame inside a 9:16 Short the
+// renderer fits each picture into that box, and the gizmo used to fit it into the
+// whole frame instead: a 9:16 clip drawn 759 wide carried handles 1080 wide.
+describe('gizmoQuad', () => {
+  const tf = { x: 0, y: 0, scale: 1, rotationDeg: 0 }
+  const asset = { width: 1080, height: 1920 }
+  const width = (c: [number, number][]) => Math.max(...c.map(([x]) => x)) - Math.min(...c.map(([x]) => x))
+  const height = (c: [number, number][]) => Math.max(...c.map(([, y]) => y)) - Math.min(...c.map(([, y]) => y))
+
+  it('lays a picture out in the 4:5 frame inside the Short, centred in it', () => {
+    const { corners } = gizmoQuad(clip(), { width: 1080, height: 1920, contentAspect: 4 / 5 }, asset, tf)
+    expect(width(corners)).toBeCloseTo(759.375, 3)
+    expect(height(corners)).toBeCloseTo(1350, 3)
+    const cy = (Math.max(...corners.map(([, y]) => y)) + Math.min(...corners.map(([, y]) => y))) / 2
+    expect(cy).toBeCloseTo(960, 6)
+  })
+
+  it('is the whole frame with no inner frame, and for a title even with one', () => {
+    expect(width(gizmoQuad(clip(), { width: 1080, height: 1920 }, asset, tf).corners)).toBeCloseTo(1080, 6)
+    const title = clip({ title: { text: 'x' } as Clip['title'] })
+    expect(width(gizmoQuad(title, { width: 1080, height: 1920, contentAspect: 4 / 5 }, undefined, tf).corners)).toBeCloseTo(1080, 6)
   })
 })

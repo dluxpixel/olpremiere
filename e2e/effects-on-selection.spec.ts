@@ -130,9 +130,11 @@ test('dragging an effect onto ONE of the three selected pictures puts it on all 
   await expect.poll(() => effectsOnPictures(page)).toEqual([[], [], []])
 })
 
-test('the multi selection Inspector Add effect list puts it on all three in one undo step', async ({ page }) => {
+test('the multi selection Inspector Add effect search puts it on all three in one undo step', async ({ page }) => {
   await openWithThreePictures(page)
-  await page.getByTestId('multi-add-effect').selectOption('gaussianBlur')
+  await page.getByTestId('inspector-add-effect').click()
+  await page.getByTestId('add-effect-search').fill('blur')
+  await page.locator('[data-testid="add-effect-row"][data-type="gaussianBlur"]').first().click()
   await expect.poll(() => effectsOnPictures(page)).toEqual([['gaussianBlur'], ['gaussianBlur'], ['gaussianBlur']])
   await expect(toast(page, 'Added Gaussian Blur to 3 clips')).toBeVisible()
   await page.keyboard.press('ControlOrMeta+z')

@@ -159,6 +159,29 @@ describe('setEffectParam', () => {
     expect(paramKeyframes(c.effects[0], 'saturation')).toEqual([kf(0, 0), kf(1, 0.8)])
   })
 
+  // Measured 2026-10-06: Glow, Ease in, parked on the first diamond, type a new
+  // Intensity, and the keyframe came back linear: the glow arrived in a line.
+  it('keeps the ease of the keyframe he types over', () => {
+    let c = addEffect(clip(), 'gaussianBlur', 'e1')
+    c = setEffectParam(c, 'e1', 'blur', 20, 0)
+    c = rampEffect(c, 'e1', 'in', 1, 4)
+    const shaped = paramKeyframes(c.effects[0], 'blur')[0]!.ease
+    expect(shaped).not.toBe('linear')
+    c = setEffectParam(c, 'e1', 'blur', 5, 0)
+    expect(paramKeyframes(c.effects[0], 'blur')[0]).toMatchObject({ t: 0, value: 5, ease: shaped })
+  })
+
+  it('keeps a hand shaped curve and takes the new value', () => {
+    const curve: [number, number, number, number] = [0.2, 0, 0.1, 1]
+    const c0 = addEffect(clip(), 'saturation', 'e1')
+    const c1: Clip = {
+      ...c0,
+      effects: [{ ...c0.effects[0]!, params: { ...c0.effects[0]!.params, saturation: { value: 0, keyframes: [{ t: 1, value: 0.2, ease: 'linear', curve }, kf(2, 0.5)] } } }],
+    }
+    const c = setEffectParam(c1, 'e1', 'saturation', 0.9, 1)
+    expect(paramKeyframes(c.effects[0], 'saturation')[0]).toEqual({ t: 1, value: 0.9, ease: 'linear', curve })
+  })
+
   it('is a no-op for an unknown effect id', () => {
     const c = addEffect(clip(), 'saturation', 'e1')
     expect(setEffectParam(c, 'nope', 'saturation', 1, 0)).toBe(c)

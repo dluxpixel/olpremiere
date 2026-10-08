@@ -273,6 +273,7 @@ describe('every dynamic testid in the source', () => {
     'move-live-',
     'move-tape-',
     'move-tile-',
+    'multi-transition-',
     'phone-tab-',
     'reset-section-',
     'shared-channel-',

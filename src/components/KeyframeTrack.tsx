@@ -177,8 +177,13 @@ export function KeyframeTrack({ clip, channel }: { clip: Clip; channel: AnimChan
         // the diamonds never travel somewhere the release will not honour.
         const raw = rail.snapDragT(dragTargetT(d.origT, dx, d.pxPerS)) - d.origT
         d.draftT = d.origT + clampKeyframesDelta(clip, d.group, raw, rail.fps)
-      } else {
+      } else if (d.copy) {
         d.draftT = rail.snapDragT(dragTargetT(d.origT, dx, d.pxPerS))
+      } else {
+        // One diamond stops one frame short of its neighbours, live, at the same
+        // wall moveKeyframeTime holds on release, so it never jumps on letting go.
+        const raw = rail.snapDragT(dragTargetT(d.origT, dx, d.pxPerS)) - d.origT
+        d.draftT = d.origT + clampKeyframesDelta(clip, [{ channel, t: d.origT }], raw, rail.fps)
       }
       if (d.moved) {
         setDragView({ origT: d.origT, t: d.draftT, copy: d.copy })
@@ -410,9 +415,10 @@ export function KeyframeTrack({ clip, channel }: { clip: Clip; channel: AnimChan
             testId="keyframe-time"
             ariaLabel="Keyframe time (seconds)"
             onCommit={(v) => {
-              const t = rail.snapT(v)
-              moveKeyframeTime(clip.id, channel, selKf.t, t)
-              rail.select({ channel, kind: 'key', t })
+              // Selects where it LANDED: a time typed past a neighbour stops one
+              // frame short of it rather than replacing it.
+              const t = moveKeyframeTime(clip.id, channel, selKf.t, rail.snapT(v))
+              if (t !== undefined) rail.select({ channel, kind: 'key', t })
             }}
           />
           {/* He could type WHEN a moment happens and not WHAT it is. Correcting a

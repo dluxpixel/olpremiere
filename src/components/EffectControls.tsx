@@ -41,6 +41,7 @@ import {
 } from 'react'
 import {
   CHANNEL_EFFECT,
+  channelBase,
   channelKeyframes,
   isChannelAnimated,
   resolveChannel,
@@ -50,6 +51,7 @@ import { FRAME_FITS, frameFitDims, frameFitOf, type FrameFit } from '../engine/f
 import { INNER_ZOOM } from '../engine/innerZoom'
 import { getEffect, paramSens, type EffectParamDef } from '../engine/effects/registry'
 import { clipEndS } from '../engine/timeline'
+import { outOverriddenBy } from '../engine/transitionMarks'
 import {
   TRANSITION_KINDS,
   TRANSITION_LABELS,
@@ -76,6 +78,7 @@ import {
   innerZoomAt,
   innerZoomKeyframes,
   innerZoomOwnsCrop,
+  isAppearanceOwned,
   isInnerZoomAnimated,
   removeInnerZoomKeyframeAtPlayhead,
   setInnerZoomAtPlayhead,
@@ -274,14 +277,19 @@ export function ScrubField({
   testId,
   ariaLabel,
   onCommit,
+  mixed = false,
 }: {
   value: number
   spec: Spec
   testId: string
   ariaLabel: string
   onCommit: (v: number) => void
+  /** Several clips that do not agree: reads "Mixed", and ANY number commits,
+   *  even the one `value` holds, since it is only the first clip's. */
+  mixed?: boolean
 }) {
-  const [text, setText] = useState(fmt(value))
+  const shown = mixed ? 'Mixed' : fmt(value)
+  const [text, setText] = useState(shown)
   const [editing, setEditing] = useState(false)
   const draggingRef = useRef<{ startX: number; startVal: number; moved: boolean } | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -293,8 +301,8 @@ export function ScrubField({
 
   // Reflect external value changes (playhead move, undo) unless mid-edit.
   useEffect(() => {
-    if (!editing) setText(fmt(value))
-  }, [value, editing])
+    if (!editing) setText(shown)
+  }, [shown, editing])
 
   // A field can go away without ever blurring (the clip deselected, a section
   // folded), and browsers fire no blur for a focused element that is removed.
@@ -305,7 +313,7 @@ export function ScrubField({
 
   const commit = (v: number) => {
     const next = normalize(v)
-    if (Math.abs(next - value) > 1e-9) onCommit(next)
+    if (mixed || Math.abs(next - value) > 1e-9) onCommit(next)
   }
 
   const onPointerDown = (e: React.PointerEvent<HTMLInputElement>) => {
@@ -350,7 +358,8 @@ export function ScrubField({
     setEditing(true)
     // Freeze who this edit is for, before any selection change can swap the
     // props. Already open (focus, then a double-click) keeps the first owner.
-    pending.begin({ onCommit, base: value, normalize })
+    // A mixed field has no base every clip shares, so whatever is typed lands.
+    pending.begin({ onCommit, base: mixed ? Number.NaN : value, normalize })
     // Select-all so a fresh typed value replaces the old one.
     requestAnimationFrame(() => inputRef.current?.select())
   }
@@ -404,7 +413,7 @@ export function ScrubField({
             // Abandon: the blur below, and any later unmount, write nothing.
             pending.cancel()
             setEditing(false)
-            setText(fmt(value))
+            setText(shown)
             inputRef.current?.blur()
           } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
             // Arrow = nudge by one step (×10 with Shift), like every pro NLE field.
@@ -414,7 +423,7 @@ export function ScrubField({
             const dir = e.key === 'ArrowUp' ? 1 : -1
             const next = clamp(roundStep(from + dir * spec.step * (e.shiftKey ? 10 : 1), spec.step), spec.min, spec.max)
             setText(fmt(next))
-            if (Math.abs(next - value) > 1e-9) onCommit(next)
+            if (mixed || Math.abs(next - value) > 1e-9) onCommit(next)
             // The nudge committed on its own; re-baseline so the blur after it
             // does not commit the same number again as a second undo step.
             pending.settle(next)
@@ -454,7 +463,14 @@ function ChannelRow({
   playheadS: number
 }) {
   const spec = SPECS[channel]
-  const animated = isChannelAnimated(clip, channel)
+  // An In or Out animation owns this channel while its keyframes are still the
+  // preset's own: the field edits the value it RESTS at and the animation
+  // follows (withOwnedBase in clipEdits), so there is no diamond row to fight it.
+  // The stopwatch stays: it hands him the keyframes (toggleChannelAnimation).
+  const seqW = useStore((s) => activeSequence(s.project).width)
+  const seqH = useStore((s) => activeSequence(s.project).height)
+  const owned = isAppearanceOwned(clip, channel, { width: seqW, height: seqH })
+  const animated = !owned && isChannelAnimated(clip, channel)
   // The lane and its curve editor are hand controls: they draw only while the
   // shelf's 'Tune it by hand' is open. The keyframes are always there.
   const { lanesVisible } = useMotionRail()
@@ -462,7 +478,7 @@ function ChannelRow({
   // derived from the reactive playheadS prop so the field tracks the playhead.
   const durS = Math.max(0, clipEndS(clip) - clip.startS)
   const localT = Math.max(0, Math.min(playheadS - clip.startS, durS))
-  const value = resolveChannel(clip, channel, localT)
+  const value = owned ? channelBase(clip, channel) : resolveChannel(clip, channel, localT)
 
   const kfs = channelKeyframes(clip, channel)
   const onKf = animated && kfs.some((k) => Math.abs(k.t - localT) <= 0.05)
@@ -479,13 +495,23 @@ function ChannelRow({
       <PropRow
         data-testid={`channel-${channel}`}
         label={LABELS[channel]}
-        labelTitle={`${LABELS[channel]} (double-click to reset)`}
+        labelTitle={
+          owned
+            ? `${LABELS[channel]}: this clip has an animation. This sets where it rests, the animation follows.`
+            : `${LABELS[channel]} (double-click to reset)`
+        }
         onLabelDoubleClick={() => resetChannel(clip.id, channel)}
         onReset={() => resetChannel(clip.id, channel)}
         resetLabel={`Reset ${LABELS[channel]}`}
         lead={
           <IconButton
-            label={animated ? `Disable ${LABELS[channel]} keyframes` : `Animate ${LABELS[channel]}`}
+            label={
+              owned
+                ? `Animate ${LABELS[channel]} by hand: the animation's keyframes become yours`
+                : animated
+                  ? `Disable ${LABELS[channel]} keyframes`
+                  : `Animate ${LABELS[channel]}`
+            }
             active={animated}
             size="compact"
             data-testid={`stopwatch-${channel}`}
@@ -524,6 +550,23 @@ function ChannelRow({
       )}
     </div>
   )
+}
+
+/**
+ * Zoom inside and Crop, for a TITLE, only when the title already uses them.
+ *
+ * A title is drawn at the frame's own size, so Zoom inside on it crops that
+ * whole frame (a second, odder Scale) and Crop cuts the frame, not the words.
+ * One click on a caption showed both under the rows that really move it
+ * (2026-10-06). Frame and Flip were already hidden for titles for the same
+ * reason. A title that carries a crop (an old project, pasted attributes) keeps
+ * both rows, so nothing he set is ever out of reach.
+ */
+export function showsCropRows(clip: Clip): boolean {
+  if (!clip.title) return true
+  const { t, r, b, l } = clip.transform.crop
+  if (t !== 0 || r !== 0 || b !== 0 || l !== 0) return true
+  return (['cropT', 'cropR', 'cropB', 'cropL'] as const).some((ch) => channelKeyframes(clip, ch).length > 0)
 }
 
 /**
@@ -1095,7 +1138,7 @@ function EffectStack({ clip, playheadS }: { clip: Clip; playheadS: number }) {
           )}
           {/* Add an effect without leaving for the Effects tab, and find it by
               what it does rather than by remembering its name. */}
-          <AddEffectMenu clipId={clip.id} />
+          <AddEffectMenu clipIds={[clip.id]} />
           {clip.effects.length > 0 && (
             <IconButton
               label="Save effects as preset"
@@ -1148,6 +1191,16 @@ export function TransitionRow({
   const t = edge === 'in' ? clip.transitionIn : clip.transitionOut
   const kind = (t?.type as TransitionKind | undefined) ?? NONE
   const durationS = t?.durationS ?? 1
+  // A string or null, so the row re-renders only when the answer changes.
+  const overriddenBy = useStore((s) => {
+    if (edge !== 'out' || !clip.transitionOut) return null
+    const sq = activeSequence(s.project)
+    const track = sq.tracks.find((tr) => tr.clips.some((c) => c.id === clip.id))
+    const i = track ? track.clips.findIndex((c) => c.id === clip.id) : -1
+    if (!track || i < 0) return null
+    const tr = outOverriddenBy(track.clips[i]!, track.clips[i + 1], sq.fps)
+    return tr ? (TRANSITION_LABELS[tr.type as TransitionKind] ?? tr.type) : null
+  })
 
   const onKind = (v: string) => {
     if (v === NONE) removeClipTransition(clip.id, edge)
@@ -1162,7 +1215,7 @@ export function TransitionRow({
     else setClipTransition(clip.id, edge, v as TransitionKind, t?.durationS)
   }
 
-  return (
+  const row = (
     <PropRow label={edge === 'in' ? 'In' : 'Out'}>
       <select
         data-testid={testId}
@@ -1197,6 +1250,15 @@ export function TransitionRow({
         />
       )}
     </PropRow>
+  )
+  if (!overriddenBy) return row
+  return (
+    <div className="flex flex-col gap-0.5">
+      {row}
+      <p className="pl-7 text-ui-xs text-text-muted" data-testid={`${testId}-overridden`}>
+        The next clip's In ({overriddenBy}) plays here instead.
+      </p>
+    </div>
   )
 }
 
@@ -1303,6 +1365,7 @@ export function EffectControls({
   // wired, still tested, one click away under the shelf, and no longer the first
   // thing he sees when he clicks a clip.
   const handTuneOpen = useStore((s) => s.ui.handTuneOpen)
+  const cropRows = showsCropRows(clip)
   return (
     <div className="flex flex-col gap-5">
       {isAdjustment && (
@@ -1358,7 +1421,7 @@ export function EffectControls({
               </Section>
               {/* Directly under Scale, because that is where he looks for a zoom
                   and because the difference between the two is the point. */}
-              <InnerZoomRow clip={clip} playheadS={playheadS} />
+              {cropRows && <InnerZoomRow clip={clip} playheadS={playheadS} />}
               {!clip.title && <FlipRow clip={clip} />}
               <div className="h-px bg-border" />
             </>
@@ -1381,8 +1444,12 @@ export function EffectControls({
                   ))}
                 </select>
               </PropRow>
-              <div className="h-px bg-border" />
-              <Section title="Crop" channels={['cropT', 'cropR', 'cropB', 'cropL']} clip={clip} playheadS={playheadS} />
+              {cropRows && (
+                <>
+                  <div className="h-px bg-border" />
+                  <Section title="Crop" channels={['cropT', 'cropR', 'cropB', 'cropL']} clip={clip} playheadS={playheadS} />
+                </>
+              )}
             </>
           )}
           <div className="h-px bg-border" />

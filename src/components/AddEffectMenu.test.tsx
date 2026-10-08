@@ -13,11 +13,12 @@ import { cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const hoisted = vi.hoisted(() => ({ applied: [] as { clipId: string; type: string }[] }))
+const hoisted = vi.hoisted(() => ({ applied: [] as { clipIds: string[]; type: string }[] }))
 
-vi.mock('../state/clipEdits', () => ({
-  applyEffect: (clipId: string, type: string) => {
-    hoisted.applied.push({ clipId, type })
+vi.mock('../state/bulkEdits', () => ({
+  applyEffectToClips: (clipIds: Iterable<string>, type: string) => {
+    hoisted.applied.push({ clipIds: [...clipIds], type })
+    return 0
   },
 }))
 
@@ -48,7 +49,7 @@ beforeEach(() => {
 
 describe('AddEffectMenu', () => {
   it('shows a button and no menu until it is asked for', () => {
-    render(<AddEffectMenu clipId="c1" />)
+    render(<AddEffectMenu clipIds={['c1']} />)
     expect(screen.getByTestId('inspector-add-effect')).toBeTruthy()
     expect(screen.queryByTestId('add-effect-menu')).toBeNull()
   })
@@ -60,14 +61,14 @@ describe('AddEffectMenu', () => {
    * shut in the same gesture, which read as flakiness rather than as a bug.
    */
   it('stays open after the click that opened it', async () => {
-    render(<AddEffectMenu clipId="c1" />)
+    render(<AddEffectMenu clipIds={['c1']} />)
     await open()
     expect(screen.getByTestId('add-effect-menu')).toBeTruthy()
     expect(document.activeElement).toBe(screen.getByTestId('add-effect-search'))
   })
 
   it('opens and closes ten times without missing one', async () => {
-    render(<AddEffectMenu clipId="c1" />)
+    render(<AddEffectMenu clipIds={['c1']} />)
     const user = userEvent.setup()
     const button = screen.getByTestId('inspector-add-effect')
     for (let i = 0; i < 10; i++) {
@@ -79,7 +80,7 @@ describe('AddEffectMenu', () => {
   })
 
   it('finds an effect by what it does rather than by its name', async () => {
-    render(<AddEffectMenu clipId="c1" />)
+    render(<AddEffectMenu clipIds={['c1']} />)
     const user = await open()
     await user.type(screen.getByTestId('add-effect-search'), 'bloom')
     const rows = screen.getAllByTestId('add-effect-row')
@@ -87,12 +88,22 @@ describe('AddEffectMenu', () => {
     expect(rows[0].getAttribute('data-type')).toBe('glow')
 
     await user.click(rows[0])
-    expect(hoisted.applied).toEqual([{ clipId: 'c1', type: 'glow' }])
+    expect(hoisted.applied).toEqual([{ clipIds: ['c1'], type: 'glow' }])
     expect(screen.queryByTestId('add-effect-menu')).toBeNull()
   })
 
+  // The multi clip Inspector hands it the whole selection, and the pick has to
+  // reach all of it in one call (one undo step), not the first clip only.
+  it('puts the pick on EVERY clip it was given, in one call', async () => {
+    render(<AddEffectMenu clipIds={['c1', 'c2', 'c3']} />)
+    const user = await open()
+    await user.type(screen.getByTestId('add-effect-search'), 'bloom')
+    await user.keyboard('{Enter}')
+    expect(hoisted.applied).toEqual([{ clipIds: ['c1', 'c2', 'c3'], type: 'glow' }])
+  })
+
   it('says so when nothing matches, instead of showing everything', async () => {
-    render(<AddEffectMenu clipId="c1" />)
+    render(<AddEffectMenu clipIds={['c1']} />)
     const user = await open()
     await user.type(screen.getByTestId('add-effect-search'), 'zzzzzznotaneffect')
     expect(screen.queryAllByTestId('add-effect-row')).toHaveLength(0)
@@ -100,17 +111,17 @@ describe('AddEffectMenu', () => {
   })
 
   it('adds an effect from the keyboard alone', async () => {
-    render(<AddEffectMenu clipId="c1" />)
+    render(<AddEffectMenu clipIds={['c1']} />)
     const user = await open()
     const wanted = screen.getAllByTestId('add-effect-row')[1].getAttribute('data-type')
     await user.keyboard('{ArrowDown}')
     expect(screen.getAllByTestId('add-effect-row')[1].getAttribute('data-highlighted')).toBe('true')
     await user.keyboard('{Enter}')
-    expect(hoisted.applied).toEqual([{ clipId: 'c1', type: wanted }])
+    expect(hoisted.applied).toEqual([{ clipIds: ['c1'], type: wanted }])
   })
 
   it('wraps the highlight round the ends rather than dying at them', async () => {
-    render(<AddEffectMenu clipId="c1" />)
+    render(<AddEffectMenu clipIds={['c1']} />)
     const user = await open()
     const rows = () => screen.getAllByTestId('add-effect-row')
     const last = rows().length - 1
@@ -121,7 +132,7 @@ describe('AddEffectMenu', () => {
   })
 
   it('Escape closes it and adds nothing', async () => {
-    render(<AddEffectMenu clipId="c1" />)
+    render(<AddEffectMenu clipIds={['c1']} />)
     const user = await open()
     await user.keyboard('{Escape}')
     expect(screen.queryByTestId('add-effect-menu')).toBeNull()
@@ -129,7 +140,7 @@ describe('AddEffectMenu', () => {
   })
 
   it('a click outside closes it and adds nothing', async () => {
-    render(<AddEffectMenu clipId="c1" />)
+    render(<AddEffectMenu clipIds={['c1']} />)
     const user = await open()
     await user.click(screen.getByTestId('add-effect-backdrop'))
     expect(screen.queryByTestId('add-effect-menu')).toBeNull()
@@ -137,7 +148,7 @@ describe('AddEffectMenu', () => {
   })
 
   it('opens with an empty box the next time, never the old query', async () => {
-    render(<AddEffectMenu clipId="c1" />)
+    render(<AddEffectMenu clipIds={['c1']} />)
     const user = await open()
     await user.type(screen.getByTestId('add-effect-search'), 'bloom')
     await user.keyboard('{Escape}')

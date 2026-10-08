@@ -439,21 +439,34 @@ function InspectorEmpty() {
   )
 }
 
+/** The last paused, frame quantized playhead the Inspector showed. */
+let pausedPlayheadS = 0
+
+/**
+ * The playhead the Inspector reads: FRAME-quantized, because the keyframe UI is
+ * frame-accurate anyway and the raw value ticks every animation frame. Even
+ * quantized, that re-rendered the whole Effect Controls + KeyframeLane fps x/s
+ * DURING PLAYBACK, a big chunk of playback lag. So while PLAYING it holds still:
+ * the panel stops re-rendering entirely and its readouts freeze (you watch the
+ * monitor, not the inspector, while it plays). They resume the instant you pause.
+ *
+ * ⛔ FROZEN ON THE LAST PAUSED FRAME, NOT ON A SENTINEL. It used to return -1,
+ * which every reader clamps to the clip's first frame, so on a clip with a move
+ * the Scale field jumped to its head value the moment he pressed space and
+ * snapped back on pause (2026-10-06). The comment always said "freeze".
+ */
+export function inspectorPlayheadS(s: { ui: { playing: boolean; playheadS: number }; project: Parameters<typeof activeSequence>[0] }): number {
+  if (s.ui.playing) return pausedPlayheadS
+  const sq = activeSequence(s.project)
+  const f = sq.fps > 0 ? sq.fps : 30
+  pausedPlayheadS = Math.floor(s.ui.playheadS * f + 1e-6) / f
+  return pausedPlayheadS
+}
+
 export function Inspector({ width }: { width: number }) {
   const project = useStore((s) => s.project)
   const selection = useStore((s) => s.ui.selection)
-  // FRAME-quantized playhead: the keyframe UI is frame-accurate anyway, and the
-  // raw value ticks every animation frame. Even quantized, that re-rendered the
-  // whole Effect Controls + KeyframeLane fps×/s DURING PLAYBACK - a big chunk of
-  // playback lag. So while PLAYING we return a constant sentinel: the panel stops
-  // re-rendering entirely and its live value readouts freeze (you watch the
-  // monitor, not the inspector, while it plays). They resume the instant you pause.
-  const playheadS = useStore((s) => {
-    if (s.ui.playing) return -1
-    const sq = activeSequence(s.project)
-    const f = sq.fps > 0 ? sq.fps : 30
-    return Math.floor(s.ui.playheadS * f + 1e-6) / f
-  })
+  const playheadS = useStore(inspectorPlayheadS)
   const seq = activeSequence(project)
   const selectedTrack: Track | undefined =
     selection.length === 1

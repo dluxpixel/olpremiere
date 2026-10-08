@@ -4,7 +4,7 @@
 
 import { DEFAULT_APPEARANCE_DUR, ENTRANCE_PRESETS, EXIT_PRESETS } from '../engine/anim/appearance'
 import { ensureTitleFont, TITLE_FONT_OPTIONS } from '../engine/render/titleFonts'
-import { isTitleClip, type Clip } from '../engine/types'
+import { activeSequence, isTitleClip, type Clip } from '../engine/types'
 import {
   APPEARANCE_SPEEDS,
   saveClipAppearanceAsDefault,
@@ -28,7 +28,7 @@ const TITLE_SIZE_PRESETS = [
 // should the normal animation still be very slow just because the text is
 // long?" See APPEARANCE_SPEEDS for the whole account. Auto is the one that fits
 // each clip, and its name says so.
-const SPEED_MENU: { label: string; spec: 'auto' | number }[] = [
+export const SPEED_MENU: { label: string; spec: 'auto' | number }[] = [
   { label: 'Auto (fit each word)', spec: 'auto' },
   ...APPEARANCE_SPEEDS.map((s) => ({ label: s.label, spec: s.seconds })),
 ]
@@ -75,6 +75,25 @@ function isStillImageClip(clip: Clip): boolean {
 }
 
 /**
+ * The selected clips a menu opened on `clip` may act on: the ones of ITS kind.
+ * Right-clicked a caption, the selected captions; a still image, the selected
+ * still images. Always includes `clip` itself.
+ *
+ * ⛔ The monitor menu used to hand every selected id to Entrance: with a whole
+ * Short selected, Fade in also landed on the footage, and compiling it wiped
+ * every move and punch in on that footage first (measured 2026-10-06). The
+ * timeline menu already narrowed the same items to titles.
+ */
+export function sameKindIds(clip: Clip, ids: readonly string[]): string[] {
+  const all = activeSequence(useStore.getState().project).tracks.flatMap((t) => t.clips)
+  const kind = (c: Clip) => (isTitleClip(c) ? 'title' : isStillImageClip(c) ? 'image' : 'other')
+  const want = kind(clip)
+  const picked = new Set(ids)
+  const out = all.filter((c) => picked.has(c.id) && c.id !== clip.id && kind(c) === want).map((c) => c.id)
+  return [clip.id, ...out]
+}
+
+/**
  * Entrance / Exit / speed appearance controls. Actions apply to `ids` (the
  * selected clips when several are selected), so choosing an animation on ONE
  * right-clicked clip applies to the rest of the selection.
@@ -82,9 +101,17 @@ function isStillImageClip(clip: Clip): boolean {
  * entrance suits them. Empty for VIDEO and audio: video animates via transitions
  * + the Motion submenu (its own set), which is the deliberate split.
  */
-export function appearanceMenuItems(clip: Clip, ids: string[] = [clip.id]): MenuItem[] {
+export function appearanceMenuItems(clip: Clip, picked: string[] = [clip.id]): MenuItem[] {
   const isTitle = isTitleClip(clip)
-  if (!isTitle && !isStillImageClip(clip)) return []
+  if (!isTitle && !isStillImageClip(clip)) {
+    // Footage never TAKES an In or Out, but one that carries one anyway (pasted
+    // off a caption by an older build, an older project) can always lose it:
+    // otherwise nothing in the app could take it off (review, 2026-10-07).
+    if (!clip.appearance) return []
+    const ids = sameKindIds(clip, picked)
+    return [{ label: 'Clear animation', separator: true, onClick: () => setClipsAppearance(ids, { in: undefined, out: undefined }) }]
+  }
+  const ids = sameKindIds(clip, picked)
   const inId = clip.appearance?.in
   const outId = clip.appearance?.out
   const hasAppearance = !!(inId || outId)
@@ -139,7 +166,8 @@ export function appearanceMenuItems(clip: Clip, ids: string[] = [clip.id]): Menu
 }
 
 /** The focused menu shown when right-clicking a clip IN the preview monitor. */
-export function previewClipMenu(clip: Clip, ids?: string[]): MenuItem[] {
+export function previewClipMenu(clip: Clip, picked?: string[]): MenuItem[] {
+  const ids = picked && sameKindIds(clip, picked)
   const items = [...titleFontSizeItems(clip, ids), ...appearanceMenuItems(clip, ids)]
   // Never a leading divider at the very top of the menu.
   if (items.length > 0) items[0] = { ...items[0], separator: false }

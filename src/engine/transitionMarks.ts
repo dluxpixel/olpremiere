@@ -14,6 +14,7 @@
 // there. The no-partner fallback mirrors resolveTrack's own lone-edge clamp.
 
 import { pairTransitionWindow } from './preview'
+import { pairTransitionAt } from './render/resolve'
 import { clipDurationS, type Clip, type Transition } from './types'
 
 const clamp = (x: number, lo: number, hi: number): number => (x < lo ? lo : x > hi ? hi : x)
@@ -81,4 +82,17 @@ export function transitionMarkPx(
     headPx: Math.min(halfPx, spans.headS * pxPerS),
     tailPx: Math.min(halfPx, spans.tailS * pxPerS),
   }
+}
+
+/**
+ * The next clip's In that plays over this clip's Out, or null when this Out is
+ * the one that plays (or there is no pair at that cut).
+ *
+ * The pair rule is `B.transitionIn ?? A.transitionOut` (resolve.ts), so with both
+ * set only the In runs, while the Out still sat in the Inspector saying "Out:
+ * Cross Dissolve" as if it would (2026-10-06).
+ */
+export function outOverriddenBy(clip: Clip, next: Clip | undefined, fps: number): Transition | null {
+  if (!clip.transitionOut || !next?.transitionIn) return null
+  return pairTransitionAt(clip, next, fps) ? next.transitionIn : null
 }

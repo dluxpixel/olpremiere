@@ -105,3 +105,17 @@ describe('boxFromQuad', () => {
     })
   })
 })
+
+describe('the inner frame of a Short', () => {
+  it('catches the top edge of the 4:5 box, where the picture actually sits', () => {
+    // A 1080x1350 box inside 1080x1920 starts at y = 285. A clip whose top sits at
+    // 290 is 5 px from that edge.
+    const box = { minX: 0, maxX: 1080, minY: 290, maxY: 1000 }
+    const inner = { x: 0, y: 285, w: 1080, h: 1350 }
+    const r = snapTransformMove(0, 0, 0, 0, box, 1080, 1920, 8, inner)
+    expect(r.y).toBe(-5)
+    expect(r.guideY).toBe(285)
+    // With no inner frame there is nothing to catch there.
+    expect(snapTransformMove(0, 0, 0, 0, box, 1080, 1920, 8).guideY).toBeNull()
+  })
+})

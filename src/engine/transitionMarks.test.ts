@@ -5,7 +5,7 @@
 // a length that will not play.
 
 import { describe, expect, it } from 'vitest'
-import { transitionMarkPx, transitionMarkSpans } from './transitionMarks'
+import { outOverriddenBy, transitionMarkPx, transitionMarkSpans } from './transitionMarks'
 import type { Clip } from './types'
 
 const clip = (o: Partial<Clip> & Pick<Clip, 'id' | 'assetId' | 'startS' | 'inS' | 'outS'>): Clip => ({
@@ -113,5 +113,25 @@ describe('transitionMarkPx', () => {
 
   it('draws nothing for empty spans', () => {
     expect(transitionMarkPx({ headS: 0, tailS: 0 }, 100, 500)).toEqual({ headPx: 0, tailPx: 0 })
+  })
+})
+
+describe('outOverriddenBy', () => {
+  const aOut = { ...a, transitionOut: { type: 'crossDissolve', durationS: 0.4 } }
+  const bIn = { ...b, transitionIn: { type: 'zoom', durationS: 0.3 } }
+
+  it("names the next clip's In when it plays over this Out", () => {
+    expect(outOverriddenBy(aOut, bIn, FPS)).toEqual({ type: 'zoom', durationS: 0.3 })
+  })
+
+  it('is null when this Out is the one that plays', () => {
+    expect(outOverriddenBy(aOut, b, FPS)).toBeNull()
+    expect(outOverriddenBy(aOut, undefined, FPS)).toBeNull()
+    expect(outOverriddenBy(a, bIn, FPS)).toBeNull()
+  })
+
+  it('is null when the two clips do not form a pair, so neither one is overridden', () => {
+    expect(outOverriddenBy(aOut, { ...bIn, startS: 3 }, FPS)).toBeNull()
+    expect(outOverriddenBy(aOut, { ...bIn, enabled: false }, FPS)).toBeNull()
   })
 })

@@ -66,12 +66,32 @@ export function snapTransformMove(
   frameW: number,
   frameH: number,
   tol: number,
+  /**
+   * The square or 4:5 frame inside a Short, when the sequence has one: its
+   * edges catch too, because that is where the picture actually sits.
+   */
+  inner?: { x: number; y: number; w: number; h: number } | null,
 ): SnapResult {
   // How far x must travel from its start for the named edge to land on target.
   const dxFor = (boxEdge: number, target: number) => startX + (target - boxEdge)
   const dyFor = (boxEdge: number, target: number) => startY + (target - boxEdge)
   const boxCx = (startBox.minX + startBox.maxX) / 2
   const boxCy = (startBox.minY + startBox.maxY) / 2
+  // After the frame's own lines, so the frame still wins a tie.
+  const innerX = inner
+    ? [
+        { at: dxFor(boxCx, inner.x + inner.w / 2), guide: inner.x + inner.w / 2 },
+        { at: dxFor(startBox.minX, inner.x), guide: inner.x },
+        { at: dxFor(startBox.maxX, inner.x + inner.w), guide: inner.x + inner.w },
+      ]
+    : []
+  const innerY = inner
+    ? [
+        { at: dyFor(boxCy, inner.y + inner.h / 2), guide: inner.y + inner.h / 2 },
+        { at: dyFor(startBox.minY, inner.y), guide: inner.y },
+        { at: dyFor(startBox.maxY, inner.y + inner.h), guide: inner.y + inner.h },
+      ]
+    : []
 
   const sx = nearest(
     x,
@@ -81,6 +101,7 @@ export function snapTransformMove(
       { at: dxFor(boxCx, frameW / 2), guide: frameW / 2 },
       { at: dxFor(startBox.minX, 0), guide: 0 },
       { at: dxFor(startBox.maxX, frameW), guide: frameW },
+      ...innerX,
     ],
     tol,
   )
@@ -90,6 +111,7 @@ export function snapTransformMove(
       { at: dyFor(boxCy, frameH / 2), guide: frameH / 2 },
       { at: dyFor(startBox.minY, 0), guide: 0 },
       { at: dyFor(startBox.maxY, frameH), guide: frameH },
+      ...innerY,
     ],
     tol,
   )

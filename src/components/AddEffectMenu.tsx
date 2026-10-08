@@ -21,10 +21,16 @@ import { Search } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 
 import { addMenuRows, highlightedRow, nextHighlight } from '../engine/effects/addMenu'
-import { applyEffect } from '../state/clipEdits'
+import { applyEffectToClips } from '../state/bulkEdits'
 import { useRecentEffects } from '../state/recentEffects'
 
-export function AddEffectMenu({ clipId }: { clipId: string }) {
+/**
+ * `clipIds` is every clip the pick lands on: the one clip in the single clip
+ * Inspector, the whole selection in the multi clip one. His words, 2026-10-04:
+ * an effect put on several selected clips applies to ALL of them, so the search
+ * he is used to cannot vanish the moment a second clip is selected.
+ */
+export function AddEffectMenu({ clipIds }: { clipIds: readonly string[] }) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [highlight, setHighlight] = useState(0)
@@ -52,7 +58,7 @@ export function AddEffectMenu({ clipId }: { clipId: string }) {
   }
 
   function choose(type: string): void {
-    applyEffect(clipId, type)
+    applyEffectToClips(clipIds, type)
     close()
   }
 

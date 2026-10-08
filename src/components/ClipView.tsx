@@ -4,14 +4,14 @@ import { clipDurationS } from '../engine/timeline'
 import { clipKeyframeTimes } from '../engine/keyframes'
 import { type TransitionKind } from '../engine/render/types'
 import { transitionMarkPx } from '../engine/transitionMarks'
-import { applyEffectToClips } from '../state/bulkEdits'
+import { applyEffectToClips, setClipsTransition } from '../state/bulkEdits'
 import { moveClipKeyframe, setClipTransition } from '../state/clipEdits'
 import { EFFECT_MIME, TRANSITION_MIME, dragHasType, edgeForOffset } from '../state/dnd'
-import { type Clip, type Id, type MediaAsset } from '../engine/types'
+import { activeSequence, type Clip, type Id, type MediaAsset } from '../engine/types'
 import { useBlobUrl } from '../state/blobUrls'
 import { useFilmstrip } from '../state/filmstrips'
 import { ClipWaveform } from './ClipWaveform'
-import { effectDropTargets } from './effectDrop'
+import { effectDropTargets, selectionAfterDrop } from './effectDrop'
 import { useStore } from '../state/store'
 
 // ---------------------------------------------------------------------------
@@ -403,11 +403,17 @@ export const ClipView = memo(function ClipView({
     clearFxDrop()
     // On one of several selected clips the drop is for all of them, and the
     // selection stays as it is (effectDropTargets).
-    const targets = effectType ? effectDropTargets(clip.id, useStore.getState().ui.selection) : [clip.id]
+    // A transition dropped on one of several selected clips goes on that edge of
+    // every one of them, the way an effect does.
+    const { project, ui } = useStore.getState()
+    const targets = effectDropTargets(clip.id, ui.selection, activeSequence(project))
+    const edge = edgeForOffset(offsetInClip(e), width)
     if (effectType) applyEffectToClips(targets, effectType)
-    else setClipTransition(clip.id, edgeForOffset(offsetInClip(e), width), transitionKind as TransitionKind)
-    // Reveal what just happened in the Inspector.
-    if (targets.length === 1) useStore.getState().setUI({ selection: [clip.id] })
+    else if (targets.length > 1 && !clip.title) setClipsTransition(targets, edge, transitionKind as TransitionKind)
+    else setClipTransition(clip.id, edge, transitionKind as TransitionKind)
+    // Reveal what just happened in the Inspector, unless it was for the selection.
+    const next = selectionAfterDrop(clip.id, ui.selection)
+    if (next) useStore.getState().setUI({ selection: next })
   }
 
   return (

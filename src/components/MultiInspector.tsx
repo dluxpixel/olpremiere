@@ -5,31 +5,45 @@
 // all of them, so a mixed selection converges on one click. This is what makes
 // "select many, edit boldness / effects on all" work.
 
-import { AudioWaveform, Bold, CaseLower, CaseUpper, FlipHorizontal2, Italic, Sparkles, Layers } from 'lucide-react'
+import {
+  AudioWaveform,
+  Bold,
+  CaseLower,
+  CaseUpper,
+  Eye,
+  EyeOff,
+  FlipHorizontal2,
+  Italic,
+  Sparkles,
+  Layers,
+} from 'lucide-react'
 import { useSyncExternalStore } from 'react'
 import { warmDenoise } from '../engine/audio'
 import { isCleaningNoise, onCleaningNoise } from '../engine/denoise'
 import {
-  applyEffectToClips,
   clearEffectsForClips,
+  effectTargets,
   setChannelForClips,
   setClipsDenoise,
   setClipsFade,
   setClipsGainDb,
   toggleClipsFlip,
+  removeClipsTransition,
+  setClipsTransition,
   setFrameFitForClips,
+  toggleEffectsForClips,
 } from '../state/bulkEdits'
+import { TRANSITION_KINDS, TRANSITION_LABELS, transitionDurationSpec, type TransitionKind } from '../engine/render/types'
 import { FRAME_FITS, frameFitDims, frameFitOf, takesFrameFit, type FrameFit } from '../engine/frameFit'
 import { useStore } from '../state/store'
-import { ENTRANCE_PRESETS } from '../engine/anim/appearance'
-import { setClipsAppearance } from '../state/appearanceActions'
 import { applyPunchyGradeToClips } from '../state/lookActions'
 import { applyCaptionStyle } from '../state/captionActions'
 import { allCaptionStyles, saveCaptionStyleFromClip, useCaptionStyles } from '../state/captionStyles'
 import { setTitlesFontSize, updateTitles } from '../state/titleActions'
-import { BROWSABLE_EFFECTS } from '../engine/effects/registry'
 import { ensureTitleFont, TITLE_FONT_OPTIONS } from '../engine/render/titleFonts'
 import { clipDurationS } from '../engine/timeline'
+import { AddEffectMenu } from './AddEffectMenu'
+import { AppearanceRows } from './AppearanceRows'
 import { useEffectDrop } from './effectDrop'
 import { activeSequence, type Clip, type Track } from '../engine/types'
 import { IconButton } from '../ui/Button'
@@ -70,6 +84,9 @@ function Header({ label, icon: Icon }: { label: string; icon?: typeof Bold }) {
 
 export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
   const allIds = selected.map((s) => s.clip.id)
+  // Opacity and Scale are for what is on screen: the sound in the selection has
+  // neither, and writing them there only cost undo steps on clips he never sees.
+  const visualIds = selected.filter((s) => s.track.kind !== 'audio').map((s) => s.clip.id)
   // The effects section takes a dragged effect here too, on the whole selection:
   // the panel is the same panel, and an effect that lands on one clip but is
   // refused the moment a second is selected is the same broken promise.
@@ -93,6 +110,10 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
   const flippable = selected.filter((s) => s.track.kind === 'video' && !s.clip.title)
   const pictureIds = flippable.map((s) => s.clip.id)
   const allFlipped = flippable.length > 0 && flippable.every((s) => s.clip.transform.flipH === true)
+  // The Shift+B eye, for the whole selection: shown once any selected picture
+  // carries an effect, and it reads "on" while any of them still has one on.
+  const withEffects = selected.filter((s) => s.track.kind !== 'audio' && s.clip.effects.length > 0)
+  const anyEffectOn = withEffects.some((s) => s.clip.effects.some((e) => e.enabled))
 
   // Every selected clip a camera move can be written onto: picture on a video
   // track, no entrance animation owning its keyframes.
@@ -130,7 +151,6 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
   const allLower = nTitle > 0 && titles.every((s) => s.clip.title!.textCase === 'lower')
   const firstOutline = firstTitle?.outline
   const allOutline = nTitle > 0 && titles.every((s) => !!s.clip.title!.outline)
-  const firstAppearanceIn = titles[0]?.clip.appearance?.in
   // Subscribed so a style saved anywhere shows up here at once.
   useCaptionStyles((s) => s.saved)
   const presets = allCaptionStyles()
@@ -312,23 +332,14 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
               </>
             )}
 
-            {/* Entrance animation across all selected captions. */}
-            <PropRow label="Animation">
-              <select
-                aria-label="Entrance animation (all)"
-                data-testid="multi-animation"
-                value={firstAppearanceIn ?? ''}
-                onChange={(e) => setClipsAppearance(titleIds, { in: e.target.value || undefined })}
-                className="h-6 w-[140px] cursor-default rounded-field bg-bg-input px-1.5 text-ui-sm text-text-primary"
-              >
-                <option value="">None</option>
-                {ENTRANCE_PRESETS.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.label}
-                  </option>
-                ))}
-              </select>
-            </PropRow>
+            {/* In, Out and Speed across all selected captions, the same rows as
+                one title's panel. A row the captions disagree on reads Mixed. */}
+            <AppearanceRows
+              ids={titleIds}
+              specs={titles.map((t) => t.clip.appearance)}
+              testIds={{ in: 'multi-animation', out: 'multi-animation-out', speed: 'multi-animation-speed' }}
+              all
+            />
 
             {/* Style presets: apply a saved look (font+case+colour+outline+animation)
                 to the whole selection, or save the current one for reuse. */}
@@ -372,7 +383,7 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
         <div className="flex flex-col gap-1">
           <PropRow
             label="Opacity"
-            onReset={() => setChannelForClips(allIds, 'opacity', 1)}
+            onReset={() => setChannelForClips(visualIds, 'opacity', 1)}
             resetLabel="Reset opacity (all)"
           >
             <ScrubField
@@ -380,12 +391,12 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
               spec={OPACITY_SPEC}
               testId="multi-opacity"
               ariaLabel="Opacity (all)"
-              onCommit={(v) => setChannelForClips(allIds, 'opacity', v)}
+              onCommit={(v) => setChannelForClips(visualIds, 'opacity', v)}
             />
           </PropRow>
           <PropRow
             label="Scale"
-            onReset={() => setChannelForClips(allIds, 'scale', 1)}
+            onReset={() => setChannelForClips(visualIds, 'scale', 1)}
             resetLabel="Reset scale (all)"
           >
             <ScrubField
@@ -393,7 +404,7 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
               spec={SCALE_SPEC}
               testId="multi-scale"
               ariaLabel="Scale (all)"
-              onCommit={(v) => setChannelForClips(allIds, 'scale', v)}
+              onCommit={(v) => setChannelForClips(visualIds, 'scale', v)}
             />
           </PropRow>
           {pictures.length > 0 && (
@@ -433,7 +444,32 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
         data-drop-hot={effectDrop.hot ? 'true' : undefined}
         {...effectDrop.dropProps}
       >
-        <Header label="Effects" icon={Sparkles} />
+        <div className="flex items-center gap-1.5">
+          <Header label="Effects" icon={Sparkles} />
+          <span className="ml-auto flex items-center gap-1">
+            {withEffects.length > 0 && (
+              <IconButton
+                label={anyEffectOn ? 'Turn every effect off' : 'Turn every effect on'}
+                shortcut="Shift+B"
+                active={!anyEffectOn}
+                size="compact"
+                data-testid="multi-bypass-effects"
+                className={anyEffectOn ? '' : 'bg-accent-quiet! text-accent!'}
+                onClick={() => toggleEffectsForClips(allIds)}
+              >
+                {anyEffectOn ? (
+                  <Eye size={13} strokeWidth={1.75} aria-hidden />
+                ) : (
+                  <EyeOff size={13} strokeWidth={1.75} aria-hidden />
+                )}
+              </IconButton>
+            )}
+            {/* The SAME search the single clip panel has (find it by what it
+                does, recents first), so it does not turn into a bare list of
+                names exactly when he is working on a whole Short. */}
+            <AddEffectMenu clipIds={allIds} />
+          </span>
+        </div>
         <div className="flex flex-wrap items-center gap-1.5">
           <button
             type="button"
@@ -454,24 +490,6 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
             Clear
           </button>
         </div>
-        <PropRow label="Add effect">
-          <select
-            aria-label="Add effect to all"
-            data-testid="multi-add-effect"
-            value=""
-            onChange={(e) => {
-              if (e.target.value) applyEffectToClips(allIds, e.target.value)
-            }}
-            className="h-6 w-[140px] cursor-default rounded-field bg-bg-input px-1.5 text-ui-sm text-text-primary"
-          >
-            <option value="">Choose…</option>
-            {BROWSABLE_EFFECTS.map((ef) => (
-              <option key={ef.type} value={ef.type}>
-                {ef.label}
-              </option>
-            ))}
-          </select>
-        </PropRow>
         {/* His ask, 2026-10-01: flip the video left to right, here on all of
             the selected pictures at once (titles are left alone). */}
         {pictureIds.length > 0 && (
@@ -489,9 +507,26 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
         )}
         {/* Every effect ALL the selected picture clips carry, with its settings:
             change one and it changes on every clip. His ask, 2026-09-29, with
-            "Select all with Auto Color" on the clip menu as the way in. */}
-        <SharedEffects clips={selected.filter((s) => s.track.kind === 'video').map((s) => s.clip)} />
+            "Select all with Auto Color" on the clip menu as the way in. Over the
+            FOOTAGE of a mixed selection, the clips an added effect goes on: one
+            caption in the selection used to make every footage card vanish. */}
+        <SharedEffects clips={effectTargets(selected.filter((s) => s.track.kind === 'video').map((s) => s.clip))} />
       </section>
+
+      {/* The single clip panel's In and Out rows, for every selected picture.
+          Select a whole montage, pick White Flash, every cut has it. */}
+      {flippable.length > 0 && (
+        <>
+          <div className="h-px bg-border" />
+          <section className="flex flex-col gap-2" data-testid="multi-transitions">
+            <Header label="Transitions" />
+            <div className="flex flex-col gap-1">
+              <MultiTransitionRow clips={flippable.map((s) => s.clip)} edge="in" />
+              <MultiTransitionRow clips={flippable.map((s) => s.clip)} edge="out" />
+            </div>
+          </section>
+        </>
+      )}
 
       {audioIds.length > 0 && (
         <>
@@ -585,6 +620,62 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
         </>
       )}
     </div>
+  )
+}
+
+/**
+ * One edge's transition across the selected pictures. Shows the kind when they
+ * all agree and "Mixed" when not, so any pick reaches all of them (a select
+ * fires nothing when he picks the value it already shows).
+ */
+function MultiTransitionRow({ clips, edge }: { clips: Clip[]; edge: 'in' | 'out' }) {
+  const ids = clips.map((c) => c.id)
+  const of = (c: Clip) => (edge === 'in' ? c.transitionIn : c.transitionOut)
+  const kinds = clips.map((c) => of(c)?.type ?? 'none')
+  const kind = kinds.every((k) => k === kinds[0]) ? kinds[0]! : ''
+  const name = edge === 'in' ? 'In' : 'Out'
+  const live = kind !== '' && kind !== 'none' ? (kind as TransitionKind) : null
+  const spec = live ? transitionDurationSpec(live) : null
+  return (
+    <PropRow label={name}>
+      <select
+        data-testid={`multi-transition-${edge}`}
+        aria-label={`${name} transition (all)`}
+        value={kind}
+        onChange={(e) => {
+          const v = e.target.value
+          if (v === 'none') removeClipsTransition(ids, edge)
+          else if (v) setClipsTransition(ids, edge, v as TransitionKind)
+        }}
+        className="h-6 w-[104px] cursor-default rounded-field bg-bg-input px-1.5 text-ui-sm text-text-primary"
+      >
+        {kind === '' && (
+          <option value="" disabled>
+            Mixed
+          </option>
+        )}
+        <option value="none">None</option>
+        {TRANSITION_KINDS.map((k) => (
+          <option key={k} value={k}>
+            {TRANSITION_LABELS[k]}
+          </option>
+        ))}
+      </select>
+      {live && spec ? (
+        <ScrubField
+          value={of(clips[0]!)?.durationS ?? spec.def}
+          // Lengths that differ read "Mixed", and typing the first clip's own
+          // number still evens them all out (it used to commit nothing).
+          mixed={clips.some((c) => Math.abs((of(c)?.durationS ?? spec.def) - (of(clips[0]!)?.durationS ?? spec.def)) > 1e-9)}
+          spec={{ min: spec.min, max: spec.max, step: live === 'whiteFlash' ? 0.05 : 0.1, sens: 0.03 }}
+          testId={`multi-transition-${edge}-duration`}
+          ariaLabel={`${name} transition duration in seconds (all)`}
+          onCommit={(d) => setClipsTransition(ids, edge, live, d, false)}
+        />
+      ) : (
+        <span aria-hidden className="w-[68px] shrink-0" />
+      )}
+    </PropRow>
   )
 }
 

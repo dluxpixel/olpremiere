@@ -14,14 +14,15 @@ import {
 import { addEffect } from '../engine/effects/ops'
 import { FRAME_FITS, frameFitDims, withFrameFit, type FrameFit } from '../engine/frameFit'
 import { getEffect } from '../engine/effects/registry'
-import { upsertKeyframe, upsertKeyframeValue } from '../engine/keyframes'
 import { MOTION_CURVES } from '../engine/motion'
 import { clipDurationS, clipEndS } from '../engine/timeline'
+import { TRANSITION_LABELS, type TransitionKind } from '../engine/render/types'
 import { activeSequence, newId, type AnimChannel, type Clip, type Curve, type Keyframe } from '../engine/types'
 // isClipArmed comes from the SINGLE-clip module on purpose: the multi-select
 // align has to ask the exact question the gizmo asks, off the exact same code,
 // or the two paths drift the way they did when one read a global preference.
-import { isClipArmed, playheadLocalT } from './clipEdits'
+import { isAppearanceOwned, isClipArmed, outsAnInOverrides, setClipTransition, transitionFor, withoutOut, withOwnedBase } from './clipEdits'
+import { plural } from '../engine/plural'
 import { noteRecentEffect } from './recentEffects'
 import { updateActiveSequence, useStore } from './store'
 import { useToasts } from './toasts'
@@ -115,29 +116,75 @@ export function toggleClipsFlip(ids: Iterable<string>): void {
 }
 
 /**
- * Set a channel value on every selected clip. Mirrors the single-clip setChannel:
- * a STATIC channel sets the base; an ANIMATED one (a caption's pop, a punch-in)
- * keys the value at the playhead. Otherwise the base write is overridden by the
- * keyframes and the bulk edit silently does nothing.
+ * Move an animation so it RESTS on `value` and keeps its shape, or null when it
+ * has no rest to measure from (a zoom through 0, a fade that never shows).
+ *
+ * Scale rests on its LOWEST keyframe (a Push in from 100 to 120 rests at 100,
+ * the baseline withFrameFit and refitClipToFill read) and opacity on its
+ * HIGHEST (a fade rests fully shown); both are multiplied, so a zoom stays the
+ * same zoom. Anything else (volume in dB) is shifted from its highest.
+ */
+function restAnimationOn(kfs: readonly Keyframe[], channel: AnimChannel, value: number): Keyframe[] | null {
+  const values = kfs.map((k) => k.value)
+  if (channel === 'scale' || channel === 'opacity') {
+    const rest = channel === 'scale' ? Math.min(...values) : Math.max(...values)
+    if (rest <= 1e-6) return null
+    const f = value / rest
+    return kfs.map((k) => ({ ...k, value: k.value * f }))
+  }
+  const d = value - Math.max(...values)
+  return kfs.map((k) => ({ ...k, value: k.value + d }))
+}
+
+/**
+ * Set a channel value on every selected clip. A STATIC channel sets the base; an
+ * ANIMATED one keeps the SHAPE of its animation and is moved so it rests on the
+ * number, every keyframe by the same factor (restAnimationOn). A caption's pop
+ * or fade rebuilds on the new base (withOwnedBase).
+ *
+ * ⛔ IN THE MULTI PANEL A NUMBER IS WHERE EVERY CLIP RESTS, NOT A KEYFRAME AT
+ * THE PLAYHEAD. Most of his clips carry a move. Keying at the playhead clamped
+ * to the clips it was not on: Scale 1.3 on a selected Short turned every Push in
+ * after the playhead into a pull back (its first keyframe replaced), gave every
+ * clip before it a stray keyframe on its last frame, and the shelf then called
+ * them all "Hand edited" (measured 2026-10-06). setClipsPosition already refused
+ * to key clips elsewhere for the same reason. The single clip Inspector still
+ * keys at the playhead, where he can see the moment he is editing.
  */
 export function setChannelForClips(ids: Iterable<string>, channel: AnimChannel, value: number): void {
-  // One read for the whole fan-out, so twelve clips cannot end up carrying two
-  // different curves because the chip changed mid-dispatch.
-  const commit = moveCommit()
+  const seq = activeSequence(useStore.getState().project)
+  let restless = 0
   mapClips(
     ids,
     `Set ${channel}`,
     (c) => {
+      // A caption's pop or fade owns this channel: the number is its new base
+      // and the animation follows (withOwnedBase says what this used to break).
+      if (isAppearanceOwned(c, channel, seq)) return withOwnedBase(c, channel, value, seq.width, seq.height)
       const kfs = channelKeyframes(c, channel)
-      if (kfs.length === 0) return withChannelValue(c, channel, value)
-      const localT = playheadLocalT(c)
-      // upsertKeyframeValue, not upsertKeyframe: a keyframe he shaped by hand keeps
-      // its curve, and only a NEW one takes the shelf's current preference.
-      return withChannelKeyframes(c, channel, upsertKeyframeValue(kfs, localT, value, commit))
+      const based = withChannelValue(c, channel, value)
+      if (kfs.length === 0) return based
+      const moved = restAnimationOn(kfs, channel, value)
+      if (!moved) restless++
+      // The base follows too, so the field reads back what he typed.
+      return moved ? withChannelKeyframes(based, channel, moved) : c
     },
     // Per channel, so nudging Opacity and then Scale still leaves two steps.
     `channel:${channel}`,
   )
+  // A move that rests at 0 has nothing to scale from, and it used to keep its
+  // old value in silence while the field said otherwise (review, 2026-10-07).
+  if (restless > 0) {
+    const name = channel === 'scale' ? 'Scale' : 'Opacity'
+    useToasts
+      .getState()
+      .show(
+        restless === 1
+          ? `1 clip kept its ${name}: its keyframes rest at 0, so there is nothing to scale from`
+          : `${restless} clips kept their ${name}: their keyframes rest at 0, so there is nothing to scale from`,
+        'info',
+      )
+  }
 }
 
 /**
@@ -188,6 +235,48 @@ export function setClipsPosition(ids: Iterable<string>, x: number, y: number): v
   )
 }
 
+/**
+ * The clips a monitor drag to align moves: the selected clips of the PRIMARY's
+ * kind (the one the box is drawn on). Captions with captions, pictures with
+ * pictures; the sound never.
+ *
+ * ⛔ It used to move the whole selection: drag the captions of a selected Short
+ * 600 px down and the footage jumped 600 px down with them. His rule for exactly
+ * this case is in MultiInspector: footage wins a mixed selection, and "a caption
+ * that zooms along with the shot underneath it is not what he asked for".
+ */
+export function alignTargets(
+  seq: { tracks: readonly { kind: string; clips: readonly Clip[] }[] },
+  selection: readonly string[],
+  primaryId: string,
+): string[] {
+  const picked = new Set(selection)
+  const kindOf = (c: Clip) => (c.title ? 'text' : 'picture')
+  const visual = seq.tracks.filter((t) => t.kind === 'video').flatMap((t) => t.clips)
+  const primary = visual.find((c) => c.id === primaryId)
+  if (!primary) return [...selection]
+  return visual.filter((c) => picked.has(c.id) && kindOf(c) === kindOf(primary)).map((c) => c.id)
+}
+
+/**
+ * What a drag to align says when it left part of the selection where it was
+ * ("Moved 3 captions"), so the footage not moving with the captions reads as
+ * the rule and not as a miss. Null when every picture in the selection moved.
+ */
+export function alignNote(
+  seq: { tracks: readonly { kind: string; clips: readonly Clip[] }[] },
+  selection: readonly string[],
+  moved: readonly string[],
+  primaryIsTitle: boolean,
+): string | null {
+  const picked = new Set(selection)
+  const visual = seq.tracks
+    .filter((t) => t.kind === 'video')
+    .reduce((n, t) => n + t.clips.filter((c) => picked.has(c.id)).length, 0)
+  if (moved.length >= visual) return null
+  return `Moved ${plural(moved.length, primaryIsTitle ? 'caption' : 'clip')}`
+}
+
 /** What one effect run did to the clips it was handed. */
 interface EffectRun {
   /** Clips asked for. */
@@ -196,6 +285,8 @@ interface EffectRun {
   visual: number
   /** Of those, the ones on a locked track, which stay as they are. */
   locked: number
+  /** Of those, the ones that already carried this effect and were skipped. */
+  already: number
   /** Clips that really got the effect. */
   changed: number
 }
@@ -207,6 +298,23 @@ export function lockedLeftOut(n: number): string {
     : `${n} clips are on a locked track and were left out`
 }
 
+/** Footage: a picture of its own, not a title and not an adjustment layer. */
+export const isFootage = (c: Clip): boolean => !c.title && !c.adjustment
+
+/**
+ * FOOTAGE WINS A MIXED SELECTION, for effects and looks too. Select a whole
+ * Short and the captions come with it: Saturation -1 turned the yellow highlight
+ * words grey, a Blur blurred the words, a second grade went on the adjustment
+ * layer on top of the footage it already grades. The punch grade has always
+ * left titles clean ("the caption style owns them", lookActions.ts) and the
+ * Move shelf does the same (MultiInspector). A selection with NO footage in it
+ * (only captions) still takes the effect, so a Glow on the captions works.
+ */
+export function effectTargets<T extends Clip>(clips: readonly T[]): T[] {
+  const footage = clips.filter(isFootage)
+  return footage.length > 0 ? footage : [...clips]
+}
+
 /**
  * Put one fresh instance of an effect on every clip it can go on, in ONE undo
  * step, and count what happened. No words: the callers say them, because the
@@ -214,21 +322,39 @@ export function lockedLeftOut(n: number): string {
  *
  * Skips audio clips the way the single-clip applyEffect does (clipEdits.ts): a
  * visual effect on an audio clip stores a card, costs an undo and renders
- * nothing. A mixed selection applies to its visual clips only. Locked tracks are
- * skipped by mapClips; they are counted here so they can be named.
+ * nothing. A mixed selection applies to its footage only (effectTargets).
+ * Locked tracks are skipped by mapClips; they are counted here so they can be
+ * named.
+ *
+ * ⛔ NEVER A SECOND COPY ON A SELECTION. Selecting the whole Short again and
+ * adding Auto Color "to make sure every clip has it" gave the clips that had it a
+ * doubled look, and the "On all N clips" card then edited only the first copy.
+ * So when more than one clip was asked for, a clip already carrying the effect
+ * is skipped and counted. One clip on its own may still stack a copy on purpose.
  */
 function runEffect(ids: Iterable<string>, type: string): EffectRun {
-  const where = new Map<string, { kind: string; locked: boolean }>()
+  const where = new Map<string, { clip: Clip; kind: string; locked: boolean }>()
   for (const t of activeSequence(useStore.getState().project).tracks) {
-    for (const c of t.clips) where.set(c.id, { kind: t.kind, locked: t.locked })
+    for (const c of t.clips) where.set(c.id, { clip: c, kind: t.kind, locked: t.locked })
   }
   const requested = [...ids]
-  const visual = requested.filter((id) => where.get(id)?.kind !== 'audio')
-  const open = visual.filter((id) => !where.get(id)?.locked)
-  const run: EffectRun = { requested: requested.length, visual: visual.length, locked: visual.length - open.length, changed: 0 }
+  const visual = requested.flatMap((id) => {
+    const w = where.get(id)
+    return w && w.kind !== 'audio' ? [w.clip] : []
+  })
+  const targets = effectTargets(visual)
+  const unlocked = targets.filter((c) => !where.get(c.id)?.locked)
+  const open = visual.length > 1 ? unlocked.filter((c) => !c.effects.some((e) => e.type === type)) : unlocked
+  const run: EffectRun = {
+    requested: requested.length,
+    visual: visual.length,
+    locked: targets.length - unlocked.length,
+    already: unlocked.length - open.length,
+    changed: 0,
+  }
   if (open.length === 0) return run
   const label = getEffect(type)?.label ?? type
-  mapClips(open, `Add ${label}`, (c) => {
+  mapClips(open.map((c) => c.id), `Add ${label}`, (c) => {
     const next = addEffect(c, type, newId())
     if (next !== c) run.changed++
     return next
@@ -239,6 +365,9 @@ function runEffect(ids: Iterable<string>, type: string): EffectRun {
   if (run.changed > 0) noteRecentEffect(type)
   return run
 }
+
+/** ". 5 already had it": the clips a run skipped because they carry it already. */
+const alreadyHad = (n: number): string => (n === 0 ? '' : `. ${n} already had it`)
 
 /**
  * Add one fresh instance of an effect to every selected clip (own id each), and
@@ -263,11 +392,12 @@ export function applyEffectToClips(ids: Iterable<string>, type: string): number 
   }
   if (run.changed === 0) {
     if (run.locked > 0) show(run.locked === 1 ? 'That clip is on a locked track' : 'Those clips are on a locked track', 'danger')
+    else if (run.already > 0) show(`Every one of those clips already has ${label}`, 'info')
     return 0
   }
-  if (run.changed > 1 || run.locked > 0) {
+  if (run.changed > 1 || run.locked > 0 || run.already > 0) {
     const left = run.locked > 0 ? `. ${lockedLeftOut(run.locked)}` : ''
-    show(`Added ${label} to ${run.changed} clip${run.changed === 1 ? '' : 's'}${left}`, 'success')
+    show(`Added ${label} to ${run.changed} clip${run.changed === 1 ? '' : 's'}${alreadyHad(run.already)}${left}`, 'success')
   }
   return run.changed
 }
@@ -276,20 +406,237 @@ export function applyEffectToClips(ids: Iterable<string>, type: string): number 
  * Add one fresh instance of an effect to EVERY video clip in the active
  * sequence, all in ONE undo step, no selection needed. Audio clips are skipped
  * (a visual effect means nothing on them) and locked tracks are skipped by
- * mapClips. Mirrors applyPresetToAllClips in library.ts.
+ * mapClips. The footage takes it and the captions stay clean, and a clip that
+ * already has it is not given a second copy (runEffect). Mirrors
+ * applyPresetToAllClips in library.ts.
+ *
+ * ⛔ A LOCKED TRACK STILL COUNTS AS FOOTAGE. It used to be dropped before the
+ * footage wins rule ran, so with the cut locked on V1 the rule saw only the
+ * captions and graded every one of them (review, 2026-10-07). runEffect drops
+ * the locked clips after the rule, and they are named.
  */
 export function applyEffectToAllClips(type: string): void {
   const show = useToasts.getState().show
   const label = getEffect(type)?.label ?? type
   const ids = activeSequence(useStore.getState().project)
-    .tracks.filter((t) => t.kind === 'video' && !t.locked)
+    .tracks.filter((t) => t.kind === 'video')
     .flatMap((t) => t.clips.map((c) => c.id))
   if (ids.length === 0) {
     show(`No video clips to apply ${label} to`)
     return
   }
-  const { changed } = runEffect(ids, type)
-  show(`Applied "${label}" to ${changed} clip${changed === 1 ? '' : 's'}`, 'success')
+  const { changed, already, locked } = runEffect(ids, type)
+  const left = locked > 0 ? `. ${lockedLeftOut(locked)}` : ''
+  if (changed === 0 && already === 0 && locked > 0) {
+    show(locked === 1 ? 'That clip is on a locked track' : 'Those clips are on a locked track', 'danger')
+    return
+  }
+  if (changed === 0 && already > 0) {
+    show(`Every ${locked > 0 ? 'unlocked ' : ''}clip already has ${label}${left}`, 'info')
+    return
+  }
+  show(`Applied "${label}" to ${changed} clip${changed === 1 ? '' : 's'}${alreadyHad(already)}${left}`, 'success')
+}
+
+/**
+ * Shift+B on the WHOLE selection: every effect off on every selected clip, or
+ * all back on, in ONE undo step.
+ *
+ * It used to switch only the first clip he had picked: three pictures with Auto
+ * Color selected, Shift+B, one went off (measured 2026-10-06). With the linked
+ * sound picked first it did nothing at all and never said why. Shift+E was fixed
+ * for exactly this on 2026-10-01 and this key was missed.
+ *
+ * The rule is toggleClipsEnabled's: if any picked clip still has an effect on,
+ * they ALL go off; only when every one is already off do they all come back.
+ * Sound clips carry no picture effects and are left out; a lock is named.
+ */
+export function toggleEffectsForClips(ids: Iterable<string>): void {
+  const idSet = new Set(ids)
+  if (idSet.size === 0) return
+  const show = useToasts.getState().show
+  let locked = 0
+  const open: Clip[] = []
+  for (const t of activeSequence(useStore.getState().project).tracks) {
+    if (t.kind === 'audio') continue
+    for (const c of t.clips) {
+      if (!idSet.has(c.id) || c.effects.length === 0) continue
+      if (t.locked) locked++
+      else open.push(c)
+    }
+  }
+  if (open.length === 0) {
+    show(locked > 0 ? lockedLeftOut(locked) : 'No effects on the selected clips', 'info')
+    return
+  }
+  const enabled = !open.some((c) => c.effects.some((e) => e.enabled))
+  const n = open.length
+  const label = n === 1
+    ? enabled ? 'Turn every effect on' : 'Turn every effect off'
+    : enabled ? `Effects back on for ${n} clips` : `Effects off on ${n} clips`
+  mapClips(
+    open.map((c) => c.id),
+    label,
+    (c) =>
+      c.effects.every((e) => e.enabled === enabled)
+        ? c
+        : { ...c, effects: c.effects.map((e) => (e.enabled === enabled ? e : { ...e, enabled })) },
+  )
+  // One clip says nothing, like the effect search: its eye and the monitor show it.
+  if (n > 1 || locked > 0) {
+    show(locked > 0 ? `${label}. ${lockedLeftOut(locked)}` : label, 'success')
+  }
+}
+
+/**
+ * The ONE clip a single clip key (P, Shift+P, Alt+P, D, F) should act on when
+ * several are selected: the selected PICTURE the playhead is inside.
+ *
+ * Those keys read `selection[0]`, which in a Short is as often a caption or the
+ * linked sound as the footage, so P said "Put the playhead inside the clip
+ * first" while the footage under the playhead sat selected. Order: a selected
+ * picture under the playhead, then any selected clip under it, then the first.
+ */
+export function keyTargetClipId(
+  seq: { tracks: readonly { kind: string; clips: readonly Clip[] }[] },
+  selection: readonly string[],
+  playheadS: number,
+): string | undefined {
+  if (selection.length <= 1) return selection[0]
+  const picked = new Set(selection)
+  const under: { clip: Clip; picture: boolean }[] = []
+  for (const t of seq.tracks) {
+    for (const c of t.clips) {
+      if (!picked.has(c.id) || playheadS < c.startS || playheadS >= clipEndS(c)) continue
+      under.push({ clip: c, picture: t.kind === 'video' && !c.title && !c.adjustment })
+    }
+  }
+  const order = (id: string) => selection.indexOf(id)
+  under.sort((a, b) => order(a.clip.id) - order(b.clip.id))
+  return (under.find((u) => u.picture) ?? under[0])?.clip.id ?? selection[0]
+}
+
+/**
+ * The selected clips a transition can go on: pictures on an unlocked video
+ * track. Titles are left out, as the clip menu always has; the linked sound has
+ * no picture to blend. Locked ones are counted so they can be named.
+ */
+function transitionTargets(ids: Iterable<string>): { open: string[]; locked: number } {
+  const idSet = new Set(ids)
+  const open: string[] = []
+  let locked = 0
+  for (const t of activeSequence(useStore.getState().project).tracks) {
+    if (t.kind !== 'video') continue
+    for (const c of t.clips) {
+      if (!idSet.has(c.id) || c.title) continue
+      if (t.locked) locked++
+      else open.push(c.id)
+    }
+  }
+  return { open, locked }
+}
+
+/**
+ * The same transition on the same edge of EVERY selected picture, in ONE undo
+ * step, each with the per kind length setClipTransition would give it.
+ *
+ * With no `durationS`, each clip keeps the length IT had on that edge when it
+ * still fits the new kind (transitionFor), the way the single clip row passes
+ * its own. Picking a kind for the whole selection used to reset every length he
+ * had set to the kind's default (review, 2026-10-07).
+ *
+ * His standing ask (2026-10-04) on every path: a gym montage is twenty cuts,
+ * and selecting all twenty and picking White Flash put it on ONE of them from
+ * every door (the clip menu, the Effects tab, a drop). Returns how many changed.
+ */
+export function setClipsTransition(
+  ids: Iterable<string>,
+  edge: 'in' | 'out',
+  kind: TransitionKind,
+  durationS?: number,
+  /** False for a duration scrub, which commits on every arrow press. */
+  say = true,
+): number {
+  const { open, locked } = transitionTargets(ids)
+  const show = useToasts.getState().show
+  if (open.length === 0) {
+    if (locked > 0) show(locked === 1 ? 'That clip is on a locked track' : 'Those clips are on a locked track', 'danger')
+    return 0
+  }
+  const key = edge === 'in' ? 'transitionIn' : 'transitionOut'
+  const targets = new Set(open)
+  // An In takes off the Out it would override on the clip before (outsAnInOverrides).
+  const outsToDrop = new Set(edge === 'in' ? outsAnInOverrides(activeSequence(useStore.getState().project), open) : [])
+  let changed = 0
+  mapClips([...targets, ...outsToDrop], `Add ${edge} transition`, (c) => {
+    const base = outsToDrop.has(c.id) ? withoutOut(c) : c
+    if (!targets.has(c.id)) return base
+    const next = transitionFor(base[key], kind, durationS ?? base[key]?.durationS)
+    if (base[key]?.type === next.type && base[key]?.durationS === next.durationS) return base
+    changed++
+    return { ...base, [key]: next }
+  })
+  if (say && (open.length > 1 || locked > 0)) {
+    const where = edge === 'in' ? 'start' : 'end'
+    const left = locked > 0 ? `. ${lockedLeftOut(locked)}` : ''
+    show(`${TRANSITION_LABELS[kind]} at the ${where} of ${open.length} clip${open.length === 1 ? '' : 's'}${left}`, 'success')
+  }
+  return changed
+}
+
+/**
+ * How many of `ids` a transition goes on: the pictures on video tracks, a
+ * locked one included (setClipsTransition names it). The count the Effects
+ * tab's menu says, which used to count the linked sound too: three pictures and
+ * their three sounds read "6 clips" and three got it (review, 2026-10-07).
+ */
+export function transitionPictureCount(
+  seq: { tracks: readonly { kind: string; clips: readonly Clip[] }[] },
+  ids: readonly string[],
+): number {
+  // The Effects tab reads this on every store change, so an empty selection
+  // costs nothing.
+  if (ids.length === 0) return 0
+  const picked = new Set(ids)
+  return seq.tracks
+    .filter((t) => t.kind === 'video')
+    .reduce((n, t) => n + t.clips.filter((c) => picked.has(c.id) && !c.title).length, 0)
+}
+
+/**
+ * The Effects tab's "Apply to the start / end of the clip": every selected
+ * picture, or a lone selected title, which a drop and the single clip Inspector
+ * also give a transition. Anything else says why nothing happened: a caption
+ * alone used to get nothing, in silence (review, 2026-10-07).
+ */
+export function applyTransitionToSelection(ids: readonly string[], edge: 'in' | 'out', kind: TransitionKind): void {
+  const seq = activeSequence(useStore.getState().project)
+  if (transitionPictureCount(seq, ids) > 0) {
+    setClipsTransition(ids, edge, kind)
+    return
+  }
+  const show = useToasts.getState().show
+  if (ids.length === 0) {
+    show('Select a clip first', 'danger')
+    return
+  }
+  const loneTitle = ids.length === 1 && seq.tracks.some((t) => t.kind === 'video' && t.clips.some((c) => c.id === ids[0] && c.title))
+  if (loneTitle) {
+    setClipTransition(ids[0]!, edge, kind)
+    return
+  }
+  show('A transition goes on a picture, and none of the selected clips is one', 'info')
+}
+
+/** Take the transition off that edge of every selected picture, ONE undo step. */
+export function removeClipsTransition(ids: Iterable<string>, edge: 'in' | 'out'): void {
+  const key = edge === 'in' ? 'transitionIn' : 'transitionOut'
+  mapClips(transitionTargets(ids).open, `Remove ${edge} transition`, (c) => {
+    if (!c[key]) return c
+    const next = { ...c }
+    delete next[key]
+    return next
+  })
 }
 
 /** Drop every applied effect from every selected clip. */
@@ -297,19 +644,19 @@ export function clearEffectsForClips(ids: Iterable<string>): void {
   mapClips(ids, 'Clear effects', (c) => (c.effects.length === 0 ? c : { ...c, effects: [] }))
 }
 
-/** Set the same gain (dB) on every selected clip. Keyframe-aware per clip:
- *  an animated volume channel overrides the base, so those clips get a
- *  keyframe at the playhead instead of a dead base write. */
+/** Set the same gain (dB) on every selected clip. An animated volume (a duck,
+ *  a swell) keeps its shape and is shifted so its loudest point sits on the new
+ *  level, the multi panel's rule (setChannelForClips): it used to key the
+ *  playhead clamped to the head or tail of every clip the playhead was not on. */
 export function setClipsGainDb(ids: Iterable<string>, db: number): void {
   mapClips(
     ids,
     'Set volume',
     (c) => {
       const kfs = channelKeyframes(c, 'volume')
-      if (kfs.length > 0) {
-        return withChannelKeyframes(c, 'volume', upsertKeyframe(kfs, { t: playheadLocalT(c), value: db, ease: 'linear' }))
-      }
-      return c.audioGainDb === db ? c : { ...c, audioGainDb: db }
+      const based = c.audioGainDb === db ? c : { ...c, audioGainDb: db }
+      if (kfs.length > 0) return withChannelKeyframes(based, 'volume', restAnimationOn(kfs, 'volume', db)!)
+      return based
     },
     'gain',
   )
