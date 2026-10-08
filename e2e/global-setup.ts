@@ -1,10 +1,11 @@
-// Synthesizes the e2e media fixtures once per machine, recorded with
+// Synthesizes the e2e media fixtures once per recipe (see RECIPE_PATH), recorded with
 // MediaRecorder in headless Chrome, so no binary fixtures live in the repo:
 //  - clip.webm:       2s 320x180, red for t<1s then blue, 440Hz tone.
 //  - greenscreen.webm: 1s 320x180 pure-green screen with a white centre block +
 //    a thin white vertical line, for the chroma-key white-edge test.
 
 import { chromium, type Browser, type FullConfig, type Page } from '@playwright/test'
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -119,10 +120,38 @@ async function warmDevServer(browser: Browser, baseURL: string): Promise<void> {
   console.log(`[global setup] dev server warmed: the editor mounted in ${((Date.now() - t0) / 1000).toFixed(1)} s`)
 }
 
+/** What each fixture is made from. Part of the recipe below, so a change here remakes them. */
+const FIXTURES = [
+  { outPath: FIXTURE_PATH, durationS: 2, kind: 'clip' },
+  { outPath: GREENSCREEN_FIXTURE_PATH, durationS: 1, kind: 'greenscreen' },
+] as const
+
+/**
+ * Which recipe made the fixtures on this machine: a hash of `synthesize` and of
+ * what it is asked to make.
+ *
+ * ⛔ THE FILES ARE KEPT BETWEEN RUNS, AND THEY USED TO BE KEPT BY NAME ALONE
+ * (found 2026-10-06), so a change to how they are made never reached a tree that
+ * already had them: his own tree went on testing the old fixture while a fresh
+ * worktree tested the new one. They are made again whenever the recipe written
+ * beside them is not this one.
+ */
+const RECIPE_PATH = path.join(FIXTURES_DIR, 'recipe.sha256')
+const recipe = (): string =>
+  createHash('sha256').update(synthesize.toString()).update(JSON.stringify(FIXTURES)).digest('hex')
+
 export default async function globalSetup(config: FullConfig): Promise<void> {
   const baseURL = config.projects[0]?.use?.baseURL
-  const needFixtures = !(fs.existsSync(FIXTURE_PATH) && fs.existsSync(GREENSCREEN_FIXTURE_PATH))
-  if (needFixtures) fs.mkdirSync(FIXTURES_DIR, { recursive: true })
+  const madeBy = fs.existsSync(RECIPE_PATH) ? fs.readFileSync(RECIPE_PATH, 'utf8').trim() : ''
+  const missing = FIXTURES.some((f) => !fs.existsSync(f.outPath))
+  const needFixtures = missing || madeBy !== recipe()
+  if (needFixtures) {
+    console.log(`[global setup] making the media fixtures (${missing ? 'missing' : 'made by another recipe'})`)
+    fs.mkdirSync(FIXTURES_DIR, { recursive: true })
+    // `synthesize` keeps a file that exists, so an old recipe's files go first.
+    for (const f of FIXTURES) fs.rmSync(f.outPath, { force: true })
+    fs.rmSync(RECIPE_PATH, { force: true })
+  }
 
   const browser = await chromium.launch({
     args: ['--autoplay-policy=no-user-gesture-required'],
@@ -130,9 +159,10 @@ export default async function globalSetup(config: FullConfig): Promise<void> {
   try {
     if (needFixtures) {
       const page = await browser.newPage()
-      await synthesize(page, FIXTURE_PATH, 2, 'clip')
-      await synthesize(page, GREENSCREEN_FIXTURE_PATH, 1, 'greenscreen')
+      for (const f of FIXTURES) await synthesize(page, f.outPath, f.durationS, f.kind)
       await page.close()
+      // Written last, so a run cut off mid recording makes them again next time.
+      fs.writeFileSync(RECIPE_PATH, recipe())
     }
     if (baseURL) await warmDevServer(browser, baseURL)
   } finally {
