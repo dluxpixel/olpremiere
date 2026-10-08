@@ -1437,7 +1437,21 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
   }
   /** Layers that play at once: two sides of a dissolve, a facecam, a picture in picture. */
   const LIVE_TEX_CAP = 4
+  /**
+   * ⛔ THE TEXTURES ARE BOUNDED IN BYTES AND FREED WHEN IDLE (sweep review N4).
+   * Four live textures of a 4K export, a mip chain each, were about 176 MB where
+   * the one shared texture was 44. So a new one is made only while the ones alive
+   * together stay under this (two at 4K, all four at 1080p and at the preview's
+   * raster); beyond it a layer shares one, which is slower and never wrong. And
+   * one no layer has drawn from for this many frames is freed, so the second
+   * side of a dissolve does not stay in video memory after the dissolve.
+   */
+  const LIVE_TEX_BYTES_CAP = 96 * 1024 * 1024
+  const LIVE_TEX_IDLE_FRAMES = 120
   const liveTex: LiveTex[] = []
+  /** What one live texture of this size holds: its sRGB storage, the mip chain, and its RGBA8 stage on the preview's road. */
+  const liveTexBytes = (w: number, h: number): number =>
+    w > 0 && h > 0 ? w * h * 4 * (mipmapSources ? 4 / 3 : 1) + (fastUpload ? w * h * 4 : 0) : 0
   /** Counts render() calls, so a texture knows whether this frame has used it. */
   let renderSeq = 0
 
@@ -1583,7 +1597,11 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     let e =
       liveTex.find((x) => x.last === source && x.w === w && x.h === h) ??
       liveTex.find((x) => x.w === w && x.h === h && x.usedIn !== renderSeq)
-    if (!e && liveTex.length < LIVE_TEX_CAP) {
+    const room =
+      liveTex.length === 0 ||
+      (liveTex.length < LIVE_TEX_CAP &&
+        liveTex.reduce((n, x) => n + liveTexBytes(x.w, x.h), 0) + liveTexBytes(w, h) <= LIVE_TEX_BYTES_CAP)
+    if (!e && room) {
       const tex = gl.createTexture()
       if (!tex) throw new Error('createTexture failed')
       gl.bindTexture(gl.TEXTURE_2D, tex)
@@ -1603,6 +1621,17 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     e ??= liveTex.reduce((a, b) => (b.usedIn < a.usedIn ? b : a))
     e.usedIn = renderSeq
     return e
+  }
+
+  /** Free the LiveTex no layer has drawn from for a while. */
+  function freeIdleLiveTex(): void {
+    for (let i = liveTex.length - 1; i >= 0; i--) {
+      const e = liveTex[i]
+      if (renderSeq - e.usedIn <= LIVE_TEX_IDLE_FRAMES) continue
+      gl.deleteTexture(e.tex)
+      if (e.stage.tex) gl.deleteTexture(e.stage.tex)
+      liveTex.splice(i, 1)
+    }
   }
 
   /** Delete every LiveTex: the next frame that plays builds what it needs. */
@@ -2365,6 +2394,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
 
   function render(frame: RenderFrame, tex: TextureSource): void {
     renderSeq++
+    freeIdleLiveTex()
     for (const e of liveTex) e.holds = null
     const frameW = frame.width
     const frameH = frame.height

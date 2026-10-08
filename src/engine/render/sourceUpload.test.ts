@@ -10,9 +10,17 @@ import { defaultTransform } from '../types'
 import type { RenderFrame, RenderLayer } from './types'
 
 /** A WebGL2 context that draws nothing and counts picture uploads, and the ones that allocate. */
-function countingGl(): { gl: WebGL2RenderingContext; uploads: () => number; allocs: () => number } {
+function countingGl(): {
+  gl: WebGL2RenderingContext
+  uploads: () => number
+  allocs: () => number
+  /** Textures created and not yet deleted. */
+  live: () => number
+} {
   let uploads = 0
   let allocs = 0
+  let made = 0
+  let freed = 0
   const consts = new Map<string, number>([['FRAMEBUFFER_COMPLETE', 0x8cd5]])
   let next = 0x10000
   const impl: Record<string, unknown> = {
@@ -24,6 +32,10 @@ function countingGl(): { gl: WebGL2RenderingContext; uploads: () => number; allo
     getUniformLocation: () => ({}),
     checkFramebufferStatus: () => 0x8cd5,
     isContextLost: () => false,
+    createTexture: () => ({ kind: 'createTexture', n: made++ }),
+    deleteTexture: () => {
+      freed++
+    },
     // (target, level, internalformat, format, type, source) is a picture; the
     // nine argument form allocates an empty buffer.
     // Either form gives the texture new storage, which texSubImage2D never does.
@@ -46,7 +58,7 @@ function countingGl(): { gl: WebGL2RenderingContext; uploads: () => number; allo
       return () => (prop.startsWith('create') ? { kind: prop } : undefined)
     },
   }) as unknown as WebGL2RenderingContext
-  return { gl, uploads: () => uploads, allocs: () => allocs }
+  return { gl, uploads: () => uploads, allocs: () => allocs, live: () => made - freed }
 }
 
 const layer = (clipId: string, scale: number): RenderLayer => ({
@@ -135,6 +147,62 @@ describe('steady playback of several video layers allocates nothing after its fi
       for (let i = 0; i < 3; i++) r.render(frame, source)
       expect(uploads()).toBe(8)
       expect(allocs()).toBe(warm)
+      r.dispose()
+    })
+  }
+})
+
+// N4 (sweep review): each layer playing at once got a texture of its own and
+// kept it until release, up to four, each with a mip chain: about 176 MB in a 4K
+// export where the one shared texture was 44. A texture a layer has stopped
+// using is freed, and the ones alive together are held to a byte budget.
+describe('the textures for playing video layers are freed when idle, and bounded in a big frame', () => {
+  for (const fastSourceUpload of [false, true]) {
+    const road = fastSourceUpload ? 'the preview (staged upload)' : 'the export (direct upload)'
+
+    it(`${road}: a dissolve's second texture goes once only one layer plays`, () => {
+      const one = countingGl()
+      const alone = createRenderer(one.gl, { mipmapSources: true, fastSourceUpload })
+      const pic = { width: 320, height: 180 } as unknown as TexImageSource
+      alone.render(frameOf([layer('game', 1)]), () => pic)
+      const baseline = one.live()
+      alone.dispose()
+
+      const { gl, live } = countingGl()
+      const r = createRenderer(gl, { mipmapSources: true, fastSourceUpload })
+      const sources = new Map<string, TexImageSource>([
+        ['game', { width: 320, height: 180 } as unknown as TexImageSource],
+        ['cam', { width: 96, height: 54 } as unknown as TexImageSource],
+        ['pip', { width: 160, height: 90 } as unknown as TexImageSource],
+      ])
+      const source = (l: RenderLayer) => sources.get(l.clipId) ?? null
+      r.render(frameOf([layer('game', 1), layer('cam', 0.3), layer('pip', 0.5)]), source)
+      expect(live()).toBeGreaterThan(baseline)
+      // Playing on with the one layer: the others are idle, then freed. The one
+      // in use is never freed, so it is never re-allocated either.
+      for (let i = 0; i < 130; i++) r.render(frameOf([layer('game', 1)]), source)
+      expect(live()).toBe(baseline)
+      r.dispose()
+    })
+
+    it(`${road}: four 4K layers do not each keep a 4K texture`, () => {
+      const one = countingGl()
+      const alone = createRenderer(one.gl, { mipmapSources: true, fastSourceUpload })
+      const k4 = (): TexImageSource => ({ width: 3840, height: 2160 }) as unknown as TexImageSource
+      alone.render(frameOf([layer('v0', 1)]), () => k4())
+      const baseline = one.live()
+      alone.dispose()
+
+      const { gl, live, uploads } = countingGl()
+      const r = createRenderer(gl, { mipmapSources: true, fastSourceUpload })
+      const sources = ['v0', 'v1', 'v2', 'v3'].map(k4)
+      const layers = ['v0', 'v1', 'v2', 'v3'].map((id) => layer(id, 1))
+      const source = (l: RenderLayer) => sources[Number(l.clipId.slice(1))]
+      for (let i = 0; i < 3; i++) r.render(frameOf(layers), source)
+      // At most two source textures at once (88 MB with mips), not four (176 MB)...
+      expect(live() - baseline).toBeLessThanOrEqual(1)
+      // ...and every layer is still drawn from its own picture, every frame.
+      expect(uploads()).toBe(12)
       r.dispose()
     })
   }
