@@ -315,7 +315,7 @@ function markQuietStartIfAway(): void {
 /**
  * Put the editor on screen. Normally maximized and in front, the way he opens it. After
  * an update that applied while he was away it goes on the taskbar minimized instead,
- * without taking focus, and maximizes when he brings it up.
+ * and maximizes when he brings it up.
  */
 function revealEditor(win: BrowserWindow): void {
   // A page that died for good is never put on screen, by any route (the editor's own
@@ -327,7 +327,12 @@ function revealEditor(win: BrowserWindow): void {
     win.once('restore', () => {
       if (maximized) win.maximize()
     })
-    // On a hidden window this shows it minimized WITHOUT activating it.
+    // ⛔ UNPROVEN THAT THIS STAYS OUT OF HIS WAY. On a hidden window Electron's minimize()
+    // is Chromium's Show(kMinimized), which is SW_SHOWMINIMIZED, and that flag ACTIVATES
+    // the window (SW_SHOWMINNOACTIVE would not, and Electron has no call for it). Windows'
+    // foreground lock probably keeps a minimized window started by the installer off his
+    // foreground, but nothing here has measured it: the hidden app stubs minimize(). It
+    // needs one real look on his machine after an update applied while he was away.
     win.minimize()
     return
   }

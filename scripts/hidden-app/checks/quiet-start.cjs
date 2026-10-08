@@ -1,6 +1,8 @@
 // Run with --quiet-update-start. An update that applied itself while he was away must
 // start the new version quietly (electron/launchMode.ts): no opening card, and the
-// editor minimized on the taskbar without taking focus, never maximized in front of him.
+// editor minimized on the taskbar, never shown or maximized in front of him. What this
+// cannot see is whether Windows activates that minimize: minimize() is stubbed here
+// (see the note in electron/main.ts revealEditor).
 const fs = require('fs')
 const path = require('path')
 const { app, BrowserWindow } = require('electron')
