@@ -1306,7 +1306,9 @@ function livePreviewSource(el: HTMLVideoElement, assetId: Id, zoom = 1): TexImag
 /**
  * Every layer shape the sequence can draw, found by resolving one frame in the
  * middle of every video clip: the renderer's own view of the clip, so the warmed
- * programs are exactly the ones the draw will ask for.
+ * programs are exactly the ones the draw will ask for. An adjustment layer's
+ * stack is a shape too: the renderer draws it with a layer program of its own,
+ * and a look on it needs its passes.
  */
 export function layerShapesOf(seq: Sequence): LayerShape[] {
   const seen = new Map<string, LayerShape>()
@@ -1320,6 +1322,7 @@ export function layerShapesOf(seq: Sequence): LayerShape[] {
       const mid = clip.startS + (clipEndS(clip) - clip.startS) / 2
       for (const op of resolveFrame(seq, mid).ops) {
         if (op.type === 'layer') add(op.layer.effects, !!op.layer.mask)
+        else if (op.type === 'adjustment') add(op.effects, !!op.mask)
         else if (op.type === 'transition') {
           add(op.from.effects, !!op.from.mask)
           add(op.to.effects, !!op.to.mask)

@@ -71,6 +71,13 @@ beforeEach(() => {
 })
 afterEach(cleanup)
 
+/** The Add effect search the multi panel has: open it, type what he wants, Enter. */
+async function addEffectBySearch(user: ReturnType<typeof userEvent.setup>, words: string): Promise<void> {
+  await user.click(screen.getByTestId('inspector-add-effect'))
+  await user.type(screen.getByTestId('add-effect-search'), words)
+  await user.keyboard('{Enter}')
+}
+
 describe('the multi selection Inspector, with three pictures selected', () => {
   // The same search the single clip panel has: found by what it does, not by
   // its name, and it lands on all three. It used to be a bare list of names.
@@ -129,6 +136,27 @@ describe('the multi selection Inspector, with three pictures selected', () => {
     expect(ids.map((id) => clipById(id).transitionOut)).toEqual(
       [0, 1, 2].map(() => ({ type: 'whiteFlash', durationS: 0.2 })),
     )
+  })
+
+  it('a look from the Add effect list skips a selected caption, and a second look swaps the first', async () => {
+    const ids = threePictures()
+    const caption = newTitleClip(defaultTitleDef('LIGHT WEIGHT'), 6, 3)
+    updateActiveSequence('caption', (sq) => ({
+      ...sq,
+      tracks: sq.tracks.map((t) => (t.name === 'V2' ? { ...t, clips: [...t.clips, caption] } : t)),
+    }))
+    const all = [...ids, caption.id]
+    const user = userEvent.setup()
+    const { rerender } = render(<MultiInspector selected={selectedOf(all)} />)
+    await addEffectBySearch(user, 'moody gym')
+    expect(effectsOf(all)).toEqual([['lookMoodyGym'], ['lookMoodyGym'], ['lookMoodyGym'], []])
+    expect(toasts.shown).toEqual(['Added Moody Gym to 3 clips. Titles and captions left clean'])
+    rerender(<MultiInspector selected={selectedOf(all)} />)
+    await addEffectBySearch(user, 'teal and orange')
+    expect(effectsOf(all)).toEqual([['lookTealOrange'], ['lookTealOrange'], ['lookTealOrange'], []])
+    expect(toasts.shown[1]).toBe('Added Teal and Orange to 3 clips, in place of Moody Gym. Titles and captions left clean')
+    useStore.getState().undo()
+    expect(effectsOf(all)).toEqual([['lookMoodyGym'], ['lookMoodyGym'], ['lookMoodyGym'], []])
   })
 
   it('Punch grade grades all three and counts three', async () => {

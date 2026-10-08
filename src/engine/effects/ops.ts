@@ -15,7 +15,7 @@
 
 import { evalChannel, removeKeyframeNear, upsertKeyframe, upsertKeyframeValue } from '../keyframes'
 import type { Clip, EffectInstance, Id, Keyframe, Keyframeable } from '../types'
-import { CANONICAL_ORDER, defaultParams, getEffect } from './registry'
+import { CANONICAL_ORDER, defaultParams, getEffect, type EffectDef } from './registry'
 
 /**
  * Where a newly applied effect lands. Canonical effects keep their frozen math
@@ -52,14 +52,84 @@ export const findEffectById = (clip: Clip, effectId: Id): EffectInstance | undef
 export function addEffect(clip: Clip, type: string, id: Id): Clip {
   const def = getEffect(type)
   if (!def) return clip
-  // Seed neutral defaults, then apply any `initialParams` so an effect that
-  // should do something on drop (Auto Color) isn't invisible at identity.
-  const params = { ...defaultParams(def), ...(def.initialParams ?? {}) }
-  const inst: EffectInstance = { id, type, params, enabled: true }
   const effects = [...clip.effects]
-  effects.splice(insertIndex(effects, type), 0, inst)
+  effects.splice(insertIndex(effects, type), 0, freshInstance(def, id))
   return { ...clip, effects }
 }
+
+/**
+ * A new instance of an effect as it lands on a clip: neutral defaults, then any
+ * `initialParams`, so an effect that should do something on drop (Auto Color,
+ * a look at its full Amount) isn't invisible at identity.
+ */
+function freshInstance(def: EffectDef, id: Id): EffectInstance {
+  return { id, type: def.type, params: { ...defaultParams(def), ...(def.initialParams ?? {}) }, enabled: true }
+}
+
+/**
+ * A finished grade off the Looks shelf (effects/looks.ts). The neighbour passes
+ * a look makes (lookClarity, lookGlow) share its category but are hidden and
+ * never stored, so they never count as a look a clip wears.
+ */
+export function isLookType(type: string): boolean {
+  const def = getEffect(type)
+  return def?.category === 'look' && !def.hidden
+}
+
+/**
+ * Put a look on a clip the way a look has to go on: ONE look per clip.
+ *
+ * Every look is designed against the raw footage, so two on one clip compound:
+ * exposure down twice, two crushing curves, two vignettes, two grains, and the
+ * picture goes to black. hasJettismGrade (state/lookActions.ts) guards the other
+ * grade on the same shelf against exactly this. So:
+ *   - a clip already wearing this look is handed back untouched, unless he
+ *     switched it off: applying it again switches it back on;
+ *   - a clip wearing another look has it SWAPPED, in the slot the old one held,
+ *     so whatever he stacked around it stays where he put it, and a fade he
+ *     keyframed on its Amount stays with the new look (swappedIn);
+ *   - a clip with no look takes it where addEffect puts any new effect.
+ * A clip carrying two looks from before this rule ends up wearing one: the new
+ * look in the first one's slot, or, when the new look is one of the two, that
+ * one where it already sits. Anything that is not a look is refused.
+ */
+export function putLook(clip: Clip, type: string, id: Id): Clip {
+  const def = getEffect(type)
+  if (!def || !isLookType(type)) return clip
+  const worn = clip.effects.filter((e) => isLookType(e.type))
+  if (worn.length === 0) return addEffect(clip, type, id)
+  // Already wearing it: alone and on, nothing to do. Next to another look from
+  // before the rule, it stays (its own instance, slot and Amount) and the other
+  // goes. Switched off, applying it again is asking for it back on.
+  const same = worn.find((e) => e.type === type)
+  if (same && worn.length === 1 && same.enabled) return clip
+  const keep = same ? (same.enabled ? same : { ...same, enabled: true }) : swappedIn(def, id, worn)
+  const slot = clip.effects.indexOf(same ?? worn[0])
+  const effects = clip.effects.flatMap((e, i) => (i === slot ? [keep] : isLookType(e.type) ? [] : [e]))
+  return { ...clip, effects }
+}
+
+/**
+ * The look that takes the place of the looks a clip wore: a fresh instance at
+ * its full Amount, as designed, except for a KEYFRAMED Amount. A fade he drew on
+ * the old look (0 to 1 over the first second) is his work on this clip, and a
+ * swap to compare looks must not quietly flatten it, so it goes onto the new
+ * look as its own copy. A static Amount does not carry: the look drops in whole.
+ */
+function swappedIn(def: EffectDef, id: Id, worn: readonly EffectInstance[]): EffectInstance {
+  const inst = freshInstance(def, id)
+  const fade = worn.map(lookFade).find((f) => f !== undefined)
+  return fade ? { ...inst, params: { ...inst.params, amount: structuredClone(fade) } } : inst
+}
+
+/** A look's Amount when it is keyframed (a fade he drew), else undefined. */
+export function lookFade(look: EffectInstance): Exclude<Keyframeable, number> | undefined {
+  const amount = look.params.amount
+  return typeof amount === 'object' && amount !== null && amount.keyframes.length > 0 ? amount : undefined
+}
+
+/** The look a clip wears now, if any: the one putLook would swap out. */
+export const wornLook = (clip: Clip): EffectInstance | undefined => clip.effects.find((e) => isLookType(e.type))
 
 export function removeEffect(clip: Clip, effectId: Id): Clip {
   const effects = clip.effects.filter((e) => e.id !== effectId)

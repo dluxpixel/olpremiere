@@ -5,6 +5,7 @@
 // identical output in both places. This file is the sole engine exception that
 // touches GL; all transform math lives in the pure, unit-tested mat.ts.
 
+import { CLARITY_GRAIN_GLSL, LOOK_COMMON_GLSL, PASS_FLOOR } from '../effects/lookMath'
 import { getEffect, stackSignature } from '../effects/registry'
 import { computeQuad, cropUV, edgeU, quadScale } from './mat'
 import { deriveMotionBlur, quadCentre, quadRadius } from './motionBlur'
@@ -409,9 +410,14 @@ const uniformName = (i: number, key: string): string => `u_fx${i}_${key}`
 function buildLayerFs(pointwise: readonly ResolvedEffect[], withMask: boolean, bicubic: boolean): string {
   const decls: string[] = []
   const bodies: string[] = []
+  // Global scope functions some bodies call (the looks' shared helpers and their
+  // curves). Each distinct text once, in first-use order. A stack with none adds
+  // nothing at all, so every existing program's text is exactly what it was.
+  const helpers: string[] = []
   pointwise.forEach((fx, i) => {
     const def = getEffect(fx.type)
     if (!def?.glsl) return
+    for (const h of def.glslHelpers ?? []) if (!helpers.includes(h)) helpers.push(h)
     for (const param of def.params) decls.push(`uniform float ${uniformName(i, param.key)};`)
     bodies.push(`  { // ${def.type}\n${def.glsl((key) => uniformName(i, key))}\n  }`)
   })
@@ -459,7 +465,7 @@ ${maskDecls}
 ${decls.join('\n')}
 ${DITHER_GLSL}
 ${SRGB_GLSL}
-${bicubic ? BICUBIC_GLSL : ''}
+${bicubic ? BICUBIC_GLSL : ''}${helpers.length > 0 ? `\n${helpers.join('\n')}` : ''}
 out vec4 outColor;
 void main() {
   if (vUV.x < uUVRect.x || vUV.x > uUVRect.z || vUV.y < uUVRect.y || vUV.y > uUVRect.w) {
@@ -809,6 +815,91 @@ void main() {
   outColor = vec4(min(base.rgb + glow, vec3(a)), a);
 }`
 
+// A LOOK'S NEIGHBOUR PASSES (effects/looks.ts). The colour of a look is a
+// pointwise body; these three read the pixels around each pixel, so they run over
+// the layer's isolated FBO like every neighborhood effect, with the SAME blur the
+// Glow uses. Everything here is premultiplied in and out, and the FBOs hold
+// LIGHT, so the blur spreads light the way a lens or a film base does.
+//
+// Bright pass: keep only what is above the threshold (measured on ENCODED luma,
+// the scale the look's numbers are written in), as premultiplied light.
+const LOOK_BRIGHT_FS = `#version 300 es
+precision highp float;
+in vec2 vUV;
+uniform sampler2D uTex;
+uniform float uThreshold;
+uniform float uSoftness;
+${SRGB_GLSL}
+out vec4 outColor;
+void main() {
+  vec4 s = texture(uTex, vUV);
+  vec3 lin = s.a > 0.0 ? clamp(s.rgb / s.a, 0.0, 1.0) : vec3(0.0);
+  float l = dot(linearToSrgb(lin), vec3(0.2126, 0.7152, 0.0722));
+  float w = smoothstep(uThreshold, uThreshold + max(uSoftness, 0.001), l);
+  outColor = s * w;
+}`
+
+// Glow combine: the blurred bright part, tinted, SCREENED onto the base in light.
+// Screen rather than add, because film and a lens both saturate: a glow over
+// something already white leaves it white instead of pushing it past the clip,
+// so the red of a halation shows round a light and not on top of it.
+const LOOK_GLOW_FS = `#version 300 es
+precision highp float;
+in vec2 vUV;
+uniform sampler2D uBase;
+uniform sampler2D uBlur;
+uniform vec3 uTint;
+uniform float uStrength;
+uniform float uLumaTint;
+out vec4 outColor;
+void main() {
+  vec4 base = texture(uBase, vUV);
+  vec4 b = texture(uBlur, vUV);
+  vec3 src = mix(b.rgb, vec3(dot(b.rgb, vec3(0.2126, 0.7152, 0.0722))), uLumaTint);
+  vec3 g = clamp(src * uTint * uStrength, 0.0, 1.0);
+  vec3 rgb = base.rgb + g * (vec3(1.0) - base.rgb);
+  float a = clamp(max(base.a, max(rgb.r, max(rgb.g, rgb.b))), 0.0, 1.0);
+  outColor = vec4(min(rgb, vec3(a)), a);
+}`
+
+// Clarity combine: local contrast. The difference between the picture and its
+// wide blur is the detail a muscle line is made of; it is added back on LUMA only
+// (so edges never fringe in colour), weighted to the middle tones (so black stays
+// black and white stays white), and capped (so a hard edge cannot grow a halo).
+// Worked in ENCODED values, the scale contrast is judged on.
+//
+// Then the look's GRAIN, last (uGrain 0 = none). A look with clarity lays its
+// grain down here and not in its colour pass, because clarity's detail band holds
+// the whole of a grain that size and sharpened it to as much as 1.35 to 1.5x what
+// the look asks for (lookMath.ts, grainAfterClarity).
+const LOOK_CLARITY_FS = `#version 300 es
+precision highp float;
+in vec2 vUV;
+uniform sampler2D uBase;
+uniform sampler2D uBlur;
+uniform float uAmount;
+uniform float uGrain;
+uniform float uGrainSize;
+uniform float uSeed;
+uniform vec2 uFrame;
+${SRGB_GLSL}
+${LOOK_COMMON_GLSL}
+out vec4 outColor;
+void main() {
+  vec4 base = texture(uBase, vUV);
+  if (base.a <= 0.0) { outColor = base; return; }
+  vec4 bl = texture(uBlur, vUV);
+  vec3 e = linearToSrgb(clamp(base.rgb / base.a, 0.0, 1.0));
+  vec3 eb = linearToSrgb(clamp(bl.a > 0.0 ? bl.rgb / bl.a : vec3(0.0), 0.0, 1.0));
+  vec3 w = vec3(0.2126, 0.7152, 0.0722);
+  float l = dot(e, w);
+  float d = clamp(l - dot(eb, w), -0.12, 0.12);
+  vec3 o = clamp(e + vec3(d * uAmount * 4.0 * l * (1.0 - l)), 0.0, 1.0);
+  if (uGrain > 0.0) {${CLARITY_GRAIN_GLSL}
+  }
+  outColor = vec4(srgbToLinear(o) * base.a, base.a);
+}`
+
 // Transition combine: both inputs are premultiplied composited layers on black.
 export const SPIN = {
   /** Peak rotation of either side, radians. 0.5 (28 degrees) did not register at speed. */
@@ -1080,6 +1171,21 @@ interface LayerProgram {
   fx: Record<string, WebGLUniformLocation | null>[]
 }
 
+/** A full screen pass program, and where its inputs live. */
+interface PassProgram<L> {
+  prog: WebGLProgram
+  loc: L
+}
+
+/** A pass program built the first time something needs it (lazyPass in createRenderer). */
+interface LazyPass<L> {
+  /** Start compiling it without waiting for the result, the way warm() starts a layer program. */
+  start(): void
+  /** The program, finished now if it has to be. Null for good once it has failed to build. */
+  get(): PassProgram<L> | null
+  dispose(): void
+}
+
 const isPointwise = (fx: ResolvedEffect): boolean => getEffect(fx.type)?.pass === 'pointwise'
 const isNeighborhood = (fx: ResolvedEffect): boolean => getEffect(fx.type)?.pass === 'neighborhood'
 
@@ -1193,6 +1299,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
   const smearProg = link(gl, FULL_VS, MOTION_SMEAR_FS)
   const glowProg = link(gl, FULL_VS, GLOW_FS)
   const blendModeProg = link(gl, FULL_VS, BLENDMODE_FS)
+  // A look's own passes are NOT linked here: see lazyPass below.
 
   // One layer program per distinct pointwise stack SHAPE (types + order, not
   // values), compiled on first sight and reused thereafter. A project with no
@@ -1212,12 +1319,12 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
   gl.getExtension('KHR_parallel_shader_compile')
   const pendingPrograms = new Map<string, WebGLProgram>()
 
-  function startLink(fsSrc: string): WebGLProgram | null {
+  function startLink(fsSrc: string, vsSrc: string = LAYER_VS): WebGLProgram | null {
     const vs = gl.createShader(gl.VERTEX_SHADER)
     const fs = gl.createShader(gl.FRAGMENT_SHADER)
     const prog = gl.createProgram()
     if (!vs || !fs || !prog) return null
-    gl.shaderSource(vs, LAYER_VS)
+    gl.shaderSource(vs, vsSrc)
     gl.compileShader(vs)
     gl.shaderSource(fs, fsSrc)
     gl.compileShader(fs)
@@ -1241,6 +1348,20 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
         const prog = startLink(buildLayerFs(pointwise, shape.mask, bicubic))
         if (prog) pendingPrograms.set(key, prog)
       }
+      // A look's passes start here too, but only for a sequence that has a look
+      // needing them: a project with no look never compiles one. Asked of each
+      // look at its FULL Amount, not at the Amount of the one frame the shape
+      // was read at: a look keyframed to fade in after that frame has no passes
+      // there, and the first frame that has them would link them mid playback.
+      const passes = [
+        ...shape.effects,
+        ...shape.effects.flatMap((fx) => getEffect(fx.type)?.companions?.({ ...fx.params, amount: 1 }) ?? []),
+      ]
+      if (passes.some((fx) => fx.type === 'lookGlow')) {
+        lookBrightPass.start()
+        lookGlowPass.start()
+      }
+      if (passes.some((fx) => fx.type === 'lookClarity')) lookClarityPass.start()
     }
   }
 
@@ -1361,6 +1482,78 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     uIntensity: gl.getUniformLocation(glowProg, 'uIntensity'),
     uThreshold: gl.getUniformLocation(glowProg, 'uThreshold'),
   }
+  /**
+   * ⛔ A LOOK'S PASSES ARE BUILT WHEN A LOOK FIRST NEEDS THEM, NEVER AT STARTUP,
+   * 2026-10-07. The three of them used to link with the programs above, so every
+   * preview and every export paid three blocking links for a project with no look
+   * in it, and a driver that refused any one of them made createRenderer throw:
+   * no preview and no export at all, for projects that never touch a look. Now
+   * warm() starts one as soon as a sequence carries a look that needs it, the
+   * first draw that needs it finishes it, and one that fails is said ONCE and its
+   * pass is left out. The look still draws its colour; nothing else is touched.
+   */
+  function lazyPass<L>(name: string, fsSrc: string, locate: (prog: WebGLProgram) => L): LazyPass<L> {
+    let pending: WebGLProgram | null = null
+    let built: PassProgram<L> | null | undefined
+    return {
+      start() {
+        if (built === undefined && !pending) pending = startLink(fsSrc, FULL_VS)
+      },
+      get() {
+        if (built !== undefined) return built
+        // A context lost but not yet reported fails every build. That is the
+        // loss, not this GPU refusing the pass: say nothing and keep nothing.
+        // The renderer is dropped and built again once the context is back.
+        if (gl.isContextLost()) return null
+        const warmed = pending
+        pending = null
+        try {
+          let prog: WebGLProgram
+          if (warmed && gl.getProgramParameter(warmed, gl.LINK_STATUS)) prog = warmed
+          else {
+            // The blocking way, which is the one that throws with the driver's log.
+            if (warmed) gl.deleteProgram(warmed)
+            prog = link(gl, FULL_VS, fsSrc)
+          }
+          built = { prog, loc: locate(prog) }
+        } catch (err) {
+          built = null
+          console.warn(`OL Premiere renderer: the look ${name} pass did not build, so looks draw without it`, err)
+        }
+        return built
+      },
+      dispose() {
+        if (pending) gl.deleteProgram(pending)
+        if (built) gl.deleteProgram(built.prog)
+        pending = null
+        built = undefined
+      },
+    }
+  }
+  const lookBrightPass = lazyPass('bright', LOOK_BRIGHT_FS, (prog) => ({
+    aPos: gl.getAttribLocation(prog, 'aPos'),
+    uTex: gl.getUniformLocation(prog, 'uTex'),
+    uThreshold: gl.getUniformLocation(prog, 'uThreshold'),
+    uSoftness: gl.getUniformLocation(prog, 'uSoftness'),
+  }))
+  const lookGlowPass = lazyPass('glow', LOOK_GLOW_FS, (prog) => ({
+    aPos: gl.getAttribLocation(prog, 'aPos'),
+    uBase: gl.getUniformLocation(prog, 'uBase'),
+    uBlur: gl.getUniformLocation(prog, 'uBlur'),
+    uTint: gl.getUniformLocation(prog, 'uTint'),
+    uStrength: gl.getUniformLocation(prog, 'uStrength'),
+    uLumaTint: gl.getUniformLocation(prog, 'uLumaTint'),
+  }))
+  const lookClarityPass = lazyPass('clarity', LOOK_CLARITY_FS, (prog) => ({
+    aPos: gl.getAttribLocation(prog, 'aPos'),
+    uBase: gl.getUniformLocation(prog, 'uBase'),
+    uBlur: gl.getUniformLocation(prog, 'uBlur'),
+    uAmount: gl.getUniformLocation(prog, 'uAmount'),
+    uGrain: gl.getUniformLocation(prog, 'uGrain'),
+    uGrainSize: gl.getUniformLocation(prog, 'uGrainSize'),
+    uSeed: gl.getUniformLocation(prog, 'uSeed'),
+    uFrame: gl.getUniformLocation(prog, 'uFrame'),
+  }))
   const blendModeLoc = {
     aPos: gl.getAttribLocation(blendModeProg, 'aPos'),
     uDst: gl.getUniformLocation(blendModeProg, 'uDst'),
@@ -1945,11 +2138,104 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
   }
 
   /**
+   * A look's halation or bloom: bright pass into `extra`, blur it there, screen it
+   * back over the layer through `scratch`. Radius arrives as a fraction of the
+   * frame's short side, so the glow keeps its size against the frame up to a short
+   * side of about 1830 px. Past that blurFbo's MAX_BLUR_PX cap (64) clips the
+   * widest ones: on a 2160 short side Golden Hour's bloom wants 76 px and gets 64,
+   * about 15% smaller. Preview and export still agree, because both blur the same
+   * sequence sized FBO; his 1080 x 1920 sequences never reach the cap.
+   */
+  function lookGlowFbo(srcFbo: Fbo, scratch: Fbo, p: Record<string, number>): void {
+    const bright = lookBrightPass.get()
+    const glow = lookGlowPass.get()
+    if (!bright || !glow) return
+    // Glow's third FBO (see applyNeighborhood), free on the same paths.
+    ensurePool(fboW, fboH, 5)
+    const extra = pool[4]
+    gl.activeTexture(gl.TEXTURE0)
+    gl.useProgram(bright.prog)
+    bindFull(bright.loc.aPos)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, extra.fb)
+    gl.viewport(0, 0, fboW, fboH)
+    gl.disable(gl.BLEND)
+    gl.uniform1i(bright.loc.uTex, 0)
+    gl.bindTexture(gl.TEXTURE_2D, srcFbo.tex)
+    gl.uniform1f(bright.loc.uThreshold, p.threshold ?? 0.9)
+    gl.uniform1f(bright.loc.uSoftness, p.softness ?? 0.1)
+    gl.drawArrays(gl.TRIANGLES, 0, 3)
+    blurFbo(extra, scratch, (p.radius ?? 0) * Math.min(fboW, fboH))
+
+    gl.useProgram(glow.prog)
+    bindFull(glow.loc.aPos)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, scratch.fb)
+    gl.viewport(0, 0, fboW, fboH)
+    gl.disable(gl.BLEND)
+    gl.uniform1i(glow.loc.uBase, 0)
+    gl.uniform1i(glow.loc.uBlur, 1)
+    gl.activeTexture(gl.TEXTURE0)
+    gl.bindTexture(gl.TEXTURE_2D, srcFbo.tex)
+    gl.activeTexture(gl.TEXTURE1)
+    gl.bindTexture(gl.TEXTURE_2D, extra.tex)
+    gl.uniform3f(glow.loc.uTint, p.tintR ?? 1, p.tintG ?? 1, p.tintB ?? 1)
+    gl.uniform1f(glow.loc.uStrength, p.strength ?? 0)
+    gl.uniform1f(glow.loc.uLumaTint, p.lumaTint ?? 0)
+    gl.drawArrays(gl.TRIANGLES, 0, 3)
+    gl.activeTexture(gl.TEXTURE0)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, srcFbo.fb)
+    gl.viewport(0, 0, fboW, fboH)
+    blitFbo(scratch)
+  }
+
+  /**
+   * A look's clarity: copy into `extra`, blur it wide, add the detail back through
+   * `scratch`, then the look's grain on top (see LOOK_CLARITY_FS). `seed` is the
+   * frame the colour pass would have grained with, so the noise is the same.
+   */
+  function lookClarityFbo(srcFbo: Fbo, scratch: Fbo, p: Record<string, number>, seed: number): void {
+    const clarity = lookClarityPass.get()
+    if (!clarity) return
+    ensurePool(fboW, fboH, 5)
+    const extra = pool[4]
+    gl.activeTexture(gl.TEXTURE0)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, extra.fb)
+    gl.viewport(0, 0, fboW, fboH)
+    gl.disable(gl.BLEND)
+    blitFbo(srcFbo)
+    blurFbo(extra, scratch, (p.radius ?? 0.015) * Math.min(fboW, fboH))
+
+    gl.useProgram(clarity.prog)
+    bindFull(clarity.loc.aPos)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, scratch.fb)
+    gl.viewport(0, 0, fboW, fboH)
+    gl.disable(gl.BLEND)
+    gl.uniform1i(clarity.loc.uBase, 0)
+    gl.uniform1i(clarity.loc.uBlur, 1)
+    gl.activeTexture(gl.TEXTURE0)
+    gl.bindTexture(gl.TEXTURE_2D, srcFbo.tex)
+    gl.activeTexture(gl.TEXTURE1)
+    gl.bindTexture(gl.TEXTURE_2D, extra.tex)
+    gl.uniform1f(clarity.loc.uAmount, p.amount ?? 0)
+    // Set on every draw, never conditionally: uniforms are per program, and a look
+    // with no grain after a grained one must not inherit its grain.
+    gl.uniform1f(clarity.loc.uGrain, p.grain ?? 0)
+    gl.uniform1f(clarity.loc.uGrainSize, p.grainSize ?? 1.6)
+    gl.uniform1f(clarity.loc.uSeed, seed)
+    gl.uniform2f(clarity.loc.uFrame, fboW, fboH)
+    gl.drawArrays(gl.TRIANGLES, 0, 3)
+    gl.activeTexture(gl.TEXTURE0)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, srcFbo.fb)
+    gl.viewport(0, 0, fboW, fboH)
+    blitFbo(scratch)
+  }
+
+  /**
    * Run one neighborhood effect over the layer's isolated FBO. Result is left
    * in `fbo`. These run AFTER the pointwise chain (which already premultiplied
-   * alpha), in stack order.
+   * alpha), in stack order. `seed` is the frame index the layer's pointwise
+   * pass bound as uSeed, for a pass that lays down noise of its own.
    */
-  function applyNeighborhood(fx: ResolvedEffect, fbo: Fbo, scratch: Fbo): void {
+  function applyNeighborhood(fx: ResolvedEffect, fbo: Fbo, scratch: Fbo, seed: number): void {
     if (fx.type === 'gaussianBlur') {
       const r = fx.params.blur ?? 0
       if (r > 0) blurFbo(fbo, scratch, r)
@@ -1981,6 +2267,16 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
         // both the layer path (uses 2,3) and the transition path (uses 0-3).
         ensurePool(fboW, fboH, 5)
         glowFbo(fbo, scratch, pool[4], fx.params.radius ?? 24, intensity, fx.params.threshold ?? 0.6)
+      }
+    } else if (fx.type === 'lookGlow') {
+      // Same third FBO as Glow, for the same reason, and free on the same paths;
+      // grown inside, once the pass is known to have built. The floor is the one
+      // lookCompanions holds, so a pass it hands over is a pass that draws.
+      if ((fx.params.strength ?? 0) > PASS_FLOOR) lookGlowFbo(fbo, scratch, fx.params)
+    } else if (fx.type === 'lookClarity') {
+      // It also lays the look's grain down, so it runs for either.
+      if ((fx.params.amount ?? 0) > PASS_FLOOR || (fx.params.grain ?? 0) > PASS_FLOOR) {
+        lookClarityFbo(fbo, scratch, fx.params, seed)
       }
     }
   }
@@ -2025,7 +2321,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
       gl.enable(gl.BLEND)
       gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
       drawLayer(layer, source, tex, frameW, frameH, 0)
-      for (const fx of post) applyNeighborhood(fx, layerFbo, scratch)
+      for (const fx of post) applyNeighborhood(fx, layerFbo, scratch, layer.frameSeed)
       // The target may be a seq-sized transition FBO (fboW×fboH), NOT the
       // canvas. Sizing the viewport to the canvas would draw into only a
       // sub-rect of that FBO (the transition-preview bug).
@@ -2260,7 +2556,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     gl.viewport(0, 0, fboW, fboH)
     gl.disable(gl.BLEND)
     drawFboThroughStack(accum, pointwise, undefined, 1, op.frameSeed, frameW, frameH)
-    for (const fx of post) applyNeighborhood(fx, work, scratch)
+    for (const fx of post) applyNeighborhood(fx, work, scratch, op.frameSeed)
     gl.bindFramebuffer(gl.FRAMEBUFFER, accum.fb)
     gl.viewport(0, 0, fboW, fboH)
     gl.enable(gl.BLEND)
@@ -2323,6 +2619,9 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     gl.deleteProgram(sharpenProg)
     gl.deleteProgram(glowProg)
     gl.deleteProgram(blendModeProg)
+    lookBrightPass.dispose()
+    lookGlowPass.dispose()
+    lookClarityPass.dispose()
     if (destCapTex) gl.deleteTexture(destCapTex)
     destCapTex = null
     if (destCapFb) gl.deleteFramebuffer(destCapFb)

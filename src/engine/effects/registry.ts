@@ -21,8 +21,14 @@
 import { evalChannel } from '../keyframes'
 import type { ResolvedEffect } from '../render/types'
 import type { ClipFilters, EffectInstance, Keyframe } from '../types'
+import { LOOK_EFFECT_DEFS } from './looks'
 
-export type EffectCategory = 'color' | 'blur' | 'key' | 'stylize'
+/**
+ * 'look' is a finished grade (looks.ts): one effect, one Amount slider. Looks sit
+ * on their own shelf in the Effects tab, so the tools list stays as short as he
+ * asked for it to be.
+ */
+export type EffectCategory = 'color' | 'blur' | 'key' | 'stylize' | 'look'
 
 /**
  * How an effect executes in the renderer.
@@ -95,6 +101,20 @@ export interface EffectDef {
    * `u`, so they cannot collide either.
    */
   glsl?: (u: UniformNamer) => string
+  /**
+   * GLSL a pointwise body needs at GLOBAL scope (functions; GLSL cannot declare
+   * a function inside a block). The renderer emits each distinct string once per
+   * shader, ahead of main, so two looks in one stack share the common helpers.
+   */
+  glslHelpers?: readonly string[]
+  /**
+   * Passes that have to read neighbouring pixels, which a pointwise body cannot,
+   * derived from this effect's resolved params at render time. They run right
+   * after the pointwise chain, in stack order, like any neighborhood effect. The
+   * pure resolver adds them, so the preview and the export are handed the same
+   * list. A look's clarity, halation and bloom arrive this way.
+   */
+  companions?: (params: Record<string, number>) => ResolvedEffect[]
 }
 
 const p = (
@@ -518,6 +538,48 @@ export const EFFECTS: EffectDef[] = [
       p('threshold', 'Threshold', 0, 1, 0.01, 0.6),
     ],
   },
+  // The cinematic looks (looks.ts). Each is pointwise, one Amount slider.
+  ...LOOK_EFFECT_DEFS,
+  {
+    // ⛔ HE NEVER ADDS THIS ONE, like motionSmear: a look derives it (`companions`)
+    // from its Amount on every frame. Local contrast, the muscle definition pass:
+    // a wide blur, and the picture's difference from it added back in the middle
+    // tones. Radius is a fraction of the frame's short side. Then the look's own
+    // grain, LAST, so the clarity never sharpens it (lookMath.ts grainAfterClarity).
+    type: 'lookClarity',
+    hidden: true,
+    label: 'Look Clarity',
+    description: 'Local contrast for a look, then its grain. Made by the look, never added by hand.',
+    category: 'look',
+    pass: 'neighborhood',
+    params: [
+      p('amount', 'Amount', 0, 2, 0.01, 0),
+      p('radius', 'Radius', 0, 0.1, 0.001, 0.015),
+      p('grain', 'Grain', 0, 1, 0.01, 0),
+      p('grainSize', 'Grain size', 0.5, 8, 0.1, 1.6, 'px'),
+    ],
+  },
+  {
+    // ⛔ HE NEVER ADDS THIS ONE EITHER. A look's halation (the red film glow round
+    // bright lights) or bloom, derived from the look's Amount. Radius is a fraction
+    // of the frame's short side; threshold and softness are encoded luma.
+    type: 'lookGlow',
+    hidden: true,
+    label: 'Look Glow',
+    description: 'Halation or bloom for a look. Made by the look, never added by hand.',
+    category: 'look',
+    pass: 'neighborhood',
+    params: [
+      p('strength', 'Strength', 0, 3, 0.01, 0),
+      p('radius', 'Radius', 0, 0.1, 0.001, 0.01),
+      p('threshold', 'Threshold', 0, 1, 0.01, 0.9),
+      p('softness', 'Softness', 0, 1, 0.01, 0.1),
+      p('tintR', 'Tint R', 0, 2, 0.01, 1),
+      p('tintG', 'Tint G', 0, 2, 0.01, 1),
+      p('tintB', 'Tint B', 0, 2, 0.01, 1),
+      p('lumaTint', 'Tint only', 0, 1, 0.01, 0),
+    ],
+  },
 ]
 
 /**
@@ -543,12 +605,29 @@ export const CANONICAL_ORDER = [
   'contrast',
   'saturation',
   'vibrance',
+  // The looks land after his own colour fixes and before the vignette, grain and
+  // blurs, which is where a finished grade goes in any editor. Every entry of
+  // looks.ts LOOK_TYPES, by name (a test holds the two lists together).
+  'lookMoodyGym',
+  'lookTealOrange',
+  'lookFilm800T',
+  'lookKodakFilm',
+  'lookGritty',
+  'lookBlackWhite',
+  'lookGoldenHour',
+  'lookColdSteel',
+  'lookBronze',
+  'lookSoftFilm',
   'vignette',
   'grain',
   'sharpen',
   'gaussianBlur',
   'directionalBlur',
   'glow',
+  // A look's own neighbour passes. Never in a stored stack: `companions` adds them
+  // to the RESOLVED stack, right after the look that made them.
+  'lookClarity',
+  'lookGlow',
   // ⛔ LAST, and it has to be. A camera blurs the FINISHED picture: a glow or a
   // grain applied after the shutter smear would come out razor sharp on top of a
   // moving frame, which is exactly the tell this feature exists to remove. It is
@@ -566,6 +645,12 @@ export const CANONICAL_ORDER = [
  * three PICKERS use this list.
  */
 export const BROWSABLE_EFFECTS: EffectDef[] = EFFECTS.filter((e) => !e.hidden)
+
+/** The looks shelf: finished grades, shown under Looks in the Effects tab. */
+export const LOOK_EFFECTS: EffectDef[] = BROWSABLE_EFFECTS.filter((e) => e.category === 'look')
+
+/** The tools shelf: every browsable effect that is not a look. */
+export const TOOL_EFFECTS: EffectDef[] = BROWSABLE_EFFECTS.filter((e) => e.category !== 'look')
 
 export const EFFECT_BY_TYPE: Readonly<Record<string, EffectDef>> = Object.freeze(
   Object.fromEntries(EFFECTS.map((e) => [e.type, e])),
@@ -607,6 +692,26 @@ export function resolveEffect(inst: EffectInstance, localT: number): ResolvedEff
   const def = getEffect(inst.type)
   if (!def) return null
   return { type: def.type, params: resolveEffectParams(def, inst, localT) }
+}
+
+/**
+ * A clip's whole stack at clip-local time `localT`, the way the renderer takes
+ * it: disabled, unknown and neutral effects dropped, and each effect followed by
+ * the neighbour passes it derives (`companions`). The ONE place the resolver
+ * turns a stored stack into a render stack, so the preview, the export and any
+ * proof harness are handed the same list.
+ */
+export function resolveStack(insts: readonly EffectInstance[], localT: number): ResolvedEffect[] {
+  const out: ResolvedEffect[] = []
+  for (const inst of insts) {
+    if (isNeutral(inst)) continue
+    const resolved = resolveEffect(inst, localT)
+    if (!resolved) continue
+    out.push(resolved)
+    const extra = getEffect(resolved.type)?.companions?.(resolved.params)
+    if (extra) for (const e of extra) out.push(e)
+  }
+  return out
 }
 
 /**

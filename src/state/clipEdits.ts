@@ -882,6 +882,11 @@ export function resetChannels(clipId: string, channels: AnimChannel[], label = '
  * audio), so a grade/key/blur dropped on an audio clip would sit dead and render
  * nothing. That is the "why did nothing happen?" confusion. Titles and adjustment
  * layers DO render, so they stay eligible.
+ *
+ * Except for a LOOK, which goes on the way it does through every other door
+ * (runEffect in bulkEdits.ts): one per clip, swapping out the one the clip
+ * wore, nothing at all when the clip already wears it, and never on a title or
+ * a caption, whose style owns its colour.
  */
 export function applyEffect(clipId: string, type: string): void {
   const seq = activeSequence(useStore.getState().project)
@@ -889,6 +894,32 @@ export function applyEffect(clipId: string, type: string): void {
   if (!track || track.kind === 'audio') return
   const label = getEffect(type)?.label ?? type
   const id = newId()
+  if (ops.isLookType(type)) {
+    const clip = track.clips.find((c) => c.id === clipId)!
+    const show = useToasts.getState().show
+    if (clip.title) {
+      show('Looks leave titles and captions clean', 'info')
+      return
+    }
+    const worn = clip.effects.filter((e) => ops.isLookType(e.type))
+    if (worn.length === 1 && worn[0].type === type && worn[0].enabled) {
+      show(`That clip already has ${label}`, 'info')
+      return
+    }
+    // Wearing it switched off: applying it again switches it back on (putLook).
+    const off = worn.some((e) => e.type === type && !e.enabled)
+    // The look it takes off: the one it swaps, or the other of two stacked
+    // before the rule when the clip already wears this one (putLook keeps it).
+    const gone = worn.find((e) => e.type !== type)
+    mapClip(clipId, `Apply ${label}`, (c) => ops.putLook(c, type, id))
+    // A locked track refuses the edit and leaves the clip as it was.
+    if (findClip(clipId) === clip) return
+    noteRecentEffect(type)
+    const goneLabel = gone && (getEffect(gone.type)?.label ?? gone.type)
+    if (off) show(`Turned ${label} back on${goneLabel ? ` and took ${goneLabel} off` : ''}`, 'success')
+    else if (goneLabel) show(`Swapped ${goneLabel} for ${label}`, 'success')
+    return
+  }
   mapClip(clipId, `Add ${label}`, (c) => ops.addEffect(c, type, id))
   // Noted only once it actually landed, and noted in BOTH doors: this one and
   // applyEffectToClips. A recents list that misses the door he uses most is

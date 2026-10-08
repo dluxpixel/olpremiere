@@ -7,7 +7,7 @@
 
 import { contentBox, type ContentBox } from '../contentFrame'
 import { resolveChannel } from '../effects/channels'
-import { isNeutral, resolveEffect } from '../effects/registry'
+import { resolveStack } from '../effects/registry'
 import { clipDurationS, clipEndS } from '../timeline'
 import { DEFAULT_SHUTTER_ANGLE, shutterSeconds } from './motionBlur'
 import type { Clip, Sequence, Track, Transition } from '../types'
@@ -48,13 +48,9 @@ function layerFor(clip: Clip, t: number, fps: number, shutterS = 0): RenderLayer
     clip.freezeAtS ?? (clip.speed < 0 ? clip.outS - localT * rate : clip.inS + localT * rate)
   // The clip's effect stack, sampled at this instant. A disabled or unknown
   // effect resolves to null; a neutral one is dropped because every GLSL body is
-  // the identity at its defaults, so an ungraded clip compiles one program.
-  const effects: ResolvedEffect[] = []
-  for (const inst of clip.effects) {
-    if (isNeutral(inst)) continue
-    const resolved = resolveEffect(inst, localT)
-    if (resolved) effects.push(resolved)
-  }
+  // the identity at its defaults, so an ungraded clip compiles one program. A
+  // look brings its own neighbour passes (clarity, halation, bloom) along.
+  const effects: ResolvedEffect[] = resolveStack(clip.effects, localT)
   const transformAt = (at: number): RenderLayer['transform'] => ({
     x: resolveChannel(clip, 'posX', at),
     y: resolveChannel(clip, 'posY', at),
