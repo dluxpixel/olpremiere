@@ -12,16 +12,18 @@ vi.mock('electron', () => ({ app: { getPath: () => where.dir }, dialog: {} }))
 where.dir = mkdtempSync(path.join(tmpdir(), 'olp-export-choice-'))
 afterAll(() => rmSync(where.dir, { recursive: true, force: true }))
 
-const { choseExportPath, exportPathFromPage, exportPathUsed } = await import('./exportChoice')
+const { choseExportPath, exportFinished, exportPathFromPage } = await import('./exportChoice')
 const { rememberFolder } = await import('./saveFiles')
 
 const ANSWER = path.join(where.dir, 'Videos', 'Green_2.mp4')
-const ELSEWHERE = 'C:\\Windows\\System32\\drivers\\etc\\hosts'
+const ELSEWHERE = 'C:\Windows\System32\drivers\etc\hosts'
+/** What native:finish answers for a movie that was written, and for one that was not. */
+const FINISHED = { ok: true, outPath: ANSWER, sizeBytes: 1 }
+const FAILED = { ok: false, error: 'ffmpeg exited with code 1' }
 
 beforeEach(() => {
-  // Spend whatever an earlier test left, so each starts with no answer on record.
-  exportPathUsed(ANSWER)
-  exportPathUsed(ELSEWHERE)
+  // End whatever job an earlier test left, so each starts with no answer on record.
+  exportFinished(FINISHED)
 })
 
 describe('a destination a page names', () => {
@@ -43,20 +45,31 @@ describe('a destination a page names', () => {
     expect(exportPathFromPage(['x'])).toBeUndefined()
   })
 
-  it('is still taken for a restart or Try again of the same export, which send it again', () => {
+  // ⛔ NOT A ONE USE PASS. The loudness switch restarts the export by cancelling it and
+  // starting again with the same answer, and Try again starts again after a failure.
+  // A slot spent by the first start made both of those ask him a second time.
+  it('⛔ is taken for every start of the same job: a restart after a cancel, Try again after a failure', () => {
     choseExportPath(ANSWER)
+    expect(exportPathFromPage(ANSWER)).toBe(path.resolve(ANSWER)) // the first start
+    // The loudness switch: native:cancel (which never reaches exportChoice), then a start.
     expect(exportPathFromPage(ANSWER)).toBe(path.resolve(ANSWER))
-    // The loudness switch cancels and starts again with the same answer.
+    // ffmpeg failed: native:finish answers not ok, and Try again starts once more.
+    exportFinished(FAILED)
+    expect(exportPathFromPage(ANSWER)).toBe(path.resolve(ANSWER))
+    // Any other path, at any point of the job, is still refused.
+    expect(exportPathFromPage(ELSEWHERE)).toBeUndefined()
+    exportFinished(undefined)
+    exportFinished({ ok: 'yes' })
     expect(exportPathFromPage(ANSWER)).toBe(path.resolve(ANSWER))
   })
 
-  it('⛔ is spent once a finished movie was written there: the next export asks again', () => {
+  it('⛔ is cleared when the job ends with a finished movie: the next export asks again', () => {
     choseExportPath(ANSWER)
-    exportPathUsed(ANSWER)
+    exportFinished(FINISHED)
     expect(exportPathFromPage(ANSWER)).toBeUndefined()
   })
 
-  it('belongs to his LAST answer only', () => {
+  it('belongs to his LAST answer only: a new pick replaces it', () => {
     const first = path.join(where.dir, 'Videos', 'first.mp4')
     choseExportPath(first)
     choseExportPath(ANSWER)

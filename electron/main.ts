@@ -52,7 +52,7 @@ import * as proxy from './proxy'
 import * as mediaStore from './mediaStore'
 import * as remux from './remux'
 import { CRASH_LOG_NAME, crashLogLine, crashPlan } from './crashPlan'
-import { exportPathFromPage, exportPathUsed } from './exportChoice'
+import { exportFinished, exportPathFromPage } from './exportChoice'
 import { appliedWhileAway, launchMode, parseQuietMarker, QUIET_START_FILE, secondInstanceAction } from './launchMode'
 import { centreIn, readWindowState, restoreBounds, WINDOW_STATE_FILE, writeWindowState, type Placement } from './windowState'
 import { fileQuietStore, startUpdateFlow, type UpdateFlow } from './updateFlow'
@@ -871,8 +871,9 @@ app.whenReady().then(() => {
   })
   ipcMain.handle('native:finish', async () => {
     const done = await native.finish()
-    // A finished movie spends his answer: the next export asks again.
-    if (done.ok) exportPathUsed(done.outPath)
+    // A finished movie ends the export job and clears his answer: the next export asks
+    // again. A failed one keeps it for Try again (./exportChoice).
+    exportFinished(done)
     return done
   })
   ipcMain.handle('native:cancel', () => native.cancel())

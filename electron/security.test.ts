@@ -19,9 +19,12 @@ describe('an export goes only where he picked', () => {
     expect(handler).not.toMatch(/outPath: config\.outPath/)
   })
 
-  it('a finished movie spends that answer, so the next export asks again', () => {
+  it('the answer lasts the whole export job: a finished movie ends it, a cancel does not', () => {
     const finish = main.slice(main.indexOf("ipcMain.handle('native:finish'"), main.indexOf("ipcMain.handle('native:cancel'"))
-    expect(finish).toMatch(/if \(done\.ok\) exportPathUsed\(done\.outPath\)/)
+    expect(finish).toContain('exportFinished(done)')
+    // The loudness switch restarts by cancelling and starting again with the same answer.
+    const cancel = main.slice(main.indexOf("ipcMain.handle('native:cancel'"))
+    expect(cancel.split('\n')[0]).toBe("ipcMain.handle('native:cancel', () => native.cancel())")
   })
 })
 
