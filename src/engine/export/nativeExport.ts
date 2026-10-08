@@ -285,17 +285,30 @@ export async function exportNative(
         // ffmpeg and ended the export, and a finish after it raced the stop.
         // And a finish that rejects ends the export with its reason; nothing
         // caught it before, and the dialog sat on "Finishing the file" for good.
+        //
+        // ⛔ A CANCEL WHILE THE FILE IS FINISHED IS A CANCEL. Main's finish is
+        // already waiting on ffmpeg when the cancel kills it, so its answer
+        // ("ffmpeg exited with code null") comes back BEFORE the cancel's, and
+        // it used to end the export as a failure: "The export stopped. Try
+        // again.", a red chip and a red taskbar button, for a Cancel he pressed
+        // (export review, 2026-10-08). Once he has pressed Cancel, onAbort ends
+        // it, whatever finish says; and main answers a finish it cut short as
+        // cancelled.
         void writeChain
-          .then(() => (settled ? null : api.nativeFinish()))
+          .then(() => (settled || signal.aborted ? null : api.nativeFinish()))
           .then((fin) => {
-            if (!fin) return
+            if (!fin || settled || signal.aborted) return
+            if (fin.cancelled) {
+              done(() => reject(abortError()))
+              return
+            }
             if (fin.ok) {
               const speed = times && firstFrameAt ? exportSpeed(times, performance.now() - firstFrameAt) : null
               done(() => resolve({ outPath: fin.outPath ?? '', sizeBytes: fin.sizeBytes ?? 0, ...(speed ? { speed } : {}) }))
             } else done(() => reject(new Error(fin.error ?? 'ffmpeg failed')))
           })
           .catch((err: unknown) => {
-            if (settled) return
+            if (settled || signal.aborted) return
             void api.nativeCancel()
             done(() => reject(err instanceof Error ? err : new Error(String(err))))
           })

@@ -178,6 +178,31 @@ describe('the export runs below normal priority, so the editor stays smooth', ()
   }, 60_000)
 })
 
+describe('⛔ a cancel while ffmpeg is finishing the file', () => {
+  // finish() was already waiting on ffmpeg when cancel() killed it, and its continuation ran first,
+  // so the page heard "ffmpeg exited with code null" before the cancel answered, and the export
+  // ended as a failure. Had ffmpeg exited 0 in that instant, finish said ok and cancel then deleted
+  // the file the "Done, show it" chip pointed at (export review S3, 2026-10-08).
+  it('finish answers cancelled, never an exit code or ok, and leaves no file behind', async () => {
+    const W = 320
+    const H = 240
+    const outPath = join(userData, 'finishing.mp4')
+    const win = { webContents: { send: () => undefined } } as unknown as Parameters<typeof native.start>[1]
+    const started = await native.start(
+      { width: W, height: H, fps: 30, totalFrames: 30, encoder: 'x264', quality: 18, hasAudio: false, outPath, suggestedName: 'x' },
+      win,
+    )
+    expect(started.started).toBe(true)
+    for (let i = 0; i < 30; i++) await native.writeFrame(new Uint8Array(W * H * 4).fill(i * 8).buffer)
+    const fin = native.finish()
+    await native.cancel()
+    expect(await fin).toEqual({ ok: false, cancelled: true })
+    expect(native.isExporting()).toBe(false)
+    await new Promise((r) => setTimeout(r, 200))
+    expect(await readdir(userData)).not.toContain('finishing.mp4')
+  }, 60_000)
+})
+
 describe('the sound, written a segment at a time', () => {
   const FFMPEG = join(REPO, 'vendor', 'ffmpeg', 'win-x64', 'ffmpeg.exe')
   const ours = async (): Promise<string[]> =>

@@ -47,6 +47,8 @@ interface NativeCall {
 const h = vi.hoisted(() => ({
   electron: true,
   native: [] as NativeCall[],
+  /** Leave the abort to the test: a reply main sent before the stop can still arrive first. */
+  manualAbort: false,
   browser: [] as { project: Project; settings: ExportSettings }[],
   browserResults: [] as (() => Promise<Blob | null>)[],
   picker: null as null | (() => Promise<unknown>),
@@ -70,7 +72,7 @@ vi.mock('../engine/export/nativeExport', () => ({
     new Promise((resolve, reject) => {
       h.native.push({ project, settings, opts, onProgress, signal, resolve, reject })
       // The real one rejects with AbortError once ffmpeg is told to stop.
-      signal.addEventListener('abort', () => reject(new DOMException('Export cancelled', 'AbortError')))
+      if (!h.manualAbort) signal.addEventListener('abort', () => reject(new DOMException('Export cancelled', 'AbortError')))
     }),
 }))
 
@@ -106,6 +108,7 @@ let taskbar: ExportTaskbarState[] = []
 beforeEach(() => {
   h.electron = true
   h.native.length = 0
+  h.manualAbort = false
   h.browser.length = 0
   h.browserResults.length = 0
   h.picker = null
@@ -355,6 +358,39 @@ describe('⛔ a failure is told in plain words', () => {
       message: 'There is no room left on the disk. Free some space and try again.',
       details: raw,
     })
+  })
+})
+
+describe('⛔ a cancel is never a failure', () => {
+  // Cancel pressed during "Finishing the file": main's finish reply, ffmpeg killed by that very
+  // cancel, could land before the cancel and end the export as "The export stopped. Try again.",
+  // with a red chip and a red taskbar button that stayed until clicked (export review S3, 2026-10-08).
+  it('whatever reason arrives after he pressed Cancel, it ends as a cancel: no red chip, no red taskbar, no toast', async () => {
+    const lines: string[] = []
+    await usage.setEnabled(true)
+    usage.attach(async (_day, text) => {
+      lines.push(text)
+    })
+    try {
+      await usage.flush()
+      lines.length = 0
+      h.manualAbort = true
+      requestExport()
+      closeExportDialog()
+      h.native[0].onProgress({ phase: 'finalizing', framesDone: 150, framesTotal: 150 })
+      cancelExport()
+      h.native[0].reject(new Error('ffmpeg exited with code null'))
+      await flush()
+      expect(useExportJob.getState().job).toBeNull()
+      expect(taskbar).not.toContainEqual({ kind: 'failed' })
+      expect(taskbar.at(-1)).toEqual({ kind: 'clear' })
+      expect(useToasts.getState().toasts).toHaveLength(0)
+      await usage.flush()
+      const events = lines.flatMap((l) => l.trim().split('\n')).filter(Boolean).map((l) => JSON.parse(l) as UsageEvent)
+      expect(events.find((e) => e.k === 'export')?.d).toMatchObject({ outcome: 'cancelled' })
+    } finally {
+      await usage.setEnabled(false)
+    }
   })
 })
 

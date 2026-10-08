@@ -42,6 +42,8 @@ export interface NativeFinishResult {
   outPath?: string
   sizeBytes?: number
   error?: string
+  /** A cancel stopped ffmpeg while it was finishing the file: no file, and not a failure. */
+  cancelled?: boolean
 }
 
 export interface NativeProgress {

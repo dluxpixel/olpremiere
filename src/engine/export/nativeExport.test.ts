@@ -78,7 +78,12 @@ function fakeMain() {
   /** What main was handed for the WAV: the begin's arguments, then every segment's bytes in order. */
   const audio = { begun: [] as [number, number][], chunks: [] as ArrayBuffer[], finished: 0 }
   const starts: Record<string, unknown>[] = []
-  const finish = { hold: false, release: () => {}, fail: null as Error | null }
+  const finish = {
+    hold: false,
+    release: () => {},
+    fail: null as Error | null,
+    result: { ok: true, outPath: 'C:\\Videos\\Holiday.mp4', sizeBytes: 1234 } as Record<string, unknown>,
+  }
   const startGate = { hold: false, release: () => {} }
   // What the save dialog answers: a path, or null when he dismisses it.
   const picker = { answer: 'C:\\Videos\\Holiday.mp4' as string | null }
@@ -123,7 +128,7 @@ function fakeMain() {
     nativeFinish: () => {
       log.push('finish')
       if (finish.fail) return Promise.reject(finish.fail)
-      const result = { ok: true, outPath: 'C:\\Videos\\Holiday.mp4', sizeBytes: 1234 }
+      const result = finish.result
       // Held open when asked: the real finish waits for ffmpeg to drain its lookahead.
       if (!finish.hold) return Promise.resolve(result)
       return new Promise((r) => (finish.release = () => r(result)))
@@ -377,6 +382,51 @@ describe('a cancel is a cancel', () => {
     await expect(run).rejects.toMatchObject({ name: 'AbortError' })
     expect(main.log.slice(-1)).toEqual(['cancel'])
     expect(FakeWorker.made).toBe(0)
+  })
+})
+
+describe('⛔ a cancel while the file is being finished', () => {
+  // Main's finish was already waiting on ffmpeg when the cancel killed it, so its reply ("ffmpeg
+  // exited with code null") came back before the cancel's and the export ended as a failure: "The
+  // export stopped. Try again.", a red chip and a red taskbar button (export review S3, 2026-10-08).
+  async function finishing(ctrl: AbortController) {
+    main.finish.hold = true
+    const run = start(ctrl.signal)
+    await flush()
+    const w = FakeWorker.last
+    w.emit({ type: 'frame', data: frame(1) } as ExportResponse)
+    w.emit({ type: 'done' } as ExportResponse)
+    await flush()
+    main.writes[0].settle({ ok: true })
+    await flush()
+    expect(main.log.at(-1)).toBe('finish')
+    // Wrapped, or the async function would wait for the export itself.
+    return { run }
+  }
+
+  it('is a cancel, even when the finish reply the stop caused arrives first', async () => {
+    main.finish.result = { ok: false, error: 'ffmpeg exited with code null' }
+    const ctrl = new AbortController()
+    const { run } = await finishing(ctrl)
+    ctrl.abort()
+    main.finish.release()
+    await expect(run).rejects.toMatchObject({ name: 'AbortError' })
+    expect(main.log).toContain('cancel')
+  })
+
+  it('is a cancel when ffmpeg had just ended well too: pressed Cancel means no Done', async () => {
+    const ctrl = new AbortController()
+    const { run } = await finishing(ctrl)
+    ctrl.abort()
+    main.finish.release()
+    await expect(run).rejects.toMatchObject({ name: 'AbortError' })
+  })
+
+  it('a finish main answers as cancelled is a cancel, not "ffmpeg failed"', async () => {
+    main.finish.result = { ok: false, cancelled: true }
+    const { run } = await finishing(new AbortController())
+    main.finish.release()
+    await expect(run).rejects.toMatchObject({ name: 'AbortError' })
   })
 })
 

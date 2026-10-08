@@ -28,6 +28,8 @@ interface Job {
   totalFrames: number
   stderr: string
   closed: Promise<number | null>
+  /** cancel() took it: whatever ffmpeg's exit code, there is no file and finish says so. */
+  cancelled: boolean
 }
 let job: Job | null = null
 let pendingAudioPath: string | null = null
@@ -58,6 +60,7 @@ export function cancelSync(): void {
     audioWrite = null
   }
   if (job) {
+    job.cancelled = true
     try {
       job.ffmpeg.stdin.destroy()
       job.ffmpeg.kill('SIGKILL')
@@ -287,7 +290,7 @@ export async function start(config: NativeExportConfig, win: BrowserWindow): Pro
   ffmpeg.stdout.on('data', (d: Buffer) => readProgress(d.toString()))
   // stdin EPIPE if ffmpeg dies early is swallowed above; the close code surfaces the error.
 
-  job = { ffmpeg, outPath, audioPath, totalFrames: config.totalFrames, stderr: '', closed }
+  job = { ffmpeg, outPath, audioPath, totalFrames: config.totalFrames, stderr: '', closed, cancelled: false }
   // Keep stderr live-updated on the job.
   ffmpeg.stderr.on('data', () => job && (job.stderr = stderr))
   return { started: true, outPath }
@@ -387,8 +390,18 @@ export async function finish(): Promise<NativeFinishResult> {
   const j = job
   j.ffmpeg.stdin.end()
   const code = await j.closed
-  job = null
+  if (job === j) job = null
   if (j.audioPath) void unlink(j.audioPath).catch(() => {})
+  // ⛔ A CANCEL WHILE THIS WAITED. cancel() kills ffmpeg, and this wait was
+  // queued first, so this used to answer "ffmpeg exited with code null" before
+  // the cancel did, and the page ended a Cancel he pressed as a failure. Had
+  // ffmpeg exited 0 in that instant, this said ok and cancel then deleted the
+  // file the Done chip pointed at (export review, 2026-10-08). A cancelled job
+  // has no file, whatever the exit code, and says so.
+  if (j.cancelled) {
+    void unlink(j.outPath).catch(() => {})
+    return { ok: false, cancelled: true }
+  }
   if (code !== 0) {
     void unlink(j.outPath).catch(() => {})
     const tail = stderrTail(j.stderr)
@@ -412,6 +425,8 @@ export async function cancel(): Promise<void> {
   }
   const j = job
   job = null
+  // Before anything can yield: a finish() waiting on this job reads it first.
+  j.cancelled = true
   try {
     j.ffmpeg.stdin.destroy()
     j.ffmpeg.kill('SIGKILL')

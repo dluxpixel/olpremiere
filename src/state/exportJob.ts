@@ -323,7 +323,11 @@ async function drive(plan: ExportPlan): Promise<void> {
     if (background) await runNative(id, f.project, plan, ctrl.signal)
     else await runBrowser(id, f.project, plan, ctrl.signal)
   } catch (err) {
-    if (isAbort(err)) settleCancelled(id)
+    // ⛔ After he pressed Cancel nothing ends as a failure. A reason the stop
+    // itself caused can arrive before the stop's own answer (ffmpeg killed while
+    // it finished the file), and it used to leave a red chip and a red taskbar
+    // button for a Cancel he pressed (export review, 2026-10-08).
+    if (isAbort(err) || ctrl.signal.aborted) settleCancelled(id)
     else fail(id, err)
   } finally {
     release()
