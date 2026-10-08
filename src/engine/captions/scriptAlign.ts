@@ -81,6 +81,22 @@ const MISSED_RUN = 2
  */
 const FILLER = new Set(['um', 'umm', 'uh', 'uhh', 'uhm', 'er', 'erm', 'ah', 'eh', 'hm', 'hmm', 'mm', 'mmm', 'mhm', 'like'])
 
+/** A stretch of the timeline one clip sits in. */
+export interface Take {
+  startS: number
+  endS: number
+}
+
+const within = (atS: number, t: Take): boolean => atS >= t.startS - 1e-9 && atS < t.endS - 1e-9
+const startsIn = (w: CaptionWord, t: Take): boolean => within(w.startS, t)
+
+/** True when two moments sit in different takes and the first take does not run straight into the second. */
+function notTouching(fromS: number, toS: number, takes: readonly Take[]): boolean {
+  const a = takes.find((t) => within(fromS, t))
+  const b = takes.find((t) => within(toS, t))
+  return !!a && !!b && a !== b && !(Math.abs(b.startS - a.endS) <= 1e-6)
+}
+
 /** A direction in his script, never said: "[HOOK]", "[cut to the base]", "(laughs)". */
 const DIRECTION = /\[[^\]]*\]|\([^)]*\)/g
 
@@ -128,10 +144,16 @@ export function alignScript(script: string, heard: readonly CaptionWord[]): Capt
  * missed inside a line it heard, are laid. What was left out is counted, by
  * line, so the caller can say so.
  *
+ * ⛔ CLIPS THAT DO NOT TOUCH ARE NOT ONE STRETCH OF SPEECH. With the `takes` the
+ * heard words came from, one or two words missed between the end of one take and
+ * the start of a take that does not touch it are laid at the end of the earlier
+ * one, and more than that are not laid: timed between the two they sat across the
+ * whole gap, over clips he never asked about.
+ *
  * The words are aligned in order, with a band around the diagonal so a long
  * voiceover costs a strip of the table and not all of it.
  */
-export function scriptHeard(script: string, heard: readonly CaptionWord[]): ScriptHeard | null {
+export function scriptHeard(script: string, heard: readonly CaptionWord[], takes?: readonly Take[]): ScriptHeard | null {
   // Punctuation standing on its own (", ", "...") rides on the word before it.
   // A direction keeps its line breaks, so the lines around it stay lines.
   const written: string[] = []
@@ -327,7 +349,14 @@ export function scriptHeard(script: string, heard: readonly CaptionWord[]): Scri
       continue
     }
     const before = out[out.length - 1]
-    const after = span[k] ?? null
+    let after = span[k] ?? null
+    if (before && after && takes && notTouching(before.startS, after.startS, takes)) {
+      if (run.length > MISSED_RUN) {
+        i = k
+        continue
+      }
+      after = null
+    }
     const letters = run.map((q) => Math.max(1, bare(written[q]!).length))
     const total = letters.reduce((a, b) => a + b, 0)
     const want = MISSED_WORD_S * run.length
@@ -374,14 +403,6 @@ export function scriptHeard(script: string, heard: readonly CaptionWord[]): Scri
   }
   return { words: out, unheardLines, unheardWords: n - out.length - inUnheard }
 }
-
-/** A stretch of the timeline one clip sits in. */
-export interface Take {
-  startS: number
-  endS: number
-}
-
-const startsIn = (w: CaptionWord, t: Take): boolean => w.startS >= t.startS - 1e-9 && w.startS < t.endS - 1e-9
 
 /**
  * Which takes his script really landed in (S-1), and only those. The alignment

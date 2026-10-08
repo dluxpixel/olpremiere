@@ -209,6 +209,40 @@ describe('alignScript', () => {
       const out = scriptHeard('now Sir Rel the Great is back', heard)!
       expect(texts(out.words)).toEqual(['now', 'Sir', 'Rel', 'the', 'Great', 'is', 'back'])
     })
+
+    // Two clips with nothing selected between them are not one stretch of speech:
+    // words missed "between" them were timed across the whole gap, over clips he
+    // never asked about.
+    describe('between clips that do not touch', () => {
+      const clipA = { startS: 0, endS: 1 }
+      const heardA = [w('alpha', 0, 0.3), w('beta', 0.3, 0.6), w('qqqq', 0.6, 0.9)]
+      const apart = [clipA, { startS: 5, endS: 6 }]
+      const beside = [clipA, { startS: 1, endS: 2 }]
+
+      it('one or two missed words are laid inside the earlier clip, not across the gap', () => {
+        const heard = [w('alpha', 0, 0.3), w('beta', 0.3, 0.6), w('zeta', 5.3, 5.6)]
+        const out = scriptHeard('alpha beta gamma delta zeta', heard, apart)!
+        expect(texts(out.words)).toEqual(['alpha', 'beta', 'gamma', 'delta', 'zeta'])
+        for (const x of out.words.slice(0, 4)) expect(x.endS).toBeLessThanOrEqual(clipA.endS + 1e-9)
+        expect(out.words[4]!.startS).toBe(5.3)
+        // The same two words with no spans are timed up to the next heard word.
+        const loose = scriptHeard('alpha beta gamma delta zeta', heard)!
+        expect(loose.words[3]!.endS).toBeCloseTo(5.3, 9)
+      })
+
+      it('three words heard as two others, one in each clip, are not laid in either', () => {
+        const heard = [...heardA, w('rrrr', 5, 5.3), w('zeta', 5.3, 5.6)]
+        const out = scriptHeard('alpha beta one two three zeta', heard, apart)!
+        expect(texts(out.words)).toEqual(['alpha', 'beta', 'zeta'])
+        expect(out.unheardWords).toBe(3)
+      })
+
+      it('clips that touch are one stretch, as before', () => {
+        const heard = [...heardA, w('rrrr', 1, 1.3), w('zeta', 1.3, 1.6)]
+        const out = scriptHeard('alpha beta one two three zeta', heard, beside)!
+        expect(texts(out.words)).toEqual(['alpha', 'beta', 'one', 'two', 'three', 'zeta'])
+      })
+    })
   })
 
   // ⛔ S-1. On a tie the aligner paired a script word as late as possible, so a

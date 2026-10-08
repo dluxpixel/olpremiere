@@ -457,7 +457,7 @@ function layCaptions(
     })
     return
   }
-  const read = scriptHeard(o.script, words)
+  const read = scriptHeard(o.script, words, o.coveredSpans)
   if (!read) {
     useToasts.getState().show(SCRIPT_NOT_HEARD, 'danger')
     return

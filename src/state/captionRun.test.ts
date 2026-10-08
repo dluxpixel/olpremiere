@@ -720,6 +720,24 @@ describe('captions from his own script', () => {
     expect(toasted).toContain('1 word of your script was not heard there, so it has no captions')
   })
 
+  it('words missed between two takes that do not touch are not laid across the gap between them', async () => {
+    const { a, b } = seed()
+    await captionTheseClips([a, b])
+    const restore = takes({ [a]: 'alpha beta', [b]: 'zeta' })
+    try {
+      useStore.getState().setUI({ selection: [a, b] })
+      await captionFromScript('Alpha beta gamma delta zeta.', spoken)
+    } finally {
+      restore()
+    }
+    // Take a is 0 to 1 s and take b is 3 to 4 s: nothing starts between them.
+    const starts = captionsOn(seq()).map(({ clip }) => clip.startS)
+    expect(starts.length).toBeGreaterThan(0)
+    expect(starts.filter((t) => t >= 1 && t < 3 - 1e-9)).toEqual([])
+    expect(inTake(0).map((cl) => cl.title!.text).join(' ')).toContain('gamma')
+    expect(inTake(3).map((cl) => cl.title!.text).join(' ')).toBe('zeta.')
+  })
+
   it('a short take that the script is about is still replaced, one word and all', async () => {
     const { a, b } = seed()
     await captionTheseClips([a, b])
