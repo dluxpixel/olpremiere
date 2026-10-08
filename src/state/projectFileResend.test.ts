@@ -16,6 +16,8 @@ import { newProject, type Project } from '../engine/types'
 const dev = vi.hoisted(() => ({
   /** The store of the device the test is on. */
   store: new Map<string, Project>(),
+  /** Its media bytes, by key. */
+  blobs: new Map<string, Blob>(),
   shown: [] as string[],
 }))
 
@@ -39,9 +41,13 @@ vi.mock('./persistence', () => ({
   listProjects: vi.fn(async () =>
     [...dev.store.values()].map((p) => ({ id: p.id, name: p.name, updatedAt: p.updatedAt, createdAt: p.createdAt })),
   ),
-  getBlob: vi.fn(async () => null),
-  putBlob: vi.fn(async () => {}),
-  deleteBlob: vi.fn(async () => {}),
+  getBlob: vi.fn(async (key: string) => dev.blobs.get(key) ?? null),
+  putBlob: vi.fn(async (key: string, blob: Blob) => {
+    dev.blobs.set(key, blob)
+  }),
+  deleteBlob: vi.fn(async (key: string) => {
+    dev.blobs.delete(key)
+  }),
 }))
 
 const { PROJECT_FILE_FORMAT, PROJECT_FILE_VERSION, encodeHeader, exportProjectToFile, importProjectFromFile } =
@@ -115,6 +121,7 @@ beforeEach(async () => {
   phone.clear()
   open.clear()
   dev.store = pc
+  dev.blobs.clear()
   dev.shown.length = 0
   useStore.getState().setProject(newProject('Untitled Project'))
 })
@@ -231,5 +238,62 @@ describe('⛔ a file from before the update never floods him with copies', () =>
     edit()
     await openFile(file)
     expect([...pc.values()].filter((p) => p.name.startsWith('GYM (copy)'))).toHaveLength(2)
+  })
+})
+
+// ⛔ The file in his hand carries the footage. Opening the same file again only
+// switched to the copy it landed before and dropped the file's bytes, so a copy
+// whose bytes the store had lost since opened with its media missing.
+describe('⛔ opening the same file again puts back footage the store lost since', () => {
+  const gymAt = (updatedAt: number): Project => ({ ...newProject('GYM'), id: 'gym-1', createdAt: 500, updatedAt })
+  const footage = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8])
+
+  /** A file from before the update, its footage inside. */
+  async function oldFileWithFootage(p: Project, name: string): Promise<string> {
+    const project: Project = {
+      ...p,
+      assets: {
+        a1: { id: 'a1', name: 'gym.mp4', kind: 'video', blobKey: 'asset/a1', durationS: 4, hasAudio: true, hasVideo: true },
+      },
+    }
+    const header = encodeHeader({
+      format: PROJECT_FILE_FORMAT,
+      version: PROJECT_FILE_VERSION,
+      project,
+      blobs: [{ key: 'asset/a1', type: 'video/mp4', size: footage.length }],
+    })
+    const target = path.join(dir, name)
+    await writeFile(target, Buffer.concat([header, footage]))
+    return target
+  }
+
+  it('the copy it landed before lost its bytes: they come back from the file, and still one copy', async () => {
+    pc.set('gym-1', gymAt(19))
+    const file = await oldFileWithFootage(gymAt(20), 'GYM old.olstudio')
+    await openFile(file)
+    const [copy] = named(pc, 'GYM (copy)')
+    const key = copy!.assets.a1!.blobKey!
+    expect(key).not.toBe('asset/a1')
+    expect(dev.blobs.has(key)).toBe(true)
+
+    // The store loses that copy's bytes (a wipe, a sweep), and he opens the file again.
+    dev.blobs.delete(key)
+    await openFile(file)
+
+    expect(named(pc, 'GYM (copy)')).toHaveLength(1)
+    expect(useStore.getState().project.id).toBe(copy!.id)
+    const back = dev.blobs.get(key)
+    expect(back ? [...new Uint8Array(await back.arrayBuffer())] : null).toEqual([...footage])
+  })
+
+  it('bytes the store still has are left exactly as they are', async () => {
+    pc.set('gym-1', gymAt(19))
+    const file = await oldFileWithFootage(gymAt(20), 'GYM old.olstudio')
+    await openFile(file)
+    const key = named(pc, 'GYM (copy)')[0]!.assets.a1!.blobKey!
+    const kept = new Blob([new Uint8Array([9, 9])])
+    dev.blobs.set(key, kept)
+    await openFile(file)
+    expect(dev.blobs.get(key)).toBe(kept)
   })
 })

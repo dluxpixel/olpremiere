@@ -628,6 +628,48 @@ async function copyAlreadyLanded(incoming: Project): Promise<Project | null> {
   return null
 }
 
+/**
+ * Put back, from the file in his hand, every byte of `copy` the store has lost
+ * since the copy landed. The copy holds the file's media under keys of its own
+ * (planProjectCopy), so each one is matched by asset id. Returns how many it put.
+ *
+ * ⛔ THE FILE IN HIS HAND CARRIES THEM. Opening the same file again only switched
+ * to the copy it landed before, and dropped the file's bytes: a copy whose bytes
+ * the store had lost since (a wipe, a sweep) opened with its media missing while
+ * the footage sat in the file he had just opened.
+ */
+async function refillLandedCopy(
+  incoming: Project,
+  copy: Project,
+  writes: readonly { key: string; blob: Blob }[],
+): Promise<number> {
+  const inFile = new Map(writes.map((w) => [w.key, w.blob]))
+  let put = 0
+  for (const [id, asset] of Object.entries(incoming.assets)) {
+    const mine = copy.assets[id]
+    if (!mine) continue
+    const pairs: [string | undefined, string | undefined][] = [
+      [asset.blobKey, mine.blobKey],
+      [asset.thumbnailKey, mine.thumbnailKey],
+    ]
+    for (const [from, to] of pairs) {
+      const blob = from ? inFile.get(from) : undefined
+      if (!blob || !to) continue
+      try {
+        if (await getBlob(to)) continue
+        await putBlob(to, blob)
+        put += 1
+      } catch (err) {
+        // The copy still opens, as it did before; the file is still in his hand.
+        console.warn('OL Premiere: could not put media back into the copy from its file', err)
+      }
+    }
+  }
+  // And on to the disk, the same as any import (adoptImported).
+  if (put > 0) void backfillMirror(copy).catch(() => undefined)
+  return put
+}
+
 /** Every project name in the store, so a copy gets one of its own. Empty when it cannot be read. */
 async function takenNames(): Promise<Set<string>> {
   try {
@@ -696,7 +738,9 @@ async function adoptImported(raw: Project, writes: { key: string; blob: Blob }[]
   if (existing && (newerHere || editedHereSince(existing, project))) {
     const before = await copyAlreadyLanded(project)
     if (before) {
-      // Its footage is already in the store under the copy's own keys.
+      // Its footage is in the store under the copy's own keys, and any the store
+      // has lost since comes back from this file.
+      await refillLandedCopy(project, before, writes)
       if ((await switchTo(before.id)) !== 'ok') return
       show(`Opened "${before.name}", the copy this file made before. Your "${existing.name}" was kept.`, 'success')
       return
