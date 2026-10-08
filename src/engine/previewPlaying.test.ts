@@ -523,6 +523,123 @@ describe("pressing Play never shows the element's old picture", () => {
   })
 })
 
+// ⛔ FOUND 2026-10-08 by e2e/transition-stale-frame.spec.ts, red since PB-6:
+// a dissolve on one razored take, played into from a second and a half before
+// the cut, showed only the incoming clip, never the outgoing one (0 green
+// frames of 38). PB-6 stopped the element's old picture after Play counting as
+// this clip's own; that old picture had been the only thing the outgoing side
+// ever got to hold. On his long GOP capture without a preview copy the cache
+// cannot keep up and the element runs a few frames late the whole way in, so
+// no picture was held at all and the outgoing side drew nothing.
+describe('the outgoing side of a dissolve has its own clip to hold, even when the element runs late into it', () => {
+  const A = asset('A')
+  // One take razored: a keeps 20..22, b keeps 30..34 with a 1 s dissolve at its head.
+  const a = clip({ id: 'a', assetId: 'A', startS: 0, inS: 20, outS: 22 })
+  const b = clip({ id: 'b', assetId: 'A', startS: 2, inS: 30, outS: 34, transitionIn: { type: 'crossDissolve', durationS: 1 } })
+  type Rvfc = (now: number, meta: { mediaTime: number; presentedFrames: number }) => void
+  const rvfc = new Map<HTMLVideoElement, Rvfc>()
+  let now = 1000
+  /** The element puts a frame on screen. */
+  const present = (el: HTMLVideoElement, mediaTime: number): void => {
+    const cb = rvfc.get(el)
+    rvfc.delete(el)
+    cb?.(now, { mediaTime, presentedFrames: 1 })
+  }
+  /** The incoming clip's own element, which the pre-roll made. */
+  const incoming = (): HTMLVideoElement => videos.find((v) => v !== videos[0])!
+
+  beforeEach(() => {
+    now = 1000
+    vi.spyOn(performance, 'now').mockImplementation(() => now)
+    const proto = HTMLVideoElement.prototype as unknown as Record<string, unknown>
+    proto.requestVideoFrameCallback = function (this: HTMLVideoElement, cb: Rvfc) {
+      rvfc.set(this, cb)
+      return 1
+    }
+    proto.cancelVideoFrameCallback = () => undefined
+    class FakeOffscreen {
+      constructor(
+        public width: number,
+        public height: number,
+      ) {}
+      getContext() {
+        return { drawImage: () => undefined }
+      }
+    }
+    vi.stubGlobal('OffscreenCanvas', FakeOffscreen)
+    Object.defineProperty(HTMLVideoElement.prototype, 'videoWidth', { configurable: true, get: () => 1920 })
+    Object.defineProperty(HTMLVideoElement.prototype, 'videoHeight', { configurable: true, get: () => 1080 })
+  })
+  afterEach(() => {
+    const proto = HTMLVideoElement.prototype as unknown as Record<string, unknown>
+    delete proto.requestVideoFrameCallback
+    delete proto.cancelVideoFrameCallback
+    rvfc.clear()
+    vi.unstubAllGlobals()
+  })
+
+  it('a picture of the outgoing clip a few frames late is held, and the dissolve shows it', async () => {
+    const seq = sequence([a, b])
+    const c = canvas()
+    preview.prewarmPreview([A])
+    await loadVideos()
+    const el = videos[0]
+    // Play from 0.5 (source 20.5). Nothing is ever in the cache, and the shared
+    // element runs a quarter second behind the playhead: its own clip, never
+    // inside tolerance.
+    for (let f = 0; f < 45; f++) {
+      const tS = 0.5 + f / 30
+      now += 1000 / 30
+      present(el, 20 + tS - 0.25)
+      preview.renderPreview(c, seq, { A }, tS, true)
+    }
+    // The incoming clip's own element (warmed by the pre-roll) is ready.
+    await loadVideos()
+    // Into the dissolve. The outgoing side has no decoded frame, and the shared
+    // element has fallen further back than it may be trusted for.
+    const before = h.drawn.length
+    for (let f = 0; f < 30; f++) {
+      const tS = 2 + f / 30
+      now += 1000 / 30
+      present(el, 20 + tS - 0.6)
+      present(incoming(), 30 + tS - 2) // the incoming clip is right on time
+      preview.renderPreview(c, seq, { A }, tS, true)
+    }
+    // Drawn on every frame (a missing side right after the cut would hold the
+    // frame before it instead), and every one still has the outgoing clip.
+    const inWindow = h.drawn.slice(before)
+    expect(inWindow).toHaveLength(30)
+    expect(inWindow.every((d) => d[0] !== null)).toBe(true)
+  })
+
+  it('a picture of another part of the take is never held for it', async () => {
+    const seq = sequence([a, b])
+    const c = canvas()
+    preview.prewarmPreview([A])
+    await loadVideos()
+    const el = videos[0]
+    // The element is stuck a second away: not this clip's own moment.
+    for (let f = 0; f < 45; f++) {
+      const tS = 0.5 + f / 30
+      now += 1000 / 30
+      present(el, 19)
+      preview.renderPreview(c, seq, { A }, tS, true)
+    }
+    await loadVideos()
+    const before = h.drawn.length
+    for (let f = 0; f < 30; f++) {
+      const tS = 2 + f / 30
+      now += 1000 / 30
+      present(el, 19)
+      present(incoming(), 30 + tS - 2)
+      preview.renderPreview(c, seq, { A }, tS, true)
+    }
+    const inWindow = h.drawn.slice(before)
+    expect(inWindow.length).toBeGreaterThan(0)
+    expect(inWindow.every((d) => d[0] === null)).toBe(true)
+  })
+})
+
 // ---- PB-16 ------------------------------------------------------------------
 
 describe('what a pause lands on: the frame the monitor last drew while playing', () => {

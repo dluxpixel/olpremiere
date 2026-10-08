@@ -73,6 +73,8 @@ interface PooledImage {
  * element's rate, which the viewer cannot see. A seek, they can.
  */
 const HARD_SEEK_S = 0.35
+/** How far outside a clip's own source span a presented frame may sit and still be its footage (frame timing). */
+const OWN_SPAN_SLACK_S = 0.05
 /**
  * Shortest interval between two hard seeks of the SAME element. A seek that has
  * landed still needs a frame decoded and composited before the probe can report
@@ -679,6 +681,32 @@ export function pairTransitionWindow(a: Clip, b: Clip, fps: number): PairTransit
  * still matter are examined (earlier windows have fully passed, later heads
  * sit beyond the pre-roll), so a long track costs O(log n) per frame.
  */
+/**
+ * The source span each clip near a window shows, as [low, high] source seconds:
+ * the clip's own in to out, and for the outgoing side also the stretch past its
+ * cut that the dissolve samples. A picture inside it is that clip's footage, a
+ * picture outside it is another part of the take. Pure.
+ */
+export function holdSpansFor(seq: Sequence, windows: readonly PairTransitionWindow[]): Map<Id, [number, number]> {
+  const spans = new Map<Id, [number, number]>()
+  if (windows.length === 0) return spans
+  const clips = new Map<Id, Clip>()
+  for (const track of seq.tracks) if (track.kind === 'video') for (const c of track.clips) clips.set(c.id, c)
+  const add = (clipId: Id, ...times: number[]): void => {
+    const c = clips.get(clipId)
+    if (!c) return
+    const lo = Math.min(c.inS, c.outS, ...times)
+    const hi = Math.max(c.inS, c.outS, ...times)
+    const had = spans.get(clipId)
+    spans.set(clipId, had ? [Math.min(had[0], lo), Math.max(had[1], hi)] : [lo, hi])
+  }
+  for (const w of windows) {
+    add(w.fromClipId, w.fromSourceStartS, w.fromSourceEndS)
+    add(w.toClipId, w.toSourceStartS, w.toSourceEndS)
+  }
+  return spans
+}
+
 export function transitionWindowsNear(
   seq: Sequence,
   tS: number,
@@ -1099,6 +1127,7 @@ function makeTextureSource(
   holdClips?: ReadonlySet<Id>,
   ownElementSides?: ReadonlySet<RenderLayer>,
   zoomByKey?: ReadonlyMap<Id, number>,
+  holdSpans?: ReadonlyMap<Id, readonly [number, number]>,
 ): TextureSource {
   /**
    * ⛔ ONE PICTURE PER ELEMENT PER FRAME (PB-5, 2026-10-06). The blurred
@@ -1177,6 +1206,17 @@ function makeTextureSource(
     }
     /** No provable picture: the last one there was, never a wrong one. */
     const held = (): TexImageSource | null => heldFrames.get(layer.clipId) ?? null
+    /**
+     * The element is showing this clip's own footage, late or not: the frame its
+     * probe says is on screen lies inside the source span this clip shows
+     * (holdSpansFor). Worth holding for a dissolve when nothing exact is. See
+     * the last rung of the ladder.
+     */
+    const showsOwnFootage = (p: PooledVideo): boolean => {
+      const span = holding ? holdSpans?.get(layer.clipId) : undefined
+      if (!span || !p.probe.live) return false
+      return p.probe.mediaTime >= span[0] - OWN_SPAN_SLACK_S && p.probe.mediaTime <= span[1] + OWN_SPAN_SLACK_S
+    }
 
     if (playing && transitionFrom?.has(layer)) {
       // Outgoing side of a live pair transition, sampled past its cut. The
@@ -1408,7 +1448,9 @@ function makeTextureSource(
         // the rungs below would ask the cache for this same frame again and
         // count the one miss twice, tripping the miss limit at half its length.
         recordServedFrame(trueErr, false)
-        return livePreviewSource(el, poolKey, zoomOn(poolKey, layer, el))
+        const old = livePreviewSource(el, poolKey, zoomOn(poolKey, layer, el))
+        // Held only when what it shows is this clip's own footage (the last rung).
+        return showsOwnFootage(pooled) ? confident(old) : old
       }
     }
 
@@ -1448,7 +1490,19 @@ function makeTextureSource(
       markPending() // the decode is queued; keep polling so it lands
     }
     recordServedFrame(trueErr, false)
-    return livePreviewSource(el, poolKey, zoomOn(poolKey, layer, el))
+    const late = livePreviewSource(el, poolKey, zoomOn(poolKey, layer, el))
+    // ⛔ THE OUTGOING SIDE OF A DISSOLVE HAD NOTHING TO HOLD (2026-10-08, red in
+    // e2e/transition-stale-frame.spec.ts since PB-6: 0 frames of the outgoing
+    // clip in 38). Off its frame here, but showing this clip's own footage, is
+    // still this clip's picture, and when the cache cannot keep up it is the
+    // only one there is: on a long GOP source without a preview copy the
+    // element runs late, or sits mid-seek, all the way into a cut. Before PB-6 a
+    // seek in flight counted as on time, and that false confidence was what the
+    // outgoing side held. Without it nothing was held, the outgoing side drew
+    // nothing, and a dissolve on one take was a cut to the incoming clip. The
+    // dissolve freezes on the outgoing clip instead, which is what its held
+    // frame is for. A picture of another part of the take is still never held.
+    return showsOwnFootage(pooled) ? confident(late) : late
   }
   return resolveOnce
 }
@@ -1795,6 +1849,7 @@ export function renderPreview(
     holdClips.add(w.toClipId)
   }
   heldCap = Math.max(HELD_FRAME_CAP, holdClips?.size ?? 0)
+  const holdSpans = holdClips ? holdSpansFor(seq, windows) : undefined
 
   // The from-layers served from the frame cache this frame, and BOTH sides of
   // every live pair transition. whiteFlash and lone-edge stand-ins (from/to are
@@ -1868,6 +1923,7 @@ export function renderPreview(
     holdClips,
     ownElementSides,
     zoomByKey,
+    holdSpans,
   )
   // ⛔ A CUT NEVER FLASHES BLACK, 2026-09-28. His words: *"it seems like it has
   // dark cuts even though clips are completely together."* At a plain cut the

@@ -19,6 +19,7 @@ import {
   playOrderRange,
   nextBackwardLow,
   nextAheadHigh,
+  holdSpansFor,
 } from './preview'
 import type { Clip, Sequence, Track } from './types'
 
@@ -199,6 +200,22 @@ describe('upcomingCutHeads', () => {
 
     expect(upcomingCutHeads(seq([track([p0, p1], { muted: true })]), 1.5)).toHaveLength(0)
     expect(upcomingCutHeads(seq([track([p0, p1], { kind: 'audio' })]), 1.5)).toHaveLength(0)
+  })
+})
+
+// A held frame for a dissolve must be the clip's own footage: what the clip
+// shows from its in point to past its cut on the outgoing side, never another
+// part of the same take (2026-10-08).
+describe('holdSpansFor', () => {
+  it('spans each side of a window: the outgoing clip to past its cut, the incoming from its in point', () => {
+    const s = seq([track([a, b])])
+    const spans = holdSpansFor(s, transitionWindowsNear(s, 1))
+    expect(spans.get('a')).toEqual([0, 2.5])
+    expect(spans.get('b')).toEqual([5, 7])
+  })
+
+  it('is empty with no window near', () => {
+    expect(holdSpansFor(seq([track([a, b])]), []).size).toBe(0)
   })
 })
 
