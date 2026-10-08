@@ -491,6 +491,30 @@ describe('editing the timeline while a sweep is running', () => {
     expect(heard).toEqual(['clip-a'])
     expect(toasted.join(' ')).toContain('left the timeline while this ran')
   })
+
+  // The clips that left are said before "No speech found": when the clip that is
+  // left says nothing, "no speech in any clip" hides that one was never heard.
+  it('says a clip left the timeline even when the clips that are left say nothing', async () => {
+    seedAudio([
+      { id: 'a', startS: 0 },
+      { id: 'b', startS: 5 },
+    ])
+    midRun.silent = true
+    midRun.fn = () => {
+      if (heard.length !== 1) return
+      updateActiveSequence('he deleted it', (sq) => ({
+        ...sq,
+        tracks: sq.tracks.map((t) => ({ ...t, clips: t.clips.filter((c) => c.id !== 'clip-b') })),
+      }))
+    }
+    try {
+      await autoCaptionEveryClip()
+    } finally {
+      midRun.silent = false
+    }
+    expect(toasted.join(' ')).toContain('1 clip left the timeline while this ran')
+    expect(toasted).not.toContain('No speech found in any clip')
+  })
 })
 
 // ⛔ 2026-09-23, an open caption finding closed. A reversed clip's sound is his

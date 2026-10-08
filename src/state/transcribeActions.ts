@@ -415,6 +415,10 @@ export interface CaptionRunOptions {
   script?: string
 }
 
+/** What a sweep says of clips deleted from the timeline while it was running. */
+const vanishedMessage = (n: number): string =>
+  `${n} clip${n === 1 ? '' : 's'} left the timeline while this ran, so ${n === 1 ? 'it was' : 'they were'} skipped`
+
 /** Said when none of his script was heard in the clips, so nothing was laid. */
 export const SCRIPT_NOT_HEARD = 'None of your script was heard there, so nothing was captioned. Select the clips you said it in'
 
@@ -971,6 +975,8 @@ export async function autoCaptionEveryClip(
     // are named as one rather than passed off as "no speech".
     if (cancelled) toasts.show('Stopped before anything was heard', 'info')
     else if (failed > 0) toasts.show(`${failed} clip${failed === 1 ? '' : 's'} could not be read`, 'danger')
+    // A clip that left the timeline was never heard: "no speech in any clip" would hide it.
+    else if (vanished > 0) toasts.show(vanishedMessage(vanished))
     else toasts.show('No speech found in any clip', 'info')
     return
   }
@@ -989,7 +995,7 @@ export async function autoCaptionEveryClip(
   // counter promised is not. Said plainly, and not as a failure, because nothing
   // failed.
   else if (vanished > 0) {
-    toasts.show(`${vanished} clip${vanished === 1 ? '' : 's'} left the timeline while this ran, so ${vanished === 1 ? 'it was' : 'they were'} skipped`)
+    toasts.show(vanishedMessage(vanished))
   }
   // Why forty one clips produced captions from six of them. Without this the run
   // looks like it quietly missed most of the timeline.
