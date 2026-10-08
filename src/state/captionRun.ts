@@ -47,7 +47,7 @@ export function captionTargets(ids: Iterable<string>): string[] {
 
 /**
  * The clips "Caption every clip" would hear that have no caption yet: none
- * starts inside the stretch the clip plays. "Caption every clip" hears every
+ * has its middle inside the stretch the clip plays. "Caption every clip" hears every
  * clip again and replaces what is there, hand fixes included, so after adding
  * two clips to a captioned edit this is the button that captions just those.
  */
@@ -55,14 +55,16 @@ export function uncaptionedTargets(): string[] {
   return withoutCaptions(audibleClips().targets.map(({ clip }) => clip.id))
 }
 
-/** These clips, less every one a caption already starts inside, in the same order. */
+/** These clips, less every one a caption already plays in the middle of, in the same order. */
 function withoutCaptions(ids: readonly string[]): string[] {
   const seq = activeSequence(useStore.getState().project)
-  const starts = captionsOn(seq).map(({ clip }) => clip.startS)
+  // A caption belongs to the take its MIDDLE plays in: its start can sit a frame
+  // or two before the take (a word snapped onto a frame, a recut moved off a neighbour).
+  const middles = captionsOn(seq).map(({ clip }) => (clip.startS + clipEndS(clip)) / 2)
   const clips = new Map(seq.tracks.flatMap((t) => t.clips.map((c) => [c.id, c] as const)))
   return ids.filter((id) => {
     const clip = clips.get(id)
-    return !!clip && !starts.some((t) => t >= clip.startS - 1e-9 && t < clipEndS(clip) - 1e-9)
+    return !!clip && !middles.some((t) => t >= clip.startS - 1e-9 && t < clipEndS(clip) - 1e-9)
   })
 }
 

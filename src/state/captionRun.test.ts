@@ -438,6 +438,27 @@ describe('"Caption the voiceover", with nothing selected', () => {
     expect(texts()).not.toContain('my own fix')
   })
 
+  it('a take whose caption starts a hair before it is still a take with captions', async () => {
+    const { a, b, c } = seed()
+    voiceLine()
+    await captionTheseClips([b])
+    const first = captionsOn(seq())[0]!.clip
+    expect(first.startS).toBeGreaterThanOrEqual(3 - 1e-9)
+    // A one line take, its caption's start a frame or two before the take it
+    // belongs to (a word snapped onto a frame, a recut moved off a neighbour).
+    const others = new Set(captionsOn(seq()).map(({ clip }) => clip.id))
+    others.delete(first.id)
+    updateActiveSequence('nudge', (sq) => ({
+      ...sq,
+      tracks: sq.tracks.map((t) => ({
+        ...t,
+        clips: t.clips.filter((cl) => !others.has(cl.id)).map((cl) => (cl.id === first.id ? { ...cl, startS: 2.95 } : cl)),
+      })),
+    }))
+    expect(captionsOn(seq())).toHaveLength(1)
+    expect(uncaptionedVoiceoverClipIds()).toEqual([a, c])
+  })
+
   it('"Redo all 3" redoes the takes it counted, wherever the playhead has gone since', async () => {
     const { a, b, c } = seed()
     voiceLine()
