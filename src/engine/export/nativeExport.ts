@@ -182,8 +182,18 @@ export async function exportNative(
   }
   if (!startRes.started) {
     await dropPreparedAudio()
+    // ⛔ A DISMISSED DIALOG IS A CANCEL, NEVER "COULD NOT START FFMPEG". Main
+    // takes back only the path its own dialog gave (native:pickOutput); for any
+    // other it asks him itself, and dismissing that one answers cancelled. This
+    // line was lost once, and the plain words turned the throw below into
+    // "Reinstall OL Premiere" with a red chip and a red taskbar button (export
+    // review, 2026-10-08).
+    if (startRes.cancelled) return null
     throw new Error(startRes.error ?? 'could not start ffmpeg')
   }
+  // Main asked him itself and wrote somewhere else: that is the answer main now
+  // holds, so a restart and Try again send that one.
+  if (startRes.outPath && startRes.outPath !== outPath) opts.onOutPath?.(startRes.outPath)
   // ⛔ A STOP WHILE FFMPEG WAS STARTING. The abort listener below goes on only
   // now, and a signal that already fired never calls it, so a cancel in that gap
   // used to render and encode the whole video anyway. ffmpeg is running and

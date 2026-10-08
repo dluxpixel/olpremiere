@@ -82,6 +82,9 @@ function fakeMain() {
   const startGate = { hold: false, release: () => {} }
   // What the save dialog answers: a path, or null when he dismisses it.
   const picker = { answer: 'C:\\Videos\\Holiday.mp4' as string | null }
+  // What start answers. Main takes back only the path its own dialog gave; for any other it asks
+  // him itself, and dismissing THAT dialog answers { started: false, cancelled: true }.
+  const startAnswer = { result: { started: true, outPath: 'C:\\Videos\\Holiday.mp4' } as Record<string, unknown> }
   const api = {
     isElectron: true,
     nativePickOutput: () => {
@@ -106,7 +109,7 @@ function fakeMain() {
     nativeStart: (config: Record<string, unknown>) => {
       log.push('start')
       starts.push(config)
-      const result = { started: true, outPath: 'C:\\Videos\\Holiday.mp4' }
+      const result = startAnswer.result
       // Held open when asked: the real start waits on the Windows save dialog.
       if (!startGate.hold) return Promise.resolve(result)
       return new Promise((r) => (startGate.release = () => r(result)))
@@ -137,7 +140,18 @@ function fakeMain() {
       }
     },
   }
-  return { api, log, writes, audio, starts, finish, startGate, picker, ffmpegSays: (frame: number) => progress?.({ frame, totalFrames: 0 }) }
+  return {
+    api,
+    log,
+    writes,
+    audio,
+    starts,
+    finish,
+    startGate,
+    picker,
+    startAnswer,
+    ffmpegSays: (frame: number) => progress?.({ frame, totalFrames: 0 }),
+  }
 }
 
 function project(): Project {
@@ -460,6 +474,41 @@ describe('⛔ where it goes is asked before the sound is made', () => {
     await flush()
     expect(main.log).not.toContain('pick')
     expect(main.starts[0].outPath).toBe('D:\\Shorts\\Gym.mp4')
+  })
+
+  it('one dialog per export, and start is handed exactly the string it answered', async () => {
+    // Main takes back only the path its own dialog gave (electron/exportChoice.ts on the electron
+    // branch), compared as a string: a page that tidied it up would make main ask a second time.
+    main.picker.answer = 'C:\\Users\\david\\Videos\\Gym Day  (2).mp4'
+    start()
+    await flush()
+    expect(main.log.filter((x) => x === 'pick')).toHaveLength(1)
+    expect(main.starts).toHaveLength(1)
+    expect(main.starts[0].outPath).toBe('C:\\Users\\david\\Videos\\Gym Day  (2).mp4')
+  })
+
+  it('⛔ main asking him itself, and him dismissing that, ends quietly as a cancel', async () => {
+    // This branch had lost `if (startRes.cancelled) return null`: the dismissed dialog threw "could
+    // not start ffmpeg", which the plain words turn into "Reinstall OL Premiere", with a red chip
+    // and a red taskbar button (export review S1, 2026-10-08).
+    const { plan } = countedMix(2)
+    h.audioPlan = plan
+    main.startAnswer.result = { started: false, cancelled: true }
+    await expect(start()).resolves.toBeNull()
+    expect(FakeWorker.made).toBe(0)
+  })
+
+  it('a start that really failed still says why', async () => {
+    main.startAnswer.result = { started: false, error: 'could not start ffmpeg: spawn EPERM' }
+    await expect(start()).rejects.toThrow('spawn EPERM')
+  })
+
+  it('when main had to ask him itself, a restart and Try again go where it really wrote', async () => {
+    const told: string[] = []
+    main.startAnswer.result = { started: true, outPath: 'E:\\Elsewhere.mp4' }
+    start(undefined, { onOutPath: (path) => told.push(path) })
+    await flush()
+    expect(told).toEqual(['C:\\Videos\\Holiday.mp4', 'E:\\Elsewhere.mp4'])
   })
 })
 
