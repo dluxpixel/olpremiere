@@ -28,6 +28,7 @@ const h = vi.hoisted(() => ({
   scale: 1,
   refines: [] as Array<{ assetId: string; t: number }>,
   cancels: [] as Array<string | undefined>,
+  cancelFrames: [] as Array<number | undefined>,
 }))
 
 const frameKey = (assetId: string, idx: number): string => `${assetId}:${idx}`
@@ -46,7 +47,10 @@ vi.mock('./frameCache', () => {
     previewCapHeight: () => undefined,
     setPreviewSequenceHeight: () => undefined,
     currentPreviewScale: () => h.scale,
-    cancelRefine: (assetId?: string) => h.cancels.push(assetId),
+    cancelRefine: (assetId?: string, tS?: number) => {
+      h.cancels.push(assetId)
+      h.cancelFrames.push(tS)
+    },
     refineFromOriginal: async (asset: MediaAsset, t: number) => {
       h.refines.push({ assetId: asset.id, t })
       return false
@@ -139,6 +143,7 @@ afterEach(() => {
   h.scale = 1
   h.refines.length = 0
   h.cancels.length = 0
+  h.cancelFrames.length = 0
   videos.length = 0
   preview.releasePreviewScratch()
   for (const id of ['A', 'B']) preview.disposePreviewAsset(id)
@@ -798,6 +803,24 @@ describe('at Full, the frame he rests on is redone from his footage', () => {
     expect(h.cancels).toEqual(['A'])
     preview.renderPreview(c, seq, { A }, 1, true)
     expect(h.cancels).toEqual(['A', undefined])
+  })
+
+  // N3 (sweep review): the settle timer was kept per ASSET, so two layers of one
+  // take at different moments (a dissolve on one take, a clip over a copy of
+  // itself at another offset) each re-armed it for the other at every draw and
+  // neither frame was ever redone.
+  it('every layer of one take is redone for its own frame, each draw re-asking changes nothing', async () => {
+    const early = clip({ id: 'early', assetId: 'A', startS: 0, inS: 0, outS: 4 })
+    const late = clip({ id: 'late', assetId: 'A', startS: 0, inS: 2, outS: 6 })
+    const seq: Sequence = { ...sequence([early]), tracks: [track([early]), { ...track([late]), id: 'T2' }] }
+    cacheFrames(A, 0, 6)
+    const c = canvas()
+    for (let i = 0; i < 3; i++) preview.renderPreview(c, seq, { A }, 0.8, false)
+    await new Promise((r) => setTimeout(r, 300))
+    expect(h.refines.map((r) => r.t).sort()).toEqual([0.8, 2.8])
+    // Moving on stops each layer's own old frame, not the take's every frame.
+    preview.renderPreview(c, seq, { A }, 1, false)
+    expect(h.cancelFrames.sort()).toEqual([0.8, 2.8])
   })
 
   it('never at Half or Quarter', async () => {

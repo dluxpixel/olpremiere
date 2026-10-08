@@ -230,6 +230,27 @@ describe('PB-13: the frame he rests on at Full is redone from his footage', () =
     fc.evictAsset(a.id)
   })
 
+  // N3 (sweep review): the one-shot readers were kept one per ASSET, so a second
+  // layer of the same take (a dissolve on one take, a clip over a bigger copy of
+  // itself) stopped the first layer's redo, and cancelling one stopped both.
+  it('two frames of one asset are redone side by side, and stopping one leaves the other', async () => {
+    const a = asset()
+    h.copyReady = true
+    await frameOf(a, 10 / 30)
+    await frameOf(a, 20 / 30)
+    const before = h.inputs.length
+    const one = fc.refineFromOriginal(a, 10 / 30)
+    await until(() => h.inputs.length > before)
+    const two = fc.refineFromOriginal(a, 20 / 30)
+    await until(() => h.inputs.length > before + 1)
+    fc.cancelRefine(a.id, 10 / 30)
+    expect(await one).toBe(false)
+    expect(await two).toBe(true)
+    expect(tagAt(a, 10 / 30)).toBe('copy:10')
+    expect(tagAt(a, 20 / 30)).toBe('orig:20')
+    fc.evictAsset(a.id)
+  })
+
   it('does nothing for a frame that is his footage already', async () => {
     const a = asset()
     expect((await frameOf(a, 10 / 30)).tag).toBe('orig:10')

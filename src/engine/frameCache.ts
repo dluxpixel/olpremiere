@@ -783,20 +783,24 @@ function reopenProxyBacked(): void {
 
 /** One-shot original decodes in flight, so a second rest on the same frame does not start another. */
 const refining = new Set<string>()
-/** The one-shot reader of each asset's refine in flight, so moving on can stop it. */
-const refineInputs = new Map<Id, Input>()
+/** The one-shot reader of each frame's refine in flight, so moving on can stop it. */
+const refineInputs = new Map<string, { assetId: Id; fps: number | undefined; input: Input }>()
 
 /**
- * Stop the one-shot original decode of this asset (every asset when omitted):
- * he moved on, or pressed Play, and that frame is not on screen any more. A
- * decode through a long GOP original can take most of a second, all of it
- * competing with the scrub he is doing now.
+ * Stop the one-shot original decode of this asset (every asset when omitted), or
+ * of just the frame at `tS` of it: he moved on, or pressed Play, and that frame
+ * is not on screen any more. A decode through a long GOP original can take most
+ * of a second, all of it competing with the scrub he is doing now.
+ *
+ * Kept per FRAME, not per asset (sweep review N3): two layers of one take rest
+ * on two different frames, and moving one on must not stop the other's redo.
  */
-export function cancelRefine(assetId?: Id): void {
-  for (const [id, input] of [...refineInputs]) {
-    if (assetId !== undefined && id !== assetId) continue
-    refineInputs.delete(id)
-    input.dispose()
+export function cancelRefine(assetId?: Id, tS?: number): void {
+  for (const [key, r] of [...refineInputs]) {
+    if (assetId !== undefined && r.assetId !== assetId) continue
+    if (tS !== undefined && key !== cacheKey(r.assetId, frameIndexAt(tS, r.fps))) continue
+    refineInputs.delete(key)
+    r.input.dispose()
   }
 }
 
@@ -832,9 +836,8 @@ export async function refineFromOriginal(asset: MediaAsset, tS: number): Promise
     ])
     const blob = await getBlob(asset.blobKey)
     if (!blob) return false
-    cancelRefine(asset.id)
     input = new MbInput({ source: new BlobSource(blob), formats: ALL_FORMATS })
-    refineInputs.set(asset.id, input)
+    refineInputs.set(key, { assetId: asset.id, fps: asset.fps, input })
     const track = await input.getPrimaryVideoTrack()
     if (!track) return false
     const th = previewTargetHeight((await track.getDisplayHeight()) || asset.height, scale, PREVIEW_BASE_MAX_H, seqH)
@@ -851,7 +854,7 @@ export async function refineFromOriginal(asset: MediaAsset, tS: number): Promise
     // A failed refine leaves the copy's frame on screen, which is what was there.
     return false
   } finally {
-    if (input && refineInputs.get(asset.id) === input) refineInputs.delete(asset.id)
+    if (input && refineInputs.get(key)?.input === input) refineInputs.delete(key)
     input?.dispose()
     refining.delete(key)
   }

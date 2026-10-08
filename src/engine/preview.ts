@@ -909,8 +909,14 @@ function parkWhenStill(pooled: PooledVideo, key: Id, srcT: number, fps: number):
 
 /** How long a paused frame must stay put before it is redone from his footage. */
 const REFINE_SETTLE_MS = 250
-/** The paused frame each asset was last asked to settle on, and its timer (spent once it fires). */
-const refineTimers = new Map<Id, { srcT: number; timer: ReturnType<typeof setTimeout> }>()
+/**
+ * The paused frame each LAYER was last asked to settle on, and its timer (spent
+ * once it fires). Per layer and not per asset (sweep review N3): two layers of
+ * one take rest on two different frames (a dissolve on one take, a clip over a
+ * copy of itself at another offset), and keyed by asset each re-armed the other's
+ * timer at every draw, so neither frame was ever redone.
+ */
+const refineTimers = new Map<Id, { assetId: Id; srcT: number; timer: ReturnType<typeof setTimeout> }>()
 
 /**
  * At Full quality, once the playhead has rested on a paused frame, have it
@@ -919,14 +925,18 @@ const refineTimers = new Map<Id, { srcT: number; timer: ReturnType<typeof setTim
  * a look or place a caption by. Not while moving, so a scrub never pays the
  * original's seek; never at Half or Quarter, whose point is being cheap.
  */
-function refineWhenStill(asset: MediaAsset, srcT: number): void {
-  const prev = refineTimers.get(asset.id)
-  if (prev && prev.srcT === srcT) return
+function refineWhenStill(layerKey: Id, asset: MediaAsset, srcT: number): void {
+  const prev = refineTimers.get(layerKey)
+  if (prev && prev.assetId === asset.id && prev.srcT === srcT) return
   if (prev) {
     clearTimeout(prev.timer)
     // Moved on: a redo of the last frame still decoding is for a frame that is
-    // not on screen any more, and it competes with the scrub.
-    cancelRefine(asset.id)
+    // not on screen any more, and it competes with the scrub. Unless another
+    // layer is resting on that very frame, whose redo it is as well.
+    const sharedWithOther = [...refineTimers].some(
+      ([k, p]) => k !== layerKey && p.assetId === prev.assetId && p.srcT === prev.srcT,
+    )
+    if (!sharedWithOther) cancelRefine(prev.assetId, prev.srcT)
   }
   const timer = setTimeout(() => {
     if (wasPlaying || currentPreviewScale() < 1) return
@@ -934,7 +944,7 @@ function refineWhenStill(asset: MediaAsset, srcT: number): void {
       if (changed) invalidatePreview()
     })
   }, REFINE_SETTLE_MS)
-  refineTimers.set(asset.id, { srcT, timer })
+  refineTimers.set(layerKey, { assetId: asset.id, srcT, timer })
 }
 
 /**
@@ -1283,7 +1293,7 @@ function makeTextureSource(
         // Served from the cache, so the element is wherever it last stopped.
         // Park it here once he stops moving, so Space starts on this frame.
         parkWhenStill(pooled, poolKey, srcT, asset.fps || fps)
-        refineWhenStill(asset, srcT)
+        refineWhenStill(layer.clipId, asset, srcT)
         return confident(exact as TexImageSource)
       }
       // No exact frame yet. Fall back to a nearest <video> seek, but the seek
