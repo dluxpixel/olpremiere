@@ -860,11 +860,11 @@ const elementDriven = (layer: RenderLayer): boolean =>
  * in the forward ladder exists for.
  *
  * Returns the new low edge. A playhead below the old edge (the decode fell
- * behind, or a jump) or far above it (a jump back up) starts over two chunks
+ * behind, or a jump) or more than two chunks above it (a jump back up) starts over two chunks
  * deep.
  */
 export function nextBackwardLow(lowS: number | undefined, srcT: number, chunkS: number): number {
-  if (lowS === undefined || srcT < lowS || srcT - lowS > 3 * chunkS) return srcT - 2 * chunkS
+  if (lowS === undefined || srcT < lowS || srcT - lowS > 2 * chunkS) return srcT - 2 * chunkS
   if (srcT - lowS < chunkS) return lowS - chunkS
   return lowS
 }

@@ -429,6 +429,14 @@ describe('nextBackwardLow (reversed play feeds the decoder in chunks)', () => {
     expect(nextBackwardLow(7, 6.9, 0.5)).toBeCloseTo(5.9, 9)
     expect(nextBackwardLow(7, 20, 0.5)).toBe(19)
   })
+  // n-B (sweep review 2): the edge is never more than two chunks below the
+  // playhead while playing backward, so a playhead further above it than that
+  // has jumped, and the old edge is a decode the new place does not want.
+  it('starts over once the playhead is more than two chunks above the edge, not three', () => {
+    expect(nextBackwardLow(7, 8.2, 0.5)).toBeCloseTo(7.2, 9)
+    // Exactly two chunks above is where a fresh start sits: nothing to redo.
+    expect(nextBackwardLow(7, 8, 0.5)).toBe(7)
+  })
 })
 
 describe('nextAheadHigh (an element off its frame keeps the decoder ahead of it)', () => {
