@@ -6,7 +6,7 @@
 // was written; and anything the sweep cannot read stops it removing anything at all.
 // Real files in a temp folder, because the folders are the point.
 
-import { mkdir, mkdtemp, readdir, readFile, rm, truncate, utimes, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rename, rm, stat, truncate, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -67,6 +67,9 @@ const onDisk = async (dir = media): Promise<string[]> => (await readdir(dir).cat
 /** The store: three projects, the open one ('p1') with its file in Projects. */
 const store = (assetIds: string[] = [A.live]) => ({ projectIds: ['p1', 'p2', 'p3'], assetIds })
 const ledger = (): string => ledgerFile(places)
+/** What the ledger holds now. */
+const onLedger = async (): Promise<{ v?: number; unused: Record<string, number>; places: unknown; seen: string[] }> =>
+  JSON.parse(await readFile(ledger(), 'utf8'))
 
 beforeEach(async () => {
   root = await mkdtemp(path.join(tmpdir(), 'olp-sweep-'))
@@ -104,7 +107,7 @@ describe('⛔ what is never let go, however old', () => {
     expect(r.removed).toEqual([])
     expect(await onDisk()).toEqual([A.live, A.file, A.trash, A.backup].sort())
     // Used copies are off the ledger, so a later unused spell starts its 7 days from zero.
-    expect(JSON.parse(await readFile(ledger(), 'utf8'))).toEqual({})
+    expect((await onLedger()).unused).toEqual({})
   })
 
   it('anything that is not an asset id: Library copies, part files, his own files', async () => {
@@ -195,7 +198,7 @@ describe('the 7 days', () => {
     await writeFile(ledger(), JSON.stringify({ [A.gone]: T0 + 100 * DAY }))
     const r = await sweepUnusedSpareCopies(places, store(), T0 + 3 * DAY)
     expect(r.removed).toEqual([])
-    expect(JSON.parse(await readFile(ledger(), 'utf8'))[A.gone]).toBe(T0 + 3 * DAY)
+    expect((await onLedger()).unused[A.gone]).toBe(T0 + 3 * DAY)
   })
 
   it('a ledger that will not read starts every clock again, and lets nothing go that run', async () => {
@@ -266,6 +269,7 @@ describe('⛔ when it cannot prove a copy is unused, it lets nothing go', () => 
   it('a store that read empty (the morning it was wiped)', async () => {
     const r = await sweepUnusedSpareCopies(places, { projectIds: [], assetIds: [] }, T0)
     expect(r.refused).toMatch(/no projects/)
+    expect(r.code).toBe('store-empty')
     expect(await onDisk()).toEqual([A.gone])
   })
 
@@ -273,6 +277,7 @@ describe('⛔ when it cannot prove a copy is unused, it lets nothing go', () => 
     await writeFile(path.join(places.projectsDir, 'half_dd.olpbak'), '{"project":{"id":"dd","ass')
     const r = await sweepUnusedSpareCopies(places, store(), T0)
     expect(r.refused).toMatch(/could not read every project file/)
+    expect(r.code).toBe('unreadable-file')
     expect(await onDisk()).toEqual([A.gone])
   })
 
@@ -280,6 +285,7 @@ describe('⛔ when it cannot prove a copy is unused, it lets nothing go', () => 
     await writeFile(path.join(places.backupDir, 'odd.olpbak'), '{"project":{"id":"x"}}')
     const r = await sweepUnusedSpareCopies(places, store(), T0)
     expect(r.refused).toBeTruthy()
+    expect(r.code).toBe('no-media-list')
     expect(await onDisk()).toEqual([A.gone])
   })
 
@@ -289,6 +295,7 @@ describe('⛔ when it cannot prove a copy is unused, it lets nothing go', () => 
     await writeFile(places.projectsDir, 'not a folder')
     const r = await sweepUnusedSpareCopies(places, store(), T0)
     expect(r.refused).toBeTruthy()
+    expect(r.code).toBe('folder-unreadable')
     expect(await onDisk()).toEqual([A.gone])
   })
 
@@ -298,6 +305,7 @@ describe('⛔ when it cannot prove a copy is unused, it lets nothing go', () => 
     await truncate(big, 65 * 1024 * 1024)
     const r = await sweepUnusedSpareCopies(places, store(), T0)
     expect(r.refused).toMatch(/too big to be a project file/)
+    expect(r.code).toBe('file-too-big')
     expect(await onDisk()).toEqual([A.gone])
   })
 
@@ -309,6 +317,7 @@ describe('⛔ when it cannot prove a copy is unused, it lets nothing go', () => 
       await rm(places.projectsDir, { recursive: true, force: true })
       const r = await sweepUnusedSpareCopies(places, store(), T0)
       expect(r.refused).toMatch(/Projects folder is not there/)
+      expect(r.code).toBe('projects-missing')
       expect(await onDisk()).toEqual([A.gone])
     })
 
@@ -316,6 +325,7 @@ describe('⛔ when it cannot prove a copy is unused, it lets nothing go', () => 
       await rm(trash, { recursive: true, force: true })
       const r = await sweepUnusedSpareCopies(places, store(), T0)
       expect(r.refused).toMatch(/Trash folder is not there/)
+      expect(r.code).toBe('trash-missing')
       expect(await onDisk()).toEqual([A.gone])
     })
 
@@ -323,6 +333,7 @@ describe('⛔ when it cannot prove a copy is unused, it lets nothing go', () => 
       await rm(places.backupDir, { recursive: true, force: true })
       const r = await sweepUnusedSpareCopies(places, store(), T0)
       expect(r.refused).toMatch(/Backups folder is not there/)
+      expect(r.code).toBe('backups-missing')
       expect(await onDisk()).toEqual([A.gone])
     })
 
@@ -340,6 +351,7 @@ describe('⛔ when it cannot prove a copy is unused, it lets nothing go', () => 
     await rm(path.join(places.projectsDir, 'Open_p1.olpbak'))
     const r = await sweepUnusedSpareCopies(places, store(), T0)
     expect(r.refused).toMatch(/holds no project files/)
+    expect(r.code).toBe('projects-empty')
     expect(await onDisk()).toEqual([A.gone])
   })
 
@@ -348,7 +360,131 @@ describe('⛔ when it cannot prove a copy is unused, it lets nothing go', () => 
     await projectFile(places.projectsDir, 'Someone else_zz.olpbak', [], 'zz')
     const r = await sweepUnusedSpareCopies(places, store(), T0)
     expect(r.refused).toMatch(/no file in the Projects folder is a project in the store/)
+    expect(r.code).toBe('projects-foreign')
     expect(await onDisk()).toEqual([A.gone])
+  })
+})
+
+// ⛔ THE APP MAKES ALL THREE FOLDERS AGAIN BY ITSELF: Projects on the next save,
+// Backups on the next backup, Trash on his next delete. After Documents moves, the
+// checks above all pass on the new, nearly empty folders while his real Trash and
+// backups sit somewhere else, and every copy only they used went 7 days later.
+describe('⛔ the same folders as last time, or nothing goes', () => {
+  /** His Trash and his backups, each with footage nothing else uses any more. */
+  async function hisTrashAndBackups(): Promise<void> {
+    for (const id of [A.trash, A.backup, A.gone]) await copy(id, 400)
+    await projectFile(trash, '2026-01-01_best cat_p9.olpbak', [A.trash], 'p9')
+    await projectFile(places.backupDir, '2026-01-01_p2_GYM.olpbak', [A.backup], 'p2')
+  }
+  const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+  const moveDocuments = (): Promise<void> => rename(path.join(root, 'Documents'), path.join(root, 'Documents moved'))
+  /** One run on each day, in turn, the store unchanged. */
+  async function runsOn(days: number[]): Promise<Awaited<ReturnType<typeof sweepUnusedSpareCopies>>[]> {
+    const out: Awaited<ReturnType<typeof sweepUnusedSpareCopies>>[] = []
+    for (const at of days) out.push(await sweepUnusedSpareCopies(places, store(), at))
+    return out
+  }
+
+  it('Documents moved, then a save, a backup and one delete made all three again: nothing goes, then or ever', async () => {
+    await hisTrashAndBackups()
+    expect((await sweepUnusedSpareCopies(places, store(), T0)).refused).toBeUndefined()
+    const ledgerBefore = await readFile(ledger(), 'utf8')
+    const born = (await stat(places.projectsDir)).birthtimeMs
+
+    await moveDocuments()
+    // The file system stamps a new folder by its clock tick: let one pass.
+    await wait(50)
+    // His next save, the next backup tick (every project once) and one delete.
+    await projectFile(places.projectsDir, 'Open_p1.olpbak', [], 'p1')
+    for (const id of ['p1', 'p2', 'p3']) await projectFile(places.backupDir, `2026-02-01_${id}.olpbak`, [], id)
+    await projectFile(trash, '2026-02-01_Old_p3.olpbak', [], 'p3')
+    expect((await stat(places.projectsDir)).birthtimeMs).not.toBe(born)
+
+    const runs = await runsOn([T0 + 1 * DAY, T0 + 8 * DAY, T0 + 60 * DAY])
+    expect(runs.flatMap((r) => r.removed)).toEqual([])
+    expect(await onDisk()).toEqual([A.trash, A.backup, A.gone].sort())
+    expect(runs.map((r) => r.code)).toEqual(['folders-changed', 'folders-changed', 'folders-changed'])
+    expect(await readFile(ledger(), 'utf8')).toBe(ledgerBefore)
+  })
+
+  it('new folders refuse even when they hold every project the old ones did', async () => {
+    await hisTrashAndBackups()
+    await sweepUnusedSpareCopies(places, store(), T0)
+    await moveDocuments()
+    await wait(50)
+    await projectFile(places.projectsDir, 'Open_p1.olpbak', [], 'p1')
+    await projectFile(trash, '2026-01-01_best cat_p9.olpbak', [], 'p9')
+    await projectFile(places.backupDir, '2026-01-01_p2_GYM.olpbak', [], 'p2')
+    const runs = await runsOn([T0 + 30 * DAY, T0 + 38 * DAY])
+    expect(runs.flatMap((r) => r.removed)).toEqual([])
+    expect(await onDisk()).toEqual([A.trash, A.backup, A.gone].sort())
+    expect(runs.map((r) => r.code)).toEqual(['folders-changed', 'folders-changed'])
+  })
+
+  it('moved back where they were, the same folders go on as before', async () => {
+    await hisTrashAndBackups()
+    await sweepUnusedSpareCopies(places, store(), T0)
+    await moveDocuments()
+    expect((await sweepUnusedSpareCopies(places, store(), T0 + 1 * DAY)).code).toBe('projects-missing')
+    await rename(path.join(root, 'Documents moved'), path.join(root, 'Documents'))
+    const r = await sweepUnusedSpareCopies(places, store(), T0 + 8 * DAY)
+    expect(r.refused).toBeUndefined()
+    expect(r.removed).toEqual([A.gone])
+    expect(await onDisk()).toEqual([A.trash, A.backup].sort())
+  })
+
+  it('a project seen in Trash last time is in none of the folders now: nothing goes, then or ever', async () => {
+    await hisTrashAndBackups()
+    await sweepUnusedSpareCopies(places, store(), T0)
+    const ledgerBefore = await readFile(ledger(), 'utf8')
+    // Gone from Trash, and from everywhere else too.
+    await rm(path.join(trash, '2026-01-01_best cat_p9.olpbak'))
+    const runs = await runsOn([T0 + 1 * DAY, T0 + 8 * DAY, T0 + 60 * DAY])
+    expect(runs.flatMap((r) => r.removed)).toEqual([])
+    expect(await onDisk()).toEqual([A.trash, A.backup, A.gone].sort())
+    expect(runs.map((r) => r.code)).toEqual(['project-gone', 'project-gone', 'project-gone'])
+    expect(await readFile(ledger(), 'utf8')).toBe(ledgerBefore)
+  })
+
+  it('his own deletes and restores between runs never stop it', async () => {
+    await hisTrashAndBackups()
+    await projectFile(places.projectsDir, 'Green_p2.olpbak', [], 'p2')
+    await sweepUnusedSpareCopies(places, store(), T0)
+    // He deletes Green: its file moves into Trash. He opens the old one from Trash: it is in Projects again.
+    await rename(path.join(places.projectsDir, 'Green_p2.olpbak'), path.join(trash, '2026-02-01_Green_p2.olpbak'))
+    await rename(path.join(trash, '2026-01-01_best cat_p9.olpbak'), path.join(places.projectsDir, 'best cat_p9.olpbak'))
+    const r = await sweepUnusedSpareCopies(places, store(), T0 + 8 * DAY)
+    expect(r.refused).toBeUndefined()
+    expect(r.removed).toEqual([A.gone])
+  })
+})
+
+// ⛔ 7 DAYS IN A ROW. A run that stops still takes what the store uses off the
+// ledger: a copy used again during a stretch of stopped runs kept its old stamp,
+// and went at the first run that got through, with no grace at all.
+describe('⛔ a run that stops still takes what the store uses off the ledger', () => {
+  it('a copy used again while a torn backup stopped every run gets its full 7 days once runs go through', async () => {
+    await copy(A.gone, 30)
+    await sweepUnusedSpareCopies(places, store(), T0)
+    const before = await onLedger()
+    // A torn backup stops every run, and on day 3 a project uses the copy again.
+    const torn = path.join(places.backupDir, 'torn.olpbak')
+    await writeFile(torn, '{"kind":"ol-premiere-ba')
+    const stopped = await sweepUnusedSpareCopies(places, store([A.live, A.gone]), T0 + 3 * DAY)
+    const after = await onLedger()
+    // Day 8: the backup is whole again.
+    await rm(torn)
+    const r = await sweepUnusedSpareCopies(places, store(), T0 + 8 * DAY)
+
+    // Unused for 5 days, not 8: it stays.
+    expect(r.removed).toEqual([])
+    expect(await onDisk()).toEqual([A.gone])
+    expect(r.refused).toBeUndefined()
+    expect(stopped.code).toBe('unreadable-file')
+    expect(after.unused[A.gone]).toBeUndefined()
+    // Only the store's ids come off: the folders it saw stay as they were.
+    expect(after.places).toEqual(before.places)
+    expect(after.seen).toEqual(before.seen)
   })
 })
 
@@ -364,6 +500,7 @@ describe('⛔ a hold stands the cleanup down for 30 days, then every clock start
 
     const held = await sweepUnusedSpareCopies(places, store(), T0 + 8 * DAY)
     expect(held.refused).toMatch(/held until .*the store had no project to open at start/)
+    expect(held.code).toBe('held')
     expect(await onDisk()).toEqual([A.gone])
 
     // The day the hold ends: its clock starts then, not 30 days before.
@@ -392,6 +529,7 @@ describe('⛔ a hold stands the cleanup down for 30 days, then every clock start
     await writeFile(holdFile(places), '{"unt')
     const r = await sweepUnusedSpareCopies(places, store(), T0)
     expect(r.refused).toMatch(/hold/)
+    expect(r.code).toBe('hold-unreadable')
     expect(await onDisk()).toEqual([A.gone])
   })
 })

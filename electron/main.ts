@@ -663,8 +663,10 @@ app.whenReady().then(() => {
   })
   ipcMain.handle('media:sweepUnused', async (_e, projectIds: unknown, assetIds: unknown) => {
     const none = { removed: [], freedBytes: 0, waiting: 0 }
-    if (sweepHeld) return { ...none, refused: `held this start: ${sweepHeld}` }
-    if (mediaStore.isWriting()) return { ...none, busy: true, refused: 'a copy is being written' }
+    if (sweepHeld) return { ...none, refused: `held this start: ${sweepHeld}`, code: 'held' as const }
+    if (mediaStore.isWriting()) {
+      return { ...none, busy: true, refused: 'a copy is being written', code: 'busy' as const }
+    }
     return mediaSweep.sweepUnusedSpareCopies(sweepPlaces(), {
       projectIds: Array.isArray(projectIds) ? projectIds.map(String) : [],
       assetIds: Array.isArray(assetIds) ? assetIds.map(String) : [],

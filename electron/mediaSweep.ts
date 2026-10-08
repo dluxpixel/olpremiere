@@ -19,8 +19,11 @@
 // Any file in those folders that cannot be read or parsed stops the whole run:
 // a project it cannot read might use anything. So does a folder that is not
 // there, or a Projects folder that does not hold the store's projects: that is
-// the wrong place, not an empty one. Only names shaped like an asset id are ever
-// looked at; the Library's `lib-` copies and anything else are never touched.
+// the wrong place, not an empty one. So do folders that are not the ones the last
+// run saw, and a project seen in Trash or the backups last time that is in none
+// of the folders now (the ledger keeps both). Only names shaped like an asset id
+// are ever looked at; the Library's `lib-` copies and anything else are never
+// touched.
 //
 // ⛔ IT DELETES ONLY IN THIS PROFILE'S OWN FOLDER. What it reads (the store, the
 // Projects folder, the backups) belongs to the profile it runs in, so what it
@@ -88,6 +91,30 @@ export interface StoreUse {
   assetIds: readonly string[]
 }
 
+/**
+ * Why a run let nothing go, as one fixed word. His usage log keeps this and never
+ * the reason's text: the text can carry a project file's name, and its first
+ * words were the same for every folder reason, so a cleanup that stopped for
+ * good could not be told from one that stopped once.
+ */
+export type RefusalCode =
+  | 'store-empty'
+  | 'hold-unreadable'
+  | 'held'
+  | 'busy'
+  | 'projects-missing'
+  | 'trash-missing'
+  | 'backups-missing'
+  | 'folder-unreadable'
+  | 'unreadable-file'
+  | 'not-a-file'
+  | 'file-too-big'
+  | 'no-media-list'
+  | 'projects-empty'
+  | 'projects-foreign'
+  | 'folders-changed'
+  | 'project-gone'
+
 export interface SweepResult {
   removed: string[]
   freedBytes: number
@@ -95,66 +122,163 @@ export interface SweepResult {
   waiting: number
   /** Why nothing was removed at all, when the run refused. */
   refused?: string
+  /** The same, as one fixed word (RefusalCode). */
+  code?: RefusalCode
   /** It only has to wait (a copy is being written), so the page tries again later. */
   busy?: boolean
 }
 
+/** A run that has to stop, with the word his usage log keeps. */
+class Refused extends Error {
+  constructor(
+    readonly code: RefusalCode,
+    message: string,
+  ) {
+    super(message)
+  }
+}
+
+/** Which folder it was: where it is, and when it was made. */
+interface Place {
+  path: string
+  born: number
+}
+
+interface FolderRead {
+  /** Project files read. */
+  files: number
+  /** The project ids in them. */
+  projectIds: Set<string>
+  place: Place
+}
+
 /**
- * Every asset id one folder of project files uses, and the project ids in it.
- * Returns how many project files it read. Throws on anything it cannot read,
- * and on a folder that is not there.
+ * Every asset id one folder of project files uses goes into `used`. Returns how
+ * many project files it read, the project ids in them, and which folder it was.
+ * Throws a Refused on anything it cannot read, and on a folder that is not there.
  */
 async function readProjectFolder(
   dir: string,
-  what: string,
+  what: 'Projects' | 'Trash' | 'Backups',
+  missing: RefusalCode,
   used: Set<string>,
-  projectIds?: Set<string>,
-): Promise<number> {
+): Promise<FolderRead> {
   let names: string[]
+  let born: number
   try {
+    born = (await stat(dir)).birthtimeMs
     names = await readdir(dir)
   } catch (err) {
     // ⛔ A FOLDER THAT IS NOT THERE IS NOT AN EMPTY ONE. Documents can move (OneDrive
     // backup switched off, its location changed, the folder renamed by hand), and
     // then every project file is still on the disk, just not here. Read as "no
     // files", that turned every copy only Trash or a backup used into "unused".
-    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') throw new Error(`the ${what} folder is not there`)
-    throw err
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') throw new Refused(missing, `the ${what} folder is not there`)
+    throw new Refused('folder-unreadable', `the ${what} folder will not open`)
   }
   let files = 0
+  const projectIds = new Set<string>()
   for (const name of names) {
     if (!name.toLowerCase().endsWith('.olpbak')) continue
     const file = path.join(dir, name)
-    const s = await stat(file)
-    if (!s.isFile()) throw new Error(`${name} is not a file`)
-    if (s.size > MAX_PROJECT_FILE_BYTES) throw new Error(`${name} is too big to be a project file`)
-    const project = (JSON.parse(await readFile(file, 'utf8')) as { project?: { id?: unknown; assets?: unknown } })
-      ?.project
-    if (!project?.assets || typeof project.assets !== 'object') throw new Error(`${name} does not say what media it uses`)
+    const s = await stat(file).catch(() => null)
+    if (!s) throw new Refused('unreadable-file', `${name} will not read`)
+    if (!s.isFile()) throw new Refused('not-a-file', `${name} is not a file`)
+    if (s.size > MAX_PROJECT_FILE_BYTES) throw new Refused('file-too-big', `${name} is too big to be a project file`)
+    let project: { id?: unknown; assets?: unknown } | undefined
+    try {
+      project = (JSON.parse(await readFile(file, 'utf8')) as { project?: { id?: unknown; assets?: unknown } } | null)
+        ?.project
+    } catch {
+      throw new Refused('unreadable-file', `${name} will not read`)
+    }
+    if (!project?.assets || typeof project.assets !== 'object') {
+      throw new Refused('no-media-list', `${name} does not say what media it uses`)
+    }
     for (const id of assetIdsUsedBy(project)) used.add(id.toLowerCase())
-    if (typeof project.id === 'string') projectIds?.add(project.id)
+    if (typeof project.id === 'string') projectIds.add(project.id)
     files += 1
     // One file at a time, letting his input through between them: this is the
     // main process, the thread that carries his mouse and keys.
     await new Promise((r) => setImmediate(r))
   }
-  return files
+  return { files, projectIds, place: { path: path.resolve(dir), born } }
 }
 
-async function readLedger(file: string): Promise<Record<string, number>> {
-  try {
-    const parsed = JSON.parse(await readFile(file, 'utf8')) as unknown
-    if (!parsed || typeof parsed !== 'object') return {}
-    const out: Record<string, number> = {}
-    for (const [id, at] of Object.entries(parsed as Record<string, unknown>)) {
-      if (typeof at === 'number' && Number.isFinite(at)) out[id] = at
-    }
-    return out
-  } catch {
-    // No ledger, or one that will not read: every clock starts again, which only
-    // ever keeps a copy longer.
-    return {}
+interface Places {
+  projects: Place
+  trash: Place
+  backups: Place
+}
+
+interface Ledger {
+  /** 'none': no ledger yet. 'broken': there, but it will not read. */
+  state: 'none' | 'read' | 'broken'
+  /** When each unused copy was first seen unused. */
+  unused: Record<string, number>
+  /** The folders the last run that went through read, or null before the first. */
+  places: Places | null
+  /** Every project id any run has seen in Trash or the backups. */
+  seen: string[]
+}
+
+function readPlace(raw: unknown): Place | null {
+  const p = raw as { path?: unknown; born?: unknown } | null
+  if (typeof p?.path !== 'string' || typeof p.born !== 'number' || !Number.isFinite(p.born)) return null
+  return { path: p.path, born: p.born }
+}
+
+function readUnused(raw: unknown): Record<string, number> {
+  const out: Record<string, number> = {}
+  if (!raw || typeof raw !== 'object') return out
+  for (const [id, at] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof at === 'number' && Number.isFinite(at)) out[id] = at
   }
+  return out
+}
+
+async function readLedger(file: string): Promise<Ledger> {
+  let raw: string
+  try {
+    raw = await readFile(file, 'utf8')
+  } catch (err) {
+    const state = (err as NodeJS.ErrnoException)?.code === 'ENOENT' ? 'none' : 'broken'
+    return { state, unused: {}, places: null, seen: [] }
+  }
+  try {
+    const parsed = JSON.parse(raw) as { v?: unknown; unused?: unknown; places?: unknown; seen?: unknown } | null
+    if (!parsed || typeof parsed !== 'object') throw new Error('not a ledger')
+    // The first ledgers were the unused map alone.
+    if (parsed.v !== 2) return { state: 'read', unused: readUnused(parsed), places: null, seen: [] }
+    const pl = parsed.places as Record<string, unknown> | null | undefined
+    const projects = readPlace(pl?.projects)
+    const trash = readPlace(pl?.trash)
+    const backups = readPlace(pl?.backups)
+    return {
+      state: 'read',
+      unused: readUnused(parsed.unused),
+      places: projects && trash && backups ? { projects, trash, backups } : null,
+      seen: Array.isArray(parsed.seen) ? parsed.seen.filter((id): id is string => typeof id === 'string') : [],
+    }
+  } catch {
+    // One that will not read: every clock starts again, which only ever keeps a
+    // copy longer.
+    return { state: 'broken', unused: {}, places: null, seen: [] }
+  }
+}
+
+function writeLedger(file: string, ledger: Pick<Ledger, 'unused' | 'places' | 'seen'>): Promise<void> {
+  return replaceFile(file, JSON.stringify({ v: 2, unused: ledger.unused, places: ledger.places, seen: ledger.seen }))
+}
+
+/**
+ * The same folder: the same place, made at the same moment. A folder made again
+ * where the old one was has a new moment; one moved back to where it was, on the
+ * same drive, has its old one.
+ */
+function samePlace(a: Place, b: Place): boolean {
+  const fold = (p: string): string => (process.platform === 'win32' ? p.toLowerCase() : p)
+  return fold(a.path) === fold(b.path) && a.born === b.born
 }
 
 interface Hold {
@@ -207,36 +331,97 @@ export async function sweepUnusedSpareCopies(
   store: StoreUse,
   now = Date.now(),
 ): Promise<SweepResult> {
-  const refuse = (why: string): SweepResult => ({ removed: [], freedBytes: 0, waiting: 0, refused: why })
+  const refuse = (code: RefusalCode, why: string): SweepResult => ({
+    removed: [],
+    freedBytes: 0,
+    waiting: 0,
+    refused: why,
+    code,
+  })
   // A store that reads empty is the morning it was wiped, not a shelf with nothing on it.
-  if (store.projectIds.length <= 0) return refuse('the store has no projects')
+  if (store.projectIds.length <= 0) return refuse('store-empty', 'the store has no projects')
 
   let hold: Hold | null
   try {
     hold = await readHold(holdFile(places))
   } catch {
-    return refuse('the hold on the cleanup does not read')
+    return refuse('hold-unreadable', 'the hold on the cleanup does not read')
   }
   if (hold && hold.until > now) {
-    return refuse(`held until ${new Date(hold.until).toISOString().slice(0, 10)}: ${hold.why}`)
+    return refuse('held', `held until ${new Date(hold.until).toISOString().slice(0, 10)}: ${hold.why}`)
   }
 
   // Lower case on both sides: a copy put back by hand under another case is still his.
-  const used = new Set(store.assetIds.map((id) => id.toLowerCase()))
+  const inStore = new Set(store.assetIds.map((id) => id.toLowerCase()))
+  const ledgerPath = ledgerFile(places)
+  const ledger = await readLedger(ledgerPath)
+
+  // ⛔ A RUN THAT STOPS STILL TAKES WHAT THE STORE USES OFF THE LEDGER. Its 7 days
+  // are 7 days IN A ROW: a copy used again during a stretch of stopped runs (a torn
+  // backup, a missing Trash) kept its old stamp and went at the first run that got
+  // through, with no grace at all. Taking an id off only ever keeps a copy longer,
+  // and the page's list is good even when the folders are not. Everything else on
+  // the ledger, the folders it saw included, is left as it was.
+  const refuseKeeping = async (code: RefusalCode, why: string): Promise<SweepResult> => {
+    if (ledger.state === 'read') {
+      const unused: Record<string, number> = {}
+      let dropped = false
+      for (const [name, at] of Object.entries(ledger.unused)) {
+        if (inStore.has(name.toLowerCase())) dropped = true
+        else unused[name] = at
+      }
+      if (dropped) await writeLedger(ledgerPath, { ...ledger, unused }).catch(() => undefined)
+    }
+    return refuse(code, why)
+  }
+
+  const used = new Set(inStore)
+  let read: { projects: FolderRead; trash: FolderRead; backups: FolderRead }
   try {
-    const inProjects = new Set<string>()
-    const files = await readProjectFolder(places.projectsDir, 'Projects', used, inProjects)
+    const projects = await readProjectFolder(places.projectsDir, 'Projects', 'projects-missing', used)
     // A saved project always writes its file, so a store with projects beside a
     // Projects folder holding none of them is the wrong folder, not an empty one.
-    if (files === 0) throw new Error('the Projects folder holds no project files')
-    if (!store.projectIds.some((id) => inProjects.has(id))) {
-      throw new Error('no file in the Projects folder is a project in the store')
+    if (projects.files === 0) throw new Refused('projects-empty', 'the Projects folder holds no project files')
+    if (!store.projectIds.some((id) => projects.projectIds.has(id))) {
+      throw new Refused('projects-foreign', 'no file in the Projects folder is a project in the store')
     }
-    await readProjectFolder(path.join(places.projectsDir, 'Trash'), 'Trash', used)
-    await readProjectFolder(places.backupDir, 'Backups', used)
+    const trash = await readProjectFolder(path.join(places.projectsDir, 'Trash'), 'Trash', 'trash-missing', used)
+    const backups = await readProjectFolder(places.backupDir, 'Backups', 'backups-missing', used)
+    read = { projects, trash, backups }
   } catch (err) {
-    return refuse(`could not read every project file: ${err instanceof Error ? err.message : String(err)}`)
+    return refuseKeeping(
+      err instanceof Refused ? err.code : 'unreadable-file',
+      `could not read every project file: ${err instanceof Error ? err.message : String(err)}`,
+    )
   }
+
+  // ⛔ THE SAME FOLDERS AS LAST TIME, OR NOTHING GOES. The app makes all three again
+  // by itself: Projects on the next save, Backups on the next backup, Trash on his
+  // next delete. After Documents moves (OneDrive backup switched off, its location
+  // changed, the folder moved by hand), one delete was enough for every check above
+  // to pass while the real Trash and backups sat somewhere else, and every copy
+  // only they used went 7 days later without a word. So the ledger keeps which
+  // folders the last run read, and every project it ever saw in Trash or the
+  // backups: Trash is never emptied by the app, and the backups never lose a
+  // project's last copy, so in his use that list only grows.
+  const placesNow: Places = {
+    projects: read.projects.place,
+    trash: read.trash.place,
+    backups: read.backups.place,
+  }
+  const last = ledger.places
+  if (last && !(['projects', 'trash', 'backups'] as const).every((k) => samePlace(last[k], placesNow[k]))) {
+    return refuseKeeping('folders-changed', 'the project folders are not the ones it saw before')
+  }
+  const anywhere = new Set([...read.projects.projectIds, ...read.trash.projectIds, ...read.backups.projectIds])
+  const gone = ledger.seen.filter((id) => !anywhere.has(id))
+  if (gone.length > 0) {
+    return refuseKeeping(
+      'project-gone',
+      `${gone.length} project${gone.length === 1 ? '' : 's'} seen in Trash or the backups before ${gone.length === 1 ? 'is' : 'are'} in none of the folders now`,
+    )
+  }
+  const seen = [...new Set([...ledger.seen, ...read.trash.projectIds, ...read.backups.projectIds])].sort()
 
   // Every copy in this profile's folder: its size and when its file last changed.
   const dir = spareCopyDir(places)
@@ -251,7 +436,6 @@ export async function sweepUnusedSpareCopies(
     copies.set(name, { size: s.size, touchedMs: Math.max(s.mtimeMs, s.ctimeMs, s.birthtimeMs) })
   }
 
-  const ledger = await readLedger(ledgerFile(places))
   const next: Record<string, number> = {}
   const removed: string[] = []
   let freedBytes = 0
@@ -260,7 +444,7 @@ export async function sweepUnusedSpareCopies(
     if (used.has(name.toLowerCase())) continue
     // A hold that has ended starts every clock at its end: what was seen unused
     // before that morning proves nothing about after it.
-    const since = Math.max(ledger[name] ?? now, hold?.until ?? 0)
+    const since = Math.max(ledger.unused[name] ?? now, hold?.until ?? 0)
     const unusedLongEnough = now - since >= UNUSED_FOR_MS
     const untouchedLongEnough = now - copy.touchedMs >= UNUSED_FOR_MS
     if (!unusedLongEnough || !untouchedLongEnough) {
@@ -275,6 +459,6 @@ export async function sweepUnusedSpareCopies(
       next[name] = since
     }
   }
-  await replaceFile(ledgerFile(places), JSON.stringify(next)).catch(() => undefined)
+  await writeLedger(ledgerPath, { unused: next, places: placesNow, seen }).catch(() => undefined)
   return { removed, freedBytes, waiting: Object.keys(next).length }
 }
