@@ -36,7 +36,7 @@ const withAssets = (...ids: string[]): Project => ({
   assets: Object.fromEntries(ids.map((id) => [id, asset(id)])),
 })
 
-type Outcome = { removed: string[]; freedBytes: number; waiting: number; refused?: string; busy?: boolean }
+type Outcome = { removed: string[]; freedBytes: number; waiting: number; refused?: string; code?: string; busy?: boolean }
 
 function shell(answer: Outcome = { removed: [], freedBytes: 0, waiting: 0 }) {
   const calls: { projects: number; ids: string[] }[] = []
@@ -139,20 +139,22 @@ describe('what main answers', () => {
     expect(await sweepSpareCopies(api)).toBe('busy')
   })
 
-  it('a refusal is written to his usage log, by its first words only, never a file name', async () => {
+  it('a refusal is written to his usage log as its fixed word, one per reason, never a file name', async () => {
     state.projects = [withAssets('a')]
-    const { api } = shell({
-      removed: [],
-      freedBytes: 0,
-      waiting: 0,
-      refused: 'could not read every project file: Green_ab9fe413.olpbak does not say what media it uses',
-    })
     const record = vi.spyOn(usage, 'record').mockImplementation(() => {})
     try {
-      await sweepSpareCopies(api)
+      // Two folder reasons whose text starts the same: the log must tell them apart.
+      for (const [code, why] of [
+        ['no-media-list', 'could not read every project file: Green_ab9fe413.olpbak does not say what media it uses'],
+        ['trash-missing', 'could not read every project file: the Trash folder is not there'],
+      ]) {
+        const { api } = shell({ removed: [], freedBytes: 0, waiting: 0, refused: why, code })
+        await sweepSpareCopies(api)
+      }
       const logged = record.mock.calls.filter((c) => c[1] === 'spare-copies')
       expect(logged).toEqual([
-        ['session', 'spare-copies', { removed: 0, mb: 0, waiting: 0, refused: 'could not read every project file' }],
+        ['session', 'spare-copies', { removed: 0, mb: 0, waiting: 0, refused: 'no-media-list' }],
+        ['session', 'spare-copies', { removed: 0, mb: 0, waiting: 0, refused: 'trash-missing' }],
       ])
       expect(JSON.stringify(logged)).not.toContain('Green')
     } finally {

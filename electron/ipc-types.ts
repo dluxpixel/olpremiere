@@ -246,7 +246,7 @@ export interface OlApi {
   mediaSweepUnused(
     projectIds: string[],
     assetIds: string[],
-  ): Promise<{ removed: string[]; freedBytes: number; waiting: number; refused?: string; busy?: boolean }>
+  ): Promise<{ removed: string[]; freedBytes: number; waiting: number; refused?: string; code?: string; busy?: boolean }>
   /**
    * Stand the spare copy cleanup down for 30 days: the store lost something this
    * start. Resolves false when the hold could not be written (it still holds for

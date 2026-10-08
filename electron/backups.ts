@@ -24,8 +24,9 @@
 // re-imported; four hundred decisions cannot.
 
 import { app } from 'electron'
-import { mkdir, open, readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises'
+import { mkdir, open, readdir, readFile, stat, unlink } from 'node:fs/promises'
 import path from 'node:path'
+import { inTurn, replaceFile } from './durableWrite'
 
 /** How many backups to keep. Small files, so keep enough to walk back a session. */
 const KEEP = 40
@@ -67,7 +68,7 @@ export function backupDir(): string {
  * SAME THING. The stamp is seconds-resolution and `backupEveryProject` writes
  * the whole shelf in one tight loop, so several land inside the same second,
  * and a name built from the timestamp and "Untitled Project" is the same name
- * for all of them. `writeFile` then overwrites, and the sweep still records
+ * for all of them. The write then overwrites, and the sweep still records
  * every one as written, so the losers are marked done and never retried. A
  * finished project never changes again, so its fingerprint never changes, and
  * it would sit there unbacked forever. Found 2026-08-24, after the wipe that
@@ -98,7 +99,19 @@ export async function writeBackup(projectName: string, json: string): Promise<st
   // failing the backup: a backup with a colliding name still beats none.
   const projectId = idFromHead(json.slice(0, HEAD_BYTES)) ?? idFromWhole(json) ?? undefined
   const target = path.join(dir, fileName(projectName, new Date(), projectId))
-  await writeFile(target, json, 'utf8')
+  // ⛔ BESIDE IT FIRST, THEN RENAMED OVER, the same as a Projects file
+  // (durableWrite.ts). Written straight to its name, a crash or a full disk left
+  // a torn backup: one with no id in it is never pruned (unreadable stays), and
+  // the spare copy cleanup, which must read every backup, stopped for good.
+  await inTurn(target, async () => {
+    try {
+      await replaceFile(target, json)
+    } catch (err) {
+      // A full disk would otherwise keep every failed attempt's part file.
+      await unlink(`${target}.tmp`).catch(() => undefined)
+      throw err
+    }
+  })
 
   const entries = await readdir(dir)
   const mine = entries.filter((f) => f.endsWith('.olpbak'))

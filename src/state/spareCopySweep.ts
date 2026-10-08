@@ -21,6 +21,8 @@ export interface SweepOutcome {
   freedBytes: number
   waiting: number
   refused?: string
+  /** Why, as one fixed word (electron/mediaSweep.ts RefusalCode). */
+  code?: string
   busy?: boolean
 }
 
@@ -75,13 +77,15 @@ export async function sweepSpareCopies(api: SpareSweepApi | null = shellApi()): 
   )
   // A copy being written is "not now", the same as an import on the page.
   if (result.busy) return 'busy'
-  // Into his usage log too, so a cleanup that keeps refusing can be seen. Only the
-  // reason's first words: the rest can carry a project file's name.
+  // Into his usage log too, so a cleanup that keeps refusing can be seen. Only its
+  // fixed word, never the reason's text: the text can carry a project file's name,
+  // and its first words were the same for every folder reason, so a cleanup that
+  // had stopped for good read the same as one that stopped once.
   usage.record('session', 'spare-copies', {
     removed: result.removed.length,
     mb: Math.round(result.freedBytes / 1e6),
     waiting: result.waiting,
-    refused: result.refused ? result.refused.split(':')[0]!.slice(0, 48) : undefined,
+    refused: result.refused ? (result.code ?? 'unknown').slice(0, 32) : undefined,
   })
   if (result.removed.length > 0) {
     console.log(
