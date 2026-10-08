@@ -330,3 +330,56 @@ describe('pendingEdit (Inspector timecode row)', () => {
     expect(moves).toEqual([{ clipId: 'clip-a', s: 4.4 }])
   })
 })
+
+// Ctrl+S from inside the field (2026-10-07). The save has to have the number in
+// it, and the field has to stay open: closing it dropped him onto the editor,
+// where the next Backspace deleted the clip.
+describe('pendingEdit save (Ctrl+S, the field stays open)', () => {
+  it('writes the typed value now, to the clip it was typed for, and keeps the edit open', () => {
+    const writes: { clipId: string; v: number }[] = []
+    const pending = createPendingEdit()
+    pending.begin({ onCommit: (v) => writes.push({ clipId: 'clip-a', v }), base: 0, normalize: clampRound })
+    pending.type('-6')
+    expect(pending.save()).toBe(-6)
+    expect(writes).toEqual([{ clipId: 'clip-a', v: -6 }])
+    // He goes on typing in the same field, then leaves it: the newer number is
+    // written to the same clip, once.
+    pending.type('-9')
+    pending.flush()
+    expect(writes).toEqual([
+      { clipId: 'clip-a', v: -6 },
+      { clipId: 'clip-a', v: -9 },
+    ])
+  })
+
+  it('writes nothing again when he leaves the field without typing after the save', () => {
+    const writes: number[] = []
+    const pending = createPendingEdit()
+    pending.begin({ onCommit: (v) => writes.push(v), base: 0, normalize: clampRound })
+    pending.type('3')
+    pending.save()
+    pending.flush()
+    expect(writes).toEqual([3])
+  })
+
+  it('counts typing back the saved number as no change, not as the old one', () => {
+    const writes: number[] = []
+    const pending = createPendingEdit()
+    pending.begin({ onCommit: (v) => writes.push(v), base: 0, normalize: clampRound })
+    pending.type('3')
+    pending.save()
+    pending.type('3')
+    pending.flush()
+    expect(writes).toEqual([3])
+  })
+
+  it('a save with nothing typed writes nothing and leaves the edit open', () => {
+    const writes: number[] = []
+    const pending = createPendingEdit()
+    pending.begin({ onCommit: (v) => writes.push(v), base: 0, normalize: clampRound })
+    expect(pending.save()).toBeNull()
+    pending.type('2')
+    pending.flush()
+    expect(writes).toEqual([2])
+  })
+})

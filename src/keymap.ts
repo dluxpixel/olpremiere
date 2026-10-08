@@ -12,6 +12,7 @@
 // the two domain tables that only they read. What is left is the shape, the
 // dispatch and the label.
 
+import { commitField } from './fieldCommit'
 import { noteShortcut } from './state/usageNotes'
 
 /**
@@ -33,6 +34,13 @@ export interface Binding {
    * that event ONLY when the keydown was left alone (state/picturePaste.ts).
    */
   allowDefault?: boolean
+  /**
+   * Also runs while he is typing in a text field, after that field has written
+   * what he typed to the project, and he stays in the field. Only Ctrl+S wants
+   * it: a save that does nothing from inside a caption is the moment he trusts
+   * it most.
+   */
+  inFields?: boolean
 }
 
 const isMac = typeof navigator !== 'undefined' && /Mac|iP(hone|ad|od)/.test(navigator.platform)
@@ -63,11 +71,16 @@ export function isEditableTarget(target: EventTarget | null): boolean {
 export function installKeymap(bindings: Binding[]): () => void {
   const byCombo = new Map(bindings.map((b) => [b.combo, b]))
   const onKeyDown = (e: KeyboardEvent) => {
-    if (isEditableTarget(e.target)) return
+    const inField = isEditableTarget(e.target)
     const combo = comboFromEvent(e)
     const binding = byCombo.get(combo)
-    if (!binding) return
+    if (!binding || (inField && !binding.inFields)) return
     if (!binding.allowDefault) e.preventDefault()
+    // Caption, title and name fields write to the project when they lose focus,
+    // so the field is told it was left, which puts his last words in the save.
+    // ⛔ TOLD, NOT LEFT: a real blur put his next keys on the editor, and the
+    // Backspace after Ctrl+S deleted the clip he was typing for. See fieldCommit.ts.
+    if (inField) commitField(e.target as HTMLElement)
     // The usage log: which key, and what it is for. Before the run, so the log reads in order.
     noteShortcut(combo, binding.description, e.repeat)
     binding.run(e)

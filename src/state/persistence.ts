@@ -3,6 +3,7 @@
 
 import { openDB, type IDBPDatabase } from 'idb'
 import { diskApi, healStoreFromDisk, trashProjectOnDisk, writeProjectToDisk } from './diskProjects'
+import { commitFocusedField } from '../fieldCommit'
 import { blobKeysOnlyUsedBy } from '../engine/blobGc'
 import { isBlobHeld } from './exportHolds'
 import { migrateProjectEffects } from '../engine/effects/migrate'
@@ -40,6 +41,17 @@ export function db(): Promise<IDBPDatabase> {
   return dbPromise
 }
 
+/**
+ * The app's own store took the save and only the file in Documents did not.
+ * His work is safe in the app, so the words he gets must not say it is lost.
+ */
+export class FileNotWrittenError extends Error {
+  constructor(cause: unknown) {
+    super(`the project file could not be written: ${cause instanceof Error ? cause.message : String(cause)}`)
+    this.name = 'FileNotWrittenError'
+  }
+}
+
 export async function saveProject(p: Project): Promise<void> {
   const d = await db()
   const tx = d.transaction(['projects', 'meta'], 'readwrite')
@@ -51,7 +63,22 @@ export async function saveProject(p: Project): Promise<void> {
   // survives that, and a save is not a save until it is there too. Rejects
   // when the file cannot be written, so the caller shows "Could not save"
   // rather than a green Saved over a copy that only exists in the store.
-  await writeProjectToDisk(p)
+  try {
+    await writeProjectToDisk(p)
+  } catch (err) {
+    throw new FileNotWrittenError(err)
+  }
+}
+
+/**
+ * What a failed save says to him, in plain words. Before 2026-10-06 every
+ * failure said "Your work is only in memory", which was wrong (and scary) when
+ * only the file failed: the app's store had it.
+ */
+export function saveFailedMessage(err: unknown): string {
+  return err instanceof FileNotWrittenError
+    ? 'Saved in the app, but its file in Documents could not be written. Trying again'
+    : 'Could not save your work. Trying again'
 }
 
 /**
@@ -412,8 +439,63 @@ export function autosaveDelayMs(dirtySinceMs: number, now: number): number {
   return Math.max(0, Math.min(AUTOSAVE_DEBOUNCE_MS, dirtySinceMs + AUTOSAVE_MAX_WAIT_MS - now))
 }
 
-/** True once a background autosave has failed, until one succeeds again. */
+/**
+ * True once a background autosave has failed and he was told, until any save
+ * lands again. Any: a Ctrl+S that lands says so itself, and the autosave after
+ * it used to say "Saved again" minutes later, out of nowhere.
+ */
 let autosaveFailing = false
+
+/**
+ * How long a failed save waits before it tries again on its own: 5 s, 15 s,
+ * then every minute until one lands.
+ *
+ * ⛔ A FAILED SAVE USED TO WAIT FOR HIS NEXT EDIT. The autosave only ran when
+ * the project changed, so after one failure (Windows holding the file for a
+ * moment, a full disk he then cleared) nothing was written while he sat and
+ * watched the preview, and the top bar showed the same "Unsaved" dot it shows
+ * for a second after every edit.
+ */
+const SAVE_RETRY_MS = [5000, 15_000, 60_000] as const
+let retryTimer: number | undefined
+let retryCount = 0
+
+function armRetry(): void {
+  if (typeof window === 'undefined') return
+  window.clearTimeout(retryTimer)
+  retryTimer = window.setTimeout(autosave, SAVE_RETRY_MS[Math.min(retryCount, SAVE_RETRY_MS.length - 1)])
+  retryCount += 1
+}
+
+function stopRetry(): void {
+  if (typeof window !== 'undefined') window.clearTimeout(retryTimer)
+  retryTimer = undefined
+  retryCount = 0
+}
+
+/** The background save: the debounce, the five second cap and every retry land here. */
+function autosave(): void {
+  dirtySince = 0
+  // Read before the write: the write that lands is what clears it.
+  const toldItFailed = autosaveFailing
+  flushSave().then(
+    () => {
+      if (toldItFailed) useToasts.getState().show('Saved again', 'success')
+    },
+    (err: unknown) => {
+      // Say it ONCE per failure streak. The save indicator's "Unsaved" dot
+      // is the same thing it shows for a second after every edit, so on its
+      // own it cannot tell the user their work is no longer being written.
+      if (autosaveFailing) return
+      autosaveFailing = true
+      useToasts.getState().show(saveFailedMessage(err), 'danger', {
+        label: 'Back up to a file',
+        // Imported lazily: projectFile reads blobs back out of THIS module.
+        onClick: () => void import('./projectFile').then((m) => m.exportProjectToFile()),
+      })
+    },
+  )
+}
 
 /**
  * Write the open project. REJECTS when the write fails. Every caller has to
@@ -426,6 +508,8 @@ let autosaveFailing = false
  */
 let saving: Promise<void> | null = null
 let saveAgain = false
+/** The last document the app's own store took, whether or not its file was written. */
+let storedDoc: Project | null = null
 
 /**
  * One save at a time. A second edit landing while the file write is still on
@@ -442,12 +526,23 @@ function flushSave(): Promise<void> {
   saving = (async () => {
     const { setUI } = useStore.getState()
     setUI({ saveState: 'saving' })
+    const doc = useStore.getState().project
     try {
-      await saveProject(useStore.getState().project)
-      setUI({ saveState: 'saved' })
+      await saveProject(doc)
+      storedDoc = doc
+      stopRetry()
+      autosaveFailing = false
+      // ⛔ "SAVED" ONLY WHEN WHAT WAS WRITTEN IS WHAT HE HAS. A letter typed
+      // while this write was on its way is not in it, and it used to be marked
+      // saved anyway: the top bar said Saved, and a close inside the next
+      // second skipped the letter because the close save trusted that word.
+      setUI({ saveState: useStore.getState().project === doc ? 'saved' : 'unsaved' })
     } catch (err) {
+      // Only the file failed: the store took it before the file was tried.
+      if (err instanceof FileNotWrittenError) storedDoc = doc
       console.error('OL Premiere autosave failed', err)
       setUI({ saveState: 'unsaved' })
+      armRetry()
       throw err
     } finally {
       saving = null
@@ -460,7 +555,12 @@ function flushSave(): Promise<void> {
   return saving
 }
 
-/** Save immediately (Ctrl+S). Rejects when the write failed (see flushSave). */
+/** Saved, no edit waiting on the timer, no write on its way. */
+function nothingToWrite(): boolean {
+  return dirtySince === 0 && saving === null && useStore.getState().ui.saveState === 'saved'
+}
+
+/** Save immediately. Rejects when the write failed (see flushSave). */
 export function saveNow(): Promise<void> {
   window.clearTimeout(saveTimer)
   dirtySince = 0
@@ -484,8 +584,7 @@ export function saveNow(): Promise<void> {
  * a first ever start opens on).
  */
 export async function saveSettled(always = false): Promise<void> {
-  const clean = dirtySince === 0 && saving === null && useStore.getState().ui.saveState === 'saved'
-  if (clean && !always) return
+  if (nothingToWrite() && !always) return
   window.clearTimeout(saveTimer)
   dirtySince = 0
   await flushSave()
@@ -547,12 +646,30 @@ export function initPersistence(): Promise<void> {
     })
     .catch((err) => console.error('OL Premiere project load failed', err))
 
-  // An edit made in the last second before the window closes was inside the
-  // debounce and never written. pagehide fires on close where beforeunload is
-  // unreliable; the backup path already listens for it. Best effort: the store
-  // write lands, and the file write gets whatever time the close allows.
+  // ⛔ CLOSING THE WINDOW WAITS FOR THE SAVE. On the desktop, main holds every
+  // close of the editor (his X, and the update restart, which closes the window
+  // the same way) until this answers (electron/closeGate.ts). Before 2026-10-06
+  // nothing waited: the pagehide below started a write while the page was being
+  // torn down, the file write never got its turn, and an edit made in the last
+  // second or two was gone the next time he opened the app.
+  const api = window.api
+  if (typeof api?.onBeforeClose === 'function' && typeof api.closeReady === 'function') {
+    api.onBeforeClose(() => {
+      void saveForClose().then((result) =>
+        result === 'file-only' ? api.closeReady(false, true) : api.closeReady(result === 'saved'),
+      )
+    })
+  }
+
+  // The browser build has no close to hold, and a reload is not a close, so
+  // this stays as the last try there. pagehide fires on close where
+  // beforeunload is unreliable; the backup path already listens for it. Best
+  // effort: the store write lands, and the file write gets whatever time is left.
   window.addEventListener('pagehide', () => {
-    if (useStore.getState().ui.saveState === 'saved') return
+    // Not `saveState === 'saved'` alone: that word is only as true as the
+    // check in flushSave, and a write in flight or an edit on the timer is
+    // still something to write.
+    if (nothingToWrite()) return
     window.clearTimeout(saveTimer)
     void flushSave().catch(() => undefined)
   })
@@ -563,27 +680,37 @@ export function initPersistence(): Promise<void> {
       const now = Date.now()
       if (dirtySince === 0) dirtySince = now
       window.clearTimeout(saveTimer)
-      saveTimer = window.setTimeout(() => {
-        dirtySince = 0
-        flushSave().then(
-          () => {
-            autosaveFailing = false
-          },
-          () => {
-            // Say it ONCE per failure streak. The save indicator's "Unsaved" dot
-            // is the same thing it shows for a second after every edit, so on its
-            // own it cannot tell the user their work is no longer being written.
-            if (autosaveFailing) return
-            autosaveFailing = true
-            useToasts.getState().show('Could not save. Your work is only in memory', 'danger', {
-              label: 'Back up to a file',
-              // Imported lazily: projectFile reads blobs back out of THIS module.
-              onClick: () => void import('./projectFile').then((m) => m.exportProjectToFile()),
-            })
-          },
-        )
-      }, autosaveDelayMs(dirtySince, now))
+      saveTimer = window.setTimeout(autosave, autosaveDelayMs(dirtySince, now))
     },
   )
   return hydrated
+}
+
+/**
+ * The window is about to close: commit what he is typing, write everything, and
+ * say whether it all landed. Never rejects; false means a write failed, and main
+ * then asks him before it closes.
+ */
+export async function saveBeforeClose(): Promise<boolean> {
+  return (await saveForClose()) === 'saved'
+}
+
+/**
+ * What the save before a close came to: all written; 'file-only', the app's
+ * store has what he has now and only its file in Documents was not written; or
+ * 'failed'. Never rejects.
+ */
+async function saveForClose(): Promise<'saved' | 'file-only' | 'failed'> {
+  // A caption, a title or the project name is written to the project when its
+  // field loses focus. Closing never takes the focus away on its own, so the
+  // words he typed last would not even be in the project yet. The field is told
+  // it was left and he stays in it: when the save fails and he chooses Stay, or a
+  // reload waits on him, his next keys are still letters (../fieldCommit.ts).
+  commitFocusedField()
+  try {
+    await saveSettled()
+    return 'saved'
+  } catch (err) {
+    return err instanceof FileNotWrittenError && storedDoc === useStore.getState().project ? 'file-only' : 'failed'
+  }
 }

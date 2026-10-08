@@ -8,6 +8,8 @@
 // download that is already running. A second copy of that rule would drift from
 // this one the first time either changed.
 
+import { saveBeforeClose } from './persistence'
+import { useToasts } from './toasts'
 import { updateInHand, useUpdateFeed } from './updateStatus'
 
 /**
@@ -23,5 +25,21 @@ export async function reloadAndCheckForUpdates(): Promise<void> {
   // Read fresh from the store rather than a closure: the answer arrives DURING
   // the promise above.
   if (updateInHand(useUpdateFeed.getState().status)) return
+  // ⛔ EVERY EDIT IS WRITTEN BEFORE THE PAGE GOES. A reload throws the page away
+  // like a close does, and the last second or two of editing used to go with it,
+  // left to a write started while the page was being torn down. If the write
+  // fails, or never answers, the reload waits for him to say so.
+  if (!(await Promise.race([saveBeforeClose(), wait(RELOAD_SAVE_TIMEOUT_MS)]))) {
+    useToasts.getState().show('Could not save, so the app did not reload. Your work is still here', 'danger', {
+      label: 'Reload anyway',
+      onClick: () => window.location.reload(),
+    })
+    return
+  }
   window.location.reload()
 }
+
+/** How long a reload waits for the save. One write takes well under a second. */
+export const RELOAD_SAVE_TIMEOUT_MS = 5000
+
+const wait = (ms: number): Promise<false> => new Promise((resolve) => setTimeout(() => resolve(false), ms))

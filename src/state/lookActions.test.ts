@@ -1,11 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { migrateClipEffects } from '../engine/effects/migrate'
 import { activeSequence, defaultTitleDef, newProject, newTitleClip, videoTracks } from '../engine/types'
-import { applyJettismLook, applyPunchyGrade, jettismGradeEffects } from './lookActions'
-import { updateActiveSequence, useStore } from './store'
+import { applyJettismLook, applyPunchyGrade, applyPunchyGradeToClips, jettismGradeEffects } from './lookActions'
+import { setActiveSequenceFormat, updateActiveSequence, useStore } from './store'
 
+const toasts: string[] = []
 vi.mock('./toasts', () => ({
-  useToasts: { getState: () => ({ show: () => {} }) },
+  useToasts: { getState: () => ({ show: (m: string) => toasts.push(m) }) },
 }))
 vi.mock('./persistence', () => ({
   db: vi.fn(async () => ({ put: async () => {}, get: async () => undefined, delete: async () => {} })),
@@ -25,6 +26,7 @@ function seedFootage(startS: number, durS: number): string {
 }
 
 beforeEach(() => {
+  toasts.length = 0
   useStore.getState().setProject(newProject())
 })
 
@@ -123,6 +125,50 @@ describe('applyJettismLook', () => {
     expect(clip.effects.map((e) => e.type)).toEqual(['exposure', 'contrast', 'saturation'])
     // Still the ORIGINAL instances, rewritten in place: nothing was appended.
     expect(clip.effects.map((e) => e.id)).toEqual(['old_e', 'old_bc', 'old_s'])
+  })
+
+  it('keeps a Phone video Phone, and still grades it', () => {
+    // His ask, 2026-10-05: Phone (1080x2112) is the frame for TikTok and Reels.
+    setActiveSequenceFormat(1080, 2112)
+    seedFootage(0, 5)
+    applyJettismLook()
+    const s = seq()
+    expect([s.width, s.height]).toEqual([1080, 2112])
+    // The next new video starts Phone too, not 9:16.
+    const settings = useStore.getState().project.settings
+    expect([settings.width, settings.height]).toEqual([1080, 2112])
+    expect(videoTracks(s)[0].clips[0].effects).toHaveLength(3)
+    expect(toasts.at(-1)).toBe('Jettism look: kept the Phone frame, punch grade on 1 clip, pop titles')
+  })
+
+  it('still turns a wide video into 9:16', () => {
+    setActiveSequenceFormat(1920, 1080)
+    seedFootage(0, 5)
+    applyJettismLook()
+    expect([seq().width, seq().height]).toEqual([1080, 1920])
+  })
+
+  it('leaves a clip on a locked track alone', () => {
+    seedFootage(0, 5)
+    updateActiveSequence('lock', (sq) => ({
+      ...sq,
+      tracks: sq.tracks.map((t, i) => (i === 0 ? { ...t, locked: true } : t)),
+    }))
+    applyJettismLook()
+    expect(videoTracks(seq())[0].clips[0].effects).toHaveLength(0)
+  })
+
+  it('a second double click with nothing left to do adds no undo step', () => {
+    seedFootage(0, 5)
+    applyJettismLook()
+    const depth = useStore.getState().history.undo.length
+    applyJettismLook()
+    expect(useStore.getState().history.undo.length).toBe(depth)
+  })
+
+  it('Punchy Grade with nothing selected says what to do', () => {
+    applyPunchyGradeToClips([])
+    expect(toasts).toEqual(['Select a clip first'])
   })
 
   it('grade instances get fresh ids per call', () => {

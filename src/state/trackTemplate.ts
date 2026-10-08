@@ -12,6 +12,7 @@
 // module reads storage, so nobody loses a setup they already saved.
 
 import { activeSequence, newTrack, type AutoLevel, type Track } from '../engine/types'
+import { notePrefsChanged } from './prefsSignal'
 import { updateActiveSequence, useStore } from './store'
 import { useToasts } from './toasts'
 
@@ -94,6 +95,7 @@ function sanitizePreset(raw: unknown): TrackPreset | null {
 function persist(store: PresetStore): void {
   try {
     if (typeof localStorage !== 'undefined') localStorage.setItem(KEY, JSON.stringify(store))
+    notePrefsChanged()
   } catch {
     /* private mode / quota: the presets just will not persist */
   }

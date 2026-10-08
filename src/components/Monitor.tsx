@@ -24,7 +24,7 @@ import { pausePlayback, subscribeShuttleRate, toggleLoop, togglePlay } from '../
 import { screenshotToMedia } from '../state/screenshot'
 import { isCriticalWorkRunning } from '../state/unloadGuard'
 import { isExportWatched } from '../state/exportJob'
-import { setPreviewQuality, useSettings } from '../state/settings'
+import { setPreviewQuality, setSafeMargins, useSettings } from '../state/settings'
 import { setActiveSequenceFormat, useStore } from '../state/store'
 import { IconButton } from '../ui/Button'
 import { CompactSelect, type CompactOption } from '../ui/CompactSelect'
@@ -403,7 +403,8 @@ export function Monitor() {
   useEffect(() => {
     setPreviewScale(quality)
   }, [quality])
-  const [safeMargins, setSafeMargins] = useState(false)
+  // Remembered in Settings like the quality beside it, so it survives a restart.
+  const safeMargins = useSettings((s) => s.safeMargins)
   // Whether THIS monitor is the thing on the full screen. The picture's editing chrome stands down
   // in it, and the button that leaves it is the one that went in (below).
   const [fullscreen, setFullscreen] = useState(false)
@@ -675,7 +676,7 @@ export function Monitor() {
             <IconButton
               label="Safe margins: draws the action-safe and title-safe guides over the picture. They are never exported."
               active={safeMargins}
-              onClick={() => setSafeMargins((v) => !v)}
+              onClick={() => setSafeMargins(!safeMargins)}
               data-testid="safe-margins-bar-toggle"
               className="phone:hidden"
             >

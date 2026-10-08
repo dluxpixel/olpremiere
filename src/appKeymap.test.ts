@@ -20,6 +20,12 @@ import { cancelPicturePaste, installPasteListener, usePastePicture } from './sta
 import { updateActiveSequence, useStore } from './state/store'
 
 vi.mock('./state/toasts', () => ({ useToasts: { getState: () => ({ show: () => {} }) } }))
+// Only the save Ctrl+S asks for is replaced, so the test can see which one it is.
+const saveSettled = vi.hoisted(() => vi.fn<(always?: boolean) => Promise<void>>(async () => undefined))
+vi.mock('./state/persistence', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./state/persistence')>()),
+  saveSettled,
+}))
 
 const bindings = () => buildAppBindings()
 const combos = () => bindings().map((b) => b.combo)
@@ -94,6 +100,20 @@ describe('the central keymap', () => {
       seen.set(b.combo, b.description)
     }
     expect(clashes).toEqual([])
+  })
+
+  it('saves from inside a text field, and nothing else reaches into one', () => {
+    // A caption, a title, the project name: Ctrl+S there used to do nothing at all.
+    expect(bindings().filter((b) => b.inFields).map((b) => b.combo)).toEqual(['mod+s'])
+  })
+
+  it('Ctrl+S says "Project saved" only once every edit is down, not just the write in flight', () => {
+    saveSettled.mockClear()
+    bindings()
+      .find((b) => b.combo === 'mod+s')
+      ?.run(new KeyboardEvent('keydown'))
+    // saveNow resolved when the write in flight landed, before an edit queued behind it.
+    expect(saveSettled).toHaveBeenCalledExactlyOnceWith(true)
   })
 
   it('carries every key the motion keyboard needs', () => {

@@ -108,6 +108,7 @@ import { allFolded, setEffectsFolded, toggleEffectFold, useEffectFold } from '..
 import { saveSelectionAsPreset } from '../state/library'
 import { EASE_SECONDS, setEaseSeconds, useSettings } from '../state/settings'
 import { createPendingEdit, type PendingEdit } from './pendingEdit'
+import { isCommitInPlace } from '../fieldCommit'
 import { useStore } from '../state/store'
 import { IconButton } from '../ui/Button'
 import { AddEffectMenu } from './AddEffectMenu'
@@ -419,7 +420,13 @@ export function ScrubField({
             pending.settle(next)
           }
         }}
-        onBlur={() => editing && commitTyped()}
+        onBlur={(e) => {
+          if (!editing) return
+          // Ctrl+S: the number is written and the field stays open for typing,
+          // never back to scrubbing under his caret (../fieldCommit.ts).
+          if (isCommitInPlace(e)) pending.save()
+          else commitTyped()
+        }}
         className={`h-6 w-full rounded-field bg-bg-input px-2 text-right font-numeric text-ui-sm text-text-primary transition-colors duration-[120ms] hover:bg-bg-elevated ${
           editing ? 'cursor-text' : 'cursor-ew-resize'
         }`}

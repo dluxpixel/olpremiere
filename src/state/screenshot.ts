@@ -76,6 +76,12 @@ export async function screenshotToMedia(): Promise<void> {
     if (!grab.complete) {
       show('Some footage was still loading, so the screenshot may be missing a layer', 'info')
     }
+  } catch (err) {
+    // The promise above. A grab can throw (a lost graphics context, a picture
+    // that will not encode), and with no catch the camera button did nothing at
+    // all and Shift+S left only an unhandled error behind.
+    console.error('OL Premiere: the screenshot failed', err)
+    show('Could not take the screenshot. Try again', 'danger')
   } finally {
     grabbing = false
   }

@@ -21,6 +21,7 @@ import {
 } from '../collab/collabControl'
 import { activeSequence } from '../engine/types'
 import { comboLabel } from '../keymap'
+import { isCommitInPlace } from '../fieldCommit'
 import { exportProjectToFile, importProjectFromFile, registerProjectFilePicker } from '../state/projectFile'
 import { useStore } from '../state/store'
 import { useToasts } from '../state/toasts'
@@ -32,6 +33,7 @@ import { MelonMark } from '../ui/MelonMark'
 import { displayVersion } from '../appVersion'
 import { requestExport } from '../state/exportJob'
 import { ExportChip } from './ExportChip'
+import { historyLabel, showHistoryToast } from './historyLabel'
 import { ExportDialog } from './ExportDialog'
 import { ProjectsDialog, type ProjectsView } from './ProjectsDialog'
 import { usePhoneLayout } from '../ui/phoneLayout'
@@ -74,7 +76,8 @@ function CollabButton() {
         }}
         onBlur={(e) => {
           setDisplayName(e.currentTarget.value)
-          setEditingName(false)
+          // Ctrl+S leaves him in the field (../fieldCommit.ts).
+          if (!isCommitInPlace(e)) setEditingName(false)
         }}
       />
     )
@@ -248,15 +251,20 @@ function ProjectName() {
   const dispatch = useStore((s) => s.dispatch)
   const [draft, setDraft] = useState(name)
 
-  useEffect(() => setDraft(name), [name])
+  // A name that only differs from what he is typing by a space at the end is
+  // his own Ctrl+S: the space stays under his caret, and the rest of the word
+  // lands after it.
+  useEffect(() => setDraft((d) => (d.trim() === name ? d : name)), [name])
 
-  const commit = () => {
+  /** `staying`: Ctrl+S from inside the field (../fieldCommit.ts). Nothing is tidied under his caret. */
+  const commit = (staying = false) => {
     const next = draft.trim()
     if (next === '' || next === name) {
-      setDraft(name)
+      if (!staying) setDraft(name)
       return
     }
     dispatch('Rename project', (p) => ({ ...p, name: next }))
+    if (!staying) setDraft(next)
   }
 
   return (
@@ -266,7 +274,7 @@ function ProjectName() {
       className="h-7 w-52 min-w-0 phone:w-auto phone:flex-1 rounded-field border border-transparent bg-transparent px-2 text-ui font-medium text-text-primary transition-colors duration-[120ms] hover:bg-bg-elevated focus:border-accent focus:bg-bg-input focus:outline-none"
       value={draft}
       onChange={(e) => setDraft(e.target.value)}
-      onBlur={commit}
+      onBlur={(e) => commit(isCommitInPlace(e))}
       onKeyDown={(e) => {
         if (e.key === 'Enter') e.currentTarget.blur()
         if (e.key === 'Escape') {
@@ -306,11 +314,11 @@ export function TopBar() {
   // toasts the label (App.tsx); the buttons must not be the silent path.
   const undo = () => {
     const label = performHistoryStep('undo')
-    if (label) useToasts.getState().show(`Undo: ${label}`)
+    if (label) showHistoryToast('undo', label)
   }
   const redo = () => {
     const label = performHistoryStep('redo')
-    if (label) useToasts.getState().show(`Redo: ${label}`)
+    if (label) showHistoryToast('redo', label)
   }
   const phone = usePhoneLayout()
   // null = closed. Otherwise which half of his work the dialog opened on.
@@ -410,7 +418,7 @@ export function TopBar() {
 
       <div className="ml-auto flex shrink-0 items-center gap-1">
         <IconButton
-          label={nextUndo ? `Undo: ${nextUndo}` : 'Undo'}
+          label={nextUndo ? `Undo: ${historyLabel(nextUndo)}` : 'Undo'}
           shortcut={comboLabel('mod+z')}
           onClick={undo}
           disabled={!canUndo}
@@ -419,7 +427,7 @@ export function TopBar() {
           <Undo2 size={16} strokeWidth={1.5} />
         </IconButton>
         <IconButton
-          label={nextRedo ? `Redo: ${nextRedo}` : 'Redo'}
+          label={nextRedo ? `Redo: ${historyLabel(nextRedo)}` : 'Redo'}
           shortcut={comboLabel('mod+shift+z')}
           onClick={redo}
           disabled={!canRedo}

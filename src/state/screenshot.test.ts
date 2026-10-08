@@ -1,6 +1,18 @@
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { screenshotName } from './screenshot'
+import { recomputeDuration } from '../engine/timeline'
+import { defaultTitleDef, newProject, newTitleClip } from '../engine/types'
+import { screenshotName, screenshotToMedia } from './screenshot'
+import { updateActiveSequence, useStore } from './store'
+
+// The grab and the import are faked: what is tested here is what he is told.
+const grab = vi.hoisted(() => vi.fn())
+const imported = vi.hoisted(() => vi.fn(async () => []))
+const toasts = vi.hoisted(() => [] as string[])
+vi.mock('../engine/grabFrame', () => ({ grabFrame: grab }))
+vi.mock('./mediaActions', () => ({ importFiles: imported }))
+vi.mock('./playbackControl', () => ({ pausePlayback: () => undefined }))
+vi.mock('./toasts', () => ({ useToasts: { getState: () => ({ show: (m: string) => toasts.push(m) }) } }))
 
 describe('screenshotName', () => {
   it('names a still by the frame it was taken on', () => {
@@ -26,5 +38,58 @@ describe('screenshotName', () => {
   it('sorts by time once past ten minutes, where an unpadded clock would not', () => {
     const names = [65, 605, 3600].map((t) => screenshotName(t, 30))
     expect([...names].sort()).toEqual(names)
+  })
+})
+
+describe('taking the screenshot', () => {
+  const still = (complete = true) => ({ blob: new Blob(['png']), width: 1080, height: 1920, complete })
+
+  beforeEach(() => {
+    toasts.length = 0
+    grab.mockReset()
+    imported.mockClear()
+    useStore.getState().setProject(newProject())
+    // Something on the timeline, so there is a frame to photograph.
+    updateActiveSequence('seed', (sq) =>
+      recomputeDuration({
+        ...sq,
+        tracks: sq.tracks.map((t, i) => (i === 0 ? { ...t, clips: [newTitleClip(defaultTitleDef('x'), 0, 5)] } : t)),
+      }),
+    )
+  })
+
+  it('says so when the grab throws, instead of the camera doing nothing', async () => {
+    grab.mockRejectedValueOnce(new Error('CONTEXT_LOST_WEBGL'))
+    await expect(screenshotToMedia()).resolves.toBeUndefined()
+    expect(toasts).toEqual(['Could not take the screenshot. Try again'])
+    // And the next press is not locked out by the one that failed.
+    grab.mockResolvedValueOnce(still())
+    await screenshotToMedia()
+    expect(imported).toHaveBeenCalledTimes(1)
+  })
+
+  it('says so when there was no picture to grab', async () => {
+    grab.mockResolvedValueOnce(null)
+    await screenshotToMedia()
+    expect(toasts).toEqual(['Could not take the screenshot'])
+    expect(imported).not.toHaveBeenCalled()
+  })
+
+  it('imports a still that was missing a layer, and then says it may be', async () => {
+    grab.mockResolvedValueOnce(still(false))
+    await screenshotToMedia()
+    expect(imported).toHaveBeenCalledTimes(1)
+    expect(toasts).toEqual(['Some footage was still loading, so the screenshot may be missing a layer'])
+  })
+
+  it('a second press while the first is still grabbing takes no second picture', async () => {
+    let finish: (v: unknown) => void = () => undefined
+    grab.mockImplementationOnce(() => new Promise((r) => (finish = r)))
+    const first = screenshotToMedia()
+    await screenshotToMedia()
+    expect(grab).toHaveBeenCalledTimes(1)
+    finish(still())
+    await first
+    expect(imported).toHaveBeenCalledTimes(1)
   })
 })

@@ -12,25 +12,19 @@
 // as project media (mediaStore.ts), under `lib-<item id>`, and come back from
 // there when this file is read back.
 
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { projectDir } from './projectFiles'
+import { replaceFile } from './replaceFile'
 
 /** `Library.json`, beside the `.olpbak` files, so it lives and dies with them. */
 export function libraryFilePath(): string {
   return path.join(projectDir(), 'Library.json')
 }
 
-/**
- * Written beside, then renamed over, for the reason writeProjectFile gives: a
- * write cut off half way must never leave half a file where the only copy was.
- */
-export async function writeLibraryFile(json: string): Promise<void> {
-  const target = libraryFilePath()
-  await mkdir(path.dirname(target), { recursive: true })
-  const tmp = `${target}.tmp`
-  await writeFile(tmp, json, 'utf8')
-  await rename(tmp, target)
+/** Written whole, flushed, and one write at a time. See ./replaceFile. */
+export function writeLibraryFile(json: string): Promise<void> {
+  return replaceFile(libraryFilePath(), json)
 }
 
 /** The file's text, or null when there is none yet. */

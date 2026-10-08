@@ -10,6 +10,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useCollab } from '../collab/collabControl'
 import { formatTimecode, parseTimecode, quantizeToFrame } from '../engine/timecode'
 import { activeSequence } from '../engine/types'
+import { isCommitInPlace } from '../fieldCommit'
 import { pausePlayback } from '../state/playbackControl'
 import { useStore } from '../state/store'
 
@@ -116,7 +117,7 @@ export function PlayheadTimecode({
   }, [fps, editing])
 
   if (editable && editing !== null) {
-    const commit = () => {
+    const jump = () => {
       const typed = parseTimecode(editing, fps)
       if (typed !== null) {
         // Onto a frame: "0:03.97" is 119.1 frames at 30 fps, and a playhead
@@ -125,6 +126,9 @@ export function PlayheadTimecode({
         const seq = activeSequence(useStore.getState().project)
         useStore.getState().setUI({ playheadS: Math.max(0, Math.min(t, seq.durationS)) })
       }
+    }
+    const commit = () => {
+      jump()
       setEditing(null)
     }
     return (
@@ -137,7 +141,9 @@ export function PlayheadTimecode({
         // target time, Enter. No cursor gymnastics.
         onFocus={(e) => e.currentTarget.select()}
         onChange={(e) => setEditing(e.target.value)}
-        onBlur={commit}
+        // Ctrl+S jumps and leaves the field open under his caret, so his next
+        // keys are not the editor's (../fieldCommit.ts).
+        onBlur={(e) => (isCommitInPlace(e) ? jump() : commit())}
         onKeyDown={(e) => {
           if (e.key === 'Enter') commit()
           else if (e.key === 'Escape') setEditing(null) // revert: live readout resumes

@@ -19,6 +19,7 @@ import { EffectControls, PropRow, ScrubField, SectionLabel, type Spec } from './
 import { useEffectDrop } from './effectDrop'
 import { MultiInspector, type SelectedClip } from './MultiInspector'
 import { createPendingEdit, type PendingEdit } from './pendingEdit'
+import { isCommitInPlace } from '../fieldCommit'
 import { TitleControls } from './TitleControls'
 import { MAX_GAIN_DB } from '../engine/loudness'
 
@@ -289,7 +290,12 @@ function EditableTimecodeRow({
               setText(null)
             }
           }}
-          onBlur={commit}
+          onBlur={(e) => {
+            // Ctrl+S: the time is written and the row stays open under his
+            // caret, so his next keys are not the editor's (../fieldCommit.ts).
+            if (isCommitInPlace(e)) pending.save()
+            else commit()
+          }}
           onFocus={(e) => e.currentTarget.select()}
           className="w-[92px] rounded-field bg-bg-input px-1 text-right font-numeric text-ui-sm text-text-primary"
         />

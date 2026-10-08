@@ -26,6 +26,7 @@ import { checkIntegrity, integrityMessage } from './state/dataIntegrity'
 import { migrateRenamedKeys } from './state/keyMigration'
 import { loadLibrary } from './state/library'
 import { initCaptionStyles } from './state/captionStyles'
+import { initPrefsHome } from './state/prefsHome'
 import { initPersistence, listProjects, loadProjectById } from './state/persistence'
 import { installEditTabs, reconcileEditTabs } from './state/editTabs'
 import { recoverFromWipe, sweepEmptyRecoveries } from './state/backupRestore'
@@ -95,6 +96,11 @@ const work: BootWork = {
     // back after a wipe and keeps it current. Nothing waits on it.
     void initCaptionStyles().catch((err: unknown) => {
       console.warn('OL Premiere boot: the caption styles file could not be read', err)
+    })
+    // His saved moves, track setups and settings: the same two homes, for the
+    // same reason. Nothing waits on it.
+    void initPrefsHome().catch((err: unknown) => {
+      console.warn('OL Premiere boot: the preferences file could not be read', err)
     })
     // Register the bundled title fonts (Minecraft/Monocraft) for the preview
     // rasterizer. Once the font lands, force a redraw so a reopened Minecraft

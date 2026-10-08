@@ -15,6 +15,7 @@
 
 import type { Beat, BeatAt, MoveDef } from '../engine/moves'
 import { MOTION_CURVES } from '../engine/motion'
+import { notePrefsChanged } from './prefsSignal'
 
 export interface MyMove {
   /** His own, not a MoveId: the built-in union is closed and these are not built in. */
@@ -119,6 +120,7 @@ function sanitizeMove(raw: unknown): MyMove | null {
 function persist(moves: MyMove[]): void {
   try {
     if (typeof localStorage !== 'undefined') localStorage.setItem(KEY, JSON.stringify(moves))
+    notePrefsChanged()
   } catch {
     /* private mode / quota: his moves just will not persist */
   }

@@ -5,7 +5,7 @@
 // the web. The origin (`app://olpremiere`) is PINNED forever: changing it (or
 // the appId/productName) would orphan the user's IndexedDB.
 
-import { app, BrowserWindow, dialog, Menu, net, protocol, ipcMain, powerMonitor, session, shell } from 'electron'
+import { app, BrowserWindow, dialog, Menu, net, protocol, ipcMain, powerMonitor, session, shell, type WebContents } from 'electron'
 
 // ⛔ ONE COPY OF THE APP AT A TIME. Two launches, a slow first start plus an
 // impatient second click, or a copy still alive after a crash, used to start a
@@ -26,6 +26,7 @@ import { createEmojiFontStore, downloadBytes, EMOJI_ROUTE } from './emojiFont'
 import * as projectFiles from './projectFiles'
 import * as libraryFile from './libraryFile'
 import * as captionStylesFile from './captionStylesFile'
+import * as preferencesFile from './preferencesFile'
 import * as usageFiles from './usageFiles'
 import * as saveFiles from './saveFiles'
 import type { NativeExportConfig, UpdateStatus } from './ipc-types'
@@ -44,6 +45,8 @@ import * as proxy from './proxy'
 import * as mediaStore from './mediaStore'
 import * as remux from './remux'
 import { IDLE_POLL_MS, updateApplyDecision } from './updateApply'
+import { CLOSE_SAVE_TIMEOUT_MS, createCloseGate, notSavedDialog, type CloseGate } from './closeGate'
+import { createInstallWait } from './installWait'
 import { planUpdateError, updateLogEntry } from './updateErrors'
 import { appendUpdateLog, UPDATE_LOG_NAME } from './updateLog'
 import electronUpdater from 'electron-updater'
@@ -113,12 +116,30 @@ const APP_ORIGIN_HOST = IS_LAB ? 'olpremierelab' : 'olpremiere'
 
 /** The main window, so native-export handlers can target it (save dialog, progress). */
 let mainWindow: BrowserWindow | null = null
-/** Set once an update install has begun closing the window. See 'update:install'. */
-let installing = false
 /** After the window is gone, how long the engine gets to finish writing before the installer runs. */
 const INSTALL_FLUSH_MS = 1500
-/** How long to wait for the window to close before installing the old way regardless. */
-const INSTALL_CLOSE_TIMEOUT_MS = 5000
+/**
+ * How long to wait for the window to close before installing the old way regardless.
+ * Longer than the close gate's own wait, so the install never cuts the save short,
+ * and since 2026-10-07 it only starts counting once the gate has let the close
+ * through (./installWait).
+ */
+const INSTALL_CLOSE_TIMEOUT_MS = CLOSE_SAVE_TIMEOUT_MS + 2000
+/**
+ * The update install waiting for the editor window to close: one at a time, and
+ * stopped whole when he chooses to stay in a close whose save failed. See
+ * ./installWait, and 'update:install' for why the window goes first.
+ */
+const installWait = createInstallWait(
+  {
+    install: () => autoUpdater.quitAndInstall(true, true),
+    setTimer: (fn, ms) => setTimeout(fn, ms),
+    clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  },
+  { flushMs: INSTALL_FLUSH_MS, fallbackMs: INSTALL_CLOSE_TIMEOUT_MS },
+)
+/** Each editor page's close gate, found by the page that answers it. See ./closeGate. */
+const closeGates = new WeakMap<WebContents, CloseGate>()
 
 /**
  * The splash: its own frameless, transparent, always-on-top window, floating over
@@ -491,10 +512,47 @@ function createWindow(): void {
     // A reload he chose over a running export (below) is exactly this.
     void native.cancel()
   }
-  win.webContents.on('did-start-navigation', (e) => {
-    if (e.isMainFrame && !e.isSameDocument) dropOrphans()
+  // ⛔ A CLOSE WAITS FOR HIS LAST EDIT TO BE WRITTEN. See ./closeGate for why.
+  // His X and an update restart (win.close() in 'update:install') both land
+  // here; the page writes everything and answers, and only then does the window
+  // go. The export question below still comes, on that second close.
+  const gate = createCloseGate({
+    askToSave: () => win.webContents.send('app:beforeClose'),
+    closeNow: () => {
+      if (!win.isDestroyed()) win.close()
+    },
+    confirmCloseUnsaved: (onlyTheFile) =>
+      dialog.showMessageBoxSync(win, {
+        type: 'warning',
+        buttons: ['Stay', 'Close anyway'],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+        ...notSavedDialog(onlyTheFile),
+      }) === 1,
+    onStay: () => installWait.cancel(),
+    setTimer: (fn, ms) => setTimeout(fn, ms),
+    clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
   })
-  win.webContents.on('render-process-gone', dropOrphans)
+  closeGates.set(win.webContents, gate)
+  win.on('close', (e) => {
+    if (gate.onClose()) e.preventDefault()
+    // His save is behind this close now, so an install waiting on the window
+    // starts its fallback only here, never while the save or its question runs.
+    else installWait.closeLetThrough()
+  })
+  win.on('closed', () => installWait.windowClosed())
+
+  win.webContents.on('did-start-navigation', (e) => {
+    if (!e.isMainFrame || e.isSameDocument) return
+    dropOrphans()
+    // The next page arms its own gate once it can answer.
+    gate.pageGone()
+  })
+  win.webContents.on('render-process-gone', () => {
+    dropOrphans()
+    gate.pageGone()
+  })
 
   // ⛔ LEAVING DURING AN EXPORT ASKS FIRST. The page refuses to unload while one
   // runs (src/state/unloadGuard.ts), and on its own that refusal is silent: the
@@ -518,6 +576,8 @@ function createWindow(): void {
     })
     // Here preventDefault means "overrule the page": the close goes ahead.
     if (choice === 1) e.preventDefault()
+    // He kept the export, so the window stays, and his next close saves again.
+    else gate.onCloseRefused()
   })
 
   if (isDev) {
@@ -721,6 +781,9 @@ app.whenReady().then(() => {
   // His caption styles beside them, one fixed file. See electron/captionStylesFile.ts.
   ipcMain.handle('captionStyles:write', (_e, json: string) => captionStylesFile.writeCaptionStylesFile(json))
   ipcMain.handle('captionStyles:read', () => captionStylesFile.readCaptionStylesFile())
+  // His moves, track setups and settings beside them. See electron/preferencesFile.ts.
+  ipcMain.handle('prefs:write', (_e, json: string) => preferencesFile.writePreferencesFile(json))
+  ipcMain.handle('prefs:read', () => preferencesFile.readPreferencesFile())
 
   // --- The private usage log (electron/usageFiles.ts) ----------------------------
   // His own record of what he uses, one file a day in the app's own data folder.
@@ -793,6 +856,13 @@ app.whenReady().then(() => {
     if (e.sender === splashWindow?.webContents) shrinkSplash()
   })
   ipcMain.on('boot:enter', () => enterEditor())
+
+  // The close gate's two messages, each found by the page that sent it, so no
+  // other window can arm or answer the editor's close. See ./closeGate.
+  ipcMain.on('app:closeGate', (e, on: unknown) => closeGates.get(e.sender)?.arm(on === true))
+  ipcMain.on('app:closeReady', (e, saved: unknown, onlyTheFile: unknown) =>
+    closeGates.get(e.sender)?.onReply(saved === true, onlyTheFile === true),
+  )
 
   // The update card. Every one guarded on the SENDER, the way boot:shrink is: any
   // other renderer asking to shrink or quit this window is not this window.
@@ -1034,22 +1104,19 @@ app.whenReady().then(() => {
     // So: close the window, wait for it to be gone, give the engine a moment to
     // finish writing, and only then install. If the window will not close (an
     // export he chose to restart through anyway), fall back to the old path
-    // after five seconds rather than leave the update stuck.
+    // after INSTALL_CLOSE_TIMEOUT_MS rather than leave the update stuck.
     ipcMain.on('update:install', () => {
       const win = mainWindow
       if (!win || win.isDestroyed()) {
         autoUpdater.quitAndInstall(true, true)
         return
       }
-      installing = true
-      let done = false
-      const go = (): void => {
-        if (done) return
-        done = true
-        autoUpdater.quitAndInstall(true, true)
-      }
-      win.once('closed', () => setTimeout(go, INSTALL_FLUSH_MS))
-      setTimeout(go, INSTALL_CLOSE_TIMEOUT_MS)
+      // The close saves first (./closeGate). If that save failed and he chose
+      // to stay, the update waits: installing over him would close the window
+      // he just said to keep, with his last changes unwritten. A second request
+      // while this one is on its way (the Restart toast and the update card)
+      // is this one, so his Stay stops the whole install. See ./installWait.
+      if (!installWait.begin()) return
       win.close()
     })
     setUpdateStatus({ kind: 'checking' })
@@ -1077,7 +1144,7 @@ app.on('window-all-closed', () => {
   // An update install closes the window itself and quits through quitAndInstall,
   // which relaunches the app afterwards. A plain quit here would install too
   // (autoInstallOnAppQuit) but would NOT bring the app back.
-  if (installing) return
+  if (installWait.pending()) return
   if (process.platform === 'darwin') return
   // ⛔ CLOSING IS THE MAIN WAY AN UPDATE GOES ON NOW (his pick 2026-09-27), so it
   // gets the restart path's settle. The installer is started on quit and gives a

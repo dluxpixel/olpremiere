@@ -290,6 +290,18 @@ export interface OlApi {
   /** Quit and install the downloaded update now. Relaunches into the new version. */
   restartToUpdate(): void
   /**
+   * The editor window is closing (his X, or an update restart). Main holds the
+   * close until `closeReady` answers. Registering arms that hold for this page.
+   * Returns an unsubscribe fn.
+   */
+  onBeforeClose(cb: () => void): () => void
+  /**
+   * The answer to `onBeforeClose`: true when every edit is written. False with
+   * `onlyTheFile`: the app's store has every edit, only the file in Documents
+   * was not written, so main does not tell him they are lost.
+   */
+  closeReady(saved: boolean, onlyTheFile?: boolean): void
+  /**
    * Tell main that a restart right now would destroy something: an in-browser
    * export, a live microphone, a take waiting to be kept. Main cannot see any of
    * those, so without this it would keep offering to relaunch mid take.
@@ -382,6 +394,14 @@ export interface OlApi {
   captionStylesWrite(json: string): Promise<void>
   /** The file's text, or null when there is none yet. */
   captionStylesRead(): Promise<string | null>
+
+  /**
+   * His saved moves, track setups and settings as one plain file beside the
+   * projects, kept current on every change (electron/preferencesFile.ts).
+   */
+  prefsWrite(json: string): Promise<void>
+  /** The file's text, or null when there is none yet. Rejects when it is there and could not be read. */
+  prefsRead(): Promise<string | null>
 
   /**
    * The private usage log (electron/usageFiles.ts): append one day's batch of JSON

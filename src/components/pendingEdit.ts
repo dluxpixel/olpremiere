@@ -39,6 +39,12 @@ export interface PendingEdit {
   cancel: () => void
   /** Commit the typed text to its owner, at most once. Returns what it wrote. */
   flush: () => number | null
+  /**
+   * Ctrl+S from inside the field: commit the typed text now and keep the edit
+   * OPEN, for the same owner, from what was just written. He is still typing;
+   * a later flush writes only what he types after this. Returns what it wrote.
+   */
+  save: () => number | null
 }
 
 export function createPendingEdit(): PendingEdit {
@@ -46,6 +52,25 @@ export function createPendingEdit(): PendingEdit {
   // null = opened but never typed into. Distinct from '', which the field has
   // always committed as 0.
   let text: string | null = null
+
+  const flush = (): number | null => {
+    const o = owner
+    const typed = text
+    // One-shot: Enter blurs, and a blur after an unmount-flush must be silent.
+    owner = null
+    text = null
+    if (!o || typed === null) return null
+    const n = o.parse ? o.parse(typed) : Number(typed)
+    // Unparseable text writes nothing. It must never fall through as 0, which
+    // on a timecode row would move the clip to the head of the sequence.
+    if (n === null || !Number.isFinite(n)) return null
+    const next = o.normalize(n)
+    // Unchanged writes nothing at all: mapClip rebuilds the sequence even for
+    // an identical clip, so a no-op commit would land an empty undo step.
+    if (Math.abs(next - o.base) <= 1e-9) return null
+    o.onCommit(next)
+    return next
+  }
 
   return {
     begin(next) {
@@ -72,23 +97,15 @@ export function createPendingEdit(): PendingEdit {
       text = null
     },
 
-    flush() {
+    flush,
+
+    save() {
       const o = owner
-      const typed = text
-      // One-shot: Enter blurs, and a blur after an unmount-flush must be silent.
-      owner = null
-      text = null
-      if (!o || typed === null) return null
-      const n = o.parse ? o.parse(typed) : Number(typed)
-      // Unparseable text writes nothing. It must never fall through as 0, which
-      // on a timecode row would move the clip to the head of the sequence.
-      if (n === null || !Number.isFinite(n)) return null
-      const next = o.normalize(n)
-      // Unchanged writes nothing at all: mapClip rebuilds the sequence even for
-      // an identical clip, so a no-op commit would land an empty undo step.
-      if (Math.abs(next - o.base) <= 1e-9) return null
-      o.onCommit(next)
-      return next
+      const wrote = flush()
+      // Still open, for the clip it was opened for. What was just written is
+      // the new base, so typing it again later is no change.
+      if (o) owner = wrote === null ? o : { ...o, base: wrote }
+      return wrote
     },
   }
 }

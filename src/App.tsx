@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef } from 'react'
+import { showHistoryToast } from './components/historyLabel'
 import { Inspector } from './components/Inspector'
 import { LeftPanel } from './components/LeftPanel'
 import { Monitor } from './components/Monitor'
@@ -55,7 +56,7 @@ import { cutPunchAtPlayhead, punchInAtPlayhead, punchOutAtPlayhead } from './sta
 import { MOVES } from './engine/moves'
 import { applyMoveToSelection } from './state/moveActions'
 import { addTitleClip } from './state/titleActions'
-import { saveNow } from './state/persistence'
+import { saveFailedMessage, saveSettled } from './state/persistence'
 import { exportProjectToFile, openProjectFilePicker } from './state/projectFile'
 import { isRestartUnsafe } from './state/unloadGuard'
 import { updateActiveSequence, useStore, zoomIn, zoomOut } from './state/store'
@@ -157,27 +158,27 @@ export function buildAppBindings(): Binding[] {
       // reverts, other people's edits survive).
       { combo: 'mod+z', description: 'Undo', domain: 'project', run: () => {
         const label = performHistoryStep('undo')
-        if (label) useToasts.getState().show(`Undo: ${label}`)
+        if (label) showHistoryToast('undo', label)
       } },
       { combo: 'mod+shift+z', description: 'Redo', domain: 'project', run: () => {
         const label = performHistoryStep('redo')
-        if (label) useToasts.getState().show(`Redo: ${label}`)
+        if (label) showHistoryToast('redo', label)
       } },
       { combo: 'mod+y', description: 'Redo', domain: 'project', run: () => {
         const label = performHistoryStep('redo')
-        if (label) useToasts.getState().show(`Redo: ${label}`)
+        if (label) showHistoryToast('redo', label)
       } },
       {
         combo: 'mod+s',
         description: 'Save project',
         domain: 'project',
+        inFields: true,
         run: () => {
-          void saveNow().then(
+          // saveSettled, not saveNow: "Project saved" has to mean every edit is
+          // down, including one made while an earlier write was on its way.
+          void saveSettled(true).then(
             () => useToasts.getState().show('Project saved', 'success'),
-            () =>
-              useToasts
-                .getState()
-                .show('Could not save. Your work is only in memory', 'danger'),
+            (err: unknown) => useToasts.getState().show(saveFailedMessage(err), 'danger'),
           )
         },
       },
@@ -480,7 +481,7 @@ export default function App() {
         useToasts.getState().show(`Update ${version} is ready. Restart to install`, 'success', {
           label: 'Restart',
           // Checked on the click, like the auto-apply toast below: the restart
-          // path forces the window shut after five seconds whether or not the
+          // path forces the window shut after a few seconds whether or not the
           // export let it close. Since 2026-09-28 an export runs behind his
           // work for as long as it takes, so a Restart pressed in the middle of
           // one is the ordinary case, not the odd one.
@@ -510,7 +511,7 @@ export default function App() {
             label: 'Restart',
             // Checked AGAIN on the click: the toast can sit there through a
             // whole export, and the restart path forces the window shut after
-            // five seconds whether or not the export let it close. Restarting
+            // a few seconds whether or not the export let it close. Restarting
             // through a running export truncates the file.
             onClick: () => {
               if (isRestartUnsafe()) {
@@ -526,7 +527,9 @@ export default function App() {
         // Restart ONLY if the flush actually landed. Relaunching after a failed
         // save destroys every edit since the last successful write, and the update
         // can wait for a restart the user chooses.
-        void saveNow().then(
+        // saveSettled, not saveNow: an edit queued behind a write in flight is
+        // written too before the restart (the close then has nothing left to do).
+        void saveSettled().then(
           () => olApi?.restartToUpdate?.(),
           () =>
             useToasts.getState().show(`Could not save, so update ${version} is deferred`, 'danger', {

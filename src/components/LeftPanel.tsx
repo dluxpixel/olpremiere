@@ -804,7 +804,7 @@ function EffectsTab() {
                   data-testid="look-jettism"
                   role="button"
                   tabIndex={0}
-                  title="One click: 9:16, punchy grade on every clip, pop-in titles. Grade lands in the Library as 'Jettism Punch'."
+                  title="Double click: a tall 9:16 frame (a Phone video stays Phone), punch grade on every clip, pop in titles"
                   onDoubleClick={applyJettismLook}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') applyJettismLook()
