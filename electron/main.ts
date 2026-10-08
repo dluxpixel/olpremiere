@@ -56,6 +56,7 @@ import { exportFinished, exportPathFromPage } from './exportChoice'
 import { appliedWhileAway, launchMode, parseQuietMarker, QUIET_START_FILE, secondInstanceAction } from './launchMode'
 import { centreIn, readWindowState, restoreBounds, WINDOW_STATE_FILE, writeWindowState, type Placement } from './windowState'
 import { fileQuietStore, startUpdateFlow, type UpdateFlow } from './updateFlow'
+import { installOrQuit } from './updateApply'
 import { MAIN_LOG_NAME, mainLog, mainLogger, setMainLogFile } from './mainLog'
 import { appendUpdateLog, UPDATE_LOG_NAME } from './updateLog'
 import electronUpdater from 'electron-updater'
@@ -1232,8 +1233,9 @@ app.on('window-all-closed', () => {
   if (updateStatus.kind === 'downloaded' && app.isPackaged && !IS_LAB) {
     quittingToInstall = true
     // His click on the icon in the meantime means "open it again": install the same
-    // way, silently, and start the new version after.
-    setTimeout(() => (openAfterInstall ? autoUpdater.quitAndInstall(true, true) : app.quit()), INSTALL_FLUSH_MS)
+    // way, silently, and start the new version after. And quit even if the updater
+    // declines that install (./updateApply installOrQuit): no window is left by now.
+    setTimeout(() => (openAfterInstall ? installOrQuit(autoUpdater, () => app.quit(), setTimeout) : app.quit()), INSTALL_FLUSH_MS)
     return
   }
   app.quit()

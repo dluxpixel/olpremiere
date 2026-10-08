@@ -5,7 +5,7 @@
 
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { IDLE_APPLY_S, updateApplyDecision } from './updateApply'
+import { IDLE_APPLY_S, INSTALL_DECLINED_QUIT_MS, installOrQuit, updateApplyDecision } from './updateApply'
 
 describe('updateApplyDecision', () => {
   it('waits rather than restarting under him while he is working', () => {
@@ -42,5 +42,47 @@ describe('opening the app never restarts it into an update', () => {
     const flow = readFileSync(new URL('./updateFlow.ts', import.meta.url), 'utf8')
     expect(flow).toMatch(/d\.updater\.autoInstallOnAppQuit = true/)
     expect(main).toMatch(/startUpdateFlow\(\{\s*updater: autoUpdater,/)
+  })
+})
+
+// ⛔ Closed with an update waiting and his click on the icon in the meantime: the app
+// installs and opens again through quitAndInstall. But electron-updater's quitAndInstall
+// quits only when its install went ahead. With no installer on disk, or one already
+// started, it returns and nothing quits: a process with no window kept the single
+// instance lock, and every later launch handed over to it and closed at once.
+describe('installOrQuit', () => {
+  const rig = (goesAhead: boolean) => {
+    const calls: string[] = []
+    let timer: (() => void) | null = null
+    const updater = {
+      quitAndInstall: (silent: boolean, runAfter: boolean) => {
+        calls.push(`install silent=${silent} runAfter=${runAfter}`)
+        if (goesAhead) calls.push('updater quits')
+      },
+    }
+    installOrQuit(updater, () => calls.push('quit'), (fn, ms) => {
+      calls.push(`wait ${ms}`)
+      timer = fn
+    })
+    return { calls, fire: () => timer?.() }
+  }
+
+  it('⛔ quits all the same when the updater declines the install', () => {
+    const r = rig(false)
+    r.fire()
+    expect(r.calls).toEqual(['install silent=true runAfter=true', `wait ${INSTALL_DECLINED_QUIT_MS}`, 'quit'])
+  })
+
+  it('installs silently and opens the new version, and the late quit is a no op behind the updater\'s own', () => {
+    const r = rig(true)
+    expect(r.calls.slice(0, 2)).toEqual(['install silent=true runAfter=true', 'updater quits'])
+    expect(INSTALL_DECLINED_QUIT_MS).toBeGreaterThanOrEqual(1000)
+  })
+
+  it('is what a close with an update waiting uses, so a declined install still ends the app', () => {
+    const main = readFileSync(new URL('./main.ts', import.meta.url), 'utf8')
+    const closed = main.slice(main.indexOf("app.on('window-all-closed'"))
+    expect(closed).toContain('openAfterInstall ? installOrQuit(autoUpdater, () => app.quit(), setTimeout) : app.quit()')
+    expect(closed).not.toMatch(/\? autoUpdater\.quitAndInstall\(/)
   })
 })
