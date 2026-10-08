@@ -838,7 +838,9 @@ function EffectsTab() {
                   data-testid="look-jettism"
                   role="button"
                   tabIndex={0}
-                  title="One click: 9:16, punchy grade on every clip, pop-in titles. Grade lands in the Library as 'Jettism Punch'."
+                  // It takes a double click (or Enter), and the look no longer leaves a copy in the
+                  // Library (state/lookActions.ts): the tooltip said "One click" and promised one.
+                  title="Double click: makes the video 9:16, gives every clip the punchy look and pops the titles in."
                   onDoubleClick={applyJettismLook}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') applyJettismLook()
@@ -852,7 +854,7 @@ function EffectsTab() {
                   data-testid="look-grade"
                   role="button"
                   tabIndex={0}
-                  title="Just the punch grade (+exposure/+contrast/+saturation) on the selected clip"
+                  title="Double click: brighter, punchier colors on every selected clip."
                   onDoubleClick={() => applyPunchyGradeToClips(targets)}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') applyPunchyGradeToClips(targets)

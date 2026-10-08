@@ -15,7 +15,7 @@ vi.mock('../state/toasts', () => ({
 
 import { newProject, activeSequence, defaultTitleDef, newTitleClip } from '../engine/types'
 import { recomputeDuration } from '../engine/timeline'
-import { EFFECTS_HINT, missingMediaLine } from '../components/LeftPanel'
+import { EFFECTS_HINT, LeftPanel, missingMediaLine } from '../components/LeftPanel'
 import { FrameSettingsMenu } from '../components/FrameSettingsMenu'
 import { SettingsDialog } from '../components/SettingsDialog'
 import { collabBadgeTitle } from '../components/TopBar'
@@ -73,6 +73,21 @@ describe('the left panel', () => {
   it('agrees with one file and with several', () => {
     expect(missingMediaLine(1)).toBe('1 file on this edit has no media. Your cuts are all still here.')
     expect(missingMediaLine(3)).toBe('3 files on this edit have no media. Your cuts are all still here.')
+  })
+
+  // 2026-10-08: the Shorts template's tooltip said "One click" for a row that takes a double
+  // click, and promised a copy in the Library the look stopped leaving long ago. The punch grade's
+  // said "(+exposure/+contrast/+saturation)".
+  it('the Shorts template and the punch grade say a double click, in plain words', () => {
+    useStore.getState().setUI({ leftTab: 'effects' })
+    render(<LeftPanel width={280} />)
+    const template = screen.getByTestId('look-jettism').getAttribute('title') ?? ''
+    const grade = screen.getByTestId('look-grade').getAttribute('title') ?? ''
+    expect(template).toMatch(/^Double click: makes the video 9:16/)
+    expect(template).not.toMatch(/one click|Library/i)
+    expect(grade).toMatch(/^Double click: brighter, punchier colors/)
+    expect(grade).not.toMatch(/[+/]|exposure|contrast|saturation/i)
+    for (const t of [template, grade]) expect(t).not.toMatch(DASHES)
   })
 
   it('tells him an effect takes a double click, not a click', () => {
