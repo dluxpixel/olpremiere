@@ -547,3 +547,187 @@ describe('a draw can tick the clock first in its frame', () => {
     spy.mockRestore()
   })
 })
+
+// PB-8, 2026-10-07: the picture ran on the sample the audio graph was
+// RENDERING, and his ears get it the output latency later: measured on his
+// default output that day, 41 ms by the output timestamps (40 ms output plus
+// 10 ms base reported), two and a half frames of a 60 fps edit, and five to
+// fifteen frames on Bluetooth. Every cut he saw landed before the beat he heard.
+describe('the picture shows what is reaching his ears', () => {
+  const world = { t: 5 }
+  /** A device whose sound reaches his ears 0.2 s after the graph renders it. */
+  const ctx = {
+    state: 'running',
+    get currentTime() {
+      return world.t
+    },
+    resume: () => Promise.resolve(),
+    getOutputTimestamp: () => ({ contextTime: world.t - 0.2, performanceTime: 1000 * world.t }),
+  }
+  let frames: FrameRequestCallback[] = []
+  const runFrame = () => frames.splice(0).forEach((f) => f(world.t))
+  beforeEach(() => {
+    world.t = 5
+    frames = []
+    globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => frames.push(cb)) as typeof requestAnimationFrame
+    vi.spyOn(performance, 'now').mockImplementation(() => 1000 * world.t)
+    audioMock.ctx = ctx
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+    audioMock.ctx = null
+  })
+
+  const transport = (ticks: number[], extra: Partial<ConstructorParameters<typeof Transport>[0]> = {}) =>
+    new Transport({
+      getEndS: () => 60,
+      onTick: (s) => ticks.push(s),
+      schedule: () => Promise.resolve(Object.assign(() => undefined, { startsAtCtxS: world.t + 0.02 })),
+      ...extra,
+    })
+
+  it('holds the first frame until the first sound reaches him, then runs on what he hears', async () => {
+    const ticks: number[] = []
+    const t = transport(ticks)
+    await t.play(2)
+    world.t = 5.12 // the sound has started, and has not reached him yet
+    runFrame()
+    expect(ticks.at(-1)).toBeCloseTo(2, 9)
+    world.t = 5.22 // it reaches him
+    runFrame()
+    expect(ticks.at(-1)).toBeCloseTo(2, 9)
+    world.t = 5.72
+    runFrame()
+    expect(ticks.at(-1)).toBeCloseTo(2.5, 9)
+    // A pause still stops where the SOUND stopped: what he has heard by the
+    // time the device plays out, which a dub resumes from (MIC-5).
+    expect(t.pause()).toBeCloseTo(2.7, 9)
+  })
+
+  it('shows the last frames of the edit before it stops, while their sound plays out', async () => {
+    const ticks: number[] = []
+    const paused: number[] = []
+    const t = transport(ticks, { getEndS: () => 3, onPaused: (s) => paused.push(s) })
+    await t.play(2)
+    world.t = 6.1 // the sound has rendered past the end; he is hearing 2.88
+    runFrame()
+    expect(t.playing).toBe(true)
+    expect(ticks.at(-1)).toBeCloseTo(2.88, 9)
+    world.t = 6.3
+    runFrame()
+    expect(t.playing).toBe(false)
+    expect(paused).toEqual([3])
+  })
+
+  it('a loop pass is seen to its end, and the next starts when its sound reaches him', async () => {
+    const ticks: number[] = []
+    const t = transport(ticks, {
+      getLoopRange: () => ({ startS: 0, endS: 1 }),
+      schedule: () => Promise.resolve(Object.assign(() => undefined, { startsAtCtxS: world.t + 0.07 })),
+    })
+    await t.play(0) // the first sound starts at 5.07
+    world.t = 6.1 // the sound wraps here; he is still hearing 0.83 of the pass
+    runFrame()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(ticks.at(-1)).toBeCloseTo(0.83, 9)
+    world.t = 6.29
+    runFrame()
+    expect(ticks.at(-1)).toBeCloseTo(1, 9) // the pass's last frame, never cut short
+    world.t = 6.32 // the old pass has played out; the new one has not reached him
+    runFrame()
+    expect(ticks.at(-1)).toBeCloseTo(0, 9)
+    world.t = 6.1 + 0.07 + 0.2 + 0.5
+    runFrame()
+    expect(ticks.at(-1)).toBeCloseTo(0.5, 9)
+    t.pause()
+  })
+
+  it('a sound that joins a picture rolling alone starts where the picture will be when he hears it', async () => {
+    // The device has not opened at Space: the picture rolls on the performance
+    // clock with nothing to wait for, and takes the lag on when the sound joins.
+    const w = { ctxT: 0, perfS: 100 }
+    audioMock.ctx = {
+      state: 'running',
+      get currentTime() {
+        return w.ctxT
+      },
+      resume: () => Promise.resolve(),
+      getOutputTimestamp: () => ({ contextTime: w.ctxT - 0.2, performanceTime: 1000 * w.perfS }),
+    }
+    vi.spyOn(performance, 'now').mockImplementation(() => 1000 * w.perfS)
+    const ticks: number[] = []
+    const joined: number[] = []
+    const t = transport(ticks, {
+      schedule: () => Promise.resolve(Object.assign(() => undefined, { startsAtCtxS: w.ctxT + 0.02 })),
+      onHeard: (span) => {
+        if (span?.continues) joined.push(span.timelineS)
+      },
+    })
+    await t.play(4)
+    w.perfS = 100.3
+    w.ctxT = 3 // the device opened: the sound is rebuilt on its clock
+    runFrame()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(joined).toHaveLength(1)
+    for (const c of [3.0, 3.1, 3.22]) {
+      w.ctxT = c
+      runFrame()
+    }
+    // When its first sample reaches him (3.02 + 0.2), the picture shows it.
+    expect(ticks.at(-1)).toBeCloseTo(joined[0], 9)
+    w.ctxT = 3.5
+    runFrame()
+    expect(ticks.at(-1)).toBeCloseTo(joined[0] + 0.28, 9)
+    expect(ticks.every((s, i) => i === 0 || s >= ticks[i - 1])).toBe(true) // never a step back
+    t.pause()
+  })
+
+  it('a late first sound never holds back a cold Space, and the picture takes the lag on when it joins', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    let firstBuild: (stop: () => void) => void = () => undefined
+    let calls = 0
+    const ticks: number[] = []
+    const joined: number[] = []
+    const t = transport(ticks, {
+      schedule: () => {
+        calls += 1
+        if (calls === 1) return new Promise((resolve) => (firstBuild = (stop) => resolve(stop)))
+        return Promise.resolve(Object.assign(() => undefined, { startsAtCtxS: world.t + 0.02 }))
+      },
+      onHeard: (span) => {
+        if (span?.continues) joined.push(span.timelineS)
+      },
+    })
+    const playing = t.play(10)
+    await vi.advanceTimersByTimeAsync(AUDIO_START_BUDGET_MS + 1)
+    await playing
+    world.t = 5.1
+    runFrame()
+    expect(ticks.at(-1)).toBeCloseTo(10.1, 9) // the picture rolls at once: nothing to wait for
+    world.t = 5.2
+    firstBuild(() => undefined)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(joined).toHaveLength(1)
+    for (const c of [5.25, 5.3, 5.42]) {
+      world.t = c
+      runFrame()
+    }
+    // When the joined sound's first sample reaches him (5.22 + 0.2), the picture shows it.
+    expect(ticks.at(-1)).toBeCloseTo(joined[0], 9)
+    expect(ticks.every((s, i) => i === 0 || s >= ticks[i - 1])).toBe(true) // never a step back
+    t.pause()
+    vi.useRealTimers()
+  })
+
+  it('a shuttle has no sound, so its picture is not held back', async () => {
+    const ticks: number[] = []
+    const t = transport(ticks)
+    await t.play(2, 2)
+    world.t = 5.5
+    runFrame()
+    expect(ticks.at(-1)).toBeCloseTo(3, 9)
+    t.pause()
+  })
+})
