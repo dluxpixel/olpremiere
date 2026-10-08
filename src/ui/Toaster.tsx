@@ -1,7 +1,8 @@
 import { useLayoutEffect, useRef, useState } from 'react'
 import { useContextMenu } from '../state/contextMenu'
 import { useToasts, type Toast } from '../state/toasts'
-import { cornerClasses, toastPlacement, type ToastPlacement } from './toastPlacement'
+import { useFullscreenElement } from './fullscreenLayer'
+import { EDGE, bottomOffset, cornerClasses, toastPlacement, type ToastPlacement } from './toastPlacement'
 
 const kindClasses: Record<Toast['kind'], string> = {
   info: 'border-border',
@@ -20,6 +21,28 @@ export function Toaster() {
   const stack = useRef<HTMLDivElement>(null)
   const [placement, setPlacement] = useState<ToastPlacement>(HOME)
   const showing = toasts.length > 0
+  const fullscreen = useFullscreenElement()
+  const [bottom, setBottom] = useState(EDGE)
+
+  // In full screen the bottom corners stand above the bar under the picture (toastPlacement.ts,
+  // bottomOffset), so Exit full screen and the tools at the bar's right end stay clear and
+  // clickable. Measured, because the bar is one row or two depending on the screen's width.
+  useLayoutEffect(() => {
+    const bar = showing ? fullscreen?.querySelector<HTMLElement>('[data-testid="transport-bar"]') : null
+    if (!bar) {
+      setBottom(EDGE)
+      return
+    }
+    const measure = () => setBottom(bottomOffset(bar.getBoundingClientRect().top, window.innerHeight))
+    measure()
+    const seen = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure)
+    seen?.observe(bar)
+    window.addEventListener('resize', measure)
+    return () => {
+      seen?.disconnect()
+      window.removeEventListener('resize', measure)
+    }
+  }, [fullscreen, showing])
 
   // ⛔ TOASTS NEVER COVER A MENU (2026-10-03). The stack sits in the bottom right corner at a
   // higher layer than the right-click menu, so a menu opened near that corner lost its last
@@ -37,14 +60,14 @@ export function Toaster() {
       if (el) {
         const box = el.getBoundingClientRect()
         const menus = Array.from(document.querySelectorAll('[role="menu"]')).map((m) => m.getBoundingClientRect())
-        const next = toastPlacement({ w: box.width, h: box.height }, menus, window.innerWidth, window.innerHeight)
+        const next = toastPlacement({ w: box.width, h: box.height }, menus, window.innerWidth, window.innerHeight, bottom)
         setPlacement((p) => (p.corner === next.corner && p.covered === next.covered ? p : next))
       }
       raf = requestAnimationFrame(watch)
     }
     watch()
     return () => cancelAnimationFrame(raf)
-  }, [menuOpen, showing])
+  }, [menuOpen, showing, bottom])
 
   if (!showing) return null
   return (
@@ -56,6 +79,7 @@ export function Toaster() {
       data-corner={placement.corner}
       // No clear corner means the menu has to win, so the stack drops beneath it (z 95).
       className={`pointer-events-none fixed ${placement.covered ? 'z-[90]' : 'z-[100]'} flex flex-col gap-2 ${cornerClasses(placement.corner)}`}
+      style={bottom !== EDGE && placement.corner[0] === 'b' ? { bottom } : undefined}
       role="status"
       aria-live="polite"
     >

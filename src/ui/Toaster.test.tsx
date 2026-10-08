@@ -33,6 +33,32 @@ describe('the Toaster', () => {
     expect(screen.queryByTestId('toast')).toBeNull()
   })
 
+  // 2026-10-08: in full screen the bar is the bottom of the screen. A toast in the usual corner sat
+  // on Exit full screen, and with its clock held under the pointer the click he meant for that
+  // button dismissed the toast and left full screen on.
+  it('stands above the bar under the picture in full screen, and in its usual corner in a window', () => {
+    const monitor = document.createElement('section')
+    const bar = document.createElement('div')
+    bar.dataset.testid = 'transport-bar'
+    // The one row bar, 44px, along the bottom of the screen.
+    bar.getBoundingClientRect = () => new DOMRect(0, window.innerHeight - 44, window.innerWidth, 44)
+    monitor.append(bar)
+    document.body.append(monitor)
+    Object.defineProperty(document, 'fullscreenElement', { configurable: true, get: () => monitor })
+    try {
+      act(() => useToasts.getState().show('Saved into your media', 'success'))
+      const { unmount } = render(<Toaster />)
+      expect(screen.getByTestId('toast-stack').style.bottom).toBe(`${44 + 8}px`)
+      unmount()
+    } finally {
+      Object.defineProperty(document, 'fullscreenElement', { configurable: true, get: () => null })
+      monitor.remove()
+    }
+    render(<Toaster />)
+    expect(screen.getByTestId('toast-stack').style.bottom).toBe('')
+    expect(screen.getByTestId('toast-stack').className).toMatch(/\bbottom-4\b/)
+  })
+
   it('keeps a long message to a readable width', () => {
     render(<Toaster />)
     act(() => useToasts.getState().show('Could not write: ' + 'clip.mp4, '.repeat(40), 'danger'))

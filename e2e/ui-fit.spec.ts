@@ -334,6 +334,56 @@ test.describe('Full screen', () => {
     await expect(page.getByTestId('toast').first()).toBeVisible({ timeout: 15_000 })
     expect(await shows('toast')).toBe(true)
   })
+
+  // 2026-10-08: inside the full screen the toasts stood in their usual corner, which there is the
+  // bar's right end. A toast sat on Exit full screen and the tools beside it, held its clock under
+  // the pointer, and the click he meant for Exit full screen dismissed it and left full screen on.
+  for (const s of [
+    { w: 1920, h: 1080 },
+    { w: 1024, h: 680 },
+  ]) {
+    test(`a toast in full screen stands above the bar, and Exit full screen takes the click, at ${s.w}x${s.h}`, async ({ page }) => {
+      await open(page, s.w, s.h, 280, 450)
+      const toggle = page.getByTestId('fullscreen-toggle')
+      await toggle.click()
+      await expect.poll(() => inFullscreen(page)).toBe('monitor')
+      // As wide as a toast gets, and up for a minute, so only a click could take it away.
+      await page.evaluate(async () => {
+        const mod = '/src/state/toasts.ts'
+        const { useToasts } = (await import(/* @vite-ignore */ mod)) as {
+          useToasts: {
+            getState: () => { show: (m: string, k: string, a: undefined, o: { durationMs: number }) => void }
+          }
+        }
+        useToasts.getState().show('Saved into your media: ' + 'a long file name, '.repeat(8), 'success', undefined, { durationMs: 60_000 })
+      })
+      await page.mouse.move(5, 5)
+      const mine = page.getByTestId('toast').filter({ hasText: 'a long file name' })
+      await expect(mine).toBeVisible()
+      const bar = page.getByTestId('transport-bar')
+      const stack = (await page.getByTestId('toast-stack').boundingBox())!
+      const b = (await bar.boundingBox())!
+      expect(stack.y + stack.height).toBeLessThanOrEqual(b.y)
+      // No toast is the thing under the middle of any control on the bar.
+      const covered = await bar.evaluate((el) => {
+        const toasts = document.querySelector('[data-testid="toast-stack"]')
+        return Array.from(el.querySelectorAll<HTMLElement>('button, select'))
+          .filter((c) => c.getClientRects().length > 0)
+          .filter((c) => {
+            const r = c.getBoundingClientRect()
+            return toasts?.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)) ?? false
+          })
+          .map((c) => c.getAttribute('aria-label') ?? c.getAttribute('data-testid') ?? c.textContent)
+      })
+      expect(covered).toEqual([])
+      await expect(toggle).toBeVisible()
+      // He reaches for Exit full screen and clicks it: full screen ends, and the toast is still up.
+      await toggle.hover()
+      await toggle.click()
+      await expect.poll(() => inFullscreen(page)).toBe(null)
+      await expect(mine).toHaveCount(1)
+    })
+  }
 })
 
 // 2026-10-07: the save label cycles Unsaved, Saving, Saved a second after every edit, and the

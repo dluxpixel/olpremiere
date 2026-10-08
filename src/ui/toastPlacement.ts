@@ -24,10 +24,24 @@ export const TOP_OFFSET = 56
 /** The corners in the order they are tried: where toasts always are, then the other side, then up. */
 const ORDER: ToastCorner[] = ['br', 'bl', 'tr', 'tl']
 
+/**
+ * How far up from the window's bottom edge the bottom corners stand.
+ *
+ * ⛔ IN FULL SCREEN THE STACK STANDS ABOVE THE BAR UNDER THE PICTURE (2026-10-08). The bar is the
+ * bottom of the screen there, and a toast in the usual corner sat on Exit full screen and the tools
+ * at the bar's right end. It also held its clock under the pointer, so he reached for Exit full
+ * screen, the click dismissed the toast instead, and full screen stayed on. `barTop` is that bar's
+ * top edge, or null when there is no bar at the bottom (in a window).
+ */
+export function bottomOffset(barTop: number | null, vh: number): number {
+  if (barTop === null) return EDGE
+  return Math.max(EDGE, Math.ceil(vh - barTop) + MENU_GAP)
+}
+
 /** The rectangle a stack of this size would fill in a corner of a window of this size. */
-export function stackRect(corner: ToastCorner, size: { w: number; h: number }, vw: number, vh: number): Rect {
+export function stackRect(corner: ToastCorner, size: { w: number; h: number }, vw: number, vh: number, bottom = EDGE): Rect {
   const left = corner === 'br' || corner === 'tr' ? vw - EDGE - size.w : EDGE
-  const top = corner === 'br' || corner === 'bl' ? vh - EDGE - size.h : TOP_OFFSET
+  const top = corner === 'br' || corner === 'bl' ? vh - bottom - size.h : TOP_OFFSET
   return { left, top, right: left + size.w, bottom: top + size.h }
 }
 
@@ -41,9 +55,15 @@ export interface ToastPlacement {
 }
 
 /** The first corner whose stack would not touch any open menu. */
-export function toastPlacement(size: { w: number; h: number }, menus: readonly Rect[], vw: number, vh: number): ToastPlacement {
+export function toastPlacement(
+  size: { w: number; h: number },
+  menus: readonly Rect[],
+  vw: number,
+  vh: number,
+  bottom = EDGE,
+): ToastPlacement {
   for (const corner of ORDER) {
-    const at = stackRect(corner, size, vw, vh)
+    const at = stackRect(corner, size, vw, vh, bottom)
     if (!menus.some((m) => meets(at, m, MENU_GAP))) return { corner, covered: false }
   }
   return { corner: 'br', covered: true }
