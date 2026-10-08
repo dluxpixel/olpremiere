@@ -799,6 +799,78 @@ describe('the outgoing side of a dissolve has its own clip to hold, even when th
     expect(inWindow.length).toBeGreaterThan(0)
     expect(inWindow.every((d) => d[0] === null)).toBe(true)
   })
+
+  // S-B (sweep review 2): the blurred background is a second layer on the SAME
+  // element, and the second layer re-held whatever picture the first resolved,
+  // vouched for or not. So a late element showing ANOTHER clip's footage (the
+  // ladder rightly refused to hold it) was held anyway by the foreground layer,
+  // and the dissolve out of this clip froze on a shot from the clip before it.
+  it('the foreground over a blurred background does not hold a picture the ladder never vouched for', async () => {
+    const a3 = clip({ id: 'a', assetId: 'A', startS: 0, inS: 20, outS: 22 })
+    const b3 = clip({ id: 'b', assetId: 'A', startS: 2, inS: 30, outS: 34 })
+    const c3 = clip({ id: 'c', assetId: 'A', startS: 6, inS: 40, outS: 44, transitionIn: { type: 'crossDissolve', durationS: 1 } })
+    const seq: Sequence = { ...sequence([a3, b3, c3]), blurBackground: true }
+    const c = canvas()
+    preview.prewarmPreview([A])
+    await loadVideos()
+    const el = videos[0]
+    // Play from 3.6 (source 31.6 of b) with the element left on a's footage.
+    for (let f = 0; f < 72; f++) {
+      now += 1000 / 30
+      present(el, 21.9)
+      preview.renderPreview(c, seq, { A }, 3.6 + f / 30, true)
+    }
+    await loadVideos()
+    const before = h.drawn.length
+    for (let f = 0; f < 30; f++) {
+      const tS = 6 + f / 30
+      now += 1000 / 30
+      present(el, 21.9)
+      present(incoming(), 40 + tS - 6)
+      preview.renderPreview(c, seq, { A }, tS, true)
+    }
+    const inWindow = h.drawn.slice(before)
+    expect(inWindow.length).toBeGreaterThan(0)
+    // The two sides of the dissolve (the backdrop in front of them is a third layer,
+    // drawn off the stale element by design, so it is not what this is about).
+    // Whatever a side shows is b's own footage (30 to 34) or c's (40 on), never a's.
+    const sides = inWindow.flatMap((d) => d.slice(1).map(seenIn)).filter((s): s is number => s !== undefined)
+    expect(sides.length).toBeGreaterThan(0)
+    expect(sides.every((s) => s >= 29)).toBe(true)
+  })
+
+  it('and still holds the picture the ladder did vouch for, so the dissolve out of the clip has it', async () => {
+    const a3 = clip({ id: 'a', assetId: 'A', startS: 0, inS: 20, outS: 22 })
+    const b3 = clip({ id: 'b', assetId: 'A', startS: 2, inS: 30, outS: 34 })
+    const c3 = clip({ id: 'c', assetId: 'A', startS: 6, inS: 40, outS: 44, transitionIn: { type: 'crossDissolve', durationS: 1 } })
+    const seq: Sequence = { ...sequence([a3, b3, c3]), blurBackground: true }
+    const c = canvas()
+    preview.prewarmPreview([A])
+    await loadVideos()
+    const el = videos[0]
+    // The element is right on time for b the whole way in.
+    for (let f = 0; f < 72; f++) {
+      const tS = 3.6 + f / 30
+      now += 1000 / 30
+      present(el, 30 + tS - 2)
+      preview.renderPreview(c, seq, { A }, tS, true)
+    }
+    await loadVideos()
+    const before = h.drawn.length
+    for (let f = 0; f < 30; f++) {
+      const tS = 6 + f / 30
+      now += 1000 / 30
+      present(el, 30 + 4 - 0.05)
+      present(incoming(), 40 + tS - 6)
+      preview.renderPreview(c, seq, { A }, tS, true)
+    }
+    const outgoing = h.drawn.slice(before).map((d) => seenIn(d[1]))
+    expect(outgoing).toHaveLength(30)
+    // The first frames can draw the element itself (it is still near enough); once
+    // it is not, the held frame is what is drawn, and it is b's last frame on time.
+    expect(outgoing[29]).toBeGreaterThanOrEqual(33.5)
+    expect(outgoing.every((s) => s === undefined || (s >= 33.5 && s <= 34.1))).toBe(true)
+  })
 })
 
 // ---- PB-16 ------------------------------------------------------------------

@@ -1192,15 +1192,28 @@ function makeTextureSource(
     const key = videoPoolKeyFor(layer.assetId, ownElementSides?.has(layer) === true)
     return `${key}|${layer.sourceTimeS}|${transitionSides?.has(layer) === true ? 1 : 0}`
   }
+  /**
+   * ⛔ ONLY A VOUCHED PICTURE IS HELD FOR THE SECOND LAYER (sweep S-B). The
+   * second layer on an element re-holds the shared picture for its own clip, but
+   * the ladder only held it when it was confident of it. A late element showing
+   * another clip's footage was refused by the first layer and then held anyway
+   * by the foreground over a blurred background, and the dissolve out of that
+   * clip froze on a shot from the clip before it. `vouchedPic` is what
+   * confident() last vouched for during this resolve.
+   */
+  let vouchedPic: TexImageSource | null = null
+  const vouchedKeys = new Set<string>()
   const resolveOnce = (layer: RenderLayer): TexImageSource | null => {
     const key = elementKey(layer)
     if (key === null) return resolveLayer(layer)
     if (sameElement.has(key)) {
       const pic = sameElement.get(key) ?? null
-      if (pic && holdClips?.has(layer.clipId)) holdGoodFrame(layer.clipId, pic)
+      if (pic && vouchedKeys.has(key) && holdClips?.has(layer.clipId)) holdGoodFrame(layer.clipId, pic)
       return pic
     }
+    vouchedPic = null
     const pic = resolveLayer(layer)
+    if (pic && pic === vouchedPic) vouchedKeys.add(key)
     sameElement.set(key, pic)
     return pic
   }
@@ -1254,6 +1267,7 @@ function makeTextureSource(
     /** A picture the ladder is confident is this clip's own frame. */
     const confident = (src: TexImageSource): TexImageSource => {
       if (holding) holdGoodFrame(layer.clipId, src)
+      vouchedPic = src
       return src
     }
     /** No provable picture: the last one there was, never a wrong one. */
