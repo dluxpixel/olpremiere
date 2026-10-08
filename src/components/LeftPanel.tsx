@@ -629,23 +629,46 @@ function RemoveUnusedButton() {
  * is keyed on the tab so it fades in (LeftPanel below), which also unmounts the tab he left: "blur"
  * typed in Effects was gone after a hop to Media to grab a clip, and a bin scrolled halfway down
  * was back at the top. The fade stays; these two outlive it, for as long as the app is open.
+ *
+ * ⛔ BUT A FILE THAT CAME IN SINCE SHOWS, AND ANOTHER PROJECT'S BIN IS ITS OWN (2026-10-08). The
+ * newest file is at the top of the bin, and his place was put back over it: Shift+S or a drop
+ * while he was on Effects, a hop to Media, and the new card sat above the fold. And the place was
+ * one for the whole app, so another project's bin opened at this one's scroll. The place now
+ * belongs to the bin it was taken in, and a file that was not in it scrolls the bin to the top.
  */
-const kept = { effectsQuery: '', mediaScrollTop: 0 }
+const kept: {
+  effectsQuery: string
+  media: { projectId: string; assets: Record<string, MediaAsset>; scrollTop: number } | null
+} = { effectsQuery: '', media: null }
 
 function MediaTab() {
   const assets = useStore((s) => s.project.assets)
+  const projectId = useStore((s) => s.project.id)
   const fps = useStore((s) => activeSequence(s.project).fps)
   const fileInput = useRef<HTMLInputElement>(null)
   const grid = useRef<HTMLDivElement>(null)
   const setUI = useStore((s) => s.setUI)
   const importing = useImportProgress((s) => s.total)
-  // Before the first paint, so the bin never shows its top first.
-  useLayoutEffect(() => {
-    if (grid.current) grid.current.scrollTop = kept.mediaScrollTop
-  }, [])
   // Newest import first, so the file you just added is at the top (matches the
   // Library and every other panel) instead of buried at the bottom of the grid.
   const list = Object.values(assets).reverse()
+  const newest = list[0]?.id
+  // The bin as he last saw it on this tab: null until the first paint, which reads `kept` instead.
+  const seen = useRef<{ projectId: string; assets: Record<string, MediaAsset> } | null>(null)
+  // Before the paint, so the bin never shows the wrong place first.
+  useLayoutEffect(() => {
+    const el = grid.current
+    const first = seen.current === null
+    const before = first ? kept.media : seen.current
+    const sameBin = before !== null && before.projectId === projectId
+    const fresh = newest !== undefined && !(sameBin && newest in before.assets)
+    if (el) {
+      if (fresh) el.scrollTop = 0
+      else if (first && sameBin && kept.media) el.scrollTop = kept.media.scrollTop
+    }
+    seen.current = { projectId, assets }
+    kept.media = { projectId, assets, scrollTop: el?.scrollTop ?? 0 }
+  }, [assets, newest, projectId])
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/* Wraps rather than squeezing: a third button joined Import and Captions. */}
@@ -694,7 +717,7 @@ function MediaTab() {
           ref={grid}
           data-testid="media-grid"
           onScroll={(e) => {
-            kept.mediaScrollTop = e.currentTarget.scrollTop
+            if (kept.media) kept.media = { ...kept.media, scrollTop: e.currentTarget.scrollTop }
           }}
           className="grid min-h-0 flex-1 grid-cols-2 content-start gap-2 overflow-y-auto p-2 pt-0"
         >

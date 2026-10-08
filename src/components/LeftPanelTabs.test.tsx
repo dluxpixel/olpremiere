@@ -4,7 +4,7 @@
 // is keyed on the tab so it fades in, and that also unmounted the tab he left: "blur" typed in
 // Effects was gone after a hop to Media, and a bin scrolled halfway down was back at the top.
 
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -66,5 +66,61 @@ describe('switching left tabs', () => {
     expect(screen.queryByTestId('media-grid')).toBeNull()
     await userEvent.click(screen.getByTestId('tab-media'))
     expect(grid().scrollTop).toBe(400)
+  })
+
+  // 2026-10-08: the newest file is at the top of the bin, and his place was put back over it. A
+  // screenshot (Shift+S) or a drop while he was on Effects, a hop to Media, and the new card sat
+  // above the fold. And the place was one for the whole app, so another project's bin opened at
+  // this one's scroll.
+  const withFile = (id: string) => {
+    const p = useStore.getState().project
+    const first = Object.values(p.assets)[0]!
+    useStore.getState().setProject({ ...p, assets: { ...p.assets, [id]: { ...first, id, name: `${id}.png` } } })
+  }
+
+  it('shows a file that came in while he was on another tab, at the top of the bin', async () => {
+    useStore.getState().setUI({ leftTab: 'media' })
+    render(<LeftPanel width={280} />)
+    grid().scrollTop = 400
+    fireEvent.scroll(grid())
+    await userEvent.click(screen.getByTestId('tab-effects'))
+    act(() => withFile('screenshot'))
+    await userEvent.click(screen.getByTestId('tab-media'))
+    expect(grid().scrollTop).toBe(0)
+  })
+
+  it('shows a file that comes in while the bin is open', () => {
+    useStore.getState().setUI({ leftTab: 'media' })
+    render(<LeftPanel width={280} />)
+    grid().scrollTop = 400
+    fireEvent.scroll(grid())
+    act(() => withFile('dropped'))
+    expect(grid().scrollTop).toBe(0)
+  })
+
+  it('keeps his place when the bin changes without a new file', async () => {
+    useStore.getState().setUI({ leftTab: 'media' })
+    render(<LeftPanel width={280} />)
+    grid().scrollTop = 400
+    fireEvent.scroll(grid())
+    act(() => {
+      const p = useStore.getState().project
+      useStore.getState().setProject({ ...p, assets: { ...p.assets, 'img-3': { ...p.assets['img-3']!, name: 'renamed.png' } } })
+    })
+    expect(grid().scrollTop).toBe(400)
+    await userEvent.click(screen.getByTestId('tab-effects'))
+    await userEvent.click(screen.getByTestId('tab-media'))
+    expect(grid().scrollTop).toBe(400)
+  })
+
+  it("opens another project's bin at its own top, not at this one's place", async () => {
+    useStore.getState().setUI({ leftTab: 'media' })
+    render(<LeftPanel width={280} />)
+    grid().scrollTop = 400
+    fireEvent.scroll(grid())
+    await userEvent.click(screen.getByTestId('tab-effects'))
+    act(() => useStore.getState().setProject({ ...newProject(), assets: binOf(40) }))
+    await userEvent.click(screen.getByTestId('tab-media'))
+    expect(grid().scrollTop).toBe(0)
   })
 })
