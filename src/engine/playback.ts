@@ -223,8 +223,10 @@ export class Transport {
 
   currentTime(): number {
     // Live while playing so JKL re-anchors (play(t.currentTime(), newRate))
-    // never jump back to a stale tick.
-    return this.isPlaying ? this.liveTime() : this.lastT
+    // never jump back to a stale tick. And the PICTURE, the frame on screen:
+    // the sound still on its way to his ears is the lag ahead of it, and a
+    // shuttle started from there jumped the picture forward first (PB-8).
+    return this.isPlaying ? this.livePicture() : this.lastT
   }
 
   /**
@@ -683,24 +685,35 @@ export class Transport {
    * looped pass is shown to its end while its last sound arrives (the tail).
    */
   private pictureAt(clock: number): number {
-    let p: number
-    const tail = this.tail
-    if (tail && clock < tail.untilClock) {
-      p = Math.min(tail.endS, tail.startS + (clock - this.earLag - tail.anchor) * this.currentRate)
-    } else {
-      if (tail) {
-        // The wrapped pass has played out; the next starts from its own first frame.
-        this.tail = null
-        this.lastPicture = -Infinity
-      }
-      p = this.timeAt(clock - this.earLag)
+    if (this.tail && clock >= this.tail.untilClock) {
+      // The wrapped pass has played out; the next starts from its own first frame.
+      this.tail = null
+      this.lastPicture = -Infinity
     }
+    let p = this.rawPicture(clock)
     // A re-measured lag moves the picture by a few ms, and never backward.
     if (this.currentRate > 0) {
       p = Math.max(p, this.lastPicture)
       this.lastPicture = p
     }
     return p
+  }
+
+  /** The picture at a clock reading, before the never-backward hold. */
+  private rawPicture(clock: number): number {
+    const tail = this.tail
+    if (tail && clock < tail.untilClock) {
+      return Math.min(tail.endS, tail.startS + (clock - this.earLag - tail.anchor) * this.currentRate)
+    }
+    return this.timeAt(clock - this.earLag)
+  }
+
+  /** The picture now, as pictureAt would draw it, without moving anything. */
+  private livePicture(): number {
+    const clock = this.readClock()
+    const p = this.rawPicture(clock)
+    const tailOver = this.tail !== null && clock >= this.tail.untilClock
+    return this.currentRate > 0 && !tailOver ? Math.max(p, this.lastPicture) : p
   }
 
   /**

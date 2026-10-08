@@ -721,6 +721,38 @@ describe('the picture shows what is reaching his ears', () => {
     vi.useRealTimers()
   })
 
+  // L or J pressed during normal play re-anchors from currentTime(). The sound
+  // still on its way is the lag ahead of the frame on screen, and starting the
+  // shuttle there jumped the picture that far forward first: 12 frames of a
+  // 60 fps edit on Bluetooth, and with J a flick forward before it ran back.
+  it('a shuttle from normal play goes on from the frame on screen, not the sound on its way', async () => {
+    const ticks: number[] = []
+    const t = transport(ticks)
+    await t.play(2) // heard from 5.22
+    world.t = 5.72
+    runFrame()
+    expect(ticks.at(-1)).toBeCloseTo(2.5, 9)
+    expect(t.currentTime()).toBeCloseTo(2.5, 9)
+    await t.play(t.currentTime(), 2) // L again
+    world.t = 5.82
+    runFrame()
+    expect(ticks.at(-1)).toBeCloseTo(2.7, 9)
+    t.pause()
+  })
+
+  it('J from normal play runs back from the frame on screen', async () => {
+    const ticks: number[] = []
+    const t = transport(ticks)
+    await t.play(2)
+    world.t = 5.72
+    runFrame()
+    await t.play(t.currentTime(), -1)
+    world.t = 5.82
+    runFrame()
+    expect(ticks.at(-1)).toBeCloseTo(2.4, 9) // never forward of 2.5 first
+    t.pause()
+  })
+
   it('a shuttle has no sound, so its picture is not held back', async () => {
     const ticks: number[] = []
     const t = transport(ticks)
