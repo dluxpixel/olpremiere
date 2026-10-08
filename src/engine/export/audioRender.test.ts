@@ -32,6 +32,8 @@ const buffers = new Map<string, FakeBuffer>()
 let delaysMade = 0
 /** How many offline renders ran: one per segment per pass. */
 let rendersMade = 0
+/** Called after each offline render, so a test can act between two segments. */
+let afterRender: (() => void) | null = null
 
 class Param {
   private set = false
@@ -115,6 +117,7 @@ class FakeOfflineContext {
   }
   async startRendering() {
     rendersMade++
+    afterRender?.()
     const out = Array.from({ length: this.channels }, () => new Float32Array(this.frames))
     // Every path from a source to the destination: the gains multiply, the
     // delays add, a compressor adds Chromium's 288 samples (and no dynamics:
@@ -345,6 +348,34 @@ describe('⛔ Platform loudness renders a mix that fits only once', () => {
     expect(segments).toHaveLength(2)
     expect(rendersMade).toBe(2)
     expect(measureLoudness(joined, SR).lufs!).toBeCloseTo(-14, 1)
+  })
+
+  it('⛔ a cancel during the measuring pass stops it at the next segment', async () => {
+    // Platform loudness is on by default, and the measuring render had no check: Cancel during
+    // "Mixing the sound" waited for all of it, about 20 segments for a 10 minute video, before the
+    // first segment reached the page's check (export review N1, 2026-10-08).
+    const tone = new Float32Array(SR * 100)
+    for (let i = 0; i < tone.length; i++) tone[i] = 0.12 * Math.sin((2 * Math.PI * 440 * i) / SR)
+    const t = source('t', tone)
+    const seq = sequence([track('t', [clip('t', 0, 100)])], 100)
+    const ctrl = new AbortController()
+    const plan = await planAudioMix(seq, { t }, 0, 100, undefined, { loudnessTargetLufs: -14, signal: ctrl.signal })
+    if (!plan) throw new Error('no plan')
+    let delivered = 0
+    rendersMade = 0
+    // Cancel pressed while the first of four segments is being measured.
+    afterRender = () => ctrl.abort()
+    try {
+      await expect(
+        plan.render(() => {
+          delivered++
+        }),
+      ).rejects.toMatchObject({ name: 'AbortError' })
+    } finally {
+      afterRender = null
+    }
+    expect(rendersMade).toBe(1)
+    expect(delivered).toBe(0)
   })
 
   it('keeps at most 3 minutes, so memory stays bounded however long the video', () => {

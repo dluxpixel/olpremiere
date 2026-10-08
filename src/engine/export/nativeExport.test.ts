@@ -579,6 +579,15 @@ describe('⛔ a cancel while the sound is being made', () => {
     expect(main.log).not.toContain('start')
     expect(main.log).not.toContain('audioFinish')
   })
+
+  it("the mix is handed the export's cancel, so Platform loudness's measuring pass hears it too", async () => {
+    // Only the segments reaching the page were checked, and the measuring pass sends none
+    // (export review N1, 2026-10-08; audioRender.test.ts holds the pass to it).
+    const ctrl = new AbortController()
+    start(ctrl.signal)
+    await flush()
+    expect(h.audioOpts[0]).toMatchObject({ signal: ctrl.signal })
+  })
 })
 
 describe('⛔ no message holds the whole mix', () => {

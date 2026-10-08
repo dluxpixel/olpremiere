@@ -114,7 +114,8 @@ export async function exportNative(
           'danger',
         ),
     // The export's own rate, which may be below the timeline's (exportFps).
-    { loudnessTargetLufs: settings.loudnessTargetLufs ?? null, fps: settings.fps },
+    // The signal is heard by Platform loudness's measuring pass too, not only as segments arrive below.
+    { loudnessTargetLufs: settings.loudnessTargetLufs ?? null, fps: settings.fps, signal },
   )
   // ⛔ THE MIX IS A FILE ON HIS DISK FROM ITS FIRST SEGMENT ON, so every way out
   // of here until ffmpeg owns it has to take it with it.

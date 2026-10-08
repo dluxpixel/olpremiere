@@ -114,6 +114,8 @@ export async function exportSequence(
       loudnessTargetLufs: settings.loudnessTargetLufs ?? null,
       fps: settings.fps,
       onCannotEncode: () => useToasts.getState().show(NO_SOUND_IN_THIS_BROWSER, 'danger'),
+      // Heard by Platform loudness's measuring pass too, not only as segments go out.
+      signal,
     },
   )
   if (signal.aborted) throw abortError()

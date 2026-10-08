@@ -115,6 +115,14 @@ export interface AudioMixOptions {
    * The plan is still null: there is no way to encode it here.
    */
   onCannotEncode?: () => void
+  /**
+   * The export's cancel. Checked before every segment of BOTH passes: the page
+   * checks it as each segment reaches it, which is only the second pass, so
+   * Cancel during Platform loudness's measuring render used to wait for the
+   * whole of it, about 20 segments for a 10 minute video (export review,
+   * 2026-10-08).
+   */
+  signal?: AbortSignal
 }
 
 export async function planAudioMix(
@@ -318,6 +326,7 @@ export async function planAudioMix(
 
   const eachSegment = async (fn: (channelData: Float32Array<ArrayBuffer>[]) => void | Promise<void>): Promise<void> => {
     for (let f0 = 0; f0 < totalFrames; f0 += AUDIO_SEGMENT_FRAMES) {
+      if (opts.signal?.aborted) throw new DOMException('Export cancelled', 'AbortError')
       await fn(await renderSegment(f0, Math.min(AUDIO_SEGMENT_FRAMES, totalFrames - f0)))
     }
   }
