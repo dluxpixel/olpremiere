@@ -90,7 +90,46 @@ const TAIL_CHARS = 8000
 const TRANSIENT = /socket hang up|ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EPIPE|ERR_STREAM_PREMATURE_CLOSE|RequestError|\b50[234]\b/i
 
 export function isTransientFailure(output) {
+  // ⛔ A release that may already be live is never "the wire", whatever else the
+  // output says. See MAY_BE_LIVE: the retry would delete it.
+  if (mayBeLive(output)) return false
   return TRANSIENT.test(output ?? '')
+}
+
+/**
+ * ⛔ THE LINE A RELEASE STOPS ON AND IS NEVER RETRIED ON, 2026-10-07.
+ *
+ * scripts/githubRelease.mjs puts it in its error when the publish call has gone out
+ * and nobody can say what GitHub did with it: the answer was lost and GitHub could not
+ * be asked afterwards, or the release was published and could not be checked. That
+ * error only exists when the network failed, so its output carries a network signature
+ * (ENOTFOUND, ECONNRESET, a 502), and `runLoggedRetry` used to run publish.mjs again 15
+ * seconds later. A new run starts by deleting every release with this tag, published or
+ * not: the live release went, every installed app saw the previous version as the
+ * newest for the minutes of the re-upload, and a copy mid download got a 404. Exactly
+ * what the error had just told him not to do.
+ */
+export const MAY_BE_LIVE = 'RELEASE MAY BE LIVE: stopped, nothing retried, nothing deleted'
+
+/** Did a step end on MAY_BE_LIVE (see above)? */
+export function mayBeLive(output) {
+  return String(output ?? '').includes(MAY_BE_LIVE)
+}
+
+/**
+ * What release.mjs and patch.mjs tell him when the publish stopped on MAY_BE_LIVE, one
+ * line per entry, or null when it did not. It ends on the marker itself, so a script
+ * that runs this one stops on it too.
+ */
+export function mayBeLiveReport(version, output) {
+  if (!mayBeLive(output)) return null
+  return [
+    `⛔ v${version} MAY ALREADY BE LIVE on GitHub. The publish call went out without an answer that could be trusted,`,
+    '   so nothing was retried and nothing was deleted. Look at the release on GitHub before running anything again:',
+    `   published with all three files, v${version} is out and nothing is left to do;`,
+    '   still a draft, `npm run release` finishes it (a run replaces the draft).',
+    `   ${MAY_BE_LIVE}`,
+  ]
 }
 
 /**

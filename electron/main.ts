@@ -5,7 +5,7 @@
 // the web. The origin (`app://olpremiere`) is PINNED forever: changing it (or
 // the appId/productName) would orphan the user's IndexedDB.
 
-import { app, BrowserWindow, dialog, Menu, net, protocol, ipcMain, powerMonitor, session, shell, type WebContents } from 'electron'
+import { app, BrowserWindow, crashReporter, dialog, Menu, net, protocol, ipcMain, powerMonitor, screen, session, shell, type WebContents } from 'electron'
 
 // ⛔ ONE COPY OF THE APP AT A TIME. Two launches, a slow first start plus an
 // impatient second click, or a copy still alive after a crash, used to start a
@@ -14,15 +14,22 @@ import { app, BrowserWindow, dialog, Menu, net, protocol, ipcMain, powerMonitor,
 // nothing of each other. That is the shape of every "the store rebuilt itself"
 // that was never explained. The second copy now hands over and quits; the first
 // one comes to the front.
+//
+// ⛔ exit, NOT quit, 2026-10-06. Before the app is ready, quit() is only a request:
+// the ready event still fired and this copy ran the whole startup first, and the
+// startup's first job is sweeping temp files "nobody can be using". On one profile
+// those were the FIRST copy's live files: an .mkv mid conversion lost its source.
+// exit() before ready ends the process on the spot. The lock has already handed his
+// click to the first copy by the time it returns.
 const singleInstance = app.requestSingleInstanceLock()
-if (!singleInstance) app.quit()
+if (!singleInstance) app.exit(0)
 import { fileURLToPath } from 'node:url'
 import { mkdir, readFile } from 'node:fs/promises'
-import { existsSync, renameSync } from 'node:fs'
+import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import * as backups from './backups'
 import { createCutstudio, realCutstudioDeps } from './cutstudio'
-import { createEmojiFontStore, downloadBytes, EMOJI_ROUTE } from './emojiFont'
+import { createEmojiFontStore, downloadBytes, EMOJI_ROUTE, emojiFontResponse } from './emojiFont'
 import * as projectFiles from './projectFiles'
 import * as libraryFile from './libraryFile'
 import * as captionStylesFile from './captionStylesFile'
@@ -46,10 +53,15 @@ import * as proxy from './proxy'
 import * as mediaStore from './mediaStore'
 import * as mediaSweep from './mediaSweep'
 import * as remux from './remux'
-import { IDLE_POLL_MS, updateApplyDecision } from './updateApply'
 import { CLOSE_SAVE_TIMEOUT_MS, createCloseGate, notSavedDialog, type CloseGate } from './closeGate'
 import { createInstallWait } from './installWait'
-import { planUpdateError, updateLogEntry } from './updateErrors'
+import { CRASH_LOG_NAME, crashLogLine, crashPlan } from './crashPlan'
+import { exportFinished, exportPathFromPage } from './exportChoice'
+import { appliedWhileAway, launchMode, parseQuietMarker, QUIET_START_FILE, secondInstanceAction } from './launchMode'
+import { centreIn, readWindowState, restoreBounds, WINDOW_STATE_FILE, writeWindowState, type Placement } from './windowState'
+import { fileQuietStore, startUpdateFlow, type UpdateFlow } from './updateFlow'
+import { installOrQuit } from './updateApply'
+import { MAIN_LOG_NAME, mainLog, mainLogger, setMainLogFile } from './mainLog'
 import { appendUpdateLog, UPDATE_LOG_NAME } from './updateLog'
 import electronUpdater from 'electron-updater'
 
@@ -78,6 +90,14 @@ try {
   // A locked or in-use profile: fall through and let Electron create a fresh
   // userData rather than refusing to start. The legacy directory is untouched,
   // so the next launch tries again.
+}
+
+// A crash dump stays on his disk (userData/Crashpad) and goes nowhere else. After the
+// userData rename above, so the dumps land in the profile he really uses.
+try {
+  crashReporter.start({ uploadToServer: false })
+} catch {
+  // A crash reporter that will not start must never be the reason the app does not.
 }
 
 // ESM main has no __dirname.
@@ -134,7 +154,8 @@ const INSTALL_CLOSE_TIMEOUT_MS = CLOSE_SAVE_TIMEOUT_MS + 2000
  */
 const installWait = createInstallWait(
   {
-    install: () => autoUpdater.quitAndInstall(true, true),
+    // installOrQuit: a declined install still quits (./updateApply), no window is left by then.
+    install: () => installOrQuit(autoUpdater, () => app.quit(), setTimeout),
     setTimer: (fn, ms) => setTimeout(fn, ms),
     clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
   },
@@ -142,6 +163,85 @@ const installWait = createInstallWait(
 )
 /** Each editor page's close gate, found by the page that answers it. See ./closeGate. */
 const closeGates = new WeakMap<WebContents, CloseGate>()
+/** Set on before-quit, so a page ending because the app is ending is not mistaken for a crash. */
+let quitting = false
+/** Closed with an update waiting: the settle before the installer is running (window-all-closed). */
+let quittingToInstall = false
+/** His click on the icon during that settle: the installer should open the new version after. */
+let openAfterInstall = false
+
+// --- A page that dies under him (./crashPlan) ---------------------------------
+/** When the editor's page died before, so a page that keeps dying stops reloading. */
+const editorDeaths: number[] = []
+/** Set by a reload after a crash. The new page asks for it once and says what happened. */
+let recoveredFromCrash = false
+/** The editor's page died for good: the app ends on his answer, and nothing shows the dead editor. */
+let editorStopped = false
+
+/** One line in logs/crash.log. Never throws, like the update log it shares a writer with. */
+function crashLog(line: string): void {
+  appendUpdateLog(path.join(app.getPath('logs'), CRASH_LOG_NAME), line)
+}
+
+/**
+ * The editor's page is gone. Load it again, and write down why. See ./crashPlan for
+ * why this exists and why it gives up on the third death in five minutes.
+ */
+function onEditorGone(win: BrowserWindow, details: Electron.RenderProcessGoneDetails): void {
+  if (quitting || installWait.pending() || win.isDestroyed()) return
+  const now = Date.now()
+  const plan = crashPlan(details.reason, editorDeaths, now)
+  if (plan === 'nothing') return
+  editorDeaths.push(now)
+  crashLog(crashLogLine(new Date(now), 'editor page gone', details, app.getVersion(), plan))
+  if (plan === 'reload') {
+    recoveredFromCrash = true
+    win.webContents.reload()
+    return
+  }
+  const box = {
+    type: 'error' as const,
+    buttons: ['Close'],
+    defaultId: 0,
+    noLink: true,
+    title: 'OL Premiere stopped',
+    message: 'OL Premiere stopped working.',
+    detail: 'Your work up to the last save is safe. Close it and open it again.',
+  }
+  // ⛔ NOTHING OF OURS MAY COVER THE BOX. While the app opens, the editor is hidden and
+  // the opening card is ALWAYS ON TOP, so a box with no parent opened UNDER the card,
+  // and 15 s later the boot backstop showed the dead editor maximized over it: a blank
+  // editor, and an app that would not quit until he found the box. A page that dies on
+  // every load (a GPU start crash, a bad store) is exactly when this box comes up, and
+  // three deaths inside those 15 s is what that looks like. So the dead editor is never
+  // revealed now (revealEditor, enterEditor), the cards go before the box, and the box
+  // takes the editor as its parent only when the editor is really on his screen.
+  // scripts/hidden-app/checks/crash-stop.cjs runs it.
+  editorStopped = true
+  if (bootBackstop) clearTimeout(bootBackstop)
+  bootBackstop = null
+  if (updateOpenTimer) clearTimeout(updateOpenTimer)
+  updateOpenTimer = null
+  for (const card of [splashWindow, updateWindow]) {
+    if (card && !card.isDestroyed()) card.destroy()
+  }
+  const onScreen = win.isVisible() && !win.isMinimized()
+  void (onScreen ? dialog.showMessageBox(win, box) : dialog.showMessageBox(box)).finally(() => app.quit())
+}
+
+/**
+ * A small window (the opening card, the update card) whose page died. It is frameless,
+ * transparent and on top of everything with no close button, so a dead one would sit
+ * over his screen as a frozen picture. It closes instead: the opening card's own
+ * `closed` handler then opens the editor.
+ */
+function closeWhenGone(win: BrowserWindow, what: string): void {
+  win.webContents.on('render-process-gone', (_e, details) => {
+    if (details.reason === 'clean-exit' || quitting || win.isDestroyed()) return
+    crashLog(crashLogLine(new Date(), `${what} page gone`, details, app.getVersion(), 'close'))
+    win.close()
+  })
+}
 
 /**
  * The splash: its own frameless, transparent, always-on-top window, floating over
@@ -159,6 +259,110 @@ let bootFinished = false
 let entered = false
 /** Rescue timer: fires only if the boot never reports at all. Cleared the moment it does. */
 let bootBackstop: ReturnType<typeof setTimeout> | null = null
+/**
+ * True when an update applied itself while he was away and the installer started us
+ * (./launchMode). No card and no melon: the editor opens minimized on the taskbar.
+ */
+let quietStart = false
+/** Where the editor opens (./windowState): his last screen, size and maximized state. */
+let editorPlace: Placement | null = null
+
+/** Work out where the editor opens. Once, before the first window, so the card can follow. */
+function placeEditor(): Placement {
+  editorPlace ??= restoreBounds(
+    readWindowState(path.join(app.getPath('userData'), WINDOW_STATE_FILE)),
+    screen.getAllDisplays(),
+    screen.getPrimaryDisplay(),
+  )
+  return editorPlace
+}
+
+/** The middle of the given screen for a card, or Electron's own centring if it is gone. */
+function cardPosition(displayId: number | undefined): { x: number; y: number } | { center: true } {
+  const d = screen.getAllDisplays().find((x) => x.id === displayId)
+  return d ? centreIn(d.workArea, SPLASH_WINDOW_W, SPLASH_WINDOW_H) : { center: true }
+}
+
+/**
+ * Keep the editor's place as he moves and sizes it, a beat after he stops, and once
+ * more as it closes. Not while hidden, minimized or full screen: none of those is a
+ * place he would want it to open in.
+ */
+function keepWindowState(win: BrowserWindow): void {
+  const file = path.join(app.getPath('userData'), WINDOW_STATE_FILE)
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const save = (): void => {
+    if (win.isDestroyed() || !win.isVisible() || win.isMinimized() || win.isFullScreen()) return
+    const bounds = win.getNormalBounds()
+    writeWindowState(file, { bounds, maximized: win.isMaximized(), displayId: screen.getDisplayMatching(bounds).id })
+  }
+  const later = (): void => {
+    if (timer) clearTimeout(timer)
+    timer = setTimeout(save, 500)
+  }
+  win.on('resize', later)
+  win.on('move', later)
+  win.on('maximize', later)
+  win.on('unmaximize', later)
+  win.on('close', () => {
+    if (timer) clearTimeout(timer)
+    save()
+  })
+}
+
+/** Read and remove the marker an unattended update left, and decide how to open. */
+function readLaunchMode(): void {
+  const file = path.join(app.getPath('userData'), QUIET_START_FILE)
+  let text: string | null = null
+  try {
+    text = readFileSync(file, 'utf8')
+    unlinkSync(file) // one start only, whatever it decides
+  } catch {
+    // no marker: an ordinary start
+  }
+  quietStart = launchMode({ argv: process.argv, markerAt: parseQuietMarker(text), now: Date.now() }) === 'quiet'
+}
+
+/**
+ * Called as an update is applied. If he is away from the machine, leave the marker
+ * that makes the new version start quietly (./launchMode).
+ */
+function markQuietStartIfAway(): void {
+  if (!appliedWhileAway(powerMonitor.getSystemIdleTime())) return
+  try {
+    writeFileSync(path.join(app.getPath('userData'), QUIET_START_FILE), JSON.stringify({ at: Date.now() }))
+  } catch {
+    // worst case the new version opens the ordinary way
+  }
+}
+
+/**
+ * Put the editor on screen. Normally maximized and in front, the way he opens it. After
+ * an update that applied while he was away it goes on the taskbar minimized instead,
+ * and maximizes when he brings it up.
+ */
+function revealEditor(win: BrowserWindow): void {
+  // A page that died for good is never put on screen, by any route (the editor's own
+  // ready-to-show included): the "stopped" box is up instead. See onEditorGone.
+  if (editorStopped) return
+  const maximized = editorPlace?.maximized ?? true
+  if (quietStart) {
+    if (win.isVisible()) return
+    win.once('restore', () => {
+      if (maximized) win.maximize()
+    })
+    // ⛔ UNPROVEN THAT THIS STAYS OUT OF HIS WAY. On a hidden window Electron's minimize()
+    // is Chromium's Show(kMinimized), which is SW_SHOWMINIMIZED, and that flag ACTIVATES
+    // the window (SW_SHOWMINNOACTIVE would not, and Electron has no call for it). Windows'
+    // foreground lock probably keeps a minimized window started by the installer off his
+    // foreground, but nothing here has measured it: the hidden app stubs minimize(). It
+    // needs one real look on his machine after an update applied while he was away.
+    win.minimize()
+    return
+  }
+  if (maximized) win.maximize()
+  win.show()
+}
 
 function createSplash(): void {
   const win = new BrowserWindow({
@@ -176,7 +380,8 @@ function createSplash(): void {
     fullscreenable: false,
     skipTaskbar: true,
     alwaysOnTop: true,
-    center: true,
+    // On the screen the editor will open on, which is not always the main one.
+    ...cardPosition(placeEditor().displayId),
     show: false,
     backgroundColor: '#00000000',
     webPreferences: {
@@ -209,8 +414,9 @@ function createSplash(): void {
     if (splashWindow === win) splashWindow = null
     // The splash is frameless with no close button, but Alt+F4 still reaches it.
     // Losing it must never leave him with a running app and no window at all.
-    if (!entered) enterEditor()
+    if (!entered && !quitting) enterEditor()
   })
+  closeWhenGone(win, 'opening card')
   void win.loadURL(isDev ? `${DEV_URL}/splash.html` : `app://${APP_ORIGIN_HOST}/splash.html`)
 }
 
@@ -258,16 +464,14 @@ function shrinkSplash(): void {
 
 /** Open the editor and retire the splash. Safe to call twice, from any route. */
 function enterEditor(): void {
-  if (entered) return
+  // A page that died for good is never put on screen: the "stopped" box is up instead.
+  if (entered || editorStopped) return
   entered = true
   bootFinished = true
   if (bootBackstop) clearTimeout(bootBackstop)
   bootBackstop = null
   const win = mainWindow
-  if (win && !win.isDestroyed() && !win.isVisible()) {
-    win.maximize()
-    win.show()
-  }
+  if (win && !win.isDestroyed() && !win.isVisible()) revealEditor(win)
   // The splash outlives the swap by the length of the melon's pop, so the fruit
   // bursts OVER the opening editor instead of blinking out a beat before it.
   const splash = splashWindow
@@ -306,6 +510,8 @@ function setUpdateStatus(status: UpdateStatus): void {
  * exactly wrong here.
  */
 let updateWindow: BrowserWindow | null = null
+/** The updater's rules (./updateFlow). Only in a packaged build that is not the lab. */
+let updateFlow: UpdateFlow | null = null
 /** His melon click, and only his. Cleared by any terminal status. */
 let userAsked = false
 let updateOpenTimer: ReturnType<typeof setTimeout> | null = null
@@ -313,6 +519,8 @@ let updateOpenTimer: ReturnType<typeof setTimeout> | null = null
 /** Every gate, in order, before a card is allowed over his editor. */
 function armUpdateWindow(s: Extract<UpdateStatus, { kind: 'downloading' }>): void {
   if (updateWindow || updateOpenTimer) return
+  // Never over the "stopped" box, which is the last thing the app shows.
+  if (editorStopped) return
   // Never two frameless transparent always-on-top windows at once.
   if (!entered || splashWindow) return
   if (!mainWindow || mainWindow.isDestroyed()) return
@@ -336,7 +544,8 @@ function createUpdateWindow(): void {
     fullscreenable: false,
     skipTaskbar: true,
     alwaysOnTop: true,
-    center: true,
+    // Over the editor, on whichever screen he has it.
+    ...cardPosition(mainWindow && !mainWindow.isDestroyed() ? screen.getDisplayMatching(mainWindow.getBounds()).id : undefined),
     show: false,
     backgroundColor: '#00000000',
     webPreferences: {
@@ -363,6 +572,7 @@ function createUpdateWindow(): void {
   win.on('closed', () => {
     if (updateWindow === win) updateWindow = null
   })
+  closeWhenGone(win, 'update card')
   void win.loadURL(isDev ? `${DEV_URL}/update.html` : `app://${APP_ORIGIN_HOST}/update.html`)
 }
 
@@ -426,15 +636,20 @@ const MIME: Record<string, string> = {
 }
 const mimeFor = (p: string): string => MIME[path.extname(p).toLowerCase()] ?? 'application/octet-stream'
 
-// Must run BEFORE app is ready.
+// Must run BEFORE app is ready. codeCache: V8 keeps the compiled pages in the profile,
+// so a launch stops compiling the editor's JS from scratch (Chromium does that only for
+// http(s) unless a scheme asks). Hashed file names mean a new version is a new entry.
+// Hidden app, same profile, warm starts: the editor's page loaded about 40 to 100 ms
+// sooner with it (medians 188 against 287 ms on a busy machine), and its workers gain too.
 protocol.registerSchemesAsPrivileged([
-  { scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
+  { scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, codeCache: true } },
 ])
 
 function createWindow(): void {
+  // Where he left it (./windowState), or the main screen the first time.
+  const place = placeEditor()
   const win = new BrowserWindow({
-    width: 1600,
-    height: 1000,
+    ...place.bounds,
     minWidth: 1024,
     minHeight: 680,
     backgroundColor: '#060709',
@@ -453,6 +668,10 @@ function createWindow(): void {
     },
   })
   mainWindow = win
+  // Again after creation: a window made on a screen with a different scale than the
+  // main one can come out the wrong size, and setting it once more puts that right.
+  win.setBounds(place.bounds)
+  keepWindowState(win)
   // ⛔ AND THE PAGE DOES NOT GET TO ARGUE. The renderer sets `document.title`, and
   // Electron follows it, so the lab came up on the taskbar reading "OL Premiere"
   // like his real editor: two identical windows, one of them a bench copy, and no
@@ -465,10 +684,7 @@ function createWindow(): void {
   win.once('ready-to-show', () => {
     // While a splash is up, the editor stays hidden even after the boot finishes:
     // the melon is a deliberate gate, and he is the one who opens it.
-    if (entered || !splashWindow) {
-      win.maximize()
-      win.show()
-    }
+    if (entered || !splashWindow) revealEditor(win)
   })
   // Backstop: if the renderer never reports a finished boot (an old bundle, a
   // startup crash), show the editor anyway rather than stranding him on a splash.
@@ -508,7 +724,8 @@ function createWindow(): void {
     // A half written mirror copy is in the same boat, and its writer slot would
     // otherwise be pinned for the life of main, refusing that asset forever.
     void mediaStore.dropWriters()
-    // And a project copy or export being saved: its part file is full size.
+    // And a project copy or export being saved to his own folder: its `.olpart` is full
+    // size, sits beside his file, and no sweep ever looks there.
     void saveFiles.dropWrites()
     // And an export. The page feeds ffmpeg its frames, so with the page gone
     // ffmpeg would wait on its pipe forever, the half made file would stay,
@@ -557,6 +774,9 @@ function createWindow(): void {
     dropOrphans()
     gate.pageGone()
   })
+  // The page died: the editor loads again, or the app ends on his answer (./crashPlan). The
+  // orphan drop and the close gate above already ran for this same event.
+  win.webContents.on('render-process-gone', (_e, details) => onEditorGone(win, details))
 
   // ⛔ LEAVING DURING AN EXPORT ASKS FIRST. The page refuses to unload while one
   // runs (src/state/unloadGuard.ts), and on its own that refusal is silent: the
@@ -578,6 +798,10 @@ function createWindow(): void {
       message: 'A video is still exporting.',
       detail: 'If you leave now, the export stops and the video will not be finished.',
     })
+    // He keeps the page, so a quit that brought him here is called off (the update
+    // install's fallback quit meets a running export): crashes reload again. Left set,
+    // every later crash of the session stayed a blank window (onEditorGone).
+    if (choice === 0) quitting = false
     // Here preventDefault means "overrule the page": the close goes ahead.
     if (choice === 1) e.preventDefault()
     // He kept the export, so the window stays, and his next close saves again.
@@ -599,12 +823,20 @@ function createWindow(): void {
 
 app.on('second-instance', () => {
   const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed())
-  if (!win) return
+  const action = secondInstanceAction({ hasWindow: !!win, quittingToInstall })
+  // See ./launchMode: the settle still runs in full, it only ends in a relaunch.
+  if (action === 'install-and-open') openAfterInstall = true
+  if (action !== 'focus' || !win) return
   if (win.isMinimized()) win.restore()
   win.focus()
 })
 
 app.whenReady().then(() => {
+  // A second copy never gets here (exit above), but if it ever did, it must not sweep
+  // the first copy's temps or open windows on its profile.
+  if (!singleInstance) return
+  // The main process's diary (./mainLog): a packaged build has no console to read.
+  setMainLogFile(path.join(app.getPath('logs'), MAIN_LOG_NAME))
   // No application menu at all. The bar was hidden, but Electron's default menu
   // stayed live behind it, so Ctrl+W (Close Window) quit the whole app from a
   // browser habit, and Ctrl+R reloaded the editor under an edit. The app's own
@@ -635,13 +867,12 @@ app.whenReady().then(() => {
   protocol.handle('app', async (req) => {
     const url = new URL(req.url)
     if (url.pathname === EMOJI_ROUTE) {
-      try {
-        const data = await emojiFont.read()
-        return new Response(new Uint8Array(data), { headers: { 'content-type': 'font/ttf' } })
-      } catch (err) {
-        console.warn('OL Premiere: the Apple emoji font could not be fetched', err)
-        return new Response('Not available', { status: 503 })
-      }
+      // Streamed off his disk, opened before the answer so a font that cannot be read
+      // is a 503 and a line in main.log (./emojiFont emojiFontResponse).
+      return emojiFontResponse(
+        () => emojiFont.path(),
+        (err) => mainLog('warn', 'OL Premiere: the Apple emoji font could not be fetched or opened', err),
+      )
     }
     const rel = url.pathname === '/' ? 'index.html' : decodeURIComponent(url.pathname.replace(/^\/+/, ''))
     const filePath = path.join(RENDERER_DIST, rel)
@@ -650,8 +881,9 @@ app.whenReady().then(() => {
       return new Response('Forbidden', { status: 403 })
     }
     try {
-      const data = await readFile(filePath)
-      return new Response(new Uint8Array(data), { headers: { 'content-type': mimeFor(filePath) } })
+      // Handed over as read: a Uint8Array copy of it first was a second copy of every
+      // file the pages load (the editor's main chunk alone is 2.4 MB).
+      return new Response(await readFile(filePath), { headers: { 'content-type': mimeFor(filePath) } })
     } catch {
       return new Response('Not found', { status: 404 })
     }
@@ -668,6 +900,18 @@ app.whenReady().then(() => {
   )
 
   ipcMain.handle('app:version', () => app.getVersion())
+  // Asked once by each new editor page: was it loaded because the last one crashed?
+  ipcMain.handle('app:takeCrashRecovered', () => {
+    const was = recoveredFromCrash
+    recoveredFromCrash = false
+    return was
+  })
+  // The GPU process and the rest. Chromium brings a GPU process back by itself, but
+  // why it died is exactly what a "the preview went black" hunt needs.
+  app.on('child-process-gone', (_e, details) => {
+    if (details.reason === 'clean-exit' || quitting) return
+    crashLog(crashLogLine(new Date(), 'child process gone', details, app.getVersion()))
+  })
 
   // Native ffmpeg export.
   ipcMain.handle('native:probe', () => native.probe())
@@ -680,7 +924,12 @@ app.whenReady().then(() => {
   ipcMain.handle('native:audioFinish', () => native.finishAudio())
   ipcMain.handle('native:start', (_e, config: NativeExportConfig) => {
     if (!mainWindow) return { started: false, error: 'no window' }
-    return native.start(config, mainWindow)
+    // ⛔ The movie goes only where he picked in MAIN's save dialog. ffmpeg writes with
+    // -y, so a destination the page could simply name would let page code overwrite any
+    // file on his PC. The page may hand back the answer that dialog gave (it asks before
+    // making the sound), and nothing else: see ./exportChoice. Anything else is dropped
+    // and the export asks him itself.
+    return native.start({ ...config, outPath: exportPathFromPage(config.outPath) }, mainWindow)
   })
   ipcMain.handle('native:writeFrame', async (_e, frame: ArrayBuffer) => {
     try {
@@ -690,7 +939,13 @@ app.whenReady().then(() => {
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
     }
   })
-  ipcMain.handle('native:finish', () => native.finish())
+  ipcMain.handle('native:finish', async () => {
+    const done = await native.finish()
+    // A finished movie ends the export job and clears his answer: the next export asks
+    // again. A failed one keeps it for Try again (./exportChoice).
+    exportFinished(done)
+    return done
+  })
   ipcMain.handle('native:cancel', () => native.cancel())
 
   // A preview copy is an optimisation, never a requirement: a failure here is
@@ -743,7 +998,7 @@ app.whenReady().then(() => {
     try {
       return await proxy.finishProxy(id)
     } catch (err) {
-      console.warn('OL Premiere: preview copy failed, preview will use the original', err)
+      mainLog('warn', 'OL Premiere: preview copy failed, preview will use the original', err)
       return null
     }
   })
@@ -871,18 +1126,25 @@ app.whenReady().then(() => {
   // so use the synchronous teardown (SIGKILL + unlinkSync) rather than the async
   // cancel() whose unlink would race the process exit.
   app.on('before-quit', () => {
+    quitting = true
     native.cancelSync()
     // And the preview copies: a proxy build that outlived the app kept its
     // ffmpeg running to the end, holding a temp file open that the sweep could
     // not delete.
     proxy.killAllProxyChildren()
+    // And a conversion, for the same reason: it is a full size copy of his source.
+    remux.killAllRemuxChildren()
+    // And a project file still being written to his folder.
+    saveFiles.dropWritesSync()
     // And CutStudio's server, when this app is the one that started it. One he
     // started himself stays running.
     cutstudio.stop()
   })
 
-  // Splash FIRST, so it is on screen while the editor window loads behind it.
-  createSplash()
+  // Splash FIRST, so it is on screen while the editor window loads behind it. Not
+  // after an update that applied itself while he was away: see ./launchMode.
+  readLaunchMode()
+  if (!quietStart) createSplash()
   createWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -992,8 +1254,7 @@ app.whenReady().then(() => {
       }
       return
     }
-    setUpdateStatus({ kind: 'checking' })
-    void autoUpdater.checkForUpdatesAndNotify()
+    updateFlow?.check()
   })
 
   // What the RENDERER says it is doing, because main cannot see it: an export
@@ -1008,122 +1269,20 @@ app.whenReady().then(() => {
   // usually OLDER than what it is running, and letting it update would quietly
   // replace the thing under test with the thing it was being tested against.
   if (app.isPackaged && !IS_LAB) {
-    let pendingVersion = ''
-    /** The version he has already been told is ready. Empty until one is. */
-    let announcedVersion = ''
-    // Set once an update is downloaded and waiting for him to step away. See
-    // ./updateApply for why idleness is the one door besides closing the app.
-    let idleApplyTimer: ReturnType<typeof setInterval> | null = null
-    autoUpdater.autoDownload = true
-    autoUpdater.autoInstallOnAppQuit = true // a pending update also installs on any quit
-    // How many checks in a row found a release that is still being published, and
-    // the pending look-again that follows one. See ./updateErrors.
-    let publishingStreak = 0
-    let recheckTimer: ReturnType<typeof setTimeout> | null = null
-    const recheckSoon = (ms: number): void => {
-      if (recheckTimer) clearTimeout(recheckTimer)
-      recheckTimer = setTimeout(() => {
-        recheckTimer = null
-        // Only if nothing has moved on since: his click or the fifteen minute poll
-        // may already have asked, and a second check over a live one helps no one.
-        if (updateStatus.kind !== 'pending') return
-        setUpdateStatus({ kind: 'checking' })
-        void autoUpdater.checkForUpdatesAndNotify()
-      }, ms)
-    }
-    autoUpdater.on('error', (e) => {
-      // ⛔ NEVER SWALLOW THIS, but "say it to him" and "keep it" are different jobs.
-      // A silent failure here is indistinguishable from "no update available",
-      // which is exactly how a dead update feed (an unreachable repo, a 404 on
-      // latest.yml) hid for weeks. So EVERY failure is kept, in full, in the log.
-      //
-      // What reaches HIS screen is decided by planUpdateError, and since 2026-10-04
-      // it is one plain sentence. That day a release was visible on GitHub while its
-      // installer was still uploading, and the toast was the updater's raw text: a
-      // URL, the response headers and a stack trace, for a check that would have
-      // passed a minute later. A release still being published says nothing and
-      // looks again soon; one that stays "still publishing" for about an hour is
-      // said out loud, because that is a dead feed.
-      const plan = planUpdateError(e, publishingStreak)
-      publishingStreak = plan.streak
-      console.error('OL Premiere auto-update error:', e)
-      appendUpdateLog(path.join(app.getPath('logs'), UPDATE_LOG_NAME), updateLogEntry(new Date(), plan, e))
-      if (plan.message === null) {
-        setUpdateStatus({ kind: 'pending' })
-        if (plan.retryInMs !== null) recheckSoon(plan.retryInMs)
-        return
-      }
-      mainWindow?.webContents.send('update:error', plan.message)
-      setUpdateStatus({ kind: 'error', message: plan.message })
-    })
-    autoUpdater.on('update-not-available', () => {
-      publishingStreak = 0
-      mainWindow?.webContents.send('update:none')
-      setUpdateStatus({ kind: 'none' })
-    })
-    // Found one, and the download starts itself (autoDownload), so say so, and then
-    // say how far it has got. A 240 MB installer arriving in silence is the thing
-    // that made the app look stuck on "checking".
-    autoUpdater.on('update-available', (info) => {
-      publishingStreak = 0
-      pendingVersion = info.version
-      setUpdateStatus({ kind: 'available', version: info.version })
-    })
-    autoUpdater.on('download-progress', (p) => {
-      // transferred/total ride along so the card can print a named denominator,
-      // "112 of 240 MB", instead of a bare percent that says which of nothing.
-      setUpdateStatus({
-        kind: 'downloading',
-        version: pendingVersion,
-        percent: Math.round(p.percent),
-        transferred: p.transferred,
-        total: p.total,
-      })
-    })
-    autoUpdater.on('update-downloaded', (info) => {
-      // ⛔ ONCE PER VERSION, AND HE WAS GETTING IT FOUR TIMES AN HOUR.
-      // A staged update stays on disk, so every later check finds it there and
-      // says "downloaded" again straight away. Nothing here cared, so the
-      // "Restart to install" toast came back every fifteen minutes, all day,
-      // over whatever he was doing. Announcing a version he has already been
-      // told about is never news.
-      if (announcedVersion === info.version) return
-      announcedVersion = info.version
-      setUpdateStatus({ kind: 'downloaded', version: info.version })
-      // Auto-apply only once he has been away from the machine AND only when no
-      // native export is mid-render (a force-quit would truncate the file + orphan
-      // ffmpeg). Even then we don't quit blindly: we ASK the renderer, which
-      // flushes a save and restarts only if no critical work is in flight.
-      // Otherwise it falls back to the "Restart to update" toast. proxyBusy for
-      // the same reason as isExporting: a restart mid-transcode orphans an ffmpeg
-      // child and leaves half a proxy behind.
-      const busy = (): boolean => rendererBusy || native.isExporting() || proxy.proxyBusy() || remux.remuxBusy()
-      const decide = (): 'now' | 'when-idle' | 'never' =>
-        updateApplyDecision({
-          idleSeconds: powerMonitor.getSystemIdleTime(),
-          busy: busy(),
-        })
-
-      if (decide() === 'now') {
-        console.log(`OL Premiere update ${info.version} downloaded while he is away, asking renderer to auto-apply`)
-        mainWindow?.webContents.send('update:autoApply', info.version)
-        return
-      }
-
-      // He asked for the click to go, 2026-08-17: "Make it automatic." So the toast
-      // is the FALLBACK now rather than the plan. The update also applies itself the
-      // moment he is not using the machine, and `getSystemIdleTime` is the whole
-      // machine rather than this app, so it cannot fire while he is typing anywhere.
-      console.log(`OL Premiere update ${info.version} downloaded, offering restart and watching for idle`)
-      mainWindow?.webContents.send('update:ready', info.version)
-      if (idleApplyTimer) clearInterval(idleApplyTimer)
-      idleApplyTimer = setInterval(() => {
-        if (decide() !== 'now') return
-        if (idleApplyTimer) clearInterval(idleApplyTimer)
-        idleApplyTimer = null
-        console.log(`OL Premiere update ${info.version}: he has been idle, applying it`)
-        mainWindow?.webContents.send('update:autoApply', info.version)
-      }, IDLE_POLL_MS)
+    // The rules live in ./updateFlow, where they are run in tests rather than read.
+    // The busy list is main's to know: an export, a preview copy or a conversion
+    // mid flight would be truncated by a restart, and the renderer reports its own
+    // (an in-browser export, a live microphone, a take not yet kept).
+    updateFlow = startUpdateFlow({
+      updater: autoUpdater,
+      getStatus: () => updateStatus,
+      setStatus: setUpdateStatus,
+      send: (channel, arg) => mainWindow?.webContents.send(channel, arg),
+      idleSeconds: () => powerMonitor.getSystemIdleTime(),
+      busy: () => rendererBusy || native.isExporting() || proxy.proxyBusy() || remux.remuxBusy(),
+      log: (entry) => appendUpdateLog(path.join(app.getPath('logs'), UPDATE_LOG_NAME), entry),
+      quiet: fileQuietStore(path.join(app.getPath('userData'), 'update-quiet-since.json')),
+      logger: mainLogger,
     })
     // Apply from the toast (and the renderer's save-then-restart path): quit and
     // relaunch into the downloaded version.
@@ -1150,6 +1309,7 @@ app.whenReady().then(() => {
     // export he chose to restart through anyway), fall back to the old path
     // after INSTALL_CLOSE_TIMEOUT_MS rather than leave the update stuck.
     ipcMain.on('update:install', () => {
+      markQuietStartIfAway()
       const win = mainWindow
       if (!win || win.isDestroyed()) {
         autoUpdater.quitAndInstall(true, true)
@@ -1163,24 +1323,6 @@ app.whenReady().then(() => {
       if (!installWait.begin()) return
       win.close()
     })
-    setUpdateStatus({ kind: 'checking' })
-    void autoUpdater.checkForUpdatesAndNotify()
-    const FIFTEEN_MIN = 15 * 60 * 1000
-    const poll = setInterval(() => {
-      // Once a version is staged, the answer cannot improve: it installs on the
-      // next restart either way, and asking again only re-finds the same file.
-      // The reload button still forces a check whenever he wants one.
-      if (updateStatus.kind === 'downloaded') {
-        clearInterval(poll)
-        return
-      }
-      // ⛔ AND NEVER OVER A LIVE DOWNLOAD. At minute fifteen of a long one this
-      // used to write {checking} across the percent, blanking the card while the
-      // file was still arriving perfectly well.
-      if (updateStatus.kind === 'downloading') return
-      setUpdateStatus({ kind: 'checking' })
-      void autoUpdater.checkForUpdatesAndNotify()
-    }, FIFTEEN_MIN)
   }
 })
 
@@ -1197,7 +1339,11 @@ app.on('window-all-closed', () => {
   // is already gone here, so waiting the same beat before quitting means the
   // installer starts on an engine that has finished writing.
   if (updateStatus.kind === 'downloaded' && app.isPackaged && !IS_LAB) {
-    setTimeout(() => app.quit(), INSTALL_FLUSH_MS)
+    quittingToInstall = true
+    // His click on the icon in the meantime means "open it again": install the same
+    // way, silently, and start the new version after. And quit even if the updater
+    // declines that install (./updateApply installOrQuit): no window is left by now.
+    setTimeout(() => (openAfterInstall ? installOrQuit(autoUpdater, () => app.quit(), setTimeout) : app.quit()), INSTALL_FLUSH_MS)
     return
   }
   app.quit()

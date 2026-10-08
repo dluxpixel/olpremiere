@@ -15,7 +15,7 @@
 // exists. So it is created as a DRAFT, which nothing outside this repo can see,
 // and flipped to published only once every asset is listed at its real size.
 
-import { fetchRetry } from './lib.mjs'
+import { fetchRetry, MAY_BE_LIVE } from './lib.mjs'
 
 /**
  * An `api(path, opts)` function for GitHub's JSON API. `fetchImpl` is injectable
@@ -203,16 +203,51 @@ export async function publishRelease({
 
     // --- every file is there: NOW it goes live ---
     log(`• Publishing ${tag}…`)
-    await api(`${repoPath}/releases/${releaseId}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ draft: false, prerelease: false, make_latest: 'true' }),
-    })
+    try {
+      await api(`${repoPath}/releases/${releaseId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ draft: false, prerelease: false, make_latest: 'true' }),
+      })
+    } catch (e) {
+      // ⛔ A LOST ANSWER IS NOT A REFUSAL. GitHub can apply the publish and the
+      // connection die before its answer arrives. "NOT published, run it again" would
+      // then be false, and running it again deletes a release that is live. So ask.
+      const now = await api(`${repoPath}/releases/${releaseId}`).catch(() => null)
+      if (!now) {
+        // ⛔ AND NOTHING MAY RUN AGAIN BY ITSELF: a new run starts by deleting this
+        // release. MAY_BE_LIVE is what stops release.mjs's retry (lib.mjs).
+        const err = new Error(
+          `${tag} MAY ALREADY BE PUBLISHED: the publish call failed (${e.message}) and GitHub could not be asked afterwards.\n` +
+            `   Look at the release on GitHub before running anything again: a new run replaces it.\n` +
+            `   ${MAY_BE_LIVE}`,
+        )
+        err.cause = e
+        err.publishUnknown = true
+        throw err
+      }
+      if (now.draft !== false) throw e
+      warn(`• The publish call failed (${e.message}), but GitHub shows ${tag} published. Checking it.`)
+    }
   } catch (e) {
-    throw stillADraft(e)
+    throw e.publishUnknown ? e : stillADraft(e)
   }
 
   // --- verify it really is out ---
-  const check = await api(`${repoPath}/releases/${releaseId}`)
+  let check
+  try {
+    check = await api(`${repoPath}/releases/${releaseId}`)
+  } catch (e) {
+    // ⛔ PUBLISHED, AND THEN THE WIRE WENT. It is live (the publish call answered, or
+    // GitHub showed it published), so this is not a failure to publish, and a run that
+    // starts again would delete it. It stops the same way as an answer that was lost.
+    const err = new Error(
+      `${tag} WAS PUBLISHED, but GitHub could not be asked to check it afterwards (${e.message}).\n` +
+        `   Look at it on GitHub: it should hold ${assets.map((a) => a.name).join(', ')}. A new run replaces it.\n` +
+        `   ${MAY_BE_LIVE}`,
+    )
+    err.cause = e
+    throw err
+  }
   const names = (check.assets ?? []).map((a) => a.name)
   log('• Assets:', names.join(', '))
   if (check.draft) throw new Error(`${tag} is still a draft after the publish call, so installed apps cannot see it`)

@@ -7,7 +7,18 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { isBigUpdate, isTransientFailure, MINOR_ROLLOVER, nextVersion, planShip, releaseWork, runLoggedRetry } from './lib.mjs'
+import {
+  isBigUpdate,
+  isTransientFailure,
+  MAY_BE_LIVE,
+  mayBeLive,
+  mayBeLiveReport,
+  MINOR_ROLLOVER,
+  nextVersion,
+  planShip,
+  releaseWork,
+  runLoggedRetry,
+} from './lib.mjs'
 
 /**
  * A command that fails `failures` times and then succeeds, printing `message`
@@ -77,6 +88,28 @@ describe('isTransientFailure', () => {
       expect(isTransientFailure(s), s).toBe(false)
     }
   })
+
+  // ⛔ A release that may already be live only ever fails on a dead wire, so its output
+  // always carries a network signature. Running again starts by deleting it.
+  it('does NOT call a release that may already be live transient, whatever the wire said', () => {
+    expect(isTransientFailure(`v9.9.9 MAY ALREADY BE PUBLISHED: fetch failed\n   ${MAY_BE_LIVE}\n[cause]: Error: read ECONNRESET`)).toBe(false)
+    expect(isTransientFailure(`getaddrinfo ENOTFOUND api.github.com\n${MAY_BE_LIVE}`)).toBe(false)
+  })
+})
+
+describe('mayBeLiveReport', () => {
+  it('tells him to look before running anything, and ends on the line that stops a caller too', () => {
+    const lines = mayBeLiveReport('9.9.9', `noise\n${MAY_BE_LIVE}\nmore`)
+    expect(lines.join('\n')).toContain('v9.9.9 MAY ALREADY BE LIVE')
+    expect(lines.join('\n')).toContain('nothing was retried and nothing was deleted')
+    expect(lines.join('\n')).not.toMatch(/Run the same command again/)
+    expect(mayBeLive(lines.at(-1))).toBe(true)
+  })
+
+  it('says nothing for any other failure', () => {
+    expect(mayBeLiveReport('9.9.9', 'read ECONNRESET')).toBeNull()
+    expect(mayBeLiveReport('9.9.9', undefined)).toBeNull()
+  })
 })
 
 describe('runLoggedRetry', () => {
@@ -107,7 +140,101 @@ describe('runLoggedRetry', () => {
       output: expect.stringContaining('TS2345'),
     })
   })
+
+  // ⛔ release.mjs runs publish.mjs under this retry. Here the REAL publishRelease runs
+  // the way publish.mjs runs it (top level, its error left for Node to print), against a
+  // stubbed GitHub: the publish call lands, then the wire drops and stays down. Node
+  // prints the error's cause chain, ECONNRESET included, which is a dropped connection
+  // by every signature. Retrying it would start by deleting the release that is live.
+  it('⛔ never runs a publish again that may already be live, and says so', async () => {
+    const { cmd, attempts, github } = publishWhoseAnswerIsLost()
+    const err = await runLoggedRetry(cmd, 'upload to GitHub', null, QUIET).catch((e) => e)
+    expect(err).toBeInstanceOf(Error)
+    expect(attempts()).toBe(1)
+    expect(err.output).toContain('MAY ALREADY BE PUBLISHED')
+    expect(err.output).toContain(MAY_BE_LIVE)
+    // Not a vacuous pass: the output does look like a dropped wire.
+    expect(err.output).toContain('ECONNRESET')
+    // The one run published it, and no run came back to delete it.
+    expect(github()).toEqual({ releases: [{ id: 7, tag_name: 'v9.9.9', draft: false }], releaseDeletes: 0, nextId: 8 })
+  })
 })
+
+/**
+ * publish.mjs in miniature: the real publishRelease against a stubbed GitHub whose
+ * publish call is applied and whose answer, and every call after it, is lost the way
+ * fetch loses it (TypeError: fetch failed, caused by ECONNRESET). The stubbed GitHub
+ * lives in a file, so a second run would find the first run's release (and delete it,
+ * as every run starts by doing). Each run counts itself.
+ */
+function publishWhoseAnswerIsLost() {
+  const dir = mkdtempSync(join(tmpdir(), 'olp-publish-'))
+  const counter = join(dir, 'n')
+  const state = join(dir, 'github.json')
+  const script = join(dir, 'publish.mjs')
+  writeFileSync(counter, '0')
+  writeFileSync(state, JSON.stringify({ releases: [], releaseDeletes: 0, nextId: 7 }))
+  const lib = new URL('./githubRelease.mjs', import.meta.url).href
+  writeFileSync(
+    script,
+    `import { readFileSync, writeFileSync } from 'node:fs'
+import { githubApi, publishRelease } from ${JSON.stringify(lib)}
+writeFileSync(${JSON.stringify(counter)}, String(Number(readFileSync(${JSON.stringify(counter)}, 'utf8')) + 1))
+const gh = JSON.parse(readFileSync(${JSON.stringify(state)}, 'utf8'))
+const save = () => writeFileSync(${JSON.stringify(state)}, JSON.stringify(gh))
+const assets = []
+let down = false
+const wire = () => new TypeError('fetch failed', { cause: Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }) })
+const answer = (status, body) => ({ ok: status < 300, status, text: async () => JSON.stringify(body ?? {}) })
+const fetchImpl = async (url, opts = {}) => {
+  const method = opts.method ?? 'GET'
+  const path = new URL(url).pathname.replace('/repos/o/r', '')
+  if (down) throw wire()
+  const id = Number((/^\\/releases\\/(\\d+)/.exec(path) ?? [])[1])
+  if (method === 'GET' && path === '/releases') return answer(200, gh.releases)
+  if (method === 'DELETE' && path === '/releases/' + id) {
+    gh.releases = gh.releases.filter((r) => r.id !== id)
+    gh.releaseDeletes++
+    save()
+    return answer(204)
+  }
+  if (method === 'DELETE') return answer(204)
+  if (method === 'GET' && path === '/git/ref/heads/main') return answer(200, { object: { sha: 'abc' } })
+  if (method === 'POST' && path === '/git/refs') return answer(201, {})
+  if (method === 'POST' && path === '/releases') {
+    const r = { id: gh.nextId++, tag_name: 'v9.9.9', draft: true }
+    gh.releases.push(r)
+    save()
+    return answer(201, r)
+  }
+  if (method === 'GET' && path === '/releases/' + id + '/assets') return answer(200, assets)
+  if (method === 'PATCH' && path === '/releases/' + id) {
+    gh.releases.find((r) => r.id === id).draft = false
+    save()
+    // Applied on GitHub's side, and then the wire goes and stays gone.
+    down = true
+    throw wire()
+  }
+  return answer(404, { message: 'no ' + method + ' ' + path })
+}
+await publishRelease({
+  api: githubApi({ token: 't', fetchImpl }),
+  repoPath: '/repos/o/r',
+  tag: 'v9.9.9',
+  assets: [{ name: 'latest.yml', file: 'x', type: 'text/yaml', bytes: 3 }],
+  postAsset: async ({ name }) => { assets.push({ id: 1, name, state: 'uploaded', size: 3 }) },
+  tagLocal: () => {},
+  log: () => {},
+  warn: () => {},
+})
+`,
+  )
+  return {
+    cmd: `node "${script}"`,
+    attempts: () => Number(readFileSync(counter, 'utf8')),
+    github: () => JSON.parse(readFileSync(state, 'utf8')),
+  }
+}
 
 // ⛔ THE CASE THAT MATTERS HERE IS THE THIRD ONE. On 2026-08-17 five commits of
 // finished work were stranded on main because the ship script asked "is anything

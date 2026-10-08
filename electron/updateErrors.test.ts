@@ -5,21 +5,40 @@
 // electron-updater throws (builder-util-runtime), because the shape they carry is the
 // thing being read.
 
-import { HttpError, newError } from 'builder-util-runtime'
+import { createHttpError, HttpError, newError } from 'builder-util-runtime'
 import { describe, expect, it } from 'vitest'
 import {
   classifyUpdateError,
   isKnownUpdateMessage,
   planUpdateError,
-  PUBLISHING_QUIET_LIMIT,
+  PUBLISHING_QUIET_MS,
   PUBLISHING_RETRY_MS,
+  PUBLISHING_RUN_GAP_MS,
+  UPDATE_FAILURES,
   updateErrorText,
   updateFailureMessage,
   updateLogEntry,
+  type QuietRun,
   type UpdateFailure,
 } from './updateErrors'
 
+const MIN = 60_000
+
 const FEED = 'https://github.com/dluxpixel/olpremiere/releases/download/v3.22.0/latest.yml'
+const ATOM = 'https://github.com/dluxpixel/olpremiere/releases.atom'
+const LATEST = 'https://github.com/dluxpixel/olpremiere/releases/latest'
+
+/** A 404 the way the updater's http stack really builds one, for a GET on `url`. */
+function real404(url: string): HttpError {
+  const u = new URL(url)
+  return createHttpError(
+    { statusCode: 404, statusMessage: 'Not Found', headers: { server: 'github.com' } } as never,
+    `method: GET url: https://${u.hostname}${u.pathname}\n\nPlease double check that your authentication token is correct. Due to security reasons, actual status maybe not reported, but 404.\n`,
+  )
+}
+
+/** A first answer of a launch: no streak yet, nothing remembered. */
+const FRESH: QuietRun = { streak: 0, quietSince: null, now: 1_800_000_000_000 }
 
 /** The error from his screenshot, built the way electron-updater builds it. */
 function missingFeedError(): Error {
@@ -31,7 +50,7 @@ function missingFeedError(): Error {
   return newError(`Cannot find latest.yml in the latest release artifacts (${FEED}): ${http.stack}`, 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND')
 }
 
-const KINDS: UpdateFailure[] = ['publishing', 'offline', 'denied', 'other']
+const KINDS: UpdateFailure[] = ['publishing', 'missing', 'offline', 'denied', 'other']
 
 describe('classifyUpdateError', () => {
   it('⛔ calls the missing latest.yml from his screenshot a release still publishing', () => {
@@ -50,15 +69,35 @@ describe('classifyUpdateError', () => {
     ).toBe('publishing')
   })
 
-  it('treats any 404 on the release as the same thing', () => {
-    expect(classifyUpdateError(new HttpError(404))).toBe('publishing')
-    expect(classifyUpdateError(Object.assign(new Error('x'), { statusCode: 404 }))).toBe('publishing')
-    expect(classifyUpdateError(Object.assign(new Error('x'), { code: 'HTTP_ERROR_404' }))).toBe('publishing')
-    expect(
-      classifyUpdateError(
-        newError(`Unable to find latest version on GitHub (${FEED}), please ensure a production release exists: HttpError: 404 Not Found`, 'ERR_UPDATER_LATEST_VERSION_NOT_FOUND'),
-      ),
-    ).toBe('publishing')
+  it('treats a 404 on a file of a listed release as the same thing', () => {
+    expect(classifyUpdateError(real404(FEED))).toBe('publishing')
+  })
+
+  // ⛔ 2026-10-06. Under the draft first flow these can never mean "still uploading": a
+  // draft is in neither the feed nor /releases/latest. A private, renamed or deleted repo
+  // answers the feed with 404, and was being called "on its way" for 45 minutes a launch.
+  it('⛔ calls a 404 on the releases feed itself a dead feed, not a release mid upload', () => {
+    expect(classifyUpdateError(real404(ATOM))).toBe('missing')
+    expect(classifyUpdateError(new HttpError(404))).toBe('missing')
+    expect(classifyUpdateError(Object.assign(new Error('x'), { statusCode: 404 }))).toBe('missing')
+    expect(classifyUpdateError(Object.assign(new Error('x'), { code: 'HTTP_ERROR_404' }))).toBe('missing')
+  })
+
+  it('⛔ calls no published release at all a dead feed', () => {
+    const latest = newError(
+      `Unable to find latest version on GitHub (${LATEST}), please ensure a production release exists: ${real404(LATEST).stack}`,
+      'ERR_UPDATER_LATEST_VERSION_NOT_FOUND',
+    )
+    expect(classifyUpdateError(latest)).toBe('missing')
+    // The way electron-updater 6.8 really delivers it: wrapped again as a feed it could not
+    // read, with the whole feed attached, whose release notes may link a download.
+    const wrapped = newError(
+      `Cannot parse releases feed: ${latest.stack},\nXML:\n<feed><entry><content>Get it at ${FEED}</content></entry></feed>`,
+      'ERR_UPDATER_INVALID_RELEASE_FEED',
+    )
+    expect(classifyUpdateError(wrapped)).toBe('missing')
+    expect(classifyUpdateError(newError('No published versions on GitHub', 'ERR_UPDATER_NO_PUBLISHED_VERSIONS'))).toBe('missing')
+    expect(classifyUpdateError(newError('No published versions on GitHub', 'ERR_XML_MISSED_ELEMENT'))).toBe('missing')
   })
 
   it('treats an installer that is not there yet the same way', () => {
@@ -100,7 +139,7 @@ describe('classifyUpdateError', () => {
       expect(() => classifyUpdateError(odd)).not.toThrow()
       expect(KINDS).toContain(classifyUpdateError(odd))
     }
-    expect(classifyUpdateError('HttpError: 404 Not Found')).toBe('publishing')
+    expect(classifyUpdateError('HttpError: 404 Not Found')).toBe('missing')
   })
 })
 
@@ -124,8 +163,9 @@ describe('the sentences he is told', () => {
     expect(codes).not.toContain(0x2014)
   })
 
-  it('are four different sentences, so the log and the toast can tell them apart', () => {
-    expect(new Set(KINDS.map(updateFailureMessage)).size).toBe(4)
+  it('are five different sentences, so the log and the toast can tell them apart', () => {
+    expect(new Set(KINDS.map(updateFailureMessage)).size).toBe(5)
+    expect([...UPDATE_FAILURES].sort()).toEqual([...KINDS].sort())
   })
 
   it('are the only text isKnownUpdateMessage lets through', () => {
@@ -138,49 +178,99 @@ describe('the sentences he is told', () => {
 
 describe('planUpdateError', () => {
   it('⛔ says NOTHING for a release that is still publishing, and looks again in two minutes', () => {
-    const plan = planUpdateError(missingFeedError(), 0)
+    const plan = planUpdateError(missingFeedError(), FRESH)
     expect(plan.kind).toBe('publishing')
     expect(plan.message).toBeNull()
     expect(plan.streak).toBe(1)
+    expect(plan.quietSince).toBe(FRESH.now)
     expect(plan.retryInMs).toBe(2 * 60_000)
   })
 
   it('waits longer each time, then leaves it to the ordinary poll', () => {
     const waits: (number | null)[] = []
-    let streak = 0
-    for (let i = 0; i < PUBLISHING_QUIET_LIMIT; i++) {
-      const plan = planUpdateError(missingFeedError(), streak)
+    let run: QuietRun = FRESH
+    for (let i = 0; i < 5; i++) {
+      const plan = planUpdateError(missingFeedError(), run)
       expect(plan.message).toBeNull()
       waits.push(plan.retryInMs)
-      streak = plan.streak
+      run = { streak: plan.streak, quietSince: plan.quietSince, now: run.now + 60_000 }
     }
-    expect(waits).toEqual([...PUBLISHING_RETRY_MS, null, null, null])
+    expect(waits).toEqual([...PUBLISHING_RETRY_MS, null, null])
     expect(PUBLISHING_RETRY_MS).toEqual([120_000, 240_000, 480_000])
   })
 
-  it('⛔ is not quiet forever: a 404 that outlasts any upload is said out loud', () => {
-    const plan = planUpdateError(missingFeedError(), PUBLISHING_QUIET_LIMIT)
+  it('⛔ is not quiet forever: a 404 that outlasts any upload, by the clock, is said out loud', () => {
+    expect(PUBLISHING_QUIET_MS).toBe(60 * 60_000)
+    const run = { streak: 3, quietSince: FRESH.now, now: FRESH.now + PUBLISHING_QUIET_MS }
+    const plan = planUpdateError(missingFeedError(), run)
     expect(plan.message).toBe(updateFailureMessage('publishing'))
     expect(plan.retryInMs).toBeNull()
-    expect(plan.streak).toBe(PUBLISHING_QUIET_LIMIT + 1)
+    expect(plan.quietSince).toBe(FRESH.now)
   })
 
-  it('gives a real failure its sentence at once and ends the streak', () => {
-    const offline = planUpdateError(new Error('net::ERR_INTERNET_DISCONNECTED'), 4)
+  it('⛔ says it on the FIRST answer of a new launch when the quiet run began 61 minutes ago', () => {
+    // streak 0: a new launch knows nothing but what main kept on disk.
+    const plan = planUpdateError(missingFeedError(), { streak: 0, quietSince: FRESH.now - 61 * 60_000, now: FRESH.now })
+    expect(plan.message).toBe(updateFailureMessage('publishing'))
+  })
+
+  // ⛔ A run is cleared only by a later answer, so an app closed inside the two minute
+  // recheck left its start on disk. Days later a real release minutes into its upload
+  // was said out loud on the first answer, because the run looked days old.
+  it('⛔ a quiet run that heard nothing for days is over: the next answer starts a new quiet hour', () => {
+    const daysAgo = FRESH.now - 3 * 24 * 60 * MIN
+    const plan = planUpdateError(missingFeedError(), { streak: 0, quietSince: daysAgo, quietLast: daysAgo, now: FRESH.now })
+    expect(plan.message).toBeNull()
+    expect(plan.quietSince).toBe(FRESH.now)
+    expect(plan.retryInMs).toBe(PUBLISHING_RETRY_MS[0])
+    // A run kept by the version before this one has no last answer: its start stands in.
+    expect(planUpdateError(missingFeedError(), { streak: 0, quietSince: daysAgo, now: FRESH.now }).message).toBeNull()
+    expect(PUBLISHING_RUN_GAP_MS).toBe(24 * 60 * MIN)
+  })
+
+  it('⛔ but a run still being heard is said on the first answer, however many launches it spans', () => {
+    // Begun yesterday afternoon, last heard last night: a release that stays half published.
+    const plan = planUpdateError(missingFeedError(), {
+      streak: 0,
+      quietSince: FRESH.now - 20 * 60 * MIN,
+      quietLast: FRESH.now - 14 * 60 * MIN,
+      now: FRESH.now,
+    })
+    expect(plan.message).toBe(updateFailureMessage('publishing'))
+    expect(plan.quietSince).toBe(FRESH.now - 20 * 60 * MIN)
+  })
+
+  it('stays quiet across a relaunch inside the hour, and a clock that went back starts it again', () => {
+    expect(planUpdateError(missingFeedError(), { streak: 0, quietSince: FRESH.now - 20 * 60_000, now: FRESH.now }).message).toBeNull()
+    const back = planUpdateError(missingFeedError(), { streak: 0, quietSince: FRESH.now + 3_600_000, now: FRESH.now })
+    expect(back.message).toBeNull()
+    expect(back.quietSince).toBe(FRESH.now)
+  })
+
+  it('⛔ says a dead feed at once, on the first answer of the first launch', () => {
+    const plan = planUpdateError(real404(ATOM), FRESH)
+    expect(plan.kind).toBe('missing')
+    expect(plan.message).toBe(updateFailureMessage('missing'))
+    expect(plan.quietSince).toBeNull()
+  })
+
+  it('gives a real failure its sentence at once and ends the run', () => {
+    const offline = planUpdateError(new Error('net::ERR_INTERNET_DISCONNECTED'), { streak: 4, quietSince: FRESH.now - 1000, now: FRESH.now })
     expect(offline).toEqual({
       kind: 'offline',
       message: updateFailureMessage('offline'),
       streak: 0,
+      quietSince: null,
       retryInMs: null,
     })
-    expect(planUpdateError(new HttpError(403), 2).message).toBe(updateFailureMessage('denied'))
-    expect(planUpdateError(new Error('boom'), 0).message).toBe(updateFailureMessage('other'))
+    expect(planUpdateError(new HttpError(403), { ...FRESH, streak: 2 }).message).toBe(updateFailureMessage('denied'))
+    expect(planUpdateError(new Error('boom'), FRESH).message).toBe(updateFailureMessage('other'))
   })
 
   it('never lets the updater\'s own text into the message', () => {
     // A real failure whose raw text is full of everything that was on his screen.
     const nasty = Object.assign(new Error(`Cannot download "${FEED}", status 500: Server Error\nheaders: {"server":"github.com"}\n    at ClientRequest.<anonymous> (node_modules/builder-util-runtime/out/httpExecutor.js:155:25)`), {})
-    const plan = planUpdateError(nasty, 0)
+    const plan = planUpdateError(nasty, FRESH)
     expect(plan.message).toBe(updateFailureMessage('other'))
     expect(plan.message).not.toContain('github.com')
     expect(plan.message).not.toContain('headers')
@@ -192,7 +282,7 @@ describe('the log entry', () => {
 
   it('keeps everything the toast no longer shows: the URL, the headers, the stack', () => {
     const err = missingFeedError()
-    const entry = updateLogEntry(at, planUpdateError(err, 0), err)
+    const entry = updateLogEntry(at, planUpdateError(err, FRESH), err)
     expect(entry).toContain('2026-10-05T10:00:00.000Z')
     expect(entry).toContain('publishing')
     expect(entry).toContain('quiet, a release still publishing, checking again in 120s')
@@ -203,12 +293,12 @@ describe('the log entry', () => {
 
   it('says when it WAS shown to him', () => {
     const err = new Error('net::ERR_INTERNET_DISCONNECTED')
-    expect(updateLogEntry(at, planUpdateError(err, 0), err)).toContain('(offline, shown to him)')
+    expect(updateLogEntry(at, planUpdateError(err, FRESH), err)).toContain('(offline, shown to him)')
   })
 
   it('is bounded, so one huge page cannot fill the log', () => {
     const err = new Error('x'.repeat(50_000))
-    expect(updateLogEntry(at, planUpdateError(err, 0), err).length).toBeLessThan(4300)
+    expect(updateLogEntry(at, planUpdateError(err, FRESH), err).length).toBeLessThan(4300)
   })
 })
 

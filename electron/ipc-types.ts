@@ -209,6 +209,11 @@ export interface OlApi {
   /** Always true when running inside the desktop shell (the renderer's isElectron gate). */
   readonly isElectron: true
   getVersion(): Promise<string>
+  /**
+   * True once, for the first page loaded after the last one crashed (main reloads a
+   * page that dies, see electron/crashPlan.ts), so it can tell him what happened.
+   */
+  takeCrashRecovered(): Promise<boolean>
   /** Which native encoders this machine's bundled ffmpeg + GPU actually offer. */
   nativeProbe(): Promise<NativeCaps>
   /**

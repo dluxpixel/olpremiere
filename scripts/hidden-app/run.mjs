@@ -8,6 +8,11 @@
 //                        so a check does not wait on the one-time download
 //   --timeout <ms>       give up after this long (default 300000)
 //   --keep               keep the throwaway folder and print where it is
+//   --seed <name>=<file>  copy <file> to <name> in the throwaway profile first, for a
+//                        check that needs a saved file there (a window-state.json).
+//                        A file, not text: a shell eats the quotes in JSON on the way.
+//   --quiet-update-start  start the way the installer does after an update that
+//                        applied while he was away (--updated and the marker)
 //   --bed <dir>          open with COPIES of his projects and media: <dir>/Projects/*.olpbak
 //                        are copied in, and <dir>/media (a copy of his media folder, never
 //                        the real one) is linked in as the app's media folder. Several runs
@@ -19,10 +24,11 @@
 // synthetic paste event, never navigator.clipboard: Electron's clipboard IS his).
 
 import { spawnSync } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, unlinkSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { bedProblem } from './bed.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const repo = path.resolve(here, '..', '..')
@@ -32,7 +38,11 @@ const flag = (name) => {
   return i < 0 ? undefined : args.splice(i, 2)[1]
 }
 const keep = args.includes('--keep') ? (args.splice(args.indexOf('--keep'), 1), true) : false
+const quietUpdate = args.includes('--quiet-update-start')
+  ? (args.splice(args.indexOf('--quiet-update-start'), 1), true)
+  : false
 const seedFont = flag('--seed-font')
+const seed = flag('--seed')
 const bed = flag('--bed')
 const timeout = Number(flag('--timeout') ?? 300000)
 const check = args[0] ? path.resolve(args[0]) : undefined
@@ -45,6 +55,15 @@ if (!existsSync(path.join(repo, 'out', 'main', 'main.js'))) {
   process.exit(2)
 }
 
+// A bed is checked before anything is made, by where it really leads (./bed.mjs).
+if (bed) {
+  const refused = process.env.APPDATA ? bedProblem(bed, process.env.APPDATA) : 'no APPDATA, so his real profile cannot be ruled out'
+  if (refused) {
+    console.error(refused)
+    process.exit(2)
+  }
+}
+
 const root = mkdtempSync(path.join(tmpdir(), 'olp-hidden-'))
 if (seedFont) {
   mkdirSync(path.join(root, 'userData', 'fonts'), { recursive: true })
@@ -53,13 +72,20 @@ if (seedFont) {
   if (!pin) throw new Error('no emoji source pin in electron/emojiFont.ts')
   copyFileSync(seedFont, path.join(root, 'userData', 'fonts', `apple-emoji-${pin[1].slice(0, 12)}.ttf`))
 }
+if (seed) {
+  const eq = seed.indexOf('=')
+  const name = seed.slice(0, eq)
+  if (eq < 1 || name.includes('..') || path.isAbsolute(name)) throw new Error('--seed wants <name>=<file>, a name inside the profile')
+  mkdirSync(path.join(root, 'userData'), { recursive: true })
+  copyFileSync(seed.slice(eq + 1), path.join(root, 'userData', name))
+}
+if (quietUpdate) {
+  // What main writes when an update is applied while he is away (electron/launchMode.ts).
+  mkdirSync(path.join(root, 'userData'), { recursive: true })
+  writeFileSync(path.join(root, 'userData', 'quiet-start.json'), JSON.stringify({ at: Date.now() }))
+}
 let bedMedia = null
 if (bed) {
-  const real = path.join(process.env.APPDATA || '', 'OL Premiere')
-  if (path.resolve(bed).toLowerCase().startsWith(path.resolve(real).toLowerCase())) {
-    console.error('the bed must be a COPY, never his real OL Premiere folder')
-    process.exit(2)
-  }
   mkdirSync(path.join(root, 'userData', 'Projects'), { recursive: true })
   for (const f of readdirSync(path.join(bed, 'Projects'))) {
     if (f.endsWith('.olpbak')) copyFileSync(path.join(bed, 'Projects', f), path.join(root, 'userData', 'Projects', f))
@@ -68,7 +94,9 @@ if (bed) {
   symlinkSync(path.resolve(bed, 'media'), bedMedia, 'junction')
 }
 const electron = path.join(repo, 'node_modules', 'electron', 'dist', process.platform === 'win32' ? 'electron.exe' : 'electron')
-const run = spawnSync(electron, [path.join(here, 'app'), `--user-data-dir=${path.join(root, 'userData')}`], {
+const appArgs = [path.join(here, 'app'), `--user-data-dir=${path.join(root, 'userData')}`]
+if (quietUpdate) appArgs.push('--updated') // what the installer passes when it starts the new version
+const run = spawnSync(electron, appArgs, {
   env: { ...process.env, OLP_HIDDEN_DIR: root, OLP_HIDDEN_CHECK: check, OLP_HIDDEN_TIMEOUT_MS: String(timeout) },
   stdio: 'ignore',
   windowsHide: true,

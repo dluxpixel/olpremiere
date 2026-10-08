@@ -41,3 +41,34 @@ export function updateApplyDecision({ idleSeconds, busy }: ApplyInputs): 'now' |
   if (busy) return 'never'
   return idleSeconds >= IDLE_APPLY_S ? 'now' : 'when-idle'
 }
+
+/**
+ * How long after asking for the install the app quits by itself, in case the updater
+ * declined it. When the install goes ahead the updater has quit long before this.
+ */
+export const INSTALL_DECLINED_QUIT_MS = 3000
+
+/** The one call of electron-updater's autoUpdater this needs. */
+export interface InstallingUpdater {
+  quitAndInstall(isSilent: boolean, isForceRunAfter: boolean): void
+}
+
+/**
+ * Install the downloaded update silently and open the new version after, and quit
+ * either way.
+ *
+ * ⛔ quitAndInstall QUITS ONLY WHEN ITS INSTALL WENT AHEAD (electron-updater 6.8.9,
+ * BaseUpdater.quitAndInstall). With no installer on disk, or one already started, it
+ * returns and nothing quits. Called with no window left, that is a process nobody can
+ * see holding the single instance lock, and every later launch hands over to it and
+ * closes at once until he kills it. So the quit comes a beat later regardless: behind
+ * an install that went ahead it is a no op, the app being gone already.
+ */
+export function installOrQuit(
+  updater: InstallingUpdater,
+  quit: () => void,
+  later: (fn: () => void, ms: number) => unknown,
+): void {
+  updater.quitAndInstall(true, true)
+  later(quit, INSTALL_DECLINED_QUIT_MS)
+}

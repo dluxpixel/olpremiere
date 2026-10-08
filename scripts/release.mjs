@@ -8,7 +8,7 @@
 
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
-import { isBigUpdate, loadToken, openShipLog, runLogged, runLoggedRetry, SHIP_LOG } from './lib.mjs'
+import { isBigUpdate, loadToken, mayBeLiveReport, openShipLog, runLogged, runLoggedRetry, SHIP_LOG } from './lib.mjs'
 
 /**
  * The last released tag, or '' when git cannot say. Never throws: a missing tag
@@ -96,8 +96,17 @@ try {
   // Generate latest.yml + create the tag + a DRAFT release + upload all assets, and
   // publish it only once every file is on it at its real size (githubRelease.mjs).
   // A failure here leaves a draft nobody can see, and running this again clears it.
+  // ⛔ EXCEPT ONE THAT MAY ALREADY BE LIVE, which is never retried (lib.mjs MAY_BE_LIVE):
+  // a new run starts by deleting the release, and this one may be the live one.
   await runLoggedRetry('node scripts/publish.mjs', 'upload to GitHub', shipLog)
 } catch (e) {
+  const live = mayBeLiveReport(version, e.output)
+  if (live) {
+    console.error('')
+    for (const line of live) console.error(line)
+    console.error(`   The whole run is in ${SHIP_LOG}`)
+    process.exit(1)
+  }
   console.error(`\n❌ v${version} did not publish. ${e.message}`)
   console.error(`   The whole run is in ${SHIP_LOG}`)
   process.exit(1)

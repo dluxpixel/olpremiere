@@ -21,6 +21,7 @@ import type {
 const api: OlApi = {
   isElectron: true,
   getVersion: () => ipcRenderer.invoke('app:version'),
+  takeCrashRecovered: (): Promise<boolean> => ipcRenderer.invoke('app:takeCrashRecovered'),
   // Real machine memory, because navigator.deviceMemory is capped at 8 GB by the
   // spec and reports TOTAL rather than free. See engine/memoryBudget.ts.
   systemMemory: (): Promise<{ totalKb: number; freeKb: number }> => ipcRenderer.invoke('system:memory'),

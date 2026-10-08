@@ -11,9 +11,10 @@
 // He can still type any name he likes; only the suggestion is numbered.
 
 import { app, dialog, type BrowserWindow } from 'electron'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { open, rename, statfs, unlink, type FileHandle } from 'node:fs/promises'
 import path from 'node:path'
+import { choseExportPath } from './exportChoice'
 
 /** `base.ext` when it is free, else `base_1.ext`, `base_2.ext` and on. Pure. */
 export function numberedFileName(base: string, ext: string, taken: (name: string) => boolean): string {
@@ -46,7 +47,14 @@ export function lastFolder(kind: SaveKind): string {
   return app.getPath(kind === 'export' ? 'videos' : 'documents')
 }
 
+/**
+ * ⛔ CALLED ONLY WITH HIS ANSWER TO A SAVE DIALOG IN MAIN, and for an export that answer
+ * is also the one place a page may later ask main to write the movie (./exportChoice,
+ * main.ts native:start). Every export dialog in main ends here, which is why the choice
+ * is recorded here rather than beside each dialog.
+ */
 export function rememberFolder(kind: SaveKind, filePath: string): void {
+  if (kind === 'export') choseExportPath(filePath)
   try {
     writeFileSync(foldersFile(), JSON.stringify({ ...readFolders(), [kind]: path.dirname(filePath) }), 'utf8')
   } catch {
@@ -155,8 +163,22 @@ export async function closeWrite(id: number, ok: boolean): Promise<void> {
  * (a reload, a crash). Nothing can ever finish them, and each one is a full size
  * `<name>.olpart` beside his file: a project copy carries all its footage (mc
  * night is about 2.8 GB) on a drive that is 97% full. Never renamed into place,
- * so his own file is never touched.
+ * so his own file is never touched. Each is a hidden part file in HIS folder that
+ * no sweep ever looks for. (before-quit cannot wait for this: dropWritesSync.)
  */
 export async function dropWrites(): Promise<void> {
   for (const id of [...writes.keys()]) await closeWrite(id, false).catch(() => undefined)
+}
+
+/** The same for before-quit, which cannot wait: the name goes now, the handle with the process. */
+export function dropWritesSync(): void {
+  for (const w of writes.values()) {
+    void w.fh.close().catch(() => undefined)
+    try {
+      unlinkSync(w.tmp)
+    } catch {
+      // Already gone.
+    }
+  }
+  writes.clear()
 }

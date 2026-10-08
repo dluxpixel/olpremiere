@@ -18,11 +18,27 @@
 // quiet for as long as a release upload plausibly takes and then it is an ordinary,
 // visible failure.
 //
-// ⛔ NOTHING RAW REACHES HIM. The message that comes out of here is one of four fixed
+// ⛔ A 404 IS NOT ALWAYS "STILL PUBLISHING", 2026-10-06. Under the draft first flow a
+// release is invisible until every file is on it, so only two 404s can still mean an
+// upload in progress: latest.yml missing from a release that is already listed
+// (ERR_UPDATER_CHANNEL_FILE_NOT_FOUND), and a file under /releases/download/. A 404 on
+// the releases feed itself (releases.atom) or on /releases/latest is a repo that is
+// private, renamed or deleted, or has no release at all: a dead feed, the August scar.
+// Those were being called "publishing" too, so every launch said "An update is on its
+// way" and the truth came out about 45 minutes in, or never in a shorter session. They
+// are `missing` now and said at once.
+//
+// And the quiet hour is kept by the wall clock across launches (`quietSince`, stored by
+// main), not by a count that started again at zero every time he opened the app.
+//
+// ⛔ NOTHING RAW REACHES HIM. The message that comes out of here is one of five fixed
 // sentences. The text electron-updater built (URLs, headers, a stack) goes to the log.
 
 /** What kind of failure an update check was. */
-export type UpdateFailure = 'publishing' | 'offline' | 'denied' | 'other'
+export type UpdateFailure = 'publishing' | 'missing' | 'offline' | 'denied' | 'other'
+
+/** Every kind, in one place, so the list of sentences cannot miss one. */
+export const UPDATE_FAILURES: readonly UpdateFailure[] = ['publishing', 'missing', 'offline', 'denied', 'other']
 
 /** Error codes (node's, and the updater's own) that mean the network was not there. */
 const OFFLINE_CODES = new Set([
@@ -73,13 +89,20 @@ export function classifyUpdateError(raw: unknown): UpdateFailure {
   const code = typeof e.code === 'string' ? e.code : ''
   const status = statusOf(e, text)
 
-  // The release exists and its feed file is not there (yet), or its installer is not.
+  // The release is listed and its feed file is not there (yet), or its installer is not.
   if (code === 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND') return 'publishing'
-  if (status === 404) return 'publishing'
   if (/Cannot find \S+ in the latest release artifacts/.test(text)) return 'publishing'
+  // Not when the 404 came from reading the feed: that error carries the whole feed
+  // with it, and his release notes may well link a download.
+  const feedStage = code === 'ERR_UPDATER_INVALID_RELEASE_FEED' || code === 'ERR_UPDATER_LATEST_VERSION_NOT_FOUND'
+  if (status === 404 && !feedStage && /\/releases\/download\//.test(text)) return 'publishing'
 
   if (status === 401 || status === 403) return 'denied'
   if (OFFLINE_CODES.has(code) || OFFLINE_TEXT.test(text)) return 'offline'
+  // Any other 404 is the feed itself: releases.atom or /releases/latest. And a feed
+  // with nothing in it is the same dead end. See the note at the top.
+  if (status === 404) return 'missing'
+  if (code === 'ERR_UPDATER_NO_PUBLISHED_VERSIONS' || /No published versions on GitHub/.test(text)) return 'missing'
   return 'other'
 }
 
@@ -96,14 +119,14 @@ export function updateFailureMessage(kind: UpdateFailure): string {
       return 'Could not check for updates because the update server refused the request.'
     case 'publishing':
       return 'The newest update could not be found, so you may not be on the newest version.'
+    case 'missing':
+      return 'Could not find the updates, so you may not be on the newest version.'
     case 'other':
       return 'Could not check for updates, so you may not be on the newest version.'
   }
 }
 
-const KNOWN_MESSAGES: ReadonlySet<string> = new Set(
-  (['offline', 'denied', 'publishing', 'other'] as const).map(updateFailureMessage),
-)
+const KNOWN_MESSAGES: ReadonlySet<string> = new Set(UPDATE_FAILURES.map(updateFailureMessage))
 
 /**
  * Is this one of the sentences above and nothing else? The renderer asks before it
@@ -123,12 +146,38 @@ export function isKnownUpdateMessage(message: string): boolean {
 export const PUBLISHING_RETRY_MS: readonly number[] = [2 * 60_000, 4 * 60_000, 8 * 60_000]
 
 /**
- * How many "release still publishing" answers in a row stay quiet. Three quick
- * rechecks (about fourteen minutes) and then three polls, so roughly an hour, which is
- * far longer than any upload. A 404 that outlasts it is a dead feed, and a dead feed
- * is what hid for weeks, so the next answer is said out loud.
+ * How long "release still publishing" answers stay quiet, by the clock, from the first
+ * one. An hour is far longer than any upload. A 404 that outlasts it is a dead feed,
+ * and a dead feed is what hid for weeks, so from then on it is said out loud, on the
+ * very first answer of a new launch too.
  */
-export const PUBLISHING_QUIET_LIMIT = 6
+export const PUBLISHING_QUIET_MS = 60 * 60_000
+
+/**
+ * ⛔ A QUIET RUN THAT HAS HEARD NOTHING FOR THIS LONG IS OVER, 2026-10-08. Its start is
+ * kept across launches and cleared only by a later answer, so an app closed inside the
+ * two minute recheck left it on disk. Days later the first "still publishing" answer
+ * of a launch, a real release minutes into its upload, was said out loud at once,
+ * because the run looked days old. A run nobody heard for a day ended unseen, and the
+ * next answer starts a new one. A day and not an hour, so a release that stays half
+ * published is still said on the first answer of the next day's launch.
+ */
+export const PUBLISHING_RUN_GAP_MS = 24 * 60 * 60_000
+
+/** Where the run of quiet answers stands, carried from one failed check to the next. */
+export interface QuietRun {
+  /** "Still publishing" answers in a row in this session, which picks the next wait. */
+  streak: number
+  /** When the run of quiet answers began (ms since 1970), kept across launches, or null. */
+  quietSince: number | null
+  /**
+   * When the last quiet answer of that run came, kept with it. Missing or null for a
+   * run kept by an older version, whose start then stands in.
+   */
+  quietLast?: number | null
+  /** The time now, in ms since 1970. */
+  now: number
+}
 
 export interface UpdateErrorPlan {
   kind: UpdateFailure
@@ -136,21 +185,30 @@ export interface UpdateErrorPlan {
   message: string | null
   /** The streak of "still publishing" answers to hand back in next time. */
   streak: number
+  /** When the quiet run began, to keep for next time; null ends it. */
+  quietSince: number | null
   /** Look again this many ms from now, or null to leave it to the ordinary poll. */
   retryInMs: number | null
 }
 
 /**
- * What to do about a failed check, given how many "still publishing" answers came
- * just before it (`streak`, 0 for none). Anything that is not a release mid upload
- * ends the streak and gets its sentence.
+ * What to do about a failed check, given the run of "still publishing" answers just
+ * before it. Anything that is not a release mid upload ends the run and gets its
+ * sentence.
  */
-export function planUpdateError(raw: unknown, streak: number): UpdateErrorPlan {
+export function planUpdateError(raw: unknown, run: QuietRun): UpdateErrorPlan {
   const kind = classifyUpdateError(raw)
-  if (kind !== 'publishing') return { kind, message: updateFailureMessage(kind), streak: 0, retryInMs: null }
-  const next = streak + 1
-  if (next > PUBLISHING_QUIET_LIMIT) return { kind, message: updateFailureMessage(kind), streak: next, retryInMs: null }
-  return { kind, message: null, streak: next, retryInMs: PUBLISHING_RETRY_MS[streak] ?? null }
+  if (kind !== 'publishing') return { kind, message: updateFailureMessage(kind), streak: 0, quietSince: null, retryInMs: null }
+  // A start in the future is a clock that moved back, and a run that heard nothing for
+  // a day ended unseen (PUBLISHING_RUN_GAP_MS): either way the hour begins again from now.
+  const last = run.quietLast ?? run.quietSince
+  const goesOn = run.quietSince !== null && run.quietSince <= run.now && last !== null && run.now - last < PUBLISHING_RUN_GAP_MS
+  const since = goesOn && run.quietSince !== null ? run.quietSince : run.now
+  const next = run.streak + 1
+  if (run.now - since >= PUBLISHING_QUIET_MS) {
+    return { kind, message: updateFailureMessage(kind), streak: next, quietSince: since, retryInMs: null }
+  }
+  return { kind, message: null, streak: next, quietSince: since, retryInMs: PUBLISHING_RETRY_MS[run.streak] ?? null }
 }
 
 /** Longest the log keeps of one failure. A stack is enough, a whole page is not. */

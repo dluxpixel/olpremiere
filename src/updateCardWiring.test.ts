@@ -79,11 +79,8 @@ describe('it never opens over the splash, or unasked', () => {
   })
 })
 
-describe('a check can never blank a live download', () => {
-  it('the poll steps aside while bytes are arriving', () => {
-    expect(main).toMatch(/if \(updateStatus\.kind === 'downloading'\) return/)
-  })
-})
+// "A check can never blank a live download" is RUN now, with a fake updater and fake
+// clocks: electron/updateFlow.test.ts, 'never checks over a live download'.
 
 describe('his click always registers, whatever the updater is already doing', () => {
   // ⛔ HIS WORDS, 2026-08-24: "clicking the melon doesn't really update the app.

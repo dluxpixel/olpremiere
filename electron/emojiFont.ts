@@ -19,8 +19,9 @@
 // while a title with an emoji is on screen.
 
 import { createHash } from 'node:crypto'
-import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises'
+import { mkdir, open, readdir, readFile, rename, stat, unlink, writeFile, type FileHandle } from 'node:fs/promises'
 import path from 'node:path'
+import { Readable } from 'node:stream'
 
 /** Pinned to one release and one checksum, so the bytes can never change under him. */
 export const EMOJI_SOURCE = {
@@ -224,4 +225,30 @@ export async function downloadBytes(url: string, fetchImpl: (url: string) => Pro
   const res = await fetchImpl(url)
   if (!res.ok) throw new Error(`the emoji font download answered ${res.status}`)
   return Buffer.from(await res.arrayBuffer())
+}
+
+/**
+ * The answer to app://<host>/user-fonts/apple-emoji.ttf: the kept font, fetched first
+ * if need be, or a 503 with the reason handed to `onError` (main.log).
+ *
+ * Streamed off his disk in 4 MB pieces, never held whole in main: the face is 66 MB
+ * and every page or worker that draws an emoji asks for it. Read whole it was three
+ * copies of it at once; the hidden app's emoji check timed both the same within noise.
+ *
+ * ⛔ THE FILE IS OPENED BEFORE THE ANSWER IS GIVEN. A stream made from a path opens
+ * the file only once read, after the 200 has gone, so a font that could not be opened
+ * (gone, or held by another program) reached the page as a stream that broke, and
+ * nothing reached main.log. The handle closes itself when the stream ends or is dropped.
+ */
+export async function emojiFontResponse(fontPath: () => Promise<string>, onError: (err: unknown) => void): Promise<Response> {
+  let handle: FileHandle | null = null
+  try {
+    handle = await open(await fontPath(), 'r')
+    const font = Readable.toWeb(handle.createReadStream({ highWaterMark: 4 << 20 })) as ReadableStream<Uint8Array>
+    return new Response(font, { headers: { 'content-type': 'font/ttf' } })
+  } catch (err) {
+    await handle?.close().catch(() => undefined)
+    onError(err)
+    return new Response('Not available', { status: 503 })
+  }
 }
