@@ -53,9 +53,12 @@ export interface TransportOpts {
   /**
    * Where a pause really stopped (the live clock, MIC-5). Defaults to onTick.
    * The app puts the playhead on the frame that was on screen and keeps this
-   * exact time to resume from.
+   * exact time to resume a take from. `ranOut` is true only for the pause that
+   * is play running off the end of the edit: the sound reaches the end before
+   * the picture does, so a pause in that last stretch has a stop time AT the
+   * end and is still a pause (sweep review S2).
    */
-  onPaused?: (tS: number) => void
+  onPaused?: (tS: number, ranOut: boolean) => void
   onStateChange?: (playing: boolean, rate: number) => void
   /** Schedules audio from a timeline time; resolves to a stop fn. */
   schedule: ScheduleFn
@@ -653,6 +656,7 @@ export class Transport {
     // live clock, read before the sound is torn down, is the truth.
     const wasPlaying = this.isPlaying
     if (wasPlaying) this.lastT = this.liveTime()
+    const ranOut = this.stoppingAtEnd
     this.teardown()
     this.stoppingAtEnd = false
     // Fire the state change if we were playing OR merely intending to (audio
@@ -664,7 +668,10 @@ export class Transport {
     this.currentRate = 0
     if (wasActive) this.opts.onStateChange?.(false, 0)
     // And the playhead is told, so the next play starts exactly there.
-    if (wasPlaying) (this.opts.onPaused ?? this.opts.onTick)(this.lastT)
+    if (wasPlaying) {
+      if (this.opts.onPaused) this.opts.onPaused(this.lastT, ranOut)
+      else this.opts.onTick(this.lastT)
+    }
     return this.lastT
   }
 

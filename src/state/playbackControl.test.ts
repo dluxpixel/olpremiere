@@ -401,4 +401,54 @@ describe.each([
     run(10)
     expect(playhead()).toBeCloseTo(5, 9)
   })
+
+  // S2 of the same review. The sound reaches the end of the edit `lagS` before the
+  // picture does, and a pause in that last stretch read the sound's end as play
+  // that ran off it: the playhead jumped to the last frame and the next Space
+  // started over from 0, though he had paused with the end still to come.
+  describe('a pause in the last stretch of the edit', () => {
+    beforeEach(() => {
+      updateActiveSequence('A 2 second edit at 60', (seq) => ({ ...seq, durationS: 2, fps: FPS }))
+      useStore.getState().setUI({ playheadS: 1.5 })
+    })
+
+    /** Play from 1.5 until the sound has rendered the end and the picture is `lagS` / 2 short of it. */
+    async function playToTheLastStretch(): Promise<number> {
+      togglePlay()
+      await settle()
+      run(50 + 500 + lagS * 500)
+      expect(isPlaying()).toBe(true) // the picture has not run out
+      return monitor.drewS as number
+    }
+
+    it('parks on the frame on screen, not on the last frame', async () => {
+      const shown = await playToTheLastStretch()
+      expect(shown).toBeLessThan(2 - 1 / FPS - 1e-6)
+      togglePlay()
+      expect(playhead()).toBeCloseTo(shown, 9)
+    })
+
+    it('and the next Space resumes from it, not from the top', async () => {
+      const shown = await playToTheLastStretch()
+      togglePlay()
+      togglePlay()
+      await settle()
+      run(10)
+      expect(isPlaying()).toBe(true)
+      expect(playhead()).toBeCloseTo(shown, 9)
+    })
+
+    it('play that really runs out still parks on the last frame, and Space starts over', async () => {
+      togglePlay()
+      await settle()
+      run(50 + 500 + lagS * 1000 + 100)
+      expect(isPlaying()).toBe(false)
+      expect(playhead()).toBeCloseTo(2 - 1 / FPS, 9)
+      togglePlay()
+      await settle()
+      run(300)
+      expect(isPlaying()).toBe(true)
+      expect(playhead()).toBeLessThan(1)
+    })
+  })
 })

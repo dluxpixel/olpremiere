@@ -107,13 +107,17 @@ function playFrom(playheadS: number, endS: number, fps: number): number {
 const transport = new Transport({
   getEndS: () => activeSequence(useStore.getState().project).durationS,
   onTick: (t) => useStore.getState().setUI({ playheadS: Math.max(0, t) }),
-  onPaused: (exactS) => {
+  onPaused: (exactS, ranOut) => {
     const s = useStore.getState()
     const seq = activeSequence(s.project)
     const fps = seq.fps || 30
     // Play ran off the end: the last real frame, never the end itself, where
     // nothing resolves and the monitor goes black (PB-17). Space starts over
-    // from there (playFrom). J that ran back to the start: the start.
+    // from there (playFrom). Only play that RAN OUT: the sound reaches the end
+    // before the picture does (PB-8), so a pause in the last stretch has a stop
+    // time at the end too, and is a pause on the frame he is looking at, which
+    // the next Space resumes from (sweep review S2). J that ran back to the
+    // start: the start.
     // Otherwise the frame on screen is the one the monitor LAST DREW
     // (lastPlayedFrameS), not the one the live clock has reached since; a tick
     // the monitor did not draw (its redraw cap, a frame still decoding) leaves
@@ -121,7 +125,7 @@ const transport = new Transport({
     // run (no canvas, or a pause on the very first frame), the frame the last
     // tick is in.
     const frameS =
-      seq.durationS > 0 && exactS >= seq.durationS - 1e-9
+      ranOut && seq.durationS > 0
         ? lastFrameS(seq.durationS, fps)
         : exactS <= 0
           ? 0

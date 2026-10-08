@@ -619,6 +619,27 @@ describe('the picture shows what is reaching his ears', () => {
     expect(paused).toEqual([3])
   })
 
+  // The sound reaches the end of the edit before the picture does. A pause in
+  // that stretch is a pause, and the playhead is told so (sweep review S2): only
+  // play that runs out says it ran out.
+  it('tells onPaused when play ran off the end, and not when he paused in the last stretch', async () => {
+    const told: Array<[number, boolean]> = []
+    const t = transport([], { getEndS: () => 3, onPaused: (s, ranOut) => told.push([s, ranOut]) })
+    await t.play(2)
+    world.t = 6.1 // the sound has rendered past the end; he is hearing 2.88
+    runFrame()
+    expect(t.playing).toBe(true)
+    t.pause()
+    expect(told).toEqual([[3, false]])
+
+    told.length = 0
+    await t.play(2)
+    world.t = 12.1
+    runFrame() // the picture has reached the end too
+    expect(t.playing).toBe(false)
+    expect(told).toEqual([[3, true]])
+  })
+
   it('a loop pass is seen to its end, and the next starts when its sound reaches him', async () => {
     const ticks: number[] = []
     const t = transport(ticks, {
