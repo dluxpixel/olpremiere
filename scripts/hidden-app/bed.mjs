@@ -6,6 +6,11 @@
 // bed whose `media` was itself a link to his real media folder passed it, and a run
 // would have worked on his real footage. Both the bed and its media are followed to
 // where they really are first.
+//
+// ⛔ AND HIS MEDIA FOLDER IS FOLLOWED TOO, 2026-10-08. It can itself be a link to
+// another drive, and then a bed linked to where it leads is outside his profile by
+// path and still his real footage. So the guarded places are each profile and each
+// profile's media folder, every one where it really leads.
 
 import { realpathSync } from 'node:fs'
 import path from 'node:path'
@@ -32,12 +37,14 @@ function leadsTo(p) {
 
 /** Why this bed must not be used, or null when it is a copy. */
 export function bedProblem(bed, appData) {
-  const profiles = realProfiles(appData).map(leadsTo)
+  const guarded = realProfiles(appData).flatMap((profile) => [
+    { where: 'his real OL Premiere folder', real: leadsTo(profile) },
+    { where: 'his real media folder', real: leadsTo(path.join(profile, 'media')) },
+  ])
   for (const [what, p] of [['the bed', bed], ['the bed\'s media', path.join(bed, 'media')]]) {
     const real = leadsTo(p)
-    if (profiles.some((profile) => inside(profile, real))) {
-      return `${what} leads into his real OL Premiere folder (${real}): a bed must be a COPY`
-    }
+    const hit = guarded.find((g) => inside(g.real, real))
+    if (hit) return `${what} leads into ${hit.where} (${real}): a bed must be a COPY`
   }
   return null
 }

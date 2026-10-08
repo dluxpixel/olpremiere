@@ -52,6 +52,23 @@ describe('a bed', () => {
     expect(bedProblem(bed, appData)).toMatch(/the bed's media leads into his real OL Premiere folder/)
   })
 
+  // ⛔ His media folder can itself be a link to another drive. A bed linked to where it
+  // leads is outside his profile by path, and is still his real footage.
+  it('⛔ whose media leads where his real media folder leads is refused, when that is another drive', () => {
+    const footage = path.join(tmp, 'D-drive', 'OLMedia')
+    mkdirSync(path.join(footage, 'clips'), { recursive: true })
+    const real = path.join(appData, 'OL Premiere', 'media')
+    rmSync(real, { recursive: true })
+    symlinkSync(footage, real, 'junction')
+    links.push(real)
+    expect(bedProblem(makeBed('same', footage), appData)).toMatch(/the bed's media leads into his real media folder/)
+    expect(bedProblem(makeBed('under', path.join(footage, 'clips')), appData)).toMatch(/must be a COPY/)
+    // A copy beside it on that drive is still a copy.
+    const copy = path.join(tmp, 'D-drive', 'OLMedia-copy')
+    mkdirSync(copy)
+    expect(bedProblem(makeBed('copy', copy), appData)).toBeNull()
+  })
+
   it('that leads into his old profile is refused too', () => {
     mkdirSync(path.join(appData, 'reel', 'media'), { recursive: true })
     expect(bedProblem(makeBed('old', path.join(appData, 'reel', 'media')), appData)).toMatch(/must be a COPY/)
