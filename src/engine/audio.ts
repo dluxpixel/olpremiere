@@ -11,7 +11,7 @@ import { evalChannel } from './keyframes'
 import { budgets } from './memoryBudget'
 import type { AutoLevel, Clip, Id, MediaAsset, Sequence, Track } from './types'
 import { limiterLatencyFrames } from './audioLimiter'
-import { decodeAudioOffThread } from './audioDecodeClient'
+import { decodeAudioOffThread, decodeLane, promoteLane, type DecodeLane } from './audioDecodeClient'
 import { DECODE_SAMPLE_RATE } from './audioDemux'
 import { resamplePlanes } from './resample'
 import { timeStretchChannels } from './timeStretch'
@@ -334,15 +334,35 @@ export function forgetAssetAudio(assetId: Id): void {
   reversedCache.delete(assetId)
 }
 
-export async function getAudioBuffer(asset: MediaAsset): Promise<AudioBuffer | null> {
+/**
+ * The line each whole-file read waits in, so Play can move one it comes to wait
+ * on to the front of the decode queue (SF-2). Keyed by the read itself, so an
+ * evicted read takes its lane with it.
+ */
+const wholeLanes = new WeakMap<Promise<AudioBuffer | null>, DecodeLane>()
+
+/** Play is waiting on this asset's whole-file read: to the front with it, if one is queued. */
+function promoteWholeRead(assetId: Id): void {
+  const pending = bufferCache.get(assetId)
+  if (pending) promoteLane(wholeLanes.get(pending))
+}
+
+/**
+ * The whole decoded sound of an asset. `priority` is for a read Play is waiting
+ * on: it goes ahead of background reads, and so does a background read of the
+ * same asset already queued (a noise pass warmed up, a transcription).
+ */
+export async function getAudioBuffer(asset: MediaAsset, opts: { priority?: boolean } = {}): Promise<AudioBuffer | null> {
   let pending = bufferCache.get(asset.id)
   if (pending) {
+    if (opts.priority) promoteWholeRead(asset.id)
     // LRU touch on both maps so hot assets stay resident.
     bufferCache.delete(asset.id)
     bufferCache.set(asset.id, pending)
     return pending
   }
-  pending = decodeAssetAudio(asset).then((buf) => {
+  const lane = decodeLane(opts.priority)
+  pending = decodeAssetAudio(asset, lane).then((buf) => {
     // Account bytes when the decode actually lands (only if still cached, since
     // eviction may have raced a slow decode).
     if (buf && bufferCache.get(asset.id) === pending) {
@@ -353,6 +373,7 @@ export async function getAudioBuffer(asset: MediaAsset): Promise<AudioBuffer | n
     }
     return buf
   })
+  wholeLanes.set(pending, lane)
   bufferCache.set(asset.id, pending)
   return pending
 }
@@ -385,6 +406,8 @@ interface RangeEntry {
   toS: number
   pending: Promise<AudioRange | null>
   bytes: number
+  /** The line its read waits in, so Play can move it to the front (SF-2). */
+  lane: DecodeLane
 }
 const rangeCache = new Map<string, RangeEntry>()
 let rangeTotalBytes = 0
@@ -416,13 +439,13 @@ async function decodeRange(
   asset: MediaAsset,
   fromS: number,
   toS: number,
-  priority: boolean,
+  lane: DecodeLane,
 ): Promise<{ range: AudioRange; owned: boolean } | null> {
   if (asset.kind === 'image' || !asset.hasAudio) return null
   const blob = await getBlob(asset.blobKey)
   if (!blob) return null
   try {
-    const r = await demuxAssetAudio(asset, blob, fromS, toS, priority)
+    const r = await demuxAssetAudio(asset, blob, fromS, toS, lane)
     if (r) return { range: r, owned: true }
   } catch (err) {
     console.warn(`OL Premiere audio: ranged read failed for "${asset.name}", reading the whole file`, err)
@@ -430,7 +453,7 @@ async function decodeRange(
   if (provedSilent.has(asset.id)) return null
   // A container the demuxer cannot read in pieces still has to play: the whole
   // file read below is the fallback it always had.
-  const whole = await getAudioBuffer(asset)
+  const whole = await getAudioBuffer(asset, { priority: lane.priority })
   return whole ? { range: { buffer: whole, startS: 0 }, owned: false } : null
 }
 
@@ -439,6 +462,12 @@ async function decodeRange(
  * contains them. A whole asset that is already decoded (a transcription, a beat
  * scan) serves every range for free. `priority` is for a read Play is waiting on:
  * it goes ahead of any background read still queued.
+ *
+ * ⛔ AND SO DOES THE SAME RANGE READ IN THE BACKGROUND (SF-2, review 2026-10-08).
+ * Selecting a clip reads exactly the seconds Play will ask for (the beat scan),
+ * so Space found that read in here and waited on it where it stood: behind every
+ * waveform of his long recordings queued before it. Asked for with priority, a
+ * read already queued is moved to the front.
  */
 export function getAudioRange(
   asset: MediaAsset,
@@ -456,14 +485,16 @@ export function getAudioRange(
     if (e.assetId !== asset.id || e.fromS > lo + 1e-6 || e.toS < hi - 1e-6) continue
     rangeCache.delete(key)
     rangeCache.set(key, e)
+    if (opts.priority) promoteLane(e.lane)
     return e.pending
   }
   const end = asset.durationS > 0 ? asset.durationS : Infinity
   const a = Math.max(0, Math.floor((lo - RANGE_PAD_S) / RANGE_ALIGN_S) * RANGE_ALIGN_S)
   const b = Math.min(end, Math.ceil((hi + RANGE_PAD_S) / RANGE_ALIGN_S) * RANGE_ALIGN_S)
   const key = `${asset.id}|${a}|${b}`
-  const entry: RangeEntry = { assetId: asset.id, fromS: a, toS: b, bytes: 0, pending: Promise.resolve(null) }
-  entry.pending = decodeRange(asset, a, b, opts.priority ?? false).then((r) => {
+  const lane = decodeLane(opts.priority)
+  const entry: RangeEntry = { assetId: asset.id, fromS: a, toS: b, bytes: 0, pending: Promise.resolve(null), lane }
+  entry.pending = decodeRange(asset, a, b, lane).then((r) => {
     if (!r) return null
     if (r.owned && rangeCache.get(key) === entry) {
       entry.bytes = r.range.buffer.length * r.range.buffer.numberOfChannels * 4
@@ -551,7 +582,7 @@ async function demuxAssetAudio(
   blob: Blob,
   fromS?: number,
   toS?: number,
-  priority = false,
+  priority: boolean | DecodeLane = false,
 ): Promise<{ buffer: AudioBuffer; startS: number } | null> {
   const r = await decodeAudioOffThread(blob, asset.durationS, fromS, toS, priority)
   // No track at all is PROOF of silence. A track this build cannot decode is
@@ -569,7 +600,7 @@ async function demuxAssetAudio(
   return { buffer: out, startS: r.startS }
 }
 
-async function decodeAssetAudio(asset: MediaAsset): Promise<AudioBuffer | null> {
+async function decodeAssetAudio(asset: MediaAsset, lane: DecodeLane = decodeLane()): Promise<AudioBuffer | null> {
   if (asset.kind === 'image' || !asset.hasAudio) return null
   const blob = await getBlob(asset.blobKey)
   if (!blob) {
@@ -580,7 +611,7 @@ async function decodeAssetAudio(asset: MediaAsset): Promise<AudioBuffer | null> 
   // The demuxed read FIRST, and for any size. This is the path that works on his
   // 2.4 GB recordings.
   try {
-    const demuxed = await demuxAssetAudio(asset, blob)
+    const demuxed = await demuxAssetAudio(asset, blob, undefined, undefined, lane)
     if (demuxed) return demuxed.buffer
   } catch (err) {
     console.warn(`OL Premiere audio: demux failed for "${asset.name}", falling back to a whole-file read`, err)
@@ -769,11 +800,13 @@ function reverseAboutContainer(src: AudioBuffer, asset: MediaAsset): AudioBuffer
   return rev
 }
 
-export function getReversedAudioBuffer(asset: MediaAsset): Promise<AudioBuffer | null> {
+export function getReversedAudioBuffer(asset: MediaAsset, opts: { priority?: boolean } = {}): Promise<AudioBuffer | null> {
   let pending = reversedCache.get(asset.id)
+  // Play waits on the forward read under a reversal already asked for.
+  if (pending && opts.priority) promoteWholeRead(asset.id)
   if (!pending) {
     pending = (async () => {
-      const src = await getAudioBuffer(asset)
+      const src = await getAudioBuffer(asset, opts)
       if (!src) return null
       const rev = reverseAboutContainer(src, asset)
       // Accounted against the SAME budget as the forward buffers, on the same
@@ -822,8 +855,13 @@ export function warmDenoise(clip: Clip, asset: MediaAsset): void {
 }
 
 function playbackAudioFor(clip: Clip, asset: MediaAsset, reversed: boolean): Promise<AudioRange | null> {
+  // Play is waiting on these, so they read at the front of the line too (SF-2):
+  // a reversed or noise-reduced clip used to read its whole file behind every
+  // background read queued before it.
   if (reversed || (clip.denoise ?? 0) > 0) {
-    return clipAudioBuffer(clip, asset, reversed).then((buffer) => (buffer ? { buffer, startS: 0 } : null))
+    return clipAudioBuffer(clip, asset, reversed, { priority: true }).then((buffer) =>
+      buffer ? { buffer, startS: 0 } : null,
+    )
   }
   return getAudioRange(asset, clip.inS, clip.outS, { priority: true })
 }
@@ -832,10 +870,11 @@ export async function clipAudioBuffer(
   clip: Clip,
   asset: MediaAsset,
   reversed: boolean,
+  opts: { priority?: boolean } = {},
 ): Promise<AudioBuffer | null> {
   const strength = clip.denoise ?? 0
-  if (strength <= 0) return reversed ? getReversedAudioBuffer(asset) : getAudioBuffer(asset)
-  const src = await getAudioBuffer(asset)
+  if (strength <= 0) return reversed ? getReversedAudioBuffer(asset, opts) : getAudioBuffer(asset, opts)
+  const src = await getAudioBuffer(asset, opts)
   if (!src) return null
   const ctx = ensureAudioContext()
   const denoised = await denoisedBufferFor(asset, src, strength, (c, l, r) => ctx.createBuffer(c, l, r))

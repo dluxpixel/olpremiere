@@ -11,7 +11,12 @@ vi.mock('../state/persistence', () => ({
   // The waveform's own store of peaks: empty, so every read goes to the bytes.
   db: async () => ({ get: async () => undefined, put: async () => undefined }),
 }))
-vi.mock('./audioDecodeClient', () => ({ decodeAudioOffThread: decode, peaksOffThread: peaks }))
+// The real lanes: only the reads themselves are stood in for.
+vi.mock('./audioDecodeClient', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./audioDecodeClient')>()),
+  decodeAudioOffThread: decode,
+  peaksOffThread: peaks,
+}))
 
 class FakeAudioContext {
   createBuffer(channels: number, length: number, sampleRate: number) {

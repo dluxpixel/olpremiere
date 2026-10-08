@@ -46,6 +46,43 @@ describe('decodeAudioOffThread', () => {
     expect(a!.posted[2]!.fromS).toBe(20)
   })
 
+  // ⛔ SF-2, review 2026-10-08. Selecting a clip queues a background read of
+  // exactly the range Play asks for, and Play then got that same read back,
+  // still waiting behind every waveform queued before it.
+  it('a background read stays in line until Play comes to wait on it, then goes first', async () => {
+    const { decodeAudioOffThread, decodeLane, peaksOffThread, promoteLane } = await import('./audioDecodeClient')
+    const blob = new Blob(['x'])
+    void peaksOffThread(blob, 600, 2000)
+    void peaksOffThread(blob, 600, 2000)
+    void peaksOffThread(blob, 900, 2000) // a third long recording's waveform, waiting
+    const lane = decodeLane()
+    const selected = decodeAudioOffThread(blob, 60, 40, 50, lane)
+    const [a, b] = FakeWorker.all
+    // Not promoted: it keeps its place behind the waveform.
+    a!.answer(a!.posted[0]!.id)
+    expect(a!.posted[1]).toMatchObject({ op: 'peaks', durationS: 900 })
+    void decodeAudioOffThread(blob, 60, 0, 10) // more background behind it
+    void peaksOffThread(blob, 1200, 2000)
+    // Space: Play waits on that very read now.
+    promoteLane(lane)
+    b!.answer(b!.posted[0]!.id)
+    expect(b!.posted[1]).toMatchObject({ op: 'pcm', fromS: 40 })
+    b!.answer(b!.posted[1]!.id)
+    await expect(selected).resolves.toEqual({ kind: 'silent' })
+  })
+
+  it('a read promoted before it reaches the queue goes in at the front', async () => {
+    const { decodeAudioOffThread, decodeLane, peaksOffThread, promoteLane } = await import('./audioDecodeClient')
+    const blob = new Blob(['x'])
+    for (let i = 0; i < 4; i++) void peaksOffThread(blob, 600, 2000)
+    const lane = decodeLane()
+    promoteLane(lane)
+    void decodeAudioOffThread(blob, 60, 40, 50, lane)
+    const [a] = FakeWorker.all
+    a!.answer(a!.posted[0]!.id)
+    expect(a!.posted[1]).toMatchObject({ op: 'pcm', fromS: 40 })
+  })
+
   it('background reads keep their order among themselves', async () => {
     const { decodeAudioOffThread } = await import('./audioDecodeClient')
     const blob = new Blob(['x'])

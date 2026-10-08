@@ -864,7 +864,7 @@ describe('the audio decode burst is bounded', () => {
     // moves back above the demux, his 2.4 GB recordings go silent again and the
     // guard below would still pass, fencing a branch nothing reaches.
     const decode = src.slice(src.indexOf('async function decodeAssetAudio'))
-    const demux = decode.indexOf('demuxAssetAudio(asset, blob)')
+    const demux = decode.indexOf('demuxAssetAudio(asset, blob, undefined, undefined, lane)')
     const guard = decode.indexOf('blob.size > MAX_ARRAY_BUFFER_BYTES')
     expect(demux).toBeGreaterThan(-1)
     expect(demux).toBeLessThan(guard)

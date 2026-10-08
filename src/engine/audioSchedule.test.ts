@@ -13,7 +13,12 @@ import type { MediaAsset, Track } from './types'
 
 const { decode, noisePass } = vi.hoisted(() => ({ decode: vi.fn(), noisePass: vi.fn() }))
 vi.mock('../state/persistence', () => ({ getBlob: async () => new Blob(['bytes']) }))
-vi.mock('./audioDecodeClient', () => ({ decodeAudioOffThread: decode, peaksOffThread: vi.fn() }))
+// The real lanes: only the reads themselves are stood in for.
+vi.mock('./audioDecodeClient', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./audioDecodeClient')>()),
+  decodeAudioOffThread: decode,
+  peaksOffThread: vi.fn(),
+}))
 // The noise pass, stood in for so a test can say how long it takes.
 vi.mock('./denoiseClient', () => ({ denoiseOffThread: noisePass }))
 // No worklets in node: the master limiter stays out, as it does until it loads.
