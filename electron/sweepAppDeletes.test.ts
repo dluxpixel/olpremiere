@@ -126,7 +126,9 @@ describe('⛔ the app deleting a project file never stops the spare copy cleanup
     expect(await onDisk()).toEqual([BACKED, TRASHED].sort())
     // p8's one backup, its only copy anywhere, is never the one pruned.
     expect(backups.some((f) => f.includes('_p8_'))).toBe(true)
-  })
+    // Each backup is flushed to the disk before it lands: with every test file running
+    // at once, forty-five of them can take longer than the default 5 seconds.
+  }, 60_000)
 
   it('a Trash file deleted by hand, outside the app, still stops it for good', async () => {
     await hisShelf()
