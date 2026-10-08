@@ -148,12 +148,18 @@ test('blend modes hit the renderer: multiply blacks out over the empty stage, ov
   await page.getByTestId('blend-mode').selectOption('multiply')
   await expect.poll(async () => luma(await px(page, 0.5, 0.5)), { timeout: 10_000 }).toBeLessThan(25)
 
+  // Back to normal first, so the picture is red when overlay is chosen.
+  await page.getByTestId('blend-mode').selectOption('normal')
+  await expect.poll(async () => (await px(page, 0.5, 0.5))[0], { timeout: 10_000 }).toBeGreaterThan(120)
+
   // Overlay runs the capture + full-screen BLENDMODE_FS path; over black it is black.
-  // Black before and black after, so no pixel can say when overlay arrived: the
-  // store is asked instead, and `px` repaints from it before it reads.
+  // ⛔ IT USED TO FOLLOW MULTIPLY DIRECTLY, black before and black after, so no
+  // pixel could say when overlay arrived and the read passed on the stale multiply
+  // frame whatever overlay drew (a mutant that drew overlay as a plain normal blend
+  // stayed green once the monitor was made to paint two seconds late). Chosen from
+  // a RED picture, the arrival is what turns it black, and the poll waits for that.
   await page.getByTestId('blend-mode').selectOption('overlay')
-  await expect(page.getByTestId('blend-mode')).toHaveValue('overlay')
-  expect(luma(await px(page, 0.5, 0.5))).toBeLessThan(25)
+  await expect.poll(async () => luma(await px(page, 0.5, 0.5)), { timeout: 10_000 }).toBeLessThan(25)
 
   await page.getByTestId('blend-mode').selectOption('normal')
   await expect.poll(async () => (await px(page, 0.5, 0.5))[0], { timeout: 10_000 }).toBeGreaterThan(120)
@@ -210,10 +216,17 @@ test('a green key leaves non-green footage untouched', async ({ page }) => {
   // red has zero green-excess, so it must survive fully (opaque, un-despilled).
   const clipId = await addClip(page) // the RED fixture
   await waitForFirstFrame(page)
+  const beforeCorner = luma(await px(page, 0.06, 0.06))
   await applyEffectWithParams(page, clipId, 'chromaKey', {}) // green key at drop defaults
-  // The one fixed wait left in this file, on purpose: nothing CHANGES here, so
-  // there is no property to poll on, and the check is that the picture stays.
-  await page.waitForTimeout(300)
+  // ⛔ NOTHING IN THE PICTURE CHANGES WHEN THE KEY IS RIGHT, so no read of the
+  // centre can say the key has reached the screen: it used to wait a fixed 300 ms
+  // and read red, which is also what the frame painted BEFORE the key looks like
+  // (a green key that wrongly keyed red passed this once the monitor painted a
+  // beat late). A vignette goes on AFTER the key on the same clip, and its dark
+  // corner is the change to poll for: a frame that shows the vignette was drawn
+  // from a store that holds the key, so the centre read below is of the keyed picture.
+  await applyEffectWithParams(page, clipId, 'vignette', { amount: 0.9, size: 0.3, feather: 0.3 })
+  await expect.poll(async () => luma(await px(page, 0.06, 0.06)), { timeout: 10_000 }).toBeLessThan(beforeCorner * 0.6)
   const red = await px(page, 0.5, 0.5)
   expect(red[0]).toBeGreaterThan(120) // red channel intact
   expect(luma(red)).toBeGreaterThan(40) // not keyed to the dark stage
