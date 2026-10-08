@@ -6,7 +6,7 @@
 
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const FOLDER = 'C:\\Users\\skyle\\AppData\\Roaming\\OL Premiere\\Usage log'
 
@@ -18,6 +18,15 @@ async function load(api?: object) {
   const web = await import('../state/usageStoreWeb')
   return { SettingsDialog, useSettings, web }
 }
+
+// The dialog's module graph is transformed cold on its first import, about a second
+// alone, and that landed inside the FIRST test's 5 s: in a full unit run on a busy box
+// (2026-10-08) it timed out, its dialog rendered after cleanup, and the next test found
+// two switches. It is paid here instead, so each test times only the dialog. load()
+// still re-imports fresh modules for every test (the transform is cached, not the run).
+beforeAll(async () => {
+  await import('./SettingsDialog')
+})
 
 beforeEach(() => {
   localStorage.clear()
