@@ -34,6 +34,21 @@ function unlike(a: string, b: string): number {
 /** What a script word or heard word costs to leave unpaired. Any pairing costs at most this. */
 const GAP = 1
 
+/**
+ * What heard words left unpaired INSIDE the script cost on top of GAP (S-1): a
+ * little for each word, and a little more for the first of a run of them. A
+ * line said in several takes ties between them to the last decimal, and a tie
+ * used to go to the LAST take, or to a word from one take and its neighbours
+ * from another. A skip between two words that are paired costs a little more
+ * than one before the first or after the last, so a line is laid whole in one
+ * take (the fewest words skipped between its own), and the first of equal takes wins.
+ */
+const SKIP_RUN = 1e-3
+const SKIP_WORD = 1e-4
+
+/** Costs closer than this are the same cost: sums of fractions differ in the last bits. */
+const TIE = 1e-9
+
 /** How unlike a written word and a heard word may be and still be the same word said. */
 const SAME_WORD = 0.5
 
@@ -62,7 +77,7 @@ const MISSED_RUN = 2
 /** A direction in his script, never said: "[HOOK]", "[cut to the base]", "(laughs)". */
 const DIRECTION = /\[[^\]]*\]|\([^)]*\)/g
 
-type Step = 'pair' | 'script' | 'heard' | 'oneTwo' | 'twoOne'
+type Step = 'pair' | 'script' | 'oneTwo' | 'twoOne'
 
 /** His script against what was heard: the words that were said here, timed, and what was not. */
 export interface ScriptHeard {
@@ -91,6 +106,9 @@ export function alignScript(script: string, heard: readonly CaptionWord[]): Capt
  *   heard as other words, share the time between their neighbours, never
  *   outside the heard words around them.
  * - A heard word the script does not have is dropped: the script wins.
+ * - A line said in several takes is laid in ONE of them, whole, and when the
+ *   takes are equal it is the first (S-1). Never a word from one take with its
+ *   neighbours from another, and never the last take by default.
  * - Anything in [square brackets] or (parentheses) is a direction ("[hook]",
  *   "(laughs)"), never said, so it is never captioned.
  *
@@ -129,12 +147,21 @@ export function scriptHeard(script: string, heard: readonly CaptionWord[]): Scri
   if (n === 0 || m === 0) return null
 
   // Banded table: row i holds columns lo(i)..lo(i)+width-1 around the diagonal.
+  //
+  // Three kinds of last move, so a skip of heard words can be priced by where
+  // it falls (S-1): a pairing or a script word left out (state A, whatever
+  // moved last), and a heard word left out (state Y). The table keeps the best
+  // cost of either, and one byte per cell for the walk back.
   const band = Math.max(64, Math.ceil(0.15 * Math.max(n, m)) + Math.abs(n - m))
   const width = 2 * band + 1
   const lo = (i: number): number => Math.round((i * m) / n) - band
   const cost = new Float64Array((n + 1) * width).fill(Infinity)
+  // Bits 0-1: the move that reached state A here. Bit 2: the best here is state Y.
+  // Bit 3: state Y here carried on a skip from the heard word before.
   const step = new Uint8Array((n + 1) * width)
-  const STEPS: Step[] = ['pair', 'script', 'heard', 'oneTwo', 'twoOne']
+  const STEPS: Step[] = ['pair', 'script', 'oneTwo', 'twoOne']
+  const BEST_Y = 4
+  const KEEP_Y = 8
   const at = (i: number, j: number): number => {
     const k = j - lo(i)
     return k >= 0 && k < width && j >= 0 && j <= m ? i * width + k : -1
@@ -143,34 +170,54 @@ export function scriptHeard(script: string, heard: readonly CaptionWord[]): Scri
     const x = at(i, j)
     return x < 0 ? Infinity : cost[x]!
   }
-  cost[at(0, 0)] = 0
   for (let i = 0; i <= n; i++) {
+    // State A and state Y of the cell to the left, in this row.
+    let leftA = Infinity
+    let leftY = Infinity
     for (let j = Math.max(0, lo(i)); j <= Math.min(m, lo(i) + width - 1); j++) {
-      if (i === 0 && j === 0) continue
-      let best = Infinity
+      let a = Infinity
       let how = 0
-      const offer = (c: number, k: number): void => {
-        if (c < best) {
-          best = c
-          how = k
+      if (i === 0 && j === 0) a = 0
+      else {
+        const offer = (c: number, k: number): void => {
+          if (c < a - TIE) {
+            a = c
+            how = k
+          }
+        }
+        if (i > 0 && j > 0) offer(get(i - 1, j - 1) + unlike(s[i - 1]!, h[j - 1]!), 0)
+        if (i > 0) offer(get(i - 1, j) + GAP, 1)
+        if (i > 0 && j > 1) {
+          const word = s[i - 1]!
+          const join = joinCost(unlike(word, h[j - 2]! + h[j - 1]!), unlike(word, h[j - 2]!), unlike(word, h[j - 1]!))
+          offer(get(i - 1, j - 2) + join, 2)
+        }
+        if (i > 1 && j > 0) {
+          const word = h[j - 1]!
+          const join = joinCost(unlike(s[i - 2]! + s[i - 1]!, word), unlike(s[i - 2]!, word), unlike(s[i - 1]!, word))
+          offer(get(i - 2, j - 1) + join, 3)
         }
       }
-      if (i > 0 && j > 0) offer(get(i - 1, j - 1) + unlike(s[i - 1]!, h[j - 1]!), 0)
-      if (i > 0) offer(get(i - 1, j) + GAP, 1)
-      if (j > 0) offer(get(i, j - 1) + GAP, 2)
-      if (i > 0 && j > 1) {
-        const word = s[i - 1]!
-        const join = joinCost(unlike(word, h[j - 2]! + h[j - 1]!), unlike(word, h[j - 2]!), unlike(word, h[j - 1]!))
-        offer(get(i - 1, j - 2) + join, 3)
-      }
-      if (i > 1 && j > 0) {
-        const word = h[j - 1]!
-        const join = joinCost(unlike(s[i - 2]! + s[i - 1]!, word), unlike(s[i - 2]!, word), unlike(s[i - 1]!, word))
-        offer(get(i - 2, j - 1) + join, 4)
+      // A heard word left out. Before the first script word and after the last
+      // it costs no more than GAP: those words are another take, not a gap.
+      let y = Infinity
+      let keep = 0
+      if (j > 0) {
+        const inside = i > 0 && i < n
+        const begin = leftA + GAP + (inside ? SKIP_WORD + SKIP_RUN : 0)
+        const carry = leftY + GAP + (inside ? SKIP_WORD : 0)
+        if (carry <= begin + TIE) {
+          y = carry
+          keep = KEEP_Y
+        } else y = begin
       }
       const x = at(i, j)
-      cost[x] = best
-      step[x] = how
+      // On a tie the heard word is the one left out, so the earliest take is the one used.
+      const bestY = y <= a + TIE
+      cost[x] = Math.min(a, y)
+      step[x] = how | keep | (bestY ? BEST_Y : 0)
+      leftA = a
+      leftY = y
     }
   }
   if (!Number.isFinite(get(n, m))) return null
@@ -188,8 +235,16 @@ export function scriptHeard(script: string, heard: readonly CaptionWord[]): Scri
   }
   const lit = (...ws: CaptionWord[]): { emphasis?: true } => (ws.some((w) => w.emphasis) ? { emphasis: true } : {})
   let paired = 0
+  let inY = (step[at(n, m)]! & BEST_Y) !== 0
   for (let i = n, j = m; i > 0 || j > 0; ) {
-    const how = STEPS[step[at(i, j)]!]!
+    const flags = step[at(i, j)]!
+    if (inY) {
+      // A heard word left out: the walk goes on in state Y if the skip carried on.
+      inY = (flags & KEEP_Y) !== 0
+      j--
+      continue
+    }
+    const how = STEPS[flags & 3]!
     if (how === 'pair') {
       // Only a pairing that is really the same word counts as heard; a guess
       // across two different words is a missed word, timed by its neighbours.
@@ -201,7 +256,6 @@ export function scriptHeard(script: string, heard: readonly CaptionWord[]): Scri
       i--
       j--
     } else if (how === 'script') i--
-    else if (how === 'heard') j--
     else if (how === 'oneTwo') {
       if (unlike(s[i - 1]!, h[j - 2]! + h[j - 1]!) <= SAME_WORD) {
         span[i - 1] = { startS: heard[j - 2]!.startS, endS: heard[j - 1]!.endS, ...lit(heard[j - 2]!, heard[j - 1]!) }
@@ -223,6 +277,7 @@ export function scriptHeard(script: string, heard: readonly CaptionWord[]): Scri
       i -= 2
       j--
     }
+    inY = (step[at(i, j)]! & BEST_Y) !== 0
   }
   if (paired === 0) return null
 

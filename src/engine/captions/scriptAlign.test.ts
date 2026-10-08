@@ -196,6 +196,49 @@ describe('alignScript', () => {
     })
   })
 
+  // ⛔ S-1. On a tie the aligner paired a script word as late as possible, so a
+  // word could land in a LATER copy of itself, and the run then replaced that
+  // later take's captions. Every tie is now settled for the first take, and a
+  // word is never taken from one take while the rest of the line is in another.
+  describe('a line said in more than one take is laid where it was said, whole', () => {
+    const said = (text: string, fromS: number): CaptionWord[] =>
+      text.split(' ').map((t, i) => w(t, fromS + i * 0.25, fromS + (i + 1) * 0.25))
+    const starts = (ws: readonly CaptionWord[]): number[] => ws.map((x) => x.startS)
+
+    it('the same line in three takes is laid in the first, all of it', () => {
+      const heard = [...said('i did it', 0), ...said('i did it', 10), ...said('i did it', 20)]
+      expect(starts(scriptHeard('I did it.', heard)!.words)).toEqual([0, 0.25, 0.5])
+    })
+
+    it('words spread over the takes still come from the one take that has them all', () => {
+      const heard = [...said('okay i did', 0), ...said('i did it', 10), ...said('yeah it', 20)]
+      expect(starts(scriptHeard('I did it.', heard)!.words)).toEqual([10, 10.25, 10.5])
+    })
+
+    it('a flubbed first take does not lend its words to the good one after it', () => {
+      const heard = [...said('i did', 0), ...said('i did it', 10)]
+      expect(starts(scriptHeard('I did it.', heard)!.words)).toEqual([10, 10.25, 10.5])
+    })
+
+    it('an ad-libbed take after the line is never laid into', () => {
+      const heard = [...said('i did it', 0), ...said('yeah i did it man', 10)]
+      expect(starts(scriptHeard('I did it.', heard)!.words)).toEqual([0, 0.25, 0.5])
+      const whole = scriptHeard('I did it. Then we left.', [...said('i did it then we left', 0), ...said('yeah i did it man', 10)])!
+      expect(texts(whole.words)).toEqual(['I', 'did', 'it.', 'Then', 'we', 'left.'])
+      expect(Math.max(...starts(whole.words))).toBeLessThan(10)
+    })
+
+    it('a stray um inside the good take does not hand its first word to the take before', () => {
+      const heard = [...said('bravo juliet', 0), ...said('juliet um hotel golf', 10)]
+      expect(starts(scriptHeard('Juliet hotel golf.', heard)!.words)).toEqual([10, 10.5, 10.75])
+    })
+
+    it('a line said twice in the script is laid in both takes', () => {
+      const heard = [...said('i did it', 0), ...said('i did it', 10)]
+      expect(starts(scriptHeard('I did it. I did it.', heard)!.words)).toEqual([0, 0.25, 0.5, 10, 10.25, 10.5])
+    })
+  })
+
   it('a direction in (parentheses) is never captioned, like one in [brackets]', () => {
     const heard = [w('that', 0, 0.2), w('was', 0.2, 0.4), w('insane', 0.4, 0.9), w('right', 1.5, 1.8)]
     expect(texts(alignScript('That was insane (laughs) right', heard))).toEqual(['That', 'was', 'insane', 'right'])
