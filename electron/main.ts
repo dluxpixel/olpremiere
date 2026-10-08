@@ -738,6 +738,10 @@ function createWindow(): void {
       message: 'A video is still exporting.',
       detail: 'If you leave now, the export stops and the video will not be finished.',
     })
+    // He keeps the page, so a quit that brought him here is called off (the update
+    // install's fallback quit meets a running export): crashes reload again. Left set,
+    // every later crash of the session stayed a blank window (onEditorGone).
+    if (choice === 0) quitting = false
     // Here preventDefault means "overrule the page": the close goes ahead.
     if (choice === 1) e.preventDefault()
   })

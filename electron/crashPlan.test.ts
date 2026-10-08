@@ -88,3 +88,19 @@ describe('the "OL Premiere stopped" box', () => {
     expect(arm).toContain('if (editorStopped) return')
   })
 })
+
+// ⛔ A crash is not reloaded while the app is quitting, and `quitting` is set by
+// before-quit. A quit can be called off after that: the update install's fallback quit
+// meets a page that refuses to unload during an export, and he picks "Keep exporting".
+// Left set, every later crash of that session stayed a blank window.
+describe('a quit he called off', () => {
+  const main = readFileSync(new URL('./main.ts', import.meta.url), 'utf8')
+  const unload = main.slice(main.indexOf("win.webContents.on('will-prevent-unload'"), main.indexOf('if (isDev) {'))
+
+  it('⛔ turns the crash reload back on when he keeps the page', () => {
+    expect(unload).toMatch(/if \(choice === 0\) quitting = false/)
+    // Decided before the page's refusal is overruled or kept, never instead of it.
+    expect(unload.indexOf('quitting = false')).toBeLessThan(unload.indexOf('if (choice === 1) e.preventDefault()'))
+    expect(main).toMatch(/app\.on\('before-quit', \(\) => \{\s+quitting = true/)
+  })
+})
