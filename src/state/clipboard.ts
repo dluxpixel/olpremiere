@@ -8,6 +8,7 @@ import {
   clipGroupIds,
   deleteGroup,
   duplicateClips,
+  linkGroupIndex,
   moveGroup,
   pasteClips,
   serializeClips,
@@ -15,7 +16,10 @@ import {
   type ClipPayload,
   type PasteResult,
 } from '../engine/timeline'
-import { activeSequence, type Id, type MediaAsset, type Project } from '../engine/types'
+import { quantizeToFrame } from '../engine/timecode'
+import { plural } from '../engine/plural'
+import { activeSequence, type Id, type MediaAsset, type Project, type Sequence, type Track } from '../engine/types'
+import { PAIR_LOCKED_MESSAGE } from './clipEdits'
 import { useContextMenu } from './contextMenu'
 import { clickedPasteTrack, selectPasted } from './pasteTarget'
 import { clipMarker, pasteNote } from './pasteRules'
@@ -88,6 +92,53 @@ export function clipMarkerOnSystemClipboard(): string | null {
   return systemMarker
 }
 
+/**
+ * The ids to copy or duplicate: the selection, plus the SOUND of every picture
+ * half in it.
+ *
+ * ⛔ A PICTURE COPIED WITHOUT ITS SOUND STILL PLAYED SOUND, HIDDEN INSIDE IT. One
+ * click selects one half, so Ctrl+C, Ctrl+V on his gameplay copied the picture
+ * alone; a lone picture is unlinked, and an unlinked picture plays its file's own
+ * sound at 0 dB: not the -18 dB, the fades or the muted line he set on the A1
+ * half, and with no audio clip anywhere to see or change it. Cut already takes
+ * the whole pair. A sound copied on its own has nothing hidden in it and stays
+ * alone, so a voice take never brings its picture along. Delete is untouched:
+ * it is selection scoped on purpose (deleteScoped).
+ */
+function withPictureSound(seq: Sequence, ids: readonly Id[]): { ids: Id[]; sounds: number; brought: Set<Id> } {
+  const out = [...ids]
+  const have = new Set(ids)
+  const brought = new Set<Id>()
+  let sounds = 0
+  // One pass over the clips and one link index. A group looked up per picture
+  // (clipGroupIds, a findClip plus a scan of every clip) made Ctrl+A, Ctrl+C on
+  // a long edit O(selection x clips).
+  const kindOf = new Map<Id, Track['kind']>()
+  const linkOf = new Map<Id, Id>()
+  for (const t of seq.tracks) {
+    for (const c of t.clips) {
+      kindOf.set(c.id, t.kind)
+      if (c.linkId) linkOf.set(c.id, c.linkId)
+    }
+  }
+  const byLink = linkGroupIndex(seq)
+  for (const id of ids) {
+    if (kindOf.get(id) !== 'video') continue
+    const link = linkOf.get(id)
+    if (!link) continue
+    let added = false
+    for (const g of byLink.get(link) ?? []) {
+      if (have.has(g) || kindOf.get(g) !== 'audio') continue
+      have.add(g)
+      out.push(g)
+      brought.add(g)
+      added = true
+    }
+    if (added) sounds += 1
+  }
+  return { ids: out, sounds, brought }
+}
+
 export function copySelection(): boolean {
   const s = useStore.getState()
   const seq = activeSequence(s.project)
@@ -97,12 +148,17 @@ export function copySelection(): boolean {
     useToasts.getState().show('Select a clip to copy', 'danger')
     return false
   }
-  const payload = serializeClips(seq, s.ui.selection)
+  const { ids, sounds, brought } = withPictureSound(seq, s.ui.selection)
+  // The sounds it brought are marked, so a locked line of theirs never costs him
+  // the picture he picked (pasteClips).
+  const payload = serializeClips(seq, ids, brought)
   if (payload.length === 0) return false
   clipboard = payload
   clipboardAssets = assetsFor(s.project, payload)
   markSystemClipboard(payload.length)
-  useToasts.getState().show(`Copied ${payload.length} clip(s)`, 'info')
+  const n = payload.length - (ids.length - s.ui.selection.length)
+  const tail = sounds === 0 ? '' : n === 1 ? ' and its sound' : ' and their sound'
+  useToasts.getState().show(`Copied ${plural(n, 'clip')}${tail}`, 'info')
   return true
 }
 
@@ -116,15 +172,28 @@ export function cutSelection(): void {
   // half a linked pair, and a lock must not be bypassed via the partner.
   const isLocked = (id: string): boolean =>
     seq.tracks.find((t) => t.clips.some((c) => c.id === id))?.locked ?? false
+  // A Cut that quietly does nothing reads as a broken key, so it says why, the
+  // way Copy and Delete do.
+  if (s.ui.selection.length === 0) {
+    useToasts.getState().show('Select a clip to cut', 'danger')
+    return
+  }
   const ids: string[] = []
   const seen = new Set<string>()
+  let heldByPartner = false
   for (const sel of s.ui.selection) {
     const group = clipGroupIds(seq, sel)
     if (group.some((id) => seen.has(id))) continue
     group.forEach((id) => seen.add(id))
     if (group.every((id) => !isLocked(id))) ids.push(...group)
+    else if (!isLocked(sel)) heldByPartner = true
   }
-  if (ids.length === 0) return
+  // The same words Shift+Delete and the drag use for a pair held by its partner.
+  if (heldByPartner) useToasts.getState().show(PAIR_LOCKED_MESSAGE, 'info')
+  if (ids.length === 0) {
+    if (!heldByPartner) useToasts.getState().show('Those clips are on a locked track', 'danger')
+    return
+  }
   const payload = serializeClips(seq, ids)
   if (payload.length === 0) return
   clipboard = payload
@@ -146,7 +215,10 @@ export function pasteAtPlayhead(): void {
   const { project, ui } = useStore.getState()
   const seq = activeSequence(project)
   const clicked = clickedPasteTrack(seq)
-  pasteClipboard(ui.playheadS, clicked ? { trackIndex: seq.tracks.indexOf(clicked) } : undefined)
+  // On the frame grid, like C and Q: a playhead paused by Space rests between
+  // two frames, and a clip pasted THERE carried the fraction into every edit
+  // after it (and C then refused the frames beside it).
+  pasteClipboard(quantizeToFrame(ui.playheadS, seq.fps), clicked ? { trackIndex: seq.tracks.indexOf(clicked) } : undefined)
 }
 
 /** True when there is something to paste. */
@@ -188,7 +260,8 @@ function pasteClipboard(atS: number, target?: { trackIndex: number }): void {
   // copied with (see `clipboardAssets`). Only a clip whose record is nowhere,
   // its media deleted before the copy, stays behind, and he is told how many.
   // pasteClips itself refuses locked destination tracks and reports how many it
-  // turned away, so no lock guard here.
+  // turned away, so no lock guard here. A sound Copy brought along for its
+  // picture goes on the next free line instead, and the note says so.
   // Title and adjustment clips carry no asset (assetId===''), keep them regardless.
   const brought: Record<Id, MediaAsset> = {}
   const payload = clipboard.filter((p) => {
@@ -249,15 +322,40 @@ function pasteClipboard(atS: number, target?: { trackIndex: number }): void {
 export function duplicateSelection(): void {
   const s = useStore.getState()
   // A duplicate lands on the clip's own track: a mutation, so locked filters out.
-  const ids = unlockedClipIds(activeSequence(s.project), s.ui.selection)
-  if (ids.length === 0) return
+  const seq = activeSequence(s.project)
+  const picked = unlockedClipIds(seq, s.ui.selection)
+  if (picked.length === 0) return
+  // The picture brings its sound, exactly as Copy does (withPictureSound). The
+  // copy of what he picked butts against it; a J or L cut sound keeps its place
+  // beside its picture, on the next free line when its own is taken.
+  const { ids } = withPictureSound(seq, picked)
   let newIds: string[] = []
+  let blocked = 0
+  let result = null as PasteResult | null
   updateActiveSequence('Duplicate clip(s)', (sq) => {
-    const r = duplicateClips(sq, ids)
+    const r = duplicateClips(sq, ids, picked)
     newIds = r.newIds
+    blocked = r.blockedByLock
+    result = r
     return r.seq
   })
   if (newIds.length > 0) s.setUI({ selection: newIds })
+  // Nothing lands on another line without a word, as for a paste.
+  const note = result && newIds.length > 0 ? pasteNote(activeSequence(useStore.getState().project), undefined, result) : null
+  if (note) useToasts.getState().show(note, 'info')
+  // The picked clips are all on unlocked lines, so a held pair is one whose
+  // sound would land on a locked line. A Ctrl+D that quietly does nothing reads
+  // as a broken key, the same as a refused paste.
+  if (blocked > 0) {
+    useToasts
+      .getState()
+      .show(
+        blocked === 1
+          ? 'Its sound is on a locked track, so it was not duplicated'
+          : `${blocked} clips have their sound on a locked track, so they were not duplicated`,
+        'danger',
+      )
+  }
 }
 
 /** Ctrl/Cmd+A: select every clip on unlocked tracks of the active sequence. */

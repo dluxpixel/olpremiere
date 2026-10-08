@@ -161,10 +161,11 @@ describe('useTimelineDrop', () => {
   })
 
   it('hands a shelf title to the title shelf with its time, snapped when snapping is on', () => {
+    // 3.02 s is frame 90.6: the drop snaps to the playhead's frame, 91.
     useStore.getState().setUI({ playheadS: 3.02 })
     const { hook } = mount(() => null, { snapping: true })
     act(() => hook.result.current.handleDrop(dragEvent({ [TITLE_MIME]: 'look' }, 30)))
-    expect(hoisted.titles).toEqual([{ id: 'look', t: 3.02 }])
+    expect(hoisted.titles).toEqual([{ id: 'look', t: 91 / 30 }])
   })
 
   it('previews a Library item like bin media and hands it over with the drop time and lane', () => {

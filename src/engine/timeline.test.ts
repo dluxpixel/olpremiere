@@ -42,6 +42,7 @@ import {
   moveMarker,
   pasteClips,
   pxToTime,
+  groupLocked,
   rateStretchGroup,
   recomputeDuration,
   removeMarker,
@@ -859,6 +860,12 @@ describe('snapTime', () => {
   it('handles no points', () => {
     expect(snapTime(3, [], 1)).toEqual({ t: 3, snapped: false })
   })
+  it('never catches the time the edge started at, which would undo the drag', () => {
+    // A butted neighbour at 3, the grabbed edge started at 3, the hand asks for 2.9.
+    expect(snapTime(2.9, [0, 3, 5], 8 / 60, 3)).toEqual({ t: 2.9, snapped: false })
+    // Another point near the hand still catches.
+    expect(snapTime(2.9, [0, 2.95, 3, 5], 8 / 60, 3)).toEqual({ t: 2.95, snapped: true })
+  })
 })
 
 describe('unlockedClipIds', () => {
@@ -1052,7 +1059,14 @@ describe('collectSnapPoints', () => {
       ],
       { markers: [{ id: 'm1', t: 7.5, label: 'M', color: '#fff' }] },
     )
-    expect(collectSnapPoints(seq, { playheadS: 2.25 })).toEqual([0, 1, 2.25, 3, 5, 7.5])
+    expect(collectSnapPoints(seq, { playheadS: 2.5 })).toEqual([0, 1, 2.5, 3, 5, 7.5])
+  })
+  it('puts a playhead and a marker that sit between two frames on the nearest frame', () => {
+    const seq = makeSeq([makeTrack({ clips: [makeClip({ startS: 1, outS: 2 })] })], {
+      markers: [{ id: 'm1', t: 4.0123, label: 'M', color: '#fff' }],
+    })
+    // 2.25 s is frame 67.5 and 4.0123 s is frame 120.37 at 30 fps.
+    expect(collectSnapPoints(seq, { playheadS: 2.25 })).toEqual([0, 1, 68 / 30, 3, 120 / 30])
   })
   it('dedupes shared edges and 0', () => {
     const seq = makeSeq([
@@ -1654,6 +1668,16 @@ describe('markers', () => {
     expect(moveMarker(seq, 'nope', 4)).toBe(seq)
     expect(moveMarker(seq, markerId, 2)).toBe(seq)
   })
+  // A dragged marker snaps onto another one (markers are snap points), and two
+  // markers stacked on one frame show as one: Shift+M then removed one of them
+  // and left the other, both invisible as two. addMarker never stacks them.
+  it('moveMarker never lands on the frame of another marker', () => {
+    const r1 = addMarker(emptySeq(), 1, 'Drop')
+    const seq = addMarker(r1.seq, 3, 'Verse').seq
+    expect(moveMarker(seq, r1.markerId, 3)).toBe(seq)
+    expect(moveMarker(seq, r1.markerId, 3.0000001)).toBe(seq)
+    expect(moveMarker(seq, r1.markerId, 3.1).markers.map((m) => m.t)).toEqual([3, 3.1])
+  })
 })
 
 describe('serializeClips', () => {
@@ -1970,6 +1994,20 @@ describe('duplicateClips', () => {
     expect(newIds).toHaveLength(1)
     expect(newIds[0]).not.toBe(a.id)
     expect(findClip(next, newIds[0])!.clip.startS).toBe(2)
+  })
+  it('butts the copy of what he picked against it, the clips it brought keeping their places', () => {
+    // A picture 1 to 4 and its J cut sound 0 to 5, the sound brought along.
+    const v = makeClip({ startS: 1, outS: 3, linkId: 'g' })
+    const a = makeClip({ startS: 0, outS: 5, linkId: 'g' })
+    const seq = makeSeq([makeTrack({ clips: [v] }), makeTrack({ kind: 'audio', clips: [a] }), makeTrack({ kind: 'audio' })])
+    const r = duplicateClips(seq, [v.id, a.id], [v.id])
+    const [nv, na] = r.newIds.map((id) => findClip(r.seq, id)!)
+    expect(nv!.trackIndex).toBe(0)
+    expect(nv!.clip.startS).toBe(4)
+    expect(na!.clip.startS).toBe(3)
+    // Its own line is taken there, so it went on the next one, and says so.
+    expect(na!.trackIndex).toBe(2)
+    expect(r.redirected).toHaveLength(1)
   })
   it('returns the same reference for an empty or unknown selection', () => {
     const seq = makeSeq([makeTrack({ clips: [makeClip()] })])
@@ -2533,6 +2571,120 @@ describe('close gap', () => {
     const r = closeAllGaps(seq, seq.tracks[0].id)
     const starts = r.tracks[0].clips.sort((a, b) => a.startS - b.startS).map((c) => c.startS)
     expect(starts).toEqual([0, 2, 4])
+  })
+})
+
+// Closing a gap is a ripple, and his captions follow a ripple. They did not
+// follow this one: close a 3 s gap on V1 and every caption after it on V2 stayed
+// put, 3 s late to the end of the edit.
+describe('close gap carries the other tracks along', () => {
+  const A = () => makeClip({ id: 'A', startS: 0, outS: 2 }) // ends 2
+  const B = () => makeClip({ id: 'B', startS: 5, outS: 2 }) // gap 3 before it, ends 7
+  const C = () => makeClip({ id: 'C', startS: 10, outS: 2 }) // gap 3 before it
+  const cap = (id: string, startS: number, outS = 1) => makeClip({ id, assetId: '', startS, outS })
+  const at = (s: Sequence, id: string) => findClip(s, id)!.clip.startS
+
+  it('a caption after the gap follows it', () => {
+    const seq = makeSeq([makeTrack({ clips: [A(), B()] }), makeTrack({ name: 'V2', clips: [cap('cap', 5)] })])
+    const report = { heldTrackIds: [] as string[] }
+    const out = closeGapBefore(seq, 'B', report)
+    expect(at(out, 'B')).toBeCloseTo(2, 9)
+    expect(at(out, 'cap')).toBeCloseTo(2, 9)
+    expect(report.heldTrackIds).toEqual([])
+  })
+
+  it('a caption sitting in the gap holds its track, and says so', () => {
+    const v2 = makeTrack({ name: 'V2', clips: [cap('inGap', 3), cap('later', 6)] })
+    const seq = makeSeq([makeTrack({ clips: [A(), B()] }), v2])
+    const report = { heldTrackIds: [] as string[] }
+    const out = closeGapBefore(seq, 'B', report)
+    expect(at(out, 'B')).toBeCloseTo(2, 9)
+    expect(at(out, 'inGap')).toBe(3)
+    expect(at(out, 'later')).toBe(6)
+    expect(report.heldTrackIds).toEqual([v2.id])
+  })
+
+  it('a music track (sync off) keeps its timing', () => {
+    const music = makeTrack({ kind: 'audio', name: 'A2', audioRole: 'music', clips: [makeClip({ id: 'song', startS: 6, outS: 10 })] })
+    const out = closeGapBefore(makeSeq([makeTrack({ clips: [A(), B()] }), music]), 'B')
+    expect(at(out, 'song')).toBe(6)
+  })
+
+  it('a locked track is not touched, as the origin or as a follower', () => {
+    const lockedV2 = makeTrack({ name: 'V2', locked: true, clips: [cap('cap', 5)] })
+    const out = closeGapBefore(makeSeq([makeTrack({ clips: [A(), B()] }), lockedV2]), 'B')
+    expect(at(out, 'cap')).toBe(5)
+    const lockedV1 = makeSeq([makeTrack({ locked: true, clips: [A(), B()] })])
+    expect(closeGapBefore(lockedV1, 'B')).toBe(lockedV1)
+    expect(closeAllGaps(lockedV1, lockedV1.tracks[0].id)).toBe(lockedV1)
+  })
+
+  it('a linked partner on a locked track holds the pair', () => {
+    const v = makeClip({ id: 'v', startS: 5, outS: 2, linkId: 'L' })
+    const a = makeClip({ id: 'a', startS: 5, outS: 2, linkId: 'L' })
+    const seq = makeSeq([makeTrack({ clips: [A(), v] }), makeTrack({ kind: 'audio', name: 'A1', locked: true, clips: [a] })])
+    expect(closeGapBefore(seq, 'v')).toBe(seq)
+  })
+
+  // The review's case: the held pair stayed and the free clip AFTER it slid on,
+  // so the gap he pointed at stayed open, the one after the pair closed instead,
+  // and the captions followed that.
+  it('a pair held by a locked partner refuses the close, and nothing after it moves', () => {
+    const b = makeClip({ id: 'b', startS: 4, outS: 2, linkId: 'L' })
+    const sb = makeClip({ id: 'sb', startS: 4, outS: 2, linkId: 'L' })
+    const c = makeClip({ id: 'c', startS: 8, outS: 2 })
+    const a1 = makeTrack({ kind: 'audio', name: 'A1', locked: true, clips: [sb] })
+    const seq = makeSeq([makeTrack({ clips: [A(), b, c] }), makeTrack({ name: 'V2', clips: [cap('cap', 9)] }), a1])
+    const report = { heldTrackIds: [] as string[], lockedTrackIds: [] as string[] }
+    const out = closeGapBefore(seq, 'b', report)
+    expect(at(out, 'c')).toBe(8)
+    expect(at(out, 'cap')).toBe(9)
+    expect(out).toBe(seq)
+    expect(report.lockedTrackIds).toEqual([a1.id])
+    // The held pair in the MIDDLE of the run holds the clip before it too: no
+    // new gap opens between them.
+    const d = makeClip({ id: 'd', startS: 12, outS: 2 })
+    const mid = makeSeq([makeTrack({ clips: [A(), makeClip({ id: 'x', startS: 2.5, outS: 1.5 }), b, d] }), a1])
+    expect(closeGapBefore(mid, 'x')).toBe(mid)
+    // The gap after the held pair is its own, and closes as ever.
+    expect(at(closeGapBefore(seq, 'c'), 'c')).toBe(6)
+  })
+
+  it('Close all gaps still closes what it can, and names the lock that held the rest', () => {
+    const b = makeClip({ id: 'b', startS: 4, outS: 2, linkId: 'L' })
+    const sb = makeClip({ id: 'sb', startS: 4, outS: 2, linkId: 'L' })
+    const c = makeClip({ id: 'c', startS: 8, outS: 2 })
+    const a1 = makeTrack({ kind: 'audio', name: 'A1', locked: true, clips: [sb] })
+    const seq = makeSeq([makeTrack({ clips: [A(), b, c] }), a1])
+    const report = { heldTrackIds: [] as string[], lockedTrackIds: [] as string[] }
+    const out = closeAllGaps(seq, seq.tracks[0].id, report)
+    expect(at(out, 'b')).toBe(4)
+    expect(at(out, 'c')).toBeCloseTo(6, 9)
+    expect(report.lockedTrackIds).toEqual([a1.id])
+  })
+
+  // A partner with no room used to hold its own clip back while the clips before
+  // it on the line still slid the full gap, opening a new gap between them.
+  it('a run held back by a partner with no room moves as one, keeping its spacing', () => {
+    const b = makeClip({ id: 'b', startS: 4, outS: 1 })
+    const c = makeClip({ id: 'c', startS: 8, outS: 1, linkId: 'L' })
+    const sc = makeClip({ id: 'sc', startS: 8, outS: 1, linkId: 'L' })
+    const bed = makeClip({ id: 'bed', startS: 0, outS: 7 })
+    const seq = makeSeq([makeTrack({ clips: [A(), b, c] }), makeTrack({ kind: 'audio', name: 'A1', clips: [bed, sc] })])
+    const out = closeGapBefore(seq, 'b')
+    expect(at(out, 'b')).toBeCloseTo(3, 9)
+    expect(at(out, 'c')).toBeCloseTo(7, 9)
+    expect(at(out, 'sc')).toBeCloseTo(7, 9)
+  })
+
+  it('closeAllGaps with two gaps moves a later caption by both', () => {
+    const v2 = makeTrack({ name: 'V2', clips: [cap('mid', 7.5, 0.5), cap('end', 12)] })
+    const seq = makeSeq([makeTrack({ clips: [A(), B(), C()] }), v2])
+    const out = closeAllGaps(seq, seq.tracks[0].id)
+    expect(at(out, 'C')).toBeCloseTo(4, 9)
+    // After the first gap only: 3 s. After both: 6 s.
+    expect(at(out, 'mid')).toBeCloseTo(4.5, 9)
+    expect(at(out, 'end')).toBeCloseTo(6, 9)
   })
 })
 
@@ -3206,6 +3358,37 @@ describe('closing gaps stays linear in the clip count', () => {
     expect(r.tracks[0].clips[1].startS).toBeCloseTo(0.5, 6)
     expect(r.tracks[1].clips[1].startS).toBeCloseTo(0.5, 6)
   })
+
+  // ⛔ AND THE CAPTIONS THAT FOLLOW STAY LINEAR TOO. Since a closed gap carries
+  // the other tracks along (syncFollowEdits), closeAllGaps hands over one ripple
+  // per gap, and the follow walked every ripple for every clip on every track
+  // that follows. Measured 2026-10-07 at 4000 pairs and 4000 captions: 2825x
+  // the yardstick (127 ms), against 218x with no caption line at all.
+  //
+  // Its own budget, from its own measurements, the way BUDGET_RATIO was chosen:
+  // the follow is a second pass over a third track, and four runs of this file
+  // on 2026-10-07 read 331x, 358x, 518x and 538x (9 ms each time; the yardstick
+  // is what moved). 2.5 times the budget is about 1.7x the worst of those, and
+  // the quadratic follow this exists to catch read 6834x, over seven times it.
+  it('closeAllGaps carries a 4000 caption line inside its own budget', () => {
+    const seq = packedPairs(4000)
+    const captions = Array.from({ length: 4000 }, (_, i) => makeClip({ id: `c${i}`, startS: i * 1.0, inS: 0, outS: 0.4 }))
+    const withCaptions = makeSeq([seq.tracks[0], makeTrack({ kind: 'video', name: 'V2', clips: captions }), seq.tracks[1]])
+    let r = closeAllGaps(withCaptions, withCaptions.tracks[0].id)
+    const { ratio, perCallMs } = benchRatio(
+      () => {
+        r = closeAllGaps(withCaptions, withCaptions.tracks[0].id)
+      },
+      1,
+      RUNS,
+    )
+    expect(ratio, `closeAllGaps with captions ran at ${ratio.toFixed(1)}x the yardstick (${perCallMs.toFixed(1)} ms)`).toBeLessThan(
+      BUDGET_RATIO * 2.5,
+    )
+    // and every caption followed its picture
+    expect(r.tracks[1].clips[3999].startS).toBeCloseTo(1999.5, 6)
+    expect(r.tracks[0].clips[3999].startS).toBeCloseTo(1999.5, 6)
+  })
 })
 
 describe('linked A/V groups stay in sync', () => {
@@ -3327,6 +3510,28 @@ describe('linked A/V groups stay in sync', () => {
     expect(out.newIds).toHaveLength(0)
     expect(out.blockedByLock).toBe(1)
     expect(out.seq).toBe(seq)
+  })
+
+  // Copy takes a picture's sound along (clipboard withPictureSound) and marks it
+  // `brought`. Its locked line must not cost him the picture he picked.
+  it('a sound brought along for its picture skips a locked line, and the pair stays linked', () => {
+    const v = makeClip({ id: 'v', startS: 0, outS: 4, linkId: 'g' })
+    const a = makeClip({ id: 'a', startS: 0, outS: 4, linkId: 'g' })
+    const seq = makeSeq([
+      makeTrack({ clips: [v] }),
+      makeTrack({ kind: 'audio', name: 'A1', locked: true, clips: [a] }),
+      makeTrack({ kind: 'audio', name: 'A2' }),
+    ])
+    const out = pasteClips(seq, serializeClips(seq, [v.id, a.id], new Set([a.id])), 10)
+    expect(out.newIds).toHaveLength(2)
+    expect(out.blockedByLock).toBe(0)
+    const [pv, pa] = out.newIds.map((id) => findClip(out.seq, id)!)
+    expect(pv!.track.id).toBe(seq.tracks[0]!.id)
+    expect(pa!.track.id).toBe(seq.tracks[2]!.id)
+    expect(pa!.clip.linkId).toBe(pv!.clip.linkId)
+    expect(pa!.clip.startS).toBeCloseTo(10, 6)
+    expect(out.redirected).toEqual([{ askedId: seq.tracks[1]!.id, landedId: seq.tracks[2]!.id, locked: true }])
+    expect(out.seq.tracks[1]!.clips.map((c) => c.id)).toEqual(['a'])
   })
 
   it('a lone clip bound for a locked track is counted too, and the rest still pastes', () => {
@@ -4075,4 +4280,57 @@ describe('a REVERSED clip cuts and trims on the frames he sees, exactly like a f
       })
     })
   }
+})
+
+// He locks A1 to protect his voice take and edits the picture on V1. Every pair
+// verb used to reach through the link and change the locked voice anyway.
+describe('a lock is not bypassed through the linked partner', () => {
+  const pair = () => {
+    const v = makeClip({ id: 'v', startS: 0, inS: 1, outS: 5, linkId: 'L' })
+    const a = makeClip({ id: 'a', startS: 0, inS: 1, outS: 5, linkId: 'L' })
+    return makeSeq([makeTrack({ clips: [v] }), makeTrack({ kind: 'audio', name: 'A1', locked: true, clips: [a] })])
+  }
+
+  it('knows the pair is held, from either half', () => {
+    const seq = pair()
+    expect(groupLocked(seq, 'v')).toBe(true)
+    expect(groupLocked(seq, 'a')).toBe(true)
+    const free = makeSeq([makeTrack({ clips: [makeClip({ id: 'x', linkId: 'Q' })] })])
+    expect(groupLocked(free, 'x')).toBe(false)
+  })
+
+  it('a trim, a ripple trim, a slip and a stretch leave the pair as it is', () => {
+    const seq = pair()
+    expect(trimGroup(seq, ASSETS, 'v', 'out', 3)).toBe(seq)
+    expect(rippleTrimGroup(seq, ASSETS, 'v', 'in', 1)).toBe(seq)
+    expect(slipGroup(seq, ASSETS, 'v', 0.5)).toBe(seq)
+    expect(rateStretchGroup(seq, 'v', 'out', 6)).toBe(seq)
+  })
+
+  it('a ripple delete leaves the pair, and still takes a free clip beside it', () => {
+    const seq = pair()
+    expect(rippleDeleteMany(seq, ['v'])).toBe(seq)
+    const withFree = makeSeq([
+      makeTrack({ clips: [makeClip({ id: 'v', startS: 0, outS: 4, linkId: 'L' }), makeClip({ id: 'w', startS: 4, outS: 2 })] }),
+      makeTrack({ kind: 'audio', name: 'A1', locked: true, clips: [makeClip({ id: 'a', startS: 0, outS: 4, linkId: 'L' })] }),
+    ])
+    const out = rippleDeleteMany(withFree, ['v', 'w'])
+    expect(findClip(out, 'v')).not.toBeNull()
+    expect(findClip(out, 'a')).not.toBeNull()
+    expect(findClip(out, 'w')).toBeNull()
+  })
+
+  // Cutting the free half alone gave each picture half a link group of its own:
+  // the picture was unlinked from its voice for good, and a later ripple of one
+  // half left the other ahead of its own sound. The locked half stays whole, and
+  // so does the picture, still linked to it.
+  it('a cut leaves the pair as it is, the picture still linked to its locked voice', () => {
+    const seq = pair()
+    const out = splitGroup(seq, 'v', 2)
+    expect(out).toBe(seq)
+    expect(out.tracks[0].clips).toHaveLength(1)
+    expect(out.tracks[1].clips).toHaveLength(1)
+    expect(out.tracks[0].clips[0].linkId).toBe('L')
+    expect(out.tracks[1].clips[0].linkId).toBe('L')
+  })
 })

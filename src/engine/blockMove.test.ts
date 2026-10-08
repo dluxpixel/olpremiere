@@ -17,7 +17,7 @@
 // Times are frames at 30 fps written as seconds, so every number is exact.
 
 import { describe, expect, it } from 'vitest'
-import { dragBlockIds, moveBlock } from './blockMove'
+import { dragBlockIds, moveBlock, snapBlockDelta } from './blockMove'
 import { clipEndS, defaultTransform, type Clip, type Id, type Sequence, type Track } from './types'
 
 const clip = (id: string, startS: number, durS: number, linkId?: string): Clip => ({
@@ -565,5 +565,24 @@ describe('a lane with no room near the pointer is not worth a flight (2026-10-03
     // On V1 the nearest fit is 1 s from the hand; the lane is worth exactly 1 s.
     const seq = seqOf([track('V1', 'video', [clip('w', 4, 2)]), track('V2', 'video', [clip('g', 2, 2)])])
     expect(at(dragAt(seq, [], 'g', 'V1', 3, 1), 'g')).toEqual({ lane: 'V1', start: 2, end: 4 })
+  })
+})
+
+// A snap that moves the block by nothing is no snap: a butted neighbour, or a
+// partner left behind, sits exactly on one of the block's own edges, and that
+// catch held every small drag at its origin.
+describe('the block snap never catches a zero move', () => {
+  it('passes over a point on an edge of the block itself and takes the next one', () => {
+    // Block edges 1 and 3 (a clip 1 to 3); a neighbour starts at 3. Drag -0.1.
+    expect(snapBlockDelta([1, 3], -0.1, [0, 3, 5], 8 / 60)).toEqual({ deltaS: -0.1, indicatorT: null })
+    // A real target near the hand still catches.
+    expect(snapBlockDelta([1, 3], -0.1, [0, 0.95, 3, 5], 8 / 60).deltaS).toBeCloseTo(-0.05, 9)
+  })
+
+  it('still catches the partner when the block is a whole second away from it', () => {
+    // A picture 2 to 4 dragged back to 1.1 to 3.1; its sound sits at 1 to 3.
+    const s = snapBlockDelta([2, 4], -0.9, [0, 1, 3], 8 / 60)
+    expect(s.deltaS).toBeCloseTo(-1, 9)
+    expect(s.indicatorT).toBe(1)
   })
 })

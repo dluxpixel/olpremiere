@@ -7,9 +7,10 @@ import { detectOnsets } from '../engine/beats'
 import { monoSlice } from '../engine/beatCache'
 import { withChannelValue } from '../engine/effects/channels'
 import { impactClip, punchInClip, punchOutClip, rampSpeedRange, whipClips } from '../engine/motion'
-import { clipEndS, splitGroup } from '../engine/timeline'
+import { clipEndS, groupLocked, splitGroup } from '../engine/timeline'
 import { activeSequence, newId, videoTracks, type Clip, type Sequence, type Track } from '../engine/types'
 import { hasWorkArea, workArea } from '../engine/workArea'
+import { PAIR_LOCKED_MESSAGE } from './clipEdits'
 import { updateActiveSequence, useStore } from './store'
 import { useToasts } from './toasts'
 
@@ -179,7 +180,10 @@ export function cutPunchAtPlayhead(clipId: string): void {
       ),
     }
   })
-  if (!landed) useToasts.getState().show('Too close to a clip edge to cut there', 'danger')
+  if (landed) return
+  // A pair with a half on a locked line is not cut at all (splitGroup).
+  if (groupLocked(activeSequence(useStore.getState().project), clipId)) useToasts.getState().show(PAIR_LOCKED_MESSAGE, 'info')
+  else useToasts.getState().show('Too close to a clip edge to cut there', 'danger')
 }
 
 /** The phonk impact (desat + blur + punch + shake), at the playhead. */

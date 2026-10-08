@@ -11,19 +11,46 @@ import type { RippleReport } from '../engine/timeline'
 import type { Sequence } from '../engine/types'
 
 /** A report to hand a ripple verb: it lists the tracks it held back. */
-export const newRippleReport = (): RippleReport => ({ heldTrackIds: [] })
+export const newRippleReport = (): RippleReport => ({ heldTrackIds: [], lockedTrackIds: [] })
+
+/** "A1" or "A1 and A2", in the sequence's own track order, each named once. */
+function trackList(seq: Sequence, ids: readonly string[]): string[] {
+  const want = new Set(ids)
+  return seq.tracks.filter((t) => want.has(t.id)).map((t) => t.name)
+}
+const joined = (names: readonly string[]): string =>
+  names.length === 1 ? names[0]! : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+
+/**
+ * Why a gap close held, naming the lock: a clip that had to move is linked to
+ * one on a locked track. `all` is Close all gaps, which still closed the gaps
+ * it could; a single close moved nothing. Null when no lock held it.
+ */
+export function lockedGapMessage(seq: Sequence, report: RippleReport, all: boolean): string | null {
+  const names = trackList(seq, report.lockedTrackIds ?? [])
+  if (names.length === 0) return null
+  const which = names.length === 1 ? 'which is locked' : 'which are locked'
+  return all
+    ? `Some gaps stayed open: a clip after them is linked to one on ${joined(names)}, ${which}`
+    : `The gap stayed open: a clip after it is linked to one on ${joined(names)}, ${which}`
+}
+
+/**
+ * What the edit took out, in his words. A closed gap cut nothing, so it is
+ * never "the part you cut".
+ */
+const TAKEN = { cut: 'the part you cut', gap: 'the gap you closed', gaps: 'the gaps you closed' } as const
 
 /**
  * "Captions kept its timing: something on it sits in the part you cut", or
  * null when every track followed. Track names come from `seq`, the sequence the
- * edit started from, in its own track order, each named once.
+ * edit started from, in its own track order, each named once. `taken` is what
+ * the edit removed: a cut (the default), or one gap or several closed.
  */
-export function keptTimingMessage(seq: Sequence, report: RippleReport): string | null {
-  const held = new Set(report.heldTrackIds)
-  const names = seq.tracks.filter((t) => held.has(t.id)).map((t) => t.name)
+export function keptTimingMessage(seq: Sequence, report: RippleReport, taken: keyof typeof TAKEN = 'cut'): string | null {
+  const names = trackList(seq, report.heldTrackIds)
   if (names.length === 0) return null
-  const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
   return names.length === 1
-    ? `${list} kept its timing: something on it sits in the part you cut`
-    : `${list} kept their timing: something on them sits in the part you cut`
+    ? `${joined(names)} kept its timing: something on it sits in ${TAKEN[taken]}`
+    : `${joined(names)} kept their timing: something on them sits in ${TAKEN[taken]}`
 }

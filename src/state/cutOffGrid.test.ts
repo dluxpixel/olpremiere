@@ -19,9 +19,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const show = vi.fn()
 vi.mock('./toasts', () => ({ useToasts: { getState: () => ({ show }) } }))
 
-import { recomputeDuration } from '../engine/timeline'
+import { collectSnapPoints, recomputeDuration } from '../engine/timeline'
 import { activeSequence, newClipFromAsset, newProject, type Clip, type MediaAsset } from '../engine/types'
 import { splitAtPlayhead, topAndTail } from './clipEdits'
+import { copySelection, pasteAtPlayhead } from './clipboard'
 import { placePastedPicture } from './pasteRules'
 import { updateActiveSequence, useStore } from './store'
 
@@ -140,5 +141,27 @@ describe('a paused playhead between frames leaves nothing off the grid', () => {
     const { seq, clipId } = placePastedPicture(activeSequence(useStore.getState().project), PIC, at)
     const placed = seq.tracks.flatMap((t) => t.clips).find((c) => c.id === clipId)!
     expect(placed.startS * 30).toBeCloseTo(190, 9)
+  })
+
+  it('Ctrl+V puts copied clips on the frame under the playhead', () => {
+    useStore.getState().setUI({ selection: ['pic1'], playheadS: 0 })
+    copySelection()
+    // 9.0123 s is frame 270.37, past the end of his edit so nothing is in the way.
+    useStore.getState().setUI({ selection: [], playheadS: 9.0123 })
+    pasteAtPlayhead()
+    const ids = new Set(V1.concat(V2).map((r) => r[0]))
+    const pasted = activeSequence(useStore.getState().project).tracks.flatMap((t) => t.clips).find((c) => !ids.has(c.id))!
+    expect(pasted.startS * 30).toBeCloseTo(270, 9)
+  })
+
+  it('a drag snaps to the frame under the playhead, and to a marker on its frame', () => {
+    const seq = { ...activeSequence(useStore.getState().project), markers: [{ id: 'm', t: 4.0123, label: '', color: '#fff' }] }
+    const points = collectSnapPoints(seq, { playheadS: 9.0123 })
+    expect(points).not.toContain(9.0123)
+    expect(points.some((p) => Math.abs(p * 30 - 270) < 1e-9)).toBe(true)
+    expect(points).not.toContain(4.0123)
+    expect(points.some((p) => Math.abs(p * 30 - 120) < 1e-9)).toBe(true)
+    // His own clip edges stay exact, even the ones between two frames.
+    expect(points).toContain(V1[4]![2])
   })
 })

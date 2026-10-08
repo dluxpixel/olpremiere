@@ -67,15 +67,58 @@ export function slideNeighborIds(track: Track, clipId: Id): Id[] {
   return [track.clips[idx - 1]?.id, track.clips[idx + 1]?.id].filter((id): id is Id => !!id)
 }
 
-/** The cut a roll on this edge moves, or null with no neighbour to roll against. */
+/**
+ * Two clips share a cut when one ends where the next begins. The engine's own
+ * slack (ADJ_EPS in engine/timeline.ts): rollEditTo and slideClip refuse
+ * anything further apart.
+ */
+const butted = (left: Clip, right: Clip): boolean => Math.abs(clipEndS(left) - right.startS) < 1e-6
+
+/**
+ * The cut a roll on this edge moves, or null when there is no cut there: no
+ * neighbour, or one across a gap. Null falls through to a plain trim.
+ *
+ * ⛔ A NEIGHBOUR ACROSS A GAP IS NOT A CUT. It used to count, the engine then
+ * refused the roll, and Ctrl+Alt on the edge read "Roll +0.00s" while nothing
+ * moved, instead of trimming it as promised.
+ */
 export function rollPair(track: Track, clipId: Id, edge: 'in' | 'out'): { leftId: Id; rightId: Id } | null {
   const idx = track.clips.findIndex((c) => c.id === clipId)
+  const clip = track.clips[idx]
   const neighbor = edge === 'out' ? track.clips[idx + 1] : track.clips[idx - 1]
-  if (!neighbor) return null
-  return {
-    leftId: edge === 'out' ? clipId : neighbor.id,
-    rightId: edge === 'out' ? neighbor.id : clipId,
+  if (!clip || !neighbor) return null
+  const [left, right] = edge === 'out' ? [clip, neighbor] : [neighbor, clip]
+  if (!butted(left, right)) return null
+  return { leftId: left.id, rightId: right.id }
+}
+
+/**
+ * A slide moves a clip between the two cuts either side of it, so it needs a
+ * butted neighbour on BOTH sides. Without them Ctrl+Alt on the body is a plain
+ * move: it used to read "Slide +0.00s" while nothing moved.
+ */
+export function canSlide(track: Track, clipId: Id): boolean {
+  const idx = track.clips.findIndex((c) => c.id === clipId)
+  const prev = track.clips[idx - 1]
+  const clip = track.clips[idx]
+  const next = track.clips[idx + 1]
+  return !!prev && !!clip && !!next && butted(prev, clip) && butted(clip, next)
+}
+
+/**
+ * Where the snapped time of an edge gesture started: the grabbed edge for a
+ * trim or a stretch, the cut for a roll, the clip's start for a slide. A snap
+ * point there can only give "no change", so the snap passes over it
+ * (`snapTime`'s `originS`).
+ */
+export function gestureOriginS(seq: Sequence, drag: DragOf<'trim' | 'stretch' | 'roll' | 'slide'>): number | undefined {
+  if (drag.kind === 'roll') {
+    const left = findClipIn(seq, drag.leftId)
+    return left ? clipEndS(left) : undefined
   }
+  const clip = findClipIn(seq, drag.clipId)
+  if (!clip) return undefined
+  return drag.kind === 'slide' || drag.edge === 'in' ? clip.startS : clipEndS(clip)
 }
 
 // ---------------------------------------------------------------------------

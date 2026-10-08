@@ -51,4 +51,29 @@ describe('slicePeaks', () => {
   it('is safe with a zero-duration source', () => {
     expect(Array.from(slicePeaks(peaks, 0, 0, 1, 3))).toEqual([0, 0, 0])
   })
+
+  // Fewer columns than peaks used to read ONE peak per column and skip the rest.
+  it('draws the loudest of the peaks each column covers', () => {
+    const p = new Float32Array([0.1, 0.9, 0.2, 0.3])
+    expect(Array.from(slicePeaks(p, 4, 0, 4, 2)).map((v) => Math.round(v * 10) / 10)).toEqual([0.9, 0.3])
+  })
+
+  it('never reaches past the trimmed window for a louder peak', () => {
+    const p = new Float32Array([1, 0, 0, 0, 0, 0, 0, 1])
+    expect(Array.from(slicePeaks(p, 8, 1, 7, 2))).toEqual([0, 0])
+  })
+
+  // The review's case: a 3 minute song at the default 60 px/s is 10,800 peaks
+  // drawn into 4,096 columns (ClipWaveform's MAX_COLS). A kick that lives in a
+  // single peak had about a 60 percent chance of not being drawn.
+  it('shows a single loud peak wherever it falls in a 3 minute song at 4096 columns', () => {
+    const song = new Float32Array(10_800).fill(0.05)
+    const missed: number[] = []
+    for (let k = 0; k < 600; k++) {
+      song[k] = 1
+      if (!slicePeaks(song, 180, 0, 180, 4096).includes(1)) missed.push(k)
+      song[k] = 0.05
+    }
+    expect(missed).toEqual([])
+  })
 })

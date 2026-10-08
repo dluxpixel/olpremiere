@@ -127,6 +127,11 @@ describe('the central keymap', () => {
       expect(combos(), c).toContain(c)
     }
   })
+
+  // The shortcut list is something he reads: "Copy clip(s)" is code talk.
+  it('names every key in plain words, with no "(s)"', () => {
+    expect(bindings().filter((b) => b.description.includes('(s)')).map((b) => b.description)).toEqual([])
+  })
 })
 
 describe('the keys reach the keyframe verbs', () => {
@@ -187,6 +192,17 @@ describe('the keys reach the keyframe verbs', () => {
     uninstall()
     expect(stretched).toBeGreaterThan(3)
     expect(times()[1]).toBeCloseTo(3, 6)
+  })
+
+  it('M drops the marker on the frame under the playhead, not between two', () => {
+    // Where a Space pause or a tap along with the song leaves the playhead.
+    useStore.getState().setUI({ playheadS: 3.0123 })
+    const uninstall = installKeymap(bindings())
+    press('m')
+    uninstall()
+    const markers = activeSequence(useStore.getState().project).markers
+    expect(markers).toHaveLength(1)
+    expect(markers[0]!.t * 30).toBeCloseTo(90, 9)
   })
 
   it('Escape lets go of the diamonds before it lets go of the clip', () => {

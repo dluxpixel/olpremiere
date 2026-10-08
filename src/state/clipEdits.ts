@@ -33,6 +33,9 @@ import {
   clipDurationS,
   clipEndS,
   clipGroupIds,
+  closeAllGaps,
+  closeGapBefore,
+  groupLocked,
   deleteScoped,
   findClip as findClipIn,
   framesShown,
@@ -56,10 +59,11 @@ import {
   type Id,
   type Keyframe,
   type Sequence,
+  type Track,
 } from '../engine/types'
 import { transitionDurationSpec, type TransitionKind } from '../engine/render/types'
 import { noteRecentEffect } from './recentEffects'
-import { keptTimingMessage, newRippleReport } from './rippleNotice'
+import { keptTimingMessage, lockedGapMessage, newRippleReport } from './rippleNotice'
 import { updateActiveSequence, useStore } from './store'
 import { useToasts } from './toasts'
 
@@ -1299,7 +1303,8 @@ export function setClipFade(clipId: string, edge: 'in' | 'out', seconds: number)
 export function crossfadeWithNeighbour(clipId: Id, side: 'next' | 'prev', seconds = 0.5): void {
   updateActiveSequence('Crossfade', (seq) => {
     const track = seq.tracks.find((t) => t.clips.some((c) => c.id === clipId))
-    if (!track) return seq
+    // A locked track is him saying leave this alone, fades included.
+    if (!track || track.locked) return seq
     const idx = track.clips.findIndex((c) => c.id === clipId)
     const a = side === 'next' ? track.clips[idx] : track.clips[idx - 1]
     const b = side === 'next' ? track.clips[idx + 1] : track.clips[idx]
@@ -1325,11 +1330,6 @@ export function crossfadeWithNeighbour(clipId: Id, side: 'next' | 'prev', second
 }
 
 /**
- * Q / W: top-and-tail. Ripple-trim the head ('in') or tail ('out') of the
- * clip under the playhead. A selected clip under the playhead wins, else the
- * topmost unlocked one. Shared by the keymap and the clip context menu.
- */
-/**
  * Delete the selection (ripple or not). Shared by the Del / Shift+Del keys AND
  * the clip context menu, which used to reimplement this inline and skipped
  * the lock filter, so right-click Delete removed clips the Del key refused.
@@ -1339,10 +1339,19 @@ export function deleteSelected(ripple: boolean): void {
   const selection = s.ui.selection
   if (selection.length === 0) return
   // Selection may legitimately include locked-track clips; deleting them never may.
-  const ids = unlockedClipIds(activeSequence(s.project), selection)
+  let ids = unlockedClipIds(activeSequence(s.project), selection)
   if (ids.length === 0) {
     useToasts.getState().show('Those clips are on a locked track', 'danger')
     return
+  }
+  // A ripple takes the whole pair, so a pair with a half on a locked track
+  // stays (the engine refuses it too). A plain delete takes only what he picked.
+  if (ripple) {
+    const sq0 = activeSequence(s.project)
+    const free = ids.filter((id) => !groupLocked(sq0, id))
+    if (free.length < ids.length) useToasts.getState().show(PAIR_LOCKED_MESSAGE, 'info')
+    if (free.length === 0) return
+    ids = free
   }
   // Selection-scoped: either half of a linked pair deletes ALONE (deleteScoped).
   // Ripple stays group-wide - rippling one half of a pair would slide its track
@@ -1380,6 +1389,39 @@ export function deleteSelected(ripple: boolean): void {
     selection: [],
     ...(soloAudio ? { playheadS: Math.max(0, soloAudio.startS) } : {}),
   })
+}
+
+/**
+ * What he is told when a pair verb holds because one half is on a locked track
+ * (engine `groupLocked`). The same words the drag uses for a held move.
+ */
+export const PAIR_LOCKED_MESSAGE = 'Its linked partner is on a locked track, so the pair stays as it is'
+
+/**
+ * Close the gap before a clip, or every gap on a track. Shared by the clip menu
+ * and the gap menu. Closing a gap is a ripple, so the other tracks follow it
+ * (engine `closeGapBefore`) and he is told which ones kept their timing, the
+ * same line Shift+Delete gives.
+ */
+export function closeGapBeforeClip(clipId: Id): void {
+  const before = activeSequence(useStore.getState().project)
+  const report = newRippleReport()
+  updateActiveSequence('Close gap', (sq) => closeGapBefore(sq, clipId, report))
+  // A pair held by a locked partner refuses the whole close, and says which lock.
+  const locked = lockedGapMessage(before, report, false)
+  if (locked) useToasts.getState().show(locked, 'info')
+  const kept = keptTimingMessage(before, report, 'gap')
+  if (kept) useToasts.getState().show(kept, 'info')
+}
+
+export function closeAllGapsOnTrack(trackId: Id): void {
+  const before = activeSequence(useStore.getState().project)
+  const report = newRippleReport()
+  updateActiveSequence('Close gaps', (sq) => closeAllGaps(sq, trackId, report))
+  const locked = lockedGapMessage(before, report, true)
+  if (locked) useToasts.getState().show(locked, 'info')
+  const kept = keptTimingMessage(before, report, 'gaps')
+  if (kept) useToasts.getState().show(kept, 'info')
 }
 
 /**
@@ -1438,6 +1480,14 @@ export function splitAtPlayhead(allTracks = false, kind?: 'video' | 'audio'): vo
   }
   const label = kind === 'audio' ? 'Split audio' : kind === 'video' ? 'Split video' : 'Split at playhead'
   const before = useStore.getState().project
+  // Singled out: he selected this clip and left its linked partner alone.
+  const singledOut = (sq: Sequence, id: string): boolean =>
+    sel.length > 0 && !clipGroupIds(sq, id).every((g) => sel.includes(g))
+  // A pair with a half on a locked track is not cut at all (engine splitGroup:
+  // cutting the free half alone unlinked it from its sound for good), and he is
+  // told why. A half he singled out is cut on its own, as ever.
+  const heldPair =
+    !kind && targets.some((id) => !singledOut(seq, id) && groupLocked(seq, id) && clipGroupIds(seq, id).length > 1)
   if (targets.length > 0) {
     updateActiveSequence(label, (sq) => {
       let next = sq
@@ -1445,9 +1495,7 @@ export function splitAtPlayhead(allTracks = false, kind?: 'video' | 'audio'): vo
       const done = new Set<string>()
       for (const id of targets) {
         if (done.has(id)) continue
-        // Singled out: he selected this clip and left its linked partner alone.
-        const solo = sel.length > 0 && !clipGroupIds(next, id).every((g) => sel.includes(g))
-        if (kind || solo) {
+        if (kind || singledOut(next, id)) {
           done.add(id)
           next = splitClipOnly(next, id, t)
           continue
@@ -1465,7 +1513,8 @@ export function splitAtPlayhead(allTracks = false, kind?: 'video' | 'audio'): vo
   // on the first frame of a clip that began between two frames, drawn half a
   // frame inside it. The razor already said "Too close to the edge"; C now says
   // why too.
-  if (useStore.getState().project === before) useToasts.getState().show(splitRefusal(seq, showing, t), 'info')
+  if (heldPair) useToasts.getState().show(PAIR_LOCKED_MESSAGE, 'info')
+  else if (useStore.getState().project === before) useToasts.getState().show(splitRefusal(seq, showing, t), 'info')
 }
 
 /**
@@ -1491,6 +1540,19 @@ function splitRefusal(seq: Sequence, showing: readonly Clip[], t: number): strin
   return 'Too close to the edge of the clip to cut there'
 }
 
+/**
+ * Q / W: top-and-tail. Ripple-trim the head ('in') or tail ('out') of the
+ * clip under the playhead. Shared by the keymap and the clip context menu.
+ *
+ * Which clip: a selected clip under the playhead wins. Otherwise the PICTURE:
+ * the lowest video line first (V1, then V2), skipping titles and adjustment
+ * layers; then a title; then sound from A1 down; an adjustment layer last.
+ *
+ * ⛔ NOT "the last clip in track order". Tracks are stored [V1, V2, A1, A2], so
+ * that pick was the song on the bottom line: with nothing selected Q cut the
+ * first seconds off his music and slid it against the picture, and the picture
+ * he was looking at stayed as it was.
+ */
 export function topAndTail(edge: 'in' | 'out'): void {
   const s = useStore.getState()
   const assets = s.project.assets
@@ -1500,15 +1562,24 @@ export function topAndTail(edge: 'in' | 'out'): void {
   // ripple after it, off the grid (2026-10-03, his "strong until" project).
   const t = quantizeToFrame(s.ui.playheadS, seq.fps)
   const sel = new Set(s.ui.selection)
+  // Rank 0 picture, 1 title, 2 sound, 3 adjustment layer. Within a rank the
+  // track order already runs V1 before V2 and A1 before A2.
+  const rank = (kind: Track['kind'], c: Clip): number =>
+    kind === 'audio' ? 2 : c.adjustment ? 3 : c.title ? 1 : 0
   const under = seq.tracks
     .filter((tr) => !tr.locked)
-    .flatMap((tr) => tr.clips)
-    .filter((c) => t > c.startS && t < clipEndS(c))
+    .flatMap((tr) => tr.clips.map((c) => ({ c, r: rank(tr.kind, c) })))
+    .filter(({ c }) => t > c.startS && t < clipEndS(c))
   if (under.length === 0) {
     useToasts.getState().show('Put the playhead inside a clip first', 'danger')
     return
   }
-  const target = under.find((c) => sel.has(c.id)) ?? under[under.length - 1]
+  const picked = under.find(({ c }) => sel.has(c.id)) ?? [...under].sort((a, b) => a.r - b.r)[0]!
+  const target = picked.c
+  if (groupLocked(seq, target.id)) {
+    useToasts.getState().show(PAIR_LOCKED_MESSAGE, 'info')
+    return
+  }
   const report = newRippleReport()
   updateActiveSequence(edge === 'in' ? 'Trim head to playhead' : 'Trim tail to playhead', (sq) =>
     rippleTrimGroup(sq, assets, target.id, edge, t, report),

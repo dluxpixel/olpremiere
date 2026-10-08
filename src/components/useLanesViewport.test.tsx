@@ -40,7 +40,7 @@ describe('useLanesViewport', () => {
     const el = makeLanesEl()
     const ref = { current: el }
     const { result } = renderHook(() => useLanesViewport(ref))
-    el.scrollLeft = 300
+    el.scrollLeft = 600
     act(() => {
       result.current.scheduleViewportMeasure()
       result.current.scheduleViewportMeasure()
@@ -48,7 +48,25 @@ describe('useLanesViewport', () => {
     expect(raf.pending()).toBe(1)
     expect(result.current.viewport?.left).toBe(0)
     act(() => raf.flush())
-    expect(result.current.viewport?.left).toBe(300)
+    expect(result.current.viewport?.left).toBe(600)
+  })
+
+  // Every scroll frame used to set a new viewport, and every lane, header and
+  // the ruler re-rendered with it, although the window carries a whole screen of
+  // margin each side.
+  it('keeps the same viewport for a scroll of under half a screen', () => {
+    const el = makeLanesEl({ width: 1000 })
+    const ref = { current: el }
+    const { result } = renderHook(() => useLanesViewport(ref))
+    const first = result.current.viewport
+    el.scrollLeft = 100
+    act(() => result.current.scheduleViewportMeasure())
+    act(() => raf.flush())
+    expect(result.current.viewport).toBe(first)
+    el.scrollLeft = 600
+    act(() => result.current.scheduleViewportMeasure())
+    act(() => raf.flush())
+    expect(result.current.viewport).toEqual({ left: 600, width: 1000 })
   })
 
   it('measures right now on demand and drops the throttled measure still owed', () => {

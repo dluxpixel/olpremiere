@@ -1,4 +1,4 @@
-import { useState, type DragEvent, type MutableRefObject } from 'react'
+import { useEffect, useRef, useState, type DragEvent, type MutableRefObject } from 'react'
 import { addClipFromAsset, addClipWithLinkedAudio } from '../engine/timeline'
 import { audioTracks, type Id, type MediaAsset, type Sequence, type Track } from '../engine/types'
 import { ASSET_MIME, LIBRARY_MIME, SFX_MIME, TITLE_MIME, dragHasType } from '../state/dnd'
@@ -51,10 +51,40 @@ export function useTimelineDrop({
   dropPreview: { trackId: Id; tS: number } | null
   setDropPreview: (p: { trackId: Id; tS: number } | null) => void
   handleDragOver: (e: DragEvent<HTMLDivElement>) => void
+  handleDragLeave: (e: DragEvent<HTMLDivElement>) => void
   handleDrop: (e: DragEvent<HTMLDivElement>) => void
 } {
   const show = useToasts((s) => s.show)
   const [dropPreview, setDropPreview] = useState<{ trackId: Id; tS: number } | null>(null)
+
+  /**
+   * A drag from the bins that ends without a drop here.
+   *
+   * ⛔ THE EDGE SCROLL STOPS WITH IT. A hover near a side of the lanes starts the
+   * scroll loop, and only the drop used to stop it: a drag that left the lanes
+   * (back to the bin, or Esc) left the timeline running by itself to the start
+   * or the end of the edit, and the next pointer drag inherited the stale step.
+   */
+  const endHover = () => {
+    stopEdgeScroll()
+    lastDragPointer.current = null
+    setDropPreview(null)
+    setSnapIndicatorT(null)
+  }
+  const endHoverRef = useRef(endHover)
+  endHoverRef.current = endHover
+
+  const handleDragLeave = (e: DragEvent<HTMLDivElement>) => {
+    // Only a leave out of the lanes, not one into a lane or clip inside them.
+    if (!(e.relatedTarget instanceof Node) || !e.currentTarget.contains(e.relatedTarget)) endHover()
+  }
+
+  // Esc, or a drop somewhere else, ends the drag with a dragend on its source.
+  useEffect(() => {
+    const onEnd = (): void => endHoverRef.current()
+    window.addEventListener('dragend', onEnd)
+    return () => window.removeEventListener('dragend', onEnd)
+  }, [])
 
   const handleDragOver = (e: DragEvent<HTMLDivElement>) => {
     const { isAsset, isSfx, isTitle } = dropKinds(e.dataTransfer.types)
@@ -153,5 +183,5 @@ export function useTimelineDrop({
     )
   }
 
-  return { dropPreview, setDropPreview, handleDragOver, handleDrop }
+  return { dropPreview, setDropPreview, handleDragOver, handleDragLeave, handleDrop }
 }

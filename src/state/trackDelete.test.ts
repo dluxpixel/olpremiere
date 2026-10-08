@@ -14,12 +14,16 @@ import {
   activeSequence,
   audioTracks,
   defaultTitleDef,
+  migrateProject,
+  newClipFromAsset,
   newProject,
   newTitleClip,
   videoTracks,
+  type MediaAsset,
   type Sequence,
 } from '../engine/types'
-import { addTrack } from '../engine/timeline'
+import { clipEmitsAudioOn } from '../engine/audio'
+import { addTrack, recomputeDuration } from '../engine/timeline'
 import { updateActiveSequence, useStore } from './store'
 import { deleteTrack } from './trackEdits'
 
@@ -97,5 +101,47 @@ describe('deleteTrack', () => {
     const before = seq().tracks.length
     expect(() => deleteTrack('no-such-track')).not.toThrow()
     expect(seq().tracks).toHaveLength(before)
+  })
+})
+
+// Deleting the sound half of a pair one clip at a time was remembered; deleting
+// the whole audio line was not, so the next open gave every picture its own
+// sound back: sound he deleted, with no clip anywhere to show where it came from.
+describe('deleting an audio track keeps its pictures silent', () => {
+  const av: MediaAsset = { id: 'av', name: 'gym.mp4', kind: 'video', blobKey: 'b', durationS: 60, hasAudio: true, hasVideo: true }
+  const clipById = (id: string) => seq().tracks.flatMap((t) => t.clips).find((c) => c.id === id)
+
+  function seedPair(): string {
+    useStore.getState().setProject({ ...newProject(), assets: { av } })
+    updateActiveSequence('seed', (sq) => {
+      const grown = addTrack(sq, 'audio') // a second audio line, so A1 can go
+      return recomputeDuration({
+        ...grown,
+        tracks: grown.tracks.map((t) =>
+          t.id === videoTracks(grown)[0].id
+            ? { ...t, clips: [{ ...newClipFromAsset(av, 0), id: 'vid', outS: 5, linkId: 'L' }] }
+            : t.id === audioTracks(grown)[0].id
+              ? { ...t, clips: [{ ...newClipFromAsset(av, 0), id: 'aud', outS: 5, linkId: 'L' }] }
+              : t,
+        ),
+      })
+    })
+    return audioTracks(seq())[0].id
+  }
+
+  it('stays silent after the project is opened again', () => {
+    deleteTrack(seedPair())
+    expect(clipEmitsAudioOn('video', clipById('vid')!)).toBe(false)
+    const reopened = activeSequence(migrateProject(useStore.getState().project))
+    const vid = reopened.tracks.flatMap((t) => t.clips).find((c) => c.id === 'vid')!
+    expect(clipEmitsAudioOn('video', vid)).toBe(false)
+  })
+
+  it('one undo brings the track and the pair back, linked and playing', () => {
+    deleteTrack(seedPair())
+    useStore.getState().undo()
+    expect(clipById('aud')?.linkId).toBe('L')
+    expect(clipById('vid')?.linkId).toBe('L')
+    expect(clipById('vid')?.ownAudioOff).toBeUndefined()
   })
 })

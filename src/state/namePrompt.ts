@@ -17,6 +17,8 @@ export interface NameRequest {
   initial?: string
   placeholder?: string
   maxLength?: number
+  /** An empty name is an answer (it takes a name off), not a problem. */
+  allowEmpty?: boolean
   /** Why a name will not do, shown under the field, or null when it will. */
   validate?: (name: string) => string | null
 }

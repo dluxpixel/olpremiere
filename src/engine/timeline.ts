@@ -261,7 +261,7 @@ export function clampSpeed(s: number): number {
  */
 export function rateStretchGroup(seq: Sequence, clipId: Id, edge: 'in' | 'out', tS: number): Sequence {
   const found = findClip(seq, clipId)
-  if (!found) return seq
+  if (!found || groupLocked(seq, clipId)) return seq
   const grabbed = found.clip
 
   const groupIds = new Set<Id>([clipId])
@@ -1001,20 +1001,47 @@ export function deleteClip(seq: Sequence, clipId: Id): Sequence {
     found.trackIndex,
     found.track.clips.filter((c) => c.id !== clipId),
   )
-  // Deleting the SOUND of a linked pair is a decision, and it has to survive
-  // the next load: the video half keeps its linkId (so its own audio stays off
-  // now) AND is marked, so repairLostAudioLinks does not read the missing
-  // partner as a lost link and hand the clip its voice back tomorrow.
   const link = found.clip.linkId
   if (found.track.kind !== 'audio' || link === undefined) return next
+  return keepPicturesSilent(next, new Set([link]))
+}
+
+/**
+ * Deleting the SOUND of a linked pair is a decision, and it has to survive
+ * the next load: the video half keeps its linkId (so its own audio stays off
+ * now) AND is marked, so repairLostAudioLinks does not read the missing
+ * partner as a lost link and hand the clip its voice back tomorrow.
+ */
+function keepPicturesSilent(seq: Sequence, links: ReadonlySet<string>): Sequence {
+  if (links.size === 0) return seq
+  const hit = (c: Clip): boolean => c.linkId !== undefined && links.has(c.linkId)
   return {
-    ...next,
-    tracks: next.tracks.map((t) =>
-      t.kind !== 'video' || !t.clips.some((c) => c.linkId === link)
+    ...seq,
+    tracks: seq.tracks.map((t) =>
+      t.kind !== 'video' || !t.clips.some(hit)
         ? t
-        : { ...t, clips: t.clips.map((c) => (c.linkId === link ? { ...c, ownAudioOff: true as const } : c)) },
+        : { ...t, clips: t.clips.map((c) => (hit(c) ? { ...c, ownAudioOff: true as const } : c)) },
     ),
   }
+}
+
+/**
+ * Remove a whole track and every clip on it.
+ *
+ * ⛔ AN AUDIO TRACK TAKES ITS PICTURES' SOUND WITH IT FOR GOOD. It used to be
+ * filtered out directly, which skipped the mark `deleteClip` leaves: every
+ * picture went silent, and on the next open `repairLostAudioLinks` read each
+ * one as a lost link and turned its own sound back on. Thirty clips of sound
+ * he deleted played again, with nothing on any audio line to show where from.
+ */
+export function removeTrack(seq: Sequence, trackId: Id): Sequence {
+  const track = seq.tracks.find((t) => t.id === trackId)
+  if (!track) return seq
+  const next = recomputeDuration({ ...seq, tracks: seq.tracks.filter((t) => t.id !== trackId) })
+  if (track.kind !== 'audio') return next
+  const links = new Set<string>()
+  for (const c of track.clips) if (c.linkId !== undefined) links.add(c.linkId)
+  return keepPicturesSilent(next, links)
 }
 
 export function rippleDelete(seq: Sequence, clipId: Id): Sequence {
@@ -1185,6 +1212,12 @@ interface RippleEdit {
  */
 export interface RippleReport {
   heldTrackIds: Id[]
+  /**
+   * The locked tracks that held a gap close: a clip that had to move is linked
+   * to a clip on one of them. Filled by closeGapBefore (which then closes
+   * nothing) and closeAllGaps (which closes the gaps it still can).
+   */
+  lockedTrackIds?: Id[]
 }
 
 /**
@@ -1205,6 +1238,26 @@ function syncFollowEdits(
 ): Sequence {
   const real = edits.filter((e) => Math.abs(e.deltaS) > EPS)
   if (real.length === 0) return seq
+  // ⛔ ONE BINARY SEARCH PER CLIP, NOT A WALK OF EVERY EDIT. A gap close hands
+  // over one edit per gap, and walking all of them for every clip on every
+  // following track made closing all gaps quadratic: 127 ms at 4000 gaps and a
+  // 4000 caption line, measured 2026-10-07. Sorted by `atS`, the edits that
+  // apply to a clip (`startS >= atS - EPS`) are always a prefix, so a running
+  // total gives its delta, summed in the same order the walk added them.
+  const byAt = real.every((e, i) => i === 0 || real[i - 1].atS <= e.atS) ? real : [...real].sort((a, b) => a.atS - b.atS)
+  const sums: number[] = [0]
+  for (const e of byAt) sums.push(sums[sums.length - 1] + e.deltaS)
+  /** The first edit that lies AFTER a clip starting at `startS`: how many apply to it. */
+  const firstAfter = (startS: number): number => {
+    let lo = 0
+    let hi = byAt.length
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (startS >= byAt[mid].atS - EPS) lo = mid + 1
+      else hi = mid
+    }
+    return lo
+  }
   const deltaById = new Map<Id, number>()
   for (const t of seq.tracks) {
     // ⛔ `alreadyMoved` is EVERY track the ripple itself touched, not just the
@@ -1215,10 +1268,11 @@ function syncFollowEdits(
     // tracks has the ripple already moved", never "which track did he click".
     if (alreadyMoved.has(t.id) || t.locked || !syncLockOf(t)) continue
     const own = new Map<Id, number>()
-    for (const c of t.clips) {
+    const after = t.clips.map((c) => firstAfter(c.startS))
+    for (let i = 0; i < t.clips.length; i++) {
+      const c = t.clips[i]
       // Every edit at or before this clip applies to it, and they add up.
-      let deltaS = 0
-      for (const e of real) if (c.startS >= e.atS - EPS) deltaS += e.deltaS
+      const deltaS = sums[after[i]]
       // `shiftClipsBy` SUBTRACTS, so a ripple that pulls the timeline left is a
       // positive entry here. Getting this sign backwards is the easiest mistake
       // in this whole feature.
@@ -1230,7 +1284,9 @@ function syncFollowEdits(
     // their epsilon-slack forms is deliberate, a clip that ends exactly ON the
     // point does not straddle it and is the ordinary butted-up case.
     //
-    const straddles = t.clips.some((c) => real.some((e) => c.startS < e.atS - EPS && clipEndS(c) > e.atS + EPS))
+    // The edits after a clip's start begin at `after`, and the nearest of them
+    // is the one it could run across.
+    const straddles = t.clips.some((c, i) => after[i] < byAt.length && clipEndS(c) > byAt[after[i]].atS + EPS)
     // ⛔⛔ AND SO DOES A CLIP IN THE TIME THE EDIT TOOK OUT THAT THE FOLLOWERS
     // WOULD LAND ON. A left ripple removes `[atS + deltaS, atS]` and every clip
     // after it slides back across that span, so a caption or a voice take lying
@@ -1302,11 +1358,23 @@ function mergeRemovals(spans: ReadonlyArray<{ startS: number; endS: number }>): 
  * the same track) left to butt against the previous clip, or to 0 if it's the
  * first. LINK-GROUP AWARE: each moved clip's linked audio partner moves the same
  * distance, so a video and its split-off audio never drift apart. Preserves
- * spacing among the rippled clips. No-op when there's no gap.
+ * spacing among the rippled clips. No-op when there's no gap, or on a locked
+ * track.
+ *
+ * Closing a gap is a ripple, so the other tracks follow it exactly as they
+ * follow Shift+Delete (see `followGapClose`).
+ *
+ * ⛔ THE RUN MOVES AS ONE, OR NOT AT ALL. Everything from the clip to the end of
+ * its track is one rigid shape. It used to be clamped clip by clip, so a pair
+ * held by a locked partner stayed while the clips after it slid on: the gap he
+ * pointed at stayed open and the one AFTER the held clip closed instead, and the
+ * captions after it followed that. A partner on a locked track now refuses the
+ * whole close (`report.lockedTrackIds` names the lock, so he is told), and a
+ * partner with no room brings the whole run down to what it can manage.
  */
-export function closeGapBefore(seq: Sequence, clipId: Id): Sequence {
+export function closeGapBefore(seq: Sequence, clipId: Id, report?: RippleReport): Sequence {
   const found = findClip(seq, clipId)
-  if (!found) return seq
+  if (!found || found.track.locked) return seq
   const delta = gapBefore(seq, clipId)
   if (delta <= EPS) return seq
   const deltaById = new Map<Id, number>()
@@ -1314,18 +1382,34 @@ export function closeGapBefore(seq: Sequence, clipId: Id): Sequence {
   for (let i = found.clipIndex; i < found.track.clips.length; i++) {
     for (const gid of groupIdsOf(found.track.clips[i], byLink)) deltaById.set(gid, delta)
   }
-  return shiftClipsBy(seq, clampShiftForCollisions(seq, deltaById, byLink))
+  const locks = lockedHolders(seq, deltaById)
+  if (locks.length > 0) {
+    if (report) (report.lockedTrackIds ??= []).push(...locks)
+    return seq
+  }
+  const clamped = clampShiftForCollisions(seq, deltaById, byLink)
+  let least = delta
+  for (const id of deltaById.keys()) least = Math.min(least, clamped.get(id) ?? 0)
+  if (least <= EPS) return seq
+  const applied = new Map<Id, number>()
+  for (const id of deltaById.keys()) applied.set(id, least)
+  return followGapClose(seq, shiftClipsBy(seq, applied), found.track, applied, report)
+}
+
+/** The locked tracks holding a clip this shift would move: its linked partners there. */
+function lockedHolders(seq: Sequence, deltaById: ReadonlyMap<Id, number>): Id[] {
+  return seq.tracks.filter((t) => t.locked && t.clips.some((c) => deltaById.has(c.id))).map((t) => t.id)
 }
 
 /**
  * Remove every gap on a track: butt each clip against the previous, keeping the
  * FIRST clip where it is (its lead-in is intentional). LINK-GROUP AWARE: each
  * clip's linked partner shifts by that clip's own delta, so linked audio repacks
- * in lockstep. One tidy pass.
+ * in lockstep. One tidy pass. The other tracks follow, as for closeGapBefore.
  */
-export function closeAllGaps(seq: Sequence, trackId: Id): Sequence {
+export function closeAllGaps(seq: Sequence, trackId: Id, report?: RippleReport): Sequence {
   const ti = seq.tracks.findIndex((t) => t.id === trackId)
-  if (ti < 0) return seq
+  if (ti < 0 || seq.tracks[ti].locked) return seq
   const sorted = [...seq.tracks[ti].clips].sort((a, b) => a.startS - b.startS)
   if (sorted.length === 0) return seq
   const deltaById = new Map<Id, number>()
@@ -1336,19 +1420,96 @@ export function closeAllGaps(seq: Sequence, trackId: Id): Sequence {
     if (Math.abs(d) > EPS) for (const gid of groupIdsOf(c, byLink)) deltaById.set(gid, d)
     cursor += clipDurationS(c)
   }
+  // A pair held by a locked partner stays, and the gaps after it still close
+  // up to it. He is told which lock kept the ones before it open.
+  const locks = lockedHolders(seq, deltaById)
+  if (locks.length > 0 && report) (report.lockedTrackIds ??= []).push(...locks)
   // Same guard as closeGapBefore: a partner on another track may not be shoved
   // through whatever is already sitting there just because this track repacks.
-  return shiftClipsBy(seq, clampShiftForCollisions(seq, deltaById, byLink))
+  const applied = clampShiftForCollisions(seq, holdLockedGroups(seq, deltaById, byLink), byLink)
+  return followGapClose(seq, shiftClipsBy(seq, applied), seq.tracks[ti], applied, report)
 }
 
+/**
+ * A group with a member on a locked track does not move at all. A lock is him
+ * saying leave this alone, and a partner on another track is no way around it.
+ * The collision clamp then holds every clip behind it on the same track, so
+ * nothing lands on the held clip. closeAllGaps only: closeGapBefore refuses
+ * the whole close instead, since its run has to move as one.
+ */
+function holdLockedGroups(seq: Sequence, deltaById: Map<Id, number>, byLink: Map<Id, Id[]>): Map<Id, number> {
+  const locked = new Set<Id>()
+  for (const t of seq.tracks) if (t.locked) for (const c of t.clips) locked.add(c.id)
+  if (locked.size === 0) return deltaById
+  const out = new Map(deltaById)
+  for (const t of seq.tracks) {
+    for (const c of t.clips) {
+      if (!out.has(c.id)) continue
+      if (groupIdsOf(c, byLink).some((g) => locked.has(g))) for (const g of groupIdsOf(c, byLink)) out.delete(g)
+    }
+  }
+  return out
+}
+
+/**
+ * Carry the other tracks along with a closed gap, by the time each one REALLY
+ * removed (the collision clamp may have closed less than was asked).
+ *
+ * ⛔ CLOSING A GAP USED TO LEAVE HIS CAPTIONS BEHIND. Every other ripple
+ * (Shift+Delete, Q, W, a Ctrl edge trim) follows through `syncFollowEdits`, and
+ * this one shifted only its own track and the linked partners: close a 2 s gap
+ * on V1 and every caption on V2 after it played 2 s late to the end of the edit.
+ *
+ * The removed spans are read off the origin track in time order: where the
+ * applied shift changes, one ripple happened, with its far edge at the OLD start
+ * of the clip that moved (the `syncFollow` rule) and its size the change.
+ * `alreadyMoved` is every track the shift touched, so a linked partner's track
+ * is never shifted twice.
+ */
+function followGapClose(
+  before: Sequence,
+  shifted: Sequence,
+  origin: Track,
+  applied: ReadonlyMap<Id, number>,
+  report?: RippleReport,
+): Sequence {
+  // Nothing on the origin track moved (all of it held), so nothing moved at all.
+  if (!origin.clips.some((c) => (applied.get(c.id) ?? 0) > EPS)) return before
+  const moved = new Set<Id>([origin.id])
+  for (const t of before.tracks) if (t.clips.some((c) => (applied.get(c.id) ?? 0) > EPS)) moved.add(t.id)
+  // No track is left to carry along (each one moved with the gap, is locked, or
+  // keeps its own timing: syncFollowEdits skips exactly these), so the ripples
+  // need not be worked out at all. The usual V1 and A1 pair with nothing else.
+  if (!before.tracks.some((t) => !moved.has(t.id) && !t.locked && syncLockOf(t) && t.clips.length > 0)) return shifted
+  const edits: RippleEdit[] = []
+  let prev = 0
+  for (const c of [...origin.clips].sort((a, b) => a.startS - b.startS)) {
+    const a = applied.get(c.id) ?? 0
+    if (Math.abs(a - prev) > EPS) edits.push({ atS: c.startS, deltaS: prev - a })
+    prev = a
+  }
+  return syncFollowEdits(shifted, moved, edits, report)
+}
+
+/**
+ * The snap point nearest `tS`, when it is within `thresholdS`.
+ *
+ * `originS` is where the edge being dragged started. A point there can only
+ * ever give "no change", so it is never a catch: a butted neighbour sits
+ * exactly on the edge he grabbed, and leaving it in snapped every trim of a
+ * few frames straight back to where it began, then jumped past them.
+ */
 export function snapTime(
   tS: number,
   points: number[],
   thresholdS: number,
+  originS?: number,
 ): { t: number; snapped: boolean } {
   let best = tS
   let bestDist = Infinity
   for (const p of points) {
+    // A microsecond is still "no change": float sums put a butted edge a hair off.
+    if (originS !== undefined && Math.abs(p - originS) < 1e-6) continue
     const dist = Math.abs(p - tS)
     // Strict < keeps the earliest point on an exact tie.
     if (dist < bestDist) {
@@ -1364,10 +1525,11 @@ export function snapTime(
  * audio alike; cross-track alignment is the point), markers, t=0, and the
  * playhead.
  *
- * `excludeClipIds` must be the dragged clip's whole LINK GROUP, not just the
- * grabbed clip. A linked A/V pair otherwise leaves its partner's stale edges in
- * the set, and the drag magnetizes back to its own origin instead of to its
- * neighbours, which reads as "snapping doesn't work across lanes".
+ * `excludeClipIds` is every clip the gesture moves. For a trim that is the
+ * grabbed clip's whole LINK GROUP: the partner trims along, and its stale edges
+ * would magnetize the drag back to its own origin. For a move it is only the
+ * clips in the block, because a partner travels only when it is selected too,
+ * and one left behind is a real target (snapPointCache, `wholeGroups`).
  */
 export function collectSnapPoints(
   seq: Sequence,
@@ -1382,8 +1544,13 @@ export function collectSnapPoints(
       points.add(clipEndS(clip))
     }
   }
-  for (const m of seq.markers) points.add(m.t)
-  if (opts?.playheadS !== undefined) points.add(opts.playheadS)
+  // The playhead and the markers go in on the frame grid. A playhead paused by
+  // Space rests between two frames (and so does a marker M dropped there before
+  // M rounded), and an edge snapped onto THAT carried the fraction into every
+  // ripple after it. Clip edges stay exact: butting against them is the point.
+  const fps = seq.fps || 30
+  for (const m of seq.markers) points.add(quantizeToFrame(m.t, fps))
+  if (opts?.playheadS !== undefined) points.add(quantizeToFrame(opts.playheadS, fps))
   return [...points].sort((a, b) => a - b)
 }
 
@@ -1446,6 +1613,24 @@ export function clipGroupIds(seq: Sequence, clipId: Id): Id[] {
   const ids: Id[] = []
   for (const track of seq.tracks) for (const c of track.clips) if (c.linkId === link) ids.push(c.id)
   return ids
+}
+
+/**
+ * True when any clip of `clipId`'s link group, itself included, sits on a
+ * locked track.
+ *
+ * ⛔ A LOCK MUST NOT BE BYPASSED VIA THE PARTNER (the rule `cutSelection` and
+ * the drag already kept). He locks A1 to protect his voice take and edits the
+ * picture on V1, and the pair verbs trimmed, slipped, stretched, cut and ripple
+ * deleted the locked voice along with it. Every pair verb asks this first.
+ */
+export function groupLocked(seq: Sequence, clipId: Id): boolean {
+  const found = findClip(seq, clipId)
+  if (!found) return false
+  if (found.track.locked) return true
+  const link = found.clip.linkId
+  if (link === undefined) return false
+  return seq.tracks.some((t) => t.locked && t.clips.some((c) => c.linkId === link))
 }
 
 /**
@@ -1602,6 +1787,7 @@ export function trimGroup(
   edge: 'in' | 'out',
   tS: number,
 ): Sequence {
+  if (groupLocked(seq, clipId)) return seq
   const ids = clipGroupIds(seq, clipId)
   if (ids.length <= 1) return trimClipTo(seq, assets, clipId, edge, tS)
   // ⛔ THE EDGE IS AGREED BEFORE ANYTHING IS CUT, the same rule rippleTrimGroup
@@ -1670,6 +1856,7 @@ export function rippleTrimGroup(
   tS: number,
   report?: RippleReport,
 ): Sequence {
+  if (groupLocked(seq, clipId)) return seq
   const before = findClip(seq, clipId)
   const ids = clipGroupIds(seq, clipId)
   const moved = new Set<Id>()
@@ -1781,6 +1968,8 @@ export function rippleDeleteMany(seq: Sequence, clipIds: readonly Id[], report?:
   const moved = new Set<Id>()
   const spans: Array<{ startS: number; endS: number }> = []
   for (const clipId of clipIds) {
+    // A pair with a half on a locked track stays whole (groupLocked).
+    if (groupLocked(seq, clipId)) continue
     for (const id of clipGroupIds(seq, clipId)) {
       if (targets.has(id)) continue
       const f = findClip(seq, id)
@@ -1824,12 +2013,23 @@ export function splitClipOnly(seq: Sequence, clipId: Id, tS: number): Sequence {
   )
 }
 
-/** Split every linked member at tS; the right halves form a fresh link group. */
+/**
+ * Split every linked member at tS; the right halves form a fresh link group.
+ *
+ * ⛔ A PAIR WITH A HALF ON A LOCKED TRACK IS NOT CUT AT ALL. It used to cut the
+ * free halves alone (splitClipOnly), and that gives each half a link group of
+ * its own: the picture was unlinked from its voice for good, without a word.
+ * Unlock the line later and Shift+Delete on the left half rippled the picture
+ * alone, two seconds ahead of its own sound. The lock is never bypassed
+ * through the partner either, so the pair stays exactly as it is, the way Q,
+ * W, the trims and Shift+Delete hold it, and the caller says why.
+ */
 export function splitGroup(seq: Sequence, clipId: Id, tS: number): Sequence {
   const found = findClip(seq, clipId)
-  if (!found) return seq
+  if (!found || found.track.locked) return seq
   const link = found.clip.linkId
   if (!link) return splitClip(seq, clipId, tS)
+  if (groupLocked(seq, clipId)) return seq
   const groupBefore = new Set(clipGroupIds(seq, clipId))
   // ALL OR NOTHING. Members can sit at different distances from the cut once one
   // of them has been trimmed on its own, so asking each in turn could split some
@@ -2032,6 +2232,7 @@ export function slipGroup(
   clipId: Id,
   deltaS: number,
 ): Sequence {
+  if (groupLocked(seq, clipId)) return seq
   const ids = clipGroupIds(seq, clipId)
   if (ids.length <= 1) return slipClip(seq, assets, clipId, deltaS)
 
@@ -2165,11 +2366,24 @@ export function removeMarkerNear(seq: Sequence, tS: number, toleranceS: number):
   return best && bestDist <= toleranceS ? removeMarker(seq, best.id) : seq
 }
 
+/** Give a marker a name (empty for none). The ruler shows it on hover. */
+export function renameMarker(seq: Sequence, markerId: Id, label: string): Sequence {
+  const m = seq.markers.find((x) => x.id === markerId)
+  if (!m || m.label === label) return seq
+  return { ...seq, markers: seq.markers.map((x) => (x.id === markerId ? { ...x, label } : x)) }
+}
+
+/**
+ * Move a marker to tS. It never lands on the frame of another marker, the rule
+ * addMarker keeps: a drag snaps onto markers, and two stacked on one frame show
+ * as one, so Shift+M removed one and left the other. The marker stays put.
+ */
 export function moveMarker(seq: Sequence, markerId: Id, tS: number): Sequence {
   const idx = seq.markers.findIndex((m) => m.id === markerId)
   if (idx === -1) return seq
   const t = Math.max(0, tS)
   if (t === seq.markers[idx].t) return seq
+  if (seq.markers.some((m, i) => i !== idx && Math.abs(m.t - t) < ADJ_EPS)) return seq
   const markers = seq.markers
     .map((m, i) => (i === idx ? { ...m, t } : m))
     .sort((a, b) => a.t - b.t)
@@ -2187,6 +2401,12 @@ export interface ClipPayload {
   /** Start relative to the earliest selected clip. */
   offsetS: number
   clip: Omit<Clip, 'id' | 'startS'>
+  /**
+   * A sound Copy took along with its picture (clipboard withPictureSound), not
+   * one he picked. Its own line being locked never costs him the picture: it
+   * goes on the next free line instead (pasteClips).
+   */
+  brought?: true
 }
 
 const clipPayloadBody = (clip: Clip): Omit<Clip, 'id' | 'startS'> => {
@@ -2196,14 +2416,22 @@ const clipPayloadBody = (clip: Clip): Omit<Clip, 'id' | 'startS'> => {
   return body as Omit<Clip, 'id' | 'startS'>
 }
 
-export function serializeClips(seq: Sequence, clipIds: Id[]): ClipPayload[] {
+/** `brought` marks the clips Copy took along with what he picked (ClipPayload.brought). */
+export function serializeClips(seq: Sequence, clipIds: Id[], brought?: ReadonlySet<Id>): ClipPayload[] {
+  // One pass over the clips, not a findClip per id: Ctrl+A, Ctrl+C on a long
+  // edit was O(selection x clips). The first clip with an id wins, as findClip's.
+  const at = new Map<Id, { clip: Clip; track: Track; trackIndex: number }>()
+  seq.tracks.forEach((track, trackIndex) => {
+    for (const clip of track.clips) if (!at.has(clip.id)) at.set(clip.id, { clip, track, trackIndex })
+  })
   const found: { clip: Clip; track: Track; trackIndex: number }[] = []
   for (const id of clipIds) {
-    const f = findClip(seq, id)
+    const f = at.get(id)
     if (f) found.push(f)
   }
   if (found.length === 0) return []
-  const earliest = Math.min(...found.map((f) => f.clip.startS))
+  let earliest = Infinity
+  for (const f of found) earliest = Math.min(earliest, f.clip.startS)
   return found.map(({ clip, track, trackIndex }) => {
     let trackOffset = 0
     for (let i = 0; i < trackIndex; i++) if (seq.tracks[i].kind === track.kind) trackOffset++
@@ -2213,6 +2441,7 @@ export function serializeClips(seq: Sequence, clipIds: Id[]): ClipPayload[] {
       trackOffset,
       offsetS: clip.startS - earliest,
       clip: clipPayloadBody(clip),
+      ...(brought?.has(clip.id) ? { brought: true as const } : {}),
     }
   })
 }
@@ -2257,9 +2486,10 @@ export interface PasteResult {
   blockedByLock: number
   /**
    * Every clip that landed on another line than the one asked for, because its
-   * spot was taken there. Track ids, so the caller can name both lines.
+   * spot was taken there, or (`locked`) because a sound Copy brought along was
+   * bound for a locked line. Track ids, so the caller can name both lines.
    */
-  redirected: { askedId: Id; landedId: Id }[]
+  redirected: { askedId: Id; landedId: Id; locked?: true }[]
   /** A target was given, but nothing copied is of its kind, so it asked for nothing. */
   targetUnused: boolean
   /** Lines the whole shape was lifted, so its lowest clip still had a line to sit on. */
@@ -2361,7 +2591,7 @@ export function pasteClips(
   let cur = seq
   for (let g = 0; g < grown; g++) cur = addTrack(cur, targetKind!)
   let blockedByLock = 0
-  const redirected: { askedId: Id; landedId: Id }[] = []
+  const redirected: PasteResult['redirected'] = []
   for (const unit of units) {
     // Indices come from the CURRENT sequence: an earlier clip may have added a
     // track, which shifts everything after it.
@@ -2376,7 +2606,15 @@ export function pasteClips(
     // and paste the video on its own, still linked, which is the one shape a
     // linked video clip cannot survive: it makes no sound of its own, because
     // its partner is meant to, and the partner never arrived.
-    if (asked.some((ti) => ti === null || cur.tracks[ti].locked)) {
+    //
+    // ⛔ EXCEPT A SOUND COPY BROUGHT ALONG (`brought`). Since Copy takes the
+    // picture's sound with it, a picture whose sound sat on a locked A1 pasted
+    // NOTHING, with a toast about a locked track though he had picked a picture
+    // on an open V1; before that the same keys pasted the picture. The brought
+    // sound goes on the next free line instead (freeTrackFor skips locked ones),
+    // the pair stays linked, and `redirected` says where it went and why.
+    const lockedFor = (ti: number | null, m: number): boolean => ti !== null && cur.tracks[ti]!.locked && !unit[m]!.brought
+    if (asked.some((ti, m) => ti === null || lockedFor(ti, m))) {
       blockedByLock += 1
       continue
     }
@@ -2406,7 +2644,9 @@ export function pasteClips(
         linkId,
       }
       const placedTrack = cur.tracks[home.trackIndex]!
-      if (placedTrack.id !== askedId) redirected.push({ askedId, landedId: placedTrack.id })
+      if (placedTrack.id !== askedId) {
+        redirected.push(askedTracks[m]!.locked ? { askedId, landedId: placedTrack.id, locked: true } : { askedId, landedId: placedTrack.id })
+      }
       const withClip = { ...placedTrack, clips: insertSorted(placedTrack.clips, clip) }
       cur = { ...cur, tracks: cur.tracks.map((t, i) => (i === home.trackIndex ? withClip : t)) }
       // Keep the identity pins pointing at the live track objects.
@@ -2418,13 +2658,43 @@ export function pasteClips(
   return { seq: recomputeDuration(cur), newIds, blockedByLock, redirected, targetUnused, lifted, grown }
 }
 
-export function duplicateClips(seq: Sequence, clipIds: Id[]): { seq: Sequence; newIds: Id[] } {
+/**
+ * Duplicate clips right after the last of them, on their own lines. A linked
+ * pair whose half would land on a locked line is held whole (pasteClips), and
+ * `blockedByLock` counts it so the caller can say why nothing came.
+ *
+ * `picked` is what he selected, when `clipIds` also carries clips brought along
+ * with it (a picture's sound, clipboard withPictureSound). The copy of what he
+ * picked butts against its end, and the rest keep their places beside it.
+ * ⛔ Measured from ALL of them, a picture 1 to 4 with a J cut sound 0 to 5 put
+ * its copy at 6, a 2 s hole on V1 where Ctrl+D used to butt it at 4. A sound
+ * that would then overlap its original goes on the next free line
+ * (`redirected`), as a paste's does.
+ */
+export function duplicateClips(seq: Sequence, clipIds: Id[], picked: readonly Id[] = clipIds): PasteResult {
   const payload = serializeClips(seq, clipIds)
-  if (payload.length === 0) return { seq, newIds: [] }
-  let atS = 0
+  if (payload.length === 0) {
+    return { seq, newIds: [], blockedByLock: 0, redirected: [], targetUnused: false, lifted: 0, grown: 0 }
+  }
+  // The payload starts at the earliest of ALL the clips; the copy of what he
+  // picked starts at the end of what he picked.
+  let first = Infinity
+  let endAll = 0
   for (const id of clipIds) {
     const f = findClip(seq, id)
-    if (f) atS = Math.max(atS, clipEndS(f.clip))
+    if (!f) continue
+    first = Math.min(first, f.clip.startS)
+    endAll = Math.max(endAll, clipEndS(f.clip))
   }
+  let firstPicked = Infinity
+  let endPicked = 0
+  for (const id of picked) {
+    const f = findClip(seq, id)
+    if (!f) continue
+    firstPicked = Math.min(firstPicked, f.clip.startS)
+    endPicked = Math.max(endPicked, clipEndS(f.clip))
+  }
+  // None of `picked` found: right after all of them, as before.
+  const atS = Number.isFinite(firstPicked) ? endPicked - (firstPicked - first) : endAll
   return pasteClips(seq, payload, atS)
 }

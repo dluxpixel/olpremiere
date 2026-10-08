@@ -1,11 +1,13 @@
-import { useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
-import { clipEndS, snapTime, splitGroup } from '../engine/timeline'
+import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { clipEndS, groupLocked, moveMarker, removeMarker, renameMarker, snapTime, splitGroup } from '../engine/timeline'
 import { dragBlockIds } from '../engine/blockMove'
 import { createSnapPointCache } from '../engine/snapPointCache'
 import { quantizeToFrame } from '../engine/timecode'
 import { activeSequence, audioTracks, videoTracks, type Clip, type Id, type Sequence, type Track } from '../engine/types'
 import { openContextMenu, type MenuItem } from '../state/contextMenu'
 import { hasClipboard, pasteAt } from '../state/clipboard'
+import { askForName } from '../state/namePrompt'
+import { PAIR_LOCKED_MESSAGE } from '../state/clipEdits'
 import { setPasteTarget } from '../state/pasteTarget'
 import { comboLabel } from '../keymap'
 import { pausePlayback } from '../state/playbackControl'
@@ -16,14 +18,16 @@ import { PlayheadLine, RemotePlayheads } from './PlayheadWidgets'
 import { pointOnScrollbar } from './scrollbarGuard'
 import { TimelineLane } from './TimelineLane'
 import { EmptyTimelineHint, MarqueeBox, RazorLine, SnapLine, TrimTip } from './TimelineOverlays'
-import { TimelineRulerBar } from './TimelineRulerBar'
+import { TimelineRulerBar, type MarkerActions } from './TimelineRulerBar'
 import { TimelineToolbar } from './TimelineToolbar'
 import { TimelineTrackHeaders } from './TimelineTrackHeaders'
-import { clipContextMenuItems } from './timelineClipMenu'
+import { clipContextMenuItems, gapMenuItems } from './timelineClipMenu'
 import { useStableCallback, type Drag } from './timelineDrag'
 import { ADD_TRACK_ROW_H, CLICK_SLOP_PX, LANE_REACH_PX, SNAP_PX } from './timelineGeometry'
 import {
+  canSlide,
   dragCommit,
+  gestureOriginS,
   moveStep,
   rollPair,
   rollStep,
@@ -172,7 +176,7 @@ export function Timeline({ height }: { height: number }) {
   // move mid-gesture, so the walk is memoized. See snapPointCache.ts.
   const snapPoints = useRef(createSnapPointCache()).current
 
-  const snapWithIndicator = (tS: number, excludeClipId?: Id | Id[]): number => {
+  const snapWithIndicator = (tS: number, excludeClipId?: Id | Id[], originS?: number): number => {
     if (!snapping) {
       setSnapIndicatorT(null)
       return tS
@@ -184,7 +188,7 @@ export function Timeline({ height }: { height: number }) {
     // - otherwise the origin stays a snap magnet and fine adjustments no-op.
     const seeds = excludeClipId === undefined ? [] : Array.isArray(excludeClipId) ? excludeClipId : [excludeClipId]
     const points = snapPoints.points(seq, seeds, useStore.getState().ui.playheadS)
-    const r = snapTime(tS, points, SNAP_PX / pxPerS)
+    const r = snapTime(tS, points, SNAP_PX / pxPerS, originS)
     setSnapIndicatorT(r.snapped ? r.t : null)
     return r.t
   }
@@ -229,7 +233,8 @@ export function Timeline({ height }: { height: number }) {
       const before = useStore.getState().project
       updateActiveSequence('Split clip', (sq) => splitGroup(sq, clip.id, t))
       if (useStore.getState().project === before) {
-        show('Too close to the edge of the clip to cut there')
+        // A pair with a half on a locked line is not cut at all (splitGroup).
+        show(groupLocked(seq, clip.id) ? PAIR_LOCKED_MESSAGE : 'Too close to the edge of the clip to cut there')
       }
       return
     }
@@ -238,6 +243,17 @@ export function Timeline({ height }: { height: number }) {
     // path: grabbing always selects the clip, so asking afterwards would report
     // "solo" every time and quietly kill linked slipping.
     const soloSlip = soloTrimIntent(seq, selection, clip.id)
+    // Ctrl+Alt = the advanced-trim pair (roll on an edge, slide on the body).
+    // Checked before plain Alt: a Ctrl+Alt press has altKey === true too.
+    const ctrlAlt = (e.ctrlKey || e.metaKey) && e.altKey
+    // A linked slip moves the partner's footage too; a locked partner holds it.
+    // Refused BEFORE the press selects the clip: a selection left behind by a
+    // refused press made the same Alt drag a second time read as singled out
+    // (soloTrimIntent) and slip the picture alone, off its locked sound.
+    if (e.altKey && !ctrlAlt && !track.locked && !soloSlip && groupLocked(seq, clip.id)) {
+      show(PAIR_LOCKED_MESSAGE)
+      return
+    }
     // ⛔ CTRL ADDS TO THE SELECTION, LIKE SHIFT, 2026-09-28. His words: *"when I
     // hold and drag control while selecting multiple things ... I can click
     // anywhere and it still drags"*. Ctrl-click used to REPLACE the selection
@@ -259,14 +275,14 @@ export function Timeline({ height }: { height: number }) {
     if (track.locked) return
     const { x } = contentPoint(e)
     dragFinal.current = null
-    // Ctrl+Alt = the advanced-trim pair (roll on an edge, slide on the body).
-    // Checked before plain Alt: a Ctrl+Alt press has altKey === true too.
-    if ((e.ctrlKey || e.metaKey) && e.altKey) {
+    // Without a butted neighbour each side there is nothing to slide between,
+    // so Ctrl+Alt falls through to a plain move (never to the Alt slip below).
+    if (ctrlAlt && canSlide(track, clip.id)) {
       const neighborIds = slideNeighborIds(track, clip.id)
       beginDrag(e, { kind: 'slide', clipId: clip.id, grabOffsetS: x / pxPerS - clip.startS, neighborIds })
       return
     }
-    if (e.altKey) {
+    if (e.altKey && !ctrlAlt) {
       beginDrag(e, { kind: 'slip', clipId: clip.id, startXPx: x, solo: soloSlip })
       return
     }
@@ -288,8 +304,10 @@ export function Timeline({ height }: { height: number }) {
   }
 
   /**
-   * A right click on EMPTY timeline: paste right here, and when clips are
-   * selected, the same menu a selected clip gives, acting on all of them. His
+   * A right click on EMPTY timeline: close the gap it is in, paste right here,
+   * and when clips are selected, the verbs of the clip menu that act on all of
+   * them (never one that acts on a single clip he did not point at:
+   * `forSelection`). His
    * words, 2026-09-28: *"when I select multiple things and right-click, the
    * context menu should actually appear everywhere, not just one clip"*, and
    * *"I click Paste on V4 ... it pastes it where I clicked it."*
@@ -299,10 +317,14 @@ export function Timeline({ height }: { height: number }) {
     const lane = laneAt(y)
     const atS = quantizeToFrame(Math.max(0, x / pxPerS), seq.fps)
     const trackIndex = lane ? seq.tracks.findIndex((t) => t.id === lane.id) : -1
+    // In a gap between two clips (or before the first), closing it comes first.
+    const gapItems = gapMenuItems(seq, lane, Math.max(0, x / pxPerS))
     const items: MenuItem[] = [
+      ...gapItems,
       {
         label: 'Paste here',
         shortcut: comboLabel('mod+v'),
+        separator: gapItems.length > 0,
         disabled: !hasClipboard() || trackIndex < 0,
         onClick: () => pasteAt(trackIndex, atS),
       },
@@ -311,7 +333,7 @@ export function Timeline({ height }: { height: number }) {
     const anchor = selNow.length > 0 ? seq.tracks.flatMap((t) => t.clips).find((c) => selNow.includes(c.id)) : undefined
     if (anchor) {
       const playheadS = useStore.getState().ui.playheadS
-      const more = clipContextMenuItems({ clip: anchor, seq, assets, selNow, keepSelection: true, playheadS, show })
+      const more = clipContextMenuItems({ clip: anchor, seq, assets, selNow, keepSelection: true, playheadS, show, forSelection: true })
       if (more.length > 0) items.push({ ...more[0]!, separator: true }, ...more.slice(1))
     }
     openContextMenu(e, items)
@@ -350,22 +372,34 @@ export function Timeline({ height }: { height: number }) {
     // kill linked trimming. Having singled this half out ALREADY (clicked it,
     // partner not selected) is what means "trim just this one".
     const solo = soloTrimIntent(seq, selection, clip.id)
+    // Edge modifiers: Ctrl = ripple trim, Alt = rate stretch, Ctrl+Alt = roll.
+    // Roll is checked FIRST - a Ctrl+Alt press satisfies both single checks.
+    // No cut to roll here (no neighbour, or one across a gap) falls through to
+    // a plain trim.
+    const roll = (e.ctrlKey || e.metaKey) && e.altKey ? rollPair(track, clip.id, edge) : null
+    const stretch = e.altKey && !(e.ctrlKey || e.metaKey)
+    // A stretch, and a trim of the pair, take the linked partner along, so a
+    // partner on a locked track holds them (the engine refuses too). Said at the
+    // press, not after a drag that showed nothing moving.
+    //
+    // ⛔ AND BEFORE THE PRESS SELECTS THE CLIP. A refused press used to select
+    // it anyway, so the very same drag a second time read as "singled out"
+    // (soloTrimIntent) and trimmed the picture alone, out of step with its
+    // locked sound, without a word.
+    if (!roll && groupLocked(seq, clip.id) && (stretch || !solo)) {
+      show(PAIR_LOCKED_MESSAGE)
+      return
+    }
     setUI({ selection: [clip.id] })
     dragFinal.current = null
     // Where the pointer sits relative to the edge it grabbed, kept for the whole
     // drag, the way a move keeps its own (see the Drag type).
     const grabOffsetS = contentPoint(e).x / pxPerS - (edge === 'in' ? clip.startS : clipEndS(clip))
-    // Edge modifiers: Ctrl = ripple trim, Alt = rate stretch, Ctrl+Alt = roll.
-    // Roll is checked FIRST - a Ctrl+Alt press satisfies both single checks.
-    if ((e.ctrlKey || e.metaKey) && e.altKey) {
-      const pair = rollPair(track, clip.id, edge)
-      if (pair) {
-        beginDrag(e, { kind: 'roll', ...pair, grabOffsetS })
-        return
-      }
-      // No neighbour to roll against - fall through to a plain trim.
+    if (roll) {
+      beginDrag(e, { kind: 'roll', ...roll, grabOffsetS })
+      return
     }
-    if (e.altKey && !(e.ctrlKey || e.metaKey)) {
+    if (stretch) {
       beginDrag(e, { kind: 'stretch', clipId: clip.id, edge, grabOffsetS })
       return
     }
@@ -517,7 +551,12 @@ export function Timeline({ height }: { height: number }) {
       // Live-select every clip whose box overlaps the rectangle.
       const hits = marqueeHitIds(laneInfos, pxPerS, { x0: drag.x0, y0: drag.y0, x1: p.x, y1: p.y })
       // Additive (Ctrl/Cmd): fold the box onto the pre-drag selection, deduped.
-      setUI({ selection: drag.additive ? [...new Set([...drag.base, ...hits])] : hits })
+      const next = drag.additive ? [...new Set([...drag.base, ...hits])] : hits
+      // Only when it changed: a fresh array every move re-rendered the
+      // Inspector, the panels, the monitor overlay and the timeline at pointer
+      // rate for the whole box drag, over the same clips.
+      const cur = useStore.getState().ui.selection
+      if (next.length !== cur.length || next.some((id, i) => id !== cur[i])) setUI({ selection: next })
       return
     }
     const { x, y } = contentPoint(e)
@@ -530,7 +569,9 @@ export function Timeline({ height }: { height: number }) {
       // the grabbed one. A clip travelling with the drag would otherwise offer
       // its OLD edges as targets and yank the whole selection back toward the
       // spot it was trying to leave. The block snaps as one (moveStep).
-      const points = snapping ? snapPoints.points(seq, drag.blockIds, useStore.getState().ui.playheadS) : []
+      // Only the moving clips themselves: a linked partner he did not select
+      // stays put, and snapping back onto it is how he puts a pair back in sync.
+      const points = snapping ? snapPoints.points(seq, drag.blockIds, useStore.getState().ui.playheadS, false) : []
       const hovered = laneAt(y)
       const valid = !!hovered && hovered.kind === drag.trackKind && !hovered.locked
       // ⛔ THE LANE HE AIMS AT IS THE NEAREST ONE OF THE CLIP'S KIND, 2026-10-03.
@@ -578,7 +619,7 @@ export function Timeline({ height }: { height: number }) {
         step = slipStep(seq, assets, drag, deltaS)
       } else if (drag.kind === 'slide') {
         const tRaw = quantizeToFrame(Math.max(0, x / pxPerS - drag.grabOffsetS), seq.fps)
-        const t = snapWithIndicator(tRaw, [drag.clipId, ...drag.neighborIds])
+        const t = snapWithIndicator(tRaw, [drag.clipId, ...drag.neighborIds], gestureOriginS(seq, drag))
         dragFinal.current = { trackId: '', tS: t }
         step = slideStep(seq, assets, drag, t)
       } else {
@@ -586,7 +627,9 @@ export function Timeline({ height }: { height: number }) {
         // second of pointer is a half second of trim, wherever on the handle
         // he took hold of it.
         const tRaw = frameAtOffset(x - (drag.grabOffsetS ?? 0) * pxPerS, pxPerS, seq.fps)
-        const t = snapWithIndicator(tRaw, drag.kind === 'roll' ? [drag.leftId, drag.rightId] : drag.clipId)
+        // Never back onto the edge's own starting time: that catch is "no change"
+        // and it ate every trim of a few frames off a butted cut.
+        const t = snapWithIndicator(tRaw, drag.kind === 'roll' ? [drag.leftId, drag.rightId] : drag.clipId, gestureOriginS(seq, drag))
         dragFinal.current = { trackId: '', tS: t }
         step =
           drag.kind === 'roll'
@@ -671,8 +714,39 @@ export function Timeline({ height }: { height: number }) {
     dragFinal.current = null
   }
 
+  /**
+   * ⛔ ESC LETS GO OF A CLIP DRAG AND COMMITS NOTHING. A move, trim, roll, slip,
+   * slide or stretch he regretted half way had no way out: Esc deselected the
+   * clip and the release still committed the drag. Now Esc drops the preview
+   * and the drag, the release that follows does nothing, and the keymap's own
+   * Escape is held back for that press, so the clip stays selected.
+   */
+  const cancelGesture = useStableCallback(() => {
+    stopEdgeScroll()
+    lastDragPointer.current = null
+    setHoverLane(null)
+    setDrag(null)
+    setPreviewSeq(null)
+    setSnapIndicatorT(null)
+    setTrimTip(null)
+    dragFinal.current = null
+  })
+  const gestureHeld = !!drag && CLIP_GESTURES.has(drag.kind)
+  useEffect(() => {
+    if (!gestureHeld) return
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape') return
+      e.preventDefault()
+      e.stopImmediatePropagation()
+      cancelGesture()
+    }
+    // Capture, so it is heard before the keymap's Escape on the same window.
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [gestureHeld, cancelGesture])
+
   // --- drop from the media bin (useTimelineDrop) ---------------------------
-  const { dropPreview, setDropPreview, handleDragOver, handleDrop } = useTimelineDrop({
+  const { dropPreview, handleDragOver, handleDragLeave, handleDrop } = useTimelineDrop({
     seq,
     assets,
     pxPerS,
@@ -700,6 +774,42 @@ export function Timeline({ height }: { height: number }) {
 
   // Dragging the playhead: one scrub per animation frame (useCoalescedScrub).
   const scrubDrag = useCoalescedScrub(scrubTo)
+
+  // A marker taken hold of on the ruler (TimelineRulerBar's MarkerPin): the
+  // drag lands on a whole frame and snaps like a clip edge, never back onto the
+  // marker's own spot, and commits once on release.
+  const markerActions: MarkerActions = {
+    timeAt: (clientX, originS) => {
+      const rect = contentRef.current?.getBoundingClientRect()
+      const raw = frameAtOffset(clientX - (rect?.left ?? 0), pxPerS, seq.fps)
+      return quantizeToFrame(snapWithIndicator(raw, undefined, originS), seq.fps)
+    },
+    end: () => setSnapIndicatorT(null),
+    move: (markerId, tS) => updateActiveSequence('Move marker', (sq) => moveMarker(sq, markerId, tS)),
+    jump: (markerId) => {
+      const m = seq.markers.find((x) => x.id === markerId)
+      if (!m) return
+      pausePlayback()
+      // On a whole frame: a marker saved before markers landed on frames sits
+      // between two, and the playhead would have too.
+      setUI({ playheadS: quantizeToFrame(m.t, seq.fps) })
+    },
+    menu: (e, markerId) => {
+      const m = seq.markers.find((x) => x.id === markerId)
+      if (!m) return
+      openContextMenu(e, [
+        {
+          label: 'Name marker',
+          onClick: () =>
+            // An empty name takes the name off (renameMarker), so it is allowed.
+            void askForName({ title: 'Name this marker', confirmLabel: 'Save', initial: m.label, maxLength: 60, allowEmpty: true }).then((name) => {
+              if (name !== null) updateActiveSequence('Name marker', (sq) => renameMarker(sq, markerId, name))
+            }),
+        },
+        { label: 'Remove marker', danger: true, onClick: () => updateActiveSequence('Remove marker', (sq) => removeMarker(sq, markerId)) },
+      ])
+    },
+  }
 
   const cursorClass = lanesCursorClass(tool, drag?.kind)
 
@@ -795,12 +905,7 @@ export function Timeline({ height }: { height: number }) {
           }}
           onDragOver={handleDragOver}
           onDrop={handleDrop}
-          onDragLeave={(e) => {
-            if (!(e.relatedTarget instanceof Node) || !e.currentTarget.contains(e.relatedTarget)) {
-              setDropPreview(null)
-              setSnapIndicatorT(null)
-            }
-          }}
+          onDragLeave={handleDragLeave}
         >
           <div ref={contentRef} className="relative" style={{ width: contentWidth }}>
             <TimelineRulerBar
@@ -812,6 +917,7 @@ export function Timeline({ height }: { height: number }) {
               winEndS={winEndS}
               onScrubStart={scrubTo}
               onScrubDrag={scrubDrag}
+              markerActions={markerActions}
             />
 
             {/* Alternating lane tints: with 3+ tracks a flat wash makes lane

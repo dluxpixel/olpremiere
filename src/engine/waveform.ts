@@ -138,6 +138,15 @@ export function forgetAssetPeaks(assetId: Id): void {
 /**
  * Resample the slice of `peaks` covering source seconds [inS, outS) into `cols`
  * columns for drawing a clip that wide. Pure so the draw path stays trivial.
+ *
+ * ⛔ A COLUMN IS THE LOUDEST PEAK IT COVERS, NEVER ONE PEAK PICKED FROM IT. With
+ * fewer columns than peaks (any clip past MAX_COLS in ClipWaveform: 68 s at the
+ * default zoom), taking the peak under each column's left edge simply skipped
+ * the ones in between, so a kick living in one 16 ms bucket had about a 60
+ * percent chance of not being drawn at all on a 3 minute song. With more
+ * columns than peaks each column still reads the one peak under it, as before.
+ * Every peak in the window is read at most once, so a draw costs the peaks in
+ * the clip (16,000 at most, see MAX_BUCKETS) plus the columns.
  */
 export function slicePeaks(
   peaks: Float32Array,
@@ -149,13 +158,23 @@ export function slicePeaks(
   const n = Math.max(1, Math.floor(cols))
   const out = new Float32Array(n)
   if (peaks.length === 0 || sourceDurationS <= 0) return out
+  const len = peaks.length
   const startFrac = Math.max(0, inS / sourceDurationS)
   const endFrac = Math.min(1, outS / sourceDurationS)
   const span = Math.max(1e-9, endFrac - startFrac)
+  /** The peak under column x's left edge: where its share of the window starts. */
+  const at = (x: number): number => Math.min(len - 1, Math.max(0, Math.floor((startFrac + (x / n) * span) * len)))
+  // The last column runs to the peak the window ends in. The nanosecond of slack
+  // keeps a float a hair past a whole peak from reaching into the next one.
+  const end = Math.min(len, Math.ceil(endFrac * len - 1e-9))
+  let from = at(0)
   for (let x = 0; x < n; x++) {
-    const frac = startFrac + (x / n) * span
-    const idx = Math.min(peaks.length - 1, Math.max(0, Math.floor(frac * peaks.length)))
-    out[x] = peaks[idx]
+    // [from, to) are the peaks under this column, and the next one starts at `to`.
+    const to = x === n - 1 ? end : at(x + 1)
+    let peak = peaks[from]
+    for (let i = from + 1; i < to; i++) if (peaks[i] > peak) peak = peaks[i]
+    out[x] = peak
+    from = to
   }
   return out
 }

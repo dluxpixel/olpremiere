@@ -1,5 +1,5 @@
-import { Gauge, Headphones, Link2, Lock, LockOpen, Mic, Music as MusicIcon, Unlink, Volume2, VolumeX } from 'lucide-react'
-import { useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { Eye, EyeOff, Gauge, Headphones, Link2, Lock, LockOpen, Mic, Music as MusicIcon, Unlink, Volume2, VolumeX } from 'lucide-react'
+import { memo, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { syncLockOf, type AutoLevel, type Track } from '../engine/types'
 import { deleteTrack, setTrackAudioRole, setTrackAutoLevel, setTrackPan, setTrackVolumeDb } from '../state/trackEdits'
 import { openContextMenu } from '../state/contextMenu'
@@ -77,7 +77,12 @@ const AUDIO_ROLES: { key: Track['audioRole']; label: string }[] = [
   { key: 'music', label: 'Music (ducks under voice)' },
 ]
 
-export function TrackHeader({ track }: { track: Track }) {
+/**
+ * Memoized on its one prop: the track object is replaced only when that track
+ * changes, so a scroll, a zoom or an edit on another line no longer re-renders
+ * every header.
+ */
+export const TrackHeader = memo(function TrackHeader({ track }: { track: Track }) {
   const phone = usePhoneLayout()
   // The line Ctrl+V pastes onto (pasteTarget.ts): clicking the header names it,
   // the same as clicking an empty spot in its lane. A press on one of the
@@ -92,6 +97,27 @@ export function TrackHeader({ track }: { track: Track }) {
       ...seq,
       tracks: seq.tracks.map((t) => (t.id === track.id ? { ...t, [field]: !t[field] } : t)),
     }))
+  /**
+   * ⛔ ON A VIDEO LINE THE SAME `muted` FIELD IS "HIDE". It takes the picture off
+   * the monitor and out of the export (render/resolve.ts), and a speaker with
+   * the word Mute on it said it only touched the sound. So a video line shows an
+   * eye and says Hide or Show; nothing to migrate, it is the same field.
+   */
+  const isVideo = track.kind === 'video'
+  const muteLabel = isVideo ? (track.muted ? 'Show track' : 'Hide track') : track.muted ? 'Unmute track' : 'Mute track'
+  const toggleMute = () =>
+    toggle('muted', `${isVideo ? (track.muted ? 'Show' : 'Hide') : track.muted ? 'Unmute' : 'Mute'} ${track.name}`)
+  const muteIcon = isVideo ? (
+    track.muted ? <EyeOff size={14} strokeWidth={1.5} /> : <Eye size={14} strokeWidth={1.5} />
+  ) : track.muted ? (
+    <VolumeX size={14} strokeWidth={1.5} />
+  ) : (
+    <Volume2 size={14} strokeWidth={1.5} />
+  )
+  // Solo is sound only, and a linked picture makes no sound of its own, so Solo
+  // on a video line silenced the whole edit (audioSilence.ts). A video line that
+  // is already soloed keeps the button, so there is always a way back out.
+  const showSolo = !isVideo || track.solo
   /**
    * Sync is its own toggle rather than a fourth entry in `toggle` above, because
    * it is the one field where ABSENT is not FALSE: absent means he has never
@@ -132,10 +158,7 @@ export function TrackHeader({ track }: { track: Track }) {
   // is a mis-click waiting to happen.
   const openTrackMenu = (e: ReactMouseEvent<HTMLDivElement>) =>
     openContextMenu(e, [
-      {
-        label: track.muted ? 'Unmute track' : 'Mute track',
-        onClick: () => toggle('muted', `${track.muted ? 'Unmute' : 'Mute'} ${track.name}`),
-      },
+      { label: muteLabel, onClick: toggleMute },
       {
         label: track.locked ? 'Unlock track' : 'Lock track',
         onClick: () => toggle('locked', `${track.locked ? 'Unlock' : 'Lock'} ${track.name}`),
@@ -165,12 +188,12 @@ export function TrackHeader({ track }: { track: Track }) {
         </span>
         <IconButton
           size="compact"
-          label={track.muted ? 'Unmute track' : 'Mute track'}
+          label={muteLabel}
           active={track.muted}
           style={track.muted ? { color: 'var(--color-danger)', background: 'rgba(255, 97, 85, 0.15)' } : undefined}
-          onClick={() => toggle('muted', `${track.muted ? 'Unmute' : 'Mute'} ${track.name}`)}
+          onClick={toggleMute}
         >
-          {track.muted ? <VolumeX size={14} strokeWidth={1.5} /> : <Volume2 size={14} strokeWidth={1.5} />}
+          {muteIcon}
         </IconButton>
       </div>
     )
@@ -198,26 +221,24 @@ export function TrackHeader({ track }: { track: Track }) {
             IconButton's own active classes deterministically. */}
         <IconButton
           size="compact"
-          label={track.muted ? 'Unmute track' : 'Mute track'}
+          label={muteLabel}
           active={track.muted}
           style={track.muted ? { color: 'var(--color-danger)', background: 'rgba(255, 97, 85, 0.15)' } : undefined}
-          onClick={() => toggle('muted', `${track.muted ? 'Unmute' : 'Mute'} ${track.name}`)}
+          onClick={toggleMute}
         >
-          {track.muted ? (
-            <VolumeX size={14} strokeWidth={1.5} />
-          ) : (
-            <Volume2 size={14} strokeWidth={1.5} />
-          )}
+          {muteIcon}
         </IconButton>
-        <IconButton
-          size="compact"
-          label={track.solo ? 'Unsolo track' : 'Solo track'}
-          active={track.solo}
-          style={track.solo ? { color: 'var(--color-ember)', background: 'var(--color-ember-quiet)' } : undefined}
-          onClick={() => toggle('solo', `${track.solo ? 'Unsolo' : 'Solo'} ${track.name}`)}
-        >
-          <Headphones size={14} strokeWidth={1.5} />
-        </IconButton>
+        {showSolo && (
+          <IconButton
+            size="compact"
+            label={track.solo ? 'Unsolo track' : 'Solo track'}
+            active={track.solo}
+            style={track.solo ? { color: 'var(--color-ember)', background: 'var(--color-ember-quiet)' } : undefined}
+            onClick={() => toggle('solo', `${track.solo ? 'Unsolo' : 'Solo'} ${track.name}`)}
+          >
+            <Headphones size={14} strokeWidth={1.5} />
+          </IconButton>
+        )}
         <IconButton
           size="compact"
           label={track.locked ? 'Unlock track' : 'Lock track'}
@@ -303,4 +324,4 @@ export function TrackHeader({ track }: { track: Track }) {
       )}
     </div>
   )
-}
+})
