@@ -153,12 +153,28 @@ export const PUBLISHING_RETRY_MS: readonly number[] = [2 * 60_000, 4 * 60_000, 8
  */
 export const PUBLISHING_QUIET_MS = 60 * 60_000
 
+/**
+ * ⛔ A QUIET RUN THAT HAS HEARD NOTHING FOR THIS LONG IS OVER, 2026-10-08. Its start is
+ * kept across launches and cleared only by a later answer, so an app closed inside the
+ * two minute recheck left it on disk. Days later the first "still publishing" answer
+ * of a launch, a real release minutes into its upload, was said out loud at once,
+ * because the run looked days old. A run nobody heard for a day ended unseen, and the
+ * next answer starts a new one. A day and not an hour, so a release that stays half
+ * published is still said on the first answer of the next day's launch.
+ */
+export const PUBLISHING_RUN_GAP_MS = 24 * 60 * 60_000
+
 /** Where the run of quiet answers stands, carried from one failed check to the next. */
 export interface QuietRun {
   /** "Still publishing" answers in a row in this session, which picks the next wait. */
   streak: number
   /** When the run of quiet answers began (ms since 1970), kept across launches, or null. */
   quietSince: number | null
+  /**
+   * When the last quiet answer of that run came, kept with it. Missing or null for a
+   * run kept by an older version, whose start then stands in.
+   */
+  quietLast?: number | null
   /** The time now, in ms since 1970. */
   now: number
 }
@@ -183,8 +199,11 @@ export interface UpdateErrorPlan {
 export function planUpdateError(raw: unknown, run: QuietRun): UpdateErrorPlan {
   const kind = classifyUpdateError(raw)
   if (kind !== 'publishing') return { kind, message: updateFailureMessage(kind), streak: 0, quietSince: null, retryInMs: null }
-  // A start in the future is a clock that moved back: the hour begins again from now.
-  const since = run.quietSince !== null && run.quietSince <= run.now ? run.quietSince : run.now
+  // A start in the future is a clock that moved back, and a run that heard nothing for
+  // a day ended unseen (PUBLISHING_RUN_GAP_MS): either way the hour begins again from now.
+  const last = run.quietLast ?? run.quietSince
+  const goesOn = run.quietSince !== null && run.quietSince <= run.now && last !== null && run.now - last < PUBLISHING_RUN_GAP_MS
+  const since = goesOn && run.quietSince !== null ? run.quietSince : run.now
   const next = run.streak + 1
   if (run.now - since >= PUBLISHING_QUIET_MS) {
     return { kind, message: updateFailureMessage(kind), streak: next, quietSince: since, retryInMs: null }

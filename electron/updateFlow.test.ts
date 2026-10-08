@@ -1,7 +1,7 @@
 // The updater's rules RUN, with a fake updater and fake clocks, instead of read off
 // main.ts's text. See ./updateFlow for why they moved out of main.
 
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { EventEmitter } from 'node:events'
@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { UpdateStatus } from './ipc-types'
 import { IDLE_APPLY_S, IDLE_POLL_MS } from './updateApply'
 import { isKnownUpdateMessage, PUBLISHING_QUIET_MS, updateFailureMessage } from './updateErrors'
-import { fileQuietStore, POLL_MS, startUpdateFlow, type QuietStore, type UpdateFlow, type UpdaterLike } from './updateFlow'
+import { fileQuietStore, POLL_MS, startUpdateFlow, type QuietMark, type QuietStore, type UpdateFlow, type UpdaterLike } from './updateFlow'
 
 const MIN = 60_000
 const T0 = new Date('2026-10-06T12:00:00.000Z').getTime()
@@ -37,11 +37,12 @@ const deadFeed = (): Error =>
     'method: GET url: https://github.com/o/r/releases.atom\n\nPlease double check that your authentication token is correct.',
   )
 
-function memoryQuiet(start: number | null = null): QuietStore & { value: number | null } {
+/** A quiet run kept in memory. A bare number is a run begun then and last heard then. */
+function memoryQuiet(start: number | QuietMark | null = null): QuietStore & { value: QuietMark | null } {
   const q = {
-    value: start,
+    value: typeof start === 'number' ? { since: start, last: start } : start,
     read: () => q.value,
-    write: (v: number | null) => {
+    write: (v: QuietMark | null) => {
       q.value = v
     },
   }
@@ -60,7 +61,7 @@ interface Rig {
   status: () => UpdateStatus
 }
 
-function rig(quietStart: number | null = null): Rig {
+function rig(quietStart: number | QuietMark | null = null): Rig {
   const updater = new FakeUpdater()
   let status: UpdateStatus = { kind: 'unsupported' }
   const statuses: UpdateStatus[] = []
@@ -96,7 +97,7 @@ afterEach(() => {
   live = null
   vi.useRealTimers()
 })
-const start = (quietStart: number | null = null): Rig => (live = rig(quietStart))
+const start = (quietStart: number | QuietMark | null = null): Rig => (live = rig(quietStart))
 
 describe('checking', () => {
   it('hands the updater the main log, so its own account is kept', () => {
@@ -226,7 +227,7 @@ describe('a release still being published', () => {
   it('⛔ is said out loud once the quiet run is an hour old', () => {
     const r = start()
     r.updater.emit('error', stillPublishing())
-    expect(r.quiet.value).toBe(T0)
+    expect(r.quiet.value?.since).toBe(T0)
     vi.setSystemTime(T0 + PUBLISHING_QUIET_MS)
     r.updater.emit('error', stillPublishing())
     expect(r.sent).toContainEqual(['update:error', updateFailureMessage('publishing')])
@@ -239,10 +240,33 @@ describe('a release still being published', () => {
     expect(r.sent).toEqual([['update:error', updateFailureMessage('publishing')]])
   })
 
+  // ⛔ An app closed inside the two minute recheck left its run on disk, and days later
+  // the first answer of a launch, a real release minutes into its upload, was said out loud.
+  it('⛔ a quiet run left on disk days ago is over: the first answer of a launch starts a new one', () => {
+    const r = start(T0 - 3 * 24 * 60 * MIN)
+    r.updater.emit('error', stillPublishing())
+    expect(r.sent).toEqual([])
+    expect(r.status()).toEqual({ kind: 'pending' })
+    expect(r.quiet.value).toEqual({ since: T0, last: T0 })
+  })
+
+  it('every quiet answer is noted as the last one heard, so a run that is still heard carries on', () => {
+    const r = start()
+    r.updater.emit('error', stillPublishing())
+    vi.setSystemTime(T0 + 2 * MIN)
+    r.updater.emit('error', stillPublishing())
+    expect(r.quiet.value).toEqual({ since: T0, last: T0 + 2 * MIN })
+    r.flow.stop()
+    // Begun yesterday afternoon and last heard last night, in launches since closed.
+    const later = start({ since: T0 - 20 * 60 * MIN, last: T0 - 14 * 60 * MIN })
+    later.updater.emit('error', stillPublishing())
+    expect(later.sent).toEqual([['update:error', updateFailureMessage('publishing')]])
+  })
+
   it('a found update, or none, ends the quiet run on disk too', () => {
     const r = start()
     r.updater.emit('error', stillPublishing())
-    expect(r.quiet.value).toBe(T0)
+    expect(r.quiet.value?.since).toBe(T0)
     r.updater.emit('update-not-available')
     expect(r.quiet.value).toBeNull()
     r.updater.emit('error', stillPublishing())
@@ -313,8 +337,11 @@ describe('fileQuietStore', () => {
     try {
       const file = path.join(dir, 'update-quiet-since.json')
       expect(fileQuietStore(file).read()).toBeNull()
-      fileQuietStore(file).write(T0)
-      expect(fileQuietStore(file).read()).toBe(T0)
+      fileQuietStore(file).write({ since: T0, last: T0 + MIN })
+      expect(fileQuietStore(file).read()).toEqual({ since: T0, last: T0 + MIN })
+      // Kept by the version before this one: no last answer, so its start stands in.
+      writeFileSync(file, JSON.stringify({ since: T0 }))
+      expect(fileQuietStore(file).read()).toEqual({ since: T0, last: T0 })
       fileQuietStore(file).write(null)
       expect(fileQuietStore(file).read()).toBeNull()
       expect(() => fileQuietStore(file).write(null)).not.toThrow()

@@ -46,10 +46,16 @@ export interface UpdaterLike {
   checkForUpdates(): Promise<{ downloadPromise?: Promise<unknown> | null } | null>
 }
 
-/** Where the start of a quiet run is kept, so it survives a restart (./updateErrors). */
+/** A quiet run: when it began and when its last answer came (ms since 1970). */
+export interface QuietMark {
+  since: number
+  last: number
+}
+
+/** Where a quiet run is kept, so it survives a restart (./updateErrors). */
 export interface QuietStore {
-  read(): number | null
-  write(since: number | null): void
+  read(): QuietMark | null
+  write(mark: QuietMark | null): void
 }
 
 export interface UpdateFlowDeps {
@@ -121,9 +127,12 @@ export function startUpdateFlow(d: UpdateFlowDeps): UpdateFlow {
     // ⛔ NEVER SWALLOW THIS. Every failure is kept, in full, in the log; what reaches
     // HIS screen is one plain sentence, or nothing for a release still being published.
     const before = d.quiet.read()
-    const plan = planUpdateError(e, { streak: publishingStreak, quietSince: before, now: now() })
+    const at = now()
+    const plan = planUpdateError(e, { streak: publishingStreak, quietSince: before?.since ?? null, quietLast: before?.last ?? null, now: at })
     publishingStreak = plan.streak
-    if (plan.quietSince !== before) d.quiet.write(plan.quietSince)
+    // Every quiet answer is the run's last one heard (PUBLISHING_RUN_GAP_MS).
+    if (plan.quietSince !== null) d.quiet.write({ since: plan.quietSince, last: at })
+    else if (before !== null) d.quiet.write(null)
     d.log(updateLogEntry(new Date(now()), plan, e))
     if (plan.message === null) {
       d.setStatus({ kind: 'pending' })
@@ -211,21 +220,24 @@ export function startUpdateFlow(d: UpdateFlowDeps): UpdateFlow {
   }
 }
 
-/** The quiet run's start in one small file in userData. Never throws. */
+/** The quiet run in one small file in userData. Never throws. */
 export function fileQuietStore(file: string): QuietStore {
+  const time = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
   return {
     read() {
       try {
-        const at = (JSON.parse(readFileSync(file, 'utf8')) as { since?: unknown }).since
-        return typeof at === 'number' && Number.isFinite(at) ? at : null
+        const kept = JSON.parse(readFileSync(file, 'utf8')) as { since?: unknown; last?: unknown }
+        const since = time(kept.since)
+        // A file from before 2026-10-08 has no last answer: its start stands in.
+        return since === null ? null : { since, last: time(kept.last) ?? since }
       } catch {
         return null
       }
     },
-    write(since) {
+    write(mark) {
       try {
-        if (since === null) unlinkSync(file)
-        else writeFileSync(file, JSON.stringify({ since }))
+        if (mark === null) unlinkSync(file)
+        else writeFileSync(file, JSON.stringify(mark))
       } catch {
         // a lost note only means the hour starts again
       }

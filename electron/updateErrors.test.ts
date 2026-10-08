@@ -13,6 +13,7 @@ import {
   planUpdateError,
   PUBLISHING_QUIET_MS,
   PUBLISHING_RETRY_MS,
+  PUBLISHING_RUN_GAP_MS,
   UPDATE_FAILURES,
   updateErrorText,
   updateFailureMessage,
@@ -20,6 +21,8 @@ import {
   type QuietRun,
   type UpdateFailure,
 } from './updateErrors'
+
+const MIN = 60_000
 
 const FEED = 'https://github.com/dluxpixel/olpremiere/releases/download/v3.22.0/latest.yml'
 const ATOM = 'https://github.com/dluxpixel/olpremiere/releases.atom'
@@ -209,6 +212,32 @@ describe('planUpdateError', () => {
     // streak 0: a new launch knows nothing but what main kept on disk.
     const plan = planUpdateError(missingFeedError(), { streak: 0, quietSince: FRESH.now - 61 * 60_000, now: FRESH.now })
     expect(plan.message).toBe(updateFailureMessage('publishing'))
+  })
+
+  // ⛔ A run is cleared only by a later answer, so an app closed inside the two minute
+  // recheck left its start on disk. Days later a real release minutes into its upload
+  // was said out loud on the first answer, because the run looked days old.
+  it('⛔ a quiet run that heard nothing for days is over: the next answer starts a new quiet hour', () => {
+    const daysAgo = FRESH.now - 3 * 24 * 60 * MIN
+    const plan = planUpdateError(missingFeedError(), { streak: 0, quietSince: daysAgo, quietLast: daysAgo, now: FRESH.now })
+    expect(plan.message).toBeNull()
+    expect(plan.quietSince).toBe(FRESH.now)
+    expect(plan.retryInMs).toBe(PUBLISHING_RETRY_MS[0])
+    // A run kept by the version before this one has no last answer: its start stands in.
+    expect(planUpdateError(missingFeedError(), { streak: 0, quietSince: daysAgo, now: FRESH.now }).message).toBeNull()
+    expect(PUBLISHING_RUN_GAP_MS).toBe(24 * 60 * MIN)
+  })
+
+  it('⛔ but a run still being heard is said on the first answer, however many launches it spans', () => {
+    // Begun yesterday afternoon, last heard last night: a release that stays half published.
+    const plan = planUpdateError(missingFeedError(), {
+      streak: 0,
+      quietSince: FRESH.now - 20 * 60 * MIN,
+      quietLast: FRESH.now - 14 * 60 * MIN,
+      now: FRESH.now,
+    })
+    expect(plan.message).toBe(updateFailureMessage('publishing'))
+    expect(plan.quietSince).toBe(FRESH.now - 20 * 60 * MIN)
   })
 
   it('stays quiet across a relaunch inside the hour, and a clock that went back starts it again', () => {
