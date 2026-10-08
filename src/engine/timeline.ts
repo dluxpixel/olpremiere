@@ -2591,7 +2591,7 @@ export function pasteClips(
   let cur = seq
   for (let g = 0; g < grown; g++) cur = addTrack(cur, targetKind!)
   let blockedByLock = 0
-  const redirected: { askedId: Id; landedId: Id }[] = []
+  const redirected: PasteResult['redirected'] = []
   for (const unit of units) {
     // Indices come from the CURRENT sequence: an earlier clip may have added a
     // track, which shifts everything after it.
