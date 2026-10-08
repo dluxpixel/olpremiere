@@ -402,17 +402,27 @@ function wordsAsSaid(clip: Clip, tokens: readonly string[]): CaptionWord[] | nul
  * of hold left after a word that was cut). Before this both halves of a split
  * caption kept the whole text, so cutting "like" out of "and like" still read
  * "and like". A caption with no word times, or one he retyped, is left as it is.
+ *
+ * ⛔ ONLY THE EDGE THE CUT MADE DROPS WORDS (R-1). `cut` says which edges of
+ * this piece are a cut: `start` for the piece after the cut, `end` for the
+ * piece before it. An edge the cut never touched keeps every word, even one
+ * whose middle plays past it, because a caption can already end before its
+ * last word's middle with no cut at all: a style's gap ends it two frames
+ * early, he trimmed it, or frame rounding moved it. Reading every edge used to
+ * drop that last word off captions far from the cut, or delete a one word
+ * caption outright, all over the video, on one cut of one "um".
  */
-export function captionAfterCut(clip: Clip): Clip | null {
+export function captionAfterCut(clip: Clip, cut: { start: boolean; end: boolean }): Clip | null {
   const kept = clip.captionWords
   const tokens = (clip.title?.text ?? '').split(/\s+/).filter(Boolean)
   if (!clip.title || !kept || kept.length !== tokens.length || kept.some((w, i) => w.text !== tokens[i])) return clip
+  if (!cut.start && !cut.end) return clip
   const rate = Math.abs(clip.speed) || 1
   const endS = clip.startS + clipDurationS(clip)
   // A word belongs to the piece its middle plays in: its edges sit on the cut.
   const inside = kept.filter((w) => {
     const mid = clip.startS + ((w.startS + w.endS) / 2 - clip.inS) / rate
-    return mid >= clip.startS - 1e-6 && mid < endS
+    return (!cut.start || mid >= clip.startS - 1e-6) && (!cut.end || mid < endS)
   })
   if (inside.length === kept.length) return clip
   if (inside.length === 0) return null

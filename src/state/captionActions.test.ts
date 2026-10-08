@@ -25,6 +25,7 @@ import {
 } from './captionActions'
 import { cutWords } from './transcriptActions'
 import { AUTO_CAPTION_TARGET_S, type CaptionWord } from '../engine/captions/captions'
+import { AUTO_SHAPE, BUILTIN_CAPTION_STYLES } from '../engine/captions/captionStyle'
 import { clipDurationS } from '../engine/timeline'
 import { updateActiveSequence, useStore } from './store'
 
@@ -259,6 +260,96 @@ describe('a Words tab cut through a caption', () => {
     expect(texts()).toEqual(['and', 'wow'])
     useStore.getState().undo()
     expect(texts()).toEqual(['and like', 'wow'])
+  })
+
+  // ⛔ R-1. The cut used to re-text EVERY caption on the track. A style with a
+  // gap (Subtitles: 2 frames) ends a caption that runs into the next one two
+  // frames early, so a short last word already has its middle past the end, and
+  // one cut 20 s away dropped that word off every such caption in the video.
+  const SUBTITLES = BUILTIN_CAPTION_STYLES.find((st) => st.id === 'builtin-subtitles')!
+  /** Short words said back to back from `fromS`, so every caption runs into the next. */
+  const rapid = (texts: string[], fromS: number): CaptionWord[] =>
+    texts.map((text, i) => ({ text, startS: fromS + i * 0.1, endS: fromS + (i + 1) * 0.1 }))
+  const speech = (): CaptionWord[] => [
+    ...rapid('so today i hit a new personal record on the bench press and it felt so good'.split(' '), 0),
+    { text: 'um', startS: 20, endS: 20.3 },
+    ...rapid('then i went home and ate a whole pizza on the couch with my dog'.split(' '), 30),
+  ]
+  const shown = () => captionsOn(seq()).map(({ clip }) => clip)
+  const shifted = (c: Clip, byS: number): Clip => ({ ...c, startS: c.startS - byS })
+
+  it('cutting one "um" leaves every other Subtitles caption exactly as it was', () => {
+    addCaptionsFromWords(speech(), { style: SUBTITLES })
+    const before = shown()
+    const um = before.find((c) => c.title!.text === 'um')!
+    expect(um).toBeDefined()
+    // The trap is really set: some caption's last word plays past its own end.
+    const pastEnd = before.filter((c) => {
+      const last = c.captionWords?.[c.captionWords.length - 1]
+      return last !== undefined && c.startS + ((last.startS + last.endS) / 2 - c.inS) > c.startS + clipDurationS(c)
+    })
+    expect(pastEnd.length).toBeGreaterThan(0)
+
+    cutWords(20, 20.3, 1)
+    const after = shown()
+    const want = before.filter((c) => c.id !== um.id).map((c) => (c.startS > 20 ? shifted(c, 0.3) : c))
+    expect(after.map((c) => c.title!.text)).toEqual(want.map((c) => c.title!.text))
+    expect(after).toEqual(want)
+  })
+
+  it('a caption he trimmed by hand, away from the cut, keeps every word he left on it', () => {
+    addCaptionsFromWords(speech(), { style: SUBTITLES })
+    const first = shown()[0]!
+    // He pulls its end in by a fifth of a second, past the middle of its last word.
+    updateActiveSequence('trim', (sq) => ({
+      ...sq,
+      tracks: sq.tracks.map((t) => ({
+        ...t,
+        clips: t.clips.map((c) => (c.id === first.id ? { ...c, outS: c.outS - 0.2 } : c)),
+      })),
+    }))
+    const trimmed = shown()[0]!
+    cutWords(20, 20.3, 1)
+    expect(shown()[0]).toEqual(trimmed)
+  })
+
+  it('a one word caption in a style with a gap survives a cut somewhere else', () => {
+    // Auto length with a gap: a one word caption that runs into the next one
+    // ends at its own word's middle (rounded to a frame, here the one before),
+    // which the old rule read as "said outside", and deleted the caption.
+    const gapped = { ...BUILTIN_CAPTION_STYLES[0]!, shape: { ...AUTO_SHAPE, gapFrames: 2 } }
+    addCaptionsFromWords(
+      [
+        { text: 'massive', startS: 1, endS: 1.08 },
+        { text: 'strength', startS: 1.08, endS: 1.7 },
+        { text: 'um', startS: 5, endS: 5.3 },
+        { text: 'yes', startS: 8, endS: 8.4 },
+      ],
+      { style: gapped },
+    )
+    const before = shown().map((c) => c.title!.text)
+    expect(before).toContain('massive')
+    cutWords(5, 5.3, 1)
+    expect(shown().map((c) => c.title!.text)).toEqual(before.filter((t) => t !== 'um'))
+  })
+
+  it('a cut through a caption still drops only the words it took', () => {
+    addCaptionsFromWords(speech(), { style: SUBTITLES })
+    const before = shown()
+    const host = before.find((c) => c.title!.text.split(' ').includes('pizza'))!
+    const pizza = speech().find((w) => w.text === 'pizza')!
+    cutWords(pizza.startS, pizza.endS, 1)
+    const after = shown()
+    // Every caption the cut did not reach is as it was.
+    for (const c of before) {
+      if (c.id === host.id) continue
+      const moved = c.startS > pizza.startS ? shifted(c, pizza.endS - pizza.startS) : c
+      expect(after).toContainEqual(moved)
+    }
+    const said = after.map((c) => c.title!.text).join(' ')
+    expect(said).not.toContain('pizza')
+    expect(said).toContain('whole')
+    expect(said).toContain('couch')
   })
 })
 

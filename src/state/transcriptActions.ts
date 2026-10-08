@@ -9,7 +9,7 @@
 import { captionAfterCut } from '../engine/captions/captionStyle'
 import { plural } from '../engine/plural'
 import { cutRange, keepHeardWords, wordsOnTimeline } from '../engine/transcriptCut'
-import { activeSequence, type Id } from '../engine/types'
+import { activeSequence, type Clip, type Id } from '../engine/types'
 import { isCaptionTrack } from './captionActions'
 import { updateActiveSequence, useStore } from './store'
 import { listenToClip, listenToClips, wordLagNow } from './transcribeActions'
@@ -64,14 +64,25 @@ export async function listenForEveryClip(): Promise<void> {
 /** Take the words' stretch of timeline out and close the gap, in one undo step. The playhead lands on the cut. */
 export function cutWords(startS: number, endS: number, count: number): void {
   updateActiveSequence(count === 1 ? 'Cut a word' : `Cut ${count} words`, (seq) => {
+    // Each caption as it was, to tell which ones the cut split.
+    const was = new Map<Id, Clip>()
+    for (const t of seq.tracks) if (isCaptionTrack(t) && !t.locked) for (const c of t.clips) was.set(c.id, c)
     const cut = cutRange(seq, startS, endS)
-    // A caption the cut split says only the words left in each piece.
+    // ⛔ R-1. ONLY a caption the cut split is re-texted, and only at the edge
+    // the cut made. Every other caption is handed back as the same object.
+    const reText = (c: Clip): Clip | null => {
+      const before = was.get(c.id)
+      // A piece with a new id is the half after a cut: its start is the cut.
+      // A piece that kept its id but lost its tail is the half before one.
+      const piece = { start: !before, end: before !== undefined && c.outS !== before.outS }
+      return captionAfterCut(c, piece)
+    }
     return {
       ...cut,
       tracks: cut.tracks.map((t) =>
         !isCaptionTrack(t) || t.locked
           ? t
-          : { ...t, clips: t.clips.map(captionAfterCut).filter((c): c is NonNullable<typeof c> => c !== null) },
+          : { ...t, clips: t.clips.map(reText).filter((c): c is NonNullable<typeof c> => c !== null) },
       ),
     }
   })
