@@ -84,6 +84,9 @@ const stripVideos = new Map<string, Promise<HTMLVideoElement>>()
 const stripVideoSrc = new Map<string, string>()
 const STRIP_VIDEOS = 3
 
+/** Test seam: how many loaded strip videos have a source on record. */
+export const stripVideoSourceCountForTests = (): number => stripVideoSrc.size
+
 function unloadStripVideo(held: Promise<HTMLVideoElement>): void {
   void held.then((v) => {
     v.removeAttribute('src')
@@ -112,7 +115,10 @@ function stripVideo(asset: MediaAsset, src: string): Promise<HTMLVideoElement> {
     video.src = src
   })
   made.catch(() => {
-    if (stripVideos.get(asset.id) === made) stripVideos.delete(asset.id)
+    if (stripVideos.get(asset.id) === made) {
+      stripVideos.delete(asset.id)
+      stripVideoSrc.delete(asset.id)
+    }
   })
   stripVideos.set(asset.id, made)
   while (stripVideos.size > STRIP_VIDEOS) {

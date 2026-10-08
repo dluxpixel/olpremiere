@@ -13,6 +13,8 @@ const h = vi.hoisted(() => ({
   copies: new Set<string>(),
   /** Element sources whose seeks never fire `seeked`. */
   stuck: new Set<string>(),
+  /** Element sources whose load fails. */
+  broken: new Set<string>(),
   made: [] as HTMLVideoElement[],
 }))
 
@@ -21,7 +23,7 @@ vi.mock('../engine/proxyMedia', () => ({
   thumbnailSourceKey: (a: { id: string; blobKey: string }) => (h.copies.has(a.id) ? `proxy:${a.id}` : a.blobKey),
 }))
 
-const { useFilmstrip } = await import('./filmstrips')
+const { useFilmstrip, stripVideoSourceCountForTests } = await import('./filmstrips')
 
 const asset = (id: string): MediaAsset => ({
   id,
@@ -48,7 +50,9 @@ beforeEach(() => {
     },
     set(this: HTMLMediaElement, v: string) {
       this.setAttribute('src', v)
-      void Promise.resolve().then(() => this.onloadeddata?.(new Event('loadeddata')))
+      void Promise.resolve().then(() =>
+        h.broken.has(v) ? this.onerror?.(new Event('error')) : this.onloadeddata?.(new Event('loadeddata')),
+      )
     },
   })
   Object.defineProperty(media, 'currentTime', {
@@ -82,6 +86,7 @@ afterEach(() => {
   vi.restoreAllMocks()
   h.copies.clear()
   h.stuck.clear()
+  h.broken.clear()
   h.made.length = 0
 })
 
@@ -109,5 +114,19 @@ describe('filmstrips', () => {
     // The stuck strip gave up and keeps its poster; the queue moved on.
     expect(first.result.current).toBeNull()
     expect(second.result.current).toMatch(/^blob:strip:/)
+  })
+
+  // n-E (sweep review 2): a load that fails dropped the loaded element but kept
+  // the note of the URL it was loaded from, one stale entry per asset that ever
+  // failed, which nothing but a retry of the same asset would clear.
+  it('a video that fails to load leaves no note of its source behind', async () => {
+    const broken = asset('broken')
+    h.broken.add('blob:asset/broken')
+    // Other strips' videos stay loaded between tests, so count against what was held.
+    const held = stripVideoSourceCountForTests()
+    const { result } = renderHook(() => useFilmstrip(broken, 128, 0, 4, 1))
+    await run(200)
+    expect(result.current).toBeNull() // it keeps its poster
+    expect(stripVideoSourceCountForTests()).toBe(held)
   })
 })
