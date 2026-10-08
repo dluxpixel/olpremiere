@@ -50,7 +50,7 @@ export function ExportChip() {
       <div
         data-testid="export-chip"
         data-ended={failed ? 'failed' : 'done'}
-        className={`flex h-7 min-w-0 items-stretch overflow-hidden rounded-full border text-ui-sm ${
+        className={`flex h-7 min-w-0 items-stretch overflow-hidden rounded-field border text-ui-sm ${
           failed ? 'border-danger/40 bg-danger/15 text-danger' : 'border-success/40 bg-success/15 text-success'
         }`}
       >
