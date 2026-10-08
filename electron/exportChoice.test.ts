@@ -16,7 +16,7 @@ const { choseExportPath, exportFinished, exportPathFromPage } = await import('./
 const { rememberFolder } = await import('./saveFiles')
 
 const ANSWER = path.join(where.dir, 'Videos', 'Green_2.mp4')
-const ELSEWHERE = 'C:\Windows\System32\drivers\etc\hosts'
+const ELSEWHERE = 'C:\\Windows\\System32\\drivers\\etc\\hosts'
 /** What native:finish answers for a movie that was written, and for one that was not. */
 const FINISHED = { ok: true, outPath: ANSWER, sizeBytes: 1 }
 const FAILED = { ok: false, error: 'ffmpeg exited with code 1' }
