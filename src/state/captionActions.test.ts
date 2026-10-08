@@ -352,6 +352,49 @@ describe('a Words tab cut through a caption', () => {
     expect(said).toContain('whole')
     expect(said).toContain('couch')
   })
+
+  // ⛔ S-2. Subtitles ends a caption two frames early, so its last word plays
+  // past its end. A cut that starts exactly where the caption ends takes that
+  // word, but the caption keeps its id and its out point, so nothing re-texted
+  // it and it went on saying a word that was cut.
+  const playsPastEnd = (c: Clip): boolean => {
+    const last = c.captionWords?.[c.captionWords.length - 1]
+    return last !== undefined && c.startS + ((last.startS + last.endS) / 2 - c.inS) > c.startS + clipDurationS(c)
+  }
+  const lastWordEndS = (c: Clip): number => c.startS + (c.captionWords![c.captionWords!.length - 1]!.endS - c.inS)
+
+  it('a word cut from just past the end of its caption is gone from that caption', () => {
+    addCaptionsFromWords(speech(), { style: SUBTITLES })
+    const host = shown().find((c) => playsPastEnd(c) && c.captionWords!.length > 1)!
+    expect(host).toBeDefined()
+    const endS = host.startS + clipDurationS(host)
+    const words = host.title!.text.split(/\s+/)
+    cutWords(endS, lastWordEndS(host), 1)
+    const after = shown().find((c) => c.id === host.id)!
+    expect(after.title!.text.split(/\s+/)).toEqual(words.slice(0, -1))
+    expect(after.captionWords!.map((w) => w.text)).toEqual(words.slice(0, -1))
+    expect(after.outS).toBe(host.outS)
+    useStore.getState().undo()
+    expect(shown().find((c) => c.id === host.id)).toEqual(host)
+  })
+
+  it('a one word caption whose only word is cut from just past its end is removed', () => {
+    const gapped = { ...BUILTIN_CAPTION_STYLES[0]!, shape: { ...AUTO_SHAPE, gapFrames: 2 } }
+    addCaptionsFromWords(
+      [
+        { text: 'massive', startS: 1, endS: 1.08 },
+        { text: 'strength', startS: 1.08, endS: 1.7 },
+        { text: 'yes', startS: 8, endS: 8.4 },
+      ],
+      { style: gapped },
+    )
+    const host = shown().find((c) => c.title!.text === 'massive')!
+    expect(host).toBeDefined()
+    expect(playsPastEnd(host)).toBe(true)
+    cutWords(host.startS + clipDurationS(host), lastWordEndS(host), 1)
+    expect(shown().find((c) => c.id === host.id)).toBeUndefined()
+    expect(shown().map((c) => c.title!.text)).toEqual(['strength', 'yes'])
+  })
 })
 
 // N-1. A recut caption that would start inside a kept neighbour is moved to

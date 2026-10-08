@@ -6,7 +6,7 @@
 // The reading itself is engine/transcriptCut.ts, pure. This file is only the
 // store side: where the words go, and the one undo step a cut makes.
 
-import { captionAfterCut } from '../engine/captions/captionStyle'
+import { captionAfterCut, captionWithoutCutWords } from '../engine/captions/captionStyle'
 import { plural } from '../engine/plural'
 import { cutRange, keepHeardWords, wordsOnTimeline } from '../engine/transcriptCut'
 import { activeSequence, type Clip, type Id } from '../engine/types'
@@ -72,6 +72,9 @@ export function cutWords(startS: number, endS: number, count: number): void {
     // the cut made. Every other caption is handed back as the same object.
     const reText = (c: Clip): Clip | null => {
       const before = was.get(c.id)
+      // ⛔ S-2. A caption that kept its id AND its out point was not split, but a
+      // word that plays past its end can still be the one the cut took.
+      if (before && c.outS === before.outS) return captionWithoutCutWords(before, c, { startS, endS })
       // A piece with a new id is the half after a cut: its start is the cut.
       // A piece that kept its id but lost its tail is the half before one.
       const piece = { start: !before, end: before !== undefined && c.outS !== before.outS }

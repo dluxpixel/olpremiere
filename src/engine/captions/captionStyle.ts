@@ -430,6 +430,28 @@ export function captionAfterCut(clip: Clip, cut: { start: boolean; end: boolean 
 }
 
 /**
+ * A caption the cut did not touch, that still says a word the cut took (S-2):
+ * a style's gap ends a caption a couple of frames early, so its last word plays
+ * past its end, and a cut that starts where the caption ends takes that word
+ * while the caption keeps its id and its out point. `was` is the caption as it
+ * was before the cut, `now` the same caption after it. Its words whose middle
+ * played inside the cut are dropped; null when none are left.
+ */
+export function captionWithoutCutWords(was: Clip, now: Clip, cut: { startS: number; endS: number }): Clip | null {
+  const kept = now.captionWords
+  const tokens = (now.title?.text ?? '').split(/\s+/).filter(Boolean)
+  if (!now.title || !kept || kept.length !== tokens.length || kept.some((w, i) => w.text !== tokens[i])) return now
+  const rate = Math.abs(was.speed) || 1
+  const left = kept.filter((w) => {
+    const mid = was.startS + ((w.startS + w.endS) / 2 - was.inS) / rate
+    return !(mid >= cut.startS - 1e-6 && mid < cut.endS - 1e-6)
+  })
+  if (left.length === kept.length) return now
+  if (left.length === 0) return null
+  return { ...now, title: { ...now.title, text: left.map((w) => w.text).join(' ') }, captionWords: left }
+}
+
+/**
  * The words on screen, read back off finished captions so they can be cut
  * again at a different length.
  *
