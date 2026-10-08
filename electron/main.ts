@@ -975,7 +975,7 @@ app.whenReady().then(() => {
       await mediaSweep.holdSweep(sweepPlaces(), sweepHeld)
       return true
     } catch (err) {
-      console.warn('OL Premiere: the spare copy cleanup hold could not be written', err)
+      mainLog('warn', 'OL Premiere: the spare copy cleanup hold could not be written', err)
       return false
     }
   })
