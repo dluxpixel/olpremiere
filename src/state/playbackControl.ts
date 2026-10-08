@@ -72,14 +72,26 @@ export function subscribeShuttleRate(cb: (rate: number) => void): () => void {
  * paused playhead draws the NEAREST frame, so about half of all pauses stepped
  * the picture on by one, and the readout disagreed with the picture. So a pause
  * puts the playhead on the frame that was on screen. The exact time is kept,
- * and play resumes from it while the playhead has not been moved, because a
- * dub resumed from the frame would replay a stretch he already heard (MIC-5).
+ * and a take being recorded resumes from it while the playhead has not been
+ * moved, because a dub resumed from the frame would replay a stretch he already
+ * heard (MIC-5).
  */
 let stoppedAt: { exactS: number; frameS: number } | null = null
 
-/** Where play should start from the playhead: the exact stop, if he has not moved it since. */
+/**
+ * Where play should start from the playhead.
+ *
+ * ⛔ EVERY RESUME SKIPPED THE PICTURE FORWARD BY THE OUTPUT LATENCY (sweep
+ * review B1, 2026-10-08). The exact stop is the SOUND clock, and the frame on
+ * screen is that less the latency (PB-8): 41 ms on his default output, 2 to 3
+ * frames at 60 fps skipped on every Space, and Space-Space crept forward by that
+ * each tap; 0.3 s on Bluetooth. So the exact stop is for a take only, the one
+ * thing that must not replay what he heard. Everything else, Space and J/L, goes
+ * on from the frame he is looking at.
+ */
 function resumeFrom(playheadS: number): number {
-  return stoppedAt && Math.abs(playheadS - stoppedAt.frameS) < 1e-9 ? stoppedAt.exactS : playheadS
+  if (!stoppedAt || Math.abs(playheadS - stoppedAt.frameS) >= 1e-9) return playheadS
+  return isTakeInProgress() ? stoppedAt.exactS : playheadS
 }
 
 /**

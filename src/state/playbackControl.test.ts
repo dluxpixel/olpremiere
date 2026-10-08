@@ -3,12 +3,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // Space, as he presses it: togglePlay against the real Transport and the real
 // store. There is no AudioContext in node, so the transport plays on the
 // performance clock, which this file moves by hand, one animation frame at a time.
+// A test about what he HEARS hands it a device (audio.ctx, see deviceWithLatency).
+const audio = vi.hoisted(() => ({ ctx: null as null | { currentTime: number } }))
 vi.mock('../engine/audio', () => ({
   ensureAudioContext: () => {
-    throw new Error('no audio context in node')
+    if (!audio.ctx) throw new Error('no audio context in node')
+    return audio.ctx
   },
   SCHEDULE_LATENCY_S: 0.05,
-  scheduleAudio: () => Promise.resolve(() => undefined),
+  scheduleAudio: () =>
+    Promise.resolve(
+      Object.assign(() => undefined, audio.ctx ? { startsAtCtxS: audio.ctx.currentTime + 0.05 } : {}),
+    ),
   clipEmitsAudioOn: () => false,
 }))
 // The frame the monitor last drew while playing (preview.ts lastPlayedFrameS).
@@ -22,8 +28,10 @@ vi.mock('../engine/preview', () => ({
     monitor.drewS = null
   },
 }))
+// A voiceover take being recorded against the preview (voiceRecorder).
+const take = vi.hoisted(() => ({ on: false }))
 vi.mock('./voiceRecorder', () => ({
-  isTakeInProgress: () => false,
+  isTakeInProgress: () => take.on,
   pauseRecording: () => {},
   resumeRecording: () => {},
   takeHeard: () => {},
@@ -67,6 +75,8 @@ beforeEach(() => {
 afterEach(() => {
   if (isPlaying()) togglePlay()
   monitor.drewS = null
+  audio.ctx = null
+  take.on = false
   vi.restoreAllMocks()
 })
 
@@ -124,7 +134,10 @@ describe('a pause lands on the frame that was on screen', () => {
     expect(Math.round(frames)).toBe(103) // floor(3.4567 * 30)
   })
 
-  it('and resumes from where it REALLY stopped while the playhead is not moved', async () => {
+  // A dub resumed from the frame would replay a stretch he already heard (MIC-5),
+  // so while a take is recording the resume is the exact stop.
+  it('and a take in progress resumes from where it REALLY stopped while the playhead is not moved', async () => {
+    take.on = true
     togglePlay()
     await settle()
     frameAfter(3456.7)
@@ -134,6 +147,18 @@ describe('a pause lands on the frame that was on screen', () => {
     await settle()
     frameAfter(100)
     expect(playhead()).toBeCloseTo(3.4767 + 0.1, 6)
+  })
+
+  it('and without a take it resumes on the frame that was on screen', async () => {
+    togglePlay()
+    await settle()
+    frameAfter(3456.7)
+    nowMs += 20
+    togglePlay()
+    togglePlay()
+    await settle()
+    frameAfter(100)
+    expect(playhead()).toBeCloseTo(103 / 30 + 0.1, 6)
   })
 
   it('a playhead moved after the pause plays from where it was put', async () => {
@@ -171,7 +196,8 @@ describe('a pause lands on the frame the monitor drew, not on the last tick', ()
     expect(playhead()).toBe(1)
   })
 
-  it('and resumes from where the sound really stopped', async () => {
+  it('and a take in progress resumes from where the sound really stopped', async () => {
+    take.on = true
     togglePlay()
     await settle()
     frameAfter(1000)
@@ -182,6 +208,19 @@ describe('a pause lands on the frame the monitor drew, not on the last tick', ()
     await settle()
     frameAfter(100)
     expect(playhead()).toBeCloseTo(1 + 1 / 60 + 0.1, 6)
+  })
+
+  it('and without a take it resumes from the frame he saw, not the sound', async () => {
+    togglePlay()
+    await settle()
+    frameAfter(1000)
+    monitor.drewS = 1
+    frameAfter(1000 / 60)
+    togglePlay()
+    togglePlay()
+    await settle()
+    frameAfter(100)
+    expect(playhead()).toBeCloseTo(1 + 0.1, 6)
   })
 
   it('never uses a frame drawn by an earlier run of play', async () => {
@@ -251,5 +290,115 @@ describe('J that runs back to the start parks on the start', () => {
     await settle()
     frameAfter(300)
     expect(playhead()).toBeCloseTo(1 / 30 + 0.3, 6)
+  })
+})
+
+// ⛔ EVERY RESUME AFTER A PAUSE SKIPPED THE PICTURE FORWARD (sweep review B1).
+// Pausing keeps the SOUND clock, and the frame on screen is that time less the
+// output latency (PB-8), so Space and J/L from a pause started from a time the
+// picture had never shown: 2 to 3 frames at 60 fps on his default output (41 ms),
+// 12 to 21 on Bluetooth, and Space-Space crept forward by that every tap. The
+// tests before this ran without a device, where the sound and the picture are the
+// same time, which is why none of them could see it.
+/** A device whose sound reaches his ears `lagS` after the graph renders it, on the test's own clock. */
+function deviceWithLatency(lagS: number): { currentTime: number } {
+  return {
+    state: 'running',
+    get currentTime() {
+      return nowMs / 1000
+    },
+    resume: () => Promise.resolve(),
+    getOutputTimestamp: () => ({ contextTime: nowMs / 1000 - lagS, performanceTime: nowMs }),
+  } as unknown as { currentTime: number }
+}
+
+describe.each([
+  ['his wired output, 41 ms', 0.041],
+  ['Bluetooth, 0.3 s', 0.3],
+])('resuming after a pause on %s', (_name, lagS) => {
+  const FPS = 60
+  beforeEach(() => {
+    updateActiveSequence('A 10 second edit at 60', (seq) => ({ ...seq, durationS: 10, fps: FPS }))
+    audio.ctx = deviceWithLatency(lagS)
+  })
+
+  /** One animation frame `ms` on, and the monitor draws the frame the playhead is in. */
+  function run(ms: number): void {
+    frameAfter(ms)
+    monitor.drewS = Math.floor(playhead() * FPS + 1e-6) / FPS
+  }
+
+  /** Play from 0, let a second go by, and pause: the sound is `lagS` ahead of the frame he is on. */
+  async function playAndPause(): Promise<number> {
+    togglePlay()
+    await settle()
+    run(1000)
+    togglePlay()
+    expect(isPlaying()).toBe(false)
+    return playhead()
+  }
+
+  it('the sound is really ahead of the picture when it pauses (the premise)', async () => {
+    const parked = await playAndPause()
+    // The sound had rendered 0.95 s of the edit; the picture shows that less the lag.
+    expect(parked).toBeLessThanOrEqual(0.95 - lagS + 1e-9)
+    expect(parked).toBeGreaterThan(0.95 - lagS - 1 / FPS - 1e-9)
+  })
+
+  it('Space starts on the frame that was on screen, so the picture does not skip', async () => {
+    const parked = await playAndPause()
+    togglePlay()
+    await settle()
+    run(10)
+    expect(playhead()).toBeCloseTo(parked, 9)
+    // And runs on from it at the speed of the sound, once the sound has reached him.
+    run(0.05 * 1000 + lagS * 1000 + 500 - 10)
+    expect(playhead()).toBeCloseTo(parked + 0.5, 6)
+  })
+
+  it('Space, Space, Space in quick taps never creeps the picture on', async () => {
+    const parked = await playAndPause()
+    for (let i = 0; i < 6; i++) {
+      togglePlay()
+      await settle()
+      run(20)
+      togglePlay()
+      expect(playhead()).toBeCloseTo(parked, 9)
+    }
+  })
+
+  it('L from a pause goes on from the frame on screen', async () => {
+    const parked = await playAndPause()
+    shuttle(1)
+    await settle()
+    run(10)
+    expect(playhead()).toBeCloseTo(parked, 9)
+  })
+
+  it('J from a pause runs back from the frame on screen, not from the sound ahead of it', async () => {
+    const parked = await playAndPause()
+    shuttle(-1)
+    await settle()
+    run(100)
+    // A shuttle is silent, so its picture has no lag to wait out.
+    expect(playhead()).toBeCloseTo(parked - 0.1, 6)
+  })
+
+  it('a take in progress still resumes from where the SOUND stopped, so no heard stretch is replayed', async () => {
+    take.on = true
+    await playAndPause()
+    togglePlay()
+    await settle()
+    run(10)
+    expect(playhead()).toBeCloseTo(0.95, 9)
+  })
+
+  it('a playhead moved after the pause plays from where it was put', async () => {
+    await playAndPause()
+    useStore.getState().setUI({ playheadS: 5 })
+    togglePlay()
+    await settle()
+    run(10)
+    expect(playhead()).toBeCloseTo(5, 9)
   })
 })
