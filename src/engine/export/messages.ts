@@ -132,6 +132,12 @@ export type ExportRequest =
        * the file and hands back an ArrayBuffer to download.
        */
       fileHandle?: FileSystemFileHandle
+      /**
+       * The page's frame budget (memoryBudget.ts budgets().frames), which knows
+       * what the machine has spare; a worker alone can only guess. Reversed
+       * clips size their windows from it (clipReader.ts planReverseReading).
+       */
+      frameBudgetBytes?: number
     }
   /** One rendered mix segment, in order. Buffers are transferred, not copied. */
   | { type: 'audioSegment'; channelData: Float32Array<ArrayBuffer>[] }

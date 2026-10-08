@@ -23,7 +23,8 @@ import {
 } from 'mediabunny'
 import type { StreamTargetChunk } from 'mediabunny'
 import { ProviderPool } from './providerPool'
-import { closeProvider, frameForClip, reverseWindowFrames, type ClipProvider } from './clipReader'
+import { closeProvider, frameForClip, planReverseReading, reverseReaderFor, type ClipProvider } from './clipReader'
+import { budgets } from '../memoryBudget'
 import { stageClock } from './stageClock'
 import { browserConfigCheck, pickDecoderOptions } from './decoderChoice'
 import { createRenderer } from '../render/glRenderer'
@@ -316,6 +317,9 @@ async function runNative(init: Extract<ExportRequest, { type: 'init' }>): Promis
 
     const providers = new ProviderPool<ClipProvider>({ close: closeProvider })
     cleanups.push(() => providers.clear())
+    // Reversed clips read a window of frames at a time: how big, from where, and
+    // when each is done, inside the machine's frame budget (clipReader.ts).
+    const reading = planReverseReading(sequence, init.frameBudgetBytes ?? budgets().frames)
     const providerFor = async (clip: Clip): Promise<ClipProvider | null> => {
       const existing = providers.get(clip.id)
       if (existing) return existing
@@ -347,11 +351,9 @@ async function runNative(init: Extract<ExportRequest, { type: 'init' }>): Promis
         current: null,
         ahead: null,
         fps: fpsById.get(clip.assetId),
-        back: null,
-        backFrames: reverseWindowFrames(track.displayWidth, track.displayHeight),
-        reverse: clip.speed < 0,
+        ...reverseReaderFor(clip, reading, track.displayWidth, track.displayHeight),
       }
-      providers.set(clip.id, clip, provider)
+      providers.set(clip.id, clip, provider, reading.doneAtS.get(clip.id))
       return provider
     }
 
@@ -805,6 +807,9 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
 
     const providers = new ProviderPool<ClipProvider>({ close: closeProvider })
     cleanups.push(() => providers.clear())
+    // Reversed clips read a window of frames at a time: how big, from where, and
+    // when each is done, inside the machine's frame budget (clipReader.ts).
+    const reading = planReverseReading(sequence, init.frameBudgetBytes ?? budgets().frames)
     const providerFor = async (clip: Clip): Promise<ClipProvider | null> => {
       const existing = providers.get(clip.id)
       if (existing) return existing
@@ -839,11 +844,9 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
         current: null,
         ahead: null,
         fps: fpsById.get(clip.assetId),
-        back: null,
-        backFrames: reverseWindowFrames(track.displayWidth, track.displayHeight),
-        reverse: clip.speed < 0,
+        ...reverseReaderFor(clip, reading, track.displayWidth, track.displayHeight),
       }
-      providers.set(clip.id, clip, provider)
+      providers.set(clip.id, clip, provider, reading.doneAtS.get(clip.id))
       return provider
     }
 

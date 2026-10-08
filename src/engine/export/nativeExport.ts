@@ -8,6 +8,7 @@ import type { NativeEncoder, NativeStartResult } from '../../../electron/ipc-typ
 import { blobForExport } from '../../state/mediaMirror'
 import { useToasts } from '../../state/toasts'
 import { olApi } from '../../platform'
+import { budgets } from '../memoryBudget'
 import type { Id, Project } from '../types'
 import { planAudioMix } from './audioRender'
 import type { ExportAsset, ExportProgress, ExportRequest, ExportResponse, ExportSettings } from './messages'
@@ -332,6 +333,7 @@ export async function exportNative(
       assets: exportAssets,
       audio: null,
       native: true,
+      frameBudgetBytes: budgets().frames,
     } satisfies ExportRequest)
   })
 }

@@ -4,6 +4,9 @@
 
 import type { CanvasSink, WrappedCanvas } from 'mediabunny'
 import { frameReached } from '../frameIndex'
+import { pairTransitionAt } from '../render/resolve'
+import { clipEndS } from '../timeline'
+import type { Clip, Id, Sequence } from '../types'
 
 // A per-clip monotonic frame reader. Random-access getCanvas() returns null on
 // VFR / cue-less MediaRecorder webm inside a worker, so export pulls frames
@@ -30,33 +33,134 @@ export interface ClipProvider {
   backFrames: number
   /** The clip plays backward (speed below 0), so its first frame is read as a window too. */
   reverse: boolean
+  /**
+   * The lowest source time this clip is ever asked for (planReverseReading): its
+   * in point, or for a reversed clip a transition's reach past its end. No
+   * window starts before it.
+   */
+  lowestS: number
 }
 
 interface BackWindow {
   /** Consecutive frames in presentation order. */
   frames: WrappedCanvas[]
-  /** The frame right after the last one held, or null at the end of the file. */
-  next: WrappedCanvas | null
+  /**
+   * When the frame right after the last one held starts, or null at the end of
+   * the file. Only its time: holding that frame too cost one more full canvas
+   * per reversed clip, 33 MB at 4K (export review, 2026-10-08).
+   */
+  nextS: number | null
   /** The first frame held is the file's first frame: nothing comes before it. */
   atStart: boolean
 }
 
-/** What a reverse window may hold, in bytes of decoded frames. */
-export const REVERSE_WINDOW_BYTES = 128 * 1024 * 1024
-/** Never fewer than this, so a 4K clip still saves most of its decodes. */
-const MIN_REVERSE_FRAMES = 4
-/** Never more: past this the saving is small and the memory is not. */
+/**
+ * The share of the frame budget (memoryBudget.ts, budgets().frames) that every
+ * reverse window of one export may hold together. A quarter: 128 MB at the
+ * budget's ceiling, the fixed number this used to be, and much less on a
+ * machine short of memory, which his is (memoryBudget.ts: 15 GB committed past
+ * his RAM before the editor opens).
+ */
+const REVERSE_SHARE = 1 / 4
+/** Never more frames than this: past it the saving is small and the memory is not. */
 const MAX_REVERSE_FRAMES = 30
 
+/** What all reverse windows of one export may hold together, in bytes. */
+export function reverseBudgetBytes(frameBudgetBytes: number): number {
+  return Number.isFinite(frameBudgetBytes) ? Math.max(0, Math.floor(frameBudgetBytes * REVERSE_SHARE)) : 0
+}
+
 /**
- * How many frames a reversed clip of this size decodes at a time. Every frame
- * is a fresh RGBA canvas, 8.3 MB at 1080p, and his machine runs short of memory
- * (memoryBudget.ts), so the window is a byte budget: 16 frames at 1080p, 30 at
- * 720p, 4 at 4K.
+ * How many frames a reversed clip of this size decodes at a time, inside
+ * `budgetBytes`. Every frame is a fresh RGBA canvas, 8.3 MB at 1080p and 33 MB
+ * at 4K. With the whole 128 MB: 16 frames at 1080p, 30 at 720p, 4 at 4K.
+ *
+ * ⛔ THE BUDGET IS A CEILING, AT 4K TOO. A floor of four frames whatever the
+ * budget, plus the frame after the window that was held as well, made 166 MB at
+ * 4K against a stated 128 MB (export review, 2026-10-08). The window now counts
+ * every frame it holds, and the only floor left is one frame, the least any
+ * reader holds (a forward one holds two).
  */
-export function reverseWindowFrames(width: number, height: number): number {
+export function reverseWindowFrames(width: number, height: number, budgetBytes: number): number {
   const bytes = Math.max(1, width) * Math.max(1, height) * 4
-  return Math.max(MIN_REVERSE_FRAMES, Math.min(MAX_REVERSE_FRAMES, Math.floor(REVERSE_WINDOW_BYTES / bytes)))
+  return Math.max(1, Math.min(MAX_REVERSE_FRAMES, Math.floor(budgetBytes / bytes)))
+}
+
+/** How each clip of one export is read, worked out once from the timeline. */
+export interface ReverseReading {
+  /** What each reversed clip's window may hold, in bytes: the budget shared by those read at once. */
+  windowBytes: number
+  /** Per clip id: the lowest source time it is ever asked for (ClipProvider.lowestS). */
+  lowestS: Map<Id, number>
+  /**
+   * Per REVERSED clip id: the output time from which it is never read again,
+   * its end or the end of the transition that reads it past its end. The pool
+   * closes it then (ProviderPool.set), not 10 s of output later.
+   */
+  doneAtS: Map<Id, number>
+}
+
+/**
+ * ⛔ REVERSE WINDOWS STAY INSIDE THEIR CLIP AND INSIDE THE MACHINE'S BUDGET.
+ * They used to start up to a window before the in point, holding frames the clip
+ * never shows; live on until the pool closed the clip 10 s of output after its
+ * end; and take a fixed 128 MB each. Two reversed clips in a dissolve held about
+ * 280 MB, and a boomerang reel of five 1 s reversed clips back to back about
+ * half a gigabyte (export review, 2026-10-08).
+ *
+ * Now the reverse share of `frameBudgetBytes` is split between the most
+ * reversed clips the timeline ever reads at once, a window never reaches before
+ * the lowest time its clip is asked for, and a reversed clip is closed the
+ * moment its last read is behind the sweep.
+ */
+export function planReverseReading(seq: Sequence, frameBudgetBytes: number): ReverseReading {
+  const lowestS = new Map<Id, number>()
+  const doneAtS = new Map<Id, number>()
+  const spans: [number, number][] = []
+  for (const track of seq.tracks) {
+    if (track.kind !== 'video') continue
+    track.clips.forEach((clip: Clip, i) => {
+      const next = track.clips[i + 1] as Clip | undefined
+      // A transition into the next clip reads this one past its own end, for as
+      // long as resolve.ts runs it, from the next clip's start.
+      const pair = next ? pairTransitionAt(clip, next, seq.fps) : null
+      const readEndS = pair && next ? next.startS + pair.d : clipEndS(clip)
+      const rate = Math.abs(clip.speed || 1)
+      const reversed = clip.speed < 0 && clip.freezeAtS === undefined
+      // Reversed, the source runs back from the out point; past the end it keeps
+      // going back, below the in point, at the same rate.
+      const low = clip.freezeAtS ?? (reversed ? clip.inS - Math.max(0, readEndS - clipEndS(clip)) * rate : clip.inS)
+      lowestS.set(clip.id, Math.max(0, low))
+      if (reversed && clip.enabled) {
+        doneAtS.set(clip.id, readEndS)
+        spans.push([clip.startS, readEndS])
+      }
+    })
+  }
+  // The most reversed clips read at the same moment. Spans are half open, so
+  // back to back clips never count twice.
+  let atOnce = 1
+  for (const [at] of spans) {
+    let n = 0
+    for (const [s, e] of spans) if (s <= at && at < e) n++
+    atOnce = Math.max(atOnce, n)
+  }
+  return { windowBytes: Math.floor(reverseBudgetBytes(frameBudgetBytes) / atOnce), lowestS, doneAtS }
+}
+
+/** The reverse reading fields of a new provider for `clip`, a picture `width` x `height`. */
+export function reverseReaderFor(
+  clip: Clip,
+  reading: ReverseReading,
+  width: number,
+  height: number,
+): Pick<ClipProvider, 'back' | 'backFrames' | 'reverse' | 'lowestS'> {
+  return {
+    back: null,
+    backFrames: reverseWindowFrames(width, height, reading.windowBytes),
+    reverse: clip.speed < 0,
+    lowestS: reading.lowestS.get(clip.id) ?? Math.max(0, clip.inS),
+  }
 }
 
 /** Closes one provider's iterator and its demuxer. The pool calls this exactly once. */
@@ -87,9 +191,9 @@ function fromWindow(back: BackWindow, sourceT: number, fps: number | undefined):
   let k = 0
   while (k + 1 < frames.length && frameReached(frames[k + 1].timestamp, sourceT, fps)) k++
   // Asked for a later frame than the window reaches: not ours.
-  if (k === frames.length - 1 && back.next && frameReached(back.next.timestamp, sourceT, fps)) return null
+  if (k === frames.length - 1 && back.nextS !== null && frameReached(back.nextS, sourceT, fps)) return null
   if (k + 1 < frames.length) {
-    back.next = frames[k + 1]
+    back.nextS = frames[k + 1].timestamp
     frames.length = k + 1
   }
   return frames[k]
@@ -97,32 +201,45 @@ function fromWindow(back: BackWindow, sourceT: number, fps: number | undefined):
 
 /**
  * Decode the window that ends at sourceT: the frames from about backFrames
- * before it, up to the last one that has reached it.
+ * before it, up to the last one that has reached it, and never from before the
+ * lowest time the clip is asked for.
  */
 async function fillWindow(p: ClipProvider, sourceT: number): Promise<void> {
   void p.iterator.return?.(undefined)
   p.back = null
   const rate = p.fps && p.fps > 0 ? p.fps : 30
-  const from = Math.max(0, sourceT - (p.backFrames - 1) / rate)
+  // ⛔ NOT BEFORE THE CLIP'S OWN FIRST FRAME. The last window of every reversed
+  // clip used to reach a whole window before its in point and hold frames the
+  // clip never shows. Never after sourceT either, whatever lowestS says.
+  const from = Math.max(0, Math.min(sourceT, Math.max(p.lowestS, sourceT - (p.backFrames - 1) / rate)))
   p.iterator = p.sink.canvases(from)
   const frames: WrappedCanvas[] = []
-  let next: WrappedCanvas | null = null
+  let nextS: number | null = null
   let dropped = false
   for (let f = await nextFrame(p); f; f = await nextFrame(p)) {
     // The first frame is kept whatever it is: before the file's first frame, it is the answer.
     if (frames.length > 0 && !frameReached(f.timestamp, sourceT, p.fps)) {
-      next = f
+      nextS = f.timestamp
       break
     }
-    frames.push(f)
-    if (frames.length > p.backFrames) {
+    // Room is made before the new one goes in, so the window never holds more than its size.
+    if (frames.length === p.backFrames) {
       frames.shift()
       dropped = true
     }
+    frames.push(f)
   }
   void p.iterator.return?.(undefined)
-  // Opened at 0 with nothing dropped off the front, the first frame held is the file's first.
-  p.back = { frames, next, atStart: from === 0 && !dropped }
+  // The first frame held is the file's first when nothing was dropped off the
+  // front and either the reader was opened at 0 or ⛔ its first frame belongs to
+  // a later slot than the time it was opened at, so nothing in the file comes
+  // before it. A file whose first frame starts late (a recording with a start
+  // offset) got neither and its reversed clip went black from there on,
+  // refilling the same window every frame (export review, 2026-10-08). By slot,
+  // not by a bare `>`: a decoder's frame times are rounded to microseconds, and
+  // a frame a hair after `from` is still the frame shown at `from`.
+  const atStart = !dropped && frames.length > 0 && (from === 0 || !frameReached(frames[0].timestamp, from, p.fps))
+  p.back = { frames, nextS, atStart }
   p.started = true
   p.current = null
   p.ahead = null
