@@ -179,12 +179,14 @@ export function captionTheVoiceover(style?: CaptionStyle, run: CaptionRunOptions
   if (ids.length === 0) return Promise.resolve()
   const fresh = withoutCaptions(ids)
   if (fresh.length > 0) return captionTheseClips(fresh, style, run)
+  // The takes counted in the toast are the takes it redoes: not whatever the
+  // playhead has come to point at by the time it is pressed.
   useToasts.getState().show(
     ids.length === 1
       ? 'The voiceover has captions already. Redo it? Your fixes in it are replaced'
       : `All ${ids.length} voiceover takes have captions already. Redo them? Your fixes in them are replaced`,
     'info',
-    { label: ids.length === 1 ? 'Redo it' : `Redo all ${ids.length}`, onClick: () => void recaptionTheVoiceover(style, run) },
+    { label: ids.length === 1 ? 'Redo it' : `Redo all ${ids.length}`, onClick: () => void captionTheseClips(ids, style, run) },
   )
   return Promise.resolve()
 }

@@ -438,6 +438,28 @@ describe('"Caption the voiceover", with nothing selected', () => {
     expect(texts()).not.toContain('my own fix')
   })
 
+  it('"Redo all 3" redoes the takes it counted, wherever the playhead has gone since', async () => {
+    const { a, b, c } = seed()
+    voiceLine()
+    // A second voice line, its one take at 9 s, for the playhead to wander onto.
+    updateActiveSequence('second voice line', (sq) => ({
+      ...sq,
+      tracks: sq.tracks.map((t) => (t.kind === 'audio' && t.clips.some((cl) => cl.id === 'other-d') ? { ...t, audioRole: 'voice' } : t)),
+    }))
+    await captionTheVoiceover()
+    heard.length = 0
+    toastActions.length = 0
+    await captionTheVoiceover()
+    const redo = toastActions.find((x) => x?.label === 'Redo all 3')
+    expect(redo).toBeDefined()
+    useStore.getState().setUI({ playheadS: 9.5 })
+    expect(voiceoverClipIds()).toEqual(['other-d'])
+    redo!.onClick()
+    await vi.waitFor(() => expect(heard.length).toBeGreaterThan(0))
+    await vi.waitFor(() => expect(useTranscribe.getState().status).toBe('idle'))
+    expect(heard).toEqual([a, b, c])
+  })
+
   it('the button says which takes it will hear', () => {
     expect(voiceoverLabel(1, 1)).toBe('Caption the voiceover')
     expect(voiceoverLabel(4, 4)).toBe('Caption the voiceover (4 clips)')
