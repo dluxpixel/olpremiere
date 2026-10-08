@@ -15,7 +15,7 @@ import { expect, test, type Page } from '@playwright/test'
 const FIXTURE = 'e2e/.fixtures/clip.webm'
 
 /**
- * Brightest pixel across a row of the program monitor, 0..255.
+ * The brightest pixel of EVERY row of the program monitor, 0..255, top to bottom.
  *
  * ⛔ IT REPAINTS FIRST (2026-10-06), the way stylize-pack's `px` does: bump the
  * preview epoch and wait two frames, so the read is of the store as it is NOW and
@@ -23,8 +23,8 @@ const FIXTURE = 'e2e/.fixtures/clip.webm'
  * 500 ms after each change and read once, the shape that failed
  * dissolve-linear-light until it polled.
  */
-async function rowMaxLuma(page: Page, fy: number): Promise<number> {
-  return page.evaluate(async (fy) => {
+async function rowsMaxLuma(page: Page): Promise<number[]> {
+  return page.evaluate(async () => {
     const previewMod = '/src/engine/preview.ts'
     const { invalidatePreview } = (await import(/* @vite-ignore */ previewMod)) as { invalidatePreview: () => void }
     invalidatePreview()
@@ -34,12 +34,29 @@ async function rowMaxLuma(page: Page, fy: number): Promise<number> {
     s.width = c.width
     s.height = c.height
     s.getContext('2d')!.drawImage(c, 0, 0)
-    const row = s.getContext('2d')!.getImageData(0, Math.floor(c.height * fy), c.width, 1).data
-    let max = 0
-    for (let i = 0; i < row.length; i += 4) max = Math.max(max, (row[i] + row[i + 1] + row[i + 2]) / 3)
-    return max
-  }, fy)
+    const data = s.getContext('2d')!.getImageData(0, 0, c.width, c.height).data
+    const rows: number[] = []
+    for (let y = 0; y < c.height; y++) {
+      let max = 0
+      for (let x = 0; x < c.width; x++) {
+        const i = (y * c.width + x) * 4
+        max = Math.max(max, (data[i] + data[i + 1] + data[i + 2]) / 3)
+      }
+      rows.push(max)
+    }
+    return rows
+  })
 }
+
+/** Brightest pixel across one row, `fy` being a fraction of the frame height. */
+async function rowMaxLuma(page: Page, fy: number): Promise<number> {
+  const rows = await rowsMaxLuma(page)
+  return rows[Math.floor(rows.length * fy)]
+}
+
+/** The clip fixture's timecode is white on red, and nothing else on the monitor gets this bright. */
+const TIMECODE_FLOOR = 200
+const rowsAbove = (rows: number[], floor: number): number[] => rows.flatMap((v, i) => (v > floor ? [i] : []))
 
 /**
  * The four frame settings live behind the Frame button since 2026-09-13: the bar
@@ -108,6 +125,14 @@ test('the blurred background fills the bars a wide clip leaves in a Shorts frame
   await setBlurBackground(page, true)
   await expect.poll(async () => rowMaxLuma(page, 0.04), { timeout: 10_000 }).toBeGreaterThan(barOff + 15)
 
+  // Where the clip's own timecode is drawn now (the fixture is flat red with a white
+  // timecode in its top left corner, and the blurred copy behind it is too soft to
+  // reach this brightness), so the zoom below has something to move.
+  let timecodeRows: number[] = []
+  await expect
+    .poll(async () => (timecodeRows = rowsAbove(await rowsMaxLuma(page), TIMECODE_FLOOR)).length, { timeout: 10_000, message: 'the clip timecode never showed' })
+    .toBeGreaterThan(0)
+
   // And it SURVIVES A ZOOM OUT, which is the thing he actually asked for: the
   // clip shrinks away from the edges and the frame stays filled, not black.
   await page.evaluate(async () => {
@@ -130,8 +155,15 @@ test('the blurred background fills the bars a wide clip leaves in a Shorts frame
     })
   })
 
+  // ⛔ THE ZOOM HAS TO BE ON THE MONITOR BEFORE THE BAND IS READ. The band is
+  // already filled before the zoom (the blur is on), so "the band is bright" is true of
+  // the stale frame and of the zoomed one alike, and a poll on it returns at once
+  // having seen nothing: a backdrop that shrank with the clip stayed green once the
+  // monitor painted a few seconds late. What the zoom changes is where the clip's
+  // sharp timecode sits, so the poll is for it to LEAVE the rows it was read on.
+  await expect.poll(async () => rowsAbove(await rowsMaxLuma(page), TIMECODE_FLOOR).filter((r) => timecodeRows.includes(r)).length, { timeout: 10_000 }).toBe(0)
+
   // Halfway between the shrunken clip's edge and the frame edge: black before
-  // this feature, blurred picture now. The zoom is already in the store, and the
-  // read repaints from the store, so this sees the zoomed out frame.
-  await expect.poll(async () => rowMaxLuma(page, 0.18), { timeout: 10_000 }).toBeGreaterThan(barOff + 15)
+  // this feature, blurred picture now.
+  expect(await rowMaxLuma(page, 0.18)).toBeGreaterThan(barOff + 15)
 })
