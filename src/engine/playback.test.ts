@@ -593,6 +593,126 @@ describe('a seamless rebuild leaves no hole', () => {
     t.pause()
   })
 
+  // ⛔ SF-1, review 2026-10-08. A clip edit mid-play rebuilds the sound, and the
+  // rebuild waits on every decode and noise pass it needs. The new sound was
+  // scheduled from where the playhead was predicted to be a few ms after the
+  // edit, but it started seconds later, and the picture was then moved onto it:
+  // picture and sound both jumped BACK by the build time and replayed it. And a
+  // slow build was learned, so the next quick one skipped AHEAD by half of it.
+  describe('a slow rebuild keeps the playhead where he hears it', () => {
+    /**
+     * Graphs that land when the test says. `places` says whether the scheduler
+     * places its own sound from where the picture is when it starts (as
+     * scheduleAudio does when it is handed `follow`).
+     */
+    const slow = (places: boolean) => {
+      type Slow = Graph & { asked: number; follow?: (ctxS: number) => number }
+      const made: Slow[] = []
+      const schedule = (fromS: number, follow?: (ctxS: number) => number) =>
+        new Promise<StopAudio>((resolve) => {
+          const g: Slow = { stopped: false, handedOverAt: null, mixes: 0, land: () => undefined, fail: () => undefined, asked: fromS, follow }
+          g.land = () => {
+            const startsAtCtxS = world.t + 0.02
+            const placed = places && follow ? { fromS: follow(startsAtCtxS) } : {}
+            resolve(
+              Object.assign(
+                () => {
+                  g.stopped = true
+                },
+                {
+                  startsAtCtxS,
+                  ...placed,
+                  stopAt: (at: number) => {
+                    g.handedOverAt = at
+                  },
+                },
+              ),
+            )
+          }
+          made.push(g)
+        })
+      return { made, schedule }
+    }
+    /** Where the picture is at context time `c` for a play from 0 heard at 5.02, untouched. */
+    const steady = (c: number) => c - 5.02
+
+    for (const places of [true, false]) {
+      it(`a build that lands 1.5 s late moves nothing back${places ? '' : ', even from a scheduler that cannot place its sound'}`, async () => {
+        const { made, schedule } = slow(places)
+        const spans: (number | boolean | null)[][] = []
+        const t = new Transport({
+          getEndS: () => 60,
+          onTick: () => undefined,
+          schedule,
+          onHeard: (span, end) => spans.push(span ? [span.timelineS, span.heardAtMs, !!span.continues] : [null, end!]),
+        })
+        const playing = t.play(0)
+        made[0]!.land()
+        await playing
+        world.t = 10.02
+        expect(t.currentTime()).toBeCloseTo(steady(10.02), 9)
+        // He turns noise reduction on: the rebuild waits 1.5 s on the noise pass.
+        t.rescheduleAudio({ seamless: true })
+        world.t = 11.52
+        made[1]!.land()
+        await tick()
+        // The picture never went back: it is exactly where it was heading.
+        expect(t.currentTime()).toBeCloseTo(steady(11.52), 9)
+        world.t = 11.54
+        expect(t.currentTime()).toBeCloseTo(steady(11.54), 9)
+        if (!places) {
+          // A sound that would start 1.5 s behind the picture is not played: it
+          // goes, and the old sound plays on while one is built from here.
+          expect(made[1]!.stopped).toBe(true)
+          expect(made[0]!.stopped || made[0]!.handedOverAt !== null).toBe(false)
+          expect(made).toHaveLength(3)
+          expect(made[2]!.asked).toBeGreaterThan(steady(11.52))
+          expect(made[2]!.asked - steady(11.52)).toBeLessThan(0.1)
+          // Warm now, so built in the 10 ms it was expected to take.
+          world.t = 11.53
+          made[2]!.land()
+          await tick()
+        }
+        // What he hears from the new sound is what the picture shows as it starts.
+        const live = made[made.length - 1]!
+        expect(live.stopped).toBe(false)
+        expect(made[0]!.handedOverAt).not.toBeNull()
+        const [timelineS, heardAtMs, continues] = spans[spans.length - 1] as [number, number, boolean]
+        expect(continues).toBe(true)
+        const startsAt = (heardAtMs - 1040) / 1000
+        expect(timelineS).toBeCloseTo(steady(startsAt), 6)
+        world.t = startsAt + 2
+        expect(t.currentTime()).toBeCloseTo(steady(startsAt + 2), 6)
+
+        // ⛔ And the slow build is not learned: the next quick rebuild asks for
+        // the sound from about where the playhead will be, not 0.75 s past it.
+        world.t = 14.02
+        t.rescheduleAudio({ seamless: true })
+        const next = made[made.length - 1]!
+        expect(next.asked - steady(14.02)).toBeLessThan(0.05)
+        world.t = 14.03
+        next.land()
+        await tick()
+        world.t = 14.05
+        expect(t.currentTime()).toBeCloseTo(steady(14.05), 9)
+        t.pause()
+      })
+    }
+
+    it('the transport tells the scheduler where the picture is at any context time', async () => {
+      const { made, schedule } = slow(true)
+      const t = new Transport({ getEndS: () => 60, onTick: () => undefined, schedule })
+      const playing = t.play(0)
+      made[0]!.land()
+      await playing
+      world.t = 8
+      t.rescheduleAudio({ seamless: true })
+      expect(made[1]!.follow).toBeTypeOf('function')
+      expect(made[1]!.follow!(9.5)).toBeCloseTo(steady(9.5), 9)
+      t.pause()
+    })
+  })
+
   it('a mix change moves the live graph, and only a live graph', async () => {
     const { made, schedule } = graphs()
     const t = new Transport({ getEndS: () => 60, onTick: () => undefined, schedule })

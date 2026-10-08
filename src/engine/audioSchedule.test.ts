@@ -11,9 +11,11 @@ import { makeClip, makeSeq, makeTrack } from '../components/timelineTestFixtures
 import { DUCK_ATTACK_S, DUCK_DB } from './ducking'
 import type { MediaAsset, Track } from './types'
 
-const { decode } = vi.hoisted(() => ({ decode: vi.fn() }))
+const { decode, noisePass } = vi.hoisted(() => ({ decode: vi.fn(), noisePass: vi.fn() }))
 vi.mock('../state/persistence', () => ({ getBlob: async () => new Blob(['bytes']) }))
 vi.mock('./audioDecodeClient', () => ({ decodeAudioOffThread: decode, peaksOffThread: vi.fn() }))
+// The noise pass, stood in for so a test can say how long it takes.
+vi.mock('./denoiseClient', () => ({ denoiseOffThread: noisePass }))
 // No worklets in node: the master limiter stays out, as it does until it loads.
 vi.mock('./limiterNode', () => ({ createLimiterNode: () => Promise.reject(new Error('no worklet in node')) }))
 
@@ -184,6 +186,8 @@ const {
   forgetAssetAudio,
 } = audio
 const ctx = ensureAudioContext() as unknown as FakeContext
+const { Transport } = await import('./playback')
+const { invalidateDenoise } = await import('./denoise')
 
 const VOICE: MediaAsset = { id: 'v', name: 'take.wav', kind: 'audio', blobKey: 'asset/v', durationS: 10, hasAudio: true, hasVideo: false }
 const MUSIC: MediaAsset = { id: 'm', name: 'bed.mp3', kind: 'audio', blobKey: 'asset/m', durationS: 10, hasAudio: true, hasVideo: false }
@@ -213,6 +217,7 @@ beforeEach(() => {
   }))
   forgetAssetAudio('v')
   forgetAssetAudio('m')
+  noisePass.mockReset()
   vi.spyOn(console, 'warn').mockImplementation(() => {})
 })
 
@@ -368,6 +373,154 @@ describe('a graph comes in and goes out through its own fader', () => {
       expect(oldFader.at(t) + newFader.at(t)).toBeCloseTo(1, 9)
     }
     second()
+  })
+})
+
+// ⛔ SF-1, review 2026-10-08. A clip edit mid-play rebuilds the sound, and that
+// rebuild waits on every read it needs: the whole span again for a clip he
+// extended, the whole take and its noise pass for one he turned noise reduction
+// on for. The sound used to start from where the playhead was when the rebuild
+// was ASKED for, seconds before it was ready, and the picture was moved back
+// onto it. Handed `follow`, the scheduler starts it from where the picture is
+// at the moment it really sounds.
+describe('a rebuild that waits on a slow read starts where the picture is', () => {
+  /** The picture for a play heard from timeline 0 at context time 10.05. */
+  const picture = (ctxS: number): number => ctxS - 10.05
+
+  /** Decodes that take `slowS` of the context's time to come back. */
+  const slowDecodes = (slowS: { s: number }) => {
+    decode.mockImplementation(async (_blob: Blob, _dur: number, fromS = 0, toS = 10) => {
+      ctx.currentTime += slowS.s
+      return {
+        kind: 'pcm',
+        planes: [new Float32Array(Math.round((toS - fromS) * 48_000)).fill(0.1)],
+        sampleRate: 48_000,
+        startS: fromS,
+      }
+    })
+  }
+
+  it('a clip extended while it plays: its span is read again for 1.5 s, and the sound starts where the picture got to', async () => {
+    const slow = { s: 0 }
+    slowDecodes(slow)
+    const short = voiceTrack({ clips: [makeClip({ id: 'c1', assetId: 'v', startS: 0, inS: 0, outS: 4 })] })
+    const first = await scheduleAudio(makeSeq([short]), ASSETS, 0)
+    expect(first.startsAtCtxS).toBeCloseTo(10.05, 9)
+    // 2 s in, he drags the out point to 8 s: a span not read yet.
+    ctx.currentTime = 12.05
+    slow.s = 1.5
+    const longer = voiceTrack({ clips: [makeClip({ id: 'c1', assetId: 'v', startS: 0, inS: 0, outS: 8 })] })
+    const hint = picture(ctx.currentTime + SCHEDULE_LATENCY_S + 0.01)
+    const stop = await scheduleAudio(makeSeq([longer]), ASSETS, hint, picture)
+    // Ready 1.5 s later, and it starts from there, not from 2 s.
+    expect(stop.startsAtCtxS).toBeCloseTo(13.55 + SCHEDULE_LATENCY_S, 9)
+    expect(stop.fromS).toBeCloseTo(picture(stop.startsAtCtxS), 9)
+    const source = ctx.sources.at(-1)!
+    const [when, offset, duration] = source.started!
+    expect(when).toBeCloseTo(stop.startsAtCtxS, 4)
+    expect(offset).toBeCloseTo(picture(stop.startsAtCtxS), 4)
+    expect(duration).toBeCloseTo(8 - picture(stop.startsAtCtxS), 4)
+    // Its gain is worked out from there too: the clip's de-clicked end lands on
+    // the moment the picture reaches 8 s, not 1.5 s after it.
+    const clipGain = (source.out[0] as Gain).gain
+    const endsAt = stop.startsAtCtxS + (8 - picture(stop.startsAtCtxS))
+    expect(clipGain.at(endsAt - 0.003)).toBeCloseTo(1, 6)
+    expect(clipGain.at(endsAt)).toBeCloseTo(0, 6)
+    first()
+    stop()
+  })
+
+  it('noise reduction turned on while it plays: a 2 s noise pass, and the sound starts where the picture got to', async () => {
+    invalidateDenoise('v')
+    noisePass.mockImplementation((channels: readonly Float32Array[]) => {
+      ctx.currentTime += 2
+      return Promise.resolve(channels.map((c) => c.slice()))
+    })
+    const track = voiceTrack({ clips: [makeClip({ id: 'c1', assetId: 'v', startS: 0, inS: 0, outS: 8, denoise: 1 })] })
+    ctx.currentTime = 11.05 // a second in
+    const stop = await scheduleAudio(makeSeq([track]), ASSETS, picture(11.05 + SCHEDULE_LATENCY_S + 0.01), picture)
+    expect(noisePass).toHaveBeenCalledTimes(1)
+    expect(stop.startsAtCtxS).toBeGreaterThan(13)
+    expect(stop.fromS).toBeCloseTo(picture(stop.startsAtCtxS), 9)
+    const [, offset] = ctx.sources.at(-1)!.started!
+    expect(offset).toBeCloseTo(picture(stop.startsAtCtxS), 4)
+    stop()
+    invalidateDenoise('v')
+  })
+
+  it('a clip that ended while the read ran is not started at all', async () => {
+    const slow = { s: 1.5 }
+    slowDecodes(slow)
+    const two = voiceTrack({
+      clips: [
+        makeClip({ id: 'c1', assetId: 'v', startS: 0, inS: 0, outS: 2.5 }),
+        makeClip({ id: 'c2', assetId: 'v', startS: 2.5, inS: 5, outS: 9 }),
+      ],
+    })
+    ctx.currentTime = 12.05 // timeline 2: c1 has half a second left
+    const stop = await scheduleAudio(makeSeq([two]), ASSETS, 2.06, picture)
+    // By the time it sounds (two reads of 1.5 s), c1 is over and c2 is well in.
+    expect(picture(stop.startsAtCtxS)).toBeGreaterThan(2.5)
+    expect(ctx.sources).toHaveLength(1)
+    const [when, offset] = ctx.sources[0]!.started!
+    expect(when).toBeCloseTo(stop.startsAtCtxS, 4)
+    // c2's read starts on its 2 s grid, at 4 s of the file.
+    expect(offset).toBeCloseTo(5 + (picture(stop.startsAtCtxS) - 2.5) - 4, 4)
+    stop()
+  })
+
+  it('a source started later plays exactly what one scheduled there would, stretched or not', () => {
+    const buf = ctx.createBuffer(1, 48_000 * 10, 48_000) as unknown as AudioBuffer
+    const on = ctx as unknown as BaseAudioContext
+    for (const speed of [1, 2, 0.5]) {
+      const clip = makeClip({ id: 'c', assetId: 'v', startS: 1, inS: 2, outS: 8, speed })
+      const early = audio.pitchPreservedSource(on, buf, speed, audio.computeClipSchedule(clip, 1.5)!, clip.inS)
+      const there = audio.pitchPreservedSource(on, buf, speed, audio.computeClipSchedule(clip, 2.25)!, clip.inS)
+      const moved = audio.startLater(early, 0.75)
+      expect(moved.buffer).toBe(there.buffer)
+      expect(moved.playbackRate).toBe(there.playbackRate)
+      expect(moved.offsetS).toBeCloseTo(there.offsetS, 9)
+      expect(moved.durationS).toBeCloseTo(there.durationS, 9)
+    }
+  })
+
+  it('without `follow` it plays from exactly where it was asked to', async () => {
+    const slow = { s: 1.5 }
+    slowDecodes(slow)
+    const stop = await scheduleAudio(makeSeq([voiceTrack()]), ASSETS, 1)
+    expect(stop.fromS).toBe(1)
+    expect(ctx.sources[0]!.started![1]).toBeCloseTo(1, 9)
+    stop()
+  })
+
+  it('end to end: the transport plays on through a slow rebuild without a jump', async () => {
+    globalThis.requestAnimationFrame = (() => 1) as unknown as typeof requestAnimationFrame
+    globalThis.cancelAnimationFrame = (() => undefined) as unknown as typeof cancelAnimationFrame
+    const slow = { s: 0 }
+    slowDecodes(slow)
+    let seq = makeSeq([voiceTrack({ clips: [makeClip({ id: 'c1', assetId: 'v', startS: 0, inS: 0, outS: 4 })] })])
+    const t = new Transport({
+      getEndS: () => 9,
+      onTick: () => undefined,
+      schedule: (fromS, follow) => scheduleAudio(seq, ASSETS, fromS, follow),
+    })
+    await t.play(0)
+    expect(ctx.sources[0]!.started![0]).toBeCloseTo(10.05, 4)
+    ctx.currentTime = 12.05
+    expect(t.currentTime()).toBeCloseTo(2, 9)
+    // He extends the clip while it plays, and the new span takes 1.5 s to read.
+    seq = makeSeq([voiceTrack({ clips: [makeClip({ id: 'c1', assetId: 'v', startS: 0, inS: 0, outS: 8 })] })])
+    slow.s = 1.5
+    t.rescheduleAudio({ seamless: true })
+    await vi.waitFor(() => expect(ctx.sources).toHaveLength(2))
+    // The picture is where it was heading all along, and the new sound starts
+    // exactly on it.
+    expect(t.currentTime()).toBeCloseTo(picture(ctx.currentTime), 9)
+    const [when, offset] = ctx.sources[1]!.started!
+    expect(offset).toBeCloseTo(picture(when), 4)
+    ctx.currentTime = when + 1
+    expect(t.currentTime()).toBeCloseTo(picture(when + 1), 9)
+    t.pause()
   })
 })
 

@@ -1117,12 +1117,13 @@ describe('a hard audio cut gets a 2 ms de-click, a blade cut none (EA-7)', () =>
   })
 
   it('both mixers read the edges off the clip as it sits on its track, and hand them to the one envelope', () => {
-    for (const [src, body] of [
-      [liveSrc, liveBody],
-      [exportSrc, exportBody],
+    // The live mixer places a rebuilt sound from `atS`, where the picture is when it sounds (SF-1).
+    for (const [src, body, from] of [
+      [liveSrc, liveBody, 'atS'],
+      [exportSrc, exportBody, 'fromS'],
     ]) {
       expect(src).toContain('edges: clipEdges(track, clip)')
-      expect(body).toContain('clipGainEnvelope(clip, fromS, edges)')
+      expect(body).toContain(`clipGainEnvelope(clip, ${from}, edges)`)
     }
   })
 })

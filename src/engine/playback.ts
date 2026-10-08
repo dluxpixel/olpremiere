@@ -16,11 +16,42 @@ import type { Track } from './types'
  */
 export type StopAudio = (() => void) & {
   startsAtCtxS?: number
+  /**
+   * The timeline time it sounds at `startsAtCtxS`, when the scheduler placed the
+   * sound itself (it was handed `follow`, see ScheduleFn).
+   */
+  fromS?: number
   stopAt?: (ctxS: number) => void
   setMix?: (tracks: readonly Track[]) => boolean
 }
 
-export type ScheduleFn = (fromS: number) => Promise<StopAudio>
+/**
+ * Builds the sound from timeline `fromS`. `follow`, when given, says where the
+ * picture is at a context time: the scheduler then starts the sound from where
+ * the picture will be at the moment it really sounds, however long the build
+ * took, and says where that was in `fromS` on what it hands back.
+ */
+export type ScheduleFn = (fromS: number, follow?: (ctxS: number) => number) => Promise<StopAudio>
+
+/**
+ * The most a rebuilt sound may land behind the picture and still have the
+ * picture follow it: the build-time guess going wrong by about a scheduling
+ * latency. Any later and the picture would visibly jump back and replay what
+ * he just watched (SF-1), so that sound is not used.
+ */
+export const FOLLOW_BACK_MAX_S = 0.05
+
+/**
+ * The longest build that is learned as the time a rebuild takes. A rebuild that
+ * waited on a decode or a noise pass is a one-off, not what the next one costs.
+ */
+const REBUILD_LEARN_MAX_S = 0.25
+
+/** A sound rebuilt mid-play: when it was asked for, and how to ask once more if it lands too late. */
+interface Rebuilt {
+  calledAt: number
+  retry?: () => void
+}
 
 /**
  * Where a stretch of the timeline reaches his EARS: timeline `timelineS` is
@@ -427,41 +458,80 @@ export class Transport {
    * lands mid-play (a late join, a loop wrap, a mix change) is a new stretch he
    * hears, from `fromS` at the time its sound was scheduled for.
    */
-  private adoptAudio(claim: number, stop: StopAudio, fromS: number, rebuiltAt?: number): void {
+  private adoptAudio(claim: number, stop: StopAudio, fromS: number, rebuilt?: Rebuilt): void {
     if (claim !== this.audioToken) {
       stop()
       return
     }
-    this.stopAudio = stop
     const ctx = this.isPlaying && this.currentRate === 1 ? this.contextOrNull() : null
     if (!ctx || !(ctx.currentTime > 0)) {
+      this.stopAudio = stop
       if (this.outgoing && this.heard?.sound) this.endHeard()
       this.stopOutgoing()
       return
     }
     const startsAt = stop.startsAtCtxS ?? ctx.currentTime + SCHEDULE_LATENCY_S
+    // Where the new sound starts on the timeline: where the scheduler placed it,
+    // or else where it was asked to start.
+    const soundS = stop.fromS ?? fromS
+    // ⛔ NEVER FOLLOW A LATE SOUND BACK (SF-1, review 2026-10-08). A rebuild that
+    // waited seconds on a decode or a noise pass used to start from where the
+    // playhead was when it was ASKED for, and the picture was then moved onto
+    // it: both jumped back by the build time and replayed it. scheduleAudio now
+    // places the sound where the picture is when it starts, so this only catches
+    // a scheduler that could not: its sound goes unheard, the old sound plays on,
+    // and one more is built from the live time (warm by now, so quick). Only if
+    // that one is late too does the picture follow, rather than run on with the
+    // sound behind it.
+    if (rebuilt?.retry && soundS < this.timelineAtCtx(ctx, startsAt) - FOLLOW_BACK_MAX_S) {
+      stop()
+      rebuilt.retry()
+      return
+    }
+    this.stopAudio = stop
     this.handOver(startsAt)
-    const rebuilt = rebuiltAt !== undefined
-    if (rebuilt) this.followSound(ctx, startsAt, fromS, rebuiltAt)
-    this.openHeard({ timelineS: fromS, heardAtMs: heardAtMsOf(ctx, startsAt), sound: true, ctxS: startsAt, continues: rebuilt })
+    if (rebuilt) this.followSound(ctx, startsAt, soundS, rebuilt.calledAt, stop.fromS === undefined)
+    this.openHeard({
+      timelineS: soundS,
+      heardAtMs: heardAtMsOf(ctx, startsAt),
+      sound: true,
+      ctxS: startsAt,
+      continues: rebuilt !== undefined,
+    })
   }
 
   /**
    * A sound rebuilt mid-play lands, scheduled to sound `fromS` at `startsAt`:
-   * put the picture exactly on it. The prediction in rescheduleAudio is off only
-   * by how wrong the build-time guess was, a few ms, so that is all the picture
-   * moves. A play that began before the context's clock had started (the picture
-   * on the performance clock) moves onto the context clock here, where the sound
-   * is. The build time is learned for the next prediction.
+   * put the picture exactly on it. A sound the scheduler placed itself is
+   * already where the picture is, so nothing moves; a predicted one is off only
+   * by how wrong the build-time guess was, a few ms (see FOLLOW_BACK_MAX_S). A
+   * play that began before the context's clock had started (the picture on the
+   * performance clock) moves onto the context clock here, where the sound is.
+   *
+   * ⛔ ONLY A PREDICTED BUILD, AND ONLY A QUICK ONE, IS LEARNED. A build that
+   * waited 1.5 s on a decode used to be learned too, and the next quick rebuild
+   * (a mute, a clip moved) then asked for the sound 0.75 s ahead of the picture
+   * and both skipped forward to it.
    */
-  private followSound(ctx: AudioContext, startsAt: number, fromS: number, calledAt: number): void {
+  private followSound(ctx: AudioContext, startsAt: number, fromS: number, calledAt: number, predicted: boolean): void {
     if (this.readClock === perfClock) {
       this.readClock = () => ctx.currentTime
-    } else {
+    } else if (predicted) {
       const took = startsAt - SCHEDULE_LATENCY_S - calledAt
-      if (took >= 0 && took < 2) this.rebuildS = (this.rebuildS + took) / 2
+      if (took >= 0 && took < REBUILD_LEARN_MAX_S) this.rebuildS = (this.rebuildS + took) / 2
     }
     this.anchor = startsAt - (fromS - this.startS) / this.currentRate
+  }
+
+  /**
+   * The timeline time the picture shows at context time `ctxS`, on whichever
+   * clock it runs: the context's own, or the performance clock before the
+   * context's had started.
+   */
+  private timelineAtCtx(ctx: AudioContext | null, ctxS: number): number {
+    if (!ctx) return this.liveTime()
+    if (this.readClock !== perfClock) return this.timeAt(ctxS)
+    return this.timeAt(this.readClock() + (ctxS - ctx.currentTime))
   }
 
   /** A new stretch he hears. One still open ends where this one begins. */
@@ -522,12 +592,17 @@ export class Transport {
    * nothing (the next play() reads the new values anyway).
    */
   rescheduleAudio(opts: { seamless?: boolean } = {}): void {
+    this.rebuild(opts.seamless === true, true)
+  }
+
+  /** One rebuild. `mayRetry`: a sound that lands too late to use may be built once more. */
+  private rebuild(seamless: boolean, mayRetry: boolean): void {
     if (!this.isPlaying || !this.intended || this.currentRate !== 1) return
     // Seamless for a change he made to the mix or the clips, where the sound
     // playing now is right up to the moment the new one starts. Not for the
     // late join or the clock that started late: there the old sound is the
     // fault being replaced.
-    const claim = this.claimAudio(opts.seamless === true)
+    const claim = this.claimAudio(seamless)
     // ⛔ FROM WHERE THE PLAYHEAD WILL BE WHEN THE NEW SOUND STARTS, not from
     // where it is now (MIC-4, 2026-10-01). A rebuilt sound starts a scheduling
     // latency plus its build time after this call, so scheduling it from here
@@ -536,11 +611,15 @@ export class Transport {
     // recorded across it came out split on two lines with 80 to 125 ms of his
     // voice twice, or 84 ms of it cut out. The prediction uses the learned build
     // time, and adoptAudio puts the picture exactly on the sound when it lands.
+    // `follow` lets the scheduler do better than predict: it starts the sound
+    // from where the picture is at the moment the sound really starts (SF-1).
     const calledAt = this.readClock()
     const fromS = this.timeAt(calledAt + SCHEDULE_LATENCY_S + this.rebuildS)
+    const follow = (ctxS: number): number => this.timelineAtCtx(this.contextOrNull(), ctxS)
+    const retry = mayRetry ? () => this.rebuild(seamless, false) : undefined
     void this.opts
-      .schedule(fromS)
-      .then((stop) => this.adoptAudio(claim, stop, fromS, calledAt))
+      .schedule(fromS, follow)
+      .then((stop) => this.adoptAudio(claim, stop, fromS, { calledAt, retry }))
       .catch(() => {
         // Nothing to hand over to: the old sound of a seamless rebuild stops.
         if (claim !== this.audioToken || !this.outgoing) return

@@ -86,7 +86,9 @@ const transport = new Transport({
   // Every stretch of the timeline he hears, so a take recorded against it lands
   // where he performed it (MIC-4, MIC-5). The recorder ignores it between takes.
   onHeard: (span, endedAtMs, why) => takeHeard(span, endedAtMs, why),
-  schedule: (fromS) => {
+  // `follow` comes with a rebuild mid-play: the sound starts where the picture
+  // is once it is ready, however long it took to build (SF-1).
+  schedule: (fromS, follow) => {
     // A scrub grain still ringing would sound over the top of the transport, so
     // the two are never alive at once. Cheap and idempotent.
     const { project } = useStore.getState()
@@ -97,7 +99,7 @@ const transport = new Transport({
     const seq = activeSequence(project)
     // What this graph plays, so a clip edit mid-play can tell it is out of date.
     builtSound = soundFingerprint(seq.tracks)
-    return scheduleAudio(seq, project.assets, fromS)
+    return scheduleAudio(seq, project.assets, fromS, follow)
   },
   // Loop toggle: the in/out range when set, else the whole sequence.
   getLoopRange: () => {

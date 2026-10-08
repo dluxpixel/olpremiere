@@ -1008,6 +1008,19 @@ export function pitchPreservedSource(
 }
 
 /**
+ * The same source started `laterS` of timeline later, `laterS` into what it
+ * plays. A source plays `playbackRate` seconds of its buffer per second, a
+ * stretched slice and a plain buffer alike, so nothing has to be stretched or
+ * read again: a rebuild placed from where the picture got to while the reads
+ * ran (SF-1) only moves its window.
+ */
+export function startLater(play: ScheduledSource, laterS: number): ScheduledSource {
+  if (!(laterS > 0)) return play
+  const skip = laterS * play.playbackRate
+  return { ...play, offsetS: play.offsetS + skip, durationS: Math.max(0, play.durationS - skip) }
+}
+
+/**
  * Stretched slices, kept so pressing play twice does not do the work twice.
  *
  * Measured 2026-08-14: a minute of stereo at 2x is about 70 ms, and a five
@@ -1371,6 +1384,11 @@ export type ScheduledAudio = (() => void) & {
   /** The context time `fromS` was scheduled to sound at (MIC-4). */
   startsAtCtxS: number
   /**
+   * The timeline time it sounds at `startsAtCtxS`: the `fromS` it was asked for,
+   * or, when it was handed `follow`, where the picture is at that moment.
+   */
+  fromS: number
+  /**
    * Hand over to a newer graph that sounds from context time `ctxS`: this one
    * fades out across that moment as the newer one fades in, so a rebuild mid-play
    * leaves no hole and no click.
@@ -1390,11 +1408,17 @@ export type ScheduledAudio = (() => void) & {
  * Resolves to a stop() that tears the scheduled graph down exactly once. It
  * carries `startsAtCtxS`, the context time `fromS` was scheduled to sound at,
  * so a take recorded against it can be placed where it was heard (MIC-4).
+ *
+ * `follow`, for a sound rebuilt while play goes on, says which timeline time
+ * the picture shows at a context time. The sound then starts from where the
+ * picture is at the moment it really sounds, however long the reads took, and
+ * `fromS` is only a hint (see the SF-1 note below).
  */
 export async function scheduleAudio(
   seq: Sequence,
   assets: Record<Id, MediaAsset>,
   fromS: number,
+  follow?: (ctxS: number) => number,
 ): Promise<ScheduledAudio> {
   const ctx = ensureAudioContext()
   await tryResume(ctx)
@@ -1404,8 +1428,16 @@ export async function scheduleAudio(
   const anySolo = seq.tracks.some((t) => t.solo)
   const audibleTracks = seq.tracks.filter((t) => (anySolo ? t.solo : !t.muted))
 
-  // One duck automation shared by every music track (see engine/ducking.ts).
-  const duckEnv = duckEnvelope(seq.tracks, anySolo, fromS)
+  // ⛔ A REBUILD MID-PLAY STARTS WHERE THE PICTURE IS WHEN IT SOUNDS (SF-1,
+  // review 2026-10-08). A clip edit while it plays rebuilds the sound, and this
+  // waits on every read below: the whole span again for a clip he extended, the
+  // whole take and its noise pass for one he turned noise reduction on for. The
+  // sound used to start from where the playhead was when it was ASKED for, a
+  // second or more before it was ready, and the transport then moved the picture
+  // back onto it: both replayed what he had just watched. With `follow`, the
+  // clips are picked from the earliest moment the sound could start, and placed
+  // from where the picture actually is once everything is read (`atS` below).
+  const pickS = follow ? Math.min(fromS, follow(ctx.currentTime + SCHEDULE_LATENCY_S)) : fromS
 
   // Audio comes from audio-track clips PLUS standalone (unlinked) video clips.
   // A linked video clip is video-only: its audio plays from the linked
@@ -1426,7 +1458,7 @@ export async function scheduleAudio(
       const reversed = clip.speed < 0
       // A reverse clip schedules as its forward-equivalent on the reversed buffer.
       const eff = reversed ? effectiveAudioClip(clip, asset.durationS) : clip
-      const sched = computeClipSchedule(eff, fromS)
+      const sched = computeClipSchedule(eff, pickS)
       if (!sched) continue
       // Its neighbours are read off the clip as it sits on the track.
       candidates.push({ clip: eff, track, sched, asset, reversed, edges: clipEdges(track, clip) })
@@ -1450,6 +1482,55 @@ export async function scheduleAudio(
       buffers[i] = await playbackAudioFor(c.clip, c.asset, c.reversed)
     },
   )
+
+  // ⛔ EVERY STRETCH HAPPENS BEFORE THE CLOCK IS READ, 2026-08-24, AND IT USED TO
+  // HAPPEN AFTER. His words: *"sometimes I know it's just popping off. It's not
+  // working."*
+  //
+  // `pitchPreservedSource` runs WSOLA SYNCHRONOUSLY on any clip that is not at 1x
+  // and is not already in the stretch cache. This file's own measurement: about
+  // 70 ms per stereo minute at 2x, 600 ms for a five minute one. The schedule
+  // latency is 50 ms. So one long un-cached clip spent the whole budget while
+  // `baseT` sat frozen above the loop, and by the time `start()` was called
+  // `ctx.currentTime` had walked past it. Everything that follows from that is
+  // exactly what he described:
+  //   - a start time in the past plays IMMEDIATELY, so every clip inside the
+  //     overrun fires at once, which is the burst,
+  //   - `linearRampToValueAtTime` to a past time SNAPS to its target, so every
+  //     fade-in collapses into a step, which is the click,
+  //   - the transport then anchors the picture to a base the sound never used,
+  //     so the two drift apart and stay apart.
+  //
+  // And the reschedule is the common path, not the rare one: the stretch cache
+  // key carries `sourceOffsetS`, which comes from `fromS`, and a reschedule
+  // passes the LIVE time, so the clip under the playhead is always a miss and
+  // re-stretches its whole remainder. Every fader nudge, every mute, every loop
+  // wrap paid that cost with the clock running.
+  //
+  // The export never had this: it starts sources at absolute offsets into an
+  // OfflineAudioContext, where the same stall costs render time and nothing else.
+  // That is why he says the export is fine.
+  const plays = candidates.map(({ clip, sched }, i) => {
+    const got = buffers[i]
+    if (!got) return null
+    // A ranged buffer starts at `got.startS` of source time, so every source
+    // offset moves by that same amount and nothing else changes.
+    const onBuffer = got.startS ? { ...sched, sourceOffsetS: sched.sourceOffsetS - got.startS } : sched
+    // `clip.inS` is the anchor: it makes the stretch cache key stand still across
+    // a reschedule, so a fader nudge mid-playback costs nothing. See the docblock
+    // on pitchPreservedSource.
+    return pitchPreservedSource(ctx, got.buffer, clip.speed, onBuffer, clip.inS - got.startS)
+  })
+
+  // One base time shared by every clip so relative offsets stay exact. Read AFTER
+  // the last slow call above, so nothing can walk the clock past it.
+  const baseT = ctx.currentTime + SCHEDULE_LATENCY_S
+  // Where on the timeline the sound starts: where the picture is at baseT for a
+  // rebuild (never before where the clips were picked from), else as asked.
+  const atS = follow ? Math.max(pickS, follow(baseT)) : fromS
+
+  // One duck automation shared by every music track (see engine/ducking.ts).
+  const duckEnv = duckEnvelope(seq.tracks, anySolo, atS)
 
   const { master } = ensureMasterChain()
   // Every track waits as long as the slowest (Auto-level's compressor), so the
@@ -1501,64 +1582,25 @@ export async function scheduleAudio(
 
   const clipNodes: { source: AudioBufferSourceNode; gain: GainNode }[] = []
 
-  // ⛔ EVERY STRETCH HAPPENS BEFORE THE CLOCK IS READ, 2026-08-24, AND IT USED TO
-  // HAPPEN AFTER. His words: *"sometimes I know it's just popping off. It's not
-  // working."*
-  //
-  // `pitchPreservedSource` runs WSOLA SYNCHRONOUSLY on any clip that is not at 1x
-  // and is not already in the stretch cache. This file's own measurement: about
-  // 70 ms per stereo minute at 2x, 600 ms for a five minute one. The schedule
-  // latency is 50 ms. So one long un-cached clip spent the whole budget while
-  // `baseT` sat frozen above the loop, and by the time `start()` was called
-  // `ctx.currentTime` had walked past it. Everything that follows from that is
-  // exactly what he described:
-  //   - a start time in the past plays IMMEDIATELY, so every clip inside the
-  //     overrun fires at once, which is the burst,
-  //   - `linearRampToValueAtTime` to a past time SNAPS to its target, so every
-  //     fade-in collapses into a step, which is the click,
-  //   - the transport then anchors the picture to a base the sound never used,
-  //     so the two drift apart and stay apart.
-  //
-  // And the reschedule is the common path, not the rare one: the stretch cache
-  // key carries `sourceOffsetS`, which comes from `fromS`, and a reschedule
-  // passes the LIVE time, so the clip under the playhead is always a miss and
-  // re-stretches its whole remainder. Every fader nudge, every mute, every loop
-  // wrap paid that cost with the clock running.
-  //
-  // The export never had this: it starts sources at absolute offsets into an
-  // OfflineAudioContext, where the same stall costs render time and nothing else.
-  // That is why he says the export is fine.
-  const plays = candidates.map(({ clip, sched }, i) => {
-    const got = buffers[i]
-    if (!got) return null
-    // A ranged buffer starts at `got.startS` of source time, so every source
-    // offset moves by that same amount and nothing else changes.
-    const onBuffer = got.startS ? { ...sched, sourceOffsetS: sched.sourceOffsetS - got.startS } : sched
-    // `clip.inS` is the anchor: it makes the stretch cache key stand still across
-    // a reschedule, so a fader nudge mid-playback costs nothing. See the docblock
-    // on pitchPreservedSource.
-    return pitchPreservedSource(ctx, got.buffer, clip.speed, onBuffer, clip.inS - got.startS)
-  })
-
-  // One base time shared by every clip so relative offsets stay exact. Read AFTER
-  // the last slow call above, so nothing can walk the clock past it.
-  const baseT = ctx.currentTime + SCHEDULE_LATENCY_S
   // ⛔ THE SOUND IS DUE AT THE SPEAKERS AT baseT, NOT AT THE SOURCES. The track
   // alignment (Auto-level's 6 ms, see AUTO_LEVEL_LATENCY_S) and the master
   // limiter's look-ahead both delay what comes out, so every source starts that
   // much earlier and the transport's anchor at baseT stays exactly right. The
   // export removes the same delays from its render, so the two still agree.
   const startT = baseT - alignS - masterLatencyS()
-  candidates.forEach(({ clip, track, sched, edges }, i) => {
-    const play = plays[i]
-    if (!play) return
+  candidates.forEach(({ clip, track, sched: picked, edges }, i) => {
+    const first = plays[i]
+    // A clip that ended while the reads ran plays nothing.
+    const sched = atS === pickS ? picked : computeClipSchedule(clip, atS)
+    if (!first || !sched) return
+    const play = atS === pickS ? first : startLater(first, Math.max(0, atS - Math.max(pickS, clip.startS)))
     // A plain track starts later by the alignment, so it meets the Auto-level ones.
     const trackT = startT + trackLateS(track, alignS)
     const source = ctx.createBufferSource()
     source.buffer = play.buffer
     source.playbackRate.value = play.playbackRate
     // Fade in/out + static gain + de-click, shared with the export mix by construction.
-    const env = clipGainEnvelope(clip, fromS, edges) ?? [{ offsetS: 0, value: dbToGain(clip.audioGainDb) }]
+    const env = clipGainEnvelope(clip, atS, edges) ?? [{ offsetS: 0, value: dbToGain(clip.audioGainDb) }]
     // Stereo always, the same node the export builds: see createClipGain.
     const gain = createClipGain(ctx, env[0]!.value)
     env.forEach((pt, idx) => {
@@ -1635,7 +1677,7 @@ export async function scheduleAudio(
     const audibleNow = new Set(tracks.filter((t) => (solo ? t.solo : !t.muted)).map((t) => t.id))
     for (const id of audibleNow) if (!builtAudible.has(id)) return false
     if (tracks.length !== builtShape.size || tracks.some((t) => builtShape.get(t.id) !== shapeOf(t))) return false
-    if (JSON.stringify(duckEnvelope(tracks, solo, fromS)) !== builtDuck) return false
+    if (JSON.stringify(duckEnvelope(tracks, solo, atS)) !== builtDuck) return false
     const now = ctx.currentTime
     for (const t of tracks) {
       const nodes = trackNodes.get(t.id)
@@ -1645,5 +1687,5 @@ export async function scheduleAudio(
     }
     return true
   }
-  return Object.assign(stop, { startsAtCtxS: baseT, stopAt, setMix })
+  return Object.assign(stop, { startsAtCtxS: baseT, fromS: atS, stopAt, setMix })
 }
