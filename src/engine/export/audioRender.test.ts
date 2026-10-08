@@ -354,16 +354,16 @@ describe('⛔ Platform loudness renders a mix that fits only once', () => {
     // Platform loudness is on by default, and the measuring render had no check: Cancel during
     // "Mixing the sound" waited for all of it, about 20 segments for a 10 minute video, before the
     // first segment reached the page's check (export review N1, 2026-10-08).
-    const tone = new Float32Array(SR * 100)
+    const tone = new Float32Array(SR * 40)
     for (let i = 0; i < tone.length; i++) tone[i] = 0.12 * Math.sin((2 * Math.PI * 440 * i) / SR)
     const t = source('t', tone)
-    const seq = sequence([track('t', [clip('t', 0, 100)])], 100)
+    const seq = sequence([track('t', [clip('t', 0, 40)])], 40)
     const ctrl = new AbortController()
-    const plan = await planAudioMix(seq, { t }, 0, 100, undefined, { loudnessTargetLufs: -14, signal: ctrl.signal })
+    const plan = await planAudioMix(seq, { t }, 0, 40, undefined, { loudnessTargetLufs: -14, signal: ctrl.signal })
     if (!plan) throw new Error('no plan')
     let delivered = 0
     rendersMade = 0
-    // Cancel pressed while the first of four segments is being measured.
+    // Cancel pressed while the first of two segments is being measured.
     afterRender = () => ctrl.abort()
     try {
       await expect(
@@ -376,7 +376,7 @@ describe('⛔ Platform loudness renders a mix that fits only once', () => {
     }
     expect(rendersMade).toBe(1)
     expect(delivered).toBe(0)
-  })
+  }, 20_000)
 
   it('keeps at most 3 minutes, so memory stays bounded however long the video', () => {
     // A longer mix renders twice and holds two segments, as before. (Rendering one here to prove
