@@ -9,7 +9,7 @@ import { migrateProjectEffects } from '../engine/effects/migrate'
 import { migrateProjectAppearance } from '../engine/anim/appearance'
 import { markDoNotAutoRecover } from './recoveryMemory'
 import { planSequenceSplit } from './sequenceSplit'
-import { holdSpareCopyCleanup } from './spareCopyHold'
+import { holdSpareCopyCleanup, resendSpareCopyHold } from './spareCopyHold'
 import { useToasts } from './toasts'
 import { migrateProject, type Project } from '../engine/types'
 import { parseStoredProject } from '../persistence/schema'
@@ -564,6 +564,10 @@ export function initPersistence(): Promise<void> {
   } catch {
     // ignore
   }
+
+  // A spare copy cleanup hold an earlier start could not get written is asked for
+  // again first, and holds this start (spareCopyHold.ts).
+  resendSpareCopyHold()
 
   // The files come back before the store is read, and he is told when they did:
   // a project that is simply there again is the point, but a blank app that

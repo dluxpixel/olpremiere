@@ -34,10 +34,13 @@ vi.mock('./diskProjects', () => ({
 }))
 vi.mock('./toasts', () => ({ useToasts: { getState: () => ({ show: () => {} }) } }))
 
-/** A fresh start: its own copy of every module, as the app has on each launch. */
-async function start(): Promise<{ hold: ReturnType<typeof vi.fn>; held: () => string | null }> {
+/**
+ * A fresh start: its own copy of every module, as the app has on each launch.
+ * `written` is main's answer: whether it could write the hold file.
+ */
+async function start(written = true): Promise<{ hold: ReturnType<typeof vi.fn>; held: () => string | null }> {
   vi.resetModules()
-  const hold = vi.fn(async () => true)
+  const hold = vi.fn(async () => written)
   vi.stubGlobal('api', { mediaSweepHold: hold })
   const { initPersistence } = await import('./persistence')
   await initPersistence()
@@ -45,10 +48,14 @@ async function start(): Promise<{ hold: ReturnType<typeof vi.fn>; held: () => st
   return { hold, held: spareCopyCleanupHeld }
 }
 
+/** Let main's answer land. */
+const answered = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
+
 beforeEach(() => {
   db.projects = []
   db.healed = []
   vi.unstubAllGlobals()
+  localStorage.clear()
 })
 
 describe('⛔ a start that shows a loss stands the spare copy cleanup down', () => {
@@ -71,5 +78,39 @@ describe('⛔ a start that shows a loss stands the spare copy cleanup down', () 
     const { hold, held } = await start()
     expect(hold).not.toHaveBeenCalled()
     expect(held()).toBeNull()
+  })
+})
+
+// ⛔ A full drive on the wipe morning (his is 97% full) can fail the hold file's
+// write. Main then held for that run alone, and the next start, its store no
+// longer empty after one edit, had nothing to set the hold again.
+describe('⛔ a hold main could not write is asked for again at every start until it is', () => {
+  it('the wipe morning cannot write it; the next start, its store not empty any more, still holds and asks again', async () => {
+    const wipe = await start(false)
+    expect(wipe.hold).toHaveBeenCalledWith('the store had no project to open at start')
+    await answered()
+
+    // He made an edit that morning, so the store no longer reads empty.
+    db.projects = [{ ...newProject('Untitled Project'), id: 'blank-1' }]
+    const next = await start(false)
+    expect(next.hold).toHaveBeenCalledWith('the store had no project to open at start')
+    expect(next.held()).toBe('the store had no project to open at start')
+    await answered()
+
+    // This time main writes it: the start after that asks for nothing.
+    const written = await start(true)
+    expect(written.hold).toHaveBeenCalledTimes(1)
+    await answered()
+    const after = await start(true)
+    expect(after.hold).not.toHaveBeenCalled()
+    expect(after.held()).toBeNull()
+  })
+
+  it('a hold main writes at once is not asked for again', async () => {
+    await start(true)
+    await answered()
+    db.projects = [{ ...newProject('Green'), id: 'green-1' }]
+    const next = await start(true)
+    expect(next.hold).not.toHaveBeenCalled()
   })
 })
