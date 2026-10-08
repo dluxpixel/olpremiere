@@ -6,9 +6,11 @@
  * same places. The gesture maths has its own tests beside each module.
  */
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
+import { buildAppBindings } from '../App'
 import { recomputeDuration } from '../engine/timeline'
 import { activeSequence, audioTracks, defaultTitleDef, newProject, newTitleClip, videoTracks, type Sequence } from '../engine/types'
+import { installKeymap } from '../keymap'
 import { useContextMenu } from '../state/contextMenu'
 import { ASSET_MIME, EFFECT_MIME } from '../state/dnd'
 import { copySelection } from '../state/clipboard'
@@ -168,9 +170,13 @@ describe('Timeline', () => {
   })
 
   // A drag he regrets mid way had no way out: Esc deselected the clip and the
-  // release still committed the move.
+  // release still committed the move. The app's own keymap is installed, the
+  // one whose Escape deselects: without it "the clip stays selected" held
+  // whether or not the drag's Esc kept the keymap from hearing it.
   it('Esc mid drag lets go of it: the release commits nothing and the clip stays selected', () => {
     const clip = seedTitle(1)
+    const uninstall = installKeymap(buildAppBindings())
+    onTestFinished(uninstall)
     render(<Timeline height={300} />)
     const { lanes } = layOut()
     const before = useStore.getState().project
