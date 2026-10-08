@@ -135,6 +135,37 @@ const LIVE_MISS_LIMIT = 8
 
 /** Last play/pause state renderPreview saw, so a transition can reset the health window. */
 let wasPlaying = false
+/**
+ * ⛔ AT PLAY START THE ELEMENT RAN AHEAD OF THE HELD PICTURE (sweep review S1,
+ * 2026-10-08). The transport holds the first frame until the first sound reaches
+ * his ears: the scheduling latency plus the output latency (PB-8), 0.09 s on his
+ * default output and 0.35 s on Bluetooth. An element started on the first draw
+ * ran through that hold and began the run that far AHEAD of the picture: the 2%
+ * servo needed 4.5 to 17 s to absorb it, the exact-frame fallback gave up on the
+ * way and the picture came from the element, ahead of the sound for seconds
+ * (undoing PB-8), and from 0.3 s up the gap passed HARD_SEEK_S and the element
+ * seeked back during the hold.
+ *
+ * So the element is left parked on the frame the picture holds, per pooled
+ * element: the source time each had at the first draw of this run of play, and
+ * it starts when the picture moves off it. Only the first draw of a run
+ * registers, so a clip that comes up mid-play (a cut) starts on its first frame,
+ * as before.
+ */
+const heldAtStart = new Map<Id, number>()
+/** This draw is the first of a run of play (renderPreview sets it, resolveLayer reads it). */
+let startingRun = false
+/** The picture has not moved off the frame it held at the start of the run (it is a float compare of one source time). */
+const HELD_EPS_S = 1e-6
+
+/** Whether the element for `key` must stay parked: the picture is still on the frame it held at play start. */
+function pictureStillHeld(key: Id, srcT: number): boolean {
+  const at = heldAtStart.get(key)
+  if (at === undefined) return false
+  if (Math.abs(srcT - at) < HELD_EPS_S) return true
+  heldAtStart.delete(key)
+  return false
+}
 /** The cut whose head has already been queued for decode, so it is asked for once, not per rAF. */
 let prefetchedCutId: Id | null = null
 
@@ -1189,6 +1220,10 @@ function makeTextureSource(
     if (asset.kind !== 'video') return null
 
     const srcT = layer.sourceTimeS
+    // The frame the picture holds at the start of this run of play, if it holds
+    // one: see heldAtStart. Registered before anything can return, so an element
+    // that is still warming up is not started ahead of the hold either.
+    if (startingRun && elementDriven(layer)) heldAtStart.set(videoPoolKeyFor(asset.id, ownElementSides?.has(layer) === true), srcT)
     // One side of a live pair transition. Its picture is composited against the
     // other clip for the whole window, so it may only ever be the RIGHT frame.
     const guarded = transitionSides?.has(layer) === true
@@ -1360,7 +1395,8 @@ function makeTextureSource(
         pooled.playSeekAt = pooled.lastSeekAt
       }
       el.playbackRate = wantRate
-      void el.play().catch(() => {})
+      // Parked on the frame the picture holds, until the picture moves off it.
+      if (!pictureStillHeld(poolKey, srcT)) void el.play().catch(() => {})
     } else if (Math.abs(trueErr) > HARD_SEEK_S) {
       // A real jump. Seeking is correct, but a <video> seek takes long enough
       // that on a run of short pieces the next cut lands before this one has
@@ -1788,8 +1824,10 @@ export function renderPreview(
   warmSoon(renderer, seq)
   // Health describes ONE continuous run of playback. Starting or stopping makes
   // every sample before it describe a different run, so the window starts over.
+  startingRun = playing && !wasPlaying
   if (playing !== wasPlaying) {
     wasPlaying = playing
+    heldAtStart.clear()
     resetPreviewHealth()
     resetPreviewPacing()
     liveMisses.clear()
