@@ -39,6 +39,16 @@ vi.mock('../engine/captions/transcribeConfig', () => ({
   getCaptionLanguage: () => 'en',
   getCaptionEmphasis: () => false,
   modelFor: () => 'onnx-community/whisper-small.en_timestamped',
+  whisperModel: () => ({ wordLagS: 0 }),
+}))
+// His spellings, read from every other project on the first run: a wait the
+// test holds open when it needs to, and answers at once otherwise.
+const vocab = vi.hoisted(() => ({ hold: null as Promise<void> | null }))
+vi.mock('./captionVocabulary', () => ({
+  currentVocabulary: async () => {
+    if (vocab.hold) await vocab.hold
+    return { rewrites: [] }
+  },
 }))
 vi.mock('../engine/captions/voiceActivity', () => ({
   voiceTrackForClip: () => Promise.resolve(null),
@@ -47,7 +57,7 @@ vi.mock('../engine/captions/voiceActivity', () => ({
 
 import { newClipFromAsset, newProject, type MediaAsset } from '../engine/types'
 import { updateActiveSequence, useStore } from './store'
-import { listenToClip, useTranscribe } from './transcribeActions'
+import { autoCaptionEveryClip, autoCaptionFromClip, listenToClip, useTranscribe, wordsForCut } from './transcribeActions'
 
 const asset = (id: string): MediaAsset => ({
   id,
@@ -76,6 +86,7 @@ function seedClip(id: string, speed = 1): void {
 }
 
 beforeEach(() => {
+  vocab.hold = null
   heard.length = 0
   toasted.length = 0
   useStore.getState().setProject(newProject())
@@ -111,5 +122,66 @@ describe('listenToClip', () => {
     const words = await listenToClip('clip-fast')
     expect(heard).toEqual(['clip-fast'])
     expect(words).not.toBeNull()
+  })
+})
+
+// ⛔ Review 2026-10-08, nit 3. The door checked that nothing was running, then
+// waited for his spellings (the first time, every other project is read), and
+// only then put its pill up. A second click in that wait started a second run:
+// it failed as "already running" inside the model, the cutter said "Could not
+// read the speech in that clip", and its tidy up took the FIRST run's pill and
+// Cancel button off the screen while that run carried on.
+describe('a second click while the first is still starting', () => {
+  const held = (): (() => void) => {
+    let open = (): void => undefined
+    vocab.hold = new Promise<void>((resolve) => (open = resolve))
+    return open
+  }
+  const clipOf = (id: string) => useStore.getState().project.sequences[useStore.getState().project.activeSequenceId]!.tracks.flatMap((t) => t.clips).find((c) => c.id === id)!
+
+  it('Cut the quiet parts: the second is refused, and the first keeps its pill', async () => {
+    seedClip('a')
+    const open = held()
+    const first = wordsForCut(clipOf('clip-a'), asset('a'))
+    const second = wordsForCut(clipOf('clip-a'), asset('a'))
+    await Promise.resolve()
+    expect(useTranscribe.getState().status).not.toBe('idle')
+    open()
+    expect(await second).toBeNull()
+    expect(await first).not.toBeNull()
+    expect(heard).toEqual(['clip-a'])
+    expect(useTranscribe.getState().status).toBe('idle')
+  })
+
+  it('the Words panel: the second says a transcription is running, and the first keeps its pill', async () => {
+    seedClip('a')
+    const open = held()
+    const first = listenToClip('clip-a')
+    const second = listenToClip('clip-a')
+    await Promise.resolve()
+    expect(useTranscribe.getState().status).not.toBe('idle')
+    open()
+    expect(await second).toBeNull()
+    expect(toasted).toContain('A transcription is already running')
+    expect(await first).not.toBeNull()
+    expect(heard).toEqual(['clip-a'])
+  })
+
+  it('the caption doors: the second is refused, and only one run listens', async () => {
+    for (const door of [() => autoCaptionFromClip('clip-a'), () => autoCaptionEveryClip()]) {
+      seedClip('a')
+      heard.length = 0
+      toasted.length = 0
+      const open = held()
+      const first = door()
+      const second = door()
+      await Promise.resolve()
+      expect(useTranscribe.getState().status).not.toBe('idle')
+      open()
+      await Promise.all([first, second])
+      expect(toasted).toContain('A transcription is already running')
+      expect(heard).toEqual(['clip-a'])
+      expect(useTranscribe.getState().status).toBe('idle')
+    }
   })
 })

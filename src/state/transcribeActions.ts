@@ -53,6 +53,16 @@ export const useTranscribe = create<TranscribeState>(() => ({
 const reset = (): void =>
   useTranscribe.setState({ status: 'idle', pct: null, downloading: false, cancel: null, queue: null })
 
+/**
+ * ⛔ A DOOR TAKES THE RUN THE MOMENT IT SAYS YES (review 2026-10-08). The check
+ * that nothing is running used to be followed by a wait for his spellings (the
+ * first time, every other project is read) before anything showed the run had
+ * started, so a second click in that wait got in too: it failed as "already
+ * running" inside the model, said the wrong thing, and its tidy up took the
+ * first run's pill and Cancel button away while that run carried on.
+ */
+const claim = (): void => useTranscribe.setState({ status: 'reading', pct: null, downloading: false, cancel: null })
+
 /** True when the caller asked to stop, rather than something going wrong. */
 export const isCancel = (err: unknown): boolean => typeof err === 'object' && err !== null && 'cancelled' in err
 
@@ -385,6 +395,7 @@ export async function autoCaptionFromClip(clipId: string, style?: CaptionStyle):
     return
   }
 
+  claim()
   try {
     const words = await captionEars.wordsForClip(clip, asset, { trimToVoice: true, vocabulary: await currentVocabulary() })
     if (words.length === 0) {
@@ -453,6 +464,7 @@ export async function listenToClip(clipId: string): Promise<CaptionWord[] | null
     )
     return null
   }
+  claim()
   try {
     const words = await wordsForClip(clip, asset, { vocabulary: await currentVocabulary() })
     if (words.length === 0) {
@@ -491,6 +503,7 @@ export async function wordsForCut(
   queue: { index: number; total: number } | null = null,
 ): Promise<CaptionWord[] | null> {
   if (useTranscribe.getState().status !== 'idle') return null
+  claim()
   if (queue) useTranscribe.setState({ queue })
   try {
     return await wordsForClip(clip, asset, { vocabulary: await currentVocabulary() })
@@ -556,14 +569,15 @@ export async function autoCaptionEveryClip(
   // clip is actually heard (not on a vanished or failed one), so a transient
   // failure never wipes what was already there with nothing to replace it.
   const coveredSpans: { startS: number; endS: number }[] = []
-  // Once for the whole sweep: it is the same vocabulary for every clip.
-  const vocabulary = await currentVocabulary()
   let cancelled = false
   let failed = 0
   let vanished = 0
   /** Clips nobody said anything in. Counted so the run can say so instead of looking short. */
   let silent = 0
+  claim()
   try {
+    // Once for the whole sweep: it is the same vocabulary for every clip.
+    const vocabulary = await currentVocabulary()
     for (let i = 0; i < targets.length; i++) {
       const { clip: listed, asset } = targets[i]
       // ⛔ THE CLIP IS READ AGAIN HERE, NOT TAKEN FROM THE LIST, and this is a real
