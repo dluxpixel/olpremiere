@@ -30,7 +30,7 @@ import { clipEndS } from '../engine/timeline'
 import { activeSequence, type Clip, type MediaAsset, type SpokenWord } from '../engine/types'
 import type { CaptionWord } from '../engine/captions/captions'
 import type { CaptionStyle } from '../engine/captions/captionStyle'
-import { scriptHeard } from '../engine/captions/scriptAlign'
+import { keepHitTakes, scriptHeard } from '../engine/captions/scriptAlign'
 import { plural } from '../engine/plural'
 import { addCaptionsFromWords } from './captionActions'
 import { defaultCaptionStyle } from './captionStyles'
@@ -458,7 +458,9 @@ function layCaptions(
     useToasts.getState().show(SCRIPT_NOT_HEARD, 'danger')
     return
   }
-  const timed = read.words
+  // ⛔ ONLY THE TAKES THE SCRIPT LANDED IN (S-1). A stray word of it in a take of
+  // ad-libbing must not replace that take's captions; it is dropped and counted.
+  const { words: timed, dropped } = keepHitTakes(read.words, words, o.coveredSpans)
   const landed = o.coveredSpans.filter((sp) => timed.some((w) => w.startS >= sp.startS - 1e-9 && w.startS < sp.endS - 1e-9))
   addCaptionsFromWords(timed, {
     label: 'Captions from your script',
@@ -467,7 +469,7 @@ function layCaptions(
     heard: o.heard,
     wordLagS: wordLagNow(),
   })
-  const unheard = scriptUnheardMessage(read.unheardLines, read.unheardWords)
+  const unheard = scriptUnheardMessage(read.unheardLines, read.unheardWords + dropped)
   if (unheard) useToasts.getState().show(unheard)
 }
 

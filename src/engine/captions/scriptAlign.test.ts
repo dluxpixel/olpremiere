@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { AUTO_CAPTION_OPTIONS, chunkWords, type CaptionWord } from './captions'
-import { alignScript, scriptHeard } from './scriptAlign'
+import { alignScript, keepHitTakes, scriptHeard } from './scriptAlign'
 
 const w = (text: string, startS: number, endS: number, emphasis?: boolean): CaptionWord => ({
   text,
@@ -254,5 +254,36 @@ describe('alignScript', () => {
     expect(out).toHaveLength(500)
     expect(out[250]!.startS).toBeCloseTo(heard[250]!.startS, 9)
     expect(ms).toBeLessThan(2000)
+  })
+})
+
+describe('keepHitTakes', () => {
+  const run = (n: number, from: number): CaptionWord[] => Array.from({ length: n }, (_, i) => w('x', from + i * 0.1, from + i * 0.1 + 0.1))
+  const takes = [
+    { startS: 0, endS: 3 },
+    { startS: 3, endS: 6 },
+  ]
+
+  it('a take with one stray word of many heard in it is dropped, and counted', () => {
+    const out = keepHitTakes([...run(3, 0), ...run(1, 3)], [...run(3, 0), ...run(6, 3)], takes)
+    expect(out.words).toHaveLength(3)
+    expect(out.dropped).toBe(1)
+  })
+
+  it('a short take the script is about stays, one word and all', () => {
+    const out = keepHitTakes([...run(3, 0), ...run(1, 3)], [...run(3, 0), ...run(1, 3)], takes)
+    expect(out.words).toHaveLength(4)
+    expect(out.dropped).toBe(0)
+  })
+
+  it('with no take hit, the takes with the most words laid are kept, never none', () => {
+    const out = keepHitTakes([...run(1, 0), ...run(1, 3)], [...run(9, 0), ...run(9, 3)], takes)
+    expect(out.words).toHaveLength(2)
+    expect(out.dropped).toBe(0)
+  })
+
+  it('a word that starts in no take is kept', () => {
+    const out = keepHitTakes([...run(3, 0), w('x', 9, 9.1)], [...run(3, 0)], takes)
+    expect(out.words).toHaveLength(4)
   })
 })

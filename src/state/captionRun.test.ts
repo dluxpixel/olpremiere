@@ -623,6 +623,72 @@ describe('captions from his own script', () => {
     await captionFromScript('Oneb Two B threeb.', spoken)
     expect(toasted.filter((t) => t.includes('not heard'))).toEqual([])
   })
+
+  // ⛔ S-1. A word of the script could land in a take it was not said in, and
+  // that take's captions were replaced by it. Nothing is said in two takes here
+  // but the script, so what each clip says is stood in for by clip.
+  const takes = (says: Record<string, string>) => {
+    const real = captionEars.wordsForClip
+    captionEars.wordsForClip = async (clip: Clip, _asset, opts = {}): Promise<CaptionWord[]> => {
+      await Promise.resolve()
+      const words = (says[clip.id] ?? '')
+        .split(' ')
+        .filter(Boolean)
+        .map((text, i) => ({ text, startS: clip.startS + i * 0.1, endS: clip.startS + (i + 1) * 0.1 }))
+      opts.onSpoken?.(words.map((x) => ({ text: x.text, startS: clip.inS + x.startS - clip.startS, endS: clip.inS + x.endS - clip.startS })))
+      return words
+    }
+    return () => void (captionEars.wordsForClip = real)
+  }
+  const inTake = (fromS: number) =>
+    captionsOn(seq())
+      .map(({ clip }) => clip)
+      .filter((cl) => cl.startS >= fromS - 1e-9 && cl.startS < fromS + 1 - 1e-9)
+
+  it('a whole script with an ad-libbed take after it leaves the ad-lib take exactly as it was', async () => {
+    const { a, b } = seed()
+    await captionTheseClips([a, b])
+    const adLib = inTake(3)
+    expect(adLib.length).toBeGreaterThan(0)
+    const restore = takes({ [a]: 'alpha beta gamma', [b]: 'yeah alpha beta gamma man' })
+    try {
+      useStore.getState().setUI({ selection: [a, b] })
+      await captionFromScript('Alpha beta gamma.', spoken)
+    } finally {
+      restore()
+    }
+    expect(inTake(3)).toEqual(adLib)
+    expect(inTake(0).map((cl) => cl.title!.text).join(' ')).toBe('Alpha beta gamma.')
+  })
+
+  it('a take that has only one stray word of the script is not replaced, and the word is not laid in it', async () => {
+    const { a, b } = seed()
+    await captionTheseClips([a, b])
+    const adLib = inTake(3)
+    const restore = takes({ [a]: 'alpha beta gamma', [b]: 'so whatever yeah delta right now' })
+    try {
+      useStore.getState().setUI({ selection: [a, b] })
+      await captionFromScript('Alpha beta gamma delta.', spoken)
+    } finally {
+      restore()
+    }
+    expect(inTake(3)).toEqual(adLib)
+    expect(inTake(0).map((cl) => cl.title!.text).join(' ')).toBe('Alpha beta gamma')
+    expect(toasted).toContain('1 word of your script was not heard there, so it has no captions')
+  })
+
+  it('a short take that the script is about is still replaced, one word and all', async () => {
+    const { a, b } = seed()
+    await captionTheseClips([a, b])
+    const restore = takes({ [a]: 'alpha beta gamma', [b]: 'delta' })
+    try {
+      useStore.getState().setUI({ selection: [a, b] })
+      await captionFromScript('Alpha beta gamma Delta!', spoken)
+    } finally {
+      restore()
+    }
+    expect(inTake(3).map((cl) => cl.title!.text).join(' ')).toBe('Delta!')
+  })
 })
 
 describe('what a script run says it left out', () => {

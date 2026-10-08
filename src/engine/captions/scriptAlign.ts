@@ -366,3 +366,44 @@ export function scriptHeard(script: string, heard: readonly CaptionWord[]): Scri
   }
   return { words: out, unheardLines, unheardWords: n - out.length - inUnheard }
 }
+
+/** A stretch of the timeline one clip sits in. */
+export interface Take {
+  startS: number
+  endS: number
+}
+
+const startsIn = (w: CaptionWord, t: Take): boolean => w.startS >= t.startS - 1e-9 && w.startS < t.endS - 1e-9
+
+/**
+ * Which takes his script really landed in (S-1), and only those. The alignment
+ * is a best guess over every take at once, so a line said in one take can leave
+ * a stray word in another: one "right" or "so" of the script that the model also
+ * heard somewhere in a take of ad-libbing. That take is not the script's, yet a
+ * caption laid in it replaces the captions the take had.
+ *
+ * A take is HIT when at least two words were laid in it, or when it is a short
+ * take the script is about: it has a word laid and at least half of what was
+ * heard in it was laid. When no take is hit the ones with the most words laid are
+ * used, so a run never drops the whole of what the script found. The words laid
+ * in a take that is not hit are dropped, and counted, because laying one would
+ * end the caption it lands inside early.
+ */
+export function keepHitTakes(
+  laid: readonly CaptionWord[],
+  heard: readonly CaptionWord[],
+  takes: readonly Take[],
+): { words: CaptionWord[]; dropped: number } {
+  const laidIn = takes.map((t) => laid.filter((w) => startsIn(w, t)).length)
+  const heardIn = takes.map((t) => heard.filter((w) => startsIn(w, t)).length)
+  let hit = takes.map((_, i) => laidIn[i]! >= 2 || (laidIn[i]! > 0 && laidIn[i]! * 2 >= heardIn[i]!))
+  if (!hit.some(Boolean)) {
+    const most = Math.max(...laidIn)
+    hit = laidIn.map((n) => n === most && n > 0)
+  }
+  const words = laid.filter((w) => {
+    const inside = takes.map((t, i) => (startsIn(w, t) ? i : -1)).filter((i) => i >= 0)
+    return inside.length === 0 || inside.some((i) => hit[i])
+  })
+  return { words, dropped: laid.length - words.length }
+}
