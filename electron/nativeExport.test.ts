@@ -44,6 +44,24 @@ vi.mock('node:os', async (importOriginal) => {
   }
 })
 
+// The real file calls, with a way to make the WAV header's rewrite fail (a full or vanished disk).
+const fsHook = vi.hoisted(() => ({ failHeaderRewrite: false }))
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const real = await importOriginal<typeof import('node:fs/promises')>()
+  return {
+    ...real,
+    open: async (...args: Parameters<typeof real.open>) => {
+      const handle = await real.open(...args)
+      const write = handle.write.bind(handle) as (...a: unknown[]) => Promise<unknown>
+      Object.assign(handle, {
+        write: (...a: unknown[]) =>
+          fsHook.failHeaderRewrite && a[3] === 0 ? Promise.reject(new Error('EIO: i/o error, write')) : write(...a),
+      })
+      return handle
+    },
+  }
+})
+
 const native = await import('./nativeExport')
 
 beforeEach(async () => {
@@ -252,4 +270,43 @@ describe('the sound, written a segment at a time', () => {
     await new Promise((r) => setTimeout(r, 100))
     expect(await ours()).toEqual([])
   })
+
+  it('⛔ a header that cannot be rewritten takes the mix with it, handle closed', async () => {
+    // finishAudio let go of the mix BEFORE rewriting the header and closing it, so when either
+    // failed the file was in neither audioWrite nor pendingAudioPath and no cancel could find it: a
+    // whole float mix left in his temp folder (export review N2, 2026-10-08).
+    await native.beginAudio(48000, 2)
+    await native.audioChunk(new Float32Array(960).buffer)
+    fsHook.failHeaderRewrite = true
+    try {
+      await expect(native.finishAudio()).rejects.toThrow('EIO')
+    } finally {
+      fsHook.failHeaderRewrite = false
+    }
+    await new Promise((r) => setTimeout(r, 100))
+    expect(await ours()).toEqual([])
+  })
+
+  it('⛔ quitting while ffmpeg is starting stops it and takes the mix and the file with it', async () => {
+    // start() waits for ffmpeg's spawn before it sets the job, and the mix was then only in a local:
+    // a quit in that tick found no job, so it neither stopped the new ffmpeg nor deleted the mix
+    // (export review N2, 2026-10-08).
+    await native.beginAudio(48000, 2)
+    await native.audioChunk(new Float32Array(960).buffer)
+    await native.finishAudio()
+    expect(await ours()).toHaveLength(1)
+    const win = { webContents: { send: () => undefined } } as unknown as Parameters<typeof native.start>[1]
+    const outPath = join(userData, 'quit.mp4')
+    const starting = native.start(
+      { width: 64, height: 64, fps: 30, totalFrames: 3, encoder: 'x264', quality: 18, hasAudio: true, outPath, suggestedName: 'x' },
+      win,
+    )
+    // The app's before-quit, in the same tick.
+    native.cancelSync()
+    expect(await starting).toMatchObject({ started: false, cancelled: true })
+    expect(native.isExporting()).toBe(false)
+    await new Promise((r) => setTimeout(r, 300))
+    expect(await ours()).toEqual([])
+    expect(await readdir(userData)).not.toContain('quit.mp4')
+  }, 30_000)
 })

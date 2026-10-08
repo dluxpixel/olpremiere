@@ -34,6 +34,14 @@ interface Job {
 let job: Job | null = null
 let pendingAudioPath: string | null = null
 
+/** An ffmpeg start() has spawned and is waiting on, before it becomes the job. */
+interface Starting {
+  ffmpeg: ChildProcessWithoutNullStreams
+  outPath: string
+  audioPath: string | null
+}
+let starting: Starting | null = null
+
 /**
  * True while a native ffmpeg export is actually running. It is the auto-updater's
  * main-side guard. The renderer's isCriticalWorkInFlight() covers the pre-spawn
@@ -50,7 +58,16 @@ export function isExporting(): boolean {
  * temp WAV right now, so a quit-during-export leaves nothing orphaned or leaked.
  */
 export function cancelSync(): void {
-  const stale = [pendingAudioPath, audioWrite?.path, job?.outPath, job?.audioPath]
+  const stale = [pendingAudioPath, audioWrite?.path, job?.outPath, job?.audioPath, starting?.outPath, starting?.audioPath]
+  if (starting) {
+    try {
+      starting.ffmpeg.stdin.destroy()
+      starting.ffmpeg.kill('SIGKILL')
+    } catch {
+      // already gone
+    }
+    starting = null
+  }
   if (audioWrite) {
     try {
       closeSync(audioWrite.handle.fd)
@@ -180,9 +197,22 @@ export async function audioChunk(interleaved: ArrayBuffer): Promise<void> {
 export async function finishAudio(): Promise<void> {
   const w = audioWrite
   if (!w) throw new Error('no sound is being written')
+  // ⛔ STILL IN audioWrite UNTIL IT IS CLOSED. It used to be let go first, so a
+  // header rewrite or close that failed left the whole mix in his temp folder,
+  // in neither audioWrite nor pendingAudioPath, where no cancel could find it
+  // (export review, 2026-10-08). A failure takes it off his disk here.
+  try {
+    await w.handle.write(wavHeaderF32(w.channels, w.sampleRate, w.dataBytes), 0, 44, 0)
+    await w.handle.close()
+  } catch (err) {
+    if (audioWrite === w) audioWrite = null
+    await w.handle.close().catch(() => undefined)
+    void unlink(w.path).catch(() => {})
+    throw err
+  }
+  // A cancel while it was being closed has already taken it away.
+  if (audioWrite !== w) return
   audioWrite = null
-  await w.handle.write(wavHeaderF32(w.channels, w.sampleRate, w.dataBytes), 0, 44, 0)
-  await w.handle.close()
   pendingAudioPath = w.path
 }
 
@@ -261,7 +291,18 @@ export async function start(config: NativeExportConfig, win: BrowserWindow): Pro
     })
   })
   ffmpeg.on('close', (code) => ended(code))
+  // ⛔ PARKED WHERE A QUIT CAN FIND IT. The job is set only once ffmpeg is
+  // really running, and until then the mix was only in a local here: a quit in
+  // that tick (cancelSync) found no job, so it neither stopped this ffmpeg nor
+  // deleted the mix (export review, 2026-10-08).
+  const mine: Starting = { ffmpeg, outPath, audioPath }
+  starting = mine
   const failed = await launched
+  if (starting !== mine) {
+    // cancelSync took it while it started: stopped, and its files are gone.
+    return { started: false, cancelled: true }
+  }
+  starting = null
   if (failed) return couldNotStart(failed)
   // ⛔ BELOW NORMAL PRIORITY. The whole point of Keep working (his ask, 2026-09-28)
   // is editing while this runs, and at normal priority x264 took every core for
