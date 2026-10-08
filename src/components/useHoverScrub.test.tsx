@@ -52,4 +52,22 @@ describe('hover scrub', () => {
     act(() => result.current.handlers.onPointerMove(over(40)))
     expect(result.current.url).toBe('blob:asset/A')
   })
+
+  // n-D (sweep review 2): `shown` remembers the last time written to the <video>,
+  // and a new url is a new source that starts at 0. The preview copy landing under
+  // a pointer that has not moved a frame left the picture on frame 0 until it did.
+  it('seeks the new source to the pointer even if the pointer has not moved since the url changed', () => {
+    const { result, rerender } = renderHook(() => useHoverScrub(asset, 30))
+    const video = { readyState: 1, seeking: false, currentTime: 0 }
+    ;(result.current.videoRef as { current: unknown }).current = video
+    act(() => result.current.handlers.onPointerMove(over(40)))
+    expect(video.currentTime).toBeGreaterThan(3.9)
+    // The preview copy lands: a new source, which starts from the top.
+    h.copies.add('A')
+    rerender()
+    expect(result.current.url).toBe('blob:proxy:A')
+    video.currentTime = 0
+    act(() => result.current.handlers.onPointerMove(over(40)))
+    expect(video.currentTime).toBeGreaterThan(3.9)
+  })
 })
