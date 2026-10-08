@@ -25,12 +25,11 @@ const singleInstance = app.requestSingleInstanceLock()
 if (!singleInstance) app.exit(0)
 import { fileURLToPath } from 'node:url'
 import { mkdir, readFile } from 'node:fs/promises'
-import { createReadStream, existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
-import { Readable } from 'node:stream'
+import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import * as backups from './backups'
 import { createCutstudio, realCutstudioDeps } from './cutstudio'
-import { createEmojiFontStore, downloadBytes, EMOJI_ROUTE } from './emojiFont'
+import { createEmojiFontStore, downloadBytes, EMOJI_ROUTE, emojiFontResponse } from './emojiFont'
 import * as projectFiles from './projectFiles'
 import * as libraryFile from './libraryFile'
 import * as captionStylesFile from './captionStylesFile'
@@ -805,17 +804,12 @@ app.whenReady().then(() => {
   protocol.handle('app', async (req) => {
     const url = new URL(req.url)
     if (url.pathname === EMOJI_ROUTE) {
-      try {
-        // Streamed off his disk in 4 MB pieces, never held whole in main: the face is
-        // 66 MB and every page or worker that draws an emoji asks for it. Read whole it
-        // was three copies of it at once; the hidden app's emoji check timed both the
-        // same within noise.
-        const font = Readable.toWeb(createReadStream(await emojiFont.path(), { highWaterMark: 4 << 20 })) as ReadableStream<Uint8Array>
-        return new Response(font, { headers: { 'content-type': 'font/ttf' } })
-      } catch (err) {
-        mainLog('warn', 'OL Premiere: the Apple emoji font could not be fetched', err)
-        return new Response('Not available', { status: 503 })
-      }
+      // Streamed off his disk, opened before the answer so a font that cannot be read
+      // is a 503 and a line in main.log (./emojiFont emojiFontResponse).
+      return emojiFontResponse(
+        () => emojiFont.path(),
+        (err) => mainLog('warn', 'OL Premiere: the Apple emoji font could not be fetched or opened', err),
+      )
     }
     const rel = url.pathname === '/' ? 'index.html' : decodeURIComponent(url.pathname.replace(/^\/+/, ''))
     const filePath = path.join(RENDERER_DIST, rel)

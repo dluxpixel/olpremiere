@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto'
-import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { createEmojiFontStore, EMOJI_SOURCE, keepOneStrike } from './emojiFont'
+import { createEmojiFontStore, EMOJI_SOURCE, emojiFontResponse, keepOneStrike } from './emojiFont'
 
 /**
  * A tiny CBDT font with two sizes, 32 and 96 px, one glyph each (index format
@@ -176,5 +176,55 @@ describe('createEmojiFontStore', () => {
     const fonts = readFileSync(new URL('../src/assets/fonts/BUNDLED-FONTS.md', import.meta.url), 'utf8')
     expect(fonts).not.toMatch(/AppleColorEmoji/)
     expect(existsSync(new URL('../src/assets/fonts/AppleColorEmoji.ttf', import.meta.url))).toBe(false)
+  })
+})
+
+// What the page gets for app://<host>/user-fonts/apple-emoji.ttf (main.ts).
+describe('emojiFontResponse', () => {
+  const withDir = async (run: (dir: string) => Promise<void>): Promise<void> => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'olp-emoji-route-'))
+    try {
+      await run(dir)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  it('streams the kept font as font/ttf', async () => {
+    await withDir(async (dir) => {
+      const file = path.join(dir, 'apple-emoji.ttf')
+      writeFileSync(file, Buffer.from('a font, byte for byte'))
+      const said: unknown[] = []
+      const res = await emojiFontResponse(async () => file, (err) => said.push(err))
+      expect(res.status).toBe(200)
+      expect(res.headers.get('content-type')).toBe('font/ttf')
+      expect(Buffer.from(await res.arrayBuffer()).toString()).toBe('a font, byte for byte')
+      expect(said).toEqual([])
+    })
+  })
+
+  // ⛔ The file used to be opened only once the answer was already a 200, so a font
+  // that could not be opened (gone, or held by another program) reached the page as a
+  // stream that broke, with nothing in main.log to say why.
+  it('⛔ answers 503 and says why when the font cannot be opened', async () => {
+    await withDir(async (dir) => {
+      const said: unknown[] = []
+      const res = await emojiFontResponse(async () => path.join(dir, 'gone.ttf'), (err) => said.push(err))
+      expect(res.status).toBe(503)
+      expect(said).toHaveLength(1)
+      expect(String(said[0])).toMatch(/ENOENT/)
+    })
+  })
+
+  it('answers 503 and says why when it could not be fetched', async () => {
+    const said: unknown[] = []
+    const res = await emojiFontResponse(
+      async () => {
+        throw new Error('offline')
+      },
+      (err) => said.push(err),
+    )
+    expect(res.status).toBe(503)
+    expect(String(said[0])).toContain('offline')
   })
 })

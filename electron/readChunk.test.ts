@@ -57,8 +57,14 @@ describe("main's app:// files", () => {
   })
 
   it('stream the emoji face instead of holding it whole', () => {
-    expect(handler).toContain('createReadStream(await emojiFont.path()')
+    // The route is ./emojiFont emojiFontResponse, run in emojiFont.test.ts.
+    expect(handler).toContain('return emojiFontResponse(')
+    expect(handler).toContain('() => emojiFont.path(),')
     expect(handler).not.toContain('emojiFont.read()')
+    const font = readFileSync(new URL('./emojiFont.ts', import.meta.url), 'utf8')
+    const route = font.slice(font.indexOf('export async function emojiFontResponse('))
+    expect(route).toContain('handle.createReadStream({ highWaterMark: 4 << 20 })')
+    expect(route).not.toMatch(/readFile\(/)
   })
 })
 
