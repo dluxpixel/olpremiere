@@ -21,42 +21,33 @@
 // os.cpus() counts every process on the machine, so it needs no quiet-box baseline
 // that would drift with the hardware. Between tests the gate's own browser and dev
 // server sit idle, so what it sees is everybody else.
+//
+// BUSY IS THE MEAN OR THE CORES TAKEN (2026-10-08), not the mean alone: fifteen pegged
+// cores on a 32 thread box read 47% and counted as quiet. See boxLoad.ts.
 
 import { test as base, expect } from '@playwright/test'
 import os from 'node:os'
+import { BUSY_LIMIT, isBusy, peggedLimit, readingBetween, type Reading, type Times } from './boxLoad'
 
-/** Above this share of all CPU time busy, a wall clock number says more about the box than the app. */
-export const BUSY_LIMIT = 0.5
+export { BUSY_LIMIT }
 /** The longest one test waits for the box to settle before it measures anyway. */
 const MAX_WAIT_MS = 120_000
 /** All the waiting one worker will do in a run, so a box that never settles cannot hang the gate. */
 const MAX_TOTAL_WAIT_MS = 600_000
 const WINDOW_MS = 1000
 
-type Times = os.CpuInfo['times']
 const snapshot = (): Times[] => os.cpus().map((c) => c.times)
 
-/** The share of all CPU time, on every core, that was busy between two snapshots. */
-function busyBetween(a: Times[], b: Times[]): number {
-  let idle = 0
-  let total = 0
-  b.forEach((t, i) => {
-    const s = a[i]
-    if (!s) return
-    idle += t.idle - s.idle
-    total += t.user + t.nice + t.sys + t.idle + t.irq - (s.user + s.nice + s.sys + s.idle + s.irq)
-  })
-  return total > 0 ? 1 - idle / total : 0
-}
-
-/** How busy the whole machine is over the next `ms`. */
-export async function busyShare(ms = WINDOW_MS): Promise<number> {
+/** How busy the whole machine is over the next `ms`, and how many of its cores are taken. */
+export async function readBox(ms = WINDOW_MS): Promise<Reading> {
   const a = snapshot()
   await new Promise((r) => setTimeout(r, ms))
-  return busyBetween(a, snapshot())
+  return readingBetween(a, snapshot())
 }
 
 const pct = (x: number): string => `${Math.round(x * 100)}%`
+/** "47% busy, 15 of 32 cores pegged": the mean alone hid the second half of that. */
+const say = (r: Reading): string => `${pct(r.share)} busy, ${r.pegged} of ${r.cores} cores pegged`
 
 let waitedThisWorker = 0
 
@@ -68,11 +59,11 @@ export const test = base.extend<{ quietBox: void }>({
       // in a row, so one lull between two bursts does not count.
       const budget = Math.min(MAX_WAIT_MS, MAX_TOTAL_WAIT_MS - waitedThisWorker)
       const t0 = Date.now()
-      let before = await busyShare()
-      let need = before < BUSY_LIMIT ? 0 : 2
+      let before = await readBox()
+      let need = before.busy ? 2 : 0
       while (need > 0 && Date.now() - t0 < budget) {
-        before = await busyShare()
-        need = before < BUSY_LIMIT ? need - 1 : 2
+        before = await readBox()
+        need = before.busy ? 2 : need - 1
       }
       const waited = Date.now() - t0
       waitedThisWorker += waited
@@ -80,33 +71,36 @@ export const test = base.extend<{ quietBox: void }>({
       testInfo.annotations.push({
         type: 'box',
         description: quiet
-          ? `${pct(before)} busy when it started${waited > WINDOW_MS * 1.5 ? `, after waiting ${Math.round(waited / 1000)} s for the box to settle` : ''}`
-          : `still ${pct(before)} busy after waiting ${Math.round(waited / 1000)} s, measured anyway`,
+          ? `${say(before)} when it started${waited > WINDOW_MS * 1.5 ? `, after waiting ${Math.round(waited / 1000)} s for the box to settle` : ''}`
+          : `still ${say(before)} after waiting ${Math.round(waited / 1000)} s, measured anyway`,
       })
-      if (!quiet) console.log(`[quiet box] ${testInfo.title}: the machine stayed ${pct(before)} busy for ${Math.round(waited / 1000)} s, measuring anyway`)
+      if (!quiet) console.log(`[quiet box] ${testInfo.title}: the machine stayed ${say(before)} for ${Math.round(waited / 1000)} s, measuring anyway`)
 
       // Keep sampling while the test runs, so a failure can say what the box did.
-      const during: number[] = []
+      const during: Reading[] = []
       let last = snapshot()
       const timer = setInterval(() => {
         const now = snapshot()
-        during.push(busyBetween(last, now))
+        during.push(readingBetween(last, now))
         last = now
       }, WINDOW_MS)
 
       await use()
 
       clearInterval(timer)
-      during.push(busyBetween(last, snapshot()))
-      const mean = during.reduce((s, x) => s + x, 0) / during.length
-      const peak = Math.max(...during)
-      if (testInfo.status !== testInfo.expectedStatus && (!quiet || mean >= BUSY_LIMIT)) {
-        const say =
-          `MACHINE BUSY: the box was ${pct(before)} busy when this timing test started and ` +
-          `${pct(mean)} on average (peak ${pct(peak)}) while it ran. Re-run it on a quiet box ` +
+      during.push(readingBetween(last, snapshot()))
+      const mean = during.reduce((n, r) => n + r.share, 0) / during.length
+      const meanPegged = during.reduce((n, r) => n + r.pegged, 0) / during.length
+      const peak = Math.max(...during.map((r) => r.share))
+      const cores = before.cores
+      if (testInfo.status !== testInfo.expectedStatus && (!quiet || isBusy(mean, meanPegged, cores))) {
+        const said =
+          `MACHINE BUSY: the box was ${say(before)} when this timing test started and ` +
+          `${pct(mean)} on average (peak ${pct(peak)}, ${Math.round(meanPegged)} of ${cores} cores pegged on average, ` +
+          `${peggedLimit(cores)} counts as busy) while it ran. Re-run it on a quiet box ` +
           `before reading this failure as a regression in the app.`
-        testInfo.annotations.push({ type: 'machine busy', description: say })
-        console.log(`[quiet box] ${testInfo.title}: ${say}`)
+        testInfo.annotations.push({ type: 'machine busy', description: said })
+        console.log(`[quiet box] ${testInfo.title}: ${said}`)
       }
     },
     // ⛔ ITS OWN TIMEOUT, so the wait is never the test's time. Without one a
