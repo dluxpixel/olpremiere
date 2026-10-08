@@ -53,8 +53,18 @@ export const useTranscribe = create<TranscribeState>(() => ({
 const reset = (): void =>
   useTranscribe.setState({ status: 'idle', pct: null, downloading: false, cancel: null, queue: null })
 
+/**
+ * ⛔ A DOOR TAKES THE RUN THE MOMENT IT SAYS YES (review 2026-10-08). The check
+ * that nothing is running used to be followed by a wait for his spellings (the
+ * first time, every other project is read) before anything showed the run had
+ * started, so a second click in that wait got in too: it failed as "already
+ * running" inside the model, said the wrong thing, and its tidy up took the
+ * first run's pill and Cancel button away while that run carried on.
+ */
+const claim = (): void => useTranscribe.setState({ status: 'reading', pct: null, downloading: false, cancel: null })
+
 /** True when the caller asked to stop, rather than something going wrong. */
-const isCancel = (err: unknown): boolean => typeof err === 'object' && err !== null && 'cancelled' in err
+export const isCancel = (err: unknown): boolean => typeof err === 'object' && err !== null && 'cancelled' in err
 
 /**
  * What to tell him when a caption run throws, in the words of the thing that
@@ -385,6 +395,7 @@ export async function autoCaptionFromClip(clipId: string, style?: CaptionStyle):
     return
   }
 
+  claim()
   try {
     const words = await captionEars.wordsForClip(clip, asset, { trimToVoice: true, vocabulary: await currentVocabulary() })
     if (words.length === 0) {
@@ -453,6 +464,7 @@ export async function listenToClip(clipId: string): Promise<CaptionWord[] | null
     )
     return null
   }
+  claim()
   try {
     const words = await wordsForClip(clip, asset, { vocabulary: await currentVocabulary() })
     if (words.length === 0) {
@@ -466,6 +478,35 @@ export async function listenToClip(clipId: string): Promise<CaptionWord[] | null
       console.error('listen for words:', err)
     }
     return null
+  } finally {
+    reset()
+  }
+}
+
+/**
+ * One clip's words for "Cut the quiet parts", through the same door as the
+ * others: it waits its turn and always puts the status back.
+ *
+ * ⛔ THE CUTTER USED TO CALL wordsForClip BARE. Nothing put the status back
+ * after it, so the listening pill stayed on screen and every caption door and
+ * the Words panel said "A transcription is already running" until a restart;
+ * and nothing stopped it starting while another run was going.
+ *
+ * His spellings are applied like the Words panel's, so what the cutter hears is
+ * what the Words panel would keep. `queue` says which clip of how many, when
+ * the cutter runs on a selection. Null when another run is going. A failure
+ * throws, for the cutter to say in its own words.
+ */
+export async function wordsForCut(
+  clip: Clip,
+  asset: MediaAsset,
+  queue: { index: number; total: number } | null = null,
+): Promise<CaptionWord[] | null> {
+  if (useTranscribe.getState().status !== 'idle') return null
+  claim()
+  if (queue) useTranscribe.setState({ queue })
+  try {
+    return await wordsForClip(clip, asset, { vocabulary: await currentVocabulary() })
   } finally {
     reset()
   }
@@ -528,14 +569,15 @@ export async function autoCaptionEveryClip(
   // clip is actually heard (not on a vanished or failed one), so a transient
   // failure never wipes what was already there with nothing to replace it.
   const coveredSpans: { startS: number; endS: number }[] = []
-  // Once for the whole sweep: it is the same vocabulary for every clip.
-  const vocabulary = await currentVocabulary()
   let cancelled = false
   let failed = 0
   let vanished = 0
   /** Clips nobody said anything in. Counted so the run can say so instead of looking short. */
   let silent = 0
+  claim()
   try {
+    // Once for the whole sweep: it is the same vocabulary for every clip.
+    const vocabulary = await currentVocabulary()
     for (let i = 0; i < targets.length; i++) {
       const { clip: listed, asset } = targets[i]
       // ⛔ THE CLIP IS READ AGAIN HERE, NOT TAKEN FROM THE LIST, and this is a real

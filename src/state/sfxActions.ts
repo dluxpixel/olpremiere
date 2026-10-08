@@ -3,6 +3,7 @@
 // audio asset, so the project stays self-contained); later uses reuse that
 // asset. Asset + clip land in ONE dispatch, so undo removes both together.
 
+import { routeToChosenOutput } from '../engine/audio'
 import { addClipFromAsset, canPlace } from '../engine/timeline'
 import { formatTimecode } from '../engine/timecode'
 import { sfxAssetName, sfxById, sfxUrl, type SfxDef } from '../engine/sfx/sfx'
@@ -102,7 +103,15 @@ export async function insertSfxAtPlayhead(sfxId: string, place: SfxPlacement = {
     hasAudio: true,
     hasVideo: false,
   }
-  await putBlob(asset.blobKey, blob)
+  // ⛔ A SAVE THAT FAILS HAS TO SAY SO. This used to be an uncaught await inside
+  // a `void` call, so on his nearly full drive the click simply did nothing.
+  try {
+    await putBlob(asset.blobKey, blob)
+  } catch (err) {
+    console.warn('OL Premiere: could not save the sound', err)
+    useToasts.getState().show('Could not save the sound. If your drive is full, free up space and try again', 'danger')
+    return
+  }
 
   let clipId = ''
   useStore.getState().dispatch(`Add ${def.name}`, (p) => {
@@ -128,6 +137,7 @@ export function previewSfx(sfxId: string): void {
   const def = sfxById(sfxId)
   if (!def || typeof Audio === 'undefined') return
   if (!previewEl) previewEl = new Audio()
+  routeToChosenOutput(previewEl)
   previewEl.src = sfxUrl(def)
   previewEl.currentTime = 0
   void previewEl.play().catch(() => {})

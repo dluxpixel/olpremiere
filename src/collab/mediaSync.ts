@@ -9,6 +9,7 @@
 
 import { upload } from '@vercel/blob/client'
 import { create } from 'zustand'
+import { forgetAssetSound } from '../engine/assetSound'
 import { evictAsset } from '../engine/frameCache'
 import { invalidatePreview } from '../engine/preview'
 import { notifyBlobArrived } from '../state/blobUrls'
@@ -195,5 +196,6 @@ async function downloadBlob(
 export function healArrivedBlob(key: string, assetId: string): void {
   notifyBlobArrived(key)
   evictAsset(assetId) // frameCache retries decode with the real bytes
+  forgetAssetSound(assetId) // and the sound, read as nothing while the bytes were missing
   invalidatePreview()
 }

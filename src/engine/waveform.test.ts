@@ -76,4 +76,20 @@ describe('slicePeaks', () => {
     }
     expect(missed).toEqual([])
   })
+
+  // ⛔ AU-7. One bucket per column skipped most buckets zoomed out, so a gunshot
+  // or a kick vanished from the waveform he cuts against.
+  it('never loses a short loud hit, at any zoom', () => {
+    const tenSeconds = new Float32Array(600) // 60 buckets a second
+    tenSeconds[301] = 1 // one 17 ms clap at 5.01 s
+    for (const cols of [600, 300, 100, 30, 7]) {
+      expect(Math.max(...slicePeaks(tenSeconds, 10, 0, 10, cols))).toBe(1)
+    }
+  })
+
+  it('draws a spoken word at its loud buckets, not its quiet ones', () => {
+    const word = Float32Array.from({ length: 600 }, (_, i) => (i % 2 === 0 ? 0.1 : 0.8))
+    const cols = slicePeaks(word, 10, 0, 10, 100)
+    expect(Math.min(...cols)).toBeCloseTo(0.8)
+  })
 })

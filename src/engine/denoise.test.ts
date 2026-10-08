@@ -5,8 +5,11 @@ import {
   denoisedBufferFor,
   denoiseEvictionPlan,
   ensureRnnoise,
+  isCleaningNoise,
   MAX_REDUCTION_DB,
   mixDryWet,
+  onCleaningNoise,
+  wetRunner,
   wetShareFor,
   type DenoiseEngine,
 } from './denoise'
@@ -443,5 +446,56 @@ describe('the denoise caches cannot grow without end', () => {
 
   it('would empty everything else rather than sit over the budget', () => {
     expect(denoiseEvictionPlan(['a', 'b', 'c'], bytesOf, 300 * MB, 0, 'c')).toEqual(['a', 'b'])
+  })
+})
+
+// ⛔ AU-4. The pass ran on the main thread and froze the app for seconds at
+// every first Play, and every call built a fresh copy of the whole take.
+describe('the noise pass runs in a worker, and its result is built once', () => {
+  it('two calls at the same strength hand back the SAME buffer, not a copy each', { timeout: MODEL_TIMEOUT }, async () => {
+    const x = Float32Array.from({ length: 4800 }, (_, i) => Math.sin(i / 7) * 0.1)
+    const a = await denoisedBufferFor(asset('same-buffer'), fakeBuffer([x], 48_000), 1, makeBuffer)
+    const b = await denoisedBufferFor(asset('same-buffer'), fakeBuffer([x], 48_000), 1, makeBuffer)
+    expect(a).not.toBeNull()
+    expect(b).toBe(a)
+    // A new strength is a new mix, and the old one is not handed out for it.
+    const c = await denoisedBufferFor(asset('same-buffer'), fakeBuffer([x], 48_000), 0.5, makeBuffer)
+    expect(c).not.toBe(a)
+  })
+
+  it('the model never runs on the calling thread when the worker takes the pass', async () => {
+    const x = Float32Array.from({ length: 4800 }, (_, i) => Math.sin(i / 5) * 0.2)
+    const runner = vi.fn(async (channels: readonly Float32Array[]) => channels.map((c) => c.map(() => 0.25)))
+    wetRunner.current = runner
+    const heard = vi.fn()
+    const stop = onCleaningNoise(() => heard(isCleaningNoise('worker-pass')))
+    try {
+      const pending = denoisedBufferFor(asset('worker-pass'), fakeBuffer([x], 48_000), 1, makeBuffer)
+      expect(isCleaningNoise('worker-pass')).toBe(true)
+      const y = (await pending)!.getChannelData(0)
+      expect(runner).toHaveBeenCalledTimes(1)
+      expect(runner.mock.calls[0]![0][0]).toBe(x)
+      // Every sample is the worker's answer mixed with the take: had the model run
+      // here, the wet half would be RNNoise's output, never a flat 0.25.
+      const share = wetShareFor(1)
+      expect(y[100]).toBeCloseTo(x[100]! * (1 - share) + 0.25 * share, 6)
+      expect(isCleaningNoise('worker-pass')).toBe(false)
+      expect(heard.mock.calls.map((c) => c[0])).toEqual([true, false])
+    } finally {
+      stop()
+      wetRunner.current = null
+    }
+  })
+
+  it('a worker that fails hands the pass back, so the toggle still works', { timeout: MODEL_TIMEOUT }, async () => {
+    const x = Float32Array.from({ length: 4800 }, (_, i) => Math.sin(i / 9) * 0.1)
+    wetRunner.current = () => Promise.reject(new Error('worker died'))
+    try {
+      const y = await denoisedBufferFor(asset('worker-died'), fakeBuffer([x], 48_000), 1, makeBuffer)
+      expect(y).not.toBeNull()
+      expect(y!.length).toBe(x.length)
+    } finally {
+      wetRunner.current = null
+    }
   })
 })

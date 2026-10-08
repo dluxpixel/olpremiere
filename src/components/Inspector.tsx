@@ -1,6 +1,7 @@
 import { AudioWaveform, Clock, Rewind, SlidersHorizontal } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
-import { clipEmitsAudio } from '../engine/audio'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { clipEmitsAudio, warmDenoise } from '../engine/audio'
+import { isCleaningNoise, onCleaningNoise } from '../engine/denoise'
 import { isChannelAnimated, resolveChannel } from '../engine/effects/channels'
 import { clipDurationS, clipEndS, moveGroup } from '../engine/timeline'
 import { formatTimecode, parseTimecode, quantizeToFrame } from '../engine/timecode'
@@ -109,6 +110,10 @@ function AudioControls({ clip, linked, playheadS }: { clip: Clip; linked?: boole
   const volAnimated = isChannelAnimated(clip, 'volume')
   const volLocalT = playheadS !== undefined && playheadS >= 0 ? Math.max(0, playheadS - clip.startS) : 0
   const shownGain = volAnimated ? resolveChannel(clip, 'volume', volLocalT) : clip.audioGainDb
+  const asset = useStore((s) => s.project.assets[clip.assetId])
+  // The noise pass runs in a worker now, so the app keeps moving while it does,
+  // and this says why the cleaned sound is not there yet.
+  const cleaning = useSyncExternalStore(onCleaningNoise, () => isCleaningNoise(clip.assetId))
   return (
     <section className="flex flex-col gap-2" data-testid="audio-controls">
       <SectionLabel>Audio{linked ? ' · linked clip' : ''}</SectionLabel>
@@ -168,10 +173,15 @@ function AudioControls({ clip, linked, playheadS }: { clip: Clip; linked?: boole
           label="Reduce noise"
           lead={
             <IconButton
-              label={clip.denoise !== undefined ? 'Turn noise reduction off' : 'Reduce background noise (RNNoise)'}
+              label={clip.denoise !== undefined ? 'Turn noise reduction off' : 'Reduce background noise'}
               size="compact"
               data-testid="denoise-toggle"
-              onClick={() => setClipDenoise(clip.id, clip.denoise !== undefined ? undefined : 1)}
+              onClick={() => {
+                const on = clip.denoise === undefined
+                setClipDenoise(clip.id, on ? 1 : undefined)
+                // Start cleaning now, so his next Play does not wait for it.
+                if (on && asset) warmDenoise({ ...clip, denoise: 1 }, asset)
+              }}
               className={clip.denoise !== undefined ? 'text-accent' : undefined}
             >
               <AudioWaveform size={13} strokeWidth={1.75} aria-hidden />
@@ -188,6 +198,11 @@ function AudioControls({ clip, linked, playheadS }: { clip: Clip; linked?: boole
             />
           )}
         </PropRow>
+        {clip.denoise !== undefined && cleaning && (
+          <p className="pl-7 text-ui-sm text-text-muted" data-testid="denoise-busy">
+            Cleaning up noise...
+          </p>
+        )}
       </div>
     </section>
   )

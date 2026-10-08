@@ -4,13 +4,14 @@
 // MASTER clock so A/V stays in sync.
 
 import { getBlob } from '../state/persistence'
-import { denoisedBufferFor } from './denoise'
+import { denoisedBufferFor, wetRunner } from './denoise'
+import { denoiseOffThread } from './denoiseClient'
 import { duckEnvelope } from './ducking'
 import { evalChannel } from './keyframes'
 import { budgets } from './memoryBudget'
 import type { AutoLevel, Clip, Id, MediaAsset, Sequence, Track } from './types'
 import { limiterLatencyFrames } from './audioLimiter'
-import { decodeAudioOffThread } from './audioDecodeClient'
+import { decodeAudioOffThread, decodeLane, promoteLane, type DecodeLane } from './audioDecodeClient'
 import { DECODE_SAMPLE_RATE } from './audioDemux'
 import { resamplePlanes } from './resample'
 import { timeStretchChannels } from './timeStretch'
@@ -193,10 +194,30 @@ async function applyOutputSink(ctx: AudioContext, id: string | null): Promise<vo
   await c.setSinkId(target ?? '').catch(() => {})
 }
 
+/**
+ * ⛔ THE PREVIEW RUNS AT 48 kHz, WHATEVER RATE THE DEVICE RUNS AT (AU-15).
+ *
+ * Every buffer in the app is 48 kHz (audioDemux.ts). A context left at the
+ * device's rate, 44.1 kHz on many headphones, read every one of them by linear
+ * interpolation, the same low pass the export work removed (see onSampleGrid),
+ * so what he heard while editing was duller than what he exported. At 48 kHz
+ * every buffer plays sample for sample and Chromium converts the finished mix
+ * once, at the device. AUTO_LEVEL_LATENCY_S assumes 48 kHz as well.
+ */
+function newPreviewContext(): AudioContext {
+  try {
+    return new AudioContext({ sampleRate: DECODE_SAMPLE_RATE })
+  } catch (err) {
+    // An engine that refuses the rate still has to play.
+    console.warn('OL Premiere audio: could not run the preview at 48 kHz, using the device rate', err)
+    return new AudioContext()
+  }
+}
+
 /** Lazy singleton, one AudioContext for the whole app. */
 export function ensureAudioContext(): AudioContext {
   if (!sharedCtx) {
-    sharedCtx = new AudioContext()
+    sharedCtx = newPreviewContext()
     if (outputDeviceId) void applyOutputSink(sharedCtx, outputDeviceId)
   }
   return sharedCtx
@@ -204,6 +225,20 @@ export function ensureAudioContext(): AudioContext {
 
 /** The chosen playback output device id (null = system default). */
 export const getAudioOutputDevice = (): string | null => outputDeviceId
+
+/**
+ * Send a plain audio element to the output he picked, like playback and the
+ * monitor. The take review, a sound effect and a Library sound used to play on
+ * the system default whatever he chose, so with headphones picked in the studio
+ * his take came out of the speakers. Called before each play, so a change of
+ * output in between is followed.
+ */
+export function routeToChosenOutput(el: HTMLMediaElement): void {
+  const sinkable = el as HTMLMediaElement & { setSinkId?: (id: string) => Promise<void> }
+  if (typeof sinkable.setSinkId !== 'function') return
+  // A device that is gone rejects, and the element stays where it was.
+  void sinkable.setSinkId(outputDeviceId ?? '').catch(() => {})
+}
 
 /**
  * Route ALL app playback to a chosen output device (null = system default) and
@@ -289,6 +324,8 @@ function evictAudioOverflow(keepId: Id): void {
 export function forgetAssetAudio(assetId: Id): void {
   forgetAssetRanges(assetId)
   undecodableRate.delete(assetId)
+  // What the demuxer proved about the OLD bytes. Media put back may be another file.
+  provedSilent.delete(assetId)
   bufferTotalBytes -= bufferBytes.get(assetId) ?? 0
   bufferBytes.delete(assetId)
   bufferCache.delete(assetId)
@@ -297,15 +334,35 @@ export function forgetAssetAudio(assetId: Id): void {
   reversedCache.delete(assetId)
 }
 
-export async function getAudioBuffer(asset: MediaAsset): Promise<AudioBuffer | null> {
+/**
+ * The line each whole-file read waits in, so Play can move one it comes to wait
+ * on to the front of the decode queue (SF-2). Keyed by the read itself, so an
+ * evicted read takes its lane with it.
+ */
+const wholeLanes = new WeakMap<Promise<AudioBuffer | null>, DecodeLane>()
+
+/** Play is waiting on this asset's whole-file read: to the front with it, if one is queued. */
+function promoteWholeRead(assetId: Id): void {
+  const pending = bufferCache.get(assetId)
+  if (pending) promoteLane(wholeLanes.get(pending))
+}
+
+/**
+ * The whole decoded sound of an asset. `priority` is for a read Play is waiting
+ * on: it goes ahead of background reads, and so does a background read of the
+ * same asset already queued (a noise pass warmed up, a transcription).
+ */
+export async function getAudioBuffer(asset: MediaAsset, opts: { priority?: boolean } = {}): Promise<AudioBuffer | null> {
   let pending = bufferCache.get(asset.id)
   if (pending) {
+    if (opts.priority) promoteWholeRead(asset.id)
     // LRU touch on both maps so hot assets stay resident.
     bufferCache.delete(asset.id)
     bufferCache.set(asset.id, pending)
     return pending
   }
-  pending = decodeAssetAudio(asset).then((buf) => {
+  const lane = decodeLane(opts.priority)
+  pending = decodeAssetAudio(asset, lane).then((buf) => {
     // Account bytes when the decode actually lands (only if still cached, since
     // eviction may have raced a slow decode).
     if (buf && bufferCache.get(asset.id) === pending) {
@@ -316,6 +373,7 @@ export async function getAudioBuffer(asset: MediaAsset): Promise<AudioBuffer | n
     }
     return buf
   })
+  wholeLanes.set(pending, lane)
   bufferCache.set(asset.id, pending)
   return pending
 }
@@ -348,6 +406,8 @@ interface RangeEntry {
   toS: number
   pending: Promise<AudioRange | null>
   bytes: number
+  /** The line its read waits in, so Play can move it to the front (SF-2). */
+  lane: DecodeLane
 }
 const rangeCache = new Map<string, RangeEntry>()
 let rangeTotalBytes = 0
@@ -361,6 +421,11 @@ function evictRangeOverflow(keepKey: string): void {
   }
 }
 
+/** What the range cache holds, for the test that guards its count. */
+export function rangeCacheBytesForTests(): number {
+  return rangeTotalBytes
+}
+
 function forgetAssetRanges(assetId: Id): void {
   for (const [key, e] of rangeCache) {
     if (e.assetId !== assetId) continue
@@ -370,12 +435,17 @@ function forgetAssetRanges(assetId: Id): void {
 }
 
 /** `owned` is false when the range IS the whole asset buffer, which the whole cache already counts. */
-async function decodeRange(asset: MediaAsset, fromS: number, toS: number): Promise<{ range: AudioRange; owned: boolean } | null> {
+async function decodeRange(
+  asset: MediaAsset,
+  fromS: number,
+  toS: number,
+  lane: DecodeLane,
+): Promise<{ range: AudioRange; owned: boolean } | null> {
   if (asset.kind === 'image' || !asset.hasAudio) return null
   const blob = await getBlob(asset.blobKey)
   if (!blob) return null
   try {
-    const r = await demuxAssetAudio(asset, blob, fromS, toS)
+    const r = await demuxAssetAudio(asset, blob, fromS, toS, lane)
     if (r) return { range: r, owned: true }
   } catch (err) {
     console.warn(`OL Premiere audio: ranged read failed for "${asset.name}", reading the whole file`, err)
@@ -383,16 +453,28 @@ async function decodeRange(asset: MediaAsset, fromS: number, toS: number): Promi
   if (provedSilent.has(asset.id)) return null
   // A container the demuxer cannot read in pieces still has to play: the whole
   // file read below is the fallback it always had.
-  const whole = await getAudioBuffer(asset)
+  const whole = await getAudioBuffer(asset, { priority: lane.priority })
   return whole ? { range: { buffer: whole, startS: 0 }, owned: false } : null
 }
 
 /**
  * The decoded sound for source seconds [fromS, toS) of `asset`, or a buffer that
  * contains them. A whole asset that is already decoded (a transcription, a beat
- * scan) serves every range for free.
+ * scan) serves every range for free. `priority` is for a read Play is waiting on:
+ * it goes ahead of any background read still queued.
+ *
+ * ⛔ AND SO DOES THE SAME RANGE READ IN THE BACKGROUND (SF-2, review 2026-10-08).
+ * Selecting a clip reads exactly the seconds Play will ask for (the beat scan),
+ * so Space found that read in here and waited on it where it stood: behind every
+ * waveform of his long recordings queued before it. Asked for with priority, a
+ * read already queued is moved to the front.
  */
-export function getAudioRange(asset: MediaAsset, fromS: number, toS: number): Promise<AudioRange | null> {
+export function getAudioRange(
+  asset: MediaAsset,
+  fromS: number,
+  toS: number,
+  opts: { priority?: boolean } = {},
+): Promise<AudioRange | null> {
   if (bufferBytes.has(asset.id)) {
     const whole = bufferCache.get(asset.id)
     if (whole) return whole.then((buffer) => (buffer ? { buffer, startS: 0 } : null))
@@ -403,14 +485,16 @@ export function getAudioRange(asset: MediaAsset, fromS: number, toS: number): Pr
     if (e.assetId !== asset.id || e.fromS > lo + 1e-6 || e.toS < hi - 1e-6) continue
     rangeCache.delete(key)
     rangeCache.set(key, e)
+    if (opts.priority) promoteLane(e.lane)
     return e.pending
   }
   const end = asset.durationS > 0 ? asset.durationS : Infinity
   const a = Math.max(0, Math.floor((lo - RANGE_PAD_S) / RANGE_ALIGN_S) * RANGE_ALIGN_S)
   const b = Math.min(end, Math.ceil((hi + RANGE_PAD_S) / RANGE_ALIGN_S) * RANGE_ALIGN_S)
   const key = `${asset.id}|${a}|${b}`
-  const entry: RangeEntry = { assetId: asset.id, fromS: a, toS: b, bytes: 0, pending: Promise.resolve(null) }
-  entry.pending = decodeRange(asset, a, b).then((r) => {
+  const lane = decodeLane(opts.priority)
+  const entry: RangeEntry = { assetId: asset.id, fromS: a, toS: b, bytes: 0, pending: Promise.resolve(null), lane }
+  entry.pending = decodeRange(asset, a, b, lane).then((r) => {
     if (!r) return null
     if (r.owned && rangeCache.get(key) === entry) {
       entry.bytes = r.range.buffer.length * r.range.buffer.numberOfChannels * 4
@@ -493,8 +577,14 @@ export function isProvedSilent(assetId: string): boolean {
  * Returns null rather than throwing when this file is not something mediabunny
  * can index or decode, so the caller can fall back.
  */
-async function demuxAssetAudio(asset: MediaAsset, blob: Blob, fromS?: number, toS?: number): Promise<{ buffer: AudioBuffer; startS: number } | null> {
-  const r = await decodeAudioOffThread(blob, asset.durationS, fromS, toS)
+async function demuxAssetAudio(
+  asset: MediaAsset,
+  blob: Blob,
+  fromS?: number,
+  toS?: number,
+  priority: boolean | DecodeLane = false,
+): Promise<{ buffer: AudioBuffer; startS: number } | null> {
+  const r = await decodeAudioOffThread(blob, asset.durationS, fromS, toS, priority)
   // No track at all is PROOF of silence. A track this build cannot decode is
   // not: that one still has to fail loudly, so only the first case is recorded.
   if (r.kind === 'silent') {
@@ -510,7 +600,7 @@ async function demuxAssetAudio(asset: MediaAsset, blob: Blob, fromS?: number, to
   return { buffer: out, startS: r.startS }
 }
 
-async function decodeAssetAudio(asset: MediaAsset): Promise<AudioBuffer | null> {
+async function decodeAssetAudio(asset: MediaAsset, lane: DecodeLane = decodeLane()): Promise<AudioBuffer | null> {
   if (asset.kind === 'image' || !asset.hasAudio) return null
   const blob = await getBlob(asset.blobKey)
   if (!blob) {
@@ -521,7 +611,7 @@ async function decodeAssetAudio(asset: MediaAsset): Promise<AudioBuffer | null> 
   // The demuxed read FIRST, and for any size. This is the path that works on his
   // 2.4 GB recordings.
   try {
-    const demuxed = await demuxAssetAudio(asset, blob)
+    const demuxed = await demuxAssetAudio(asset, blob, undefined, undefined, lane)
     if (demuxed) return demuxed.buffer
   } catch (err) {
     console.warn(`OL Premiere audio: demux failed for "${asset.name}", falling back to a whole-file read`, err)
@@ -710,11 +800,13 @@ function reverseAboutContainer(src: AudioBuffer, asset: MediaAsset): AudioBuffer
   return rev
 }
 
-export function getReversedAudioBuffer(asset: MediaAsset): Promise<AudioBuffer | null> {
+export function getReversedAudioBuffer(asset: MediaAsset, opts: { priority?: boolean } = {}): Promise<AudioBuffer | null> {
   let pending = reversedCache.get(asset.id)
+  // Play waits on the forward read under a reversal already asked for.
+  if (pending && opts.priority) promoteWholeRead(asset.id)
   if (!pending) {
     pending = (async () => {
-      const src = await getAudioBuffer(asset)
+      const src = await getAudioBuffer(asset, opts)
       if (!src) return null
       const rev = reverseAboutContainer(src, asset)
       // Accounted against the SAME budget as the forward buffers, on the same
@@ -750,21 +842,39 @@ export function getReversedAudioBuffer(asset: MediaAsset): Promise<AudioBuffer |
  * and a denoised one is cached per asset). The export keeps reading
  * clipAudioBuffer, unchanged, so its bytes cannot move.
  */
+// The noise pass runs in a worker wherever this engine runs (denoiseClient.ts).
+wetRunner.current = denoiseOffThread
+
+/**
+ * Start a clip's noise pass now, when he turns noise reduction on, so the first
+ * Play does not wait for it. Never throws.
+ */
+export function warmDenoise(clip: Clip, asset: MediaAsset): void {
+  if (!((clip.denoise ?? 0) > 0)) return
+  void clipAudioBuffer(clip, asset, false).catch(() => undefined)
+}
+
 function playbackAudioFor(clip: Clip, asset: MediaAsset, reversed: boolean): Promise<AudioRange | null> {
+  // Play is waiting on these, so they read at the front of the line too (SF-2):
+  // a reversed or noise-reduced clip used to read its whole file behind every
+  // background read queued before it.
   if (reversed || (clip.denoise ?? 0) > 0) {
-    return clipAudioBuffer(clip, asset, reversed).then((buffer) => (buffer ? { buffer, startS: 0 } : null))
+    return clipAudioBuffer(clip, asset, reversed, { priority: true }).then((buffer) =>
+      buffer ? { buffer, startS: 0 } : null,
+    )
   }
-  return getAudioRange(asset, clip.inS, clip.outS)
+  return getAudioRange(asset, clip.inS, clip.outS, { priority: true })
 }
 
 export async function clipAudioBuffer(
   clip: Clip,
   asset: MediaAsset,
   reversed: boolean,
+  opts: { priority?: boolean } = {},
 ): Promise<AudioBuffer | null> {
   const strength = clip.denoise ?? 0
-  if (strength <= 0) return reversed ? getReversedAudioBuffer(asset) : getAudioBuffer(asset)
-  const src = await getAudioBuffer(asset)
+  if (strength <= 0) return reversed ? getReversedAudioBuffer(asset, opts) : getAudioBuffer(asset, opts)
+  const src = await getAudioBuffer(asset, opts)
   if (!src) return null
   const ctx = ensureAudioContext()
   const denoised = await denoisedBufferFor(asset, src, strength, (c, l, r) => ctx.createBuffer(c, l, r))
@@ -934,6 +1044,19 @@ export function pitchPreservedSource(
   rememberStretch(buffer, cacheKey, out)
   const into = Math.max(0, (sched.sourceOffsetS - anchor) / rate)
   return { buffer: out, playbackRate: 1, offsetS: into, durationS: Math.max(0, outFrames / sr - into) }
+}
+
+/**
+ * The same source started `laterS` of timeline later, `laterS` into what it
+ * plays. A source plays `playbackRate` seconds of its buffer per second, a
+ * stretched slice and a plain buffer alike, so nothing has to be stretched or
+ * read again: a rebuild placed from where the picture got to while the reads
+ * ran (SF-1) only moves its window.
+ */
+export function startLater(play: ScheduledSource, laterS: number): ScheduledSource {
+  if (!(laterS > 0)) return play
+  const skip = laterS * play.playbackRate
+  return { ...play, offsetS: play.offsetS + skip, durationS: Math.max(0, play.durationS - skip) }
 }
 
 /**
@@ -1281,16 +1404,61 @@ async function tryResume(ctx: AudioContext): Promise<void> {
 }
 
 /**
+ * How long a graph takes to come in and to go: at Play, at a pause, and across
+ * the handover to a rebuilt graph mid-play. The same 2 ms a hard cut gets.
+ */
+export const GRAPH_FADE_S = DECLICK_S
+
+/**
+ * How quickly a fader, pan, mute or solo moved mid-play reaches its new value
+ * (a time constant: about 95 percent of the way in three of them).
+ */
+export const MIX_GLIDE_S = 0.01
+
+/**
+ * One scheduled graph. Calling it stops the graph, fading out over GRAPH_FADE_S
+ * from now, exactly once.
+ */
+export type ScheduledAudio = (() => void) & {
+  /** The context time `fromS` was scheduled to sound at (MIC-4). */
+  startsAtCtxS: number
+  /**
+   * The timeline time it sounds at `startsAtCtxS`: the `fromS` it was asked for,
+   * or, when it was handed `follow`, where the picture is at that moment.
+   */
+  fromS: number
+  /**
+   * Hand over to a newer graph that sounds from context time `ctxS`: this one
+   * fades out across that moment as the newer one fades in, so a rebuild mid-play
+   * leaves no hole and no click.
+   */
+  stopAt: (ctxS: number) => void
+  /**
+   * Move this graph's faders, pans, mutes and solos to `tracks` without
+   * rebuilding it. False, changing nothing, when the change needs a rebuild: a
+   * track that was silent when the graph was built would have to sound, the
+   * voice the music ducks under changed, or a track's chain itself changed.
+   */
+  setMix: (tracks: readonly Track[]) => boolean
+}
+
+/**
  * Schedule every audible clip of `seq` from timeline time `fromS`.
  * Resolves to a stop() that tears the scheduled graph down exactly once. It
  * carries `startsAtCtxS`, the context time `fromS` was scheduled to sound at,
  * so a take recorded against it can be placed where it was heard (MIC-4).
+ *
+ * `follow`, for a sound rebuilt while play goes on, says which timeline time
+ * the picture shows at a context time. The sound then starts from where the
+ * picture is at the moment it really sounds, however long the reads took, and
+ * `fromS` is only a hint (see the SF-1 note below).
  */
 export async function scheduleAudio(
   seq: Sequence,
   assets: Record<Id, MediaAsset>,
   fromS: number,
-): Promise<(() => void) & { startsAtCtxS: number }> {
+  follow?: (ctxS: number) => number,
+): Promise<ScheduledAudio> {
   const ctx = ensureAudioContext()
   await tryResume(ctx)
 
@@ -1299,8 +1467,16 @@ export async function scheduleAudio(
   const anySolo = seq.tracks.some((t) => t.solo)
   const audibleTracks = seq.tracks.filter((t) => (anySolo ? t.solo : !t.muted))
 
-  // One duck automation shared by every music track (see engine/ducking.ts).
-  const duckEnv = duckEnvelope(seq.tracks, anySolo, fromS)
+  // ⛔ A REBUILD MID-PLAY STARTS WHERE THE PICTURE IS WHEN IT SOUNDS (SF-1,
+  // review 2026-10-08). A clip edit while it plays rebuilds the sound, and this
+  // waits on every read below: the whole span again for a clip he extended, the
+  // whole take and its noise pass for one he turned noise reduction on for. The
+  // sound used to start from where the playhead was when it was ASKED for, a
+  // second or more before it was ready, and the transport then moved the picture
+  // back onto it: both replayed what he had just watched. With `follow`, the
+  // clips are picked from the earliest moment the sound could start, and placed
+  // from where the picture actually is once everything is read (`atS` below).
+  const pickS = follow ? Math.min(fromS, follow(ctx.currentTime + SCHEDULE_LATENCY_S)) : fromS
 
   // Audio comes from audio-track clips PLUS standalone (unlinked) video clips.
   // A linked video clip is video-only: its audio plays from the linked
@@ -1321,7 +1497,7 @@ export async function scheduleAudio(
       const reversed = clip.speed < 0
       // A reverse clip schedules as its forward-equivalent on the reversed buffer.
       const eff = reversed ? effectiveAudioClip(clip, asset.durationS) : clip
-      const sched = computeClipSchedule(eff, fromS)
+      const sched = computeClipSchedule(eff, pickS)
       if (!sched) continue
       // Its neighbours are read off the clip as it sits on the track.
       candidates.push({ clip: eff, track, sched, asset, reversed, edges: clipEdges(track, clip) })
@@ -1345,48 +1521,6 @@ export async function scheduleAudio(
       buffers[i] = await playbackAudioFor(c.clip, c.asset, c.reversed)
     },
   )
-
-  const { master } = ensureMasterChain()
-  // Every track waits as long as the slowest (Auto-level's compressor), so the
-  // tracks stay together; startT below takes that wait back off.
-  const alignS = trackAlignS(candidates.map((c) => c.track))
-
-  // One gain→[compressor]→pan chain per audible track, feeding the shared
-  // master. Built lazily so a track with no audible clip costs nothing.
-  const trackNodes = new Map<Id, { input: GainNode; nodes: AudioNode[] }>()
-  const trackInputFor = (track: Track): GainNode => {
-    const existing = trackNodes.get(track.id)
-    if (existing) return existing.input
-    const gain = ctx.createGain()
-    gain.gain.value = dbToGain(track.volumeDb ?? 0)
-    const pan = ctx.createStereoPanner()
-    pan.pan.value = clamp(track.pan ?? 0, -1, 1)
-    const nodes: AudioNode[] = [gain, pan]
-    // Loudness equalization: a compressor + makeup gain on the track bus. The
-    // export renderer calls this same function, see connectAutoLevel.
-    let tail: AudioNode = connectAutoLevel(ctx, gain, track.autoLevel, (...made) => nodes.push(...made))
-    // Music sits down under the voiceover: the shared duck automation rides a
-    // dedicated gain so the fader/auto-level stay untouched.
-    if (track.audioRole === 'music' && duckEnv) {
-      const duck = ctx.createGain()
-      // The duck rides AFTER the track's shared delay, so its automation moves
-      // with the sound it ducks.
-      duckEnv.forEach((pt, idx) => {
-        const when = startT + alignS + pt.offsetS
-        if (idx === 0) duck.gain.setValueAtTime(pt.value, when)
-        else duck.gain.linearRampToValueAtTime(pt.value, when)
-      })
-      tail.connect(duck)
-      nodes.push(duck)
-      tail = duck
-    }
-    tail.connect(pan)
-    pan.connect(master)
-    trackNodes.set(track.id, { input: gain, nodes })
-    return gain
-  }
-
-  const clipNodes: { source: AudioBufferSourceNode; gain: GainNode }[] = []
 
   // ⛔ EVERY STRETCH HAPPENS BEFORE THE CLOCK IS READ, 2026-08-24, AND IT USED TO
   // HAPPEN AFTER. His words: *"sometimes I know it's just popping off. It's not
@@ -1430,22 +1564,82 @@ export async function scheduleAudio(
   // One base time shared by every clip so relative offsets stay exact. Read AFTER
   // the last slow call above, so nothing can walk the clock past it.
   const baseT = ctx.currentTime + SCHEDULE_LATENCY_S
+  // Where on the timeline the sound starts: where the picture is at baseT for a
+  // rebuild (never before where the clips were picked from), else as asked.
+  const atS = follow ? Math.max(pickS, follow(baseT)) : fromS
+
+  // One duck automation shared by every music track (see engine/ducking.ts).
+  const duckEnv = duckEnvelope(seq.tracks, anySolo, atS)
+
+  const { master } = ensureMasterChain()
+  // Every track waits as long as the slowest (Auto-level's compressor), so the
+  // tracks stay together; startT below takes that wait back off.
+  const alignS = trackAlignS(candidates.map((c) => c.track))
+
+  // One gain→[compressor]→pan chain per audible track, feeding the shared
+  // master. Built lazily so a track with no audible clip costs nothing.
+  const trackNodes = new Map<Id, { input: GainNode; pan: StereoPannerNode; nodes: AudioNode[] }>()
+  // ⛔ EVERY GRAPH COMES IN AND GOES OUT THROUGH ITS OWN FADER (AU-9). A source
+  // stopped mid-waveform is a step, which is a click, and a mix change mid-play
+  // used to stop every source at once and leave 50 ms of nothing before the
+  // rebuilt graph. This one gain is what fades the whole graph in at its start
+  // and out at a pause or a handover. It sits before the master chain, so both
+  // graphs of a handover meet on the same clock.
+  const graphOut = ctx.createGain()
+  graphOut.connect(master)
+  const trackInputFor = (track: Track): GainNode => {
+    const existing = trackNodes.get(track.id)
+    if (existing) return existing.input
+    const gain = ctx.createGain()
+    gain.gain.value = dbToGain(track.volumeDb ?? 0)
+    const pan = ctx.createStereoPanner()
+    pan.pan.value = clamp(track.pan ?? 0, -1, 1)
+    const nodes: AudioNode[] = [gain, pan]
+    // Loudness equalization: a compressor + makeup gain on the track bus. The
+    // export renderer calls this same function, see connectAutoLevel.
+    let tail: AudioNode = connectAutoLevel(ctx, gain, track.autoLevel, (...made) => nodes.push(...made))
+    // Music sits down under the voiceover: the shared duck automation rides a
+    // dedicated gain so the fader/auto-level stay untouched.
+    if (track.audioRole === 'music' && duckEnv) {
+      const duck = ctx.createGain()
+      // The duck rides AFTER the track's shared delay, so its automation moves
+      // with the sound it ducks.
+      duckEnv.forEach((pt, idx) => {
+        const when = startT + alignS + pt.offsetS
+        if (idx === 0) duck.gain.setValueAtTime(pt.value, when)
+        else duck.gain.linearRampToValueAtTime(pt.value, when)
+      })
+      tail.connect(duck)
+      nodes.push(duck)
+      tail = duck
+    }
+    tail.connect(pan)
+    pan.connect(graphOut)
+    trackNodes.set(track.id, { input: gain, pan, nodes })
+    return gain
+  }
+
+  const clipNodes: { source: AudioBufferSourceNode; gain: GainNode }[] = []
+
   // ⛔ THE SOUND IS DUE AT THE SPEAKERS AT baseT, NOT AT THE SOURCES. The track
   // alignment (Auto-level's 6 ms, see AUTO_LEVEL_LATENCY_S) and the master
   // limiter's look-ahead both delay what comes out, so every source starts that
   // much earlier and the transport's anchor at baseT stays exactly right. The
   // export removes the same delays from its render, so the two still agree.
   const startT = baseT - alignS - masterLatencyS()
-  candidates.forEach(({ clip, track, sched, edges }, i) => {
-    const play = plays[i]
-    if (!play) return
+  candidates.forEach(({ clip, track, sched: picked, edges }, i) => {
+    const first = plays[i]
+    // A clip that ended while the reads ran plays nothing.
+    const sched = atS === pickS ? picked : computeClipSchedule(clip, atS)
+    if (!first || !sched) return
+    const play = atS === pickS ? first : startLater(first, Math.max(0, atS - Math.max(pickS, clip.startS)))
     // A plain track starts later by the alignment, so it meets the Auto-level ones.
     const trackT = startT + trackLateS(track, alignS)
     const source = ctx.createBufferSource()
     source.buffer = play.buffer
     source.playbackRate.value = play.playbackRate
     // Fade in/out + static gain + de-click, shared with the export mix by construction.
-    const env = clipGainEnvelope(clip, fromS, edges) ?? [{ offsetS: 0, value: dbToGain(clip.audioGainDb) }]
+    const env = clipGainEnvelope(clip, atS, edges) ?? [{ offsetS: 0, value: dbToGain(clip.audioGainDb) }]
     // Stereo always, the same node the export builds: see createClipGain.
     const gain = createClipGain(ctx, env[0]!.value)
     env.forEach((pt, idx) => {
@@ -1460,23 +1654,77 @@ export async function scheduleAudio(
     clipNodes.push({ source, gain })
   })
 
+  // Every track's sound reaches graphOut at the same moment: baseT, less the
+  // master chain's own delay, which comes after it.
+  const atOut = baseT - masterLatencyS()
+  graphOut.gain.value = 0
+  graphOut.gain.setValueAtTime(0, atOut)
+  graphOut.gain.linearRampToValueAtTime(1, atOut + GRAPH_FADE_S)
+
+  // What the graph was built from, so a mix change can tell whether this graph
+  // can follow it or has to be rebuilt.
+  const shapeOf = (t: Track): string => `${t.autoLevel ?? 0}:${t.audioRole ?? 0}`
+  const builtAudible = new Set(audibleTracks.map((t) => t.id))
+  const builtShape = new Map(seq.tracks.map((t) => [t.id, shapeOf(t)]))
+  const builtDuck = JSON.stringify(duckEnv)
+
   let stopped = false
-  const stop = (): void => {
+  /** Fade out from `at` (graphOut's clock) and let every node go once it is silent. */
+  const fadeOutFrom = (at: number): void => {
     if (stopped) return
     stopped = true
-    for (const { source, gain } of clipNodes) {
+    const g = graphOut.gain
+    // Where the fader is at `at`: still silent, halfway through its fade in, or open.
+    const held = at <= atOut ? 0 : Math.min(1, (at - atOut) / GRAPH_FADE_S)
+    if (typeof g.cancelAndHoldAtTime === 'function') g.cancelAndHoldAtTime(at)
+    else g.cancelScheduledValues(at)
+    // ⛔ ANCHORED BY HAND. A linear ramp runs from the PREVIOUS event, and
+    // cancelAndHoldAtTime adds none when the fade in finished long ago, so the
+    // fade out ramped from the start of play: at once down to a few percent, a
+    // hole of 30 to 50 ms at every handover (measured in Chromium, 2026-10-07).
+    g.setValueAtTime(held, at)
+    g.linearRampToValueAtTime(0, at + GRAPH_FADE_S)
+    // Nothing a source plays after this reaches the speakers.
+    const silentAt = at + GRAPH_FADE_S
+    for (const { source } of clipNodes) {
       try {
-        source.stop()
+        source.stop(silentAt)
       } catch {
         // stop() only throws before start(); every node here was started
       }
-      source.disconnect()
-      gain.disconnect()
     }
-    // Tear down the per-track nodes too; the master chain persists for the meter.
-    for (const { nodes } of trackNodes.values()) {
-      for (const n of nodes) n.disconnect()
+    // Let go of the nodes once they are silent. A suspended clock never gets
+    // there, so this does not wait on it: disconnected is silent either way.
+    const release = (): void => {
+      for (const { source, gain } of clipNodes) {
+        source.disconnect()
+        gain.disconnect()
+      }
+      // Tear down the per-track nodes too; the master chain persists for the meter.
+      for (const { nodes } of trackNodes.values()) {
+        for (const n of nodes) n.disconnect()
+      }
+      graphOut.disconnect()
     }
+    setTimeout(release, Math.max(0, silentAt - ctx.currentTime) * 1000 + 50)
   }
-  return Object.assign(stop, { startsAtCtxS: baseT })
+  const stop = (): void => fadeOutFrom(ctx.currentTime)
+  const stopAt = (ctxS: number): void => fadeOutFrom(Math.max(ctx.currentTime, ctxS - masterLatencyS()))
+  const setMix = (tracks: readonly Track[]): boolean => {
+    if (stopped) return false
+    const solo = tracks.some((t) => t.solo)
+    const audibleNow = new Set(tracks.filter((t) => (solo ? t.solo : !t.muted)).map((t) => t.id))
+    for (const id of audibleNow) if (!builtAudible.has(id)) return false
+    if (tracks.length !== builtShape.size || tracks.some((t) => builtShape.get(t.id) !== shapeOf(t))) return false
+    if (JSON.stringify(duckEnvelope(tracks, solo, atS)) !== builtDuck) return false
+    const now = ctx.currentTime
+    for (const t of tracks) {
+      const nodes = trackNodes.get(t.id)
+      if (!nodes) continue
+      nodes.input.gain.setTargetAtTime(audibleNow.has(t.id) ? dbToGain(t.volumeDb ?? 0) : 0, now, MIX_GLIDE_S)
+      nodes.pan.pan.setTargetAtTime(clamp(t.pan ?? 0, -1, 1), now, MIX_GLIDE_S)
+    }
+    return true
+  }
+  return Object.assign(stop, { startsAtCtxS: baseT, fromS: atS, stopAt, setMix })
 }

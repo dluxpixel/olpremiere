@@ -22,6 +22,7 @@ import {
   useRecorder,
 } from '../state/voiceRecorder'
 import { canPickOutput, listAudioOutputs } from '../state/recordingMonitor'
+import { routeToChosenOutput } from '../engine/audio'
 import { IconButton } from '../ui/Button'
 import { dbToFrac, METER_IDLE, METER_TICKS_DB, meterGradient, stepMeter, type MeterState } from './levelMeter'
 import { useEscapeToClose } from '../ui/useEscapeToClose'
@@ -127,6 +128,12 @@ export function RecordingStudio() {
   const [elapsed, setElapsed] = useState(0)
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null)
   const drag = useRef<{ dx: number; dy: number } | null>(null)
+  // The take under review plays on the output he picked here, not the system default.
+  const takeAudio = useRef<HTMLAudioElement>(null)
+  const takeUrl = pending?.url
+  useEffect(() => {
+    if (takeAudio.current) routeToChosenOutput(takeAudio.current)
+  }, [takeUrl, selectedOutputId])
 
   useEffect(() => {
     void listAudioInputs().then(setInputs)
@@ -250,7 +257,9 @@ export function RecordingStudio() {
             data-testid="studio-take"
             className="flex flex-col gap-2 rounded-overlay border border-border bg-bg-panel p-2"
           >
-            {pending && <audio src={pending.url} controls className="h-8 w-full" data-testid="studio-take-audio" />}
+            {pending && (
+              <audio ref={takeAudio} src={pending.url} controls className="h-8 w-full" data-testid="studio-take-audio" />
+            )}
             <div className="flex items-center gap-2">
               <button
                 type="button"

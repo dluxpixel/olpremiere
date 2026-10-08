@@ -63,6 +63,19 @@ export interface MediaAsset {
    * so every clip cut from the same file shares one listening.
    */
   words?: SpokenWord[]
+  /**
+   * The stretches of the source that have been listened to, merged and sorted,
+   * so a stretch with no words in it is known to be quiet rather than not heard
+   * yet. A project from before this has words and no spans, and reads as not
+   * heard.
+   */
+  heardSpans?: HeardSpan[]
+}
+
+/** A stretch of a file's source that has been listened to, in source seconds. */
+export interface HeardSpan {
+  fromS: number
+  toS: number
 }
 
 /** One spoken word, in source seconds. The same shape the recogniser hands back. */

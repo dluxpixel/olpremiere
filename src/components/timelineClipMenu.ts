@@ -133,6 +133,15 @@ export function clipContextMenuItems({
       ? [{ label: captionLabel(captionCount), separator: true, onClick: () => void captionTheseClips(captionIds) }]
       : []
 
+  // Cut the quiet parts takes the same clips the caption item does: a dubbed
+  // take lands as several clips, and all of them go in one pass and one undo
+  // step. One clip goes through the single door, which says why it refuses.
+  // The cut works one line at a time (silenceActions.ts), the line of the first
+  // clip it is handed, so the clip he right-clicked goes first.
+  const lead = captionTargets([clip.id])[0]
+  const quietTargets = captionCount > 1 ? captionTargets(captionIds) : [clip.id]
+  const quietIds = lead && quietTargets.includes(lead) ? [lead, ...quietTargets.filter((id) => id !== lead)] : quietTargets
+
   // Beat-driven punches and the loudness verbs, for audio clips with sound.
   const captionItems =
     ownSound
@@ -145,7 +154,10 @@ export function clipContextMenuItems({
           { label: 'Punch video on beats', onClick: () => void punchOnBeats(clip.id) },
           // Same door as the caption item on purpose: both need a transcript,
           // so they share the wait and the mental model.
-          { label: 'Cut the quiet parts', onClick: () => void cutQuietParts(clip.id) },
+          {
+            label: quietIds.length > 1 ? `Cut the quiet parts of ${quietIds.length} clips` : 'Cut the quiet parts',
+            onClick: () => void cutQuietParts(quietIds),
+          },
         ]
       : []
 

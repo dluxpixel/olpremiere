@@ -3,11 +3,14 @@ import { join } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { sfxAssetName, sfxById } from '../engine/sfx/sfx'
 import { activeSequence, audioTracks, newProject } from '../engine/types'
-import { insertSfxAtPlayhead } from './sfxActions'
+import { putBlob } from './persistence'
+import { insertSfxAtPlayhead, previewSfx } from './sfxActions'
+import { setAudioOutputDevice } from '../engine/audio'
 import { useStore } from './store'
 
+const show = vi.hoisted(() => vi.fn())
 vi.mock('./toasts', () => ({
-  useToasts: { getState: () => ({ show: () => {} }) },
+  useToasts: { getState: () => ({ show }) },
 }))
 vi.mock('./persistence', () => ({
   putBlob: vi.fn(async () => {}),
@@ -79,5 +82,41 @@ describe('insertSfxAtPlayhead', () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, blob: async () => new Blob() })))
     await insertSfxAtPlayhead('boom')
     expect(assets()).toHaveLength(0)
+  })
+
+  // ⛔ AU-21. Out of room, the save rejected into a `void` call and the click
+  // silently did nothing.
+  it('says so when the sound cannot be saved, and leaves the project untouched', async () => {
+    show.mockClear()
+    vi.mocked(putBlob).mockRejectedValueOnce(new DOMException('full', 'QuotaExceededError'))
+    await expect(insertSfxAtPlayhead('boom')).resolves.toBeUndefined()
+    expect(assets()).toHaveLength(0)
+    expect(seq().tracks.flatMap((t) => t.clips)).toHaveLength(0)
+    expect(show).toHaveBeenCalledWith(expect.stringContaining('Could not save the sound'), 'danger')
+  })
+})
+
+// ⛔ AU-19. A sound effect heard from the panel played on the system default
+// whatever output he had picked.
+describe('previewSfx', () => {
+  it('plays on the output he picked', async () => {
+    const setSinkId = vi.fn(async () => {})
+    vi.stubGlobal(
+      'Audio',
+      class {
+        src = ''
+        currentTime = 0
+        setSinkId = setSinkId
+        play = async () => {}
+      },
+    )
+    try {
+      await setAudioOutputDevice('headphones')
+      previewSfx('boom')
+      expect(setSinkId).toHaveBeenCalledWith('headphones')
+    } finally {
+      await setAudioOutputDevice(null)
+      vi.unstubAllGlobals()
+    }
   })
 })

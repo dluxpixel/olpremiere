@@ -2,7 +2,8 @@
  * @vitest-environment jsdom
  */
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { setAudioOutputDevice } from '../engine/audio'
 import { useRecorder } from '../state/voiceRecorder'
 import { RecordingStudio } from './RecordingStudio'
 
@@ -81,5 +82,25 @@ describe('keeping a take', () => {
     render(<RecordingStudio />)
     expect(screen.getByTestId('studio-keep').textContent).toBe('Add to timeline')
     act(() => useRecorder.setState({ pendingTake: null }))
+  })
+})
+
+// ⛔ AU-19. With headphones picked here, the take under review played on the speakers.
+describe('the take under review', () => {
+  it('plays on the output he picked', async () => {
+    const setSinkId = vi.fn(async () => {})
+    Object.defineProperty(HTMLMediaElement.prototype, 'setSinkId', { value: setSinkId, configurable: true })
+    try {
+      await setAudioOutputDevice('headphones')
+      const take = { url: 'blob:x', blob: new Blob(['x']), mime: 'audio/wav', name: 'Voice recording 1.wav', durationS: 1 }
+      act(() => useRecorder.setState({ pendingTake: take as never, selectedOutputId: 'headphones' }))
+      render(<RecordingStudio />)
+      expect(screen.getByTestId('studio-take-audio')).toBeTruthy()
+      expect(setSinkId).toHaveBeenCalledWith('headphones')
+    } finally {
+      act(() => useRecorder.setState({ pendingTake: null, selectedOutputId: null }))
+      await setAudioOutputDevice(null)
+      delete (HTMLMediaElement.prototype as { setSinkId?: unknown }).setSinkId
+    }
   })
 })

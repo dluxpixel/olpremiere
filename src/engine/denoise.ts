@@ -128,13 +128,17 @@ export function denoiseAtRate(engine: DenoiseEngine, data: Float32Array, sampleR
 }
 
 /**
- * Dry/wet mix into a new array: out is raw times (one minus strength), plus
- * wet times strength.
+ * Dry/wet mix into a new array (or into `out`): out is raw times (one minus
+ * strength), plus wet times strength.
  * strength 0 returns samples numerically identical to raw; 1 returns wet.
  */
-export function mixDryWet(raw: Float32Array, wet: Float32Array, strength: number): Float32Array {
+export function mixDryWet(
+  raw: Float32Array,
+  wet: Float32Array,
+  strength: number,
+  out: Float32Array = new Float32Array(raw.length),
+): Float32Array {
   const s = Math.min(1, Math.max(0, strength))
-  const out = new Float32Array(raw.length)
   const dry = 1 - s
   for (let i = 0; i < raw.length; i++) out[i] = raw[i]! * dry + (wet[i] ?? 0) * s
   return out
@@ -190,7 +194,12 @@ export function wetShareFor(strength: number): number {
 // Follows the machine now, see engine/memoryBudget.ts.
 const denoiseCacheMaxBytes = (): number => budgets().denoise
 const wetCache = new Map<string, Promise<Float32Array[] | null>>()
-const mixCache = new Map<string, { strength: number; channels: Float32Array[] }>()
+// ⛔ THE MIX IS KEPT AS THE AUDIOBUFFER ITSELF, handed out as the same object
+// every time. A fresh copy of the whole take used to be built on EVERY call:
+// every Play, every mute or fader move, every loop wrap. And because the copy
+// was a new object, the time-stretch cache (keyed on the buffer) missed on every
+// one of them for a sped up clip with noise reduction on.
+const mixCache = new Map<string, { strength: number; buffer: AudioBuffer }>()
 /** Bytes charged per asset, counting both copies, so the budget is the truth. */
 const denoiseBytes = new Map<string, number>()
 let denoiseTotalBytes = 0
@@ -247,16 +256,52 @@ function evictDenoiseOverflow(keepId: string): void {
   }
 }
 
+/**
+ * Who runs the full-wet pass. The app points this at the worker
+ * (denoiseClient.ts, set by engine/audio.ts); a runner that returns null, or
+ * none at all, means the pass runs right here, as it always did. A seam rather
+ * than an import, because the worker itself imports this file.
+ */
+export const wetRunner: {
+  current: ((channels: readonly Float32Array[], sampleRate: number) => Promise<Float32Array[]> | null) | null
+} = { current: null }
+
+async function wetPass(src: AudioBuffer): Promise<Float32Array[]> {
+  const dry = Array.from({ length: src.numberOfChannels }, (_, ch) => src.getChannelData(ch))
+  const off = wetRunner.current?.(dry, src.sampleRate)
+  if (off) {
+    try {
+      return await off
+    } catch (err) {
+      console.warn('OL Premiere: noise reduction worker failed, cleaning here instead', err)
+    }
+  }
+  const engine = await ensureRnnoise()
+  return dry.map((c) => denoiseAtRate(engine, c, src.sampleRate))
+}
+
+/** Assets whose noise pass is running, so the Inspector can say so. */
+const cleaning = new Set<string>()
+const cleaningListeners = new Set<() => void>()
+const tellCleaning = (): void => cleaningListeners.forEach((l) => l())
+
+/** The noise pass for this asset is running right now. */
+export const isCleaningNoise = (assetId: string): boolean => cleaning.has(assetId)
+
+/** Hear when a noise pass starts or ends. Returns the way to stop listening. */
+export function onCleaningNoise(listener: () => void): () => void {
+  cleaningListeners.add(listener)
+  return () => cleaningListeners.delete(listener)
+}
+
 /** Denoised (full-wet) channels for an asset's decoded buffer, cached. */
 function ensureWetChannels(asset: MediaAsset, src: AudioBuffer): Promise<Float32Array[] | null> {
   let pending = wetCache.get(asset.id)
   if (!pending) {
-    pending = ensureRnnoise()
-      .then((engine) => {
-        const channels: Float32Array[] = []
-        for (let ch = 0; ch < src.numberOfChannels; ch++) {
-          channels.push(denoiseAtRate(engine, src.getChannelData(ch), src.sampleRate))
-        }
+    cleaning.add(asset.id)
+    tellCleaning()
+    pending = wetPass(src)
+      .then((channels) => {
         chargeDenoise(asset.id, channelsBytes(channels))
         evictDenoiseOverflow(asset.id)
         return channels
@@ -268,6 +313,10 @@ function ensureWetChannels(asset: MediaAsset, src: AudioBuffer): Promise<Float32
         console.warn('OL Premiere: noise reduction unavailable', err)
         wetCache.delete(asset.id)
         return null
+      })
+      .finally(() => {
+        cleaning.delete(asset.id)
+        tellCleaning()
       })
     wetCache.set(asset.id, pending)
   }
@@ -294,19 +343,19 @@ export async function denoisedBufferFor(
     // A replaced mix at a new strength is the same size, so only a NEW entry
     // adds to the total. Charging both would double count every slider move.
     const had = mixCache.has(asset.id)
-    mixed = {
-      strength: s,
-      channels: wet.map((w, ch) => mixDryWet(src.getChannelData(ch), w, wetShareFor(s))),
+    const buffer = createBuffer(src.numberOfChannels, src.length, src.sampleRate)
+    // Mixed straight into the buffer: no second copy of the take on the way.
+    for (let ch = 0; ch < src.numberOfChannels; ch++) {
+      mixDryWet(src.getChannelData(ch), wet[ch]!, wetShareFor(s), buffer.getChannelData(ch))
     }
+    mixed = { strength: s, buffer }
     mixCache.set(asset.id, mixed)
     if (!had) {
-      chargeDenoise(asset.id, channelsBytes(mixed.channels))
+      chargeDenoise(asset.id, buffer.length * buffer.numberOfChannels * 4)
       evictDenoiseOverflow(asset.id)
     }
   }
-  const out = createBuffer(src.numberOfChannels, src.length, src.sampleRate)
-  for (let ch = 0; ch < src.numberOfChannels; ch++) out.getChannelData(ch).set(mixed.channels[ch]!)
-  return out
+  return mixed.buffer
 }
 
 /** Drop cached denoise work for an asset (asset deleted / replaced). */

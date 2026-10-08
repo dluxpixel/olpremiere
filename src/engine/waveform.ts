@@ -130,9 +130,24 @@ export function getAssetPeaks(asset: MediaAsset): Promise<Float32Array | null> {
   return pending
 }
 
+/** Bumped per asset each time its peaks are forgotten, so a drawn waveform asks again. */
+const peaksVersions = new Map<Id, number>()
+const peaksListeners = new Set<() => void>()
+
 /** Forget one asset's peaks. They come back from the next getAssetPeaks. */
 export function forgetAssetPeaks(assetId: Id): void {
   peaksCache.delete(assetId)
+  peaksVersions.set(assetId, (peaksVersions.get(assetId) ?? 0) + 1)
+  peaksListeners.forEach((l) => l())
+}
+
+/** How many times this asset's peaks have been forgotten: a waveform drawn from older ones asks again. */
+export const peaksVersion = (assetId: Id): number => peaksVersions.get(assetId) ?? 0
+
+/** Hear when any asset's peaks are forgotten. Returns the way to stop listening. */
+export function onPeaksForgotten(listener: () => void): () => void {
+  peaksListeners.add(listener)
+  return () => peaksListeners.delete(listener)
 }
 
 /**
@@ -145,7 +160,9 @@ export function forgetAssetPeaks(assetId: Id): void {
  * the ones in between, so a kick living in one 16 ms bucket had about a 60
  * percent chance of not being drawn at all on a 3 minute song. With more
  * columns than peaks each column still reads the one peak under it, as before.
- * Every peak in the window is read at most once, so a draw costs the peaks in
+ * A short loud hit (a gunshot, a kick, a vine boom) and a spoken word keep their
+ * height at any zoom, and the shape he razors against no longer changes as he
+ * zooms. Every peak in the window is read at most once, so a draw costs the peaks in
  * the clip (16,000 at most, see MAX_BUCKETS) plus the columns.
  */
 export function slicePeaks(

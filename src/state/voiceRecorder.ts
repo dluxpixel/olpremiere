@@ -15,6 +15,7 @@ import { useToasts } from './toasts'
 import { currentHeardSpan, ensurePlaying, pausePlayback } from './playbackControl'
 import { updateActiveSequence, useStore } from './store'
 import { CLIP_AMP, readTake } from './takeAudio'
+import { clearDraft, leftoverDrafts, startDraft, type TakeDraft } from './takeDraft'
 import { placeTakeClips, takeClipSpans, type HeardDuringTake, type TakeTiming } from './takePlacement'
 import { beginRestartHold } from './unloadGuard'
 
@@ -29,6 +30,8 @@ export interface PendingTake {
   durationS: number
   /** What was measured while it was recorded, so a kept take lands where he performed it. */
   timing: TakeTiming
+  /** Its copy on disk (takeDraft.ts), kept until it is in the bin or thrown away for good. */
+  draftId?: string
 }
 
 interface RecorderState {
@@ -141,7 +144,9 @@ export const useRecorder = create<RecorderState>(() => ({
  */
 let releaseRestartHold: (() => void) | null = null
 useRecorder.subscribe((s) => {
-  const precious = s.recording || s.pendingTake !== null
+  // `keeping` too: a take being added sits in memory only until the bin has it,
+  // and a restart in that wait loses it the same way.
+  const precious = s.recording || s.pendingTake !== null || s.keeping
   if (precious && !releaseRestartHold) releaseRestartHold = beginRestartHold()
   else if (!precious && releaseRestartHold) {
     releaseRestartHold()
@@ -402,7 +407,7 @@ export async function openStudio(): Promise<void> {
 /** Close the studio: stop any take, release the mic, drop an unreviewed take. */
 export function closeStudio(): void {
   if (useRecorder.getState().recording) stopRecording()
-  discardTake()
+  discard(true)
   cancelRaf(levelRaf)
   monitor?.dispose()
   monitor = null
@@ -459,9 +464,69 @@ export function pickRecorderMime(): string {
 export const isLosslessMime = (mime: string): boolean => /codecs=pcm|audio\/wav/i.test(mime)
 
 /** File extension matching the recorded mime, so probe/import route it correctly. */
+const takeExtension = (mime: string): string =>
+  mime.includes('ogg') ? 'ogg' : mime.includes('mp4') ? 'm4a' : mime.includes('wav') ? 'wav' : 'webm'
+
 export function recordingFileName(n: number, mime: string): string {
-  const ext = mime.includes('ogg') ? 'ogg' : mime.includes('mp4') ? 'm4a' : mime.includes('wav') ? 'wav' : 'webm'
-  return `Voice recording ${n}.${ext}`
+  return `Voice recording ${n}.${takeExtension(mime)}`
+}
+
+/**
+ * The number for the next take: past every take already in the edit and past
+ * every one handed out this session, so two takes in one bin never share a name.
+ *
+ * ⛔ IT USED TO COUNT FROM 1 EVERY LAUNCH, so a project recorded over a few
+ * sessions collected several "Voice recording 1" in its bin, and Find my media
+ * matches a lost take by its name.
+ */
+export function nextTakeNumber(names: Iterable<string>, givenSoFar: number): number {
+  let top = givenSoFar
+  for (const name of names) {
+    const m = /^Voice recording (\d+)\.\w+$/i.exec(name)
+    if (m) top = Math.max(top, Number(m[1]))
+  }
+  return top + 1
+}
+
+/** How often the recorder hands over a chunk, and so the most a crash can cost. */
+export const DRAFT_SLICE_MS = 1000
+
+/** How long the offer of a take saved before a crash stays up. */
+const OFFER_MS = 20_000
+
+/**
+ * At launch: a take still on disk from before the app closed (a crash, or the
+ * app shut with a take waiting) is offered back. Added, it goes into the
+ * library like any import. Not answered, it stays and is offered again next
+ * time: these are his words, and nothing deletes them without him.
+ */
+export async function offerLeftoverTakes(): Promise<void> {
+  let drafts: Awaited<ReturnType<typeof leftoverDrafts>>
+  try {
+    drafts = await leftoverDrafts()
+  } catch {
+    return
+  }
+  for (const d of drafts) {
+    const file = new File([d.blob], `Saved voice recording.${takeExtension(d.blob.type)}`, { type: d.blob.type })
+    let adding = false
+    useToasts.getState().show(
+      'A take from before the app closed was saved. Add it?',
+      'info',
+      {
+        label: 'Add it',
+        onClick: () => {
+          if (adding) return
+          adding = true
+          void importFiles([file], { successMessage: 'Your saved take is in the library' }).then(([id]) => {
+            adding = false
+            if (id) void clearDraft(d.id)
+          })
+        },
+      },
+      { durationMs: OFFER_MS },
+    )
+  }
 }
 
 /**
@@ -488,8 +553,8 @@ export async function startRecording(): Promise<void> {
     if (!monitor) return // openStudio already surfaced the error
   }
   // A held take is replaced by the new one; reviewing is per-take, not a queue.
-  // dropTake, NOT discardTake: see the comment on discardTake.
-  dropTake()
+  // throwAwayTake, NOT discardTake: see the comment on discardTake.
+  throwAwayTake()
 
   const mime = pickRecorderMime()
   // Opus only: a high, explicit bitrate. The browser default is low and a big
@@ -505,14 +570,19 @@ export async function startRecording(): Promise<void> {
     heard,
     startPlayheadS: useStore.getState().ui.playheadS,
   }
+  const draft = startDraft()
   try {
     const rec = new MediaRecorder(monitor.stream, options)
     recorder = rec
     rec.ondataavailable = (e) => {
-      if (e.data.size > 0) takeChunks.push(e.data)
+      if (e.data.size === 0) return
+      takeChunks.push(e.data)
+      draft.add(e.data)
     }
-    rec.onstop = () => finalize(mime, rec, takeChunks, startedAt, timing)
-    rec.start()
+    rec.onstop = () => finalize(mime, rec, takeChunks, startedAt, timing, draft)
+    // A chunk every second, so a crash costs at most that second (takeDraft.ts).
+    // The chunks join into the same file one start() with no slice would give.
+    rec.start(DRAFT_SLICE_MS)
     // File position 0 is the audio delivered from here on (see takePlacement).
     timing.recorderStartMs = performance.now()
   } catch (err) {
@@ -564,7 +634,14 @@ export function stopRecording(): void {
  * stream and stays live for the next take + the meter). Clears the recorder
  * pointer only if this take is still the active one.
  */
-function finalize(mime: string, rec: MediaRecorder, takeChunks: Blob[], startedAt: number, timing: TakeTiming): void {
+function finalize(
+  mime: string,
+  rec: MediaRecorder,
+  takeChunks: Blob[],
+  startedAt: number,
+  timing: TakeTiming,
+  draft: TakeDraft,
+): void {
   if (recorder === rec) {
     recorder = null
     takeHeardSpans = null
@@ -580,10 +657,14 @@ function finalize(mime: string, rec: MediaRecorder, takeChunks: Blob[], startedA
   pausedAtMs = null
   const blob = new Blob(takeChunks, { type: mime || 'audio/webm' })
   if (blob.size === 0) {
+    void clearDraft(draft.id)
     useToasts.getState().show('Recording was empty', 'danger')
     return
   }
-  takeCount += 1
+  takeCount = nextTakeNumber(
+    Object.values(useStore.getState().project.assets).map((a) => a.name),
+    takeCount,
+  )
   const take: PendingTake = {
     url: URL.createObjectURL(blob),
     blob,
@@ -591,10 +672,22 @@ function finalize(mime: string, rec: MediaRecorder, takeChunks: Blob[], startedA
     name: recordingFileName(takeCount, mime),
     durationS: recordedS,
     timing,
+    draftId: draft.id,
   }
-  useRecorder.setState({ pendingTake: take })
+  // One take is reviewed at a time: one brought back during this take steps aside.
+  throwAwayTake()
   const reading = readFinalTake(take, takeLivePeak)
   takeReadings.set(take, reading)
+  // ⛔ CLOSED WHILE RECORDING: the take finishes after the studio is gone, and
+  // used to sit in the review slot where nothing could show it, holding off
+  // every update. Closing throws a take away, so this one is thrown away too,
+  // with the same way back.
+  if (!useRecorder.getState().studioOpen) {
+    URL.revokeObjectURL(take.url)
+    keepForBringBack(take)
+    return
+  }
+  useRecorder.setState({ pendingTake: take })
   // While it is still the one under review, the player plays what will be kept.
   void reading.then((final) => {
     if (final === take || useRecorder.getState().pendingTake !== take) return
@@ -660,19 +753,57 @@ export async function keepTake(): Promise<void> {
   // Kept, so there is nothing to go back FROM: a later discard must not fling
   // him to where this take began.
   takeStartPlayheadS = null
+  // ⛔ THE TAKE IS ONLY LET GO ONCE IT IS IN THE BIN. importFiles never throws:
+  // out of room on his nearly full drive it says so and hands back nothing, and
+  // this used to return there with the take's only copy in a local that was then
+  // thrown away. Freeing up space could not bring it back. Now a take that did
+  // not land goes back into the studio, and Add can be pressed again.
+  let final = take
+  let landed = false
   try {
-    const final = await (takeReadings.get(take) ?? Promise.resolve(take))
-    URL.revokeObjectURL(take.url)
+    final = await (takeReadings.get(take) ?? Promise.resolve(take))
     const file = new File([final.blob], final.name, { type: final.blob.type })
     const [id] = await importFiles([file])
     const asset = id ? useStore.getState().project.assets[id] : undefined
     if (!asset) return
+    landed = true
+    URL.revokeObjectURL(take.url)
+    void clearDraft(take.draftId)
     const spans = takeClipSpans(final.timing, asset.durationS)
     if (spans.length === 0) return
     updateActiveSequence(`Place ${asset.name}`, (seq) => placeTakeClips(seq, asset, spans).seq)
+  } catch (err) {
+    console.warn('OL Premiere: could not add the take', err)
   } finally {
+    if (!landed) holdTakeAgain(take, final)
     useRecorder.setState({ keeping: false })
   }
+}
+
+/** A kept take that did not reach the bin goes back up for review, so it is never lost. */
+function holdTakeAgain(take: PendingTake, final: PendingTake): void {
+  const show = useToasts.getState().show
+  // Review holds one take. A newer one recorded while this was being added has
+  // the slot, and putting this back would throw THAT one away instead.
+  // Its copy on disk is kept, so it is offered again the next time the app opens.
+  if (useRecorder.getState().pendingTake) {
+    URL.revokeObjectURL(take.url)
+    show('Could not add your earlier take. It will be offered again when the app next opens.', 'danger')
+    return
+  }
+  let held = final
+  if (final !== take) {
+    URL.revokeObjectURL(take.url)
+    held = { ...final, url: URL.createObjectURL(final.blob) }
+  }
+  takeReadings.set(held, Promise.resolve(held))
+  useRecorder.setState({ pendingTake: held })
+  const open = useRecorder.getState().studioOpen
+  show(
+    'Could not add your take. It is still in the recording studio, so press Add to timeline again.',
+    'danger',
+    open ? undefined : { label: 'Show it', onClick: () => void openStudio() },
+  )
 }
 
 /** Drop the held take and nothing else. The playhead is NOT touched. */
@@ -681,6 +812,57 @@ function dropTake(): void {
   if (!take) return
   URL.revokeObjectURL(take.url)
   useRecorder.setState({ pendingTake: null })
+}
+
+/**
+ * ⛔ A TAKE THROWN AWAY BY ANYTHING BUT DISCARD CAN BE BROUGHT BACK, FOR A FEW
+ * SECONDS. The X, the lit mic in the top bar and the red Record button all
+ * throw the waiting take away, and only Escape was guarded, as "the key hit by
+ * accident". The design stays (review is one take, closing means throw away),
+ * but the last one thrown away is held long enough to say so and undo it.
+ */
+const BRING_BACK_MS = 10_000
+let thrownAway: { take: PendingTake; timer: ReturnType<typeof setTimeout> } | null = null
+
+function keepForBringBack(take: PendingTake): void {
+  if (thrownAway) {
+    clearTimeout(thrownAway.timer)
+    void clearDraft(thrownAway.take.draftId)
+  }
+  // Held only for the toast's life: a long lossless take is tens of megabytes.
+  // Then it is gone for good, its copy on disk too.
+  const timer = setTimeout(() => {
+    if (thrownAway?.take !== take) return
+    thrownAway = null
+    void clearDraft(take.draftId)
+  }, BRING_BACK_MS)
+  thrownAway = { take, timer }
+  useToasts
+    .getState()
+    .show('Take thrown away', 'info', { label: 'Bring it back', onClick: () => void bringBack(take) }, { durationMs: BRING_BACK_MS })
+}
+
+/** Drop the held take, keeping it for one step so it can be brought back. */
+function throwAwayTake(): void {
+  const take = useRecorder.getState().pendingTake
+  if (!take) return
+  dropTake()
+  keepForBringBack(take)
+}
+
+/** Put a take thrown away back up for review, in the studio, while it is still held. */
+async function bringBack(thrown: PendingTake): Promise<void> {
+  const held = thrownAway
+  // An older toast's button: only the last take thrown away is still held.
+  if (!held || held.take !== thrown) return
+  clearTimeout(held.timer)
+  thrownAway = null
+  if (!useRecorder.getState().studioOpen) await openStudio()
+  // The take waiting now, if any, swaps places with it and can come back in turn.
+  throwAwayTake()
+  const take: PendingTake = { ...held.take, url: URL.createObjectURL(held.take.blob) }
+  takeReadings.set(take, takeReadings.get(held.take) ?? Promise.resolve(take))
+  useRecorder.setState({ pendingTake: take })
 }
 
 /**
@@ -697,10 +879,20 @@ function dropTake(): void {
  * for.
  */
 export function discardTake(): void {
+  discard(false)
+}
+
+/** Discard, and when it was not the Discard button, keep the take to bring back. */
+function discard(bringBack: boolean): void {
   // Only a REAL discard moves him. With nothing held this is a no-op, or a
   // stray click would fling the playhead back to some take he already kept.
-  if (!useRecorder.getState().pendingTake) return
-  dropTake()
+  const take = useRecorder.getState().pendingTake
+  if (!take) return
+  if (bringBack) throwAwayTake()
+  else {
+    dropTake()
+    void clearDraft(take.draftId)
+  }
   const back = takeStartPlayheadS
   takeStartPlayheadS = null
   if (back === null) return

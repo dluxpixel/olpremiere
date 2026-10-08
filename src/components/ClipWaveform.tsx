@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
-import { getAssetPeaks, slicePeaks } from '../engine/waveform'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { getAssetPeaks, onPeaksForgotten, peaksVersion, slicePeaks } from '../engine/waveform'
 import type { Clip, MediaAsset } from '../engine/types'
 
 /**
@@ -39,6 +39,9 @@ export function ClipWaveform({
 }) {
   const [peaks, setPeaks] = useState<Float32Array | null>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  // Media put back mid-session drops the peaks read while it was missing, and
+  // this asks again: the waveform used to stay flat until a restart.
+  const version = useSyncExternalStore(onPeaksForgotten, () => peaksVersion(asset.id))
 
   useEffect(() => {
     let alive = true
@@ -48,7 +51,7 @@ export function ClipWaveform({
     return () => {
       alive = false
     }
-  }, [asset])
+  }, [asset, version])
 
   useEffect(() => {
     const canvas = canvasRef.current

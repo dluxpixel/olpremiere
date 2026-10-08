@@ -284,6 +284,9 @@ void booted.then(() => {
   // And the spare copies on disk nothing has used for 7 days, his call 2026-10-06.
   // A few minutes in, and never while an import or export runs (spareCopySweep.ts).
   void import('./state/spareCopySweep').then((m) => m.scheduleSpareCopySweep())
+  // A voice take the last run never finished with (a crash mid take) is offered
+  // back, once the project it would go into is open (takeDraft.ts).
+  void import('./state/voiceRecorder').then((m) => m.offerLeftoverTakes())
 })
 
 // Hydrate the saved default text animation.

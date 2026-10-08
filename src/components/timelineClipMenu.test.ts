@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { MOVES } from '../engine/moves'
 import { defaultTitleDef, newTitleClip, type Clip, type Sequence } from '../engine/types'
 import type { MenuItem } from '../state/contextMenu'
@@ -7,6 +7,10 @@ import { useStore } from '../state/store'
 import { newProject } from '../engine/types'
 import { clipContextMenuItems, type ClipMenuContext } from './timelineClipMenu'
 import { ASSETS, makeClip, makeSeq, makeTrack } from './timelineTestFixtures'
+
+// What the quiet parts item hands over, without running the cut itself.
+const { quiet } = vi.hoisted(() => ({ quiet: vi.fn(async () => undefined) }))
+vi.mock('../state/silenceActions', () => ({ cutQuietParts: quiet }))
 
 const labels = (items: MenuItem[]): string[] => items.map((i) => i.label)
 const item = (items: MenuItem[], label: string): MenuItem => {
@@ -234,6 +238,25 @@ describe('the clip right-click menu', () => {
       expect(labels(menu(v, seq))).toContain('Caption this clip')
       // v, w and a: the pair is one, w carries its own sound, so two.
       expect(labels(menu(v, seq, { selNow: [v.id, w.id, a.id], keepSelection: true }))).toContain('Caption 2 clips')
+    })
+
+    it('cuts the quiet parts of every selected clip in one go, and says how many', () => {
+      const { a, b, v, seq } = fixture()
+      onTimeline(seq)
+      expect(labels(menu(a, seq))).toContain('Cut the quiet parts')
+      expect(labels(menu(a, seq, { selNow: [a.id, b.id], keepSelection: true }))).toContain('Cut the quiet parts of 2 clips')
+      // The picture of a linked pair is the same take as its sound, not a second clip.
+      expect(labels(menu(a, seq, { selNow: [a.id, v.id], keepSelection: true }))).toContain('Cut the quiet parts')
+    })
+
+    // The cut works one line at a time, from the first clip it is handed, so
+    // that has to be the clip he right-clicked (review 2026-10-08).
+    it('hands the clip he right-clicked over first, so its line is the one cut', () => {
+      const { a, b, seq } = fixture()
+      onTimeline(seq)
+      quiet.mockClear()
+      item(menu(b, seq, { selNow: [a.id, b.id], keepSelection: true }), 'Cut the quiet parts of 2 clips').onClick?.()
+      expect(quiet).toHaveBeenCalledWith([b.id, a.id])
     })
 
     it('never offers it on a title', () => {

@@ -7,7 +7,7 @@
 // because one consonant spike sets it for both, and matching those spikes
 // leaves the shout far louder to a listener. See engine/loudness.ts.
 
-import { getAudioBuffer } from '../engine/audio'
+import { clipEmitsAudio, getAudioRange } from '../engine/audio'
 import { balanceGains, gainForTarget, measureLoudness, type ClipLoudness, TARGET_LUFS } from '../engine/loudness'
 import { activeSequence } from '../engine/types'
 import { setClipGainDb } from './clipEdits'
@@ -40,12 +40,15 @@ export async function normalizeClipGain(clipId: string): Promise<void> {
     useToasts.getState().show('Volume is keyframed, remove the keyframes to normalize', 'danger')
     return
   }
-  const buffer = await getAudioBuffer(asset)
-  if (!buffer) {
+  // The clip's own seconds, never the whole file: a 30 minute recording decoded
+  // whole is bigger than the entire audio budget.
+  const range = await getAudioRange(asset, clip.inS, clip.outS)
+  if (!range) {
     useToasts.getState().show('Could not decode the audio', 'danger')
     return
   }
-  const measured = measureLoudness(channelsOf(buffer), buffer.sampleRate, clip.inS, clip.outS)
+  const { buffer, startS } = range
+  const measured = measureLoudness(channelsOf(buffer), buffer.sampleRate, clip.inS - startS, clip.outS - startS)
   const db = gainForTarget(measured, TARGET_LUFS)
   if (db === null) {
     useToasts.getState().show('That clip is silent', 'danger')
@@ -73,9 +76,18 @@ export async function balanceAllClipLoudness(): Promise<void> {
   const s = useStore.getState()
   const seq = activeSequence(s.project)
   const show = useToasts.getState().show
+  // ⛔ ONLY THE CLIPS HE HEARS AS VOICE. Every clip with sound used to count:
+  // his music, a muted line, a disabled clip, and a linked VIDEO clip that makes
+  // no sound of its own (its sound is its audio partner, measured already). All
+  // were levelled up to the voice target, and the loudest of them set the shared
+  // offset that pulled his voice down. The ask behind this was his own voice:
+  // "some clips I'm screaming and some clips I'm speaking softly". So music lines
+  // keep their own level.
   const targets = seq.tracks
-    .filter((t) => !t.locked)
-    .flatMap((t) => t.clips.map((c) => ({ clip: c, asset: s.project.assets[c.assetId] })))
+    .filter((t) => !t.locked && !t.muted && t.audioRole !== 'music')
+    .flatMap((t) =>
+      t.clips.filter((c) => c.enabled && clipEmitsAudio(t, c)).map((c) => ({ clip: c, asset: s.project.assets[c.assetId] })),
+    )
     .filter((x) => x.asset?.hasAudio)
   if (targets.length === 0) {
     show('Nothing on the timeline makes any sound', 'danger')
@@ -90,12 +102,13 @@ export async function balanceAllClipLoudness(): Promise<void> {
       keyframed++
       continue
     }
-    const buffer = await getAudioBuffer(asset)
-    if (!buffer) {
+    const range = await getAudioRange(asset, clip.inS, clip.outS)
+    if (!range) {
       silent++
       continue
     }
-    const m = measureLoudness(channelsOf(buffer), buffer.sampleRate, clip.inS, clip.outS)
+    const { buffer, startS } = range
+    const m = measureLoudness(channelsOf(buffer), buffer.sampleRate, clip.inS - startS, clip.outS - startS)
     if (m.lufs === null) silent++
     else measured.push({ id: clip.id, measured: m })
   }

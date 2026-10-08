@@ -7,6 +7,7 @@
 // Nothing here touches the project.
 
 import { create } from 'zustand'
+import { routeToChosenOutput } from '../engine/audio'
 import type { Id } from '../engine/types'
 import { getBlobUrl } from './blobUrls'
 import { useToasts } from './toasts'
@@ -43,6 +44,7 @@ export async function toggleLibraryPreview(item: { id: Id; name: string; blobKey
   audio.onended = () => {
     if (mine === turn) useLibraryPreview.setState({ playingId: null })
   }
+  routeToChosenOutput(audio)
   audio.src = url
   audio.currentTime = 0
   useLibraryPreview.setState({ playingId: item.id })

@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   clipEdges,
   AUTO_LEVEL_LATENCY_S,
@@ -16,6 +16,8 @@ import {
   dbToGain,
   effectiveAudioClip,
   pitchPreservedSource,
+  routeToChosenOutput,
+  setAudioOutputDevice,
   type GainPoint,
 } from './audio'
 import { evalChannel } from './keyframes'
@@ -862,7 +864,7 @@ describe('the audio decode burst is bounded', () => {
     // moves back above the demux, his 2.4 GB recordings go silent again and the
     // guard below would still pass, fencing a branch nothing reaches.
     const decode = src.slice(src.indexOf('async function decodeAssetAudio'))
-    const demux = decode.indexOf('demuxAssetAudio(asset, blob)')
+    const demux = decode.indexOf('demuxAssetAudio(asset, blob, undefined, undefined, lane)')
     const guard = decode.indexOf('blob.size > MAX_ARRAY_BUFFER_BYTES')
     expect(demux).toBeGreaterThan(-1)
     expect(demux).toBeLessThan(guard)
@@ -1115,12 +1117,88 @@ describe('a hard audio cut gets a 2 ms de-click, a blade cut none (EA-7)', () =>
   })
 
   it('both mixers read the edges off the clip as it sits on its track, and hand them to the one envelope', () => {
-    for (const [src, body] of [
-      [liveSrc, liveBody],
-      [exportSrc, exportBody],
+    // The live mixer places a rebuilt sound from `atS`, where the picture is when it sounds (SF-1).
+    for (const [src, body, from] of [
+      [liveSrc, liveBody, 'atS'],
+      [exportSrc, exportBody, 'fromS'],
     ]) {
       expect(src).toContain('edges: clipEdges(track, clip)')
-      expect(body).toContain('clipGainEnvelope(clip, fromS, edges)')
+      expect(body).toContain(`clipGainEnvelope(clip, ${from}, edges)`)
     }
   })
 })
+
+// ⛔ AU-19. Playback and the monitor followed the output he picked; the take
+// review, a sound effect and a Library sound played on the system default.
+describe('a plain audio element plays on the output he picked', () => {
+  it('is sent to the chosen device, and back to the default when he picks that', async () => {
+    const setSinkId = vi.fn(async () => {})
+    const el = { setSinkId } as unknown as HTMLMediaElement
+    await setAudioOutputDevice('headphones')
+    routeToChosenOutput(el)
+    expect(setSinkId).toHaveBeenLastCalledWith('headphones')
+    await setAudioOutputDevice(null)
+    routeToChosenOutput(el)
+    expect(setSinkId).toHaveBeenLastCalledWith('')
+  })
+
+  it('an engine without it, or a device that is gone, never throws', async () => {
+    expect(() => routeToChosenOutput({} as HTMLMediaElement)).not.toThrow()
+    const gone = vi.fn(async () => {
+      throw new Error('NotFoundError')
+    })
+    expect(() => routeToChosenOutput({ setSinkId: gone } as unknown as HTMLMediaElement)).not.toThrow()
+    await Promise.resolve()
+    expect(gone).toHaveBeenCalled()
+  })
+})
+
+// ⛔ AU-15. The preview ran at the device's rate, so on a 44.1 kHz device every
+// 48 kHz buffer was read by linear interpolation, duller than the export.
+describe('the preview runs at 48 kHz', () => {
+  it('asks for a 48 kHz context, whatever the device runs at', async () => {
+    const made: (AudioContextOptions | undefined)[] = []
+    vi.stubGlobal(
+      'AudioContext',
+      class {
+        constructor(opts?: AudioContextOptions) {
+          made.push(opts)
+        }
+      },
+    )
+    try {
+      vi.resetModules()
+      const fresh = await import('./audio')
+      fresh.ensureAudioContext()
+      expect(made).toEqual([{ sampleRate: 48_000 }])
+    } finally {
+      vi.unstubAllGlobals()
+      vi.resetModules()
+    }
+  })
+
+  it('an engine that refuses the rate still gets a context', async () => {
+    const made: (AudioContextOptions | undefined)[] = []
+    vi.stubGlobal(
+      'AudioContext',
+      class {
+        constructor(opts?: AudioContextOptions) {
+          if (opts?.sampleRate) throw new DOMException('no', 'NotSupportedError')
+          made.push(opts)
+        }
+      },
+    )
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      vi.resetModules()
+      const fresh = await import('./audio')
+      expect(fresh.ensureAudioContext()).toBeTruthy()
+      expect(made).toEqual([undefined])
+    } finally {
+      warn.mockRestore()
+      vi.unstubAllGlobals()
+      vi.resetModules()
+    }
+  })
+})
+

@@ -5,11 +5,15 @@
 // all of them, so a mixed selection converges on one click. This is what makes
 // "select many, edit boldness / effects on all" work.
 
-import { Bold, CaseLower, CaseUpper, FlipHorizontal2, Italic, Sparkles, Layers } from 'lucide-react'
+import { AudioWaveform, Bold, CaseLower, CaseUpper, FlipHorizontal2, Italic, Sparkles, Layers } from 'lucide-react'
+import { useSyncExternalStore } from 'react'
+import { warmDenoise } from '../engine/audio'
+import { isCleaningNoise, onCleaningNoise } from '../engine/denoise'
 import {
   applyEffectToClips,
   clearEffectsForClips,
   setChannelForClips,
+  setClipsDenoise,
   setClipsFade,
   setClipsGainDb,
   toggleClipsFlip,
@@ -39,6 +43,8 @@ const SCALE_SPEC: Spec = { min: 0, max: 5, step: 0.01, sens: 0.01 }
 const SIZE_SPEC: Spec = { min: 8, max: 400, step: 1, sens: 0.5 }
 const GAIN_SPEC: Spec = { min: -60, max: MAX_GAIN_DB, step: 0.5, sens: 0.2 }
 const FADE_SPEC: Spec = { min: 0, max: 30, step: 0.05, sens: 0.02 }
+/** The single Inspector's: 5 to 100 percent of the room taken off. */
+const DENOISE_SPEC: Spec = { min: 5, max: 100, step: 5, sens: 0.5 }
 
 const SWATCHES = [
   { hex: '#ffffff', label: 'White' },
@@ -72,6 +78,17 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
   const titleIds = titles.map((s) => s.clip.id)
   const audio = selected.filter((s) => s.emitsAudio)
   const audioIds = audio.map((s) => s.clip.id)
+  // Noise reduction reads as on only when every clip has it, so one press on a
+  // mixed selection turns it on for all of them, the panel's absolute rule.
+  // Only the clips a press can change count: setClipsDenoise leaves a locked
+  // line alone, so a clip there without it would hold the toggle at off forever
+  // and every press would put the rest back at full strength.
+  const denoisable = audio.filter((s) => !s.track.locked)
+  const allDenoised = denoisable.length > 0 && denoisable.every((s) => s.clip.denoise !== undefined)
+  const assets = useStore((st) => st.project.assets)
+  const cleaning = useSyncExternalStore(onCleaningNoise, () =>
+    audio.some((s) => s.clip.denoise !== undefined && isCleaningNoise(s.clip.assetId)),
+  )
   // The pictures Flip acts on: video track clips that are not titles.
   const flippable = selected.filter((s) => s.track.kind === 'video' && !s.clip.title)
   const pictureIds = flippable.map((s) => s.clip.id)
@@ -521,6 +538,48 @@ export function MultiInspector({ selected }: { selected: SelectedClip[] }) {
                   onCommit={(v) => setClipsFade(audioIds, 'out', v)}
                 />
               </PropRow>
+              {/* AU-18: the single Inspector's noise reduction, on every clip at
+                  once. A dubbed take is several clips, and Cut the quiet parts
+                  makes many more. */}
+              <PropRow
+                label="Reduce noise"
+                lead={
+                  <IconButton
+                    label={allDenoised ? 'Turn noise reduction off (all)' : 'Reduce background noise (all)'}
+                    size="compact"
+                    data-testid="multi-denoise-toggle"
+                    onClick={() => {
+                      setClipsDenoise(audioIds, allDenoised ? undefined : 1)
+                      // Start cleaning now, so his next Play does not wait for it.
+                      // A clip on a locked line was left alone, so it is not cleaned.
+                      if (!allDenoised) {
+                        for (const s of denoisable) {
+                          const asset = assets[s.clip.assetId]
+                          if (asset) warmDenoise({ ...s.clip, denoise: 1 }, asset)
+                        }
+                      }
+                    }}
+                    className={allDenoised ? 'text-accent' : undefined}
+                  >
+                    <AudioWaveform size={13} strokeWidth={1.75} aria-hidden />
+                  </IconButton>
+                }
+              >
+                {allDenoised && (
+                  <ScrubField
+                    value={Math.round((denoisable[0].clip.denoise ?? 1) * 100)}
+                    spec={DENOISE_SPEC}
+                    testId="multi-denoise"
+                    ariaLabel="Noise reduction strength (%) (all)"
+                    onCommit={(v) => setClipsDenoise(audioIds, v / 100)}
+                  />
+                )}
+              </PropRow>
+              {allDenoised && cleaning && (
+                <p className="pl-7 text-ui-sm text-text-muted" data-testid="multi-denoise-busy">
+                  Cleaning up noise...
+                </p>
+              )}
             </div>
           </section>
         </>

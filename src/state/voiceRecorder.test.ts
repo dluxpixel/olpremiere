@@ -65,12 +65,15 @@ vi.mock('./takeAudio', async (importOriginal) => ({
   readTake: readTakeSpy,
 }))
 
+import { draftStore } from './takeDraft'
 import {
   audioConstraintFor,
   clearClip,
   closeStudio,
   discardTake,
   keepTake,
+  nextTakeNumber,
+  offerLeftoverTakes,
   openStudio,
   pauseRecording,
   pickRecorderMime,
@@ -95,6 +98,23 @@ describe('recordingFileName', () => {
   it('defaults to webm when the mime is unknown or empty', () => {
     expect(recordingFileName(5, '')).toBe('Voice recording 5.webm')
     expect(recordingFileName(6, 'audio/weird')).toBe('Voice recording 6.webm')
+  })
+})
+
+// ⛔ AU-20. Takes counted from 1 every launch, so a project recorded over a
+// few sessions held several "Voice recording 1" in its bin.
+describe('nextTakeNumber', () => {
+  it('follows the highest take already in the edit', () => {
+    expect(nextTakeNumber(['Voice recording 3.wav', 'Voice recording 1.webm', 'music.mp3'], 0)).toBe(4)
+  })
+
+  it('never hands out a number this session already gave', () => {
+    expect(nextTakeNumber(['Voice recording 3.wav'], 7)).toBe(8)
+    expect(nextTakeNumber([], 0)).toBe(1)
+  })
+
+  it('reads only its own names', () => {
+    expect(nextTakeNumber(['Saved voice recording.webm', 'Voice recording 12 final.wav', 'Voice recording x.wav'], 0)).toBe(1)
   })
 })
 
@@ -126,14 +146,24 @@ class FakeMediaRecorder {
   ) {
     FakeMediaRecorder.instances.push(this)
   }
-  start(): void {}
+  start = vi.fn()
   stop(): void {}
   pause = vi.fn()
   resume = vi.fn()
 }
 
+/** Takes on disk, held in a Map for the test (takeDraft.ts). */
+const drafts = new Map<string, Blob>()
+draftStore.current = {
+  put: async (k, b) => void drafts.set(k, b),
+  keys: async () => [...drafts.keys()],
+  get: async (k) => drafts.get(k),
+  delete: async (k) => void drafts.delete(k),
+}
+
 describe('studio capture: review-then-keep, and coexistence with playback', () => {
   beforeEach(() => {
+    drafts.clear()
     vi.stubGlobal('MediaRecorder', FakeMediaRecorder as unknown as typeof MediaRecorder)
     vi.stubGlobal('navigator', { mediaDevices: { getUserMedia: vi.fn() } })
     vi.stubGlobal('URL', { createObjectURL: () => 'blob:take', revokeObjectURL: vi.fn() })
@@ -242,6 +272,76 @@ describe('studio capture: review-then-keep, and coexistence with playback', () =
     expect(useRecorder.getState().studioOpen).toBe(false)
     expect(useRecorder.getState().pendingTake).toBeNull() // unreviewed take gone
     expect(monitorStop).toHaveBeenCalled() // mic released
+  })
+
+  // ⛔ AU-13. The X, the top bar mic and Record threw the waiting take away with
+  // no word and no way back. The design stays; the last one can come back.
+  const bringBackToast = () => {
+    const call = [...showSpy.mock.calls].reverse().find(([m]) => m === 'Take thrown away')
+    return call?.[2] as { label: string; onClick: () => void } | undefined
+  }
+
+  it('Record over a waiting take says so, and Bring it back puts the same take back', async () => {
+    await startRecording()
+    let rec = FakeMediaRecorder.instances[0]!
+    rec.ondataavailable?.({ data: new Blob(['first']) })
+    stopRecording()
+    rec.onstop?.()
+    const first = useRecorder.getState().pendingTake!
+
+    await startRecording()
+    expect(useRecorder.getState().pendingTake).toBeNull()
+    const action = bringBackToast()
+    expect(action?.label).toBe('Bring it back')
+    action!.onClick()
+    await vi.waitFor(() => expect(useRecorder.getState().pendingTake?.blob).toBe(first.blob))
+
+    // The new take, once it ends, swaps places with it, and can come back in turn.
+    rec = FakeMediaRecorder.instances[1]!
+    rec.ondataavailable?.({ data: new Blob(['second']) })
+    stopRecording()
+    rec.onstop?.()
+    expect(useRecorder.getState().pendingTake?.blob).not.toBe(first.blob)
+    bringBackToast()!.onClick()
+    await vi.waitFor(() => expect(useRecorder.getState().pendingTake?.blob).toBe(first.blob))
+  })
+
+  it('closing the studio over a waiting take can be undone, and the studio opens again', async () => {
+    await startRecording()
+    const rec = FakeMediaRecorder.instances[0]!
+    rec.ondataavailable?.({ data: new Blob(['x']) })
+    stopRecording()
+    rec.onstop?.()
+    const take = useRecorder.getState().pendingTake!
+
+    closeStudio()
+    expect(useRecorder.getState().studioOpen).toBe(false)
+    bringBackToast()!.onClick()
+    await vi.waitFor(() => expect(useRecorder.getState().pendingTake?.blob).toBe(take.blob))
+    expect(useRecorder.getState().studioOpen).toBe(true)
+  })
+
+  it('closing while recording does not park the take where nothing shows it', async () => {
+    const { isRestartUnsafe } = await import('./unloadGuard')
+    await startRecording()
+    const rec = FakeMediaRecorder.instances[0]!
+    rec.ondataavailable?.({ data: new Blob(['x']) })
+    closeStudio()
+    rec.onstop?.() // the browser finishes the file after the studio is gone
+
+    expect(useRecorder.getState().pendingTake).toBeNull()
+    expect(isRestartUnsafe()).toBe(false)
+    expect(bringBackToast()).toBeDefined()
+  })
+
+  it('the Discard button throws away for good, with no toast', async () => {
+    await startRecording()
+    const rec = FakeMediaRecorder.instances[0]!
+    rec.ondataavailable?.({ data: new Blob(['x']) })
+    stopRecording()
+    rec.onstop?.()
+    discardTake()
+    expect(bringBackToast()).toBeUndefined()
   })
 
   it('concurrent and repeat record clicks are one take (guards hold)', async () => {
@@ -473,6 +573,117 @@ describe('studio capture: review-then-keep, and coexistence with playback', () =
     expect(importFilesSpy).toHaveBeenCalledTimes(1)
   })
 
+  // ⛔ AU-3. importFiles never throws: out of room it says so and hands back
+  // nothing, and Keep used to stop there with the take's only copy thrown away.
+  it('a take that could not be added goes back into the studio, the same take', async () => {
+    readTakeSpy.mockResolvedValue({ peak: 0.5, mono: null })
+    await startRecording()
+    const rec = FakeMediaRecorder.instances[0]!
+    rec.ondataavailable?.({ data: new Blob(['his words']) })
+    stopRecording()
+    rec.onstop?.()
+    const before = useRecorder.getState().pendingTake!
+    importFilesSpy.mockResolvedValueOnce([])
+
+    await keepTake()
+
+    const after = useRecorder.getState().pendingTake
+    expect(after?.blob).toBe(before.blob)
+    expect(useRecorder.getState().keeping).toBe(false)
+    expect(showSpy.mock.calls.some(([m]) => /still in the recording studio/i.test(String(m)))).toBe(true)
+    // And Add works the second time.
+    await keepTake()
+    expect(importFilesSpy).toHaveBeenCalledTimes(2)
+    expect(useRecorder.getState().pendingTake).toBeNull()
+  })
+
+  it('a take that could not be added after the studio closed is held, with a way to show it', async () => {
+    await startRecording()
+    const rec = FakeMediaRecorder.instances[0]!
+    rec.ondataavailable?.({ data: new Blob(['his words']) })
+    stopRecording()
+    rec.onstop?.()
+    const before = useRecorder.getState().pendingTake!
+    importFilesSpy.mockRejectedValueOnce(new Error('disk gone'))
+    const kept = keepTake()
+    closeStudio()
+    await kept
+
+    expect(useRecorder.getState().pendingTake?.blob).toBe(before.blob)
+    const call = showSpy.mock.calls.find(([m]) => /still in the recording studio/i.test(String(m)))
+    expect(call?.[2]).toMatchObject({ label: 'Show it' })
+  })
+
+  it('a take being added still holds off an automatic restart', async () => {
+    const { isRestartUnsafe } = await import('./unloadGuard')
+    const finishRead = await takeBeingRead()
+    const kept = keepTake()
+    expect(useRecorder.getState().pendingTake).toBeNull()
+    expect(isRestartUnsafe()).toBe(true)
+    finishRead()
+    await kept
+    expect(isRestartUnsafe()).toBe(false)
+  })
+
+  // ⛔ AU-14. Every byte of a take lived in memory until Add: a crash lost it all.
+  const recordTwoSeconds = async () => {
+    await startRecording()
+    const rec = FakeMediaRecorder.instances[FakeMediaRecorder.instances.length - 1]!
+    rec.ondataavailable?.({ data: new Blob(['one'], { type: 'audio/webm' }) })
+    rec.ondataavailable?.({ data: new Blob(['two'], { type: 'audio/webm' }) })
+    return rec
+  }
+
+  it('a take is written to disk a second at a time while he records', async () => {
+    const rec = await recordTwoSeconds()
+    expect(rec.start).toHaveBeenCalledWith(1000)
+    await vi.waitFor(() => expect(drafts.size).toBe(2))
+    stopRecording()
+    rec.onstop?.()
+  })
+
+  it('the copy on disk goes once the take is in the bin', async () => {
+    const rec = await recordTwoSeconds()
+    stopRecording()
+    rec.onstop?.()
+    await keepTake()
+    await vi.waitFor(() => expect(drafts.size).toBe(0))
+  })
+
+  it('the copy on disk goes with Discard, and stays while a failed Add holds the take', async () => {
+    let rec = await recordTwoSeconds()
+    stopRecording()
+    rec.onstop?.()
+    importFilesSpy.mockResolvedValueOnce([])
+    await keepTake()
+    expect(useRecorder.getState().pendingTake).not.toBeNull()
+    await vi.waitFor(() => expect(drafts.size).toBe(2))
+    discardTake()
+    await vi.waitFor(() => expect(drafts.size).toBe(0))
+
+    rec = await recordTwoSeconds()
+    stopRecording()
+    rec.onstop?.()
+    expect(drafts.size).toBeGreaterThan(0)
+  })
+
+  it('a take left on disk by an earlier run is offered, and Add puts it in the library', async () => {
+    drafts.set('take-1-old/0000000', new Blob(['his '], { type: 'audio/webm;codecs=pcm' }))
+    drafts.set('take-1-old/0000001', new Blob(['words'], { type: 'audio/webm;codecs=pcm' }))
+
+    await offerLeftoverTakes()
+
+    const call = showSpy.mock.calls.find(([m]) => /before the app closed was saved/i.test(String(m)))
+    const action = call?.[2] as { label: string; onClick: () => void }
+    expect(action.label).toBe('Add it')
+    action.onClick()
+    await vi.waitFor(() => expect(importFilesSpy).toHaveBeenCalledTimes(1))
+    const file = (importFilesSpy.mock.calls[0] as unknown as [File[]])[0][0]!
+    expect(await file.text()).toBe('his words')
+    expect(file.name).toBe('Saved voice recording.webm')
+    await vi.waitFor(() => expect(drafts.size).toBe(0))
+  })
+
   it('the transport says a stretch continues, or ran off the end of the edit, and the take keeps both', async () => {
     const { useStore } = await import('./store')
     const { activeSequence, newProject } = await import('../engine/types')
@@ -495,5 +706,21 @@ describe('studio capture: review-then-keep, and coexistence with playback', () =
     // a frame past the last whole one (timeline 29.89 is frame 896.7, and the
     // file has nothing for frame 897 to show).
     expect(clips.map((c) => [c.startS, +c.inS.toFixed(6), +c.outS.toFixed(6)])).toEqual([[0, 0.11, 29.976667]])
+  })
+
+  it('a new take is numbered after the takes already in the edit', async () => {
+    const { useStore } = await import('./store')
+    const { newProject } = await import('../engine/types')
+    const p = newProject()
+    useStore.getState().setProject({
+      ...p,
+      assets: { t: { id: 't', kind: 'audio', name: 'Voice recording 500.wav', blobKey: 'asset/t', durationS: 3 } as never },
+    })
+    await startRecording()
+    const rec = FakeMediaRecorder.instances[0]!
+    rec.ondataavailable?.({ data: new Blob(['x']) })
+    stopRecording()
+    rec.onstop?.()
+    expect(useRecorder.getState().pendingTake?.name).toMatch(/^Voice recording 501\.\w+$/)
   })
 })

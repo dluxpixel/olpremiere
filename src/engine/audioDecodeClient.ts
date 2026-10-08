@@ -24,7 +24,12 @@ interface Slot {
 let pool: Slot[] | null = null
 let broken = false
 let nextId = 1
-const waiting: { req: AudioWorkerRequest; resolve: (r: DemuxResult | PeaksResult) => void; reject: (e: Error) => void }[] = []
+const waiting: {
+  req: AudioWorkerRequest
+  priority: boolean
+  resolve: (r: DemuxResult | PeaksResult) => void
+  reject: (e: Error) => void
+}[] = []
 const inFlight = new Map<number, { slot: Slot; resolve: (r: DemuxResult | PeaksResult) => void; reject: (e: Error) => void }>()
 
 function startPool(): Slot[] | null {
@@ -87,10 +92,57 @@ function runHere(req: AudioWorkerRequest): Promise<DemuxResult | PeaksResult> {
     : demuxAudio(req.blob, { durationS: req.durationS, fromS: req.fromS, toS: req.toS })
 }
 
-function run(req: AudioWorkerRequest): Promise<DemuxResult | PeaksResult> {
+/**
+ * Which line a read waits in. A read starts in the background and can be moved
+ * to the front later, when Play comes to wait on it (see promoteLane).
+ */
+export interface DecodeLane {
+  priority: boolean
+  /** Set while the read is queued: moves it to the front. */
+  promote?: () => void
+}
+
+export const decodeLane = (priority = false): DecodeLane => ({ priority })
+
+/**
+ * Play is waiting on this read now. A read still queued moves ahead of every
+ * background read; one not queued yet goes in at the front when it is; one
+ * already running or done is left alone.
+ */
+export function promoteLane(lane: DecodeLane | undefined): void {
+  if (!lane || lane.priority) return
+  lane.priority = true
+  lane.promote?.()
+}
+
+type Job = (typeof waiting)[number]
+
+/** Into the queue: a front-lane read goes after the other front-lane ones, ahead of the background. */
+function enqueue(job: Job): void {
+  const at = job.priority ? waiting.findIndex((w) => !w.priority) : -1
+  if (at >= 0) waiting.splice(at, 0, job)
+  else waiting.push(job)
+}
+
+function run(req: AudioWorkerRequest, lane: DecodeLane = decodeLane()): Promise<DemuxResult | PeaksResult> {
   if (!startPool()) return runHere(req)
   return new Promise((resolve, reject) => {
-    waiting.push({ req, resolve, reject })
+    // ⛔ PLAYBACK GOES TO THE FRONT. Two workers, first come first served, meant a
+    // press of Space waited behind every waveform, beat scan and loudness read
+    // queued before it. A read the transport is waiting on now jumps every
+    // background read that has not started (never one already running).
+    const job: Job = { req, priority: lane.priority, resolve, reject }
+    // ⛔ AND SO DOES A BACKGROUND READ PLAY COMES TO WAIT ON (SF-2, review
+    // 2026-10-08). Selecting a clip queues a read of exactly the range Play then
+    // asks for, and Play got that same read back, still behind every waveform.
+    lane.promote = () => {
+      const i = waiting.indexOf(job)
+      if (i < 0 || job.priority) return
+      waiting.splice(i, 1)
+      job.priority = true
+      enqueue(job)
+    }
+    enqueue(job)
     pump()
   }).then(
     (r) => r as DemuxResult | PeaksResult,
@@ -100,9 +152,20 @@ function run(req: AudioWorkerRequest): Promise<DemuxResult | PeaksResult> {
   )
 }
 
-/** Decode source seconds [fromS, toS) (or the whole file) off the main thread. */
-export function decodeAudioOffThread(blob: Blob, durationS: number, fromS?: number, toS?: number): Promise<DemuxResult> {
-  return run({ id: nextId++, op: 'pcm', blob, durationS, fromS, toS }) as Promise<DemuxResult>
+/**
+ * Decode source seconds [fromS, toS) (or the whole file) off the main thread.
+ * `priority` is for a read the transport is waiting on, or a lane it can be
+ * moved to the front with later.
+ */
+export function decodeAudioOffThread(
+  blob: Blob,
+  durationS: number,
+  fromS?: number,
+  toS?: number,
+  priority: boolean | DecodeLane = false,
+): Promise<DemuxResult> {
+  const lane = typeof priority === 'boolean' ? decodeLane(priority) : priority
+  return run({ id: nextId++, op: 'pcm', blob, durationS, fromS, toS }, lane) as Promise<DemuxResult>
 }
 
 /** Whole file peaks, computed off the main thread without holding the sound. */

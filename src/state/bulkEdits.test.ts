@@ -18,6 +18,7 @@ import {
   clearEffectsForClips,
   mapClips,
   setChannelForClips,
+  setClipsDenoise,
   setClipsFade,
   setClipsGainDb,
   setClipsPosition,
@@ -268,6 +269,35 @@ describe('setClipsGainDb / setClipsFade', () => {
     setClipsFade([a.id, b.id], 'in', 0.5)
     expect(clips().map((x) => x.audioGainDb)).toEqual([-6, -6])
     expect(clips().map((x) => x.fadeInS)).toEqual([0.5, 0.5])
+  })
+})
+
+// AU-18: a dubbed take lands as several clips and Cut the quiet parts makes many
+// more, and each used to need its own noise reduction toggle.
+describe('setClipsDenoise', () => {
+  it('gives every selected clip the same strength in ONE undo step', () => {
+    const a = seedTitle(0)
+    const b = seedTitle(6)
+    const c = seedTitle(12)
+    const steps = useStore.getState().history.undo.length
+    setClipsDenoise([a.id, b.id, c.id], 0.7)
+    expect(clips().map((x) => x.denoise)).toEqual([0.7, 0.7, 0.7])
+    expect(useStore.getState().history.undo.length).toBe(steps + 1)
+    useStore.getState().undo()
+    expect(clips().map((x) => 'denoise' in x)).toEqual([false, false, false])
+  })
+
+  it('turns it off on all of them by leaving the key out, and clamps like the single clip', () => {
+    const a = seedTitle(0)
+    const b = seedTitle(6)
+    setClipsDenoise([a.id, b.id], 5)
+    expect(clips().map((x) => x.denoise)).toEqual([1, 1])
+    setClipsDenoise([a.id, b.id], 0)
+    expect(clips().map((x) => 'denoise' in x)).toEqual([false, false])
+    // Already off everywhere: no empty undo step.
+    const before = useStore.getState().project
+    setClipsDenoise([a.id, b.id], undefined)
+    expect(useStore.getState().project).toBe(before)
   })
 })
 

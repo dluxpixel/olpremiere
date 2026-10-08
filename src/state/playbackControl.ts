@@ -1,11 +1,11 @@
 // Wires the engine Transport (audio-master clock) to the store. The single
 // place Space / J / K / L and the transport buttons act through.
 
-import { scheduleAudio } from '../engine/audio'
+import { clipEmitsAudioOn, scheduleAudio } from '../engine/audio'
 import { diagnoseSilence, type SilenceFix } from '../engine/audioSilence'
 import { Transport, type HeardSpan } from '../engine/playback'
 import { pauseAllPreviewVideos, setPreviewTransportRate } from '../engine/preview'
-import { activeSequence } from '../engine/types'
+import { activeSequence, type Clip, type Track } from '../engine/types'
 import { workArea } from '../engine/workArea'
 import { isTakeInProgress, pauseRecording, resumeRecording, takeHeard } from './voiceRecorder'
 import { useToasts } from './toasts'
@@ -86,7 +86,9 @@ const transport = new Transport({
   // Every stretch of the timeline he hears, so a take recorded against it lands
   // where he performed it (MIC-4, MIC-5). The recorder ignores it between takes.
   onHeard: (span, endedAtMs, why) => takeHeard(span, endedAtMs, why),
-  schedule: (fromS) => {
+  // `follow` comes with a rebuild mid-play: the sound starts where the picture
+  // is once it is ready, however long it took to build (SF-1).
+  schedule: (fromS, follow) => {
     // A scrub grain still ringing would sound over the top of the transport, so
     // the two are never alive at once. Cheap and idempotent.
     const { project } = useStore.getState()
@@ -94,7 +96,10 @@ const transport = new Transport({
     // hears the same nothing either way and the only difference is whether the
     // app told him which switch is doing it.
     warnIfSilent()
-    return scheduleAudio(activeSequence(project), project.assets, fromS)
+    const seq = activeSequence(project)
+    // What this graph plays, so a clip edit mid-play can tell it is out of date.
+    builtSound = soundFingerprint(seq.tracks)
+    return scheduleAudio(seq, project.assets, fromS, follow)
   },
   // Loop toggle: the in/out range when set, else the whole sequence.
   getLoopRange: () => {
@@ -196,5 +201,72 @@ useStore.subscribe(() => {
   const now = mixFingerprint()
   if (now === lastMix) return
   lastMix = now
-  if (transport.playing) transport.rescheduleAudio()
+  if (!transport.playing) return
+  // ⛔ A FADER, PAN, MUTE OR SOLO MOVES THE LIVE GRAPH'S OWN GAINS (AU-9). Every
+  // one used to rebuild the whole graph, which stopped every source mid-waveform
+  // (a click) and left 50 ms and more of nothing. Only a change the graph cannot
+  // follow (a track that was silent has to sound, the ducking changed, Auto-level
+  // or a role switched) still rebuilds, and that rebuild hands over seamlessly.
+  if (transport.setMix(activeSequence(useStore.getState().project).tracks)) warnIfSilent()
+  else transport.rescheduleAudio({ seamless: true })
+})
+
+/**
+ * ⛔ A CLIP EDIT MID-PLAY IS HEARD WHILE IT PLAYS (AU-9). The graph is built from
+ * the clips as they were at Play, so a clip's volume, fades, keyframes, noise
+ * reduction, trim, or a deleted clip, kept playing the old way until he stopped
+ * and started again. Every field the sound is built from is named here, and a
+ * change rebuilds the sound once he has stopped dragging for a moment, so a
+ * drag does not rebuild it on every step. A picture-only edit changes nothing here.
+ */
+export const CLIP_EDIT_SETTLE_MS = 200
+
+const clipSoundKey = (c: Clip): string =>
+  [
+    c.id,
+    c.assetId,
+    c.startS,
+    c.inS,
+    c.outS,
+    c.speed,
+    c.enabled ? 1 : 0,
+    c.audioGainDb,
+    c.fadeInS,
+    c.fadeOutS,
+    c.denoise ?? 0,
+    c.linkId ?? '',
+    c.ownAudioOff ? 1 : 0,
+    JSON.stringify(c.keyframes?.volume ?? null),
+  ].join(',')
+
+let keyedTracks: readonly Track[] | null = null
+let keyedSound = ''
+/** What every clip that makes a sound would play, per track. Cached on the tracks themselves. */
+function soundFingerprint(tracks: readonly Track[]): string {
+  if (tracks === keyedTracks) return keyedSound
+  keyedTracks = tracks
+  keyedSound = tracks
+    .map((t) => `${t.id}[${t.clips.filter((c) => clipEmitsAudioOn(t.kind, c)).map(clipSoundKey).join(';')}]`)
+    .join('|')
+  return keyedSound
+}
+
+/** What the graph playing now was built from, and what the clips were last seen to say. */
+let builtSound = ''
+let seenSound = ''
+let clipEditTimer: ReturnType<typeof setTimeout> | null = null
+const soundNow = (): string => soundFingerprint(activeSequence(useStore.getState().project).tracks)
+useStore.subscribe(() => {
+  if (!transport.playing) return
+  // Only a CHANGE re-arms the wait. The playhead writes to the store every frame,
+  // and re-arming on each of those would put the rebuild off until he stopped.
+  const now = soundNow()
+  if (now === seenSound) return
+  seenSound = now
+  if (now === builtSound) return
+  if (clipEditTimer !== null) clearTimeout(clipEditTimer)
+  clipEditTimer = setTimeout(() => {
+    clipEditTimer = null
+    if (transport.playing && soundNow() !== builtSound) transport.rescheduleAudio({ seamless: true })
+  }, CLIP_EDIT_SETTLE_MS)
 })
