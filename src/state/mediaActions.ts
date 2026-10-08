@@ -77,6 +77,110 @@ export interface ImportOptions {
 }
 
 /**
+ * What an import does to a file before its bytes are stored: convert a recording
+ * Chromium cannot open, make the SDR master of an HDR phone clip, and rescue a
+ * file the browser will not decode. Shared by the import and by Find my media,
+ * so a file put back on an edit is the same thing the import would have stored.
+ *
+ * Resolves `ok: false` for the two failures that are not the file's fault, with
+ * which one it was. A probe that fails for any other reason THROWS, so the
+ * caller can tell a full drive from a file that is truly not supported.
+ */
+export type PreparedSource =
+  | { ok: true; source: File; probe: Awaited<ReturnType<typeof probeFile>>; masterFailed: boolean }
+  | { ok: false; why: 'needs-desktop' | 'convert-failed' }
+
+export async function prepareSource(
+  file: File,
+  onStep: (step: string, frac: number) => void = () => {},
+): Promise<PreparedSource> {
+  // ⛔ HIS OWN OBS CAPTURES LAND HERE. A .mkv cannot be opened by Chromium
+  // at all, so `probeFile` fails on it and the import used to end as
+  // "unsupported" on footage that was perfectly fine. The desktop shell
+  // changes the container first, copying the video rather than re-encoding
+  // it, and everything below is then the same code an .mp4 has always run.
+  // An .mp4 never enters this: `remuxIfNeeded` returns it untouched.
+  if (!canImport(file.name)) return { ok: false, why: 'needs-desktop' }
+  let source: File
+  try {
+    source = (await remuxIfNeeded(file)).file
+  } catch (err) {
+    // NOT "unsupported". The format is supported, the conversion of THIS
+    // file failed, and those want opposite things from him. Same lesson as
+    // the out-of-room branch below.
+    console.warn('OL Premiere: could not convert', file.name, err)
+    return { ok: false, why: 'convert-failed' }
+  }
+  // ⛔ HIS IPHONE CLIPS ARE HDR, AND CHROMIUM'S OWN TONE MAP CRUSHED THEM.
+  // Measured on his two GYM clips: the darkest tenth at half the level the
+  // clip's own SDR grade gives it, in the preview and the export alike. A
+  // new HDR clip is tone mapped ONCE here, by ffmpeg with the clip's own
+  // Dolby Vision data, and everything after this line, probe, preview,
+  // proxy, export, only ever sees the SDR master (remuxArgs.ts, "HDR phone
+  // clips"). Clips already in his projects are never touched.
+  //
+  // A conversion that fails is not a lost import: the clip comes in
+  // exactly as it always did, and he is told once.
+  //
+  // ⛔ THE HLG ORIGINAL IS NOT KEPT BESIDE THE MASTER. A second blob is not
+  // cheap here: every byte goes into IndexedDB, whose quota is what says
+  // "No room left", and into the disk mirror, on a drive at 97 percent, so
+  // each iPhone clip would cost the original AND the master (104 MB plus
+  // 72 MB for his 75 s clip). Nor is it safe: orphanedBlobKeys keeps any
+  // key it does not recognise for good, so an extra key would outlive the
+  // asset, and backups, restore and relink would all need teaching about
+  // it. And nothing could read it: there is no HDR export. The original
+  // stays wherever he imported it from.
+  let masterFailed = false
+  try {
+    const master = await sdrMasterIfHdr(source, (frac) => onStep('Converting HDR colour', frac))
+    if (master) source = master.file
+  } catch (err) {
+    console.warn('OL Premiere: could not make an SDR copy of', source.name, '- importing it as it is', err)
+    masterFailed = true
+  } finally {
+    onStep('', 0)
+  }
+  // ⛔ A DECODE FAILURE IS NOT THE SAME AS AN UNSUPPORTED FILE, and until
+  // 2026-09-11 this app could not tell them apart. `needsRemux` converts the
+  // containers Chromium cannot demux at ALL (his OBS .mkv) and skips .mp4
+  // and .mov on purpose, because converting every ordinary mp4 up front
+  // turns a one second import into a five minute one.
+  //
+  // But an iPhone or modern Android clip is HEVC in a .mov or .mp4. It
+  // sails past that gate, Chromium refuses to decode it, and the import
+  // used to end at "couldn't import (unsupported?)" while the 137.9 MB
+  // ffmpeg in the installer sat there able to convert it in seconds.
+  // The most likely first file a new person has, rejected by the one
+  // component that could have opened it.
+  //
+  // So the probe failing is not the end any more: if there is an ffmpeg
+  // here and the file looks like a video at all, it gets converted and
+  // probed again. The cost is paid ONLY by files that already failed, so
+  // an ordinary import is byte for byte the same work it always was.
+  let probe
+  try {
+    probe = await probeFile(source)
+  } catch (probeErr) {
+    if (isOutOfRoom(probeErr) || !canRescue(source.name)) throw probeErr
+    console.warn('OL Premiere: the browser could not open', source.name, '- converting it', probeErr)
+    // A rescue that itself fails must read as a conversion failure, not as
+    // "unsupported": the format IS supported, this file did not survive it.
+    let rescued
+    try {
+      rescued = (await rescueByRemux(source, (frac) => onStep('Converting', frac))).file
+    } catch (rescueErr) {
+      console.warn('OL Premiere: could not convert', source.name, rescueErr)
+      return { ok: false, why: 'convert-failed' }
+    }
+    // If the converted file ALSO will not open, it is genuinely beyond us.
+    probe = await probeFile(rescued)
+    source = rescued
+  }
+  return { ok: true, source, probe, masterFailed }
+}
+
+/**
  * Resolves to the ids of the assets that made it into the bin, in the order the
  * files came. A pasted picture needs its id to be placed on the timeline; every
  * other caller can go on ignoring it.
@@ -106,98 +210,13 @@ export async function importFiles(files: File[], opts?: ImportOptions): Promise<
     for (const [i, file] of files.entries()) {
       useImportProgress.setState({ total: files.length, done: i, name: file.name, step: '', frac: 0 })
       try {
-        // ⛔ HIS OWN OBS CAPTURES LAND HERE. A .mkv cannot be opened by Chromium
-        // at all, so `probeFile` fails on it and the import used to end as
-        // "unsupported" on footage that was perfectly fine. The desktop shell
-        // changes the container first, copying the video rather than re-encoding
-        // it, and everything below is then the same code an .mp4 has always run.
-        // An .mp4 never enters this: `remuxIfNeeded` returns it untouched.
-        if (!canImport(file.name)) {
-          needsDesktop.push(file.name)
+        const prepared = await prepareSource(file, (step, frac) => useImportProgress.setState({ step, frac }))
+        if (!prepared.ok) {
+          if (prepared.why === 'needs-desktop') needsDesktop.push(file.name)
+          else convertFailed.push(file.name)
           continue
         }
-        let source: File
-        try {
-          source = (await remuxIfNeeded(file)).file
-        } catch (err) {
-          // NOT "unsupported". The format is supported, the conversion of THIS
-          // file failed, and those want opposite things from him. Same lesson as
-          // the out-of-room branch below.
-          console.warn('OL Premiere: could not convert', file.name, err)
-          convertFailed.push(file.name)
-          continue
-        }
-        // ⛔ HIS IPHONE CLIPS ARE HDR, AND CHROMIUM'S OWN TONE MAP CRUSHED THEM.
-        // Measured on his two GYM clips: the darkest tenth at half the level the
-        // clip's own SDR grade gives it, in the preview and the export alike. A
-        // new HDR clip is tone mapped ONCE here, by ffmpeg with the clip's own
-        // Dolby Vision data, and everything after this line, probe, preview,
-        // proxy, export, only ever sees the SDR master (remuxArgs.ts, "HDR phone
-        // clips"). Clips already in his projects are never touched.
-        //
-        // A conversion that fails is not a lost import: the clip comes in
-        // exactly as it always did, and he is told once.
-        //
-        // ⛔ THE HLG ORIGINAL IS NOT KEPT BESIDE THE MASTER. A second blob is not
-        // cheap here: every byte goes into IndexedDB, whose quota is what says
-        // "No room left", and into the disk mirror, on a drive at 97 percent, so
-        // each iPhone clip would cost the original AND the master (104 MB plus
-        // 72 MB for his 75 s clip). Nor is it safe: orphanedBlobKeys keeps any
-        // key it does not recognise for good, so an extra key would outlive the
-        // asset, and backups, restore and relink would all need teaching about
-        // it. And nothing could read it: there is no HDR export. The original
-        // stays wherever he imported it from.
-        let masterFailed = false
-        try {
-          const master = await sdrMasterIfHdr(source, (frac) =>
-            useImportProgress.setState({ step: 'Converting HDR colour', frac }),
-          )
-          if (master) source = master.file
-        } catch (err) {
-          console.warn('OL Premiere: could not make an SDR copy of', source.name, '- importing it as it is', err)
-          masterFailed = true
-        } finally {
-          useImportProgress.setState({ step: '', frac: 0 })
-        }
-        // ⛔ A DECODE FAILURE IS NOT THE SAME AS AN UNSUPPORTED FILE, and until
-        // 2026-09-11 this app could not tell them apart. `needsRemux` converts the
-        // containers Chromium cannot demux at ALL (his OBS .mkv) and skips .mp4
-        // and .mov on purpose, because converting every ordinary mp4 up front
-        // turns a one second import into a five minute one.
-        //
-        // But an iPhone or modern Android clip is HEVC in a .mov or .mp4. It
-        // sails past that gate, Chromium refuses to decode it, and the import
-        // used to end at "couldn't import (unsupported?)" while the 137.9 MB
-        // ffmpeg in the installer sat there able to convert it in seconds.
-        // The most likely first file a new person has, rejected by the one
-        // component that could have opened it.
-        //
-        // So the probe failing is not the end any more: if there is an ffmpeg
-        // here and the file looks like a video at all, it gets converted and
-        // probed again. The cost is paid ONLY by files that already failed, so
-        // an ordinary import is byte for byte the same work it always was.
-        let probe
-        try {
-          probe = await probeFile(source)
-        } catch (probeErr) {
-          if (isOutOfRoom(probeErr) || !canRescue(source.name)) throw probeErr
-          console.warn('OL Premiere: the browser could not open', source.name, '- converting it', probeErr)
-          // A rescue that itself fails must read as a conversion failure, not as
-          // "unsupported": the format IS supported, this file did not survive it.
-          let rescued
-          try {
-            rescued = (
-              await rescueByRemux(source, (frac) => useImportProgress.setState({ step: 'Converting', frac }))
-            ).file
-          } catch (rescueErr) {
-            console.warn('OL Premiere: could not convert', source.name, rescueErr)
-            convertFailed.push(file.name)
-            continue
-          }
-          // If the converted file ALSO will not open, it is genuinely beyond us.
-          probe = await probeFile(rescued)
-          source = rescued
-        }
+        const { source, probe, masterFailed } = prepared
         const id = newId()
         const blobKey = 'asset/' + id
         await putBlob(blobKey, source)
@@ -395,8 +414,8 @@ export function deleteAsset(assetId: Id): void {
   // Sharing. `landRestored` gives a recovered project a fresh id and keeps its
   // ASSETS byte for byte, so several rows on his shelf point at one set of
   // bytes. Both IndexedDB delete paths were taught that; this one never was, and
-  // `deleteMedia` loops every folder the app has ever used, so there is no
-  // second chance.
+  // `deleteMedia` looped every folder the app has ever used, so there was no
+  // second chance. It is gone now: nothing on the page can delete a spare copy.
   //
   // Size is not a constraint on his machine and a mirror that only grows is the
   // right trade. If reclamation is ever wanted it belongs in `blobSweep`, beside

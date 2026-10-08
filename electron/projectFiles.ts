@@ -26,8 +26,9 @@
 // nothing; a multi gigabyte bundle every second would be its own disaster.
 
 import { app } from 'electron'
-import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rename, stat, unlink } from 'node:fs/promises'
 import path from 'node:path'
+import { inTurn, replaceFile } from './durableWrite'
 
 /**
  * Documents, for the same reason the backups live there: a copy that lives
@@ -68,18 +69,22 @@ function belongsTo(fileName: string, id: string): boolean {
 /**
  * Write the file for one project, and only then let go of the old one.
  *
- * ⛔ WRITTEN BESIDE, THEN RENAMED OVER. A save that is cut off half way (the
- * updater killing the app, a power cut) must never leave a half file where the
- * only copy was. The rename is atomic on NTFS, so the file on disk is always
- * either the previous complete state or the new complete state.
+ * ⛔ WRITTEN BESIDE, FLUSHED, THEN RENAMED OVER. A save that is cut off half way
+ * (the updater killing the app, a power cut) must never leave a half file where
+ * the only copy was. The rename is atomic on NTFS, so the file on disk is always
+ * either the previous complete state or the new complete state, and the flush
+ * makes that true of the bytes too (durableWrite.ts). One write per project at a
+ * time, for the same reason.
  */
-export async function writeProjectFile(id: string, projectName: string, json: string): Promise<string> {
+export function writeProjectFile(id: string, projectName: string, json: string): Promise<string> {
+  return inTurn(`project:${id}`, () => writeProjectFileNow(id, projectName, json))
+}
+
+async function writeProjectFileNow(id: string, projectName: string, json: string): Promise<string> {
   const dir = projectDir()
   await mkdir(dir, { recursive: true })
   const target = path.join(dir, projectFileName(projectName, id))
-  const tmp = `${target}.tmp`
-  await writeFile(tmp, json, 'utf8')
-  await rename(tmp, target)
+  await replaceFile(target, json)
   rememberWritten(target, id, projectName, json)
   // A rename of the project leaves the file under its old name behind. Clear it
   // now that the new one is safely down.
@@ -194,8 +199,19 @@ export async function listProjectFiles(): Promise<ProjectFileEntry[]> {
  * His delete. The file moves into `Trash` under a timestamp rather than being
  * unlinked, because "I deleted the wrong one" is the one mistake this whole
  * folder exists to make survivable.
+ *
+ * ⛔ NOTHING IN THE APP DELETES A FILE FROM TRASH. The spare copy cleanup stops
+ * for good when a project it saw in Trash is in no folder any more (mediaSweep.ts),
+ * so a way to empty Trash would have to take those ids off its ledger in the same
+ * step (sweepAppDeletes.test.ts).
  */
-export async function trashProjectFile(id: string): Promise<number> {
+export function trashProjectFile(id: string): Promise<number> {
+  // In turn with the writes, so a save still on its way cannot land after the
+  // delete and put the file straight back.
+  return inTurn(`project:${id}`, () => trashProjectFileNow(id))
+}
+
+async function trashProjectFileNow(id: string): Promise<number> {
   const dir = projectDir()
   let names: string[]
   try {

@@ -1,5 +1,5 @@
 import { Plus, X } from 'lucide-react'
-import { useState, type KeyboardEvent, type MouseEvent } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type WheelEvent } from 'react'
 import { closeTab, switchTo, useEditTabs, type EditTab } from '../state/editTabs'
 import { useStore } from '../state/store'
 import { IconButton } from '../ui/Button'
@@ -26,13 +26,35 @@ export function EditTabs() {
   const shown: EditTab[] = tabs.some((t) => t.id === openId) ? tabs : [...tabs, { id: openId, name: openName }]
   const closable = shown.length > 1
 
+  // ⛔ A DOZEN TABS USED TO RUN PAST THE EDGE WITH NO WAY TO REACH THEM. The strip
+  // has no scrollbar (it would eat the 32 px row), a normal wheel moves nothing
+  // sideways, and a tab opened from Projects could be the open one somewhere he
+  // could not see. Tabs now shrink first, the wheel scrolls the strip, and the
+  // open tab is brought into view whenever it changes.
+  const list = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const tab = Array.from(list.current?.children ?? []).find((el) => el.getAttribute('data-project-id') === openId)
+    tab?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })
+  }, [openId])
+  const onWheel = (e: WheelEvent<HTMLDivElement>): void => {
+    // Only the up and down wheel: a sideways swipe already scrolls the strip itself.
+    if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) e.currentTarget.scrollLeft += e.deltaY
+  }
+
   return (
     <nav
       data-testid="edit-tabs"
       aria-label="Open edits"
       className="flex h-8 shrink-0 items-center gap-1 border-b border-border bg-bg-panel px-3"
     >
-      <div role="tablist" aria-label="Open edits" className="flex min-w-0 items-center gap-1 overflow-x-auto [scrollbar-width:none]">
+      <div
+        ref={list}
+        role="tablist"
+        aria-label="Open edits"
+        data-testid="edit-tabs-strip"
+        onWheel={onWheel}
+        className="flex min-w-0 items-center gap-1 overflow-x-auto [scrollbar-width:none]"
+      >
         {shown.map((t) => (
           <Tab
             key={t.id}
@@ -97,7 +119,7 @@ function Tab({ tab, name, open, waking, closable }: { tab: EditTab; name: string
       onAuxClick={(e) => {
         if (e.button === 1 && closable) close(e)
       }}
-      className={`group/tab flex h-6 min-w-[72px] max-w-[200px] shrink-0 cursor-default items-center gap-1.5 rounded-field pl-2.5 text-[12px] font-medium transition-colors duration-[120ms] ${
+      className={`group/tab flex h-6 min-w-[72px] max-w-[200px] shrink cursor-default items-center gap-1.5 rounded-field pl-2.5 text-[12px] font-medium transition-colors duration-[120ms] ${
         closable ? 'pr-1' : 'pr-2.5'
       } ${open ? 'bg-accent-quiet text-accent' : 'text-text-secondary hover:bg-bg-elevated hover:text-text-primary'} ${
         waking ? 'animate-pulse' : ''

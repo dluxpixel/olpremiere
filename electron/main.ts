@@ -43,6 +43,7 @@ import {
 import * as native from './nativeExport'
 import * as proxy from './proxy'
 import * as mediaStore from './mediaStore'
+import * as mediaSweep from './mediaSweep'
 import * as remux from './remux'
 import { IDLE_POLL_MS, updateApplyDecision } from './updateApply'
 import { CLOSE_SAVE_TIMEOUT_MS, createCloseGate, notSavedDialog, type CloseGate } from './closeGate'
@@ -506,6 +507,8 @@ function createWindow(): void {
     // A half written mirror copy is in the same boat, and its writer slot would
     // otherwise be pinned for the life of main, refusing that asset forever.
     void mediaStore.dropWriters()
+    // And a project copy or export being saved: its part file is full size.
+    void saveFiles.dropWrites()
     // And an export. The page feeds ffmpeg its frames, so with the page gone
     // ffmpeg would wait on its pipe forever, the half made file would stay,
     // and the updater would believe an export is running until the app quits.
@@ -696,7 +699,38 @@ app.whenReady().then(() => {
   ipcMain.handle('media:finish', (_e, id: string) => mediaStore.finishMedia(id))
   ipcMain.handle('media:cancel', (_e, id: string) => mediaStore.cancelMedia(id))
   ipcMain.handle('media:read', (_e, id: string, offset: number, length: number) => mediaStore.readMedia(id, offset, length))
-  ipcMain.handle('media:delete', (_e, id: string) => mediaStore.deleteMedia(id))
+  // Spare copies nothing has used for 7 days, his call 2026-10-06 (mediaSweep.ts).
+  // Never while a copy is being written: that is an import on its way.
+  // ⛔ ONLY THIS PROFILE'S OWN FOLDER is deleted from (mediaStore.mediaDir, which
+  // is `<userData>/media`), never the older profile folders mediaStore reads.
+  const sweepPlaces = (): mediaSweep.SweepPlaces => ({
+    profileDir: app.getPath('userData'),
+    projectsDir: projectFiles.projectDir(),
+    backupDir: backups.backupDir(),
+  })
+  // A hold asked for this start stands even when its file could not be written.
+  let sweepHeld: string | null = null
+  ipcMain.handle('media:sweepHold', async (_e, why: unknown) => {
+    sweepHeld = typeof why === 'string' && why ? why.slice(0, 200) : 'held by the page'
+    try {
+      await mediaSweep.holdSweep(sweepPlaces(), sweepHeld)
+      return true
+    } catch (err) {
+      console.warn('OL Premiere: the spare copy cleanup hold could not be written', err)
+      return false
+    }
+  })
+  ipcMain.handle('media:sweepUnused', async (_e, projectIds: unknown, assetIds: unknown) => {
+    const none = { removed: [], freedBytes: 0, waiting: 0 }
+    if (sweepHeld) return { ...none, refused: `held this start: ${sweepHeld}`, code: 'held' as const }
+    if (mediaStore.isWriting()) {
+      return { ...none, busy: true, refused: 'a copy is being written', code: 'busy' as const }
+    }
+    return mediaSweep.sweepUnusedSpareCopies(sweepPlaces(), {
+      projectIds: Array.isArray(projectIds) ? projectIds.map(String) : [],
+      assetIds: Array.isArray(assetIds) ? assetIds.map(String) : [],
+    })
+  })
 
   ipcMain.handle('proxy:begin', () => proxy.beginProxy())
   ipcMain.handle('proxy:chunk', (_e, id: string, bytes: ArrayBuffer) => proxy.chunkProxy(id, bytes))
@@ -805,7 +839,9 @@ app.whenReady().then(() => {
     if (!win) return null
     return saveFiles.pickSavePath(win, kind, base, ext, filterName)
   })
-  ipcMain.handle('file:openWrite', (_e, target: string) => saveFiles.openForWrite(target))
+  ipcMain.handle('file:openWrite', (_e, target: string, sizeBytes?: number) =>
+    saveFiles.openForWrite(target, typeof sizeBytes === 'number' ? sizeBytes : 0),
+  )
   ipcMain.handle('file:writeChunk', (_e, id: number, chunk: ArrayBuffer) => saveFiles.writeChunk(id, chunk))
   ipcMain.handle('file:close', (_e, id: number, ok: boolean) => saveFiles.closeWrite(id, ok))
 

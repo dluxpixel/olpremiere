@@ -60,7 +60,7 @@ import {
   snapshotOf,
   type LibraryRestored,
 } from './libraryHome'
-import { mirrorApi, mirrorAsset, mirroredIds, readMirrored } from './mediaMirror'
+import { blobForExport, mirrorApi, mirrorAsset, mirroredIds, readMirrored } from './mediaMirror'
 import { askForName } from './namePrompt'
 import { db, getBlob, putBlob } from './persistence'
 import { lockedLeftOut } from './bulkEdits'
@@ -509,7 +509,8 @@ export async function saveAssetToLibrary(assetId: Id, categoryId?: Id): Promise<
     toast(`${asset.name} is already in the Library, in ${categoryLabel(categoryIdOf(existing, categories), categories)}`)
     return
   }
-  const blob = await getBlob(asset.blobKey)
+  // From the store, or from the asset's spare copy on disk when the store lost it.
+  const blob = await blobForExport(asset)
   if (!blob) {
     toast(`${asset.name}: media is missing from local storage`, 'danger')
     return
@@ -561,7 +562,10 @@ export async function saveAssetToLibrary(assetId: Id, categoryId?: Id): Promise<
  * project. Null (and a toast) when the Library's bytes are gone.
  */
 async function copyIntoProject(item: LibraryItem): Promise<MediaAsset | null> {
-  const blob = await getBlob(item.blobKey)
+  // ⛔ THE SPARE COPY TOO. A Library item whose bytes the store lost still has its
+  // `lib-` copy on disk, and used to be called missing anyway. This reads it back,
+  // and puts it back in the store for next time.
+  const blob = await blobForExport({ id: libMirrorId(item.id), blobKey: item.blobKey, name: item.name })
   if (!blob) {
     toast(`${item.name}: Library media is missing`, 'danger')
     return null
@@ -569,6 +573,9 @@ async function copyIntoProject(item: LibraryItem): Promise<MediaAsset | null> {
   const id = newId()
   const blobKey = `asset/${id}`
   await putBlob(blobKey, blob)
+  // ⛔ AND ITS OWN SPARE COPY, the moment it is made, the same as an import. It
+  // used to wait for the next start's backfill, so a wipe before then lost it.
+  void mirrorAsset(id, blob)
   const asset: MediaAsset = {
     id,
     name: item.name,
@@ -582,7 +589,7 @@ async function copyIntoProject(item: LibraryItem): Promise<MediaAsset | null> {
     codec: undefined,
   }
   if (item.thumbnailKey) {
-    const thumb = await getBlob(item.thumbnailKey)
+    const thumb = await blobForExport({ id: libThumbMirrorId(item.id), blobKey: item.thumbnailKey })
     if (thumb) {
       asset.thumbnailKey = `thumb/${id}`
       await putBlob(asset.thumbnailKey, thumb)
@@ -671,16 +678,57 @@ export async function addLibraryItemToTimeline(itemId: Id, place: LibraryPlaceme
   if (useStore.getState().ui.selection.length > 0) useStore.getState().setUI({ selection: [] })
 }
 
-/** Remove a Library item and ITS OWN blobs. Projects that used it keep their copies. */
+/** How long a Library remove offers its Undo, and so how long the bytes wait for it. */
+export const LIBRARY_UNDO_MS = 10_000
+
+/**
+ * Remove a Library item and, once its Undo has run out, ITS OWN blobs. Projects
+ * that used it keep their copies.
+ *
+ * ⛔ ONE STRAY CLICK USED TO LOSE A SAVED SOUND FOR GOOD. Remove sits one click
+ * away in the right click menu, and a whole category's delete already had Undo.
+ * The record goes at once; the bytes stay while the toast offers Undo.
+ */
 export async function removeLibraryItem(itemId: Id): Promise<void> {
   const item = useLibrary.getState().items.find((i) => i.id === itemId)
   if (!item) return
   const d = await db()
   await d.delete('library', itemId)
+  useLibrary.setState((s) => ({ items: s.items.filter((i) => i.id !== itemId) }))
+  let undone = false
+  const letGo = setTimeout(() => void dropLibraryBytes(item).catch(() => undefined), LIBRARY_UNDO_MS + 1000)
+  useToasts.getState().show(
+    `Removed ${item.name} from Library`,
+    'info',
+    {
+      label: 'Undo',
+      onClick: () => {
+        if (undone) return
+        undone = true
+        clearTimeout(letGo)
+        void putLibraryItemBack(item)
+      },
+    },
+    { durationMs: LIBRARY_UNDO_MS },
+  )
+}
+
+/** A removed item's own bytes, unless it has come back since. */
+async function dropLibraryBytes(item: LibraryItem): Promise<void> {
+  const d = await db()
+  if (await d.get('library', item.id)) return
   await d.delete('blobs', item.blobKey)
   if (item.thumbnailKey) await d.delete('blobs', item.thumbnailKey)
-  useLibrary.setState((s) => ({ items: s.items.filter((i) => i.id !== itemId) }))
-  useToasts.getState().show(`Removed ${item.name} from Library`)
+}
+
+/** The Undo on a remove: the same item, same bytes, same category. */
+async function putLibraryItemBack(item: LibraryItem): Promise<void> {
+  const d = await db()
+  await d.put('library', item, item.id)
+  useLibrary.setState((s) =>
+    s.items.some((i) => i.id === item.id) ? s : { items: [item, ...s.items].sort(byNewest) },
+  )
+  toast(`${item.name} is back in the Library`, 'success')
 }
 
 // ---------------------------------------------------------------------------
@@ -806,13 +854,33 @@ export function applyPresetToAllClips(presetId: Id): void {
   show(`Applied "${preset.name}" to ${targetCount} clip${targetCount === 1 ? '' : 's'}`, 'success')
 }
 
+/** Remove a preset, with Undo on the toast: it is one click away in the right click menu. */
 export async function removePreset(presetId: Id): Promise<void> {
   const preset = useLibrary.getState().presets.find((p) => p.id === presetId)
   if (!preset) return
   const d = await db()
   await d.delete('presets', presetId)
   useLibrary.setState((s) => ({ presets: s.presets.filter((p) => p.id !== presetId) }))
-  useToasts.getState().show(`Removed preset "${preset.name}"`)
+  let undone = false
+  useToasts.getState().show(
+    `Removed preset "${preset.name}"`,
+    'info',
+    {
+      label: 'Undo',
+      onClick: () => {
+        if (undone) return
+        undone = true
+        void (async () => {
+          await (await db()).put('presets', preset, preset.id)
+          useLibrary.setState((s) =>
+            s.presets.some((p) => p.id === preset.id) ? s : { presets: [preset, ...s.presets].sort(byNewest) },
+          )
+          toast(`Preset "${preset.name}" is back`, 'success')
+        })()
+      },
+    },
+    { durationMs: LIBRARY_UNDO_MS },
+  )
 }
 
 export { autoPresetName }

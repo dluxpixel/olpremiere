@@ -199,6 +199,8 @@ const work: BootWork = {
       console.warn('OL Premiere boot: could not check the backups', err)
       return null
     })
+    // A recovery that lands anything also stands the spare copy cleanup down
+    // (backupRestore.ts recoverFromWipe).
     if (recovered) return { detail: `brought ${recovered.name} back, ${plural(recovered.clipCount, 'clip')}` }
     // ⛔ CLEANING UP AFTER AN EARLIER VERSION OF MYSELF. A restore before 2.23
     // handed back projects whose media had never existed in this store, and his
@@ -279,6 +281,9 @@ void booted.then(() => {
   // never delay the app opening, and it must never be able to fail the boot. Once
   // per session is plenty; the space only leaks when he deletes media.
   void import('./state/blobSweep').then((m) => m.sweepOrphanedBlobs())
+  // And the spare copies on disk nothing has used for 7 days, his call 2026-10-06.
+  // A few minutes in, and never while an import or export runs (spareCopySweep.ts).
+  void import('./state/spareCopySweep').then((m) => m.scheduleSpareCopySweep())
 })
 
 // Hydrate the saved default text animation.

@@ -470,6 +470,8 @@ function FindMyMedia() {
   const healing = useMediaHeal((s) => s.progress)
   const [missing, setMissing] = useState<MissingAsset[]>([])
   const [busy, setBusy] = useState(false)
+  // What the put-back is on, when a file has to be converted first (an OBS .mkv, an HDR phone clip).
+  const [converting, setConverting] = useState('')
   const pick = useRef<HTMLInputElement>(null)
 
   const [why, setWhy] = useState('')
@@ -540,7 +542,7 @@ function FindMyMedia() {
         disabled={busy}
         onClick={() => pick.current?.click()}
       >
-        {busy ? 'Putting them back' : 'Find my media'}
+        {busy ? (converting ? `Converting ${converting}` : 'Putting them back') : 'Find my media'}
       </Button>
       <input
         ref={pick}
@@ -556,9 +558,23 @@ function FindMyMedia() {
           setBusy(true)
           void (async () => {
             const result = matchFilesToMissing(missing, files)
-            const { done, failed } = await relink(result.matched)
-            useToasts.getState().show(relinkSummary(result, done), done > 0 ? 'success' : 'info')
+            const { done, failed, unusable } = await relink(result.matched, {
+              onFile: (name, step) => setConverting(step ? name : ''),
+            })
+            setConverting('')
+            // A file that could not be converted says so below, not "none of those matched".
+            if (done > 0 || unusable.length === 0) {
+              useToasts.getState().show(relinkSummary(result, done), done > 0 ? 'success' : 'info')
+            }
             if (failed.length > 0) useToasts.getState().show(`Could not write: ${failed.join(', ')}`, 'danger')
+            if (unusable.length > 0) {
+              useToasts
+                .getState()
+                .show(
+                  `${unusable.join(', ')} could not be converted, so ${unusable.length === 1 ? 'it was' : 'they were'} not put back`,
+                  'danger',
+                )
+            }
             // Ask storage again rather than assuming, and make the preview drop
             // whatever it decided when the bytes were not there.
             for (const m of result.matched) evictAsset(m.asset.id)

@@ -27,6 +27,9 @@ export function PastePictureDialog() {
 function PastePictureCard({ url }: { url: string }) {
   const phase = usePastePicture((s) => s.phase)
   const problem = usePastePicture((s) => s.problem)
+  // Every picture in the paste gets this one question (his five unit pictures, one answer).
+  const count = usePastePicture((s) => 1 + s.more.length)
+  const workingOn = usePastePicture((s) => s.workingOn)
   const working = phase === 'working'
   const canRemove = canRemoveBackground()
 
@@ -47,7 +50,9 @@ function PastePictureCard({ url }: { url: string }) {
         className="olp-pop w-[380px] max-w-[calc(100vw-24px)] rounded-dialog border border-border bg-bg-elevated shadow-pop"
       >
         <div className="flex h-11 items-center gap-2 border-b border-border px-4">
-          <span className="text-ui font-semibold text-text-primary">Paste picture</span>
+          <span className="text-ui font-semibold text-text-primary">
+            {count === 1 ? 'Paste picture' : `Paste ${count} pictures`}
+          </span>
           <span className="ml-auto">
             <IconButton label="Cancel" data-testid="paste-picture-cancel" onClick={cancelPicturePaste}>
               <X size={16} strokeWidth={1.5} />
@@ -65,11 +70,16 @@ function PastePictureCard({ url }: { url: string }) {
               className="max-h-full max-w-full object-contain"
             />
           </div>
+          {count > 1 && (
+            <p data-testid="paste-picture-more" className="-mt-1 text-[11px] leading-4 text-text-muted">
+              and {count - 1} more, placed one after another
+            </p>
+          )}
 
-          {working && <WorkingLine />}
+          {working && <WorkingLine at={count > 1 ? workingOn : 0} of={count} />}
           {phase === 'failed' && problem && (
             <p role="alert" data-testid="paste-picture-problem" className="text-[12px] leading-5 text-danger">
-              {problem} You can still paste it with its background.
+              {problem} You can still paste {count === 1 ? 'it with its background' : 'them with their background'}.
             </p>
           )}
 
@@ -99,7 +109,8 @@ function PastePictureCard({ url }: { url: string }) {
   )
 }
 
-function WorkingLine() {
+/** `at` is which picture of `of` CutStudio is on, 0 when there is only one. */
+function WorkingLine({ at, of }: { at: number; of: number }) {
   const [slow, setSlow] = useState(false)
   useEffect(() => {
     const t = window.setTimeout(() => setSlow(true), SLOW_HINT_MS)
@@ -110,7 +121,7 @@ function WorkingLine() {
       <span className="flex items-center gap-2">
         {/* In-progress work is an ember state, the same as the caption pill. */}
         <Loader2 size={13} strokeWidth={2} aria-hidden className="animate-spin text-ember" />
-        Removing the background…
+        {at > 0 ? `Removing the background, ${at} of ${of}…` : 'Removing the background…'}
       </span>
       {slow && (
         <span className="pl-[21px] text-text-secondary">The first one can take a little longer.</span>

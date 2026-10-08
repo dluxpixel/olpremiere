@@ -38,3 +38,14 @@ export function markDoNotAutoRecover(ids: Iterable<string>): void {
     // As above: this list is a courtesy, never a correctness requirement.
   }
 }
+
+/** Take ids off the list, for a delete he took back with Undo. */
+export function forgetDoNotAutoRecover(ids: Iterable<string>): void {
+  try {
+    const all = doNotAutoRecover()
+    for (const id of ids) all.delete(id)
+    window.localStorage.setItem(KEY, JSON.stringify([...all]))
+  } catch {
+    // As above: a courtesy list.
+  }
+}

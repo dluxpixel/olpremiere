@@ -14,9 +14,13 @@
 import { migrateProjectEffects } from '../engine/effects/migrate'
 import { migrateProjectAppearance } from '../engine/anim/appearance'
 import { migrateProject, newId, type Project } from '../engine/types'
+import { nextFreeName } from '../engine/uniqueName'
+import { parseStoredProject } from '../persistence/schema'
 import { backfillMirror } from './mediaMirror'
-import { deleteBlob, getBlob, loadProjectById, putBlob, saveProject } from './persistence'
+import { deleteBlob, getBlob, listProjects, loadProjectById, putBlob, saveProject, saveSettled } from './persistence'
 import { flushOutgoing, guardRoom, switchTo } from './editTabs'
+import { copyOfProject } from './projectActions'
+import { forgetDoNotAutoRecover } from './recoveryMemory'
 import { useStore } from './store'
 import { useToasts } from './toasts'
 import { plural } from '../engine/plural'
@@ -115,7 +119,7 @@ export function openProjectFilePicker(): void {
   // Fallback for anywhere the top bar is not mounted: a throwaway input.
   const input = document.createElement('input')
   input.type = 'file'
-  input.accept = `.${PROJECT_FILE_EXT},.json,application/octet-stream`
+  input.accept = `.${PROJECT_FILE_EXT},.olpbak,.json,application/octet-stream`
   input.onchange = () => {
     const file = input.files?.[0]
     if (file) void importProjectFromFile(file)
@@ -130,9 +134,13 @@ export function openProjectFilePicker(): void {
  * which reported "couldn't import (unsupported?)" and left him believing his own
  * backup was broken. The file is the only bridge between the browser app and the
  * desktop app, so the most obvious gesture has to be the one that works.
+ *
+ * `.olpbak` too: the file each project keeps in his Projects folder, in its
+ * Trash and in the backups. Dropped on the window it used to read
+ * "Green_ab9fe413.olpbak: couldn't import (unsupported?)".
  */
 export function isProjectFileName(name: string): boolean {
-  return /\.olstudio(\.json)?$/i.test(name.trim())
+  return /\.(olstudio(\.json)?|olpbak)$/i.test(name.trim())
 }
 
 /**
@@ -256,6 +264,24 @@ export function copyName(name: string): string {
   return trimmed.endsWith('(copy)') ? trimmed : `${trimmed} (copy)`
 }
 
+/**
+ * True when the copy HERE has changed since the incoming edit last shared a save
+ * with it, so the incoming one must not replace it, however new it is.
+ *
+ * ⛔ NEWER IS NOT ENOUGH. He sends GYM to his phone at 18:00, keeps editing it on
+ * the PC until 19:00, edits on the phone until 20:00 and sends it back. The phone
+ * copy is newer, and opening it used to write over the PC's 19:00 work without a
+ * word. It may replace the copy here only when that copy is still exactly the save
+ * the phone started from (`fileBaseUpdatedAt`, kept on the edit when it was
+ * opened, and on the sender's own copy when it was sent: rememberSent). A file
+ * that does not say where it started from cannot prove that, so it lands beside,
+ * never over.
+ */
+export function editedHereSince(here: Project, incoming: Project): boolean {
+  if (here.updatedAt === incoming.updatedAt) return false
+  return incoming.fileBaseUpdatedAt !== here.updatedAt
+}
+
 export interface CopyPlan {
   project: Project
   /** Old blob key to new blob key, for the bytes this import is about to write. */
@@ -293,6 +319,8 @@ export interface BuiltProjectFile {
   bundled: number
   /** Media items the project uses that could not be read, so are NOT in it. */
   absent: number
+  /** The save it carries, so the copy here can remember it was sent (rememberSent). */
+  sent: { id: string; updatedAt: number }
 }
 
 /**
@@ -318,7 +346,48 @@ export async function buildProjectFile(): Promise<BuiltProjectFile> {
     blobs: metas,
   })
   const file = new File([header, ...parts], projectFileName(project.name), { type: 'application/octet-stream' })
-  return { file, bundled: metas.length, absent: wanted.length - metas.length }
+  return {
+    file,
+    bundled: metas.length,
+    absent: wanted.length - metas.length,
+    sent: { id: project.id, updatedAt: project.updatedAt },
+  }
+}
+
+/**
+ * The copy here remembers which save just went out, so the NEXT copy sent from
+ * here says where it starts from.
+ *
+ * ⛔ WITHOUT THIS EVERY RESEND LANDED AS A COPY. He sends GYM from the PC and the
+ * phone opens it, so the phone knows it holds that save. He edits more on the PC
+ * and sends again, but the PC copy had never been opened from a file, so the new
+ * one could not say it started from the save the phone has, and the phone kept
+ * landing "GYM (copy)" beside an untouched GYM. Now the PC copy carries the save
+ * it sent (`fileBaseUpdatedAt`), its next send carries that, and an untouched
+ * phone copy is replaced in place.
+ *
+ * Not an edit: `updatedAt` is untouched and no undo step is made, the same way a
+ * project is filed under Later (persistence.ts stampOpenProject). A stamp that
+ * does not land costs one copy beside it later, never a loss.
+ */
+export async function rememberSent(sent: BuiltProjectFile['sent']): Promise<void> {
+  try {
+    const live = useStore.getState().project
+    if (live.id === sent.id) {
+      if (live.fileBaseUpdatedAt === sent.updatedAt) return
+      useStore.setState({ project: { ...live, fileBaseUpdatedAt: sent.updatedAt } })
+      // Through the one save path, so it can never land under a newer autosave.
+      await saveSettled(true)
+      return
+    }
+    // He moved to another edit while it was being written: stamp the stored copy.
+    const stored = await loadProjectById(sent.id)
+    if (stored && stored.fileBaseUpdatedAt !== sent.updatedAt) {
+      await saveProject({ ...stored, fileBaseUpdatedAt: sent.updatedAt })
+    }
+  } catch (err) {
+    console.warn('OL Premiere: could not note which save of the project was sent', err)
+  }
 }
 
 /** Say when the bundle is short. A copy that quietly left media behind is a lie. */
@@ -354,6 +423,7 @@ export async function shareProjectFile(built: BuiltProjectFile): Promise<boolean
   try {
     await navigator.share({ files: [built.file], title: built.file.name })
     reportBuilt(built, 'Sent the project')
+    await rememberSent(built.sent)
     return true
   } catch (err) {
     // Closing the sheet is not a failure: the copy is still ready to send.
@@ -364,12 +434,30 @@ export async function shareProjectFile(built: BuiltProjectFile): Promise<boolean
   }
 }
 
+/** One slice of a project file per trip to main: the same 8 MB the spare copies use. */
+const WRITE_SLICE = 8 * 1024 * 1024
+
+/** "2.8 GB", "640 MB": a size in the words the drive's own dialogs use. */
+function sizeWords(bytes: number): string {
+  return bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(bytes / 1e6))} MB`
+}
+
+/** True for a failure that is the drive being full, however it was spelled on the way. */
+export function isDiskFull(err: unknown): boolean {
+  const text = err instanceof Error ? `${err.name} ${err.message}` : String(err)
+  return /ENOSPC|no space|not enough space|disk is full/i.test(text)
+}
+
 /**
  * Serialize the current project + its media into one file. With the File
  * System picker it streams to disk, otherwise it downloads.
+ *
+ * `onProgress` hears the share written, 0 to 1, on the desktop, where the copy
+ * carries all his footage and takes a while (mc night is about 2.8 GB).
  */
-export async function exportProjectToFile(): Promise<void> {
+export async function exportProjectToFile(onProgress?: (frac: number) => void): Promise<void> {
   const show = useToasts.getState().show
+  let need = 0
   try {
     const built = await buildProjectFile()
     const file = built.file
@@ -382,21 +470,24 @@ export async function exportProjectToFile(): Promise<void> {
     if (api?.isElectron && api.pickSavePath && api.fileOpenWrite && api.fileWriteChunk && api.fileClose) {
       const target = await api.pickSavePath('project', name.replace(/\.[^.]+$/, ''), PROJECT_FILE_EXT, 'OL Premiere project')
       if (!target) return // he cancelled
-      const id = await api.fileOpenWrite(target)
+      need = file.size
+      // Main checks the drive has room for all of it before a byte is written.
+      const id = await api.fileOpenWrite(target, file.size)
       let ok = false
       try {
-        const reader = file.stream().getReader()
-        for (;;) {
-          const { done, value } = await reader.read()
-          if (done) break
-          // A copy, so the buffer that crosses is exactly this chunk and nothing around it.
-          await api.fileWriteChunk(id, value.slice().buffer)
+        // ⛔ 8 MB SLICES, NOT THE STREAM'S OWN CHUNKS. A stream hands over small
+        // pieces, one awaited trip to main each, thousands of them for one
+        // project with footage in it.
+        for (let off = 0; off < file.size; off += WRITE_SLICE) {
+          await api.fileWriteChunk(id, await file.slice(off, off + WRITE_SLICE).arrayBuffer())
+          onProgress?.(Math.min(1, (off + WRITE_SLICE) / file.size))
         }
         ok = true
       } finally {
         await api.fileClose(id, ok)
       }
       reportBuilt(built, 'Saved project file')
+      await rememberSent(built.sent)
       return
     }
 
@@ -424,9 +515,13 @@ export async function exportProjectToFile(): Promise<void> {
       setTimeout(() => URL.revokeObjectURL(url), 30_000)
     }
     reportBuilt(built, 'Saved project file')
+    await rememberSent(built.sent)
   } catch (err) {
     console.warn('OL Premiere: project export failed', err)
-    show('Could not save the project file', 'danger')
+    // Say WHY when it is the drive: on his 97% full drive that is the likely one.
+    if (isDiskFull(err)) {
+      show(`Not enough space on the drive for this copy${need > 0 ? ` (needs ${sizeWords(need)})` : ''}`, 'danger')
+    } else show('Could not save the project file', 'danger')
   }
 }
 
@@ -483,7 +578,11 @@ export async function importProjectFromFile(file: File): Promise<void> {
       show('That is not an OL Premiere project file', 'danger')
       return
     }
-    const bundle = JSON.parse(await file.text()) as Partial<LegacyProjectFile>
+    const bundle = JSON.parse(await file.text()) as Partial<LegacyProjectFile> & { kind?: unknown }
+    if (bundle.kind === 'ol-premiere-backup' && bundle.project) {
+      await adoptProjectRecord(bundle.project, show)
+      return
+    }
     if (bundle.format !== PROJECT_FILE_FORMAT || !bundle.project) {
       show('That is not an OL Premiere project file', 'danger')
       return
@@ -503,6 +602,115 @@ export async function importProjectFromFile(file: File): Promise<void> {
 }
 
 type Show = ReturnType<typeof useToasts.getState>['show']
+
+/**
+ * The copy an earlier open of this same save already landed, untouched since:
+ * the same project stamps (`createdAt`, `updatedAt`) under another id, starting
+ * from this save. Null when there is none.
+ *
+ * ⛔ ONE COPY PER SAVE, NOT ONE PER OPEN. A file that cannot say where it started
+ * from (every file from before this update) lands beside the project rather than
+ * over it, and opening it again landed another copy each time, with another set
+ * of its footage in the store, on a drive that is 97% full.
+ */
+async function copyAlreadyLanded(incoming: Project): Promise<Project | null> {
+  let rows: Awaited<ReturnType<typeof listProjects>>
+  try {
+    rows = await listProjects()
+  } catch {
+    return null
+  }
+  for (const row of rows) {
+    if (row.id === incoming.id || row.updatedAt !== incoming.updatedAt || row.createdAt !== incoming.createdAt) continue
+    const p = await loadProjectById(row.id)
+    if (p && p.fileBaseUpdatedAt === incoming.updatedAt) return p
+  }
+  return null
+}
+
+/**
+ * Put back, from the file in his hand, every byte of `copy` the store has lost
+ * since the copy landed. The copy holds the file's media under keys of its own
+ * (planProjectCopy), so each one is matched by asset id. Returns how many it put.
+ *
+ * ⛔ THE FILE IN HIS HAND CARRIES THEM. Opening the same file again only switched
+ * to the copy it landed before, and dropped the file's bytes: a copy whose bytes
+ * the store had lost since (a wipe, a sweep) opened with its media missing while
+ * the footage sat in the file he had just opened.
+ */
+async function refillLandedCopy(
+  incoming: Project,
+  copy: Project,
+  writes: readonly { key: string; blob: Blob }[],
+): Promise<number> {
+  const inFile = new Map(writes.map((w) => [w.key, w.blob]))
+  let put = 0
+  for (const [id, asset] of Object.entries(incoming.assets)) {
+    const mine = copy.assets[id]
+    if (!mine) continue
+    const pairs: [string | undefined, string | undefined][] = [
+      [asset.blobKey, mine.blobKey],
+      [asset.thumbnailKey, mine.thumbnailKey],
+    ]
+    for (const [from, to] of pairs) {
+      const blob = from ? inFile.get(from) : undefined
+      if (!blob || !to) continue
+      try {
+        if (await getBlob(to)) continue
+        await putBlob(to, blob)
+        put += 1
+      } catch (err) {
+        // The copy still opens, as it did before; the file is still in his hand.
+        console.warn('OL Premiere: could not put media back into the copy from its file', err)
+      }
+    }
+  }
+  // And on to the disk, the same as any import (adoptImported).
+  if (put > 0) void backfillMirror(copy).catch(() => undefined)
+  return put
+}
+
+/** Every project name in the store, so a copy gets one of its own. Empty when it cannot be read. */
+async function takenNames(): Promise<Set<string>> {
+  try {
+    return new Set((await listProjects()).map((s) => s.name))
+  } catch {
+    return new Set()
+  }
+}
+
+/**
+ * Open one of his own `.olpbak` files: the document only, no footage inside. Its
+ * media are found when it opens, in the store or in the spare copies on disk.
+ *
+ * - Its id is not here (a project he deleted, a file from Trash): it is put back
+ *   as it is, same id and name, the way the Projects folder refills a lost store.
+ * - The same save is already here: that project simply opens.
+ * - A different save of a project he has: it lands beside it as a copy, so
+ *   neither one is written over.
+ */
+async function adoptProjectRecord(raw: unknown, show: Show): Promise<void> {
+  const parsed = parseStoredProject(raw)
+  if (!parsed) {
+    show('That project file is damaged', 'danger')
+    return
+  }
+  if (!(await flushOutgoing())) return
+  const project = migrateProjectAppearance(migrateProjectEffects(migrateProject(parsed)))
+  const existing = await loadProjectById(project.id)
+  if (existing && existing.updatedAt === project.updatedAt) {
+    await switchTo(project.id, { announce: true })
+    return
+  }
+  let landed = project
+  // Unknown names only cost the plain name.
+  if (existing) landed = copyOfProject(project, nextFreeName(project.name, await takenNames()))
+  await saveProject(landed)
+  // Brought back on purpose, so a later wipe may bring it back too.
+  if (!existing) forgetDoNotAutoRecover([landed.id])
+  if ((await switchTo(landed)) !== 'ok') return
+  show(existing ? `Opened "${landed.name}". Your "${existing.name}" was kept.` : `Opened "${landed.name}"`, 'success')
+}
 
 /**
  * Write an imported project's media, then its document, then adopt it.
@@ -526,16 +734,29 @@ async function adoptImported(raw: Project, writes: { key: string; blob: Blob }[]
   // the incoming project fresh keys is the only way to keep both projects' media
   // intact without duplicating gigabytes.
   const existing = await loadProjectById(project.id)
-  if (existing && existing.updatedAt > project.updatedAt) {
+  const newerHere = existing !== null && existing.updatedAt > project.updatedAt
+  if (existing && (newerHere || editedHereSince(existing, project))) {
+    const before = await copyAlreadyLanded(project)
+    if (before) {
+      // Its footage is in the store under the copy's own keys, and any the store
+      // has lost since comes back from this file.
+      await refillLandedCopy(project, before, writes)
+      if ((await switchTo(before.id)) !== 'ok') return
+      show(`Opened "${before.name}", the copy this file made before. Your "${existing.name}" was kept.`, 'success')
+      return
+    }
     // A random suffix, not a clock one. Two imports whose timestamps agreed would
     // mint the SAME "private" keys, and deleting one copy would then empty the
     // other, because blobs are deleted by the keys in the document being removed
     // with no reference counting.
     const plan = planProjectCopy(project, newId(), newId())
-    project = plan.project
+    // A name of its own: a second copy is "GYM (copy)_1", never a second "GYM (copy)".
+    project = { ...plan.project, name: nextFreeName(plan.project.name, await takenNames()) }
     finalWrites = writes.map((w) => ({ key: plan.keyMap[w.key] ?? w.key, blob: w.blob }))
     kept = existing.name
   }
+  // Where this edit now starts from, so sending it back later can be judged.
+  project = { ...project, fileBaseUpdatedAt: project.updatedAt }
 
   // Only bytes this import CREATED may be rolled back. When the file restores in
   // place, it writes under the same keys the stored document already uses, and a
@@ -577,7 +798,11 @@ async function adoptImported(raw: Project, writes: { key: string; blob: Blob }[]
   }
   // Say WHY the name changed, or a copy appearing out of nowhere reads as a bug.
   show(
-    kept ? `Opened "${project.name}". Your newer "${kept}" was kept.` : `Opened "${project.name}"`,
+    kept
+      ? newerHere
+        ? `Opened "${project.name}". Your newer "${kept}" was kept.`
+        : `Opened "${project.name}". Your "${kept}" changed on this device too, so both were kept.`
+      : `Opened "${project.name}"`,
     'success',
   )
 }

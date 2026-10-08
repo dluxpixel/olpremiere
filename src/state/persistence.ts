@@ -4,12 +4,13 @@
 import { openDB, type IDBPDatabase } from 'idb'
 import { diskApi, healStoreFromDisk, trashProjectOnDisk, writeProjectToDisk } from './diskProjects'
 import { commitFocusedField } from '../fieldCommit'
-import { blobKeysOnlyUsedBy } from '../engine/blobGc'
+import { blobKeysOnlyUsedBy, reachableBlobKeys } from '../engine/blobGc'
 import { isBlobHeld } from './exportHolds'
 import { migrateProjectEffects } from '../engine/effects/migrate'
 import { migrateProjectAppearance } from '../engine/anim/appearance'
 import { markDoNotAutoRecover } from './recoveryMemory'
 import { planSequenceSplit } from './sequenceSplit'
+import { holdSpareCopyCleanup, resendSpareCopyHold } from './spareCopyHold'
 import { useToasts } from './toasts'
 import { migrateProject, type Project } from '../engine/types'
 import { parseStoredProject } from '../persistence/schema'
@@ -98,7 +99,12 @@ async function healFromDisk(): Promise<string[]> {
       await d.put('projects', project, project.id)
     },
   )
-  if (names.length > 0) console.log(`OL Premiere: put ${names.length} project(s) back from their files: ${names.join(', ')}`)
+  if (names.length > 0) {
+    console.log(`OL Premiere: put ${names.length} project(s) back from their files: ${names.join(', ')}`)
+    // The store lost them, so it may have lost more than this can see: the spare
+    // copies on disk stand untouched for 30 days (spareCopyHold.ts).
+    holdSpareCopyCleanup('projects came back from their files')
+  }
   return names
 }
 
@@ -348,14 +354,25 @@ export async function setProjectArchived(id: string, archived: boolean): Promise
  * Reading every other project first costs one pass over a store that holds a
  * handful of rows, against silently destroying the footage the app exists to
  * protect.
+ *
+ * `keepBytes` leaves the media where they are, for a delete that can still be
+ * undone (projectActions.ts); `dropUnusedBlobs` lets them go once it cannot.
+ * Resolves to the document that was deleted, or null when there was none.
  */
-export async function deleteProject(id: string): Promise<void> {
+export async function deleteProject(id: string, opts: { keepBytes?: boolean } = {}): Promise<Project | null> {
+  // ⛔ THE FILE GOES TO TRASH FIRST, THEN THE RECORD. The other way round, a
+  // listing landing in between (the Projects dialog, the two minute backup) saw
+  // the file with no record and put the project straight back, after its bytes
+  // were dropped: a project with every file missing. This way round a listing in
+  // between sees the record and does nothing, and a Trash that fails is retried
+  // by his next delete, which is the right way round for a mistake.
+  await trashProjectOnDisk(id)
   const d = await db()
   const p = (await d.get('projects', id)) as Project | undefined
   const others = ((await d.getAll('projects')) as Project[]).filter((o) => o?.id !== id)
   const tx = d.transaction(['projects', 'blobs', 'meta'], 'readwrite')
   void tx.objectStore('projects').delete(id)
-  if (p) {
+  if (p && !opts.keepBytes) {
     const blobs = tx.objectStore('blobs')
     // A key the running export still reads stays: he may delete the very
     // project he is exporting (exportHolds.ts). The next sweep reclaims it.
@@ -370,10 +387,29 @@ export async function deleteProject(id: string): Promise<void> {
   // identical from the outside, and an app that puts back work he binned would
   // be arguing with him rather than protecting him.
   markDoNotAutoRecover([id])
-  // The file goes to Trash rather than being unlinked. If this fails the
-  // project comes back on the next listing and he deletes it again, which is
-  // the right way round for a mistake.
-  await trashProjectOnDisk(id)
+  return p ?? null
+}
+
+/**
+ * Drop the bytes under `keys` that nothing uses any more: no stored project, not
+ * the open edit, not a step of its undo history, not a running export. For a
+ * deleted project whose Undo has run out. Anything still used is kept, so a
+ * project put back, or sharing its media, never loses a byte to this.
+ */
+export async function dropUnusedBlobs(keys: readonly string[]): Promise<number> {
+  if (keys.length === 0) return 0
+  const d = await db()
+  const { project, history } = useStore.getState()
+  const docs: Project[] = [project, ...((await d.getAll('projects')) as Project[])]
+  for (const c of [...history.undo, ...history.redo]) docs.push(c.before, c.after)
+  const used = new Set<string>()
+  for (const doc of docs) if (doc) for (const k of reachableBlobKeys(doc)) used.add(k)
+  const gone = keys.filter((k) => !used.has(k) && !isBlobHeld(k))
+  if (gone.length === 0) return 0
+  const tx = d.transaction('blobs', 'readwrite')
+  for (const k of gone) void tx.store.delete(k)
+  await tx.done
+  return gone.length
 }
 
 /**
@@ -628,6 +664,10 @@ export function initPersistence(): Promise<void> {
     // ignore
   }
 
+  // A spare copy cleanup hold an earlier start could not get written is asked for
+  // again first, and holds this start (spareCopyHold.ts).
+  resendSpareCopyHold()
+
   // The files come back before the store is read, and he is told when they did:
   // a project that is simply there again is the point, but a blank app that
   // silently refilled itself is the kind of quiet that made him stop trusting it.
@@ -643,8 +683,16 @@ export function initPersistence(): Promise<void> {
       const s = useStore.getState()
       // Only hydrate if the user hasn't already started editing.
       if (p && s.history.undo.length === 0) s.setProject(p)
+      // ⛔ NOTHING TO OPEN IS THE WIPE MORNING (or a first ever start, which has no
+      // spare copies to lose). Its first edit saves the blank project, and from
+      // then on the store no longer reads empty, so the cleanup is stood down now,
+      // while it still can be told apart (spareCopyHold.ts).
+      if (!p) holdSpareCopyCleanup('the store had no project to open at start')
     })
-    .catch((err) => console.error('OL Premiere project load failed', err))
+    .catch((err) => {
+      console.error('OL Premiere project load failed', err)
+      holdSpareCopyCleanup('the store could not be read at start')
+    })
 
   // ⛔ CLOSING THE WINDOW WAITS FOR THE SAVE. On the desktop, main holds every
   // close of the editor (his X, and the update restart, which closes the window

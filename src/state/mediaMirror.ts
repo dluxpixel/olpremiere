@@ -19,6 +19,7 @@
 // desktop shell (the web build) simply has no mirror and behaves as before.
 
 import { create } from 'zustand'
+import { notifyBlobArrived } from './blobUrls'
 import { getBlob, putBlob } from './persistence'
 import type { MediaAsset, Project } from '../engine/types'
 
@@ -32,7 +33,6 @@ interface MediaApi {
   mediaFinish(id: string): Promise<number>
   mediaCancel(id: string): Promise<void>
   mediaRead(id: string, offset: number, length: number): Promise<ArrayBuffer | null>
-  mediaDelete(id: string): Promise<void>
 }
 
 /**
@@ -103,10 +103,20 @@ export async function mirroredIds(): Promise<Set<string>> {
  */
 const inFlight = new Map<string, Promise<boolean>>()
 
+/**
+ * ⛔ AND ONE SPARE COPY BEING WRITTEN AT A TIME, ACROSS ALL IDS. An import does
+ * not wait for its spare copy, so dropping a folder of clips started one per file
+ * at once, every one moving 8 MB per round trip through the main process, the
+ * thread that also carries his mouse and keys. His rule: never lag his PC. They
+ * now queue and land one after another; the import still waits for none of them.
+ */
+let lane: Promise<unknown> = Promise.resolve()
+
 export function mirrorAsset(assetId: string, bytes: Blob): Promise<boolean> {
   const running = inFlight.get(assetId)
   if (running) return running
-  const p = writeMirror(assetId, bytes).finally(() => inFlight.delete(assetId))
+  const p = lane.then(() => writeMirror(assetId, bytes)).finally(() => inFlight.delete(assetId))
+  lane = p.catch(() => false)
   inFlight.set(assetId, p)
   return p
 }
@@ -324,29 +334,22 @@ async function healOnce(project: Project, onProgress: HealProgressFn): Promise<H
   // every asset in `lost` with no reason attached anywhere. He opened v2.27 to a
   // banner and no explanation, which is the worst possible way to find out.
   const onDisk = new Map<string, number>()
-  let listing: { dir: string; error?: string; files: { id: string; size: number }[] }
+  let listing: { dir: string; error?: string; files: { id: string; size: number }[] } | null = null
+  let listFailed = ''
   try {
     listing = await api.mediaList()
   } catch (err) {
-    const why = err instanceof Error ? err.message : String(err)
+    listFailed = err instanceof Error ? err.message : String(err)
     console.warn('OL Premiere: could not read the spare media folder', err)
-    return { healed, lost: missing.map((a) => a.name ?? a.id), failure: `could not read the spare copies: ${why}` }
-  }
-  for (const m of listing.files) onDisk.set(m.id, m.size)
-  if (onDisk.size === 0) {
-    // ⛔ NAME THE FOLDER IT LOOKED IN. On 2026-08-23 this said "there are no spare
-    // copies" while 23 files and 7.1 GB sat in the folder I had filled by hand,
-    // and there was no way to tell a wrong path from an unreadable one from an
-    // empty one. A repair that cannot say WHERE it looked cannot be diagnosed
-    // from his side of the screen, and he has lost days to exactly that.
-    const why = listing.error ? `${listing.error} in ${listing.dir}` : `nothing in ${listing.dir}`
-    return { healed, lost: missing.map((a) => a.name ?? a.id), failure: why }
   }
 
   // ⛔ COUNT WHAT IS ACTUALLY GOING TO BE MOVED BEFORE MOVING ANY OF IT. His own
   // repair is 1.38 GB across twenty files, which is the better part of a minute,
   // and the boot card showing a silent row for that long after five days without
   // his editor would read as "still broken".
+  //
+  // ⛔ AND BEFORE SAYING ANYTHING IS LOST. An empty spare copy folder used to put
+  // EVERY asset in `lost`, the ones the store still had included.
   const toHeal: MediaAsset[] = []
   for (const a of missing) {
     // ⛔ ASKED PER ASSET, INSIDE A TRY. A store that has been rebuilt underneath
@@ -361,7 +364,21 @@ async function healOnce(project: Project, onProgress: HealProgressFn): Promise<H
     }
     if (!has) toHeal.push(a)
   }
+  if (toHeal.length === 0) return { healed, lost }
+  const names = toHeal.map((a) => a.name ?? a.id)
+  if (!listing) return { healed, lost: names, failure: `could not read the spare copies: ${listFailed}` }
+  for (const m of listing.files) onDisk.set(m.id, m.size)
+  if (onDisk.size === 0) {
+    // ⛔ NAME THE FOLDER IT LOOKED IN. On 2026-08-23 this said "there are no spare
+    // copies" while 23 files and 7.1 GB sat in the folder I had filled by hand,
+    // and there was no way to tell a wrong path from an unreadable one from an
+    // empty one. A repair that cannot say WHERE it looked cannot be diagnosed
+    // from his side of the screen, and he has lost days to exactly that.
+    const why = listing.error ? `${listing.error} in ${listing.dir}` : `nothing in ${listing.dir}`
+    return { healed, lost: names, failure: why }
+  }
   let done = 0
+  const back: MediaAsset[] = []
 
   for (const a of toHeal) {
     onProgress(done, toHeal.length, a.name ?? a.id)
@@ -372,10 +389,51 @@ async function healOnce(project: Project, onProgress: HealProgressFn): Promise<H
       continue
     }
     // One read and one write per file, shared with an export that wants it now.
-    if (await healAsset(a, size)) healed.push(a.name ?? a.id)
-    else lost.push(a.name ?? a.id)
+    if (await healAsset(a, size)) {
+      healed.push(a.name ?? a.id)
+      back.push(a)
+    } else lost.push(a.name ?? a.id)
   }
+  // Behind the repair, never in front of it: the edit is what he is waiting for.
+  if (back.length > 0) void rebuildMissingThumbnails(back)
   return { healed, lost }
+}
+
+/** A type the browser can open a typeless copy by: the spare copies keep bytes, not types. */
+function typeFor(a: Pick<MediaAsset, 'kind' | 'name'>): string {
+  const ext = (a.name ?? '').toLowerCase().split('.').pop() ?? ''
+  if (a.kind === 'image') return ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : 'image/png'
+  return ext === 'webm' ? 'video/webm' : ext === 'mov' ? 'video/quicktime' : 'video/mp4'
+}
+
+/**
+ * Make the bin picture again for media put back without one.
+ *
+ * ⛔ THE PICTURES WERE NEVER COPIED TO DISK AND NOTHING REMADE THEM, so after a
+ * wipe every card in his bin was a plain icon for good, though the footage came
+ * back. Made from the bytes just put back, the way the import made it, one at a
+ * time. Never throws: a missing picture is a plain icon, never a failed repair.
+ */
+export async function rebuildMissingThumbnails(assets: readonly MediaAsset[]): Promise<number> {
+  let made = 0
+  for (const a of assets) {
+    if (!a?.thumbnailKey || a.kind === 'audio') continue
+    try {
+      if (await getBlob(a.thumbnailKey)) continue
+      const bytes = await getBlob(a.blobKey)
+      if (!bytes) continue
+      const file = new File([bytes], a.name ?? a.id, { type: bytes.type || typeFor(a) })
+      const { probeFile } = await import('../engine/probe')
+      const thumb = (await probeFile(file)).thumbnailBlob
+      if (!thumb) continue
+      await putBlob(a.thumbnailKey, thumb)
+      notifyBlobArrived(a.thumbnailKey)
+      made += 1
+    } catch (err) {
+      console.warn(`OL Premiere: could not make the picture for ${a.name ?? a.id}`, err)
+    }
+  }
+  return made
 }
 
 /**

@@ -53,8 +53,14 @@ export async function checkIntegrity(): Promise<IntegrityReport | null> {
   }
 }
 
-/** The sentence the user sees. Null when everything is fine. */
+/**
+ * The sentence the user sees. Null when everything is fine.
+ *
+ * ⛔ NO "CHECK YOUR BACKUPS". It pointed him at backups the app no longer lets
+ * him open (the Recover tab went at his word, 2026-08-23), so it frightened
+ * without helping. What helps is knowing nothing is gone and what not to do.
+ */
 export function integrityMessage(r: IntegrityReport | null): string | null {
   if (!r || r.empty || !r.orphanedMedia) return null
-  return `Your media is here (${plural(r.blobCount, 'file')}) but no project references it. An edit may have failed to save. Check your backups before making changes.`
+  return `Your media is still here (${plural(r.blobCount, 'file')}), but no project uses it. Nothing was deleted. Do not delete anything yet.`
 }

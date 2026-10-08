@@ -1,7 +1,7 @@
 // The Projects picker: every edit lives side by side. Open another one,
 // start fresh, or delete an old one, without ever nuking current work.
 
-import { Archive, ArchiveRestore, Clapperboard, Clock, Download, FolderOpen, LifeBuoy, Plus, Share, Trash2, Upload, X } from 'lucide-react'
+import { Archive, ArchiveRestore, Clapperboard, Clock, Copy, Download, FolderOpen, LifeBuoy, Plus, Share, Trash2, Upload, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import {
   activeProjects,
@@ -11,7 +11,15 @@ import {
   type ProjectSummary,
 } from '../state/persistence'
 import { listBackups, readBackup, restoreBackup, type BackupContents, type BackupRow } from '../state/backupRestore'
-import { createProject, openProject, removeProject, setArchived, setLater } from '../state/projectActions'
+import {
+  createProject,
+  duplicateProject,
+  openProject,
+  removeProject,
+  setArchived,
+  setLater,
+  useProjectListStamp,
+} from '../state/projectActions'
 import { useStore } from '../state/store'
 import {
   buildProjectFile,
@@ -68,10 +76,21 @@ function CopyToAnotherDevice({ onClose }: { onClose: () => void }) {
   const phone = usePhoneLayout()
   const [packing, setPacking] = useState(false)
   const [ready, setReady] = useState<BuiltProjectFile | null>(null)
+  // How much of the copy is written, 0 to 100, while the PC saves it. Null when idle.
+  const [saved, setSaved] = useState<number | null>(null)
 
   const send = async () => {
     if (!phone) {
-      await exportProjectToFile()
+      // ⛔ BUSY WHILE IT WRITES. The copy carries all his footage, and with
+      // nothing on screen the button could be pressed again half way.
+      setPacking(true)
+      setSaved(0)
+      try {
+        await exportProjectToFile((frac) => setSaved(Math.round(frac * 100)))
+      } finally {
+        setPacking(false)
+        setSaved(null)
+      }
       return
     }
     setPacking(true)
@@ -89,8 +108,10 @@ function CopyToAnotherDevice({ onClose }: { onClose: () => void }) {
       data-testid="project-copy"
       className="flex shrink-0 flex-wrap items-center gap-2 border-t border-border px-4 py-2.5"
     >
-      <span className="mr-auto min-w-0 text-[11px] text-text-muted">
-        Copy the open project to your {phone ? 'PC' : 'phone'}, footage and all
+      <span className="mr-auto min-w-0 text-[11px] text-text-muted" data-testid="project-copy-status">
+        {saved !== null && saved > 0
+          ? `Saving the copy, ${saved}%`
+          : `Copy the open project to your ${phone ? 'PC' : 'phone'}, footage and all`}
       </span>
       {ready ? (
         <Button
@@ -160,7 +181,9 @@ export function ProjectsDialog({ onClose, view = 'active' }: { onClose: () => vo
       })
       .catch((err) => console.error('OL Premiere: projects list failed', err))
   }
-  useEffect(refresh, [])
+  // Read again when a deleted project comes back by Undo, so its row returns.
+  const stamp = useProjectListStamp((s) => s.stamp)
+  useEffect(refresh, [stamp])
 
   // The row goes the moment he confirms, not when storage has answered, so a slow
   // delete never leaves a row that looks untouched for him to click a third time.
@@ -343,6 +366,18 @@ export function ProjectsDialog({ onClose, view = 'active' }: { onClose: () => vo
                       Open
                     </Button>
                   )}
+                  <button
+                    type="button"
+                    data-testid="project-duplicate"
+                    aria-label={`Make a copy of ${p.name}`}
+                    title="Make a copy to start a new video from it"
+                    onClick={() => {
+                      void duplicateProject(p.id).then((opened) => (opened ? onClose() : refresh()))
+                    }}
+                    className="rounded-field p-1.5 text-text-muted opacity-0 transition-colors duration-[120ms] hover:text-text-primary group-hover/proj:opacity-100"
+                  >
+                    <Copy size={14} strokeWidth={1.5} />
+                  </button>
                   {tab !== 'archived' && (
                     <button
                       type="button"

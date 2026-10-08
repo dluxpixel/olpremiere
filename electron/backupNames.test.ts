@@ -33,6 +33,14 @@ vi.mock('node:fs/promises', () => ({
     disk.files.delete(p)
     return Promise.resolve()
   },
+  // A backup is written beside its name and renamed over (durableWrite.ts).
+  rename: (from: string, to: string) => {
+    const data = disk.files.get(from)
+    if (data === undefined) return Promise.reject(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }))
+    disk.files.delete(from)
+    disk.files.set(to, data)
+    return Promise.resolve()
+  },
 }))
 
 const { writeBackup } = await import('./backups')

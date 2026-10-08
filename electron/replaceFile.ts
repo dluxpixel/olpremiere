@@ -4,7 +4,9 @@
 // Written beside, then renamed over, for the reason writeProjectFile gives: a
 // write cut off half way must never leave half a file where the only copy was.
 // Flushed before the rename, the way the media writer is (mediaStore.ts): on
-// NTFS the rename can reach the disk before the bytes do.
+// NTFS the rename can reach the disk before the bytes do. The flush and the
+// rename are durableWrite.ts's one implementation; this adds the folder and the
+// queue on top of it.
 //
 // ⛔ ONE AT A TIME PER FILE. Every write of a file used the same `.tmp` beside
 // it, and nothing in main put the writes in order, so two that overlapped (a
@@ -12,28 +14,17 @@
 // temp file together. The second rename then found it gone, and in the narrow
 // case where one write truncated it under the other, the file was left as one
 // JSON with the tail of another, which no reader can parse. Now each write waits
-// for the one before it, so the last one asked for is the one on disk.
+// for the one before it (durableWrite.inTurn, keyed on the file), so the last
+// one asked for is the one on disk. A write that failed has already said so to
+// its own caller; the next one still goes.
 
-import { mkdir, rename, writeFile } from 'node:fs/promises'
+import { mkdir } from 'node:fs/promises'
 import path from 'node:path'
-
-/** The last write asked for, per file. Settles once it is down or has failed. */
-const queues = new Map<string, Promise<void>>()
+import { inTurn, replaceFile as writeBesideAndRename } from './durableWrite'
 
 export function replaceFile(target: string, text: string): Promise<void> {
-  const write = async (): Promise<void> => {
+  return inTurn(target, async () => {
     await mkdir(path.dirname(target), { recursive: true })
-    const tmp = `${target}.tmp`
-    await writeFile(tmp, text, { encoding: 'utf8', flush: true })
-    await rename(tmp, target)
-  }
-  // A write that failed has already said so to its own caller; the next one
-  // still goes.
-  const mine = (queues.get(target) ?? Promise.resolve()).then(write)
-  const settled = mine.catch(() => undefined)
-  queues.set(target, settled)
-  void settled.then(() => {
-    if (queues.get(target) === settled) queues.delete(target)
+    await writeBesideAndRename(target, text)
   })
-  return mine
 }

@@ -16,6 +16,15 @@ vi.mock('./persistence', () => ({
   },
 }))
 
+/** What the bin picture maker was handed, by file name. */
+const probed: { name: string; type: string }[] = []
+vi.mock('../engine/probe', () => ({
+  probeFile: async (f: File) => {
+    probed.push({ name: f.name, type: f.type })
+    return { thumbnailBlob: new Blob(['picture of ' + f.name], { type: 'image/jpeg' }) }
+  },
+}))
+
 const { backfillMirror, healProjectMedia, isHealing, mirrorAsset, mirrorApi, readMirrored, useMediaHeal } = await import(
   './mediaMirror'
 )
@@ -56,10 +65,6 @@ function fakeShell(opts: { failWrite?: boolean; failRead?: boolean } = {}) {
       const b = disk.get(id)
       if (!b) return Promise.resolve(null)
       return Promise.resolve(b.slice(off, off + len).buffer)
-    },
-    mediaDelete: (id: string) => {
-      disk.delete(id)
-      return Promise.resolve()
     },
   }
 }
@@ -111,6 +116,55 @@ describe('keeping the second copy', () => {
     fakeShell()
     expect(await mirrorAsset('vid', new Blob([]))).toBe(false)
     expect(calls.begins).toEqual([])
+  })
+})
+
+describe('⛔ one spare copy written at a time, never one per file at once', () => {
+  it('six imports at once never overlap on the disk, and all six land', async () => {
+    fakeShell()
+    const api = (globalThis as { api?: Record<string, (...a: never[]) => Promise<unknown>> }).api!
+    const { mediaBegin, mediaChunk, mediaFinish } = api as unknown as {
+      mediaBegin: (id: string) => Promise<boolean>
+      mediaChunk: (id: string, b: ArrayBuffer) => Promise<void>
+      mediaFinish: (id: string) => Promise<number>
+    }
+    let open = 0
+    let most = 0
+    Object.assign(api, {
+      mediaBegin: (id: string) => {
+        open++
+        most = Math.max(most, open)
+        return mediaBegin(id)
+      },
+      // A real disk takes a while per slice, which is when the others pile up.
+      mediaChunk: async (id: string, b: ArrayBuffer) => {
+        await new Promise((r) => setTimeout(r, 2))
+        return mediaChunk(id, b)
+      },
+      mediaFinish: (id: string) => {
+        open--
+        return mediaFinish(id)
+      },
+    })
+    const ids = ['a', 'b', 'c', 'd', 'e', 'f']
+    const landed = await Promise.all(ids.map((id) => mirrorAsset(id, new Blob([new Uint8Array(10).fill(1)]))))
+    expect(landed).toEqual(ids.map(() => true))
+    expect(most).toBe(1)
+    expect([...disk.keys()].sort()).toEqual(ids)
+    expect(ids.map((id) => disk.get(id)?.length)).toEqual(ids.map(() => 10))
+  })
+
+  it('a copy that fails does not stop the ones queued behind it', async () => {
+    fakeShell()
+    const api = (globalThis as { api?: Record<string, unknown> }).api!
+    const begin = api.mediaBegin as (id: string) => Promise<boolean>
+    api.mediaBegin = (id: string) => (id === 'bad' ? Promise.reject(new Error('no disk')) : begin(id))
+    const [bad, good] = await Promise.all([
+      mirrorAsset('bad', new Blob(['x'])),
+      mirrorAsset('good', new Blob(['y'])),
+    ])
+    expect(bad).toBe(false)
+    expect(good).toBe(true)
   })
 })
 
@@ -189,6 +243,32 @@ describe('putting his edit back on launch', () => {
     expect(r.healed).toEqual([])
     expect(r.failure).toContain('EPERM')
     expect(r.lost.sort()).toEqual(['clip.mp4', 'voice.webm'])
+  })
+
+  // ⛔ An empty spare copy folder used to put EVERY asset in `lost`, the ones the
+  // store still had included, so the banner named files that were fine.
+  it('with no spare copies, names as lost only what the store lost too', async () => {
+    fakeShell()
+    blobs.set('asset/a', new Blob(['x']))
+    const r = await healProjectMedia(p)
+    expect(r.lost).toEqual(['voice.webm'])
+  })
+
+  it('with no spare copies and a healthy store, nothing is lost and nothing is said', async () => {
+    fakeShell()
+    blobs.set('asset/a', new Blob(['x']))
+    blobs.set('asset/b', new Blob(['x']))
+    expect(await healProjectMedia(p)).toEqual({ healed: [], lost: [] })
+  })
+
+  it('a folder that cannot be read names only what the store lost', async () => {
+    fakeShell()
+    ;(globalThis as { api?: { mediaList: () => Promise<never> } }).api!.mediaList = () =>
+      Promise.reject(new Error('EPERM'))
+    blobs.set('asset/b', new Blob(['x']))
+    const r = await healProjectMedia(p)
+    expect(r.lost).toEqual(['clip.mp4'])
+    expect(r.failure).toContain('EPERM')
   })
 
   it('says so plainly when there are no spare copies yet, rather than nothing', async () => {
@@ -273,5 +353,37 @@ describe('the put-back says what it is doing, and runs once however many ask', (
     expect(isHealing('mc')).toBe(false)
     // And when it is done the bytes are in the store for the export to read.
     expect(blobs.get('asset/a')?.size).toBe(30)
+  })
+})
+
+// ⛔ The bin pictures were never copied to disk and nothing remade them, so after
+// a wipe every card in his bin stayed a plain icon for good.
+describe('the bin pictures come back with the media', () => {
+  const withThumb = (id: string, name: string, kind = 'video') => ({ ...asset(id, name), kind, thumbnailKey: `thumb/${id}` })
+
+  beforeEach(() => {
+    probed.length = 0
+  })
+
+  it('a heal where the picture is gone too makes it again from the bytes put back', async () => {
+    fakeShell()
+    disk.set('a', new Uint8Array(32).fill(3))
+    await healProjectMedia(project({ a: withThumb('a', 'clip.mov') }))
+    await vi.waitFor(() => expect(blobs.get('thumb/a')).toBeInstanceOf(Blob))
+    // The spare copy keeps bytes, not a type, so the maker is told what it is.
+    expect(probed).toEqual([{ name: 'clip.mov', type: 'video/quicktime' }])
+  })
+
+  it('a picture still in the store is left alone, and sound has none to make', async () => {
+    fakeShell()
+    disk.set('a', new Uint8Array(32).fill(3))
+    disk.set('s', new Uint8Array(32).fill(4))
+    const kept = new Blob(['his own picture'])
+    blobs.set('thumb/a', kept)
+    await healProjectMedia(project({ a: withThumb('a', 'clip.mp4'), s: withThumb('s', 'song.mp3', 'audio') }))
+    await new Promise((r) => setTimeout(r, 20))
+    expect(blobs.get('thumb/a')).toBe(kept)
+    expect(blobs.has('thumb/s')).toBe(false)
+    expect(probed).toEqual([])
   })
 })

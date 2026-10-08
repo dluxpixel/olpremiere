@@ -15,8 +15,9 @@ vi.mock('electron', () => ({
   },
 }))
 
-const { beginMedia, chunkMedia, cancelMedia, deleteMedia, finishMedia, listMedia, mediaDir, mediaWriteDir, readMedia, sweepMediaTemps } =
-  await import('./mediaStore')
+const mediaStore = await import('./mediaStore')
+const { beginMedia, chunkMedia, cancelMedia, finishMedia, listMedia, mediaDir, mediaWriteDir, readMedia, sweepMediaTemps } =
+  mediaStore
 
 const bytes = (n: number, fill: number): ArrayBuffer => new Uint8Array(n).fill(fill).buffer
 
@@ -69,12 +70,47 @@ describe('keeping a copy', () => {
     expect((await listMedia()).files).toEqual([{ id: 'abc', size: 4 }])
   })
 
-  it('forgets one for good when he deletes the media', async () => {
-    await beginMedia('abc')
-    await chunkMedia('abc', bytes(4, 1))
-    await finishMedia('abc')
-    await deleteMedia('abc')
-    expect((await listMedia()).files).toEqual([])
+})
+
+// ⛔ NOTHING THE PAGE CAN CALL DELETES A SPARE COPY. `media:delete` removed the
+// copy from every folder this module reads, his real one included, whichever
+// profile asked: a throwaway or lab profile that opened one of his `.olpbak`
+// files reads his media through those same fallbacks, and one call with one of
+// his asset ids took his copy. Only the 7 day cleanup deletes, in this profile's
+// own folder alone (mediaSweep.ts).
+describe('⛔ nothing the page can call deletes a spare copy', () => {
+  const source = (file: string): Promise<string> => readFile(new URL(file, import.meta.url), 'utf8')
+
+  it('main answers no media delete, and the page is handed none', async () => {
+    const main = await source('./main.ts')
+    const channels = [...main.matchAll(/ipcMain\.handle\('(media:[^']+)'/g)].map((m) => m[1])
+    expect(channels.sort()).toEqual(
+      ['media:begin', 'media:cancel', 'media:chunk', 'media:finish', 'media:list', 'media:read', 'media:sweepHold', 'media:sweepUnused'].sort(),
+    )
+    expect(await source('./preload.ts')).not.toMatch(/mediaDelete|media:delete/)
+    expect(await source('./ipc-types.ts')).not.toMatch(/mediaDelete/)
+  })
+
+  it('and this module has no delete that reaches into the folders it only reads', async () => {
+    expect(Object.keys(mediaStore)).not.toContain('deleteMedia')
+    // His copy, in the older profile folder this module reads as a fallback.
+    appData = await mkdtemp(join(tmpdir(), 'olp-appdata-'))
+    const his = join(appData, 'OL Premiere', 'media')
+    await mkdir(his, { recursive: true })
+    await writeFile(join(his, 'abc'), new Uint8Array([7, 7, 7, 7]))
+    try {
+      // Every call the page has that names an asset, with his asset's id.
+      await beginMedia('abc')
+      await chunkMedia('abc', bytes(4, 1))
+      await cancelMedia('abc')
+      await expect(finishMedia('abc')).rejects.toThrow()
+      await readMedia('abc', 0, 4)
+      await listMedia()
+      await sweepMediaTemps()
+      expect([...(await readFile(join(his, 'abc')))]).toEqual([7, 7, 7, 7])
+    } finally {
+      await rm(appData, { recursive: true, force: true })
+    }
   })
 })
 
@@ -85,7 +121,6 @@ describe('it cannot be talked into writing somewhere else', () => {
     it(`refuses ${JSON.stringify(bad)}`, async () => {
       expect(await beginMedia(bad)).toBe(false)
       expect(await readMedia(bad, 0, 4)).toBeNull()
-      await deleteMedia(bad)
     })
   }
 

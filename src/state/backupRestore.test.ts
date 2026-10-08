@@ -52,6 +52,9 @@ vi.mock('./projectActions', () => ({
 vi.mock('./toasts', () => ({
   useToasts: { getState: () => ({ show: (text: string, kind = 'info') => void toasts.push({ text, kind }) }) },
 }))
+/** Every time the 7 day spare copy cleanup was stood down. */
+const holds = vi.hoisted(() => [] as string[])
+vi.mock('./spareCopyHold', () => ({ holdSpareCopyCleanup: (why: string) => void holds.push(why) }))
 
 /** Backups keyed by path, for the tests that need more than one file on disk. */
 let backupFiles: Record<string, string> = {}
@@ -99,6 +102,7 @@ beforeEach(() => {
   saved.length = 0
   opened.length = 0
   toasts.length = 0
+  holds.length = 0
   liveBlobKeys = new Set(['blob-1'])
   backupText = backupOf(projectFixture())
   backupFiles = {}
@@ -207,6 +211,22 @@ describe('the app never opens empty while his backups exist', () => {
     expect(got).toEqual({ name: 'Pear', clipCount: 1, assetCount: 1, projectCount: 1 })
     expect(saved).toHaveLength(1)
     expect(saved[0].name).toBe('Pear (recovered)')
+  })
+
+  // ⛔ A store that needed the backups may have lost more than they hold: the
+  // spare copies on disk can be the last trace of the rest, so the 7 day cleanup
+  // must stand down that morning, not run at minute 3.
+  it('a recovery that lands something stands the spare copy cleanup down', async () => {
+    backupFiles = { 'C:/b/new.olpbak': backupOf(projectFixture({ name: 'Pear' })) }
+    backupRows = rows('C:/b/new.olpbak')
+    expect(await recoverFromWipe(emptyStore)).not.toBeNull()
+    expect(holds).toEqual(['a project came back from the backups'])
+  })
+
+  it('a start with nothing to recover holds nothing', async () => {
+    backupRows = []
+    expect(await recoverFromWipe(emptyStore)).toBeNull()
+    expect(holds).toEqual([])
   })
 
   /** Two clips on one track, so this project is plainly the bigger of the two. */

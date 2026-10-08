@@ -166,14 +166,20 @@ export interface AppState {
  * disk, and the project he had just parked was back under Working on. Measured
  * 2026-10-01 in his GYM: laterAt set, Ctrl+Z, laterAt gone from the store and
  * from GYM_9eb042e8.olpbak.
+ *
+ * The save last sent to or opened from a file (`fileBaseUpdatedAt`) is the same
+ * kind of fact, stamped the same way (projectFile.ts rememberSent): an undo after
+ * sending GYM must not forget which save the phone has.
  */
+const NOT_EDITS = ['laterAt', 'archivedAt', 'fileBaseUpdatedAt'] as const
+
 function withLiveMeta(live: Project, restored: Project): Project {
   // ⛔ AND THE "LAST CHANGED" TIME IS NOW. The snapshot carries the time of the
   // edit it was taken at, so three undos stamped the project as last changed
   // before one he only looked at yesterday, and Projects listed it below that.
   // An undo is a change he made now.
   const next: Project = { ...restored, updatedAt: Date.now() }
-  for (const field of ['laterAt', 'archivedAt'] as const) {
+  for (const field of NOT_EDITS) {
     if (live[field] === undefined) delete next[field]
     else next[field] = live[field]
   }

@@ -2,7 +2,7 @@
 // written, so "after a restart" is a real question: wipe the in-memory Library,
 // load it again from the stores, and look.
 
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { activeSequence, audioTracks, newProject, type MediaAsset } from '../engine/types'
 
 const hoisted = vi.hoisted(() => {
@@ -62,10 +62,13 @@ import {
   addLibraryItemToTimeline,
   createLibraryCategory,
   deleteLibraryCategory,
+  LIBRARY_UNDO_MS,
   loadLibrary,
   moveLibraryItems,
   promptNewLibraryCategory,
   promptRenameLibraryCategory,
+  removeLibraryItem,
+  removePreset,
   renameLibraryCategory,
   saveAssetToLibrary,
   saveAssetToNewCategory,
@@ -442,5 +445,107 @@ describe('using a Library item', () => {
     await addLibraryItemToProject('a')
     expect(Object.keys(useStore.getState().project.assets)).toHaveLength(2)
     expect(clipsOnA1()).toHaveLength(0)
+  })
+})
+
+describe('⛔ a Library remove can be taken back', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+  const undoOf = (message: string) => hoisted.toasts.find((t) => t.message === message)?.action
+
+  it('Undo puts the item back with its bytes and its category', async () => {
+    seedOldLibrary([oldItem('a', 'meow.wav', { categoryId: 'bc' })])
+    await restart()
+    await removeLibraryItem('a')
+    expect(lib().items).toEqual([])
+    expect(stored('a')).toBeUndefined()
+
+    undoOf('Removed meow.wav from Library')!.onClick()
+    await vi.advanceTimersByTimeAsync(LIBRARY_UNDO_MS + 2000)
+
+    expect(lib().items.map((i) => [i.id, i.categoryId])).toEqual([['a', 'bc']])
+    expect(stored('a')?.name).toBe('meow.wav')
+    expect(hoisted.store('blobs').get('lib/a')).toBeInstanceOf(Blob)
+  })
+
+  it('without Undo, its bytes go once the toast is gone, and not before', async () => {
+    seedOldLibrary([oldItem('a', 'meow.wav')])
+    await restart()
+    await removeLibraryItem('a')
+    await vi.advanceTimersByTimeAsync(LIBRARY_UNDO_MS - 1)
+    expect(hoisted.store('blobs').get('lib/a')).toBeInstanceOf(Blob)
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(hoisted.store('blobs').has('lib/a')).toBe(false)
+  })
+
+  it('Remove preset has Undo too', async () => {
+    hoisted.store('presets').set('p1', { id: 'p1', name: 'Warm', effects: [], createdAt: 5 })
+    await restart()
+    await removePreset('p1')
+    expect(lib().presets).toEqual([])
+
+    undoOf('Removed preset "Warm"')!.onClick()
+    await vi.advanceTimersByTimeAsync(10)
+
+    expect(lib().presets.map((p) => p.id)).toEqual(['p1'])
+    expect(hoisted.store('presets').get('p1')).toBeTruthy()
+  })
+})
+
+describe('⛔ a Library item and the spare copies on disk', () => {
+  const clipsOnA1 = () => audioTracks(activeSequence(useStore.getState().project))[0].clips
+  /** The desktop shell's spare copy folder. */
+  let disk: Map<string, Uint8Array>
+  let begins: string[]
+  beforeEach(() => {
+    disk = new Map()
+    begins = []
+    ;(globalThis as { api?: unknown }).api = {
+      mediaList: async () => ({ dir: 'C:/fake', files: [...disk].map(([id, b]) => ({ id, size: b.length })) }),
+      mediaBegin: async (id: string) => {
+        begins.push(id)
+        disk.set(id, new Uint8Array(0))
+        return true
+      },
+      mediaChunk: async (id: string, bytes: ArrayBuffer) => {
+        const prev = disk.get(id)!
+        const next = new Uint8Array(prev.length + bytes.byteLength)
+        next.set(prev)
+        next.set(new Uint8Array(bytes), prev.length)
+        disk.set(id, next)
+      },
+      mediaFinish: async (id: string) => disk.get(id)!.length,
+      mediaCancel: async (id: string) => void disk.delete(id),
+      mediaRead: async (id: string, off: number, len: number) => disk.get(id)?.slice(off, off + len).buffer ?? null,
+    }
+  })
+  afterEach(() => {
+    delete (globalThis as { api?: unknown }).api
+  })
+
+  it('putting it on the timeline starts a spare copy of the new media at once', async () => {
+    seedOldLibrary([oldItem('a', 'meow.wav')])
+    await restart()
+    await addLibraryItemToTimeline('a')
+    const [asset] = Object.values(useStore.getState().project.assets)
+    await vi.waitFor(() => expect(disk.get(asset!.id)?.length).toBeGreaterThan(0))
+    expect(begins).toContain(asset!.id)
+  })
+
+  it('a Library item the store lost but the disk still has goes on the timeline, and back in the store', async () => {
+    const item = oldItem('a', 'meow.wav')
+    hoisted.store('library').set(item.id, structuredClone(item))
+    disk.set('lib-a', new Uint8Array([1, 2, 3, 4]))
+    await restart()
+
+    await addLibraryItemToTimeline('a')
+
+    expect(clipsOnA1()).toHaveLength(1)
+    expect(lastToast()).not.toMatch(/missing/)
+    expect((hoisted.store('blobs').get('lib/a') as Blob | undefined)?.size).toBe(4)
   })
 })

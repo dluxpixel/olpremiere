@@ -6,12 +6,23 @@
 // dialog's Open adds a tab, or focuses the one already open, and the edit he
 // leaves stays in the strip, saved and asleep.
 
-import { activeSequence, newProject } from '../engine/types'
+import { create } from 'zustand'
+import { reachableBlobKeys } from '../engine/blobGc'
+import { activeSequence, newId, newProject, type Project } from '../engine/types'
 import { nextFreeName } from '../engine/uniqueName'
 import { sampleFromClips } from '../engine/captions/styleLearning'
 import { rememberProjectStyle } from '../engine/captions/styleStore'
 import { flushOutgoing, forgetTab, guardRoom, neighbourTabs, switchTo } from './editTabs'
-import { deleteProject, listProjects, loadProjectById, saveProject, setProjectArchived, setProjectLater } from './persistence'
+import {
+  deleteProject,
+  dropUnusedBlobs,
+  listProjects,
+  loadProjectById,
+  saveProject,
+  setProjectArchived,
+  setProjectLater,
+} from './persistence'
+import { forgetDoNotAutoRecover } from './recoveryMemory'
 import { useStore } from './store'
 import { useToasts } from './toasts'
 import { applyTemplateTracks } from './trackTemplate'
@@ -47,6 +58,83 @@ export async function createProject(): Promise<void> {
 }
 
 /**
+ * `source` as a brand new project called `name`: its own id, fresh sequence ids,
+ * and the SAME media (asset ids and byte keys), so no footage is copied.
+ *
+ * Sharing the bytes is safe and already happens: a recovered project shares its
+ * media the same way, a delete keeps every key another project still uses
+ * (`blobKeysOnlyUsedBy`), the sweep keeps the union of every project, and the
+ * spare copies on disk are by asset id. Fresh sequence ids for the reason
+ * `landRestored` gives: two projects must never share one.
+ */
+export function copyOfProject(source: Project, name: string, now = Date.now()): Project {
+  const sequenceIdMap = new Map<string, string>()
+  const sequences: Project['sequences'] = {}
+  for (const [oldId, sq] of Object.entries(source.sequences)) {
+    const freshId = newId()
+    sequenceIdMap.set(oldId, freshId)
+    sequences[freshId] = { ...sq, id: freshId }
+  }
+  const copy: Project = {
+    ...source,
+    id: newId(),
+    name,
+    sequences,
+    activeSequenceId:
+      sequenceIdMap.get(source.activeSequenceId) ?? Object.keys(sequences)[0] ?? source.activeSequenceId,
+    createdAt: now,
+    updatedAt: now,
+  }
+  // A new video is work he is on now, whatever shelf the old one sat on.
+  delete copy.archivedAt
+  delete copy.laterAt
+  return copy
+}
+
+/**
+ * MAKE A COPY to start a new video from an old one, and open it in a tab.
+ *
+ * His Projects folder holds "BC template 1" to "BC template 5", full edits he
+ * reuses (his words, 2026-10-01: *"when I use a template for an old video and
+ * then I make new stuff in the video"*). With no copy he edited the old video in
+ * place, so the old edit was gone. The copy is named the _1 _2 way he asked for
+ * (engine/uniqueName.ts). Resolves true when the copy is the open edit.
+ */
+export async function duplicateProject(id: string): Promise<boolean> {
+  const show = useToasts.getState().show
+  const live = useStore.getState().project
+  // The open one is copied as it is on screen: the store copy can be a second behind.
+  const source = id === live.id ? live : await loadProjectById(id)
+  if (!source) {
+    show('That project could not be read, so no copy was made', 'danger')
+    return false
+  }
+  let taken = new Set<string>()
+  try {
+    taken = new Set((await listProjects()).map((s) => s.name))
+  } catch {
+    // Unknown names only cost the plain name, never the copy.
+  }
+  // The open edit's name as it is now: a rename can be a second ahead of the list.
+  taken.add(live.name)
+  const copy = copyOfProject(source, nextFreeName(source.name, taken))
+  try {
+    // Saved BEFORE the switch, so the copy exists even when the switch says no.
+    await saveProject(copy)
+  } catch (err) {
+    console.error('OL Premiere: the copy could not be saved', err)
+    show('Could not make the copy. Nothing was changed', 'danger')
+    return false
+  }
+  if ((await switchTo(copy)) !== 'ok') {
+    show(`Made a copy: ${copy.name}. It is in your projects`, 'info')
+    return false
+  }
+  show(`Made a copy: ${copy.name}`, 'success')
+  return true
+}
+
+/**
  * Delete a project and its media bytes, INCLUDING the one that is open.
  *
  * His ask, 2026-08-14: the archive, later and delete buttons should be there on
@@ -61,10 +149,7 @@ export async function createProject(): Promise<void> {
  */
 export async function removeProject(id: string): Promise<void> {
   if (id !== useStore.getState().project.id) {
-    await deleteProject(id)
-    // A deleted project asleep in a tab leaves the strip with it.
-    forgetTab(id)
-    useToasts.getState().show('Project deleted')
+    await deleteWithUndo(id, false)
     return
   }
   if (!guardRoom()) return
@@ -84,9 +169,68 @@ export async function removeProject(id: string): Promise<void> {
     // pull the file out from under the editor still showing it.
     return
   }
-  await deleteProject(id)
+  await deleteWithUndo(id, true)
+}
+
+/** How long "Project deleted" offers its Undo, and so how long the media wait for it. */
+export const UNDO_DELETE_MS = 10_000
+
+/**
+ * Bumped when a project comes back by Undo, so a Projects list on screen reads
+ * itself again: the toast sits above the dialog, and the row must reappear.
+ */
+export const useProjectListStamp = create<{ stamp: number }>(() => ({ stamp: 0 }))
+
+/**
+ * ⛔ A DELETE HE CAN TAKE BACK. Two quick clicks delete a project, and before this
+ * nothing in the app could reach it again, though the file sat in Trash and the
+ * footage in the spare copies (ten of his projects are in Trash today). The
+ * document is kept in hand and the media stay in the store while the toast offers
+ * Undo; after that the media go, unless something uses them again. A close in
+ * that window leaves them for the next start's sweep, which reclaims them.
+ */
+async function deleteWithUndo(id: string, wasOpen: boolean): Promise<void> {
+  const gone = await deleteProject(id, { keepBytes: true })
+  // A deleted project asleep in a tab leaves the strip with it.
   forgetTab(id)
-  useToasts.getState().show('Project deleted')
+  if (!gone) {
+    useToasts.getState().show('Project deleted')
+    return
+  }
+  const keys = [...reachableBlobKeys(gone)]
+  let undone = false
+  const letGo = setTimeout(() => {
+    void dropUnusedBlobs(keys).catch((err) => console.warn('OL Premiere: could not free a deleted project', err))
+  }, UNDO_DELETE_MS + 1000)
+  useToasts.getState().show(
+    'Project deleted',
+    'info',
+    {
+      label: 'Undo',
+      onClick: () => {
+        if (undone) return
+        undone = true
+        clearTimeout(letGo)
+        void putBack(gone, wasOpen)
+      },
+    },
+    { durationMs: UNDO_DELETE_MS },
+  )
+}
+
+/** Undo a delete: the same document, same id, same media, back in the list (and open, if it was). */
+async function putBack(p: Project, reopen: boolean): Promise<void> {
+  try {
+    await saveProject(p)
+  } catch (err) {
+    console.error('OL Premiere: could not put the project back', err)
+    useToasts.getState().show('Could not put the project back', 'danger')
+    return
+  }
+  forgetDoNotAutoRecover([p.id])
+  useProjectListStamp.setState((s) => ({ stamp: s.stamp + 1 }))
+  if (reopen) await openProject(p.id)
+  else useToasts.getState().show(`${p.name} is back`, 'success')
 }
 
 /**

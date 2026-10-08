@@ -34,7 +34,9 @@ const api: OlApi = {
   mediaFinish: (id: string) => ipcRenderer.invoke('media:finish', id),
   mediaCancel: (id: string) => ipcRenderer.invoke('media:cancel', id),
   mediaRead: (id: string, offset: number, length: number) => ipcRenderer.invoke('media:read', id, offset, length),
-  mediaDelete: (id: string) => ipcRenderer.invoke('media:delete', id),
+  mediaSweepUnused: (projectIds: string[], assetIds: string[]) =>
+    ipcRenderer.invoke('media:sweepUnused', projectIds, assetIds),
+  mediaSweepHold: (why: string) => ipcRenderer.invoke('media:sweepHold', why),
   proxyBegin: () => ipcRenderer.invoke('proxy:begin'),
   proxyChunk: (id: string, bytes: ArrayBuffer) => ipcRenderer.invoke('proxy:chunk', id, bytes),
   proxyFinish: (id: string) => ipcRenderer.invoke('proxy:finish', id),
@@ -139,7 +141,7 @@ const api: OlApi = {
   usageReveal: () => ipcRenderer.invoke('usage:reveal'),
   pickSavePath: (kind: 'export' | 'project', base: string, ext: string, filterName: string) =>
     ipcRenderer.invoke('file:pickSave', kind, base, ext, filterName),
-  fileOpenWrite: (target: string) => ipcRenderer.invoke('file:openWrite', target),
+  fileOpenWrite: (target: string, sizeBytes?: number) => ipcRenderer.invoke('file:openWrite', target, sizeBytes),
   fileWriteChunk: (id: number, chunk: ArrayBuffer) => ipcRenderer.invoke('file:writeChunk', id, chunk),
   fileClose: (id: number, ok: boolean) => ipcRenderer.invoke('file:close', id, ok),
   // A pasted picture, cut out by CutStudio. Main makes the request because the

@@ -237,7 +237,21 @@ export interface OlApi {
   mediaFinish(id: string): Promise<number>
   mediaCancel(id: string): Promise<void>
   mediaRead(id: string, offset: number, length: number): Promise<ArrayBuffer | null>
-  mediaDelete(id: string): Promise<void>
+  /**
+   * Let go of spare copies nothing has used for 7 days (electron/mediaSweep.ts).
+   * `projectIds` and `assetIds` are what the store holds; no projects refuses.
+   * `busy` means only "not now": the page tries again later.
+   */
+  mediaSweepUnused(
+    projectIds: string[],
+    assetIds: string[],
+  ): Promise<{ removed: string[]; freedBytes: number; waiting: number; refused?: string; code?: string; busy?: boolean }>
+  /**
+   * Stand the spare copy cleanup down for 30 days: the store lost something this
+   * start. Resolves false when the hold could not be written (it still holds for
+   * the rest of this start).
+   */
+  mediaSweepHold(why: string): Promise<boolean>
   proxyBegin(): Promise<string>
   proxyChunk(id: string, bytes: ArrayBuffer): Promise<void>
   proxyFinish(id: string): Promise<{ size: number } | null>
@@ -419,8 +433,11 @@ export interface OlApi {
    * nothing there has (`_1`, `_2`, never a replace prompt). Null when cancelled.
    */
   pickSavePath(kind: 'export' | 'project', base: string, ext: string, filterName: string): Promise<string | null>
-  /** Open a path he just picked for writing. Any other path is refused. */
-  fileOpenWrite(target: string): Promise<number>
+  /**
+   * Open a path he just picked for writing. Any other path is refused, and so is
+   * a write of `sizeBytes` the drive has no room for (an ENOSPC error).
+   */
+  fileOpenWrite(target: string, sizeBytes?: number): Promise<number>
   fileWriteChunk(id: number, chunk: ArrayBuffer): Promise<void>
   /** `ok` false throws the partial file away instead of keeping it. */
   fileClose(id: number, ok: boolean): Promise<void>
