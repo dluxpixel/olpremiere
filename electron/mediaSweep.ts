@@ -87,7 +87,10 @@ export function holdFile(places: Pick<SweepPlaces, 'profileDir'>): string {
 export interface StoreUse {
   /** Every project in the store, by id. */
   projectIds: readonly string[]
-  /** Every asset id they, the open edit and its undo steps use. */
+  /**
+   * Every asset id they use, and the open edit, every undo step in memory (the
+   * open edit's and each sleeping tab's) and the clip clipboard.
+   */
   assetIds: readonly string[]
 }
 

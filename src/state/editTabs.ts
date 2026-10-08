@@ -403,6 +403,15 @@ export function forgetTab(id: Id): void {
   releaseClosedEdit({ id }, useStore.getState().project)
 }
 
+/**
+ * The undo history every sleeping tab keeps. Waking one and pressing Undo can
+ * bring back a file it removed, so the spare copy cleanup counts every project in
+ * them as in use (spareCopySweep.ts).
+ */
+export function asleepHistories(): History[] {
+  return [...asleep.values()].map((a) => a.history)
+}
+
 // ---------------------------------------------------------------------------
 // Boot
 

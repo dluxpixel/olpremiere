@@ -4,11 +4,15 @@
 // ⛔ HIS CALL, 2026-10-06: *"every 7 days"*. Main decides what goes and keeps
 // everything it cannot prove is unused. This half only has to be COMPLETE: every
 // asset the store's projects use, plus the open edit and every step of its undo
-// history, because an Undo can bring a removed file back. And it never asks on a
-// start that showed a loss (spareCopyHold.ts).
+// history, because an Undo can bring a removed file back; every step of each
+// sleeping tab's undo history, for the same Undo after waking it; and every clip
+// on the clip clipboard, because a paste brings its media back. And it never asks
+// on a start that showed a loss (spareCopyHold.ts).
 
 import type { Project } from '../engine/types'
 import { assetIdsUsedBy as idsUsedBy } from '../../electron/assetIdsUsed'
+import { clipboardAssetIds } from './clipboard'
+import { asleepHistories } from './editTabs'
 import { useExportJob, isExportActive } from './exportJob'
 import { useImportProgress } from './mediaActions'
 import { db } from './persistence'
@@ -65,9 +69,12 @@ export async function sweepSpareCopies(api: SpareSweepApi | null = shellApi()): 
   if (projects.length === 0) return null
   const { project, history } = useStore.getState()
   const docs: Project[] = [project, ...projects]
-  for (const c of [...history.undo, ...history.redo]) docs.push(c.before, c.after)
+  // Every undo history in memory: the open edit's, and each sleeping tab's.
+  for (const h of [history, ...asleepHistories()]) for (const c of [...h.undo, ...h.redo]) docs.push(c.before, c.after)
   const ids = new Set<string>()
   for (const doc of docs) if (doc) for (const id of assetIdsUsedBy(doc)) ids.add(id)
+  // The clip clipboard: a paste brings its media back, into any edit.
+  for (const id of clipboardAssetIds()) ids.add(id)
   // Checked again: an import may have started, or a loss been seen, while the store was read.
   if (spareCopyCleanupHeld()) return null
   if (sweepMustWait()) return 'busy'

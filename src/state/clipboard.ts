@@ -155,6 +155,21 @@ export function hasClipboard(): boolean {
 }
 
 /**
+ * Every asset id on the clip clipboard: the clips' own, and the media records
+ * carried with them. A paste brings each one back, into any edit, so the spare
+ * copy cleanup counts them as in use (spareCopySweep.ts).
+ */
+export function clipboardAssetIds(): Id[] {
+  const ids = new Set<Id>()
+  for (const p of clipboard) ids.add(p.assetId)
+  for (const [key, a] of Object.entries(clipboardAssets)) {
+    ids.add(key)
+    ids.add(a.id)
+  }
+  return [...ids]
+}
+
+/**
  * Paste onto the track he right clicked, at the time he clicked. His words,
  * 2026-09-28: *"it pastes it where I clicked it. It doesn't just paste it
  * randomly."*

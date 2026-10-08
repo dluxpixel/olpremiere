@@ -10,7 +10,22 @@ const state = vi.hoisted(() => ({
   exportStage: null as null | { kind: string },
   held: null as string | null,
 }))
-vi.mock('./persistence', () => ({ db: async () => ({ getAll: async () => state.projects }) }))
+vi.mock('./persistence', () => ({
+  db: async () => ({ getAll: async () => state.projects }),
+  // What switching edit tabs reaches for: every edit is saved already.
+  saveSettled: async () => {},
+  settleAfterLoad: () => {},
+  rememberOpenProject: async () => {},
+  loadProjectById: async (id: string) => state.projects.find((p) => p.id === id) ?? null,
+  listProjects: async () => [],
+}))
+vi.mock('./playbackControl', () => ({ pausePlayback: () => {} }))
+vi.mock('./toasts', () => ({ useToasts: { getState: () => ({ show: () => {} }) } }))
+vi.mock('../collab/collabControl', () => ({ useCollab: { getState: () => ({ session: null }) } }))
+vi.mock('./transcribeActions', () => ({ useTranscribe: { getState: () => ({ status: 'idle' }) } }))
+vi.mock('./voiceRecorder', () => ({
+  useRecorder: { getState: () => ({ recording: false, pendingTake: null, keeping: false }) },
+}))
 vi.mock('./mediaActions', () => ({ useImportProgress: { getState: () => ({ total: state.importing }) } }))
 vi.mock('./exportJob', () => ({
   useExportJob: { getState: () => ({ job: state.exportStage ? { stage: state.exportStage } : null }) },
@@ -19,6 +34,8 @@ vi.mock('./exportJob', () => ({
 vi.mock('./spareCopyHold', () => ({ spareCopyCleanupHeld: () => state.held }))
 
 const { assetIdsUsedBy, sweepSpareCopies } = await import('./spareCopySweep')
+const { switchTo } = await import('./editTabs')
+const { copySelection } = await import('./clipboard')
 const { usage } = await import('./usageLog')
 const { useStore } = await import('./store')
 
@@ -76,6 +93,40 @@ describe('what the page tells main the store uses', () => {
     const { api, calls } = shell()
     await sweepSpareCopies(api)
     expect(calls).toEqual([{ projects: 2, ids: ['a', 'b', 'open', 'removed'] }])
+  })
+
+  it('every undo step of a sleeping edit tab, so waking it and pressing Undo never finds its copy gone', async () => {
+    const left = withAssets('kept')
+    state.projects = [left]
+    useStore.getState().setProject(left)
+    // A file removed from the bin: only that edit's undo history still has it.
+    useStore.getState().dispatch('Import', (p) => ({ ...p, assets: { ...p.assets, removed: asset('removed') } }))
+    useStore.getState().dispatch('Remove', (p) => {
+      const assets = { ...p.assets }
+      delete assets.removed
+      return { ...p, assets }
+    })
+    // He moves to another edit tab: that one sleeps, its history kept for Undo.
+    expect(await switchTo(withAssets('other'))).toBe('ok')
+    const { api, calls } = shell()
+    await sweepSpareCopies(api)
+    expect(calls[0]?.ids).toContain('removed')
+  })
+
+  it('every clip on the clip clipboard, so a paste never brings back a clip whose copy went', async () => {
+    state.projects = [withAssets('a')]
+    const p = withAssets('copied')
+    const seq = p.sequences[p.activeSequenceId]!
+    const clip = newClipFromAsset(asset('copied'), 0)
+    const tracks = seq.tracks.map((t, i) => (i === 0 ? { ...t, clips: [clip] } : t))
+    useStore.getState().setProject({ ...p, sequences: { ...p.sequences, [seq.id]: { ...seq, tracks } } })
+    useStore.getState().setUI({ selection: [clip.id] })
+    expect(copySelection()).toBe(true)
+    // The edit it came from goes, undo history and all: only the clipboard has it.
+    useStore.getState().setProject(withAssets('open'))
+    const { api, calls } = shell()
+    await sweepSpareCopies(api)
+    expect(calls[0]?.ids).toContain('copied')
   })
 
   it('tells main WHICH projects the store holds, so it can check the Projects folder holds them', async () => {
