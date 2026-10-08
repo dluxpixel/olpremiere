@@ -295,9 +295,13 @@ async function run(pcm: Float32Array, language: CaptionLanguage, gpuFailuresTold
       // ⛔ THE FALLBACK SAYS IT IS LOADING (CA-15). Its weights are other files,
       // about 770 MB the first time, and it used to load them in silence under
       // "Listening for words...", with the main thread's listening clock still
-      // running: the download was killed half way and the run failed. The
-      // 'model' phase stops that clock and shows the download, and 'listening'
-      // starts it again once the wasm pipeline is ready.
+      // running: the download was killed half way and the run failed. Each
+      // 'model' report shows the download and starts the main thread's budget
+      // again (transcribe.ts), and 'listening' starts it once more when the
+      // wasm pipeline is ready. It does not stop the clock: only the biggest
+      // file reports, so a smaller file's tail and the session build run on
+      // the listening budget, a minute at the least. The files load side by
+      // side, so the biggest is in practice the last to finish (N-5).
       const { pipeline } = await import('@huggingface/transformers')
       const wasmAsr = (await pipeline('automatic-speech-recognition', model, {
         device: 'wasm',
