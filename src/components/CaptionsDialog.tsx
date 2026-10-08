@@ -14,6 +14,7 @@ import { defaultCaptionStyle } from '../state/captionStyles'
 import { pausePlayback, togglePlay } from '../state/playbackControl'
 import { useStore } from '../state/store'
 import { Button, IconButton } from '../ui/Button'
+import { useDialogFocus } from '../ui/useDialogFocus'
 import { useEscapeToClose } from '../ui/useEscapeToClose'
 
 const PASTE_HINT = `[{"text":"so","startS":0.1,"endS":0.4}, …]   or an .srt`
@@ -88,6 +89,15 @@ export function CaptionsDialog({ onClose, initialMode = 'paste' }: { onClose: ()
   // (the tap handler above intercepts Escape on capture to cancel the run).
   const tappingNow = tapWords !== null
   useEscapeToClose(onClose, !tappingNow)
+  const box = useRef<HTMLDivElement>(null)
+  useDialogFocus(box)
+  // The script box takes the keys, so the Ctrl+V he opened "Paste a transcript" for lands in it.
+  // An effect AFTER useDialogFocus and not autoFocus: that hook has already noted the button that
+  // opened the window, so the focus still goes back to it on close.
+  const field = useRef<HTMLTextAreaElement>(null)
+  useEffect(() => {
+    if (!tappingNow) field.current?.focus({ preventScroll: true })
+  }, [mode, tappingNow])
 
   const applyPaste = () => {
     const words = parseTranscript(text)
@@ -123,6 +133,8 @@ export function CaptionsDialog({ onClose, initialMode = 'paste' }: { onClose: ()
       }}
     >
       <div
+        ref={box}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-label="Captions"
@@ -171,6 +183,7 @@ export function CaptionsDialog({ onClose, initialMode = 'paste' }: { onClose: ()
           ) : (
             <>
               <textarea
+                ref={field}
                 value={text}
                 onChange={(e) => {
                   setText(e.target.value)

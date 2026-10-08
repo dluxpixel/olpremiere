@@ -106,7 +106,7 @@ export function splitTitleIntoWordCaptions(clipId: string): void {
   const endS = clip.startS + clipDurationS(clip)
   const words = spreadWords(clip.title.text, clip.startS, endS - clip.startS)
   if (words.length < 2) {
-    useToasts.getState().show('Type at least two words first', 'danger')
+    useToasts.getState().show('Type at least two words first', 'info')
     return
   }
   // holdS/bridgeS 0: the words are contiguous, so captions still hand off

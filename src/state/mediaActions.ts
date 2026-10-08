@@ -312,8 +312,8 @@ export async function importFiles(files: File[], opts?: ImportOptions): Promise<
       'info',
     )
   }
-  if (failed.length === 1) show(`${failed[0]}: couldn’t import (unsupported?)`, 'danger')
-  else if (failed.length > 1) show(`${failed.length} files skipped (unsupported)`, 'danger')
+  const failure = importFailureMessage(failed)
+  if (failure) show(failure, 'danger')
 
   if (imported.length === 0) return []
   useStore.getState().dispatch(`Import ${imported.length} file(s)`, (p) => ({
@@ -484,4 +484,14 @@ export function insertAssetAtPlayhead(assetId: Id): void {
     return { ...p, sequences: { ...p.sequences, [seq.id]: next } }
   })
   if (newClipId && ui.selection.length > 0) setUI({ selection: [] })
+}
+
+/**
+ * What he reads when files could not be brought in. Plain words: it used to say
+ * "couldn’t import (unsupported?)", a guess with a question mark in a toast.
+ */
+export function importFailureMessage(failed: readonly string[]): string | null {
+  if (failed.length === 0) return null
+  if (failed.length === 1) return `${failed[0]} could not be imported. The app cannot open this kind of file.`
+  return `${failed.length} files could not be imported. The app cannot open that kind of file.`
 }

@@ -7,7 +7,7 @@
 // new preference lands so they stop breeding in dropdown corners.
 
 import { Bookmark, Monitor as MonitorIcon, Moon, Sparkles, Sun, X } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   CAPTION_LANGUAGES,
   getCaptionLanguage,
@@ -29,6 +29,7 @@ import { listAudioInputs, setInputDevice, setOutputDevice, useRecorder } from '.
 import { listAudioOutputs } from '../state/recordingMonitor'
 import { canPickAudioOutput } from '../engine/audio'
 import { Button, IconButton } from '../ui/Button'
+import { useDialogFocus } from '../ui/useDialogFocus'
 import { useEscapeToClose } from '../ui/useEscapeToClose'
 
 /** One labelled preference row on the settings grid. */
@@ -101,6 +102,8 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   }, [])
 
   useEscapeToClose(onClose)
+  const box = useRef<HTMLDivElement>(null)
+  useDialogFocus(box)
 
   return (
     <div
@@ -110,6 +113,8 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
       }}
     >
       <div
+        ref={box}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-label="Settings"
@@ -188,7 +193,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
         </Group>
 
         <Group title="Captions">
-          <Row label="Spoken language" hint="Picks the local Whisper model. Czech uses the multilingual one.">
+          <Row label="Spoken language" hint="The language you speak in your videos. Captions come out best when this matches.">
             <select
               aria-label="Caption language"
               data-testid="settings-language"
@@ -234,7 +239,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
               className={`${SELECT_CLS} max-w-[200px]`}
               value={selectedOutputId ?? ''}
               onChange={(e) => setOutputDevice(e.target.value || null)}
-              title={canPickAudioOutput() ? undefined : 'This engine always uses the system default output'}
+              title={canPickAudioOutput() ? undefined : "Sound always plays on your computer's default speakers here"}
             >
               <option value="">System default</option>
               {outputs.map((d, i) => (

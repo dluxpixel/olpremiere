@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { EDGE, TOP_OFFSET, stackRect, toastPlacement, type Rect } from './toastPlacement'
+import { EDGE, MENU_GAP, TOP_OFFSET, bottomOffset, stackRect, toastPlacement, type Rect } from './toastPlacement'
 
 const VW = 1280
 const VH = 720
@@ -42,5 +42,35 @@ describe('toastPlacement', () => {
     expect(stackRect('tr', stack, VW, VH).top).toBe(TOP_OFFSET)
     expect(stackRect('tl', stack, VW, VH).left).toBe(EDGE)
     expect(stackRect('br', stack, VW, VH)).toEqual({ left: VW - EDGE - 300, top: VH - EDGE - 120, right: VW - EDGE, bottom: VH - EDGE })
+  })
+})
+
+// 2026-10-08: in full screen the bar under the picture is the bottom of the screen, and the stack in
+// its usual corner sat on Exit full screen and the tools at the bar's right end.
+describe('the bottom corners in full screen', () => {
+  const FS_W = 1920
+  const FS_H = 1080
+  const bar = (h: number): Rect => ({ left: 0, top: FS_H - h, right: FS_W, bottom: FS_H })
+  const wide = { w: 420, h: 120 }
+
+  it('stand the usual 16px up in a window', () => {
+    expect(bottomOffset(null, FS_H)).toBe(EDGE)
+  })
+
+  for (const h of [44, 80]) {
+    it(`stand above a ${h}px bar, with air between, and never touch it`, () => {
+      const lift = bottomOffset(FS_H - h, FS_H)
+      expect(lift).toBe(h + MENU_GAP)
+      for (const corner of ['br', 'bl'] as const) {
+        const at = stackRect(corner, wide, FS_W, FS_H, lift)
+        expect(at.bottom).toBeLessThanOrEqual(bar(h).top - MENU_GAP)
+      }
+    })
+  }
+
+  it('a menu in the lifted corner still sends the stack to the other side', () => {
+    const lift = bottomOffset(FS_H - 44, FS_H)
+    const overLifted = menu(FS_W - 300, FS_H - 44 - 200, 280, 190)
+    expect(toastPlacement(wide, [overLifted], FS_W, FS_H, lift).corner).toBe('bl')
   })
 })

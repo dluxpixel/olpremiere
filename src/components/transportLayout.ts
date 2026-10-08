@@ -52,10 +52,18 @@ export function showsTotalLength(tier: TransportTier, widthPx: number): boolean 
   return tier === 'two-rows' && widthPx >= FULL_TIMECODE_MIN_PX
 }
 
-/** The bar's own classes for a tier. `relative` because the way out of full screen is pinned to its corner. */
+/**
+ * The bar's own classes for a tier. `relative` because the way out of full screen is pinned to its corner.
+ *
+ * ⛔ THE ONE ROW CLIPS SIDEWAYS ONLY (`overflow-x-clip`, 2026-10-06). It was `overflow-hidden`, which
+ * also cut off every tooltip on the bar, because a tooltip is drawn inside its button: at 1920x1080,
+ * his window, the Loop and Screenshot tooltips did not show at all and Play's showed a sliver. Sideways
+ * is the only way a control could ever spill over the transport, and `clip` (unlike `hidden`) leaves
+ * the other direction open, so the tooltips can rise over the picture.
+ */
 export function barClasses(tier: TransportTier): string {
   if (tier === 'one-row') {
-    return 'relative grid h-11 shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 overflow-hidden border-t border-border bg-bg-panel px-3'
+    return 'relative grid h-11 shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 overflow-x-clip border-t border-border bg-bg-panel px-3'
   }
   if (tier === 'two-rows') {
     return 'relative grid shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-x-1 gap-y-1 border-t border-border bg-bg-panel px-2 pb-2 pt-1'
@@ -79,7 +87,7 @@ export const groupClasses = 'flex shrink-0 items-center gap-1'
  * sits in from the edge, and 4px of air.
  */
 export function settingsClasses(tier: TransportTier): string {
-  if (tier === 'one-row') return 'flex w-full min-w-0 items-center justify-end gap-x-3 overflow-hidden pr-10'
+  if (tier === 'one-row') return 'flex w-full min-w-0 items-center justify-end gap-x-3 overflow-x-clip pr-10'
   if (tier === 'two-rows') return 'col-span-3 flex w-full min-w-0 flex-wrap items-center justify-center gap-x-3 gap-y-1 px-10'
   // Not centred here: at 292px the room is short by a few pixels, and keeping 40px clear on the left
   // as well would stand the camera on a row of its own.

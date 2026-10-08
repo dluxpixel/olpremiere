@@ -110,7 +110,7 @@ test('dropping a project file on the window opens it instead of failing as media
 
   // It opened as a PROJECT. Before this it went to the media importer and failed.
   await expect(page.getByText(/Opened "Dropped/)).toBeVisible({ timeout: 15_000 })
-  await expect(page.getByText(/couldn't import|unsupported/i)).toHaveCount(0)
+  await expect(page.getByText(/couldn't import|could not be imported|unsupported/i)).toHaveCount(0)
 })
 
 /**

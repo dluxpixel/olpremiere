@@ -514,7 +514,7 @@ export function setActiveSequenceShutterAngle(deg: number): void {
 export function setActiveSequenceBlurBackdropZoom(zoom: number): void {
   const next = Math.min(BLUR_BACKDROP_ZOOM.max, Math.max(BLUR_BACKDROP_ZOOM.min, zoom))
   useStore.getState().dispatch(
-    'Blur band tightness',
+    'Background zoom',
     (p) => {
       const seq = p.sequences[p.activeSequenceId]
       if ((seq.blurBackdropZoom ?? BACKDROP_ZOOM) === next) return p

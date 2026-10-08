@@ -1,5 +1,5 @@
 import { Captions, Film, FolderOpen, Image as ImageIcon, Music, Plus, Sparkles, Trash2, Upload, Wand2 } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { filterEffects, matchesQuery } from '../engine/effects/search'
 import { TRANSITION_KINDS, TRANSITION_LABELS } from '../engine/render/types'
 import { formatTimecode } from '../engine/timecode'
@@ -451,6 +451,18 @@ function ImportProgress() {
   )
 }
 
+/** The Find my media banner's first line. "1 file on this edit have no media" never agreed. */
+export function missingMediaLine(n: number): string {
+  return `${plural(n, 'file')} on this edit ${n === 1 ? 'has' : 'have'} no media. Your cuts are all still here.`
+}
+
+/**
+ * The Effects tab's line while no clip is selected. It used to start "Select a clip to apply",
+ * but a click on an effect applies nothing: it takes a double click, a drag or a right click.
+ */
+export const EFFECTS_HINT =
+  'Double click to put it on the selected clip, or drag it onto any clip. Right click to put it on every clip. Drag a transition onto either edge of a clip.'
+
 /**
  * The way back when a project's media has lost its bytes.
  *
@@ -535,8 +547,7 @@ function FindMyMedia() {
       className="mx-2 mb-2 rounded-overlay border border-warning/40 bg-warning/10 px-2 py-2 text-[11px] text-text-primary"
     >
       <div className="mb-1.5">
-        {missing.length} {missing.length === 1 ? 'file' : 'files'} on this edit have no media. Your cuts are all still
-        here.
+        {missingMediaLine(missing.length)}
         {why !== '' && <span className="mt-1 block text-text-muted">The spare copies could not be used: {why}</span>}
       </div>
       <Button
@@ -635,15 +646,51 @@ function RemoveUnusedButton() {
   )
 }
 
+/**
+ * ⛔ A HOP TO ANOTHER TAB KEEPS HIS SEARCH AND HIS PLACE IN THE BIN (2026-10-07). The tab content
+ * is keyed on the tab so it fades in (LeftPanel below), which also unmounts the tab he left: "blur"
+ * typed in Effects was gone after a hop to Media to grab a clip, and a bin scrolled halfway down
+ * was back at the top. The fade stays; these two outlive it, for as long as the app is open.
+ *
+ * ⛔ BUT A FILE THAT CAME IN SINCE SHOWS, AND ANOTHER PROJECT'S BIN IS ITS OWN (2026-10-08). The
+ * newest file is at the top of the bin, and his place was put back over it: Shift+S or a drop
+ * while he was on Effects, a hop to Media, and the new card sat above the fold. And the place was
+ * one for the whole app, so another project's bin opened at this one's scroll. The place now
+ * belongs to the bin it was taken in, and a file that was not in it scrolls the bin to the top.
+ */
+const kept: {
+  effectsQuery: string
+  media: { projectId: string; assets: Record<string, MediaAsset>; scrollTop: number } | null
+} = { effectsQuery: '', media: null }
+
 function MediaTab() {
   const assets = useStore((s) => s.project.assets)
+  const projectId = useStore((s) => s.project.id)
   const fps = useStore((s) => activeSequence(s.project).fps)
   const fileInput = useRef<HTMLInputElement>(null)
+  const grid = useRef<HTMLDivElement>(null)
   const setUI = useStore((s) => s.setUI)
   const importing = useImportProgress((s) => s.total)
   // Newest import first, so the file you just added is at the top (matches the
   // Library and every other panel) instead of buried at the bottom of the grid.
   const list = Object.values(assets).reverse()
+  const newest = list[0]?.id
+  // The bin as he last saw it on this tab: null until the first paint, which reads `kept` instead.
+  const seen = useRef<{ projectId: string; assets: Record<string, MediaAsset> } | null>(null)
+  // Before the paint, so the bin never shows the wrong place first.
+  useLayoutEffect(() => {
+    const el = grid.current
+    const first = seen.current === null
+    const before = first ? kept.media : seen.current
+    const sameBin = before !== null && before.projectId === projectId
+    const fresh = newest !== undefined && !(sameBin && newest in before.assets)
+    if (el) {
+      if (fresh) el.scrollTop = 0
+      else if (first && sameBin && kept.media) el.scrollTop = kept.media.scrollTop
+    }
+    seen.current = { projectId, assets }
+    kept.media = { projectId, assets, scrollTop: el?.scrollTop ?? 0 }
+  }, [assets, newest, projectId])
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/* Wraps rather than squeezing: a third button joined Import and Captions. */}
@@ -688,7 +735,14 @@ function MediaTab() {
           <div className="text-[11px] text-text-muted">Drop files here or click + Import</div>
         </div>
       ) : (
-        <div className="grid min-h-0 flex-1 grid-cols-2 content-start gap-2 overflow-y-auto p-2 pt-0">
+        <div
+          ref={grid}
+          data-testid="media-grid"
+          onScroll={(e) => {
+            if (kept.media) kept.media = { ...kept.media, scrollTop: e.currentTarget.scrollTop }
+          }}
+          className="grid min-h-0 flex-1 grid-cols-2 content-start gap-2 overflow-y-auto p-2 pt-0"
+        >
           {list.map((a) => (
             <AssetCard key={a.id} asset={a} fps={fps} />
           ))}
@@ -749,7 +803,7 @@ function BrowserItem({
 
 
 function EffectsTab() {
-  const [query, setQuery] = useState('')
+  const [query, setQuery] = useState(kept.effectsQuery)
   const selection = useStore((s) => s.ui.selection)
   // Effects + grades apply to the WHOLE selection through the bulk helpers
   // (one undo step). Selecting five clips used to grey the browser out entirely.
@@ -779,7 +833,10 @@ function EffectsTab() {
         <input
           type="search"
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => {
+            kept.effectsQuery = e.target.value
+            setQuery(e.target.value)
+          }}
           placeholder="Search effects"
           aria-label="Search effects and transitions"
           data-testid="effect-search"
@@ -790,7 +847,7 @@ function EffectsTab() {
       <div className="min-h-0 flex-1 overflow-y-auto px-1 pb-2">
         {!hasTarget && (
           <p className="px-2 pb-1.5 text-[10px] text-text-muted">
-            Select a clip to apply, drag straight onto one, or right-click to apply to every clip, or a transition to either edge.
+            {EFFECTS_HINT}
           </p>
         )}
 
@@ -828,7 +885,9 @@ function EffectsTab() {
                   data-testid="look-jettism"
                   role="button"
                   tabIndex={0}
-                  title="Double click: a tall 9:16 frame (a Phone video stays Phone), punch grade on every clip, pop in titles"
+                  // It takes a double click (or Enter), and the look no longer leaves a copy in the
+                  // Library (state/lookActions.ts): the tooltip said "One click" and promised one.
+                  title="Double click: makes the video 9:16 (a Phone video stays Phone), gives every clip the punchy look and pops the titles in."
                   onDoubleClick={applyJettismLook}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') applyJettismLook()
@@ -842,7 +901,7 @@ function EffectsTab() {
                   data-testid="look-grade"
                   role="button"
                   tabIndex={0}
-                  title="Just the punch grade (+exposure/+contrast/+saturation) on the selected clip"
+                  title="Double click: brighter, punchier colors on every selected clip."
                   onDoubleClick={() => applyPunchyGradeToClips(targets)}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') applyPunchyGradeToClips(targets)

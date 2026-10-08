@@ -387,7 +387,8 @@ export function applyEffectToClips(ids: Iterable<string>, type: string): number 
   // absolutely nothing, silently. The browser row is always usable, so the
   // reason it did not land has to be said out loud.
   if (run.visual === 0) {
-    show(run.requested === 0 ? 'Select a clip first' : 'Effects don’t apply to audio clips', 'danger')
+    if (run.requested === 0) show('Select a clip first', 'info')
+    else show('Effects don’t apply to audio clips', 'danger')
     return 0
   }
   if (run.changed === 0) {

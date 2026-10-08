@@ -211,6 +211,60 @@ test('Loop says what it is, lights while it is on, and the tooltip says what it 
   await expect(loop).toHaveAttribute('aria-pressed', 'false')
 })
 
+// ⛔ THE TOOLTIPS ON THE BAR, AT HIS OWN WINDOW (2026-10-06). The Loop test above ran only at 1280x720,
+// where the bar is two rows and nothing is clipped, and `:visible` is true for a tooltip that is cut
+// off. At 1920x1080, the size he works at, the bar is one row and was `overflow-hidden`: the Loop and
+// Screenshot tooltips did not show at all and Play's showed a sliver. So this measures how much of
+// each tooltip is really on screen, cut by every box around it, and that it is on top.
+/** The share of an element's box that every clipping box around it, and the window, leaves showing. */
+function visibleShare(el: Element): number {
+  const r = el.getBoundingClientRect()
+  if (r.width === 0 || r.height === 0) return 0
+  let [L, T, R, B] = [r.left, r.top, r.right, r.bottom]
+  for (let p = el.parentElement; p; p = p.parentElement) {
+    const cs = getComputedStyle(p)
+    const cx = /hidden|clip|auto|scroll/.test(cs.overflowX)
+    const cy = /hidden|clip|auto|scroll/.test(cs.overflowY)
+    if (!cx && !cy) continue
+    const pr = p.getBoundingClientRect()
+    if (cx) [L, R] = [Math.max(L, pr.left), Math.min(R, pr.right)]
+    if (cy) [T, B] = [Math.max(T, pr.top), Math.min(B, pr.bottom)]
+  }
+  ;[L, T, R, B] = [Math.max(L, 0), Math.max(T, 0), Math.min(R, innerWidth), Math.min(B, innerHeight)]
+  return (Math.max(0, R - L) * Math.max(0, B - T)) / (r.width * r.height)
+}
+
+for (const s of [
+  { w: 1920, h: 1080, tier: 'one-row' },
+  { w: 1920, h: 1200, tier: 'one-row' },
+  { w: 1280, h: 720, tier: 'two-rows' },
+]) {
+  test(`every tooltip on the bar shows whole and on top at ${s.w}x${s.h}`, async ({ page }) => {
+    await open(page, s.w, s.h, 280, 450)
+    await expect(page.getByTestId('transport-bar')).toHaveAttribute('data-tier', s.tier)
+    for (const id of ['loop-toggle', 'play-toggle', 'screenshot-button', 'safe-margins-bar-toggle', 'fullscreen-toggle']) {
+      const button = page.getByTestId(id)
+      await button.hover()
+      const tip = page.locator('.group\\/tip', { has: button }).locator('[role="tooltip"]')
+      await expect(tip, id).toBeVisible()
+      // Measured after the tooltip has slid itself inside its edges (it does that a frame after the hover).
+      await expect.poll(() => tip.evaluate(visibleShare), { message: id }).toBeGreaterThan(0.99)
+      // Nothing painted over it. A tooltip lets the pointer through, which hit testing skips, so
+      // it takes the pointer for this one synchronous look.
+      const onTop = await tip.evaluate((t) => {
+        const el = t as HTMLElement
+        const r = el.getBoundingClientRect()
+        el.style.pointerEvents = 'auto'
+        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
+        el.style.pointerEvents = ''
+        return el.contains(hit)
+      })
+      expect(onTop, id).toBe(true)
+      await page.mouse.move(5, 5)
+    }
+  })
+}
+
 test.describe('Full screen', () => {
   const inFullscreen = (page: Page) => page.evaluate(() => document.fullscreenElement?.getAttribute('data-testid') ?? null)
 
@@ -254,6 +308,120 @@ test.describe('Full screen', () => {
       await expect(page.getByTestId('transform-gizmo')).toBeVisible()
     })
   }
+
+  // 2026-10-06: full screen paints over everything outside it, and the Frame menu and the toasts
+  // lived outside it. The Frame button lit up and nothing appeared; Shift+S said "saved" to nobody.
+  test('the Frame menu and a toast show in full screen, on top, at 1920x1080', async ({ page }) => {
+    await open(page, 1920, 1080, 280, 450)
+    await page.getByTestId('fullscreen-toggle').click()
+    await expect.poll(() => inFullscreen(page)).toBe('monitor')
+    /** Inside the full screen, and the thing actually under the middle of it. */
+    const shows = (testId: string) =>
+      page.getByTestId(testId).first().evaluate((el) => {
+        const r = el.getBoundingClientRect()
+        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
+        return (document.fullscreenElement?.contains(el) ?? false) && el.contains(hit)
+      })
+
+    await page.getByTestId('frame-settings-button').click()
+    await expect(page.getByTestId('frame-settings-menu')).toBeVisible()
+    expect(await shows('frame-settings-menu')).toBe(true)
+    await page.getByTestId('frame-settings-backdrop').click({ position: { x: 10, y: 10 } })
+    await expect(page.getByTestId('frame-settings-menu')).toHaveCount(0)
+    expect(await inFullscreen(page)).toBe('monitor')
+
+    await page.keyboard.press('Shift+S')
+    await expect(page.getByTestId('toast').first()).toBeVisible({ timeout: 15_000 })
+    expect(await shows('toast')).toBe(true)
+  })
+
+  // 2026-10-08: inside the full screen the toasts stood in their usual corner, which there is the
+  // bar's right end. A toast sat on Exit full screen and the tools beside it, held its clock under
+  // the pointer, and the click he meant for Exit full screen dismissed it and left full screen on.
+  for (const s of [
+    { w: 1920, h: 1080 },
+    { w: 1024, h: 680 },
+  ]) {
+    test(`a toast in full screen stands above the bar, and Exit full screen takes the click, at ${s.w}x${s.h}`, async ({ page }) => {
+      await open(page, s.w, s.h, 280, 450)
+      const toggle = page.getByTestId('fullscreen-toggle')
+      await toggle.click()
+      await expect.poll(() => inFullscreen(page)).toBe('monitor')
+      // As wide as a toast gets, and up for a minute, so only a click could take it away.
+      await page.evaluate(async () => {
+        const mod = '/src/state/toasts.ts'
+        const { useToasts } = (await import(/* @vite-ignore */ mod)) as {
+          useToasts: {
+            getState: () => { show: (m: string, k: string, a: undefined, o: { durationMs: number }) => void }
+          }
+        }
+        useToasts.getState().show('Saved into your media: ' + 'a long file name, '.repeat(8), 'success', undefined, { durationMs: 60_000 })
+      })
+      await page.mouse.move(5, 5)
+      const mine = page.getByTestId('toast').filter({ hasText: 'a long file name' })
+      await expect(mine).toBeVisible()
+      const bar = page.getByTestId('transport-bar')
+      const stack = (await page.getByTestId('toast-stack').boundingBox())!
+      const b = (await bar.boundingBox())!
+      expect(stack.y + stack.height).toBeLessThanOrEqual(b.y)
+      // No toast is the thing under the middle of any control on the bar.
+      const covered = await bar.evaluate((el) => {
+        const toasts = document.querySelector('[data-testid="toast-stack"]')
+        return Array.from(el.querySelectorAll<HTMLElement>('button, select'))
+          .filter((c) => c.getClientRects().length > 0)
+          .filter((c) => {
+            const r = c.getBoundingClientRect()
+            return toasts?.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)) ?? false
+          })
+          .map((c) => c.getAttribute('aria-label') ?? c.getAttribute('data-testid') ?? c.textContent)
+      })
+      expect(covered).toEqual([])
+      await expect(toggle).toBeVisible()
+      // He reaches for Exit full screen and clicks it: full screen ends, and the toast is still up.
+      await toggle.hover()
+      await toggle.click()
+      await expect.poll(() => inFullscreen(page)).toBe(null)
+      await expect(mine).toHaveCount(1)
+    })
+  }
+})
+
+// 2026-10-07: the save label cycles Unsaved, Saving, Saved a second after every edit, and the
+// Back up button after it slid left and right by the difference in the words' widths; the open
+// tab grew a dot while unsaved and pushed the "+" the same way. Watched on every frame.
+test('nothing in the top bar or the tab strip slides sideways while an edit saves, at 1920x1080', async ({ page }) => {
+  await open(page, 1920, 1080, 280, 450)
+  await expect(page.getByTestId('save-state')).toHaveText('Saved', { timeout: 15_000 })
+  type Sample = { state: string; backup: number; add: number; fits: boolean }
+  await page.evaluate(() => {
+    const w = window as unknown as { __samples: Sample[] }
+    w.__samples = []
+    const left = (id: string) => document.querySelector(`[data-testid="${id}"]`)!.getBoundingClientRect().left
+    const tick = () => {
+      const label = document.querySelector<HTMLElement>('[data-testid="save-state"]')!
+      w.__samples.push({
+        state: label.textContent ?? '',
+        backup: left('save-project-file'),
+        add: left('edit-tabs-add'),
+        fits: label.scrollWidth <= label.clientWidth,
+      })
+      requestAnimationFrame(tick)
+    }
+    tick()
+  })
+  await page.keyboard.press('m')
+  const samples = () => page.evaluate(() => (window as unknown as { __samples: Sample[] }).__samples)
+  // Round the whole cycle: Unsaved seen, and Saved again at the end.
+  await expect
+    .poll(async () => {
+      const all = await samples()
+      return all.some((s) => s.state === 'Unsaved') && all[all.length - 1].state === 'Saved'
+    }, { timeout: 15_000 })
+    .toBe(true)
+  const all = await samples()
+  expect(new Set(all.map((s) => s.backup)), 'Back up project moved').toEqual(new Set([all[0].backup]))
+  expect(new Set(all.map((s) => s.add)), 'the + moved').toEqual(new Set([all[0].add]))
+  expect(all.every((s) => s.fits), 'a save word is cut off').toBe(true)
 })
 
 // ---------------------------------------------------------------------------------------------

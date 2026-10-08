@@ -4,7 +4,7 @@
 // The look is the app's other small dialogs (Settings, Captions, Projects).
 
 import { Loader2, X } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   canRemoveBackground,
   cancelPicturePaste,
@@ -13,6 +13,7 @@ import {
   usePastePicture,
 } from '../state/picturePaste'
 import { Button, IconButton } from '../ui/Button'
+import { useDialogFocus } from '../ui/useDialogFocus'
 import { useEscapeToClose } from '../ui/useEscapeToClose'
 
 /** After this long the wait says why it is long: the first cutout starts CutStudio and loads its model. */
@@ -34,6 +35,8 @@ function PastePictureCard({ url }: { url: string }) {
   const canRemove = canRemoveBackground()
 
   useEscapeToClose(cancelPicturePaste)
+  const box = useRef<HTMLDivElement>(null)
+  useDialogFocus(box)
 
   return (
     <div
@@ -43,6 +46,8 @@ function PastePictureCard({ url }: { url: string }) {
       }}
     >
       <div
+        ref={box}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-label="Paste picture"

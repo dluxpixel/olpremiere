@@ -70,7 +70,9 @@ export function Tooltip({ label, shortcut, side = 'bottom', children }: TooltipP
         ref={tip}
         role="tooltip"
         style={shift ? { marginLeft: shift } : undefined}
-        className={`pointer-events-none absolute left-1/2 z-50 hidden -translate-x-1/2 whitespace-nowrap rounded-field border border-border bg-bg-elevated px-2 py-1 text-ui-sm text-text-primary shadow-pop group-hover/tip:block ${pos}`}
+        // As wide as its words up to 320px, then it wraps: the Safe margins one is about 100
+        // characters, and on one line it was wider than the part of the bar it can show in.
+        className={`pointer-events-none absolute left-1/2 z-50 hidden w-max max-w-[320px] -translate-x-1/2 whitespace-normal rounded-field border border-border bg-bg-elevated px-2 py-1 text-ui-sm text-text-primary shadow-pop group-hover/tip:block ${pos}`}
       >
         {label}
         {shortcut && <span className="ml-1.5 text-text-muted">{shortcut}</span>}

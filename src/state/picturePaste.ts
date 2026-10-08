@@ -11,7 +11,7 @@
 
 import { create } from 'zustand'
 import type { CutoutResult } from '../../electron/ipc-types'
-import { isEditableTarget } from '../keymap'
+import { isEditableTarget, windowOverTheEdit } from '../keymap'
 import { activeSequence, type Id } from '../engine/types'
 import { clipMarkerLost, clipMarkerOnSystemClipboard, pasteAtPlayhead } from './clipboard'
 import { importFiles } from './mediaActions'
@@ -280,7 +280,10 @@ export function pasteKey(): void {
 export function installPasteListener(): () => void {
   const onPaste = (e: ClipboardEvent): void => {
     // A paste into a text field belongs to the field: a title, a project name.
-    if (e.defaultPrevented || isEditableTarget(e.target)) {
+    // ⛔ AND WITH A WINDOW OR A MENU OPEN, NOTHING IS PASTED INTO THE EDIT BEHIND IT (2026-10-07).
+    // The keymap holds Ctrl+V there, but the browser still fired this event: with Captions open
+    // on "Paste transcript", his copied clips landed on the timeline instead of his transcript.
+    if (e.defaultPrevented || isEditableTarget(e.target) || windowOverTheEdit()) {
       router.onPasteTakenElsewhere()
       return
     }

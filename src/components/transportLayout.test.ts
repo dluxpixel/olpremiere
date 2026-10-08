@@ -58,13 +58,22 @@ describe('showsTotalLength', () => {
 })
 
 describe('the classes of each shape', () => {
-  it('leaves the wide bar as it was: a 44px grid of 1fr, auto, 1fr that clips instead of spilling', () => {
+  it('leaves the wide bar as it was: a 44px grid of 1fr, auto, 1fr that clips sideways instead of spilling', () => {
     const wide = barClasses('one-row')
     expect(wide).toContain('h-11')
     expect(wide).toContain('grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]')
-    expect(wide).toContain('overflow-hidden')
+    expect(wide).toContain('overflow-x-clip')
     expect(settingsClasses('one-row')).toContain('justify-end')
-    expect(settingsClasses('one-row')).toContain('overflow-hidden')
+    expect(settingsClasses('one-row')).toContain('overflow-x-clip')
+  })
+
+  // 2026-10-06: `overflow-hidden` cut off every tooltip on the bar at 1920x1080. The real proof
+  // is e2e/transport-tips.spec.ts; this keeps the class from creeping back.
+  it('never hides upward, so the tooltips can rise over the picture', () => {
+    for (const tier of ['one-row', 'two-rows', 'compact'] as const) {
+      expect(barClasses(tier)).not.toMatch(/\boverflow-(hidden|y-hidden|clip|auto)\b/)
+      expect(settingsClasses(tier)).not.toMatch(/\boverflow-(hidden|y-hidden|clip|auto)\b/)
+    }
   })
 
   it('lets the narrow shapes grow in height and clip nothing', () => {

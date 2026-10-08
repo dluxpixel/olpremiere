@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { memo, useEffect, useMemo, useRef } from 'react'
 import { showHistoryToast } from './components/historyLabel'
 import { Inspector } from './components/Inspector'
 import { LeftPanel } from './components/LeftPanel'
@@ -69,6 +69,7 @@ import { ContextMenu } from './ui/ContextMenu'
 import { NamePrompt } from './ui/NamePrompt'
 import { Splitter } from './ui/Splitter'
 import { Toaster } from './ui/Toaster'
+import { InFullscreen } from './ui/fullscreenLayer'
 import { useLayoutSizes } from './useLayoutSizes'
 import { PhoneShell } from './components/PhoneShell'
 import { usePhoneLayout } from './ui/phoneLayout'
@@ -177,6 +178,7 @@ export function buildAppBindings(): Binding[] {
         description: 'Save project',
         domain: 'project',
         inFields: true,
+        overWindows: true,
         run: () => {
           // saveSettled, not saveNow: "Project saved" has to mean every edit is
           // down, including one made while an earlier write was on its way.
@@ -195,6 +197,7 @@ export function buildAppBindings(): Binding[] {
         combo: 'f5',
         description: 'Reload the app',
         domain: 'project',
+        overWindows: true,
         run: () => void reloadAndCheckForUpdates(),
       },
       {
@@ -462,10 +465,21 @@ function RecordingStudioMount() {
   return open ? <RecordingStudio /> : null
 }
 
+// ⛔ A SPLITTER DRAG RE-RENDERED THE WHOLE EDITOR ON EVERY POINTER MOVE (2026-10-07). The panel
+// sizes are App's state, and none of the big regions was memo, so each move of a drag rendered
+// the top bar, the tabs, all three columns and the timeline again. Their props are a number or
+// nothing, so memo leaves each to render only when its own size or its own store data changes.
+const TopBarRegion = memo(TopBar)
+const EditTabsRegion = memo(EditTabs)
+const LeftPanelRegion = memo(LeftPanel)
+const MonitorRegion = memo(Monitor)
+const InspectorRegion = memo(Inspector)
+const TimelineRegion = memo(Timeline)
+
 export default function App() {
   // The offline update toast, once per session (see onUpdateError below).
   const updateErrorShown = useRef(false)
-  const { sizes, adjust } = useLayoutSizes()
+  const { sizes, startDrag, adjust, endDrag } = useLayoutSizes()
   const phone = usePhoneLayout()
   // One binding list, and since 2026-08-17 the keymap is its only reader: the
   // palette and the help sheet were both cut. Still built in one place, because
@@ -603,42 +617,53 @@ export default function App() {
       // our own menu instead (media cards, clips).
       onContextMenu={(e) => e.preventDefault()}
     >
-      <TopBar />
+      <TopBarRegion />
       {/* The open edits. Not on a phone: the bus-ride layout keeps its room, and the
           Projects button still opens and switches edits there. */}
-      {!phone && <EditTabs />}
+      {!phone && <EditTabsRegion />}
       {phone ? (
         <PhoneShell />
       ) : (
         <div className="flex min-h-0 flex-1 flex-col">
           <div className="flex min-h-0 flex-1">
-            <LeftPanel width={sizes.left} />
+            <LeftPanelRegion width={sizes.left} />
             <Splitter
               orientation="vertical"
               testId="splitter-left"
+              onDragStart={startDrag}
               onDrag={(d) => adjust('left', d)}
+              onDragEnd={endDrag}
             />
-            <Monitor />
+            <MonitorRegion />
             <Splitter
               orientation="vertical"
               testId="splitter-right"
+              onDragStart={startDrag}
               onDrag={(d) => adjust('right', -d)}
+              onDragEnd={endDrag}
             />
-            <Inspector width={sizes.right} />
+            <InspectorRegion width={sizes.right} />
           </div>
           <Splitter
             orientation="horizontal"
             testId="splitter-bottom"
+            onDragStart={startDrag}
             onDrag={(d) => adjust('bottom', -d)}
+            onDragEnd={endDrag}
           />
-          <Timeline height={sizes.bottom} />
+          <TimelineRegion height={sizes.bottom} />
         </div>
       )}
-      <Toaster />
+      {/* Inside the full screen while the picture is full screen, or they cannot be seen there. */}
+      <InFullscreen>
+        <Toaster />
+      </InFullscreen>
       <RecordingStudioMount />
       <PastePictureDialog />
       <TranscribeStatus />
-      <ContextMenu />
+      <InFullscreen>
+        <ContextMenu />
+      </InFullscreen>
       <NamePrompt />
     </div>
   )

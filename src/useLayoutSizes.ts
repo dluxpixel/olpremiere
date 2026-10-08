@@ -48,7 +48,7 @@
 // project can be dragged to two clean rows of five. Anything he does with the
 // handle is his and is remembered.
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 export interface LayoutSizes {
   left: number
@@ -82,13 +82,22 @@ export const SIZE_LIMITS: Record<keyof LayoutSizes, [number, number]> = {
  */
 const MONITOR_MIN_W = 280
 /**
- * 200, deliberately not more: at 900px of window the timeline's own 640 ceiling
- * is still reachable, so this guard only ever bites on a window near the 680
- * minimum, where the timeline would otherwise take the entire screen.
+ * 200, deliberately not more: from 921px of window (80 of chrome, 1 of splitter,
+ * 200 of picture, 640 of timeline) the timeline's own 640 ceiling is still
+ * reachable, so this guard only bites on a small window, where the timeline
+ * would otherwise take the entire screen.
  */
 const MONITOR_MIN_H = 200
-/** Chrome above the monitor row, and the 1px splitters between the regions. */
+/**
+ * Chrome above the monitor row, and the 1px splitters between the regions.
+ *
+ * ⛔ THE TOP BAR (h-12, TopBar.tsx) AND THE EDIT TABS (h-8, EditTabs.tsx), BOTH. The tabs came
+ * on 2026-10-03 and this still counted the top bar alone, so on a 720px window with the
+ * timeline dragged up the monitor row was 168px and the picture under the bar about 70.
+ */
 const TOPBAR_H = 48
+const EDIT_TABS_H = 32
+export const CHROME_H = TOPBAR_H + EDIT_TABS_H
 const SPLITTER_PX = 1
 
 const clampLimits = (key: keyof LayoutSizes, v: number): number =>
@@ -113,7 +122,7 @@ function viewport(): Viewport {
 function ceilingFor(key: keyof LayoutSizes, otherPanel: number, vp: Viewport): number {
   const room =
     key === 'bottom'
-      ? vp.h - TOPBAR_H - SPLITTER_PX - MONITOR_MIN_H
+      ? vp.h - CHROME_H - SPLITTER_PX - MONITOR_MIN_H
       : vp.w - 2 * SPLITTER_PX - MONITOR_MIN_W - otherPanel
   return Math.max(SIZE_LIMITS[key][0], Math.min(SIZE_LIMITS[key][1], room))
 }
@@ -175,11 +184,27 @@ function load(): LayoutSizes {
   }
 }
 
+/**
+ * A panel's size during a drag: the size it had at the press plus how far the pointer has
+ * gone since, held inside the panel's limits. From the press, never from the last move, so
+ * a pointer that went past a limit has to come all the way back before the edge moves
+ * again, and the edge stays under it (ui/Splitter.tsx).
+ */
+export function sizeAfterDrag(key: keyof LayoutSizes, atPress: number, totalPx: number): number {
+  return clampLimits(key, atPress + totalPx)
+}
+
 /** Panel sizes for the three splitters; persisted to localStorage. */
 export function useLayoutSizes() {
   // `pref` is what he chose. `sizes` is that, made to fit today's window.
   const [pref, setPref] = useState<LayoutSizes>(load)
   const [vp, setVp] = useState<Viewport>(viewport)
+  /** `pref` as of the last move, even before React has rendered it: what a drag's end writes. */
+  const latest = useRef(pref)
+  /** What he could see when he pressed the handle. Null between drags. */
+  const atPress = useRef<LayoutSizes | null>(null)
+  /** The drag changed a size, so its end has something to write. */
+  const moved = useRef(false)
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -190,25 +215,39 @@ export function useLayoutSizes() {
 
   const sizes = useMemo(() => fitToWindow(pref, vp), [pref, vp])
 
+  const startDrag = useCallback(() => {
+    // The drag starts from what he can SEE, not from the stored preference: while a
+    // small window is squeezing the panel, a drag that started from the stored
+    // value would jump before it moved.
+    atPress.current = fitToWindow(latest.current, vp)
+  }, [vp])
+
+  /** `totalPx` is how far the pointer has gone since the press (Splitter's onDrag). */
   const adjust = useCallback(
-    (key: keyof LayoutSizes, deltaPx: number) => {
-      // The delta lands on what he can SEE, not on the stored preference: while a
-      // small window is squeezing the panel, a drag that started from the stored
-      // value would jump before it moved.
-      setPref((prev) => {
-        const shown = fitToWindow(prev, vp)
-        const next = { ...prev, [key]: clampLimits(key, shown[key] + deltaPx) }
-        if (next[key] === prev[key]) return prev
-        try {
-          localStorage.setItem(KEY, JSON.stringify(next))
-        } catch {
-          // localStorage full/unavailable, so layout just won't persist
-        }
-        return next
-      })
+    (key: keyof LayoutSizes, totalPx: number) => {
+      const from = atPress.current ?? fitToWindow(latest.current, vp)
+      const size = sizeAfterDrag(key, from[key], totalPx)
+      if (size === latest.current[key]) return
+      latest.current = { ...latest.current, [key]: size }
+      moved.current = true
+      setPref(latest.current)
     },
     [vp],
   )
 
-  return { sizes, adjust }
+  // ⛔ ONE WRITE PER DRAG, NOT ONE PER POINTER MOVE (2026-10-07). Storage is written
+  // synchronously, and every move of a drag used to write it. The size on screen follows the
+  // pointer from memory; what he chose is written once, when he lets go.
+  const endDrag = useCallback(() => {
+    atPress.current = null
+    if (!moved.current) return
+    moved.current = false
+    try {
+      localStorage.setItem(KEY, JSON.stringify(latest.current))
+    } catch {
+      // localStorage full/unavailable, so layout just won't persist
+    }
+  }, [])
+
+  return { sizes, startDrag, adjust, endDrag }
 }

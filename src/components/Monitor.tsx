@@ -317,7 +317,7 @@ function ShuttleBadge() {
     // the rate readout steady while J/K/L pumps it.
     <span
       data-testid="shuttle-badge"
-      className="rounded-full bg-ember-quiet px-2 py-0.5 font-numeric text-dense font-medium text-ember"
+      className="rounded-field bg-ember-quiet px-2 py-0.5 font-numeric text-dense font-medium text-ember"
     >
       {arrow} {Math.abs(rate)}×
     </span>
@@ -575,6 +575,7 @@ export function Monitor() {
               The rest is the desktop's and is hidden here, never removed. An
               iPhone cannot put a page fullscreen at all. */}
           <IconButton
+            tipSide="top"
             label="Go to start"
             shortcut="Home"
             className="phone:hidden"
@@ -585,10 +586,11 @@ export function Monitor() {
           >
             <SkipBack size={16} strokeWidth={1.5} />
           </IconButton>
-          <IconButton label="Step back 1 frame" shortcut="←" onClick={() => stepFrames(-1)}>
+          <IconButton tipSide="top" label="Step back 1 frame" shortcut="←" onClick={() => stepFrames(-1)}>
             <ChevronLeft size={16} strokeWidth={1.5} />
           </IconButton>
           <IconButton
+            tipSide="top"
             label={playing ? 'Pause' : 'Play'}
             shortcut="Space"
             onClick={togglePlay}
@@ -598,10 +600,11 @@ export function Monitor() {
           >
             {playing ? <Pause size={16} strokeWidth={1.5} /> : <Play size={16} strokeWidth={1.5} />}
           </IconButton>
-          <IconButton label="Step forward 1 frame" shortcut="→" onClick={() => stepFrames(1)}>
+          <IconButton tipSide="top" label="Step forward 1 frame" shortcut="→" onClick={() => stepFrames(1)}>
             <ChevronRight size={16} strokeWidth={1.5} />
           </IconButton>
           <IconButton
+            tipSide="top"
             label="Go to end"
             shortcut="End"
             className="phone:hidden"
@@ -626,6 +629,7 @@ export function Monitor() {
             {/* Left of the aspect picker, alongside the blur: the frame he can
                 see is the frame it takes, at the sequence's own size. */}
             <IconButton
+              tipSide="top"
               label="Screenshot: saves this exact frame into your media, full size"
               shortcut="Shift+S"
               data-testid="screenshot-button"
@@ -674,6 +678,7 @@ export function Monitor() {
                 Phase 5 until 2026-09-14, when the Frame button folded four settings into one popover and
                 took it with them. It is still in that popover, and the two are one switch. */}
             <IconButton
+              tipSide="top"
               label="Safe margins: draws the action-safe and title-safe guides over the picture. They are never exported."
               active={safeMargins}
               onClick={() => setSafeMargins(!safeMargins)}
@@ -732,6 +737,7 @@ export function Monitor() {
             it is full), and nothing is laid out under it: the controls keep clear of its 40px. */}
         <div className={`phone:hidden ${pinnedClasses}`}>
           <IconButton
+            tipSide="top"
             label={fullscreen ? 'Exit full screen' : 'Full screen'}
             shortcut={fullscreen ? 'Esc' : undefined}
             data-testid="fullscreen-toggle"

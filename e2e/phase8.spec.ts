@@ -31,7 +31,7 @@ test('unsupported files surface an honest error toast', async ({ page }) => {
   const bad = `${VERIFY}/notmedia.txt`
   fs.writeFileSync(bad, 'this is not a media file')
   await page.getByTestId('media-file-input').setInputFiles(bad)
-  await expect(page.getByTestId('toast')).toContainText(/unsupported|import failed/i, { timeout: 15_000 })
+  await expect(page.getByTestId('toast')).toContainText(/could not be imported|import failed/i, { timeout: 15_000 })
 })
 
 test('9:16 Shorts format makes the sequence vertical and fills the frame', async ({ page }) => {

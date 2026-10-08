@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { TYPING_FIELD } from '../keymap'
 
 // Escape closes a dialog (2026-10-03). The Projects dialog and the Recording studio did not listen
 // for it at all, and the ones that did each had a private window listener, so two dialogs open at
@@ -35,22 +36,13 @@ function noteMenu(e: KeyboardEvent): void {
   if (e.key === 'Escape') menuAtKeydown = { event: e, open: document.querySelector(MENU) !== null }
 }
 
-/** Fields that take typing. Checkboxes, ranges, buttons and the like do not count. */
-const TYPING = [
-  'textarea',
-  '[contenteditable=""]',
-  '[contenteditable="true"]',
-  ...['text', 'search', 'number', 'email', 'url', 'tel', 'password'].map((t) => `input[type="${t}"]`),
-  'input:not([type])',
-].join(',')
-
 function onKeyDown(e: KeyboardEvent): void {
   if (e.key !== 'Escape') return
   const top = layers[layers.length - 1]
   if (!top) return
   if (menuAtKeydown?.event === e ? menuAtKeydown.open : document.querySelector(MENU) !== null) return
   const target = e.target
-  if (target instanceof HTMLElement && target.matches(TYPING)) {
+  if (target instanceof HTMLElement && target.matches(TYPING_FIELD)) {
     target.blur()
     e.preventDefault()
     return

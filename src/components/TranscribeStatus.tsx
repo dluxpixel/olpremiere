@@ -21,7 +21,7 @@ export function TranscribeStatus() {
     <div
       data-testid="transcribe-status"
       role="status"
-      className="fixed bottom-12 left-1/2 z-50 flex -translate-x-1/2 items-center gap-2 rounded-full border border-border bg-bg-elevated py-1.5 pl-3 pr-2.5 text-ui-sm text-text-primary shadow-pop"
+      className="fixed bottom-12 left-1/2 z-50 flex -translate-x-1/2 items-center gap-2 rounded-overlay border border-border bg-bg-elevated py-1.5 pl-3 pr-2.5 text-ui-sm text-text-primary shadow-pop"
     >
       {/* In-progress work is an ember state, not an accent state. */}
       <Loader2 size={13} strokeWidth={2} aria-hidden className="animate-spin text-ember" />

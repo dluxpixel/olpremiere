@@ -145,7 +145,7 @@ export function copySelection(): boolean {
   // Copy is the one verb with NO visible effect of its own, so it has to say so.
   // Otherwise the only way to find out whether it worked is to paste.
   if (s.ui.selection.length === 0) {
-    useToasts.getState().show('Select a clip to copy', 'danger')
+    useToasts.getState().show('Select a clip to copy', 'info')
     return false
   }
   const { ids, sounds, brought } = withPictureSound(seq, s.ui.selection)
@@ -253,7 +253,7 @@ export function pasteAt(trackIndex: number, atS: number): void {
 function pasteClipboard(atS: number, target?: { trackIndex: number }): void {
   const s = useStore.getState()
   if (clipboard.length === 0) {
-    useToasts.getState().show('Nothing to paste. Copy a clip first', 'danger')
+    useToasts.getState().show('Nothing to paste. Copy a clip first', 'info')
     return
   }
   // A clip whose media this project does not have brings the record it was

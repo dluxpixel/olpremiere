@@ -47,7 +47,7 @@ const clipById = (id: string | undefined): Clip | undefined => {
 export function copyClipMove(clipId?: string): void {
   const clip = clipById(clipId ?? useStore.getState().ui.selection[0])
   if (!clip) {
-    useToasts.getState().show('Select a clip to copy the move from', 'danger')
+    useToasts.getState().show('Select a clip to copy the move from', 'info')
     return
   }
   const tracks: MoveTracks = {}
@@ -95,12 +95,12 @@ export function copyClipMove(clipId?: string): void {
 export function pasteClipMove(ids?: Iterable<string>): void {
   const tracks = clipboard
   if (!tracks) {
-    useToasts.getState().show('Copy a move first', 'danger')
+    useToasts.getState().show('Copy a move first', 'info')
     return
   }
   const targets = new Set(ids ?? useStore.getState().ui.selection)
   if (targets.size === 0) {
-    useToasts.getState().show('Select the clips to paste the move onto', 'danger')
+    useToasts.getState().show('Select the clips to paste the move onto', 'info')
     return
   }
   let done = 0
