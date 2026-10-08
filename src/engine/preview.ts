@@ -76,6 +76,13 @@ const HARD_SEEK_S = 0.35
 /** How far outside a clip's own source span a presented frame may sit and still be its footage (frame timing). */
 const OWN_SPAN_SLACK_S = 0.05
 /**
+ * How far from the moment wanted a picture may sit and still be held as a clip's
+ * own (sweep review S-A). Inside the clip's source span is not enough on a long
+ * clip: an element left 17 s back by a scrub is the clip's footage and the wrong
+ * shot. The worst lag measured on his long GOP capture was 1.8 s.
+ */
+const OWN_FOOTAGE_NEAR_S = 2
+/**
  * Shortest interval between two hard seeks of the SAME element. A seek that has
  * landed still needs a frame decoded and composited before the probe can report
  * it, and re-seeking inside that window throws away the work. 120 ms is about
@@ -1260,7 +1267,8 @@ function makeTextureSource(
     const showsOwnFootage = (p: PooledVideo): boolean => {
       const span = holding ? holdSpans?.get(layer.clipId) : undefined
       if (!span || !p.probe.live) return false
-      return p.probe.mediaTime >= span[0] - OWN_SPAN_SLACK_S && p.probe.mediaTime <= span[1] + OWN_SPAN_SLACK_S
+      const at = p.probe.mediaTime
+      return at >= span[0] - OWN_SPAN_SLACK_S && at <= span[1] + OWN_SPAN_SLACK_S && Math.abs(at - srcT) <= OWN_FOOTAGE_NEAR_S
     }
 
     if (playing && transitionFrom?.has(layer)) {

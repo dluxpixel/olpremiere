@@ -652,14 +652,23 @@ describe('the outgoing side of a dissolve has its own clip to hold, even when th
   type Rvfc = (now: number, meta: { mediaTime: number; presentedFrames: number }) => void
   const rvfc = new Map<HTMLVideoElement, Rvfc>()
   let now = 1000
+  /** The source time each element last put on screen. */
+  const shown = new WeakMap<object, number>()
   /** The element puts a frame on screen. */
   const present = (el: HTMLVideoElement, mediaTime: number): void => {
+    shown.set(el, mediaTime)
     const cb = rvfc.get(el)
     rvfc.delete(el)
     cb?.(now, { mediaTime, presentedFrames: 1 })
   }
   /** The incoming clip's own element, which the pre-roll made. */
   const incoming = (): HTMLVideoElement => videos.find((v) => v !== videos[0])!
+  /**
+   * The source time of the footage a picture holds: a canvas remembers what it
+   * was last drawn from (an element, or a canvas that was), so a held frame can be
+   * asked whose moment it is, not only whether something was drawn.
+   */
+  const seenIn = (pic: unknown): number | undefined => (pic as { seen?: number } | null)?.seen
 
   beforeEach(() => {
     now = 1000
@@ -671,12 +680,17 @@ describe('the outgoing side of a dissolve has its own clip to hold, even when th
     }
     proto.cancelVideoFrameCallback = () => undefined
     class FakeOffscreen {
+      seen: number | undefined
       constructor(
         public width: number,
         public height: number,
       ) {}
       getContext() {
-        return { drawImage: () => undefined }
+        return {
+          drawImage: (src: object) => {
+            this.seen = (src as { seen?: number }).seen ?? shown.get(src)
+          },
+        }
       }
     }
     vi.stubGlobal('OffscreenCanvas', FakeOffscreen)
@@ -723,6 +737,9 @@ describe('the outgoing side of a dissolve has its own clip to hold, even when th
     const inWindow = h.drawn.slice(before)
     expect(inWindow).toHaveLength(30)
     expect(inWindow.every((d) => d[0] !== null)).toBe(true)
+    // And it is the outgoing clip's own footage (source 20 to 22), the last frame
+    // it showed on time, not merely something.
+    expect(inWindow.every((d) => (seenIn(d[0]) ?? -1) >= 21.5 && (seenIn(d[0]) ?? 99) <= 22)).toBe(true)
   })
 
   it('a picture of another part of the take is never held for it', async () => {
@@ -745,6 +762,37 @@ describe('the outgoing side of a dissolve has its own clip to hold, even when th
       now += 1000 / 30
       present(el, 19)
       present(incoming(), 30 + tS - 2)
+      preview.renderPreview(c, seq, { A }, tS, true)
+    }
+    const inWindow = h.drawn.slice(before)
+    expect(inWindow.length).toBeGreaterThan(0)
+    expect(inWindow.every((d) => d[0] === null)).toBe(true)
+  })
+
+  // S-A (sweep review 2): "inside the clip" was the whole test, so on a long
+  // clip an element left 17 s back (a scrub, then Space at once) was still "this
+  // clip's footage", and the dissolve crossfaded from a shot 17 s old.
+  it('a picture far from the wanted moment is not held, even when it is inside a long clip', async () => {
+    const longA = clip({ id: 'a', assetId: 'A', startS: 0, inS: 0, outS: 30 })
+    const b2 = clip({ id: 'b', assetId: 'A', startS: 30, inS: 100, outS: 104, transitionIn: { type: 'crossDissolve', durationS: 1 } })
+    const seq = sequence([longA, b2])
+    const c = canvas()
+    preview.prewarmPreview([A])
+    await loadVideos()
+    const el = videos[0]
+    // Space at 27.5 with the element left at 10 s, where the scrub began.
+    for (let f = 0; f < 75; f++) {
+      now += 1000 / 30
+      present(el, 10)
+      preview.renderPreview(c, seq, { A }, 27.5 + f / 30, true)
+    }
+    await loadVideos()
+    const before = h.drawn.length
+    for (let f = 0; f < 30; f++) {
+      const tS = 30 + f / 30
+      now += 1000 / 30
+      present(el, 10)
+      present(incoming(), 100 + tS - 30)
       preview.renderPreview(c, seq, { A }, tS, true)
     }
     const inWindow = h.drawn.slice(before)
