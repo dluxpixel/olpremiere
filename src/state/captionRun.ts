@@ -209,7 +209,8 @@ export function captionFromScript(script: string, style?: CaptionStyle): Promise
   const selection = s.ui.selection
   const picked = [...withSoundPartners(activeSequence(s.project), selection)].filter(hasSound)
   if (picked.length > 0) return captionTheseClips(selection, style, { script })
-  // Every take, captioned or not: his script replaces only where it was heard.
+  // Every take is heard, captioned or not, but only the takes his script lands in are
+  // replaced (layCaptions): a take it was not said in keeps the captions it has.
   return voiceoverClipIds().length > 0 ? recaptionTheVoiceover(style, { script }) : null
 }
 
