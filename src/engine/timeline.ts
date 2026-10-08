@@ -2418,13 +2418,20 @@ const clipPayloadBody = (clip: Clip): Omit<Clip, 'id' | 'startS'> => {
 
 /** `brought` marks the clips Copy took along with what he picked (ClipPayload.brought). */
 export function serializeClips(seq: Sequence, clipIds: Id[], brought?: ReadonlySet<Id>): ClipPayload[] {
+  // One pass over the clips, not a findClip per id: Ctrl+A, Ctrl+C on a long
+  // edit was O(selection x clips). The first clip with an id wins, as findClip's.
+  const at = new Map<Id, { clip: Clip; track: Track; trackIndex: number }>()
+  seq.tracks.forEach((track, trackIndex) => {
+    for (const clip of track.clips) if (!at.has(clip.id)) at.set(clip.id, { clip, track, trackIndex })
+  })
   const found: { clip: Clip; track: Track; trackIndex: number }[] = []
   for (const id of clipIds) {
-    const f = findClip(seq, id)
+    const f = at.get(id)
     if (f) found.push(f)
   }
   if (found.length === 0) return []
-  const earliest = Math.min(...found.map((f) => f.clip.startS))
+  let earliest = Infinity
+  for (const f of found) earliest = Math.min(earliest, f.clip.startS)
   return found.map(({ clip, track, trackIndex }) => {
     let trackOffset = 0
     for (let i = 0; i < trackIndex; i++) if (seq.tracks[i].kind === track.kind) trackOffset++

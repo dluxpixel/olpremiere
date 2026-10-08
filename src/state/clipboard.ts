@@ -8,6 +8,7 @@ import {
   clipGroupIds,
   deleteGroup,
   duplicateClips,
+  linkGroupIndex,
   moveGroup,
   pasteClips,
   serializeClips,
@@ -109,12 +110,24 @@ function withPictureSound(seq: Sequence, ids: readonly Id[]): { ids: Id[]; sound
   const have = new Set(ids)
   const brought = new Set<Id>()
   let sounds = 0
+  // One pass over the clips and one link index. A group looked up per picture
+  // (clipGroupIds, a findClip plus a scan of every clip) made Ctrl+A, Ctrl+C on
+  // a long edit O(selection x clips).
   const kindOf = new Map<Id, Track['kind']>()
-  for (const t of seq.tracks) for (const c of t.clips) kindOf.set(c.id, t.kind)
+  const linkOf = new Map<Id, Id>()
+  for (const t of seq.tracks) {
+    for (const c of t.clips) {
+      kindOf.set(c.id, t.kind)
+      if (c.linkId) linkOf.set(c.id, c.linkId)
+    }
+  }
+  const byLink = linkGroupIndex(seq)
   for (const id of ids) {
     if (kindOf.get(id) !== 'video') continue
+    const link = linkOf.get(id)
+    if (!link) continue
     let added = false
-    for (const g of clipGroupIds(seq, id)) {
+    for (const g of byLink.get(link) ?? []) {
       if (have.has(g) || kindOf.get(g) !== 'audio') continue
       have.add(g)
       out.push(g)

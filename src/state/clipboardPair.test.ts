@@ -8,7 +8,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { recomputeDuration } from '../engine/timeline'
 import { activeSequence, audioTracks, newClipFromAsset, newProject, videoTracks, type MediaAsset } from '../engine/types'
-import { copySelection, cutSelection, duplicateSelection, pasteAtPlayhead } from './clipboard'
+import { benchRatio } from '../engine/perfRatio'
+import { copySelection, cutSelection, duplicateSelection, pasteAtPlayhead, selectAllClips } from './clipboard'
 import { updateActiveSequence, useStore } from './store'
 
 const show = vi.fn()
@@ -148,5 +149,40 @@ describe('the picture half brings its sound', () => {
     duplicateSelection()
     expect(fresh()).toHaveLength(0)
     expect(show).toHaveBeenCalledWith('Its sound is on a locked track, so it was not duplicated', 'danger')
+  })
+})
+
+describe('Copy stays linear in the clip count', () => {
+  // withPictureSound found each picture's group with clipGroupIds, a findClip
+  // plus a scan of every clip, and serializeClips found each clip with a
+  // findClip of its own: Ctrl+A, Ctrl+C on a long edit was O(selection x clips).
+  //
+  // A ratio to the yardstick, as the close gap budgets (perfRatio.ts). Measured
+  // on this machine, 2026-10-08, at 4000 pairs: the old code 16283x and 16942x
+  // (355 and 428 ms); one pass 1266x, 1461x, 1647x and 2208x (54 to 65 ms, most
+  // of it the structuredClone of each clip, which is linear and stays). 6000 is
+  // about 2.7 times the worst of those, and the old code reads 2.7 times over it.
+  const BUDGET_RATIO = 6000
+  it('Ctrl+A, Ctrl+C on 4000 pairs stays inside its budget', () => {
+    const n = 4000
+    const pair = (prefix: string, k: number) => ({ ...newClipFromAsset(av, k), id: `${prefix}${k}`, outS: 0.5, linkId: `L${k}` })
+    updateActiveSequence('long edit', (sq) =>
+      recomputeDuration({
+        ...sq,
+        tracks: sq.tracks.map((t, i) =>
+          i === 0
+            ? { ...t, clips: Array.from({ length: n }, (_, k) => pair('v', k)) }
+            : i === 2
+              ? { ...t, clips: Array.from({ length: n }, (_, k) => pair('a', k)) }
+              : t,
+        ),
+      }),
+    )
+    selectAllClips()
+    expect(useStore.getState().ui.selection).toHaveLength(2 * n)
+    copySelection()
+    const { ratio, perCallMs } = benchRatio(() => void copySelection(), 1, 5)
+    expect(ratio, `Copy ran at ${ratio.toFixed(1)}x the yardstick (${perCallMs.toFixed(1)} ms)`).toBeLessThan(BUDGET_RATIO)
+    expect(show).toHaveBeenLastCalledWith(`Copied ${2 * n} clips`, 'info')
   })
 })
