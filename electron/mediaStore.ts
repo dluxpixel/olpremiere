@@ -40,9 +40,12 @@ export function mediaDir(): string {
  * own name, and the legacy profile this app is already known to have used. A
  * folder that is not there costs one failed `readdir`.
  *
- * ⛔ FOR READING ONLY. The 7 day cleanup deletes in `mediaDir()` alone, this
- * profile's own folder (mediaSweep.ts): from a throwaway or lab profile, which
- * sees none of his projects, every copy in his real folder looked unused.
+ * ⛔ FOR READING ONLY. Nothing deletes through these folders. The 7 day cleanup
+ * deletes in `mediaDir()` alone, this profile's own folder (mediaSweep.ts): from
+ * a throwaway or lab profile, which sees none of his projects, every copy in his
+ * real folder looked unused. And the page has no call that deletes a copy at
+ * all: `media:delete` removed it from every one of these, his real folder
+ * included, whichever profile asked, so it went on 2026-10-08.
  */
 function mediaDirs(): string[] {
   const dirs = [mediaDir()]
@@ -216,14 +219,6 @@ export async function readMedia(assetId: string, offset: number, length: number)
   } finally {
     await handle.close().catch(() => undefined)
   }
-}
-
-/** Drop an asset's copy, for when he deletes the media for good. */
-export async function deleteMedia(assetId: string): Promise<void> {
-  if (!SAFE_ID.test(assetId)) return
-  // Every folder it could be in, or a delete would leave a copy behind that the
-  // next repair would happily put back.
-  for (const dir of mediaDirs()) await rm(path.join(dir, assetId), { force: true }).catch(() => undefined)
 }
 
 /** Half written files from a run that died. Startup only, when no write is live. */

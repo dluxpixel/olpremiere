@@ -66,10 +66,6 @@ function fakeShell(opts: { failWrite?: boolean; failRead?: boolean } = {}) {
       if (!b) return Promise.resolve(null)
       return Promise.resolve(b.slice(off, off + len).buffer)
     },
-    mediaDelete: (id: string) => {
-      disk.delete(id)
-      return Promise.resolve()
-    },
   }
 }
 

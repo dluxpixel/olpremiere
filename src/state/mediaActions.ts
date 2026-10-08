@@ -414,8 +414,8 @@ export function deleteAsset(assetId: Id): void {
   // Sharing. `landRestored` gives a recovered project a fresh id and keeps its
   // ASSETS byte for byte, so several rows on his shelf point at one set of
   // bytes. Both IndexedDB delete paths were taught that; this one never was, and
-  // `deleteMedia` loops every folder the app has ever used, so there is no
-  // second chance.
+  // `deleteMedia` looped every folder the app has ever used, so there was no
+  // second chance. It is gone now: nothing on the page can delete a spare copy.
   //
   // Size is not a constraint on his machine and a mirror that only grows is the
   // right trade. If reclamation is ever wanted it belongs in `blobSweep`, beside

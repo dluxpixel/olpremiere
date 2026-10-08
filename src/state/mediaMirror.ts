@@ -33,7 +33,6 @@ interface MediaApi {
   mediaFinish(id: string): Promise<number>
   mediaCancel(id: string): Promise<void>
   mediaRead(id: string, offset: number, length: number): Promise<ArrayBuffer | null>
-  mediaDelete(id: string): Promise<void>
 }
 
 /**

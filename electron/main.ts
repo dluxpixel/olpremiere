@@ -639,7 +639,6 @@ app.whenReady().then(() => {
   ipcMain.handle('media:finish', (_e, id: string) => mediaStore.finishMedia(id))
   ipcMain.handle('media:cancel', (_e, id: string) => mediaStore.cancelMedia(id))
   ipcMain.handle('media:read', (_e, id: string, offset: number, length: number) => mediaStore.readMedia(id, offset, length))
-  ipcMain.handle('media:delete', (_e, id: string) => mediaStore.deleteMedia(id))
   // Spare copies nothing has used for 7 days, his call 2026-10-06 (mediaSweep.ts).
   // Never while a copy is being written: that is an import on its way.
   // ⛔ ONLY THIS PROFILE'S OWN FOLDER is deleted from (mediaStore.mediaDir, which

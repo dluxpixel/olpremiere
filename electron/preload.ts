@@ -34,7 +34,6 @@ const api: OlApi = {
   mediaFinish: (id: string) => ipcRenderer.invoke('media:finish', id),
   mediaCancel: (id: string) => ipcRenderer.invoke('media:cancel', id),
   mediaRead: (id: string, offset: number, length: number) => ipcRenderer.invoke('media:read', id, offset, length),
-  mediaDelete: (id: string) => ipcRenderer.invoke('media:delete', id),
   mediaSweepUnused: (projectIds: string[], assetIds: string[]) =>
     ipcRenderer.invoke('media:sweepUnused', projectIds, assetIds),
   mediaSweepHold: (why: string) => ipcRenderer.invoke('media:sweepHold', why),
