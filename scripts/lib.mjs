@@ -384,6 +384,85 @@ export function commitExactTree(tree, message, { parent, cwd = process.cwd() }) 
   return commit
 }
 
+// --- THE VERSION BUMP IS BUILT FROM THE GATED MANIFESTS (2026-10-08) ----------------
+//
+// ⛔ THE BUMP READ package.json AND package-lock.json FROM DISK, AFTER THE GATE. The gate
+// hashes the tree when it ends and refuses one that moved, but the bump runs after that
+// check: it read the current version from disk, `npm version` rewrote both files on
+// disk, and the release commit took both files from disk. A dependency added to
+// package.json in that window (or between the stamp check and the bump of an
+// already-verified tree) was committed and released with no check ever having seen it.
+//
+// So the bump refuses unless both files are, on disk, exactly what the gate checked,
+// reads the version it bumps FROM THE GATED TREE, and after `npm version` has run it
+// refuses again unless each file differs from the gated one in its version fields and
+// nothing else.
+
+/** The two files `npm version` rewrites, and the release commit takes from disk. */
+export const MANIFESTS = ['package.json', 'package-lock.json']
+
+/** A file as it is in `tree`, or null when the tree has none. */
+function fileInTree(tree, path, cwd) {
+  try {
+    return execFileSync('git', ['show', `${tree}:${path}`], { cwd, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+  } catch {
+    return null
+  }
+}
+
+/** The version in the gated tree's package.json: the one a bump starts from, whatever is on disk now. */
+export function versionInTree(tree, cwd = process.cwd()) {
+  const text = fileInTree(tree, 'package.json', cwd)
+  if (text === null) throw new Error(`the gated tree has no package.json`)
+  const version = JSON.parse(text).version
+  if (typeof version !== 'string') throw new Error('the gated tree has no version in its package.json')
+  return version
+}
+
+/**
+ * The manifests whose bytes on disk are not what the gated tree holds. Empty means the
+ * bump may start. A manifest the tree has and the disk has lost is named too.
+ */
+export function manifestsMoved(gatedTree, cwd = process.cwd()) {
+  const gone = MANIFESTS.filter((f) => fileInTree(gatedTree, f, cwd) !== null && !existsSync(join(cwd, f)))
+  const changed = changedBetween(gatedTree, treeWith(gatedTree, MANIFESTS, cwd), cwd).filter((f) => MANIFESTS.includes(f))
+  return [...new Set([...gone, ...changed])].sort()
+}
+
+/** JSON with its keys in a fixed order, so two spellings of one document compare equal. */
+function canonical(value) {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${canonical(value[k])}`)
+      .join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+/**
+ * The manifests that, after `npm version` ran, differ from the gated tree by more than
+ * the version: a change nobody gated. Empty means the commit may take them from disk.
+ */
+export function manifestsBeyondVersion(gatedTree, version, cwd = process.cwd()) {
+  const bad = []
+  for (const f of MANIFESTS) {
+    const gatedText = fileInTree(gatedTree, f, cwd)
+    if (gatedText === null) continue
+    try {
+      const expected = JSON.parse(gatedText)
+      expected.version = version
+      if (f === 'package-lock.json' && expected.packages?.['']) expected.packages[''].version = version
+      const onDisk = JSON.parse(readFileSync(join(cwd, f), 'utf8'))
+      if (canonical(expected) !== canonical(onDisk)) bad.push(f)
+    } catch {
+      bad.push(f)
+    }
+  }
+  return bad
+}
+
 // --- --fast keeps its own contract (2026-10-06) -------------------------------
 //
 // ⛔ `--fast` says "docs only or comment only", and it shipped four FEATURE
@@ -403,6 +482,39 @@ export function isDocsPath(path) {
 /** The paths that make a release NOT docs only. Empty means --fast is allowed. */
 export function codeFiles(paths) {
   return paths.filter((p) => !isDocsPath(p))
+}
+
+/**
+ * What makes the release NOT docs only, judged on `tree` and on nothing else.
+ *
+ * ⛔ THE TREE IS PASSED IN, NEVER HASHED HERE (2026-10-08). `--fast` used to hash the
+ * tree for this check and the gate used to hash it again a moment later, so a code
+ * file saved between the two was never looked at by the docs only check and then
+ * became the gate's own baseline: it shipped marked "docs only". One hash is taken at
+ * the start of the run; this check, the stamp check and the gate all read that one,
+ * and the gate's check at its end covers all of them.
+ *
+ * With no tag to compare against, everything counts as unreleased.
+ */
+export function fastRefusal(lastTag, tree, cwd = process.cwd()) {
+  return lastTag ? codeFiles(changedBetween(lastTag, tree, cwd)) : ['(no release tag to compare against)']
+}
+
+/**
+ * Put the process in the state the gate runs in, for itself and every step it starts.
+ *
+ * OLP_GATE tells a spec it is inside the gate, where a missing prerequisite is a
+ * failure and not a quiet skip.
+ *
+ * ⛔ OLP_MEASURE IS CLEARED (2026-10-08). It switches on the `measure` project, which
+ * is scrub-cost on his own 1.38 GB project and took 3 to 10 minutes: not part of the
+ * gate. Set in a PowerShell terminal it STAYS set for every later command in that
+ * window, so a plain `npm run patch` there put scrub-cost back in the gate. The gate
+ * answers for what it runs, whatever the shell it was started from still holds.
+ */
+export function enterGate(env = process.env) {
+  env.OLP_GATE = '1'
+  delete env.OLP_MEASURE
 }
 
 // --- a failed gate keeps its evidence (2026-10-06) ----------------------------

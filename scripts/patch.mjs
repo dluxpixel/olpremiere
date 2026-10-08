@@ -31,12 +31,15 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   changedBetween,
-  codeFiles,
   commitExactTree,
+  enterGate,
   FAST_MARK,
+  fastRefusal,
   isTransientFailure,
   keepEvidence,
   loadToken,
+  manifestsBeyondVersion,
+  manifestsMoved,
   nextVersion,
   openShipLog,
   planShip,
@@ -44,6 +47,7 @@ import {
   SHIP_LOG,
   treeHash,
   treeWith,
+  versionInTree,
 } from './lib.mjs'
 
 const args = process.argv.slice(2)
@@ -83,6 +87,14 @@ const stampedTree = () => {
 }
 const writeStamp = (tree) => writeFileSync(STAMP, JSON.stringify({ tree, at: new Date().toISOString() }))
 
+// ⛔ THE TREE IS HASHED ONCE, HERE (2026-10-08). `--fast` hashed it for its docs only
+// check and the gate hashed it again a moment later, so a code file saved between the
+// two was never seen by the docs only check and became the gate's own baseline: it
+// shipped marked "docs only". The stamp check, the docs only check and the gate all read
+// THIS one, and the gate's check at its end (below) covers all three. Nothing else in
+// this file may hash the tree for a verdict at the start of a run.
+const startTree = treeHash()
+
 // The gate, in one place, for a ship and for --verify alike. Only a FULL gate
 // stamps: --fast skipped the browser, so it proved less than a stamp promises.
 //
@@ -93,8 +105,7 @@ const writeStamp = (tree) => writeFileSync(STAMP, JSON.stringify({ tree, at: new
 // e2e (the dev server serves whatever is on disk), so a gate whose tree moved
 // under it has no verdict on either tree. Nothing is committed or stamped, and the
 // files are named.
-const gate = async () => {
-  const tree = treeHash()
+const gate = async (tree) => {
   const t0 = Date.now()
   const fail = (why) => {
     const say = `\n❌ The gate failed (${why}), so NOTHING was committed or released.\n   The whole run is in ${SHIP_LOG}\n   Fix it and run the same command again.\n`
@@ -103,8 +114,10 @@ const gate = async () => {
     process.exit(1)
   }
   // Tells a spec it is inside the gate, where a missing prerequisite (vendor/ffmpeg)
-  // is a failure and not a quiet skip: the release cannot package without it.
-  process.env.OLP_GATE = '1'
+  // is a failure and not a quiet skip: the release cannot package without it. And clears
+  // OLP_MEASURE, which a PowerShell window keeps for every later command and which would
+  // put scrub-cost back in the gate (see enterGate in lib.mjs).
+  enterGate()
 
   // 1. THE CHECKS THAT NEED NO BROWSER, one after another, as before. Running them
   // side by side would save about a minute, and it would put seven heavy jobs on
@@ -169,7 +182,7 @@ const gate = async () => {
 }
 
 if (verifyOnly) {
-  await gate()
+  await gate(startTree)
   console.log(`\n✅ Verified${fast ? ' without the browser suite, so nothing was stamped' : ': this exact code passed every check, and a ship of it goes straight to publishing'}.`)
   process.exit(0)
 }
@@ -255,7 +268,7 @@ const unreleased = lastTag ? git('rev-list', '--count', `${lastTag}..HEAD`) : '1
 const shippedVersion = JSON.parse(readFileSync('package.json', 'utf8')).version
 // Only this script writes that line, and only after a gate passed.
 const headIsRelease = git('log', '-1', '--format=%B').includes(`Released as v${shippedVersion} by scripts/patch.mjs`)
-const verified = !!(dirty && dirty.trim()) && stampedTree() === treeHash()
+const verified = !!(dirty && dirty.trim()) && stampedTree() === startTree
 
 const plan = planShip({ dirty, unpushed, unreleased, headIsRelease, verified })
 if (!plan) {
@@ -274,7 +287,7 @@ const headAtStart = git('rev-parse', 'HEAD')
 // browser suite, and a stranded release commit is not gated at all.
 const skippingE2e = fast && plan.gate
 if (skippingE2e) {
-  const code = lastTag ? codeFiles(changedBetween(lastTag, treeHash())) : ['(no release tag to compare against)']
+  const code = fastRefusal(lastTag, startTree)
   if (code.length) {
     console.error(`\n❌ --fast is for a docs only release, and this one changes code since ${lastTag || 'the start'}:`)
     for (const f of code.slice(0, 40)) console.error(`   ${f}`)
@@ -287,7 +300,7 @@ if (skippingE2e) {
 
 // --- 1. the gate ------------------------------------------------------------
 let gatedTree = ''
-if (plan.gate) gatedTree = await gate()
+if (plan.gate) gatedTree = await gate(startTree)
 else if (plan.bump) {
   // `verified` above means the tree on disk matched this stamp a moment ago.
   // The commit is built from the STAMPED tree, so a save since then stays out.
@@ -332,9 +345,36 @@ if (!plan.bump) {
 // ships as the ordinary release it is rather than as a "big" one that opens a
 // window on his screen.
 const bump = process.argv.includes('--fix') ? 'fix' : 'minor'
-const current = JSON.parse(readFileSync('package.json', 'utf8')).version
+
+// ⛔ THE BUMP STARTS FROM THE GATED MANIFESTS, NOT FROM DISK (2026-10-08). The gate's
+// check at its end is behind us, and `npm version` rewrites package.json and
+// package-lock.json on disk, which the release commit then takes. A dependency added in
+// this window went out with nothing ever having checked it. So the two files must be, on
+// disk, what the gate checked; the version comes out of the gated tree; and after the
+// bump each file may differ from the gated one in its version and nothing else.
+const refuse = (say) => {
+  console.error(say)
+  shipLog?.write(say)
+  process.exit(1)
+}
+const moved = manifestsMoved(gatedTree)
+if (moved.length) {
+  refuse(
+    '\n❌ package.json or package-lock.json changed after the gate checked them, so the version was NOT bumped and nothing was committed or released.\n' +
+      moved.map((f) => `   ${f}\n`).join('') +
+      '   Let whatever is writing them finish, then run the same command again.\n',
+  )
+}
+const current = versionInTree(gatedTree)
 const version = nextVersion(current, bump)
 await run(`npm version ${version} --no-git-tag-version`, `version bump (${bump}): ${current} to ${version}`)
+const beyond = manifestsBeyondVersion(gatedTree, version)
+if (beyond.length) {
+  refuse(
+    `\n❌ ${beyond.join(' and ')} changed by more than the version while it was bumped, so NOTHING was committed or released.\n` +
+      `   The bump to ${version} is on disk and uncommitted. Let whatever is writing them finish, check the diff, then run the same command again.\n`,
+  )
+}
 
 // ⛔ THE COMMIT IS THE GATED TREE PLUS THE BUMP, BY CONSTRUCTION. It used to be
 // `git add -A`, which took whatever was on disk at this moment, gated or not.

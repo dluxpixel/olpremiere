@@ -4,15 +4,19 @@
 // release cannot be "checked by eye" in any useful sense.
 
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it } from 'vitest'
 import {
   changedBetween,
   codeFiles,
   commitExactTree,
+  enterGate,
+  fastRefusal,
   keepEvidence,
+  manifestsBeyondVersion,
+  manifestsMoved,
   runLogged,
   isBigUpdate,
   isDocsPath,
@@ -24,7 +28,23 @@ import {
   runLoggedRetry,
   treeHash,
   treeWith,
+  versionInTree,
 } from './lib.mjs'
+
+// ⛔ EVERY FOLDER THIS FILE MAKES IS REMOVED WHEN IT ENDS (2026-10-08). Each run left
+// eleven behind in %TEMP% (olp-gate-*, olp-evidence-*, olp-retry-*), a scratch git repo
+// each, and a box that runs this on every ship and every `npm run verify` filled up
+// with them: 578 were sitting there when this was found.
+const made = []
+/** A fresh folder under the temp directory, removed in afterAll. */
+function scratchDir(prefix) {
+  const dir = mkdtempSync(join(tmpdir(), prefix))
+  made.push(dir)
+  return dir
+}
+afterAll(() => {
+  for (const dir of made) rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+})
 
 /**
  * A command that fails `failures` times and then succeeds, printing `message`
@@ -32,7 +52,7 @@ import {
  * how this reacts to a real exit code and a real stream.
  */
 function flakyCommand(failures, message) {
-  const dir = mkdtempSync(join(tmpdir(), 'olp-retry-'))
+  const dir = scratchDir('olp-retry-')
   const counter = join(dir, 'n')
   const script = join(dir, 'run.mjs')
   writeFileSync(counter, '0')
@@ -283,7 +303,7 @@ describe('nextVersion', () => {
  * Real git, because what is being proven is what git ends up committing.
  */
 function scratchRepo() {
-  const dir = mkdtempSync(join(tmpdir(), 'olp-gate-'))
+  const dir = scratchDir('olp-gate-')
   const git = (...a) => execFileSync('git', a, { cwd: dir, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }).trim()
   git('init', '-q', '-b', 'main')
   git('config', 'user.email', 'gate@test.invalid')
@@ -373,6 +393,168 @@ describe('the --fast contract', () => {
   })
 })
 
+// ⛔ `--fast` HASHED THE TREE FOR ITS DOCS ONLY CHECK AND THE GATE HASHED IT AGAIN (2026-10-08).
+// A code file saved between the two was never seen by the check and then became the gate's
+// own baseline, so it shipped marked "docs only". The check now judges the tree it is
+// handed, which is the one tree taken at the start of the run.
+describe('the --fast check judges the one tree it is given', { timeout: 30_000 }, () => {
+  it('a code file saved after the tree was taken does not change the verdict on that tree', () => {
+    const { dir, git, write } = scratchRepo()
+    git('tag', 'v1.0.0')
+    write('NOTES.md', 'docs')
+    const tree = treeHash(dir)
+    expect(fastRefusal('v1.0.0', tree, dir)).toEqual([])
+
+    // Saved between the check and the gate.
+    mkdirSync(join(dir, 'src'))
+    write('src/x.ts', 'x')
+    expect(fastRefusal('v1.0.0', tree, dir)).toEqual([])
+    // A tree taken now carries it, which is what the gate's check at its end compares.
+    const later = treeHash(dir)
+    expect(fastRefusal('v1.0.0', later, dir)).toEqual(['src/x.ts'])
+    expect(changedBetween(tree, later, dir)).toEqual(['src/x.ts'])
+  })
+
+  it('names every code file in the tree it is given', () => {
+    const { dir, git, write } = scratchRepo()
+    git('tag', 'v1.0.0')
+    write('a.txt', 'a2')
+    write('README.md', 'docs')
+    expect(fastRefusal('v1.0.0', treeHash(dir), dir)).toEqual(['a.txt'])
+  })
+
+  it('with no release tag to compare against, nothing is docs only', () => {
+    const { dir } = scratchRepo()
+    expect(fastRefusal('', treeHash(dir), dir)).toEqual(['(no release tag to compare against)'])
+  })
+})
+
+// ⛔ THE VERSION BUMP READ package.json AND package-lock.json FROM DISK, AFTER THE GATE
+// (2026-10-08). The gate's check at its end was already behind it, `npm version` rewrote
+// both files on disk and the release commit took both from disk, so a dependency added in
+// that window shipped with no check having seen it.
+describe('the version bump is built from the gated manifests', { timeout: 30_000 }, () => {
+  const pkg = (version, extra = {}) =>
+    JSON.stringify({ name: 'olp', version, dependencies: { a: '1.0.0', ...extra } }, null, 2) + '\n'
+  const lock = (version, extra = {}) =>
+    JSON.stringify({ name: 'olp', version, lockfileVersion: 3, packages: { '': { name: 'olp', version }, ...extra } }, null, 2) + '\n'
+  /** A repo whose gated tree holds both manifests at 1.0.0. */
+  const gatedRepo = () => {
+    const r = scratchRepo()
+    r.write('package.json', pkg('1.0.0'))
+    r.write('package-lock.json', lock('1.0.0'))
+    r.git('add', '-A')
+    r.git('commit', '-q', '-m', 'manifests')
+    return { ...r, gated: treeHash(r.dir) }
+  }
+
+  it('lets the bump start when both files are what the gate checked', () => {
+    const { dir, gated } = gatedRepo()
+    expect(manifestsMoved(gated, dir)).toEqual([])
+  })
+
+  it('refuses when package.json, the lock, or both changed after the gate', () => {
+    const { dir, write, gated } = gatedRepo()
+    write('package.json', pkg('1.0.0', { sneaked: '9.9.9' }))
+    expect(manifestsMoved(gated, dir)).toEqual(['package.json'])
+    write('package-lock.json', lock('1.0.0', { 'node_modules/sneaked': { version: '9.9.9' } }))
+    expect(manifestsMoved(gated, dir)).toEqual(['package-lock.json', 'package.json'])
+  })
+
+  it('refuses a lock that was deleted, and ignores a change to any other file', () => {
+    const { dir, write, gated } = gatedRepo()
+    write('a.txt', 'a changed, not a manifest')
+    expect(manifestsMoved(gated, dir)).toEqual([])
+    rmSync(join(dir, 'package-lock.json'))
+    expect(manifestsMoved(gated, dir)).toEqual(['package-lock.json'])
+  })
+
+  it('reads the version it bumps from the gated tree, whatever is on disk now', () => {
+    const { dir, write, gated } = gatedRepo()
+    write('package.json', pkg('9.9.9'))
+    expect(versionInTree(gated, dir)).toBe('1.0.0')
+  })
+
+  it('accepts the files `npm version` writes: the version fields and nothing else', () => {
+    const { dir, write, gated } = gatedRepo()
+    write('package.json', pkg('1.1.0'))
+    write('package-lock.json', lock('1.1.0'))
+    expect(manifestsBeyondVersion(gated, '1.1.0', dir)).toEqual([])
+    // Another spelling of the same document is the same document.
+    write('package.json', JSON.stringify({ dependencies: { a: '1.0.0' }, version: '1.1.0', name: 'olp' }))
+    expect(manifestsBeyondVersion(gated, '1.1.0', dir)).toEqual([])
+  })
+
+  it('refuses a change that rode in with the bump, in either file', () => {
+    const { dir, write, gated } = gatedRepo()
+    write('package.json', pkg('1.1.0', { sneaked: '9.9.9' }))
+    write('package-lock.json', lock('1.1.0'))
+    expect(manifestsBeyondVersion(gated, '1.1.0', dir)).toEqual(['package.json'])
+    write('package.json', pkg('1.1.0'))
+    write('package-lock.json', lock('1.1.0', { 'node_modules/sneaked': { version: '9.9.9' } }))
+    expect(manifestsBeyondVersion(gated, '1.1.0', dir)).toEqual(['package-lock.json'])
+  })
+
+  it('refuses files that do not carry the version the bump chose, or that cannot be read', () => {
+    const { dir, write, gated } = gatedRepo()
+    write('package.json', pkg('1.2.0'))
+    write('package-lock.json', lock('1.1.0'))
+    expect(manifestsBeyondVersion(gated, '1.1.0', dir)).toEqual(['package.json'])
+    write('package.json', 'not json at all')
+    expect(manifestsBeyondVersion(gated, '1.1.0', dir)).toEqual(['package.json'])
+  })
+})
+
+// ⛔ OLP_MEASURE SET IN A POWERSHELL WINDOW STAYS THERE (2026-10-08), and a plain
+// `npm run patch` in that window put scrub-cost, 3 to 10 minutes on his own 1.38 GB
+// project, back into the gate.
+describe('the gate clears what must not reach it', () => {
+  it('marks the process as inside the gate and removes OLP_MEASURE', () => {
+    const env = { OLP_MEASURE: '1', PATH: 'a-path', OLP_OTHER: 'kept' }
+    enterGate(env)
+    expect(env.OLP_GATE).toBe('1')
+    expect('OLP_MEASURE' in env).toBe(false)
+    expect(env.PATH).toBe('a-path')
+    expect(env.OLP_OTHER).toBe('kept')
+  })
+
+  it('is fine when OLP_MEASURE was never set', () => {
+    const env = {}
+    enterGate(env)
+    expect(env).toEqual({ OLP_GATE: '1' })
+  })
+})
+
+// The three above only help if the script calls them. patch.mjs runs for 25 minutes inside
+// a ship, so the wiring is read from its source, comments left out.
+describe('patch.mjs is wired to them', () => {
+  const src = readFileSync(new URL('./patch.mjs', import.meta.url), 'utf8')
+  const code = src
+    .split('\n')
+    .filter((l) => !l.trim().startsWith('//'))
+    .join('\n')
+
+  it('hashes the tree once for the run and once at the end of the gate, and nowhere else', () => {
+    expect(code.match(/\btreeHash\(/g)).toHaveLength(2)
+    expect(code).toMatch(/const startTree = treeHash\(\)/)
+    expect(code).toMatch(/const gate = async \(tree\) =>/)
+    expect(code).toMatch(/await gate\(startTree\)/)
+    expect(code).toMatch(/fastRefusal\(lastTag, startTree\)/)
+  })
+
+  it('enters the gate through enterGate, and sets no gate variable by hand', () => {
+    expect(code).toMatch(/\benterGate\(\)/)
+    expect(code).not.toMatch(/process\.env\.OLP_GATE\s*=/)
+  })
+
+  it('bumps from the gated manifests and checks them again after npm version', () => {
+    expect(code).toMatch(/manifestsMoved\(gatedTree\)/)
+    expect(code).toMatch(/versionInTree\(gatedTree\)/)
+    expect(code).toMatch(/manifestsBeyondVersion\(gatedTree, version\)/)
+    expect(code).not.toMatch(/const current = JSON\.parse\(readFileSync/)
+  })
+})
+
 // 2026-10-06: "how long is the gate" had to be rebuilt from file times.
 describe('runLogged', () => {
   it('says how long a step took, in the log as well', async () => {
@@ -397,7 +579,7 @@ describe('runLogged', () => {
 // seconds after the red gate of 2026-10-06 deleted its trace.
 describe('keepEvidence', () => {
   const results = () => {
-    const dir = mkdtempSync(join(tmpdir(), 'olp-evidence-'))
+    const dir = scratchDir('olp-evidence-')
     const from = join(dir, 'test-results')
     mkdirSync(join(from, 'play-latency-1'), { recursive: true })
     writeFileSync(join(from, 'play-latency-1', 'trace.zip'), 'trace')
