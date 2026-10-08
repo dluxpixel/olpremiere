@@ -1,6 +1,7 @@
 // A page that dies is loaded again and the reason is written down; a page that keeps
 // dying stops and says so. Until 2026-10-06 a crashed editor stayed a blank window.
 
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { CRASH_WINDOW_MS, crashLogLine, crashPlan, MAX_RELOADS } from './crashPlan'
 
@@ -50,5 +51,40 @@ describe('crashLogLine', () => {
     const line = crashLogLine(at, 'x', { reason: 'a\nb', name: 'c\r\nd' }, '1')
     expect(line.split('\n')).toHaveLength(2)
     expect(line.endsWith('\n')).toBe(true)
+  })
+})
+
+// main.ts cannot be imported here (electron), so the wiring of the "stopped" box is
+// pinned at the source, and run for real by scripts/hidden-app/checks/crash-stop.cjs.
+describe('the "OL Premiere stopped" box', () => {
+  const main = readFileSync(new URL('./main.ts', import.meta.url), 'utf8')
+  const gone = main.slice(main.indexOf('function onEditorGone('), main.indexOf('function closeWhenGone('))
+  const stop = gone.slice(gone.indexOf('const box ='))
+  const boxAt = stop.indexOf('dialog.showMessageBox(')
+
+  it('⛔ opens only after the always on top cards are gone and the boot backstop is off', () => {
+    expect(boxAt).toBeGreaterThan(0)
+    for (const step of ['editorStopped = true', 'clearTimeout(bootBackstop)', 'card.destroy()']) {
+      expect(stop.indexOf(step), step).toBeGreaterThan(0)
+      expect(stop.indexOf(step), step).toBeLessThan(boxAt)
+    }
+    expect(stop).toMatch(/for \(const card of \[splashWindow, updateWindow\]\)/)
+  })
+
+  it('has the editor as its parent only when the editor is really on his screen', () => {
+    expect(stop).toContain('const onScreen = win.isVisible() && !win.isMinimized()')
+    expect(stop).toContain('onScreen ? dialog.showMessageBox(win, box) : dialog.showMessageBox(box)')
+  })
+
+  it('⛔ the dead editor is never put on screen afterwards, by the backstop or a card closing', () => {
+    const enter = main.slice(main.indexOf('function enterEditor('), main.indexOf('function enterEditor(') + 200)
+    expect(enter).toContain('if (entered || editorStopped) return')
+    // Every route that shows the editor goes through revealEditor, the editor's own
+    // ready-to-show included.
+    const reveal = main.slice(main.indexOf('function revealEditor('), main.indexOf('function createSplash('))
+    expect(reveal).toMatch(/^\s*if \(editorStopped\) return$/m)
+    expect(reveal.indexOf('if (editorStopped) return')).toBeLessThan(reveal.indexOf('win.'))
+    const arm = main.slice(main.indexOf('function armUpdateWindow('), main.indexOf('function createUpdateWindow('))
+    expect(arm).toContain('if (editorStopped) return')
   })
 })

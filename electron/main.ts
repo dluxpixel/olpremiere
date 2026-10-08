@@ -151,6 +151,8 @@ let openAfterInstall = false
 const editorDeaths: number[] = []
 /** Set by a reload after a crash. The new page asks for it once and says what happened. */
 let recoveredFromCrash = false
+/** The editor's page died for good: the app ends on his answer, and nothing shows the dead editor. */
+let editorStopped = false
 
 /** One line in logs/crash.log. Never throws, like the update log it shares a writer with. */
 function crashLog(line: string): void {
@@ -182,9 +184,25 @@ function onEditorGone(win: BrowserWindow, details: Electron.RenderProcessGoneDet
     message: 'OL Premiere stopped working.',
     detail: 'Your work up to the last save is safe. Close it and open it again.',
   }
-  // A box on a hidden parent is a box nobody can see, and the editor is hidden while
-  // the opening card is up.
-  void (win.isVisible() ? dialog.showMessageBox(win, box) : dialog.showMessageBox(box)).finally(() => app.quit())
+  // ⛔ NOTHING OF OURS MAY COVER THE BOX. While the app opens, the editor is hidden and
+  // the opening card is ALWAYS ON TOP, so a box with no parent opened UNDER the card,
+  // and 15 s later the boot backstop showed the dead editor maximized over it: a blank
+  // editor, and an app that would not quit until he found the box. A page that dies on
+  // every load (a GPU start crash, a bad store) is exactly when this box comes up, and
+  // three deaths inside those 15 s is what that looks like. So the dead editor is never
+  // revealed now (revealEditor, enterEditor), the cards go before the box, and the box
+  // takes the editor as its parent only when the editor is really on his screen.
+  // scripts/hidden-app/checks/crash-stop.cjs runs it.
+  editorStopped = true
+  if (bootBackstop) clearTimeout(bootBackstop)
+  bootBackstop = null
+  if (updateOpenTimer) clearTimeout(updateOpenTimer)
+  updateOpenTimer = null
+  for (const card of [splashWindow, updateWindow]) {
+    if (card && !card.isDestroyed()) card.destroy()
+  }
+  const onScreen = win.isVisible() && !win.isMinimized()
+  void (onScreen ? dialog.showMessageBox(win, box) : dialog.showMessageBox(box)).finally(() => app.quit())
 }
 
 /**
@@ -300,6 +318,9 @@ function markQuietStartIfAway(): void {
  * without taking focus, and maximizes when he brings it up.
  */
 function revealEditor(win: BrowserWindow): void {
+  // A page that died for good is never put on screen, by any route (the editor's own
+  // ready-to-show included): the "stopped" box is up instead. See onEditorGone.
+  if (editorStopped) return
   const maximized = editorPlace?.maximized ?? true
   if (quietStart) {
     if (win.isVisible()) return
@@ -414,7 +435,8 @@ function shrinkSplash(): void {
 
 /** Open the editor and retire the splash. Safe to call twice, from any route. */
 function enterEditor(): void {
-  if (entered) return
+  // A page that died for good is never put on screen: the "stopped" box is up instead.
+  if (entered || editorStopped) return
   entered = true
   bootFinished = true
   if (bootBackstop) clearTimeout(bootBackstop)
@@ -468,6 +490,8 @@ let updateOpenTimer: ReturnType<typeof setTimeout> | null = null
 /** Every gate, in order, before a card is allowed over his editor. */
 function armUpdateWindow(s: Extract<UpdateStatus, { kind: 'downloading' }>): void {
   if (updateWindow || updateOpenTimer) return
+  // Never over the "stopped" box, which is the last thing the app shows.
+  if (editorStopped) return
   // Never two frameless transparent always-on-top windows at once.
   if (!entered || splashWindow) return
   if (!mainWindow || mainWindow.isDestroyed()) return
