@@ -18,7 +18,8 @@ import type { CaptionStyle } from '../engine/captions/captionStyle'
 import { clipEndS } from '../engine/timeline'
 import { activeSequence, type Sequence } from '../engine/types'
 import { captionsOn } from './captionActions'
-import { useStore } from './store'
+import { useStore, type AppState } from './store'
+import { useToasts } from './toasts'
 import {
   audibleClips,
   autoCaptionEveryClip,
@@ -51,15 +52,32 @@ export function captionTargets(ids: Iterable<string>): string[] {
  * two clips to a captioned edit this is the button that captions just those.
  */
 export function uncaptionedTargets(): string[] {
+  return withoutCaptions(audibleClips().targets.map(({ clip }) => clip.id))
+}
+
+/** These clips, less every one a caption already starts inside, in the same order. */
+function withoutCaptions(ids: readonly string[]): string[] {
   const seq = activeSequence(useStore.getState().project)
   const starts = captionsOn(seq).map(({ clip }) => clip.startS)
-  return audibleClips()
-    .targets.filter(({ clip }) => !starts.some((t) => t >= clip.startS - 1e-9 && t < clipEndS(clip) - 1e-9))
-    .map(({ clip }) => clip.id)
+  const clips = new Map(seq.tracks.flatMap((t) => t.clips.map((c) => [c.id, c] as const)))
+  return ids.filter((id) => {
+    const clip = clips.get(id)
+    return !!clip && !starts.some((t) => t >= clip.startS - 1e-9 && t < clipEndS(clip) - 1e-9)
+  })
 }
 
 /** The words on the button: one clip, or how many. */
 export const captionLabel = (n: number): string => (n > 1 ? `Caption ${n} clips` : 'Caption this clip')
+
+/**
+ * The big button's words with nothing selected (R-3): it hears only the
+ * voiceover takes with no captions, and says so once some takes have them.
+ */
+export function voiceoverLabel(takes: number, fresh: number): string {
+  if (fresh === 0 && takes > 0) return takes > 1 ? `Re-caption the voiceover (${takes} clips)` : 'Re-caption the voiceover'
+  if (fresh < takes) return fresh === 1 ? 'Caption the 1 voiceover take with no captions' : `Caption the ${fresh} voiceover takes with no captions`
+  return takes > 1 ? `Caption the voiceover (${takes} clips)` : 'Caption the voiceover'
+}
 
 /** True when this clip's own media has sound, whatever track it sits on. */
 function hasSound(clipId: string): boolean {
@@ -96,8 +114,7 @@ export function captionTheseClips(ids: readonly string[], style?: CaptionStyle, 
  * the very last resort, so a timeline whose only sound is that track still
  * captions something.
  */
-export function voiceoverClipId(): string | null {
-  const s = useStore.getState()
+export function voiceoverClipId(s: Pick<AppState, 'project' | 'ui'> = useStore.getState()): string | null {
   const seq = activeSequence(s.project)
   const t = s.ui.playheadS
   const audible = seq.tracks
@@ -110,6 +127,15 @@ export function voiceoverClipId(): string | null {
   if (audible.length === 0) return null
   const under = audible.find(({ c, voice }) => voice && t >= c.startS && t < clipEndS(c))
   return (under ?? audible.find(({ voice }) => voice) ?? audible.find(({ music }) => !music) ?? audible[0]!).c.id
+}
+
+/**
+ * The track "Caption the voiceover" would hear. Cheap enough to select on, so
+ * a label follows the playhead from one voice track to another (N-6).
+ */
+export function voiceoverTrackId(s: Pick<AppState, 'project' | 'ui'> = useStore.getState()): string | null {
+  const id = voiceoverClipId(s)
+  return id ? (activeSequence(s.project).tracks.find((t) => t.clips.some((c) => c.id === id))?.id ?? null) : null
 }
 
 /**
@@ -132,8 +158,39 @@ export function voiceoverClipIds(): string[] {
   return takes.length > 0 ? takes : [id]
 }
 
-/** "Caption the voiceover": every take of it, in one pass and one undo step. */
+/** The takes of the voiceover that have no caption yet: what "Caption the voiceover" hears. */
+export function uncaptionedVoiceoverClipIds(): string[] {
+  return withoutCaptions(voiceoverClipIds())
+}
+
+/**
+ * "Caption the voiceover": the takes of it with no captions yet, in one pass
+ * and one undo step.
+ *
+ * ⛔ NEVER A TAKE HE HAS ALREADY CAPTIONED (R-3). His way (2026-08-24) is to
+ * caption the takes one by one and fix each as he goes. Hearing every take
+ * again replaced the ones he had fixed: a caption he deleted came back, two he
+ * merged came apart. So a take with captions is left alone, and when every
+ * take has them nothing is heard: the toast asks first, offering to redo
+ * them all.
+ */
 export function captionTheVoiceover(style?: CaptionStyle, run: CaptionRunOptions = {}): Promise<void> {
+  const ids = voiceoverClipIds()
+  if (ids.length === 0) return Promise.resolve()
+  const fresh = withoutCaptions(ids)
+  if (fresh.length > 0) return captionTheseClips(fresh, style, run)
+  useToasts.getState().show(
+    ids.length === 1
+      ? 'The voiceover has captions already. Redo it? Your fixes in it are replaced'
+      : `All ${ids.length} voiceover takes have captions already. Redo them? Your fixes in them are replaced`,
+    'info',
+    { label: ids.length === 1 ? 'Redo it' : `Redo all ${ids.length}`, onClick: () => void recaptionTheVoiceover(style, run) },
+  )
+  return Promise.resolve()
+}
+
+/** Hear every take of the voiceover again and replace its captions, his fixes included. Asked for on purpose. */
+export function recaptionTheVoiceover(style?: CaptionStyle, run: CaptionRunOptions = {}): Promise<void> {
   const ids = voiceoverClipIds()
   return ids.length > 0 ? captionTheseClips(ids, style, run) : Promise.resolve()
 }
@@ -152,7 +209,8 @@ export function captionFromScript(script: string, style?: CaptionStyle): Promise
   const selection = s.ui.selection
   const picked = [...withSoundPartners(activeSequence(s.project), selection)].filter(hasSound)
   if (picked.length > 0) return captionTheseClips(selection, style, { script })
-  return voiceoverClipIds().length > 0 ? captionTheVoiceover(style, { script }) : null
+  // Every take, captioned or not: his script replaces only where it was heard.
+  return voiceoverClipIds().length > 0 ? recaptionTheVoiceover(style, { script }) : null
 }
 
 /**

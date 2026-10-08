@@ -67,7 +67,10 @@ import {
   captionTheseClips,
   captionTheVoiceover,
   uncaptionedTargets,
+  uncaptionedVoiceoverClipIds,
   voiceoverClipIds,
+  voiceoverLabel,
+  voiceoverTrackId,
 } from '../state/captionRun'
 import {
   allCaptionStyles,
@@ -361,12 +364,15 @@ function CreatePart({ onScript }: { onScript: (mode: ScriptMode) => void }) {
     void project
     return uncaptionedTargets()
   }, [project])
-  // How many takes "Caption the voiceover" would hear. Worked out when the
-  // project changes, never per frame: the click itself asks again.
-  const voiceTakes = useMemo(() => {
+  // How many takes "Caption the voiceover" would hear, and how many of them
+  // have no captions yet. Worked out when the project changes or the playhead
+  // moves onto another voice track, never per frame: the click asks again.
+  const voiceTrack = useStore(voiceoverTrackId)
+  const { voiceTakes, freshTakes } = useMemo(() => {
     void project
-    return voiceoverClipIds().length
-  }, [project])
+    void voiceTrack
+    return { voiceTakes: voiceoverClipIds().length, freshTakes: uncaptionedVoiceoverClipIds().length }
+  }, [project, voiceTrack])
   const hasVoice = voiceTakes > 0
   const selectedSound = useMemo(() => {
     const seq = activeSequence(project)
@@ -382,12 +388,12 @@ function CreatePart({ onScript }: { onScript: (mode: ScriptMode) => void }) {
       ? `Caption ${n} selected clips`
       : fromSelection
         ? 'Caption this clip'
-        : voiceTakes > 1
-          ? `Caption the voiceover (${voiceTakes} clips)`
-          : 'Caption the voiceover'
+        : voiceoverLabel(voiceTakes, freshTakes)
   const primaryTitle = fromSelection
     ? 'Listen to what you selected and caption it, in one undo step'
-    : 'Nothing selected, so this captions every take on the voiceover track under the playhead, or the first one on the timeline, in one undo step'
+    : freshTakes > 0
+      ? 'Nothing selected, so this captions the takes on the voiceover track that have no captions yet, in one undo step. Takes you captioned stay as they are'
+      : 'Every voiceover take has captions already. Press to be asked whether to hear them all again and replace them, your fixes included'
 
   const runPrimary = (): void => {
     if (fromSelection) {

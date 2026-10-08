@@ -66,7 +66,10 @@ import {
   captionTheseClips,
   captionTheVoiceover,
   uncaptionedTargets,
+  uncaptionedVoiceoverClipIds,
   voiceoverClipIds,
+  voiceoverLabel,
+  voiceoverTrackId,
 } from './captionRun'
 import { reloadCaptionStyles, saveNewCaptionStyle, setDefaultCaptionStyle } from './captionStyles'
 import { updateActiveSequence, useStore } from './store'
@@ -384,6 +387,78 @@ describe('"Caption the voiceover", with nothing selected', () => {
     expect(videoTracks(seq()).filter((t) => t.name === CAPTION_TRACK_NAME)).toHaveLength(1)
     useStore.getState().undo()
     expect(videoTracks(seq())).toHaveLength(before)
+  })
+
+  // ⛔ R-3. His way (2026-08-24) is to caption the takes one by one and fix
+  // each. The big button, pressed for the next take, heard every take again and
+  // replaced the ones he had already fixed: deleted captions back, merges undone.
+  const texts = () => captionsOn(seq()).map(({ clip }) => clip.title!.text)
+  const inTake = (startS: number) => () =>
+    captionsOn(seq())
+      .map(({ clip }) => clip)
+      .filter((cl) => cl.startS >= startS - 1e-9 && cl.startS < startS + 1 - 1e-9)
+
+  it('captions only the takes with no captions, and leaves the one he fixed exactly as it is', async () => {
+    const { a, b, c } = seed()
+    voiceLine()
+    await captionTheseClips([a])
+    const first = captionsOn(seq())[0]!.clip
+    setCaptionText(first.id, 'my own fix')
+    const takeA = inTake(0)()
+    heard.length = 0
+    expect(uncaptionedVoiceoverClipIds()).toEqual([b, c])
+    await captionTheVoiceover()
+    expect(heard).toEqual([b, c])
+    expect(inTake(0)()).toEqual(takeA)
+    expect(inTake(3)().length).toBeGreaterThan(0)
+    expect(inTake(6)().length).toBeGreaterThan(0)
+    // One undo step back to just his fixed take.
+    useStore.getState().undo()
+    expect(captionsOn(seq()).map(({ clip }) => clip)).toEqual(takeA)
+  })
+
+  it('with every take captioned it hears nothing and asks first, offering to redo them all', async () => {
+    const { a, b, c } = seed()
+    voiceLine()
+    await captionTheVoiceover()
+    const fixed = captionsOn(seq())[0]!.clip
+    setCaptionText(fixed.id, 'my own fix')
+    const before = texts()
+    heard.length = 0
+    toastActions.length = 0
+    expect(uncaptionedVoiceoverClipIds()).toEqual([])
+    await captionTheVoiceover()
+    expect(heard).toEqual([])
+    expect(texts()).toEqual(before)
+    const redo = toastActions.find((x) => x?.label === 'Redo all 3')
+    expect(redo).toBeDefined()
+    redo!.onClick()
+    await vi.waitFor(() => expect(heard).toEqual([a, b, c]))
+    await vi.waitFor(() => expect(useTranscribe.getState().status).toBe('idle'))
+    expect(texts()).not.toContain('my own fix')
+  })
+
+  it('the button says which takes it will hear', () => {
+    expect(voiceoverLabel(1, 1)).toBe('Caption the voiceover')
+    expect(voiceoverLabel(4, 4)).toBe('Caption the voiceover (4 clips)')
+    expect(voiceoverLabel(4, 3)).toBe('Caption the 3 voiceover takes with no captions')
+    expect(voiceoverLabel(4, 1)).toBe('Caption the 1 voiceover take with no captions')
+    expect(voiceoverLabel(4, 0)).toBe('Re-caption the voiceover (4 clips)')
+    expect(voiceoverLabel(1, 0)).toBe('Re-caption the voiceover')
+  })
+
+  it('the label follows the playhead onto another voice track', () => {
+    const { a } = seed()
+    voiceLine()
+    // A second voice line, its one take at 9 s.
+    updateActiveSequence('second voice line', (sq) => ({
+      ...sq,
+      tracks: sq.tracks.map((t) => (t.kind === 'audio' && t.clips.some((cl) => cl.id === 'other-d') ? { ...t, audioRole: 'voice' } : t)),
+    }))
+    const at = (playheadS: number) => voiceoverTrackId({ ...useStore.getState(), ui: { ...useStore.getState().ui, playheadS } })
+    const trackOf = (id: string) => seq().tracks.find((t) => t.clips.some((cl) => cl.id === id))!.id
+    expect(at(0.5)).toBe(trackOf(a))
+    expect(at(9.5)).toBe(trackOf('other-d'))
   })
 
   it('an unmarked timeline: the takes on the line of the first clip with sound', async () => {
