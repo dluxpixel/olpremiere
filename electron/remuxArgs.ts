@@ -239,12 +239,19 @@ export type MasterEncoder = 'qsv' | 'software'
  * zscale is the fallback for a machine with no Vulkan: the closest of the
  * software chains to the Dolby Vision grade (npl 150 with hable: dY -0.8 and
  * -6.0 on his two clips; npl 100 or 203 and mobius or reinhard were all worse).
+ *
+ * ⛔ THE LAST ZSCALE DITHERS (d=error_diffusion). Without it the float picture
+ * was rounded straight to 8 bits, so a dark gradient came out as flat bands one
+ * code apart. MEASURED 2026-10-06 on a dark 10 bit HLG ramp tagged like his
+ * phone's clips, master through libx264: 1.4 luma steps per code without the
+ * dither (a staircase), 8.7 with it (smooth), for 0.2 s more on a 2 s clip.
+ * libplacebo dithers on its own.
  */
 const TONE_MAP: Record<ToneMapper, string> = {
   libplacebo:
     'libplacebo=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv:apply_dolbyvision=1:format=yuv420p',
   zscale:
-    'zscale=t=linear:npl=150,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p',
+    'zscale=t=linear:npl=150,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv:d=error_diffusion,format=yuv420p',
 }
 
 /**
@@ -264,9 +271,19 @@ const TONE_MAP: Record<ToneMapper, string> = {
  * The bar was 45 dB, real time or faster, and the least disk that clears it.
  * 18 clears it on both clips with half a dB to spare and comes out SMALLER than
  * the 103.7 MB original; 20 clears it by 0.1 dB, too thin for a clip shot in
- * worse light. QuickSync first because it does the work on the processor's own
- * graphics instead of ten cores (the same reason as the preview copies in
- * proxy.ts); libx264 at the same quality for a machine without it.
+ * worse light.
+ *
+ * ⛔ SOFTWARE FIRST, NOT QUICKSYNC (2026-10-06). QuickSync used to go first, to
+ * spare the cores. But at any quality it throws away the tone mapper's dither:
+ * MEASURED on a dark 10 bit HLG ramp tagged like his phone's clips, through
+ * these exact arguments, the QuickSync master had exactly ONE luma step per code
+ * it spans, a pure staircase of flat bands, with or without noise in the source,
+ * where libx264 kept 7.2 steps per code. The export's own dither cannot put back
+ * what the master lost, and a dim gym wall or a night sky is exactly that
+ * picture. It was not even faster: the table above has libx264 at 13.2 s
+ * against QuickSync's 16.1 s on his 75 s clip, and the import is something he
+ * waits for (remuxRun.ts). QuickSync stays as a rung for a machine where the
+ * software encode cannot start.
  *
  * A keyframe every 30 frames (the phone's own file has one every 28) keeps a
  * cut into the middle of a long clip as cheap to reach as it was.
@@ -278,10 +295,10 @@ const MASTER_VIDEO: Record<MasterEncoder, string[]> = {
 
 /** Every way to make the master, best first. Tried in this order until one works. */
 export const MASTER_LADDER: ReadonlyArray<{ tonemap: ToneMapper; encoder: MasterEncoder }> = [
-  { tonemap: 'libplacebo', encoder: 'qsv' },
   { tonemap: 'libplacebo', encoder: 'software' },
-  { tonemap: 'zscale', encoder: 'qsv' },
+  { tonemap: 'libplacebo', encoder: 'qsv' },
   { tonemap: 'zscale', encoder: 'software' },
+  { tonemap: 'zscale', encoder: 'qsv' },
 ]
 
 /** Turn an HDR clip into its SDR master. */

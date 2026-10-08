@@ -27,10 +27,14 @@
 // here, so there is one copy of the retry and of the result handling.
 
 import { create } from 'zustand'
+import type { ExportTaskbarState } from '../../electron/ipc-types'
 import { canStreamToDisk, exportSequence, pickExportDestination, type ExportProgress } from '../engine/export'
 import { planExport, type ExportPlan } from '../engine/export/exportPlan'
 import { PLATFORM_TARGET_LUFS } from '../engine/loudness'
 import { exportNative } from '../engine/export/nativeExport'
+import { addSample, timeLeftS, type ProgressSample } from '../engine/export/timeLeft'
+import { CANNOT_WRITE_THERE, plainExportError } from '../engine/export/plainError'
+import type { ExportSpeed } from '../engine/export/stageClock'
 import { activeSequence, type Project } from '../engine/types'
 import { isElectron } from '../platform'
 import { isPhoneLayout } from '../ui/phoneLayout'
@@ -45,10 +49,12 @@ import { noteExportEnd, noteExportStart } from './usageNotes'
 export type ExportStage =
   /** The browser's save picker is up; nothing is encoding yet. */
   | { kind: 'starting' }
-  | { kind: 'running'; progress: ExportProgress; startedAt: number }
+  /** `leftS`: seconds left at the recent rate (engine/export/timeLeft.ts), NaN until known. */
+  | { kind: 'running'; progress: ExportProgress; leftS: number }
   /** `streamed` tells "written where you chose" apart from "in your downloads". */
   | { kind: 'done'; sizeBytes: number; fileName: string; streamed: boolean; path?: string; share?: File }
-  | { kind: 'error'; message: string }
+  /** `message` is the plain line; `details` the machine's own words, behind Details (plainError.ts). */
+  | { kind: 'error'; message: string; details?: string }
 
 export interface ExportJob {
   /** New for every run, so a late callback from an older run changes nothing. */
@@ -70,8 +76,12 @@ interface ExportJobState {
 
 export const useExportJob = create<ExportJobState>(() => ({ job: null, dialogOpen: false, alreadyRunning: false }))
 
-/** The frozen copy the current job reads, and the media keys it needs. */
-let frozen: { project: Project; blobKeys: string[] } | null = null
+/**
+ * The frozen copy the current job reads, the media keys it needs, and on the
+ * desktop the file he chose for it: a restart (the loudness switch) and Try
+ * again write there without asking again.
+ */
+let frozen: { project: Project; blobKeys: string[]; outPath?: string } | null = null
 let abort: AbortController | null = null
 let nextJobId = 1
 /** A plan to start the moment the running export has finished cancelling. */
@@ -133,7 +143,7 @@ const runningStage = (plan: ExportPlan): ExportStage => ({
     framesDone: 0,
     framesTotal: Math.ceil((plan.settings.endS - plan.settings.startS) * plan.settings.fps),
   },
-  startedAt: performance.now(),
+  leftS: Number.NaN,
 })
 
 /** Change the job only if it is still run `id`. */
@@ -205,6 +215,63 @@ export function openExportDialog(): void {
 }
 
 /**
+ * The chip's click once the export has ended: a finished file opens in its folder
+ * and the chip goes, a failed one opens the dialog on the reason and Try again.
+ */
+export function openExportResult(): void {
+  const { job } = useExportJob.getState()
+  if (!job || isExportActive(job.stage)) return
+  if (job.stage.kind === 'done') {
+    const path = job.stage.path
+    const api = typeof window !== 'undefined' ? window.api : undefined
+    if (path && api?.exportReveal) void api.exportReveal(path)
+    forgetJob()
+  } else if (job.stage.kind === 'error') {
+    openExportDialog()
+  }
+}
+
+/** The chip's X once the export has ended: he has seen it. */
+export function dismissExportResult(): void {
+  const { job } = useExportJob.getState()
+  if (job && !isExportActive(job.stage)) forgetJob()
+}
+
+/**
+ * What the Windows taskbar button shows for this job: a moving bar while it gets
+ * ready and mixes the sound, the percent while it makes the video, red when it
+ * failed. Only the desktop export, the one that runs behind his back.
+ */
+export function taskbarStateFor(job: ExportJob | null): ExportTaskbarState {
+  if (!job || !job.background) return { kind: 'clear' }
+  const stage = job.stage
+  switch (stage.kind) {
+    case 'starting':
+      return { kind: 'busy' }
+    case 'running':
+      if (stage.progress.phase === 'preparing' || stage.progress.phase === 'audio') return { kind: 'busy' }
+      return { kind: 'progress', fraction: exportPercent(stage) / 100 }
+    case 'done':
+      return { kind: 'done' }
+    case 'error':
+      return { kind: 'failed' }
+  }
+}
+
+// Told to main only when it changes: the percent moves in whole steps, so this is
+// at most about a hundred messages an export.
+let shownOnTaskbar = JSON.stringify(taskbarStateFor(null))
+useExportJob.subscribe((s) => {
+  const api = typeof window !== 'undefined' ? window.api : undefined
+  if (!api?.exportTaskbar) return
+  const state = taskbarStateFor(s.job)
+  const key = JSON.stringify(state)
+  if (key === shownOnTaskbar) return
+  shownOnTaskbar = key
+  void api.exportTaskbar(state).catch(() => undefined)
+})
+
+/**
  * Close the dialog. On the desktop a running export carries on without it. In
  * the browser the save picker is the one point it may close early, and closing
  * there means no export; once encoding it stays up, as before.
@@ -256,7 +323,11 @@ async function drive(plan: ExportPlan): Promise<void> {
     if (background) await runNative(id, f.project, plan, ctrl.signal)
     else await runBrowser(id, f.project, plan, ctrl.signal)
   } catch (err) {
-    if (isAbort(err)) settleCancelled(id)
+    // ⛔ After he pressed Cancel nothing ends as a failure. A reason the stop
+    // itself caused can arrive before the stop's own answer (ffmpeg killed while
+    // it finished the file), and it used to leave a red chip and a red taskbar
+    // button for a Cancel he pressed (export review, 2026-10-08).
+    if (isAbort(err) || ctrl.signal.aborted) settleCancelled(id)
     else fail(id, err)
   } finally {
     release()
@@ -300,20 +371,35 @@ function settleCancelled(id: number): void {
   if (useExportJob.getState().job?.id === id) forgetJob()
 }
 
+/** The running export's recent progress, for the time left. */
+let rate: { id: number; samples: ProgressSample[] } = { id: 0, samples: [] }
+
 function onProgress(id: number, progress: ExportProgress): void {
   const { job } = useExportJob.getState()
   if (!job || job.id !== id || job.stage.kind !== 'running') return
-  useExportJob.setState({ job: { ...job, stage: { ...job.stage, progress } } })
+  // Only while frames are being made: getting ready and the sound mix have no frame rate.
+  let leftS = Number.NaN
+  if (progress.phase === 'video' || progress.phase === 'finalizing') {
+    if (rate.id !== id) rate = { id, samples: [] }
+    rate.samples = addSample(rate.samples, { t: performance.now(), frames: progress.framesDone })
+    leftS = timeLeftS(rate.samples, progress.framesTotal)
+  }
+  useExportJob.setState({ job: { ...job, stage: { ...job.stage, progress, leftS } } })
 }
 
-function succeed(id: number, stage: Extract<ExportStage, { kind: 'done' }>): void {
+function succeed(id: number, stage: Extract<ExportStage, { kind: 'done' }>, speed?: ExportSpeed): void {
   const { job, dialogOpen } = useExportJob.getState()
   if (!job || job.id !== id) return
-  noteExportEnd('done', { sizeBytes: stage.sizeBytes, fileName: stage.fileName })
-  // Watching it: the done screen is where he is. Working elsewhere: the toast
-  // is the whole news, so the job is finished with.
-  if (dialogOpen) useExportJob.setState({ job: { ...job, stage } })
-  else forgetJob()
+  noteExportEnd('done', { sizeBytes: stage.sizeBytes, fileName: stage.fileName, speed })
+  // Watching it: the done screen is where he is. Working elsewhere: the chip in
+  // the top bar says "Done, show it" until he clicks it. ⛔ It used to be only a
+  // toast, gone after 7 seconds, so an export that ended while he was in his
+  // browser left no trace in the app (export audit, 2026-10-06).
+  if (dialogOpen || job.background) {
+    useExportJob.setState({ job: { ...job, stage } })
+    // A finished file is never made again, so the frozen copy can go now.
+    frozen = null
+  } else forgetJob()
   // He may be three edits into another project by now, so the toast carries the
   // way to the file rather than leaving him to go looking for it.
   const path = stage.path
@@ -329,14 +415,20 @@ function succeed(id: number, stage: Extract<ExportStage, { kind: 'done' }>): voi
 }
 
 function fail(id: number, err: unknown): void {
-  const message = err instanceof Error ? err.message : String(err)
+  const raw = err instanceof Error ? err.message : String(err)
+  const plain = plainExportError(raw)
+  // The place itself was the problem: Try again asks for another.
+  if (plain.line === CANNOT_WRITE_THERE && frozen) frozen.outPath = undefined
   const name = useExportJob.getState().job?.projectName ?? ''
-  if (!patchJob(id, () => ({ stage: { kind: 'error', message } }))) return
-  noteExportEnd('failed', { error: message })
+  const stage: ExportStage = { kind: 'error', message: plain.line, ...(plain.details ? { details: plain.details } : {}) }
+  if (!patchJob(id, () => ({ stage }))) return
+  // The usage log keeps the machine's words: that is where they help.
+  noteExportEnd('failed', { error: raw })
   // With the dialog open the error sits on it, with its own Try again. Closed,
   // he is in the middle of something else and has to be told here.
   if (!useExportJob.getState().dialogOpen) {
-    useToasts.getState().show(`The export of “${name}” failed: ${message}`, 'danger', {
+    const said = plain.generic ? `The export of “${name}” stopped.` : `The export of “${name}” failed. ${plain.line}`
+    useToasts.getState().show(said, 'danger', {
       label: 'Try again',
       onClick: retryExport,
     })
@@ -344,15 +436,24 @@ function fail(id: number, err: unknown): void {
 }
 
 // Desktop: render with the shared pipeline, encode with the bundled ffmpeg
-// (x264 veryslow at constant quality, the best file this app can produce).
+// (x264 slow at constant quality, the best file this app can produce).
 async function runNative(id: number, project: Project, plan: ExportPlan, signal: AbortSignal): Promise<void> {
   const baseName = exportBaseName(project.name)
   const endCritical = beginCriticalWork()
   try {
+    const f = frozen
     const res = await exportNative(
       project,
       plan.settings,
-      { encoder: plan.nativeEncoder, quality: plan.qp, suggestedName: `${baseName}.${plan.nativeExt}` },
+      {
+        encoder: plan.nativeEncoder,
+        quality: plan.qp,
+        suggestedName: `${baseName}.${plan.nativeExt}`,
+        outPath: f?.outPath,
+        onOutPath: (path) => {
+          if (f && frozen === f) f.outPath = path
+        },
+      },
       (p) => onProgress(id, p),
       signal,
     )
@@ -362,7 +463,7 @@ async function runNative(id: number, project: Project, plan: ExportPlan, signal:
       return
     }
     const fileName = res.outPath.split(/[\\/]/).pop() || `${baseName}.${plan.nativeExt}`
-    succeed(id, { kind: 'done', sizeBytes: res.sizeBytes, fileName, streamed: true, path: res.outPath })
+    succeed(id, { kind: 'done', sizeBytes: res.sizeBytes, fileName, streamed: true, path: res.outPath }, res.speed)
   } finally {
     endCritical()
   }

@@ -3,6 +3,7 @@
 // the helpers run under node for unit tests.
 
 import type { Id, MediaAsset, Sequence } from '../types'
+import type { StageTimes } from './stageClock'
 
 /**
  * How the encoder spends bits.
@@ -26,7 +27,7 @@ export type VideoCodecFamily = 'avc' | 'hevc' | 'av1'
  * high-motion areas (a clean static ground, a shredded moving sky) while flat
  * or all-keyframe content decodes fine, which is why the golden export never
  * caught it. Export must be pixel-CORRECT, not fast; it is already dominated by
- * libx264 -preset veryslow, so software decode costs little. Preview keeps
+ * libx264 at constant quality, so software decode costs little. Preview keeps
  * hardware decode (downscaled) for scrub speed. The two paths may differ
  * because export must be correct. Passed as the CanvasSink `decoderOptions`.
  */
@@ -131,6 +132,12 @@ export type ExportRequest =
        * the file and hands back an ArrayBuffer to download.
        */
       fileHandle?: FileSystemFileHandle
+      /**
+       * The page's frame budget (memoryBudget.ts budgets().frames), which knows
+       * what the machine has spare; a worker alone can only guess. Reversed
+       * clips size their windows from it (clipReader.ts planReverseReading).
+       */
+      frameBudgetBytes?: number
     }
   /** One rendered mix segment, in order. Buffers are transferred, not copied. */
   | { type: 'audioSegment'; channelData: Float32Array<ArrayBuffer>[] }
@@ -150,10 +157,15 @@ export type ExportResponse =
   | { type: 'segmentDone' }
   /** NATIVE mode: one rendered RGBA frame (bottom-origin; ffmpeg -vf vflip corrects it). Transferred. */
   | { type: 'frame'; index: number; data: ArrayBuffer }
-  /** `buffer` is null when the file was streamed to disk: there is nothing to hand back. */
-  | { type: 'done'; buffer: ArrayBuffer | null }
+  /**
+   * `buffer` is null when the file was streamed to disk: there is nothing to hand back.
+   * `times`: the desktop render's split of its time per stage, for the usage log (stageClock.ts).
+   */
+  | { type: 'done'; buffer: ArrayBuffer | null; times?: StageTimes }
   | { type: 'cancelled' }
   | { type: 'error'; message: string }
+  /** Something he must hear about while the export carries on (the video will have no sound). */
+  | { type: 'warning'; message: string }
 
 // ---------------------------------------------------------------------------
 // Pure helpers (unit-tested in export.test.ts)
@@ -322,6 +334,47 @@ export function exportColorSpace(
     matrix: reported?.matrix ?? 'bt709',
     fullRange: reported?.fullRange ?? false,
   }
+}
+
+/** What the export says when the timeline has sound and this browser cannot encode any. */
+export const NO_SOUND_IN_THIS_BROWSER = 'This browser cannot add sound. The video will have no sound.'
+
+/**
+ * The sound encoder the browser export uses, or null when this browser has none
+ * for the file. AAC-LC is the universal default; Opus is smaller and cleaner for
+ * voice but is not accepted in MP4 by every player, so it goes first only when
+ * asked for (and never below HD, so the golden bytes hold).
+ *
+ * A codec is worth more than a bitrate, so the RATE drops before the CODEC.
+ * Chrome's AAC encoder refuses anything at or above 256 kbps (measured: 128k and
+ * 192k supported, 256k/320k/384k not), and the plan asks for 320k on every HD
+ * export. The old loop read that as "no AAC" and wrote OPUS INSIDE AN MP4, which
+ * most players and phones will not play, so every HD export he made came out
+ * silent while an SD one was fine. Ladder down the bitrate first, and only then
+ * consider another codec.
+ */
+export async function pickAudioConfig(
+  base: { sampleRate: number; numberOfChannels: number; bitrate: number },
+  preferOpus: boolean,
+  isSupported: (config: AudioEncoderConfig) => Promise<boolean>,
+): Promise<{ codec: 'aac' | 'opus'; config: AudioEncoderConfig } | null> {
+  const candidates: { codec: 'aac' | 'opus'; str: string }[] = preferOpus
+    ? [
+        { codec: 'opus', str: 'opus' },
+        { codec: 'aac', str: 'mp4a.40.2' },
+      ]
+    : [
+        { codec: 'aac', str: 'mp4a.40.2' },
+        { codec: 'opus', str: 'opus' },
+      ]
+  const ladder = [base.bitrate, 256_000, 192_000, 128_000].filter((b, i, all) => b > 0 && all.indexOf(b) === i)
+  for (const cand of candidates) {
+    for (const bitrate of ladder) {
+      const config = { codec: cand.str, ...base, bitrate }
+      if (await isSupported(config)) return { codec: cand.codec, config }
+    }
+  }
+  return null
 }
 
 /** First candidate the async predicate accepts; probes stop at the first hit. */

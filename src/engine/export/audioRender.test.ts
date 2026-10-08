@@ -30,6 +30,10 @@ interface FakeBuffer {
 }
 const buffers = new Map<string, FakeBuffer>()
 let delaysMade = 0
+/** How many offline renders ran: one per segment per pass. */
+let rendersMade = 0
+/** Called after each offline render, so a test can act between two segments. */
+let afterRender: (() => void) | null = null
 
 class Param {
   private set = false
@@ -112,6 +116,8 @@ class FakeOfflineContext {
     return s
   }
   async startRendering() {
+    rendersMade++
+    afterRender?.()
     const out = Array.from({ length: this.channels }, () => new Float32Array(this.frames))
     // Every path from a source to the destination: the gains multiply, the
     // delays add, a compressor adds Chromium's 288 samples (and no dynamics:
@@ -163,7 +169,7 @@ vi.mock('../audio', async () => {
     clipEdges: () => undefined,
   }
 })
-const { planAudioMix, AUDIO_SEGMENT_FRAMES } = await import('./audioRender')
+const { planAudioMix, AUDIO_SEGMENT_FRAMES, KEEP_MEASURED_MIX_FRAMES, audioFramesFor } = await import('./audioRender')
 
 // --- the timeline --------------------------------------------------------------
 
@@ -324,5 +330,70 @@ describe('Platform loudness', () => {
     for (const v of joined[0]) peak = Math.max(peak, Math.abs(v))
     expect(peak).toBeLessThanOrEqual(LIMIT_CEILING)
     expect(measureLoudness(joined, SR).lufs!).toBeCloseTo(-14, 0)
+  })
+})
+
+describe('⛔ Platform loudness renders a mix that fits only once', () => {
+  // The measure pass and the export pass each rendered the whole mix, every clip, stretch and effect,
+  // to arrive at the same samples twice (export audit, 2026-10-06).
+  it('a Short is rendered once and the measured samples are what goes out', async () => {
+    const tone = new Float32Array(SR * 40)
+    // Quiet, but within the boost the platform gain allows, so it really lands on the target.
+    for (let i = 0; i < tone.length; i++) tone[i] = 0.12 * Math.sin((2 * Math.PI * 440 * i) / SR)
+    const t = source('t', tone)
+    const seq = sequence([track('t', [clip('t', 0, 40)])], 40)
+    rendersMade = 0
+    const { joined, segments } = await renderAll(seq, { t }, 40, -14)
+    // 40 s is two segments: two renders, not four.
+    expect(segments).toHaveLength(2)
+    expect(rendersMade).toBe(2)
+    expect(measureLoudness(joined, SR).lufs!).toBeCloseTo(-14, 1)
+  })
+
+  it('⛔ a cancel during the measuring pass stops it at the next segment', async () => {
+    // Platform loudness is on by default, and the measuring render had no check: Cancel during
+    // "Mixing the sound" waited for all of it, about 20 segments for a 10 minute video, before the
+    // first segment reached the page's check (export review N1, 2026-10-08).
+    const tone = new Float32Array(SR * 40)
+    for (let i = 0; i < tone.length; i++) tone[i] = 0.12 * Math.sin((2 * Math.PI * 440 * i) / SR)
+    const t = source('t', tone)
+    const seq = sequence([track('t', [clip('t', 0, 40)])], 40)
+    const ctrl = new AbortController()
+    const plan = await planAudioMix(seq, { t }, 0, 40, undefined, { loudnessTargetLufs: -14, signal: ctrl.signal })
+    if (!plan) throw new Error('no plan')
+    let delivered = 0
+    rendersMade = 0
+    // Cancel pressed while the first of two segments is being measured.
+    afterRender = () => ctrl.abort()
+    try {
+      await expect(
+        plan.render(() => {
+          delivered++
+        }),
+      ).rejects.toMatchObject({ name: 'AbortError' })
+    } finally {
+      afterRender = null
+    }
+    expect(rendersMade).toBe(1)
+    expect(delivered).toBe(0)
+  }, 20_000)
+
+  it('keeps at most 3 minutes, so memory stays bounded however long the video', () => {
+    // A longer mix renders twice and holds two segments, as before. (Rendering one here to prove
+    // it took 25 s of this suite, for the same `totalFrames <= KEEP_MEASURED_MIX_FRAMES` branch.)
+    expect(KEEP_MEASURED_MIX_FRAMES).toBeLessThanOrEqual(3 * 60 * SR)
+    // A 60 s Short fits with room to spare.
+    expect(KEEP_MEASURED_MIX_FRAMES).toBeGreaterThanOrEqual(60 * SR)
+  })
+})
+
+describe('the sound is as long as the picture at the rate the file is made at', () => {
+  it('⛔ a 240 fps timeline exported at 60 has sound the length of the 60 fps video, to the sample', async () => {
+    const a = source('slowmo', click())
+    const seq = { ...sequence([track('t', [clip('slowmo', 0, 0.1)])], 2), fps: 240 } as Sequence
+    // 1.01 s: 61 frames at 60 (1.01667 s), but 243 at 240 (1.0125 s). The video is made at 60.
+    const plan = await planAudioMix(seq, { slowmo: a }, 0, 1.01, undefined, { fps: 60 })
+    expect(plan!.info.totalFrames).toBe(audioFramesFor(1.01, 60, SR))
+    expect(Math.abs(plan!.info.totalFrames - (61 / 60) * SR)).toBeLessThanOrEqual(1)
   })
 })

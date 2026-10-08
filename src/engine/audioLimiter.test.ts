@@ -175,6 +175,48 @@ describe('TruePeakLimiter', () => {
     expect(worst).toBeLessThan(0.05)
   })
 
+  it('bass pushed into it: the gain rides each wave, and that is measured, not hidden', () => {
+    // The steady 1 kHz test above cannot see this: one tone never makes the gain move. A bass note
+    // with a voice on top does (export audit, 2026-10-06): 60 Hz + 1 kHz at 4:1, the way Platform
+    // loudness can push a quiet mix up into the ceiling. The sidebands around 1 kHz are the gain
+    // riding the bass. Measured with the 0.08 s release: 0.68% at +3 dB over, 1.18% at +6, 1.46%
+    // at +12 (0.2 s halves it, 0.4 s quarters it, at the cost of a slower return after a hit; that
+    // choice is his ears', so the export window no longer says "no distortion"). Pinned at today's
+    // numbers so it can only get better.
+    for (const [overDb, most] of [
+      [3, 0.0075],
+      [6, 0.013],
+      [12, 0.016],
+    ]) {
+      const k = LIMIT_CEILING * 10 ** (overDb / 20)
+      const x = Float32Array.from(
+        { length: 2 * SR },
+        (_, i) => k * (0.8 * Math.sin((2 * Math.PI * 60 * i) / SR) + 0.2 * Math.sin((2 * Math.PI * 1000 * i) / SR)),
+      )
+      const [y] = limit([x, x])
+      const from = SR
+      const len = 32768
+      let sidebands = 0
+      for (let m = 1; m <= 6; m++) {
+        sidebands += amplitudeAt(y, 1000 + 60 * m, from, len) ** 2 + amplitudeAt(y, 1000 - 60 * m, from, len) ** 2
+      }
+      const imd = Math.sqrt(sidebands) / amplitudeAt(y, 1000, from, len)
+      expect(imd, `+${overDb} dB`).toBeLessThan(most)
+    }
+  })
+
+  it('is back within 1 dB 300 ms after a single 6 dB hit, so a longer release cannot creep in unnoticed', () => {
+    // Speech right after a loud hit must not stay ducked. The 0.08 s release is back in about 125 ms.
+    const x = tone(0.25, 300, 1.5)
+    const hitAt = 0.25 * SR
+    const k = LIMIT_CEILING * 2 // 6 dB over
+    for (let i = hitAt; i < hitAt + 0.01 * SR; i++) x[i] = k * Math.sin((2 * Math.PI * 300 * i) / SR)
+    const [y] = limit([x])
+    const at = hitAt + 0.01 * SR + 0.3 * SR
+    const gain = amplitudeAt(y, 300, at, 2048) / amplitudeAt(x, 300, at, 2048)
+    expect(dB(gain)).toBeGreaterThan(-1)
+  })
+
   it('reads a missing channel as silence instead of throwing', () => {
     const lim = new TruePeakLimiter(2, SR)
     const out = [new Float32Array(256), new Float32Array(256)]

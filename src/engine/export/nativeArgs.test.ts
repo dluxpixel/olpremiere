@@ -190,7 +190,7 @@ describe('native export arguments', () => {
       '-vf',
       'vflip,scale=in_range=full:out_range=tv:out_color_matrix=bt709' +
         ':out_primaries=bt709:out_transfer=bt709:out_chroma_loc=left:flags=lanczos+accurate_rnd+full_chroma_inp',
-      '-c:v', 'libx264', '-preset', 'veryslow', '-crf', '14', '-level:v', '4.2', '-pix_fmt', 'yuv420p',
+      '-c:v', 'libx264', '-preset', 'slow', '-crf', '14', '-level:v', '4.2', '-pix_fmt', 'yuv420p',
       '-g', '60',
       '-map', '0:v:0',
       '-map', '1:a:0', '-c:a', 'aac', '-b:a', '384k', '-ar', '48000', '-ac', '2',
@@ -201,13 +201,22 @@ describe('native export arguments', () => {
     ])
   })
 
+  it('runs x264 at the slow preset, never veryslow, and with no aq-mode of its own', () => {
+    // Measured 2026-10-06 at crf 14: slow scored equal or better than veryslow on his gym and
+    // Minecraft frames, on the file and after a platform re-encode, at about half the encoder time.
+    // aq-mode=3 was measured the same day and rejected: more bits, lower VMAF after the platform.
+    const args = videoEncoderArgs(cfg())
+    expect(args[args.indexOf('-preset') + 1]).toBe('slow')
+    expect(args.join(' ')).not.toMatch(/veryslow|aq-mode|-x264-params/)
+  })
+
   it('pins H.264 level 4.2 for the 1080p rasters he exports, up to 60 fps', () => {
     // Left alone, veryslow's 16 reference frames made every export of his a
     // level 5.1 file (measured 2026-09-30). 4.2 makes x264 fit the references
     // to the level instead, at no measurable cost to the picture.
     for (const [w, h, fps] of [[1920, 1080, 60], [1080, 1920, 60], [1080, 1920, 30], [1280, 720, 60], [640, 360, 30]]) {
       expect(videoEncoderArgs(cfg({ width: w, height: h, fps })), `${w}x${h}@${fps}`).toEqual([
-        '-c:v', 'libx264', '-preset', 'veryslow', '-crf', '14', '-level:v', '4.2', '-pix_fmt', 'yuv420p',
+        '-c:v', 'libx264', '-preset', 'slow', '-crf', '14', '-level:v', '4.2', '-pix_fmt', 'yuv420p',
       ])
     }
   })
@@ -232,7 +241,7 @@ describe('native export arguments', () => {
     expect(Math.ceil(1080 / 16) * Math.ceil(2112 / 16)).toBe(8976)
     for (const fps of [24, 30, 60]) expect(x264LevelArgs(1080, 2112, fps), `${fps} fps`).toEqual([])
     const args = videoEncoderArgs(cfg({ width: 1080, height: 2112 }))
-    expect(args).toEqual(['-c:v', 'libx264', '-preset', 'veryslow', '-crf', '14', '-pix_fmt', 'yuv420p'])
+    expect(args).toEqual(['-c:v', 'libx264', '-preset', 'slow', '-crf', '14', '-pix_fmt', 'yuv420p'])
     // And the raw frames are fed at exactly the phone raster.
     const all = buildArgs(cfg({ width: 1080, height: 2112 }), null, 'o.mp4')
     expect(all[all.indexOf('-video_size') + 1]).toBe('1080x2112')

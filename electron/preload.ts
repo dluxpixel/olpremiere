@@ -6,7 +6,9 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
   CutoutResult,
+  ExportTaskbarState,
   NativeCaps,
+  NativeEncoder,
   NativeExportConfig,
   NativeFinishResult,
   NativeProgress,
@@ -23,7 +25,10 @@ const api: OlApi = {
   // spec and reports TOTAL rather than free. See engine/memoryBudget.ts.
   systemMemory: (): Promise<{ totalKb: number; freeKb: number }> => ipcRenderer.invoke('system:memory'),
   nativeProbe: (): Promise<NativeCaps> => ipcRenderer.invoke('native:probe'),
-  nativePrepareAudio: (wav: ArrayBuffer) => ipcRenderer.invoke('native:prepareAudio', wav),
+  nativePickOutput: (encoder: NativeEncoder, suggestedName: string) => ipcRenderer.invoke('native:pickOutput', encoder, suggestedName),
+  nativeAudioBegin: (sampleRate: number, channels: number) => ipcRenderer.invoke('native:audioBegin', sampleRate, channels),
+  nativeAudioChunk: (interleaved: ArrayBuffer) => ipcRenderer.invoke('native:audioChunk', interleaved),
+  nativeAudioFinish: () => ipcRenderer.invoke('native:audioFinish'),
   nativeStart: (config: NativeExportConfig): Promise<NativeStartResult> => ipcRenderer.invoke('native:start', config),
   nativeWriteFrame: (frame: ArrayBuffer) => ipcRenderer.invoke('native:writeFrame', frame),
   nativeFinish: (): Promise<NativeFinishResult> => ipcRenderer.invoke('native:finish'),
@@ -124,6 +129,7 @@ const api: OlApi = {
   backupRead: (filePath: string) => ipcRenderer.invoke('backup:read', filePath),
   backupReveal: () => ipcRenderer.invoke('backup:reveal'),
   exportReveal: (filePath: string) => ipcRenderer.invoke('export:reveal', filePath),
+  exportTaskbar: (state: ExportTaskbarState) => ipcRenderer.invoke('export:taskbar', state),
   projectWrite: (id: string, projectName: string, json: string) =>
     ipcRenderer.invoke('project:write', id, projectName, json),
   projectList: () => ipcRenderer.invoke('project:list'),

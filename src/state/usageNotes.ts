@@ -8,6 +8,7 @@
 // hot paths go through, which is where the "it costs nothing" claim is measured.
 
 import type { Project } from '../engine/types'
+import { stageLine, type ExportSpeed } from '../engine/export/stageClock'
 import { extensionOf, usage, type UsageDetails } from './usageLog'
 import { editAction, extensionSummary, maskMessage } from './usageNames'
 
@@ -97,7 +98,15 @@ export function noteExportStart(n: ExportNote): void {
   })
 }
 
-export function noteExportEnd(outcome: 'done' | 'failed' | 'cancelled', more?: { sizeBytes?: number; fileName?: string; error?: string }): void {
+/**
+ * `speed`, a desktop export's: the frames per second of the whole run and where
+ * the time went (stageClock.ts), so the next speed fix is aimed by data. The line
+ * is then 14 details, the log's cap: a new one here has to replace one.
+ */
+export function noteExportEnd(
+  outcome: 'done' | 'failed' | 'cancelled',
+  more?: { sizeBytes?: number; fileName?: string; error?: string; speed?: ExportSpeed },
+): void {
   const end = endExport
   endExport = null
   end?.({
@@ -105,5 +114,7 @@ export function noteExportEnd(outcome: 'done' | 'failed' | 'cancelled', more?: {
     mb: more?.sizeBytes !== undefined ? Math.round(more.sizeBytes / 1e5) / 10 : undefined,
     ext: more?.fileName ? extensionOf(more.fileName) : undefined,
     err: more?.error ? maskMessage(more.error) : undefined,
+    fpsMade: more?.speed?.fps,
+    stages: more?.speed ? stageLine(more.speed) : undefined,
   })
 }

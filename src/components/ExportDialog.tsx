@@ -13,11 +13,15 @@ import { useSettings } from '../state/settings'
 import { useToasts } from '../state/toasts'
 import { Button, IconButton } from '../ui/Button'
 import { useEscapeToClose } from '../ui/useEscapeToClose'
+import { timeLeftWords } from '../engine/export/timeLeft'
+import type { ExportProgress } from '../engine/export/messages'
 
-function fmtEta(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds < 0) return '--'
-  const s = Math.round(seconds)
-  return s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`
+/** What each step is called where he reads it. */
+const PHASE_WORDS: Record<ExportProgress['phase'], string> = {
+  preparing: 'Getting ready',
+  audio: 'Mixing the sound',
+  video: 'Making the video',
+  finalizing: 'Finishing the file',
 }
 
 /**
@@ -56,11 +60,6 @@ export function ExportDialog() {
   const { plan } = job
 
   const pct = exportPercent(stage)
-  const eta =
-    stage.kind === 'running' && stage.progress.framesDone > 3
-      ? ((performance.now() - stage.startedAt) / 1000 / stage.progress.framesDone) *
-        (stage.progress.framesTotal - stage.progress.framesDone)
-      : NaN
 
   return (
     <div
@@ -121,8 +120,8 @@ export function ExportDialog() {
                 />
               </label>
               <span className="text-[10px] text-text-muted">
-                Lands at the level YouTube, TikTok and Instagram play videos at, with a clean limiter and no
-                distortion. Off keeps your mix as it is. Changing it starts this export again.
+                Lands at the level YouTube, TikTok and Instagram play videos at, with a clean limiter. Off keeps
+                your mix as it is. Changing it starts this export again.
               </span>
             </div>
 
@@ -130,9 +129,9 @@ export function ExportDialog() {
             {stage.kind === 'running' && (
               <>
                 <div className="flex items-center justify-between text-[12px]">
-                  <span className="flex items-center gap-1.5 capitalize text-ember">
+                  <span className="flex items-center gap-1.5 text-ember" data-testid="export-phase">
                     <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-ember" aria-hidden />
-                    {stage.progress.phase}…
+                    {PHASE_WORDS[stage.progress.phase]}…
                   </span>
                   <span className="font-numeric text-text-primary">{pct}%</span>
                 </div>
@@ -146,7 +145,7 @@ export function ExportDialog() {
                   <span>
                     {stage.progress.framesDone} / {stage.progress.framesTotal} frames
                   </span>
-                  <span>ETA {fmtEta(eta)}</span>
+                  <span data-testid="export-time-left">{timeLeftWords(stage.leftS)}</span>
                 </div>
                 <div className="mt-1 flex justify-end gap-2">
                   <Button variant="secondary" data-testid="export-cancel" onClick={cancelExport}>
@@ -212,7 +211,16 @@ export function ExportDialog() {
 
         {stage.kind === 'error' && (
           <div className="flex flex-col gap-3 p-4">
-            <p className="text-[12px] leading-5 text-danger">{stage.message}</p>
+            <p className="text-[12px] leading-5 text-danger" data-testid="export-error">
+              {stage.message}
+            </p>
+            {/* The machine's own words, for whoever helps him: out of the way, never gone. */}
+            {stage.details && (
+              <details className="text-[11px] text-text-muted" data-testid="export-error-details">
+                <summary className="cursor-default">Details</summary>
+                <p className="mt-1 select-text break-words">{stage.details}</p>
+              </details>
+            )}
             <div className="flex justify-end gap-2">
               <Button variant="secondary" onClick={closeExportDialog}>
                 Close

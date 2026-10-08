@@ -39,12 +39,15 @@ module.exports = async ({ wc, root, log, exportPath, repo }) => {
     const s = await js(`({
       keep: !!document.querySelector('[data-testid=export-keep-working]'),
       chip: !!document.querySelector('[data-testid=export-chip]'),
+      // The chip stays once it ends, saying how: 'done' or 'failed' (ExportChip.tsx).
+      ended: (document.querySelector('[data-testid=export-chip]') || { dataset: {} }).dataset.ended || '',
       text: (document.querySelector('[data-testid=export-dialog]') || {}).innerText || '',
     })`)
     if (s.keep) await js(`document.querySelector('[data-testid=export-keep-working]').click()`)
     if (s.chip) sawChip = true
-    if (/error|failed/i.test(s.text)) throw new Error('the export failed: ' + s.text.slice(0, 300))
-    if (!s.chip && fs.existsSync(exportPath) && fs.statSync(exportPath).size > 1000 && Date.now() - t0 > 3000) break
+    if (/error|failed/i.test(s.text) || s.ended === 'failed') throw new Error('the export failed: ' + s.text.slice(0, 300))
+    const over = !s.chip || s.ended === 'done'
+    if (over && fs.existsSync(exportPath) && fs.statSync(exportPath).size > 1000 && Date.now() - t0 > 3000) break
     await sleep(500)
   }
   log('export done in', Date.now() - t0, 'ms')

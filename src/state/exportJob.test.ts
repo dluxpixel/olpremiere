@@ -18,21 +18,26 @@ import { isBlobHeld } from './exportHolds'
 import {
   cancelExport,
   closeExportDialog,
+  dismissExportResult,
   isExportRunning,
+  openExportResult,
   requestExport,
   retryExport,
   setExportLoudness,
   useExportJob,
 } from './exportJob'
+import type { ExportTaskbarState } from '../../electron/ipc-types'
 import { PLATFORM_TARGET_LUFS } from '../engine/loudness'
 import { setPlatformLoudness, useSettings } from './settings'
 import { useStore } from './store'
 import { useToasts } from './toasts'
 import { isCriticalWorkInFlight } from './unloadGuard'
+import { usage, type UsageEvent } from './usageLog'
 
 interface NativeCall {
   project: Project
   settings: ExportSettings
+  opts: { outPath?: string; onOutPath?: (path: string) => void }
   onProgress: (p: ExportProgress) => void
   signal: AbortSignal
   resolve: (r: { outPath: string; sizeBytes: number } | null) => void
@@ -42,6 +47,8 @@ interface NativeCall {
 const h = vi.hoisted(() => ({
   electron: true,
   native: [] as NativeCall[],
+  /** Leave the abort to the test: a reply main sent before the stop can still arrive first. */
+  manualAbort: false,
   browser: [] as { project: Project; settings: ExportSettings }[],
   browserResults: [] as (() => Promise<Blob | null>)[],
   picker: null as null | (() => Promise<unknown>),
@@ -58,14 +65,14 @@ vi.mock('../engine/export/nativeExport', () => ({
   exportNative: (
     project: Project,
     settings: ExportSettings,
-    _opts: unknown,
+    opts: NativeCall['opts'],
     onProgress: (p: ExportProgress) => void,
     signal: AbortSignal,
   ) =>
     new Promise((resolve, reject) => {
-      h.native.push({ project, settings, onProgress, signal, resolve, reject })
+      h.native.push({ project, settings, opts, onProgress, signal, resolve, reject })
       // The real one rejects with AbortError once ffmpeg is told to stop.
-      signal.addEventListener('abort', () => reject(new DOMException('Export cancelled', 'AbortError')))
+      if (!h.manualAbort) signal.addEventListener('abort', () => reject(new DOMException('Export cancelled', 'AbortError')))
     }),
 }))
 
@@ -96,18 +103,25 @@ function projectWithClip(name: string, blobKey: string): Project {
 }
 
 let revealed: string[] = []
+let taskbar: ExportTaskbarState[] = []
 
 beforeEach(() => {
   h.electron = true
   h.native.length = 0
+  h.manualAbort = false
   h.browser.length = 0
   h.browserResults.length = 0
   h.picker = null
   revealed = []
+  taskbar = []
   ;(window as unknown as { api: unknown }).api = {
     isElectron: true,
     exportReveal: (p: string) => {
       revealed.push(p)
+      return Promise.resolve()
+    },
+    exportTaskbar: (state: ExportTaskbarState) => {
+      taskbar.push(state)
       return Promise.resolve()
     },
   }
@@ -221,8 +235,50 @@ describe('how it ended, told with the dialog closed', () => {
     expect(toast.action?.label).toBe('Show in folder')
     toast.action!.onClick()
     expect(revealed).toEqual(['C:\\Videos\\Holiday 2.mp4'])
-    // Nothing left to show: the toast was the news.
+  })
+
+  it('⛔ a finished export stays as done, for the chip, until he clicks it', async () => {
+    requestExport()
+    closeExportDialog()
+    h.native[0].resolve({ outPath: 'C:\\Videos\\Holiday 2.mp4', sizeBytes: 5_000_000 })
+    await flush()
+    // The toast is gone in 7 seconds; this is not.
+    useToasts.setState({ toasts: [] })
+    expect(useExportJob.getState().job?.stage).toMatchObject({ kind: 'done', path: 'C:\\Videos\\Holiday 2.mp4' })
+    expect(useExportJob.getState().dialogOpen).toBe(false)
+
+    // The chip's click: the folder, and the chip goes.
+    openExportResult()
+    expect(revealed).toEqual(['C:\\Videos\\Holiday 2.mp4'])
     expect(useExportJob.getState().job).toBeNull()
+  })
+
+  it('⛔ a failed export stays as failed, and its click opens the dialog on the reason', async () => {
+    requestExport()
+    closeExportDialog()
+    h.native[0].reject(new Error('ffmpeg exited with code 1'))
+    await flush()
+    useToasts.setState({ toasts: [] })
+    expect(useExportJob.getState().job?.stage.kind).toBe('error')
+
+    openExportResult()
+    expect(useExportJob.getState().dialogOpen).toBe(true)
+    expect(useExportJob.getState().job?.stage.kind).toBe('error')
+    // From there Try again makes it again.
+    retryExport()
+    expect(h.native).toHaveLength(2)
+  })
+
+  it('the chip can be put away without opening anything, but never a running export', async () => {
+    requestExport()
+    closeExportDialog()
+    dismissExportResult()
+    expect(isExportRunning()).toBe(true)
+    h.native[0].reject(new Error('ffmpeg exited with code 1'))
+    await flush()
+    dismissExportResult()
+    expect(useExportJob.getState().job).toBeNull()
+    expect(revealed).toEqual([])
   })
 
   it('a failure says so, and Try again makes the same frozen project again', async () => {
@@ -234,7 +290,8 @@ describe('how it ended, told with the dialog closed', () => {
 
     const [toast] = useToasts.getState().toasts
     expect(toast.kind).toBe('danger')
-    expect(toast.message).toBe('The export of “Holiday” failed: ffmpeg exited with code 1')
+    // Plain words, not ffmpeg's: the cause is unknown here, so it only says it stopped.
+    expect(toast.message).toBe('The export of “Holiday” stopped.')
     expect(toast.action?.label).toBe('Try again')
 
     toast.action!.onClick()
@@ -247,11 +304,123 @@ describe('how it ended, told with the dialog closed', () => {
     requestExport()
     h.native[0].reject(new Error('ffmpeg exited with code 1'))
     await flush()
-    expect(useExportJob.getState().job?.stage).toEqual({ kind: 'error', message: 'ffmpeg exited with code 1' })
+    expect(useExportJob.getState().job?.stage).toEqual({
+      kind: 'error',
+      message: 'The export stopped. Try again.',
+      details: 'ffmpeg exited with code 1',
+    })
     expect(useToasts.getState().toasts).toHaveLength(0)
 
     retryExport()
     expect(h.native).toHaveLength(2)
+  })
+})
+
+describe('the usage log', () => {
+  it('a desktop export that finishes writes how fast it made frames and where the time went', async () => {
+    const lines: string[] = []
+    await usage.setEnabled(true)
+    usage.attach(async (_day, text) => {
+      lines.push(text)
+    })
+    try {
+      await usage.flush()
+      lines.length = 0
+      requestExport()
+      h.native[0].resolve({
+        outPath: 'C:\\Videos\\Holiday 2.mp4',
+        sizeBytes: 5_000_000,
+        speed: { fps: 9, read: 41, draw: 9, pixels: 12, wait: 38 },
+      } as { outPath: string; sizeBytes: number })
+      await flush()
+      await usage.flush()
+      const events = lines.flatMap((l) => l.trim().split('\n')).filter(Boolean).map((l) => JSON.parse(l) as UsageEvent)
+      const done = events.find((e) => e.k === 'export')
+      expect(done?.d).toMatchObject({ outcome: 'done', fpsMade: 9, stages: 'read 41 draw 9 pixels 12 wait 38' })
+    } finally {
+      await usage.setEnabled(false)
+    }
+  })
+})
+
+describe('⛔ a failure is told in plain words', () => {
+  it('a full disk says so, and keeps what ffmpeg said behind it', async () => {
+    requestExport()
+    closeExportDialog()
+    const raw = 'ffmpeg exited during export (exit code -28): [out#0/mp4 @ 0000020c] Error writing trailer: No space left on device'
+    h.native[0].reject(new Error(raw))
+    await flush()
+    expect(useToasts.getState().toasts[0].message).toBe(
+      'The export of “Holiday” failed. There is no room left on the disk. Free some space and try again.',
+    )
+    expect(useExportJob.getState().job?.stage).toEqual({
+      kind: 'error',
+      message: 'There is no room left on the disk. Free some space and try again.',
+      details: raw,
+    })
+  })
+})
+
+describe('⛔ a cancel is never a failure', () => {
+  // Cancel pressed during "Finishing the file": main's finish reply, ffmpeg killed by that very
+  // cancel, could land before the cancel and end the export as "The export stopped. Try again.",
+  // with a red chip and a red taskbar button that stayed until clicked (export review S3, 2026-10-08).
+  it('whatever reason arrives after he pressed Cancel, it ends as a cancel: no red chip, no red taskbar, no toast', async () => {
+    const lines: string[] = []
+    await usage.setEnabled(true)
+    usage.attach(async (_day, text) => {
+      lines.push(text)
+    })
+    try {
+      await usage.flush()
+      lines.length = 0
+      h.manualAbort = true
+      requestExport()
+      closeExportDialog()
+      h.native[0].onProgress({ phase: 'finalizing', framesDone: 150, framesTotal: 150 })
+      cancelExport()
+      h.native[0].reject(new Error('ffmpeg exited with code null'))
+      await flush()
+      expect(useExportJob.getState().job).toBeNull()
+      expect(taskbar).not.toContainEqual({ kind: 'failed' })
+      expect(taskbar.at(-1)).toEqual({ kind: 'clear' })
+      expect(useToasts.getState().toasts).toHaveLength(0)
+      await usage.flush()
+      const events = lines.flatMap((l) => l.trim().split('\n')).filter(Boolean).map((l) => JSON.parse(l) as UsageEvent)
+      expect(events.find((e) => e.k === 'export')?.d).toMatchObject({ outcome: 'cancelled' })
+    } finally {
+      await usage.setEnabled(false)
+    }
+  })
+})
+
+describe('the export on the taskbar button', () => {
+  it('moves while it gets ready, fills with the percent, and clears when it is done', async () => {
+    requestExport()
+    closeExportDialog()
+    h.native[0].onProgress({ phase: 'audio', framesDone: 0, framesTotal: 150 })
+    h.native[0].onProgress({ phase: 'video', framesDone: 75, framesTotal: 150 })
+    h.native[0].onProgress({ phase: 'video', framesDone: 75, framesTotal: 150 })
+    h.native[0].resolve({ outPath: 'C:\\Videos\\Holiday.mp4', sizeBytes: 1 })
+    await flush()
+    openExportResult()
+    // Told only when it changes: the repeated 50% is not sent twice.
+    expect(taskbar).toEqual([
+      { kind: 'busy' },
+      { kind: 'progress', fraction: 0.5 },
+      { kind: 'done' },
+      { kind: 'clear' },
+    ])
+  })
+
+  it('goes red when it fails, until the failure is put away', async () => {
+    requestExport()
+    closeExportDialog()
+    h.native[0].reject(new Error('ffmpeg exited with code 1'))
+    await flush()
+    expect(taskbar.at(-1)).toEqual({ kind: 'failed' })
+    dismissExportResult()
+    expect(taskbar.at(-1)).toEqual({ kind: 'clear' })
   })
 })
 
@@ -346,5 +515,48 @@ describe('platform loudness', () => {
     await flush()
     expect(h.native).toHaveLength(1)
     expect(h.native[0].signal.aborted).toBe(false)
+  })
+})
+
+describe('⛔ the file he named is asked for once', () => {
+  // The loudness switch restarts the export, and the save dialog used to come up again for a file
+  // he had already named; Try again asked again too (export audit, 2026-10-06).
+  const chosen = 'D:\\Shorts\\Gym day.mp4'
+
+  it('the loudness restart writes where he said, without asking again', async () => {
+    requestExport()
+    expect(h.native[0].opts.outPath).toBeUndefined()
+    h.native[0].opts.onOutPath?.(chosen)
+    setExportLoudness(false)
+    await flush()
+    expect(h.native[1].opts.outPath).toBe(chosen)
+  })
+
+  it('so does Try again', async () => {
+    requestExport()
+    h.native[0].opts.onOutPath?.(chosen)
+    h.native[0].reject(new Error('ffmpeg exited during export (exit code -28): No space left on device'))
+    await flush()
+    retryExport()
+    expect(h.native[1].opts.outPath).toBe(chosen)
+  })
+
+  it('unless the place itself was the problem: then Try again asks for another', async () => {
+    requestExport()
+    h.native[0].opts.onOutPath?.(chosen)
+    h.native[0].reject(new Error('ffmpeg exited during export (exit code -13): Permission denied'))
+    await flush()
+    retryExport()
+    expect(h.native[1].opts.outPath).toBeUndefined()
+  })
+
+  it('a new export asks afresh', async () => {
+    requestExport()
+    h.native[0].opts.onOutPath?.(chosen)
+    h.native[0].resolve({ outPath: chosen, sizeBytes: 1 })
+    await flush()
+    closeExportDialog()
+    requestExport()
+    expect(h.native[1].opts.outPath).toBeUndefined()
   })
 })

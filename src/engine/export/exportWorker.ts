@@ -21,9 +21,11 @@ import {
   Output,
   StreamTarget,
 } from 'mediabunny'
-import type { StreamTargetChunk, WrappedCanvas } from 'mediabunny'
+import type { StreamTargetChunk } from 'mediabunny'
 import { ProviderPool } from './providerPool'
-import { frameReached } from '../frameIndex'
+import { closeProvider, frameForClip, planReverseReading, reverseReaderFor, type ClipProvider } from './clipReader'
+import { budgets } from '../memoryBudget'
+import { stageClock } from './stageClock'
 import { browserConfigCheck, pickDecoderOptions } from './decoderChoice'
 import { createRenderer } from '../render/glRenderer'
 import { resolveFrame } from '../render/resolve'
@@ -42,8 +44,10 @@ import {
   firstSupported,
   isHdRaster,
   keyframeStride,
+  NO_SOUND_IN_THIS_BROWSER,
   packPlanarChunk,
   pcmChunks,
+  pickAudioConfig,
   quantizerFor,
   videoCodecLadder,
   videoEncoderConfig,
@@ -254,72 +258,7 @@ const nextDequeue = (enc: VideoEncoder | AudioEncoder): Promise<void> =>
     enc.addEventListener('dequeue', done, { once: true })
   })
 
-// A per-clip monotonic frame reader. Random-access getCanvas() returns null on
-// VFR / cue-less MediaRecorder webm inside a worker, so export pulls frames
-// SEQUENTIALLY (canvases()) and holds the newest frame the requested source
-// time has reached (frameReached: the NEAREST frame, the very one the paused
-// preview shows). Classic pull-down. One Input per CLIP, so two clips
-// of the same asset (e.g. across a cross-dissolve) read independently.
-// A ProviderPool owns the lifetime of these (see providerPool.ts): it closes the
-// least recently used one once the live count passes a ceiling, so the decoder
-// count stops tracking how finely the timeline is cut.
-interface ClipProvider {
-  /** Kept so the iterator can be re-opened for a backward (reverse-clip) seek. */
-  sink: CanvasSink
-  iterator: AsyncGenerator<WrappedCanvas, void, unknown>
-  dispose: () => void
-  started: boolean
-  current: WrappedCanvas | null
-  ahead: WrappedCanvas | null
-  /** The source's frame rate, which sets the slots frames are picked by. */
-  fps: number | undefined
-}
-
-/** Closes one provider's iterator and its demuxer. The pool calls this exactly once. */
-const closeProvider = (p: ClipProvider): void => {
-  // p.iterator, not the one captured at creation, since a reverse re-seek may
-  // have replaced it.
-  void p.iterator.return?.(undefined)
-  p.dispose()
-}
-
-async function nextFrame(p: ClipProvider): Promise<WrappedCanvas | null> {
-  const r = await p.iterator.next()
-  return r.done ? null : r.value
-}
-
-/**
- * Advance the clip's sequential reader to the frame shown at sourceT.
- *
- * ⛔ THE NEAREST FRAME, NOT THE LAST ONE THAT STARTED. That floor put his
- * iPhone cuts 24.1 ms behind their sound on average, always late
- * (frameIndex.ts). The rule is the paused preview's own, so preview == export.
- */
-async function frameForClip(p: ClipProvider, sourceT: number): Promise<OffscreenCanvas | HTMLCanvasElement | null> {
-  // A REVERSE clip (speed < 0) requests DECREASING sourceT. The reader is
-  // forward-only, so a backward jump means re-opening the sink iterator from the
-  // new time (a random-access re-seek). Without this the whole reversed clip
-  // would freeze on its furthest-decoded frame. The preview reverses correctly
-  // (random-access frame cache) but the export would not.
-  if (p.current && !frameReached(p.current.timestamp, sourceT, p.fps)) {
-    void p.iterator.return?.(undefined)
-    p.iterator = p.sink.canvases(Math.max(0, sourceT))
-    p.started = false
-    p.current = null
-    p.ahead = null
-  }
-  if (!p.started) {
-    p.started = true
-    p.ahead = await nextFrame(p)
-  }
-  while (p.ahead && frameReached(p.ahead.timestamp, sourceT, p.fps)) {
-    p.current = p.ahead
-    p.ahead = await nextFrame(p)
-  }
-  // Before the first packet clamp to it; past the last, freeze on it.
-  const w = p.current ?? p.ahead
-  return w ? w.canvas : null
-}
+// The per-clip frame reader, forward and in reverse: clipReader.ts.
 
 /**
  * NATIVE (Electron ffmpeg) render path. Uses the SAME media-open + shared WebGL
@@ -378,6 +317,9 @@ async function runNative(init: Extract<ExportRequest, { type: 'init' }>): Promis
 
     const providers = new ProviderPool<ClipProvider>({ close: closeProvider })
     cleanups.push(() => providers.clear())
+    // Reversed clips read a window of frames at a time: how big, from where, and
+    // when each is done, inside the machine's frame budget (clipReader.ts).
+    const reading = planReverseReading(sequence, init.frameBudgetBytes ?? budgets().frames)
     const providerFor = async (clip: Clip): Promise<ClipProvider | null> => {
       const existing = providers.get(clip.id)
       if (existing) return existing
@@ -409,8 +351,9 @@ async function runNative(init: Extract<ExportRequest, { type: 'init' }>): Promis
         current: null,
         ahead: null,
         fps: fpsById.get(clip.assetId),
+        ...reverseReaderFor(clip, reading, track.displayWidth, track.displayHeight),
       }
-      providers.set(clip.id, clip, provider)
+      providers.set(clip.id, clip, provider, reading.doneAtS.get(clip.id))
       return provider
     }
 
@@ -451,6 +394,8 @@ async function runNative(init: Extract<ExportRequest, { type: 'init' }>): Promis
 
     // --- render → readback → stream ----------------------------------------
     stage = 'rendering video'
+    // Where each frame's time goes, for the usage log (stageClock.ts).
+    const clock = stageClock()
     for (let f = 0; f < framesTotal; f++) {
       checkCancel()
       const t = settings.startS + f / settings.fps
@@ -465,7 +410,9 @@ async function runNative(init: Extract<ExportRequest, { type: 'init' }>): Promis
         else if (op.type === 'transition') layers.push(op.from, op.to)
       }
       const texMap = await gatherTextures(layers)
+      clock.mark('read')
       renderer.render(frame, (layer) => texMap.get(layer) ?? null)
+      clock.mark('draw')
 
       // Read the rendered pixels (bottom-origin RGBA; ffmpeg -vf vflip corrects the
       // row order). A fresh buffer per frame because it's transferred to the page.
@@ -478,9 +425,12 @@ async function runNative(init: Extract<ExportRequest, { type: 'init' }>): Promis
       if (gl.isContextLost()) throw new Error('the graphics context was lost during the export, so the frames would have come out black')
       const pixels = new Uint8Array(W * H * 4)
       gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, pixels)
+      clock.mark('pixels')
       post({ type: 'frame', index: f, data: pixels.buffer }, [pixels.buffer])
       framesInFlight++
       await awaitFrameCredit()
+      clock.mark('wait')
+      clock.frame()
       checkCancel()
 
       if ((f + 1) % 3 === 0 || f + 1 === framesTotal) {
@@ -490,8 +440,9 @@ async function runNative(init: Extract<ExportRequest, { type: 'init' }>): Promis
     // Every frame must be WRITTEN before 'done' lets the page close ffmpeg's
     // stdin, or the credit window would silently truncate the tail of the video.
     await awaitFramesDrained()
+    clock.mark('wait')
     checkCancel()
-    outcome = { msg: { type: 'done', buffer: null }, transfer: [] }
+    outcome = { msg: { type: 'done', buffer: null, times: clock.times() }, transfer: [] }
   } catch (err) {
     if (err instanceof CancelledError || cancelled) {
       outcome = { msg: { type: 'cancelled' }, transfer: [] }
@@ -622,43 +573,22 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
         // SD is forced to the legacy 192k; HD honours the dialog's choice.
         bitrate: effectiveAudioBitrate(settings, isHd),
       }
-      // AAC-LC is the universal default; Opus is smaller/cleaner for voice but
-      // isn't accepted in MP4 by every player, so it's opt-in. Try the preferred
-      // codec first, then fall back to the other. (SD keeps AAC-first so the
-      // golden bytes hold.)
-      const candidates: { codec: 'aac' | 'opus'; str: string }[] =
-        settings.audioCodecPref === 'opus' && isHd
-          ? [
-              { codec: 'opus', str: 'opus' },
-              { codec: 'aac', str: 'mp4a.40.2' },
-            ]
-          : [
-              { codec: 'aac', str: 'mp4a.40.2' },
-              { codec: 'opus', str: 'opus' },
-            ]
-      // A codec is worth more than a bitrate, so drop the RATE before dropping the
-      // CODEC. Chrome's AAC encoder refuses anything at or above 256 kbps
-      // (measured: 128k and 192k supported, 256k/320k/384k not), and the plan asks
-      // for 320k on every HD export. The old loop read that as "no AAC" and wrote
-      // OPUS INSIDE AN MP4, which most players and phones will not play, so every
-      // HD export he made came out silent while an SD one was fine. Ladder down
-      // the bitrate first, and only then consider another codec.
-      const ladder = [base.bitrate, 256_000, 192_000, 128_000].filter(
-        (b, i, all) => b > 0 && all.indexOf(b) === i,
+      // The codec and rate ladder, and why the rate drops first: messages.ts.
+      // (SD keeps AAC first so the golden bytes hold.)
+      const chosen = await pickAudioConfig(
+        base,
+        settings.audioCodecPref === 'opus' && isHd,
+        async (config) => (await AudioEncoder.isConfigSupported(config)).supported === true,
       )
-      outer: for (const cand of candidates) {
-        for (const bitrate of ladder) {
-          const config = { codec: cand.str, ...base, bitrate }
-          const support = await AudioEncoder.isConfigSupported(config)
-          if (support.supported) {
-            audioCodec = cand.codec
-            audioConfig = config
-            break outer
-          }
-        }
+      if (chosen) {
+        audioCodec = chosen.codec
+        audioConfig = chosen.config
       }
       // Neither AAC nor Opus: ship a video-only file instead of failing.
       if (!audioConfig) {
+        // ⛔ AND SAY SO. This used to happen without a word, so he found out the
+        // file had no sound after uploading it (export audit, 2026-10-06).
+        post({ type: 'warning', message: NO_SOUND_IN_THIS_BROWSER })
         // Video-only fallback: the main thread will still stream the mix (it
         // has no way to know the probe failed), so discard segments on arrival
         // and ACK them, or the queue retains the entire mix for the whole
@@ -877,6 +807,9 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
 
     const providers = new ProviderPool<ClipProvider>({ close: closeProvider })
     cleanups.push(() => providers.clear())
+    // Reversed clips read a window of frames at a time: how big, from where, and
+    // when each is done, inside the machine's frame budget (clipReader.ts).
+    const reading = planReverseReading(sequence, init.frameBudgetBytes ?? budgets().frames)
     const providerFor = async (clip: Clip): Promise<ClipProvider | null> => {
       const existing = providers.get(clip.id)
       if (existing) return existing
@@ -901,7 +834,7 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
       const sink = new CanvasSink(track, { decoderOptions })
       // Decode forward from just before the clip's in-point; a transition reads
       // past the out-point (handles), so leave the end open (to media end). For a
-      // reverse clip frameForClip re-opens sink.canvases() at each backward step.
+      // reverse clip frameForClip reads backward a window at a time (clipReader.ts).
       const iterator = sink.canvases(Math.max(0, clip.inS))
       const provider: ClipProvider = {
         sink,
@@ -911,8 +844,9 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
         current: null,
         ahead: null,
         fps: fpsById.get(clip.assetId),
+        ...reverseReaderFor(clip, reading, track.displayWidth, track.displayHeight),
       }
-      providers.set(clip.id, clip, provider)
+      providers.set(clip.id, clip, provider, reading.doneAtS.get(clip.id))
       return provider
     }
 

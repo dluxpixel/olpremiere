@@ -29,7 +29,7 @@ import * as captionStylesFile from './captionStylesFile'
 import * as preferencesFile from './preferencesFile'
 import * as usageFiles from './usageFiles'
 import * as saveFiles from './saveFiles'
-import type { NativeExportConfig, UpdateStatus } from './ipc-types'
+import type { ExportTaskbarState, NativeEncoder, NativeExportConfig, UpdateStatus } from './ipc-types'
 import {
   SPLASH_MELON_POP_MS,
   SPLASH_MELON_PX,
@@ -41,6 +41,7 @@ import {
   UPDATE_SCREEN_UNBIDDEN,
 } from './ipc-types'
 import * as native from './nativeExport'
+import { showExportOnTaskbar } from './exportTaskbar'
 import * as proxy from './proxy'
 import * as mediaStore from './mediaStore'
 import * as mediaSweep from './mediaSweep'
@@ -670,10 +671,13 @@ app.whenReady().then(() => {
 
   // Native ffmpeg export.
   ipcMain.handle('native:probe', () => native.probe())
-  ipcMain.handle('native:prepareAudio', async (_e, wav: ArrayBuffer) => {
-    await native.prepareAudio(wav)
-    return { ok: true }
+  ipcMain.handle('native:pickOutput', (_e, encoder: NativeEncoder, suggestedName: string) => {
+    if (!mainWindow || typeof encoder !== 'string' || typeof suggestedName !== 'string') return null
+    return native.pickOutput(encoder, suggestedName, mainWindow)
   })
+  ipcMain.handle('native:audioBegin', (_e, sampleRate: number, channels: number) => native.beginAudio(sampleRate, channels))
+  ipcMain.handle('native:audioChunk', (_e, interleaved: ArrayBuffer) => native.audioChunk(interleaved))
+  ipcMain.handle('native:audioFinish', () => native.finishAudio())
   ipcMain.handle('native:start', (_e, config: NativeExportConfig) => {
     if (!mainWindow) return { started: false, error: 'no window' }
     return native.start(config, mainWindow)
@@ -772,6 +776,10 @@ app.whenReady().then(() => {
   ipcMain.handle('export:reveal', (_e, filePath: string) => {
     if (typeof filePath !== 'string' || !/\.(mp4|mov)$/i.test(filePath) || !existsSync(filePath)) return
     shell.showItemInFolder(filePath)
+  })
+  // The export on the taskbar button, so he sees it from whatever app he is in.
+  ipcMain.handle('export:taskbar', (_e, state: ExportTaskbarState) => {
+    if (mainWindow) showExportOnTaskbar(mainWindow, state)
   })
 
   // --- Backups -------------------------------------------------------------

@@ -25,9 +25,16 @@
 //             YouTube's bitrate-starved 1080p tier and comes back visibly
 //             cleaner. SD footage is NOT upscaled: interpolating 360p to 1440p
 //             adds no detail, only minutes of encoding.
-//   FPS       the sequence's own rate. Every other value throws frames away.
-//   AUDIO     AAC 320 kbps, which is transparent and universally playable (192 kbps
-//             below HD, same byte-stability reason as QUALITY).
+//   FPS       the sequence's own rate, up to 60. Every lower value throws frames
+//             away. Above 60 (a timeline that took its rate from an iPhone slow
+//             motion clip, 120 or 240) every k-th frame, for 60 or just under:
+//             TikTok, Reels and YouTube play 60 at most, so the rest was work for
+//             frames the apps throw away. See exportFps.
+//   AUDIO     AAC, transparent and universally playable. The desktop file is 384
+//             kbps (electron/exportArgs.ts sets it, not this plan). The browser
+//             asks for 320 and gets 192 in practice: Chrome's AAC encoder refuses
+//             256 and up, so the worker ladders down (exportWorker.ts). 192 below
+//             HD, same byte-stability reason as QUALITY.
 //   RANGE     the work area when in/out points are set, the whole sequence
 //             otherwise. Marking I/O already said which part you meant.
 //   LOUDNESS  the whole mix lands at -14 LUFS, the level YouTube, TikTok and
@@ -51,16 +58,36 @@ import { workArea } from '../workArea'
  */
 export const EXPORT_QP = 14
 
-/** AAC at 320 kbps is transparent, and matches what the desktop ffmpeg emits. */
+/**
+ * What the BROWSER export asks for. Only the browser reads it: the desktop
+ * ffmpeg writes 384 kbps whatever this says (electron/exportArgs.ts), and Chrome
+ * refuses AAC at 256 and up, so the worker steps down to 192 in practice.
+ */
 export const EXPORT_AUDIO_BITRATE = 320_000
 
 /** What a sub-HD raster actually gets: the legacy rate the golden export pins. */
 export const SD_AUDIO_BITRATE = 192_000
 
+/** The fastest any platform he posts to plays: TikTok, Reels and YouTube all top out at 60. */
+export const MAX_EXPORT_FPS = 60
+
+/**
+ * The rate the file is made at: the timeline's own, or for a timeline above 60
+ * every k-th frame of it, k the smallest whole number that brings it to 60 or
+ * under (120 and 240 to 60, 119.88 to 59.94, 100 to 50, 90 to 45). A whole
+ * number of steps, so motion stays even: no frame is shown twice or skipped
+ * unevenly. ⛔ The sound must be planned at THIS rate too (planAudioMix's fps),
+ * or picture and sound come out different lengths again.
+ */
+export function exportFps(seqFps: number): number {
+  if (!(seqFps > MAX_EXPORT_FPS)) return seqFps
+  return seqFps / Math.ceil(seqFps / MAX_EXPORT_FPS - 1e-9)
+}
+
 /** Two seconds is the GOP length every upload platform expects. */
 export const EXPORT_KEYFRAME_S = 2
 
-/** x264 veryslow: the best quality-per-bit of any encoder we bundle. */
+/** x264 at the slow preset (electron/exportArgs.ts says why not veryslow): the best picture we bundle. */
 export const EXPORT_NATIVE_ENCODER: NativeEncoder = 'x264'
 
 /**
@@ -132,7 +159,7 @@ export interface PlanOptions {
 export function planExport(seq: Sequence, opts: PlanOptions = {}): ExportPlan {
   const raster = exportRaster(seq.width, seq.height)
   const area = workArea(seq)
-  const fps = seq.fps
+  const fps = exportFps(seq.fps)
   // Below HD the browser worker coerces rate control to VBR and audio to
   // 192 kbps no matter what it is handed, to keep the golden 640×360 export
   // byte-stable. The plan asks for what it will actually GET: this changes not

@@ -58,6 +58,8 @@ export interface ProviderPoolOptions<P> {
 interface Entry<P> {
   provider: P
   deadAfterS: number
+  /** Known exactly by the caller: from this output time on it is never read (set's doneAtS). */
+  doneAtS?: number
   /** Frame counter at the last get/set, so the LRU victim is the stalest. */
   usedTick: number
 }
@@ -106,9 +108,22 @@ export class ProviderPool<P> {
     return entry.provider
   }
 
-  /** Adds a freshly opened provider, then closes the stalest ones over the cap. */
-  set(id: Id, clip: PooledClipTiming, provider: P): void {
-    this.entries.set(id, { provider, deadAfterS: providerDeadAfterS(clip), usedTick: this.tick })
+  /**
+   * Adds a freshly opened provider, then closes the stalest ones over the cap.
+   *
+   * `doneAtS`, when the caller knows it exactly, is the output time from which
+   * this clip is never read again, and the provider is closed at the first frame
+   * that reaches it rather than 10 s later. A reversed clip holds a window of
+   * decoded frames, so its 10 s margin was 10 s of that window held for nothing
+   * (clipReader.ts planReverseReading).
+   */
+  set(id: Id, clip: PooledClipTiming, provider: P, doneAtS?: number): void {
+    this.entries.set(id, {
+      provider,
+      deadAfterS: providerDeadAfterS(clip),
+      ...(doneAtS !== undefined && Number.isFinite(doneAtS) ? { doneAtS } : {}),
+      usedTick: this.tick,
+    })
     this.enforceCeiling()
   }
 
@@ -119,7 +134,7 @@ export class ProviderPool<P> {
    */
   reap(t: number): void {
     for (const [id, entry] of this.entries) {
-      if (t > entry.deadAfterS) this.drop(id, entry, false)
+      if (entry.doneAtS !== undefined ? t >= entry.doneAtS : t > entry.deadAfterS) this.drop(id, entry, false)
     }
   }
 

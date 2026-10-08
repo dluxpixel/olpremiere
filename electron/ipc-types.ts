@@ -42,6 +42,8 @@ export interface NativeFinishResult {
   outPath?: string
   sizeBytes?: number
   error?: string
+  /** A cancel stopped ffmpeg while it was finishing the file: no file, and not a failure. */
+  cancelled?: boolean
 }
 
 export interface NativeProgress {
@@ -195,14 +197,34 @@ export interface BootProgress {
   version: string
 }
 
+/** What the taskbar button shows for the export (electron/exportTaskbar.ts). */
+export type ExportTaskbarState =
+  | { kind: 'busy' }
+  | { kind: 'progress'; fraction: number }
+  | { kind: 'done' }
+  | { kind: 'failed' }
+  | { kind: 'clear' }
+
 export interface OlApi {
   /** Always true when running inside the desktop shell (the renderer's isElectron gate). */
   readonly isElectron: true
   getVersion(): Promise<string>
   /** Which native encoders this machine's bundled ffmpeg + GPU actually offer. */
   nativeProbe(): Promise<NativeCaps>
-  /** Write the rendered audio mix (a full WAV) to a temp file BEFORE starting (it's an ffmpeg input). */
-  nativePrepareAudio(wav: ArrayBuffer): Promise<{ ok: boolean }>
+  /**
+   * The save dialog alone: where the export goes, or null when he dismissed it.
+   * Asked before the sound is rendered, so a dismissed dialog throws nothing away.
+   */
+  nativePickOutput(encoder: NativeEncoder, suggestedName: string): Promise<string | null>
+  /**
+   * The rendered audio mix, written to a temp WAV BEFORE starting (it's an ffmpeg
+   * input), one segment per message so no message holds the whole mix: begin,
+   * then each segment's interleaved little-endian float samples in order, then
+   * finish. nativeCancel drops a mix half written.
+   */
+  nativeAudioBegin(sampleRate: number, channels: number): Promise<void>
+  nativeAudioChunk(interleaved: ArrayBuffer): Promise<void>
+  nativeAudioFinish(): Promise<void>
   /** Pick a destination (or use config.outPath) and spawn ffmpeg. */
   nativeStart(config: NativeExportConfig): Promise<NativeStartResult>
   /** Stream one raw RGBA frame to ffmpeg; resolves when it's accepted (backpressure). */
@@ -376,6 +398,8 @@ export interface OlApi {
   backupReveal(): Promise<void>
   /** Open Explorer with the exported file selected, so he can find what he just made. */
   exportReveal(filePath: string): Promise<void>
+  /** Show the export on the taskbar button: filling, red on failure, flashing when it ends unseen. */
+  exportTaskbar(state: ExportTaskbarState): Promise<void>
 
   /**
    * The project as a plain file, kept current on every save (electron/projectFiles.ts).

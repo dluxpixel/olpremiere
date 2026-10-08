@@ -103,3 +103,37 @@ describe('an export must never quietly lose the sound', () => {
     expect(await planAudioMix(empty, { a1: asset() }, 0, 10)).toBeNull()
   })
 })
+
+describe('⛔ a browser that cannot encode sound says so', () => {
+  // Older Safari has no AudioEncoder. planAudioMix used to return null before it even looked at the
+  // timeline, which reads as "nothing audible", so the video went out silent without a word.
+  async function withoutAudioEncoder<T>(fn: () => Promise<T>): Promise<T> {
+    const g = globalThis as { AudioEncoder?: unknown }
+    const saved = g.AudioEncoder
+    delete g.AudioEncoder
+    try {
+      return await fn()
+    } finally {
+      g.AudioEncoder = saved
+    }
+  }
+
+  it('the timeline has sound: he is told, and the video goes out without it', async () => {
+    const told: number[] = []
+    const plan = await withoutAudioEncoder(() =>
+      planAudioMix(seqWithAudioClip(), { a1: asset() }, 0, 10, undefined, { onCannotEncode: () => told.push(1) }),
+    )
+    expect(plan).toBeNull()
+    expect(told).toHaveLength(1)
+  })
+
+  it('a timeline with nothing to hear raises nothing', async () => {
+    const told: number[] = []
+    const empty = { ...seqWithAudioClip(), tracks: [] } as unknown as Sequence
+    const plan = await withoutAudioEncoder(() =>
+      planAudioMix(empty, { a1: asset() }, 0, 10, undefined, { onCannotEncode: () => told.push(1) }),
+    )
+    expect(plan).toBeNull()
+    expect(told).toEqual([])
+  })
+})

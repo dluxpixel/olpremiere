@@ -23,6 +23,8 @@ import { ExportDialog } from './ExportDialog'
 interface NativeCall {
   onProgress: (p: ExportProgress) => void
   signal: AbortSignal
+  resolve: (r: { outPath: string; sizeBytes: number }) => void
+  reject: (err: unknown) => void
 }
 
 const h = vi.hoisted(() => ({ electron: true, native: [] as NativeCall[] }))
@@ -42,8 +44,8 @@ vi.mock('../engine/export/nativeExport', () => ({
     onProgress: (p: ExportProgress) => void,
     signal: AbortSignal,
   ) =>
-    new Promise((_resolve, reject) => {
-      h.native.push({ onProgress, signal })
+    new Promise((resolve, reject) => {
+      h.native.push({ onProgress, signal, resolve, reject })
       signal.addEventListener('abort', () => reject(new DOMException('Export cancelled', 'AbortError')))
     }),
 }))
@@ -75,9 +77,19 @@ function renderBar() {
   )
 }
 
+let revealed: string[] = []
+
 beforeEach(() => {
   h.electron = true
   h.native.length = 0
+  revealed = []
+  ;(window as unknown as { api: unknown }).api = {
+    isElectron: true,
+    exportReveal: (p: string) => {
+      revealed.push(p)
+      return Promise.resolve()
+    },
+  }
   useStore.getState().setProject(projectWithClip('Holiday'))
 })
 
@@ -86,6 +98,7 @@ afterEach(async () => {
   cancelExport()
   await flush()
   useExportJob.setState({ job: null, dialogOpen: false, alreadyRunning: false })
+  delete (window as unknown as { api?: unknown }).api
 })
 
 describe('on the desktop', () => {
@@ -104,6 +117,14 @@ describe('on the desktop', () => {
     const chip = screen.getByTestId('export-chip')
     expect(chip.textContent).toContain('50%')
     expect(chip.textContent).toContain('Holiday')
+
+    // Each step in plain words, and the time left from how fast it is going.
+    await user.click(screen.getByTestId('export-chip-open'))
+    expect(screen.getByTestId('export-phase').textContent).toContain('Making the video')
+    act(() => h.native[0].onProgress({ phase: 'finalizing', framesDone: 140, framesTotal: 150 }))
+    expect(screen.getByTestId('export-phase').textContent).toContain('Finishing the file')
+    expect(screen.getByTestId('export-dialog').textContent).not.toMatch(/ETA|finalizing/)
+    await user.click(screen.getByTestId('export-keep-working'))
 
     // He opens another project; the chip still names the one being made.
     act(() => useStore.getState().setProject(newProject('Other')))
@@ -165,6 +186,66 @@ describe('on the desktop', () => {
   })
 })
 
+describe('⛔ the chip stays when the export ends behind his back', () => {
+  it('done: "Done, show it" opens the folder, and only then goes', async () => {
+    const user = userEvent.setup()
+    act(() => requestExport())
+    renderBar()
+    await user.click(screen.getByTestId('export-keep-working'))
+
+    await act(async () => {
+      h.native[0].resolve({ outPath: 'C:\\Videos\\Holiday.mp4', sizeBytes: 1_000_000 })
+      await flush()
+    })
+    const chip = screen.getByTestId('export-chip')
+    expect(chip.textContent).toContain('Done, show it')
+    expect(chip.textContent).toContain('Holiday')
+    expect(screen.queryByTestId('export-dialog')).toBeNull()
+
+    await user.click(screen.getByTestId('export-chip-open'))
+    expect(revealed).toEqual(['C:\\Videos\\Holiday.mp4'])
+    expect(screen.queryByTestId('export-chip')).toBeNull()
+  })
+
+  it('failed: "Export failed, see why" opens the dialog on the reason, with Try again', async () => {
+    const user = userEvent.setup()
+    act(() => requestExport())
+    renderBar()
+    await user.click(screen.getByTestId('export-keep-working'))
+
+    await act(async () => {
+      h.native[0].reject(new Error('ffmpeg exited during export (exit code -28): No space left on device'))
+      await flush()
+    })
+    expect(screen.getByTestId('export-chip').textContent).toContain('Export failed, see why')
+
+    await user.click(screen.getByTestId('export-chip-open'))
+    // The first line is plain; ffmpeg's own words are only inside Details.
+    expect(screen.getByTestId('export-error').textContent).toBe('There is no room left on the disk. Free some space and try again.')
+    expect(screen.getByTestId('export-error').textContent).not.toContain('ffmpeg')
+    const details = screen.getByTestId('export-error-details')
+    expect(details.tagName).toBe('DETAILS')
+    expect(details.textContent).toContain('exit code -28')
+    expect(screen.getByTestId('export-retry')).toBeTruthy()
+    // The dialog says it now, so the chip steps aside.
+    expect(screen.queryByTestId('export-chip')).toBeNull()
+  })
+
+  it('its X puts it away without opening anything', async () => {
+    const user = userEvent.setup()
+    act(() => requestExport())
+    renderBar()
+    await user.click(screen.getByTestId('export-keep-working'))
+    await act(async () => {
+      h.native[0].resolve({ outPath: 'C:\\Videos\\Holiday.mp4', sizeBytes: 1 })
+      await flush()
+    })
+    await user.click(screen.getByTestId('export-chip-dismiss'))
+    expect(screen.queryByTestId('export-chip')).toBeNull()
+    expect(revealed).toEqual([])
+  })
+})
+
 describe('in the browser', () => {
   it('stays up while it encodes, as before, and shows no chip', async () => {
     h.electron = false
@@ -179,5 +260,18 @@ describe('in the browser', () => {
     await user.keyboard('{Escape}')
     expect(screen.getByTestId('export-dialog')).toBeTruthy()
     expect(screen.queryByTestId('export-chip')).toBeNull()
+  })
+})
+
+describe('the Platform loudness switch', () => {
+  it('⛔ promises a clean limiter, not "no distortion", which bass pushed into it measurably breaks', async () => {
+    // Measured 2026-10-06 with the app's own limiter: 60 Hz + 1 kHz pushed 6 dB over the ceiling
+    // comes out with 1.2% intermodulation (audioLimiter.test.ts pins it). The words said none.
+    act(() => requestExport())
+    renderBar()
+    await act(flush)
+    const hint = screen.getByTestId('export-loudness').closest('div')?.textContent ?? ''
+    expect(hint).toContain('with a clean limiter')
+    expect(hint).not.toMatch(/no distortion/i)
   })
 })

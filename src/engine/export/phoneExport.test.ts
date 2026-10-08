@@ -7,8 +7,8 @@
 //
 //  1. THE LEVEL. electron/exportArgs.ts pins 4.2 only where the frame fits 8704 macroblocks, and
 //     1080 x 2112 is 68 x 132 = 8976. So the level is x264's own choice, and it has to be one a phone
-//     decodes. Measured on the bundled binary: it writes level 5.1 (16 reference frames, the same as
-//     it did for his 1080p files before the 4.2 pin). 5.0 or 5.1 is fine; 4.x could not hold the frame.
+//     decodes. Measured on the bundled binary: veryslow wrote level 5.1 (16 reference frames), slow
+//     writes 5.0 (5 reference frames, 2026-10-06). 5.0 or 5.1 is fine; 4.x could not hold the frame.
 //  2. THE EDGES. The raw frames go in at the phone raster and come out at it, with no band added.
 //
 // Slower than most of the suite on purpose: it spawns a real encoder, like electron/sdrMaster.test.ts.
