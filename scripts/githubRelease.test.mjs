@@ -12,6 +12,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { githubApi, publishRelease, uploadAsset } from './githubRelease.mjs'
+import { MAY_BE_LIVE } from './lib.mjs'
 
 const REPO = '/repos/dluxpixel/olpremiere'
 const TAG = 'v3.22.0'
@@ -317,6 +318,17 @@ describe('a ship that fails part way', () => {
     const err = await ship(gh).promise.catch((e) => e)
     expect(err.message).toContain('MAY ALREADY BE PUBLISHED')
     expect(err.message).not.toContain('NOT published')
+    // ⛔ and it carries the line release.mjs's retry stops on: a new run deletes it first.
+    expect(err.message).toContain(MAY_BE_LIVE)
+    expect(gh.public()).toHaveLength(1)
+  })
+
+  it('⛔ published, and then the check cannot reach GitHub: live, never retried, never "NOT published"', async () => {
+    const gh = fakeGitHub({ offlineAfterPatch: true })
+    const err = await ship(gh).promise.catch((e) => e)
+    expect(err.message).toContain(`${TAG} WAS PUBLISHED`)
+    expect(err.message).not.toContain('NOT published')
+    expect(err.message).toContain(MAY_BE_LIVE)
     expect(gh.public()).toHaveLength(1)
   })
 

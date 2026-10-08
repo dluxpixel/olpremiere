@@ -27,7 +27,7 @@ import { execFileSync, execSync } from 'node:child_process'
 import { copyFileSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { isTransientFailure, loadToken, nextVersion, openShipLog, planShip, runLogged, SHIP_LOG } from './lib.mjs'
+import { isTransientFailure, loadToken, mayBeLiveReport, nextVersion, openShipLog, planShip, runLogged, SHIP_LOG } from './lib.mjs'
 
 const args = process.argv.slice(2)
 const fast = args.includes('--fast')
@@ -49,6 +49,19 @@ if (!message && !verifyOnly) {
 // that cost.
 const shipLog = openShipLog(`ship: ${new Date().toISOString()}`)
 const run = (cmd, label) => runLogged(cmd, label, shipLog)
+
+/**
+ * ⛔ A RELEASE THAT MAY ALREADY BE LIVE (lib.mjs MAY_BE_LIVE) is not "did not publish",
+ * and "run it again" is the one thing he must not do: a new run deletes it first.
+ */
+const stopIfMayBeLive = (version, e) => {
+  const live = mayBeLiveReport(version, e.output)
+  if (!live) return
+  console.error('')
+  for (const line of live) console.error(line)
+  console.error(`   The whole run is in ${SHIP_LOG}`)
+  process.exit(1)
+}
 
 const git = (...a) => execFileSync('git', a, { encoding: 'utf8' }).trim()
 
@@ -203,6 +216,7 @@ if (!plan.bump) {
   try {
     await run('node scripts/release.mjs', `release v${shippedVersion}`)
   } catch (e) {
+    stopIfMayBeLive(shippedVersion, e)
     console.error(`\n❌ v${shippedVersion} is committed and PUSHED, but the build did not publish.`)
     console.error(`   ${e.message}`)
     console.error('   Run the same command again: it will only publish.')
@@ -252,6 +266,7 @@ await pushMain()
 try {
   await run('node scripts/release.mjs', `release v${version}`)
 } catch (e) {
+  stopIfMayBeLive(version, e)
   console.error(`\n❌ v${version} is committed and PUSHED, but the build did not publish.`)
   console.error(`   ${e.message}`)
   console.error(`   The whole run is in ${SHIP_LOG}`)
