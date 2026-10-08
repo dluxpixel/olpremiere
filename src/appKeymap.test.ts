@@ -395,6 +395,61 @@ describe('a clicked slider, tick box or select gives the keys back to the edit',
     }
   })
 
+  // 2026-10-08: "clicked" outlived the click. He clicked the slider, then the timeline (which takes
+  // no focus), and the slider he later reached with Tab still gave its arrows to the edit.
+  it('a slider clicked, left for something that takes no focus, then reached with Tab keeps its arrows', async () => {
+    seedClip()
+    const uninstall = installKeymap(bindings())
+    try {
+      const el = put<HTMLInputElement>('<input type="range" min="0" max="10" value="5">')
+      click(el)
+      document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+      el.blur()
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      pressOn(document.body, 'Tab')
+      el.focus()
+      const e = pressOn(el, 'ArrowRight')
+      expect(e.defaultPrevented).toBe(false)
+      expect(playhead()).toBe(1)
+    } finally {
+      uninstall()
+    }
+  })
+
+  it('a clicked slider stays clicked while the whole window loses the focus and gets it back', async () => {
+    seedClip()
+    const uninstall = installKeymap(bindings())
+    try {
+      const el = put<HTMLInputElement>('<input type="range" min="0" max="10" value="5">')
+      click(el)
+      // The window going to the background: a focusout naming nowhere, and the slider still focused.
+      el.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: null }))
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      expect(pressOn(el, 'ArrowRight').defaultPrevented).toBe(true)
+      expect(playhead()).toBeCloseTo(1 + 1 / fps(), 6)
+    } finally {
+      uninstall()
+    }
+  })
+
+  // The other way round: a click on a slider that already has the focus fires no focusin, so one
+  // reached with Tab and THEN clicked was never marked, and Right still turned the volume up.
+  it('a slider reached with Tab and then clicked gives the keys back to the edit', () => {
+    seedClip()
+    const uninstall = installKeymap(bindings())
+    try {
+      const el = put<HTMLInputElement>('<input type="range" min="0" max="10" value="5">')
+      pressOn(document.body, 'Tab')
+      el.focus()
+      el.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+      const e = pressOn(el, 'ArrowRight')
+      expect(e.defaultPrevented).toBe(true)
+      expect(playhead()).toBeCloseTo(1 + 1 / fps(), 6)
+    } finally {
+      uninstall()
+    }
+  })
+
   it('a text field keeps every key, clicked or not', () => {
     seedClip()
     const uninstall = installKeymap(bindings())
@@ -406,6 +461,30 @@ describe('a clicked slider, tick box or select gives the keys back to the edit',
       expect(pressOn(el, ' ').defaultPrevented).toBe(false)
       expect(playhead()).toBe(1)
       expect(togglePlay).not.toHaveBeenCalled()
+    } finally {
+      uninstall()
+    }
+  })
+})
+
+// 2026-10-08: the Czech AltGr fallback took every Ctrl+Alt for AltGr, so on a US keyboard Ctrl+Alt+1
+// applied Move 1 to the selected clip, a key that had never done anything.
+describe('Ctrl+Alt with a digit', () => {
+  it('applies no Move, where the digit alone does', () => {
+    const clip = newTitleClip(defaultTitleDef('x'), 0, 5)
+    updateActiveSequence('seed', (sq) =>
+      recomputeDuration({ ...sq, tracks: sq.tracks.map((t, i) => (i === 0 ? { ...t, clips: [clip] } : t)) }),
+    )
+    useStore.getState().setUI({ selection: [clip.id], playheadS: 1 })
+    const digit = (mods: { ctrlKey?: boolean; altKey?: boolean }) =>
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: '1', code: 'Digit1', bubbles: true, cancelable: true, ...mods }))
+    const uninstall = installKeymap(bindings())
+    try {
+      const before = useStore.getState().project
+      digit({ ctrlKey: true, altKey: true })
+      expect(useStore.getState().project).toBe(before)
+      digit({})
+      expect(useStore.getState().project).not.toBe(before)
     } finally {
       uninstall()
     }

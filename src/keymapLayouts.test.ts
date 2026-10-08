@@ -87,6 +87,14 @@ describe('a US keyboard', () => {
     press({ key: ' ', code: 'Space', shift: true })
     expect(ran).toEqual([])
   })
+
+  // 2026-10-08: the AltGr fallback took every Ctrl+Alt for AltGr, so Ctrl+Alt+1 ran the binding on
+  // 1 (Move 1 in the app), a key that had never done anything. AltGr never types a digit.
+  it('leaves Ctrl+Alt with a digit alone', () => {
+    press({ key: '1', code: 'Digit1', ctrl: true, alt: true })
+    press({ key: '2', code: 'Digit2', ctrl: true, alt: true })
+    expect(ran).toEqual([])
+  })
 })
 
 describe('combosFromEvent', () => {

@@ -103,8 +103,11 @@ function keyAtPlace(code: string | undefined): string | null {
 export function combosFromEvent(e: KeyboardEvent): string[] {
   const out = [comboFromEvent(e)]
   const key = e.key
-  // Windows and Linux report AltGr as Ctrl and Alt held together.
-  const altGr = !isMac && e.ctrlKey && e.altKey
+  // Windows and Linux report AltGr as Ctrl and Alt held together. But AltGr never types a digit:
+  // where AltGr exists the digits are on the number row, with or without Shift. So a digit under
+  // Ctrl+Alt is Ctrl+Alt and a digit, which no binding has. Without this, Ctrl+Alt+1 on a US
+  // keyboard ran Move 1, a key that had never done anything (found 2026-10-08).
+  const altGr = !isMac && e.ctrlKey && e.altKey && !/^[0-9]$/.test(key)
   if (key.length === 1 && key !== ' ' && !/\p{L}/u.test(key) && (altGr || e.shiftKey)) {
     const parts: string[] = []
     if (!altGr && (isMac ? e.metaKey : e.ctrlKey)) parts.push('mod')
@@ -160,10 +163,19 @@ export function installKeymap(bindings: Binding[]): () => void {
   // Space did not play. The edit tabs made the same choice (EditTabs.tsx). One he reached with Tab
   // keeps its keys, and an open list always does. Not :focus-visible for "reached with Tab":
   // Chromium turns it on for a clicked control at the first key he presses.
+  //
+  // ⛔ AND THE CLICK ENDS WHEN THE FOCUS LEAVES THE CONTROL (found 2026-10-08). "Clicked" outlived
+  // the click: he clicked the volume slider, clicked the timeline (which takes no focus), and when he
+  // later reached the slider with Tab it still counted as clicked, so the arrows stepped frames
+  // instead of moving it. The other way round, a slider he reached with Tab and THEN clicked was never
+  // marked, because a click on a control that already has the focus fires no focusin: Right still
+  // turned the volume up.
   let pointing = false
   let clicked: HTMLElement | null = null
-  const onPointerDown = () => {
+  const onPointerDown = (e: PointerEvent) => {
     pointing = true
+    const control = e.target instanceof HTMLElement ? controlOf(e.target) : null
+    if (control && control === document.activeElement) clicked = control
   }
   const onAnyKey = () => {
     pointing = false
@@ -173,6 +185,23 @@ export function installKeymap(bindings: Binding[]): () => void {
     // Focus moving between a select and its own open list is still the same click.
     if (control && control === clicked) return
     clicked = pointing ? control : null
+  }
+  const onFocusOut = (e: FocusEvent) => {
+    const was = clicked
+    if (!was) return
+    const to = e.relatedTarget
+    // Into its own open list: the same click.
+    if (to instanceof Node && was.contains(to)) return
+    if (to) {
+      clicked = null
+      return
+    }
+    // Focus going nowhere named: a click on something that takes no focus, or the whole window
+    // losing the focus. The window keeps its focused element, so only the first lets go.
+    setTimeout(() => {
+      const now = document.activeElement
+      if (clicked === was && !(now && was.contains(now))) clicked = null
+    }, 0)
   }
   const keysStayIn = (target: EventTarget | null): boolean => {
     if (!(target instanceof HTMLElement)) return false
@@ -195,11 +224,13 @@ export function installKeymap(bindings: Binding[]): () => void {
   window.addEventListener('pointerdown', onPointerDown, true)
   window.addEventListener('keydown', onAnyKey, true)
   window.addEventListener('focusin', onFocusIn, true)
+  window.addEventListener('focusout', onFocusOut, true)
   window.addEventListener('keydown', onKeyDown)
   return () => {
     window.removeEventListener('pointerdown', onPointerDown, true)
     window.removeEventListener('keydown', onAnyKey, true)
     window.removeEventListener('focusin', onFocusIn, true)
+    window.removeEventListener('focusout', onFocusOut, true)
     window.removeEventListener('keydown', onKeyDown)
   }
 }
