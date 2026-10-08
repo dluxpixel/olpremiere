@@ -664,6 +664,37 @@ describe('the picture shows what is reaching his ears', () => {
     t.pause()
   })
 
+  // N2 (sweep review): the pass's tail is the pass's own picture, clock less lag
+  // from the pass's anchor. For a loop shorter than the lag the clock reaches the
+  // wrap before the first sound has reached him, and that sum is NEGATIVE: the
+  // picture fell below the in point, to a frame outside his loop.
+  describe.each([0.041, 0.3])('a loop shorter than the lag (%s s) never leaves its range', (lag) => {
+    it.each([0.05, 0.1, 0.2, 0.5])('loop of %s s', async (len) => {
+      audioMock.ctx = {
+        state: 'running',
+        get currentTime() {
+          return world.t
+        },
+        resume: () => Promise.resolve(),
+        getOutputTimestamp: () => ({ contextTime: world.t - lag, performanceTime: 1000 * world.t }),
+      }
+      const IN = 2
+      const ticks: number[] = []
+      const t = transport(ticks, { getLoopRange: () => ({ startS: IN, endS: IN + len }) })
+      await t.play(IN)
+      for (let i = 0; i < 300; i++) {
+        world.t += 0.01
+        runFrame()
+        await Promise.resolve()
+        await Promise.resolve()
+      }
+      t.pause()
+      expect(ticks.length).toBeGreaterThan(50)
+      expect(Math.min(...ticks)).toBeGreaterThanOrEqual(IN - 1e-9)
+      expect(Math.max(...ticks)).toBeLessThanOrEqual(IN + len + 1e-9)
+    })
+  })
+
   it('a sound that joins a picture rolling alone starts where the picture will be when he hears it', async () => {
     // The device has not opened at Space: the picture rolls on the performance
     // clock with nothing to wait for, and takes the lag on when the sound joins.

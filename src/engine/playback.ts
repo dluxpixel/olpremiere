@@ -725,7 +725,10 @@ export class Transport {
   private rawPicture(clock: number): number {
     const tail = this.tail
     if (tail && clock < tail.untilClock) {
-      return Math.min(tail.endS, tail.startS + (clock - this.earLag - tail.anchor) * this.currentRate)
+      // Never below the pass's own first frame: for a loop shorter than the lag
+      // the clock wraps before the pass's first sound has reached him, and the
+      // sum is negative (N2). A tail is only ever made at a forward rate.
+      return Math.min(tail.endS, Math.max(tail.startS, tail.startS + (clock - this.earLag - tail.anchor) * this.currentRate))
     }
     return this.timeAt(clock - this.earLag)
   }
