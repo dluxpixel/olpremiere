@@ -16,7 +16,15 @@ const COMPACT_AT = 200
 const pollDelay = (): number =>
   typeof document !== 'undefined' && document.visibilityState === 'hidden' ? POLL_HIDDEN_MS : POLL_ACTIVE_MS
 
-const b64 = (u: Uint8Array): string => btoa(String.fromCharCode(...u))
+// ⛔ IN CHUNKS (found 2026-10-08). Spreading a whole update into fromCharCode throws
+// "Maximum call stack size exceeded" past about 125,000 bytes, and the first update
+// of a room is the whole project, so a big project could not start a session.
+const B64_CHUNK = 0x8000
+const b64 = (u: Uint8Array): string => {
+  let bin = ''
+  for (let i = 0; i < u.length; i += B64_CHUNK) bin += String.fromCharCode(...u.subarray(i, i + B64_CHUNK))
+  return btoa(bin)
+}
 const fromB64 = (s: string): Uint8Array => Uint8Array.from(atob(s), (c) => c.charCodeAt(0))
 
 /**
