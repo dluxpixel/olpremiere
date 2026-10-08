@@ -110,6 +110,45 @@ test('Settings takes the keyboard when it opens, and Space behind it does not pl
   await expect(page.getByTestId('settings-open')).toBeFocused()
 })
 
+// 2026-10-07: Ctrl+V was the one edit key that still reached the edit behind a window. The browser's
+// paste event pasted his copied clips at the playhead behind Projects, and in Captions, "Paste a
+// transcript", the clips went onto the timeline while his transcript never reached the box.
+test('Ctrl+V with a window open pastes into its text box and never into the edit behind it', async ({ page, context, baseURL }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: new URL(baseURL!).origin })
+  await bootWithSelectedClip(page)
+  await page.keyboard.press('ControlOrMeta+c')
+  const before = await editState(page)
+  try {
+    await page.getByTestId('open-projects').click()
+    const projects = page.getByTestId('projects-dialog')
+    await expect.poll(() => projects.evaluate((d) => d.contains(document.activeElement))).toBe(true)
+    await page.keyboard.press('ControlOrMeta+v')
+    await page.waitForTimeout(300)
+    let now = await editState(page)
+    expect(now.clips).toBe(before.clips)
+    expect(now.undo).toEqual(before.undo)
+    await page.keyboard.press('Escape')
+    await expect(projects).toHaveCount(0)
+
+    // The transcript he copied from somewhere else, after the clips.
+    const transcript = '1\n00:00:00,000 --> 00:00:01,000\nso here we go\n'
+    await page.evaluate((t) => navigator.clipboard.writeText(t), transcript)
+    await page.getByTestId('tab-captions').click()
+    await page.getByTestId('captions-paste').click()
+    const box = page.getByTestId('captions-text')
+    await expect(box).toBeFocused()
+    await page.keyboard.press('ControlOrMeta+v')
+    await expect(box).toHaveValue(transcript)
+    await page.waitForTimeout(300)
+    now = await editState(page)
+    expect(now.clips).toBe(before.clips)
+    expect(now.undo).toEqual(before.undo)
+  } finally {
+    // The headless browser's clipboard outlives the page: leave it empty for the next test.
+    await page.evaluate(() => navigator.clipboard.writeText('')).catch(() => undefined)
+  }
+})
+
 // After he set a clip's volume with the slider, the slider kept the focus and every key: the two
 // taps of Right he meant as "two frames on" turned the volume up as an undo step, and Space did
 // not play. A clicked control gives the keys back to the edit.

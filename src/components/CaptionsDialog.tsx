@@ -91,6 +91,13 @@ export function CaptionsDialog({ onClose, initialMode = 'paste' }: { onClose: ()
   useEscapeToClose(onClose, !tappingNow)
   const box = useRef<HTMLDivElement>(null)
   useDialogFocus(box)
+  // The script box takes the keys, so the Ctrl+V he opened "Paste a transcript" for lands in it.
+  // An effect AFTER useDialogFocus and not autoFocus: that hook has already noted the button that
+  // opened the window, so the focus still goes back to it on close.
+  const field = useRef<HTMLTextAreaElement>(null)
+  useEffect(() => {
+    if (!tappingNow) field.current?.focus({ preventScroll: true })
+  }, [mode, tappingNow])
 
   const applyPaste = () => {
     const words = parseTranscript(text)
@@ -176,6 +183,7 @@ export function CaptionsDialog({ onClose, initialMode = 'paste' }: { onClose: ()
           ) : (
             <>
               <textarea
+                ref={field}
                 value={text}
                 onChange={(e) => {
                   setText(e.target.value)

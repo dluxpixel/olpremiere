@@ -252,6 +252,67 @@ describe('keys wait while a window or a menu is open over the edit', () => {
   it('only Save and Reload still work over a window, because they do not touch the edit', () => {
     expect(bindings().filter((b) => b.overWindows).map((b) => b.combo).sort()).toEqual(['f5', 'mod+s'])
   })
+
+  // 2026-10-07: Ctrl+V still got through. The keymap held the key, but the browser fired its paste
+  // event anyway, and that pasted his copied clips at the playhead behind the window: in Captions,
+  // "Paste a transcript", the clips went onto the timeline instead of his transcript into the box.
+  function pasteOn(target: Element): Event {
+    const e = new Event('paste', { bubbles: true, cancelable: true })
+    Object.defineProperty(e, 'clipboardData', {
+      value: { getData: (type: string) => (type === 'text/plain' ? 'so here we go' : ''), items: [] },
+    })
+    target.dispatchEvent(e)
+    return e
+  }
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 5))
+
+  for (const [what, attrs] of [
+    ['a window', { role: 'dialog', 'aria-modal': 'true', tabindex: '-1' }],
+    ['a menu', { role: 'menu', 'data-esc-owner': '' }],
+  ] as const) {
+    it(`Ctrl+V and its paste event paste no copied clip into the edit behind ${what}`, async () => {
+      seedSelectedClip()
+      const offKeys = installKeymap(bindings())
+      const offPaste = installPasteListener()
+      press('c', { ctrl: true })
+      const before = useStore.getState().project
+      const el = over(attrs)
+      try {
+        press('v', { ctrl: true })
+        pasteOn(el)
+        await settle()
+        expect(useStore.getState().project).toBe(before)
+        expect(allClips()).toHaveLength(1)
+      } finally {
+        offKeys()
+        offPaste()
+        el.remove()
+      }
+    })
+  }
+
+  it('a paste into a text box inside the window is left to the box', async () => {
+    seedSelectedClip()
+    const offKeys = installKeymap(bindings())
+    const offPaste = installPasteListener()
+    press('c', { ctrl: true })
+    const before = useStore.getState().project
+    const el = over({ role: 'dialog', 'aria-modal': 'true' })
+    const box = document.createElement('textarea')
+    el.append(box)
+    box.focus()
+    try {
+      press('v', { ctrl: true })
+      // Not taken: the browser's own paste puts the text in the box.
+      expect(pasteOn(box).defaultPrevented).toBe(false)
+      await settle()
+      expect(useStore.getState().project).toBe(before)
+    } finally {
+      offKeys()
+      offPaste()
+      el.remove()
+    }
+  })
 })
 
 // 2026-10-06: after he clicked the clip volume slider, Right turned the volume up instead of

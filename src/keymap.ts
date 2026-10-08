@@ -50,6 +50,11 @@ export interface Binding {
  */
 const OVER_THE_EDIT = '[aria-modal="true"], [data-esc-owner]'
 
+/** Is a window or a menu open over the edit? Its keys, and Ctrl+V's paste event, wait while one is. */
+export function windowOverTheEdit(): boolean {
+  return typeof document !== 'undefined' && document.querySelector(OVER_THE_EDIT) !== null
+}
+
 const isMac = typeof navigator !== 'undefined' && /Mac|iP(hone|ad|od)/.test(navigator.platform)
 
 export function comboFromEvent(e: KeyboardEvent): string {
@@ -181,7 +186,7 @@ export function installKeymap(bindings: Binding[]): () => void {
     const combo = combosFromEvent(e).find((c) => byCombo.has(c))
     const binding = combo === undefined ? undefined : byCombo.get(combo)
     if (!combo || !binding) return
-    if (!binding.overWindows && document.querySelector(OVER_THE_EDIT)) return
+    if (!binding.overWindows && windowOverTheEdit()) return
     if (!binding.allowDefault) e.preventDefault()
     // The usage log: which key, and what it is for. Before the run, so the log reads in order.
     noteShortcut(combo, binding.description, e.repeat)

@@ -75,4 +75,15 @@ describe('useDialogFocus', () => {
     unmount()
     expect(document.activeElement).toBe(b)
   })
+
+  // 2026-10-07: he opened "Paste a transcript" and pressed Ctrl+V at once. The focus was on the
+  // window itself, not in its box, so nothing landed in the box.
+  it('the Captions window puts the focus in its script box, and still gives it back on close', async () => {
+    const b = opener()
+    const { CaptionsDialog } = await import('../components/CaptionsDialog')
+    const { unmount } = render(<CaptionsDialog initialMode="paste" onClose={() => {}} />)
+    expect(document.activeElement).toBe(screen.getByTestId('captions-text'))
+    unmount()
+    expect(document.activeElement).toBe(b)
+  })
 })
