@@ -5,6 +5,7 @@
 // reaches the relay and what reaches the subscribers.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import * as Y from 'yjs'
 import { HttpRelayTransport, relayAvailable } from './httpTransport'
 
 const POLL_MS = 1_000
@@ -49,6 +50,12 @@ const fromB64 = (s: string): Uint8Array => Uint8Array.from(Buffer.from(s, 'base6
 const toB64 = (u: Uint8Array): string => Buffer.from(u).toString('base64')
 /** Bytes that are not all one value, so a decode that drops or reorders any shows. */
 const bytes = (n: number, seed = 1): Uint8Array => Uint8Array.from({ length: n }, (_, i) => (i * 31 + seed * 7) & 0xff)
+/**
+ * Equal byte for byte, answered as a boolean. A failing toEqual on a 300 KB array
+ * spends minutes printing its diff (found 2026-10-09 breaking the encoder on purpose),
+ * and a red check that hangs is worse than one that says so at once.
+ */
+const sameBytes = (a: Uint8Array, b: Uint8Array): boolean => Buffer.from(a).equals(Buffer.from(b))
 /** Let every pending promise and the given stretch of timers run. */
 const run = (ms = 0): Promise<void> => vi.advanceTimersByTimeAsync(ms).then(() => undefined)
 
@@ -94,7 +101,32 @@ describe('an edit goes out', () => {
     expect(() => t.send(project)).not.toThrow()
     await run()
     expect(relay.log).toHaveLength(1)
-    expect(fromB64(relay.log[0]!)).toEqual(project)
+    const back = fromB64(relay.log[0]!)
+    expect(sameBytes(back, project), `${project.length} bytes went out, ${back.length} came back different`).toBe(true)
+  })
+
+  // The bytes above are a pattern; this is a real document. Anything not English is
+  // mostly bytes above 127 in a Yjs update (the text is UTF-8 in it), and an encoder
+  // that treats the update as text instead of bytes drops or mangles exactly those.
+  // Past 125 KB it also has to survive the chunking, whose cuts fall inside the
+  // multi byte letters, which is fine for bytes and fatal for text.
+  it.each([
+    ['a short one', 'héllo wörld 日本語 ✓ 🎬'],
+    ['one past 125 KB', 'é日🎬'.repeat(40_000)],
+  ])('a real document with non-ASCII text, %s, rebuilds the same text on the other side', async (_name, text) => {
+    const t = transport()
+    await run()
+    const doc = new Y.Doc()
+    doc.getText('t').insert(0, text)
+    const update = Y.encodeStateAsUpdate(doc)
+    if (text.length > 100_000) expect(update.length).toBeGreaterThan(125_000)
+    t.send(update)
+    await run()
+    expect(relay.log).toHaveLength(1)
+    const there = new Y.Doc()
+    Y.applyUpdate(there, fromB64(relay.log[0]!))
+    const rebuilt = there.getText('t').toString()
+    expect(rebuilt === text, `${text.length} characters went out, ${rebuilt.length} came back different`).toBe(true)
   })
 
   it('in the order it was made, after the relay refused it twice, and the badge says so meanwhile', async () => {
@@ -154,7 +186,8 @@ describe('joining a long room', () => {
     await run()
     await run(POLL_MS * 3)
     expect(relay.snapshots).toHaveLength(1)
-    expect(fromB64(relay.snapshots[0]!)).toEqual(state)
+    const back = fromB64(relay.snapshots[0]!)
+    expect(sameBytes(back, state), `${state.length} bytes in the snapshot, ${back.length} came back different`).toBe(true)
   })
 
   // Only at join. The relay drops every log entry older than the snapshot, so a
