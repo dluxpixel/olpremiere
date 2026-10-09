@@ -393,7 +393,13 @@ export async function cutQuietParts(clipIds: string | readonly string[], opts: S
         if (!fresh || !a) continue
         const { inS, outS } = plan.heard.clip
         // Into words that are where he said them, the recogniser's timings would sit a lag late.
-        const added = a.wordsOnVoice ? correctWordLag(fresh, wordLagS()) : fresh
+        // Taking the lag off can carry a first word back past the clip's in point, and the
+        // Words tab drops a word that starts before it, so no word starts before inS.
+        const onVoice = a.wordsOnVoice ? correctWordLag(fresh, wordLagS()) : fresh
+        const added = onVoice.map((w) => {
+          const startS = Math.max(w.startS, inS)
+          return { ...w, startS, endS: Math.max(w.endS, startS) }
+        })
         assets[a.id] = { ...a, words: mergeWords(a.words, added, inS, outS), heardSpans: mergeHeardSpans(a.heardSpans, inS, outS) }
       }
       return { ...p, assets, sequences: { ...p.sequences, [seq.id]: cutSeq } }

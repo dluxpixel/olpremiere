@@ -19,6 +19,9 @@ vi.mock('./toasts', () => ({
 }))
 
 const heard: string[] = []
+/** How far into the clip the one heard word starts, and the recogniser's lag the cutter takes off. */
+const wordAt = { s: 0 }
+const lag = { s: 0 }
 vi.mock('../engine/captions/transcribe', () => ({
   TRANSCRIBE_SAMPLE_RATE: 16000,
   extractClipPcm: (_asset: unknown, clip: { id: string }) => {
@@ -29,13 +32,15 @@ vi.mock('../engine/captions/transcribe', () => ({
   wordsFromAsrChunks: () => [],
   tidyTranscribedWords: () => [],
   // One word at the head of the clip, in timeline seconds like the real one.
-  timelineWords: (_w: unknown, clip: { startS: number }) => [{ text: 'hi', startS: clip.startS, endS: clip.startS + 0.4 }],
+  timelineWords: (_w: unknown, clip: { startS: number }) => [
+    { text: 'hi', startS: clip.startS + wordAt.s, endS: clip.startS + wordAt.s + 0.4 },
+  ],
 }))
 vi.mock('../engine/captions/transcribeConfig', () => ({
   getCaptionLanguage: () => 'en',
   getCaptionEmphasis: () => false,
   modelFor: () => 'onnx-community/whisper-small.en_timestamped',
-  whisperModel: () => ({ wordLagS: 0 }),
+  whisperModel: () => ({ wordLagS: lag.s }),
 }))
 // His spellings are read from every other project, which needs a database this
 // test does not have: none are taught here.
@@ -77,6 +82,8 @@ function seedClip(id: string): void {
 beforeEach(() => {
   heard.length = 0
   toasted.length = 0
+  wordAt.s = 0
+  lag.s = 0
   useStore.getState().setProject(newProject())
   useTranscribe.setState({ status: 'idle', pct: null, downloading: false, cancel: null, queue: null })
 })
@@ -101,5 +108,32 @@ describe('Cut the quiet parts and the transcription door', () => {
     expect(toasted.join(' ')).toContain('already running')
     // And it leaves the other run's status alone.
     expect(useTranscribe.getState().status).toBe('listening')
+  })
+})
+
+// Review B2. Taking the recogniser's lag off a word that starts just inside the
+// clip carries it back past the clip's in point, and the Words tab drops a word
+// that starts before it. The cutter keeps the word at the in point instead.
+describe('Cut the quiet parts keeps what it heard inside the clip', () => {
+  it('a first word the lag would carry before the in point starts at the in point', async () => {
+    lag.s = 0.18
+    wordAt.s = 0.05
+    const s = useStore.getState()
+    s.setProject({ ...s.project, assets: { a: { ...asset('a'), wordsOnVoice: true } } })
+    updateActiveSequence('seed', (sq) => {
+      const targetId = sq.tracks.find((t) => t.kind === 'audio')?.id
+      return {
+        ...sq,
+        tracks: sq.tracks.map((t) =>
+          t.id === targetId ? { ...t, clips: [{ ...newClipFromAsset(asset('a'), 0), id: 'clip-a', inS: 2, outS: 6 }] } : t,
+        ),
+      }
+    })
+    await cutQuietParts('clip-a')
+    expect(heard).toEqual(['clip-a'])
+    const words = useStore.getState().project.assets['a']!.words ?? []
+    expect(words.map((w) => w.text)).toEqual(['hi'])
+    expect(words[0]!.startS).toBe(2)
+    expect(words[0]!.endS).toBeGreaterThanOrEqual(words[0]!.startS)
   })
 })
