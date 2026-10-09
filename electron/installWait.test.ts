@@ -63,6 +63,44 @@ describe('installing an update over the editor window', () => {
     expect(wait.pending()).toBe(true)
   })
 
+  // The crash reload stands down while this is true (main.ts onEditorGone), and the app
+  // stays up on it (window-all-closed). A page that dies at ANY moment of the install
+  // must therefore find it pending, the beat between the window closing and the settle too.
+  it('is pending from the request until the installer is running, and not after Stay', () => {
+    const { wait, runTimers } = rig()
+    expect(wait.pending()).toBe(false)
+    wait.begin()
+    expect(wait.pending()).toBe(true)
+    wait.closeLetThrough()
+    expect(wait.pending()).toBe(true)
+    wait.windowClosed()
+    // The window is gone and the settle has not run: exactly where window-all-closed asks.
+    expect(wait.pending()).toBe(true)
+    runTimers()
+    expect(wait.pending()).toBe(true)
+    wait.cancel()
+    expect(wait.pending()).toBe(true) // once installing there is no taking it back
+
+    const stayed = rig()
+    stayed.wait.begin()
+    stayed.wait.closeLetThrough()
+    stayed.wait.cancel()
+    expect(stayed.wait.pending()).toBe(false)
+  })
+
+  it('Keep exporting after the close passed the gate stops the install fallback', () => {
+    const { wait, log, counting, runTimers } = rig()
+    wait.begin()
+    wait.closeLetThrough()
+    expect(counting()).toEqual([FALLBACK_MS])
+    // will-prevent-unload, choice 0 (main.ts): the page refused and he kept the export.
+    wait.cancel()
+    expect(counting()).toEqual([])
+    runTimers()
+    expect(log).toEqual([])
+    expect(wait.pending()).toBe(false)
+  })
+
   it('a second request while one is on its way joins it, and Stay stops the whole install', () => {
     const { wait, log, counting, runTimers } = rig()
     wait.begin()

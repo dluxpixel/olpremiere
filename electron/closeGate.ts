@@ -83,6 +83,12 @@ export interface CloseGate {
   pageGone(): void
   /** The page refused to unload after all (he chose to keep an export running). */
   onCloseRefused(): void
+  /**
+   * The window has been let go and is on its way out. A page that dies now is not a
+   * crash: main's reload (onEditorGone) stands down for it, so it never reloads a
+   * window that is closing. Leaves only by onCloseRefused.
+   */
+  closing(): boolean
 }
 
 export function createCloseGate(deps: CloseGateDeps): CloseGate {
@@ -133,6 +139,9 @@ export function createCloseGate(deps: CloseGateDeps): CloseGate {
     },
     onCloseRefused() {
       if (phase === 'closing') phase = 'open'
+    },
+    closing() {
+      return phase === 'closing'
     },
   }
 }

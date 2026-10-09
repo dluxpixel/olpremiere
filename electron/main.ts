@@ -188,7 +188,10 @@ function crashLog(line: string): void {
  * why this exists and why it gives up on the third death in five minutes.
  */
 function onEditorGone(win: BrowserWindow, details: Electron.RenderProcessGoneDetails): void {
-  if (quitting || installWait.pending() || win.isDestroyed()) return
+  // A window on its way out is not a crash either: pageGone() closes it on the spot, and
+  // a reload then would meet a close it cannot tell from its own. The destroyed check
+  // comes first because a destroyed window has no webContents to read.
+  if (quitting || installWait.pending() || win.isDestroyed() || closeGates.get(win.webContents)?.closing()) return
   const now = Date.now()
   const plan = crashPlan(details.reason, editorDeaths, now)
   if (plan === 'nothing') return
@@ -800,8 +803,13 @@ function createWindow(): void {
     })
     // He keeps the page, so a quit that brought him here is called off (the update
     // install's fallback quit meets a running export): crashes reload again. Left set,
-    // every later crash of the session stayed a blank window (onEditorGone).
-    if (choice === 0) quitting = false
+    // every later crash of the session stayed a blank window (onEditorGone). The update
+    // waiting on this close stands down too: its fallback was armed when the close passed
+    // the gate, and it would install over the export he just chose to keep.
+    if (choice === 0) {
+      quitting = false
+      installWait.cancel()
+    }
     // Here preventDefault means "overrule the page": the close goes ahead.
     if (choice === 1) e.preventDefault()
     // He kept the export, so the window stays, and his next close saves again.

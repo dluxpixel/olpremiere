@@ -93,6 +93,21 @@ describe('closing the editor', () => {
     expect(gate.onClose()).toBe(false)
   })
 
+  // The crash reload (main.ts onEditorGone) must not run on a window that is going:
+  // pageGone() closes it on the spot, and closing() is how main sees that.
+  it('says it is closing from the moment the window is let go until he keeps the page', () => {
+    const { gate } = rig()
+    expect(gate.closing()).toBe(false)
+    gate.arm(true)
+    gate.onClose()
+    // Held, waiting for the save: not closing yet.
+    expect(gate.closing()).toBe(false)
+    gate.pageGone()
+    expect(gate.closing()).toBe(true)
+    gate.onCloseRefused()
+    expect(gate.closing()).toBe(false)
+  })
+
   it('saves again on the next close after he chose to keep an export running', () => {
     const { gate, log } = rig()
     gate.arm(true)

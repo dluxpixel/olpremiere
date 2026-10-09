@@ -98,9 +98,43 @@ describe('a quit he called off', () => {
   const unload = main.slice(main.indexOf("win.webContents.on('will-prevent-unload'"), main.indexOf('if (isDev) {'))
 
   it('⛔ turns the crash reload back on when he keeps the page', () => {
-    expect(unload).toMatch(/if \(choice === 0\) quitting = false/)
+    expect(unload).toMatch(/if \(choice === 0\) \{\s*quitting = false/)
     // Decided before the page's refusal is overruled or kept, never instead of it.
     expect(unload.indexOf('quitting = false')).toBeLessThan(unload.indexOf('if (choice === 1) e.preventDefault()'))
     expect(main).toMatch(/app\.on\('before-quit', \(\) => \{\s+quitting = true/)
+  })
+})
+
+// ⛔ The same choice calls off a waiting update install. The install's 12 s fallback was
+// armed when the close passed the gate, before the page refused to unload; left running it
+// installed over the export he had just chosen to keep, and its phase then held
+// installWait.pending() true for good, which switches the crash reload off.
+describe('keeping an export while an update waits', () => {
+  const main = readFileSync(new URL('./main.ts', import.meta.url), 'utf8')
+  const unload = main.slice(main.indexOf("win.webContents.on('will-prevent-unload'"), main.indexOf('if (isDev) {'))
+
+  it('⛔ stops the waiting install along with the quit', () => {
+    const kept = unload.slice(unload.indexOf('if (choice === 0) {'), unload.indexOf('if (choice === 1) e.preventDefault()'))
+    expect(kept).toContain('quitting = false')
+    expect(kept).toContain('installWait.cancel()')
+  })
+})
+
+// ⛔ A window that is closing is not a crash. When the page dies mid save the gate closes
+// the window on the spot (closeGate pageGone), and the reload in onEditorGone must not run
+// on it. Everything else that ends a page on purpose is in the same guard.
+describe('a page that dies while the app is leaving', () => {
+  const main = readFileSync(new URL('./main.ts', import.meta.url), 'utf8')
+  const gone = main.slice(main.indexOf('function onEditorGone('), main.indexOf('function closeWhenGone('))
+  const guard = gone.slice(gone.indexOf('if ('), gone.indexOf('const now = Date.now()'))
+
+  it('⛔ does not reload while an update install waits, while quitting, once destroyed, or while its window closes', () => {
+    for (const part of ['quitting', 'installWait.pending()', 'win.isDestroyed()', 'closeGates.get(win.webContents)?.closing()']) {
+      expect(guard, part).toContain(part)
+    }
+    expect(guard).toMatch(/\) return\s*$/)
+    // A destroyed window has no webContents to read, so it is asked first.
+    expect(guard.indexOf('win.isDestroyed()')).toBeLessThan(guard.indexOf('closeGates.get(win.webContents)'))
+    expect(gone.indexOf('crashPlan(')).toBeGreaterThan(gone.indexOf('closeGates.get(win.webContents)'))
   })
 })
