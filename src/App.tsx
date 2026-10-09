@@ -497,6 +497,17 @@ export default function App() {
   useEffect(() => installKeymap(bindings), [bindings])
   // Ctrl+V's other half: the paste event, the only thing that can carry a picture.
   useEffect(() => installPasteListener(), [])
+  // ⛔ THE PAGE SAYS WHEN IT LISTENS (2026-10-06). Both listeners above arrive in
+  // effects, after the first paint and after the load event, so a key pressed the
+  // moment the page has loaded can land before anything hears it. The specs that
+  // press Ctrl+V straight after opening the app wait for this mark. Declared after
+  // both, so it is set once both are in.
+  useEffect(() => {
+    document.documentElement.dataset.olpKeys = 'ready'
+    return () => {
+      delete document.documentElement.dataset.olpKeys
+    }
+  }, [])
 
   // Desktop: when a newer version has downloaded, surface "Update ready → Restart"
   // so it doesn't sit invisible until the user happens to fully quit the app.

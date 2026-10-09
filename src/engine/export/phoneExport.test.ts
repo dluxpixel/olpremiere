@@ -22,7 +22,7 @@ import type { Writable } from 'node:stream'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { buildArgs } from '../../../electron/exportArgs'
 import type { NativeExportConfig } from '../../../electron/ipc-types'
-import { avcLevelOf, cropdetect, edgeBands, ffmpegAvailable, runFfmpeg, videoSizeOf } from '../../../e2e/exportHelpers'
+import { avcLevelOf, cropdetect, edgeBands, runFfmpeg, runsWithFfmpeg, videoSizeOf } from '../../../e2e/exportHelpers'
 import { EXPORT_KEYFRAME_S, planExport } from './exportPlan'
 
 const W = 1080
@@ -65,7 +65,8 @@ async function feedFrames(stdin: Writable): Promise<void> {
   }
 }
 
-describe.skipIf(!ffmpegAvailable())('a phone screen export, through the real x264', () => {
+// Skips in a fresh worktree without vendor/ffmpeg; inside the ship gate it fails instead.
+describe.skipIf(!runsWithFfmpeg())('a phone screen export, through the real x264', () => {
   let dir = ''
   let out = ''
   let log = ''

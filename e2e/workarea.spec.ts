@@ -1,6 +1,8 @@
 // The work area (in/out) and exporting just that range (spec §5.6, §4.6 step 1).
 
-import { expect, test, type Page } from '@playwright/test'
+import type { Page } from '@playwright/test'
+// Timing spec: runs in the `timing` project, on a quiet box (see quietBox.ts).
+import { expect, test } from './quietBox'
 import fs from 'node:fs'
 import { shrinkSequence } from './exportHelpers'
 

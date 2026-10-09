@@ -3,12 +3,23 @@
 // for the same reason `_verify` is: a step that only runs during a 25 minute
 // release cannot be "checked by eye" in any useful sense.
 
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it } from 'vitest'
 import {
+  changedBetween,
+  codeFiles,
+  commitExactTree,
+  enterGate,
+  fastRefusal,
+  keepEvidence,
+  manifestsBeyondVersion,
+  manifestsMoved,
+  runLogged,
   isBigUpdate,
+  isDocsPath,
   isTransientFailure,
   MAY_BE_LIVE,
   mayBeLive,
@@ -18,7 +29,25 @@ import {
   planShip,
   releaseWork,
   runLoggedRetry,
+  treeHash,
+  treeWith,
+  versionInTree,
 } from './lib.mjs'
+
+// ⛔ EVERY FOLDER THIS FILE MAKES IS REMOVED WHEN IT ENDS (2026-10-08). Each run left
+// eleven behind in %TEMP% (olp-gate-*, olp-evidence-*, olp-retry-*), a scratch git repo
+// each, and a box that runs this on every ship and every `npm run verify` filled up
+// with them: 578 were sitting there when this was found.
+const made = []
+/** A fresh folder under the temp directory, removed in afterAll. */
+function scratchDir(prefix) {
+  const dir = mkdtempSync(join(tmpdir(), prefix))
+  made.push(dir)
+  return dir
+}
+afterAll(() => {
+  for (const dir of made) rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+})
 
 /**
  * A command that fails `failures` times and then succeeds, printing `message`
@@ -26,7 +55,7 @@ import {
  * how this reacts to a real exit code and a real stream.
  */
 function flakyCommand(failures, message) {
-  const dir = mkdtempSync(join(tmpdir(), 'olp-retry-'))
+  const dir = scratchDir('olp-retry-')
   const counter = join(dir, 'n')
   const script = join(dir, 'run.mjs')
   writeFileSync(counter, '0')
@@ -43,9 +72,18 @@ function flakyCommand(failures, message) {
   return { cmd: `node "${script}"`, attempts: () => Number(readFileSync(counter, 'utf8')) }
 }
 
+/** A stream that keeps what it is given instead of printing it. */
+function sink() {
+  const said = []
+  return { said, write: (d) => said.push(String(d)) }
+}
+
 // Silent and instant: this suite must not print a wall of banners or spend
-// real seconds sleeping between attempts.
-const QUIET = { tries: 3, baseDelayMs: 0 }
+// real seconds sleeping between attempts. ⛔ It used to print "package failed on
+// what looks like a dropped connection" into every ship log, a false lead for
+// anyone reading a red gate.
+const quiet = () => ({ tries: 3, baseDelayMs: 0, out: sink(), err: sink() })
+const QUIET = quiet()
 
 describe('isTransientFailure', () => {
   it('knows the drop that cost two ships', () => {
@@ -115,7 +153,7 @@ describe('mayBeLiveReport', () => {
 describe('runLoggedRetry', () => {
   it('rides out a dropped connection and succeeds', async () => {
     const { cmd, attempts } = flakyCommand(2, 'socket hang up')
-    await expect(runLoggedRetry(cmd, 'package', null, QUIET)).resolves.toBeUndefined()
+    await expect(runLoggedRetry(cmd, 'package', null, QUIET)).resolves.toBeTypeOf('number')
     expect(attempts()).toBe(3)
   })
 
@@ -168,7 +206,7 @@ describe('runLoggedRetry', () => {
  * as every run starts by doing). Each run counts itself.
  */
 function publishWhoseAnswerIsLost() {
-  const dir = mkdtempSync(join(tmpdir(), 'olp-publish-'))
+  const dir = scratchDir('olp-publish-')
   const counter = join(dir, 'n')
   const state = join(dir, 'github.json')
   const script = join(dir, 'publish.mjs')
@@ -376,5 +414,318 @@ describe('nextVersion', () => {
   it('refuses what it cannot read rather than inventing a number', () => {
     expect(() => nextVersion('banana', 'minor')).toThrow()
     expect(() => nextVersion('2.17.0', 'major')).toThrow()
+  })
+})
+
+/**
+ * A real git repo in a temp folder, with one commit: a.txt, b.txt, package.json.
+ * Real git, because what is being proven is what git ends up committing.
+ */
+function scratchRepo() {
+  const dir = scratchDir('olp-gate-')
+  const git = (...a) => execFileSync('git', a, { cwd: dir, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+  git('init', '-q', '-b', 'main')
+  git('config', 'user.email', 'gate@test.invalid')
+  git('config', 'user.name', 'gate test')
+  git('config', 'core.autocrlf', 'false')
+  writeFileSync(join(dir, 'a.txt'), 'a1')
+  writeFileSync(join(dir, 'b.txt'), 'b1')
+  writeFileSync(join(dir, 'package.json'), '{"version":"1.0.0"}')
+  git('add', '-A')
+  git('commit', '-q', '-m', 'start')
+  const write = (name, text) => writeFileSync(join(dir, name), text)
+  return { dir, git, write }
+}
+
+// ⛔ 2026-10-06: the gate hashed the tree BEFORE a 25 minute run and committed
+// with `git add -A` AFTER it, so a file saved mid-gate shipped as gated.
+describe('the release commit is exactly the gated tree', { timeout: 30_000 }, () => {
+  it('a save after the gate stays out of the commit and is left uncommitted', () => {
+    const { dir, git, write } = scratchRepo()
+    const head = git('rev-parse', 'HEAD')
+    write('a.txt', 'a2 gated')
+    const gated = treeHash(dir)
+
+    // Somebody saves while the gate runs, then the version is bumped.
+    write('b.txt', 'b2 saved during the gate')
+    write('new.txt', 'a new file nobody checked')
+    write('package.json', '{"version":"1.1.0"}')
+
+    const tree = treeWith(gated, ['package.json', 'package-lock.json'], dir)
+    commitExactTree(tree, 'release\n\nbody\n', { parent: head, cwd: dir })
+
+    expect(git('show', 'HEAD:a.txt')).toBe('a2 gated')
+    expect(git('show', 'HEAD:b.txt')).toBe('b1')
+    expect(git('show', 'HEAD:package.json')).toBe('{"version":"1.1.0"}')
+    expect(() => git('show', 'HEAD:new.txt')).toThrow()
+    expect(git('log', '-1', '--format=%B')).toBe('release\n\nbody')
+    // The index matches the new commit; the ungated work is still on disk.
+    expect(git('status', '--porcelain').split('\n').map((l) => l.trim()).sort()).toEqual(['?? new.txt', 'M b.txt'])
+    expect(readFileSync(join(dir, 'b.txt'), 'utf8')).toBe('b2 saved during the gate')
+  })
+
+  it('the tree hash moves when a file is saved, and names it', () => {
+    const { dir, write } = scratchRepo()
+    const before = treeHash(dir)
+    expect(treeHash(dir)).toBe(before)
+    write('b.txt', 'b2')
+    mkdirSync(join(dir, 'src'))
+    write('src/x.ts', 'x')
+    const after = treeHash(dir)
+    expect(after).not.toBe(before)
+    expect(changedBetween(before, after, dir)).toEqual(['b.txt', 'src/x.ts'])
+  })
+
+  it('the hash leaves the real index alone', () => {
+    const { dir, git, write } = scratchRepo()
+    write('b.txt', 'b2')
+    treeHash(dir)
+    expect(git('diff', '--cached', '--name-only')).toBe('')
+  })
+
+  it('refuses, and moves nothing, if the branch moved while the gate ran', () => {
+    const { dir, git, write } = scratchRepo()
+    const head = git('rev-parse', 'HEAD')
+    write('a.txt', 'a2')
+    const gated = treeHash(dir)
+    git('commit', '-q', '-am', 'somebody else committed meanwhile')
+    const theirs = git('rev-parse', 'HEAD')
+    expect(() => commitExactTree(gated, 'release', { parent: head, cwd: dir })).toThrow()
+    expect(git('rev-parse', 'HEAD')).toBe(theirs)
+  })
+})
+
+// ⛔ `--fast` ("docs only") shipped four feature releases with no browser test.
+describe('the --fast contract', () => {
+  it('lets Markdown and docs/ through', () => {
+    for (const p of ['README.md', 'docs/notes.txt', 'docs/img/a.png', 'e2e/NOTES.MD']) expect(isDocsPath(p), p).toBe(true)
+    expect(codeFiles(['README.md', 'docs/a.txt'])).toEqual([])
+  })
+
+  it('names every code file in a release, which is a refusal', () => {
+    expect(codeFiles(['README.md', 'src/App.tsx', 'package.json', 'scripts/patch.mjs', 'mydocs/a.ts'])).toEqual([
+      'src/App.tsx',
+      'package.json',
+      'scripts/patch.mjs',
+      'mydocs/a.ts',
+    ])
+  })
+})
+
+// ⛔ `--fast` HASHED THE TREE FOR ITS DOCS ONLY CHECK AND THE GATE HASHED IT AGAIN (2026-10-08).
+// A code file saved between the two was never seen by the check and then became the gate's
+// own baseline, so it shipped marked "docs only". The check now judges the tree it is
+// handed, which is the one tree taken at the start of the run.
+describe('the --fast check judges the one tree it is given', { timeout: 30_000 }, () => {
+  it('a code file saved after the tree was taken does not change the verdict on that tree', () => {
+    const { dir, git, write } = scratchRepo()
+    git('tag', 'v1.0.0')
+    write('NOTES.md', 'docs')
+    const tree = treeHash(dir)
+    expect(fastRefusal('v1.0.0', tree, dir)).toEqual([])
+
+    // Saved between the check and the gate.
+    mkdirSync(join(dir, 'src'))
+    write('src/x.ts', 'x')
+    expect(fastRefusal('v1.0.0', tree, dir)).toEqual([])
+    // A tree taken now carries it, which is what the gate's check at its end compares.
+    const later = treeHash(dir)
+    expect(fastRefusal('v1.0.0', later, dir)).toEqual(['src/x.ts'])
+    expect(changedBetween(tree, later, dir)).toEqual(['src/x.ts'])
+  })
+
+  it('names every code file in the tree it is given', () => {
+    const { dir, git, write } = scratchRepo()
+    git('tag', 'v1.0.0')
+    write('a.txt', 'a2')
+    write('README.md', 'docs')
+    expect(fastRefusal('v1.0.0', treeHash(dir), dir)).toEqual(['a.txt'])
+  })
+
+  it('with no release tag to compare against, nothing is docs only', () => {
+    const { dir } = scratchRepo()
+    expect(fastRefusal('', treeHash(dir), dir)).toEqual(['(no release tag to compare against)'])
+  })
+})
+
+// ⛔ THE VERSION BUMP READ package.json AND package-lock.json FROM DISK, AFTER THE GATE
+// (2026-10-08). The gate's check at its end was already behind it, `npm version` rewrote
+// both files on disk and the release commit took both from disk, so a dependency added in
+// that window shipped with no check having seen it.
+describe('the version bump is built from the gated manifests', { timeout: 30_000 }, () => {
+  const pkg = (version, extra = {}) =>
+    JSON.stringify({ name: 'olp', version, dependencies: { a: '1.0.0', ...extra } }, null, 2) + '\n'
+  const lock = (version, extra = {}) =>
+    JSON.stringify({ name: 'olp', version, lockfileVersion: 3, packages: { '': { name: 'olp', version }, ...extra } }, null, 2) + '\n'
+  /** A repo whose gated tree holds both manifests at 1.0.0. */
+  const gatedRepo = () => {
+    const r = scratchRepo()
+    r.write('package.json', pkg('1.0.0'))
+    r.write('package-lock.json', lock('1.0.0'))
+    r.git('add', '-A')
+    r.git('commit', '-q', '-m', 'manifests')
+    return { ...r, gated: treeHash(r.dir) }
+  }
+
+  it('lets the bump start when both files are what the gate checked', () => {
+    const { dir, gated } = gatedRepo()
+    expect(manifestsMoved(gated, dir)).toEqual([])
+  })
+
+  it('refuses when package.json, the lock, or both changed after the gate', () => {
+    const { dir, write, gated } = gatedRepo()
+    write('package.json', pkg('1.0.0', { sneaked: '9.9.9' }))
+    expect(manifestsMoved(gated, dir)).toEqual(['package.json'])
+    write('package-lock.json', lock('1.0.0', { 'node_modules/sneaked': { version: '9.9.9' } }))
+    expect(manifestsMoved(gated, dir)).toEqual(['package-lock.json', 'package.json'])
+  })
+
+  it('refuses a lock that was deleted, and ignores a change to any other file', () => {
+    const { dir, write, gated } = gatedRepo()
+    write('a.txt', 'a changed, not a manifest')
+    expect(manifestsMoved(gated, dir)).toEqual([])
+    rmSync(join(dir, 'package-lock.json'))
+    expect(manifestsMoved(gated, dir)).toEqual(['package-lock.json'])
+  })
+
+  it('reads the version it bumps from the gated tree, whatever is on disk now', () => {
+    const { dir, write, gated } = gatedRepo()
+    write('package.json', pkg('9.9.9'))
+    expect(versionInTree(gated, dir)).toBe('1.0.0')
+  })
+
+  it('accepts the files `npm version` writes: the version fields and nothing else', () => {
+    const { dir, write, gated } = gatedRepo()
+    write('package.json', pkg('1.1.0'))
+    write('package-lock.json', lock('1.1.0'))
+    expect(manifestsBeyondVersion(gated, '1.1.0', dir)).toEqual([])
+    // Another spelling of the same document is the same document.
+    write('package.json', JSON.stringify({ dependencies: { a: '1.0.0' }, version: '1.1.0', name: 'olp' }))
+    expect(manifestsBeyondVersion(gated, '1.1.0', dir)).toEqual([])
+  })
+
+  it('refuses a change that rode in with the bump, in either file', () => {
+    const { dir, write, gated } = gatedRepo()
+    write('package.json', pkg('1.1.0', { sneaked: '9.9.9' }))
+    write('package-lock.json', lock('1.1.0'))
+    expect(manifestsBeyondVersion(gated, '1.1.0', dir)).toEqual(['package.json'])
+    write('package.json', pkg('1.1.0'))
+    write('package-lock.json', lock('1.1.0', { 'node_modules/sneaked': { version: '9.9.9' } }))
+    expect(manifestsBeyondVersion(gated, '1.1.0', dir)).toEqual(['package-lock.json'])
+  })
+
+  it('refuses files that do not carry the version the bump chose, or that cannot be read', () => {
+    const { dir, write, gated } = gatedRepo()
+    write('package.json', pkg('1.2.0'))
+    write('package-lock.json', lock('1.1.0'))
+    expect(manifestsBeyondVersion(gated, '1.1.0', dir)).toEqual(['package.json'])
+    write('package.json', 'not json at all')
+    expect(manifestsBeyondVersion(gated, '1.1.0', dir)).toEqual(['package.json'])
+  })
+})
+
+// ⛔ OLP_MEASURE SET IN A POWERSHELL WINDOW STAYS THERE (2026-10-08), and a plain
+// `npm run patch` in that window put scrub-cost, 3 to 10 minutes on his own 1.38 GB
+// project, back into the gate.
+describe('the gate clears what must not reach it', () => {
+  it('marks the process as inside the gate and removes OLP_MEASURE', () => {
+    const env = { OLP_MEASURE: '1', PATH: 'a-path', OLP_OTHER: 'kept' }
+    enterGate(env)
+    expect(env.OLP_GATE).toBe('1')
+    expect('OLP_MEASURE' in env).toBe(false)
+    expect(env.PATH).toBe('a-path')
+    expect(env.OLP_OTHER).toBe('kept')
+  })
+
+  it('is fine when OLP_MEASURE was never set', () => {
+    const env = {}
+    enterGate(env)
+    expect(env).toEqual({ OLP_GATE: '1' })
+  })
+})
+
+// The three above only help if the script calls them. patch.mjs runs for 25 minutes inside
+// a ship, so the wiring is read from its source, comments left out.
+describe('patch.mjs is wired to them', () => {
+  const src = readFileSync(new URL('./patch.mjs', import.meta.url), 'utf8')
+  const code = src
+    .split('\n')
+    .filter((l) => !l.trim().startsWith('//'))
+    .join('\n')
+
+  it('hashes the tree once for the run and once at the end of the gate, and nowhere else', () => {
+    expect(code.match(/\btreeHash\(/g)).toHaveLength(2)
+    expect(code).toMatch(/const startTree = treeHash\(\)/)
+    expect(code).toMatch(/const gate = async \(tree\) =>/)
+    expect(code).toMatch(/await gate\(startTree\)/)
+    expect(code).toMatch(/fastRefusal\(lastTag, startTree\)/)
+  })
+
+  it('enters the gate through enterGate, and sets no gate variable by hand', () => {
+    expect(code).toMatch(/\benterGate\(\)/)
+    expect(code).not.toMatch(/process\.env\.OLP_GATE\s*=/)
+  })
+
+  it('bumps from the gated manifests and checks them again after npm version', () => {
+    expect(code).toMatch(/manifestsMoved\(gatedTree\)/)
+    expect(code).toMatch(/versionInTree\(gatedTree\)/)
+    expect(code).toMatch(/manifestsBeyondVersion\(gatedTree, version\)/)
+    expect(code).not.toMatch(/const current = JSON\.parse\(readFileSync/)
+  })
+})
+
+// 2026-10-06: "how long is the gate" had to be rebuilt from file times.
+describe('runLogged', () => {
+  it('says how long a step took, in the log as well', async () => {
+    const log = sink()
+    const out = sink()
+    const secs = await runLogged('node -e "console.log(1)"', 'tiny step', log, { out, err: sink() })
+    expect(secs).toBeTypeOf('number')
+    expect(log.said.join('')).toMatch(/✓ tiny step \(\d+ s\)/)
+  })
+
+  it('a failure carries its label and says how long it ran', async () => {
+    const log = sink()
+    await expect(runLogged('node -e "process.exit(3)"', 'red step', log, { out: sink(), err: sink() })).rejects.toMatchObject({
+      label: 'red step',
+      message: 'red step exited 3',
+    })
+    expect(log.said.join('')).toMatch(/✗ red step exited 3 after \d+ s/)
+  })
+})
+
+// ⛔ Playwright empties test-results/ at the start of every run, and a rerun 54
+// seconds after the red gate of 2026-10-06 deleted its trace.
+describe('keepEvidence', () => {
+  const results = () => {
+    const dir = scratchDir('olp-evidence-')
+    const from = join(dir, 'test-results')
+    mkdirSync(join(from, 'play-latency-1'), { recursive: true })
+    writeFileSync(join(from, 'play-latency-1', 'trace.zip'), 'trace')
+    writeFileSync(join(dir, 'last-ship.log'), 'the log')
+    return { dir, from, root: join(dir, 'gate-evidence'), log: join(dir, 'last-ship.log') }
+  }
+
+  it('moves the results out of reach and keeps the ship log beside them', () => {
+    const { from, root, log } = results()
+    const kept = keepEvidence({ from, root, extra: [log], now: new Date('2026-10-06T16:09:11Z') })
+    expect(kept).toBe(join(root, '2026-10-06T16-09-11-000Z'))
+    expect(existsSync(from)).toBe(false)
+    expect(readFileSync(join(kept, 'test-results', 'play-latency-1', 'trace.zip'), 'utf8')).toBe('trace')
+    expect(readFileSync(join(kept, 'last-ship.log'), 'utf8')).toBe('the log')
+  })
+
+  it('keeps only the newest few, because his C drive fills up', () => {
+    const { dir, root } = results()
+    for (let day = 1; day <= 5; day++) {
+      mkdirSync(join(dir, 'test-results'), { recursive: true })
+      keepEvidence({ from: join(dir, 'test-results'), root, keep: 3, now: new Date(`2026-10-0${day}T12:00:00Z`) })
+    }
+    expect(readdirSync(root).sort()).toEqual(['2026-10-03T12-00-00-000Z', '2026-10-04T12-00-00-000Z', '2026-10-05T12-00-00-000Z'])
+  })
+
+  it('nothing to keep is not an error', () => {
+    const { dir, root } = results()
+    expect(keepEvidence({ from: join(dir, 'no-such-folder'), root })).toBeNull()
   })
 })

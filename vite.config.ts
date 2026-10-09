@@ -51,6 +51,28 @@ function offlineCopy(): Plugin {
 export default defineConfig({
   define: { __APP_VERSION__: JSON.stringify(appVersion) },
   plugins: [react(), tailwindcss(), offlineCopy()],
+  // THE DEV SERVER SEES ONLY THIS TREE (2026-10-06). With no entries, Vite's
+  // dependency scan globs every *.html under the repo, which on the day this was
+  // found was 17 files: the builder worktrees' own index/splash/update pages (each
+  // a second copy of the app's imports, plus whatever deps that branch added),
+  // out/ and release/ builds, and a trace page under test-results. A dependency
+  // found after startup makes Vite re-optimize and RELOAD every open page, in the
+  // middle of a gate test. These three are this app's pages, and nothing else.
+  //
+  // ⛔ transformers.js is only ever imported from inside the caption and music
+  // workers, which the scan cannot see into, so it was found on first use: the
+  // first gate run with piped server output (2026-10-06) logged "new dependencies
+  // optimized: @huggingface/transformers ... reloading" in the middle of the boot
+  // specs. Bundled at startup instead, so nothing reloads a test's page.
+  optimizeDeps: { entries: ['index.html', 'splash.html', 'update.html'], include: ['@huggingface/transformers'] },
+  server: {
+    watch: {
+      ignored: ['**/.claude/**', '**/out/**', '**/release/**', '**/_verify/**', '**/test-results/**', '**/playwright-report/**'],
+    },
+  },
+  // The gate's dev server keeps its own optimized deps (playwright.config.ts sets
+  // this), so it never shares node_modules/.vite with his 5177 session.
+  cacheDir: process.env.OLP_VITE_CACHE || 'node_modules/.vite',
   worker: {
     // The transcribe worker dynamic-imports transformers.js (code-splitting),
     // which the default iife worker format cannot express. Every supported

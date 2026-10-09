@@ -27,21 +27,27 @@ test('scrubbing the ruler coalesces to one update per frame, not one per pointer
   await page.getByTestId('asset-card').dblclick()
   await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
 
-  // Count every distinct playhead value the store is asked to hold.
+  // Count every distinct playhead value the store is asked to hold. Counted from
+  // the playhead as it is NOW: starting from -1 counted the first store change of
+  // any kind (an import finishing) as a scrub write, so the count read 2 or 3 for
+  // the same scrub depending on what else had landed (2026-10-06).
   await page.evaluate(async () => {
     const storeMod = '/src/state/store.ts'
     const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
       useStore: {
+        getState: () => { ui: { playheadS: number } }
         subscribe: (cb: (s: { ui: { playheadS: number } }) => void) => () => void
       }
     }
-    const w = window as unknown as { __scrubWrites: number }
+    const w = window as unknown as { __scrubWrites: number; __scrubValues: number[] }
     w.__scrubWrites = 0
-    let last = -1
+    w.__scrubValues = []
+    let last = useStore.getState().ui.playheadS
     useStore.subscribe((s) => {
       if (s.ui.playheadS !== last) {
         last = s.ui.playheadS
         w.__scrubWrites++
+        w.__scrubValues.push(+s.ui.playheadS.toFixed(3))
       }
     })
   })
@@ -81,16 +87,25 @@ test('scrubbing the ruler coalesces to one update per frame, not one per pointer
   // Let any frame still owed actually run, so the last write is counted.
   await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
 
-  const writes = await page.evaluate(() => (window as unknown as { __scrubWrites: number }).__scrubWrites)
+  const { writes, values } = await page.evaluate(() => {
+    const w = window as unknown as { __scrubWrites: number; __scrubValues: number[] }
+    return { writes: w.__scrubWrites, values: w.__scrubValues }
+  })
+  console.log(`[scrub lag] ${writes} store writes for ${MOVES} pointer moves: ${JSON.stringify(values)}`)
 
   // ⛔ THE POINT OF THE WHOLE TEST. Uncoalesced this is one write per move, so
   // it lands at or above MOVES. Coalesced it is one per animation frame, and a
-  // burst dispatched this fast spans far fewer frames than it has events.
+  // burst dispatched in one synchronous loop cannot span a frame at all: the press
+  // writes once (a click lands on its own frame, useCoalescedScrub) and the whole
+  // burst writes once. That is 2 on any machine, measured 2 (2026-10-06). It used
+  // to allow anything under 60, which a scrub that wrote every other event, half
+  // the lag he reported, would have passed.
   expect(
     writes,
-    `store writes for ${MOVES} pointer moves: uncoalesced scrubbing writes once per EVENT, ` +
+    `store writes for ${MOVES} pointer moves (${JSON.stringify(values)}): the press writes once and ` +
+      `the burst, which cannot span a frame, once. Uncoalesced scrubbing writes once per EVENT, ` +
       `which on a 1000 Hz mouse is eight times what the screen can show and is the lag he reported`,
-  ).toBeLessThan(MOVES)
+  ).toBeLessThanOrEqual(2)
 
   // And it still actually scrubbed: the playhead has to have gone somewhere, or
   // a test that "passes" by doing nothing at all would look identical.

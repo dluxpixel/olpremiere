@@ -598,6 +598,14 @@ async function pump(e: AssetEntry): Promise<void> {
     e.pumping = false
     // Asked for after the last frame: nothing is reading now, so do it now.
     if (e.reopenWanted && !e.failed) closeReader(e)
+    // ⛔ THE CEILING IS ENFORCED AGAIN WHEN A PUMP ENDS (2026-10-06). reapDecoders
+    // ran only when a decoder OPENED, and it skips every entry that is pumping at
+    // that moment. A scrub across many clips opens nearly all of them at once, so
+    // most were skipped, and nothing came back for them once their decode ended:
+    // decoder-cap.spec.ts read 12 open against a cap of 8 with nothing pumping,
+    // queued or decoding. "Exceeded briefly" was the rest of the session. The
+    // entry that just finished is the one kept.
+    reapDecoders(e.asset.id)
   }
 }
 

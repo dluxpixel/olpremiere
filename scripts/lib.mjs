@@ -1,7 +1,8 @@
 // Shared release helpers.
-import { spawn } from 'node:child_process'
-import { createWriteStream, existsSync, mkdirSync, readFileSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { execFileSync, spawn } from 'node:child_process'
+import { copyFileSync, cpSync, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { basename, dirname, join } from 'node:path'
 
 /**
  * Where a ship writes everything it saw. ONE rolling file, overwritten each run,
@@ -40,11 +41,14 @@ export function openShipLog(header) {
  * The fix is NOT "remember not to pipe it". The log is written here, so it
  * exists however the command was invoked, and a failure prints where to read it.
  */
-export function runLogged(cmd, label, log) {
+export function runLogged(cmd, label, log, { out = process.stdout, err = process.stderr } = {}) {
   return new Promise((resolve, reject) => {
-    const banner = `\n▶ ${label}\n`
-    process.stdout.write(banner)
-    log?.write(banner)
+    const t0 = Date.now()
+    const say = (stream, d) => {
+      stream.write(d)
+      log?.write(d)
+    }
+    say(out, `\n▶ ${label}\n`)
     // windowsHide: shell:true means cmd.exe on Windows, and a ship launched
     // detached has no console of its own, so each gate step opened a black box
     // on his screen. The output is piped and logged either way.
@@ -57,22 +61,25 @@ export function runLogged(cmd, label, log) {
       tail = (tail + d).slice(-TAIL_CHARS)
     }
     child.stdout.on('data', (d) => {
-      process.stdout.write(d)
-      log?.write(d)
+      say(out, d)
       keep(d)
     })
     child.stderr.on('data', (d) => {
-      process.stderr.write(d)
-      log?.write(d)
+      say(err, d)
       keep(d)
     })
     child.on('error', reject)
     child.on('close', (code) => {
-      if (code === 0) resolve()
+      // How long each step took, in the log, because on 2026-10-06 "how long is
+      // the gate" had to be rebuilt from file times.
+      const secs = Math.round((Date.now() - t0) / 1000)
+      say(out, code === 0 ? `✓ ${label} (${secs} s)\n` : `✗ ${label} exited ${code} after ${secs} s\n`)
+      if (code === 0) resolve(secs)
       else {
-        const err = new Error(`${label} exited ${code}`)
-        err.output = tail
-        reject(err)
+        const e = new Error(`${label} exited ${code}`)
+        e.output = tail
+        e.label = label
+        reject(e)
       }
     })
   })
@@ -284,15 +291,15 @@ export function planShip({ dirty, unpushed, unreleased, headIsRelease, verified 
  * suite gets shipped. This only wraps steps that are a local build or an upload,
  * where the only thing that failed was the wire.
  */
-export async function runLoggedRetry(cmd, label, log, { tries = 3, baseDelayMs = 15_000 } = {}) {
+export async function runLoggedRetry(cmd, label, log, { tries = 3, baseDelayMs = 15_000, out = process.stdout, err = process.stderr } = {}) {
   for (let attempt = 1; ; attempt++) {
     try {
-      return await runLogged(cmd, attempt === 1 ? label : `${label}, try ${attempt} of ${tries}`, log)
+      return await runLogged(cmd, attempt === 1 ? label : `${label}, try ${attempt} of ${tries}`, log, { out, err })
     } catch (e) {
       if (attempt >= tries || !isTransientFailure(e.output)) throw e
       const waitMs = baseDelayMs * attempt
       const msg = `\n⚠ ${label} failed on what looks like a dropped connection, not a broken build.\n  Waiting ${Math.round(waitMs / 1000)}s, then try ${attempt + 1} of ${tries}.\n`
-      process.stdout.write(msg)
+      out.write(msg)
       log?.write(msg)
       await new Promise((r) => setTimeout(r, waitMs))
     }
@@ -328,4 +335,264 @@ export async function fetchRetry(url, opts = {}, tries = 4) {
     }
   }
   throw lastErr
+}
+
+// --- what the gate checked is what gets committed (2026-10-06) ---------------
+//
+// ⛔ THE GATE USED TO CERTIFY A TREE IT NEVER SAW. The tree hash was taken BEFORE
+// a 25 minute gate, tsc, eslint and vitest were all done in its first two
+// minutes, and the commit at the end was a plain `git add -A`. A file saved at
+// minute five skipped typecheck, lint and unit tests, was half seen by the e2e
+// (the dev server serves whatever is on disk), and was then committed as gated.
+// Eleven auditors and several builders were live in this repo the day that was
+// found.
+//
+// So the gate hashes the tree again when it ends and refuses a tree that moved,
+// and the release commit is BUILT from the gated tree (plus the version bump),
+// never from whatever is on disk at commit time.
+
+/** git in `cwd`, stdout trimmed. `env` adds to the environment. */
+function gitIn(cwd, args, { env, input } = {}) {
+  return execFileSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    input,
+    env: env ? { ...process.env, ...env } : process.env,
+    stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+    windowsHide: true,
+  }).trim()
+}
+
+/** Run `fn(env)` against a throwaway index, so the real one is never touched. */
+function withScratchIndex(cwd, seedFromReal, fn) {
+  const index = join(tmpdir(), `olp-index-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+  try {
+    if (seedFromReal) {
+      // A copy of the real index only saves git re-hashing unchanged files.
+      const real = join(gitIn(cwd, ['rev-parse', '--absolute-git-dir']), 'index')
+      if (existsSync(real)) copyFileSync(real, index)
+    }
+    return fn({ GIT_INDEX_FILE: index })
+  } finally {
+    rmSync(index, { force: true })
+  }
+}
+
+/**
+ * The tree hash of everything a commit would take (tracked and new files, the
+ * ignore list honoured). Same hash means same bytes.
+ */
+export function treeHash(cwd = process.cwd()) {
+  return withScratchIndex(cwd, true, (env) => {
+    gitIn(cwd, ['add', '-A'], { env })
+    return gitIn(cwd, ['write-tree'], { env })
+  })
+}
+
+/** Paths that differ between two trees (or commits, or tags), sorted. */
+export function changedBetween(a, b, cwd = process.cwd()) {
+  const out = gitIn(cwd, ['diff-tree', '-r', '--name-only', '--no-commit-id', a, b])
+  return out ? out.split('\n').sort() : []
+}
+
+/**
+ * `baseTree` with only `paths` taken from the working tree on top: the gated
+ * tree plus the version bump, and nothing anybody saved after the gate.
+ */
+export function treeWith(baseTree, paths, cwd = process.cwd()) {
+  return withScratchIndex(cwd, false, (env) => {
+    gitIn(cwd, ['read-tree', baseTree], { env })
+    const present = paths.filter((p) => existsSync(join(cwd, p)))
+    if (present.length) gitIn(cwd, ['add', '--', ...present], { env })
+    return gitIn(cwd, ['write-tree'], { env })
+  })
+}
+
+/**
+ * Commit exactly `tree` on top of `parent` and move the branch there, then line
+ * the real index up with it. Throws, and moves nothing, if the branch is no
+ * longer at `parent` (something else committed while the gate ran).
+ *
+ * Whatever changed on disk after the tree was taken is NOT in the commit and
+ * shows up as an ordinary uncommitted change afterwards, for the next ship.
+ */
+export function commitExactTree(tree, message, { parent, cwd = process.cwd() }) {
+  const commit = gitIn(cwd, ['commit-tree', tree, '-p', parent, '-F', '-'], { input: message })
+  gitIn(cwd, ['update-ref', '-m', 'patch: release commit of the gated tree', 'HEAD', commit, parent])
+  gitIn(cwd, ['reset', '-q'])
+  return commit
+}
+
+// --- THE VERSION BUMP IS BUILT FROM THE GATED MANIFESTS (2026-10-08) ----------------
+//
+// ⛔ THE BUMP READ package.json AND package-lock.json FROM DISK, AFTER THE GATE. The gate
+// hashes the tree when it ends and refuses one that moved, but the bump runs after that
+// check: it read the current version from disk, `npm version` rewrote both files on
+// disk, and the release commit took both files from disk. A dependency added to
+// package.json in that window (or between the stamp check and the bump of an
+// already-verified tree) was committed and released with no check ever having seen it.
+//
+// So the bump refuses unless both files are, on disk, exactly what the gate checked,
+// reads the version it bumps FROM THE GATED TREE, and after `npm version` has run it
+// refuses again unless each file differs from the gated one in its version fields and
+// nothing else.
+
+/** The two files `npm version` rewrites, and the release commit takes from disk. */
+export const MANIFESTS = ['package.json', 'package-lock.json']
+
+/** A file as it is in `tree`, or null when the tree has none. */
+function fileInTree(tree, path, cwd) {
+  try {
+    return execFileSync('git', ['show', `${tree}:${path}`], { cwd, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+  } catch {
+    return null
+  }
+}
+
+/** The version in the gated tree's package.json: the one a bump starts from, whatever is on disk now. */
+export function versionInTree(tree, cwd = process.cwd()) {
+  const text = fileInTree(tree, 'package.json', cwd)
+  if (text === null) throw new Error(`the gated tree has no package.json`)
+  const version = JSON.parse(text).version
+  if (typeof version !== 'string') throw new Error('the gated tree has no version in its package.json')
+  return version
+}
+
+/**
+ * The manifests whose bytes on disk are not what the gated tree holds. Empty means the
+ * bump may start. A manifest the tree has and the disk has lost is named too.
+ */
+export function manifestsMoved(gatedTree, cwd = process.cwd()) {
+  const gone = MANIFESTS.filter((f) => fileInTree(gatedTree, f, cwd) !== null && !existsSync(join(cwd, f)))
+  const changed = changedBetween(gatedTree, treeWith(gatedTree, MANIFESTS, cwd), cwd).filter((f) => MANIFESTS.includes(f))
+  return [...new Set([...gone, ...changed])].sort()
+}
+
+/** JSON with its keys in a fixed order, so two spellings of one document compare equal. */
+function canonical(value) {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${canonical(value[k])}`)
+      .join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+/**
+ * The manifests that, after `npm version` ran, differ from the gated tree by more than
+ * the version: a change nobody gated. Empty means the commit may take them from disk.
+ */
+export function manifestsBeyondVersion(gatedTree, version, cwd = process.cwd()) {
+  const bad = []
+  for (const f of MANIFESTS) {
+    const gatedText = fileInTree(gatedTree, f, cwd)
+    if (gatedText === null) continue
+    try {
+      const expected = JSON.parse(gatedText)
+      expected.version = version
+      if (f === 'package-lock.json' && expected.packages?.['']) expected.packages[''].version = version
+      const onDisk = JSON.parse(readFileSync(join(cwd, f), 'utf8'))
+      if (canonical(expected) !== canonical(onDisk)) bad.push(f)
+    } catch {
+      bad.push(f)
+    }
+  }
+  return bad
+}
+
+// --- --fast keeps its own contract (2026-10-06) -------------------------------
+//
+// ⛔ `--fast` says "docs only or comment only", and it shipped four FEATURE
+// releases with no browser test at all: v3.15.0 (fonts), v3.16.0 (the HEVC
+// export path), v3.18.0, v3.20.0. Nothing in git or on GitHub said so. Now it
+// refuses a release that carries code, and the ones it allows say so in the
+// commit and in the GitHub release.
+
+/** The line a --fast release carries in its commit body and its GitHub release. */
+export const FAST_MARK = 'E2E SKIPPED (--fast)'
+
+/** What a --fast release may carry: Markdown anywhere, and anything under docs/. */
+export function isDocsPath(path) {
+  return /\.md$/i.test(path) || path.startsWith('docs/')
+}
+
+/** The paths that make a release NOT docs only. Empty means --fast is allowed. */
+export function codeFiles(paths) {
+  return paths.filter((p) => !isDocsPath(p))
+}
+
+/**
+ * What makes the release NOT docs only, judged on `tree` and on nothing else.
+ *
+ * ⛔ THE TREE IS PASSED IN, NEVER HASHED HERE (2026-10-08). `--fast` used to hash the
+ * tree for this check and the gate used to hash it again a moment later, so a code
+ * file saved between the two was never looked at by the docs only check and then
+ * became the gate's own baseline: it shipped marked "docs only". One hash is taken at
+ * the start of the run; this check, the stamp check and the gate all read that one,
+ * and the gate's check at its end covers all of them.
+ *
+ * With no tag to compare against, everything counts as unreleased.
+ */
+export function fastRefusal(lastTag, tree, cwd = process.cwd()) {
+  return lastTag ? codeFiles(changedBetween(lastTag, tree, cwd)) : ['(no release tag to compare against)']
+}
+
+/**
+ * Put the process in the state the gate runs in, for itself and every step it starts.
+ *
+ * OLP_GATE tells a spec it is inside the gate, where a missing prerequisite is a
+ * failure and not a quiet skip.
+ *
+ * ⛔ OLP_MEASURE IS CLEARED (2026-10-08). It switches on the `measure` project, which
+ * is scrub-cost on his own 1.38 GB project and took 3 to 10 minutes: not part of the
+ * gate. Set in a PowerShell terminal it STAYS set for every later command in that
+ * window, so a plain `npm run patch` there put scrub-cost back in the gate. The gate
+ * answers for what it runs, whatever the shell it was started from still holds.
+ */
+export function enterGate(env = process.env) {
+  env.OLP_GATE = '1'
+  delete env.OLP_MEASURE
+}
+
+// --- a failed gate keeps its evidence (2026-10-06) ----------------------------
+//
+// ⛔ PLAYWRIGHT EMPTIES test-results/ AT THE START OF EVERY RUN. The nine traces of
+// 2026-10-04's first ship were deleted when the next ship started that evening,
+// so the failures could only be re-rolled ("8 passed alone"), never read. On
+// 2026-10-06 a rerun started 54 seconds after a red gate and deleted its
+// scrub-cost trace. So a red e2e step moves its results out of reach first.
+
+/** Where a red gate's traces, videos and ship log are kept. His C drive, newest few only. */
+export const EVIDENCE_DIR = 'C:/Users/skyle/AppData/Local/olp-build/gate-evidence'
+
+/**
+ * Move `from` (test-results/) into `<root>/<stamp>/`, copy each of `extra` beside
+ * it, and keep only the newest `keep` runs. Returns the folder, or null when there
+ * was nothing to keep. Never throws: keeping evidence must not hide the failure.
+ */
+export function keepEvidence({ from, root = EVIDENCE_DIR, extra = [], keep = 3, now = new Date() }) {
+  try {
+    if (!existsSync(from)) return null
+    const stamp = now.toISOString().replace(/[:.]/g, '-')
+    const dest = join(root, stamp)
+    mkdirSync(dest, { recursive: true })
+    const target = join(dest, basename(from))
+    try {
+      renameSync(from, target)
+    } catch {
+      // Another drive, or a file still held open: copy what can be copied.
+      cpSync(from, target, { recursive: true })
+      rmSync(from, { recursive: true, force: true })
+    }
+    for (const f of extra) {
+      if (existsSync(f)) copyFileSync(f, join(dest, basename(f)))
+    }
+    const runs = readdirSync(root).filter((n) => statSync(join(root, n)).isDirectory()).sort()
+    for (const old of runs.slice(0, Math.max(0, runs.length - keep))) rmSync(join(root, old), { recursive: true, force: true })
+    return dest
+  } catch {
+    return null
+  }
 }
