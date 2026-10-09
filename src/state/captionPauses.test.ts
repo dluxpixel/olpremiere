@@ -74,6 +74,7 @@ import { activeSequence, newClipFromAsset, newProject, videoTracks, type MediaAs
 import { updateActiveSequence, useStore } from './store'
 import { autoCaptionEveryClip, autoCaptionFromClip, forgetHeard, useTranscribe, wordsForClip } from './transcribeActions'
 import { listenForWords } from './transcriptActions'
+import { cutQuietParts } from './silenceActions'
 
 /** RNNoise's real frame, 10 ms. Quiet everywhere except the voiced spans. */
 const FRAME_S = 0.01
@@ -306,5 +307,24 @@ describe('captions land when he says the word', () => {
       expect(c.startS * seq.fps).toBeCloseTo(Math.round(c.startS * seq.fps), 6)
       expect((c.startS + (c.outS - c.inS)) * seq.fps).toBeCloseTo(Math.round((c.startS + (c.outS - c.inS)) * seq.fps), 6)
     }
+  })
+})
+
+// Review B1. A caption run stores the words it heard on the media. It must also
+// say WHICH stretch it heard, or Cut the quiet parts finds no heard span, thinks
+// the clip was never listened to, and runs the speech model a second time.
+describe('a caption run tells the media what it heard', () => {
+  it('stores the heard span, so Cut the quiet parts does not listen to the clip again', async () => {
+    seed([{ id: 'a', startS: 0, outS: 3 }])
+    said['clip-a'] = PAUSED
+    voices['clip-a'] = PAUSED_VOICE
+    await autoCaptionFromClip('clip-a')
+    expect(recogniserRuns.n).toBe(1)
+    expect(useStore.getState().project.assets['a']!.heardSpans).toEqual([{ fromS: 0, toS: 3 }])
+    // The recogniser's cache is a second, separate memory; empty it so only the
+    // media's own record of what it heard can spare the second run.
+    forgetHeard()
+    await cutQuietParts('clip-a')
+    expect(recogniserRuns.n).toBe(1)
   })
 })

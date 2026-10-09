@@ -19,7 +19,7 @@ import { respellWords, type Rewrite, type Vocabulary } from '../engine/captions/
 import { learnedProfile } from '../engine/captions/styleStore'
 import { retimeAppearance } from '../engine/anim/appearance'
 import { addTrack, clipDurationS, clipEndS, recomputeDuration, resolveStart } from '../engine/timeline'
-import { keepHeardWords } from '../engine/transcriptCut'
+import { keepHeardWords, mergeHeardSpans } from '../engine/transcriptCut'
 import { activeSequence, videoTracks, type Clip, type Sequence, type SpokenWord, type Track } from '../engine/types'
 import { updateActiveSequence, useStore } from './store'
 import { useToasts } from './toasts'
@@ -333,7 +333,12 @@ export function addCaptionsFromWords(
     let assets = p.assets
     for (const h of options.heard ?? []) {
       const a = assets[h.assetId]
-      if (a) assets = { ...assets, [a.id]: keepHeardWords(a, h.words, h.fromS, h.toS, options.wordLagS ?? 0) }
+      if (a) {
+        // The words AND the stretch they were heard over: with only the words,
+        // Cut the quiet parts finds no heard span and listens to the clip again.
+        const kept = keepHeardWords(a, h.words, h.fromS, h.toS, options.wordLagS ?? 0)
+        assets = { ...assets, [a.id]: { ...kept, heardSpans: mergeHeardSpans(a.heardSpans, h.fromS, h.toS) } }
+      }
     }
     return { ...p, assets, sequences: { ...p.sequences, [sq.id]: next } }
   })
