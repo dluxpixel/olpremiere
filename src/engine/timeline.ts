@@ -115,9 +115,11 @@ export function refitClipToFill(
   const asset = assets[clip.assetId]
   const sw = asset?.width ?? 0
   const sh = asset?.height ?? 0
-  if (sw <= 0 || sh <= 0) return clip
+  // `!(x > 0)` also catches NaN, which `x <= 0` lets through: a size that is not a
+  // number would otherwise write a NaN scale into the clip and blank it.
+  if (!(sw > 0) || !(sh > 0) || !Number.isFinite(sw) || !Number.isFinite(sh)) return clip
   const contain = Math.min(frameW / sw, frameH / sh)
-  if (contain <= 0) return clip
+  if (!(contain > 0)) return clip
   const tf = clip.transform
   if (tf.x !== 0 || tf.y !== 0) return clip
   const cover = Math.max(frameW / sw, frameH / sh) / contain
