@@ -277,7 +277,7 @@ describe('Ctrl+S in his name for a shared room', () => {
     useCollab.setState({ roomId: 'room-test', mode: 'tabs', connected: true })
     const user = userEvent.setup()
     render(<TopBar />)
-    await user.click(screen.getByTitle(/click to set your name/))
+    await user.click(screen.getByTitle(/click to set your name/i))
     const name = screen.getByTestId('collab-name-input') as HTMLInputElement
     expect(document.activeElement).toBe(name)
     await user.clear(name)
