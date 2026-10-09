@@ -11,6 +11,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { buildAppBindings } from './App'
+import { isCommitInPlace } from './fieldCommit'
 import { installKeymap } from './keymap'
 import { recomputeDuration } from '../src/engine/timeline'
 import { channelKeyframes } from './engine/effects/channels'
@@ -296,6 +297,50 @@ describe('keys wait while a window or a menu is open over the edit', () => {
       }
     })
   }
+
+  // The one key that reaches past a window is Save, and it must do all of its job from a text
+  // field inside one: write what he typed, save, and leave the caret where it is (a real blur
+  // would put his next keys on the edit behind the window). Delete there still does nothing.
+  it('Ctrl+S in a text field of an open window saves, writes the field and keeps him in it, while Delete does nothing behind the window', () => {
+    seedSelectedClip()
+    saveSettled.mockClear()
+    const before = useStore.getState().project
+    const win = over({ role: 'dialog', 'aria-modal': 'true' })
+    const field = document.createElement('input')
+    field.type = 'text'
+    win.append(field)
+    field.focus()
+    // What commitField sends, as a field's onBlur would hear it: a focus-out marked "stay open".
+    const told: boolean[] = []
+    field.addEventListener('focusout', (e) => told.push(isCommitInPlace({ nativeEvent: e })))
+    const onField = (key: string, ctrl = false): KeyboardEvent => {
+      const e = new KeyboardEvent('keydown', { key, ctrlKey: ctrl, bubbles: true, cancelable: true })
+      field.dispatchEvent(e)
+      return e
+    }
+    const uninstall = installKeymap(bindings())
+    try {
+      expect(document.activeElement).toBe(field)
+      const save = onField('s', true)
+      expect(saveSettled).toHaveBeenCalledExactlyOnceWith(true)
+      expect(save.defaultPrevented).toBe(true)
+      expect(told).toEqual([true])
+      expect(document.activeElement).toBe(field)
+      expect(field.isConnected).toBe(true)
+
+      // Behind the window the edit keeps its hands off: from the field and from the page.
+      onField('Delete')
+      press('Delete')
+      press('Backspace')
+      expect(useStore.getState().project).toBe(before)
+      expect(allClips()).toHaveLength(1)
+      expect(saveSettled).toHaveBeenCalledTimes(1)
+      expect(document.activeElement).toBe(field)
+    } finally {
+      uninstall()
+      win.remove()
+    }
+  })
 
   it('a window that is not modal (the floating Record panel) holds nothing', () => {
     seedSelectedClip()
